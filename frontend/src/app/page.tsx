@@ -35,7 +35,7 @@ interface ContainerStatus {
   };
 }
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:9100';
 
 export default function Dashboard() {
   const queryClient = useQueryClient();
@@ -231,7 +231,7 @@ export default function Dashboard() {
           <div>
             <p className="font-semibold text-rose-200">백엔드 서버와 통신할 수 없습니다.</p>
             <p className="mt-1 opacity-80">
-              `poetry run uvicorn src.tripmate_manager.main:app` 명령어를 통해 백엔드 서버를 8000포트에서 실행해 주세요.
+              백엔드 서버가 {BACKEND_URL} 에서 실행 중인지 확인해 주세요. (WSL 환경 확인)
             </p>
           </div>
         </div>
@@ -258,12 +258,25 @@ export default function Dashboard() {
                 const isPG = container.role === 'postgresql' || container.id.includes('postgresql');
                 const Icon = isPG ? Database : FolderGit2;
                 const title = container.display_name || (isPG ? 'PostgreSQL (PostGIS)' : 'RustFS Store');
+                
+                const isActionPending = actionMutation.isPending && actionMutation.variables?.id === container.id;
+                const isConfigPending = configMutation.isPending && configMutation.variables?.id === container.id;
+                const isResetPending = resetMutation.isPending && resetMutation.variables === container.id;
+                const isContainerLoading = isActionPending || isConfigPending || isResetPending;
 
                 return (
                   <div 
                     key={container.id}
-                    className={`border rounded-2xl p-6 transition-all duration-300 hover:translate-y-[-2px] hover:shadow-glow/20 flex flex-col justify-between h-[280px] ${config.bgClass} bg-card/30 backdrop-blur-sm`}
+                    className={`border rounded-2xl p-6 transition-all duration-300 hover:translate-y-[-2px] hover:shadow-glow/20 flex flex-col justify-between h-[280px] ${config.bgClass} bg-card/30 backdrop-blur-sm relative overflow-hidden`}
                   >
+                    {isContainerLoading && (
+                      <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-[2px] flex flex-col items-center justify-center z-20 gap-3 transition-all duration-300">
+                        <RefreshCw className="w-8 h-8 text-primary animate-spin" />
+                        <span className="text-xs text-slate-300 font-semibold tracking-wide">
+                          {isActionPending ? '컨테이너 제어 중...' : '컨테이너 재생성 중...'}
+                        </span>
+                      </div>
+                    )}
                     <div>
                       {/* Service Header */}
                       <div className="flex justify-between items-start">
