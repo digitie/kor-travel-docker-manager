@@ -1,0 +1,58 @@
+# TripMate infrastructure docker-compose
+# Configures PostgreSQL (PostGIS) and RustFS services
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.5-alpine
+    container_name: tripmate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tripmate
+      POSTGRES_PASSWORD: tripmate_dev_password
+      POSTGRES_DB: tripmate
+    ports:
+      - "55432:5432"
+    volumes:
+      - tripmate-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tripmate -d tripmate"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: tripmate-rustfs
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: ":9003"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9004"
+    ports:
+      - "9003:9003"
+      - "9004:9004"
+    volumes:
+      - tripmate-rustfs:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9003/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rustfs-init:
+    image: minio/mc:latest
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://rustfs:9003 rustfsadmin rustfsadmin;
+      mc mb -p local/tripmate-media || true;
+      "
+
+volumes:
+  tripmate-pgdata:
+  tripmate-rustfs:
