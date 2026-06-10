@@ -1,0 +1,80 @@
+# AGENTS.md
+
+## 문서 언어 정책
+
+이 저장소의 **모든 Markdown 문서는 한글로 작성한다**. 예외 없음. `README.md`, `CHANGELOG.md`도 본문은 한글이다.
+
+다음 항목만 영어를 유지한다 — 한글로 옮기면 의미가 변하거나 정확성이 깨지기 때문:
+
+- **코드 식별자**: 함수/클래스/변수/타입/엔드포인트 이름 (예: `DockerService`, `get_container_status`, `/api/containers`).
+- **명령어와 경로**: `npm run dev`, `poetry run uvicorn`, `f:\dev\tripmate-manager\backend`.
+- **외부 공식 용어**: Docker, PostgreSQL, PostGIS, RustFS, FastAPI, Next.js, TanStack Query, Tailwind CSS, Shadcn UI.
+- **표준 keyword**: ADR, CHANGELOG, semver 라벨.
+- **shell 출력 / 로그 예시**: 그대로 캡처한 문자열은 보존.
+
+설명 문장, 절제목, 표 column 헤더, ADR 본문, 빠른 시작 가이드, 일지 항목은 한글로 적는다. 새 문서를 만들 때 영문 초안을 두지 않는다 — 처음부터 한글로 쓴다.
+
+---
+
+## 역할
+
+이 저장소(`tripmate-manager`)는 TripMate 서비스 구동에 필요한 기반 인프라(PostgreSQL, RustFS 등)의 Docker 컨테이너 구동 관리 및 상태 모니터링을 담당하는 소프트웨어다. 
+
+- **Backend**: Python FastAPI 기반으로 구성되어 로컬 Docker 데몬과 상호작용하여 상태를 체크하고 제어한다.
+- **Frontend**: Next.js (React), zod, react-hook-form, tanstack query, tailwind css, shadcn ui 기반의 대시보드 웹이다.
+
+공용으로 사용하는 데이터베이스 및 파일 스토리지 인프라를 안정적으로 통합 관리하는 것이 목적이다.
+
+---
+
+## 식별자 (혼동 방지)
+
+| 항목 | 값 |
+|------|----|
+| GitHub 저장소 이름 | `tripmate-manager` |
+| Backend 기술 스택 | Python 3.11+, FastAPI, Docker SDK, Pytest, Ruff, Mypy |
+| Frontend 기술 스택 | Next.js 14+ (App Router), TypeScript, Tailwind CSS, Shadcn UI, TanStack Query |
+| DB 서비스 정보 | PostgreSQL / PostGIS (기본 포트: 55432) |
+| 파일 스토리지 정보 | RustFS (기본 포트: 9003 / 콘솔 포트: 9004) |
+
+---
+
+## 개발 환경 정책
+
+개발 환경은 Linux 기반이며, Windows 호스트에서는 WSL (Windows Subsystem for Linux)을 사용하여 백엔드/프론트엔드 등을 구동한다. 단, git 및 소스코드 버전 관리는 Windows 호스트에서 직접 진행한다. 
+
+- **에이전트별 고정 worktree**:
+  - Google Antigravity: `F:\dev\tripmate-manager-antigravity`
+  - Claude Code: `F:\dev\tripmate-manager-claude`
+  - ChatGPT Codex: `F:\dev\tripmate-manager-codex`
+- 각 worktree 진입 시 `git fetch` 후 `git switch -c agent/<topic> main`으로 새 브랜치를 따서 작업한다.
+- CodeGraph 인덱스는 각 worktree에서 최초 1회 `codegraph init -i`로 생성한 후, 작업 시작 시 `codegraph sync`를 수행한다. `.codegraph/`는 gitignore 대상이다.
+
+작업 전에 반드시 다음을 읽는다:
+1. `CLAUDE.md` — 현재 작업과 잔존 부채
+2. `SKILL.md` — DO NOT 룰, 빠른 시작, 도메인 어휘
+3. `docs/architecture.md` — 백엔드 + 프론트엔드 + Docker 구조 설계
+4. `docs/decisions.md` — ADR 기록
+5. `docs/tasks.md` — 백로그 작업 추적
+
+---
+
+## 지시 우선순위
+
+1. 사용자 요청
+2. 이 `AGENTS.md`
+3. `SKILL.md`
+4. `docs/architecture.md`, `docs/decisions.md`
+5. `docs/tasks.md`, `docs/journal.md`, `README.md`
+6. 기존 코드와 테스트
+
+---
+
+## 절대 하지 말 것 (DO NOT)
+
+1. **`main` 직접 푸시 금지**: 반드시 feature 브랜치 + PR 제출 방식을 사용한다.
+2. **비즈니스 로직과 인프라 관리의 혼선 금지**: 본 서비스는 PostgreSQL, RustFS의 컨테이너/상태 관리만을 목적으로 한다. TripMate의 여행 예약, 기상 통계 등 상위 도메인 비즈니스 코드를 이곳에 섞지 않는다.
+3. **'use client' 누락 금지**: 프론트엔드에서 React 훅 또는 DOM 조작을 수행하는 Next.js 컴포넌트에는 첫 줄에 반드시 `'use client'` 지시어를 추가한다.
+4. **포트 충돌 유발 금지**: PostgreSQL(55432) 및 RustFS(9003, 9004) 포트는 TripMate 구성 프로그램이 공용으로 접근할 수 있어야 하므로 임의로 변경하지 않는다.
+5. **API 키 및 비밀번호 하드코딩 금지**: `.env` 및 `.env.local` 파일을 사용하고, git에 커밋하지 않는다.
+6. **`.codegraph/` 커밋 금지**: 로컬 인덱싱 파일은 개별 에이전트의 로컬 빌드 결과물이므로 git 추적에서 제외한다.
