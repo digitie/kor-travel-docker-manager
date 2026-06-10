@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { 
   Database, 
@@ -11,7 +11,9 @@ import {
   Terminal, 
   Activity, 
   RefreshCw, 
-  ShieldAlert 
+  ShieldAlert,
+  Settings,
+  X
 } from 'lucide-react';
 
 interface ContainerStatus {
@@ -25,6 +27,12 @@ interface ContainerStatus {
   status: string;
   state: string;
   ports: string[];
+  config?: {
+    ports: string[];
+    env: Record<string, string>;
+    volumes: string[];
+    networks: string[];
+  };
 }
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://127.0.0.1:8000';
@@ -35,7 +43,15 @@ export default function Dashboard() {
   const [logContent, setLogContent] = useState<string>('');
   const [isLoadingLogs, setIsLoadingLogs] = useState<boolean>(false);
 
-  // Fetch all container statuses
+  // Configuration Modal States
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
+  const [configTargetContainer, setConfigTargetContainer] = useState<ContainerStatus | null>(null);
+  const [inputPortsList, setInputPortsList] = useState<string[]>([]);
+  const [inputEnvDict, setInputEnvDict] = useState<Record<string, string>>({});
+  const [inputVolumesList, setInputVolumesList] = useState<string[]>([]);
+  const [inputNetworksList, setInputNetworksList] = useState<string[]>([]);
+
+  // Action mutation (start/stop/restart)
   const { data: containers = [], isLoading, isRefetching, error } = useQuery<ContainerStatus[]>({
     queryKey: ['containers'],
     queryFn: async () => {
@@ -85,6 +101,73 @@ export default function Dashboard() {
 
   const handleAction = (id: string, action: string) => {
     actionMutation.mutate({ id, action });
+  };
+
+  // Config Update mutation
+  const configMutation = useMutation({
+    mutationFn: async ({ id, ports, env, volumes, networks }: { id: string; ports: string[]; env: Record<string, string>; volumes: string[]; networks: string[] }) => {
+      const res = await fetch(`${BACKEND_URL}/api/containers/${id}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ports, env, volumes, networks }),
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || 'Failed to update configuration.');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['containers'] });
+      setIsConfigModalOpen(false);
+      alert('설정이 성공적으로 반영되었으며, 컨테이너가 재생성되었습니다.');
+    },
+    onError: (err: any) => {
+      alert(`설정 변경 실패: ${err.message}`);
+    }
+  });
+
+  // Config Reset mutation
+  const resetMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`${BACKEND_URL}/api/containers/${id}/reset`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || 'Failed to reset configuration.');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['containers'] });
+      setIsConfigModalOpen(false);
+      alert('설정이 기본값으로 원복되었으며, 컨테이너가 재생성되었습니다.');
+    },
+    onError: (err: any) => {
+      alert(`설정 원복 실패: ${err.message}`);
+    }
+  });
+
+  const openConfigModal = (container: ContainerStatus) => {
+    setConfigTargetContainer(container);
+    setInputPortsList(container.config?.ports || []);
+    setInputEnvDict(container.config?.env || {});
+    setInputVolumesList(container.config?.volumes || []);
+    setInputNetworksList(container.config?.networks || []);
+    setIsConfigModalOpen(true);
+  };
+
+  const handleConfigSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!configTargetContainer) return;
+    configMutation.mutate({
+      id: configTargetContainer.id,
+      ports: inputPortsList,
+      env: inputEnvDict,
+      volumes: inputVolumesList,
+      networks: inputNetworksList
+    });
   };
 
   // Helper to determine status color and animations
@@ -261,6 +344,14 @@ export default function Dashboard() {
                       >
                         <Terminal className="w-4 h-4" />
                       </button>
+
+                      <button
+                        onClick={() => openConfigModal(container)}
+                        className="flex-none flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl p-2.5 text-xs font-semibold transition-all"
+                        title="설정 변경"
+                      >
+                        <Settings className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 );
@@ -315,6 +406,215 @@ export default function Dashboard() {
           </div>
         </div>
       </main>
+
+      {/* Config Edit Glassmorphic Modal */}
+      {isConfigModalOpen && configTargetContainer && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300">
+          <div className="bg-slate-900/95 border border-slate-800/80 rounded-2xl w-full max-w-lg p-6 shadow-2xl backdrop-blur-lg relative overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="absolute top-[-20%] left-[-10%] w-[40%] h-[40%] bg-primary/10 rounded-full blur-[80px] pointer-events-none" />
+            
+            {/* Modal Header */}
+            <div className="flex justify-between items-center pb-4 border-b border-border/80 z-10">
+              <h3 className="text-lg font-bold flex items-center gap-2 text-slate-200">
+                <Settings className="w-5 h-5 text-primary animate-spin-slow" />
+                <span>컨테이너 설정 변경</span>
+              </h3>
+              <button 
+                onClick={() => setIsConfigModalOpen(false)}
+                className="text-slate-400 hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-800/50 transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body / Form */}
+            <form onSubmit={handleConfigSubmit} className="flex-grow overflow-y-auto pr-2 mt-4 space-y-5 z-10 select-text">
+              <div className="p-4 bg-slate-950/40 border border-slate-800 rounded-xl text-xs text-slate-400 leading-relaxed">
+                <p className="font-semibold text-slate-300 mb-1">{configTargetContainer.display_name} 설정</p>
+                <p>docker-compose.yml 파일 내 설정을 변경합니다. 변경 후 컨테이너가 중지/삭제된 뒤 재생성됩니다.</p>
+              </div>
+
+              {/* Ports section */}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">포트 매핑 (host:container)</h4>
+                  <button
+                    type="button"
+                    onClick={() => setInputPortsList(prev => [...prev, ''])}
+                    className="text-[10px] text-primary hover:underline font-semibold"
+                  >
+                    + 추가
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {inputPortsList.map((port, idx) => (
+                    <div key={idx} className="flex gap-2 items-center">
+                      <input
+                        type="text"
+                        value={port}
+                        onChange={(e) => {
+                          const next = [...inputPortsList];
+                          next[idx] = e.target.value;
+                          setInputPortsList(next);
+                        }}
+                        placeholder="e.g. 55432:5432"
+                        className="bg-slate-950 border border-slate-800 focus:border-primary focus:ring-1 focus:ring-primary rounded-xl px-4 py-2 text-xs text-slate-200 outline-none flex-grow font-mono"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setInputPortsList(prev => prev.filter((_, i) => i !== idx))}
+                        className="text-rose-500 hover:text-rose-400 p-1.5"
+                      >
+                        <X className="w-4.5 h-4.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {inputPortsList.length === 0 && (
+                    <p className="text-xs text-slate-600">포트 바인딩 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Volumes section */}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">볼륨 마운트 (host:container:mode)</h4>
+                  <button
+                    type="button"
+                    onClick={() => setInputVolumesList(prev => [...prev, ''])}
+                    className="text-[10px] text-primary hover:underline font-semibold"
+                  >
+                    + 추가
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {inputVolumesList.map((vol, idx) => (
+                    <div key={idx} className="flex gap-2 items-center">
+                      <input
+                        type="text"
+                        value={vol}
+                        onChange={(e) => {
+                          const next = [...inputVolumesList];
+                          next[idx] = e.target.value;
+                          setInputVolumesList(next);
+                        }}
+                        placeholder="e.g. tripmate-pgdata:/var/lib/postgresql/data"
+                        className="bg-slate-950 border border-slate-800 focus:border-primary focus:ring-1 focus:ring-primary rounded-xl px-4 py-2 text-xs text-slate-200 outline-none flex-grow font-mono"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setInputVolumesList(prev => prev.filter((_, i) => i !== idx))}
+                        className="text-rose-500 hover:text-rose-400 p-1.5"
+                      >
+                        <X className="w-4.5 h-4.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {inputVolumesList.length === 0 && (
+                    <p className="text-xs text-slate-600">볼륨 바인딩 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Networks section */}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">네트워크 (default, etc.)</h4>
+                  <button
+                    type="button"
+                    onClick={() => setInputNetworksList(prev => [...prev, ''])}
+                    className="text-[10px] text-primary hover:underline font-semibold"
+                  >
+                    + 추가
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {inputNetworksList.map((net, idx) => (
+                    <div key={idx} className="flex gap-2 items-center">
+                      <input
+                        type="text"
+                        value={net}
+                        onChange={(e) => {
+                          const next = [...inputNetworksList];
+                          next[idx] = e.target.value;
+                          setInputNetworksList(next);
+                        }}
+                        placeholder="e.g. default"
+                        className="bg-slate-950 border border-slate-800 focus:border-primary focus:ring-1 focus:ring-primary rounded-xl px-4 py-2 text-xs text-slate-200 outline-none flex-grow font-mono"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setInputNetworksList(prev => prev.filter((_, i) => i !== idx))}
+                        className="text-rose-500 hover:text-rose-400 p-1.5"
+                      >
+                        <X className="w-4.5 h-4.5" />
+                      </button>
+                    </div>
+                  ))}
+                  {inputNetworksList.length === 0 && (
+                    <p className="text-xs text-slate-600">네트워크 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Env Variables section */}
+              {Object.keys(inputEnvDict).length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">컨테이너 환경 변수</h4>
+                  <div className="grid grid-cols-1 gap-4">
+                    {Object.entries(inputEnvDict).map(([key, val]) => (
+                      <div key={key} className="flex flex-col gap-1.5">
+                        <label className="text-xs text-slate-500 font-mono">{key}</label>
+                        <input
+                          type="text"
+                          value={val}
+                          onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
+                          className="bg-slate-950 border border-slate-800 focus:border-primary focus:ring-1 focus:ring-primary rounded-xl px-4 py-2.5 text-sm text-slate-200 outline-none w-full transition-all font-mono"
+                          required
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Submit / Reset Actions */}
+              <div className="flex gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm('정말로 설정을 기본값으로 원복하시겠습니까?')) {
+                      resetMutation.mutate(configTargetContainer.id);
+                    }
+                  }}
+                  disabled={resetMutation.isPending || configMutation.isPending}
+                  className="bg-slate-850 hover:bg-slate-700 disabled:opacity-40 text-rose-400 border border-slate-800 rounded-xl py-3 text-sm font-semibold transition-all flex-1"
+                >
+                  {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
+                </button>
+                
+                <button
+                  type="submit"
+                  disabled={configMutation.isPending || resetMutation.isPending}
+                  className="bg-primary hover:bg-primary/95 disabled:opacity-50 text-white rounded-xl py-3 text-sm font-semibold transition-all flex-1 shadow-glow flex items-center justify-center gap-2"
+                >
+                  {configMutation.isPending ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>적용 중...</span>
+                    </>
+                  ) : (
+                    <span>적용 및 재생성</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

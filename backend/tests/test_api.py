@@ -52,3 +52,35 @@ def test_get_container_logs_success(mock_docker_service):
     assert response.status_code == 200
     assert response.json() == {"logs": "Sample logs content"}
     mock_docker_service.get_container_logs.assert_called_once_with("postgresql", tail=100)
+
+@patch("tripmate_manager.api.routes.docker_service")
+def test_update_container_config_success(mock_docker_service):
+    mock_docker_service.update_container_config.return_value = {"success": True, "message": "Successfully updated config and recreated tripmate-postgres."}
+    
+    response = client.post("/api/containers/tripmate-postgresql/config", json={
+        "ports": ["55432:5432"],
+        "env": {"POSTGRES_PASSWORD": "new_password"},
+        "volumes": ["tripmate-pgdata:/var/lib/postgresql/data"],
+        "networks": ["default"]
+    })
+    assert response.status_code == 200
+    assert response.json() == {"status": "success", "message": "Successfully updated config and recreated tripmate-postgres."}
+    mock_docker_service.update_container_config.assert_called_once_with(
+        "tripmate-postgresql", 
+        ["55432:5432"], 
+        {"POSTGRES_PASSWORD": "new_password"},
+        ["tripmate-pgdata:/var/lib/postgresql/data"],
+        ["default"]
+    )
+
+@patch("tripmate_manager.api.routes.docker_service")
+def test_reset_container_config_success(mock_docker_service):
+    mock_docker_service.reset_container_config.return_value = {"success": True, "message": "Successfully updated config and recreated tripmate-postgres."}
+    
+    response = client.post("/api/containers/tripmate-postgresql/reset")
+    assert response.status_code == 200
+    assert response.json() == {"status": "success", "message": "Successfully updated config and recreated tripmate-postgres."}
+    mock_docker_service.reset_container_config.assert_called_once_with("tripmate-postgresql")
+
+
+
