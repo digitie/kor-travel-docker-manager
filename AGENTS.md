@@ -34,7 +34,7 @@
 | GitHub 저장소 이름 | `tripmate-manager` |
 | Backend 기술 스택 | Python 3.11+, FastAPI, Docker SDK, Pytest, Ruff, Mypy |
 | Frontend 기술 스택 | Next.js 14+ (App Router), TypeScript, Tailwind CSS, Shadcn UI, TanStack Query |
-| DB 서비스 정보 | PostgreSQL / PostGIS (기본 포트: 55432) |
+| DB 서비스 정보 | PostgreSQL / PostGIS (`tripmate`: 55432, `python-kraddr-geo`: 15434) |
 | 파일 스토리지 정보 | RustFS (기본 포트: 9003 / 콘솔 포트: 9004) |
 
 ---
@@ -78,3 +78,4 @@
 4. **포트 충돌 유발 금지**: PostgreSQL(55432) 및 RustFS(9003, 9004) 포트는 TripMate 구성 프로그램이 공용으로 접근할 수 있어야 하므로 임의로 변경하지 않는다.
 5. **API 키 및 비밀번호 하드코딩 금지**: `.env` 및 `.env.local` 파일을 사용하고, git에 커밋하지 않는다.
 6. **`.codegraph/` 커밋 금지**: 로컬 인덱싱 파일은 개별 에이전트의 로컬 빌드 결과물이므로 git 추적에서 제외한다.
+7. **공용 인프라 설정 분산 금지**: PostgreSQL/RustFS의 Docker 생명주기, 포트, credential, bucket 기본값은 이 저장소에서 관리한다. 하위 프로젝트 저장소에 별도 정지/재시작 스크립트를 다시 만들지 않는다.

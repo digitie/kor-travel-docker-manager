@@ -21,6 +21,7 @@
 
 ### 백엔드 (FastAPI) Setup
 ```bash
+scripts/infra.sh up kraddr-geo
 cd backend
 poetry install
 poetry run ruff check .
@@ -76,6 +77,7 @@ docs/
 3. **Next.js Client Directive 누락 금지**: 프론트엔드에서 React `useState`, `useEffect`, TanStack Query 훅을 사용하는 파일의 첫 줄에 `'use client'`를 누락하지 않는다.
 4. **API 키 및 Credential 평문 커밋 금지**: `.env`에 보관하고 git 추적을 방지한다.
 5. **독립성 유지 실패 금지**: `tripmate-manager`는 서비스의 "인프라 관리"만을 수행하므로, 다른 TripMate 구성 패키지의 비즈니스 로직(예: 지도 렌더링, 관광지 정보 정합성 검사 등)을 수행해서는 안 된다.
+6. **인프라 생명주기 재분산 금지**: `python-kraddr-geo` 등 하위 프로젝트 저장소가 PostgreSQL/RustFS 컨테이너를 직접 정지/재시작하지 않도록, 포트·credential·bucket·compose 설정은 이 저장소의 `docker-compose.yml`과 `scripts/infra.sh`에 둔다.
 
 ---
 

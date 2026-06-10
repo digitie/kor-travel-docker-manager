@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-10 (python-kraddr-geo PostgreSQL/RustFS 인프라 이관)
+
+- **작업 내용**:
+  - `docker-compose.yml`에 `python-kraddr-geo` 전용 `kraddr-geo-postgres` 서비스를 추가하고, 기존 T-027 최종 DB 접속 계약(`localhost:15434`, `addr/addr`, `kraddr_geo`, `KRADDR_GEO_PGDATA`)을 `tripmate-manager` 기본 설정으로 이관했다.
+  - 공용 RustFS 서비스의 포트, credential, 데이터 디렉터리, bucket 초기화를 `.env.example`과 compose에 명시하고 `kraddr-geo` bucket을 함께 생성하도록 했다.
+  - `scripts/infra.sh`를 추가해 `up/stop/restart/status/logs`를 `all`, `tripmate`, `kraddr-geo`, `rustfs` 단위로 실행할 수 있게 했다.
+  - 백엔드/프론트엔드 대시보드가 `tripmate-postgresql`, `kraddr-geo-postgresql`, `rustfs`를 모두 관리 대상으로 표시하도록 갱신했다.
+- **결정 사항**:
+  - PostgreSQL/RustFS Docker 생명주기와 로컬 포트 계약은 `tripmate-manager`가 관리한다(ADR-5).
+- **다음 작업**:
+  - compose live smoke와 대시보드의 compose create 액션 확장 여부를 후속으로 검토한다.
+
 ## 2026-06-10 (인프라 매니저 프로젝트 초기화 및 가이드라인 복사)
 
 - **작업 내용**:

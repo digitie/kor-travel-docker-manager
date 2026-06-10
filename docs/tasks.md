@@ -9,7 +9,7 @@
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
 | **T-001** | 에이전트 및 워크스페이스 문서 초기화 | `[x]` | 2026-06-10 | 가이드 및 설정 완료 |
-| **T-002** | 프로젝트 인프라 설정 (`.gitignore`, `docker-compose.yml`, `README.md`) | `[ ]` | - | 후속 작업 |
+| **T-002** | 프로젝트 인프라 설정 (`.gitignore`, `docker-compose.yml`, `README.md`) | `[/]` | - | python-kraddr-geo 인프라 이관 반영 중 |
 | **T-003** | FastAPI 백엔드 뼈대 구성 (`backend/pyproject.toml`, main app) | `[ ]` | - | 후속 작업 |
 | **T-004** | Docker 제어 모듈 (`DockerService` 및 API 엔드포인트) 구현 | `[ ]` | - | 후속 작업 |
 | **T-005** | Next.js 프론트엔드 구성 (`frontend/package.json` 및 라우팅) | `[ ]` | - | 후속 작업 |
@@ -29,7 +29,9 @@
 
 ### T-002: 프로젝트 인프라 설정
 - [ ] 모노레포용 통합 `.gitignore` 작성
-- [ ] PostgreSQL + RustFS 구동을 위한 `docker-compose.yml` 루트 정의
+- [x] PostgreSQL + RustFS 구동을 위한 `docker-compose.yml` 루트 정의
+- [x] `python-kraddr-geo`용 PostgreSQL/RustFS 포트·credential·bucket 기본값 이관
+- [x] 공용 인프라 구동/정지/재시작 helper `scripts/infra.sh` 추가
 - [ ] 전체 저장소 개요를 담은 `README.md` 작성
 
 ### T-003: FastAPI 백엔드 뼈대 구성

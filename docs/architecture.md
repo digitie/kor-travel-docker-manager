@@ -73,11 +73,24 @@ graph TD
 
 `tripmate-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다:
 
-1. **PostgreSQL / PostGIS**:
+1. **TripMate PostgreSQL / PostGIS**:
+   - 컨테이너: `tripmate-postgres`
    - 이미지: `postgis/postgis:16-3.5-alpine`
    - 목적: TripMate 공간 데이터 및 일반 데이터 보관.
    - 내부 포트: `5432` / 외부 노출 포트: `55432`.
-2. **RustFS**:
+2. **python-kraddr-geo PostgreSQL / PostGIS**:
+   - 컨테이너: `kraddr-geo-postgres`
+   - 이미지: `postgis/postgis:16-3.5`
+   - 목적: `python-kraddr-geo`의 T-027 최종 적재 DB와 후속 검증 DB 구동.
+   - 내부 포트: `5432` / 외부 노출 포트: `15434`.
+   - 기본 DSN: `postgresql+psycopg://addr:addr@localhost:15434/kraddr_geo`.
+   - 기본 pgdata: `KRADDR_GEO_PGDATA=/home/digitie/kraddr-geo-data/pgdata-final-20260529`.
+3. **RustFS**:
+   - 컨테이너: `tripmate-rustfs`
    - 이미지: `rustfs/rustfs:latest`
-   - 목적: 미디어 자원 보관을 위한 경량 오브젝트 스토리지.
+   - 목적: 미디어 자원과 `python-kraddr-geo` 업로드 원천 보관을 위한 공용 S3 호환 오브젝트 스토리지.
    - 포트: `9003` (API), `9004` (어드민 콘솔).
+   - 기본 credential: `RUSTFS_ACCESS_KEY=rustfsadmin`, `RUSTFS_SECRET_KEY=rustfsadmin`.
+   - 기본 bucket: `tripmate-media`, `kraddr-geo`.
+
+`python-kraddr-geo`는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. 로컬에서 해당 인프라를 정지하거나 재시작할 때는 이 저장소의 `scripts/infra.sh` 또는 대시보드/API를 사용한다.

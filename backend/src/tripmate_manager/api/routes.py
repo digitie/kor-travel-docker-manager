@@ -9,7 +9,7 @@ class ActionRequest(BaseModel):
 
 @router.get("/containers")
 def list_containers():
-    """Retrieve state and ports for TripMate PostgreSQL and RustFS services."""
+    """Retrieve state and ports for managed PostgreSQL and RustFS services."""
     try:
         return docker_service.get_containers_status()
     except Exception as e:

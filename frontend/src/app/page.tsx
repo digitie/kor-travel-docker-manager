@@ -17,6 +17,11 @@ import {
 interface ContainerStatus {
   id: string;
   name: string;
+  display_name?: string;
+  role?: string;
+  connection?: string;
+  expected_ports?: string[];
+  image?: string;
   status: string;
   state: string;
   ports: string[];
@@ -167,8 +172,9 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {containers.map((container) => {
                 const config = getStatusConfig(container.status);
-                const isPG = container.id === 'postgresql';
+                const isPG = container.role === 'postgresql' || container.id.includes('postgresql');
                 const Icon = isPG ? Database : FolderGit2;
+                const title = container.display_name || (isPG ? 'PostgreSQL (PostGIS)' : 'RustFS Store');
 
                 return (
                   <div 
@@ -183,7 +189,7 @@ export default function Dashboard() {
                             <Icon className="w-6 h-6 text-primary" />
                           </div>
                           <div>
-                            <h3 className="font-bold text-slate-200 text-base">{container.id === 'postgresql' ? 'PostgreSQL (PostGIS)' : 'RustFS Store'}</h3>
+                            <h3 className="font-bold text-slate-200 text-base">{title}</h3>
                             <p className="text-slate-500 text-xs mt-0.5">{container.name}</p>
                           </div>
                         </div>
@@ -199,13 +205,19 @@ export default function Dashboard() {
                         <div className="flex justify-between py-1.5 border-b border-border/40">
                           <span className="text-slate-500">포트 바인딩</span>
                           <span className="text-slate-300 font-mono">
-                            {container.ports.length > 0 ? container.ports.join(', ') : 'Exposed internally only'}
+                            {container.ports.length > 0 ? container.ports.join(', ') : (container.expected_ports || []).join(', ') || 'Exposed internally only'}
                           </span>
                         </div>
                         <div className="flex justify-between py-1.5 border-b border-border/40">
                           <span className="text-slate-500">도커 이미지</span>
                           <span className="text-slate-400 font-mono truncate max-w-[150px]">
-                            {isPG ? 'postgis/postgis:16-3.5-alpine' : 'rustfs/rustfs:latest'}
+                            {container.image || (isPG ? 'postgis/postgis:16-3.5' : 'rustfs/rustfs:latest')}
+                          </span>
+                        </div>
+                        <div className="flex justify-between py-1.5 border-b border-border/40">
+                          <span className="text-slate-500">접속 정보</span>
+                          <span className="text-slate-400 font-mono truncate max-w-[180px]">
+                            {container.connection || '-'}
                           </span>
                         </div>
                       </div>

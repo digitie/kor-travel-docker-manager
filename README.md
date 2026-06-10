@@ -35,7 +35,29 @@ tripmate-manager/
 
 ### 1. 인프라 컨테이너 구동
 ```bash
-docker-compose up -d
+scripts/infra.sh up all
+```
+
+`python-kraddr-geo`만 필요한 경우:
+
+```bash
+scripts/infra.sh up kraddr-geo
+```
+
+기본 접속 정보는 다음과 같습니다.
+
+| 대상 | Host 포트 | 접속 정보 |
+|------|-----------|-----------|
+| TripMate PostgreSQL | `55432` | `postgresql://tripmate:tripmate_dev_password@localhost:55432/tripmate` |
+| python-kraddr-geo PostgreSQL | `15434` | `postgresql+psycopg://addr:addr@localhost:15434/kraddr_geo` |
+| RustFS S3 API | `9003` | `http://127.0.0.1:9003` |
+| RustFS console | `9004` | `http://127.0.0.1:9004` |
+
+정지/재시작은 같은 스크립트에서 수행합니다.
+
+```bash
+scripts/infra.sh restart kraddr-geo
+scripts/infra.sh stop rustfs
 ```
 
 ### 2. 백엔드 실행
