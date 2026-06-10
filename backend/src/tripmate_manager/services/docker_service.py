@@ -30,6 +30,14 @@ MANAGED_CONTAINERS = {
         "connection": "postgresql+psycopg://addr:***@localhost:15434/kraddr_geo",
         "expected_ports": ["15434:5432"],
     },
+    "tripmate-agent-postgresql": {
+        "name": "kraddr-geo-postgres",
+        "compose_service": "kraddr-geo-postgres",
+        "role": "postgresql",
+        "display_name": "TripMate Agent PostgreSQL",
+        "connection": "postgresql+asyncpg://addr:***@localhost:15434/tripmate_agent",
+        "expected_ports": ["15434:5432"],
+    },
     "rustfs": {
         "name": "tripmate-rustfs",
         "compose_service": "rustfs",
@@ -39,6 +47,21 @@ MANAGED_CONTAINERS = {
         "expected_ports": ["9003:9003", "9004:9004"],
     },
 }
+
+import re
+
+def _substitute_env_vars(val: Any) -> Any:
+    if not isinstance(val, str):
+        return val
+    # Perform standard os.path.expandvars
+    expanded = os.path.expandvars(val)
+    # Match ${VAR:-default}
+    pattern = r"\$\{([^:]+):-([^}]+)\}"
+    def repl(match):
+        env_key = match.group(1)
+        default_val = match.group(2)
+        return os.environ.get(env_key, default_val)
+    return re.sub(pattern, repl, expanded)
 
 def _get_compose_path() -> str:
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -91,6 +114,9 @@ def parse_compose_ports(ports_list: List[Any]) -> Dict[str, int]:
 
 def parse_compose_volumes(volumes_list: List[Any]) -> Dict[str, Dict[str, str]]:
     binds = {}
+    compose_path = _get_compose_path()
+    project_root = os.path.dirname(compose_path) if compose_path else ""
+
     for vol in volumes_list:
         if isinstance(vol, str):
             parts = vol.split(":")
@@ -98,13 +124,28 @@ def parse_compose_volumes(volumes_list: List[Any]) -> Dict[str, Dict[str, str]]:
                 host_path = parts[0]
                 container_path = parts[1]
                 mode = parts[2] if len(parts) > 2 else "rw"
+                
+                # Resolve relative path to absolute path relative to project root
+                if project_root and (host_path.startswith("./") or host_path.startswith("../") or not os.path.isabs(host_path)):
+                    # If it's a named volume (no slashes and doesn't start with dot), leave it as is
+                    if not (host_path.startswith(".") or "/" in host_path or "\\" in host_path):
+                        pass
+                    else:
+                        host_path = os.path.abspath(os.path.join(project_root, host_path))
+                        
                 binds[host_path] = {"bind": container_path, "mode": mode}
         elif isinstance(vol, dict):
             source = vol.get("source")
             target = vol.get("target")
             read_only = vol.get("read_only", False)
             if source and target:
-                binds[source] = {"bind": target, "mode": "ro" if read_only else "rw"}
+                host_path = source
+                if project_root and (host_path.startswith("./") or host_path.startswith("../") or not os.path.isabs(host_path)):
+                    if not (host_path.startswith(".") or "/" in host_path or "\\" in host_path):
+                        pass
+                    else:
+                        host_path = os.path.abspath(os.path.join(project_root, host_path))
+                binds[host_path] = {"bind": target, "mode": "ro" if read_only else "rw"}
     return binds
 
 
@@ -267,7 +308,28 @@ class DockerService:
 
             return {"success": True, "message": f"Successfully performed '{action}' on {cname}."}
         except NotFound:
-            return {"success": False, "error": f"Container {cname} not found. Please run docker-compose up."}
+            if action == "start":
+                logger.info(f"Container {cname} not found. Attempting to create and start it from docker-compose.yml settings.")
+                try:
+                    compose_cfg = get_compose_config()
+                    services = compose_cfg.get("services", {})
+                    svc_name = MANAGED_CONTAINERS[container_id]["compose_service"]
+                    svc_config = services.get(svc_name, {})
+                    
+                    ports = svc_config.get("ports", [])
+                    env = svc_config.get("environment", {})
+                    volumes = svc_config.get("volumes", [])
+                    networks = svc_config.get("networks", [])
+                    
+                    res = self.update_container_config(container_id, ports, env, volumes, networks)
+                    if res.get("success"):
+                        return {"success": True, "message": f"Container {cname} was not found, so it was created and started from compose configuration."}
+                    else:
+                        return {"success": False, "error": f"Container {cname} not found, and failed to create: {res.get('error')}"}
+                except Exception as create_err:
+                    return {"success": False, "error": f"Container {cname} not found, and failed during creation process: {str(create_err)}"}
+            else:
+                return {"success": False, "error": f"Container {cname} not found. Please start it first to create it."}
         except Exception as e:
             logger.error(f"Failed to {action} container {cname}: {e}")
             return {"success": False, "error": str(e)}
@@ -352,28 +414,18 @@ class DockerService:
             except NotFound:
                 logger.info(f"Container {cname} not found, proceeding to create new one.")
 
-            # 5. Parse environment variables (substitute ${VAR} using os.path.expandvars)
+            # 5. Parse environment variables (substitute ${VAR})
             parsed_env = {}
             for k, v in new_env.items():
-                if isinstance(v, str):
-                    val = os.path.expandvars(v)
-                    # Handle fallback parsing e.g. ${VAR:-default}
-                    if val.startswith("${") and ":-" in val:
-                        # Extract default value
-                        # simple parser
-                        default_val = val.split(":-")[1].rstrip("}")
-                        # Check if env key is set
-                        env_key = val.split(":-")[0].lstrip("${")
-                        val = os.environ.get(env_key, default_val)
-                    parsed_env[k] = val
-                else:
-                    parsed_env[k] = v
+                parsed_env[k] = _substitute_env_vars(v)
 
-            # 6. Parse ports mapping
-            port_bindings = parse_compose_ports(new_ports)
+            # 6. Parse ports mapping (substitute env vars first)
+            resolved_ports = [_substitute_env_vars(p) for p in new_ports]
+            port_bindings = parse_compose_ports(resolved_ports)
 
-            # 7. Parse volumes mapping
-            volumes_dict = parse_compose_volumes(binds_list)
+            # 7. Parse volumes mapping (substitute env vars first)
+            resolved_volumes = [_substitute_env_vars(vol) for vol in binds_list]
+            volumes_dict = parse_compose_volumes(resolved_volumes)
 
             logger.info(f"Recreating container {cname} (image: {image_name}, ports: {port_bindings})...")
             
