@@ -1,24 +1,4 @@
 services:
-  postgres:
-    image: postgis/postgis:16-3.5-alpine
-    container_name: tripmate-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${TRIPMATE_POSTGRES_USER:-tripmate}
-      POSTGRES_PASSWORD: ${TRIPMATE_POSTGRES_PASSWORD:-tripmate_dev_password}
-      POSTGRES_DB: ${TRIPMATE_POSTGRES_DB:-tripmate}
-    ports:
-    - ${TRIPMATE_POSTGRES_PORT:-55432}:5432
-    volumes:
-    - tripmate-pgdata:/var/lib/postgresql/data
-    - ./scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
-    healthcheck:
-      test:
-      - CMD-SHELL
-      - pg_isready -U ${TRIPMATE_POSTGRES_USER:-tripmate} -d ${TRIPMATE_POSTGRES_DB:-tripmate}
-      interval: 10s
-      timeout: 5s
-      retries: 5
   kraddr-geo-postgres:
     image: postgis/postgis:16-3.5
     container_name: kraddr-geo-postgres
@@ -100,5 +80,3 @@ services:
       mb -p local/${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads} || true; "
 
       '
-volumes:
-  tripmate-pgdata: null

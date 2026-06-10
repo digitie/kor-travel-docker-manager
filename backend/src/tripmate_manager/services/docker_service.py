@@ -14,28 +14,12 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 MANAGED_CONTAINERS = {
-    "tripmate-postgresql": {
-        "name": "tripmate-postgres",
-        "compose_service": "postgres",
-        "role": "postgresql",
-        "display_name": "TripMate PostgreSQL / PostGIS",
-        "connection": "postgresql://tripmate:***@localhost:55432/tripmate",
-        "expected_ports": ["55432:5432"],
-    },
     "kraddr-geo-postgresql": {
         "name": "kraddr-geo-postgres",
         "compose_service": "kraddr-geo-postgres",
         "role": "postgresql",
-        "display_name": "python-kraddr-geo PostgreSQL / PostGIS",
-        "connection": "postgresql+psycopg://addr:***@localhost:15434/kraddr_geo",
-        "expected_ports": ["15434:5432"],
-    },
-    "tripmate-agent-postgresql": {
-        "name": "kraddr-geo-postgres",
-        "compose_service": "kraddr-geo-postgres",
-        "role": "postgresql",
-        "display_name": "TripMate Agent PostgreSQL",
-        "connection": "postgresql+asyncpg://addr:***@localhost:15434/tripmate_agent",
+        "display_name": "python-kraddr-geo Shared PostgreSQL",
+        "connection": "postgresql://localhost:15434 (DBs: kraddr_geo, tripmate_agent, tripmate, krtour_map)",
         "expected_ports": ["15434:5432"],
     },
     "rustfs": {
