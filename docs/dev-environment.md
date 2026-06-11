@@ -44,10 +44,20 @@ POSTGRES_DB=tripmate
 ```
 
 ### 2.3 로컬 개발 서버 실행
+Poetry를 사용할 경우:
 ```bash
-poetry run uvicorn src.tripmate_manager.main:app --host 127.0.0.1 --port 8000 --reload
+poetry run uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 9091 --reload
 ```
-실행 후 `http://127.0.0.1:8000/docs`에서 OpenAPI 대화식 문서를 확인할 수 있다.
+
+Poetry 없이 수동으로 생성한 가상환경(`tripmate_venv`)을 사용할 경우 (WSL 권장):
+```bash
+PYTHONPATH=src tripmate_venv/bin/python -m uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 9091 --reload
+```
+실행 후 `http://localhost:9091/docs`에서 OpenAPI 대화식 문서를 확인할 수 있다.
+
+> [!IMPORTANT]
+> WSL2 내부에서 백엔드를 실행하는 경우, 호스트 Windows 브라우저에서 WSL 가상 IP(예: `172.26.51.35`)로 직접 통신하면 방화벽 필터링 장치 등으로 인해 접속 연결이 거부되는 현상이 빈번히 발생합니다.
+> 따라서 프론트엔드 환경변수 및 API 접속 주소는 항상 `http://localhost:9091`을 활용하여 WSL2 localhost 포트 포워딩을 통해 접근하십시오.
 
 ---
 
@@ -67,7 +77,7 @@ npm install
 ```bash
 npm run dev
 ```
-기본적으로 `http://localhost:3000`에서 대시보드가 로드되며, 백엔드 서버(`http://127.0.0.1:8000`)에 자동으로 API를 요청한다.
+기본적으로 `http://localhost:9092`에서 대시보드가 로드되며, 백엔드 서버(`http://127.0.0.1:9091`)에 자동으로 API를 요청한다.
 
 ---
 

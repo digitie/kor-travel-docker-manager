@@ -50,3 +50,9 @@ yarn-error.log*
 # AI agent local indexes & backups
 .codegraph/
 .claude/settings.local.json
+
+# Local databases, virtualenvs and log directories
+tripmate_metrics.db
+backend/logs/
+tripmate_venv/
+win_venv/

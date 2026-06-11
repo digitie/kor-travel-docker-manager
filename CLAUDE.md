@@ -40,7 +40,8 @@ poetry run ruff check .
 poetry run ruff format .
 
 # 백엔드 실행
-poetry run uvicorn src.tripmate_manager.main:app --host 127.0.0.1 --port 8000 --reload
+poetry run uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 9091 --reload
+# 또는 WSL 수동 가상환경: PYTHONPATH=src tripmate_venv/bin/python -m uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 9091 --reload
 
 # 테스트 실행
 poetry run pytest
