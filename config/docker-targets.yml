@@ -1,0 +1,175 @@
+version: 1
+
+port_policy:
+  base_port: 12000
+  band_size: 100
+  api_offset: 1
+  service_offset_start: 2
+  web_ui_offset: 5
+  additional_web_ui_offset_start: 6
+  tripmate_manager_band: 12900
+  postgresql_fixed_ports:
+    - 5432
+
+dependency_order:
+  - db
+  - storage
+  - geo
+  - map
+  - ai
+  - main
+
+containers:
+  kraddr-geo-postgresql:
+    name: kraddr-geo-postgres
+    compose_service: kraddr-geo-postgres
+    role: postgresql
+    display_name: TripMate 통합 PostgreSQL / PostGIS
+    connection: "postgresql://localhost:5432 (DBs: kraddr_geo, tripmate, tripmate_agent, krtour_map)"
+    expected_ports:
+      - "5432:5432"
+  rustfs:
+    name: tripmate-rustfs
+    compose_service: rustfs
+    role: rustfs
+    display_name: RustFS 공용 오브젝트 스토리지
+    connection: http://127.0.0.1:12101
+    expected_ports:
+      - "12101:9000"
+      - "12105:9001"
+
+targets:
+  db:
+    port_band: "12000-12099"
+    display_name: 통합 DB
+    description: TripMate 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
+    aliases:
+      - postgresql
+      - postgres
+      - database
+      - shared-postgresql
+      - kraddr-geo-postgres
+      - kraddr-geo-postgresql
+    services:
+      - kraddr-geo-postgres
+    runtime_services:
+      - kraddr-geo-postgres
+    containers:
+      - kraddr-geo-postgresql
+    init_steps:
+      - name: db-schema-recovery
+        description: 통합 DB, role, extension, schema grant를 idempotent 방식으로 보정합니다.
+        command:
+          - exec
+          - -T
+          - kraddr-geo-postgres
+          - sh
+          - /opt/tripmate-manager/ensure-kraddr-geo-db.sh
+
+  storage:
+    port_band: "12100-12199"
+    display_name: 통합 RustFS
+    description: TripMate 미디어와 원천 데이터를 저장하는 S3 호환 오브젝트 스토리지입니다.
+    aliases:
+      - rustfs
+      - s3
+      - object-storage
+    services:
+      - rustfs
+    runtime_services:
+      - rustfs
+    containers:
+      - rustfs
+    init_steps:
+      - name: rustfs-bucket-recovery
+        description: RustFS 기동을 기다린 뒤 공용 bucket을 idempotent 방식으로 보정합니다.
+        command:
+          - run
+          - --rm
+          - rustfs-init
+
+  geo:
+    port_band: "12200-12299"
+    display_name: 지오코더/리버스지오코더
+    description: python-kraddr-geo 개발에 필요한 DB/RustFS와 원천 데이터 적재 상태를 확인합니다.
+    aliases:
+      - kraddr-geo
+      - python-kraddr-geo
+      - geocoder
+      - reverse-geocoder
+    services: []
+    runtime_services: []
+    containers:
+      - kraddr-geo-postgresql
+      - rustfs
+    init_steps:
+      - name: geo-source-verification
+        description: /data/juso 마운트와 T-027 계열 핵심 적재 테이블을 검증합니다.
+        command:
+          - exec
+          - -T
+          - kraddr-geo-postgres
+          - sh
+          - /opt/tripmate-manager/verify-kraddr-geo-source.sh
+
+  map:
+    port_band: "12300-12399"
+    display_name: python-krtour-map
+    description: python-krtour-map 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
+    aliases:
+      - krtour-map
+      - python-krtour-map
+    services: []
+    runtime_services: []
+    containers:
+      - kraddr-geo-postgresql
+      - rustfs
+    init_steps: []
+
+  ai:
+    port_band: "12400-12499"
+    display_name: TripMate Agent
+    description: tripmate-agent 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
+    aliases:
+      - tripmate-agent
+      - agent
+    services: []
+    runtime_services: []
+    containers:
+      - kraddr-geo-postgresql
+      - rustfs
+    init_steps: []
+
+  main:
+    port_band: "12500-12599"
+    display_name: TripMate main
+    description: TripMate main 서비스 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
+    aliases:
+      - tripmate
+      - tripmate-api
+      - tripmate-web
+    services: []
+    runtime_services: []
+    containers:
+      - kraddr-geo-postgresql
+      - rustfs
+    init_steps: []
+
+  all:
+    display_name: 전체 TripMate 개발 인프라
+    description: dependency_order 전체를 순서대로 실행합니다.
+    aliases:
+      - default
+    include:
+      - db
+      - storage
+      - geo
+      - map
+      - ai
+      - main
+    services: []
+    runtime_services: []
+    containers:
+      - kraddr-geo-postgresql
+      - rustfs
+    init_steps: []

@@ -28,6 +28,14 @@ cd backend
 poetry install
 ```
 
+설치 후 `tmctl` CLI를 사용할 수 있다.
+
+```bash
+poetry run tmctl targets
+poetry run tmctl main --build
+poetry run tmctl status main
+```
+
 ### 2.2 환경 변수 설정
 `backend/.env` 파일을 만들고 필요한 값을 정의한다 (기본값이 설정되어 있으므로 개발 단계에서는 선택 사항).
 
@@ -37,35 +45,63 @@ DOCKER_HOST=npipe:////./pipe/docker_engine
 # Linux/WSL 사용 시:
 # DOCKER_HOST=unix:///var/run/docker.sock
 
-# TripMate DB 접속 정보
-POSTGRES_USER=tripmate
-POSTGRES_PASSWORD=tripmate_dev_password
-POSTGRES_DB=tripmate
+# 통합 PostgreSQL / PostGIS 접속 정보
+KRADDR_GEO_DB_PORT=5432
+KRADDR_GEO_POSTGRES_USER=addr
+KRADDR_GEO_POSTGRES_PASSWORD=addr
+KRADDR_GEO_POSTGRES_DB=kraddr_geo
+KRADDR_GEO_STRICT_SOURCE_CHECK=1
 ```
+
+RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이며, PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
 Poetry를 사용할 경우:
 ```bash
-poetry run uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 9091 --reload
+poetry run uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
 ```
 
 Poetry 없이 수동으로 생성한 가상환경(`tripmate_venv`)을 사용할 경우 (WSL 권장):
 ```bash
-PYTHONPATH=src tripmate_venv/bin/python -m uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 9091 --reload
+PYTHONPATH=src tripmate_venv/bin/python -m uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
 ```
-실행 후 `http://localhost:9091/docs`에서 OpenAPI 대화식 문서를 확인할 수 있다.
+실행 후 `http://localhost:12901/docs`에서 OpenAPI 대화식 문서를 확인할 수 있다.
 
 > [!IMPORTANT]
 > WSL2 내부에서 백엔드를 실행하는 경우, 호스트 Windows 브라우저에서 WSL 가상 IP(예: `172.26.51.35`)로 직접 통신하면 방화벽 필터링 장치 등으로 인해 접속 연결이 거부되는 현상이 빈번히 발생합니다.
-> 따라서 프론트엔드 환경변수 및 API 접속 주소는 항상 `http://localhost:9091`을 활용하여 WSL2 localhost 포트 포워딩을 통해 접근하십시오.
+> 따라서 프론트엔드 환경변수 및 API 접속 주소는 항상 `http://localhost:12901`을 활용하여 WSL2 localhost 포트 포워딩을 통해 접근하십시오.
 
 ---
 
-## 3. 프론트엔드 개발 환경 구축 (Next.js)
+## 3. 의존 Docker 실행
+
+다른 TripMate 개발 저장소에서 DB 또는 RustFS가 필요할 때는 manager CLI로 바로 실행한다.
+
+```bash
+cd f:/dev/tripmate-manager/backend
+poetry run tmctl main --build
+```
+
+공식 target 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> geo -> map -> ai -> main`이다. 예를 들어 `tmctl geo --build`는 통합 DB, RustFS, `python-kraddr-geo` 원천 데이터 검증까지 수행한다.
+
+호환 별칭으로 `postgresql`, `rustfs`, `python-kraddr-geo`, `python-krtour-map`, `tripmate-agent`, `tripmate`도 사용할 수 있다.
+
+기존 helper 스크립트도 유지한다.
+
+```bash
+scripts/infra.sh geo --build
+scripts/infra.sh status all
+```
+
+`geo` 이상 target은 `/data/juso` 마운트와 `kraddr_geo` 핵심 테이블 적재 상태를 확인한다. 의도적으로 빈 DB를 다루는 경우에만 `.env`에서 `KRADDR_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
+
+---
+
+## 4. 프론트엔드 개발 환경 구축 (Next.js)
 
 프론트엔드는 `frontend` 디렉토리에 위치한다.
 
-### 3.1 의존성 설치
+### 4.1 의존성 설치
 npm을 사용해 필요한 Node 패키지들을 설치한다.
 
 ```bash
@@ -73,15 +109,15 @@ cd frontend
 npm install
 ```
 
-### 3.2 로컬 개발 서버 실행
+### 4.2 로컬 개발 서버 실행
 ```bash
 npm run dev
 ```
-기본적으로 `http://localhost:9092`에서 대시보드가 로드되며, 백엔드 서버(`http://127.0.0.1:9091`)에 자동으로 API를 요청한다.
+기본적으로 `http://localhost:12905`에서 대시보드가 로드되며, 백엔드 서버(`http://127.0.0.1:12901`)에 자동으로 API를 요청한다.
 
 ---
 
-## 4. 에이전트(Agent) 작업 가이드
+## 5. 에이전트(Agent) 작업 가이드
 
 새로운 기능을 구현하기 위해 AI 에이전트 세션을 실행할 때는 다음 흐름을 따른다:
 

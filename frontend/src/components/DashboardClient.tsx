@@ -72,7 +72,7 @@ interface MetricHistoryPoint {
   io_write: number;
 }
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:9091';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:12901';
 
 // Byte Formatting Helper
 function formatBytes(bytes: number | undefined, decimals = 1) {
@@ -1002,7 +1002,7 @@ export default function DashboardClient() {
                           next[idx] = e.target.value;
                           setInputPortsList(next);
                         }}
-                        placeholder="e.g. 55432:5432"
+                        placeholder="e.g. 5432:5432"
                         className="bg-surface-card border border-hairline focus:border-on-dark focus:ring-0 rounded-none px-4 py-2 text-xs text-body-strong outline-none flex-grow font-mono"
                         aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
                         required
@@ -1046,7 +1046,7 @@ export default function DashboardClient() {
                           next[idx] = e.target.value;
                           setInputVolumesList(next);
                         }}
-                        placeholder="e.g. tripmate-pgdata:/var/lib/postgresql/data"
+                        placeholder="e.g. ${KRADDR_GEO_PGDATA:-/tmp/pgdata}:/var/lib/postgresql/data"
                         className="bg-surface-card border border-hairline focus:border-on-dark focus:ring-0 rounded-none px-4 py-2 text-xs text-body-strong outline-none flex-grow font-mono"
                         aria-label={`볼륨 마운트 ${idx + 1}`} // Added aria-label for accessibility
                         required

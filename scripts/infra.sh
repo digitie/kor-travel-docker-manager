@@ -16,40 +16,32 @@ compose_cmd() {
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/infra.sh up [all|tripmate|kraddr-geo|rustfs|tripmate-postgres|kraddr-geo-postgres]
-  scripts/infra.sh stop [all|tripmate|kraddr-geo|rustfs|tripmate-postgres|kraddr-geo-postgres]
-  scripts/infra.sh restart [all|tripmate|kraddr-geo|rustfs|tripmate-postgres|kraddr-geo-postgres]
+  scripts/infra.sh [db|storage|geo|map|ai|main] [--build] [--recreate]
+  scripts/infra.sh up [target] [--build] [--recreate]
+  scripts/infra.sh ensure [target] [--build] [--recreate]
+  scripts/infra.sh stop [target]
+  scripts/infra.sh restart [target]
   scripts/infra.sh status [target]
-  scripts/infra.sh logs [target]
+  scripts/infra.sh logs [target] [--follow]
   scripts/infra.sh config
 
-기본 target은 all이다. python-kraddr-geo에서 필요한 인프라는
-`scripts/infra.sh up kraddr-geo`로 기동한다.
+기본 target은 all이다. target은 db, storage, geo, map, ai, main 순서로 의존성을 확장한다.
+새 작업에서는 Python CLI `tmctl <alias>` 사용을 권장한다.
 EOF
 }
 
 services_for_target() {
   case "${1:-all}" in
-    all)
-      printf '%s\n' postgres kraddr-geo-postgres rustfs rustfs-init
-      ;;
-    tripmate)
-      printf '%s\n' postgres rustfs rustfs-init
-      ;;
-    kraddr-geo|python-kraddr-geo)
-      printf '%s\n' kraddr-geo-postgres rustfs rustfs-init
-      ;;
-    rustfs)
-      printf '%s\n' rustfs rustfs-init
-      ;;
-    krtour-map|python-krtour-map)
-      printf '%s\n' postgres rustfs rustfs-init
-      ;;
-    postgres|tripmate-postgres)
-      printf '%s\n' postgres
-      ;;
-    kraddr-postgres|kraddr-geo-postgres|kraddr-geo-postgresql)
+    db|postgresql|postgres|shared-postgresql|kraddr-postgres|kraddr-geo-postgres|kraddr-geo-postgresql)
       printf '%s\n' kraddr-geo-postgres
+      ;;
+    storage|rustfs|s3|object-storage)
+      printf '%s\n' kraddr-geo-postgres
+      printf '%s\n' rustfs
+      ;;
+    all|geo|kraddr-geo|python-kraddr-geo|map|krtour-map|python-krtour-map|ai|tripmate-agent|agent|main|tripmate|tripmate-api|tripmate-web)
+      printf '%s\n' kraddr-geo-postgres
+      printf '%s\n' rustfs
       ;;
     *)
       echo "unknown target: $1" >&2
@@ -58,19 +50,46 @@ services_for_target() {
   esac
 }
 
-without_init_services() {
-  local service
-  for service in "$@"; do
-    [[ "$service" == "rustfs-init" ]] || printf '%s\n' "$service"
-  done
+target_rank() {
+  case "${1:-all}" in
+    db|postgresql|postgres|shared-postgresql|kraddr-postgres|kraddr-geo-postgres|kraddr-geo-postgresql)
+      echo 1
+      ;;
+    storage|rustfs|s3|object-storage)
+      echo 2
+      ;;
+    geo|kraddr-geo|python-kraddr-geo)
+      echo 3
+      ;;
+    map|krtour-map|python-krtour-map)
+      echo 4
+      ;;
+    ai|tripmate-agent|agent)
+      echo 5
+      ;;
+    main|tripmate|tripmate-api|tripmate-web|all)
+      echo 6
+      ;;
+    *)
+      echo 0
+      ;;
+  esac
 }
 
-contains_init() {
-  local service
-  for service in "$@"; do
-    [[ "$service" == "rustfs-init" ]] && return 0
-  done
-  return 1
+run_init_steps() {
+  local target="$1"
+  local rank
+  rank="$(target_rank "$target")"
+
+  if [[ "$rank" -ge 1 ]]; then
+    compose_cmd exec -T kraddr-geo-postgres sh /opt/tripmate-manager/ensure-kraddr-geo-db.sh
+  fi
+  if [[ "$rank" -ge 2 ]]; then
+    compose_cmd run --rm rustfs-init
+  fi
+  if [[ "$rank" -ge 3 ]]; then
+    compose_cmd exec -T kraddr-geo-postgres sh /opt/tripmate-manager/verify-kraddr-geo-source.sh
+  fi
 }
 
 require_docker() {
@@ -86,30 +105,66 @@ main() {
   [[ -n "$command" ]] || { usage; exit 2; }
   shift || true
 
+  case "$command" in
+    db|storage|geo|map|ai|main)
+      set -- "$command" "$@"
+      command="ensure"
+      ;;
+  esac
+
   local target="${1:-all}"
+  if [[ "$target" == --* ]]; then
+    target="all"
+  else
+    shift || true
+  fi
+
+  local compose_args=()
+  local follow_logs=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --build)
+        compose_args+=(--build)
+        ;;
+      --recreate)
+        compose_args+=(--force-recreate)
+        ;;
+      --follow|-f)
+        follow_logs=true
+        ;;
+      *)
+        echo "unknown option: $1" >&2
+        usage
+        exit 2
+        ;;
+    esac
+    shift
+  done
+
   local services=()
-  local runtime_services=()
   mapfile -t services < <(services_for_target "$target")
-  mapfile -t runtime_services < <(without_init_services "${services[@]}")
 
   case "$command" in
-    up)
-      compose_cmd up -d "${services[@]}"
+    up|ensure)
+      compose_cmd up -d "${compose_args[@]}" "${services[@]}"
+      run_init_steps "$target"
       ;;
     stop)
-      compose_cmd stop "${runtime_services[@]}"
+      compose_cmd stop "${services[@]}"
       ;;
     restart)
-      compose_cmd restart "${runtime_services[@]}"
-      if contains_init "${services[@]}"; then
-        compose_cmd up -d rustfs-init
-      fi
+      compose_cmd restart "${services[@]}"
+      run_init_steps "$target"
       ;;
     status|ps)
       compose_cmd ps "${services[@]}"
       ;;
     logs)
-      compose_cmd logs -f --tail=100 "${runtime_services[@]}"
+      if [[ "$follow_logs" == true ]]; then
+        compose_cmd logs -f --tail=100 "${services[@]}"
+      else
+        compose_cmd logs --tail=100 "${services[@]}"
+      fi
       ;;
     config)
       compose_cmd config
