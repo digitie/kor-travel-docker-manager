@@ -1,14 +1,10 @@
 import logging
-from typing import Any, Dict, List
+import os
+from typing import Any
 
 import docker
-from docker.errors import DockerException, NotFound
-
-import os
-import shutil
-
-import os
 import yaml
+from docker.errors import DockerException, NotFound
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -34,6 +30,7 @@ MANAGED_CONTAINERS = {
 
 import re
 
+
 def _substitute_env_vars(val: Any) -> Any:
     if not isinstance(val, str):
         return val
@@ -58,19 +55,19 @@ def _get_env_path() -> str:
     root_dir = os.path.abspath(os.path.join(current_dir, "../../../../"))
     return os.path.join(root_dir, ".env")
 
-def get_compose_config() -> Dict[str, Any]:
+def get_compose_config() -> dict[str, Any]:
     path = _get_compose_path()
     if not os.path.exists(path):
         logger.error(f"docker-compose.yml not found at {path}")
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
         logger.error(f"Error reading docker-compose.yml: {e}")
         return {}
 
-def save_compose_config(config: Dict[str, Any]):
+def save_compose_config(config: dict[str, Any]):
     path = _get_compose_path()
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -79,7 +76,7 @@ def save_compose_config(config: Dict[str, Any]):
         logger.error(f"Error writing docker-compose.yml: {e}")
         raise
 
-def parse_compose_ports(ports_list: List[Any]) -> Dict[str, int]:
+def parse_compose_ports(ports_list: list[Any]) -> dict[str, int]:
     bindings = {}
     for port in ports_list:
         if isinstance(port, str):
@@ -96,7 +93,7 @@ def parse_compose_ports(ports_list: List[Any]) -> Dict[str, int]:
                 bindings[f"{target}/tcp"] = int(published)
     return bindings
 
-def parse_compose_volumes(volumes_list: List[Any]) -> Dict[str, Dict[str, str]]:
+def parse_compose_volumes(volumes_list: list[Any]) -> dict[str, dict[str, str]]:
     binds = {}
     compose_path = _get_compose_path()
     project_root = os.path.dirname(compose_path) if compose_path else ""
@@ -160,12 +157,15 @@ class DockerService:
                 raise RuntimeError("Docker daemon is not accessible.") from e
         return self._client
 
-    def get_containers_status(self) -> List[Dict[str, Any]]:
+    def get_containers_status(self) -> list[dict[str, Any]]:
         """Fetch the statuses of all managed containers."""
         status_list = []
         compose_cfg = get_compose_config()
         services = compose_cfg.get("services", {})
         
+        # 순환 참조 방지를 위해 로컬 임포트 수행
+        from tripmate_manager.services.metrics_collector import metrics_collector
+
         try:
             client = self._get_client()
         except RuntimeError:
@@ -183,6 +183,14 @@ class DockerService:
                         "status": "offline",
                         "state": "Docker daemon unavailable",
                         "ports": [],
+                        "metrics": {
+                            "cpu_pct": 0.0,
+                            "mem_pct": 0.0,
+                            "mem_usage": 0,
+                            "mem_limit": 0,
+                            "io_read": 0,
+                            "io_write": 0
+                        },
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -197,6 +205,7 @@ class DockerService:
             cname = spec["name"]
             svc_name = spec["compose_service"]
             svc_config = services.get(svc_name, {})
+            metric = metrics_collector.get_latest_metric(key)
             
             try:
                 container = client.containers.get(cname)
@@ -220,6 +229,7 @@ class DockerService:
                         "status": container.status,  # e.g., 'running', 'exited', 'paused'
                         "state": container.attrs.get("State", {}).get("Status", "unknown"),
                         "ports": ports,
+                        "metrics": metric,
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -240,6 +250,14 @@ class DockerService:
                         "status": "not_created",
                         "state": "Container not found",
                         "ports": [],
+                        "metrics": {
+                            "cpu_pct": 0.0,
+                            "mem_pct": 0.0,
+                            "mem_usage": 0,
+                            "mem_limit": 0,
+                            "io_read": 0,
+                            "io_write": 0
+                        },
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -261,6 +279,14 @@ class DockerService:
                         "status": "error",
                         "state": str(e),
                         "ports": [],
+                        "metrics": {
+                            "cpu_pct": 0.0,
+                            "mem_pct": 0.0,
+                            "mem_usage": 0,
+                            "mem_limit": 0,
+                            "io_read": 0,
+                            "io_write": 0
+                        },
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -271,7 +297,7 @@ class DockerService:
                 )
         return status_list
 
-    def control_container(self, container_id: str, action: str) -> Dict[str, Any]:
+    def control_container(self, container_id: str, action: str) -> dict[str, Any]:
         """Perform start/stop/restart action on a container."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
@@ -318,7 +344,7 @@ class DockerService:
             logger.error(f"Failed to {action} container {cname}: {e}")
             return {"success": False, "error": str(e)}
 
-    def get_container_logs(self, container_id: str, tail: int = 100) -> Dict[str, Any]:
+    def get_container_logs(self, container_id: str, tail: int = 100) -> dict[str, Any]:
         """Retrieve the recent stdout/stderr logs of a container."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
@@ -335,7 +361,7 @@ class DockerService:
             logger.error(f"Failed to fetch logs for {cname}: {e}")
             return {"success": False, "error": str(e)}
 
-    def update_container_config(self, container_id: str, new_ports: List[str], new_env: Dict[str, str], new_volumes: List[str], new_networks: List[str]) -> Dict[str, Any]:
+    def update_container_config(self, container_id: str, new_ports: list[str], new_env: dict[str, str], new_volumes: list[str], new_networks: list[str]) -> dict[str, Any]:
         """Update docker-compose.yml configuration and recreate container with updated settings using Docker SDK."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
@@ -414,7 +440,7 @@ class DockerService:
             logger.info(f"Recreating container {cname} (image: {image_name}, ports: {port_bindings})...")
             
             # 8. Create new container
-            new_container = client.containers.run(
+            client.containers.run(
                 image=image_name,
                 name=cname,
                 detach=True,
@@ -453,7 +479,7 @@ class DockerService:
             logger.error(f"Failed to update config for {cname}: {e}")
             return {"success": False, "error": str(e)}
 
-    def reset_container_config(self, container_id: str) -> Dict[str, Any]:
+    def reset_container_config(self, container_id: str) -> dict[str, Any]:
         """Reset container configuration in docker-compose.yml to default and recreate it."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}

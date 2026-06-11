@@ -1,7 +1,10 @@
-from typing import Dict, List, Any
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
 from tripmate_manager.services.docker_service import docker_service
+from tripmate_manager.services.metrics_service import metrics_service
 
 router = APIRouter()
 
@@ -14,7 +17,7 @@ def list_containers():
     try:
         return docker_service.get_containers_status()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 @router.post("/containers/{container_id}/action")
 def control_container(container_id: str, payload: ActionRequest):
@@ -30,10 +33,10 @@ def control_container(container_id: str, payload: ActionRequest):
     return {"status": "success", "message": result.get("message")}
 
 class ContainerConfigUpdate(BaseModel):
-    ports: List[Any] = Field(..., description="Compose ports list, e.g. ['55432:5432']")
-    env: Dict[str, Any] = Field(..., description="Compose environment variables dict, e.g. {'POSTGRES_PASSWORD': 'xyz'}")
-    volumes: List[Any] = Field(..., description="Compose volumes list, e.g. ['tripmate-pgdata:/var/lib/postgresql/data']")
-    networks: List[str] = Field(..., description="Compose networks list, e.g. ['default']")
+    ports: list[Any] = Field(..., description="Compose ports list, e.g. ['55432:5432']")
+    env: dict[str, Any] = Field(..., description="Compose environment variables dict, e.g. {'POSTGRES_PASSWORD': 'xyz'}")
+    volumes: list[Any] = Field(..., description="Compose volumes list, e.g. ['tripmate-pgdata:/var/lib/postgresql/data']")
+    networks: list[str] = Field(..., description="Compose networks list, e.g. ['default']")
 
 @router.get("/containers/{container_id}/logs")
 def get_container_logs(container_id: str, tail: int = 100):
@@ -67,6 +70,14 @@ def reset_container_config(container_id: str):
         raise HTTPException(status_code=500, detail=result.get("error"))
         
     return {"status": "success", "message": result.get("message")}
+
+@router.get("/containers/{container_id}/metrics")
+def get_container_metrics_history(container_id: str, hours: int = 1):
+    """Retrieve historical metrics (CPU, Memory, IO) for a container over the last N hours."""
+    try:
+        return metrics_service.get_recent_metrics(container_id, hours=hours)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 
