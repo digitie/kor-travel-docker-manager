@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-12 (TripMate 전용 Docker Manager CLI/API 및 문서 정리)
+
+- **작업 내용**:
+  - **통합 DB 모델 공식화**: `kraddr-geo-postgres:5432` 하나에 `kraddr_geo`, `tripmate`, `tripmate_agent`, `krtour_map` database를 담는 현재 구조를 공식 기준으로 문서화하고, 과거 분리 DB 기준 문구를 정리.
+  - **target registry 도입**: `db`, `storage`, `geo`, `map`, `ai`, `main`, `all` target을 API/CLI가 공유하도록 정의.
+  - **Python CLI 추가**: `tmctl targets/status/ensure/logs/action/inspect` 명령을 추가하고, 개발환경에서 `tmctl <alias> --build`로 의존 Docker를 바로 실행할 수 있게 함.
+  - **짧은 CLI 별칭 추가**: `db`, `storage`, `geo`, `map`, `ai`, `main`을 공식 별칭으로 두고 `config/docker-targets.yml`의 `db -> storage -> geo -> map -> ai -> main` 순서를 따라 누적 실행하도록 구현.
+  - **포트 정책 일원화**: PostgreSQL host 포트를 `5432`로 변경하고, RustFS는 `12101`/`12105`, manager API/Web은 `12901`/`12905`로 정리.
+  - **초기화/복구 step 추가**: 통합 DB database/role/schema/extension 복구, RustFS bucket 복구, `python-kraddr-geo` 원천 디렉터리와 핵심 테이블 적재 검증을 `ensure` 흐름에 연결.
+  - **API 확장**: `GET /api/v1/targets`, `POST /api/v1/targets/{target}/ensure`, `GET /api/v1/containers/{container_id}/inspect`를 추가.
+  - **Docker inspect redaction**: inspect 응답에서 password, secret, token, access key 계열 environment 값을 마스킹하도록 구현.
+  - **문서 보강**: `docs/docker-management.md`를 신규 작성하고, `architecture`, `decisions`, `tasks`, `dev-environment`, `README`, 에이전트 가이드를 통합 DB/CLI 기준으로 갱신.
+- **결정 사항**:
+  - Docker 생명주기와 `--build`는 `docker compose` 인자 배열 실행으로 처리하고, stats/logs/inspect/action은 Docker SDK를 유지한다(ADR-7).
+  - target alias와 초기화 step은 `config/docker-targets.yml`을 source of truth로 삼는다(ADR-8).
+- **다음 작업**:
+  - 대시보드 상세 패널에서 inspect API를 연결하고, compose 설정 변경 전 diff/validation을 강화한다.
+
 ## 2026-06-11 (WSL 네트워크 연결 복구 및 월 단위 로그 롤링 구현)
 
 - **작업 내용**:
@@ -48,7 +66,7 @@
   - `docker-compose.yml`에 `python-kraddr-geo` 전용 `kraddr-geo-postgres` 서비스를 추가하고, 기존 T-027 최종 DB 접속 계약(`localhost:15434`, `addr/addr`, `kraddr_geo`, `KRADDR_GEO_PGDATA`)을 `tripmate-manager` 기본 설정으로 이관했다.
   - 공용 RustFS 서비스의 포트, credential, 데이터 디렉터리, bucket 초기화를 `.env.example`과 compose에 명시하고 `kraddr-geo` bucket을 함께 생성하도록 했다.
   - `scripts/infra.sh`를 추가해 `up/stop/restart/status/logs`를 `all`, `tripmate`, `kraddr-geo`, `rustfs` 단위로 실행할 수 있게 했다.
-  - 백엔드/프론트엔드 대시보드가 `tripmate-postgresql`, `kraddr-geo-postgresql`, `rustfs`를 모두 관리 대상으로 표시하도록 갱신했다.
+  - 백엔드/프론트엔드 대시보드가 당시의 PostgreSQL/RustFS 관리 대상을 표시하도록 갱신했다.
 - **결정 사항**:
   - PostgreSQL/RustFS Docker 생명주기와 로컬 포트 계약은 `tripmate-manager`가 관리한다(ADR-5).
 - **다음 작업**:

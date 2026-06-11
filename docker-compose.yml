@@ -7,12 +7,23 @@ services:
       POSTGRES_USER: ${KRADDR_GEO_POSTGRES_USER:-addr}
       POSTGRES_PASSWORD: ${KRADDR_GEO_POSTGRES_PASSWORD:-addr}
       POSTGRES_DB: ${KRADDR_GEO_POSTGRES_DB:-kraddr_geo}
+      TRIPMATE_POSTGRES_USER: ${TRIPMATE_POSTGRES_USER:-tripmate}
+      TRIPMATE_POSTGRES_PASSWORD: ${TRIPMATE_POSTGRES_PASSWORD:-tripmate_dev_password}
+      TRIPMATE_POSTGRES_DB: ${TRIPMATE_POSTGRES_DB:-tripmate}
+      TRIPMATE_AGENT_POSTGRES_DB: ${TRIPMATE_AGENT_POSTGRES_DB:-tripmate_agent}
+      KRTOUR_MAP_POSTGRES_USER: ${KRTOUR_MAP_POSTGRES_USER:-krtour_map}
+      KRTOUR_MAP_POSTGRES_PASSWORD: ${KRTOUR_MAP_POSTGRES_PASSWORD:-krtour_map_dev_password}
+      KRTOUR_MAP_POSTGRES_DB: ${KRTOUR_MAP_POSTGRES_DB:-krtour_map}
+      KRADDR_GEO_STRICT_SOURCE_CHECK: ${KRADDR_GEO_STRICT_SOURCE_CHECK:-1}
+      KRADDR_GEO_SOURCE_DIR: ${KRADDR_GEO_SOURCE_DIR:-/data/juso}
     ports:
-    - ${KRADDR_GEO_DB_PORT:-15434}:5432
+    - ${KRADDR_GEO_DB_PORT:-5432}:5432
     volumes:
     - ${KRADDR_GEO_PGDATA:-/home/digitie/kraddr-geo-data/pgdata-final-20260529}:/var/lib/postgresql/data
     - ${KRADDR_JUSO_DATA:-/mnt/f/dev/python-kraddr-geo/data/juso}:/data/juso:ro
-    - ./scripts/init-kraddr-geo.sql:/docker-entrypoint-initdb.d/init-kraddr-geo.sql:ro
+    - ./scripts/ensure-kraddr-geo-db.sh:/docker-entrypoint-initdb.d/010-ensure-kraddr-geo-db.sh:ro
+    - ./scripts/ensure-kraddr-geo-db.sh:/opt/tripmate-manager/ensure-kraddr-geo-db.sh:ro
+    - ./scripts/verify-kraddr-geo-source.sh:/opt/tripmate-manager/verify-kraddr-geo-source.sh:ro
     shm_size: 512mb
     command:
     - postgres
@@ -52,18 +63,18 @@ services:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       RUSTFS_VOLUMES: /data
-      RUSTFS_ADDRESS: :${RUSTFS_API_CONTAINER_PORT:-9003}
+      RUSTFS_ADDRESS: :${RUSTFS_API_CONTAINER_PORT:-9000}
       RUSTFS_CONSOLE_ENABLE: 'true'
-      RUSTFS_CONSOLE_ADDRESS: :${RUSTFS_CONSOLE_CONTAINER_PORT:-9004}
+      RUSTFS_CONSOLE_ADDRESS: :${RUSTFS_CONSOLE_CONTAINER_PORT:-9001}
     ports:
-    - ${RUSTFS_API_PORT:-9003}:${RUSTFS_API_CONTAINER_PORT:-9003}
-    - ${RUSTFS_CONSOLE_PORT:-9004}:${RUSTFS_CONSOLE_CONTAINER_PORT:-9004}
+    - ${RUSTFS_API_PORT:-12101}:${RUSTFS_API_CONTAINER_PORT:-9000}
+    - ${RUSTFS_CONSOLE_PORT:-12105}:${RUSTFS_CONSOLE_CONTAINER_PORT:-9001}
     volumes:
     - ${RUSTFS_DATA_DIR:-/home/digitie/kraddr-geo-data/rustfs}:/data
     healthcheck:
       test:
       - CMD-SHELL
-      - curl -fsS http://localhost:${RUSTFS_API_CONTAINER_PORT:-9003}/health/live
+      - curl -fsS http://localhost:${RUSTFS_API_CONTAINER_PORT:-9000}/health/live
         || exit 1
       interval: 10s
       timeout: 5s
@@ -73,10 +84,16 @@ services:
     depends_on:
       rustfs:
         condition: service_healthy
-    entrypoint: '/bin/sh -c " mc alias set local http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9003}
-      ${RUSTFS_ACCESS_KEY:-rustfsadmin} ${RUSTFS_SECRET_KEY:-rustfsadmin}; mc mb -p
-      local/${TRIPMATE_RUSTFS_BUCKET:-tripmate-media} || true; mc mb -p local/${KRADDR_GEO_RUSTFS_BUCKET:-kraddr-geo}
-      || true; mc mb -p local/${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map} || true; mc
-      mb -p local/${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads} || true; "
-
-      '
+    environment:
+      RUSTFS_API_CONTAINER_PORT: ${RUSTFS_API_CONTAINER_PORT:-9000}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      TRIPMATE_RUSTFS_BUCKET: ${TRIPMATE_RUSTFS_BUCKET:-tripmate-media}
+      KRADDR_GEO_RUSTFS_BUCKET: ${KRADDR_GEO_RUSTFS_BUCKET:-kraddr-geo}
+      KRTOUR_MAP_RUSTFS_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
+      KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
+    volumes:
+    - ./scripts/ensure-rustfs-buckets.sh:/opt/tripmate-manager/ensure-rustfs-buckets.sh:ro
+    entrypoint:
+    - /bin/sh
+    - /opt/tripmate-manager/ensure-rustfs-buckets.sh

@@ -15,6 +15,13 @@
 | **T-005** | Next.js 프론트엔드 구성 (`frontend/package.json` 및 라우팅) | `[x]` | 2026-06-11 | 패키지 구성 및 recharts 설치 완료 |
 | **T-006** | 대시보드 UI 및 TanStack Query 연동 개발 | `[x]` | 2026-06-11 | WS 실시간 테이블 및 차트/로그 모달 완료 |
 | **T-007** | 품질 검증 및 최종 통합 테스트 | `[x]` | 2026-06-11 | 백엔드 테스트 및 프론트엔드 빌드 검사 완료 |
+| **T-008** | Docker 관리 문서 및 target registry 정리 | `[x]` | 2026-06-12 | 통합 DB 모델, CLI/API target 기준 정리 |
+| **T-009** | Python CLI 및 target ensure/build 구현 | `[x]` | 2026-06-12 | `tmctl` CLI 추가 |
+| **T-010** | Docker inspect API 및 secret redaction 구현 | `[x]` | 2026-06-12 | `/api/v1/containers/{id}/inspect` 추가 |
+| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[ ]` | - | compose diff, secret `.env` 분리, 입력 검증 보강 |
+| **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
+| **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | `[x]` | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 DB/RustFS/geo 검증 step 추가 |
+| **T-014** | TripMate 계열 로컬 포트 정책 일원화 | `[x]` | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
 
 ---
 
@@ -60,3 +67,51 @@
 - [x] BMW M 디자인 시스템(DESIGN.md) 반영 및 `/bmw` 쇼케이스 검증 완료
 - [x] `docs/design-system.md` 보강 및 `react-doctor` 성능 오딧 검증 완료
 - [x] 변경 사항에 대한 `walkthrough.md` 작성 및 최종 PR 제출
+
+### T-008: Docker 관리 문서 및 target registry 정리
+- [x] `docs/docker-management.md` 신규 작성
+- [x] 통합 DB 모델(`kraddr-geo-postgres:5432`)을 공식 기준으로 문서 정정
+- [x] UI/API/CLI에서 공유할 target registry 정의
+- [x] `scripts/infra.sh`의 오래된 분리 DB target 제거 및 호환 정리
+
+### T-009: Python CLI 및 target ensure/build 구현
+- [x] `tmctl` console script 추가
+- [x] `targets`, `status`, `ensure`, `logs`, `action`, `inspect` 명령 추가
+- [x] `ensure <target> --build`에서 `docker compose up -d --build`를 인자 배열로 실행
+- [x] CLI mock 테스트 추가
+
+### T-010: Docker inspect API 및 secret redaction 구현
+- [x] `GET /api/v1/targets` API 추가
+- [x] `POST /api/v1/targets/{target}/ensure` API 추가
+- [x] `GET /api/v1/containers/{container_id}/inspect` API 추가
+- [x] inspect environment redaction 테스트 추가
+
+### T-013: 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현
+- [x] `config/docker-targets.yml`에 `db`, `storage`, `geo`, `map`, `ai`, `main` 의존 순서 정의
+- [x] `tmctl db --build`처럼 짧은 별칭을 직접 `ensure`로 실행하는 CLI shortcut 추가
+- [x] 통합 DB database/role/schema/extension 복구 스크립트 추가
+- [x] RustFS 공용 bucket 복구 스크립트 추가
+- [x] `python-kraddr-geo` 원천 디렉터리와 핵심 적재 테이블 검증 스크립트 추가
+- [x] API/CLI가 같은 설정 파일 registry를 읽도록 정리
+
+### T-014: TripMate 계열 로컬 포트 정책 일원화
+- [x] 관련 canonical 로컬 레포의 현재 포트 사용처 조사
+- [x] `docs/ports.md`에 현재 포트와 정책 포트 비교표 작성
+- [x] 통합 PostgreSQL host 포트를 `5432`로 변경
+- [x] RustFS host 포트를 S3 API `12101`, console `12105`로 변경
+- [x] RustFS 컨테이너 내부 포트를 이미지 표준 `9000`, `9001`로 정리
+- [x] `tripmate-manager` Backend API를 `12901`, Dashboard Web을 `12905`로 변경
+- [x] `config/docker-targets.yml`에 포트 정책 metadata와 target 대역 추가
+- [x] 포트 정책 ADR 추가
+
+### T-011: 설정 저장 안정화 및 validation 고도화
+- [ ] compose 변경 전 diff 생성 및 UI 표시
+- [ ] 포트, 볼륨, 네트워크 입력 validation 강화
+- [ ] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가
+- [ ] 컨테이너 재생성 전 확인 단계와 실패 시 rollback 전략 문서화
+
+### T-012: 대시보드 상세 패널 확장
+- [ ] 컨테이너 row 선택 시 inspect 상세 drawer 또는 modal 표시
+- [ ] mounts, networks, healthcheck, redacted env를 탭으로 분리
+- [ ] target 단위 `ensure --build` 버튼을 개발 모드에서 제공
+- [ ] 모바일/데스크톱에서 표와 상세 패널이 겹치지 않도록 반응형 검증
