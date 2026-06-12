@@ -144,7 +144,12 @@ def test_get_targets():
     data = response.json()
     assert [target["id"] for target in data[:6]] == ["db", "storage", "geo", "map", "ai", "main"]
     assert data[5]["resolved_sequence"] == ["db", "storage", "geo", "map", "ai", "main"]
-    assert data[5]["resolved_services"] == ["kraddr-geo-postgres", "rustfs"]
+    assert data[5]["resolved_services"] == [
+        "kraddr-geo-postgres",
+        "rustfs",
+        "kraddr-geo-api",
+        "kraddr-geo-ui",
+    ]
     assert any(target["id"] == "all" for target in data)
 
 
@@ -153,12 +158,24 @@ def test_ensure_target_success(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
         "returncode": 0,
-        "command": [["docker", "compose", "up", "-d", "--build", "kraddr-geo-postgres", "rustfs"]],
+        "command": [
+            [
+                "docker",
+                "compose",
+                "up",
+                "-d",
+                "--build",
+                "kraddr-geo-postgres",
+                "rustfs",
+                "kraddr-geo-api",
+                "kraddr-geo-ui",
+            ]
+        ],
         "stdout": "ok",
         "stderr": "",
         "target": "main",
         "target_sequence": ["db", "storage", "geo", "map", "ai", "main"],
-        "services": ["kraddr-geo-postgres", "rustfs"],
+        "services": ["kraddr-geo-postgres", "rustfs", "kraddr-geo-api", "kraddr-geo-ui"],
         "init_results": [],
     }
 

@@ -4,7 +4,7 @@
 
 ## 프로젝트 현황 (2026-06-12)
 
-TripMate 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS 등의 Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
+TripMate 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `python-kraddr-geo` API/Web UI Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
 
 - **Backend**: Python FastAPI 기반 (`backend/`)
@@ -22,7 +22,7 @@ f:\dev\tripmate-manager\
 │   ├── src/app/        # App Router 및 페이지
 │   └── src/components/ # UI 컴포넌트
 ├── docs/               # 아키텍처 및 의사결정 문서
-├── docker-compose.yml  # PostgreSQL/RustFS 로컬 구동 compose 파일
+├── docker-compose.yml  # PostgreSQL/RustFS/python-kraddr-geo 로컬 구동 compose 파일
 ├── AGENTS.md           # 에이전트 협업 정책 및 한글 언어 규정
 ├── SKILL.md            # 에이전트 매뉴얼 및 명령어 세트
 └── CLAUDE.md           # 본 파일 (세션 상태 관리)
@@ -30,9 +30,12 @@ f:\dev\tripmate-manager\
 
 ## 로컬 개발 및 빠른 검증 명령
 
+아래 개발/검증/Docker/서버 명령은 WSL에서 실행한다. `git` 명령은 Windows 호스트에서만 실행하고, Playwright E2E는 명시 예외로 Windows 호스트에서 실행한다.
+
 ### 백엔드 (FastAPI)
 ```bash
 # 의존성 설치 (Poetry)
+cd /mnt/f/dev/tripmate-manager
 cd backend
 poetry install
 
@@ -41,8 +44,8 @@ poetry run ruff check .
 poetry run ruff format .
 
 # 백엔드 실행
-poetry run uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
-# 또는 WSL 수동 가상환경: PYTHONPATH=src tripmate_venv/bin/python -m uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
+poetry run uvicorn tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
+# 또는 수동 가상환경: PYTHONPATH=src tripmate_venv/bin/python -m uvicorn tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
 
 # 테스트 실행
 poetry run pytest
@@ -50,11 +53,13 @@ poetry run pytest
 # 개발 의존 Docker 실행
 poetry run tmctl main --build
 # 짧은 별칭: db, storage, geo, map, ai, main
+# geo target은 python-kraddr-geo API 12201, Web UI 12205까지 포함
 ```
 
 ### 프론트엔드 (Next.js)
 ```bash
 # 의존성 설치 (npm)
+cd /mnt/f/dev/tripmate-manager
 cd frontend
 npm install
 

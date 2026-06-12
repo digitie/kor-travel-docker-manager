@@ -72,6 +72,7 @@
 | PostgreSQL host 포트 `5432` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | RustFS host API `12101`, console `12105` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | RustFS 컨테이너 내부 API `9000`, console `9001` | `.env.example`, `docker-compose.yml`, `scripts/ensure-rustfs-buckets.sh` | 반영 |
+| `python-kraddr-geo` API `12201`, Web UI `12205` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml`, `scripts/infra.sh` | 반영 |
 | Manager Backend API `12901` | `backend/src/tripmate_manager/main.py`, `frontend/src/components/DashboardClient.tsx` | 반영 |
 | Manager Web UI `12905` | `frontend/package.json` | 반영 |
 | 포트 대역 metadata | `config/docker-targets.yml` | 반영 |

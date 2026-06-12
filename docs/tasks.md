@@ -22,6 +22,8 @@
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | `[x]` | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 DB/RustFS/geo 검증 step 추가 |
 | **T-014** | TripMate 계열 로컬 포트 정책 일원화 | `[x]` | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
+| **T-015** | 실행 위치 정책 문서화 | `[x]` | 2026-06-12 | git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정 |
+| **T-016** | `python-kraddr-geo` Docker API/UI target 편입 | `[x]` | 2026-06-12 | `geo` target에 API `12201`, Web UI `12205` compose 서비스 추가 |
 
 ---
 
@@ -103,6 +105,19 @@
 - [x] `tripmate-manager` Backend API를 `12901`, Dashboard Web을 `12905`로 변경
 - [x] `config/docker-targets.yml`에 포트 정책 metadata와 target 대역 추가
 - [x] 포트 정책 ADR 추가
+
+### T-015: 실행 위치 정책 문서화
+- [x] `AGENTS.md`에 git/WSL/Playwright E2E 실행 위치 강제 규칙 추가
+- [x] `SKILL.md` 빠른 시작 명령을 WSL 기준으로 정리
+- [x] `docs/dev-environment.md`에 명령 실행 위치 표와 에이전트 작업 절차 추가
+- [x] `CLAUDE.md` 빠른 검증 명령에 WSL/Windows 예외 정책 명시
+
+### T-016: `python-kraddr-geo` Docker API/UI target 편입
+- [x] `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스 추가
+- [x] `config/docker-targets.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 관리 컨테이너 등록
+- [x] `geo` target이 API/Web UI 실행과 원천 데이터 검증을 함께 수행하도록 변경
+- [x] `scripts/infra.sh` 호환 target도 `geo` 이상에서 API/Web UI를 포함하도록 정리
+- [x] `.env.example`, 포트 문서, Docker 관리 문서에 `12201`, `12205` 기준 추가
 
 ### T-011: 설정 저장 안정화 및 validation 고도화
 - [ ] compose 변경 전 diff 생성 및 UI 표시

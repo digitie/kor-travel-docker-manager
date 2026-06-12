@@ -54,7 +54,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks: []
   rustfs:
     image: rustfs/rustfs:latest
     container_name: tripmate-rustfs
@@ -97,3 +96,73 @@ services:
     entrypoint:
     - /bin/sh
     - /opt/tripmate-manager/ensure-rustfs-buckets.sh
+  kraddr-geo-api:
+    image: ${KRADDR_GEO_API_IMAGE:-kraddr-geo-api:latest-main-gdal}
+    build:
+      context: ${KRADDR_GEO_REPO_DIR:-../python-kraddr-geo}
+      dockerfile: docker/api.Dockerfile
+    container_name: ${KRADDR_GEO_API_CONTAINER:-kraddr-geo-api-latest}
+    restart: unless-stopped
+    depends_on:
+      kraddr-geo-postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+    environment:
+      PORT: ${KRADDR_GEO_API_CONTAINER_PORT:-12201}
+      KRADDR_GEO_API_HOST: 0.0.0.0
+      KRADDR_GEO_PG_DSN: ${KRADDR_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@kraddr-geo-postgres:5432/kraddr_geo}
+      KRADDR_GEO_GEOIP_GATE_MODE: ${KRADDR_GEO_GEOIP_GATE_MODE:-off}
+      KRADDR_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES: ${KRADDR_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES:-0}
+      KRADDR_GEO_RUSTFS_ENABLED: ${KRADDR_GEO_RUSTFS_ENABLED:-1}
+      KRADDR_GEO_RUSTFS_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      KRADDR_GEO_RUSTFS_BUCKET: ${KRADDR_GEO_RUSTFS_BUCKET:-kraddr-geo}
+      KRADDR_GEO_RUSTFS_PREFIX: ${KRADDR_GEO_RUSTFS_PREFIX:-python-kraddr-geo}
+      KRADDR_GEO_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KRADDR_GEO_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KRADDR_GEO_RUSTFS_LOCAL_IMPORT_ROOTS: /data
+      KRADDR_GEO_VWORLD_API_KEY: ${KRADDR_GEO_VWORLD_API_KEY:-}
+    ports:
+    - ${KRADDR_GEO_API_PORT:-12201}:${KRADDR_GEO_API_CONTAINER_PORT:-12201}
+    volumes:
+    - ${KRADDR_GEO_APP_DATA_DIR:-../python-kraddr-geo/data}:/data:ro
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - >-
+        python -c "import urllib.request; urllib.request.urlopen('http://localhost:${KRADDR_GEO_API_CONTAINER_PORT:-12201}/v1/healthz', timeout=5).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+  kraddr-geo-ui:
+    image: ${KRADDR_GEO_UI_IMAGE:-kraddr-geo-ui:latest-main}
+    build:
+      context: ${KRADDR_GEO_REPO_DIR:-../python-kraddr-geo}/kraddr-geo-ui
+    container_name: ${KRADDR_GEO_UI_CONTAINER:-kraddr-geo-ui-latest}
+    restart: unless-stopped
+    depends_on:
+      kraddr-geo-api:
+        condition: service_healthy
+    environment:
+      PORT: ${KRADDR_GEO_UI_CONTAINER_PORT:-12205}
+      HOSTNAME: 0.0.0.0
+      KRADDR_GEO_API_INTERNAL_URL: http://kraddr-geo-api:${KRADDR_GEO_API_CONTAINER_PORT:-12201}
+      NEXT_PUBLIC_API_BASE_URL: ${KRADDR_GEO_UI_PUBLIC_API_BASE_URL:-/api/proxy}
+      NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+      KRADDR_GEO_VWORLD_API_KEY: ${KRADDR_GEO_VWORLD_API_KEY:-}
+    ports:
+    - ${KRADDR_GEO_UI_PORT:-12205}:${KRADDR_GEO_UI_CONTAINER_PORT:-12205}
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - >-
+        node -e "fetch('http://localhost:' + (process.env.PORT || '12205')).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

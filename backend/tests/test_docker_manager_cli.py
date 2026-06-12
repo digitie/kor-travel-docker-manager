@@ -28,8 +28,18 @@ def test_registry_resolves_application_targets_to_shared_services():
 
     assert target["id"] == "main"
     assert target_sequence_for_target("main") == ["db", "storage", "geo", "map", "ai", "main"]
-    assert services_for_target("main") == ["kraddr-geo-postgres", "rustfs"]
-    assert runtime_services_for_target("main") == ["kraddr-geo-postgres", "rustfs"]
+    assert services_for_target("main") == [
+        "kraddr-geo-postgres",
+        "rustfs",
+        "kraddr-geo-api",
+        "kraddr-geo-ui",
+    ]
+    assert runtime_services_for_target("main") == [
+        "kraddr-geo-postgres",
+        "rustfs",
+        "kraddr-geo-api",
+        "kraddr-geo-ui",
+    ]
     assert [step["name"] for step in init_steps_for_target("main")] == [
         "db-schema-recovery",
         "rustfs-bucket-recovery",
@@ -47,7 +57,12 @@ def test_short_aliases_resolve_dependency_order():
     assert target_sequence_for_target("map") == ["db", "storage", "geo", "map"]
     assert target_sequence_for_target("ai") == ["db", "storage", "geo", "map", "ai"]
     assert target_sequence_for_target("main") == ["db", "storage", "geo", "map", "ai", "main"]
-    assert services_for_target("geo") == ["kraddr-geo-postgres", "rustfs"]
+    assert services_for_target("geo") == [
+        "kraddr-geo-postgres",
+        "rustfs",
+        "kraddr-geo-api",
+        "kraddr-geo-ui",
+    ]
 
 
 def test_env_redaction_masks_sensitive_values():
@@ -66,7 +81,12 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
     result = ComposeService().ensure_target("main", build=True, recreate=True)
 
     assert result["success"] is True
-    assert result["services"] == ["kraddr-geo-postgres", "rustfs"]
+    assert result["services"] == [
+        "kraddr-geo-postgres",
+        "rustfs",
+        "kraddr-geo-api",
+        "kraddr-geo-ui",
+    ]
     assert result["target_sequence"] == ["db", "storage", "geo", "map", "ai", "main"]
     up_command = result["command"][0]
     assert up_command[:2] == ["docker", "compose"]
@@ -74,6 +94,8 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
     assert "--build" in up_command
     assert "--force-recreate" in up_command
     assert "kraddr-geo-postgres" in up_command
+    assert "kraddr-geo-api" in up_command
+    assert "kraddr-geo-ui" in up_command
     assert mock_run.call_count == 4
 
 

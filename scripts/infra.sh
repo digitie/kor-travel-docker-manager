@@ -42,6 +42,8 @@ services_for_target() {
     all|geo|kraddr-geo|python-kraddr-geo|map|krtour-map|python-krtour-map|ai|tripmate-agent|agent|main|tripmate|tripmate-api|tripmate-web)
       printf '%s\n' kraddr-geo-postgres
       printf '%s\n' rustfs
+      printf '%s\n' kraddr-geo-api
+      printf '%s\n' kraddr-geo-ui
       ;;
     *)
       echo "unknown target: $1" >&2

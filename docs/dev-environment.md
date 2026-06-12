@@ -14,6 +14,17 @@
 - **Docker**:
   - Docker Desktop 구동 중이어야 하며, 백엔드가 로컬 Docker Named Pipe에 접근할 수 있어야 함.
 
+### 1.1 명령 실행 위치 강제
+
+이 저장소의 기본 개발 환경은 WSL이다. git과 Playwright E2E를 제외한 모든 개발/검증/서버/Docker 명령은 WSL에서 실행한다.
+
+| 실행 위치 | 실행 대상 |
+|---|---|
+| WSL | `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `tmctl`, `scripts/infra.sh`, `ruff`, `pytest`, `npm run type-check`, `npm run build`, 서버 실행, 파일 검색 |
+| Windows 호스트 | `git` 전체, Playwright E2E (`npx playwright test`, Playwright browser install 포함) |
+
+Windows 경로 `F:\dev\tripmate-manager`는 WSL에서 `/mnt/f/dev/tripmate-manager`로 접근한다. 문서 예시가 Windows 경로를 보여 주더라도 git과 Playwright E2E를 제외한 명령은 WSL 경로에서 실행한다.
+
 ---
 
 ## 2. 백엔드 개발 환경 구축 (FastAPI)
@@ -24,6 +35,7 @@
 Poetry를 사용해 패키지를 설치하고 가상환경을 활성화한다.
 
 ```bash
+cd /mnt/f/dev/tripmate-manager
 cd backend
 poetry install
 ```
@@ -53,17 +65,17 @@ KRADDR_GEO_POSTGRES_DB=kraddr_geo
 KRADDR_GEO_STRICT_SOURCE_CHECK=1
 ```
 
-RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이며, PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
+RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이며, `python-kraddr-geo`는 API `12201`, Web UI `12205`를 사용한다. PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
 Poetry를 사용할 경우:
 ```bash
-poetry run uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
+poetry run uvicorn tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
 ```
 
-Poetry 없이 수동으로 생성한 가상환경(`tripmate_venv`)을 사용할 경우 (WSL 권장):
+Poetry 없이 수동으로 생성한 가상환경(`tripmate_venv`)을 사용할 경우:
 ```bash
-PYTHONPATH=src tripmate_venv/bin/python -m uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
+PYTHONPATH=src tripmate_venv/bin/python -m uvicorn tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
 ```
 실행 후 `http://localhost:12901/docs`에서 OpenAPI 대화식 문서를 확인할 수 있다.
 
@@ -78,11 +90,11 @@ PYTHONPATH=src tripmate_venv/bin/python -m uvicorn src.tripmate_manager.main:app
 다른 TripMate 개발 저장소에서 DB 또는 RustFS가 필요할 때는 manager CLI로 바로 실행한다.
 
 ```bash
-cd f:/dev/tripmate-manager/backend
+cd /mnt/f/dev/tripmate-manager/backend
 poetry run tmctl main --build
 ```
 
-공식 target 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> geo -> map -> ai -> main`이다. 예를 들어 `tmctl geo --build`는 통합 DB, RustFS, `python-kraddr-geo` 원천 데이터 검증까지 수행한다.
+공식 target 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> geo -> map -> ai -> main`이다. 예를 들어 `tmctl geo --build`는 통합 DB, RustFS, `python-kraddr-geo` API/Web UI 실행, 원천 데이터 검증까지 수행한다.
 
 호환 별칭으로 `postgresql`, `rustfs`, `python-kraddr-geo`, `python-krtour-map`, `tripmate-agent`, `tripmate`도 사용할 수 있다.
 
@@ -105,6 +117,7 @@ scripts/infra.sh status all
 npm을 사용해 필요한 Node 패키지들을 설치한다.
 
 ```bash
+cd /mnt/f/dev/tripmate-manager
 cd frontend
 npm install
 ```
@@ -126,15 +139,23 @@ npm run dev
    - Claude Code: `F:\dev\tripmate-manager-claude`
    - Google Antigravity: `F:\dev\tripmate-manager-antigravity`
 2. **코드 갱신 및 브랜치 작성**:
+   Windows 호스트에서 실행한다.
    ```bash
    git fetch origin
    git switch -c agent/<topic> main
    ```
 3. **CodeGraph 인덱스 동기화**:
+   WSL에서 실행한다.
    ```bash
    codegraph sync
    codegraph status
    ```
 4. **로컬 품질 게이트 확인**:
+   WSL에서 실행한다.
    - 백엔드: `poetry run ruff check .` 및 `poetry run pytest`
    - 프론트엔드: `npm run type-check` 및 `npm run build`
+5. **Playwright E2E 확인**:
+   Windows 호스트에서 실행한다. Playwright E2E는 실제 Windows 브라우저 환경을 검증하는 예외 작업이므로 WSL에서 실행하지 않는다.
+   ```bash
+   npx playwright test
+   ```

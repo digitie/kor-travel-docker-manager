@@ -28,12 +28,14 @@
 | CLI | `tmctl` Python CLI 추가 | 다른 TripMate 프로젝트에서 의존 Docker 실행용으로 사용 |
 | 문서 | 통합 DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
 
-현재 공식 관리 컨테이너는 다음 2개다.
+현재 공식 관리 컨테이너는 다음 4개다.
 
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트 |
 |---|---|---|---|
 | `kraddr-geo-postgresql` | `kraddr-geo-postgres` | `kraddr_geo`, `tripmate`, `tripmate_agent`, `krtour_map` database를 담는 통합 PostgreSQL / PostGIS | `5432:5432` |
 | `rustfs` | `tripmate-rustfs` | TripMate 계열 미디어 및 원천 데이터용 S3 호환 오브젝트 스토리지 | host `12101`, `12105` / container `9000`, `9001` |
+| `kraddr-geo-api` | `kraddr-geo-api-latest` | `python-kraddr-geo` REST API | host/container `12201` |
+| `kraddr-geo-ui` | `kraddr-geo-ui-latest` | `python-kraddr-geo` admin Web UI | host/container `12205` |
 
 ---
 
@@ -51,15 +53,15 @@ db -> storage -> geo -> map -> ai -> main
 |---|---|---|---|
 | `db` | 통합 DB | 통합 PostgreSQL/PostGIS 실행 및 DB/role/schema 복구 | `postgresql`, `postgres`, `kraddr-geo-postgres` |
 | `storage` | 통합 RustFS | `db` + RustFS 실행 및 bucket 복구 | `rustfs`, `s3`, `object-storage` |
-| `geo` | 지오코더/리버스지오코더 | `storage` + `python-kraddr-geo` 원천 데이터 적재 검증 | `kraddr-geo`, `python-kraddr-geo`, `geocoder` |
+| `geo` | 지오코더/리버스지오코더 | `storage` + `python-kraddr-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kraddr-geo`, `python-kraddr-geo`, `geocoder` |
 | `map` | 관광 지도 처리 | `geo` + `python-krtour-map` 의존성 | `krtour-map`, `python-krtour-map` |
 | `ai` | TripMate Agent | `map` + `tripmate-agent` 의존성 | `tripmate-agent`, `agent` |
 | `main` | TripMate main | 전체 TripMate 개발 의존성 | `tripmate`, `tripmate-api`, `tripmate-web` |
 | `all` | 전체 | `db`부터 `main`까지 전체 순서 | `default` |
 
-현재 `map`, `ai`, `main` 자체 앱 컨테이너는 이 저장소 compose에 포함하지 않는다. 따라서 해당 target은 공용 DB/RustFS와 선행 검증을 실행하는 개발 의존성 target이다. 나중에 앱 컨테이너를 이 저장소에서 함께 관리하게 되면 `config/docker-targets.yml`에 compose service와 init step을 추가한다.
+현재 `map`, `ai`, `main` 자체 앱 컨테이너는 이 저장소 compose에 포함하지 않는다. 따라서 해당 target은 공용 DB/RustFS, `python-kraddr-geo` API/Web UI, 선행 검증을 실행하는 개발 의존성 target이다. 나중에 앱 컨테이너를 이 저장소에서 함께 관리하게 되면 `config/docker-targets.yml`에 compose service와 init step을 추가한다.
 
-로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역은 `12000-12099`지만 PostgreSQL은 표준 `5432` 접속 포트를 고정하므로 비워 두고, `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `tripmate-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
+로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역은 `12000-12099`지만 PostgreSQL은 표준 `5432` 접속 포트를 고정하므로 비워 두고, `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `geo` 대역의 `python-kraddr-geo`는 API `12201`, Web UI `12205`를 사용한다. `tripmate-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
 
 ---
 
@@ -72,6 +74,8 @@ db -> storage -> geo -> map -> ai -> main
 | DB 복구 | `db` 이상 | `scripts/ensure-kraddr-geo-db.sh` | PostgreSQL readiness 대기, `kraddr_geo`, `tripmate`, `tripmate_agent`, `krtour_map` database 생성/소유자 보정, role/password refresh, PostGIS/pg_stat_statements/schema grant 보정 |
 | RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `tripmate-media`, `kraddr-geo`, `krtour-map`, `krtour-uploads` bucket 생성 |
 | Geo 원천 검증 | `geo` 이상 | `scripts/verify-kraddr-geo-source.sh` | `/data/juso` 마운트와 `load_manifest`, `tl_juso_text`, `mv_geocode_target` 적재 상태 확인 |
+
+`geo` target은 compose에서 `kraddr-geo-api`, `kraddr-geo-ui`를 실행하고, API 컨테이너는 compose 네트워크 안에서 `kraddr-geo-postgres:5432`와 `rustfs:9000`을 사용한다. 기존 `python-kraddr-geo` 로컬 script와 같은 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 사용하므로 대시보드와 CLI가 같은 Docker 대상을 바라본다.
 
 `geo` 검증은 원천 DB가 비어 있거나 핵심 테이블이 없으면 기본적으로 실패한다. 전체 적재는 무겁고 `python-kraddr-geo`의 도메인 로더가 책임지는 작업이므로, manager는 자동 전체 적재 대신 명확한 실패 메시지와 복구 지침을 출력한다. 비어 있는 DB를 의도적으로 허용해야 하는 경우에만 `.env`에서 `KRADDR_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
 
@@ -146,4 +150,4 @@ tmctl main --build
 - `docker compose` 실행은 반드시 문자열 shell이 아니라 인자 배열로 수행한다.
 - inspect와 로그 출력에서 secret 성격의 environment 값은 redaction한다.
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
-- 포트 `5432`, `12101`, `12105`, `12901`, `12905`는 TripMate 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
+- 포트 `5432`, `12101`, `12105`, `12201`, `12205`, `12901`, `12905`는 TripMate 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
