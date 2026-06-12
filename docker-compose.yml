@@ -1,14 +1,14 @@
 name: kor-travel-docker-manager
 
 services:
-  kraddr-geo-postgres:
+  kor-travel-geo-postgres:
     image: postgis/postgis:16-3.5
-    container_name: kraddr-geo-postgres
+    container_name: kor-travel-geo-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${KRADDR_GEO_POSTGRES_USER:-addr}
-      POSTGRES_PASSWORD: ${KRADDR_GEO_POSTGRES_PASSWORD:-addr}
-      POSTGRES_DB: ${KRADDR_GEO_POSTGRES_DB:-kraddr_geo}
+      POSTGRES_USER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
+      POSTGRES_PASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
+      POSTGRES_DB: ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
       TRIPMATE_POSTGRES_USER: ${TRIPMATE_POSTGRES_USER:-tripmate}
       TRIPMATE_POSTGRES_PASSWORD: ${TRIPMATE_POSTGRES_PASSWORD:-tripmate_dev_password}
       TRIPMATE_POSTGRES_DB: ${TRIPMATE_POSTGRES_DB:-tripmate}
@@ -16,16 +16,16 @@ services:
       KRTOUR_MAP_POSTGRES_USER: ${KRTOUR_MAP_POSTGRES_USER:-krtour_map}
       KRTOUR_MAP_POSTGRES_PASSWORD: ${KRTOUR_MAP_POSTGRES_PASSWORD:-krtour_map_dev_password}
       KRTOUR_MAP_POSTGRES_DB: ${KRTOUR_MAP_POSTGRES_DB:-krtour_map}
-      KRADDR_GEO_STRICT_SOURCE_CHECK: ${KRADDR_GEO_STRICT_SOURCE_CHECK:-1}
-      KRADDR_GEO_SOURCE_DIR: ${KRADDR_GEO_SOURCE_DIR:-/data/juso}
+      KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK: ${KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK:-1}
+      KOR_TRAVEL_GEO_SOURCE_DIR: ${KOR_TRAVEL_GEO_SOURCE_DIR:-/data/juso}
     ports:
-    - ${KRADDR_GEO_DB_PORT:-5432}:5432
+    - ${KOR_TRAVEL_GEO_DB_PORT:-5432}:5432
     volumes:
-    - ${KRADDR_GEO_PGDATA:-/home/digitie/kraddr-geo-data/pgdata-final-20260529}:/var/lib/postgresql/data
+    - ${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}:/var/lib/postgresql/data
     - ${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}:/data/juso:ro
-    - ./scripts/ensure-kraddr-geo-db.sh:/docker-entrypoint-initdb.d/010-ensure-kraddr-geo-db.sh:ro
-    - ./scripts/ensure-kraddr-geo-db.sh:/opt/kor-travel-docker-manager/ensure-kraddr-geo-db.sh:ro
-    - ./scripts/verify-kraddr-geo-source.sh:/opt/kor-travel-docker-manager/verify-kraddr-geo-source.sh:ro
+    - ./scripts/ensure-kor-travel-geo-db.sh:/docker-entrypoint-initdb.d/010-ensure-kor-travel-geo-db.sh:ro
+    - ./scripts/ensure-kor-travel-geo-db.sh:/opt/kor-travel-docker-manager/ensure-kor-travel-geo-db.sh:ro
+    - ./scripts/verify-kor-travel-geo-source.sh:/opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh:ro
     shm_size: 512mb
     command:
     - postgres
@@ -52,7 +52,7 @@ services:
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -U ${KRADDR_GEO_POSTGRES_USER:-addr} -d ${KRADDR_GEO_POSTGRES_DB:-kraddr_geo}
+      - pg_isready -U ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr} -d ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
       interval: 10s
       timeout: 5s
       retries: 5
@@ -71,7 +71,7 @@ services:
     - ${RUSTFS_API_PORT:-12101}:${RUSTFS_API_CONTAINER_PORT:-9000}
     - ${RUSTFS_CONSOLE_PORT:-12105}:${RUSTFS_CONSOLE_CONTAINER_PORT:-9001}
     volumes:
-    - ${RUSTFS_DATA_DIR:-/home/digitie/kraddr-geo-data/rustfs}:/data
+    - ${RUSTFS_DATA_DIR:-/home/digitie/kor-travel-geo-data/rustfs}:/data
     healthcheck:
       test:
       - CMD-SHELL
@@ -90,7 +90,7 @@ services:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       TRIPMATE_RUSTFS_BUCKET: ${TRIPMATE_RUSTFS_BUCKET:-tripmate-media}
-      KRADDR_GEO_RUSTFS_BUCKET: ${KRADDR_GEO_RUSTFS_BUCKET:-kraddr-geo}
+      KOR_TRAVEL_GEO_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KRTOUR_MAP_RUSTFS_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
     volumes:
@@ -98,34 +98,34 @@ services:
     entrypoint:
     - /bin/sh
     - /opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh
-  kraddr-geo-api:
-    image: ${KRADDR_GEO_API_IMAGE:-kraddr-geo-api:latest-main-gdal}
+  kor-travel-geo-api:
+    image: ${KOR_TRAVEL_GEO_API_IMAGE:-kor-travel-geo-api:latest-main-gdal}
     build:
       context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}
       dockerfile: docker/api.Dockerfile
-    container_name: ${KRADDR_GEO_API_CONTAINER:-kraddr-geo-api-latest}
+    container_name: ${KOR_TRAVEL_GEO_API_CONTAINER:-kor-travel-geo-api-latest}
     restart: unless-stopped
     depends_on:
-      kraddr-geo-postgres:
+      kor-travel-geo-postgres:
         condition: service_healthy
       rustfs:
         condition: service_healthy
     environment:
-      PORT: ${KRADDR_GEO_API_CONTAINER_PORT:-12201}
-      KRADDR_GEO_API_HOST: 0.0.0.0
-      KRADDR_GEO_PG_DSN: ${KRADDR_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@kraddr-geo-postgres:5432/kraddr_geo}
-      KRADDR_GEO_GEOIP_GATE_MODE: ${KRADDR_GEO_GEOIP_GATE_MODE:-off}
-      KRADDR_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES: ${KRADDR_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES:-0}
-      KRADDR_GEO_RUSTFS_ENABLED: ${KRADDR_GEO_RUSTFS_ENABLED:-1}
-      KRADDR_GEO_RUSTFS_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
-      KRADDR_GEO_RUSTFS_BUCKET: ${KRADDR_GEO_RUSTFS_BUCKET:-kraddr-geo}
-      KRADDR_GEO_RUSTFS_PREFIX: ${KRADDR_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KRADDR_GEO_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KRADDR_GEO_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
-      KRADDR_GEO_RUSTFS_LOCAL_IMPORT_ROOTS: /data
-      KRADDR_GEO_VWORLD_API_KEY: ${KRADDR_GEO_VWORLD_API_KEY:-}
+      PORT: ${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
+      KTG_API_HOST: 0.0.0.0
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@kor-travel-geo-postgres:5432/kor_travel_geo}
+      KTG_GEOIP_GATE_MODE: ${KOR_TRAVEL_GEO_GEOIP_GATE_MODE:-off}
+      KTG_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES: ${KOR_TRAVEL_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES:-0}
+      KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
+      KTG_RUSTFS_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
+      KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_LOCAL_IMPORT_ROOTS: /data
+      KTG_VWORLD_API_KEY: ${KOR_TRAVEL_GEO_VWORLD_API_KEY:-}
     ports:
-    - ${KRADDR_GEO_API_PORT:-12201}:${KRADDR_GEO_API_CONTAINER_PORT:-12201}
+    - ${KOR_TRAVEL_GEO_API_PORT:-12501}:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
     volumes:
     - ${KOR_TRAVEL_GEO_APP_DATA_DIR:-../kor-travel-geo/data}:/data:ro
     extra_hosts:
@@ -134,36 +134,36 @@ services:
       test:
       - CMD-SHELL
       - >-
-        python -c "import urllib.request; urllib.request.urlopen('http://localhost:${KRADDR_GEO_API_CONTAINER_PORT:-12201}/v1/healthz', timeout=5).read()"
+        python -c "import urllib.request; urllib.request.urlopen('http://localhost:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}/v1/healthz', timeout=5).read()"
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 30s
-  kraddr-geo-ui:
-    image: ${KRADDR_GEO_UI_IMAGE:-kraddr-geo-ui:latest-main}
+  kor-travel-geo-ui:
+    image: ${KOR_TRAVEL_GEO_UI_IMAGE:-kor-travel-geo-ui:latest-main}
     build:
-      context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}/kraddr-geo-ui
-    container_name: ${KRADDR_GEO_UI_CONTAINER:-kraddr-geo-ui-latest}
+      context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}/kor-travel-geo-ui
+    container_name: ${KOR_TRAVEL_GEO_UI_CONTAINER:-kor-travel-geo-ui-latest}
     restart: unless-stopped
     depends_on:
-      kraddr-geo-api:
+      kor-travel-geo-api:
         condition: service_healthy
     environment:
-      PORT: ${KRADDR_GEO_UI_CONTAINER_PORT:-12205}
+      PORT: ${KOR_TRAVEL_GEO_UI_CONTAINER_PORT:-12505}
       HOSTNAME: 0.0.0.0
-      KRADDR_GEO_API_INTERNAL_URL: http://kraddr-geo-api:${KRADDR_GEO_API_CONTAINER_PORT:-12201}
-      NEXT_PUBLIC_API_BASE_URL: ${KRADDR_GEO_UI_PUBLIC_API_BASE_URL:-/api/proxy}
+      KTG_API_INTERNAL_URL: http://kor-travel-geo-api:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
+      NEXT_PUBLIC_API_BASE_URL: ${KOR_TRAVEL_GEO_UI_PUBLIC_API_BASE_URL:-/api/proxy}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
-      KRADDR_GEO_VWORLD_API_KEY: ${KRADDR_GEO_VWORLD_API_KEY:-}
+      KTG_VWORLD_API_KEY: ${KOR_TRAVEL_GEO_VWORLD_API_KEY:-}
     ports:
-    - ${KRADDR_GEO_UI_PORT:-12205}:${KRADDR_GEO_UI_CONTAINER_PORT:-12205}
+    - ${KOR_TRAVEL_GEO_UI_PORT:-12505}:${KOR_TRAVEL_GEO_UI_CONTAINER_PORT:-12505}
     extra_hosts:
     - host.docker.internal:host-gateway
     healthcheck:
       test:
       - CMD-SHELL
       - >-
-        node -e "fetch('http://localhost:' + (process.env.PORT || '12205')).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        node -e "fetch('http://localhost:' + (process.env.PORT || '12505')).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 10s
       timeout: 5s
       retries: 12
@@ -180,13 +180,10 @@ services:
     - --web.console.templates=/usr/share/prometheus/consoles
     - --web.enable-lifecycle
     ports:
-    - ${PROMETHEUS_PORT:-12601}:9090
+    - ${PROMETHEUS_PORT:-12401}:9090
     volumes:
     - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    - ${PROMETHEUS_DATA_DIR:-/home/digitie/kraddr-geo-data/prometheus}:/prometheus
-    depends_on:
-      cadvisor:
-        condition: service_started
+    - ${PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-geo-data/prometheus}:/prometheus
   grafana:
     image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.4}
     container_name: ${GRAFANA_CONTAINER:-tripmate-grafana}
@@ -198,13 +195,10 @@ services:
       GF_USERS_ALLOW_SIGN_UP: 'false'
       GF_SERVER_HTTP_PORT: 3000
     ports:
-    - ${GRAFANA_PORT:-12605}:3000
+    - ${GRAFANA_PORT:-12205}:3000
     volumes:
-    - ${GRAFANA_DATA_DIR:-/home/digitie/kraddr-geo-data/grafana}:/var/lib/grafana
+    - ${GRAFANA_DATA_DIR:-/home/digitie/kor-travel-geo-data/grafana}:/var/lib/grafana
     - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-    depends_on:
-      prometheus:
-        condition: service_started
   cadvisor:
     image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}
     container_name: ${CADVISOR_CONTAINER:-tripmate-cadvisor}
@@ -213,7 +207,7 @@ services:
     devices:
     - /dev/kmsg:/dev/kmsg
     ports:
-    - ${CADVISOR_PORT:-12602}:8080
+    - ${CADVISOR_PORT:-12301}:8080
     volumes:
     - /:/rootfs:ro
     - /var/run:/var/run:ro

@@ -52,8 +52,9 @@ poetry run pytest
 
 # 개발 의존 Docker 실행
 poetry run ktdctl main --build
-# 짧은 별칭: db, storage, geo, map, ai, main
-# geo target은 kor-travel-geo API 12201, Web UI 12205까지 포함
+# 짧은 별칭: db, storage, gra, cadv, prom, geo, map, ai, main
+# gra/cadv/prom은 Grafana 12205, cAdvisor 12301, Prometheus 12401을 분리 실행
+# geo target은 kor-travel-geo API 12501, Web UI 12505까지 포함
 ```
 
 ### 프론트엔드 (Next.js)

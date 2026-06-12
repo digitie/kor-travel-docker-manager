@@ -14,19 +14,21 @@ port_policy:
 dependency_order:
   - db
   - storage
+  - gra
+  - cadv
+  - prom
   - geo
   - map
   - ai
   - main
-  - observability
 
 containers:
-  kraddr-geo-postgresql:
-    name: kraddr-geo-postgres
-    compose_service: kraddr-geo-postgres
+  kor-travel-geo-postgresql:
+    name: kor-travel-geo-postgres
+    compose_service: kor-travel-geo-postgres
     role: postgresql
     display_name: TripMate 통합 PostgreSQL / PostGIS
-    connection: "postgresql://localhost:5432 (DBs: kraddr_geo, tripmate, kor_travel_concierge, krtour_map)"
+    connection: "postgresql://localhost:5432 (DBs: kor_travel_geo, tripmate, kor_travel_concierge, krtour_map)"
     expected_ports:
       - "5432:5432"
   rustfs:
@@ -38,46 +40,46 @@ containers:
     expected_ports:
       - "12101:9000"
       - "12105:9001"
-  kraddr-geo-api:
-    name: kraddr-geo-api-latest
-    compose_service: kraddr-geo-api
+  kor-travel-geo-api:
+    name: kor-travel-geo-api-latest
+    compose_service: kor-travel-geo-api
     role: geocoder-api
     display_name: Kor Travel Geo API
-    connection: http://127.0.0.1:12201
+    connection: http://127.0.0.1:12501
     expected_ports:
-      - "12201:12201"
-  kraddr-geo-ui:
-    name: kraddr-geo-ui-latest
-    compose_service: kraddr-geo-ui
+      - "12501:12501"
+  kor-travel-geo-ui:
+    name: kor-travel-geo-ui-latest
+    compose_service: kor-travel-geo-ui
     role: geocoder-ui
     display_name: Kor Travel Geo Web UI
-    connection: http://127.0.0.1:12205
+    connection: http://127.0.0.1:12505
     expected_ports:
-      - "12205:12205"
+      - "12505:12505"
   prometheus:
     name: tripmate-prometheus
     compose_service: prometheus
     role: prometheus
     display_name: Prometheus 메트릭 저장소
-    connection: http://127.0.0.1:12601
+    connection: http://127.0.0.1:12401
     expected_ports:
-      - "12601:9090"
+      - "12401:9090"
   grafana:
     name: tripmate-grafana
     compose_service: grafana
     role: grafana
-    display_name: Grafana 시각화 도구
-    connection: http://127.0.0.1:12605
+    display_name: 공용 Grafana 시각화 도구
+    connection: http://127.0.0.1:12205
     expected_ports:
-      - "12605:3000"
+      - "12205:3000"
   cadvisor:
     name: tripmate-cadvisor
     compose_service: cadvisor
     role: metrics-exporter
     display_name: cAdvisor 컨테이너 메트릭 Exporter
-    connection: http://127.0.0.1:12602
+    connection: http://127.0.0.1:12301
     expected_ports:
-      - "12602:8080"
+      - "12301:8080"
 
 targets:
   db:
@@ -90,20 +92,20 @@ targets:
       - database
       - shared-postgresql
     services:
-      - kraddr-geo-postgres
+      - kor-travel-geo-postgres
     runtime_services:
-      - kraddr-geo-postgres
+      - kor-travel-geo-postgres
     containers:
-      - kraddr-geo-postgresql
+      - kor-travel-geo-postgresql
     init_steps:
       - name: db-schema-recovery
         description: 통합 DB, role, extension, schema grant를 idempotent 방식으로 보정합니다.
         command:
           - exec
           - -T
-          - kraddr-geo-postgres
+          - kor-travel-geo-postgres
           - sh
-          - /opt/kor-travel-docker-manager/ensure-kraddr-geo-db.sh
+          - /opt/kor-travel-docker-manager/ensure-kor-travel-geo-db.sh
 
   storage:
     port_band: "12100-12199"
@@ -127,8 +129,56 @@ targets:
           - --rm
           - rustfs-init
 
-  geo:
+  gra:
     port_band: "12200-12299"
+    display_name: 공용 Grafana
+    description: 다른 Kor Travel 앱에서도 공통 연계하는 Grafana Web UI입니다.
+    aliases:
+      - grafana
+      - dashboard
+      - visualization
+    services:
+      - grafana
+    runtime_services:
+      - grafana
+    containers:
+      - grafana
+    init_steps: []
+
+  cadv:
+    port_band: "12300-12399"
+    display_name: cAdvisor Exporter
+    description: Docker 컨테이너 리소스 메트릭을 Prometheus 형식으로 노출합니다.
+    aliases:
+      - cadvisor
+      - exporter
+      - metrics-exporter
+    services:
+      - cadvisor
+    runtime_services:
+      - cadvisor
+    containers:
+      - cadvisor
+    init_steps: []
+
+  prom:
+    port_band: "12400-12499"
+    display_name: Prometheus
+    description: cAdvisor와 앱 메트릭을 수집하고 Grafana datasource로 제공하는 메트릭 저장소입니다.
+    aliases:
+      - prometheus
+      - metrics
+      - monitoring
+    services:
+      - prometheus
+    runtime_services:
+      - prometheus
+    containers:
+      - prometheus
+    init_steps: []
+
+  geo:
+    port_band: "12500-12599"
     display_name: Kor Travel Geo
     description: Kor Travel Geo API/Web UI와 원천 데이터 적재 상태를 관리합니다.
     aliases:
@@ -137,28 +187,28 @@ targets:
       - geocoder
       - reverse-geocoder
     services:
-      - kraddr-geo-api
-      - kraddr-geo-ui
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
     runtime_services:
-      - kraddr-geo-api
-      - kraddr-geo-ui
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
     containers:
-      - kraddr-geo-postgresql
+      - kor-travel-geo-postgresql
       - rustfs
-      - kraddr-geo-api
-      - kraddr-geo-ui
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
     init_steps:
       - name: geo-source-verification
         description: /data/juso 마운트와 T-027 계열 핵심 적재 테이블을 검증합니다.
         command:
           - exec
           - -T
-          - kraddr-geo-postgres
+          - kor-travel-geo-postgres
           - sh
-          - /opt/kor-travel-docker-manager/verify-kraddr-geo-source.sh
+          - /opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh
 
   map:
-    port_band: "12300-12399"
+    port_band: "12600-12699"
     display_name: python-krtour-map
     description: python-krtour-map 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
     aliases:
@@ -167,14 +217,14 @@ targets:
     services: []
     runtime_services: []
     containers:
-      - kraddr-geo-postgresql
+      - kor-travel-geo-postgresql
       - rustfs
-      - kraddr-geo-api
-      - kraddr-geo-ui
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
     init_steps: []
 
   ai:
-    port_band: "12400-12499"
+    port_band: "12700-12799"
     display_name: Kor Travel Concierge
     description: Kor Travel Concierge provider와 krtour-map 연계 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
     aliases:
@@ -184,14 +234,14 @@ targets:
     services: []
     runtime_services: []
     containers:
-      - kraddr-geo-postgresql
+      - kor-travel-geo-postgresql
       - rustfs
-      - kraddr-geo-api
-      - kraddr-geo-ui
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
     init_steps: []
 
   main:
-    port_band: "12500-12599"
+    port_band: "12800-12899"
     display_name: TripMate main
     description: TripMate main 서비스 개발에 필요한 공용 DB/RustFS와 krtour-map 의존성을 실행합니다. Kor Travel Concierge는 포함하지 않습니다.
     aliases:
@@ -206,35 +256,10 @@ targets:
     services: []
     runtime_services: []
     containers:
-      - kraddr-geo-postgresql
+      - kor-travel-geo-postgresql
       - rustfs
-      - kraddr-geo-api
-      - kraddr-geo-ui
-    init_steps: []
-
-  observability:
-    port_band: "12600-12699"
-    display_name: 관측 스택
-    description: Prometheus, Grafana, cAdvisor Exporter를 별도 컨테이너로 실행합니다.
-    aliases:
-      - metrics
-      - monitoring
-      - prometheus
-      - grafana
-      - exporter
-      - cadvisor
-    services:
-      - cadvisor
-      - prometheus
-      - grafana
-    runtime_services:
-      - cadvisor
-      - prometheus
-      - grafana
-    containers:
-      - prometheus
-      - grafana
-      - cadvisor
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
     init_steps: []
 
   all:
@@ -245,19 +270,21 @@ targets:
     include:
       - db
       - storage
+      - gra
+      - cadv
+      - prom
       - geo
       - map
       - ai
       - main
-      - observability
     services: []
     runtime_services: []
     containers:
-      - kraddr-geo-postgresql
+      - kor-travel-geo-postgresql
       - rustfs
-      - kraddr-geo-api
-      - kraddr-geo-ui
-      - prometheus
       - grafana
       - cadvisor
+      - prometheus
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
     init_steps: []

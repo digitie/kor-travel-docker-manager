@@ -58,14 +58,14 @@ DOCKER_HOST=npipe:////./pipe/docker_engine
 # DOCKER_HOST=unix:///var/run/docker.sock
 
 # 통합 PostgreSQL / PostGIS 접속 정보
-KRADDR_GEO_DB_PORT=5432
-KRADDR_GEO_POSTGRES_USER=addr
-KRADDR_GEO_POSTGRES_PASSWORD=addr
-KRADDR_GEO_POSTGRES_DB=kraddr_geo
-KRADDR_GEO_STRICT_SOURCE_CHECK=1
+KOR_TRAVEL_GEO_DB_PORT=5432
+KOR_TRAVEL_GEO_POSTGRES_USER=addr
+KOR_TRAVEL_GEO_POSTGRES_PASSWORD=addr
+KOR_TRAVEL_GEO_POSTGRES_DB=kor_travel_geo
+KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=1
 ```
 
-RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이며, `kor-travel-geo`는 API `12201`, Web UI `12205`를 사용한다. PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
+RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`을 사용하며, `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
 Poetry를 사용할 경우:
@@ -94,11 +94,11 @@ cd /mnt/f/dev/kor-travel-docker-manager/backend
 poetry run ktdctl main --build
 ```
 
-공식 target 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> geo -> map -> ai -> main`이다. 예를 들어 `ktdctl geo --build`는 통합 DB, RustFS, `kor-travel-geo` API/Web UI 실행, 원천 데이터 검증까지 수행한다.
+공식 target 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `map`, `ai`, `main`이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main`이다. 예를 들어 `ktdctl geo --build`는 통합 DB, RustFS, Grafana, cAdvisor, Prometheus, `kor-travel-geo` API/Web UI 실행, 원천 데이터 검증까지 수행한다.
 
-추가 target 이름으로 `postgresql`, `rustfs`, `kor-travel-geo`, `python-krtour-map`, `kor-travel-concierge`, `tripmate`도 사용할 수 있다.
+추가 target 이름으로 `postgresql`, `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `python-krtour-map`, `kor-travel-concierge`, `tripmate`도 사용할 수 있다.
 
-`geo` 이상 target은 `/data/juso` 마운트와 `kraddr_geo` 핵심 테이블 적재 상태를 확인한다. 의도적으로 빈 DB를 다루는 경우에만 `.env`에서 `KRADDR_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
+`geo` 이상 target은 `/data/juso` 마운트와 `kor_travel_geo` 핵심 테이블 적재 상태를 확인한다. 의도적으로 빈 DB를 다루는 경우에만 `.env`에서 `KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
 
 ---
 

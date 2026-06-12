@@ -17,7 +17,7 @@ const sairaCondensed = Saira_Condensed({
 
 export const metadata: Metadata = {
   title: "Kor Travel Docker Manager",
-  description: "Kor Travel infrastructure container management and observability dashboard",
+  description: "Kor Travel infrastructure container management and metrics dashboard",
 };
 
 export default function RootLayout({

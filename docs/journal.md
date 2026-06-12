@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-06-13 (Grafana/cAdvisor/Prometheus target 개별 분리)
+
+- **작업 내용**:
+  - 단일 관측 target을 제거하고 `gra`, `cadv`, `prom`을 독립 CLI/API target으로 분리했다.
+  - dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main`으로 조정했다.
+  - Grafana는 공용 연계를 위해 `12205`, cAdvisor는 `12301`, Prometheus는 `12401`을 사용하도록 재배치했다.
+  - `kor-travel-geo` API/Web UI는 새 dependency 순서에 맞춰 `12501`, `12505`로 이동했다.
+  - Prometheus scrape target을 `kor-travel-geo-api:12501/metrics`로 갱신했다.
+  - CLI 직접 별칭, API/CLI 테스트, 포트 문서, Docker 관리 문서, 개발 가이드를 같은 기준으로 갱신했다.
+- **결정 사항**:
+  - Grafana, cAdvisor, Prometheus compose service는 서로 `depends_on`으로 묶지 않고 독립 실행 가능하게 둔다.
+  - `geo` 이상 target은 새 dependency 순서상 관측 컨테이너를 선행 실행한다.
+- **검증**:
+  - WSL `backend/tripmate_venv`에서 `ruff check .` 통과.
+  - WSL `backend/tripmate_venv`에서 `pytest` → 22 passed.
+  - WSL 프론트엔드에서 `npm run type-check`, `npm run build` 통과.
+  - WSL Docker에서 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`, `kor-travel-geo` API `12501`, Web UI `12505`로 재기동 완료.
+  - HTTP 확인: Grafana `/api/health` 200, cAdvisor `/healthz` 200, Prometheus `/-/ready` 200, Geo API `/v1/healthz` 200, Geo UI `/` 307, RustFS `/health/live` 200.
+
+---
+
+## 2026-06-13 (`kor-travel-geo` DB명·환경변수·Prometheus scrape 계약 동기화)
+
+- **작업 내용**:
+  - 사용자 지시에 따라 `kor-travel-geo`가 현재 사용하는 DB명과 환경변수 계약에 Docker manager compose를 맞췄다.
+  - `kor-travel-geo` DB 기본값을 `kor_travel_geo`로 변경했다.
+  - manager override 변수는 `KOR_TRAVEL_GEO_*`로, API/UI 컨테이너 내부 환경변수는 앱이 읽는 `KTG_*`로 변경했다.
+  - Docker service/container 이름과 target registry를 `kor-travel-geo-*` 기준으로 변경했다.
+  - `/home/digitie/kor-travel-geo-data`를 PostgreSQL, RustFS, Prometheus, Grafana의 물리 데이터 디렉터리 기준으로 반영했다.
+  - `kor-travel-geo` RustFS bucket 기본값을 `kor-travel-geo`로 맞췄다.
+  - Prometheus scrape 설정에 `kor-travel-geo-api` job을 추가했다.
+- **결정 사항**:
+  - 기존 bind mount와 compose label을 가진 manager 스택 컨테이너는 중지 후 제거하고, 새 compose 기준으로 재생성 가능한 상태로 둔다.
+  - 물리 데이터 디렉터리 이름도 프로젝트 공식명과 맞춘다.
+- **검증**:
+  - WSL Docker에서 manager 스택 컨테이너를 중지·제거하고 `/home/digitie/kor-travel-geo-data`로 데이터 디렉터리 이동 완료.
+  - 과거 geo 이름 계열 문자열 검색 결과 없음.
+  - `bash -n scripts/ensure-kor-travel-geo-db.sh scripts/verify-kor-travel-geo-source.sh scripts/ensure-rustfs-buckets.sh` 통과.
+  - `docker compose config`에서 `KTG_PG_DSN=postgresql+psycopg://addr:addr@kor-travel-geo-postgres:5432/kor_travel_geo`, `POSTGRES_DB=kor_travel_geo` 확인.
+  - `git diff --check` 통과.
+  - WSL `/tmp/ktdm-venv` 임시 가상환경에서 `ruff check .` 통과.
+  - WSL `/tmp/ktdm-venv` 임시 가상환경에서 `pytest` → 22 passed.
+  - 프론트엔드 `npm run type-check` 통과.
+  - `npm run lint`는 Next.js ESLint 초기 설정 프롬프트로 비대화형 실행이 중단됨.
+  - `npx react-doctor@latest . --offline --verbose --json`은 실패 없이 완료했으며 기존 Next.js 14 보안 경고와 `DashboardClient` 구조성 경고 4건을 보고.
+
+---
+
 ## 2026-06-13 (Kor Travel Docker Manager 프로젝트명 전환)
 
 - **작업 내용**:
@@ -23,10 +71,10 @@
   - `origin/main` 기준 최신 머지 상태를 확인한 뒤 `agent/remove-old-name-helper` 브랜치에서 재검토했다.
   - 과거 프로젝트명 기반 target alias와 fallback env 검색을 재수행하고, 남은 문서 표현과 UI 기본 표시명을 `kor-travel-geo`, `kor-travel-concierge` 기준으로 정리했다.
   - target을 중복 하드코딩하던 보조 shell helper를 제거하고, 공식 실행 경로를 `ktdctl` CLI와 API/dashboard registry로 단일화했다.
-  - `ktdctl observability`와 `ktdctl all`도 직접 `ensure`로 해석되도록 CLI 직접 target 목록을 registry target과 맞췄다.
+  - `ktdctl gra`, `ktdctl cadv`, `ktdctl prom`, `ktdctl all`도 직접 `ensure`로 해석되도록 CLI 직접 target 목록을 registry target과 맞췄다.
 - **결정 사항**:
   - 과거 이름 수용 목적 alias/fallback/helper는 유지하지 않는다.
-  - 실제 Docker container/service 이름(`kraddr-geo-*`) 변경은 데이터와 컨테이너 migration이 필요한 별도 작업으로 남긴다.
+  - 실제 Docker container/service 이름과 물리 데이터 디렉터리는 후속 작업에서 `kor-travel-geo` 기준으로 맞춘다.
 
 ---
 
@@ -34,8 +82,8 @@
 
 - **작업 내용**:
   - `docker-compose.yml`에 Prometheus, Grafana, cAdvisor Exporter를 각각 별도 Docker service로 추가했다.
-  - 포트 정책에 맞춰 `observability` 대역(`12600-12699`)을 배정하고 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 사용하도록 설정했다.
-  - `config/docker-targets.yml`에 `observability` target과 `prometheus`, `grafana`, `cadvisor` 관리 컨테이너를 등록했다.
+  - 포트 정책에 맞춰 Grafana, cAdvisor Exporter, Prometheus를 각각 관리 컨테이너로 등록했다.
+  - `config/docker-targets.yml`에 `grafana`, `prometheus`, `cadvisor` 관리 컨테이너를 등록했다.
   - Prometheus scrape 설정(`config/prometheus/prometheus.yml`)과 Grafana Prometheus datasource provisioning을 추가했다.
   - 관리 UI 목록에서 Prometheus, Grafana, cAdvisor Exporter가 역할별 아이콘과 표시명으로 구분되도록 프론트엔드 표시 로직을 보강했다.
   - `.env.example`, `docs/architecture.md`, `docs/docker-management.md`, `docs/ports.md`, `docs/decisions.md`, `docs/tasks-done.md`를 같은 기준으로 갱신했다.
@@ -60,12 +108,12 @@
 ## 2026-06-12 (`kor-travel-geo` Docker API/UI 관리 편입)
 
 - **작업 내용**:
-  - `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스를 추가해 `kor-travel-geo` REST API와 admin Web UI를 manager에서 함께 실행할 수 있게 했다.
-  - `config/docker-targets.yml`에 `kraddr-geo-api-latest`, `kraddr-geo-ui-latest`를 공식 관리 컨테이너로 등록하고 `geo` 이상 target에 포함했다.
-  - 포트 정책에 맞춰 API는 `12201`, Web UI는 `12205`를 사용하고, API 컨테이너가 compose 네트워크의 `kraddr-geo-postgres:5432`, `rustfs:9000`을 사용하도록 설정했다.
+  - `docker-compose.yml`에 `kor-travel-geo-api`, `kor-travel-geo-ui` 서비스를 추가해 `kor-travel-geo` REST API와 admin Web UI를 manager에서 함께 실행할 수 있게 했다.
+  - `config/docker-targets.yml`에 `kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`를 공식 관리 컨테이너로 등록하고 `geo` 이상 target에 포함했다.
+  - 포트 정책에 맞춰 API와 Web UI 포트를 배정하고, API 컨테이너가 compose 네트워크의 `kor-travel-geo-postgres:5432`, `rustfs:9000`을 사용하도록 설정했다.
   - `.env.example`, `docs/docker-management.md`, `docs/architecture.md`, `docs/ports.md`, `docs/dev-environment.md`, `README.md`, `docs/tasks.md`를 같은 기준으로 갱신했다.
 - **결정 사항**:
-  - 기존 `kor-travel-geo` 로컬 script와 같은 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 사용해 대시보드와 CLI가 기존 Docker 대상을 그대로 확인할 수 있게 한다.
+  - 기존 `kor-travel-geo` 로컬 script와 같은 컨테이너 이름(`kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`)을 사용해 대시보드와 CLI가 기존 Docker 대상을 그대로 확인할 수 있게 한다.
 
 ---
 
@@ -83,10 +131,10 @@
 ## 2026-06-12 (TripMate 전용 Docker Manager CLI/API 및 문서 정리)
 
 - **작업 내용**:
-  - **통합 DB 모델 공식화**: `kraddr-geo-postgres:5432` 하나에 `kraddr_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database를 담는 현재 구조를 공식 기준으로 문서화하고, 과거 분리 DB 기준 문구를 정리.
+  - **통합 DB 모델 공식화**: `kor-travel-geo-postgres:5432` 하나에 `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database를 담는 현재 구조를 공식 기준으로 문서화하고, 과거 분리 DB 기준 문구를 정리.
   - **target registry 도입**: `db`, `storage`, `geo`, `map`, `ai`, `main`, `all` target을 API/CLI가 공유하도록 정의.
   - **Python CLI 추가**: `ktdctl targets/status/ensure/logs/action/inspect` 명령을 추가하고, 개발환경에서 `ktdctl <alias> --build`로 의존 Docker를 바로 실행할 수 있게 함.
-  - **짧은 CLI 별칭 추가**: `db`, `storage`, `geo`, `map`, `ai`, `main`을 공식 별칭으로 두고 `config/docker-targets.yml`의 `db -> storage -> geo -> map -> ai -> main` 순서를 따라 누적 실행하도록 구현.
+  - **짧은 CLI 별칭 추가**: `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `map`, `ai`, `main`을 공식 별칭으로 두고 `config/docker-targets.yml`의 dependency 순서를 따라 누적 실행하도록 구현.
   - **포트 정책 일원화**: PostgreSQL host 포트를 `5432`로 변경하고, RustFS는 `12101`/`12105`, manager API/Web은 `12901`/`12905`로 정리.
   - **초기화/복구 step 추가**: 통합 DB database/role/schema/extension 복구, RustFS bucket 복구, `kor-travel-geo` 원천 디렉터리와 핵심 테이블 적재 검증을 `ensure` 흐름에 연결.
   - **API 확장**: `GET /api/v1/targets`, `POST /api/v1/targets/{target}/ensure`, `GET /api/v1/containers/{container_id}/inspect`를 추가.
@@ -139,8 +187,8 @@
 ## 2026-06-10 (kor-travel-geo PostgreSQL/RustFS 인프라 이관)
 
 - **작업 내용**:
-  - `docker-compose.yml`에 `kor-travel-geo` 전용 `kraddr-geo-postgres` 서비스를 추가하고, 기존 T-027 최종 DB 접속 계약(`localhost:15434`, `addr/addr`, `kraddr_geo`, `KRADDR_GEO_PGDATA`)을 `kor-travel-docker-manager` 기본 설정으로 이관했다.
-  - 공용 RustFS 서비스의 포트, credential, 데이터 디렉터리, bucket 초기화를 `.env.example`과 compose에 명시하고 `kraddr-geo` bucket을 함께 생성하도록 했다.
+  - `docker-compose.yml`에 `kor-travel-geo` 전용 `kor-travel-geo-postgres` 서비스를 추가하고, 기존 T-027 최종 DB 접속 계약을 `kor-travel-docker-manager` 기본 설정으로 이관했다.
+  - 공용 RustFS 서비스의 포트, credential, 데이터 디렉터리, bucket 초기화를 `.env.example`과 compose에 명시하고 `kor-travel-geo` bucket을 함께 생성하도록 했다.
   - 초기 helper 명령을 추가해 `up/stop/restart/status/logs`를 주요 target 단위로 실행할 수 있게 했다.
   - 백엔드/프론트엔드 대시보드가 당시의 PostgreSQL/RustFS 관리 대상을 표시하도록 갱신했다.
 - **결정 사항**:

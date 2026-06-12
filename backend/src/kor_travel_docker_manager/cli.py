@@ -7,7 +7,7 @@ from kor_travel_docker_manager.services.compose_service import compose_service
 from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.registry import list_targets
 
-DIRECT_ENSURE_ALIASES = {"db", "storage", "geo", "map", "ai", "main", "observability", "all"}
+DIRECT_ENSURE_ALIASES = {"db", "storage", "gra", "cadv", "prom", "geo", "map", "ai", "main", "all"}
 
 
 def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -> int:
