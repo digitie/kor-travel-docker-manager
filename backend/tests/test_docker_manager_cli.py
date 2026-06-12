@@ -27,7 +27,7 @@ def test_registry_resolves_application_targets_to_shared_services():
     target = get_target("main")
 
     assert target["id"] == "main"
-    assert target_sequence_for_target("main") == ["db", "storage", "geo", "map", "ai", "main"]
+    assert target_sequence_for_target("main") == ["db", "storage", "geo", "map"]
     assert services_for_target("main") == [
         "kraddr-geo-postgres",
         "rustfs",
@@ -51,18 +51,32 @@ def test_short_aliases_resolve_dependency_order():
     assert get_target("db")["id"] == "db"
     assert get_target("storage")["id"] == "storage"
     assert get_target("geo")["id"] == "geo"
+    assert get_target("kor-travel-geo")["id"] == "geo"
     assert get_target("map")["id"] == "map"
     assert get_target("ai")["id"] == "ai"
+    assert get_target("kor-travel-concierge")["id"] == "ai"
     assert get_target("tripmate")["id"] == "main"
+    assert get_target("metrics")["id"] == "observability"
+    assert get_target("grafana")["id"] == "observability"
     assert target_sequence_for_target("map") == ["db", "storage", "geo", "map"]
     assert target_sequence_for_target("ai") == ["db", "storage", "geo", "map", "ai"]
-    assert target_sequence_for_target("main") == ["db", "storage", "geo", "map", "ai", "main"]
+    assert target_sequence_for_target("main") == ["db", "storage", "geo", "map"]
+    assert target_sequence_for_target("observability") == [
+        "db",
+        "storage",
+        "geo",
+        "map",
+        "ai",
+        "main",
+        "observability",
+    ]
     assert services_for_target("geo") == [
         "kraddr-geo-postgres",
         "rustfs",
         "kraddr-geo-api",
         "kraddr-geo-ui",
     ]
+    assert services_for_target("observability")[-3:] == ["cadvisor", "prometheus", "grafana"]
 
 
 def test_env_redaction_masks_sensitive_values():
@@ -87,7 +101,7 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
         "kraddr-geo-api",
         "kraddr-geo-ui",
     ]
-    assert result["target_sequence"] == ["db", "storage", "geo", "map", "ai", "main"]
+    assert result["target_sequence"] == ["db", "storage", "geo", "map"]
     up_command = result["command"][0]
     assert up_command[:2] == ["docker", "compose"]
     assert "up" in up_command

@@ -17,7 +17,7 @@ const sairaCondensed = Saira_Condensed({
 
 export const metadata: Metadata = {
   title: "TripMate Manager",
-  description: "PostgreSQL & RustFS Container Management Dashboard for TripMate Developers",
+  description: "TripMate infrastructure container management and observability dashboard",
 };
 
 export default function RootLayout({

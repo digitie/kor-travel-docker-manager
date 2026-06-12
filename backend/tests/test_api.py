@@ -142,14 +142,23 @@ def test_get_targets():
     response = client.get("/api/v1/targets")
     assert response.status_code == 200
     data = response.json()
-    assert [target["id"] for target in data[:6]] == ["db", "storage", "geo", "map", "ai", "main"]
-    assert data[5]["resolved_sequence"] == ["db", "storage", "geo", "map", "ai", "main"]
+    assert [target["id"] for target in data[:7]] == [
+        "db",
+        "storage",
+        "geo",
+        "map",
+        "ai",
+        "main",
+        "observability",
+    ]
+    assert data[5]["resolved_sequence"] == ["db", "storage", "geo", "map"]
     assert data[5]["resolved_services"] == [
         "kraddr-geo-postgres",
         "rustfs",
         "kraddr-geo-api",
         "kraddr-geo-ui",
     ]
+    assert data[6]["resolved_services"][-3:] == ["cadvisor", "prometheus", "grafana"]
     assert any(target["id"] == "all" for target in data)
 
 
@@ -174,7 +183,7 @@ def test_ensure_target_success(mock_compose_service):
         "stdout": "ok",
         "stderr": "",
         "target": "main",
-        "target_sequence": ["db", "storage", "geo", "map", "ai", "main"],
+        "target_sequence": ["db", "storage", "geo", "map"],
         "services": ["kraddr-geo-postgres", "rustfs", "kraddr-geo-api", "kraddr-geo-ui"],
         "init_results": [],
     }

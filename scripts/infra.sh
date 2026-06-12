@@ -16,7 +16,7 @@ compose_cmd() {
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/infra.sh [db|storage|geo|map|ai|main] [--build] [--recreate]
+  scripts/infra.sh [db|storage|geo|map|ai|main|observability] [--build] [--recreate]
   scripts/infra.sh up [target] [--build] [--recreate]
   scripts/infra.sh ensure [target] [--build] [--recreate]
   scripts/infra.sh stop [target]
@@ -25,7 +25,8 @@ Usage:
   scripts/infra.sh logs [target] [--follow]
   scripts/infra.sh config
 
-기본 target은 all이다. target은 db, storage, geo, map, ai, main 순서로 의존성을 확장한다.
+기본 target은 all이다. target은 db, storage, geo, map, ai, main, observability 순서로 의존성을 확장한다.
+main은 ai를 포함하지 않고 map까지의 의존성만 실행한다.
 새 작업에서는 Python CLI `tmctl <alias>` 사용을 권장한다.
 EOF
 }
@@ -39,11 +40,25 @@ services_for_target() {
       printf '%s\n' kraddr-geo-postgres
       printf '%s\n' rustfs
       ;;
-    all|geo|kraddr-geo|python-kraddr-geo|map|krtour-map|python-krtour-map|ai|tripmate-agent|agent|main|tripmate|tripmate-api|tripmate-web)
+    all|geo|kor-travel-geo|map|krtour-map|python-krtour-map|ai|kor-travel-concierge|concierge|agent|main|tripmate|tripmate-api|tripmate-web)
       printf '%s\n' kraddr-geo-postgres
       printf '%s\n' rustfs
       printf '%s\n' kraddr-geo-api
       printf '%s\n' kraddr-geo-ui
+      if [[ "${1:-all}" == all ]]; then
+        printf '%s\n' cadvisor
+        printf '%s\n' prometheus
+        printf '%s\n' grafana
+      fi
+      ;;
+    observability|metrics|monitoring|prometheus|grafana|exporter|cadvisor)
+      printf '%s\n' kraddr-geo-postgres
+      printf '%s\n' rustfs
+      printf '%s\n' kraddr-geo-api
+      printf '%s\n' kraddr-geo-ui
+      printf '%s\n' cadvisor
+      printf '%s\n' prometheus
+      printf '%s\n' grafana
       ;;
     *)
       echo "unknown target: $1" >&2
@@ -60,16 +75,19 @@ target_rank() {
     storage|rustfs|s3|object-storage)
       echo 2
       ;;
-    geo|kraddr-geo|python-kraddr-geo)
+    geo|kor-travel-geo)
       echo 3
       ;;
     map|krtour-map|python-krtour-map)
       echo 4
       ;;
-    ai|tripmate-agent|agent)
+    main|tripmate|tripmate-api|tripmate-web)
+      echo 4
+      ;;
+    ai|kor-travel-concierge|concierge|agent|all)
       echo 5
       ;;
-    main|tripmate|tripmate-api|tripmate-web|all)
+    observability|metrics|monitoring|prometheus|grafana|exporter|cadvisor)
       echo 6
       ;;
     *)
@@ -108,7 +126,7 @@ main() {
   shift || true
 
   case "$command" in
-    db|storage|geo|map|ai|main)
+    db|storage|geo|map|ai|main|observability)
       set -- "$command" "$@"
       command="ensure"
       ;;

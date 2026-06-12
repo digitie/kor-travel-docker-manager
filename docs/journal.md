@@ -4,27 +4,42 @@
 
 ---
 
-## 2026-06-12 (태스크 장부 정리 및 krtour-ai-agent 선행 작업 등록)
+## 2026-06-13 (Prometheus/Grafana/Exporter 관측 스택 분리)
+
+- **작업 내용**:
+  - `docker-compose.yml`에 Prometheus, Grafana, cAdvisor Exporter를 각각 별도 Docker service로 추가했다.
+  - 포트 정책에 맞춰 `observability` 대역(`12600-12699`)을 배정하고 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 사용하도록 설정했다.
+  - `config/docker-targets.yml`에 `observability` target과 `prometheus`, `grafana`, `cadvisor` 관리 컨테이너를 등록했다.
+  - Prometheus scrape 설정(`config/prometheus/prometheus.yml`)과 Grafana Prometheus datasource provisioning을 추가했다.
+  - 관리 UI 목록에서 Prometheus, Grafana, cAdvisor Exporter가 역할별 아이콘과 표시명으로 구분되도록 프론트엔드 표시 로직을 보강했다.
+  - `.env.example`, `scripts/infra.sh`, `docs/architecture.md`, `docs/docker-management.md`, `docs/ports.md`, `docs/decisions.md`, `docs/tasks-done.md`를 같은 기준으로 갱신했다.
+- **결정 사항**:
+  - Exporter는 Docker 컨테이너 리소스 메트릭에 적합한 cAdvisor를 사용하고, Grafana는 Prometheus datasource를 자동 등록한다.
+  - `all` target에는 관측 스택까지 포함해 전체 로컬 인프라 실행 시 함께 올라가도록 한다.
+
+---
+
+## 2026-06-12 (태스크 장부 정리 및 kor-travel-concierge 선행 작업 등록)
 
 - **작업 내용**:
   - 완료된 `T-001`~`T-010`, `T-013`~`T-016`을 `docs/tasks-done.md`로 분리하고, `docs/tasks.md`에는 진행 중/대기 작업만 남겼다.
-  - 미완료 작업 `T-011`, `T-012`를 유지하고, `krtour-ai-agent` provider 상세 구현 및 명칭 전환을 `T-220` 선행 작업으로 등록했다.
+  - 미완료 작업 `T-011`, `T-012`를 유지하고, `kor-travel-concierge` provider 상세 구현 및 명칭 전환을 `T-220` 선행 작업으로 등록했다.
   - 사용자 지정 순서인 `T-221`, `T-222`, `T-223`을 `T-220` 이후 순차 진행 항목으로 추가했다.
 - **결정 사항**:
-  - `T-221` 착수 전 `tripmate-agent` 잔여 명칭과 `tripmate` 직접 의존 설명을 먼저 정리한다.
+  - `T-221` 착수 전 `kor-travel-concierge` 잔여 명칭과 `tripmate` 직접 의존 설명을 먼저 정리한다.
   - `T-221`~`T-223`의 세부 범위는 현재 `tripmate-manager` 저장소 장부에 없으므로, `T-220` 완료 후 작업 전 상세 항목을 확정한다.
 
 ---
 
-## 2026-06-12 (`python-kraddr-geo` Docker API/UI 관리 편입)
+## 2026-06-12 (`kor-travel-geo` Docker API/UI 관리 편입)
 
 - **작업 내용**:
-  - `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스를 추가해 `python-kraddr-geo` REST API와 admin Web UI를 manager에서 함께 실행할 수 있게 했다.
+  - `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스를 추가해 `kor-travel-geo` REST API와 admin Web UI를 manager에서 함께 실행할 수 있게 했다.
   - `config/docker-targets.yml`에 `kraddr-geo-api-latest`, `kraddr-geo-ui-latest`를 공식 관리 컨테이너로 등록하고 `geo` 이상 target에 포함했다.
   - 포트 정책에 맞춰 API는 `12201`, Web UI는 `12205`를 사용하고, API 컨테이너가 compose 네트워크의 `kraddr-geo-postgres:5432`, `rustfs:9000`을 사용하도록 설정했다.
   - `scripts/infra.sh`, `.env.example`, `docs/docker-management.md`, `docs/architecture.md`, `docs/ports.md`, `docs/dev-environment.md`, `README.md`, `docs/tasks.md`를 같은 기준으로 갱신했다.
 - **결정 사항**:
-  - 기존 `python-kraddr-geo` 로컬 script와 같은 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 사용해 대시보드와 CLI가 기존 Docker 대상을 그대로 확인할 수 있게 한다.
+  - 기존 `kor-travel-geo` 로컬 script와 같은 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 사용해 대시보드와 CLI가 기존 Docker 대상을 그대로 확인할 수 있게 한다.
 
 ---
 
@@ -42,12 +57,12 @@
 ## 2026-06-12 (TripMate 전용 Docker Manager CLI/API 및 문서 정리)
 
 - **작업 내용**:
-  - **통합 DB 모델 공식화**: `kraddr-geo-postgres:5432` 하나에 `kraddr_geo`, `tripmate`, `tripmate_agent`, `krtour_map` database를 담는 현재 구조를 공식 기준으로 문서화하고, 과거 분리 DB 기준 문구를 정리.
+  - **통합 DB 모델 공식화**: `kraddr-geo-postgres:5432` 하나에 `kraddr_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database를 담는 현재 구조를 공식 기준으로 문서화하고, 과거 분리 DB 기준 문구를 정리.
   - **target registry 도입**: `db`, `storage`, `geo`, `map`, `ai`, `main`, `all` target을 API/CLI가 공유하도록 정의.
   - **Python CLI 추가**: `tmctl targets/status/ensure/logs/action/inspect` 명령을 추가하고, 개발환경에서 `tmctl <alias> --build`로 의존 Docker를 바로 실행할 수 있게 함.
   - **짧은 CLI 별칭 추가**: `db`, `storage`, `geo`, `map`, `ai`, `main`을 공식 별칭으로 두고 `config/docker-targets.yml`의 `db -> storage -> geo -> map -> ai -> main` 순서를 따라 누적 실행하도록 구현.
   - **포트 정책 일원화**: PostgreSQL host 포트를 `5432`로 변경하고, RustFS는 `12101`/`12105`, manager API/Web은 `12901`/`12905`로 정리.
-  - **초기화/복구 step 추가**: 통합 DB database/role/schema/extension 복구, RustFS bucket 복구, `python-kraddr-geo` 원천 디렉터리와 핵심 테이블 적재 검증을 `ensure` 흐름에 연결.
+  - **초기화/복구 step 추가**: 통합 DB database/role/schema/extension 복구, RustFS bucket 복구, `kor-travel-geo` 원천 디렉터리와 핵심 테이블 적재 검증을 `ensure` 흐름에 연결.
   - **API 확장**: `GET /api/v1/targets`, `POST /api/v1/targets/{target}/ensure`, `GET /api/v1/containers/{container_id}/inspect`를 추가.
   - **Docker inspect redaction**: inspect 응답에서 password, secret, token, access key 계열 environment 값을 마스킹하도록 구현.
   - **문서 보강**: `docs/docker-management.md`를 신규 작성하고, `architecture`, `decisions`, `tasks`, `dev-environment`, `README`, 에이전트 가이드를 통합 DB/CLI 기준으로 갱신.
@@ -95,10 +110,10 @@
 - **다음 작업**:
   - 개별 컨테이너 환경설정 업데이트 동작 확인 및 최종 사용자 테스트.
 
-## 2026-06-10 (python-kraddr-geo PostgreSQL/RustFS 인프라 이관)
+## 2026-06-10 (kor-travel-geo PostgreSQL/RustFS 인프라 이관)
 
 - **작업 내용**:
-  - `docker-compose.yml`에 `python-kraddr-geo` 전용 `kraddr-geo-postgres` 서비스를 추가하고, 기존 T-027 최종 DB 접속 계약(`localhost:15434`, `addr/addr`, `kraddr_geo`, `KRADDR_GEO_PGDATA`)을 `tripmate-manager` 기본 설정으로 이관했다.
+  - `docker-compose.yml`에 `kor-travel-geo` 전용 `kraddr-geo-postgres` 서비스를 추가하고, 기존 T-027 최종 DB 접속 계약(`localhost:15434`, `addr/addr`, `kraddr_geo`, `KRADDR_GEO_PGDATA`)을 `tripmate-manager` 기본 설정으로 이관했다.
   - 공용 RustFS 서비스의 포트, credential, 데이터 디렉터리, bucket 초기화를 `.env.example`과 compose에 명시하고 `kraddr-geo` bucket을 함께 생성하도록 했다.
   - `scripts/infra.sh`를 추가해 `up/stop/restart/status/logs`를 `all`, `tripmate`, `kraddr-geo`, `rustfs` 단위로 실행할 수 있게 했다.
   - 백엔드/프론트엔드 대시보드가 당시의 PostgreSQL/RustFS 관리 대상을 표시하도록 갱신했다.

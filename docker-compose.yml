@@ -10,7 +10,7 @@ services:
       TRIPMATE_POSTGRES_USER: ${TRIPMATE_POSTGRES_USER:-tripmate}
       TRIPMATE_POSTGRES_PASSWORD: ${TRIPMATE_POSTGRES_PASSWORD:-tripmate_dev_password}
       TRIPMATE_POSTGRES_DB: ${TRIPMATE_POSTGRES_DB:-tripmate}
-      TRIPMATE_AGENT_POSTGRES_DB: ${TRIPMATE_AGENT_POSTGRES_DB:-tripmate_agent}
+      KOR_TRAVEL_CONCIERGE_POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_DB:-kor_travel_concierge}
       KRTOUR_MAP_POSTGRES_USER: ${KRTOUR_MAP_POSTGRES_USER:-krtour_map}
       KRTOUR_MAP_POSTGRES_PASSWORD: ${KRTOUR_MAP_POSTGRES_PASSWORD:-krtour_map_dev_password}
       KRTOUR_MAP_POSTGRES_DB: ${KRTOUR_MAP_POSTGRES_DB:-krtour_map}
@@ -20,7 +20,7 @@ services:
     - ${KRADDR_GEO_DB_PORT:-5432}:5432
     volumes:
     - ${KRADDR_GEO_PGDATA:-/home/digitie/kraddr-geo-data/pgdata-final-20260529}:/var/lib/postgresql/data
-    - ${KRADDR_JUSO_DATA:-/mnt/f/dev/python-kraddr-geo/data/juso}:/data/juso:ro
+    - ${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}:/data/juso:ro
     - ./scripts/ensure-kraddr-geo-db.sh:/docker-entrypoint-initdb.d/010-ensure-kraddr-geo-db.sh:ro
     - ./scripts/ensure-kraddr-geo-db.sh:/opt/tripmate-manager/ensure-kraddr-geo-db.sh:ro
     - ./scripts/verify-kraddr-geo-source.sh:/opt/tripmate-manager/verify-kraddr-geo-source.sh:ro
@@ -99,7 +99,7 @@ services:
   kraddr-geo-api:
     image: ${KRADDR_GEO_API_IMAGE:-kraddr-geo-api:latest-main-gdal}
     build:
-      context: ${KRADDR_GEO_REPO_DIR:-../python-kraddr-geo}
+      context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}
       dockerfile: docker/api.Dockerfile
     container_name: ${KRADDR_GEO_API_CONTAINER:-kraddr-geo-api-latest}
     restart: unless-stopped
@@ -117,7 +117,7 @@ services:
       KRADDR_GEO_RUSTFS_ENABLED: ${KRADDR_GEO_RUSTFS_ENABLED:-1}
       KRADDR_GEO_RUSTFS_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
       KRADDR_GEO_RUSTFS_BUCKET: ${KRADDR_GEO_RUSTFS_BUCKET:-kraddr-geo}
-      KRADDR_GEO_RUSTFS_PREFIX: ${KRADDR_GEO_RUSTFS_PREFIX:-python-kraddr-geo}
+      KRADDR_GEO_RUSTFS_PREFIX: ${KRADDR_GEO_RUSTFS_PREFIX:-kor-travel-geo}
       KRADDR_GEO_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       KRADDR_GEO_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       KRADDR_GEO_RUSTFS_LOCAL_IMPORT_ROOTS: /data
@@ -125,7 +125,7 @@ services:
     ports:
     - ${KRADDR_GEO_API_PORT:-12201}:${KRADDR_GEO_API_CONTAINER_PORT:-12201}
     volumes:
-    - ${KRADDR_GEO_APP_DATA_DIR:-../python-kraddr-geo/data}:/data:ro
+    - ${KOR_TRAVEL_GEO_APP_DATA_DIR:-../kor-travel-geo/data}:/data:ro
     extra_hosts:
     - host.docker.internal:host-gateway
     healthcheck:
@@ -140,7 +140,7 @@ services:
   kraddr-geo-ui:
     image: ${KRADDR_GEO_UI_IMAGE:-kraddr-geo-ui:latest-main}
     build:
-      context: ${KRADDR_GEO_REPO_DIR:-../python-kraddr-geo}/kraddr-geo-ui
+      context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}/kraddr-geo-ui
     container_name: ${KRADDR_GEO_UI_CONTAINER:-kraddr-geo-ui-latest}
     restart: unless-stopped
     depends_on:
@@ -166,3 +166,55 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+  prometheus:
+    image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
+    container_name: ${PROMETHEUS_CONTAINER:-tripmate-prometheus}
+    restart: unless-stopped
+    user: ${PROMETHEUS_RUN_AS_USER:-0}
+    command:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --web.console.libraries=/usr/share/prometheus/console_libraries
+    - --web.console.templates=/usr/share/prometheus/consoles
+    - --web.enable-lifecycle
+    ports:
+    - ${PROMETHEUS_PORT:-12601}:9090
+    volumes:
+    - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ${PROMETHEUS_DATA_DIR:-/home/digitie/kraddr-geo-data/prometheus}:/prometheus
+    depends_on:
+      cadvisor:
+        condition: service_started
+  grafana:
+    image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.4}
+    container_name: ${GRAFANA_CONTAINER:-tripmate-grafana}
+    restart: unless-stopped
+    user: ${GRAFANA_RUN_AS_USER:-0}
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_SERVER_HTTP_PORT: 3000
+    ports:
+    - ${GRAFANA_PORT:-12605}:3000
+    volumes:
+    - ${GRAFANA_DATA_DIR:-/home/digitie/kraddr-geo-data/grafana}:/var/lib/grafana
+    - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      prometheus:
+        condition: service_started
+  cadvisor:
+    image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}
+    container_name: ${CADVISOR_CONTAINER:-tripmate-cadvisor}
+    restart: unless-stopped
+    privileged: true
+    devices:
+    - /dev/kmsg:/dev/kmsg
+    ports:
+    - ${CADVISOR_PORT:-12602}:8080
+    volumes:
+    - /:/rootfs:ro
+    - /var/run:/var/run:ro
+    - /sys:/sys:ro
+    - /var/lib/docker/:/var/lib/docker:ro
+    - /dev/disk/:/dev/disk:ro

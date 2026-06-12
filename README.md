@@ -2,7 +2,7 @@
 
 TripMate 구동에 필요한 공용 기반 서비스(PostgreSQL / PostGIS, RustFS 등)를 관리하고 실시간으로 모니터링하기 위한 관리 소프트웨어입니다.
 
-`tripmate`, `tripmate-agent`, `python-krtour-map`, `python-kraddr-geo` 등 포스트그레스와 파일 스토리지를 활용하는 여러 서비스에서 이 인프라를 안정적으로 공용하여 사용할 수 있게 돕습니다.
+`tripmate`, `kor-travel-concierge`, `python-krtour-map`, `kor-travel-geo` 등 포스트그레스와 파일 스토리지를 활용하는 여러 서비스에서 이 인프라를 안정적으로 공용하여 사용할 수 있게 돕습니다.
 
 ---
 
@@ -22,7 +22,7 @@ tripmate-manager/
 ├── config/             # Docker target alias, 의존 순서, 초기화 step 설정
 ├── frontend/           # Next.js 프론트엔드 대시보드 웹
 ├── docs/               # 아키텍처, 결정 사항(ADR), 일지 및 백로그 문서
-├── docker-compose.yml  # PostgreSQL, RustFS, python-kraddr-geo 로컬 구동용 compose 설정
+├── docker-compose.yml  # PostgreSQL, RustFS, kor-travel-geo 로컬 구동용 compose 설정
 ├── AGENTS.md           # AI 에이전트 협업 정책 및 언어 규칙
 ├── SKILL.md            # 에이전트 개발 매뉴얼 및 명령어 세트
 └── CLAUDE.md           # 세션 컨텍스트 가이드
@@ -51,7 +51,7 @@ poetry run tmctl main --build
 scripts/infra.sh main --build
 ```
 
-`python-kraddr-geo`만 필요한 경우:
+`kor-travel-geo`만 필요한 경우:
 
 ```bash
 poetry run tmctl geo --build
@@ -64,11 +64,11 @@ scripts/infra.sh geo --build
 
 | 대상 | Host 포트 | 접속 정보 |
 |------|-----------|-----------|
-| 통합 PostgreSQL / PostGIS | `5432` | `postgresql://localhost:5432` 안의 `kraddr_geo`, `tripmate`, `tripmate_agent`, `krtour_map` database |
+| 통합 PostgreSQL / PostGIS | `5432` | `postgresql://localhost:5432` 안의 `kraddr_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
 | RustFS console | `12105` | `http://127.0.0.1:12105` |
-| python-kraddr-geo API | `12201` | `http://127.0.0.1:12201` |
-| python-kraddr-geo Web UI | `12205` | `http://127.0.0.1:12205` |
+| kor-travel-geo API | `12201` | `http://127.0.0.1:12201` |
+| kor-travel-geo Web UI | `12205` | `http://127.0.0.1:12205` |
 | Manager Backend API | `12901` | `http://127.0.0.1:12901` |
 | Manager Dashboard Web | `12905` | `http://127.0.0.1:12905` |
 

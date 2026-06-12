@@ -1,8 +1,8 @@
--- kraddr_geo, tripmate, krtour_map, tripmate_agent 데이터베이스 및 사용자 통합 생성
+-- kraddr_geo, tripmate, krtour_map, kor_travel_concierge 데이터베이스 및 사용자 통합 생성
 
 CREATE DATABASE tripmate;
 CREATE DATABASE krtour_map;
-CREATE DATABASE tripmate_agent;
+CREATE DATABASE kor_travel_concierge;
 
 -- tripmate 사용자 생성 및 권한 부여
 CREATE USER tripmate WITH PASSWORD 'tripmate_dev_password';
@@ -12,8 +12,8 @@ GRANT ALL PRIVILEGES ON DATABASE tripmate TO tripmate;
 CREATE USER krtour_map WITH PASSWORD 'krtour_map_dev_password';
 GRANT ALL PRIVILEGES ON DATABASE krtour_map TO krtour_map;
 
--- 1. tripmate_agent 데이터베이스 초기화 및 PostGIS 확장 설정
-\c tripmate_agent
+-- 1. kor_travel_concierge 데이터베이스 초기화 및 PostGIS 확장 설정
+\c kor_travel_concierge
 CREATE EXTENSION IF NOT EXISTS postgis;
 GRANT ALL PRIVILEGES ON SCHEMA public TO addr;
 
