@@ -89,8 +89,6 @@ targets:
       - postgres
       - database
       - shared-postgresql
-      - kraddr-geo-postgres
-      - kraddr-geo-postgresql
     services:
       - kraddr-geo-postgres
     runtime_services:
