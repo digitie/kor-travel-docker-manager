@@ -62,8 +62,8 @@ done
 
 if [ "$missing" = "1" ]; then
   cat >&2 <<'EOF'
-python-kraddr-geo source DB is not fully loaded.
-Run the full-load or restore flow from python-kraddr-geo, for example:
+Kor Travel Geo source DB is not fully loaded.
+Run the full-load or restore flow from kor-travel-geo, for example:
   PLAN_ONLY=1 bash scripts/fullload_test.sh
   bash scripts/fullload_test.sh
 or restore the T-027 backup before using the geo target.

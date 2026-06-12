@@ -10,7 +10,7 @@
 | 태스크 ID | 작업 항목 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---|
 | **T-001** | 에이전트 및 워크스페이스 문서 초기화 | 2026-06-10 | 가이드 및 설정 완료 |
-| **T-002** | 프로젝트 인프라 설정 (`.gitignore`, `docker-compose.yml`, `README.md`) | 2026-06-11 | `python-kraddr-geo` 인프라 이관 반영 완료 |
+| **T-002** | 프로젝트 인프라 설정 (`.gitignore`, `docker-compose.yml`, `README.md`) | 2026-06-11 | `kor-travel-geo` 인프라 이관 반영 완료 |
 | **T-003** | FastAPI 백엔드 뼈대 구성 (`backend/pyproject.toml`, main app) | 2026-06-11 | 뼈대 구성 및 websockets 추가 완료 |
 | **T-004** | Docker 제어 모듈 (`DockerService` 및 API 엔드포인트) 구현 | 2026-06-11 | 실시간 메트릭 및 로그 엔드포인트 포함 구현 완료 |
 | **T-005** | Next.js 프론트엔드 구성 (`frontend/package.json` 및 라우팅) | 2026-06-11 | 패키지 구성 및 recharts 설치 완료 |
@@ -22,7 +22,8 @@
 | **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 init step 추가 |
 | **T-014** | TripMate 계열 로컬 포트 정책 일원화 | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
 | **T-015** | 실행 위치 정책 문서화 | 2026-06-12 | git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정 |
-| **T-016** | `python-kraddr-geo` Docker API/UI target 편입 | 2026-06-12 | `geo` target에 API `12201`, Web UI `12205` compose 서비스 추가 |
+| **T-016** | `kor-travel-geo` Docker API/UI target 편입 | 2026-06-12 | `geo` target에 API `12201`, Web UI `12205` compose 서비스 추가 |
+| **T-017** | 관측 스택 Docker target 추가 | 2026-06-13 | Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605` 분리 컨테이너 추가 |
 
 ---
 
@@ -40,7 +41,7 @@
 
 - [x] 모노레포용 통합 `.gitignore` 작성
 - [x] PostgreSQL + RustFS 구동을 위한 `docker-compose.yml` 루트 정의
-- [x] `python-kraddr-geo`용 PostgreSQL/RustFS 포트·credential·bucket 기본값 이관
+- [x] `kor-travel-geo`용 PostgreSQL/RustFS 포트·credential·bucket 기본값 이관
 - [x] 공용 인프라 구동/정지/재시작 helper `scripts/infra.sh` 추가
 - [x] 전체 저장소 개요를 담은 `README.md` 작성
 
@@ -103,7 +104,7 @@
 - [x] `tmctl db --build`처럼 짧은 별칭을 직접 `ensure`로 실행하는 CLI shortcut 추가
 - [x] 통합 DB database/role/schema/extension 복구 스크립트 추가
 - [x] RustFS 공용 bucket 복구 스크립트 추가
-- [x] `python-kraddr-geo` 원천 디렉터리와 핵심 적재 테이블 검증 스크립트 추가
+- [x] `kor-travel-geo` 원천 디렉터리와 핵심 적재 테이블 검증 스크립트 추가
 - [x] API/CLI가 같은 설정 파일 registry를 읽도록 정리
 
 ### T-014: TripMate 계열 로컬 포트 정책 일원화
@@ -124,10 +125,18 @@
 - [x] `docs/dev-environment.md`에 명령 실행 위치 표와 에이전트 작업 절차 추가
 - [x] `CLAUDE.md` 빠른 검증 명령에 WSL/Windows 예외 정책 명시
 
-### T-016: `python-kraddr-geo` Docker API/UI target 편입
+### T-016: `kor-travel-geo` Docker API/UI target 편입
 
 - [x] `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스 추가
 - [x] `config/docker-targets.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 관리 컨테이너 등록
 - [x] `geo` target이 API/Web UI 실행과 원천 데이터 검증을 함께 수행하도록 변경
 - [x] `scripts/infra.sh` 호환 target도 `geo` 이상에서 API/Web UI를 포함하도록 정리
 - [x] `.env.example`, 포트 문서, Docker 관리 문서에 `12201`, `12205` 기준 추가
+
+### T-017: 관측 스택 Docker target 추가
+
+- [x] `docker-compose.yml`에 Prometheus, Grafana, cAdvisor Exporter를 별도 service로 추가
+- [x] `config/docker-targets.yml`에 `observability` target과 세 관리 컨테이너를 등록
+- [x] 포트 정책에 맞춰 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 배정
+- [x] Prometheus scrape config와 Grafana Prometheus datasource provisioning을 추가
+- [x] `.env.example`, `scripts/infra.sh`, 아키텍처/포트/Docker 관리 문서, ADR을 갱신

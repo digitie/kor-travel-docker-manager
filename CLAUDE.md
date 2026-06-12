@@ -4,7 +4,7 @@
 
 ## 프로젝트 현황 (2026-06-12)
 
-TripMate 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `python-kraddr-geo` API/Web UI Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
+TripMate 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo` API/Web UI Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
 
 - **Backend**: Python FastAPI 기반 (`backend/`)
@@ -22,7 +22,7 @@ f:\dev\tripmate-manager\
 │   ├── src/app/        # App Router 및 페이지
 │   └── src/components/ # UI 컴포넌트
 ├── docs/               # 아키텍처 및 의사결정 문서
-├── docker-compose.yml  # PostgreSQL/RustFS/python-kraddr-geo 로컬 구동 compose 파일
+├── docker-compose.yml  # PostgreSQL/RustFS/kor-travel-geo 로컬 구동 compose 파일
 ├── AGENTS.md           # 에이전트 협업 정책 및 한글 언어 규정
 ├── SKILL.md            # 에이전트 매뉴얼 및 명령어 세트
 └── CLAUDE.md           # 본 파일 (세션 상태 관리)
@@ -53,7 +53,7 @@ poetry run pytest
 # 개발 의존 Docker 실행
 poetry run tmctl main --build
 # 짧은 별칭: db, storage, geo, map, ai, main
-# geo target은 python-kraddr-geo API 12201, Web UI 12205까지 포함
+# geo target은 kor-travel-geo API 12201, Web UI 12205까지 포함
 ```
 
 ### 프론트엔드 (Next.js)

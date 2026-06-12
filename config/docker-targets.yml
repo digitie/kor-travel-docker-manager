@@ -18,6 +18,7 @@ dependency_order:
   - map
   - ai
   - main
+  - observability
 
 containers:
   kraddr-geo-postgresql:
@@ -25,7 +26,7 @@ containers:
     compose_service: kraddr-geo-postgres
     role: postgresql
     display_name: TripMate 통합 PostgreSQL / PostGIS
-    connection: "postgresql://localhost:5432 (DBs: kraddr_geo, tripmate, tripmate_agent, krtour_map)"
+    connection: "postgresql://localhost:5432 (DBs: kraddr_geo, tripmate, kor_travel_concierge, krtour_map)"
     expected_ports:
       - "5432:5432"
   rustfs:
@@ -41,7 +42,7 @@ containers:
     name: kraddr-geo-api-latest
     compose_service: kraddr-geo-api
     role: geocoder-api
-    display_name: python-kraddr-geo API
+    display_name: Kor Travel Geo API
     connection: http://127.0.0.1:12201
     expected_ports:
       - "12201:12201"
@@ -49,10 +50,34 @@ containers:
     name: kraddr-geo-ui-latest
     compose_service: kraddr-geo-ui
     role: geocoder-ui
-    display_name: python-kraddr-geo Web UI
+    display_name: Kor Travel Geo Web UI
     connection: http://127.0.0.1:12205
     expected_ports:
       - "12205:12205"
+  prometheus:
+    name: tripmate-prometheus
+    compose_service: prometheus
+    role: prometheus
+    display_name: Prometheus 메트릭 저장소
+    connection: http://127.0.0.1:12601
+    expected_ports:
+      - "12601:9090"
+  grafana:
+    name: tripmate-grafana
+    compose_service: grafana
+    role: grafana
+    display_name: Grafana 시각화 도구
+    connection: http://127.0.0.1:12605
+    expected_ports:
+      - "12605:3000"
+  cadvisor:
+    name: tripmate-cadvisor
+    compose_service: cadvisor
+    role: metrics-exporter
+    display_name: cAdvisor 컨테이너 메트릭 Exporter
+    connection: http://127.0.0.1:12602
+    expected_ports:
+      - "12602:8080"
 
 targets:
   db:
@@ -106,11 +131,11 @@ targets:
 
   geo:
     port_band: "12200-12299"
-    display_name: 지오코더/리버스지오코더
-    description: python-kraddr-geo API/Web UI와 원천 데이터 적재 상태를 관리합니다.
+    display_name: Kor Travel Geo
+    description: Kor Travel Geo API/Web UI와 원천 데이터 적재 상태를 관리합니다.
     aliases:
-      - kraddr-geo
-      - python-kraddr-geo
+      - kor-travel-geo
+      - kor-travel-geo-api
       - geocoder
       - reverse-geocoder
     services:
@@ -152,10 +177,11 @@ targets:
 
   ai:
     port_band: "12400-12499"
-    display_name: TripMate Agent
-    description: tripmate-agent 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
+    display_name: Kor Travel Concierge
+    description: Kor Travel Concierge provider와 krtour-map 연계 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
     aliases:
-      - tripmate-agent
+      - kor-travel-concierge
+      - concierge
       - agent
     services: []
     runtime_services: []
@@ -169,11 +195,16 @@ targets:
   main:
     port_band: "12500-12599"
     display_name: TripMate main
-    description: TripMate main 서비스 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
+    description: TripMate main 서비스 개발에 필요한 공용 DB/RustFS와 krtour-map 의존성을 실행합니다. Kor Travel Concierge는 포함하지 않습니다.
     aliases:
       - tripmate
       - tripmate-api
       - tripmate-web
+    include:
+      - db
+      - storage
+      - geo
+      - map
     services: []
     runtime_services: []
     containers:
@@ -181,6 +212,31 @@ targets:
       - rustfs
       - kraddr-geo-api
       - kraddr-geo-ui
+    init_steps: []
+
+  observability:
+    port_band: "12600-12699"
+    display_name: 관측 스택
+    description: Prometheus, Grafana, cAdvisor Exporter를 별도 컨테이너로 실행합니다.
+    aliases:
+      - metrics
+      - monitoring
+      - prometheus
+      - grafana
+      - exporter
+      - cadvisor
+    services:
+      - cadvisor
+      - prometheus
+      - grafana
+    runtime_services:
+      - cadvisor
+      - prometheus
+      - grafana
+    containers:
+      - prometheus
+      - grafana
+      - cadvisor
     init_steps: []
 
   all:
@@ -195,6 +251,7 @@ targets:
       - map
       - ai
       - main
+      - observability
     services: []
     runtime_services: []
     containers:
@@ -202,4 +259,7 @@ targets:
       - rustfs
       - kraddr-geo-api
       - kraddr-geo-ui
+      - prometheus
+      - grafana
+      - cadvisor
     init_steps: []

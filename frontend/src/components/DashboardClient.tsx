@@ -16,7 +16,11 @@ import {
   X,
   Radio,
   Cpu,
-  HardDrive
+  HardDrive,
+  BarChart3,
+  Gauge,
+  ServerCog,
+  Boxes
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useForm } from 'react-hook-form';
@@ -126,6 +130,32 @@ const getStatusConfig = (status: string) => {
       rowClass: 'border-slate-800 bg-slate-900/10'
     };
   }
+};
+
+const getContainerPresentation = (container: ContainerStatus) => {
+  const role = container.role || '';
+  const id = container.id || '';
+
+  if (role === 'postgresql' || id.includes('postgresql')) {
+    return { Icon: Database, displayName: container.display_name || 'PostgreSQL (PostGIS)' };
+  }
+  if (role === 'rustfs') {
+    return { Icon: FolderGit2, displayName: container.display_name || 'RustFS Store' };
+  }
+  if (role.includes('geocoder')) {
+    return { Icon: ServerCog, displayName: container.display_name || 'python-kraddr-geo' };
+  }
+  if (role === 'prometheus') {
+    return { Icon: Activity, displayName: container.display_name || 'Prometheus 메트릭 저장소' };
+  }
+  if (role === 'grafana') {
+    return { Icon: BarChart3, displayName: container.display_name || 'Grafana 시각화 도구' };
+  }
+  if (role === 'metrics-exporter') {
+    return { Icon: Gauge, displayName: container.display_name || 'cAdvisor Exporter' };
+  }
+
+  return { Icon: Boxes, displayName: container.display_name || container.name };
 };
 
 export default function DashboardClient() {
@@ -458,7 +488,7 @@ export default function DashboardClient() {
               TRIPMATE INFRASTRUCTURE SERVICES CONTROL CENTER.
             </h1>
             <p className="text-body-text text-xs font-light max-w-xl mt-2 leading-relaxed">
-              공용 데이터베이스 및 RustFS 오브젝트 스토리지를 최상의 상태로 제어하고 모니터링하는 통합 인프라 관리 센터입니다.
+              공용 데이터베이스, 오브젝트 스토리지, 지오코더, 관측 스택을 제어하고 모니터링하는 통합 인프라 관리 센터입니다.
             </p>
           </div>
 
@@ -527,9 +557,7 @@ export default function DashboardClient() {
                 <tbody className="divide-y divide-border/40 text-xs md:text-sm">
                   {displayContainers.map((container) => {
                     const statusCfg = getStatusConfig(container.status);
-                    const isPG = container.role === 'postgresql' || container.id.includes('postgresql');
-                    const Icon = isPG ? Database : FolderGit2;
-                    const displayName = container.display_name || (isPG ? 'PostgreSQL (PostGIS)' : 'RustFS Store');
+                    const { Icon, displayName } = getContainerPresentation(container);
                     
                     const isActionPending = actionMutation.isPending && actionMutation.variables?.id === container.id;
                     const isConfigPending = configMutation.isPending && configMutation.variables?.id === container.id;

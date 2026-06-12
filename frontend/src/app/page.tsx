@@ -3,7 +3,7 @@ import DashboardClient from '../components/DashboardClient';
 
 export const metadata: Metadata = {
   title: 'TripMate Infrastructure Manager',
-  description: 'PostgreSQL & RustFS Container Management Control Center for TripMate Developers',
+  description: 'TripMate infrastructure container management and observability control center',
 };
 
 export default function Page() {

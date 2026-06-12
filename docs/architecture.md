@@ -6,7 +6,7 @@
 
 ## 1. 개요
 
-`tripmate-manager`는 TripMate 서비스를 구동하기 위한 통합 PostgreSQL/PostGIS, RustFS, `python-kraddr-geo` Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
+`tripmate-manager`는 TripMate 서비스를 구동하기 위한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo` Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
 
 ```mermaid
 graph TD
@@ -27,7 +27,7 @@ graph TD
     end
 
     subgraph CLI [Python CLI]
-        CLI_CMD[tmctl db/storage/geo/map/ai/main]
+        CLI_CMD[tmctl db/storage/geo/map/ai/main/observability]
         CLI_CMD --> REG
         CLI_CMD --> DS
         CLI_CMD --> CS
@@ -37,14 +37,22 @@ graph TD
         D_Sock[docker.sock / Named Pipe]
         C_PG[kraddr-geo-postgres/통합 PostgreSQL]
         C_RFS[RustFS Container]
-        C_GEO_API[kraddr-geo-api-latest/python-kraddr-geo API]
-        C_GEO_UI[kraddr-geo-ui-latest/python-kraddr-geo Web UI]
+        C_GEO_API[kraddr-geo-api-latest/kor-travel-geo API]
+        C_GEO_UI[kraddr-geo-ui-latest/kor-travel-geo Web UI]
+        C_PROM[tripmate-prometheus/Prometheus]
+        C_GRAF[tripmate-grafana/Grafana]
+        C_EXP[tripmate-cadvisor/cAdvisor Exporter]
         
         DS -->|API Calls / Controls| D_Sock
         D_Sock -->|Manage| C_PG
         D_Sock -->|Manage| C_RFS
         D_Sock -->|Manage| C_GEO_API
         D_Sock -->|Manage| C_GEO_UI
+        D_Sock -->|Manage| C_PROM
+        D_Sock -->|Manage| C_GRAF
+        D_Sock -->|Manage| C_EXP
+        C_PROM -->|Scrape| C_EXP
+        C_GRAF -->|Datasource| C_PROM
     end
     
     TQ -->|HTTP requests| API
@@ -67,10 +75,10 @@ graph TD
 - **역할**: 개발환경에서 의존 Docker를 앱 관점 target으로 실행한다.
 - **실행 방식**: `docker compose`를 문자열 shell이 아닌 인자 배열로 실행한다.
 - **지원 옵션**: `ensure`에서 `--build`, `--force-recreate`를 전달할 수 있다.
-- **공유 target**: API와 Python CLI가 같은 registry(`db`, `storage`, `geo`, `map`, `ai`, `main`, `all`)를 사용한다.
+- **공유 target**: API와 Python CLI가 같은 registry(`db`, `storage`, `geo`, `map`, `ai`, `main`, `observability`, `all`)를 사용한다.
 - **설정 파일**: target 정의, alias, 의존 순서, 초기화 단계는 `config/docker-targets.yml`에서 읽는다.
-- **의존 순서**: 기본 순서는 `db -> storage -> geo -> map -> ai -> main`이며, 각 target은 자기 앞 단계까지 누적 실행한다.
-- **초기화 단계**: `db`는 database/role/schema 복구, `storage`는 RustFS bucket 복구, `geo`는 `python-kraddr-geo` API/Web UI 실행과 원천 DB 적재 검증을 수행한다.
+- **의존 순서**: 기본 순서는 `db -> storage -> geo -> map -> ai -> main -> observability`이며, 각 target은 자기 앞 단계까지 누적 실행한다.
+- **초기화 단계**: `db`는 database/role/schema 복구, `storage`는 RustFS bucket 복구, `geo`는 `kor-travel-geo` API/Web UI 실행과 원천 DB 적재 검증을 수행한다.
 
 ### 2.3 API 엔드포인트 설계
 - `GET /api/v1/targets`: 앱 관점 target 목록 반환.
@@ -106,34 +114,52 @@ graph TD
 1. **TripMate 통합 PostgreSQL / PostGIS**:
    - 컨테이너: `kraddr-geo-postgres`
    - 이미지: `postgis/postgis:16-3.5`
-   - 목적: `kraddr_geo`, `tripmate`, `tripmate_agent`, `krtour_map` database를 하나의 공용 PostgreSQL/PostGIS 컨테이너에서 구동.
+   - 목적: `kraddr_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database를 하나의 공용 PostgreSQL/PostGIS 컨테이너에서 구동.
    - 내부 포트: `5432` / 외부 노출 포트: `5432`.
    - 기본 DSN: `postgresql+psycopg://addr:addr@localhost:5432/kraddr_geo`.
    - 기본 pgdata: `KRADDR_GEO_PGDATA=/home/digitie/kraddr-geo-data/pgdata-final-20260529`.
 2. **RustFS**:
    - 컨테이너: `tripmate-rustfs`
    - 이미지: `rustfs/rustfs:latest`
-   - 목적: 미디어 자원과 `python-kraddr-geo`, `python-krtour-map` 원천·업로드 데이터 보관을 위한 공용 S3 호환 오브젝트 스토리지.
+   - 목적: 미디어 자원과 `kor-travel-geo`, `python-krtour-map` 원천·업로드 데이터 보관을 위한 공용 S3 호환 오브젝트 스토리지.
    - host 포트: `12101` (S3 API), `12105` (어드민 콘솔).
    - 컨테이너 내부 포트: `9000` (S3 API), `9001` (어드민 콘솔).
    - 기본 credential: `RUSTFS_ACCESS_KEY=rustfsadmin`, `RUSTFS_SECRET_KEY=rustfsadmin`.
    - 기본 bucket: `tripmate-media`, `kraddr-geo`, `krtour-map`, `krtour-uploads`.
-3. **python-kraddr-geo API**:
+3. **kor-travel-geo API**:
    - 컨테이너: `kraddr-geo-api-latest`
    - compose service: `kraddr-geo-api`
    - 목적: 지오코딩/리버스 지오코딩 REST API 제공.
    - host 포트: `12201`.
    - 컨테이너 내부 포트: `12201`.
    - 내부 의존성: `kraddr-geo-postgres:5432`, `rustfs:9000`.
-   - 기본 source data mount: `KRADDR_GEO_APP_DATA_DIR=/mnt/f/dev/python-kraddr-geo/data` -> `/data:ro`.
-4. **python-kraddr-geo Web UI**:
+   - 기본 source data mount: `KOR_TRAVEL_GEO_APP_DATA_DIR` -> `/data:ro`. 현재 로컬 Dockerfile과 원천 데이터가 기존 checkout에 있으면 `/mnt/f/dev/python-kraddr-geo/data`를 사용하고, 새 checkout 이전이 끝나면 `/mnt/f/dev/kor-travel-geo/data`로 변경한다.
+4. **kor-travel-geo Web UI**:
    - 컨테이너: `kraddr-geo-ui-latest`
    - compose service: `kraddr-geo-ui`
-   - 목적: `python-kraddr-geo` admin Web UI 제공.
+   - 목적: `kor-travel-geo` admin Web UI 제공.
    - host 포트: `12205`.
    - 컨테이너 내부 포트: `12205`.
    - 내부 API URL: `http://kraddr-geo-api:12201`.
+5. **Prometheus**:
+   - 컨테이너: `tripmate-prometheus`
+   - compose service: `prometheus`
+   - 목적: cAdvisor Exporter에서 노출한 컨테이너 메트릭 수집 및 저장.
+   - host 포트: `12601`.
+   - 컨테이너 내부 포트: `9090`.
+6. **Grafana**:
+   - 컨테이너: `tripmate-grafana`
+   - compose service: `grafana`
+   - 목적: Prometheus datasource 기반 메트릭 시각화.
+   - host 포트: `12605`.
+   - 컨테이너 내부 포트: `3000`.
+7. **cAdvisor Exporter**:
+   - 컨테이너: `tripmate-cadvisor`
+   - compose service: `cadvisor`
+   - 목적: Docker 컨테이너 CPU, memory, filesystem, network 메트릭을 Prometheus 형식으로 노출.
+   - host 포트: `12602`.
+   - 컨테이너 내부 포트: `8080`.
 
-`python-kraddr-geo`, `python-krtour-map`, `tripmate`, `tripmate-agent`는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `python-kraddr-geo` API/Web UI도 `geo` target에 포함되어 manager에서 함께 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `tmctl` CLI, `scripts/infra.sh`, 대시보드/API를 사용한다. 공식 CLI 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`이며, `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
+`kor-travel-geo`, `python-krtour-map`, `tripmate`, `kor-travel-concierge`는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `kor-travel-geo` API/Web UI도 `geo` target에 포함되어 manager에서 함께 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `tmctl` CLI, `scripts/infra.sh`, 대시보드/API를 사용한다. 공식 CLI 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`, `observability`이며, `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
 
-로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 표준 `5432`를 사용하고, RustFS는 `storage` 대역(`12100-12199`), `python-kraddr-geo`는 `geo` 대역(`12200-12299`), `tripmate-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.
+로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 표준 `5432`를 사용하고, RustFS는 `storage` 대역(`12100-12199`), `kor-travel-geo`는 `geo` 대역(`12200-12299`), Prometheus/Grafana/cAdvisor Exporter는 `observability` 대역(`12600-12699`), `tripmate-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.
