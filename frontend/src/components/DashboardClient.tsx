@@ -1074,7 +1074,7 @@ export default function DashboardClient() {
                           next[idx] = e.target.value;
                           setInputVolumesList(next);
                         }}
-                        placeholder="e.g. ${KRADDR_GEO_PGDATA:-/tmp/pgdata}:/var/lib/postgresql/data"
+                        placeholder="e.g. ${KOR_TRAVEL_GEO_PGDATA:-/tmp/pgdata}:/var/lib/postgresql/data"
                         className="bg-surface-card border border-hairline focus:border-on-dark focus:ring-0 rounded-none px-4 py-2 text-xs text-body-strong outline-none flex-grow font-mono"
                         aria-label={`볼륨 마운트 ${idx + 1}`} // Added aria-label for accessibility
                         required

@@ -1,4 +1,4 @@
--- kraddr_geo, tripmate, krtour_map, kor_travel_concierge 데이터베이스 및 사용자 통합 생성
+-- kor_travel_geo, tripmate, krtour_map, kor_travel_concierge 데이터베이스 및 사용자 통합 생성
 
 CREATE DATABASE tripmate;
 CREATE DATABASE krtour_map;

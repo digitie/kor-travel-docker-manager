@@ -10,9 +10,9 @@
 본 저장소(`kor-travel-docker-manager`)는 `tripmate`, `kor-travel-concierge`, `python-krtour-map`, `kor-travel-geo`가 사용하는 공용 데이터베이스(PostgreSQL/PostGIS), 파일 저장소(RustFS), `kor-travel-geo` API/Web UI를 Docker 기반으로 안정적으로 통합 관리하고 상태를 대시보드로 모니터링하기 위한 관리 도구다.
 
 - **FastAPI 백엔드**: 로컬 Docker 데몬과 소켓 또는 API로 연동해 컨테이너의 상태(`running`, `exited` 등)를 읽고 Start/Stop/Restart 제어 명령을 실행한다.
-- **Python CLI**: `ktdctl db|storage|geo|map|ai|main --build`로 개발환경 의존 Docker를 바로 실행한다.
+- **Python CLI**: `ktdctl db|storage|gra|cadv|prom|geo|map|ai|main --build`로 개발환경 의존 Docker를 바로 실행한다.
 - **Next.js 프론트엔드**: 관리자 대시보드 화면을 렌더링하며, 미려한 UI(dark mode, HSL tailored color palette, glassmorphism)를 제공해 운영의 직관성을 돕는다.
-- **포트 정책**: 로컬 host 포트는 `docs/ports.md`의 `12000` 시작, target별 `+100`, API `+1`, Web UI `+5` 규칙을 따른다. PostgreSQL은 표준 `5432`, `kor-travel-geo`는 `12201`/`12205`, manager 자체는 `12900-12999`를 사용한다.
+- **포트 정책**: 로컬 host 포트는 `docs/ports.md`의 `12000` 시작, target별 `+100`, API `+1`, Web UI `+5` 규칙을 따른다. PostgreSQL은 표준 `5432`, Grafana/cAdvisor/Prometheus는 `12205`/`12301`/`12401`, `kor-travel-geo`는 `12501`/`12505`, manager 자체는 `12900-12999`를 사용한다.
 
 ---
 
@@ -67,7 +67,7 @@ backend/
         docker_service.py     — Python Docker SDK 활용 컨테이너 상태 제어 및 수집
   tests/                      — pytest 단위 및 통합 테스트 코드
 config/
-  docker-targets.yml          — db/storage/geo/map/ai/main alias, 의존 순서, init step 정의
+  docker-targets.yml          — db/storage/gra/cadv/prom/geo/map/ai/main alias, 의존 순서, init step 정의
 frontend/
   src/
     app/

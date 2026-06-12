@@ -22,9 +22,10 @@
 | **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 init step 추가 |
 | **T-014** | TripMate 계열 로컬 포트 정책 일원화 | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
 | **T-015** | 실행 위치 정책 문서화 | 2026-06-12 | git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정 |
-| **T-016** | `kor-travel-geo` Docker API/UI target 편입 | 2026-06-12 | `geo` target에 API `12201`, Web UI `12205` compose 서비스 추가 |
-| **T-017** | 관측 스택 Docker target 추가 | 2026-06-13 | Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605` 분리 컨테이너 추가 |
+| **T-016** | `kor-travel-geo` Docker API/UI target 편입 | 2026-06-12 | `geo` target에 API/Web UI compose 서비스 추가 |
+| **T-017** | 관측 스택 Docker target 추가 | 2026-06-13 | Grafana, cAdvisor, Prometheus 분리 컨테이너 추가 |
 | **T-018** | 프로젝트명 및 CLI 명령 전환 | 2026-06-13 | `kor-travel-docker-manager`, `ktdctl` 기준으로 변경 |
+| **T-222** | 관측 target 개별 분리 및 포트 재배치 | 2026-06-13 | `gra`, `cadv`, `prom` target과 `12205`, `12301`, `12401` 포트 반영 |
 
 ---
 
@@ -81,7 +82,7 @@
 ### T-008: Docker 관리 문서 및 target registry 정리
 
 - [x] `docs/docker-management.md` 신규 작성
-- [x] 통합 DB 모델(`kraddr-geo-postgres:5432`)을 공식 기준으로 문서 정정
+- [x] 통합 DB 모델(`kor-travel-geo-postgres:5432`)을 공식 기준으로 문서 정정
 - [x] UI/API/CLI에서 공유할 target registry 정의
 - [x] 오래된 분리 DB target 제거 및 초기 helper 정리
 
@@ -128,17 +129,17 @@
 
 ### T-016: `kor-travel-geo` Docker API/UI target 편입
 
-- [x] `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스 추가
-- [x] `config/docker-targets.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 관리 컨테이너 등록
+- [x] `docker-compose.yml`에 `kor-travel-geo-api`, `kor-travel-geo-ui` 서비스 추가
+- [x] `config/docker-targets.yml`에 `kor-travel-geo-api`, `kor-travel-geo-ui` 관리 컨테이너 등록
 - [x] `geo` target이 API/Web UI 실행과 원천 데이터 검증을 함께 수행하도록 변경
 - [x] 초기 helper target도 `geo` 이상에서 API/Web UI를 포함하도록 정리
-- [x] `.env.example`, 포트 문서, Docker 관리 문서에 `12201`, `12205` 기준 추가
+- [x] `.env.example`, 포트 문서, Docker 관리 문서에 API/Web UI 포트 기준 추가
 
 ### T-017: 관측 스택 Docker target 추가
 
 - [x] `docker-compose.yml`에 Prometheus, Grafana, cAdvisor Exporter를 별도 service로 추가
-- [x] `config/docker-targets.yml`에 `observability` target과 세 관리 컨테이너를 등록
-- [x] 포트 정책에 맞춰 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 배정
+- [x] `config/docker-targets.yml`에 Grafana, Prometheus, cAdvisor 관리 컨테이너를 등록
+- [x] 포트 정책에 맞춰 Grafana, cAdvisor Exporter, Prometheus 포트를 배정
 - [x] Prometheus scrape config와 Grafana Prometheus datasource provisioning을 추가
 - [x] `.env.example`, 아키텍처/포트/Docker 관리 문서, ADR을 갱신
 
@@ -149,3 +150,11 @@
 - [x] CLI console script를 `ktdctl`로 변경하고 이전 CLI 명령 안내 제거
 - [x] 프론트엔드/백엔드 package metadata와 화면 metadata를 새 이름으로 갱신
 - [x] Docker Compose project name을 `kor-travel-docker-manager`로 고정
+
+### T-222: 관측 target 개별 분리 및 포트 재배치
+
+- [x] 단일 관측 target을 제거하고 `gra`, `cadv`, `prom` target으로 분리
+- [x] dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main`으로 조정
+- [x] Grafana는 공용 연계를 위해 `12205`, cAdvisor는 `12301`, Prometheus는 `12401`로 배치
+- [x] `kor-travel-geo` API/Web UI를 새 dependency 순서에 맞춰 `12501`, `12505`로 이동
+- [x] CLI, API 테스트, 포트 문서, Docker 관리 문서, 개발 가이드를 같은 기준으로 갱신

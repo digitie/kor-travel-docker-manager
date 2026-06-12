@@ -6,9 +6,9 @@ log() {
 }
 
 POSTGRES_USER="${POSTGRES_USER:-addr}"
-POSTGRES_DB="${POSTGRES_DB:-kraddr_geo}"
-SOURCE_DIR="${KRADDR_GEO_SOURCE_DIR:-/data/juso}"
-STRICT="${KRADDR_GEO_STRICT_SOURCE_CHECK:-1}"
+POSTGRES_DB="${POSTGRES_DB:-kor_travel_geo}"
+SOURCE_DIR="${KOR_TRAVEL_GEO_SOURCE_DIR:-/data/juso}"
+STRICT="${KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK:-1}"
 
 i=0
 while [ "$i" -lt "${POSTGRES_WAIT_RETRIES:-60}" ]; do
@@ -67,7 +67,7 @@ Run the full-load or restore flow from kor-travel-geo, for example:
   PLAN_ONLY=1 bash scripts/fullload_test.sh
   bash scripts/fullload_test.sh
 or restore the T-027 backup before using the geo target.
-Set KRADDR_GEO_STRICT_SOURCE_CHECK=0 only when an empty DB is intentional.
+Set KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=0 only when an empty DB is intentional.
 EOF
   if [ "$STRICT" = "1" ]; then
     exit 1

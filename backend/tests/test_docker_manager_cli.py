@@ -27,18 +27,32 @@ def test_registry_resolves_application_targets_to_shared_services():
     target = get_target("main")
 
     assert target["id"] == "main"
-    assert target_sequence_for_target("main") == ["db", "storage", "geo", "map"]
+    assert target_sequence_for_target("main") == [
+        "db",
+        "storage",
+        "gra",
+        "cadv",
+        "prom",
+        "geo",
+        "map",
+    ]
     assert services_for_target("main") == [
-        "kraddr-geo-postgres",
+        "kor-travel-geo-postgres",
         "rustfs",
-        "kraddr-geo-api",
-        "kraddr-geo-ui",
+        "grafana",
+        "cadvisor",
+        "prometheus",
+        "kor-travel-geo-api",
+        "kor-travel-geo-ui",
     ]
     assert runtime_services_for_target("main") == [
-        "kraddr-geo-postgres",
+        "kor-travel-geo-postgres",
         "rustfs",
-        "kraddr-geo-api",
-        "kraddr-geo-ui",
+        "grafana",
+        "cadvisor",
+        "prometheus",
+        "kor-travel-geo-api",
+        "kor-travel-geo-ui",
     ]
     assert [step["name"] for step in init_steps_for_target("main")] == [
         "db-schema-recovery",
@@ -52,37 +66,61 @@ def test_short_aliases_resolve_dependency_order():
     assert get_target("storage")["id"] == "storage"
     assert get_target("geo")["id"] == "geo"
     assert get_target("kor-travel-geo")["id"] == "geo"
+    assert get_target("gra")["id"] == "gra"
+    assert get_target("grafana")["id"] == "gra"
+    assert get_target("cadv")["id"] == "cadv"
+    assert get_target("cadvisor")["id"] == "cadv"
+    assert get_target("prom")["id"] == "prom"
+    assert get_target("prometheus")["id"] == "prom"
     assert get_target("map")["id"] == "map"
     assert get_target("ai")["id"] == "ai"
     assert get_target("kor-travel-concierge")["id"] == "ai"
     assert get_target("tripmate")["id"] == "main"
-    assert get_target("metrics")["id"] == "observability"
-    assert get_target("grafana")["id"] == "observability"
-    assert target_sequence_for_target("map") == ["db", "storage", "geo", "map"]
-    assert target_sequence_for_target("ai") == ["db", "storage", "geo", "map", "ai"]
-    assert target_sequence_for_target("main") == ["db", "storage", "geo", "map"]
-    assert target_sequence_for_target("observability") == [
+    assert get_target("metrics")["id"] == "prom"
+    assert target_sequence_for_target("map") == [
         "db",
         "storage",
+        "gra",
+        "cadv",
+        "prom",
+        "geo",
+        "map",
+    ]
+    assert target_sequence_for_target("ai") == [
+        "db",
+        "storage",
+        "gra",
+        "cadv",
+        "prom",
         "geo",
         "map",
         "ai",
-        "main",
-        "observability",
+    ]
+    assert target_sequence_for_target("main") == [
+        "db",
+        "storage",
+        "gra",
+        "cadv",
+        "prom",
+        "geo",
+        "map",
     ]
     assert services_for_target("geo") == [
-        "kraddr-geo-postgres",
+        "kor-travel-geo-postgres",
         "rustfs",
-        "kraddr-geo-api",
-        "kraddr-geo-ui",
+        "grafana",
+        "cadvisor",
+        "prometheus",
+        "kor-travel-geo-api",
+        "kor-travel-geo-ui",
     ]
-    assert services_for_target("observability")[-3:] == ["cadvisor", "prometheus", "grafana"]
+    assert services_for_target("prom")[-3:] == ["grafana", "cadvisor", "prometheus"]
 
 
 def test_env_redaction_masks_sensitive_values():
     assert _redact_env_pair("POSTGRES_PASSWORD=addr") == "POSTGRES_PASSWORD=<redacted>"
     assert _redact_env_pair("RUSTFS_ACCESS_KEY=rustfsadmin") == "RUSTFS_ACCESS_KEY=<redacted>"
-    assert _redact_env_pair("POSTGRES_DB=kraddr_geo") == "POSTGRES_DB=kraddr_geo"
+    assert _redact_env_pair("POSTGRES_DB=kor_travel_geo") == "POSTGRES_DB=kor_travel_geo"
 
 
 @patch("kor_travel_docker_manager.services.compose_service.subprocess.run")
@@ -96,20 +134,34 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
 
     assert result["success"] is True
     assert result["services"] == [
-        "kraddr-geo-postgres",
+        "kor-travel-geo-postgres",
         "rustfs",
-        "kraddr-geo-api",
-        "kraddr-geo-ui",
+        "grafana",
+        "cadvisor",
+        "prometheus",
+        "kor-travel-geo-api",
+        "kor-travel-geo-ui",
     ]
-    assert result["target_sequence"] == ["db", "storage", "geo", "map"]
+    assert result["target_sequence"] == [
+        "db",
+        "storage",
+        "gra",
+        "cadv",
+        "prom",
+        "geo",
+        "map",
+    ]
     up_command = result["command"][0]
     assert up_command[:2] == ["docker", "compose"]
     assert "up" in up_command
     assert "--build" in up_command
     assert "--force-recreate" in up_command
-    assert "kraddr-geo-postgres" in up_command
-    assert "kraddr-geo-api" in up_command
-    assert "kraddr-geo-ui" in up_command
+    assert "kor-travel-geo-postgres" in up_command
+    assert "grafana" in up_command
+    assert "cadvisor" in up_command
+    assert "prometheus" in up_command
+    assert "kor-travel-geo-api" in up_command
+    assert "kor-travel-geo-ui" in up_command
     assert mock_run.call_count == 4
 
 
@@ -165,7 +217,7 @@ def test_cli_direct_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_direct_observability_alias_runs_ensure(mock_compose_service):
+def test_cli_direct_gra_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
         "returncode": 0,
@@ -174,9 +226,9 @@ def test_cli_direct_observability_alias_runs_ensure(mock_compose_service):
         "stderr": "",
     }
 
-    assert main(["observability"]) == 0
+    assert main(["gra"]) == 0
     mock_compose_service.ensure_target.assert_called_once_with(
-        "observability",
+        "gra",
         build=False,
         recreate=False,
         capture_output=True,
