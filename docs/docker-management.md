@@ -1,12 +1,12 @@
 # Docker 관리 설계
 
-이 문서는 `tripmate-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, TripMate 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
+이 문서는 `kor-travel-docker-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, TripMate 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
 
 ---
 
 ## 1. 목표
 
-`tripmate-manager`는 불특정 다수에게 노출되는 범용 Docker 콘솔이 아니다. 목적은 `tripmate`, `kor-travel-concierge`, `kor-travel-geo`, `python-krtour-map`이 의존하는 공용 Docker 인프라를 한 곳에서 확인하고 실행하는 것이다.
+`kor-travel-docker-manager`는 불특정 다수에게 노출되는 범용 Docker 콘솔이 아니다. 목적은 `tripmate`, `kor-travel-concierge`, `kor-travel-geo`, `python-krtour-map`이 의존하는 공용 Docker 인프라를 한 곳에서 확인하고 실행하는 것이다.
 
 - 의존 Docker가 꺼져 있으면 UI, API, CLI에서 즉시 실행한다.
 - 개발환경에서는 필요한 경우 `docker compose up -d --build`로 빌드 후 실행한다.
@@ -25,7 +25,7 @@
 | 로그 | REST 최근 로그, WebSocket 실시간 로그 구현 | CLI `logs`와 UI 상세 패널에서 동일한 대상 기준 사용 |
 | 메트릭 | CPU, 메모리, I/O 10초 수집 및 30일 보관 | 컨테이너 상세 화면에서 최근 추세와 현재값 동시 표시 |
 | 설정 변경 | compose의 ports, env, volumes, networks 저장 및 재생성 구현 | 입력 검증, secret redaction, 변경 전 diff 표시 |
-| CLI | `tmctl` Python CLI 추가 | 다른 TripMate 프로젝트에서 의존 Docker 실행용으로 사용 |
+| CLI | `ktdctl` Python CLI 추가 | 다른 TripMate 프로젝트에서 의존 Docker 실행용으로 사용 |
 | 문서 | 통합 DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
 
 현재 공식 관리 컨테이너는 다음 7개다.
@@ -50,7 +50,7 @@ UI/API/CLI는 Docker service 이름을 직접 외우지 않고 앱 관점 target
 db -> storage -> geo -> map -> ai -> main -> observability
 ```
 
-이 순서는 누적 적용된다. 예를 들어 `tmctl map --build`는 `db`, `storage`, `geo`, `map` 순서로 필요한 서비스를 실행하고 초기화 단계를 수행한다. 새 앱이나 중간 의존성이 생기면 `config/docker-targets.yml`의 `dependency_order`, `targets.<id>.services`, `targets.<id>.init_steps`만 확장한다.
+이 순서는 누적 적용된다. 예를 들어 `ktdctl map --build`는 `db`, `storage`, `geo`, `map` 순서로 필요한 서비스를 실행하고 초기화 단계를 수행한다. 새 앱이나 중간 의존성이 생기면 `config/docker-targets.yml`의 `dependency_order`, `targets.<id>.services`, `targets.<id>.init_steps`만 확장한다.
 
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
@@ -65,7 +65,7 @@ db -> storage -> geo -> map -> ai -> main -> observability
 
 현재 `map`, `ai`, `main` 자체 앱 컨테이너는 이 저장소 compose에 포함하지 않는다. 따라서 해당 target은 공용 DB/RustFS, `kor-travel-geo` API/Web UI, 선행 검증을 실행하는 개발 의존성 target이다. 나중에 앱 컨테이너를 이 저장소에서 함께 관리하게 되면 `config/docker-targets.yml`에 compose service와 init step을 추가한다.
 
-로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역은 `12000-12099`지만 PostgreSQL은 표준 `5432` 접속 포트를 고정하므로 비워 두고, `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12201`, Web UI `12205`를 사용한다. `observability` 대역은 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 사용한다. `tripmate-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
+로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역은 `12000-12099`지만 PostgreSQL은 표준 `5432` 접속 포트를 고정하므로 비워 두고, `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12201`, Web UI `12205`를 사용한다. `observability` 대역은 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
 
 ---
 
@@ -89,33 +89,33 @@ db -> storage -> geo -> map -> ai -> main -> observability
 
 ### 5.1 CLI
 
-정식 CLI는 백엔드 패키지의 console script인 `tmctl`이다. 짧은 별칭은 곧바로 `ensure`로 해석된다.
+정식 CLI는 백엔드 패키지의 console script인 `ktdctl`이다. 짧은 별칭은 곧바로 `ensure`로 해석된다.
 
 ```bash
-tmctl targets
-tmctl db --build
-tmctl storage
-tmctl geo --recreate
-tmctl map --build
-tmctl ai
-tmctl main --build
-tmctl observability
+ktdctl targets
+ktdctl db --build
+ktdctl storage
+ktdctl geo --recreate
+ktdctl map --build
+ktdctl ai
+ktdctl main --build
+ktdctl observability
 ```
 
 명시형 명령도 유지한다.
 
 ```bash
-tmctl status main
-tmctl ensure geo --build
-tmctl logs storage --follow
-tmctl action kraddr-geo-postgresql restart
-tmctl inspect kraddr-geo-postgresql --json
+ktdctl status main
+ktdctl ensure geo --build
+ktdctl logs storage --follow
+ktdctl action kraddr-geo-postgresql restart
+ktdctl inspect kraddr-geo-postgresql --json
 ```
 
 다른 TripMate 저장소에서는 개발 서버 시작 전에 필요한 target만 호출한다.
 
 ```bash
-tmctl main --build
+ktdctl main --build
 ```
 
 ### 5.2 API

@@ -1,6 +1,6 @@
 # TASKS — 개발 태스크 백로그
 
-이 문서는 `tripmate-manager`의 진행 중/대기 작업만 관리한다. 완료된 작업은
+이 문서는 `kor-travel-docker-manager`의 진행 중/대기 작업만 관리한다. 완료된 작업은
 [`docs/tasks-done.md`](tasks-done.md)로 분리한다.
 
 - 완료: `[x]`

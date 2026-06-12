@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from tripmate_manager.main import app
+from kor_travel_docker_manager.main import app
 
 client = TestClient(app)
 
@@ -10,10 +10,10 @@ client = TestClient(app)
 def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "healthy", "service": "tripmate-manager-backend"}
+    assert response.json() == {"status": "healthy", "service": "kor-travel-docker-manager-backend"}
 
 
-@patch("tripmate_manager.api.routes.docker_service")
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_list_containers(mock_docker_service):
     # Setup mock status list
     mock_docker_service.get_containers_status.return_value = [
@@ -45,7 +45,7 @@ def test_list_containers(mock_docker_service):
     assert data[1]["status"] == "exited"
 
 
-@patch("tripmate_manager.api.routes.docker_service")
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_control_container_success(mock_docker_service):
     mock_docker_service.control_container.return_value = {
         "success": True,
@@ -64,7 +64,7 @@ def test_control_container_success(mock_docker_service):
     mock_docker_service.control_container.assert_called_once_with("kraddr-geo-postgresql", "stop")
 
 
-@patch("tripmate_manager.api.routes.docker_service")
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_control_container_invalid_action(mock_docker_service):
     # Target versioned route v1
     response = client.post(
@@ -74,7 +74,7 @@ def test_control_container_invalid_action(mock_docker_service):
     assert "Action must be start, stop, or restart" in response.json()["detail"]
 
 
-@patch("tripmate_manager.api.routes.docker_service")
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_get_container_logs_success(mock_docker_service):
     mock_docker_service.get_container_logs.return_value = {
         "success": True,
@@ -90,7 +90,7 @@ def test_get_container_logs_success(mock_docker_service):
     )
 
 
-@patch("tripmate_manager.api.routes.docker_service")
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_update_container_config_success(mock_docker_service):
     mock_docker_service.update_container_config.return_value = {
         "success": True,
@@ -121,7 +121,7 @@ def test_update_container_config_success(mock_docker_service):
     )
 
 
-@patch("tripmate_manager.api.routes.docker_service")
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_reset_container_config_success(mock_docker_service):
     mock_docker_service.reset_container_config.return_value = {
         "success": True,
@@ -162,7 +162,7 @@ def test_get_targets():
     assert any(target["id"] == "all" for target in data)
 
 
-@patch("tripmate_manager.api.routes.compose_service")
+@patch("kor_travel_docker_manager.api.routes.compose_service")
 def test_ensure_target_success(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -198,7 +198,7 @@ def test_ensure_target_success(mock_compose_service):
     )
 
 
-@patch("tripmate_manager.api.routes.docker_service")
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_inspect_container_success(mock_docker_service):
     mock_docker_service.inspect_container.return_value = {
         "success": True,

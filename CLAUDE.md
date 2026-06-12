@@ -13,7 +13,7 @@ TripMate 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`
 ## 디렉토리 구조
 
 ```
-f:\dev\tripmate-manager\
+f:\dev\kor-travel-docker-manager\
 ├── backend/            # FastAPI 백엔드 (Python 3.11+, Poetry)
 │   ├── src/            # 백엔드 소스코드
 │   └── tests/          # 백엔드 단위/통합 테스트
@@ -35,7 +35,7 @@ f:\dev\tripmate-manager\
 ### 백엔드 (FastAPI)
 ```bash
 # 의존성 설치 (Poetry)
-cd /mnt/f/dev/tripmate-manager
+cd /mnt/f/dev/kor-travel-docker-manager
 cd backend
 poetry install
 
@@ -44,14 +44,14 @@ poetry run ruff check .
 poetry run ruff format .
 
 # 백엔드 실행
-poetry run uvicorn tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
-# 또는 수동 가상환경: PYTHONPATH=src tripmate_venv/bin/python -m uvicorn tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
+poetry run uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 12901 --reload
+# 또는 수동 가상환경: PYTHONPATH=src ktd_venv/bin/python -m uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 12901 --reload
 
 # 테스트 실행
 poetry run pytest
 
 # 개발 의존 Docker 실행
-poetry run tmctl main --build
+poetry run ktdctl main --build
 # 짧은 별칭: db, storage, geo, map, ai, main
 # geo target은 kor-travel-geo API 12201, Web UI 12205까지 포함
 ```
@@ -59,7 +59,7 @@ poetry run tmctl main --build
 ### 프론트엔드 (Next.js)
 ```bash
 # 의존성 설치 (npm)
-cd /mnt/f/dev/tripmate-manager
+cd /mnt/f/dev/kor-travel-docker-manager
 cd frontend
 npm install
 

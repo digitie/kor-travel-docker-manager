@@ -2,8 +2,8 @@ import asyncio
 import datetime
 import logging
 
-from tripmate_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
-from tripmate_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
+from kor_travel_docker_manager.services.metrics_service import metrics_service
 
 logger = logging.getLogger(__name__)
 

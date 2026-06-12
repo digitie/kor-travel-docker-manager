@@ -7,8 +7,8 @@ import yaml
 from docker.errors import DockerException, NotFound
 from dotenv import load_dotenv
 
-from tripmate_manager.services.compose_service import get_compose_path, get_env_path
-from tripmate_manager.services.registry import MANAGED_CONTAINERS
+from kor_travel_docker_manager.services.compose_service import get_compose_path, get_env_path
+from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ class DockerService:
         services = compose_cfg.get("services", {})
 
         # 순환 참조 방지를 위해 로컬 임포트 수행
-        from tripmate_manager.services.metrics_collector import metrics_collector
+        from kor_travel_docker_manager.services.metrics_collector import metrics_collector
 
         try:
             client = self._get_client()
@@ -545,8 +545,8 @@ class DockerService:
             binds_list = new_volumes
             network_mode = "bridge"
             if len(new_networks) > 0:
-                # Resolve compose network prefix (e.g. tripmate-manager_default)
-                network_mode = f"tripmate-manager_{new_networks[0]}"
+                # Resolve compose network prefix (e.g. kor-travel-docker-manager_default)
+                network_mode = f"kor-travel-docker-manager_{new_networks[0]}"
             restart_policy = {"Name": "unless-stopped"}
             command = svc_config.get("command", None)
             shm_size = svc_config.get("shm_size", None)

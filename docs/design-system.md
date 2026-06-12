@@ -1,6 +1,6 @@
 # BMW M 디자인 시스템 적용 및 개발 가이드
 
-이 문서는 `tripmate-manager` 저장소에 적용된 **BMW M 디자인 시스템(BMW M Design System)**의 시각적 원칙과 개발 규약을 기술합니다. 
+이 문서는 `kor-travel-docker-manager` 저장소에 적용된 **BMW M 디자인 시스템(BMW M Design System)**의 시각적 원칙과 개발 규약을 기술합니다.
 향후 다른 에이전트(Claude Code, ChatGPT Codex 등)가 UI 컴포넌트 추가, 변경 및 프론트엔드 작업을 진행할 때 본 시스템의 철학이 어긋나지 않도록 **일관성**을 유지해 주시기 바랍니다.
 
 ---
@@ -140,6 +140,6 @@ Tailwind CSS의 테마에 직접 통합되어 있습니다 (`tailwind.config.ts`
 
 ## 6. 적용 파일 현황
 
-- **Tailwind 설정**: [tailwind.config.ts](file:///f:/dev/tripmate-manager/frontend/tailwind.config.ts) (M 브랜딩 색상, 스페이싱, 0px 둥글기 스케일 수록)
-- **글로벌 스타일**: [globals.css](file:///f:/dev/tripmate-manager/frontend/src/app/globals.css) (Next.js font/google 연동 및 스크롤바 0px 직각화 적용)
-- **대시보드 페이지**: [page.tsx](file:///f:/dev/tripmate-manager/frontend/src/app/page.tsx) (BMW M 디자인 원칙인 Pure Black, 둥글기 0px, 서체 대비, M 삼색선 디바이더를 이식하여 리스킨된 메인 인프라 제어 센터)
+- **Tailwind 설정**: [tailwind.config.ts](file:///f:/dev/kor-travel-docker-manager/frontend/tailwind.config.ts) (M 브랜딩 색상, 스페이싱, 0px 둥글기 스케일 수록)
+- **글로벌 스타일**: [globals.css](file:///f:/dev/kor-travel-docker-manager/frontend/src/app/globals.css) (Next.js font/google 연동 및 스크롤바 0px 직각화 적용)
+- **대시보드 페이지**: [page.tsx](file:///f:/dev/kor-travel-docker-manager/frontend/src/app/page.tsx) (BMW M 디자인 원칙인 Pure Black, 둥글기 0px, 서체 대비, M 삼색선 디바이더를 이식하여 리스킨된 메인 인프라 제어 센터)

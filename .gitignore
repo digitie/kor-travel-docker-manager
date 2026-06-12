@@ -55,5 +55,5 @@ yarn-error.log*
 # Local databases, virtualenvs and log directories
 tripmate_metrics.db
 backend/logs/
-tripmate_venv/
+*_venv/
 win_venv/

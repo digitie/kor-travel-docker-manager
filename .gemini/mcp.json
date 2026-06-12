@@ -25,7 +25,7 @@
         "serve",
         "--mcp"
       ],
-      "cwd": "F:\\dev\\tripmate-manager-antigravity"
+      "cwd": "F:\\dev\\kor-travel-docker-manager-antigravity"
     }
   }
 }

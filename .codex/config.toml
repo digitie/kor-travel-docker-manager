@@ -2,7 +2,7 @@
 enabled = true
 command = "npx"
 args = ["-y", "@colbymchenry/codegraph", "serve", "--mcp"]
-cwd = "F:\\dev\\tripmate-manager-codex"
+cwd = "F:\\dev\\kor-travel-docker-manager-codex"
 
 [mcp_servers.playwright]
 command = "npx"

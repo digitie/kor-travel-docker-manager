@@ -1,12 +1,12 @@
-# ARCHITECTURE — TripMate Manager 아키텍처
+# ARCHITECTURE — Kor Travel Docker Manager 아키텍처
 
-이 문서는 `tripmate-manager`의 시스템 아키텍처와 컴포넌트 간 데이터 흐름을 다룬다.
+이 문서는 `kor-travel-docker-manager`의 시스템 아키텍처와 컴포넌트 간 데이터 흐름을 다룬다.
 
 ---
 
 ## 1. 개요
 
-`tripmate-manager`는 TripMate 서비스를 구동하기 위한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo` Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
+`kor-travel-docker-manager`는 TripMate 서비스를 구동하기 위한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo` Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
 
 ```mermaid
 graph TD
@@ -27,7 +27,7 @@ graph TD
     end
 
     subgraph CLI [Python CLI]
-        CLI_CMD[tmctl db/storage/geo/map/ai/main/observability]
+        CLI_CMD[ktdctl db/storage/geo/map/ai/main/observability]
         CLI_CMD --> REG
         CLI_CMD --> DS
         CLI_CMD --> CS
@@ -109,7 +109,7 @@ graph TD
 
 ## 4. 데이터베이스 및 파일 스토리지 (대상 인프라)
 
-`tripmate-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다.
+`kor-travel-docker-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다.
 
 1. **TripMate 통합 PostgreSQL / PostGIS**:
    - 컨테이너: `kraddr-geo-postgres`
@@ -160,6 +160,6 @@ graph TD
    - host 포트: `12602`.
    - 컨테이너 내부 포트: `8080`.
 
-`kor-travel-geo`, `python-krtour-map`, `tripmate`, `kor-travel-concierge`는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `kor-travel-geo` API/Web UI도 `geo` target에 포함되어 manager에서 함께 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `tmctl` CLI, 대시보드/API를 사용한다. 공식 CLI 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`, `observability`이며, `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
+`kor-travel-geo`, `python-krtour-map`, `tripmate`, `kor-travel-concierge`는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `kor-travel-geo` API/Web UI도 `geo` target에 포함되어 manager에서 함께 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `ktdctl` CLI, 대시보드/API를 사용한다. 공식 CLI 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`, `observability`이며, `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
 
-로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 표준 `5432`를 사용하고, RustFS는 `storage` 대역(`12100-12199`), `kor-travel-geo`는 `geo` 대역(`12200-12299`), Prometheus/Grafana/cAdvisor Exporter는 `observability` 대역(`12600-12699`), `tripmate-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.
+로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 표준 `5432`를 사용하고, RustFS는 `storage` 대역(`12100-12199`), `kor-travel-geo`는 `geo` 대역(`12200-12299`), Prometheus/Grafana/cAdvisor Exporter는 `observability` 대역(`12600-12699`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.

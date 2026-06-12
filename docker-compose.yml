@@ -1,3 +1,5 @@
+name: kor-travel-docker-manager
+
 services:
   kraddr-geo-postgres:
     image: postgis/postgis:16-3.5
@@ -22,8 +24,8 @@ services:
     - ${KRADDR_GEO_PGDATA:-/home/digitie/kraddr-geo-data/pgdata-final-20260529}:/var/lib/postgresql/data
     - ${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}:/data/juso:ro
     - ./scripts/ensure-kraddr-geo-db.sh:/docker-entrypoint-initdb.d/010-ensure-kraddr-geo-db.sh:ro
-    - ./scripts/ensure-kraddr-geo-db.sh:/opt/tripmate-manager/ensure-kraddr-geo-db.sh:ro
-    - ./scripts/verify-kraddr-geo-source.sh:/opt/tripmate-manager/verify-kraddr-geo-source.sh:ro
+    - ./scripts/ensure-kraddr-geo-db.sh:/opt/kor-travel-docker-manager/ensure-kraddr-geo-db.sh:ro
+    - ./scripts/verify-kraddr-geo-source.sh:/opt/kor-travel-docker-manager/verify-kraddr-geo-source.sh:ro
     shm_size: 512mb
     command:
     - postgres
@@ -92,10 +94,10 @@ services:
       KRTOUR_MAP_RUSTFS_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
     volumes:
-    - ./scripts/ensure-rustfs-buckets.sh:/opt/tripmate-manager/ensure-rustfs-buckets.sh:ro
+    - ./scripts/ensure-rustfs-buckets.sh:/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh:ro
     entrypoint:
     - /bin/sh
-    - /opt/tripmate-manager/ensure-rustfs-buckets.sh
+    - /opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh
   kraddr-geo-api:
     image: ${KRADDR_GEO_API_IMAGE:-kraddr-geo-api:latest-main-gdal}
     build:

@@ -3,9 +3,9 @@ import json
 import sys
 from typing import Any
 
-from tripmate_manager.services.compose_service import compose_service
-from tripmate_manager.services.docker_service import docker_service
-from tripmate_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.compose_service import compose_service
+from kor_travel_docker_manager.services.docker_service import docker_service
+from kor_travel_docker_manager.services.registry import list_targets
 
 DIRECT_ENSURE_ALIASES = {"db", "storage", "geo", "map", "ai", "main", "observability", "all"}
 
@@ -108,8 +108,8 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="tmctl",
-        description="TripMate 개발 인프라 Docker 관리 CLI",
+        prog="ktdctl",
+        description="Kor Travel 개발 인프라 Docker 관리 CLI",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

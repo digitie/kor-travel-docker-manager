@@ -8,11 +8,11 @@ from logging.handlers import BaseRotatingHandler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from tripmate_manager.api.routes import router as container_router
-from tripmate_manager.api.websocket import router as ws_router
-from tripmate_manager.api.websocket import status_broadcast_loop
-from tripmate_manager.services.metrics_collector import metrics_collector
-from tripmate_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.api.routes import router as container_router
+from kor_travel_docker_manager.api.websocket import router as ws_router
+from kor_travel_docker_manager.api.websocket import status_broadcast_loop
+from kor_travel_docker_manager.services.metrics_collector import metrics_collector
+from kor_travel_docker_manager.services.metrics_service import metrics_service
 
 
 # -------------------------------------------------------------
@@ -47,10 +47,10 @@ class MonthlyRotatingFileHandler(BaseRotatingHandler):
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOG_DIR = os.path.join(BACKEND_DIR, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
-log_file = os.path.join(LOG_DIR, "tripmate_manager.log")
+log_file = os.path.join(LOG_DIR, "kor_travel_docker_manager.log")
 
 # Logger 설정
-logger = logging.getLogger("tripmate_manager")
+logger = logging.getLogger("kor_travel_docker_manager")
 logger.setLevel(logging.INFO)
 
 # 기존 핸들러 초기화 방지
@@ -81,7 +81,7 @@ def cleanup_old_log_files():
 
     if os.path.exists(LOG_DIR):
         for filename in os.listdir(LOG_DIR):
-            if filename.startswith("tripmate_manager.log."):
+            if filename.startswith("kor_travel_docker_manager.log."):
                 file_path = os.path.join(LOG_DIR, filename)
                 if os.path.isfile(file_path):
                     file_time = os.path.getmtime(file_path)
@@ -137,8 +137,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="TripMate Infrastructure Manager API",
-    description="API and WebSockets for monitoring and managing TripMate services.",
+    title="Kor Travel Docker Manager API",
+    description="API and WebSockets for monitoring and managing Kor Travel Docker services.",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -159,10 +159,10 @@ app.include_router(ws_router, prefix="/api/v1", tags=["websocket"])
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": "tripmate-manager-backend"}
+    return {"status": "healthy", "service": "kor-travel-docker-manager-backend"}
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=12901, reload=True)
+    uvicorn.run("kor_travel_docker_manager.main:app", host="0.0.0.0", port=12901, reload=True)

@@ -9,14 +9,14 @@ from sqlalchemy.orm import sessionmaker
 test_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
-import tripmate_manager.database
+import kor_travel_docker_manager.database
 
-tripmate_manager.database.engine = test_engine
-tripmate_manager.database.SessionLocal = TestSessionLocal
+kor_travel_docker_manager.database.engine = test_engine
+kor_travel_docker_manager.database.SessionLocal = TestSessionLocal
 
-from tripmate_manager.main import app
-from tripmate_manager.models import Base, Metric
-from tripmate_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.main import app
+from kor_travel_docker_manager.models import Base, Metric
+from kor_travel_docker_manager.services.metrics_service import metrics_service
 
 client = TestClient(app)
 
@@ -48,7 +48,7 @@ def test_metrics_service_cleanup():
     metrics_service.save_metric("test-container", 10.0, 100, 200, 50.0, 10, 20)
     
     # 31일 전 오래된 메트릭 저장 (직접 세션을 열어 timestamp 강제 설정)
-    with tripmate_manager.database.get_db_session() as session:
+    with kor_travel_docker_manager.database.get_db_session() as session:
         old_metric = Metric(
             container_id="test-container",
             timestamp=datetime.datetime.utcnow() - datetime.timedelta(days=31),
@@ -63,7 +63,7 @@ def test_metrics_service_cleanup():
         session.commit()
     
     # 클린업 전 데이터 개수 확인 (2개)
-    with tripmate_manager.database.get_db_session() as session:
+    with kor_travel_docker_manager.database.get_db_session() as session:
         count_before = session.query(Metric).count()
         assert count_before == 2
         
@@ -71,13 +71,13 @@ def test_metrics_service_cleanup():
     metrics_service.cleanup_old_metrics(days=30)
     
     # 클린업 후 데이터 개수 확인 (신규 메트릭 1개만 잔존)
-    with tripmate_manager.database.get_db_session() as session:
+    with kor_travel_docker_manager.database.get_db_session() as session:
         count_after = session.query(Metric).count()
         assert count_after == 1
         
     Base.metadata.drop_all(bind=test_engine)
 
-@patch("tripmate_manager.api.routes.metrics_service")
+@patch("kor_travel_docker_manager.api.routes.metrics_service")
 def test_metrics_api_route(mock_metrics_service):
     # Setup mock return data
     mock_metrics_service.get_recent_metrics.return_value = [
