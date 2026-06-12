@@ -7,7 +7,7 @@ port_policy:
   service_offset_start: 2
   web_ui_offset: 5
   additional_web_ui_offset_start: 6
-  tripmate_manager_band: 12900
+  kor_travel_docker_manager_band: 12900
   postgresql_fixed_ports:
     - 5432
 
@@ -103,7 +103,7 @@ targets:
           - -T
           - kraddr-geo-postgres
           - sh
-          - /opt/tripmate-manager/ensure-kraddr-geo-db.sh
+          - /opt/kor-travel-docker-manager/ensure-kraddr-geo-db.sh
 
   storage:
     port_band: "12100-12199"
@@ -155,7 +155,7 @@ targets:
           - -T
           - kraddr-geo-postgres
           - sh
-          - /opt/tripmate-manager/verify-kraddr-geo-source.sh
+          - /opt/kor-travel-docker-manager/verify-kraddr-geo-source.sh
 
   map:
     port_band: "12300-12399"

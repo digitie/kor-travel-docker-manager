@@ -16,8 +16,8 @@ const sairaCondensed = Saira_Condensed({
 });
 
 export const metadata: Metadata = {
-  title: "TripMate Manager",
-  description: "TripMate infrastructure container management and observability dashboard",
+  title: "Kor Travel Docker Manager",
+  description: "Kor Travel infrastructure container management and observability dashboard",
 };
 
 export default function RootLayout({

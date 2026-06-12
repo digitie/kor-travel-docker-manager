@@ -7,7 +7,7 @@
 다음 항목만 영어를 유지한다 — 한글로 옮기면 의미가 변하거나 정확성이 깨지기 때문:
 
 - **코드 식별자**: 함수/클래스/변수/타입/엔드포인트 이름 (예: `DockerService`, `get_container_status`, `/api/containers`).
-- **명령어와 경로**: `npm run dev`, `poetry run uvicorn`, `f:\dev\tripmate-manager\backend`.
+- **명령어와 경로**: `npm run dev`, `poetry run uvicorn`, `f:\dev\kor-travel-docker-manager\backend`.
 - **외부 공식 용어**: Docker, PostgreSQL, PostGIS, RustFS, FastAPI, Next.js, TanStack Query, Tailwind CSS, Shadcn UI.
 - **표준 keyword**: ADR, CHANGELOG, semver 라벨.
 - **shell 출력 / 로그 예시**: 그대로 캡처한 문자열은 보존.
@@ -18,7 +18,7 @@
 
 ## 역할
 
-이 저장소(`tripmate-manager`)는 TripMate 서비스 구동에 필요한 기반 인프라(PostgreSQL, RustFS 등)의 Docker 컨테이너 구동 관리 및 상태 모니터링을 담당하는 소프트웨어다. 
+이 저장소(`kor-travel-docker-manager`)는 TripMate 서비스 구동에 필요한 기반 인프라(PostgreSQL, RustFS 등)의 Docker 컨테이너 구동 관리 및 상태 모니터링을 담당하는 소프트웨어다.
 
 - **Backend**: Python FastAPI 기반으로 구성되어 로컬 Docker 데몬과 상호작용하여 상태를 체크하고 제어한다.
 - **Frontend**: Next.js (React), zod, react-hook-form, tanstack query, tailwind css, shadcn ui 기반의 대시보드 웹이다.
@@ -31,7 +31,7 @@
 
 | 항목 | 값 |
 |------|----|
-| GitHub 저장소 이름 | `tripmate-manager` |
+| GitHub 저장소 이름 | `kor-travel-docker-manager` |
 | Backend 기술 스택 | Python 3.11+, FastAPI, Docker SDK, Pytest, Ruff, Mypy |
 | Frontend 기술 스택 | Next.js 14+ (App Router), TypeScript, Tailwind CSS, Shadcn UI, TanStack Query |
 | DB 서비스 정보 | 통합 PostgreSQL / PostGIS (`kraddr-geo-postgres`: 5432, DBs: `kraddr_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map`) |
@@ -48,14 +48,14 @@
 
 - **명령 실행 위치 강제**:
   - `git` 관련 명령(`git status`, `git fetch`, `git switch`, `git add`, `git commit`, `git push` 등)은 Windows 호스트에서만 실행한다.
-  - `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `tmctl`, `ruff`, `pytest`, 빌드, 서버 실행, 파일 검색 등 git이 아닌 모든 개발/검증 명령은 WSL에서 실행한다.
+  - `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `ktdctl`, `ruff`, `pytest`, 빌드, 서버 실행, 파일 검색 등 git이 아닌 모든 개발/검증 명령은 WSL에서 실행한다.
   - Playwright E2E는 명시 예외로 Windows 호스트에서 실행한다. 브라우저/그래픽/확장 연동 상태를 실제 Windows 사용자 환경 기준으로 검증하기 위함이다.
   - 문서 예시에서 Windows 경로(`F:\...`)가 나오더라도 git과 Playwright E2E를 제외한 실행 명령은 WSL 경로(`/mnt/f/...`)로 변환해 실행한다.
 
 - **에이전트별 고정 worktree**:
-  - Google Antigravity: `F:\dev\tripmate-manager-antigravity`
-  - Claude Code: `F:\dev\tripmate-manager-claude`
-  - ChatGPT Codex: `F:\dev\tripmate-manager-codex`
+  - Google Antigravity: `F:\dev\kor-travel-docker-manager-antigravity`
+  - Claude Code: `F:\dev\kor-travel-docker-manager-claude`
+  - ChatGPT Codex: `F:\dev\kor-travel-docker-manager-codex`
 - Windows 호스트에서 각 worktree 진입 시 `git fetch` 후 `git switch -c agent/<topic> main`으로 새 브랜치를 따서 작업한다.
 - CodeGraph 인덱스는 각 worktree에서 최초 1회 `codegraph init -i`로 생성한 후, 작업 시작 시 `codegraph sync`를 수행한다. `.codegraph/`는 gitignore 대상이다.
 

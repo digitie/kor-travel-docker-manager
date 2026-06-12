@@ -1,6 +1,6 @@
 # TASKS-DONE — 완료 태스크 기록
 
-이 문서는 `tripmate-manager`에서 완료된 작업을 역순이 아닌 태스크 번호순으로 보관한다.
+이 문서는 `kor-travel-docker-manager`에서 완료된 작업을 역순이 아닌 태스크 번호순으로 보관한다.
 진행 중/대기 작업은 [`docs/tasks.md`](tasks.md)를 기준으로 한다.
 
 ---
@@ -17,13 +17,14 @@
 | **T-006** | 대시보드 UI 및 TanStack Query 연동 개발 | 2026-06-11 | WebSocket 실시간 테이블 및 차트/로그 모달 완료 |
 | **T-007** | 품질 검증 및 최종 통합 테스트 | 2026-06-11 | 백엔드 테스트 및 프론트엔드 빌드 검사 완료 |
 | **T-008** | Docker 관리 문서 및 target registry 정리 | 2026-06-12 | 통합 DB 모델, CLI/API target 기준 정리 |
-| **T-009** | Python CLI 및 target ensure/build 구현 | 2026-06-12 | `tmctl` CLI 추가 |
+| **T-009** | Python CLI 및 target ensure/build 구현 | 2026-06-12 | `ktdctl` CLI 추가 |
 | **T-010** | Docker inspect API 및 secret redaction 구현 | 2026-06-12 | `/api/v1/containers/{id}/inspect` 추가 |
 | **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 init step 추가 |
 | **T-014** | TripMate 계열 로컬 포트 정책 일원화 | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
 | **T-015** | 실행 위치 정책 문서화 | 2026-06-12 | git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정 |
 | **T-016** | `kor-travel-geo` Docker API/UI target 편입 | 2026-06-12 | `geo` target에 API `12201`, Web UI `12205` compose 서비스 추가 |
 | **T-017** | 관측 스택 Docker target 추가 | 2026-06-13 | Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605` 분리 컨테이너 추가 |
+| **T-018** | 프로젝트명 및 CLI 명령 전환 | 2026-06-13 | `kor-travel-docker-manager`, `ktdctl` 기준으로 변경 |
 
 ---
 
@@ -48,7 +49,7 @@
 ### T-003: FastAPI 백엔드 뼈대 구성
 
 - [x] `backend/pyproject.toml` 생성 및 dependencies 추가 (FastAPI, uvicorn, docker sdk 등)
-- [x] `backend/src/tripmate_manager/main.py` 진입 소스 및 환경 설정 모듈 작성
+- [x] `backend/src/kor_travel_docker_manager/main.py` 진입 소스 및 환경 설정 모듈 작성
 - [x] 백엔드 ruff/lint 검증 스크립트 셋업
 
 ### T-004: Docker 제어 모듈 구현
@@ -86,7 +87,7 @@
 
 ### T-009: Python CLI 및 target ensure/build 구현
 
-- [x] `tmctl` console script 추가
+- [x] `ktdctl` console script 추가
 - [x] `targets`, `status`, `ensure`, `logs`, `action`, `inspect` 명령 추가
 - [x] `ensure <target> --build`에서 `docker compose up -d --build`를 인자 배열로 실행
 - [x] CLI mock 테스트 추가
@@ -101,7 +102,7 @@
 ### T-013: 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현
 
 - [x] `config/docker-targets.yml`에 `db`, `storage`, `geo`, `map`, `ai`, `main` 의존 순서 정의
-- [x] `tmctl db --build`처럼 짧은 별칭을 직접 `ensure`로 실행하는 CLI shortcut 추가
+- [x] `ktdctl db --build`처럼 짧은 별칭을 직접 `ensure`로 실행하는 CLI shortcut 추가
 - [x] 통합 DB database/role/schema/extension 복구 스크립트 추가
 - [x] RustFS 공용 bucket 복구 스크립트 추가
 - [x] `kor-travel-geo` 원천 디렉터리와 핵심 적재 테이블 검증 스크립트 추가
@@ -114,7 +115,7 @@
 - [x] 통합 PostgreSQL host 포트를 `5432`로 변경
 - [x] RustFS host 포트를 S3 API `12101`, console `12105`로 변경
 - [x] RustFS 컨테이너 내부 포트를 이미지 표준 `9000`, `9001`로 정리
-- [x] `tripmate-manager` Backend API를 `12901`, Dashboard Web을 `12905`로 변경
+- [x] `kor-travel-docker-manager` Backend API를 `12901`, Dashboard Web을 `12905`로 변경
 - [x] `config/docker-targets.yml`에 포트 정책 metadata와 target 대역 추가
 - [x] 포트 정책 ADR 추가
 
@@ -140,3 +141,11 @@
 - [x] 포트 정책에 맞춰 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 배정
 - [x] Prometheus scrape config와 Grafana Prometheus datasource provisioning을 추가
 - [x] `.env.example`, 아키텍처/포트/Docker 관리 문서, ADR을 갱신
+
+### T-018: 프로젝트명 및 CLI 명령 전환
+
+- [x] 공식 프로젝트명과 GitHub 저장소명을 `kor-travel-docker-manager` 기준으로 문서화
+- [x] Python package import path를 `kor_travel_docker_manager`로 변경
+- [x] CLI console script를 `ktdctl`로 변경하고 이전 CLI 명령 안내 제거
+- [x] 프론트엔드/백엔드 package metadata와 화면 metadata를 새 이름으로 갱신
+- [x] Docker Compose project name을 `kor-travel-docker-manager`로 고정

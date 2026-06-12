@@ -3,7 +3,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from tripmate_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
+from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

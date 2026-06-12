@@ -2,10 +2,10 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
-from tripmate_manager.cli import build_parser, main
-from tripmate_manager.services.compose_service import ComposeService
-from tripmate_manager.services.docker_service import _redact_env_pair
-from tripmate_manager.services.registry import (
+from kor_travel_docker_manager.cli import build_parser, main
+from kor_travel_docker_manager.services.compose_service import ComposeService
+from kor_travel_docker_manager.services.docker_service import _redact_env_pair
+from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
     runtime_services_for_target,
@@ -14,13 +14,13 @@ from tripmate_manager.services.registry import (
 )
 
 
-def test_cli_console_script_is_tmctl():
+def test_cli_console_script_is_ktdctl():
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     pyproject = tomllib.loads(pyproject_path.read_text())
 
     scripts = pyproject["tool"]["poetry"]["scripts"]
-    assert scripts == {"tmctl": "tripmate_manager.cli:main"}
-    assert build_parser().prog == "tmctl"
+    assert scripts == {"ktdctl": "kor_travel_docker_manager.cli:main"}
+    assert build_parser().prog == "ktdctl"
 
 
 def test_registry_resolves_application_targets_to_shared_services():
@@ -85,8 +85,8 @@ def test_env_redaction_masks_sensitive_values():
     assert _redact_env_pair("POSTGRES_DB=kraddr_geo") == "POSTGRES_DB=kraddr_geo"
 
 
-@patch("tripmate_manager.services.compose_service.subprocess.run")
-@patch("tripmate_manager.services.compose_service.os.path.exists", return_value=False)
+@patch("kor_travel_docker_manager.services.compose_service.subprocess.run")
+@patch("kor_travel_docker_manager.services.compose_service.os.path.exists", return_value=False)
 def test_compose_ensure_build_command(mock_exists, mock_run):
     mock_run.return_value.returncode = 0
     mock_run.return_value.stdout = "started"
@@ -113,7 +113,7 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
     assert mock_run.call_count == 4
 
 
-@patch("tripmate_manager.cli.compose_service")
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_status_returns_compose_exit_code(mock_compose_service):
     mock_compose_service.status_target.return_value = {
         "success": False,
@@ -126,7 +126,7 @@ def test_cli_status_returns_compose_exit_code(mock_compose_service):
     assert main(["status", "tripmate"]) == 17
 
 
-@patch("tripmate_manager.cli.compose_service")
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_ensure_passes_build_flag(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -145,7 +145,7 @@ def test_cli_ensure_passes_build_flag(mock_compose_service):
     )
 
 
-@patch("tripmate_manager.cli.compose_service")
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_direct_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -164,7 +164,7 @@ def test_cli_direct_alias_runs_ensure(mock_compose_service):
     )
 
 
-@patch("tripmate_manager.cli.compose_service")
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_direct_observability_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,

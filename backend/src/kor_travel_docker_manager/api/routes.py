@@ -3,10 +3,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from tripmate_manager.services.compose_service import compose_service
-from tripmate_manager.services.docker_service import docker_service
-from tripmate_manager.services.metrics_service import metrics_service
-from tripmate_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.compose_service import compose_service
+from kor_travel_docker_manager.services.docker_service import docker_service
+from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.registry import list_targets
 
 router = APIRouter()
 

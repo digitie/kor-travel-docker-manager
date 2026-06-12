@@ -4,8 +4,8 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from tripmate_manager.database import engine, get_db_session
-from tripmate_manager.models import Base, Metric
+from kor_travel_docker_manager.database import engine, get_db_session
+from kor_travel_docker_manager.models import Base, Metric
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@ import subprocess
 from collections.abc import Sequence
 from typing import Any
 
-from tripmate_manager.services.registry import (
+from kor_travel_docker_manager.services.registry import (
     init_steps_for_target,
     is_known_target,
     runtime_services_for_target,
@@ -19,14 +19,14 @@ def get_project_root() -> str:
 
 def get_compose_path() -> str:
     return os.environ.get(
-        "TRIPMATE_MANAGER_COMPOSE_FILE",
+        "KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE",
         os.path.join(get_project_root(), "docker-compose.yml"),
     )
 
 
 def get_env_path() -> str:
     return os.environ.get(
-        "TRIPMATE_MANAGER_ENV_FILE",
+        "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE",
         os.path.join(get_project_root(), ".env"),
     )
 

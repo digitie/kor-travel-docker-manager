@@ -12,7 +12,7 @@ def get_project_root() -> str:
 
 def get_targets_config_path() -> str:
     return os.environ.get(
-        "TRIPMATE_MANAGER_TARGETS_FILE",
+        "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE",
         os.path.join(get_project_root(), "config", "docker-targets.yml"),
     )
 

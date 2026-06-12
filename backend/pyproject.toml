@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "tripmate-manager-backend"
+name = "kor-travel-docker-manager-backend"
 version = "0.1.0"
 description = "FastAPI backend for managing PostgreSQL and RustFS docker containers"
 authors = ["digitie <digitie@gmail.com>"]
 readme = "../README.md"
-packages = [{include = "tripmate_manager", from = "src"}]
+packages = [{include = "kor_travel_docker_manager", from = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.11"
@@ -19,7 +19,7 @@ websockets = "^12.0"
 sqlalchemy = "^2.0.0"
 
 [tool.poetry.scripts]
-tmctl = "tripmate_manager.cli:main"
+ktdctl = "kor_travel_docker_manager.cli:main"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

@@ -13,7 +13,7 @@
 - 같은 서비스 자체에서 추가로 필요한 API/관리 포트는 `+2`부터 사용한다.
 - Web UI 포트는 각 대역의 `+5`를 사용하고, 추가 Web UI는 `+6`부터 사용한다.
 - PostgreSQL 접속 포트는 예외적으로 표준 `5432`를 사용한다.
-- `tripmate-manager` 자체 포트는 dependency 순서와 무관하게 `12900-12999` 대역을 사용한다.
+- `kor-travel-docker-manager` 자체 포트는 dependency 순서와 무관하게 `12900-12999` 대역을 사용한다.
 - 이 문서의 포트 정책은 호스트에서 노출되는 로컬 포트 기준이다. 컨테이너 내부 포트는 이미지 표준 포트를 유지할 수 있다.
 
 ---
@@ -29,21 +29,21 @@
 | `ai` | `12400-12499` | API `12401`, 추가 MCP 포트 `12402`, Web UI `12405` | `kor-travel-concierge` API, MCP HTTP, Web UI. |
 | `main` | `12500-12599` | API `12501`, Web UI `12505` | `tripmate` API/Web. |
 | `observability` | `12600-12699` | Prometheus `12601`, Exporter `12602`, Grafana `12605` | Prometheus, cAdvisor Exporter, Grafana 관측 스택. |
-| `tripmate-manager` | `12900-12999` | API `12901`, Web UI `12905` | dependency 추가와 무관하게 고정. |
+| `kor-travel-docker-manager` | `12900-12999` | API `12901`, Web UI `12905` | dependency 추가와 무관하게 고정. |
 
 ---
 
 ## 3. 관련 로컬 레포 포트 조사
 
-조사 대상 canonical 레포는 `F:\dev\tripmate`, `F:\dev\kor-travel-concierge`, `F:\dev\kor-travel-geo`, `F:\dev\python-krtour-map`, `F:\dev\tripmate-manager`다. `*-codex`, `*-claude`, `*-antigravity` 등 worktree 복제본은 같은 계약이 중복될 수 있어 본 표의 집계 대상에서 제외했다.
+조사 대상 canonical 레포는 `F:\dev\tripmate`, `F:\dev\kor-travel-concierge`, `F:\dev\kor-travel-geo`, `F:\dev\python-krtour-map`, `F:\dev\kor-travel-docker-manager`다. `*-codex`, `*-claude`, `*-antigravity` 등 worktree 복제본은 같은 계약이 중복될 수 있어 본 표의 집계 대상에서 제외했다.
 
 | 레포 | 대상 | 변경 전 확인 포트 | 변경 후 정책 포트 | 근거 |
 |---|---|---:|---:|---|
-| `tripmate-manager` | Backend API | `9091` | `12901` | `backend/src/tripmate_manager/main.py`, `docs/dev-environment.md` |
-| `tripmate-manager` | Dashboard Web UI | `9092` | `12905` | `frontend/package.json` |
-| `tripmate-manager` | RustFS S3 API | `9003` | `12101` | `.env.example`, `docker-compose.yml` |
-| `tripmate-manager` | RustFS console | `9004` | `12105` | `.env.example`, `docker-compose.yml` |
-| `tripmate-manager` | 통합 PostgreSQL | `15434` | `5432` | PostgreSQL 표준 포트로 변경 |
+| `kor-travel-docker-manager` | Backend API | `9091` | `12901` | `backend/src/kor_travel_docker_manager/main.py`, `docs/dev-environment.md` |
+| `kor-travel-docker-manager` | Dashboard Web UI | `9092` | `12905` | `frontend/package.json` |
+| `kor-travel-docker-manager` | RustFS S3 API | `9003` | `12101` | `.env.example`, `docker-compose.yml` |
+| `kor-travel-docker-manager` | RustFS console | `9004` | `12105` | `.env.example`, `docker-compose.yml` |
+| `kor-travel-docker-manager` | 통합 PostgreSQL | `15434` | `5432` | PostgreSQL 표준 포트로 변경 |
 | `kor-travel-geo` | PostgreSQL | `15434` | `5432` | `.env.example`, `docker-compose.yml`, `AGENTS.md` |
 | `kor-travel-geo` | REST API | `9001`, 일부 문서 `8888` | `12201` | `README.md`, `docker/api.Dockerfile`, `CLAUDE.md` |
 | `kor-travel-geo` | Admin Web UI | `9002`, 일부 문서 `13088` | `12205` | `README.md`, `CLAUDE.md` |
@@ -66,7 +66,7 @@
 
 ---
 
-## 4. `tripmate-manager` 반영 상태
+## 4. `kor-travel-docker-manager` 반영 상태
 
 | 항목 | 반영 파일 | 상태 |
 |---|---|---|
@@ -74,7 +74,7 @@
 | RustFS host API `12101`, console `12105` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | RustFS 컨테이너 내부 API `9000`, console `9001` | `.env.example`, `docker-compose.yml`, `scripts/ensure-rustfs-buckets.sh` | 반영 |
 | `kor-travel-geo` API `12201`, Web UI `12205` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
-| Manager Backend API `12901` | `backend/src/tripmate_manager/main.py`, `frontend/src/components/DashboardClient.tsx` | 반영 |
+| Manager Backend API `12901` | `backend/src/kor_travel_docker_manager/main.py`, `frontend/src/components/DashboardClient.tsx` | 반영 |
 | Manager Web UI `12905` | `frontend/package.json` | 반영 |
 | 관측 스택 Prometheus `12601`, Exporter `12602`, Grafana `12605` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | 포트 대역 metadata | `config/docker-targets.yml` | 반영 |
@@ -85,5 +85,5 @@
 ## 5. 후속 원칙
 
 - 관련 프로젝트 레포의 실제 설정 변경은 각 레포에서 별도 PR로 진행한다.
-- `tripmate-manager`는 통합 DB/RustFS의 기준 포트를 먼저 제공하고, 관련 레포 문서는 이 표의 정책 포트를 따르도록 순차 정리한다.
+- `kor-travel-docker-manager`는 통합 DB/RustFS의 기준 포트를 먼저 제공하고, 관련 레포 문서는 이 표의 정책 포트를 따르도록 순차 정리한다.
 - 새 서비스가 생기면 `config/docker-targets.yml`의 `dependency_order`에 추가하고, `base + n * 100` 대역을 배정한다.
