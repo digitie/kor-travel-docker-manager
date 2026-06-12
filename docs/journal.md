@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-12 (`python-kraddr-geo` Docker API/UI 관리 편입)
+
+- **작업 내용**:
+  - `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스를 추가해 `python-kraddr-geo` REST API와 admin Web UI를 manager에서 함께 실행할 수 있게 했다.
+  - `config/docker-targets.yml`에 `kraddr-geo-api-latest`, `kraddr-geo-ui-latest`를 공식 관리 컨테이너로 등록하고 `geo` 이상 target에 포함했다.
+  - 포트 정책에 맞춰 API는 `12201`, Web UI는 `12205`를 사용하고, API 컨테이너가 compose 네트워크의 `kraddr-geo-postgres:5432`, `rustfs:9000`을 사용하도록 설정했다.
+  - `scripts/infra.sh`, `.env.example`, `docs/docker-management.md`, `docs/architecture.md`, `docs/ports.md`, `docs/dev-environment.md`, `README.md`, `docs/tasks.md`를 같은 기준으로 갱신했다.
+- **결정 사항**:
+  - 기존 `python-kraddr-geo` 로컬 script와 같은 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 사용해 대시보드와 CLI가 기존 Docker 대상을 그대로 확인할 수 있게 한다.
+
+---
+
+## 2026-06-12 (WSL/Windows 실행 위치 정책 고정)
+
+- **작업 내용**:
+  - `git` 명령은 Windows 호스트에서만 실행하고, 패키지 설치·Docker·서버 실행·빌드·테스트·파일 검색 등 일반 개발 명령은 WSL에서만 실행하도록 문서화.
+  - Playwright E2E는 실제 Windows 브라우저 환경 확인을 위한 명시 예외로 Windows 호스트에서 실행하도록 고정.
+  - `AGENTS.md`, `SKILL.md`, `docs/dev-environment.md`, `CLAUDE.md`, `docs/tasks.md`에 실행 위치 정책을 반영.
+- **결정 사항**:
+  - Windows 경로가 문서에 나오더라도 git과 Playwright E2E를 제외한 명령 실행은 `/mnt/f/...` WSL 경로를 사용한다.
+
+---
+
 ## 2026-06-12 (TripMate 전용 Docker Manager CLI/API 및 문서 정리)
 
 - **작업 내용**:

@@ -225,7 +225,7 @@ TripMate 계열 database는 `kraddr-geo-postgres` 컨테이너의 `kraddr_geo`, 
 TripMate 계열 프로젝트가 늘어나면서 개발자가 매번 compose service 이름이나 내부 컨테이너 이름을 기억하는 방식은 실수가 잦다. 사용자는 `db`, `storage`, `geo`, `map`, `ai`, `main` 같은 짧은 별칭으로 필요한 Docker 의존성을 바로 실행하고, 그 의존 순서를 설정 파일로 관리하기를 원했다. 특히 `python-kraddr-geo`는 원천 DB 적재 상태가 흔히 문제의 원인이 되므로 시작 시 검증이 필요했다.
 
 ### 결정
-공식 의존 순서를 `db -> storage -> geo -> map -> ai -> main`으로 정하고, `config/docker-targets.yml`을 target alias, 포함 service, 초기화 step의 source of truth로 사용한다. CLI는 `tmctl db --build`처럼 짧은 별칭을 `ensure`로 해석한다.
+공식 의존 순서를 `db -> storage -> geo -> map -> ai -> main`으로 정하고, `config/docker-targets.yml`을 target alias, 포함 service, 초기화 step의 source of truth로 사용한다. CLI는 `tmctl db --build`처럼 짧은 별칭을 `ensure`로 해석한다. `geo` target에는 `python-kraddr-geo` API/Web UI compose service를 포함한다.
 
 ### 근거
 - 짧은 별칭은 하위 프로젝트 README와 개발 스크립트에서 사용하기 쉽다.
@@ -234,7 +234,7 @@ TripMate 계열 프로젝트가 늘어나면서 개발자가 매번 compose serv
 - `geo` 전체 적재는 무겁고 도메인 로더가 책임져야 하므로 manager는 자동 적재 대신 검증과 복구 지침 제공을 담당한다.
 
 ### 결과(긍정)
-- `tmctl main --build` 한 번으로 통합 DB, RustFS, geo 검증까지 순서대로 수행된다.
+- `tmctl main --build` 한 번으로 통합 DB, RustFS, `python-kraddr-geo` API/Web UI, geo 검증까지 순서대로 수행된다.
 - `config/docker-targets.yml`만 수정해 future target과 init step을 확장할 수 있다.
 - DB와 RustFS는 idempotent 복구 스크립트로 반복 실행해도 안정적으로 보정된다.
 
@@ -243,6 +243,7 @@ TripMate 계열 프로젝트가 늘어나면서 개발자가 매번 compose serv
 - 호환용 `scripts/infra.sh`는 Python registry와 동일한 의미를 유지해야 하므로 중복 관리 부담이 일부 남는다.
 
 ### 후속
+- (done) `geo` target은 `python-kraddr-geo` API/Web UI 컨테이너를 함께 관리한다.
 - (open) 실제 앱 컨테이너를 이 compose에서 함께 관리하게 되면 `map`, `ai`, `main` target의 `services`를 확장한다.
 - (open) UI에서 target dependency graph와 init step 결과를 보여 준다.
 

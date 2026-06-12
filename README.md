@@ -22,7 +22,7 @@ tripmate-manager/
 ├── config/             # Docker target alias, 의존 순서, 초기화 step 설정
 ├── frontend/           # Next.js 프론트엔드 대시보드 웹
 ├── docs/               # 아키텍처, 결정 사항(ADR), 일지 및 백로그 문서
-├── docker-compose.yml  # PostgreSQL 및 RustFS 서비스 로컬 구동용 compose 설정
+├── docker-compose.yml  # PostgreSQL, RustFS, python-kraddr-geo 로컬 구동용 compose 설정
 ├── AGENTS.md           # AI 에이전트 협업 정책 및 언어 규칙
 ├── SKILL.md            # 에이전트 개발 매뉴얼 및 명령어 세트
 └── CLAUDE.md           # 세션 컨텍스트 가이드
@@ -67,6 +67,8 @@ scripts/infra.sh geo --build
 | 통합 PostgreSQL / PostGIS | `5432` | `postgresql://localhost:5432` 안의 `kraddr_geo`, `tripmate`, `tripmate_agent`, `krtour_map` database |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
 | RustFS console | `12105` | `http://127.0.0.1:12105` |
+| python-kraddr-geo API | `12201` | `http://127.0.0.1:12201` |
+| python-kraddr-geo Web UI | `12205` | `http://127.0.0.1:12205` |
 | Manager Backend API | `12901` | `http://127.0.0.1:12901` |
 | Manager Dashboard Web | `12905` | `http://127.0.0.1:12905` |
 
@@ -86,7 +88,7 @@ Docker 관리 설계와 CLI/API 상세는 [Docker 관리 설계](docs/docker-man
 ```bash
 cd backend
 poetry install
-poetry run uvicorn src.tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
+poetry run uvicorn tripmate_manager.main:app --host 0.0.0.0 --port 12901 --reload
 ```
 
 ### 3. 프론트엔드 실행

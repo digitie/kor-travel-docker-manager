@@ -37,6 +37,22 @@ containers:
     expected_ports:
       - "12101:9000"
       - "12105:9001"
+  kraddr-geo-api:
+    name: kraddr-geo-api-latest
+    compose_service: kraddr-geo-api
+    role: geocoder-api
+    display_name: python-kraddr-geo API
+    connection: http://127.0.0.1:12201
+    expected_ports:
+      - "12201:12201"
+  kraddr-geo-ui:
+    name: kraddr-geo-ui-latest
+    compose_service: kraddr-geo-ui
+    role: geocoder-ui
+    display_name: python-kraddr-geo Web UI
+    connection: http://127.0.0.1:12205
+    expected_ports:
+      - "12205:12205"
 
 targets:
   db:
@@ -91,17 +107,23 @@ targets:
   geo:
     port_band: "12200-12299"
     display_name: 지오코더/리버스지오코더
-    description: python-kraddr-geo 개발에 필요한 DB/RustFS와 원천 데이터 적재 상태를 확인합니다.
+    description: python-kraddr-geo API/Web UI와 원천 데이터 적재 상태를 관리합니다.
     aliases:
       - kraddr-geo
       - python-kraddr-geo
       - geocoder
       - reverse-geocoder
-    services: []
-    runtime_services: []
+    services:
+      - kraddr-geo-api
+      - kraddr-geo-ui
+    runtime_services:
+      - kraddr-geo-api
+      - kraddr-geo-ui
     containers:
       - kraddr-geo-postgresql
       - rustfs
+      - kraddr-geo-api
+      - kraddr-geo-ui
     init_steps:
       - name: geo-source-verification
         description: /data/juso 마운트와 T-027 계열 핵심 적재 테이블을 검증합니다.
@@ -124,6 +146,8 @@ targets:
     containers:
       - kraddr-geo-postgresql
       - rustfs
+      - kraddr-geo-api
+      - kraddr-geo-ui
     init_steps: []
 
   ai:
@@ -138,6 +162,8 @@ targets:
     containers:
       - kraddr-geo-postgresql
       - rustfs
+      - kraddr-geo-api
+      - kraddr-geo-ui
     init_steps: []
 
   main:
@@ -153,6 +179,8 @@ targets:
     containers:
       - kraddr-geo-postgresql
       - rustfs
+      - kraddr-geo-api
+      - kraddr-geo-ui
     init_steps: []
 
   all:
@@ -172,4 +200,6 @@ targets:
     containers:
       - kraddr-geo-postgresql
       - rustfs
+      - kraddr-geo-api
+      - kraddr-geo-ui
     init_steps: []
