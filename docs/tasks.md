@@ -1,6 +1,11 @@
 # TASKS — 개발 태스크 백로그
 
-이 문서는 `tripmate-manager` 개발 태스크 목록과 진행 현황을 관리한다. 완료된 작업은 `[x]`, 진행 중은 `[/]`, 미진행은 `[ ]`로 마킹한다.
+이 문서는 `tripmate-manager`의 진행 중/대기 작업만 관리한다. 완료된 작업은
+[`docs/tasks-done.md`](tasks-done.md)로 분리한다.
+
+- 완료: `[x]`
+- 진행 중: `[/]`
+- 미진행: `[ ]`
 
 ---
 
@@ -8,125 +13,62 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
-| **T-001** | 에이전트 및 워크스페이스 문서 초기화 | `[x]` | 2026-06-10 | 가이드 및 설정 완료 |
-| **T-002** | 프로젝트 인프라 설정 (`.gitignore`, `docker-compose.yml`, `README.md`) | `[x]` | 2026-06-11 | python-kraddr-geo 인프라 이관 반영 완료 |
-| **T-003** | FastAPI 백엔드 뼈대 구성 (`backend/pyproject.toml`, main app) | `[x]` | 2026-06-11 | 뼈대 구성 및 websockets 추가 완료 |
-| **T-004** | Docker 제어 모듈 (`DockerService` 및 API 엔드포인트) 구현 | `[x]` | 2026-06-11 | 실시간 메트릭 및 로그 엔드포인트 포함 구현 완료 |
-| **T-005** | Next.js 프론트엔드 구성 (`frontend/package.json` 및 라우팅) | `[x]` | 2026-06-11 | 패키지 구성 및 recharts 설치 완료 |
-| **T-006** | 대시보드 UI 및 TanStack Query 연동 개발 | `[x]` | 2026-06-11 | WS 실시간 테이블 및 차트/로그 모달 완료 |
-| **T-007** | 품질 검증 및 최종 통합 테스트 | `[x]` | 2026-06-11 | 백엔드 테스트 및 프론트엔드 빌드 검사 완료 |
-| **T-008** | Docker 관리 문서 및 target registry 정리 | `[x]` | 2026-06-12 | 통합 DB 모델, CLI/API target 기준 정리 |
-| **T-009** | Python CLI 및 target ensure/build 구현 | `[x]` | 2026-06-12 | `tmctl` CLI 추가 |
-| **T-010** | Docker inspect API 및 secret redaction 구현 | `[x]` | 2026-06-12 | `/api/v1/containers/{id}/inspect` 추가 |
 | **T-011** | 설정 저장 안정화 및 validation 고도화 | `[ ]` | - | compose diff, secret `.env` 분리, 입력 검증 보강 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
-| **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | `[x]` | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 DB/RustFS/geo 검증 step 추가 |
-| **T-014** | TripMate 계열 로컬 포트 정책 일원화 | `[x]` | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
-| **T-015** | 실행 위치 정책 문서화 | `[x]` | 2026-06-12 | git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정 |
-| **T-016** | `python-kraddr-geo` Docker API/UI target 편입 | `[x]` | 2026-06-12 | `geo` target에 API `12201`, Web UI `12205` compose 서비스 추가 |
+| **T-220** | `krtour-ai-agent` provider 상세 구현 및 명칭 전환 | `[ ]` | - | `T-221` 착수 전 선행 작업 |
+| **T-221** | 사용자 지정 후속 작업 1 | `[ ]` | - | `T-220` 완료 후 착수, 세부 범위 확정 필요 |
+| **T-222** | 사용자 지정 후속 작업 2 | `[ ]` | - | `T-221` 완료 후 착수, 세부 범위 확정 필요 |
+| **T-223** | 사용자 지정 후속 작업 3 | `[ ]` | - | `T-222` 완료 후 착수, 세부 범위 확정 필요 |
+
+---
+
+## 진행 순서
+
+1. `tasks.md`와 `tasks-done.md`를 최신 완료/미완료 상태로 정리한다.
+2. `T-220`에서 `tripmate-agent` 잔여 명칭을 `krtour-ai-agent` 기준으로 정리하고,
+   TripMate main과 AI agent의 직접 의존 관계를 끊는다.
+3. `T-221`, `T-222`, `T-223`을 순서대로 진행한다.
+4. 병행 작업 충돌을 줄이기 위해 각 PR 전후로 `main` rebase를 수행한다.
 
 ---
 
 ## 태스크 세부 내역
 
-### T-001: 에이전트 및 워크스페이스 문서 초기화
-- [x] `antigravity.json`, `claude.json`, `codex.json` 설정 파일 생성
-- [x] `.gemini/`, `.claude/`, `.codex/` 내부 설정 디렉토리 매핑
-- [x] 에이전트 협업 정책 (`AGENTS.md`), 진입 컨텍스트 (`CLAUDE.md`), 스킬 매뉴얼 (`SKILL.md`) 생성
-- [x] 아키텍처 문서(`docs/architecture.md`) 및 의사결정 문서(`docs/decisions.md` ADR-1~4) 생성
-- [x] 작업 일지 (`docs/journal.md`) 및 백로그 관리 파일 (`docs/tasks.md`) 작성
-
-### T-002: 프로젝트 인프라 설정
-- [x] 모노레포용 통합 `.gitignore` 작성
-- [x] PostgreSQL + RustFS 구동을 위한 `docker-compose.yml` 루트 정의
-- [x] `python-kraddr-geo`용 PostgreSQL/RustFS 포트·credential·bucket 기본값 이관
-- [x] 공용 인프라 구동/정지/재시작 helper `scripts/infra.sh` 추가
-- [x] 전체 저장소 개요를 담은 `README.md` 작성
-
-### T-003: FastAPI 백엔드 뼈대 구성
-- [x] `backend/pyproject.toml` 생성 및 dependencies 추가 (FastAPI, uvicorn, docker sdk 등)
-- [x] `backend/src/tripmate_manager/main.py` 진입 소스 및 환경 설정 모듈 작성
-- [x] 백엔드 ruff/lint 검증 스크립트 셋업
-
-### T-004: Docker 제어 모듈 구현
-- [x] `DockerService` 클래스 개발 (컨테이너 상태 수집, 시작/정지/재시작 통제)
-- [x] API 라우터 (`/api/containers`) 연동 및 로그 조회 기능 작성
-- [x] 단위 테스트 작성 및 pytest 통과 검증
-
-### T-005: Next.js 프론트엔드 구성
-- [x] `frontend/package.json` 및 `tsconfig.json` 정의
-- [x] Zod, React Hook Form, TanStack Query, Tailwind CSS 패키지 설치
-- [x] App Router 구조 기반 루트 레이아웃 작성
-
-### T-006: 대시보드 UI 및 TanStack Query 연동 개발
-- [x] TanStack Query Client 및 Query Provider 설정
-- [x] 컨테이너 구동 제어 상태 카드 UI 구현 (neon glow 및 micro-animations 반영)
-- [x] 백엔드 연동 액션 버튼 및 로그 출력 콘솔 UI 구현
-
-### T-007: 품질 검증 및 최종 통합 테스트
-- [x] 백엔드 및 프론트엔드 전체 린터/타입 빌드 테스트 실행
-- [x] Docker 데몬 연동 수동 기능 확인
-- [x] BMW M 디자인 시스템(DESIGN.md) 반영 및 `/bmw` 쇼케이스 검증 완료
-- [x] `docs/design-system.md` 보강 및 `react-doctor` 성능 오딧 검증 완료
-- [x] 변경 사항에 대한 `walkthrough.md` 작성 및 최종 PR 제출
-
-### T-008: Docker 관리 문서 및 target registry 정리
-- [x] `docs/docker-management.md` 신규 작성
-- [x] 통합 DB 모델(`kraddr-geo-postgres:5432`)을 공식 기준으로 문서 정정
-- [x] UI/API/CLI에서 공유할 target registry 정의
-- [x] `scripts/infra.sh`의 오래된 분리 DB target 제거 및 호환 정리
-
-### T-009: Python CLI 및 target ensure/build 구현
-- [x] `tmctl` console script 추가
-- [x] `targets`, `status`, `ensure`, `logs`, `action`, `inspect` 명령 추가
-- [x] `ensure <target> --build`에서 `docker compose up -d --build`를 인자 배열로 실행
-- [x] CLI mock 테스트 추가
-
-### T-010: Docker inspect API 및 secret redaction 구현
-- [x] `GET /api/v1/targets` API 추가
-- [x] `POST /api/v1/targets/{target}/ensure` API 추가
-- [x] `GET /api/v1/containers/{container_id}/inspect` API 추가
-- [x] inspect environment redaction 테스트 추가
-
-### T-013: 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현
-- [x] `config/docker-targets.yml`에 `db`, `storage`, `geo`, `map`, `ai`, `main` 의존 순서 정의
-- [x] `tmctl db --build`처럼 짧은 별칭을 직접 `ensure`로 실행하는 CLI shortcut 추가
-- [x] 통합 DB database/role/schema/extension 복구 스크립트 추가
-- [x] RustFS 공용 bucket 복구 스크립트 추가
-- [x] `python-kraddr-geo` 원천 디렉터리와 핵심 적재 테이블 검증 스크립트 추가
-- [x] API/CLI가 같은 설정 파일 registry를 읽도록 정리
-
-### T-014: TripMate 계열 로컬 포트 정책 일원화
-- [x] 관련 canonical 로컬 레포의 현재 포트 사용처 조사
-- [x] `docs/ports.md`에 현재 포트와 정책 포트 비교표 작성
-- [x] 통합 PostgreSQL host 포트를 `5432`로 변경
-- [x] RustFS host 포트를 S3 API `12101`, console `12105`로 변경
-- [x] RustFS 컨테이너 내부 포트를 이미지 표준 `9000`, `9001`로 정리
-- [x] `tripmate-manager` Backend API를 `12901`, Dashboard Web을 `12905`로 변경
-- [x] `config/docker-targets.yml`에 포트 정책 metadata와 target 대역 추가
-- [x] 포트 정책 ADR 추가
-
-### T-015: 실행 위치 정책 문서화
-- [x] `AGENTS.md`에 git/WSL/Playwright E2E 실행 위치 강제 규칙 추가
-- [x] `SKILL.md` 빠른 시작 명령을 WSL 기준으로 정리
-- [x] `docs/dev-environment.md`에 명령 실행 위치 표와 에이전트 작업 절차 추가
-- [x] `CLAUDE.md` 빠른 검증 명령에 WSL/Windows 예외 정책 명시
-
-### T-016: `python-kraddr-geo` Docker API/UI target 편입
-- [x] `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스 추가
-- [x] `config/docker-targets.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 관리 컨테이너 등록
-- [x] `geo` target이 API/Web UI 실행과 원천 데이터 검증을 함께 수행하도록 변경
-- [x] `scripts/infra.sh` 호환 target도 `geo` 이상에서 API/Web UI를 포함하도록 정리
-- [x] `.env.example`, 포트 문서, Docker 관리 문서에 `12201`, `12205` 기준 추가
-
 ### T-011: 설정 저장 안정화 및 validation 고도화
+
 - [ ] compose 변경 전 diff 생성 및 UI 표시
 - [ ] 포트, 볼륨, 네트워크 입력 validation 강화
 - [ ] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가
 - [ ] 컨테이너 재생성 전 확인 단계와 실패 시 rollback 전략 문서화
 
 ### T-012: 대시보드 상세 패널 확장
+
 - [ ] 컨테이너 row 선택 시 inspect 상세 drawer 또는 modal 표시
 - [ ] mounts, networks, healthcheck, redacted env를 탭으로 분리
 - [ ] target 단위 `ensure --build` 버튼을 개발 모드에서 제공
 - [ ] 모바일/데스크톱에서 표와 상세 패널이 겹치지 않도록 반응형 검증
+
+### T-220: `krtour-ai-agent` provider 상세 구현 및 명칭 전환
+
+- [ ] `config/docker-targets.yml`의 `ai` target을 `krtour-ai-agent` 기준으로 정리
+- [ ] `tripmate-agent` 호환 별칭은 필요한 범위에서만 유지하고 새 공식 별칭을 우선한다
+- [ ] 통합 DB 기본값을 `krtour_ai_agent` database 기준으로 정리하고 기존 `tripmate_agent`
+      환경변수는 호환 입력으로만 처리한다
+- [ ] `tripmate` target이 `krtour-ai-agent`에 직접 의존하지 않도록 문서와 target 설명을 정리
+- [ ] `krtour-map`과 `krtour-ai-agent` 간 provider 관계만 남도록 아키텍처/포트/관리 문서를 동기화
+- [ ] 관련 테스트와 설정 검증을 갱신한다
+
+### T-221: 사용자 지정 후속 작업 1
+
+- [ ] `T-220` PR 머지 후 세부 범위를 확정한다
+- [ ] 작업 전 `main` 기준 rebase를 수행한다
+
+### T-222: 사용자 지정 후속 작업 2
+
+- [ ] `T-221` 완료 후 세부 범위를 확정한다
+- [ ] 작업 전 `main` 기준 rebase를 수행한다
+
+### T-223: 사용자 지정 후속 작업 3
+
+- [ ] `T-222` 완료 후 세부 범위를 확정한다
+- [ ] 작업 전 `main` 기준 rebase를 수행한다
