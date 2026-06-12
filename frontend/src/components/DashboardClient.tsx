@@ -143,7 +143,7 @@ const getContainerPresentation = (container: ContainerStatus) => {
     return { Icon: FolderGit2, displayName: container.display_name || 'RustFS Store' };
   }
   if (role.includes('geocoder')) {
-    return { Icon: ServerCog, displayName: container.display_name || 'python-kraddr-geo' };
+    return { Icon: ServerCog, displayName: container.display_name || 'Kor Travel Geo' };
   }
   if (role === 'prometheus') {
     return { Icon: Activity, displayName: container.display_name || 'Prometheus 메트릭 저장소' };

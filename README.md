@@ -39,23 +39,16 @@ tripmate-manager/
 백엔드 패키지를 설치한 뒤 정식 CLI를 사용할 수 있습니다.
 
 ```bash
-cd backend
+cd /mnt/f/dev/tripmate-manager/backend
 poetry install
 poetry run tmctl targets
 poetry run tmctl main --build
-```
-
-루트 helper 스크립트를 사용하는 경우:
-
-```bash
-scripts/infra.sh main --build
 ```
 
 `kor-travel-geo`만 필요한 경우:
 
 ```bash
 poetry run tmctl geo --build
-scripts/infra.sh geo --build
 ```
 
 공식 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`이며, 의존 순서는 `config/docker-targets.yml`의 `db -> storage -> geo -> map -> ai -> main`을 따른다.
@@ -74,12 +67,11 @@ scripts/infra.sh geo --build
 
 TripMate 계열 전체 포트 정책과 관련 로컬 레포 조사 결과는 [로컬 포트 정책](docs/ports.md)을 참고해 주세요.
 
-정지/재시작은 같은 스크립트에서 수행합니다.
+정지/재시작은 같은 CLI에서 수행합니다.
 
 ```bash
-poetry run tmctl action kraddr-geo-postgresql restart
-scripts/infra.sh restart geo
-scripts/infra.sh stop rustfs
+poetry run tmctl action kraddr-geo-api restart
+poetry run tmctl action rustfs stop
 ```
 
 Docker 관리 설계와 CLI/API 상세는 [Docker 관리 설계](docs/docker-management.md)를 참고해 주세요.

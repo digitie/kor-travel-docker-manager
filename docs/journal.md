@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-13 (과거 이름 helper 제거 및 rebase 재검토)
+
+- **작업 내용**:
+  - `origin/main` 기준 최신 머지 상태를 확인한 뒤 `agent/remove-old-name-helper` 브랜치에서 재검토했다.
+  - 과거 프로젝트명 기반 target alias와 fallback env 검색을 재수행하고, 남은 문서 표현과 UI 기본 표시명을 `kor-travel-geo`, `kor-travel-concierge` 기준으로 정리했다.
+  - target을 중복 하드코딩하던 보조 shell helper를 제거하고, 공식 실행 경로를 `tmctl` CLI와 API/dashboard registry로 단일화했다.
+  - `tmctl observability`와 `tmctl all`도 직접 `ensure`로 해석되도록 CLI 직접 target 목록을 registry target과 맞췄다.
+- **결정 사항**:
+  - 과거 이름 수용 목적 alias/fallback/helper는 유지하지 않는다.
+  - 실제 Docker container/service 이름(`kraddr-geo-*`) 변경은 데이터와 컨테이너 migration이 필요한 별도 작업으로 남긴다.
+
+---
+
 ## 2026-06-13 (Prometheus/Grafana/Exporter 관측 스택 분리)
 
 - **작업 내용**:
@@ -12,7 +25,7 @@
   - `config/docker-targets.yml`에 `observability` target과 `prometheus`, `grafana`, `cadvisor` 관리 컨테이너를 등록했다.
   - Prometheus scrape 설정(`config/prometheus/prometheus.yml`)과 Grafana Prometheus datasource provisioning을 추가했다.
   - 관리 UI 목록에서 Prometheus, Grafana, cAdvisor Exporter가 역할별 아이콘과 표시명으로 구분되도록 프론트엔드 표시 로직을 보강했다.
-  - `.env.example`, `scripts/infra.sh`, `docs/architecture.md`, `docs/docker-management.md`, `docs/ports.md`, `docs/decisions.md`, `docs/tasks-done.md`를 같은 기준으로 갱신했다.
+  - `.env.example`, `docs/architecture.md`, `docs/docker-management.md`, `docs/ports.md`, `docs/decisions.md`, `docs/tasks-done.md`를 같은 기준으로 갱신했다.
 - **결정 사항**:
   - Exporter는 Docker 컨테이너 리소스 메트릭에 적합한 cAdvisor를 사용하고, Grafana는 Prometheus datasource를 자동 등록한다.
   - `all` target에는 관측 스택까지 포함해 전체 로컬 인프라 실행 시 함께 올라가도록 한다.
@@ -37,7 +50,7 @@
   - `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스를 추가해 `kor-travel-geo` REST API와 admin Web UI를 manager에서 함께 실행할 수 있게 했다.
   - `config/docker-targets.yml`에 `kraddr-geo-api-latest`, `kraddr-geo-ui-latest`를 공식 관리 컨테이너로 등록하고 `geo` 이상 target에 포함했다.
   - 포트 정책에 맞춰 API는 `12201`, Web UI는 `12205`를 사용하고, API 컨테이너가 compose 네트워크의 `kraddr-geo-postgres:5432`, `rustfs:9000`을 사용하도록 설정했다.
-  - `scripts/infra.sh`, `.env.example`, `docs/docker-management.md`, `docs/architecture.md`, `docs/ports.md`, `docs/dev-environment.md`, `README.md`, `docs/tasks.md`를 같은 기준으로 갱신했다.
+  - `.env.example`, `docs/docker-management.md`, `docs/architecture.md`, `docs/ports.md`, `docs/dev-environment.md`, `README.md`, `docs/tasks.md`를 같은 기준으로 갱신했다.
 - **결정 사항**:
   - 기존 `kor-travel-geo` 로컬 script와 같은 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 사용해 대시보드와 CLI가 기존 Docker 대상을 그대로 확인할 수 있게 한다.
 
@@ -115,7 +128,7 @@
 - **작업 내용**:
   - `docker-compose.yml`에 `kor-travel-geo` 전용 `kraddr-geo-postgres` 서비스를 추가하고, 기존 T-027 최종 DB 접속 계약(`localhost:15434`, `addr/addr`, `kraddr_geo`, `KRADDR_GEO_PGDATA`)을 `tripmate-manager` 기본 설정으로 이관했다.
   - 공용 RustFS 서비스의 포트, credential, 데이터 디렉터리, bucket 초기화를 `.env.example`과 compose에 명시하고 `kraddr-geo` bucket을 함께 생성하도록 했다.
-  - `scripts/infra.sh`를 추가해 `up/stop/restart/status/logs`를 `all`, `tripmate`, `kraddr-geo`, `rustfs` 단위로 실행할 수 있게 했다.
+  - 초기 helper 명령을 추가해 `up/stop/restart/status/logs`를 주요 target 단위로 실행할 수 있게 했다.
   - 백엔드/프론트엔드 대시보드가 당시의 PostgreSQL/RustFS 관리 대상을 표시하도록 갱신했다.
 - **결정 사항**:
   - PostgreSQL/RustFS Docker 생명주기와 로컬 포트 계약은 `tripmate-manager`가 관리한다(ADR-5).

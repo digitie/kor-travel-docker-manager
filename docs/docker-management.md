@@ -52,11 +52,11 @@ db -> storage -> geo -> map -> ai -> main -> observability
 
 이 순서는 누적 적용된다. 예를 들어 `tmctl map --build`는 `db`, `storage`, `geo`, `map` 순서로 필요한 서비스를 실행하고 초기화 단계를 수행한다. 새 앱이나 중간 의존성이 생기면 `config/docker-targets.yml`의 `dependency_order`, `targets.<id>.services`, `targets.<id>.init_steps`만 확장한다.
 
-| 공식 별칭 | 의미 | 누적 실행 범위 | 대표 호환 별칭 |
+| 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
-| `db` | 통합 DB | 통합 PostgreSQL/PostGIS 실행 및 DB/role/schema 복구 | `postgresql`, `postgres`, `kraddr-geo-postgres` |
+| `db` | 통합 DB | 통합 PostgreSQL/PostGIS 실행 및 DB/role/schema 복구 | `postgresql`, `postgres`, `database` |
 | `storage` | 통합 RustFS | `db` + RustFS 실행 및 bucket 복구 | `rustfs`, `s3`, `object-storage` |
-| `geo` | 지오코더/리버스지오코더 | `storage` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kraddr-geo`, `kor-travel-geo`, `geocoder` |
+| `geo` | 지오코더/리버스지오코더 | `storage` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kor-travel-geo`, `geocoder`, `reverse-geocoder` |
 | `map` | 관광 지도 처리 | `geo` + `python-krtour-map` 의존성 | `krtour-map`, `python-krtour-map` |
 | `ai` | Kor Travel Concierge | `map` + `kor-travel-concierge` 의존성 | `kor-travel-concierge`, `concierge`, `agent` |
 | `main` | TripMate main | 전체 TripMate 개발 의존성 | `tripmate`, `tripmate-api`, `tripmate-web` |
@@ -79,7 +79,7 @@ db -> storage -> geo -> map -> ai -> main -> observability
 | RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `tripmate-media`, `kraddr-geo`, `krtour-map`, `krtour-uploads` bucket 생성 |
 | Geo 원천 검증 | `geo` 이상 | `scripts/verify-kraddr-geo-source.sh` | `/data/juso` 마운트와 `load_manifest`, `tl_juso_text`, `mv_geocode_target` 적재 상태 확인 |
 
-`geo` target은 compose에서 `kraddr-geo-api`, `kraddr-geo-ui`를 실행하고, API 컨테이너는 compose 네트워크 안에서 `kraddr-geo-postgres:5432`와 `rustfs:9000`을 사용한다. 기존 `kor-travel-geo` 로컬 script와 같은 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 사용하므로 대시보드와 CLI가 같은 Docker 대상을 바라본다.
+`geo` target은 compose에서 `kraddr-geo-api`, `kraddr-geo-ui`를 실행하고, API 컨테이너는 compose 네트워크 안에서 `kraddr-geo-postgres:5432`와 `rustfs:9000`을 사용한다. 대시보드와 CLI는 registry에 등록된 컨테이너 이름(`kraddr-geo-api-latest`, `kraddr-geo-ui-latest`)을 같은 Docker 대상으로 사용한다.
 
 `geo` 검증은 원천 DB가 비어 있거나 핵심 테이블이 없으면 기본적으로 실패한다. 전체 적재는 무겁고 `kor-travel-geo`의 도메인 로더가 책임지는 작업이므로, manager는 자동 전체 적재 대신 명확한 실패 메시지와 복구 지침을 출력한다. 비어 있는 DB를 의도적으로 허용해야 하는 경우에만 `.env`에서 `KRADDR_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
 

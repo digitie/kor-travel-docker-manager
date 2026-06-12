@@ -42,7 +42,7 @@
 - [x] 모노레포용 통합 `.gitignore` 작성
 - [x] PostgreSQL + RustFS 구동을 위한 `docker-compose.yml` 루트 정의
 - [x] `kor-travel-geo`용 PostgreSQL/RustFS 포트·credential·bucket 기본값 이관
-- [x] 공용 인프라 구동/정지/재시작 helper `scripts/infra.sh` 추가
+- [x] 공용 인프라 구동/정지/재시작 초기 helper 추가
 - [x] 전체 저장소 개요를 담은 `README.md` 작성
 
 ### T-003: FastAPI 백엔드 뼈대 구성
@@ -82,7 +82,7 @@
 - [x] `docs/docker-management.md` 신규 작성
 - [x] 통합 DB 모델(`kraddr-geo-postgres:5432`)을 공식 기준으로 문서 정정
 - [x] UI/API/CLI에서 공유할 target registry 정의
-- [x] `scripts/infra.sh`의 오래된 분리 DB target 제거 및 호환 정리
+- [x] 오래된 분리 DB target 제거 및 초기 helper 정리
 
 ### T-009: Python CLI 및 target ensure/build 구현
 
@@ -130,7 +130,7 @@
 - [x] `docker-compose.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 서비스 추가
 - [x] `config/docker-targets.yml`에 `kraddr-geo-api`, `kraddr-geo-ui` 관리 컨테이너 등록
 - [x] `geo` target이 API/Web UI 실행과 원천 데이터 검증을 함께 수행하도록 변경
-- [x] `scripts/infra.sh` 호환 target도 `geo` 이상에서 API/Web UI를 포함하도록 정리
+- [x] 초기 helper target도 `geo` 이상에서 API/Web UI를 포함하도록 정리
 - [x] `.env.example`, 포트 문서, Docker 관리 문서에 `12201`, `12205` 기준 추가
 
 ### T-017: 관측 스택 Docker target 추가
@@ -139,4 +139,4 @@
 - [x] `config/docker-targets.yml`에 `observability` target과 세 관리 컨테이너를 등록
 - [x] 포트 정책에 맞춰 Prometheus `12601`, cAdvisor Exporter `12602`, Grafana `12605`를 배정
 - [x] Prometheus scrape config와 Grafana Prometheus datasource provisioning을 추가
-- [x] `.env.example`, `scripts/infra.sh`, 아키텍처/포트/Docker 관리 문서, ADR을 갱신
+- [x] `.env.example`, 아키텍처/포트/Docker 관리 문서, ADR을 갱신

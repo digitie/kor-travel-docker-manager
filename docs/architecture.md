@@ -133,7 +133,7 @@ graph TD
    - host 포트: `12201`.
    - 컨테이너 내부 포트: `12201`.
    - 내부 의존성: `kraddr-geo-postgres:5432`, `rustfs:9000`.
-   - 기본 source data mount: `KOR_TRAVEL_GEO_APP_DATA_DIR` -> `/data:ro`. 현재 로컬 Dockerfile과 원천 데이터가 기존 checkout에 있으면 `/mnt/f/dev/python-kraddr-geo/data`를 사용하고, 새 checkout 이전이 끝나면 `/mnt/f/dev/kor-travel-geo/data`로 변경한다.
+   - 기본 source data mount: `KOR_TRAVEL_GEO_APP_DATA_DIR=/mnt/f/dev/kor-travel-geo/data` -> `/data:ro`.
 4. **kor-travel-geo Web UI**:
    - 컨테이너: `kraddr-geo-ui-latest`
    - compose service: `kraddr-geo-ui`
@@ -160,6 +160,6 @@ graph TD
    - host 포트: `12602`.
    - 컨테이너 내부 포트: `8080`.
 
-`kor-travel-geo`, `python-krtour-map`, `tripmate`, `kor-travel-concierge`는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `kor-travel-geo` API/Web UI도 `geo` target에 포함되어 manager에서 함께 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `tmctl` CLI, `scripts/infra.sh`, 대시보드/API를 사용한다. 공식 CLI 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`, `observability`이며, `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
+`kor-travel-geo`, `python-krtour-map`, `tripmate`, `kor-travel-concierge`는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `kor-travel-geo` API/Web UI도 `geo` target에 포함되어 manager에서 함께 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `tmctl` CLI, 대시보드/API를 사용한다. 공식 CLI 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`, `observability`이며, `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
 
 로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 표준 `5432`를 사용하고, RustFS는 `storage` 대역(`12100-12199`), `kor-travel-geo`는 `geo` 대역(`12200-12299`), Prometheus/Grafana/cAdvisor Exporter는 `observability` 대역(`12600-12699`), `tripmate-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.

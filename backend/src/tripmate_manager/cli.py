@@ -7,7 +7,7 @@ from tripmate_manager.services.compose_service import compose_service
 from tripmate_manager.services.docker_service import docker_service
 from tripmate_manager.services.registry import list_targets
 
-DIRECT_ENSURE_ALIASES = {"db", "storage", "geo", "map", "ai", "main"}
+DIRECT_ENSURE_ALIASES = {"db", "storage", "geo", "map", "ai", "main", "observability", "all"}
 
 
 def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -> int:

@@ -20,7 +20,7 @@
 
 | 실행 위치 | 실행 대상 |
 |---|---|
-| WSL | `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `tmctl`, `scripts/infra.sh`, `ruff`, `pytest`, `npm run type-check`, `npm run build`, 서버 실행, 파일 검색 |
+| WSL | `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `tmctl`, `ruff`, `pytest`, `npm run type-check`, `npm run build`, 서버 실행, 파일 검색 |
 | Windows 호스트 | `git` 전체, Playwright E2E (`npx playwright test`, Playwright browser install 포함) |
 
 Windows 경로 `F:\dev\tripmate-manager`는 WSL에서 `/mnt/f/dev/tripmate-manager`로 접근한다. 문서 예시가 Windows 경로를 보여 주더라도 git과 Playwright E2E를 제외한 명령은 WSL 경로에서 실행한다.
@@ -96,14 +96,7 @@ poetry run tmctl main --build
 
 공식 target 별칭은 `db`, `storage`, `geo`, `map`, `ai`, `main`이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> geo -> map -> ai -> main`이다. 예를 들어 `tmctl geo --build`는 통합 DB, RustFS, `kor-travel-geo` API/Web UI 실행, 원천 데이터 검증까지 수행한다.
 
-호환 별칭으로 `postgresql`, `rustfs`, `kor-travel-geo`, `python-krtour-map`, `kor-travel-concierge`, `tripmate`도 사용할 수 있다.
-
-기존 helper 스크립트도 유지한다.
-
-```bash
-scripts/infra.sh geo --build
-scripts/infra.sh status all
-```
+추가 target 이름으로 `postgresql`, `rustfs`, `kor-travel-geo`, `python-krtour-map`, `kor-travel-concierge`, `tripmate`도 사용할 수 있다.
 
 `geo` 이상 target은 `/data/juso` 마운트와 `kraddr_geo` 핵심 테이블 적재 상태를 확인한다. 의도적으로 빈 DB를 다루는 경우에만 `.env`에서 `KRADDR_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
 

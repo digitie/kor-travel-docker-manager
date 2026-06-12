@@ -162,3 +162,22 @@ def test_cli_direct_alias_runs_ensure(mock_compose_service):
         recreate=False,
         capture_output=True,
     )
+
+
+@patch("tripmate_manager.cli.compose_service")
+def test_cli_direct_observability_alias_runs_ensure(mock_compose_service):
+    mock_compose_service.ensure_target.return_value = {
+        "success": True,
+        "returncode": 0,
+        "command": [["docker", "compose", "up", "-d"]],
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert main(["observability"]) == 0
+    mock_compose_service.ensure_target.assert_called_once_with(
+        "observability",
+        build=False,
+        recreate=False,
+        capture_output=True,
+    )

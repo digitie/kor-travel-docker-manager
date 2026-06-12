@@ -48,7 +48,7 @@
 
 - **명령 실행 위치 강제**:
   - `git` 관련 명령(`git status`, `git fetch`, `git switch`, `git add`, `git commit`, `git push` 등)은 Windows 호스트에서만 실행한다.
-  - `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `tmctl`, `scripts/infra.sh`, `ruff`, `pytest`, 빌드, 서버 실행, 파일 검색 등 git이 아닌 모든 개발/검증 명령은 WSL에서 실행한다.
+  - `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `tmctl`, `ruff`, `pytest`, 빌드, 서버 실행, 파일 검색 등 git이 아닌 모든 개발/검증 명령은 WSL에서 실행한다.
   - Playwright E2E는 명시 예외로 Windows 호스트에서 실행한다. 브라우저/그래픽/확장 연동 상태를 실제 Windows 사용자 환경 기준으로 검증하기 위함이다.
   - 문서 예시에서 Windows 경로(`F:\...`)가 나오더라도 git과 Playwright E2E를 제외한 실행 명령은 WSL 경로(`/mnt/f/...`)로 변환해 실행한다.
 
