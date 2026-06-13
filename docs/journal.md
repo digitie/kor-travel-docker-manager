@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-06-13 (`kor-travel-geo` UI Prometheus scrape 추가)
+
+- **작업 내용**:
+  - `kor-travel-geo-ui`의 Next.js Prometheus endpoint(`/api/metrics`)를 scrape하도록 `kor-travel-geo-ui:12505` target을 추가했다.
+- **검증**:
+  - `docker compose config` 통과.
+  - `config/prometheus/prometheus.yml`에서 `kor-travel-geo-api:12501`, `kor-travel-geo-ui:12505` scrape target 확인.
+
+---
+
 ## 2026-06-13 (Grafana/cAdvisor/Prometheus target 개별 분리)
 
 - **작업 내용**:

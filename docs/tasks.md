@@ -64,7 +64,7 @@
 - [x] Docker service/container 이름을 `kor-travel-geo-*`로 맞춘다
 - [x] 물리 데이터 디렉터리를 `/home/digitie/kor-travel-geo-data` 기준으로 맞춘다
 - [x] RustFS bucket 기본값을 `kor-travel-geo`로 맞춘다
-- [x] Prometheus scrape target에 `kor-travel-geo-api:12501/metrics`를 추가한다
+- [x] Prometheus scrape target에 `kor-travel-geo-api:12501/metrics`와 `kor-travel-geo-ui:12505/api/metrics`를 추가한다
 - [x] 관련 문서와 테스트 fixture를 갱신한다
 
 ### T-222: 관측 target 개별 분리 및 포트 재배치

@@ -18,3 +18,9 @@ scrape_configs:
     static_configs:
       - targets:
           - kor-travel-geo-api:12501
+
+  - job_name: kor-travel-geo-ui
+    metrics_path: /api/metrics
+    static_configs:
+      - targets:
+          - kor-travel-geo-ui:12505
