@@ -59,7 +59,7 @@ poetry run ktdctl geo --build
 |------|-----------|-----------|
 | 통합 PostgreSQL / PostGIS | `5432` | `postgresql://localhost:5432` 안의 `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
-| RustFS console | `12105` | `http://127.0.0.1:12105` |
+| RustFS console | `12105` | `http://127.0.0.1:12105/rustfs/console/` |
 | Grafana Web UI | `12205` | `http://127.0.0.1:12205` |
 | cAdvisor Exporter | `12301` | `http://127.0.0.1:12301` |
 | Prometheus | `12401` | `http://127.0.0.1:12401` |

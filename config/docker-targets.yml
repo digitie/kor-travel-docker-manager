@@ -36,7 +36,7 @@ containers:
     compose_service: rustfs
     role: rustfs
     display_name: RustFS 공용 오브젝트 스토리지
-    connection: http://127.0.0.1:12101
+    connection: "S3 API http://127.0.0.1:12101 / console http://127.0.0.1:12105/rustfs/console/"
     expected_ports:
       - "12101:9000"
       - "12105:9001"
