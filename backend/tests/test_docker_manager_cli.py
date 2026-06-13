@@ -24,19 +24,21 @@ def test_cli_console_script_is_ktdctl():
 
 
 def test_registry_resolves_application_targets_to_shared_services():
-    target = get_target("main")
+    target = get_target("srv")
 
-    assert target["id"] == "main"
-    assert target_sequence_for_target("main") == [
+    assert target["id"] == "pinvi"
+    assert target_sequence_for_target("srv") == [
         "db",
         "storage",
         "gra",
         "cadv",
         "prom",
         "geo",
+        "conc",
         "map",
+        "pinvi",
     ]
-    assert services_for_target("main") == [
+    assert services_for_target("srv") == [
         "kor-travel-geo-postgres",
         "rustfs",
         "grafana",
@@ -44,8 +46,18 @@ def test_registry_resolves_application_targets_to_shared_services():
         "prometheus",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-mcp",
+        "kor-travel-concierge-scheduler",
+        "kor-travel-concierge-ui",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        "pinvi-api",
+        "pinvi-web",
     ]
-    assert runtime_services_for_target("main") == [
+    assert runtime_services_for_target("srv") == [
         "kor-travel-geo-postgres",
         "rustfs",
         "grafana",
@@ -53,8 +65,18 @@ def test_registry_resolves_application_targets_to_shared_services():
         "prometheus",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-mcp",
+        "kor-travel-concierge-scheduler",
+        "kor-travel-concierge-ui",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        "pinvi-api",
+        "pinvi-web",
     ]
-    assert [step["name"] for step in init_steps_for_target("main")] == [
+    assert [step["name"] for step in init_steps_for_target("srv")] == [
         "db-schema-recovery",
         "rustfs-bucket-recovery",
         "geo-source-verification",
@@ -72,11 +94,24 @@ def test_short_aliases_resolve_dependency_order():
     assert get_target("cadvisor")["id"] == "cadv"
     assert get_target("prom")["id"] == "prom"
     assert get_target("prometheus")["id"] == "prom"
+    assert get_target("conc")["id"] == "conc"
+    assert get_target("kor-travel-concierge")["id"] == "conc"
     assert get_target("map")["id"] == "map"
-    assert get_target("ai")["id"] == "ai"
-    assert get_target("kor-travel-concierge")["id"] == "ai"
-    assert get_target("tripmate")["id"] == "main"
+    assert get_target("kor-travel-map")["id"] == "map"
+    assert get_target("srv")["id"] == "pinvi"
+    assert get_target("pinvi")["id"] == "pinvi"
+    assert get_target("tripmate")["id"] == "pinvi"
+    assert get_target("main")["id"] == "pinvi"
     assert get_target("metrics")["id"] == "prom"
+    assert target_sequence_for_target("conc") == [
+        "db",
+        "storage",
+        "gra",
+        "cadv",
+        "prom",
+        "geo",
+        "conc",
+    ]
     assert target_sequence_for_target("map") == [
         "db",
         "storage",
@@ -84,26 +119,19 @@ def test_short_aliases_resolve_dependency_order():
         "cadv",
         "prom",
         "geo",
+        "conc",
         "map",
     ]
-    assert target_sequence_for_target("ai") == [
+    assert target_sequence_for_target("srv") == [
         "db",
         "storage",
         "gra",
         "cadv",
         "prom",
         "geo",
+        "conc",
         "map",
-        "ai",
-    ]
-    assert target_sequence_for_target("main") == [
-        "db",
-        "storage",
-        "gra",
-        "cadv",
-        "prom",
-        "geo",
-        "map",
+        "pinvi",
     ]
     assert services_for_target("geo") == [
         "kor-travel-geo-postgres",
@@ -130,7 +158,7 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
     mock_run.return_value.stdout = "started"
     mock_run.return_value.stderr = ""
 
-    result = ComposeService().ensure_target("main", build=True, recreate=True)
+    result = ComposeService().ensure_target("srv", build=True, recreate=True)
 
     assert result["success"] is True
     assert result["services"] == [
@@ -141,6 +169,16 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
         "prometheus",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-mcp",
+        "kor-travel-concierge-scheduler",
+        "kor-travel-concierge-ui",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        "pinvi-api",
+        "pinvi-web",
     ]
     assert result["target_sequence"] == [
         "db",
@@ -149,7 +187,9 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
         "cadv",
         "prom",
         "geo",
+        "conc",
         "map",
+        "pinvi",
     ]
     up_command = result["command"][0]
     assert up_command[:2] == ["docker", "compose"]
@@ -162,6 +202,9 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
     assert "prometheus" in up_command
     assert "kor-travel-geo-api" in up_command
     assert "kor-travel-geo-ui" in up_command
+    assert "kor-travel-concierge-api" in up_command
+    assert "kor-travel-map-api" in up_command
+    assert "pinvi-api" in up_command
     assert mock_run.call_count == 4
 
 
@@ -230,6 +273,25 @@ def test_cli_direct_gra_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.assert_called_once_with(
         "gra",
         build=False,
+        recreate=False,
+        capture_output=True,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
+    mock_compose_service.ensure_target.return_value = {
+        "success": True,
+        "returncode": 0,
+        "command": [["docker", "compose", "up", "-d"]],
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert main(["srv", "--build"]) == 0
+    mock_compose_service.ensure_target.assert_called_once_with(
+        "srv",
+        build=True,
         recreate=False,
         capture_output=True,
     )

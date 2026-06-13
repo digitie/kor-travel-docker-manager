@@ -405,3 +405,38 @@ Kor Travel Geo의 DB명은 `kor_travel_geo`로, manager override 변수는 `KOR_
 ### 결과(부정)
 - 기존 `.env`에 이전 geo 이름 계열 변수를 직접 넣어 둔 개발자는 `.env.example`을 기준으로 `KOR_TRAVEL_GEO_*` 이름으로 갱신해야 한다.
 - 기존 컨테이너를 제거하고 새 compose 기준으로 재생성해야 하므로 전환 시점에 짧은 로컬 중단이 발생한다.
+
+---
+
+## ADR-14: 앱 target 흐름을 `geo -> conc -> map -> pinvi`로 재정렬하고 실제 앱 컨테이너를 manager에서 빌드한다
+
+- 상태: accepted
+- 날짜: 2026-06-13
+- 결정자: human, AI agent
+
+### 컨텍스트
+기존 target registry는 `geo -> map -> ai -> main` 순서를 사용했고, `map`, `ai`, `main`은 실제 앱 컨테이너 없이 선행 공용 인프라만 실행하는 placeholder 성격이었다. 사용자는 `map` target이 실제 `kor-travel-map` Docker 이미지를 빌드하고 실행해야 하며, 앱 흐름은 `kor-travel-geo` 다음 `kor-travel-concierge`, 그 다음 `kor-travel-map`, 그 다음 Pinvi라고 명확히 지정했다.
+
+### 결정
+공식 dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`로 변경한다. `conc`는 `kor-travel-concierge`, `map`은 `kor-travel-map`, `pinvi`는 Pinvi 앱 컨테이너를 실제 compose service로 빌드하고 실행한다. `srv`와 `main`은 `pinvi` target의 별칭으로 둔다.
+
+### 근거
+- 사용자가 지정한 서비스 흐름과 CLI 별칭(`conc`, `srv`)을 source of truth에 반영해야 한다.
+- `map` target이 실제 앱을 빌드하지 않으면 `ktdctl map --build`라는 명령 의미와 실행 결과가 어긋난다.
+- `main`을 독립 target으로 유지하면 Pinvi를 추가하는 순간 `12900` 대역과 manager 자체 포트가 충돌하므로, Pinvi를 `12800-12899` 대역의 마지막 앱 target으로 둔다.
+- registry alias 기반 직접 실행으로 바꾸면 새 target alias를 추가할 때 CLI 고정 목록을 다시 수정하지 않아도 된다.
+
+### 결과(긍정)
+- `ktdctl conc --build`는 `kor-travel-concierge` API/MCP/Scheduler/Web UI를 빌드하고 실행한다.
+- `ktdctl map --build`는 `geo`, `conc` 이후 `kor-travel-map` API/Dagster/Web UI까지 빌드하고 실행한다.
+- `ktdctl srv --build` 또는 기존 `ktdctl main --build`는 Pinvi API/Web UI까지 실행한다.
+- 공용 DB 복구가 `krtour_map_dagster` database까지 보정하고, RustFS 복구가 `kor-travel-concierge` bucket까지 보정한다.
+
+### 결과(부정)
+- 기존 `ai` target은 제거되므로 해당 별칭을 쓰던 스크립트는 `conc`로 바꿔야 한다.
+- `kor-travel-map` 포트가 `126xx`에서 `127xx`로 이동하고, `kor-travel-concierge`가 `126xx` 대역을 사용한다.
+- `ktdctl map --build`가 실제 앱 이미지들을 빌드하므로 이전보다 실행 시간이 길어진다.
+
+### 후속
+- (open) 대시보드에서 `conc`, `map`, `pinvi` target의 dependency graph와 init step 결과를 표시한다.
+- (open) Prometheus scrape target에 새 앱의 `/metrics` 표면이 안정화되면 추가한다.

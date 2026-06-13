@@ -149,9 +149,9 @@ def test_get_targets():
         "cadv",
         "prom",
         "geo",
+        "conc",
         "map",
-        "ai",
-        "main",
+        "pinvi",
     ]
     assert data[8]["resolved_sequence"] == [
         "db",
@@ -160,7 +160,9 @@ def test_get_targets():
         "cadv",
         "prom",
         "geo",
+        "conc",
         "map",
+        "pinvi",
     ]
     assert data[8]["resolved_services"] == [
         "kor-travel-geo-postgres",
@@ -170,6 +172,16 @@ def test_get_targets():
         "prometheus",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-mcp",
+        "kor-travel-concierge-scheduler",
+        "kor-travel-concierge-ui",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        "pinvi-api",
+        "pinvi-web",
     ]
     assert data[4]["resolved_services"][-3:] == ["grafana", "cadvisor", "prometheus"]
     assert any(target["id"] == "all" for target in data)
@@ -194,6 +206,16 @@ def test_ensure_target_success(mock_compose_service):
                 "prometheus",
                 "kor-travel-geo-api",
                 "kor-travel-geo-ui",
+                "kor-travel-concierge-api",
+                "kor-travel-concierge-mcp",
+                "kor-travel-concierge-scheduler",
+                "kor-travel-concierge-ui",
+                "kor-travel-map-api",
+                "kor-travel-map-ui",
+                "kor-travel-map-dagster",
+                "kor-travel-map-dagster-daemon",
+                "pinvi-api",
+                "pinvi-web",
             ]
         ],
         "stdout": "ok",
@@ -206,7 +228,9 @@ def test_ensure_target_success(mock_compose_service):
             "cadv",
             "prom",
             "geo",
+            "conc",
             "map",
+            "pinvi",
         ],
         "services": [
             "kor-travel-geo-postgres",
@@ -216,6 +240,16 @@ def test_ensure_target_success(mock_compose_service):
             "prometheus",
             "kor-travel-geo-api",
             "kor-travel-geo-ui",
+            "kor-travel-concierge-api",
+            "kor-travel-concierge-mcp",
+            "kor-travel-concierge-scheduler",
+            "kor-travel-concierge-ui",
+            "kor-travel-map-api",
+            "kor-travel-map-ui",
+            "kor-travel-map-dagster",
+            "kor-travel-map-dagster-daemon",
+            "pinvi-api",
+            "pinvi-web",
         ],
         "init_results": [],
     }

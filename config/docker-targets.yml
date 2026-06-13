@@ -18,9 +18,9 @@ dependency_order:
   - cadv
   - prom
   - geo
+  - conc
   - map
-  - ai
-  - main
+  - pinvi
 
 containers:
   kor-travel-geo-postgresql:
@@ -56,6 +56,84 @@ containers:
     connection: http://127.0.0.1:12505
     expected_ports:
       - "12505:12505"
+  kor-travel-concierge-api:
+    name: kor-travel-concierge-api-latest
+    compose_service: kor-travel-concierge-api
+    role: concierge-api
+    display_name: Kor Travel Concierge API
+    connection: http://127.0.0.1:12601
+    expected_ports:
+      - "12601:8000"
+  kor-travel-concierge-mcp:
+    name: kor-travel-concierge-mcp-latest
+    compose_service: kor-travel-concierge-mcp
+    role: concierge-mcp
+    display_name: Kor Travel Concierge MCP
+    connection: http://127.0.0.1:12602/mcp
+    expected_ports:
+      - "12602:12402"
+  kor-travel-concierge-scheduler:
+    name: kor-travel-concierge-scheduler-latest
+    compose_service: kor-travel-concierge-scheduler
+    role: concierge-scheduler
+    display_name: Kor Travel Concierge Scheduler
+    connection: internal scheduler
+    expected_ports: []
+  kor-travel-concierge-ui:
+    name: kor-travel-concierge-ui-latest
+    compose_service: kor-travel-concierge-ui
+    role: concierge-ui
+    display_name: Kor Travel Concierge Web UI
+    connection: http://127.0.0.1:12605
+    expected_ports:
+      - "12605:3000"
+  kor-travel-map-api:
+    name: kor-travel-map-api-latest
+    compose_service: kor-travel-map-api
+    role: map-api
+    display_name: Kor Travel Map API
+    connection: http://127.0.0.1:12701
+    expected_ports:
+      - "12701:9011"
+  kor-travel-map-ui:
+    name: kor-travel-map-ui-latest
+    compose_service: kor-travel-map-ui
+    role: map-ui
+    display_name: Kor Travel Map Web UI
+    connection: http://127.0.0.1:12705
+    expected_ports:
+      - "12705:9012"
+  kor-travel-map-dagster:
+    name: kor-travel-map-dagster-latest
+    compose_service: kor-travel-map-dagster
+    role: map-dagster
+    display_name: Kor Travel Map Dagster
+    connection: http://127.0.0.1:12702
+    expected_ports:
+      - "12702:9013"
+  kor-travel-map-dagster-daemon:
+    name: kor-travel-map-dagster-daemon-latest
+    compose_service: kor-travel-map-dagster-daemon
+    role: map-dagster-daemon
+    display_name: Kor Travel Map Dagster Daemon
+    connection: internal daemon
+    expected_ports: []
+  pinvi-api:
+    name: pinvi-api-latest
+    compose_service: pinvi-api
+    role: pinvi-api
+    display_name: Pinvi API
+    connection: http://127.0.0.1:12801
+    expected_ports:
+      - "12801:8000"
+  pinvi-web:
+    name: pinvi-web-latest
+    compose_service: pinvi-web
+    role: pinvi-web
+    display_name: Pinvi Web UI
+    connection: http://127.0.0.1:12805
+    expected_ports:
+      - "12805:3000"
   prometheus:
     name: tripmate-prometheus
     compose_service: prometheus
@@ -207,59 +285,100 @@ targets:
           - sh
           - /opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh
 
-  map:
+  conc:
     port_band: "12600-12699"
-    display_name: python-krtour-map
-    description: python-krtour-map 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
-    aliases:
-      - krtour-map
-      - python-krtour-map
-    services: []
-    runtime_services: []
-    containers:
-      - kor-travel-geo-postgresql
-      - rustfs
-      - kor-travel-geo-api
-      - kor-travel-geo-ui
-    init_steps: []
-
-  ai:
-    port_band: "12700-12799"
     display_name: Kor Travel Concierge
-    description: Kor Travel Concierge provider와 krtour-map 연계 개발에 필요한 공용 DB/RustFS 의존성을 실행합니다.
+    description: Kor Travel Concierge API/MCP/Scheduler/Web UI와 공용 DB/RustFS 의존성을 실행합니다.
     aliases:
       - kor-travel-concierge
       - concierge
       - agent
-    services: []
-    runtime_services: []
+      - conc
+    services:
+      - kor-travel-concierge-api
+      - kor-travel-concierge-mcp
+      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-ui
+    runtime_services:
+      - kor-travel-concierge-api
+      - kor-travel-concierge-mcp
+      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-ui
     containers:
       - kor-travel-geo-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
+      - kor-travel-concierge-api
+      - kor-travel-concierge-mcp
+      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-ui
     init_steps: []
 
-  main:
-    port_band: "12800-12899"
-    display_name: TripMate main
-    description: TripMate main 서비스 개발에 필요한 공용 DB/RustFS와 krtour-map 의존성을 실행합니다. Kor Travel Concierge는 포함하지 않습니다.
+  map:
+    port_band: "12700-12799"
+    display_name: Kor Travel Map
+    description: Kor Travel Map API/Dagster/Web UI와 선행 Kor Travel Concierge 의존성을 실행합니다.
     aliases:
+      - kor-travel-map
+      - krtour-map
+      - python-krtour-map
+    services:
+      - kor-travel-map-api
+      - kor-travel-map-ui
+      - kor-travel-map-dagster
+      - kor-travel-map-dagster-daemon
+    runtime_services:
+      - kor-travel-map-api
+      - kor-travel-map-ui
+      - kor-travel-map-dagster
+      - kor-travel-map-dagster-daemon
+    containers:
+      - kor-travel-geo-postgresql
+      - rustfs
+      - kor-travel-geo-api
+      - kor-travel-geo-ui
+      - kor-travel-concierge-api
+      - kor-travel-concierge-mcp
+      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-ui
+      - kor-travel-map-api
+      - kor-travel-map-ui
+      - kor-travel-map-dagster
+      - kor-travel-map-dagster-daemon
+    init_steps: []
+
+  pinvi:
+    port_band: "12800-12899"
+    display_name: Pinvi
+    description: Pinvi API/Web UI와 Kor Travel Map까지의 선행 의존성을 실행합니다.
+    aliases:
+      - srv
+      - main
       - tripmate
       - tripmate-api
       - tripmate-web
-    include:
-      - db
-      - storage
-      - geo
-      - map
-    services: []
-    runtime_services: []
+    services:
+      - pinvi-api
+      - pinvi-web
+    runtime_services:
+      - pinvi-api
+      - pinvi-web
     containers:
       - kor-travel-geo-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
+      - kor-travel-concierge-api
+      - kor-travel-concierge-mcp
+      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-ui
+      - kor-travel-map-api
+      - kor-travel-map-ui
+      - kor-travel-map-dagster
+      - kor-travel-map-dagster-daemon
+      - pinvi-api
+      - pinvi-web
     init_steps: []
 
   all:
@@ -274,9 +393,9 @@ targets:
       - cadv
       - prom
       - geo
+      - conc
       - map
-      - ai
-      - main
+      - pinvi
     services: []
     runtime_services: []
     containers:
@@ -287,4 +406,14 @@ targets:
       - prometheus
       - kor-travel-geo-api
       - kor-travel-geo-ui
+      - kor-travel-concierge-api
+      - kor-travel-concierge-mcp
+      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-ui
+      - kor-travel-map-api
+      - kor-travel-map-ui
+      - kor-travel-map-dagster
+      - kor-travel-map-dagster-daemon
+      - pinvi-api
+      - pinvi-web
     init_steps: []

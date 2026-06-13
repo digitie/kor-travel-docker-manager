@@ -2,7 +2,7 @@
 
 TripMate 구동에 필요한 공용 기반 서비스(PostgreSQL / PostGIS, RustFS 등)를 관리하고 실시간으로 모니터링하기 위한 관리 소프트웨어입니다.
 
-`tripmate`, `kor-travel-concierge`, `python-krtour-map`, `kor-travel-geo` 등 포스트그레스와 파일 스토리지를 활용하는 여러 서비스에서 이 인프라를 안정적으로 공용하여 사용할 수 있게 돕습니다.
+`pinvi`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo` 등 포스트그레스와 파일 스토리지를 활용하는 여러 서비스에서 이 인프라를 안정적으로 공용하여 사용할 수 있게 돕습니다.
 
 ---
 
@@ -22,7 +22,7 @@ kor-travel-docker-manager/
 ├── config/             # Docker target alias, 의존 순서, 초기화 step 설정
 ├── frontend/           # Next.js 프론트엔드 대시보드 웹
 ├── docs/               # 아키텍처, 결정 사항(ADR), 일지 및 백로그 문서
-├── docker-compose.yml  # PostgreSQL, RustFS, kor-travel-geo 로컬 구동용 compose 설정
+├── docker-compose.yml  # PostgreSQL, RustFS, geo/conc/map/pinvi 로컬 구동용 compose 설정
 ├── AGENTS.md           # AI 에이전트 협업 정책 및 언어 규칙
 ├── SKILL.md            # 에이전트 개발 매뉴얼 및 명령어 세트
 └── CLAUDE.md           # 세션 컨텍스트 가이드
@@ -42,7 +42,7 @@ kor-travel-docker-manager/
 cd /mnt/f/dev/kor-travel-docker-manager/backend
 poetry install
 poetry run ktdctl targets
-poetry run ktdctl main --build
+poetry run ktdctl srv --build
 ```
 
 `kor-travel-geo`만 필요한 경우:
@@ -51,7 +51,7 @@ poetry run ktdctl main --build
 poetry run ktdctl geo --build
 ```
 
-공식 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `map`, `ai`, `main`이며, 의존 순서는 `config/docker-targets.yml`의 `db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main`을 따른다.
+공식 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이며, `srv`와 `main`은 `pinvi`를 가리키는 별칭입니다. 의존 순서는 `config/docker-targets.yml`의 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`를 따릅니다.
 
 기본 접속 정보는 다음과 같습니다.
 
@@ -65,6 +65,14 @@ poetry run ktdctl geo --build
 | Prometheus | `12401` | `http://127.0.0.1:12401` |
 | kor-travel-geo API | `12501` | `http://127.0.0.1:12501` |
 | kor-travel-geo Web UI | `12505` | `http://127.0.0.1:12505` |
+| kor-travel-concierge API | `12601` | `http://127.0.0.1:12601` |
+| kor-travel-concierge MCP | `12602` | `http://127.0.0.1:12602/mcp` |
+| kor-travel-concierge Web UI | `12605` | `http://127.0.0.1:12605` |
+| kor-travel-map API | `12701` | `http://127.0.0.1:12701` |
+| kor-travel-map Dagster | `12702` | `http://127.0.0.1:12702` |
+| kor-travel-map Web UI | `12705` | `http://127.0.0.1:12705` |
+| Pinvi API | `12801` | `http://127.0.0.1:12801` |
+| Pinvi Web UI | `12805` | `http://127.0.0.1:12805` |
 | Manager Backend API | `12901` | `http://127.0.0.1:12901` |
 | Manager Dashboard Web | `12905` | `http://127.0.0.1:12905` |
 

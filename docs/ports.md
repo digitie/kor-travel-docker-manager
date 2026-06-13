@@ -28,16 +28,16 @@
 | `cadv` | `12300-12399` | API `12301` | cAdvisor Exporter. |
 | `prom` | `12400-12499` | API/Web `12401` | Prometheus. |
 | `geo` | `12500-12599` | API `12501`, Web UI `12505` | `kor-travel-geo` REST API와 admin UI. |
-| `map` | `12600-12699` | API `12601`, 추가 관리 포트 `12602`, Web UI `12605` | `python-krtour-map` admin API, Dagster, admin Web UI. |
-| `ai` | `12700-12799` | API `12701`, 추가 MCP 포트 `12702`, Web UI `12705` | `kor-travel-concierge` API, MCP HTTP, Web UI. |
-| `main` | `12800-12899` | API `12801`, Web UI `12805` | `tripmate` API/Web. |
+| `conc` | `12600-12699` | API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` API, MCP HTTP, scheduler, Web UI. |
+| `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` admin API, Dagster, admin Web UI. |
+| `pinvi` | `12800-12899` | API `12801`, Web UI `12805` | Pinvi API/Web. `srv`와 `main`은 이 target의 별칭. |
 | `kor-travel-docker-manager` | `12900-12999` | API `12901`, Web UI `12905` | dependency 추가와 무관하게 고정. |
 
 ---
 
 ## 3. 관련 로컬 레포 포트 조사
 
-조사 대상 canonical 레포는 `F:\dev\tripmate`, `F:\dev\kor-travel-concierge`, `F:\dev\kor-travel-geo`, `F:\dev\python-krtour-map`, `F:\dev\kor-travel-docker-manager`다. `*-codex`, `*-claude`, `*-antigravity` 등 worktree 복제본은 같은 계약이 중복될 수 있어 본 표의 집계 대상에서 제외했다.
+조사 대상 canonical 레포는 `F:\dev\pinvi`, `F:\dev\kor-travel-concierge`, `F:\dev\kor-travel-geo`, `F:\dev\kor-travel-map`, `F:\dev\kor-travel-docker-manager`다. `*-codex`, `*-claude`, `*-antigravity` 등 worktree 복제본은 같은 계약이 중복될 수 있어 본 표의 집계 대상에서 제외했다.
 
 | 레포 | 대상 | 변경 전 확인 포트 | 변경 후 정책 포트 | 근거 |
 |---|---|---:|---:|---|
@@ -53,21 +53,21 @@
 | `kor-travel-geo` | REST API | `9001`, 일부 문서 `8888` | `12501` | `README.md`, `docker/api.Dockerfile`, `CLAUDE.md` |
 | `kor-travel-geo` | Admin Web UI | `9002`, 일부 문서 `13088` | `12505` | `README.md`, `CLAUDE.md` |
 | `kor-travel-geo` | RustFS S3 API/console | `9003` / `9004` | `12101` / `12105` | `README.md`, `CHANGELOG.md` |
-| `python-krtour-map` | Standalone PostgreSQL | `15433` | `5432` | 통합 DB 사용 시 `5432`로 이관 대상. |
-| `python-krtour-map` | Admin API | `9011` | `12601` | `.env.example`, `docker-compose.yml` |
-| `python-krtour-map` | Dagster Webserver | `9013` | `12602` | `.env.example`, `docker-compose.yml` |
-| `python-krtour-map` | Admin Web UI | `9012` | `12605` | `.env.example`, `docker-compose.yml`, frontend package |
-| `python-krtour-map` | kor-travel-geo 연동 API URL | `9001` | `12501` | `.env.example`, `docs/address-geocoding.md` |
-| `python-krtour-map` | RustFS S3 API/console | `9003` / `9004` | `12101` / `12105` | `.env.example`, `docker-compose.yml` |
-| `kor-travel-concierge` | API | `9041` | `12701` | `.env.example`, `docker-compose.yml`, `README.md` |
-| `kor-travel-concierge` | MCP HTTP | `8010` | `12702` | `.env.example`, `docker-compose.yml` |
-| `kor-travel-concierge` | Web UI | `9042` | `12705` | `.env.example`, `docker-compose.yml`, frontend package |
+| `kor-travel-concierge` | API | `9041`, compose 기본 `12401` | `12601` | `.env.example`, `docker-compose.yml`, `README.md` |
+| `kor-travel-concierge` | MCP HTTP | `8010`, compose 기본 `12402` | `12602` | `.env.example`, `docker-compose.yml` |
+| `kor-travel-concierge` | Web UI | `9042`, compose 기본 `12405` | `12605` | `.env.example`, `docker-compose.yml`, frontend package |
 | `kor-travel-concierge` | PostgreSQL | `15434` | `5432` | `.env.example`, `docker-compose.yml` |
 | `kor-travel-concierge` | RustFS S3 API/console | `9003` / `9004` | `12101` / `12105` | `.env.example`, `docker-compose.yml` |
-| `tripmate` | API | `8001`, app compose `18082` | `12801` | `.env.example`, `infra/docker-compose.app.yml` |
-| `tripmate` | Web UI | `3001`, app compose `13082`, infra compose `23000` | `12805` | `.env.example`, `apps/web/package.json`, `infra/docker-compose*.yml` |
-| `tripmate` | PostgreSQL | `55432` | `5432` | 구 분리 DB 기준. 통합 DB 모델로 이관 대상. |
-| `tripmate` | RustFS S3 API/console | `9003` / `9004` | `12101` / `12105` | `.env.example`, `infra/docker-compose*.yml` |
+| `kor-travel-map` | Standalone PostgreSQL | `15433` | `5432` | 통합 DB 사용 시 `5432`로 이관 대상. |
+| `kor-travel-map` | Admin API | `9011` | `12701` | `.env.example`, `docker-compose.yml` |
+| `kor-travel-map` | Dagster Webserver | `9013` | `12702` | `.env.example`, `docker-compose.yml` |
+| `kor-travel-map` | Admin Web UI | `9012` | `12705` | `.env.example`, `docker-compose.yml`, frontend package |
+| `kor-travel-map` | kor-travel-geo 연동 API URL | `9001` | `12501` | `.env.example`, `docs/address-geocoding.md` |
+| `kor-travel-map` | RustFS S3 API/console | `9003` / `9004` | `12101` / `12105` | `.env.example`, `docker-compose.yml` |
+| `pinvi` | API | `8001`, app compose `18082` | `12801` | `.env.example`, `infra/docker-compose.app.yml` |
+| `pinvi` | Web UI | `3001`, app compose `13082`, infra compose `23000` | `12805` | `.env.example`, `apps/web/package.json`, `infra/docker-compose*.yml` |
+| `pinvi` | PostgreSQL | `55432` | `5432` | 구 분리 DB 기준. 통합 DB 모델로 이관 대상. |
+| `pinvi` | RustFS S3 API/console | `9003` / `9004` | `12101` / `12105` | `.env.example`, `infra/docker-compose*.yml` |
 
 ---
 
@@ -82,6 +82,9 @@
 | cAdvisor Exporter `12301` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | Prometheus `12401` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | `kor-travel-geo` API `12501`, Web UI `12505` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
+| `kor-travel-concierge` API `12601`, MCP `12602`, Web UI `12605` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
+| `kor-travel-map` API `12701`, Dagster `12702`, Web UI `12705` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
+| Pinvi API `12801`, Web UI `12805` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | Manager Backend API `12901` | `backend/src/kor_travel_docker_manager/main.py`, `frontend/src/components/DashboardClient.tsx` | 반영 |
 | Manager Web UI `12905` | `frontend/package.json` | 반영 |
 | 포트 대역 metadata | `config/docker-targets.yml` | 반영 |

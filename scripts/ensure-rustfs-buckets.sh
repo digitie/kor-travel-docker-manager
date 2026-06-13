@@ -26,6 +26,7 @@ fi
 for bucket in \
   "${TRIPMATE_RUSTFS_BUCKET:-tripmate-media}" \
   "${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}" \
+  "${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}" \
   "${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}" \
   "${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}"; do
   if [ -n "$bucket" ]; then
