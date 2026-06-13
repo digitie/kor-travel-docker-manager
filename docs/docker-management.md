@@ -6,7 +6,7 @@
 
 ## 1. 목표
 
-`kor-travel-docker-manager`는 불특정 다수에게 노출되는 범용 Docker 콘솔이 아니다. 목적은 `tripmate`, `kor-travel-concierge`, `kor-travel-geo`, `python-krtour-map`이 의존하는 공용 Docker 인프라를 한 곳에서 확인하고 실행하는 것이다.
+`kor-travel-docker-manager`는 불특정 다수에게 노출되는 범용 Docker 콘솔이 아니다. 목적은 `pinvi`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo`가 의존하는 공용 Docker 인프라와 앱 컨테이너를 한 곳에서 확인하고 실행하는 것이다.
 
 - 의존 Docker가 꺼져 있으면 UI, API, CLI에서 즉시 실행한다.
 - 개발환경에서는 필요한 경우 `docker compose up -d --build`로 빌드 후 실행한다.
@@ -28,7 +28,7 @@
 | CLI | `ktdctl` Python CLI 추가 | 다른 TripMate 프로젝트에서 의존 Docker 실행용으로 사용 |
 | 문서 | 통합 DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
 
-현재 공식 관리 컨테이너는 다음 7개다.
+현재 공식 관리 컨테이너는 다음 17개다.
 
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트 |
 |---|---|---|---|
@@ -39,6 +39,16 @@
 | `prometheus` | `tripmate-prometheus` | cAdvisor Exporter와 앱 메트릭을 수집하고 저장하는 Prometheus | host `12401` / container `9090` |
 | `kor-travel-geo-api` | `kor-travel-geo-api-latest` | `kor-travel-geo` REST API | host/container `12501` |
 | `kor-travel-geo-ui` | `kor-travel-geo-ui-latest` | `kor-travel-geo` admin Web UI | host/container `12505` |
+| `kor-travel-concierge-api` | `kor-travel-concierge-api-latest` | `kor-travel-concierge` API | host `12601` / container `8000` |
+| `kor-travel-concierge-mcp` | `kor-travel-concierge-mcp-latest` | `kor-travel-concierge` MCP HTTP | host `12602` / container `12402` |
+| `kor-travel-concierge-scheduler` | `kor-travel-concierge-scheduler-latest` | `kor-travel-concierge` scheduler | 내부 실행 |
+| `kor-travel-concierge-ui` | `kor-travel-concierge-ui-latest` | `kor-travel-concierge` Web UI | host `12605` / container `3000` |
+| `kor-travel-map-api` | `kor-travel-map-api-latest` | `kor-travel-map` admin API | host `12701` / container `9011` |
+| `kor-travel-map-dagster` | `kor-travel-map-dagster-latest` | `kor-travel-map` Dagster Webserver | host `12702` / container `9013` |
+| `kor-travel-map-dagster-daemon` | `kor-travel-map-dagster-daemon-latest` | `kor-travel-map` Dagster daemon | 내부 실행 |
+| `kor-travel-map-ui` | `kor-travel-map-ui-latest` | `kor-travel-map` admin Web UI | host `12705` / container `9012` |
+| `pinvi-api` | `pinvi-api-latest` | Pinvi API | host `12801` / container `8000` |
+| `pinvi-web` | `pinvi-web-latest` | Pinvi Web UI | host `12805` / container `3000` |
 
 ---
 
@@ -47,10 +57,10 @@
 UI/API/CLI는 Docker service 이름을 직접 외우지 않고 앱 관점 target을 사용한다. 공식 target 정의와 의존 순서는 `config/docker-targets.yml`에서 읽는다. 기본 의존 순서는 다음과 같다.
 
 ```text
-db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main
+db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi
 ```
 
-이 순서는 누적 적용된다. 예를 들어 `ktdctl map --build`는 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `map` 순서로 필요한 서비스를 실행하고 초기화 단계를 수행한다. 새 앱이나 중간 의존성이 생기면 `config/docker-targets.yml`의 `dependency_order`, `targets.<id>.services`, `targets.<id>.init_steps`만 확장한다.
+이 순서는 누적 적용된다. 예를 들어 `ktdctl map --build`는 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map` 순서로 필요한 서비스를 실행하고 초기화 단계를 수행한다. 새 앱이나 중간 의존성이 생기면 `config/docker-targets.yml`의 `dependency_order`, `targets.<id>.services`, `targets.<id>.init_steps`만 확장한다.
 
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
@@ -60,14 +70,14 @@ db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main
 | `cadv` | cAdvisor Exporter | `gra` + cAdvisor Exporter 실행 | `cadvisor`, `exporter`, `metrics-exporter` |
 | `prom` | Prometheus | `cadv` + Prometheus 실행 | `prometheus`, `metrics`, `monitoring` |
 | `geo` | 지오코더/리버스지오코더 | `prom` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kor-travel-geo`, `geocoder`, `reverse-geocoder` |
-| `map` | 관광 지도 처리 | `geo` + `python-krtour-map` 의존성 | `krtour-map`, `python-krtour-map` |
-| `ai` | Kor Travel Concierge | `map` + `kor-travel-concierge` 의존성 | `kor-travel-concierge`, `concierge`, `agent` |
-| `main` | TripMate main | 전체 TripMate 개발 의존성 | `tripmate`, `tripmate-api`, `tripmate-web` |
-| `all` | 전체 | `db`부터 `main`까지 전체 순서 | `default` |
+| `conc` | Kor Travel Concierge | `geo` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 | `kor-travel-concierge`, `concierge`, `agent` |
+| `map` | Kor Travel Map | `conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
+| `pinvi` | Pinvi | `map` + Pinvi API/Web UI 실행 | `srv`, `main`, `tripmate` |
+| `all` | 전체 | `db`부터 `pinvi`까지 전체 순서 | `default` |
 
-현재 `map`, `ai`, `main` 자체 앱 컨테이너는 이 저장소 compose에 포함하지 않는다. 따라서 해당 target은 공용 DB/RustFS, `kor-travel-geo` API/Web UI, 선행 검증을 실행하는 개발 의존성 target이다. 나중에 앱 컨테이너를 이 저장소에서 함께 관리하게 되면 `config/docker-targets.yml`에 compose service와 init step을 추가한다.
+`geo` 이후 앱 target은 모두 실제 앱 컨테이너를 이 저장소 compose에서 빌드하고 실행한다. `main`은 독립 target이 아니라 `pinvi`의 호환 별칭이며, 새 자동화에서는 짧은 별칭 `srv`를 사용한다.
 
-로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역은 `12000-12099`지만 PostgreSQL은 표준 `5432` 접속 포트를 고정하므로 비워 둔다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12205`, `cadv`는 cAdvisor `12301`, `prom`은 Prometheus `12401`을 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
+로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역은 `12000-12099`지만 PostgreSQL은 표준 `5432` 접속 포트를 고정하므로 비워 둔다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12205`, `cadv`는 cAdvisor `12301`, `prom`은 Prometheus `12401`을 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`/`12805`를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
 
 ---
 
@@ -77,8 +87,8 @@ db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main
 
 | 단계 | 실행 조건 | 스크립트 | 역할 |
 |---|---|---|---|
-| DB 복구 | `db` 이상 | `scripts/ensure-kor-travel-geo-db.sh` | PostgreSQL readiness 대기, `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database 생성/소유자 보정, role/password refresh, PostGIS/pg_stat_statements/schema grant 보정 |
-| RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `tripmate-media`, `kor-travel-geo`, `krtour-map`, `krtour-uploads` bucket 생성 |
+| DB 복구 | `db` 이상 | `scripts/ensure-kor-travel-geo-db.sh` | PostgreSQL readiness 대기, `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map`, `krtour_map_dagster` database 생성/소유자 보정, role/password refresh, PostGIS/pg_stat_statements/schema grant 보정 |
+| RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `tripmate-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads` bucket 생성 |
 | Geo 원천 검증 | `geo` 이상 | `scripts/verify-kor-travel-geo-source.sh` | `/data/juso` 마운트와 `load_manifest`, `tl_juso_text`, `mv_geocode_target` 적재 상태 확인 |
 
 `geo` target은 compose에서 `kor-travel-geo-api`, `kor-travel-geo-ui`를 실행하고, API 컨테이너는 compose 네트워크 안에서 `kor-travel-geo-postgres:5432`와 `rustfs:9000`을 사용한다. 대시보드와 CLI는 registry에 등록된 컨테이너 이름(`kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`)을 같은 Docker 대상으로 사용한다.
@@ -98,9 +108,9 @@ ktdctl targets
 ktdctl db --build
 ktdctl storage
 ktdctl geo --recreate
+ktdctl conc --build
 ktdctl map --build
-ktdctl ai
-ktdctl main --build
+ktdctl srv --build
 ktdctl gra
 ktdctl cadv
 ktdctl prom
@@ -109,7 +119,7 @@ ktdctl prom
 명시형 명령도 유지한다.
 
 ```bash
-ktdctl status main
+ktdctl status srv
 ktdctl ensure geo --build
 ktdctl logs storage --follow
 ktdctl action kor-travel-geo-postgresql restart
@@ -119,7 +129,7 @@ ktdctl inspect kor-travel-geo-postgresql --json
 다른 TripMate 저장소에서는 개발 서버 시작 전에 필요한 target만 호출한다.
 
 ```bash
-ktdctl main --build
+ktdctl srv --build
 ```
 
 ### 5.2 API
@@ -159,4 +169,4 @@ ktdctl main --build
 - `docker compose` 실행은 반드시 문자열 shell이 아니라 인자 배열로 수행한다.
 - inspect와 로그 출력에서 secret 성격의 environment 값은 redaction한다.
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
-- 포트 `5432`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12901`, `12905`는 TripMate 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
+- 포트 `5432`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12805`, `12901`, `12905`는 TripMate 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.

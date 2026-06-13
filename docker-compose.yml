@@ -168,6 +168,357 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+  kor-travel-concierge-api:
+    image: ${KOR_TRAVEL_CONCIERGE_API_IMAGE:-kor-travel-concierge-api:latest-main}
+    build:
+      context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}
+      dockerfile: Dockerfile.python
+    container_name: ${KOR_TRAVEL_CONCIERGE_API_CONTAINER:-kor-travel-concierge-api-latest}
+    restart: unless-stopped
+    command:
+    - python
+    - -m
+    - ktc.cli
+    - api
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      kor-travel-geo-api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@kor-travel-geo-postgres:5432/kor_travel_concierge}
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}
+      CORS_ALLOW_ORIGINS: '["http://localhost:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}","http://127.0.0.1:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}"]'
+      RUSTFS_ENABLED: 'true'
+      RUSTFS_ENDPOINT: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      RUSTFS_PUBLIC_BASE_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}/${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
+      RUSTFS_CONSOLE_URL: http://127.0.0.1:${RUSTFS_CONSOLE_PORT:-12105}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_BUCKET_RAW_VIDEOS: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
+      RUSTFS_BUCKET_SUBTITLES: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
+      RUSTFS_BUCKET_FRAMES: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
+      RUSTFS_OBJECT_PREFIX: ${KOR_TRAVEL_CONCIERGE_RUSTFS_PREFIX:-features}
+      RUSTFS_REGION: ${RUSTFS_REGION:-us-east-1}
+      RUSTFS_HEALTH_PATH: /health/live
+      MEDIA_RETENTION_POLICY: infinite
+      FFMPEG_PATH: /usr/bin/ffmpeg
+      APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
+      API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
+      API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
+    ports:
+    - ${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}:8000
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',
+        timeout=2).read()
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+  kor-travel-concierge-mcp:
+    image: ${KOR_TRAVEL_CONCIERGE_MCP_IMAGE:-kor-travel-concierge-mcp:latest-main}
+    build:
+      context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}
+      dockerfile: Dockerfile.python
+    container_name: ${KOR_TRAVEL_CONCIERGE_MCP_CONTAINER:-kor-travel-concierge-mcp-latest}
+    restart: unless-stopped
+    command:
+    - python
+    - -m
+    - ktc.cli
+    - mcp
+    depends_on:
+      kor-travel-concierge-api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@kor-travel-geo-postgres:5432/kor_travel_concierge}
+      RUSTFS_ENABLED: 'true'
+      RUSTFS_ENDPOINT: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: '12402'
+      MCP_STREAMABLE_HTTP_PATH: /mcp
+      APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
+      API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
+      API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
+    ports:
+    - ${KOR_TRAVEL_CONCIERGE_MCP_PORT:-12602}:12402
+    extra_hosts:
+    - host.docker.internal:host-gateway
+  kor-travel-concierge-scheduler:
+    image: ${KOR_TRAVEL_CONCIERGE_SCHEDULER_IMAGE:-kor-travel-concierge-scheduler:latest-main}
+    build:
+      context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}
+      dockerfile: Dockerfile.python
+    container_name: ${KOR_TRAVEL_CONCIERGE_SCHEDULER_CONTAINER:-kor-travel-concierge-scheduler-latest}
+    restart: unless-stopped
+    command:
+    - python
+    - -m
+    - ktc.cli
+    - scheduler
+    depends_on:
+      kor-travel-concierge-api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@kor-travel-geo-postgres:5432/kor_travel_concierge}
+      RUSTFS_ENABLED: 'true'
+      RUSTFS_ENDPOINT: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
+      API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
+      API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
+    extra_hosts:
+    - host.docker.internal:host-gateway
+  kor-travel-concierge-ui:
+    image: ${KOR_TRAVEL_CONCIERGE_UI_IMAGE:-kor-travel-concierge-ui:latest-main}
+    build:
+      context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/frontend
+    container_name: ${KOR_TRAVEL_CONCIERGE_UI_CONTAINER:-kor-travel-concierge-ui-latest}
+    restart: unless-stopped
+    depends_on:
+      kor-travel-concierge-api:
+        condition: service_healthy
+    environment:
+      BACKEND_ORIGIN: http://kor-travel-concierge-api:8000
+      BACKEND_API_KEY: ${KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY:-}
+      NEXT_PUBLIC_VWORLD_SERVICE_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+    ports:
+    - ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}:3000
+  kor-travel-map-api:
+    image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
+    build:
+      context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
+      dockerfile: docker/api.Dockerfile
+    container_name: ${KOR_TRAVEL_MAP_API_CONTAINER:-kor-travel-map-api-latest}
+    restart: unless-stopped
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      kor-travel-concierge-api:
+        condition: service_healthy
+    environment:
+      KRTOUR_MAP_ADMIN_HOST: 0.0.0.0
+      KRTOUR_MAP_ADMIN_PORT: ${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-9011}
+      KRTOUR_MAP_ADMIN_CORS_ALLOW_ORIGINS: '["http://localhost:${KOR_TRAVEL_MAP_UI_PORT:-12705}","http://127.0.0.1:${KOR_TRAVEL_MAP_UI_PORT:-12705}"]'
+      KRTOUR_MAP_ADMIN_DAGSTER_URL: http://kor-travel-map-dagster:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-9013}
+      KRTOUR_MAP_ADMIN_DAGSTER_ALLOWED_HOSTS: '["kor-travel-map-dagster","127.0.0.1","localhost","::1"]'
+      KRTOUR_MAP_PG_DSN: ${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://krtour_map:krtour_map_dev_password@kor-travel-geo-postgres:5432/krtour_map}
+      KRTOUR_MAP_OBJECT_STORE_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      KRTOUR_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
+      KRTOUR_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
+      KRTOUR_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KRTOUR_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KRTOUR_MAP_OBJECT_STORE_PUBLIC_BASE_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}/${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
+      KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
+      KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
+      KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
+      KRTOUR_MAP_OPINET_API_KEY: ${KRTOUR_MAP_OPINET_API_KEY:-}
+      KRTOUR_MAP_KREX_EX_API_KEY: ${KRTOUR_MAP_KREX_EX_API_KEY:-}
+      KRTOUR_MAP_KREX_GO_API_KEY: ${KRTOUR_MAP_KREX_GO_API_KEY:-}
+      KRTOUR_MAP_ADMIN_KMA_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_KMA_SERVICE_KEY:-}
+      KRTOUR_MAP_ADMIN_KMA_APIHUB_KEY: ${KRTOUR_MAP_ADMIN_KMA_APIHUB_KEY:-}
+      KRTOUR_MAP_ADMIN_OPINET_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_OPINET_SERVICE_KEY:-}
+      KRTOUR_MAP_ADMIN_DATAGOKR_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_DATAGOKR_SERVICE_KEY:-}
+      KRTOUR_MAP_ADMIN_VISITKOREA_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_VISITKOREA_SERVICE_KEY:-}
+      KRTOUR_MAP_ADMIN_KREX_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_KREX_SERVICE_KEY:-}
+      KRTOUR_MAP_ADMIN_KNPS_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_KNPS_SERVICE_KEY:-}
+      KRTOUR_MAP_ADMIN_AIRKOREA_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_AIRKOREA_SERVICE_KEY:-}
+      KRTOUR_MAP_ADMIN_KRFOREST_SERVICE_KEY: ${KRTOUR_MAP_ADMIN_KRFOREST_SERVICE_KEY:-}
+    ports:
+    - ${KOR_TRAVEL_MAP_API_PORT:-12701}:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-9011}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - >-
+        python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('KRTOUR_MAP_ADMIN_PORT', '9011'), timeout=2).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+  kor-travel-map-ui:
+    image: ${KOR_TRAVEL_MAP_UI_IMAGE:-kor-travel-map-ui:latest-main}
+    build:
+      context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        NEXT_PUBLIC_KRTOUR_MAP_ADMIN_API: http://127.0.0.1:${KOR_TRAVEL_MAP_API_PORT:-12701}
+        NEXT_PUBLIC_KRTOUR_MAP_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}
+        NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+    container_name: ${KOR_TRAVEL_MAP_UI_CONTAINER:-kor-travel-map-ui-latest}
+    restart: unless-stopped
+    depends_on:
+      kor-travel-map-api:
+        condition: service_healthy
+    environment:
+      PORT: ${KOR_TRAVEL_MAP_UI_CONTAINER_PORT:-9012}
+      HOSTNAME: 0.0.0.0
+      NEXT_PUBLIC_KRTOUR_MAP_ADMIN_API: http://127.0.0.1:${KOR_TRAVEL_MAP_API_PORT:-12701}
+      NEXT_PUBLIC_KRTOUR_MAP_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}
+      NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+    ports:
+    - ${KOR_TRAVEL_MAP_UI_PORT:-12705}:${KOR_TRAVEL_MAP_UI_CONTAINER_PORT:-9012}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - >-
+        node -e "fetch('http://127.0.0.1:' + (process.env.PORT || '9012')).then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+  kor-travel-map-dagster:
+    image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
+    build:
+      context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
+      dockerfile: docker/dagster.Dockerfile
+    container_name: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER:-kor-travel-map-dagster-latest}
+    restart: unless-stopped
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      kor-travel-map-api:
+        condition: service_healthy
+    environment:
+      TMPDIR: /tmp
+      TEMP: /tmp
+      TMP: /tmp
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      KRTOUR_MAP_DAGSTER_PORT: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-9013}
+      KRTOUR_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DOCKER_DAGSTER_PG_URL:-postgresql://krtour_map:krtour_map_dev_password@kor-travel-geo-postgres:5432/krtour_map_dagster}
+      KRTOUR_MAP_PG_DSN: ${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://krtour_map:krtour_map_dev_password@kor-travel-geo-postgres:5432/krtour_map}
+      KRTOUR_MAP_OBJECT_STORE_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      KRTOUR_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
+      KRTOUR_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
+      KRTOUR_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KRTOUR_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
+      KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
+      KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
+      KRTOUR_MAP_OPINET_API_KEY: ${KRTOUR_MAP_OPINET_API_KEY:-}
+      KRTOUR_MAP_KREX_EX_API_KEY: ${KRTOUR_MAP_KREX_EX_API_KEY:-}
+      KRTOUR_MAP_KREX_GO_API_KEY: ${KRTOUR_MAP_KREX_GO_API_KEY:-}
+    ports:
+    - ${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-9013}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - >-
+        python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/' % os.environ.get('KRTOUR_MAP_DAGSTER_PORT', '9013'), timeout=2).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+  kor-travel-map-dagster-daemon:
+    image: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE:-kor-travel-map-dagster-daemon:latest-main}
+    build:
+      context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
+      dockerfile: docker/dagster.Dockerfile
+    container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
+    restart: unless-stopped
+    depends_on:
+      kor-travel-map-dagster:
+        condition: service_healthy
+    command:
+    - dagster-daemon
+    - run
+    - -m
+    - krtour.map_dagster.definitions
+    environment:
+      TMPDIR: /tmp
+      TEMP: /tmp
+      TMP: /tmp
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      KRTOUR_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DOCKER_DAGSTER_PG_URL:-postgresql://krtour_map:krtour_map_dev_password@kor-travel-geo-postgres:5432/krtour_map_dagster}
+      KRTOUR_MAP_PG_DSN: ${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://krtour_map:krtour_map_dev_password@kor-travel-geo-postgres:5432/krtour_map}
+      KRTOUR_MAP_OBJECT_STORE_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      KRTOUR_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
+      KRTOUR_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
+      KRTOUR_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KRTOUR_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
+      KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
+      KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
+      KRTOUR_MAP_OPINET_API_KEY: ${KRTOUR_MAP_OPINET_API_KEY:-}
+      KRTOUR_MAP_KREX_EX_API_KEY: ${KRTOUR_MAP_KREX_EX_API_KEY:-}
+      KRTOUR_MAP_KREX_GO_API_KEY: ${KRTOUR_MAP_KREX_GO_API_KEY:-}
+  pinvi-api:
+    image: ${PINVI_API_IMAGE:-pinvi-api:latest-main}
+    build:
+      context: ${PINVI_REPO_DIR:-../pinvi}
+      dockerfile: apps/api/Dockerfile
+    container_name: ${PINVI_API_CONTAINER:-pinvi-api-latest}
+    restart: unless-stopped
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      kor-travel-map-api:
+        condition: service_healthy
+    command:
+    - sh
+    - -c
+    - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
+      --workers 2
+    environment:
+      TRIPMATE_ENVIRONMENT: local
+      TRIPMATE_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://tripmate:tripmate_dev_password@kor-travel-geo-postgres:5432/tripmate}
+      TRIPMATE_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
+      TRIPMATE_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
+      TRIPMATE_RUSTFS_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      TRIPMATE_RUSTFS_PUBLIC_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}
+      TRIPMATE_RUSTFS_BUCKET: ${TRIPMATE_RUSTFS_BUCKET:-tripmate-media}
+      TRIPMATE_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      TRIPMATE_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      TRIPMATE_CORS_ALLOWED_ORIGINS: '["http://127.0.0.1:${PINVI_WEB_PORT:-12805}","http://localhost:${PINVI_WEB_PORT:-12805}"]'
+    ports:
+    - ${PINVI_API_PORT:-12801}:8000
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - curl -fsS http://localhost:8000/health || exit 1
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+  pinvi-web:
+    image: ${PINVI_WEB_IMAGE:-pinvi-web:latest-main}
+    build:
+      context: ${PINVI_REPO_DIR:-../pinvi}
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_TRIPMATE_API_URL: http://127.0.0.1:${PINVI_API_PORT:-12801}
+    container_name: ${PINVI_WEB_CONTAINER:-pinvi-web-latest}
+    restart: unless-stopped
+    depends_on:
+      pinvi-api:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_TRIPMATE_API_URL: http://127.0.0.1:${PINVI_API_PORT:-12801}
+    ports:
+    - ${PINVI_WEB_PORT:-12805}:3000
   prometheus:
     image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
     container_name: ${PROMETHEUS_CONTAINER:-tripmate-prometheus}

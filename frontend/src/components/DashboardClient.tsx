@@ -145,6 +145,18 @@ const getContainerPresentation = (container: ContainerStatus) => {
   if (role.includes('geocoder')) {
     return { Icon: ServerCog, displayName: container.display_name || 'Kor Travel Geo' };
   }
+  if (role.includes('mcp')) {
+    return { Icon: Radio, displayName: container.display_name || 'MCP HTTP' };
+  }
+  if (role.includes('scheduler') || role.includes('dagster')) {
+    return { Icon: Activity, displayName: container.display_name || 'Workflow' };
+  }
+  if (role.includes('concierge') || role.includes('map-api') || role.includes('pinvi-api')) {
+    return { Icon: ServerCog, displayName: container.display_name || 'App API' };
+  }
+  if (role.includes('ui') || role.includes('web')) {
+    return { Icon: Boxes, displayName: container.display_name || 'Web UI' };
+  }
   if (role === 'prometheus') {
     return { Icon: Activity, displayName: container.display_name || 'Prometheus 메트릭 저장소' };
   }

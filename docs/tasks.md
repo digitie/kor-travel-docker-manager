@@ -18,16 +18,15 @@
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
 | **T-222** | 관측 target 개별 분리 및 포트 재배치 | `[x]` | 2026-06-13 | `gra`, `cadv`, `prom` 분리 및 새 포트 반영 |
-| **T-223** | 사용자 지정 후속 작업 3 | `[ ]` | - | `T-222` 완료 후 착수, 세부 범위 확정 필요 |
+| **T-223** | 앱 target 흐름 재정렬 및 실제 컨테이너 빌드 편입 | `[x]` | 2026-06-13 | `geo -> conc -> map -> pinvi`, `srv` 별칭 반영 |
 
 ---
 
 ## 진행 순서
 
 1. `tasks.md`와 `tasks-done.md`를 최신 완료/미완료 상태로 정리한다.
-2. `T-220`에서 AI provider의 과거 명칭을 제거하고 `kor-travel-concierge` 기준으로 정리한 뒤,
-   TripMate main과 AI agent의 직접 의존 관계를 끊는다.
-3. `T-223` 착수 전 세부 범위를 확정한다.
+2. `kor-travel-concierge`는 `conc`, Pinvi는 `srv` 별칭을 기준으로 안내한다.
+3. 다음 앱 target 추가 시 `config/docker-targets.yml`, `docker-compose.yml`, 포트 문서, API/CLI 테스트를 함께 갱신한다.
 4. 병행 작업 충돌을 줄이기 위해 각 PR 전후로 `main` rebase를 수행한다.
 
 ---
@@ -70,12 +69,16 @@
 ### T-222: 관측 target 개별 분리 및 포트 재배치
 
 - [x] 단일 관측 target을 제거하고 `gra`, `cadv`, `prom` target으로 분리한다
-- [x] dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main`으로 맞춘다
+- [x] 관측 target 분리 당시 dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main`으로 맞춘다
 - [x] Grafana 공용 연계를 위해 `gra`를 RustFS 다음 target으로 배치한다
 - [x] Grafana `12205`, cAdvisor `12301`, Prometheus `12401`, `kor-travel-geo` API/Web UI `12501`/`12505` 포트를 반영한다
 - [x] CLI/API 테스트와 문서를 새 target/포트 기준으로 갱신한다
 
-### T-223: 사용자 지정 후속 작업 3
+### T-223: 앱 target 흐름 재정렬 및 실제 컨테이너 빌드 편입
 
-- [ ] `T-222` 완료 후 세부 범위를 확정한다
-- [ ] 작업 전 `main` 기준 rebase를 수행한다
+- [x] dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`로 조정한다
+- [x] `kor-travel-concierge` target을 `conc`로 등록하고 API/MCP/Scheduler/Web UI compose service를 추가한다
+- [x] `kor-travel-map` target을 `map`에 실제 API/Dagster/Web UI compose service로 연결한다
+- [x] Pinvi target을 `pinvi`로 등록하고 `srv`, `main` 별칭을 제공한다
+- [x] 공용 DB/RustFS 복구 스크립트에 `krtour_map_dagster` database와 `kor-travel-concierge` bucket 보정을 추가한다
+- [x] API/CLI 테스트와 문서를 새 target 흐름에 맞춰 갱신한다
