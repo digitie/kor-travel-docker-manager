@@ -296,6 +296,11 @@ services:
       APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
       API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
       API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
+      # 자막 비활성/숏폼 영상은 transcript_api·yt-dlp로 자막을 못 받으므로,
+      # faster-whisper 오디오 전사 폴백을 켠다(무거움; env로 제어).
+      TRANSCRIPT_WHISPER_ENABLED: ${KOR_TRAVEL_CONCIERGE_WHISPER_ENABLED:-true}
+      WHISPER_MODEL_SIZE: ${KOR_TRAVEL_CONCIERGE_WHISPER_MODEL_SIZE:-base}
+      FFMPEG_PATH: /usr/bin/ffmpeg
     extra_hosts:
     - host.docker.internal:host-gateway
   kor-travel-concierge-ui:
