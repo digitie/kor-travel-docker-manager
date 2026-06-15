@@ -24,7 +24,7 @@ if [ "$i" -ge "${RUSTFS_WAIT_RETRIES:-60}" ]; then
 fi
 
 for bucket in \
-  "${TRIPMATE_RUSTFS_BUCKET:-tripmate-media}" \
+  "${PINVI_RUSTFS_BUCKET:-pinvi-media}" \
   "${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}" \
   "${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}" \
   "${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}" \

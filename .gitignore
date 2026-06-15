@@ -53,7 +53,7 @@ yarn-error.log*
 .claude/settings.local.json
 
 # Local databases, virtualenvs and log directories
-tripmate_metrics.db
+pinvi_metrics.db
 backend/logs/
 *_venv/
 win_venv/

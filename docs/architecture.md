@@ -6,7 +6,7 @@
 
 ## 1. 개요
 
-`kor-travel-docker-manager`는 TripMate 계열 서비스를 구동하기 위한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, Pinvi Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
+`kor-travel-docker-manager`는 Kor Travel/Pinvi 계열 서비스를 구동하기 위한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, Pinvi Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
 
 ```mermaid
 graph TD
@@ -42,9 +42,9 @@ graph TD
         C_CONC[kor-travel-concierge-*/Concierge]
         C_MAP[kor-travel-map-*/Map]
         C_PINVI[pinvi-*/Pinvi]
-        C_PROM[tripmate-prometheus/Prometheus]
-        C_GRAF[tripmate-grafana/Grafana]
-        C_EXP[tripmate-cadvisor/cAdvisor Exporter]
+        C_PROM[kor-travel-prometheus/Prometheus]
+        C_GRAF[kor-travel-grafana/Grafana]
+        C_EXP[kor-travel-cadvisor/cAdvisor Exporter]
         
         DS -->|API Calls / Controls| D_Sock
         D_Sock -->|Manage| C_PG
@@ -117,35 +117,35 @@ graph TD
 
 `kor-travel-docker-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다.
 
-1. **TripMate 통합 PostgreSQL / PostGIS**:
+1. **Kor Travel 통합 PostgreSQL / PostGIS**:
    - 컨테이너: `kor-travel-geo-postgres`
    - 이미지: `postgis/postgis:16-3.5`
-   - 목적: `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database를 하나의 공용 PostgreSQL/PostGIS 컨테이너에서 구동.
+   - 목적: `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database를 하나의 공용 PostgreSQL/PostGIS 컨테이너에서 구동.
    - 내부 포트: `5432` / 외부 노출 포트: `5432`.
    - 기본 DSN: `postgresql+psycopg://addr:addr@localhost:5432/kor_travel_geo`.
    - 기본 pgdata: `KOR_TRAVEL_GEO_PGDATA=/home/digitie/kor-travel-geo-data/pgdata-final-20260529`.
 2. **RustFS**:
-   - 컨테이너: `tripmate-rustfs`
+   - 컨테이너: `kor-travel-rustfs`
    - 이미지: `rustfs/rustfs:latest`
    - 목적: 미디어 자원과 `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, Pinvi 원천·업로드 데이터 보관을 위한 공용 S3 호환 오브젝트 스토리지.
    - host 포트: `12101` (S3 API), `12105` (어드민 콘솔).
    - 컨테이너 내부 포트: `9000` (S3 API), `9001` (어드민 콘솔).
    - 기본 credential: `RUSTFS_ACCESS_KEY=rustfsadmin`, `RUSTFS_SECRET_KEY=rustfsadmin`.
-   - 기본 bucket: `tripmate-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads`.
+   - 기본 bucket: `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads`.
 3. **Grafana**:
-   - 컨테이너: `tripmate-grafana`
+   - 컨테이너: `kor-travel-grafana`
    - compose service: `grafana`
    - 목적: Prometheus datasource 기반 공용 메트릭 시각화.
    - host 포트: `12205`.
    - 컨테이너 내부 포트: `3000`.
 4. **cAdvisor Exporter**:
-   - 컨테이너: `tripmate-cadvisor`
+   - 컨테이너: `kor-travel-cadvisor`
    - compose service: `cadvisor`
    - 목적: Docker 컨테이너 CPU, memory, filesystem, network 메트릭을 Prometheus 형식으로 노출.
    - host 포트: `12301`.
    - 컨테이너 내부 포트: `8080`.
 5. **Prometheus**:
-   - 컨테이너: `tripmate-prometheus`
+   - 컨테이너: `kor-travel-prometheus`
    - compose service: `prometheus`
    - 목적: cAdvisor Exporter와 앱 메트릭 수집 및 저장.
    - host 포트: `12401`.

@@ -26,7 +26,7 @@ def test_list_containers(mock_docker_service):
         },
         {
             "id": "rustfs",
-            "name": "tripmate-rustfs",
+            "name": "kor-travel-rustfs",
             "status": "exited",
             "state": "exited",
             "ports": [],

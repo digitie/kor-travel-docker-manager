@@ -1,12 +1,12 @@
--- kor_travel_geo, tripmate, krtour_map, kor_travel_concierge 데이터베이스 및 사용자 통합 생성
+-- kor_travel_geo, pinvi, krtour_map, kor_travel_concierge 데이터베이스 및 사용자 통합 생성
 
-CREATE DATABASE tripmate;
+CREATE DATABASE pinvi;
 CREATE DATABASE krtour_map;
 CREATE DATABASE kor_travel_concierge;
 
--- tripmate 사용자 생성 및 권한 부여
-CREATE USER tripmate WITH PASSWORD 'tripmate_dev_password';
-GRANT ALL PRIVILEGES ON DATABASE tripmate TO tripmate;
+-- pinvi 사용자 생성 및 권한 부여
+CREATE USER pinvi WITH PASSWORD 'pinvi_dev_password';
+GRANT ALL PRIVILEGES ON DATABASE pinvi TO pinvi;
 
 -- krtour_map 사용자 생성 및 권한 부여
 CREATE USER krtour_map WITH PASSWORD 'krtour_map_dev_password';
@@ -37,7 +37,7 @@ GRANT ALL PRIVILEGES ON SCHEMA provider_sync TO krtour_map;
 GRANT ALL PRIVILEGES ON SCHEMA ops TO krtour_map;
 GRANT ALL PRIVILEGES ON SCHEMA x_extension TO krtour_map;
 
--- 3. tripmate 데이터베이스 초기화 및 PostGIS 확장 설정
-\c tripmate
+-- 3. pinvi 데이터베이스 초기화 및 PostGIS 확장 설정
+\c pinvi
 CREATE EXTENSION IF NOT EXISTS postgis;
-GRANT ALL PRIVILEGES ON SCHEMA public TO tripmate;
+GRANT ALL PRIVILEGES ON SCHEMA public TO pinvi;

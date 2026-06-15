@@ -1,6 +1,6 @@
 # Docker 관리 설계
 
-이 문서는 `kor-travel-docker-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, TripMate 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
+이 문서는 `kor-travel-docker-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, Kor Travel/Pinvi 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
 
 ---
 
@@ -25,18 +25,18 @@
 | 로그 | REST 최근 로그, WebSocket 실시간 로그 구현 | CLI `logs`와 UI 상세 패널에서 동일한 대상 기준 사용 |
 | 메트릭 | CPU, 메모리, I/O 10초 수집 및 30일 보관 | 컨테이너 상세 화면에서 최근 추세와 현재값 동시 표시 |
 | 설정 변경 | compose의 ports, env, volumes, networks 저장 및 재생성 구현 | 입력 검증, secret redaction, 변경 전 diff 표시 |
-| CLI | `ktdctl` Python CLI 추가 | 다른 TripMate 프로젝트에서 의존 Docker 실행용으로 사용 |
+| CLI | `ktdctl` Python CLI 추가 | 다른 Kor Travel/Pinvi 프로젝트에서 의존 Docker 실행용으로 사용 |
 | 문서 | 통합 DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
 
 현재 공식 관리 컨테이너는 다음 17개다.
 
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트 |
 |---|---|---|---|
-| `kor-travel-geo-postgresql` | `kor-travel-geo-postgres` | `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database를 담는 통합 PostgreSQL / PostGIS | `5432:5432` |
-| `rustfs` | `tripmate-rustfs` | TripMate 계열 미디어 및 원천 데이터용 S3 호환 오브젝트 스토리지 | host `12101`, `12105` / container `9000`, `9001` |
-| `grafana` | `tripmate-grafana` | 다른 앱과도 공통 연계하는 Grafana 시각화 도구 | host `12205` / container `3000` |
-| `cadvisor` | `tripmate-cadvisor` | Docker 컨테이너 리소스 메트릭을 노출하는 cAdvisor Exporter | host `12301` / container `8080` |
-| `prometheus` | `tripmate-prometheus` | cAdvisor Exporter와 앱 메트릭을 수집하고 저장하는 Prometheus | host `12401` / container `9090` |
+| `kor-travel-geo-postgresql` | `kor-travel-geo-postgres` | `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database를 담는 통합 PostgreSQL / PostGIS | `5432:5432` |
+| `rustfs` | `kor-travel-rustfs` | Kor Travel/Pinvi 계열 미디어 및 원천 데이터용 S3 호환 오브젝트 스토리지 | host `12101`, `12105` / container `9000`, `9001` |
+| `grafana` | `kor-travel-grafana` | 다른 앱과도 공통 연계하는 Grafana 시각화 도구 | host `12205` / container `3000` |
+| `cadvisor` | `kor-travel-cadvisor` | Docker 컨테이너 리소스 메트릭을 노출하는 cAdvisor Exporter | host `12301` / container `8080` |
+| `prometheus` | `kor-travel-prometheus` | cAdvisor Exporter와 앱 메트릭을 수집하고 저장하는 Prometheus | host `12401` / container `9090` |
 | `kor-travel-geo-api` | `kor-travel-geo-api-latest` | `kor-travel-geo` REST API | host/container `12501` |
 | `kor-travel-geo-ui` | `kor-travel-geo-ui-latest` | `kor-travel-geo` admin Web UI | host/container `12505` |
 | `kor-travel-concierge-api` | `kor-travel-concierge-api-latest` | `kor-travel-concierge` API | host `12601` / container `8000` |
@@ -72,7 +72,7 @@ db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi
 | `geo` | 지오코더/리버스지오코더 | `prom` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kor-travel-geo`, `geocoder`, `reverse-geocoder` |
 | `conc` | Kor Travel Concierge | `geo` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 | `kor-travel-concierge`, `concierge`, `agent` |
 | `map` | Kor Travel Map | `conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
-| `pinvi` | Pinvi | `map` + Pinvi API/Web UI 실행 | `srv`, `main`, `tripmate` |
+| `pinvi` | Pinvi | `map` + Pinvi API/Web UI 실행 | `srv`, `main`, `pinvi` |
 | `all` | 전체 | `db`부터 `pinvi`까지 전체 순서 | `default` |
 
 `geo` 이후 앱 target은 모두 실제 앱 컨테이너를 이 저장소 compose에서 빌드하고 실행한다. `main`은 독립 target이 아니라 `pinvi`의 호환 별칭이며, 새 자동화에서는 짧은 별칭 `srv`를 사용한다.
@@ -87,8 +87,8 @@ db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi
 
 | 단계 | 실행 조건 | 스크립트 | 역할 |
 |---|---|---|---|
-| DB 복구 | `db` 이상 | `scripts/ensure-kor-travel-geo-db.sh` | PostgreSQL readiness 대기, `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map`, `krtour_map_dagster` database 생성/소유자 보정, role/password refresh, PostGIS/pg_stat_statements/schema grant 보정 |
-| RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `tripmate-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads` bucket 생성 |
+| DB 복구 | `db` 이상 | `scripts/ensure-kor-travel-geo-db.sh` | PostgreSQL readiness 대기, `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map`, `krtour_map_dagster` database 생성/소유자 보정, role/password refresh, PostGIS/pg_stat_statements/schema grant 보정 |
+| RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads` bucket 생성 |
 | Geo 원천 검증 | `geo` 이상 | `scripts/verify-kor-travel-geo-source.sh` | `/data/juso` 마운트와 `load_manifest`, `tl_juso_text`, `mv_geocode_target` 적재 상태 확인 |
 
 `geo` target은 compose에서 `kor-travel-geo-api`, `kor-travel-geo-ui`를 실행하고, API 컨테이너는 compose 네트워크 안에서 `kor-travel-geo-postgres:5432`와 `rustfs:9000`을 사용한다. 대시보드와 CLI는 registry에 등록된 컨테이너 이름(`kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`)을 같은 Docker 대상으로 사용한다.
@@ -126,7 +126,7 @@ ktdctl action kor-travel-geo-postgresql restart
 ktdctl inspect kor-travel-geo-postgresql --json
 ```
 
-다른 TripMate 저장소에서는 개발 서버 시작 전에 필요한 target만 호출한다.
+다른 Kor Travel/Pinvi 저장소에서는 개발 서버 시작 전에 필요한 target만 호출한다.
 
 ```bash
 ktdctl srv --build
@@ -169,4 +169,4 @@ ktdctl srv --build
 - `docker compose` 실행은 반드시 문자열 shell이 아니라 인자 배열로 수행한다.
 - inspect와 로그 출력에서 secret 성격의 environment 값은 redaction한다.
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
-- 포트 `5432`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12805`, `12901`, `12905`는 TripMate 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
+- 포트 `5432`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12805`, `12901`, `12905`는 Kor Travel/Pinvi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.

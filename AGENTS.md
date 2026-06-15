@@ -18,7 +18,7 @@
 
 ## 역할
 
-이 저장소(`kor-travel-docker-manager`)는 TripMate 서비스 구동에 필요한 기반 인프라(PostgreSQL, RustFS 등)의 Docker 컨테이너 구동 관리 및 상태 모니터링을 담당하는 소프트웨어다.
+이 저장소(`kor-travel-docker-manager`)는 Pinvi 서비스 구동에 필요한 기반 인프라(PostgreSQL, RustFS 등)의 Docker 컨테이너 구동 관리 및 상태 모니터링을 담당하는 소프트웨어다.
 
 - **Backend**: Python FastAPI 기반으로 구성되어 로컬 Docker 데몬과 상호작용하여 상태를 체크하고 제어한다.
 - **Frontend**: Next.js (React), zod, react-hook-form, tanstack query, tailwind css, shadcn ui 기반의 대시보드 웹이다.
@@ -34,9 +34,9 @@
 | GitHub 저장소 이름 | `kor-travel-docker-manager` |
 | Backend 기술 스택 | Python 3.11+, FastAPI, Docker SDK, Pytest, Ruff, Mypy |
 | Frontend 기술 스택 | Next.js 14+ (App Router), TypeScript, Tailwind CSS, Shadcn UI, TanStack Query |
-| DB 서비스 정보 | 통합 PostgreSQL / PostGIS (`kor-travel-geo-postgres`: 5432, DBs: `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map`) |
+| DB 서비스 정보 | 통합 PostgreSQL / PostGIS (`kor-travel-geo-postgres`: 5432, DBs: `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map`) |
 | 파일 스토리지 정보 | RustFS (기본 host 포트: 12101 / 콘솔 host 포트: 12105) |
-| 관측 서비스 정보 | Grafana `tripmate-grafana`: 12205 / cAdvisor `tripmate-cadvisor`: 12301 / Prometheus `tripmate-prometheus`: 12401 |
+| 관측 서비스 정보 | Grafana `kor-travel-grafana`: 12205 / cAdvisor `kor-travel-cadvisor`: 12301 / Prometheus `kor-travel-prometheus`: 12401 |
 | 지오코더 서비스 정보 | `kor-travel-geo` API `kor-travel-geo-api-latest`: 12501 / Web UI `kor-travel-geo-ui-latest`: 12505 |
 | Concierge 서비스 정보 | `kor-travel-concierge` API `kor-travel-concierge-api-latest`: 12601 / MCP `kor-travel-concierge-mcp-latest`: 12602 / Web UI `kor-travel-concierge-ui-latest`: 12605 |
 | Map 서비스 정보 | `kor-travel-map` API `kor-travel-map-api-latest`: 12701 / Dagster `kor-travel-map-dagster-latest`: 12702 / Web UI `kor-travel-map-ui-latest`: 12705 |
@@ -86,9 +86,9 @@
 ## 절대 하지 말 것 (DO NOT)
 
 1. **`main` 직접 푸시 금지**: 반드시 feature 브랜치 + PR 제출 방식을 사용한다.
-2. **비즈니스 로직과 인프라 관리의 혼선 금지**: 본 서비스는 PostgreSQL, RustFS의 컨테이너/상태 관리만을 목적으로 한다. TripMate의 여행 예약, 기상 통계 등 상위 도메인 비즈니스 코드를 이곳에 섞지 않는다.
+2. **비즈니스 로직과 인프라 관리의 혼선 금지**: 본 서비스는 PostgreSQL, RustFS의 컨테이너/상태 관리만을 목적으로 한다. Pinvi의 여행 예약, 기상 통계 등 상위 도메인 비즈니스 코드를 이곳에 섞지 않는다.
 3. **'use client' 누락 금지**: 프론트엔드에서 React 훅 또는 DOM 조작을 수행하는 Next.js 컴포넌트에는 첫 줄에 반드시 `'use client'` 지시어를 추가한다.
-4. **포트 충돌 유발 금지**: 통합 PostgreSQL(`5432`), RustFS(`12101`, `12105`), Grafana(`12205`), cAdvisor(`12301`), Prometheus(`12401`), `kor-travel-geo`(`12501`, `12505`), `kor-travel-concierge`(`12601`, `12602`, `12605`), `kor-travel-map`(`12701`, `12702`, `12705`), Pinvi(`12801`, `12805`), Manager(`12901`, `12905`) 포트는 TripMate 구성 프로그램이 공용으로 접근할 수 있어야 하므로 임의로 변경하지 않는다.
+4. **포트 충돌 유발 금지**: 통합 PostgreSQL(`5432`), RustFS(`12101`, `12105`), Grafana(`12205`), cAdvisor(`12301`), Prometheus(`12401`), `kor-travel-geo`(`12501`, `12505`), `kor-travel-concierge`(`12601`, `12602`, `12605`), `kor-travel-map`(`12701`, `12702`, `12705`), Pinvi(`12801`, `12805`), Manager(`12901`, `12905`) 포트는 Kor Travel/Pinvi 구성 프로그램이 공용으로 접근할 수 있어야 하므로 임의로 변경하지 않는다.
 5. **API 키 및 비밀번호 하드코딩 금지**: `.env` 및 `.env.local` 파일을 사용하고, git에 커밋하지 않는다.
 6. **`.codegraph/` 커밋 금지**: 로컬 인덱싱 파일은 개별 에이전트의 로컬 빌드 결과물이므로 git 추적에서 제외한다.
 7. **공용 인프라 설정 분산 금지**: PostgreSQL/RustFS의 Docker 생명주기, 포트, credential, bucket 기본값은 이 저장소에서 관리한다. 하위 프로젝트 저장소에 별도 정지/재시작 스크립트를 다시 만들지 않는다.

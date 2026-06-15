@@ -19,6 +19,7 @@
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
 | **T-222** | 관측 target 개별 분리 및 포트 재배치 | `[x]` | 2026-06-13 | `gra`, `cadv`, `prom` 분리 및 새 포트 반영 |
 | **T-223** | 앱 target 흐름 재정렬 및 실제 컨테이너 빌드 편입 | `[x]` | 2026-06-13 | `geo -> conc -> map -> pinvi`, `srv` 별칭 반영 |
+| **T-224** | 과거 서비스명과 공용 인프라 명칭 정리 | `[x]` | 2026-06-15 | Pinvi 및 `kor-travel-*` 기준 반영 |
 
 ---
 
@@ -52,7 +53,7 @@
 - [x] `config/docker-targets.yml`의 `ai` target을 `kor-travel-concierge` 기준으로 정리
 - [x] 과거 AI provider 명칭 기반 별칭을 제거하고 새 공식 별칭만 남긴다
 - [x] 통합 DB 기본값을 `kor_travel_concierge` database 기준으로 정리하고 과거 env fallback을 제거한다
-- [x] `tripmate` target이 `kor-travel-concierge`에 직접 의존하지 않도록 문서와 target 설명을 정리
+- [x] `pinvi` target이 `kor-travel-concierge`에 직접 의존하지 않도록 문서와 target 설명을 정리
 - [x] `krtour-map`과 `kor-travel-concierge` 간 provider 관계만 남도록 아키텍처/포트/관리 문서를 동기화
 - [x] 관련 테스트와 설정 검증을 갱신한다
 
@@ -82,3 +83,9 @@
 - [x] Pinvi target을 `pinvi`로 등록하고 `srv`, `main` 별칭을 제공한다
 - [x] 공용 DB/RustFS 복구 스크립트에 `krtour_map_dagster` database와 `kor-travel-concierge` bucket 보정을 추가한다
 - [x] API/CLI 테스트와 문서를 새 target 흐름에 맞춰 갱신한다
+
+### T-224: 과거 서비스명과 공용 인프라 명칭 정리
+
+- [x] Pinvi 전용 database, role, bucket, 환경변수 기본값을 `pinvi` 및 `PINVI_*` 기준으로 맞춘다
+- [x] 공용 RustFS와 관측 컨테이너 이름을 `kor-travel-*` 기준으로 맞춘다
+- [x] 문서, 테스트, 설정 파일의 과거 서비스명 잔여 표기를 제거한다

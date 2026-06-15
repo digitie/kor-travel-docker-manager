@@ -27,12 +27,12 @@ containers:
     name: kor-travel-geo-postgres
     compose_service: kor-travel-geo-postgres
     role: postgresql
-    display_name: TripMate 통합 PostgreSQL / PostGIS
-    connection: "postgresql://localhost:5432 (DBs: kor_travel_geo, tripmate, kor_travel_concierge, krtour_map)"
+    display_name: Kor Travel 통합 PostgreSQL / PostGIS
+    connection: "postgresql://localhost:5432 (DBs: kor_travel_geo, pinvi, kor_travel_concierge, krtour_map)"
     expected_ports:
       - "5432:5432"
   rustfs:
-    name: tripmate-rustfs
+    name: kor-travel-rustfs
     compose_service: rustfs
     role: rustfs
     display_name: RustFS 공용 오브젝트 스토리지
@@ -135,7 +135,7 @@ containers:
     expected_ports:
       - "12805:3000"
   prometheus:
-    name: tripmate-prometheus
+    name: kor-travel-prometheus
     compose_service: prometheus
     role: prometheus
     display_name: Prometheus 메트릭 저장소
@@ -143,7 +143,7 @@ containers:
     expected_ports:
       - "12401:9090"
   grafana:
-    name: tripmate-grafana
+    name: kor-travel-grafana
     compose_service: grafana
     role: grafana
     display_name: 공용 Grafana 시각화 도구
@@ -151,7 +151,7 @@ containers:
     expected_ports:
       - "12205:3000"
   cadvisor:
-    name: tripmate-cadvisor
+    name: kor-travel-cadvisor
     compose_service: cadvisor
     role: metrics-exporter
     display_name: cAdvisor 컨테이너 메트릭 Exporter
@@ -163,7 +163,7 @@ targets:
   db:
     port_band: "12000-12099"
     display_name: 통합 DB
-    description: TripMate 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
+    description: Kor Travel/Pinvi 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
     aliases:
       - postgresql
       - postgres
@@ -188,7 +188,7 @@ targets:
   storage:
     port_band: "12100-12199"
     display_name: 통합 RustFS
-    description: TripMate 미디어와 원천 데이터를 저장하는 S3 호환 오브젝트 스토리지입니다.
+    description: Kor Travel/Pinvi 미디어와 원천 데이터를 저장하는 S3 호환 오브젝트 스토리지입니다.
     aliases:
       - rustfs
       - s3
@@ -355,9 +355,9 @@ targets:
     aliases:
       - srv
       - main
-      - tripmate
-      - tripmate-api
-      - tripmate-web
+      - pinvi
+      - pinvi-api
+      - pinvi-web
     services:
       - pinvi-api
       - pinvi-web
@@ -382,7 +382,7 @@ targets:
     init_steps: []
 
   all:
-    display_name: 전체 TripMate 개발 인프라
+    display_name: 전체 Kor Travel/Pinvi 개발 인프라
     description: dependency_order 전체를 순서대로 실행합니다.
     aliases:
       - default

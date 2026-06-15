@@ -87,7 +87,7 @@ PYTHONPATH=src ktd_venv/bin/python -m uvicorn kor_travel_docker_manager.main:app
 
 ## 3. 의존 Docker 실행
 
-다른 TripMate 개발 저장소에서 DB 또는 RustFS가 필요할 때는 manager CLI로 바로 실행한다.
+다른 Kor Travel/Pinvi 개발 저장소에서 DB 또는 RustFS가 필요할 때는 manager CLI로 바로 실행한다.
 
 ```bash
 cd /mnt/f/dev/kor-travel-docker-manager/backend
@@ -96,7 +96,7 @@ poetry run ktdctl srv --build
 
 공식 target 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이다. `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이다. 예를 들어 `ktdctl map --build`는 통합 DB, RustFS, 관측 스택, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map` API/Dagster/Web UI 실행까지 수행한다.
 
-추가 target 이름으로 `postgresql`, `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `kor-travel-map`, `python-krtour-map`, `kor-travel-concierge`, `srv`, `tripmate`, `main`도 사용할 수 있다.
+추가 target 이름으로 `postgresql`, `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `kor-travel-map`, `python-krtour-map`, `kor-travel-concierge`, `srv`, `pinvi`, `main`도 사용할 수 있다.
 
 `geo` 이상 target은 `/data/juso` 마운트와 `kor_travel_geo` 핵심 테이블 적재 상태를 확인한다. 의도적으로 빈 DB를 다루는 경우에만 `.env`에서 `KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
 
