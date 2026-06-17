@@ -26,6 +26,14 @@
         "--mcp"
       ],
       "cwd": "F:\\dev\\kor-travel-docker-manager-codex"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "F:\\dev\\kor-travel-docker-manager-codex"
+      ]
     }
   }
 }
