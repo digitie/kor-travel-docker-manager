@@ -12,3 +12,7 @@ env = { PLAYWRIGHT_HEADLESS = "true" }
 [mcp_servers.sequential-thinking]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+
+[mcp_servers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "F:\\dev\\kor-travel-docker-manager-codex"]
