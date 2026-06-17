@@ -20,12 +20,13 @@
 | **T-009** | Python CLI 및 target ensure/build 구현 | 2026-06-12 | `ktdctl` CLI 추가 |
 | **T-010** | Docker inspect API 및 secret redaction 구현 | 2026-06-12 | `/api/v1/containers/{id}/inspect` 추가 |
 | **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 init step 추가 |
-| **T-014** | TripMate 계열 로컬 포트 정책 일원화 | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
+| **T-014** | Kor Travel/Pinvi 계열 로컬 포트 정책 일원화 | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
 | **T-015** | 실행 위치 정책 문서화 | 2026-06-12 | git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정 |
 | **T-016** | `kor-travel-geo` Docker API/UI target 편입 | 2026-06-12 | `geo` target에 API/Web UI compose 서비스 추가 |
 | **T-017** | 관측 스택 Docker target 추가 | 2026-06-13 | Grafana, cAdvisor, Prometheus 분리 컨테이너 추가 |
 | **T-018** | 프로젝트명 및 CLI 명령 전환 | 2026-06-13 | `kor-travel-docker-manager`, `ktdctl` 기준으로 변경 |
 | **T-222** | 관측 target 개별 분리 및 포트 재배치 | 2026-06-13 | `gra`, `cadv`, `prom` target과 `12205`, `12301`, `12401` 포트 반영 |
+| **T-224** | 과거 서비스명과 공용 인프라 명칭 정리 | 2026-06-15 | Pinvi 및 `kor-travel-*` 기준 반영 |
 
 ---
 
@@ -109,7 +110,7 @@
 - [x] `kor-travel-geo` 원천 디렉터리와 핵심 적재 테이블 검증 스크립트 추가
 - [x] API/CLI가 같은 설정 파일 registry를 읽도록 정리
 
-### T-014: TripMate 계열 로컬 포트 정책 일원화
+### T-014: Kor Travel/Pinvi 계열 로컬 포트 정책 일원화
 
 - [x] 관련 canonical 로컬 레포의 현재 포트 사용처 조사
 - [x] `docs/ports.md`에 현재 포트와 정책 포트 비교표 작성
@@ -158,3 +159,9 @@
 - [x] Grafana는 공용 연계를 위해 `12205`, cAdvisor는 `12301`, Prometheus는 `12401`로 배치
 - [x] `kor-travel-geo` API/Web UI를 새 dependency 순서에 맞춰 `12501`, `12505`로 이동
 - [x] CLI, API 테스트, 포트 문서, Docker 관리 문서, 개발 가이드를 같은 기준으로 갱신
+
+### T-224: 과거 서비스명과 공용 인프라 명칭 정리
+
+- [x] Pinvi 전용 database, role, bucket, 환경변수 기본값을 `pinvi` 및 `PINVI_*` 기준으로 정리
+- [x] 공용 RustFS와 관측 컨테이너 이름을 `kor-travel-*` 기준으로 정리
+- [x] 문서, 테스트, 설정 파일에서 과거 서비스명 잔여 표기를 제거

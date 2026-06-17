@@ -1,6 +1,6 @@
 # Kor Travel Docker Manager
 
-TripMate 구동에 필요한 공용 기반 서비스(PostgreSQL / PostGIS, RustFS 등)를 관리하고 실시간으로 모니터링하기 위한 관리 소프트웨어입니다.
+Pinvi 구동에 필요한 공용 기반 서비스(PostgreSQL / PostGIS, RustFS 등)를 관리하고 실시간으로 모니터링하기 위한 관리 소프트웨어입니다.
 
 `pinvi`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo` 등 포스트그레스와 파일 스토리지를 활용하는 여러 서비스에서 이 인프라를 안정적으로 공용하여 사용할 수 있게 돕습니다.
 
@@ -57,7 +57,7 @@ poetry run ktdctl geo --build
 
 | 대상 | Host 포트 | 접속 정보 |
 |------|-----------|-----------|
-| 통합 PostgreSQL / PostGIS | `5432` | `postgresql://localhost:5432` 안의 `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database |
+| 통합 PostgreSQL / PostGIS | `5432` | `postgresql://localhost:5432` 안의 `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
 | RustFS console | `12105` | `http://127.0.0.1:12105/rustfs/console/` |
 | Grafana Web UI | `12205` | `http://127.0.0.1:12205` |
@@ -76,7 +76,7 @@ poetry run ktdctl geo --build
 | Manager Backend API | `12901` | `http://127.0.0.1:12901` |
 | Manager Dashboard Web | `12905` | `http://127.0.0.1:12905` |
 
-TripMate 계열 전체 포트 정책과 관련 로컬 레포 조사 결과는 [로컬 포트 정책](docs/ports.md)을 참고해 주세요.
+Kor Travel/Pinvi 계열 전체 포트 정책과 관련 로컬 레포 조사 결과는 [로컬 포트 정책](docs/ports.md)을 참고해 주세요.
 
 정지/재시작은 같은 CLI에서 수행합니다.
 

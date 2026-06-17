@@ -605,7 +605,7 @@ class DockerService:
                     init_command = (
                         f"mc alias set local http://rustfs:{rustfs_internal_port} "
                         f"{parsed_env.get('RUSTFS_ACCESS_KEY', 'rustfsadmin')} {parsed_env.get('RUSTFS_SECRET_KEY', 'rustfsadmin')}; "
-                        f"mc mb -p local/tripmate-media || true; "
+                        f"mc mb -p local/pinvi-media || true; "
                         f"mc mb -p local/kor-travel-geo || true; "
                         f"mc mb -p local/krtour-map || true; "
                         f"mc mb -p local/krtour-uploads || true;"

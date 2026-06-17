@@ -7,7 +7,7 @@
 
 ## 1. 정체성
 
-본 저장소(`kor-travel-docker-manager`)는 `tripmate`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo`가 사용하는 공용 데이터베이스(PostgreSQL/PostGIS), 파일 저장소(RustFS), 앱 API/Web UI를 Docker 기반으로 안정적으로 통합 관리하고 상태를 대시보드로 모니터링하기 위한 관리 도구다.
+본 저장소(`kor-travel-docker-manager`)는 `pinvi`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo`가 사용하는 공용 데이터베이스(PostgreSQL/PostGIS), 파일 저장소(RustFS), 앱 API/Web UI를 Docker 기반으로 안정적으로 통합 관리하고 상태를 대시보드로 모니터링하기 위한 관리 도구다.
 
 - **FastAPI 백엔드**: 로컬 Docker 데몬과 소켓 또는 API로 연동해 컨테이너의 상태(`running`, `exited` 등)를 읽고 Start/Stop/Restart 제어 명령을 실행한다.
 - **Python CLI**: `ktdctl db|storage|gra|cadv|prom|geo|conc|map|pinvi|srv --build`로 개발환경 의존 Docker를 바로 실행한다.
@@ -92,7 +92,7 @@ docs/
 2. **Docker Socket 접근 권한 무시 금지**: Windows 호스트 또는 WSL 환경에서 Docker 데몬에 정상적으로 접근할 수 있도록 `DockerService`가 `docker.from_env()`를 호출할 때 예외 처리를 철저히 작성한다.
 3. **Next.js Client Directive 누락 금지**: 프론트엔드에서 React `useState`, `useEffect`, TanStack Query 훅을 사용하는 파일의 첫 줄에 `'use client'`를 누락하지 않는다.
 4. **API 키 및 Credential 평문 커밋 금지**: `.env`에 보관하고 git 추적을 방지한다.
-5. **독립성 유지 실패 금지**: `kor-travel-docker-manager`는 서비스의 "인프라 관리"만을 수행하므로, 다른 TripMate 구성 패키지의 비즈니스 로직(예: 지도 렌더링, 관광지 정보 정합성 검사 등)을 수행해서는 안 된다.
+5. **독립성 유지 실패 금지**: `kor-travel-docker-manager`는 서비스의 "인프라 관리"만을 수행하므로, 다른 Kor Travel/Pinvi 구성 패키지의 비즈니스 로직(예: 지도 렌더링, 관광지 정보 정합성 검사 등)을 수행해서는 안 된다.
 6. **인프라 생명주기 재분산 금지**: `kor-travel-geo` 등 하위 프로젝트 저장소가 PostgreSQL/RustFS 및 `kor-travel-geo` API/Web UI 컨테이너를 직접 정지/재시작하지 않도록, 포트·credential·bucket·compose 설정은 이 저장소의 `docker-compose.yml`, `ktdctl` CLI에 둔다.
 7. **target 순서 하드코딩 금지**: 새 Docker 의존성을 추가할 때는 `config/docker-targets.yml`의 `dependency_order`, `targets`, `init_steps`를 갱신하고 API/CLI가 같은 registry를 읽게 유지한다.
 8. **실행 위치 정책 위반 금지**: `git`은 Windows 호스트에서만, Playwright E2E는 Windows 호스트에서만, 그 밖의 개발/검증/Docker/서버 명령은 WSL에서만 실행한다.

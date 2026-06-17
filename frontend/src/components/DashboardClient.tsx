@@ -494,10 +494,10 @@ export default function DashboardClient() {
         <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-end w-full gap-4 mt-auto">
           <div className="select-text">
             <span className="text-[9px] font-bold tracking-machined uppercase text-on-dark border border-hairline px-2.5 py-1 bg-canvas rounded-none">
-              TRIPMATE SYSTEM INFRASTRUCTURE
+              PINVI SYSTEM INFRASTRUCTURE
             </span>
             <h1 className="text-2xl md:text-4xl font-display font-bold uppercase tracking-tight text-on-dark mt-4">
-              TRIPMATE INFRASTRUCTURE SERVICES CONTROL CENTER.
+              PINVI INFRASTRUCTURE SERVICES CONTROL CENTER.
             </h1>
             <p className="text-body-text text-xs font-light max-w-xl mt-2 leading-relaxed">
               공용 데이터베이스, 오브젝트 스토리지, 지오코더, 관측 스택을 제어하고 모니터링하는 통합 인프라 관리 센터입니다.

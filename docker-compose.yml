@@ -9,9 +9,9 @@ services:
       POSTGRES_USER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
       POSTGRES_PASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       POSTGRES_DB: ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
-      TRIPMATE_POSTGRES_USER: ${TRIPMATE_POSTGRES_USER:-tripmate}
-      TRIPMATE_POSTGRES_PASSWORD: ${TRIPMATE_POSTGRES_PASSWORD:-tripmate_dev_password}
-      TRIPMATE_POSTGRES_DB: ${TRIPMATE_POSTGRES_DB:-tripmate}
+      PINVI_POSTGRES_USER: ${PINVI_POSTGRES_USER:-pinvi}
+      PINVI_POSTGRES_PASSWORD: ${PINVI_POSTGRES_PASSWORD:-pinvi_dev_password}
+      PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
       KOR_TRAVEL_CONCIERGE_POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_DB:-kor_travel_concierge}
       KRTOUR_MAP_POSTGRES_USER: ${KRTOUR_MAP_POSTGRES_USER:-krtour_map}
       KRTOUR_MAP_POSTGRES_PASSWORD: ${KRTOUR_MAP_POSTGRES_PASSWORD:-krtour_map_dev_password}
@@ -58,7 +58,7 @@ services:
       retries: 5
   rustfs:
     image: rustfs/rustfs:latest
-    container_name: tripmate-rustfs
+    container_name: kor-travel-rustfs
     restart: unless-stopped
     command:
     - /data
@@ -93,7 +93,7 @@ services:
       RUSTFS_API_CONTAINER_PORT: ${RUSTFS_API_CONTAINER_PORT:-9000}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
-      TRIPMATE_RUSTFS_BUCKET: ${TRIPMATE_RUSTFS_BUCKET:-tripmate-media}
+      PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
       KOR_TRAVEL_GEO_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KRTOUR_MAP_RUSTFS_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
@@ -501,16 +501,16 @@ services:
     - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
       --workers 2
     environment:
-      TRIPMATE_ENVIRONMENT: local
-      TRIPMATE_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://tripmate:tripmate_dev_password@kor-travel-geo-postgres:5432/tripmate}
-      TRIPMATE_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
-      TRIPMATE_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
-      TRIPMATE_RUSTFS_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
-      TRIPMATE_RUSTFS_PUBLIC_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}
-      TRIPMATE_RUSTFS_BUCKET: ${TRIPMATE_RUSTFS_BUCKET:-tripmate-media}
-      TRIPMATE_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      TRIPMATE_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
-      TRIPMATE_CORS_ALLOWED_ORIGINS: '["http://127.0.0.1:${PINVI_WEB_PORT:-12805}","http://localhost:${PINVI_WEB_PORT:-12805}"]'
+      PINVI_ENVIRONMENT: local
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@kor-travel-geo-postgres:5432/pinvi}
+      PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
+      PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
+      PINVI_RUSTFS_ENDPOINT_URL: http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}
+      PINVI_RUSTFS_PUBLIC_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}
+      PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
+      PINVI_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      PINVI_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      PINVI_CORS_ALLOWED_ORIGINS: '["http://127.0.0.1:${PINVI_WEB_PORT:-12805}","http://localhost:${PINVI_WEB_PORT:-12805}"]'
     ports:
     - ${PINVI_API_PORT:-12801}:8000
     healthcheck:
@@ -527,19 +527,19 @@ services:
       context: ${PINVI_REPO_DIR:-../pinvi}
       dockerfile: apps/web/Dockerfile
       args:
-        NEXT_PUBLIC_TRIPMATE_API_URL: http://127.0.0.1:${PINVI_API_PORT:-12801}
+        NEXT_PUBLIC_PINVI_API_URL: http://127.0.0.1:${PINVI_API_PORT:-12801}
     container_name: ${PINVI_WEB_CONTAINER:-pinvi-web-latest}
     restart: unless-stopped
     depends_on:
       pinvi-api:
         condition: service_healthy
     environment:
-      NEXT_PUBLIC_TRIPMATE_API_URL: http://127.0.0.1:${PINVI_API_PORT:-12801}
+      NEXT_PUBLIC_PINVI_API_URL: http://127.0.0.1:${PINVI_API_PORT:-12801}
     ports:
     - ${PINVI_WEB_PORT:-12805}:3000
   prometheus:
     image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
-    container_name: ${PROMETHEUS_CONTAINER:-tripmate-prometheus}
+    container_name: ${PROMETHEUS_CONTAINER:-kor-travel-prometheus}
     restart: unless-stopped
     user: ${PROMETHEUS_RUN_AS_USER:-0}
     command:
@@ -555,7 +555,7 @@ services:
     - ${PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-geo-data/prometheus}:/prometheus
   grafana:
     image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.4}
-    container_name: ${GRAFANA_CONTAINER:-tripmate-grafana}
+    container_name: ${GRAFANA_CONTAINER:-kor-travel-grafana}
     restart: unless-stopped
     user: ${GRAFANA_RUN_AS_USER:-0}
     environment:
@@ -570,7 +570,7 @@ services:
     - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
   cadvisor:
     image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}
-    container_name: ${CADVISOR_CONTAINER:-tripmate-cadvisor}
+    container_name: ${CADVISOR_CONTAINER:-kor-travel-cadvisor}
     restart: unless-stopped
     privileged: true
     devices:

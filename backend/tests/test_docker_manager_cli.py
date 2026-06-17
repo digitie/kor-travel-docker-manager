@@ -100,7 +100,7 @@ def test_short_aliases_resolve_dependency_order():
     assert get_target("kor-travel-map")["id"] == "map"
     assert get_target("srv")["id"] == "pinvi"
     assert get_target("pinvi")["id"] == "pinvi"
-    assert get_target("tripmate")["id"] == "pinvi"
+    assert get_target("pinvi-api")["id"] == "pinvi"
     assert get_target("main")["id"] == "pinvi"
     assert get_target("metrics")["id"] == "prom"
     assert target_sequence_for_target("conc") == [
@@ -218,7 +218,7 @@ def test_cli_status_returns_compose_exit_code(mock_compose_service):
         "stderr": "compose failed",
     }
 
-    assert main(["status", "tripmate"]) == 17
+    assert main(["status", "pinvi"]) == 17
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")

@@ -23,6 +23,18 @@
 
 ---
 
+## 2026-06-15 (Pinvi 및 Kor Travel 공용 명칭 정리)
+
+- **작업 내용**:
+  - 남아 있던 과거 서비스명 계열 명칭을 Pinvi 기준으로 정리했다.
+  - 공용 컨테이너 성격이 강한 RustFS, Grafana, cAdvisor, Prometheus 이름은 `kor-travel-*` 기준으로 변경했다.
+  - Pinvi 전용 database/role/bucket/env 이름을 `pinvi`, `PINVI_*`, `pinvi-media` 기준으로 맞췄다.
+  - 과거 geo 패키지명 계열 잔여 명칭이 없는 것을 확인했다.
+- **검증**:
+  - WSL에서 과거 서비스명과 과거 geo 패키지명 계열 잔여 검색 결과 0건 확인.
+
+---
+
 ## 2026-06-13 (`geo -> conc -> map -> pinvi` target 흐름 반영)
 
 - **작업 내용**:
@@ -35,7 +47,7 @@
 - **검증**:
   - `docker compose config --quiet` 통과.
   - `scripts/ensure-kor-travel-geo-db.sh`, `scripts/ensure-rustfs-buckets.sh` `bash -n` 통과.
-  - `PYTHONPATH=src backend/tripmate_venv/bin/python`으로 registry 해석 확인: `map`은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map`, `srv`는 `... -> pinvi`로 resolve.
+  - `PYTHONPATH=src backend/pinvi_venv/bin/python`으로 registry 해석 확인: `map`은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map`, `srv`는 `... -> pinvi`로 resolve.
 
 ---
 
@@ -62,8 +74,8 @@
   - Grafana, cAdvisor, Prometheus compose service는 서로 `depends_on`으로 묶지 않고 독립 실행 가능하게 둔다.
   - `geo` 이상 target은 새 dependency 순서상 관측 컨테이너를 선행 실행한다.
 - **검증**:
-  - WSL `backend/tripmate_venv`에서 `ruff check .` 통과.
-  - WSL `backend/tripmate_venv`에서 `pytest` → 22 passed.
+  - WSL `backend/pinvi_venv`에서 `ruff check .` 통과.
+  - WSL `backend/pinvi_venv`에서 `pytest` → 22 passed.
   - WSL 프론트엔드에서 `npm run type-check`, `npm run build` 통과.
   - WSL Docker에서 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`, `kor-travel-geo` API `12501`, Web UI `12505`로 재기동 완료.
   - HTTP 확인: Grafana `/api/health` 200, cAdvisor `/healthz` 200, Prometheus `/-/ready` 200, Geo API `/v1/healthz` 200, Geo UI `/` 307, RustFS `/health/live` 200.
@@ -145,7 +157,7 @@
   - 미완료 작업 `T-011`, `T-012`를 유지하고, `kor-travel-concierge` provider 상세 구현 및 명칭 전환을 `T-220` 선행 작업으로 등록했다.
   - 사용자 지정 순서인 `T-221`, `T-222`, `T-223`을 `T-220` 이후 순차 진행 항목으로 추가했다.
 - **결정 사항**:
-  - `T-221` 착수 전 `kor-travel-concierge` 잔여 명칭과 `tripmate` 직접 의존 설명을 먼저 정리한다.
+  - `T-221` 착수 전 `kor-travel-concierge` 잔여 명칭과 `pinvi` 직접 의존 설명을 먼저 정리한다.
   - `T-221`~`T-223`의 세부 범위는 현재 `kor-travel-docker-manager` 저장소 장부에 없으므로, `T-220` 완료 후 작업 전 상세 항목을 확정한다.
 
 ---
@@ -173,10 +185,10 @@
 
 ---
 
-## 2026-06-12 (TripMate 전용 Docker Manager CLI/API 및 문서 정리)
+## 2026-06-12 (Kor Travel/Pinvi 전용 Docker Manager CLI/API 및 문서 정리)
 
 - **작업 내용**:
-  - **통합 DB 모델 공식화**: `kor-travel-geo-postgres:5432` 하나에 `kor_travel_geo`, `tripmate`, `kor_travel_concierge`, `krtour_map` database를 담는 현재 구조를 공식 기준으로 문서화하고, 과거 분리 DB 기준 문구를 정리.
+  - **통합 DB 모델 공식화**: `kor-travel-geo-postgres:5432` 하나에 `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database를 담는 현재 구조를 공식 기준으로 문서화하고, 과거 분리 DB 기준 문구를 정리.
   - **target registry 도입**: `db`, `storage`, `geo`, `map`, `ai`, `main`, `all` target을 API/CLI가 공유하도록 정의.
   - **Python CLI 추가**: `ktdctl targets/status/ensure/logs/action/inspect` 명령을 추가하고, 개발환경에서 `ktdctl <alias> --build`로 의존 Docker를 바로 실행할 수 있게 함.
   - **짧은 CLI 별칭 추가**: `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `map`, `ai`, `main`을 공식 별칭으로 두고 `config/docker-targets.yml`의 dependency 순서를 따라 누적 실행하도록 구현.
