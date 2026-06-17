@@ -4,7 +4,7 @@
 
 ## 프로젝트 현황 (2026-06-12)
 
-Pinvi 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, Pinvi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
+PinVi 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
 
 - **Backend**: Python FastAPI 기반 (`backend/`)

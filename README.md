@@ -1,6 +1,6 @@
 # Kor Travel Docker Manager
 
-Pinvi 구동에 필요한 공용 기반 서비스(PostgreSQL / PostGIS, RustFS 등)를 관리하고 실시간으로 모니터링하기 위한 관리 소프트웨어입니다.
+PinVi 구동에 필요한 공용 기반 서비스(PostgreSQL / PostGIS, RustFS 등)를 관리하고 실시간으로 모니터링하기 위한 관리 소프트웨어입니다.
 
 `pinvi`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo` 등 포스트그레스와 파일 스토리지를 활용하는 여러 서비스에서 이 인프라를 안정적으로 공용하여 사용할 수 있게 돕습니다.
 
@@ -71,12 +71,12 @@ poetry run ktdctl geo --build
 | kor-travel-map API | `12701` | `http://127.0.0.1:12701` |
 | kor-travel-map Dagster | `12702` | `http://127.0.0.1:12702` |
 | kor-travel-map Web UI | `12705` | `http://127.0.0.1:12705` |
-| Pinvi API | `12801` | `http://127.0.0.1:12801` |
-| Pinvi Web UI | `12805` | `http://127.0.0.1:12805` |
+| PinVi API | `12801` | `http://127.0.0.1:12801` |
+| PinVi Web UI | `12805` | `http://127.0.0.1:12805` |
 | Manager Backend API | `12901` | `http://127.0.0.1:12901` |
 | Manager Dashboard Web | `12905` | `http://127.0.0.1:12905` |
 
-Kor Travel/Pinvi 계열 전체 포트 정책과 관련 로컬 레포 조사 결과는 [로컬 포트 정책](docs/ports.md)을 참고해 주세요.
+Kor Travel/PinVi 계열 전체 포트 정책과 관련 로컬 레포 조사 결과는 [로컬 포트 정책](docs/ports.md)을 참고해 주세요.
 
 정지/재시작은 같은 CLI에서 수행합니다.
 

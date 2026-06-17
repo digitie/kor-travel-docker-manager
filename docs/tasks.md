@@ -19,14 +19,14 @@
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
 | **T-222** | 관측 target 개별 분리 및 포트 재배치 | `[x]` | 2026-06-13 | `gra`, `cadv`, `prom` 분리 및 새 포트 반영 |
 | **T-223** | 앱 target 흐름 재정렬 및 실제 컨테이너 빌드 편입 | `[x]` | 2026-06-13 | `geo -> conc -> map -> pinvi`, `srv` 별칭 반영 |
-| **T-224** | 과거 서비스명과 공용 인프라 명칭 정리 | `[x]` | 2026-06-15 | Pinvi 및 `kor-travel-*` 기준 반영 |
+| **T-224** | 과거 서비스명과 공용 인프라 명칭 정리 | `[x]` | 2026-06-15 | PinVi 및 `kor-travel-*` 기준 반영 |
 
 ---
 
 ## 진행 순서
 
 1. `tasks.md`와 `tasks-done.md`를 최신 완료/미완료 상태로 정리한다.
-2. `kor-travel-concierge`는 `conc`, Pinvi는 `srv` 별칭을 기준으로 안내한다.
+2. `kor-travel-concierge`는 `conc`, PinVi는 `srv` 별칭을 기준으로 안내한다.
 3. 다음 앱 target 추가 시 `config/docker-targets.yml`, `docker-compose.yml`, 포트 문서, API/CLI 테스트를 함께 갱신한다.
 4. 병행 작업 충돌을 줄이기 위해 각 PR 전후로 `main` rebase를 수행한다.
 
@@ -80,12 +80,12 @@
 - [x] dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`로 조정한다
 - [x] `kor-travel-concierge` target을 `conc`로 등록하고 API/MCP/Scheduler/Web UI compose service를 추가한다
 - [x] `kor-travel-map` target을 `map`에 실제 API/Dagster/Web UI compose service로 연결한다
-- [x] Pinvi target을 `pinvi`로 등록하고 `srv`, `main` 별칭을 제공한다
+- [x] PinVi target을 `pinvi`로 등록하고 `srv`, `main` 별칭을 제공한다
 - [x] 공용 DB/RustFS 복구 스크립트에 `krtour_map_dagster` database와 `kor-travel-concierge` bucket 보정을 추가한다
 - [x] API/CLI 테스트와 문서를 새 target 흐름에 맞춰 갱신한다
 
 ### T-224: 과거 서비스명과 공용 인프라 명칭 정리
 
-- [x] Pinvi 전용 database, role, bucket, 환경변수 기본값을 `pinvi` 및 `PINVI_*` 기준으로 맞춘다
+- [x] PinVi 전용 database, role, bucket, 환경변수 기본값을 `pinvi` 및 `PINVI_*` 기준으로 맞춘다
 - [x] 공용 RustFS와 관측 컨테이너 이름을 `kor-travel-*` 기준으로 맞춘다
 - [x] 문서, 테스트, 설정 파일의 과거 서비스명 잔여 표기를 제거한다

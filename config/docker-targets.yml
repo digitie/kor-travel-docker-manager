@@ -122,7 +122,7 @@ containers:
     name: pinvi-api-latest
     compose_service: pinvi-api
     role: pinvi-api
-    display_name: Pinvi API
+    display_name: PinVi API
     connection: http://127.0.0.1:12801
     expected_ports:
       - "12801:8000"
@@ -130,7 +130,7 @@ containers:
     name: pinvi-web-latest
     compose_service: pinvi-web
     role: pinvi-web
-    display_name: Pinvi Web UI
+    display_name: PinVi Web UI
     connection: http://127.0.0.1:12805
     expected_ports:
       - "12805:3000"
@@ -163,7 +163,7 @@ targets:
   db:
     port_band: "12000-12099"
     display_name: 통합 DB
-    description: Kor Travel/Pinvi 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
+    description: Kor Travel/PinVi 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
     aliases:
       - postgresql
       - postgres
@@ -188,7 +188,7 @@ targets:
   storage:
     port_band: "12100-12199"
     display_name: 통합 RustFS
-    description: Kor Travel/Pinvi 미디어와 원천 데이터를 저장하는 S3 호환 오브젝트 스토리지입니다.
+    description: Kor Travel/PinVi 미디어와 원천 데이터를 저장하는 S3 호환 오브젝트 스토리지입니다.
     aliases:
       - rustfs
       - s3
@@ -350,8 +350,8 @@ targets:
 
   pinvi:
     port_band: "12800-12899"
-    display_name: Pinvi
-    description: Pinvi API/Web UI와 Kor Travel Map까지의 선행 의존성을 실행합니다.
+    display_name: PinVi
+    description: PinVi API/Web UI와 Kor Travel Map까지의 선행 의존성을 실행합니다.
     aliases:
       - srv
       - main
@@ -382,7 +382,7 @@ targets:
     init_steps: []
 
   all:
-    display_name: 전체 Kor Travel/Pinvi 개발 인프라
+    display_name: 전체 Kor Travel/PinVi 개발 인프라
     description: dependency_order 전체를 순서대로 실행합니다.
     aliases:
       - default

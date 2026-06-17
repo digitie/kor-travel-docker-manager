@@ -1,6 +1,6 @@
 # Docker 관리 설계
 
-이 문서는 `kor-travel-docker-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, Kor Travel/Pinvi 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
+이 문서는 `kor-travel-docker-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, Kor Travel/PinVi 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
 
 ---
 
@@ -25,7 +25,7 @@
 | 로그 | REST 최근 로그, WebSocket 실시간 로그 구현 | CLI `logs`와 UI 상세 패널에서 동일한 대상 기준 사용 |
 | 메트릭 | CPU, 메모리, I/O 10초 수집 및 30일 보관 | 컨테이너 상세 화면에서 최근 추세와 현재값 동시 표시 |
 | 설정 변경 | compose의 ports, env, volumes, networks 저장 및 재생성 구현 | 입력 검증, secret redaction, 변경 전 diff 표시 |
-| CLI | `ktdctl` Python CLI 추가 | 다른 Kor Travel/Pinvi 프로젝트에서 의존 Docker 실행용으로 사용 |
+| CLI | `ktdctl` Python CLI 추가 | 다른 Kor Travel/PinVi 프로젝트에서 의존 Docker 실행용으로 사용 |
 | 문서 | 통합 DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
 
 현재 공식 관리 컨테이너는 다음 17개다.
@@ -33,7 +33,7 @@
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트 |
 |---|---|---|---|
 | `kor-travel-geo-postgresql` | `kor-travel-geo-postgres` | `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database를 담는 통합 PostgreSQL / PostGIS | `5432:5432` |
-| `rustfs` | `kor-travel-rustfs` | Kor Travel/Pinvi 계열 미디어 및 원천 데이터용 S3 호환 오브젝트 스토리지 | host `12101`, `12105` / container `9000`, `9001` |
+| `rustfs` | `kor-travel-rustfs` | Kor Travel/PinVi 계열 미디어 및 원천 데이터용 S3 호환 오브젝트 스토리지 | host `12101`, `12105` / container `9000`, `9001` |
 | `grafana` | `kor-travel-grafana` | 다른 앱과도 공통 연계하는 Grafana 시각화 도구 | host `12205` / container `3000` |
 | `cadvisor` | `kor-travel-cadvisor` | Docker 컨테이너 리소스 메트릭을 노출하는 cAdvisor Exporter | host `12301` / container `8080` |
 | `prometheus` | `kor-travel-prometheus` | cAdvisor Exporter와 앱 메트릭을 수집하고 저장하는 Prometheus | host `12401` / container `9090` |
@@ -47,8 +47,8 @@
 | `kor-travel-map-dagster` | `kor-travel-map-dagster-latest` | `kor-travel-map` Dagster Webserver | host `12702` / container `9013` |
 | `kor-travel-map-dagster-daemon` | `kor-travel-map-dagster-daemon-latest` | `kor-travel-map` Dagster daemon | 내부 실행 |
 | `kor-travel-map-ui` | `kor-travel-map-ui-latest` | `kor-travel-map` admin Web UI | host `12705` / container `9012` |
-| `pinvi-api` | `pinvi-api-latest` | Pinvi API | host `12801` / container `8000` |
-| `pinvi-web` | `pinvi-web-latest` | Pinvi Web UI | host `12805` / container `3000` |
+| `pinvi-api` | `pinvi-api-latest` | PinVi API | host `12801` / container `8000` |
+| `pinvi-web` | `pinvi-web-latest` | PinVi Web UI | host `12805` / container `3000` |
 
 ---
 
@@ -72,7 +72,7 @@ db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi
 | `geo` | 지오코더/리버스지오코더 | `prom` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kor-travel-geo`, `geocoder`, `reverse-geocoder` |
 | `conc` | Kor Travel Concierge | `geo` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 | `kor-travel-concierge`, `concierge`, `agent` |
 | `map` | Kor Travel Map | `conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
-| `pinvi` | Pinvi | `map` + Pinvi API/Web UI 실행 | `srv`, `main`, `pinvi` |
+| `pinvi` | PinVi | `map` + PinVi API/Web UI 실행 | `srv`, `main`, `pinvi` |
 | `all` | 전체 | `db`부터 `pinvi`까지 전체 순서 | `default` |
 
 `geo` 이후 앱 target은 모두 실제 앱 컨테이너를 이 저장소 compose에서 빌드하고 실행한다. `main`은 독립 target이 아니라 `pinvi`의 호환 별칭이며, 새 자동화에서는 짧은 별칭 `srv`를 사용한다.
@@ -126,7 +126,7 @@ ktdctl action kor-travel-geo-postgresql restart
 ktdctl inspect kor-travel-geo-postgresql --json
 ```
 
-다른 Kor Travel/Pinvi 저장소에서는 개발 서버 시작 전에 필요한 target만 호출한다.
+다른 Kor Travel/PinVi 저장소에서는 개발 서버 시작 전에 필요한 target만 호출한다.
 
 ```bash
 ktdctl srv --build
@@ -169,4 +169,4 @@ ktdctl srv --build
 - `docker compose` 실행은 반드시 문자열 shell이 아니라 인자 배열로 수행한다.
 - inspect와 로그 출력에서 secret 성격의 environment 값은 redaction한다.
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
-- 포트 `5432`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12805`, `12901`, `12905`는 Kor Travel/Pinvi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
+- 포트 `5432`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
