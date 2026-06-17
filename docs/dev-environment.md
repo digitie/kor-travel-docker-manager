@@ -65,7 +65,7 @@ KOR_TRAVEL_GEO_POSTGRES_DB=kor_travel_geo
 KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=1
 ```
 
-RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`을 사용하며, `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, Pinvi는 `12801`/`12805`를 사용한다. PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
+RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`을 사용하며, `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
 Poetry를 사용할 경우:
@@ -87,7 +87,7 @@ PYTHONPATH=src ktd_venv/bin/python -m uvicorn kor_travel_docker_manager.main:app
 
 ## 3. 의존 Docker 실행
 
-다른 Kor Travel/Pinvi 개발 저장소에서 DB 또는 RustFS가 필요할 때는 manager CLI로 바로 실행한다.
+다른 Kor Travel/PinVi 개발 저장소에서 DB 또는 RustFS가 필요할 때는 manager CLI로 바로 실행한다.
 
 ```bash
 cd /mnt/f/dev/kor-travel-docker-manager/backend

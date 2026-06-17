@@ -1,6 +1,6 @@
 # 로컬 포트 정책
 
-이 문서는 Kor Travel/Pinvi 계열 로컬 개발 포트 정책과 2026-06-12 기준 관련 로컬 레포에서 확인한 변경 전 포트, 변경 후 정책 포트를 정리한다.
+이 문서는 Kor Travel/PinVi 계열 로컬 개발 포트 정책과 2026-06-12 기준 관련 로컬 레포에서 확인한 변경 전 포트, 변경 후 정책 포트를 정리한다.
 
 ---
 
@@ -30,7 +30,7 @@
 | `geo` | `12500-12599` | API `12501`, Web UI `12505` | `kor-travel-geo` REST API와 admin UI. |
 | `conc` | `12600-12699` | API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` API, MCP HTTP, scheduler, Web UI. |
 | `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` admin API, Dagster, admin Web UI. |
-| `pinvi` | `12800-12899` | API `12801`, Web UI `12805` | Pinvi API/Web. `srv`와 `main`은 이 target의 별칭. |
+| `pinvi` | `12800-12899` | API `12801`, Web UI `12805` | PinVi API/Web. `srv`와 `main`은 이 target의 별칭. |
 | `kor-travel-docker-manager` | `12900-12999` | API `12901`, Web UI `12905` | dependency 추가와 무관하게 고정. |
 
 ---
@@ -84,7 +84,7 @@
 | `kor-travel-geo` API `12501`, Web UI `12505` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | `kor-travel-concierge` API `12601`, MCP `12602`, Web UI `12605` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | `kor-travel-map` API `12701`, Dagster `12702`, Web UI `12705` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
-| Pinvi API `12801`, Web UI `12805` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
+| PinVi API `12801`, Web UI `12805` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | Manager Backend API `12901` | `backend/src/kor_travel_docker_manager/main.py`, `frontend/src/components/DashboardClient.tsx` | 반영 |
 | Manager Web UI `12905` | `frontend/package.json` | 반영 |
 | 포트 대역 metadata | `config/docker-targets.yml` | 반영 |
