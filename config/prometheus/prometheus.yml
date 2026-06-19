@@ -2,25 +2,27 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# 네트워크 host 모드 기준: 각 서비스는 호스트 정규 포트에 직접 바인딩되므로
+# scrape target은 컨테이너명이 아닌 127.0.0.1:<호스트 포트>를 사용한다.
 scrape_configs:
   - job_name: prometheus
     static_configs:
       - targets:
-          - prometheus:9090
+          - 127.0.0.1:12401
 
   - job_name: cadvisor
     static_configs:
       - targets:
-          - cadvisor:8080
+          - 127.0.0.1:12301
 
   - job_name: kor-travel-geo-api
     metrics_path: /metrics
     static_configs:
       - targets:
-          - kor-travel-geo-api:12501
+          - 127.0.0.1:12501
 
   - job_name: kor-travel-geo-ui
     metrics_path: /api/metrics
     static_configs:
       - targets:
-          - kor-travel-geo-ui:12505
+          - 127.0.0.1:12505

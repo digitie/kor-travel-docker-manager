@@ -46,6 +46,7 @@ interface ContainerStatus {
   display_name?: string;
   role?: string;
   connection?: string;
+  public_url?: string;
   expected_ports?: string[];
   image?: string;
   status: string;
@@ -609,6 +610,17 @@ export default function DashboardClient() {
                             <div>
                               <div className="font-bold text-on-dark text-base uppercase">{displayName}</div>
                               <div className="text-muted text-xs md:text-sm mt-0.5 font-mono font-light">{container.name}</div>
+                              {container.public_url && (
+                                <a
+                                  href={container.public_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title="운영(prod) 공개 주소"
+                                  className="block text-m-blue-dark text-xs md:text-sm mt-0.5 font-mono font-light underline hover:opacity-80 break-all"
+                                >
+                                  {container.public_url.replace(/^https?:\/\//, '')}
+                                </a>
+                              )}
                             </div>
                           </div>
                         </td>

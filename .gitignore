@@ -51,6 +51,7 @@ yarn-error.log*
 # AI agent local indexes & backups
 .codegraph/
 .claude/settings.local.json
+memory/
 
 # Local databases, virtualenvs and log directories
 pinvi_metrics.db

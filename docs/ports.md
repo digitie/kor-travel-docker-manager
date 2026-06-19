@@ -14,7 +14,8 @@
 - Web UI 포트는 각 대역의 `+5`를 사용하고, 추가 Web UI는 `+6`부터 사용한다.
 - PostgreSQL 접속 포트는 예외적으로 표준 `5432`를 사용한다.
 - `kor-travel-docker-manager` 자체 포트는 dependency 순서와 무관하게 `12900-12999` 대역을 사용한다.
-- 이 문서의 포트 정책은 호스트에서 노출되는 로컬 포트 기준이다. 컨테이너 내부 포트는 이미지 표준 포트를 유지할 수 있다.
+- 이 문서의 포트 정책은 호스트에서 노출되는 로컬 포트 기준이다.
+- dev 기본 네트워크는 Docker host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 포트 NAT가 없으므로 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다(컨테이너 내부 포트 = 호스트 포트). 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다.
 
 ---
 
@@ -30,7 +31,7 @@
 | `geo` | `12500-12599` | API `12501`, Web UI `12505` | `kor-travel-geo` REST API와 admin UI. |
 | `conc` | `12600-12699` | API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` API, MCP HTTP, scheduler, Web UI. |
 | `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` admin API, Dagster, admin Web UI. |
-| `pinvi` | `12800-12899` | API `12801`, Web UI `12805` | PinVi API/Web. `srv`와 `main`은 이 target의 별칭. |
+| `pinvi` | `12800-12899` | API `12801`, Dagster `12802`, Web UI `12805` | PinVi API/Dagster/Web. `srv`와 `main`은 이 target의 별칭. |
 | `kor-travel-docker-manager` | `12900-12999` | API `12901`, Web UI `12905` | dependency 추가와 무관하게 고정. |
 
 ---
@@ -85,6 +86,8 @@
 | `kor-travel-concierge` API `12601`, MCP `12602`, Web UI `12605` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | `kor-travel-map` API `12701`, Dagster `12702`, Web UI `12705` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | PinVi API `12801`, Web UI `12805` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
+| PinVi Dagster `12802` (host=container) | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml`, pinvi `apps/etl/Dockerfile` | 반영 |
+| host 네트워크 모드 및 컨테이너=호스트 포트 통일 (geo/conc/map/pinvi 및 인프라) | `docker-compose.yml`, `.env.example`, `config/prometheus/prometheus.yml` | 반영 |
 | Manager Backend API `12901` | `backend/src/kor_travel_docker_manager/main.py`, `frontend/src/components/DashboardClient.tsx` | 반영 |
 | Manager Web UI `12905` | `frontend/package.json` | 반영 |
 | 포트 대역 metadata | `config/docker-targets.yml` | 반영 |

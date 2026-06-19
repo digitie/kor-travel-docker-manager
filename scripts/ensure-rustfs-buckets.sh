@@ -5,7 +5,8 @@ log() {
   printf '[rustfs-init] %s\n' "$*"
 }
 
-endpoint="${RUSTFS_ENDPOINT:-http://rustfs:${RUSTFS_API_CONTAINER_PORT:-9000}}"
+# host 네트워크 모드 기본값: rustfs는 호스트 정규 포트(12101)에 직접 바인딩되므로 127.0.0.1로 접속한다.
+endpoint="${RUSTFS_ENDPOINT:-http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}}"
 access_key="${RUSTFS_ACCESS_KEY:-rustfsadmin}"
 secret_key="${RUSTFS_SECRET_KEY:-rustfsadmin}"
 
