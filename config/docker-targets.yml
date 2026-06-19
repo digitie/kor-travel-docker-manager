@@ -37,15 +37,17 @@ containers:
     role: rustfs
     display_name: RustFS 공용 오브젝트 스토리지
     connection: "S3 API http://127.0.0.1:12101 / console http://127.0.0.1:12105/rustfs/console/"
+    prod_url_env: KTDM_PROD_URL_S3
     expected_ports:
-      - "12101:9000"
-      - "12105:9001"
+      - "12101:12101"
+      - "12105:12105"
   kor-travel-geo-api:
     name: kor-travel-geo-api-latest
     compose_service: kor-travel-geo-api
     role: geocoder-api
     display_name: Kor Travel Geo API
     connection: http://127.0.0.1:12501
+    prod_url_env: KTDM_PROD_URL_GEO_API
     expected_ports:
       - "12501:12501"
   kor-travel-geo-ui:
@@ -54,6 +56,7 @@ containers:
     role: geocoder-ui
     display_name: Kor Travel Geo Web UI
     connection: http://127.0.0.1:12505
+    prod_url_env: KTDM_PROD_URL_GEO
     expected_ports:
       - "12505:12505"
   kor-travel-concierge-api:
@@ -62,16 +65,18 @@ containers:
     role: concierge-api
     display_name: Kor Travel Concierge API
     connection: http://127.0.0.1:12601
+    prod_url_env: KTDM_PROD_URL_CONCIERGE_API
     expected_ports:
-      - "12601:8000"
+      - "12601:12601"
   kor-travel-concierge-mcp:
     name: kor-travel-concierge-mcp-latest
     compose_service: kor-travel-concierge-mcp
     role: concierge-mcp
     display_name: Kor Travel Concierge MCP
     connection: http://127.0.0.1:12602/mcp
+    prod_url_env: KTDM_PROD_URL_CONCIERGE_MCP
     expected_ports:
-      - "12602:12402"
+      - "12602:12602"
   kor-travel-concierge-scheduler:
     name: kor-travel-concierge-scheduler-latest
     compose_service: kor-travel-concierge-scheduler
@@ -85,32 +90,36 @@ containers:
     role: concierge-ui
     display_name: Kor Travel Concierge Web UI
     connection: http://127.0.0.1:12605
+    prod_url_env: KTDM_PROD_URL_CONCIERGE
     expected_ports:
-      - "12605:3000"
+      - "12605:12605"
   kor-travel-map-api:
     name: kor-travel-map-api-latest
     compose_service: kor-travel-map-api
     role: map-api
     display_name: Kor Travel Map API
     connection: http://127.0.0.1:12701
+    prod_url_env: KTDM_PROD_URL_MAP_API
     expected_ports:
-      - "12701:9011"
+      - "12701:12701"
   kor-travel-map-ui:
     name: kor-travel-map-ui-latest
     compose_service: kor-travel-map-ui
     role: map-ui
     display_name: Kor Travel Map Web UI
     connection: http://127.0.0.1:12705
+    prod_url_env: KTDM_PROD_URL_MAP
     expected_ports:
-      - "12705:9012"
+      - "12705:12705"
   kor-travel-map-dagster:
     name: kor-travel-map-dagster-latest
     compose_service: kor-travel-map-dagster
     role: map-dagster
     display_name: Kor Travel Map Dagster
     connection: http://127.0.0.1:12702
+    prod_url_env: KTDM_PROD_URL_MAP_DAGSTER
     expected_ports:
-      - "12702:9013"
+      - "12702:12702"
   kor-travel-map-dagster-daemon:
     name: kor-travel-map-dagster-daemon-latest
     compose_service: kor-travel-map-dagster-daemon
@@ -124,40 +133,54 @@ containers:
     role: pinvi-api
     display_name: PinVi API
     connection: http://127.0.0.1:12801
+    prod_url_env: KTDM_PROD_URL_PINVI_API
     expected_ports:
-      - "12801:8000"
+      - "12801:12801"
   pinvi-web:
     name: pinvi-web-latest
     compose_service: pinvi-web
     role: pinvi-web
     display_name: PinVi Web UI
     connection: http://127.0.0.1:12805
+    prod_url_env: KTDM_PROD_URL_PINVI
     expected_ports:
-      - "12805:3000"
+      - "12805:12805"
+  pinvi-dagster:
+    name: pinvi-dagster-latest
+    compose_service: pinvi-dagster
+    role: pinvi-dagster
+    display_name: PinVi Dagster
+    connection: http://127.0.0.1:12802
+    prod_url_env: KTDM_PROD_URL_PINVI_DAGSTER
+    expected_ports:
+      - "12802:12802"
   prometheus:
     name: kor-travel-prometheus
     compose_service: prometheus
     role: prometheus
     display_name: Prometheus 메트릭 저장소
     connection: http://127.0.0.1:12401
+    prod_url_env: KTDM_PROD_URL_PROMETHEUS
     expected_ports:
-      - "12401:9090"
+      - "12401:12401"
   grafana:
     name: kor-travel-grafana
     compose_service: grafana
     role: grafana
     display_name: 공용 Grafana 시각화 도구
     connection: http://127.0.0.1:12205
+    prod_url_env: KTDM_PROD_URL_GRAFANA
     expected_ports:
-      - "12205:3000"
+      - "12205:12205"
   cadvisor:
     name: kor-travel-cadvisor
     compose_service: cadvisor
     role: metrics-exporter
     display_name: cAdvisor 컨테이너 메트릭 Exporter
     connection: http://127.0.0.1:12301
+    prod_url_env: KTDM_PROD_URL_CADVISOR
     expected_ports:
-      - "12301:8080"
+      - "12301:12301"
 
 targets:
   db:
@@ -361,9 +384,11 @@ targets:
     services:
       - pinvi-api
       - pinvi-web
+      - pinvi-dagster
     runtime_services:
       - pinvi-api
       - pinvi-web
+      - pinvi-dagster
     containers:
       - kor-travel-geo-postgresql
       - rustfs
@@ -379,6 +404,7 @@ targets:
       - kor-travel-map-dagster-daemon
       - pinvi-api
       - pinvi-web
+      - pinvi-dagster
     init_steps: []
 
   all:
@@ -416,4 +442,5 @@ targets:
       - kor-travel-map-dagster-daemon
       - pinvi-api
       - pinvi-web
+      - pinvi-dagster
     init_steps: []

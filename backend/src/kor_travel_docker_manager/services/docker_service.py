@@ -39,6 +39,20 @@ def _get_env_path() -> str:
     return get_env_path()
 
 
+def _public_url(spec: dict[str, Any]) -> str | None:
+    """컨테이너의 운영(prod) 공개 URL을 환경변수에서 해석한다.
+
+    docker-targets.yml의 `prod_url_env`가 가리키는 환경변수(KTDM_PROD_URL_*)에서
+    실제 도메인을 읽는다. 미설정이면 None을 반환해 대시보드가 로컬 connection만 표시한다.
+    실제 도메인은 저장소에 커밋하지 않고 gitignore된 .env에만 둔다.
+    """
+    env_key = spec.get("prod_url_env")
+    if not env_key:
+        return None
+    value = os.environ.get(str(env_key), "").strip()
+    return value or None
+
+
 def get_compose_config() -> dict[str, Any]:
     path = _get_compose_path()
     if not os.path.exists(path):
@@ -209,6 +223,7 @@ class DockerService:
                         "display_name": spec["display_name"],
                         "role": spec["role"],
                         "connection": spec["connection"],
+                        "public_url": _public_url(spec),
                         "expected_ports": spec["expected_ports"],
                         "status": "offline",
                         "state": "Docker daemon unavailable",
@@ -256,6 +271,7 @@ class DockerService:
                         "display_name": spec["display_name"],
                         "role": spec["role"],
                         "connection": spec["connection"],
+                        "public_url": _public_url(spec),
                         "expected_ports": spec["expected_ports"],
                         "image": image_tags[0] if image_tags else container.image.short_id,
                         "status": container.status,  # e.g., 'running', 'exited', 'paused'
@@ -278,6 +294,7 @@ class DockerService:
                         "display_name": spec["display_name"],
                         "role": spec["role"],
                         "connection": spec["connection"],
+                        "public_url": _public_url(spec),
                         "expected_ports": spec["expected_ports"],
                         "status": "not_created",
                         "state": "Container not found",
@@ -307,6 +324,7 @@ class DockerService:
                         "display_name": spec["display_name"],
                         "role": spec["role"],
                         "connection": spec["connection"],
+                        "public_url": _public_url(spec),
                         "expected_ports": spec["expected_ports"],
                         "status": "error",
                         "state": str(e),

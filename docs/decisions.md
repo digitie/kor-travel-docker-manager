@@ -440,3 +440,71 @@ Kor Travel Geo의 DB명은 `kor_travel_geo`로, manager override 변수는 `KOR_
 ### 후속
 - (open) 대시보드에서 `conc`, `map`, `pinvi` target의 dependency graph와 init step 결과를 표시한다.
 - (open) Prometheus scrape target에 새 앱의 `/metrics` 표면이 안정화되면 추가한다.
+
+---
+
+## ADR-15: 운영(prod) 공개 주소를 gitignore된 `.env`/`.env.production`로 주입하고 CORS Origin을 환경변수화한다
+
+- 상태: accepted
+- 날짜: 2026-06-20
+- 결정자: human, AI agent
+
+### 컨텍스트
+매니저 백엔드 API와 대시보드는 운영 환경에서 각각 별도 공개 도메인으로 노출된다. 프론트엔드는 `NEXT_PUBLIC_BACKEND_URL` 빌드타임 변수로 백엔드 주소를 알아야 하고(기본값 `http://localhost:12901`), 백엔드 CORS는 `allow_origins=["*"]`로 고정되어 있었다. 운영 도메인을 소스에 하드코딩하면 공개 저장소에 노출되고, 환경별 분기도 어렵다. 또한 Next.js 환경파일 우선순위상 `.env.local`이 `.env.production`을 덮어써, 기존 개발용 `.env.local`이 운영 빌드를 localhost로 고정시키는 사고 위험이 있었다.
+
+### 결정
+운영 공개 주소를 소스/문서에 커밋하지 않고 gitignore된 `.env`(백엔드)와 `frontend/.env.production`(프론트엔드)에만 저장한다. 백엔드 CORS 허용 Origin은 `KTDM_CORS_ALLOW_ORIGINS` 환경변수(콤마 구분, 미설정/`*`이면 전체 허용)로 제어하고, 프론트엔드는 환경별 `.env.development`/`.env.production`로 백엔드 주소를 분리하며 `.env.local`에는 `NEXT_PUBLIC_BACKEND_URL`을 두지 않는다.
+
+### 근거
+- 운영 도메인은 dynamic DNS 기반 사설 주소라 공개 저장소에 노출하지 않아야 한다.
+- `NEXT_PUBLIC_*`은 빌드타임에 번들로 인라인되므로 운영 호스트 빌드에서 `.env.production` 값이 들어가야 한다.
+- 백엔드는 `python-dotenv`로 루트 `.env`를 기동 시 로드하므로 동일 파일에서 CORS를 제어할 수 있다.
+- 개발 기본값을 `*`/`localhost`로 유지하면 기존 로컬 워크플로가 깨지지 않는다.
+
+### 결과(긍정)
+- 운영 도메인 변경 시 코드 수정 없이 gitignore된 env 파일만 갱신하면 된다.
+- 백엔드 CORS를 운영 대시보드 Origin으로 좁혀 노출 표면을 줄일 수 있다.
+- `.env.example`/`frontend/.env.example`이 플레이스홀더로 계약을 문서화해 실제 도메인 누출 없이 셋업을 안내한다.
+
+### 결과(부정)
+- `NEXT_PUBLIC_*` 인라인 특성상 운영 호스트에서 `next build`를 다시 수행해야 주소가 반영된다.
+- 운영 도메인이 env 파일에만 존재하므로 배포 자동화에서 해당 파일 주입을 별도로 보장해야 한다.
+
+### 후속
+- (open) 리버스 프록시(TLS/WS 업그레이드) 설정 예시를 운영 배포 문서로 분리한다.
+- (open) 인증 도입 시 `allow_credentials`와 Origin 화이트리스트를 함께 재검토한다.
+
+---
+
+## ADR-16: dev 기본 네트워크를 Docker host 모드로 전환하고 컨테이너=호스트 포트로 통일한다
+
+- 상태: accepted
+- 날짜: 2026-06-20
+- 결정자: human, AI agent
+
+### 컨텍스트
+기존 compose는 bridge 네트워크 + 포트 NAT(`host:container`) 매핑을 사용했고, 서비스 간 통신은 compose DNS 컨테이너명(`kor-travel-geo-postgres`, `rustfs` 등)에 의존했다. 사용자는 dev 기본 네트워크를 host 모드로 통일하고, `kor-travel-geo`/`kor-travel-concierge`/`kor-travel-map`/PinVi의 컨테이너 내부 포트도 호스트 포트와 동일하게 맞출 것을 요청했다. host 모드에서는 포트 NAT가 없어 컨테이너가 바인딩한 포트가 곧 호스트 포트이므로, 정규 포트(12xxx, 5432) 직접 바인딩과 컨테이너=호스트 포트 통일이 필수다. 또한 관리 대상 서비스별 운영 공개 주소를 대시보드에 반영하고, PinVi Dagster(`pinvi-dagster`, 12802)를 새 관리 컨테이너로 추가해야 했다.
+
+### 결정
+dev 기본 네트워크 모드를 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}`로 전환한다. 모든 인프라/앱 서비스는 호스트 정규 포트에 직접 바인딩하고(컨테이너 내부 포트 = 호스트 포트), 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다. 관리 서비스의 운영 공개 URL은 docker-targets.yml의 `prod_url_env`가 가리키는 `KTDM_PROD_URL_*` 환경변수에서 읽어 대시보드 `public_url`로 표시한다(실제 도메인은 gitignore된 `.env`에만 저장). `pinvi-dagster`(12802)를 신규 관리 컨테이너로 등록하고 PinVi 저장소에 `apps/etl/Dockerfile`을 추가한다.
+
+### 근거
+- host 모드에서는 NAT가 없으므로 컨테이너=호스트 포트 통일이 동작의 전제 조건이다(사용자 요청과 일치).
+- 정규 포트를 직접 바인딩하면 `docs/ports.md` 포트 정책과 컨테이너 내부 포트가 일치해 추적이 단순해진다.
+- 서비스 간 참조를 `127.0.0.1`로 두면 host 네트워크에서 일관되게 동작한다.
+- prod 공개 주소를 env로 주입하면 도메인을 저장소에 노출하지 않고 대시보드에 반영할 수 있다([[ADR-15]] 패턴 재사용).
+
+### 결과(긍정)
+- `docker compose config`가 모든 서비스 `network_mode: host`와 host=container 포트로 검증된다.
+- 대시보드가 컨테이너별 운영 공개 URL을 표시한다.
+- `pinvi` target이 API/Dagster/Web을 모두 포함한다.
+
+### 결과(부정)
+- host 모드에서 `ports:` 매핑은 무시되며, 매니저 대시보드의 실시간 PortBindings 표시는 `expected_ports`(compose 선언 포트)에 의존한다.
+- `KTDM_DOCKER_NETWORK_MODE=bridge`로 되돌리면 `127.0.0.1` 참조가 동작하지 않으므로 서비스 간 hostname을 컨테이너명으로 수동 복원해야 한다.
+- host 모드는 Docker 엔진의 host networking 지원에 의존하며(WSL2 native docker에서는 동작, Docker Desktop은 버전/설정에 따라 제약), 런타임 검증이 필요하다.
+- PinVi `apps/etl` ETL 모듈은 미완(Sprint 1 stub)이라 `pinvi-dagster` webserver 기동은 upstream 모듈 완성에 따라 달라질 수 있다.
+
+### 후속
+- (open) host 모드 런타임 기동 검증 후 대시보드 PortBindings 표시 전략을 보완한다.
+- (open) PinVi ETL 모듈이 완성되면 `pinvi-dagster` 헬스체크/스케줄러(daemon) 편입을 검토한다.

@@ -56,6 +56,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-map-dagster-daemon",
         "pinvi-api",
         "pinvi-web",
+        "pinvi-dagster",
     ]
     assert runtime_services_for_target("srv") == [
         "kor-travel-geo-postgres",
@@ -75,6 +76,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-map-dagster-daemon",
         "pinvi-api",
         "pinvi-web",
+        "pinvi-dagster",
     ]
     assert [step["name"] for step in init_steps_for_target("srv")] == [
         "db-schema-recovery",
@@ -179,6 +181,7 @@ def test_compose_ensure_build_command(mock_exists, mock_run):
         "kor-travel-map-dagster-daemon",
         "pinvi-api",
         "pinvi-web",
+        "pinvi-dagster",
     ]
     assert result["target_sequence"] == [
         "db",

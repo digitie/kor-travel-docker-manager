@@ -94,7 +94,10 @@ cd /mnt/f/dev/kor-travel-docker-manager/backend
 poetry run ktdctl srv --build
 ```
 
-공식 target 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이다. `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이다. 예를 들어 `ktdctl map --build`는 통합 DB, RustFS, 관측 스택, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map` API/Dagster/Web UI 실행까지 수행한다.
+> [!NOTE]
+> dev 기본 Docker 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)다. 포트 NAT가 없으므로 각 컨테이너가 호스트 정규 포트에 직접 바인딩하고(컨테이너 내부 포트 = 호스트 포트), 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다. host networking을 지원하지 않는 Docker 엔진에서는 `KTDM_DOCKER_NETWORK_MODE=bridge`로 바꾼 뒤 서비스 간 hostname을 컨테이너명으로 복원해야 한다.
+
+공식 target 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이다. `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이다. 예를 들어 `ktdctl map --build`는 통합 DB, RustFS, 관측 스택, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map` API/Dagster/Web UI 실행까지 수행한다.
 
 추가 target 이름으로 `postgresql`, `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `kor-travel-map`, `python-krtour-map`, `kor-travel-concierge`, `srv`, `pinvi`, `main`도 사용할 수 있다.
 
@@ -120,6 +123,22 @@ npm install
 npm run dev
 ```
 기본적으로 `http://localhost:12905`에서 대시보드가 로드되며, 백엔드 서버(`http://127.0.0.1:12901`)에 자동으로 API를 요청한다.
+
+---
+
+## 4.3 운영(prod) 공개 주소 설정
+
+운영 환경에서 매니저 백엔드 API와 대시보드는 각각 별도 공개 도메인으로 노출된다. 실제 도메인은 저장소에 커밋하지 않고 **gitignore된 env 파일에만** 둔다. TLS 종단과 라우팅, WebSocket 업그레이드는 앱 바깥의 리버스 프록시가 담당한다(저장소에 프록시 설정은 포함하지 않음).
+
+| 대상 | 주입 위치(gitignore) | 변수 | 비고 |
+|---|---|---|---|
+| 대시보드 → 백엔드 API 주소 | `frontend/.env.production` | `NEXT_PUBLIC_BACKEND_URL` | `https://<api-domain>`. `wss://`는 `http→ws` 치환으로 자동 파생 |
+| 백엔드 CORS 허용 Origin | 루트 `.env` | `KTDM_CORS_ALLOW_ORIGINS` | 대시보드 공개 Origin. 콤마로 여러 개. 미설정/`*`이면 전체 허용 |
+
+- 계약(placeholder)은 `frontend/.env.example`, 루트 `.env.example`에 문서화되어 있다. 실제 도메인은 채워 넣지 않는다.
+- `NEXT_PUBLIC_*`은 **빌드 타임에 번들로 인라인**되므로 운영 호스트에서 `npm run build`를 다시 수행해야 주소가 반영된다.
+- **Next.js 환경파일 우선순위 주의**: `.env.local`이 `.env.production`을 덮어쓴다. 개발 기본값은 `frontend/.env.development`(localhost), 운영 값은 `frontend/.env.production`에 두고, `.env.local`에는 `NEXT_PUBLIC_BACKEND_URL`을 두지 않는다.
+- 백엔드는 기동 시 루트 `.env`(또는 `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 경로)를 로드해 `KTDM_CORS_ALLOW_ORIGINS`를 적용한다. 개발에서는 미설정이면 전체 허용을 유지한다.
 
 ---
 

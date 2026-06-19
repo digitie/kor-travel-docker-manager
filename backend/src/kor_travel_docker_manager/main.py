@@ -5,14 +5,22 @@ import time
 from contextlib import asynccontextmanager
 from logging.handlers import BaseRotatingHandler
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from kor_travel_docker_manager.api.routes import router as container_router
 from kor_travel_docker_manager.api.websocket import router as ws_router
 from kor_travel_docker_manager.api.websocket import status_broadcast_loop
+from kor_travel_docker_manager.services.compose_service import get_env_path
 from kor_travel_docker_manager.services.metrics_collector import metrics_collector
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+
+# 프로젝트 루트 .env(gitignore 대상)에서 prod 공개 주소/CORS 설정을 읽어온다.
+# 개발 환경에서 .env가 없으면 아래 기본값(전체 허용)을 그대로 사용한다.
+_ENV_PATH = get_env_path()
+if os.path.exists(_ENV_PATH):
+    load_dotenv(_ENV_PATH)
 
 
 # -------------------------------------------------------------
@@ -136,6 +144,21 @@ async def lifespan(app: FastAPI):
     logger.info("Application shutdown complete.")
 
 
+def _resolve_cors_allow_origins() -> list[str]:
+    """대시보드 프론트엔드의 허용 Origin을 환경변수로 제어한다.
+
+    `KTDM_CORS_ALLOW_ORIGINS`(콤마 구분)에 prod 대시보드 Origin만 지정하면
+    노출 범위를 좁힐 수 있다. 미설정이거나 ``*``이면 전체 허용(개발 기본값)을
+    유지한다. 실제 prod 도메인은 저장소에 커밋하지 않고 gitignore된 `.env`에만 둔다.
+    """
+    raw = os.environ.get("KTDM_CORS_ALLOW_ORIGINS", "*").strip()
+    if not raw or raw == "*":
+        return ["*"]
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+CORS_ALLOW_ORIGINS = _resolve_cors_allow_origins()
+
 app = FastAPI(
     title="Kor Travel Docker Manager API",
     description="API and WebSockets for monitoring and managing Kor Travel Docker services.",
@@ -146,7 +169,7 @@ app = FastAPI(
 # Enable CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOW_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
