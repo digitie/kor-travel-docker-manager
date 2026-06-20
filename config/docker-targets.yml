@@ -185,6 +185,7 @@ containers:
 targets:
   db:
     port_band: "12000-12099"
+    depends_on: []
     display_name: 통합 DB
     description: Kor Travel/PinVi 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
     aliases:
@@ -210,6 +211,7 @@ targets:
 
   storage:
     port_band: "12100-12199"
+    depends_on: [db]
     display_name: 통합 RustFS
     description: Kor Travel/PinVi 미디어와 원천 데이터를 저장하는 S3 호환 오브젝트 스토리지입니다.
     aliases:
@@ -232,6 +234,7 @@ targets:
 
   gra:
     port_band: "12200-12299"
+    depends_on: [storage]
     display_name: 공용 Grafana
     description: 다른 Kor Travel 앱에서도 공통 연계하는 Grafana Web UI입니다.
     aliases:
@@ -248,6 +251,7 @@ targets:
 
   cadv:
     port_band: "12300-12399"
+    depends_on: [gra]
     display_name: cAdvisor Exporter
     description: Docker 컨테이너 리소스 메트릭을 Prometheus 형식으로 노출합니다.
     aliases:
@@ -264,6 +268,7 @@ targets:
 
   prom:
     port_band: "12400-12499"
+    depends_on: [cadv]
     display_name: Prometheus
     description: cAdvisor와 앱 메트릭을 수집하고 Grafana datasource로 제공하는 메트릭 저장소입니다.
     aliases:
@@ -280,6 +285,7 @@ targets:
 
   geo:
     port_band: "12500-12599"
+    depends_on: [prom]
     display_name: Kor Travel Geo
     description: Kor Travel Geo API/Web UI와 원천 데이터 적재 상태를 관리합니다.
     aliases:
@@ -310,8 +316,9 @@ targets:
 
   conc:
     port_band: "12600-12699"
+    depends_on: [prom]
     display_name: Kor Travel Concierge
-    description: Kor Travel Concierge API/MCP/Scheduler/Web UI와 공용 DB/RustFS 의존성을 실행합니다.
+    description: Kor Travel Concierge API/MCP/Scheduler/Web UI를 실행합니다. geo에는 의존하지 않는다.
     aliases:
       - kor-travel-concierge
       - concierge
@@ -330,8 +337,6 @@ targets:
     containers:
       - kor-travel-geo-postgresql
       - rustfs
-      - kor-travel-geo-api
-      - kor-travel-geo-ui
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
       - kor-travel-concierge-scheduler
@@ -340,8 +345,9 @@ targets:
 
   map:
     port_band: "12700-12799"
+    depends_on: [geo, conc]
     display_name: Kor Travel Map
-    description: Kor Travel Map API/Dagster/Web UI와 선행 Kor Travel Concierge 의존성을 실행합니다.
+    description: Kor Travel Map API/Dagster/Web UI를 실행하며 Kor Travel Geo와 Kor Travel Concierge에 의존한다.
     aliases:
       - kor-travel-map
       - krtour-map
@@ -373,8 +379,9 @@ targets:
 
   pinvi:
     port_band: "12800-12899"
+    depends_on: [map]
     display_name: PinVi
-    description: PinVi API/Web UI와 Kor Travel Map까지의 선행 의존성을 실행합니다.
+    description: PinVi API/Web UI/Dagster를 실행하며 Kor Travel Map에 의존한다.
     aliases:
       - srv
       - main

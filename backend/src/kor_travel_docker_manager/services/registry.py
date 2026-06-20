@@ -70,6 +70,20 @@ def resolve_target_name(target: str | None) -> str:
     raise ValueError(f"unknown target: {target}")
 
 
+def _dependency_closure(target_name: str) -> set[str]:
+    """target의 transitive `depends_on` 폐포(자기 자신 포함)를 반환한다."""
+    closure: set[str] = set()
+    stack = [target_name]
+    while stack:
+        name = stack.pop()
+        if name in closure:
+            continue
+        closure.add(name)
+        for dep in _targets().get(name, {}).get("depends_on", []):
+            stack.append(str(dep))
+    return closure
+
+
 def target_sequence_for_target(target: str | None) -> list[str]:
     target_name = resolve_target_name(target)
     target_spec = _targets()[target_name]
@@ -79,10 +93,14 @@ def target_sequence_for_target(target: str | None) -> list[str]:
             included.extend(target_sequence_for_target(included_target))
         return _dedupe(included)
 
+    # 선형 슬라이스 대신 `depends_on` DAG의 위상정렬을 사용한다.
+    # dependency_order는 DAG의 유효한 linearization이므로, 폐포를 그 순서로 정렬하면
+    # 의존성(부모)이 항상 먼저 오는 결정적 순서가 된다. depends_on이 없으면 단일 target.
     order = _dependency_order()
-    if target_name in order:
-        return order[: order.index(target_name) + 1]
-    return [target_name]
+    closure = _dependency_closure(target_name)
+    if not _targets()[target_name].get("depends_on") and target_name not in order:
+        return [target_name]
+    return sorted(closure, key=lambda t: order.index(t) if t in order else len(order))
 
 
 def get_target(target: str | None) -> dict[str, Any]:
