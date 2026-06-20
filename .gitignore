@@ -53,6 +53,9 @@ yarn-error.log*
 .claude/settings.local.json
 memory/
 
+# Local-only docs (민감 운영 접속 정보 등) — 커밋 금지
+*.local.md
+
 # Local databases, virtualenvs and log directories
 pinvi_metrics.db
 backend/logs/
