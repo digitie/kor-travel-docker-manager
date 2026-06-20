@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **운영 대시보드 UI는 StyleSeed 기반 [`docs/DESIGN-RULES.md`](docs/DESIGN-RULES.md)를 따른다.**
+> 2026-06-20부로 매니저 프론트엔드(`frontend/`)는 Tailwind v4 + StyleSeed 라이트 토큰 체계로 전환되어
+> 아래 BMW M Pure Black 양식을 대체했다(ADR-17). 이 문서는 과거 시각 양식의 기록으로 보존한다.
+> 새 UI 작업은 `docs/DESIGN-RULES.md`의 semantic 토큰(surface/text/brand/status)을 기준으로 한다.
+
 ## Overview
 
 BMW M's marketing surface is a near-pure black canvas (`{colors.canvas}` — #000) holding white BMW Type Next Latin headlines in **confident UPPERCASE**. The system has no decorative voltage of its own; brand energy comes from **full-bleed automotive photography** — cars cornering at speed, carbon-fiber wheel detail, driver cockpit shots, motorsport pit lanes — placed as edge-to-edge content that fills entire bands. UI chrome around the photography stays minimal: thin sans-serif copy, dividers as 1px hairlines (`{colors.hairline}`), all-caps button labels with no fill until hovered.
