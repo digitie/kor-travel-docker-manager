@@ -78,3 +78,29 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12905/   # 200
 
 공개 라우팅 완료 후에는 `https://manager.<domain>` 에서 대시보드가 로드되고 컨테이너 상태가 표시되는지
 확인한다.
+
+## 7. concierge UI는 prod에서 프로덕션 빌드로 구동 (중요)
+
+`kor-travel-concierge-ui`는 베이스 compose에서 `npm run dev`(Next dev 모드)로 정의돼 있다. dev 모드는
+**원격/리버스 프록시 접속 시 HMR WebSocket 실패와 함께 hydration이 되지 않아 모든 인터랙티브 컴포넌트가
+멈춘다**(드롭다운/폼이 동작하지 않음). 따라서 prod에서는 **프로덕션 빌드(`next build` + `next start`)**로
+구동해야 한다.
+
+prod 호스트에만 두는 **`docker-compose.override.yml`**(이 repo에 커밋하지 않음 — dev 로컬에서 auto-load되면
+dev도 프로덕션 모드가 되어 HMR이 사라진다)로 concierge-ui의 command만 오버라이드한다:
+
+```yaml
+services:
+  kor-travel-concierge-ui:
+    command:
+      - sh
+      - -c
+      - npm run build && npm run start -- -H 0.0.0.0 -p 12605
+```
+
+- 적용: `docker compose up -d --no-deps --force-recreate kor-travel-concierge-ui` (override는 `docker compose`가
+  자동 병합). 컨테이너 시작 시 `next build`(~1–2분) 후 `next start`로 서빙한다.
+- `NEXT_PUBLIC_*`(예: `NEXT_PUBLIC_VWORLD_API_KEY`)는 prod `.env`에 있어야 빌드 시 번들에 인라인된다.
+- dev(로컬)에는 이 override 파일이 없으므로 `npm run dev`(HMR)가 유지된다.
+- 재현성을 높이려면 베이스 compose의 UI command를 `KTDM_CONCIERGE_UI_MODE`(기본 dev) 같은 env 토글로
+  바꾸고 prod `.env`에서 `production`으로 설정하는 방식으로 후속 개선할 수 있다.
