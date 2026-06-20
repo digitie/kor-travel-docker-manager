@@ -5,38 +5,15 @@ from typing import Any
 import docker
 import yaml
 from docker.errors import DockerException, NotFound
-from dotenv import load_dotenv
 
-from kor_travel_docker_manager.services.compose_service import get_compose_path, get_env_path
+from kor_travel_docker_manager.services.compose_service import compose_service, get_compose_path
 from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
 
 logger = logging.getLogger(__name__)
 
-import re
-
-
-def _substitute_env_vars(val: Any) -> Any:
-    if not isinstance(val, str):
-        return val
-    # Perform standard os.path.expandvars
-    expanded = os.path.expandvars(val)
-    # Match ${VAR:-default}
-    pattern = r"\$\{([^:]+):-([^}]+)\}"
-
-    def repl(match):
-        env_key = match.group(1)
-        default_val = match.group(2)
-        return os.environ.get(env_key, default_val)
-
-    return re.sub(pattern, repl, expanded)
-
 
 def _get_compose_path() -> str:
     return get_compose_path()
-
-
-def _get_env_path() -> str:
-    return get_env_path()
 
 
 def _public_url(spec: dict[str, Any]) -> str | None:
@@ -74,69 +51,6 @@ def save_compose_config(config: dict[str, Any]):
     except Exception as e:
         logger.error(f"Error writing docker-compose.yml: {e}")
         raise
-
-
-def parse_compose_ports(ports_list: list[Any]) -> dict[str, int]:
-    bindings = {}
-    for port in ports_list:
-        if isinstance(port, str):
-            parts = port.split(":")
-            if len(parts) == 2:
-                host_port, container_port = parts
-                bindings[f"{container_port}/tcp"] = int(host_port)
-            elif len(parts) == 1:
-                bindings[f"{port}/tcp"] = int(port)
-        elif isinstance(port, dict):
-            target = port.get("target")
-            published = port.get("published")
-            if target and published:
-                bindings[f"{target}/tcp"] = int(published)
-    return bindings
-
-
-def parse_compose_volumes(volumes_list: list[Any]) -> dict[str, dict[str, str]]:
-    binds = {}
-    compose_path = _get_compose_path()
-    project_root = os.path.dirname(compose_path) if compose_path else ""
-
-    for vol in volumes_list:
-        if isinstance(vol, str):
-            parts = vol.split(":")
-            if len(parts) >= 2:
-                host_path = parts[0]
-                container_path = parts[1]
-                mode = parts[2] if len(parts) > 2 else "rw"
-
-                # Resolve relative path to absolute path relative to project root
-                if project_root and (
-                    host_path.startswith("./")
-                    or host_path.startswith("../")
-                    or not os.path.isabs(host_path)
-                ):
-                    # If it's a named volume (no slashes and doesn't start with dot), leave it as is
-                    if not (host_path.startswith(".") or "/" in host_path or "\\" in host_path):
-                        pass
-                    else:
-                        host_path = os.path.abspath(os.path.join(project_root, host_path))
-
-                binds[host_path] = {"bind": container_path, "mode": mode}
-        elif isinstance(vol, dict):
-            source = vol.get("source")
-            target = vol.get("target")
-            read_only = vol.get("read_only", False)
-            if source and target:
-                host_path = source
-                if project_root and (
-                    host_path.startswith("./")
-                    or host_path.startswith("../")
-                    or not os.path.isabs(host_path)
-                ):
-                    if not (host_path.startswith(".") or "/" in host_path or "\\" in host_path):
-                        pass
-                    else:
-                        host_path = os.path.abspath(os.path.join(project_root, host_path))
-                binds[host_path] = {"bind": target, "mode": "ro" if read_only else "rw"}
-    return binds
 
 
 SENSITIVE_KEY_PARTS = ("PASSWORD", "SECRET", "TOKEN", "ACCESS_KEY", "PRIVATE_KEY")
@@ -514,7 +428,7 @@ class DockerService:
         new_volumes: list[str],
         new_networks: list[str],
     ) -> dict[str, Any]:
-        """Update docker-compose.yml configuration and recreate container with updated settings using Docker SDK."""
+        """Update docker-compose.yml configuration and recreate the service through Compose."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
 
@@ -539,104 +453,45 @@ class DockerService:
             svc_config["ports"] = new_ports
             svc_config["environment"] = new_env
             svc_config["volumes"] = new_volumes
-            svc_config["networks"] = new_networks
+            if new_networks:
+                svc_config["networks"] = new_networks
+                svc_config.pop("network_mode", None)
+            else:
+                svc_config.pop("networks", None)
 
             # 3. Save docker-compose.yml back to disk
             save_compose_config(compose_cfg)
             logger.info(f"Updated docker-compose.yml for service {svc_name}.")
 
-            # Load latest env for variable substitution
-            env_path = _get_env_path()
-            if os.path.exists(env_path):
-                load_dotenv(env_path, override=True)
-
-            # 4. Stop and Remove existing container
-            client = self._get_client()
-            image_name = svc_config.get(
-                "image",
-                "postgis/postgis:16-3.5-alpine"
-                if spec["role"] == "postgresql"
-                else "rustfs/rustfs:latest",
+            recreate_result = compose_service.run(
+                ["up", "-d", "--force-recreate", svc_name],
+                capture_output=True,
             )
+            if not recreate_result.get("success"):
+                return {
+                    "success": False,
+                    "error": (
+                        "docker compose recreate failed: "
+                        f"{recreate_result.get('stderr') or recreate_result.get('stdout')}"
+                    ),
+                    "command": recreate_result.get("command"),
+                }
 
-            # Default options in case container attributes retrieval fails
-            binds_list = new_volumes
-            network_mode = "bridge"
-            if len(new_networks) > 0:
-                # Resolve compose network prefix (e.g. kor-travel-docker-manager_default)
-                network_mode = f"kor-travel-docker-manager_{new_networks[0]}"
-            restart_policy = {"Name": "unless-stopped"}
-            command = svc_config.get("command", None)
-            shm_size = svc_config.get("shm_size", None)
-
-            try:
-                container = client.containers.get(cname)
-                image_name = (
-                    container.image.tags[0] if container.image.tags else container.image.short_id
-                )
-                restart_policy = container.attrs.get("HostConfig", {}).get(
-                    "RestartPolicy", {"Name": "unless-stopped"}
-                )
-
-                logger.info(f"Stopping conflicting container {cname}...")
-                container.stop(timeout=5)
-                logger.info(f"Removing conflicting container {cname}...")
-                container.remove()
-            except NotFound:
-                logger.info(f"Container {cname} not found, proceeding to create new one.")
-
-            # 5. Parse environment variables (substitute ${VAR})
-            parsed_env = {}
-            for k, v in new_env.items():
-                parsed_env[k] = _substitute_env_vars(v)
-
-            # 6. Parse ports mapping (substitute env vars first)
-            resolved_ports = [_substitute_env_vars(p) for p in new_ports]
-            port_bindings = parse_compose_ports(resolved_ports)
-
-            # 7. Parse volumes mapping (substitute env vars first)
-            resolved_volumes = [_substitute_env_vars(vol) for vol in binds_list]
-            volumes_dict = parse_compose_volumes(resolved_volumes)
-
-            logger.info(
-                f"Recreating container {cname} (image: {image_name}, ports: {port_bindings})..."
-            )
-
-            # 8. Create new container
-            client.containers.run(
-                image=image_name,
-                name=cname,
-                detach=True,
-                environment=parsed_env,
-                ports=port_bindings,
-                volumes=volumes_dict,
-                network_mode=network_mode,
-                restart_policy=restart_policy,
-                command=command,
-                shm_size=shm_size,
-            )
-
-            # Special Case: RustFS 버킷 초기화가 필요한 경우 rustfs-init을 한번 실행
+            # RustFS 재생성 후에는 compose에 정의된 init service를 그대로 실행해 bucket을 보정한다.
             if container_id == "rustfs":
-                try:
-                    rustfs_internal_port = parsed_env.get("RUSTFS_API_CONTAINER_PORT", "9000")
-                    init_command = (
-                        f"mc alias set local http://rustfs:{rustfs_internal_port} "
-                        f"{parsed_env.get('RUSTFS_ACCESS_KEY', 'rustfsadmin')} {parsed_env.get('RUSTFS_SECRET_KEY', 'rustfsadmin')}; "
-                        f"mc mb -p local/pinvi-media || true; "
-                        f"mc mb -p local/kor-travel-geo || true; "
-                        f"mc mb -p local/krtour-map || true; "
-                        f"mc mb -p local/krtour-uploads || true;"
-                    )
-                    logger.info("Initializing RustFS buckets...")
-                    client.containers.run(
-                        image="minio/mc:latest",
-                        command=f'/bin/sh -c "{init_command}"',
-                        network_mode=network_mode,
-                        remove=True,
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to auto-initialize rustfs buckets: {e}")
+                init_result = compose_service.run(
+                    ["run", "--rm", "rustfs-init"],
+                    capture_output=True,
+                )
+                if not init_result.get("success"):
+                    return {
+                        "success": False,
+                        "error": (
+                            "rustfs bucket initialization failed: "
+                            f"{init_result.get('stderr') or init_result.get('stdout')}"
+                        ),
+                        "command": init_result.get("command"),
+                    }
 
             return {
                 "success": True,
