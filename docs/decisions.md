@@ -508,3 +508,36 @@ dev 기본 네트워크 모드를 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-hos
 ### 후속
 - (open) host 모드 런타임 기동 검증 후 대시보드 PortBindings 표시 전략을 보완한다.
 - (open) PinVi ETL 모듈이 완성되면 `pinvi-dagster` 헬스체크/스케줄러(daemon) 편입을 검토한다.
+
+---
+
+## ADR-17: 프론트엔드를 Tailwind v4 + StyleSeed 라이트 토큰으로 전환하고 전역 오류 복구 boundary를 추가한다
+
+- 상태: accepted
+- 날짜: 2026-06-20
+- 결정자: human, AI agent
+
+### 컨텍스트
+매니저 대시보드는 BMW M Pure Black(다크) 양식([[DESIGN.md]], Tailwind v3 커스텀 토큰)을 사용했다. 사용자는 (1) `kor-travel-geo`의 글로벌 오류 복구 UI(PR #391: App Router error/global-error boundary, chunk/RSC/network 오류 1회 hard reload)를 매니저에도 똑같이 반영하고, (2) `kor-travel-geo-ui`의 `DESIGN-RULES.md`(StyleSeed 기반 운영 콘솔 규칙)를 매니저에 반영하며, (3) Tailwind v4로 전환할 것을 요청했다. geo 규칙은 순수 검정 금지·단일 accent·surface 토큰·약한 그림자를 강조해 기존 Pure Black 정체성과 충돌했고, 사용자는 전면 리스타일(StyleSeed화)을 선택했다.
+
+### 결정
+프론트엔드 빌드를 Tailwind v4(CSS-first `@theme`, `@tailwindcss/postcss`)로 전환하고, `globals.css`의 `@theme`에 StyleSeed 라이트 토큰(surface/text 5단계/brand teal/status/shadow/motion)을 정의한다. `DashboardClient`와 오류 복구 패널을 이 토큰으로 전면 리스타일한다. App Router `app/error.tsx`/`app/global-error.tsx`와 `AppErrorPanel`, `lib/error-recovery.ts`를 추가해 Next 기본 영어 오류 화면 대신 한국어 복구 패널을 보여 주고, chunk/RSC/network 계열 오류는 pathname당 1회 hard reload를 시도한다. `docs/DESIGN-RULES.md`를 매니저용으로 포팅하고 `DESIGN.md`(BMW M)는 superseded 기록으로 보존한다.
+
+### 근거
+- 사용자가 geo 규칙으로의 통일과 Tailwind v4 전환을 명시했다.
+- v4 CSS-first `@theme`는 semantic 토큰을 단일 소스로 관리하기 쉽다.
+- 오류 복구 boundary는 Firefox 포함 브라우저에서 Next 기본 오류 화면 노출을 막는다(geo와 동일 패턴).
+
+### 결과(긍정)
+- 대시보드가 라이트 StyleSeed 콘솔 룩(단일 brand accent, 약한 그림자, 44px 터치타깃, 상태 dot+text)으로 통일된다.
+- 런타임 오류 시 한국어 복구 패널과 자동 1회 reload로 사용자 경험이 개선된다.
+- 토큰이 `@theme` 한 곳에 모여 새 UI가 hardcoded hex 없이 작성된다.
+
+### 결과(부정)
+- BMW M Pure Black 시각 정체성이 제거된다(`DESIGN.md`는 기록 보존).
+- Tailwind v4는 v3 대비 유틸리티/설정이 달라 향후 의존 패키지/플러그인 호환성 확인이 필요하다.
+- geo가 참조하는 shadcn primitive 구조는 매니저에 도입하지 않고 토큰 직접 적용 방식을 유지했다.
+
+### 후속
+- (open) 모달/표 컴포넌트를 재사용 primitive로 분리해 DESIGN-RULES 적용을 더 일관화한다.
+- (open) Tailwind v4 전환에 따른 시각 회귀를 Playwright 스냅샷으로 보강한다.
