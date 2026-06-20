@@ -13,7 +13,7 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
-| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[ ]` | - | compose diff, secret `.env` 분리, 입력 검증 보강 |
+| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[/]` | - | Compose 재생성 경로 반영, diff/validation/rollback 남음 |
 | **T-013** | 운영(prod) 공개 주소 `.env` 주입 및 CORS 환경변수화 | `[x]` | 2026-06-20 | 도메인 비노출, `KTDM_CORS_ALLOW_ORIGINS`, 프론트 환경파일 분리 |
 | **T-014** | Docker host 네트워크 전환·컨테이너=호스트 포트·서비스 prod URL·pinvi-dagster·tripmate 정리 | `[x]` | 2026-06-20 | `KTDM_DOCKER_NETWORK_MODE=host`, 12802, `KTDM_PROD_URL_*`, `ktd_venv` |
 | **T-015** | 프론트 Tailwind v4 + StyleSeed 전면 전환·전역 오류 복구 boundary | `[x]` | 2026-06-20 | geo PR #391 반영, `@theme` 토큰, `DESIGN-RULES.md` |
@@ -39,6 +39,7 @@
 
 ### T-011: 설정 저장 안정화 및 validation 고도화
 
+- [x] host 네트워크 기준에서 설정 저장·reset·미생성 start fallback이 Docker SDK 직접 생성 경로를 우회하지 않고 `docker compose up --force-recreate`를 사용하도록 변경
 - [ ] compose 변경 전 diff 생성 및 UI 표시
 - [ ] 포트, 볼륨, 네트워크 입력 validation 강화
 - [ ] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가

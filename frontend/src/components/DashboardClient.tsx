@@ -231,6 +231,34 @@ export default function DashboardClient() {
   // Active containers dataset (WS if available, fallback query otherwise)
   const displayContainers = wsContainers || fallbackContainers;
 
+  // KPI summary counts derived from the active container list
+  const kpiCounts = useMemo(() => {
+    const stoppedStatuses = new Set([
+      'exited',
+      'paused',
+      'created',
+      'dead',
+      'not_created',
+      'not created',
+      'offline',
+    ]);
+    let running = 0;
+    let stopped = 0;
+    let errored = 0;
+    for (const c of displayContainers) {
+      const s = (c.status || '').toLowerCase();
+      if (s === 'running') running += 1;
+      else if (s === 'error') errored += 1;
+      else if (stoppedStatuses.has(s)) stopped += 1;
+    }
+    return {
+      total: displayContainers.length,
+      running,
+      stopped,
+      error: errored,
+    };
+  }, [displayContainers]);
+
   // Status WebSockets connection setup - Versioned v1
   useEffect(() => {
     let ws: WebSocket;
@@ -489,43 +517,83 @@ export default function DashboardClient() {
       {/* 4px Brand Accent Stripe Pinned to Top */}
       <div className="h-1 w-full bg-brand fixed top-0 left-0 z-50" />
 
-      {/* Hero Header Section - Clean header with border-b, NO background image */}
-      <section className="relative w-full h-[24vh] bg-card flex flex-col justify-end p-6 md:p-12 overflow-hidden border-b border-line mt-1 shadow-card">
-        {/* Content over card background */}
-        <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-end w-full gap-4 mt-auto">
-          <div className="select-text">
-            <span className="text-[9px] font-bold tracking-[0.05em] uppercase text-secondary border border-line px-2.5 py-1 bg-subtle rounded-md">
+      {/* Admin Top Bar - Compact header with border-b */}
+      <header className="w-full bg-card border-b border-line mt-1 shadow-card">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-6 md:px-12 py-5">
+          <div className="select-text min-w-0">
+            <span className="inline-block text-[9px] font-semibold tracking-[0.05em] uppercase text-secondary border border-line px-2 py-0.5 bg-subtle rounded-md">
               PINVI SYSTEM INFRASTRUCTURE
             </span>
-            <h1 className="text-2xl md:text-4xl font-semibold uppercase tracking-tight text-strong mt-4">
-              PINVI INFRASTRUCTURE SERVICES CONTROL CENTER.
+            <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-strong mt-2">
+              인프라 서비스 컨트롤 센터
             </h1>
-            <p className="text-ink text-xs font-light max-w-xl mt-2 leading-relaxed">
+            <p className="text-secondary text-sm font-sans mt-1 leading-relaxed">
               공용 데이터베이스, 오브젝트 스토리지, 지오코더, 관측 스택을 제어하고 모니터링하는 통합 인프라 관리 센터입니다.
             </p>
           </div>
 
-          <div className="flex items-center gap-4 select-none self-end md:self-auto mb-1 md:mb-0">
+          <div className="flex items-center gap-2 select-none shrink-0 self-start md:self-auto">
             {/* WebSocket Status Indicator */}
-            <div className="flex items-center gap-2 bg-card border border-line px-4 py-2.5 rounded-card shadow-card text-[9px] tracking-[0.05em] uppercase font-bold text-strong">
+            <div className="flex items-center gap-2 bg-subtle border border-line px-3 py-2 rounded-card text-[10px] tracking-[0.05em] uppercase font-semibold">
               {isWsConnected ? (
                 <>
-                  <Radio className="w-3.5 h-3.5 text-ok animate-pulse mr-1" />
+                  <span className="w-2 h-2 rounded-full bg-ok animate-pulse" />
                   <span className="text-ok">REALTIME WS SYNC</span>
                 </>
               ) : (
                 <>
-                  <RefreshCw className="w-3.5 h-3.5 text-warn animate-spin mr-1" />
+                  <span className="w-2 h-2 rounded-full bg-warn" />
                   <span className="text-warn">HTTP FALLBACK POLLING</span>
                 </>
               )}
             </div>
           </div>
         </div>
-      </section>
+      </header>
 
       {/* Main Container Wrapper with Padding */}
-      <div className="flex-grow w-full px-6 md:px-12 py-10 z-10 flex flex-col select-text">
+      <div className="flex-grow w-full px-6 md:px-12 py-6 z-10 flex flex-col select-text">
+        {/* KPI Summary Strip */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          {/* 전체 */}
+          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
+            <span className="text-secondary text-xs font-semibold tracking-[0.05em] uppercase">전체</span>
+            <span className="text-strong text-3xl font-mono tabular-nums font-semibold leading-none">
+              {kpiCounts.total}
+            </span>
+          </div>
+
+          {/* 실행 중 */}
+          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
+            <span className="flex items-center gap-1.5 text-secondary text-xs font-semibold tracking-[0.05em] uppercase">
+              <span className="w-1.5 h-1.5 rounded-full bg-ok" />
+              실행 중
+            </span>
+            <span className="text-ok text-3xl font-mono tabular-nums font-semibold leading-none">
+              {kpiCounts.running}
+            </span>
+          </div>
+
+          {/* 중지·미생성 */}
+          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
+            <span className="text-secondary text-xs font-semibold tracking-[0.05em] uppercase">중지·미생성</span>
+            <span className="text-strong text-3xl font-mono tabular-nums font-semibold leading-none">
+              {kpiCounts.stopped}
+            </span>
+          </div>
+
+          {/* 오류 */}
+          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
+            <span className="flex items-center gap-1.5 text-secondary text-xs font-semibold tracking-[0.05em] uppercase">
+              <span className="w-1.5 h-1.5 rounded-full bg-danger" />
+              오류
+            </span>
+            <span className="text-danger text-3xl font-mono tabular-nums font-semibold leading-none">
+              {kpiCounts.error}
+            </span>
+          </div>
+        </div>
+
         {/* API Connection Error Alert */}
         {error && !isWsConnected && (
           <div className="mb-8 p-4 bg-danger/5 border border-danger/30 rounded-card shadow-card flex items-start gap-3 text-danger text-sm z-10">
@@ -554,17 +622,17 @@ export default function DashboardClient() {
           ) : (
             <div className="border border-line rounded-card bg-card overflow-x-auto shadow-card">
               <table className="w-full text-left border-collapse min-w-[1000px]">
-                <thead>
-                  <tr className="border-b border-line text-secondary font-bold uppercase tracking-[0.05em] text-xs md:text-sm bg-subtle">
-                    <th className="py-4.5 px-6">상태</th>
-                    <th className="py-4.5 px-6">컨테이너 명칭</th>
-                    <th className="py-4.5 px-6">역할</th>
-                    <th className="py-4.5 px-6">포트 바인딩</th>
-                    <th className="py-4.5 px-6 text-center">CPU 점유율</th>
-                    <th className="py-4.5 px-6 text-center">메모리 사용량</th>
-                    <th className="py-4.5 px-6 text-center">I/O 델타 (Read / Write)</th>
-                    <th className="py-4.5 px-6 text-center">기능</th>
-                    <th className="py-4.5 px-6 text-right">서비스 통제</th>
+                <thead className="sticky top-0 z-10">
+                  <tr className="border-b border-line text-secondary font-semibold uppercase tracking-[0.05em] text-xs bg-subtle [&>th]:bg-subtle">
+                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">상태</th>
+                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">컨테이너 명칭</th>
+                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">역할</th>
+                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">포트 바인딩</th>
+                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">CPU 점유율</th>
+                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">메모리 사용량</th>
+                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">I/O 델타 (Read / Write)</th>
+                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">기능</th>
+                    <th className="py-3 px-6 text-right text-secondary text-xs font-semibold uppercase tracking-[0.05em]">서비스 통제</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line text-xs md:text-sm">
@@ -592,7 +660,7 @@ export default function DashboardClient() {
                         className={`transition-colors duration-150 ease-default group relative ${statusCfg.rowClass}`}
                       >
                         {/* Status Indicator */}
-                        <td className="py-5 px-6">
+                        <td className="py-3 px-6">
                           <div className="flex items-center gap-2.5">
                             <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
                             <span className={`${statusCfg.textClass} text-xs md:text-sm uppercase tracking-[0.05em] font-bold`}>
@@ -602,14 +670,14 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Display & Container Name */}
-                        <td className="py-5 px-6">
+                        <td className="py-3 px-6">
                           <div className="flex items-center gap-3">
                             <div className="p-2 bg-subtle border border-line rounded-card shrink-0">
                               <Icon className="w-5 h-5 text-brand" />
                             </div>
                             <div>
-                              <div className="font-semibold text-strong text-base uppercase">{displayName}</div>
-                              <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono font-light">{container.name}</div>
+                              <div className="font-sans font-semibold text-strong text-base uppercase">{displayName}</div>
+                              <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums font-light">{container.name}</div>
                               {container.public_url && (
                                 <a
                                   href={container.public_url}
@@ -626,20 +694,20 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Role */}
-                        <td className="py-5 px-6 text-ink font-light uppercase text-xs md:text-sm tracking-[0.05em]">
+                        <td className="py-3 px-6 text-ink font-light uppercase text-xs md:text-sm tracking-[0.05em]">
                           {container.role}
                         </td>
 
                         {/* Port Bindings */}
-                        <td className="py-5 px-6 font-mono text-strong font-light text-xs md:text-sm">
-                          {container.ports.length > 0 
-                            ? container.ports.join(', ') 
+                        <td className="py-3 px-6 font-mono tabular-nums text-strong font-light text-xs md:text-sm">
+                          {container.ports.length > 0
+                            ? container.ports.join(', ')
                             : (container.expected_ports || []).join(', ') || 'Exposed internally'
                           }
                         </td>
 
                         {/* CPU Metric (Interactive) */}
-                        <td className="py-5 px-6 text-center">
+                        <td className="py-3 px-6 text-center">
                           <button 
                             type="button"
                             disabled={container.status !== 'running'}
@@ -651,7 +719,7 @@ export default function DashboardClient() {
                             }`}
                             title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
                           >
-                            <span className="flex items-center gap-1 font-mono font-bold text-xs md:text-sm">
+                            <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
                               <Cpu className="w-3.5 h-3.5 opacity-80" />
                               {container.status === 'running' ? `${metrics.cpu_pct.toFixed(1)}%` : '0.0%'}
                             </span>
@@ -660,7 +728,7 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Memory Metric (Interactive) */}
-                        <td className="py-5 px-6 text-center">
+                        <td className="py-3 px-6 text-center">
                           <button 
                             type="button"
                             disabled={container.status !== 'running'}
@@ -672,18 +740,18 @@ export default function DashboardClient() {
                             }`}
                             title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
                           >
-                            <span className="flex items-center gap-1 font-mono font-bold text-xs md:text-sm">
+                            <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
                               <HardDrive className="w-3.5 h-3.5 opacity-80" />
                               {container.status === 'running' ? `${metrics.mem_pct.toFixed(1)}%` : '0.0%'}
                             </span>
-                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 uppercase tracking-[0.05em] font-bold">
+                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 uppercase tracking-[0.05em] font-bold font-mono tabular-nums">
                               {container.status === 'running' ? formatBytes(metrics.mem_usage) : '0 B'}
                             </span>
                           </button>
                         </td>
 
                         {/* I/O Metrics (Interactive) */}
-                        <td className="py-5 px-6 text-center">
+                        <td className="py-3 px-6 text-center">
                           <button 
                             type="button"
                             disabled={container.status !== 'running'}
@@ -695,7 +763,7 @@ export default function DashboardClient() {
                             }`}
                             title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
                           >
-                            <span className="font-mono text-xs md:text-sm font-semibold space-y-0.5 block">
+                            <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
                               <span className="block text-warn">R: {container.status === 'running' ? formatBytes(metrics.io_read) : '0 B'}</span>
                               <span className="block text-danger">W: {container.status === 'running' ? formatBytes(metrics.io_write) : '0 B'}</span>
                             </span>
@@ -704,7 +772,7 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Terminal Log & Configuration */}
-                        <td className="py-5 px-6 text-center">
+                        <td className="py-3 px-6 text-center">
                           <div className="flex items-center justify-center gap-1.5">
                             <button
                               type="button"
@@ -727,7 +795,7 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Controller Actions */}
-                        <td className="py-5 px-6 text-right">
+                        <td className="py-3 px-6 text-right">
                           <div className="inline-flex gap-1.5 items-center">
                             {isContainerLoading ? (
                               <div className="flex items-center gap-1.5 text-xs text-secondary font-bold tracking-[0.05em] uppercase py-2 px-3">

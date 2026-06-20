@@ -43,9 +43,11 @@
   /* named motion */
   --ease-default: cubic-bezier(0.2, 0, 0, 1);
 
-  /* type */
-  --font-sans: var(--font-inter), Inter, ui-sans-serif, system-ui, -apple-system,
+  /* type — admin/ops console: IBM Plex Sans(UI) + IBM Plex Mono(data) */
+  --font-sans: var(--font-ibm-sans), ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", sans-serif;
+  --font-mono: var(--font-ibm-mono), ui-monospace, "SF Mono", "Cascadia Code",
+    Menlo, Consolas, monospace;
 }
 
 @layer base {
@@ -60,6 +62,12 @@
 
   h1, h2, h3, h4, h5, h6 {
     color: var(--color-strong);
+  }
+
+  /* 데이터 그리드 숫자 정렬(안전망: v4 유틸 미생성 환경 대비) */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
   }
 
   a {

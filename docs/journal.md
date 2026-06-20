@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-20 (Claude Code PR #23/#24 리뷰 후속 수정 — T-011/T-015)
+
+- **작업 내용**:
+  - Claude Code가 2026-06-19부터 올린 PR #23, #24(merged/closed 포함)를 확인하고 각각 후속 리뷰 코멘트를 남겼다.
+  - #23 후속: 설정 변경 API와 미생성 컨테이너 start fallback이 Docker SDK 직접 `containers.run(...)` 경로로 `network_mode: host` 계약을 우회하던 문제를 수정했다. `docker-compose.yml` 저장 후 `docker compose up -d --force-recreate <service>`로 재생성하고, RustFS는 compose의 `rustfs-init` service를 그대로 실행하도록 변경했다.
+  - #24 후속: 운영 콘솔 첫 화면을 compact top bar + KPI strip 중심으로 정리하고, UI/데이터 표시용 font token을 명시했다.
+- **검증**:
+  - 백엔드 `ktd_venv/bin/python -m ruff check .` 통과.
+  - 백엔드 `ktd_venv/bin/python -m pytest` 25 passed.
+  - 프론트 `npm run type-check`, `npm run build` 통과.
+  - `docker compose config` 통과.
+- **주의**:
+  - `codegraph sync`는 로컬 `.codegraph` disk I/O 오류로 실패해 직접 파일 확인과 테스트로 검증했다.
+
+---
+
 ## 2026-06-20 (프론트엔드 Tailwind v4 + StyleSeed 전면 전환 및 전역 오류 복구 boundary — T-015)
 
 - **작업 내용**:
