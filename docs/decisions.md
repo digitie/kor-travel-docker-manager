@@ -541,3 +541,32 @@ dev 기본 네트워크 모드를 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-hos
 ### 후속
 - (open) 모달/표 컴포넌트를 재사용 primitive로 분리해 DESIGN-RULES 적용을 더 일관화한다.
 - (open) Tailwind v4 전환에 따른 시각 회귀를 Playwright 스냅샷으로 보강한다.
+
+---
+
+## ADR-18: target 의존을 선형 누적에서 `depends_on` DAG로 전환한다 (concierge는 geo 비의존)
+
+- 상태: accepted
+- 날짜: 2026-06-20
+- 결정자: human, AI agent
+
+### 컨텍스트
+기존 target 의존은 `dependency_order` 선형 리스트의 슬라이스(`order[:index+1]`)로 표현돼, `ktdctl <target>`이 항상 그 target 앞의 모든 target을 누적 실행했다. 이 모델에서는 `geo -> conc` 순서 때문에 concierge가 geo에 의존하게 된다. 그러나 실제 아키텍처에서 `kor-travel-concierge`는 geo에 의존하지 않으며, `kor-travel-map`이 geo와 concierge 모두에 의존한다. 사용자는 "concierge는 geo 비의존, prometheus 다음 geo·conc 분기 후 map(geo+conc 의존)·pinvi"로 의존 그래프를 재설정할 것을 요청했다.
+
+### 결정
+각 target에 `depends_on`을 선언해 의존을 **DAG**로 표현한다. `target_sequence_for_target`은 선형 슬라이스 대신 transitive `depends_on` 폐포를 `dependency_order`(유효한 위상정렬) 순으로 정렬해 반환한다. 그래프: `db -> storage -> gra -> cadv -> prom`, 그 다음 `geo`와 `conc`가 각각 `prom`에만 의존(상호 독립), `map`은 `[geo, conc]`, `pinvi`는 `[map]`에 의존한다. docker-compose의 service `depends_on`도 정렬: concierge-api에서 geo-api 의존 제거, map-api에 geo-api 의존 추가.
+
+### 근거
+- concierge는 geo 없이 독립 기동·운영되어야 한다(실아키텍처 반영). `ktdctl conc`가 geo를 끌어오지 않는다.
+- map은 지오코딩(geo)과 provider(concierge) 모두에 의존하므로 둘을 명시적 부모로 둔다.
+- `dependency_order`가 DAG의 유효한 linearization이라 폐포를 그 순서로 정렬하면 부모가 항상 먼저 오는 결정적 순서가 보장된다.
+
+### 결과(긍정)
+- `ktdctl conc` = `db, storage, gra, cadv, prom, conc`(geo 제외). `ktdctl map` = `… geo, conc, map`. `ktdctl pinvi` = 전체.
+- 새 의존성은 `targets.<id>.depends_on` 한 줄로 선언한다.
+
+### 결과(부정)
+- `dependency_order`는 여전히 표시/정렬용 linearization으로 남아 DAG와 이중 관리된다(유효성 전제).
+
+### 후속
+- (open) `depends_on` 사이클/유효성 검증을 로드 시 추가한다.

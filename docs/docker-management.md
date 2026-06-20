@@ -57,13 +57,14 @@
 
 ## 3. 설정 파일 기반 target 모델
 
-UI/API/CLI는 Docker service 이름을 직접 외우지 않고 앱 관점 target을 사용한다. 공식 target 정의와 의존 순서는 `config/docker-targets.yml`에서 읽는다. 기본 의존 순서는 다음과 같다.
+UI/API/CLI는 Docker service 이름을 직접 외우지 않고 앱 관점 target을 사용한다. 공식 target 정의와 의존 관계는 `config/docker-targets.yml`에서 읽는다. 의존 관계는 각 target의 `depends_on`으로 표현되는 **DAG**이며, `ktdctl <target>`은 해당 target의 transitive 의존 폐포를 위상정렬 순서로 실행한다(`dependency_order`는 표시/결정적 정렬용 linearization).
 
 ```text
-db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi
+db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
+                                      └─ conc ──┴─> map -> pinvi
 ```
 
-이 순서는 누적 적용된다. 예를 들어 `ktdctl map --build`는 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map` 순서로 필요한 서비스를 실행하고 초기화 단계를 수행한다. 새 앱이나 중간 의존성이 생기면 `config/docker-targets.yml`의 `dependency_order`, `targets.<id>.services`, `targets.<id>.init_steps`만 확장한다.
+핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `db, storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `db, storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
 
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
@@ -73,8 +74,8 @@ db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi
 | `cadv` | cAdvisor Exporter | `gra` + cAdvisor Exporter 실행 | `cadvisor`, `exporter`, `metrics-exporter` |
 | `prom` | Prometheus | `cadv` + Prometheus 실행 | `prometheus`, `metrics`, `monitoring` |
 | `geo` | 지오코더/리버스지오코더 | `prom` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kor-travel-geo`, `geocoder`, `reverse-geocoder` |
-| `conc` | Kor Travel Concierge | `geo` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 | `kor-travel-concierge`, `concierge`, `agent` |
-| `map` | Kor Travel Map | `conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
+| `conc` | Kor Travel Concierge | `prom` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 (geo 비의존) | `kor-travel-concierge`, `concierge`, `agent` |
+| `map` | Kor Travel Map | `geo`+`conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
 | `pinvi` | PinVi | `map` + PinVi API/Dagster/Web UI 실행 | `srv`, `main`, `pinvi` |
 | `all` | 전체 | `db`부터 `pinvi`까지 전체 순서 | `default` |
 

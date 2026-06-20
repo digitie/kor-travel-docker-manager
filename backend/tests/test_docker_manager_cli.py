@@ -105,13 +105,13 @@ def test_short_aliases_resolve_dependency_order():
     assert get_target("pinvi-api")["id"] == "pinvi"
     assert get_target("main")["id"] == "pinvi"
     assert get_target("metrics")["id"] == "prom"
+    # concierge는 geo에 의존하지 않는다(prometheus 다음 별도 분기).
     assert target_sequence_for_target("conc") == [
         "db",
         "storage",
         "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
     ]
     assert target_sequence_for_target("map") == [

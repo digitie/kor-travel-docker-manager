@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-20 (운영 스택 db→conc 기동, geo 실데이터 복원, 의존성 DAG 재설정 — T-017)
+
+- **운영 스택 기동(db→conc, 도메인 정합성 확인)**: 운영 호스트에 dev의 빌드된 이미지를 `docker save | ssh docker load`로 전송(geo ~4.3GB, concierge ~4.5GB, GDAL 재빌드 회피)하고 `ktdctl`로 하나씩 기동했다. db·storage·gra·cadv·prom·geo·conc 각 단계에서 해당 `*.digitie.mywire.org` 도메인이 503→정상(200/307/406 등)으로 전환됨을 확인했다. 매니저 API가 running 11/18을 반영.
+  - rustfs 크래시(root 소유 데이터 디렉터리 Permission denied)는 digitie 소유 쓰기가능 디렉터리로 `RUSTFS_DATA_DIR`를 전환해 해결(sudo 불필요).
+  - geo는 앱 스키마(ops/public/x_extension)와 `pg_stat_statements`가 필요해 처음엔 data-less 기동했고, concierge는 기동 시 자동 마이그레이션(17테이블)으로 스키마 불필요.
+- **geo 실데이터 복원**: dev `kor_travel_geo`(31GB)를 `pg_dump -Fc | ssh pg_restore`로 운영 DB에 복원해 지오코딩 데이터를 살렸다(운영 geo DB를 drop/recreate 후 전체 schema+data 복원).
+- **의존성 DAG 재설정(ADR-18)**: target 의존을 선형 누적에서 `depends_on` DAG로 전환했다. `geo`와 `conc`는 각각 `prom`에만 의존(상호 독립, **concierge는 geo 비의존**), `map`은 `[geo, conc]`, `pinvi`는 `[map]`. `registry.target_sequence_for_target`을 폐포 위상정렬로 재작성하고, docker-compose의 concierge-api에서 geo-api 의존 제거·map-api에 geo-api 의존 추가.
+- **검증**: 백엔드 25 pytest 통과(`conc` 시퀀스에서 geo 제외 반영), `docker compose config` 통과(concierge-api: geo-postgres/rustfs만, map-api: geo-api+concierge-api 포함), ruff 통과. 문서 ADR-18·docker-management DAG·tasks 동기화.
+- **비민감 처리**: 운영 접속 정보/도메인/IP는 gitignore된 `.env`·`docs/prod-access.local.md`에만, 운영 전용 설정(`RUSTFS_DATA_DIR`, `STRICT_SOURCE_CHECK=0` 등)은 운영 호스트 `.env`에만 둔다.
+
+---
+
 ## 2026-06-20 (운영(prod) 배포 및 docker-manager 실행 검증 — T-016)
 
 - **작업 내용**:

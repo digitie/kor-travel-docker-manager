@@ -207,8 +207,6 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_healthy
-      kor-travel-geo-api:
-        condition: service_healthy
     environment:
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:5432/kor_travel_concierge}
       NEXT_PUBLIC_API_BASE_URL: http://localhost:${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}
@@ -353,6 +351,8 @@ services:
       kor-travel-geo-postgres:
         condition: service_healthy
       rustfs:
+        condition: service_healthy
+      kor-travel-geo-api:
         condition: service_healthy
       kor-travel-concierge-api:
         condition: service_healthy
