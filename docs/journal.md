@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-24 (PR #36 후속 하드닝 — T-021)
+
+- T-020에서 배포 리스크로 분리했던 후속 항목을 모두 반영(별도 PR, fix/pr36-followups-2). 적용:
+  - **AUTH-3**: `_request_from_trusted_proxy`에 선택적 공유 시크릿 헤더(`KTDM_TRUSTED_PROXY_SECRET` / `X-KTDM-Proxy-Secret`) 요구 추가 — 설정 시 신뢰 CIDR이라도 헤더가 일치해야 X-Forwarded-* 를 신뢰(host 네트워크 로컬 프로세스의 loopback 위조 차단), 미설정 시 기존 동작(하위호환).
+  - **AUTH-6**: 인메모리 brute-force 카운터를 제거하고 `login_audit_events` 기반 durable 집계로 전환 — 재시작·다중 워커에서 유지되며 마지막 성공 이후 실패만 카운트(성공 시 리셋 효과 보존).
+  - **APIKEY-1**: 공개 API 키 검증의 프로세스 로컬 TTL 캐시를 제거하고 요청당 `key_hash` 유니크 인덱스 DB 조회로 전환 — 키 폐기가 모든 워커에 즉시 반영. `KTDM_PUBLIC_API_KEY_CACHE_TTL_S` 폐기.
+  - **FE-4**: log/chart/config 모달에 `role="dialog"`/`aria-modal`/`aria-label`·Escape 닫기·닫기 버튼 초기 포커스 및 접근명(aria-label) 추가.
+  - 문서: `.env.example`에 `KTDM_TRUSTED_PROXY_SECRET` 추가, 미사용 `KTDM_PUBLIC_API_KEY_CACHE_TTL_S` 제거.
+- 검증: 백엔드 `ruff`(클린)·`pytest`(37 passed; AUTH-3/AUTH-6 테스트 추가), 프론트 `type-check`·`build` 통과. prod 배포 후 인증 end-to-end(로그인/me/컨테이너/키 생성·폐기/로그아웃·폐기쿠키 재사용 401) 재검증.
+
+---
+
 ## 2026-06-24 (PR #36 사후 리뷰 + fix-forward — T-020)
 
 - 자동 머지된 PR #36(`[codex]` 관리자 인증·공개 API 키)에 대해 보안/정확성/설정/프론트/테스트 5개 차원의 다각도 적대적 코드리뷰(원시 28건 → 검증 후 확정 24건, critical/high 없음)를 수행하고 PR #36에 한글 상세 리뷰 코멘트를 게시했다.

@@ -7,7 +7,6 @@ import json
 import os
 import secrets
 from dataclasses import dataclass
-from time import time
 from uuid import uuid4
 
 from fastapi import HTTPException, Request, Response, WebSocket, status
@@ -29,10 +28,12 @@ SESSION_SECRET_MIN_LENGTH = 32
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 LOGIN_AUDIT_MAX_ROWS = 5000
+# brute-force 카운트로 집계하는 로그인 실패 사유(rate_limited 응답 행은 제외).
+LOGIN_FAILURE_REASONS = ("invalid_credentials", "misconfigured")
+TRUSTED_PROXY_SECRET_HEADER = "x-ktdm-proxy-secret"
 DEFAULT_FRONTEND_ORIGINS = ("http://localhost:12905", "http://127.0.0.1:12905")
 DEFAULT_TRUSTED_PROXY_CIDRS = ("127.0.0.1/32", "::1/128")
 
-_login_failures: dict[str, tuple[int, int]] = {}
 _db_initialized = False
 _db_engine_id: int | None = None
 
@@ -220,30 +221,49 @@ def expire_admin_cookie(request: Request, response: Response) -> None:
 
 
 def check_login_rate_limit(request: Request) -> int | None:
-    now = int(time())
-    _cleanup_login_failures(now)
-    key = _login_attempt_key(request)
-    bucket = _login_failures.get(key)
-    if bucket is None:
+    """최근 로그인 실패 횟수를 감사 로그(durable, 워커 공유)에서 계산해 제한한다.
+
+    인메모리 카운터와 달리 백엔드 재시작·다중 워커에서도 유지된다. 동일 client IP 해시의
+    마지막 로그인 성공 이후 실패만 집계해, 성공 시 카운터가 리셋되는 효과를 보존한다.
+    실패 행(invalid_credentials/misconfigured)은 호출부의 record_login_audit_event 가 남기므로
+    별도 카운터 기록이 필요 없다.
+    """
+    _ensure_db()
+    client_hash = _client_ip_hash(request)
+    if client_hash is None:
         return None
-    count, reset_at = bucket
-    if count < LOGIN_FAILURE_LIMIT:
+    now = utcnow()
+    window_start = now - datetime.timedelta(seconds=LOGIN_FAILURE_WINDOW_SECONDS)
+    with database.get_db_session() as session:
+        last_success = session.scalars(
+            select(LoginAuditEvent.occurred_at)
+            .where(
+                LoginAuditEvent.client_ip_hash == client_hash,
+                LoginAuditEvent.event_type == "login",
+                LoginAuditEvent.outcome == "succeeded",
+                LoginAuditEvent.occurred_at >= window_start,
+            )
+            .order_by(LoginAuditEvent.occurred_at.desc())
+            .limit(1)
+        ).first()
+        effective_start = max(window_start, last_success) if last_success else window_start
+        failure_times = session.scalars(
+            select(LoginAuditEvent.occurred_at)
+            .where(
+                LoginAuditEvent.client_ip_hash == client_hash,
+                LoginAuditEvent.event_type == "login",
+                LoginAuditEvent.reason.in_(LOGIN_FAILURE_REASONS),
+                LoginAuditEvent.occurred_at > effective_start,
+            )
+            .order_by(LoginAuditEvent.occurred_at.asc())
+        ).all()
+    if len(failure_times) < LOGIN_FAILURE_LIMIT:
         return None
-    return max(reset_at - now, 1)
-
-
-def record_login_failure(request: Request) -> None:
-    now = int(time())
-    _cleanup_login_failures(now)
-    key = _login_attempt_key(request)
-    count, reset_at = _login_failures.get(key, (0, now + LOGIN_FAILURE_WINDOW_SECONDS))
-    if reset_at <= now:
-        count, reset_at = 0, now + LOGIN_FAILURE_WINDOW_SECONDS
-    _login_failures[key] = (count + 1, reset_at)
-
-
-def clear_login_failures(request: Request) -> None:
-    _login_failures.pop(_login_attempt_key(request), None)
+    oldest = failure_times[0]
+    retry_after = int(
+        (oldest + datetime.timedelta(seconds=LOGIN_FAILURE_WINDOW_SECONDS) - now).total_seconds()
+    )
+    return max(retry_after, 1)
 
 
 def record_login_audit_event(
@@ -437,16 +457,6 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def _login_attempt_key(request: Request) -> str:
-    return _client_ip(request) or "local"
-
-
-def _cleanup_login_failures(now: int) -> None:
-    expired = [key for key, (_, reset_at) in _login_failures.items() if reset_at <= now]
-    for key in expired:
-        _login_failures.pop(key, None)
-
-
 def _normalize_origin(value: str) -> str:
     return value.strip().rstrip("/").lower()
 
@@ -476,7 +486,21 @@ def _request_from_trusted_proxy(request: Request) -> bool:
         client_ip = ipaddress.ip_address(request.client.host)
     except ValueError:
         return False
-    return any(client_ip in network for network in _trusted_proxy_networks())
+    if not any(client_ip in network for network in _trusted_proxy_networks()):
+        return False
+    # KTDM_TRUSTED_PROXY_SECRET 가 설정되어 있으면, 신뢰 CIDR(기본 loopback) 매칭만으로는 부족하고
+    # 리버스 프록시가 설정한 시크릿 헤더가 일치해야 X-Forwarded-* 를 신뢰한다. host 네트워크의 로컬
+    # 프로세스가 loopback 출처로 X-Forwarded-* 를 위조하는 것을 차단한다(미설정 시 기존 동작 유지).
+    secret = _trusted_proxy_secret()
+    if secret is not None:
+        provided = request.headers.get(TRUSTED_PROXY_SECRET_HEADER, "")
+        return hmac.compare_digest(provided.encode("utf-8"), secret.encode("utf-8"))
+    return True
+
+
+def _trusted_proxy_secret() -> str | None:
+    value = os.environ.get("KTDM_TRUSTED_PROXY_SECRET", "").strip()
+    return value or None
 
 
 def _trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:

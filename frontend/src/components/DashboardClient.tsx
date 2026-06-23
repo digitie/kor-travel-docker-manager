@@ -240,6 +240,24 @@ export default function DashboardClient() {
     chartContainerIdRef.current = chartContainerId;
   }, [chartContainerId]);
 
+  // 모달 접근성: 열린 모달을 Escape 키로 닫는다(AdminSettings 모달은 자체 처리).
+  useEffect(() => {
+    if (!isLogModalOpen && !isChartModalOpen && !isConfigModalOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      if (isConfigModalOpen) {
+        setIsConfigModalOpen(false);
+      } else if (isChartModalOpen) {
+        setIsChartModalOpen(false);
+        setWsMetricsPoints([]);
+      } else if (isLogModalOpen) {
+        setIsLogModalOpen(false);
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isLogModalOpen, isChartModalOpen, isConfigModalOpen]);
+
   // Fallback Polling (Query) - Versioned v1
   const { data: fallbackContainers = [], isLoading, error } = useQuery<ContainerStatus[]>({
     queryKey: ['containers'],
@@ -913,7 +931,12 @@ export default function DashboardClient() {
       {/* Live Log Terminal Modal */}
       {isLogModalOpen && logContainerId && (
         <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300 select-text">
-          <div className="bg-card border border-line rounded-card w-full max-w-4xl p-6 shadow-modal flex flex-col h-[75vh] relative overflow-hidden">
+          <div
+            aria-label="실시간 콘솔 로그"
+            aria-modal="true"
+            role="dialog"
+            className="bg-card border border-line rounded-card w-full max-w-4xl p-6 shadow-modal flex flex-col h-[75vh] relative overflow-hidden"
+          >
 
             {/* Modal Header */}
             <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
@@ -929,6 +952,8 @@ export default function DashboardClient() {
 
               <button
                 type="button"
+                aria-label="닫기"
+                autoFocus
                 onClick={() => setIsLogModalOpen(false)}
                 className="text-secondary hover:text-strong p-2 rounded-full hover:bg-elevated transition-all"
               >
@@ -959,7 +984,12 @@ export default function DashboardClient() {
       {/* Performance History Chart Modal */}
       {isChartModalOpen && chartContainerId && (
         <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300">
-          <div className="bg-card border border-line rounded-card w-full max-w-3xl p-6 shadow-modal flex flex-col relative overflow-hidden">
+          <div
+            aria-label="실시간 성능 차트"
+            aria-modal="true"
+            role="dialog"
+            className="bg-card border border-line rounded-card w-full max-w-3xl p-6 shadow-modal flex flex-col relative overflow-hidden"
+          >
 
             {/* Modal Header */}
             <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
@@ -975,6 +1005,8 @@ export default function DashboardClient() {
 
               <button
                 type="button"
+                aria-label="닫기"
+                autoFocus
                 onClick={() => {
                   setIsChartModalOpen(false);
                   setWsMetricsPoints([]); // 이벤트 핸들러에서 직접 초기화하여 derived-state 경고 방지
@@ -1136,7 +1168,12 @@ export default function DashboardClient() {
       {/* Config Edit Modal */}
       {isConfigModalOpen && configTargetContainer && (
         <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300">
-          <div className="bg-card border border-line rounded-card w-full max-w-lg p-6 shadow-modal relative overflow-hidden flex flex-col max-h-[90vh]">
+          <div
+            aria-label="컨테이너 설정 변경"
+            aria-modal="true"
+            role="dialog"
+            className="bg-card border border-line rounded-card w-full max-w-lg p-6 shadow-modal relative overflow-hidden flex flex-col max-h-[90vh]"
+          >
 
             {/* Modal Header */}
             <div className="flex justify-between items-center pb-4 border-b border-line z-10">
@@ -1146,6 +1183,8 @@ export default function DashboardClient() {
               </h3>
               <button
                 type="button"
+                aria-label="닫기"
+                autoFocus
                 onClick={() => setIsConfigModalOpen(false)}
                 className="text-secondary hover:text-strong p-1.5 rounded-full hover:bg-elevated transition-all"
               >
