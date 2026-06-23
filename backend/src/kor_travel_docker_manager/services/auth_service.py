@@ -11,9 +11,10 @@ from time import time
 from uuid import uuid4
 
 from fastapi import HTTPException, Request, Response, WebSocket, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from kor_travel_docker_manager import database
+from kor_travel_docker_manager._time import utcnow
 from kor_travel_docker_manager.models import AdminSession, Base, LoginAuditEvent
 
 SESSION_COOKIE_NAME = "ktdm_admin_session"
@@ -27,6 +28,7 @@ SESSION_ID_BYTES = 32
 SESSION_SECRET_MIN_LENGTH = 32
 LOGIN_FAILURE_LIMIT = 5
 LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
+LOGIN_AUDIT_MAX_ROWS = 5000
 DEFAULT_FRONTEND_ORIGINS = ("http://localhost:12905", "http://127.0.0.1:12905")
 DEFAULT_TRUSTED_PROXY_CIDRS = ("127.0.0.1/32", "::1/128")
 
@@ -70,9 +72,13 @@ def verify_admin_password(username: str, password: str) -> str:
     session_secret = _session_secret()
     if not password_hash or session_secret is None:
         return "misconfigured"
-    if username.strip() != expected_username:
-        return "invalid"
-    return "ok" if _verify_password(password, password_hash) else "invalid"
+    # 사용자명이 불일치하더라도 PBKDF2 검증을 항상 수행한다. 사용자명 불일치 시 즉시 반환하면
+    # 응답 시간이 사용자명 일치 여부에 의존해 username 열거 타이밍 사이드채널이 된다.
+    username_ok = hmac.compare_digest(
+        username.strip().encode("utf-8"), expected_username.encode("utf-8")
+    )
+    password_ok = _verify_password(password, password_hash)
+    return "ok" if (username_ok and password_ok) else "invalid"
 
 
 def require_frontend_origin(request: Request) -> None:
@@ -101,7 +107,7 @@ def allowed_frontend_origins() -> tuple[str, ...]:
 def create_admin_session(request: Request, response: Response, username: str) -> AdminSessionContext:
     _ensure_db()
     secret = _require_session_secret()
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     expires_at = now + datetime.timedelta(seconds=SESSION_TTL_SECONDS)
     session_id = _base64url_encode(secrets.token_bytes(SESSION_ID_BYTES))
     session_id_hash = _hash_value(session_id)
@@ -156,7 +162,7 @@ def validate_session_cookie(value: str | None, request: Request | WebSocket) -> 
     payload = _decode_session_cookie(value, secret)
     if payload is None:
         return None
-    now = datetime.datetime.utcnow()
+    now = utcnow()
     now_epoch = int(now.timestamp())
     if payload.get("aud") != SESSION_AUDIENCE or payload.get("v") != SESSION_VERSION:
         return None
@@ -198,7 +204,7 @@ def revoke_admin_session(value: str | None, request: Request) -> str | None:
             select(AdminSession).where(AdminSession.session_id_hash == session_id_hash)
         ).first()
         if row is not None and row.revoked_at is None:
-            row.revoked_at = datetime.datetime.utcnow()
+            row.revoked_at = utcnow()
             session.commit()
     return session_id_hash
 
@@ -270,6 +276,36 @@ def record_login_audit_event(
             )
         )
         session.commit()
+        _prune_login_audit_events(session)
+
+
+def _login_audit_max_rows() -> int:
+    raw = os.environ.get("KTDM_LOGIN_AUDIT_MAX_ROWS", str(LOGIN_AUDIT_MAX_ROWS))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return LOGIN_AUDIT_MAX_ROWS
+
+
+def _prune_login_audit_events(session) -> None:
+    """감사 로그 테이블이 무한 증식하지 않도록 보존 상한 초과분(오래된 행)을 정리한다.
+
+    로그아웃/오설정 로그인 등 미인증 경로도 감사 행을 남기므로, 상한이 없으면 테이블이
+    무제한으로 커질 수 있다. ``KTDM_LOGIN_AUDIT_MAX_ROWS`` 로 상한을 조정할 수 있다(<=0 이면 비활성).
+    """
+    max_rows = _login_audit_max_rows()
+    if max_rows <= 0:
+        return
+    threshold_id = session.scalars(
+        select(LoginAuditEvent.id)
+        .order_by(LoginAuditEvent.id.desc())
+        .offset(max_rows - 1)
+        .limit(1)
+    ).first()
+    if threshold_id is None:
+        return
+    session.execute(delete(LoginAuditEvent).where(LoginAuditEvent.id < threshold_id))
+    session.commit()
 
 
 def list_login_audit_events(

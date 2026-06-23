@@ -16,6 +16,7 @@ test_engine = create_engine(
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 import kor_travel_docker_manager.database
+from kor_travel_docker_manager._time import utcnow
 from kor_travel_docker_manager.services.auth_service import hash_password_for_env
 
 FRONTEND_ORIGIN = "http://localhost:12905"
@@ -81,7 +82,7 @@ def test_metrics_service_cleanup():
     with kor_travel_docker_manager.database.get_db_session() as session:
         old_metric = Metric(
             container_id="test-container",
-            timestamp=datetime.datetime.utcnow() - datetime.timedelta(days=31),
+            timestamp=utcnow() - datetime.timedelta(days=31),
             cpu_pct=20.0,
             mem_usage=200,
             mem_limit=200,

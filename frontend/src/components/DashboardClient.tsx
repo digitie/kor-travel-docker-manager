@@ -29,7 +29,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import LoginScreen from './LoginScreen';
-import { AuthMe, BACKEND_URL, apiJson, apiWsUrl } from '@/lib/api';
+import { AuthMe, BACKEND_URL, apiJson, apiWsUrl, setUnauthorizedHandler } from '@/lib/api';
 
 // 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
 const _unusedForm = typeof useForm !== 'undefined';
@@ -190,7 +190,16 @@ export default function DashboardClient() {
     staleTime: 60_000,
   });
   const isAuthenticated = auth?.authenticated === true;
-  
+
+  // 백그라운드 요청이 401을 받으면 하드 리로드 대신 auth-me 쿼리를 무효화해 SPA 내에서
+  // LoginScreen 으로 전환한다(logout 경로와 동작 일치, in-flight UI 상태 보존).
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      void queryClient.invalidateQueries({ queryKey: ['auth-me'] });
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [queryClient]);
+
   // WebSocket State - Default initialized directly to resolve 'State initialized from a mount effect'
   const [wsContainers, setWsContainers] = useState<ContainerStatus[] | null>(null);
   const [isWsConnected, setIsWsConnected] = useState<boolean>(false);

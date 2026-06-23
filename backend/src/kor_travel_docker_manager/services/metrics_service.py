@@ -4,7 +4,9 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from kor_travel_docker_manager.database import engine, get_db_session
+from kor_travel_docker_manager import database
+from kor_travel_docker_manager._time import utcnow
+from kor_travel_docker_manager.database import get_db_session
 from kor_travel_docker_manager.models import Base, Metric
 
 logger = logging.getLogger(__name__)
@@ -12,11 +14,14 @@ logger = logging.getLogger(__name__)
 class MetricsService:
     def init_db(self):
         """Initialize SQLite database tables using SQLAlchemy Metadata."""
+        # database.engine 을 import 시점이 아니라 호출 시점에 참조해 (테스트의) 엔진 재할당을
+        # 따르게 한다. 스키마 생성 실패는 치명적이므로 삼키지 않고 재발생시켜 fail-fast 한다.
         try:
-            Base.metadata.create_all(bind=engine)
+            Base.metadata.create_all(bind=database.engine)
             logger.info("Metrics database initialized via SQLAlchemy.")
-        except Exception as e:
-            logger.error(f"Failed to initialize metrics database: {e}")
+        except Exception:
+            logger.exception("Failed to initialize metrics database")
+            raise
 
     def save_metric(
         self, 
@@ -50,8 +55,8 @@ class MetricsService:
         try:
             # SQLAlchemy func.now() 혹은 SQLite CURRENT_TIMESTAMP는 UTC 기준이므로,
             # 파이썬 레벨에서 UTC cutoff를 계산하여 필터링합니다.
-            cutoff = datetime.datetime.utcnow() - datetime.timedelta(hours=hours)
-            
+            cutoff = utcnow() - datetime.timedelta(hours=hours)
+
             with get_db_session() as session:
                 stmt = (
                     select(Metric)
@@ -80,7 +85,7 @@ class MetricsService:
     def cleanup_old_metrics(self, days: int = 30):
         """Delete metrics older than N days."""
         try:
-            cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+            cutoff = utcnow() - datetime.timedelta(days=days)
             with get_db_session() as session:
                 stmt = delete(Metric).where(Metric.timestamp < cutoff)
                 result = session.execute(stmt)
