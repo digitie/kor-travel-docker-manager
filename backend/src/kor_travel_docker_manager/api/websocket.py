@@ -3,6 +3,11 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from kor_travel_docker_manager.services.auth_service import (
+    SESSION_COOKIE_NAME,
+    validate_session_cookie,
+    websocket_origin_allowed,
+)
 from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,9 @@ async def status_broadcast_loop():
 
 @router.websocket("/ws/status")
 async def ws_status(websocket: WebSocket):
+    if not _websocket_is_authorized(websocket):
+        await websocket.close(code=4401, reason="AUTH_REQUIRED")
+        return
     await status_manager.connect(websocket)
     try:
         # Send initial status immediately upon connection
@@ -73,6 +81,9 @@ async def ws_status(websocket: WebSocket):
 
 @router.websocket("/ws/logs/{container_id}")
 async def ws_logs(websocket: WebSocket, container_id: str):
+    if not _websocket_is_authorized(websocket):
+        await websocket.close(code=4401, reason="AUTH_REQUIRED")
+        return
     if container_id not in MANAGED_CONTAINERS:
         await websocket.close(code=4000, reason="Invalid container ID")
         return
@@ -127,3 +138,12 @@ async def ws_logs(websocket: WebSocket, container_id: str):
             await websocket.close()
         except Exception:
             pass
+
+
+def _websocket_is_authorized(websocket: WebSocket) -> bool:
+    if not websocket_origin_allowed(websocket):
+        return False
+    return (
+        validate_session_cookie(websocket.cookies.get(SESSION_COOKIE_NAME), websocket)
+        is not None
+    )

@@ -1,15 +1,28 @@
 import datetime
+import os
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # 몽키 패칭을 위해 임시 인메모리 DB 엔진 및 세션 생성
-test_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+test_engine = create_engine(
+    "sqlite://",
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 import kor_travel_docker_manager.database
+from kor_travel_docker_manager.services.auth_service import hash_password_for_env
+
+FRONTEND_ORIGIN = "http://localhost:12905"
+os.environ["KTDM_ADMIN_USERNAME"] = "admin"
+os.environ["KTDM_ADMIN_PASSWORD_HASH"] = hash_password_for_env("ad.min")
+os.environ["KTDM_SESSION_SECRET"] = "test-session-secret-minimum-32-bytes-value"
+os.environ["KTDM_FRONTEND_ORIGINS"] = FRONTEND_ORIGIN
 
 kor_travel_docker_manager.database.engine = test_engine
 kor_travel_docker_manager.database.SessionLocal = TestSessionLocal
@@ -19,6 +32,23 @@ from kor_travel_docker_manager.models import Base, Metric
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 
 client = TestClient(app)
+client.headers.update({"Origin": FRONTEND_ORIGIN})
+
+
+def login_client():
+    client.cookies.clear()
+    login_response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "ad.min", "next": "/"},
+    )
+    assert login_response.status_code == 200
+
+
+def clear_metrics():
+    with kor_travel_docker_manager.database.get_db_session() as session:
+        session.query(Metric).delete()
+        session.commit()
+
 
 def test_metrics_service_save_and_retrieve():
     # 테이블 스키마 초기화
@@ -39,7 +69,7 @@ def test_metrics_service_save_and_retrieve():
     assert metrics[0]["io_write"] == 200
     
     # 테이블 데이터 삭제
-    Base.metadata.drop_all(bind=test_engine)
+    clear_metrics()
 
 def test_metrics_service_cleanup():
     Base.metadata.create_all(bind=test_engine)
@@ -75,10 +105,11 @@ def test_metrics_service_cleanup():
         count_after = session.query(Metric).count()
         assert count_after == 1
         
-    Base.metadata.drop_all(bind=test_engine)
+    clear_metrics()
 
 @patch("kor_travel_docker_manager.api.routes.metrics_service")
 def test_metrics_api_route(mock_metrics_service):
+    login_client()
     # Setup mock return data
     mock_metrics_service.get_recent_metrics.return_value = [
         {"timestamp": "2026-06-11 12:00:00", "cpu_pct": 5.5, "mem_usage": 100, "mem_limit": 200, "mem_pct": 50.0, "io_read": 10, "io_write": 10}

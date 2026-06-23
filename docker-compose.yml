@@ -137,6 +137,9 @@ services:
       KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       KTG_RUSTFS_LOCAL_IMPORT_ROOTS: /data
       KTG_VWORLD_API_KEY: ${KOR_TRAVEL_GEO_VWORLD_API_KEY:-}
+      KTG_PUBLIC_API_KEY_CACHE_TTL_S: ${KOR_TRAVEL_GEO_PUBLIC_API_KEY_CACHE_TTL_S:-30}
+      KTG_ADMIN_TRUSTED_PROXY_CIDRS: ${KOR_TRAVEL_GEO_ADMIN_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}
+      KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
     ports:
     - ${KOR_TRAVEL_GEO_API_PORT:-12501}:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
     volumes:
@@ -162,6 +165,10 @@ services:
     depends_on:
       kor-travel-geo-api:
         condition: service_healthy
+    env_file:
+    - path: ${KOR_TRAVEL_GEO_UI_ENV_FILE:-.env.kor-travel-geo-ui.local}
+      required: false
+      format: raw
     environment:
       PORT: ${KOR_TRAVEL_GEO_UI_CONTAINER_PORT:-12505}
       HOSTNAME: 0.0.0.0
@@ -169,6 +176,9 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${KOR_TRAVEL_GEO_UI_PUBLIC_API_BASE_URL:-/api/proxy}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
       KTG_VWORLD_API_KEY: ${KOR_TRAVEL_GEO_VWORLD_API_KEY:-}
+      KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
+      KTG_UI_ADMIN_USERNAME: ${KOR_TRAVEL_GEO_UI_ADMIN_USERNAME:-admin}
+      KTG_UI_SESSION_SECRET: ${KOR_TRAVEL_GEO_UI_SESSION_SECRET:-}
     ports:
     - ${KOR_TRAVEL_GEO_UI_PORT:-12505}:${KOR_TRAVEL_GEO_UI_CONTAINER_PORT:-12505}
     extra_hosts:
@@ -202,6 +212,7 @@ services:
     env_file:
     - path: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/.env
       required: false
+      format: raw
     depends_on:
       kor-travel-geo-postgres:
         condition: service_healthy
@@ -259,6 +270,7 @@ services:
     env_file:
     - path: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/.env
       required: false
+      format: raw
     depends_on:
       kor-travel-concierge-api:
         condition: service_healthy
@@ -295,6 +307,7 @@ services:
     env_file:
     - path: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/.env
       required: false
+      format: raw
     depends_on:
       kor-travel-concierge-api:
         condition: service_healthy

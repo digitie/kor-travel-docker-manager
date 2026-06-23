@@ -9,9 +9,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from kor_travel_docker_manager.api.admin import router as admin_router
+from kor_travel_docker_manager.api.auth import router as auth_router
 from kor_travel_docker_manager.api.routes import router as container_router
 from kor_travel_docker_manager.api.websocket import router as ws_router
 from kor_travel_docker_manager.api.websocket import status_broadcast_loop
+from kor_travel_docker_manager.services.auth_service import allowed_frontend_origins
 from kor_travel_docker_manager.services.compose_service import get_env_path
 from kor_travel_docker_manager.services.metrics_collector import metrics_collector
 from kor_travel_docker_manager.services.metrics_service import metrics_service
@@ -153,7 +156,7 @@ def _resolve_cors_allow_origins() -> list[str]:
     """
     raw = os.environ.get("KTDM_CORS_ALLOW_ORIGINS", "*").strip()
     if not raw or raw == "*":
-        return ["*"]
+        return list(allowed_frontend_origins())
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
@@ -170,12 +173,14 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOW_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Include routers with v1 versioning
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 app.include_router(container_router, prefix="/api/v1", tags=["containers"])
 app.include_router(ws_router, prefix="/api/v1", tags=["websocket"])
 

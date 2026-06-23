@@ -1,14 +1,15 @@
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from kor_travel_docker_manager.services.auth_service import require_admin_session
 from kor_travel_docker_manager.services.compose_service import compose_service
 from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.registry import list_targets
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin_session)])
 
 
 class ActionRequest(BaseModel):
