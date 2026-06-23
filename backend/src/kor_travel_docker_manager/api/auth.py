@@ -48,6 +48,9 @@ def login(payload: LoginRequest, request: Request, response: Response):
 
     result = verify_admin_password(payload.username, payload.password)
     if result == "misconfigured":
+        # 오설정(시크릿 미설정) 상태에서도 미인증 호출이 무제한으로 감사 행을 쓰지 못하도록
+        # 실패 카운트를 증가시킨다(상한 초과 시 위 rate-limit 분기에서 429로 차단됨).
+        record_login_failure(request)
         record_login_audit_event(
             request,
             event_type="login",
@@ -90,14 +93,17 @@ def logout(request: Request, response: Response):
     require_frontend_origin(request)
     session_hash = revoke_admin_session(request.cookies.get(SESSION_COOKIE_NAME), request)
     expire_admin_cookie(request, response)
-    record_login_audit_event(
-        request,
-        event_type="logout",
-        outcome="succeeded",
-        attempted_username=admin_username(),
-        reason="user_logout",
-        session_id_hash=session_hash,
-    )
+    # 유효 서명된 세션 쿠키가 제시된 경우에만 감사 행을 남긴다. 쿠키 없는/위조된 미인증
+    # 호출이 logout으로 감사 테이블을 무제한 적재하는 것을 막는다.
+    if session_hash is not None:
+        record_login_audit_event(
+            request,
+            event_type="logout",
+            outcome="succeeded",
+            attempted_username=admin_username(),
+            reason="user_logout",
+            session_id_hash=session_hash,
+        )
     return {"ok": True}
 
 

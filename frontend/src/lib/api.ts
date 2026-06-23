@@ -52,6 +52,17 @@ type ApiRequestInit = RequestInit & {
   redirectOnUnauthorized?: boolean;
 };
 
+let unauthorizedHandler: (() => void) | null = null;
+
+/**
+ * 401 응답 시 호출될 핸들러를 등록한다. 등록되면 전체 페이지 하드 리로드 대신 이 핸들러가
+ * 호출되어 SPA 내에서 인증 상태를 갱신(예: auth-me 쿼리 무효화 → LoginScreen 전환)할 수 있다.
+ * 등록 해제하려면 null 을 전달한다.
+ */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
 export function apiUrl(path: string): string {
   const normalized = path.startsWith('/') ? path : `/${path}`;
   return `${BACKEND_URL}${normalized}`;
@@ -72,7 +83,7 @@ export async function apiFetch(path: string, init?: ApiRequestInit): Promise<Res
     },
   });
   if (response.status === 401 && redirectOnUnauthorized) {
-    redirectToLogin();
+    handleUnauthorized();
   }
   return response;
 }
@@ -97,10 +108,16 @@ export function deleteJson<T>(path: string): Promise<T> {
   return apiJson<T>(path, { method: 'DELETE' });
 }
 
-function redirectToLogin() {
+function handleUnauthorized() {
+  if (unauthorizedHandler) {
+    unauthorizedHandler();
+    return;
+  }
+  // 핸들러 미등록(SSR/마운트 이전) 시 폴백: 루트로 이동/새로고침해 로그인 화면을 띄운다.
   if (typeof window === 'undefined') return;
-  const next = `${window.location.pathname}${window.location.search}`;
-  const target = `/?next=${encodeURIComponent(next || '/')}`;
-  if (window.location.pathname === '/' && window.location.search.includes('next=')) return;
-  window.location.assign(target);
+  if (window.location.pathname !== '/') {
+    window.location.assign('/');
+  } else {
+    window.location.reload();
+  }
 }

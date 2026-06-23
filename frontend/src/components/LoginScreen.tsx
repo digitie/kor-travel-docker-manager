@@ -71,6 +71,7 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
               aria-describedby={error ? 'login-error' : undefined}
               aria-invalid={Boolean(error)}
               autoComplete="current-password"
+              autoFocus
               className="w-full bg-subtle border border-line rounded-card min-h-[44px] px-3 text-sm text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand"
               disabled={busy}
               id="admin-password"

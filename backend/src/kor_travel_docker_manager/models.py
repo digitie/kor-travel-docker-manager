@@ -3,6 +3,8 @@ import datetime
 from sqlalchemy import DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from kor_travel_docker_manager._time import utcnow
+
 
 class Base(DeclarativeBase):
     pass
@@ -34,7 +36,7 @@ class AdminSession(Base):
     username: Mapped[str] = mapped_column(String(120), nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime,
-        default=datetime.datetime.utcnow,
+        default=utcnow,
         index=True,
         nullable=False,
     )
@@ -52,7 +54,7 @@ class LoginAuditEvent(Base):
     audit_event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
     occurred_at: Mapped[datetime.datetime] = mapped_column(
         DateTime,
-        default=datetime.datetime.utcnow,
+        default=utcnow,
         index=True,
         nullable=False,
     )
@@ -75,12 +77,13 @@ class PublicApiKey(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     public_api_key_id: Mapped[str] = mapped_column(String(36), unique=True, index=True, nullable=False)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
-    key_hint: Mapped[str] = mapped_column(String(12), nullable=False)
+    # 생성 서비스가 항상 마지막 6자(api_key[-6:])만 저장하므로 컬럼 폭을 6으로 정렬한다.
+    key_hint: Mapped[str] = mapped_column(String(6), nullable=False)
     label: Mapped[str | None] = mapped_column(String(80), nullable=True)
     state: Mapped[str] = mapped_column(String(16), default="active", index=True, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime,
-        default=datetime.datetime.utcnow,
+        default=utcnow,
         index=True,
         nullable=False,
     )

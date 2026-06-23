@@ -157,7 +157,14 @@ def _resolve_cors_allow_origins() -> list[str]:
     raw = os.environ.get("KTDM_CORS_ALLOW_ORIGINS", "*").strip()
     if not raw or raw == "*":
         return list(allowed_frontend_origins())
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    # allow_credentials=True 와 함께 와일드카드 '*' 가 섞여 들어가지 않도록 명시 분기에서도
+    # '*' 항목을 제거한다(자격증명 포함 CORS는 정확한 Origin 매칭이어야 한다).
+    origins = [
+        origin.strip()
+        for origin in raw.split(",")
+        if origin.strip() and origin.strip() != "*"
+    ]
+    return origins or list(allowed_frontend_origins())
 
 
 CORS_ALLOW_ORIGINS = _resolve_cors_allow_origins()

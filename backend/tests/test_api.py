@@ -2,6 +2,8 @@ import hashlib
 import os
 from unittest.mock import patch
 
+import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -48,9 +50,56 @@ def test_health_check():
 
 
 def test_admin_api_requires_frontend_origin_and_session():
+    # Origin 헤더가 없으면 origin 가드(require_frontend_origin)에서 403으로 단락된다.
     unauthenticated = TestClient(app)
     response = unauthenticated.get("/api/v1/containers")
     assert response.status_code == 403
+
+
+def test_admin_api_with_valid_origin_no_session_returns_401():
+    # 유효한 Origin이지만 세션 쿠키가 없으면 origin 가드를 통과한 뒤 401(AUTH_REQUIRED)이어야 한다.
+    client.cookies.clear()
+    response = client.get("/api/v1/containers")
+    assert response.status_code == 401
+
+
+def test_auth_me_returns_username_when_authenticated_and_401_otherwise():
+    client.cookies.clear()
+    assert client.get("/api/v1/auth/me").status_code == 401
+
+    login_client()
+    me = client.get("/api/v1/auth/me")
+    assert me.status_code == 200
+    body = me.json()
+    assert body["authenticated"] is True
+    assert body["username"] == "admin"
+
+
+def test_logout_revokes_session_and_blocks_cookie_reuse():
+    login_client()
+    cookie = client.cookies.get("ktdm_admin_session")
+    assert cookie
+
+    assert client.post("/api/v1/auth/logout").status_code == 200
+
+    # 폐기(revoked_at)된 세션 쿠키를 재사용하면 401이어야 한다.
+    client.cookies.set("ktdm_admin_session", cookie, domain="testserver")
+    reuse = client.get("/api/v1/auth/me")
+    assert reuse.status_code == 401
+    client.cookies.clear()
+
+
+def test_tampered_session_cookie_rejected():
+    login_client()
+    cookie = client.cookies.get("ktdm_admin_session")
+    assert cookie
+    # 서명 마지막 1자를 변조하면 HMAC 불일치로 거부(401)되어야 한다.
+    tampered = cookie[:-1] + ("A" if cookie[-1] != "A" else "B")
+    client.cookies.clear()
+    client.cookies.set("ktdm_admin_session", tampered, domain="testserver")
+    response = client.get("/api/v1/auth/me")
+    assert response.status_code == 401
+    client.cookies.clear()
 
 
 def test_login_rejects_invalid_password_and_records_audit_event():
@@ -63,12 +112,68 @@ def test_login_rejects_invalid_password_and_records_audit_event():
     assert response.status_code == 401
 
     events = client.get("/api/v1/admin/login-audit-events?event_type=login").json()
+    # 기본 TestClient(client.host="testclient")는 신뢰 프록시가 아니므로 X-Forwarded-For가
+    # 무시되어야 한다. 저장된 client_ip_hash는 forwarded IP 해시가 아니라 client.host 해시여야 한다.
+    untrusted_hash = hashlib.sha256(b"testclient").hexdigest()
+    forwarded_hash = hashlib.sha256(b"203.0.113.7").hexdigest()
     denied = next(
         event
         for event in events
-        if event["outcome"] == "denied" and event["reason"] == "invalid_credentials"
+        if event["outcome"] == "denied"
+        and event["reason"] == "invalid_credentials"
+        and event["client_ip_hash"] == untrusted_hash
     )
-    assert denied["client_ip_hash"] != hashlib.sha256(b"203.0.113.7").hexdigest()
+    assert denied["client_ip_hash"] != forwarded_hash
+
+
+def test_client_ip_trusts_forwarded_only_from_trusted_proxy():
+    # 신뢰 프록시 판정/ X-Forwarded-For 처리를 실제 코드 경로로 직접 검증한다.
+    from starlette.requests import Request
+
+    from kor_travel_docker_manager.services.auth_service import _client_ip
+
+    def make_request(client_host: str, xff: str) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/",
+                "headers": [(b"x-forwarded-for", xff.encode("utf-8"))],
+                "client": (client_host, 12345),
+                "scheme": "http",
+                "server": ("testserver", 80),
+            }
+        )
+
+    # 신뢰 프록시(loopback)에서는 X-Forwarded-For의 가장 오른쪽 홉을 사용한다.
+    trusted = make_request("127.0.0.1", "198.51.100.2, 203.0.113.9")
+    assert _client_ip(trusted) == "203.0.113.9"
+
+    # 신뢰되지 않은 클라이언트의 X-Forwarded-For는 무시하고 실제 client.host를 사용한다.
+    untrusted = make_request("203.0.113.50", "203.0.113.9")
+    assert _client_ip(untrusted) == "203.0.113.50"
+
+
+def test_ws_status_requires_session():
+    client.cookies.clear()
+    with pytest.raises(WebSocketDisconnect) as excinfo:
+        with client.websocket_connect(
+            "/api/v1/ws/status", headers={"Origin": FRONTEND_ORIGIN}
+        ):
+            pass
+    assert excinfo.value.code == 4401
+
+
+@patch("kor_travel_docker_manager.api.websocket.docker_service")
+def test_ws_status_accepts_authenticated_session(mock_docker_service):
+    mock_docker_service.get_containers_status.return_value = []
+    login_client()
+    with client.websocket_connect(
+        "/api/v1/ws/status", headers={"Origin": FRONTEND_ORIGIN}
+    ) as ws:
+        message = ws.receive_json()
+        assert message["type"] == "status"
+        assert message["containers"] == []
 
 
 def test_public_api_key_lifecycle():

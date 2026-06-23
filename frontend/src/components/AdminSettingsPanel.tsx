@@ -1,7 +1,7 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useState } from 'react';
-import { Copy, KeyRound, RefreshCw, Trash2, X } from 'lucide-react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { Copy, EyeOff, KeyRound, RefreshCw, Trash2, X } from 'lucide-react';
 import {
   LoginAuditEvent,
   PublicApiKeyCreateResponse,
@@ -33,6 +33,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     keys: null,
   });
   const [auditState, setAuditState] = useState<AuditState>({ events: null, message: null });
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   const patchKeyState = useCallback((patch: Partial<PublicKeyState>) => {
     setKeyState((current) => ({ ...current, ...patch }));
@@ -66,6 +67,16 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     void loadPublicKeys();
     void loadAuditEvents();
   }, [loadAuditEvents, loadPublicKeys]);
+
+  // 모달 접근성: 열릴 때 초기 포커스를 패널로 옮기고, Escape 키로 닫는다.
+  useEffect(() => {
+    dialogRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
 
   async function createKey(event: FormEvent) {
     event.preventDefault();
@@ -136,13 +147,22 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
   }
 
   return (
-    <div className="bg-card border border-line rounded-card w-full max-w-5xl shadow-modal max-h-[88vh] overflow-hidden flex flex-col">
+    <div
+      aria-labelledby="admin-settings-title"
+      aria-modal="true"
+      className="bg-card border border-line rounded-card w-full max-w-5xl shadow-modal max-h-[88vh] overflow-hidden flex flex-col outline-hidden"
+      ref={dialogRef}
+      role="dialog"
+      tabIndex={-1}
+    >
       <div className="flex items-center justify-between border-b border-line px-6 py-4">
         <div>
           <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
             Admin Settings
           </p>
-          <h2 className="text-lg font-semibold text-strong mt-1">인증 및 공개 API 키</h2>
+          <h2 className="text-lg font-semibold text-strong mt-1" id="admin-settings-title">
+            인증 및 공개 API 키
+          </h2>
         </div>
         <button
           className="text-secondary hover:text-strong p-2 rounded-card hover:bg-subtle"
@@ -216,14 +236,25 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                   onFocus={(event) => event.currentTarget.select()}
                 />
                 <button
+                  aria-label="생성된 키 복사"
                   className="inline-flex items-center justify-center min-h-[44px] w-11 bg-card border border-line rounded-card text-ink"
                   onClick={() => void copyGeneratedKey()}
                   type="button"
                 >
                   <Copy className="w-4 h-4" />
                 </button>
+                <button
+                  aria-label="생성된 키 화면에서 지우기"
+                  className="inline-flex items-center justify-center min-h-[44px] w-11 bg-card border border-line rounded-card text-ink"
+                  onClick={() => patchKeyState({ generatedKey: null })}
+                  type="button"
+                >
+                  <EyeOff className="w-4 h-4" />
+                </button>
               </div>
-              <p className="text-xs text-secondary">이 키는 지금 한 번만 표시됩니다.</p>
+              <p className="text-xs text-secondary">
+                이 키는 지금 한 번만 표시됩니다. 복사한 뒤 “지우기”로 화면에서 제거할 수 있습니다.
+              </p>
             </div>
           ) : null}
 
