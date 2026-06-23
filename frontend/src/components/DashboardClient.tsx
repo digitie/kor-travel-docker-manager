@@ -20,11 +20,16 @@ import {
   BarChart3,
   Gauge,
   ServerCog,
-  Boxes
+  Boxes,
+  KeyRound,
+  LogOut
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
+import AdminSettingsPanel from './AdminSettingsPanel';
+import LoginScreen from './LoginScreen';
+import { AuthMe, BACKEND_URL, apiJson, apiWsUrl } from '@/lib/api';
 
 // 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
 const _unusedForm = typeof useForm !== 'undefined';
@@ -76,8 +81,6 @@ interface MetricHistoryPoint {
   io_read: number;
   io_write: number;
 }
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:12901';
 
 // Byte Formatting Helper
 function formatBytes(bytes: number | undefined, decimals = 1) {
@@ -173,6 +176,20 @@ const getContainerPresentation = (container: ContainerStatus) => {
 
 export default function DashboardClient() {
   const queryClient = useQueryClient();
+  const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
+
+  const {
+    data: auth,
+    isLoading: isAuthLoading,
+    refetch: refetchAuth,
+  } = useQuery<AuthMe>({
+    queryKey: ['auth-me'],
+    queryFn: () => apiJson<AuthMe>('/api/v1/auth/me', { redirectOnUnauthorized: false }),
+    retry: false,
+    refetchInterval: false,
+    staleTime: 60_000,
+  });
+  const isAuthenticated = auth?.authenticated === true;
   
   // WebSocket State - Default initialized directly to resolve 'State initialized from a mount effect'
   const [wsContainers, setWsContainers] = useState<ContainerStatus[] | null>(null);
@@ -217,15 +234,9 @@ export default function DashboardClient() {
   // Fallback Polling (Query) - Versioned v1
   const { data: fallbackContainers = [], isLoading, error } = useQuery<ContainerStatus[]>({
     queryKey: ['containers'],
-    queryFn: async () => {
-      const res = await fetch(`${BACKEND_URL}/api/v1/containers`);
-      if (!res.ok) {
-        throw new Error('Failed to fetch containers status.');
-      }
-      return res.json();
-    },
+    queryFn: () => apiJson<ContainerStatus[]>('/api/v1/containers'),
     refetchInterval: 5000,
-    enabled: !isWsConnected, // Only run polling if WebSocket is offline
+    enabled: isAuthenticated && !isWsConnected, // Only run polling if WebSocket is offline
   });
 
   // Active containers dataset (WS if available, fallback query otherwise)
@@ -261,11 +272,13 @@ export default function DashboardClient() {
 
   // Status WebSockets connection setup - Versioned v1
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     let ws: WebSocket;
     let reconnectTimeout: NodeJS.Timeout;
 
     const connectWS = () => {
-      const wsUrl = `${BACKEND_URL.replace(/^http/, 'ws')}/api/v1/ws/status`;
+      const wsUrl = apiWsUrl('/api/v1/ws/status');
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -329,21 +342,15 @@ export default function DashboardClient() {
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, []);
+  }, [isAuthenticated]);
 
   // Container Action Mutation - Versioned v1
   const actionMutation = useMutation({
     mutationFn: async ({ id, action }: { id: string; action: string }) => {
-      const res = await fetch(`${BACKEND_URL}/api/v1/containers/${id}/action`, {
+      return apiJson(`/api/v1/containers/${id}/action`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
       });
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Failed to execute action.');
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
@@ -357,16 +364,10 @@ export default function DashboardClient() {
   // Config Update mutation - Versioned v1
   const configMutation = useMutation({
     mutationFn: async ({ id, ports, env, volumes, networks }: { id: string; ports: string[]; env: Record<string, string>; volumes: string[]; networks: string[] }) => {
-      const res = await fetch(`${BACKEND_URL}/api/v1/containers/${id}/config`, {
+      return apiJson(`/api/v1/containers/${id}/config`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ports, env, volumes, networks }),
       });
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Failed to update configuration.');
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
@@ -381,14 +382,9 @@ export default function DashboardClient() {
   // Config Reset mutation - Versioned v1
   const resetMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`${BACKEND_URL}/api/v1/containers/${id}/reset`, {
+      return apiJson(`/api/v1/containers/${id}/reset`, {
         method: 'POST',
       });
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Failed to reset configuration.');
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
@@ -406,11 +402,11 @@ export default function DashboardClient() {
     queryKey: ['metrics-history', chartContainerId, chartMetricType],
     queryFn: async () => {
       if (!chartContainerId) return [];
-      const res = await fetch(`${BACKEND_URL}/api/v1/containers/${chartContainerId}/metrics?hours=1`);
-      if (!res.ok) throw new Error('Failed to fetch metrics history');
-      return res.json();
+      return apiJson<MetricHistoryPoint[]>(
+        `/api/v1/containers/${chartContainerId}/metrics?hours=1`
+      );
     },
-    enabled: !!chartContainerId && isChartModalOpen,
+    enabled: isAuthenticated && !!chartContainerId && isChartModalOpen,
   });
 
   // Derived combined chart data using useMemo (resolves react-doctor's 'no-derived-state')
@@ -438,7 +434,7 @@ export default function DashboardClient() {
   useEffect(() => {
     if (!logContainerId || !isLogModalOpen) return;
 
-    const wsUrl = `${BACKEND_URL.replace(/^http/, 'ws')}/api/v1/ws/logs/${logContainerId}`;
+    const wsUrl = apiWsUrl(`/api/v1/ws/logs/${logContainerId}`);
     const ws = new WebSocket(wsUrl);
 
     setLiveLogs('--- 실시간 로그 스트리밍을 시작합니다 ---\n');
@@ -512,6 +508,39 @@ export default function DashboardClient() {
     setIsChartModalOpen(true);
   };
 
+  const logoutMutation = useMutation({
+    mutationFn: () => apiJson<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' }),
+    onSettled: async () => {
+      setWsContainers(null);
+      setIsWsConnected(false);
+      setIsAdminSettingsOpen(false);
+      queryClient.removeQueries({ queryKey: ['containers'] });
+      await refetchAuth();
+    },
+  });
+
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-page text-ink flex items-center justify-center">
+        <div className="flex items-center gap-2 text-sm text-secondary">
+          <RefreshCw className="w-4 h-4 text-brand animate-spin" />
+          <span>인증 상태를 확인하는 중입니다...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <LoginScreen
+        onLogin={async () => {
+          await refetchAuth();
+          queryClient.invalidateQueries({ queryKey: ['containers'] });
+        }}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-page text-ink flex flex-col relative overflow-hidden select-none">
       {/* 4px Brand Accent Stripe Pinned to Top */}
@@ -533,6 +562,23 @@ export default function DashboardClient() {
           </div>
 
           <div className="flex items-center gap-2 select-none shrink-0 self-start md:self-auto">
+            <button
+              type="button"
+              onClick={() => setIsAdminSettingsOpen(true)}
+              className="flex items-center gap-2 bg-card hover:bg-subtle border border-line px-3 py-2 rounded-card text-xs font-semibold text-ink"
+            >
+              <KeyRound className="w-4 h-4 text-brand" />
+              인증 설정
+            </button>
+            <button
+              type="button"
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending}
+              className="flex items-center gap-2 bg-card hover:bg-subtle border border-line px-3 py-2 rounded-card text-xs font-semibold text-ink disabled:opacity-60"
+            >
+              <LogOut className="w-4 h-4 text-secondary" />
+              로그아웃
+            </button>
             {/* WebSocket Status Indicator */}
             <div className="flex items-center gap-2 bg-subtle border border-line px-3 py-2 rounded-card text-[10px] tracking-[0.05em] uppercase font-semibold">
               {isWsConnected ? (
@@ -848,6 +894,12 @@ export default function DashboardClient() {
           )}
         </main>
       </div>
+
+      {isAdminSettingsOpen && (
+        <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300 select-text">
+          <AdminSettingsPanel onClose={() => setIsAdminSettingsOpen(false)} />
+        </div>
+      )}
 
       {/* Live Log Terminal Modal */}
       {isLogModalOpen && logContainerId && (

@@ -570,3 +570,46 @@ dev 기본 네트워크 모드를 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-hos
 
 ### 후속
 - (open) `depends_on` 사이클/유효성 검증을 로드 시 추가한다.
+
+---
+
+## ADR-19: 관리자 인증과 공개 API 키 관리를 `kor-travel-geo` PR #399 패턴으로 맞춘다
+
+- 상태: accepted
+- 날짜: 2026-06-23
+- 결정자: human, AI agent
+
+### 컨텍스트
+
+Manager 대시보드는 Docker 컨테이너 시작·정지·설정 변경 API를 직접 호출한다. 기존에는 로컬 개발 편의를 위해 별도 인증이 없었지만, 운영 공개 주소와 CORS 설정이 들어온 뒤에는 관리자 화면과 API를 보호해야 한다. 사용자는 단일 관리자 계정(`admin`/`ad.min`)을 요구했고, 비밀번호와 API 키 원문은 git에 노출하지 않아야 했다. 또한 `kor-travel-geo` PR #399의 로그인·API 키 UX와 보안 패턴을 따르고, `kor-travel-geo` v2 API도 같은 VWorld 키 계약을 사용할 수 있어야 했다.
+
+### 결정
+
+단일 관리자 로그인은 프론트엔드 Origin 제한, PBKDF2 비밀번호 해시, HMAC 서명 `httpOnly` 세션 쿠키, DB 저장 세션 해시를 함께 사용한다. 로그인·로그아웃·실패 시도·API 키 생성/폐기는 DB 감사 로그로 남긴다. 공개 API 키는 VWorld 호환 32자리 영문/숫자 문자열로 생성하되, 원문은 생성 응답에서 1회만 보여 주고 DB에는 SHA-256 해시와 끝 6자리 힌트만 저장한다. 활성 키 해시는 짧은 TTL 메모리 캐시로 읽고 생성·폐기 시 무효화한다. 로그인된 신뢰 UI 요청은 외부 공개 API의 key 검증을 생략할 수 있는 공통 dependency를 제공한다. `X-Forwarded-*` 계열 헤더는 `KTDM_TRUSTED_PROXY_CIDRS`에 포함된 직접 peer에서 온 요청일 때만 감사 로그·rate-limit·secure cookie 판단에 사용한다.
+
+### 근거
+
+- 관리자 API는 같은 PC의 대시보드에서만 호출해야 하므로 세션 검증과 Origin 허용 목록을 함께 적용한다.
+- `X-Forwarded-*`는 클라이언트가 위조할 수 있으므로 신뢰 프록시 CIDR을 통과한 요청에서만 반영한다.
+- 세션 쿠키만 믿지 않고 DB의 세션 해시 상태도 조회하면 로그아웃·재로그인·폐기 처리가 서버 측에서 가능하다.
+- API 키 원문을 저장하지 않으면 DB 유출 시 직접 재사용 위험이 줄어든다.
+- 키 검증은 외부 공개 API에서 자주 호출될 수 있어 활성 해시 목록을 짧게 캐시하되, 관리 UI에서 키 상태가 바뀌면 즉시 무효화한다.
+- `kor-travel-geo` PR #399와 같은 env 계약을 compose에 반영하면 `kor-travel-geo` v2 공개 API와 관리자 UI가 같은 키 운용 방식을 쓸 수 있다.
+
+### 결과(긍정)
+
+- 대시보드 최초 진입 시 로그인 화면이 표시되고, 보호 API와 WebSocket은 유효한 세션이 있어야 접근된다.
+- 관리자 UI에서 최근 로그인 감사 기록과 공개 API 키 목록·생성·폐기를 확인할 수 있다.
+- `.env.example`에는 변수 이름과 예시만 있고, 실제 비밀번호 해시·세션 secret·proxy secret은 gitignore된 `.env`에만 남는다.
+- 공개 API 키 검증 로직을 새 외부 API endpoint에 dependency로 붙여 재사용할 수 있다.
+
+### 결과(부정)
+
+- 기존 인증 없는 API 호출 스크립트는 관리자 세션 또는 별도 공개 API 키 검증 경로에 맞춰 수정해야 한다.
+- 세션과 감사 로그 테이블은 현재 `Base.metadata.create_all` 기반으로 생성되며, 별도 마이그레이션 체계가 생기면 DDL 관리로 옮겨야 한다.
+- 현재 감사 로그는 IP와 User-Agent를 해시로 저장하므로 원문 기반 장애 분석은 할 수 없다.
+
+### 후속
+
+- (open) 공개 API surface가 실제로 추가될 때 `require_public_api_key` dependency를 붙이고 key 생략 허용 조건을 endpoint별로 검토한다.
+- (open) 운영 프록시 배치가 확정되면 `KTDM_FRONTEND_ORIGINS`, `KTDM_CORS_ALLOW_ORIGINS`, `KTG_ADMIN_PROXY_SECRET` 값을 배포 런북에 비공개로 연결한다.

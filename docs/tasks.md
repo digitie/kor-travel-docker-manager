@@ -20,6 +20,7 @@
 | **T-016** | 운영(prod) 배포 및 docker-manager 실행 검증 | `[x]` | 2026-06-20 | SSH 배포, venv --without-pip, 백엔드/프론트 기동·검증, 공개 라우팅은 인프라 |
 | **T-017** | 운영 스택 db→conc 기동·geo 실데이터 복원·의존성 DAG 재설정 | `[x]` | 2026-06-20 | 이미지 save/load, geo 31GB 복원, `depends_on` DAG(concierge geo 비의존) |
 | **T-018** | prod endpoint 문서 redaction | `[x]` | 2026-06-23 | `kor-travel-map` #508 동일 패턴 반영 |
+| **T-019** | 관리자 로그인·세션·감사 로그·공개 API 키 관리 | `[x]` | 2026-06-23 | `kor-travel-geo` PR #399 패턴 반영 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -54,6 +55,17 @@
 - [ ] mounts, networks, healthcheck, redacted env를 탭으로 분리
 - [ ] target 단위 `ensure --build` 버튼을 개발 모드에서 제공
 - [ ] 모바일/데스크톱에서 표와 상세 패널이 겹치지 않도록 반응형 검증
+
+### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
+
+- [x] 단일 관리자 계정(`admin`) 로그인 화면을 추가하고 실제 비밀번호는 gitignore된 `.env`의 `KTDM_ADMIN_PASSWORD_HASH`에 PBKDF2 해시로만 저장
+- [x] 관리자 세션을 HMAC 서명 `httpOnly` 쿠키와 DB 저장 세션 해시로 검증하고, 지정된 프론트엔드 Origin만 관리자 API를 호출하도록 제한
+- [x] 로그인 성공·실패·로그아웃·API 키 생성/폐기 이벤트를 `login_audit_events`에 기록하고 관리자 UI에서 조회
+- [x] VWorld 호환 32자리 공개 API 키를 UI 버튼으로 생성하고, 원문은 1회만 표시하며 DB에는 해시와 힌트만 저장
+- [x] 공개 API 키 활성 해시는 짧은 TTL 메모리 캐시로 읽고 생성·폐기 시 즉시 무효화
+- [x] 신뢰된 로그인 세션 요청은 공개 API 키 검증을 생략할 수 있도록 공통 dependency 제공
+- [x] `kor-travel-geo` PR #399의 v2 공개 API 키·관리자 인증 env 계약을 compose와 `.env.example`에 반영
+- [x] PR #399 사후 리뷰를 재확인해 미검증 `X-Forwarded-*` 신뢰 차단, 401 처리, 로그인 접근성, clipboard fallback을 보강
 
 ### T-013: 운영(prod) 공개 주소 `.env` 주입 및 CORS 환경변수화
 
