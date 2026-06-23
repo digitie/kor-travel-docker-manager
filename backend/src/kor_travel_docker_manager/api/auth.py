@@ -8,11 +8,9 @@ from kor_travel_docker_manager.services.auth_service import (
     AdminSessionContext,
     admin_username,
     check_login_rate_limit,
-    clear_login_failures,
     create_admin_session,
     expire_admin_cookie,
     record_login_audit_event,
-    record_login_failure,
     require_admin_session,
     require_frontend_origin,
     revoke_admin_session,
@@ -48,9 +46,8 @@ def login(payload: LoginRequest, request: Request, response: Response):
 
     result = verify_admin_password(payload.username, payload.password)
     if result == "misconfigured":
-        # 오설정(시크릿 미설정) 상태에서도 미인증 호출이 무제한으로 감사 행을 쓰지 못하도록
-        # 실패 카운트를 증가시킨다(상한 초과 시 위 rate-limit 분기에서 429로 차단됨).
-        record_login_failure(request)
+        # 실패 사유 'misconfigured'/'invalid_credentials' 감사 행을 check_login_rate_limit 가
+        # durable 카운트로 집계하므로 별도 실패 카운터 기록이 필요 없다.
         record_login_audit_event(
             request,
             event_type="login",
@@ -61,7 +58,6 @@ def login(payload: LoginRequest, request: Request, response: Response):
         )
         raise HTTPException(status_code=503, detail="AUTH_MISCONFIGURED")
     if result != "ok":
-        record_login_failure(request)
         record_login_audit_event(
             request,
             event_type="login",
@@ -72,7 +68,6 @@ def login(payload: LoginRequest, request: Request, response: Response):
         )
         raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
 
-    clear_login_failures(request)
     old_session_hash = revoke_admin_session(request.cookies.get(SESSION_COOKIE_NAME), request)
     session = create_admin_session(request, response, admin_username())
     record_login_audit_event(

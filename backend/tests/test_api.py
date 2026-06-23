@@ -154,6 +154,104 @@ def test_client_ip_trusts_forwarded_only_from_trusted_proxy():
     assert _client_ip(untrusted) == "203.0.113.50"
 
 
+def test_trusted_proxy_requires_secret_header_when_configured(monkeypatch):
+    # KTDM_TRUSTED_PROXY_SECRET 설정 시, loopback이라도 일치하는 시크릿 헤더가 있어야 XFF를 신뢰한다.
+    from starlette.requests import Request
+
+    from kor_travel_docker_manager.services.auth_service import _client_ip
+
+    def make_request(headers):
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/",
+                "headers": headers,
+                "client": ("127.0.0.1", 40000),
+                "scheme": "http",
+                "server": ("testserver", 80),
+            }
+        )
+
+    monkeypatch.setenv("KTDM_TRUSTED_PROXY_SECRET", "s3cr3t-proxy-value")
+    # 시크릿 헤더 없음 → XFF 무시, 실제 loopback client.host 사용
+    no_secret = make_request([(b"x-forwarded-for", b"203.0.113.10")])
+    assert _client_ip(no_secret) == "127.0.0.1"
+    # 올바른 시크릿 헤더 → XFF 신뢰
+    with_secret = make_request(
+        [
+            (b"x-forwarded-for", b"203.0.113.10"),
+            (b"x-ktdm-proxy-secret", b"s3cr3t-proxy-value"),
+        ]
+    )
+    assert _client_ip(with_secret) == "203.0.113.10"
+
+
+def test_login_rate_limit_durable_via_audit_log():
+    # 인메모리 카운터가 아니라 감사 로그에서 실패를 집계하므로 재시작/멀티워커에서도 유지된다.
+    from starlette.requests import Request
+
+    import kor_travel_docker_manager.database as db
+    from kor_travel_docker_manager._time import utcnow
+    from kor_travel_docker_manager.models import LoginAuditEvent
+    from kor_travel_docker_manager.services.auth_service import (
+        LOGIN_FAILURE_LIMIT,
+        check_login_rate_limit,
+    )
+
+    ip = "198.51.100.123"
+    req = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/auth/login",
+            "headers": [],
+            "client": (ip, 55555),
+            "scheme": "http",
+            "server": ("testserver", 80),
+        }
+    )
+    client_hash = hashlib.sha256(ip.encode("utf-8")).hexdigest()
+
+    with db.get_db_session() as s:
+        s.query(LoginAuditEvent).filter(LoginAuditEvent.client_ip_hash == client_hash).delete()
+        s.commit()
+
+    assert check_login_rate_limit(req) is None
+
+    with db.get_db_session() as s:
+        for i in range(LOGIN_FAILURE_LIMIT):
+            s.add(
+                LoginAuditEvent(
+                    audit_event_id=f"rl-fail-{i}",
+                    event_type="login",
+                    outcome="denied",
+                    reason="invalid_credentials",
+                    client_ip_hash=client_hash,
+                    occurred_at=utcnow(),
+                )
+            )
+        s.commit()
+
+    assert check_login_rate_limit(req) is not None
+
+    # 성공 이벤트 이후에는 카운터가 리셋되어 다시 허용되어야 한다.
+    with db.get_db_session() as s:
+        s.add(
+            LoginAuditEvent(
+                audit_event_id="rl-success",
+                event_type="login",
+                outcome="succeeded",
+                reason="authenticated",
+                client_ip_hash=client_hash,
+                occurred_at=utcnow(),
+            )
+        )
+        s.commit()
+
+    assert check_login_rate_limit(req) is None
+
+
 def test_ws_status_requires_session():
     client.cookies.clear()
     with pytest.raises(WebSocketDisconnect) as excinfo:
