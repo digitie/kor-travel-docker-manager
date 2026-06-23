@@ -4,6 +4,13 @@
 
 ---
 
+## 2026-06-23 (prod endpoint 문서 redaction — T-018)
+
+- `kor-travel-map` #508과 같은 prod endpoint 노출 패턴이 이 저장소에도 있는지 확인했다. 추적 파일 기준으로 `docs/journal.md`에 남아 있던 실제 운영 도메인 표현을 placeholder로 치환했다.
+- gitignore된 루트 `.env`, `frontend/.env.production`, `docs/prod-access.local.md`에는 실제 값이 남아 있으나, 저장소 커밋 대상이 아니므로 정책 범위 안으로 확인했다.
+
+---
+
 ## 2026-06-22 — kor-travel-map 서비스 env rename + prod 도메인 정합 (by claude)
 
 `kor-travel-map`이 패키지 rename(`KRTOUR_MAP_*`→`KOR_TRAVEL_MAP_*`, `krtour.map_dagster`→
@@ -20,13 +27,13 @@
   + geo 추가. map admin은 BFF 프록시가 아니라 브라우저 직접 호출이라 cross-origin prod 도메인이 필수.
 - **API CORS**: prod frontend origin(`KTDM_PROD_URL_MAP`) + localhost 허용.
 - 검증: `docker compose config -q` VALID. 렌더 확인 — NEXT_PUBLIC=map-api/map-dagster/geo-api 도메인,
-  CORS=`["https://map.digitie.mywire.org",...]`, object public=s3-api/krtour-map.
+  CORS=`["https://<map-host>",...]`, object public=s3-api/krtour-map.
 
 ---
 
 ## 2026-06-20 (운영 스택 db→conc 기동, geo 실데이터 복원, 의존성 DAG 재설정 — T-017)
 
-- **운영 스택 기동(db→conc, 도메인 정합성 확인)**: 운영 호스트에 dev의 빌드된 이미지를 `docker save | ssh docker load`로 전송(geo ~4.3GB, concierge ~4.5GB, GDAL 재빌드 회피)하고 `ktdctl`로 하나씩 기동했다. db·storage·gra·cadv·prom·geo·conc 각 단계에서 해당 `*.digitie.mywire.org` 도메인이 503→정상(200/307/406 등)으로 전환됨을 확인했다. 매니저 API가 running 11/18을 반영.
+- **운영 스택 기동(db→conc, 도메인 정합성 확인)**: 운영 호스트에 dev의 빌드된 이미지를 `docker save | ssh docker load`로 전송(geo ~4.3GB, concierge ~4.5GB, GDAL 재빌드 회피)하고 `ktdctl`로 하나씩 기동했다. db·storage·gra·cadv·prom·geo·conc 각 단계에서 해당 `<service-prod-host>` 계열 도메인이 503→정상(200/307/406 등)으로 전환됨을 확인했다. 매니저 API가 running 11/18을 반영.
   - rustfs 크래시(root 소유 데이터 디렉터리 Permission denied)는 digitie 소유 쓰기가능 디렉터리로 `RUSTFS_DATA_DIR`를 전환해 해결(sudo 불필요).
   - geo는 앱 스키마(ops/public/x_extension)와 `pg_stat_statements`가 필요해 처음엔 data-less 기동했고, concierge는 기동 시 자동 마이그레이션(17테이블)으로 스키마 불필요.
 - **geo 실데이터 복원**: dev `kor_travel_geo`(31GB)를 `pg_dump -Fc | ssh pg_restore`로 운영 DB에 복원해 지오코딩 데이터를 살렸다(운영 geo DB를 drop/recreate 후 전체 schema+data 복원).

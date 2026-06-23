@@ -19,6 +19,7 @@
 | **T-015** | 프론트 Tailwind v4 + StyleSeed 전면 전환·전역 오류 복구 boundary | `[x]` | 2026-06-20 | geo PR #391 반영, `@theme` 토큰, `DESIGN-RULES.md` |
 | **T-016** | 운영(prod) 배포 및 docker-manager 실행 검증 | `[x]` | 2026-06-20 | SSH 배포, venv --without-pip, 백엔드/프론트 기동·검증, 공개 라우팅은 인프라 |
 | **T-017** | 운영 스택 db→conc 기동·geo 실데이터 복원·의존성 DAG 재설정 | `[x]` | 2026-06-20 | 이미지 save/load, geo 31GB 복원, `depends_on` DAG(concierge geo 비의존) |
+| **T-018** | prod endpoint 문서 redaction | `[x]` | 2026-06-23 | `kor-travel-map` #508 동일 패턴 반영 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
