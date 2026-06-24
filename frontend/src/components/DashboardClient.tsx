@@ -29,7 +29,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import LoginScreen from './LoginScreen';
-import { AuthMe, BACKEND_URL, apiJson, apiWsUrl, setUnauthorizedHandler } from '@/lib/api';
+import { ApiError, AuthMe, BACKEND_URL, apiJson, apiWsUrl, setUnauthorizedHandler } from '@/lib/api';
 
 // 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
 const _unusedForm = typeof useForm !== 'undefined';
@@ -184,7 +184,18 @@ export default function DashboardClient() {
     refetch: refetchAuth,
   } = useQuery<AuthMe>({
     queryKey: ['auth-me'],
-    queryFn: () => apiJson<AuthMe>('/api/v1/auth/me', { redirectOnUnauthorized: false }),
+    queryFn: async (): Promise<AuthMe> => {
+      try {
+        return await apiJson<AuthMe>('/api/v1/auth/me', { redirectOnUnauthorized: false });
+      } catch (error) {
+        // 미인증(401)은 오류가 아니라 유효한 상태로 취급한다. throw하면 react-query가 직전
+        // 성공 데이터(authenticated:true)를 유지해 로그아웃/세션만료 후에도 대시보드가 남는다.
+        if (error instanceof ApiError && error.status === 401) {
+          return { authenticated: false, username: '', expires_at: '' };
+        }
+        throw error;
+      }
+    },
     retry: false,
     refetchInterval: false,
     staleTime: 60_000,
