@@ -575,3 +575,44 @@ def test_inspect_container_success(mock_docker_service):
     response = client.get("/api/v1/containers/kor-travel-geo-postgresql/inspect")
     assert response.status_code == 200
     assert response.json()["config"]["env"] == ["POSTGRES_PASSWORD=<redacted>"]
+
+
+def test_rate_limited_login_returns_retry_after_header():
+    # 429 응답은 Retry-After 헤더를 포함해야 한다(HTTPException headers로 전달).
+    # 주의: 이 테스트는 마지막에 두고 testclient 버킷을 정리해 후속 영향이 없게 한다.
+    import kor_travel_docker_manager.database as _db
+    from kor_travel_docker_manager._time import utcnow as _utcnow
+    from kor_travel_docker_manager.models import LoginAuditEvent
+
+    client_hash = hashlib.sha256(b"testclient").hexdigest()
+
+    def _clear():
+        with _db.get_db_session() as s:
+            s.query(LoginAuditEvent).filter(LoginAuditEvent.client_ip_hash == client_hash).delete()
+            s.commit()
+
+    _clear()
+    with _db.get_db_session() as s:
+        for i in range(5):
+            s.add(
+                LoginAuditEvent(
+                    audit_event_id=f"ra-fail-{i}",
+                    event_type="login",
+                    outcome="denied",
+                    reason="invalid_credentials",
+                    client_ip_hash=client_hash,
+                    occurred_at=_utcnow(),
+                )
+            )
+        s.commit()
+
+    client.cookies.clear()
+    resp = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "ad.min", "next": "/"},
+    )
+    assert resp.status_code == 429
+    assert resp.headers.get("retry-after") is not None
+    assert int(resp.headers["retry-after"]) >= 1
+
+    _clear()

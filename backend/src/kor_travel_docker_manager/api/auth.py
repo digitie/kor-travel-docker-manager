@@ -41,8 +41,13 @@ def login(payload: LoginRequest, request: Request, response: Response):
             reason="rate_limited",
             next_path=next_path,
         )
-        response.headers["Retry-After"] = str(retry_after)
-        raise HTTPException(status_code=429, detail="RATE_LIMITED")
+        # Retry-After는 HTTPException의 headers로 전달해야 한다. 주입된 response 객체에 설정해도
+        # 예외 발생 시 응답에 반영되지 않아 클라이언트가 재시도 시점을 알 수 없다.
+        raise HTTPException(
+            status_code=429,
+            detail="RATE_LIMITED",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     result = verify_admin_password(payload.username, payload.password)
     if result == "misconfigured":
