@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-06-24 (concierge PR #127 참고: 공개도메인 Secure 쿠키 보강 — T-023)
+
+- 형제 프로젝트 `kor-travel-concierge` PR #127(공개 도메인 로그인 403 INVALID_ORIGIN — 운영 TLS 종단 프록시(라우터 HAProxy)가 `X-Forwarded-Proto: https` 미주입 → same-origin 재구성이 http가 돼 https Origin과 불일치 → 신뢰 origin 화이트리스트로 보완)를 참고해 동일 계열 문제를 점검·보강했다.
+- 이 repo의 origin(CSRF) 검사는 concierge와 달리 **헤더 재구성이 아니라 화이트리스트(`KTDM_FRONTEND_ORIGINS`) 대조** 방식이라 **로그인 403 버그가 없음**을 실제 공개도메인 브라우저 E2E(Playwright, `https://manager.…`)로 확인했다(로그인→대시보드 18컨테이너·WS 실시간 동작, `me 401(초기)→login 200→me 200`).
+- 다만 동일한 프록시-proto 문제로 `_is_https`가 내부 http로 판단해 **세션 쿠키 `Secure` 플래그가 누락**되는 약점이 남아 있었다. `_is_https`를 보강: 신뢰 `X-Forwarded-Proto`/직접 https가 아니어도 **브라우저 Origin이 설정된 https 공개 origin(`allowed_frontend_origins`)과 일치하면 https로 간주**해 `Secure`를 부여한다. 브라우저 Origin을 화이트리스트와 대조하므로 안전하고, LAN http origin은 영향 없으며 prod `.env` 변경이 필요 없다(기존 allowlist 재사용).
+- 단위 테스트 추가(https 공개 origin→True, http LAN→False, 미등록 https→False, 직접 https→True). 검증: 백엔드 `ruff`(클린)·`pytest`(39 passed), prod 배포 후 실제 브라우저 로그인 재검증.
+
+---
+
 ## 2026-06-24 (prod 풀 라이브 e2e + Retry-After 버그 수정 — T-022)
 
 - n150(prod)에서 docker 컨테이너를 변경하지 않는 범위로 풀 라이브 e2e(63→65 케이스: health·unauth 게이트·CORS·RBAC(컨테이너 무변경)·로그인 음성/검증·next sanitize·인증 읽기전용·감사·키 lifecycle·WebSocket·세션 보안·AUTH-6 레이트리밋·프론트)를 수행했다. stdlib urllib + websockets 기반 e2e 스크립트(`/tmp/prod_e2e.py`, repo 미커밋)로 venv python 실행.

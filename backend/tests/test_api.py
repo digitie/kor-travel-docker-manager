@@ -616,3 +616,35 @@ def test_rate_limited_login_returns_retry_after_header():
     assert int(resp.headers["retry-after"]) >= 1
 
     _clear()
+
+
+def test_is_https_via_configured_public_origin(monkeypatch):
+    # TLS 종단 프록시가 신뢰 X-Forwarded-Proto를 주입하지 않아도, 브라우저 Origin이 설정된
+    # https 공개 origin과 일치하면 https로 간주(세션 쿠키 Secure 플래그)해야 한다.
+    from starlette.requests import Request
+
+    from kor_travel_docker_manager.services.auth_service import _is_https
+
+    monkeypatch.setenv("KTDM_FRONTEND_ORIGINS", "https://manager.example.org,http://localhost:12905")
+
+    def make_request(scheme, origin):
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/",
+                "scheme": scheme,
+                "headers": [(b"origin", origin.encode())] if origin else [],
+                "client": ("192.168.1.1", 40000),  # non-loopback: X-Forwarded-Proto 미신뢰
+                "server": ("testserver", 80),
+            }
+        )
+
+    # http 연결이지만 브라우저 Origin이 설정된 https 공개 origin -> https로 간주
+    assert _is_https(make_request("http", "https://manager.example.org")) is True
+    # http LAN origin -> https 아님
+    assert _is_https(make_request("http", "http://localhost:12905")) is False
+    # 화이트리스트에 없는 https origin -> 거부(위조 방지)
+    assert _is_https(make_request("http", "https://evil.example.org")) is False
+    # 직접 https 연결 -> https
+    assert _is_https(make_request("https", None)) is True
