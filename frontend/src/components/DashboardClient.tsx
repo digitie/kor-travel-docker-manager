@@ -314,8 +314,10 @@ export default function DashboardClient() {
 
     let ws: WebSocket;
     let reconnectTimeout: NodeJS.Timeout;
+    let cancelled = false;
 
     const connectWS = () => {
+      if (cancelled) return;
       const wsUrl = apiWsUrl('/api/v1/ws/status');
       ws = new WebSocket(wsUrl);
 
@@ -365,7 +367,11 @@ export default function DashboardClient() {
         // Multi-setState is fine in standard handlers, but let's reset cleanly
         setIsWsConnected(false);
         setWsContainers(null);
-        reconnectTimeout = setTimeout(connectWS, 3000); // Retry every 3 seconds
+        // 미인증 전환/언마운트(cancelled) 후에는 재연결하지 않는다 — 로그아웃 시 서버가 WS를
+        // 닫으면서 cleanup 이후 onclose가 재연결을 거는 403 무한 루프를 방지.
+        if (!cancelled) {
+          reconnectTimeout = setTimeout(connectWS, 3000); // Retry every 3 seconds
+        }
       };
 
       ws.onerror = (err) => {
@@ -377,6 +383,7 @@ export default function DashboardClient() {
     connectWS();
 
     return () => {
+      cancelled = true;
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
