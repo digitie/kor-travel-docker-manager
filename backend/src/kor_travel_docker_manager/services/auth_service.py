@@ -476,7 +476,18 @@ def _is_https(request: Request) -> bool:
     forwarded = request.headers.get("x-forwarded-proto") if _request_from_trusted_proxy(request) else None
     if forwarded:
         return forwarded.split(",")[0].strip().lower() == "https"
-    return request.url.scheme == "https"
+    if request.url.scheme == "https":
+        return True
+    # TLS 종단 프록시(라우터의 HAProxy 등)가 신뢰되는 X-Forwarded-Proto를 주입하지 않아 백엔드에는
+    # http로 보여도, 브라우저 Origin이 설정된 https 공개 origin(allowed_frontend_origins)과 일치하면
+    # https 요청으로 간주해 세션 쿠키에 Secure 플래그를 부여한다. 브라우저가 보낸 Origin을
+    # 화이트리스트와 대조하므로 위조 위험이 없고, LAN http origin은 https가 아니라 영향이 없다.
+    origin = request.headers.get("origin")
+    if origin:
+        normalized = _normalize_origin(origin)
+        if normalized.startswith("https://") and normalized in allowed_frontend_origins():
+            return True
+    return False
 
 
 def _request_from_trusted_proxy(request: Request) -> bool:
