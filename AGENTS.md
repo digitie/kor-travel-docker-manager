@@ -106,6 +106,28 @@
 3. `docs/architecture.md` — 백엔드 + 프론트엔드 + Docker 구조 설계
 4. `docs/decisions.md` — ADR 기록
 5. `docs/tasks.md` — 백로그 작업 추적
+6. `docs/deploy-runbook.local.md` — (있으면) prod 배포/운영에서 반복된 실수와 민감 접속 정보 정본 런북. `*.local.md` gitignore 대상이라 git으로 전파되지 않으므로 **각 worktree에 수동 복사**해 둔다. prod 배포·운영 작업 전 필독.
+
+---
+
+## prod 배포 & 보안 감사
+
+**prod(n150) 배포 절차·접속·반복 함정의 정본은 `docs/deploy-runbook.local.md`** (gitignore된 로컬 전용, 민감정보 포함)에 있다. 배포 전 반드시 읽고, 특히 **배포 후 공개도메인 브라우저 로그인→로그아웃 전환 검증**을 빼먹지 않는다. (이 런북은 커밋되지 않으므로 각 git worktree에도 같은 경로로 복사해 둔다.)
+
+### remote 푸시 전 보안 감사 (필수 절차)
+
+`git push` / PR 생성 직전에 아래를 수행한다(WSL bash). **하나라도 걸리면 푸시 중지** 후 원인 제거.
+
+1. **스테이징 파일 점검**: `git diff --cached --name-only`에 `*.local.md`, `.env`(`.env.example` 제외), `.env.production`, `prod-access*`, `docker-compose.override.yml`, 키/시크릿 파일이 **없어야** 한다.
+2. **diff 비밀 스캔**: 커밋 대상 diff에서 일반 비밀 패턴을 검색한다(이 파일은 커밋되므로 **여기에 실제 호스트/도메인/비밀번호 같은 구체 값을 적지 않는다**).
+   ```bash
+   git diff --cached -U0 | grep -nEi '(api[_-]?key|secret|password|passwd|token|pbkdf2_sha256|AKIA[0-9A-Z]{16}|BEGIN [A-Z ]*PRIVATE KEY)' && echo '⛔ 의심 항목 발견 — 푸시 중지' || echo '✅ 일반 비밀 패턴 없음'
+   ```
+   - 매칭이 나오면 placeholder인지 실제 값인지 확인하고, 실제 값이면 제거하거나 `.local`/`.env`로 옮긴다.
+   - **프로젝트별 민감 문자열**(prod 호스트 IP·도메인·SSH 사용자·관리자 비밀번호 등)은 `docs/deploy-runbook.local.md`의 "푸시 전 추가 스캔" 패턴으로도 함께 검색한다(그 값들은 런북에만 두고 커밋 파일에는 절대 적지 않는다).
+3. **`.env.example`은 placeholder만** — 실제 키가 들어가지 않았는지 확인한다.
+4. **신규 파일이 비밀 운반체가 아닌지** — 덤프·로그·백업(`*.log`, `docker compose config`/`.env` 출력 등)이 섞이지 않았는지 확인한다.
+5. 통과하면 푸시. 위 절차는 생략하지 말고 매 푸시 전에 실행한다.
 
 ---
 
@@ -134,3 +156,5 @@
 10. **Windows에서 개발 명령 실행 금지**: `git`과 Playwright E2E를 제외한 패키지 설치, Docker, 서버 실행, 테스트, 빌드, 파일 검색 명령을 Windows PowerShell/CMD에서 실행하지 않는다.
 11. **WSL에서 git 실행 금지**: 버전 관리 작업은 Windows 호스트에서만 수행한다.
 12. **Playwright E2E 실행 위치 혼선 금지**: Playwright E2E는 Windows 호스트에서만 실행하고, WSL에서 실행하지 않는다.
+13. **remote 푸시 전 보안 감사 생략 금지**: `git push`(특히 PR 생성 직전) 전에 위 "remote 푸시 전 보안 감사" 절차를 수행해, 비밀(API 키·세션 시크릿·비밀번호·prod 호스트/도메인 등)이나 `*.local.md`·`.env*`가 스테이징/커밋에 섞이지 않았는지 확인한다. 통과 전에는 푸시하지 않는다.
+14. **배포 후 검증 생략 금지**: prod 재배포 후 `/health`·`:12905` 200만 보지 말고, 공개도메인 **브라우저 로그인→대시보드→로그아웃 전환(+WS 재연결 루프 없음)** 까지 확인한다(반복적으로 깨진 항목). 절차·근본원인·복구는 `docs/deploy-runbook.local.md` 참조.
