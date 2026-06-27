@@ -31,6 +31,23 @@ def get_env_path() -> str:
     )
 
 
+def get_override_path() -> str:
+    """prod 전용 docker-compose.override.yml 경로.
+
+    base compose 파일과 같은 디렉터리에 있으면 함께 적용한다. dev에는 이 파일이
+    없어 base만 쓰이고(npm run dev 유지), prod에는 있어 prod build·env_file·command
+    가드가 반영된다. `docker compose up`을 dir에서 직접 호출하면 auto-load되지만,
+    이 서비스는 명시적 `-f base`로 호출하므로 여기서 override를 명시적으로 더해야
+    한다(미적용 시 concierge-ui가 dev 모드+빈 env로 떠 로그인이 죽는다).
+    """
+    override = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE")
+    if override:
+        return override
+    return os.path.join(
+        os.path.dirname(get_compose_path()), "docker-compose.override.yml"
+    )
+
+
 class ComposeService:
     def build_command(self, args: Sequence[str]) -> list[str]:
         command = ["docker", "compose"]
@@ -38,6 +55,9 @@ class ComposeService:
         if os.path.exists(env_path):
             command.extend(["--env-file", env_path])
         command.extend(["-f", get_compose_path()])
+        override_path = get_override_path()
+        if os.path.exists(override_path):
+            command.extend(["-f", override_path])
         command.extend(args)
         return command
 
