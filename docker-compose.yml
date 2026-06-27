@@ -552,10 +552,13 @@ services:
     command:
     - sh
     - -c
+    # PinVi realtime broker is process-local until a shared broker lands.
+    # Keep the API at one worker unless the deployment has a broker-compatible override.
     - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PINVI_API_PORT:-12801}
-      --workers 2
+      --workers ${PINVI_API_WORKERS:-1}
     environment:
       PINVI_ENVIRONMENT: local
+      PINVI_API_WORKERS: ${PINVI_API_WORKERS:-1}
       PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}

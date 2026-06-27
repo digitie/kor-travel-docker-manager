@@ -27,6 +27,7 @@
 | **T-018** | 프로젝트명 및 CLI 명령 전환 | 2026-06-13 | `kor-travel-docker-manager`, `ktdctl` 기준으로 변경 |
 | **T-222** | 관측 target 개별 분리 및 포트 재배치 | 2026-06-13 | `gra`, `cadv`, `prom` target과 `12205`, `12301`, `12401` 포트 반영 |
 | **T-224** | 과거 서비스명과 공용 인프라 명칭 정리 | 2026-06-15 | PinVi 및 `kor-travel-*` 기준 반영 |
+| **T-026** | PinVi API worker 기본값 환경변수화 | 2026-06-28 | `PINVI_API_WORKERS=1` 기본값으로 process-local WebSocket broadcast 제약 반영 |
 
 ---
 
@@ -165,3 +166,9 @@
 - [x] PinVi 전용 database, role, bucket, 환경변수 기본값을 `pinvi` 및 `PINVI_*` 기준으로 정리
 - [x] 공용 RustFS와 관측 컨테이너 이름을 `kor-travel-*` 기준으로 정리
 - [x] 문서, 테스트, 설정 파일에서 과거 서비스명 잔여 표기를 제거
+
+### T-026: PinVi API worker 기본값 환경변수화
+
+- [x] `pinvi-api` compose command의 hardcoded `--workers 2`를 `PINVI_API_WORKERS` 환경변수로 대체
+- [x] shared broker 도입 전 PinVi WebSocket broadcast broker가 process-local이라는 운영 제약을 문서화
+- [x] `.env.example`에 `PINVI_API_WORKERS=1` 기본값 추가
