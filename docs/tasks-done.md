@@ -28,6 +28,7 @@
 | **T-222** | 관측 target 개별 분리 및 포트 재배치 | 2026-06-13 | `gra`, `cadv`, `prom` target과 `12205`, `12301`, `12401` 포트 반영 |
 | **T-224** | 과거 서비스명과 공용 인프라 명칭 정리 | 2026-06-15 | PinVi 및 `kor-travel-*` 기준 반영 |
 | **T-026** | PinVi API worker 기본값 환경변수화 | 2026-06-28 | `PINVI_API_WORKERS=1` 기본값으로 process-local WebSocket broadcast 제약 반영 |
+| **T-027** | PinVi public API URL·CORS origin 환경변수화 | 2026-06-28 | prod public Web/API origin을 gitignore `.env`에서 주입하도록 변경 |
 
 ---
 
@@ -172,3 +173,9 @@
 - [x] `pinvi-api` compose command의 hardcoded `--workers 2`를 `PINVI_API_WORKERS` 환경변수로 대체
 - [x] shared broker 도입 전 PinVi WebSocket broadcast broker가 process-local이라는 운영 제약을 문서화
 - [x] `.env.example`에 `PINVI_API_WORKERS=1` 기본값 추가
+
+### T-027: PinVi public API URL·CORS origin 환경변수화
+
+- [x] `pinvi-web` build/runtime의 API URL을 `PINVI_PUBLIC_API_URL`로 주입 가능하게 변경
+- [x] `pinvi-api` CORS 허용 origin을 `PINVI_CORS_ALLOWED_ORIGINS`로 주입 가능하게 변경
+- [x] dev 기본값은 로컬 `127.0.0.1` API/Web origin으로 유지하고 prod 실제 도메인은 gitignore `.env`에만 두도록 문서화
