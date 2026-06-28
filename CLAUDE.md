@@ -30,7 +30,7 @@ f:\dev\kor-travel-docker-manager\
 
 ## 로컬 개발 및 빠른 검증 명령
 
-아래 개발/검증/Docker/서버 명령은 WSL에서 실행한다. `git` 명령은 Windows 호스트에서만 실행하고, Playwright E2E는 명시 예외로 Windows 호스트에서 실행한다.
+아래 개발/검증/Docker/서버/버전 관리 명령은 WSL을 포함한 Linux shell에서 실행한다. `git`과 CodeGraph도 Linux에서만 실행하며, Playwright E2E는 우선 n150 Linux 운영 환경에서 실행하고 불가능할 때만 Windows 호스트 실행을 예외로 허용한다.
 
 ### 백엔드 (FastAPI)
 ```bash

@@ -16,14 +16,15 @@
 
 ### 1.1 명령 실행 위치 강제
 
-이 저장소의 기본 개발 환경은 WSL이다. git과 Playwright E2E를 제외한 모든 개발/검증/서버/Docker 명령은 WSL에서 실행한다.
+이 저장소의 기본 개발 환경은 WSL을 포함한 Linux shell이다. 개발, 검증, 서버, Docker, 버전 관리, CodeGraph 작업은 모두 Linux에서 실행한다.
 
 | 실행 위치 | 실행 대상 |
 |---|---|
-| WSL | `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `ktdctl`, `ruff`, `pytest`, `npm run type-check`, `npm run build`, 서버 실행, 파일 검색 |
-| Windows 호스트 | `git` 전체, Playwright E2E (`npx playwright test`, Playwright browser install 포함) |
+| Linux/WSL | `git`, `codegraph`, `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `ktdctl`, `ruff`, `pytest`, `npm run type-check`, `npm run build`, 서버 실행, 파일 검색 |
+| n150 Linux | Playwright E2E 우선 실행 (`npx playwright test`, Playwright browser install 포함) |
+| Windows 호스트 | n150에서 Playwright E2E 실행이 불가능할 때의 예외 실행 |
 
-Windows 경로 `F:\dev\kor-travel-docker-manager`는 WSL에서 `/mnt/f/dev/kor-travel-docker-manager`로 접근한다. 문서 예시가 Windows 경로를 보여 주더라도 git과 Playwright E2E를 제외한 명령은 WSL 경로에서 실행한다.
+Windows 경로 `F:\dev\kor-travel-docker-manager`는 WSL에서 `/mnt/f/dev/kor-travel-docker-manager`로 접근한다. 문서 예시가 Windows 경로를 보여 주면 Linux 경로로 변환해 실행한다.
 
 ---
 
@@ -151,13 +152,13 @@ npm run dev
    - Claude Code: `F:\dev\kor-travel-docker-manager-claude`
    - Google Antigravity: `F:\dev\kor-travel-docker-manager-antigravity`
 2. **코드 갱신 및 브랜치 작성**:
-   Windows 호스트에서 실행한다.
+   Linux shell에서 실행한다.
    ```bash
    git fetch origin
    git switch -c agent/<topic> main
    ```
 3. **CodeGraph 인덱스 동기화**:
-   WSL에서 실행한다.
+   Linux shell에서 실행한다.
    ```bash
    codegraph sync
    codegraph status
@@ -167,7 +168,7 @@ npm run dev
    - 백엔드: `poetry run ruff check .` 및 `poetry run pytest`
    - 프론트엔드: `npm run type-check` 및 `npm run build`
 5. **Playwright E2E 확인**:
-   Windows 호스트에서 실행한다. Playwright E2E는 실제 Windows 브라우저 환경을 검증하는 예외 작업이므로 WSL에서 실행하지 않는다.
+   우선 n150 Linux 운영 환경에서 실행한다. n150에서 브라우저/그래픽/권한 문제로 실행할 수 없을 때만 Windows 호스트에서 예외 실행하고, 예외 사유를 작업 기록에 남긴다.
    ```bash
    npx playwright test
    ```
