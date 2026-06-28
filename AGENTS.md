@@ -85,19 +85,20 @@
 
 ## 개발 환경 정책
 
-개발 환경은 Linux 기반이며, Windows 호스트에서는 WSL (Windows Subsystem for Linux)을 사용하여 백엔드/프론트엔드 등을 구동한다. 단, git 및 소스코드 버전 관리는 Windows 호스트에서 직접 진행한다.
+개발 환경은 Linux 기반이며, Windows 호스트에서는 WSL (Windows Subsystem for Linux)을 사용한다. 개발, 검증, 버전 관리, CodeGraph 인덱싱은 모두 Linux 환경에서 수행한다.
 
 - **명령 실행 위치 강제**:
-  - `git` 관련 명령(`git status`, `git fetch`, `git switch`, `git add`, `git commit`, `git push` 등)은 Windows 호스트에서만 실행한다.
-  - `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `ktdctl`, `ruff`, `pytest`, 빌드, 서버 실행, 파일 검색 등 git이 아닌 모든 개발/검증 명령은 WSL에서 실행한다.
-  - Playwright E2E는 명시 예외로 Windows 호스트에서 실행한다. 브라우저/그래픽/확장 연동 상태를 실제 Windows 사용자 환경 기준으로 검증하기 위함이다.
-  - 문서 예시에서 Windows 경로(`F:\...`)가 나오더라도 git과 Playwright E2E를 제외한 실행 명령은 WSL 경로(`/mnt/f/...`)로 변환해 실행한다.
+  - `git` 관련 명령(`git status`, `git fetch`, `git switch`, `git add`, `git commit`, `git push` 등)은 WSL을 포함한 Linux shell에서만 실행한다.
+  - `python`, `poetry`, `pip`, `node`, `npm`, `docker`, `docker compose`, `ktdctl`, `ruff`, `pytest`, 빌드, 서버 실행, 파일 검색 등 모든 개발/검증 명령도 Linux shell에서만 실행한다.
+  - CodeGraph 인덱스 생성/동기화(`codegraph init -i`, `codegraph sync`)도 Linux shell에서만 실행한다. 과거 인덱스 작업을 재수행하거나 복구할 때도 Windows에서 실행하지 않는다.
+  - Playwright E2E는 우선 n150 Linux 운영 환경에서 실행한다. n150에서 브라우저/그래픽/권한 문제로 실행이 불가능한 경우에만 Windows 호스트 실행을 예외로 허용하고, 그 사유를 작업 기록에 남긴다.
+  - 문서 예시에서 Windows 경로(`F:\...`)가 나오면 Linux 경로(`/mnt/f/...`)로 변환해 실행한다.
 
 - **에이전트별 고정 worktree**:
   - Google Antigravity: `F:\dev\kor-travel-docker-manager-antigravity`
   - Claude Code: `F:\dev\kor-travel-docker-manager-claude`
   - ChatGPT Codex: `F:\dev\kor-travel-docker-manager-codex`
-- Windows 호스트에서 각 worktree 진입 시 `git fetch` 후 `git switch -c agent/<topic> main`으로 새 브랜치를 따서 작업한다.
+- Linux shell에서 각 worktree의 `/mnt/f/...` 경로로 진입해 `git fetch` 후 `git switch -c agent/<topic> main`으로 새 브랜치를 따서 작업한다.
 - CodeGraph 인덱스는 각 worktree에서 최초 1회 `codegraph init -i`로 생성한 후, 작업 시작 시 `codegraph sync`를 수행한다. `.codegraph/`는 gitignore 대상이다.
 
 작업 전에 반드시 다음을 읽는다:
@@ -153,8 +154,8 @@
 7. **공용 인프라 설정 분산 금지**: PostgreSQL/RustFS의 Docker 생명주기, 포트, credential, bucket 기본값은 이 저장소에서 관리한다. 하위 프로젝트 저장소에 별도 정지/재시작 스크립트를 다시 만들지 않는다.
 8. **Docker target 임시 하드코딩 금지**: 새 target, alias, 초기화/복구 step은 `config/docker-targets.yml`에 추가하고 API/CLI/문서가 같은 기준을 읽도록 유지한다.
 9. **포트 정책 우회 금지**: 새 로컬 서비스 포트는 `docs/ports.md`의 `12000 + dependency index * 100 + offset` 규칙을 따른다. PostgreSQL 접속 포트는 표준 `5432`를 사용한다.
-10. **Windows에서 개발 명령 실행 금지**: `git`과 Playwright E2E를 제외한 패키지 설치, Docker, 서버 실행, 테스트, 빌드, 파일 검색 명령을 Windows PowerShell/CMD에서 실행하지 않는다.
-11. **WSL에서 git 실행 금지**: 버전 관리 작업은 Windows 호스트에서만 수행한다.
-12. **Playwright E2E 실행 위치 혼선 금지**: Playwright E2E는 Windows 호스트에서만 실행하고, WSL에서 실행하지 않는다.
+10. **Windows에서 개발 명령 실행 금지**: `git`, CodeGraph, 패키지 설치, Docker, 서버 실행, 테스트, 빌드, 파일 검색 등 모든 개발/검증 명령을 Windows PowerShell/CMD에서 실행하지 않는다.
+11. **Linux 밖에서 git 실행 금지**: 버전 관리 작업은 WSL을 포함한 Linux shell에서만 수행한다.
+12. **Playwright E2E 실행 위치 혼선 금지**: Playwright E2E는 우선 n150 Linux 운영 환경에서 실행한다. 불가능할 때만 Windows 호스트 실행을 예외로 허용하고, 예외 사유를 작업 기록에 남긴다.
 13. **remote 푸시 전 보안 감사 생략 금지**: `git push`(특히 PR 생성 직전) 전에 위 "remote 푸시 전 보안 감사" 절차를 수행해, 비밀(API 키·세션 시크릿·비밀번호·prod 호스트/도메인 등)이나 `*.local.md`·`.env*`가 스테이징/커밋에 섞이지 않았는지 확인한다. 통과 전에는 푸시하지 않는다.
 14. **배포 후 검증 생략 금지**: prod 재배포 후 `/health`·`:12905` 200만 보지 말고, 공개도메인 **브라우저 로그인→대시보드→로그아웃 전환(+WS 재연결 루프 없음)** 까지 확인한다(반복적으로 깨진 항목). 절차·근본원인·복구는 `docs/deploy-runbook.local.md` 참조.
