@@ -21,7 +21,7 @@
 | **T-010** | Docker inspect API 및 secret redaction 구현 | 2026-06-12 | `/api/v1/containers/{id}/inspect` 추가 |
 | **T-013** | 설정 파일 기반 CLI 별칭 및 초기화/복구 step 구현 | 2026-06-12 | `db/storage/geo/map/ai/main` alias와 init step 추가 |
 | **T-014** | Kor Travel/PinVi 계열 로컬 포트 정책 일원화 | 2026-06-12 | PostgreSQL `5432`, RustFS `12101/12105`, manager `12901/12905` 반영 |
-| **T-015** | 실행 위치 정책 문서화 | 2026-06-12 | 당시 정책: git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정. T-028/ADR-20으로 대체 |
+| **T-015** | 실행 위치 정책 문서화 | 2026-06-12 | 당시 정책: git은 Windows, 일반 개발 명령은 WSL, Playwright E2E는 Windows로 고정. T-028로 대체 |
 | **T-016** | `kor-travel-geo` Docker API/UI target 편입 | 2026-06-12 | `geo` target에 API/Web UI compose 서비스 추가 |
 | **T-017** | 관측 스택 Docker target 추가 | 2026-06-13 | Grafana, cAdvisor, Prometheus 분리 컨테이너 추가 |
 | **T-018** | 프로젝트명 및 CLI 명령 전환 | 2026-06-13 | `kor-travel-docker-manager`, `ktdctl` 기준으로 변경 |
@@ -136,7 +136,7 @@
 - [x] `git` 버전 관리 명령을 Windows 호스트 예외에서 Linux shell 전용으로 변경
 - [x] CodeGraph 생성/동기화도 Linux shell에서만 수행하도록 명시
 - [x] Playwright E2E 기본 실행 위치를 n150 Linux 운영 환경으로 바꾸고, 불가능한 경우에만 Windows fallback을 허용
-- [x] `AGENTS.md`, `SKILL.md`, `CLAUDE.md`, `docs/dev-environment.md`, `docs/decisions.md`, `docs/journal.md`를 새 정책에 맞춰 동기화
+- [x] `AGENTS.md`, `SKILL.md`, `CLAUDE.md`, `docs/dev-environment.md`, `docs/tasks-done.md`를 새 정책에 맞춰 동기화
 
 ### T-016: `kor-travel-geo` Docker API/UI target 편입
 
