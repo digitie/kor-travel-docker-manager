@@ -694,3 +694,90 @@ services:
     - /sys:/sys:ro
     - /var/lib/docker/:/var/lib/docker:ro
     - /dev/disk/:/dev/disk:ro
+  # --- geo 독립 Dagster (T-290, ADR-066) ---------------------------------------
+  # geo 전용 Dagster webserver + daemon + 메타 DB init. 앱 DB(kor_travel_geo)는
+  # 절대 건드리지 않고 별도 DB kor_travel_geo_dagster에 run/event/schedule 이력을 둔다.
+  # 포트 12502 (docs/ports.md: geo 125xx 블록의 worker/aux 슬롯; map 12702·concierge 12602 패턴).
+  kor-travel-geo-dagster-db-init:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_GEO_DAGSTER_DB_INIT_CONTAINER:-kor-travel-geo-dagster-db-init}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
+      PGPASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
+      KOR_TRAVEL_GEO_DAGSTER_DB: ${KOR_TRAVEL_GEO_DAGSTER_DB:-kor_travel_geo_dagster}
+    command:
+    - sh
+    - -c
+    - createdb "$${KOR_TRAVEL_GEO_DAGSTER_DB}" 2>/dev/null || true
+  kor-travel-geo-dagster:
+    image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
+    build:
+      context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}
+      dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
+    container_name: ${KOR_TRAVEL_GEO_DAGSTER_CONTAINER:-kor-travel-geo-dagster-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+      kor-travel-geo-dagster-db-init:
+        condition: service_completed_successfully
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      KTG_DAGSTER_PORT: ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:5432/kor_travel_geo_dagster}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
+      KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
+      KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
+      KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+    ports:
+    - ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}:${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - >-
+        python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/' % os.environ.get('KTG_DAGSTER_PORT', '12502'), timeout=2).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+  kor-travel-geo-dagster-daemon:
+    image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
+    build:
+      context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}
+      dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
+    container_name: ${KOR_TRAVEL_GEO_DAGSTER_DAEMON_CONTAINER:-kor-travel-geo-dagster-daemon-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+      kor-travel-geo-dagster-db-init:
+        condition: service_completed_successfully
+    command:
+    - dagster-daemon
+    - run
+    - -m
+    - kortravelgeo_dagster.definitions
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:5432/kor_travel_geo_dagster}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
+      KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
+      KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
+      KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
