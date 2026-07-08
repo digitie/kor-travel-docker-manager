@@ -141,11 +141,11 @@ services:
       KTG_ADMIN_TRUSTED_PROXY_CIDRS: ${KOR_TRAVEL_GEO_ADMIN_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}
       KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
       # Browser-facing Dagster URL the admin API returns for the /admin/dagster iframe/links
-      # (T-290). The LAN router reverse-proxies geo-dagster.digitie.mywire.org (TLS) to this
+      # (T-290). The LAN router reverse-proxies geo-dagster.example.org (TLS) to this
       # host's 127.0.0.1:12502 webserver (external step; same pattern as the other services'
       # *.digitie.mywire.org domains). Backend GraphQL observe stays on the internal
       # KTG_DAGSTER_URL (default 127.0.0.1:12502, SSRF-allowlisted). Dev overrides to internal.
-      KTG_DAGSTER_PUBLIC_URL: ${KOR_TRAVEL_GEO_DAGSTER_PUBLIC_URL:-https://geo-dagster.digitie.mywire.org/}
+      KTG_DAGSTER_PUBLIC_URL: ${KOR_TRAVEL_GEO_DAGSTER_PUBLIC_URL:-}
     ports:
     - ${KOR_TRAVEL_GEO_API_PORT:-12501}:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
     volumes:
@@ -748,7 +748,7 @@ services:
       KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
     # Public routing (external/manual, no compose label): the LAN router reverse-proxies
-    # https://geo-dagster.digitie.mywire.org/ (TLS termination) -> this host 127.0.0.1:12502,
+    # https://geo-dagster.example.org/ (TLS termination) -> this host 127.0.0.1:12502,
     # same pattern as the other services' *.digitie.mywire.org domains. The geo-api echoes
     # that public URL to the admin UI via KTG_DAGSTER_PUBLIC_URL (T-290).
     ports:
