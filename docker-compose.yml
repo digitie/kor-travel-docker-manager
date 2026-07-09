@@ -747,6 +747,12 @@ services:
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
       KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      # T-290 on-ramp (kor-travel-geo #444): the scheduled_backup Dagster run calls the
+      # geo admin API (POST /v1/admin/backups/scheduled/run-due) and must present the
+      # admin proxy secret the API expects, else the run-due call 403s.
+      # KTG_DAGSTER_ADMIN_API_URL defaults to the host-network geo-api.
+      KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
+      KTG_DAGSTER_ADMIN_API_URL: ${KOR_TRAVEL_GEO_DAGSTER_ADMIN_API_URL:-http://127.0.0.1:12501}
     # Public routing (external/manual, no compose label): the LAN router reverse-proxies
     # https://geo-dagster.example.org/ (TLS termination) -> this host 127.0.0.1:12502,
     # same pattern as the other services' *.digitie.mywire.org domains. The geo-api echoes
@@ -791,3 +797,9 @@ services:
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
       KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      # T-290 on-ramp (kor-travel-geo #444): the daemon shares the code-location image
+      # and can execute the scheduled_backup run, which calls the geo admin API
+      # (POST /v1/admin/backups/scheduled/run-due). It must present the admin proxy
+      # secret the API expects, else the run-due call 403s.
+      KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
+      KTG_DAGSTER_ADMIN_API_URL: ${KOR_TRAVEL_GEO_DAGSTER_ADMIN_API_URL:-http://127.0.0.1:12501}
