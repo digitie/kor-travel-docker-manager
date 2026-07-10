@@ -150,6 +150,11 @@ services:
     - ${KOR_TRAVEL_GEO_API_PORT:-12501}:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
     volumes:
     - ${KOR_TRAVEL_GEO_APP_DATA_DIR:-../kor-travel-geo/data}:/data:ro
+    # T-290g: shared writable DB-backup dir. The Dagster db_backup op (writer) and this
+    # geo-api's restore/download/verify (reader) must resolve the SAME artifacts at the
+    # app's backup_allowed_dirs (/app/data/backups). Before this the api mounted only
+    # /data:ro, so a Dagster-written backup was invisible to restore (geo #459/#460).
+    - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
     extra_hosts:
     - host.docker.internal:host-gateway
     healthcheck:
@@ -753,6 +758,11 @@ services:
       # KTG_DAGSTER_ADMIN_API_URL defaults to the host-network geo-api.
       KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
       KTG_DAGSTER_ADMIN_API_URL: ${KOR_TRAVEL_GEO_DAGSTER_ADMIN_API_URL:-http://127.0.0.1:12501}
+    # T-290g: the db_backup op executes in this webserver container and writes the backup to
+    # /app/data/backups — mount the SAME shared host dir as geo-api so the artifact is
+    # restorable/downloadable/verifiable there.
+    volumes:
+    - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
     # Public routing (external/manual, no compose label): the LAN router reverse-proxies
     # https://geo-dagster.example.org/ (TLS termination) -> this host 127.0.0.1:12502,
     # same pattern as the other services' *.digitie.mywire.org domains. The geo-api echoes
@@ -803,3 +813,7 @@ services:
       # secret the API expects, else the run-due call 403s.
       KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
       KTG_DAGSTER_ADMIN_API_URL: ${KOR_TRAVEL_GEO_DAGSTER_ADMIN_API_URL:-http://127.0.0.1:12501}
+    # T-290g: same shared backup dir as the webserver/api, so a db_backup run launched here
+    # (or a leaf executed in this container) writes artifacts the geo-api can restore.
+    volumes:
+    - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
