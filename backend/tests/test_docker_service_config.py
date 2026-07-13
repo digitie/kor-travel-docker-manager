@@ -1,6 +1,17 @@
+from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from kor_travel_docker_manager.services.docker_service import DockerService
+
+_ROOT = Path(__file__).resolve().parents[2]
+_CONCIERGE_BASE_URL_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}"
+_CONCIERGE_API_KEY_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}"
+_MAP_FETCH_SERVICES = (
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+)
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -11,6 +22,34 @@ def _compose_success(command: list[str] | None = None) -> dict[str, object]:
         "stdout": "",
         "stderr": "",
     }
+
+
+def test_map_services_share_single_concierge_read_key_source() -> None:
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services_with_key = {
+        service_name
+        for service_name, service in compose["services"].items()
+        if "KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY"
+        in service.get("environment", {})
+    }
+    assert services_with_key == set(_MAP_FETCH_SERVICES)
+
+    for service_name in _MAP_FETCH_SERVICES:
+        environment = compose["services"][service_name]["environment"]
+        assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL"] == (
+            _CONCIERGE_BASE_URL_ENV
+        )
+        assert (
+            environment["KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY"]
+            == _CONCIERGE_API_KEY_ENV
+        )
+
+    key_lines = [
+        line
+        for line in (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY=")
+    ]
+    assert key_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY="]
 
 
 @patch("kor_travel_docker_manager.services.docker_service.compose_service.run")

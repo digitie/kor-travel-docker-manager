@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-13 (Concierge DB read 키 단일 source wiring — T-029)
+
+- `KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY`를 manager 루트 `.env`의 단일 secret source로
+  정의하고, base compose가 실제 fetcher를 실행하는 Dagster·Dagster daemon에 동일하게 주입하도록
+  했다. 사용하지 않는 map API에는 read secret을 주입하지 않는다.
+- Concierge feature base URL도 두 서비스에 같은 계약으로 주입해 prod override의 중복 literal 없이
+  `/api/v1/features/{snapshot,changes}`를 호출할 수 있게 했다.
+- `.env.example`에는 빈 placeholder와 DB `read` scope 발급 원칙만 기록했다. 실제 prod `.env`와
+  `docker-compose.override.yml`은 변경하지 않았다.
+- 계약 테스트가 두 서비스의 source 식과 `.env.example` key 정의 1건을 고정한다. n150 Python 3.11
+  일회성 컨테이너에서 백엔드 테스트 40개와 Ruff를 통과했고, n150의 Docker Compose로
+  `config --quiet` 보간도 통과했다. 로컬 테스트는 실행하지 않았다. rollout은 Concierge 0016
+  migration → read 키 발급 → 제한권한 백업·single source 전환 → equality·live smoke → BFF/operator
+  static admin overlap 회전 → 구 static 제거 순서로 수행한다.
+
+---
+
 ## 2026-06-28 (PinVi public API URL·CORS origin 환경변수화 — T-027)
 
 - PinVi live mutating E2E 재검증 중 public Web origin의 `/auth/login` preflight가 `400 Bad Request`로 거부되는 배포 drift를 확인했다. 원인은 manager compose가 `PINVI_CORS_ALLOWED_ORIGINS`를 로컬 origin으로만 고정하고, Web build/runtime API URL도 로컬 API 기본값으로만 선언하던 것이다.
