@@ -4,20 +4,20 @@
 
 ---
 
-## 2026-07-13 (Map OpiNet·KREX provider 키 compose 보간 drift 수정 — T-030)
+## 2026-07-14 (Map OpiNet·KREX provider 키 compose 보간 drift 수정 — T-030)
 
 - manager `.env`는 현재 Map 계약인 `KOR_TRAVEL_MAP_OPINET_API_KEY`와
   `KOR_TRAVEL_MAP_KREX_EX_API_KEY`를 사용하지만 base compose가 과거 `KRTOUR_MAP_*` source를
-  읽어, 값이 있어도 map API·Dagster·Dagster daemon에 빈 문자열을 전달하는 반복 장애의 원천을
+  읽어, 값이 있어도 Dagster·Dagster daemon에 빈 문자열을 전달하는 반복 장애의 원천을
   확인했다. KREX GO key와 두 provider의 map API live preview key도 함께 점검했다.
-- OpiNet 공통 key를 현재 이름에서 명시 보간하고, API live preview key는 별도 값이 없으면 공통
-  key를 재사용하도록 했다.
-- EX·GO key를 현재 이름에서 명시 보간하도록 바꾸고, API live preview key는 별도 값이 없으면 EX
-  key를 재사용하도록 했다. 실제 secret은 코드·문서·테스트에 넣지 않고 gitignore된 루트 `.env`
-  한 곳에만 둔다.
-- 계약 테스트가 세 Map 서비스의 OpiNet·KREX source 식과 API fallback, `.env.example`의 빈
-  placeholder 각 1건을 고정한다. 백엔드 focused test 4건과 Ruff, placeholder를 사용한
-  `docker compose config --quiet` 및 세 서비스 resolved-value 동등성 검증을 통과했다.
+- OpiNet·KREX EX·GO 공통 key를 현재 이름에서 명시 보간하되 실제 수집기를 실행하는
+  Dagster·Dagster daemon에만 주입한다. API에는 resolved live preview 변수만 주입하고, 별도 값이
+  없을 때 각각 OpiNet 공통 key와 EX key를 compose interpolation source로 재사용한다. 실제 secret은
+  코드·문서·테스트에 넣지 않고 gitignore된 루트 `.env` 한 곳에만 둔다.
+- 계약 테스트가 수집 서비스의 공통 key와 API 전용 preview key 경계를 분리하고 API에 원본 공통
+  key가 없음을 고정한다. `.env.example`의 빈 placeholder 각 1건, 백엔드 focused test·Ruff,
+  placeholder를 사용한 `docker compose config --quiet` 및 current/fallback/blank resolved-value 검증을
+  통과했다.
 
 ---
 

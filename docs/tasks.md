@@ -82,7 +82,8 @@
 - [x] OpiNet map API live preview key는 별도 설정을 우선하고 미설정 시 공통 key를 재사용하도록 고정
 - [x] EX·GO key가 과거 `KRTOUR_MAP_*` source 대신 현재 `KOR_TRAVEL_MAP_*` `.env` 값을 읽도록 수정
 - [x] map API live preview key는 별도 설정을 우선하고 미설정 시 EX key를 재사용하도록 고정
-- [x] map API·Dagster·Dagster daemon의 OpiNet·KREX key 보간 계약과 `.env.example` placeholder를 테스트
+- [x] OpiNet·KREX 공통 key는 Dagster·daemon에만, resolved preview key는 map API에만 주입하는
+      최소 권한 계약과 `.env.example` placeholder를 테스트
 - [x] 실제 secret 비노출 상태로 focused test·Ruff·Docker Compose 보간 검증
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리

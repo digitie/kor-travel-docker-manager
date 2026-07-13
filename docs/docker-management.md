@@ -238,18 +238,21 @@ prod 전환 순서는 다음과 같다.
 `kor-travel-map`의 OpiNet·KREX credential은 gitignore된 루트 `.env`의 현재 이름을 source로
 사용한다.
 
-- `KOR_TRAVEL_MAP_OPINET_API_KEY`: OpiNet station·price 수집용이다. base compose가 map API·
-  Dagster·Dagster daemon에 같은 이름으로 명시 보간한다. API live preview의
-  `KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY`는 별도 값을 우선하고 미설정 시 이 공통 key를 재사용한다.
+- `KOR_TRAVEL_MAP_OPINET_API_KEY`: OpiNet station·price 수집용이다. base compose가 실제 수집기를
+  실행하는 Dagster·Dagster daemon에만 같은 이름으로 명시 보간한다. API live preview에는
+  `KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY`만 주입하며, 별도 값을 우선하고 미설정 시 compose가 공통
+  key로 이 API 전용 변수의 값을 resolve한다.
 - `KOR_TRAVEL_MAP_KREX_EX_API_KEY`: 교통 돌발·notice를 포함한 EX endpoint용이다. base compose가
-  map API·Dagster·Dagster daemon에 같은 이름으로 명시 보간한다.
-- `KOR_TRAVEL_MAP_KREX_GO_API_KEY`: data.go.kr 계열 KREX 수집용이다. 같은 세 서비스에 명시
+  Dagster·Dagster daemon에만 같은 이름으로 명시 보간한다.
+- `KOR_TRAVEL_MAP_KREX_GO_API_KEY`: data.go.kr 계열 KREX 수집용이다. 같은 두 수집 서비스에만 명시
   보간한다.
 - `KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY`: map API live preview가 별도 key를 써야 할 때만
-  설정한다. 미설정 시 compose가 EX key를 재사용한다.
+  설정한다. 미설정 시 compose가 EX key로 이 API 전용 변수의 값을 resolve한다. API 컨테이너에는
+  원본 EX·GO 공통 key를 주입하지 않는다.
 
 과거 `KRTOUR_MAP_*` 이름을 source로 쓰면 `.env`에 현재 이름의 key가 있어도 빈 문자열이
 컨테이너로 전달된다. 따라서 override에 bare key나 secret literal을 반복하지 않는다. 변경 뒤에는
 resolved config 전체를 출력하지 말고 `docker compose config --quiet`를 실행한 뒤, 한 프로세스
-안에서 `.env`와 대상 컨테이너 값을 constant-time 비교해 `nonempty && all_equal` 여부만 확인한다.
+안에서 `.env`와 두 수집 컨테이너 값을 constant-time 비교하고 API 컨테이너에는 resolved API 전용
+변수만 있는지 확인한다. 검증 결과는 `nonempty && all_equal` 같은 불리언만 남기며
 실제 값·길이·digest는 로그에 남기지 않는다.

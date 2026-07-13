@@ -12,11 +12,11 @@ _MAP_FETCH_SERVICES = (
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
 )
-_MAP_PROVIDER_SERVICES = (
-    "kor-travel-map-api",
+_MAP_INGESTION_SERVICES = (
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
 )
+_MAP_API_SERVICE = "kor-travel-map-api"
 _OPINET_API_KEY_ENV = "${KOR_TRAVEL_MAP_OPINET_API_KEY:-}"
 _API_OPINET_SERVICE_KEY_ENV = (
     "${KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY:-${KOR_TRAVEL_MAP_OPINET_API_KEY:-}}"
@@ -66,16 +66,35 @@ def test_map_services_share_single_concierge_read_key_source() -> None:
     assert key_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY="]
 
 
-def test_map_services_interpolate_provider_credentials_from_current_env_names() -> None:
+def test_map_ingestion_services_interpolate_provider_credentials_from_current_env_names() -> None:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
 
-    for service_name in _MAP_PROVIDER_SERVICES:
-        environment = compose["services"][service_name]["environment"]
-        assert environment["KOR_TRAVEL_MAP_OPINET_API_KEY"] == _OPINET_API_KEY_ENV
-        assert environment["KOR_TRAVEL_MAP_KREX_EX_API_KEY"] == _KREX_EX_API_KEY_ENV
-        assert environment["KOR_TRAVEL_MAP_KREX_GO_API_KEY"] == _KREX_GO_API_KEY_ENV
+    provider_keys = {
+        "KOR_TRAVEL_MAP_OPINET_API_KEY": _OPINET_API_KEY_ENV,
+        "KOR_TRAVEL_MAP_KREX_EX_API_KEY": _KREX_EX_API_KEY_ENV,
+        "KOR_TRAVEL_MAP_KREX_GO_API_KEY": _KREX_GO_API_KEY_ENV,
+    }
+    for key in provider_keys:
+        services_with_key = {
+            service_name
+            for service_name, service in compose["services"].items()
+            if key in service.get("environment", {})
+        }
+        assert services_with_key == set(_MAP_INGESTION_SERVICES)
 
-    api_environment = compose["services"]["kor-travel-map-api"]["environment"]
+    for service_name in _MAP_INGESTION_SERVICES:
+        environment = compose["services"][service_name]["environment"]
+        for key, source_expression in provider_keys.items():
+            assert environment[key] == source_expression
+
+
+def test_map_api_interpolates_only_provider_preview_credentials() -> None:
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    api_environment = compose["services"][_MAP_API_SERVICE]["environment"]
+    assert "KOR_TRAVEL_MAP_OPINET_API_KEY" not in api_environment
+    assert "KOR_TRAVEL_MAP_KREX_EX_API_KEY" not in api_environment
+    assert "KOR_TRAVEL_MAP_KREX_GO_API_KEY" not in api_environment
     assert (
         api_environment["KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY"]
         == _API_OPINET_SERVICE_KEY_ENV
@@ -85,6 +104,19 @@ def test_map_services_interpolate_provider_credentials_from_current_env_names() 
         == _API_KREX_SERVICE_KEY_ENV
     )
 
+    for key in (
+        "KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY",
+    ):
+        services_with_key = {
+            service_name
+            for service_name, service in compose["services"].items()
+            if key in service.get("environment", {})
+        }
+        assert services_with_key == {_MAP_API_SERVICE}
+
+
+def test_map_provider_credentials_have_empty_env_example_placeholders() -> None:
     env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     for key in (
         "KOR_TRAVEL_MAP_OPINET_API_KEY",
