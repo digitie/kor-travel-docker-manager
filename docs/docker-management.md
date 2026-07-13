@@ -232,3 +232,24 @@ prod 전환 순서는 다음과 같다.
 - static admin 교체 후 구 키 401, 신규 admin GET 200, read 공급 GET 200, read 내부/write 403을
   확인했다. UI 로그인 POST 200+`Set-Cookie`, BFF settings 200, 잘못된 비밀번호 401도 재확인했다.
 - 성공 뒤 key/cookie 임시 파일과 secret 포함 제한권한 백업을 모두 삭제했다.
+
+### 7.2 Map OpiNet·KREX provider 키 주입
+
+`kor-travel-map`의 OpiNet·KREX credential은 gitignore된 루트 `.env`의 현재 이름을 source로
+사용한다.
+
+- `KOR_TRAVEL_MAP_OPINET_API_KEY`: OpiNet station·price 수집용이다. base compose가 map API·
+  Dagster·Dagster daemon에 같은 이름으로 명시 보간한다. API live preview의
+  `KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY`는 별도 값을 우선하고 미설정 시 이 공통 key를 재사용한다.
+- `KOR_TRAVEL_MAP_KREX_EX_API_KEY`: 교통 돌발·notice를 포함한 EX endpoint용이다. base compose가
+  map API·Dagster·Dagster daemon에 같은 이름으로 명시 보간한다.
+- `KOR_TRAVEL_MAP_KREX_GO_API_KEY`: data.go.kr 계열 KREX 수집용이다. 같은 세 서비스에 명시
+  보간한다.
+- `KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY`: map API live preview가 별도 key를 써야 할 때만
+  설정한다. 미설정 시 compose가 EX key를 재사용한다.
+
+과거 `KRTOUR_MAP_*` 이름을 source로 쓰면 `.env`에 현재 이름의 key가 있어도 빈 문자열이
+컨테이너로 전달된다. 따라서 override에 bare key나 secret literal을 반복하지 않는다. 변경 뒤에는
+resolved config 전체를 출력하지 말고 `docker compose config --quiet`를 실행한 뒤, 한 프로세스
+안에서 `.env`와 대상 컨테이너 값을 constant-time 비교해 `nonempty && all_equal` 여부만 확인한다.
+실제 값·길이·digest는 로그에 남기지 않는다.

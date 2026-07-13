@@ -27,6 +27,7 @@
 | **T-024** | 로그아웃/세션만료 시 LoginScreen 전환 회귀 수정(auth-me 401→authenticated:false) | `[x]` | 2026-06-24 | PR #37 FE-2 회귀, 브라우저 E2E로 발견·PR #41 머지 |
 | **T-025** | 배포 런북(`deploy-runbook.local.md`) + push 전 보안 감사 절차 — concierge 스타일 정렬 | `[/]` | - | 민감 런북(gitignore)·AGENTS.md 절차·DO NOT #13/#14, 각 worktree 복사 |
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
+| **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·API fallback·서비스별 계약 테스트 고정 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -74,6 +75,15 @@
 - [x] `limit=1` snapshot/changes 2페이지 cursor 검증, `page_size=200` 전체 8페이지/1,416건 순회, 실제 수집기 각 1,416건 및 내부/write 403 smoke
 - [x] BFF/operator static admin overlap 회전·UI/BFF 검증 후 구 static 제거
 - [x] 최종 old 401/new admin 200/read 공급 200·write 403/UI login 검증과 제한권한 백업 폐기
+
+### T-030: Map OpiNet·KREX provider 키 compose 보간 drift 수정
+
+- [x] OpiNet 공통 key가 과거 `KRTOUR_MAP_*` source 대신 현재 `KOR_TRAVEL_MAP_*` `.env` 값을 읽도록 수정
+- [x] OpiNet map API live preview key는 별도 설정을 우선하고 미설정 시 공통 key를 재사용하도록 고정
+- [x] EX·GO key가 과거 `KRTOUR_MAP_*` source 대신 현재 `KOR_TRAVEL_MAP_*` `.env` 값을 읽도록 수정
+- [x] map API live preview key는 별도 설정을 우선하고 미설정 시 EX key를 재사용하도록 고정
+- [x] map API·Dagster·Dagster daemon의 OpiNet·KREX key 보간 계약과 `.env.example` placeholder를 테스트
+- [x] 실제 secret 비노출 상태로 focused test·Ruff·Docker Compose 보간 검증
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

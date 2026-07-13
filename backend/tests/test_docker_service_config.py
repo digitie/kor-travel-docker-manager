@@ -12,6 +12,20 @@ _MAP_FETCH_SERVICES = (
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
 )
+_MAP_PROVIDER_SERVICES = (
+    "kor-travel-map-api",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+)
+_OPINET_API_KEY_ENV = "${KOR_TRAVEL_MAP_OPINET_API_KEY:-}"
+_API_OPINET_SERVICE_KEY_ENV = (
+    "${KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY:-${KOR_TRAVEL_MAP_OPINET_API_KEY:-}}"
+)
+_KREX_EX_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}"
+_KREX_GO_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-}"
+_API_KREX_SERVICE_KEY_ENV = (
+    "${KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY:-${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}}"
+)
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -50,6 +64,38 @@ def test_map_services_share_single_concierge_read_key_source() -> None:
         if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY=")
     ]
     assert key_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY="]
+
+
+def test_map_services_interpolate_provider_credentials_from_current_env_names() -> None:
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    for service_name in _MAP_PROVIDER_SERVICES:
+        environment = compose["services"][service_name]["environment"]
+        assert environment["KOR_TRAVEL_MAP_OPINET_API_KEY"] == _OPINET_API_KEY_ENV
+        assert environment["KOR_TRAVEL_MAP_KREX_EX_API_KEY"] == _KREX_EX_API_KEY_ENV
+        assert environment["KOR_TRAVEL_MAP_KREX_GO_API_KEY"] == _KREX_GO_API_KEY_ENV
+
+    api_environment = compose["services"]["kor-travel-map-api"]["environment"]
+    assert (
+        api_environment["KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY"]
+        == _API_OPINET_SERVICE_KEY_ENV
+    )
+    assert (
+        api_environment["KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY"]
+        == _API_KREX_SERVICE_KEY_ENV
+    )
+
+    env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    for key in (
+        "KOR_TRAVEL_MAP_OPINET_API_KEY",
+        "KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_KREX_EX_API_KEY",
+        "KOR_TRAVEL_MAP_KREX_GO_API_KEY",
+        "KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY",
+    ):
+        assert [line for line in env_example_lines if line.startswith(f"{key}=")] == [
+            f"{key}="
+        ]
 
 
 @patch("kor_travel_docker_manager.services.docker_service.compose_service.run")
