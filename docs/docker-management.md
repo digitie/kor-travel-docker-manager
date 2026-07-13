@@ -194,19 +194,22 @@ prod 전환 순서는 다음과 같다.
 2. Concierge 관리 UI/API에서 소비자·owner·발급일을 식별할 수 있는 label로 DB `read` scope 키를
    발급하고, DB에는 hash만 남았으며 발급 audit가 기록됐는지 확인한다.
 3. manager의 gitignore된 prod `.env`와 override를 mode `0600` 임시 파일로 원자 백업한다. read 키는
-   `.env`의 단일 변수에만 저장하고, override에 남은 map API·Dagster·daemon의 기존 literal 세 줄을
-   모두 제거한다. `docker compose config --quiet`만 실행하고 resolved config 전체는 출력하지 않는다.
-4. Dagster·Dagster daemon을 재생성한다. map API에는 해당 key env가 없음을 확인한다. `.env`와 두
-   컨테이너의 값을 한 프로세스 안에서 constant-time 비교해 `nonempty && all_equal`의 성공 여부와
-   exit code만 확인한다. 값·길이·digest는 출력하지 않는다.
-5. n150에서 Concierge backend를 직접 호출한다. `limit=1`로 snapshot과 changes를 각각 끝까지
-   순회해 page 수가 2 이상이고 export ID가 중복되지 않는지 확인한다. cursor는 opaque라 크기를
+   `.env`의 단일 변수에만 저장하고, override에 남은 map API·Dagster·daemon의 기존 key literal
+   세 줄과 base URL literal 세 줄을 모두 제거한다. `docker compose config --quiet`만 실행하고
+   resolved config 전체는 출력하지 않는다.
+4. Dagster·Dagster daemon을 재생성한다. 과거 배포에서 map API에 같은 환경변수가 들어갔다면
+   map API도 한 번 재생성해 과거 secret을 제거한다. map API에는 해당 key env가 없음을 확인한다.
+   `.env`와 두 수집기 컨테이너의 값을 한 프로세스 안에서 constant-time 비교해
+   `nonempty && all_equal`의 성공 여부와 exit code만 확인한다. 값·길이·digest는 출력하지 않는다.
+5. n150에서 Concierge backend를 직접 호출한다. 먼저 `limit=1`로 snapshot과 changes를 각각
+   2페이지까지 요청해 cursor가 실제 다음 페이지를 가리키는지 검증한다. 이어 `page_size=200`으로
+   두 모드를 끝까지 순회해 전체 건수와 export ID 무중복을 확인한다. cursor는 opaque라 크기를
    비교하지 않는다. `has_more=true`면 unseen `next_cursor`가 필수이고 그 값을 다음 요청에 그대로
    쓰며, `has_more=false`면 non-null cursor여도 종료한다. 빈 최종 page의 입력 cursor echo도
    허용한다. 실제 Dagster 컨테이너 fetcher는 `endpoint=snapshot|changes`, `cursor=None`,
-   `page_size=1`을 각각 명시해 두 모드를 모두 2 page 이상 소비한다. read 키의
+   `page_size=200`을 각각 명시해 두 모드의 전체 결과를 소비한다. read 키의
    `DELETE /api/v1/destinations/0`과 `GET /api/v1/settings`가 403이고 응답이 admin scope 부족을
-   가리키는지 확인한다. 데이터 부족으로 2 page가 안 되면 합격으로 처리하지 않는다.
+   가리키는지 확인한다. 데이터가 2페이지보다 적다면 cursor 검증을 합격으로 처리하지 않는다.
 6. 기존 static 키가 BFF와 공유돼 있으면 먼저 BFF/operator key를 회전한다. 새 static admin 키를
    생성해 `KOR_TRAVEL_CONCIERGE_API_KEYS=old,new`로 API/MCP/scheduler를 재생성하고,
    `KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY=new`로 UI를 강제 재생성한다. UI key가 allowlist와
@@ -218,3 +221,14 @@ prod 전환 순서는 다음과 같다.
    함께 복원해 관련 서비스를 재생성하고 신규 DB read 키를 폐기한 뒤 임시 파일을 삭제한다. static
    제거 뒤 실패했다면 구 static 키를 allowlist에 임시 재등록하고 API/UI를 재생성하며 incident와
    rollback 시점만 기록한다.
+
+2026-07-13 n150 전환에서는 위 절차를 다음 결과로 완료했다.
+
+- snapshot·changes의 `limit=1` 2페이지 cursor 검증이 모두 통과했다.
+- `page_size=200` 전체 순회는 두 모드 모두 8페이지, 1,416건이었고 export ID 중복이 없었다. 실제
+  Dagster 컨테이너 수집기도 두 모드에서 각각 1,416건을 반환했다.
+- map API를 재생성해 사용하지 않는 read secret을 제거했고, Dagster·Dagster daemon만 `.env`의
+  동일한 read key를 가진다는 값 비노출 동등성 검증을 통과했다.
+- static admin 교체 후 구 키 401, 신규 admin GET 200, read 공급 GET 200, read 내부/write 403을
+  확인했다. UI 로그인 POST 200+`Set-Cookie`, BFF settings 200, 잘못된 비밀번호 401도 재확인했다.
+- 성공 뒤 key/cookie 임시 파일과 secret 포함 제한권한 백업을 모두 삭제했다.
