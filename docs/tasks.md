@@ -26,7 +26,7 @@
 | **T-023** | concierge PR #127 참고 공개도메인 Secure 쿠키 보강(`_is_https`가 https 공개 origin 인식) | `[x]` | 2026-06-24 | 브라우저 E2E로 로그인 정상 확인(403 무), Secure 플래그 PR #40 머지·prod 검증 |
 | **T-024** | 로그아웃/세션만료 시 LoginScreen 전환 회귀 수정(auth-me 401→authenticated:false) | `[x]` | 2026-06-24 | PR #37 FE-2 회귀, 브라우저 E2E로 발견·PR #41 머지 |
 | **T-025** | 배포 런북(`deploy-runbook.local.md`) + push 전 보안 감사 절차 — concierge 스타일 정렬 | `[/]` | - | 민감 런북(gitignore)·AGENTS.md 절차·DO NOT #13/#14, 각 worktree 복사 |
-| **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[/]` | - | least privilege compose·`.env.example`·계약 테스트 완료, n150 rollout/smoke 남음 |
+| **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -68,12 +68,12 @@
 - [x] 실제 fetcher를 실행하는 Dagster·Dagster daemon에 동일한 base URL/key 환경변수 주입
 - [x] 사용하지 않는 map API에는 read secret을 주입하지 않는 least privilege 계약 고정
 - [x] `.env.example`, Docker 관리 문서, compose 계약 테스트 동기화
-- [ ] n150에 Concierge head 0017(scope migration 0016 포함) 배포·제약 및 실제 UI 로그인 검증
-- [ ] prod `.env` 주입·override literal 세 줄 제거·compose 보간·Dagster 두 서비스 재생성
-- [ ] `.env`와 두 컨테이너 key를 값 비노출 constant-time equality로 확인
-- [ ] `limit=1` snapshot/changes 다중 page·cursor 불변식·실제 fetcher·내부/write 403 smoke
-- [ ] BFF/operator static admin overlap 회전·UI/BFF 검증 후 구 static 제거
-- [ ] 최종 old 401/new admin 200/read 공급 200·write 403/UI login 검증과 제한권한 백업 폐기
+- [x] n150에 Concierge head 0017(scope migration 0016 포함) 배포·제약 및 실제 UI 로그인 검증
+- [x] prod `.env` 주입·override의 key/base URL literal 각 세 줄 제거·compose 보간·Dagster 두 서비스 재생성
+- [x] `.env`와 두 컨테이너 key를 값 비노출 constant-time equality로 확인
+- [x] `limit=1` snapshot/changes 2페이지 cursor 검증, `page_size=200` 전체 8페이지/1,416건 순회, 실제 수집기 각 1,416건 및 내부/write 403 smoke
+- [x] BFF/operator static admin overlap 회전·UI/BFF 검증 후 구 static 제거
+- [x] 최종 old 401/new admin 200/read 공급 200·write 403/UI login 검증과 제한권한 백업 폐기
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

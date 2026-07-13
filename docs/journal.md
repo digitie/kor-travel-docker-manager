@@ -4,20 +4,34 @@
 
 ---
 
-## 2026-07-13 (Concierge DB read 키 단일 source wiring — T-029)
+## 2026-07-13 (Concierge DB read 키 단일 source 주입·운영 전환 — T-029)
 
 - `KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY`를 manager 루트 `.env`의 단일 secret source로
   정의하고, base compose가 실제 fetcher를 실행하는 Dagster·Dagster daemon에 동일하게 주입하도록
   했다. 사용하지 않는 map API에는 read secret을 주입하지 않는다.
 - Concierge feature base URL도 두 서비스에 같은 계약으로 주입해 prod override의 중복 literal 없이
   `/api/v1/features/{snapshot,changes}`를 호출할 수 있게 했다.
-- `.env.example`에는 빈 placeholder와 DB `read` scope 발급 원칙만 기록했다. 실제 prod `.env`와
-  `docker-compose.override.yml`은 변경하지 않았다.
+- `.env.example`에는 빈 placeholder와 DB `read` scope 발급 원칙만 기록했다. 구현 PR에서는 실제
+  prod `.env`와 `docker-compose.override.yml`을 변경하지 않고 n150 전환 단계에서만 적용했다.
 - 계약 테스트가 두 서비스의 source 식과 `.env.example` key 정의 1건을 고정한다. n150 Python 3.11
   일회성 컨테이너에서 백엔드 테스트 40개와 Ruff를 통과했고, n150의 Docker Compose로
-  `config --quiet` 보간도 통과했다. 로컬 테스트는 실행하지 않았다. rollout은 Concierge 0016
-  migration → read 키 발급 → 제한권한 백업·single source 전환 → equality·live smoke → BFF/operator
-  static admin overlap 회전 → 구 static 제거 순서로 수행한다.
+  `config --quiet` 보간도 통과했다. 로컬 테스트는 실행하지 않았다.
+- n150에서 Concierge DB를 Alembic head `20260713_0017`로 올리고 scope migration
+  `20260713_0016`의 `scope NOT NULL`, `read|admin` CHECK와 soft-delete schema를 확인했다. UI
+  재생성 뒤 admin 해시/session secret 비어 있지 않음, 로그인 POST 200+`Set-Cookie`, BFF settings
+  200, 잘못된 비밀번호 401을 확인했다. 재생성 직후 준비 구간에서 일시 503이 한 번 있었으나
+  준비 완료 후 같은 전체 검증을 재실행해 통과했다.
+- DB `read` 키를 발급해 DB에는 해시와 발급 감사 기록만 남기고, manager `.env` 한 곳에만 주입했다.
+  override의 기존 key 세 줄과 base URL 세 줄을 제거하고 Dagster·Dagster daemon을 재생성했다. 과거
+  환경변수를 확실히 제거하기 위해 map API도 한 번 재생성했으며, map API에는 read key가 없고 두
+  수집기 컨테이너 값은 `.env`와 같음을 값 비노출 constant-time 비교로 확인했다.
+- snapshot과 changes 각각 `limit=1` 2페이지 cursor 검증을 수행한 뒤 `page_size=200`으로 전체를
+  순회했다. 두 모드 모두 8페이지, 1,416건이었고 cursor 진행·export ID 무중복 조건을 통과했다.
+  실제 Dagster 컨테이너 수집기도 snapshot/changes 각 1,416건을 반환했다.
+- BFF/operator static admin 키를 old/new overlap으로 교체하고 UI·BFF를 검증한 뒤 old를 제거했다.
+  최종 old admin 401, new admin 내부 GET 200, read 공급 GET 200, read 내부/write 403과 로그인 POST
+  200+`Set-Cookie`를 확인했다. 성공 후 key/cookie 임시 파일, 제한권한 백업, migration 복원
+  지점을 삭제하고 관련 서비스 최근 로그에 오류가 없음을 확인해 T-029를 완료했다.
 
 ---
 
