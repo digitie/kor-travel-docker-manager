@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-18 (Map↔PinVi C6c ops principal 배포 결선 착수 — T-031)
+
+- Map canonical ops clean-cut 뒤 PinVi가 삭제된 legacy endpoint를 호출하던 문제를 복구하기 위해,
+  서비스 간 principal을 `ops:read`와 import-job `ops:cancel` 두 capability로 분리한다.
+- token은 manager의 gitignore된 `.env`를 단일 source로 사용하되 map API와 PinVi API에만 각각
+  전달한다. Map Dagster·daemon·UI와 PinVi Web·Dagster에는 전달하지 않는다.
+- 일반 write token은 schedule·refresh policy·update request까지 불필요하게 열기 때문에 두지
+  않는다. cancel token은 exact import-job cancel endpoint에만 결박하며, 단일 고정 PinVi 주체를
+  위해 DB credential 수명주기를 추가하지 않는다.
+- 구현 전 완료 조건을 `docs/tasks.md` T-031과 ADR-20에 먼저 기록했다. 이후 compose 계약 테스트,
+  compatible image pair 배포/rollback, n150 read·cancel·거부 smoke와 로그인 검증까지 수행한다.
+
+---
+
 ## 2026-07-14 (Map OpiNet·KREX provider 키 compose 보간 drift 수정 — T-030)
 
 - manager `.env`는 현재 Map 계약인 `KOR_TRAVEL_MAP_OPINET_API_KEY`와

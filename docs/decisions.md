@@ -613,3 +613,49 @@ Manager 대시보드는 Docker 컨테이너 시작·정지·설정 변경 API를
 
 - (open) 공개 API surface가 실제로 추가될 때 `require_public_api_key` dependency를 붙이고 key 생략 허용 조건을 endpoint별로 검토한다.
 - (open) 운영 프록시 배치가 확정되면 `KTDM_FRONTEND_ORIGINS`, `KTDM_CORS_ALLOW_ORIGINS`, `KTG_ADMIN_PROXY_SECRET` 값을 배포 런북에 비공개로 연결한다.
+
+---
+
+## ADR-20: Map↔PinVi ops principal을 API 전용 read/cancel capability로 배포한다
+
+- 상태: accepted
+- 날짜: 2026-07-18
+- 결정자: human, Codex
+
+### 컨텍스트
+
+Map의 legacy ops endpoint 제거 뒤 PinVi가 canonical datasets/pipeline REST API를 사용하려면 브라우저
+BFF secret과 분리된 서버 간 인증이 필요하다. PinVi가 필요한 mutation은 import-job 취소 하나뿐인데
+일반 write token을 주면 schedule command, refresh policy, update request까지 불필요하게 열리고, root
+`.env`를 모든 Map 컨테이너가 읽게 하면 Dagster와 UI에도 secret이 퍼진다.
+
+### 결정
+
+manager의 gitignore된 `.env`에 Map API용 read token과 cancel token을 두고, 두 값을 Map API와 PinVi
+API에만 서로 대응하는 환경변수로 주입한다. read token은 canonical ops GET/HEAD, cancel token은 exact
+import-job cancel endpoint에만 결박한다. 두 token은 32자 이상·앞뒤 공백 없음·상호 다름을 요구한다.
+고정된 단일 PinVi service principal에는 DB credential 테이블을 추가하지 않는다.
+
+### 근거
+
+- 브라우저 BFF secret을 공유하거나 trusted CIDR을 넓히지 않고 서버 간 경계를 분리한다.
+- `ops:cancel`은 PinVi가 실제로 필요한 최소 mutation만 허용한다.
+- API 컨테이너 전용 주입은 Dagster·daemon·UI·PinVi Web로 secret이 확산되는 것을 막는다.
+- 단일 고정 consumer의 두 회전 secret을 DB에서 관리하면 발급·폐기·암호화·bootstrap 수명주기만
+  추가되며 현재 권한 모델이나 감사 의미가 개선되지 않는다.
+
+### 결과(긍정)
+
+- PinVi는 canonical REST만 사용하면서 read와 cancel 권한을 서로 다른 secret으로 갖는다.
+- cancel token 탈취 시에도 schedule/policy/update request mutation은 거부된다.
+- manager가 prod secret 주입과 compatible map+PinVi image pair 배포 순서를 한 곳에서 관리한다.
+
+### 결과(부정)
+
+- Map과 PinVi image가 모두 새 계약을 이해해야 하므로 단일 서비스만 임의 rollback할 수 없다.
+- token 회전 시 두 API 컨테이너를 같은 overlap window에서 재생성해야 한다.
+
+### 후속
+
+- (open) 여러 service principal과 개별 폐기·감사 요구가 생기면 DB 기반 hashed credential registry를
+  별도 ADR로 검토한다.

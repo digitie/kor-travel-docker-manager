@@ -28,6 +28,7 @@
 | **T-025** | 배포 런북(`deploy-runbook.local.md`) + push 전 보안 감사 절차 — concierge 스타일 정렬 | `[/]` | - | 민감 런북(gitignore)·AGENTS.md 절차·DO NOT #13/#14, 각 worktree 복사 |
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
 | **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·API fallback·서비스별 계약 테스트 고정 |
+| **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -85,6 +86,23 @@
 - [x] OpiNet·KREX 공통 key는 Dagster·daemon에만, resolved preview key는 map API에만 주입하는
       최소 권한 계약과 `.env.example` placeholder를 테스트
 - [x] 실제 secret 비노출 상태로 focused test·Ruff·Docker Compose 보간 검증
+
+### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선
+
+- [ ] manager `.env`의 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
+      `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`을 map API에만 주입하고 Dagster·daemon·UI에는
+      주입하지 않는다.
+- [ ] 같은 두 값을 PinVi API의 `PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN`과
+      `PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN`으로만 전달하고 PinVi Web/Dagster에는
+      주입하지 않는다.
+- [ ] 두 token은 각각 32자 이상·앞뒤 공백 없음·상호 다름을 배포 전 검증하고, 실제 값은
+      gitignore된 `.env`에만 둔다.
+- [ ] 배포는 secret 선배치 → compatible map image → read·cancel 허용/그 외 mutation 거부 smoke
+      → compatible PinVi image 순서로 수행한다.
+- [ ] rollback은 검증된 map+PinVi image pair 단위로 수행하고, 새 PinVi와 구 map 또는 구 PinVi와
+      새 map을 장시간 혼용하지 않는다.
+- [ ] compose 계약 테스트, Docker Compose 보간, n150 cross-repo smoke와 실제 로그인 검증을
+      통과한 뒤 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
