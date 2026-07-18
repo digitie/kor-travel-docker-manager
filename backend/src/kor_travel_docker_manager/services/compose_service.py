@@ -14,7 +14,6 @@ from typing import Any
 
 import yaml
 from dotenv import dotenv_values
-
 from kor_travel_docker_manager.services.c6c_deployment import (
     _COMPATIBLE_PAIR_MUTATION_CAPABILITY,
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
@@ -43,9 +42,11 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     new_image_pair,
     revalidate_candidate_system_bind_snapshots,
     run_map_ops_smoke,
+    run_map_ui_auth_preflight,
     run_pinvi_canonical_smoke,
     run_ui_auth_smoke,
     validate_compose_candidate_protected_values,
+    validate_current_map_ui_auth_runtime,
     validate_resolved_compose_candidate_protected_values,
     validate_resolved_compose_image_pair,
     validate_resolved_compose_secret_isolation,
@@ -2268,6 +2269,7 @@ class ComposeService:
             services,
             transaction=transaction,
         )
+        preflight_ui_smoke = self._preflight_current_map_ui_auth(config)
 
         result: dict[str, Any] = {
             "success": True,
@@ -2280,6 +2282,7 @@ class ComposeService:
             "smoke": [],
             "pinvi_smoke": [],
             "ui_smoke": [],
+            "preflight_ui_smoke": preflight_ui_smoke,
             "runtime_secret_isolation": False,
             "deployment_state": "preflight_complete",
             "command": [],
@@ -2419,6 +2422,16 @@ class ComposeService:
             )
         return manifest
 
+    def _preflight_current_map_ui_auth(
+        self,
+        config: C6cDeploymentConfig,
+    ) -> list[dict[str, int | str]]:
+        runtime_config = self._inspect_container_runtime_config(
+            config.map_ui_container
+        )
+        validate_current_map_ui_auth_runtime(runtime_config, config)
+        return run_map_ui_auth_preflight(config)
+
     def _validate_resolved_compose_contract(
         self,
         config: C6cDeploymentConfig,
@@ -2557,16 +2570,27 @@ class ComposeService:
     @staticmethod
     def _redact_c6c_output(text: str, config: C6cDeploymentConfig) -> str:
         redacted = text
-        for secret in (
-            config.read_token,
-            config.cancel_token,
-            config.smoke.map_ui_password,
-            config.smoke.pinvi_admin_email,
-            config.smoke.pinvi_admin_password,
-            config.smoke.cancel_probe_job_id,
+        credentials = {
+            value
+            for value in (
+                config.read_token,
+                config.cancel_token,
+                config.map_ui_password_hash,
+                config.map_ui_session_secret,
+                config.smoke.map_ui_username,
+                config.smoke.map_ui_password,
+                config.smoke.pinvi_admin_email,
+                config.smoke.pinvi_admin_password,
+                config.smoke.cancel_probe_job_id,
+                config.contract_generation,
+            )
+            if value
+        }
+        for credential in sorted(
+            credentials,
+            key=lambda value: (-len(value), value),
         ):
-            if secret:
-                redacted = redacted.replace(secret, "<redacted>")
+            redacted = redacted.replace(credential, "<redacted>")
         return redacted
 
     def _append_stage_result(
@@ -3251,6 +3275,7 @@ class ComposeService:
 
             services = services_for_target("pinvi")
             self._require_services_ready(services, transaction=transaction)
+            preflight_ui_smoke = self._preflight_current_map_ui_auth(config)
             result: dict[str, Any] = {
                 "success": True,
                 "returncode": 0,
@@ -3261,6 +3286,7 @@ class ComposeService:
                 "stdout": "",
                 "stderr": "",
                 "rollback_state": "preflight_complete",
+                "preflight_ui_smoke": preflight_ui_smoke,
             }
             cancel_probe_state = PinviCancelProbeState()
             try:
@@ -3368,8 +3394,11 @@ class ComposeService:
         if (
             config.map_container not in container_names
             or config.pinvi_container not in container_names
+            or config.map_ui_container not in container_names
         ):
-            raise DeploymentContractError("C6c API containers are missing from runtime inspection")
+            raise DeploymentContractError(
+                "C6c protected containers are missing from runtime inspection"
+            )
         return {
             container_name: self._inspect_container_runtime_config(container_name)
             for container_name in container_names

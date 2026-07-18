@@ -282,11 +282,17 @@ public service token, trusted CIDR을 재사용하지 않는다.
   사용하며 schedule command, refresh policy, update request mutation은 같은 token으로도 403이어야
   한다.
 
-`KTDM_C6C_CONTRACT_GENERATION`, Map UI/PinVi admin smoke 계정, owned typed-failure
+Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
+`KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH`, `KOR_TRAVEL_MAP_UI_SESSION_SECRET`은 기본값 없는 `:?`
+보간으로 Map UI의 정확한 Env path에만 전달한다. PBKDF2 반복 수는 100,000 이상, session secret은 32자
+이상이며 Python `str.isspace()`가 인식하는 모든 Unicode 공백 문자를 포함할 수 없다. Map UI는
+`env_file`을 사용할 수 없다.
+`KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정, owned typed-failure
 `KTDM_C6C_CANCEL_PROBE_JOB_ID`는 manager `.env`에만 둔다. 이 값들은 compose service env나 다른
 `env_file`에 주입하지 않는다. 특히 contract generation은 secret이 아니더라도 배포 판단용 manager-only
 값이므로 resolved compose의 command·label·build arg를 포함한 scalar와 runtime Env 어디에도 전달하지
-않는다. 최초 설치나 legacy v1 manifest 환경에서는 base dependency부터 전체
+않는다. frozen snapshot과 rollback도 최초 environment snapshot의 Map UI 인증값만 해석하고 hash·session
+secret의 다른 서비스 노출이나 평문 비밀번호 주입을 거부한다. 최초 설치나 legacy v1 manifest 환경에서는 base dependency부터 전체
 토폴로지를 순서대로 bootstrap하고 candidate pair 전체 계약을 검증해 최초 v2를 만든다.
 
 ```bash
@@ -315,8 +321,10 @@ ktdctl pinvi-pair deploy --build
    host network·PinVi production mode·Map bind port·정확한 loopback base·container identity·두 immutable
    image override·`env_file`/secret 격리를 API 변경 전에 검사한다. 별도 compose override/include/extends는
    mutation source로 허용하지 않는다.
-2. 현재 active pair와 공용 dependency·Map/PinVi UI·Dagster의 running/healthy를 확인한다. 비-API
-   서비스는 변경하지 않고 기존 PinVi API를
+2. 현재 active pair와 공용 dependency·Map/PinVi UI·Dagster의 running/healthy를 확인한다. 현재 Map UI
+   container를 inspect해 username·hash·session secret이 frozen environment와 정확히 같은지 검증한 다음,
+   login→`/ops/providers`→logout→재차단 lifecycle을 통과해야 한다. 어느 단계든 실패하면 Docker mutation은
+   0이며 기존 PinVi API도 중지하지 않는다. 통과하면 비-API 서비스는 변경하지 않고 기존 PinVi API를
    먼저 중지해 mixed pair 노출을 막은 뒤 `--no-deps`로 새 Map API image만 재생성한다. 직접 read 200, 무토큰 401,
    cancel token으로 허용된 cancel 계약과 대표 non-cancel schedule command mutation 403을 확인한다.
    실제 running job이 없으면
@@ -327,9 +335,10 @@ ktdctl pinvi-pair deploy --build
    502 `DAGSTER_TERMINATE_FAILED`, 503 `DAGSTER_UNAVAILABLE` 중 status/code/details/retryability가 정확히
    일치하고 양의 `Retry-After`를 보존해야 한다. 429나 generic code는 실패다.
 4. 변경하지 않은 모든 필수 service가 계속 running/healthy인지 확인한 뒤 managed container를 `docker inspect`로
-   검사한다. Map API에는 Map 이름 세 개(read/cancel/required), PinVi API에는 대응 token 두 개만
-   존재해야 한다. runtime `.Config`의 Env/Cmd/Entrypoint/Labels와 안전하게 순회할 수 있는 모든 scalar에서
-   secret 이름·값을 찾고 두 API의 정확한 허용 Env path 외 노출을 거부한다.
+   검사한다. Map API에는 Map 이름 세 개(read/cancel/required), PinVi API에는 대응 token 두 개만,
+   Map UI에는 username·PBKDF2 hash·session secret 세 개만 존재해야 한다. runtime `.Config`의
+   Env/Cmd/Entrypoint/Labels와 안전하게 순회할 수 있는 모든 scalar에서 보호 이름·값을 찾고 각 서비스의
+   정확한 허용 Env path 외 노출과 UI 평문 비밀번호 주입을 거부한다.
 5. Map UI 로그인·`/ops/providers` 보호 화면·로그아웃·재차단과 PinVi Web login shell을 확인한다. 새
    generation의 Map/PinVi canonical smoke와 runtime 격리를 한 번 더 확인한 뒤에만 active manifest를
    갱신한다.
