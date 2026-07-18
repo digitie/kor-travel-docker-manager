@@ -27,7 +27,7 @@
 | **T-024** | 로그아웃/세션만료 시 LoginScreen 전환 회귀 수정(auth-me 401→authenticated:false) | `[x]` | 2026-06-24 | PR #37 FE-2 회귀, 브라우저 E2E로 발견·PR #41 머지 |
 | **T-025** | 배포 런북(`deploy-runbook.local.md`) + push 전 보안 감사 절차 — concierge 스타일 정렬 | `[/]` | - | 민감 런북(gitignore)·AGENTS.md 절차·DO NOT #13/#14, 각 worktree 복사 |
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
-| **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·API fallback·서비스별 계약 테스트 고정 |
+| **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
@@ -203,6 +203,11 @@
       격리를 분리하는 회귀 계약을 추가했다. 공식 리뷰 승인 뒤 ext4 C6c targeted `528 passed`, backend 전체
       `616 passed`, strict mypy와 신규 lint `0`, production Docker Compose `config --quiet` 및 resolved guard
       `2/2`를 통과했다.
+- [x] Map clean-cut entrypoint에서 제거된 provider credential env 9개를 API compose에서 삭제하고, 해당
+      이름·legacy data.go.kr credential·제거된 live-preview flag를 raw candidate·resolved candidate·최종
+      C6c contract가 이름의 존재 자체로 fail-close하도록 회귀 계약을 추가했다. Map API의 `command`·
+      `entrypoint` override와 runtime `Cmd`/`Entrypoint` drift도 금지해 immutable image migration과
+      entrypoint guard 우회를 차단했다.
 - [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
       통과한 뒤 완료 이력으로 옮긴다.
 
