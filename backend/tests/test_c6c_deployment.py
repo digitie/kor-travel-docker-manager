@@ -1472,7 +1472,6 @@ def test_resolved_candidate_rejects_inexact_compose_dollar_escaping(
 @pytest.mark.parametrize(
     "environment_name",
     [
-        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
     ],
@@ -1606,6 +1605,10 @@ def test_compose_candidate_rejects_invalid_map_ui_auth_source_environment(
     [
         ("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", None),
         (
+            "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+            "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:-attacker}",
+        ),
+        (
             "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
             "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH}",
         ),
@@ -1637,6 +1640,32 @@ def test_compose_candidate_rejects_noncanonical_map_ui_auth_wiring(
             compose_path=str(compose_path),
             root_env_path=str(compose_path.with_name(".env")),
             environment=_raw_candidate_environment(),
+        )
+
+
+@pytest.mark.parametrize("username", [None, "attacker"])
+def test_resolved_candidate_rejects_inexact_map_ui_username_wiring(
+    username: str | None,
+) -> None:
+    resolved = _resolved_compose()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    environment = map_ui["environment"]
+    assert isinstance(environment, dict)
+    if username is None:
+        environment.pop("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME")
+    else:
+        environment["KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"] = username
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="KOR_TRAVEL_MAP_UI_ADMIN_USERNAME wiring is invalid",
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=_resolved_candidate_environment(),
         )
 
 
@@ -2911,63 +2940,97 @@ def test_compose_candidate_rejects_protected_reference_in_non_api_service(
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("environment", {"COPIED_USERNAME": _MAP_UI_USERNAME}),
-        ("command", ["worker", _MAP_UI_USERNAME]),
-        ("labels", {"copied-username": _MAP_UI_USERNAME}),
-    ],
+    "ordinary_value",
+    [_MAP_UI_USERNAME, f"prefix-{_MAP_UI_USERNAME}-suffix"],
 )
-def test_raw_candidate_rejects_map_ui_username_outside_exact_path(
+@pytest.mark.parametrize("field", ["environment", "command", "labels"])
+def test_raw_candidate_allows_username_value_in_ordinary_scalar(
     field: str,
-    value: object,
+    ordinary_value: str,
 ) -> None:
     candidate = _source_compose()
     services = candidate["services"]
     assert isinstance(services, dict)
     rustfs = services["rustfs"]
     assert isinstance(rustfs, dict)
-    rustfs[field] = value
+    if field == "environment":
+        rustfs_environment = rustfs["environment"]
+        assert isinstance(rustfs_environment, dict)
+        rustfs_environment["ORDINARY_IDENTITY"] = ordinary_value
+    elif field == "command":
+        rustfs[field] = ["worker", ordinary_value]
+    else:
+        rustfs[field] = {"ordinary-identity": ordinary_value}
 
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="compose candidate leaks a protected C6c reference",
-    ):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path="/tmp/docker-compose.yml",
-            root_env_path="/tmp/.env",
-            environment=_raw_candidate_environment(),
-        )
+    validate_compose_candidate_protected_values(
+        candidate,
+        compose_path="/tmp/docker-compose.yml",
+        root_env_path="/tmp/.env",
+        environment=_raw_candidate_environment(),
+    )
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("environment", {"COPIED_USERNAME": _MAP_UI_USERNAME}),
-        ("command", ["worker", _MAP_UI_USERNAME]),
-        ("labels", {"copied-username": _MAP_UI_USERNAME}),
-    ],
+    "ordinary_value",
+    [_MAP_UI_USERNAME, f"prefix-{_MAP_UI_USERNAME}-suffix"],
 )
-def test_resolved_candidate_rejects_map_ui_username_outside_exact_path(
+@pytest.mark.parametrize("field", ["environment", "command", "labels"])
+def test_resolved_candidate_allows_username_value_in_ordinary_scalar(
     field: str,
-    value: object,
+    ordinary_value: str,
 ) -> None:
     resolved = _resolved_compose()
     services = resolved["services"]
     assert isinstance(services, dict)
     pinvi_web = services["pinvi-web"]
     assert isinstance(pinvi_web, dict)
-    pinvi_web[field] = value
+    if field == "environment":
+        pinvi_web_environment = pinvi_web.setdefault("environment", {})
+        assert isinstance(pinvi_web_environment, dict)
+        pinvi_web_environment["ORDINARY_IDENTITY"] = ordinary_value
+    elif field == "command":
+        pinvi_web[field] = ["worker", ordinary_value]
+    else:
+        pinvi_web[field] = {"ordinary-identity": ordinary_value}
+
+    validate_resolved_compose_candidate_protected_values(
+        resolved,
+        environment=_resolved_candidate_environment(),
+    )
+    validate_resolved_compose_secret_isolation(resolved, _production_config())
+
+
+@pytest.mark.parametrize("resolved", [False, True], ids=["raw", "resolved"])
+def test_candidate_rejects_username_environment_name_outside_map_ui(
+    resolved: bool,
+) -> None:
+    document = _resolved_compose() if resolved else _source_compose()
+    services = document["services"]
+    assert isinstance(services, dict)
+    if resolved:
+        services["rustfs"] = {"environment": {"RUSTFS_LOG_LEVEL": "info"}}
+    rustfs = services["rustfs"]
+    assert isinstance(rustfs, dict)
+    rustfs_environment = rustfs.setdefault("environment", {})
+    assert isinstance(rustfs_environment, dict)
+    rustfs_environment["KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"] = "ordinary-identity"
 
     with pytest.raises(
         ComposeCandidateContractError,
-        match="resolved compose candidate leaks a protected C6c reference",
+        match="protected C6c reference",
     ):
-        validate_resolved_compose_candidate_protected_values(
-            resolved,
-            environment=_resolved_candidate_environment(),
-        )
+        if resolved:
+            validate_resolved_compose_candidate_protected_values(
+                document,
+                environment=_resolved_candidate_environment(),
+            )
+        else:
+            validate_compose_candidate_protected_values(
+                document,
+                compose_path="/tmp/docker-compose.yml",
+                root_env_path="/tmp/.env",
+                environment=_raw_candidate_environment(),
+            )
 
 
 @pytest.mark.parametrize(
@@ -3251,46 +3314,85 @@ def test_current_map_ui_runtime_rejects_authentication_drift(
         validate_current_map_ui_auth_runtime(runtime, config)
 
 
+@pytest.mark.parametrize(
+    "ordinary_value",
+    [_MAP_UI_USERNAME, f"prefix-{_MAP_UI_USERNAME}-suffix"],
+)
 @pytest.mark.parametrize("field", ["Env", "Cmd", "Labels"])
-def test_current_map_ui_runtime_rejects_copied_username_in_other_scalar(
+def test_current_map_ui_runtime_allows_username_value_in_ordinary_scalar(
     field: str,
+    ordinary_value: str,
 ) -> None:
     config = _production_config()
     runtime = deepcopy(_runtime_secret_configs(config)[config.map_ui_container])
     if field == "Env":
         environment = runtime["Env"]
         assert isinstance(environment, dict)
-        environment["COPIED_USERNAME"] = _MAP_UI_USERNAME
+        environment["ORDINARY_IDENTITY"] = ordinary_value
     elif field == "Cmd":
-        runtime[field] = ["worker", _MAP_UI_USERNAME]
+        runtime[field] = ["worker", ordinary_value]
     else:
-        runtime[field] = {"copied-username": _MAP_UI_USERNAME}
+        runtime[field] = {"ordinary-identity": ordinary_value}
 
-    with pytest.raises(
-        DeploymentContractError,
-        match="current Map UI authentication leaks outside",
-    ):
-        validate_current_map_ui_auth_runtime(runtime, config)
+    validate_current_map_ui_auth_runtime(runtime, config)
 
 
+@pytest.mark.parametrize(
+    "ordinary_value",
+    [_MAP_UI_USERNAME, f"prefix-{_MAP_UI_USERNAME}-suffix"],
+)
 @pytest.mark.parametrize("field", ["Env", "Cmd", "Labels"])
-def test_final_runtime_rejects_copied_map_ui_username_in_other_scalar(
+def test_final_runtime_allows_username_value_in_other_service_scalar(
     field: str,
+    ordinary_value: str,
 ) -> None:
     config = _production_config()
     runtime = _runtime_secret_configs(config)
-    map_ui = runtime[config.map_ui_container]
+    ordinary_service = runtime["pinvi-web-latest"]
     if field == "Env":
-        environment = map_ui["Env"]
-        assert isinstance(environment, dict)
-        environment["COPIED_USERNAME"] = _MAP_UI_USERNAME
+        ordinary_service["Env"] = {"ORDINARY_IDENTITY": ordinary_value}
     elif field == "Cmd":
-        map_ui[field] = ["worker", _MAP_UI_USERNAME]
+        ordinary_service[field] = ["worker", ordinary_value]
     else:
-        map_ui[field] = {"copied-username": _MAP_UI_USERNAME}
+        ordinary_service[field] = {"ordinary-identity": ordinary_value}
 
-    with pytest.raises(DeploymentContractError, match="leaks"):
+    validate_runtime_secret_isolation(runtime, config)
+
+
+def test_final_runtime_rejects_username_environment_name_outside_map_ui() -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime["pinvi-web-latest"] = {
+        "Env": {"KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "ordinary-identity"}
+    }
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=(
+            "a C6c runtime protected value is present in an unauthorized container"
+        ),
+    ):
         validate_runtime_secret_isolation(runtime, config)
+
+
+@pytest.mark.parametrize("username", [None, "attacker"])
+def test_current_map_ui_runtime_rejects_inexact_username(
+    username: str | None,
+) -> None:
+    config = _production_config()
+    runtime = deepcopy(_runtime_secret_configs(config)[config.map_ui_container])
+    environment = runtime["Env"]
+    assert isinstance(environment, dict)
+    if username is None:
+        environment.pop("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME")
+    else:
+        environment["KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"] = username
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="authentication differs from the frozen environment",
+    ):
+        validate_current_map_ui_auth_runtime(runtime, config)
 
 
 @pytest.mark.parametrize(
@@ -7729,10 +7831,9 @@ def test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair(
 def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     service = ComposeService()
     config = _production_config()
-    credentials = (
+    secrets = (
         _READ_TOKEN,
         _CANCEL_TOKEN,
-        _MAP_UI_USERNAME,
         _MAP_UI_PASSWORD_HASH,
         _MAP_UI_SESSION_SECRET,
         _MAP_UI_PASSWORD,
@@ -7741,7 +7842,7 @@ def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) 
         _CANCEL_PROBE_JOB_ID,
         _CONTRACT_GENERATION,
     )
-    all_secrets = " ".join(credentials)
+    stage_output = " ".join((_MAP_UI_USERNAME, *secrets))
     monkeypatch.setattr(
         service,
         "run",
@@ -7749,8 +7850,8 @@ def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) 
             "success": False,
             "returncode": 1,
             "command": [],
-            "stdout": all_secrets,
-            "stderr": all_secrets,
+            "stdout": stage_output,
+            "stderr": stage_output,
         },
     )
     result: dict[str, object] = {
@@ -7774,17 +7875,17 @@ def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) 
         transaction=Mock(spec=ComposeTransactionSnapshot),
     )
     serialized = json.dumps(result)
-    for secret in credentials:
+    assert _MAP_UI_USERNAME in serialized
+    for secret in secrets:
         assert secret not in serialized
 
 
 def test_c6c_config_repr_error_and_redactor_never_expose_credentials() -> None:
     service = ComposeService()
     config = _production_config()
-    credentials = (
+    secrets = (
         config.read_token,
         config.cancel_token,
-        config.smoke.map_ui_username,
         config.map_ui_password_hash,
         config.map_ui_session_secret,
         config.smoke.map_ui_password,
@@ -7793,7 +7894,7 @@ def test_c6c_config_repr_error_and_redactor_never_expose_credentials() -> None:
         config.smoke.cancel_probe_job_id,
         config.contract_generation,
     )
-    raw = " | ".join(credentials)
+    raw = " | ".join((config.smoke.map_ui_username, *secrets))
     redacted = service._redact_c6c_output(raw, config)
     error = DeploymentContractError(redacted)
     surfaces = (
@@ -7805,8 +7906,9 @@ def test_c6c_config_repr_error_and_redactor_never_expose_credentials() -> None:
     )
 
     for surface in surfaces:
-        for credential in credentials:
-            assert credential not in surface
+        assert config.smoke.map_ui_username in surface
+        for secret in secrets:
+            assert secret not in surface
 
 
 def test_c6c_redactor_removes_overlapping_credentials_without_suffix_residue() -> None:
@@ -7833,13 +7935,15 @@ def test_c6c_redactor_removes_overlapping_credentials_without_suffix_residue() -
 
     redacted = ComposeService()._redact_c6c_output(raw, config)
 
-    assert redacted == " | ".join(["<redacted>"] * 4)
+    assert redacted == " | ".join(
+        ["<redacted>", "<redacted>", "<redacted>", config.smoke.map_ui_username]
+    )
+    assert config.smoke.map_ui_username in redacted
     assert "cancel-identifiable-tail" not in redacted
     assert "password-identifiable-tail" not in redacted
-    for credential in (
+    for secret in (
         config.cancel_token,
         config.read_token,
         config.smoke.map_ui_password,
-        config.smoke.map_ui_username,
     ):
-        assert credential not in redacted
+        assert secret not in redacted

@@ -2577,7 +2577,6 @@ class ComposeService:
                 config.cancel_token,
                 config.map_ui_password_hash,
                 config.map_ui_session_secret,
-                config.smoke.map_ui_username,
                 config.smoke.map_ui_password,
                 config.smoke.pinvi_admin_email,
                 config.smoke.pinvi_admin_password,
