@@ -4,6 +4,184 @@
 
 ---
 
+## 2026-07-19 (C6c closed transaction 회귀 검증 — T-031)
+
+- pass17~19의 frozen compose transaction, candidate/baseline 분리, 동일 transaction 복구 계약에 맞춰
+  이전 테스트 fixture를 갱신했다. production guard를 우회하거나 실제 manager 경로 검증을 약화하지
+  않고, 테스트마다 frozen root/active recovery transaction을 명시적으로 주입했다.
+- C6c/Docker config focused 테스트 `395 passed`, backend 전체 테스트 `453 passed`,
+  `c6c_deployment.py` strict mypy와 변경 파일 Ruff를 통과했다.
+- n150 production 배포와 live UI/API E2E는 아직 수행하지 않았으므로 T-031은 진행 중으로 유지한다.
+
+## 2026-07-18 (Map↔PinVi C6c ops principal 배포 결선 착수 — T-031)
+
+- Map canonical ops clean-cut 뒤 PinVi가 삭제된 legacy endpoint를 호출하던 문제를 복구하기 위해,
+  서비스 간 principal을 `ops:read`와 import-job `ops:cancel` 두 capability로 분리한다.
+- token은 manager의 gitignore된 `.env`를 단일 source로 사용하되 map API와 PinVi API에만 각각
+  전달한다. Map Dagster·daemon·UI와 PinVi Web·Dagster에는 전달하지 않는다.
+- 일반 write token은 schedule·refresh policy·update request까지 불필요하게 열기 때문에 두지
+  않는다. cancel token은 exact import-job cancel endpoint에만 결박하며, 단일 고정 PinVi 주체를
+  위해 DB credential 수명주기를 추가하지 않는다.
+- 구현 전 완료 조건을 `docs/tasks.md` T-031과 ADR-20에 먼저 기록했다. 이후 compose 계약 테스트,
+  compatible image pair 배포/rollback, n150 read·cancel·거부 smoke와 로그인 검증까지 수행한다.
+- 적대적 리뷰에서 production mode 누락 시 local+빈 token으로 부팅되는 fail-open, public liveness만으로
+  Map과 PinVi를 동시에 올리는 순서, host-network bind/publish port 혼동, mutable tag rollback,
+  gitignore된 override의 secret leak 검사 공백을 확인했다.
+- `KTDM_DEPLOYMENT_ENVIRONMENT`와 `PINVI_ENVIRONMENT`를 명시적으로 일치시키고 production은 Map
+  `KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true`까지 요구한다. 두 token은 32자 이상·모든 공백 없음·
+  상호 다름을 container 변경 전에 검사한다.
+- 최초 구현은 production `ensure pinvi`를 dependency 1회 → Map API wait → signed read 200 envelope/
+  무토큰 401/import-job cancel 404/non-cancel mutation 403 → PinVi API wait → 나머지 앱 순서로
+  분리했다. 아래 적대적 재리뷰에서 일반 ensure를 폐쇄하고 mixed pair 없는 전용 deploy로 보강했다.
+- merged compose와 prod override의 environment/env_file/command/build args를 실제 token 값까지 검사하고,
+  기동 뒤에는 모든 managed container를 inspect해 Map API와 PinVi API 외 노출을 거부한다.
+- `ktdctl pinvi-pair capture --verified-compatible`와 `ktdctl pinvi-pair rollback`을 추가했다. manifest는
+  manager state 디렉터리에 두 immutable image ID를 mode 0600으로 원자 기록하며,
+  단일 image·moving tag rollback 표면은 제공하지 않는다. 실제 테스트와 n150 배포 검증은 아직 남았다.
+- C6c 적대적 재리뷰의 P1을 반영해 production 일반 `ensure`/container action·config·reset/direct Compose
+  경로의 API mutation을 중앙 차단하고, 전용 `ktdctl pinvi-pair deploy` capability만 허용했다. deploy,
+  capture, rollback은 preflight부터 manifest commit/복구까지 같은 host filesystem lock을 잡는다.
+- manifest를 generation 포함 v2로 올렸다. merged compose의 두 API host network, PinVi production mode,
+  Map bind port, 정확한 loopback base, container identity, manager-only smoke credential와 `env_file` 격리,
+  두 immutable image override를 mutation 전에 검증한다. local token opt-out도 두 값이 모두 빈 경우로
+  제한했다.
+- mixed pair 창을 없애기 위해 기존 PinVi API를 먼저 quiesce하고 Map smoke → PinVi admin 로그인과
+  ETL/provider-sync 200 envelope·typed cancel 오류/`Retry-After` → remaining app `--wait` → Map UI
+  로그인/보호 `/ops/providers`/로그아웃과 PinVi Web shell → runtime inspect 순으로 승격한다.
+- 어느 중간 단계나 rollback 검증이 실패해도 manifest를 갱신하지 않고 배포 시작 시점 active pair의 두
+  image를 함께 복구해 전체 계약을 재검증한다. 복구가 불가능하면 두 API를 중지하고
+  `halted_requires_operator`를 반환한다. 이 보강의 테스트 실행·n150 live 검증은 아직 하지 않았다.
+- 최종 적대적 리뷰를 반영해 generic API mutation guard가 mode/required/token pair를 공통 검사하도록
+  닫고, Compose 분류는 알려진 read-only만 허용하며 `scale`·`watch`·알 수 없는 명령을 default-deny한다.
+- pair deploy/rollback은 dependency·UI·Dagster를 build/recreate하지 않는다. 비-API 필수 서비스는 변경
+  없이 running/healthy를 검사하고 두 API만 `--no-deps`로 변경·복구한다. final/recovery runtime 검증도
+  `ps --all` 존재 여부가 아니라 필수 서비스의 실제 running/healthy 상태를 요구한다.
+- clean/legacy v1용 capture를 host-lock bootstrap transaction으로 강화했다. candidate Map → signed smoke
+  → PinVi → 전체 smoke 성공 뒤에만 최초 v2를 기록하고 실패하면 두 API를 모두 중지한다. PinVi owned
+  cancel fixture는 정확한 409/502/503 code/details/retryability와 양의 `Retry-After`만 허용하며 429와
+  generic 오류는 거부한다. 요청에 따라 이 보강 직후 테스트는 아직 실행하지 않았다.
+- 최종 차단 리뷰에서 local manager와 PinVi mode의 실제 계약을 `local → development`로 바로잡고,
+  모든 Compose/Docker SDK/config 파일 mutation이 공통 mode/token guard와 재진입 가능한 host lock을
+  공유하도록 닫았다. config recreate/init 실패는 compose 파일의 원래 byte를 원자 복원하고 기존 runtime
+  재생성까지 시도한다.
+- clean capture는 빈 host에서도 base dependency → Map API/signed smoke → Map dependents → PinVi API/
+  canonical smoke → PinVi dependents로 전체 topology를 구성한다. 실패 시 기존 container를 삭제하지 않고
+  transaction이 만든 container만 정리한다. rollback/recovery도 Map 복원·signed smoke 뒤 PinVi를 복원해
+  혼합 pair를 실행하지 않는다.
+- PinVi ETL/provider 응답은 `data: null`을 거부하고 실제 DTO 핵심 shape를 검사한다. Web 200도 admin login
+  form과 Next build marker가 모두 있어야 한다. runtime inspect는 Env뿐 아니라 Cmd/Entrypoint/Labels와 모든
+  안전 scalar에서 secret 이름·값 누출을 차단한다.
+- manifest/lock을 checkout-independent Compose project 상태 디렉터리로 옮기고 relative/noncanonical/
+  cross-project production override를 거부한다. manifest 원자 replace 뒤 부모 디렉터리까지 fsync한다.
+  이 차단 리뷰 반영 뒤에도 신규 적대적 리뷰 2명 승인 전에는 테스트·lint를 실행하지 않는다.
+- 신규 1차 적대적 리뷰에서 발견한 `wait --down-project=true` 분류 우회, raw Env 중복에 가려지는 secret,
+  offset 없는 PinVi datetime, REST 500에서의 config/runtime 복원 진단 유실을 보강했다. 회귀 테스트는
+  추가했지만 2명 승인 전 실행 금지 원칙에 따라 아직 실행하지 않았다.
+- pass3 적대적 차단 리뷰 8건을 반영했다. clean bootstrap은 실제 init 예외도 created-only cleanup으로
+  수렴하고, `wait --down-project=*`는 service 인자와 무관하게 project-wide guard/lock을 사용한다. production
+  state root/파일명은 project별 단일 경로로 고정했다. Map/PinVi DTO와 owned cancel member, manifest
+  version/recorded_at을 fail-closed로 강화했으며 parent fsync 실패 시 이전 manifest를 복원한다. config restore와
+  미생성 start fallback은 subprocess 진단을 REST까지 보존한다. 회귀 테스트는 작성만 했고 신규 리뷰 2명 승인
+  전까지 실행하지 않는다.
+- pass4 적대적 차단 리뷰 3건을 반영했다. Map dataset-grid의 canonical 필드를 `execution_coverage`로
+  바로잡고 production Map bind/PinVi base URL을 정확히 `12701`로 고정했다. Map dataset row와 PinVi
+  repository/asset/schedule/sensor 배열 원소를 실제 DTO shape까지 검사하며 `[null]`과 잘못된 nested 원소를
+  거부하는 회귀 fixture를 추가했다. 신규 적대적 리뷰 2명 승인 전이므로 테스트·lint·build는 실행하지 않았다.
+- pass5 적대적 차단 리뷰 3건을 반영했다. Map tokenless/cross-token/non-cancel capability 음성 smoke는 HTTP
+  status와 RFC7807 code를 함께 검사한다. PinVi destructive cancel은 transaction state로 정확히 한 번만
+  호출하고 첫 증거를 deploy/bootstrap/final verification/recovery에서 재사용하며 uncertain 결과에는 재요청하지
+  않는다. cancellation attempt/member/Dagster run의 전체 datetime·structured error·lifecycle·commit 보존
+  DTO와 canonical 409 root-only shape를 회귀 fixture로 고정했다. 신규 적대적 리뷰 2명 승인 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass6 cancel DTO 정렬을 반영했다. full 409은 unresolved count 0, resolved root+unresolved child,
+  transient all-resolved topology를 허용하되 count와 member 상태를 정확히 맞춘다. retryable은 모든 failed
+  member/run의 exact run-backed `cancel_failed`와 retryable error를 요구하고 `already_terminal` 대체를
+  거부한다. in-progress/definitive CAS drift의 member `cancel_failed`+run `cancelled` canonical 전이는
+  허용한다. actual `409 PIPELINE_CANCELLATION_UNSAFE`+`failed`와
+  `503 DAGSTER_TERMINATION_TIMEOUT`+`retryable` pair도 고정했다. 회귀 fixture만 작성했으며
+  테스트·lint·build는 실행하지 않았다.
+- pass7에서 failed attempt의 retryable run-backed/definitive mismatch 혼재, status-error-finished DB lifecycle,
+  retry subset lineage, frozen termination flag와 engine timestamp를 actual Map/PinVi 정본에 맞췄다.
+  `Retry-After` header presence와 양의 정수 parsing을 분리하고, Compose `kill -s/--signal` 값 소비 및
+  service-less/project-wide·unknown option default-deny fixture를 추가했다. 신규 적대적 리뷰 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass8에서 Compose 옵션을 command별로 분리해 `build --pull`, `run --rm`, `rm -s/--stop`이 다음 service를
+  값으로 소비하지 않게 했다. `config -o/--output`의 분리·inline·누락 형식은 write-capable mutation으로
+  host lock과 capability를 요구하고, `--format json` 등 명시한 read-only 형식만 무변경으로 허용한다.
+- PinVi cancel detail은 in-progress runless 실패를 definitive code로 한정하고, run-backed member/run 오류
+  policy group, retryable exact evidence, resolved member와 Dagster terminal mapping을 현재 Map/PinVi 정본에
+  맞췄다. feature-load root의 failed/SUCCESS 예외는 동일 run의 `provider_feature_load` child 증거가 있을
+  때만 허용한다.
+- `KTDM_C6C_CONTRACT_GENERATION`을 manager-only 보호값으로 올려 resolved compose scalar, non-root
+  `env_file`, runtime Env를 포함한 모든 container 주입을 거부한다. bootstrap 정리 명령이 예외를 내도
+  예외를 외부로 흘리지 않고 operator-required 상태로 수렴한다. 회귀 fixture만 작성했으며 신규 적대적
+  리뷰 2명 승인 전이므로 테스트·lint·build는 실행하지 않았다.
+- pass9에서 `Retry-After` parser를 ASCII `[0-9]+`와 1..300 범위로 고정했다. 부호, 앞뒤 공백,
+  Unicode digit, 0, 301 이상은 header가 존재해도 parsing 실패로 처리한다.
+- rustfs 같은 non-API config update/reset 및 미생성 start-create도 candidate raw compose 전체를 먼저
+  검사한다. exact Map/PinVi API environment interpolation 외의 environment·label·command·build scalar에서
+  ops/manager 보호 이름이나 현재 보호값을 참조하면 거부하고, non-root `env_file` 내용의 alias 값도 검사한다.
+  거부는 compose 파일 쓰기와 container recreate 전에 발생하며 REST는 typed 409
+  `COMPOSE_CANDIDATE_PROTECTED_REFERENCE`, `mutation_applied=false`를 반환한다. 정적 fixture만 보강했고
+  테스트·lint·build는 실행하지 않았다.
+- pass10 적대적 차단 리뷰 4건을 반영했다. candidate raw/resolved 검사를 compose 전체 graph와 top-level
+  secret/config 외부 파일로 확장하고, API raw wiring은 suffix까지 canonical exact로 고정했다. `env_file` 경로는
+  Compose 변수 연산자와 `$$`를 명시 해석하되 중첩·미완성 문법은 fail-close한다. generic ensure/up/create/
+  recreate와 config prewrite가 검증 전에 Docker/file mutation을 실행하지 않도록 중앙 gate를 연결했고 candidate
+  오류는 REST typed 409 detail을 보존한다. 지시에 따라 테스트·lint·build는 실행하지 않았다.
+- pass11 적대적 차단 리뷰를 반영했다. volume short/long bind source를 보간·canonicalize해 root `.env`, manager
+  state 파일, 보호 이름·현재 값이 든 파일의 relative/absolute/traversal/symlink/`:ro` 우회를 raw/resolved 모두
+  차단했다. Windows-looking source는 fail-close하고 named volume은 host file 검사에서 분리했다. 내용 확인이
+  불가능한 external secret/config alias reference도 빈 exact allowlist 밖에서 거부하며 rustfs config REST의
+  typed 409와 compose/container mutation 0 fixture를 고정했다. 지시에 따라 테스트·lint·build는 실행하지 않았다.
+- pass12 적대적 차단 리뷰 2건을 반영했다. manager 파일 ancestor·state directory·host root bind는 먼저
+  거부하고, directory bind를 서비스별 canonical source/target allowlist로 닫았다. missing source와 oversized/
+  unreadable/non-regular file은 Docker 자동 생성·mutation 전에 fail-close한다. cAdvisor의 `/:/rootfs`, `/var/run`,
+  `/var/lib/docker`, `/dev/disk` mount를 제거하고 Docker socket+`/sys`, `--docker_only=true`로 축소했다. RustFS
+  REST typed 409와 source/compose/container mutation 0 fixture를 보강했으며 같은 리뷰어 재승인 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass13 적대적 리뷰의 volume/TOCTOU 지적을 반영했다. 운영 DB·RustFS·Geo·Prometheus·Grafana bind를 별도
+  migration 없이 유지하되 config API의 top-level/service volume graph를 pre-request compose와 exact immutable로
+  고정했다. internal/default named volume만 허용하고 bind-capable local driver option, unknown driver/option,
+  external alias를 raw/resolved에서 거부한다. cAdvisor short/long RO access와 `/sys` mountpoint, root:docker `0660`
+  socket, root-owned parent chain의 inode/device/mode snapshot을 mutex 안에서 compose write·Docker subprocess 직전
+  재검증한다. mismatch의 write 전 차단/compose byte 복원과 REST typed 409 mutation 0 fixture를 보강했으며 같은
+  리뷰어 재승인 전이므로 테스트·lint·build는 실행하지 않았다.
+- pass14 차단 리뷰를 반영해 mutex 안에서 persisted/request의 raw·resolved volume graph를 각각 exact 비교하고,
+  include/extends/`COMPOSE_FILE`/추가 override를 거부하는 single-file mutation 경계를 고정했다. cAdvisor는 raw
+  literal과 resolved identity 모두 RO `/sys`·Docker socket exact set만 허용하고 named-volume raw alias와
+  resolved project-name drift를 차단한다. 첫 mutation 성공 후 다음 preflight가 drift하면 원래 오류와 복구
+  진단을 typed 500으로 보존하고 compose byte/mode와 persisted runtime을 best-effort 복구한다. reset/API
+  no-mutation, Docker/ensure direct/API post-mutation fixture를 추가했으며 같은 리뷰어 재승인 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass15 차단 리뷰 4건만 반영했다. mutation command에서 override 탐색을 제거하고 subprocess 직전
+  single-file 경계를 재검증한다. `ensure` recovery는 최초 compose byte/mode를 원자 복원하고 동일
+  raw/resolved hash·system snapshot을 재검증한 뒤에만 baseline runtime을 재생성하며, 실패 시 Docker recovery를
+  실행하지 않는다. preflight drift 원본 복원이 실패해 durable config mutation이 남는 경우도 원래 candidate
+  오류와 복구 진단을 typed 500으로 보존한다. CLI fixture는 완전한 validation DTO로 고쳤고 테스트·lint·build는
+  재승인 전 금지에 따라 실행하지 않았다.
+- pass16에서 Compose interpolation TOCTOU를 닫았다. transaction 시작 시 `.env` 존재 여부·byte와
+  device/inode/mode/uid/gid, process env를 합친 effective mapping을 비밀값 비노출 snapshot으로 고정하고
+  raw/resolved 검증·mutation·recovery 전체에서 재사용한다. mutation subprocess는
+  `--env-file /dev/null`과 frozen env만 받고, 직전 `.env` 생성·삭제·내용·identity drift는 typed contract
+  오류와 Docker subprocess 0으로 중단한다. direct/API no-mutation과 frozen env/recovery identity fixture를
+  보강했으며 재승인 전 금지에 따라 테스트·lint·build는 실행하지 않았다.
+- pass17에서 production mutation lock을 project state에서 분리한 사용자 단일 전역 경로로 고정했다. lock을
+  잡은 뒤 manifest 경로와 root `.env`, canonical compose source, external `env_file` graph·byte·identity를
+  한 번만 capture하고 pair deploy/capture/rollback 및 recovery 전체에 같은 transaction snapshot을 전달한다.
+  외부 입력은 exact `{path, required, format}` list만 허용하며 top-level secret/config file source는
+  fail-close한다. resolution은 외부 byte를 익명 fd로만 제공하고, mutation은 original project directory에서
+  완전 해석된 compose JSON을 `-f -` stdin으로 실행해 relative bind/build 의미와 secret 비노출을 함께
+  보존한다. 최초 mutation 뒤 source/external 계약 drift는 같은 snapshot으로 복구 또는 두 API halt를 시도하고
+  원래 오류와 복구 진단을 typed post-mutation 오류에 남긴다. 지시에 따라 추가 fixture는 중단했고
+  테스트·lint·build 없이 정적 호출부와 diff만 확인했다.
+- pass18에서 live env/source drift 뒤에도 복구 가능한 frozen resolved stdin 경계를 추가하고, config 변경의
+  baseline/candidate transaction을 분리해 원본 오류·halt 증거와 exact 원본 복원을 보존했다.
+- pass19에서 첫 mutation 전에 manifest active SHA를 root frozen source/env/external/system 입력으로 resolve한
+  recovery transaction을 별도 생성해 deploy/rollback과 legacy capture 실패 복구에만 사용하도록 분리했다.
+
+---
+
 ## 2026-07-14 (Map OpiNet·KREX provider 키 compose 보간 drift 수정 — T-030)
 
 - manager `.env`는 현재 Map 계약인 `KOR_TRAVEL_MAP_OPINET_API_KEY`와

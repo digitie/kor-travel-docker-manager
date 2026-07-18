@@ -53,6 +53,7 @@ yarn-error.log*
 .codegraph/
 .claude/settings.local.json
 memory/
+.local/
 
 # Local-only docs (민감 운영 접속 정보 등) — 커밋 금지
 *.local.md

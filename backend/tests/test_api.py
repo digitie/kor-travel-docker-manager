@@ -11,6 +11,11 @@ from sqlalchemy.pool import StaticPool
 
 import kor_travel_docker_manager.database
 from kor_travel_docker_manager.services.auth_service import hash_password_for_env
+from kor_travel_docker_manager.services.c6c_deployment import (
+    ComposeCandidateContractError,
+    ComposePostMutationContractError,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.public_api_key_service import public_api_key_is_valid
 
 FRONTEND_ORIGIN = "http://localhost:12905"
@@ -412,6 +417,253 @@ def test_update_container_config_success(mock_docker_service):
 
 
 @patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_update_container_config_failure_preserves_restoration_detail(
+    mock_docker_service,
+):
+    login_client()
+    restoration = {
+        "config_restored": True,
+        "runtime_restored": False,
+        "command": ["docker", "compose"],
+    }
+    mock_docker_service.update_container_config.return_value = {
+        "success": False,
+        "error": "candidate recreate failed",
+        "restoration": restoration,
+    }
+
+    response = client.post(
+        "/api/v1/containers/rustfs/config",
+        json={
+            "ports": ["12101:12101"],
+            "env": {},
+            "volumes": ["rustfs:/data"],
+            "networks": [],
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "message": "candidate recreate failed",
+        "restoration": restoration,
+    }
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_update_container_candidate_rejection_returns_typed_unchanged_detail(
+    mock_docker_service,
+):
+    login_client()
+    mock_docker_service.update_container_config.side_effect = (
+        ComposeCandidateContractError(
+            "compose candidate rustfs bind source exposes a manager file"
+        )
+    )
+
+    response = client.post(
+        "/api/v1/containers/rustfs/config",
+        json={
+            "ports": [],
+            "env": {},
+            "volumes": ["./.env:/run/manager.env:ro"],
+            "networks": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+        "message": "compose candidate rustfs bind source exposes a manager file",
+        "stage": "candidate_validation",
+        "mutation_applied": False,
+    }
+    mock_docker_service.update_container_config.assert_called_once_with(
+        "rustfs",
+        [],
+        {},
+        ["./.env:/run/manager.env:ro"],
+        [],
+    )
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_update_container_post_mutation_drift_returns_typed_recovery_detail(
+    mock_docker_service,
+) -> None:
+    login_client()
+    original_error = ComposeCandidateContractError(
+        "compose resolved volume graph changed during the request"
+    )
+    restoration = {
+        "config_restored": True,
+        "runtime_restored": False,
+        "error": "persisted runtime recovery failed",
+    }
+    mock_docker_service.update_container_config.side_effect = (
+        ComposePostMutationContractError(
+            original_error,
+            recovery_attempted=True,
+            recovery_succeeded=False,
+            recovery_error="persisted runtime recovery failed",
+            restoration=restoration,
+        )
+    )
+
+    response = client.post(
+        "/api/v1/containers/rustfs/config",
+        json={"ports": [], "env": {}, "volumes": [], "networks": []},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_POST_MUTATION_CONTRACT_FAILURE",
+        "message": str(original_error),
+        "stage": "post_mutation_recovery",
+        "mutation_applied": True,
+        "original_error": {
+            "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+            "message": str(original_error),
+        },
+        "recovery_attempted": True,
+        "recovery_succeeded": False,
+        "recovery_error": "persisted runtime recovery failed",
+        "restoration": restoration,
+    }
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_update_container_preflight_restore_failure_is_typed_durable_mutation(
+    mock_docker_service,
+) -> None:
+    login_client()
+    original_error = ComposeCandidateContractError(
+        "compose candidate source changed during the config request"
+    )
+    restoration = {
+        "config_restored": False,
+        "runtime_restored": False,
+        "runtime_recovery_attempted": False,
+        "durable_config_mutation": True,
+        "error": "atomic compose restore failed",
+    }
+    mock_docker_service.update_container_config.side_effect = (
+        ComposePostMutationContractError(
+            original_error,
+            recovery_attempted=True,
+            recovery_succeeded=False,
+            recovery_error="atomic compose restore failed",
+            restoration=restoration,
+        )
+    )
+
+    response = client.post(
+        "/api/v1/containers/rustfs/config",
+        json={"ports": [], "env": {}, "volumes": [], "networks": []},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_POST_MUTATION_CONTRACT_FAILURE",
+        "message": str(original_error),
+        "stage": "post_mutation_recovery",
+        "mutation_applied": True,
+        "original_error": {
+            "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+            "message": str(original_error),
+        },
+        "recovery_attempted": True,
+        "recovery_succeeded": False,
+        "recovery_error": "atomic compose restore failed",
+        "restoration": restoration,
+    }
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_rustfs_missing_bind_rejection_returns_typed_no_mutation_detail(
+    mock_docker_service,
+):
+    login_client()
+    mock_docker_service.update_container_config.side_effect = (
+        ComposeCandidateContractError(
+            "compose candidate rustfs bind source does not exist"
+        )
+    )
+
+    response = client.post(
+        "/api/v1/containers/rustfs/config",
+        json={
+            "ports": [],
+            "env": {},
+            "volumes": ["./future-secret:/run/future-secret:ro"],
+            "networks": [],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+        "message": "compose candidate rustfs bind source does not exist",
+        "stage": "candidate_validation",
+        "mutation_applied": False,
+    }
+    mock_docker_service.update_container_config.assert_called_once_with(
+        "rustfs",
+        [],
+        {},
+        ["./future-secret:/run/future-secret:ro"],
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    "volumes",
+    [
+        ["/sys:/sys:rw", "/var/run/docker.sock:/var/run/docker.sock:ro"],
+        [
+            {
+                "type": "bind",
+                "source": "/sys",
+                "target": "/sys",
+                "read_only": False,
+            },
+            {
+                "type": "bind",
+                "source": "/var/run/docker.sock",
+                "target": "/var/run/docker.sock",
+                "read_only": True,
+            },
+        ],
+    ],
+)
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_cadvisor_writable_bind_returns_typed_no_mutation_detail(
+    mock_docker_service,
+    volumes: list[object],
+) -> None:
+    login_client()
+    error = ComposeCandidateContractError(
+        "compose candidate volume configuration is immutable through the Manager API"
+    )
+    mock_docker_service.update_container_config.side_effect = error
+
+    response = client.post(
+        "/api/v1/containers/cadvisor/config",
+        json={"ports": [], "env": {}, "volumes": volumes, "networks": []},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+        "message": str(error),
+        "stage": "candidate_validation",
+        "mutation_applied": False,
+    }
+    mock_docker_service.update_container_config.assert_called_once_with(
+        "cadvisor", [], {}, volumes, []
+    )
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_reset_container_config_success(mock_docker_service):
     login_client()
     mock_docker_service.reset_container_config.return_value = {
@@ -427,6 +679,139 @@ def test_reset_container_config_success(mock_docker_service):
         "message": "Successfully updated config and recreated kor-travel-geo-postgres.",
     }
     mock_docker_service.reset_container_config.assert_called_once_with("kor-travel-geo-postgresql")
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_reset_container_config_failure_preserves_restoration_detail(
+    mock_docker_service,
+):
+    login_client()
+    restoration = {
+        "config_restored": False,
+        "runtime_restored": False,
+        "command": ["docker", "compose"],
+    }
+    mock_docker_service.reset_container_config.return_value = {
+        "success": False,
+        "error": "config restore failed",
+        "restoration": restoration,
+    }
+
+    response = client.post("/api/v1/containers/rustfs/reset")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "message": "config restore failed",
+        "restoration": restoration,
+    }
+
+
+@pytest.mark.parametrize("graph", ["raw", "resolved"])
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_reset_volume_graph_drift_returns_typed_no_mutation_detail(
+    mock_docker_service,
+    graph: str,
+) -> None:
+    login_client()
+    error = ComposeCandidateContractError(
+        f"compose candidate {graph} volume graph differs from persisted compose"
+    )
+    mock_docker_service.reset_container_config.side_effect = error
+
+    response = client.post("/api/v1/containers/rustfs/reset")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+        "message": str(error),
+        "stage": "candidate_validation",
+        "mutation_applied": False,
+    }
+    mock_docker_service.reset_container_config.assert_called_once_with("rustfs")
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_missing_container_action_failure_preserves_restoration_detail(
+    mock_docker_service,
+):
+    login_client()
+    restoration = {
+        "config_restored": True,
+        "runtime_restored": False,
+        "returncode": 9,
+        "stdout": "restore stdout",
+        "stderr": "restore stderr",
+        "error": "restore stderr",
+    }
+    mock_docker_service.control_container.return_value = {
+        "success": False,
+        "error": "missing container create failed",
+        "command": ["docker", "compose"],
+        "returncode": 1,
+        "stdout": "candidate stdout",
+        "stderr": "candidate stderr",
+        "restoration": restoration,
+    }
+
+    response = client.post(
+        "/api/v1/containers/rustfs/action",
+        json={"action": "start"},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "message": "missing container create failed",
+        "command": ["docker", "compose"],
+        "returncode": 1,
+        "stdout": "candidate stdout",
+        "stderr": "candidate stderr",
+        "restoration": restoration,
+    }
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_production_api_container_action_contract_failure_is_conflict(mock_docker_service):
+    login_client()
+    mock_docker_service.control_container.side_effect = DeploymentContractError(
+        "production Map/PinVi API mutation requires the compatible-pair workflow"
+    )
+
+    response = client.post(
+        "/api/v1/containers/kor-travel-map-api/action",
+        json={"action": "restart"},
+    )
+
+    assert response.status_code == 409
+    assert "compatible-pair" in response.json()["detail"]
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_production_api_container_config_contract_failure_is_conflict(mock_docker_service):
+    login_client()
+    mock_docker_service.update_container_config.side_effect = DeploymentContractError(
+        "production Map/PinVi API mutation requires the compatible-pair workflow"
+    )
+
+    response = client.post(
+        "/api/v1/containers/pinvi-api/config",
+        json={"ports": [], "env": {}, "volumes": [], "networks": []},
+    )
+
+    assert response.status_code == 409
+    assert "compatible-pair" in response.json()["detail"]
+
+
+@patch("kor_travel_docker_manager.api.routes.docker_service")
+def test_production_api_container_reset_contract_failure_is_conflict(mock_docker_service):
+    login_client()
+    mock_docker_service.reset_container_config.side_effect = DeploymentContractError(
+        "production Map/PinVi API mutation requires the compatible-pair workflow"
+    )
+
+    response = client.post("/api/v1/containers/kor-travel-map-api/reset")
+
+    assert response.status_code == 409
+    assert "compatible-pair" in response.json()["detail"]
 
 
 def test_get_targets():
@@ -557,6 +942,107 @@ def test_ensure_target_success(mock_compose_service):
         "main",
         build=True,
         recreate=False,
+    )
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_ensure_target_contract_failure_is_conflict_without_secret_body(
+    mock_compose_service,
+):
+    login_client()
+    mock_compose_service.ensure_target.side_effect = DeploymentContractError(
+        "C6c production preflight failed"
+    )
+
+    response = client.post("/api/v1/targets/main/ensure", json={"recreate": True})
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "C6c production preflight failed"}
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_ensure_target_candidate_rejection_returns_typed_unchanged_detail(
+    mock_compose_service,
+):
+    login_client()
+    mock_compose_service.ensure_target.side_effect = ComposeCandidateContractError(
+        "compose candidate resolution failed"
+    )
+
+    response = client.post("/api/v1/targets/storage/ensure", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+        "message": "compose candidate resolution failed",
+        "stage": "candidate_validation",
+        "mutation_applied": False,
+    }
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_ensure_target_env_file_drift_returns_typed_no_mutation_detail(
+    mock_compose_service,
+) -> None:
+    login_client()
+    error = ComposeCandidateContractError(
+        "compose env-file identity changed during the transaction"
+    )
+    mock_compose_service.ensure_target.side_effect = error
+
+    response = client.post("/api/v1/targets/storage/ensure", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+        "message": str(error),
+        "stage": "candidate_validation",
+        "mutation_applied": False,
+    }
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_ensure_target_post_mutation_drift_returns_typed_recovery_detail(
+    mock_compose_service,
+) -> None:
+    login_client()
+    original_error = ComposeCandidateContractError(
+        "compose raw volume graph changed during the request"
+    )
+    restoration = {
+        "success": True,
+        "recovery_attempted": True,
+        "command": ["docker", "compose", "up"],
+    }
+    mock_compose_service.ensure_target.side_effect = (
+        ComposePostMutationContractError(
+            original_error,
+            recovery_attempted=True,
+            recovery_succeeded=True,
+            recovery_error=None,
+            restoration=restoration,
+        )
+    )
+
+    response = client.post("/api/v1/targets/storage/ensure", json={})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "COMPOSE_POST_MUTATION_CONTRACT_FAILURE",
+        "message": str(original_error),
+        "stage": "post_mutation_recovery",
+        "mutation_applied": True,
+        "original_error": {
+            "code": "COMPOSE_CANDIDATE_PROTECTED_REFERENCE",
+            "message": str(original_error),
+        },
+        "recovery_attempted": True,
+        "recovery_succeeded": True,
+        "recovery_error": None,
+        "restoration": restoration,
+    }
+    mock_compose_service.ensure_target.assert_called_once_with(
+        "storage", build=False, recreate=False
     )
 
 
