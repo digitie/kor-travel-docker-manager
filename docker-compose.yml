@@ -386,6 +386,9 @@ services:
       KOR_TRAVEL_MAP_API_CORS_ALLOW_ORIGINS: '["${KTDM_PROD_URL_MAP:-http://localhost:${KOR_TRAVEL_MAP_UI_PORT:-12705}}","http://localhost:${KOR_TRAVEL_MAP_UI_PORT:-12705}","http://127.0.0.1:${KOR_TRAVEL_MAP_UI_PORT:-12705}"]'
       KOR_TRAVEL_MAP_API_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
       KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS: '["kor-travel-map-dagster","127.0.0.1","localhost","::1"]'
+      KOR_TRAVEL_MAP_API_OPS_READ_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}
+      KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}
+      KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED: ${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://krtour_map:krtour_map_dev_password@127.0.0.1:5432/krtour_map}
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -569,7 +572,7 @@ services:
     - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PINVI_API_PORT:-12801}
       --workers ${PINVI_API_WORKERS:-1}
     environment:
-      PINVI_ENVIRONMENT: local
+      PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
       PINVI_API_WORKERS: ${PINVI_API_WORKERS:-1}
       PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
@@ -580,6 +583,9 @@ services:
       PINVI_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       PINVI_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       PINVI_CORS_ALLOWED_ORIGINS: '${PINVI_CORS_ALLOWED_ORIGINS:-["http://127.0.0.1:12805","http://localhost:12805"]}'
+      PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
+      PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}
+      PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}
     ports:
     - ${PINVI_API_PORT:-12801}:${PINVI_API_PORT:-12801}
     healthcheck:
@@ -697,15 +703,13 @@ services:
     - /dev/kmsg:/dev/kmsg
     command:
     - --logtostderr
+    - --docker_only=true
     - --port=${CADVISOR_PORT:-12301}
     ports:
     - ${CADVISOR_PORT:-12301}:${CADVISOR_PORT:-12301}
     volumes:
-    - /:/rootfs:ro
-    - /var/run:/var/run:ro
+    - /var/run/docker.sock:/var/run/docker.sock:ro
     - /sys:/sys:ro
-    - /var/lib/docker/:/var/lib/docker:ro
-    - /dev/disk/:/dev/disk:ro
   # --- geo 독립 Dagster (T-290, ADR-066) ---------------------------------------
   # geo 전용 Dagster webserver + daemon + 메타 DB init. 앱 DB(kor_travel_geo)는
   # 절대 건드리지 않고 별도 DB kor_travel_geo_dagster에 run/event/schedule 이력을 둔다.

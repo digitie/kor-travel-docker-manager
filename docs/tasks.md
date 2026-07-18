@@ -55,7 +55,8 @@
 - [ ] compose 변경 전 diff 생성 및 UI 표시
 - [ ] 포트, 볼륨, 네트워크 입력 validation 강화
 - [ ] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가
-- [ ] 컨테이너 재생성 전 확인 단계와 실패 시 rollback 전략 문서화
+- [x] config 파일 변경과 재생성을 같은 host lock transaction으로 묶고, recreate/init 실패 시 원본 byte와
+      파일 mode를 원자 복원한 뒤 기존 runtime 재생성을 시도하는 rollback 전략 문서화
 
 ### T-012: 대시보드 상세 패널 확장
 
@@ -89,18 +90,106 @@
 
 ### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선
 
-- [ ] manager `.env`의 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
+- [x] manager `.env`의 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
       `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`을 map API에만 주입하고 Dagster·daemon·UI에는
       주입하지 않는다.
-- [ ] 같은 두 값을 PinVi API의 `PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN`과
+- [x] 같은 두 값을 PinVi API의 `PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN`과
       `PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN`으로만 전달하고 PinVi Web/Dagster에는
       주입하지 않는다.
-- [ ] 두 token은 각각 32자 이상·앞뒤 공백 없음·상호 다름을 배포 전 검증하고, 실제 값은
-      gitignore된 `.env`에만 둔다.
-- [ ] 배포는 secret 선배치 → compatible map image → read·cancel 허용/그 외 mutation 거부 smoke
-      → compatible PinVi image 순서로 수행한다.
-- [ ] rollback은 검증된 map+PinVi image pair 단위로 수행하고, 새 PinVi와 구 map 또는 구 PinVi와
-      새 map을 장시간 혼용하지 않는다.
+- [x] 두 token은 각각 32자 이상·모든 공백 없음·상호 다름을 container 변경 전 검증하고, 실제 값은
+      gitignore된 `.env`에만 둔다. manager/PinVi production mode와 Map
+      `OPS_PRINCIPAL_REQUIRED=true`를 함께 강제한다.
+- [x] production 배포 경로를 preflight/readiness → Map API → signed read·cancel·거부 smoke
+      → PinVi API → 전체 managed container readiness/secret inspect 순서로 구현하고, dependency·UI·Dagster는
+      pair transaction에서 변경하지 않는다.
+- [x] rollback은 현재 contract generation의 canonical Map+PinVi immutable image ID pair 단위로만
+      원자 기록·복원하며, legacy/과거 generation 조합을 정상 rollback 지점으로 오인하지 않는다.
+- [x] base/override merged config의 `environment`·`env_file`·command·build args와 runtime inspect를
+      API 두 곳만 허용하는 계약 테스트로 고정한다.
+- [x] production 일반 `ensure`/container action·config·reset/direct Compose의 Map/PinVi API mutation을
+      중앙 차단하고, deployment-wide lock을 잡는 전용 `pinvi-pair deploy` capability만 허용한다.
+- [x] manifest v2에 contract generation을 기록하고 merged compose의 host network·PinVi production
+      mode·Map bind port·loopback base·container identity·두 immutable image override·manager-only smoke
+      credential 격리를 mutation 전에 검증한다.
+- [x] deploy/rollback 중 mixed pair를 노출하지 않고 Map/PinVi canonical smoke, owned fixture의 정확한
+      409/502/503 typed cancel·`Retry-After`, 필수 서비스 running/healthy, Map UI auth lifecycle, runtime
+      격리 뒤에만 manifest를 commit한다.
+- [x] clean/legacy v1 환경은 host lock 안에서 base dependency→Map API→Map dependents→PinVi API→PinVi
+      dependents를 단계 bootstrap하고 전체 smoke 성공 뒤 최초 v2를 기록한다. 실패하면 두 API를
+      중지하고 transaction이 만든 container만 제거한다.
+      중간 실패는 시작 시점 active pair 전체 복구 또는 두 API 명시적 halt로 끝낸다.
+- [x] pass3 차단 리뷰의 init 예외 cleanup, project-wide `wait --down-project`, production 단일 state path,
+      깊은 Map/PinVi DTO·owned cancel·manifest 검증, parent fsync 실패 복원, config/runtime 복원 진단 보존을
+      코드·회귀 테스트·운영 문서에 반영한다(테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass4 차단 리뷰의 canonical `execution_coverage`, production exact `12701` fail-close, Map dataset row와
+      PinVi repository/asset/schedule/sensor 배열 원소의 실제 DTO 검증 및 `null` 음성 fixture를 반영한다
+      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass5 차단 리뷰의 cross-token capability typed status/code 음성 smoke, transaction당 destructive cancel
+      정확히 1회 및 결과 재사용, actual cancellation attempt/member/Dagster run/root-only DTO 검증을 반영한다
+      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass6 DTO 정렬로 full 409 unresolved 0·resolved root/child topology·transient all-resolved를 허용하고,
+      retryable exact run-backed failure와 in-progress CAS drift transition matrix를 실제 PinVi projection에 맞춘다
+      (`409 PIPELINE_CANCELLATION_UNSAFE`와 `503 DAGSTER_TERMINATION_TIMEOUT` pair 포함).
+      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass7 actual DB lifecycle 정렬로 failed mixed evidence, retry subset lineage, frozen termination/engine time,
+      `Retry-After` presence/parse 분리와 Compose kill signal/unknown option default-deny fixture를 반영한다
+      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass8에서 Compose `build --pull`·`run --rm`·`rm -s/--stop`의 command별 flag 의미와
+      `config -o/--output` write-capable default-deny를 고정하고, cancel member/run policy·terminal mapping,
+      feature-load child success 예외, contract generation 격리, bootstrap cleanup 예외 수렴을 반영한다
+      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass9에서 `Retry-After`를 ASCII decimal 1..300으로 제한하고, generic non-API config
+      update/reset/create의 raw compose 전체·`env_file` 보호 이름/값 검증을 파일 쓰기·재생성 전에 수행한다.
+      candidate 거부는 불변 상태와 typed 409 detail을 보존한다
+      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass10에서 raw/resolved compose 검사를 service 하위가 아닌 top-level `secrets`/`configs`/extension과
+      service mount/reference를 포함한 전체 graph로 확장한다. API wiring은 suffix까지 정해진 canonical raw
+      표현만 허용하고, `env_file`/외부 config 경로의 Compose 변수 문법은 완전 해석할 수 없으면 거부한다.
+      generic ensure/up/create/recreate와 config prewrite는 두 단계 검증 뒤에만 mutation하며 typed 409 detail과
+      mutation 0을 보존한다(테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass11에서 service volume short/long bind source를 보간 후 canonical path로 해석해 root `.env`, manager
+      state 파일, 보호 이름·현재 값이 든 외부 파일 mount를 raw/resolved 단계에서 거부한다. symlink·traversal·
+      relative/absolute·Windows-looking·`:ro` 변형을 닫고 named volume은 경로로 오인하지 않는다. 내용 확인이
+      불가능한 external secret/config alias reference도 exact allowlist 외에는 fail-close하며 rustfs REST config의
+      typed 409와 파일/container mutation 0을 고정한다(테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
+- [x] pass12에서 manager 보호 파일의 ancestor directory와 host root bind를 거부하고, directory bind는 서비스별
+      exact source/target allowlist로 한정한다. 존재하지 않거나 bounded regular-file 검사가 불가능한 source도
+      fail-close해 Docker 자동 directory 생성과 TOCTOU 우회를 막는다. cAdvisor의 host root·Docker data directory
+      mount는 제거하고 Docker socket+`/sys` 기반 container-only 모드로 전환하며 RustFS REST typed 409와
+      source/compose/container mutation 0을 고정한다(같은 리뷰어 재승인 전 테스트 실행 금지).
+- [x] pass13에서 config API의 전체 volume graph(top-level 정의와 모든 service reference)를 pre-request compose와
+      exact immutable로 고정해 volume add/remove/source/target/type/mode 변경을 409로 거부한다. internal/default
+      named volume만 허용하고 local bind driver option·unknown driver/option·external alias는 raw/resolved 모두
+      fail-close한다. cAdvisor `/sys`·Docker socket은 short `:ro` 또는 long `read_only: true`만 허용하며,
+      root-owned parent chain과 `/sys` mountpoint, root:docker `0660` socket의 inode/device/mode snapshot을 compose
+      write와 Docker subprocess 직전에 재검증한다. mismatch는 write 전 중단 또는 compose byte 복원으로 durable
+      mutation 0을 보존한다(같은 리뷰어 재승인 전 테스트 실행 금지).
+- [x] pass14에서 mutex 안의 persisted compose와 request candidate의 raw/resolved volume graph를 각각 exact
+      비교하고 `include`·service `extends`·`COMPOSE_FILE`·추가 override를 거부하는 single-file mutation 경계를
+      고정한다. cAdvisor mount는 raw literal/resolved identity 모두 RO `/sys`와 Docker socket 두 개만 허용하고,
+      raw named-volume `name`/`external` 및 resolved project-derived name drift를 차단한다. 첫 mutation subprocess
+      성공 뒤 후속 preflight drift가 나면 원본 compose byte/mode와 persisted runtime을 best-effort 복구하고
+      원래 계약 오류·복구 결과를 보존한 typed 500으로 승격한다(같은 리뷰어 재승인 전 테스트 실행 금지).
+- [x] pass15에서 mutation Docker command의 override 탐색을 제거하고 subprocess 직전 single-file 경계를
+      재검증한다. `ensure`는 최초 compose byte/mode와 raw/resolved/snapshot baseline을 복원·재검증한 뒤에만
+      runtime recovery를 실행하며, 검증 실패 시 Docker recovery를 금지한다. preflight drift의 원본 복원도
+      원자 복원 실패를 원래 오류와 함께 typed 500 durable mutation으로 보존한다(재승인 전 테스트 실행 금지).
+- [x] pass16에서 transaction 시작 시 `.env` 존재 여부·byte·device/inode/mode/uid/gid와 effective Compose
+      environment를 비밀값 비노출 snapshot으로 고정한다. raw/resolved 검증과 Docker mutation은 같은 snapshot을
+      사용하고, subprocess 직전 `.env` 생성·삭제·내용·identity drift를 재검증한다. mutation은
+      `--env-file /dev/null`과 frozen process env만 사용하며 `ensure`/config recovery도 최초 snapshot을 재사용한다
+      (재승인 전 테스트 실행 금지).
+- [x] pass17에서 production mutation mutex를 checkout/project와 무관한 단일 전역 lock으로 고정하고,
+      lock 안에서 manifest 경로와 root `.env`·canonical compose·외부 `env_file` 입력을 한 번만 snapshot한다.
+      외부 입력은 exact 4-key graph와 byte/identity를 매 경계에서 재검증하고 Docker resolution에만 익명 fd로
+      전달하며, mutation은 original project directory에서 완전 해석된 compose를 stdin으로 소비한다.
+      deploy/capture/rollback은 최초 mutation 뒤 모든 계약 오류를 같은 root snapshot의 recovery 또는 두 API
+      halt로 수렴시키고 원래 오류와 복구 결과를 typed post-mutation 오류로 보존한다
+      (지시에 따라 테스트·lint·build는 실행하지 않고 정적 diff 검사만 수행).
+- [x] pass18에서 recovery/halt를 frozen resolved transaction 전용 실행으로 분리하고, config update/reset의
+      persisted baseline과 exact candidate transaction을 분리해 forward는 candidate, restore는 baseline만 쓴다.
+- [x] pass19에서 manifest active image override를 root frozen 입력으로 미리 해석한 별도 recovery transaction을
+      deploy/rollback과 legacy capture 복구에 사용하고, forward transaction과 identity를 분리한다.
 - [ ] compose 계약 테스트, Docker Compose 보간, n150 cross-repo smoke와 실제 로그인 검증을
       통과한 뒤 완료 이력으로 옮긴다.
 

@@ -256,3 +256,268 @@ resolved config 전체를 출력하지 말고 `docker compose config --quiet`를
 안에서 `.env`와 두 수집 컨테이너 값을 constant-time 비교하고 API 컨테이너에는 resolved API 전용
 변수만 있는지 확인한다. 검증 결과는 `nonempty && all_equal` 같은 불리언만 남기며
 실제 값·길이·digest는 로그에 남기지 않는다.
+
+### 7.3 Map↔PinVi canonical ops read/cancel principal
+
+PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회, 그리고
+`POST /v1/ops/pipeline/executions/import_job/{job_id}/cancel`만 사용한다. 브라우저 BFF secret,
+public service token, trusted CIDR을 재사용하지 않는다.
+
+- manager `.env`가 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
+  `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`의 단일 source다. 두 값은 각각 32자 이상이고 공백 문자가
+  하나도 없으며 서로 달라야 한다.
+- Map API에는 같은 이름으로 전달한다. PinVi API에는 각각
+  `PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN`과 `PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN`으로 전달한다.
+- mode는 추론하지 않는다. 개발 PC는 `KTDM_DEPLOYMENT_ENVIRONMENT=local`,
+  `PINVI_ENVIRONMENT=development`, `KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=false`, n150은 각각
+  `production`, `production`, `true`를 명시한다. 세 값이 없거나 서로 맞지 않으면 manager는 어떤
+  container도 변경하기 전에 중단한다.
+- PinVi API의 Map 주소는 `PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL`이며, manager host-network
+  기본값은 `http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT}`이다. publish port가 아니라 Map
+  process의 실제 bind port를 사용한다. production은 host network·loopback·bind port 일치를
+  preflight에서 강제한다.
+- Map Dagster·daemon·UI와 PinVi Web·Dagster에는 위 token을 전달하지 않는다. `docker inspect`로
+  검증할 때도 값을 출력하지 말고 서비스별 존재 여부와 constant-time 동등성 boolean만 남긴다.
+- read token은 GET에만 사용한다. cancel token은 exact import-job cancel endpoint에만
+  사용하며 schedule command, refresh policy, update request mutation은 같은 token으로도 403이어야
+  한다.
+
+`KTDM_C6C_CONTRACT_GENERATION`, Map UI/PinVi admin smoke 계정, owned typed-failure
+`KTDM_C6C_CANCEL_PROBE_JOB_ID`는 manager `.env`에만 둔다. 이 값들은 compose service env나 다른
+`env_file`에 주입하지 않는다. 특히 contract generation은 secret이 아니더라도 배포 판단용 manager-only
+값이므로 resolved compose의 command·label·build arg를 포함한 scalar와 runtime Env 어디에도 전달하지
+않는다. 최초 설치나 legacy v1 manifest 환경에서는 base dependency부터 전체
+토폴로지를 순서대로 bootstrap하고 candidate pair 전체 계약을 검증해 최초 v2를 만든다.
+
+```bash
+ktdctl pinvi-pair capture --verified-compatible --build
+# 기본 manifest: ~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/compatible-pair-v2.json
+```
+
+capture는 host lock 안에서 base dependency → Map → signed smoke → Map UI/Dagster → PinVi →
+canonical smoke → PinVi Web/Dagster → 전체 smoke 순서로 candidate를 검증한다. 실패하면 v2를 기록하지
+않고 두 API를 중지하며 capture가 새로 만든 container만 제거한다. 기존 v2나 알 수 없는
+manifest는 덮어쓰지 않으며 legacy v1만 검증 성공 뒤 v2로 교체한다. manifest v2는
+`sha256:<64 hex>` 두 값과 contract generation을 한 단위로 기록한다. `latest-main` 같은 tag, 단일 image,
+과거 generation, 로컬에 없는 image ID는 배포와 rollback 전에 거부한다. 실행 중인 두 image ID가
+manifest의 active pair와 달라도 배포를 거부한다. 일반 `ensure`/container action·config·reset과 direct
+Compose API mutation은 production에서 409/CLI 오류로 거부한다. `scale`·`watch`와 알 수 없는 Compose
+명령도 read-only로 오인하지 않는다. production의 low-level Compose runner는 알려진 read-only 명령만
+capability 없이 허용하며, 일반 인프라 mutation도 `ensure`/config 같은 관리 workflow capability를 거친다.
+
+```bash
+ktdctl pinvi-pair deploy --build
+```
+
+전용 deploy는 다음 순서를 코드로 강제한다.
+
+1. deployment-wide host lock을 잡고 mode/token/base URL/generation, 단일 canonical base compose의
+   host network·PinVi production mode·Map bind port·정확한 loopback base·container identity·두 immutable
+   image override·`env_file`/secret 격리를 API 변경 전에 검사한다. 별도 compose override/include/extends는
+   mutation source로 허용하지 않는다.
+2. 현재 active pair와 공용 dependency·Map/PinVi UI·Dagster의 running/healthy를 확인한다. 비-API
+   서비스는 변경하지 않고 기존 PinVi API를
+   먼저 중지해 mixed pair 노출을 막은 뒤 `--no-deps`로 새 Map API image만 재생성한다. 직접 read 200, 무토큰 401,
+   cancel token으로 허용된 cancel 계약과 대표 non-cancel schedule command mutation 403을 확인한다.
+   실제 running job이 없으면
+   존재하지 않는 import-job ID의 404까지 인증 통과 증거로 사용하고, 파괴적 취소는 최종 C7 gate의
+   owned job에서 수행한다.
+3. `--no-deps`로 새 PinVi API image만 재생성하고 PinVi admin ETL/provider-sync에서 canonical 조회가
+   200인지 확인한다. owned fixture 취소는 409 `PIPELINE_CANCELLATION_IN_PROGRESS`,
+   502 `DAGSTER_TERMINATE_FAILED`, 503 `DAGSTER_UNAVAILABLE` 중 status/code/details/retryability가 정확히
+   일치하고 양의 `Retry-After`를 보존해야 한다. 429나 generic code는 실패다.
+4. 변경하지 않은 모든 필수 service가 계속 running/healthy인지 확인한 뒤 managed container를 `docker inspect`로
+   검사한다. Map API에는 Map 이름 세 개(read/cancel/required), PinVi API에는 대응 token 두 개만
+   존재해야 한다. runtime `.Config`의 Env/Cmd/Entrypoint/Labels와 안전하게 순회할 수 있는 모든 scalar에서
+   secret 이름·값을 찾고 두 API의 정확한 허용 Env path 외 노출을 거부한다.
+5. Map UI 로그인·`/ops/providers` 보호 화면·로그아웃·재차단과 PinVi Web login shell을 확인한다. 새
+   generation의 Map/PinVi canonical smoke와 runtime 격리를 한 번 더 확인한 뒤에만 active manifest를
+   갱신한다.
+
+모든 중간 실패는 배포 시작 시점 active pair의 두 immutable image를 함께 복원하고 같은 merged
+contract·Map/PinVi canonical smoke·UI auth·runtime 검사를 다시 수행한다. 복구 검증도 실패하면 두 API를
+중지하고 명시적인 operator-required 상태로 끝낸다. legacy/과거 generation으로의 부분 fallback은 없다.
+
+```bash
+ktdctl pinvi-pair rollback
+```
+
+rollback 명령은 manifest의 Map/PinVi image ID가 모두 로컬에 있는지 먼저 확인하고 두 API를 함께
+적용한 단일 canonical compose가 두 image와 전체 계약을 만족하는지 **stop 전에** 확인한다. 두 API를 함께
+중지한 뒤 Map 복원·signed smoke, PinVi 복원, 실제 image ID·전체 canonical smoke·UI auth·runtime 격리가 모두 일치해야
+manifest의 active pair를 갱신한다. 실패하면 rollback 시작 시점 active pair를 복구하거나 둘 다 중지한다.
+
+manifest와 mode 0600 lock은 checkout이 아니라
+`~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`에 함께 저장한다. production에서는
+root와 `compatible-pair-v2.json`/`deployment.lock` 파일명을 고정하고 모든 path override를 거부해 같은
+Compose project가 서로 다른 lock으로 갈라지지 않게 한다. manifest version은 bool/string/float 변환 없이
+정확한 integer만 허용하고 두 pair의 `recorded_at`은 offset ISO 8601 datetime이어야 한다. 기록은 파일
+fsync, 원자 replace, 부모 디렉터리 fsync 순서이며 마지막 fsync 실패 시 이전 byte/mode를 다시 원자
+복원·fsync한다. 복원을 완료할 수 없지만 새 byte가 정확히 남아 있으면 rename commit으로 일관되게 취급해
+runtime과 manifest가 서로 다른 pair로 갈라지지 않게 한다.
+
+대시보드의 일반 container config 변경·reset·미생성 start fallback도 같은 host lock과 공통 mode 계약을
+사용한다. compose 파일을 바꾼 뒤 service recreate 또는 RustFS init이 실패하면 원본 byte와 file mode를
+원자 복원하고 기존 설정으로 service를 다시 recreate한다. 복원 결과의 config/runtime 성공 여부는 API
+500 응답의 `detail.restoration.config_restored`와 `runtime_restored`에 분리해 남기며, 실패한 candidate
+설정을 파일에 방치하지 않는다. 첫 Docker mutation이 성공한 뒤 다음 command의 preflight에서 snapshot이나
+raw/resolved graph drift를 발견하면 단순 409로 축소하지 않는다. 원래 candidate 오류, `mutation_applied=true`,
+복구 시도·성공 여부와 진단을 `COMPOSE_POST_MUTATION_CONTRACT_FAILURE` typed 500으로 반환한다. 이때 config
+경로와 `ensure` 모두 mutation 시작 시점의 원본 byte/mode를 먼저 원자 복원하고, 같은 raw/resolved hash와
+system snapshot을 재검증한 뒤에만 baseline target runtime을 force-recreate한다. 복원·재검증 실패 시 Docker
+recovery는 실행하지 않으며 복구 실패가 원래 계약 오류를 덮지 않는다. preflight drift 뒤 원본 원자 복원마저
+실패해 candidate compose가 durable하게 남으면 409/no-mutation으로 축소하지 않고 같은 typed 500에
+`config_restored=false`, `mutation_applied=true`를 기록한다.
+Compose `wait`는 기본적으로 read-only지만 `--down-project`와
+`--down-project=<bool>` 형식은 뒤에 특정 service가 있어도 project 전체 mutation으로 분류해 두 API guard와
+같은 host lock을 적용한다. runtime `.Config.Env`
+목록은 dict로 축약하지 않고 raw 순서로 검사하며 중복 이름을 거부한다. PinVi datetime은 날짜-only나
+offset 없는 문자열을 거부하고 timezone offset이 있는 ISO 8601 값만 허용한다.
+
+clean bootstrap result는 `init_results`를 항상 초기화하고 실제 init command가 예외를 내도 실패 결과로
+흡수한다. 각 단계 전에 touched service를 기록하므로 이 경로를 포함한 모든 실패에서 transaction이 새로
+만든 dependency/API만 제거하고 기존 container는 보존한다. signed Map smoke는 dataset-grid의 canonical
+`execution_coverage`, typed `meta`, 각 dataset row의 identity/freshness/schedule/execution/catalog/policy/issue
+shape를 검사하고 배열의 `null` 또는 잘못된 원소를 거부한다. PinVi smoke도 repository/asset/job/schedule/
+sensor 배열 원소와 nullable datetime을 실제 admin DTO에 맞춰 깊게 검사한다. owned cancel 409/502/503은
+fixture root member가 정확히 한 번 존재하고 UUID가 중복되지 않으며 unresolved count가 실제
+`pending|cancel_failed` member 수와 같아야 한다. CAS 전이 중에는 0도 허용한다.
+created service 제거 또는 기존 stopped service 복원 명령 자체가 예외를 내면 bootstrap 호출 밖으로
+전파하지 않고 두 API halt 결과를 보존한 operator-required 상태로 끝낸다.
+
+production compatible-pair preflight는 Map host bind port와 PinVi Map base URL을 각각 정확히 `12701`과
+`http://127.0.0.1:12701`로 고정한다. 둘이 서로 일치하더라도 다른 포트면 첫 container mutation 전에
+실패한다. local/development에서는 두 값을 동일하게 맞춘 비표준 포트를 허용한다.
+
+Map capability smoke는 tokenless read의 typed 401뿐 아니라 cancel token의 GET/read, read token의 exact
+import-job cancel, cancel token의 schedule mutation을 모두 typed 403 `OPS_SCOPE_FORBIDDEN`으로 확인한다.
+올바른 cancel token의 exact path만 typed 404 domain boundary에 도달해야 한다. HTTP status와 RFC7807
+`code`가 서로 다르면 실패한다.
+
+PinVi owned cancel은 compatible-pair transaction마다 정확히 한 번만 POST한다. deploy/bootstrap의 첫
+검증 결과를 final verification과 recovery에 재사용하며, 이미 요청했지만 결과를 검증하지 못한 경우에는
+retryable/uncertain 상태를 바꿀 수 있는 두 번째 요청을 금지하고 fail-close한다. rollback과 그 recovery도
+같은 transaction state를 공유한다. full cancel detail은 attempt datetime/error, member lifecycle,
+`dagster_runs`, `committed_data_rolled_back=false`, warning을 실제 canonical DTO대로 검사한다. durable attempt가
+아직 없는 409 `PIPELINE_CANCELLATION_IN_PROGRESS`만 exact `{root, cancellation: null}` shape를 허용한다.
+
+full 409 attempt의 `unresolved_member_count`는 0을 허용하고 모든 member의 `pending|cancel_failed` 개수와
+정확히 같아야 한다. owned root가 이미 resolved이고 child만 unresolved인 경우와 CAS/reconcile 중 잠시 모든
+member가 resolved인 경우도 root identity와 member/run topology가 보존되면 canonical이다. retryable attempt의
+`cancel_failed` member는 반드시 termination 대상 Dagster run에 결박되고, member와 matching run 모두
+retryable structured error를 가진 exact `cancel_failed`여야 한다. 반면 in-progress/definitive CAS drift에서는
+`cancel_failed` member와 이미 `cancelled`인 run 조합을 canonical transition으로 허용한다. definitive
+attempt는 `409 PIPELINE_CANCELLATION_UNSAFE`+`failed`, timeout은
+`503 DAGSTER_TERMINATION_TIMEOUT`+`retryable` pair로만 허용하고, root-only shape는
+`409 PIPELINE_CANCELLATION_IN_PROGRESS`에만 한정한다.
+
+in-progress runless `cancel_failed`는 definitive error code만 허용한다. run-backed `cancel_failed`의 run도
+실패 snapshot이면 member와 retryable/definitive policy group이 같아야 한다. resolved run-backed member는
+`cancelled↔CANCELED`, `done↔SUCCESS`, `failed↔FAILURE`를 정확히 맞춘다. 단,
+`provider_feature_load_run`의 failed member와 SUCCESS run 조합은 동일 run에 초기 `done`이 아니었던
+`provider_feature_load` child가 함께 있어 tracking failure를 입증할 때만 허용한다.
+
+failed attempt의 top error는 definitive여야 하지만 member/run 증거는 frozen-base mismatch의 definitive
+error와 exact run-backed retryable error가 함께 존재할 수 있다. attempt `status`는 `finished_at`/`error`의
+DB lifecycle과 정확히 맞고, retry lineage는 self-reference를 금지하며 run-backed unresolved subset만 가진다.
+member의 `requires_run_termination`은 frozen `initial_status`·`operation_kind`·Dagster run ID로 다시 계산해
+일치해야 하고, run engine timestamp는 terminal result에서만 종료시각과 정렬되어야 한다.
+
+`Retry-After`는 헤더 존재와 양의 정수 파싱 성공을 별도로 검사한다. retryable 502/503은 존재하는 양의
+정수만 허용하고 non-retryable 409는 헤더 자체가 없어야 한다. 값은 공백·부호 없는 ASCII `[0-9]+` 중
+1..300만 허용하며 Unicode digit, 0, 301 이상도 status와 무관하게 fail-close한다. low-level Compose
+mutation parser는 `kill -s/--signal VALUE SERVICE`의 값을 service로
+오인하지 않으며, service-less/project-wide·unknown command/option·option value 누락은 두 API 대상으로
+default-deny한다.
+
+Compose option은 command별 의미를 사용한다. `build --pull`, `run --rm`, `rm -s/--stop`은 값을 소비하지
+않는 flag이고 `kill -s/--signal`만 다음 signal 값을 소비한다. `docker compose config -o/--output`은
+resolved 설정을 파일에 쓰므로 분리·inline·값 누락 여부와 무관하게 mutation capability와 host lock을
+요구한다. `config --format json`처럼 명시한 read-only option만 lock 없이 허용하며 unknown/incomplete
+option은 두 API scope로 default-deny한다.
+
+config/runtime 복원 실패 응답은 `returncode`, `stdout`, `stderr`, `error`를 `detail.restoration` 안에 그대로
+보존한다. 미생성 container의 start fallback도 이 nested 복원 진단과 candidate command 결과를 REST 500까지
+전달한다.
+
+일반 non-API container config update/reset과 미생성 start-create뿐 아니라 generic ensure/up/create/recreate도
+수정하거나 실행할 service만 검사하지 않는다. mutation 전에 raw와 Docker Compose resolved 문서의 전체 graph를
+검사한다. 범위에는 모든 service 필드와 top-level `secrets`, `configs`, `x-*` extension, service의
+secret/config mount·reference가 포함된다. 실제 존재하는 non-root `env_file`과 top-level secret/config 외부
+파일 내용도 보호 이름·현재 값이 없는지 확인한다.
+
+mutation source는 단일 canonical compose 파일이다. top-level `include`, service `extends`, process의
+`COMPOSE_FILE`, `KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE`, 실제 존재하는 `docker-compose.override.yml` 중
+하나라도 있으면 resolution이나 Docker mutation 전에 fail-close한다. 운영에 필요한 prod 차이는 canonical
+base compose의 명시적 environment 보간으로 합쳐야 한다. mutation command 자체도 original compose
+directory를 `--project-directory`로 고정하고
+`docker compose --env-file /dev/null --project-directory <canonical-directory> -f -`로 완전 해석된
+compose JSON을 stdin에서 소비하며 override를 탐색하지 않는다.
+transaction 시작 시 `.env`의 존재 여부·byte·device/inode/mode/uid/gid와 process env를 합친 effective
+environment를 한 번만 snapshot한다. raw/resolved 검증과 Docker subprocess는 이 frozen mapping만 사용하며,
+subprocess 직전에 `.env` 생성·삭제·내용·identity drift를 다시 확인한다. recovery도 최초 snapshot을 재사용하고
+새 baseline을 만들지 않는다. snapshot의 값·원문 byte는 repr·오류·로그·hash에 노출하지 않는다. 같은 mutex
+안에서 source byte와 include/extends/env/override 부재도 다시 확인하며, raw/resolved 계약을 별도 파일 합성
+순서에 맡기지 않는다.
+
+production mutation mutex는 compose project나 checkout별 state가 아니라 사용자별 단일 전역 경로를 사용한다.
+local test process만 명시 override할 수 있고 production 값은 고정된다. lock 안에서 manifest 경로, root `.env`,
+canonical compose byte/mode와 external `env_file` 입력을 한 번만 capture한다. `env_file`은 list의 exact
+`{path, required, format}` mapping만 허용하며 각 regular file의 존재 여부·byte·device/inode/mode/uid/gid를
+동결한다. Docker resolution에는 동결한 byte를 익명 fd로만 제공하고 외부 secret/config file source는 지원하지
+않는다. deploy/capture/rollback의 stage, verification, recovery/halt는 모두 같은 transaction snapshot을 사용한다.
+첫 mutation 이후 source나 외부 입력 계약이 바뀌면 원래 계약 오류와 recovery 결과를 typed post-mutation 오류로
+보존하고, 검증되지 않은 pair를 계속 진행하지 않는다.
+복구/halt만 frozen resolved transaction을 사용해 live env/source 재검증을 생략하며, config forward는 exact
+candidate transaction, 원본 파일·runtime 복원은 persisted baseline transaction만 사용한다.
+pair deploy/rollback과 legacy capture는 첫 mutation 전에 manifest active immutable image SHA를 root frozen
+입력으로 해석한 별도 recovery transaction을 만들며, forward는 계속 root/candidate transaction을 사용한다.
+
+Map API read/cancel/required 및 PinVi API 대응 read/cancel key는 source 이름뿐 아니라 default/required suffix와
+메시지까지 고정된 canonical raw 표현만 허용한다. `env_file`과 외부 파일 경로의 `$VAR`, `${VAR}`, `:-`, `-`,
+`:?`, `?`, `:+`, `+`, `$$`를 Compose 의미로 해석하고, 중첩·미완성·지원하지 않는 표현은 fail-close한다.
+그 밖의 environment key/value, label, command, build arg, 외부 reference가 ops 또는 manager-only 이름이나 현재
+보호값을 참조하면 `COMPOSE_CANDIDATE_PROTECTED_REFERENCE`로 거부한다. raw와 resolved 검증이 모두 끝나기 전에는
+compose 파일 또는 container를 변경하는 Docker mutation subprocess를 실행하지 않으며 REST 409 detail에
+`stage=candidate_validation`, `mutation_applied=false`를 남긴다.
+
+service `volumes`는 short syntax(`source:target[:mode]`)와 long syntax(`type: bind`)를 모두 source 보간 뒤
+compose 파일 디렉터리 기준 canonical path로 해석한다. symlink와 `..`도 최종 실제 경로로 비교하므로 manager
+루트 `.env`, compatible-pair manifest/lock, 보호 이름·현재 값이 든 regular file은 read-only mount여도
+거부한다. Windows drive/UNC처럼 Linux에서 안전하게 canonicalize할 수 없는 source는 fail-close한다. 반면
+Compose 규칙상 named volume인 source는 host file로 읽지 않으며 기존 전체 graph의 보호 이름/reference 검사는
+계속 적용한다. top-level secret/config가 `external: true`이거나 내용 없는 external `name`만 제공하면 manager가
+내용을 검증할 수 없으므로 service reference를 허용하지 않는다. 현재 canonical API wiring에도 external
+secret/config mount 허용 항목은 없다.
+
+기존 DB/RustFS/Geo/Prometheus/Grafana data와 init script처럼 운영자가 관리하는 canonical bind는 현재 persisted
+compose의 source/target/access mode가 그대로인 경우에만 유지한다. config API는 top-level `volumes` 정의와 모든
+service `volumes` reference를 raw 문서와 Docker-resolved 문서에서 각각 정규화하고, mutex 안에서 persisted
+compose의 두 hash와 모두 exact 비교한다. add/remove/source/target/type/mode
+변경은 기능상 지원하지 않으며 `COMPOSE_CANDIDATE_PROTECTED_REFERENCE` 409,
+`mutation_applied=false`로 끝난다. UI/API 사용자는 `volumes`에 현재 값을 그대로 보내야 하며 env/port/network만
+변경할 수 있다. 이 불변 경계 덕분에 운영 데이터 이전 없이 request가 임의 mutable host path를 새로 주입하거나
+Docker의 missing-source directory 자동 생성을 유도할 수 없다.
+
+새 named volume은 top-level internal/default 정의와 일치하는 service reference만 허용한다. `local` driver의
+non-empty `driver_opts`(`type`, `o=bind|rbind`, `device` 포함), 알 수 없는 driver/option, raw의 명시적 `name` 또는
+`external` key, 미선언 service reference는 fail-close한다. resolved volume `name`은 exact
+`<canonical-project>_<top-level-alias>`여야 하고 project name을 확정할 수 없으면 named volume 전체를 거부한다.
+기존 operator bind도 manager
+`.env`·state file의 ancestor 또는 host root를 노출할 수 없고, regular file은 1 MiB 이하 UTF-8 내용 검사를
+통과해야 한다.
+
+cAdvisor system bind는 raw literal과 resolved identity 모두 정확히 두 개의 set, 즉 RO `/sys -> /sys`와
+RO `/var/run/docker.sock -> /var/run/docker.sock`만 허용한다. named/anonymous/추가 bind, writable mode,
+source/target interpolation alias는 모두 거부한다. `/sys`는 root-owned mountpoint/directory이고 source와 parent chain이 group/other-writable이 아니어야
+한다. Docker socket은 실제 socket, uid 0, `docker` group, mode `0660`, other-write 금지 계약을 강제한다.
+source와 parent chain의 canonical path·inode·device·mode·uid/gid snapshot은 같은 manager mutex 안에서 capture해
+compose write 직전과 각 Docker subprocess 직전에 재검증한다. 변경되면 write 전에 중단하거나 이미 쓴 compose
+byte를 원자 복원한다. `docker` group 구성원은 Docker daemon을 통해 root-equivalent 권한을 가진다는 기존 Linux
+위협 모델에 포함하며, root 또는 동일 권한의 privileged host actor가 mutex 밖에서 filesystem을 교체하는 공격은
+이 경계의 보호 대상이 아니다. Docker socket을 `0600`으로 바꾸는 별도 운영 전제는 두지 않는다.
+
+cAdvisor는 더 이상 `/:/rootfs`, `/var/run`, `/var/lib/docker`, `/dev/disk`를 mount하지 않는다.
+`--docker_only=true`와 read-only `/var/run/docker.sock`, `/sys`만 사용해 container CPU·memory·I/O 지표를
+노출한다. host root filesystem/disk inventory는 제공하지 않지만 manager 대시보드의 Docker SDK 기반 container
+상태·stats와 Prometheus의 container metric 수집은 유지한다.

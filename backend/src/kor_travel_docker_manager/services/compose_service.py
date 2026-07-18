@@ -1,9 +1,59 @@
+import hashlib
+import json
 import os
+import stat
 import subprocess
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
+from io import StringIO
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
+import yaml
+from dotenv import dotenv_values
+
+from kor_travel_docker_manager.services.c6c_deployment import (
+    _COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    C6cDeploymentConfig,
+    CandidateSystemBindSnapshot,
+    CompatibleImagePair,
+    CompatiblePairManifest,
+    ComposeCandidateContractError,
+    ComposePostMutationContractError,
+    DeploymentContractError,
+    PinviCancelProbeState,
+    _assert_candidate_single_file_boundary,
+    _expand_env_path,
+    assert_c6c_mutation_allowed,
+    assert_compose_mutation_allowed,
+    assert_manager_mutation_allowed,
+    assert_pair_manifest_bootstrap_allowed,
+    c6c_deployment_lock,
+    c6c_global_mutation_lock_path,
+    c6c_state_paths,
+    compose_volume_graph_hash,
+    initial_pair_manifest,
+    load_c6c_deployment_config_from_environment,
+    load_pair_manifest,
+    manifest_with_active_pair,
+    new_image_pair,
+    revalidate_candidate_system_bind_snapshots,
+    run_map_ops_smoke,
+    run_pinvi_canonical_smoke,
+    run_ui_auth_smoke,
+    validate_compose_candidate_protected_values,
+    validate_resolved_compose_candidate_protected_values,
+    validate_resolved_compose_image_pair,
+    validate_resolved_compose_secret_isolation,
+    validate_runtime_secret_isolation,
+    write_pair_manifest,
+)
 from kor_travel_docker_manager.services.registry import (
+    get_target,
     init_steps_for_target,
     is_known_target,
     runtime_services_for_target,
@@ -32,13 +82,10 @@ def get_env_path() -> str:
 
 
 def get_override_path() -> str:
-    """prod 전용 docker-compose.override.yml 경로.
+    """legacy read-only 명령이 인식하는 override 경로.
 
-    base compose 파일과 같은 디렉터리에 있으면 함께 적용한다. dev에는 이 파일이
-    없어 base만 쓰이고(npm run dev 유지), prod에는 있어 prod build·env_file·command
-    가드가 반영된다. `docker compose up`을 dir에서 직접 호출하면 auto-load되지만,
-    이 서비스는 명시적 `-f base`로 호출하므로 여기서 override를 명시적으로 더해야
-    한다(미적용 시 concierge-ui가 dev 모드+빈 env로 떠 로그인이 죽는다).
+    Manager mutation은 raw/resolved volume graph를 하나의 파일에 고정하므로 실제
+    override가 존재하거나 명시되면 candidate 검증에서 거부한다.
     """
     override = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE")
     if override:
@@ -48,26 +95,1436 @@ def get_override_path() -> str:
     )
 
 
+def get_compatible_pair_manifest_path(
+    environment: Mapping[str, str] | None = None,
+) -> str:
+    """Manifest 경로는 lock 안에서 전달된 frozen environment로만 해석한다."""
+
+    if environment is None:
+        raise DeploymentContractError(
+            "compatible-pair manifest path requires a frozen environment snapshot"
+        )
+    return c6c_state_paths(environment)[0]
+
+
+def get_c6c_deployment_lock_path() -> str:
+    return c6c_global_mutation_lock_path()
+
+
+@dataclass(frozen=True)
+class ComposeEnvFileIdentity:
+    exists: bool
+    device: int | None = None
+    inode: int | None = None
+    mode: int | None = None
+    uid: int | None = None
+    gid: int | None = None
+
+
+@dataclass(frozen=True, eq=False, repr=False)
+class ComposeEnvironmentSnapshot:
+    effective: Mapping[str, str] = field(repr=False)
+    env_path: str = field(repr=False)
+    compose_path: str = field(repr=False)
+    override_path: str = field(repr=False)
+    env_file_identity: ComposeEnvFileIdentity
+    env_file_bytes: bytes = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "ComposeEnvironmentSnapshot(<redacted>)"
+
+
+@dataclass(frozen=True, repr=False)
+class ComposeExternalReference:
+    service: str
+    index: int
+    raw_path: str = field(repr=False)
+    resolved_path: str = field(repr=False)
+    required: bool
+    format: str
+
+
+@dataclass(frozen=True, repr=False)
+class ComposeExternalFileSnapshot:
+    path: str = field(repr=False)
+    identity: ComposeEnvFileIdentity
+    contents: bytes = field(repr=False)
+
+
+@dataclass(frozen=True, eq=False, repr=False)
+class ComposeExternalInputSnapshot:
+    references: tuple[ComposeExternalReference, ...] = field(repr=False)
+    files: tuple[ComposeExternalFileSnapshot, ...] = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "ComposeExternalInputSnapshot(<redacted>)"
+
+
+@dataclass(frozen=True, eq=False, repr=False)
+class ComposeTransactionSnapshot:
+    environment: ComposeEnvironmentSnapshot = field(repr=False)
+    external_inputs: ComposeExternalInputSnapshot = field(repr=False)
+    compose_source_bytes: bytes = field(repr=False)
+    compose_source_mode: int
+    system_bind_snapshots: tuple[CandidateSystemBindSnapshot, ...]
+    raw_volume_graph_hash: str
+    resolved_volume_graph_hash: str
+    resolved: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    resolved_document_hash: str = field(default="", repr=False)
+    manifest_path: str | None = field(default=None, repr=False)
+
+    def __repr__(self) -> str:
+        return "ComposeTransactionSnapshot(<redacted>)"
+
+
+@dataclass(frozen=True)
+class ValidatedComposeCandidate:
+    resolved: Mapping[str, Any] = field(repr=False)
+    system_bind_snapshots: tuple[CandidateSystemBindSnapshot, ...]
+    raw_volume_graph_hash: str = ""
+    resolved_volume_graph_hash: str = ""
+    environment_snapshot: ComposeEnvironmentSnapshot | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    external_input_snapshot: ComposeExternalInputSnapshot | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    transaction_snapshot: ComposeTransactionSnapshot | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+
+_TRUSTED_FROZEN_RECOVERY_CAPABILITY = object()
+
+
+def _serialize_resolved_compose_document(resolved: Mapping[str, Any]) -> str:
+    return json.dumps(
+        resolved,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _resolved_compose_document_hash(resolved: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        _serialize_resolved_compose_document(resolved).encode("utf-8")
+    ).hexdigest()
+
+
+_MAX_EXTERNAL_INPUT_BYTES = 1_048_576
+
+
+def _effective_snapshot_environment(
+    snapshot: ComposeEnvironmentSnapshot,
+    environment_override: Mapping[str, str] | None,
+) -> Mapping[str, str]:
+    if environment_override is None:
+        return snapshot.effective
+    merged = dict(snapshot.effective)
+    merged.update(environment_override)
+    return MappingProxyType(merged)
+
+
+def _external_reference_graph(
+    candidate: Mapping[str, Any],
+    *,
+    environment: Mapping[str, str],
+    compose_path: str,
+    root_env_path: str,
+) -> tuple[ComposeExternalReference, ...]:
+    for collection_name in ("secrets", "configs"):
+        collection = candidate.get(collection_name)
+        if collection is None:
+            continue
+        if not isinstance(collection, Mapping):
+            raise ComposeCandidateContractError(
+                f"compose candidate top-level {collection_name} is invalid"
+            )
+        if any(
+            isinstance(source, Mapping) and "file" in source
+            for source in collection.values()
+        ):
+            raise ComposeCandidateContractError(
+                f"compose candidate top-level {collection_name} file resources are unsupported"
+            )
+
+    services = candidate.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError(
+            "compose candidate has no valid services mapping"
+        )
+    try:
+        compose_directory = Path(compose_path).resolve().parent
+        root_env = Path(root_env_path).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ComposeCandidateContractError(
+            "compose external input paths cannot be resolved"
+        ) from exc
+
+    references: list[ComposeExternalReference] = []
+    for service_name in sorted(str(name) for name in services):
+        service = services.get(service_name)
+        if not isinstance(service, Mapping):
+            continue
+        raw_entries = service.get("env_file")
+        if raw_entries is None:
+            continue
+        if not isinstance(raw_entries, list):
+            raise ComposeCandidateContractError(
+                "compose candidate env_file syntax is unsupported"
+            )
+        for index, entry in enumerate(raw_entries):
+            if (
+                not isinstance(entry, Mapping)
+                or set(entry) != {"path", "required", "format"}
+                or not isinstance(entry.get("path"), str)
+                or type(entry.get("required")) is not bool
+                or entry.get("format") != "raw"
+            ):
+                raise ComposeCandidateContractError(
+                    "compose candidate env_file syntax is unsupported"
+                )
+            raw_path = str(entry["path"])
+            if not raw_path:
+                raise ComposeCandidateContractError(
+                    "compose candidate env_file path is empty"
+                )
+            try:
+                expanded = _expand_env_path(raw_path, environment)
+                path = Path(expanded)
+                if not path.is_absolute():
+                    path = compose_directory / path
+                resolved_path = path.resolve()
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ComposeCandidateContractError(
+                    "compose candidate env_file path cannot be resolved"
+                ) from exc
+            if resolved_path == root_env:
+                raise ComposeCandidateContractError(
+                    "compose candidate service must not load the manager root .env"
+                )
+            references.append(
+                ComposeExternalReference(
+                    service=service_name,
+                    index=index,
+                    raw_path=raw_path,
+                    resolved_path=str(resolved_path),
+                    required=bool(entry["required"]),
+                    format="raw",
+                )
+            )
+    return tuple(references)
+
+
+def _capture_compose_external_input_snapshot(
+    candidate: Mapping[str, Any],
+    *,
+    environment_snapshot: ComposeEnvironmentSnapshot,
+    environment_override: Mapping[str, str] | None = None,
+) -> ComposeExternalInputSnapshot:
+    environment = _effective_snapshot_environment(
+        environment_snapshot,
+        environment_override,
+    )
+    references = _external_reference_graph(
+        candidate,
+        environment=environment,
+        compose_path=environment_snapshot.compose_path,
+        root_env_path=environment_snapshot.env_path,
+    )
+    required_by_path: dict[str, bool] = {}
+    for reference in references:
+        required_by_path[reference.resolved_path] = (
+            required_by_path.get(reference.resolved_path, False)
+            or reference.required
+        )
+
+    files: list[ComposeExternalFileSnapshot] = []
+    for path_text in sorted(required_by_path):
+        path = Path(path_text)
+        before = _env_file_identity(path)
+        if not before.exists:
+            if required_by_path[path_text]:
+                raise ComposeCandidateContractError(
+                    "required compose external env_file is missing"
+                )
+            if _env_file_identity(path).exists:
+                raise ComposeCandidateContractError(
+                    "compose external env_file appeared during snapshot"
+                )
+            files.append(
+                ComposeExternalFileSnapshot(
+                    path=path_text,
+                    identity=before,
+                    contents=b"",
+                )
+            )
+            continue
+        if before.mode is None or not stat.S_ISREG(before.mode):
+            raise ComposeCandidateContractError(
+                "compose external env_file is not a regular file"
+            )
+        try:
+            contents = path.read_bytes()
+        except OSError as exc:
+            raise ComposeCandidateContractError(
+                "compose external env_file snapshot cannot be read"
+            ) from exc
+        if len(contents) > _MAX_EXTERNAL_INPUT_BYTES:
+            raise ComposeCandidateContractError(
+                "compose external env_file exceeds the snapshot limit"
+            )
+        if _env_file_identity(path) != before:
+            raise ComposeCandidateContractError(
+                "compose external env_file identity changed during snapshot"
+            )
+        files.append(
+            ComposeExternalFileSnapshot(
+                path=path_text,
+                identity=before,
+                contents=contents,
+            )
+        )
+    return ComposeExternalInputSnapshot(
+        references=references,
+        files=tuple(files),
+    )
+
+
+def _revalidate_compose_external_input_snapshot(
+    snapshot: ComposeExternalInputSnapshot,
+    *,
+    candidate: Mapping[str, Any] | None = None,
+    environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+    environment_override: Mapping[str, str] | None = None,
+) -> None:
+    if candidate is not None:
+        if environment_snapshot is None:
+            raise ComposeCandidateContractError(
+                "compose external input revalidation has no environment snapshot"
+            )
+        current_graph = _external_reference_graph(
+            candidate,
+            environment=_effective_snapshot_environment(
+                environment_snapshot,
+                environment_override,
+            ),
+            compose_path=environment_snapshot.compose_path,
+            root_env_path=environment_snapshot.env_path,
+        )
+        if current_graph != snapshot.references:
+            raise ComposeCandidateContractError(
+                "compose external reference graph changed during the transaction"
+            )
+    for file_snapshot in snapshot.files:
+        path = Path(file_snapshot.path)
+        current_identity = _env_file_identity(path)
+        if current_identity != file_snapshot.identity:
+            raise ComposeCandidateContractError(
+                "compose external env_file identity changed during the transaction"
+            )
+        if not current_identity.exists:
+            continue
+        try:
+            current_contents = path.read_bytes()
+        except OSError as exc:
+            raise ComposeCandidateContractError(
+                "compose external env_file cannot be revalidated"
+            ) from exc
+        if current_contents != file_snapshot.contents:
+            raise ComposeCandidateContractError(
+                "compose external env_file bytes changed during the transaction"
+            )
+        if _env_file_identity(path) != current_identity:
+            raise ComposeCandidateContractError(
+                "compose external env_file identity changed during revalidation"
+            )
+
+
+def _external_snapshot_contents(
+    snapshot: ComposeExternalInputSnapshot,
+) -> Mapping[str, bytes]:
+    return MappingProxyType(
+        {file_snapshot.path: file_snapshot.contents for file_snapshot in snapshot.files}
+    )
+
+
+def _materialize_external_inputs_with_memfd(
+    candidate: Mapping[str, Any],
+    snapshot: ComposeExternalInputSnapshot,
+) -> tuple[dict[str, Any], tuple[int, ...]]:
+    """Secret env_file bytes를 disk에 쓰지 않고 inherited memfd로 Compose에 준다."""
+
+    document = deepcopy(dict(candidate))
+    services = document.get("services")
+    if not isinstance(services, dict):
+        raise ComposeCandidateContractError(
+            "compose candidate has no materializable services mapping"
+        )
+    contents_by_path = _external_snapshot_contents(snapshot)
+    descriptors: dict[str, int] = {}
+    opened: list[int] = []
+    try:
+        for file_snapshot in snapshot.files:
+            try:
+                descriptor = os.memfd_create("compose-env", flags=0)
+            except (AttributeError, OSError) as exc:
+                raise ComposeCandidateContractError(
+                    "compose external input memory snapshot cannot be created"
+                ) from exc
+            opened.append(descriptor)
+            payload = contents_by_path[file_snapshot.path]
+            view = memoryview(payload)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise ComposeCandidateContractError(
+                        "compose external input memory snapshot cannot be written"
+                    )
+                view = view[written:]
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            descriptors[file_snapshot.path] = descriptor
+        for reference in snapshot.references:
+            service = services.get(reference.service)
+            if not isinstance(service, dict):
+                raise ComposeCandidateContractError(
+                    "compose external reference service changed"
+                )
+            entries = service.get("env_file")
+            if not isinstance(entries, list) or reference.index >= len(entries):
+                raise ComposeCandidateContractError(
+                    "compose external reference graph changed"
+                )
+            entry = entries[reference.index]
+            if not isinstance(entry, dict):
+                raise ComposeCandidateContractError(
+                    "compose external reference syntax changed"
+                )
+            entry["path"] = f"/proc/self/fd/{descriptors[reference.resolved_path]}"
+        return document, tuple(opened)
+    except Exception:
+        for descriptor in opened:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+def _assert_resolved_external_inputs_materialized(
+    resolved: Mapping[str, Any],
+) -> None:
+    services = resolved.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError(
+            "resolved compose has no services mapping"
+        )
+    if any(
+        isinstance(service, Mapping) and service.get("env_file")
+        for service in services.values()
+    ):
+        raise ComposeCandidateContractError(
+            "resolved compose retained a live env_file reference"
+        )
+    for collection_name in ("secrets", "configs"):
+        collection = resolved.get(collection_name)
+        if isinstance(collection, Mapping) and any(
+            isinstance(source, Mapping) and source.get("file")
+            for source in collection.values()
+        ):
+            raise ComposeCandidateContractError(
+                "resolved compose retained an external file resource"
+            )
+
+
+def _env_file_identity(path: Path) -> ComposeEnvFileIdentity:
+    try:
+        source_stat = path.stat()
+    except FileNotFoundError:
+        return ComposeEnvFileIdentity(exists=False)
+    except OSError as exc:
+        raise ComposeCandidateContractError(
+            "compose env-file identity cannot be inspected"
+        ) from exc
+    return ComposeEnvFileIdentity(
+        exists=True,
+        device=source_stat.st_dev,
+        inode=source_stat.st_ino,
+        mode=source_stat.st_mode,
+        uid=source_stat.st_uid,
+        gid=source_stat.st_gid,
+    )
+
+
+def _capture_compose_environment_snapshot(
+    *,
+    environment_override: Mapping[str, str] | None,
+) -> ComposeEnvironmentSnapshot:
+    env_path = Path(get_env_path()).resolve(strict=False)
+    compose_path = Path(get_compose_path()).resolve(strict=False)
+    override_path = Path(get_override_path()).resolve(strict=False)
+    before = _env_file_identity(env_path)
+    env_file_bytes = b""
+    values: dict[str, str] = {}
+    if before.exists:
+        try:
+            env_file_bytes = env_path.read_bytes()
+            decoded = env_file_bytes.decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ComposeCandidateContractError(
+                "compose env-file snapshot cannot be read"
+            ) from exc
+        after = _env_file_identity(env_path)
+        if after != before:
+            raise ComposeCandidateContractError(
+                "compose env-file identity changed during snapshot"
+            )
+        try:
+            values.update(
+                {
+                    key: value or ""
+                    for key, value in dotenv_values(
+                        stream=StringIO(decoded)
+                    ).items()
+                    if isinstance(key, str)
+                }
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ComposeCandidateContractError(
+                "compose env-file snapshot cannot be parsed"
+            ) from exc
+    elif _env_file_identity(env_path).exists:
+        raise ComposeCandidateContractError(
+            "compose env-file appeared during snapshot"
+        )
+    values.update(dict(os.environ))
+    if environment_override is not None:
+        values.update(environment_override)
+    return ComposeEnvironmentSnapshot(
+        effective=MappingProxyType(values),
+        env_path=str(env_path),
+        compose_path=str(compose_path),
+        override_path=str(override_path),
+        env_file_identity=before,
+        env_file_bytes=env_file_bytes,
+    )
+
+
+def _revalidate_compose_environment_snapshot(
+    snapshot: ComposeEnvironmentSnapshot,
+) -> None:
+    env_path = Path(snapshot.env_path)
+    current_identity = _env_file_identity(env_path)
+    if current_identity != snapshot.env_file_identity:
+        raise ComposeCandidateContractError(
+            "compose env-file identity changed during the transaction"
+        )
+    if not current_identity.exists:
+        return
+    try:
+        current_bytes = env_path.read_bytes()
+    except OSError as exc:
+        raise ComposeCandidateContractError(
+            "compose env-file cannot be revalidated"
+        ) from exc
+    if current_bytes != snapshot.env_file_bytes:
+        raise ComposeCandidateContractError(
+            "compose env-file bytes changed during the transaction"
+        )
+    if _env_file_identity(env_path) != current_identity:
+        raise ComposeCandidateContractError(
+            "compose env-file identity changed during revalidation"
+        )
+
+
+def _atomic_restore_compose_source(
+    path: Path,
+    payload: bytes,
+    *,
+    mode: int,
+) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".restore",
+            delete=False,
+        ) as temporary:
+            temporary.write(payload)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, path)
+        temporary_path = None
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 class ComposeService:
-    def build_command(self, args: Sequence[str]) -> list[str]:
+    def _capture_transaction_unlocked(
+        self,
+        *,
+        environment_override: Mapping[str, str] | None = None,
+        derive_manifest_path: bool = False,
+        environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+    ) -> tuple[ComposeTransactionSnapshot, ValidatedComposeCandidate]:
+        if environment_snapshot is None:
+            environment_snapshot = _capture_compose_environment_snapshot(
+                environment_override=None,
+            )
+        compose_path = Path(environment_snapshot.compose_path)
+        try:
+            source_bytes = compose_path.read_bytes()
+            source_mode = compose_path.stat().st_mode & 0o777
+        except OSError as exc:
+            raise ComposeCandidateContractError(
+                "compose transaction source cannot be snapshotted"
+            ) from exc
+        validation = self._validate_current_compose_candidate_unlocked(
+            environment_override=environment_override,
+            environment_snapshot=environment_snapshot,
+        )
+        external_inputs = validation.external_input_snapshot
+        if external_inputs is None:
+            try:
+                source_document = yaml.safe_load(source_bytes.decode("utf-8")) or {}
+            except (UnicodeError, ValueError, yaml.YAMLError) as exc:
+                raise ComposeCandidateContractError(
+                    "compose transaction source cannot be loaded"
+                ) from exc
+            if not isinstance(source_document, Mapping):
+                raise ComposeCandidateContractError(
+                    "compose transaction source is not a mapping"
+                )
+            external_inputs = _capture_compose_external_input_snapshot(
+                source_document,
+                environment_snapshot=environment_snapshot,
+                environment_override=environment_override,
+            )
+            validation = replace(
+                validation,
+                environment_snapshot=environment_snapshot,
+                external_input_snapshot=external_inputs,
+            )
+        if compose_path.read_bytes() != source_bytes:
+            raise ComposeCandidateContractError(
+                "compose transaction source changed during snapshot"
+            )
+        resolved = json.loads(_serialize_resolved_compose_document(validation.resolved))
+        if not isinstance(resolved, Mapping):
+            raise ComposeCandidateContractError(
+                "compose transaction resolved document is invalid"
+            )
+        transaction = ComposeTransactionSnapshot(
+            environment=environment_snapshot,
+            external_inputs=external_inputs,
+            compose_source_bytes=source_bytes,
+            compose_source_mode=source_mode,
+            system_bind_snapshots=validation.system_bind_snapshots,
+            raw_volume_graph_hash=validation.raw_volume_graph_hash,
+            resolved_volume_graph_hash=validation.resolved_volume_graph_hash,
+            resolved=resolved,
+            resolved_document_hash=_resolved_compose_document_hash(resolved),
+            manifest_path=(
+                get_compatible_pair_manifest_path(environment_snapshot.effective)
+                if derive_manifest_path
+                else None
+            ),
+        )
+        return transaction, replace(
+            validation,
+            transaction_snapshot=transaction,
+        )
+
+    def build_command(
+        self,
+        args: Sequence[str],
+        *,
+        canonical_single_file: bool = False,
+        compose_path: str | None = None,
+    ) -> list[str]:
         command = ["docker", "compose"]
-        env_path = get_env_path()
-        if os.path.exists(env_path):
-            command.extend(["--env-file", env_path])
-        command.extend(["-f", get_compose_path()])
-        override_path = get_override_path()
-        if os.path.exists(override_path):
-            command.extend(["-f", override_path])
+        if canonical_single_file:
+            command.extend(
+                [
+                    "--env-file",
+                    "/dev/null",
+                    "--project-directory",
+                    str(Path(compose_path or get_compose_path()).resolve().parent),
+                    "-f",
+                    "-",
+                ]
+            )
+        else:
+            env_path = get_env_path()
+            if os.path.exists(env_path):
+                command.extend(["--env-file", env_path])
+        if not canonical_single_file:
+            command.extend(["-f", compose_path or get_compose_path()])
+        if not canonical_single_file:
+            override_path = get_override_path()
+            if os.path.exists(override_path):
+                command.extend(["-f", override_path])
         command.extend(args)
         return command
+
+    @staticmethod
+    def _validate_frozen_transaction_unlocked(
+        transaction: ComposeTransactionSnapshot,
+    ) -> Mapping[str, Any]:
+        try:
+            source = yaml.safe_load(
+                transaction.compose_source_bytes.decode("utf-8")
+            ) or {}
+        except (UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError(
+                "frozen compose transaction source is invalid"
+            ) from exc
+        if not isinstance(source, Mapping) or not isinstance(
+            transaction.resolved, Mapping
+        ):
+            raise ComposeCandidateContractError(
+                "frozen compose transaction document is invalid"
+            )
+        if transaction.compose_source_mode & ~0o777:
+            raise ComposeCandidateContractError(
+                "frozen compose transaction mode is invalid"
+            )
+        source_references: list[tuple[str, int, str, bool, str]] = []
+        services = source.get("services")
+        if not isinstance(services, Mapping):
+            raise ComposeCandidateContractError(
+                "frozen compose transaction has no services mapping"
+            )
+        for service_name in sorted(str(name) for name in services):
+            service = services.get(service_name)
+            if not isinstance(service, Mapping):
+                continue
+            entries = service.get("env_file", [])
+            if not isinstance(entries, list):
+                raise ComposeCandidateContractError(
+                    "frozen compose transaction external graph is invalid"
+                )
+            for index, entry in enumerate(entries):
+                if not isinstance(entry, Mapping):
+                    raise ComposeCandidateContractError(
+                        "frozen compose transaction external graph is invalid"
+                    )
+                source_references.append(
+                    (
+                        service_name,
+                        index,
+                        str(entry.get("path", "")),
+                        entry.get("required") is True,
+                        str(entry.get("format", "")),
+                    )
+                )
+        snapshot_references = [
+            (
+                reference.service,
+                reference.index,
+                reference.raw_path,
+                reference.required,
+                reference.format,
+            )
+            for reference in transaction.external_inputs.references
+        ]
+        if source_references != snapshot_references:
+            raise ComposeCandidateContractError(
+                "frozen compose transaction external graph is inconsistent"
+            )
+        if compose_volume_graph_hash(source) != transaction.raw_volume_graph_hash:
+            raise ComposeCandidateContractError(
+                "frozen compose transaction raw graph is inconsistent"
+            )
+        if (
+            compose_volume_graph_hash(transaction.resolved)
+            != transaction.resolved_volume_graph_hash
+        ):
+            raise ComposeCandidateContractError(
+                "frozen compose transaction resolved graph is inconsistent"
+            )
+        if (
+            _resolved_compose_document_hash(transaction.resolved)
+            != transaction.resolved_document_hash
+        ):
+            raise ComposeCandidateContractError(
+                "frozen compose transaction resolved document is inconsistent"
+            )
+        _assert_resolved_external_inputs_materialized(transaction.resolved)
+        revalidate_candidate_system_bind_snapshots(
+            transaction.system_bind_snapshots
+        )
+        return transaction.resolved
+
+    def _run_frozen_recovery(
+        self,
+        args: Sequence[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+        capture_output: bool = True,
+        mutation_capability: object | None = None,
+        redact_config: C6cDeploymentConfig | None = None,
+    ) -> dict[str, Any]:
+        return self.run(
+            args,
+            capture_output=capture_output,
+            mutation_capability=mutation_capability,
+            redact_config=redact_config,
+            transaction=transaction,
+            _frozen_recovery_capability=_TRUSTED_FROZEN_RECOVERY_CAPABILITY,
+        )
+
+    def _materialize_active_recovery_transaction_unlocked(
+        self,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        active_pair: CompatibleImagePair,
+    ) -> ComposeTransactionSnapshot:
+        """Frozen root 입력만으로 manifest active pair 복구 문서를 만든다."""
+
+        self._validate_frozen_transaction_unlocked(transaction)
+        try:
+            source = yaml.safe_load(
+                transaction.compose_source_bytes.decode("utf-8")
+            ) or {}
+        except (UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError(
+                "active recovery transaction source is invalid"
+            ) from exc
+        if not isinstance(source, Mapping):
+            raise ComposeCandidateContractError(
+                "active recovery transaction source is not a mapping"
+            )
+        environment = dict(transaction.environment.effective)
+        environment.update(self._pair_image_environment(active_pair))
+        descriptors: tuple[int, ...] = ()
+        try:
+            materialized, descriptors = _materialize_external_inputs_with_memfd(
+                source,
+                transaction.external_inputs,
+            )
+            completed = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "--env-file",
+                    "/dev/null",
+                    "--project-directory",
+                    str(Path(transaction.environment.compose_path).parent),
+                    "-f",
+                    "-",
+                    "config",
+                    "--format",
+                    "json",
+                ],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+                env=environment,
+                pass_fds=descriptors,
+                input=yaml.safe_dump(
+                    materialized,
+                    default_flow_style=False,
+                    sort_keys=False,
+                    allow_unicode=True,
+                ),
+            )
+            if completed.returncode != 0:
+                raise ComposeCandidateContractError(
+                    "active recovery transaction resolution failed"
+                )
+            try:
+                resolved = json.loads(completed.stdout)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ComposeCandidateContractError(
+                    "active recovery transaction returned invalid JSON"
+                ) from exc
+            if not isinstance(resolved, Mapping):
+                raise ComposeCandidateContractError(
+                    "active recovery transaction resolved document is invalid"
+                )
+            _assert_resolved_external_inputs_materialized(resolved)
+            if (
+                compose_volume_graph_hash(resolved)
+                != transaction.resolved_volume_graph_hash
+            ):
+                raise ComposeCandidateContractError(
+                    "active recovery transaction volume graph changed"
+                )
+            revalidate_candidate_system_bind_snapshots(
+                transaction.system_bind_snapshots
+            )
+            validate_resolved_compose_image_pair(resolved, config, active_pair)
+            frozen_resolved = json.loads(
+                _serialize_resolved_compose_document(resolved)
+            )
+            if not isinstance(frozen_resolved, Mapping):
+                raise ComposeCandidateContractError(
+                    "active recovery transaction cannot be frozen"
+                )
+            return replace(
+                transaction,
+                resolved=frozen_resolved,
+                resolved_document_hash=(
+                    _resolved_compose_document_hash(frozen_resolved)
+                ),
+            )
+        except OSError as exc:
+            raise ComposeCandidateContractError(
+                "active recovery transaction could not start"
+            ) from exc
+        finally:
+            for descriptor in descriptors:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
     def run(
         self,
         args: Sequence[str],
         *,
         capture_output: bool = True,
+        environment: Mapping[str, str] | None = None,
+        mutation_capability: object | None = None,
+        redact_config: C6cDeploymentConfig | None = None,
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ] | None = None,
+        expected_raw_volume_graph_hash: str | None = None,
+        expected_resolved_volume_graph_hash: str | None = None,
+        expected_environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+        expected_external_input_snapshot: ComposeExternalInputSnapshot | None = None,
+        transaction: ComposeTransactionSnapshot | None = None,
+        _frozen_recovery_capability: object | None = None,
     ) -> dict[str, Any]:
-        command = self.build_command(args)
+        if (
+            _frozen_recovery_capability is not None
+            and _frozen_recovery_capability
+            is not _TRUSTED_FROZEN_RECOVERY_CAPABILITY
+        ):
+            raise ComposeCandidateContractError(
+                "untrusted frozen recovery capability"
+            )
+        frozen_recovery = (
+            _frozen_recovery_capability
+            is _TRUSTED_FROZEN_RECOVERY_CAPABILITY
+        )
+        mutation_identifiers = self._compose_mutation_identifiers(args)
+        if (
+            mutation_identifiers
+            or transaction is not None
+            or expected_environment_snapshot is not None
+        ):
+            with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+                if frozen_recovery:
+                    if transaction is None or environment is not None:
+                        raise ComposeCandidateContractError(
+                            "frozen recovery requires one closed transaction"
+                        )
+                    assert_compose_mutation_allowed(
+                        mutation_identifiers,
+                        environment=transaction.environment.effective,
+                        capability=mutation_capability,
+                    )
+                    resolved = self._validate_frozen_transaction_unlocked(
+                        transaction
+                    )
+                    return self._run_unlocked(
+                        args,
+                        capture_output=capture_output,
+                        environment=None,
+                        redact_config=redact_config,
+                        expected_system_bind_snapshots=(
+                            transaction.system_bind_snapshots
+                        ),
+                        expected_compose_source_bytes=None,
+                        environment_snapshot=transaction.environment,
+                        external_input_snapshot=None,
+                        materialized_compose=resolved,
+                    )
+                captured_validation: ValidatedComposeCandidate | None = None
+                if transaction is None and expected_environment_snapshot is None:
+                    transaction, captured_validation = (
+                        self._capture_transaction_unlocked(
+                            environment_override=environment,
+                        )
+                    )
+                environment_snapshot = (
+                    transaction.environment
+                    if transaction is not None
+                    else expected_environment_snapshot
+                )
+                if environment_snapshot is None:
+                    raise ComposeCandidateContractError(
+                        "compose transaction has no environment snapshot"
+                    )
+                assert_compose_mutation_allowed(
+                    mutation_identifiers,
+                    environment=environment_snapshot.effective,
+                    capability=mutation_capability,
+                )
+                compose_source_bytes = (
+                    transaction.compose_source_bytes
+                    if transaction is not None
+                    else Path(environment_snapshot.compose_path).read_bytes()
+                )
+                external_input_snapshot = (
+                    transaction.external_inputs
+                    if transaction is not None
+                    else expected_external_input_snapshot
+                )
+                validation = captured_validation or (
+                    self._validate_current_compose_candidate_unlocked(
+                        environment_override=environment,
+                        environment_snapshot=environment_snapshot,
+                        external_input_snapshot=external_input_snapshot,
+                    )
+                )
+                snapshots = validation.system_bind_snapshots
+                if (
+                    transaction is not None
+                    and snapshots != transaction.system_bind_snapshots
+                ):
+                    raise ComposeCandidateContractError(
+                        "compose candidate system bind snapshot differs from the transaction"
+                    )
+                if expected_system_bind_snapshots is not None:
+                    if snapshots != expected_system_bind_snapshots:
+                        raise ComposeCandidateContractError(
+                            "compose candidate system bind snapshot differs from the request"
+                        )
+                    snapshots = expected_system_bind_snapshots
+                if (
+                    transaction is not None
+                    and validation.raw_volume_graph_hash
+                    != transaction.raw_volume_graph_hash
+                ):
+                    raise ComposeCandidateContractError(
+                        "compose raw volume graph changed during the transaction"
+                    )
+                if (
+                    transaction is not None
+                    and validation.resolved_volume_graph_hash
+                    != transaction.resolved_volume_graph_hash
+                ):
+                    raise ComposeCandidateContractError(
+                        "compose resolved volume graph changed during the transaction"
+                    )
+                if (
+                    expected_raw_volume_graph_hash is not None
+                    and validation.raw_volume_graph_hash
+                    != expected_raw_volume_graph_hash
+                ):
+                    raise ComposeCandidateContractError(
+                        "compose raw volume graph changed during the request"
+                    )
+                if (
+                    expected_resolved_volume_graph_hash is not None
+                    and validation.resolved_volume_graph_hash
+                    != expected_resolved_volume_graph_hash
+                ):
+                    raise ComposeCandidateContractError(
+                        "compose resolved volume graph changed during the request"
+                    )
+                try:
+                    source_unchanged = (
+                        Path(environment_snapshot.compose_path).read_bytes()
+                        == compose_source_bytes
+                    )
+                except OSError as exc:
+                    raise ComposeCandidateContractError(
+                        "compose candidate source cannot be revalidated"
+                    ) from exc
+                if not source_unchanged:
+                    raise ComposeCandidateContractError(
+                        "compose candidate source changed before Docker mutation"
+                    )
+                return self._run_unlocked(
+                    args,
+                    capture_output=capture_output,
+                    environment=environment,
+                    redact_config=redact_config,
+                    expected_system_bind_snapshots=snapshots,
+                    expected_compose_source_bytes=compose_source_bytes,
+                    environment_snapshot=environment_snapshot,
+                    external_input_snapshot=external_input_snapshot,
+                    materialized_compose=validation.resolved,
+                )
+        return self._run_unlocked(
+            args,
+            capture_output=capture_output,
+            environment=environment,
+            redact_config=redact_config,
+            expected_system_bind_snapshots=None,
+            expected_compose_source_bytes=None,
+            environment_snapshot=None,
+            external_input_snapshot=None,
+            materialized_compose=None,
+        )
+
+    def validate_compose_candidate_document(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        environment_override: Mapping[str, str] | None = None,
+    ) -> Mapping[str, Any]:
+        """raw candidate와 Docker Compose resolved graph를 mutation 전에 검증한다."""
+
+        return self.capture_compose_candidate_transaction(
+            candidate,
+            environment_override=environment_override,
+        ).resolved
+
+    def capture_compose_candidate_transaction(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        environment_override: Mapping[str, str] | None = None,
+        environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+    ) -> ValidatedComposeCandidate:
+        """mutex 안의 config transaction이 재검증할 candidate identity를 반환한다."""
+
+        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+            transaction, persisted = self._capture_transaction_unlocked(
+                environment_override=environment_override,
+                environment_snapshot=environment_snapshot,
+            )
+            return self._capture_candidate_transaction_unlocked(
+                candidate,
+                baseline_transaction=transaction,
+                baseline_validation=persisted,
+                environment_override=environment_override,
+            )
+
+    def _capture_candidate_transaction_unlocked(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        baseline_transaction: ComposeTransactionSnapshot,
+        baseline_validation: ValidatedComposeCandidate,
+        environment_override: Mapping[str, str] | None = None,
+    ) -> ValidatedComposeCandidate:
+        candidate_validation = self._validate_compose_candidate_document_unlocked(
+            candidate,
+            environment_override=environment_override,
+            environment_snapshot=baseline_transaction.environment,
+            external_input_snapshot=baseline_transaction.external_inputs,
+        )
+        if (
+            candidate_validation.raw_volume_graph_hash
+            != baseline_validation.raw_volume_graph_hash
+        ):
+            raise ComposeCandidateContractError(
+                "compose candidate raw volume graph differs from persisted compose"
+            )
+        if (
+            candidate_validation.resolved_volume_graph_hash
+            != baseline_validation.resolved_volume_graph_hash
+        ):
+            raise ComposeCandidateContractError(
+                "compose candidate resolved volume graph differs from persisted compose"
+            )
+        candidate_source_bytes = yaml.safe_dump(
+            candidate,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+        ).encode("utf-8")
+        resolved = json.loads(
+            _serialize_resolved_compose_document(candidate_validation.resolved)
+        )
+        if not isinstance(resolved, Mapping):
+            raise ComposeCandidateContractError(
+                "compose candidate resolved document is invalid"
+            )
+        candidate_transaction = ComposeTransactionSnapshot(
+            environment=baseline_transaction.environment,
+            external_inputs=baseline_transaction.external_inputs,
+            compose_source_bytes=candidate_source_bytes,
+            compose_source_mode=baseline_transaction.compose_source_mode,
+            system_bind_snapshots=candidate_validation.system_bind_snapshots,
+            raw_volume_graph_hash=candidate_validation.raw_volume_graph_hash,
+            resolved_volume_graph_hash=(
+                candidate_validation.resolved_volume_graph_hash
+            ),
+            resolved=resolved,
+            resolved_document_hash=_resolved_compose_document_hash(resolved),
+            manifest_path=baseline_transaction.manifest_path,
+        )
+        return replace(
+            candidate_validation,
+            transaction_snapshot=candidate_transaction,
+        )
+
+    def _validate_current_compose_candidate_unlocked(
+        self,
+        *,
+        environment_override: Mapping[str, str] | None = None,
+        environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+        external_input_snapshot: ComposeExternalInputSnapshot | None = None,
+    ) -> ValidatedComposeCandidate:
+        if environment_snapshot is None:
+            environment_snapshot = _capture_compose_environment_snapshot(
+                environment_override=environment_override,
+            )
+        compose_path = Path(environment_snapshot.compose_path)
+        try:
+            loaded = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError(
+                "compose candidate source cannot be loaded"
+            ) from exc
+        if not isinstance(loaded, Mapping):
+            raise ComposeCandidateContractError(
+                "compose candidate source is not a mapping"
+            )
+        return self._validate_compose_candidate_document_unlocked(
+            loaded,
+            environment_override=environment_override,
+            environment_snapshot=environment_snapshot,
+            external_input_snapshot=external_input_snapshot,
+        )
+
+    def _validate_compose_candidate_document_unlocked(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        environment_override: Mapping[str, str] | None,
+        environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+        external_input_snapshot: ComposeExternalInputSnapshot | None = None,
+    ) -> ValidatedComposeCandidate:
+        if environment_snapshot is None:
+            environment_snapshot = _capture_compose_environment_snapshot(
+                environment_override=environment_override,
+            )
+        environment = _effective_snapshot_environment(
+            environment_snapshot,
+            environment_override,
+        )
+        if external_input_snapshot is None:
+            external_input_snapshot = _capture_compose_external_input_snapshot(
+                candidate,
+                environment_snapshot=environment_snapshot,
+                environment_override=environment_override,
+            )
+        else:
+            _revalidate_compose_external_input_snapshot(
+                external_input_snapshot,
+                candidate=candidate,
+                environment_snapshot=environment_snapshot,
+                environment_override=environment_override,
+            )
+        raw_snapshots = validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=environment_snapshot.compose_path,
+            root_env_path=environment_snapshot.env_path,
+            environment=environment,
+            external_file_contents=_external_snapshot_contents(
+                external_input_snapshot
+            ),
+        )
+
+        try:
+            override_path = Path(environment_snapshot.override_path)
+            override_exists = override_path.exists()
+        except (OSError, ValueError) as exc:
+            raise ComposeCandidateContractError(
+                "compose candidate override path cannot be resolved"
+            ) from exc
+        if override_exists:
+            raise ComposeCandidateContractError(
+                "compose candidate override file is not supported by the single-file boundary"
+            )
+
+        expected_snapshots = raw_snapshots
+
+        resolved = self._resolve_compose_candidate_unlocked(
+            candidate,
+            environment=environment,
+            expected_system_bind_snapshots=expected_snapshots,
+            environment_snapshot=environment_snapshot,
+            environment_override=environment_override,
+            external_input_snapshot=external_input_snapshot,
+        )
+        resolved_snapshots = validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+            compose_path=environment_snapshot.compose_path,
+            root_env_path=environment_snapshot.env_path,
+        )
+        if resolved_snapshots != expected_snapshots:
+            raise ComposeCandidateContractError(
+                "resolved compose system bind snapshot differs from raw compose"
+            )
+        return ValidatedComposeCandidate(
+            resolved=resolved,
+            system_bind_snapshots=resolved_snapshots,
+            raw_volume_graph_hash=compose_volume_graph_hash(candidate),
+            resolved_volume_graph_hash=compose_volume_graph_hash(resolved),
+            environment_snapshot=environment_snapshot,
+            external_input_snapshot=external_input_snapshot,
+        )
+
+    def _resolve_compose_candidate_unlocked(
+        self,
+        candidate: Mapping[str, Any],
+        *,
+        environment: Mapping[str, str],
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ],
+        environment_snapshot: ComposeEnvironmentSnapshot,
+        environment_override: Mapping[str, str] | None,
+        external_input_snapshot: ComposeExternalInputSnapshot,
+    ) -> Mapping[str, Any]:
+        external_descriptors: tuple[int, ...] = ()
+        try:
+            compose_path = Path(environment_snapshot.compose_path)
+            _revalidate_compose_external_input_snapshot(
+                external_input_snapshot,
+                candidate=candidate,
+                environment_snapshot=environment_snapshot,
+                environment_override=environment_override,
+            )
+            materialized_candidate, external_descriptors = (
+                _materialize_external_inputs_with_memfd(
+                    candidate,
+                    external_input_snapshot,
+                )
+            )
+            candidate_input = yaml.safe_dump(
+                materialized_candidate,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+            command = ["docker", "compose"]
+            command.extend(["--env-file", "/dev/null"])
+            command.extend(["--project-directory", str(compose_path.parent)])
+            command.extend(["-f", "-"])
+            command.extend(["config", "--format", "json"])
+            revalidate_candidate_system_bind_snapshots(
+                expected_system_bind_snapshots
+            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=get_project_root(),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    env=dict(environment),
+                    pass_fds=external_descriptors,
+                    input=candidate_input,
+                )
+            except OSError as exc:
+                raise ComposeCandidateContractError(
+                    "compose candidate resolution could not start"
+                ) from exc
+            _revalidate_compose_external_input_snapshot(
+                external_input_snapshot,
+                candidate=candidate,
+                environment_snapshot=environment_snapshot,
+                environment_override=environment_override,
+            )
+            if completed.returncode != 0:
+                raise ComposeCandidateContractError(
+                    "compose candidate resolution failed"
+                )
+            try:
+                resolved = json.loads(completed.stdout)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ComposeCandidateContractError(
+                    "compose candidate resolution returned invalid JSON"
+                ) from exc
+            if not isinstance(resolved, Mapping):
+                raise ComposeCandidateContractError(
+                    "compose candidate resolution returned an invalid document"
+                )
+            _assert_resolved_external_inputs_materialized(resolved)
+            return resolved
+        except (OSError, RuntimeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError(
+                "compose candidate cannot be materialized"
+            ) from exc
+        finally:
+            for descriptor in external_descriptors:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    def _run_unlocked(
+        self,
+        args: Sequence[str],
+        *,
+        capture_output: bool,
+        environment: Mapping[str, str] | None,
+        redact_config: C6cDeploymentConfig | None,
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ] | None,
+        expected_compose_source_bytes: bytes | None,
+        environment_snapshot: ComposeEnvironmentSnapshot | None,
+        external_input_snapshot: ComposeExternalInputSnapshot | None,
+        materialized_compose: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        command = self.build_command(
+            args,
+            canonical_single_file=materialized_compose is not None,
+            compose_path=(
+                environment_snapshot.compose_path
+                if environment_snapshot is not None
+                else None
+            ),
+        )
+        process_environment = None
+        if environment_snapshot is not None:
+            process_environment = dict(environment_snapshot.effective)
+            if environment is not None:
+                process_environment.update(environment)
+        elif environment is not None:
+            process_environment = {**os.environ, **environment}
+        if expected_system_bind_snapshots is not None:
+            revalidate_candidate_system_bind_snapshots(
+                expected_system_bind_snapshots
+            )
+        if expected_compose_source_bytes is not None:
+            self._revalidate_mutation_single_file_boundary(
+                expected_compose_source_bytes,
+                environment_snapshot=environment_snapshot,
+                environment_override=environment,
+                external_input_snapshot=external_input_snapshot,
+            )
+        process_input = None
+        if materialized_compose is not None:
+            process_input = json.dumps(
+                materialized_compose,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         try:
             completed = subprocess.run(
                 command,
@@ -75,23 +1532,378 @@ class ComposeService:
                 text=True,
                 capture_output=capture_output,
                 check=False,
+                env=process_environment,
+                input=process_input,
             )
-        except FileNotFoundError as exc:
+        except OSError:
             return {
                 "success": False,
                 "returncode": 127,
                 "command": command,
                 "stdout": "",
-                "stderr": str(exc),
+                "stderr": "docker compose command could not start",
             }
 
+        stdout = completed.stdout if capture_output else ""
+        stderr = completed.stderr if capture_output else ""
+        if redact_config is not None:
+            stdout = self._redact_c6c_output(stdout, redact_config)
+            stderr = self._redact_c6c_output(stderr, redact_config)
         return {
             "success": completed.returncode == 0,
             "returncode": completed.returncode,
             "command": command,
-            "stdout": completed.stdout if capture_output else "",
-            "stderr": completed.stderr if capture_output else "",
+            "stdout": stdout,
+            "stderr": stderr,
         }
+
+    def _revalidate_mutation_single_file_boundary(
+        self,
+        expected_source_bytes: bytes,
+        *,
+        environment_snapshot: ComposeEnvironmentSnapshot | None,
+        environment_override: Mapping[str, str] | None,
+        external_input_snapshot: ComposeExternalInputSnapshot | None,
+    ) -> None:
+        if environment_snapshot is None:
+            raise ComposeCandidateContractError(
+                "compose mutation has no frozen environment snapshot"
+            )
+        compose_path = Path(environment_snapshot.compose_path)
+        try:
+            source_bytes = compose_path.read_bytes()
+            loaded = yaml.safe_load(source_bytes.decode("utf-8")) or {}
+            override_exists = Path(environment_snapshot.override_path).exists()
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError(
+                "compose single-file mutation boundary cannot be revalidated"
+            ) from exc
+        if source_bytes != expected_source_bytes:
+            raise ComposeCandidateContractError(
+                "compose candidate source changed before Docker mutation"
+            )
+        if not isinstance(loaded, Mapping):
+            raise ComposeCandidateContractError(
+                "compose candidate source is not a mapping"
+            )
+        _revalidate_compose_environment_snapshot(environment_snapshot)
+        if external_input_snapshot is None:
+            raise ComposeCandidateContractError(
+                "compose mutation has no frozen external input snapshot"
+            )
+        _revalidate_compose_external_input_snapshot(
+            external_input_snapshot,
+            candidate=loaded,
+            environment_snapshot=environment_snapshot,
+            environment_override=environment_override,
+        )
+        _assert_candidate_single_file_boundary(
+            loaded,
+            environment=_effective_snapshot_environment(
+                environment_snapshot,
+                environment_override,
+            ),
+        )
+        if override_exists:
+            raise ComposeCandidateContractError(
+                "compose candidate override file appeared before Docker mutation"
+            )
+
+    @staticmethod
+    def _compose_mutation_identifiers(args: Sequence[str]) -> list[str]:
+        """Compose 명령을 read-only allowlist로 분류하고 mutation 대상을 보수적으로 찾는다."""
+
+        api_identifiers = ["kor-travel-map-api", "pinvi-api"]
+        if not args:
+            return api_identifiers
+        global_options_with_value = {
+            "--ansi",
+            "--env-file",
+            "-f",
+            "--file",
+            "--parallel",
+            "--profile",
+            "--progress",
+            "--project-directory",
+            "-p",
+            "--project-name",
+        }
+        global_flags = {
+            "--all-resources",
+            "--compatibility",
+            "--dry-run",
+            "--help",
+            "--verbose",
+            "--version",
+        }
+        command_index: int | None = None
+        skip_next = False
+        for index, item in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+            if item in global_options_with_value:
+                if index + 1 >= len(args):
+                    return api_identifiers
+                skip_next = True
+                continue
+            inline_global_option = next(
+                (
+                    option
+                    for option in global_options_with_value
+                    if option.startswith("--")
+                    and item.startswith(f"{option}=")
+                ),
+                None,
+            )
+            if inline_global_option is not None:
+                if not item.partition("=")[2]:
+                    return api_identifiers
+                continue
+            if item.startswith("-"):
+                if item not in global_flags:
+                    return api_identifiers
+                continue
+            command_index = index
+            break
+        if command_index is None:
+            return api_identifiers
+        command = args[command_index]
+        if command == "config":
+            read_options_with_value = {"--format", "--hash"}
+            read_flags = {
+                "--environment",
+                "--images",
+                "--no-consistency",
+                "--no-interpolate",
+                "--no-normalize",
+                "--profiles",
+                "-q",
+                "--quiet",
+                "--resolve-image-digests",
+                "--services",
+                "--variables",
+                "--volumes",
+            }
+            config_items = list(args[command_index + 1 :])
+            skip_next = False
+            for index, item in enumerate(config_items):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if (
+                    item in {"-o", "--output"}
+                    or item.startswith("--output=")
+                    or (item.startswith("-o") and item != "-o")
+                ):
+                    return api_identifiers
+                if item in read_options_with_value:
+                    if index + 1 >= len(config_items):
+                        return api_identifiers
+                    skip_next = True
+                    continue
+                inline_read_option = next(
+                    (
+                        option
+                        for option in read_options_with_value
+                        if item.startswith(f"{option}=")
+                    ),
+                    None,
+                )
+                if inline_read_option is not None:
+                    if not item.partition("=")[2]:
+                        return api_identifiers
+                    continue
+                if item not in read_flags:
+                    return api_identifiers
+            return []
+        read_only = {
+            "events",
+            "images",
+            "logs",
+            "ls",
+            "port",
+            "ps",
+            "stats",
+            "top",
+            "version",
+        }
+        if command in read_only:
+            return []
+        if command == "wait":
+            if any(
+                item == "--down-project" or item.startswith("--down-project=")
+                for item in args
+            ):
+                return api_identifiers
+            wait_items = args[command_index + 1 :]
+            if any(item.startswith("-") for item in wait_items):
+                return api_identifiers
+            return []
+        mutation_commands = {
+            "build",
+            "cp",
+            "create",
+            "down",
+            "exec",
+            "kill",
+            "pause",
+            "pull",
+            "push",
+            "restart",
+            "rm",
+            "run",
+            "scale",
+            "start",
+            "stop",
+            "unpause",
+            "up",
+            "watch",
+        }
+        if command not in mutation_commands:
+            return api_identifiers
+        options_with_value = {
+            "--attach",
+            "--build-arg",
+            "--change",
+            "--env-file",
+            "--env",
+            "-e",
+            "--entrypoint",
+            "--exclude",
+            "--index",
+            "--label",
+            "-l",
+            "--name",
+            "--no-attach",
+            "--policy",
+            "--timeout",
+            "-t",
+            "--user",
+            "--volume",
+            "-v",
+            "--wait-timeout",
+            "--workdir",
+        }
+        flag_options = {
+            "--abort-on-container-exit",
+            "--abort-on-container-failure",
+            "--all",
+            "--always-recreate-deps",
+            "--attach-dependencies",
+            "--build",
+            "-d",
+            "--detach",
+            "--force",
+            "--force-recreate",
+            "--help",
+            "--include-deps",
+            "--menu",
+            "--no-build",
+            "--no-color",
+            "--no-deps",
+            "--no-log-prefix",
+            "--no-recreate",
+            "--no-start",
+            "--no-TTY",
+            "--privileged",
+            "--quiet",
+            "--remove-orphans",
+            "--renew-anon-volumes",
+            "-T",
+            "--timestamps",
+            "-V",
+            "--wait",
+            "-w",
+            "--watch",
+            "-y",
+            "--yes",
+        }
+        command_options_with_value = {
+            "create": {"--pull"},
+            "kill": {"-s", "--signal"},
+            "run": {"--pull"},
+            "up": {"--pull"},
+        }
+        command_flags = {
+            "build": {"--pull"},
+            "rm": {"-f", "-s", "--stop"},
+            "run": {"--rm"},
+        }
+        options_with_value.update(command_options_with_value.get(command, set()))
+        flag_options.update(command_flags.get(command, set()))
+        explicit_services: list[str] = []
+        skip_next = False
+        items = list(args[command_index + 1 :])
+        for index, item in enumerate(items):
+            if skip_next:
+                skip_next = False
+                continue
+            if item == "--scale" and index + 1 < len(items):
+                service = items[index + 1].partition("=")[0]
+                if not service:
+                    return api_identifiers
+                explicit_services.append(service)
+                skip_next = True
+                continue
+            if item == "--scale":
+                return api_identifiers
+            if item.startswith("--scale="):
+                service = item.removeprefix("--scale=").partition("=")[0]
+                if not service:
+                    return api_identifiers
+                explicit_services.append(service)
+                continue
+            if command == "scale" and "=" in item and not item.startswith("-"):
+                explicit_services.append(item.partition("=")[0])
+                continue
+            if item in options_with_value:
+                if index + 1 >= len(items):
+                    return api_identifiers
+                skip_next = True
+                continue
+            inline_value_option = next(
+                (
+                    option
+                    for option in options_with_value
+                    if option.startswith("--")
+                    and item.startswith(f"{option}=")
+                ),
+                None,
+            )
+            if inline_value_option is not None:
+                if not item.partition("=")[2]:
+                    return api_identifiers
+                continue
+            if item.startswith("-"):
+                if item not in flag_options:
+                    return api_identifiers
+                continue
+            explicit_services.append(item)
+        if explicit_services:
+            explicit_services.extend(
+                item.partition(":")[0]
+                for item in tuple(explicit_services)
+                if ":" in item
+            )
+            if command in {"up", "create", "restart", "watch"} and "--no-deps" not in args:
+                api_dependencies = {
+                    "kor-travel-map-ui": "kor-travel-map-api",
+                    "kor-travel-map-dagster": "kor-travel-map-api",
+                    "kor-travel-map-dagster-daemon": "kor-travel-map-api",
+                    "pinvi-web": "pinvi-api",
+                    "pinvi-dagster": "pinvi-api",
+                }
+                explicit_services.extend(
+                    api_dependencies[service]
+                    for service in tuple(explicit_services)
+                    if service in api_dependencies
+                )
+            if "--remove-orphans" in args:
+                explicit_services.extend(api_identifiers)
+            return explicit_services
+        # down/rm --all/unknown command/option parse failure may affect either API.
+        return api_identifiers
 
     def ensure_target(
         self,
@@ -103,6 +1915,71 @@ class ComposeService:
     ) -> dict[str, Any]:
         target_sequence = target_sequence_for_target(target)
         services = services_for_target(target)
+        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+            transaction, validation = self._capture_transaction_unlocked()
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            assert_c6c_mutation_allowed(
+                services,
+                environment=transaction.environment.effective,
+            )
+            compose_path = Path(transaction.environment.compose_path)
+            try:
+                baseline_unchanged = (
+                    compose_path.read_bytes() == transaction.compose_source_bytes
+                    and compose_path.stat().st_mode & 0o777
+                    == transaction.compose_source_mode
+                )
+            except OSError as exc:
+                raise ComposeCandidateContractError(
+                    "compose baseline cannot be revalidated for ensure"
+                ) from exc
+            if not baseline_unchanged:
+                raise ComposeCandidateContractError(
+                    "compose baseline changed before ensure mutation"
+                )
+            return self._ensure_target_unlocked(
+                target,
+                target_sequence=target_sequence,
+                services=services,
+                build=build,
+                recreate=recreate,
+                capture_output=capture_output,
+                expected_system_bind_snapshots=validation.system_bind_snapshots,
+                expected_raw_volume_graph_hash=validation.raw_volume_graph_hash,
+                expected_resolved_volume_graph_hash=(
+                    validation.resolved_volume_graph_hash
+                ),
+                original_compose_bytes=transaction.compose_source_bytes,
+                original_compose_mode=transaction.compose_source_mode,
+                expected_environment_snapshot=transaction.environment,
+                expected_external_input_snapshot=(
+                    transaction.external_inputs
+                ),
+                transaction=transaction,
+            )
+
+    def _ensure_target_unlocked(
+        self,
+        target: str,
+        *,
+        target_sequence: list[str],
+        services: list[str],
+        build: bool,
+        recreate: bool,
+        capture_output: bool,
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ],
+        expected_raw_volume_graph_hash: str,
+        expected_resolved_volume_graph_hash: str,
+        original_compose_bytes: bytes,
+        original_compose_mode: int,
+        expected_environment_snapshot: ComposeEnvironmentSnapshot,
+        expected_external_input_snapshot: ComposeExternalInputSnapshot | None,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, Any]:
         init_steps = init_steps_for_target(target)
         commands: list[list[str]] = []
         init_results: list[dict[str, Any]] = []
@@ -119,44 +1996,1479 @@ class ComposeService:
             "stderr": "",
         }
 
-        if services:
-            args = ["up", "-d"]
-            if build:
-                args.append("--build")
-            if recreate:
-                args.append("--force-recreate")
-            args.extend(services)
-            up_result = self.run(args, capture_output=capture_output)
-            commands.append(up_result["command"])
-            result["stdout"] += up_result.get("stdout", "")
-            result["stderr"] += up_result.get("stderr", "")
-            result["returncode"] = up_result["returncode"]
-            result["success"] = up_result["success"]
-            if not up_result["success"]:
-                result["command"] = commands
-                return result
+        mutation_succeeded = False
+        try:
+            if services:
+                args = ["up", "-d"]
+                if build:
+                    args.append("--build")
+                if recreate:
+                    args.append("--force-recreate")
+                args.extend(services)
+                up_result = self.run(
+                    args,
+                    capture_output=capture_output,
+                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                    expected_system_bind_snapshots=expected_system_bind_snapshots,
+                    expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
+                    expected_resolved_volume_graph_hash=(
+                        expected_resolved_volume_graph_hash
+                    ),
+                    expected_environment_snapshot=expected_environment_snapshot,
+                    expected_external_input_snapshot=(
+                        expected_external_input_snapshot
+                    ),
+                    transaction=transaction,
+                )
+                commands.append(up_result["command"])
+                result["stdout"] += up_result.get("stdout", "")
+                result["stderr"] += up_result.get("stderr", "")
+                result["returncode"] = up_result["returncode"]
+                result["success"] = up_result["success"]
+                if not up_result["success"]:
+                    result["command"] = commands
+                    return result
+                mutation_succeeded = True
 
+            for step in init_steps:
+                step_command = step.get("command", [])
+                step_result = self.run(
+                    step_command,
+                    capture_output=capture_output,
+                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                    expected_system_bind_snapshots=expected_system_bind_snapshots,
+                    expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
+                    expected_resolved_volume_graph_hash=(
+                        expected_resolved_volume_graph_hash
+                    ),
+                    expected_environment_snapshot=expected_environment_snapshot,
+                    expected_external_input_snapshot=(
+                        expected_external_input_snapshot
+                    ),
+                    transaction=transaction,
+                )
+                step_result = {
+                    "target": step.get("target"),
+                    "name": step.get("name"),
+                    "description": step.get("description"),
+                    **step_result,
+                }
+                init_results.append(step_result)
+                commands.append(step_result["command"])
+                result["stdout"] += step_result.get("stdout", "")
+                result["stderr"] += step_result.get("stderr", "")
+                if not step_result["success"]:
+                    result["success"] = False
+                    result["returncode"] = step_result["returncode"]
+                    result["command"] = commands
+                    return result
+                mutation_succeeded = True
+        except ComposeCandidateContractError as exc:
+            if not mutation_succeeded:
+                raise
+            recovery = self._recover_persisted_target_runtime(
+                services,
+                capture_output=capture_output,
+                original_compose_bytes=original_compose_bytes,
+                original_compose_mode=original_compose_mode,
+                expected_system_bind_snapshots=expected_system_bind_snapshots,
+                expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
+                expected_resolved_volume_graph_hash=(
+                    expected_resolved_volume_graph_hash
+                ),
+                expected_environment_snapshot=expected_environment_snapshot,
+                expected_external_input_snapshot=expected_external_input_snapshot,
+                transaction=transaction,
+            )
+            raise ComposePostMutationContractError(
+                exc,
+                recovery_attempted=True,
+                recovery_succeeded=bool(recovery.get("success")),
+                recovery_error=(
+                    None if recovery.get("success") else str(recovery.get("error"))
+                ),
+                restoration=recovery,
+            ) from exc
+
+        result["command"] = commands
+        return result
+
+    def _recover_persisted_target_runtime(
+        self,
+        services: list[str],
+        *,
+        capture_output: bool,
+        original_compose_bytes: bytes,
+        original_compose_mode: int,
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ],
+        expected_raw_volume_graph_hash: str,
+        expected_resolved_volume_graph_hash: str,
+        expected_environment_snapshot: ComposeEnvironmentSnapshot,
+        expected_external_input_snapshot: ComposeExternalInputSnapshot | None,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, Any]:
+        compose_path = Path(expected_environment_snapshot.compose_path)
+        baseline = {
+            "raw_volume_graph_hash": expected_raw_volume_graph_hash,
+            "resolved_volume_graph_hash": expected_resolved_volume_graph_hash,
+            "system_bind_snapshots": len(expected_system_bind_snapshots),
+        }
+        try:
+            _atomic_restore_compose_source(
+                compose_path,
+                original_compose_bytes,
+                mode=original_compose_mode,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "recovery_attempted": True,
+                "config_restored": False,
+                "contract_revalidated": False,
+                "runtime_recovery_attempted": False,
+                "baseline": baseline,
+                "error": str(exc),
+            }
+        try:
+            self._validate_frozen_transaction_unlocked(transaction)
+            if transaction.system_bind_snapshots != expected_system_bind_snapshots:
+                raise ComposeCandidateContractError(
+                    "restored compose system bind snapshot differs from baseline"
+                )
+            if transaction.raw_volume_graph_hash != expected_raw_volume_graph_hash:
+                raise ComposeCandidateContractError(
+                    "restored compose raw volume graph differs from baseline"
+                )
+            if (
+                transaction.resolved_volume_graph_hash
+                != expected_resolved_volume_graph_hash
+            ):
+                raise ComposeCandidateContractError(
+                    "restored compose resolved volume graph differs from baseline"
+                )
+            if (
+                transaction.compose_source_bytes != original_compose_bytes
+                or transaction.compose_source_mode != original_compose_mode
+            ):
+                raise ComposeCandidateContractError(
+                    "frozen recovery transaction differs from baseline"
+                )
+        except Exception as exc:
+            return {
+                "success": False,
+                "recovery_attempted": True,
+                "config_restored": True,
+                "contract_revalidated": False,
+                "runtime_recovery_attempted": False,
+                "baseline": baseline,
+                "error": str(exc),
+            }
+        if not services:
+            return {
+                "success": True,
+                "recovery_attempted": True,
+                "config_restored": True,
+                "contract_revalidated": True,
+                "runtime_recovery_attempted": False,
+                "baseline": baseline,
+                "error": None,
+            }
+        try:
+            recovery = self._run_frozen_recovery(
+                ["up", "-d", "--force-recreate", *services],
+                capture_output=capture_output,
+                mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                transaction=transaction,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "recovery_attempted": True,
+                "config_restored": True,
+                "contract_revalidated": True,
+                "runtime_recovery_attempted": True,
+                "baseline": baseline,
+                "error": str(exc),
+            }
+        return {
+            **recovery,
+            "recovery_attempted": True,
+            "config_restored": True,
+            "contract_revalidated": True,
+            "runtime_recovery_attempted": True,
+            "baseline": baseline,
+            "error": None if recovery.get("success") else (
+                recovery.get("stderr") or recovery.get("stdout") or "recovery failed"
+            ),
+        }
+
+    def deploy_compatible_pinvi_pair(
+        self,
+        *,
+        build: bool = False,
+        recreate: bool = True,
+    ) -> dict[str, Any]:
+        """production Map+PinVi API pair의 유일한 배포 mutation 진입점."""
+
+        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production:
+                raise DeploymentContractError(
+                    "compatible-pair deploy is available only in production mode"
+                )
+            return self._ensure_production_pinvi_target(
+                "pinvi",
+                config=config,
+                build=build,
+                recreate=recreate,
+                capture_output=True,
+                transaction=transaction,
+            )
+
+    def _ensure_production_pinvi_target(
+        self,
+        target: str,
+        *,
+        config: C6cDeploymentConfig,
+        build: bool,
+        recreate: bool,
+        capture_output: bool,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, Any]:
+        """C6c compatible pair를 Map 검증 뒤 PinVi로 단계 배포한다."""
+
+        manifest = self._production_preflight(
+            config,
+            transaction=transaction,
+        )
+        active_recovery_transaction = (
+            self._materialize_active_recovery_transaction_unlocked(
+                transaction,
+                config,
+                manifest.active,
+            )
+        )
+        cancel_probe_state = PinviCancelProbeState()
+        target_sequence = target_sequence_for_target(target)
+        services = services_for_target(target)
+
+        # Pair transaction은 두 API만 변경한다. 현재 active pair와 dependency/init/app은
+        # 모두 ready여야 하며 비-API 서비스는 변경하지 않는다.
+        self._require_services_ready(
+            services,
+            transaction=transaction,
+        )
+
+        result: dict[str, Any] = {
+            "success": True,
+            "returncode": 0,
+            "target": target,
+            "target_sequence": target_sequence,
+            "services": services,
+            "init_results": [],
+            "stages": [],
+            "smoke": [],
+            "pinvi_smoke": [],
+            "ui_smoke": [],
+            "runtime_secret_isolation": False,
+            "deployment_state": "preflight_complete",
+            "command": [],
+            "stdout": "",
+            "stderr": "",
+        }
+
+        try:
+            quiesce_result = self.run(
+                ["stop", "pinvi-api"],
+                capture_output=capture_output,
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                transaction=transaction,
+            )
+            self._append_stage_result(
+                result,
+                "quiesce_pinvi_api",
+                quiesce_result,
+                config,
+            )
+            if not quiesce_result["success"]:
+                raise DeploymentContractError("PinVi API quiesce failed")
+            if not self._run_up_stage(
+                result,
+                "map_api",
+                ["kor-travel-map-api"],
+                build=build,
+                recreate=recreate,
+                no_deps=True,
+                wait=True,
+                capture_output=capture_output,
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                redact_config=config,
+                transaction=transaction,
+            ):
+                raise DeploymentContractError("Map API deployment failed")
+            result["smoke"] = run_map_ops_smoke(config)
+            if not self._run_up_stage(
+                result,
+                "pinvi_api",
+                ["pinvi-api"],
+                build=build,
+                recreate=recreate,
+                no_deps=True,
+                wait=True,
+                capture_output=capture_output,
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                redact_config=config,
+                transaction=transaction,
+            ):
+                raise DeploymentContractError("PinVi API deployment failed")
+            result["pinvi_smoke"] = run_pinvi_canonical_smoke(
+                config,
+                cancel_probe_state=cancel_probe_state,
+            )
+            active_pair = self._inspect_current_pair(config)
+            verification = self._verify_active_contract(
+                config,
+                active_pair,
+                services,
+                cancel_probe_state=cancel_probe_state,
+                transaction=transaction,
+            )
+            result["ui_smoke"] = verification["ui_smoke"]
+            result["runtime_secret_isolation"] = True
+            result["activation_verification"] = verification
+            if transaction.manifest_path is None:
+                raise DeploymentContractError(
+                    "compatible-pair transaction has no manifest path"
+                )
+            write_pair_manifest(
+                transaction.manifest_path,
+                manifest_with_active_pair(manifest, active_pair),
+            )
+            result["deployment_state"] = "active_manifest_committed"
+            return result
+        except Exception as exc:
+            self._fail_result(
+                result,
+                str(exc)
+                if isinstance(exc, DeploymentContractError)
+                else "unexpected compatible-pair transaction failure",
+            )
+            recovery = self._recover_previous_pair(
+                result,
+                config,
+                manifest.active,
+                services,
+                cancel_probe_state=cancel_probe_state,
+                transaction=active_recovery_transaction,
+            )
+            raise ComposePostMutationContractError(
+                exc,
+                recovery_attempted=True,
+                recovery_succeeded=bool(recovery.get("success")),
+                recovery_error=(
+                    None
+                    if recovery.get("success")
+                    else str(recovery.get("error") or recovery.get("state"))
+                ),
+                restoration=recovery,
+            ) from exc
+
+    def _production_preflight(
+        self,
+        config: C6cDeploymentConfig,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> CompatiblePairManifest:
+        self._validate_resolved_compose_contract(
+            config,
+            transaction=transaction,
+        )
+
+        if transaction.manifest_path is None:
+            raise DeploymentContractError(
+                "compatible-pair transaction has no manifest path"
+            )
+        manifest = load_pair_manifest(transaction.manifest_path)
+        for pair in (manifest.rollback, manifest.active):
+            if pair.contract_generation != config.contract_generation:
+                raise DeploymentContractError(
+                    "compatible pair manifest generation differs from deployment contract"
+                )
+            self._require_local_image(pair.map_image_id)
+            self._require_local_image(pair.pinvi_image_id)
+        self._validate_resolved_compose_contract(
+            config,
+            environment_override=self._pair_image_environment(manifest.active),
+            expected_pair=manifest.active,
+            transaction=transaction,
+        )
+        current = self._inspect_current_pair(config)
+        if not self._pair_matches(current, manifest.active):
+            raise DeploymentContractError(
+                "running Map+PinVi image pair drifted from the captured compatible manifest"
+            )
+        return manifest
+
+    def _validate_resolved_compose_contract(
+        self,
+        config: C6cDeploymentConfig,
+        *,
+        environment_override: Mapping[str, str] | None = None,
+        expected_pair: CompatibleImagePair | None = None,
+        transaction: ComposeTransactionSnapshot,
+        frozen_recovery: bool = False,
+    ) -> Mapping[str, Any]:
+        if frozen_recovery:
+            if environment_override is not None:
+                raise ComposeCandidateContractError(
+                    "frozen recovery must not resolve a new environment override"
+                )
+            resolved = self._validate_frozen_transaction_unlocked(transaction)
+        else:
+            validation = self._validate_current_compose_candidate_unlocked(
+                environment_override=environment_override,
+                environment_snapshot=transaction.environment,
+                external_input_snapshot=transaction.external_inputs,
+            )
+            resolved = validation.resolved
+        if expected_pair is None:
+            validate_resolved_compose_secret_isolation(resolved, config)
+        else:
+            validate_resolved_compose_image_pair(resolved, config, expected_pair)
+        return resolved
+
+    def _run_up_stage(
+        self,
+        result: dict[str, Any],
+        stage: str,
+        services: list[str],
+        *,
+        build: bool,
+        recreate: bool,
+        no_deps: bool,
+        wait: bool = False,
+        capture_output: bool,
+        environment: Mapping[str, str] | None = None,
+        mutation_capability: object | None = None,
+        redact_config: C6cDeploymentConfig | None = None,
+        transaction: ComposeTransactionSnapshot,
+        frozen_recovery: bool = False,
+    ) -> bool:
+        args = ["up", "-d"]
+        if no_deps:
+            args.append("--no-deps")
+        if wait:
+            args.extend(["--wait", "--wait-timeout", "120"])
+        if build:
+            args.append("--build")
+        if recreate:
+            args.append("--force-recreate")
+        args.extend(services)
+        if frozen_recovery:
+            if environment is not None:
+                raise ComposeCandidateContractError(
+                    "frozen recovery stage must use the resolved transaction"
+                )
+            stage_result = self._run_frozen_recovery(
+                args,
+                capture_output=capture_output,
+                mutation_capability=mutation_capability,
+                redact_config=redact_config,
+                transaction=transaction,
+            )
+        else:
+            stage_result = self.run(
+                args,
+                capture_output=capture_output,
+                environment=environment,
+                mutation_capability=mutation_capability,
+                redact_config=redact_config,
+                transaction=transaction,
+            )
+        result["command"].append(stage_result["command"])
+        result["stages"].append(
+            {"name": stage, "services": services, "success": stage_result["success"]}
+        )
+        stdout = stage_result.get("stdout", "")
+        stderr = stage_result.get("stderr", "")
+        if redact_config is not None:
+            stdout = self._redact_c6c_output(stdout, redact_config)
+            stderr = self._redact_c6c_output(stderr, redact_config)
+        result["stdout"] += stdout
+        result["stderr"] += stderr
+        if stage_result["success"]:
+            return True
+        result["success"] = False
+        result["returncode"] = stage_result["returncode"]
+        return False
+
+    def _run_init_steps(
+        self,
+        result: dict[str, Any],
+        init_steps: list[dict[str, Any]],
+        *,
+        capture_output: bool,
+        transaction: ComposeTransactionSnapshot,
+    ) -> bool:
         for step in init_steps:
-            step_command = step.get("command", [])
-            step_result = self.run(step_command, capture_output=capture_output)
-            step_result = {
+            try:
+                step_result = self.run(
+                    step.get("command", []),
+                    capture_output=capture_output,
+                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                    transaction=transaction,
+                )
+            except Exception:
+                self._fail_result(result, "bootstrap init command raised unexpectedly")
+                return False
+            annotated = {
                 "target": step.get("target"),
                 "name": step.get("name"),
                 "description": step.get("description"),
                 **step_result,
             }
-            init_results.append(step_result)
-            commands.append(step_result["command"])
+            result["init_results"].append(annotated)
+            result["command"].append(step_result["command"])
             result["stdout"] += step_result.get("stdout", "")
             result["stderr"] += step_result.get("stderr", "")
-            if not step_result["success"]:
-                result["success"] = False
-                result["returncode"] = step_result["returncode"]
-                result["command"] = commands
-                return result
+            if step_result["success"]:
+                continue
+            result["success"] = False
+            result["returncode"] = step_result["returncode"]
+            return False
+        return True
 
-        result["command"] = commands
-        return result
+    @staticmethod
+    def _fail_result(result: dict[str, Any], message: str) -> None:
+        result["success"] = False
+        result["returncode"] = 1
+        result["stderr"] += f"{message}\n"
+
+    @staticmethod
+    def _redact_c6c_output(text: str, config: C6cDeploymentConfig) -> str:
+        redacted = text
+        for secret in (
+            config.read_token,
+            config.cancel_token,
+            config.smoke.map_ui_password,
+            config.smoke.pinvi_admin_email,
+            config.smoke.pinvi_admin_password,
+            config.smoke.cancel_probe_job_id,
+        ):
+            if secret:
+                redacted = redacted.replace(secret, "<redacted>")
+        return redacted
+
+    def _append_stage_result(
+        self,
+        result: dict[str, Any],
+        stage: str,
+        stage_result: Mapping[str, Any],
+        config: C6cDeploymentConfig,
+    ) -> None:
+        result["command"].append(stage_result["command"])
+        result["stages"].append(
+            {"name": stage, "services": [], "success": stage_result["success"]}
+        )
+        result["stdout"] += self._redact_c6c_output(
+            str(stage_result.get("stdout", "")), config
+        )
+        result["stderr"] += self._redact_c6c_output(
+            str(stage_result.get("stderr", "")), config
+        )
+        if not stage_result["success"]:
+            result["success"] = False
+            result["returncode"] = int(stage_result["returncode"])
+
+    @staticmethod
+    def _pair_matches(first: CompatibleImagePair, second: CompatibleImagePair) -> bool:
+        return (
+            first.map_image_id == second.map_image_id
+            and first.pinvi_image_id == second.pinvi_image_id
+            and first.contract_generation == second.contract_generation
+        )
+
+    @staticmethod
+    def _pair_image_environment(pair: CompatibleImagePair) -> dict[str, str]:
+        return {
+            "KOR_TRAVEL_MAP_API_IMAGE": pair.map_image_id,
+            "PINVI_API_IMAGE": pair.pinvi_image_id,
+        }
+
+    def _verify_active_contract(
+        self,
+        config: C6cDeploymentConfig,
+        expected_pair: CompatibleImagePair,
+        services: list[str],
+        *,
+        cancel_probe_state: PinviCancelProbeState | None = None,
+        transaction: ComposeTransactionSnapshot,
+        frozen_recovery: bool = False,
+    ) -> dict[str, Any]:
+        self._require_services_ready(
+            services,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        )
+        self._validate_resolved_compose_contract(
+            config,
+            environment_override=(
+                None
+                if frozen_recovery
+                else self._pair_image_environment(expected_pair)
+            ),
+            expected_pair=expected_pair,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        )
+        actual = self._inspect_current_pair(config)
+        if not self._pair_matches(actual, expected_pair):
+            raise DeploymentContractError("compatible pair image verification failed")
+        map_smoke = run_map_ops_smoke(config)
+        pinvi_smoke = run_pinvi_canonical_smoke(
+            config,
+            cancel_probe_state=cancel_probe_state,
+        )
+        ui_smoke = run_ui_auth_smoke(config)
+        runtime_configs = self._inspect_c6c_runtime_configs(
+            config,
+            services,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        )
+        validate_runtime_secret_isolation(runtime_configs, config)
+        return {
+            "contract_generation": expected_pair.contract_generation,
+            "map_smoke": map_smoke,
+            "pinvi_smoke": pinvi_smoke,
+            "ui_smoke": ui_smoke,
+            "runtime_secret_isolation": True,
+        }
+
+    def _recover_previous_pair(
+        self,
+        result: dict[str, Any],
+        config: C6cDeploymentConfig,
+        active_at_start: CompatibleImagePair,
+        services: list[str],
+        *,
+        cancel_probe_state: PinviCancelProbeState | None = None,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, Any]:
+        """실패 시 배포 시작 시점 active pair를 복원하고 manifest는 건드리지 않는다."""
+
+        state_key = "rollback_state" if "rollback_state" in result else "deployment_state"
+        result["success"] = False
+        result["returncode"] = result.get("returncode") or 1
+        result[state_key] = "recovery_started"
+        try:
+            self._validate_resolved_compose_contract(
+                config,
+                expected_pair=active_at_start,
+                transaction=transaction,
+                frozen_recovery=True,
+            )
+            result["recovery_verification"] = self._activate_pair_sequentially(
+                result,
+                config,
+                active_at_start,
+                services,
+                stage_prefix="recovery",
+                cancel_probe_state=cancel_probe_state,
+                transaction=transaction,
+                frozen_recovery=True,
+            )
+            result[state_key] = "previous_active_pair_restored"
+            return {"success": True, "state": result[state_key]}
+        except Exception as recovery_error:
+            halt = self._halt_c6c_pair(
+                result,
+                config,
+                state_key,
+                transaction=transaction,
+            )
+            return {
+                "success": False,
+                "state": result[state_key],
+                "error": str(recovery_error),
+                "halt": halt,
+            }
+
+    def _activate_pair_sequentially(
+        self,
+        result: dict[str, Any],
+        config: C6cDeploymentConfig,
+        pair: CompatibleImagePair,
+        services: list[str],
+        *,
+        stage_prefix: str,
+        cancel_probe_state: PinviCancelProbeState | None = None,
+        transaction: ComposeTransactionSnapshot,
+        frozen_recovery: bool = False,
+    ) -> dict[str, Any]:
+        """혼합 pair 실행 구간 없이 Map 검증 뒤 PinVi와 전체 계약을 복원한다."""
+
+        environment = None if frozen_recovery else self._pair_image_environment(pair)
+        if frozen_recovery:
+            stop_result = self._run_frozen_recovery(
+                ["stop", "pinvi-api", "kor-travel-map-api"],
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                transaction=transaction,
+            )
+        else:
+            stop_result = self.run(
+                ["stop", "pinvi-api", "kor-travel-map-api"],
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                transaction=transaction,
+            )
+        self._append_stage_result(result, f"{stage_prefix}_stop_pair", stop_result, config)
+        if not stop_result["success"]:
+            raise DeploymentContractError("compatible pair stop failed")
+        if not self._run_up_stage(
+            result,
+            f"{stage_prefix}_map_api",
+            ["kor-travel-map-api"],
+            build=False,
+            recreate=True,
+            no_deps=True,
+            wait=True,
+            capture_output=True,
+            environment=environment,
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+            redact_config=config,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        ):
+            raise DeploymentContractError("Map API pair restoration failed")
+        result[f"{stage_prefix}_map_smoke"] = run_map_ops_smoke(config)
+        if not self._run_up_stage(
+            result,
+            f"{stage_prefix}_pinvi_api",
+            ["pinvi-api"],
+            build=False,
+            recreate=True,
+            no_deps=True,
+            wait=True,
+            capture_output=True,
+            environment=environment,
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+            redact_config=config,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        ):
+            raise DeploymentContractError("PinVi API pair restoration failed")
+        return self._verify_active_contract(
+            config,
+            pair,
+            services,
+            cancel_probe_state=cancel_probe_state,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        )
+
+    def _halt_c6c_pair(
+        self,
+        result: dict[str, Any],
+        config: C6cDeploymentConfig,
+        state_key: str,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, Any]:
+        try:
+            halt_result = self._run_frozen_recovery(
+                ["stop", "pinvi-api", "kor-travel-map-api"],
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                transaction=transaction,
+            )
+            self._append_stage_result(
+                result, "halt_unverified_pair", halt_result, config
+            )
+            result[state_key] = (
+                "halted_requires_operator"
+                if halt_result["success"]
+                else "halt_failed_requires_operator"
+            )
+            return {
+                "success": bool(halt_result["success"]),
+                "state": result[state_key],
+                "command": halt_result.get("command"),
+                "returncode": halt_result.get("returncode"),
+                "stderr": halt_result.get("stderr"),
+            }
+        except Exception as halt_error:
+            result[state_key] = "halt_failed_requires_operator"
+            return {
+                "success": False,
+                "state": result[state_key],
+                "error": str(halt_error),
+            }
+
+    @staticmethod
+    def _load_bootstrap_previous_active_pair(
+        manifest_path: str,
+    ) -> CompatibleImagePair | None:
+        path = Path(manifest_path)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping) or payload.get("version") != 1:
+                return None
+            active = payload.get("active")
+            if not isinstance(active, Mapping):
+                raise TypeError("legacy active pair is missing")
+            return new_image_pair(
+                str(active["map_image_id"]),
+                str(active["pinvi_image_id"]),
+                str(active["contract_generation"]),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
+            raise DeploymentContractError(
+                "legacy compatible pair active record is invalid"
+            ) from exc
+
+    def capture_compatible_pinvi_pair(
+        self,
+        *,
+        verified_compatible: bool,
+        build: bool = False,
+    ) -> dict[str, Any]:
+        """clean/legacy 환경에서 candidate pair를 단계 검증해 최초 v2를 기록한다."""
+
+        if not verified_compatible:
+            raise DeploymentContractError(
+                "capturing a rollback pair requires --verified-compatible"
+            )
+        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production:
+                raise DeploymentContractError(
+                    "compatible pair capture is available only in production mode"
+                )
+            self._validate_resolved_compose_contract(
+                config,
+                transaction=transaction,
+            )
+            manifest_path = transaction.manifest_path
+            if manifest_path is None:
+                raise DeploymentContractError(
+                    "compatible-pair transaction has no manifest path"
+                )
+            assert_pair_manifest_bootstrap_allowed(manifest_path)
+            previous_active = self._load_bootstrap_previous_active_pair(
+                manifest_path
+            )
+            active_recovery_transaction = (
+                self._materialize_active_recovery_transaction_unlocked(
+                    transaction,
+                    config,
+                    previous_active,
+                )
+                if previous_active is not None
+                else None
+            )
+            services = services_for_target("pinvi")
+            map_services = list(get_target("map").get("services", []))
+            pinvi_services = list(get_target("pinvi").get("services", []))
+            base_target_names = [
+                target_name
+                for target_name in target_sequence_for_target("pinvi")
+                if target_name not in {"map", "pinvi"}
+            ]
+            map_dependents = [
+                service for service in map_services if service != "kor-travel-map-api"
+            ]
+            pinvi_dependents = [service for service in pinvi_services if service != "pinvi-api"]
+            initial_states = self._snapshot_service_states(
+                services,
+                transaction=transaction,
+            )
+            touched_services: set[str] = set()
+            cancel_probe_state = PinviCancelProbeState()
+            result: dict[str, Any] = {
+                "success": True,
+                "returncode": 0,
+                "target": "pinvi-compatible-pair-bootstrap",
+                "services": ["kor-travel-map-api", "pinvi-api"],
+                "stages": [],
+                "init_results": [],
+                "command": [],
+                "stdout": "",
+                "stderr": "",
+                "manifest": manifest_path,
+                "deployment_state": "bootstrap_preflight_complete",
+            }
+            mutation_attempted = False
+            try:
+                for target_name in base_target_names:
+                    target_config = get_target(target_name)
+                    target_services = list(target_config.get("services", []))
+                    touched_services.update(target_services)
+                    mutation_attempted = True
+                    if not self._run_up_stage(
+                        result,
+                        f"bootstrap_base_{target_name}",
+                        target_services,
+                        build=False,
+                        recreate=False,
+                        no_deps=True,
+                        wait=True,
+                        capture_output=True,
+                        mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                        transaction=transaction,
+                    ):
+                        raise DeploymentContractError(
+                            "bootstrap base service deployment failed"
+                        )
+                    direct_init_steps = [
+                        {"target": target_name, **step}
+                        for step in target_config.get("init_steps", [])
+                    ]
+                    if not self._run_init_steps(
+                        result,
+                        direct_init_steps,
+                        capture_output=True,
+                        transaction=transaction,
+                    ):
+                        raise DeploymentContractError(
+                            "bootstrap init command failed"
+                        )
+                stop_result = self.run(
+                    ["stop", "pinvi-api", "kor-travel-map-api"],
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    transaction=transaction,
+                )
+                self._append_stage_result(
+                    result,
+                    "bootstrap_stop_pair",
+                    stop_result,
+                    config,
+                )
+                if not stop_result["success"]:
+                    raise DeploymentContractError("bootstrap pair stop failed")
+                touched_services.add("kor-travel-map-api")
+                if not self._run_up_stage(
+                    result,
+                    "bootstrap_map_api",
+                    ["kor-travel-map-api"],
+                    build=build,
+                    recreate=True,
+                    no_deps=True,
+                    wait=True,
+                    capture_output=True,
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    redact_config=config,
+                    transaction=transaction,
+                ):
+                    raise DeploymentContractError("bootstrap Map API failed")
+                result["smoke"] = run_map_ops_smoke(config)
+                touched_services.update(map_dependents)
+                if not self._run_up_stage(
+                    result,
+                    "bootstrap_map_dependents",
+                    map_dependents,
+                    build=False,
+                    recreate=False,
+                    no_deps=True,
+                    wait=True,
+                    capture_output=True,
+                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                    transaction=transaction,
+                ):
+                    raise DeploymentContractError(
+                        "bootstrap Map dependents failed"
+                    )
+                touched_services.add("pinvi-api")
+                if not self._run_up_stage(
+                    result,
+                    "bootstrap_pinvi_api",
+                    ["pinvi-api"],
+                    build=build,
+                    recreate=True,
+                    no_deps=True,
+                    wait=True,
+                    capture_output=True,
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    redact_config=config,
+                    transaction=transaction,
+                ):
+                    raise DeploymentContractError("bootstrap PinVi API failed")
+                result["pinvi_smoke"] = run_pinvi_canonical_smoke(
+                    config,
+                    cancel_probe_state=cancel_probe_state,
+                )
+                touched_services.update(pinvi_dependents)
+                if not self._run_up_stage(
+                    result,
+                    "bootstrap_pinvi_dependents",
+                    pinvi_dependents,
+                    build=False,
+                    recreate=False,
+                    no_deps=True,
+                    wait=True,
+                    capture_output=True,
+                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                    transaction=transaction,
+                ):
+                    raise DeploymentContractError(
+                        "bootstrap PinVi dependents failed"
+                    )
+                pair = self._inspect_current_pair(config)
+                self._require_local_image(pair.map_image_id)
+                self._require_local_image(pair.pinvi_image_id)
+                verification = self._verify_active_contract(
+                    config,
+                    pair,
+                    services,
+                    cancel_probe_state=cancel_probe_state,
+                    transaction=transaction,
+                )
+                write_pair_manifest(manifest_path, initial_pair_manifest(pair))
+                result["verification"] = verification
+                result["contract_generation"] = pair.contract_generation
+                result["deployment_state"] = "initial_v2_manifest_committed"
+                result["stdout"] += (
+                    f"compatible Map+PinVi image pair bootstrapped: {manifest_path}\n"
+                )
+                return result
+            except Exception as exc:
+                if not mutation_attempted:
+                    raise
+                self._fail_result(
+                    result,
+                    str(exc)
+                    if isinstance(exc, DeploymentContractError)
+                    else "unexpected compatible-pair capture failure",
+                )
+                if (
+                    previous_active is not None
+                    and active_recovery_transaction is not None
+                ):
+                    recovery = self._recover_previous_pair(
+                        result,
+                        config,
+                        previous_active,
+                        services,
+                        cancel_probe_state=cancel_probe_state,
+                        transaction=active_recovery_transaction,
+                    )
+                else:
+                    recovery = self._cleanup_bootstrap(
+                        result,
+                        config,
+                        initial_states,
+                        touched_services,
+                        transaction=transaction,
+                    )
+                raise ComposePostMutationContractError(
+                    exc,
+                    recovery_attempted=True,
+                    recovery_succeeded=bool(recovery.get("success")),
+                    recovery_error=(
+                        None
+                        if recovery.get("success")
+                        else str(recovery.get("error") or recovery.get("state"))
+                    ),
+                    restoration=recovery,
+                ) from exc
+
+    def _snapshot_service_states(
+        self,
+        services: list[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, str]:
+        ps_result = self.run(
+            ["ps", "--all", "--format", "json", *services],
+            transaction=transaction,
+        )
+        if not ps_result["success"]:
+            raise DeploymentContractError("cannot capture bootstrap service state")
+        return {
+            str(record["Service"]): str(record.get("State", "")).strip().lower()
+            for record in self._compose_ps_records(
+                str(ps_result.get("stdout", "")), allow_empty=True
+            )
+        }
+
+    def _cleanup_bootstrap(
+        self,
+        result: dict[str, Any],
+        config: C6cDeploymentConfig,
+        initial_states: Mapping[str, str],
+        touched_services: set[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, Any]:
+        """bootstrap이 만든 서비스만 제거하고 기존 비실행 서비스는 원상 정지한다."""
+
+        halt_ok = False
+        try:
+            self._halt_c6c_pair(
+                result,
+                config,
+                "deployment_state",
+                transaction=transaction,
+            )
+            halt_ok = result.get("deployment_state") == "halted_requires_operator"
+        except Exception:
+            self._fail_result(result, "bootstrap halt command raised unexpectedly")
+            result["deployment_state"] = "halt_failed_requires_operator"
+        api_services = {"kor-travel-map-api", "pinvi-api"}
+        created = sorted(
+            service for service in touched_services if service not in initial_states
+        )
+        restore_stopped = sorted(
+            service
+            for service in touched_services - api_services
+            if service in initial_states and initial_states[service] != "running"
+        )
+        cleanup_ok = halt_ok
+        if created:
+            removal_capability = (
+                _COMPATIBLE_PAIR_MUTATION_CAPABILITY
+                if set(created).intersection(api_services)
+                else _MANAGED_COMPOSE_MUTATION_CAPABILITY
+            )
+            try:
+                remove_result = self._run_frozen_recovery(
+                    ["rm", "--force", "--stop", *created],
+                    mutation_capability=removal_capability,
+                    transaction=transaction,
+                )
+                self._append_stage_result(
+                    result, "bootstrap_remove_created", remove_result, config
+                )
+                cleanup_ok = cleanup_ok and bool(remove_result["success"])
+            except Exception:
+                self._fail_result(
+                    result, "bootstrap created-service cleanup raised unexpectedly"
+                )
+                cleanup_ok = False
+        if restore_stopped:
+            try:
+                stop_result = self._run_frozen_recovery(
+                    ["stop", *restore_stopped],
+                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                    transaction=transaction,
+                )
+                self._append_stage_result(
+                    result, "bootstrap_restore_stopped", stop_result, config
+                )
+                cleanup_ok = cleanup_ok and bool(stop_result["success"])
+            except Exception:
+                self._fail_result(
+                    result, "bootstrap stopped-service restore raised unexpectedly"
+                )
+                cleanup_ok = False
+        if not cleanup_ok:
+            result["deployment_state"] = (
+                "bootstrap_cleanup_failed_requires_operator"
+                if halt_ok
+                else "halt_failed_requires_operator"
+            )
+        return {
+            "success": cleanup_ok,
+            "state": result["deployment_state"],
+            "error": None if cleanup_ok else "bootstrap cleanup failed",
+        }
+
+    def rollback_compatible_pinvi_pair(self) -> dict[str, Any]:
+        """manifest pair를 Map smoke 뒤 PinVi 순서로 복원해 혼합 실행을 막는다."""
+
+        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production:
+                raise DeploymentContractError(
+                    "compatible pair rollback is available only in production mode"
+                )
+            manifest_path = transaction.manifest_path
+            if manifest_path is None:
+                raise DeploymentContractError(
+                    "compatible-pair transaction has no manifest path"
+                )
+            manifest = load_pair_manifest(manifest_path)
+            active_at_start = manifest.active
+            rollback = manifest.rollback
+            for pair in (active_at_start, rollback):
+                if pair.contract_generation != config.contract_generation:
+                    raise DeploymentContractError(
+                        "rollback pair generation differs from the active deployment contract"
+                    )
+                self._require_local_image(pair.map_image_id)
+                self._require_local_image(pair.pinvi_image_id)
+            active_recovery_transaction = (
+                self._materialize_active_recovery_transaction_unlocked(
+                    transaction,
+                    config,
+                    active_at_start,
+                )
+            )
+            if not self._pair_matches(self._inspect_current_pair(config), active_at_start):
+                raise DeploymentContractError(
+                    "running pair differs from manifest active pair before rollback"
+                )
+            active_environment = self._pair_image_environment(active_at_start)
+            rollback_environment = self._pair_image_environment(rollback)
+            self._validate_resolved_compose_contract(
+                config,
+                environment_override=active_environment,
+                expected_pair=active_at_start,
+                transaction=transaction,
+            )
+            self._validate_resolved_compose_contract(
+                config,
+                environment_override=rollback_environment,
+                expected_pair=rollback,
+                transaction=transaction,
+            )
+
+            services = services_for_target("pinvi")
+            self._require_services_ready(services, transaction=transaction)
+            result: dict[str, Any] = {
+                "success": True,
+                "returncode": 0,
+                "target": "pinvi-compatible-pair-rollback",
+                "services": ["kor-travel-map-api", "pinvi-api"],
+                "stages": [],
+                "command": [],
+                "stdout": "",
+                "stderr": "",
+                "rollback_state": "preflight_complete",
+            }
+            cancel_probe_state = PinviCancelProbeState()
+            try:
+                verification = self._activate_pair_sequentially(
+                    result,
+                    config,
+                    rollback,
+                    services,
+                    stage_prefix="rollback",
+                    cancel_probe_state=cancel_probe_state,
+                    transaction=transaction,
+                )
+                result["verification"] = verification
+                write_pair_manifest(
+                    manifest_path,
+                    manifest_with_active_pair(manifest, rollback),
+                )
+                result["rollback_state"] = "active_manifest_committed"
+                return result
+            except Exception as exc:
+                self._fail_result(
+                    result,
+                    str(exc)
+                    if isinstance(exc, DeploymentContractError)
+                    else "unexpected compatible-pair rollback failure",
+                )
+                recovery = self._recover_previous_pair(
+                    result,
+                    config,
+                    active_at_start,
+                    services,
+                    cancel_probe_state=cancel_probe_state,
+                    transaction=active_recovery_transaction,
+                )
+                raise ComposePostMutationContractError(
+                    exc,
+                    recovery_attempted=True,
+                    recovery_succeeded=bool(recovery.get("success")),
+                    recovery_error=(
+                        None
+                        if recovery.get("success")
+                        else str(recovery.get("error") or recovery.get("state"))
+                    ),
+                    restoration=recovery,
+                ) from exc
+
+    def _inspect_current_pair(self, config: C6cDeploymentConfig) -> CompatibleImagePair:
+        return new_image_pair(
+            self._inspect_container_image_id(config.map_container),
+            self._inspect_container_image_id(config.pinvi_container),
+            config.contract_generation,
+        )
+
+    @staticmethod
+    def _inspect_container_image_id(container_name: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["docker", "inspect", "--format={{.Image}}", container_name],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise DeploymentContractError(
+                "cannot inspect immutable image ID for a C6c API container"
+            ) from exc
+        if completed.returncode != 0:
+            raise DeploymentContractError(
+                "cannot inspect immutable image ID for a C6c API container"
+            )
+        return completed.stdout.strip()
+
+    @staticmethod
+    def _require_local_image(image_id: str) -> None:
+        try:
+            completed = subprocess.run(
+                ["docker", "image", "inspect", "--format={{.Id}}", image_id],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise DeploymentContractError(
+                "compatible pair image ID cannot be inspected locally"
+            ) from exc
+        if completed.returncode != 0 or completed.stdout.strip() != image_id:
+            raise DeploymentContractError("compatible pair image ID is not available locally")
+
+    def _inspect_c6c_runtime_configs(
+        self,
+        config: C6cDeploymentConfig,
+        services: list[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+        frozen_recovery: bool = False,
+    ) -> dict[str, Mapping[str, Any]]:
+        records = self._require_services_ready(
+            services,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        )
+        container_names = [str(record["Name"]) for record in records]
+        if (
+            config.map_container not in container_names
+            or config.pinvi_container not in container_names
+        ):
+            raise DeploymentContractError("C6c API containers are missing from runtime inspection")
+        return {
+            container_name: self._inspect_container_runtime_config(container_name)
+            for container_name in container_names
+        }
+
+    @staticmethod
+    def _compose_ps_records(
+        payload: str,
+        *,
+        allow_empty: bool = False,
+    ) -> list[Mapping[str, Any]]:
+        try:
+            parsed = json.loads(payload)
+            records = parsed if isinstance(parsed, list) else [parsed]
+        except json.JSONDecodeError:
+            try:
+                records = [json.loads(line) for line in payload.splitlines() if line.strip()]
+            except json.JSONDecodeError as exc:
+                raise DeploymentContractError(
+                    "docker compose ps returned invalid container metadata"
+                ) from exc
+        valid_records = [
+            record
+            for record in records
+            if isinstance(record, Mapping) and record.get("Name") and record.get("Service")
+        ]
+        if not valid_records and not allow_empty:
+            raise DeploymentContractError("docker compose ps returned no managed containers")
+        return valid_records
+
+    def _require_services_ready(
+        self,
+        services: Sequence[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+        frozen_recovery: bool = False,
+    ) -> list[Mapping[str, Any]]:
+        """필수 서비스가 실행 중이고 healthcheck가 있으면 healthy인지 확인한다."""
+
+        expected = list(dict.fromkeys(services))
+        if not expected:
+            return []
+        if frozen_recovery:
+            ps_result = self._run_frozen_recovery(
+                ["ps", "--format", "json", *expected],
+                transaction=transaction,
+            )
+        else:
+            ps_result = self.run(
+                ["ps", "--format", "json", *expected],
+                transaction=transaction,
+            )
+        if not ps_result["success"]:
+            raise DeploymentContractError("cannot inspect mandatory service readiness")
+        records = self._compose_ps_records(str(ps_result.get("stdout", "")))
+        by_service = {str(record["Service"]): record for record in records}
+        missing = [service for service in expected if service not in by_service]
+        if missing:
+            raise DeploymentContractError(
+                "mandatory services are not running: " + ", ".join(missing)
+            )
+        not_ready: list[str] = []
+        for service in expected:
+            record = by_service[service]
+            state = str(record.get("State", "")).strip().lower()
+            health = str(record.get("Health", "")).strip().lower()
+            if state != "running" or health not in {"", "healthy"}:
+                not_ready.append(service)
+        if not_ready:
+            raise DeploymentContractError(
+                "mandatory services are not running/healthy: " + ", ".join(not_ready)
+            )
+        return [by_service[service] for service in expected]
+
+    @staticmethod
+    def _inspect_container_runtime_config(container_name: str) -> Mapping[str, Any]:
+        try:
+            completed = subprocess.run(
+                ["docker", "inspect", "--format={{json .Config}}", container_name],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise DeploymentContractError(
+                "cannot verify C6c runtime secret isolation"
+            ) from exc
+        if completed.returncode != 0:
+            raise DeploymentContractError("cannot verify C6c runtime secret isolation")
+        try:
+            runtime_config = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise DeploymentContractError(
+                "container returned invalid runtime config metadata"
+            ) from exc
+        if not isinstance(runtime_config, Mapping):
+            raise DeploymentContractError("container returned invalid runtime config metadata")
+        return runtime_config
 
     def status_target(self, target: str = "all", *, capture_output: bool = True) -> dict[str, Any]:
         services = services_for_target(target)

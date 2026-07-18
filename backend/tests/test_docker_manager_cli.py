@@ -1,9 +1,13 @@
+import os
 import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
 from kor_travel_docker_manager.cli import build_parser, main
-from kor_travel_docker_manager.services.compose_service import ComposeService
+from kor_travel_docker_manager.services.compose_service import (
+    ComposeService,
+    ValidatedComposeCandidate,
+)
 from kor_travel_docker_manager.services.docker_service import _redact_env_pair
 from kor_travel_docker_manager.services.registry import (
     get_target,
@@ -153,14 +157,38 @@ def test_env_redaction_masks_sensitive_values():
     assert _redact_env_pair("POSTGRES_DB=kor_travel_geo") == "POSTGRES_DB=kor_travel_geo"
 
 
+@patch.object(
+    ComposeService,
+    "_validate_current_compose_candidate_unlocked",
+    return_value=ValidatedComposeCandidate(
+        resolved={},
+        system_bind_snapshots=(),
+        raw_volume_graph_hash="raw-stable",
+        resolved_volume_graph_hash="resolved-stable",
+    ),
+)
 @patch("kor_travel_docker_manager.services.compose_service.subprocess.run")
 @patch("kor_travel_docker_manager.services.compose_service.os.path.exists", return_value=False)
-def test_compose_ensure_build_command(mock_exists, mock_run):
+def test_compose_ensure_build_command(
+    mock_exists,
+    mock_run,
+    _mock_candidate_validation,
+    tmp_path: Path,
+):
     mock_run.return_value.returncode = 0
     mock_run.return_value.stdout = "started"
     mock_run.return_value.stderr = ""
 
-    result = ComposeService().ensure_target("srv", build=True, recreate=True)
+    with patch.dict(
+        os.environ,
+        {
+            "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
+            "PINVI_ENVIRONMENT": "development",
+            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
+            "KTDM_C6C_DEPLOYMENT_LOCK": str(tmp_path / "ensure.lock"),
+        },
+    ):
+        result = ComposeService().ensure_target("srv", build=True, recreate=True)
 
     assert result["success"] is True
     assert result["services"] == [
@@ -298,3 +326,48 @@ def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
         recreate=False,
         capture_output=True,
     )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_deploys_only_through_compatible_pair_workflow(mock_compose_service):
+    mock_compose_service.deploy_compatible_pinvi_pair.return_value = {
+        "success": True,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert main(["pinvi-pair", "deploy", "--build"]) == 0
+    mock_compose_service.deploy_compatible_pinvi_pair.assert_called_once_with(
+        build=True,
+        recreate=True,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_captures_only_verified_compatible_pair(mock_compose_service):
+    mock_compose_service.capture_compatible_pinvi_pair.return_value = {
+        "success": True,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 0
+    mock_compose_service.capture_compatible_pinvi_pair.assert_called_once_with(
+        verified_compatible=True,
+        build=True,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rolls_back_only_the_whole_compatible_pair(mock_compose_service):
+    mock_compose_service.rollback_compatible_pinvi_pair.return_value = {
+        "success": True,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert main(["pinvi-pair", "rollback"]) == 0
+    mock_compose_service.rollback_compatible_pinvi_pair.assert_called_once_with()

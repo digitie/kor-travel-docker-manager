@@ -79,7 +79,11 @@ def _cmd_logs(args: argparse.Namespace) -> int:
 
 
 def _cmd_action(args: argparse.Namespace) -> int:
-    result = docker_service.control_container(args.container, args.action)
+    try:
+        result = docker_service.control_container(args.container, args.action)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif result.get("success"):
@@ -108,6 +112,26 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     print(f"mounts: {len(container.get('mounts', []))}")
     print(f"networks: {', '.join(container.get('network', {}).get('networks', {}).keys())}")
     return 0
+
+
+def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
+    try:
+        if args.pair_action == "deploy":
+            result = compose_service.deploy_compatible_pinvi_pair(
+                build=args.build,
+                recreate=True,
+            )
+        elif args.pair_action == "capture":
+            result = compose_service.capture_compatible_pinvi_pair(
+                verified_compatible=args.verified_compatible,
+                build=args.build,
+            )
+        else:
+            result = compose_service.rollback_compatible_pinvi_pair()
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return _emit_process_result(result, json_output=args.json)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,6 +189,39 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("container")
     inspect.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
     inspect.set_defaults(func=_cmd_inspect)
+
+    pinvi_pair = subparsers.add_parser(
+        "pinvi-pair",
+        help="검증된 Map+PinVi immutable image pair를 기록하거나 함께 rollback합니다.",
+    )
+    pair_subparsers = pinvi_pair.add_subparsers(dest="pair_action", required=True)
+    pair_deploy = pair_subparsers.add_parser(
+        "deploy",
+        help="production Map+PinVi compatible pair를 단계 검증하며 배포합니다.",
+    )
+    pair_deploy.add_argument("--build", action="store_true", help="이미지를 먼저 빌드합니다.")
+    pair_deploy.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
+    pair_deploy.set_defaults(func=_cmd_pinvi_pair)
+    pair_capture = pair_subparsers.add_parser(
+        "capture",
+        help="clean/legacy 환경에서 candidate pair를 검증하고 최초 v2를 기록합니다.",
+    )
+    pair_capture.add_argument(
+        "--build", action="store_true", help="두 API candidate 이미지를 먼저 빌드합니다."
+    )
+    pair_capture.add_argument(
+        "--verified-compatible",
+        action="store_true",
+        help="candidate Map+PinVi image가 같은 contract generation임을 명시합니다.",
+    )
+    pair_capture.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
+    pair_capture.set_defaults(func=_cmd_pinvi_pair)
+    pair_rollback = pair_subparsers.add_parser(
+        "rollback",
+        help="manifest의 Map+PinVi image ID를 두 서비스 함께 복원합니다.",
+    )
+    pair_rollback.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
+    pair_rollback.set_defaults(func=_cmd_pinvi_pair)
 
     return parser
 
