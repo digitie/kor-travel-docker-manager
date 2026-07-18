@@ -190,8 +190,15 @@
       persisted baseline과 exact candidate transaction을 분리해 forward는 candidate, restore는 baseline만 쓴다.
 - [x] pass19에서 manifest active image override를 root frozen 입력으로 미리 해석한 별도 recovery transaction을
       deploy/rollback과 legacy capture 복구에 사용하고, forward transaction과 identity를 분리한다.
-- [ ] compose 계약 테스트, Docker Compose 보간, n150 cross-repo smoke와 실제 로그인 검증을
-      통과한 뒤 완료 이력으로 옮긴다.
+- [x] Map UI username·PBKDF2 hash·session secret을 기본값 없는 canonical raw 보간과 exact resolved/runtime
+      Env 경로로 고정하고, manager-only 평문 smoke 비밀번호 비주입 및 frozen snapshot/rollback 인증값
+      격리 계약과 회귀 테스트·운영 문서를 추가한다. Docker Compose resolved literal escape와 runtime raw-exact
+      분리를 포함한 ext4 C6c targeted `541 passed`, backend 전체 `599 passed`로 검증했다.
+- [x] 공식 차단 리뷰를 반영해 canonical test baseline, raw/resolved Map UI 필수 서비스, 모든 Unicode
+      whitespace 거부, credential redaction을 고정한다. deploy/rollback은 readiness 뒤 current Map UI의 exact
+      runtime 인증과 login/protected/logout/reblock을 첫 API stop 전에 검사하며 실패 시 mutation 0이다.
+      strict mypy, 신규 lint `0`, production Docker Compose config/resolved guard를 통과했다.
+- [ ] n150 production에서 cross-repo smoke와 실제 UI 로그인 검증을 통과한 뒤 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

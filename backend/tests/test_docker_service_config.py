@@ -36,6 +36,7 @@ _MAP_INGESTION_SERVICES = (
     "kor-travel-map-dagster-daemon",
 )
 _MAP_API_SERVICE = "kor-travel-map-api"
+_MAP_UI_SERVICE = "kor-travel-map-ui"
 _PINVI_API_SERVICE = "pinvi-api"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
 _OPS_CANCEL_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
@@ -52,6 +53,9 @@ _KREX_GO_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-}"
 _API_KREX_SERVICE_KEY_ENV = (
     "${KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY:-${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}}"
 )
+_MAP_UI_USERNAME = "map-ui-admin-placeholder"
+_MAP_UI_PASSWORD_HASH = "pbkdf2_sha256$100000$test-salt$test-digest"
+_MAP_UI_SESSION_SECRET = "map-ui-session-secret-placeholder-value"
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -115,6 +119,57 @@ def _candidate_capture_for(compose_path: Path):  # type: ignore[no-untyped-def]
         return _config_transaction(compose_path, candidate)[1]
 
     return capture
+
+
+def _compose_with_canonical_c6c_services(
+    services: dict[str, object],
+) -> dict[str, object]:
+    protected_services: dict[str, object] = {
+        _MAP_API_SERVICE: {
+            "image": "fixture.invalid/kor-travel-map-api:test",
+            "container_name": "kor-travel-map-api-latest",
+            "network_mode": "host",
+            "environment": {
+                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _OPS_READ_SOURCE,
+                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": (
+                    "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
+                    "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
+                ),
+            }
+        },
+        _MAP_UI_SERVICE: {
+            "image": "fixture.invalid/kor-travel-map-ui:test",
+            "container_name": "kor-travel-map-ui-latest",
+            "network_mode": "host",
+            "environment": {
+                "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": (
+                    "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
+                    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
+                    "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
+                    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_UI_SESSION_SECRET": (
+                    "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
+                    "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+                ),
+            }
+        },
+        _PINVI_API_SERVICE: {
+            "image": "fixture.invalid/pinvi-api:test",
+            "container_name": "pinvi-api-latest",
+            "network_mode": "host",
+            "environment": {
+                "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
+                "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+            }
+        },
+    }
+    assert not protected_services.keys() & services.keys()
+    protected_services.update(deepcopy(services))
+    return {"services": protected_services}
 
 
 def test_nontrivial_config_change_runs_candidate_transaction(
@@ -366,7 +421,7 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
     } == {_PINVI_API_SERVICE}
 
 
-def test_map_pinvi_ops_principal_env_example_has_only_source_placeholders() -> None:
+def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> None:
     env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     assert "KTDM_DEPLOYMENT_ENVIRONMENT=local" in env_example_lines
     assert "COMPOSE_PROJECT_NAME=kor-travel-local" in env_example_lines
@@ -383,8 +438,15 @@ def test_map_pinvi_ops_principal_env_example_has_only_source_placeholders() -> N
     assert not any(
         line.startswith("PINVI_KOR_TRAVEL_MAP_OPS_") for line in env_example_lines
     )
+    assert "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME=admin" in env_example_lines
+    for key in (
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+    ):
+        assert [line for line in env_example_lines if line.startswith(f"{key}=")] == [
+            f"{key}="
+        ]
     manager_only_names = {
-        "KTDM_C6C_MAP_UI_ADMIN_USERNAME",
         "KTDM_C6C_MAP_UI_ADMIN_PASSWORD",
         "KTDM_C6C_PINVI_ADMIN_EMAIL",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD",
@@ -394,6 +456,18 @@ def test_map_pinvi_ops_principal_env_example_has_only_source_placeholders() -> N
         assert any(line.startswith(f"{name}=") for line in env_example_lines)
 
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    map_ui_environment = compose["services"][_MAP_UI_SERVICE]["environment"]
+    for key in (
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+    ):
+        assert map_ui_environment[key] == f"${{{key}:?{key} must be explicitly set}}"
+        assert {
+            service_name
+            for service_name, service in compose["services"].items()
+            if key in service.get("environment", {})
+        } == {_MAP_UI_SERVICE}
     assert all(
         name not in service.get("environment", {})
         for service in compose["services"].values()
@@ -533,6 +607,24 @@ def _prepare_candidate_transaction(
     monkeypatch: pytest.MonkeyPatch,
     compose_config: dict[str, object],
 ) -> tuple[DockerService, Path, Mock]:
+    services = compose_config.get("services")
+    if isinstance(services, dict) and {
+        _MAP_API_SERVICE,
+        _MAP_UI_SERVICE,
+        _PINVI_API_SERVICE,
+    }.issubset(services):
+        monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+        monkeypatch.setenv("PINVI_ENVIRONMENT", "development")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_READ_TOKEN", "")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN", "")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "false")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", _MAP_UI_USERNAME)
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", _MAP_UI_PASSWORD_HASH
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET", _MAP_UI_SESSION_SECRET
+        )
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(
         yaml.safe_dump(compose_config, sort_keys=False), encoding="utf-8"
@@ -605,9 +697,9 @@ def test_rustfs_config_rejects_root_env_bind_before_write_or_recreate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {"rustfs": {"image": "rustfs/rustfs:latest"}}
-    }
+    compose_config = _compose_with_canonical_c6c_services(
+        {"rustfs": {"image": "rustfs/rustfs:latest"}}
+    )
     root_env = tmp_path / ".env"
     root_env.write_text("SAFE=value\n", encoding="utf-8")
     service, compose_path, compose_run = _prepare_candidate_transaction(
@@ -635,9 +727,9 @@ def test_rustfs_config_rejects_missing_bind_without_creating_or_mutating(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {"rustfs": {"image": "rustfs/rustfs:latest"}}
-    }
+    compose_config = _compose_with_canonical_c6c_services(
+        {"rustfs": {"image": "rustfs/rustfs:latest"}}
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )
@@ -690,14 +782,14 @@ def test_cadvisor_config_rejects_writable_system_bind_without_mutation(
         "/var/run/docker.sock:/var/run/docker.sock:ro",
         "/sys:/sys:ro",
     ]
-    compose_config: dict[str, object] = {
-        "services": {
+    compose_config = _compose_with_canonical_c6c_services(
+        {
             "cadvisor": {
                 "image": "gcr.io/cadvisor/cadvisor:v0.52.1",
                 "volumes": baseline,
             }
         }
-    }
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )
@@ -717,9 +809,9 @@ def test_system_bind_snapshot_change_before_write_keeps_compose_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {"rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}}
-    }
+    compose_config = _compose_with_canonical_c6c_services(
+        {"rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}}
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )
@@ -750,9 +842,9 @@ def test_preflight_rejection_restore_failure_is_typed_post_mutation_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {"rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}}
-    }
+    compose_config = _compose_with_canonical_c6c_services(
+        {"rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}}
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )
@@ -802,9 +894,9 @@ def test_system_bind_snapshot_change_before_subprocess_restores_compose(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {"rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}}
-    }
+    compose_config = _compose_with_canonical_c6c_services(
+        {"rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}}
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )
@@ -849,15 +941,15 @@ def test_rustfs_second_preflight_drift_restores_bytes_mode_and_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {
+    compose_config = _compose_with_canonical_c6c_services(
+        {
             "rustfs": {
                 "image": "rustfs/rustfs:latest",
                 "environment": {"ORIGINAL": "yes"},
                 "volumes": [],
             }
         }
-    }
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )
@@ -902,11 +994,9 @@ def test_non_api_config_update_rejects_resolved_candidate_before_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {
-            "rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}
-        }
-    }
+    compose_config = _compose_with_canonical_c6c_services(
+        {"rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}}
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )
@@ -967,14 +1057,14 @@ def test_reset_rejects_persisted_volume_graph_drift_without_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    compose_config: dict[str, object] = {
-        "services": {
+    compose_config = _compose_with_canonical_c6c_services(
+        {
             "rustfs": {
                 "image": "rustfs/rustfs:latest",
                 "volumes": [],
             }
         }
-    }
+    )
     service, compose_path, compose_run = _prepare_candidate_transaction(
         tmp_path, monkeypatch, compose_config
     )

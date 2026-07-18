@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -27,23 +27,36 @@ import yaml
 from dotenv import dotenv_values
 
 _MAP_API_SERVICE = "kor-travel-map-api"
+_MAP_UI_SERVICE = "kor-travel-map-ui"
 _PINVI_API_SERVICE = "pinvi-api"
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
 _PINVI_READ_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
 _PINVI_CANCEL_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"
+_MAP_UI_USERNAME_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
+_MAP_UI_PASSWORD_HASH_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
+_MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
 _MAP_UI_PASSWORD_ENV = "KTDM_C6C_MAP_UI_ADMIN_PASSWORD"
 _PINVI_ADMIN_PASSWORD_ENV = "KTDM_C6C_PINVI_ADMIN_PASSWORD"
 _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
     {
         "KTDM_C6C_CONTRACT_GENERATION",
-        "KTDM_C6C_MAP_UI_ADMIN_USERNAME",
         _MAP_UI_PASSWORD_ENV,
         "KTDM_C6C_PINVI_ADMIN_EMAIL",
         _PINVI_ADMIN_PASSWORD_ENV,
         "KTDM_C6C_CANCEL_PROBE_JOB_ID",
     }
+)
+_MAP_UI_AUTH_ENV_NAMES = frozenset(
+    {
+        _MAP_UI_USERNAME_ENV,
+        _MAP_UI_PASSWORD_HASH_ENV,
+        _MAP_UI_SESSION_SECRET_ENV,
+    }
+)
+_CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
+    {_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE}
 )
 _OPS_ENV_NAMES = frozenset(
     {
@@ -60,6 +73,9 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): _MAP_REQUIRED_ENV,
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
     (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
+    (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): _MAP_UI_USERNAME_ENV,
+    (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): _MAP_UI_PASSWORD_HASH_ENV,
+    (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): _MAP_UI_SESSION_SECRET_ENV,
 }
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
@@ -72,11 +88,27 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): (
         "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
     ),
+    (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): (
+        "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
+    ),
+    (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): (
+        "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+    ),
+    (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): (
+        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+    ),
 }
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES
-    - {"KTDM_C6C_MAP_UI_ADMIN_USERNAME"}
+    | {
+        _MAP_UI_USERNAME_ENV,
+        _MAP_UI_PASSWORD_HASH_ENV,
+        _MAP_UI_SESSION_SECRET_ENV,
+    }
 )
 _C6C_API_IDENTIFIERS = frozenset(
     {
@@ -112,6 +144,9 @@ _IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CONTRACT_GENERATION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _COMPOSE_PROJECT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{2,62}$")
 _ASCII_RETRY_AFTER = re.compile(r"^[0-9]+$")
+_MAP_UI_PASSWORD_HASH_PATTERN = re.compile(
+    r"^pbkdf2_sha256\$([0-9]+)\$[0-9A-Za-z_-]+\$[0-9A-Za-z_-]+$"
+)
 _CANDIDATE_EXTERNAL_FILE_MAX_BYTES = 1_048_576
 _CANDIDATE_ALLOWED_EXTERNAL_RESOURCE_REFERENCES: frozenset[
     tuple[str, str, str]
@@ -264,11 +299,11 @@ class C6cSmokeConfig:
     pinvi_api_base_url: str
     map_ui_base_url: str
     pinvi_web_base_url: str
-    map_ui_username: str
-    map_ui_password: str
-    pinvi_admin_email: str
-    pinvi_admin_password: str
-    cancel_probe_job_id: str
+    map_ui_username: str = field(repr=False)
+    map_ui_password: str = field(repr=False)
+    pinvi_admin_email: str = field(repr=False)
+    pinvi_admin_password: str = field(repr=False)
+    cancel_probe_job_id: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -277,11 +312,14 @@ class C6cDeploymentConfig:
     pinvi_environment: str
     base_url: str
     map_container_port: int
-    read_token: str
-    cancel_token: str
+    read_token: str = field(repr=False)
+    cancel_token: str = field(repr=False)
     map_container: str
+    map_ui_container: str
+    map_ui_password_hash: str = field(repr=False)
+    map_ui_session_secret: str = field(repr=False)
     pinvi_container: str
-    contract_generation: str
+    contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
 
     @property
@@ -621,6 +659,10 @@ def load_c6c_deployment_config_from_environment(
         raise DeploymentContractError(
             "KTDM_C6C_CONTRACT_GENERATION must be an explicit stable identifier"
         )
+    if not _map_ui_auth_values_are_valid(values):
+        raise DeploymentContractError(
+            "Map UI runtime authentication environment is invalid"
+        )
 
     config = C6cDeploymentConfig(
         deployment_environment=deployment_environment,
@@ -630,13 +672,18 @@ def load_c6c_deployment_config_from_environment(
         read_token=values.get(_MAP_READ_ENV, ""),
         cancel_token=values.get(_MAP_CANCEL_ENV, ""),
         map_container=values.get("KOR_TRAVEL_MAP_API_CONTAINER", "kor-travel-map-api-latest"),
+        map_ui_container=values.get(
+            "KOR_TRAVEL_MAP_UI_CONTAINER", "kor-travel-map-ui-latest"
+        ),
+        map_ui_password_hash=values.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
+        map_ui_session_secret=values.get(_MAP_UI_SESSION_SECRET_ENV, ""),
         pinvi_container=values.get("PINVI_API_CONTAINER", "pinvi-api-latest"),
         contract_generation=contract_generation,
         smoke=C6cSmokeConfig(
             pinvi_api_base_url=f"http://127.0.0.1:{pinvi_api_port}",
             map_ui_base_url=f"http://127.0.0.1:{map_ui_port}",
             pinvi_web_base_url=f"http://127.0.0.1:{pinvi_web_port}",
-            map_ui_username=values.get("KTDM_C6C_MAP_UI_ADMIN_USERNAME", "admin"),
+            map_ui_username=values.get(_MAP_UI_USERNAME_ENV, ""),
             map_ui_password=values.get(_MAP_UI_PASSWORD_ENV, ""),
             pinvi_admin_email=values.get("KTDM_C6C_PINVI_ADMIN_EMAIL", ""),
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
@@ -648,6 +695,41 @@ def load_c6c_deployment_config_from_environment(
         c6c_state_paths(values)
         _validate_production_config(config, values)
     return config
+
+
+def _map_ui_auth_values_are_valid(values: Mapping[str, str]) -> bool:
+    username = values.get(_MAP_UI_USERNAME_ENV, "")
+    password_hash = values.get(_MAP_UI_PASSWORD_HASH_ENV, "")
+    session_secret = values.get(_MAP_UI_SESSION_SECRET_ENV, "")
+    if not all(
+        isinstance(value, str) for value in (username, password_hash, session_secret)
+    ):
+        return False
+    if (
+        not username
+        or username != username.strip()
+        or "\r" in username
+        or "\n" in username
+    ):
+        return False
+    match = _MAP_UI_PASSWORD_HASH_PATTERN.fullmatch(password_hash)
+    if match is None:
+        return False
+    try:
+        iterations = int(match.group(1))
+    except ValueError:
+        return False
+    if iterations < 100_000:
+        return False
+    return len(session_secret) >= 32 and not any(
+        character.isspace() for character in session_secret
+    )
+
+
+def _compose_resolved_escaped_value(value: str) -> str:
+    """Compose resolved JSON이 literal `$`를 표현하는 결정적 값을 반환한다."""
+
+    return value.replace("$", "$$")
 
 
 def _parse_port(value: str, env_name: str) -> int:
@@ -708,6 +790,10 @@ def _validate_production_config(
         raise DeploymentContractError(
             "production C6c deployment requires the canonical PinVi API container identity"
         )
+    if config.map_ui_container != "kor-travel-map-ui-latest":
+        raise DeploymentContractError(
+            "production C6c deployment requires the canonical Map UI container identity"
+        )
     if config.map_container_port != 12701:
         raise DeploymentContractError(
             "production KOR_TRAVEL_MAP_API_CONTAINER_PORT must be exactly 12701"
@@ -745,7 +831,7 @@ def _validate_production_config(
 
     smoke = config.smoke
     identities = (
-        ("KTDM_C6C_MAP_UI_ADMIN_USERNAME", smoke.map_ui_username),
+        (_MAP_UI_USERNAME_ENV, smoke.map_ui_username),
         ("KTDM_C6C_PINVI_ADMIN_EMAIL", smoke.pinvi_admin_email),
     )
     passwords = (
@@ -782,12 +868,14 @@ def validate_resolved_compose_secret_isolation(
 
     map_service = _service_mapping(services, _MAP_API_SERVICE)
     pinvi_service = _service_mapping(services, _PINVI_API_SERVICE)
+    map_ui_service = _service_mapping(services, _MAP_UI_SERVICE)
     map_environment = _environment_mapping(map_service.get("environment"))
     pinvi_environment = _environment_mapping(pinvi_service.get("environment"))
 
     for service_name, service in (
         (_MAP_API_SERVICE, map_service),
         (_PINVI_API_SERVICE, pinvi_service),
+        (_MAP_UI_SERVICE, map_ui_service),
     ):
         if service.get("network_mode") != "host":
             raise DeploymentContractError(
@@ -801,6 +889,10 @@ def validate_resolved_compose_secret_isolation(
         raise DeploymentContractError("resolved compose Map API container identity is invalid")
     if pinvi_service.get("container_name") != config.pinvi_container:
         raise DeploymentContractError("resolved compose PinVi API container identity is invalid")
+    if map_ui_service.get("container_name") != config.map_ui_container:
+        raise DeploymentContractError(
+            "resolved compose Map UI container identity is invalid"
+        )
     if map_environment.get("KOR_TRAVEL_MAP_API_PORT") != str(config.map_container_port):
         raise DeploymentContractError("resolved compose Map API bind port is invalid")
     if pinvi_environment.get("PINVI_ENVIRONMENT") != "production":
@@ -810,13 +902,24 @@ def validate_resolved_compose_secret_isolation(
 
     expected = {
         _MAP_API_SERVICE: {
-            _MAP_READ_ENV: config.read_token,
-            _MAP_CANCEL_ENV: config.cancel_token,
+            _MAP_READ_ENV: _compose_resolved_escaped_value(config.read_token),
+            _MAP_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
             _MAP_REQUIRED_ENV: "true",
         },
         _PINVI_API_SERVICE: {
-            _PINVI_READ_ENV: config.read_token,
-            _PINVI_CANCEL_ENV: config.cancel_token,
+            _PINVI_READ_ENV: _compose_resolved_escaped_value(config.read_token),
+            _PINVI_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
+        },
+        _MAP_UI_SERVICE: {
+            _MAP_UI_USERNAME_ENV: _compose_resolved_escaped_value(
+                config.smoke.map_ui_username
+            ),
+            _MAP_UI_PASSWORD_HASH_ENV: _compose_resolved_escaped_value(
+                config.map_ui_password_hash
+            ),
+            _MAP_UI_SESSION_SECRET_ENV: _compose_resolved_escaped_value(
+                config.map_ui_session_secret
+            ),
         },
     }
     for service_name, expected_environment in expected.items():
@@ -830,11 +933,49 @@ def validate_resolved_compose_secret_isolation(
                 )
 
     allowed_paths = {
-        ("services", _MAP_API_SERVICE, "environment", _MAP_READ_ENV): config.read_token,
-        ("services", _MAP_API_SERVICE, "environment", _MAP_CANCEL_ENV): config.cancel_token,
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_READ_ENV,
+        ): _compose_resolved_escaped_value(config.read_token),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_CANCEL_ENV,
+        ): _compose_resolved_escaped_value(config.cancel_token),
         ("services", _MAP_API_SERVICE, "environment", _MAP_REQUIRED_ENV): "true",
-        ("services", _PINVI_API_SERVICE, "environment", _PINVI_READ_ENV): config.read_token,
-        ("services", _PINVI_API_SERVICE, "environment", _PINVI_CANCEL_ENV): config.cancel_token,
+        (
+            "services",
+            _PINVI_API_SERVICE,
+            "environment",
+            _PINVI_READ_ENV,
+        ): _compose_resolved_escaped_value(config.read_token),
+        (
+            "services",
+            _PINVI_API_SERVICE,
+            "environment",
+            _PINVI_CANCEL_ENV,
+        ): _compose_resolved_escaped_value(config.cancel_token),
+        (
+            "services",
+            _MAP_UI_SERVICE,
+            "environment",
+            _MAP_UI_USERNAME_ENV,
+        ): _compose_resolved_escaped_value(config.smoke.map_ui_username),
+        (
+            "services",
+            _MAP_UI_SERVICE,
+            "environment",
+            _MAP_UI_PASSWORD_HASH_ENV,
+        ): _compose_resolved_escaped_value(config.map_ui_password_hash),
+        (
+            "services",
+            _MAP_UI_SERVICE,
+            "environment",
+            _MAP_UI_SESSION_SECRET_ENV,
+        ): _compose_resolved_escaped_value(config.map_ui_session_secret),
     }
     for path, scalar in _walk_scalars(resolved):
         if path in allowed_paths or (
@@ -844,25 +985,32 @@ def validate_resolved_compose_secret_isolation(
         text = str(scalar)
         if any(
             env_name in text
-            for env_name in _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES
+            for env_name in (
+                _OPS_ENV_NAMES
+                | _MANAGER_ONLY_CREDENTIAL_NAMES
+                | _MAP_UI_AUTH_ENV_NAMES
+            )
         ):
             raise DeploymentContractError(
-                "C6c secret environment name leaks outside the API-only wiring"
+                "C6c protected environment name leaks outside its exact wiring"
             )
         if any(
-            secret and secret in text
-            for secret in (
-                config.read_token,
-                config.cancel_token,
-                config.smoke.map_ui_password,
-                config.smoke.pinvi_admin_email,
-                config.smoke.pinvi_admin_password,
-                config.smoke.cancel_probe_job_id,
-                config.contract_generation,
+            escaped and escaped in text
+            for escaped in (
+                _compose_resolved_escaped_value(config.read_token),
+                _compose_resolved_escaped_value(config.cancel_token),
+                _compose_resolved_escaped_value(config.smoke.map_ui_username),
+                _compose_resolved_escaped_value(config.map_ui_password_hash),
+                _compose_resolved_escaped_value(config.map_ui_session_secret),
+                _compose_resolved_escaped_value(config.smoke.map_ui_password),
+                _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
+                _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
+                _compose_resolved_escaped_value(config.smoke.cancel_probe_job_id),
+                _compose_resolved_escaped_value(config.contract_generation),
             )
         ):
             raise DeploymentContractError(
-                "C6c secret value leaks outside the API-only wiring"
+                "C6c protected value leaks outside its exact wiring"
             )
 
 
@@ -881,9 +1029,17 @@ def validate_resolved_compose_candidate_protected_values(
         raise ComposeCandidateContractError(
             "resolved compose candidate has no valid services mapping"
         )
-    protected_names = _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES
+    missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
+    if missing_services:
+        raise ComposeCandidateContractError(
+            "resolved compose candidate is missing required protected services: "
+            + ", ".join(sorted(missing_services))
+        )
+    protected_names = (
+        _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+    )
     protected_values = tuple(
-        value
+        _compose_resolved_escaped_value(value)
         for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
         if (value := environment.get(name, ""))
     )
@@ -892,7 +1048,7 @@ def validate_resolved_compose_candidate_protected_values(
         for service_name, target_name in _CANDIDATE_ALLOWED_API_ENV_SOURCES
     }
 
-    for service_name in {_MAP_API_SERVICE, _PINVI_API_SERVICE}.intersection(services):
+    for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
         service = services[service_name]
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
@@ -909,11 +1065,23 @@ def validate_resolved_compose_candidate_protected_values(
             if allowed_service != service_name:
                 continue
             actual = service_environment.get(target_name)
-            expected = environment.get(source_name, "")
+            expected = _compose_resolved_escaped_value(
+                environment.get(source_name, "")
+            )
             if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
                 raise ComposeCandidateContractError(
                     f"resolved compose candidate {service_name}.{target_name} wiring is invalid"
                 )
+        if service_name == _MAP_UI_SERVICE and not _map_ui_auth_values_are_valid(
+            environment
+        ):
+            raise ComposeCandidateContractError(
+                "resolved compose candidate Map UI authentication is invalid"
+            )
+        if _env_file_entries(service.get("env_file")):
+            raise ComposeCandidateContractError(
+                f"resolved compose candidate forbids env_file on {service_name}"
+            )
 
     for path, scalar in _walk_scalars(resolved):
         if path in allowed_paths or (
@@ -1011,9 +1179,14 @@ def validate_compose_env_file_isolation(
             if not isinstance(service, Mapping):
                 continue
             for env_file in _env_file_entries(service.get("env_file")):
-                if service_name in {_MAP_API_SERVICE, _PINVI_API_SERVICE}:
+                if service_name in {
+                    _MAP_API_SERVICE,
+                    _PINVI_API_SERVICE,
+                    _MAP_UI_SERVICE,
+                }:
                     raise DeploymentContractError(
-                        "C6c API services must use explicit environment, not env_file"
+                        "C6c protected services must use explicit environment, "
+                        "not env_file"
                     )
                 expanded = _expand_env_path(env_file, environment)
                 path = Path(expanded)
@@ -1028,7 +1201,12 @@ def validate_compose_env_file_isolation(
                     continue
                 env_keys = dotenv_values(resolved_path, interpolate=False).keys()
                 if any(
-                    key in _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES
+                    key
+                    in (
+                        _OPS_ENV_NAMES
+                        | _MANAGER_ONLY_CREDENTIAL_NAMES
+                        | _MAP_UI_AUTH_ENV_NAMES
+                    )
                     for key in env_keys
                 ):
                     raise DeploymentContractError(
@@ -1053,7 +1231,15 @@ def validate_compose_candidate_protected_values(
         raise ComposeCandidateContractError(
             "compose candidate has no valid services mapping"
         )
-    protected_names = _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES
+    missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
+    if missing_services:
+        raise ComposeCandidateContractError(
+            "compose candidate is missing required protected services: "
+            + ", ".join(sorted(missing_services))
+        )
+    protected_names = (
+        _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+    )
     protected_values = tuple(
         value
         for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
@@ -1064,7 +1250,7 @@ def validate_compose_candidate_protected_values(
         for service_name, target_name in _CANDIDATE_ALLOWED_API_ENV_SOURCES
     }
 
-    for service_name in {_MAP_API_SERVICE, _PINVI_API_SERVICE}.intersection(services):
+    for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
         service = services[service_name]
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
@@ -1090,6 +1276,14 @@ def validate_compose_candidate_protected_values(
                 raise ComposeCandidateContractError(
                     f"compose candidate {service_name}.{target_name} wiring is invalid"
                 )
+        if (
+            service_name == _MAP_UI_SERVICE
+            and require_api_wiring
+            and not _map_ui_auth_values_are_valid(environment)
+        ):
+            raise ComposeCandidateContractError(
+                "compose candidate Map UI authentication is invalid"
+            )
         if _env_file_entries(service.get("env_file")):
             raise ComposeCandidateContractError(
                 f"compose candidate forbids env_file on {service_name}"
@@ -1986,8 +2180,10 @@ def _validate_cancellation_engine_times(
     )
 
 
-def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]:
-    """필수 app readiness 뒤 Map UI auth lifecycle와 PinVi login shell을 검사한다."""
+def run_map_ui_auth_preflight(
+    config: C6cDeploymentConfig,
+) -> list[dict[str, int | str]]:
+    """현재 plaintext credential로 Map UI auth lifecycle만 비파괴 검사한다."""
 
     smoke = config.smoke
     opener = _cookie_opener(follow_redirects=False)
@@ -2036,6 +2232,19 @@ def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
     redirect_path = urlsplit(post_logout.location or "").path
     if post_logout.status not in {302, 303, 307, 308} or redirect_path != "/login":
         raise DeploymentContractError("C6c Map UI post-logout protection smoke failed")
+    return [
+        {"name": "map_ui_login", "status": login.status},
+        {"name": "map_ui_protected", "status": protected.status},
+        {"name": "map_ui_logout", "status": logout.status},
+        {"name": "map_ui_post_logout", "status": post_logout.status},
+    ]
+
+
+def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]:
+    """필수 app readiness 뒤 Map UI auth lifecycle와 PinVi login shell을 검사한다."""
+
+    map_ui_smoke = run_map_ui_auth_preflight(config)
+    smoke = config.smoke
 
     pinvi_login_shell = _session_request(
         _cookie_opener(follow_redirects=False),
@@ -2053,10 +2262,7 @@ def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
     ):
         raise DeploymentContractError("C6c PinVi Web login shell smoke failed")
     return [
-        {"name": "map_ui_login", "status": login.status},
-        {"name": "map_ui_protected", "status": protected.status},
-        {"name": "map_ui_logout", "status": logout.status},
-        {"name": "map_ui_post_logout", "status": post_logout.status},
+        *map_ui_smoke,
         {"name": "pinvi_web_login", "status": pinvi_login_shell.status},
     ]
 
@@ -2992,6 +3198,69 @@ def _request_json(
         raise DeploymentContractError("C6c Map smoke endpoint is unavailable") from exc
 
 
+def validate_current_map_ui_auth_runtime(
+    runtime_config: Mapping[str, Any],
+    config: C6cDeploymentConfig,
+) -> None:
+    """mutation 전 현재 Map UI runtime 인증값만 frozen expected와 대조한다."""
+
+    expected = {
+        _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
+        _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
+        _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
+    }
+    actual: dict[str, str] = {}
+    allowed_paths: set[tuple[str, ...]] = set()
+    plaintext = config.smoke.map_ui_password
+    for env_name, value, scalar_paths in _runtime_environment_entries(
+        runtime_config.get("Env")
+    ):
+        if env_name in _MANAGER_ONLY_CREDENTIAL_NAMES:
+            raise DeploymentContractError(
+                "a C6c manager-only credential is present in the current Map UI"
+            )
+        if plaintext and plaintext in value:
+            raise DeploymentContractError(
+                "the current Map UI contains a plaintext smoke credential"
+            )
+        if env_name not in expected:
+            continue
+        if env_name in actual:
+            raise DeploymentContractError(
+                "the current Map UI has duplicate authentication variables"
+            )
+        actual[env_name] = value
+        allowed_paths.update(scalar_paths)
+
+    for env_name, expected_value in expected.items():
+        actual_value = actual.get(env_name)
+        if actual_value is None or not hmac.compare_digest(
+            actual_value.encode("utf-8"), expected_value.encode("utf-8")
+        ):
+            raise DeploymentContractError(
+                "the current Map UI authentication differs from the frozen environment"
+            )
+
+    protected_values = (
+        config.smoke.map_ui_username,
+        config.map_ui_password_hash,
+        config.map_ui_session_secret,
+        plaintext,
+    )
+    protected_names = _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+    for path, scalar in _walk_scalars(runtime_config):
+        if path in allowed_paths:
+            continue
+        text = "" if scalar is None else str(scalar)
+        if any(name in text for name in protected_names) or any(
+            value and value in text for value in protected_values
+        ):
+            raise DeploymentContractError(
+                "the current Map UI authentication leaks outside its exact "
+                "environment path"
+            )
+
+
 def validate_runtime_secret_isolation(
     container_configs: Mapping[str, Mapping[str, Any]],
     config: C6cDeploymentConfig,
@@ -3006,17 +3275,25 @@ def validate_runtime_secret_isolation(
             _PINVI_READ_ENV: config.read_token,
             _PINVI_CANCEL_ENV: config.cancel_token,
         },
+        config.map_ui_container: {
+            _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
+            _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
+            _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
+        },
     }
     for required_container in expected:
         if required_container not in container_configs:
             raise DeploymentContractError(
-                "a required C6c API container is missing from runtime inspection"
+                "a required C6c container is missing from runtime inspection"
             )
     secret_values = tuple(
         secret
         for secret in (
             config.read_token,
             config.cancel_token,
+            config.smoke.map_ui_username,
+            config.map_ui_password_hash,
+            config.map_ui_session_secret,
             config.smoke.map_ui_password,
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,
@@ -3025,7 +3302,9 @@ def validate_runtime_secret_isolation(
         )
         if secret
     )
-    protected_names = _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES
+    protected_names = (
+        _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+    )
     for container_name, runtime_config in container_configs.items():
         if not isinstance(runtime_config, Mapping):
             raise DeploymentContractError("container returned invalid runtime config")
@@ -3043,14 +3322,15 @@ def validate_runtime_secret_isolation(
                 raise DeploymentContractError(
                     "a C6c manager-only credential is present in a container"
                 )
-            if env_name in _OPS_ENV_NAMES:
+            if env_name in _OPS_ENV_NAMES | _MAP_UI_AUTH_ENV_NAMES:
                 if env_name not in allowed:
                     raise DeploymentContractError(
-                        "a C6c runtime secret is present in an unauthorized container"
+                        "a C6c runtime protected value is present in an "
+                        "unauthorized container"
                     )
                 if not hmac.compare_digest(value, allowed[env_name]):
                     raise DeploymentContractError(
-                        "C6c runtime secret wiring is invalid"
+                        "C6c runtime protected value wiring is invalid"
                     )
                 allowed_paths.update(scalar_paths)
             elif any(secret in value for secret in secret_values):
@@ -3060,7 +3340,7 @@ def validate_runtime_secret_isolation(
         for env_name in allowed:
             if env_name not in environment:
                 raise DeploymentContractError(
-                    "C6c runtime secret wiring is missing"
+                    "C6c runtime protected value wiring is missing"
                 )
         for path, scalar in _walk_scalars(runtime_config):
             if path in allowed_paths:
@@ -3070,7 +3350,7 @@ def validate_runtime_secret_isolation(
                 secret in text for secret in secret_values
             ):
                 raise DeploymentContractError(
-                    "a C6c credential leaks outside its exact API environment path"
+                    "a C6c credential leaks outside its exact environment path"
                 )
 
 

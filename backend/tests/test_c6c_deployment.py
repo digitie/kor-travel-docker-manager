@@ -32,13 +32,16 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_state_paths,
     initial_pair_manifest,
     load_c6c_deployment_config,
+    load_c6c_deployment_config_from_environment,
     load_pair_manifest,
     new_image_pair,
+    run_map_ui_auth_preflight,
     run_map_ops_smoke,
     run_pinvi_canonical_smoke,
     run_ui_auth_smoke,
     validate_compose_candidate_protected_values,
     validate_compose_env_file_isolation,
+    validate_current_map_ui_auth_runtime,
     validate_resolved_compose_candidate_protected_values,
     validate_resolved_compose_image_pair,
     validate_resolved_compose_secret_isolation,
@@ -67,7 +70,28 @@ _PINVI_IMAGE_ID = f"sha256:{'b' * 64}"
 _ACTIVE_MAP_IMAGE_ID = f"sha256:{'c' * 64}"
 _ACTIVE_PINVI_IMAGE_ID = f"sha256:{'d' * 64}"
 _CONTRACT_GENERATION = "c6c-ops-v1"
+_MAP_UI_USERNAME = "map-ui-admin-placeholder"
+_MAP_UI_PASSWORD_HASH = "pbkdf2_sha256$100000$test-salt$test-digest"
+_MAP_UI_SESSION_SECRET = "map-ui-session-secret-placeholder-value"
+_DOLLAR_MAP_UI_USERNAME = "map$ui$admin"
+_DOLLAR_MAP_UI_SESSION_SECRET = "map$ui$session$secret$placeholder$value"
 _MAP_UI_PASSWORD = "map-ui-password-strong"
+_UNICODE_WHITESPACE = tuple(
+    chr(codepoint)
+    for codepoint in (
+        *range(0x0009, 0x000E),
+        *range(0x001C, 0x0021),
+        0x0085,
+        0x00A0,
+        0x1680,
+        *range(0x2000, 0x200B),
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+    )
+)
 _PINVI_ADMIN_PASSWORD = "pinvi-admin-password-strong"
 _CANCEL_PROBE_JOB_ID = "77777777-7777-4777-8777-777777777777"
 _OPERATION_MEMBER_ID = "88888888-8888-4888-8888-888888888888"
@@ -81,12 +105,15 @@ _C6C_ENV_NAMES = (
     "PINVI_WEB_PORT",
     "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL",
     "KOR_TRAVEL_MAP_API_CONTAINER",
+    "KOR_TRAVEL_MAP_UI_CONTAINER",
     "PINVI_API_CONTAINER",
     "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN",
     "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN",
     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED",
     "KTDM_C6C_CONTRACT_GENERATION",
-    "KTDM_C6C_MAP_UI_ADMIN_USERNAME",
+    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+    "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
     "KTDM_C6C_MAP_UI_ADMIN_PASSWORD",
     "KTDM_C6C_PINVI_ADMIN_EMAIL",
     "KTDM_C6C_PINVI_ADMIN_PASSWORD",
@@ -107,13 +134,16 @@ def _production_config() -> C6cDeploymentConfig:
         read_token=_READ_TOKEN,
         cancel_token=_CANCEL_TOKEN,
         map_container="kor-travel-map-api-latest",
+        map_ui_container="kor-travel-map-ui-latest",
+        map_ui_password_hash=_MAP_UI_PASSWORD_HASH,
+        map_ui_session_secret=_MAP_UI_SESSION_SECRET,
         pinvi_container="pinvi-api-latest",
         contract_generation=_CONTRACT_GENERATION,
         smoke=C6cSmokeConfig(
             pinvi_api_base_url="http://127.0.0.1:12801",
             map_ui_base_url="http://127.0.0.1:12705",
             pinvi_web_base_url="http://127.0.0.1:12805",
-            map_ui_username="admin",
+            map_ui_username=_MAP_UI_USERNAME,
             map_ui_password=_MAP_UI_PASSWORD,
             pinvi_admin_email="admin@example.test",
             pinvi_admin_password=_PINVI_ADMIN_PASSWORD,
@@ -128,8 +158,8 @@ def _manifest() -> CompatiblePairManifest:
     )
 
 
-def _write_env(path: Path, **overrides: str | None) -> None:
-    values: dict[str, str | None] = {
+def _production_environment() -> dict[str, str | None]:
+    return {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
         "PINVI_ENVIRONMENT": "production",
         "COMPOSE_PROJECT_NAME": "kor-travel-test",
@@ -139,13 +169,19 @@ def _write_env(path: Path, **overrides: str | None) -> None:
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
         "KTDM_C6C_CONTRACT_GENERATION": _CONTRACT_GENERATION,
-        "KTDM_C6C_MAP_UI_ADMIN_USERNAME": "admin",
         "KTDM_C6C_MAP_UI_ADMIN_PASSWORD": _MAP_UI_PASSWORD,
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": _PINVI_ADMIN_PASSWORD,
         "KTDM_C6C_CANCEL_PROBE_JOB_ID": _CANCEL_PROBE_JOB_ID,
     }
+
+
+def _write_env(path: Path, **overrides: str | None) -> None:
+    values = _production_environment()
     values.update(overrides)
     path.write_text(
         "".join(f"{key}={value}\n" for key, value in values.items() if value is not None),
@@ -559,6 +595,10 @@ def _map_datasets_envelope() -> dict[str, object]:
     }
 
 
+def _compose_resolved_literal(value: str) -> str:
+    return value.replace("$", "$$")
+
+
 def _resolved_compose() -> dict[str, object]:
     return {
         "services": {
@@ -584,10 +624,90 @@ def _resolved_compose() -> dict[str, object]:
                     "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL": "http://127.0.0.1:12701",
                 }
             },
-            "kor-travel-map-ui": {"environment": {"NODE_ENV": "production"}},
+            "kor-travel-map-ui": {
+                "container_name": "kor-travel-map-ui-latest",
+                "network_mode": "host",
+                "environment": {
+                    "NODE_ENV": "production",
+                    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+                    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
+                        _compose_resolved_literal(_MAP_UI_PASSWORD_HASH)
+                    ),
+                    "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+                },
+            },
             "pinvi-web": {"command": ["npm", "start"]},
         }
     }
+
+
+def _resolved_compose_with_map_ui_auth() -> dict[str, object]:
+    return deepcopy(_resolved_compose())
+
+
+def _resolved_candidate_environment() -> dict[str, str]:
+    return {
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+    }
+
+
+def _raw_candidate_environment(**overrides: str) -> dict[str, str]:
+    environment = {
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+    }
+    environment.update(overrides)
+    return environment
+
+
+def _runtime_secret_configs(
+    config: C6cDeploymentConfig,
+) -> dict[str, dict[str, object]]:
+    return {
+        config.map_container: {
+            "Env": {
+                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
+                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+            }
+        },
+        config.pinvi_container: {
+            "Env": {
+                "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
+                "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+            }
+        },
+        config.map_ui_container: {
+            "Env": {
+                "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+                "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+                "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+            }
+        },
+        "kor-travel-map-dagster-latest": {},
+        "pinvi-web-latest": {},
+    }
+
+
+def _map_ui_source_candidate() -> tuple[Path, dict[str, object]]:
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    document = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    services = document["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    candidate = _source_compose()
+    candidate_services = candidate["services"]
+    assert isinstance(candidate_services, dict)
+    candidate_services["kor-travel-map-ui"] = deepcopy(map_ui)
+    return compose_path, candidate
 
 
 def _source_compose() -> dict[str, object]:
@@ -617,9 +737,86 @@ def _source_compose() -> dict[str, object]:
                     ),
                 }
             },
+            "kor-travel-map-ui": {
+                "environment": {
+                    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": (
+                        "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
+                        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
+                    ),
+                    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
+                        "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
+                        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+                    ),
+                    "KOR_TRAVEL_MAP_UI_SESSION_SECRET": (
+                        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
+                        "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+                    ),
+                }
+            },
             "rustfs": {"environment": {"RUSTFS_LOG_LEVEL": "info"}},
         }
     }
+
+
+def _materializable_source_compose() -> dict[str, object]:
+    candidate = _source_compose()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    identities = {
+        "kor-travel-map-api": "kor-travel-map-api-latest",
+        "kor-travel-map-ui": "kor-travel-map-ui-latest",
+        "pinvi-api": "pinvi-api-latest",
+    }
+    for service_name, container_name in identities.items():
+        service = services[service_name]
+        assert isinstance(service, dict)
+        service.update(
+            {
+                "image": f"fixture.invalid/{service_name}:test",
+                "container_name": container_name,
+                "network_mode": "host",
+            }
+        )
+    rustfs = services["rustfs"]
+    assert isinstance(rustfs, dict)
+    rustfs["image"] = "fixture.invalid/rustfs:test"
+    return candidate
+
+
+def _resolve_dollar_auth_candidate_with_docker_compose(
+    tmp_path: Path,
+) -> tuple[dict[str, str], dict[str, object]]:
+    environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", str(tmp_path)),
+        "COMPOSE_PROJECT_NAME": "c6c-dollar-auth-fixture",
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
+        "PINVI_ENVIRONMENT": "development",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "",
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _DOLLAR_MAP_UI_USERNAME,
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _DOLLAR_MAP_UI_SESSION_SECRET,
+    }
+    snapshot = ComposeEnvironmentSnapshot(
+        effective=environment,
+        env_path=str(tmp_path / ".env"),
+        compose_path=str(tmp_path / "docker-compose.yml"),
+        override_path=str(tmp_path / "missing.override.yml"),
+        env_file_identity=ComposeEnvFileIdentity(exists=False),
+        env_file_bytes=b"",
+    )
+    resolved = ComposeService()._resolve_compose_candidate_unlocked(
+        _materializable_source_compose(),
+        environment=environment,
+        expected_system_bind_snapshots=(),
+        environment_snapshot=snapshot,
+        environment_override=None,
+        external_input_snapshot=ComposeExternalInputSnapshot(references=(), files=()),
+    )
+    assert isinstance(resolved, dict)
+    return environment, resolved
 
 
 def test_production_config_requires_explicit_matching_modes_and_strong_pair(
@@ -745,10 +942,23 @@ def test_production_state_paths_cannot_split_one_project_lock(tmp_path: Path) ->
         {"KTDM_DOCKER_NETWORK_MODE": "bridge"},
         {"PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL": None},
         {"KTDM_C6C_CONTRACT_GENERATION": None},
+        {"KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": None},
+        {"KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": '" admin"'},
+        {"KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": None},
+        {
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
+                "pbkdf2_sha256$99999$test-salt$test-digest"
+            )
+        },
+        {"KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": "not-a-password-hash"},
+        {"KOR_TRAVEL_MAP_UI_SESSION_SECRET": None},
+        {"KOR_TRAVEL_MAP_UI_SESSION_SECRET": "too-short"},
+        {"KOR_TRAVEL_MAP_UI_SESSION_SECRET": f'" {_MAP_UI_SESSION_SECRET}"'},
         {"KTDM_C6C_MAP_UI_ADMIN_PASSWORD": None},
         {"KTDM_C6C_PINVI_ADMIN_EMAIL": None},
         {"KTDM_C6C_CANCEL_PROBE_JOB_ID": "not-a-uuid"},
         {"KOR_TRAVEL_MAP_API_CONTAINER": "attacker-map"},
+        {"KOR_TRAVEL_MAP_UI_CONTAINER": "attacker-map-ui"},
         {"PINVI_API_CONTAINER": "attacker-pinvi"},
         {"KOR_TRAVEL_MAP_API_CONTAINER_PORT": "12702"},
         {"PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL": "http://127.0.0.1:12702"},
@@ -768,6 +978,43 @@ def test_production_config_rejects_before_compose_and_never_echoes_secrets(
 
     assert _READ_TOKEN not in str(captured.value)
     assert _CANCEL_TOKEN not in str(captured.value)
+    assert _MAP_UI_PASSWORD_HASH not in str(captured.value)
+    assert _MAP_UI_SESSION_SECRET not in str(captured.value)
+    assert _MAP_UI_PASSWORD not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    [
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+    ],
+)
+@pytest.mark.parametrize("whitespace", _UNICODE_WHITESPACE)
+def test_map_ui_auth_rejects_every_unicode_whitespace_from_environment(
+    environment_name: str,
+    whitespace: str,
+) -> None:
+    assert whitespace.isspace()
+    values = {
+        name: value
+        for name, value in _production_environment().items()
+        if value is not None
+    }
+    rejected_value = (
+        f"{whitespace}{_MAP_UI_USERNAME}"
+        if environment_name == "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
+        else f"{'a' * 16}{whitespace}{'b' * 16}"
+    )
+    values[environment_name] = rejected_value
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="Map UI runtime authentication environment is invalid",
+    ) as captured:
+        load_c6c_deployment_config_from_environment(values)
+
+    assert rejected_value not in str(captured.value)
 
 
 def test_explicit_local_mode_keeps_tokenless_development_path(
@@ -824,21 +1071,32 @@ def test_local_mode_rejects_partial_or_weak_token_pair(
 
 
 @pytest.mark.parametrize(
-    ("service", "leak"),
+    ("service", "leak", "message"),
     [
-        ("kor-travel-map-ui", {"command": ["worker", _READ_TOKEN]}),
-        ("pinvi-web", {"build": {"args": {"OPS_SECRET": _CANCEL_TOKEN}}}),
+        (
+            "kor-travel-map-ui",
+            {"command": ["worker", _READ_TOKEN]},
+            "protected value leaks",
+        ),
+        (
+            "pinvi-web",
+            {"build": {"args": {"OPS_SECRET": _CANCEL_TOKEN}}},
+            "protected value leaks",
+        ),
         (
             "pinvi-web",
             {"environment": {"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN}},
+            "protected environment name leaks",
         ),
         (
             "kor-travel-map-ui",
             {"labels": {"PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": "present"}},
+            "protected environment name leaks",
         ),
         (
             "pinvi-web",
             {"environment": {"KTDM_C6C_PINVI_ADMIN_PASSWORD": "injected"}},
+            "protected environment name leaks",
         ),
         (
             "pinvi-web",
@@ -847,32 +1105,106 @@ def test_local_mode_rejects_partial_or_weak_token_pair(
                     "KTDM_C6C_CONTRACT_GENERATION": _CONTRACT_GENERATION
                 }
             },
+            "protected environment name leaks",
         ),
         (
             "kor-travel-map-ui",
             {"command": ["worker", _MAP_UI_PASSWORD]},
+            "protected value leaks",
         ),
         (
             "kor-travel-map-ui",
             {"labels": {"contract": _CONTRACT_GENERATION}},
+            "protected value leaks",
         ),
     ],
 )
 def test_resolved_compose_rejects_secret_leak_from_any_channel(
     service: str,
     leak: dict[str, object],
+    message: str,
 ) -> None:
-    resolved = _resolved_compose()
+    resolved = _resolved_compose_with_map_ui_auth()
     services = resolved["services"]
     assert isinstance(services, dict)
-    services[service] = leak
+    service_config = services[service]
+    assert isinstance(service_config, dict)
+    for key, value in leak.items():
+        if key == "environment" and isinstance(value, dict):
+            environment = service_config.setdefault("environment", {})
+            assert isinstance(environment, dict)
+            environment.update(value)
+        else:
+            service_config[key] = value
 
-    with pytest.raises(DeploymentContractError):
+    with pytest.raises(
+        DeploymentContractError,
+        match=message,
+    ):
         validate_resolved_compose_secret_isolation(resolved, _production_config())
 
 
-def test_resolved_compose_accepts_exact_api_only_wiring() -> None:
-    validate_resolved_compose_secret_isolation(_resolved_compose(), _production_config())
+def test_resolved_candidate_requires_map_ui_service() -> None:
+    resolved = _resolved_compose()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services.pop("kor-travel-map-ui")
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="missing required protected services: kor-travel-map-ui",
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=_resolved_candidate_environment(),
+        )
+
+
+def test_resolved_compose_accepts_exact_protected_service_wiring() -> None:
+    validate_resolved_compose_secret_isolation(
+        _resolved_compose_with_map_ui_auth(),
+        _production_config(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", None),
+        ("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", "attacker"),
+        ("KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", None),
+        (
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+            "pbkdf2_sha256$100000$other-salt$other-digest",
+        ),
+        ("KOR_TRAVEL_MAP_UI_SESSION_SECRET", None),
+        (
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+            "other-map-ui-session-secret-placeholder",
+        ),
+    ],
+)
+def test_resolved_compose_rejects_missing_or_changed_map_ui_auth(
+    env_name: str,
+    value: str | None,
+) -> None:
+    resolved = _resolved_compose_with_map_ui_auth()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    environment = map_ui["environment"]
+    assert isinstance(environment, dict)
+    if value is None:
+        environment.pop(env_name)
+    else:
+        environment[env_name] = value
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=rf"does not wire {env_name} to kor-travel-map-ui",
+    ):
+        validate_resolved_compose_secret_isolation(resolved, _production_config())
 
 
 @pytest.mark.parametrize(
@@ -886,7 +1218,7 @@ def test_resolved_compose_accepts_exact_api_only_wiring() -> None:
 def test_resolved_compose_rejects_protected_top_level_graph(
     top_level_leak: dict[str, object],
 ) -> None:
-    resolved = _resolved_compose()
+    resolved = _resolved_compose_with_map_ui_auth()
     resolved.update(top_level_leak)
 
     with pytest.raises(DeploymentContractError):
@@ -905,11 +1237,7 @@ def test_generic_resolved_candidate_rejects_service_config_alias_value() -> None
     with pytest.raises(ComposeCandidateContractError):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
         )
 
 
@@ -918,7 +1246,10 @@ def test_candidate_document_rejects_indirect_value_after_resolution(
     tmp_path: Path,
 ) -> None:
     service = ComposeService()
-    resolved = {"services": {"rustfs": {"environment": {"INDIRECT": _READ_TOKEN}}}}
+    resolved = _resolved_compose()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services["rustfs"] = {"environment": {"INDIRECT": _READ_TOKEN}}
     resolve = Mock(return_value=resolved)
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.get_compose_path",
@@ -937,11 +1268,7 @@ def test_candidate_document_rejects_indirect_value_after_resolution(
     with pytest.raises(ComposeCandidateContractError):
         service._validate_compose_candidate_document_unlocked(
             _source_compose(),
-            environment_override={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment_override=_resolved_candidate_environment(),
         )
 
     resolve.assert_called_once()
@@ -956,7 +1283,7 @@ def test_compose_candidate_rejects_multi_file_composition_boundary(
     tmp_path: Path,
 ) -> None:
     candidate = _source_compose()
-    environment: dict[str, str] = {}
+    environment = _raw_candidate_environment()
     if boundary == "include":
         candidate["include"] = ["./compose.extra.yml"]
     elif boundary == "extends":
@@ -1006,7 +1333,7 @@ def test_candidate_document_rejects_existing_override_before_resolution(
     with pytest.raises(ComposeCandidateContractError, match="single-file"):
         service._validate_compose_candidate_document_unlocked(
             _source_compose(),
-            environment_override={},
+            environment_override=_raw_candidate_environment(),
         )
 
     resolve.assert_not_called()
@@ -1070,12 +1397,247 @@ def test_compose_candidate_accepts_only_exact_api_source_wiring() -> None:
         _source_compose(),
         compose_path="/tmp/docker-compose.yml",
         root_env_path="/tmp/.env",
-        environment={
-            "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-            "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-            "KTDM_C6C_CONTRACT_GENERATION": _CONTRACT_GENERATION,
-        },
+        environment=_raw_candidate_environment(
+            KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=_READ_TOKEN,
+            KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=_CANCEL_TOKEN,
+            KTDM_C6C_CONTRACT_GENERATION=_CONTRACT_GENERATION,
+        ),
     )
+
+
+def test_resolved_candidate_accepts_docker_compose_escaped_auth_literals(
+    tmp_path: Path,
+) -> None:
+    environment, resolved = _resolve_dollar_auth_candidate_with_docker_compose(
+        tmp_path
+    )
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    resolved_environment = map_ui["environment"]
+    assert isinstance(resolved_environment, dict)
+
+    for environment_name in (
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+    ):
+        raw_value = environment[environment_name]
+        assert resolved_environment[environment_name] == _compose_resolved_literal(
+            raw_value
+        )
+
+    validate_resolved_compose_candidate_protected_values(
+        resolved,
+        environment=environment,
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_resolved_hash",
+    [
+        _MAP_UI_PASSWORD_HASH,
+        _compose_resolved_literal(_MAP_UI_PASSWORD_HASH).replace("$$", "$$$"),
+    ],
+    ids=["missing-dollar-escape", "extra-dollar"],
+)
+def test_resolved_candidate_rejects_inexact_compose_dollar_escaping(
+    invalid_resolved_hash: str,
+    tmp_path: Path,
+) -> None:
+    environment, resolved = _resolve_dollar_auth_candidate_with_docker_compose(
+        tmp_path
+    )
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    resolved_environment = map_ui["environment"]
+    assert isinstance(resolved_environment, dict)
+    resolved_environment["KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"] = (
+        invalid_resolved_hash
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH wiring is invalid",
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    [
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+    ],
+)
+@pytest.mark.parametrize("field", ["environment", "command", "labels"])
+def test_resolved_candidate_rejects_escaped_auth_literal_clones(
+    environment_name: str,
+    field: str,
+    tmp_path: Path,
+) -> None:
+    environment, resolved = _resolve_dollar_auth_candidate_with_docker_compose(
+        tmp_path
+    )
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    map_ui_environment = map_ui["environment"]
+    assert isinstance(map_ui_environment, dict)
+    escaped_value = map_ui_environment[environment_name]
+    assert isinstance(escaped_value, str)
+    assert "$$" in escaped_value
+    rustfs = services["rustfs"]
+    assert isinstance(rustfs, dict)
+    if field == "environment":
+        rustfs_environment = rustfs["environment"]
+        assert isinstance(rustfs_environment, dict)
+        rustfs_environment["COPIED_AUTH"] = escaped_value
+    elif field == "command":
+        rustfs[field] = ["worker", escaped_value]
+    else:
+        rustfs[field] = {"copied-auth": escaped_value}
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="resolved compose candidate leaks a protected C6c reference",
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+        )
+
+
+def test_repository_compose_uses_fail_closed_map_ui_auth_wiring() -> None:
+    compose_path, candidate = _map_ui_source_candidate()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    environment = map_ui["environment"]
+    assert isinstance(environment, dict)
+    assert environment["KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"] == (
+        "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
+    )
+    assert environment["KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"] == (
+        "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+    )
+    assert environment["KOR_TRAVEL_MAP_UI_SESSION_SECRET"] == (
+        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+    )
+    serialized = yaml.safe_dump(candidate, sort_keys=False)
+    assert "KTDM_C6C_MAP_UI_ADMIN_PASSWORD" not in serialized
+    assert _MAP_UI_PASSWORD not in serialized
+
+    validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(compose_path),
+        root_env_path=str(compose_path.with_name(".env")),
+        environment=_raw_candidate_environment(),
+    )
+
+
+def test_raw_candidate_requires_map_ui_service() -> None:
+    candidate = _source_compose()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    services.pop("kor-travel-map-ui")
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="missing required protected services: kor-travel-map-ui",
+    ):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path="/tmp/docker-compose.yml",
+            root_env_path="/tmp/.env",
+            environment=_raw_candidate_environment(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", None),
+        ("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", " admin"),
+        ("KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", None),
+        ("KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", "not-a-password-hash"),
+        ("KOR_TRAVEL_MAP_UI_SESSION_SECRET", None),
+        ("KOR_TRAVEL_MAP_UI_SESSION_SECRET", "too-short"),
+    ],
+)
+def test_compose_candidate_rejects_invalid_map_ui_auth_source_environment(
+    env_name: str,
+    value: str | None,
+) -> None:
+    compose_path, candidate = _map_ui_source_candidate()
+    environment: dict[str, str] = {
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+    }
+    if value is None:
+        environment.pop(env_name)
+    else:
+        environment[env_name] = value
+
+    with pytest.raises(ComposeCandidateContractError, match="authentication"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(compose_path),
+            root_env_path=str(compose_path.with_name(".env")),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize(
+    ("env_name", "raw_value"),
+    [
+        ("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", None),
+        (
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+            "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH}",
+        ),
+        (
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+            "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:-unsafe-default}",
+        ),
+    ],
+)
+def test_compose_candidate_rejects_noncanonical_map_ui_auth_wiring(
+    env_name: str,
+    raw_value: str | None,
+) -> None:
+    compose_path, candidate = _map_ui_source_candidate()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert isinstance(map_ui, dict)
+    environment = map_ui["environment"]
+    assert isinstance(environment, dict)
+    if raw_value is None:
+        environment.pop(env_name)
+    else:
+        environment[env_name] = raw_value
+
+    with pytest.raises(ComposeCandidateContractError, match="wiring"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(compose_path),
+            root_env_path=str(compose_path.with_name(".env")),
+            environment=_raw_candidate_environment(),
+        )
 
 
 def test_compose_candidate_rejects_cross_wired_api_source() -> None:
@@ -1095,7 +1657,7 @@ def test_compose_candidate_rejects_cross_wired_api_source() -> None:
             candidate,
             compose_path="/tmp/docker-compose.yml",
             root_env_path="/tmp/.env",
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1122,7 +1684,7 @@ def test_compose_candidate_rejects_noncanonical_api_suffix(raw_value: str) -> No
             candidate,
             compose_path="/tmp/docker-compose.yml",
             root_env_path="/tmp/.env",
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1143,7 +1705,7 @@ def test_compose_candidate_rejects_noncanonical_required_message() -> None:
             candidate,
             compose_path="/tmp/docker-compose.yml",
             root_env_path="/tmp/.env",
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1166,10 +1728,10 @@ def test_compose_candidate_rejects_protected_reference_in_top_level_graph(
             candidate,
             compose_path="/tmp/docker-compose.yml",
             root_env_path="/tmp/.env",
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KTDM_C6C_CONTRACT_GENERATION": _CONTRACT_GENERATION,
-            },
+            environment=_raw_candidate_environment(
+                KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=_CANCEL_TOKEN,
+                KTDM_C6C_CONTRACT_GENERATION=_CONTRACT_GENERATION,
+            ),
         )
 
 
@@ -1193,7 +1755,9 @@ def test_compose_candidate_rejects_protected_external_source_file(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN},
+            environment=_raw_candidate_environment(
+                KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=_READ_TOKEN
+            ),
         )
 
 
@@ -1226,7 +1790,9 @@ def test_compose_candidate_env_file_path_rejects_root_env_aliases(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={"ROOT_ALIAS": str(tmp_path / ".env")},
+            environment=_raw_candidate_environment(
+                ROOT_ALIAS=str(tmp_path / ".env")
+            ),
         )
 
 
@@ -1256,7 +1822,9 @@ def test_compose_candidate_env_file_path_rejects_unresolved_or_unsupported(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={"ROOT_ALIAS": str(tmp_path / ".env")},
+            environment=_raw_candidate_environment(
+                ROOT_ALIAS=str(tmp_path / ".env")
+            ),
         )
 
 
@@ -1274,7 +1842,7 @@ def test_compose_candidate_env_file_path_supports_escaped_dollar(
         candidate,
         compose_path=str(tmp_path / "docker-compose.yml"),
         root_env_path=str(tmp_path / ".env"),
-        environment={"ROOT_ALIAS": str(tmp_path / ".env")},
+        environment=_raw_candidate_environment(ROOT_ALIAS=str(tmp_path / ".env")),
     )
 
 
@@ -1310,7 +1878,7 @@ def test_compose_candidate_rejects_root_env_bind_short_and_long_syntax(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(root_env),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1331,7 +1899,7 @@ def test_compose_candidate_rejects_symlink_to_root_env_bind(tmp_path: Path) -> N
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(root_env),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1350,7 +1918,7 @@ def test_compose_candidate_rejects_interpolated_root_env_bind(tmp_path: Path) ->
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(root_env),
-            environment={"MANAGER_ENV": str(root_env)},
+            environment=_raw_candidate_environment(MANAGER_ENV=str(root_env)),
         )
 
 
@@ -1369,9 +1937,9 @@ def test_compose_candidate_rejects_manager_state_file_bind(tmp_path: Path) -> No
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={
-                "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST": str(manifest.resolve())
-            },
+            environment=_raw_candidate_environment(
+                KTDM_C6C_COMPATIBLE_PAIR_MANIFEST=str(manifest.resolve())
+            ),
         )
 
 
@@ -1397,7 +1965,7 @@ def test_compose_candidate_rejects_windows_looking_bind_source(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1418,7 +1986,9 @@ def test_compose_candidate_rejects_bind_file_containing_protected_value(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={"KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN},
+            environment=_raw_candidate_environment(
+                KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=_CANCEL_TOKEN
+            ),
         )
 
 
@@ -1440,7 +2010,9 @@ def test_compose_candidate_named_volume_is_not_treated_as_host_file(
         candidate,
         compose_path=str(tmp_path / "docker-compose.yml"),
         root_env_path=str(tmp_path / ".env"),
-        environment={"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN},
+        environment=_raw_candidate_environment(
+            KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=_READ_TOKEN
+        ),
     )
 
 
@@ -1466,11 +2038,7 @@ def test_resolved_compose_candidate_rejects_canonical_root_env_bind(
     with pytest.raises(ComposeCandidateContractError, match="manager file"):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(root_env),
         )
@@ -1493,11 +2061,7 @@ def test_resolved_compose_candidate_rejects_host_root_directory_bind(
     with pytest.raises(ComposeCandidateContractError, match="manager file"):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(root_env),
         )
@@ -1532,7 +2096,7 @@ def test_compose_candidate_rejects_uninspectable_external_resource_reference(
             candidate,
             compose_path="/tmp/docker-compose.yml",
             root_env_path="/tmp/.env",
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1546,11 +2110,7 @@ def test_resolved_compose_rejects_uninspectable_external_secret_reference() -> N
     with pytest.raises(ComposeCandidateContractError, match="uninspectable external"):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
         )
 
 
@@ -1576,7 +2136,7 @@ def test_compose_candidate_rejects_compose_root_directory_bind(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(root_env),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1601,10 +2161,10 @@ def test_compose_candidate_rejects_manager_state_directory_bind(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={
-                "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST": str(manifest.resolve()),
-                "KTDM_C6C_DEPLOYMENT_LOCK": str(lock.resolve()),
-            },
+            environment=_raw_candidate_environment(
+                KTDM_C6C_COMPATIBLE_PAIR_MANIFEST=str(manifest.resolve()),
+                KTDM_C6C_DEPLOYMENT_LOCK=str(lock.resolve()),
+            ),
         )
 
 
@@ -1621,7 +2181,7 @@ def test_compose_candidate_rejects_host_root_directory_bind(tmp_path: Path) -> N
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1647,7 +2207,9 @@ def test_compose_candidate_rejects_unapproved_directory_with_protected_child(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN},
+            environment=_raw_candidate_environment(
+                KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=_READ_TOKEN
+            ),
         )
 
 
@@ -1680,7 +2242,7 @@ def test_compose_candidate_rejects_missing_bind_source(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
     assert not (tmp_path / "future-secret").exists()
@@ -1702,11 +2264,7 @@ def test_resolved_compose_candidate_rejects_missing_absolute_bind_source(
     with pytest.raises(ComposeCandidateContractError, match="does not exist"):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
         )
@@ -1729,7 +2287,7 @@ def test_compose_candidate_rejects_oversized_bind_file(tmp_path: Path) -> None:
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1748,7 +2306,7 @@ def test_compose_candidate_rejects_non_regular_bind_source(tmp_path: Path) -> No
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1787,7 +2345,7 @@ def test_cadvisor_system_bind_requires_exact_read_only_mode(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1817,7 +2375,7 @@ def test_cadvisor_rejects_mount_set_missing_docker_socket(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -1841,11 +2399,7 @@ def test_resolved_cadvisor_sys_rejects_non_boolean_or_writable_mode(
     with pytest.raises(ComposeCandidateContractError):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
         )
@@ -1872,11 +2426,7 @@ def test_resolved_cadvisor_rejects_mount_set_missing_docker_socket(
     with pytest.raises(ComposeCandidateContractError, match="exactly read-only"):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
         )
@@ -2000,7 +2550,7 @@ def test_cadvisor_docker_socket_rejects_writable_mount(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -2019,7 +2569,7 @@ def test_cadvisor_system_bind_rejects_symlink_alias(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -2165,7 +2715,7 @@ def test_compose_candidate_rejects_unsafe_named_volume_definition(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -2184,7 +2734,7 @@ def test_compose_candidate_accepts_internal_default_named_volume(
         candidate,
         compose_path=str(tmp_path / "docker-compose.yml"),
         root_env_path=str(tmp_path / ".env"),
-        environment={},
+        environment=_raw_candidate_environment(),
     )
 
 
@@ -2203,7 +2753,7 @@ def test_compose_candidate_rejects_undeclared_named_volume_reference(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={},
+            environment=_raw_candidate_environment(),
         )
 
 
@@ -2238,11 +2788,7 @@ def test_resolved_compose_candidate_rejects_unsafe_named_volume_definition(
     with pytest.raises(ComposeCandidateContractError):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
         )
@@ -2264,11 +2810,7 @@ def test_resolved_compose_candidate_accepts_internal_default_named_volume(
 
     validate_resolved_compose_candidate_protected_values(
         resolved,
-        environment={
-            "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-            "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        },
+        environment=_resolved_candidate_environment(),
         compose_path=str(tmp_path / "docker-compose.yml"),
         root_env_path=str(tmp_path / ".env"),
     )
@@ -2298,11 +2840,7 @@ def test_resolved_named_volume_rejects_alias_or_unknown_project(
     with pytest.raises(ComposeCandidateContractError):
         validate_resolved_compose_candidate_protected_values(
             resolved,
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            },
+            environment=_resolved_candidate_environment(),
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
         )
@@ -2324,7 +2862,7 @@ def test_compose_candidate_accepts_exact_rustfs_data_directory_bind(
         candidate,
         compose_path=str(tmp_path / "docker-compose.yml"),
         root_env_path=str(tmp_path / ".env"),
-        environment={"RUSTFS_DATA_DIR": str(source)},
+        environment=_raw_candidate_environment(RUSTFS_DATA_DIR=str(source)),
     )
 
 
@@ -2364,11 +2902,71 @@ def test_compose_candidate_rejects_protected_reference_in_non_api_service(
             candidate,
             compose_path="/tmp/docker-compose.yml",
             root_env_path="/tmp/.env",
-            environment={
-                "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                "KTDM_C6C_CONTRACT_GENERATION": _CONTRACT_GENERATION,
-            },
+            environment=_raw_candidate_environment(
+                KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=_READ_TOKEN,
+                KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=_CANCEL_TOKEN,
+                KTDM_C6C_CONTRACT_GENERATION=_CONTRACT_GENERATION,
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("environment", {"COPIED_USERNAME": _MAP_UI_USERNAME}),
+        ("command", ["worker", _MAP_UI_USERNAME]),
+        ("labels", {"copied-username": _MAP_UI_USERNAME}),
+    ],
+)
+def test_raw_candidate_rejects_map_ui_username_outside_exact_path(
+    field: str,
+    value: object,
+) -> None:
+    candidate = _source_compose()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    rustfs = services["rustfs"]
+    assert isinstance(rustfs, dict)
+    rustfs[field] = value
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="compose candidate leaks a protected C6c reference",
+    ):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path="/tmp/docker-compose.yml",
+            root_env_path="/tmp/.env",
+            environment=_raw_candidate_environment(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("environment", {"COPIED_USERNAME": _MAP_UI_USERNAME}),
+        ("command", ["worker", _MAP_UI_USERNAME]),
+        ("labels", {"copied-username": _MAP_UI_USERNAME}),
+    ],
+)
+def test_resolved_candidate_rejects_map_ui_username_outside_exact_path(
+    field: str,
+    value: object,
+) -> None:
+    resolved = _resolved_compose()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    pinvi_web = services["pinvi-web"]
+    assert isinstance(pinvi_web, dict)
+    pinvi_web[field] = value
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="resolved compose candidate leaks a protected C6c reference",
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=_resolved_candidate_environment(),
         )
 
 
@@ -2392,46 +2990,91 @@ def test_compose_candidate_rejects_protected_value_in_non_root_env_file(
             candidate,
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
-            environment={"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN},
+            environment=_raw_candidate_environment(
+                KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=_READ_TOKEN
+            ),
         )
 
 
 @pytest.mark.parametrize(
-    ("service_name", "field", "value"),
+    ("service_name", "field", "value", "message"),
     [
-        ("kor-travel-map-api", "network_mode", "bridge"),
-        ("pinvi-api", "network_mode", "bridge"),
-        ("kor-travel-map-api", "container_name", "attacker-map"),
-        ("pinvi-api", "container_name", "attacker-pinvi"),
-        ("kor-travel-map-api", "env_file", ["malicious.env"]),
-        ("pinvi-api", "env_file", ["malicious.env"]),
+        ("kor-travel-map-api", "network_mode", "bridge", "requires host network"),
+        ("pinvi-api", "network_mode", "bridge", "requires host network"),
+        ("kor-travel-map-ui", "network_mode", "bridge", "requires host network"),
+        (
+            "kor-travel-map-api",
+            "container_name",
+            "attacker-map",
+            "Map API container identity",
+        ),
+        (
+            "pinvi-api",
+            "container_name",
+            "attacker-pinvi",
+            "PinVi API container identity",
+        ),
+        (
+            "kor-travel-map-ui",
+            "container_name",
+            "attacker-map-ui",
+            "Map UI container identity",
+        ),
+        ("kor-travel-map-api", "env_file", ["malicious.env"], "forbids env_file"),
+        ("pinvi-api", "env_file", ["malicious.env"], "forbids env_file"),
+        ("kor-travel-map-ui", "env_file", ["malicious.env"], "forbids env_file"),
     ],
 )
 def test_resolved_compose_rejects_malicious_api_override(
     service_name: str,
     field: str,
     value: object,
+    message: str,
 ) -> None:
-    resolved = _resolved_compose()
+    resolved = _resolved_compose_with_map_ui_auth()
     services = resolved["services"]
     assert isinstance(services, dict)
     service = services[service_name]
     assert isinstance(service, dict)
     service[field] = value
 
-    with pytest.raises(DeploymentContractError):
+    with pytest.raises(DeploymentContractError, match=message):
         validate_resolved_compose_secret_isolation(resolved, _production_config())
 
 
 @pytest.mark.parametrize(
-    ("service_name", "env_name", "value"),
+    ("service_name", "env_name", "value", "message"),
     [
-        ("kor-travel-map-api", "KOR_TRAVEL_MAP_API_PORT", "12799"),
-        ("pinvi-api", "PINVI_ENVIRONMENT", "local"),
+        (
+            "kor-travel-map-api",
+            "KOR_TRAVEL_MAP_API_PORT",
+            "12799",
+            "Map API bind port",
+        ),
+        ("pinvi-api", "PINVI_ENVIRONMENT", "local", "PinVi mode"),
         (
             "pinvi-api",
             "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL",
             "http://127.0.0.1:12799",
+            "PinVi Map base URL",
+        ),
+        (
+            "kor-travel-map-ui",
+            "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+            "attacker",
+            "does not wire KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+        ),
+        (
+            "kor-travel-map-ui",
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+            "pbkdf2_sha256$100000$other-salt$other-digest",
+            "does not wire KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+        ),
+        (
+            "kor-travel-map-ui",
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+            "other-map-ui-session-secret-placeholder",
+            "does not wire KOR_TRAVEL_MAP_UI_SESSION_SECRET",
         ),
     ],
 )
@@ -2439,8 +3082,9 @@ def test_resolved_compose_rejects_malicious_api_environment_override(
     service_name: str,
     env_name: str,
     value: str,
+    message: str,
 ) -> None:
-    resolved = _resolved_compose()
+    resolved = _resolved_compose_with_map_ui_auth()
     services = resolved["services"]
     assert isinstance(services, dict)
     service = services[service_name]
@@ -2449,7 +3093,7 @@ def test_resolved_compose_rejects_malicious_api_environment_override(
     assert isinstance(environment, dict)
     environment[env_name] = value
 
-    with pytest.raises(DeploymentContractError):
+    with pytest.raises(DeploymentContractError, match=message):
         validate_resolved_compose_secret_isolation(resolved, _production_config())
 
 
@@ -2560,108 +3204,216 @@ def test_non_api_env_file_cannot_carry_contract_generation(tmp_path: Path) -> No
         )
 
 
-def test_runtime_secret_gate_accepts_only_both_api_containers() -> None:
+def test_runtime_secret_gate_accepts_exact_protected_containers() -> None:
     config = _production_config()
-    validate_runtime_secret_isolation(
-        {
-            config.map_container: {
-                "Env": {
-                    "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                    "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                    "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-                }
-            },
-            config.pinvi_container: {
-                "Env": {
-                    "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
-                    "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                }
-            },
-            "kor-travel-map-dagster-latest": {},
-            "pinvi-web-latest": {},
-        },
-        config,
-    )
+    validate_runtime_secret_isolation(_runtime_secret_configs(config), config)
+
+
+def test_current_map_ui_runtime_accepts_exact_frozen_authentication() -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)[config.map_ui_container]
+
+    validate_current_map_ui_auth_runtime(runtime, config)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing", "authentication differs from the frozen environment"),
+        ("changed", "authentication differs from the frozen environment"),
+        ("duplicate", "duplicate authentication variables"),
+        ("plaintext", "plaintext smoke credential"),
+    ],
+)
+def test_current_map_ui_runtime_rejects_authentication_drift(
+    mutation: str,
+    message: str,
+) -> None:
+    config = _production_config()
+    runtime = deepcopy(_runtime_secret_configs(config)[config.map_ui_container])
+    environment = runtime["Env"]
+    assert isinstance(environment, dict)
+    if mutation == "missing":
+        environment.pop("KOR_TRAVEL_MAP_UI_SESSION_SECRET")
+    elif mutation == "changed":
+        environment["KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"] = (
+            "pbkdf2_sha256$100000$other-salt$other-digest"
+        )
+    elif mutation == "duplicate":
+        runtime["Env"] = [
+            f"{name}={value}"
+            for name, value in environment.items()
+        ] + [f"KOR_TRAVEL_MAP_UI_ADMIN_USERNAME={_MAP_UI_USERNAME}"]
+    else:
+        environment["UNRELATED"] = _MAP_UI_PASSWORD
+
+    with pytest.raises(DeploymentContractError, match=message):
+        validate_current_map_ui_auth_runtime(runtime, config)
+
+
+@pytest.mark.parametrize("field", ["Env", "Cmd", "Labels"])
+def test_current_map_ui_runtime_rejects_copied_username_in_other_scalar(
+    field: str,
+) -> None:
+    config = _production_config()
+    runtime = deepcopy(_runtime_secret_configs(config)[config.map_ui_container])
+    if field == "Env":
+        environment = runtime["Env"]
+        assert isinstance(environment, dict)
+        environment["COPIED_USERNAME"] = _MAP_UI_USERNAME
+    elif field == "Cmd":
+        runtime[field] = ["worker", _MAP_UI_USERNAME]
+    else:
+        runtime[field] = {"copied-username": _MAP_UI_USERNAME}
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="current Map UI authentication leaks outside",
+    ):
+        validate_current_map_ui_auth_runtime(runtime, config)
+
+
+@pytest.mark.parametrize("field", ["Env", "Cmd", "Labels"])
+def test_final_runtime_rejects_copied_map_ui_username_in_other_scalar(
+    field: str,
+) -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    map_ui = runtime[config.map_ui_container]
+    if field == "Env":
+        environment = map_ui["Env"]
+        assert isinstance(environment, dict)
+        environment["COPIED_USERNAME"] = _MAP_UI_USERNAME
+    elif field == "Cmd":
+        map_ui[field] = ["worker", _MAP_UI_USERNAME]
+    else:
+        map_ui[field] = {"copied-username": _MAP_UI_USERNAME}
+
+    with pytest.raises(DeploymentContractError, match="leaks"):
+        validate_runtime_secret_isolation(runtime, config)
+
+
+@pytest.mark.parametrize(
+    ("container_name", "env_name", "value", "message"),
+    [
+        ("missing-map-ui", None, None, "required C6c container is missing"),
+        (
+            "map-ui",
+            "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+            None,
+            "runtime protected value wiring is missing",
+        ),
+        (
+            "map-ui",
+            "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+            "attacker",
+            "runtime protected value wiring is invalid",
+        ),
+        (
+            "map-ui",
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+            None,
+            "runtime protected value wiring is missing",
+        ),
+        (
+            "map-ui",
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+            "pbkdf2_sha256$100000$other-salt$other-digest",
+            "runtime protected value wiring is invalid",
+        ),
+        (
+            "map-ui",
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+            None,
+            "runtime protected value wiring is missing",
+        ),
+        (
+            "map-ui",
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+            "other-map-ui-session-secret-placeholder",
+            "runtime protected value wiring is invalid",
+        ),
+    ],
+)
+def test_runtime_secret_gate_rejects_missing_or_changed_map_ui_auth(
+    container_name: str,
+    env_name: str | None,
+    value: str | None,
+    message: str,
+) -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    if container_name == "missing-map-ui":
+        runtime.pop(config.map_ui_container)
+    else:
+        map_ui = runtime[config.map_ui_container]["Env"]
+        assert isinstance(map_ui, dict)
+        assert env_name is not None
+        if value is None:
+            map_ui.pop(env_name)
+        else:
+            map_ui[env_name] = value
+
+    with pytest.raises(DeploymentContractError, match=message):
+        validate_runtime_secret_isolation(runtime, config)
 
 
 def test_runtime_secret_gate_rejects_non_api_container() -> None:
     config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime["pinvi-web-latest"] = {
+        "Cmd": ["worker", f"prefix-{_READ_TOKEN}-suffix"],
+    }
     with pytest.raises(DeploymentContractError, match="leaks outside"):
-        validate_runtime_secret_isolation(
-            {
-                config.map_container: {
-                    "Env": {
-                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-                    }
-                },
-                config.pinvi_container: {
-                    "Env": {
-                        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
-                        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                    }
-                },
-                "pinvi-web-latest": {
-                    "Cmd": ["worker", f"prefix-{_READ_TOKEN}-suffix"],
-                },
-            },
-            config,
-        )
+        validate_runtime_secret_isolation(runtime, config)
 
 
 def test_runtime_secret_gate_rejects_manager_only_smoke_credential() -> None:
     config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime["pinvi-web-latest"] = {
+        "Labels": {"KTDM_C6C_PINVI_ADMIN_PASSWORD": "injected"},
+    }
     with pytest.raises(DeploymentContractError, match="leaks outside"):
-        validate_runtime_secret_isolation(
-            {
-                config.map_container: {
-                    "Env": {
-                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-                    }
-                },
-                config.pinvi_container: {
-                    "Env": {
-                        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
-                        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                    }
-                },
-                "pinvi-web-latest": {
-                    "Labels": {"KTDM_C6C_PINVI_ADMIN_PASSWORD": "injected"},
-                },
-            },
-            config,
-        )
+        validate_runtime_secret_isolation(runtime, config)
+
+
+def test_runtime_secret_gate_rejects_map_ui_plaintext_password() -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime[config.map_ui_container]["Cmd"] = ["worker", _MAP_UI_PASSWORD]
+
+    with pytest.raises(DeploymentContractError, match="leaks outside"):
+        validate_runtime_secret_isolation(runtime, config)
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", _MAP_UI_PASSWORD_HASH),
+        ("KOR_TRAVEL_MAP_UI_SESSION_SECRET", _MAP_UI_SESSION_SECRET),
+    ],
+)
+def test_runtime_secret_gate_rejects_map_ui_secret_in_other_container(
+    env_name: str,
+    value: str,
+) -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime["kor-travel-map-dagster-latest"] = {"Env": {env_name: value}}
+
+    with pytest.raises(DeploymentContractError, match="unauthorized container"):
+        validate_runtime_secret_isolation(runtime, config)
 
 
 def test_runtime_secret_gate_rejects_contract_generation_environment() -> None:
     config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime["pinvi-web-latest"] = {
+        "Env": {"KTDM_C6C_CONTRACT_GENERATION": _CONTRACT_GENERATION},
+    }
     with pytest.raises(DeploymentContractError, match="manager-only"):
-        validate_runtime_secret_isolation(
-            {
-                config.map_container: {
-                    "Env": {
-                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-                    }
-                },
-                config.pinvi_container: {
-                    "Env": {
-                        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
-                        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                    }
-                },
-                "pinvi-web-latest": {
-                    "Env": {
-                        "KTDM_C6C_CONTRACT_GENERATION": _CONTRACT_GENERATION,
-                    }
-                },
-            },
-            config,
-        )
+        validate_runtime_secret_isolation(runtime, config)
 
 
 @pytest.mark.parametrize(
@@ -2676,76 +3428,37 @@ def test_runtime_secret_gate_rejects_non_env_api_config_leaks(
     leak: dict[str, object],
 ) -> None:
     config = _production_config()
-    map_runtime: dict[str, object] = {
-        "Env": {
-            "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-            "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        },
-        **leak,
-    }
-    with pytest.raises(DeploymentContractError, match="exact API environment"):
-        validate_runtime_secret_isolation(
-            {
-                config.map_container: map_runtime,
-                config.pinvi_container: {
-                    "Env": {
-                        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
-                        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                    }
-                },
-            },
-            config,
-        )
+    runtime = _runtime_secret_configs(config)
+    runtime[config.map_container].update(leak)
+    with pytest.raises(DeploymentContractError, match="exact environment"):
+        validate_runtime_secret_isolation(runtime, config)
 
 
 def test_runtime_secret_gate_rejects_raw_env_secret_masked_by_duplicate() -> None:
     config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime[config.map_container]["Env"] = [
+        "OTHER=" + _READ_TOKEN,
+        "OTHER=safe-later-value",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=" + _READ_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=" + _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true",
+    ]
     with pytest.raises(DeploymentContractError, match="unauthorized variable"):
-        validate_runtime_secret_isolation(
-            {
-                config.map_container: {
-                    "Env": [
-                        "OTHER=" + _READ_TOKEN,
-                        "OTHER=safe-later-value",
-                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=" + _READ_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=" + _CANCEL_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true",
-                    ]
-                },
-                config.pinvi_container: {
-                    "Env": {
-                        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
-                        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                    }
-                },
-            },
-            config,
-        )
+        validate_runtime_secret_isolation(runtime, config)
 
 
 def test_runtime_secret_gate_rejects_duplicate_authorized_env() -> None:
     config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime[config.map_container]["Env"] = [
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=" + _READ_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=" + _READ_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=" + _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true",
+    ]
     with pytest.raises(DeploymentContractError, match="duplicate"):
-        validate_runtime_secret_isolation(
-            {
-                config.map_container: {
-                    "Env": [
-                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=" + _READ_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=" + _READ_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=" + _CANCEL_TOKEN,
-                        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true",
-                    ]
-                },
-                config.pinvi_container: {
-                    "Env": {
-                        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
-                        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-                    }
-                },
-            },
-            config,
-        )
+        validate_runtime_secret_isolation(runtime, config)
 
 
 def test_mandatory_service_readiness_requires_running_and_healthy_without_all(
@@ -3964,6 +4677,67 @@ def test_pinvi_uncertain_cancel_probe_is_never_reissued() -> None:
         call.args[1].endswith(f"/{_CANCEL_PROBE_JOB_ID}/cancel")
         for call in request.call_args_list
     )
+
+
+def test_map_ui_auth_preflight_requires_login_protected_logout_and_reblock() -> None:
+    responses = [
+        HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+        HttpProbeResponse(200, None),
+        HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+        HttpProbeResponse(307, None, location="/login?next=%2Fops%2Fproviders"),
+    ]
+    with patch.object(
+        c6c_deployment, "_session_request", side_effect=responses
+    ) as request:
+        result = run_map_ui_auth_preflight(_production_config())
+
+    assert [item["status"] for item in result] == [200, 200, 200, 307]
+    assert request.call_args_list[1].args[1].endswith("/ops/providers")
+    assert request.call_args_list[3].args[1].endswith("/ops/providers")
+
+
+@pytest.mark.parametrize(
+    ("responses", "message"),
+    [
+        (
+            [HttpProbeResponse(401, None)],
+            "C6c Map UI login smoke failed",
+        ),
+        (
+            [
+                HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+                HttpProbeResponse(403, None),
+            ],
+            "C6c Map UI protected-page smoke failed",
+        ),
+        (
+            [
+                HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+                HttpProbeResponse(200, None),
+                HttpProbeResponse(500, None),
+            ],
+            "C6c Map UI logout smoke failed",
+        ),
+        (
+            [
+                HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+                HttpProbeResponse(200, None),
+                HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+                HttpProbeResponse(200, None),
+            ],
+            "C6c Map UI post-logout protection smoke failed",
+        ),
+    ],
+)
+def test_map_ui_auth_preflight_rejects_each_pre_mutation_auth_failure(
+    responses: list[HttpProbeResponse],
+    message: str,
+) -> None:
+    with (
+        patch.object(c6c_deployment, "_session_request", side_effect=responses),
+        pytest.raises(DeploymentContractError, match=message),
+    ):
+        run_map_ui_auth_preflight(_production_config())
 
 
 def test_ui_auth_smoke_requires_login_protected_logout_and_pinvi_shell() -> None:
@@ -5193,12 +5967,35 @@ def test_active_recovery_transaction_freezes_manifest_image_sha(
         "services": {
             "kor-travel-map-api": {"image": "${KOR_TRAVEL_MAP_API_IMAGE}"},
             "pinvi-api": {"image": "${PINVI_API_IMAGE}"},
+            "kor-travel-map-ui": {
+                "environment": {
+                    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": (
+                        "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
+                        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
+                    ),
+                    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
+                        "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
+                        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+                    ),
+                    "KOR_TRAVEL_MAP_UI_SESSION_SECRET": (
+                        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
+                        "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+                    ),
+                }
+            },
         }
     }
     root_resolved = {
         "services": {
             "kor-travel-map-api": {"image": _ACTIVE_MAP_IMAGE_ID},
             "pinvi-api": {"image": _ACTIVE_PINVI_IMAGE_ID},
+            "kor-travel-map-ui": {
+                "environment": {
+                    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+                    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+                    "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+                }
+            },
         }
     }
     source_bytes = yaml.safe_dump(source, sort_keys=False).encode("utf-8")
@@ -5207,6 +6004,10 @@ def test_active_recovery_transaction_freezes_manifest_image_sha(
             "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
             "PINVI_ENVIRONMENT": "production",
             "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+            "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+            "KTDM_C6C_MAP_UI_ADMIN_PASSWORD": _MAP_UI_PASSWORD,
         },
         env_path=str(tmp_path / ".env"),
         compose_path=str(tmp_path / "docker-compose.yml"),
@@ -5232,6 +6033,13 @@ def test_active_recovery_transaction_freezes_manifest_image_sha(
         "services": {
             "kor-travel-map-api": {"image": active.map_image_id},
             "pinvi-api": {"image": active.pinvi_image_id},
+            "kor-travel-map-ui": {
+                "environment": {
+                    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+                    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+                    "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+                }
+            },
         }
     }
     subprocess_run = Mock(
@@ -5248,6 +6056,15 @@ def test_active_recovery_transaction_freezes_manifest_image_sha(
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.validate_resolved_compose_image_pair",
         Mock(),
+    )
+    monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", "attacker")
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+        "pbkdf2_sha256$100000$other-salt$other-digest",
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+        "other-map-ui-session-secret-placeholder",
     )
 
     recovery_transaction = (
@@ -5275,6 +6092,27 @@ def test_active_recovery_transaction_freezes_manifest_image_sha(
     assert subprocess_run.call_args.kwargs["env"]["PINVI_API_IMAGE"] == (
         active.pinvi_image_id
     )
+    assert subprocess_run.call_args.kwargs["env"][
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
+    ] == _MAP_UI_USERNAME
+    assert subprocess_run.call_args.kwargs["env"][
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
+    ] == _MAP_UI_PASSWORD_HASH
+    assert subprocess_run.call_args.kwargs["env"][
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
+    ] == _MAP_UI_SESSION_SECRET
+    resolved_map_ui = recovery_transaction.resolved["services"][
+        "kor-travel-map-ui"
+    ]
+    assert resolved_map_ui["environment"] == {
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+    }
+    serialized_source = subprocess_run.call_args.kwargs["input"]
+    serialized_resolved = json.dumps(recovery_transaction.resolved)
+    assert _MAP_UI_PASSWORD not in serialized_source
+    assert _MAP_UI_PASSWORD not in serialized_resolved
 
 
 def test_deploy_map_contract_error_after_quiesce_uses_active_recovery_transaction(
@@ -5296,6 +6134,11 @@ def test_deploy_map_contract_error_after_quiesce_uses_active_recovery_transactio
         materialize,
     )
     monkeypatch.setattr(service, "_require_services_ready", Mock())
+    monkeypatch.setattr(
+        service,
+        "_preflight_current_map_ui_auth",
+        Mock(return_value=[{"name": "map_ui_login", "status": 200}]),
+    )
     monkeypatch.setattr(
         service,
         "run",
@@ -5566,6 +6409,121 @@ def test_dedicated_pair_deploy_is_the_only_production_ensure_bypass(
     deploy.assert_called_once()
 
 
+def test_current_map_ui_preflight_orders_inspect_validation_and_auth_smoke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)[config.map_ui_container]
+    events: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_runtime_config",
+        lambda container: events.append(f"inspect:{container}") or runtime,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.validate_current_map_ui_auth_runtime",
+        lambda actual, expected: events.append("validate")
+        if actual is runtime and expected is config
+        else None,
+    )
+    smoke = [{"name": "map_ui_login", "status": 200}]
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_map_ui_auth_preflight",
+        lambda expected: events.append("smoke") or smoke
+        if expected is config
+        else [],
+    )
+
+    result = service._preflight_current_map_ui_auth(config)
+
+    assert result is smoke
+    assert events == [f"inspect:{config.map_ui_container}", "validate", "smoke"]
+
+
+@pytest.mark.parametrize("operation", ["deploy", "rollback"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "C6c Map UI login smoke failed",
+        "C6c Map UI protected-page smoke failed",
+        "C6c Map UI logout smoke failed",
+        "C6c Map UI post-logout protection smoke failed",
+    ],
+)
+def test_map_ui_preflight_failure_keeps_docker_mutation_at_zero(
+    operation: str,
+    message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_manager_mutation(monkeypatch)
+    manifest_path = tmp_path / "pair.json"
+    manifest = _manifest()
+    write_pair_manifest(str(manifest_path), manifest)
+    transaction = replace(
+        _frozen_external_transaction(tmp_path),
+        manifest_path=str(manifest_path),
+    )
+    service = ComposeService()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_production_preflight",
+        lambda _config, **_kwargs: manifest,
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        lambda _environment: _production_config(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_materialize_active_recovery_transaction_unlocked",
+        Mock(return_value=transaction),
+    )
+    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    monkeypatch.setattr(
+        service,
+        "_validate_resolved_compose_contract",
+        lambda *_args, **_kwargs: _resolved_compose(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_current_pair",
+        lambda _config: manifest.active,
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_require_services_ready",
+        lambda _services, **_kwargs: events.append("readiness") or [],
+    )
+    monkeypatch.setattr(
+        service,
+        "_preflight_current_map_ui_auth",
+        Mock(side_effect=DeploymentContractError(message)),
+    )
+    run = Mock()
+    monkeypatch.setattr(service, "run", run)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        if operation == "deploy":
+            service.deploy_compatible_pinvi_pair()
+        else:
+            service.rollback_compatible_pinvi_pair()
+
+    assert events == ["readiness"]
+    run.assert_not_called()
+
+
 def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5589,6 +6547,13 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         service,
         "_require_services_ready",
         lambda services, **_kwargs: readiness.append(list(services)) or [],
+    )
+    preflight_ui_smoke = [{"name": "map_ui_login", "status": 200}]
+    monkeypatch.setattr(
+        service,
+        "_preflight_current_map_ui_auth",
+        lambda _config: events.append(("preflight", "map-ui"))
+        or preflight_ui_smoke,
     )
 
     def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
@@ -5649,6 +6614,8 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     )
 
     assert result["success"] is True
+    assert result["preflight_ui_smoke"] is preflight_ui_smoke
+    assert events[0] == ("preflight", "map-ui")
     assert [stage["name"] for stage in result["stages"]] == [
         "quiesce_pinvi_api",
         "map_api",
@@ -5708,6 +6675,7 @@ def test_failed_map_smoke_never_invokes_pinvi_up(
     monkeypatch.setattr(
         service, "_require_services_ready", lambda _services, **_kwargs: []
     )
+    monkeypatch.setattr(service, "_preflight_current_map_ui_auth", lambda _config: [])
 
     def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
         args_list = list(args)
@@ -6341,6 +7309,12 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
     monkeypatch.setattr(
         service, "_require_services_ready", lambda _services, **_kwargs: []
     )
+    preflight_ui_smoke = [{"name": "map_ui_login", "status": 200}]
+    monkeypatch.setattr(
+        service,
+        "_preflight_current_map_ui_auth",
+        lambda _config: preflight_ui_smoke,
+    )
     monkeypatch.setattr(service, "_inspect_current_pair", lambda _config: manifest.active)
     monkeypatch.setattr(service, "_validate_resolved_compose_contract", lambda *_a, **_k: {})
     monkeypatch.setattr(
@@ -6367,6 +7341,7 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
     result = service.rollback_compatible_pinvi_pair()
 
     assert result["success"] is True
+    assert result["preflight_ui_smoke"] is preflight_ui_smoke
     assert calls[0][0] == ["stop", "pinvi-api", "kor-travel-map-api"]
     map_args, map_kwargs = calls[1]
     pinvi_args, pinvi_kwargs = calls[2]
@@ -6434,6 +7409,7 @@ def test_pinvi_smoke_failure_restores_start_pair_before_remaining_apps(
     monkeypatch.setattr(
         service, "_require_services_ready", lambda _services, **_kwargs: []
     )
+    monkeypatch.setattr(service, "_preflight_current_map_ui_auth", lambda _config: [])
 
     def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
         args_list = list(args)
@@ -6714,6 +7690,7 @@ def test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair(
     monkeypatch.setattr(
         service, "_require_services_ready", lambda _services, **_kwargs: []
     )
+    monkeypatch.setattr(service, "_preflight_current_map_ui_auth", lambda _config: [])
     monkeypatch.setattr(
         service,
         "run",
@@ -6752,14 +7729,19 @@ def test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair(
 def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     service = ComposeService()
     config = _production_config()
-    all_secrets = " ".join(
-        (
-            _READ_TOKEN,
-            _CANCEL_TOKEN,
-            _MAP_UI_PASSWORD,
-            _PINVI_ADMIN_PASSWORD,
-        )
+    credentials = (
+        _READ_TOKEN,
+        _CANCEL_TOKEN,
+        _MAP_UI_USERNAME,
+        _MAP_UI_PASSWORD_HASH,
+        _MAP_UI_SESSION_SECRET,
+        _MAP_UI_PASSWORD,
+        config.smoke.pinvi_admin_email,
+        _PINVI_ADMIN_PASSWORD,
+        _CANCEL_PROBE_JOB_ID,
+        _CONTRACT_GENERATION,
     )
+    all_secrets = " ".join(credentials)
     monkeypatch.setattr(
         service,
         "run",
@@ -6792,5 +7774,72 @@ def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) 
         transaction=Mock(spec=ComposeTransactionSnapshot),
     )
     serialized = json.dumps(result)
-    for secret in all_secrets.split():
+    for secret in credentials:
         assert secret not in serialized
+
+
+def test_c6c_config_repr_error_and_redactor_never_expose_credentials() -> None:
+    service = ComposeService()
+    config = _production_config()
+    credentials = (
+        config.read_token,
+        config.cancel_token,
+        config.smoke.map_ui_username,
+        config.map_ui_password_hash,
+        config.map_ui_session_secret,
+        config.smoke.map_ui_password,
+        config.smoke.pinvi_admin_email,
+        config.smoke.pinvi_admin_password,
+        config.smoke.cancel_probe_job_id,
+        config.contract_generation,
+    )
+    raw = " | ".join(credentials)
+    redacted = service._redact_c6c_output(raw, config)
+    error = DeploymentContractError(redacted)
+    surfaces = (
+        repr(config),
+        repr(config.smoke),
+        redacted,
+        str(error),
+        json.dumps({"result": {"stdout": redacted, "stderr": str(error)}}),
+    )
+
+    for surface in surfaces:
+        for credential in credentials:
+            assert credential not in surface
+
+
+def test_c6c_redactor_removes_overlapping_credentials_without_suffix_residue() -> None:
+    base = _production_config()
+    smoke = replace(
+        base.smoke,
+        map_ui_username="overlap-ui",
+        map_ui_password="overlap-ui-password-identifiable-tail",
+    )
+    config = replace(
+        base,
+        read_token="overlap-token",
+        cancel_token="overlap-token-cancel-identifiable-tail",
+        smoke=smoke,
+    )
+    raw = " | ".join(
+        (
+            config.cancel_token,
+            config.read_token,
+            config.smoke.map_ui_password,
+            config.smoke.map_ui_username,
+        )
+    )
+
+    redacted = ComposeService()._redact_c6c_output(raw, config)
+
+    assert redacted == " | ".join(["<redacted>"] * 4)
+    assert "cancel-identifiable-tail" not in redacted
+    assert "password-identifiable-tail" not in redacted
+    for credential in (
+        config.cancel_token,
+        config.read_token,
+        config.smoke.map_ui_password,
+        config.smoke.map_ui_username,
+    ):
+        assert credential not in redacted

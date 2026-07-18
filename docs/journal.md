@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-07-19 (C6c Map UI 인증 fail-close 계약 보강 — T-031)
+
+- Map UI runtime username·PBKDF2 hash·session secret을 기본값 없는 compose 보간과 정확한 Map UI Env
+  경로로 고정하고, manager-only 평문 smoke 비밀번호가 container에 주입되지 않는 계약을 문서화했다.
+- raw/resolved compose, runtime inspect, active-pair frozen recovery transaction에서 누락·변조·다른 서비스
+  노출·평문 주입·live environment drift를 거부하는 회귀 테스트를 추가했다.
+- 공식 차단 리뷰에 따라 첫 API stop 전에 current Map UI exact runtime 인증과
+  login→protected→logout→reblock을 검사하고, 모든 Unicode whitespace session secret·credential
+  repr/result/error 누출·필수 Map UI 서비스 부재를 거부하는 테스트와 운영 순서를 보강했다.
+- local gate에서 Docker Compose resolved JSON이 literal `$`를 `$$`로 표현하는 경계를 확인해,
+  resolved compose 비교는 escaped representation을 허용하되 current/final runtime은 raw exact 값을
+  유지하고 잘못된 dollar 수와 비허용 경로 복제를 거부하는 회귀 테스트를 보강했다.
+- 공식 리뷰 승인 뒤 ext4에서 C6c targeted 테스트 `541 passed`, backend 전체 테스트 `599 passed`,
+  strict mypy와 신규 lint `0`, production Docker Compose config/resolved guard를 통과했다.
+  n150 production cross-repo smoke와 실제 UI 로그인 검증은 아직 남아 있어 T-031은 진행 중으로 유지한다.
+
 ## 2026-07-19 (C6c closed transaction 회귀 검증 — T-031)
 
 - pass17~19의 frozen compose transaction, candidate/baseline 분리, 동일 transaction 복구 계약에 맞춰
