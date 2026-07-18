@@ -105,7 +105,6 @@ _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES
     | {
-        _MAP_UI_USERNAME_ENV,
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
     }
@@ -299,7 +298,7 @@ class C6cSmokeConfig:
     pinvi_api_base_url: str
     map_ui_base_url: str
     pinvi_web_base_url: str
-    map_ui_username: str = field(repr=False)
+    map_ui_username: str
     map_ui_password: str = field(repr=False)
     pinvi_admin_email: str = field(repr=False)
     pinvi_admin_password: str = field(repr=False)
@@ -999,7 +998,6 @@ def validate_resolved_compose_secret_isolation(
             for escaped in (
                 _compose_resolved_escaped_value(config.read_token),
                 _compose_resolved_escaped_value(config.cancel_token),
-                _compose_resolved_escaped_value(config.smoke.map_ui_username),
                 _compose_resolved_escaped_value(config.map_ui_password_hash),
                 _compose_resolved_escaped_value(config.map_ui_session_secret),
                 _compose_resolved_escaped_value(config.smoke.map_ui_password),
@@ -3242,7 +3240,6 @@ def validate_current_map_ui_auth_runtime(
             )
 
     protected_values = (
-        config.smoke.map_ui_username,
         config.map_ui_password_hash,
         config.map_ui_session_secret,
         plaintext,
@@ -3291,7 +3288,6 @@ def validate_runtime_secret_isolation(
         for secret in (
             config.read_token,
             config.cancel_token,
-            config.smoke.map_ui_username,
             config.map_ui_password_hash,
             config.map_ui_session_secret,
             config.smoke.map_ui_password,

@@ -286,13 +286,15 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH`, `KOR_TRAVEL_MAP_UI_SESSION_SECRET`은 기본값 없는 `:?`
 보간으로 Map UI의 정확한 Env path에만 전달한다. PBKDF2 반복 수는 100,000 이상, session secret은 32자
 이상이며 Python `str.isspace()`가 인식하는 모든 Unicode 공백 문자를 포함할 수 없다. Map UI는
-`env_file`을 사용할 수 없다.
+`env_file`을 사용할 수 없다. username은 confidential 값이 아닌 identity라 다른 서비스의 일반 scalar와
+같거나 그 일부여도 허용하지만, Map UI의 exact wiring/runtime equality와 Map UI 밖 username 환경변수 이름
+금지는 유지한다.
 `KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정, owned typed-failure
 `KTDM_C6C_CANCEL_PROBE_JOB_ID`는 manager `.env`에만 둔다. 이 값들은 compose service env나 다른
 `env_file`에 주입하지 않는다. 특히 contract generation은 secret이 아니더라도 배포 판단용 manager-only
 값이므로 resolved compose의 command·label·build arg를 포함한 scalar와 runtime Env 어디에도 전달하지
 않는다. frozen snapshot과 rollback도 최초 environment snapshot의 Map UI 인증값만 해석하고 hash·session
-secret의 다른 서비스 노출이나 평문 비밀번호 주입을 거부한다. 최초 설치나 legacy v1 manifest 환경에서는 base dependency부터 전체
+secret·ops token의 다른 서비스 노출이나 평문 비밀번호 주입을 전역 scalar에서 거부한다. 최초 설치나 legacy v1 manifest 환경에서는 base dependency부터 전체
 토폴로지를 순서대로 bootstrap하고 candidate pair 전체 계약을 검증해 최초 v2를 만든다.
 
 ```bash
@@ -337,8 +339,9 @@ ktdctl pinvi-pair deploy --build
 4. 변경하지 않은 모든 필수 service가 계속 running/healthy인지 확인한 뒤 managed container를 `docker inspect`로
    검사한다. Map API에는 Map 이름 세 개(read/cancel/required), PinVi API에는 대응 token 두 개만,
    Map UI에는 username·PBKDF2 hash·session secret 세 개만 존재해야 한다. runtime `.Config`의
-   Env/Cmd/Entrypoint/Labels와 안전하게 순회할 수 있는 모든 scalar에서 보호 이름·값을 찾고 각 서비스의
-   정확한 허용 Env path 외 노출과 UI 평문 비밀번호 주입을 거부한다.
+   Env/Cmd/Entrypoint/Labels와 안전하게 순회할 수 있는 모든 scalar에서 confidential 이름·값을 찾고 각
+   서비스의 정확한 허용 Env path 외 노출과 UI 평문 비밀번호 주입을 거부한다. username은 Map UI exact
+   Env 이름·값만 고정하며 일반 scalar의 동일 문자열은 secret leak으로 처리하지 않는다.
 5. Map UI 로그인·`/ops/providers` 보호 화면·로그아웃·재차단과 PinVi Web login shell을 확인한다. 새
    generation의 Map/PinVi canonical smoke와 runtime 격리를 한 번 더 확인한 뒤에만 active manifest를
    갱신한다.

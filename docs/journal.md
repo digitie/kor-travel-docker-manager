@@ -19,6 +19,13 @@
 - 공식 리뷰 승인 뒤 ext4에서 C6c targeted 테스트 `541 passed`, backend 전체 테스트 `599 passed`,
   strict mypy와 신규 lint `0`, production Docker Compose config/resolved guard를 통과했다.
   n150 production cross-repo smoke와 실제 UI 로그인 검증은 아직 남아 있어 T-031은 진행 중으로 유지한다.
+- n150 read-only preflight에서 일반 scalar의 username 문자열 일치를 confidential value leak으로 오인한
+  false-positive를 mutation 없이 확인했다. username은 exact Map UI wiring/runtime equality만 강제하고,
+  ops token·PBKDF2 hash·session secret·평문 credential만 전역 scalar isolation 대상으로 유지하도록 회귀
+  테스트와 운영 문서를 보강했다. 공식 리뷰 승인 뒤 ext4에서 C6c targeted 테스트 `528 passed`, backend
+  전체 테스트 `616 passed`, strict mypy와 신규 lint `0`, production Docker Compose `config --quiet` 및
+  resolved guard `2/2`를 통과했다. root 권한이 필요한 n150 Map UI 비밀번호 회전, cross-repo smoke와
+  실제 UI 로그인 검증은 아직 남았다.
 
 ## 2026-07-19 (C6c closed transaction 회귀 검증 — T-031)
 

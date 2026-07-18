@@ -198,7 +198,13 @@
       whitespace 거부, credential redaction을 고정한다. deploy/rollback은 readiness 뒤 current Map UI의 exact
       runtime 인증과 login/protected/logout/reblock을 첫 API stop 전에 검사하며 실패 시 mutation 0이다.
       strict mypy, 신규 lint `0`, production Docker Compose config/resolved guard를 통과했다.
-- [ ] n150 production에서 cross-repo smoke와 실제 UI 로그인 검증을 통과한 뒤 완료 이력으로 옮긴다.
+- [x] n150 read-only preflight에서 일반 scalar의 username 문자열 일치를 secret leak으로 오인한 false-positive를
+      mutation 없이 확인했다. username identity의 exact wiring/runtime equality와 confidential 값의 전역 scalar
+      격리를 분리하는 회귀 계약을 추가했다. 공식 리뷰 승인 뒤 ext4 C6c targeted `528 passed`, backend 전체
+      `616 passed`, strict mypy와 신규 lint `0`, production Docker Compose `config --quiet` 및 resolved guard
+      `2/2`를 통과했다.
+- [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
+      통과한 뒤 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
