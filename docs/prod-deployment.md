@@ -256,6 +256,9 @@ exact를 허용한다. activation·runtime isolation·전체 smoke 성공 뒤 ma
 되며, 이후 rollback/rotation으로 source slot이 v3/v3가 되어도 admin proxy는 필수 exact다. marker
 손상·symlink·owner/mode drift는 container mutation 전에 거부한다. candidate와 activation 후 검사는
 세대와 무관하게 모두 필수다.
+source Compose의 허용 `env_file`은 service별 exact path/options를 사용하며, exact source revision에
+추적된 파일은 단일 `100644 blob`, 64 KiB 이하, UTF-8이어야 한다. 허용되지 않은 service의
+`env_file` key는 `null`을 포함해 모두 거부한다.
 rollback은 다섯 image environment override의 canonical single-file contract를 stop 전에 검증하고
 Map API 복원·signed smoke와 Map dependent exact revision 검증 뒤 PinVi를 복원한다. 이후 Map/PinVi canonical 조회,
 Map UI 로그인·보호 화면·로그아웃, PinVi Web login shell과 runtime 격리가 모두 통과해야 commit한다.

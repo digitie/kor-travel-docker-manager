@@ -346,6 +346,30 @@ def _run_git_read(
     return completed.stdout.strip()
 
 
+def _run_git_bytes(
+    repository: Path,
+    args: Sequence[str],
+    *,
+    label: str,
+) -> bytes:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), *args],
+            cwd=get_project_root(),
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        ) from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        )
+    return completed.stdout
+
+
 _MAP_SOURCE_V3_API_ENVIRONMENT = {
     "KOR_TRAVEL_MAP_API_PROFILE": "${KOR_TRAVEL_MAP_API_PROFILE:-production}",
     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": (
@@ -423,6 +447,7 @@ _MAP_SOURCE_ENV_FILE_CONTRACT = {
         {"path": ".env", "required": False, "format": "raw"}
     ],
 }
+_MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES = 64 * 1024
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -608,7 +633,9 @@ def _validate_map_source_env_files(
                 "Map source environment contract service shape is invalid"
             )
         expected = _MAP_SOURCE_ENV_FILE_CONTRACT.get(str(service_name))
-        if "env_file" in service and service.get("env_file") != expected:
+        if "env_file" in service and (
+            expected is None or service.get("env_file") != expected
+        ):
             raise DeploymentContractError(
                 "Map source environment contract env_file shape is invalid"
             )
@@ -626,30 +653,67 @@ def _validate_map_source_env_files(
         for entry in entries
     }
     for referenced_path in referenced_paths:
-        tracked = _run_git_read(
+        tree = _run_git_bytes(
             repository,
             [
                 "ls-tree",
-                "--name-only",
+                "-z",
                 source_revision,
                 "--",
                 referenced_path,
             ],
             label="Map",
-            allow_output_whitespace=True,
         )
-        if not tracked:
+        if not tree:
             continue
-        if tracked != referenced_path:
+        records = tree.split(b"\0")
+        if len(records) != 2 or records[-1] != b"":
             raise DeploymentContractError(
                 "Map source environment contract env_file tree lookup is invalid"
             )
-        content = _run_git_read(
+        metadata, separator, path_bytes = records[0].partition(b"\t")
+        fields = metadata.split(b" ")
+        if (
+            separator != b"\t"
+            or len(fields) != 3
+            or fields[0] != b"100644"
+            or fields[1] != b"blob"
+            or re.fullmatch(rb"[0-9a-f]{40}", fields[2]) is None
+            or path_bytes != referenced_path.encode("utf-8")
+        ):
+            raise DeploymentContractError(
+                "Map source environment contract tracked env_file is not a regular 100644 blob"
+            )
+        object_id = fields[2].decode("ascii")
+        raw_size = _run_git_read(
             repository,
-            ["show", f"{source_revision}:{referenced_path}"],
+            ["cat-file", "-s", object_id],
             label="Map",
-            allow_output_whitespace=True,
         )
+        if re.fullmatch(r"[0-9]+", raw_size) is None:
+            raise DeploymentContractError(
+                "Map source environment contract tracked env_file size is invalid"
+            )
+        object_size = int(raw_size)
+        if object_size > _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES:
+            raise DeploymentContractError(
+                "Map source environment contract tracked env_file exceeds 64 KiB"
+            )
+        raw_content = _run_git_bytes(
+            repository,
+            ["cat-file", "blob", object_id],
+            label="Map",
+        )
+        if len(raw_content) != object_size:
+            raise DeploymentContractError(
+                "Map source environment contract tracked env_file size changed"
+            )
+        try:
+            content = raw_content.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise DeploymentContractError(
+                "Map source environment contract tracked env_file is not UTF-8"
+            ) from exc
         if any(name in content for name in protected_names):
             raise DeploymentContractError(
                 "Map source environment contract tracked env_file contains protected wiring"

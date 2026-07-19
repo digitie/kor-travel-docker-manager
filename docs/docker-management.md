@@ -315,7 +315,9 @@ drift는 fail-close한다. compatible-pair manifest v4와 pair의 exact 9개 필
 source classifier는 profile/public/debug/service를 API-only, admin을 API+frontend, cursor를 v3 전체
 scalar tree 0회/v4 API-only exact 1회로 제한한다. API·Dagster·daemon의 `env_file`은 실제 Map
 source의 service별 path/options만 허용하고, 허용 파일이 exact commit에 추적돼 있으면 그 내용에도
-보호 이름이 없어야 한다. 보호 이름·placeholder가 다른 service나 build/label/command/config/secret
+보호 이름이 없어야 한다. 추적 파일은 exact path의 단일 `100644 blob`, 64 KiB 이하, UTF-8이어야 하며
+허용 목록 밖 service는 값이 `null`이어도 `env_file` key 자체를 가질 수 없다.
+보호 이름·placeholder가 다른 service나 build/label/command/config/secret
 등 다른 source path에 있으면 거부한다. manager candidate와 runtime의 metrics-off·trusted
 loopback 검사는 이 source 세대 판정과 섞지 않고 기존 raw/resolved/runtime validator가 담당한다.
 `KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정, owned typed-failure

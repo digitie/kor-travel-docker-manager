@@ -4588,7 +4588,7 @@ def test_map_source_environment_contract_rejects_route_literal_duplicate(
 
 @pytest.mark.parametrize(
     "mutation",
-    ["frontend_add", "api_path", "dagster_required"],
+    ["frontend_add", "frontend_null", "api_path", "dagster_required"],
 )
 def test_map_source_environment_contract_rejects_env_file_shape_drift(
     mutation: str,
@@ -4609,6 +4609,8 @@ def test_map_source_environment_contract_rejects_env_file_shape_drift(
         services["frontend"]["env_file"] = [
             {"path": "frontend-secrets.env", "required": True, "format": "raw"}
         ]
+    elif mutation == "frontend_null":
+        services["frontend"]["env_file"] = None
     elif mutation == "api_path":
         services["api"]["env_file"][0]["path"] = "api-secrets.env"
     else:
@@ -4649,6 +4651,43 @@ def test_map_source_environment_contract_rejects_tracked_env_file_wiring(
     revision = _commit_current_map_source_document(
         repository,
         "tracked env file leak",
+    )
+
+    with pytest.raises(DeploymentContractError, match="tracked env_file"):
+        _map_source_environment_contract_version(
+            {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
+            compose_path=str(compose_path),
+            source_revision=revision,
+        )
+
+
+@pytest.mark.parametrize("invalid_object", ["symlink", "oversized", "non_utf8"])
+def test_map_source_environment_contract_rejects_invalid_tracked_env_file(
+    invalid_object: str,
+    tmp_path: Path,
+) -> None:
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    repository = tmp_path / "map"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    _commit_map_source_contract(repository, cursor_value=None)
+    env_path = repository / ".env"
+    if invalid_object == "symlink":
+        env_path.symlink_to("outside.env")
+    elif invalid_object == "oversized":
+        env_path.write_bytes(b"A" * (64 * 1024 + 1))
+    else:
+        env_path.write_bytes(b"\xff\xfe")
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "-f", ".env"],
+        check=True,
+    )
+    revision = _commit_current_map_source_document(
+        repository,
+        f"invalid tracked env file: {invalid_object}",
     )
 
     with pytest.raises(DeploymentContractError, match="tracked env_file"):
