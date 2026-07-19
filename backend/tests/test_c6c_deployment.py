@@ -16,7 +16,6 @@ from unittest.mock import Mock, patch
 
 import pytest
 import yaml
-
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
@@ -38,11 +37,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     initial_pair_manifest,
     load_c6c_deployment_config,
     load_c6c_deployment_config_from_environment,
-    load_pair_manifest,
     load_or_create_map_production_env_migration,
-    map_production_env_migration_path,
+    load_pair_manifest,
     manifest_with_active_pair,
-    new_image_pair as _build_image_pair,
+    map_production_env_migration_path,
     run_map_ops_smoke,
     run_map_ui_auth_preflight,
     run_pinvi_canonical_smoke,
@@ -57,6 +55,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_resolved_compose_secret_isolation,
     validate_runtime_secret_isolation,
     write_pair_manifest,
+)
+from kor_travel_docker_manager.services.c6c_deployment import (
+    new_image_pair as _build_image_pair,
 )
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
@@ -412,6 +413,7 @@ def _frozen_external_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
         ),
         resolved=resolved,
         resolved_document_hash=_resolved_compose_document_hash(resolved),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
     )
 
 

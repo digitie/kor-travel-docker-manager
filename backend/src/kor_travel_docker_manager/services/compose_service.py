@@ -17,7 +17,6 @@ from typing import Any
 
 import yaml
 from dotenv import dotenv_values
-
 from kor_travel_docker_manager.services.c6c_deployment import (
     _COMPATIBLE_PAIR_MUTATION_CAPABILITY,
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
@@ -50,8 +49,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     compose_volume_graph_hash,
     initial_pair_manifest,
     load_c6c_deployment_config_from_environment,
-    load_pair_manifest,
     load_or_create_map_production_env_migration,
+    load_pair_manifest,
     manifest_with_active_pair,
     new_image_pair,
     revalidate_candidate_system_bind_snapshots,
@@ -519,7 +518,7 @@ def _validate_map_source_protected_scalar_tree(
     *,
     contract_version: int,
 ) -> None:
-    allowed_values = {
+    allowed_values: dict[tuple[str, ...], str] = {
         (
             "services",
             "api",
