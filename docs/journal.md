@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-19 (C6c cAdvisor healthcheck 포트 drift 확인 — T-034)
+
+- n150 production의 canonical compose는 cAdvisor를 `CADVISOR_PORT`(기본 `12301`)로
+  정상 기동하고 해당 포트의 `/healthz`도 응답했지만, image에서 상속된
+  healthcheck는 `8080`을 계속 조회해 container를 `unhealthy`로 판정했다.
+- C6c bootstrap의 base-service readiness가 이 판정을 fail-close해 compatible-pair
+  capture가 중단되었고, 계약에 따라 Map·PinVi API는 정지 상태를 유지했다.
+- issue #62와 T-034는 cAdvisor listen·healthcheck가 같은 `CADVISOR_PORT`를 사용하게
+  고정하고, 정상 health 확인 후 capture를 한 번만 재시도하는 작업으로 분리한다.
+
 ## 2026-07-19 (C7 Map UI·Dagster provenance 누락 확인 — T-033)
 
 - n150 production 후보를 clean Map commit에서 빌드한 뒤 OCI label을 확인한 결과 Map API는

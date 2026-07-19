@@ -146,7 +146,9 @@ graph TD
      directory는 mount하지 않음.
    - socket은 root:docker `0660`, `/sys`는 root-owned mountpoint 계약과 inode/device/mode 재검증을 통과해야 함.
    - host 포트: `12301`.
-   - 컨테이너 내부 포트: `8080`.
+   - host network에서 cAdvisor 프로세스는 `CADVISOR_PORT`(기본 `12301`)에 직접
+     listen하며, Compose의 명시적 healthcheck도 같은 포트의 `/healthz`를 조회함.
+     image에 상속된 기본 `8080` healthcheck에 의존하지 않음.
 5. **Prometheus**:
    - 컨테이너: `kor-travel-prometheus`
    - compose service: `prometheus`

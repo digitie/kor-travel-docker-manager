@@ -30,6 +30,7 @@
 | **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
+| **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -225,6 +226,16 @@
       `org.opencontainers.image.revision` label이 같은 40자 commit인지 확인한다.
 - [ ] C7 runtime attestation과 live E2E가 실제 기동된 네 Map image provenance를 통과하면
       issue #60을 닫고 완료 이력으로 옮긴다.
+
+### T-034: C6c cAdvisor healthcheck 포트 계약 정렬
+
+- [/] canonical compose의 cAdvisor listen 포트와 명시적 `/healthz` healthcheck가
+      모두 `CADVISOR_PORT`(기본 `12301`)를 단일 정본으로 사용하게 한다.
+- [ ] raw compose 계약 테스트가 image에 상속된 `8080` probe로 돌아가거나
+      listen과 probe 포트가 달라지는 회귀를 차단한다.
+- [ ] n150 production에서 cAdvisor `healthy`와 설정 포트 `/healthz` 200을 확인한 뒤
+      중단된 C6c compatible-pair capture를 단 한 번 재시도한다.
+- [ ] capture와 후속 readiness가 통과하면 issue #62를 닫고 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

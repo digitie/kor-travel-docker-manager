@@ -796,3 +796,43 @@ attestation이 실제 container image ID·revision과 함께 검증한다.
 
 - (open) n150의 실제 clean checkout과 두 image label, manifest source revision을 C6c live smoke
   증거에 포함한다.
+
+## ADR-22: cAdvisor listen·healthcheck 포트를 단일 정본으로 관리한다
+
+- 상태: accepted
+- 날짜: 2026-07-19
+- 결정자: human, AI agent
+
+### 컨텍스트
+
+canonical Compose는 host network의 cAdvisor listen 포트를 `CADVISOR_PORT`(기본
+`12301`)로 바꿘지만 image의 기본 healthcheck는 `8080`을 조회했다. 설정 포트의
+`/healthz`가 정상이어도 Docker health는 `unhealthy`가 되었고, production C6c capture의
+base-service readiness가 정상 서비스를 오탐해 fail-close했다.
+
+### 결정
+
+cAdvisor 프로세스의 `--port` 인자와 Compose의 명시적 `/healthz` healthcheck는
+모두 동일한 `CADVISOR_PORT` 보간을 사용한다. image에 상속된 기본 healthcheck는
+canonical runtime health 계약으로 취급하지 않는다.
+
+### 근거
+
+- listen과 probe가 같은 포트 정본을 쓰면 기본·사용자 지정 포트 모두에서 drift가 없다.
+- Docker `healthy`는 C6c의 기동 순서·rollback 판정에 사용되므로 실제 readiness endpoint와
+  다른 probe를 허용하면 안 된다.
+
+### 결과(긍정)
+
+- 설정된 포트의 실제 cAdvisor readiness와 Docker health 판정이 일치한다.
+- C6c base-service readiness가 실제 장애만 fail-close한다.
+
+### 결과(부정)
+
+- cAdvisor image 기본 healthcheck 변경은 자동 상속되지 않으며 Compose 계약을 직접
+  갱신해야 한다.
+
+### 후속
+
+- (open) n150에서 Docker `healthy`와 설정 포트 `/healthz` 200을 모두 확인한 후
+  C6c capture를 재시도한다.
