@@ -850,3 +850,74 @@ canonical runtime health 계약으로 취급하지 않는다.
 
 - (open) n150에서 Docker `healthy`와 설정 포트 `/healthz` 200을 모두 확인한 후
   C6c capture를 재시도한다.
+
+## ADR-23: Map production API 인증 환경을 C6c runtime set에 결박한다
+
+- 상태: accepted
+- 날짜: 2026-07-19
+- 결정자: human, Codex
+
+### 컨텍스트
+
+Map production profile은 ops principal뿐 아니라 admin BFF, service surface, public-key gate,
+debug route 비활성, cursor 서명과 metrics 노출 정책도 fail-closed한다. manager canonical Compose가
+ops read/cancel만 전달하면 새 Map image는 migration 전 또는 settings 생성 중 종료되어 C6c v4
+runtime set을 기동할 수 없다.
+
+### 결정
+
+manager의 gitignore된 `.env`를 Map production API 인증 설정의 단일 source로 둔다. admin proxy
+secret은 Map API와 Map UI BFF에만 같은 값으로 전달하고, service token과 cursor signing secret은
+Map API에만 전달한다. production profile, public-key-required와 debug-off를 canonical literal로
+고정한다. metrics는 인증된 Prometheus scrape가 결선되기 전까지 endpoint 자체를 명시적으로
+비활성화하며, 암묵적 무인증 fallback을 허용하지 않는다. host network의 admin trusted proxy는
+loopback `127.0.0.1/32`·`::1/128` exact JSON으로 고정해 image 기본값 drift에 의존하지 않는다.
+C6c raw/resolved/runtime 검사는 각
+credential의 shape·상호 구분·허용 service exact set과 설정 literal을 첫 mutation 전에 검증한다.
+`.env.example`의 세 local placeholder는 production에서 exact 값으로 거부한다.
+
+기존 runtime에서 새 UI env를 요구해 첫 전환을 순환 차단하지 않도록, 현재 pair의 manifest
+`map_source_revision`이 가리키는 exact Map `docker-compose.yml`을 읽어 별도의 source env 계약
+세대를 판정한다. admin/service/profile/public/debug hard-require가 있고 cursor가 없는 source v3가
+manifest active/rollback 양쪽에 있고 migration marker가 처음 없을 때만 exact logical manifest hash를
+`pending` baseline으로 mutation 전에 원자 기록한다. pending 재시도는 같은 hash만 허용하고, 현재 UI
+admin proxy는 `없음 또는 frozen exact`로 검증한다. activation, runtime secret isolation, 전체 smoke가
+성공하면 manifest commit 전에 sibling `map-production-env-migration-v1.json`을 `complete`로 원자
+전환한다. 이 0600 owner regular-file marker는 manager가 삭제·초기화하지 않으며 rollback과 pair 회전도
+낮출 수 없다. complete 뒤에는 source slot이 다시 v3/v3가 되어도 현재 UI admin proxy exact를 요구한다.
+corrupt/symlink/wrong owner/mode와 pending baseline drift는 fail-close한다.
+
+source 판정은 profile/public/debug/service를 API-only, admin을 API+frontend, cursor를 v3 전체 문서
+0회/v4 API-only exact 1회로 고정한다. API·Dagster·daemon `env_file`은 known path/options exact
+shape만 허용하고 exact revision에 추적된 참조 파일의 보호 이름도 거부한다. 해당 이름·placeholder가
+다른 service 또는 build arg, label, command, config, secret 등 source Compose 전체 scalar tree의
+다른 경로에 나타나도 거부한다.
+candidate raw/resolved와 activation 후 runtime 검사는 source v3에서도 새 결선을 항상 필수 exact로
+유지한다. 이 source env 세대와 migration marker는 compatible-pair manifest 자체의 v4 exact shape를
+변경하지 않는다.
+
+### 근거
+
+- image 내부 기본값에 의존하면 Map 설정 변경이 manager 배포 계약을 조용히 깨뜨린다.
+- admin BFF 공유 secret과 API-only service/cursor secret의 허용 runtime이 다르므로 이름 존재만
+  확인하지 않고 exact service별 결선을 검증해야 한다.
+- 사용하지 않는 metrics endpoint를 열어 둔 채 scrape credential만 누락하는 것보다 route를 끄는
+  것이 현재 cutover에 단순하고 fail-closed다.
+
+### 결과(긍정)
+
+- C6c v4 candidate가 Map production settings와 같은 인증 불변식을 container mutation 전에 검증한다.
+- credential이 Dagster·daemon·PinVi·다른 runtime으로 확산되는 경로를 차단한다.
+- base runtime에서 새 manager 결선으로 가는 최초 managed cutover/rollback은 허용하면서, 완료
+  marker 뒤의 A3→B4→rollback A3→C3 pair 회전도 누락 예외를 다시 열지 못한다.
+
+### 결과(부정)
+
+- 기존 production `.env`는 admin proxy, service, cursor signing 값을 별도로 준비해야 한다.
+- Map metrics는 인증된 Prometheus credential 전달 경로를 별도 채택하기 전까지 수집하지 않는다.
+
+### 후속
+
+- (open) issue #63 구현·리뷰·CI와 n150 C6c v4 exact-pair 검증을 완료한다.
+- (open) Map metrics가 운영상 필요하다는 측정이 나오면 secret-safe Prometheus credentials file
+  전달을 별도 task로 설계한다.

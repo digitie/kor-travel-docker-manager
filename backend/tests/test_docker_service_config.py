@@ -6,7 +6,6 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
-
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
@@ -63,6 +62,9 @@ _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = {
 _MAP_UI_USERNAME = "map-ui-admin-placeholder"
 _MAP_UI_PASSWORD_HASH = "pbkdf2_sha256$100000$test-salt$test-digest"
 _MAP_UI_SESSION_SECRET = "map-ui-session-secret-placeholder-value"
+_MAP_ADMIN_PROXY_SECRET = "map-admin-proxy-secret-placeholder-value"
+_MAP_SERVICE_TOKEN = "map-service-token-placeholder-value"
+_MAP_CURSOR_SIGNING_SECRET = "map-cursor-signing-secret-placeholder-value"
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -143,6 +145,25 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
                     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
                 ),
+                "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
+                    "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+                    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": (
+                    "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+                    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (
+                    "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
+                    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_API_PROFILE": "production",
+                "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
+                "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
+                "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
+                "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
+                    '["127.0.0.1/32","::1/128"]'
+                ),
             }
         },
         _MAP_UI_SERVICE: {
@@ -161,6 +182,10 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_UI_SESSION_SECRET": (
                     "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
                     "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
+                    "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+                    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
                 ),
             }
         },
@@ -610,6 +635,14 @@ def _prepare_candidate_transaction(
         )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_UI_SESSION_SECRET", _MAP_UI_SESSION_SECRET
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET", _MAP_ADMIN_PROXY_SECRET
+        )
+        monkeypatch.setenv("KOR_TRAVEL_MAP_API_SERVICE_TOKEN", _MAP_SERVICE_TOKEN)
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
+            _MAP_CURSOR_SIGNING_SECRET,
         )
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(

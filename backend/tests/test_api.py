@@ -2,14 +2,10 @@ import hashlib
 import os
 from unittest.mock import patch
 
+import kor_travel_docker_manager.database
 import pytest
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-import kor_travel_docker_manager.database
 from kor_travel_docker_manager.services.auth_service import hash_password_for_env
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
@@ -17,6 +13,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.public_api_key_service import public_api_key_is_valid
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 FRONTEND_ORIGIN = "http://localhost:12905"
 os.environ["KTDM_ADMIN_USERNAME"] = "admin"
@@ -133,9 +132,8 @@ def test_login_rejects_invalid_password_and_records_audit_event():
 
 def test_client_ip_trusts_forwarded_only_from_trusted_proxy():
     # 신뢰 프록시 판정/ X-Forwarded-For 처리를 실제 코드 경로로 직접 검증한다.
-    from starlette.requests import Request
-
     from kor_travel_docker_manager.services.auth_service import _client_ip
+    from starlette.requests import Request
 
     def make_request(client_host: str, xff: str) -> Request:
         return Request(
@@ -161,9 +159,8 @@ def test_client_ip_trusts_forwarded_only_from_trusted_proxy():
 
 def test_trusted_proxy_requires_secret_header_when_configured(monkeypatch):
     # KTDM_TRUSTED_PROXY_SECRET 설정 시, loopback이라도 일치하는 시크릿 헤더가 있어야 XFF를 신뢰한다.
-    from starlette.requests import Request
-
     from kor_travel_docker_manager.services.auth_service import _client_ip
+    from starlette.requests import Request
 
     def make_request(headers):
         return Request(
@@ -194,8 +191,6 @@ def test_trusted_proxy_requires_secret_header_when_configured(monkeypatch):
 
 def test_login_rate_limit_durable_via_audit_log():
     # 인메모리 카운터가 아니라 감사 로그에서 실패를 집계하므로 재시작/멀티워커에서도 유지된다.
-    from starlette.requests import Request
-
     import kor_travel_docker_manager.database as db
     from kor_travel_docker_manager._time import utcnow
     from kor_travel_docker_manager.models import LoginAuditEvent
@@ -203,6 +198,7 @@ def test_login_rate_limit_durable_via_audit_log():
         LOGIN_FAILURE_LIMIT,
         check_login_rate_limit,
     )
+    from starlette.requests import Request
 
     ip = "198.51.100.123"
     req = Request(
@@ -1107,9 +1103,8 @@ def test_rate_limited_login_returns_retry_after_header():
 def test_is_https_via_configured_public_origin(monkeypatch):
     # TLS 종단 프록시가 신뢰 X-Forwarded-Proto를 주입하지 않아도, 브라우저 Origin이 설정된
     # https 공개 origin과 일치하면 https로 간주(세션 쿠키 Secure 플래그)해야 한다.
-    from starlette.requests import Request
-
     from kor_travel_docker_manager.services.auth_service import _is_https
+    from starlette.requests import Request
 
     monkeypatch.setenv("KTDM_FRONTEND_ORIGINS", "https://manager.example.org,http://localhost:12905")
 

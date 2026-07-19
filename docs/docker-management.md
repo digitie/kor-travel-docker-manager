@@ -267,6 +267,15 @@ PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회,
 `POST /v1/ops/pipeline/executions/import_job/{job_id}/cancel`만 사용한다. 브라우저 BFF secret,
 public service token, trusted CIDR을 재사용하지 않는다.
 
+Map API의 production fail-closed 설정은 ops pair만으로 완결되지 않는다. ADR-23에 따라 manager
+`.env`는 admin proxy secret, API-only service token, API-only cursor signing secret도 서로 다른
+값으로 보관한다. admin proxy secret은 Map API와 Map UI BFF에만 전달하고 service/cursor 값은 Map
+API 외 service에 전달하지 않는다. profile은 `production`, public API key gate는 `true`, debug route는
+`false`로 candidate에 고정한다. Map metrics는 인증된 Prometheus scrape 경로가 없는 동안 endpoint를
+`false`로 명시해 무인증 fallback과 startup drift를 함께 차단한다. host network admin proxy의
+trusted CIDR는 `127.0.0.1/32`·`::1/128` exact JSON으로 명시한다. 실제 값·길이·digest는 로그에
+남기지 않고 shape, 상호 불일치, 허용 service별 존재 여부만 증거로 남긴다.
+
 - manager `.env`가 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
   `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`의 단일 source다. 두 값은 각각 32자 이상이고 공백 문자가
   하나도 없으며 서로 달라야 한다.
@@ -293,6 +302,24 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `env_file`을 사용할 수 없다. username은 confidential 값이 아닌 identity라 다른 서비스의 일반 scalar와
 같거나 그 일부여도 허용하지만, Map UI의 exact wiring/runtime equality와 Map UI 밖 username 환경변수 이름
 금지는 유지한다.
+현재 pair의 exact `map_source_revision`에서 Map source `docker-compose.yml`을 읽었을 때
+admin/service/profile/public/debug hard-require가 있고 cursor가 아직 없는 source env v3가 manifest
+active/rollback 양쪽에만 있고 marker가 없으면, manager는 manifest logical hash를 sibling
+`map-production-env-migration-v1.json`의 pending baseline으로 mutation 전에 원자 기록한다. pending은
+동일 manifest 재시도만 허용하며 현재 UI admin proxy는 없음 또는 frozen exact다. activation·runtime
+격리·전체 smoke가 성공하면 manifest commit 전에 marker를 complete로 바꾸며 manager는 이를 삭제하거나
+pending으로 낮추지 않는다. complete 뒤에는 pair rotation으로 slot이 다시 v3/v3가 되어도 admin proxy는
+필수 exact다. marker는 fixed-shape 0600 owner regular file이며 corrupt/symlink/wrong owner/mode와 baseline
+drift는 fail-close한다. compatible-pair manifest v4와 pair의 exact 9개 필드는 바꾸지 않는다.
+
+source classifier는 profile/public/debug/service를 API-only, admin을 API+frontend, cursor를 v3 전체
+scalar tree 0회/v4 API-only exact 1회로 제한한다. API·Dagster·daemon의 `env_file`은 실제 Map
+source의 service별 path/options만 허용하고, 허용 파일이 exact commit에 추적돼 있으면 그 내용에도
+보호 이름이 없어야 한다. 추적 파일은 exact path의 단일 `100644 blob`, 64 KiB 이하, UTF-8이어야 하며
+허용 목록 밖 service는 값이 `null`이어도 `env_file` key 자체를 가질 수 없다.
+보호 이름·placeholder가 다른 service나 build/label/command/config/secret
+등 다른 source path에 있으면 거부한다. manager candidate와 runtime의 metrics-off·trusted
+loopback 검사는 이 source 세대 판정과 섞지 않고 기존 raw/resolved/runtime validator가 담당한다.
 `KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정, owned typed-failure
 `KTDM_C6C_CANCEL_PROBE_JOB_ID`는 manager `.env`에만 둔다. 이 값들은 compose service env나 다른
 `env_file`에 주입하지 않는다. 특히 contract generation은 secret이 아니더라도 배포 판단용 manager-only
@@ -386,7 +413,8 @@ compose가 전체 계약을 만족하는지 **stop 전에** 확인한다. 다섯
 
 manifest와 mode 0600 lock은 checkout이 아니라
 `~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`에 함께 저장한다. production에서는
-root와 `compatible-pair-v4.json`/`deployment.lock` 파일명을 고정하고 모든 path override를 거부해 같은
+root와 `compatible-pair-v4.json`/`deployment.lock`/`map-production-env-migration-v1.json` 파일명을
+고정하고 모든 path override를 거부해 같은
 Compose project가 서로 다른 lock으로 갈라지지 않게 한다. manifest version은 bool/string/float 변환 없이
 정확한 integer만 허용하고 두 pair의 `recorded_at`은 offset ISO 8601 datetime이어야 한다. 기록은 파일
 fsync, 원자 replace, 부모 디렉터리 fsync 순서이며 마지막 fsync 실패 시 이전 byte/mode를 다시 원자

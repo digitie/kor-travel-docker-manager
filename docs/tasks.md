@@ -31,6 +31,7 @@
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
 | **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
+| **T-035** | C7 Map production API 인증 env 결선 | `[/]` | - | issue #63, Map #780/#782 fail-closed 설정과 C6c preflight 정렬 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -245,6 +246,33 @@
 - [ ] n150 production에서 cAdvisor `healthy`와 설정 포트 `/healthz` 200을 확인한 뒤
       중단된 C6c compatible-pair capture를 단 한 번 재시도한다.
 - [ ] capture와 후속 readiness가 통과하면 issue #62를 닫고 완료 이력으로 옮긴다.
+
+### T-035: C7 Map production API 인증 env 결선
+
+- [x] ADR-23에서 admin BFF, API-only service/cursor, public/debug/profile, metrics 비활성 계약과
+      service별 최소 주입 범위를 문서로 먼저 고정한다.
+- [x] canonical Compose와 `.env.example`에 Map #780/#782 production 설정을 정확히 반영했다.
+- [x] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
+      production literal을 mutation 전에 검증하게 한다.
+- [x] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가했다.
+- [x] 두 번째 적대적 리뷰 P1에 따라 manifest v4 exact 9-field shape 밖의 sibling 단조 marker를
+      추가했다. 최초 v3/v3 logical manifest hash만 pending 재시도를 허용하고 성공 검증 뒤 complete로
+      영구 닫아 A3→B4→rollback A3→C3 회전도 누락 예외를 다시 열지 못한다.
+- [x] marker atomic write/fsync와 fixed shape, 0600 regular owner, corrupt/symlink/mode/owner 및 pending
+      baseline drift fail-close 회귀 계약을 추가했다.
+- [x] 두 번째 적대적 리뷰 P2에 따라 source Compose 전체 scalar tree에서 admin=API+frontend,
+      service=API-only, cursor=v3 0회/v4 API exact 1회 외 모든 service/field leak를 거부했다.
+- [x] 세 번째 적대적 리뷰 P2에 따라 profile/public/debug도 API-only exact path로 올리고,
+      API·Dagster·daemon `env_file`의 known path/options와 tracked exact-revision 내용까지 검증한다.
+- [x] 네 번째 적대적 리뷰 P2에 따라 tracked `env_file`을 exact `100644 blob`·64 KiB 이하·UTF-8로
+      제한하고, 허용되지 않은 service의 `env_file: null` 우회도 차단했다.
+- [x] `.env.example`의 세 공개 local placeholder를 production config/raw/resolved에서 각각 거부하고
+      local 허용 회귀 계약을 추가했다.
+- [x] 동일 적대적 리뷰어의 최종 P0~P2 없음 판정 뒤 backend 886개, 변경 파일 Ruff,
+      strict mypy, 기본·커스텀 Compose gate를 통과했다.
+- [ ] PR을 merge한다.
+- [ ] n150 final v4 exact-pair에서 Map API startup/readiness와 runtime secret isolation을 확인한 뒤
+      issue #63을 닫고 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

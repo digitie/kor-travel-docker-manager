@@ -51,6 +51,18 @@ _PINVI_CANCEL_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"
 _MAP_UI_USERNAME_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
 _MAP_UI_PASSWORD_HASH_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
 _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
+_MAP_ADMIN_PROXY_ENV = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+_MAP_SERVICE_TOKEN_ENV = "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+_MAP_CURSOR_SIGNING_SECRET_ENV = "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+_MAP_PROFILE_ENV = "KOR_TRAVEL_MAP_API_PROFILE"
+_MAP_PUBLIC_API_KEY_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
+_MAP_DEBUG_ROUTES_ENABLED_ENV = "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
+_MAP_PROMETHEUS_METRICS_ENABLED_ENV = (
+    "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED"
+)
+_MAP_ADMIN_TRUSTED_PROXY_CIDRS_ENV = (
+    "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS"
+)
 _MAP_UI_PASSWORD_ENV = "KTDM_C6C_MAP_UI_ADMIN_PASSWORD"
 _PINVI_ADMIN_PASSWORD_ENV = "KTDM_C6C_PINVI_ADMIN_PASSWORD"
 _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = frozenset(
@@ -84,6 +96,28 @@ _MAP_UI_AUTH_ENV_NAMES = frozenset(
         _MAP_UI_SESSION_SECRET_ENV,
     }
 )
+_MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
+    {
+        _MAP_ADMIN_PROXY_ENV,
+        _MAP_SERVICE_TOKEN_ENV,
+        _MAP_CURSOR_SIGNING_SECRET_ENV,
+    }
+)
+_MAP_PUBLISHED_EXAMPLE_SECRET_VALUES = {
+    _MAP_ADMIN_PROXY_ENV: "local-map-admin-proxy-secret-change-me",
+    _MAP_SERVICE_TOKEN_ENV: "local-map-service-token-change-me-now",
+    _MAP_CURSOR_SIGNING_SECRET_ENV: "local-map-cursor-signing-secret-change-me",
+}
+_MAP_PRODUCTION_API_LITERAL_VALUES = {
+    _MAP_PROFILE_ENV: "production",
+    _MAP_PUBLIC_API_KEY_REQUIRED_ENV: "true",
+    _MAP_DEBUG_ROUTES_ENABLED_ENV: "false",
+    _MAP_PROMETHEUS_METRICS_ENABLED_ENV: "false",
+    _MAP_ADMIN_TRUSTED_PROXY_CIDRS_ENV: '["127.0.0.1/32","::1/128"]',
+}
+_MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
+    _MAP_PRODUCTION_API_LITERAL_VALUES
+)
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
     {_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE}
 )
@@ -105,6 +139,12 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): _MAP_UI_USERNAME_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): _MAP_UI_PASSWORD_HASH_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): _MAP_UI_SESSION_SECRET_ENV,
+    (_MAP_API_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
+    (_MAP_UI_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
+    (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): _MAP_SERVICE_TOKEN_ENV,
+    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
+        _MAP_CURSOR_SIGNING_SECRET_ENV
+    ),
 }
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
@@ -129,10 +169,31 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
     ),
+    (_MAP_API_SERVICE, _MAP_ADMIN_PROXY_ENV): (
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+    ),
+    (_MAP_UI_SERVICE, _MAP_ADMIN_PROXY_ENV): (
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): (
+        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
+        "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
+    ),
+    **{
+        (_MAP_API_SERVICE, env_name): value
+        for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
+    },
 }
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES
+    | _MAP_PRODUCTION_SECRET_ENV_NAMES
     | {
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
@@ -245,6 +306,11 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
 }
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _PAIR_MANIFEST_VERSION = 4
+_MAP_PRODUCTION_ENV_MIGRATION_VERSION = 1
+_MAP_PRODUCTION_ENV_MIGRATION_FILENAME = (
+    "map-production-env-migration-v1.json"
+)
+_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _LEGACY_PAIR_MANIFEST_FILENAMES = (
     "compatible-pair-v2.json",
     "compatible-pair-v3.json",
@@ -351,6 +417,9 @@ class C6cDeploymentConfig:
     map_ui_container: str
     map_ui_password_hash: str = field(repr=False)
     map_ui_session_secret: str = field(repr=False)
+    map_admin_proxy_secret: str = field(repr=False)
+    map_service_token: str = field(repr=False)
+    map_cursor_signing_secret: str = field(repr=False)
     pinvi_container: str
     contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
@@ -391,6 +460,15 @@ class CompatiblePairManifest:
     version: int
     rollback: CompatibleImagePair
     active: CompatibleImagePair
+
+
+@dataclass(frozen=True)
+class MapProductionEnvMigrationState:
+    version: int
+    state: str
+    baseline_manifest_sha256: str | None
+    prepared_at: str
+    completed_at: str | None
 
 
 @dataclass(frozen=True)
@@ -728,6 +806,9 @@ def load_c6c_deployment_config_from_environment(
         ),
         map_ui_password_hash=values.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
         map_ui_session_secret=values.get(_MAP_UI_SESSION_SECRET_ENV, ""),
+        map_admin_proxy_secret=values.get(_MAP_ADMIN_PROXY_ENV, ""),
+        map_service_token=values.get(_MAP_SERVICE_TOKEN_ENV, ""),
+        map_cursor_signing_secret=values.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
         pinvi_container=values.get("PINVI_API_CONTAINER", "pinvi-api-latest"),
         contract_generation=contract_generation,
         smoke=C6cSmokeConfig(
@@ -742,6 +823,7 @@ def load_c6c_deployment_config_from_environment(
         ),
     )
     _validate_token_pair(config, require_nonempty=config.production)
+    _validate_map_production_secrets(config)
     if config.production:
         c6c_state_paths(values)
         _validate_production_config(config, values)
@@ -829,6 +911,82 @@ def _validate_raw_token_pair(
         raise DeploymentContractError("C6c read and cancel tokens must differ")
 
 
+def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
+    _validate_map_production_secret_values(
+        {
+            _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
+            _MAP_SERVICE_TOKEN_ENV: config.map_service_token,
+            _MAP_CURSOR_SIGNING_SECRET_ENV: config.map_cursor_signing_secret,
+            _MAP_READ_ENV: config.read_token,
+            _MAP_CANCEL_ENV: config.cancel_token,
+            _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
+            _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
+            _MAP_UI_PASSWORD_ENV: config.smoke.map_ui_password,
+            "KTDM_C6C_PINVI_ADMIN_EMAIL": config.smoke.pinvi_admin_email,
+            _PINVI_ADMIN_PASSWORD_ENV: config.smoke.pinvi_admin_password,
+            "KTDM_C6C_CANCEL_PROBE_JOB_ID": config.smoke.cancel_probe_job_id,
+            "KTDM_C6C_CONTRACT_GENERATION": config.contract_generation,
+        },
+        reject_published_examples=config.production,
+    )
+
+
+def _validate_map_production_secret_values(
+    values: Mapping[str, str],
+    *,
+    error_type: type[DeploymentContractError] = DeploymentContractError,
+    reject_published_examples: bool = False,
+) -> None:
+    new_secrets = tuple(
+        (env_name, values.get(env_name, ""))
+        for env_name in (
+            _MAP_ADMIN_PROXY_ENV,
+            _MAP_SERVICE_TOKEN_ENV,
+            _MAP_CURSOR_SIGNING_SECRET_ENV,
+        )
+    )
+    for env_name, secret in new_secrets:
+        if not isinstance(secret, str) or len(secret) < 32:
+            raise error_type(
+                f"{env_name} must contain at least 32 characters"
+            )
+        if any(character.isspace() for character in secret):
+            raise error_type(f"{env_name} must not contain whitespace")
+        if reject_published_examples and hmac.compare_digest(
+            secret,
+            _MAP_PUBLISHED_EXAMPLE_SECRET_VALUES[env_name],
+        ):
+            raise error_type(
+                f"{env_name} must not use the published local example value "
+                "in production"
+            )
+
+    protected_credential_names = (
+        _MAP_READ_ENV,
+        _MAP_CANCEL_ENV,
+        _MAP_UI_PASSWORD_HASH_ENV,
+        _MAP_UI_SESSION_SECRET_ENV,
+        _MAP_UI_PASSWORD_ENV,
+        "KTDM_C6C_PINVI_ADMIN_EMAIL",
+        _PINVI_ADMIN_PASSWORD_ENV,
+        "KTDM_C6C_CANCEL_PROBE_JOB_ID",
+        "KTDM_C6C_CONTRACT_GENERATION",
+    )
+    compared: list[tuple[str, str]] = []
+    for env_name, secret in (
+        *new_secrets,
+        *((name, values.get(name, "")) for name in protected_credential_names),
+    ):
+        if not isinstance(secret, str) or not secret:
+            continue
+        for previous_name, previous_secret in compared:
+            if hmac.compare_digest(secret, previous_secret):
+                raise error_type(
+                    f"{env_name} must differ from {previous_name}"
+                )
+        compared.append((env_name, secret))
+
+
 def _validate_production_config(
     config: C6cDeploymentConfig,
     values: Mapping[str, str],
@@ -913,6 +1071,7 @@ def validate_resolved_compose_secret_isolation(
     resolved: Mapping[str, Any],
     config: C6cDeploymentConfig,
 ) -> None:
+    _validate_map_production_secrets(config)
     services = resolved.get("services")
     if not isinstance(services, Mapping):
         raise DeploymentContractError("resolved compose config has no services mapping")
@@ -967,6 +1126,16 @@ def validate_resolved_compose_secret_isolation(
             _MAP_READ_ENV: _compose_resolved_escaped_value(config.read_token),
             _MAP_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
             _MAP_REQUIRED_ENV: "true",
+            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
+                config.map_admin_proxy_secret
+            ),
+            _MAP_SERVICE_TOKEN_ENV: _compose_resolved_escaped_value(
+                config.map_service_token
+            ),
+            _MAP_CURSOR_SIGNING_SECRET_ENV: _compose_resolved_escaped_value(
+                config.map_cursor_signing_secret
+            ),
+            **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         _PINVI_API_SERVICE: {
             _PINVI_READ_ENV: _compose_resolved_escaped_value(config.read_token),
@@ -981,6 +1150,9 @@ def validate_resolved_compose_secret_isolation(
             ),
             _MAP_UI_SESSION_SECRET_ENV: _compose_resolved_escaped_value(
                 config.map_ui_session_secret
+            ),
+            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
+                config.map_admin_proxy_secret
             ),
         },
     }
@@ -1038,6 +1210,34 @@ def validate_resolved_compose_secret_isolation(
             "environment",
             _MAP_UI_SESSION_SECRET_ENV,
         ): _compose_resolved_escaped_value(config.map_ui_session_secret),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_ADMIN_PROXY_ENV,
+        ): _compose_resolved_escaped_value(config.map_admin_proxy_secret),
+        (
+            "services",
+            _MAP_UI_SERVICE,
+            "environment",
+            _MAP_ADMIN_PROXY_ENV,
+        ): _compose_resolved_escaped_value(config.map_admin_proxy_secret),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_SERVICE_TOKEN_ENV,
+        ): _compose_resolved_escaped_value(config.map_service_token),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_CURSOR_SIGNING_SECRET_ENV,
+        ): _compose_resolved_escaped_value(config.map_cursor_signing_secret),
+        **{
+            ("services", _MAP_API_SERVICE, "environment", env_name): value
+            for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
+        },
     }
     for path, scalar in _walk_scalars(resolved):
         if path in allowed_paths or (
@@ -1051,6 +1251,8 @@ def validate_resolved_compose_secret_isolation(
                 _OPS_ENV_NAMES
                 | _MANAGER_ONLY_CREDENTIAL_NAMES
                 | _MAP_UI_AUTH_ENV_NAMES
+                | _MAP_PRODUCTION_SECRET_ENV_NAMES
+                | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
             )
         ):
             raise DeploymentContractError(
@@ -1063,6 +1265,9 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.cancel_token),
                 _compose_resolved_escaped_value(config.map_ui_password_hash),
                 _compose_resolved_escaped_value(config.map_ui_session_secret),
+                _compose_resolved_escaped_value(config.map_admin_proxy_secret),
+                _compose_resolved_escaped_value(config.map_service_token),
+                _compose_resolved_escaped_value(config.map_cursor_signing_secret),
                 _compose_resolved_escaped_value(config.smoke.map_ui_password),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
@@ -1084,6 +1289,13 @@ def validate_resolved_compose_candidate_protected_values(
 ) -> tuple[CandidateSystemBindSnapshot, ...]:
     """resolved compose 전체 graph의 C6c 보호 이름·현재 값을 검사한다."""
 
+    _validate_map_production_secret_values(
+        environment,
+        error_type=ComposeCandidateContractError,
+        reject_published_examples=(
+            environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
+        ),
+    )
     _assert_candidate_single_file_boundary(resolved, environment=environment)
     services = resolved.get("services")
     if not isinstance(services, Mapping):
@@ -1097,7 +1309,11 @@ def validate_resolved_compose_candidate_protected_values(
             + ", ".join(sorted(missing_services))
         )
     protected_names = (
-        _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+        _OPS_ENV_NAMES
+        | _MANAGER_ONLY_CREDENTIAL_NAMES
+        | _MAP_UI_AUTH_ENV_NAMES
+        | _MAP_PRODUCTION_SECRET_ENV_NAMES
+        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
     )
     protected_values = tuple(
         _compose_resolved_escaped_value(value)
@@ -1106,7 +1322,7 @@ def validate_resolved_compose_candidate_protected_values(
     )
     allowed_paths = {
         ("services", service_name, "environment", target_name)
-        for service_name, target_name in _CANDIDATE_ALLOWED_API_ENV_SOURCES
+        for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
     }
 
     for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
@@ -1132,14 +1348,19 @@ def validate_resolved_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 "resolved compose candidate Map API must use the immutable image entrypoint and command"
             )
-        for (allowed_service, target_name), source_name in (
-            _CANDIDATE_ALLOWED_API_ENV_SOURCES.items()
-        ):
+        for allowed_service, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES:
             if allowed_service != service_name:
                 continue
             actual = service_environment.get(target_name)
-            expected = _compose_resolved_escaped_value(
-                environment.get(source_name, "")
+            source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get(
+                (allowed_service, target_name)
+            )
+            expected = (
+                _compose_resolved_escaped_value(environment.get(source_name, ""))
+                if source_name is not None
+                else _CANDIDATE_CANONICAL_API_ENV_VALUES[
+                    (allowed_service, target_name)
+                ]
             )
             if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
                 raise ComposeCandidateContractError(
@@ -1469,6 +1690,8 @@ def validate_compose_env_file_isolation(
                         _OPS_ENV_NAMES
                         | _MANAGER_ONLY_CREDENTIAL_NAMES
                         | _MAP_UI_AUTH_ENV_NAMES
+                        | _MAP_PRODUCTION_SECRET_ENV_NAMES
+                        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
                     )
                     for key in env_keys
                 ):
@@ -1488,6 +1711,14 @@ def validate_compose_candidate_protected_values(
 ) -> tuple[CandidateSystemBindSnapshot, ...]:
     """파일 반영 전 raw compose 전체의 C6c 보호 이름·값 격리를 검사한다."""
 
+    if require_api_wiring:
+        _validate_map_production_secret_values(
+            environment,
+            error_type=ComposeCandidateContractError,
+            reject_published_examples=(
+                environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
+            ),
+        )
     _assert_candidate_single_file_boundary(candidate, environment=environment)
     services = candidate.get("services")
     if not isinstance(services, Mapping):
@@ -1501,7 +1732,11 @@ def validate_compose_candidate_protected_values(
             + ", ".join(sorted(missing_services))
         )
     protected_names = (
-        _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+        _OPS_ENV_NAMES
+        | _MANAGER_ONLY_CREDENTIAL_NAMES
+        | _MAP_UI_AUTH_ENV_NAMES
+        | _MAP_PRODUCTION_SECRET_ENV_NAMES
+        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
     )
     protected_values = tuple(
         value
@@ -1510,7 +1745,7 @@ def validate_compose_candidate_protected_values(
     )
     allowed_paths = {
         ("services", service_name, "environment", target_name)
-        for service_name, target_name in _CANDIDATE_ALLOWED_API_ENV_SOURCES
+        for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
     }
 
     for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
@@ -1538,7 +1773,7 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 "compose candidate Map API must use the immutable image entrypoint and command"
             )
-        for allowed_service, target_name in _CANDIDATE_ALLOWED_API_ENV_SOURCES:
+        for allowed_service, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES:
             if allowed_service != service_name:
                 continue
             if not require_api_wiring and target_name not in raw_environment:
@@ -3476,14 +3711,30 @@ def _request_json(
 def validate_current_map_ui_auth_runtime(
     runtime_config: Mapping[str, Any],
     config: C6cDeploymentConfig,
+    *,
+    source_env_contract_version: int = 4,
+    allow_legacy_admin_proxy_absence: bool = False,
 ) -> None:
-    """mutation 전 현재 Map UI runtime 인증값만 frozen expected와 대조한다."""
+    """현재 Map UI 인증을 exact source 환경 계약 세대와 대조한다."""
 
+    _validate_map_production_secrets(config)
+    if source_env_contract_version not in {3, 4}:
+        raise DeploymentContractError(
+            "the current Map source environment contract version is unsupported"
+        )
     expected = {
         _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
         _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
         _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
     }
+    optional_expected = (
+        {_MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret}
+        if source_env_contract_version == 3
+        and allow_legacy_admin_proxy_absence
+        else {}
+    )
+    if not optional_expected:
+        expected[_MAP_ADMIN_PROXY_ENV] = config.map_admin_proxy_secret
     actual: dict[str, str] = {}
     allowed_paths: set[tuple[str, ...]] = set()
     plaintext = config.smoke.map_ui_password
@@ -3498,7 +3749,7 @@ def validate_current_map_ui_auth_runtime(
             raise DeploymentContractError(
                 "the current Map UI contains a plaintext smoke credential"
             )
-        if env_name not in expected:
+        if env_name not in expected and env_name not in optional_expected:
             continue
         if env_name in actual:
             raise DeploymentContractError(
@@ -3515,13 +3766,27 @@ def validate_current_map_ui_auth_runtime(
             raise DeploymentContractError(
                 "the current Map UI authentication differs from the frozen environment"
             )
+    for env_name, expected_value in optional_expected.items():
+        actual_value = actual.get(env_name)
+        if actual_value is not None and not hmac.compare_digest(
+            actual_value.encode("utf-8"), expected_value.encode("utf-8")
+        ):
+            raise DeploymentContractError(
+                "the current Map UI authentication differs from the frozen environment"
+            )
 
     protected_values = (
         config.map_ui_password_hash,
         config.map_ui_session_secret,
+        config.map_admin_proxy_secret,
         plaintext,
     )
-    protected_names = _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+    protected_names = (
+        _MANAGER_ONLY_CREDENTIAL_NAMES
+        | _MAP_UI_AUTH_ENV_NAMES
+        | _MAP_PRODUCTION_SECRET_ENV_NAMES
+        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+    )
     for path, scalar in _walk_scalars(runtime_config):
         if path in allowed_paths:
             continue
@@ -3539,11 +3804,16 @@ def validate_runtime_secret_isolation(
     container_configs: Mapping[str, Mapping[str, Any]],
     config: C6cDeploymentConfig,
 ) -> None:
+    _validate_map_production_secrets(config)
     expected = {
         config.map_container: {
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
             _MAP_REQUIRED_ENV: "true",
+            _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
+            _MAP_SERVICE_TOKEN_ENV: config.map_service_token,
+            _MAP_CURSOR_SIGNING_SECRET_ENV: config.map_cursor_signing_secret,
+            **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         config.pinvi_container: {
             _PINVI_READ_ENV: config.read_token,
@@ -3553,6 +3823,7 @@ def validate_runtime_secret_isolation(
             _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
             _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
+            _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
         },
     }
     for required_container in expected:
@@ -3567,6 +3838,9 @@ def validate_runtime_secret_isolation(
             config.cancel_token,
             config.map_ui_password_hash,
             config.map_ui_session_secret,
+            config.map_admin_proxy_secret,
+            config.map_service_token,
+            config.map_cursor_signing_secret,
             config.smoke.map_ui_password,
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,
@@ -3576,7 +3850,11 @@ def validate_runtime_secret_isolation(
         if secret
     )
     protected_names = (
-        _OPS_ENV_NAMES | _MANAGER_ONLY_CREDENTIAL_NAMES | _MAP_UI_AUTH_ENV_NAMES
+        _OPS_ENV_NAMES
+        | _MANAGER_ONLY_CREDENTIAL_NAMES
+        | _MAP_UI_AUTH_ENV_NAMES
+        | _MAP_PRODUCTION_SECRET_ENV_NAMES
+        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
     )
     for container_name, runtime_config in container_configs.items():
         if not isinstance(runtime_config, Mapping):
@@ -3595,7 +3873,12 @@ def validate_runtime_secret_isolation(
                 raise DeploymentContractError(
                     "a C6c manager-only credential is present in a container"
                 )
-            if env_name in _OPS_ENV_NAMES | _MAP_UI_AUTH_ENV_NAMES:
+            if env_name in (
+                _OPS_ENV_NAMES
+                | _MAP_UI_AUTH_ENV_NAMES
+                | _MAP_PRODUCTION_SECRET_ENV_NAMES
+                | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+            ):
                 if env_name not in allowed:
                     raise DeploymentContractError(
                         "a C6c runtime protected value is present in an "
@@ -3715,6 +3998,288 @@ def load_pair_manifest(path: str) -> CompatiblePairManifest:
         raise DeploymentContractError("compatible pair manifest is invalid") from exc
     _validate_pair_manifest_contract(manifest)
     return manifest
+
+
+def map_production_env_migration_path(manifest_path: str) -> str:
+    """manifest shape를 바꾸지 않는 sibling 단조 migration marker 경로."""
+
+    path = _canonical_absolute_path(
+        manifest_path,
+        "compatible pair manifest path",
+    )
+    return str(path.with_name(_MAP_PRODUCTION_ENV_MIGRATION_FILENAME))
+
+
+def compatible_pair_manifest_logical_hash(
+    manifest: CompatiblePairManifest,
+) -> str:
+    _validate_pair_manifest_contract(manifest)
+    payload = json.dumps(
+        asdict(manifest),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def load_or_create_map_production_env_migration(
+    manifest_path: str,
+    *,
+    baseline_manifest: CompatiblePairManifest | None,
+    allow_create: bool = True,
+) -> MapProductionEnvMigrationState:
+    """missing marker를 pending으로 한 번 만들거나 기존 단조 상태를 검증한다."""
+
+    marker_path = Path(map_production_env_migration_path(manifest_path))
+    existing = _load_map_production_env_migration(marker_path, allow_missing=True)
+    expected_baseline = (
+        compatible_pair_manifest_logical_hash(baseline_manifest)
+        if baseline_manifest is not None
+        else None
+    )
+    if existing is not None:
+        if (
+            existing.state == "pending"
+            and existing.baseline_manifest_sha256 != expected_baseline
+        ):
+            raise DeploymentContractError(
+                "Map production env migration baseline changed while pending"
+            )
+        return existing
+    if not allow_create:
+        raise DeploymentContractError(
+            "Map production env migration marker is missing outside the original v3 baseline"
+        )
+
+    prepared_at = datetime.now(UTC).isoformat()
+    pending = MapProductionEnvMigrationState(
+        version=_MAP_PRODUCTION_ENV_MIGRATION_VERSION,
+        state="pending",
+        baseline_manifest_sha256=expected_baseline,
+        prepared_at=prepared_at,
+        completed_at=None,
+    )
+    _create_map_production_env_migration(marker_path, pending)
+    return pending
+
+
+def complete_map_production_env_migration(
+    manifest_path: str,
+) -> MapProductionEnvMigrationState:
+    """pending marker를 complete로만 전환하고 complete는 그대로 유지한다."""
+
+    marker_path = Path(map_production_env_migration_path(manifest_path))
+    current = _load_map_production_env_migration(marker_path, allow_missing=False)
+    if current is None:
+        raise DeploymentContractError(
+            "Map production env migration marker is missing"
+        )
+    if current.state == "complete":
+        return current
+    completed = MapProductionEnvMigrationState(
+        version=current.version,
+        state="complete",
+        baseline_manifest_sha256=current.baseline_manifest_sha256,
+        prepared_at=current.prepared_at,
+        completed_at=datetime.now(UTC).isoformat(),
+    )
+    _replace_map_production_env_migration(marker_path, completed)
+    return completed
+
+
+def _load_map_production_env_migration(
+    path: Path,
+    *,
+    allow_missing: bool,
+) -> MapProductionEnvMigrationState | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        if allow_missing:
+            return None
+        raise DeploymentContractError(
+            "Map production env migration marker is missing"
+        ) from None
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker cannot be opened safely"
+        ) from exc
+    try:
+        artifact_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(artifact_stat.st_mode)
+            or artifact_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(artifact_stat.st_mode) != 0o600
+            or artifact_stat.st_size > 4096
+        ):
+            raise DeploymentContractError(
+                "Map production env migration marker type, owner, mode, or size is unsafe"
+            )
+        with os.fdopen(descriptor, mode="r", encoding="utf-8") as handle:
+            descriptor = -1
+            payload = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker is invalid"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    expected_keys = {
+        "version",
+        "state",
+        "baseline_manifest_sha256",
+        "prepared_at",
+        "completed_at",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != expected_keys:
+        raise DeploymentContractError(
+            "Map production env migration marker shape is invalid"
+        )
+    state = MapProductionEnvMigrationState(
+        version=payload["version"],
+        state=payload["state"],
+        baseline_manifest_sha256=payload["baseline_manifest_sha256"],
+        prepared_at=payload["prepared_at"],
+        completed_at=payload["completed_at"],
+    )
+    _validate_map_production_env_migration(state)
+    return state
+
+
+def _validate_map_production_env_migration(
+    state: MapProductionEnvMigrationState,
+) -> None:
+    if (
+        type(state.version) is not int
+        or state.version != _MAP_PRODUCTION_ENV_MIGRATION_VERSION
+        or not isinstance(state.state, str)
+        or state.state not in {"pending", "complete"}
+        or (
+            state.baseline_manifest_sha256 is not None
+            and (
+                not isinstance(state.baseline_manifest_sha256, str)
+                or _SHA256_HEX_PATTERN.fullmatch(
+                    state.baseline_manifest_sha256
+                )
+                is None
+            )
+        )
+        or not isinstance(state.prepared_at, str)
+        or not _is_iso8601(state.prepared_at)
+    ):
+        raise DeploymentContractError(
+            "Map production env migration marker contract is invalid"
+        )
+    if state.state == "pending" and state.completed_at is not None:
+        raise DeploymentContractError(
+            "pending Map production env migration cannot be completed"
+        )
+    if state.state == "complete" and (
+        not isinstance(state.completed_at, str)
+        or not _is_iso8601(state.completed_at)
+    ):
+        raise DeploymentContractError(
+            "complete Map production env migration needs a completion time"
+        )
+
+
+def _map_production_env_migration_bytes(
+    state: MapProductionEnvMigrationState,
+) -> bytes:
+    _validate_map_production_env_migration(state)
+    return (
+        json.dumps(
+            asdict(state),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _validate_map_production_env_state_directory(path: Path) -> None:
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory_stat = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration state directory is unavailable"
+        ) from exc
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != os.geteuid()
+        or directory_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise DeploymentContractError(
+            "Map production env migration state directory is unsafe"
+        )
+
+
+def _write_map_production_env_migration_temp(
+    path: Path,
+    state: MapProductionEnvMigrationState,
+) -> Path:
+    _validate_map_production_env_state_directory(path.parent)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            os.fchmod(temporary.fileno(), 0o600)
+            temporary.write(_map_production_env_migration_bytes(state))
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        return temporary_path
+    except OSError as exc:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise DeploymentContractError(
+            "Map production env migration marker write failed"
+        ) from exc
+
+
+def _create_map_production_env_migration(
+    path: Path,
+    state: MapProductionEnvMigrationState,
+) -> None:
+    temporary_path = _write_map_production_env_migration_temp(path, state)
+    try:
+        os.link(temporary_path, path, follow_symlinks=False)
+        _fsync_directory(path.parent)
+    except FileExistsError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker appeared concurrently"
+        ) from exc
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker create failed"
+        ) from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _replace_map_production_env_migration(
+    path: Path,
+    state: MapProductionEnvMigrationState,
+) -> None:
+    temporary_path = _write_map_production_env_migration_temp(path, state)
+    try:
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker completion failed"
+        ) from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def assert_pair_manifest_bootstrap_allowed(path: str) -> None:

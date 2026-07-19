@@ -4,6 +4,66 @@
 
 ---
 
+## 2026-07-20 (C7 Map production env 로컬 검증 완료 — T-035)
+
+- 같은 적대적 리뷰어가 marker 단조성, source 전체 scalar tree, tracked `env_file` object
+  identity와 test fixture 보강까지 exact head별로 재검토했고 최종 P0~P2 차단점이 없음을 확인했다.
+- Python 3.12에서 backend 886개 테스트가 모두 통과했다. 변경 파일은 Ruff 0.3.7 범위 검사와
+  `types-PyYAML`을 포함한 strict mypy를 통과했고, 공개 dummy 값으로 기본·커스텀 Compose
+  `config --quiet`도 모두 통과했다.
+- 저장소 main 자체의 Ruff/mypy 누적 오류는 별도 baseline으로 분리했다. 이번 변경 파일 Ruff는
+  기존 exact-type 검사(`E721`, `UP038`)를 명시적으로 보존했고, 새 source 두 파일은 strict mypy
+  suppression 없이 통과했다.
+- PR 병합 후에도 issue #63은 닫지 않는다. final n150 v4 exact-pair의 startup/readiness,
+  runtime secret isolation, cAdvisor health와 C7 live E2E가 끝난 뒤에만 닫는다.
+
+## 2026-07-20 (C7 Map production env 적대적 리뷰 P1 보강 — T-035)
+
+- CodeGraph depth 4 재점검에서 현재 UI auth preflight가 candidate build/recreate 전에 실행되어,
+  base runtime에 새 admin proxy env가 없으면 첫 전환과 rollback이 모두 Docker mutation 0회에서
+  순환 차단됨을 확인했다.
+- compatible-pair v4 shape는 유지하면서 manifest active pair의 exact `map_source_revision`에서 Map
+  source `docker-compose.yml`을 읽는다. active/rollback이 모두 알려진 source env v3인 최초 전환
+  window에서만 현재 UI admin proxy의 없음/frozen exact를 허용한다. source env v4가 한 번 기록되면
+  이후 v3 rollback도 필수 exact이며 candidate와 activation 후 runtime의 결선은 완화하지 않았다.
+- `.env.example`에 공개된 admin/service/cursor local placeholder 세 값은 production config와
+  raw/resolved candidate에서 명시적으로 거부하고 local에서만 허용하도록 보강했다. 재리뷰 승인
+  전 정책에 따라 test/lint/Compose gate는 아직 실행하지 않았다.
+- 두 번째 재리뷰에서 active/rollback 두 slot만으로 v4 이력의 단조성을 증명할 수 없고 source Compose의
+  다른 scalar path에 보호 placeholder를 복제할 수 있음을 확인했다. manifest v4 exact shape는 유지하고
+  sibling marker에 최초 v3/v3 logical hash를 pending으로 원자 고정한 뒤 성공한 activation/runtime
+  isolation/전체 smoke 후 complete로만 전환한다. complete는 rollback/rotation이 낮출 수 없으며
+  A3→B4→rollback A3→C3 뒤에도 누락을 거부한다.
+- source classifier는 profile/public/debug/service/admin/cursor 이름과 placeholder를 전체 scalar tree에서
+  exact path/count로 검사한다. API·Dagster·daemon `env_file`의 path/options shape와 exact commit에
+  추적된 참조 파일 내용도 고정하고, 다른 service/build/label/command/config/secret 유출 fixture를
+  추가했다. 재리뷰 승인 전이므로 test/lint/Compose gate는 계속 실행하지 않았다.
+
+## 2026-07-19 (C7 Map production API env 구현 준비 — T-035)
+
+- 수정 전 CodeGraph로 `C6cDeploymentConfig`, config loader, raw candidate validator, resolved
+  secret isolation의 depth 4 영향도를 확인했다. 배포·캡처·롤백과 공용 fixture가 모두 직접
+  영향권이므로 config·Compose·raw/resolved/runtime 검사를 한 변경으로 정렬했다.
+- canonical Compose에 production/public-key/debug/metrics와 host-network loopback trusted proxy
+  CIDR literal을 고정했다. admin proxy secret은 Map API+UI BFF exact pair, service token과 cursor
+  signing secret은 Map API-only로 결선하고 모두 manager `.env`에서 hard-require한다.
+- 세 신규 secret의 32자 이상·Unicode 공백 금지·기존 ops/UI/smoke credential 포함 상호 구분을
+  mutation 전에 검증한다. 다른 service의 environment/env_file/build arg/config/secret/label/command
+  경로와 runtime metadata로 이름 또는 값이 유출되는 경우를 거부하는 음성 fixture를 보강했다.
+- 구현 diff와 보안 점검 뒤 동일 적대적 리뷰어에게 넘길 준비 상태다. 리뷰 승인 전 정책에 따라
+  test/lint/Compose gate와 n150 live 검증은 아직 실행하지 않았다.
+
+## 2026-07-19 (C7 Map production API env 결선 착수 — T-035)
+
+- Map PR #782 교차 적대 리뷰에서 manager main이 ops principal만 전달해 새 production image의
+  admin/service/public/debug/metrics 불변식을 만족하지 못하고 startup 전에 fail-close하는 P1을
+  확인했다. 이어지는 PR #780의 cursor signing secret도 같은 final cutover에 포함한다.
+- issue #63과 ADR-23을 만들고 admin proxy는 Map API+UI BFF, service/cursor secret은 Map API-only,
+  profile/public/debug는 canonical literal로 고정했다. 인증된 Prometheus scrape 결선 전에는 metrics
+  endpoint를 명시적으로 끈다.
+- 다음 단계는 문서 선행 commit 뒤 canonical Compose와 C6c raw/resolved/runtime preflight·음성
+  fixture를 구현하고, 같은 단일 적대적 리뷰어 승인 전에는 test/lint/Compose gate를 실행하지 않는 것이다.
+
 ## 2026-07-19 (PR #61 리뷰 차단 보강 설계 — T-033/T-034)
 
 - PR #61 리뷰에서 raw Compose에는 있던 Map UI·Dagster web·Dagster daemon provenance가
