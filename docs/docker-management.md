@@ -304,10 +304,18 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 금지는 유지한다.
 현재 pair의 exact `map_source_revision`에서 Map source `docker-compose.yml`을 읽었을 때
 admin/service/profile/public/debug hard-require가 있고 cursor가 아직 없는 source env v3가 manifest
-active/rollback 양쪽에만 있다면 최초 managed cutover/rollback 경계에서 현재 UI의 admin proxy는
-없음 또는 frozen exact를 허용한다. source env v4 pair가 한 번 기록되면 이후 v3 rollback에서도
-현재 UI admin proxy는 필수 exact다. 이 예외는 candidate와 activation 후 runtime에는 적용하지 않으며,
-알려진 두 source shape 밖은 fail-close한다.
+active/rollback 양쪽에만 있고 marker가 없으면, manager는 manifest logical hash를 sibling
+`map-production-env-migration-v1.json`의 pending baseline으로 mutation 전에 원자 기록한다. pending은
+동일 manifest 재시도만 허용하며 현재 UI admin proxy는 없음 또는 frozen exact다. activation·runtime
+격리·전체 smoke가 성공하면 manifest commit 전에 marker를 complete로 바꾸며 manager는 이를 삭제하거나
+pending으로 낮추지 않는다. complete 뒤에는 pair rotation으로 slot이 다시 v3/v3가 되어도 admin proxy는
+필수 exact다. marker는 fixed-shape 0600 owner regular file이며 corrupt/symlink/wrong owner/mode와 baseline
+drift는 fail-close한다. compatible-pair manifest v4와 pair의 exact 9개 필드는 바꾸지 않는다.
+
+source classifier는 admin을 API+frontend, service를 API-only, cursor를 v3 전체 scalar tree 0회/v4
+API-only exact 1회로 제한한다. 보호 이름·placeholder가 Dagster/daemon/build/label/command/env_file/
+config/secret 등 다른 source path에 있으면 거부한다. manager candidate와 runtime의 metrics-off·trusted
+loopback 검사는 이 source 세대 판정과 섞지 않고 기존 raw/resolved/runtime validator가 담당한다.
 `KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정, owned typed-failure
 `KTDM_C6C_CANCEL_PROBE_JOB_ID`는 manager `.env`에만 둔다. 이 값들은 compose service env나 다른
 `env_file`에 주입하지 않는다. 특히 contract generation은 secret이 아니더라도 배포 판단용 manager-only
@@ -401,7 +409,8 @@ compose가 전체 계약을 만족하는지 **stop 전에** 확인한다. 다섯
 
 manifest와 mode 0600 lock은 checkout이 아니라
 `~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`에 함께 저장한다. production에서는
-root와 `compatible-pair-v4.json`/`deployment.lock` 파일명을 고정하고 모든 path override를 거부해 같은
+root와 `compatible-pair-v4.json`/`deployment.lock`/`map-production-env-migration-v1.json` 파일명을
+고정하고 모든 path override를 거부해 같은
 Compose project가 서로 다른 lock으로 갈라지지 않게 한다. manifest version은 bool/string/float 변환 없이
 정확한 integer만 허용하고 두 pair의 `recorded_at`은 offset ISO 8601 datetime이어야 한다. 기록은 파일
 fsync, 원자 replace, 부모 디렉터리 fsync 순서이며 마지막 fsync 실패 시 이전 byte/mode를 다시 원자

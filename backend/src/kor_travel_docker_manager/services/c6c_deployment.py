@@ -306,6 +306,11 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
 }
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _PAIR_MANIFEST_VERSION = 4
+_MAP_PRODUCTION_ENV_MIGRATION_VERSION = 1
+_MAP_PRODUCTION_ENV_MIGRATION_FILENAME = (
+    "map-production-env-migration-v1.json"
+)
+_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _LEGACY_PAIR_MANIFEST_FILENAMES = (
     "compatible-pair-v2.json",
     "compatible-pair-v3.json",
@@ -455,6 +460,15 @@ class CompatiblePairManifest:
     version: int
     rollback: CompatibleImagePair
     active: CompatibleImagePair
+
+
+@dataclass(frozen=True)
+class MapProductionEnvMigrationState:
+    version: int
+    state: str
+    baseline_manifest_sha256: str | None
+    prepared_at: str
+    completed_at: str | None
 
 
 @dataclass(frozen=True)
@@ -3984,6 +3998,288 @@ def load_pair_manifest(path: str) -> CompatiblePairManifest:
         raise DeploymentContractError("compatible pair manifest is invalid") from exc
     _validate_pair_manifest_contract(manifest)
     return manifest
+
+
+def map_production_env_migration_path(manifest_path: str) -> str:
+    """manifest shape를 바꾸지 않는 sibling 단조 migration marker 경로."""
+
+    path = _canonical_absolute_path(
+        manifest_path,
+        "compatible pair manifest path",
+    )
+    return str(path.with_name(_MAP_PRODUCTION_ENV_MIGRATION_FILENAME))
+
+
+def compatible_pair_manifest_logical_hash(
+    manifest: CompatiblePairManifest,
+) -> str:
+    _validate_pair_manifest_contract(manifest)
+    payload = json.dumps(
+        asdict(manifest),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def load_or_create_map_production_env_migration(
+    manifest_path: str,
+    *,
+    baseline_manifest: CompatiblePairManifest | None,
+    allow_create: bool = True,
+) -> MapProductionEnvMigrationState:
+    """missing marker를 pending으로 한 번 만들거나 기존 단조 상태를 검증한다."""
+
+    marker_path = Path(map_production_env_migration_path(manifest_path))
+    existing = _load_map_production_env_migration(marker_path, allow_missing=True)
+    expected_baseline = (
+        compatible_pair_manifest_logical_hash(baseline_manifest)
+        if baseline_manifest is not None
+        else None
+    )
+    if existing is not None:
+        if (
+            existing.state == "pending"
+            and existing.baseline_manifest_sha256 != expected_baseline
+        ):
+            raise DeploymentContractError(
+                "Map production env migration baseline changed while pending"
+            )
+        return existing
+    if not allow_create:
+        raise DeploymentContractError(
+            "Map production env migration marker is missing outside the original v3 baseline"
+        )
+
+    prepared_at = datetime.now(UTC).isoformat()
+    pending = MapProductionEnvMigrationState(
+        version=_MAP_PRODUCTION_ENV_MIGRATION_VERSION,
+        state="pending",
+        baseline_manifest_sha256=expected_baseline,
+        prepared_at=prepared_at,
+        completed_at=None,
+    )
+    _create_map_production_env_migration(marker_path, pending)
+    return pending
+
+
+def complete_map_production_env_migration(
+    manifest_path: str,
+) -> MapProductionEnvMigrationState:
+    """pending marker를 complete로만 전환하고 complete는 그대로 유지한다."""
+
+    marker_path = Path(map_production_env_migration_path(manifest_path))
+    current = _load_map_production_env_migration(marker_path, allow_missing=False)
+    if current is None:
+        raise DeploymentContractError(
+            "Map production env migration marker is missing"
+        )
+    if current.state == "complete":
+        return current
+    completed = MapProductionEnvMigrationState(
+        version=current.version,
+        state="complete",
+        baseline_manifest_sha256=current.baseline_manifest_sha256,
+        prepared_at=current.prepared_at,
+        completed_at=datetime.now(UTC).isoformat(),
+    )
+    _replace_map_production_env_migration(marker_path, completed)
+    return completed
+
+
+def _load_map_production_env_migration(
+    path: Path,
+    *,
+    allow_missing: bool,
+) -> MapProductionEnvMigrationState | None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        if allow_missing:
+            return None
+        raise DeploymentContractError(
+            "Map production env migration marker is missing"
+        ) from None
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker cannot be opened safely"
+        ) from exc
+    try:
+        artifact_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(artifact_stat.st_mode)
+            or artifact_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(artifact_stat.st_mode) != 0o600
+            or artifact_stat.st_size > 4096
+        ):
+            raise DeploymentContractError(
+                "Map production env migration marker type, owner, mode, or size is unsafe"
+            )
+        with os.fdopen(descriptor, mode="r", encoding="utf-8") as handle:
+            descriptor = -1
+            payload = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker is invalid"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    expected_keys = {
+        "version",
+        "state",
+        "baseline_manifest_sha256",
+        "prepared_at",
+        "completed_at",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != expected_keys:
+        raise DeploymentContractError(
+            "Map production env migration marker shape is invalid"
+        )
+    state = MapProductionEnvMigrationState(
+        version=payload["version"],
+        state=payload["state"],
+        baseline_manifest_sha256=payload["baseline_manifest_sha256"],
+        prepared_at=payload["prepared_at"],
+        completed_at=payload["completed_at"],
+    )
+    _validate_map_production_env_migration(state)
+    return state
+
+
+def _validate_map_production_env_migration(
+    state: MapProductionEnvMigrationState,
+) -> None:
+    if (
+        type(state.version) is not int
+        or state.version != _MAP_PRODUCTION_ENV_MIGRATION_VERSION
+        or not isinstance(state.state, str)
+        or state.state not in {"pending", "complete"}
+        or (
+            state.baseline_manifest_sha256 is not None
+            and (
+                not isinstance(state.baseline_manifest_sha256, str)
+                or _SHA256_HEX_PATTERN.fullmatch(
+                    state.baseline_manifest_sha256
+                )
+                is None
+            )
+        )
+        or not isinstance(state.prepared_at, str)
+        or not _is_iso8601(state.prepared_at)
+    ):
+        raise DeploymentContractError(
+            "Map production env migration marker contract is invalid"
+        )
+    if state.state == "pending" and state.completed_at is not None:
+        raise DeploymentContractError(
+            "pending Map production env migration cannot be completed"
+        )
+    if state.state == "complete" and (
+        not isinstance(state.completed_at, str)
+        or not _is_iso8601(state.completed_at)
+    ):
+        raise DeploymentContractError(
+            "complete Map production env migration needs a completion time"
+        )
+
+
+def _map_production_env_migration_bytes(
+    state: MapProductionEnvMigrationState,
+) -> bytes:
+    _validate_map_production_env_migration(state)
+    return (
+        json.dumps(
+            asdict(state),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _validate_map_production_env_state_directory(path: Path) -> None:
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory_stat = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration state directory is unavailable"
+        ) from exc
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != os.geteuid()
+        or directory_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise DeploymentContractError(
+            "Map production env migration state directory is unsafe"
+        )
+
+
+def _write_map_production_env_migration_temp(
+    path: Path,
+    state: MapProductionEnvMigrationState,
+) -> Path:
+    _validate_map_production_env_state_directory(path.parent)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            os.fchmod(temporary.fileno(), 0o600)
+            temporary.write(_map_production_env_migration_bytes(state))
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        return temporary_path
+    except OSError as exc:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise DeploymentContractError(
+            "Map production env migration marker write failed"
+        ) from exc
+
+
+def _create_map_production_env_migration(
+    path: Path,
+    state: MapProductionEnvMigrationState,
+) -> None:
+    temporary_path = _write_map_production_env_migration_temp(path, state)
+    try:
+        os.link(temporary_path, path, follow_symlinks=False)
+        _fsync_directory(path.parent)
+    except FileExistsError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker appeared concurrently"
+        ) from exc
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker create failed"
+        ) from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _replace_map_production_env_migration(
+    path: Path,
+    state: MapProductionEnvMigrationState,
+) -> None:
+    temporary_path = _write_map_production_env_migration_temp(path, state)
+    try:
+        os.replace(temporary_path, path)
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "Map production env migration marker completion failed"
+        ) from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def assert_pair_manifest_bootstrap_allowed(path: str) -> None:

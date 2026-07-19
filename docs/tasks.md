@@ -255,9 +255,13 @@
 - [x] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
       production literal을 mutation 전에 검증하게 한다.
 - [x] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가했다.
-- [x] 적대적 리뷰 P1에 따라 exact source manifest의 env v3→v4 경계를 판정해 active/rollback이
-      모두 v3인 최초 전환의 현재 UI admin proxy만 없음/exact를 허용했다. v4가 한 번 기록된 뒤의
-      v3 rollback과 source v4·candidate·최종 runtime은 필수 exact로 유지했다.
+- [x] 두 번째 적대적 리뷰 P1에 따라 manifest v4 exact 9-field shape 밖의 sibling 단조 marker를
+      추가했다. 최초 v3/v3 logical manifest hash만 pending 재시도를 허용하고 성공 검증 뒤 complete로
+      영구 닫아 A3→B4→rollback A3→C3 회전도 누락 예외를 다시 열지 못한다.
+- [x] marker atomic write/fsync와 fixed shape, 0600 regular owner, corrupt/symlink/mode/owner 및 pending
+      baseline drift fail-close 회귀 계약을 추가했다.
+- [x] 두 번째 적대적 리뷰 P2에 따라 source Compose 전체 scalar tree에서 admin=API+frontend,
+      service=API-only, cursor=v3 0회/v4 API exact 1회 외 모든 service/field leak를 거부했다.
 - [x] `.env.example`의 세 공개 local placeholder를 production config/raw/resolved에서 각각 거부하고
       local 허용 회귀 계약을 추가했다.
 - [ ] 동일 적대적 리뷰어 승인 뒤 test/lint/Compose gate를 실행하고 PR을 merge한다.

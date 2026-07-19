@@ -240,18 +240,22 @@ ktdctl pinvi-pair rollback
 
 기본 manifest와 mode 0600 lock은
 `~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`의 고정
-`compatible-pair-v4.json`/`deployment.lock`에 함께 저장한다. production은
+`compatible-pair-v4.json`/`deployment.lock`/`map-production-env-migration-v1.json`에 함께 저장한다.
+production은
 root·manifest·lock path override를
 모두 거부하므로 동일 Compose project가 다른 host lock을 선택할 수 없다. manifest version은 정확한 integer,
 active/rollback은 각각 Map runtime 네 image ID, `map_source_revision`, `pinvi_image_id`,
 `pinvi_source_revision`, `contract_generation`, `recorded_at` exact 9개 필드만 갖는다.
 `recorded_at`은 offset ISO 8601이어야 하며 parent fsync 실패 시 이전 snapshot을 원자 복원한다. manifest와
 capture/deploy/rollback은 같은 filesystem lock과 contract generation을 사용한다.
-deploy/rollback의 현재 UI preflight는 manifest active pair의 exact `map_source_revision`에서 Map source
-`docker-compose.yml`을 읽는다. active/rollback 양쪽이 cursor hard-require 전 source env v3일 때만
-기존 username/hash/session을 exact 검증하고 admin proxy는 없음 또는 frozen exact를 허용한다.
-source env v4 pair가 한 번 기록되면 이후 v3 rollback에서도 admin proxy는 필수 exact이며,
-candidate와 activation 후 검사는 세대와 무관하게 모두 필수다.
+deploy/rollback의 현재 UI preflight는 manifest pair의 exact `map_source_revision`에서 Map source
+`docker-compose.yml`을 읽는다. active/rollback 양쪽이 cursor hard-require 전 source env v3이고 marker가
+없을 때 exact manifest hash를 0600 sibling marker의 pending baseline으로 먼저 기록한다. pending은 같은
+baseline에서만 재시도하고 기존 username/hash/session을 exact 검증하며 admin proxy는 없음 또는 frozen
+exact를 허용한다. activation·runtime isolation·전체 smoke 성공 뒤 manifest보다 먼저 marker가 complete가
+되며, 이후 rollback/rotation으로 source slot이 v3/v3가 되어도 admin proxy는 필수 exact다. marker
+손상·symlink·owner/mode drift는 container mutation 전에 거부한다. candidate와 activation 후 검사는
+세대와 무관하게 모두 필수다.
 rollback은 다섯 image environment override의 canonical single-file contract를 stop 전에 검증하고
 Map API 복원·signed smoke와 Map dependent exact revision 검증 뒤 PinVi를 복원한다. 이후 Map/PinVi canonical 조회,
 Map UI 로그인·보호 화면·로그아웃, PinVi Web login shell과 runtime 격리가 모두 통과해야 commit한다.

@@ -46,10 +46,12 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_deployment_lock,
     c6c_global_mutation_lock_path,
     c6c_state_paths,
+    complete_map_production_env_migration,
     compose_volume_graph_hash,
     initial_pair_manifest,
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
+    load_or_create_map_production_env_migration,
     manifest_with_active_pair,
     new_image_pair,
     revalidate_candidate_system_bind_snapshots,
@@ -382,6 +384,160 @@ _MAP_SOURCE_V4_CURSOR_ENV_VALUE = (
     "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
 )
+_MAP_SOURCE_PROTECTED_ENV_VALUES = {
+    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
+    ),
+    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": (
+        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
+    ),
+    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (
+        _MAP_SOURCE_V4_CURSOR_ENV_VALUE
+    ),
+}
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_unique_yaml_mapping(
+    loader: _UniqueKeySafeLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable mapping key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_yaml_mapping,
+)
+
+
+def _load_unique_map_source_yaml(source: str) -> Any:
+    loader = _UniqueKeySafeLoader(source)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
+def _walk_map_source_scalars(
+    value: Any,
+    path: tuple[str, ...] = (),
+) -> Iterator[tuple[tuple[str, ...], Any]]:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key)
+            yield (*path, key_text, "<key>"), key_text
+            yield from _walk_map_source_scalars(item, (*path, key_text))
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk_map_source_scalars(item, (*path, str(index)))
+        return
+    yield path, value
+
+
+def _validate_map_source_protected_scalar_tree(
+    payload: Mapping[str, Any],
+    *,
+    contract_version: int,
+) -> None:
+    allowed_values = {
+        (
+            "services",
+            "api",
+            "environment",
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+        ],
+        (
+            "services",
+            "frontend",
+            "environment",
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+        ],
+        (
+            "services",
+            "api",
+            "environment",
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+        ],
+    }
+    if contract_version == 4:
+        allowed_values[
+            (
+                "services",
+                "api",
+                "environment",
+                "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
+            )
+        ] = _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+        ]
+
+    seen_key_paths: set[tuple[str, ...]] = set()
+    seen_value_paths: set[tuple[str, ...]] = set()
+    protected_names = tuple(_MAP_SOURCE_PROTECTED_ENV_VALUES)
+    for path, scalar in _walk_map_source_scalars(payload):
+        text = "" if scalar is None else str(scalar)
+        matching_names = tuple(name for name in protected_names if name in text)
+        if not matching_names:
+            continue
+        if path[-1:] == ("<key>",):
+            value_path = path[:-1]
+            if (
+                value_path not in allowed_values
+                or text != value_path[-1]
+                or matching_names != (value_path[-1],)
+            ):
+                raise DeploymentContractError(
+                    "Map source environment contract has a protected name outside its exact path"
+                )
+            seen_key_paths.add(value_path)
+            continue
+        expected_value = allowed_values.get(path)
+        if expected_value is None or text != expected_value:
+            raise DeploymentContractError(
+                "Map source environment contract has a protected placeholder outside its exact path"
+            )
+        seen_value_paths.add(path)
+
+    required_paths = set(allowed_values)
+    if seen_key_paths != required_paths or seen_value_paths != required_paths:
+        raise DeploymentContractError(
+            "Map source environment contract protected wiring count is invalid"
+        )
 
 
 def _map_source_environment_contract_version(
@@ -408,7 +564,7 @@ def _map_source_environment_contract_version(
         allow_output_whitespace=True,
     )
     try:
-        payload = yaml.safe_load(source_manifest)
+        payload = _load_unique_map_source_yaml(source_manifest)
     except yaml.YAMLError as exc:
         raise DeploymentContractError(
             "Map source environment contract manifest is invalid"
@@ -437,17 +593,19 @@ def _map_source_environment_contract_version(
     cursor_value = api_environment.get(
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
     )
-    if "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET" in ui_environment:
-        raise DeploymentContractError(
-            "Map source environment contract leaks the cursor secret into the UI"
-        )
     if cursor_value is None:
-        return 3
-    if cursor_value == _MAP_SOURCE_V4_CURSOR_ENV_VALUE:
-        return 4
-    raise DeploymentContractError(
-        "Map source environment contract has an unsupported cursor secret wiring"
+        contract_version = 3
+    elif cursor_value == _MAP_SOURCE_V4_CURSOR_ENV_VALUE:
+        contract_version = 4
+    else:
+        raise DeploymentContractError(
+            "Map source environment contract has an unsupported cursor secret wiring"
+        )
+    _validate_map_source_protected_scalar_tree(
+        payload,
+        contract_version=contract_version,
     )
+    return contract_version
 
 
 def get_compatible_pair_manifest_path(
@@ -3034,8 +3192,22 @@ class ComposeService:
         active_source_env_contract_version = source_contract_versions[
             manifest.active.map_source_revision
         ]
+        source_contract_version_set = set(source_contract_versions.values())
+        if transaction.manifest_path is None:
+            raise DeploymentContractError(
+                "compatible-pair transaction has no migration marker path"
+            )
+        marker = load_or_create_map_production_env_migration(
+            transaction.manifest_path,
+            baseline_manifest=manifest,
+            allow_create=source_contract_version_set == {3},
+        )
+        if marker.state == "pending" and source_contract_version_set != {3}:
+            raise DeploymentContractError(
+                "pending Map production env migration requires the original v3 baseline"
+            )
         allow_legacy_admin_proxy_absence = (
-            set(source_contract_versions.values()) == {3}
+            marker.state == "pending"
         )
         runtime_config = self._inspect_container_runtime_config(
             config.map_ui_container
@@ -3315,6 +3487,14 @@ class ComposeService:
             frozen_recovery=frozen_recovery,
         )
         validate_runtime_secret_isolation(runtime_configs, config)
+        if not frozen_recovery:
+            if transaction.manifest_path is None:
+                raise DeploymentContractError(
+                    "compatible-pair transaction has no migration marker path"
+                )
+            complete_map_production_env_migration(
+                transaction.manifest_path
+            )
         return {
             "contract_generation": expected_pair.contract_generation,
             "image_provenance": self._pair_provenance_payload(expected_pair),
@@ -3565,6 +3745,10 @@ class ComposeService:
                     "compatible-pair transaction has no manifest path"
                 )
             assert_pair_manifest_bootstrap_allowed(manifest_path)
+            load_or_create_map_production_env_migration(
+                manifest_path,
+                baseline_manifest=None,
+            )
             services = services_for_target("pinvi")
             map_services = list(get_target("map").get("services", []))
             pinvi_services = list(get_target("pinvi").get("services", []))

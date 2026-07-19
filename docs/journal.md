@@ -16,6 +16,14 @@
 - `.env.example`에 공개된 admin/service/cursor local placeholder 세 값은 production config와
   raw/resolved candidate에서 명시적으로 거부하고 local에서만 허용하도록 보강했다. 재리뷰 승인
   전 정책에 따라 test/lint/Compose gate는 아직 실행하지 않았다.
+- 두 번째 재리뷰에서 active/rollback 두 slot만으로 v4 이력의 단조성을 증명할 수 없고 source Compose의
+  다른 scalar path에 보호 placeholder를 복제할 수 있음을 확인했다. manifest v4 exact shape는 유지하고
+  sibling marker에 최초 v3/v3 logical hash를 pending으로 원자 고정한 뒤 성공한 activation/runtime
+  isolation/전체 smoke 후 complete로만 전환한다. complete는 rollback/rotation이 낮출 수 없으며
+  A3→B4→rollback A3→C3 뒤에도 누락을 거부한다.
+- source classifier는 admin/service/cursor 이름과 placeholder를 전체 scalar tree에서 exact path/count로
+  검사한다. Dagster/daemon과 environment 외 build/label/command/env_file/config/secret 유출 fixture를
+  추가했다. 두 번째 재리뷰 승인 전이므로 test/lint/Compose gate는 계속 실행하지 않았다.
 
 ## 2026-07-19 (C7 Map production API env 구현 준비 — T-035)
 

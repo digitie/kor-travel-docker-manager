@@ -33,10 +33,14 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     assert_pair_manifest_bootstrap_allowed,
     c6c_deployment_lock,
     c6c_state_paths,
+    compatible_pair_manifest_logical_hash,
+    complete_map_production_env_migration,
     initial_pair_manifest,
     load_c6c_deployment_config,
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
+    load_or_create_map_production_env_migration,
+    map_production_env_migration_path,
     manifest_with_active_pair,
     new_image_pair as _build_image_pair,
     run_map_ops_smoke,
@@ -1158,6 +1162,149 @@ def test_production_state_paths_cannot_split_one_project_lock(tmp_path: Path) ->
                 "COMPOSE_PROJECT_NAME": "pinvi-prod",
                 "KTDM_C6C_DEPLOYMENT_LOCK": str(tmp_path / "second.lock"),
             }
+        )
+
+
+def test_map_env_migration_pending_is_atomic_mode_600_and_retryable(
+    tmp_path: Path,
+) -> None:
+    manifest_path = str(tmp_path / "compatible-pair-v4.json")
+    manifest = _manifest()
+
+    first = load_or_create_map_production_env_migration(
+        manifest_path,
+        baseline_manifest=manifest,
+    )
+    second = load_or_create_map_production_env_migration(
+        manifest_path,
+        baseline_manifest=manifest,
+    )
+    marker_path = Path(map_production_env_migration_path(manifest_path))
+
+    assert first == second
+    assert first.state == "pending"
+    assert first.baseline_manifest_sha256 == (
+        compatible_pair_manifest_logical_hash(manifest)
+    )
+    assert stat.S_IMODE(marker_path.stat().st_mode) == 0o600
+    assert json.loads(marker_path.read_text(encoding="utf-8")) == asdict(first)
+
+
+def test_map_env_migration_pending_retry_rejects_changed_manifest(
+    tmp_path: Path,
+) -> None:
+    manifest_path = str(tmp_path / "compatible-pair-v4.json")
+    manifest = _manifest()
+    load_or_create_map_production_env_migration(
+        manifest_path,
+        baseline_manifest=manifest,
+    )
+    changed = replace(
+        manifest,
+        active=replace(
+            manifest.active,
+            recorded_at="2026-07-20T00:00:00+00:00",
+        ),
+    )
+
+    with pytest.raises(DeploymentContractError, match="baseline changed"):
+        load_or_create_map_production_env_migration(
+            manifest_path,
+            baseline_manifest=changed,
+        )
+
+
+def test_map_env_migration_missing_outside_legacy_prepare_fails_closed(
+    tmp_path: Path,
+) -> None:
+    manifest_path = str(tmp_path / "compatible-pair-v4.json")
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="missing outside the original v3 baseline",
+    ):
+        load_or_create_map_production_env_migration(
+            manifest_path,
+            baseline_manifest=_manifest(),
+            allow_create=False,
+        )
+
+
+def test_map_env_migration_complete_is_idempotent_and_never_downgrades(
+    tmp_path: Path,
+) -> None:
+    manifest_path = str(tmp_path / "compatible-pair-v4.json")
+    manifest = _manifest()
+    load_or_create_map_production_env_migration(
+        manifest_path,
+        baseline_manifest=manifest,
+    )
+
+    completed = complete_map_production_env_migration(manifest_path)
+    repeated = complete_map_production_env_migration(manifest_path)
+    rotated = replace(
+        manifest,
+        active=replace(
+            manifest.active,
+            map_source_revision="4" * 40,
+            recorded_at="2026-07-20T00:00:00+00:00",
+        ),
+    )
+    loaded_after_rotation = load_or_create_map_production_env_migration(
+        manifest_path,
+        baseline_manifest=rotated,
+        allow_create=False,
+    )
+
+    assert completed.state == "complete"
+    assert repeated == completed
+    assert loaded_after_rotation == completed
+
+
+@pytest.mark.parametrize(
+    "artifact_kind",
+    ["corrupt", "wrong_shape", "symlink", "wrong_mode"],
+)
+def test_map_env_migration_marker_artifact_drift_fails_closed(
+    artifact_kind: str,
+    tmp_path: Path,
+) -> None:
+    manifest_path = str(tmp_path / "compatible-pair-v4.json")
+    marker_path = Path(map_production_env_migration_path(manifest_path))
+    if artifact_kind == "symlink":
+        target = tmp_path / "target.json"
+        target.write_text("{}\n", encoding="utf-8")
+        marker_path.symlink_to(target)
+    elif artifact_kind == "wrong_shape":
+        marker_path.write_text('{"version": 1}\n', encoding="utf-8")
+        marker_path.chmod(0o600)
+    else:
+        marker_path.write_text("not-json\n", encoding="utf-8")
+        marker_path.chmod(0o600 if artifact_kind == "corrupt" else 0o644)
+
+    with pytest.raises(DeploymentContractError, match="migration marker"):
+        load_or_create_map_production_env_migration(
+            manifest_path,
+            baseline_manifest=_manifest(),
+        )
+
+
+def test_map_env_migration_wrong_owner_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = str(tmp_path / "compatible-pair-v4.json")
+    load_or_create_map_production_env_migration(
+        manifest_path,
+        baseline_manifest=_manifest(),
+    )
+    real_uid = os.geteuid()
+    monkeypatch.setattr(c6c_deployment.os, "geteuid", lambda: real_uid + 1)
+
+    with pytest.raises(DeploymentContractError, match="owner"):
+        load_or_create_map_production_env_migration(
+            manifest_path,
+            baseline_manifest=_manifest(),
         )
 
 
@@ -4200,6 +4347,35 @@ def _commit_map_source_contract(
     ).stdout.strip()
 
 
+def _commit_current_map_source_document(repository: Path, message: str) -> str:
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "docker-compose.yml"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=C6c Test",
+            "-c",
+            "user.email=c6c@example.test",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def test_map_source_environment_contract_is_exact_revision_and_version_aware(
     tmp_path: Path,
 ) -> None:
@@ -4250,6 +4426,131 @@ def test_map_source_environment_contract_rejects_partial_cursor_wiring(
     with pytest.raises(
         DeploymentContractError,
         match="unsupported cursor secret wiring",
+    ):
+        _map_source_environment_contract_version(
+            {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
+            compose_path=str(compose_path),
+            source_revision=revision,
+        )
+
+
+@pytest.mark.parametrize(
+    "leak_kind",
+    [
+        "dagster_environment",
+        "daemon_environment",
+        "build_arg",
+        "label",
+        "command",
+        "config",
+        "secret",
+        "env_file",
+    ],
+)
+def test_map_source_environment_contract_rejects_protected_tree_leak(
+    leak_kind: str,
+    tmp_path: Path,
+) -> None:
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    repository = tmp_path / "map"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    _commit_map_source_contract(repository, cursor_value=None)
+    source_path = repository / "docker-compose.yml"
+    payload = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    services = payload["services"]
+    assert isinstance(services, dict)
+    api = services["api"]
+    frontend = services["frontend"]
+    assert isinstance(api, dict)
+    assert isinstance(frontend, dict)
+    if leak_kind in {"dagster_environment", "daemon_environment"}:
+        leaked_service = (
+            "dagster"
+            if leak_kind == "dagster_environment"
+            else "dagster-daemon"
+        )
+        services[leaked_service] = {
+            "environment": {
+                "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (
+                    "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
+                    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
+                )
+            }
+        }
+    elif leak_kind == "build_arg":
+        api["build"] = {
+            "args": {
+                "LEAK": (
+                    "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+                    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
+                )
+            }
+        }
+    elif leak_kind == "label":
+        frontend["labels"] = {
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "leak"
+        }
+    elif leak_kind == "command":
+        api["command"] = [
+            "worker",
+            "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?required}",
+        ]
+    elif leak_kind == "config":
+        payload["configs"] = {
+            "leak": {"name": "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"}
+        }
+    elif leak_kind == "secret":
+        payload["secrets"] = {
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": {"file": "unused"}
+        }
+    else:
+        frontend["env_file"] = "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+    source_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    revision = _commit_current_map_source_document(repository, "protected leak")
+
+    with pytest.raises(DeploymentContractError, match="protected"):
+        _map_source_environment_contract_version(
+            {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
+            compose_path=str(compose_path),
+            source_revision=revision,
+        )
+
+
+def test_map_source_environment_contract_rejects_duplicate_protected_key(
+    tmp_path: Path,
+) -> None:
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    repository = tmp_path / "map"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    _commit_map_source_contract(repository, cursor_value=None)
+    source_path = repository / "docker-compose.yml"
+    source = source_path.read_text(encoding="utf-8")
+    protected_line = next(
+        line
+        for line in source.splitlines(keepends=True)
+        if "KOR_TRAVEL_MAP_API_SERVICE_TOKEN:" in line
+    )
+    source_path.write_text(
+        source.replace(protected_line, protected_line * 2, 1),
+        encoding="utf-8",
+    )
+    revision = _commit_current_map_source_document(repository, "duplicate key")
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="manifest is invalid",
     ):
         _map_source_environment_contract_version(
             {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
@@ -8154,6 +8455,12 @@ def test_current_map_ui_preflight_orders_inspect_validation_and_auth_smoke(
     events: list[str] = []
     transaction = _frozen_external_transaction(tmp_path)
     manifest = _manifest()
+    assert transaction.manifest_path is not None
+    load_or_create_map_production_env_migration(
+        transaction.manifest_path,
+        baseline_manifest=manifest,
+    )
+    complete_map_production_env_migration(transaction.manifest_path)
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service."
         "_map_source_environment_contract_version",
@@ -8220,6 +8527,13 @@ def test_current_map_ui_preflight_limits_absent_admin_proxy_to_v3_window(
         ),
     )
     transaction = _frozen_external_transaction(tmp_path)
+    assert transaction.manifest_path is not None
+    if v4_already_recorded:
+        load_or_create_map_production_env_migration(
+            transaction.manifest_path,
+            baseline_manifest=manifest,
+        )
+        complete_map_production_env_migration(transaction.manifest_path)
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service."
         "_map_source_environment_contract_version",
@@ -8254,6 +8568,145 @@ def test_current_map_ui_preflight_limits_absent_admin_proxy_to_v3_window(
             manifest=manifest,
             transaction=transaction,
         ) == []
+
+
+def test_complete_map_env_marker_blocks_a3_b4_rollback_a3_c3_reopen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    config = _production_config()
+    a3 = replace(
+        _manifest().active,
+        map_source_revision="3" * 40,
+    )
+    initial = CompatiblePairManifest(version=4, active=a3, rollback=a3)
+    b4 = replace(
+        a3,
+        map_image_id=f"sha256:{'4' * 64}",
+        map_source_revision="4" * 40,
+        recorded_at="2026-07-20T00:00:00+00:00",
+    )
+    after_b4 = manifest_with_active_pair(initial, b4)
+    after_rollback_a3 = manifest_with_active_pair(after_b4, a3)
+    c3 = replace(
+        a3,
+        map_image_id=f"sha256:{'5' * 64}",
+        map_source_revision="5" * 40,
+        recorded_at="2026-07-20T00:01:00+00:00",
+    )
+    final_manifest = manifest_with_active_pair(after_rollback_a3, c3)
+    assert {
+        final_manifest.active.map_source_revision,
+        final_manifest.rollback.map_source_revision,
+    } == {"3" * 40, "5" * 40}
+    transaction = _frozen_external_transaction(tmp_path)
+    assert transaction.manifest_path is not None
+    load_or_create_map_production_env_migration(
+        transaction.manifest_path,
+        baseline_manifest=initial,
+    )
+    complete_map_production_env_migration(transaction.manifest_path)
+    runtime = deepcopy(_runtime_secret_configs(config)[config.map_ui_container])
+    environment = runtime["Env"]
+    assert isinstance(environment, dict)
+    environment.pop("KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET")
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service."
+        "_map_source_environment_contract_version",
+        lambda _environment, **_kwargs: 3,
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_runtime_config",
+        lambda _container: runtime,
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="authentication differs from the frozen environment",
+    ):
+        service._preflight_current_map_ui_auth(
+            config,
+            manifest=final_manifest,
+            transaction=transaction,
+        )
+
+
+@pytest.mark.parametrize("frozen_recovery", [False, True])
+def test_full_verification_completes_marker_only_for_successful_activation(
+    frozen_recovery: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    config = _production_config()
+    pair = _manifest().active
+    transaction = _frozen_external_transaction(tmp_path)
+    assert transaction.manifest_path is not None
+    load_or_create_map_production_env_migration(
+        transaction.manifest_path,
+        baseline_manifest=_manifest(),
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_require_services_ready",
+        lambda *_args, **_kwargs: events.append("ready"),
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate_resolved_compose_contract",
+        lambda *_args, **_kwargs: events.append("resolved"),
+    )
+    monkeypatch.setattr(service, "_inspect_current_pair", lambda _config: pair)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
+        lambda _config: events.append("map-smoke") or [],
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service."
+        "run_pinvi_canonical_smoke",
+        lambda *_args, **_kwargs: events.append("pinvi-smoke") or [],
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_ui_auth_smoke",
+        lambda _config: events.append("ui-smoke") or [],
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_c6c_runtime_configs",
+        lambda *_args, **_kwargs: events.append("inspect-runtime") or {},
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service."
+        "validate_runtime_secret_isolation",
+        lambda *_args: events.append("runtime-isolation"),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service."
+        "complete_map_production_env_migration",
+        lambda path: events.append("marker-complete")
+        or complete_map_production_env_migration(path),
+    )
+
+    service._verify_active_contract(
+        config,
+        pair,
+        ["kor-travel-map-api"],
+        transaction=transaction,
+        frozen_recovery=frozen_recovery,
+    )
+
+    assert events[-1] == (
+        "runtime-isolation" if frozen_recovery else "marker-complete"
+    )
+    assert ("marker-complete" in events) is (not frozen_recovery)
+    persisted = load_or_create_map_production_env_migration(
+        transaction.manifest_path,
+        baseline_manifest=_manifest(),
+    )
+    assert persisted.state == ("pending" if frozen_recovery else "complete")
 
 
 @pytest.mark.parametrize("operation", ["deploy", "rollback"])
