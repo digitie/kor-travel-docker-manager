@@ -6,7 +6,6 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
-
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,

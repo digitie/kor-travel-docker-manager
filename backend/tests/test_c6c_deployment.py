@@ -8817,12 +8817,13 @@ def test_full_verification_completes_marker_only_for_successful_activation(
 ) -> None:
     service = ComposeService()
     config = _production_config()
-    pair = _manifest().active
+    manifest = _manifest()
+    pair = manifest.active
     transaction = _frozen_external_transaction(tmp_path)
     assert transaction.manifest_path is not None
     load_or_create_map_production_env_migration(
         transaction.manifest_path,
-        baseline_manifest=_manifest(),
+        baseline_manifest=manifest,
     )
     events: list[str] = []
     monkeypatch.setattr(
@@ -8880,7 +8881,7 @@ def test_full_verification_completes_marker_only_for_successful_activation(
     assert ("marker-complete" in events) is (not frozen_recovery)
     persisted = load_or_create_map_production_env_migration(
         transaction.manifest_path,
-        baseline_manifest=_manifest(),
+        baseline_manifest=manifest,
     )
     assert persisted.state == ("pending" if frozen_recovery else "complete")
 
