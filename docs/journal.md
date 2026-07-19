@@ -19,6 +19,10 @@
 - manager 구현은 manifest v4, 다섯 service snapshot build·activation·rollback·halt와 관련
   회귀 계약까지 작성했다. Map main의 C7 attestation runner도 동반 PR #778에서 v4 9-field
   pair와 네 Map role image ID 비교로 동기화하며, manager PR은 이 선행 계약에 의존한다.
+- 교차 재리뷰에서 canonical v4 파일이 없고 과거 기본 `compatible-pair-v2.json`만 있는 host를
+  빈 state로 오인하는 경로와 ADR-20의 과거 v3·두 API 지침이 현행 ADR-21과 충돌하는 문제를
+  확인했다. 저장소 역사에 실제 존재한 v2/v3 sibling은 payload를 신뢰하지 않고 fail-close하며,
+  ADR-20의 배포 결과는 ADR-21의 v4·다섯 runtime transaction이 대체함을 명시한다.
 
 ## 2026-07-19 (C6c cAdvisor healthcheck 포트 drift 확인 — T-034)
 

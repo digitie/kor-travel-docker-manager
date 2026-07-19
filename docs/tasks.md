@@ -228,6 +228,9 @@
       재생성·검증하며, 복원 실패 시 다섯 runtime을 모두 중지해 혼합 generation을 차단한다.
 - [x] resolved fixture drift, candidate build service 누락, dependent image/revision mismatch,
       activation·rollback 누락에 대한 회귀 계약을 추가한다.
+- [ ] canonical v4 경로가 저장소 역사에 존재한 sibling `compatible-pair-v2.json`과
+      `compatible-pair-v3.json`을 payload·file type과 무관하게 mutation 전에 fail-close하고,
+      legacy bytes 불변과 Docker 미호출을 실행형 회귀로 고정한다.
 - [ ] n150에서 clean exact commit으로 네 image를 빌드해 각
       `org.opencontainers.image.revision` label이 같은 40자 commit인지 확인한다.
 - [ ] C7 runtime attestation과 live E2E가 실제 기동된 네 Map image provenance를 통과하면
