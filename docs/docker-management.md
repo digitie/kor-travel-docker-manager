@@ -302,6 +302,12 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `env_file`을 사용할 수 없다. username은 confidential 값이 아닌 identity라 다른 서비스의 일반 scalar와
 같거나 그 일부여도 허용하지만, Map UI의 exact wiring/runtime equality와 Map UI 밖 username 환경변수 이름
 금지는 유지한다.
+현재 pair의 exact `map_source_revision`에서 Map source `docker-compose.yml`을 읽었을 때
+admin/service/profile/public/debug hard-require가 있고 cursor가 아직 없는 source env v3가 manifest
+active/rollback 양쪽에만 있다면 최초 managed cutover/rollback 경계에서 현재 UI의 admin proxy는
+없음 또는 frozen exact를 허용한다. source env v4 pair가 한 번 기록되면 이후 v3 rollback에서도
+현재 UI admin proxy는 필수 exact다. 이 예외는 candidate와 activation 후 runtime에는 적용하지 않으며,
+알려진 두 source shape 밖은 fail-close한다.
 `KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정, owned typed-failure
 `KTDM_C6C_CANCEL_PROBE_JOB_ID`는 manager `.env`에만 둔다. 이 값들은 compose service env나 다른
 `env_file`에 주입하지 않는다. 특히 contract generation은 secret이 아니더라도 배포 판단용 manager-only

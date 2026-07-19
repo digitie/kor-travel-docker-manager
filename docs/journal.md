@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-20 (C7 Map production env 적대적 리뷰 P1 보강 — T-035)
+
+- CodeGraph depth 4 재점검에서 현재 UI auth preflight가 candidate build/recreate 전에 실행되어,
+  base runtime에 새 admin proxy env가 없으면 첫 전환과 rollback이 모두 Docker mutation 0회에서
+  순환 차단됨을 확인했다.
+- compatible-pair v4 shape는 유지하면서 manifest active pair의 exact `map_source_revision`에서 Map
+  source `docker-compose.yml`을 읽는다. active/rollback이 모두 알려진 source env v3인 최초 전환
+  window에서만 현재 UI admin proxy의 없음/frozen exact를 허용한다. source env v4가 한 번 기록되면
+  이후 v3 rollback도 필수 exact이며 candidate와 activation 후 runtime의 결선은 완화하지 않았다.
+- `.env.example`에 공개된 admin/service/cursor local placeholder 세 값은 production config와
+  raw/resolved candidate에서 명시적으로 거부하고 local에서만 허용하도록 보강했다. 재리뷰 승인
+  전 정책에 따라 test/lint/Compose gate는 아직 실행하지 않았다.
+
 ## 2026-07-19 (C7 Map production API env 구현 준비 — T-035)
 
 - 수정 전 CodeGraph로 `C6cDeploymentConfig`, config loader, raw candidate validator, resolved

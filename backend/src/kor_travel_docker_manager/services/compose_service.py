@@ -344,6 +344,112 @@ def _run_git_read(
     return completed.stdout.strip()
 
 
+_MAP_SOURCE_V3_API_ENVIRONMENT = {
+    "KOR_TRAVEL_MAP_API_PROFILE": "${KOR_TRAVEL_MAP_API_PROFILE:-production}",
+    "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": (
+        "${KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED:-false}"
+    ),
+    "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": (
+        "${KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED:-true}"
+    ),
+    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
+    ),
+    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": (
+        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
+    ),
+}
+_MAP_SOURCE_V3_UI_ENVIRONMENT = {
+    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
+    ),
+    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": (
+        "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:-admin}"
+    ),
+    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
+        "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH is required}"
+    ),
+    "KOR_TRAVEL_MAP_UI_SESSION_SECRET": (
+        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET is required}"
+    ),
+}
+_MAP_SOURCE_V4_CURSOR_ENV_VALUE = (
+    "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
+    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
+)
+
+
+def _map_source_environment_contract_version(
+    environment: Mapping[str, str],
+    *,
+    compose_path: str,
+    source_revision: str,
+) -> int:
+    """active image exact source manifest의 production env 계약 세대를 판정한다."""
+
+    if re.fullmatch(r"[0-9a-f]{40}", source_revision) is None:
+        raise DeploymentContractError(
+            "Map source environment contract requires an exact source revision"
+        )
+    repository = _resolve_repository_path(
+        environment.get("KOR_TRAVEL_MAP_REPO_DIR", "../kor-travel-map"),
+        compose_directory=Path(compose_path).resolve().parent,
+        label="Map",
+    )
+    source_manifest = _run_git_read(
+        repository,
+        ["show", f"{source_revision}:docker-compose.yml"],
+        label="Map",
+        allow_output_whitespace=True,
+    )
+    try:
+        payload = yaml.safe_load(source_manifest)
+    except yaml.YAMLError as exc:
+        raise DeploymentContractError(
+            "Map source environment contract manifest is invalid"
+        ) from exc
+    services = payload.get("services") if isinstance(payload, Mapping) else None
+    api = services.get("api") if isinstance(services, Mapping) else None
+    ui = services.get("frontend") if isinstance(services, Mapping) else None
+    api_environment = api.get("environment") if isinstance(api, Mapping) else None
+    ui_environment = ui.get("environment") if isinstance(ui, Mapping) else None
+    if not isinstance(api_environment, Mapping) or not isinstance(
+        ui_environment, Mapping
+    ):
+        raise DeploymentContractError(
+            "Map source environment contract manifest has no canonical services"
+        )
+    if any(
+        api_environment.get(name) != expected
+        for name, expected in _MAP_SOURCE_V3_API_ENVIRONMENT.items()
+    ) or any(
+        ui_environment.get(name) != expected
+        for name, expected in _MAP_SOURCE_V3_UI_ENVIRONMENT.items()
+    ):
+        raise DeploymentContractError(
+            "Map source environment contract is outside the supported v3/v4 range"
+        )
+    cursor_value = api_environment.get(
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+    )
+    if "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET" in ui_environment:
+        raise DeploymentContractError(
+            "Map source environment contract leaks the cursor secret into the UI"
+        )
+    if cursor_value is None:
+        return 3
+    if cursor_value == _MAP_SOURCE_V4_CURSOR_ENV_VALUE:
+        return 4
+    raise DeploymentContractError(
+        "Map source environment contract has an unsupported cursor secret wiring"
+    )
+
+
 def get_compatible_pair_manifest_path(
     environment: Mapping[str, str] | None = None,
 ) -> str:
@@ -2528,7 +2634,11 @@ class ComposeService:
             services,
             transaction=transaction,
         )
-        preflight_ui_smoke = self._preflight_current_map_ui_auth(config)
+        preflight_ui_smoke = self._preflight_current_map_ui_auth(
+            config,
+            manifest=manifest,
+            transaction=transaction,
+        )
 
         result: dict[str, Any] = {
             "success": True,
@@ -2906,11 +3016,38 @@ class ComposeService:
     def _preflight_current_map_ui_auth(
         self,
         config: C6cDeploymentConfig,
+        *,
+        manifest: CompatiblePairManifest,
+        transaction: ComposeTransactionSnapshot,
     ) -> list[dict[str, int | str]]:
+        source_contract_versions = {
+            source_revision: _map_source_environment_contract_version(
+                transaction.environment.effective,
+                compose_path=transaction.environment.compose_path,
+                source_revision=source_revision,
+            )
+            for source_revision in {
+                manifest.active.map_source_revision,
+                manifest.rollback.map_source_revision,
+            }
+        }
+        active_source_env_contract_version = source_contract_versions[
+            manifest.active.map_source_revision
+        ]
+        allow_legacy_admin_proxy_absence = (
+            set(source_contract_versions.values()) == {3}
+        )
         runtime_config = self._inspect_container_runtime_config(
             config.map_ui_container
         )
-        validate_current_map_ui_auth_runtime(runtime_config, config)
+        validate_current_map_ui_auth_runtime(
+            runtime_config,
+            config,
+            source_env_contract_version=active_source_env_contract_version,
+            allow_legacy_admin_proxy_absence=(
+                allow_legacy_admin_proxy_absence
+            ),
+        )
         return run_map_ui_auth_preflight(config)
 
     def _validate_resolved_compose_contract(
@@ -3839,7 +3976,11 @@ class ComposeService:
 
             services = services_for_target("pinvi")
             self._require_services_ready(services, transaction=transaction)
-            preflight_ui_smoke = self._preflight_current_map_ui_auth(config)
+            preflight_ui_smoke = self._preflight_current_map_ui_auth(
+                config,
+                manifest=manifest,
+                transaction=transaction,
+            )
             result: dict[str, Any] = {
                 "success": True,
                 "returncode": 0,

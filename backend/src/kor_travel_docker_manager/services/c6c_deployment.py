@@ -103,6 +103,11 @@ _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
         _MAP_CURSOR_SIGNING_SECRET_ENV,
     }
 )
+_MAP_PUBLISHED_EXAMPLE_SECRET_VALUES = {
+    _MAP_ADMIN_PROXY_ENV: "local-map-admin-proxy-secret-change-me",
+    _MAP_SERVICE_TOKEN_ENV: "local-map-service-token-change-me-now",
+    _MAP_CURSOR_SIGNING_SECRET_ENV: "local-map-cursor-signing-secret-change-me",
+}
 _MAP_PRODUCTION_API_LITERAL_VALUES = {
     _MAP_PROFILE_ENV: "production",
     _MAP_PUBLIC_API_KEY_REQUIRED_ENV: "true",
@@ -907,7 +912,8 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
             _PINVI_ADMIN_PASSWORD_ENV: config.smoke.pinvi_admin_password,
             "KTDM_C6C_CANCEL_PROBE_JOB_ID": config.smoke.cancel_probe_job_id,
             "KTDM_C6C_CONTRACT_GENERATION": config.contract_generation,
-        }
+        },
+        reject_published_examples=config.production,
     )
 
 
@@ -915,6 +921,7 @@ def _validate_map_production_secret_values(
     values: Mapping[str, str],
     *,
     error_type: type[DeploymentContractError] = DeploymentContractError,
+    reject_published_examples: bool = False,
 ) -> None:
     new_secrets = tuple(
         (env_name, values.get(env_name, ""))
@@ -931,6 +938,14 @@ def _validate_map_production_secret_values(
             )
         if any(character.isspace() for character in secret):
             raise error_type(f"{env_name} must not contain whitespace")
+        if reject_published_examples and hmac.compare_digest(
+            secret,
+            _MAP_PUBLISHED_EXAMPLE_SECRET_VALUES[env_name],
+        ):
+            raise error_type(
+                f"{env_name} must not use the published local example value "
+                "in production"
+            )
 
     protected_credential_names = (
         _MAP_READ_ENV,
@@ -1263,6 +1278,9 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_map_production_secret_values(
         environment,
         error_type=ComposeCandidateContractError,
+        reject_published_examples=(
+            environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
+        ),
     )
     _assert_candidate_single_file_boundary(resolved, environment=environment)
     services = resolved.get("services")
@@ -1683,6 +1701,9 @@ def validate_compose_candidate_protected_values(
         _validate_map_production_secret_values(
             environment,
             error_type=ComposeCandidateContractError,
+            reject_published_examples=(
+                environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
+            ),
         )
     _assert_candidate_single_file_boundary(candidate, environment=environment)
     services = candidate.get("services")
@@ -3676,16 +3697,30 @@ def _request_json(
 def validate_current_map_ui_auth_runtime(
     runtime_config: Mapping[str, Any],
     config: C6cDeploymentConfig,
+    *,
+    source_env_contract_version: int = 4,
+    allow_legacy_admin_proxy_absence: bool = False,
 ) -> None:
-    """mutation 전 현재 Map UI runtime 인증값만 frozen expected와 대조한다."""
+    """현재 Map UI 인증을 exact source 환경 계약 세대와 대조한다."""
 
     _validate_map_production_secrets(config)
+    if source_env_contract_version not in {3, 4}:
+        raise DeploymentContractError(
+            "the current Map source environment contract version is unsupported"
+        )
     expected = {
         _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
         _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
         _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
-        _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
     }
+    optional_expected = (
+        {_MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret}
+        if source_env_contract_version == 3
+        and allow_legacy_admin_proxy_absence
+        else {}
+    )
+    if not optional_expected:
+        expected[_MAP_ADMIN_PROXY_ENV] = config.map_admin_proxy_secret
     actual: dict[str, str] = {}
     allowed_paths: set[tuple[str, ...]] = set()
     plaintext = config.smoke.map_ui_password
@@ -3700,7 +3735,7 @@ def validate_current_map_ui_auth_runtime(
             raise DeploymentContractError(
                 "the current Map UI contains a plaintext smoke credential"
             )
-        if env_name not in expected:
+        if env_name not in expected and env_name not in optional_expected:
             continue
         if env_name in actual:
             raise DeploymentContractError(
@@ -3712,6 +3747,14 @@ def validate_current_map_ui_auth_runtime(
     for env_name, expected_value in expected.items():
         actual_value = actual.get(env_name)
         if actual_value is None or not hmac.compare_digest(
+            actual_value.encode("utf-8"), expected_value.encode("utf-8")
+        ):
+            raise DeploymentContractError(
+                "the current Map UI authentication differs from the frozen environment"
+            )
+    for env_name, expected_value in optional_expected.items():
+        actual_value = actual.get(env_name)
+        if actual_value is not None and not hmac.compare_digest(
             actual_value.encode("utf-8"), expected_value.encode("utf-8")
         ):
             raise DeploymentContractError(

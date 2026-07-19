@@ -255,6 +255,11 @@
 - [x] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
       production literal을 mutation 전에 검증하게 한다.
 - [x] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가했다.
+- [x] 적대적 리뷰 P1에 따라 exact source manifest의 env v3→v4 경계를 판정해 active/rollback이
+      모두 v3인 최초 전환의 현재 UI admin proxy만 없음/exact를 허용했다. v4가 한 번 기록된 뒤의
+      v3 rollback과 source v4·candidate·최종 runtime은 필수 exact로 유지했다.
+- [x] `.env.example`의 세 공개 local placeholder를 production config/raw/resolved에서 각각 거부하고
+      local 허용 회귀 계약을 추가했다.
 - [ ] 동일 적대적 리뷰어 승인 뒤 test/lint/Compose gate를 실행하고 PR을 merge한다.
 - [ ] n150 final v4 exact-pair에서 Map API startup/readiness와 runtime secret isolation을 확인한 뒤
       issue #63을 닫고 완료 이력으로 옮긴다.
