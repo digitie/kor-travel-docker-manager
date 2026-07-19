@@ -29,6 +29,7 @@
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
 | **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
+| **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -212,6 +213,18 @@
       entrypoint guard 우회를 차단했다.
 - [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
       통과한 뒤 완료 이력으로 옮긴다.
+
+### T-033: C7 Map UI·Dagster OCI revision 결선
+
+- [/] `kor-travel-map-api`, `kor-travel-map-ui`, `kor-travel-map-dagster`,
+      `kor-travel-map-dagster-daemon`의 build가 모두 동일한 canonical
+      `KOR_TRAVEL_MAP_GIT_COMMIT`을 Dockerfile에 전달하도록 compose를 정렬한다.
+- [ ] raw compose 계약 테스트가 네 service의 build arg source와 `development` fallback을
+      고정하고 일부 service만 누락되는 회귀를 차단한다.
+- [ ] n150에서 clean exact commit으로 네 image를 빌드해 각
+      `org.opencontainers.image.revision` label이 같은 40자 commit인지 확인한다.
+- [ ] C7 runtime attestation과 live E2E가 실제 기동된 네 Map image provenance를 통과하면
+      issue #60을 닫고 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

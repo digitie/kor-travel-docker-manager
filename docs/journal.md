@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-07-19 (C7 Map UI·Dagster provenance 누락 확인 — T-033)
+
+- n150 production 후보를 clean Map commit에서 빌드한 뒤 OCI label을 확인한 결과 Map API는
+  exact revision을 가졌지만 Map UI·Dagster web·Dagster daemon은 Dockerfile 기본값
+  `development`를 유지해 C7 runtime attestation을 통과할 수 없음을 확인했다.
+- 원인은 세 compose service가 Dockerfile에 선언된 `KOR_TRAVEL_MAP_GIT_COMMIT` build arg를
+  전달하지 않는 wiring 누락이다. issue #60으로 기록하고 실제 container 기동 전에
+  candidate를 중단했다.
+- T-033은 Map runtime 네 image가 같은 canonical source commit을 사용하도록 compose와
+  계약 테스트를 정렬하고, n150 exact-image label 및 C7 attestation으로 완료한다.
+
 ## 2026-07-19 (T-032 C7 image provenance 완료·아카이브)
 
 - docker-manager PR #58을 `ecaab504e63a99cb757318d3b67337bec962d90b`로 squash merge했다.

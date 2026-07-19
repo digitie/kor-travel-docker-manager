@@ -198,6 +198,8 @@ graph TD
      안에서 candidate pair를 bootstrap하고 전체 계약 성공 뒤 최초 v3를 기록한다.
      v3는 두 immutable image ID와 clean source revision을 active/rollback 각 pair에 함께
      결박하며 provenance가 없는 v1/v2를 거부한다. 실패 시 두 API를 중지한다.
+     상위 C7 runtime attestation을 위해 Map API·UI·Dagster web·Dagster daemon image도
+     같은 canonical `KOR_TRAVEL_MAP_GIT_COMMIT` build arg와 OCI revision label을 사용한다.
    - Manager mutation의 compose source는 단일 canonical 파일이다. mutex 안에서 persisted/request의
      raw·Docker-resolved volume graph를 각각 exact 비교하고 include/extends/override 합성을 거부한다.
      cAdvisor mount는 RO `/sys`와 Docker socket exact set만 허용한다. 첫 mutation 성공 뒤 후속 preflight
