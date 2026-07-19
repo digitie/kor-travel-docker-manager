@@ -39,6 +39,21 @@ _MAP_UI_PASSWORD_HASH_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
 _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
 _MAP_UI_PASSWORD_ENV = "KTDM_C6C_MAP_UI_ADMIN_PASSWORD"
 _PINVI_ADMIN_PASSWORD_ENV = "KTDM_C6C_PINVI_ADMIN_PASSWORD"
+_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = frozenset(
+    {
+        "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_KMA_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_KMA_APIHUB_KEY",
+        "KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_DATAGOKR_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_VISITKOREA_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_KNPS_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_AIRKOREA_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_KRFOREST_SERVICE_KEY",
+        "KOR_TRAVEL_MAP_API_ETL_LIVE_PREVIEW_ENABLED",
+    }
+)
 _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
     {
         "KTDM_C6C_CONTRACT_GENERATION",
@@ -870,6 +885,17 @@ def validate_resolved_compose_secret_isolation(
     map_ui_service = _service_mapping(services, _MAP_UI_SERVICE)
     map_environment = _environment_mapping(map_service.get("environment"))
     pinvi_environment = _environment_mapping(pinvi_service.get("environment"))
+    removed_provider_names = _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(
+        map_environment
+    )
+    if removed_provider_names:
+        raise DeploymentContractError(
+            "resolved compose Map API includes removed provider runtime environment"
+        )
+    if map_service.get("command") is not None or map_service.get("entrypoint") is not None:
+        raise DeploymentContractError(
+            "resolved compose Map API must use the immutable image entrypoint and command"
+        )
 
     for service_name, service in (
         (_MAP_API_SERVICE, map_service),
@@ -1056,6 +1082,18 @@ def validate_resolved_compose_candidate_protected_values(
         if not isinstance(service_environment, Mapping):
             raise ComposeCandidateContractError(
                 f"resolved compose candidate {service_name} has no environment mapping"
+            )
+        if service_name == _MAP_API_SERVICE and (
+            _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(service_environment)
+        ):
+            raise ComposeCandidateContractError(
+                "resolved compose candidate Map API includes removed provider runtime environment"
+            )
+        if service_name == _MAP_API_SERVICE and (
+            service.get("command") is not None or service.get("entrypoint") is not None
+        ):
+            raise ComposeCandidateContractError(
+                "resolved compose candidate Map API must use the immutable image entrypoint and command"
             )
         for (allowed_service, target_name), source_name in (
             _CANDIDATE_ALLOWED_API_ENV_SOURCES.items()
@@ -1261,6 +1299,18 @@ def validate_compose_candidate_protected_values(
                     f"compose candidate {service_name} must use mapping environment"
                 )
             raw_environment = {}
+        if service_name == _MAP_API_SERVICE and (
+            _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(raw_environment)
+        ):
+            raise ComposeCandidateContractError(
+                "compose candidate Map API includes removed provider runtime environment"
+            )
+        if service_name == _MAP_API_SERVICE and (
+            service.get("command") is not None or service.get("entrypoint") is not None
+        ):
+            raise ComposeCandidateContractError(
+                "compose candidate Map API must use the immutable image entrypoint and command"
+            )
         for allowed_service, target_name in _CANDIDATE_ALLOWED_API_ENV_SOURCES:
             if allowed_service != service_name:
                 continue
@@ -3347,6 +3397,17 @@ def validate_runtime_secret_isolation(
             ):
                 raise DeploymentContractError(
                     "a C6c credential leaks outside its exact environment path"
+                )
+        if container_name == config.map_container:
+            if _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(environment):
+                raise DeploymentContractError(
+                    "Map API runtime includes forbidden provider environment"
+                )
+            if runtime_config.get("Entrypoint") is not None or runtime_config.get(
+                "Cmd"
+            ) != ["./docker/api-entrypoint.sh"]:
+                raise DeploymentContractError(
+                    "Map API runtime must use the immutable image entrypoint and command"
                 )
 
 

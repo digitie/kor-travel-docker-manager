@@ -45,14 +45,21 @@ _PINVI_MAP_BASE_URL_SOURCE = (
     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
 )
 _OPINET_API_KEY_ENV = "${KOR_TRAVEL_MAP_OPINET_API_KEY:-}"
-_API_OPINET_SERVICE_KEY_ENV = (
-    "${KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY:-${KOR_TRAVEL_MAP_OPINET_API_KEY:-}}"
-)
 _KREX_EX_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}"
 _KREX_GO_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-}"
-_API_KREX_SERVICE_KEY_ENV = (
-    "${KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY:-${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}}"
-)
+_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = {
+    "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KMA_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KMA_APIHUB_KEY",
+    "KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_DATAGOKR_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_VISITKOREA_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KNPS_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_AIRKOREA_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KRFOREST_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_ETL_LIVE_PREVIEW_ENABLED",
+}
 _MAP_UI_USERNAME = "map-ui-admin-placeholder"
 _MAP_UI_PASSWORD_HASH = "pbkdf2_sha256$100000$test-salt$test-digest"
 _MAP_UI_SESSION_SECRET = "map-ui-session-secret-placeholder-value"
@@ -342,46 +349,25 @@ def test_map_ingestion_services_interpolate_provider_credentials_from_current_en
             assert environment[key] == source_expression
 
 
-def test_map_api_interpolates_only_provider_preview_credentials() -> None:
+def test_map_api_excludes_removed_provider_runtime_credentials() -> None:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
 
     api_environment = compose["services"][_MAP_API_SERVICE]["environment"]
-    assert "KOR_TRAVEL_MAP_OPINET_API_KEY" not in api_environment
-    assert "KOR_TRAVEL_MAP_KREX_EX_API_KEY" not in api_environment
-    assert "KOR_TRAVEL_MAP_KREX_GO_API_KEY" not in api_environment
-    assert (
-        api_environment["KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY"]
-        == _API_OPINET_SERVICE_KEY_ENV
-    )
-    assert (
-        api_environment["KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY"]
-        == _API_KREX_SERVICE_KEY_ENV
-    )
-
-    for key in (
-        "KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY",
-        "KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY",
-    ):
-        services_with_key = {
-            service_name
-            for service_name, service in compose["services"].items()
-            if key in service.get("environment", {})
-        }
-        assert services_with_key == {_MAP_API_SERVICE}
+    assert _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.isdisjoint(api_environment)
 
 
 def test_map_provider_credentials_have_empty_env_example_placeholders() -> None:
     env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     for key in (
         "KOR_TRAVEL_MAP_OPINET_API_KEY",
-        "KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY",
         "KOR_TRAVEL_MAP_KREX_EX_API_KEY",
         "KOR_TRAVEL_MAP_KREX_GO_API_KEY",
-        "KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY",
     ):
         assert [line for line in env_example_lines if line.startswith(f"{key}=")] == [
             f"{key}="
         ]
+    for key in _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES:
+        assert not any(line.startswith(f"{key}=") for line in env_example_lines)
 
 
 def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> None:

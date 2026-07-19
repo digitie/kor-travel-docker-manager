@@ -35,8 +35,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
     new_image_pair,
-    run_map_ui_auth_preflight,
     run_map_ops_smoke,
+    run_map_ui_auth_preflight,
     run_pinvi_canonical_smoke,
     run_ui_auth_smoke,
     validate_compose_candidate_protected_values,
@@ -76,6 +76,19 @@ _MAP_UI_SESSION_SECRET = "map-ui-session-secret-placeholder-value"
 _DOLLAR_MAP_UI_USERNAME = "map$ui$admin"
 _DOLLAR_MAP_UI_SESSION_SECRET = "map$ui$session$secret$placeholder$value"
 _MAP_UI_PASSWORD = "map-ui-password-strong"
+_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = (
+    "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KMA_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KMA_APIHUB_KEY",
+    "KOR_TRAVEL_MAP_API_OPINET_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_DATAGOKR_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_VISITKOREA_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KREX_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KNPS_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_AIRKOREA_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_KRFOREST_SERVICE_KEY",
+    "KOR_TRAVEL_MAP_API_ETL_LIVE_PREVIEW_ENABLED",
+)
 _UNICODE_WHITESPACE = tuple(
     chr(codepoint)
     for codepoint in (
@@ -671,6 +684,8 @@ def _runtime_secret_configs(
 ) -> dict[str, dict[str, object]]:
     return {
         config.map_container: {
+            "Cmd": ["./docker/api-entrypoint.sh"],
+            "Entrypoint": None,
             "Env": {
                 "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
                 "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
@@ -1165,6 +1180,123 @@ def test_resolved_compose_accepts_exact_protected_service_wiring() -> None:
         _resolved_compose_with_map_ui_auth(),
         _production_config(),
     )
+
+
+@pytest.mark.parametrize("env_name", _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES)
+def test_raw_candidate_rejects_removed_map_api_provider_environment(
+    env_name: str,
+) -> None:
+    candidate = _source_compose()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    map_api = services["kor-travel-map-api"]
+    assert isinstance(map_api, dict)
+    environment = map_api["environment"]
+    assert isinstance(environment, dict)
+    environment[env_name] = "${REMOVED_PROVIDER_KEY:-}"
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="removed provider runtime environment",
+    ):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path="/tmp/docker-compose.yml",
+            root_env_path="/tmp/.env",
+            environment=_raw_candidate_environment(),
+        )
+
+
+@pytest.mark.parametrize("env_name", _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES)
+def test_resolved_candidate_rejects_removed_map_api_provider_environment(
+    env_name: str,
+) -> None:
+    resolved = _resolved_compose()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_api = services["kor-travel-map-api"]
+    assert isinstance(map_api, dict)
+    environment = map_api["environment"]
+    assert isinstance(environment, dict)
+    environment[env_name] = ""
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="removed provider runtime environment",
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=_resolved_candidate_environment(),
+        )
+
+
+@pytest.mark.parametrize("env_name", _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES)
+def test_resolved_contract_rejects_removed_map_api_provider_environment(
+    env_name: str,
+) -> None:
+    resolved = _resolved_compose_with_map_ui_auth()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_api = services["kor-travel-map-api"]
+    assert isinstance(map_api, dict)
+    environment = map_api["environment"]
+    assert isinstance(environment, dict)
+    environment[env_name] = ""
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="removed provider runtime environment",
+    ):
+        validate_resolved_compose_secret_isolation(resolved, _production_config())
+
+
+@pytest.mark.parametrize("field", ["command", "entrypoint"])
+@pytest.mark.parametrize("resolved", [False, True], ids=["raw", "resolved"])
+def test_candidate_rejects_map_api_image_entrypoint_override(
+    field: str,
+    resolved: bool,
+) -> None:
+    document = _resolved_compose() if resolved else _source_compose()
+    services = document["services"]
+    assert isinstance(services, dict)
+    map_api = services["kor-travel-map-api"]
+    assert isinstance(map_api, dict)
+    map_api[field] = ["python", "-m", "uvicorn"]
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="immutable image entrypoint and command",
+    ):
+        if resolved:
+            validate_resolved_compose_candidate_protected_values(
+                document,
+                environment=_resolved_candidate_environment(),
+            )
+        else:
+            validate_compose_candidate_protected_values(
+                document,
+                compose_path="/tmp/docker-compose.yml",
+                root_env_path="/tmp/.env",
+                environment=_raw_candidate_environment(),
+            )
+
+
+@pytest.mark.parametrize("field", ["command", "entrypoint"])
+def test_resolved_contract_rejects_map_api_image_entrypoint_override(
+    field: str,
+) -> None:
+    resolved = _resolved_compose_with_map_ui_auth()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_api = services["kor-travel-map-api"]
+    assert isinstance(map_api, dict)
+    map_api[field] = ["python", "-m", "uvicorn"]
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="immutable image entrypoint and command",
+    ):
+        validate_resolved_compose_secret_isolation(resolved, _production_config())
 
 
 @pytest.mark.parametrize(
@@ -3467,6 +3599,45 @@ def test_runtime_secret_gate_rejects_non_api_container() -> None:
         "Cmd": ["worker", f"prefix-{_READ_TOKEN}-suffix"],
     }
     with pytest.raises(DeploymentContractError, match="leaks outside"):
+        validate_runtime_secret_isolation(runtime, config)
+
+
+@pytest.mark.parametrize("env_name", _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES)
+def test_runtime_secret_gate_rejects_forbidden_map_api_provider_environment(
+    env_name: str,
+) -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    environment = runtime[config.map_container]["Env"]
+    assert isinstance(environment, dict)
+    environment[env_name] = ""
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="forbidden provider environment",
+    ):
+        validate_runtime_secret_isolation(runtime, config)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Cmd", ["python", "-m", "uvicorn"]),
+        ("Entrypoint", ["sh", "-c"]),
+    ],
+)
+def test_runtime_secret_gate_rejects_map_api_image_entrypoint_override(
+    field: str,
+    value: list[str],
+) -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime[config.map_container][field] = value
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="immutable image entrypoint and command",
+    ):
         validate_runtime_secret_isolation(runtime, config)
 
 
