@@ -245,6 +245,10 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
 }
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _PAIR_MANIFEST_VERSION = 4
+_LEGACY_PAIR_MANIFEST_FILENAMES = (
+    "compatible-pair-v2.json",
+    "compatible-pair-v3.json",
+)
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
@@ -3717,14 +3721,13 @@ def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
     """manifest가 없는 환경에서만 초기 v4 bootstrap을 허용한다."""
 
     manifest_path = Path(path)
-    if not manifest_path.exists():
-        legacy_v3_path = manifest_path.with_name("compatible-pair-v3.json")
-        if (
-            manifest_path.name == "compatible-pair-v4.json"
-            and legacy_v3_path.exists()
+    if not _pair_manifest_artifact_exists(manifest_path):
+        if manifest_path.name == "compatible-pair-v4.json" and any(
+            _pair_manifest_artifact_exists(manifest_path.with_name(filename))
+            for filename in _LEGACY_PAIR_MANIFEST_FILENAMES
         ):
             raise DeploymentContractError(
-                "legacy compatible pair manifest has no complete Map runtime provenance"
+                "legacy compatible pair manifest requires operator migration or removal"
             )
         return
     try:
@@ -3743,6 +3746,26 @@ def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
     raise DeploymentContractError(
         "legacy compatible pair manifest has no source provenance"
     )
+
+
+def _pair_manifest_artifact_exists(path: Path) -> bool:
+    try:
+        artifact_stat = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise DeploymentContractError(
+            "compatible pair manifest artifact cannot be inspected"
+        ) from exc
+    if (
+        not stat.S_ISREG(artifact_stat.st_mode)
+        or artifact_stat.st_uid != os.geteuid()
+        or artifact_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise DeploymentContractError(
+            "compatible pair manifest artifact type, owner, or mode is unsafe"
+        )
+    return True
 
 
 def write_pair_manifest(path: str, manifest: CompatiblePairManifest) -> None:

@@ -301,7 +301,10 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 secret·ops token의 다른 서비스 노출이나 평문 비밀번호 주입을 전역 scalar에서 거부한다. 최초 설치의
 manifest가 없는 환경에서는 base dependency부터 전체 토폴로지를 순서대로 bootstrap하고
 candidate runtime set 전체 계약을 검증해 최초 v4를 만든다. Map dependent provenance가 없는 v1/v2/v3는
-자동 전환하지 않고 거부한다.
+자동 전환하지 않고 거부한다. canonical v4 경로 옆에 저장소 역사상 실제 기본 파일명이었던
+`compatible-pair-v2.json` 또는 `compatible-pair-v3.json`이 남아 있어도 빈 state로 간주하지 않는다.
+payload를 읽어 자동 변환하지 않으며 symlink·비정규 파일·다른 owner·group/world writable mode를
+포함한 어느 legacy artifact든 mutation 전에 operator migration/removal을 요구한다.
 
 ```bash
 ktdctl pinvi-pair capture --verified-compatible --build

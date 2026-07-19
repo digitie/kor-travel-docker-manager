@@ -30,6 +30,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     HttpProbeResponse,
     PinviCancelProbeState,
     assert_c6c_mutation_allowed,
+    assert_pair_manifest_bootstrap_allowed,
     c6c_deployment_lock,
     c6c_state_paths,
     initial_pair_manifest,
@@ -8397,6 +8398,83 @@ def test_pair_capture_rejects_manifest_without_source_provenance(
 
     run.assert_not_called()
     assert manifest_path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize(
+    ("legacy_filename", "legacy_version"),
+    [
+        ("compatible-pair-v2.json", 1),
+        ("compatible-pair-v2.json", 2),
+        ("compatible-pair-v3.json", 3),
+    ],
+)
+def test_pair_capture_rejects_canonical_legacy_sibling_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    legacy_filename: str,
+    legacy_version: int,
+) -> None:
+    _allow_manager_mutation(monkeypatch)
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    manifest_path = tmp_path / "compatible-pair-v4.json"
+    legacy_path = manifest_path.with_name(legacy_filename)
+    original_bytes = json.dumps({"version": legacy_version}).encode()
+    legacy_path.write_bytes(original_bytes)
+    service = ComposeService()
+    transaction = replace(
+        _frozen_external_transaction(tmp_path),
+        manifest_path=str(manifest_path),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        lambda _environment: _production_config(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate_resolved_compose_contract",
+        lambda *_a, **_k: {},
+    )
+    run = Mock()
+    monkeypatch.setattr(service, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="operator migration or removal"):
+        service.capture_compatible_pinvi_pair(verified_compatible=True)
+
+    run.assert_not_called()
+    assert legacy_path.read_bytes() == original_bytes
+    assert not manifest_path.exists()
+
+
+@pytest.mark.parametrize("artifact_kind", ["symlink", "directory", "mode", "owner"])
+def test_pair_bootstrap_rejects_unsafe_v2_sibling_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_kind: str,
+) -> None:
+    manifest_path = tmp_path / "compatible-pair-v4.json"
+    legacy_path = tmp_path / "compatible-pair-v2.json"
+    if artifact_kind == "symlink":
+        legacy_path.symlink_to(tmp_path / "missing-pair.json")
+    elif artifact_kind == "directory":
+        legacy_path.mkdir()
+    else:
+        legacy_path.write_text("{}\n", encoding="utf-8")
+        if artifact_kind == "mode":
+            legacy_path.chmod(0o620)
+        else:
+            monkeypatch.setattr(
+                c6c_deployment.os,
+                "geteuid",
+                lambda: legacy_path.stat().st_uid + 1,
+            )
+
+    with pytest.raises(DeploymentContractError, match="type, owner, or mode"):
+        assert_pair_manifest_bootstrap_allowed(str(manifest_path))
 
 
 def test_pair_capture_never_overwrites_existing_v4(
