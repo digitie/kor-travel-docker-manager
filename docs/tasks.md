@@ -29,6 +29,8 @@
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
 | **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
+| **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
+| **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -100,25 +102,25 @@
       gitignore된 `.env`에만 둔다. manager/PinVi production mode와 Map
       `OPS_PRINCIPAL_REQUIRED=true`를 함께 강제한다.
 - [x] production 배포 경로를 preflight/readiness → Map API → signed read·cancel·거부 smoke
-      → PinVi API → 전체 managed container readiness/secret inspect 순서로 구현하고, dependency·UI·Dagster는
-      pair transaction에서 변경하지 않는다.
+      → Map UI·Dagster web·daemon → PinVi API → 전체 managed container readiness/secret inspect
+      순서로 구현하고 Map runtime 네 service를 pair transaction에 포함한다.
 - [x] rollback은 현재 contract generation의 canonical Map+PinVi immutable image ID pair 단위로만
       원자 기록·복원하며, legacy/과거 generation 조합을 정상 rollback 지점으로 오인하지 않는다.
 - [x] base/override merged config의 `environment`·`env_file`·command·build args와 runtime inspect를
       API 두 곳만 허용하는 계약 테스트로 고정한다.
-- [x] production 일반 `ensure`/container action·config·reset/direct Compose의 Map/PinVi API mutation을
+- [x] production 일반 `ensure`/container action·config·reset/direct Compose의 Map runtime/PinVi API mutation을
       중앙 차단하고, deployment-wide lock을 잡는 전용 `pinvi-pair deploy` capability만 허용한다.
 - [x] manifest에 contract generation을 기록하고 merged compose의 host network·PinVi production
-      mode·Map bind port·loopback base·container identity·두 immutable image override·manager-only smoke
+      mode·Map bind port·loopback base·container identity·다섯 immutable image override·manager-only smoke
       credential 격리를 mutation 전에 검증한다.
 - [x] deploy/rollback 중 mixed pair를 노출하지 않고 Map/PinVi canonical smoke, owned fixture의 정확한
       409/502/503 typed cancel·`Retry-After`, 필수 서비스 running/healthy, Map UI auth lifecycle, runtime
       격리 뒤에만 manifest를 commit한다.
 - [x] manifest가 없는 clean 환경은 host lock 안에서 base dependency→Map API→Map dependents→
-      PinVi API→PinVi dependents를 단계 bootstrap하고 전체 smoke 성공 뒤 최초 v3를 기록한다.
-      provenance가 없는 v1/v2는 자동 전환하지 않는다. 실패하면 두 API를
-      중지하고 transaction이 만든 container만 제거한다.
-      중간 실패는 시작 시점 active pair 전체 복구 또는 두 API 명시적 halt로 끝낸다.
+      PinVi API→PinVi dependents를 단계 bootstrap하고 전체 smoke 성공 뒤 최초 v4를 기록한다.
+      Map dependent provenance가 없는 v1/v2/v3는 자동 전환하지 않는다. 실패하면 Map runtime
+      네 service와 PinVi API를 중지하고 transaction이 만든 container만 제거한다. 중간 실패는
+      시작 시점 active runtime set 전체 복구 또는 다섯 service 명시적 halt로 끝낸다.
 - [x] pass3 차단 리뷰의 init 예외 cleanup, project-wide `wait --down-project`, production 단일 state path,
       깊은 Map/PinVi DTO·owned cancel·manifest 검증, parent fsync 실패 복원, config/runtime 복원 진단 보존을
       코드·회귀 테스트·운영 문서에 반영한다(테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
@@ -184,7 +186,7 @@
       lock 안에서 manifest 경로와 root `.env`·canonical compose·외부 `env_file` 입력을 한 번만 snapshot한다.
       외부 입력은 exact 4-key graph와 byte/identity를 매 경계에서 재검증하고 Docker resolution에만 익명 fd로
       전달하며, mutation은 original project directory에서 완전 해석된 compose를 stdin으로 소비한다.
-      deploy/capture/rollback은 최초 mutation 뒤 모든 계약 오류를 같은 root snapshot의 recovery 또는 두 API
+      deploy/capture/rollback은 최초 mutation 뒤 모든 계약 오류를 같은 root snapshot의 recovery 또는 다섯 runtime
       halt로 수렴시키고 원래 오류와 복구 결과를 typed post-mutation 오류로 보존한다
       (지시에 따라 테스트·lint·build는 실행하지 않고 정적 diff 검사만 수행).
 - [x] pass18에서 recovery/halt를 frozen resolved transaction 전용 실행으로 분리하고, config update/reset의
@@ -212,6 +214,37 @@
       entrypoint guard 우회를 차단했다.
 - [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
       통과한 뒤 완료 이력으로 옮긴다.
+
+### T-033: C7 Map UI·Dagster OCI revision 결선
+
+- [x] `kor-travel-map-api`, `kor-travel-map-ui`, `kor-travel-map-dagster`,
+      `kor-travel-map-dagster-daemon`의 build가 모두 동일한 canonical
+      `KOR_TRAVEL_MAP_GIT_COMMIT`을 Dockerfile에 전달하도록 compose를 정렬한다.
+- [x] raw·resolved compose 계약이 네 service의 build arg·snapshot context·Dockerfile을
+      exact 검증하고 일부 service 또는 revision이 다른 회귀를 첫 mutation 전에 차단한다.
+- [x] candidate build가 Map runtime 네 image와 PinVi image를 모두 같은 frozen snapshot에서
+      완성하고, 각 immutable image ID와 OCI revision을 manifest v4에 기록한다.
+- [x] capture/deploy/rollback이 Map runtime 네 service를 같은 frozen transaction으로
+      재생성·검증하며, 복원 실패 시 다섯 runtime을 모두 중지해 혼합 generation을 차단한다.
+- [x] resolved fixture drift, candidate build service 누락, dependent image/revision mismatch,
+      activation·rollback 누락에 대한 회귀 계약을 추가한다.
+- [x] canonical v4 경로가 저장소 역사에 존재한 sibling `compatible-pair-v2.json`과
+      `compatible-pair-v3.json`을 payload·file type과 무관하게 mutation 전에 fail-close하고,
+      legacy bytes 불변과 Docker 미호출을 실행형 회귀로 고정한다.
+- [ ] n150에서 clean exact commit으로 네 image를 빌드해 각
+      `org.opencontainers.image.revision` label이 같은 40자 commit인지 확인한다.
+- [ ] C7 runtime attestation과 live E2E가 실제 기동된 네 Map image provenance를 통과하면
+      issue #60을 닫고 완료 이력으로 옮긴다.
+
+### T-034: C6c cAdvisor healthcheck 포트 계약 정렬
+
+- [x] canonical compose의 cAdvisor listen 포트와 명시적 `/healthz` healthcheck가
+      모두 `CADVISOR_PORT`(기본 `12301`)를 단일 정본으로 사용하게 한다.
+- [x] raw compose 계약이 exact `--port=${CADVISOR_PORT:-12301}`과 health URL을 고정하고,
+      default/custom resolved config에서 listen·probe 포트가 같은지 검증한다.
+- [ ] n150 production에서 cAdvisor `healthy`와 설정 포트 `/healthz` 200을 확인한 뒤
+      중단된 C6c compatible-pair capture를 단 한 번 재시도한다.
+- [ ] capture와 후속 readiness가 통과하면 issue #62를 닫고 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

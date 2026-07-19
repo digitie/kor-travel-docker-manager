@@ -773,7 +773,7 @@ def test_missing_container_action_failure_preserves_restoration_detail(
 def test_production_api_container_action_contract_failure_is_conflict(mock_docker_service):
     login_client()
     mock_docker_service.control_container.side_effect = DeploymentContractError(
-        "production Map/PinVi API mutation requires the compatible-pair workflow"
+        "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
     )
 
     response = client.post(
@@ -789,7 +789,7 @@ def test_production_api_container_action_contract_failure_is_conflict(mock_docke
 def test_production_api_container_config_contract_failure_is_conflict(mock_docker_service):
     login_client()
     mock_docker_service.update_container_config.side_effect = DeploymentContractError(
-        "production Map/PinVi API mutation requires the compatible-pair workflow"
+        "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
     )
 
     response = client.post(
@@ -805,7 +805,7 @@ def test_production_api_container_config_contract_failure_is_conflict(mock_docke
 def test_production_api_container_reset_contract_failure_is_conflict(mock_docker_service):
     login_client()
     mock_docker_service.reset_container_config.side_effect = DeploymentContractError(
-        "production Map/PinVi API mutation requires the compatible-pair workflow"
+        "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
     )
 
     response = client.post("/api/v1/containers/kor-travel-map-api/reset")

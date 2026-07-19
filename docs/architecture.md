@@ -146,7 +146,9 @@ graph TD
      directory는 mount하지 않음.
    - socket은 root:docker `0660`, `/sys`는 root-owned mountpoint 계약과 inode/device/mode 재검증을 통과해야 함.
    - host 포트: `12301`.
-   - 컨테이너 내부 포트: `8080`.
+   - host network에서 cAdvisor 프로세스는 `CADVISOR_PORT`(기본 `12301`)에 직접
+     listen하며, Compose의 명시적 healthcheck도 같은 포트의 `/healthz`를 조회함.
+     image에 상속된 기본 `8080` healthcheck에 의존하지 않음.
 5. **Prometheus**:
    - 컨테이너: `kor-travel-prometheus`
    - compose service: `prometheus`
@@ -191,13 +193,18 @@ graph TD
    - public URL/CORS: dev 기본값은 `http://127.0.0.1:12801`/로컬 Web origin이며, prod에서는 gitignore된 `.env`의 `PINVI_PUBLIC_API_URL`과 `PINVI_CORS_ALLOWED_ORIGINS`로 공개 API 주소와 Web origin을 주입한다.
    - C6c production: manager mode와 PinVi mode를 모두 `production`, Map의
      `KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED`를 `true`로 명시한다. production의 일반
-     `ensure`/container action·config·reset/direct Compose 경로는 두 API를 변경할 수 없고,
-     host-wide lock을 잡는 `pinvi-pair deploy`만 generation이 같은 Map+PinVi pair를 단계 기동한다.
-     transaction은 두 API만 `--no-deps`로 변경하고 dependency·UI·Dagster는 변경 없이
-     running/healthy를 요구한다. manifest가 없을 때만 `pinvi-pair capture`가 같은 lock
-     안에서 candidate pair를 bootstrap하고 전체 계약 성공 뒤 최초 v3를 기록한다.
-     v3는 두 immutable image ID와 clean source revision을 active/rollback 각 pair에 함께
-     결박하며 provenance가 없는 v1/v2를 거부한다. 실패 시 두 API를 중지한다.
+     `ensure`/container action·config·reset/direct Compose 경로는 다섯 runtime을 변경할 수 없고,
+     host-wide lock을 잡는 `pinvi-pair deploy`만 generation이 같은 Map+PinVi runtime set을 단계 기동한다.
+     transaction은 Map API·UI·Dagster web·Dagster daemon과 PinVi API를 하나의 immutable
+     runtime set으로 다룬다. 다섯 service를 같은 Git snapshot build에서 먼저 완성하고,
+     Map API smoke 뒤 나머지 Map runtime과 PinVi API를 exact image ID로 재생성한 다음
+     모든 Map runtime의 OCI revision이 같은 `KOR_TRAVEL_MAP_GIT_COMMIT`인지 확인한다.
+     manifest가 없을 때만 `pinvi-pair capture`가 같은 lock 안에서 candidate set을
+     bootstrap하고 전체 계약 성공 뒤 최초 v4를 기록한다. v4는 Map runtime 네 immutable
+     image ID와 공통 clean source revision, PinVi immutable image ID와 clean source revision을
+     active/rollback 각 set에 함께 결박하며 provenance가 없는 이전 version을 거부한다.
+     실패·rollback도 같은 frozen transaction의 다섯 image ID를 복원하고, 완전한 복원이
+     불가능하면 다섯 runtime을 모두 중지해 혼합 generation 노출을 막는다.
    - Manager mutation의 compose source는 단일 canonical 파일이다. mutex 안에서 persisted/request의
      raw·Docker-resolved volume graph를 각각 exact 비교하고 include/extends/override 합성을 거부한다.
      cAdvisor mount는 RO `/sys`와 Docker socket exact set만 허용한다. 첫 mutation 성공 뒤 후속 preflight

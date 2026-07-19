@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-07-19 (PR #61 리뷰 차단 보강 설계 — T-033/T-034)
+
+- PR #61 리뷰에서 raw Compose에는 있던 Map UI·Dagster web·Dagster daemon provenance가
+  resolved 검증, snapshot build, candidate inspection, activation·rollback에서 누락돼 기존
+  `development` image가 계속 기동될 수 있는 P1 경로를 확인했다.
+- Map API만 기록하던 compatible-pair v3 대신 Map runtime 네 immutable image ID와 공통 clean
+  source revision을 모두 기록하는 v4 clean-cut을 결정했다. capture/deploy/rollback은 Map
+  runtime 네 service와 PinVi API를 같은 frozen transaction으로 build·재생성·검증하고,
+  복원 실패 시 전체를 중지한다.
+- cAdvisor는 raw exact listen argument와 default/custom resolved health URL이 같은 port인지
+  확인하는 회귀 계약을 추가한다. 구현 뒤 동일 리뷰어 재검토 전에는 test·lint·Compose
+  config를 실행하지 않는다.
+- manager 구현은 manifest v4, 다섯 service snapshot build·activation·rollback·halt와 관련
+  회귀 계약까지 작성했다. Map main의 C7 attestation runner도 동반 PR #778에서 v4 9-field
+  pair와 네 Map role image ID 비교로 동기화하며, manager PR은 이 선행 계약에 의존한다.
+- 교차 재리뷰에서 canonical v4 파일이 없고 과거 기본 `compatible-pair-v2.json`만 있는 host를
+  빈 state로 오인하는 경로와 ADR-20의 과거 v3·두 API 지침이 현행 ADR-21과 충돌하는 문제를
+  확인했다. 저장소 역사에 실제 존재한 v2/v3 sibling은 payload를 신뢰하지 않고 fail-close하며,
+  ADR-20의 배포 결과는 ADR-21의 v4·다섯 runtime transaction이 대체함을 명시한다.
+
+## 2026-07-19 (C6c cAdvisor healthcheck 포트 drift 확인 — T-034)
+
+- n150 production의 canonical compose는 cAdvisor를 `CADVISOR_PORT`(기본 `12301`)로
+  정상 기동하고 해당 포트의 `/healthz`도 응답했지만, image에서 상속된
+  healthcheck는 `8080`을 계속 조회해 container를 `unhealthy`로 판정했다.
+- C6c bootstrap의 base-service readiness가 이 판정을 fail-close해 compatible-pair
+  capture가 중단되었고, 계약에 따라 Map·PinVi API는 정지 상태를 유지했다.
+- issue #62와 T-034는 cAdvisor listen·healthcheck가 같은 `CADVISOR_PORT`를 사용하게
+  고정하고, 정상 health 확인 후 capture를 한 번만 재시도하는 작업으로 분리한다.
+
+## 2026-07-19 (C7 Map UI·Dagster provenance 누락 확인 — T-033)
+
+- n150 production 후보를 clean Map commit에서 빌드한 뒤 OCI label을 확인한 결과 Map API는
+  exact revision을 가졌지만 Map UI·Dagster web·Dagster daemon은 Dockerfile 기본값
+  `development`를 유지해 C7 runtime attestation을 통과할 수 없음을 확인했다.
+- 원인은 세 compose service가 Dockerfile에 선언된 `KOR_TRAVEL_MAP_GIT_COMMIT` build arg를
+  전달하지 않는 wiring 누락이다. issue #60으로 기록하고 실제 container 기동 전에
+  candidate를 중단했다.
+- T-033은 Map runtime 네 image가 같은 canonical source commit을 사용하도록 compose와
+  계약 테스트를 정렬하고, n150 exact-image label 및 C7 attestation으로 완료한다.
+
 ## 2026-07-19 (T-032 C7 image provenance 완료·아카이브)
 
 - docker-manager PR #58을 `ecaab504e63a99cb757318d3b67337bec962d90b`로 squash merge했다.
