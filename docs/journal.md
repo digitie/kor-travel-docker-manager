@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-20 (C7 Map production env 로컬 검증 완료 — T-035)
+
+- 같은 적대적 리뷰어가 marker 단조성, source 전체 scalar tree, tracked `env_file` object
+  identity와 test fixture 보강까지 exact head별로 재검토했고 최종 P0~P2 차단점이 없음을 확인했다.
+- Python 3.12에서 backend 886개 테스트가 모두 통과했다. 변경 파일은 Ruff 0.3.7 범위 검사와
+  `types-PyYAML`을 포함한 strict mypy를 통과했고, 공개 dummy 값으로 기본·커스텀 Compose
+  `config --quiet`도 모두 통과했다.
+- 저장소 main 자체의 Ruff/mypy 누적 오류는 별도 baseline으로 분리했다. 이번 변경 파일 Ruff는
+  기존 exact-type 검사(`E721`, `UP038`)를 명시적으로 보존했고, 새 source 두 파일은 strict mypy
+  suppression 없이 통과했다.
+- PR 병합 후에도 issue #63은 닫지 않는다. final n150 v4 exact-pair의 startup/readiness,
+  runtime secret isolation, cAdvisor health와 C7 live E2E가 끝난 뒤에만 닫는다.
+
 ## 2026-07-20 (C7 Map production env 적대적 리뷰 P1 보강 — T-035)
 
 - CodeGraph depth 4 재점검에서 현재 UI auth preflight가 candidate build/recreate 전에 실행되어,
