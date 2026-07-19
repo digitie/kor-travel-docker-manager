@@ -30,6 +30,7 @@
 | **T-026** | PinVi API worker 기본값 환경변수화 | 2026-06-28 | `PINVI_API_WORKERS=1` 기본값으로 process-local WebSocket broadcast 제약 반영 |
 | **T-027** | PinVi public API URL·CORS origin 환경변수화 | 2026-06-28 | prod public Web/API origin을 gitignore `.env`에서 주입하도록 변경 |
 | **T-028** | Linux 전용 개발·버전관리·CodeGraph 실행 위치 정책 정리 | 2026-06-28 | `git`/CodeGraph는 Linux, Playwright E2E는 n150 우선·불가 시 Windows fallback |
+| **T-032** | C6c Map·PinVi image source provenance fail-close | 2026-07-19 | PR #58 squash merge, clean HEAD→Git archive→OCI label→manifest v3 결박 |
 
 ---
 
@@ -187,3 +188,22 @@
 - [x] `pinvi-web` build/runtime의 API URL을 `PINVI_PUBLIC_API_URL`로 주입 가능하게 변경
 - [x] `pinvi-api` CORS 허용 origin을 `PINVI_CORS_ALLOWED_ORIGINS`로 주입 가능하게 변경
 - [x] dev 기본값은 로컬 `127.0.0.1` API/Web origin으로 유지하고 prod 실제 도메인은 gitignore `.env`에만 두도록 문서화
+
+### T-032: C6c Map·PinVi image source provenance fail-close
+
+- [x] production `pinvi-pair capture/deploy --build`가 Map·PinVi checkout의 exact Git root,
+      clean worktree, lowercase 40자 `HEAD`를 container mutation 전에 검증하고 각 API build arg의
+      유일한 source revision으로 전달하도록 고정
+- [x] live worktree 대신 exact `HEAD` Git archive 임시 context를 사용해 build 중 변경·원복과
+      ignored 파일 혼입을 차단
+- [x] raw/resolved Compose의 context·in-tree Dockerfile·build arg를 exact allowlist로 고정하고
+      external Dockerfile, additional context, secret, target 같은 추가 build input을 거부
+- [x] build 후 Map·PinVi immutable image의 `org.opencontainers.image.revision`과 PinVi
+      `io.pinvi.build.environment=production`을 container stop/recreate 전에 검증
+- [x] compatible-pair manifest를 v3로 clean-cut하고 active/rollback과
+      capture/deploy/rollback/recovery/smoke 결과에 image ID↔source revision을 함께 보존
+- [x] 단일 적대적 리뷰의 두 P1을 반영하고 재검토 `ACCEPT FOR TESTS` 확인
+- [x] WSL Docker Python 3.13 C6c focused `597 passed`, backend 전체 `685 passed`, 변경 source
+      strict mypy, Ruff, production Compose `config --quiet`/resolved exact build mapping 통과
+- [x] PR #58을 squash merge(`ecaab504e63a99cb757318d3b67337bec962d90b`)하고 상위 C7
+      완료 흐름의 n150 production gate까지 마감
