@@ -3107,6 +3107,20 @@ def test_cadvisor_does_not_bind_host_root_or_docker_data() -> None:
         "/var/run/docker.sock:/var/run/docker.sock:ro",
         "/sys:/sys:ro",
     ]
+    assert cadvisor["healthcheck"] == {
+        "test": [
+            "CMD-SHELL",
+            (
+                "wget -qO- "
+                "http://127.0.0.1:${CADVISOR_PORT:-12301}/healthz "
+                ">/dev/null || exit 1"
+            ),
+        ],
+        "interval": "10s",
+        "timeout": "5s",
+        "retries": 12,
+        "start_period": "10s",
+    }
 
 
 def test_canonical_compose_wires_c6c_runtime_provenance_build_args() -> None:
