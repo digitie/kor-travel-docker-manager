@@ -194,8 +194,10 @@ graph TD
      `ensure`/container action·config·reset/direct Compose 경로는 두 API를 변경할 수 없고,
      host-wide lock을 잡는 `pinvi-pair deploy`만 generation이 같은 Map+PinVi pair를 단계 기동한다.
      transaction은 두 API만 `--no-deps`로 변경하고 dependency·UI·Dagster는 변경 없이
-     running/healthy를 요구한다. manifest가 없거나 legacy v1이면 `pinvi-pair capture`가 같은 lock 안에서
-     candidate pair를 bootstrap하고 전체 계약 성공 뒤 최초 v2를 기록하며 실패 시 두 API를 중지한다.
+     running/healthy를 요구한다. manifest가 없을 때만 `pinvi-pair capture`가 같은 lock
+     안에서 candidate pair를 bootstrap하고 전체 계약 성공 뒤 최초 v3를 기록한다.
+     v3는 두 immutable image ID와 clean source revision을 active/rollback 각 pair에 함께
+     결박하며 provenance가 없는 v1/v2를 거부한다. 실패 시 두 API를 중지한다.
    - Manager mutation의 compose source는 단일 canonical 파일이다. mutex 안에서 persisted/request의
      raw·Docker-resolved volume graph를 각각 exact 비교하고 include/extends/override 합성을 거부한다.
      cAdvisor mount는 RO `/sys`와 Docker socket exact set만 허용한다. 첫 mutation 성공 뒤 후속 preflight

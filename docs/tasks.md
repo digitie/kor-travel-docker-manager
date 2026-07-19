@@ -29,6 +29,7 @@
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
 | **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
+| **T-032** | C6c Map·PinVi image source provenance fail-close | `[/]` | - | clean HEAD build arg, OCI label, compatible-pair manifest 계약 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -108,14 +109,15 @@
       API 두 곳만 허용하는 계약 테스트로 고정한다.
 - [x] production 일반 `ensure`/container action·config·reset/direct Compose의 Map/PinVi API mutation을
       중앙 차단하고, deployment-wide lock을 잡는 전용 `pinvi-pair deploy` capability만 허용한다.
-- [x] manifest v2에 contract generation을 기록하고 merged compose의 host network·PinVi production
+- [x] manifest에 contract generation을 기록하고 merged compose의 host network·PinVi production
       mode·Map bind port·loopback base·container identity·두 immutable image override·manager-only smoke
       credential 격리를 mutation 전에 검증한다.
 - [x] deploy/rollback 중 mixed pair를 노출하지 않고 Map/PinVi canonical smoke, owned fixture의 정확한
       409/502/503 typed cancel·`Retry-After`, 필수 서비스 running/healthy, Map UI auth lifecycle, runtime
       격리 뒤에만 manifest를 commit한다.
-- [x] clean/legacy v1 환경은 host lock 안에서 base dependency→Map API→Map dependents→PinVi API→PinVi
-      dependents를 단계 bootstrap하고 전체 smoke 성공 뒤 최초 v2를 기록한다. 실패하면 두 API를
+- [x] manifest가 없는 clean 환경은 host lock 안에서 base dependency→Map API→Map dependents→
+      PinVi API→PinVi dependents를 단계 bootstrap하고 전체 smoke 성공 뒤 최초 v3를 기록한다.
+      provenance가 없는 v1/v2는 자동 전환하지 않는다. 실패하면 두 API를
       중지하고 transaction이 만든 container만 제거한다.
       중간 실패는 시작 시점 active pair 전체 복구 또는 두 API 명시적 halt로 끝낸다.
 - [x] pass3 차단 리뷰의 init 예외 cleanup, project-wide `wait --down-project`, production 단일 state path,
@@ -189,7 +191,8 @@
 - [x] pass18에서 recovery/halt를 frozen resolved transaction 전용 실행으로 분리하고, config update/reset의
       persisted baseline과 exact candidate transaction을 분리해 forward는 candidate, restore는 baseline만 쓴다.
 - [x] pass19에서 manifest active image override를 root frozen 입력으로 미리 해석한 별도 recovery transaction을
-      deploy/rollback과 legacy capture 복구에 사용하고, forward transaction과 identity를 분리한다.
+      deploy/rollback 복구에 사용하고, forward transaction과 identity를 분리한다. manifest가 없는
+      v3 bootstrap capture는 이전 active pair 복구 대신 생성한 서비스 정리·API halt로 수렴한다.
 - [x] Map UI username·PBKDF2 hash·session secret을 기본값 없는 canonical raw 보간과 exact resolved/runtime
       Env 경로로 고정하고, manager-only 평문 smoke 비밀번호 비주입 및 frozen snapshot/rollback 인증값
       격리 계약과 회귀 테스트·운영 문서를 추가한다. Docker Compose resolved literal escape와 runtime raw-exact
@@ -210,6 +213,26 @@
       entrypoint guard 우회를 차단했다.
 - [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
       통과한 뒤 완료 이력으로 옮긴다.
+
+### T-032: C6c Map·PinVi image source provenance fail-close
+
+- [x] production `pinvi-pair capture/deploy --build`는 Map·PinVi 각 checkout의 exact Git root,
+      clean worktree, lowercase 40자 `HEAD`를 container mutation 전에 검증하고 이 값을 각 API
+      build arg의 유일한 source revision으로 전달한다. live worktree 자체를 build하지 않고 각
+      `HEAD`의 Git archive 임시 context를 사용해 build 중 변경·원복과 ignored 파일 혼입을 차단한다.
+- [x] 운영 사용자가 명시한 revision/build environment가 현재 checkout·`production`과 다르거나,
+      raw/resolved Compose의 exact context·in-tree Dockerfile·build arg가 canonical 계약과 다르면
+      Docker build/stop 전에 거부한다. external Dockerfile, additional context, secret, target 같은
+      추가 build input은 허용하지 않는다.
+- [x] build 후 Map·PinVi immutable image의 `org.opencontainers.image.revision`을 재검사하고,
+      PinVi image의 build environment label이 `production`인지 확인한다. `development`, 누락,
+      잘못된 revision은 smoke·manifest commit 전에 거부한다.
+- [x] compatible-pair active/rollback 정체성에 두 source revision을 포함하고 capture/deploy/
+      rollback 검증과 안전한 결과 payload에서 image ID↔revision 연계를 유지한다.
+- [x] 단일 적대적 리뷰에서 두 P1을 반영하고 재검토 `ACCEPT FOR TESTS`를 받았다. WSL Docker
+      Python 3.13에서 C6c focused `597 passed`, backend 전체 `685 passed`, 변경 source strict mypy,
+      Ruff와 production Compose `config --quiet`/resolved exact build mapping을 통과했다.
+- [ ] n150에서 exact clean checkout build, image label, manifest, C6c smoke 증거를 확인한다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

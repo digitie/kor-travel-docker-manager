@@ -4,6 +4,7 @@ import io
 import json
 import os
 import stat
+import subprocess
 import urllib.error
 from contextlib import nullcontext
 from contextvars import Context
@@ -18,6 +19,7 @@ import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services.c6c_deployment import (
+    C6cBuildProvenance,
     C6cDeploymentConfig,
     C6cSmokeConfig,
     CompatibleImagePair,
@@ -34,14 +36,17 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     load_c6c_deployment_config,
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
+    manifest_with_active_pair,
     new_image_pair,
     run_map_ops_smoke,
     run_map_ui_auth_preflight,
     run_pinvi_canonical_smoke,
     run_ui_auth_smoke,
+    validate_c6c_build_source_wiring,
     validate_compose_candidate_protected_values,
     validate_compose_env_file_isolation,
     validate_current_map_ui_auth_runtime,
+    validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
     validate_resolved_compose_image_pair,
     validate_resolved_compose_secret_isolation,
@@ -57,8 +62,10 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ComposeTransactionSnapshot,
     ValidatedComposeCandidate,
+    _c6c_source_snapshot_environment,
     _capture_compose_environment_snapshot,
     _capture_compose_external_input_snapshot,
+    _derive_c6c_build_provenance,
     _resolved_compose_document_hash,
 )
 from kor_travel_docker_manager.services.docker_service import DockerService
@@ -69,6 +76,8 @@ _MAP_IMAGE_ID = f"sha256:{'a' * 64}"
 _PINVI_IMAGE_ID = f"sha256:{'b' * 64}"
 _ACTIVE_MAP_IMAGE_ID = f"sha256:{'c' * 64}"
 _ACTIVE_PINVI_IMAGE_ID = f"sha256:{'d' * 64}"
+_MAP_SOURCE_REVISION = "1" * 40
+_PINVI_SOURCE_REVISION = "2" * 40
 _CONTRACT_GENERATION = "c6c-ops-v1"
 _MAP_UI_USERNAME = "map-ui-admin-placeholder"
 _MAP_UI_PASSWORD_HASH = "pbkdf2_sha256$100000$test-salt$test-digest"
@@ -135,6 +144,11 @@ _C6C_ENV_NAMES = (
     "KTDM_C6C_STATE_ROOT",
     "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
     "KTDM_C6C_DEPLOYMENT_LOCK",
+    "KOR_TRAVEL_MAP_REPO_DIR",
+    "PINVI_REPO_DIR",
+    "KOR_TRAVEL_MAP_GIT_COMMIT",
+    "PINVI_SOURCE_REVISION",
+    "PINVI_BUILD_ENVIRONMENT",
 )
 
 
@@ -167,7 +181,13 @@ def _production_config() -> C6cDeploymentConfig:
 
 def _manifest() -> CompatiblePairManifest:
     return initial_pair_manifest(
-        new_image_pair(_MAP_IMAGE_ID, _PINVI_IMAGE_ID, _CONTRACT_GENERATION)
+        new_image_pair(
+            _MAP_IMAGE_ID,
+            _PINVI_IMAGE_ID,
+            _CONTRACT_GENERATION,
+            map_source_revision=_MAP_SOURCE_REVISION,
+            pinvi_source_revision=_PINVI_SOURCE_REVISION,
+        )
     )
 
 
@@ -220,6 +240,40 @@ def _allow_manager_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
         "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
         lambda **_kwargs: "production",
     )
+
+
+def _allow_running_image_provenance(
+    service: ComposeService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        service,
+        "_verify_running_image_source_provenance",
+        lambda *_args, expected_revision=None, **_kwargs: (
+            expected_revision or _MAP_SOURCE_REVISION
+        ),
+    )
+
+
+def _allow_candidate_pair(
+    service: ComposeService,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pair: CompatibleImagePair | None = None,
+    with_prebuild_result: bool = False,
+) -> CompatibleImagePair:
+    candidate = pair or _manifest().active
+    prebuild_result = (
+        _success(["build", "kor-travel-map-api", "pinvi-api"])
+        if with_prebuild_result
+        else None
+    )
+    monkeypatch.setattr(
+        service,
+        "_prepare_c6c_candidate_pair",
+        Mock(return_value=(candidate, prebuild_result)),
+    )
+    return candidate
 
 
 def _frozen_external_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
@@ -619,6 +673,11 @@ def _resolved_compose() -> dict[str, object]:
                 "container_name": "kor-travel-map-api-latest",
                 "network_mode": "host",
                 "image": "kor-travel-map-api:latest-main",
+                "build": {
+                    "context": "/tmp/map-context",
+                    "dockerfile": "docker/api.Dockerfile",
+                    "args": {"KOR_TRAVEL_MAP_GIT_COMMIT": _MAP_SOURCE_REVISION}
+                },
                 "environment": {
                     "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
                     "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
@@ -630,6 +689,14 @@ def _resolved_compose() -> dict[str, object]:
                 "container_name": "pinvi-api-latest",
                 "network_mode": "host",
                 "image": "pinvi-api:latest-main",
+                "build": {
+                    "context": "/tmp/pinvi-context",
+                    "dockerfile": "apps/api/Dockerfile",
+                    "args": {
+                        "PINVI_SOURCE_REVISION": _PINVI_SOURCE_REVISION,
+                        "PINVI_BUILD_ENVIRONMENT": "production",
+                    }
+                },
                 "environment": {
                     "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
                     "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
@@ -899,7 +966,7 @@ def test_production_state_paths_are_checkout_independent_and_project_scoped(
     state_dir = (
         tmp_path / ".local" / "state" / "kor-travel-docker-manager" / "pinvi-prod"
     )
-    assert Path(manifest) == state_dir / "compatible-pair-v2.json"
+    assert Path(manifest) == state_dir / "compatible-pair-v3.json"
     assert Path(lock) == (
         tmp_path
         / ".local"
@@ -2084,7 +2151,7 @@ def test_compose_candidate_rejects_interpolated_root_env_bind(tmp_path: Path) ->
 
 
 def test_compose_candidate_rejects_manager_state_file_bind(tmp_path: Path) -> None:
-    manifest = tmp_path / "compatible-pair-v2.json"
+    manifest = tmp_path / "compatible-pair-v3.json"
     manifest.write_text("{}\n", encoding="utf-8")
     candidate = _source_compose()
     services = candidate["services"]
@@ -2306,7 +2373,7 @@ def test_compose_candidate_rejects_manager_state_directory_bind(
 ) -> None:
     state_dir = tmp_path / "manager-state"
     state_dir.mkdir()
-    manifest = state_dir / "compatible-pair-v2.json"
+    manifest = state_dir / "compatible-pair-v3.json"
     lock = state_dir / "deployment.lock"
     manifest.write_text("{}\n", encoding="utf-8")
     lock.write_text("", encoding="utf-8")
@@ -3042,6 +3109,42 @@ def test_cadvisor_does_not_bind_host_root_or_docker_data() -> None:
     ]
 
 
+def test_canonical_compose_wires_c6c_api_provenance_build_args() -> None:
+    compose = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    services = compose["services"]
+
+    assert services["kor-travel-map-api"]["build"]["args"] == {
+        "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
+    }
+    assert services["pinvi-api"]["build"]["args"] == {
+        "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
+        "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
+    }
+    validate_c6c_build_source_wiring(compose)
+
+    external_dockerfile = deepcopy(compose)
+    external_dockerfile["services"]["kor-travel-map-api"]["build"][
+        "dockerfile"
+    ] = "/tmp/evil.Dockerfile"
+    with pytest.raises(DeploymentContractError, match="build wiring"):
+        validate_c6c_build_source_wiring(external_dockerfile)
+
+    extra_context = deepcopy(compose)
+    extra_context["services"]["pinvi-api"]["build"]["additional_contexts"] = {
+        "outside": "/tmp/outside"
+    }
+    with pytest.raises(DeploymentContractError, match="build wiring"):
+        validate_c6c_build_source_wiring(extra_context)
+
+    services["pinvi-api"]["build"]["args"]["PINVI_SOURCE_REVISION"] = "0" * 40
+    with pytest.raises(DeploymentContractError, match="build wiring"):
+        validate_c6c_build_source_wiring(compose)
+
+
 @pytest.mark.parametrize(
     "leak",
     [
@@ -3305,7 +3408,13 @@ def test_rollback_resolved_compose_requires_both_manifest_image_ids() -> None:
     with pytest.raises(DeploymentContractError, match="immutable image"):
         validate_resolved_compose_image_pair(resolved, _production_config(), pair)
 
-    wrong_generation = new_image_pair(_MAP_IMAGE_ID, _PINVI_IMAGE_ID, "legacy-c6b")
+    wrong_generation = new_image_pair(
+        _MAP_IMAGE_ID,
+        _PINVI_IMAGE_ID,
+        "legacy-c6b",
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
     services["pinvi-api"]["image"] = _PINVI_IMAGE_ID
     with pytest.raises(DeploymentContractError, match="generation"):
         validate_resolved_compose_image_pair(
@@ -3313,6 +3422,363 @@ def test_rollback_resolved_compose_requires_both_manifest_image_ids() -> None:
             _production_config(),
             wrong_generation,
         )
+
+
+def test_resolved_c6c_build_provenance_requires_exact_production_args() -> None:
+    resolved = _resolved_compose()
+    provenance = C6cBuildProvenance(
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+
+    validate_resolved_c6c_build_provenance(resolved, provenance)
+
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    pinvi = services["pinvi-api"]
+    assert isinstance(pinvi, dict)
+    build = pinvi["build"]
+    assert isinstance(build, dict)
+    args = build["args"]
+    assert isinstance(args, dict)
+    args["PINVI_BUILD_ENVIRONMENT"] = "development"
+    with pytest.raises(DeploymentContractError, match="build arg"):
+        validate_resolved_c6c_build_provenance(resolved, provenance)
+
+
+def test_resolved_c6c_build_provenance_requires_snapshot_build_paths(
+    tmp_path: Path,
+) -> None:
+    resolved = _resolved_compose()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    map_context = tmp_path / "map"
+    pinvi_context = tmp_path / "pinvi"
+    (map_context / "docker").mkdir(parents=True)
+    (pinvi_context / "apps" / "api").mkdir(parents=True)
+    (map_context / "docker" / "api.Dockerfile").write_text(
+        "FROM scratch\n",
+        encoding="utf-8",
+    )
+    (pinvi_context / "apps" / "api" / "Dockerfile").write_text(
+        "FROM scratch\n",
+        encoding="utf-8",
+    )
+    services["kor-travel-map-api"]["build"]["context"] = str(map_context)
+    services["pinvi-api"]["build"]["context"] = str(pinvi_context)
+    provenance = C6cBuildProvenance(
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    expected_contexts = {
+        "kor-travel-map-api": str(map_context),
+        "pinvi-api": str(pinvi_context),
+    }
+
+    validate_resolved_c6c_build_provenance(
+        resolved,
+        provenance,
+        expected_build_contexts=expected_contexts,
+    )
+
+    services["kor-travel-map-api"]["build"]["dockerfile"] = "/tmp/evil.Dockerfile"
+    with pytest.raises(DeploymentContractError, match="build path"):
+        validate_resolved_c6c_build_provenance(
+            resolved,
+            provenance,
+            expected_build_contexts=expected_contexts,
+        )
+
+
+def _initialize_clean_git_repository(path: Path) -> str:
+    path.mkdir()
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    (path / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(path), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "-c",
+            "user.name=C6c Test",
+            "-c",
+            "user.email=c6c@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ],
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_c6c_build_provenance_derives_clean_exact_heads(tmp_path: Path) -> None:
+    compose_path = tmp_path / "manager" / "docker-compose.yml"
+    compose_path.parent.mkdir()
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    map_revision = _initialize_clean_git_repository(tmp_path / "map")
+    pinvi_revision = _initialize_clean_git_repository(tmp_path / "pinvi")
+
+    provenance = _derive_c6c_build_provenance(
+        {
+            "KOR_TRAVEL_MAP_REPO_DIR": "../map",
+            "PINVI_REPO_DIR": "../pinvi",
+        },
+        compose_path=str(compose_path),
+    )
+
+    assert provenance.map_source_revision == map_revision
+    assert provenance.pinvi_source_revision == pinvi_revision
+    assert provenance.compose_environment() == {
+        "KOR_TRAVEL_MAP_GIT_COMMIT": map_revision,
+        "PINVI_SOURCE_REVISION": pinvi_revision,
+        "PINVI_BUILD_ENVIRONMENT": "production",
+    }
+
+
+@pytest.mark.parametrize(
+    ("override_name", "override_value", "message"),
+    [
+        ("KOR_TRAVEL_MAP_GIT_COMMIT", "0" * 40, "clean build context HEAD"),
+        ("PINVI_SOURCE_REVISION", "0" * 40, "clean build context HEAD"),
+        ("PINVI_BUILD_ENVIRONMENT", "development", "must be production"),
+    ],
+)
+def test_c6c_build_provenance_rejects_operator_arg_mismatch(
+    tmp_path: Path,
+    override_name: str,
+    override_value: str,
+    message: str,
+) -> None:
+    compose_path = tmp_path / "manager" / "docker-compose.yml"
+    compose_path.parent.mkdir()
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    _initialize_clean_git_repository(tmp_path / "map")
+    _initialize_clean_git_repository(tmp_path / "pinvi")
+
+    with pytest.raises(DeploymentContractError, match=message):
+        _derive_c6c_build_provenance(
+            {
+                "KOR_TRAVEL_MAP_REPO_DIR": "../map",
+                "PINVI_REPO_DIR": "../pinvi",
+                override_name: override_value,
+            },
+            compose_path=str(compose_path),
+        )
+
+
+def test_c6c_build_provenance_rejects_dirty_checkout(tmp_path: Path) -> None:
+    compose_path = tmp_path / "manager" / "docker-compose.yml"
+    compose_path.parent.mkdir()
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    _initialize_clean_git_repository(tmp_path / "map")
+    _initialize_clean_git_repository(tmp_path / "pinvi")
+    (tmp_path / "pinvi" / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError, match="worktree is not clean"):
+        _derive_c6c_build_provenance(
+            {
+                "KOR_TRAVEL_MAP_REPO_DIR": "../map",
+                "PINVI_REPO_DIR": "../pinvi",
+            },
+            compose_path=str(compose_path),
+        )
+
+
+def test_c6c_source_snapshot_uses_exact_git_tree_and_excludes_ignored_files(
+    tmp_path: Path,
+) -> None:
+    compose_path = tmp_path / "manager" / "docker-compose.yml"
+    compose_path.parent.mkdir()
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    repositories = [tmp_path / "map", tmp_path / "pinvi"]
+    revisions: list[str] = []
+    for repository in repositories:
+        _initialize_clean_git_repository(repository)
+        (repository / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(repository), "add", ".gitignore"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "-c",
+                "user.name=C6c Test",
+                "-c",
+                "user.email=c6c@example.test",
+                "commit",
+                "-q",
+                "-m",
+                "ignore build artifact",
+            ],
+            check=True,
+        )
+        revisions.append(
+            subprocess.run(
+                ["git", "-C", str(repository), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        (repository / "tracked.txt").write_text("live mutation\n", encoding="utf-8")
+        (repository / "ignored.txt").write_text("ignored build input\n", encoding="utf-8")
+
+    provenance = C6cBuildProvenance(
+        map_source_revision=revisions[0],
+        pinvi_source_revision=revisions[1],
+    )
+    snapshot_paths: list[Path] = []
+    with _c6c_source_snapshot_environment(
+        {
+            "KOR_TRAVEL_MAP_REPO_DIR": "../map",
+            "PINVI_REPO_DIR": "../pinvi",
+        },
+        compose_path=str(compose_path),
+        provenance=provenance,
+    ) as environment:
+        for name in ("KOR_TRAVEL_MAP_REPO_DIR", "PINVI_REPO_DIR"):
+            snapshot = Path(environment[name])
+            snapshot_paths.append(snapshot)
+            assert (snapshot / "tracked.txt").read_text(encoding="utf-8") == "clean\n"
+            assert not (snapshot / "ignored.txt").exists()
+            assert not (snapshot / ".git").exists()
+
+    assert all(not path.exists() for path in snapshot_paths)
+
+
+def test_pair_image_provenance_rejects_label_manifest_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    pair = _manifest().active
+    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    revisions = iter([_MAP_SOURCE_REVISION, "3" * 40])
+    monkeypatch.setattr(
+        service,
+        "_inspect_image_source_revision",
+        lambda *_args, **_kwargs: next(revisions),
+    )
+
+    with pytest.raises(DeploymentContractError, match="manifest source provenance"):
+        service._require_pair_image_provenance(pair)
+
+
+def test_c6c_build_stage_passes_derived_provenance_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    provenance = C6cBuildProvenance(
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    monkeypatch.setattr(service, "_revalidate_c6c_build_provenance", Mock())
+    run = Mock(return_value=_success(["up", "kor-travel-map-api"]))
+    monkeypatch.setattr(service, "run", run)
+    result: dict[str, object] = {
+        "success": True,
+        "returncode": 0,
+        "stages": [],
+        "command": [],
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert service._run_up_stage(
+        result,
+        "map_api",
+        ["kor-travel-map-api"],
+        build=True,
+        recreate=True,
+        no_deps=True,
+        capture_output=True,
+        transaction=Mock(spec=ComposeTransactionSnapshot),
+        build_provenance=provenance,
+    )
+    assert run.call_args.kwargs["environment"] == provenance.compose_environment()
+
+
+def test_c6c_candidate_build_and_labels_complete_before_container_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    provenance = C6cBuildProvenance(
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.environment = Mock()
+    transaction.external_inputs = Mock()
+    snapshot_environment = {
+        **provenance.compose_environment(),
+        "KOR_TRAVEL_MAP_REPO_DIR": "/tmp/map-snapshot",
+        "PINVI_REPO_DIR": "/tmp/pinvi-snapshot",
+    }
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._c6c_source_snapshot_environment",
+        lambda *_args, **_kwargs: nullcontext(snapshot_environment),
+    )
+    monkeypatch.setattr(service, "_revalidate_c6c_build_provenance", Mock())
+    validate_snapshot = Mock()
+    monkeypatch.setattr(
+        service,
+        "_validate_c6c_snapshot_build_contract",
+        validate_snapshot,
+    )
+    run = Mock(
+        return_value=_success(["build", "kor-travel-map-api", "pinvi-api"])
+    )
+    monkeypatch.setattr(service, "run", run)
+    monkeypatch.setattr(
+        service,
+        "_validate_current_compose_candidate_unlocked",
+        Mock(
+            return_value=ValidatedComposeCandidate(
+                resolved=_resolved_compose(),
+                system_bind_snapshots=(),
+            )
+        ),
+    )
+    image_ids = iter([_MAP_IMAGE_ID, _PINVI_IMAGE_ID])
+    monkeypatch.setattr(
+        service,
+        "_inspect_image_reference_id",
+        lambda *_args, **_kwargs: next(image_ids),
+    )
+    revisions = iter([_MAP_SOURCE_REVISION, _PINVI_SOURCE_REVISION])
+    monkeypatch.setattr(
+        service,
+        "_inspect_image_source_revision",
+        lambda *_args, **_kwargs: next(revisions),
+    )
+
+    pair, build_result = service._prepare_c6c_candidate_pair(
+        _production_config(),
+        build=True,
+        build_provenance=provenance,
+        transaction=transaction,
+    )
+
+    assert pair.map_image_id == _MAP_IMAGE_ID
+    assert pair.pinvi_image_id == _PINVI_IMAGE_ID
+    assert build_result is not None
+    assert run.call_args.args[0] == ["build", "kor-travel-map-api", "pinvi-api"]
+    assert run.call_args.kwargs["environment"] == snapshot_environment
+    validate_snapshot.assert_called_once_with(
+        provenance,
+        snapshot_environment,
+        transaction=transaction,
+    )
 
 
 def test_override_env_file_cannot_load_manager_root_env(
@@ -6362,8 +6828,17 @@ def test_active_recovery_transaction_freezes_manifest_image_sha(
     assert subprocess_run.call_args.kwargs["env"]["KOR_TRAVEL_MAP_API_IMAGE"] == (
         active.map_image_id
     )
+    assert subprocess_run.call_args.kwargs["env"]["KOR_TRAVEL_MAP_GIT_COMMIT"] == (
+        active.map_source_revision
+    )
     assert subprocess_run.call_args.kwargs["env"]["PINVI_API_IMAGE"] == (
         active.pinvi_image_id
+    )
+    assert subprocess_run.call_args.kwargs["env"]["PINVI_SOURCE_REVISION"] == (
+        active.pinvi_source_revision
+    )
+    assert subprocess_run.call_args.kwargs["env"]["PINVI_BUILD_ENVIRONMENT"] == (
+        "production"
     )
     assert subprocess_run.call_args.kwargs["env"][
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
@@ -6392,6 +6867,7 @@ def test_deploy_map_contract_error_after_quiesce_uses_active_recovery_transactio
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
+    _allow_candidate_pair(service, monkeypatch)
     transaction = Mock(spec=ComposeTransactionSnapshot)
     active_recovery_transaction = Mock(spec=ComposeTransactionSnapshot)
     manifest = _manifest()
@@ -6449,9 +6925,10 @@ def test_capture_base_contract_exception_uses_same_root_and_preserves_halt_failu
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
+    _allow_candidate_pair(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v2.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
     )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.get_c6c_deployment_lock_path",
@@ -6673,6 +7150,14 @@ def test_dedicated_pair_deploy_is_the_only_production_ensure_bypass(
         "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
         lambda _environment: _production_config(),
     )
+    provenance = C6cBuildProvenance(
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._derive_c6c_build_provenance",
+        Mock(return_value=provenance),
+    )
     deploy = Mock(return_value={"success": True, "returncode": 0})
     monkeypatch.setattr(service, "_ensure_production_pinvi_target", deploy)
 
@@ -6680,6 +7165,7 @@ def test_dedicated_pair_deploy_is_the_only_production_ensure_bypass(
 
     assert result["success"] is True
     deploy.assert_called_once()
+    assert deploy.call_args.kwargs["build_provenance"] == provenance
 
 
 def test_current_map_ui_preflight_orders_inspect_validation_and_auth_smoke(
@@ -6762,7 +7248,7 @@ def test_map_ui_preflight_failure_keeps_docker_mutation_at_zero(
         "_materialize_active_recovery_transaction_unlocked",
         Mock(return_value=transaction),
     )
-    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
     monkeypatch.setattr(
         service,
         "_validate_resolved_compose_contract",
@@ -6805,12 +7291,30 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     config = _production_config()
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v2.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
     )
     events: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        service,
+        "_verify_running_image_source_provenance",
+        lambda _container, *, label, **_kwargs: events.append(
+            ("provenance", label)
+        )
+        or _MAP_SOURCE_REVISION,
+    )
     cancel_probe_states: list[PinviCancelProbeState] = []
     active = new_image_pair(
-        _ACTIVE_MAP_IMAGE_ID, _ACTIVE_PINVI_IMAGE_ID, _CONTRACT_GENERATION
+        _ACTIVE_MAP_IMAGE_ID,
+        _ACTIVE_PINVI_IMAGE_ID,
+        _CONTRACT_GENERATION,
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    _allow_candidate_pair(
+        service,
+        monkeypatch,
+        pair=active,
+        with_prebuild_result=True,
     )
     monkeypatch.setattr(
         service, "_production_preflight", lambda _config, **_kwargs: _manifest()
@@ -6888,8 +7392,13 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
 
     assert result["success"] is True
     assert result["preflight_ui_smoke"] is preflight_ui_smoke
+    assert result["image_provenance"]["map"] == {
+        "image_id": _ACTIVE_MAP_IMAGE_ID,
+        "source_revision": _MAP_SOURCE_REVISION,
+    }
     assert events[0] == ("preflight", "map-ui")
     assert [stage["name"] for stage in result["stages"]] == [
+        "prebuild_candidate_pair",
         "quiesce_pinvi_api",
         "map_api",
         "pinvi_api",
@@ -6920,6 +7429,10 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         if event[0] == "run" and event[1][0] == "up" and "pinvi-api" in event[1]
     )
     assert map_index < smoke_index < pinvi_index
+    assert events.index(("provenance", "Map")) < events.index(("smoke", "map"))
+    assert events.index(("provenance", "PinVi")) < events.index(
+        ("smoke", "pinvi")
+    )
     assert not any(
         event[0] == "run"
         and any(
@@ -6936,9 +7449,11 @@ def test_failed_map_smoke_never_invokes_pinvi_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
+    _allow_candidate_pair(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v2.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
     )
     active_recovery_transaction = replace(transaction)
     events: list[list[str]] = []
@@ -7008,6 +7523,59 @@ def test_invalid_production_env_stops_before_any_container_command(
     run.assert_not_called()
 
 
+def test_public_c6c_deploy_build_passes_clean_head_provenance_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    map_revision = _initialize_clean_git_repository(tmp_path / "map")
+    pinvi_revision = _initialize_clean_git_repository(tmp_path / "pinvi")
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    base_transaction = _frozen_external_transaction(transaction_root)
+    transaction = replace(
+        base_transaction,
+        environment=replace(
+            base_transaction.environment,
+            compose_path=str(compose_path),
+            effective={
+                "KOR_TRAVEL_MAP_REPO_DIR": "../map",
+                "PINVI_REPO_DIR": "../pinvi",
+            },
+        ),
+    )
+    service = ComposeService()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
+        Mock(return_value="production"),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=_production_config()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    ensure = Mock(return_value={"success": True})
+    monkeypatch.setattr(service, "_ensure_production_pinvi_target", ensure)
+
+    assert service.deploy_compatible_pinvi_pair(build=True) == {"success": True}
+    provenance = ensure.call_args.kwargs["build_provenance"]
+    assert provenance == C6cBuildProvenance(
+        map_source_revision=map_revision,
+        pinvi_source_revision=pinvi_revision,
+    )
+
+
 def test_pair_manifest_is_atomic_and_rejects_mutable_tags(tmp_path: Path) -> None:
     manifest_path = tmp_path / ".local" / "pair.json"
     with patch.object(c6c_deployment.os, "fsync", wraps=os.fsync) as fsync:
@@ -7017,13 +7585,17 @@ def test_pair_manifest_is_atomic_and_rejects_mutable_tags(tmp_path: Path) -> Non
 
     assert loaded.rollback.map_image_id == _MAP_IMAGE_ID
     assert loaded.rollback.pinvi_image_id == _PINVI_IMAGE_ID
-    assert loaded.version == 2
+    assert loaded.version == 3
     assert loaded.active.contract_generation == _CONTRACT_GENERATION
     assert fsync.call_count == 2
     assert not list(manifest_path.parent.glob("*.tmp"))
     with pytest.raises(DeploymentContractError, match="immutable"):
         new_image_pair(
-            "kor-travel-map-api:latest-main", _PINVI_IMAGE_ID, _CONTRACT_GENERATION
+            "kor-travel-map-api:latest-main",
+            _PINVI_IMAGE_ID,
+            _CONTRACT_GENERATION,
+            map_source_revision=_MAP_SOURCE_REVISION,
+            pinvi_source_revision=_PINVI_SOURCE_REVISION,
         )
 
     legacy_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -7057,6 +7629,62 @@ def test_pair_manifest_rejects_recorded_at_without_offset(tmp_path: Path) -> Non
         load_pair_manifest(str(manifest_path))
 
 
+def test_pair_manifest_rejects_missing_or_development_source_revision(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "pair.json"
+    missing = json.loads(json.dumps(asdict(_manifest())))
+    missing["active"].pop("map_source_revision")
+    manifest_path.write_text(json.dumps(missing), encoding="utf-8")
+    with pytest.raises(DeploymentContractError, match="invalid"):
+        load_pair_manifest(str(manifest_path))
+
+    development = json.loads(json.dumps(asdict(_manifest())))
+    development["active"]["pinvi_source_revision"] = "development"
+    manifest_path.write_text(json.dumps(development), encoding="utf-8")
+    with pytest.raises(DeploymentContractError, match="source revision"):
+        load_pair_manifest(str(manifest_path))
+
+
+def test_manifest_revision_change_rotates_previous_active_to_rollback() -> None:
+    manifest = _manifest()
+    candidate = replace(
+        manifest.active,
+        map_source_revision="3" * 40,
+        recorded_at="2026-07-19T00:00:00+00:00",
+    )
+
+    updated = manifest_with_active_pair(manifest, candidate)
+
+    assert updated.active == candidate
+    assert updated.rollback == manifest.active
+
+
+def test_pinvi_image_provenance_requires_production_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "org.opencontainers.image.revision": _PINVI_SOURCE_REVISION,
+                "io.pinvi.build.environment": "development",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        Mock(return_value=completed),
+    )
+
+    with pytest.raises(DeploymentContractError, match="build environment label"):
+        ComposeService._inspect_image_source_revision(
+            _PINVI_IMAGE_ID,
+            label="PinVi",
+            expected_build_environment="production",
+        )
+
+
 def test_pair_manifest_parent_fsync_failure_restores_previous_bytes(
     tmp_path: Path,
 ) -> None:
@@ -7066,12 +7694,14 @@ def test_pair_manifest_parent_fsync_failure_restores_previous_bytes(
     manifest_path.chmod(0o640)
     original_bytes = manifest_path.read_bytes()
     replacement = CompatiblePairManifest(
-        version=2,
+        version=3,
         rollback=original.active,
         active=new_image_pair(
             _ACTIVE_MAP_IMAGE_ID,
             _ACTIVE_PINVI_IMAGE_ID,
             _CONTRACT_GENERATION,
+            map_source_revision=_MAP_SOURCE_REVISION,
+            pinvi_source_revision=_PINVI_SOURCE_REVISION,
         ),
     )
     real_fsync = os.fsync
@@ -7100,7 +7730,7 @@ def test_pair_capture_requires_explicit_compatibility_attestation() -> None:
         ComposeService().capture_compatible_pinvi_pair(verified_compatible=False)
 
 
-def test_pair_capture_bootstraps_candidate_pair_and_records_v2_atomically(
+def test_pair_capture_bootstraps_candidate_pair_and_records_v3_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7110,6 +7740,7 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v2_atomically(
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
     monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "capture.lock"))
     service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
         manifest_path=str(manifest_path),
@@ -7119,17 +7750,38 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v2_atomically(
         "_capture_transaction_unlocked",
         Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
     )
-    pair = new_image_pair(_MAP_IMAGE_ID, _PINVI_IMAGE_ID, _CONTRACT_GENERATION)
+    pair = new_image_pair(
+        _MAP_IMAGE_ID,
+        _PINVI_IMAGE_ID,
+        _CONTRACT_GENERATION,
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    _allow_candidate_pair(
+        service,
+        monkeypatch,
+        pair=pair,
+        with_prebuild_result=True,
+    )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
         lambda _environment: _production_config(),
     )
+    provenance = C6cBuildProvenance(
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._derive_c6c_build_provenance",
+        Mock(return_value=provenance),
+    )
+    monkeypatch.setattr(service, "_revalidate_c6c_build_provenance", Mock())
     monkeypatch.setattr(service, "_validate_resolved_compose_contract", lambda *_a, **_k: {})
     monkeypatch.setattr(
         service, "_snapshot_service_states", lambda _services, **_kwargs: {}
     )
     monkeypatch.setattr(service, "_inspect_current_pair", lambda _config: pair)
-    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
         lambda _config: [],
@@ -7158,7 +7810,12 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v2_atomically(
     )
 
     assert result["success"] is True
+    assert result["image_provenance"]["pinvi"] == {
+        "image_id": _PINVI_IMAGE_ID,
+        "source_revision": _PINVI_SOURCE_REVISION,
+    }
     assert [stage["name"] for stage in result["stages"]] == [
+        "prebuild_candidate_pair",
         "bootstrap_base_db",
         "bootstrap_base_storage",
         "bootstrap_base_gra",
@@ -7181,7 +7838,14 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v2_atomically(
     )
     assert stop_index < map_index
     assert "--no-deps" in commands[map_index]
-    assert "--build" in commands[map_index]
+    assert "--build" not in commands[map_index]
+    assert result["command"][0] == [
+        "docker",
+        "compose",
+        "build",
+        "kor-travel-map-api",
+        "pinvi-api",
+    ]
     assert commands[map_index + 1][-3:] == [
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -7210,6 +7874,7 @@ def test_pair_capture_actual_init_exception_cleans_created_dependency(
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
     monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "capture.lock"))
     service = ComposeService()
+    _allow_candidate_pair(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
         manifest_path=str(manifest_path),
@@ -7269,6 +7934,8 @@ def test_pair_capture_failure_halts_both_apis_without_manifest(
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
     monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "capture.lock"))
     service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
+    _allow_candidate_pair(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
         manifest_path=str(manifest_path),
@@ -7450,17 +8117,24 @@ def test_bootstrap_cleanup_exception_returns_controlled_operator_state(
     assert "cleanup raised unexpectedly" in str(result["stderr"])
 
 
-def test_pair_capture_replaces_legacy_v1_only_after_success(
+@pytest.mark.parametrize("legacy_version", [1, 2])
+def test_pair_capture_rejects_manifest_without_source_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    legacy_version: int,
 ) -> None:
     _allow_manager_mutation(monkeypatch)
     monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
     manifest_path = tmp_path / "pair.json"
     write_pair_manifest(str(manifest_path), _manifest())
     legacy = json.loads(manifest_path.read_text(encoding="utf-8"))
-    legacy["version"] = 1
-    manifest_path.write_text(json.dumps(legacy), encoding="utf-8")
+    legacy["version"] = legacy_version
+    legacy["active"].pop("map_source_revision")
+    legacy["active"].pop("pinvi_source_revision")
+    legacy["rollback"].pop("map_source_revision")
+    legacy["rollback"].pop("pinvi_source_revision")
+    original_bytes = json.dumps(legacy).encode()
+    manifest_path.write_bytes(original_bytes)
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
     monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "capture.lock"))
     service = ComposeService()
@@ -7474,44 +8148,21 @@ def test_pair_capture_replaces_legacy_v1_only_after_success(
         Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
     )
     monkeypatch.setattr(
-        service,
-        "_materialize_active_recovery_transaction_unlocked",
-        Mock(return_value=replace(transaction)),
-    )
-    pair = _manifest().active
-    monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
         lambda _environment: _production_config(),
     )
     monkeypatch.setattr(service, "_validate_resolved_compose_contract", lambda *_a, **_k: {})
-    monkeypatch.setattr(
-        service, "_snapshot_service_states", lambda _services, **_kwargs: {}
-    )
-    monkeypatch.setattr(service, "_run_init_steps", lambda *_a, **_k: True)
-    monkeypatch.setattr(service, "_inspect_current_pair", lambda _config: pair)
-    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
-    monkeypatch.setattr(service, "_verify_active_contract", lambda *_a, **_k: {})
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
-        lambda _config: [],
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.run_pinvi_canonical_smoke",
-        lambda _config, **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        service,
-        "run",
-        lambda args, **_kwargs: _success(list(args)),
-    )
+    run = Mock()
+    monkeypatch.setattr(service, "run", run)
 
-    result = service.capture_compatible_pinvi_pair(verified_compatible=True)
+    with pytest.raises(DeploymentContractError, match="source provenance"):
+        service.capture_compatible_pinvi_pair(verified_compatible=True)
 
-    assert result["success"] is True
-    assert load_pair_manifest(str(manifest_path)).version == 2
+    run.assert_not_called()
+    assert manifest_path.read_bytes() == original_bytes
 
 
-def test_pair_capture_never_overwrites_existing_v2(
+def test_pair_capture_never_overwrites_existing_v3(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7540,7 +8191,7 @@ def test_pair_capture_never_overwrites_existing_v2(
     run = Mock()
     monkeypatch.setattr(service, "run", run)
 
-    with pytest.raises(DeploymentContractError, match="v2 already exists"):
+    with pytest.raises(DeploymentContractError, match="v3 already exists"):
         service.capture_compatible_pinvi_pair(verified_compatible=True)
 
     run.assert_not_called()
@@ -7560,6 +8211,7 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
     monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "rollback.lock"))
     service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
         manifest_path=str(manifest_path),
@@ -7578,7 +8230,7 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
         "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
         lambda _environment: _production_config(),
     )
-    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
     monkeypatch.setattr(
         service, "_require_services_ready", lambda _services, **_kwargs: []
     )
@@ -7615,6 +8267,9 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
 
     assert result["success"] is True
     assert result["preflight_ui_smoke"] is preflight_ui_smoke
+    assert result["image_provenance"]["map"]["source_revision"] == (
+        _MAP_SOURCE_REVISION
+    )
     assert calls[0][0] == ["stop", "pinvi-api", "kor-travel-map-api"]
     map_args, map_kwargs = calls[1]
     pinvi_args, pinvi_kwargs = calls[2]
@@ -7623,7 +8278,10 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
     assert events == ["up:kor-travel-map-api", "map_smoke", "up:pinvi-api"]
     assert map_kwargs["environment"] == {
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_IMAGE_ID,
+        "KOR_TRAVEL_MAP_GIT_COMMIT": _MAP_SOURCE_REVISION,
         "PINVI_API_IMAGE": _PINVI_IMAGE_ID,
+        "PINVI_SOURCE_REVISION": _PINVI_SOURCE_REVISION,
+        "PINVI_BUILD_ENVIRONMENT": "production",
     }
     assert pinvi_kwargs["environment"] == map_kwargs["environment"]
     assert not any(
@@ -7644,12 +8302,16 @@ def test_production_preflight_rejects_running_pair_drift(
         "kor_travel_docker_manager.services.compose_service.load_pair_manifest",
         lambda _path: _manifest(),
     )
-    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
     monkeypatch.setattr(
         service,
         "_inspect_current_pair",
         lambda _config: new_image_pair(
-            _ACTIVE_MAP_IMAGE_ID, _ACTIVE_PINVI_IMAGE_ID, _CONTRACT_GENERATION
+            _ACTIVE_MAP_IMAGE_ID,
+            _ACTIVE_PINVI_IMAGE_ID,
+            _CONTRACT_GENERATION,
+            map_source_revision=_MAP_SOURCE_REVISION,
+            pinvi_source_revision=_PINVI_SOURCE_REVISION,
         ),
     )
     transaction = Mock(spec=ComposeTransactionSnapshot)
@@ -7658,6 +8320,7 @@ def test_production_preflight_rejects_running_pair_drift(
         service._production_preflight(
             _production_config(),
             transaction=transaction,
+            build_provenance=None,
         )
 
 
@@ -7666,11 +8329,13 @@ def test_pinvi_smoke_failure_restores_start_pair_before_remaining_apps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
+    _allow_candidate_pair(service, monkeypatch)
     config = _production_config()
     manifest = _manifest()
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v2.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
     )
     active_recovery_transaction = replace(transaction)
     commands: list[list[str]] = []
@@ -7749,11 +8414,14 @@ def test_recovery_restores_start_pair_and_runs_full_contract_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
     config = _production_config()
     active_at_start = new_image_pair(
         _ACTIVE_MAP_IMAGE_ID,
         _ACTIVE_PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
     )
     result: dict[str, object] = {
         "success": False,
@@ -7856,8 +8524,10 @@ def test_rollback_validates_active_and_rollback_images_before_first_stop(
         _ACTIVE_MAP_IMAGE_ID,
         _ACTIVE_PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
     )
-    manifest = CompatiblePairManifest(version=2, rollback=rollback, active=active)
+    manifest = CompatiblePairManifest(version=3, rollback=rollback, active=active)
     manifest_path = tmp_path / "pair.json"
     write_pair_manifest(str(manifest_path), manifest)
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
@@ -7883,7 +8553,7 @@ def test_rollback_validates_active_and_rollback_images_before_first_stop(
         "_materialize_active_recovery_transaction_unlocked",
         materialize,
     )
-    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
     monkeypatch.setattr(
         service, "_require_services_ready", lambda _services, **_kwargs: []
     )
@@ -7931,8 +8601,10 @@ def test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair(
         _ACTIVE_MAP_IMAGE_ID,
         _ACTIVE_PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
     )
-    manifest = CompatiblePairManifest(version=2, rollback=rollback, active=active)
+    manifest = CompatiblePairManifest(version=3, rollback=rollback, active=active)
     manifest_path = tmp_path / "pair.json"
     write_pair_manifest(str(manifest_path), manifest)
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
@@ -7942,6 +8614,7 @@ def test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair(
         lambda _environment: _production_config(),
     )
     service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
     root_transaction = replace(
         _frozen_external_transaction(tmp_path),
         manifest_path=str(manifest_path),
@@ -7957,7 +8630,7 @@ def test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair(
         "_materialize_active_recovery_transaction_unlocked",
         Mock(return_value=active_recovery_transaction),
     )
-    monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
     monkeypatch.setattr(service, "_inspect_current_pair", lambda _config: active)
     monkeypatch.setattr(service, "_validate_resolved_compose_contract", lambda *_a, **_k: {})
     monkeypatch.setattr(

@@ -204,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
     pair_deploy.set_defaults(func=_cmd_pinvi_pair)
     pair_capture = pair_subparsers.add_parser(
         "capture",
-        help="clean/legacy 환경에서 candidate pair를 검증하고 최초 v2를 기록합니다.",
+        help="clean 환경에서 candidate pair를 검증하고 최초 v3를 기록합니다.",
     )
     pair_capture.add_argument(
         "--build", action="store_true", help="두 API candidate 이미지를 먼저 빌드합니다."

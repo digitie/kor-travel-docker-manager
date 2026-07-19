@@ -1,10 +1,13 @@
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
+import tarfile
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from io import StringIO
@@ -14,9 +17,13 @@ from typing import Any
 
 import yaml
 from dotenv import dotenv_values
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     _COMPATIBLE_PAIR_MUTATION_CAPABILITY,
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    _MAP_API_SERVICE,
+    _PINVI_API_SERVICE,
+    C6cBuildProvenance,
     C6cDeploymentConfig,
     CandidateSystemBindSnapshot,
     CompatibleImagePair,
@@ -45,8 +52,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     run_map_ui_auth_preflight,
     run_pinvi_canonical_smoke,
     run_ui_auth_smoke,
+    validate_c6c_build_source_wiring,
     validate_compose_candidate_protected_values,
     validate_current_map_ui_auth_runtime,
+    validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
     validate_resolved_compose_image_pair,
     validate_resolved_compose_secret_isolation,
@@ -94,6 +103,240 @@ def get_override_path() -> str:
     return os.path.join(
         os.path.dirname(get_compose_path()), "docker-compose.override.yml"
     )
+
+
+def _derive_c6c_build_provenance(
+    environment: Mapping[str, str],
+    *,
+    compose_path: str,
+) -> C6cBuildProvenance:
+    """두 API build context의 clean HEAD를 production provenance로 확정한다."""
+
+    compose_directory = Path(compose_path).resolve().parent
+    revisions = {
+        "KOR_TRAVEL_MAP_GIT_COMMIT": _clean_repository_revision(
+            environment.get("KOR_TRAVEL_MAP_REPO_DIR", "../kor-travel-map"),
+            compose_directory=compose_directory,
+            label="Map",
+        ),
+        "PINVI_SOURCE_REVISION": _clean_repository_revision(
+            environment.get("PINVI_REPO_DIR", "../pinvi"),
+            compose_directory=compose_directory,
+            label="PinVi",
+        ),
+    }
+    for env_name, expected in revisions.items():
+        configured = environment.get(env_name)
+        if configured is not None and configured != expected:
+            raise DeploymentContractError(
+                f"{env_name} must match the clean build context HEAD"
+            )
+    configured_build_environment = environment.get("PINVI_BUILD_ENVIRONMENT")
+    if (
+        configured_build_environment is not None
+        and configured_build_environment != "production"
+    ):
+        raise DeploymentContractError(
+            "PINVI_BUILD_ENVIRONMENT must be production for C6c build"
+        )
+    return C6cBuildProvenance(
+        map_source_revision=revisions["KOR_TRAVEL_MAP_GIT_COMMIT"],
+        pinvi_source_revision=revisions["PINVI_SOURCE_REVISION"],
+    )
+
+
+def _clean_repository_revision(
+    configured_path: str,
+    *,
+    compose_directory: Path,
+    label: str,
+) -> str:
+    repository = _resolve_repository_path(
+        configured_path,
+        compose_directory=compose_directory,
+        label=label,
+    )
+
+    root = _run_git_read(repository, ["rev-parse", "--show-toplevel"], label=label)
+    try:
+        git_root = Path(root).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise DeploymentContractError(f"{label} Git root cannot be resolved") from exc
+    if git_root != repository:
+        raise DeploymentContractError(
+            f"{label} build context must be the exact Git worktree root"
+        )
+    status = _run_git_read(
+        repository,
+        ["status", "--porcelain=v1", "--untracked-files=normal"],
+        label=label,
+        allow_output_whitespace=True,
+    )
+    if status:
+        raise DeploymentContractError(f"{label} build context worktree is not clean")
+    revision = _run_git_read(
+        repository,
+        ["rev-parse", "--verify", "HEAD"],
+        label=label,
+    )
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise DeploymentContractError(
+            f"{label} build context HEAD is not an exact lowercase commit"
+        )
+    return revision
+
+
+def _resolve_repository_path(
+    configured_path: str,
+    *,
+    compose_directory: Path,
+    label: str,
+) -> Path:
+    path = Path(configured_path)
+    if not path.is_absolute():
+        path = compose_directory / path
+    try:
+        repository = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise DeploymentContractError(
+            f"{label} build context cannot be resolved"
+        ) from exc
+    if not repository.is_dir():
+        raise DeploymentContractError(f"{label} build context is not a directory")
+    return repository
+
+
+@contextmanager
+def _c6c_source_snapshot_environment(
+    environment: Mapping[str, str],
+    *,
+    compose_path: str,
+    provenance: C6cBuildProvenance,
+) -> Iterator[dict[str, str]]:
+    """live 파일 대신 두 exact Git tree를 일회성 build context로 제공한다."""
+
+    compose_directory = Path(compose_path).resolve().parent
+    repositories = {
+        "KOR_TRAVEL_MAP_REPO_DIR": (
+            _resolve_repository_path(
+                environment.get("KOR_TRAVEL_MAP_REPO_DIR", "../kor-travel-map"),
+                compose_directory=compose_directory,
+                label="Map",
+            ),
+            provenance.map_source_revision,
+            "Map",
+        ),
+        "PINVI_REPO_DIR": (
+            _resolve_repository_path(
+                environment.get("PINVI_REPO_DIR", "../pinvi"),
+                compose_directory=compose_directory,
+                label="PinVi",
+            ),
+            provenance.pinvi_source_revision,
+            "PinVi",
+        ),
+    }
+    with tempfile.TemporaryDirectory(prefix="ktdm-c6c-source-") as temporary:
+        snapshot_root = Path(temporary)
+        build_environment = provenance.compose_environment()
+        for env_name, (repository, revision, label) in repositories.items():
+            target = snapshot_root / env_name.lower()
+            target.mkdir(mode=0o700)
+            _export_git_tree(repository, revision, target, label=label)
+            build_environment[env_name] = str(target)
+        yield build_environment
+
+
+def _export_git_tree(
+    repository: Path,
+    revision: str,
+    target: Path,
+    *,
+    label: str,
+) -> None:
+    tree = _run_git_read(
+        repository,
+        ["ls-tree", "-r", "--full-tree", revision],
+        label=label,
+        allow_output_whitespace=True,
+    )
+    if re.search(r"(?m)^160000 ", tree) is not None:
+        raise DeploymentContractError(
+            f"{label} build context Git submodules are not supported"
+        )
+    archive_path = target.parent / f"{target.name}.tar"
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "archive",
+                "--format=tar",
+                f"--output={archive_path}",
+                revision,
+            ],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise DeploymentContractError(
+            f"cannot snapshot {label} build context Git tree"
+        ) from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError(
+            f"cannot snapshot {label} build context Git tree"
+        )
+    try:
+        with tarfile.open(archive_path, mode="r:") as archive:
+            for member in archive.getmembers():
+                parts = Path(member.name).parts
+                if (
+                    not parts
+                    or Path(member.name).is_absolute()
+                    or ".." in parts
+                    or not (member.isfile() or member.isdir())
+                ):
+                    raise DeploymentContractError(
+                        f"{label} Git tree has an unsafe build context entry"
+                    )
+            archive.extractall(target)
+    except (OSError, tarfile.TarError) as exc:
+        raise DeploymentContractError(
+            f"cannot extract {label} build context Git tree"
+        ) from exc
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+
+def _run_git_read(
+    repository: Path,
+    args: Sequence[str],
+    *,
+    label: str,
+    allow_output_whitespace: bool = False,
+) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), *args],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        ) from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        )
+    if allow_output_whitespace:
+        return completed.stdout.rstrip("\r\n")
+    return completed.stdout.strip()
 
 
 def get_compatible_pair_manifest_path(
@@ -2227,6 +2470,14 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible-pair deploy is available only in production mode"
                 )
+            build_provenance = (
+                _derive_c6c_build_provenance(
+                    transaction.environment.effective,
+                    compose_path=transaction.environment.compose_path,
+                )
+                if build
+                else None
+            )
             return self._ensure_production_pinvi_target(
                 "pinvi",
                 config=config,
@@ -2234,6 +2485,7 @@ class ComposeService:
                 recreate=recreate,
                 capture_output=True,
                 transaction=transaction,
+                build_provenance=build_provenance,
             )
 
     def _ensure_production_pinvi_target(
@@ -2245,12 +2497,14 @@ class ComposeService:
         recreate: bool,
         capture_output: bool,
         transaction: ComposeTransactionSnapshot,
+        build_provenance: C6cBuildProvenance | None = None,
     ) -> dict[str, Any]:
         """C6c compatible pair를 Map 검증 뒤 PinVi로 단계 배포한다."""
 
         manifest = self._production_preflight(
             config,
             transaction=transaction,
+            build_provenance=build_provenance,
         )
         active_recovery_transaction = (
             self._materialize_active_recovery_transaction_unlocked(
@@ -2290,7 +2544,29 @@ class ComposeService:
             "stderr": "",
         }
 
+        candidate_pair, prebuild_result = self._prepare_c6c_candidate_pair(
+            config,
+            build=build,
+            build_provenance=build_provenance,
+            transaction=transaction,
+        )
+        if prebuild_result is not None:
+            self._append_stage_result(
+                result,
+                "prebuild_candidate_pair",
+                prebuild_result,
+                config,
+            )
+        candidate_environment = self._pair_image_environment(candidate_pair)
+        result["candidate_image_provenance"] = self._pair_provenance_payload(
+            candidate_pair
+        )
+
         try:
+            self._revalidate_c6c_build_provenance(
+                build_provenance,
+                transaction=transaction,
+            )
             quiesce_result = self.run(
                 ["stop", "pinvi-api"],
                 capture_output=capture_output,
@@ -2309,36 +2585,67 @@ class ComposeService:
                 result,
                 "map_api",
                 ["kor-travel-map-api"],
-                build=build,
+                build=False,
                 recreate=recreate,
                 no_deps=True,
                 wait=True,
                 capture_output=capture_output,
+                environment=candidate_environment,
                 mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                 redact_config=config,
                 transaction=transaction,
+                build_provenance=build_provenance,
             ):
                 raise DeploymentContractError("Map API deployment failed")
+            self._verify_running_image_source_provenance(
+                config.map_container,
+                label="Map",
+                expected_revision=(
+                    build_provenance.map_source_revision
+                    if build_provenance is not None
+                    else None
+                ),
+            )
             result["smoke"] = run_map_ops_smoke(config)
             if not self._run_up_stage(
                 result,
                 "pinvi_api",
                 ["pinvi-api"],
-                build=build,
+                build=False,
                 recreate=recreate,
                 no_deps=True,
                 wait=True,
                 capture_output=capture_output,
+                environment=candidate_environment,
                 mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                 redact_config=config,
                 transaction=transaction,
+                build_provenance=build_provenance,
             ):
                 raise DeploymentContractError("PinVi API deployment failed")
+            self._verify_running_image_source_provenance(
+                config.pinvi_container,
+                label="PinVi",
+                expected_revision=(
+                    build_provenance.pinvi_source_revision
+                    if build_provenance is not None
+                    else None
+                ),
+                expected_build_environment="production",
+            )
             result["pinvi_smoke"] = run_pinvi_canonical_smoke(
                 config,
                 cancel_probe_state=cancel_probe_state,
             )
             active_pair = self._inspect_current_pair(config)
+            self._require_expected_source_provenance(
+                active_pair,
+                build_provenance,
+            )
+            if not self._pair_matches(active_pair, candidate_pair):
+                raise DeploymentContractError(
+                    "running C6c pair differs from the pre-attested candidate images"
+                )
             verification = self._verify_active_contract(
                 config,
                 active_pair,
@@ -2349,6 +2656,7 @@ class ComposeService:
             result["ui_smoke"] = verification["ui_smoke"]
             result["runtime_secret_isolation"] = True
             result["activation_verification"] = verification
+            result["image_provenance"] = self._pair_provenance_payload(active_pair)
             if transaction.manifest_path is None:
                 raise DeploymentContractError(
                     "compatible-pair transaction has no manifest path"
@@ -2391,9 +2699,14 @@ class ComposeService:
         config: C6cDeploymentConfig,
         *,
         transaction: ComposeTransactionSnapshot,
+        build_provenance: C6cBuildProvenance | None = None,
     ) -> CompatiblePairManifest:
         self._validate_resolved_compose_contract(
             config,
+            transaction=transaction,
+        )
+        self._revalidate_c6c_build_provenance(
+            build_provenance,
             transaction=transaction,
         )
 
@@ -2407,8 +2720,7 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible pair manifest generation differs from deployment contract"
                 )
-            self._require_local_image(pair.map_image_id)
-            self._require_local_image(pair.pinvi_image_id)
+            self._require_pair_image_provenance(pair)
         self._validate_resolved_compose_contract(
             config,
             environment_override=self._pair_image_environment(manifest.active),
@@ -2421,6 +2733,220 @@ class ComposeService:
                 "running Map+PinVi image pair drifted from the captured compatible manifest"
             )
         return manifest
+
+    def _revalidate_c6c_build_provenance(
+        self,
+        expected: C6cBuildProvenance | None,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        if expected is None:
+            return
+        actual = _derive_c6c_build_provenance(
+            transaction.environment.effective,
+            compose_path=transaction.environment.compose_path,
+        )
+        if actual != expected:
+            raise DeploymentContractError(
+                "C6c build context revision changed during the transaction"
+            )
+        try:
+            source = yaml.safe_load(
+                transaction.compose_source_bytes.decode("utf-8")
+            ) or {}
+        except (UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError(
+                "C6c provenance compose source is invalid"
+            ) from exc
+        if not isinstance(source, Mapping):
+            raise ComposeCandidateContractError(
+                "C6c provenance compose source is not a mapping"
+            )
+        validate_c6c_build_source_wiring(source)
+        validation = self._validate_current_compose_candidate_unlocked(
+            environment_override=expected.compose_environment(),
+            environment_snapshot=transaction.environment,
+            external_input_snapshot=transaction.external_inputs,
+        )
+        if (
+            validation.raw_volume_graph_hash != transaction.raw_volume_graph_hash
+            or validation.resolved_volume_graph_hash
+            != transaction.resolved_volume_graph_hash
+        ):
+            raise ComposeCandidateContractError(
+                "C6c provenance resolution changed the frozen volume graph"
+            )
+        validate_resolved_c6c_build_provenance(validation.resolved, expected)
+
+    def _validate_c6c_snapshot_build_contract(
+        self,
+        provenance: C6cBuildProvenance,
+        build_environment: Mapping[str, str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        validation = self._validate_current_compose_candidate_unlocked(
+            environment_override=build_environment,
+            environment_snapshot=transaction.environment,
+            external_input_snapshot=transaction.external_inputs,
+        )
+        if (
+            validation.raw_volume_graph_hash != transaction.raw_volume_graph_hash
+            or validation.resolved_volume_graph_hash
+            != transaction.resolved_volume_graph_hash
+        ):
+            raise ComposeCandidateContractError(
+                "C6c source snapshot resolution changed the frozen volume graph"
+            )
+        validate_resolved_c6c_build_provenance(
+            validation.resolved,
+            provenance,
+            expected_build_contexts={
+                _MAP_API_SERVICE: build_environment["KOR_TRAVEL_MAP_REPO_DIR"],
+                _PINVI_API_SERVICE: build_environment["PINVI_REPO_DIR"],
+            },
+        )
+
+    def _prepare_c6c_candidate_pair(
+        self,
+        config: C6cDeploymentConfig,
+        *,
+        build: bool,
+        build_provenance: C6cBuildProvenance | None,
+        transaction: ComposeTransactionSnapshot,
+    ) -> tuple[CompatibleImagePair, Mapping[str, Any] | None]:
+        """두 candidate image를 container 변경 없이 build/attest한다."""
+
+        if build != (build_provenance is not None):
+            raise DeploymentContractError(
+                "C6c build flag and source provenance must be provided together"
+            )
+        if build_provenance is None:
+            return (
+                self._inspect_c6c_candidate_pair(
+                    config,
+                    environment_override=None,
+                    transaction=transaction,
+                ),
+                None,
+            )
+        self._revalidate_c6c_build_provenance(
+            build_provenance,
+            transaction=transaction,
+        )
+        with _c6c_source_snapshot_environment(
+            transaction.environment.effective,
+            compose_path=transaction.environment.compose_path,
+            provenance=build_provenance,
+        ) as build_environment:
+            self._validate_c6c_snapshot_build_contract(
+                build_provenance,
+                build_environment,
+                transaction=transaction,
+            )
+            build_result = self.run(
+                ["build", _MAP_API_SERVICE, _PINVI_API_SERVICE],
+                capture_output=True,
+                environment=build_environment,
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                redact_config=config,
+                transaction=transaction,
+            )
+            if not build_result["success"]:
+                raise DeploymentContractError(
+                    "C6c candidate image build failed before container mutation"
+                )
+            self._revalidate_c6c_build_provenance(
+                build_provenance,
+                transaction=transaction,
+            )
+            pair = self._inspect_c6c_candidate_pair(
+                config,
+                environment_override=build_environment,
+                transaction=transaction,
+            )
+        self._require_expected_source_provenance(pair, build_provenance)
+        return pair, build_result
+
+    def _inspect_c6c_candidate_pair(
+        self,
+        config: C6cDeploymentConfig,
+        *,
+        environment_override: Mapping[str, str] | None,
+        transaction: ComposeTransactionSnapshot,
+    ) -> CompatibleImagePair:
+        """resolved image reference를 immutable ID와 OCI provenance로 고정한다."""
+
+        validation = self._validate_current_compose_candidate_unlocked(
+            environment_override=environment_override,
+            environment_snapshot=transaction.environment,
+            external_input_snapshot=transaction.external_inputs,
+        )
+        services = validation.resolved.get("services")
+        if not isinstance(services, Mapping):
+            raise DeploymentContractError(
+                "resolved compose config has no services mapping"
+            )
+        image_references: dict[str, str] = {}
+        for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE):
+            service = services.get(service_name)
+            image = service.get("image") if isinstance(service, Mapping) else None
+            if not isinstance(image, str) or not image:
+                raise DeploymentContractError(
+                    f"resolved compose is missing {service_name} candidate image"
+                )
+            image_references[service_name] = image
+        map_image_id = self._inspect_image_reference_id(
+            image_references[_MAP_API_SERVICE],
+            label="Map",
+        )
+        pinvi_image_id = self._inspect_image_reference_id(
+            image_references[_PINVI_API_SERVICE],
+            label="PinVi",
+        )
+        pair = new_image_pair(
+            map_image_id,
+            pinvi_image_id,
+            config.contract_generation,
+            map_source_revision=self._inspect_image_source_revision(
+                map_image_id,
+                label="Map",
+            ),
+            pinvi_source_revision=self._inspect_image_source_revision(
+                pinvi_image_id,
+                label="PinVi",
+                expected_build_environment="production",
+            ),
+        )
+        return pair
+
+    @staticmethod
+    def _require_expected_source_provenance(
+        pair: CompatibleImagePair,
+        expected: C6cBuildProvenance | None,
+    ) -> None:
+        if expected is None:
+            return
+        if (
+            pair.map_source_revision != expected.map_source_revision
+            or pair.pinvi_source_revision != expected.pinvi_source_revision
+        ):
+            raise DeploymentContractError(
+                "built C6c image provenance differs from the clean checkout HEAD"
+            )
+
+    @staticmethod
+    def _pair_provenance_payload(pair: CompatibleImagePair) -> dict[str, Any]:
+        return {
+            "map": {
+                "image_id": pair.map_image_id,
+                "source_revision": pair.map_source_revision,
+            },
+            "pinvi": {
+                "image_id": pair.pinvi_image_id,
+                "source_revision": pair.pinvi_source_revision,
+            },
+        }
 
     def _preflight_current_map_ui_auth(
         self,
@@ -2476,7 +3002,19 @@ class ComposeService:
         redact_config: C6cDeploymentConfig | None = None,
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
+        build_provenance: C6cBuildProvenance | None = None,
     ) -> bool:
+        if frozen_recovery and build_provenance is not None:
+            raise ComposeCandidateContractError(
+                "frozen recovery must not carry build provenance"
+            )
+        self._revalidate_c6c_build_provenance(
+            build_provenance,
+            transaction=transaction,
+        )
+        stage_environment = dict(environment or {})
+        if build_provenance is not None:
+            stage_environment.update(build_provenance.compose_environment())
         args = ["up", "-d"]
         if no_deps:
             args.append("--no-deps")
@@ -2503,7 +3041,7 @@ class ComposeService:
             stage_result = self.run(
                 args,
                 capture_output=capture_output,
-                environment=environment,
+                environment=stage_environment or None,
                 mutation_capability=mutation_capability,
                 redact_config=redact_config,
                 transaction=transaction,
@@ -2617,7 +3155,9 @@ class ComposeService:
     def _pair_matches(first: CompatibleImagePair, second: CompatibleImagePair) -> bool:
         return (
             first.map_image_id == second.map_image_id
+            and first.map_source_revision == second.map_source_revision
             and first.pinvi_image_id == second.pinvi_image_id
+            and first.pinvi_source_revision == second.pinvi_source_revision
             and first.contract_generation == second.contract_generation
         )
 
@@ -2625,7 +3165,10 @@ class ComposeService:
     def _pair_image_environment(pair: CompatibleImagePair) -> dict[str, str]:
         return {
             "KOR_TRAVEL_MAP_API_IMAGE": pair.map_image_id,
+            "KOR_TRAVEL_MAP_GIT_COMMIT": pair.map_source_revision,
             "PINVI_API_IMAGE": pair.pinvi_image_id,
+            "PINVI_SOURCE_REVISION": pair.pinvi_source_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
         }
 
     def _verify_active_contract(
@@ -2672,6 +3215,7 @@ class ComposeService:
         validate_runtime_secret_isolation(runtime_configs, config)
         return {
             "contract_generation": expected_pair.contract_generation,
+            "image_provenance": self._pair_provenance_payload(expected_pair),
             "map_smoke": map_smoke,
             "pinvi_smoke": pinvi_smoke,
             "ui_smoke": ui_smoke,
@@ -2712,7 +3256,11 @@ class ComposeService:
                 frozen_recovery=True,
             )
             result[state_key] = "previous_active_pair_restored"
-            return {"success": True, "state": result[state_key]}
+            return {
+                "success": True,
+                "state": result[state_key],
+                "image_provenance": self._pair_provenance_payload(active_at_start),
+            }
         except Exception as recovery_error:
             halt = self._halt_c6c_pair(
                 result,
@@ -2773,6 +3321,11 @@ class ComposeService:
             frozen_recovery=frozen_recovery,
         ):
             raise DeploymentContractError("Map API pair restoration failed")
+        self._verify_running_image_source_provenance(
+            config.map_container,
+            label="Map",
+            expected_revision=pair.map_source_revision,
+        )
         result[f"{stage_prefix}_map_smoke"] = run_map_ops_smoke(config)
         if not self._run_up_stage(
             result,
@@ -2790,6 +3343,12 @@ class ComposeService:
             frozen_recovery=frozen_recovery,
         ):
             raise DeploymentContractError("PinVi API pair restoration failed")
+        self._verify_running_image_source_provenance(
+            config.pinvi_container,
+            label="PinVi",
+            expected_revision=pair.pinvi_source_revision,
+            expected_build_environment="production",
+        )
         return self._verify_active_contract(
             config,
             pair,
@@ -2836,37 +3395,13 @@ class ComposeService:
                 "error": str(halt_error),
             }
 
-    @staticmethod
-    def _load_bootstrap_previous_active_pair(
-        manifest_path: str,
-    ) -> CompatibleImagePair | None:
-        path = Path(manifest_path)
-        if not path.exists():
-            return None
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, Mapping) or payload.get("version") != 1:
-                return None
-            active = payload.get("active")
-            if not isinstance(active, Mapping):
-                raise TypeError("legacy active pair is missing")
-            return new_image_pair(
-                str(active["map_image_id"]),
-                str(active["pinvi_image_id"]),
-                str(active["contract_generation"]),
-            )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
-            raise DeploymentContractError(
-                "legacy compatible pair active record is invalid"
-            ) from exc
-
     def capture_compatible_pinvi_pair(
         self,
         *,
         verified_compatible: bool,
         build: bool = False,
     ) -> dict[str, Any]:
-        """clean/legacy 환경에서 candidate pair를 단계 검증해 최초 v2를 기록한다."""
+        """clean 환경에서 candidate pair를 단계 검증해 최초 v3를 기록한다."""
 
         if not verified_compatible:
             raise DeploymentContractError(
@@ -2886,8 +3421,20 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible pair capture is available only in production mode"
                 )
+            build_provenance = (
+                _derive_c6c_build_provenance(
+                    transaction.environment.effective,
+                    compose_path=transaction.environment.compose_path,
+                )
+                if build
+                else None
+            )
             self._validate_resolved_compose_contract(
                 config,
+                transaction=transaction,
+            )
+            self._revalidate_c6c_build_provenance(
+                build_provenance,
                 transaction=transaction,
             )
             manifest_path = transaction.manifest_path
@@ -2896,18 +3443,6 @@ class ComposeService:
                     "compatible-pair transaction has no manifest path"
                 )
             assert_pair_manifest_bootstrap_allowed(manifest_path)
-            previous_active = self._load_bootstrap_previous_active_pair(
-                manifest_path
-            )
-            active_recovery_transaction = (
-                self._materialize_active_recovery_transaction_unlocked(
-                    transaction,
-                    config,
-                    previous_active,
-                )
-                if previous_active is not None
-                else None
-            )
             services = services_for_target("pinvi")
             map_services = list(get_target("map").get("services", []))
             pinvi_services = list(get_target("pinvi").get("services", []))
@@ -2919,7 +3454,9 @@ class ComposeService:
             map_dependents = [
                 service for service in map_services if service != "kor-travel-map-api"
             ]
-            pinvi_dependents = [service for service in pinvi_services if service != "pinvi-api"]
+            pinvi_dependents = [
+                service for service in pinvi_services if service != "pinvi-api"
+            ]
             initial_states = self._snapshot_service_states(
                 services,
                 transaction=transaction,
@@ -2939,6 +3476,23 @@ class ComposeService:
                 "manifest": manifest_path,
                 "deployment_state": "bootstrap_preflight_complete",
             }
+            candidate_pair, prebuild_result = self._prepare_c6c_candidate_pair(
+                config,
+                build=build,
+                build_provenance=build_provenance,
+                transaction=transaction,
+            )
+            if prebuild_result is not None:
+                self._append_stage_result(
+                    result,
+                    "prebuild_candidate_pair",
+                    prebuild_result,
+                    config,
+                )
+            candidate_environment = self._pair_image_environment(candidate_pair)
+            result["candidate_image_provenance"] = self._pair_provenance_payload(
+                candidate_pair
+            )
             mutation_attempted = False
             try:
                 for target_name in base_target_names:
@@ -2957,6 +3511,7 @@ class ComposeService:
                         capture_output=True,
                         mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                         transaction=transaction,
+                        build_provenance=build_provenance,
                     ):
                         raise DeploymentContractError(
                             "bootstrap base service deployment failed"
@@ -2965,6 +3520,10 @@ class ComposeService:
                         {"target": target_name, **step}
                         for step in target_config.get("init_steps", [])
                     ]
+                    self._revalidate_c6c_build_provenance(
+                        build_provenance,
+                        transaction=transaction,
+                    )
                     if not self._run_init_steps(
                         result,
                         direct_init_steps,
@@ -2974,6 +3533,10 @@ class ComposeService:
                         raise DeploymentContractError(
                             "bootstrap init command failed"
                         )
+                self._revalidate_c6c_build_provenance(
+                    build_provenance,
+                    transaction=transaction,
+                )
                 stop_result = self.run(
                     ["stop", "pinvi-api", "kor-travel-map-api"],
                     mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -2992,16 +3555,27 @@ class ComposeService:
                     result,
                     "bootstrap_map_api",
                     ["kor-travel-map-api"],
-                    build=build,
+                    build=False,
                     recreate=True,
                     no_deps=True,
                     wait=True,
                     capture_output=True,
+                    environment=candidate_environment,
                     mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                     redact_config=config,
                     transaction=transaction,
+                    build_provenance=build_provenance,
                 ):
                     raise DeploymentContractError("bootstrap Map API failed")
+                self._verify_running_image_source_provenance(
+                    config.map_container,
+                    label="Map",
+                    expected_revision=(
+                        build_provenance.map_source_revision
+                        if build_provenance is not None
+                        else None
+                    ),
+                )
                 result["smoke"] = run_map_ops_smoke(config)
                 touched_services.update(map_dependents)
                 if not self._run_up_stage(
@@ -3015,6 +3589,7 @@ class ComposeService:
                     capture_output=True,
                     mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                     transaction=transaction,
+                    build_provenance=build_provenance,
                 ):
                     raise DeploymentContractError(
                         "bootstrap Map dependents failed"
@@ -3024,16 +3599,28 @@ class ComposeService:
                     result,
                     "bootstrap_pinvi_api",
                     ["pinvi-api"],
-                    build=build,
+                    build=False,
                     recreate=True,
                     no_deps=True,
                     wait=True,
                     capture_output=True,
+                    environment=candidate_environment,
                     mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                     redact_config=config,
                     transaction=transaction,
+                    build_provenance=build_provenance,
                 ):
                     raise DeploymentContractError("bootstrap PinVi API failed")
+                self._verify_running_image_source_provenance(
+                    config.pinvi_container,
+                    label="PinVi",
+                    expected_revision=(
+                        build_provenance.pinvi_source_revision
+                        if build_provenance is not None
+                        else None
+                    ),
+                    expected_build_environment="production",
+                )
                 result["pinvi_smoke"] = run_pinvi_canonical_smoke(
                     config,
                     cancel_probe_state=cancel_probe_state,
@@ -3050,13 +3637,18 @@ class ComposeService:
                     capture_output=True,
                     mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                     transaction=transaction,
+                    build_provenance=build_provenance,
                 ):
                     raise DeploymentContractError(
                         "bootstrap PinVi dependents failed"
                     )
                 pair = self._inspect_current_pair(config)
-                self._require_local_image(pair.map_image_id)
-                self._require_local_image(pair.pinvi_image_id)
+                self._require_expected_source_provenance(pair, build_provenance)
+                if not self._pair_matches(pair, candidate_pair):
+                    raise DeploymentContractError(
+                        "running C6c pair differs from pre-attested bootstrap images"
+                    )
+                self._require_pair_image_provenance(pair)
                 verification = self._verify_active_contract(
                     config,
                     pair,
@@ -3067,7 +3659,8 @@ class ComposeService:
                 write_pair_manifest(manifest_path, initial_pair_manifest(pair))
                 result["verification"] = verification
                 result["contract_generation"] = pair.contract_generation
-                result["deployment_state"] = "initial_v2_manifest_committed"
+                result["image_provenance"] = self._pair_provenance_payload(pair)
+                result["deployment_state"] = "initial_v3_manifest_committed"
                 result["stdout"] += (
                     f"compatible Map+PinVi image pair bootstrapped: {manifest_path}\n"
                 )
@@ -3081,26 +3674,13 @@ class ComposeService:
                     if isinstance(exc, DeploymentContractError)
                     else "unexpected compatible-pair capture failure",
                 )
-                if (
-                    previous_active is not None
-                    and active_recovery_transaction is not None
-                ):
-                    recovery = self._recover_previous_pair(
-                        result,
-                        config,
-                        previous_active,
-                        services,
-                        cancel_probe_state=cancel_probe_state,
-                        transaction=active_recovery_transaction,
-                    )
-                else:
-                    recovery = self._cleanup_bootstrap(
-                        result,
-                        config,
-                        initial_states,
-                        touched_services,
-                        transaction=transaction,
-                    )
+                recovery = self._cleanup_bootstrap(
+                    result,
+                    config,
+                    initial_states,
+                    touched_services,
+                    transaction=transaction,
+                )
                 raise ComposePostMutationContractError(
                     exc,
                     recovery_attempted=True,
@@ -3244,8 +3824,7 @@ class ComposeService:
                     raise DeploymentContractError(
                         "rollback pair generation differs from the active deployment contract"
                     )
-                self._require_local_image(pair.map_image_id)
-                self._require_local_image(pair.pinvi_image_id)
+                self._require_pair_image_provenance(pair)
             active_recovery_transaction = (
                 self._materialize_active_recovery_transaction_unlocked(
                     transaction,
@@ -3299,6 +3878,7 @@ class ComposeService:
                     transaction=transaction,
                 )
                 result["verification"] = verification
+                result["image_provenance"] = self._pair_provenance_payload(rollback)
                 write_pair_manifest(
                     manifest_path,
                     manifest_with_active_pair(manifest, rollback),
@@ -3333,10 +3913,21 @@ class ComposeService:
                 ) from exc
 
     def _inspect_current_pair(self, config: C6cDeploymentConfig) -> CompatibleImagePair:
+        map_image_id = self._inspect_container_image_id(config.map_container)
+        pinvi_image_id = self._inspect_container_image_id(config.pinvi_container)
         return new_image_pair(
-            self._inspect_container_image_id(config.map_container),
-            self._inspect_container_image_id(config.pinvi_container),
+            map_image_id,
+            pinvi_image_id,
             config.contract_generation,
+            map_source_revision=self._inspect_image_source_revision(
+                map_image_id,
+                label="Map",
+            ),
+            pinvi_source_revision=self._inspect_image_source_revision(
+                pinvi_image_id,
+                label="PinVi",
+                expected_build_environment="production",
+            ),
         )
 
     @staticmethod
@@ -3359,6 +3950,26 @@ class ComposeService:
             )
         return completed.stdout.strip()
 
+    def _verify_running_image_source_provenance(
+        self,
+        container_name: str,
+        *,
+        label: str,
+        expected_revision: str | None = None,
+        expected_build_environment: str | None = None,
+    ) -> str:
+        image_id = self._inspect_container_image_id(container_name)
+        revision = self._inspect_image_source_revision(
+            image_id,
+            label=label,
+            expected_build_environment=expected_build_environment,
+        )
+        if expected_revision is not None and revision != expected_revision:
+            raise DeploymentContractError(
+                f"{label} running image revision differs from the clean checkout HEAD"
+            )
+        return revision
+
     @staticmethod
     def _require_local_image(image_id: str) -> None:
         try:
@@ -3375,6 +3986,105 @@ class ComposeService:
             ) from exc
         if completed.returncode != 0 or completed.stdout.strip() != image_id:
             raise DeploymentContractError("compatible pair image ID is not available locally")
+
+    @staticmethod
+    def _inspect_image_reference_id(image_reference: str, *, label: str) -> str:
+        try:
+            completed = subprocess.run(
+                [
+                    "docker",
+                    "image",
+                    "inspect",
+                    "--format={{.Id}}",
+                    image_reference,
+                ],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise DeploymentContractError(
+                f"cannot inspect {label} candidate image ID"
+            ) from exc
+        image_id = completed.stdout.strip()
+        if completed.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            raise DeploymentContractError(
+                f"{label} candidate image ID is not immutable"
+            )
+        return image_id
+
+    def _require_pair_image_provenance(self, pair: CompatibleImagePair) -> None:
+        self._require_local_image(pair.map_image_id)
+        self._require_local_image(pair.pinvi_image_id)
+        map_revision = self._inspect_image_source_revision(
+            pair.map_image_id,
+            label="Map",
+        )
+        pinvi_revision = self._inspect_image_source_revision(
+            pair.pinvi_image_id,
+            label="PinVi",
+            expected_build_environment="production",
+        )
+        if (
+            map_revision != pair.map_source_revision
+            or pinvi_revision != pair.pinvi_source_revision
+        ):
+            raise DeploymentContractError(
+                "compatible pair image labels differ from manifest source provenance"
+            )
+
+    @staticmethod
+    def _inspect_image_source_revision(
+        image_id: str,
+        *,
+        label: str,
+        expected_build_environment: str | None = None,
+    ) -> str:
+        try:
+            completed = subprocess.run(
+                [
+                    "docker",
+                    "image",
+                    "inspect",
+                    "--format={{json .Config.Labels}}",
+                    image_id,
+                ],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise DeploymentContractError(
+                f"cannot inspect {label} image source provenance"
+            ) from exc
+        if completed.returncode != 0:
+            raise DeploymentContractError(
+                f"cannot inspect {label} image source provenance"
+            )
+        try:
+            labels = json.loads(completed.stdout)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise DeploymentContractError(
+                f"{label} image provenance labels are invalid"
+            ) from exc
+        if not isinstance(labels, Mapping):
+            raise DeploymentContractError(
+                f"{label} image provenance labels are missing"
+            )
+        revision = labels.get("org.opencontainers.image.revision")
+        if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise DeploymentContractError(
+                f"{label} image source revision label is invalid"
+            )
+        if expected_build_environment is not None and labels.get(
+            "io.pinvi.build.environment"
+        ) != expected_build_environment:
+            raise DeploymentContractError(
+                f"{label} image build environment label is invalid"
+            )
+        return revision
 
     def _inspect_c6c_runtime_configs(
         self,

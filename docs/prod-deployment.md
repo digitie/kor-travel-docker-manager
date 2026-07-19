@@ -154,21 +154,36 @@ n150 read-only preflight에서는 일반 scalar의 username 문자열 일치를 
 확인했으며 container mutation은 없었다. 위 identity/confidential 분리 반영 뒤 root 권한이 필요한 Map UI
 비밀번호 회전과 cross-repo smoke·실제 로그인을 다시 수행하기 전까지 production 전환은 완료로 보지 않는다.
 
-최초 설치 또는 legacy v1에서는 capture가 같은 host lock 안에서 base dependency, Map API, Map UI/Dagster,
-PinVi API, PinVi Web/Dagster 순으로 전체 토폴로지를 단계 bootstrap한다. merged compose, canonical API,
-UI auth, runtime secret 격리를 모두 통과한 뒤 최초 v2를 원자 기록한다. 실패하면 두 API를 중지하고 이
-capture가 새로 만든 container만 제거하며 기존 v2나 알 수 없는 manifest는 덮어쓰지 않는다.
+최초 설치에서 manifest가 없으면 capture가 같은 host lock 안에서 base dependency, Map API,
+Map UI/Dagster, PinVi API, PinVi Web/Dagster 순으로 전체 토폴로지를 단계 bootstrap한다.
+merged compose, canonical API, UI auth, runtime secret 격리를 모두 통과한 뒤 최초 v3를
+원자 기록한다. 실패하면 두 API를 중지하고 이 capture가 새로 만든 container만
+제거한다. provenance가 없는 v1/v2와 알 수 없는 manifest는 덮어쓰지 않고 거부한다.
 
 ```bash
 ktdctl pinvi-pair capture --verified-compatible --build
 ktdctl pinvi-pair deploy --build
 ```
 
-첫 번째 명령은 manifest가 없거나 legacy v1일 때만 사용할 수 있다. 두 번째 명령은 host-wide lock 안에서
+첫 번째 명령은 manifest가 없을 때만 사용할 수 있다. `--build`는 Map·PinVi 각
+build context가 exact Git worktree root이고 clean인지 검증한다. manager는 각 lowercase 40자
+`HEAD`를 `KOR_TRAVEL_MAP_GIT_COMMIT`/`PINVI_SOURCE_REVISION`으로 직접 파생하고
+`PINVI_BUILD_ENVIRONMENT=production`을 강제한다. 이 세 값을 `.env`에 stale 값으로 고정하지
+않는다. 명시한 값이 파생값과 다르거나 두 worktree 중 하나라도 dirty이면 첫 container
+mutation 전에 중단한다.
+
+두 번째 명령은 host-wide lock 안에서
 현재 active pair와 비-API 필수 서비스의 running/healthy를 확인한 다음 현재 Map UI container를 inspect해
 username·hash·session secret이 frozen environment와 정확히 같은지 확인하고, login→보호 화면→logout→
 재차단 lifecycle을 통과한 뒤에만 기존 PinVi API를 처음 중지한다. 이후 Map API, signed 권한
-smoke, PinVi API, UI auth를 단계 실행한다. build/recreate는 `--no-deps`로 두 API에만 적용한다. Map
+smoke, PinVi API, UI auth를 단계 실행한다. build/recreate는 `--no-deps`로 두 API에만 적용한다.
+두 candidate image는 API `up`과 분리된 Compose build 단계에서 먼저 만들고, 기존 container를
+중지·재생성하기 전에 immutable image ID와 `org.opencontainers.image.revision`을 파생한
+`HEAD`와 비교한다. build context는 live checkout이 아니라 각 `HEAD`의 일회성 Git archive라서
+build 도중 변경·원복한 파일과 ignored 파일은 image input이 될 수 없다. PinVi는
+`io.pinvi.build.environment=production`도 함께 확인한다. raw/resolved build mapping은 이
+snapshot context와 저장소 내부의 지정 Dockerfile, exact provenance arg만 허용하며 external
+Dockerfile·additional context·secret·target은 거부한다. Map
 read 200 envelope·무토큰 401·존재하지 않는 import-job cancel 404·cancel token의 non-cancel mutation
 403 가운데 하나라도 다르면 새 pair를 활성화하지 않는다. PinVi owned cancel fixture는 정확한
 409 `PIPELINE_CANCELLATION_IN_PROGRESS`, 502 `DAGSTER_TERMINATE_FAILED`,
@@ -223,8 +238,11 @@ ktdctl pinvi-pair rollback
 
 기본 manifest와 mode 0600 lock은
 `~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`의 고정
-`compatible-pair-v2.json`/`deployment.lock`에 함께 저장한다. production은 root·manifest·lock path override를
+`compatible-pair-v3.json`/`deployment.lock`에 함께 저장한다. production은
+root·manifest·lock path override를
 모두 거부하므로 동일 Compose project가 다른 host lock을 선택할 수 없다. manifest version은 정확한 integer,
+active/rollback은 각각 `map_image_id`, `map_source_revision`, `pinvi_image_id`,
+`pinvi_source_revision`, `contract_generation`, `recorded_at` exact 6개 필드만 갖는다.
 `recorded_at`은 offset ISO 8601이어야 하며 parent fsync 실패 시 이전 snapshot을 원자 복원한다. manifest와
 capture/deploy/rollback은 같은 filesystem lock과 contract generation을 사용한다.
 rollback은 두 image environment override의 canonical single-file contract를 stop 전에 검증하고 Map 복원·signed smoke 뒤
