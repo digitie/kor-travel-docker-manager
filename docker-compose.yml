@@ -418,6 +418,7 @@ services:
       context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
       dockerfile: docker/frontend.Dockerfile
       args:
+        KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
         NEXT_PUBLIC_KOR_TRAVEL_MAP_API: ${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_PORT:-12701}}
         NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}
         NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL: ${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}
@@ -454,6 +455,8 @@ services:
     build:
       context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
       dockerfile: docker/dagster.Dockerfile
+      args:
+        KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER:-kor-travel-map-dagster-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -507,6 +510,8 @@ services:
     build:
       context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
       dockerfile: docker/dagster.Dockerfile
+      args:
+        KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}

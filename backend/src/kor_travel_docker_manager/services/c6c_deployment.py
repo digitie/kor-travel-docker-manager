@@ -1303,6 +1303,39 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
                 "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
             },
         },
+        _MAP_UI_SERVICE: {
+            "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
+            "dockerfile": "docker/frontend.Dockerfile",
+            "args": {
+                "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
+                "NEXT_PUBLIC_KOR_TRAVEL_MAP_API": (
+                    "${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:"
+                    "${KOR_TRAVEL_MAP_API_PORT:-12701}}"
+                ),
+                "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL": (
+                    "${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:"
+                    "${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}"
+                ),
+                "NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL": (
+                    "${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}"
+                ),
+                "NEXT_PUBLIC_VWORLD_API_KEY": "${NEXT_PUBLIC_VWORLD_API_KEY:-}",
+            },
+        },
+        "kor-travel-map-dagster": {
+            "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
+            "dockerfile": "docker/dagster.Dockerfile",
+            "args": {
+                "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
+            },
+        },
+        "kor-travel-map-dagster-daemon": {
+            "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
+            "dockerfile": "docker/dagster.Dockerfile",
+            "args": {
+                "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
+            },
+        },
         _PINVI_API_SERVICE: {
             "context": "${PINVI_REPO_DIR:-../pinvi}",
             "dockerfile": "apps/api/Dockerfile",

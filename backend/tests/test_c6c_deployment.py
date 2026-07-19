@@ -3109,7 +3109,7 @@ def test_cadvisor_does_not_bind_host_root_or_docker_data() -> None:
     ]
 
 
-def test_canonical_compose_wires_c6c_api_provenance_build_args() -> None:
+def test_canonical_compose_wires_c6c_runtime_provenance_build_args() -> None:
     compose = yaml.safe_load(
         (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
             encoding="utf-8"
@@ -3120,6 +3120,30 @@ def test_canonical_compose_wires_c6c_api_provenance_build_args() -> None:
     assert services["kor-travel-map-api"]["build"]["args"] == {
         "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
     }
+    assert services["kor-travel-map-ui"]["build"]["args"] == {
+        "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
+        "NEXT_PUBLIC_KOR_TRAVEL_MAP_API": (
+            "${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:"
+            "${KOR_TRAVEL_MAP_API_PORT:-12701}}"
+        ),
+        "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL": (
+            "${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:"
+            "${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}"
+        ),
+        "NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL": (
+            "${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}"
+        ),
+        "NEXT_PUBLIC_VWORLD_API_KEY": "${NEXT_PUBLIC_VWORLD_API_KEY:-}",
+    }
+    for service_name in (
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+    ):
+        assert services[service_name]["build"]["args"] == {
+            "KOR_TRAVEL_MAP_GIT_COMMIT": (
+                "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}"
+            ),
+        }
     assert services["pinvi-api"]["build"]["args"] == {
         "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
         "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
@@ -3139,6 +3163,13 @@ def test_canonical_compose_wires_c6c_api_provenance_build_args() -> None:
     }
     with pytest.raises(DeploymentContractError, match="build wiring"):
         validate_c6c_build_source_wiring(extra_context)
+
+    missing_map_runtime_revision = deepcopy(compose)
+    del missing_map_runtime_revision["services"]["kor-travel-map-dagster"]["build"][
+        "args"
+    ]["KOR_TRAVEL_MAP_GIT_COMMIT"]
+    with pytest.raises(DeploymentContractError, match="build wiring"):
+        validate_c6c_build_source_wiring(missing_map_runtime_revision)
 
     services["pinvi-api"]["build"]["args"]["PINVI_SOURCE_REVISION"] = "0" * 40
     with pytest.raises(DeploymentContractError, match="build wiring"):
