@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-07-19 (T-032 C7 image provenance 완료·아카이브)
+
+- docker-manager PR #58을 `ecaab504e63a99cb757318d3b67337bec962d90b`로 squash merge했다.
+- clean HEAD→Git archive context→exact Compose build mapping→OCI label→compatible-pair manifest v3
+  결박과 상위 C7 n150 production gate 완료를 반영해 T-032를 `tasks-done.md`로 옮겼다.
+- 세션 상태 정본인 `CLAUDE.md`를 최종 merge 상태로 갱신했다. 이 저장소에는 별도
+  `docs/resume.md`가 없다.
+
 ## 2026-07-19 (C7 C6c image source provenance fail-close 착수 — T-032)
 
 - production `pinvi-pair capture/deploy --build`가 Map·PinVi 각 build context의 exact Git root,

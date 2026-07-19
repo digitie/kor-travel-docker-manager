@@ -29,7 +29,6 @@
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
 | **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
-| **T-032** | C6c Map·PinVi image source provenance fail-close | `[/]` | - | clean HEAD build arg, OCI label, compatible-pair manifest 계약 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -213,26 +212,6 @@
       entrypoint guard 우회를 차단했다.
 - [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
       통과한 뒤 완료 이력으로 옮긴다.
-
-### T-032: C6c Map·PinVi image source provenance fail-close
-
-- [x] production `pinvi-pair capture/deploy --build`는 Map·PinVi 각 checkout의 exact Git root,
-      clean worktree, lowercase 40자 `HEAD`를 container mutation 전에 검증하고 이 값을 각 API
-      build arg의 유일한 source revision으로 전달한다. live worktree 자체를 build하지 않고 각
-      `HEAD`의 Git archive 임시 context를 사용해 build 중 변경·원복과 ignored 파일 혼입을 차단한다.
-- [x] 운영 사용자가 명시한 revision/build environment가 현재 checkout·`production`과 다르거나,
-      raw/resolved Compose의 exact context·in-tree Dockerfile·build arg가 canonical 계약과 다르면
-      Docker build/stop 전에 거부한다. external Dockerfile, additional context, secret, target 같은
-      추가 build input은 허용하지 않는다.
-- [x] build 후 Map·PinVi immutable image의 `org.opencontainers.image.revision`을 재검사하고,
-      PinVi image의 build environment label이 `production`인지 확인한다. `development`, 누락,
-      잘못된 revision은 smoke·manifest commit 전에 거부한다.
-- [x] compatible-pair active/rollback 정체성에 두 source revision을 포함하고 capture/deploy/
-      rollback 검증과 안전한 결과 payload에서 image ID↔revision 연계를 유지한다.
-- [x] 단일 적대적 리뷰에서 두 P1을 반영하고 재검토 `ACCEPT FOR TESTS`를 받았다. WSL Docker
-      Python 3.13에서 C6c focused `597 passed`, backend 전체 `685 passed`, 변경 source strict mypy,
-      Ruff와 production Compose `config --quiet`/resolved exact build mapping을 통과했다.
-- [ ] n150에서 exact clean checkout build, image label, manifest, C6c smoke 증거를 확인한다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
