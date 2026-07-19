@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-07-20 (C7 PinVi Dagster image 계약 drift 수정 착수 — T-036)
+
+- n150 C7 verified-compatible capture의 PinVi dependent bootstrap에서 `pinvi-dagster`가
+  기동하지 못하는 blocker를 재현 로그와 exact source 계약으로 좁혔다.
+- PinVi exact source revision의 image는 `DAGSTER_HOME=/opt/pinvi/.dagster`와
+  `pinvi.etl.definitions`를 정본으로 사용하지만 manager canonical Compose가 각각 존재하지 않는
+  `/opt/dagster/dagster_home`과 과거 `tripmate.etl.definitions`로 덮어쓰고 있었다.
+- T-036은 두 override와 resolved Compose 회귀 계약만 최소 수정한다. 구현은 단일 적대적 리뷰
+  승인 전까지 테스트를 실행하지 않고, 승인 뒤 로컬 gate와 n150 compatible-pair capture로 검증한다.
+
 ## 2026-07-20 (C7 Map production env 로컬 검증 완료 — T-035)
 
 - 같은 적대적 리뷰어가 marker 단조성, source 전체 scalar tree, tracked `env_file` object

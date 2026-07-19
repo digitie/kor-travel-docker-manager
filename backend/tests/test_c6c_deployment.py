@@ -3778,6 +3778,64 @@ def test_cadvisor_resolved_listen_and_healthcheck_use_same_port(
     ]
 
 
+@pytest.mark.parametrize(
+    ("configured_port", "expected_port"),
+    [(None, "12802"), ("22802", "22802")],
+)
+def test_pinvi_dagster_resolved_runtime_matches_exact_image_contract(
+    configured_port: str | None,
+    expected_port: str,
+) -> None:
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    source = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    service = deepcopy(source["services"]["pinvi-dagster"])
+    service.pop("depends_on")
+    environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "COMPOSE_PROJECT_NAME": "c7-pinvi-dagster-contract",
+    }
+    if configured_port is not None:
+        environment["PINVI_DAGSTER_PORT"] = configured_port
+
+    completed = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "-f",
+            "-",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=compose_path.parent,
+        env=environment,
+        input=yaml.safe_dump(
+            {"services": {"pinvi-dagster": service}},
+            sort_keys=False,
+        ),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    resolved = json.loads(completed.stdout)["services"]["pinvi-dagster"]
+
+    assert resolved["command"] == [
+        "dagster-webserver",
+        "-h",
+        "0.0.0.0",
+        "-p",
+        expected_port,
+        "-m",
+        "pinvi.etl.definitions",
+    ]
+    assert resolved["environment"]["DAGSTER_HOME"] == "/opt/pinvi/.dagster"
+    assert "PINVI_DATABASE_URL" in resolved["environment"]
+    assert "TRIPMATE_DATABASE_URL" not in resolved["environment"]
+
+
 def test_canonical_compose_wires_c6c_runtime_provenance_build_args() -> None:
     compose = yaml.safe_load(
         (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(
