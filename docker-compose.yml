@@ -653,13 +653,12 @@ services:
     - -p
     - '${PINVI_DAGSTER_PORT:-12802}'
     - -m
-    - tripmate.etl.definitions
+    - pinvi.etl.definitions
     environment:
-      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       PINVI_DAGSTER_PORT: ${PINVI_DAGSTER_PORT:-12802}
       PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
-      TRIPMATE_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
     ports:
     - ${PINVI_DAGSTER_PORT:-12802}:${PINVI_DAGSTER_PORT:-12802}
     healthcheck:

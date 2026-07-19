@@ -50,7 +50,7 @@
 | `kor-travel-map-dagster-daemon` | `kor-travel-map-dagster-daemon-latest` | `kor-travel-map` Dagster daemon | 내부 실행 |
 | `kor-travel-map-ui` | `kor-travel-map-ui-latest` | `kor-travel-map` admin Web UI | `12705` |
 | `pinvi-api` | `pinvi-api-latest` | PinVi API | `12801` |
-| `pinvi-dagster` | `pinvi-dagster-latest` | PinVi Dagster Webserver (`apps/etl/Dockerfile`, code location `tripmate.etl.definitions`) | `12802` |
+| `pinvi-dagster` | `pinvi-dagster-latest` | PinVi Dagster Webserver (`apps/etl/Dockerfile`, code location `pinvi.etl.definitions`, `DAGSTER_HOME=/opt/pinvi/.dagster`) | `12802` |
 | `pinvi-web` | `pinvi-web-latest` | PinVi Web UI | `12805` |
 
 ---

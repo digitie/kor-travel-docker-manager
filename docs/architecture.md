@@ -182,11 +182,13 @@ graph TD
    - 목적: 지도 feature admin API, Dagster workflow, admin Web UI 제공.
    - host 포트: API `12701`, Dagster `12702`, Web UI `12705`.
    - 내부 의존성: `kor-travel-geo-postgres:5432`, `rustfs:9000`, `kor-travel-concierge-api:8000`.
-10. **PinVi API / Web UI**:
-   - 컨테이너: `pinvi-api-latest`, `pinvi-web-latest`
-   - compose service: `pinvi-api`, `pinvi-web`
-   - 목적: PinVi 서비스 API와 Web UI 제공.
-   - host 포트: API `12801`, Web UI `12805`.
+10. **PinVi API / Dagster / Web UI**:
+   - 컨테이너: `pinvi-api-latest`, `pinvi-dagster-latest`, `pinvi-web-latest`
+   - compose service: `pinvi-api`, `pinvi-dagster`, `pinvi-web`
+   - 목적: PinVi 서비스 API, Dagster workflow와 Web UI 제공.
+   - host 포트: API `12801`, Dagster `12802`, Web UI `12805`.
+   - Dagster image 계약: `DAGSTER_HOME=/opt/pinvi/.dagster`, code location
+     `pinvi.etl.definitions`를 사용한다.
    - 내부 의존성: host network의 `127.0.0.1:5432`, `127.0.0.1:12101`,
      `127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}`.
    - worker 수: PinVi 실시간 WebSocket broadcast broker는 shared broker 도입 전까지 process-local이므로 `PINVI_API_WORKERS=1`을 기본값으로 둔다. worker를 2 이상으로 올리려면 PinVi 쪽 broadcast broker가 프로세스 간 전달을 지원해야 한다.
