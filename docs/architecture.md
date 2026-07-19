@@ -208,7 +208,8 @@ graph TD
    - Map production API 인증은 ADR-23의 exact runtime 경계를 따른다. admin proxy secret은
      Map API와 UI BFF에만 공유하고 service token·cursor signing secret은 Map API에만 둔다.
      production profile/public-key-required/debug-off는 literal로 고정하며, 인증된 Prometheus
-     scrape 결선 전에는 Map metrics endpoint를 명시적으로 비활성화한다. raw/resolved/runtime
+     scrape 결선 전에는 Map metrics endpoint를 명시적으로 비활성화한다. host network의 admin
+     proxy 신뢰 범위는 loopback `127.0.0.1/32`·`::1/128` exact JSON으로 고정한다. raw/resolved/runtime
      preflight는 이 결선과 credential 상호 구분을 candidate mutation 전에 검사한다.
    - Manager mutation의 compose source는 단일 canonical 파일이다. mutex 안에서 persisted/request의
      raw·Docker-resolved volume graph를 각각 exact 비교하고 include/extends/override 합성을 거부한다.

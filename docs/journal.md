@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-07-19 (C7 Map production API env 구현 준비 — T-035)
+
+- 수정 전 CodeGraph로 `C6cDeploymentConfig`, config loader, raw candidate validator, resolved
+  secret isolation의 depth 4 영향도를 확인했다. 배포·캡처·롤백과 공용 fixture가 모두 직접
+  영향권이므로 config·Compose·raw/resolved/runtime 검사를 한 변경으로 정렬했다.
+- canonical Compose에 production/public-key/debug/metrics와 host-network loopback trusted proxy
+  CIDR literal을 고정했다. admin proxy secret은 Map API+UI BFF exact pair, service token과 cursor
+  signing secret은 Map API-only로 결선하고 모두 manager `.env`에서 hard-require한다.
+- 세 신규 secret의 32자 이상·Unicode 공백 금지·기존 ops/UI/smoke credential 포함 상호 구분을
+  mutation 전에 검증한다. 다른 service의 environment/env_file/build arg/config/secret/label/command
+  경로와 runtime metadata로 이름 또는 값이 유출되는 경우를 거부하는 음성 fixture를 보강했다.
+- 구현 diff와 보안 점검 뒤 동일 적대적 리뷰어에게 넘길 준비 상태다. 리뷰 승인 전 정책에 따라
+  test/lint/Compose gate와 n150 live 검증은 아직 실행하지 않았다.
+
 ## 2026-07-19 (C7 Map production API env 결선 착수 — T-035)
 
 - Map PR #782 교차 적대 리뷰에서 manager main이 ops principal만 전달해 새 production image의

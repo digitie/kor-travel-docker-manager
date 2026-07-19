@@ -251,10 +251,10 @@
 
 - [x] ADR-23에서 admin BFF, API-only service/cursor, public/debug/profile, metrics 비활성 계약과
       service별 최소 주입 범위를 문서로 먼저 고정한다.
-- [ ] canonical Compose와 `.env.example`에 Map #780/#782 production 설정을 정확히 반영한다.
-- [ ] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
+- [x] canonical Compose와 `.env.example`에 Map #780/#782 production 설정을 정확히 반영했다.
+- [x] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
       production literal을 mutation 전에 검증하게 한다.
-- [ ] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가한다.
+- [x] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가했다.
 - [ ] 동일 적대적 리뷰어 승인 뒤 test/lint/Compose gate를 실행하고 PR을 merge한다.
 - [ ] n150 final v4 exact-pair에서 Map API startup/readiness와 runtime secret isolation을 확인한 뒤
       issue #63을 닫고 완료 이력으로 옮긴다.

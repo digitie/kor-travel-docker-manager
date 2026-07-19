@@ -870,7 +870,9 @@ manager의 gitignore된 `.env`를 Map production API 인증 설정의 단일 sou
 secret은 Map API와 Map UI BFF에만 같은 값으로 전달하고, service token과 cursor signing secret은
 Map API에만 전달한다. production profile, public-key-required와 debug-off를 canonical literal로
 고정한다. metrics는 인증된 Prometheus scrape가 결선되기 전까지 endpoint 자체를 명시적으로
-비활성화하며, 암묵적 무인증 fallback을 허용하지 않는다. C6c raw/resolved/runtime 검사는 각
+비활성화하며, 암묵적 무인증 fallback을 허용하지 않는다. host network의 admin trusted proxy는
+loopback `127.0.0.1/32`·`::1/128` exact JSON으로 고정해 image 기본값 drift에 의존하지 않는다.
+C6c raw/resolved/runtime 검사는 각
 credential의 shape·상호 구분·허용 service exact set과 설정 literal을 첫 mutation 전에 검증한다.
 
 ### 근거
