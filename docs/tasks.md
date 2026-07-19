@@ -31,6 +31,7 @@
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
 | **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
+| **T-035** | C7 Map production API 인증 env 결선 | `[/]` | - | issue #63, Map #780/#782 fail-closed 설정과 C6c preflight 정렬 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -245,6 +246,18 @@
 - [ ] n150 production에서 cAdvisor `healthy`와 설정 포트 `/healthz` 200을 확인한 뒤
       중단된 C6c compatible-pair capture를 단 한 번 재시도한다.
 - [ ] capture와 후속 readiness가 통과하면 issue #62를 닫고 완료 이력으로 옮긴다.
+
+### T-035: C7 Map production API 인증 env 결선
+
+- [x] ADR-23에서 admin BFF, API-only service/cursor, public/debug/profile, metrics 비활성 계약과
+      service별 최소 주입 범위를 문서로 먼저 고정한다.
+- [ ] canonical Compose와 `.env.example`에 Map #780/#782 production 설정을 정확히 반영한다.
+- [ ] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
+      production literal을 mutation 전에 검증하게 한다.
+- [ ] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가한다.
+- [ ] 동일 적대적 리뷰어 승인 뒤 test/lint/Compose gate를 실행하고 PR을 merge한다.
+- [ ] n150 final v4 exact-pair에서 Map API startup/readiness와 runtime secret isolation을 확인한 뒤
+      issue #63을 닫고 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

@@ -205,6 +205,11 @@ graph TD
      active/rollback 각 set에 함께 결박하며 provenance가 없는 이전 version을 거부한다.
      실패·rollback도 같은 frozen transaction의 다섯 image ID를 복원하고, 완전한 복원이
      불가능하면 다섯 runtime을 모두 중지해 혼합 generation 노출을 막는다.
+   - Map production API 인증은 ADR-23의 exact runtime 경계를 따른다. admin proxy secret은
+     Map API와 UI BFF에만 공유하고 service token·cursor signing secret은 Map API에만 둔다.
+     production profile/public-key-required/debug-off는 literal로 고정하며, 인증된 Prometheus
+     scrape 결선 전에는 Map metrics endpoint를 명시적으로 비활성화한다. raw/resolved/runtime
+     preflight는 이 결선과 credential 상호 구분을 candidate mutation 전에 검사한다.
    - Manager mutation의 compose source는 단일 canonical 파일이다. mutex 안에서 persisted/request의
      raw·Docker-resolved volume graph를 각각 exact 비교하고 include/extends/override 합성을 거부한다.
      cAdvisor mount는 RO `/sys`와 Docker socket exact set만 허용한다. 첫 mutation 성공 뒤 후속 preflight

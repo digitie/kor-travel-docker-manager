@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-07-19 (C7 Map production API env 결선 착수 — T-035)
+
+- Map PR #782 교차 적대 리뷰에서 manager main이 ops principal만 전달해 새 production image의
+  admin/service/public/debug/metrics 불변식을 만족하지 못하고 startup 전에 fail-close하는 P1을
+  확인했다. 이어지는 PR #780의 cursor signing secret도 같은 final cutover에 포함한다.
+- issue #63과 ADR-23을 만들고 admin proxy는 Map API+UI BFF, service/cursor secret은 Map API-only,
+  profile/public/debug는 canonical literal로 고정했다. 인증된 Prometheus scrape 결선 전에는 metrics
+  endpoint를 명시적으로 끈다.
+- 다음 단계는 문서 선행 commit 뒤 canonical Compose와 C6c raw/resolved/runtime preflight·음성
+  fixture를 구현하고, 같은 단일 적대적 리뷰어 승인 전에는 test/lint/Compose gate를 실행하지 않는 것이다.
+
 ## 2026-07-19 (PR #61 리뷰 차단 보강 설계 — T-033/T-034)
 
 - PR #61 리뷰에서 raw Compose에는 있던 Map UI·Dagster web·Dagster daemon provenance가

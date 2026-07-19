@@ -850,3 +850,49 @@ canonical runtime health 계약으로 취급하지 않는다.
 
 - (open) n150에서 Docker `healthy`와 설정 포트 `/healthz` 200을 모두 확인한 후
   C6c capture를 재시도한다.
+
+## ADR-23: Map production API 인증 환경을 C6c runtime set에 결박한다
+
+- 상태: accepted
+- 날짜: 2026-07-19
+- 결정자: human, Codex
+
+### 컨텍스트
+
+Map production profile은 ops principal뿐 아니라 admin BFF, service surface, public-key gate,
+debug route 비활성, cursor 서명과 metrics 노출 정책도 fail-closed한다. manager canonical Compose가
+ops read/cancel만 전달하면 새 Map image는 migration 전 또는 settings 생성 중 종료되어 C6c v4
+runtime set을 기동할 수 없다.
+
+### 결정
+
+manager의 gitignore된 `.env`를 Map production API 인증 설정의 단일 source로 둔다. admin proxy
+secret은 Map API와 Map UI BFF에만 같은 값으로 전달하고, service token과 cursor signing secret은
+Map API에만 전달한다. production profile, public-key-required와 debug-off를 canonical literal로
+고정한다. metrics는 인증된 Prometheus scrape가 결선되기 전까지 endpoint 자체를 명시적으로
+비활성화하며, 암묵적 무인증 fallback을 허용하지 않는다. C6c raw/resolved/runtime 검사는 각
+credential의 shape·상호 구분·허용 service exact set과 설정 literal을 첫 mutation 전에 검증한다.
+
+### 근거
+
+- image 내부 기본값에 의존하면 Map 설정 변경이 manager 배포 계약을 조용히 깨뜨린다.
+- admin BFF 공유 secret과 API-only service/cursor secret의 허용 runtime이 다르므로 이름 존재만
+  확인하지 않고 exact service별 결선을 검증해야 한다.
+- 사용하지 않는 metrics endpoint를 열어 둔 채 scrape credential만 누락하는 것보다 route를 끄는
+  것이 현재 cutover에 단순하고 fail-closed다.
+
+### 결과(긍정)
+
+- C6c v4 candidate가 Map production settings와 같은 인증 불변식을 container mutation 전에 검증한다.
+- credential이 Dagster·daemon·PinVi·다른 runtime으로 확산되는 경로를 차단한다.
+
+### 결과(부정)
+
+- 기존 production `.env`는 admin proxy, service, cursor signing 값을 별도로 준비해야 한다.
+- Map metrics는 인증된 Prometheus credential 전달 경로를 별도 채택하기 전까지 수집하지 않는다.
+
+### 후속
+
+- (open) issue #63 구현·리뷰·CI와 n150 C6c v4 exact-pair 검증을 완료한다.
+- (open) Map metrics가 운영상 필요하다는 측정이 나오면 secret-safe Prometheus credentials file
+  전달을 별도 task로 설계한다.

@@ -267,6 +267,14 @@ PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회,
 `POST /v1/ops/pipeline/executions/import_job/{job_id}/cancel`만 사용한다. 브라우저 BFF secret,
 public service token, trusted CIDR을 재사용하지 않는다.
 
+Map API의 production fail-closed 설정은 ops pair만으로 완결되지 않는다. ADR-23에 따라 manager
+`.env`는 admin proxy secret, API-only service token, API-only cursor signing secret도 서로 다른
+값으로 보관한다. admin proxy secret은 Map API와 Map UI BFF에만 전달하고 service/cursor 값은 Map
+API 외 service에 전달하지 않는다. profile은 `production`, public API key gate는 `true`, debug route는
+`false`로 candidate에 고정한다. Map metrics는 인증된 Prometheus scrape 경로가 없는 동안 endpoint를
+`false`로 명시해 무인증 fallback과 startup drift를 함께 차단한다. 실제 값·길이·digest는 로그에
+남기지 않고 shape, 상호 불일치, 허용 service별 존재 여부만 증거로 남긴다.
+
 - manager `.env`가 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
   `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`의 단일 source다. 두 값은 각각 32자 이상이고 공백 문자가
   하나도 없으며 서로 달라야 한다.
