@@ -270,7 +270,7 @@
       local 허용 회귀 계약을 추가했다.
 - [x] 동일 적대적 리뷰어의 최종 P0~P2 없음 판정 뒤 backend 886개, 변경 파일 Ruff,
       strict mypy, 기본·커스텀 Compose gate를 통과했다.
-- [ ] PR을 merge한다.
+- [x] PR을 merge한다.
 - [ ] n150 final v4 exact-pair에서 Map API startup/readiness와 runtime secret isolation을 확인한 뒤
       issue #63을 닫고 완료 이력으로 옮긴다.
 

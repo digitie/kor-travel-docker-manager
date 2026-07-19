@@ -14,8 +14,9 @@
 - 저장소 main 자체의 Ruff/mypy 누적 오류는 별도 baseline으로 분리했다. 이번 변경 파일 Ruff는
   기존 exact-type 검사(`E721`, `UP038`)를 명시적으로 보존했고, 새 source 두 파일은 strict mypy
   suppression 없이 통과했다.
-- PR 병합 후에도 issue #63은 닫지 않는다. final n150 v4 exact-pair의 startup/readiness,
-  runtime secret isolation, cAdvisor health와 C7 live E2E가 끝난 뒤에만 닫는다.
+- PR #64는 merge commit `3f9973806e8addff96eb1339602f992ed424fb1c`로 `main`에 병합됐다.
+  issue #63은 계속 열어 두며, final n150 v4 exact-pair의 startup/readiness, runtime secret
+  isolation, cAdvisor health와 C7 live E2E가 끝난 뒤에만 닫는다.
 
 ## 2026-07-20 (C7 Map production env 적대적 리뷰 P1 보강 — T-035)
 
