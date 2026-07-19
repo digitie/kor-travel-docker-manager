@@ -493,7 +493,7 @@ def _load_unique_map_source_yaml(source: str) -> Any:
     try:
         return loader.get_single_data()
     finally:
-        loader.dispose()
+        loader.dispose()  # type: ignore[no-untyped-call]
 
 
 def _walk_map_source_scalars(
