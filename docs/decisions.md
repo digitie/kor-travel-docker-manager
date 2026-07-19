@@ -887,9 +887,11 @@ admin proxy는 `없음 또는 frozen exact`로 검증한다. activation, runtime
 낮출 수 없다. complete 뒤에는 source slot이 다시 v3/v3가 되어도 현재 UI admin proxy exact를 요구한다.
 corrupt/symlink/wrong owner/mode와 pending baseline drift는 fail-close한다.
 
-source 판정은 admin placeholder를 API+frontend, service token을 API-only, cursor를 v3 전체 문서 0회 /
-v4 API-only exact 1회로 고정한다. 해당 이름·placeholder가 Dagster/daemon 또는 build arg, label,
-command, env_file, config, secret 등 source Compose 전체 scalar tree의 다른 경로에 나타나면 거부한다.
+source 판정은 profile/public/debug/service를 API-only, admin을 API+frontend, cursor를 v3 전체 문서
+0회/v4 API-only exact 1회로 고정한다. API·Dagster·daemon `env_file`은 known path/options exact
+shape만 허용하고 exact revision에 추적된 참조 파일의 보호 이름도 거부한다. 해당 이름·placeholder가
+다른 service 또는 build arg, label, command, config, secret 등 source Compose 전체 scalar tree의
+다른 경로에 나타나도 거부한다.
 candidate raw/resolved와 activation 후 runtime 검사는 source v3에서도 새 결선을 항상 필수 exact로
 유지한다. 이 source env 세대와 migration marker는 compatible-pair manifest 자체의 v4 exact shape를
 변경하지 않는다.

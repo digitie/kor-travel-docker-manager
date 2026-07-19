@@ -4293,7 +4293,16 @@ def _commit_map_source_contract(
         api_environment["KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"] = cursor_value
     payload = {
         "services": {
-            "api": {"environment": api_environment},
+            "api": {
+                "env_file": [
+                    {
+                        "path": "packages/kor-travel-map-api/.env",
+                        "required": True,
+                        "format": "raw",
+                    }
+                ],
+                "environment": api_environment,
+            },
             "frontend": {
                 "environment": {
                     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
@@ -4312,6 +4321,16 @@ def _commit_map_source_contract(
                         "KOR_TRAVEL_MAP_UI_SESSION_SECRET is required}"
                     ),
                 }
+            },
+            "dagster": {
+                "env_file": [
+                    {"path": ".env", "required": False, "format": "raw"}
+                ]
+            },
+            "dagster-daemon": {
+                "env_file": [
+                    {"path": ".env", "required": False, "format": "raw"}
+                ]
             },
         }
     }
@@ -4474,13 +4493,11 @@ def test_map_source_environment_contract_rejects_protected_tree_leak(
             if leak_kind == "dagster_environment"
             else "dagster-daemon"
         )
-        services[leaked_service] = {
-            "environment": {
-                "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (
-                    "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
-                    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
-                )
-            }
+        services[leaked_service]["environment"] = {
+            "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (
+                "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
+                "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
+            )
         }
     elif leak_kind == "build_arg":
         api["build"] = {
@@ -4516,7 +4533,125 @@ def test_map_source_environment_contract_rejects_protected_tree_leak(
     )
     revision = _commit_current_map_source_document(repository, "protected leak")
 
+    with pytest.raises(DeploymentContractError, match="protected|env_file"):
+        _map_source_environment_contract_version(
+            {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
+            compose_path=str(compose_path),
+            source_revision=revision,
+        )
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    [
+        "KOR_TRAVEL_MAP_API_PROFILE",
+        "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED",
+        "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED",
+    ],
+)
+def test_map_source_environment_contract_rejects_route_literal_duplicate(
+    environment_name: str,
+    tmp_path: Path,
+) -> None:
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    repository = tmp_path / "map"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    _commit_map_source_contract(repository, cursor_value=None)
+    source_path = repository / "docker-compose.yml"
+    payload = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    canonical_value = payload["services"]["api"]["environment"][
+        environment_name
+    ]
+    payload["services"]["dagster"]["environment"] = {
+        environment_name: canonical_value
+    }
+    source_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    revision = _commit_current_map_source_document(
+        repository,
+        "duplicate route literal",
+    )
+
     with pytest.raises(DeploymentContractError, match="protected"):
+        _map_source_environment_contract_version(
+            {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
+            compose_path=str(compose_path),
+            source_revision=revision,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["frontend_add", "api_path", "dagster_required"],
+)
+def test_map_source_environment_contract_rejects_env_file_shape_drift(
+    mutation: str,
+    tmp_path: Path,
+) -> None:
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    repository = tmp_path / "map"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    _commit_map_source_contract(repository, cursor_value=None)
+    source_path = repository / "docker-compose.yml"
+    payload = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    services = payload["services"]
+    if mutation == "frontend_add":
+        services["frontend"]["env_file"] = [
+            {"path": "frontend-secrets.env", "required": True, "format": "raw"}
+        ]
+    elif mutation == "api_path":
+        services["api"]["env_file"][0]["path"] = "api-secrets.env"
+    else:
+        services["dagster"]["env_file"][0]["required"] = True
+    source_path.write_text(
+        yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
+    revision = _commit_current_map_source_document(repository, "env file drift")
+
+    with pytest.raises(DeploymentContractError, match="env_file shape"):
+        _map_source_environment_contract_version(
+            {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
+            compose_path=str(compose_path),
+            source_revision=revision,
+        )
+
+
+def test_map_source_environment_contract_rejects_tracked_env_file_wiring(
+    tmp_path: Path,
+) -> None:
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    repository = tmp_path / "map"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    _commit_map_source_contract(repository, cursor_value=None)
+    (repository / ".env").write_text(
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET=tracked-leak\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "-f", ".env"],
+        check=True,
+    )
+    revision = _commit_current_map_source_document(
+        repository,
+        "tracked env file leak",
+    )
+
+    with pytest.raises(DeploymentContractError, match="tracked env_file"):
         _map_source_environment_contract_version(
             {"KOR_TRAVEL_MAP_REPO_DIR": "../map"},
             compose_path=str(compose_path),

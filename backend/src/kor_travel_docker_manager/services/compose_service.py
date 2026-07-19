@@ -385,6 +385,19 @@ _MAP_SOURCE_V4_CURSOR_ENV_VALUE = (
     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
 )
 _MAP_SOURCE_PROTECTED_ENV_VALUES = {
+    "KOR_TRAVEL_MAP_API_PROFILE": (
+        _MAP_SOURCE_V3_API_ENVIRONMENT["KOR_TRAVEL_MAP_API_PROFILE"]
+    ),
+    "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": (
+        _MAP_SOURCE_V3_API_ENVIRONMENT[
+            "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
+        ]
+    ),
+    "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": (
+        _MAP_SOURCE_V3_API_ENVIRONMENT[
+            "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
+        ]
+    ),
     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
         "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
         "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
@@ -396,6 +409,19 @@ _MAP_SOURCE_PROTECTED_ENV_VALUES = {
     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (
         _MAP_SOURCE_V4_CURSOR_ENV_VALUE
     ),
+}
+_MAP_SOURCE_ENV_FILE_CONTRACT = {
+    "api": [
+        {
+            "path": "packages/kor-travel-map-api/.env",
+            "required": True,
+            "format": "raw",
+        }
+    ],
+    "dagster": [{"path": ".env", "required": False, "format": "raw"}],
+    "dagster-daemon": [
+        {"path": ".env", "required": False, "format": "raw"}
+    ],
 }
 
 
@@ -473,6 +499,30 @@ def _validate_map_source_protected_scalar_tree(
             "services",
             "api",
             "environment",
+            "KOR_TRAVEL_MAP_API_PROFILE",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_PROFILE"
+        ],
+        (
+            "services",
+            "api",
+            "environment",
+            "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
+        ],
+        (
+            "services",
+            "api",
+            "environment",
+            "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
+        ],
+        (
+            "services",
+            "api",
+            "environment",
             "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
         ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
             "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
@@ -540,6 +590,72 @@ def _validate_map_source_protected_scalar_tree(
         )
 
 
+def _validate_map_source_env_files(
+    repository: Path,
+    source_revision: str,
+    payload: Mapping[str, Any],
+) -> None:
+    """source compose env_file의 경로·옵션과 tracked 내용을 고정한다."""
+
+    services = payload.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError(
+            "Map source environment contract manifest has no services"
+        )
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
+            raise DeploymentContractError(
+                "Map source environment contract service shape is invalid"
+            )
+        expected = _MAP_SOURCE_ENV_FILE_CONTRACT.get(str(service_name))
+        if "env_file" in service and service.get("env_file") != expected:
+            raise DeploymentContractError(
+                "Map source environment contract env_file shape is invalid"
+            )
+    for service_name, expected in _MAP_SOURCE_ENV_FILE_CONTRACT.items():
+        service = services.get(service_name)
+        if not isinstance(service, Mapping) or service.get("env_file") != expected:
+            raise DeploymentContractError(
+                "Map source environment contract env_file shape is invalid"
+            )
+
+    protected_names = tuple(_MAP_SOURCE_PROTECTED_ENV_VALUES)
+    referenced_paths = {
+        str(entry["path"])
+        for entries in _MAP_SOURCE_ENV_FILE_CONTRACT.values()
+        for entry in entries
+    }
+    for referenced_path in referenced_paths:
+        tracked = _run_git_read(
+            repository,
+            [
+                "ls-tree",
+                "--name-only",
+                source_revision,
+                "--",
+                referenced_path,
+            ],
+            label="Map",
+            allow_output_whitespace=True,
+        )
+        if not tracked:
+            continue
+        if tracked != referenced_path:
+            raise DeploymentContractError(
+                "Map source environment contract env_file tree lookup is invalid"
+            )
+        content = _run_git_read(
+            repository,
+            ["show", f"{source_revision}:{referenced_path}"],
+            label="Map",
+            allow_output_whitespace=True,
+        )
+        if any(name in content for name in protected_names):
+            raise DeploymentContractError(
+                "Map source environment contract tracked env_file contains protected wiring"
+            )
+
+
 def _map_source_environment_contract_version(
     environment: Mapping[str, str],
     *,
@@ -604,6 +720,11 @@ def _map_source_environment_contract_version(
     _validate_map_source_protected_scalar_tree(
         payload,
         contract_version=contract_version,
+    )
+    _validate_map_source_env_files(
+        repository,
+        source_revision,
+        payload,
     )
     return contract_version
 

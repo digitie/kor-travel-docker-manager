@@ -262,6 +262,8 @@
       baseline drift fail-close 회귀 계약을 추가했다.
 - [x] 두 번째 적대적 리뷰 P2에 따라 source Compose 전체 scalar tree에서 admin=API+frontend,
       service=API-only, cursor=v3 0회/v4 API exact 1회 외 모든 service/field leak를 거부했다.
+- [x] 세 번째 적대적 리뷰 P2에 따라 profile/public/debug도 API-only exact path로 올리고,
+      API·Dagster·daemon `env_file`의 known path/options와 tracked exact-revision 내용까지 검증한다.
 - [x] `.env.example`의 세 공개 local placeholder를 production config/raw/resolved에서 각각 거부하고
       local 허용 회귀 계약을 추가했다.
 - [ ] 동일 적대적 리뷰어 승인 뒤 test/lint/Compose gate를 실행하고 PR을 merge한다.
