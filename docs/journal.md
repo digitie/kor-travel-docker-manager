@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-07-19 (C7 C6c image source provenance fail-close 착수 — T-032)
+
+- production `pinvi-pair capture/deploy --build`가 Map·PinVi 각 build context의 exact Git root,
+  clean worktree, lowercase 40자 `HEAD`를 host-wide lock 안에서 파생·재검증하도록 설계했다.
+- 적대적 사전 리뷰에서 live worktree build의 변경·원복 TOCTOU와 ignored 파일 혼입 위험을
+  P1로 확인해, 실제 Docker build input을 각 exact `HEAD`의 일회성 Git archive context로 교체했다.
+- 후속 리뷰에서 external Dockerfile·additional context가 snapshot을 우회할 수 있음을 확인해
+  raw/resolved build mapping 전체와 snapshot 내부 Dockerfile 경로를 exact allowlist로 고정했다.
+- Map의 `KOR_TRAVEL_MAP_GIT_COMMIT`, PinVi의 `PINVI_SOURCE_REVISION`/
+  `PINVI_BUILD_ENVIRONMENT=production`을 canonical Compose build arg로만 전달하고, 사용자
+  명시 값·resolved arg·source wiring drift를 첫 container mutation 전에 거부하도록 했다.
+- 각 API build/recreate 직후 smoke보다 먼저 immutable image의
+  `org.opencontainers.image.revision`을 검사하고 PinVi는
+  `io.pinvi.build.environment=production`도 강제했다.
+- compatible-pair를 v3 clean-cut해 active/rollback 각 pair에 두 image ID, 두 source revision,
+  contract generation, recorded time을 exact 필수 필드로 보존했다. provenance가 없는
+  v1/v2는 자동 전환하지 않으며 capture/deploy/rollback/smoke 결과도 image ID↔revision을
+  함께 반환한다.
+- 같은 단일 리뷰어가 두 P1 보강 뒤 새 P0/P1/P2 없음과 `ACCEPT FOR TESTS`를 확인했다. WSL
+  Docker Python 3.13에서 C6c focused `597 passed`, backend 전체 `685 passed`, 변경 source strict
+  mypy와 Ruff를 통과했다. production Compose도 `config --quiet`과 resolved exact build mapping을
+  통과했다. Python 3.13 tarfile의 3.14 기본 filter 변경 안내 2건만 남고 기능 실패는 없다.
+
 ## 2026-07-19 (C6c Map API provider runtime clean-cut 정렬 — T-031)
 
 - n150 migration 전 비파괴 preflight에서 Manager compose가 Map에서 제거된 provider credential env 9개를

@@ -368,6 +368,8 @@ services:
     build:
       context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
       dockerfile: docker/api.Dockerfile
+      args:
+        KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
     container_name: ${KOR_TRAVEL_MAP_API_CONTAINER:-kor-travel-map-api-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -547,6 +549,9 @@ services:
     build:
       context: ${PINVI_REPO_DIR:-../pinvi}
       dockerfile: apps/api/Dockerfile
+      args:
+        PINVI_SOURCE_REVISION: ${PINVI_SOURCE_REVISION:-development}
+        PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_API_CONTAINER:-pinvi-api-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}

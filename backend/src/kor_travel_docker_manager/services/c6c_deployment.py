@@ -155,6 +155,7 @@ _FAILED_CANCELLATION_ERROR_CODES = frozenset(
     }
 )
 _IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SOURCE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _CONTRACT_GENERATION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _COMPOSE_PROJECT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{2,62}$")
 _ASCII_RETRY_AFTER = re.compile(r"^[0-9]+$")
@@ -229,7 +230,7 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     ),
 }
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
-_PAIR_MANIFEST_VERSION = 2
+_PAIR_MANIFEST_VERSION = 3
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
@@ -344,9 +345,24 @@ class C6cDeploymentConfig:
 @dataclass(frozen=True)
 class CompatibleImagePair:
     map_image_id: str
+    map_source_revision: str
     pinvi_image_id: str
+    pinvi_source_revision: str
     contract_generation: str
     recorded_at: str
+
+
+@dataclass(frozen=True)
+class C6cBuildProvenance:
+    map_source_revision: str
+    pinvi_source_revision: str
+
+    def compose_environment(self) -> dict[str, str]:
+        return {
+            "KOR_TRAVEL_MAP_GIT_COMMIT": self.map_source_revision,
+            "PINVI_SOURCE_REVISION": self.pinvi_source_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        }
 
 
 @dataclass(frozen=True)
@@ -574,7 +590,7 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
             "production C6c manifest and global lock paths are fixed"
         )
     manifest = _canonical_absolute_path(
-        manifest_override or str(state_dir / "compatible-pair-v2.json"),
+        manifest_override or str(state_dir / "compatible-pair-v3.json"),
         "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
     )
     lock = Path(c6c_global_mutation_lock_path())
@@ -1181,6 +1197,127 @@ def validate_resolved_compose_image_pair(
         if service.get("image") != expected_image:
             raise DeploymentContractError(
                 f"resolved compose immutable image does not match {service_name} manifest"
+            )
+    validate_resolved_c6c_build_provenance(
+        resolved,
+        C6cBuildProvenance(
+            map_source_revision=pair.map_source_revision,
+            pinvi_source_revision=pair.pinvi_source_revision,
+        ),
+    )
+
+
+def validate_resolved_c6c_build_provenance(
+    resolved: Mapping[str, Any],
+    provenance: C6cBuildProvenance,
+    *,
+    expected_build_contexts: Mapping[str, str] | None = None,
+) -> None:
+    """production API build arg가 clean checkout 파생값과 정확히 같은지 검사한다."""
+
+    services = resolved.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("resolved compose config has no services mapping")
+    expected_args = {
+        _MAP_API_SERVICE: {
+            "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
+        },
+        _PINVI_API_SERVICE: {
+            "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
+    }
+    expected_dockerfiles = {
+        _MAP_API_SERVICE: "docker/api.Dockerfile",
+        _PINVI_API_SERVICE: "apps/api/Dockerfile",
+    }
+    for service_name, service_expected_args in expected_args.items():
+        service = _service_mapping(services, service_name)
+        build = service.get("build")
+        if not isinstance(build, Mapping):
+            raise DeploymentContractError(
+                f"resolved compose is missing {service_name} build contract"
+            )
+        if set(build) != {"context", "dockerfile", "args"}:
+            raise DeploymentContractError(
+                f"resolved compose {service_name} build inputs are not canonical"
+            )
+        args = build.get("args")
+        if not isinstance(args, Mapping) or set(args) != set(service_expected_args):
+            raise DeploymentContractError(
+                f"resolved compose {service_name} provenance build args are invalid"
+            )
+        for arg_name, expected_value in service_expected_args.items():
+            if args.get(arg_name) != expected_value:
+                raise DeploymentContractError(
+                    f"resolved compose {service_name} provenance build arg is invalid"
+                )
+        if expected_build_contexts is None:
+            continue
+        expected_context = expected_build_contexts.get(service_name)
+        if expected_context is None:
+            raise DeploymentContractError(
+                f"resolved compose {service_name} expected build context is missing"
+            )
+        try:
+            expected_context_path = Path(expected_context).resolve(strict=True)
+            context_value = build.get("context")
+            if not isinstance(context_value, str) or not Path(context_value).is_absolute():
+                raise ValueError("resolved build context must be absolute")
+            context_path = Path(context_value).resolve(strict=True)
+            dockerfile_value = build.get("dockerfile")
+            if not isinstance(dockerfile_value, str):
+                raise ValueError("resolved Dockerfile must be a string")
+            dockerfile_path = Path(dockerfile_value)
+            if not dockerfile_path.is_absolute():
+                dockerfile_path = context_path / dockerfile_path
+            dockerfile_path = dockerfile_path.resolve(strict=True)
+            expected_dockerfile = (
+                context_path / expected_dockerfiles[service_name]
+            ).resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise DeploymentContractError(
+                f"resolved compose {service_name} build path is invalid"
+            ) from exc
+        if (
+            context_path != expected_context_path
+            or dockerfile_path != expected_dockerfile
+            or not expected_dockerfile.is_file()
+        ):
+            raise DeploymentContractError(
+                f"resolved compose {service_name} build path is not the Git snapshot"
+            )
+
+
+def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
+    """canonical source가 manager-derived provenance 변수만 참조하는지 검사한다."""
+
+    services = candidate.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("compose source has no services mapping")
+    expected = {
+        _MAP_API_SERVICE: {
+            "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
+            "dockerfile": "docker/api.Dockerfile",
+            "args": {
+                "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
+            },
+        },
+        _PINVI_API_SERVICE: {
+            "context": "${PINVI_REPO_DIR:-../pinvi}",
+            "dockerfile": "apps/api/Dockerfile",
+            "args": {
+                "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
+                "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
+            },
+        },
+    }
+    for service_name, expected_build in expected.items():
+        service = _service_mapping(services, service_name)
+        build = service.get("build")
+        if not isinstance(build, Mapping) or build != expected_build:
+            raise DeploymentContractError(
+                f"compose source {service_name} provenance build wiring is invalid"
             )
 
 
@@ -3415,16 +3552,23 @@ def new_image_pair(
     map_image_id: str,
     pinvi_image_id: str,
     contract_generation: str,
+    *,
+    map_source_revision: str,
+    pinvi_source_revision: str,
 ) -> CompatibleImagePair:
     _validate_image_id(map_image_id, "Map")
     _validate_image_id(pinvi_image_id, "PinVi")
+    _validate_source_revision(map_source_revision, "Map")
+    _validate_source_revision(pinvi_source_revision, "PinVi")
     if not isinstance(contract_generation, str) or not _CONTRACT_GENERATION_PATTERN.fullmatch(
         contract_generation
     ):
         raise DeploymentContractError("compatible pair contract generation is invalid")
     return CompatibleImagePair(
         map_image_id=map_image_id,
+        map_source_revision=map_source_revision,
         pinvi_image_id=pinvi_image_id,
+        pinvi_source_revision=pinvi_source_revision,
         contract_generation=contract_generation,
         recorded_at=datetime.now(UTC).isoformat(),
     )
@@ -3439,8 +3583,27 @@ def load_pair_manifest(path: str) -> CompatiblePairManifest:
         )
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, Mapping) or type(payload.get("version")) is not int:
+        if (
+            not isinstance(payload, Mapping)
+            or set(payload) != {"version", "rollback", "active"}
+            or type(payload.get("version")) is not int
+        ):
             raise TypeError("manifest version must be an exact integer")
+        expected_pair_keys = {
+            "map_image_id",
+            "map_source_revision",
+            "pinvi_image_id",
+            "pinvi_source_revision",
+            "contract_generation",
+            "recorded_at",
+        }
+        for pair_name in ("rollback", "active"):
+            pair_payload = payload.get(pair_name)
+            if (
+                not isinstance(pair_payload, Mapping)
+                or set(pair_payload) != expected_pair_keys
+            ):
+                raise TypeError("manifest pair shape is invalid")
         manifest = CompatiblePairManifest(
             version=payload["version"],
             rollback=CompatibleImagePair(**payload["rollback"]),
@@ -3453,7 +3616,7 @@ def load_pair_manifest(path: str) -> CompatiblePairManifest:
 
 
 def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
-    """manifest가 없거나 legacy v1일 때만 초기 v2 bootstrap을 허용한다."""
+    """manifest가 없는 환경에서만 초기 v3 bootstrap을 허용한다."""
 
     manifest_path = Path(path)
     if not manifest_path.exists():
@@ -3467,13 +3630,13 @@ def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
         raise DeploymentContractError(
             "invalid compatible pair manifest cannot be bootstrapped automatically"
         ) from exc
-    if version == 1:
-        return
     if version == _PAIR_MANIFEST_VERSION:
         raise DeploymentContractError(
-            "compatible pair manifest v2 already exists; use deploy or rollback"
+            "compatible pair manifest v3 already exists; use deploy or rollback"
         )
-    raise DeploymentContractError("compatible pair manifest version is unsupported")
+    raise DeploymentContractError(
+        "legacy compatible pair manifest has no source provenance"
+    )
 
 
 def write_pair_manifest(path: str, manifest: CompatiblePairManifest) -> None:
@@ -3582,6 +3745,8 @@ def _validate_pair_manifest_contract(manifest: CompatiblePairManifest) -> None:
     for pair in (manifest.rollback, manifest.active):
         _validate_image_id(pair.map_image_id, "Map")
         _validate_image_id(pair.pinvi_image_id, "PinVi")
+        _validate_source_revision(pair.map_source_revision, "Map")
+        _validate_source_revision(pair.pinvi_source_revision, "PinVi")
         if not isinstance(
             pair.contract_generation, str
         ) or not _CONTRACT_GENERATION_PATTERN.fullmatch(pair.contract_generation):
@@ -3598,7 +3763,9 @@ def manifest_with_active_pair(
 ) -> CompatiblePairManifest:
     same_active_identity = (
         active.map_image_id == manifest.active.map_image_id
+        and active.map_source_revision == manifest.active.map_source_revision
         and active.pinvi_image_id == manifest.active.pinvi_image_id
+        and active.pinvi_source_revision == manifest.active.pinvi_source_revision
         and active.contract_generation == manifest.active.contract_generation
     )
     rollback = manifest.rollback if same_active_identity else manifest.active
@@ -3621,6 +3788,13 @@ def _validate_image_id(image_id: str, label: str) -> None:
     if not isinstance(image_id, str) or not _IMAGE_ID_PATTERN.fullmatch(image_id):
         raise DeploymentContractError(
             f"{label} image must be an immutable sha256 image ID, not a mutable tag"
+        )
+
+
+def _validate_source_revision(revision: str, label: str) -> None:
+    if not isinstance(revision, str) or not _SOURCE_REVISION_PATTERN.fullmatch(revision):
+        raise DeploymentContractError(
+            f"{label} image source revision must be an exact lowercase commit"
         )
 
 
