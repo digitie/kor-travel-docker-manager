@@ -8213,7 +8213,7 @@ def test_pair_capture_failure_halts_complete_runtime_set_without_manifest(
     assert _C6C_STOP_COMMAND in commands
     remove_command = next(command for command in commands if command[0] == "rm")
     assert "kor-travel-map-api" in remove_command
-    assert "pinvi-api" not in remove_command
+    assert "pinvi-api" in remove_command
     assert not manifest_path.exists()
 
 
