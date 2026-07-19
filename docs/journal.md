@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-07-19 (PR #61 리뷰 차단 보강 설계 — T-033/T-034)
+
+- PR #61 리뷰에서 raw Compose에는 있던 Map UI·Dagster web·Dagster daemon provenance가
+  resolved 검증, snapshot build, candidate inspection, activation·rollback에서 누락돼 기존
+  `development` image가 계속 기동될 수 있는 P1 경로를 확인했다.
+- Map API만 기록하던 compatible-pair v3 대신 Map runtime 네 immutable image ID와 공통 clean
+  source revision을 모두 기록하는 v4 clean-cut을 결정했다. capture/deploy/rollback은 Map
+  runtime 네 service와 PinVi API를 같은 frozen transaction으로 build·재생성·검증하고,
+  복원 실패 시 전체를 중지한다.
+- cAdvisor는 raw exact listen argument와 default/custom resolved health URL이 같은 port인지
+  확인하는 회귀 계약을 추가한다. 구현 뒤 동일 리뷰어 재검토 전에는 test·lint·Compose
+  config를 실행하지 않는다.
+
 ## 2026-07-19 (C6c cAdvisor healthcheck 포트 drift 확인 — T-034)
 
 - n150 production의 canonical compose는 cAdvisor를 `CADVISOR_PORT`(기본 `12301`)로

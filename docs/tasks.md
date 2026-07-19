@@ -220,8 +220,14 @@
 - [/] `kor-travel-map-api`, `kor-travel-map-ui`, `kor-travel-map-dagster`,
       `kor-travel-map-dagster-daemon`의 build가 모두 동일한 canonical
       `KOR_TRAVEL_MAP_GIT_COMMIT`을 Dockerfile에 전달하도록 compose를 정렬한다.
-- [ ] raw compose 계약 테스트가 네 service의 build arg source와 `development` fallback을
-      고정하고 일부 service만 누락되는 회귀를 차단한다.
+- [/] raw·resolved compose 계약이 네 service의 build arg·snapshot context·Dockerfile을
+      exact 검증하고 일부 service 또는 revision이 다른 회귀를 첫 mutation 전에 차단한다.
+- [ ] candidate build가 Map runtime 네 image와 PinVi image를 모두 같은 frozen snapshot에서
+      완성하고, 각 immutable image ID와 OCI revision을 manifest v4에 기록한다.
+- [ ] capture/deploy/rollback이 Map runtime 네 service를 같은 frozen transaction으로
+      재생성·검증하며, 복원 실패 시 다섯 runtime을 모두 중지해 혼합 generation을 차단한다.
+- [ ] resolved fixture drift, candidate build service 누락, dependent image/revision mismatch,
+      activation·rollback 누락에 대한 회귀 계약을 추가한다.
 - [ ] n150에서 clean exact commit으로 네 image를 빌드해 각
       `org.opencontainers.image.revision` label이 같은 40자 commit인지 확인한다.
 - [ ] C7 runtime attestation과 live E2E가 실제 기동된 네 Map image provenance를 통과하면
@@ -231,8 +237,8 @@
 
 - [/] canonical compose의 cAdvisor listen 포트와 명시적 `/healthz` healthcheck가
       모두 `CADVISOR_PORT`(기본 `12301`)를 단일 정본으로 사용하게 한다.
-- [ ] raw compose 계약 테스트가 image에 상속된 `8080` probe로 돌아가거나
-      listen과 probe 포트가 달라지는 회귀를 차단한다.
+- [/] raw compose 계약이 exact `--port=${CADVISOR_PORT:-12301}`과 health URL을 고정하고,
+      default/custom resolved config에서 listen·probe 포트가 같은지 검증한다.
 - [ ] n150 production에서 cAdvisor `healthy`와 설정 포트 `/healthz` 200을 확인한 뒤
       중단된 C6c compatible-pair capture를 단 한 번 재시도한다.
 - [ ] capture와 후속 readiness가 통과하면 issue #62를 닫고 완료 이력으로 옮긴다.

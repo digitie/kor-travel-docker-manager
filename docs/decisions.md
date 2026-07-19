@@ -756,46 +756,52 @@ worktree를 그대로 전송하므로 dirty checkout, 임의 build arg, `develop
 production C6c build는 Map·PinVi clean checkout의 exact lowercase 40자 `HEAD`를 manager가
 직접 파생한다. build는 live worktree가 아니라 각 `HEAD`의 Git archive로 만든 일회성 context만
 사용해 build 중 파일 변경·원복과 ignored 파일 혼입을 배제한다. canonical Compose build arg,
-immutable image label, compatible-pair v3
-record에 같은 revision을 끝까지 유지한다. v3의 active/rollback pair는 각각
-`map_image_id`, `map_source_revision`, `pinvi_image_id`, `pinvi_source_revision`,
-`contract_generation`, `recorded_at`을 exact 필수 필드로 갖는다.
+immutable image label, compatible-pair v4 record에 같은 revision을 끝까지 유지한다. v4의
+active/rollback set은 각각 `map_image_id`, `map_ui_image_id`, `map_dagster_image_id`,
+`map_dagster_daemon_image_id`, `map_source_revision`, `pinvi_image_id`,
+`pinvi_source_revision`, `contract_generation`, `recorded_at`을 exact 필수 필드로 갖는다.
 
 Map source revision의 적용 범위는 API 한 image에 한정하지 않는다. C7이 실제 runtime으로
 검증하는 Map API·UI·Dagster web·Dagster daemon 네 image는 모두 같은 canonical
 `KOR_TRAVEL_MAP_GIT_COMMIT`을 build arg로 받아 `org.opencontainers.image.revision`에 기록한다.
-compatible-pair manifest는 API image만 active pair로 기록하지만, 나머지 세 image는 C7 host
-attestation이 실제 container image ID·revision과 함께 검증한다.
+resolved Compose, Git snapshot context와 Dockerfile, candidate build·image inspection,
+activation·rollback은 이 네 image를 분리할 수 없는 하나의 Map runtime set으로 취급한다.
+compatible-pair manifest도 네 immutable image ID를 모두 보존해 moving tag가 갱신된 뒤에도
+rollback이 이전 Map runtime 전체를 같은 source revision으로 exact 복원하게 한다.
 
 ### 근거
 
 - moving tag와 image ID는 image byte 정체성만 보장하며 source checkout 정체성은 보장하지 않는다.
-- manager가 mutation lock 안에서 checkout→arg→label→manifest를 연결해야 두 서비스가
-  서로 다른 generation으로 빌드되는 경로를 닫을 수 있다.
+- manager가 mutation lock 안에서 checkout→arg→label→manifest를 연결해야 다섯 runtime이
+  서로 다른 generation으로 빌드·기동되는 경로를 닫을 수 있다.
 - build 전후 `git status`만 검사하면 build 중 변경 후 원복하는 TOCTOU와 ignored 파일을 놓치므로
   build input 자체를 exact Git tree로 고정해야 한다.
 - raw/resolved build mapping은 Git snapshot context, 저장소 내부의 지정 Dockerfile, provenance
   arg만 허용하며 external Dockerfile, additional context, secret, target 같은 추가 입력은 거부한다.
 - operator가 입력한 revision을 신뢰하지 않고 Git `HEAD`와 비교해야 타이포·stale
   환경값을 mutation 전에 거부할 수 있다.
-- 현재 제작 단계이므로 provenance가 없는 v2 호환 계층을 유지하지 않고 v3로
+- 현재 제작 단계이므로 Map dependent image provenance가 없는 v3 호환 계층을 유지하지 않고 v4로
   clean-cut하는 것이 오인 가능성을 낮춘다.
 
 ### 결과(긍정)
 
-- capture/deploy/rollback 증거에서 image ID와 source commit을 함께 추적할 수 있다.
+- capture/deploy/rollback 증거에서 Map runtime 네 image ID와 PinVi image ID, source commit을
+  함께 추적할 수 있다.
 - dirty checkout, `development`, revision mismatch, label 누락은 운영 container 변경 전 또는
   candidate 승격 전에 fail-close한다.
+- activation·recovery 실패가 일부 Map runtime만 남기는 대신 전체 runtime set을 중지하므로
+  혼합 generation을 정상 상태로 오인하지 않는다.
 
 ### 결과(부정)
 
 - production `--build`는 두 저장소의 Git metadata와 clean worktree를 모두 필요로 한다.
-- provenance 필드가 없는 v1/v2 compatible-pair manifest는 배포·rollback에 사용할 수 없다.
+- Map dependent image provenance가 없는 v1/v2/v3 compatible-pair manifest는
+  배포·rollback에 사용할 수 없다.
 
 ### 후속
 
-- (open) n150의 실제 clean checkout과 두 image label, manifest source revision을 C6c live smoke
-  증거에 포함한다.
+- (open) n150의 실제 clean checkout과 Map runtime 네 image·PinVi image label, manifest source
+  revision을 C6c live smoke 증거에 포함한다.
 
 ## ADR-22: cAdvisor listen·healthcheck 포트를 단일 정본으로 관리한다
 
