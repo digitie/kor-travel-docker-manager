@@ -16,6 +16,9 @@
 - cAdvisor는 raw exact listen argument와 default/custom resolved health URL이 같은 port인지
   확인하는 회귀 계약을 추가한다. 구현 뒤 동일 리뷰어 재검토 전에는 test·lint·Compose
   config를 실행하지 않는다.
+- manager 구현은 manifest v4, 다섯 service snapshot build·activation·rollback·halt와 관련
+  회귀 계약까지 작성했다. Map main의 C7 attestation runner도 동반 PR #778에서 v4 9-field
+  pair와 네 Map role image ID 비교로 동기화하며, manager PR은 이 선행 계약에 의존한다.
 
 ## 2026-07-19 (C6c cAdvisor healthcheck 포트 drift 확인 — T-034)
 

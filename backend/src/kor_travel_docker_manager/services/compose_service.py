@@ -22,6 +22,11 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _COMPATIBLE_PAIR_MUTATION_CAPABILITY,
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_API_SERVICE,
+    _MAP_DAGSTER_DAEMON_SERVICE,
+    _MAP_DAGSTER_SERVICE,
+    _MAP_RUNTIME_CONTAINERS,
+    _MAP_RUNTIME_SERVICES,
+    _MAP_UI_SERVICE,
     _PINVI_API_SERVICE,
     C6cBuildProvenance,
     C6cDeploymentConfig,
@@ -110,7 +115,7 @@ def _derive_c6c_build_provenance(
     *,
     compose_path: str,
 ) -> C6cBuildProvenance:
-    """두 API build context의 clean HEAD를 production provenance로 확정한다."""
+    """Map runtime과 PinVi build context의 clean HEAD를 provenance로 확정한다."""
 
     compose_directory = Path(compose_path).resolve().parent
     revisions = {
@@ -1857,9 +1862,9 @@ class ComposeService:
     def _compose_mutation_identifiers(args: Sequence[str]) -> list[str]:
         """Compose 명령을 read-only allowlist로 분류하고 mutation 대상을 보수적으로 찾는다."""
 
-        api_identifiers = ["kor-travel-map-api", "pinvi-api"]
+        runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
         if not args:
-            return api_identifiers
+            return runtime_identifiers
         global_options_with_value = {
             "--ansi",
             "--env-file",
@@ -1888,7 +1893,7 @@ class ComposeService:
                 continue
             if item in global_options_with_value:
                 if index + 1 >= len(args):
-                    return api_identifiers
+                    return runtime_identifiers
                 skip_next = True
                 continue
             inline_global_option = next(
@@ -1902,16 +1907,16 @@ class ComposeService:
             )
             if inline_global_option is not None:
                 if not item.partition("=")[2]:
-                    return api_identifiers
+                    return runtime_identifiers
                 continue
             if item.startswith("-"):
                 if item not in global_flags:
-                    return api_identifiers
+                    return runtime_identifiers
                 continue
             command_index = index
             break
         if command_index is None:
-            return api_identifiers
+            return runtime_identifiers
         command = args[command_index]
         if command == "config":
             read_options_with_value = {"--format", "--hash"}
@@ -1940,10 +1945,10 @@ class ComposeService:
                     or item.startswith("--output=")
                     or (item.startswith("-o") and item != "-o")
                 ):
-                    return api_identifiers
+                    return runtime_identifiers
                 if item in read_options_with_value:
                     if index + 1 >= len(config_items):
-                        return api_identifiers
+                        return runtime_identifiers
                     skip_next = True
                     continue
                 inline_read_option = next(
@@ -1956,10 +1961,10 @@ class ComposeService:
                 )
                 if inline_read_option is not None:
                     if not item.partition("=")[2]:
-                        return api_identifiers
+                        return runtime_identifiers
                     continue
                 if item not in read_flags:
-                    return api_identifiers
+                    return runtime_identifiers
             return []
         read_only = {
             "events",
@@ -1979,10 +1984,10 @@ class ComposeService:
                 item == "--down-project" or item.startswith("--down-project=")
                 for item in args
             ):
-                return api_identifiers
+                return runtime_identifiers
             wait_items = args[command_index + 1 :]
             if any(item.startswith("-") for item in wait_items):
-                return api_identifiers
+                return runtime_identifiers
             return []
         mutation_commands = {
             "build",
@@ -2005,7 +2010,7 @@ class ComposeService:
             "watch",
         }
         if command not in mutation_commands:
-            return api_identifiers
+            return runtime_identifiers
         options_with_value = {
             "--attach",
             "--build-arg",
@@ -2086,16 +2091,16 @@ class ComposeService:
             if item == "--scale" and index + 1 < len(items):
                 service = items[index + 1].partition("=")[0]
                 if not service:
-                    return api_identifiers
+                    return runtime_identifiers
                 explicit_services.append(service)
                 skip_next = True
                 continue
             if item == "--scale":
-                return api_identifiers
+                return runtime_identifiers
             if item.startswith("--scale="):
                 service = item.removeprefix("--scale=").partition("=")[0]
                 if not service:
-                    return api_identifiers
+                    return runtime_identifiers
                 explicit_services.append(service)
                 continue
             if command == "scale" and "=" in item and not item.startswith("-"):
@@ -2103,7 +2108,7 @@ class ComposeService:
                 continue
             if item in options_with_value:
                 if index + 1 >= len(items):
-                    return api_identifiers
+                    return runtime_identifiers
                 skip_next = True
                 continue
             inline_value_option = next(
@@ -2117,11 +2122,11 @@ class ComposeService:
             )
             if inline_value_option is not None:
                 if not item.partition("=")[2]:
-                    return api_identifiers
+                    return runtime_identifiers
                 continue
             if item.startswith("-"):
                 if item not in flag_options:
-                    return api_identifiers
+                    return runtime_identifiers
                 continue
             explicit_services.append(item)
         if explicit_services:
@@ -2144,10 +2149,10 @@ class ComposeService:
                     if service in api_dependencies
                 )
             if "--remove-orphans" in args:
-                explicit_services.extend(api_identifiers)
+                explicit_services.extend(runtime_identifiers)
             return explicit_services
         # down/rm --all/unknown command/option parse failure may affect either API.
-        return api_identifiers
+        return runtime_identifiers
 
     def ensure_target(
         self,
@@ -2454,7 +2459,7 @@ class ComposeService:
         build: bool = False,
         recreate: bool = True,
     ) -> dict[str, Any]:
-        """production Map+PinVi API pair의 유일한 배포 mutation 진입점."""
+        """production Map runtime+PinVi API set의 유일한 배포 mutation 진입점."""
 
         with c6c_deployment_lock(get_c6c_deployment_lock_path()):
             transaction, _ = self._capture_transaction_unlocked(
@@ -2499,7 +2504,7 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         build_provenance: C6cBuildProvenance | None = None,
     ) -> dict[str, Any]:
-        """C6c compatible pair를 Map 검증 뒤 PinVi로 단계 배포한다."""
+        """C6c compatible runtime set을 Map 검증 뒤 PinVi로 단계 배포한다."""
 
         manifest = self._production_preflight(
             config,
@@ -2517,8 +2522,8 @@ class ComposeService:
         target_sequence = target_sequence_for_target(target)
         services = services_for_target(target)
 
-        # Pair transaction은 두 API만 변경한다. 현재 active pair와 dependency/init/app은
-        # 모두 ready여야 하며 비-API 서비스는 변경하지 않는다.
+        # Pair transaction은 Map runtime 네 service와 PinVi API를 함께 변경한다.
+        # 나머지 dependency/init/app은 현재 ready여야 한다.
         self._require_services_ready(
             services,
             transaction=transaction,
@@ -2557,7 +2562,6 @@ class ComposeService:
                 prebuild_result,
                 config,
             )
-        candidate_environment = self._pair_image_environment(candidate_pair)
         result["candidate_image_provenance"] = self._pair_provenance_payload(
             candidate_pair
         )
@@ -2567,103 +2571,28 @@ class ComposeService:
                 build_provenance,
                 transaction=transaction,
             )
-            quiesce_result = self.run(
-                ["stop", "pinvi-api"],
-                capture_output=capture_output,
-                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
-                transaction=transaction,
-            )
-            self._append_stage_result(
+            verification = self._activate_pair_sequentially(
                 result,
-                "quiesce_pinvi_api",
-                quiesce_result,
                 config,
-            )
-            if not quiesce_result["success"]:
-                raise DeploymentContractError("PinVi API quiesce failed")
-            if not self._run_up_stage(
-                result,
-                "map_api",
-                ["kor-travel-map-api"],
-                build=False,
-                recreate=recreate,
-                no_deps=True,
-                wait=True,
-                capture_output=capture_output,
-                environment=candidate_environment,
-                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
-                redact_config=config,
-                transaction=transaction,
-                build_provenance=build_provenance,
-            ):
-                raise DeploymentContractError("Map API deployment failed")
-            self._verify_running_image_source_provenance(
-                config.map_container,
-                label="Map",
-                expected_revision=(
-                    build_provenance.map_source_revision
-                    if build_provenance is not None
-                    else None
-                ),
-            )
-            result["smoke"] = run_map_ops_smoke(config)
-            if not self._run_up_stage(
-                result,
-                "pinvi_api",
-                ["pinvi-api"],
-                build=False,
-                recreate=recreate,
-                no_deps=True,
-                wait=True,
-                capture_output=capture_output,
-                environment=candidate_environment,
-                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
-                redact_config=config,
-                transaction=transaction,
-                build_provenance=build_provenance,
-            ):
-                raise DeploymentContractError("PinVi API deployment failed")
-            self._verify_running_image_source_provenance(
-                config.pinvi_container,
-                label="PinVi",
-                expected_revision=(
-                    build_provenance.pinvi_source_revision
-                    if build_provenance is not None
-                    else None
-                ),
-                expected_build_environment="production",
-            )
-            result["pinvi_smoke"] = run_pinvi_canonical_smoke(
-                config,
-                cancel_probe_state=cancel_probe_state,
-            )
-            active_pair = self._inspect_current_pair(config)
-            self._require_expected_source_provenance(
-                active_pair,
-                build_provenance,
-            )
-            if not self._pair_matches(active_pair, candidate_pair):
-                raise DeploymentContractError(
-                    "running C6c pair differs from the pre-attested candidate images"
-                )
-            verification = self._verify_active_contract(
-                config,
-                active_pair,
+                candidate_pair,
                 services,
+                stage_prefix="deploy",
                 cancel_probe_state=cancel_probe_state,
                 transaction=transaction,
             )
+            result["smoke"] = verification["map_smoke"]
+            result["pinvi_smoke"] = verification["pinvi_smoke"]
             result["ui_smoke"] = verification["ui_smoke"]
             result["runtime_secret_isolation"] = True
             result["activation_verification"] = verification
-            result["image_provenance"] = self._pair_provenance_payload(active_pair)
+            result["image_provenance"] = self._pair_provenance_payload(candidate_pair)
             if transaction.manifest_path is None:
                 raise DeploymentContractError(
                     "compatible-pair transaction has no manifest path"
                 )
             write_pair_manifest(
                 transaction.manifest_path,
-                manifest_with_active_pair(manifest, active_pair),
+                manifest_with_active_pair(manifest, candidate_pair),
             )
             result["deployment_state"] = "active_manifest_committed"
             return result
@@ -2802,7 +2731,10 @@ class ComposeService:
             validation.resolved,
             provenance,
             expected_build_contexts={
-                _MAP_API_SERVICE: build_environment["KOR_TRAVEL_MAP_REPO_DIR"],
+                service_name: build_environment["KOR_TRAVEL_MAP_REPO_DIR"]
+                for service_name in _MAP_RUNTIME_SERVICES
+            }
+            | {
                 _PINVI_API_SERVICE: build_environment["PINVI_REPO_DIR"],
             },
         )
@@ -2815,7 +2747,7 @@ class ComposeService:
         build_provenance: C6cBuildProvenance | None,
         transaction: ComposeTransactionSnapshot,
     ) -> tuple[CompatibleImagePair, Mapping[str, Any] | None]:
-        """두 candidate image를 container 변경 없이 build/attest한다."""
+        """Map runtime set과 PinVi candidate를 container 변경 없이 build/attest한다."""
 
         if build != (build_provenance is not None):
             raise DeploymentContractError(
@@ -2845,7 +2777,7 @@ class ComposeService:
                 transaction=transaction,
             )
             build_result = self.run(
-                ["build", _MAP_API_SERVICE, _PINVI_API_SERVICE],
+                ["build", *_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE],
                 capture_output=True,
                 environment=build_environment,
                 mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -2888,7 +2820,7 @@ class ComposeService:
                 "resolved compose config has no services mapping"
             )
         image_references: dict[str, str] = {}
-        for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE):
+        for service_name in (*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE):
             service = services.get(service_name)
             image = service.get("image") if isinstance(service, Mapping) else None
             if not isinstance(image, str) or not image:
@@ -2896,20 +2828,28 @@ class ComposeService:
                     f"resolved compose is missing {service_name} candidate image"
                 )
             image_references[service_name] = image
-        map_image_id = self._inspect_image_reference_id(
-            image_references[_MAP_API_SERVICE],
-            label="Map",
-        )
+        map_image_ids = {
+            service_name: self._inspect_image_reference_id(
+                image_references[service_name],
+                label=service_name,
+            )
+            for service_name in _MAP_RUNTIME_SERVICES
+        }
         pinvi_image_id = self._inspect_image_reference_id(
             image_references[_PINVI_API_SERVICE],
             label="PinVi",
         )
         pair = new_image_pair(
-            map_image_id,
+            map_image_ids[_MAP_API_SERVICE],
             pinvi_image_id,
             config.contract_generation,
+            map_ui_image_id=map_image_ids[_MAP_UI_SERVICE],
+            map_dagster_image_id=map_image_ids[_MAP_DAGSTER_SERVICE],
+            map_dagster_daemon_image_id=map_image_ids[
+                _MAP_DAGSTER_DAEMON_SERVICE
+            ],
             map_source_revision=self._inspect_image_source_revision(
-                map_image_id,
+                map_image_ids[_MAP_API_SERVICE],
                 label="Map",
             ),
             pinvi_source_revision=self._inspect_image_source_revision(
@@ -2918,6 +2858,15 @@ class ComposeService:
                 expected_build_environment="production",
             ),
         )
+        for service_name in _MAP_RUNTIME_SERVICES[1:]:
+            revision = self._inspect_image_source_revision(
+                map_image_ids[service_name],
+                label=service_name,
+            )
+            if revision != pair.map_source_revision:
+                raise DeploymentContractError(
+                    f"{service_name} candidate image revision differs from Map API"
+                )
         return pair
 
     @staticmethod
@@ -2941,6 +2890,12 @@ class ComposeService:
             "map": {
                 "image_id": pair.map_image_id,
                 "source_revision": pair.map_source_revision,
+                "runtime_images": {
+                    _MAP_API_SERVICE: pair.map_image_id,
+                    _MAP_UI_SERVICE: pair.map_ui_image_id,
+                    _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
+                    _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
+                },
             },
             "pinvi": {
                 "image_id": pair.pinvi_image_id,
@@ -3155,6 +3110,10 @@ class ComposeService:
     def _pair_matches(first: CompatibleImagePair, second: CompatibleImagePair) -> bool:
         return (
             first.map_image_id == second.map_image_id
+            and first.map_ui_image_id == second.map_ui_image_id
+            and first.map_dagster_image_id == second.map_dagster_image_id
+            and first.map_dagster_daemon_image_id
+            == second.map_dagster_daemon_image_id
             and first.map_source_revision == second.map_source_revision
             and first.pinvi_image_id == second.pinvi_image_id
             and first.pinvi_source_revision == second.pinvi_source_revision
@@ -3165,6 +3124,9 @@ class ComposeService:
     def _pair_image_environment(pair: CompatibleImagePair) -> dict[str, str]:
         return {
             "KOR_TRAVEL_MAP_API_IMAGE": pair.map_image_id,
+            "KOR_TRAVEL_MAP_UI_IMAGE": pair.map_ui_image_id,
+            "KOR_TRAVEL_MAP_DAGSTER_IMAGE": pair.map_dagster_image_id,
+            "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE": pair.map_dagster_daemon_image_id,
             "KOR_TRAVEL_MAP_GIT_COMMIT": pair.map_source_revision,
             "PINVI_API_IMAGE": pair.pinvi_image_id,
             "PINVI_SOURCE_REVISION": pair.pinvi_source_revision,
@@ -3287,18 +3249,18 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
     ) -> dict[str, Any]:
-        """혼합 pair 실행 구간 없이 Map 검증 뒤 PinVi와 전체 계약을 복원한다."""
+        """혼합 set 실행 없이 Map runtime 검증 뒤 PinVi와 전체 계약을 복원한다."""
 
         environment = None if frozen_recovery else self._pair_image_environment(pair)
         if frozen_recovery:
             stop_result = self._run_frozen_recovery(
-                ["stop", "pinvi-api", "kor-travel-map-api"],
+                ["stop", _PINVI_API_SERVICE, *_MAP_RUNTIME_SERVICES],
                 mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                 transaction=transaction,
             )
         else:
             stop_result = self.run(
-                ["stop", "pinvi-api", "kor-travel-map-api"],
+                ["stop", _PINVI_API_SERVICE, *_MAP_RUNTIME_SERVICES],
                 mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                 transaction=transaction,
             )
@@ -3327,6 +3289,26 @@ class ComposeService:
             expected_revision=pair.map_source_revision,
         )
         result[f"{stage_prefix}_map_smoke"] = run_map_ops_smoke(config)
+        if not self._run_up_stage(
+            result,
+            f"{stage_prefix}_map_runtime_dependents",
+            list(_MAP_RUNTIME_SERVICES[1:]),
+            build=False,
+            recreate=True,
+            no_deps=True,
+            wait=True,
+            capture_output=True,
+            environment=environment,
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+            redact_config=config,
+            transaction=transaction,
+            frozen_recovery=frozen_recovery,
+        ):
+            raise DeploymentContractError("Map runtime dependent restoration failed")
+        self._verify_map_runtime_source_provenance(
+            pair.map_source_revision,
+            include_api=False,
+        )
         if not self._run_up_stage(
             result,
             f"{stage_prefix}_pinvi_api",
@@ -3368,7 +3350,7 @@ class ComposeService:
     ) -> dict[str, Any]:
         try:
             halt_result = self._run_frozen_recovery(
-                ["stop", "pinvi-api", "kor-travel-map-api"],
+                ["stop", _PINVI_API_SERVICE, *_MAP_RUNTIME_SERVICES],
                 mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                 transaction=transaction,
             )
@@ -3401,7 +3383,7 @@ class ComposeService:
         verified_compatible: bool,
         build: bool = False,
     ) -> dict[str, Any]:
-        """clean 환경에서 candidate pair를 단계 검증해 최초 v3를 기록한다."""
+        """clean 환경에서 candidate runtime set을 단계 검증해 최초 v4를 기록한다."""
 
         if not verified_compatible:
             raise DeploymentContractError(
@@ -3451,9 +3433,11 @@ class ComposeService:
                 for target_name in target_sequence_for_target("pinvi")
                 if target_name not in {"map", "pinvi"}
             ]
-            map_dependents = [
-                service for service in map_services if service != "kor-travel-map-api"
-            ]
+            if tuple(map_services) != _MAP_RUNTIME_SERVICES:
+                raise DeploymentContractError(
+                    "Map target must contain the canonical runtime service set"
+                )
+            map_dependents = list(_MAP_RUNTIME_SERVICES[1:])
             pinvi_dependents = [
                 service for service in pinvi_services if service != "pinvi-api"
             ]
@@ -3467,7 +3451,7 @@ class ComposeService:
                 "success": True,
                 "returncode": 0,
                 "target": "pinvi-compatible-pair-bootstrap",
-                "services": ["kor-travel-map-api", "pinvi-api"],
+                "services": [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE],
                 "stages": [],
                 "init_results": [],
                 "command": [],
@@ -3537,8 +3521,9 @@ class ComposeService:
                     build_provenance,
                     transaction=transaction,
                 )
+                touched_services.update((*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE))
                 stop_result = self.run(
-                    ["stop", "pinvi-api", "kor-travel-map-api"],
+                    ["stop", _PINVI_API_SERVICE, *_MAP_RUNTIME_SERVICES],
                     mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                     transaction=transaction,
                 )
@@ -3570,11 +3555,7 @@ class ComposeService:
                 self._verify_running_image_source_provenance(
                     config.map_container,
                     label="Map",
-                    expected_revision=(
-                        build_provenance.map_source_revision
-                        if build_provenance is not None
-                        else None
-                    ),
+                    expected_revision=candidate_pair.map_source_revision,
                 )
                 result["smoke"] = run_map_ops_smoke(config)
                 touched_services.update(map_dependents)
@@ -3583,17 +3564,23 @@ class ComposeService:
                     "bootstrap_map_dependents",
                     map_dependents,
                     build=False,
-                    recreate=False,
+                    recreate=True,
                     no_deps=True,
                     wait=True,
                     capture_output=True,
-                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
+                    environment=candidate_environment,
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    redact_config=config,
                     transaction=transaction,
                     build_provenance=build_provenance,
                 ):
                     raise DeploymentContractError(
                         "bootstrap Map dependents failed"
                     )
+                self._verify_map_runtime_source_provenance(
+                    candidate_pair.map_source_revision,
+                    include_api=False,
+                )
                 touched_services.add("pinvi-api")
                 if not self._run_up_stage(
                     result,
@@ -3614,11 +3601,7 @@ class ComposeService:
                 self._verify_running_image_source_provenance(
                     config.pinvi_container,
                     label="PinVi",
-                    expected_revision=(
-                        build_provenance.pinvi_source_revision
-                        if build_provenance is not None
-                        else None
-                    ),
+                    expected_revision=candidate_pair.pinvi_source_revision,
                     expected_build_environment="production",
                 )
                 result["pinvi_smoke"] = run_pinvi_canonical_smoke(
@@ -3660,7 +3643,7 @@ class ComposeService:
                 result["verification"] = verification
                 result["contract_generation"] = pair.contract_generation
                 result["image_provenance"] = self._pair_provenance_payload(pair)
-                result["deployment_state"] = "initial_v3_manifest_committed"
+                result["deployment_state"] = "initial_v4_manifest_committed"
                 result["stdout"] += (
                     f"compatible Map+PinVi image pair bootstrapped: {manifest_path}\n"
                 )
@@ -3735,20 +3718,20 @@ class ComposeService:
         except Exception:
             self._fail_result(result, "bootstrap halt command raised unexpectedly")
             result["deployment_state"] = "halt_failed_requires_operator"
-        api_services = {"kor-travel-map-api", "pinvi-api"}
+        protected_runtime_services = {*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE}
         created = sorted(
             service for service in touched_services if service not in initial_states
         )
         restore_stopped = sorted(
             service
-            for service in touched_services - api_services
+            for service in touched_services - protected_runtime_services
             if service in initial_states and initial_states[service] != "running"
         )
         cleanup_ok = halt_ok
         if created:
             removal_capability = (
                 _COMPATIBLE_PAIR_MUTATION_CAPABILITY
-                if set(created).intersection(api_services)
+                if set(created).intersection(protected_runtime_services)
                 else _MANAGED_COMPOSE_MUTATION_CAPABILITY
             )
             try:
@@ -3858,7 +3841,7 @@ class ComposeService:
                 "success": True,
                 "returncode": 0,
                 "target": "pinvi-compatible-pair-rollback",
-                "services": ["kor-travel-map-api", "pinvi-api"],
+                "services": [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE],
                 "stages": [],
                 "command": [],
                 "stdout": "",
@@ -3913,16 +3896,33 @@ class ComposeService:
                 ) from exc
 
     def _inspect_current_pair(self, config: C6cDeploymentConfig) -> CompatibleImagePair:
-        map_image_id = self._inspect_container_image_id(config.map_container)
+        map_image_ids = {
+            service_name: self._inspect_container_image_id(container_name)
+            for service_name, container_name in _MAP_RUNTIME_CONTAINERS.items()
+        }
         pinvi_image_id = self._inspect_container_image_id(config.pinvi_container)
+        map_source_revision = self._inspect_image_source_revision(
+            map_image_ids[_MAP_API_SERVICE],
+            label="Map",
+        )
+        for service_name in _MAP_RUNTIME_SERVICES[1:]:
+            if self._inspect_image_source_revision(
+                map_image_ids[service_name],
+                label=service_name,
+            ) != map_source_revision:
+                raise DeploymentContractError(
+                    f"{service_name} running image revision differs from Map API"
+                )
         return new_image_pair(
-            map_image_id,
+            map_image_ids[_MAP_API_SERVICE],
             pinvi_image_id,
             config.contract_generation,
-            map_source_revision=self._inspect_image_source_revision(
-                map_image_id,
-                label="Map",
-            ),
+            map_ui_image_id=map_image_ids[_MAP_UI_SERVICE],
+            map_dagster_image_id=map_image_ids[_MAP_DAGSTER_SERVICE],
+            map_dagster_daemon_image_id=map_image_ids[
+                _MAP_DAGSTER_DAEMON_SERVICE
+            ],
+            map_source_revision=map_source_revision,
             pinvi_source_revision=self._inspect_image_source_revision(
                 pinvi_image_id,
                 label="PinVi",
@@ -3942,11 +3942,11 @@ class ComposeService:
             )
         except OSError as exc:
             raise DeploymentContractError(
-                "cannot inspect immutable image ID for a C6c API container"
+                "cannot inspect immutable image ID for a C6c runtime container"
             ) from exc
         if completed.returncode != 0:
             raise DeploymentContractError(
-                "cannot inspect immutable image ID for a C6c API container"
+                "cannot inspect immutable image ID for a C6c runtime container"
             )
         return completed.stdout.strip()
 
@@ -3969,6 +3969,24 @@ class ComposeService:
                 f"{label} running image revision differs from the clean checkout HEAD"
             )
         return revision
+
+    def _verify_map_runtime_source_provenance(
+        self,
+        expected_revision: str,
+        *,
+        include_api: bool = True,
+    ) -> None:
+        services = (
+            _MAP_RUNTIME_SERVICES
+            if include_api
+            else _MAP_RUNTIME_SERVICES[1:]
+        )
+        for service_name in services:
+            self._verify_running_image_source_provenance(
+                _MAP_RUNTIME_CONTAINERS[service_name],
+                label=service_name,
+                expected_revision=expected_revision,
+            )
 
     @staticmethod
     def _require_local_image(image_id: str) -> None:
@@ -4015,19 +4033,32 @@ class ComposeService:
         return image_id
 
     def _require_pair_image_provenance(self, pair: CompatibleImagePair) -> None:
-        self._require_local_image(pair.map_image_id)
+        map_image_ids = {
+            _MAP_API_SERVICE: pair.map_image_id,
+            _MAP_UI_SERVICE: pair.map_ui_image_id,
+            _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
+            _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
+        }
+        for image_id in map_image_ids.values():
+            self._require_local_image(image_id)
         self._require_local_image(pair.pinvi_image_id)
-        map_revision = self._inspect_image_source_revision(
-            pair.map_image_id,
-            label="Map",
-        )
+        map_revisions = {
+            service_name: self._inspect_image_source_revision(
+                image_id,
+                label=service_name,
+            )
+            for service_name, image_id in map_image_ids.items()
+        }
         pinvi_revision = self._inspect_image_source_revision(
             pair.pinvi_image_id,
             label="PinVi",
             expected_build_environment="production",
         )
         if (
-            map_revision != pair.map_source_revision
+            any(
+                revision != pair.map_source_revision
+                for revision in map_revisions.values()
+            )
             or pinvi_revision != pair.pinvi_source_revision
         ):
             raise DeploymentContractError(

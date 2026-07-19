@@ -37,7 +37,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
     manifest_with_active_pair,
-    new_image_pair,
+    new_image_pair as _build_image_pair,
     run_map_ops_smoke,
     run_map_ui_auth_preflight,
     run_pinvi_canonical_smoke,
@@ -74,8 +74,19 @@ _READ_TOKEN = "r" * 32
 _CANCEL_TOKEN = "c" * 32
 _MAP_IMAGE_ID = f"sha256:{'a' * 64}"
 _PINVI_IMAGE_ID = f"sha256:{'b' * 64}"
+_MAP_UI_IMAGE_ID = f"sha256:{'e' * 64}"
+_MAP_DAGSTER_IMAGE_ID = f"sha256:{'f' * 64}"
+_MAP_DAGSTER_DAEMON_IMAGE_ID = f"sha256:{'0' * 64}"
 _ACTIVE_MAP_IMAGE_ID = f"sha256:{'c' * 64}"
 _ACTIVE_PINVI_IMAGE_ID = f"sha256:{'d' * 64}"
+_MAP_RUNTIME_SERVICES = [
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+]
+_C6C_BUILD_COMMAND = ["build", *_MAP_RUNTIME_SERVICES, "pinvi-api"]
+_C6C_STOP_COMMAND = ["stop", "pinvi-api", *_MAP_RUNTIME_SERVICES]
 _MAP_SOURCE_REVISION = "1" * 40
 _PINVI_SOURCE_REVISION = "2" * 40
 _CONTRACT_GENERATION = "c6c-ops-v1"
@@ -152,6 +163,29 @@ _C6C_ENV_NAMES = (
 )
 
 
+def _new_image_pair(
+    map_image_id: str,
+    pinvi_image_id: str,
+    contract_generation: str,
+    *,
+    map_ui_image_id: str = _MAP_UI_IMAGE_ID,
+    map_dagster_image_id: str = _MAP_DAGSTER_IMAGE_ID,
+    map_dagster_daemon_image_id: str = _MAP_DAGSTER_DAEMON_IMAGE_ID,
+    map_source_revision: str,
+    pinvi_source_revision: str,
+) -> CompatibleImagePair:
+    return _build_image_pair(
+        map_image_id,
+        pinvi_image_id,
+        contract_generation,
+        map_ui_image_id=map_ui_image_id,
+        map_dagster_image_id=map_dagster_image_id,
+        map_dagster_daemon_image_id=map_dagster_daemon_image_id,
+        map_source_revision=map_source_revision,
+        pinvi_source_revision=pinvi_source_revision,
+    )
+
+
 def _production_config() -> C6cDeploymentConfig:
     return C6cDeploymentConfig(
         deployment_environment="production",
@@ -181,7 +215,7 @@ def _production_config() -> C6cDeploymentConfig:
 
 def _manifest() -> CompatiblePairManifest:
     return initial_pair_manifest(
-        new_image_pair(
+        _new_image_pair(
             _MAP_IMAGE_ID,
             _PINVI_IMAGE_ID,
             _CONTRACT_GENERATION,
@@ -264,7 +298,7 @@ def _allow_candidate_pair(
 ) -> CompatibleImagePair:
     candidate = pair or _manifest().active
     prebuild_result = (
-        _success(["build", "kor-travel-map-api", "pinvi-api"])
+        _success(_C6C_BUILD_COMMAND)
         if with_prebuild_result
         else None
     )
@@ -707,6 +741,22 @@ def _resolved_compose() -> dict[str, object]:
             "kor-travel-map-ui": {
                 "container_name": "kor-travel-map-ui-latest",
                 "network_mode": "host",
+                "image": "kor-travel-map-ui:latest-main",
+                "build": {
+                    "context": "/tmp/map-context",
+                    "dockerfile": "docker/frontend.Dockerfile",
+                    "args": {
+                        "KOR_TRAVEL_MAP_GIT_COMMIT": _MAP_SOURCE_REVISION,
+                        "NEXT_PUBLIC_KOR_TRAVEL_MAP_API": "http://127.0.0.1:12701",
+                        "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL": (
+                            "http://127.0.0.1:12702"
+                        ),
+                        "NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL": (
+                            "http://127.0.0.1:12501"
+                        ),
+                        "NEXT_PUBLIC_VWORLD_API_KEY": "",
+                    },
+                },
                 "environment": {
                     "NODE_ENV": "production",
                     "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
@@ -714,6 +764,26 @@ def _resolved_compose() -> dict[str, object]:
                         _compose_resolved_literal(_MAP_UI_PASSWORD_HASH)
                     ),
                     "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
+                },
+            },
+            "kor-travel-map-dagster": {
+                "container_name": "kor-travel-map-dagster-latest",
+                "network_mode": "host",
+                "image": "kor-travel-map-dagster:latest-main",
+                "build": {
+                    "context": "/tmp/map-context",
+                    "dockerfile": "docker/dagster.Dockerfile",
+                    "args": {"KOR_TRAVEL_MAP_GIT_COMMIT": _MAP_SOURCE_REVISION},
+                },
+            },
+            "kor-travel-map-dagster-daemon": {
+                "container_name": "kor-travel-map-dagster-daemon-latest",
+                "network_mode": "host",
+                "image": "kor-travel-map-dagster-daemon:latest-main",
+                "build": {
+                    "context": "/tmp/map-context",
+                    "dockerfile": "docker/dagster.Dockerfile",
+                    "args": {"KOR_TRAVEL_MAP_GIT_COMMIT": _MAP_SOURCE_REVISION},
                 },
             },
             "pinvi-web": {"command": ["npm", "start"]},
@@ -966,7 +1036,7 @@ def test_production_state_paths_are_checkout_independent_and_project_scoped(
     state_dir = (
         tmp_path / ".local" / "state" / "kor-travel-docker-manager" / "pinvi-prod"
     )
-    assert Path(manifest) == state_dir / "compatible-pair-v3.json"
+    assert Path(manifest) == state_dir / "compatible-pair-v4.json"
     assert Path(lock) == (
         tmp_path
         / ".local"
@@ -2151,7 +2221,7 @@ def test_compose_candidate_rejects_interpolated_root_env_bind(tmp_path: Path) ->
 
 
 def test_compose_candidate_rejects_manager_state_file_bind(tmp_path: Path) -> None:
-    manifest = tmp_path / "compatible-pair-v3.json"
+    manifest = tmp_path / "compatible-pair-v4.json"
     manifest.write_text("{}\n", encoding="utf-8")
     candidate = _source_compose()
     services = candidate["services"]
@@ -2373,7 +2443,7 @@ def test_compose_candidate_rejects_manager_state_directory_bind(
 ) -> None:
     state_dir = tmp_path / "manager-state"
     state_dir.mkdir()
-    manifest = state_dir / "compatible-pair-v3.json"
+    manifest = state_dir / "compatible-pair-v4.json"
     lock = state_dir / "deployment.lock"
     manifest.write_text("{}\n", encoding="utf-8")
     lock.write_text("", encoding="utf-8")
@@ -3103,6 +3173,7 @@ def test_cadvisor_does_not_bind_host_root_or_docker_data() -> None:
     cadvisor = compose["services"]["cadvisor"]
 
     assert "--docker_only=true" in cadvisor["command"]
+    assert "--port=${CADVISOR_PORT:-12301}" in cadvisor["command"]
     assert cadvisor["volumes"] == [
         "/var/run/docker.sock:/var/run/docker.sock:ro",
         "/sys:/sys:ro",
@@ -3121,6 +3192,55 @@ def test_cadvisor_does_not_bind_host_root_or_docker_data() -> None:
         "retries": 12,
         "start_period": "10s",
     }
+
+
+@pytest.mark.parametrize(
+    ("configured_port", "expected_port"),
+    [(None, 12301), ("22301", 22301)],
+)
+def test_cadvisor_resolved_listen_and_healthcheck_use_same_port(
+    configured_port: str | None,
+    expected_port: int,
+) -> None:
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    source = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    fragment = {"services": {"cadvisor": source["services"]["cadvisor"]}}
+    environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "COMPOSE_PROJECT_NAME": "c6c-cadvisor-port-contract",
+    }
+    if configured_port is not None:
+        environment["CADVISOR_PORT"] = configured_port
+    completed = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "-f",
+            "-",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=compose_path.parent,
+        env=environment,
+        input=yaml.safe_dump(fragment, sort_keys=False),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    resolved = json.loads(completed.stdout)["services"]["cadvisor"]
+
+    assert f"--port={expected_port}" in resolved["command"]
+    assert resolved["healthcheck"]["test"] == [
+        "CMD-SHELL",
+        (
+            f"wget -qO- http://127.0.0.1:{expected_port}/healthz "
+            ">/dev/null || exit 1"
+        ),
+    ]
 
 
 def test_canonical_compose_wires_c6c_runtime_provenance_build_args() -> None:
@@ -3440,11 +3560,16 @@ def test_resolved_compose_rejects_malicious_api_environment_override(
         validate_resolved_compose_secret_isolation(resolved, _production_config())
 
 
-def test_rollback_resolved_compose_requires_both_manifest_image_ids() -> None:
+def test_rollback_resolved_compose_requires_complete_manifest_image_set() -> None:
     resolved = _resolved_compose()
     services = resolved["services"]
     assert isinstance(services, dict)
     services["kor-travel-map-api"]["image"] = _MAP_IMAGE_ID
+    services["kor-travel-map-ui"]["image"] = _MAP_UI_IMAGE_ID
+    services["kor-travel-map-dagster"]["image"] = _MAP_DAGSTER_IMAGE_ID
+    services["kor-travel-map-dagster-daemon"]["image"] = (
+        _MAP_DAGSTER_DAEMON_IMAGE_ID
+    )
     services["pinvi-api"]["image"] = _PINVI_IMAGE_ID
     pair = _manifest().active
 
@@ -3453,7 +3578,7 @@ def test_rollback_resolved_compose_requires_both_manifest_image_ids() -> None:
     with pytest.raises(DeploymentContractError, match="immutable image"):
         validate_resolved_compose_image_pair(resolved, _production_config(), pair)
 
-    wrong_generation = new_image_pair(
+    wrong_generation = _new_image_pair(
         _MAP_IMAGE_ID,
         _PINVI_IMAGE_ID,
         "legacy-c6b",
@@ -3491,6 +3616,35 @@ def test_resolved_c6c_build_provenance_requires_exact_production_args() -> None:
         validate_resolved_c6c_build_provenance(resolved, provenance)
 
 
+@pytest.mark.parametrize(
+    "service_name",
+    [
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+    ],
+)
+def test_resolved_c6c_build_provenance_rejects_map_runtime_revision_drift(
+    service_name: str,
+) -> None:
+    resolved = _resolved_compose()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services[service_name]["build"]["args"]["KOR_TRAVEL_MAP_GIT_COMMIT"] = (
+        "development"
+    )
+
+    with pytest.raises(DeploymentContractError, match="build arg"):
+        validate_resolved_c6c_build_provenance(
+            resolved,
+            C6cBuildProvenance(
+                map_source_revision=_MAP_SOURCE_REVISION,
+                pinvi_source_revision=_PINVI_SOURCE_REVISION,
+            ),
+        )
+
+
 def test_resolved_c6c_build_provenance_requires_snapshot_build_paths(
     tmp_path: Path,
 ) -> None:
@@ -3505,11 +3659,20 @@ def test_resolved_c6c_build_provenance_requires_snapshot_build_paths(
         "FROM scratch\n",
         encoding="utf-8",
     )
+    (map_context / "docker" / "frontend.Dockerfile").write_text(
+        "FROM scratch\n",
+        encoding="utf-8",
+    )
+    (map_context / "docker" / "dagster.Dockerfile").write_text(
+        "FROM scratch\n",
+        encoding="utf-8",
+    )
     (pinvi_context / "apps" / "api" / "Dockerfile").write_text(
         "FROM scratch\n",
         encoding="utf-8",
     )
-    services["kor-travel-map-api"]["build"]["context"] = str(map_context)
+    for service_name in _MAP_RUNTIME_SERVICES:
+        services[service_name]["build"]["context"] = str(map_context)
     services["pinvi-api"]["build"]["context"] = str(pinvi_context)
     provenance = C6cBuildProvenance(
         map_source_revision=_MAP_SOURCE_REVISION,
@@ -3517,6 +3680,9 @@ def test_resolved_c6c_build_provenance_requires_snapshot_build_paths(
     )
     expected_contexts = {
         "kor-travel-map-api": str(map_context),
+        "kor-travel-map-ui": str(map_context),
+        "kor-travel-map-dagster": str(map_context),
+        "kor-travel-map-dagster-daemon": str(map_context),
         "pinvi-api": str(pinvi_context),
     }
 
@@ -3526,7 +3692,9 @@ def test_resolved_c6c_build_provenance_requires_snapshot_build_paths(
         expected_build_contexts=expected_contexts,
     )
 
-    services["kor-travel-map-api"]["build"]["dockerfile"] = "/tmp/evil.Dockerfile"
+    services["kor-travel-map-dagster-daemon"]["build"]["dockerfile"] = (
+        "/tmp/evil.Dockerfile"
+    )
     with pytest.raises(DeploymentContractError, match="build path"):
         validate_resolved_c6c_build_provenance(
             resolved,
@@ -3708,7 +3876,15 @@ def test_pair_image_provenance_rejects_label_manifest_mismatch(
     service = ComposeService()
     pair = _manifest().active
     monkeypatch.setattr(service, "_require_local_image", lambda _image: None)
-    revisions = iter([_MAP_SOURCE_REVISION, "3" * 40])
+    revisions = iter(
+        [
+            _MAP_SOURCE_REVISION,
+            _MAP_SOURCE_REVISION,
+            _MAP_SOURCE_REVISION,
+            "3" * 40,
+            _PINVI_SOURCE_REVISION,
+        ]
+    )
     monkeypatch.setattr(
         service,
         "_inspect_image_source_revision",
@@ -3780,9 +3956,8 @@ def test_c6c_candidate_build_and_labels_complete_before_container_mutation(
         "_validate_c6c_snapshot_build_contract",
         validate_snapshot,
     )
-    run = Mock(
-        return_value=_success(["build", "kor-travel-map-api", "pinvi-api"])
-    )
+    expected_build_command = _C6C_BUILD_COMMAND
+    run = Mock(return_value=_success(expected_build_command))
     monkeypatch.setattr(service, "run", run)
     monkeypatch.setattr(
         service,
@@ -3794,13 +3969,27 @@ def test_c6c_candidate_build_and_labels_complete_before_container_mutation(
             )
         ),
     )
-    image_ids = iter([_MAP_IMAGE_ID, _PINVI_IMAGE_ID])
+    image_ids = iter(
+        [
+            _MAP_IMAGE_ID,
+            _MAP_UI_IMAGE_ID,
+            _MAP_DAGSTER_IMAGE_ID,
+            _MAP_DAGSTER_DAEMON_IMAGE_ID,
+            _PINVI_IMAGE_ID,
+        ]
+    )
     monkeypatch.setattr(
         service,
         "_inspect_image_reference_id",
         lambda *_args, **_kwargs: next(image_ids),
     )
-    revisions = iter([_MAP_SOURCE_REVISION, _PINVI_SOURCE_REVISION])
+    revisions = iter(
+        [
+            _MAP_SOURCE_REVISION,
+            _PINVI_SOURCE_REVISION,
+            *([_MAP_SOURCE_REVISION] * 3),
+        ]
+    )
     monkeypatch.setattr(
         service,
         "_inspect_image_source_revision",
@@ -3815,9 +4004,12 @@ def test_c6c_candidate_build_and_labels_complete_before_container_mutation(
     )
 
     assert pair.map_image_id == _MAP_IMAGE_ID
+    assert pair.map_ui_image_id == _MAP_UI_IMAGE_ID
+    assert pair.map_dagster_image_id == _MAP_DAGSTER_IMAGE_ID
+    assert pair.map_dagster_daemon_image_id == _MAP_DAGSTER_DAEMON_IMAGE_ID
     assert pair.pinvi_image_id == _PINVI_IMAGE_ID
     assert build_result is not None
-    assert run.call_args.args[0] == ["build", "kor-travel-map-api", "pinvi-api"]
+    assert run.call_args.args[0] == expected_build_command
     assert run.call_args.kwargs["environment"] == snapshot_environment
     validate_snapshot.assert_called_once_with(
         provenance,
@@ -6121,11 +6313,11 @@ def test_production_compose_classifier_is_default_deny_for_api_mutations(
         ["up", "--future-option=value", "rustfs"],
     ],
 )
-def test_compose_mutation_parser_defaults_ambiguous_scope_to_both_apis(
+def test_compose_mutation_parser_defaults_ambiguous_scope_to_runtime_set(
     args: list[str],
 ) -> None:
     assert ComposeService._compose_mutation_identifiers(args) == [
-        "kor-travel-map-api",
+        *_MAP_RUNTIME_SERVICES,
         "pinvi-api",
     ]
 
@@ -6973,7 +7165,7 @@ def test_capture_base_contract_exception_uses_same_root_and_preserves_halt_failu
     _allow_candidate_pair(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
     )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.get_c6c_deployment_lock_path",
@@ -7336,7 +7528,7 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     config = _production_config()
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
     )
     events: list[tuple[str, object]] = []
     monkeypatch.setattr(
@@ -7348,7 +7540,7 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         or _MAP_SOURCE_REVISION,
     )
     cancel_probe_states: list[PinviCancelProbeState] = []
-    active = new_image_pair(
+    active = _new_image_pair(
         _ACTIVE_MAP_IMAGE_ID,
         _ACTIVE_PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
@@ -7437,16 +7629,19 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
 
     assert result["success"] is True
     assert result["preflight_ui_smoke"] is preflight_ui_smoke
-    assert result["image_provenance"]["map"] == {
-        "image_id": _ACTIVE_MAP_IMAGE_ID,
-        "source_revision": _MAP_SOURCE_REVISION,
+    assert result["image_provenance"]["map"]["runtime_images"] == {
+        "kor-travel-map-api": _ACTIVE_MAP_IMAGE_ID,
+        "kor-travel-map-ui": _MAP_UI_IMAGE_ID,
+        "kor-travel-map-dagster": _MAP_DAGSTER_IMAGE_ID,
+        "kor-travel-map-dagster-daemon": _MAP_DAGSTER_DAEMON_IMAGE_ID,
     }
     assert events[0] == ("preflight", "map-ui")
     assert [stage["name"] for stage in result["stages"]] == [
         "prebuild_candidate_pair",
-        "quiesce_pinvi_api",
-        "map_api",
-        "pinvi_api",
+        "deploy_stop_pair",
+        "deploy_map_api",
+        "deploy_map_runtime_dependents",
+        "deploy_pinvi_api",
     ]
     explicit_services = [
         service_name
@@ -7454,10 +7649,9 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         for service_name in stage["services"]
     ]
     assert len(explicit_services) == len(set(explicit_services))
-    assert set(explicit_services) == {"kor-travel-map-api", "pinvi-api"}
+    assert set(explicit_services) == {*_MAP_RUNTIME_SERVICES, "pinvi-api"}
     assert readiness
-    assert len(cancel_probe_states) == 2
-    assert cancel_probe_states[0] is cancel_probe_states[1]
+    assert len(cancel_probe_states) == 1
 
     event_names = [event[0] for event in events]
     smoke_index = event_names.index("smoke")
@@ -7475,15 +7669,18 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     )
     assert map_index < smoke_index < pinvi_index
     assert events.index(("provenance", "Map")) < events.index(("smoke", "map"))
-    assert events.index(("provenance", "PinVi")) < events.index(
-        ("smoke", "pinvi")
-    )
+    assert events.index(("provenance", "PinVi")) < events.index(("verify", "full"))
     assert not any(
         event[0] == "run"
         and any(
             service in event[1]
-            for service in ("pinvi-web", "pinvi-dagster", "kor-travel-map-ui")
+            for service in ("pinvi-web", "pinvi-dagster")
         )
+        for event in events
+    )
+    assert any(
+        event[0] == "run"
+        and event[1][-3:] == _MAP_RUNTIME_SERVICES[1:]
         for event in events
     )
     assert events.index(("verify", "full")) < events.index(("manifest", "active"))
@@ -7498,7 +7695,7 @@ def test_failed_map_smoke_never_invokes_pinvi_up(
     _allow_candidate_pair(service, monkeypatch)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
     )
     active_recovery_transaction = replace(transaction)
     events: list[list[str]] = []
@@ -7630,12 +7827,12 @@ def test_pair_manifest_is_atomic_and_rejects_mutable_tags(tmp_path: Path) -> Non
 
     assert loaded.rollback.map_image_id == _MAP_IMAGE_ID
     assert loaded.rollback.pinvi_image_id == _PINVI_IMAGE_ID
-    assert loaded.version == 3
+    assert loaded.version == 4
     assert loaded.active.contract_generation == _CONTRACT_GENERATION
     assert fsync.call_count == 2
     assert not list(manifest_path.parent.glob("*.tmp"))
     with pytest.raises(DeploymentContractError, match="immutable"):
-        new_image_pair(
+        _new_image_pair(
             "kor-travel-map-api:latest-main",
             _PINVI_IMAGE_ID,
             _CONTRACT_GENERATION,
@@ -7739,9 +7936,9 @@ def test_pair_manifest_parent_fsync_failure_restores_previous_bytes(
     manifest_path.chmod(0o640)
     original_bytes = manifest_path.read_bytes()
     replacement = CompatiblePairManifest(
-        version=3,
+        version=4,
         rollback=original.active,
-        active=new_image_pair(
+        active=_new_image_pair(
             _ACTIVE_MAP_IMAGE_ID,
             _ACTIVE_PINVI_IMAGE_ID,
             _CONTRACT_GENERATION,
@@ -7775,7 +7972,7 @@ def test_pair_capture_requires_explicit_compatibility_attestation() -> None:
         ComposeService().capture_compatible_pinvi_pair(verified_compatible=False)
 
 
-def test_pair_capture_bootstraps_candidate_pair_and_records_v3_atomically(
+def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7795,7 +7992,7 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v3_atomically(
         "_capture_transaction_unlocked",
         Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
     )
-    pair = new_image_pair(
+    pair = _new_image_pair(
         _MAP_IMAGE_ID,
         _PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
@@ -7875,7 +8072,7 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v3_atomically(
         "bootstrap_pinvi_dependents",
     ]
     assert len(result["init_results"]) == 3
-    stop_index = commands.index(["stop", "pinvi-api", "kor-travel-map-api"])
+    stop_index = commands.index(_C6C_STOP_COMMAND)
     map_index = next(
         index
         for index, command in enumerate(commands)
@@ -7884,13 +8081,7 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v3_atomically(
     assert stop_index < map_index
     assert "--no-deps" in commands[map_index]
     assert "--build" not in commands[map_index]
-    assert result["command"][0] == [
-        "docker",
-        "compose",
-        "build",
-        "kor-travel-map-api",
-        "pinvi-api",
-    ]
+    assert result["command"][0] == ["docker", "compose", *_C6C_BUILD_COMMAND]
     assert commands[map_index + 1][-3:] == [
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -7969,7 +8160,7 @@ def test_pair_capture_actual_init_exception_cleans_created_dependency(
     assert not manifest_path.exists()
 
 
-def test_pair_capture_failure_halts_both_apis_without_manifest(
+def test_pair_capture_failure_halts_complete_runtime_set_without_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8018,7 +8209,7 @@ def test_pair_capture_failure_halts_both_apis_without_manifest(
 
     assert isinstance(caught.value.original_error, DeploymentContractError)
     assert caught.value.restoration["state"] == "halted_requires_operator"
-    assert ["stop", "pinvi-api", "kor-travel-map-api"] in commands
+    assert _C6C_STOP_COMMAND in commands
     remove_command = next(command for command in commands if command[0] == "rm")
     assert "kor-travel-map-api" in remove_command
     assert "pinvi-api" not in remove_command
@@ -8067,7 +8258,8 @@ def test_bootstrap_cleanup_removes_only_created_services(
     restore_stop = next(
         command
         for command in commands
-        if command[0] == "stop" and command != ["stop", "pinvi-api", "kor-travel-map-api"]
+        if command[0] == "stop"
+        and command != _C6C_STOP_COMMAND
     )
     assert set(remove[3:]) == {"kor-travel-map-api", "pinvi-api", "new-service"}
     assert restore_stop == ["stop", "rustfs"]
@@ -8111,7 +8303,7 @@ def test_production_bootstrap_cleanup_uses_real_guarded_compose_path(
     assert result["deployment_state"] == "halted_requires_operator"
     compose_args = [call.args[0] for call in run.call_args_list]
     assert any(
-        command[-3:] == ["stop", "pinvi-api", "kor-travel-map-api"]
+        command[-len(_C6C_STOP_COMMAND) :] == _C6C_STOP_COMMAND
         for command in compose_args
     )
     assert any(
@@ -8162,7 +8354,7 @@ def test_bootstrap_cleanup_exception_returns_controlled_operator_state(
     assert "cleanup raised unexpectedly" in str(result["stderr"])
 
 
-@pytest.mark.parametrize("legacy_version", [1, 2])
+@pytest.mark.parametrize("legacy_version", [1, 2, 3])
 def test_pair_capture_rejects_manifest_without_source_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -8207,7 +8399,7 @@ def test_pair_capture_rejects_manifest_without_source_provenance(
     assert manifest_path.read_bytes() == original_bytes
 
 
-def test_pair_capture_never_overwrites_existing_v3(
+def test_pair_capture_never_overwrites_existing_v4(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8236,7 +8428,7 @@ def test_pair_capture_never_overwrites_existing_v3(
     run = Mock()
     monkeypatch.setattr(service, "run", run)
 
-    with pytest.raises(DeploymentContractError, match="v3 already exists"):
+    with pytest.raises(DeploymentContractError, match="v4 already exists"):
         service.capture_compatible_pinvi_pair(verified_compatible=True)
 
     run.assert_not_called()
@@ -8315,19 +8507,25 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
     assert result["image_provenance"]["map"]["source_revision"] == (
         _MAP_SOURCE_REVISION
     )
-    assert calls[0][0] == ["stop", "pinvi-api", "kor-travel-map-api"]
+    assert calls[0][0] == _C6C_STOP_COMMAND
     map_args, map_kwargs = calls[1]
-    pinvi_args, pinvi_kwargs = calls[2]
+    dependent_args, dependent_kwargs = calls[2]
+    pinvi_args, pinvi_kwargs = calls[3]
     assert map_args[-1] == "kor-travel-map-api"
+    assert dependent_args[-3:] == [
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+    ]
     assert pinvi_args[-1] == "pinvi-api"
-    assert events == ["up:kor-travel-map-api", "map_smoke", "up:pinvi-api"]
-    assert map_kwargs["environment"] == {
-        "KOR_TRAVEL_MAP_API_IMAGE": _MAP_IMAGE_ID,
-        "KOR_TRAVEL_MAP_GIT_COMMIT": _MAP_SOURCE_REVISION,
-        "PINVI_API_IMAGE": _PINVI_IMAGE_ID,
-        "PINVI_SOURCE_REVISION": _PINVI_SOURCE_REVISION,
-        "PINVI_BUILD_ENVIRONMENT": "production",
-    }
+    assert events == [
+        "up:kor-travel-map-api",
+        "map_smoke",
+        "up:kor-travel-map-dagster-daemon",
+        "up:pinvi-api",
+    ]
+    assert map_kwargs["environment"] == service._pair_image_environment(rollback_pair)
+    assert dependent_kwargs["environment"] == map_kwargs["environment"]
     assert pinvi_kwargs["environment"] == map_kwargs["environment"]
     assert not any(
         call[0][0] == "up"
@@ -8351,7 +8549,7 @@ def test_production_preflight_rejects_running_pair_drift(
     monkeypatch.setattr(
         service,
         "_inspect_current_pair",
-        lambda _config: new_image_pair(
+        lambda _config: _new_image_pair(
             _ACTIVE_MAP_IMAGE_ID,
             _ACTIVE_PINVI_IMAGE_ID,
             _CONTRACT_GENERATION,
@@ -8380,7 +8578,7 @@ def test_pinvi_smoke_failure_restores_start_pair_before_remaining_apps(
     manifest = _manifest()
     transaction = replace(
         _frozen_external_transaction(tmp_path),
-        manifest_path=str(tmp_path / "compatible-pair-v3.json"),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
     )
     active_recovery_transaction = replace(transaction)
     commands: list[list[str]] = []
@@ -8446,12 +8644,18 @@ def test_pinvi_smoke_failure_restores_start_pair_before_remaining_apps(
     untouched = {
         "pinvi-web",
         "pinvi-dagster",
-        "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
         "kor-travel-geo-postgres",
     }
     assert not any(untouched.intersection(command) for command in commands)
+    assert any(
+        command[-3:]
+        == [
+            "kor-travel-map-ui",
+            "kor-travel-map-dagster",
+            "kor-travel-map-dagster-daemon",
+        ]
+        for command in commands
+    )
     write_manifest.assert_not_called()
 
 
@@ -8461,7 +8665,7 @@ def test_recovery_restores_start_pair_and_runs_full_contract_verification(
     service = ComposeService()
     _allow_running_image_provenance(service, monkeypatch)
     config = _production_config()
-    active_at_start = new_image_pair(
+    active_at_start = _new_image_pair(
         _ACTIVE_MAP_IMAGE_ID,
         _ACTIVE_PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
@@ -8517,13 +8721,18 @@ def test_recovery_restores_start_pair_and_runs_full_contract_verification(
     assert verify.call_args.kwargs["cancel_probe_state"] is None
     assert verify.call_args.kwargs["transaction"] is transaction
     assert verify.call_args.kwargs["frozen_recovery"] is True
-    assert commands[0] == ["stop", "pinvi-api", "kor-travel-map-api"]
+    assert commands[0] == _C6C_STOP_COMMAND
     assert commands[1][-1] == "kor-travel-map-api"
-    assert commands[2][-1] == "pinvi-api"
+    assert commands[2][-3:] == [
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+    ]
+    assert commands[3][-1] == "pinvi-api"
     map_smoke.assert_called_once_with(config)
 
 
-def test_recovery_validation_failure_halts_both_apis(
+def test_recovery_validation_failure_halts_complete_runtime_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
@@ -8543,7 +8752,7 @@ def test_recovery_validation_failure_halts_both_apis(
         Mock(side_effect=DeploymentContractError("active contract unavailable")),
     )
     transaction = Mock(spec=ComposeTransactionSnapshot)
-    run = Mock(return_value=_success(["stop", "pinvi-api", "kor-travel-map-api"]))
+    run = Mock(return_value=_success(_C6C_STOP_COMMAND))
     monkeypatch.setattr(service, "_run_frozen_recovery", run)
 
     service._recover_previous_pair(
@@ -8555,7 +8764,7 @@ def test_recovery_validation_failure_halts_both_apis(
     )
 
     assert result["deployment_state"] == "halted_requires_operator"
-    assert run.call_args.args[0] == ["stop", "pinvi-api", "kor-travel-map-api"]
+    assert run.call_args.args[0] == _C6C_STOP_COMMAND
 
 
 def test_rollback_validates_active_and_rollback_images_before_first_stop(
@@ -8565,14 +8774,14 @@ def test_rollback_validates_active_and_rollback_images_before_first_stop(
     _allow_manager_mutation(monkeypatch)
     monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
     rollback = _manifest().rollback
-    active = new_image_pair(
+    active = _new_image_pair(
         _ACTIVE_MAP_IMAGE_ID,
         _ACTIVE_PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
         map_source_revision=_MAP_SOURCE_REVISION,
         pinvi_source_revision=_PINVI_SOURCE_REVISION,
     )
-    manifest = CompatiblePairManifest(version=3, rollback=rollback, active=active)
+    manifest = CompatiblePairManifest(version=4, rollback=rollback, active=active)
     manifest_path = tmp_path / "pair.json"
     write_pair_manifest(str(manifest_path), manifest)
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
@@ -8642,14 +8851,14 @@ def test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair(
     _allow_manager_mutation(monkeypatch)
     monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
     rollback = _manifest().rollback
-    active = new_image_pair(
+    active = _new_image_pair(
         _ACTIVE_MAP_IMAGE_ID,
         _ACTIVE_PINVI_IMAGE_ID,
         _CONTRACT_GENERATION,
         map_source_revision=_MAP_SOURCE_REVISION,
         pinvi_source_revision=_PINVI_SOURCE_REVISION,
     )
-    manifest = CompatiblePairManifest(version=3, rollback=rollback, active=active)
+    manifest = CompatiblePairManifest(version=4, rollback=rollback, active=active)
     manifest_path = tmp_path / "pair.json"
     write_pair_manifest(str(manifest_path), manifest)
     monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))

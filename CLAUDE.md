@@ -7,9 +7,10 @@
 PinVi 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
 
-C7 C6c image provenance는 PR #58 squash merge로 완료됐다. production compatible-pair는
-Map·PinVi exact clean `HEAD`의 Git archive build context, OCI revision label, manifest v3의
-image ID↔source revision을 하나의 fail-closed 계약으로 검증한다.
+C7 C6c image provenance는 PR #61 보강 중이다. production compatible-pair는 Map·PinVi exact
+clean `HEAD`의 Git archive build context와 OCI revision label을 검증하고, manifest v4에 Map
+API·UI·Dagster web·daemon 네 immutable image ID와 공통 revision, PinVi API image ID와
+revision을 하나의 fail-closed runtime-set 계약으로 기록한다.
 
 - **Backend**: Python FastAPI 기반 (`backend/`)
 - **Frontend**: Next.js 14+ TypeScript 기반 (`frontend/`)

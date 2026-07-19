@@ -193,8 +193,8 @@ graph TD
    - public URL/CORS: dev 기본값은 `http://127.0.0.1:12801`/로컬 Web origin이며, prod에서는 gitignore된 `.env`의 `PINVI_PUBLIC_API_URL`과 `PINVI_CORS_ALLOWED_ORIGINS`로 공개 API 주소와 Web origin을 주입한다.
    - C6c production: manager mode와 PinVi mode를 모두 `production`, Map의
      `KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED`를 `true`로 명시한다. production의 일반
-     `ensure`/container action·config·reset/direct Compose 경로는 두 API를 변경할 수 없고,
-     host-wide lock을 잡는 `pinvi-pair deploy`만 generation이 같은 Map+PinVi pair를 단계 기동한다.
+     `ensure`/container action·config·reset/direct Compose 경로는 다섯 runtime을 변경할 수 없고,
+     host-wide lock을 잡는 `pinvi-pair deploy`만 generation이 같은 Map+PinVi runtime set을 단계 기동한다.
      transaction은 Map API·UI·Dagster web·Dagster daemon과 PinVi API를 하나의 immutable
      runtime set으로 다룬다. 다섯 service를 같은 Git snapshot build에서 먼저 완성하고,
      Map API smoke 뒤 나머지 Map runtime과 PinVi API를 exact image ID로 재생성한 다음

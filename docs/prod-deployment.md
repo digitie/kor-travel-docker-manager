@@ -156,9 +156,10 @@ n150 read-only preflight에서는 일반 scalar의 username 문자열 일치를 
 
 최초 설치에서 manifest가 없으면 capture가 같은 host lock 안에서 base dependency, Map API,
 Map UI/Dagster, PinVi API, PinVi Web/Dagster 순으로 전체 토폴로지를 단계 bootstrap한다.
-merged compose, canonical API, UI auth, runtime secret 격리를 모두 통과한 뒤 최초 v3를
-원자 기록한다. 실패하면 두 API를 중지하고 이 capture가 새로 만든 container만
-제거한다. provenance가 없는 v1/v2와 알 수 없는 manifest는 덮어쓰지 않고 거부한다.
+merged compose, canonical runtime image, UI auth, runtime secret 격리를 모두 통과한 뒤 최초 v4를
+원자 기록한다. 실패하면 Map runtime 네 service와 PinVi API를 중지하고 이 capture가 새로 만든
+container만 제거한다. Map dependent provenance가 없는 v1/v2/v3와 알 수 없는 manifest는
+덮어쓰지 않고 거부한다.
 
 ```bash
 ktdctl pinvi-pair capture --verified-compatible --build
@@ -173,11 +174,11 @@ build context가 exact Git worktree root이고 clean인지 검증한다. manager
 mutation 전에 중단한다.
 
 두 번째 명령은 host-wide lock 안에서
-현재 active pair와 비-API 필수 서비스의 running/healthy를 확인한 다음 현재 Map UI container를 inspect해
+현재 active set과 필수 서비스의 running/healthy를 확인한 다음 현재 Map UI container를 inspect해
 username·hash·session secret이 frozen environment와 정확히 같은지 확인하고, login→보호 화면→logout→
-재차단 lifecycle을 통과한 뒤에만 기존 PinVi API를 처음 중지한다. 이후 Map API, signed 권한
-smoke, PinVi API, UI auth를 단계 실행한다. build/recreate는 `--no-deps`로 두 API에만 적용한다.
-두 candidate image는 API `up`과 분리된 Compose build 단계에서 먼저 만들고, 기존 container를
+재차단 lifecycle을 통과한 뒤에만 다섯 runtime을 함께 중지한다. 이후 Map API, signed 권한
+smoke, Map UI·Dagster web·daemon, PinVi API, UI auth를 단계 실행한다. build/recreate는 `--no-deps`로
+다섯 runtime에 적용한다. 다섯 candidate image는 runtime `up`과 분리된 Compose build 단계에서 먼저 만들고, 기존 container를
 중지·재생성하기 전에 immutable image ID와 `org.opencontainers.image.revision`을 파생한
 `HEAD`와 비교한다. build context는 live checkout이 아니라 각 `HEAD`의 일회성 Git archive라서
 build 도중 변경·원복한 파일과 ignored 파일은 image input이 될 수 없다. PinVi는
@@ -189,7 +190,7 @@ read 200 envelope·무토큰 401·존재하지 않는 import-job cancel 404·can
 409 `PIPELINE_CANCELLATION_IN_PROGRESS`, 502 `DAGSTER_TERMINATE_FAILED`,
 503 `DAGSTER_UNAVAILABLE`와 canonical details/retryability/양의 `Retry-After`만 허용하고 429·generic 오류는
 거부한다. details의 canonical import root ID도 `KTDM_C6C_CANCEL_PROBE_JOB_ID`와 같아야 한다. 모든 중간 실패는 시작 시점 active pair를
-복구해 전체 계약을 재검사하며, 복구도 실패하면 두 API를 중지하고 operator 조치를 요구한다. 최종
+복구해 전체 계약을 재검사하며, 복구도 실패하면 다섯 runtime을 중지하고 operator 조치를 요구한다. 최종
 readiness는 `ps --all` 존재 여부가 아니라 모든 필수 service의 running/healthy 상태를 요구한다. runtime
 inspect는 실제 값을 출력하지 않고 `.Config` 전체의 안전 scalar를 순회해 ops token이 두 API의 정확한
 Env path에만, Map UI username Env 이름과 exact 값이 Map UI의 정확한 path에 있는지 검사한다. hash·session
@@ -220,14 +221,15 @@ mismatch member를 함께 보존할 수 있다. `status`별 `finished_at`/`error
 flag, engine timestamp lifecycle이 DB 정본과 다르면 배포를 중단한다. `Retry-After`가 존재하지만 garbage·0·
 음수이거나 ASCII decimal 1..300 범위를 벗어난 경우도 “헤더 없음”으로 취급하지 않고 실패한다. `+5`,
 앞뒤 공백, Unicode digit, 301도 거부한다. Compose `kill`의 signal option
-값은 service에서 제외하며 service-less/project-wide 또는 unknown option scope는 두 API를 포함한다고 본다.
+값은 service에서 제외하며 service-less/project-wide 또는 unknown option scope는 다섯 runtime을 포함한다고 본다.
 `build --pull`, `run --rm`, `rm -s/--stop`은 command별 boolean flag로 해석한다. `compose config`의
 `-o/--output` 분리·inline·누락 형식은 모두 write-capable mutation으로 분류해 host lock과 전용 capability를
 요구하며, `--format json` 등 명시한 read-only option만 lock 없이 허용한다. bootstrap created cleanup이나
 stopped-service 복원에서 예외가 나면 배포 응답은 operator-required 상태로 수렴한다.
 
 일반 non-API config update/reset/create도 파일 쓰기와 recreate 전에 candidate compose 전체를 검사한다.
-두 API의 exact ops interpolation 외 위치에서 보호 이름·현재 값을 environment, label, command, build arg로
+Map runtime 네 service와 PinVi API의 exact build mapping 외 위치에서 보호 이름·현재 값을
+environment, label, command, build arg로
 참조하거나 non-root `env_file`에 alias로 넣으면 typed 409로 거부하고 파일/container 불변을 보장한다.
 
 rollback은 단일 image/tag를 받지 않으며 manifest의 immutable pair만 복원한다.
@@ -238,13 +240,13 @@ ktdctl pinvi-pair rollback
 
 기본 manifest와 mode 0600 lock은
 `~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`의 고정
-`compatible-pair-v3.json`/`deployment.lock`에 함께 저장한다. production은
+`compatible-pair-v4.json`/`deployment.lock`에 함께 저장한다. production은
 root·manifest·lock path override를
 모두 거부하므로 동일 Compose project가 다른 host lock을 선택할 수 없다. manifest version은 정확한 integer,
-active/rollback은 각각 `map_image_id`, `map_source_revision`, `pinvi_image_id`,
-`pinvi_source_revision`, `contract_generation`, `recorded_at` exact 6개 필드만 갖는다.
+active/rollback은 각각 Map runtime 네 image ID, `map_source_revision`, `pinvi_image_id`,
+`pinvi_source_revision`, `contract_generation`, `recorded_at` exact 9개 필드만 갖는다.
 `recorded_at`은 offset ISO 8601이어야 하며 parent fsync 실패 시 이전 snapshot을 원자 복원한다. manifest와
 capture/deploy/rollback은 같은 filesystem lock과 contract generation을 사용한다.
-rollback은 두 image environment override의 canonical single-file contract를 stop 전에 검증하고 Map 복원·signed smoke 뒤
-PinVi를 복원한다. 이후 Map/PinVi canonical 조회,
+rollback은 다섯 image environment override의 canonical single-file contract를 stop 전에 검증하고
+Map API 복원·signed smoke와 Map dependent exact revision 검증 뒤 PinVi를 복원한다. 이후 Map/PinVi canonical 조회,
 Map UI 로그인·보호 화면·로그아웃, PinVi Web login shell과 runtime 격리가 모두 통과해야 commit한다.

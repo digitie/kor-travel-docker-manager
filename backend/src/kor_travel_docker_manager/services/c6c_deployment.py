@@ -28,7 +28,21 @@ from dotenv import dotenv_values
 
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
+_MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
+_MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _PINVI_API_SERVICE = "pinvi-api"
+_MAP_RUNTIME_SERVICES = (
+    _MAP_API_SERVICE,
+    _MAP_UI_SERVICE,
+    _MAP_DAGSTER_SERVICE,
+    _MAP_DAGSTER_DAEMON_SERVICE,
+)
+_MAP_RUNTIME_CONTAINERS = {
+    _MAP_API_SERVICE: "kor-travel-map-api-latest",
+    _MAP_UI_SERVICE: "kor-travel-map-ui-latest",
+    _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
+    _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
+}
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
@@ -124,11 +138,11 @@ _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
         _MAP_UI_SESSION_SECRET_ENV,
     }
 )
-_C6C_API_IDENTIFIERS = frozenset(
+_C6C_RUNTIME_IDENTIFIERS = frozenset(
     {
-        _MAP_API_SERVICE,
+        *_MAP_RUNTIME_SERVICES,
+        *_MAP_RUNTIME_CONTAINERS.values(),
         _PINVI_API_SERVICE,
-        "kor-travel-map-api-latest",
         "pinvi-api-latest",
     }
 )
@@ -230,7 +244,7 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     ),
 }
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
-_PAIR_MANIFEST_VERSION = 3
+_PAIR_MANIFEST_VERSION = 4
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
@@ -345,6 +359,9 @@ class C6cDeploymentConfig:
 @dataclass(frozen=True)
 class CompatibleImagePair:
     map_image_id: str
+    map_ui_image_id: str
+    map_dagster_image_id: str
+    map_dagster_daemon_image_id: str
     map_source_revision: str
     pinvi_image_id: str
     pinvi_source_revision: str
@@ -415,10 +432,10 @@ def assert_c6c_mutation_allowed(
     environment: Mapping[str, str] | None = None,
     capability: object | None = None,
 ) -> None:
-    """Map/PinVi API mutation은 production compatible-pair 경로만 허용한다."""
+    """Map runtime/PinVi API mutation은 production compatible-pair 경로만 허용한다."""
 
     normalized = {str(identifier).strip() for identifier in identifiers}
-    if not normalized.intersection(_C6C_API_IDENTIFIERS):
+    if not normalized.intersection(_C6C_RUNTIME_IDENTIFIERS):
         return
     if environment is None:
         if env_path is None:
@@ -430,7 +447,7 @@ def assert_c6c_mutation_allowed(
     mode = _validate_mutation_environment(values)
     if mode == "production" and capability is not _COMPATIBLE_PAIR_MUTATION_CAPABILITY:
         raise DeploymentContractError(
-            "production Map/PinVi API mutation requires the compatible-pair workflow"
+            "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
         )
 
 
@@ -452,11 +469,11 @@ def assert_compose_mutation_allowed(
     )
     if (
         mode == "production"
-        and normalized.intersection(_C6C_API_IDENTIFIERS)
+        and normalized.intersection(_C6C_RUNTIME_IDENTIFIERS)
         and capability is not _COMPATIBLE_PAIR_MUTATION_CAPABILITY
     ):
         raise DeploymentContractError(
-            "production Map/PinVi API mutation requires the compatible-pair workflow"
+            "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
         )
     if (
         mode == "production"
@@ -590,7 +607,7 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
             "production C6c manifest and global lock paths are fixed"
         )
     manifest = _canonical_absolute_path(
-        manifest_override or str(state_dir / "compatible-pair-v3.json"),
+        manifest_override or str(state_dir / "compatible-pair-v4.json"),
         "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
     )
     lock = Path(c6c_global_mutation_lock_path())
@@ -1190,6 +1207,9 @@ def validate_resolved_compose_image_pair(
         raise DeploymentContractError("resolved compose config has no services mapping")
     expected_images = {
         _MAP_API_SERVICE: pair.map_image_id,
+        _MAP_UI_SERVICE: pair.map_ui_image_id,
+        _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
+        _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
         _PINVI_API_SERVICE: pair.pinvi_image_id,
     }
     for service_name, expected_image in expected_images.items():
@@ -1197,6 +1217,15 @@ def validate_resolved_compose_image_pair(
         if service.get("image") != expected_image:
             raise DeploymentContractError(
                 f"resolved compose immutable image does not match {service_name} manifest"
+            )
+        expected_container = (
+            _MAP_RUNTIME_CONTAINERS.get(service_name)
+            if service_name in _MAP_RUNTIME_CONTAINERS
+            else config.pinvi_container
+        )
+        if service.get("container_name") != expected_container:
+            raise DeploymentContractError(
+                f"resolved compose container identity is not canonical for {service_name}"
             )
     validate_resolved_c6c_build_provenance(
         resolved,
@@ -1213,13 +1242,22 @@ def validate_resolved_c6c_build_provenance(
     *,
     expected_build_contexts: Mapping[str, str] | None = None,
 ) -> None:
-    """production API build arg가 clean checkout 파생값과 정확히 같은지 검사한다."""
+    """production runtime build 입력이 clean checkout 파생값과 정확히 같은지 검사한다."""
 
     services = resolved.get("services")
     if not isinstance(services, Mapping):
         raise DeploymentContractError("resolved compose config has no services mapping")
-    expected_args = {
+    expected_provenance_args = {
         _MAP_API_SERVICE: {
+            "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
+        },
+        _MAP_UI_SERVICE: {
+            "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
+        },
+        _MAP_DAGSTER_SERVICE: {
+            "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
+        },
+        _MAP_DAGSTER_DAEMON_SERVICE: {
             "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
         },
         _PINVI_API_SERVICE: {
@@ -1227,11 +1265,26 @@ def validate_resolved_c6c_build_provenance(
             "PINVI_BUILD_ENVIRONMENT": "production",
         },
     }
+    expected_arg_names = {
+        service_name: set(args)
+        for service_name, args in expected_provenance_args.items()
+    }
+    expected_arg_names[_MAP_UI_SERVICE].update(
+        {
+            "NEXT_PUBLIC_KOR_TRAVEL_MAP_API",
+            "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL",
+            "NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL",
+            "NEXT_PUBLIC_VWORLD_API_KEY",
+        }
+    )
     expected_dockerfiles = {
         _MAP_API_SERVICE: "docker/api.Dockerfile",
+        _MAP_UI_SERVICE: "docker/frontend.Dockerfile",
+        _MAP_DAGSTER_SERVICE: "docker/dagster.Dockerfile",
+        _MAP_DAGSTER_DAEMON_SERVICE: "docker/dagster.Dockerfile",
         _PINVI_API_SERVICE: "apps/api/Dockerfile",
     }
-    for service_name, service_expected_args in expected_args.items():
+    for service_name, service_expected_args in expected_provenance_args.items():
         service = _service_mapping(services, service_name)
         build = service.get("build")
         if not isinstance(build, Mapping):
@@ -1243,7 +1296,7 @@ def validate_resolved_c6c_build_provenance(
                 f"resolved compose {service_name} build inputs are not canonical"
             )
         args = build.get("args")
-        if not isinstance(args, Mapping) or set(args) != set(service_expected_args):
+        if not isinstance(args, Mapping) or set(args) != expected_arg_names[service_name]:
             raise DeploymentContractError(
                 f"resolved compose {service_name} provenance build args are invalid"
             )
@@ -3586,10 +3639,16 @@ def new_image_pair(
     pinvi_image_id: str,
     contract_generation: str,
     *,
+    map_ui_image_id: str,
+    map_dagster_image_id: str,
+    map_dagster_daemon_image_id: str,
     map_source_revision: str,
     pinvi_source_revision: str,
 ) -> CompatibleImagePair:
     _validate_image_id(map_image_id, "Map")
+    _validate_image_id(map_ui_image_id, "Map UI")
+    _validate_image_id(map_dagster_image_id, "Map Dagster")
+    _validate_image_id(map_dagster_daemon_image_id, "Map Dagster daemon")
     _validate_image_id(pinvi_image_id, "PinVi")
     _validate_source_revision(map_source_revision, "Map")
     _validate_source_revision(pinvi_source_revision, "PinVi")
@@ -3599,6 +3658,9 @@ def new_image_pair(
         raise DeploymentContractError("compatible pair contract generation is invalid")
     return CompatibleImagePair(
         map_image_id=map_image_id,
+        map_ui_image_id=map_ui_image_id,
+        map_dagster_image_id=map_dagster_image_id,
+        map_dagster_daemon_image_id=map_dagster_daemon_image_id,
         map_source_revision=map_source_revision,
         pinvi_image_id=pinvi_image_id,
         pinvi_source_revision=pinvi_source_revision,
@@ -3624,6 +3686,9 @@ def load_pair_manifest(path: str) -> CompatiblePairManifest:
             raise TypeError("manifest version must be an exact integer")
         expected_pair_keys = {
             "map_image_id",
+            "map_ui_image_id",
+            "map_dagster_image_id",
+            "map_dagster_daemon_image_id",
             "map_source_revision",
             "pinvi_image_id",
             "pinvi_source_revision",
@@ -3649,10 +3714,18 @@ def load_pair_manifest(path: str) -> CompatiblePairManifest:
 
 
 def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
-    """manifest가 없는 환경에서만 초기 v3 bootstrap을 허용한다."""
+    """manifest가 없는 환경에서만 초기 v4 bootstrap을 허용한다."""
 
     manifest_path = Path(path)
     if not manifest_path.exists():
+        legacy_v3_path = manifest_path.with_name("compatible-pair-v3.json")
+        if (
+            manifest_path.name == "compatible-pair-v4.json"
+            and legacy_v3_path.exists()
+        ):
+            raise DeploymentContractError(
+                "legacy compatible pair manifest has no complete Map runtime provenance"
+            )
         return
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -3665,7 +3738,7 @@ def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
         ) from exc
     if version == _PAIR_MANIFEST_VERSION:
         raise DeploymentContractError(
-            "compatible pair manifest v3 already exists; use deploy or rollback"
+            "compatible pair manifest v4 already exists; use deploy or rollback"
         )
     raise DeploymentContractError(
         "legacy compatible pair manifest has no source provenance"
@@ -3777,6 +3850,9 @@ def _validate_pair_manifest_contract(manifest: CompatiblePairManifest) -> None:
         raise DeploymentContractError("compatible pair manifest version is unsupported")
     for pair in (manifest.rollback, manifest.active):
         _validate_image_id(pair.map_image_id, "Map")
+        _validate_image_id(pair.map_ui_image_id, "Map UI")
+        _validate_image_id(pair.map_dagster_image_id, "Map Dagster")
+        _validate_image_id(pair.map_dagster_daemon_image_id, "Map Dagster daemon")
         _validate_image_id(pair.pinvi_image_id, "PinVi")
         _validate_source_revision(pair.map_source_revision, "Map")
         _validate_source_revision(pair.pinvi_source_revision, "PinVi")
@@ -3796,6 +3872,10 @@ def manifest_with_active_pair(
 ) -> CompatiblePairManifest:
     same_active_identity = (
         active.map_image_id == manifest.active.map_image_id
+        and active.map_ui_image_id == manifest.active.map_ui_image_id
+        and active.map_dagster_image_id == manifest.active.map_dagster_image_id
+        and active.map_dagster_daemon_image_id
+        == manifest.active.map_dagster_daemon_image_id
         and active.map_source_revision == manifest.active.map_source_revision
         and active.pinvi_image_id == manifest.active.pinvi_image_id
         and active.pinvi_source_revision == manifest.active.pinvi_source_revision
