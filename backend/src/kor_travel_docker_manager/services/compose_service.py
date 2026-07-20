@@ -68,6 +68,12 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_runtime_secret_isolation,
     write_pair_manifest,
 )
+from kor_travel_docker_manager.services.c6c_image_retention import (
+    ensure_pair_references,
+    reconcile_pair_references,
+    require_empty_retention_namespace,
+    validate_retention_namespace_is_reserved,
+)
 from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
@@ -3001,6 +3007,15 @@ class ComposeService:
             "stderr": "",
         }
 
+        retention_preflight = reconcile_pair_references(
+            (manifest.active, manifest.rollback),
+            cwd=get_project_root(),
+        )
+        result["retention_preflight"] = {
+            "ensured": retention_preflight.ensured,
+            "removed": retention_preflight.removed,
+        }
+
         candidate_pair, prebuild_result = self._prepare_c6c_candidate_pair(
             config,
             build=build,
@@ -3018,6 +3033,26 @@ class ComposeService:
             candidate_pair
         )
 
+        try:
+            candidate_retention = ensure_pair_references(
+                (candidate_pair,),
+                cwd=get_project_root(),
+            )
+        except Exception:
+            try:
+                reconcile_pair_references(
+                    (manifest.active, manifest.rollback),
+                    cwd=get_project_root(),
+                )
+            except DeploymentContractError:
+                pass
+            raise
+        result["candidate_retention"] = {
+            "ensured": candidate_retention.ensured,
+        }
+
+        manifest_commit_started = False
+        updated_manifest: CompatiblePairManifest | None = None
         try:
             self._revalidate_c6c_build_provenance(
                 build_provenance,
@@ -3042,12 +3077,9 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible-pair transaction has no manifest path"
                 )
-            write_pair_manifest(
-                transaction.manifest_path,
-                manifest_with_active_pair(manifest, candidate_pair),
-            )
-            result["deployment_state"] = "active_manifest_committed"
-            return result
+            updated_manifest = manifest_with_active_pair(manifest, candidate_pair)
+            manifest_commit_started = True
+            write_pair_manifest(transaction.manifest_path, updated_manifest)
         except Exception as exc:
             self._fail_result(
                 result,
@@ -3063,6 +3095,20 @@ class ComposeService:
                 cancel_probe_state=cancel_probe_state,
                 transaction=active_recovery_transaction,
             )
+            if bool(recovery.get("success")) and not manifest_commit_started:
+                try:
+                    cleanup = reconcile_pair_references(
+                        (manifest.active, manifest.rollback),
+                        cwd=get_project_root(),
+                    )
+                    recovery["retention_cleanup"] = {
+                        "success": True,
+                        "removed": cleanup.removed,
+                    }
+                except DeploymentContractError:
+                    recovery["retention_cleanup"] = {
+                        "success": False,
+                    }
             raise ComposePostMutationContractError(
                 exc,
                 recovery_attempted=True,
@@ -3074,6 +3120,29 @@ class ComposeService:
                 ),
                 restoration=recovery,
             ) from exc
+
+        assert updated_manifest is not None
+        try:
+            retention_cleanup = reconcile_pair_references(
+                (updated_manifest.rollback,),
+                cwd=get_project_root(),
+            )
+        except DeploymentContractError:
+            result["deployment_state"] = (
+                "active_manifest_committed_retention_cleanup_pending"
+            )
+            result["retention_cleanup"] = {"success": False}
+            result["stderr"] += (
+                "compatible pair retention cleanup is pending; "
+                "the next mutation will fail closed\n"
+            )
+            return result
+        result["retention_cleanup"] = {
+            "success": True,
+            "removed": retention_cleanup.removed,
+        }
+        result["deployment_state"] = "active_manifest_committed"
+        return result
 
     def _production_preflight(
         self,
@@ -3428,6 +3497,7 @@ class ComposeService:
                 external_input_snapshot=transaction.external_inputs,
             )
             resolved = validation.resolved
+        validate_retention_namespace_is_reserved(resolved)
         if expected_pair is None:
             validate_resolved_compose_secret_isolation(resolved, config)
         else:
@@ -3929,6 +3999,7 @@ class ComposeService:
                     "compatible-pair transaction has no manifest path"
                 )
             assert_pair_manifest_bootstrap_allowed(manifest_path)
+            require_empty_retention_namespace(cwd=get_project_root())
             load_or_create_map_production_env_migration(
                 manifest_path,
                 baseline_manifest=None,
@@ -3985,7 +4056,23 @@ class ComposeService:
             result["candidate_image_provenance"] = self._pair_provenance_payload(
                 candidate_pair
             )
+            try:
+                candidate_retention = ensure_pair_references(
+                    (candidate_pair,),
+                    cwd=get_project_root(),
+                )
+            except Exception:
+                try:
+                    reconcile_pair_references((), cwd=get_project_root())
+                except DeploymentContractError:
+                    pass
+                raise
+            result["candidate_retention"] = {
+                "ensured": candidate_retention.ensured,
+            }
             mutation_attempted = False
+            manifest_commit_started = False
+            updated_manifest: CompatiblePairManifest | None = None
             try:
                 for target_name in base_target_names:
                     target_config = get_target(target_name)
@@ -4147,17 +4234,21 @@ class ComposeService:
                     cancel_probe_state=cancel_probe_state,
                     transaction=transaction,
                 )
-                write_pair_manifest(manifest_path, initial_pair_manifest(pair))
+                updated_manifest = initial_pair_manifest(pair)
+                manifest_commit_started = True
+                write_pair_manifest(manifest_path, updated_manifest)
                 result["verification"] = verification
                 result["contract_generation"] = pair.contract_generation
                 result["image_provenance"] = self._pair_provenance_payload(pair)
-                result["deployment_state"] = "initial_v4_manifest_committed"
                 result["stdout"] += (
                     f"compatible Map+PinVi image pair bootstrapped: {manifest_path}\n"
                 )
-                return result
             except Exception as exc:
                 if not mutation_attempted:
+                    try:
+                        reconcile_pair_references((), cwd=get_project_root())
+                    except DeploymentContractError:
+                        pass
                     raise
                 self._fail_result(
                     result,
@@ -4172,6 +4263,15 @@ class ComposeService:
                     touched_services,
                     transaction=transaction,
                 )
+                if bool(recovery.get("success")) and not manifest_commit_started:
+                    try:
+                        cleanup = reconcile_pair_references((), cwd=get_project_root())
+                        recovery["retention_cleanup"] = {
+                            "success": True,
+                            "removed": cleanup.removed,
+                        }
+                    except DeploymentContractError:
+                        recovery["retention_cleanup"] = {"success": False}
                 raise ComposePostMutationContractError(
                     exc,
                     recovery_attempted=True,
@@ -4183,6 +4283,29 @@ class ComposeService:
                     ),
                     restoration=recovery,
                 ) from exc
+
+            assert updated_manifest is not None
+            try:
+                retention_cleanup = reconcile_pair_references(
+                    (updated_manifest.rollback,),
+                    cwd=get_project_root(),
+                )
+            except DeploymentContractError:
+                result["deployment_state"] = (
+                    "initial_v4_manifest_committed_retention_cleanup_pending"
+                )
+                result["retention_cleanup"] = {"success": False}
+                result["stderr"] += (
+                    "compatible pair retention cleanup is pending; "
+                    "the next mutation will fail closed\n"
+                )
+                return result
+            result["retention_cleanup"] = {
+                "success": True,
+                "removed": retention_cleanup.removed,
+            }
+            result["deployment_state"] = "initial_v4_manifest_committed"
+            return result
 
     def _snapshot_service_states(
         self,
@@ -4361,7 +4484,16 @@ class ComposeService:
                 "rollback_state": "preflight_complete",
                 "preflight_ui_smoke": preflight_ui_smoke,
             }
+            retention_preflight = reconcile_pair_references(
+                (active_at_start, rollback),
+                cwd=get_project_root(),
+            )
+            result["retention_preflight"] = {
+                "ensured": retention_preflight.ensured,
+                "removed": retention_preflight.removed,
+            }
             cancel_probe_state = PinviCancelProbeState()
+            updated_manifest: CompatiblePairManifest | None = None
             try:
                 verification = self._activate_pair_sequentially(
                     result,
@@ -4374,12 +4506,8 @@ class ComposeService:
                 )
                 result["verification"] = verification
                 result["image_provenance"] = self._pair_provenance_payload(rollback)
-                write_pair_manifest(
-                    manifest_path,
-                    manifest_with_active_pair(manifest, rollback),
-                )
-                result["rollback_state"] = "active_manifest_committed"
-                return result
+                updated_manifest = manifest_with_active_pair(manifest, rollback)
+                write_pair_manifest(manifest_path, updated_manifest)
             except Exception as exc:
                 self._fail_result(
                     result,
@@ -4406,6 +4534,29 @@ class ComposeService:
                     ),
                     restoration=recovery,
                 ) from exc
+
+            assert updated_manifest is not None
+            try:
+                retention_cleanup = reconcile_pair_references(
+                    (updated_manifest.rollback,),
+                    cwd=get_project_root(),
+                )
+            except DeploymentContractError:
+                result["rollback_state"] = (
+                    "active_manifest_committed_retention_cleanup_pending"
+                )
+                result["retention_cleanup"] = {"success": False}
+                result["stderr"] += (
+                    "compatible pair retention cleanup is pending; "
+                    "the next mutation will fail closed\n"
+                )
+                return result
+            result["retention_cleanup"] = {
+                "success": True,
+                "removed": retention_cleanup.removed,
+            }
+            result["rollback_state"] = "active_manifest_committed"
+            return result
 
     def _inspect_current_pair(self, config: C6cDeploymentConfig) -> CompatibleImagePair:
         map_image_ids = {

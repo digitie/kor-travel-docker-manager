@@ -56,6 +56,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_runtime_secret_isolation,
     write_pair_manifest,
 )
+from kor_travel_docker_manager.services.c6c_image_retention import RetentionReport
 from kor_travel_docker_manager.services.c6c_deployment import (
     new_image_pair as _build_image_pair,
 )
@@ -300,6 +301,24 @@ def _write_env(path: Path, **overrides: str | None) -> None:
 def _clear_c6c_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _C6C_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _stub_c6c_image_retention(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기존 배포 테스트는 Docker local tag 대신 별도 retention 단위 테스트를 사용한다."""
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        lambda *_args, **_kwargs: RetentionReport(ensured=0, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        lambda *_args, **_kwargs: RetentionReport(ensured=0, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.require_empty_retention_namespace",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 def _set_production_guard_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -9183,9 +9202,11 @@ def test_map_ui_preflight_failure_keeps_docker_mutation_at_zero(
     run.assert_not_called()
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cleanup_fails: bool,
 ) -> None:
     service = ComposeService()
     config = _production_config()
@@ -9216,8 +9237,11 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         pair=active,
         with_prebuild_result=True,
     )
+    starting_manifest = _manifest()
     monkeypatch.setattr(
-        service, "_production_preflight", lambda _config, **_kwargs: _manifest()
+        service,
+        "_production_preflight",
+        lambda _config, **_kwargs: starting_manifest,
     )
     readiness: list[list[str]] = []
     monkeypatch.setattr(
@@ -9231,6 +9255,28 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         "_preflight_current_map_ui_auth",
         lambda _config, **_kwargs: events.append(("preflight", "map-ui"))
         or preflight_ui_smoke,
+    )
+    retention_calls: list[tuple[str, tuple[CompatibleImagePair, ...]]] = []
+
+    def reconcile_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        retention_calls.append(("reconcile", tuple(pairs)))
+        if cleanup_fails and len(
+            [call for call in retention_calls if call[0] == "reconcile"]
+        ) == 2:
+            raise DeploymentContractError("cleanup failed")
+        return RetentionReport(ensured=0, removed=0)
+
+    def ensure_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        retention_calls.append(("ensure", tuple(pairs)))
+        return RetentionReport(ensured=0, removed=0)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        reconcile_retention,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        ensure_retention,
     )
 
     def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
@@ -9291,6 +9337,13 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     )
 
     assert result["success"] is True
+    if cleanup_fails:
+        assert result["deployment_state"] == (
+            "active_manifest_committed_retention_cleanup_pending"
+        )
+        assert "next mutation will fail closed" in result["stderr"]
+    else:
+        assert result["deployment_state"] == "active_manifest_committed"
     assert result["preflight_ui_smoke"] is preflight_ui_smoke
     assert result["image_provenance"]["map"]["runtime_images"] == {
         "kor-travel-map-api": _ACTIVE_MAP_IMAGE_ID,
@@ -9315,6 +9368,11 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     assert set(explicit_services) == {*_MAP_RUNTIME_SERVICES, "pinvi-api"}
     assert readiness
     assert len(cancel_probe_states) == 1
+    assert retention_calls == [
+        ("reconcile", (starting_manifest.active, starting_manifest.rollback)),
+        ("ensure", (active,)),
+        ("reconcile", (starting_manifest.active,)),
+    ]
 
     event_names = [event[0] for event in events]
     smoke_index = event_names.index("smoke")
@@ -9704,6 +9762,21 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
         "_verify_active_contract",
         lambda *_a, **_k: {"runtime_secret_isolation": True},
     )
+    retention_calls: list[tuple[str, tuple[CompatibleImagePair, ...]]] = []
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.require_empty_retention_namespace",
+        lambda **_kwargs: retention_calls.append(("empty", ())),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        lambda pairs, **_kwargs: retention_calls.append(("ensure", tuple(pairs)))
+        or RetentionReport(ensured=5, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        lambda pairs, **_kwargs: retention_calls.append(("reconcile", tuple(pairs)))
+        or RetentionReport(ensured=0, removed=0),
+    )
     commands: list[list[str]] = []
 
     def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -9765,6 +9838,11 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
     loaded = load_pair_manifest(str(manifest_path))
     assert loaded.rollback == pair
     assert loaded.active == pair
+    assert retention_calls == [
+        ("empty", ()),
+        ("ensure", (pair,)),
+        ("reconcile", (pair,)),
+    ]
 
 
 def test_pair_capture_actual_init_exception_cleans_created_dependency(
@@ -10229,6 +10307,12 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
         lambda *_a, **_k: {"runtime_secret_isolation": True},
     )
     events: list[str] = []
+    retention_calls: list[tuple[CompatibleImagePair, ...]] = []
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        lambda pairs, **_kwargs: retention_calls.append(tuple(pairs))
+        or RetentionReport(ensured=0, removed=0),
+    )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
         lambda _config: events.append("map_smoke") or [],
@@ -10278,6 +10362,10 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
         for call in calls
     )
     assert load_pair_manifest(str(manifest_path)).active == rollback_pair
+    assert retention_calls == [
+        (manifest.active, manifest.rollback),
+        (manifest.active,),
+    ]
 
 
 def test_production_preflight_rejects_running_pair_drift(
