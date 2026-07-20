@@ -333,7 +333,7 @@
 - [x] raw source, Docker-resolved candidate, activation 뒤 runtime이 exact `true`이고 다른
       service·`env_file`·build arg·command·label·config·secret에는 이름이 없는지 C6c 보호 환경
       계약과 음성 회귀 테스트로 고정한다.
-- [x] focused 39개, C6c·Docker config 846개, backend 904개, Ruff baseline 제외, strict mypy,
+- [x] focused 42개, C6c·Docker config 849개, backend 907개, Ruff baseline 제외, strict mypy,
       canonical Compose config gate를 통과한다.
 - [ ] 단일 적대적 리뷰와 CI를 통과한다.
 - [ ] n150 compatible-pair recapture와 C7 live E2E에서 feature 관리 REST를 확인한 뒤 issue #70을 닫는다.

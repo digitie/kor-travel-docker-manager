@@ -16,8 +16,8 @@
 - 최신 main `b3bcb83`에서 독립 branch/worktree를 만들고 CodeGraph 영향도를 확인했다. 변경은 공통
   candidate 검증과 compatible-pair capture/deploy/rollback 최종 runtime 검증에 모두 도달한다.
 - canonical Compose와 공통 production literal 집합을 정렬하고 누락·`false`·API 외 유출을 raw,
-  resolved, runtime 각각의 음성 회귀로 고정했다. focused 39개, C6c·Docker config 846개, backend
-  전체 904개 테스트가 통과했다.
+  resolved, runtime 각각의 `false`·누락 음성 회귀로 고정했다. focused 42개, C6c·Docker config
+  849개, backend 전체 907개 테스트가 통과했다.
 - 변경 source strict mypy와 Ruff의 기존 `E721`/`UP038` 기준선을 제외한 변경 파일 검사가 통과했고,
   공개 placeholder만 사용한 canonical Docker Compose `config --quiet`도 통과했다.
 
