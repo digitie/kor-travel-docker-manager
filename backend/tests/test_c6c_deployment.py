@@ -6920,7 +6920,14 @@ def test_map_ui_auth_preflight_rejects_each_pre_mutation_auth_failure(
         run_map_ui_auth_preflight(_production_config())
 
 
-def test_ui_auth_smoke_requires_login_protected_logout_and_pinvi_shell() -> None:
+@pytest.mark.parametrize(
+    "form_html",
+    ["", '<form data-testid="admin-login-form"></form>'],
+    ids=["suspense-ssr-shell", "server-rendered-form"],
+)
+def test_ui_auth_smoke_requires_login_protected_logout_and_pinvi_shell(
+    form_html: str,
+) -> None:
     responses = [
         HttpProbeResponse(200, {"ok": True}, set_cookie=True),
         HttpProbeResponse(200, None),
@@ -6930,8 +6937,9 @@ def test_ui_auth_smoke_requires_login_protected_logout_and_pinvi_shell() -> None
             200,
             None,
             body_text=(
-                '<html><form data-testid="admin-login-form"></form>'
-                '<script src="/_next/static/chunks/app.js"></script></html>'
+                f"<html>{form_html}"
+                '<script src="/_next/static/chunks/app/(admin)/admin/login/'
+                'page-0e42b2cb94aee998.js"></script></html>'
             ),
             content_type="text/html; charset=utf-8",
         ),
@@ -7060,18 +7068,61 @@ def test_pinvi_provider_sync_requires_canonical_scope_and_status(
     assert c6c_deployment._validate_pinvi_provider_sync(payload) is False
 
 
-def test_ui_auth_smoke_rejects_fallback_html_200() -> None:
-    responses = [
-        HttpProbeResponse(200, {"ok": True}, set_cookie=True),
-        HttpProbeResponse(200, None),
-        HttpProbeResponse(200, {"ok": True}, set_cookie=True),
-        HttpProbeResponse(307, None, location="/login"),
+@pytest.mark.parametrize(
+    "pinvi_response",
+    [
+        HttpProbeResponse(
+            503,
+            None,
+            body_text=(
+                '<html><script src="/_next/static/chunks/app/(admin)/admin/login/'
+                'page-0e42b2cb94aee998.js"></script></html>'
+            ),
+            content_type="text/html",
+        ),
+        HttpProbeResponse(
+            200,
+            None,
+            body_text=(
+                '<html><script src="/_next/static/chunks/app/(admin)/admin/login/'
+                'page-0e42b2cb94aee998.js"></script></html>'
+            ),
+            content_type="application/json",
+        ),
+        HttpProbeResponse(200, None, body_text="", content_type="text/html"),
         HttpProbeResponse(
             200,
             None,
             body_text='<html><script src="/_next/static/fallback.js"></script></html>',
             content_type="text/html",
         ),
+        HttpProbeResponse(
+            200,
+            None,
+            body_text=(
+                '<html><script src="/_next/static/chunks/app/(admin)/admin/users/'
+                'page-0e42b2cb94aee998.js"></script></html>'
+            ),
+            content_type="text/html",
+        ),
+    ],
+    ids=[
+        "non-200",
+        "non-html",
+        "empty-body",
+        "generic-next-fallback",
+        "different-route-chunk",
+    ],
+)
+def test_ui_auth_smoke_rejects_invalid_pinvi_login_shell(
+    pinvi_response: HttpProbeResponse,
+) -> None:
+    responses = [
+        HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+        HttpProbeResponse(200, None),
+        HttpProbeResponse(200, {"ok": True}, set_cookie=True),
+        HttpProbeResponse(307, None, location="/login"),
+        pinvi_response,
     ]
     with (
         patch.object(c6c_deployment, "_session_request", side_effect=responses),
