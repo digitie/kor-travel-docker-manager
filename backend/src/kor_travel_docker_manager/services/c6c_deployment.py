@@ -64,6 +64,7 @@ _MAP_ADMIN_TRUSTED_PROXY_CIDRS_ENV = (
     "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS"
 )
 _MAP_UI_PASSWORD_ENV = "KTDM_C6C_MAP_UI_ADMIN_PASSWORD"
+_MAP_UI_PROTECTED_PATH = "/ops/datasets"
 _PINVI_ADMIN_PASSWORD_ENV = "KTDM_C6C_PINVI_ADMIN_PASSWORD"
 _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = frozenset(
     {
@@ -2707,7 +2708,7 @@ def run_map_ui_auth_preflight(
             {
                 "username": smoke.map_ui_username,
                 "password": smoke.map_ui_password,
-                "next": "/ops/providers",
+                "next": _MAP_UI_PROTECTED_PATH,
             }
         ).encode(),
         read_error_body=False,
@@ -2716,7 +2717,7 @@ def run_map_ui_auth_preflight(
         raise DeploymentContractError("C6c Map UI login smoke failed")
     protected = _session_request(
         opener,
-        f"{origin}/ops/providers",
+        f"{origin}{_MAP_UI_PROTECTED_PATH}",
         method="GET",
         headers={},
         read_error_body=False,
@@ -2734,7 +2735,7 @@ def run_map_ui_auth_preflight(
         raise DeploymentContractError("C6c Map UI logout smoke failed")
     post_logout = _session_request(
         opener,
-        f"{origin}/ops/providers",
+        f"{origin}{_MAP_UI_PROTECTED_PATH}",
         method="GET",
         headers={},
         read_error_body=False,
