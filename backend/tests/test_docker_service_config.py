@@ -159,6 +159,7 @@ def _compose_with_canonical_c6c_services(
                 ),
                 "KOR_TRAVEL_MAP_API_PROFILE": "production",
                 "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
+                "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
                 "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
                 "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
                 "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
