@@ -9487,7 +9487,11 @@ def test_candidate_retention_failure_cleans_only_to_start_manifest_before_stop(
         manifest_path=str(tmp_path / "compatible-pair-v4.json"),
     )
     manifest = _manifest()
-    candidate = _allow_candidate_pair(service, monkeypatch)
+    candidate = _allow_candidate_pair(
+        service,
+        monkeypatch,
+        pair=manifest.active,
+    )
     reconcile = Mock(return_value=RetentionReport(ensured=0, removed=0))
     run = Mock()
     monkeypatch.setattr(
@@ -9613,14 +9617,14 @@ def test_failed_map_smoke_never_invokes_pinvi_up(
 ) -> None:
     service = ComposeService()
     _allow_running_image_provenance(service, monkeypatch)
-    _allow_candidate_pair(service, monkeypatch)
+    manifest = _manifest()
+    _allow_candidate_pair(service, monkeypatch, pair=manifest.active)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
         manifest_path=str(tmp_path / "compatible-pair-v4.json"),
     )
     active_recovery_transaction = replace(transaction)
     events: list[list[str]] = []
-    manifest = _manifest()
     monkeypatch.setattr(
         service, "_production_preflight", lambda _config, **_kwargs: manifest
     )
