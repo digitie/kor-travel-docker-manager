@@ -391,6 +391,9 @@ services:
       KOR_TRAVEL_MAP_API_PROFILE: production
       KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED: 'true'
       KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED: 'false'
+      # ADR-24/T-038 — standalone Map은 destructive default false다. Manager가
+      # 관리하는 production runtime만 review된 source에서 명시적으로 승인한다.
+      KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED: 'true'
       KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED: 'false'
       KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS: '["127.0.0.1/32","::1/128"]'
       KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}

@@ -130,6 +130,12 @@ KTDM_C6C_PINVI_ADMIN_PASSWORD=<16자 이상 PinVi admin 비밀번호>
 KTDM_C6C_CANCEL_PROBE_JOB_ID=<owned typed-failure UUID fixture>
 ```
 
+Map의 standalone compose는 destructive 기능을 기본 `false`로 해석한다. Manager production은
+canonical `kor-travel-map-api` service에 `KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED=true` literal을
+직접 결선하며 host `.env` 값으로 우회하지 않는다. C6c는 raw/resolved/runtime에서 Map API exact
+`true`와 다른 service의 이름 부재를 mutation 전에 검증하고, compatible-pair/C7 environment hash로
+활성 runtime까지 결박한다. 실제 delete/restore/swap 감사 actor는 Map API의 인증 principal이다.
+
 production compatible-pair 계약은 Map API host bind와 PinVi의 Map base URL을 각각 정확히 `12701`과
 `http://127.0.0.1:12701`로 고정한다. 두 값이 서로 일치해도 다른 포트면 첫 container mutation 전에
 중단한다. 비표준 포트는 local/development에서 두 값을 함께 맞춘 경우에만 허용한다.
