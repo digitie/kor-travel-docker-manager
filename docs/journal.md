@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-07-20 (C7 Map features routes production 결선 착수 — T-040)
+
+- n150 C7 attestation에서 Manager production Map API runtime에
+  `KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED`가 없어 검증이 중단되는 원인을 확인했다. Map image의
+  미설정 기본값은 `true`라 feature 관리 REST는 동작했지만, review된 Manager source가 production
+  노출을 명시 승인했다는 사실을 runtime에서 증명할 수 없었다.
+- issue #70과 ADR-25를 먼저 기록했다. Manager canonical Compose의 Map API에만 exact `true`
+  literal을 두고, C6c raw/resolved/runtime 보호 환경 계약이 누락·값 변경·다른 service나 channel의
+  이름 유출을 첫 mutation 전에 거부하도록 구현한다.
+- 최신 main `b3bcb83`에서 독립 branch/worktree를 만들고 CodeGraph 영향도를 확인했다. 변경은 공통
+  candidate 검증과 compatible-pair capture/deploy/rollback 최종 runtime 검증에 모두 도달한다.
+- canonical Compose와 공통 production literal 집합을 정렬하고 누락·`false`·API 외 유출을 raw,
+  resolved, runtime 각각의 음성 회귀로 고정했다. focused 39개, C6c·Docker config 846개, backend
+  전체 904개 테스트가 통과했다.
+- 변경 source strict mypy와 Ruff의 기존 `E721`/`UP038` 기준선을 제외한 변경 파일 검사가 통과했고,
+  공개 placeholder만 사용한 canonical Docker Compose `config --quiet`도 통과했다.
+
 ## 2026-07-20 (C6c PinVi login SSR shell 오탐 수정 착수 — T-039)
 
 - n150 C6c capture status2에서 PinVi Web은 healthy이고 `/admin/login`도 200·`text/html`·비어 있지 않은

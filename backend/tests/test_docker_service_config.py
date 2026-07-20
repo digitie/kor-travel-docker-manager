@@ -159,6 +159,7 @@ def _compose_with_canonical_c6c_services(
                 ),
                 "KOR_TRAVEL_MAP_API_PROFILE": "production",
                 "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
+                "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED": "true",
                 "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
                 "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
                 "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
@@ -380,6 +381,19 @@ def test_map_api_excludes_removed_provider_runtime_credentials() -> None:
 
     api_environment = compose["services"][_MAP_API_SERVICE]["environment"]
     assert _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.isdisjoint(api_environment)
+
+
+def test_map_features_routes_are_explicitly_enabled_only_for_map_api() -> None:
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    env_name = "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED"
+
+    assert services[_MAP_API_SERVICE]["environment"][env_name] == "true"
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if env_name in service.get("environment", {})
+    } == {_MAP_API_SERVICE}
 
 
 def test_map_provider_credentials_have_empty_env_example_placeholders() -> None:

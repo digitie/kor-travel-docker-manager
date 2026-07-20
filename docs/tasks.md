@@ -324,6 +324,20 @@
       포함하고, 실제 destructive backup 작업은 인증 principal actor를 감사한다는 운영 증거를 문서화한다.
 - [ ] Map issue #796의 actor/OpenAPI 변경과 함께 단일 적대 리뷰·CI·n150 final live를 통과한다.
 
+### T-040: C7 Map features routes production 명시 결선
+
+- [x] issue #70과 ADR-25에 Map feature 관리 REST가 production에서 명시적으로 활성화되어야 하는
+      이유와 API-only fail-closed 경계를 기록한다.
+- [x] Manager canonical `kor-travel-map-api`에
+      `KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED=true`를 literal로 명시한다.
+- [x] raw source, Docker-resolved candidate, activation 뒤 runtime이 exact `true`이고 다른
+      service·`env_file`·build arg·command·label·config·secret에는 이름이 없는지 C6c 보호 환경
+      계약과 음성 회귀 테스트로 고정한다.
+- [x] focused 39개, C6c·Docker config 846개, backend 904개, Ruff baseline 제외, strict mypy,
+      canonical Compose config gate를 통과한다.
+- [ ] 단일 적대적 리뷰와 CI를 통과한다.
+- [ ] n150 compatible-pair recapture와 C7 live E2E에서 feature 관리 REST를 확인한 뒤 issue #70을 닫는다.
+
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
 - [x] 단일 관리자 계정(`admin`) 로그인 화면을 추가하고 실제 비밀번호는 gitignore된 `.env`의 `KTDM_ADMIN_PASSWORD_HASH`에 PBKDF2 해시로만 저장

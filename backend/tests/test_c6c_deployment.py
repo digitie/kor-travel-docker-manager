@@ -118,6 +118,7 @@ _MAP_PRODUCTION_API_LITERALS = {
     "KOR_TRAVEL_MAP_API_PROFILE": "production",
     "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
+    "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED": "true",
     "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
     "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
     "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
@@ -941,6 +942,7 @@ def _source_compose() -> dict[str, object]:
                     "KOR_TRAVEL_MAP_API_PROFILE": "production",
                     "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
                     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
+                    "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED": "true",
                     "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
                     "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
                     "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
@@ -1708,6 +1710,11 @@ def test_resolved_compose_accepts_exact_protected_service_wiring() -> None:
         ),
         (
             "kor-travel-map-api",
+            "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED",
+            "false",
+        ),
+        (
+            "kor-travel-map-api",
             "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED",
             "false",
         ),
@@ -1741,6 +1748,20 @@ def test_resolved_compose_rejects_map_production_env_drift(
         environment[env_name] = value
 
     with pytest.raises(DeploymentContractError, match=rf"does not wire {env_name}"):
+        validate_resolved_compose_secret_isolation(resolved, _production_config())
+
+
+def test_resolved_compose_rejects_features_routes_name_outside_map_api() -> None:
+    resolved = _resolved_compose_with_map_ui_auth()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    pinvi = services["pinvi-api"]
+    assert isinstance(pinvi, dict)
+    environment = pinvi["environment"]
+    assert isinstance(environment, dict)
+    environment["KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED"] = "true"
+
+    with pytest.raises(DeploymentContractError, match="leaks outside"):
         validate_resolved_compose_secret_isolation(resolved, _production_config())
 
 
@@ -2128,6 +2149,11 @@ def test_compose_candidate_accepts_only_exact_api_source_wiring() -> None:
         ),
         (
             "kor-travel-map-api",
+            "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED",
+            "false",
+        ),
+        (
+            "kor-travel-map-api",
             "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED",
             "false",
         ),
@@ -2161,6 +2187,25 @@ def test_raw_candidate_rejects_map_production_env_drift(
         environment[env_name] = raw_value
 
     with pytest.raises(ComposeCandidateContractError, match=rf"{env_name} wiring"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path="/tmp/docker-compose.yml",
+            root_env_path="/tmp/.env",
+            environment=_raw_candidate_environment(),
+        )
+
+
+def test_raw_candidate_rejects_features_routes_name_outside_map_api() -> None:
+    candidate = _source_compose()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    pinvi = services["pinvi-api"]
+    assert isinstance(pinvi, dict)
+    environment = pinvi["environment"]
+    assert isinstance(environment, dict)
+    environment["KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED"] = "true"
+
+    with pytest.raises(ComposeCandidateContractError, match="protected C6c reference"):
         validate_compose_candidate_protected_values(
             candidate,
             compose_path="/tmp/docker-compose.yml",
@@ -5491,6 +5536,7 @@ def test_runtime_secret_gate_rejects_missing_or_changed_map_ui_auth(
         ("KOR_TRAVEL_MAP_API_PROFILE", "local-dev"),
         ("KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED", "false"),
         ("KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED", "true"),
+        ("KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED", "false"),
         ("KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED", "false"),
         ("KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED", "true"),
         ("KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS", '["0.0.0.0/0"]'),
@@ -5513,6 +5559,19 @@ def test_runtime_secret_gate_rejects_map_production_env_drift(
         DeploymentContractError,
         match="runtime protected value wiring is (missing|invalid)",
     ):
+        validate_runtime_secret_isolation(runtime, config)
+
+
+def test_runtime_secret_gate_rejects_features_routes_name_outside_map_api() -> None:
+    config = _production_config()
+    runtime = _runtime_secret_configs(config)
+    runtime[config.pinvi_container]["Env"] = {
+        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _READ_TOKEN,
+        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED": "true",
+    }
+
+    with pytest.raises(DeploymentContractError, match="unauthorized container"):
         validate_runtime_secret_isolation(runtime, config)
 
 
