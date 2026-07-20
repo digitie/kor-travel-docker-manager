@@ -1006,18 +1006,22 @@ reference는 아니다. `pinvi-pair deploy --build`가 다섯 service의 moving 
 
 ### 결정
 
-Manager는 service 이름과 전체 image SHA로 결정되는 전용 content-addressed local retention reference를
-사용한다. manifest의 `active ∪ rollback` image 집합을 보존 대상 정본으로 삼고, 같은 reference를 다른
-image ID로 다시 tag하지 않는다.
+Manager는 service 이름과 전체 image SHA로 결정되는 예약된 repository/tag 형식의 전용
+content-addressed local retention reference를 사용한다. 같은 reference를 다른 image ID로 다시 tag하지
+않고, cleanup도 이 exact manager namespace의 tag만 제거하며 image ID 자체를 삭제하지 않는다. Compose의
+resolved service image가 이 namespace를 사용하는 것도 거부한다.
 
-deploy는 현재 manifest 두 슬롯의 reference를 먼저 생성·exact inspect한 뒤 candidate를 build한다.
-candidate 다섯 image도 첫 container stop 전에 보존한다. 새 pair 검증과 manifest 원자 commit이 끝나면
-새 manifest 합집합 밖의 manager 전용 reference를 제거한다. activation 또는 manifest commit 실패 시
-candidate reference만 정리하고 기존 두 슬롯은 유지한다. rollback은 두 슬롯 합집합이 같으므로 reference를
-바꾸지 않는다. 최초 capture도 candidate 보존 뒤에만 runtime mutation을 시작한다.
+build 유무와 무관한 deploy와 explicit rollback은 기존 read-only preflight 뒤 현재 manifest의
+`active ∪ rollback` reference를 additive 생성·exact inspect한다. 전체 재검증 뒤 manifest 밖 stale
+manager tag 정리를 성공시켜야만 build 또는 container mutation으로 진행한다. deploy candidate 다섯
+image도 첫 container stop 전에 보존한다. 새 pair 검증과 manifest 원자 commit이 끝나면 새 manifest의
+rollback image가 아닌 manager tag를 제거한다. activation 또는 manifest commit 실패 시 candidate
+reference만 정리하고 기존 두 슬롯은 유지한다. 최초 capture도 candidate 보존 뒤에만 runtime mutation을
+시작한다.
 
 post-commit cleanup 실패는 이미 검증·commit된 runtime을 과거 pair로 되돌리지 않고 명시적
-`cleanup_pending` 결과로 남긴다. 다음 pair mutation은 stale reference 정리를 먼저 성공시키기 전까지
+`cleanup_pending` 결과로 남기고 이전 pair recovery를 호출하지 않는다. 다음 pair mutation은 현재 두
+슬롯을 다시 additive ensure한 뒤 stale reference 정리를 성공시키기 전까지
 중단해 세대가 무한 누적되지 않게 한다. 외부 root-equivalent actor의 강제 image 제거와
 `docker image prune -a`는 threat model 밖이며, 이를 견디는 archive/registry는 별도 결정으로 다룬다.
 
@@ -1025,13 +1029,14 @@ post-commit cleanup 실패는 이미 검증·commit된 runtime을 과거 pair로
 
 - content-addressed reference는 기존 tag를 덮어쓰지 않아 부분 tag 실패와 process crash가 현재
   rollback reference를 훼손하지 않는다.
-- manifest의 두 슬롯과 보존 reference의 desired set을 직접 대응시키면 role tag 수명주기보다 검증과
-  복구가 단순하다.
+- operation 시작 때 두 슬롯을 모두 보존하고 commit 뒤 rollback reference만 남기면 role tag
+  수명주기보다 검증과 복구가 단순하며 상시 reference 수도 최소화된다.
 - candidate도 activation 전에 보존해야 중간 실패 복구와 manifest commit 사이의 reference 공백이 없다.
 
 ### 결과
 
-- moving service tag와 container 교체 뒤에도 active/rollback 두 세대의 다섯 image를 exact 복원할 수 있다.
+- moving service tag와 container 교체 뒤에도 manifest rollback의 다섯 image를 exact 복원할 수 있고,
+  다음 mutation 전에는 active/rollback 두 슬롯을 모두 retention reference로 결박한다.
 - 실패한 candidate reference와 과거 세대는 정해진 reconcile 경로로 정리된다.
 - Docker 외부 privileged cleanup을 방지하려면 별도의 local registry 또는 archive가 필요하다.
 
