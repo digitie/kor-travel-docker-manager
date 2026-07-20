@@ -370,6 +370,10 @@ ktdctl pinvi-pair deploy --build
    live checkout 대신 각 `HEAD`의 일회성 Git archive context만 전달해 build 중 변경·원복과 ignored
    파일 혼입을 막는다. raw/resolved build mapping도 이 context, 저장소 내부 지정 Dockerfile,
    provenance arg만 exact 허용하고 external Dockerfile·additional context·secret·target을 거부한다.
+   build 전에 manifest active/rollback 합집합을 service별 manager 전용 content-addressed retention
+   tag로 보존하고 exact ID를 재검증한다. build된 candidate도 첫 container stop 전에 보존한다.
+   일부 tag 실패는 기존 reference를 덮어쓰지 않은 채 mutation 전에 중단하며, manifest commit 뒤
+   새 두 슬롯 밖의 manager 전용 tag를 정리한다. cleanup residue는 다음 pair mutation 전에 해소한다.
 2. 현재 active set과 공용 dependency·Map/PinVi UI·Dagster의 running/healthy를 확인한다. 현재 Map UI
    container를 inspect해 username·hash·session secret이 frozen environment와 정확히 같은지 검증한 다음,
    login→`/ops/datasets`→logout→재차단 lifecycle을 통과해야 한다. 어느 단계든 실패하면 Docker mutation은
