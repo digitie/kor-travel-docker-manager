@@ -314,13 +314,13 @@
 
 ### T-038: Map destructive production 명시 승인 결선
 
-- [ ] Manager canonical `kor-travel-map-api`에
+- [x] Manager canonical `kor-travel-map-api`에
       `KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED=true`를 literal로 명시한다.
-- [ ] raw·resolved candidate, activation 뒤 runtime이 exact `true`이고 다른 service·channel에는 이름이
+- [x] raw·resolved candidate, activation 뒤 runtime이 exact `true`이고 다른 service·channel에는 이름이
       없는지 C6c protected environment 계약으로 고정한다.
-- [ ] standalone Map compose의 기본 `false`와 Manager의 명시적 production 승인을 교차 계약 테스트로
+- [x] standalone Map compose의 기본 `false`와 Manager의 명시적 production 승인을 교차 계약 테스트로
       구분한다. image 기본값이나 host env fallback은 승인 근거가 아니다.
-- [ ] compatible-pair manifest v4 및 C7 attestation의 Map API environment hash가 이 enablement를
+- [x] compatible-pair manifest v4 및 C7 attestation의 Map API environment hash가 이 enablement를
       포함하고, 실제 destructive backup 작업은 인증 principal actor를 감사한다는 운영 증거를 문서화한다.
 - [ ] Map issue #796의 actor/OpenAPI 변경과 함께 단일 적대 리뷰·CI·n150 final live를 통과한다.
 

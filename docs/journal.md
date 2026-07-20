@@ -32,7 +32,8 @@
 - 변경 source Ruff와 기존 import 정렬 기준선을 제외한 C6c test Ruff가 통과했다. strict mypy는 공용
   venv에 없는 `types-PyYAML` stub만 제외하고 변경 source에서 통과했다. 대형 기존 파일 전체의 import
   정렬·format 기준선은 이 수정과 무관하므로 섞지 않았다.
-## 2026-07-20 (Map destructive production 명시 승인 착수 — T-038)
+
+## 2026-07-20 (Map destructive production 명시 로컬 검증 완료 — T-038)
 
 - Map standalone compose가 파괴 작업 kill-switch를 기본 `false`로 내리면, Manager가 운영 Map API의
   승인된 파괴 작업을 명시적으로 결선해야 한다. image 기본값이나 host 환경의 우연한 상속은 쓰지 않는다.
@@ -40,7 +41,12 @@
   환경 계약과 compatible-pair v4·C7 environment hash에 결박한다. Dagster·UI·PinVi 등 다른 service에는
   이름과 값이 없어야 한다.
 - enablement 증거는 source/runtime attestation이 소유하고, 실제 delete/restore/swap 사용의 actor는
-  Map API가 인증 principal에서 기록한다. 이 문서 단계에서는 테스트·lint를 실행하지 않았다.
+  Map API가 인증 principal에서 기록한다. 단일 적대적 정적 리뷰에서 P0~P2 없음 판정을 받은 뒤 canonical
+  Docker config fixture 누락 한 곳을 exact `true`로 정렬했다.
+- WSL ext4 임시 디렉터리에서 C6c·Docker config focused `839 passed`, backend 전체 `897 passed`를
+  확인했다. 변경 범위는 Ruff 0.3.7의 기존 `I001` 8건을 제외한 gate와 변경 source strict mypy를
+  통과했고, 공개 placeholder만 사용한 production `docker compose config --quiet`도 통과했다.
+
 ## 2026-07-20 (C6c Map UI 통합 경로 smoke 수정 착수 — T-037)
 
 - 최종 Map UI 로그인은 200과 `Set-Cookie`를 반환했지만, C6c가 clean-cut된
