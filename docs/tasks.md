@@ -36,6 +36,7 @@
 | **T-037** | C6c Map UI 통합 경로 smoke 정렬 | `[/]` | - | 삭제된 `/ops/providers` 대신 `/ops/datasets` 인증 lifecycle 검증 |
 | **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
 | **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
+| **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -337,6 +338,22 @@
       canonical Compose config gate를 통과한다.
 - [ ] 단일 적대적 리뷰와 CI를 통과한다.
 - [ ] n150 compatible-pair recapture와 C7 live E2E에서 feature 관리 REST를 확인한 뒤 issue #70을 닫는다.
+
+### T-041: C6c rollback image retention 보장
+
+- [x] n150에서 `pinvi-pair deploy --build` 성공 직후 새 manifest의 active 5개는 존재하지만
+      rollback으로 기록된 직전 active 5개 image ID가 모두 사라지는 문제를 재현하고 issue #72로 기록한다.
+- [ ] build/no-build deploy와 rollback은 mutation 전 manifest active/rollback 합집합을, capture/deploy는
+      candidate를 service+전체 image SHA 기반 예약 namespace에 보존하고 exact ID를 재검증한다.
+- [ ] retention 실패는 첫 container mutation 전에 중단한다. manifest commit 뒤 새 rollback 밖 reference를
+      정리하고, cleanup residue가 있으면 다음 mutation 전에 해소해 과거 세대가 누적되지 않게 한다.
+- [ ] moving tag rollover, 일부 tag 실패·wrong-ID collision, SIGKILL cut point, candidate 실패 정리,
+      active=rollback dedupe, no-build·rollback·capture, post-commit cleanup pending과 다음 mutation 차단을
+      실행형 회귀 테스트로 고정한다.
+- [ ] mutation 전 실패 또는 시작 manifest 확정+previous runtime 복구 검증 성공 때만 candidate를 정리하고,
+      recovery 실패·mixed runtime·manifest 불확정이면 관련 reference를 모두 보존한다.
+- [ ] 단일 적대적 리뷰와 CI green 뒤 n150 exact Manager로 compatible-pair를 재배포하고 실제 rollback
+      가용성 및 C7 strict live E2E를 통과하면 issue #72를 닫고 완료 이력으로 옮긴다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

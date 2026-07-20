@@ -56,6 +56,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_runtime_secret_isolation,
     write_pair_manifest,
 )
+from kor_travel_docker_manager.services.c6c_image_retention import RetentionReport
 from kor_travel_docker_manager.services.c6c_deployment import (
     new_image_pair as _build_image_pair,
 )
@@ -300,6 +301,24 @@ def _write_env(path: Path, **overrides: str | None) -> None:
 def _clear_c6c_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _C6C_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _stub_c6c_image_retention(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기존 배포 테스트는 Docker local tag 대신 별도 retention 단위 테스트를 사용한다."""
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        lambda *_args, **_kwargs: RetentionReport(ensured=0, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        lambda *_args, **_kwargs: RetentionReport(ensured=0, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.require_empty_retention_namespace",
+        lambda *_args, **_kwargs: None,
+    )
 
 
 def _set_production_guard_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -9183,9 +9202,13 @@ def test_map_ui_preflight_failure_keeps_docker_mutation_at_zero(
     run.assert_not_called()
 
 
+@pytest.mark.parametrize("build", [False, True])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    build: bool,
+    cleanup_fails: bool,
 ) -> None:
     service = ComposeService()
     config = _production_config()
@@ -9214,10 +9237,13 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         service,
         monkeypatch,
         pair=active,
-        with_prebuild_result=True,
+        with_prebuild_result=build,
     )
+    starting_manifest = _manifest()
     monkeypatch.setattr(
-        service, "_production_preflight", lambda _config, **_kwargs: _manifest()
+        service,
+        "_production_preflight",
+        lambda _config, **_kwargs: starting_manifest,
     )
     readiness: list[list[str]] = []
     monkeypatch.setattr(
@@ -9231,6 +9257,32 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         "_preflight_current_map_ui_auth",
         lambda _config, **_kwargs: events.append(("preflight", "map-ui"))
         or preflight_ui_smoke,
+    )
+    retention_calls: list[tuple[str, tuple[CompatibleImagePair, ...]]] = []
+
+    def reconcile_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        call = ("reconcile", tuple(pairs))
+        retention_calls.append(call)
+        events.append(("retention", call))
+        if cleanup_fails and len(
+            [call for call in retention_calls if call[0] == "reconcile"]
+        ) == 2:
+            raise DeploymentContractError("cleanup failed")
+        return RetentionReport(ensured=0, removed=0)
+
+    def ensure_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        call = ("ensure", tuple(pairs))
+        retention_calls.append(call)
+        events.append(("retention", call))
+        return RetentionReport(ensured=0, removed=0)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        reconcile_retention,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        ensure_retention,
     )
 
     def fake_run(args, **kwargs):  # type: ignore[no-untyped-def]
@@ -9284,13 +9336,20 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     result = service._ensure_production_pinvi_target(
         "srv",
         config=config,
-        build=True,
+        build=build,
         recreate=True,
         capture_output=True,
         transaction=transaction,
     )
 
     assert result["success"] is True
+    if cleanup_fails:
+        assert result["deployment_state"] == (
+            "active_manifest_committed_retention_cleanup_pending"
+        )
+        assert "next mutation will fail closed" in result["stderr"]
+    else:
+        assert result["deployment_state"] == "active_manifest_committed"
     assert result["preflight_ui_smoke"] is preflight_ui_smoke
     assert result["image_provenance"]["map"]["runtime_images"] == {
         "kor-travel-map-api": _ACTIVE_MAP_IMAGE_ID,
@@ -9299,13 +9358,15 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         "kor-travel-map-dagster-daemon": _MAP_DAGSTER_DAEMON_IMAGE_ID,
     }
     assert events[0] == ("preflight", "map-ui")
-    assert [stage["name"] for stage in result["stages"]] == [
-        "prebuild_candidate_pair",
+    expected_stages = [
         "deploy_stop_pair",
         "deploy_map_api",
         "deploy_map_runtime_dependents",
         "deploy_pinvi_api",
     ]
+    if build:
+        expected_stages.insert(0, "prebuild_candidate_pair")
+    assert [stage["name"] for stage in result["stages"]] == expected_stages
     explicit_services = [
         service_name
         for stage in result["stages"]
@@ -9315,6 +9376,11 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
     assert set(explicit_services) == {*_MAP_RUNTIME_SERVICES, "pinvi-api"}
     assert readiness
     assert len(cancel_probe_states) == 1
+    assert retention_calls == [
+        ("reconcile", (starting_manifest.active, starting_manifest.rollback)),
+        ("ensure", (active,)),
+        ("reconcile", (starting_manifest.active,)),
+    ]
 
     event_names = [event[0] for event in events]
     smoke_index = event_names.index("smoke")
@@ -9347,15 +9413,212 @@ def test_production_pinvi_ensure_is_staged_without_duplicate_services(
         for event in events
     )
     assert events.index(("verify", "full")) < events.index(("manifest", "active"))
+    first_stop = next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "run" and event[1] == _C6C_STOP_COMMAND
+    )
+    assert events.index(
+        (
+            "retention",
+            ("reconcile", (starting_manifest.active, starting_manifest.rollback)),
+        )
+    ) < events.index(("retention", ("ensure", (active,)))) < first_stop
+    assert first_stop < events.index(("verify", "full"))
+    assert events.index(("manifest", "active")) < events.index(
+        ("retention", ("reconcile", (starting_manifest.active,)))
+    )
 
 
-def test_failed_map_smoke_never_invokes_pinvi_up(
+def test_stale_retention_cleanup_failure_blocks_candidate_and_container_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
+    transaction = replace(
+        _frozen_external_transaction(tmp_path),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+    )
+    manifest = _manifest()
+    prepare_candidate = Mock()
+    run = Mock()
+    monkeypatch.setattr(
+        service, "_production_preflight", lambda _config, **_kwargs: manifest
+    )
+    monkeypatch.setattr(
+        service,
+        "_materialize_active_recovery_transaction_unlocked",
+        Mock(return_value=transaction),
+    )
+    monkeypatch.setattr(
+        service, "_require_services_ready", lambda _services, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        service, "_preflight_current_map_ui_auth", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(service, "_prepare_c6c_candidate_pair", prepare_candidate)
+    monkeypatch.setattr(service, "run", run)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        Mock(side_effect=DeploymentContractError("stale cleanup failed")),
+    )
+
+    with pytest.raises(DeploymentContractError, match="stale cleanup failed"):
+        service._ensure_production_pinvi_target(
+            "srv",
+            config=_production_config(),
+            build=True,
+            recreate=True,
+            capture_output=True,
+            transaction=transaction,
+        )
+
+    prepare_candidate.assert_not_called()
+    run.assert_not_called()
+
+
+def test_candidate_retention_failure_cleans_only_to_start_manifest_before_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = replace(
+        _frozen_external_transaction(tmp_path),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+    )
+    manifest = _manifest()
+    candidate = _allow_candidate_pair(
+        service,
+        monkeypatch,
+        pair=manifest.active,
+    )
+    reconcile = Mock(return_value=RetentionReport(ensured=0, removed=0))
+    run = Mock()
+    monkeypatch.setattr(
+        service, "_production_preflight", lambda _config, **_kwargs: manifest
+    )
+    monkeypatch.setattr(
+        service,
+        "_materialize_active_recovery_transaction_unlocked",
+        Mock(return_value=transaction),
+    )
+    monkeypatch.setattr(
+        service, "_require_services_ready", lambda _services, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        service, "_preflight_current_map_ui_auth", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        Mock(side_effect=DeploymentContractError("candidate retention failed")),
+    )
+    monkeypatch.setattr(service, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="candidate retention failed"):
+        service._ensure_production_pinvi_target(
+            "srv",
+            config=_production_config(),
+            build=False,
+            recreate=True,
+            capture_output=True,
+            transaction=transaction,
+        )
+
+    assert candidate == manifest.active
+    assert [call.args[0] for call in reconcile.call_args_list] == [
+        (manifest.active, manifest.rollback),
+        (manifest.active, manifest.rollback),
+    ]
+    run.assert_not_called()
+
+
+def test_indeterminate_manifest_write_preserves_candidate_references(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = replace(
+        _frozen_external_transaction(tmp_path),
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+    )
+    manifest = _manifest()
+    candidate = _allow_candidate_pair(service, monkeypatch)
+    retention_calls: list[tuple[str, tuple[CompatibleImagePair, ...]]] = []
+    monkeypatch.setattr(
+        service, "_production_preflight", lambda _config, **_kwargs: manifest
+    )
+    monkeypatch.setattr(
+        service,
+        "_materialize_active_recovery_transaction_unlocked",
+        Mock(return_value=transaction),
+    )
+    monkeypatch.setattr(
+        service, "_require_services_ready", lambda _services, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        service, "_preflight_current_map_ui_auth", lambda *_args, **_kwargs: []
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        lambda pairs, **_kwargs: retention_calls.append(
+            ("reconcile", tuple(pairs))
+        )
+        or RetentionReport(ensured=0, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        lambda pairs, **_kwargs: retention_calls.append(("ensure", tuple(pairs)))
+        or RetentionReport(ensured=0, removed=0),
+    )
+    monkeypatch.setattr(
+        service,
+        "_activate_pair_sequentially",
+        Mock(
+            return_value={
+                "map_smoke": [],
+                "pinvi_smoke": [],
+                "ui_smoke": [],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.write_pair_manifest",
+        Mock(side_effect=DeploymentContractError("commit state is indeterminate")),
+    )
+    recovery = Mock(return_value={"success": True, "state": "restored"})
+    monkeypatch.setattr(service, "_recover_previous_pair", recovery)
+
+    with pytest.raises(ComposePostMutationContractError):
+        service._ensure_production_pinvi_target(
+            "srv",
+            config=_production_config(),
+            build=False,
+            recreate=True,
+            capture_output=True,
+            transaction=transaction,
+        )
+
+    assert retention_calls == [
+        ("reconcile", (manifest.active, manifest.rollback)),
+        ("ensure", (candidate,)),
+    ]
+    recovery.assert_called_once()
+
+
+@pytest.mark.parametrize("recovery_succeeds", [False, True])
+def test_failed_map_smoke_never_invokes_pinvi_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_succeeds: bool,
+) -> None:
+    service = ComposeService()
     _allow_running_image_provenance(service, monkeypatch)
-    _allow_candidate_pair(service, monkeypatch)
+    manifest = _manifest()
+    _allow_candidate_pair(service, monkeypatch, pair=manifest.active)
     transaction = replace(
         _frozen_external_transaction(tmp_path),
         manifest_path=str(tmp_path / "compatible-pair-v4.json"),
@@ -9363,7 +9626,7 @@ def test_failed_map_smoke_never_invokes_pinvi_up(
     active_recovery_transaction = replace(transaction)
     events: list[list[str]] = []
     monkeypatch.setattr(
-        service, "_production_preflight", lambda _config, **_kwargs: _manifest()
+        service, "_production_preflight", lambda _config, **_kwargs: manifest
     )
     monkeypatch.setattr(
         service, "_require_services_ready", lambda _services, **_kwargs: []
@@ -9389,7 +9652,30 @@ def test_failed_map_smoke_never_invokes_pinvi_up(
         "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
         Mock(side_effect=DeploymentContractError("signed read failed")),
     )
-    recovery = Mock(return_value={"success": True, "state": "restored"})
+    retention_calls: list[tuple[str, tuple[CompatibleImagePair, ...]]] = []
+
+    def reconcile_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        retention_calls.append(("reconcile", tuple(pairs)))
+        return RetentionReport(ensured=0, removed=0)
+
+    def ensure_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        retention_calls.append(("ensure", tuple(pairs)))
+        return RetentionReport(ensured=0, removed=0)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        reconcile_retention,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        ensure_retention,
+    )
+    recovery = Mock(
+        return_value={
+            "success": recovery_succeeds,
+            "state": "restored" if recovery_succeeds else "mixed_requires_operator",
+        }
+    )
     monkeypatch.setattr(service, "_recover_previous_pair", recovery)
 
     with pytest.raises(ComposePostMutationContractError) as caught:
@@ -9412,6 +9698,15 @@ def test_failed_map_smoke_never_invokes_pinvi_up(
     assert _CANCEL_TOKEN not in result["stderr"]
     recovery.assert_called_once()
     assert recovery.call_args.kwargs["transaction"] is active_recovery_transaction
+    expected_retention_calls = [
+        ("reconcile", (manifest.active, manifest.rollback)),
+        ("ensure", (manifest.active,)),
+    ]
+    if recovery_succeeds:
+        expected_retention_calls.append(
+            ("reconcile", (manifest.active, manifest.rollback))
+        )
+    assert retention_calls == expected_retention_calls
 
 
 def test_invalid_production_env_stops_before_any_container_command(
@@ -9639,9 +9934,11 @@ def test_pair_capture_requires_explicit_compatibility_attestation() -> None:
         ComposeService().capture_compatible_pinvi_pair(verified_compatible=False)
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cleanup_fails: bool,
 ) -> None:
     _allow_manager_mutation(monkeypatch)
     monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
@@ -9704,14 +10001,58 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
         "_verify_active_contract",
         lambda *_a, **_k: {"runtime_secret_isolation": True},
     )
+    timeline: list[tuple[str, object]] = []
+    retention_calls: list[tuple[str, tuple[CompatibleImagePair, ...]]] = []
+
+    def record_retention(
+        operation: str,
+        pairs: tuple[CompatibleImagePair, ...],
+    ) -> None:
+        call = (operation, pairs)
+        retention_calls.append(call)
+        timeline.append(("retention", call))
+
+    def reconcile_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        pair_tuple = tuple(pairs)
+        record_retention("reconcile", pair_tuple)
+        if cleanup_fails:
+            raise DeploymentContractError("cleanup failed")
+        return RetentionReport(ensured=0, removed=0)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.require_empty_retention_namespace",
+        lambda **_kwargs: record_retention("empty", ()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        lambda pairs, **_kwargs: record_retention("ensure", tuple(pairs))
+        or RetentionReport(ensured=5, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        reconcile_retention,
+    )
     commands: list[list[str]] = []
 
     def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
         args_list = list(args)
         commands.append(args_list)
+        timeline.append(("run", args_list))
         return _success(args_list)
 
     monkeypatch.setattr(service, "run", fake_run)
+    real_write_pair_manifest = write_pair_manifest
+
+    def record_manifest(path: str, manifest: CompatiblePairManifest) -> None:
+        timeline.append(("manifest", manifest))
+        real_write_pair_manifest(path, manifest)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.write_pair_manifest",
+        record_manifest,
+    )
+    cleanup_bootstrap = Mock()
+    monkeypatch.setattr(service, "_cleanup_bootstrap", cleanup_bootstrap)
 
     result = service.capture_compatible_pinvi_pair(
         verified_compatible=True,
@@ -9719,6 +10060,13 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
     )
 
     assert result["success"] is True
+    if cleanup_fails:
+        assert result["deployment_state"] == (
+            "initial_v4_manifest_committed_retention_cleanup_pending"
+        )
+    else:
+        assert result["deployment_state"] == "initial_v4_manifest_committed"
+    cleanup_bootstrap.assert_not_called()
     assert result["image_provenance"]["pinvi"] == {
         "image_id": _PINVI_IMAGE_ID,
         "source_revision": _PINVI_SOURCE_REVISION,
@@ -9765,6 +10113,96 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
     loaded = load_pair_manifest(str(manifest_path))
     assert loaded.rollback == pair
     assert loaded.active == pair
+    assert retention_calls == [
+        ("empty", ()),
+        ("ensure", (pair,)),
+        ("reconcile", (pair,)),
+    ]
+    first_stop = timeline.index(("run", _C6C_STOP_COMMAND))
+    assert timeline.index(("retention", ("ensure", (pair,)))) < first_stop
+    manifest_event = next(
+        event for event in timeline if event[0] == "manifest"
+    )
+    assert first_stop < timeline.index(manifest_event)
+    assert timeline.index(manifest_event) < timeline.index(
+        ("retention", ("reconcile", (pair,)))
+    )
+
+
+def test_pair_capture_builds_all_result_payload_before_manifest_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_manager_mutation(monkeypatch)
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    manifest_path = tmp_path / "pair.json"
+    monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "capture.lock"))
+    service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
+    transaction = replace(
+        _frozen_external_transaction(tmp_path),
+        manifest_path=str(manifest_path),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    pair = _allow_candidate_pair(service, monkeypatch)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        lambda _environment: _production_config(),
+    )
+    monkeypatch.setattr(service, "_revalidate_c6c_build_provenance", Mock())
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        service, "_snapshot_service_states", lambda _services, **_kwargs: {}
+    )
+    monkeypatch.setattr(service, "_inspect_current_pair", lambda _config: pair)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
+        lambda _config: [],
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_pinvi_canonical_smoke",
+        lambda _config, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        service,
+        "_verify_active_contract",
+        lambda *_args, **_kwargs: {"runtime_secret_isolation": True},
+    )
+    monkeypatch.setattr(
+        service, "run", lambda args, **_kwargs: _success(list(args))
+    )
+    real_payload = service._pair_provenance_payload
+    payload_calls = 0
+
+    def fail_second_payload(candidate: CompatibleImagePair):
+        nonlocal payload_calls
+        payload_calls += 1
+        if payload_calls == 2:
+            raise RuntimeError("payload failed")
+        return real_payload(candidate)
+
+    monkeypatch.setattr(service, "_pair_provenance_payload", fail_second_payload)
+    cleanup = Mock(return_value={"success": True, "state": "restored"})
+    monkeypatch.setattr(service, "_cleanup_bootstrap", cleanup)
+    write_manifest = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.write_pair_manifest",
+        write_manifest,
+    )
+
+    with pytest.raises(ComposePostMutationContractError) as caught:
+        service.capture_compatible_pinvi_pair(verified_compatible=True)
+
+    assert isinstance(caught.value.original_error, RuntimeError)
+    cleanup.assert_called_once()
+    write_manifest.assert_not_called()
+    assert not manifest_path.exists()
 
 
 def test_pair_capture_actual_init_exception_cleans_created_dependency(
@@ -10179,9 +10617,11 @@ def test_pair_capture_never_overwrites_existing_v4(
     assert load_pair_manifest(str(manifest_path)) == original
 
 
+@pytest.mark.parametrize("cleanup_fails", [False, True])
 def test_pair_rollback_restores_map_then_smoke_then_pinvi(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    cleanup_fails: bool,
 ) -> None:
     _allow_manager_mutation(monkeypatch)
     monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
@@ -10229,6 +10669,21 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
         lambda *_a, **_k: {"runtime_secret_isolation": True},
     )
     events: list[str] = []
+    timeline: list[tuple[str, object]] = []
+    retention_calls: list[tuple[CompatibleImagePair, ...]] = []
+
+    def reconcile_retention(pairs, **_kwargs):  # type: ignore[no-untyped-def]
+        call = tuple(pairs)
+        retention_calls.append(call)
+        timeline.append(("retention", call))
+        if cleanup_fails and len(retention_calls) == 2:
+            raise DeploymentContractError("cleanup failed")
+        return RetentionReport(ensured=0, removed=0)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        reconcile_retention,
+    )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
         lambda _config: events.append("map_smoke") or [],
@@ -10240,13 +10695,33 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
         if args_list[0] == "up":
             events.append(f"up:{args_list[-1]}")
         calls.append((args_list, kwargs))
+        timeline.append(("run", args_list))
         return _success(args_list)
 
     monkeypatch.setattr(service, "run", fake_run)
+    real_write_pair_manifest = write_pair_manifest
+
+    def record_manifest(path: str, pair_manifest: CompatiblePairManifest) -> None:
+        timeline.append(("manifest", pair_manifest))
+        real_write_pair_manifest(path, pair_manifest)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.write_pair_manifest",
+        record_manifest,
+    )
+    recovery = Mock()
+    monkeypatch.setattr(service, "_recover_previous_pair", recovery)
 
     result = service.rollback_compatible_pinvi_pair()
 
     assert result["success"] is True
+    if cleanup_fails:
+        assert result["rollback_state"] == (
+            "active_manifest_committed_retention_cleanup_pending"
+        )
+    else:
+        assert result["rollback_state"] == "active_manifest_committed"
+    recovery.assert_not_called()
     assert result["preflight_ui_smoke"] is preflight_ui_smoke
     assert result["image_provenance"]["map"]["source_revision"] == (
         _MAP_SOURCE_REVISION
@@ -10278,6 +10753,19 @@ def test_pair_rollback_restores_map_then_smoke_then_pinvi(
         for call in calls
     )
     assert load_pair_manifest(str(manifest_path)).active == rollback_pair
+    assert retention_calls == [
+        (manifest.active, manifest.rollback),
+        (manifest.active,),
+    ]
+    first_stop = timeline.index(("run", _C6C_STOP_COMMAND))
+    assert timeline.index(
+        ("retention", (manifest.active, manifest.rollback))
+    ) < first_stop
+    manifest_event = next(event for event in timeline if event[0] == "manifest")
+    assert first_stop < timeline.index(manifest_event)
+    assert timeline.index(manifest_event) < timeline.index(
+        ("retention", (manifest.active,))
+    )
 
 
 def test_production_preflight_rejects_running_pair_drift(
