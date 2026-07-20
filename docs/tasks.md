@@ -304,11 +304,11 @@
 - [x] HTTP shell smoke와 browser smoke의 책임을 문서로 먼저 분리한다. shell은 status/content/body,
       일반 Next.js static marker와 `admin/login` 전용 page chunk를 확인하고, hydration 후 form·로그인
       상호작용은 최종 n150 Playwright가 담당한다.
-- [ ] `run_ui_auth_smoke`에서 raw SSR `admin-login-form` 요구를 제거하고 route-specific page chunk를
+- [x] `run_ui_auth_smoke`에서 raw SSR `admin-login-form` 요구를 제거하고 route-specific page chunk를
       exact 판정한다. 일반 Next.js fallback HTML이나 다른 route chunk만 있는 응답은 계속 fail-close한다.
-- [ ] positive SSR shell과 form 포함 shell, route chunk가 없는 generic fallback, 다른 route chunk,
+- [x] positive SSR shell과 form 포함 shell, route chunk가 없는 generic fallback, 다른 route chunk,
       status/content-type/empty-body 오류를 focused 단위 테스트로 고정한다.
-- [ ] 같은 단일 적대적 reviewer의 P0~P2 없음 승인 뒤에만 focused/full test와 Ruff/mypy를 실행한다.
+- [x] 같은 단일 적대적 reviewer의 P0~P2 없음 승인 뒤에만 focused/full test와 Ruff/mypy를 실행한다.
 - [ ] 최신 main rebase·CI green 뒤 n150 compatible-pair capture와 최종 Playwright login form을 확인한다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
