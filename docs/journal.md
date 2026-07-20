@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-20 (C6c PinVi login SSR shell 오탐 수정 착수 — T-039)
+
+- n150 C6c capture status2에서 PinVi Web은 healthy이고 `/admin/login`도 200·`text/html`·비어 있지 않은
+  body·일반 Next.js static marker·`admin/login` 전용 page chunk를 반환했지만, raw HTML에
+  `data-testid="admin-login-form"`이 없다는 이유만으로 shell smoke가 실패했다.
+- exact PinVi page는 `Suspense fallback={null}` 아래 client component를 hydration하므로 SSR shell에
+  form이 없는 것이 정상이다. HTTP shell smoke는 status/content/body와 일반 static marker에 더해
+  route-specific page chunk를 요구해 generic fallback을 fail-close하고, 실제 form과 로그인 상호작용은
+  최종 n150 Playwright가 소유하도록 경계를 정렬한다.
+- C4e main `c4e7cad`에서 T-039 독립 branch/worktree를 만들었다. 문서-only draft PR을 먼저 게시한 뒤
+  exact 구현 diff를 같은 단일 적대적 reviewer가 승인하기 전에는 test/lint를 실행하지 않는다.
+
 ## 2026-07-20 (C6c Map UI 통합 경로 smoke 수정 착수 — T-037)
 
 - 최종 Map UI 로그인은 200과 `Set-Cookie`를 반환했지만, C6c가 clean-cut된
