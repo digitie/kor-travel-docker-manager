@@ -345,11 +345,13 @@
       rollback으로 기록된 직전 active 5개 image ID가 모두 사라지는 문제를 재현하고 issue #72로 기록한다.
 - [ ] build/no-build deploy와 rollback은 mutation 전 manifest active/rollback 합집합을, capture/deploy는
       candidate를 service+전체 image SHA 기반 예약 namespace에 보존하고 exact ID를 재검증한다.
-- [ ] retention 실패는 첫 container mutation 전에 중단한다. manifest commit 뒤 새 합집합 밖 reference를
+- [ ] retention 실패는 첫 container mutation 전에 중단한다. manifest commit 뒤 새 rollback 밖 reference를
       정리하고, cleanup residue가 있으면 다음 mutation 전에 해소해 과거 세대가 누적되지 않게 한다.
 - [ ] moving tag rollover, 일부 tag 실패·wrong-ID collision, SIGKILL cut point, candidate 실패 정리,
       active=rollback dedupe, no-build·rollback·capture, post-commit cleanup pending과 다음 mutation 차단을
       실행형 회귀 테스트로 고정한다.
+- [ ] mutation 전 실패 또는 시작 manifest 확정+previous runtime 복구 검증 성공 때만 candidate를 정리하고,
+      recovery 실패·mixed runtime·manifest 불확정이면 관련 reference를 모두 보존한다.
 - [ ] 단일 적대적 리뷰와 CI green 뒤 n150 exact Manager로 compatible-pair를 재배포하고 실제 rollback
       가용성 및 C7 strict live E2E를 통과하면 issue #72를 닫고 완료 이력으로 옮긴다.
 

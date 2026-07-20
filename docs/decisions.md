@@ -1016,8 +1016,14 @@ build 유무와 무관한 deploy와 explicit rollback은 기존 read-only prefli
 manager tag 정리를 성공시켜야만 build 또는 container mutation으로 진행한다. deploy candidate 다섯
 image도 첫 container stop 전에 보존한다. 새 pair 검증과 manifest 원자 commit이 끝나면 새 manifest의
 rollback image가 아닌 manager tag를 제거한다. activation 또는 manifest commit 실패 시 candidate
-reference만 정리하고 기존 두 슬롯은 유지한다. 최초 capture도 candidate 보존 뒤에만 runtime mutation을
+reference 정리는 다음 안전 조건으로 제한한다. 최초 capture도 candidate 보존 뒤에만 runtime mutation을
 시작한다.
+
+candidate cleanup은 container mutation 전 실패이거나, manifest가 시작 snapshot으로 확정되고 시작
+active runtime의 복구·전체 검증이 성공한 경우에만 수행한다. previous-pair recovery 실패, mixed runtime,
+manifest commit 상태 불확정 중 하나라도 있으면 candidate를 포함한 관련 retention reference를 모두
+보존해 operator 진단·복구 근거가 사라지지 않게 한다. 정상 preflight가 다시 성립하기 전에는 이 residue를
+reconcile하지 않는다.
 
 post-commit cleanup 실패는 이미 검증·commit된 runtime을 과거 pair로 되돌리지 않고 명시적
 `cleanup_pending` 결과로 남기고 이전 pair recovery를 호출하지 않는다. 다음 pair mutation은 현재 두
