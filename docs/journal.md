@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-07-20 (C6c PinVi login SSR shell 오탐 수정 착수 — T-039)
+
+- n150 C6c capture status2에서 PinVi Web은 healthy이고 `/admin/login`도 200·`text/html`·비어 있지 않은
+  body·일반 Next.js static marker·`admin/login` 전용 page chunk를 반환했지만, raw HTML에
+  `data-testid="admin-login-form"`이 없다는 이유만으로 shell smoke가 실패했다.
+- exact PinVi page는 `Suspense fallback={null}` 아래 client component를 hydration하므로 SSR shell에
+  form이 없는 것이 정상이다. HTTP shell smoke는 status/content/body와 일반 static marker에 더해
+  route-specific page chunk를 요구해 generic fallback을 fail-close하고, 실제 form과 로그인 상호작용은
+  최종 n150 Playwright가 소유하도록 경계를 정렬한다.
+- C4e main `c4e7cad`에서 T-039 독립 branch/worktree를 만들었다. 문서-only draft PR을 먼저 게시한 뒤
+  exact 구현 diff를 같은 단일 적대적 reviewer가 승인하기 전에는 test/lint를 실행하지 않는다.
+- CodeGraph depth 4에서 직접 호출은 active-contract 검증과 단위 테스트 두 곳이고, 상위 영향은
+  capture/deploy/rollback의 공통 full-contract 검증으로 확인했다. 로컬 exact PinVi production build의
+  `admin/login.html`도 form 0개·Next static marker·`(admin)/admin/login/page-<hex>.js` chunk를 확인했다.
+- 구현 diff는 exact route script `src` regex와 form 유무 양성 2건, non-200/non-HTML/empty/generic/다른
+  route 음성 5건으로 제한했다. 동일 단일 reviewer 승인 전 정책에 따라 test/lint는 실행하지 않았다.
+- 단일 reviewer의 P2 두 건에 따라 content type prefix 비교를 exact `text/html` media type token
+  비교로 바꾸고 `text/html-fallback` 음성 fixture를 추가했다. 운영 문서도 실제
+  `(admin)/admin/login/page-<hex>.js` route chunk와 exact하게 맞췄다. 코드 재리뷰 전에는 test/lint를
+  계속 실행하지 않는다.
+- 같은 단일 reviewer가 수정된 exact head `e5a5835`를 재검토해 P0~P2 없음으로 승인했다. 그 뒤에만
+  gate를 실행했고 focused auth smoke 13개, C6c 전체 806개, backend 전체 894개가 통과했다.
+- pytest 기본 임시경로가 Windows 사용자 Temp를 가리킨 최초 실행은 capture 임시 파일 오류로 0개를
+  수집했고, C6c 전체의 최초 재시도도 NTFS 권한 비트 안전성 검사에서 실패했다. WSL `/tmp`를 명시한
+  동일 범위 재실행은 모두 통과해 코드 실패가 아닌 실행 환경 기준선임을 확인했다.
+- 변경 source Ruff와 기존 import 정렬 기준선을 제외한 C6c test Ruff가 통과했다. strict mypy는 공용
+  venv에 없는 `types-PyYAML` stub만 제외하고 변경 source에서 통과했다. 대형 기존 파일 전체의 import
+  정렬·format 기준선은 이 수정과 무관하므로 섞지 않았다.
+
 ## 2026-07-20 (C6c Map UI 통합 경로 smoke 수정 착수 — T-037)
 
 - 최종 Map UI 로그인은 200과 `Set-Cookie`를 반환했지만, C6c가 clean-cut된

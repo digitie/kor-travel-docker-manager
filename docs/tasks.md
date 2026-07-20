@@ -34,6 +34,7 @@
 | **T-035** | C7 Map production API 인증 env 결선 | `[/]` | - | issue #63, Map #780/#782 fail-closed 설정과 C6c preflight 정렬 |
 | **T-036** | C7 PinVi Dagster image 계약 정렬 | `[/]` | - | exact PinVi image의 `DAGSTER_HOME`·code location과 manager Compose override 정렬 |
 | **T-037** | C6c Map UI 통합 경로 smoke 정렬 | `[/]` | - | 삭제된 `/ops/providers` 대신 `/ops/datasets` 인증 lifecycle 검증 |
+| **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -294,6 +295,21 @@
 - [x] 단일 적대적 리뷰 P0~P2 없음 판정과 backend 888개, focused 800개, Ruff, strict mypy gate를 통과한다.
 - [ ] PR을 병합한다.
 - [ ] n150 compatible-pair capture에서 실제 보호 페이지 200과 logout 후 재차단을 확인한다.
+
+### T-039: C6c PinVi login SSR shell 판정 정렬
+
+- [x] n150 read-only 응답이 200·`text/html`·비어 있지 않은 body·`/_next/static/`과
+      `/admin/login/page-*.js` route chunk를 포함하지만 `admin-login-form`은 포함하지 않는 원인을
+      PinVi의 `Suspense fallback={null}` client login page와 대조한다.
+- [x] HTTP shell smoke와 browser smoke의 책임을 문서로 먼저 분리한다. shell은 status/content/body,
+      일반 Next.js static marker와 `admin/login` 전용 page chunk를 확인하고, hydration 후 form·로그인
+      상호작용은 최종 n150 Playwright가 담당한다.
+- [x] `run_ui_auth_smoke`에서 raw SSR `admin-login-form` 요구를 제거하고 route-specific page chunk를
+      exact 판정한다. 일반 Next.js fallback HTML이나 다른 route chunk만 있는 응답은 계속 fail-close한다.
+- [x] positive SSR shell과 form 포함 shell, route chunk가 없는 generic fallback, 다른 route chunk,
+      status/content-type/empty-body 오류를 focused 단위 테스트로 고정한다.
+- [x] 같은 단일 적대적 reviewer의 P0~P2 없음 승인 뒤에만 focused/full test와 Ruff/mypy를 실행한다.
+- [ ] 최신 main rebase·CI green 뒤 n150 compatible-pair capture와 최종 Playwright login form을 확인한다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

@@ -235,6 +235,12 @@ _SOURCE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _CONTRACT_GENERATION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 _COMPOSE_PROJECT_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{2,62}$")
 _ASCII_RETRY_AFTER = re.compile(r"^[0-9]+$")
+_PINVI_LOGIN_PAGE_CHUNK_PATTERN = re.compile(
+    r'<script\b[^>]*\bsrc=["\']'
+    r"/_next/static/chunks/app/\(admin\)/admin/login/page-[0-9a-f]+\.js"
+    r'(?:\?[^"\']*)?["\'][^>]*>',
+    re.IGNORECASE,
+)
 _MAP_UI_PASSWORD_HASH_PATTERN = re.compile(
     r"^pbkdf2_sha256\$([0-9]+)\$[0-9A-Za-z_-]+\$[0-9A-Za-z_-]+$"
 )
@@ -2764,12 +2770,15 @@ def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
         headers={},
         read_error_body=False,
     )
+    pinvi_content_type = (
+        (pinvi_login_shell.content_type or "").partition(";")[0].strip().lower()
+    )
     if (
         pinvi_login_shell.status != 200
-        or not (pinvi_login_shell.content_type or "").lower().startswith("text/html")
+        or pinvi_content_type != "text/html"
         or not pinvi_login_shell.body_text
-        or 'data-testid="admin-login-form"' not in pinvi_login_shell.body_text
         or "/_next/static/" not in pinvi_login_shell.body_text
+        or not _PINVI_LOGIN_PAGE_CHUNK_PATTERN.search(pinvi_login_shell.body_text)
     ):
         raise DeploymentContractError("C6c PinVi Web login shell smoke failed")
     return [
