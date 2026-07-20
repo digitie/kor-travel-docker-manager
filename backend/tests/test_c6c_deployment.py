@@ -118,6 +118,7 @@ _MAP_PRODUCTION_API_LITERALS = {
     "KOR_TRAVEL_MAP_API_PROFILE": "production",
     "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
+    "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
     "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
     "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
         '["127.0.0.1/32","::1/128"]'
@@ -940,6 +941,7 @@ def _source_compose() -> dict[str, object]:
                     "KOR_TRAVEL_MAP_API_PROFILE": "production",
                     "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
                     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
+                    "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
                     "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
                     "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
                         '["127.0.0.1/32","::1/128"]'
@@ -1706,6 +1708,11 @@ def test_resolved_compose_accepts_exact_protected_service_wiring() -> None:
         ),
         (
             "kor-travel-map-api",
+            "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED",
+            "false",
+        ),
+        (
+            "kor-travel-map-api",
             "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED",
             "true",
         ),
@@ -2121,6 +2128,11 @@ def test_compose_candidate_accepts_only_exact_api_source_wiring() -> None:
         ),
         (
             "kor-travel-map-api",
+            "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED",
+            "false",
+        ),
+        (
+            "kor-travel-map-api",
             "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED",
             "true",
         ),
@@ -2331,6 +2343,15 @@ def test_repository_compose_uses_fail_closed_map_ui_auth_wiring() -> None:
         name: map_api_environment[name]
         for name in _MAP_PRODUCTION_API_LITERALS
     } == _MAP_PRODUCTION_API_LITERALS
+    for service_name, service in repository_services.items():
+        if service_name == "kor-travel-map-api" or not isinstance(service, dict):
+            continue
+        service_environment = service.get("environment")
+        if isinstance(service_environment, dict):
+            assert (
+                "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED"
+                not in service_environment
+            )
     assert map_api_environment["KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"] == (
         "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
         "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
@@ -5470,6 +5491,7 @@ def test_runtime_secret_gate_rejects_missing_or_changed_map_ui_auth(
         ("KOR_TRAVEL_MAP_API_PROFILE", "local-dev"),
         ("KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED", "false"),
         ("KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED", "true"),
+        ("KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED", "false"),
         ("KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED", "true"),
         ("KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS", '["0.0.0.0/0"]'),
     ],
