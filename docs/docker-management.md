@@ -372,7 +372,7 @@ ktdctl pinvi-pair deploy --build
    provenance arg만 exact 허용하고 external Dockerfile·additional context·secret·target을 거부한다.
 2. 현재 active set과 공용 dependency·Map/PinVi UI·Dagster의 running/healthy를 확인한다. 현재 Map UI
    container를 inspect해 username·hash·session secret이 frozen environment와 정확히 같은지 검증한 다음,
-   login→`/ops/providers`→logout→재차단 lifecycle을 통과해야 한다. 어느 단계든 실패하면 Docker mutation은
+   login→`/ops/datasets`→logout→재차단 lifecycle을 통과해야 한다. 어느 단계든 실패하면 Docker mutation은
    0이며 기존 runtime도 중지하지 않는다. 통과하면 다섯 runtime을 함께 중지해 mixed set 노출을 막은 뒤
    `--no-deps`로 새 Map API image를 먼저 재생성한다.
    image의 `org.opencontainers.image.revision`을 clean Map `HEAD`와 비교한 뒤에만 직접 read 200,
@@ -394,7 +394,7 @@ ktdctl pinvi-pair deploy --build
    Env/Cmd/Entrypoint/Labels와 안전하게 순회할 수 있는 모든 scalar에서 confidential 이름·값을 찾고 각
    서비스의 정확한 허용 Env path 외 노출과 UI 평문 비밀번호 주입을 거부한다. username은 Map UI exact
    Env 이름·값만 고정하며 일반 scalar의 동일 문자열은 secret leak으로 처리하지 않는다.
-5. Map UI 로그인·`/ops/providers` 보호 화면·로그아웃·재차단과 PinVi Web login shell을 확인한다. 새
+5. Map UI 로그인·`/ops/datasets` 보호 화면·로그아웃·재차단과 PinVi Web login shell을 확인한다. 새
    generation의 Map/PinVi canonical smoke와 runtime 격리를 한 번 더 확인한 뒤에만 active manifest를
    갱신한다.
 

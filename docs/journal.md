@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-07-20 (C6c Map UI 통합 경로 smoke 수정 착수 — T-037)
+
+- 최종 Map UI 로그인은 200과 `Set-Cookie`를 반환했지만, C6c가 clean-cut된
+  `/ops/providers`를 보호 페이지로 조회해 404로 compatible-pair capture를 차단하는 현상을
+  n150에서 재현했다.
+- provider 운영 화면의 통합 정본인 `/ops/datasets`를 login `next`, 로그인 후 보호 GET,
+  logout 후 재차단 GET의 단일 경로로 사용하고 회귀 테스트·Docker 관리 문서를 함께 정렬한다.
+- 단일 적대적 리뷰에서 P0~P2 없음 판정을 받은 뒤 focused 800개·backend 전체 888개 테스트,
+  Ruff 0.3.7 baseline 제외 gate와 변경 source strict mypy를 통과했다. PR 병합 뒤 같은 exact
+  source compatible-pair capture로 재검증한다.
+
 ## 2026-07-20 (C7 PinVi Dagster image 계약 drift 수정 착수 — T-036)
 
 - n150 C7 verified-compatible capture의 PinVi dependent bootstrap에서 `pinvi-dagster`가

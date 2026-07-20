@@ -6861,7 +6861,7 @@ def test_map_ui_auth_preflight_requires_login_protected_logout_and_reblock() -> 
         HttpProbeResponse(200, {"ok": True}, set_cookie=True),
         HttpProbeResponse(200, None),
         HttpProbeResponse(200, {"ok": True}, set_cookie=True),
-        HttpProbeResponse(307, None, location="/login?next=%2Fops%2Fproviders"),
+        HttpProbeResponse(307, None, location="/login?next=%2Fops%2Fdatasets"),
     ]
     with patch.object(
         c6c_deployment, "_session_request", side_effect=responses
@@ -6869,8 +6869,11 @@ def test_map_ui_auth_preflight_requires_login_protected_logout_and_reblock() -> 
         result = run_map_ui_auth_preflight(_production_config())
 
     assert [item["status"] for item in result] == [200, 200, 200, 307]
-    assert request.call_args_list[1].args[1].endswith("/ops/providers")
-    assert request.call_args_list[3].args[1].endswith("/ops/providers")
+    assert json.loads(request.call_args_list[0].kwargs["body"])["next"] == (
+        "/ops/datasets"
+    )
+    assert request.call_args_list[1].args[1].endswith("/ops/datasets")
+    assert request.call_args_list[3].args[1].endswith("/ops/datasets")
 
 
 @pytest.mark.parametrize(
@@ -6922,7 +6925,7 @@ def test_ui_auth_smoke_requires_login_protected_logout_and_pinvi_shell() -> None
         HttpProbeResponse(200, {"ok": True}, set_cookie=True),
         HttpProbeResponse(200, None),
         HttpProbeResponse(200, {"ok": True}, set_cookie=True),
-        HttpProbeResponse(307, None, location="/login?next=%2Fops%2Fproviders"),
+        HttpProbeResponse(307, None, location="/login?next=%2Fops%2Fdatasets"),
         HttpProbeResponse(
             200,
             None,
@@ -6939,8 +6942,8 @@ def test_ui_auth_smoke_requires_login_protected_logout_and_pinvi_shell() -> None
         result = run_ui_auth_smoke(_production_config())
 
     assert [item["status"] for item in result] == [200, 200, 200, 307, 200]
-    assert request.call_args_list[1].args[1].endswith("/ops/providers")
-    assert request.call_args_list[3].args[1].endswith("/ops/providers")
+    assert request.call_args_list[1].args[1].endswith("/ops/datasets")
+    assert request.call_args_list[3].args[1].endswith("/ops/datasets")
 
 
 def test_pinvi_canonical_smoke_rejects_data_null() -> None:

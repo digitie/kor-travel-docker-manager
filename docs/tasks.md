@@ -33,6 +33,7 @@
 | **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
 | **T-035** | C7 Map production API 인증 env 결선 | `[/]` | - | issue #63, Map #780/#782 fail-closed 설정과 C6c preflight 정렬 |
 | **T-036** | C7 PinVi Dagster image 계약 정렬 | `[/]` | - | exact PinVi image의 `DAGSTER_HOME`·code location과 manager Compose override 정렬 |
+| **T-037** | C6c Map UI 통합 경로 smoke 정렬 | `[/]` | - | 삭제된 `/ops/providers` 대신 `/ops/datasets` 인증 lifecycle 검증 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -279,11 +280,20 @@
 
 - [x] C7 exact PinVi source revision의 `apps/etl/Dockerfile`과 package metadata에서
       `DAGSTER_HOME=/opt/pinvi/.dagster`, code location `pinvi.etl.definitions` 계약을 확인한다.
-- [ ] canonical `pinvi-dagster` Compose가 image 계약을 과거 `tripmate` 경로로 덮어쓰지 않도록
+- [x] canonical `pinvi-dagster` Compose가 image 계약을 과거 `tripmate` 경로로 덮어쓰지 않도록
       environment와 command를 정렬한다.
-- [ ] resolved Compose 회귀 테스트로 `DAGSTER_HOME`과 code location을 고정한다.
-- [ ] 적대적 리뷰 승인 뒤 focused/backend/Compose gate를 통과하고 C7 n150 compatible-pair
-      capture의 PinVi dependent bootstrap을 완료한다.
+- [x] resolved Compose 회귀 테스트로 `DAGSTER_HOME`과 code location을 고정한다.
+- [x] 적대적 리뷰 승인 뒤 focused/backend/Compose gate를 통과하고 PR #66을 병합한다.
+- [ ] C7 n150 compatible-pair capture에서 PinVi dependent bootstrap을 완료한다.
+
+### T-037: C6c Map UI 통합 경로 smoke 정렬
+
+- [x] 최종 Map UI에서 `/ops/providers`가 clean-cut되고 `/ops/datasets`로 통합된 경로 계약을 확인한다.
+- [x] login `next`, 로그인 후 보호 GET, logout 후 재차단 GET을 단일 `/ops/datasets` 정본으로 묶는다.
+- [x] auth lifecycle 단위 테스트와 Docker 관리 문서를 같은 경로로 정렬한다.
+- [x] 단일 적대적 리뷰 P0~P2 없음 판정과 backend 888개, focused 800개, Ruff, strict mypy gate를 통과한다.
+- [ ] PR을 병합한다.
+- [ ] n150 compatible-pair capture에서 실제 보호 페이지 200과 logout 후 재차단을 확인한다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
