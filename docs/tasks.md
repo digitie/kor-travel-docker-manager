@@ -35,6 +35,7 @@
 | **T-036** | C7 PinVi Dagster image 계약 정렬 | `[/]` | - | exact PinVi image의 `DAGSTER_HOME`·code location과 manager Compose override 정렬 |
 | **T-037** | C6c Map UI 통합 경로 smoke 정렬 | `[/]` | - | 삭제된 `/ops/providers` 대신 `/ops/datasets` 인증 lifecycle 검증 |
 | **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
+| **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -310,6 +311,18 @@
       status/content-type/empty-body 오류를 focused 단위 테스트로 고정한다.
 - [x] 같은 단일 적대적 reviewer의 P0~P2 없음 승인 뒤에만 focused/full test와 Ruff/mypy를 실행한다.
 - [ ] 최신 main rebase·CI green 뒤 n150 compatible-pair capture와 최종 Playwright login form을 확인한다.
+
+### T-038: Map destructive production 명시 승인 결선
+
+- [ ] Manager canonical `kor-travel-map-api`에
+      `KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED=true`를 literal로 명시한다.
+- [ ] raw·resolved candidate, activation 뒤 runtime이 exact `true`이고 다른 service·channel에는 이름이
+      없는지 C6c protected environment 계약으로 고정한다.
+- [ ] standalone Map compose의 기본 `false`와 Manager의 명시적 production 승인을 교차 계약 테스트로
+      구분한다. image 기본값이나 host env fallback은 승인 근거가 아니다.
+- [ ] compatible-pair manifest v4 및 C7 attestation의 Map API environment hash가 이 enablement를
+      포함하고, 실제 destructive backup 작업은 인증 principal actor를 감사한다는 운영 증거를 문서화한다.
+- [ ] Map issue #796의 actor/OpenAPI 변경과 함께 단일 적대 리뷰·CI·n150 final live를 통과한다.
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
