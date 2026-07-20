@@ -254,8 +254,8 @@ def test_unexpected_docker_error_is_not_treated_as_missing(
 @pytest.mark.parametrize(
     ("stdout", "stderr"),
     [
-        ("{}\n", "Error response from daemon: No such image: ignored\n"),
-        ("[]\n", "Error response from daemon: No such image: ignored extra\n"),
+        ("{}\n", "Error response from daemon: No such image: {reference}\n"),
+        ("[]\n", "Error response from daemon: No such image: {reference} extra\n"),
         ("[]\n", "permission denied\n"),
     ],
 )
@@ -265,9 +265,13 @@ def test_near_miss_missing_output_is_rejected(
     stderr: str,
 ) -> None:
     pair = _pair("abcde", "6")
+    reference = (
+        f"{RETENTION_REPOSITORY_PREFIX}kor-travel-map-api:"
+        f"{pair.map_image_id.removeprefix('sha256:')}"
+    )
     run = Mock(
         return_value=subprocess.CompletedProcess(
-            ["docker"], 1, stdout=stdout, stderr=stderr
+            ["docker"], 1, stdout=stdout, stderr=stderr.format(reference=reference)
         )
     )
     monkeypatch.setattr(subprocess, "run", run)
