@@ -958,3 +958,34 @@ enablement는 Manager source/runtime attestation, use는 Map의 principal audit 
 ### 후속
 
 - (open) Manager T-038과 Map issue #796을 각각 PR로 병합한 뒤 n150 exact pair를 recapture한다.
+
+## ADR-25: Map feature 관리 REST는 Manager production source가 명시 활성화한다
+
+- 상태: accepted
+- 날짜: 2026-07-20
+- 결정자: human, Codex
+
+### 컨텍스트
+
+Map API의 feature 관리 REST 미설정 기본값은 `true`라 Manager production runtime에
+`KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED`가 없어도 조회·조작 surface 자체는 동작한다. 그러나
+C7 verifier는 기능 노출이 review된 Manager source의 명시 결정인지 image 기본값의 우연한 결과인지
+구분할 수 없어 attestation을 fail-close했다. image 기본값이나 host 환경의 암묵 상속에 기대면 어떤
+배포 source가 기능 노출을 승인했는지 증명할 수 없다.
+
+### 결정
+
+Manager canonical Compose의 `kor-travel-map-api` environment에만
+`KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED=true` literal을 둔다. C6c raw/resolved candidate와
+activation 뒤 runtime은 이 exact path와 값을 보호 환경 계약으로 검사한다. 다른 service,
+`env_file`, build arg, command, label, config, secret 등 다른 channel에는 이름 자체가 나타날 수 없다.
+
+### 결과
+
+- production feature 관리 REST 활성화 의도가 review된 Manager source와 runtime에 함께 결박된다.
+- 누락, `false` 변경, 다른 service 유출은 첫 mutation 전 또는 activation 검증에서 fail-close한다.
+- standalone Map과 Manager 밖 배포의 기본 정책은 바뀌지 않는다.
+
+### 후속
+
+- (open) issue #70 구현·단일 적대적 리뷰·CI와 n150 compatible-pair/C7 live E2E를 완료한다.

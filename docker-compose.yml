@@ -391,6 +391,9 @@ services:
       KOR_TRAVEL_MAP_API_PROFILE: production
       KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED: 'true'
       KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED: 'false'
+      # ADR-25/T-040 — production feature 관리 REST는 image default가 아니라
+      # review된 Manager source가 명시적으로 활성화한다.
+      KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED: 'true'
       # ADR-24/T-038 — standalone Map은 destructive default false다. Manager가
       # 관리하는 production runtime만 review된 source에서 명시적으로 승인한다.
       KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED: 'true'
