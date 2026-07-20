@@ -396,7 +396,7 @@ ktdctl pinvi-pair deploy --build
    Env 이름·값만 고정하며 일반 scalar의 동일 문자열은 secret leak으로 처리하지 않는다.
 5. Map UI 로그인·`/ops/datasets` 보호 화면·로그아웃·재차단과 PinVi Web login shell을 확인한다.
    PinVi shell은 200·`text/html`·비어 있지 않은 body·일반 `/_next/static/` marker와
-   `/_next/static/chunks/app/admin/login/page-<hash>.js`를 모두 요구하며, route chunk 없는 generic
+   `/_next/static/chunks/app/(admin)/admin/login/page-<hex>.js`를 모두 요구하며, route chunk 없는 generic
    fallback은 거부한다. `Suspense fallback={null}` client page의 hydrated `admin-login-form`과 실제
    로그인 동작은 최종 n150 Playwright가 검증한다. 새
    generation의 Map/PinVi canonical smoke와 runtime 격리를 한 번 더 확인한 뒤에만 active manifest를

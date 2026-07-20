@@ -2770,9 +2770,12 @@ def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
         headers={},
         read_error_body=False,
     )
+    pinvi_content_type = (
+        (pinvi_login_shell.content_type or "").partition(";")[0].strip().lower()
+    )
     if (
         pinvi_login_shell.status != 200
-        or not (pinvi_login_shell.content_type or "").lower().startswith("text/html")
+        or pinvi_content_type != "text/html"
         or not pinvi_login_shell.body_text
         or "/_next/static/" not in pinvi_login_shell.body_text
         or not _PINVI_LOGIN_PAGE_CHUNK_PATTERN.search(pinvi_login_shell.body_text)

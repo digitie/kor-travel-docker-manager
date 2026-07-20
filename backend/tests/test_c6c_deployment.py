@@ -7089,6 +7089,15 @@ def test_pinvi_provider_sync_requires_canonical_scope_and_status(
             ),
             content_type="application/json",
         ),
+        HttpProbeResponse(
+            200,
+            None,
+            body_text=(
+                '<html><script src="/_next/static/chunks/app/(admin)/admin/login/'
+                'page-0e42b2cb94aee998.js"></script></html>'
+            ),
+            content_type="text/html-fallback",
+        ),
         HttpProbeResponse(200, None, body_text="", content_type="text/html"),
         HttpProbeResponse(
             200,
@@ -7109,6 +7118,7 @@ def test_pinvi_provider_sync_requires_canonical_scope_and_status(
     ids=[
         "non-200",
         "non-html",
+        "html-prefix-only",
         "empty-body",
         "generic-next-fallback",
         "different-route-chunk",

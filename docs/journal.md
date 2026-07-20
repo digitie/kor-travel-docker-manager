@@ -20,6 +20,10 @@
   `admin/login.html`도 form 0개·Next static marker·`(admin)/admin/login/page-<hex>.js` chunk를 확인했다.
 - 구현 diff는 exact route script `src` regex와 form 유무 양성 2건, non-200/non-HTML/empty/generic/다른
   route 음성 5건으로 제한했다. 동일 단일 reviewer 승인 전 정책에 따라 test/lint는 실행하지 않았다.
+- 단일 reviewer의 P2 두 건에 따라 content type prefix 비교를 exact `text/html` media type token
+  비교로 바꾸고 `text/html-fallback` 음성 fixture를 추가했다. 운영 문서도 실제
+  `(admin)/admin/login/page-<hex>.js` route chunk와 exact하게 맞췄다. 코드 재리뷰 전에는 test/lint를
+  계속 실행하지 않는다.
 
 ## 2026-07-20 (C6c Map UI 통합 경로 smoke 수정 착수 — T-037)
 
