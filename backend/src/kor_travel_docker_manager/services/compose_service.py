@@ -4235,14 +4235,15 @@ class ComposeService:
                     transaction=transaction,
                 )
                 updated_manifest = initial_pair_manifest(pair)
-                manifest_commit_started = True
-                write_pair_manifest(manifest_path, updated_manifest)
+                image_provenance = self._pair_provenance_payload(pair)
                 result["verification"] = verification
                 result["contract_generation"] = pair.contract_generation
-                result["image_provenance"] = self._pair_provenance_payload(pair)
+                result["image_provenance"] = image_provenance
                 result["stdout"] += (
                     f"compatible Map+PinVi image pair bootstrapped: {manifest_path}\n"
                 )
+                manifest_commit_started = True
+                write_pair_manifest(manifest_path, updated_manifest)
             except Exception as exc:
                 if not mutation_attempted:
                     try:

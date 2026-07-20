@@ -178,6 +178,34 @@ def test_partial_tag_failure_does_not_remove_existing_references(
     assert original.items() <= docker.references.items()
     assert not any(command[1:3] == ("image", "rm") for command in docker.commands)
 
+    docker.fail_tag_number = None
+    retry = reconcile_pair_references((active, rollback), cwd="/tmp")
+
+    assert retry.removed == 0
+    assert len(docker.references) == 10
+
+
+def test_moving_service_tag_rollover_keeps_previous_content_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = _pair("abcde", "6")
+    candidate = _pair("f1234", "7")
+    docker = FakeDocker(previous, candidate)
+    moving_reference = "kor-travel-map-api:latest"
+    docker.references[moving_reference] = previous.map_image_id
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    reconcile_pair_references((previous,), cwd="/tmp")
+    retained_previous = (
+        f"{RETENTION_REPOSITORY_PREFIX}kor-travel-map-api:"
+        f"{previous.map_image_id.removeprefix('sha256:')}"
+    )
+
+    docker.references[moving_reference] = candidate.map_image_id
+    ensure_pair_references((candidate,), cwd="/tmp")
+
+    assert docker.references[moving_reference] == candidate.map_image_id
+    assert docker.references[retained_previous] == previous.map_image_id
+
 
 def test_bootstrap_rejects_unresolved_retention_residue(
     monkeypatch: pytest.MonkeyPatch,
@@ -221,3 +249,42 @@ def test_unexpected_docker_error_is_not_treated_as_missing(
 
     with pytest.raises(DeploymentContractError, match="cannot be inspected"):
         ensure_pair_references((pair,), cwd="/tmp")
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        ("{}\n", "Error response from daemon: No such image: ignored\n"),
+        ("[]\n", "Error response from daemon: No such image: ignored extra\n"),
+        ("[]\n", "permission denied\n"),
+    ],
+)
+def test_near_miss_missing_output_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+    stderr: str,
+) -> None:
+    pair = _pair("abcde", "6")
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["docker"], 1, stdout=stdout, stderr=stderr
+        )
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="cannot be inspected"):
+        ensure_pair_references((pair,), cwd="/tmp")
+
+
+def test_invalid_reference_in_owned_namespace_blocks_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pair = _pair("abcde", "6")
+    docker = FakeDocker(pair)
+    docker.references[f"{RETENTION_REPOSITORY_PREFIX}unknown:latest"] = (
+        pair.map_image_id
+    )
+    monkeypatch.setattr(subprocess, "run", docker.run)
+
+    with pytest.raises(DeploymentContractError, match="invalid reference"):
+        reconcile_pair_references((pair,), cwd="/tmp")
