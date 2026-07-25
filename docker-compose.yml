@@ -394,6 +394,10 @@ services:
       KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}}/graphql
       # allowlist에 공개 dagster host를 추가해야 위 공개 graphql_url이 SSRF 검증을 통과한다.
       KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS: '["kor-travel-map-dagster","127.0.0.1","localhost","::1"${KTDM_PROD_MAP_DAGSTER_HOST:+,"${KTDM_PROD_MAP_DAGSTER_HOST}"}]'
+      # reloadRepositoryLocation(schedule cron override 반영 시 호출)은 code location을
+      # 다시 로드하며 완료까지 ~4s+ 걸린다. 기본 3s 타임아웃으로는 이 reload가 timeout(503)돼
+      # C7 ops-c7-schedule-write의 cron 단계가 실패한다. 상한(30s) 내에서 여유를 준다.
+      KOR_TRAVEL_MAP_API_DAGSTER_REQUEST_TIMEOUT_SECONDS: "30"
       KOR_TRAVEL_MAP_API_PROFILE: production
       KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED: 'true'
       KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED: 'false'
