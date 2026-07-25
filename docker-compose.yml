@@ -387,7 +387,13 @@ services:
       KOR_TRAVEL_MAP_API_PORT: ${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}
       KOR_TRAVEL_MAP_API_CORS_ALLOW_ORIGINS: '["${KTDM_PROD_URL_MAP:-http://localhost:${KOR_TRAVEL_MAP_UI_PORT:-12705}}","http://localhost:${KOR_TRAVEL_MAP_UI_PORT:-12705}","http://127.0.0.1:${KOR_TRAVEL_MAP_UI_PORT:-12705}"]'
       KOR_TRAVEL_MAP_API_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
-      KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS: '["kor-travel-map-dagster","127.0.0.1","localhost","::1"]'
+      # admin API가 클라이언트(admin UI / C7 게이트)에 노출하는 Dagster GraphQL endpoint는
+      # 내부(127.0.0.1)가 아니라 공개 https origin이어야 한다(ops-c7-schedule-write의
+      # canonicalGraphqlSha256이 https 강제). 서버측 호출용 DAGSTER_URL(내부)과 분리해
+      # KTDM_PROD_URL_MAP_DAGSTER에서 파생한다. dev(미설정)면 내부로 fallback.
+      KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}}/graphql
+      # allowlist에 공개 dagster host를 추가해야 위 공개 graphql_url이 SSRF 검증을 통과한다.
+      KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS: '["kor-travel-map-dagster","127.0.0.1","localhost","::1"${KTDM_PROD_MAP_DAGSTER_HOST:+,"${KTDM_PROD_MAP_DAGSTER_HOST}"}]'
       KOR_TRAVEL_MAP_API_PROFILE: production
       KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED: 'true'
       KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED: 'false'
