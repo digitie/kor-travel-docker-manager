@@ -31,6 +31,9 @@
 | **T-027** | PinVi public API URL·CORS origin 환경변수화 | 2026-06-28 | prod public Web/API origin을 gitignore `.env`에서 주입하도록 변경 |
 | **T-028** | Linux 전용 개발·버전관리·CodeGraph 실행 위치 정책 정리 | 2026-06-28 | `git`/CodeGraph는 Linux, Playwright E2E는 n150 우선·불가 시 Windows fallback |
 | **T-032** | C6c Map·PinVi image source provenance fail-close | 2026-07-19 | PR #58 squash merge, clean HEAD→Git archive→OCI label→manifest v3 결박 |
+| **T-021** | PR #36 후속 하드닝(신뢰 프록시 시크릿·brute-force durable·공개키 DB 직접조회·모달 a11y) | 2026-06-24 | AUTH-3/AUTH-6/APIKEY-1/FE-4, PR #38 머지·prod 검증 |
+| **T-025** | 배포 런북 + push 전 보안 감사 절차 | 2026-06-24 | `deploy-runbook.local.md`(gitignore), AGENTS.md 절차·DO NOT #13/#14 |
+| **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | 2026-07-28 | PR #75, n150 프록시 경유 실브라우저에서 `4401`/`wasClean` 확인, settle 실측 |
 
 ---
 
@@ -207,3 +210,45 @@
       strict mypy, Ruff, production Compose `config --quiet`/resolved exact build mapping 통과
 - [x] PR #58을 squash merge(`ecaab504e63a99cb757318d3b67337bec962d90b`)하고 상위 C7
       완료 흐름의 n150 production gate까지 마감
+
+### T-021: PR #36 후속 하드닝(신뢰 프록시 시크릿·brute-force durable·공개키 DB 직접조회·모달 a11y)
+
+- [x] AUTH-3: `KTDM_TRUSTED_PROXY_SECRET`으로 신뢰 CIDR 매칭만으로는 `X-Forwarded-*`를 신뢰하지
+      않도록 보강한다. host 네트워크의 로컬 프로세스가 loopback 출처로 헤더를 위조하는 것을 차단한다.
+- [x] AUTH-6: 로그인 실패 카운터를 인메모리가 아닌 감사 로그(durable) 기반으로 계산해 재시작·다중
+      워커에서도 유지되게 한다(`check_login_rate_limit`).
+- [x] APIKEY-1: 공개 API 키 유효성을 DB에서 직접 조회한다(`public_api_key_is_valid`).
+- [x] FE-4: 로그·차트·설정 모달에 `role="dialog"`/`aria-modal`/`aria-label`을 부여한다.
+- [x] PR #38 머지 및 prod 배포 후 검증.
+
+### T-025: 배포 런북 + push 전 보안 감사 절차
+
+- [x] 민감 정보를 담는 `docs/deploy-runbook.local.md`를 gitignore(`*.local.md`) 대상으로 유지하고,
+      반복 배포 실수와 고정 절차를 상세히 기록한다.
+- [x] AGENTS.md에 「prod 배포 & 보안 감사」와 「remote 푸시 전 보안 감사(필수 절차)」를 둔다.
+- [x] DO NOT #13/#14로 민감값 커밋 금지를 명문화한다.
+- [x] 프로젝트별 민감 문자열(호스트 IP·SSH 사용자·공개 도메인·관리자 비번·시크릿) 스캔 명령을
+      런북에 고정한다.
+
+### T-042: C7 WebSocket 종료 코드 계약(accept-then-close) 결선
+
+`kor-travel-map`의 `T-ADM-C7W`(#806/PR #807)·`T-VN-H11`(#809)과 같은 결함이 매니저에도 있었다.
+거절이 `accept()` 이전에 `close(4401)`을 호출해 uvicorn이 HTTP 403 handshake 거절로 바꿔 보냈고,
+브라우저는 `4401`이 아니라 `1006`만 관측했다. 기존 테스트는 Starlette TestClient가 ASGI close
+메시지를 그대로 되던지는 탓에 거짓 통과하고 있었다.
+
+- [x] 세 pre-accept close를 accept-then-close로 전환하고 data frame 0건을 고정한다 (C-1/C-6).
+- [x] settle window를 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS`로 env 튜너블·`[0,5]` clamp한다 (C-3).
+- [x] accept 실패 뒤 close 금지, accept→settle→close를 취소 shield child task로 묶는다 (C-4/C-5).
+- [x] 프론트가 `4401`/`4000`을 소비해 재시도를 멈추고 LoginScreen으로 전환한다 (C-8).
+- [x] 계약을 TestClient로 구분할 수 없으므로 ASGI 메시지 시퀀스(`accept`→`close`) 회귀로 고정하고,
+      구 동작 negative control에서 6건이 실패함을 확인한다.
+- [x] 같은 handler의 확인된 결함(idle container client 종료 미검출, 소진 stream 무한 polling,
+      accept 후 close 없는 return, event loop 위 blocking 호출, 연결 0건 docker sweep,
+      살아 있는 소켓의 세션 재검증 부재)을 함께 정리한다.
+- [x] 적대적 리뷰 2명 × 2라운드를 반영한다. 재인가 우회(keepalive가 창을 리셋), 프론트 backoff
+      무력화, `ensure_ascii` 회귀, 테스트 모듈의 공유 env 오염을 mutation/negative control로 고정.
+- [x] n150 운영 HAProxy TLS 엣지 경유 실브라우저에서 `code=4401, wasClean=true, data frame 0건`,
+      알 수 없는 container는 `4000`, 로그아웃 후 20초간 WS 재연결 0건을 확인한다.
+- [x] settle 기본값을 실측으로 확정한다 — `0.25` 10/10, `0.0` 12/12 모두 4401(1006 0건)이라
+      `0.0`으로 두고 knob은 유지. uvicorn ws 구현·프록시 토폴로지 변경 시 재측정.
