@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -168,12 +169,50 @@ def save_compose_config(config: dict[str, Any]) -> None:
         )
 
 
-SENSITIVE_KEY_PARTS = ("PASSWORD", "SECRET", "TOKEN", "ACCESS_KEY", "PRIVATE_KEY")
+# inspect 응답의 env·label에서 가릴 key 조각.
+#
+# `API_KEY`는 `ACCESS_KEY`에 걸리지 않는다. 이 저장소만 해도 provider API 키가 여럿 있어
+# (`KOR_TRAVEL_MAP_OPINET_API_KEY`, `KOR_TRAVEL_MAP_KREX_*_API_KEY`,
+# `KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY`, `KOR_TRAVEL_GEO_VWORLD_API_KEY`)
+# 빠뜨리면 그대로 노출된다. T-012가 inspect를 대시보드 UI에 연결하면서 이 경로가
+# API/CLI 뿐 아니라 브라우저 한 번의 클릭으로 열리게 됐다.
+#
+# 과다 redaction은 안전한 방향이므로(값을 못 보는 불편) 의심스러우면 포함한다.
+# 예: `..._API_KEY_CACHE_TTL_S`(숫자)나 공개용 `NEXT_PUBLIC_*_API_KEY`도 함께 가려진다.
+SENSITIVE_KEY_PARTS = (
+    "PASSWORD",
+    "PASSWD",
+    "SECRET",
+    "TOKEN",
+    "ACCESS_KEY",
+    "PRIVATE_KEY",
+    "API_KEY",
+    "APIKEY",
+    "CREDENTIAL",
+)
+
+
+# key 이름만 보는 방식은 값 안에 박힌 credential을 못 잡는다. DSN/URL은 이름이
+# `..._PG_DSN`·`..._DATABASE_URL`처럼 위 목록에 걸리지 않으면서 값에
+# `postgresql+asyncpg://user:password@host/db` 형태로 비밀번호를 담는다.
+#
+# key 전체를 가리는 대신 userinfo의 비밀번호 구간만 치환한다. `..._BASE_URL`,
+# `..._ENDPOINT_URL`처럼 비밀이 아닌 URL은 그대로 읽을 수 있어야 패널이 쓸모 있다.
+_URL_USERINFO_RE = re.compile(
+    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)(?P<user>[^:/?#@\s]+):(?P<password>[^@/?#\s]+)@"
+)
 
 
 def _is_sensitive_key(key: str) -> bool:
     upper_key = key.upper()
     return any(part in upper_key for part in SENSITIVE_KEY_PARTS)
+
+
+def _redact_value_credentials(value: str) -> str:
+    """값 안의 `scheme://user:password@` 비밀번호 구간을 가린다."""
+    return _URL_USERINFO_RE.sub(
+        lambda m: f"{m.group('scheme')}{m.group('user')}:<redacted>@", value
+    )
 
 
 def _redact_env_pair(raw_pair: str) -> str:
@@ -182,7 +221,19 @@ def _redact_env_pair(raw_pair: str) -> str:
     key, value = raw_pair.split("=", 1)
     if _is_sensitive_key(key):
         return f"{key}=<redacted>"
-    return f"{key}={value}"
+    return f"{key}={_redact_value_credentials(value)}"
+
+
+def _redact_argv(argv: list[str] | None) -> list[str] | None:
+    """command/entrypoint argv에서 URL credential을 가린다.
+
+    env·label과 달리 cmd/entrypoint는 그동안 아무 필터도 거치지 않았다. 지금 compose의
+    command에는 credential이 없지만(모두 environment로 주입), 이미지에 내장된 CMD나
+    `mc alias set <ep> <access> <secret>` 같은 관용구가 그대로 노출될 수 있는 통로다.
+    """
+    if not argv:
+        return argv
+    return [_redact_value_credentials(str(item)) for item in argv]
 
 
 def _sanitize_labels(labels: dict[str, str] | None) -> dict[str, str]:
@@ -559,8 +610,8 @@ class DockerService:
                     "config": {
                         "hostname": config.get("Hostname"),
                         "env": env,
-                        "cmd": config.get("Cmd"),
-                        "entrypoint": config.get("Entrypoint"),
+                        "cmd": _redact_argv(config.get("Cmd")),
+                        "entrypoint": _redact_argv(config.get("Entrypoint")),
                         "labels": _sanitize_labels(config.get("Labels")),
                         "working_dir": config.get("WorkingDir"),
                     },

@@ -25,7 +25,8 @@
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
 | **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[/]` | - | T-042 리뷰 후속, PR #76 |
 | **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
-| **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
+| **T-012** | 대시보드 상세 패널 확장 | `[/]` | - | inspect 모달·5개 탭·dev ensure 버튼, 비밀 redaction 보강, 실브라우저 검증 |
+| **T-044** | ensure 라우트의 production 서버측 차단 | `[ ]` | - | T-012 리뷰 발견: 비-C6c target은 production에서도 통과한다 |
 
 ---
 
@@ -51,12 +52,48 @@
 
 ### T-012: 대시보드 상세 패널 확장
 
-- [ ] 컨테이너 row 선택 시 inspect 상세 drawer 또는 modal 표시
-- [ ] mounts, networks, healthcheck, redacted env를 탭으로 분리
-- [ ] target 단위 `ensure --build` 버튼을 개발 모드에서 제공
-- [ ] 모바일/데스크톱에서 표와 상세 패널이 겹치지 않도록 반응형 검증
+- [x] 컨테이너 row의 상세 버튼으로 inspect modal을 연다(`ContainerDetailModal`).
+      기존 모달과 같은 `role="dialog"`/`aria-modal`/`aria-label` 패턴에 Esc 닫기와
+      포커스 이동을 더했다.
+- [x] mounts, networks, healthcheck, redacted env를 탭으로 분리한다
+      (`role="tablist"`/`tab`/`tabpanel`과 `aria-controls`/`aria-labelledby` 연결).
+- [x] target 단위 `ensure --build` 버튼을 개발 빌드에서만 제공한다. `containers`는 사실
+      depends_on까지 펼쳐진 목록이라(통합 PostgreSQL은 db·geo·conc·map·pinvi·all 여섯
+      target에 모두 있다) 첫 매치를 쓰면 `dependency_order` 순서에 의존하게 된다.
+      순서와 무관하게 **가장 좁은** target을 고른다. 실행 전에는 실제 재생성 대상
+      서비스 목록과 개수를 보여 주고 확인을 받는다(db 포함 시 스키마 스크립트 경고).
+- [x] 모바일/데스크톱 반응형을 실브라우저로 검증한다. 390×844에서 page 가로 스크롤 0,
+      모달이 viewport 안에 들어오고, 넓은 Mounts 표와 탭 목록은 각자의 컨테이너 안에서만
+      가로 스크롤한다. 1440×900도 동일.
+- [x] 로컬 실브라우저 검증: 18개 row 전부 상세 버튼 노출, 5개 탭이 실제 inspect 데이터를
+      렌더(마운트 rw/ro, 네트워크 2개 IP/MAC/alias, healthcheck `healthy`+최근 검사 로그).
+      콘솔 오류 0건(로그인 전 401과 기존 favicon 404 제외).
+- [x] **적대적 리뷰 2명이 찾은 비밀 노출을 수정한다.** 이 패널이 inspect를 UI에 연결한
+      최초 지점이라, 그동안 API/CLI에만 있던 redaction 공백이 브라우저 한 번의 클릭으로
+      열렸다. key 이름 누락(`*_API_KEY`가 `ACCESS_KEY`에 안 걸림)과 값 내부 credential
+      (`postgresql://user:password@`)을 모두 막고, `cmd`/`entrypoint`도 필터에 넣었다.
+      실행 중 10개 컨테이너 전수 검사에서 유출 0건, `KTG_PG_DSN`은
+      `postgresql+psycopg://addr:<redacted>@...`로 비밀번호만 가려지는 것을 확인했다.
+- [x] 리뷰 지적 반영: WS broadcast(2초)마다 포커스를 빼앗던 effect 의존성 수정(7초간
+      포커스 유지 확인), `aria-controls` dangling IDREF 4건 해소, tabpanel `tabIndex=0`,
+      탭 좌우/Home/End 키 이동, 미생성·오프라인 컨테이너 버튼 비활성화, raw JSON 오류 문구
+      교체, running 중 `종료 코드 0` 오표시 제거.
 
+### T-044: ensure 라우트의 production 서버측 차단
 
+T-012 적대적 리뷰에서 확인한 공백이다. `POST /targets/{target}/ensure`는 production에서도
+비-C6c target을 막지 않는다. `assert_manager_mutation_allowed`는 환경 선언의 정합성만
+검증하고 문자열을 돌려주며, `assert_c6c_mutation_allowed`는 대상 service가 C6c
+runtime(Map 4종·pinvi-api)과 겹치지 않으면 그대로 반환한다. 따라서 db·storage·gra·cadv·
+prom·geo·conc는 통과한다.
+
+현재는 프론트의 `NODE_ENV` 분기(빌드 타임 제거)가 **유일한** 방어선인데, 이는 브라우저
+번들의 속성이지 백엔드의 속성이 아니다. `npm run dev` 프론트를 운영 백엔드에 붙이면
+버튼이 보이고 실제로 실행된다.
+
+- [ ] `/targets/{target}/ensure`가 production에서 명시 승인 없이는 거부하도록 한다.
+- [ ] 또는 서버가 보고하는 배포 환경을 UI에 내려 `NODE_ENV` 대신 그것으로 게이팅한다.
+- [ ] 음성 회귀 테스트로 고정한다(production + 비-C6c target → 거부).
 
 ### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선
 
