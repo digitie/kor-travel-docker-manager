@@ -43,6 +43,10 @@
 | **T-021** | PR #36 후속 하드닝(신뢰 프록시 시크릿·brute-force durable·공개키 DB 직접조회·모달 a11y) | 2026-06-24 | AUTH-3/AUTH-6/APIKEY-1/FE-4, PR #38 머지·prod 검증 |
 | **T-025** | 배포 런북 + push 전 보안 감사 절차 | 2026-06-24 | `deploy-runbook.local.md`(gitignore), AGENTS.md 절차·DO NOT #13/#14 |
 | **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | 2026-07-28 | PR #75, n150 프록시 경유 실브라우저에서 `4401`/`wasClean` 확인, settle 실측 |
+| **T-033** | C7 Map UI·Dagster OCI revision 결선 | 2026-07-28 | issue #60(closed), n150 실행 중 Map 4종 image의 `org.opencontainers.image.revision`이 동일 40자 commit임을 실측 |
+| **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | 2026-07-28 | issue #62(closed), n150 cAdvisor healthy·`/healthz` 200 및 compatible-pair active 세대 정상 확인 |
+| **T-035** | C7 Map production API 인증 env 결선 | 2026-07-28 | issue #63(closed), n150 Map API startup/readiness 및 service별 secret 격리 계약을 `docker exec env`로 실측 |
+| **T-036** | C7 PinVi Dagster image 계약 정렬 | 2026-07-28 | PR #66, n150 `pinvi-dagster-latest` 9일째 healthy로 dependent bootstrap 완료 확인 |
 | **T-013** | 운영(prod) 공개 주소 `.env` 주입 및 CORS 환경변수화 | 2026-06-20 | 도메인 비노출, `KTDM_CORS_ALLOW_ORIGINS`, 프론트 환경파일 분리 ⚠️ ID 재사용 |
 | **T-014** | Docker host 네트워크 전환·컨테이너=호스트 포트·서비스 prod URL·pinvi-dagster·tripmate 정리 | 2026-06-20 | `KTDM_DOCKER_NETWORK_MODE=host`, 12802, `KTDM_PROD_URL_*`, `ktd_venv` ⚠️ ID 재사용 |
 | **T-015** | 프론트 Tailwind v4 + StyleSeed 전면 전환·전역 오류 복구 boundary | 2026-06-20 | geo PR #391 반영, `@theme` 토큰, `DESIGN-RULES.md` ⚠️ ID 재사용 |
@@ -276,6 +280,83 @@
       알 수 없는 container는 `4000`, 로그아웃 후 20초간 WS 재연결 0건을 확인한다.
 - [x] settle 기본값을 실측으로 확정한다 — `0.25` 10/10, `0.0` 12/12 모두 4401(1006 0건)이라
       `0.0`으로 두고 knob은 유지. uvicorn ws 구현·프록시 토폴로지 변경 시 재측정.
+
+### T-033: C7 Map UI·Dagster OCI revision 결선
+
+- [x] `kor-travel-map-api`, `kor-travel-map-ui`, `kor-travel-map-dagster`,
+      `kor-travel-map-dagster-daemon`의 build가 모두 동일한 canonical
+      `KOR_TRAVEL_MAP_GIT_COMMIT`을 Dockerfile에 전달하도록 compose를 정렬한다.
+- [x] raw·resolved compose 계약이 네 service의 build arg·snapshot context·Dockerfile을
+      exact 검증하고 일부 service 또는 revision이 다른 회귀를 첫 mutation 전에 차단한다.
+- [x] candidate build가 Map runtime 네 image와 PinVi image를 모두 같은 frozen snapshot에서
+      완성하고, 각 immutable image ID와 OCI revision을 manifest v4에 기록한다.
+- [x] capture/deploy/rollback이 Map runtime 네 service를 같은 frozen transaction으로
+      재생성·검증하며, 복원 실패 시 다섯 runtime을 모두 중지해 혼합 generation을 차단한다.
+- [x] resolved fixture drift, candidate build service 누락, dependent image/revision mismatch,
+      activation·rollback 누락에 대한 회귀 계약을 추가한다.
+- [x] canonical v4 경로가 저장소 역사에 존재한 sibling `compatible-pair-v2.json`과
+      `compatible-pair-v3.json`을 payload·file type과 무관하게 mutation 전에 fail-close하고,
+      legacy bytes 불변과 Docker 미호출을 실행형 회귀로 고정한다.
+- [x] n150 production에서 실제 기동 중인 `kor-travel-map-api`·`-ui`·`-dagster`·
+      `-dagster-daemon` 네 컨테이너의 `org.opencontainers.image.revision` label을
+      `docker inspect`로 직접 확인 — 네 image 모두 동일한 40자 commit
+      (`c8ed6164381fccd35df1840427e5a682f2a2789d`)이었고, 이는 compatible-pair
+      manifest v4의 `map_source_revision` 기록과도 정확히 일치했다. issue #60은 이미
+      closed 상태였다.
+
+### T-034: C6c cAdvisor healthcheck 포트 계약 정렬
+
+- [x] canonical compose의 cAdvisor listen 포트와 명시적 `/healthz` healthcheck가
+      모두 `CADVISOR_PORT`(기본 `12301`)를 단일 정본으로 사용하게 한다.
+- [x] raw compose 계약이 exact `--port=${CADVISOR_PORT:-12301}`과 health URL을 고정하고,
+      default/custom resolved config에서 listen·probe 포트가 같은지 검증한다.
+- [x] n150 production에서 cAdvisor `healthy`와 설정 포트(`CADVISOR_PORT`) `/healthz` 200을
+      직접 확인했다. compatible-pair manifest v4에 2026-07-27 기록된 `active` 세대가
+      이미 존재하고 그 이후 계속 healthy 상태였다 — capture와 후속 readiness가 이미
+      통과한 상태임을 확인했다. issue #62는 이미 closed 상태였다.
+
+### T-035: C7 Map production API 인증 env 결선
+
+- [x] ADR-23에서 admin BFF, API-only service/cursor, public/debug/profile, metrics 비활성 계약과
+      service별 최소 주입 범위를 문서로 먼저 고정한다.
+- [x] canonical Compose와 `.env.example`에 Map #780/#782 production 설정을 정확히 반영했다.
+- [x] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
+      production literal을 mutation 전에 검증하게 한다.
+- [x] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가했다.
+- [x] 두 번째 적대적 리뷰 P1에 따라 manifest v4 exact 9-field shape 밖의 sibling 단조 marker를
+      추가했다. 최초 v3/v3 logical manifest hash만 pending 재시도를 허용하고 성공 검증 뒤 complete로
+      영구 닫아 A3→B4→rollback A3→C3 회전도 누락 예외를 다시 열지 못한다.
+- [x] marker atomic write/fsync와 fixed shape, 0600 regular owner, corrupt/symlink/mode/owner 및 pending
+      baseline drift fail-close 회귀 계약을 추가했다.
+- [x] 두 번째 적대적 리뷰 P2에 따라 source Compose 전체 scalar tree에서 admin=API+frontend,
+      service=API-only, cursor=v3 0회/v4 API exact 1회 외 모든 service/field leak를 거부했다.
+- [x] 세 번째 적대적 리뷰 P2에 따라 profile/public/debug도 API-only exact path로 올리고,
+      API·Dagster·daemon `env_file`의 known path/options와 tracked exact-revision 내용까지 검증한다.
+- [x] 네 번째 적대적 리뷰 P2에 따라 tracked `env_file`을 exact `100644 blob`·64 KiB 이하·UTF-8로
+      제한하고, 허용되지 않은 service의 `env_file: null` 우회도 차단했다.
+- [x] `.env.example`의 세 공개 local placeholder를 production config/raw/resolved에서 각각 거부하고
+      local 허용 회귀 계약을 추가했다.
+- [x] 동일 적대적 리뷰어의 최종 P0~P2 없음 판정 뒤 backend 886개, 변경 파일 Ruff,
+      strict mypy, 기본·커스텀 Compose gate를 통과했다.
+- [x] PR을 merge한다.
+- [x] n150 final v4 exact-pair에서 Map API startup/readiness(`kor-travel-map-api-latest`
+      46시간째 healthy)와 runtime secret isolation을 `docker exec env`로 이름만
+      확인(값은 출력하지 않음) — Map API에는 admin proxy·service token·cursor
+      signing secret·features/destructive 플래그가 모두 존재, admin BFF인 Map UI에는
+      정확히 admin proxy secret만 존재, Dagster/daemon에는 둘 다 부재 — 설계된
+      격리 계약과 정확히 일치했다. issue #63은 이미 closed 상태였다.
+
+### T-036: C7 PinVi Dagster image 계약 정렬
+
+- [x] C7 exact PinVi source revision의 `apps/etl/Dockerfile`과 package metadata에서
+      `DAGSTER_HOME=/opt/pinvi/.dagster`, code location `pinvi.etl.definitions` 계약을 확인한다.
+- [x] canonical `pinvi-dagster` Compose가 image 계약을 과거 `tripmate` 경로로 덮어쓰지 않도록
+      environment와 command를 정렬한다.
+- [x] resolved Compose 회귀 테스트로 `DAGSTER_HOME`과 code location을 고정한다.
+- [x] 적대적 리뷰 승인 뒤 focused/backend/Compose gate를 통과하고 PR #66을 병합한다.
+- [x] n150 production에서 `pinvi-dagster-latest`가 9일째 healthy 상태로 실행 중임을
+      확인했다 — C7 compatible-pair capture에서 PinVi dependent bootstrap이 이미
+      완료된 상태임을 확인했다.
 
 ### T-013 (2026-06-20): 운영(prod) 공개 주소 `.env` 주입 및 CORS 환경변수화
 

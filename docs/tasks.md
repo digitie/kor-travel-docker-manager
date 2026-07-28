@@ -15,10 +15,6 @@
 |:---|:---|:---:|:---:|:---|
 | **T-011** | 설정 저장 안정화 및 validation 고도화 | `[x]` | 2026-07-28 | diff 미리보기, 포트/네트워크/env 검증(baseline 인지 secret 방어) + 적대적 리뷰 2라운드(URL/비-URL 위조 변수명 우회, React key 포커스 유실) 수정, 실브라우저 검증 완료 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
-| **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
-| **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
-| **T-035** | C7 Map production API 인증 env 결선 | `[/]` | - | issue #63, Map #780/#782 fail-closed 설정과 C6c preflight 정렬 |
-| **T-036** | C7 PinVi Dagster image 계약 정렬 | `[/]` | - | exact PinVi image의 `DAGSTER_HOME`·code location과 manager Compose override 정렬 |
 | **T-037** | C6c Map UI 통합 경로 smoke 정렬 | `[/]` | - | 삭제된 `/ops/providers` 대신 `/ops/datasets` 인증 lifecycle 검증 |
 | **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
 | **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
@@ -283,74 +279,6 @@ prom·geo·conc는 통과한다.
       entrypoint guard 우회를 차단했다.
 - [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
       통과한 뒤 완료 이력으로 옮긴다.
-
-### T-033: C7 Map UI·Dagster OCI revision 결선
-
-- [x] `kor-travel-map-api`, `kor-travel-map-ui`, `kor-travel-map-dagster`,
-      `kor-travel-map-dagster-daemon`의 build가 모두 동일한 canonical
-      `KOR_TRAVEL_MAP_GIT_COMMIT`을 Dockerfile에 전달하도록 compose를 정렬한다.
-- [x] raw·resolved compose 계약이 네 service의 build arg·snapshot context·Dockerfile을
-      exact 검증하고 일부 service 또는 revision이 다른 회귀를 첫 mutation 전에 차단한다.
-- [x] candidate build가 Map runtime 네 image와 PinVi image를 모두 같은 frozen snapshot에서
-      완성하고, 각 immutable image ID와 OCI revision을 manifest v4에 기록한다.
-- [x] capture/deploy/rollback이 Map runtime 네 service를 같은 frozen transaction으로
-      재생성·검증하며, 복원 실패 시 다섯 runtime을 모두 중지해 혼합 generation을 차단한다.
-- [x] resolved fixture drift, candidate build service 누락, dependent image/revision mismatch,
-      activation·rollback 누락에 대한 회귀 계약을 추가한다.
-- [x] canonical v4 경로가 저장소 역사에 존재한 sibling `compatible-pair-v2.json`과
-      `compatible-pair-v3.json`을 payload·file type과 무관하게 mutation 전에 fail-close하고,
-      legacy bytes 불변과 Docker 미호출을 실행형 회귀로 고정한다.
-- [ ] n150에서 clean exact commit으로 네 image를 빌드해 각
-      `org.opencontainers.image.revision` label이 같은 40자 commit인지 확인한다.
-- [ ] C7 runtime attestation과 live E2E가 실제 기동된 네 Map image provenance를 통과하면
-      issue #60을 닫고 완료 이력으로 옮긴다.
-
-### T-034: C6c cAdvisor healthcheck 포트 계약 정렬
-
-- [x] canonical compose의 cAdvisor listen 포트와 명시적 `/healthz` healthcheck가
-      모두 `CADVISOR_PORT`(기본 `12301`)를 단일 정본으로 사용하게 한다.
-- [x] raw compose 계약이 exact `--port=${CADVISOR_PORT:-12301}`과 health URL을 고정하고,
-      default/custom resolved config에서 listen·probe 포트가 같은지 검증한다.
-- [ ] n150 production에서 cAdvisor `healthy`와 설정 포트 `/healthz` 200을 확인한 뒤
-      중단된 C6c compatible-pair capture를 단 한 번 재시도한다.
-- [ ] capture와 후속 readiness가 통과하면 issue #62를 닫고 완료 이력으로 옮긴다.
-
-### T-035: C7 Map production API 인증 env 결선
-
-- [x] ADR-23에서 admin BFF, API-only service/cursor, public/debug/profile, metrics 비활성 계약과
-      service별 최소 주입 범위를 문서로 먼저 고정한다.
-- [x] canonical Compose와 `.env.example`에 Map #780/#782 production 설정을 정확히 반영했다.
-- [x] C6c raw/resolved/runtime preflight가 credential shape·상호 구분·허용 service exact set과
-      production literal을 mutation 전에 검증하게 한다.
-- [x] 누락·약한 값·재사용·다른 service 유출·설정 drift 음성 fixture를 추가했다.
-- [x] 두 번째 적대적 리뷰 P1에 따라 manifest v4 exact 9-field shape 밖의 sibling 단조 marker를
-      추가했다. 최초 v3/v3 logical manifest hash만 pending 재시도를 허용하고 성공 검증 뒤 complete로
-      영구 닫아 A3→B4→rollback A3→C3 회전도 누락 예외를 다시 열지 못한다.
-- [x] marker atomic write/fsync와 fixed shape, 0600 regular owner, corrupt/symlink/mode/owner 및 pending
-      baseline drift fail-close 회귀 계약을 추가했다.
-- [x] 두 번째 적대적 리뷰 P2에 따라 source Compose 전체 scalar tree에서 admin=API+frontend,
-      service=API-only, cursor=v3 0회/v4 API exact 1회 외 모든 service/field leak를 거부했다.
-- [x] 세 번째 적대적 리뷰 P2에 따라 profile/public/debug도 API-only exact path로 올리고,
-      API·Dagster·daemon `env_file`의 known path/options와 tracked exact-revision 내용까지 검증한다.
-- [x] 네 번째 적대적 리뷰 P2에 따라 tracked `env_file`을 exact `100644 blob`·64 KiB 이하·UTF-8로
-      제한하고, 허용되지 않은 service의 `env_file: null` 우회도 차단했다.
-- [x] `.env.example`의 세 공개 local placeholder를 production config/raw/resolved에서 각각 거부하고
-      local 허용 회귀 계약을 추가했다.
-- [x] 동일 적대적 리뷰어의 최종 P0~P2 없음 판정 뒤 backend 886개, 변경 파일 Ruff,
-      strict mypy, 기본·커스텀 Compose gate를 통과했다.
-- [x] PR을 merge한다.
-- [ ] n150 final v4 exact-pair에서 Map API startup/readiness와 runtime secret isolation을 확인한 뒤
-      issue #63을 닫고 완료 이력으로 옮긴다.
-
-### T-036: C7 PinVi Dagster image 계약 정렬
-
-- [x] C7 exact PinVi source revision의 `apps/etl/Dockerfile`과 package metadata에서
-      `DAGSTER_HOME=/opt/pinvi/.dagster`, code location `pinvi.etl.definitions` 계약을 확인한다.
-- [x] canonical `pinvi-dagster` Compose가 image 계약을 과거 `tripmate` 경로로 덮어쓰지 않도록
-      environment와 command를 정렬한다.
-- [x] resolved Compose 회귀 테스트로 `DAGSTER_HOME`과 code location을 고정한다.
-- [x] 적대적 리뷰 승인 뒤 focused/backend/Compose gate를 통과하고 PR #66을 병합한다.
-- [ ] C7 n150 compatible-pair capture에서 PinVi dependent bootstrap을 완료한다.
 
 ### T-037: C6c Map UI 통합 경로 smoke 정렬
 
