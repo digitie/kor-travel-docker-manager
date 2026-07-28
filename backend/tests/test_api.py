@@ -32,6 +32,7 @@ TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_eng
 kor_travel_docker_manager.database.engine = test_engine
 kor_travel_docker_manager.database.SessionLocal = TestSessionLocal
 
+from kor_travel_docker_manager.api.websocket import status_manager
 from kor_travel_docker_manager.main import app
 
 client = TestClient(app)
@@ -254,12 +255,17 @@ def test_login_rate_limit_durable_via_audit_log():
 
 
 def test_ws_status_requires_session():
+    """미인증 거절은 accept-then-close다. handshake는 성립하고 첫 수신에서 4401이 온다.
+
+    브라우저가 실제로 보는 지점과 같은 층위를 측정한다. 계약(accept → close 순서) 자체는
+    tests/test_ws_contract.py의 ASGI 메시지 시퀀스 회귀가 고정한다.
+    """
     client.cookies.clear()
-    with pytest.raises(WebSocketDisconnect) as excinfo:
-        with client.websocket_connect(
-            "/api/v1/ws/status", headers={"Origin": FRONTEND_ORIGIN}
-        ):
-            pass
+    with client.websocket_connect(
+        "/api/v1/ws/status", headers={"Origin": FRONTEND_ORIGIN}
+    ) as ws:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            ws.receive_json()
     assert excinfo.value.code == 4401
 
 
@@ -267,12 +273,15 @@ def test_ws_status_requires_session():
 def test_ws_status_accepts_authenticated_session(mock_docker_service):
     mock_docker_service.get_containers_status.return_value = []
     login_client()
+    baseline = len(status_manager.active_connections)
     with client.websocket_connect(
         "/api/v1/ws/status", headers={"Origin": FRONTEND_ORIGIN}
     ) as ws:
         message = ws.receive_json()
         assert message["type"] == "status"
         assert message["containers"] == []
+        assert len(status_manager.active_connections) == baseline + 1
+    assert len(status_manager.active_connections) == baseline
 
 
 def test_public_api_key_lifecycle():

@@ -13,7 +13,10 @@ from kor_travel_docker_manager.api.admin import router as admin_router
 from kor_travel_docker_manager.api.auth import router as auth_router
 from kor_travel_docker_manager.api.routes import router as container_router
 from kor_travel_docker_manager.api.websocket import router as ws_router
-from kor_travel_docker_manager.api.websocket import status_broadcast_loop
+from kor_travel_docker_manager.api.websocket import (
+    shutdown_log_stream_executor,
+    status_broadcast_loop,
+)
 from kor_travel_docker_manager.services.auth_service import allowed_frontend_origins
 from kor_travel_docker_manager.services.compose_service import get_env_path
 from kor_travel_docker_manager.services.metrics_collector import metrics_collector
@@ -144,6 +147,10 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(broadcast_task, cleanup_task, return_exceptions=True)
     except Exception:
         pass
+
+    logger.info("Shutting down log stream executor...")
+    shutdown_log_stream_executor()
+
     logger.info("Application shutdown complete.")
 
 

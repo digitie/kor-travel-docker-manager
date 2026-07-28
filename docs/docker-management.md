@@ -30,6 +30,34 @@
 | CLI | `ktdctl` Python CLI 추가 | 다른 Kor Travel/PinVi 프로젝트에서 의존 Docker 실행용으로 사용 |
 | 문서 | 통합 DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
 
+### WebSocket 종료 코드 계약 (C7)
+
+거절은 반드시 handshake(101)를 먼저 완료한 뒤 application close frame으로 전달한다. accept
+이전에 close하면 ASGI 규약상 handshake 거절이 되어 uvicorn이 HTTP 403으로 바꿔 보내고,
+브라우저 WebSocket API는 4401 대신 1006(빈 reason, `wasClean=false`)만 본다.
+
+| 상황 | 서버 동작 | 브라우저 관측 |
+|---|---|---|
+| 미인증 · 세션 만료/폐기 · 허용되지 않은 Origin | accept(101) → data frame 0건 → `close(4401, "AUTH_REQUIRED")` | `code=4401`, `wasClean=true` |
+| 알 수 없는 `container_id` (`/ws/logs`) | accept(101) → data frame 0건 → `close(4000, "INVALID_CONTAINER_ID")` | `code=4000` |
+| 연결 유지 중 세션 만료/폐기(60초 주기 재검증) | `close(4401)` | `code=4401` |
+| docker 접근/스트림 실패 | `{"error": ...}` 1건 → `close(1011)` | `code=1011` |
+| 로그 스트림 EOF | `{"error": "로그 스트림이 종료되었습니다."}` → `close(1000)` | `code=1000` |
+| 정상 종료 | `close(1000)` | `code=1000` |
+
+- accept가 실패하면 close를 보내지 않는다(다시 pre-handshake 거절로 퇴화한다).
+- accept(101)과 close frame 사이에 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS`(기본 `0.25`,
+  clamp 범위 `[0, 5]`)만큼 settle 대기를 둔다. ASGI에는 transport drain acknowledgement가
+  없어 두 write가 한 TCP 세그먼트로 합쳐지면 리버스 프록시 엣지가 close frame을 잘라
+  브라우저가 1006으로 뭉갠다. 실제 값은 운영 프록시를 경유한 실브라우저 측정으로 정한다.
+- 클라이언트는 4401을 종단 상태로 취급하고 재연결하지 않는다. 4401을 소비하지 않으면
+  서버 수정은 관측되지 않는다.
+- 클라이언트는 서버의 첫 프레임 이전에 소켓에 쓰지 않는다. `onopen`에서 optimistic하게
+  보내면 거절 close와 동시 close가 되어 프록시가 RST로 close frame을 자른다.
+  `ws_status`의 `receive()`는 keepalive를 허용하지만, 추가한다면 첫 서버 프레임 이후에만 보낸다.
+- TestClient는 pre-accept close와 accept-then-close를 모두 같은 `WebSocketDisconnect(4401)`로
+  보고하므로 계약 회귀는 `backend/tests/test_ws_contract.py`의 ASGI 메시지 시퀀스로 고정한다.
+
 현재 공식 관리 컨테이너는 다음 18개다. dev 기본 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 포트 NAT가 없으므로 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다(컨테이너 내부 포트 = 호스트 포트). 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다.
 
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트(host=container) |
