@@ -10,7 +10,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.compose_service import compose_service
-from kor_travel_docker_manager.services.docker_service import docker_service
+from kor_travel_docker_manager.services.docker_service import (
+    ContainerConfigValidationError,
+    docker_service,
+)
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.registry import list_targets
 
@@ -185,6 +188,8 @@ def update_container_config(container_id: str, payload: ContainerConfigUpdate):
         result = docker_service.update_container_config(
             container_id, payload.ports, payload.env, payload.volumes, payload.networks
         )
+    except ContainerConfigValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ComposePostMutationContractError as exc:
         raise HTTPException(
             status_code=500, detail=_post_mutation_contract_detail(exc)

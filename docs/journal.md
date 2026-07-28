@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-07-28 (T-011 설정 저장 validation 고도화 — diff 미리보기·baseline 인지 secret 방어)
+
+- T-011의 남은 3개 항목(diff 표시, 포트/볼륨/네트워크 validation, secret 값 방어)을 마무리했다.
+- **diff 미리보기**는 백엔드 호출 없이 프론트에서 계산한다. `configTargetContainer.config`(baseline)와
+  현재 입력 상태를 비교해 포트·네트워크 추가/삭제, env 변경 전후 값을 모달에 실시간으로 보여 준다.
+- **포트 validation**: `docker_service.validate_port_mapping`을 추가했다. 이 저장소의 모든 ports 항목이
+  `${VAR:-12101}:${VAR:-12101}` 형태를 쓰므로(docker-compose.yml 전수 확인), `${...}` 보간 토큰은
+  opaque하게 신뢰하고 리터럴 숫자만 1~65535 범위·host[:container] 형식을 검사한다. 실제 compose 파일의
+  ports 18개·environment 244개 전체를 대상으로 "지금 저장해도 통과하는가"를 living regression test로
+  고정했다(파일이 바뀌면 테스트도 같이 검증한다).
+- **볼륨**: 이미 `compose_volume_graph_hash` 비교로 완전히 불변 처리되어 있어(임의 변경이 첫 mutation
+  전에 409) 서버에 새 검증을 추가하지 않았다. 대신 프론트가 baseline과 비교해 변경을 감지하면 제출 전에
+  경고하고 제출 버튼을 막아, 이미 서버가 거부할 왕복을 미리 차단한다.
+- **secret 방어의 핵심 설계 결정**: 처음에는 T-012에서 확장한 `_is_sensitive_key`(정적 key-이름
+  substring 목록)를 그대로 재사용하려 했으나, 실제 compose 파일 244개 env 전수 검증에서
+  `KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=true`가 오탐으로 걸렸다 — 이름에 "API_KEY"가 들어가지만
+  원래부터 리터럴 불리언 값이다. 정적 key-이름 휴리스틱은 READ(T-012의 inspect 마스킹, 과다 redaction이
+  안전한 방향)에는 맞지만 WRITE(이 작업, 오탐이 실제 기능을 막는 회귀)에는 너무 거칠다는 것을 실측으로
+  확인했다. **baseline이 이미 `${...}` 보간이었는지**를 기준으로 바꿨다 — 이미 `.env`로 분리돼 있던
+  참조를 리터럴로 되돌리는 것만 막고, 원래부터 리터럴이던 값(불리언 flag, DB 이름 등)은 건드리지 않는다.
+  baseline을 모르는 경우(오늘의 UI에서는 발생하지 않는 신규 key 추가 시나리오)에만 안전한 쪽으로
+  key-이름 휴리스틱을 fallback으로 쓴다.
+- key 이름과 무관하게, 값 안에 literal 접속 자격증명(`scheme://user:pass@`)이 `${...}` 밖에 남아 있으면
+  별도로 거부한다 — `..._PG_DSN`, `..._DATABASE_URL`처럼 이름이 평범해도 값에 비밀번호가 박혀 있을 수
+  있다(T-012 리뷰가 READ 경로에서 지적한 것과 같은 클래스의 위험을 WRITE 경로에서도 막는다). 다만
+  `${OUTER_VAR:-postgresql://user:dev_pw@host/db}`처럼 자격증명 전체를 하나의 `${...:-default}` 기본값
+  안에 두는 이 저장소의 기존 관행(모든 DSN류 값이 이 형태)은 통과시킨다 — `${...}` 블록을 통째로 지운
+  뒤 바깥쪽에 literal credential이 남아 있는지만 본다.
+- 검증은 lock 획득이나 Docker 접근보다 먼저 실행한다(`update_container_config` 진입 직후, compose 파일을
+  읽는 로컬 YAML 읽기만 하고 lock은 잡지 않는다). mutation 테스트로 이 순서를 직접 확인했다: 검증 호출을
+  제거하면 lock/환경 스냅샷 mock의 `AssertionError`가 먼저 터져 테스트가 실패한다.
+- 프론트에는 같은 규칙을 미러링한 `configValidation.ts`/`configDiff.ts`를 추가해 왕복 없이 즉시
+  피드백한다(서버가 최종 게이트이므로 프론트가 놓쳐도 보안 문제는 아니고 UX 품질만 낮아진다). 필드별
+  인라인 오류, 볼륨 불변 경고, 오류가 있으면 제출 버튼 비활성화까지 실브라우저로 확인했다.
+- **로컬 실브라우저 검증**(WSL 백엔드 + dev 프론트, 실제 컨테이너는 절대 재생성하지 않고 모달만 조작):
+  잘못된 포트 형식 → 인라인 오류 + 제출 비활성화, `POSTGRES_PASSWORD`를 리터럴로 바꾸면 baseline 인지
+  거부 메시지, 무해한 `POSTGRES_DB` 변경은 diff 패널에 정확히 표시, 볼륨 변경 시 불변 경고, 잘못된
+  네트워크 이름 거부까지 모두 확인. 제출은 한 번도 누르지 않아 로컬 인프라는 그대로 유지했다.
+- backend 1035 passed(신규 validation 테스트 다수 + negative control로 검증 순서 확인), ruff 기존 9건
+  유지, 프론트 type-check/lint/build 통과.
+
+---
+
 ## 2026-07-28 (T-012 적대적 리뷰 반영 — 비밀 노출·포커스 탈취 수정)
 
 - **적대적 리뷰 2명이 각각 실제 비밀 노출 경로를 찾았다.** 이 패널은 inspect를 UI에

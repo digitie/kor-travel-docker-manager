@@ -13,7 +13,7 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
-| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[/]` | - | Compose 재생성 경로 반영, diff/validation/rollback 남음 |
+| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[x]` | 2026-07-28 | diff 미리보기, 포트/네트워크/env 검증(baseline 인지 secret 방어), 실브라우저 검증 완료 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
 | **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
@@ -44,9 +44,23 @@
 ### T-011: 설정 저장 안정화 및 validation 고도화
 
 - [x] host 네트워크 기준에서 설정 저장·reset·미생성 start fallback이 Docker SDK 직접 생성 경로를 우회하지 않고 `docker compose up --force-recreate`를 사용하도록 변경
-- [ ] compose 변경 전 diff 생성 및 UI 표시
-- [ ] 포트, 볼륨, 네트워크 입력 validation 강화
-- [ ] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가
+- [x] compose 변경 전 diff 생성 및 UI 표시. 백엔드 호출 없이 프론트에서 baseline(`configTargetContainer.config`) vs
+      현재 입력을 실시간 비교해 포트/네트워크 추가·삭제, env 변경 전후 값을 모달에 즉시 표시한다.
+- [x] 포트, 볼륨, 네트워크 입력 validation 강화. 백엔드에 `docker_service.validate_container_config_update`를
+      추가해 lock 획득·Docker 접근보다 먼저 검증하고(`ContainerConfigValidationError` → HTTP 422),
+      프론트에도 같은 규칙을 미러링해 왕복 없이 즉시 피드백한다. 포트는 `${VAR:-default}` 보간 토큰을
+      opaque하게 신뢰하고 리터럴 숫자만 1~65535 범위·host:container 형식을 검사한다(docker-compose.yml
+      실제 ports 18개 전수 통과를 회귀 테스트로 고정). 볼륨은 이미 `compose_volume_graph_hash` 비교로
+      완전히 불변 처리되어 있어(어떤 변경도 첫 mutation 전에 409) 새 검증을 추가하지 않고, 대신 프론트에서
+      변경을 미리 감지해 제출 전에 경고하고 제출을 막는다.
+- [x] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가. 정적 key-이름 휴리스틱만 쓰면
+      `KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=true`처럼 이름에 "API_KEY"가 들어 있지만 원래부터 리터럴
+      불리언인 값까지 오탐으로 막는다(실제 compose 파일 전수 검증에서 발견). 그래서 "baseline이 이미
+      `${...}` 보간이었는지"를 기준으로 삼는다 — 이미 `.env`로 분리돼 있던 참조를 리터럴로 되돌리는 것만
+      막고, 원래부터 리터럴이던 값은 자유롭다(baseline을 모르는 신규 key에는 안전한 쪽으로 key-이름
+      휴리스틱을 fallback으로 쓴다). key 이름과 무관하게 값 안에 literal 접속 자격증명
+      (`scheme://user:pass@`)이 `${...}` 밖에 남아 있으면 별도로 거부한다 — `${OUTER:-postgresql://user:dev_pw@host/db}`처럼
+      비밀번호까지 하나의 `${...:-default}` 안에 두는 이 저장소의 기존 관행은 통과시킨다.
 - [x] config 파일 변경과 재생성을 같은 host lock transaction으로 묶고, recreate/init 실패 시 원본 byte와
       파일 mode를 원자 복원한 뒤 기존 runtime 재생성을 시도하는 rollback 전략 문서화
 

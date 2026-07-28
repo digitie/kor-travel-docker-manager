@@ -253,6 +253,182 @@ def _format_mount(mount: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# --- 컨테이너 설정 변경(ports/env/networks) 입력 검증 (T-011) ------------------------
+#
+# volumes는 여기서 검증하지 않는다 — compose_volume_graph_hash 비교가 이미 어떤 변경도
+# 첫 container mutation 전에 거부하는 강한 불변 계약이다(update_container_config 안,
+# `_update_container_config_unlocked`의 `compose_volume_graph_hash(compose_cfg) !=
+# baseline_volume_hash` 검사). 그 외 세 필드는 지금까지 어떤 형식 검증도 없었다.
+
+
+class ContainerConfigValidationError(ValueError):
+    """ports/env/networks 사용자 입력이 형식이나 보안 정책을 위반했다."""
+
+
+_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_INTERPOLATED_VALUE_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$")
+_INTERPOLATION_BLOCK_RE = re.compile(r"\$\{[^{}]*\}")
+_NETWORK_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
+
+# 포트 토큰: 리터럴 숫자(범위 포함) 또는 `${VAR:-default}` 보간. docker-compose.yml의
+# 모든 ports 항목이 `${VAR:-12101}:${VAR:-12101}` 형태를 쓰므로(전수 확인), 보간
+# 토큰은 opaque하게 신뢰하고 리터럴 숫자만 1~65535 범위와 형식을 검사한다.
+_PORT_TOKEN = r"\d{1,5}(?:-\d{1,5})?|\$\{[^{}]+\}"
+_PORT_IP = r"\d{1,3}(?:\.\d{1,3}){3}|\$\{[^{}]+\}"
+_PORT_PROTO = r"(?:/(?:tcp|udp))?"
+_PORT_PATTERNS = (
+    re.compile(rf"^(?P<container>{_PORT_TOKEN}){_PORT_PROTO}$"),
+    re.compile(rf"^(?P<host>{_PORT_TOKEN}):(?P<container>{_PORT_TOKEN}){_PORT_PROTO}$"),
+    re.compile(
+        rf"^(?P<ip>{_PORT_IP}):(?P<host>{_PORT_TOKEN}):(?P<container>{_PORT_TOKEN}){_PORT_PROTO}$"
+    ),
+)
+
+
+def _validate_port_token(token: str, *, raw: str) -> None:
+    if token.startswith("${"):
+        return
+    values: list[int] = []
+    for part in token.split("-"):
+        if not part.isdigit():
+            raise ContainerConfigValidationError(
+                f"포트 매핑 형식이 올바르지 않습니다: '{raw}'"
+            )
+        value = int(part)
+        if not (1 <= value <= 65535):
+            raise ContainerConfigValidationError(
+                f"포트 번호는 1~65535 범위여야 합니다: '{raw}'"
+            )
+        values.append(value)
+    if len(values) == 2 and values[0] > values[1]:
+        raise ContainerConfigValidationError(
+            f"포트 범위의 시작이 끝보다 큽니다: '{raw}'"
+        )
+
+
+def validate_port_mapping(raw: str) -> None:
+    """Compose ports 항목 형식을 검증한다."""
+    entry = raw.strip()
+    if not entry:
+        raise ContainerConfigValidationError("포트 매핑 값이 비어 있습니다.")
+    for pattern in _PORT_PATTERNS:
+        match = pattern.match(entry)
+        if not match:
+            continue
+        groups = match.groupdict()
+        if groups.get("host"):
+            _validate_port_token(groups["host"], raw=raw)
+        _validate_port_token(groups["container"], raw=raw)
+        return
+    raise ContainerConfigValidationError(
+        f"포트 매핑 형식이 올바르지 않습니다: '{raw}' "
+        "(예: '5432:5432' 또는 '${VAR:-5432}:${VAR:-5432}')"
+    )
+
+
+def validate_network_name(raw: str) -> None:
+    entry = raw.strip()
+    if not entry:
+        raise ContainerConfigValidationError("네트워크 이름이 비어 있습니다.")
+    if entry != raw:
+        raise ContainerConfigValidationError(
+            f"네트워크 이름 앞뒤에 공백이 있습니다: '{raw}'"
+        )
+    if not _NETWORK_NAME_RE.match(entry):
+        raise ContainerConfigValidationError(
+            f"네트워크 이름 형식이 올바르지 않습니다: '{raw}' "
+            "(영문/숫자로 시작하고 영문·숫자·'_'·'.'·'-'만 허용)"
+        )
+
+
+def _value_has_literal_url_credential(value: str) -> bool:
+    """`${...}` 블록(기존 관행의 dev 기본값) 밖에 literal credential이 남아 있는지 본다.
+
+    이 저장소의 모든 DSN류 값은 `${OUTER_VAR:-postgresql://user:dev_pw@host/db}`처럼
+    자격증명 전체를 하나의 `${...:-...}` 기본값 안에 둔다(docker-compose.yml 전수 확인).
+    그 블록을 통째로 지우면 정상 값은 빈 문자열만 남는다. 블록 밖에 credential이 남아
+    있다면 보간 없이 새로 타이핑된 literal 비밀이라는 뜻이다.
+    """
+    outside = _INTERPOLATION_BLOCK_RE.sub("", value)
+    return bool(_URL_USERINFO_RE.search(outside))
+
+
+def validate_env_entry(
+    key: str, value: str, *, baseline_value: str | None = None
+) -> None:
+    """env key/value를 검증한다.
+
+    docker-compose.yml은 git에 커밋되는 파일이다. 세 겹으로 막는다.
+
+    1. 이 key의 기존(baseline) 값이 이미 `${...}` 보간 형태였다면, 새 값도 보간
+       형태여야 한다 — 이미 `.env`로 분리돼 있던 비밀 참조를 UI 편집 중 실수로
+       리터럴로 되돌리는 것을 막는다. `_is_sensitive_key` 같은 정적 key-이름
+       휴리스틱만 쓰면 `KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=true`처럼 이름에
+       "API_KEY"가 들어가지만 원래부터 리터럴 불리언인 값까지 오탐으로 막는다
+       (docker-compose.yml 전수 검증에서 실제로 걸렸다). baseline이 이미 보간이
+       아니었다면(불리언·DB명 등) 새 값도 자유롭다.
+    2. baseline을 모르는 경우(오늘의 UI에서는 발생하지 않지만, 이 함수는 새 key를
+       추가하는 미래의 호출자에도 방어적이어야 한다) key 이름이 비밀스러워 보이면
+       (`_is_sensitive_key`) 안전한 쪽으로 기울어 보간을 요구한다.
+    3. key 이름과 무관하게, 값 안에 literal 접속 자격증명(`scheme://user:pass@`)이
+       `${...}` 밖에 그대로 있으면 거부한다 — `..._PG_DSN`처럼 이름이 평범해도
+       값 안에 비밀번호가 박혀 있을 수 있다.
+    """
+    if not key or not _ENV_VAR_NAME_RE.match(key):
+        raise ContainerConfigValidationError(
+            f"환경변수 이름이 올바르지 않습니다: '{key}' "
+            "(영문 또는 '_'로 시작하고 영문·숫자·'_'만 허용)"
+        )
+    if baseline_value is not None:
+        if _INTERPOLATED_VALUE_RE.match(baseline_value) and not _INTERPOLATED_VALUE_RE.match(
+            value
+        ):
+            raise ContainerConfigValidationError(
+                f"'{key}'는 원래 '${{...}}' 참조로 분리되어 있었습니다. 리터럴로 바꾸면 "
+                "docker-compose.yml(git 추적 파일)에 실제 값이 그대로 저장됩니다. "
+                f"'${{{key}}}' 또는 '${{{key}:-기본값}}' 형태를 유지하세요."
+            )
+    elif _is_sensitive_key(key) and not _INTERPOLATED_VALUE_RE.match(value):
+        raise ContainerConfigValidationError(
+            f"'{key}'는 비밀 성격 값으로 판단됩니다. docker-compose.yml은 git에 "
+            "커밋되므로 실제 값을 여기 직접 적지 말고, gitignore된 .env에 정의한 뒤 "
+            f"'${{{key}}}' 또는 '${{{key}:-기본값}}' 형태로 참조하세요."
+        )
+    if _value_has_literal_url_credential(value):
+        raise ContainerConfigValidationError(
+            f"'{key}' 값에 접속 문자열 형태의 자격증명이 그대로 포함되어 있습니다. "
+            "비밀번호 부분만이라도 '${VAR}' 보간으로 바꿔서 저장하세요."
+        )
+
+
+def validate_container_config_update(
+    *,
+    ports: list[Any],
+    env: dict[str, Any],
+    networks: list[Any],
+    baseline_env: dict[str, Any] | None = None,
+) -> None:
+    """`update_container_config` 저장 전 사용자 입력을 검증한다.
+
+    실패하면 ContainerConfigValidationError를 던진다. lock 획득이나 Docker 접근보다
+    먼저 호출해, 형식이 잘못된 입력이 아무 mutation도 건드리지 않게 한다.
+    """
+    for port in ports:
+        validate_port_mapping(str(port))
+    for network in networks:
+        validate_network_name(str(network))
+    baseline_env = baseline_env or {}
+    for key, value in env.items():
+        baseline_value = baseline_env.get(key)
+        validate_env_entry(
+            str(key),
+            "" if value is None else str(value),
+            baseline_value=(
+                None if baseline_value is None else str(baseline_value)
+            ),
+        )
+
+
 class DockerService:
     def __init__(self):
         self._client = None
@@ -645,6 +821,20 @@ class DockerService:
         """Update docker-compose.yml configuration and recreate the service through Compose."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
+        # lock 획득이나 Docker 접근보다 먼저 검증한다. compose 파일을 읽는 것은 로컬 YAML
+        # 읽기라 lock이 필요 없다 — env의 기존(baseline) 값이 이미 `${...}` 보간이었는지
+        # 알아야 "보간 → 리터럴 되돌리기"만 정확히 잡고 원래부터 리터럴이던 값(불리언
+        # flag 등)은 건드리지 않는다.
+        svc_name = MANAGED_CONTAINERS[container_id]["compose_service"]
+        baseline_env = (
+            get_compose_config().get("services", {}).get(svc_name, {}).get("environment")
+        )
+        validate_container_config_update(
+            ports=new_ports,
+            env=new_env,
+            networks=new_networks,
+            baseline_env=baseline_env if isinstance(baseline_env, dict) else {},
+        )
         with c6c_deployment_lock(get_c6c_deployment_lock_path()):
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None

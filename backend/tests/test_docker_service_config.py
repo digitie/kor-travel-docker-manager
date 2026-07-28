@@ -21,7 +21,14 @@ from kor_travel_docker_manager.services.compose_service import (
     ValidatedComposeCandidate,
     _resolved_compose_document_hash,
 )
-from kor_travel_docker_manager.services.docker_service import DockerService
+from kor_travel_docker_manager.services.docker_service import (
+    ContainerConfigValidationError,
+    DockerService,
+    validate_container_config_update,
+    validate_env_entry,
+    validate_network_name,
+    validate_port_mapping,
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CONCIERGE_BASE_URL_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}"
@@ -608,6 +615,218 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
     assert compose_run.call_args.args == (
         ["up", "-d", "--force-recreate", "kor-travel-geo-postgres"],
     )
+
+
+def _real_compose_config() -> dict[str, object]:
+    compose_path = _ROOT / "docker-compose.yml"
+    return yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+
+
+def _real_ports_and_env() -> tuple[list[str], list[tuple[str, str]]]:
+    """실제 docker-compose.yml 전 서비스의 ports/environment 값을 모은다.
+
+    파일이 바뀌면 이 값도 같이 바뀌는 living regression guard다 — 새 검증 규칙이
+    실제 운영 설정을 오탐으로 막지 않는지 CI에서 항상 확인한다.
+    """
+    config = _real_compose_config()
+    ports: list[str] = []
+    envs: list[tuple[str, str]] = []
+    for svc in (config.get("services") or {}).values():
+        for port in svc.get("ports") or []:
+            ports.append(str(port))
+        env = svc.get("environment")
+        if isinstance(env, dict):
+            for key, value in env.items():
+                envs.append((str(key), "" if value is None else str(value)))
+    return ports, envs
+
+
+def test_validate_port_mapping_accepts_every_real_compose_port() -> None:
+    ports, _ = _real_ports_and_env()
+    assert len(ports) >= 15, "docker-compose.yml에서 ports를 못 읽었다 — fixture 확인"
+    for port in ports:
+        validate_port_mapping(port)  # 실패하면 예외로 바로 드러난다
+
+
+def test_validate_env_entry_accepts_every_real_compose_env_value_unchanged() -> None:
+    """설정 모달을 열고 아무것도 바꾸지 않은 채 저장하면 항상 통과해야 한다."""
+    _, envs = _real_ports_and_env()
+    assert len(envs) >= 200, "docker-compose.yml에서 environment를 못 읽었다 — fixture 확인"
+    for key, value in envs:
+        validate_env_entry(key, value, baseline_value=value)  # 실패하면 예외로 바로 드러난다
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "5432:5432",
+        "${RUSTFS_API_PORT:-12101}:${RUSTFS_API_CONTAINER_PORT:-12101}",
+        "127.0.0.1:8080:80",
+        "8080/tcp",
+        "8080",
+        "8000-8010:8000-8010",
+        "${VAR}:${VAR}",
+    ],
+)
+def test_validate_port_mapping_accepts_typical_forms(raw: str) -> None:
+    validate_port_mapping(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "   ",
+        "abc:80",
+        "70000:80",
+        "80:700000",
+        "0:80",
+        "80-70:80",
+        "80::80",
+        "80:80:80:80",
+        "80/ftp",
+    ],
+)
+def test_validate_port_mapping_rejects_bad_forms(raw: str) -> None:
+    with pytest.raises(ContainerConfigValidationError):
+        validate_port_mapping(raw)
+
+
+@pytest.mark.parametrize("raw", ["default", "kor-travel-geo-net", "a", "a.b-c_d"])
+def test_validate_network_name_accepts_typical_forms(raw: str) -> None:
+    validate_network_name(raw)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["", "   ", " default", "default ", "bad name", "-leading-dash", "${VAR}"],
+)
+def test_validate_network_name_rejects_bad_forms(raw: str) -> None:
+    with pytest.raises(ContainerConfigValidationError):
+        validate_network_name(raw)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "POSTGRES_PASSWORD",
+        "RUSTFS_ACCESS_KEY",
+        "KOR_TRAVEL_MAP_OPINET_API_KEY",
+        "SOME_TOKEN",
+        "SERVICE_CREDENTIAL",
+    ],
+)
+def test_validate_env_entry_rejects_regression_from_interpolated_baseline_to_literal(
+    key: str,
+) -> None:
+    """이미 `${...}`로 분리돼 있던 값을 리터럴로 되돌리면 거부한다."""
+    with pytest.raises(ContainerConfigValidationError, match="원래"):
+        validate_env_entry(
+            key,
+            "an-actual-literal-secret-value",
+            baseline_value=f"${{{key}:-dev-default}}",
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("POSTGRES_PASSWORD", "${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}"),
+        ("RUSTFS_ACCESS_KEY", "${RUSTFS_ACCESS_KEY}"),
+    ],
+)
+def test_validate_env_entry_accepts_unchanged_interpolated_secret(
+    key: str, value: str
+) -> None:
+    validate_env_entry(key, value, baseline_value=value)
+
+
+def test_validate_env_entry_allows_literal_flag_whose_baseline_was_never_interpolated() -> None:
+    """key 이름에 'API_KEY'가 들어 있어도 원래부터 리터럴 불리언이면 건드리지 않는다.
+
+    실제로 `KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=true`가 정적 key-이름
+    휴리스틱만으로는 오탐(전수 검증 중 실제로 발견)이었다.
+    """
+    validate_env_entry(
+        "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED",
+        "false",
+        baseline_value="true",
+    )
+
+
+def test_validate_env_entry_requires_interpolation_for_new_sensitive_key_without_baseline() -> None:
+    """baseline을 모르는(신규 key) 경우에는 sensitive 이름 휴리스틱으로 방어한다."""
+    with pytest.raises(ContainerConfigValidationError, match="비밀 성격"):
+        validate_env_entry("NEW_SERVICE_API_KEY", "literal-secret", baseline_value=None)
+
+
+def test_validate_env_entry_rejects_literal_url_credential_even_for_innocuous_key_name() -> None:
+    """key 이름이 sensitive 목록에 안 걸려도 값에 literal credential이 있으면 거부한다."""
+    with pytest.raises(ContainerConfigValidationError, match="접속 문자열"):
+        validate_env_entry(
+            "KOR_TRAVEL_MAP_PG_DSN",
+            "postgresql+asyncpg://map:realpassword123@127.0.0.1:5432/kor_travel_map",
+        )
+
+
+def test_validate_env_entry_allows_existing_dsn_default_wrapping_convention() -> None:
+    """docker-compose.yml 전체가 쓰는 관행: DSN 전체가 하나의 `${VAR:-...}` 안에 있다."""
+    validate_env_entry(
+        "KOR_TRAVEL_MAP_PG_DSN",
+        "${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://"
+        "krtour_map:krtour_map_dev_password@127.0.0.1:5432/krtour_map}",
+    )
+
+
+def test_validate_env_entry_allows_partial_interpolation_of_just_the_password() -> None:
+    validate_env_entry(
+        "KOR_TRAVEL_MAP_PG_DSN",
+        "postgresql+asyncpg://map:${MAP_DB_PASSWORD}@127.0.0.1:5432/map",
+    )
+
+
+def test_validate_env_entry_rejects_bad_key_name() -> None:
+    with pytest.raises(ContainerConfigValidationError):
+        validate_env_entry("1_BAD_NAME", "value")
+    with pytest.raises(ContainerConfigValidationError):
+        validate_env_entry("BAD-NAME", "value")
+
+
+def test_validate_container_config_update_checks_ports_env_and_networks() -> None:
+    with pytest.raises(ContainerConfigValidationError):
+        validate_container_config_update(ports=["not-a-port"], env={}, networks=[])
+    with pytest.raises(ContainerConfigValidationError):
+        validate_container_config_update(ports=[], env={}, networks=["bad name"])
+    with pytest.raises(ContainerConfigValidationError):
+        validate_container_config_update(
+            ports=[], env={"POSTGRES_PASSWORD": "literal"}, networks=[]
+        )
+    # 유효한 입력은 조용히 통과한다.
+    validate_container_config_update(
+        ports=["5432:5432"],
+        env={"POSTGRES_DB": "kor_travel_geo"},
+        networks=["default"],
+    )
+
+
+def test_update_container_config_validates_before_lock_or_environment_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """형식이 잘못된 입력은 lock도, 환경 스냅샷도 건드리기 전에 거부되어야 한다."""
+    service = DockerService()
+    monkeypatch.setattr(
+        docker_service_module,
+        "c6c_deployment_lock",
+        Mock(side_effect=AssertionError("lock을 잡기 전에 검증에서 걸러야 한다")),
+    )
+    monkeypatch.setattr(
+        docker_service_module,
+        "_capture_compose_environment_snapshot",
+        Mock(side_effect=AssertionError("환경 스냅샷보다 검증이 먼저여야 한다")),
+    )
+
+    with pytest.raises(ContainerConfigValidationError):
+        service.update_container_config("rustfs", ["not-a-port"], {}, [], [])
 
 
 def test_non_api_sdk_mutation_validates_environment_before_docker(
