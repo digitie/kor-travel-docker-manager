@@ -14,18 +14,6 @@
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
 | **T-011** | 설정 저장 안정화 및 validation 고도화 | `[/]` | - | Compose 재생성 경로 반영, diff/validation/rollback 남음 |
-| **T-013** | 운영(prod) 공개 주소 `.env` 주입 및 CORS 환경변수화 | `[x]` | 2026-06-20 | 도메인 비노출, `KTDM_CORS_ALLOW_ORIGINS`, 프론트 환경파일 분리 |
-| **T-014** | Docker host 네트워크 전환·컨테이너=호스트 포트·서비스 prod URL·pinvi-dagster·tripmate 정리 | `[x]` | 2026-06-20 | `KTDM_DOCKER_NETWORK_MODE=host`, 12802, `KTDM_PROD_URL_*`, `ktd_venv` |
-| **T-015** | 프론트 Tailwind v4 + StyleSeed 전면 전환·전역 오류 복구 boundary | `[x]` | 2026-06-20 | geo PR #391 반영, `@theme` 토큰, `DESIGN-RULES.md` |
-| **T-016** | 운영(prod) 배포 및 docker-manager 실행 검증 | `[x]` | 2026-06-20 | SSH 배포, venv --without-pip, 백엔드/프론트 기동·검증, 공개 라우팅은 인프라 |
-| **T-017** | 운영 스택 db→conc 기동·geo 실데이터 복원·의존성 DAG 재설정 | `[x]` | 2026-06-20 | 이미지 save/load, geo 31GB 복원, `depends_on` DAG(concierge geo 비의존) |
-| **T-018** | prod endpoint 문서 redaction | `[x]` | 2026-06-23 | `kor-travel-map` #508 동일 패턴 반영 |
-| **T-019** | 관리자 로그인·세션·감사 로그·공개 API 키 관리 | `[x]` | 2026-06-23 | `kor-travel-geo` PR #399 패턴 반영 |
-| **T-020** | PR #36 사후 리뷰 + fix-forward(보안 테스트 보강·감사 retention·CORS·프론트 a11y·utcnow 정리) | `[x]` | 2026-06-24 | 리뷰 코멘트, PR #37 머지, prod 배포·인증 검증 완료 |
-| **T-023** | concierge PR #127 참고 공개도메인 Secure 쿠키 보강(`_is_https`가 https 공개 origin 인식) | `[x]` | 2026-06-24 | 브라우저 E2E로 로그인 정상 확인(403 무), Secure 플래그 PR #40 머지·prod 검증 |
-| **T-024** | 로그아웃/세션만료 시 LoginScreen 전환 회귀 수정(auth-me 401→authenticated:false) | `[x]` | 2026-06-24 | PR #37 FE-2 회귀, 브라우저 E2E로 발견·PR #41 머지 |
-| **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
-| **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
 | **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
@@ -35,15 +23,9 @@
 | **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
 | **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
-| **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | `[x]` | 2026-07-28 | Map `T-ADM-C7W`/`T-VN-H11` 참조, n150 프록시 경유 실브라우저에서 4401 확인 |
 | **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[/]` | - | T-042 리뷰 후속, PR #76 |
 | **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
-| **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
-| **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
-| **T-222** | 관측 target 개별 분리 및 포트 재배치 | `[x]` | 2026-06-13 | `gra`, `cadv`, `prom` 분리 및 새 포트 반영 |
-| **T-223** | 앱 target 흐름 재정렬 및 실제 컨테이너 빌드 편입 | `[x]` | 2026-06-13 | `geo -> conc -> map -> pinvi`, `srv` 별칭 반영 |
-| **T-224** | 과거 서비스명과 공용 인프라 명칭 정리 | `[x]` | 2026-06-15 | PinVi 및 `kor-travel-*` 기준 반영 |
 
 ---
 
@@ -74,28 +56,7 @@
 - [ ] target 단위 `ensure --build` 버튼을 개발 모드에서 제공
 - [ ] 모바일/데스크톱에서 표와 상세 패널이 겹치지 않도록 반응형 검증
 
-### T-029: Concierge DB read 키를 Map Dagster에 단일 source로 주입
 
-- [x] 루트 `.env`의 `KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY`를 유일한 secret source로 정의
-- [x] 실제 fetcher를 실행하는 Dagster·Dagster daemon에 동일한 base URL/key 환경변수 주입
-- [x] 사용하지 않는 map API에는 read secret을 주입하지 않는 least privilege 계약 고정
-- [x] `.env.example`, Docker 관리 문서, compose 계약 테스트 동기화
-- [x] n150에 Concierge head 0017(scope migration 0016 포함) 배포·제약 및 실제 UI 로그인 검증
-- [x] prod `.env` 주입·override의 key/base URL literal 각 세 줄 제거·compose 보간·Dagster 두 서비스 재생성
-- [x] `.env`와 두 컨테이너 key를 값 비노출 constant-time equality로 확인
-- [x] `limit=1` snapshot/changes 2페이지 cursor 검증, `page_size=200` 전체 8페이지/1,416건 순회, 실제 수집기 각 1,416건 및 내부/write 403 smoke
-- [x] BFF/operator static admin overlap 회전·UI/BFF 검증 후 구 static 제거
-- [x] 최종 old 401/new admin 200/read 공급 200·write 403/UI login 검증과 제한권한 백업 폐기
-
-### T-030: Map OpiNet·KREX provider 키 compose 보간 drift 수정
-
-- [x] OpiNet 공통 key가 과거 `KRTOUR_MAP_*` source 대신 현재 `KOR_TRAVEL_MAP_*` `.env` 값을 읽도록 수정
-- [x] OpiNet map API live preview key는 별도 설정을 우선하고 미설정 시 공통 key를 재사용하도록 고정
-- [x] EX·GO key가 과거 `KRTOUR_MAP_*` source 대신 현재 `KOR_TRAVEL_MAP_*` `.env` 값을 읽도록 수정
-- [x] map API live preview key는 별도 설정을 우선하고 미설정 시 EX key를 재사용하도록 고정
-- [x] OpiNet·KREX 공통 key는 Dagster·daemon에만, resolved preview key는 map API에만 주입하는
-      최소 권한 계약과 `.env.example` placeholder를 테스트
-- [x] 실제 secret 비노출 상태로 focused test·Ruff·Docker Compose 보간 검증
 
 ### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선
 
@@ -385,101 +346,12 @@ T-042의 적대적 리뷰가 남긴 두 항목이다. accept-then-close 계약�
       counter 증가를 검증하지 않던 테스트 공백을 모두 수정
 - [ ] n150 배포 후 1013 shed 동작과 preflight를 운영에서 확인한다
 
-### T-042: C7 WebSocket 종료 코드 계약(accept-then-close) 결선
 
-`kor-travel-map`의 `T-ADM-C7W`(issue #806 / PR #807)와 `T-VN-H11`(issue #809)이 고친 것과
-같은 결함이 매니저에도 있었다. `ws_status`/`ws_logs`의 거절이 `accept()` 이전에 `close()`를
-호출해 uvicorn이 HTTP 403 handshake 거절로 바꿔 보냈고, 브라우저는 `4401`이 아니라 `1006`만
-관측했다. 기존 `test_ws_status_requires_session`은 TestClient가 ASGI 레벨이라 통과하고 있었다.
 
-- [x] 세 pre-accept close를 accept-then-close로 전환한다 (C-1)
-- [x] settle window를 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS`로 env 튜너블·clamp 처리한다 (C-3)
-- [x] accept 실패 뒤 close 금지와 cancellation-shield child task를 고정한다 (C-4/C-5)
-- [x] 프론트가 4401/4000을 소비해 재시도를 멈추고 LoginScreen으로 전환한다 (C-8)
-- [x] ASGI 메시지 시퀀스 회귀와 Origin 거절 회귀를 추가한다(구 코드 대비 negative control 확인)
-- [x] 같은 handler의 확인된 누수를 함께 고친다: idle container에서 client 종료 미검출,
-      소진된 stream의 무한 polling, accept 후 close 없는 return, event loop 위의 blocking
-      docker/DB 호출, 연결 0건에도 도는 docker sweep
-- [x] 운영 프록시 경유 실브라우저에서 `CloseEvent.code=4401`, `wasClean=true`를 확인하고
-      측정된 settle 기본값을 journal에 기록한다 — n150 HAProxy 엣지에서 `0.25` 10/10,
-      `0.0` 12/12 모두 4401(1006 0건). 기본값을 실측값 `0.0`으로 확정하고 knob은 유지
-- [x] 적대적 리뷰어 2명 × 2라운드 반영 — 재인가 우회 blocker, env 오염 blocker,
-      backoff 무력화, 인코딩 회귀를 수정하고 mutation/negative control로 회귀 고정
 
-### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
-- [x] 단일 관리자 계정(`admin`) 로그인 화면을 추가하고 실제 비밀번호는 gitignore된 `.env`의 `KTDM_ADMIN_PASSWORD_HASH`에 PBKDF2 해시로만 저장
-- [x] 관리자 세션을 HMAC 서명 `httpOnly` 쿠키와 DB 저장 세션 해시로 검증하고, 지정된 프론트엔드 Origin만 관리자 API를 호출하도록 제한
-- [x] 로그인 성공·실패·로그아웃·API 키 생성/폐기 이벤트를 `login_audit_events`에 기록하고 관리자 UI에서 조회
-- [x] VWorld 호환 32자리 공개 API 키를 UI 버튼으로 생성하고, 원문은 1회만 표시하며 DB에는 해시와 힌트만 저장
-- [x] 공개 API 키 활성 해시는 짧은 TTL 메모리 캐시로 읽고 생성·폐기 시 즉시 무효화
-- [x] 신뢰된 로그인 세션 요청은 공개 API 키 검증을 생략할 수 있도록 공통 dependency 제공
-- [x] `kor-travel-geo` PR #399의 v2 공개 API 키·관리자 인증 env 계약을 compose와 `.env.example`에 반영
-- [x] PR #399 사후 리뷰를 재확인해 미검증 `X-Forwarded-*` 신뢰 차단, 401 처리, 로그인 접근성, clipboard fallback을 보강
 
-### T-013: 운영(prod) 공개 주소 `.env` 주입 및 CORS 환경변수화
 
-- [x] 백엔드 CORS 허용 Origin을 `KTDM_CORS_ALLOW_ORIGINS`(콤마 구분, 기본 `*`)로 제어하고 기동 시 루트 `.env`를 로드한다
-- [x] 프론트엔드 백엔드 주소를 `.env.development`/`.env.production`로 분리하고 `.env.local` 섀도잉을 제거한다
-- [x] 실제 운영 도메인은 gitignore된 `.env`/`frontend/.env.production`에만 두고 `.env.example`은 플레이스홀더로 문서화한다
-- [x] 백엔드 ruff·CORS 파싱, 프론트 type-check·prod 빌드(인라인) 검증
 
-### T-014: Docker host 네트워크 전환·컨테이너=호스트 포트·서비스 prod URL·pinvi-dagster·tripmate 정리
 
-- [x] dev 기본 네트워크를 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}`로 전환하고 인프라/앱이 호스트 정규 포트에 직접 바인딩하도록 맞춘다
-- [x] 서비스 간 참조(DSN/RustFS/내부 API/Dagster)를 `127.0.0.1:<포트>`로, Prometheus scrape·rustfs-init 엔드포인트도 동기화한다
-- [x] geo/concierge/map/pinvi 컨테이너 내부 포트를 호스트 포트와 동일하게 통일한다
-- [x] `pinvi-dagster`(12802)를 compose/registry/`pinvi` target에 추가하고 PinVi `apps/etl/Dockerfile`을 신규 작성한다
-- [x] 관리 16개 서비스의 prod 공개 URL을 `KTDM_PROD_URL_*`(.env, 비노출)·`prod_url_env`로 주입해 대시보드 `public_url`로 표시한다
-- [x] tripmate 로컬 잔재 정리(`pinvi_metrics.db` 개명, `ktd_venv` 재생성)
-- [x] `docker compose config`·백엔드 ruff·프론트 type-check/build 검증 및 문서 동기화
 
-### T-015: 프론트 Tailwind v4 + StyleSeed 전면 전환·전역 오류 복구 boundary
-
-- [x] `kor-travel-geo` PR #391의 오류 복구 boundary(error/global-error/AppErrorPanel/error-recovery)를 매니저에 반영
-- [x] Tailwind v4 전환(`@import`+`@theme`, `@tailwindcss/postcss`, autoprefixer/tailwind.config 제거)
-- [x] `kor-travel-geo-ui/docs/DESIGN-RULES.md`의 StyleSeed 라이트 토큰을 `@theme`에 정의
-- [x] `DashboardClient`·`AppErrorPanel`을 Pure Black → StyleSeed 토큰으로 전면 리스타일
-- [x] `docs/DESIGN-RULES.md` 포팅, `DESIGN.md` superseded 안내, ADR-17, 프론트 type-check/build 검증
-
-### T-220: `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거
-
-- [x] `config/docker-targets.yml`의 `ai` target을 `kor-travel-concierge` 기준으로 정리
-- [x] 과거 AI provider 명칭 기반 별칭을 제거하고 새 공식 별칭만 남긴다
-- [x] 통합 DB 기본값을 `kor_travel_concierge` database 기준으로 정리하고 과거 env fallback을 제거한다
-- [x] `pinvi` target이 `kor-travel-concierge`에 직접 의존하지 않도록 문서와 target 설명을 정리
-- [x] `krtour-map`과 `kor-travel-concierge` 간 provider 관계만 남도록 아키텍처/포트/관리 문서를 동기화
-- [x] 관련 테스트와 설정 검증을 갱신한다
-
-### T-221: `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화
-
-- [x] `kor-travel-geo` DB 기본값을 `kor_travel_geo`로 맞춘다
-- [x] manager override 변수는 `KOR_TRAVEL_GEO_*`, API/UI 컨테이너 내부 변수는 `KTG_*`로 맞춘다
-- [x] Docker service/container 이름을 `kor-travel-geo-*`로 맞춘다
-- [x] 물리 데이터 디렉터리를 `/home/digitie/kor-travel-geo-data` 기준으로 맞춘다
-- [x] RustFS bucket 기본값을 `kor-travel-geo`로 맞춘다
-- [x] Prometheus scrape target에 `kor-travel-geo-api:12501/metrics`와 `kor-travel-geo-ui:12505/api/metrics`를 추가한다
-- [x] 관련 문서와 테스트 fixture를 갱신한다
-
-### T-222: 관측 target 개별 분리 및 포트 재배치
-
-- [x] 단일 관측 target을 제거하고 `gra`, `cadv`, `prom` target으로 분리한다
-- [x] 관측 target 분리 당시 dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> map -> ai -> main`으로 맞춘다
-- [x] Grafana 공용 연계를 위해 `gra`를 RustFS 다음 target으로 배치한다
-- [x] Grafana `12205`, cAdvisor `12301`, Prometheus `12401`, `kor-travel-geo` API/Web UI `12501`/`12505` 포트를 반영한다
-- [x] CLI/API 테스트와 문서를 새 target/포트 기준으로 갱신한다
-
-### T-223: 앱 target 흐름 재정렬 및 실제 컨테이너 빌드 편입
-
-- [x] dependency 순서를 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`로 조정한다
-- [x] `kor-travel-concierge` target을 `conc`로 등록하고 API/MCP/Scheduler/Web UI compose service를 추가한다
-- [x] `kor-travel-map` target을 `map`에 실제 API/Dagster/Web UI compose service로 연결한다
-- [x] PinVi target을 `pinvi`로 등록하고 `srv`, `main` 별칭을 제공한다
-- [x] 공용 DB/RustFS 복구 스크립트에 `krtour_map_dagster` database와 `kor-travel-concierge` bucket 보정을 추가한다
-- [x] API/CLI 테스트와 문서를 새 target 흐름에 맞춰 갱신한다
-
-### T-224: 과거 서비스명과 공용 인프라 명칭 정리
-
-- [x] PinVi 전용 database, role, bucket, 환경변수 기본값을 `pinvi` 및 `PINVI_*` 기준으로 맞춘다
-- [x] 공용 RustFS와 관측 컨테이너 이름을 `kor-travel-*` 기준으로 맞춘다
-- [x] 문서, 테스트, 설정 파일의 과거 서비스명 잔여 표기를 제거한다
