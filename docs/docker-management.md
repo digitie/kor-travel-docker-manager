@@ -40,6 +40,7 @@
 |---|---|---|
 | 미인증 · 세션 만료/폐기 · 허용되지 않은 Origin | accept(101) → data frame 0건 → `close(4401, "AUTH_REQUIRED")` | `code=4401`, `wasClean=true` |
 | 알 수 없는 `container_id` (`/ws/logs`) | accept(101) → data frame 0건 → `close(4000, "INVALID_CONTAINER_ID")` | `code=4000` |
+| 인가 동시성 상한 초과 | accept(101) → data frame 0건 → `close(1013, "TRY_AGAIN_LATER")` | `code=1013` |
 | 연결 유지 중 세션 만료/폐기 (`/ws/status`·`/ws/logs` 모두 60초 주기 재검증) | `close(4401)` | `code=4401` |
 | docker 접근/스트림 실패 | `{"error": ...}` 1건 → `close(1011)` | `code=1011` |
 | 로그 스트림 EOF | `{"error": "로그 스트림이 종료되었습니다."}` → `close(1000)` | `code=1000` |
@@ -64,8 +65,17 @@
   프레임이 올 때마다 창이 리셋돼, keepalive를 주기보다 자주 보내는 client가 logout·TTL
   만료를 무한히 우회한다.
 - 미인증 peer도 handshake를 완료하게 되므로 거절 경로의 close는 peer의 close echo를
-  오래 기다리지 않는다(`_REJECT_CLOSE_TIMEOUT_SECONDS`). WS 라우트에는 아직 rate limit이
-  없으므로, 공개 노출 시 uvicorn `--limit-concurrency`나 프록시 단 제한을 함께 둔다.
+  오래 기다리지 않는다(`_REJECT_CLOSE_TIMEOUT_SECONDS`).
+- **인가 동시성 상한**: 동시에 인가(Origin+세션 쿠키 검증) 처리 중인 handshake를
+  `KTDM_WS_MAX_PENDING_AUTHORIZATIONS`(기본 `64`, clamp `[1, 10000]`)로 묶는다. 상한을
+  넘으면 DB를 건드리지 않고 `1013`으로 흘려보내므로, 미인증 flood가 broadcast·metrics·
+  log cleanup이 함께 쓰는 기본 executor를 굶기지 못한다.
+  - **per-IP 제한은 쓰지 않는다.** 이 배포의 공개 트래픽은 전부 리버스 프록시 IP 하나로
+    도착하고(신뢰 프록시 CIDR이 loopback 전용이라 `X-Forwarded-For`를 신뢰하지 않는다),
+    per-IP 버킷은 인터넷 전체를 한 키에 묶어 정상 관리자까지 함께 막는다. per-IP로
+    가려면 `KTDM_TRUSTED_PROXY_SECRET` + 프록시의 `X-Forwarded-For` 주입이 선행되어야 한다.
+  - 이 상한은 **신규 handshake의 인가 경로만** 묶는다. 전체 동시 연결 수는 uvicorn
+    `--limit-concurrency`나 프록시 단에서 제한한다.
 - TestClient는 pre-accept close와 accept-then-close를 모두 같은 `WebSocketDisconnect(4401)`로
   보고하므로 계약 회귀는 `backend/tests/test_ws_contract.py`의 ASGI 메시지 시퀀스로 고정한다.
 

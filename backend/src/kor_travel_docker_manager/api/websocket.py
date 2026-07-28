@@ -23,8 +23,31 @@ router = APIRouter()
 # --- C7 WebSocket 종료 코드 계약 (docs/docker-management.md) --------------------------
 WS_CLOSE_NORMAL = 1000              # 정상 종료(스트림 EOF 포함)
 WS_CLOSE_INTERNAL_ERROR = 1011      # 서버측 오류로 종료
+WS_CLOSE_TRY_AGAIN_LATER = 1013     # 인가 동시성 상한 초과 — 재시도 가능
 WS_CLOSE_INVALID_CONTAINER = 4000   # 알 수 없는 container_id
 WS_CLOSE_AUTH_REQUIRED = 4401       # 미인증 / 허용되지 않은 Origin / 세션 만료·폐기
+
+# 동시에 인가(Origin+세션 쿠키 검증) 처리 중인 handshake 상한.
+#
+# accept-then-close 계약상 미인증 peer도 handshake를 완료하므로, 거절 1건마다 소켓과
+# ASGI task와 executor의 동기 SQLite 조회가 함께 잡힌다. 상한이 없으면 미인증 flood가
+# broadcast·metrics·log cleanup이 함께 쓰는 기본 executor를 굶긴다.
+#
+# **per-IP 제한을 쓰지 않는 이유**: 이 배포의 공개 트래픽은 전부 리버스 프록시 IP 하나로
+# 도착하고(신뢰 프록시 CIDR이 loopback 전용이라 X-Forwarded-For를 신뢰하지 않는다),
+# per-IP 버킷은 인터넷 전체를 한 키에 묶어 정상 관리자까지 함께 막는다. 실제 자원을
+# 직접 묶는 IP 비의존 동시성 상한이 이 토폴로지에서 옳은 제어다. per-IP로 가려면 먼저
+# KTDM_TRUSTED_PROXY_SECRET + 프록시의 X-Forwarded-For 주입이 선행되어야 한다.
+#
+# 이 상한은 신규 handshake의 인가 경로만 묶는다. 전체 동시 연결 수는 uvicorn
+# `--limit-concurrency`나 프록시 단에서 제한한다(docs/docker-management.md).
+_MAX_PENDING_WS_AUTH_ENV = "KTDM_WS_MAX_PENDING_AUTHORIZATIONS"
+_DEFAULT_MAX_PENDING_WS_AUTH = 64
+_MIN_MAX_PENDING_WS_AUTH = 1
+_MAX_MAX_PENDING_WS_AUTH = 10_000
+
+# 단일 event loop에서만 갱신하므로 lock이 필요 없다(검사와 증가 사이에 await가 없다).
+_pending_ws_authorizations = 0
 
 # accept()/close()는 각각 이 시간 안에 끝나야 한다(wedged transport가 handler를 막지 않게).
 _WS_HANDSHAKE_TIMEOUT_SECONDS = 1.0
@@ -172,6 +195,42 @@ def _websocket_authorize(websocket: WebSocket) -> AdminSessionContext | None:
     return validate_session_cookie(websocket.cookies.get(SESSION_COOKIE_NAME), websocket)
 
 
+def _resolve_max_pending_ws_authorizations() -> int:
+    """동시 인가 상한을 env에서 읽는다. 비정상 값은 기본값/범위로 clamp한다."""
+    raw = os.environ.get(_MAX_PENDING_WS_AUTH_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_MAX_PENDING_WS_AUTH
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_PENDING_WS_AUTH
+    return min(_MAX_MAX_PENDING_WS_AUTH, max(_MIN_MAX_PENDING_WS_AUTH, value))
+
+
+async def _authorize_with_limit(
+    websocket: WebSocket,
+) -> tuple[bool, AdminSessionContext | None]:
+    """동시성 상한 안에서 인가를 수행한다.
+
+    반환 `(granted, context)`. `granted=False`는 과부하라 인가 자체를 수행하지 않았다는
+    뜻이다 — 이 경로는 DB를 건드리지 않으므로 flood 시 가장 싼 경로로 부하를 흘려보낸다.
+    """
+    global _pending_ws_authorizations
+
+    if _pending_ws_authorizations >= _resolve_max_pending_ws_authorizations():
+        logger.warning(
+            "WebSocket authorization rejected: pending=%d at limit",
+            _pending_ws_authorizations,
+        )
+        return False, None
+
+    _pending_ws_authorizations += 1
+    try:
+        return True, await asyncio.to_thread(_websocket_authorize, websocket)
+    finally:
+        _pending_ws_authorizations -= 1
+
+
 def encode_status_payload(message: dict) -> str | None:
     """상태 payload를 WebSocket text frame 문자열로 직렬화한다. 실패하면 None.
 
@@ -240,7 +299,12 @@ async def status_broadcast_loop():
 
 @router.websocket("/ws/status")
 async def ws_status(websocket: WebSocket):
-    context = await asyncio.to_thread(_websocket_authorize, websocket)
+    granted, context = await _authorize_with_limit(websocket)
+    if not granted:
+        await _accept_and_close(
+            websocket, code=WS_CLOSE_TRY_AGAIN_LATER, reason="TRY_AGAIN_LATER"
+        )
+        return
     if context is None:
         await _accept_and_close(websocket, code=WS_CLOSE_AUTH_REQUIRED, reason="AUTH_REQUIRED")
         return
@@ -337,7 +401,12 @@ def _open_log_stream(container):
 @router.websocket("/ws/logs/{container_id}")
 async def ws_logs(websocket: WebSocket, container_id: str):
     # 인증을 먼저 본다: container 존재 여부가 미인증 peer에게 새면 안 된다.
-    context = await asyncio.to_thread(_websocket_authorize, websocket)
+    granted, context = await _authorize_with_limit(websocket)
+    if not granted:
+        await _accept_and_close(
+            websocket, code=WS_CLOSE_TRY_AGAIN_LATER, reason="TRY_AGAIN_LATER"
+        )
+        return
     if context is None:
         await _accept_and_close(websocket, code=WS_CLOSE_AUTH_REQUIRED, reason="AUTH_REQUIRED")
         return

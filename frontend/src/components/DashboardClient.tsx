@@ -35,6 +35,7 @@ import {
   BACKEND_URL,
   WS_CLOSE_AUTH_REQUIRED,
   WS_CLOSE_INVALID_CONTAINER,
+  WS_CLOSE_TRY_AGAIN_LATER,
   apiJson,
   apiWsUrl,
   notifyUnauthorized,
@@ -595,6 +596,12 @@ export default function DashboardClient() {
       }
       if (event.code === WS_CLOSE_INVALID_CONTAINER) {
         setLiveLogs((prev) => prev + '\n--- 알 수 없는 컨테이너 ID입니다 ---\n');
+        return;
+      }
+      if (event.code === WS_CLOSE_TRY_AGAIN_LATER) {
+        setLiveLogs(
+          (prev) => prev + '\n--- 서버가 혼잡합니다. 잠시 후 다시 열어 주세요 ---\n'
+        );
         return;
       }
       setLiveLogs((prev) => prev + '\n--- 스트리밍 연결이 닫혔습니다 ---\n');

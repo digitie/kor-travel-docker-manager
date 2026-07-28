@@ -518,6 +518,97 @@ def test_reauth_is_not_bypassed_by_keepalive_frames(monkeypatch):
     assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
 
 
+# --- 인가 동시성 상한 -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, 64),
+        ("", 64),
+        ("abc", 64),
+        ("0", 1),      # 하한 clamp — 0이면 모든 연결이 영구 거절된다
+        ("-5", 1),
+        ("1", 1),
+        ("128", 128),
+        ("999999", 10_000),  # 상한 clamp
+    ],
+)
+def test_max_pending_ws_authorizations_resolver(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, raw)
+
+    assert ws_mod._resolve_max_pending_ws_authorizations() == expected
+
+
+def test_ws_status_sheds_load_at_authorization_limit(monkeypatch):
+    """상한 초과 시 DB를 건드리지 않고 1013으로 흘려보낸다."""
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "1")
+    monkeypatch.setattr(
+        ws_mod,
+        "_websocket_authorize",
+        lambda ws: pytest.fail("상한 초과 시 인가(DB 조회)를 수행하면 안 된다"),
+    )
+    # 이미 한 건이 인가 처리 중인 상태를 만든다.
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 1)
+
+    sent = drive_websocket("/api/v1/ws/status", headers=[ORIGIN_HEADER])
+
+    assert [m["type"] for m in sent] == ["websocket.accept", "websocket.close"]
+    assert sent[-1]["code"] == ws_mod.WS_CLOSE_TRY_AGAIN_LATER
+    assert sent[-1]["reason"] == "TRY_AGAIN_LATER"
+    _assert_no_data_frames(sent)
+
+
+def test_ws_logs_sheds_load_at_authorization_limit(monkeypatch):
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "1")
+    monkeypatch.setattr(
+        ws_mod,
+        "_websocket_authorize",
+        lambda ws: pytest.fail("상한 초과 시 인가(DB 조회)를 수행하면 안 된다"),
+    )
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 1)
+
+    valid_id = next(iter(MANAGED_CONTAINERS))
+    sent = drive_websocket(f"/api/v1/ws/logs/{valid_id}", headers=[ORIGIN_HEADER])
+
+    assert sent[-1]["code"] == ws_mod.WS_CLOSE_TRY_AGAIN_LATER
+    _assert_no_data_frames(sent)
+
+
+def test_authorization_slot_is_released_on_success_and_failure(monkeypatch):
+    """slot 누수는 서비스를 영구 1013으로 만든다 — 성공/예외 모두에서 반납해야 한다."""
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 0)
+
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", lambda ws: _context())
+    granted, context = asyncio.run(ws_mod._authorize_with_limit(object()))
+    assert granted is True
+    assert context is not None
+    assert ws_mod._pending_ws_authorizations == 0, "성공 경로에서 slot이 새고 있다"
+
+    def _boom(_ws):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", _boom)
+    with pytest.raises(RuntimeError):
+        asyncio.run(ws_mod._authorize_with_limit(object()))
+    assert ws_mod._pending_ws_authorizations == 0, "예외 경로에서 slot이 새고 있다"
+
+
+def test_authorized_connection_is_not_blocked_by_the_limit(monkeypatch):
+    """상한은 신규 인가 동시성만 묶는다. 여유가 있으면 정상 인증은 그대로 통과한다."""
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "2")
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 1)  # 여유 1
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", lambda ws: _context())
+
+    granted, context = asyncio.run(ws_mod._authorize_with_limit(object()))
+
+    assert granted is True
+    assert context is not None
+
+
 # --- ws_logs 재인가 (status와 별도 코드 경로다) ---------------------------------------
 
 
