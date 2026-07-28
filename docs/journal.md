@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-07-28 (T-033/034/035/036 완료 이력 이관 — GitHub issue 상태 확인)
+
+n150 읽기 전용 점검에서 이미 증거로 충족을 확인했던 T-033·T-034·T-035·T-036의 남은
+체크박스를 마무리하면서, 각 태스크 본문이 지시한 대로 관련 GitHub issue(#60/#62/#63)를
+`gh issue view`로 확인했다 — **세 건 모두 이미 closed 상태였다**(저장소에 열린 issue
+자체가 0건). 즉 GitHub 쪽은 이전에 이미 정리되어 있었고, 남은 것은 `docs/tasks.md`가
+그 사실을 반영하지 못하고 있던 문서 쪽 지연뿐이었다.
+
+- T-033: n150에서 실행 중인 Map 4종 image의 `org.opencontainers.image.revision`이 모두
+  동일 40자 commit(`c8ed6164...`)이고 manifest v4 기록과도 일치함을 재확인.
+- T-034: cAdvisor healthy·`/healthz` 200과 manifest의 2026-07-27 active 세대 기록으로
+  capture+readiness가 이미 통과했음을 재확인.
+- T-035: Map API 46시간째 healthy, `docker exec env`로 이름만 확인한 service별 secret
+  격리(admin proxy는 API+UI, service token/cursor signing은 API 전용, Dagster/daemon은
+  전무)가 설계 계약과 정확히 일치함을 재확인.
+- T-036: `pinvi-dagster-latest` 9일째 healthy로 PinVi dependent bootstrap 완료를 재확인.
+
+네 태스크 모두 `docs/tasks.md`에서 제거하고 `docs/tasks-done.md`에 요약 표 행과 전체
+상세 절(기존 체크박스 + 이번 실측으로 채운 마지막 체크박스)을 그대로 이관했다. 코드
+변경 없음(문서 전용).
+
+---
+
 ## 2026-07-28 (n150 production 배포 + T-043 1013 shed 실측 검증)
 
 `main`(T-012, T-011 2라운드, T-044)이 병합된 뒤로도 n150 production 매니저는 갱신되지
