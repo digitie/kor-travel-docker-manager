@@ -40,7 +40,7 @@
 |---|---|---|
 | 미인증 · 세션 만료/폐기 · 허용되지 않은 Origin | accept(101) → data frame 0건 → `close(4401, "AUTH_REQUIRED")` | `code=4401`, `wasClean=true` |
 | 알 수 없는 `container_id` (`/ws/logs`) | accept(101) → data frame 0건 → `close(4000, "INVALID_CONTAINER_ID")` | `code=4000` |
-| 연결 유지 중 세션 만료/폐기(60초 주기 재검증) | `close(4401)` | `code=4401` |
+| 연결 유지 중 세션 만료/폐기 (`/ws/status`·`/ws/logs` 모두 60초 주기 재검증) | `close(4401)` | `code=4401` |
 | docker 접근/스트림 실패 | `{"error": ...}` 1건 → `close(1011)` | `code=1011` |
 | 로그 스트림 EOF | `{"error": "로그 스트림이 종료되었습니다."}` → `close(1000)` | `code=1000` |
 | 정상 종료 | `close(1000)` | `code=1000` |
@@ -55,6 +55,12 @@
 - 클라이언트는 서버의 첫 프레임 이전에 소켓에 쓰지 않는다. `onopen`에서 optimistic하게
   보내면 거절 close와 동시 close가 되어 프록시가 RST로 close frame을 자른다.
   `ws_status`의 `receive()`는 keepalive를 허용하지만, 추가한다면 첫 서버 프레임 이후에만 보낸다.
+- 재검증 시점은 monotonic deadline에 고정한다. `asyncio.wait`의 timeout을 그대로 쓰면
+  프레임이 올 때마다 창이 리셋돼, keepalive를 주기보다 자주 보내는 client가 logout·TTL
+  만료를 무한히 우회한다.
+- 미인증 peer도 handshake를 완료하게 되므로 거절 경로의 close는 peer의 close echo를
+  오래 기다리지 않는다(`_REJECT_CLOSE_TIMEOUT_SECONDS`). WS 라우트에는 아직 rate limit이
+  없으므로, 공개 노출 시 uvicorn `--limit-concurrency`나 프록시 단 제한을 함께 둔다.
 - TestClient는 pre-accept close와 accept-then-close를 모두 같은 `WebSocketDisconnect(4401)`로
   보고하므로 계약 회귀는 `backend/tests/test_ws_contract.py`의 ASGI 메시지 시퀀스로 고정한다.
 

@@ -352,12 +352,15 @@ export default function DashboardClient() {
       ws = socket;
 
       socket.onopen = () => {
-        attempt = 0;
         lastMessageAt = Date.now();
         setIsWsConnected(true);
       };
 
       socket.onmessage = (event) => {
+        // backoff는 handshake 성립이 아니라 "실제로 동작하는 소켓"에서만 리셋한다.
+        // 서버가 항상 accept한 뒤 닫는 계약이라 onopen에서 리셋하면 backoff가 영원히
+        // attempt=0에 머물러, 즉시 close되는 장애에서 초당 1회 재연결 폭주가 된다.
+        attempt = 0;
         lastMessageAt = Date.now();
         try {
           const message = JSON.parse(event.data);

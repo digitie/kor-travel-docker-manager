@@ -37,9 +37,20 @@ TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_eng
 kor_travel_docker_manager.database.engine = test_engine
 kor_travel_docker_manager.database.SessionLocal = TestSessionLocal
 
+from kor_travel_docker_manager._time import utcnow  # noqa: E402
 from kor_travel_docker_manager.api import websocket as ws_mod  # noqa: E402
 from kor_travel_docker_manager.main import app  # noqa: E402
 from kor_travel_docker_manager.services.auth_service import AdminSessionContext  # noqa: E402
+from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS  # noqa: E402
+
+
+def _context(*, ttl_seconds: float = 3600.0) -> AdminSessionContext:
+    """운영과 동일하게 naive UTC를 쓴다(_time.utcnow()와 DB 컬럼이 모두 naive)."""
+    return AdminSessionContext(
+        username="admin",
+        session_id_hash="x" * 64,
+        expires_at=utcnow() + datetime.timedelta(seconds=ttl_seconds),
+    )
 
 ORIGIN_HEADER = (b"origin", FRONTEND_ORIGIN.encode())
 
@@ -107,23 +118,35 @@ def test_ws_status_auth_reject_accepts_then_closes():
     _assert_no_data_frames(sent)
 
 
-def test_ws_logs_auth_reject_accepts_then_closes():
-    sent = drive_websocket("/api/v1/ws/logs/db", headers=[ORIGIN_HEADER])
+def test_ws_logs_unauthenticated_valid_container_is_4401():
+    """존재하는 container라도 미인증이면 4401이다."""
+    valid_id = next(iter(MANAGED_CONTAINERS))
+    sent = drive_websocket(f"/api/v1/ws/logs/{valid_id}", headers=[ORIGIN_HEADER])
 
     assert [m["type"] for m in sent] == ["websocket.accept", "websocket.close"]
     assert sent[-1]["code"] == ws_mod.WS_CLOSE_AUTH_REQUIRED
     _assert_no_data_frames(sent)
 
 
+def test_ws_logs_unauthenticated_unknown_container_is_also_4401():
+    """미인증 peer에게는 container 존재 여부가 새면 안 된다.
+
+    인증 검사가 MANAGED_CONTAINERS 조회보다 반드시 먼저 와야 한다. 순서가 뒤집히면
+    미인증 peer가 4000/4401 차이로 18개 container id를 열거할 수 있다.
+    """
+    unknown_id = "no-such-container"
+    assert unknown_id not in MANAGED_CONTAINERS
+
+    sent = drive_websocket(f"/api/v1/ws/logs/{unknown_id}", headers=[ORIGIN_HEADER])
+
+    assert sent[-1]["code"] == ws_mod.WS_CLOSE_AUTH_REQUIRED, (
+        "미인증인데 4000이 나왔다 — container 존재 여부가 누출된다"
+    )
+
+
 def test_ws_logs_unknown_container_accepts_then_closes(monkeypatch):
     """인증은 통과하고 container_id만 모르는 경우 4000으로 구분되어야 한다."""
-    context = AdminSessionContext(
-        username="admin",
-        session_id_hash="x" * 64,
-        expires_at=datetime.datetime.now(datetime.UTC)
-        + datetime.timedelta(hours=1),
-    )
-    monkeypatch.setattr(ws_mod, "_websocket_authorize", lambda ws: context)
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", lambda ws: _context())
 
     sent = drive_websocket("/api/v1/ws/logs/no-such-container", headers=[ORIGIN_HEADER])
 
@@ -327,6 +350,119 @@ def test_status_broadcast_loop_skips_docker_without_connections():
 
 
 # --- 로그 스트림 종료 경로 ------------------------------------------------------------
+
+
+class _ScriptedWebSocket:
+    """ws_status를 직접 구동하기 위한 최소 WebSocket 대역.
+
+    receive()는 keepalive 프레임을 지정 간격으로 계속 흘려보내 재인가 창이 프레임에
+    의해 리셋되는지(=우회되는지)를 드러낸다.
+    """
+
+    def __init__(self, *, keepalive_interval: float | None):
+        self.keepalive_interval = keepalive_interval
+        self.sent: list[dict] = []
+        self.closed_with: int | None = None
+
+    async def receive(self):
+        if self.keepalive_interval is None:
+            await asyncio.Event().wait()  # 아무것도 보내지 않는 client
+        await asyncio.sleep(self.keepalive_interval)
+        return {"type": "websocket.text", "text": "ping"}
+
+    async def send_json(self, message):
+        self.sent.append(message)
+
+    async def close(self, code=1000, reason=""):
+        self.closed_with = code
+
+
+def _run_ws_status(websocket, *, authorize, interval: float, timeout: float = 2.0):
+    async def main():
+        await asyncio.wait_for(ws_status_direct(websocket, authorize, interval), timeout)
+
+    asyncio.run(main())
+
+
+async def ws_status_direct(websocket, authorize, interval):
+    """monkeypatch 없이 모듈 전역만 바꿔 ws_status를 그대로 실행한다."""
+    import contextlib as _contextlib
+
+    original_authorize = ws_mod._websocket_authorize
+    original_interval = ws_mod._REAUTH_INTERVAL_SECONDS
+    original_accept = ws_mod._accept_best_effort
+    original_docker = ws_mod.docker_service
+
+    class _Docker:
+        @staticmethod
+        def get_containers_status():
+            return []
+
+    async def _accept(_ws):
+        return True
+
+    ws_mod._websocket_authorize = authorize
+    ws_mod._REAUTH_INTERVAL_SECONDS = interval
+    ws_mod._accept_best_effort = _accept
+    ws_mod.docker_service = _Docker()
+    try:
+        with _contextlib.suppress(Exception):
+            await ws_mod.ws_status(websocket)
+    finally:
+        ws_mod._websocket_authorize = original_authorize
+        ws_mod._REAUTH_INTERVAL_SECONDS = original_interval
+        ws_mod._accept_best_effort = original_accept
+        ws_mod.docker_service = original_docker
+        ws_mod.status_manager.disconnect(websocket)
+
+
+def test_live_session_revocation_closes_4401():
+    """살아 있는 소켓도 재인가에서 폐기가 확인되면 4401로 닫아야 한다."""
+    calls = {"n": 0}
+
+    def authorize(_ws):
+        calls["n"] += 1
+        return _context() if calls["n"] == 1 else None  # 두 번째 검사에서 폐기
+
+    websocket = _ScriptedWebSocket(keepalive_interval=None)
+    _run_ws_status(websocket, authorize=authorize, interval=0.05)
+
+    assert calls["n"] >= 2, "재인가가 한 번도 다시 일어나지 않았다"
+    assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
+
+
+def test_live_session_expiry_closes_4401():
+    """expires_at이 지나면 재인가 결과와 무관하게 닫는다."""
+    websocket = _ScriptedWebSocket(keepalive_interval=None)
+    _run_ws_status(
+        websocket,
+        authorize=lambda _ws: _context(ttl_seconds=-1.0),  # 이미 만료된 세션
+        interval=0.05,
+    )
+
+    assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
+
+
+def test_reauth_is_not_bypassed_by_keepalive_frames():
+    """재인가 창이 프레임마다 리셋되면 keepalive를 보내는 client는 영원히 재검증되지 않는다.
+
+    적대적 리뷰에서 실제로 재현된 우회다. 재인가 시점을 monotonic deadline에 고정하지
+    않으면 이 테스트가 실패한다(재인가 0회, 정상 종료).
+    """
+    calls = {"n": 0}
+
+    def authorize(_ws):
+        calls["n"] += 1
+        return _context() if calls["n"] == 1 else None
+
+    # 재인가 주기(0.05s)보다 자주 프레임을 보내는 client.
+    websocket = _ScriptedWebSocket(keepalive_interval=0.01)
+    _run_ws_status(websocket, authorize=authorize, interval=0.05)
+
+    assert calls["n"] >= 2, (
+        f"keepalive 프레임이 재인가를 우회했다 — 재인가 호출 {calls['n']}회"
+    )
+    assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
 
 
 def test_read_next_chunk_returns_eof_sentinel():
