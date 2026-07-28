@@ -3,12 +3,18 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ValidatedComposeCandidate,
 )
-from kor_travel_docker_manager.services.docker_service import _redact_env_pair
+from kor_travel_docker_manager.services.docker_service import (
+    _redact_argv,
+    _redact_env_pair,
+    _sanitize_labels,
+)
 from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
@@ -155,6 +161,99 @@ def test_env_redaction_masks_sensitive_values():
     assert _redact_env_pair("POSTGRES_PASSWORD=addr") == "POSTGRES_PASSWORD=<redacted>"
     assert _redact_env_pair("RUSTFS_ACCESS_KEY=rustfsadmin") == "RUSTFS_ACCESS_KEY=<redacted>"
     assert _redact_env_pair("POSTGRES_DB=kor_travel_geo") == "POSTGRES_DB=kor_travel_geo"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        # `API_KEY`는 `ACCESS_KEY`에 걸리지 않아 예전에는 평문으로 나갔다.
+        # T-012가 inspect를 대시보드에 연결하면서 브라우저에 그대로 보이게 됐던 값들이다.
+        "KOR_TRAVEL_MAP_OPINET_API_KEY",
+        "KOR_TRAVEL_MAP_KREX_EX_API_KEY",
+        "KOR_TRAVEL_MAP_KREX_GO_API_KEY",
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY",
+        "KOR_TRAVEL_GEO_VWORLD_API_KEY",
+        "SOME_APIKEY",
+        "SERVICE_CREDENTIAL",
+        "DB_PASSWD",
+    ],
+)
+def test_env_redaction_masks_provider_api_keys(key):
+    assert _redact_env_pair(f"{key}=super-secret-value") == f"{key}=<redacted>"
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        "POSTGRES_DB=kor_travel_geo",
+        "KOR_TRAVEL_GEO_SOURCE_DIR=/data/juso",
+        "KTDM_ADMIN_USERNAME=admin",
+        "PORT=12901",
+    ],
+)
+def test_env_redaction_keeps_non_secret_values(pair):
+    """과다 redaction은 안전하지만, 운영에 필요한 일반 설정까지 가리면 패널이 쓸모없어진다."""
+    assert _redact_env_pair(pair) == pair
+
+
+@pytest.mark.parametrize(
+    ("pair", "expected"),
+    [
+        # key 이름이 어떤 SENSITIVE_KEY_PARTS에도 걸리지 않는데 값에 비밀번호가 박혀 있다.
+        # 적대적 리뷰 2명이 각각 찾은 실제 노출 경로다.
+        (
+            "PINVI_DATABASE_URL=postgresql+asyncpg://pinvi:s3cr3t@127.0.0.1:5432/pinvi",
+            "PINVI_DATABASE_URL=postgresql+asyncpg://pinvi:<redacted>@127.0.0.1:5432/pinvi",
+        ),
+        (
+            "KOR_TRAVEL_MAP_PG_DSN=postgresql+psycopg://map:pw123@db:5432/kor_travel_map",
+            "KOR_TRAVEL_MAP_PG_DSN=postgresql+psycopg://map:<redacted>@db:5432/kor_travel_map",
+        ),
+        (
+            "KTG_DAGSTER_PG_URL=postgresql://geo:hunter2@127.0.0.1/geo",
+            "KTG_DAGSTER_PG_URL=postgresql://geo:<redacted>@127.0.0.1/geo",
+        ),
+    ],
+)
+def test_env_redaction_masks_credentials_embedded_in_dsn_values(pair, expected):
+    assert _redact_env_pair(pair) == expected
+
+
+@pytest.mark.parametrize(
+    "pair",
+    [
+        # credential이 없는 URL은 그대로 읽혀야 패널이 쓸모 있다.
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL=http://127.0.0.1:12501",
+        "KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL=http://127.0.0.1:12702/graphql",
+        "KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL=http://127.0.0.1:12101",
+    ],
+)
+def test_env_redaction_keeps_credential_free_urls(pair):
+    assert _redact_env_pair(pair) == pair
+
+
+def test_argv_redaction_masks_url_credentials():
+    """cmd/entrypoint는 그동안 어떤 필터도 거치지 않던 통로였다."""
+    assert _redact_argv(["sh", "-c", "psql postgresql://u:pw@h/db -c 'select 1'"]) == [
+        "sh",
+        "-c",
+        "psql postgresql://u:<redacted>@h/db -c 'select 1'",
+    ]
+    assert _redact_argv(None) is None
+    assert _redact_argv([]) == []
+    # credential이 없는 일반 command는 그대로 둔다.
+    assert _redact_argv(["postgres", "-c", "shared_buffers=512MB"]) == [
+        "postgres",
+        "-c",
+        "shared_buffers=512MB",
+    ]
+
+
+def test_label_sanitizer_uses_the_same_predicate():
+    assert _sanitize_labels({"OPINET_API_KEY": "v", "app": "manager"}) == {
+        "OPINET_API_KEY": "<redacted>",
+        "app": "manager",
+    }
 
 
 @patch.object(

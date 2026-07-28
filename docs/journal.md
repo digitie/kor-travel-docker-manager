@@ -4,6 +4,53 @@
 
 ---
 
+## 2026-07-28 (T-012 적대적 리뷰 반영 — 비밀 노출·포커스 탈취 수정)
+
+- **적대적 리뷰 2명이 각각 실제 비밀 노출 경로를 찾았다.** 이 패널은 inspect를 UI에
+  연결한 최초 지점이라, API/CLI에만 있던 redaction 공백이 브라우저 클릭 한 번으로 열렸다.
+  - key 이름 누락: `SENSITIVE_KEY_PARTS`에 `API_KEY`가 없어 `ACCESS_KEY`에 안 걸렸다.
+    `.env.example`에서 실제로 `*_API_KEY` 5개(OpiNet·KREX EX/GO·concierge·VWorld)를 확인.
+    `API_KEY`/`APIKEY`/`CREDENTIAL`/`PASSWD`를 추가했다.
+  - 값 내부 credential: key 이름이 뭘 걸어도 값 자체에 `postgresql+asyncpg://user:pw@host`
+    형태로 비밀번호가 박힌 DSN은 못 잡는다(`PINVI_DATABASE_URL`, `KOR_TRAVEL_MAP_PG_DSN`,
+    `KTG_PG_DSN` 등). key 전체를 가리는 대신 URL userinfo의 비밀번호 구간만 정규식으로
+    치환해, `..._BASE_URL`처럼 비밀 없는 URL은 그대로 읽을 수 있게 했다.
+  - `cmd`/`entrypoint`는 그동안 어떤 필터도 거치지 않았다. 지금 compose에는 credential이
+    없지만(모두 environment로 주입) 이미지 내장 CMD나 `mc alias set ep access secret`
+    관용구가 통로가 될 수 있어 같은 redaction을 적용했다.
+  - 실행 중 10개 컨테이너 전수 검사(로컬 실브라우저 + fetch)로 유출 0건을 확인했다.
+    `KTG_PG_DSN`은 `postgresql+psycopg://addr:<redacted>@127.0.0.1:5432/kor_travel_geo`로
+    나온다.
+- **포커스 탈취**: 열릴 때 포커스 이동 effect가 `[onClose]`에 묶여 있었는데, `onClose`는
+  부모의 인라인 화살표라 WS broadcast(2초)마다 새 identity를 받아 effect가 재실행되고
+  포커스가 닫기 버튼으로 계속 끌려갔다. 마우스 검증으로는 안 드러나는 키보드/스크린리더
+  결함이었다. 한 번만 포커스하는 effect와 ref로 최신 `onClose`를 읽는 별도 keydown
+  effect로 분리하고, 부모의 콜백도 `useCallback`으로 고정했다. 7초간(broadcast 3회분)
+  포커스가 유지되는 것을 확인했다.
+- **`ensure --build`가 라벨보다 훨씬 넓은 범위를 건드렸다.** `ensure_target`은
+  depends_on 폐포 전체를 재생성한다 — `prom` 5개, `map` 12개, `pinvi` 18개(전체 스택).
+  확인 없이 클릭 한 번으로 실행됐고, db가 포함되면 스키마·권한 복구 스크립트까지 돈다.
+  실행 전 실제 대상 서비스 목록과 개수를 보여 주고 확인을 받게 했다.
+- **target 매칭 comment가 사실과 달랐다.** `containers`를 "직접 소유"라고 적었지만
+  실제로는 depends_on까지 펼쳐진 목록이라 통합 PostgreSQL이 db·geo·conc·map·pinvi·all
+  여섯 target 모두에 들어 있다. 첫 매치를 쓰면 `dependency_order`가 좁은 것부터 나열돼
+  있다는 우연에 기댄 것이었다(`all`은 18개 담아 순서가 바뀌면 클릭 한 번이 전체 스택
+  재생성이 된다). 순서와 무관하게 가장 좁은 target을 고르도록 고쳤다.
+- **`assert_manager_mutation_allowed`가 production을 막는다는 코드 주석이 틀렸다.** 직접
+  읽어 확인 — 그 함수는 환경 선언의 정합성만 검증하고 문자열을 돌려주며,
+  `assert_c6c_mutation_allowed`는 대상이 C6c runtime(Map 4종·pinvi-api)과 안 겹치면 그냥
+  반환한다. 즉 db·storage·gra·cadv·prom·geo·conc는 production에서도 통과한다. 현재
+  유일한 방어선은 프론트 `NODE_ENV` 빌드 타임 제거뿐임을 주석에 정직하게 남기고, 서버측
+  차단은 T-044로 분리했다.
+- 그 외: `aria-controls`가 활성 탭 하나만 유효한 dangling IDREF였던 것을 고정 id로
+  통일, tabpanel에 `tabIndex=0`과 탭 좌우/Home/End 키 이동 추가, 미생성·오프라인
+  컨테이너의 상세 버튼 비활성화(500 에러 대신), raw FastAPI JSON을 사용자 문구로 교체,
+  running 중 `종료 코드 0`으로 오독되던 표시 제거.
+- backend 990 passed(신규 redaction 테스트 다수 포함, negative control로 구 predicate가
+  9건 실패함을 확인), ruff 기존 9건 유지, 프론트 type-check/lint/build 통과.
+
+---
+
 ## 2026-07-28 (대시보드 inspect 상세 패널 — T-012)
 
 - 백엔드 `GET /containers/{id}/inspect`는 T-010부터 있었지만 프론트에서 호출하는 코드가

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { 
   Database, 
@@ -231,6 +231,8 @@ export default function DashboardClient() {
   const [isWsShedding, setIsWsShedding] = useState<boolean>(false);
   // inspect 상세 패널 대상 컨테이너(null이면 닫힘).
   const [detailContainer, setDetailContainer] = useState<ContainerStatus | null>(null);
+  // 안정된 identity로 넘긴다. 인라인 화살표를 주면 WS broadcast(2초)마다 prop이 바뀐다.
+  const closeDetailModal = useCallback(() => setDetailContainer(null), []);
 
   // Modal States
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
@@ -298,21 +300,36 @@ export default function DashboardClient() {
     enabled: isAuthenticated && !isWsConnected,
   });
 
-  // target registry — 상세 패널의 `ensure --build`가 어떤 target에 속하는지 알기 위해 쓴다.
-  // 상세 패널이 열린 동안에만 조회하고, 정적 설정이라 재조회하지 않는다.
-  const { data: targets = [] } = useQuery<Array<{ id: string; containers?: string[] }>>({
+  // target registry — 상세 패널의 `ensure --build`가 어떤 target에 속하고 실제로 몇 개
+  // 서비스를 재생성하는지 알기 위해 쓴다. 정적 설정이라 한 번만 받는다. 모달이 열리기 전에
+  // 미리 캐시해 두어야 패널이 열린 뒤 footer가 뒤늦게 튀어나오지 않는다.
+  type TargetSummary = {
+    id: string;
+    containers?: string[];
+    resolved_services?: string[];
+  };
+  const { data: targets = [] } = useQuery<TargetSummary[]>({
     queryKey: ['targets'],
-    queryFn: () => apiJson<Array<{ id: string; containers?: string[] }>>('/api/v1/targets'),
-    enabled: isAuthenticated && detailContainer !== null,
+    queryFn: () => apiJson<TargetSummary[]>('/api/v1/targets'),
+    enabled: isAuthenticated,
     staleTime: Infinity,
     refetchInterval: false,
   });
 
-  // target의 depends_on까지 펼친 resolved 목록이 아니라 target이 직접 소유한 containers만
-  // 본다. resolved를 쓰면 의존 대상까지 매칭돼 엉뚱한 상위 target이 잡힌다.
-  const detailTargetId = useMemo(() => {
+  // `containers`는 target이 "직접 소유한" 목록이 아니다 — depends_on까지 펼쳐져 있어
+  // 통합 PostgreSQL 하나가 db·geo·conc·map·pinvi·all 여섯 target에 모두 들어 있다.
+  // 따라서 첫 매치를 쓰면 `dependency_order`가 좁은 것부터 나열돼 있다는 우연에 기대게 된다.
+  // (`all` target은 18개를 담는다 — 순서가 바뀌면 한 번의 클릭이 전체 스택 재생성이 된다.)
+  // 순서와 무관하게 **가장 좁은** target을 고른다.
+  const detailTarget = useMemo(() => {
     if (!detailContainer) return null;
-    return targets.find((t) => (t.containers ?? []).includes(detailContainer.id))?.id ?? null;
+    const matches = targets.filter((t) => (t.containers ?? []).includes(detailContainer.id));
+    if (matches.length === 0) return null;
+    return matches.reduce((narrowest, t) =>
+      (t.containers?.length ?? Infinity) < (narrowest.containers?.length ?? Infinity)
+        ? t
+        : narrowest
+    );
   }, [targets, detailContainer]);
 
   // Active containers dataset (WS if available, fallback query otherwise)
@@ -1007,11 +1024,27 @@ export default function DashboardClient() {
                               <Terminal className="w-4 h-4" />
                             </button>
 
+                            {/* 컨테이너가 없거나 docker가 죽어 있으면 inspect가 500이다.
+                                다른 지표 버튼과 같은 방식으로 미리 막는다. */}
                             <button
                               type="button"
+                              disabled={
+                                container.status === 'not_created' ||
+                                container.status === 'offline'
+                              }
                               onClick={() => setDetailContainer(container)}
-                              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default"
-                              title="inspect 상세(mounts·networks·healthcheck·env) 보기"
+                              className={`border rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default ${
+                                container.status === 'not_created' ||
+                                container.status === 'offline'
+                                  ? 'bg-card border-line text-secondary opacity-50 cursor-default'
+                                  : 'bg-card hover:bg-subtle text-ink border-line'
+                              }`}
+                              title={
+                                container.status === 'not_created' ||
+                                container.status === 'offline'
+                                  ? '컨테이너가 생성되지 않아 상세 정보를 볼 수 없습니다'
+                                  : 'inspect 상세(mounts·networks·healthcheck·env) 보기'
+                              }
                             >
                               <Boxes className="w-4 h-4" />
                             </button>
@@ -1557,8 +1590,9 @@ export default function DashboardClient() {
         <ContainerDetailModal
           containerId={detailContainer.id}
           containerLabel={detailContainer.display_name || detailContainer.name}
-          targetId={detailTargetId}
-          onClose={() => setDetailContainer(null)}
+          targetId={detailTarget?.id ?? null}
+          targetServices={detailTarget?.resolved_services ?? null}
+          onClose={closeDetailModal}
         />
       )}
     </div>

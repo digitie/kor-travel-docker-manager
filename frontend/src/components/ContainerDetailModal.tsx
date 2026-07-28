@@ -15,8 +15,15 @@ const TABS: Array<{ id: TabId; label: string; Icon: typeof Boxes }> = [
   { id: 'env', label: 'Env', Icon: KeyRound },
 ];
 
-// 개발 빌드에서만 노출한다. 운영 빌드(NODE_ENV=production)에서는 번들에서 분기 자체가 죽고,
-// 서버도 production mutation 차단으로 거절하므로 이중으로 막힌다.
+// 개발 빌드에서만 노출한다. 운영 빌드에서는 Next.js가 이 분기를 번들에서 제거한다.
+//
+// ⚠️ 이것이 **유일한** 방어선이다. 서버는 이 호출을 production이라고 막지 않는다 —
+// `assert_manager_mutation_allowed`는 환경 선언의 정합성만 검증하고 문자열을 돌려주며,
+// `assert_c6c_mutation_allowed`는 대상 service가 C6c runtime(Map 4종·pinvi-api)과 겹치지
+// 않으면 그냥 반환한다. 즉 db·storage·gra·cadv·prom·geo·conc target은 production에서도
+// 통과한다. `npm run dev`로 띄운 프론트를 운영 백엔드에 붙이면 NODE_ENV는 development라
+// 버튼이 보이고 실제로 실행된다. 서버측 차단은 후속 과제로 분리했다(T-044).
+// 그래서 아래 실행 경로에 실제 영향 범위를 밝힌 확인 절차를 둔다.
 const IS_DEV = process.env.NODE_ENV !== 'production';
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -36,11 +43,14 @@ export default function ContainerDetailModal({
   containerId,
   containerLabel,
   targetId,
+  targetServices,
   onClose,
 }: {
   containerId: string;
   containerLabel: string;
   targetId?: string | null;
+  /** target의 depends_on까지 펼친 실제 재생성 대상. 영향 범위를 사용자에게 보여 준다. */
+  targetServices?: string[] | null;
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<TabId>('overview');
@@ -54,15 +64,23 @@ export default function ContainerDetailModal({
     refetchInterval: 5000,
   });
 
-  // Esc로 닫기 + 열릴 때 닫기 버튼으로 포커스 이동(모달 a11y 기존 패턴과 정렬).
+  // 열릴 때 한 번만 포커스를 옮긴다. `[onClose]`에 묶으면 부모가 WS broadcast(2초)마다
+  // 리렌더할 때 effect가 재실행돼 사용자가 어디에 있든 2초마다 닫기 버튼으로 포커스를
+  // 빼앗는다. 마우스 검증으로는 드러나지 않는 키보드/스크린리더 결함이다.
   useEffect(() => {
     closeRef.current?.focus();
+  }, []);
+
+  // Esc 핸들러는 ref로 최신 onClose를 읽어 리스너를 한 번만 등록한다.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, []);
 
   const mounts = useMemo(() => data?.mounts ?? [], [data]);
   const networks = useMemo(
@@ -74,12 +92,27 @@ export default function ContainerDetailModal({
 
   const runEnsure = async () => {
     if (!targetId) return;
+    // ensure는 target 하나가 아니라 depends_on 폐포 전체를 재생성한다(`pinvi`면 18개 서비스).
+    // db가 포함되면 스키마·권한 복구 스크립트까지 실행된다. 버튼 라벨만 보면 이 범위가
+    // 드러나지 않으므로, 실제 대상을 세어 보여 주고 확인을 받는다.
+    const services = targetServices ?? [];
+    const scope = services.length ? `\n\n대상 ${services.length}개: ${services.join(', ')}` : '';
+    const dbWarning = services.some((s) => /postgres/i.test(s))
+      ? '\n\n⚠️ PostgreSQL이 포함됩니다. 재생성과 함께 스키마·권한 복구 스크립트가 실행됩니다.'
+      : '';
+    if (
+      !window.confirm(
+        `${targetId} target을 docker compose up -d --build 로 재생성합니다.${scope}${dbWarning}\n\n계속할까요?`
+      )
+    ) {
+      return;
+    }
     setEnsureState('running');
     setEnsureMessage('');
     try {
       await postJson(`/api/v1/targets/${targetId}/ensure`, { build: true, recreate: false });
       setEnsureState('done');
-      setEnsureMessage(`${targetId} target을 --build로 실행했습니다.`);
+      setEnsureMessage(`${targetId} target(${services.length || '?'}개 서비스)을 재생성했습니다.`);
     } catch (e) {
       setEnsureState('error');
       setEnsureMessage(e instanceof Error ? e.message : String(e));
@@ -123,7 +156,25 @@ export default function ContainerDetailModal({
               role="tab"
               id={`container-detail-tab-${id}`}
               aria-selected={tab === id}
-              aria-controls={`container-detail-panel-${id}`}
+              // 패널은 DOM에 하나뿐이고 id가 활성 탭을 따라간다. 탭마다 자기 id를 가리키면
+              // 비활성 4개는 존재하지 않는 IDREF가 된다. 고정 id 하나를 함께 가리킨다.
+              aria-controls="container-detail-panel"
+              tabIndex={tab === id ? 0 : -1}
+              onKeyDown={(e) => {
+                const idx = TABS.findIndex((t) => t.id === tab);
+                const move =
+                  e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+                if (!move && e.key !== 'Home' && e.key !== 'End') return;
+                e.preventDefault();
+                const next =
+                  e.key === 'Home'
+                    ? 0
+                    : e.key === 'End'
+                      ? TABS.length - 1
+                      : (idx + move + TABS.length) % TABS.length;
+                setTab(TABS[next].id);
+                document.getElementById(`container-detail-tab-${TABS[next].id}`)?.focus();
+              }}
               onClick={() => setTab(id)}
               className={`flex items-center gap-1.5 px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors ${
                 tab === id
@@ -139,15 +190,23 @@ export default function ContainerDetailModal({
 
         <div
           role="tabpanel"
-          id={`container-detail-panel-${tab}`}
+          id="container-detail-panel"
           aria-labelledby={`container-detail-tab-${tab}`}
-          className="flex-grow overflow-y-auto px-6 py-4 text-xs select-text scrollbar-thin"
+          // 이 div가 스크롤 컨테이너인데 내부에 포커스 가능한 요소가 없다. tabIndex가 없으면
+          // 키보드만 쓰는 사용자가 패널에 포커스를 못 줘서 긴 env 목록을 스크롤할 수 없다.
+          tabIndex={0}
+          className="flex-grow overflow-y-auto px-6 py-4 text-xs select-text scrollbar-thin outline-hidden focus-visible:outline-2 focus-visible:outline-brand"
         >
           {isLoading && <EmptyState>불러오는 중…</EmptyState>}
           {error && (
-            <p className="py-6 text-center text-danger">
-              상세 정보를 불러오지 못했습니다: {error instanceof Error ? error.message : String(error)}
-            </p>
+            <div className="py-6 text-center space-y-1">
+              <p className="text-danger">상세 정보를 불러오지 못했습니다.</p>
+              {/* 백엔드는 FastAPI detail JSON을 그대로 돌려준다. 원문을 그대로 찍으면
+                  사용자에게 의미 없는 문자열이 보이므로 보조 설명으로만 둔다. */}
+              <p className="text-secondary">
+                컨테이너가 실행 중이 아니거나 Docker 데몬에 연결할 수 없습니다.
+              </p>
+            </div>
           )}
 
           {data && tab === 'overview' && (
@@ -157,7 +216,11 @@ export default function ContainerDetailModal({
               <Row label="Docker ID" value={data.docker_id?.slice(0, 20)} />
               <Row label="상태" value={data.state?.status} />
               <Row label="시작" value={data.state?.started_at} />
-              <Row label="종료 코드" value={data.state?.exit_code ?? undefined} />
+              {/* Docker는 running 중에도 ExitCode 0을 보고한다. 그대로 찍으면 '정상 종료'로 읽힌다. */}
+              <Row
+                label="종료 코드"
+                value={data.state?.running === false ? data.state?.exit_code : undefined}
+              />
               <Row label="restart" value={data.host_config?.restart_policy?.Name} />
               <Row label="network mode" value={data.host_config?.network_mode} />
               <Row label="workdir" value={data.config?.working_dir} />
@@ -256,7 +319,9 @@ export default function ContainerDetailModal({
             ) : (
               <div className="space-y-2">
                 <p className="text-secondary leading-relaxed">
-                  secret 성격 값은 서버에서 이미 가려진 상태로 전달됩니다. 원문은 노출되지 않습니다.
+                  비밀 성격의 key와 접속 문자열의 비밀번호 구간은 서버에서 가려서 전달합니다
+                  (<code>&lt;redacted&gt;</code>). 다만 이는 이름·패턴 기반이라 완전하지 않을 수
+                  있으니, 화면 공유나 스크린샷 전에 값을 확인하세요.
                 </p>
                 <ul className="space-y-1">
                   {env.map((pair, i) => {
@@ -283,10 +348,14 @@ export default function ContainerDetailModal({
               onClick={runEnsure}
               disabled={ensureState === 'running'}
               className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[36px] px-3 text-xs inline-flex items-center gap-1.5 transition-all disabled:opacity-50"
-              title={`${targetId} target을 docker compose up -d --build로 실행`}
+              title={`${targetId} target의 depends_on 폐포 전체를 docker compose up -d --build로 재생성한다`}
             >
               <Hammer className="w-3.5 h-3.5" />
-              {ensureState === 'running' ? '실행 중…' : `${targetId} ensure --build`}
+              {ensureState === 'running'
+                ? '실행 중…'
+                : `${targetId} ensure --build${
+                    targetServices?.length ? ` (${targetServices.length}개 서비스)` : ''
+                  }`}
             </button>
             <span className="text-[11px] text-secondary">개발 빌드 전용</span>
             {ensureMessage ? (
