@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -29,18 +30,30 @@ WS_CLOSE_AUTH_REQUIRED = 4401       # 미인증 / 허용되지 않은 Origin / �
 
 # 동시에 인가(Origin+세션 쿠키 검증) 처리 중인 handshake 상한.
 #
-# accept-then-close 계약상 미인증 peer도 handshake를 완료하므로, 거절 1건마다 소켓과
-# ASGI task와 executor의 동기 SQLite 조회가 함께 잡힌다. 상한이 없으면 미인증 flood가
-# broadcast·metrics·log cleanup이 함께 쓰는 기본 executor를 굶긴다.
+# **이 상한이 실제로 묶는 것과 묶지 않는 것을 정확히 적는다.** 적대적 리뷰에서 최초 근거가
+# 틀린 것으로 측정됐다.
+#
+# 묶는 것: `to_thread` dispatch와 동시 인가 handshake 수. 유효 서명 쿠키를 가진 peer에
+#   한해 executor queue 깊이.
+# 묶지 **않는** 것: fd, uvicorn protocol 객체, ASGI task, `_accept_and_close`의
+#   accept/close 소켓 수명. flood에서 실제로 고갈되는 자원은 이쪽이다.
+#
+# 미인증 peer는 SQLite에 **도달하지 못한다**. `validate_session_cookie`는 쿠키가 없으면
+# session을 열기 전에 None을 돌려주고, `get_db_session()` SELECT는 HMAC 서명 검증
+# 뒤에 있어 KTDM_SESSION_SECRET 없이는 통과할 수 없다(측정: 미인증 경로 DB session 0건,
+# 호출당 0.2~2.6us). 따라서 "거절마다 DB 조회가 잡힌다"는 서술로 이 값을 튜닝하지 말 것.
 #
 # **per-IP 제한을 쓰지 않는 이유**: 이 배포의 공개 트래픽은 전부 리버스 프록시 IP 하나로
 # 도착하고(신뢰 프록시 CIDR이 loopback 전용이라 X-Forwarded-For를 신뢰하지 않는다),
-# per-IP 버킷은 인터넷 전체를 한 키에 묶어 정상 관리자까지 함께 막는다. 실제 자원을
-# 직접 묶는 IP 비의존 동시성 상한이 이 토폴로지에서 옳은 제어다. per-IP로 가려면 먼저
-# KTDM_TRUSTED_PROXY_SECRET + 프록시의 X-Forwarded-For 주입이 선행되어야 한다.
+# per-IP 버킷은 인터넷 전체를 한 키에 묶어 정상 관리자까지 함께 막는다. per-IP로 가려면
+# `KTDM_TRUSTED_PROXY_CIDRS`에 프록시 IP를 **먼저** 추가해야 하고(이게 필수 조건),
+# `KTDM_TRUSTED_PROXY_SECRET`는 loopback 위조를 막는 추가 방어다.
 #
-# 이 상한은 신규 handshake의 인가 경로만 묶는다. 전체 동시 연결 수는 uvicorn
-# `--limit-concurrency`나 프록시 단에서 제한한다(docs/docker-management.md).
+# 전체 동시 연결 수는 이 상한의 범위가 아니다. uvicorn `--limit-concurrency`로는 막을 수
+# 없다 — h11_impl은 WebSocket upgrade를 503 검사 **이전에** return한다(0.28.1
+# h11_impl.py:221-230). 연결 수 제한은 프록시(HAProxy `maxconn`/stick-table)에서 건다.
+#
+# 이 값은 프로세스(uvicorn worker)당 상한이다. 워커를 늘리면 실효 상한도 그만큼 곱해진다.
 _MAX_PENDING_WS_AUTH_ENV = "KTDM_WS_MAX_PENDING_AUTHORIZATIONS"
 _DEFAULT_MAX_PENDING_WS_AUTH = 64
 _MIN_MAX_PENDING_WS_AUTH = 1
@@ -48,6 +61,11 @@ _MAX_MAX_PENDING_WS_AUTH = 10_000
 
 # 단일 event loop에서만 갱신하므로 lock이 필요 없다(검사와 증가 사이에 await가 없다).
 _pending_ws_authorizations = 0
+# shed 상태 진입/해제에서만 로그를 남긴다. 거절 1건마다 logger.warning을 부르면 attacker가
+# 제어하는 동기 디스크 write가 되어, shed 경로가 완화하려던 경로보다 오히려 비싸진다
+# (측정: 거절당 1039~1207us vs 로그 제거 시 57~62us, 4401 경로는 285~313us).
+_ws_shedding = False
+_ws_shed_count = 0
 
 # accept()/close()는 각각 이 시간 안에 끝나야 한다(wedged transport가 handler를 막지 않게).
 _WS_HANDSHAKE_TIMEOUT_SECONDS = 1.0
@@ -73,8 +91,9 @@ _ACCEPT_CLOSE_SETTLE_ENV = "KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS"
 _DEFAULT_ACCEPT_CLOSE_SETTLE_SECONDS = 0.0
 _MAX_ACCEPT_CLOSE_SETTLE_SECONDS = 5.0
 
-# 살아 있는 연결의 세션 재검증 주기(초).
+# 살아 있는 연결의 세션 재검증 주기(초). jitter로 위상 고정을 푼다.
 _REAUTH_INTERVAL_SECONDS = 60.0
+_REAUTH_JITTER_RATIO = 0.2
 
 # 상태 broadcast 주기(초).
 _STATUS_BROADCAST_INTERVAL_SECONDS = 2.0
@@ -195,6 +214,17 @@ def _websocket_authorize(websocket: WebSocket) -> AdminSessionContext | None:
     return validate_session_cookie(websocket.cookies.get(SESSION_COOKIE_NAME), websocket)
 
 
+def _next_reauth_deadline(loop: asyncio.AbstractEventLoop) -> float:
+    """재인가 deadline을 jitter와 함께 계산한다.
+
+    배포 때 백엔드를 재기동하면 열려 있던 모든 tab이 같은 순간에 재연결해 deadline이
+    영구히 위상 고정된다. jitter가 없으면 N개 소켓의 세션 조회가 60초마다 같은
+    밀리초에 몰린다(공유 executor로).
+    """
+    jitter = _REAUTH_INTERVAL_SECONDS * _REAUTH_JITTER_RATIO * random.random()
+    return loop.time() + _REAUTH_INTERVAL_SECONDS + jitter
+
+
 def _resolve_max_pending_ws_authorizations() -> int:
     """동시 인가 상한을 env에서 읽는다. 비정상 값은 기본값/범위로 clamp한다."""
     raw = os.environ.get(_MAX_PENDING_WS_AUTH_ENV)
@@ -215,14 +245,24 @@ async def _authorize_with_limit(
     반환 `(granted, context)`. `granted=False`는 과부하라 인가 자체를 수행하지 않았다는
     뜻이다 — 이 경로는 DB를 건드리지 않으므로 flood 시 가장 싼 경로로 부하를 흘려보낸다.
     """
-    global _pending_ws_authorizations
+    global _pending_ws_authorizations, _ws_shedding, _ws_shed_count
 
     if _pending_ws_authorizations >= _resolve_max_pending_ws_authorizations():
-        logger.warning(
-            "WebSocket authorization rejected: pending=%d at limit",
-            _pending_ws_authorizations,
-        )
+        _ws_shed_count += 1
+        if not _ws_shedding:
+            # edge-triggered: 진입 시 1회만 기록한다.
+            _ws_shedding = True
+            logger.warning(
+                "WebSocket authorization shedding started (pending=%d at limit)",
+                _pending_ws_authorizations,
+            )
         return False, None
+
+    if _ws_shedding:
+        _ws_shedding = False
+        logger.warning(
+            "WebSocket authorization shedding ended (total shed=%d)", _ws_shed_count
+        )
 
     _pending_ws_authorizations += 1
     try:
@@ -328,7 +368,7 @@ async def ws_status(websocket: WebSocket):
         # 재인가 시점은 monotonic deadline에 고정한다. wait의 timeout을 그대로 쓰면
         # 프레임이 올 때마다 창이 처음부터 다시 시작해, keepalive를 주기보다 자주 보내는
         # client는 영원히 재검증되지 않는다(logout/TTL이 살아 있는 소켓에 적용되지 않음).
-        deadline = loop.time() + _REAUTH_INTERVAL_SECONDS
+        deadline = _next_reauth_deadline(loop)
         while True:
             # wait_for가 아니라 wait를 쓴다: timeout이 나도 recv_task를 취소하지 않으므로
             # websockets의 recv()를 반복 취소하는 위험이 없다.
@@ -346,7 +386,7 @@ async def ws_status(websocket: WebSocket):
                     continue
 
             # deadline 도달 — logout(revoked_at)/TTL 만료를 살아 있는 소켓에도 적용한다.
-            deadline = loop.time() + _REAUTH_INTERVAL_SECONDS
+            deadline = _next_reauth_deadline(loop)
             if utcnow() >= context.expires_at:
                 close_code = WS_CLOSE_AUTH_REQUIRED
                 break
@@ -437,7 +477,7 @@ async def ws_logs(websocket: WebSocket, container_id: str):
 
         # ws_status와 같은 재인가 계약을 적용한다. 로그 stdout/stderr는 status보다
         # 민감할 수 있으므로 revoked/만료 세션이 스트림을 이어받게 두지 않는다.
-        deadline = loop.time() + _REAUTH_INTERVAL_SECONDS
+        deadline = _next_reauth_deadline(loop)
         while True:
             done, _ = await asyncio.wait(
                 {read_task, recv_task},
@@ -448,7 +488,7 @@ async def ws_logs(websocket: WebSocket, container_id: str):
             # 재인가를 send보다 먼저 본다. 뒤에 두면 deadline이 지난 iteration에서
             # 폐기된 세션에 로그 chunk를 한 번 더 흘려보낸다.
             if loop.time() >= deadline:
-                deadline = loop.time() + _REAUTH_INTERVAL_SECONDS
+                deadline = _next_reauth_deadline(loop)
                 if utcnow() >= context.expires_at:
                     close_code = WS_CLOSE_AUTH_REQUIRED
                     break

@@ -10,17 +10,39 @@
 # 동기화하지 않으므로(대상 호스트에서 직접 설치) 이 검사는 배포 호스트에서 실행해야 한다.
 #
 # 사용:
-#   scripts/verify-frontend-toolchain.sh            # 검사만
+#   scripts/verify-frontend-toolchain.sh            # 검사만 (비파괴)
 #   scripts/verify-frontend-toolchain.sh --fix      # 깨져 있으면 npm ci 로 복구 후 재검사
 #
-# 종료 코드: 0 정상 / 1 툴체인 손상(또는 복구 실패)
+# ⚠️ --fix 는 파괴적이다. `npm ci` 는 기존 node_modules 를 **먼저 지우고** 설치한다.
+#    `next start` 는 route 번들과 그 require 를 요청 시점에 lazy 로 해석하므로, 실행 중인
+#    서버가 있는 상태에서 --fix 를 돌리면 그 서버의 의존성 트리가 사라진다. 설치가 실패하면
+#    실행 중인 서버와 복구 경로가 동시에 없어진다.
+#    → --fix 는 **서버를 내린 뒤**, 또는 아직 서비스 중이 아닌 호스트에서만 쓴다.
+#      검사만 할 때는 인자 없이 실행한다(비파괴).
+#
+# 종료 코드: 0 정상 / 1 툴체인 손상(또는 복구 실패) / 2 잘못된 사용법
 
 set -euo pipefail
 
 FIX=0
-[ "${1:-}" = "--fix" ] && FIX=1
+for arg in "$@"; do
+  case "$arg" in
+    --fix) FIX=1 ;;
+    *)
+      echo "사용법: $(basename "$0") [--fix]" >&2
+      echo "  알 수 없는 인자: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 심볼릭 링크로 호출돼도 저장소의 frontend/ 를 보도록 실제 경로를 먼저 푼다.
+# (풀지 않으면 링크 옆에 있는 무관한 frontend/ 를 검사하고 0을 반환할 수 있다.)
+_self="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1 && readlink -f "$_self" >/dev/null 2>&1; then
+  _self="$(readlink -f "$_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 FRONTEND_DIR="$(cd "$SCRIPT_DIR/../frontend" && pwd)"
 cd "$FRONTEND_DIR"
 
@@ -44,10 +66,13 @@ run_checks() {
   check "package.json 존재" test -f package.json
   check "package-lock.json 존재" test -f package-lock.json
   check "node_modules 디렉터리 존재" test -d node_modules
-  # 핵심 판정: 부분 설치는 최상위 패키지가 있어도 .bin 이 비어 있다.
+  # 빠른 사전 판정: 부분 설치는 최상위 패키지가 있어도 .bin 이 비어 있다.
   check "node_modules/.bin/next 실행 가능" test -x node_modules/.bin/next
-  check "next 패키지 존재" test -d node_modules/next
-  check "빌드에 필요한 typescript 존재" test -d node_modules/typescript
+  # 결정적 판정: 개별 경로를 찍어 보는 방식으로는 부분 설치를 못 잡는다. 실제로
+  # next/typescript 는 있는데 react·react-dom·tailwindcss 가 없는 트리가 위 검사들을
+  # 모두 통과한다(적대적 리뷰에서 재현). npm ls 는 최상위 의존성의 누락·불일치를
+  # 네트워크 없이 종료 코드로 알려 주므로 이 검사가 진짜 게이트다.
+  check "의존성 트리 정합(npm ls --depth=0)" npm ls --depth=0
   return 0
 }
 
