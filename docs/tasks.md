@@ -25,7 +25,7 @@
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
 | **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[/]` | - | T-042 리뷰 후속, PR #76 |
 | **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
-| **T-012** | 대시보드 상세 패널 확장 | `[/]` | - | inspect 모달·5개 탭·dev ensure 버튼, 비밀 redaction 보강, 실브라우저 검증 |
+| **T-012** | 대시보드 상세 패널 확장 | `[x]` | 2026-07-28 | inspect 모달·5개 탭·dev ensure 버튼, 비밀 redaction 보강, 적대적 리뷰 2명 반영, 실브라우저 검증 완료 (PR #79) |
 | **T-044** | ensure 라우트의 production 서버측 차단 | `[x]` | 2026-07-28 | `ComposeService.ensure_target`이 target과 무관하게 production을 전면 차단, 적대적 리뷰 2명 + 검증 통과 |
 
 ---
