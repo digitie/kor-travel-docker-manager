@@ -38,6 +38,8 @@
 | **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
 | **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | `[x]` | 2026-07-28 | Map `T-ADM-C7W`/`T-VN-H11` 참조, n150 프록시 경유 실브라우저에서 4401 확인 |
+| **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[/]` | - | T-042 리뷰 후속, PR #76 |
+| **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -355,6 +357,21 @@
       recovery 실패·mixed runtime·manifest 불확정이면 관련 reference를 모두 보존한다.
 - [ ] 단일 적대적 리뷰와 CI green 뒤 n150 exact Manager로 compatible-pair를 재배포하고 실제 rollback
       가용성 및 C7 strict live E2E를 통과하면 issue #72를 닫고 완료 이력으로 옮긴다.
+
+### T-043: WS 인가 동시성 상한 + 프론트 배포 preflight
+
+T-042의 적대적 리뷰가 남긴 두 항목이다. accept-then-close 계약상 미인증 peer도 handshake를
+완료하는데 WS 라우트에는 제한이 없었고, 운영 호스트의 `frontend/node_modules`가 부분 설치
+상태로 남아 배포 중 빌드가 실패할 수 있었다.
+
+- [x] 동시 인가 handshake를 `KTDM_WS_MAX_PENDING_AUTHORIZATIONS`로 묶고 초과분을
+      `close(1013)`으로 흘려보낸다. per-IP를 쓰지 않는 이유(프록시 IP 단일화)를 함께 기록한다
+- [x] 서버를 내리기 전에 프론트 툴체인을 검증하는 `scripts/verify-frontend-toolchain.sh`를
+      추가한다(`npm ls --depth=0`이 결정적 게이트)
+- [x] 적대적 리뷰 2명 반영 — 잘못된 위협 모델(미인증 peer는 SQLite에 도달하지 못한다),
+      shed 경로가 더 비쌌던 문제(거절당 로그 write), `--limit-concurrency` 오권고,
+      counter 증가를 검증하지 않던 테스트 공백을 모두 수정
+- [ ] n150 배포 후 1013 shed 동작과 preflight를 운영에서 확인한다
 
 ### T-042: C7 WebSocket 종료 코드 계약(accept-then-close) 결선
 

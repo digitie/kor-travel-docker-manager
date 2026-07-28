@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-07-28 (WS 인가 동시성 상한 + 프론트 배포 preflight — T-043)
+
+- T-042 리뷰가 남긴 두 항목을 처리했다. accept-then-close 계약상 미인증 peer도 handshake를
+  완료하는데 WS 라우트에는 제한이 없었고, 운영 호스트의 `frontend/node_modules`가 부분 설치
+  상태(최상위 패키지는 있는데 `.bin`이 비어 `next: not found`)로 남아 있었다.
+- 동시 인가 handshake를 `KTDM_WS_MAX_PENDING_AUTHORIZATIONS`(기본 64, 프로세스당)로 묶고
+  초과분을 `close(1013)`으로 흘려보낸다. **per-IP 제한은 쓰지 않았다** — 이 배포의 공개
+  트래픽은 전부 리버스 프록시 IP 하나로 도착해(신뢰 프록시 CIDR이 loopback 전용, 운영
+  로그에서 실제로 모든 외부 접속이 라우터 IP로 관측됨) per-IP 버킷이 인터넷 전체를 한 키에
+  묶어 정상 관리자까지 막는다.
+- **적대적 리뷰 2명이 측정으로 최초 근거 자체를 반증했다. 정직하게 기록한다.**
+  - 위협 모델이 틀렸다: 미인증 peer는 SQLite에 도달하지 못한다. `validate_session_cookie`는
+    쿠키가 없으면 session을 열기 전에 `None`을 돌려주고 DB SELECT는 HMAC 서명 검증 뒤에
+    있다(측정: DB session 0건, 호출당 0.2~2.6us). "거절마다 DB 조회가 잡힌다"는 서술을
+    코드·문서·env에서 모두 걷어냈다.
+  - shed 경로가 완화하려던 경로보다 비쌌다(blocker). 거절 1건마다 `logger.warning`을 부른
+    탓이다 — 측정 거절당 1039~1207us, 로그 제거 시 57~62us, 4401 경로 285~313us.
+    attacker가 제어하는 무제한 동기 디스크 write이기도 했다. edge-triggered로 바꿨다.
+  - `uvicorn --limit-concurrency` 권고를 철회했다. h11 구현이 WebSocket upgrade를 503 검사
+    **이전에** return하므로(`h11_impl.py:221-230`) WS에는 발동하지 않는다. 연결 수 제한은
+    HAProxy `maxconn`/stick-table로 안내한다.
+  - 테스트 공백: counter 증가/감소를 통째로 지워도 970건이 전부 통과했다. 실제 인가 중
+    counter가 오르고 그 사이 요청이 shed되는지, 취소(BaseException)에서 slot이 반납되는지를
+    검증하는 테스트를 추가하고 mutation에서 정확히 그 테스트만 실패함을 확인했다.
+  - preflight가 부분 설치를 통과시켰다 — 막으려던 바로 그 장애다(`next`·`typescript`는
+    있고 `react`가 없는 트리). `npm ls --depth=0`을 결정적 게이트로 바꿨다.
+- 그 밖에 재인가 deadline jitter(배포 재기동 후 위상 고정 해소), 1013 시 폴백 폴링
+  5초→30초(5초 폴링은 요청마다 전체 docker sweep이라 shed가 부하를 되레 키운다),
+  심볼릭 링크 경로 해석·인자 검증·`--fix` 파괴성 경고를 보완했다.
+- backend 970 passed, ruff 기존 9건 유지, 프론트 type-check/lint/build 통과. PR #76.
+
+---
+
 ## 2026-07-28 (C7 WebSocket accept-then-close 종료 코드 계약 — T-042)
 
 - `kor-travel-map`의 C7 WebSocket 작업(`T-ADM-C7W` issue #806/PR #807, `T-VN-H11` issue #809)을
