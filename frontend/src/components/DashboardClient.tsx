@@ -1457,8 +1457,12 @@ export default function DashboardClient() {
                   </button>
                 </div>
                 <div className="space-y-2">
+                  {/* key에 값(port)을 넣으면 매 keystroke마다 key가 바뀌어 React가 input
+                      DOM 노드를 파괴·재생성한다 — 실시간 검증 기능 자체가 타이핑할 때마다
+                      포커스를 잃어 쓸 수 없게 된다(적대적 리뷰에서 발견). 행은 추가/삭제만
+                      되고 재정렬되지 않으므로 index만으로 충분히 안정적인 key다. */}
                   {inputPortsList.map((port, idx) => (
-                    <div key={`port-${idx}-${port}`}>
+                    <div key={`port-${idx}`}>
                       <div className="flex gap-2 items-center">
                         <input
                           type="text"
@@ -1470,6 +1474,9 @@ export default function DashboardClient() {
                           }}
                           placeholder="e.g. 5432:5432"
                           aria-invalid={!!configValidation.portErrors[idx]}
+                          aria-describedby={
+                            configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
+                          }
                           className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 flex-grow font-mono ${
                             configValidation.portErrors[idx]
                               ? 'border-danger focus:border-danger focus-visible:outline-danger'
@@ -1488,7 +1495,7 @@ export default function DashboardClient() {
                         </button>
                       </div>
                       {configValidation.portErrors[idx] && (
-                        <p className="text-danger text-[11px] mt-1 pl-1">
+                        <p id={`port-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
                           {configValidation.portErrors[idx]}
                         </p>
                       )}
@@ -1513,8 +1520,9 @@ export default function DashboardClient() {
                   </button>
                 </div>
                 <div className="space-y-2">
+                  {/* index-only key — 값을 key에 넣으면 keystroke마다 재마운트돼 포커스를 잃는다. */}
                   {inputVolumesList.map((vol, idx) => (
-                    <div key={`vol-${idx}-${vol}`} className="flex gap-2 items-center">
+                    <div key={`vol-${idx}`} className="flex gap-2 items-center">
                       <input
                         type="text"
                         value={vol}
@@ -1563,8 +1571,9 @@ export default function DashboardClient() {
                   </button>
                 </div>
                 <div className="space-y-2">
+                  {/* index-only key — 값을 key에 넣으면 keystroke마다 재마운트돼 포커스를 잃는다. */}
                   {inputNetworksList.map((net, idx) => (
-                    <div key={`net-${idx}-${net}`}>
+                    <div key={`net-${idx}`}>
                       <div className="flex gap-2 items-center">
                         <input
                           type="text"
@@ -1576,6 +1585,9 @@ export default function DashboardClient() {
                           }}
                           placeholder="e.g. default"
                           aria-invalid={!!configValidation.networkErrors[idx]}
+                          aria-describedby={
+                            configValidation.networkErrors[idx] ? `network-error-${idx}` : undefined
+                          }
                           className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 flex-grow font-mono ${
                             configValidation.networkErrors[idx]
                               ? 'border-danger focus:border-danger focus-visible:outline-danger'
@@ -1594,7 +1606,7 @@ export default function DashboardClient() {
                         </button>
                       </div>
                       {configValidation.networkErrors[idx] && (
-                        <p className="text-danger text-[11px] mt-1 pl-1">
+                        <p id={`network-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
                           {configValidation.networkErrors[idx]}
                         </p>
                       )}
@@ -1624,6 +1636,7 @@ export default function DashboardClient() {
                             value={val}
                             onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
                             aria-invalid={!!envError}
+                            aria-describedby={envError ? `env-error-${key}` : undefined}
                             className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 w-full transition-all font-mono ${
                               envError
                                 ? 'border-danger focus:border-danger focus-visible:outline-danger'
@@ -1633,7 +1646,7 @@ export default function DashboardClient() {
                             required
                           />
                           {envError && (
-                            <p className="text-danger text-[11px]">{envError}</p>
+                            <p id={`env-error-${key}`} className="text-danger text-[11px]">{envError}</p>
                           )}
                         </div>
                       );
@@ -1646,7 +1659,10 @@ export default function DashboardClient() {
               {(configValidation.portsDiff.changed ||
                 configValidation.networksDiff.changed ||
                 configValidation.envDiff.length > 0) && (
-                <div className="space-y-2 p-4 bg-subtle border border-line rounded-card text-xs">
+                <div
+                  aria-live="polite"
+                  className="space-y-2 p-4 bg-subtle border border-line rounded-card text-xs"
+                >
                   <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">
                     변경 사항 미리보기
                   </h4>

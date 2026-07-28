@@ -770,11 +770,147 @@ def test_validate_env_entry_rejects_literal_url_credential_even_for_innocuous_ke
 
 
 def test_validate_env_entry_allows_existing_dsn_default_wrapping_convention() -> None:
-    """docker-compose.yml 전체가 쓰는 관행: DSN 전체가 하나의 `${VAR:-...}` 안에 있다."""
-    validate_env_entry(
-        "KOR_TRAVEL_MAP_PG_DSN",
+    """docker-compose.yml 전체가 쓰는 관행: DSN 전체가 하나의 `${VAR:-...}` 안에 있다.
+
+    baseline과 완전히 같은(수정 없는) 값으로만 통과한다 — `validate_container_config_update`가
+    실제로 호출하는 방식과 같다. baseline 없이(None) 이 값을 그대로 받으면 지금은
+    거부된다(아래 `test_validate_env_entry_rejects_dsn_literal_credential_without_baseline`).
+    """
+    value = (
         "${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://"
-        "krtour_map:krtour_map_dev_password@127.0.0.1:5432/krtour_map}",
+        "krtour_map:krtour_map_dev_password@127.0.0.1:5432/krtour_map}"
+    )
+    validate_env_entry("KOR_TRAVEL_MAP_PG_DSN", value, baseline_value=value)
+
+
+def test_validate_env_entry_rejects_dsn_literal_credential_without_baseline() -> None:
+    """baseline을 모르면(값이 unchanged인지 증명할 수 없으면) literal credential은 항상 거부한다."""
+    value = (
+        "${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://"
+        "krtour_map:krtour_map_dev_password@127.0.0.1:5432/krtour_map}"
+    )
+    with pytest.raises(ContainerConfigValidationError, match="접속 문자열"):
+        validate_env_entry("KOR_TRAVEL_MAP_PG_DSN", value, baseline_value=None)
+
+
+def test_validate_env_entry_rejects_any_change_to_a_value_with_embedded_literal_credential() -> None:
+    """DSN 관행값이라도 baseline과 달라지면(감싸는 이름이 같아도) literal credential은
+    거부한다 — 이 UI로 DSN 기본값에 새 비밀을 커밋시키지 않기 위한 의도적으로 엄격한
+    정책이다. `.env`를 직접 고치는 것이 올바른 경로다."""
+    baseline = (
+        "${KOR_TRAVEL_MAP_DOCKER_PG_DSN:-postgresql+asyncpg://"
+        "krtour_map:krtour_map_dev_password@127.0.0.1:5432/krtour_map}"
+    )
+    changed = baseline.replace("krtour_map_dev_password", "changed_password")
+    with pytest.raises(ContainerConfigValidationError, match="접속 문자열"):
+        validate_env_entry("KOR_TRAVEL_MAP_PG_DSN", changed, baseline_value=baseline)
+
+
+def test_validate_env_entry_rejects_fabricated_variable_name_hiding_new_credential() -> None:
+    """적대적 리뷰에서 재현된 우회: 아무 key에나, 지어낸 이름을 `${...}`로 감싸기만
+    하면 credential 스캔을 피해 갈 수 있었다(key 이름이 sensitive하지 않고 baseline도
+    보간이 아니어도). `${...}` 블록을 통째로 지우고 스캔하던 이전 구현에서 실제로
+    통과했던 입력이다.
+    """
+    with pytest.raises(ContainerConfigValidationError, match="접속 문자열"):
+        validate_env_entry(
+            "POSTGRES_DB",
+            "${TOTALLY_MADE_UP_VAR_NAME:-http://admin:SuperSecretPassw0rd@internal-host/x}",
+            baseline_value="kor_travel_geo",
+        )
+
+
+def test_validate_env_entry_rejects_fabricated_variable_name_replacing_protected_reference() -> None:
+    """key 이름이 `_is_sensitive_key`에 걸리지 않아도(예: DB URL류 이름), 값이 DSN이고
+    baseline이 이미 `${...}`로 보호되던 경우 다른 이름으로 지어낸 `${...}` 참조로
+    바꾸면(여전히 "보간 형태"라 규칙 1의 재보간 요구 자체는 통과하지만) credential
+    스캔(규칙 3)에서 잡혀야 한다. 규칙 1(재보간 요구)만으로는 이 우회를 막지 못한다 —
+    baseline이 `${REAL_VAR:-old}`이고 새 값이 `${FAKE_VAR:-new-secret}`이면 둘 다
+    "보간 형태"이기 때문이다. (key 이름 자체가 sensitive한 경우의 동등한 시나리오는
+    `test_validate_env_entry_rejects_fabricated_variable_name_for_non_url_secret`가
+    규칙 1의 일반화된 default-비교로 더 일찍 잡는다.)
+    """
+    with pytest.raises(ContainerConfigValidationError, match="접속 문자열"):
+        validate_env_entry(
+            "GEO_DB_CONNECTION",
+            "${SOME_UNRELATED_MADE_UP_NAME:-postgresql://"
+            "admin:N3wR3alProdPassw0rd!@prod-db.internal/db}",
+            baseline_value="${GEO_DB_CONNECTION:-devpw}",
+        )
+
+
+def test_validate_env_entry_rejects_fabricated_variable_name_for_non_url_secret() -> None:
+    """규칙 3(URL credential 스캔)은 `scheme://user:pass@` 형태에만 반응한다 — 단일
+    리터럴 비밀(URL이 아닌 값, 예: `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}`)은
+    스캔 대상이 아니라서, 규칙 1의 "여전히 보간 형태면 통과"만으로는 지어낸 변수명 +
+    새 리터럴 default 우회가 막히지 않았다(적대적 리뷰 이후 재검토에서 재현됨). 규칙 1의
+    일반화(“sensitive key면 default 리터럴 자체가 baseline과 같아야 한다”)로 막는다.
+    """
+    with pytest.raises(ContainerConfigValidationError, match="비밀 성격 값"):
+        validate_env_entry(
+            "GF_SECURITY_ADMIN_PASSWORD",
+            "${TOTALLY_MADE_UP_NAME:-h4x0r-literal-secret}",
+            baseline_value="${GRAFANA_ADMIN_PASSWORD:-admin}",
+        )
+
+
+def test_validate_env_entry_rejects_new_literal_default_under_same_var_name() -> None:
+    """변수 이름을 그대로 두어도, sensitive key의 default 리터럴을 바꾸면 거부한다 —
+    이 UI로 새 비밀 리터럴이 git 추적 파일에 커밋되는 것을 막는 것이 목적이지,
+    변수 이름이 바뀌었는지는 부수적이다."""
+    with pytest.raises(ContainerConfigValidationError, match="비밀 성격 값"):
+        validate_env_entry(
+            "GF_SECURITY_ADMIN_PASSWORD",
+            "${GRAFANA_ADMIN_PASSWORD:-newsecret123}",
+            baseline_value="${GRAFANA_ADMIN_PASSWORD:-admin}",
+        )
+
+
+def test_validate_env_entry_allows_renaming_reference_when_default_literal_unchanged() -> None:
+    """sensitive key라도, 참조하는 변수 이름만 바뀌고 default 리터럴 자체는 baseline과
+    동일하면 허용한다 — git에 새로 노출되는 리터럴이 없기 때문이다."""
+    validate_env_entry(
+        "GF_SECURITY_ADMIN_PASSWORD",
+        "${GRAFANA_ADMIN_PASSWORD_V2:-admin}",
+        baseline_value="${GRAFANA_ADMIN_PASSWORD:-admin}",
+    )
+
+
+def test_validate_env_entry_allows_dropping_default_entirely_for_sensitive_key() -> None:
+    """sensitive key의 default를 아예 없애는 것(`${OTHER_NAME}`, default 없음)은 git에
+    새 리터럴을 남기지 않으므로 허용한다."""
+    validate_env_entry(
+        "GF_SECURITY_ADMIN_PASSWORD",
+        "${GRAFANA_ADMIN_PASSWORD}",
+        baseline_value="${GRAFANA_ADMIN_PASSWORD:-admin}",
+    )
+
+
+def test_validate_env_entry_allows_default_change_for_non_sensitive_key() -> None:
+    """key 이름이 sensitive하지 않으면(예: 포트 번호), 지어낸 변수명 + 새 default도
+    자유롭다 — 비밀이 아니므로 이 정책의 대상이 아니다."""
+    validate_env_entry(
+        "GF_SERVER_HTTP_PORT",
+        "${SOME_OTHER_PORT_VAR:-12206}",
+        baseline_value="${GRAFANA_PORT:-12205}",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "  ${POSTGRES_PASSWORD}  ",
+        "${POSTGRES_PASSWORD}\t",
+        "\n${POSTGRES_PASSWORD:-addr}",
+    ],
+)
+def test_validate_env_entry_ignores_incidental_whitespace_around_interpolation(
+    value: str,
+) -> None:
+    """터미널/.env에서 복붙하면 흔히 붙는 앞뒤 공백 때문에 '리터럴로 바꿨다'는
+    오해의 소지가 있는 메시지가 뜨면 안 된다."""
+    validate_env_entry(
+        "POSTGRES_PASSWORD", value, baseline_value="${POSTGRES_PASSWORD:-addr}"
     )
 
 

@@ -13,7 +13,7 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
-| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[x]` | 2026-07-28 | diff 미리보기, 포트/네트워크/env 검증(baseline 인지 secret 방어), 실브라우저 검증 완료 |
+| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[x]` | 2026-07-28 | diff 미리보기, 포트/네트워크/env 검증(baseline 인지 secret 방어) + 적대적 리뷰 2라운드(URL/비-URL 위조 변수명 우회, React key 포커스 유실) 수정, 실브라우저 검증 완료 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
 | **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
@@ -63,6 +63,32 @@
       비밀번호까지 하나의 `${...:-default}` 안에 두는 이 저장소의 기존 관행은 통과시킨다.
 - [x] config 파일 변경과 재생성을 같은 host lock transaction으로 묶고, recreate/init 실패 시 원본 byte와
       파일 mode를 원자 복원한 뒤 기존 runtime 재생성을 시도하는 rollback 전략 문서화
+- [x] **적대적 리뷰 2명이 찾은 문제를 수정한다(1차 라운드).** (1) 리뷰어 1: `_value_has_literal_url_credential`가
+      `${...}` 블록을 통째로 지우고 스캔해서, `${FAKE_NAME:-literal-secret}`처럼 지어낸 변수명으로
+      감싸기만 해도 credential 스캔이 통째로 우회됐다 — raw 값을 그대로 스캔하고 password 캡처
+      그룹 자체가 보간인 경우만 예외로 인정하도록, 그리고 credential 스캔을 baseline과 완전히
+      같은 값에만 예외로 두도록 재작성했다. (2) 리뷰어 2: ports/volumes/networks 행의 React
+      `key`에 필드 값 자체(`port-${idx}-${port}`)가 들어 있어 매 keystroke마다 DOM 노드가
+      재마운트되어 포커스가 사라졌다 — index 전용 key로 교체(행은 추가/삭제만 되고 재정렬은
+      없어 안전). 그 외 whitespace로 인한 오탐 메시지, `aria-describedby`/`aria-live` 접근성
+      공백도 함께 수정. 두 버그 모두 리뷰어가 제시한 실제 입력으로 직접 재현 후 수정 확인,
+      추가로 수정을 되돌리는 mutation test로 새 회귀 테스트 4건만 실패하는 것을 확인했다.
+- [x] **1차 라운드 수정 직후 재검토에서 발견한 2차 보안 공백을 수정한다.** 1차 수정은
+      `scheme://user:pass@` 형태(DSN)에만 반응하는 credential 스캔이라, URL이 아닌 단일 리터럴
+      비밀(예: `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}`)에는 적용되지
+      않는다는 것을 재발견했다 — baseline이 이미 `${...}` 보간이어도, sensitive key의 값을
+      `${TOTALLY_MADE_UP_NAME:-h4x0r-literal-secret}`처럼 지어낸 이름 + 새 리터럴 default로
+      바꾸면 "여전히 보간 형태"라는 이유만으로 규칙 1(재보간 요구)을 통과했다(실제
+      `docker-compose.yml`의 Grafana 서비스로 직접 재현). 규칙 1을 일반화해, sensitive key면
+      `${...}` 형태를 유지해도 `:-default` 리터럴 자체가 baseline과 달라졌으면 거부하도록 했다
+      (변수 이름만 바뀌고 default 리터럴이 동일하면 허용, default를 아예 없애는 것도 허용,
+      비-sensitive key는 대상이 아님 — 포트 기본값 변경 등 정상 편집을 막지 않는다). 백엔드
+      회귀 테스트 5건 추가 + mutation test로 새 테스트 2건만 실패 확인, 전체 1047 backend
+      테스트 통과, 프론트 `configValidation.ts`에 동일 로직 미러링 후 실브라우저(WSL dev
+      backend/frontend, 로그인 세션)에서 Grafana 컨테이너의 `GF_SECURITY_ADMIN_PASSWORD`
+      필드에 직접 재현 입력을 타이핑해 차단 메시지·diff 미리보기·제출 버튼 비활성화를
+      확인했다(실제 컨테이너 재생성은 트리거하지 않음). 같은 세션에서 포트 필드에 여러
+      글자를 연속 입력해 React key 수정으로 포커스가 유지되는 것도 함께 재확인했다.
 
 ### T-012: 대시보드 상세 패널 확장
 

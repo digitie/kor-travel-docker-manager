@@ -15,6 +15,9 @@ export type EnvDiffRow = {
   kind: 'added' | 'removed' | 'changed' | 'same';
 };
 
+// 'added'/'removed'는 오늘의 설정 모달에서는 나오지 않는다 — env 섹션에는 key를
+// 추가하거나 삭제하는 UI가 없고, 기존 key의 값만 편집한다. env key 삭제/추가 UI가
+// 생기면 그때 쓰일 대비용 케이스로 남겨 둔다.
 export function diffEnv(
   before: Record<string, string>,
   after: Record<string, string>

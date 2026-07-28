@@ -21,13 +21,25 @@ function isSensitiveEnvKey(key: string): boolean {
 
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const INTERPOLATED_VALUE_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/;
-const INTERPOLATION_BLOCK_RE = /\$\{[^{}]*\}/g;
+const INTERPOLATED_VALUE_PARTS_RE = /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-([^}]*))?\}$/;
 const URL_USERINFO_RE = /[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^:/?#@\s]+:([^@/?#\s]+)@/g;
 
+function interpolatedDefault(value: string): string | undefined {
+  const match = INTERPOLATED_VALUE_PARTS_RE.exec(value);
+  return match ? match[1] : undefined;
+}
+
+// ⚠️ `${...}` 블록 전체를 지우고 남는 부분만 스캔하지 않는다. 그러면
+// `${FAKE_NAME:-literal-secret}`처럼 지어낸 이름으로 감싸기만 해도 스캔을 통째로
+// 우회할 수 있다(적대적 리뷰에서 재현됨 — 백엔드 docker_service.py 참조). password
+// 토큰 자체가 `${VAR}` 보간인 경우만 안전하다고 본다.
 function hasLiteralUrlCredential(value: string): boolean {
-  const outside = value.replace(INTERPOLATION_BLOCK_RE, '');
   URL_USERINFO_RE.lastIndex = 0;
-  return URL_USERINFO_RE.test(outside);
+  let match: RegExpExecArray | null;
+  while ((match = URL_USERINFO_RE.exec(value)) !== null) {
+    if (!INTERPOLATED_VALUE_RE.test(match[1])) return true;
+  }
+  return false;
 }
 
 /**
@@ -35,9 +47,16 @@ function hasLiteralUrlCredential(value: string): boolean {
  *
  * - baseline이 이미 `${...}` 보간이었다면 새 값도 보간이어야 한다(비밀 참조를 리터럴로
  *   되돌리는 것만 막는다 — `KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=true`처럼 이름에
- *   API_KEY가 들어가도 원래부터 리터럴 불리언이면 자유롭다).
+ *   API_KEY가 들어가도 원래부터 리터럴 불리언이면 자유롭다). sensitive key이면 한 겹 더:
+ *   여전히 보간 형태여도 `:-default` 리터럴 자체가 baseline과 달라졌으면 거부한다 —
+ *   그렇지 않으면 `${REAL_VAR:-old}` → `${FAKE_VAR:-new-secret}`처럼 지어낸 변수명으로
+ *   감싸기만 해도 "여전히 보간 형태"라는 이유로 통과한다(URL이 아닌 단일 리터럴 비밀은
+ *   아래 credential 스캔의 대상이 아니라서 이 겹이 없으면 그대로 뚫린다). default를
+ *   완전히 없애는 것은 git에 새 리터럴을 남기지 않으므로 허용한다.
  * - baseline을 모르면(신규 key) key 이름 휴리스틱으로 방어한다.
- * - key 이름과 무관하게 값 안에 literal 접속 자격증명이 있으면 거부한다.
+ * - 값이 baseline과 완전히 같지 않다면, key 이름과 무관하게 literal 접속 자격증명이
+ *   있으면 거부한다. "보간으로 감싸면 통과"가 아니다 — 지어낸 변수명으로 감싼
+ *   `${FAKE_NAME:-literal-secret}`도 값이 바뀌었으면 거부된다.
  */
 export function validateEnvEntry(
   key: string,
@@ -47,14 +66,26 @@ export function validateEnvEntry(
   if (!ENV_VAR_NAME_RE.test(key)) {
     return `환경변수 이름이 올바르지 않습니다: '${key}'`;
   }
+  // 보간 판정은 앞뒤 공백을 무시한다(터미널/.env 복붙 시 흔한 공백으로 인한 오해 방지).
+  const trimmedValue = value.trim();
   if (baselineValue !== undefined) {
-    if (INTERPOLATED_VALUE_RE.test(baselineValue) && !INTERPOLATED_VALUE_RE.test(value)) {
-      return `'${key}'는 원래 '\${...}' 참조였습니다. 리터럴로 바꾸면 docker-compose.yml(git 추적 파일)에 실제 값이 그대로 저장됩니다.`;
+    const trimmedBaseline = baselineValue.trim();
+    if (INTERPOLATED_VALUE_RE.test(trimmedBaseline)) {
+      if (!INTERPOLATED_VALUE_RE.test(trimmedValue)) {
+        return `'${key}'는 원래 '\${...}' 참조였습니다. 리터럴로 바꾸면 docker-compose.yml(git 추적 파일)에 실제 값이 그대로 저장됩니다.`;
+      }
+      if (isSensitiveEnvKey(key)) {
+        const newDefault = interpolatedDefault(trimmedValue);
+        const baselineDefault = interpolatedDefault(trimmedBaseline);
+        if (newDefault && newDefault !== baselineDefault) {
+          return `'${key}'는 비밀 성격 값입니다. 참조하는 변수 이름을 바꾸거나 새 기본값을 지정해도, 그 기본값이 docker-compose.yml(git 추적 파일)에 그대로 저장됩니다.`;
+        }
+      }
     }
-  } else if (isSensitiveEnvKey(key) && !INTERPOLATED_VALUE_RE.test(value)) {
+  } else if (isSensitiveEnvKey(key) && !INTERPOLATED_VALUE_RE.test(trimmedValue)) {
     return `'${key}'는 비밀 성격 값으로 보입니다. .env에 정의하고 '\${${key}}' 형태로 참조하세요.`;
   }
-  if (hasLiteralUrlCredential(value)) {
+  if (value !== baselineValue && hasLiteralUrlCredential(value)) {
     return `'${key}' 값에 접속 문자열 형태의 자격증명이 그대로 포함되어 있습니다.`;
   }
   return null;

@@ -267,8 +267,16 @@ class ContainerConfigValidationError(ValueError):
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _INTERPOLATED_VALUE_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$")
-_INTERPOLATION_BLOCK_RE = re.compile(r"\$\{[^{}]*\}")
+_INTERPOLATED_VALUE_PARTS_RE = re.compile(
+    r"^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-(?P<default>[^}]*))?\}$"
+)
 _NETWORK_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]*$")
+
+
+def _interpolated_default(value: str) -> str | None:
+    """`${VAR:-default}`의 default 부분을 반환한다. 보간이 아니거나 default가 없으면 None."""
+    match = _INTERPOLATED_VALUE_PARTS_RE.match(value)
+    return match.group("default") if match else None
 
 # 포트 토큰: 리터럴 숫자(범위 포함) 또는 `${VAR:-default}` 보간. docker-compose.yml의
 # 모든 ports 항목이 `${VAR:-12101}:${VAR:-12101}` 형태를 쓰므로(전수 확인), 보간
@@ -342,15 +350,22 @@ def validate_network_name(raw: str) -> None:
 
 
 def _value_has_literal_url_credential(value: str) -> bool:
-    """`${...}` 블록(기존 관행의 dev 기본값) 밖에 literal credential이 남아 있는지 본다.
+    """`scheme://user:password@` 중 password 부분이 literal이면 True.
 
-    이 저장소의 모든 DSN류 값은 `${OUTER_VAR:-postgresql://user:dev_pw@host/db}`처럼
-    자격증명 전체를 하나의 `${...:-...}` 기본값 안에 둔다(docker-compose.yml 전수 확인).
-    그 블록을 통째로 지우면 정상 값은 빈 문자열만 남는다. 블록 밖에 credential이 남아
-    있다면 보간 없이 새로 타이핑된 literal 비밀이라는 뜻이다.
+    password 토큰 자체가 `${VAR}`/`${VAR:-default}` 보간이면(둘러싼 scheme·user·host가
+    literal이어도) 안전하다고 본다 — 실제 비밀은 이미 `.env`로 분리돼 있기 때문이다.
+
+    ⚠️ `${...}` 블록 전체를 지우고 남는 부분만 스캔하지 않는다. 그렇게 하면
+    `${FAKE_NAME:-literal-secret}`처럼 지어낸 이름으로 감싸기만 해도 스캔을 통째로
+    우회할 수 있다 — 적대적 리뷰에서 실제로 재현됐다(이미 보호되던 key도 예외가 아니었다:
+    "보간 형태를 유지하라"는 요구는 `${SOME_UNRELATED_NAME:-literal-secret}`도 통과시킨다).
+    이 함수는 값을 그대로(어떤 `${...}` 블록 안에 있든) 스캔한다. baseline과 완전히
+    같은 값만 `validate_env_entry`에서 예외로 통과시킨다.
     """
-    outside = _INTERPOLATION_BLOCK_RE.sub("", value)
-    return bool(_URL_USERINFO_RE.search(outside))
+    for match in _URL_USERINFO_RE.finditer(value):
+        if not _INTERPOLATED_VALUE_RE.match(match.group("password")):
+            return True
+    return False
 
 
 def validate_env_entry(
@@ -367,34 +382,62 @@ def validate_env_entry(
        "API_KEY"가 들어가지만 원래부터 리터럴 불리언인 값까지 오탐으로 막는다
        (docker-compose.yml 전수 검증에서 실제로 걸렸다). baseline이 이미 보간이
        아니었다면(불리언·DB명 등) 새 값도 자유롭다.
+       이 key가 `_is_sensitive_key`이면, 여기서 한 겹 더 막는다: 새 값도 `${...}`
+       형태이기만 하면 통과시키지 않고, `:-default` 리터럴이 baseline과 달라졌으면
+       거부한다 — 그렇지 않으면 `${REAL_VAR:-old}` → `${FAKE_VAR:-new-secret}`처럼
+       지어낸 변수명으로 감싸기만 해도 "여전히 보간 형태"라는 이유로 통과해 버린다
+       (적대적 리뷰에서 실제로 재현됐다; DSN이 아닌 단일 값 비밀— 예:
+       `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}` 같은 키에서는
+       3번 규칙의 URL 자격증명 스캔이 적용되지 않으므로 이 겹이 없으면 그대로
+       뚫린다). default를 완전히 제거하는 것(`${OTHER_NAME}`, default 없음)은 git에
+       아무 리터럴도 남기지 않으므로 허용한다 — 그래서 "새 default가 있고 그것이
+       baseline과 다를 때"만 거부한다.
     2. baseline을 모르는 경우(오늘의 UI에서는 발생하지 않지만, 이 함수는 새 key를
        추가하는 미래의 호출자에도 방어적이어야 한다) key 이름이 비밀스러워 보이면
        (`_is_sensitive_key`) 안전한 쪽으로 기울어 보간을 요구한다.
-    3. key 이름과 무관하게, 값 안에 literal 접속 자격증명(`scheme://user:pass@`)이
-       `${...}` 밖에 그대로 있으면 거부한다 — `..._PG_DSN`처럼 이름이 평범해도
-       값 안에 비밀번호가 박혀 있을 수 있다.
+    3. **값이 baseline과 완전히 같지 않다면**, key 이름과 무관하게 literal 접속
+       자격증명(`scheme://user:pass@`, password가 보간이 아닌 경우)이 있으면 거부한다.
+       baseline과 동일한 값(수정 없이 그대로 제출)은 예외다 — 이미 git에 있던 값이라
+       새로운 노출이 아니다. **"보간으로 감싸면 통과"가 아니다** — 지어낸 변수명으로
+       감싼 `${FAKE_NAME:-literal-secret}`도 값이 바뀌었으면 그대로 거부된다. 1번
+       규칙(재보간 요구)만으로는 이 우회를 막지 못한다: baseline이 `${REAL_VAR:-old}`이고
+       새 값이 `${FAKE_VAR:-new-secret}`이면 둘 다 "보간 형태"라 1번을 통과하기 때문이다.
     """
     if not key or not _ENV_VAR_NAME_RE.match(key):
         raise ContainerConfigValidationError(
             f"환경변수 이름이 올바르지 않습니다: '{key}' "
             "(영문 또는 '_'로 시작하고 영문·숫자·'_'만 허용)"
         )
+    # 보간 판정은 앞뒤 공백을 무시한다. 터미널/.env에서 복붙하면 흔히 붙는 공백 때문에
+    # "리터럴로 바꿨다"는 오해의 소지가 있는 메시지가 뜨는 것을 막는다. 저장되는 값
+    # 자체(`value`)는 그대로 두고, 오직 이 판정에서만 trim한 사본을 쓴다.
+    stripped_value = value.strip()
     if baseline_value is not None:
-        if _INTERPOLATED_VALUE_RE.match(baseline_value) and not _INTERPOLATED_VALUE_RE.match(
-            value
-        ):
-            raise ContainerConfigValidationError(
-                f"'{key}'는 원래 '${{...}}' 참조로 분리되어 있었습니다. 리터럴로 바꾸면 "
-                "docker-compose.yml(git 추적 파일)에 실제 값이 그대로 저장됩니다. "
-                f"'${{{key}}}' 또는 '${{{key}:-기본값}}' 형태를 유지하세요."
-            )
-    elif _is_sensitive_key(key) and not _INTERPOLATED_VALUE_RE.match(value):
+        baseline_stripped = baseline_value.strip()
+        if _INTERPOLATED_VALUE_RE.match(baseline_stripped):
+            if not _INTERPOLATED_VALUE_RE.match(stripped_value):
+                raise ContainerConfigValidationError(
+                    f"'{key}'는 원래 '${{...}}' 참조로 분리되어 있었습니다. 리터럴로 바꾸면 "
+                    "docker-compose.yml(git 추적 파일)에 실제 값이 그대로 저장됩니다. "
+                    f"'${{{key}}}' 또는 '${{{key}:-기본값}}' 형태를 유지하세요."
+                )
+            if _is_sensitive_key(key):
+                new_default = _interpolated_default(stripped_value)
+                baseline_default = _interpolated_default(baseline_stripped)
+                if new_default and new_default != baseline_default:
+                    raise ContainerConfigValidationError(
+                        f"'{key}'는 비밀 성격 값으로 판단됩니다. 참조하는 변수 이름을 바꾸거나 "
+                        "새 기본값을 지정해도, 그 기본값이 docker-compose.yml(git 추적 파일)에 "
+                        f"그대로 저장됩니다. 실제 비밀은 gitignore된 .env에 두고 "
+                        f"'${{{key}}}' 또는 기존과 동일한 기본값으로만 참조하세요."
+                    )
+    elif _is_sensitive_key(key) and not _INTERPOLATED_VALUE_RE.match(stripped_value):
         raise ContainerConfigValidationError(
             f"'{key}'는 비밀 성격 값으로 판단됩니다. docker-compose.yml은 git에 "
             "커밋되므로 실제 값을 여기 직접 적지 말고, gitignore된 .env에 정의한 뒤 "
             f"'${{{key}}}' 또는 '${{{key}:-기본값}}' 형태로 참조하세요."
         )
-    if _value_has_literal_url_credential(value):
+    if value != baseline_value and _value_has_literal_url_credential(value):
         raise ContainerConfigValidationError(
             f"'{key}' 값에 접속 문자열 형태의 자격증명이 그대로 포함되어 있습니다. "
             "비밀번호 부분만이라도 '${VAR}' 보간으로 바꿔서 저장하세요."

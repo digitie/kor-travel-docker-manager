@@ -4,6 +4,71 @@
 
 ---
 
+## 2026-07-28 (T-011 적대적 리뷰 반영 — credential 스캔 우회 2건, React key 포커스 유실)
+
+T-011 구현 직후 적대적 리뷰어 2명(Agent 도구 병렬 실행, 이 시점 ultracode는 off라서 Workflow
+대신 Agent를 썼다)이 리뷰했고, 수정 후 재검토에서 관련된 2차 공백을 추가로 발견해 총 2라운드로
+막았다.
+
+**1라운드 — 리뷰어가 찾은 것**
+
+- **리뷰어 1(보안, confirmed)**: `_value_has_literal_url_credential`이 `_INTERPOLATION_BLOCK_RE`로
+  `${...}` 블록을 통째로 지운 뒤 남은 부분만 스캔했다. `${FAKE_NAME:-literal-secret}`처럼 지어낸
+  변수명으로 감싸기만 하면 스캔 대상 문자열 자체가 사라져 credential 검사를 통째로 우회했고,
+  이미 `${REAL_VAR:-old}`로 보호되던 key를 `${FAKE_VAR:-new-secret}`로 바꾸는 것도 "여전히 보간
+  형태"라 규칙 1(재보간 요구)만으로는 막지 못했다. 두 가지 구체적 우회 입력을 리뷰어가 제시했고,
+  직접 재현 스크립트(shell 이스케이프를 피하려고 Python 파일로 작성)로 두 우회 모두 확인 후 수정:
+  `_INTERPOLATION_BLOCK_RE`를 완전히 제거하고 raw 값을 그대로 스캔하되, `scheme://user:pass@`의
+  password 캡처 그룹 자체가 `${VAR}` 보간인 경우만 예외로 인정한다. credential 스캔은 **baseline과
+  완전히 같은 값**에만 예외를 준다(구조가 아니라 byte-동일성으로 게이트) — 그래야 지어낸 이름으로
+  감싸는 우회가 통하지 않는다.
+- **리뷰어 2(UX, pre-existing이지만 새 기능으로 새로 문제가 됨)**: ports/volumes/networks 행의
+  React `key`에 필드 값 자체(`key={\`port-${idx}-${port}\`}`)가 들어 있어, 이번에 추가한
+  "타이핑 중 즉시 검증" 기능과 만나면 매 keystroke마다 key가 바뀌어 DOM input이 재마운트되고
+  브라우저 포커스가 사라졌다 — 새 기능이 사실상 타이핑 불가능했다. index 전용 key로 교체(행은
+  추가/삭제만 되고 재정렬은 없어 안전). 그 외 whitespace로 인한 오탐 메시지(복붙 시 붙는 공백),
+  `aria-describedby`/`aria-live` 접근성 공백도 함께 수정.
+- 수정 후 mutation test(수정을 되돌리는 스크립트로 원래 취약한 구현을 재도입)로 새로 추가한
+  회귀 테스트 4건만 실패하고 나머지 79건은 그대로 통과하는 것을 확인해, 테스트가 실제로 이
+  수정에 의존한다는 것을 검증했다.
+
+**2라운드 — 1라운드 수정 직후 재검토에서 재발견한 것**
+
+1라운드 수정을 실브라우저로 재검증하려고 Grafana 컨테이너의 설정 모달을 열었을 때(실제
+`docker-compose.yml`의 `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}`을 보고),
+리뷰어 1이 고친 credential 스캔(`_value_has_literal_url_credential`)이 `scheme://user:pass@`
+**형태에만** 반응한다는 것을 재확인했다 — DSN이 아닌 단일 리터럴 비밀은 이 스캔의 대상이 아니다.
+직접 재현: baseline `${GRAFANA_ADMIN_PASSWORD:-admin}`에 `${TOTALLY_MADE_UP_NAME:-h4x0r-literal-secret}`를
+넣으면 규칙 1(재보간 요구)은 "여전히 `${...}` 형태"라는 이유로 통과시켰다 — `BYPASS CONFIRMED`.
+1라운드에서 고친 것은 DSN류(연결 문자열)뿐이고, 이 저장소의 압도적 다수인 "단일 값 비밀"
+(`PASSWORD`, `TOKEN`, `API_KEY` 등 하나의 리터럴 값)에는 같은 클래스의 우회가 그대로 남아 있었다.
+
+- **수정**: 규칙 1(baseline이 보간이면 새 값도 보간이어야 한다)을 일반화했다. sensitive key
+  (`_is_sensitive_key`)이면, 새 값이 여전히 `${...}` 형태여도 `:-default` 리터럴 자체를 baseline의
+  default와 비교해서 **달라졌으면 거부**한다. 변수 이름이 바뀌었는지는 부수적이다 — 판단 기준은
+  "새 리터럴이 git 추적 파일에 커밋되는가"이다. default를 완전히 없애는 것(`${OTHER_NAME}`, default
+  없음)은 git에 아무것도 남기지 않으므로 허용하고, 변수 이름만 바뀌고 default 리터럴이 baseline과
+  동일하면 허용하며, 비-sensitive key(포트 번호 등)는 이 검사의 대상이 아니라 기본값을 자유롭게
+  바꿀 수 있다(과다 차단 방지).
+- 새 검증 5건 추가(위조 변수명 거부, 같은 변수명 아래 새 리터럴 거부, 변수 이름만 바뀌고 default
+  동일하면 허용, default 제거 허용, 비-sensitive key default 변경 허용) + 기존 DSN 우회 테스트 1건은
+  rule 3만 단독 검증하도록 key 이름을 sensitive하지 않은 이름으로 바꿔 재구성. mutation test로
+  새 테스트 2건만 실패 확인. backend 전체 1047 passed(기존 1042 + 5), ruff 기존 9건 유지. 프론트
+  `configValidation.ts`에 동일 로직 미러링, type-check/lint/build 모두 통과(build는 `next dev`와
+  동시 실행 시 `.next` lock 충돌로 정지하는 것을 발견 — dev 서버를 먼저 내리고 build를 단독
+  실행해야 한다).
+- **실브라우저 재검증**(WSL dev backend + frontend, admin 로그인 세션, 로컬 검증 전용 임시
+  `KTDM_ADMIN_*`/`KTDM_SESSION_SECRET`/`KTDM_FRONTEND_ORIGINS`/`KTDM_CORS_ALLOW_ORIGINS` 환경변수 —
+  `KTDM_CORS_ALLOW_ORIGINS`는 루트 `.env`의 prod 값이 `KTDM_FRONTEND_ORIGINS` 오버라이드보다
+  우선하므로 둘 다 명시적으로 설정해야 했다): Grafana 컨테이너의 `GF_SECURITY_ADMIN_PASSWORD`
+  필드에 `${TOTALLY_MADE_UP_NAME:-h4x0r-literal-secret}`를 한 글자씩 타이핑 → 인라인 오류 표시,
+  diff 미리보기에 `before → after` 정확히 표시, "적용 및 재생성" 버튼 비활성화까지 확인. 같은
+  세션에서 포트 필드에도 문자열을 이어서 타이핑해 React key 수정으로 값이 잘리거나 초기화되지
+  않고 그대로 누적되는 것을 확인했다. 실제 제출은 한 번도 누르지 않아 로컬 컨테이너는 그대로
+  유지했다.
+
+---
+
 ## 2026-07-28 (T-011 설정 저장 validation 고도화 — diff 미리보기·baseline 인지 secret 방어)
 
 - T-011의 남은 3개 항목(diff 표시, 포트/볼륨/네트워크 validation, secret 값 방어)을 마무리했다.
