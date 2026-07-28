@@ -328,7 +328,13 @@ export default function DashboardClient() {
     let reconnectTimeout: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
     let attempt = 0;
+    let framesThisSocket = 0;
     let lastMessageAt = Date.now();
+    // 최초 프레임은 서버가 docker sweep을 끝낸 뒤에야 온다. 그 지연을 watchdog으로 재면
+    // 느리지만 정상인 서버에서 소켓을 영영 유지하지 못한다. 최초 프레임 전에는 넉넉한
+    // grace를 주고, 그 뒤부터 broadcast 간격(2초) 기준으로 반개방을 감시한다.
+    const FIRST_FRAME_GRACE_MS = 30000;
+    const IDLE_LIMIT_MS = 8000;
 
     const detach = (socket: WebSocket) => {
       socket.onopen = null;
@@ -352,15 +358,19 @@ export default function DashboardClient() {
       ws = socket;
 
       socket.onopen = () => {
+        framesThisSocket = 0;
         lastMessageAt = Date.now();
         setIsWsConnected(true);
       };
 
       socket.onmessage = (event) => {
         // backoff는 handshake 성립이 아니라 "실제로 동작하는 소켓"에서만 리셋한다.
-        // 서버가 항상 accept한 뒤 닫는 계약이라 onopen에서 리셋하면 backoff가 영원히
-        // attempt=0에 머물러, 즉시 close되는 장애에서 초당 1회 재연결 폭주가 된다.
-        attempt = 0;
+        // onopen에서 리셋하면 서버가 항상 accept하는 계약 탓에 backoff가 영원히
+        // attempt=0에 머문다. 첫 프레임만으로 리셋해도 부족하다 — ws_status는 accept
+        // 직후 초기 상태를 한 번 보내므로, 크래시 루프 중인 서버도 매 연결마다 1프레임을
+        // 흘려 초당 1회 재연결이 된다. 2프레임(초기 + broadcast 1회)을 받아야 리셋한다.
+        framesThisSocket += 1;
+        if (framesThisSocket >= 2) attempt = 0;
         lastMessageAt = Date.now();
         try {
           const message = JSON.parse(event.data);
@@ -424,11 +434,13 @@ export default function DashboardClient() {
 
     connectWS();
 
-    // 반개방 소켓 감시: 서버는 2초마다 상태를 보낸다. 8초간 무프레임이면 소켓을 닫아
-    // 재연결 경로와 폴백 폴링을 다시 켠다.
+    // 반개방 소켓 감시: 서버는 2초마다 상태를 보낸다. 프레임이 한 건도 오지 않은
+    // 동안에는 초기 docker sweep 지연을 감안해 grace를 주고, 그 뒤로는 무프레임
+    // 8초에 소켓을 닫아 재연결 경로와 폴백 폴링을 다시 켠다.
     const watchdog = setInterval(() => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      if (Date.now() - lastMessageAt > 8000) ws.close();
+      const limit = framesThisSocket === 0 ? FIRST_FRAME_GRACE_MS : IDLE_LIMIT_MS;
+      if (Date.now() - lastMessageAt > limit) ws.close();
     }, 3000);
 
     return () => {

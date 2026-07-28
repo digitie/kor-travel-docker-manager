@@ -161,6 +161,24 @@ def _websocket_authorize(websocket: WebSocket) -> AdminSessionContext | None:
     return validate_session_cookie(websocket.cookies.get(SESSION_COOKIE_NAME), websocket)
 
 
+def encode_status_payload(message: dict) -> str | None:
+    """상태 payload를 WebSocket text frame 문자열로 직렬화한다. 실패하면 None.
+
+    ensure_ascii=True는 starlette 0.37.2 `send_json`(ensure_ascii=False)과 **의도적으로**
+    다르다. False로 두면 os.environ의 surrogateescape 바이트(예: `_public_url()`이 읽는
+    `KTDM_PROD_URL_*`)가 lone surrogate로 남아 websockets의 utf-8 encode에서
+    UnicodeEncodeError가 난다. broadcast에서는 전 client가 evict/재연결을 반복하고,
+    최초 프레임에서는 연결이 곧바로 1011로 죽는다. 두 경로가 갈라지지 않도록 반드시
+    이 helper를 함께 쓴다.
+    """
+    try:
+        # UnicodeEncodeError는 ValueError의 하위 클래스라 아래 guard에 이미 포함된다.
+        return json.dumps(message, ensure_ascii=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        logger.error("Status payload is not JSON serializable", exc_info=True)
+        return None
+
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -177,16 +195,10 @@ class ConnectionManager:
     async def broadcast(self, message: dict) -> None:
         if not self.active_connections:
             return
-        try:
-            # 직렬화를 fan-out 밖에서 한 번만 한다. 직렬화 불가 payload가 모든 client를
-            # 조용히 evict하지 않고 서버 오류로 귀속된다.
-            # ensure_ascii=True는 Starlette send_json과 동일한 인코딩이다. False로 두면
-            # os.environ의 surrogateescape 바이트(예: KTDM_PROD_URL_*)가 lone surrogate로
-            # 남아 websockets의 utf-8 encode에서 UnicodeEncodeError가 나고, 모든 client가
-            # 2초마다 evict/재연결을 반복한다.
-            payload = json.dumps(message, ensure_ascii=True, separators=(",", ":"))
-        except (TypeError, ValueError, UnicodeEncodeError):
-            logger.error("Status payload is not JSON serializable; broadcast skipped", exc_info=True)
+        # 직렬화를 fan-out 밖에서 한 번만 한다. 직렬화 불가 payload가 모든 client를
+        # 조용히 evict하지 않고 서버 오류로 귀속된다.
+        payload = encode_status_payload(message)
+        if payload is None:
             return
         for connection in list(self.active_connections):
             try:
@@ -230,7 +242,11 @@ async def ws_status(websocket: WebSocket):
     recv_task: asyncio.Task | None = None
     try:
         status = await asyncio.to_thread(docker_service.get_containers_status)
-        await websocket.send_json({"type": "status", "containers": status})
+        # broadcast와 같은 encoder를 쓴다. send_json은 ensure_ascii=False라 lone surrogate가
+        # 섞이면 최초 프레임에서만 죽어 소켓이 영구히 1011로 끊긴다.
+        initial = encode_status_payload({"type": "status", "containers": status})
+        if initial is not None:
+            await websocket.send_text(initial)
 
         recv_task = asyncio.create_task(websocket.receive())
         loop = asyncio.get_running_loop()
@@ -273,8 +289,11 @@ async def ws_status(websocket: WebSocket):
         # 규칙: accept된 WebSocket handler는 명시적 close 없이 return하지 않는다.
         # finally이므로 CancelledError(BaseException)에서도 등록이 해제된다.
         status_manager.disconnect(websocket)
-        if recv_task is not None and not recv_task.done():
-            recv_task.cancel()
+        if recv_task is not None:
+            if not recv_task.done():
+                recv_task.cancel()
+            # done인 task도 예외가 회수되지 않을 수 있다(ws_logs와 같은 모양으로 맞춘다).
+            recv_task.add_done_callback(_discard_future_result)
         await _close_best_effort(websocket, code=close_code)
 
 
@@ -346,6 +365,19 @@ async def ws_logs(websocket: WebSocket, container_id: str):
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
+            # 재인가를 send보다 먼저 본다. 뒤에 두면 deadline이 지난 iteration에서
+            # 폐기된 세션에 로그 chunk를 한 번 더 흘려보낸다.
+            if loop.time() >= deadline:
+                deadline = loop.time() + _REAUTH_INTERVAL_SECONDS
+                if utcnow() >= context.expires_at:
+                    close_code = WS_CLOSE_AUTH_REQUIRED
+                    break
+                refreshed = await asyncio.to_thread(_websocket_authorize, websocket)
+                if refreshed is None:
+                    close_code = WS_CLOSE_AUTH_REQUIRED
+                    break
+                context = refreshed
+
             if recv_task in done:
                 message = recv_task.result()
                 if message["type"] == "websocket.disconnect":
@@ -362,17 +394,6 @@ async def ws_logs(websocket: WebSocket, container_id: str):
                 read_task = loop.run_in_executor(
                     _log_stream_executor, _read_next_chunk, log_stream
                 )
-
-            if loop.time() >= deadline:
-                deadline = loop.time() + _REAUTH_INTERVAL_SECONDS
-                if utcnow() >= context.expires_at:
-                    close_code = WS_CLOSE_AUTH_REQUIRED
-                    break
-                refreshed = await asyncio.to_thread(_websocket_authorize, websocket)
-                if refreshed is None:
-                    close_code = WS_CLOSE_AUTH_REQUIRED
-                    break
-                context = refreshed
     except WebSocketDisconnect:
         pass
     except Exception:

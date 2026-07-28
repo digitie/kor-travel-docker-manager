@@ -10,8 +10,11 @@ uvicorn이 403을 보낼지 101을 보낼지는 이 시퀀스의 첫 메시지 t
 """
 
 import asyncio
+import contextlib
 import datetime
 import os
+import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -23,14 +26,18 @@ import kor_travel_docker_manager.database
 from kor_travel_docker_manager.services.auth_service import hash_password_for_env
 
 FRONTEND_ORIGIN = "http://localhost:12905"
-os.environ["KTDM_ADMIN_USERNAME"] = "admin"
-# 이 모듈은 로그인을 하지 않는다. app 기동에 필요한 형식만 갖추면 되므로 운영 비밀번호와
-# 같은 값을 쓰지 않는다(런북: 테스트 비번이 prod 관리자 비번과 같아 전파 금지).
-os.environ["KTDM_ADMIN_PASSWORD_HASH"] = hash_password_for_env(
-    "ws-contract-tests-never-log-in"
+# 모두 setdefault다. 이 모듈은 app 기동에 필요한 env만 채우면 되고, 로그인은 하지 않는다.
+# 무조건 대입하면 collect 순서에 따라 먼저 import된 test_api/test_metrics의 값을 덮어써
+# 그쪽 로그인이 전부 실패하고 brute-force 제한에 걸려 429로 연쇄된다(실측 34건 실패).
+# 비밀번호는 운영 관리자 비번과 같은 값을 쓰지 않는다(런북: 전파 금지).
+os.environ.setdefault("KTDM_ADMIN_USERNAME", "admin")
+os.environ.setdefault(
+    "KTDM_ADMIN_PASSWORD_HASH", hash_password_for_env("ws-contract-tests-never-log-in")
 )
-os.environ["KTDM_SESSION_SECRET"] = "test-session-secret-minimum-32-bytes-value"
-os.environ["KTDM_FRONTEND_ORIGINS"] = FRONTEND_ORIGIN
+os.environ.setdefault(
+    "KTDM_SESSION_SECRET", "test-session-secret-minimum-32-bytes-value"
+)
+os.environ.setdefault("KTDM_FRONTEND_ORIGINS", FRONTEND_ORIGIN)
 
 test_engine = create_engine(
     "sqlite://",
@@ -372,30 +379,23 @@ class _ScriptedWebSocket:
         if self.keepalive_interval is None:
             await asyncio.Event().wait()  # 아무것도 보내지 않는 client
         await asyncio.sleep(self.keepalive_interval)
-        return {"type": "websocket.text", "text": "ping"}
+        # Starlette WebSocket.receive()는 websocket.receive / websocket.disconnect만
+        # 돌려준다. 실제로 발생하지 않는 type을 쓰면 handler를 좁혔을 때 테스트가
+        # 잘못된 이유로 계속 통과한다.
+        return {"type": "websocket.receive", "text": "ping"}
 
     async def send_json(self, message):
         self.sent.append(message)
+
+    async def send_text(self, payload):
+        self.sent.append(payload)
 
     async def close(self, code=1000, reason=""):
         self.closed_with = code
 
 
-def _run_ws_status(websocket, *, authorize, interval: float, timeout: float = 2.0):
-    async def main():
-        await asyncio.wait_for(ws_status_direct(websocket, authorize, interval), timeout)
-
-    asyncio.run(main())
-
-
-async def ws_status_direct(websocket, authorize, interval):
-    """monkeypatch 없이 모듈 전역만 바꿔 ws_status를 그대로 실행한다."""
-    import contextlib as _contextlib
-
-    original_authorize = ws_mod._websocket_authorize
-    original_interval = ws_mod._REAUTH_INTERVAL_SECONDS
-    original_accept = ws_mod._accept_best_effort
-    original_docker = ws_mod.docker_service
+def _patch_ws_globals(monkeypatch, *, authorize, interval: float):
+    """두 handler가 공유하는 모듈 전역을 monkeypatch로 교체한다."""
 
     class _Docker:
         @staticmethod
@@ -405,40 +405,87 @@ async def ws_status_direct(websocket, authorize, interval):
     async def _accept(_ws):
         return True
 
-    ws_mod._websocket_authorize = authorize
-    ws_mod._REAUTH_INTERVAL_SECONDS = interval
-    ws_mod._accept_best_effort = _accept
-    ws_mod.docker_service = _Docker()
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", authorize)
+    monkeypatch.setattr(ws_mod, "_REAUTH_INTERVAL_SECONDS", interval)
+    monkeypatch.setattr(ws_mod, "_accept_best_effort", _accept)
+    monkeypatch.setattr(ws_mod, "docker_service", _Docker())
+
+
+def _run_ws_status(monkeypatch, websocket, *, authorize, interval: float, timeout=2.0):
+    _patch_ws_globals(monkeypatch, authorize=authorize, interval=interval)
+
+    async def main():
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(ws_mod.ws_status(websocket), timeout)
+
     try:
-        with _contextlib.suppress(Exception):
-            await ws_mod.ws_status(websocket)
+        asyncio.run(main())
     finally:
-        ws_mod._websocket_authorize = original_authorize
-        ws_mod._REAUTH_INTERVAL_SECONDS = original_interval
-        ws_mod._accept_best_effort = original_accept
-        ws_mod.docker_service = original_docker
         ws_mod.status_manager.disconnect(websocket)
 
 
-def test_live_session_revocation_closes_4401():
-    """살아 있는 소켓도 재인가에서 폐기가 확인되면 4401로 닫아야 한다."""
-    calls = {"n": 0}
+class _FakeLogStream:
+    """chatty(계속 chunk 반환) 또는 idle(영원히 block) 로그 스트림."""
 
+    def __init__(self, *, chatty: bool):
+        self.chatty = chatty
+        self.closed = threading.Event()
+        self._release = threading.Event()
+
+    def __next__(self):
+        if self.chatty:
+            time.sleep(0.001)
+            return b"line\n"
+        self._release.wait(timeout=5)
+        raise StopIteration
+
+    def close(self):
+        self.closed.set()
+        self._release.set()
+
+
+def _run_ws_logs(
+    monkeypatch, websocket, *, authorize, interval: float, chatty: bool, timeout=2.0
+):
+    _patch_ws_globals(monkeypatch, authorize=authorize, interval=interval)
+    stream = _FakeLogStream(chatty=chatty)
+    monkeypatch.setattr(ws_mod, "_open_container", lambda cname: object())
+    monkeypatch.setattr(ws_mod, "_open_log_stream", lambda container: stream)
+    container_id = next(iter(MANAGED_CONTAINERS))
+
+    async def main():
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(ws_mod.ws_logs(websocket, container_id), timeout)
+
+    asyncio.run(main())
+    return stream
+
+
+def _revoke_on_second_check(calls: dict):
     def authorize(_ws):
         calls["n"] += 1
         return _context() if calls["n"] == 1 else None  # 두 번째 검사에서 폐기
 
+    return authorize
+
+
+def test_live_session_revocation_closes_4401(monkeypatch):
+    """살아 있는 소켓도 재인가에서 폐기가 확인되면 4401로 닫아야 한다."""
+    calls = {"n": 0}
     websocket = _ScriptedWebSocket(keepalive_interval=None)
-    _run_ws_status(websocket, authorize=authorize, interval=0.05)
+    _run_ws_status(
+        monkeypatch, websocket, authorize=_revoke_on_second_check(calls), interval=0.05
+    )
 
     assert calls["n"] >= 2, "재인가가 한 번도 다시 일어나지 않았다"
     assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
 
 
-def test_live_session_expiry_closes_4401():
+def test_live_session_expiry_closes_4401(monkeypatch):
     """expires_at이 지나면 재인가 결과와 무관하게 닫는다."""
     websocket = _ScriptedWebSocket(keepalive_interval=None)
     _run_ws_status(
+        monkeypatch,
         websocket,
         authorize=lambda _ws: _context(ttl_seconds=-1.0),  # 이미 만료된 세션
         interval=0.05,
@@ -447,24 +494,81 @@ def test_live_session_expiry_closes_4401():
     assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
 
 
-def test_reauth_is_not_bypassed_by_keepalive_frames():
+def test_reauth_is_not_bypassed_by_keepalive_frames(monkeypatch):
     """재인가 창이 프레임마다 리셋되면 keepalive를 보내는 client는 영원히 재검증되지 않는다.
 
     적대적 리뷰에서 실제로 재현된 우회다. 재인가 시점을 monotonic deadline에 고정하지
     않으면 이 테스트가 실패한다(재인가 0회, 정상 종료).
     """
     calls = {"n": 0}
-
-    def authorize(_ws):
-        calls["n"] += 1
-        return _context() if calls["n"] == 1 else None
-
     # 재인가 주기(0.05s)보다 자주 프레임을 보내는 client.
     websocket = _ScriptedWebSocket(keepalive_interval=0.01)
-    _run_ws_status(websocket, authorize=authorize, interval=0.05)
+    _run_ws_status(
+        monkeypatch, websocket, authorize=_revoke_on_second_check(calls), interval=0.05
+    )
 
     assert calls["n"] >= 2, (
         f"keepalive 프레임이 재인가를 우회했다 — 재인가 호출 {calls['n']}회"
+    )
+    assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
+
+
+# --- ws_logs 재인가 (status와 별도 코드 경로다) ---------------------------------------
+
+
+def test_ws_logs_live_session_revocation_closes_4401(monkeypatch):
+    """로그 스트림도 폐기된 세션에 계속 흘려보내면 안 된다."""
+    calls = {"n": 0}
+    websocket = _ScriptedWebSocket(keepalive_interval=None)
+    stream = _run_ws_logs(
+        monkeypatch,
+        websocket,
+        authorize=_revoke_on_second_check(calls),
+        interval=0.05,
+        chatty=False,
+    )
+
+    assert calls["n"] >= 2, "ws_logs가 재인가를 하지 않는다"
+    assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
+    assert stream.closed.is_set(), "teardown이 로그 스트림을 닫지 않았다"
+
+
+def test_ws_logs_reauth_is_not_starved_by_chatty_container(monkeypatch):
+    """read_task가 계속 완료돼도 재인가 deadline이 굶으면 안 된다.
+
+    로그가 끊임없이 나오는 container에서 deadline 분기가 read 분기 뒤에서만 평가되면
+    재인가가 영원히 밀린다.
+    """
+    calls = {"n": 0}
+    websocket = _ScriptedWebSocket(keepalive_interval=None)
+    _run_ws_logs(
+        monkeypatch,
+        websocket,
+        authorize=_revoke_on_second_check(calls),
+        interval=0.05,
+        chatty=True,
+    )
+
+    assert calls["n"] >= 2, (
+        f"chatty container가 재인가를 굶겼다 — 재인가 호출 {calls['n']}회"
+    )
+    assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
+
+
+def test_ws_logs_reauth_is_not_bypassed_by_keepalive_frames(monkeypatch):
+    """ws_logs에서도 client 프레임이 재인가 창을 리셋하면 안 된다."""
+    calls = {"n": 0}
+    websocket = _ScriptedWebSocket(keepalive_interval=0.01)
+    _run_ws_logs(
+        monkeypatch,
+        websocket,
+        authorize=_revoke_on_second_check(calls),
+        interval=0.05,
+        chatty=False,
+    )
+
+    assert calls["n"] >= 2, (
+        f"keepalive 프레임이 ws_logs 재인가를 우회했다 — 재인가 호출 {calls['n']}회"
     )
     assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
 
