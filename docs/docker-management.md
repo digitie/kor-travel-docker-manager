@@ -40,6 +40,7 @@
 |---|---|---|
 | 미인증 · 세션 만료/폐기 · 허용되지 않은 Origin | accept(101) → data frame 0건 → `close(4401, "AUTH_REQUIRED")` | `code=4401`, `wasClean=true` |
 | 알 수 없는 `container_id` (`/ws/logs`) | accept(101) → data frame 0건 → `close(4000, "INVALID_CONTAINER_ID")` | `code=4000` |
+| 인가 동시성 상한 초과 | accept(101) → data frame 0건 → `close(1013, "TRY_AGAIN_LATER")` | `code=1013` |
 | 연결 유지 중 세션 만료/폐기 (`/ws/status`·`/ws/logs` 모두 60초 주기 재검증) | `close(4401)` | `code=4401` |
 | docker 접근/스트림 실패 | `{"error": ...}` 1건 → `close(1011)` | `code=1011` |
 | 로그 스트림 EOF | `{"error": "로그 스트림이 종료되었습니다."}` → `close(1000)` | `code=1000` |
@@ -64,8 +65,30 @@
   프레임이 올 때마다 창이 리셋돼, keepalive를 주기보다 자주 보내는 client가 logout·TTL
   만료를 무한히 우회한다.
 - 미인증 peer도 handshake를 완료하게 되므로 거절 경로의 close는 peer의 close echo를
-  오래 기다리지 않는다(`_REJECT_CLOSE_TIMEOUT_SECONDS`). WS 라우트에는 아직 rate limit이
-  없으므로, 공개 노출 시 uvicorn `--limit-concurrency`나 프록시 단 제한을 함께 둔다.
+  오래 기다리지 않는다(`_REJECT_CLOSE_TIMEOUT_SECONDS`).
+- **인가 동시성 상한**: 동시에 인가(Origin+세션 쿠키 검증) 처리 중인 handshake를
+  `KTDM_WS_MAX_PENDING_AUTHORIZATIONS`(기본 `64`, clamp `[1, 10000]`, **프로세스당**)로
+  묶고, 초과분은 `1013`으로 흘려보낸다.
+  - **이 상한이 묶는 것**: `to_thread` dispatch와 동시 인가 handshake 수, 그리고 유효
+    서명 쿠키를 가진 peer에 한해 executor queue 깊이.
+  - **묶지 않는 것**: fd, uvicorn protocol 객체, ASGI task, accept/close 소켓 수명.
+    flood에서 실제로 고갈되는 자원은 이쪽이므로 이 상한을 DoS 완화로 과신하면 안 된다.
+  - 미인증 peer는 **SQLite에 도달하지 못한다**. `validate_session_cookie`는 쿠키가 없으면
+    session을 열기 전에 `None`을 돌려주고, DB SELECT는 HMAC 서명 검증 뒤에 있다
+    (측정: 미인증 경로 DB session 0건, 호출당 0.2~2.6us). "거절마다 DB 조회가 잡힌다"는
+    근거로 이 값을 튜닝하지 말 것.
+  - shed 로그는 **상태 진입/해제에서만** 남긴다. 거절 1건마다 기록하면 attacker가 제어하는
+    동기 디스크 write가 되어 shed 경로가 완화하려던 경로보다 비싸진다(측정: 거절당
+    1039~1207us → 로그 제거 시 57~62us, 4401 경로 285~313us).
+  - **per-IP 제한은 쓰지 않는다.** 이 배포의 공개 트래픽은 전부 리버스 프록시 IP 하나로
+    도착하고(신뢰 프록시 CIDR이 loopback 전용이라 `X-Forwarded-For`를 신뢰하지 않는다),
+    per-IP 버킷은 인터넷 전체를 한 키에 묶어 정상 관리자까지 함께 막는다. per-IP로
+    가려면 **먼저** `KTDM_TRUSTED_PROXY_CIDRS`에 프록시 IP를 추가해야 한다(필수 조건).
+    `KTDM_TRUSTED_PROXY_SECRET`는 loopback 위조를 막는 추가 방어이지 활성화 스위치가 아니다.
+  - **전체 동시 연결 수는 uvicorn `--limit-concurrency`로 막을 수 없다.** h11 구현이
+    WebSocket upgrade를 503 검사 **이전에** return하기 때문이다(0.28.1
+    `h11_impl.py:221-230`). 연결 수 제한은 프록시에서 건다(HAProxy `maxconn`,
+    stick-table 연결률 제한).
 - TestClient는 pre-accept close와 accept-then-close를 모두 같은 `WebSocketDisconnect(4401)`로
   보고하므로 계약 회귀는 `backend/tests/test_ws_contract.py`의 ASGI 메시지 시퀀스로 고정한다.
 

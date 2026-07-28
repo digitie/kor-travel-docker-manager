@@ -518,6 +518,171 @@ def test_reauth_is_not_bypassed_by_keepalive_frames(monkeypatch):
     assert websocket.closed_with == ws_mod.WS_CLOSE_AUTH_REQUIRED
 
 
+# --- 인가 동시성 상한 -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, 64),
+        ("", 64),
+        ("abc", 64),
+        ("0", 1),      # 하한 clamp — 0이면 모든 연결이 영구 거절된다
+        ("-5", 1),
+        ("1", 1),
+        ("128", 128),
+        ("999999", 10_000),  # 상한 clamp
+    ],
+)
+def test_max_pending_ws_authorizations_resolver(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, raw)
+
+    assert ws_mod._resolve_max_pending_ws_authorizations() == expected
+
+
+def test_ws_status_sheds_load_at_authorization_limit(monkeypatch):
+    """상한 초과 시 DB를 건드리지 않고 1013으로 흘려보낸다."""
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "1")
+    monkeypatch.setattr(
+        ws_mod,
+        "_websocket_authorize",
+        lambda ws: pytest.fail("상한 초과 시 인가(DB 조회)를 수행하면 안 된다"),
+    )
+    # 이미 한 건이 인가 처리 중인 상태를 만든다.
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 1)
+
+    sent = drive_websocket("/api/v1/ws/status", headers=[ORIGIN_HEADER])
+
+    assert [m["type"] for m in sent] == ["websocket.accept", "websocket.close"]
+    assert sent[-1]["code"] == ws_mod.WS_CLOSE_TRY_AGAIN_LATER
+    assert sent[-1]["reason"] == "TRY_AGAIN_LATER"
+    _assert_no_data_frames(sent)
+
+
+def test_ws_logs_sheds_load_at_authorization_limit(monkeypatch):
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "1")
+    monkeypatch.setattr(
+        ws_mod,
+        "_websocket_authorize",
+        lambda ws: pytest.fail("상한 초과 시 인가(DB 조회)를 수행하면 안 된다"),
+    )
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 1)
+
+    valid_id = next(iter(MANAGED_CONTAINERS))
+    sent = drive_websocket(f"/api/v1/ws/logs/{valid_id}", headers=[ORIGIN_HEADER])
+
+    assert sent[-1]["code"] == ws_mod.WS_CLOSE_TRY_AGAIN_LATER
+    _assert_no_data_frames(sent)
+
+
+def test_authorization_slot_is_released_on_success_and_failure(monkeypatch):
+    """slot 누수는 서비스를 영구 1013으로 만든다 — 성공/예외 모두에서 반납해야 한다."""
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 0)
+
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", lambda ws: _context())
+    granted, context = asyncio.run(ws_mod._authorize_with_limit(object()))
+    assert granted is True
+    assert context is not None
+    assert ws_mod._pending_ws_authorizations == 0, "성공 경로에서 slot이 새고 있다"
+
+    def _boom(_ws):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", _boom)
+    with pytest.raises(RuntimeError):
+        asyncio.run(ws_mod._authorize_with_limit(object()))
+    assert ws_mod._pending_ws_authorizations == 0, "예외 경로에서 slot이 새고 있다"
+
+
+def test_counter_rises_during_real_authorization_and_sheds_the_next(monkeypatch):
+    """실제 인가가 진행되는 동안 counter가 올라가고, 그 사이 도착한 요청이 shed되어야 한다.
+
+    이 테스트가 없으면 증가/감소를 통째로 지워도(=limit이 영영 발동하지 않아도) 전체
+    스위트가 통과한다. 적대적 리뷰의 mutation으로 실제 확인된 공백이다.
+    """
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "1")
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 0)
+    monkeypatch.setattr(ws_mod, "_ws_shedding", False)
+
+    release = threading.Event()
+    entered = threading.Event()
+    observed: dict = {}
+
+    def _blocking_authorize(_ws):
+        entered.set()
+        release.wait(timeout=5)
+        return _context()
+
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", _blocking_authorize)
+
+    async def main():
+        first = asyncio.create_task(ws_mod._authorize_with_limit(object()))
+        # 첫 인가가 executor에서 실제로 실행 중인 상태를 만든다.
+        await asyncio.to_thread(entered.wait, 5)
+        observed["pending_while_running"] = ws_mod._pending_ws_authorizations
+        # 그 사이 도착한 두 번째 요청은 shed되어야 한다.
+        observed["second"] = await ws_mod._authorize_with_limit(object())
+        release.set()
+        observed["first"] = await first
+
+    asyncio.run(main())
+
+    assert observed["pending_while_running"] == 1, (
+        "실제 인가 중인데 counter가 오르지 않았다 — limit이 죽은 코드다"
+    )
+    assert observed["second"] == (False, None), "상한 초과 요청이 shed되지 않았다"
+    granted, context = observed["first"]
+    assert granted is True and context is not None
+    assert ws_mod._pending_ws_authorizations == 0, "완료 후 slot이 반납되지 않았다"
+
+
+def test_slot_is_released_when_awaiter_is_cancelled(monkeypatch):
+    """취소는 BaseException이라 `except Exception` 리팩터링이 slot을 새게 만든다.
+
+    slot이 새면 누적되어 서비스가 영구 1013으로 굳는다.
+    """
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "8")
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 0)
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def _blocking_authorize(_ws):
+        entered.set()
+        release.wait(timeout=5)
+        return _context()
+
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", _blocking_authorize)
+
+    async def main():
+        task = asyncio.create_task(ws_mod._authorize_with_limit(object()))
+        await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        outcome = await asyncio.gather(task, return_exceptions=True)
+        release.set()
+        return outcome[0]
+
+    outcome = asyncio.run(main())
+
+    assert isinstance(outcome, asyncio.CancelledError)
+    assert ws_mod._pending_ws_authorizations == 0, "취소 경로에서 slot이 샜다"
+
+
+def test_authorized_connection_is_not_blocked_by_the_limit(monkeypatch):
+    """상한은 신규 인가 동시성만 묶는다. 여유가 있으면 정상 인증은 그대로 통과한다."""
+    monkeypatch.setenv(ws_mod._MAX_PENDING_WS_AUTH_ENV, "2")
+    monkeypatch.setattr(ws_mod, "_pending_ws_authorizations", 1)  # 여유 1
+    monkeypatch.setattr(ws_mod, "_websocket_authorize", lambda ws: _context())
+
+    granted, context = asyncio.run(ws_mod._authorize_with_limit(object()))
+
+    assert granted is True
+    assert context is not None
+
+
 # --- ws_logs 재인가 (status와 별도 코드 경로다) ---------------------------------------
 
 

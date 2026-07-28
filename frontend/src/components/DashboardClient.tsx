@@ -35,6 +35,7 @@ import {
   BACKEND_URL,
   WS_CLOSE_AUTH_REQUIRED,
   WS_CLOSE_INVALID_CONTAINER,
+  WS_CLOSE_TRY_AGAIN_LATER,
   apiJson,
   apiWsUrl,
   notifyUnauthorized,
@@ -225,6 +226,8 @@ export default function DashboardClient() {
   // WebSocket State - Default initialized directly to resolve 'State initialized from a mount effect'
   const [wsContainers, setWsContainers] = useState<ContainerStatus[] | null>(null);
   const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
+  // 서버가 1013(혼잡)으로 흘려보낸 상태. 폴백 폴링 주기를 늦추는 데만 쓴다.
+  const [isWsShedding, setIsWsShedding] = useState<boolean>(false);
 
   // Modal States
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
@@ -285,8 +288,11 @@ export default function DashboardClient() {
   const { data: fallbackContainers = [], isLoading, error } = useQuery<ContainerStatus[]>({
     queryKey: ['containers'],
     queryFn: () => apiJson<ContainerStatus[]>('/api/v1/containers'),
-    refetchInterval: 5000,
-    enabled: isAuthenticated && !isWsConnected, // Only run polling if WebSocket is offline
+    // 서버가 혼잡(1013)해서 WS를 흘려보낸 경우에는 폴백 폴링을 늦춘다. 5초 폴링은
+    // 요청마다 전체 docker sweep을 돌아 WS 한 건보다 비싸므로, 그대로 두면 부하를
+    // 덜어내려던 shed가 오히려 서버 부하를 올린다.
+    refetchInterval: isWsShedding ? 30000 : 5000,
+    enabled: isAuthenticated && !isWsConnected,
   });
 
   // Active containers dataset (WS if available, fallback query otherwise)
@@ -360,6 +366,7 @@ export default function DashboardClient() {
       socket.onopen = () => {
         framesThisSocket = 0;
         lastMessageAt = Date.now();
+        setIsWsShedding(false);
         setIsWsConnected(true);
       };
 
@@ -421,6 +428,8 @@ export default function DashboardClient() {
           notifyUnauthorized();
           return;
         }
+        // 1013은 서버 혼잡이다. 폴백 폴링을 늦춰 shed가 부하를 되레 키우지 않게 한다.
+        setIsWsShedding(event.code === WS_CLOSE_TRY_AGAIN_LATER);
         const delay = Math.min(30000, 1000 * 2 ** attempt) * (0.5 + Math.random() * 0.5);
         attempt += 1;
         reconnectTimeout = setTimeout(connectWS, delay);
@@ -595,6 +604,12 @@ export default function DashboardClient() {
       }
       if (event.code === WS_CLOSE_INVALID_CONTAINER) {
         setLiveLogs((prev) => prev + '\n--- 알 수 없는 컨테이너 ID입니다 ---\n');
+        return;
+      }
+      if (event.code === WS_CLOSE_TRY_AGAIN_LATER) {
+        setLiveLogs(
+          (prev) => prev + '\n--- 서버가 혼잡합니다. 잠시 후 다시 열어 주세요 ---\n'
+        );
         return;
       }
       setLiveLogs((prev) => prev + '\n--- 스트리밍 연결이 닫혔습니다 ---\n');
