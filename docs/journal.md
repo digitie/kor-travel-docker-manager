@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-07-28 (n150 production 배포 + T-043 1013 shed 실측 검증)
+
+`main`(T-012, T-011 2라운드, T-044)이 병합된 뒤로도 n150 production 매니저는 갱신되지
+않은 상태였다(백엔드 프로세스가 오늘 03:30에 기동되어 T-011/T-044 코드보다 앞선다).
+읽기 전용 사전 점검(cAdvisor healthz, compatible-pair manifest, 실행 중 Map/PinVi
+이미지 4+1종의 OCI revision, Map API/UI의 production 전용 secret 이름 존재 여부)으로
+n150의 현재 상태를 먼저 확인한 뒤, 사용자 승인을 받아 실제 배포를 진행했다.
+
+**배포 절차**([[prod-deploy-mechanics]] 메모 그대로): `backend/src/`·`frontend/src/`만
+dry-run 확인 후 rsync(`.env`·`docker-compose.override.yml`·`frontend/.env.*` 등 보존
+파일은 경로 자체가 겹치지 않아 자동 회피), 프론트 `npm run build`로 재빌드, 백엔드
+프로세스를 내리고 `nohup setsid`로 재기동(`/health` 200 확인), 프론트는 `next start
+-p 12905`의 **process group만**(PGID 확인 후 `kill -TERM -<pgid>`) 종료하고 재기동
+(`Ready in 947ms`). 호스트에 공존하는 다른 프로젝트의 next-server(v15/v16 여러 종)는
+PID/PGID를 미리 확인해 전혀 건드리지 않았다. `kill -TERM -<pgid>`는 auto mode
+classifier가 차단해 사용자가 직접 실행했다.
+
+**T-043 1013 shed 실측**: 배포 직후 `scripts/verify-frontend-toolchain.sh`가 `툴체인
+정상`을 보고했다. WS shed 동작은 `/ws/status`가 아니라 실제로는 `/api/v1/ws/status`에
+마운트되어 있다는 것을 라우터 코드에서 재확인한 뒤(첫 시도는 잘못된 경로라 accept 이전
+ASGI 거절 → uvicorn이 403으로 변환하는 것이었다 — 이 자체가 코드 주석이 설명하는 정확한
+현상이었다), Origin 헤더도 앱의 `allowed_frontend_origins()`를 그대로 호출해 실제
+허용값과 100% 동일하게 맞췄다. 그 뒤 `/api/v1/ws/status`에 유효한 Origin으로 300개의
+미인증 WebSocket 연결을 `asyncio.Barrier`로 동시에 발생시켜 실측: `4401`(AUTH_REQUIRED)
+121건, `1013`(TRY_AGAIN_LATER, shed) 179건. 기본 상한 `KTDM_WS_MAX_PENDING_AUTHORIZATIONS=64`를
+넘는 동시 인가 시도가 정확히 shed되는 것을 실제 production에서 확인했다. 테스트 스크립트는
+실행 뒤 `/tmp`에서 삭제했고, `/health` 200과 다른 모든 컨테이너의 기존 uptime이 그대로
+유지되는 것을 확인해 부작용이 없음을 검증했다.
+
+이번 세션에서 함께 확인한(읽기 전용) T-033·T-034·T-035·T-036의 n150 관련 잔여 체크박스는
+증거상 이미 충족된 것으로 보이나(각 태스크 본문 참조 대신 이 항목에 요약: OCI revision
+전 서비스 동일 40자 commit, cAdvisor healthy+manifest 최신 active 세대, Map API/UI
+secret 이름별 격리 계약 실측 일치, PinVi Dagster 9일째 healthy), GitHub issue(#60/#62/#63)를
+직접 닫는 것은 별도 확인 없이 진행하지 않았다 — tasks.md 체크박스 갱신은 이번 항목의
+범위 밖이라 다음 세션에서 사용자 확인 후 처리한다.
+
+---
+
 ## 2026-07-28 (T-044: ensure 라우트 production 서버측 차단)
 
 T-012 적대적 리뷰가 남긴 후속 항목이다. `POST /targets/{target}/ensure`(`ComposeService.ensure_target`)는
