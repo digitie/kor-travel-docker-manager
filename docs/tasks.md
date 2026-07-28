@@ -25,7 +25,7 @@
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
 | **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[/]` | - | T-042 리뷰 후속, PR #76 |
 | **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
-| **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
+| **T-012** | 대시보드 상세 패널 확장 | `[/]` | - | inspect 모달·5개 탭·dev ensure 버튼 구현, 로컬 실브라우저 검증 완료 |
 
 ---
 
@@ -51,10 +51,21 @@
 
 ### T-012: 대시보드 상세 패널 확장
 
-- [ ] 컨테이너 row 선택 시 inspect 상세 drawer 또는 modal 표시
-- [ ] mounts, networks, healthcheck, redacted env를 탭으로 분리
-- [ ] target 단위 `ensure --build` 버튼을 개발 모드에서 제공
-- [ ] 모바일/데스크톱에서 표와 상세 패널이 겹치지 않도록 반응형 검증
+- [x] 컨테이너 row의 상세 버튼으로 inspect modal을 연다(`ContainerDetailModal`).
+      기존 모달과 같은 `role="dialog"`/`aria-modal`/`aria-label` 패턴에 Esc 닫기와
+      포커스 이동을 더했다.
+- [x] mounts, networks, healthcheck, redacted env를 탭으로 분리한다
+      (`role="tablist"`/`tab`/`tabpanel`과 `aria-controls`/`aria-labelledby` 연결).
+- [x] target 단위 `ensure --build` 버튼을 개발 빌드에서만 제공한다. target은
+      registry의 **직접 소유 `containers`**로 매칭한다 — `resolved_services`를 쓰면
+      depends_on까지 펼쳐져 상위 target이 잘못 잡힌다.
+- [x] 모바일/데스크톱 반응형을 실브라우저로 검증한다. 390×844에서 page 가로 스크롤 0,
+      모달이 viewport 안에 들어오고, 넓은 Mounts 표와 탭 목록은 각자의 컨테이너 안에서만
+      가로 스크롤한다. 1440×900도 동일.
+- [x] 로컬 실브라우저 검증: 18개 row 전부 상세 버튼 노출, 5개 탭이 실제 inspect 데이터를
+      렌더(마운트 rw/ro, 네트워크 2개 IP/MAC/alias, healthcheck `healthy`+최근 검사 로그),
+      **env의 비밀값은 `<redacted>`로 전달**되는 것까지 확인. 콘솔 오류 0건(로그인 전 401과
+      기존 favicon 404 제외).
 
 
 

@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-07-28 (대시보드 inspect 상세 패널 — T-012)
+
+- 백엔드 `GET /containers/{id}/inspect`는 T-010부터 있었지만 프론트에서 호출하는 코드가
+  0건이었다. 이미 mounts·networks·healthcheck·redact된 env를 모두 반환하고 있어, 이번 작업은
+  기존 계약에 UI를 배선하는 일이었다.
+- `ContainerDetailModal`을 별도 파일로 분리했다. `DashboardClient.tsx`가 이미 1,400줄대라
+  탭 5개를 그 안에 넣으면 리뷰가 어려워진다.
+- target 매칭은 registry가 **직접 소유한 `containers`**를 쓴다. `resolved_services`는
+  depends_on까지 펼쳐지므로 상위 target이 잘못 잡힌다(예: postgres가 `pinvi`로 매칭).
+  실제로 `db`가 정확히 잡히는 것을 브라우저에서 확인했다.
+- `ensure --build` 버튼은 `NODE_ENV !== 'production'` 가드로 개발 빌드에만 노출한다.
+  운영 빌드에서는 번들에서 분기가 죽고, 서버도 production mutation 차단으로 거절하므로 이중이다.
+- **로컬 실브라우저 검증**(WSL 백엔드 + dev 프론트, Windows Chromium). 18개 row 전부 상세
+  버튼 노출, 5개 탭이 실데이터 렌더 — 마운트 rw/ro, 네트워크 2개의 IP/GW/MAC/alias,
+  healthcheck `healthy`와 최근 검사 로그, **env 비밀값 `<redacted>`**. Esc 닫기 동작, 콘솔
+  오류 0건(로그인 전 401·기존 favicon 404 제외).
+- 반응형: 390×844에서 page 가로 스크롤 0, 모달이 viewport 내부, 넓은 Mounts 표와 탭 목록은
+  각자 컨테이너 안에서만 가로 스크롤. 1440×900도 동일.
+- `ensure --build` **클릭은 실행하지 않았다.** 로컬 `db` target은 실데이터가 마운트된
+  PostgreSQL을 재생성하므로 확인 없이 누를 대상이 아니다. 버튼 렌더·target 매칭·title까지
+  확인했고, 클릭 경로는 기존 `POST /targets/{target}/ensure`를 그대로 호출한다.
+- 검증 중 확인한 환경 특성: WSL에서 `cleanup_old_log_files`가 `/mnt/f`(9p)를 스캔해 기동이
+  약 2분 걸린다. 코드 문제가 아니라 마운트 성능이며, 운영(n150 로컬 디스크)은 20~35초다.
+
+---
+
 ## 2026-07-28 (WS 인가 동시성 상한 + 프론트 배포 preflight — T-043)
 
 - T-042 리뷰가 남긴 두 항목을 처리했다. accept-then-close 계약상 미인증 peer도 handshake를

@@ -28,6 +28,7 @@ import dynamic from 'next/dynamic';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
+import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
 import {
   ApiError,
@@ -228,6 +229,8 @@ export default function DashboardClient() {
   const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
   // 서버가 1013(혼잡)으로 흘려보낸 상태. 폴백 폴링 주기를 늦추는 데만 쓴다.
   const [isWsShedding, setIsWsShedding] = useState<boolean>(false);
+  // inspect 상세 패널 대상 컨테이너(null이면 닫힘).
+  const [detailContainer, setDetailContainer] = useState<ContainerStatus | null>(null);
 
   // Modal States
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
@@ -294,6 +297,23 @@ export default function DashboardClient() {
     refetchInterval: isWsShedding ? 30000 : 5000,
     enabled: isAuthenticated && !isWsConnected,
   });
+
+  // target registry — 상세 패널의 `ensure --build`가 어떤 target에 속하는지 알기 위해 쓴다.
+  // 상세 패널이 열린 동안에만 조회하고, 정적 설정이라 재조회하지 않는다.
+  const { data: targets = [] } = useQuery<Array<{ id: string; containers?: string[] }>>({
+    queryKey: ['targets'],
+    queryFn: () => apiJson<Array<{ id: string; containers?: string[] }>>('/api/v1/targets'),
+    enabled: isAuthenticated && detailContainer !== null,
+    staleTime: Infinity,
+    refetchInterval: false,
+  });
+
+  // target의 depends_on까지 펼친 resolved 목록이 아니라 target이 직접 소유한 containers만
+  // 본다. resolved를 쓰면 의존 대상까지 매칭돼 엉뚱한 상위 target이 잡힌다.
+  const detailTargetId = useMemo(() => {
+    if (!detailContainer) return null;
+    return targets.find((t) => (t.containers ?? []).includes(detailContainer.id))?.id ?? null;
+  }, [targets, detailContainer]);
 
   // Active containers dataset (WS if available, fallback query otherwise)
   const displayContainers = wsContainers || fallbackContainers;
@@ -989,6 +1009,15 @@ export default function DashboardClient() {
 
                             <button
                               type="button"
+                              onClick={() => setDetailContainer(container)}
+                              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default"
+                              title="inspect 상세(mounts·networks·healthcheck·env) 보기"
+                            >
+                              <Boxes className="w-4 h-4" />
+                            </button>
+
+                            <button
+                              type="button"
                               onClick={() => openConfigModal(container)}
                               className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default"
                               title="컨테이너 세부 설정 변경"
@@ -1522,6 +1551,15 @@ export default function DashboardClient() {
             </form>
           </div>
         </div>
+      )}
+
+      {detailContainer && (
+        <ContainerDetailModal
+          containerId={detailContainer.id}
+          containerLabel={detailContainer.display_name || detailContainer.name}
+          targetId={detailTargetId}
+          onClose={() => setDetailContainer(null)}
+        />
       )}
     </div>
   );

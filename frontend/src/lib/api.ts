@@ -16,6 +16,75 @@ export type AuthMe = {
   expires_at: string;
 };
 
+/** `GET /api/v1/containers/{id}/inspect` 응답. env는 백엔드에서 이미 redact된 값이다. */
+export type ContainerInspect = {
+  id: string;
+  docker_id?: string | null;
+  name: string;
+  display_name?: string | null;
+  role?: string | null;
+  image?: string | null;
+  created?: string | null;
+  status?: string | null;
+  state?: {
+    status?: string | null;
+    running?: boolean | null;
+    paused?: boolean | null;
+    restarting?: boolean | null;
+    oom_killed?: boolean | null;
+    dead?: boolean | null;
+    exit_code?: number | null;
+    error?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+    health?: {
+      Status?: string | null;
+      FailingStreak?: number | null;
+      Log?: Array<{
+        Start?: string | null;
+        End?: string | null;
+        ExitCode?: number | null;
+        Output?: string | null;
+      }> | null;
+    } | null;
+  } | null;
+  config?: {
+    hostname?: string | null;
+    env?: string[] | null;
+    cmd?: string[] | null;
+    entrypoint?: string[] | null;
+    labels?: Record<string, string> | null;
+    working_dir?: string | null;
+  } | null;
+  host_config?: {
+    restart_policy?: { Name?: string | null; MaximumRetryCount?: number | null } | null;
+    network_mode?: string | null;
+    port_bindings?: Record<string, unknown> | null;
+    binds?: string[] | null;
+  } | null;
+  mounts?: Array<{
+    type?: string | null;
+    name?: string | null;
+    source?: string | null;
+    destination?: string | null;
+    mode?: string | null;
+    rw?: boolean | null;
+  }> | null;
+  network?: {
+    ports?: Record<string, unknown> | null;
+    networks?: Record<
+      string,
+      {
+        network_id?: string | null;
+        ip_address?: string | null;
+        gateway?: string | null;
+        mac_address?: string | null;
+        aliases?: string[] | null;
+      }
+    > | null;
+  } | null;
+};
+
 export type PublicApiKeySummary = {
   public_api_key_id: string;
   label?: string | null;
