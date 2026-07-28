@@ -2620,13 +2620,30 @@ class ComposeService:
         services = services_for_target(target)
         with c6c_deployment_lock(get_c6c_deployment_lock_path()):
             transaction, validation = self._capture_transaction_unlocked()
-            assert_manager_mutation_allowed(
+            mode = assert_manager_mutation_allowed(
                 environment=transaction.environment.effective
             )
             assert_c6c_mutation_allowed(
                 services,
                 environment=transaction.environment.effective,
             )
+            # T-044: `assert_c6c_mutation_allowed`는 target이 Map/PinVi API 런타임이 아니면
+            # production에서도 그대로 통과시킨다 — 그 target들은 개별 컨테이너
+            # start/stop/config 경로로 production에서도 정상 운영되어야 하기 때문이다(의도된
+            # 동작). 그러나 `ensure`는 target 전체(의존 서비스 다건)를 대상으로
+            # `--build`/`--force-recreate`까지 허용하는 범용 dev 부트스트랩 경로라, target과
+            # 무관하게 production에서는 전면 차단해야 한다. 지금까지는 프론트가 production
+            # 빌드에서 버튼을 숨기는 것이 유일한 방어선이었는데, 이는 브라우저 번들 속성일
+            # 뿐 백엔드 방어가 아니다 — dev 프론트를 production 백엔드에 붙이면 그대로
+            # 실행된다(T-012 적대적 리뷰에서 확인). 이 지점은 C6c target이면 위
+            # `assert_c6c_mutation_allowed`가 이미 걸러 내므로 항상 비-C6c target에서만
+            # 도달한다 — compatible-pair 워크플로는 여기서 적용 대상이 아니라 메시지에
+            # 넣지 않는다.
+            if mode == "production":
+                raise DeploymentContractError(
+                    "production ensure is not permitted; "
+                    "manage this service directly on the host instead"
+                )
             compose_path = Path(transaction.environment.compose_path)
             try:
                 baseline_unchanged = (

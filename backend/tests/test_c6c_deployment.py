@@ -7319,6 +7319,69 @@ def test_non_api_generic_mutation_is_not_blocked_by_c6c_guard(
     assert_c6c_mutation_allowed(["rustfs"], env_path="/missing/.env")
 
 
+def test_ensure_target_rejects_non_c6c_target_in_production(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T-044: 위 테스트가 보여주듯 `assert_c6c_mutation_allowed`만으로는 `storage`처럼
+    Map/PinVi API가 아닌 target의 mutation이 production에서 막히지 않는다(의도된
+    동작 — 개별 컨테이너 제어는 production에서도 정상 운영되어야 한다). 하지만 `ensure`는
+    target 전체를 `--build`/`--force-recreate`까지 허용하는 범용 dev 부트스트랩 경로라 target과
+    무관하게 production에서는 전면 차단해야 한다. 지금까지는 프론트가 production 빌드에서
+    버튼을 숨기는 것만이 유일한 방어선이었다(브라우저 번들 속성일 뿐 백엔드 방어가 아니다 —
+    dev 프론트를 production 백엔드에 붙이면 그대로 실행됐다).
+
+    `_capture_transaction_unlocked`를 통째로 mock하므로(아래) `mode`는 오직
+    `transaction.environment.effective`에서만 오고 실제 `os.environ`은 읽지 않는다 —
+    그래서 이 테스트는 `monkeypatch.setenv`가 아니라 `_production_guard_transaction`의
+    production 환경 값으로만 검증한다."""
+    transaction = _production_guard_transaction(tmp_path)
+    monkeypatch.setattr(
+        ComposeService,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    subprocess_run = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        subprocess_run,
+    )
+
+    with pytest.raises(
+        DeploymentContractError, match="production ensure is not permitted"
+    ):
+        ComposeService().ensure_target("storage")
+
+    subprocess_run.assert_not_called()
+
+
+def test_ensure_target_allows_non_c6c_target_in_local_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """production 전면 차단이 local/개발 모드의 정상 `ensure` 흐름을 막지 않는지 확인한다."""
+    service = ComposeService()
+    transaction = _frozen_external_transaction(tmp_path)
+    Path(transaction.environment.compose_path).chmod(transaction.compose_source_mode)
+    validation = SimpleNamespace(
+        system_bind_snapshots=transaction.system_bind_snapshots,
+        raw_volume_graph_hash=transaction.raw_volume_graph_hash,
+        resolved_volume_graph_hash=transaction.resolved_volume_graph_hash,
+    )
+    monkeypatch.setattr(
+        ComposeService,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, validation)),
+    )
+    ensure = Mock(return_value={"success": True})
+    monkeypatch.setattr(service, "_ensure_target_unlocked", ensure)
+
+    result = service.ensure_target("storage")
+
+    assert result == {"success": True}
+    ensure.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "args",
     [
