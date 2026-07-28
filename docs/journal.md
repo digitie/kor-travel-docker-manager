@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-07-28 (C7 WebSocket accept-then-close 종료 코드 계약 — T-042)
+
+- `kor-travel-map`의 C7 WebSocket 작업(`T-ADM-C7W` issue #806/PR #807, `T-VN-H11` issue #809)을
+  참조해 매니저 WebSocket 로직을 점검한 결과, **Map이 고친 것과 같은 결함이 그대로 있었다.**
+  `ws_status`/`ws_logs`의 거절이 `accept()` 이전에 `close(4401)`을 호출해 uvicorn(0.28.1 legacy
+  `websockets_impl`)이 HTTP 403 handshake 거절로 바꿔 보냈고, 브라우저는 `4401`이 아니라 `1006`만
+  관측했다. 즉 종료 코드 계약이 어떤 실제 client에도 도달하지 않았다.
+- 기존 `test_ws_status_requires_session`은 이를 잡지 못했다. Starlette TestClient는 ASGI
+  `websocket.close`를 그대로 되던져 pre-accept close와 accept-then-close를 **모두** 같은
+  `WebSocketDisconnect(4401)`로 보고한다 — 거짓 통과였다. 계약은 `test_ws_contract.py`에서
+  ASGI 메시지 시퀀스(`accept` → `close`)로 고정했고, 구 동작 negative control에서 6건이 실패함을
+  확인했다.
+- `C-2`(subprotocol echo)는 이식하지 않았다. 매니저는 쿠키 인증이라 client가
+  `Sec-WebSocket-Protocol`을 보내지 않고, RFC 6455는 제시되지 않은 protocol 선택을 금지한다.
+- 같은 handler의 확인된 결함도 함께 정리했다: idle container에서 client 종료 미검출로 reader
+  thread/docker socket 누수, 소진된 stream의 무한 polling, accept 후 close 없는 return,
+  event loop 위의 blocking docker/SQLite 호출, 연결 0건에도 도는 docker sweep, 살아 있는 소켓의
+  세션 재검증 부재(logout·TTL 미적용).
+- **적대적 리뷰 2명 × 2라운드.** 1라운드는 양쪽 모두 REQUEST_CHANGES였고, 재인가가
+  `asyncio.wait` timeout 기반이라 프레임마다 창이 리셋돼 keepalive를 보내는 client가 logout·TTL을
+  무한 우회하는 것을 probe로 재현했다(19회 기대 → **0회**). 프론트 `attempt`를 `onopen`에서
+  리셋해 지수 backoff가 무력화된 것, `ensure_ascii=False` 회귀도 함께 잡혔다. 2라운드에서는
+  테스트 모듈이 import 시점에 공유 env를 덮어써 34건이 실패하는 blocker를 추가로 발견했다.
+- 리뷰어 간 상충 1건(로그 스트림 thread 누수)은 직접 확인해 **기각**했다. docker-py 7.1.0의
+  `logs(stream=True)`는 generator가 아니라 `CancellableStream`을 반환하고 그 `close()`가
+  `sock.shutdown(SHUT_RDWR)`으로 park된 worker를 깨운다. n150에서 로그 소켓을 16회 열고 닫아
+  hang 0건·pool이 정확히 8에서 유지되는 것으로 재확인했다.
+- **n150 운영 HAProxy TLS 엣지 경유 실브라우저 E2E**로 계약을 검증했다. 미인증
+  `/ws/status`·`/ws/logs` 모두 `code=4401, reason=AUTH_REQUIRED, wasClean=true, data frame 0건`,
+  인증 후 알 수 없는 container_id는 `4000/INVALID_CONTAINER_ID`로 구분됐다. 로그인→대시보드
+  (18개 컨테이너, `REALTIME WS SYNC`)→로그아웃 전환도 정상이고, **로그아웃 뒤 20초간 WS 재연결
+  시도 0건**으로 과거의 403 무한 재시도 루프가 사라진 것을 확인했다.
+- **settle window 기본값은 실측으로 정했다.** 같은 엣지에서 `0.25`는 10/10, `0.0`은 12/12 모두
+  4401이었고 1006은 한 번도 없었다(거절 왕복 264~791ms → 79~373ms). uvicorn legacy
+  `websockets_impl`이 `websocket.close`를 `handshake_completed_event` 뒤에 처리해 101과 close가
+  서버 단에서 이미 직렬화되기 때문이다. Map의 `0.25`는 `websockets-sansio` 기준이라 이 스택에
+  이식되지 않는다. 기본값을 `0.0`으로 두고 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS` 조절 knob은
+  남겼다 — **uvicorn ws 구현이나 프록시 토폴로지 변경 시 재측정 필요.**
+- backend 956 passed, ruff 기존 9건 유지, 프론트 type-check/lint/build 통과.
+
+---
+
 ## 2026-07-20 (C7 Map features routes production 결선 착수 — T-040)
 
 - n150 C7 attestation에서 Manager production Map API runtime에

@@ -72,6 +72,15 @@ export function apiWsUrl(path: string): string {
   return apiUrl(path).replace(/^http/, 'ws');
 }
 
+// C7 WebSocket 종료 코드 계약 — backend api/websocket.py 및 docs/docker-management.md 참조.
+export const WS_CLOSE_AUTH_REQUIRED = 4401;
+export const WS_CLOSE_INVALID_CONTAINER = 4000;
+
+/** WebSocket 4401을 REST 401과 동일한 인증 갱신 경로로 흘려보낸다. */
+export function notifyUnauthorized(): void {
+  handleUnauthorized();
+}
+
 export async function apiFetch(path: string, init?: ApiRequestInit): Promise<Response> {
   const { redirectOnUnauthorized = true, ...fetchInit } = init ?? {};
   const response = await fetch(apiUrl(path), {

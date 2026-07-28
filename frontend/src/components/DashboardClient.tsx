@@ -29,7 +29,17 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import LoginScreen from './LoginScreen';
-import { ApiError, AuthMe, BACKEND_URL, apiJson, apiWsUrl, setUnauthorizedHandler } from '@/lib/api';
+import {
+  ApiError,
+  AuthMe,
+  BACKEND_URL,
+  WS_CLOSE_AUTH_REQUIRED,
+  WS_CLOSE_INVALID_CONTAINER,
+  apiJson,
+  apiWsUrl,
+  notifyUnauthorized,
+  setUnauthorizedHandler,
+} from '@/lib/api';
 
 // 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
 const _unusedForm = typeof useForm !== 'undefined';
@@ -197,7 +207,8 @@ export default function DashboardClient() {
       }
     },
     retry: false,
-    refetchInterval: false,
+    refetchInterval: 5 * 60_000, // 살아 있는 소켓만으로 세션이 무한 연장되지 않게 주기 재확인
+    refetchOnWindowFocus: true,
     staleTime: 60_000,
   });
   const isAuthenticated = auth?.authenticated === true;
@@ -227,6 +238,7 @@ export default function DashboardClient() {
   const [isLogModalOpen, setIsLogModalOpen] = useState<boolean>(false);
   const [logContainerId, setLogContainerId] = useState<string | null>(null);
   const [liveLogs, setLiveLogs] = useState<string>('');
+  const [isLogWsOpen, setIsLogWsOpen] = useState<boolean>(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   // Performance Chart Modal States
@@ -312,20 +324,54 @@ export default function DashboardClient() {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    let ws: WebSocket;
-    let reconnectTimeout: NodeJS.Timeout;
+    let ws: WebSocket | undefined;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
+    let attempt = 0;
+    let framesThisSocket = 0;
+    let lastMessageAt = Date.now();
+    // 최초 프레임은 서버가 docker sweep을 끝낸 뒤에야 온다. 그 지연을 watchdog으로 재면
+    // 느리지만 정상인 서버에서 소켓을 영영 유지하지 못한다. 최초 프레임 전에는 넉넉한
+    // grace를 주고, 그 뒤부터 broadcast 간격(2초) 기준으로 반개방을 감시한다.
+    const FIRST_FRAME_GRACE_MS = 30000;
+    const IDLE_LIMIT_MS = 8000;
+
+    const detach = (socket: WebSocket) => {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+    };
 
     const connectWS = () => {
       if (cancelled) return;
       const wsUrl = apiWsUrl('/api/v1/ws/status');
-      ws = new WebSocket(wsUrl);
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch (err) {
+        // SecurityError/SyntaxError는 설정 오류이지 일시적 장애가 아니다. 재시도하지 않고
+        // HTTP 폴백 폴링(isWsConnected=false)에 맡긴다.
+        console.error('WebSocket construction failed for', wsUrl, err);
+        return;
+      }
+      ws = socket;
 
-      ws.onopen = () => {
+      socket.onopen = () => {
+        framesThisSocket = 0;
+        lastMessageAt = Date.now();
         setIsWsConnected(true);
       };
 
-      ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        // backoff는 handshake 성립이 아니라 "실제로 동작하는 소켓"에서만 리셋한다.
+        // onopen에서 리셋하면 서버가 항상 accept하는 계약 탓에 backoff가 영원히
+        // attempt=0에 머문다. 첫 프레임만으로 리셋해도 부족하다 — ws_status는 accept
+        // 직후 초기 상태를 한 번 보내므로, 크래시 루프 중인 서버도 매 연결마다 1프레임을
+        // 흘려 초당 1회 재연결이 된다. 2프레임(초기 + broadcast 1회)을 받아야 리셋한다.
+        framesThisSocket += 1;
+        if (framesThisSocket >= 2) attempt = 0;
+        lastMessageAt = Date.now();
         try {
           const message = JSON.parse(event.data);
           if (message.type === 'status' && message.containers) {
@@ -363,29 +409,49 @@ export default function DashboardClient() {
         }
       };
 
-      ws.onclose = () => {
-        // Multi-setState is fine in standard handlers, but let's reset cleanly
+      socket.onclose = (event) => {
         setIsWsConnected(false);
         setWsContainers(null);
-        // 미인증 전환/언마운트(cancelled) 후에는 재연결하지 않는다 — 로그아웃 시 서버가 WS를
-        // 닫으면서 cleanup 이후 onclose가 재연결을 거는 403 무한 루프를 방지.
-        if (!cancelled) {
-          reconnectTimeout = setTimeout(connectWS, 3000); // Retry every 3 seconds
+        // 미인증 전환/언마운트(cancelled) 후에는 재연결하지 않는다.
+        if (cancelled) return;
+        // 4401은 재시도로 회복되지 않는 종단 상태다. REST 401과 같은 경로로 인증 상태를
+        // 갱신해 LoginScreen으로 전환하고 재연결을 멈춘다. 이 분기가 없으면 서버의
+        // accept-then-close 수정이 관측되지 않는다.
+        if (event.code === WS_CLOSE_AUTH_REQUIRED) {
+          notifyUnauthorized();
+          return;
         }
+        const delay = Math.min(30000, 1000 * 2 ** attempt) * (0.5 + Math.random() * 0.5);
+        attempt += 1;
+        reconnectTimeout = setTimeout(connectWS, delay);
       };
 
-      ws.onerror = (err) => {
+      socket.onerror = (err) => {
         console.error('WebSocket error:', err);
-        ws.close();
+        socket.close();
       };
     };
 
     connectWS();
 
+    // 반개방 소켓 감시: 서버는 2초마다 상태를 보낸다. 프레임이 한 건도 오지 않은
+    // 동안에는 초기 docker sweep 지연을 감안해 grace를 주고, 그 뒤로는 무프레임
+    // 8초에 소켓을 닫아 재연결 경로와 폴백 폴링을 다시 켠다.
+    const watchdog = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const limit = framesThisSocket === 0 ? FIRST_FRAME_GRACE_MS : IDLE_LIMIT_MS;
+      if (Date.now() - lastMessageAt > limit) ws.close();
+    }, 3000);
+
     return () => {
       cancelled = true;
-      if (ws) ws.close();
+      clearInterval(watchdog);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (ws) {
+        // 정리 후 stale onclose가 4401 종단 분기를 오발동하지 않게 핸들러를 먼저 뗀다.
+        detach(ws);
+        ws.close();
+      }
     };
   }, [isAuthenticated]);
 
@@ -480,9 +546,19 @@ export default function DashboardClient() {
     if (!logContainerId || !isLogModalOpen) return;
 
     const wsUrl = apiWsUrl(`/api/v1/ws/logs/${logContainerId}`);
-    const ws = new WebSocket(wsUrl);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (err) {
+      console.error('Log WebSocket construction failed for', wsUrl, err);
+      setLiveLogs('\n[Error] 로그 스트림 주소가 올바르지 않습니다.\n');
+      return;
+    }
 
     setLiveLogs('--- 실시간 로그 스트리밍을 시작합니다 ---\n');
+    setIsLogWsOpen(false);
+
+    ws.onopen = () => setIsLogWsOpen(true);
 
     ws.onmessage = (event) => {
       try {
@@ -504,12 +580,33 @@ export default function DashboardClient() {
       }
     };
 
-    ws.onclose = () => {
+    ws.onerror = (err) => {
+      console.error('Log WS error:', err);
+      ws.close();
+    };
+
+    ws.onclose = (event) => {
+      setIsLogWsOpen(false);
+      // 로그 소켓도 종료 코드를 소비해 원인을 구분한다.
+      if (event.code === WS_CLOSE_AUTH_REQUIRED) {
+        setLiveLogs((prev) => prev + '\n--- 인증이 만료되어 로그 스트리밍이 종료되었습니다 ---\n');
+        notifyUnauthorized();
+        return;
+      }
+      if (event.code === WS_CLOSE_INVALID_CONTAINER) {
+        setLiveLogs((prev) => prev + '\n--- 알 수 없는 컨테이너 ID입니다 ---\n');
+        return;
+      }
       setLiveLogs((prev) => prev + '\n--- 스트리밍 연결이 닫혔습니다 ---\n');
     };
 
     return () => {
-      if (ws) ws.close();
+      // 이전 컨테이너의 종료 배너가 새 컨테이너 버퍼에 섞이지 않게 핸들러를 먼저 뗀다.
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      ws.close();
     };
   }, [logContainerId, isLogModalOpen]);
 
@@ -542,6 +639,7 @@ export default function DashboardClient() {
   };
 
   const openLogModal = (id: string) => {
+    setLiveLogs(''); // 이전 컨테이너 로그가 한 프레임 비치지 않게 먼저 비운다
     setLogContainerId(id);
     setIsLogModalOpen(true);
   };
@@ -991,8 +1089,10 @@ export default function DashboardClient() {
             <div className="pt-4 text-[10px] text-secondary shrink-0 z-10 flex justify-between items-center">
               <span className="font-light">* 최신 3,000줄의 로그가 메모리에 버퍼링되며 자동으로 아래로 스크롤됩니다.</span>
               <span className="flex items-center gap-1 font-bold uppercase tracking-[0.05em]">
-                <span className="w-1.5 h-1.5 rounded-full bg-ok animate-ping" />
-                WS 스트리밍 활성화됨
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${isLogWsOpen ? 'bg-ok animate-ping' : 'bg-warn'}`}
+                />
+                {isLogWsOpen ? 'WS 스트리밍 활성화됨' : 'WS 스트리밍 종료됨'}
               </span>
             </div>
           </div>

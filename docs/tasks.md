@@ -37,6 +37,7 @@
 | **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
 | **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
+| **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | `[x]` | 2026-07-28 | Map `T-ADM-C7W`/`T-VN-H11` 참조, n150 프록시 경유 실브라우저에서 4401 확인 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -354,6 +355,27 @@
       recovery 실패·mixed runtime·manifest 불확정이면 관련 reference를 모두 보존한다.
 - [ ] 단일 적대적 리뷰와 CI green 뒤 n150 exact Manager로 compatible-pair를 재배포하고 실제 rollback
       가용성 및 C7 strict live E2E를 통과하면 issue #72를 닫고 완료 이력으로 옮긴다.
+
+### T-042: C7 WebSocket 종료 코드 계약(accept-then-close) 결선
+
+`kor-travel-map`의 `T-ADM-C7W`(issue #806 / PR #807)와 `T-VN-H11`(issue #809)이 고친 것과
+같은 결함이 매니저에도 있었다. `ws_status`/`ws_logs`의 거절이 `accept()` 이전에 `close()`를
+호출해 uvicorn이 HTTP 403 handshake 거절로 바꿔 보냈고, 브라우저는 `4401`이 아니라 `1006`만
+관측했다. 기존 `test_ws_status_requires_session`은 TestClient가 ASGI 레벨이라 통과하고 있었다.
+
+- [x] 세 pre-accept close를 accept-then-close로 전환한다 (C-1)
+- [x] settle window를 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS`로 env 튜너블·clamp 처리한다 (C-3)
+- [x] accept 실패 뒤 close 금지와 cancellation-shield child task를 고정한다 (C-4/C-5)
+- [x] 프론트가 4401/4000을 소비해 재시도를 멈추고 LoginScreen으로 전환한다 (C-8)
+- [x] ASGI 메시지 시퀀스 회귀와 Origin 거절 회귀를 추가한다(구 코드 대비 negative control 확인)
+- [x] 같은 handler의 확인된 누수를 함께 고친다: idle container에서 client 종료 미검출,
+      소진된 stream의 무한 polling, accept 후 close 없는 return, event loop 위의 blocking
+      docker/DB 호출, 연결 0건에도 도는 docker sweep
+- [x] 운영 프록시 경유 실브라우저에서 `CloseEvent.code=4401`, `wasClean=true`를 확인하고
+      측정된 settle 기본값을 journal에 기록한다 — n150 HAProxy 엣지에서 `0.25` 10/10,
+      `0.0` 12/12 모두 4401(1006 0건). 기본값을 실측값 `0.0`으로 확정하고 knob은 유지
+- [x] 적대적 리뷰어 2명 × 2라운드 반영 — 재인가 우회 blocker, env 오염 blocker,
+      backoff 무력화, 인코딩 회귀를 수정하고 mutation/negative control로 회귀 고정
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 
