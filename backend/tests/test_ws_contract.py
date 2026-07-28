@@ -24,7 +24,11 @@ from kor_travel_docker_manager.services.auth_service import hash_password_for_en
 
 FRONTEND_ORIGIN = "http://localhost:12905"
 os.environ["KTDM_ADMIN_USERNAME"] = "admin"
-os.environ["KTDM_ADMIN_PASSWORD_HASH"] = hash_password_for_env("ad.min")
+# 이 모듈은 로그인을 하지 않는다. app 기동에 필요한 형식만 갖추면 되므로 운영 비밀번호와
+# 같은 값을 쓰지 않는다(런북: 테스트 비번이 prod 관리자 비번과 같아 전파 금지).
+os.environ["KTDM_ADMIN_PASSWORD_HASH"] = hash_password_for_env(
+    "ws-contract-tests-never-log-in"
+)
 os.environ["KTDM_SESSION_SECRET"] = "test-session-secret-minimum-32-bytes-value"
 os.environ["KTDM_FRONTEND_ORIGINS"] = FRONTEND_ORIGIN
 
