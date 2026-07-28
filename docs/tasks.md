@@ -26,7 +26,7 @@
 | **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[/]` | - | T-042 리뷰 후속, PR #76 |
 | **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
 | **T-012** | 대시보드 상세 패널 확장 | `[/]` | - | inspect 모달·5개 탭·dev ensure 버튼, 비밀 redaction 보강, 실브라우저 검증 |
-| **T-044** | ensure 라우트의 production 서버측 차단 | `[ ]` | - | T-012 리뷰 발견: 비-C6c target은 production에서도 통과한다 |
+| **T-044** | ensure 라우트의 production 서버측 차단 | `[x]` | 2026-07-28 | `ComposeService.ensure_target`이 target과 무관하게 production을 전면 차단, 적대적 리뷰 2명 + 검증 통과 |
 
 ---
 
@@ -131,9 +131,33 @@ prom·geo·conc는 통과한다.
 번들의 속성이지 백엔드의 속성이 아니다. `npm run dev` 프론트를 운영 백엔드에 붙이면
 버튼이 보이고 실제로 실행된다.
 
-- [ ] `/targets/{target}/ensure`가 production에서 명시 승인 없이는 거부하도록 한다.
-- [ ] 또는 서버가 보고하는 배포 환경을 UI에 내려 `NODE_ENV` 대신 그것으로 게이팅한다.
-- [ ] 음성 회귀 테스트로 고정한다(production + 비-C6c target → 거부).
+- [x] `ComposeService.ensure_target`이 `assert_manager_mutation_allowed`의 반환값(`mode`)을
+      받아, `assert_c6c_mutation_allowed` 호출 직후(`c6c_deployment_lock` 안, baseline 검사와
+      첫 Docker subprocess보다 먼저) `mode == "production"`이면 target·service 구성과 무관하게
+      전면 차단하도록 했다. `assert_c6c_mutation_allowed`·`assert_compose_mutation_allowed`·
+      `control_container`·`update_container_config`·`reset_container_config`는 건드리지
+      않는다 — 그 경로들의 "비-C6c target은 production에서도 허용" 동작은 개별 컨테이너
+      제어를 위한 의도된 동작이라 범위 밖이다(`ensure`만 target 전체를
+      `--build`/`--force-recreate`+init step까지 허용하는 범용 dev 부트스트랩이라 다르다).
+      `DeploymentContractError` → 기존과 동일하게 HTTP 409, 라우트 코드 변경 없음.
+      CLI(`ktdctl ensure`)도 같은 메서드를 호출하므로 동일하게 막힌다.
+- [x] 음성 회귀 테스트 2건 추가: production + 비-C6c target(`storage`) → 거부(`subprocess.run`
+      미호출까지 확인), local/개발 모드에서는 동일 target의 정상 `ensure` 흐름이 막히지
+      않는지 양성 대조로 확인. 기존 `test_production_generic_mutation_guard_rejects_every_api_entrypoint`
+      (C6c target `map`은 `assert_c6c_mutation_allowed`로 이미 차단)와 공존하며 서로
+      가리지 않는 것도 확인.
+- [x] **적대적 리뷰 2명 + 독립 검증 통과.** 리뷰어 1은 `mode` 판정이
+      `_validate_mutation_environment`(local/production만 반환하는 fail-closed 계약)에
+      전적으로 의존해 우회 불가능함을, `ensure_target`/`_ensure_target_unlocked`의 호출자가
+      API 라우트와 CLI 단 둘뿐임을(다른 라우트·WS·스케줄러 경로 없음) 확인했다. 리뷰어 2는
+      두 production 차단(C6c 전용·신규 전면 차단)이 서로 마스킹하지 않고 공존함을, 실제로
+      의존하는 production `ensure` 사용처가 문서상 없음을 확인했다. 두 리뷰 모두 raise 메시지가
+      비-C6c target에서만 도달하는 이 지점에 compatible-pair(Map/PinVi 전용) 문구를 넣은 것이
+      부적절하다고 지적해 메시지를 단순화했고("manage this service directly on the host
+      instead"), 테스트 하나에 실제로는 읽히지 않는 `monkeypatch.setenv` 호출이 남아 있던 것도
+      제거했다. 검증 단계에서 두 리뷰의 모든 구체적 주장을 코드에서 직접 재확인(CONFIRMED)했고
+      우회·회귀는 발견되지 않았다. backend 1049 passed, ruff 기존 9건 유지, 변경 파일 mypy
+      clean. 백엔드 정책 변경만이라 UI 변경이나 실브라우저 E2E는 필요 없다.
 
 ### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선
 

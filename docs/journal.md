@@ -4,6 +4,53 @@
 
 ---
 
+## 2026-07-28 (T-044: ensure 라우트 production 서버측 차단)
+
+T-012 적대적 리뷰가 남긴 후속 항목이다. `POST /targets/{target}/ensure`(`ComposeService.ensure_target`)는
+`db`·`storage`·`gra`·`cadv`·`prom`·`geo`·`conc`처럼 Map/PinVi API 런타임이 아닌 target에 대해서는
+production에서도 막히지 않았다 — `assert_c6c_mutation_allowed`는 대상 service가 C6c runtime과
+겹치지 않으면 그대로 반환하는데(이는 개별 컨테이너 start/stop/config가 production에서도 정상
+동작해야 하므로 의도된 것이다), `ensure`는 그런 개별 제어가 아니라 target 전체(의존 서비스
+다건)를 `--build`/`--force-recreate`+init step까지 허용하는 범용 dev 부트스트랩 경로라서 다르다.
+지금까지 유일한 방어선은 프론트가 production 빌드에서 버튼 자체를 숨기는 것뿐이었는데, 이는
+브라우저 번들의 속성이지 백엔드의 속성이 아니다 — `npm run dev` 프론트를 운영 백엔드에 붙이면
+버튼이 보이고 실제로 실행됐다.
+
+**수정**: `ensure_target`이 `assert_manager_mutation_allowed`의 반환값(`mode`)을 받아,
+`assert_c6c_mutation_allowed` 호출 직후(`c6c_deployment_lock` 안, compose baseline 검사와 첫
+Docker subprocess보다 먼저) `mode == "production"`이면 target·service 구성과 무관하게 전면
+차단하도록 했다. `assert_c6c_mutation_allowed` 자체나 `assert_compose_mutation_allowed`,
+`control_container`/`update_container_config`/`reset_container_config`는 건드리지 않았다 —
+그 경로들이 비-C6c target을 production에서도 허용하는 것은 의도된 동작이고 이 태스크의 범위
+밖이다. `DeploymentContractError`를 재사용해 기존과 동일하게 HTTP 409로 매핑되므로 라우트 코드
+변경이 없고, CLI(`ktdctl ensure`)도 같은 메서드를 호출하므로 자동으로 함께 막힌다.
+
+새 회귀 테스트 2건: production + 비-C6c target(`storage`) → 거부(`subprocess.run` 미호출까지
+확인), local/개발 모드에서는 정상 `ensure` 흐름이 막히지 않는 것을 양성 대조로 확인. 기존
+`test_production_generic_mutation_guard_rejects_every_api_entrypoint`(C6c target `map`은
+`assert_c6c_mutation_allowed`가 이미 차단)와 두 차단이 서로 가리지 않고 공존하는 것도 함께
+재확인했다.
+
+**적대적 리뷰 2명(ultracode on, Workflow 도구로 병렬 실행) + 독립 검증**: 리뷰어 1(보안
+완결성/mode 판정/상태 코드 담당)은 `_validate_mutation_environment`가 `local`/`production`
+외에는 절대 반환하지 않는 fail-closed 계약임을 확인해 새 검사를 우회할 제3의 값이 없음을,
+`ensure_target`/`_ensure_target_unlocked`의 호출자가 API 라우트와 CLI 단 둘뿐임을(다른 라우트·
+WebSocket·스케줄러 경로에서 같은 "target 전체 up --build" 동작에 도달할 방법이 없음) 코드
+전수 추적으로 확인했다. 리뷰어 2(테스트 품질/회귀 위험 담당)는 두 production 차단(C6c
+전용·신규 전면 차단)이 서로 마스킹하지 않고 공존함을, 문서상 production에서 `ensure`에 실제로
+의존하는 사용처가 없음을 확인했다. 두 리뷰 모두 새 raise 메시지가 "compatible-pair 워크플로"를
+언급한 것을 지적했다 — 이 지점은 C6c target이면 이미 위에서 걸러지므로 항상 비-C6c target에서만
+도달하는데, 그 대안은 이 지점에서 결코 적용되지 않는다. 메시지를 "manage this service directly
+on the host instead"로 단순화했다. 테스트 하나에 실제로는 읽히지 않는(트랜잭션을 통째로 mock해
+`os.environ`을 안 읽는) `monkeypatch.setenv` 호출이 남아 있던 것도 제거했다. 검증 단계(별도
+에이전트, xhigh effort)에서 두 리뷰의 모든 구체적 주장을 코드에서 직접 재확인(CONFIRMED)했고
+우회나 회귀는 발견되지 않았다 — "핵심 수정은 그대로 merge해도 안전하다"는 결론.
+
+backend 1049 passed(기존 1047 + 신규 2), ruff 기존 9건 유지, 변경 파일 mypy clean. 백엔드 정책
+변경만이고 UI 표면이 없어 실브라우저 E2E는 수행하지 않았다.
+
+---
+
 ## 2026-07-28 (T-011 적대적 리뷰 반영 — credential 스캔 우회 2건, React key 포커스 유실)
 
 T-011 구현 직후 적대적 리뷰어 2명(Agent 도구 병렬 실행, 이 시점 ultracode는 off라서 Workflow
