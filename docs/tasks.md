@@ -22,10 +22,8 @@
 | **T-018** | prod endpoint 문서 redaction | `[x]` | 2026-06-23 | `kor-travel-map` #508 동일 패턴 반영 |
 | **T-019** | 관리자 로그인·세션·감사 로그·공개 API 키 관리 | `[x]` | 2026-06-23 | `kor-travel-geo` PR #399 패턴 반영 |
 | **T-020** | PR #36 사후 리뷰 + fix-forward(보안 테스트 보강·감사 retention·CORS·프론트 a11y·utcnow 정리) | `[x]` | 2026-06-24 | 리뷰 코멘트, PR #37 머지, prod 배포·인증 검증 완료 |
-| **T-021** | PR #36 후속 하드닝(신뢰 프록시 시크릿·brute-force durable·공개키 DB 직접조회·나머지 모달 a11y) | `[/]` | - | AUTH-3/AUTH-6/APIKEY-1/FE-4, `fix/pr36-followups-2` PR, prod 배포 후 머지 |
 | **T-023** | concierge PR #127 참고 공개도메인 Secure 쿠키 보강(`_is_https`가 https 공개 origin 인식) | `[x]` | 2026-06-24 | 브라우저 E2E로 로그인 정상 확인(403 무), Secure 플래그 PR #40 머지·prod 검증 |
 | **T-024** | 로그아웃/세션만료 시 LoginScreen 전환 회귀 수정(auth-me 401→authenticated:false) | `[x]` | 2026-06-24 | PR #37 FE-2 회귀, 브라우저 E2E로 발견·PR #41 머지 |
-| **T-025** | 배포 런북(`deploy-runbook.local.md`) + push 전 보안 감사 절차 — concierge 스타일 정렬 | `[/]` | - | 민감 런북(gitignore)·AGENTS.md 절차·DO NOT #13/#14, 각 worktree 복사 |
 | **T-029** | Concierge DB read 키를 Map Dagster에 단일 source로 주입 | `[x]` | 2026-07-13 | n150 단일 source 전환·cursor/수집기·권한·로그인 smoke 및 구 static 제거 완료 |
 | **T-030** | Map OpiNet·KREX provider 키 compose 보간 drift 수정 | `[x]` | 2026-07-13 | 현재 env 이름·수집 서비스 전용 주입·API 제거 계약 테스트 고정 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
@@ -298,7 +296,7 @@
 - [x] login `next`, 로그인 후 보호 GET, logout 후 재차단 GET을 단일 `/ops/datasets` 정본으로 묶는다.
 - [x] auth lifecycle 단위 테스트와 Docker 관리 문서를 같은 경로로 정렬한다.
 - [x] 단일 적대적 리뷰 P0~P2 없음 판정과 backend 888개, focused 800개, Ruff, strict mypy gate를 통과한다.
-- [ ] PR을 병합한다.
+- [x] PR을 병합한다. (PR #67, 2026-07-20 merged)
 - [ ] n150 compatible-pair capture에서 실제 보호 페이지 200과 logout 후 재차단을 확인한다.
 
 ### T-039: C6c PinVi login SSR shell 판정 정렬
@@ -314,7 +312,8 @@
 - [x] positive SSR shell과 form 포함 shell, route chunk가 없는 generic fallback, 다른 route chunk,
       status/content-type/empty-body 오류를 focused 단위 테스트로 고정한다.
 - [x] 같은 단일 적대적 reviewer의 P0~P2 없음 승인 뒤에만 focused/full test와 Ruff/mypy를 실행한다.
-- [ ] 최신 main rebase·CI green 뒤 n150 compatible-pair capture와 최종 Playwright login form을 확인한다.
+- [x] 최신 main rebase·CI green을 통과한다. (PR #69, 2026-07-20 merged)
+- [ ] n150 compatible-pair capture와 최종 Playwright login form을 확인한다.
 
 ### T-038: Map destructive production 명시 승인 결선
 
@@ -339,22 +338,35 @@
       계약과 음성 회귀 테스트로 고정한다.
 - [x] focused 42개, C6c·Docker config 849개, backend 907개, Ruff baseline 제외, strict mypy,
       canonical Compose config gate를 통과한다.
-- [ ] 단일 적대적 리뷰와 CI를 통과한다.
+- [x] 단일 적대적 리뷰와 CI를 통과한다. (PR #71, 2026-07-20 merged)
 - [ ] n150 compatible-pair recapture와 C7 live E2E에서 feature 관리 REST를 확인한 뒤 issue #70을 닫는다.
 
 ### T-041: C6c rollback image retention 보장
 
 - [x] n150에서 `pinvi-pair deploy --build` 성공 직후 새 manifest의 active 5개는 존재하지만
       rollback으로 기록된 직전 active 5개 image ID가 모두 사라지는 문제를 재현하고 issue #72로 기록한다.
-- [ ] build/no-build deploy와 rollback은 mutation 전 manifest active/rollback 합집합을, capture/deploy는
+- [x] build/no-build deploy와 rollback은 mutation 전 manifest active/rollback 합집합을, capture/deploy는
       candidate를 service+전체 image SHA 기반 예약 namespace에 보존하고 exact ID를 재검증한다.
-- [ ] retention 실패는 첫 container mutation 전에 중단한다. manifest commit 뒤 새 rollback 밖 reference를
+      (PR #73, `c6c_image_retention.py`의 `ensure_pair_references`/`require_empty_retention_namespace`/
+      `validate_retention_namespace_is_reserved`)
+- [x] retention 실패는 첫 container mutation 전에 중단한다. manifest commit 뒤 새 rollback 밖 reference를
       정리하고, cleanup residue가 있으면 다음 mutation 전에 해소해 과거 세대가 누적되지 않게 한다.
-- [ ] moving tag rollover, 일부 tag 실패·wrong-ID collision, SIGKILL cut point, candidate 실패 정리,
+      (`test_stale_retention_cleanup_failure_blocks_candidate_and_container_mutation`)
+- [/] moving tag rollover, 일부 tag 실패·wrong-ID collision, SIGKILL cut point, candidate 실패 정리,
       active=rollback dedupe, no-build·rollback·capture, post-commit cleanup pending과 다음 mutation 차단을
       실행형 회귀 테스트로 고정한다.
-- [ ] mutation 전 실패 또는 시작 manifest 확정+previous runtime 복구 검증 성공 때만 candidate를 정리하고,
+      **7개 시나리오 중 6개 완료. `SIGKILL cut point`만 미커버.** 확인 결과 기존 `SIGKILL` 매치는
+      container 대상 `docker kill -s SIGKILL`이고, retention 진행 중 프로세스가 죽는 cut point를
+      재현하는 테스트는 없다(`cut_point|interrupted|crash|abrupt` 검색 0건). 나머지 6개 대응:
+      rollover `test_moving_service_tag_rollover_keeps_previous_content_reference`,
+      일부 tag 실패 `test_partial_tag_failure_does_not_remove_existing_references`,
+      wrong-ID collision `test_existing_content_reference_never_retargets_another_image`,
+      candidate 실패 정리 `test_candidate_retention_failure_cleans_only_to_start_manifest_before_stop`,
+      dedupe `test_active_equals_rollback_deduplicates_five_references`,
+      post-commit cleanup pending `active_manifest_committed_retention_cleanup_pending`.
+- [x] mutation 전 실패 또는 시작 manifest 확정+previous runtime 복구 검증 성공 때만 candidate를 정리하고,
       recovery 실패·mixed runtime·manifest 불확정이면 관련 reference를 모두 보존한다.
+      (`test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair`)
 - [ ] 단일 적대적 리뷰와 CI green 뒤 n150 exact Manager로 compatible-pair를 재배포하고 실제 rollback
       가용성 및 C7 strict live E2E를 통과하면 issue #72를 닫고 완료 이력으로 옮긴다.
 
