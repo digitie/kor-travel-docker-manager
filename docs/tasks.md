@@ -23,7 +23,7 @@
 | **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
 | **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
-| **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[/]` | - | T-042 리뷰 후속, PR #76 |
+| **T-043** | WS 인가 동시성 상한 + 프론트 배포 preflight | `[x]` | 2026-07-28 | T-042 리뷰 후속(PR #76), n150 배포 후 1013 shed 실측(300 동시 접속 중 179건 shed) 및 preflight 확인 완료 |
 | **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
 | **T-012** | 대시보드 상세 패널 확장 | `[x]` | 2026-07-28 | inspect 모달·5개 탭·dev ensure 버튼, 비밀 redaction 보강, 적대적 리뷰 2명 반영, 실브라우저 검증 완료 (PR #79) |
 | **T-044** | ensure 라우트의 production 서버측 차단 | `[x]` | 2026-07-28 | `ComposeService.ensure_target`이 target과 무관하게 production을 전면 차단, 적대적 리뷰 2명 + 검증 통과 |
@@ -445,7 +445,15 @@ T-042의 적대적 리뷰가 남긴 두 항목이다. accept-then-close 계약�
 - [x] 적대적 리뷰 2명 반영 — 잘못된 위협 모델(미인증 peer는 SQLite에 도달하지 못한다),
       shed 경로가 더 비쌌던 문제(거절당 로그 write), `--limit-concurrency` 오권고,
       counter 증가를 검증하지 않던 테스트 공백을 모두 수정
-- [ ] n150 배포 후 1013 shed 동작과 preflight를 운영에서 확인한다
+- [x] n150 배포 후 1013 shed 동작과 preflight를 운영에서 확인했다. `backend/src`·
+      `frontend/src`를 rsync(보존 파일 제외)한 뒤 백엔드 프로세스와 프론트
+      `next start -p 12905` 프로세스 그룹만(호스트에 공존하는 다른 앱들은 미접촉)
+      재기동했다(`/health` 200, `next start` `Ready in 947ms`). `scripts/verify-frontend-toolchain.sh`
+      실행 결과 `툴체인 정상`. 실제 production `/api/v1/ws/status`에 유효한 Origin
+      헤더로 300개 동시 미인증 WebSocket 연결을 발생시켜 관측: `4401`(AUTH_REQUIRED) 121건,
+      `1013`(TRY_AGAIN_LATER, shed) 179건 — 기본 상한(64)을 넘는 동시 인가 시도가 정확히
+      shed되는 것을 실측으로 확인했다. 테스트 뒤 `/health` 200 유지, 다른 컨테이너 전부
+      기존 uptime 그대로 영향 없음을 확인했다.
 
 
 
