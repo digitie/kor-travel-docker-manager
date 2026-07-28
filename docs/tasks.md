@@ -37,7 +37,7 @@
 | **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
 | **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
 | **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
-| **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | `[/]` | - | Map `T-ADM-C7W`/`T-VN-H11` 참조, 브라우저가 1006 대신 4401을 관측 |
+| **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | `[x]` | 2026-07-28 | Map `T-ADM-C7W`/`T-VN-H11` 참조, n150 프록시 경유 실브라우저에서 4401 확인 |
 | **T-012** | 대시보드 상세 패널 확장 | `[ ]` | - | inspect, mounts, networks, redacted env를 UI에 연결 |
 | **T-220** | `kor-travel-concierge` provider 상세 구현 및 과거 명칭 제거 | `[x]` | 2026-06-13 | 공식 프로젝트명 전환 완료 |
 | **T-221** | `kor-travel-geo` DB명·환경변수·Docker 이름·Prometheus scrape 계약 동기화 | `[x]` | 2026-06-13 | `kor_travel_geo`, `KOR_TRAVEL_GEO_*`, `KTG_*`, `kor-travel-geo-*` 기준 반영 |
@@ -371,9 +371,11 @@
 - [x] 같은 handler의 확인된 누수를 함께 고친다: idle container에서 client 종료 미검출,
       소진된 stream의 무한 polling, accept 후 close 없는 return, event loop 위의 blocking
       docker/DB 호출, 연결 0건에도 도는 docker sweep
-- [ ] 운영 프록시 경유 실브라우저에서 `CloseEvent.code=4401`, `wasClean=true`를 확인하고
-      측정된 settle 기본값을 journal에 기록한다
-- [ ] 적대적 리뷰어 2명 승인 뒤 병합한다
+- [x] 운영 프록시 경유 실브라우저에서 `CloseEvent.code=4401`, `wasClean=true`를 확인하고
+      측정된 settle 기본값을 journal에 기록한다 — n150 HAProxy 엣지에서 `0.25` 10/10,
+      `0.0` 12/12 모두 4401(1006 0건). 기본값을 실측값 `0.0`으로 확정하고 knob은 유지
+- [x] 적대적 리뷰어 2명 × 2라운드 반영 — 재인가 우회 blocker, env 오염 blocker,
+      backoff 무력화, 인코딩 회귀를 수정하고 mutation/negative control로 회귀 고정
 
 ### T-019: 관리자 로그인·세션·감사 로그·공개 API 키 관리
 

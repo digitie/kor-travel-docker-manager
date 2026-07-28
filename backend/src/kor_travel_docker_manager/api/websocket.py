@@ -35,8 +35,19 @@ _WS_HANDSHAKE_TIMEOUT_SECONDS = 1.0
 _REJECT_CLOSE_TIMEOUT_SECONDS = 0.1
 
 # accept(101)과 close frame 사이 settle 대기(초). 배포 토폴로지별로 env로 튜닝한다.
+#
+# 기본값 0.0은 추정이 아니라 실측 결과다. 운영 HAProxy TLS 엣지를 경유한 실제 Chromium
+# 으로 0.25에서 10/10, 0.0에서 12/12 모두 `code=4401, wasClean=true, data frame 0건`을
+# 관측했고 1006은 한 번도 나오지 않았다(거절 왕복 264~791ms → 79~373ms).
+# 근거: uvicorn 0.28.1의 legacy websockets_impl은 `websocket.close`를
+# `handshake_completed_event.wait()` 뒤에 처리하므로 101과 close frame이 서버 단에서
+# 이미 직렬화된다. Map(T-VN-H11)이 0.25가 필요했던 것은 websockets-sansio 구현이라
+# 그 수치는 이 스택에 그대로 이식되지 않는다.
+#
+# 다만 uvicorn의 ws 구현을 바꾸거나(sansio 등) 프록시 토폴로지가 달라지면 coalescing
+# 위험이 되살아난다. 그때는 이 env로 올리고 반드시 실브라우저로 재측정한다.
 _ACCEPT_CLOSE_SETTLE_ENV = "KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS"
-_DEFAULT_ACCEPT_CLOSE_SETTLE_SECONDS = 0.25
+_DEFAULT_ACCEPT_CLOSE_SETTLE_SECONDS = 0.0
 _MAX_ACCEPT_CLOSE_SETTLE_SECONDS = 5.0
 
 # 살아 있는 연결의 세션 재검증 주기(초).

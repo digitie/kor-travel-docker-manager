@@ -235,18 +235,23 @@ def test_reject_close_survives_outer_cancellation():
 
 # --- settle window ------------------------------------------------------------------
 
+# 기본값을 모듈에서 읽는다. 하드코딩하면 기본값 변경 시 이 테스트가 조용히 무의미해진다.
+_DEFAULT_SETTLE = ws_mod._DEFAULT_ACCEPT_CLOSE_SETTLE_SECONDS
+
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        (None, 0.25),
-        ("", 0.25),
-        ("   ", 0.25),
-        ("abc", 0.25),
+        # 미설정·공백·파싱 불가는 모듈 기본값(실측으로 정한 0.0)으로 떨어진다.
+        (None, _DEFAULT_SETTLE),
+        ("", _DEFAULT_SETTLE),
+        ("   ", _DEFAULT_SETTLE),
+        ("abc", _DEFAULT_SETTLE),
         ("-1", 0.0),
         ("0", 0.0),
         ("0.01", 0.01),
-        ("99", 5.0),
+        ("0.25", 0.25),
+        ("99", 5.0),  # 상한 clamp
     ],
 )
 def test_accept_close_settle_seconds_resolver(monkeypatch, raw, expected):

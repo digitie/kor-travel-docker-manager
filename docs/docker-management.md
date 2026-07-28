@@ -46,10 +46,15 @@
 | 정상 종료 | `close(1000)` | `code=1000` |
 
 - accept가 실패하면 close를 보내지 않는다(다시 pre-handshake 거절로 퇴화한다).
-- accept(101)과 close frame 사이에 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS`(기본 `0.25`,
-  clamp 범위 `[0, 5]`)만큼 settle 대기를 둔다. ASGI에는 transport drain acknowledgement가
-  없어 두 write가 한 TCP 세그먼트로 합쳐지면 리버스 프록시 엣지가 close frame을 잘라
-  브라우저가 1006으로 뭉갠다. 실제 값은 운영 프록시를 경유한 실브라우저 측정으로 정한다.
+- accept(101)과 close frame 사이 settle 대기는 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS`로
+  조절한다(clamp 범위 `[0, 5]`). ASGI에는 transport drain acknowledgement가 없어 두 write가
+  한 TCP 세그먼트로 합쳐지면 프록시 엣지가 close frame을 잘라 브라우저가 1006으로 뭉갤 수
+  있다. **기본값 `0.0`은 실측으로 정했다** — 운영 HAProxy TLS 엣지를 경유한 실제 Chromium에서
+  `0.25` 10/10, `0.0` 12/12 모두 `code=4401, wasClean=true, data frame 0건`이었고 1006은 한 번도
+  나오지 않았다(거절 왕복 264~791ms → 79~373ms). uvicorn 0.28.1의 legacy `websockets_impl`이
+  `websocket.close`를 `handshake_completed_event` 뒤에 처리해 서버 단에서 이미 직렬화되기
+  때문이다. Map(`T-VN-H11`)이 `0.25`를 쓴 것은 `websockets-sansio` 구현이라 수치가 그대로
+  이식되지 않는다. **uvicorn ws 구현이나 프록시 토폴로지를 바꾸면 반드시 재측정한다.**
 - 클라이언트는 4401을 종단 상태로 취급하고 재연결하지 않는다. 4401을 소비하지 않으면
   서버 수정은 관측되지 않는다.
 - 클라이언트는 서버의 첫 프레임 이전에 소켓에 쓰지 않는다. `onopen`에서 optimistic하게
