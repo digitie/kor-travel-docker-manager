@@ -13,7 +13,7 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
-| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[/]` | - | Compose 재생성 경로 반영, diff/validation/rollback 남음 |
+| **T-011** | 설정 저장 안정화 및 validation 고도화 | `[x]` | 2026-07-28 | diff 미리보기, 포트/네트워크/env 검증(baseline 인지 secret 방어) + 적대적 리뷰 2라운드(URL/비-URL 위조 변수명 우회, React key 포커스 유실) 수정, 실브라우저 검증 완료 |
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
 | **T-033** | C7 Map UI·Dagster OCI revision 결선 | `[/]` | - | issue #60, Map runtime 네 image의 exact source provenance |
 | **T-034** | C6c cAdvisor healthcheck 포트 계약 정렬 | `[/]` | - | issue #62, listen·`/healthz`가 같은 `CADVISOR_PORT` 사용 |
@@ -44,11 +44,51 @@
 ### T-011: 설정 저장 안정화 및 validation 고도화
 
 - [x] host 네트워크 기준에서 설정 저장·reset·미생성 start fallback이 Docker SDK 직접 생성 경로를 우회하지 않고 `docker compose up --force-recreate`를 사용하도록 변경
-- [ ] compose 변경 전 diff 생성 및 UI 표시
-- [ ] 포트, 볼륨, 네트워크 입력 validation 강화
-- [ ] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가
+- [x] compose 변경 전 diff 생성 및 UI 표시. 백엔드 호출 없이 프론트에서 baseline(`configTargetContainer.config`) vs
+      현재 입력을 실시간 비교해 포트/네트워크 추가·삭제, env 변경 전후 값을 모달에 즉시 표시한다.
+- [x] 포트, 볼륨, 네트워크 입력 validation 강화. 백엔드에 `docker_service.validate_container_config_update`를
+      추가해 lock 획득·Docker 접근보다 먼저 검증하고(`ContainerConfigValidationError` → HTTP 422),
+      프론트에도 같은 규칙을 미러링해 왕복 없이 즉시 피드백한다. 포트는 `${VAR:-default}` 보간 토큰을
+      opaque하게 신뢰하고 리터럴 숫자만 1~65535 범위·host:container 형식을 검사한다(docker-compose.yml
+      실제 ports 18개 전수 통과를 회귀 테스트로 고정). 볼륨은 이미 `compose_volume_graph_hash` 비교로
+      완전히 불변 처리되어 있어(어떤 변경도 첫 mutation 전에 409) 새 검증을 추가하지 않고, 대신 프론트에서
+      변경을 미리 감지해 제출 전에 경고하고 제출을 막는다.
+- [x] secret 성격 값은 `.env` override로 저장하도록 안내 및 방어 로직 추가. 정적 key-이름 휴리스틱만 쓰면
+      `KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=true`처럼 이름에 "API_KEY"가 들어 있지만 원래부터 리터럴
+      불리언인 값까지 오탐으로 막는다(실제 compose 파일 전수 검증에서 발견). 그래서 "baseline이 이미
+      `${...}` 보간이었는지"를 기준으로 삼는다 — 이미 `.env`로 분리돼 있던 참조를 리터럴로 되돌리는 것만
+      막고, 원래부터 리터럴이던 값은 자유롭다(baseline을 모르는 신규 key에는 안전한 쪽으로 key-이름
+      휴리스틱을 fallback으로 쓴다). key 이름과 무관하게 값 안에 literal 접속 자격증명
+      (`scheme://user:pass@`)이 `${...}` 밖에 남아 있으면 별도로 거부한다 — `${OUTER:-postgresql://user:dev_pw@host/db}`처럼
+      비밀번호까지 하나의 `${...:-default}` 안에 두는 이 저장소의 기존 관행은 통과시킨다.
 - [x] config 파일 변경과 재생성을 같은 host lock transaction으로 묶고, recreate/init 실패 시 원본 byte와
       파일 mode를 원자 복원한 뒤 기존 runtime 재생성을 시도하는 rollback 전략 문서화
+- [x] **적대적 리뷰 2명이 찾은 문제를 수정한다(1차 라운드).** (1) 리뷰어 1: `_value_has_literal_url_credential`가
+      `${...}` 블록을 통째로 지우고 스캔해서, `${FAKE_NAME:-literal-secret}`처럼 지어낸 변수명으로
+      감싸기만 해도 credential 스캔이 통째로 우회됐다 — raw 값을 그대로 스캔하고 password 캡처
+      그룹 자체가 보간인 경우만 예외로 인정하도록, 그리고 credential 스캔을 baseline과 완전히
+      같은 값에만 예외로 두도록 재작성했다. (2) 리뷰어 2: ports/volumes/networks 행의 React
+      `key`에 필드 값 자체(`port-${idx}-${port}`)가 들어 있어 매 keystroke마다 DOM 노드가
+      재마운트되어 포커스가 사라졌다 — index 전용 key로 교체(행은 추가/삭제만 되고 재정렬은
+      없어 안전). 그 외 whitespace로 인한 오탐 메시지, `aria-describedby`/`aria-live` 접근성
+      공백도 함께 수정. 두 버그 모두 리뷰어가 제시한 실제 입력으로 직접 재현 후 수정 확인,
+      추가로 수정을 되돌리는 mutation test로 새 회귀 테스트 4건만 실패하는 것을 확인했다.
+- [x] **1차 라운드 수정 직후 재검토에서 발견한 2차 보안 공백을 수정한다.** 1차 수정은
+      `scheme://user:pass@` 형태(DSN)에만 반응하는 credential 스캔이라, URL이 아닌 단일 리터럴
+      비밀(예: `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}`)에는 적용되지
+      않는다는 것을 재발견했다 — baseline이 이미 `${...}` 보간이어도, sensitive key의 값을
+      `${TOTALLY_MADE_UP_NAME:-h4x0r-literal-secret}`처럼 지어낸 이름 + 새 리터럴 default로
+      바꾸면 "여전히 보간 형태"라는 이유만으로 규칙 1(재보간 요구)을 통과했다(실제
+      `docker-compose.yml`의 Grafana 서비스로 직접 재현). 규칙 1을 일반화해, sensitive key면
+      `${...}` 형태를 유지해도 `:-default` 리터럴 자체가 baseline과 달라졌으면 거부하도록 했다
+      (변수 이름만 바뀌고 default 리터럴이 동일하면 허용, default를 아예 없애는 것도 허용,
+      비-sensitive key는 대상이 아님 — 포트 기본값 변경 등 정상 편집을 막지 않는다). 백엔드
+      회귀 테스트 5건 추가 + mutation test로 새 테스트 2건만 실패 확인, 전체 1047 backend
+      테스트 통과, 프론트 `configValidation.ts`에 동일 로직 미러링 후 실브라우저(WSL dev
+      backend/frontend, 로그인 세션)에서 Grafana 컨테이너의 `GF_SECURITY_ADMIN_PASSWORD`
+      필드에 직접 재현 입력을 타이핑해 차단 메시지·diff 미리보기·제출 버튼 비활성화를
+      확인했다(실제 컨테이너 재생성은 트리거하지 않음). 같은 세션에서 포트 필드에 여러
+      글자를 연속 입력해 React key 수정으로 포커스가 유지되는 것도 함께 재확인했다.
 
 ### T-012: 대시보드 상세 패널 확장
 

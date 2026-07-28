@@ -42,6 +42,12 @@ import {
   notifyUnauthorized,
   setUnauthorizedHandler,
 } from '@/lib/api';
+import { diffEnv, diffList } from '@/lib/configDiff';
+import {
+  validateEnvEntry,
+  validateNetworkName,
+  validatePortMapping,
+} from '@/lib/configValidation';
 
 // 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
 const _unusedForm = typeof useForm !== 'undefined';
@@ -680,7 +686,7 @@ export default function DashboardClient() {
 
   const handleConfigSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!configTargetContainer) return;
+    if (!configTargetContainer || configValidation.hasBlockingIssue) return;
     configMutation.mutate({
       id: configTargetContainer.id,
       ports: inputPortsList,
@@ -689,6 +695,50 @@ export default function DashboardClient() {
       networks: inputNetworksList,
     });
   };
+
+  // 저장 전 실시간 검증 + diff. 서버(docker_service.validate_container_config_update)와
+  // 같은 규칙을 프론트에도 반영해 왕복 없이 즉시 피드백한다 — 서버가 최종 게이트이므로
+  // 여기서 놓쳐도 보안 문제는 아니고 UX 품질만 낮아진다.
+  const configValidation = useMemo(() => {
+    const baseline = configTargetContainer?.config ?? {
+      ports: [],
+      env: {},
+      volumes: [],
+      networks: [],
+    };
+    const portErrors = inputPortsList.map(validatePortMapping);
+    const networkErrors = inputNetworksList.map(validateNetworkName);
+    const envErrors = Object.fromEntries(
+      Object.entries(inputEnvDict).map(([key, value]) => [
+        key,
+        validateEnvEntry(key, value, baseline.env?.[key]),
+      ])
+    );
+    const portsDiff = diffList(baseline.ports ?? [], inputPortsList);
+    const networksDiff = diffList(baseline.networks ?? [], inputNetworksList);
+    const envDiff = diffEnv(baseline.env ?? {}, inputEnvDict).filter(
+      (row) => row.kind !== 'same'
+    );
+    // volumes는 서버에서 불변이다(compose_volume_graph_hash 비교로 첫 mutation 전에
+    // 거부). 여기서 미리 감지해 제출 왕복 없이 안내한다.
+    const volumesChanged = diffList(baseline.volumes ?? [], inputVolumesList).changed;
+
+    const hasFieldError =
+      portErrors.some(Boolean) ||
+      networkErrors.some(Boolean) ||
+      Object.values(envErrors).some(Boolean);
+
+    return {
+      portErrors,
+      networkErrors,
+      envErrors,
+      portsDiff,
+      networksDiff,
+      envDiff,
+      volumesChanged,
+      hasBlockingIssue: hasFieldError || volumesChanged,
+    };
+  }, [configTargetContainer, inputPortsList, inputNetworksList, inputEnvDict, inputVolumesList]);
 
   const openLogModal = (id: string) => {
     setLiveLogs(''); // 이전 컨테이너 로그가 한 프레임 비치지 않게 먼저 비운다
@@ -1407,29 +1457,48 @@ export default function DashboardClient() {
                   </button>
                 </div>
                 <div className="space-y-2">
+                  {/* key에 값(port)을 넣으면 매 keystroke마다 key가 바뀌어 React가 input
+                      DOM 노드를 파괴·재생성한다 — 실시간 검증 기능 자체가 타이핑할 때마다
+                      포커스를 잃어 쓸 수 없게 된다(적대적 리뷰에서 발견). 행은 추가/삭제만
+                      되고 재정렬되지 않으므로 index만으로 충분히 안정적인 key다. */}
                   {inputPortsList.map((port, idx) => (
-                    <div key={`port-${idx}-${port}`} className="flex gap-2 items-center">
-                      <input
-                        type="text"
-                        value={port}
-                        onChange={(e) => {
-                          const next = [...inputPortsList];
-                          next[idx] = e.target.value;
-                          setInputPortsList(next);
-                        }}
-                        placeholder="e.g. 5432:5432"
-                        className="bg-card border border-line focus:border-brand focus:ring-0 rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand flex-grow font-mono"
-                        aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setInputPortsList(prev => prev.filter((_, i) => i !== idx))}
-                        className="text-danger hover:text-danger/80 p-1.5"
-                        aria-label={`포트 매핑 ${idx + 1} 삭제`} // Added aria-label for accessibility
-                      >
-                        <X className="w-4.5 h-4.5" />
-                      </button>
+                    <div key={`port-${idx}`}>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          value={port}
+                          onChange={(e) => {
+                            const next = [...inputPortsList];
+                            next[idx] = e.target.value;
+                            setInputPortsList(next);
+                          }}
+                          placeholder="e.g. 5432:5432"
+                          aria-invalid={!!configValidation.portErrors[idx]}
+                          aria-describedby={
+                            configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
+                          }
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 flex-grow font-mono ${
+                            configValidation.portErrors[idx]
+                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
+                              : 'border-line focus:border-brand focus-visible:outline-brand'
+                          } focus:ring-0`}
+                          aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setInputPortsList(prev => prev.filter((_, i) => i !== idx))}
+                          className="text-danger hover:text-danger/80 p-1.5"
+                          aria-label={`포트 매핑 ${idx + 1} 삭제`} // Added aria-label for accessibility
+                        >
+                          <X className="w-4.5 h-4.5" />
+                        </button>
+                      </div>
+                      {configValidation.portErrors[idx] && (
+                        <p id={`port-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
+                          {configValidation.portErrors[idx]}
+                        </p>
+                      )}
                     </div>
                   ))}
                   {inputPortsList.length === 0 && (
@@ -1451,8 +1520,9 @@ export default function DashboardClient() {
                   </button>
                 </div>
                 <div className="space-y-2">
+                  {/* index-only key — 값을 key에 넣으면 keystroke마다 재마운트돼 포커스를 잃는다. */}
                   {inputVolumesList.map((vol, idx) => (
-                    <div key={`vol-${idx}-${vol}`} className="flex gap-2 items-center">
+                    <div key={`vol-${idx}`} className="flex gap-2 items-center">
                       <input
                         type="text"
                         value={vol}
@@ -1479,6 +1549,12 @@ export default function DashboardClient() {
                   {inputVolumesList.length === 0 && (
                     <p className="text-xs text-secondary font-light italic">볼륨 바인딩 설정이 없습니다.</p>
                   )}
+                  {configValidation.volumesChanged && (
+                    <p className="text-danger text-[11px] bg-danger/10 border border-danger/30 rounded-card p-2">
+                      볼륨은 이 화면에서 변경할 수 없습니다. 서버가 컨테이너 변경 전에
+                      거부합니다(volume graph 불변 계약). 원래 값으로 되돌려 주세요.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -1495,29 +1571,45 @@ export default function DashboardClient() {
                   </button>
                 </div>
                 <div className="space-y-2">
+                  {/* index-only key — 값을 key에 넣으면 keystroke마다 재마운트돼 포커스를 잃는다. */}
                   {inputNetworksList.map((net, idx) => (
-                    <div key={`net-${idx}-${net}`} className="flex gap-2 items-center">
-                      <input
-                        type="text"
-                        value={net}
-                        onChange={(e) => {
-                          const next = [...inputNetworksList];
-                          next[idx] = e.target.value;
-                          setInputNetworksList(next);
-                        }}
-                        placeholder="e.g. default"
-                        className="bg-card border border-line focus:border-brand focus:ring-0 rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand flex-grow font-mono"
-                        aria-label={`네트워크 ${idx + 1}`} // Added aria-label for accessibility
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setInputNetworksList(prev => prev.filter((_, i) => i !== idx))}
-                        className="text-danger hover:text-danger/80 p-1.5"
-                        aria-label={`네트워크 ${idx + 1} 삭제`} // Added aria-label for accessibility
-                      >
-                        <X className="w-4.5 h-4.5" />
-                      </button>
+                    <div key={`net-${idx}`}>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          value={net}
+                          onChange={(e) => {
+                            const next = [...inputNetworksList];
+                            next[idx] = e.target.value;
+                            setInputNetworksList(next);
+                          }}
+                          placeholder="e.g. default"
+                          aria-invalid={!!configValidation.networkErrors[idx]}
+                          aria-describedby={
+                            configValidation.networkErrors[idx] ? `network-error-${idx}` : undefined
+                          }
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 flex-grow font-mono ${
+                            configValidation.networkErrors[idx]
+                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
+                              : 'border-line focus:border-brand focus-visible:outline-brand'
+                          } focus:ring-0`}
+                          aria-label={`네트워크 ${idx + 1}`} // Added aria-label for accessibility
+                          required
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setInputNetworksList(prev => prev.filter((_, i) => i !== idx))}
+                          className="text-danger hover:text-danger/80 p-1.5"
+                          aria-label={`네트워크 ${idx + 1} 삭제`} // Added aria-label for accessibility
+                        >
+                          <X className="w-4.5 h-4.5" />
+                        </button>
+                      </div>
+                      {configValidation.networkErrors[idx] && (
+                        <p id={`network-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
+                          {configValidation.networkErrors[idx]}
+                        </p>
+                      )}
                     </div>
                   ))}
                   {inputNetworksList.length === 0 && (
@@ -1531,23 +1623,81 @@ export default function DashboardClient() {
                 <div className="space-y-3">
                   <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">환경 변수</h4>
                   <div className="grid grid-cols-1 gap-4">
-                    {Object.entries(inputEnvDict).map(([key, val]) => (
-                      <div key={key} className="flex flex-col gap-1.5">
-                        <label className="text-xs text-secondary font-mono font-light" htmlFor={`env-input-${key}`}>
-                          {key}
-                        </label>
-                        <input
-                          id={`env-input-${key}`}
-                          type="text"
-                          value={val}
-                          onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
-                          className="bg-card border border-line focus:border-brand focus:ring-0 rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand w-full transition-all font-mono"
-                          aria-label={`환경 변수 ${key}`} // Added aria-label for accessibility
-                          required
-                        />
-                      </div>
-                    ))}
+                    {Object.entries(inputEnvDict).map(([key, val]) => {
+                      const envError = configValidation.envErrors[key];
+                      return (
+                        <div key={key} className="flex flex-col gap-1.5">
+                          <label className="text-xs text-secondary font-mono font-light" htmlFor={`env-input-${key}`}>
+                            {key}
+                          </label>
+                          <input
+                            id={`env-input-${key}`}
+                            type="text"
+                            value={val}
+                            onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
+                            aria-invalid={!!envError}
+                            aria-describedby={envError ? `env-error-${key}` : undefined}
+                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 w-full transition-all font-mono ${
+                              envError
+                                ? 'border-danger focus:border-danger focus-visible:outline-danger'
+                                : 'border-line focus:border-brand focus-visible:outline-brand'
+                            } focus:ring-0`}
+                            aria-label={`환경 변수 ${key}`} // Added aria-label for accessibility
+                            required
+                          />
+                          {envError && (
+                            <p id={`env-error-${key}`} className="text-danger text-[11px]">{envError}</p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
+                </div>
+              )}
+
+              {/* 변경 사항 미리보기: 제출 전 무엇이 바뀌는지 요약한다. */}
+              {(configValidation.portsDiff.changed ||
+                configValidation.networksDiff.changed ||
+                configValidation.envDiff.length > 0) && (
+                <div
+                  aria-live="polite"
+                  className="space-y-2 p-4 bg-subtle border border-line rounded-card text-xs"
+                >
+                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">
+                    변경 사항 미리보기
+                  </h4>
+                  {configValidation.portsDiff.changed && (
+                    <div>
+                      {configValidation.portsDiff.added.map((p) => (
+                        <p key={`port-add-${p}`} className="text-ok font-mono">+ 포트 {p}</p>
+                      ))}
+                      {configValidation.portsDiff.removed.map((p) => (
+                        <p key={`port-rm-${p}`} className="text-danger font-mono">- 포트 {p}</p>
+                      ))}
+                    </div>
+                  )}
+                  {configValidation.networksDiff.changed && (
+                    <div>
+                      {configValidation.networksDiff.added.map((n) => (
+                        <p key={`net-add-${n}`} className="text-ok font-mono">+ 네트워크 {n}</p>
+                      ))}
+                      {configValidation.networksDiff.removed.map((n) => (
+                        <p key={`net-rm-${n}`} className="text-danger font-mono">- 네트워크 {n}</p>
+                      ))}
+                    </div>
+                  )}
+                  {configValidation.envDiff.length > 0 && (
+                    <div className="space-y-1">
+                      {configValidation.envDiff.map((row) => (
+                        <p key={`env-diff-${row.key}`} className="font-mono break-all">
+                          <span className="text-secondary">{row.key}:</span>{' '}
+                          <span className="text-danger">{row.before ?? '(없음)'}</span>
+                          {' → '}
+                          <span className="text-ok">{row.after ?? '(삭제)'}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1568,7 +1718,16 @@ export default function DashboardClient() {
 
                 <button
                   type="submit"
-                  disabled={configMutation.isPending || resetMutation.isPending}
+                  disabled={
+                    configMutation.isPending ||
+                    resetMutation.isPending ||
+                    configValidation.hasBlockingIssue
+                  }
+                  title={
+                    configValidation.hasBlockingIssue
+                      ? '위에 표시된 오류를 먼저 해결하세요'
+                      : undefined
+                  }
                   className="bg-brand hover:bg-brand-ink text-white disabled:opacity-50 rounded-card shadow-card min-h-[44px] py-3 text-xs font-bold tracking-[0.05em] uppercase transition-all duration-150 ease-default flex-1 flex items-center justify-center gap-2"
                 >
                   {configMutation.isPending ? (
