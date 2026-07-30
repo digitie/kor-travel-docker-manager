@@ -12,6 +12,9 @@ WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-}"
 STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage.$$"
 ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback.$$"
 ARCHIVE="${APP_PARENT}/.kor-travel-docker-manager.archive.$$.tar"
+LAUNCHER_PATH="/usr/local/sbin/ktdctl-map-ui-auth-rotate"
+LAUNCHER_ROLLBACK="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback.$$"
+ACTIVATED=0
 
 die() {
   echo "$1" >&2
@@ -114,10 +117,18 @@ run_source_git archive --format=tar HEAD > "${ARCHIVE}"
 
 cleanup() {
   /usr/bin/rm -rf "${STAGING}" "${ARCHIVE}"
+  if [[ "${ACTIVATED}" == "1" && -d "${APP_ROOT}" ]]; then
+    /usr/bin/rm -rf "${APP_ROOT}"
+  fi
   if [[ -d "${ROLLBACK}" && ! -d "${APP_ROOT}" ]]; then
     /usr/bin/mv -T "${ROLLBACK}" "${APP_ROOT}"
   elif [[ -d "${ROLLBACK}" ]]; then
     /usr/bin/rm -rf "${ROLLBACK}"
+  fi
+  if [[ -e "${LAUNCHER_ROLLBACK}" ]]; then
+    /usr/bin/mv -f "${LAUNCHER_ROLLBACK}" "${LAUNCHER_PATH}"
+  elif [[ "${ACTIVATED}" == "1" ]]; then
+    /usr/bin/rm -f "${LAUNCHER_PATH}"
   fi
 }
 trap cleanup EXIT
@@ -137,22 +148,30 @@ trap cleanup EXIT
 /usr/bin/chmod 0644 "${STAGING}/.ktdm-source-revision"
 
 /usr/bin/python3 -m venv "${STAGING}/backend/.venv"
+/usr/bin/install -d -o root -g root -m 0755 "${STAGING}/.wheelhouse"
+"${STAGING}/backend/.venv/bin/python" -I -m pip wheel \
+  --no-index \
+  --find-links "${WHEELHOUSE}" \
+  --wheel-dir "${STAGING}/.wheelhouse" \
+  "${STAGING}/backend"
 shopt -s nullglob
-backend_wheels=("${WHEELHOUSE}"/kor_travel_docker_manager_backend-*.whl)
+built_backend_wheels=("${STAGING}"/.wheelhouse/kor_travel_docker_manager_backend-*.whl)
 shopt -u nullglob
-if [[ "${#backend_wheels[@]}" != "1" ]]; then
-  die "trusted wheelhouse must contain exactly one manager backend wheel"
+if [[ "${#built_backend_wheels[@]}" != "1" ]]; then
+  die "trusted release build must produce exactly one manager backend wheel"
 fi
 "${STAGING}/backend/.venv/bin/python" -I -m pip install \
   --no-index \
   --find-links "${WHEELHOUSE}" \
-  "${backend_wheels[0]}"
+  --find-links "${STAGING}/.wheelhouse" \
+  "${built_backend_wheels[0]}"
 
 KTDM_SOURCE_OWNER_UID="${source_uid}" \
 KTDM_SOURCE_OWNER_GID="${source_gid}" \
 KTDM_ENV_OWNER_UID="${env_uid}" \
 KTDM_ENV_OWNER_GID="${env_gid}" \
 KTDM_WHEELHOUSE="${WHEELHOUSE}" \
+KTDM_BUILT_BACKEND_WHEEL="${built_backend_wheels[0]}" \
 /usr/bin/python3 -I -S - "${STAGING}" "${revision}" <<'PY'
 from __future__ import annotations
 
@@ -170,6 +189,7 @@ revision = sys.argv[2]
 env_uid = int(os.environ["KTDM_ENV_OWNER_UID"])
 env_gid = int(os.environ["KTDM_ENV_OWNER_GID"])
 wheelhouse = pathlib.Path(os.environ["KTDM_WHEELHOUSE"]).resolve(strict=True)
+built_backend_wheel = pathlib.Path(os.environ["KTDM_BUILT_BACKEND_WHEEL"]).resolve(strict=True)
 site_packages_candidates = list((root / "backend" / ".venv" / "lib").glob(
     "python*/site-packages"
 ))
@@ -210,6 +230,7 @@ for required in (
     dist_info,
     record,
     wheelhouse,
+    built_backend_wheel,
 ):
     assert_root_locked(required)
 assert_env(root / ".env")
@@ -251,6 +272,7 @@ manifest = {
     "env_owner_uid": env_uid,
     "env_owner_gid": env_gid,
     "backend_distribution": dist_info.name,
+    "backend_wheel_sha256": hashlib.sha256(built_backend_wheel.read_bytes()).hexdigest(),
     "wheel_record_sha256": record_hash,
     "wheelhouse_sha256": wheelhouse_hash.hexdigest(),
 }
@@ -296,7 +318,11 @@ fi
 if [[ -e "${APP_ROOT}" ]]; then
   /usr/bin/mv -T "${APP_ROOT}" "${ROLLBACK}"
 fi
+if [[ -e "${LAUNCHER_PATH}" ]]; then
+  /usr/bin/cp -a "${LAUNCHER_PATH}" "${LAUNCHER_ROLLBACK}"
+fi
 /usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
+ACTIVATED=1
 /usr/bin/python3 - <<'PY'
 from __future__ import annotations
 
@@ -312,5 +338,5 @@ PY
 "${APP_ROOT}/scripts/install-ktdctl-map-ui-auth-rotate" "${APP_ROOT}/scripts/ktdctl-map-ui-auth-rotate"
 /usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null
 
-/usr/bin/rm -rf "${ROLLBACK}" "${ARCHIVE}"
+/usr/bin/rm -rf "${ROLLBACK}" "${ARCHIVE}" "${LAUNCHER_ROLLBACK}"
 trap - EXIT

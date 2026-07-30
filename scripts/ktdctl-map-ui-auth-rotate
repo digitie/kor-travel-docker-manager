@@ -133,6 +133,7 @@ revision = revision_file.read_text(encoding="utf-8").strip()
 manifest = json.loads(release_manifest.read_text(encoding="utf-8"))
 if manifest.get("manager_source_revision") != revision:
     raise SystemExit("release manifest revision does not match source evidence")
+expected_record_hash = manifest.get("wheel_record_sha256")
 
 def assert_locked(path: pathlib.Path) -> None:
     st = path.lstat()
@@ -143,6 +144,8 @@ def assert_locked(path: pathlib.Path) -> None:
 
 for path in (site_packages, package_dir, dist_info, record):
     assert_locked(path)
+if hashlib.sha256(record.read_bytes()).hexdigest() != expected_record_hash:
+    raise SystemExit("wheel RECORD digest does not match release manifest")
 seen_package = False
 with record.open(newline="", encoding="utf-8") as handle:
     for row in csv.reader(handle):

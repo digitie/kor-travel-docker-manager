@@ -904,6 +904,7 @@ def test_trusted_launcher_verifies_package_with_system_python_before_venv_exec()
     assert "require_trusted_python" in script
     assert "trusted package path is writable or not root-owned" in script
     assert "site_packages, package_dir, dist_info, record" in script
+    assert "wheel RECORD digest does not match release manifest" in script
 
 
 def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
@@ -914,13 +915,19 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     assert "/usr/bin/sudo -H -u \"#${source_uid}\" -- /usr/bin/git" in script
     assert "run_source_git archive --format=tar HEAD > \"${ARCHIVE}\"" in script
     assert "/usr/bin/install -o \"${env_uid}\" -g \"${env_gid}\" -m 0600" in script
+    assert "-m pip wheel" in script
+    assert "--wheel-dir \"${STAGING}/.wheelhouse\"" in script
     assert "KTDM_SOURCE_OWNER_UID=\"${source_uid}\" \\" in script
     assert "/usr/bin/python3 -I -S - \"${STAGING}\" \"${revision}\"" in script
     assert "--no-index" in script
     assert "--find-links \"${WHEELHOUSE}\"" in script
+    assert "KTDM_BUILT_BACKEND_WHEEL" in script
+    assert "backend_wheel_sha256" in script
     assert "wheel_record_sha256" in script
     assert "wheelhouse_sha256" in script
     assert "mv -T \"${APP_ROOT}\" \"${ROLLBACK}\"" in script
+    assert "LAUNCHER_ROLLBACK" in script
+    assert "rm -rf \"${APP_ROOT}\"" in script
     assert script.rindex("install-ktdctl-map-ui-auth-rotate") < script.rindex(
         "rm -rf \"${ROLLBACK}\""
     )

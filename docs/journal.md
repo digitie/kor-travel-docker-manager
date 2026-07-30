@@ -51,8 +51,10 @@ trusted root launcher는 `/usr/bin/python3 -I -S`로 wheel `RECORD`와 root-owne
 `scripts/install-ktdm-trusted-release`를 도입해 clean checkout의 tracked `git archive`를 root-owned
 staging에 푼다. git archive는 source owner 권한으로 만들고, root는 root-owned/non-writable offline
 wheelhouse만 `pip --no-index --find-links`로 소비한다. 기존 또는 명시 deployment-owner 0600 `.env`를
-보존하며, isolated wheel venv·wheelhouse SHA·wheel `RECORD` SHA·`.ktdm-release-manifest.json`을 만든 뒤
-`/opt/kor-travel-docker-manager` activation/rollback 및 launcher self-check까지 이어지게 했다.
+보존하며, staging exact source에서 backend wheel을 offline build해 설치한다. isolated wheel venv·
+wheelhouse SHA·backend wheel SHA·wheel `RECORD` SHA·`.ktdm-release-manifest.json`을 만든 뒤
+`/opt/kor-travel-docker-manager` activation/rollback 및 launcher self-check까지 이어지게 했다. launcher
+self-check 실패 시에도 새 app root와 새 launcher를 제거하고 이전 app root와 launcher bytes/mode를 복구한다.
 
 ---
 

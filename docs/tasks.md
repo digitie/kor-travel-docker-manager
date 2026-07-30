@@ -68,9 +68,10 @@
       trusted launcher, root-owned `.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 제공하며,
       `KTDM_MANAGER_SOURCE_REVISION`은 있을 때 파일과 일치해야 하는 보조 검증값이다. trusted release
       설치는 source owner 권한에서 clean checkout의 tracked `git archive`를 만들고 root-owned offline
-      wheelhouse만 소비한다. 기존 또는 명시 deployment-owner 0600 `.env`를 보존한 뒤 isolated wheel
-      venv, wheelhouse SHA, wheel `RECORD` SHA, release manifest revision을 결박해 activation/rollback
-      가능한 제품 경로로 제공한다.
+      wheelhouse만 소비한다. staging exact source에서 backend wheel을 offline build해 설치하고, 기존
+      또는 명시 deployment-owner 0600 `.env`를 보존한 뒤 isolated wheel venv, wheelhouse SHA, backend
+      wheel SHA, wheel `RECORD` SHA, release manifest revision을 결박해 app root와 launcher까지
+      activation/rollback 가능한 제품 경로로 제공한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
       environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
       독립 검증하고 hash와 session secret은 항상 함께 회전한다.

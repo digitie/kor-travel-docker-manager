@@ -173,15 +173,18 @@ Map UI credential rotation은 user-writable checkout이나 venv를 `sudo`로 직
 `.ktdm-source-revision`·isolated backend wheel venv·`.ktdm-release-manifest.json`을 만든 뒤
 `/opt/kor-travel-docker-manager`로 activation한다. 운영 `.env`는 source snapshot에서 가져오지 않고
 명시 `--env-file` 또는 기존 app root의 owner/group을 유지한 0600 regular file로 보존한다. wheel install은
-`pip --no-index --find-links`만 사용하며, wheelhouse 전체 SHA와 설치된 wheel `RECORD` SHA를 release
-manifest에 결박한다. 설치·launcher self-check가 실패하면 기존 app root를 rollback directory에서 복구한다.
+staging의 exact source에서 `pip wheel --no-index --find-links <root-owned-wheelhouse>`로 backend wheel을
+먼저 빌드한 뒤 그 wheel만 설치한다. wheelhouse 전체 SHA, staging source에서 빌드한 backend wheel SHA,
+설치된 wheel `RECORD` SHA를 release manifest에 결박한다. 설치·launcher self-check가 실패하면 새 app
+root를 제거하고 기존 app root와 이전 launcher bytes/mode를 rollback에서 복구한다.
 
 root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate`는 `scripts/install-ktdctl-map-ui-auth-rotate`가
 staging 파일을 fsync한 뒤 설치한다. launcher는 `/usr/local/sbin`, `/opt`, app root, source evidence,
 release manifest, backend venv/site-packages/package/dist-info/`RECORD`를 확인한다. `RECORD` 검증은
 venv Python이 아니라 exact root-owned `/usr/bin/python3 -I -S`로 먼저 실행해 `.pth`/`sitecustomize`
 pre-import gap을 막고, venv `bin/python`은 canonical root-owned `/usr/bin/python3.x` symlink chain으로
-resolve될 때만 허용한다. 모든 검증을 통과한 뒤에만
+resolve될 때만 허용한다. 또한 설치된 wheel `RECORD` SHA가 release manifest의 `wheel_record_sha256`과
+일치해야 한다. 모든 검증을 통과한 뒤에만
 `KTDM_TRUSTED_ROOT_LAUNCHER=ktdctl-map-ui-auth-rotate-v1`을 설정하고 `python -I -m
 kor_travel_docker_manager.cli map-ui-auth rotate`를 실행한다. `sudo
 <user-writable-venv>/bin/ktdctl map-ui-auth rotate` 경로는 root가 사용자 소유 Python script/import
