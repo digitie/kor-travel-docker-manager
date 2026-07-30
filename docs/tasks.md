@@ -13,12 +13,8 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
-| **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | API 전용 secret 격리, compatible image pair 배포·rollback·smoke |
-| **T-037** | C6c Map UI 통합 경로 smoke 정렬 | `[/]` | - | 삭제된 `/ops/providers` 대신 `/ops/datasets` 인증 lifecycle 검증 |
-| **T-039** | C6c PinVi login SSR shell 판정 정렬 | `[/]` | - | HTTP shell은 route chunk까지, hydrated form은 최종 Playwright에서 검증 |
-| **T-038** | Map destructive production 명시 승인 결선 | `[/]` | - | standalone false와 분리해 Manager Map API에 exact true·attestation 고정 |
-| **T-041** | C6c rollback image retention 보장 | `[/]` | - | issue #72, candidate build 전 직전 active 5-image 세대 보존 |
-| **T-040** | C7 Map features routes production 명시 결선 | `[/]` | - | issue #70, 요약 표 누락분 보강 |
+| **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | 구현·기존 live 충족, T-045 회전과 새 official deploy 미완료 |
+| **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[ ]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
 
 ---
 
@@ -35,205 +31,48 @@
 
 ### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선
 
-- [x] manager `.env`의 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
-      `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`을 map API에만 주입하고 Dagster·daemon·UI에는
-      주입하지 않는다.
-- [x] 같은 두 값을 PinVi API의 `PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN`과
-      `PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN`으로만 전달하고 PinVi Web/Dagster에는
-      주입하지 않는다.
-- [x] 두 token은 각각 32자 이상·모든 공백 없음·상호 다름을 container 변경 전 검증하고, 실제 값은
-      gitignore된 `.env`에만 둔다. manager/PinVi production mode와 Map
-      `OPS_PRINCIPAL_REQUIRED=true`를 함께 강제한다.
-- [x] production 배포 경로를 preflight/readiness → Map API → signed read·cancel·거부 smoke
-      → Map UI·Dagster web·daemon → PinVi API → 전체 managed container readiness/secret inspect
-      순서로 구현하고 Map runtime 네 service를 pair transaction에 포함한다.
-- [x] rollback은 현재 contract generation의 canonical Map+PinVi immutable image ID pair 단위로만
-      원자 기록·복원하며, legacy/과거 generation 조합을 정상 rollback 지점으로 오인하지 않는다.
-- [x] base/override merged config의 `environment`·`env_file`·command·build args와 runtime inspect를
-      API 두 곳만 허용하는 계약 테스트로 고정한다.
-- [x] production 일반 `ensure`/container action·config·reset/direct Compose의 Map runtime/PinVi API mutation을
-      중앙 차단하고, deployment-wide lock을 잡는 전용 `pinvi-pair deploy` capability만 허용한다.
-- [x] manifest에 contract generation을 기록하고 merged compose의 host network·PinVi production
-      mode·Map bind port·loopback base·container identity·다섯 immutable image override·manager-only smoke
-      credential 격리를 mutation 전에 검증한다.
-- [x] deploy/rollback 중 mixed pair를 노출하지 않고 Map/PinVi canonical smoke, owned fixture의 정확한
-      409/502/503 typed cancel·`Retry-After`, 필수 서비스 running/healthy, Map UI auth lifecycle, runtime
-      격리 뒤에만 manifest를 commit한다.
-- [x] manifest가 없는 clean 환경은 host lock 안에서 base dependency→Map API→Map dependents→
-      PinVi API→PinVi dependents를 단계 bootstrap하고 전체 smoke 성공 뒤 최초 v4를 기록한다.
-      Map dependent provenance가 없는 v1/v2/v3는 자동 전환하지 않는다. 실패하면 Map runtime
-      네 service와 PinVi API를 중지하고 transaction이 만든 container만 제거한다. 중간 실패는
-      시작 시점 active runtime set 전체 복구 또는 다섯 service 명시적 halt로 끝낸다.
-- [x] pass3 차단 리뷰의 init 예외 cleanup, project-wide `wait --down-project`, production 단일 state path,
-      깊은 Map/PinVi DTO·owned cancel·manifest 검증, parent fsync 실패 복원, config/runtime 복원 진단 보존을
-      코드·회귀 테스트·운영 문서에 반영한다(테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass4 차단 리뷰의 canonical `execution_coverage`, production exact `12701` fail-close, Map dataset row와
-      PinVi repository/asset/schedule/sensor 배열 원소의 실제 DTO 검증 및 `null` 음성 fixture를 반영한다
-      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass5 차단 리뷰의 cross-token capability typed status/code 음성 smoke, transaction당 destructive cancel
-      정확히 1회 및 결과 재사용, actual cancellation attempt/member/Dagster run/root-only DTO 검증을 반영한다
-      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass6 DTO 정렬로 full 409 unresolved 0·resolved root/child topology·transient all-resolved를 허용하고,
-      retryable exact run-backed failure와 in-progress CAS drift transition matrix를 실제 PinVi projection에 맞춘다
-      (`409 PIPELINE_CANCELLATION_UNSAFE`와 `503 DAGSTER_TERMINATION_TIMEOUT` pair 포함).
-      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass7 actual DB lifecycle 정렬로 failed mixed evidence, retry subset lineage, frozen termination/engine time,
-      `Retry-After` presence/parse 분리와 Compose kill signal/unknown option default-deny fixture를 반영한다
-      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass8에서 Compose `build --pull`·`run --rm`·`rm -s/--stop`의 command별 flag 의미와
-      `config -o/--output` write-capable default-deny를 고정하고, cancel member/run policy·terminal mapping,
-      feature-load child success 예외, contract generation 격리, bootstrap cleanup 예외 수렴을 반영한다
-      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass9에서 `Retry-After`를 ASCII decimal 1..300으로 제한하고, generic non-API config
-      update/reset/create의 raw compose 전체·`env_file` 보호 이름/값 검증을 파일 쓰기·재생성 전에 수행한다.
-      candidate 거부는 불변 상태와 typed 409 detail을 보존한다
-      (테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass10에서 raw/resolved compose 검사를 service 하위가 아닌 top-level `secrets`/`configs`/extension과
-      service mount/reference를 포함한 전체 graph로 확장한다. API wiring은 suffix까지 정해진 canonical raw
-      표현만 허용하고, `env_file`/외부 config 경로의 Compose 변수 문법은 완전 해석할 수 없으면 거부한다.
-      generic ensure/up/create/recreate와 config prewrite는 두 단계 검증 뒤에만 mutation하며 typed 409 detail과
-      mutation 0을 보존한다(테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass11에서 service volume short/long bind source를 보간 후 canonical path로 해석해 root `.env`, manager
-      state 파일, 보호 이름·현재 값이 든 외부 파일 mount를 raw/resolved 단계에서 거부한다. symlink·traversal·
-      relative/absolute·Windows-looking·`:ro` 변형을 닫고 named volume은 경로로 오인하지 않는다. 내용 확인이
-      불가능한 external secret/config alias reference도 exact allowlist 외에는 fail-close하며 rustfs REST config의
-      typed 409와 파일/container mutation 0을 고정한다(테스트 실행은 신규 적대적 리뷰 2명 승인 뒤 수행).
-- [x] pass12에서 manager 보호 파일의 ancestor directory와 host root bind를 거부하고, directory bind는 서비스별
-      exact source/target allowlist로 한정한다. 존재하지 않거나 bounded regular-file 검사가 불가능한 source도
-      fail-close해 Docker 자동 directory 생성과 TOCTOU 우회를 막는다. cAdvisor의 host root·Docker data directory
-      mount는 제거하고 Docker socket+`/sys` 기반 container-only 모드로 전환하며 RustFS REST typed 409와
-      source/compose/container mutation 0을 고정한다(같은 리뷰어 재승인 전 테스트 실행 금지).
-- [x] pass13에서 config API의 전체 volume graph(top-level 정의와 모든 service reference)를 pre-request compose와
-      exact immutable로 고정해 volume add/remove/source/target/type/mode 변경을 409로 거부한다. internal/default
-      named volume만 허용하고 local bind driver option·unknown driver/option·external alias는 raw/resolved 모두
-      fail-close한다. cAdvisor `/sys`·Docker socket은 short `:ro` 또는 long `read_only: true`만 허용하며,
-      root-owned parent chain과 `/sys` mountpoint, root:docker `0660` socket의 inode/device/mode snapshot을 compose
-      write와 Docker subprocess 직전에 재검증한다. mismatch는 write 전 중단 또는 compose byte 복원으로 durable
-      mutation 0을 보존한다(같은 리뷰어 재승인 전 테스트 실행 금지).
-- [x] pass14에서 mutex 안의 persisted compose와 request candidate의 raw/resolved volume graph를 각각 exact
-      비교하고 `include`·service `extends`·`COMPOSE_FILE`·추가 override를 거부하는 single-file mutation 경계를
-      고정한다. cAdvisor mount는 raw literal/resolved identity 모두 RO `/sys`와 Docker socket 두 개만 허용하고,
-      raw named-volume `name`/`external` 및 resolved project-derived name drift를 차단한다. 첫 mutation subprocess
-      성공 뒤 후속 preflight drift가 나면 원본 compose byte/mode와 persisted runtime을 best-effort 복구하고
-      원래 계약 오류·복구 결과를 보존한 typed 500으로 승격한다(같은 리뷰어 재승인 전 테스트 실행 금지).
-- [x] pass15에서 mutation Docker command의 override 탐색을 제거하고 subprocess 직전 single-file 경계를
-      재검증한다. `ensure`는 최초 compose byte/mode와 raw/resolved/snapshot baseline을 복원·재검증한 뒤에만
-      runtime recovery를 실행하며, 검증 실패 시 Docker recovery를 금지한다. preflight drift의 원본 복원도
-      원자 복원 실패를 원래 오류와 함께 typed 500 durable mutation으로 보존한다(재승인 전 테스트 실행 금지).
-- [x] pass16에서 transaction 시작 시 `.env` 존재 여부·byte·device/inode/mode/uid/gid와 effective Compose
-      environment를 비밀값 비노출 snapshot으로 고정한다. raw/resolved 검증과 Docker mutation은 같은 snapshot을
-      사용하고, subprocess 직전 `.env` 생성·삭제·내용·identity drift를 재검증한다. mutation은
-      `--env-file /dev/null`과 frozen process env만 사용하며 `ensure`/config recovery도 최초 snapshot을 재사용한다
-      (재승인 전 테스트 실행 금지).
-- [x] pass17에서 production mutation mutex를 checkout/project와 무관한 단일 전역 lock으로 고정하고,
-      lock 안에서 manifest 경로와 root `.env`·canonical compose·외부 `env_file` 입력을 한 번만 snapshot한다.
-      외부 입력은 exact 4-key graph와 byte/identity를 매 경계에서 재검증하고 Docker resolution에만 익명 fd로
-      전달하며, mutation은 original project directory에서 완전 해석된 compose를 stdin으로 소비한다.
-      deploy/capture/rollback은 최초 mutation 뒤 모든 계약 오류를 같은 root snapshot의 recovery 또는 다섯 runtime
-      halt로 수렴시키고 원래 오류와 복구 결과를 typed post-mutation 오류로 보존한다
-      (지시에 따라 테스트·lint·build는 실행하지 않고 정적 diff 검사만 수행).
-- [x] pass18에서 recovery/halt를 frozen resolved transaction 전용 실행으로 분리하고, config update/reset의
-      persisted baseline과 exact candidate transaction을 분리해 forward는 candidate, restore는 baseline만 쓴다.
-- [x] pass19에서 manifest active image override를 root frozen 입력으로 미리 해석한 별도 recovery transaction을
-      deploy/rollback 복구에 사용하고, forward transaction과 identity를 분리한다. manifest가 없는
-      v3 bootstrap capture는 이전 active pair 복구 대신 생성한 서비스 정리·API halt로 수렴한다.
-- [x] Map UI username·PBKDF2 hash·session secret을 기본값 없는 canonical raw 보간과 exact resolved/runtime
-      Env 경로로 고정하고, manager-only 평문 smoke 비밀번호 비주입 및 frozen snapshot/rollback 인증값
-      격리 계약과 회귀 테스트·운영 문서를 추가한다. Docker Compose resolved literal escape와 runtime raw-exact
-      분리를 포함한 ext4 C6c targeted `541 passed`, backend 전체 `599 passed`로 검증했다.
-- [x] 공식 차단 리뷰를 반영해 canonical test baseline, raw/resolved Map UI 필수 서비스, 모든 Unicode
-      whitespace 거부, credential redaction을 고정한다. deploy/rollback은 readiness 뒤 current Map UI의 exact
-      runtime 인증과 login/protected/logout/reblock을 첫 API stop 전에 검사하며 실패 시 mutation 0이다.
-      strict mypy, 신규 lint `0`, production Docker Compose config/resolved guard를 통과했다.
-- [x] n150 read-only preflight에서 일반 scalar의 username 문자열 일치를 secret leak으로 오인한 false-positive를
-      mutation 없이 확인했다. username identity의 exact wiring/runtime equality와 confidential 값의 전역 scalar
-      격리를 분리하는 회귀 계약을 추가했다. 공식 리뷰 승인 뒤 ext4 C6c targeted `528 passed`, backend 전체
-      `616 passed`, strict mypy와 신규 lint `0`, production Docker Compose `config --quiet` 및 resolved guard
-      `2/2`를 통과했다.
-- [x] Map clean-cut entrypoint에서 제거된 provider credential env 9개를 API compose에서 삭제하고, 해당
-      이름·legacy data.go.kr credential·제거된 live-preview flag를 raw candidate·resolved candidate·최종
-      C6c contract가 이름의 존재 자체로 fail-close하도록 회귀 계약을 추가했다. Map API의 `command`·
-      `entrypoint` override와 runtime `Cmd`/`Entrypoint` drift도 금지해 immutable image migration과
-      entrypoint guard 우회를 차단했다.
-- [ ] n150 production에서 root 권한으로 Map UI 비밀번호를 회전하고 cross-repo smoke와 실제 UI 로그인 검증을
-      통과한 뒤 완료 이력으로 옮긴다.
+- [x] read/cancel principal을 Map API와 PinVi API에만 결선하고 Map UI·Dagster·daemon,
+      PinVi Web·Dagster에는 전달하지 않는 최소 권한 계약을 raw/resolved/runtime 단계에서
+      고정했다.
+- [x] production 일반 `ensure`와 container action/config/reset/direct Compose 경로에서
+      Map runtime 4종과 PinVi API 변경을 차단하고, 전역 lock을 소유하는
+      `pinvi-pair capture/deploy/rollback`만 다섯 immutable image 세대를 변경하도록 했다.
+- [x] compatible-pair manifest v4가 active/rollback의 Map API·UI·Dagster web·daemon과
+      PinVi API image ID, clean source revision, contract generation을 함께 기록한다.
+      mixed generation은 시작 세대 복구 또는 다섯 runtime halt로 수렴한다.
+- [x] Map UI username·PBKDF2 hash·session secret을 canonical Compose와 exact runtime에
+      결박하고 manager smoke 평문은 container에 주입하지 않는 회귀 계약을 고정했다.
+- [x] PR #54~#57, #64, #67, #69, #73의 리뷰·CI를 통과했다. 2026-07-26 C7 공식
+      gate에서 read-auth `7/7`, KMA active/cap/empty 각 `2/2`, schedule-write `2/2`,
+      POI-cache-causal `2/2`, `BLOCKED` 0건, 상태 복구와 active target 0을 확인했다.
+- [x] 2026-07-27 compatible-pair에서 C6c principal smoke와 targeted live를 통과했다.
+- [ ] 현재 canonical Manager `.env`의 Map UI hash/session은 running UI와 일치하지만
+      manager smoke 평문은 그 PBKDF2 hash를 검증하지 못한다. 따라서 새 official deploy
+      preflight는 container mutation 전에 중단된다. 수정은 T-045가 소유한다.
+- [ ] n150에서 Map UI password hash와 session secret을 함께 회전하고, 새 manager smoke
+      평문↔hash 일치, 이전 session 무효화, login→`/ops/datasets` 보호 GET→logout→재차단을
+      확인한다.
+- [ ] 회전 뒤 최신 exact Map·Manager·PinVi 조합으로 official compatible-pair deploy와
+      cross-repo smoke·targeted live를 다시 통과한 뒤 완료 이력으로 옮긴다.
 
-### T-037: C6c Map UI 통합 경로 smoke 정렬
+### T-045: Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화
 
-- [x] 최종 Map UI에서 `/ops/providers`가 clean-cut되고 `/ops/datasets`로 통합된 경로 계약을 확인한다.
-- [x] login `next`, 로그인 후 보호 GET, logout 후 재차단 GET을 단일 `/ops/datasets` 정본으로 묶는다.
-- [x] auth lifecycle 단위 테스트와 Docker 관리 문서를 같은 경로로 정렬한다.
-- [x] 단일 적대적 리뷰 P0~P2 없음 판정과 backend 888개, focused 800개, Ruff, strict mypy gate를 통과한다.
-- [x] PR을 병합한다. (PR #67, 2026-07-20 merged)
-- [ ] n150 compatible-pair capture에서 실제 보호 페이지 200과 logout 후 재차단을 확인한다.
-
-### T-039: C6c PinVi login SSR shell 판정 정렬
-
-- [x] n150 read-only 응답이 200·`text/html`·비어 있지 않은 body·`/_next/static/`과
-      `/admin/login/page-*.js` route chunk를 포함하지만 `admin-login-form`은 포함하지 않는 원인을
-      PinVi의 `Suspense fallback={null}` client login page와 대조한다.
-- [x] HTTP shell smoke와 browser smoke의 책임을 문서로 먼저 분리한다. shell은 status/content/body,
-      일반 Next.js static marker와 `admin/login` 전용 page chunk를 확인하고, hydration 후 form·로그인
-      상호작용은 최종 n150 Playwright가 담당한다.
-- [x] `run_ui_auth_smoke`에서 raw SSR `admin-login-form` 요구를 제거하고 route-specific page chunk를
-      exact 판정한다. 일반 Next.js fallback HTML이나 다른 route chunk만 있는 응답은 계속 fail-close한다.
-- [x] positive SSR shell과 form 포함 shell, route chunk가 없는 generic fallback, 다른 route chunk,
-      status/content-type/empty-body 오류를 focused 단위 테스트로 고정한다.
-- [x] 같은 단일 적대적 reviewer의 P0~P2 없음 승인 뒤에만 focused/full test와 Ruff/mypy를 실행한다.
-- [x] 최신 main rebase·CI green을 통과한다. (PR #69, 2026-07-20 merged)
-- [ ] n150 compatible-pair capture와 최종 Playwright login form을 확인한다.
-
-### T-038: Map destructive production 명시 승인 결선
-
-- [x] Manager canonical `kor-travel-map-api`에
-      `KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED=true`를 literal로 명시한다.
-- [x] raw·resolved candidate, activation 뒤 runtime이 exact `true`이고 다른 service·channel에는 이름이
-      없는지 C6c protected environment 계약으로 고정한다.
-- [x] standalone Map compose의 기본 `false`와 Manager의 명시적 production 승인을 교차 계약 테스트로
-      구분한다. image 기본값이나 host env fallback은 승인 근거가 아니다.
-- [x] compatible-pair manifest v4 및 C7 attestation의 Map API environment hash가 이 enablement를
-      포함하고, 실제 destructive backup 작업은 인증 principal actor를 감사한다는 운영 증거를 문서화한다.
-- [ ] Map issue #796의 actor/OpenAPI 변경과 함께 단일 적대 리뷰·CI·n150 final live를 통과한다.
-
-### T-040: C7 Map features routes production 명시 결선
-
-- [x] issue #70과 ADR-25에 Map feature 관리 REST가 production에서 명시적으로 활성화되어야 하는
-      이유와 API-only fail-closed 경계를 기록한다.
-- [x] Manager canonical `kor-travel-map-api`에
-      `KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED=true`를 literal로 명시한다.
-- [x] raw source, Docker-resolved candidate, activation 뒤 runtime이 exact `true`이고 다른
-      service·`env_file`·build arg·command·label·config·secret에는 이름이 없는지 C6c 보호 환경
-      계약과 음성 회귀 테스트로 고정한다.
-- [x] focused 42개, C6c·Docker config 849개, backend 907개, Ruff baseline 제외, strict mypy,
-      canonical Compose config gate를 통과한다.
-- [x] 단일 적대적 리뷰와 CI를 통과한다. (PR #71, 2026-07-20 merged)
-- [ ] n150 compatible-pair recapture와 C7 live E2E에서 feature 관리 REST를 확인한 뒤 issue #70을 닫는다.
-
-### T-041: C6c rollback image retention 보장
-
-- [x] n150에서 `pinvi-pair deploy --build` 성공 직후 새 manifest의 active 5개는 존재하지만
-      rollback으로 기록된 직전 active 5개 image ID가 모두 사라지는 문제를 재현하고 issue #72로 기록한다.
-- [x] build/no-build deploy와 rollback은 mutation 전 manifest active/rollback 합집합을, capture/deploy는
-      candidate를 service+전체 image SHA 기반 예약 namespace에 보존하고 exact ID를 재검증한다.
-      (PR #73, `c6c_image_retention.py`의 `ensure_pair_references`/`require_empty_retention_namespace`/
-      `validate_retention_namespace_is_reserved`)
-- [x] retention 실패는 첫 container mutation 전에 중단한다. manifest commit 뒤 새 rollback 밖 reference를
-      정리하고, cleanup residue가 있으면 다음 mutation 전에 해소해 과거 세대가 누적되지 않게 한다.
-      (`test_stale_retention_cleanup_failure_blocks_candidate_and_container_mutation`)
-- [/] moving tag rollover, 일부 tag 실패·wrong-ID collision, SIGKILL cut point, candidate 실패 정리,
-      active=rollback dedupe, no-build·rollback·capture, post-commit cleanup pending과 다음 mutation 차단을
-      실행형 회귀 테스트로 고정한다.
-      **7개 시나리오 중 6개 완료. `SIGKILL cut point`만 미커버.** 확인 결과 기존 `SIGKILL` 매치는
-      container 대상 `docker kill -s SIGKILL`이고, retention 진행 중 프로세스가 죽는 cut point를
-      재현하는 테스트는 없다(`cut_point|interrupted|crash|abrupt` 검색 0건). 나머지 6개 대응:
-      rollover `test_moving_service_tag_rollover_keeps_previous_content_reference`,
-      일부 tag 실패 `test_partial_tag_failure_does_not_remove_existing_references`,
-      wrong-ID collision `test_existing_content_reference_never_retargets_another_image`,
-      candidate 실패 정리 `test_candidate_retention_failure_cleans_only_to_start_manifest_before_stop`,
-      dedupe `test_active_equals_rollback_deduplicates_five_references`,
-      post-commit cleanup pending `active_manifest_committed_retention_cleanup_pending`.
-- [x] mutation 전 실패 또는 시작 manifest 확정+previous runtime 복구 검증 성공 때만 candidate를 정리하고,
-      recovery 실패·mixed runtime·manifest 불확정이면 관련 reference를 모두 보존한다.
-      (`test_rollback_verification_failure_keeps_manifest_and_recovers_start_pair`)
-- [ ] 단일 적대적 리뷰와 CI green 뒤 n150 exact Manager로 compatible-pair를 재배포하고 실제 rollback
-      가용성 및 C7 strict live E2E를 통과하면 issue #72를 닫고 완료 이력으로 옮긴다.
+- [ ] production에서만 실행되는 전용 `ktdctl` command를 추가하고 C6c 전역 lock,
+      canonical manager checkout/Compose/`.env`, 실행 중 Map UI identity와 immutable image를
+      mutation 전에 fail-closed로 검증한다.
+- [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
+      environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
+      독립 검증하고 hash와 session secret은 항상 함께 회전한다.
+- [ ] canonical `.env`의 Map UI hash/session 두 항목만 원자 교체하고 같은 immutable image로
+      Map UI service만 `--no-deps --force-recreate --no-build --pull never --wait` 재생성한다.
+      다른 project container와 manifest/image generation은 변경하지 않는다.
+- [ ] 새 login→`/ops/datasets` 보호 GET→logout→재차단, 회전 전 session 거부를 검증한 뒤
+      durable audit를 commit한다. forward 실패 시 이전 hash/image와 새로운 recovery session
+      secret으로 UI를 복구해 partial-forward session까지 무효화하고 실제 복구 상태를 정직하게
+      기록한다.
+- [ ] crash/signal/재실행 recovery journal, foreign container/name collision, `.env` drift,
+      Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다.
+- [ ] 단일 적대적 리뷰, focused/backend 전체 테스트, Ruff, strict mypy, canonical Compose gate,
+      CI green을 통과한 별도 코드 PR을 병합한다.
+- [ ] n150에서 전용 command로 실제 회전하고 official compatible-pair deploy, C6c principal
+      smoke, C7 targeted live를 통과한 뒤 T-031과 함께 완료 이력으로 옮긴다.
