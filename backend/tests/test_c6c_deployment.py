@@ -9843,6 +9843,287 @@ def test_public_c6c_deploy_build_passes_clean_head_provenance_before_mutation(
     )
 
 
+def test_deploy_compatible_pinvi_pair_passes_custom_wait_timeout_through(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #88: kor-travel-map API가 uvicorn 기동 전에 alembic 마이그레이션을
+    실행하므로, 긴 마이그레이션을 수반하는 배포는 기본 120초보다 큰 값이 필요하다.
+    `deploy_compatible_pinvi_pair(wait_timeout=...)`가 `_ensure_production_pinvi_target`까지
+    그대로 전달되는지 확인한다."""
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    base_transaction = _frozen_external_transaction(transaction_root)
+    transaction = replace(
+        base_transaction,
+        environment=replace(base_transaction.environment, compose_path=str(compose_path)),
+    )
+    service = ComposeService()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
+        Mock(return_value="production"),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=_production_config()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    ensure = Mock(return_value={"success": True})
+    monkeypatch.setattr(service, "_ensure_production_pinvi_target", ensure)
+
+    assert service.deploy_compatible_pinvi_pair(wait_timeout=1200) == {"success": True}
+    assert ensure.call_args.kwargs["wait_timeout"] == 1200
+
+
+def test_deploy_compatible_pinvi_pair_defaults_wait_timeout_to_120(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wait_timeout을 지정하지 않으면 기존 동작(120초)과 동일해야 한다(회귀 방지)."""
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    base_transaction = _frozen_external_transaction(transaction_root)
+    transaction = replace(
+        base_transaction,
+        environment=replace(base_transaction.environment, compose_path=str(compose_path)),
+    )
+    service = ComposeService()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
+        Mock(return_value="production"),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=_production_config()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    ensure = Mock(return_value={"success": True})
+    monkeypatch.setattr(service, "_ensure_production_pinvi_target", ensure)
+
+    assert service.deploy_compatible_pinvi_pair() == {"success": True}
+    assert ensure.call_args.kwargs["wait_timeout"] == 120
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [0, -1, 3601, True, False, 12.5, "120"],
+)
+def test_deploy_compatible_pinvi_pair_rejects_invalid_wait_timeout_before_any_mutation(
+    bad_value: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """범위 밖 값(0·음수·1시간 초과)과 잘못된 타입(bool·float·str)은 lock/subprocess에
+    닿기 전에 거부되어야 한다 — 검증은 `c6c_deployment_lock` 진입보다 먼저다."""
+    lock = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        lock,
+    )
+    subprocess_run = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        subprocess_run,
+    )
+
+    with pytest.raises(DeploymentContractError, match="wait_timeout"):
+        ComposeService().deploy_compatible_pinvi_pair(wait_timeout=bad_value)
+
+    lock.assert_not_called()
+    subprocess_run.assert_not_called()
+
+
+@pytest.mark.parametrize("boundary_value", [1, 3600])
+def test_deploy_compatible_pinvi_pair_accepts_boundary_wait_timeout_values(
+    boundary_value: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1초·3600초(하한/상한)는 정상적으로 통과해야 한다(off-by-one 회귀 방지)."""
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    base_transaction = _frozen_external_transaction(transaction_root)
+    transaction = replace(
+        base_transaction,
+        environment=replace(base_transaction.environment, compose_path=str(compose_path)),
+    )
+    service = ComposeService()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
+        Mock(return_value="production"),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=_production_config()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    ensure = Mock(return_value={"success": True})
+    monkeypatch.setattr(service, "_ensure_production_pinvi_target", ensure)
+
+    assert service.deploy_compatible_pinvi_pair(wait_timeout=boundary_value) == {
+        "success": True
+    }
+    assert ensure.call_args.kwargs["wait_timeout"] == boundary_value
+
+
+def test_run_up_stage_uses_custom_wait_timeout_in_compose_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #88의 핵심 회귀 테스트: `_run_up_stage(wait=True, wait_timeout=...)`가
+    하드코딩된 120이 아니라 지정한 값을 실제 `docker compose up --wait-timeout`
+    인자로 사용해야 한다."""
+    service = ComposeService()
+    monkeypatch.setattr(service, "_revalidate_c6c_build_provenance", Mock())
+    run = Mock(return_value=_success(["up", "kor-travel-map-api"]))
+    monkeypatch.setattr(service, "run", run)
+    result: dict[str, object] = {
+        "success": True,
+        "returncode": 0,
+        "stages": [],
+        "command": [],
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert service._run_up_stage(
+        result,
+        "map_api",
+        ["kor-travel-map-api"],
+        build=False,
+        recreate=True,
+        no_deps=True,
+        wait=True,
+        wait_timeout=1200,
+        capture_output=True,
+        transaction=Mock(spec=ComposeTransactionSnapshot),
+    )
+    args = run.call_args.args[0]
+    assert args == [
+        "up",
+        "-d",
+        "--no-deps",
+        "--wait",
+        "--wait-timeout",
+        "1200",
+        "--force-recreate",
+        "kor-travel-map-api",
+    ]
+
+
+def test_run_up_stage_defaults_wait_timeout_to_120(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`wait_timeout`을 생략하면 기존 동작(120초)과 동일해야 한다(회귀 방지)."""
+    service = ComposeService()
+    monkeypatch.setattr(service, "_revalidate_c6c_build_provenance", Mock())
+    run = Mock(return_value=_success(["up", "kor-travel-map-api"]))
+    monkeypatch.setattr(service, "run", run)
+    result: dict[str, object] = {
+        "success": True,
+        "returncode": 0,
+        "stages": [],
+        "command": [],
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert service._run_up_stage(
+        result,
+        "map_api",
+        ["kor-travel-map-api"],
+        build=False,
+        recreate=True,
+        no_deps=True,
+        wait=True,
+        capture_output=True,
+        transaction=Mock(spec=ComposeTransactionSnapshot),
+    )
+    args = run.call_args.args[0]
+    assert "--wait-timeout" in args
+    assert args[args.index("--wait-timeout") + 1] == "120"
+
+
+def test_activate_pair_sequentially_applies_same_wait_timeout_to_all_three_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #88: map API뿐 아니라 map dependents·pinvi API 활성화 단계 모두 같은
+    `wait_timeout`을 받아야 한다(부분 적용으로 map API만 늘어나고 나머지는 여전히
+    120초에 묶이는 회귀를 막는다)."""
+    service = ComposeService()
+    run_up_stage = Mock(return_value=True)
+    monkeypatch.setattr(service, "_run_up_stage", run_up_stage)
+    monkeypatch.setattr(
+        service, "_verify_running_image_source_provenance", Mock(return_value=None)
+    )
+    monkeypatch.setattr(
+        service, "_verify_map_runtime_source_provenance", Mock(return_value=None)
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
+        Mock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        service,
+        "_verify_active_contract",
+        Mock(return_value={"map_smoke": [], "pinvi_smoke": [], "ui_smoke": []}),
+    )
+    monkeypatch.setattr(
+        service,
+        "run",
+        Mock(return_value=_success(["stop"])),
+    )
+    result: dict[str, object] = {"stages": [], "command": [], "stdout": "", "stderr": ""}
+
+    service._activate_pair_sequentially(
+        result,
+        _production_config(),
+        _manifest().active,
+        ["kor-travel-map-api", "pinvi-api"],
+        stage_prefix="deploy",
+        transaction=Mock(spec=ComposeTransactionSnapshot),
+        wait_timeout=900,
+    )
+
+    assert run_up_stage.call_count == 3
+    for call in run_up_stage.call_args_list:
+        assert call.kwargs["wait_timeout"] == 900
+
+
 def test_pair_manifest_is_atomic_and_rejects_mutable_tags(tmp_path: Path) -> None:
     manifest_path = tmp_path / ".local" / "pair.json"
     with patch.object(c6c_deployment.os, "fsync", wraps=os.fsync) as fsync:
@@ -10190,6 +10471,127 @@ def test_pair_capture_bootstraps_candidate_pair_and_records_v4_atomically(
     assert timeline.index(manifest_event) < timeline.index(
         ("retention", ("reconcile", (pair,)))
     )
+
+
+def test_pair_capture_rejects_invalid_wait_timeout_before_any_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #88: `capture`도 `deploy`와 같은 wait_timeout 검증을 lock/subprocess보다
+    먼저 거쳐야 한다."""
+    lock = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        lock,
+    )
+    subprocess_run = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        subprocess_run,
+    )
+
+    with pytest.raises(DeploymentContractError, match="wait_timeout"):
+        ComposeService().capture_compatible_pinvi_pair(
+            verified_compatible=True, wait_timeout=0
+        )
+
+    lock.assert_not_called()
+    subprocess_run.assert_not_called()
+
+
+def test_pair_capture_bootstrap_stages_use_custom_wait_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #88: `pinvi-pair capture`의 5개 bootstrap `up --wait` 단계(base 의존성·
+    map API·map dependents·pinvi API·pinvi dependents) 모두 지정한 `wait_timeout`을
+    실제 compose 명령 인자로 써야 한다 — `deploy`만 고치고 `capture`의 동일한 root
+    cause(clean bootstrap도 kor-travel-map API의 alembic 마이그레이션을 기다린다)를
+    빠뜨리는 회귀를 막는다."""
+    _allow_manager_mutation(monkeypatch)
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    manifest_path = tmp_path / ".local" / "pair.json"
+    monkeypatch.setenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", str(manifest_path))
+    monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "capture.lock"))
+    service = ComposeService()
+    _allow_running_image_provenance(service, monkeypatch)
+    transaction = replace(
+        _frozen_external_transaction(tmp_path),
+        manifest_path=str(manifest_path),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    pair = _new_image_pair(
+        _MAP_IMAGE_ID,
+        _PINVI_IMAGE_ID,
+        _CONTRACT_GENERATION,
+        map_source_revision=_MAP_SOURCE_REVISION,
+        pinvi_source_revision=_PINVI_SOURCE_REVISION,
+    )
+    _allow_candidate_pair(service, monkeypatch, pair=pair)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        lambda _environment: _production_config(),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        service, "_snapshot_service_states", lambda _services, **_kwargs: {}
+    )
+    monkeypatch.setattr(service, "_inspect_current_pair", lambda _config: pair)
+    monkeypatch.setattr(service, "_require_pair_image_provenance", lambda _pair: None)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_map_ops_smoke",
+        lambda _config: [],
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.run_pinvi_canonical_smoke",
+        lambda _config, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        service,
+        "_verify_active_contract",
+        lambda *_a, **_k: {"runtime_secret_isolation": True},
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.require_empty_retention_namespace",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        lambda pairs, **_kwargs: RetentionReport(ensured=5, removed=0),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        lambda pairs, **_kwargs: RetentionReport(ensured=0, removed=0),
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):  # type: ignore[no-untyped-def]
+        args_list = list(args)
+        commands.append(args_list)
+        return _success(args_list)
+
+    monkeypatch.setattr(service, "run", fake_run)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.write_pair_manifest",
+        lambda *_a, **_k: None,
+    )
+
+    result = service.capture_compatible_pinvi_pair(
+        verified_compatible=True, wait_timeout=1200
+    )
+
+    assert result["success"] is True
+    up_wait_commands = [
+        command for command in commands if command[0] == "up" and "--wait" in command
+    ]
+    # 7 bootstrap_base_* stages (db/storage/gra/cadv/prom/geo/conc) + map_api +
+    # map_dependents + pinvi_api + pinvi_dependents = 11 separate `up --wait` stages.
+    assert len(up_wait_commands) == 11
+    for command in up_wait_commands:
+        assert command[command.index("--wait-timeout") + 1] == "1200"
 
 
 def test_pair_capture_builds_all_result_payload_before_manifest_commit(

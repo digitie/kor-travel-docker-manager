@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-07-31 (T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거, issue #88)
+
+kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행하는데, `_run_up_stage`가
+`docker compose up --wait --wait-timeout 120`을 하드코딩해 `CREATE INDEX CONCURRENTLY` 등
+non-transactional DDL을 쓰는 긴 마이그레이션(실측 8~18분)에서 deploy가 실패로 판정되고
+`_recover_previous_pair` rollback이 마이그레이션 진행 중인 컨테이너를 그대로 뜯어 durable한
+부분 적용 상태를 남기는 문제였다. kor-travel-map T-VN-H35(prod alembic 0063→0069) 실행 중
+실제로 배포가 중단되며 발견됐다(issue #88).
+
+`_run_up_stage`부터 `deploy_compatible_pinvi_pair` → CLI `pinvi-pair deploy --wait-timeout`까지
+`wait_timeout`을 관통시켰다. 기본값(120)은 그대로라 기존 호출은 회귀 없다.
+
+적대적 리뷰 1명(Workflow 도구)이 스코프 공백을 찾아냈다: `pinvi-pair capture`(clean bootstrap)도
+5개 활성화 단계에서 같은 하드코딩 `wait=True`를 쓰고, `bootstrap_map_api` 단계는 issue #88과
+정확히 같은 alembic 선행 실행 패턴이었다 — 최초 bootstrap은 전체 마이그레이션 이력을 처음부터
+실행할 수 있어 오히려 증분 배포보다 초과 가능성이 크다는 지적도 있었다. 리뷰가 실제 코드
+라인(4139/4191/4214/4237/4264)까지 짚어 재확인했고, `capture_compatible_pinvi_pair`에도 같은
+파라미터·CLI 플래그를 추가해 막았다(검증 로직은 `_validate_c6c_wait_timeout` 공유 helper로
+통일 — CLI 기본값도 리터럴 대신 같은 상수를 import해 두 곳이 벌어지는 것을 막았다).
+
+rollback/recovery 경로(`_recover_previous_pair`, `rollback_compatible_pinvi_pair`)는 의도적으로
+그대로 뒀다 — rollback 대상은 이미 마이그레이션이 끝난 옛 image라, 진짜 hang을 빠르게 판별하는
+쪽이 더 안전하다.
+
+회귀 테스트 다수 추가: threading·기본값 유지·경계값(1/3600)·잘못된 타입/범위(`bool`은
+`isinstance(x, int)`가 `True`라 별도 배제 필요)·`_run_up_stage`가 실제로 만드는 compose
+인자·`_activate_pair_sequentially`의 세 단계 모두 동일 값 사용·`capture`의 11개 `up --wait`
+단계(base 7종 + map_api + map_dependents + pinvi_api + pinvi_dependents) 모두 동일 값 사용.
+backend 1067 passed(기존 1049 + 신규 18), ruff 기존 9건 유지, 변경 파일 mypy clean.
+
+n150에서 실제 긴 마이그레이션을 수반하는 배포로 오발동 rollback이 재현되지 않는 것은 아직
+확인하지 못했다 — kor-travel-map 쪽 실제 cutover 시점에 검증 예정.
+
+---
+
 ## 2026-07-31 (C6c/C7 완료 태스크 이관과 credential blocker 분리)
 
 `docs/tasks.md`에 남은 C6c/C7 태스크의 GitHub·운영 증거를 다시 대조했다. 실제 인수까지

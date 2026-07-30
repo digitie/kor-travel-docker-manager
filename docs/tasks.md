@@ -15,6 +15,7 @@
 |:---|:---|:---:|:---:|:---|
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | 구현·기존 live 충족, T-045 회전과 새 official deploy 미완료 |
 | **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[ ]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
+| **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
 
 ---
 
@@ -76,3 +77,36 @@
       CI green을 통과한 별도 코드 PR을 병합한다.
 - [ ] n150에서 전용 command로 실제 회전하고 official compatible-pair deploy, C6c principal
       smoke, C7 targeted live를 통과한 뒤 T-031과 함께 완료 이력으로 옮긴다.
+
+### T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88)
+
+kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한다. `_run_up_stage`가
+`docker compose up --wait --wait-timeout 120`을 하드코딩했는데, `CREATE INDEX CONCURRENTLY`
+등 non-transactional DDL을 쓰는 긴 마이그레이션(실측 8~18분)은 120초를 넘겨 deploy가 실패로
+판정되고 `_recover_previous_pair` rollback이 발동한다 — **마이그레이션이 진행 중인 컨테이너를
+그대로 뜯어** durable한 부분 적용 상태를 남긴다. kor-travel-map T-VN-H35(prod alembic
+0063→0069) 실행 중 발견되어 배포가 중단됐다.
+
+- [x] `_run_up_stage`가 `wait_timeout: int` 파라미터를 받아 하드코딩 `"120"` 대신 실제
+      compose `--wait-timeout` 인자로 쓴다. `deploy_compatible_pinvi_pair` → CLI
+      `pinvi-pair deploy --wait-timeout <seconds>`까지 전체 경로를 관통하며, 기본값(120)은
+      바뀌지 않아 기존 호출은 회귀 없다.
+- [x] **적대적 리뷰(1명)가 발견한 공백을 함께 수정한다**: `pinvi-pair capture`(clean
+      bootstrap)도 5개 활성화 단계에서 같은 하드코딩 `wait=True`를 쓰고, 그중
+      `bootstrap_map_api`는 정확히 같은 alembic 선행 실행 패턴이다 — 최초 bootstrap은
+      전체 마이그레이션 이력을 처음부터 실행할 수 있어 증분 배포보다 오래 걸릴 가능성이
+      크다. `capture_compatible_pinvi_pair`에도 같은 `wait_timeout` 파라미터와 CLI
+      `--wait-timeout`을 추가하고, 검증 로직은 `_validate_c6c_wait_timeout` 공유 helper로
+      중복 없이 통일했다.
+- [x] `wait_timeout`은 int·1~3600초 범위만 허용하고(`bool`은 `isinstance(x, int)`가 `True`라
+      별도 배제), lock 진입·subprocess 호출보다 먼저 검증한다. rollback/recovery 경로
+      (`_recover_previous_pair`, `rollback_compatible_pinvi_pair`)는 의도적으로 그대로
+      두어 기본 120초를 유지한다 — rollback 대상은 이미 마이그레이션이 끝난 옛 image라
+      진짜 hang을 빠르게 판별하는 쪽이 더 안전하다.
+- [x] 회귀 테스트 다수 추가(threading·기본값 유지·경계값 1/3600·잘못된 타입/범위 거부·
+      `_run_up_stage`가 실제로 만드는 compose 인자·`_activate_pair_sequentially`의 세 단계
+      모두 동일 값 사용·`capture`의 11개 `up --wait` 단계 모두 동일 값 사용). backend
+      1067 passed(기존 1049 + 신규 18), ruff 기존 9건 유지, 변경 파일 mypy clean.
+- [ ] n150에서 실제 긴 마이그레이션을 수반하는 `pinvi-pair deploy --wait-timeout <n>`
+      (또는 `capture`)을 실행해 오발동 rollback 없이 통과하는 것을 확인한 뒤 완료 이력으로
+      옮긴다.

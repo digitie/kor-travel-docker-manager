@@ -440,6 +440,25 @@ def test_cli_deploys_only_through_compatible_pair_workflow(mock_compose_service)
     mock_compose_service.deploy_compatible_pinvi_pair.assert_called_once_with(
         build=True,
         recreate=True,
+        wait_timeout=120,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_deploy_passes_explicit_wait_timeout(mock_compose_service):
+    """issue #88: 마이그레이션을 수반하는 배포는 기본 120초보다 큰 값을 지정해야 한다."""
+    mock_compose_service.deploy_compatible_pinvi_pair.return_value = {
+        "success": True,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert main(["pinvi-pair", "deploy", "--wait-timeout", "1200"]) == 0
+    mock_compose_service.deploy_compatible_pinvi_pair.assert_called_once_with(
+        build=False,
+        recreate=True,
+        wait_timeout=1200,
     )
 
 
@@ -456,6 +475,28 @@ def test_cli_captures_only_verified_compatible_pair(mock_compose_service):
     mock_compose_service.capture_compatible_pinvi_pair.assert_called_once_with(
         verified_compatible=True,
         build=True,
+        wait_timeout=120,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_capture_passes_explicit_wait_timeout(mock_compose_service):
+    """issue #88: clean bootstrap capture도 kor-travel-map API의 alembic 마이그레이션을
+    기다려야 하므로 같은 --wait-timeout 오버라이드가 필요하다."""
+    mock_compose_service.capture_compatible_pinvi_pair.return_value = {
+        "success": True,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert main(
+        ["pinvi-pair", "capture", "--verified-compatible", "--wait-timeout", "1200"]
+    ) == 0
+    mock_compose_service.capture_compatible_pinvi_pair.assert_called_once_with(
+        verified_compatible=True,
+        build=False,
+        wait_timeout=1200,
     )
 
 
