@@ -1,13 +1,16 @@
 import argparse
+import getpass
 import json
 import sys
 from typing import Any
 
+from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import (
     _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
+from kor_travel_docker_manager.services.map_ui_auth_rotation import rotate_map_ui_auth
 from kor_travel_docker_manager.services.registry import list_targets
 
 DIRECT_ENSURE_ALIASES = {
@@ -139,6 +142,56 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _cmd_map_ui_auth_rotate(args: argparse.Namespace) -> int:
+    try:
+        current_password, new_password = _read_map_ui_auth_passwords(
+            password_stdin=args.password_stdin,
+        )
+        result = rotate_map_ui_auth(
+            current_password=current_password,
+            new_password=new_password,
+            project_root=args.project_root,
+        ).as_process_result()
+    except (DeploymentContractError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return _emit_process_result(result, json_output=args.json)
+
+
+def _read_map_ui_auth_passwords(*, password_stdin: bool) -> tuple[str, str]:
+    if password_stdin:
+        current_password, new_password = _read_exact_two_stdin_lines()
+    else:
+        if not sys.stdin.isatty():
+            raise ValueError("interactive password input requires a TTY")
+        current_password = getpass.getpass("Current Map UI password: ")
+        new_password = getpass.getpass("New Map UI password: ")
+        confirm_password = getpass.getpass("Confirm new Map UI password: ")
+        if new_password != confirm_password:
+            raise ValueError("new Map UI password confirmation does not match")
+    return current_password, new_password
+
+
+def _read_exact_two_stdin_lines() -> tuple[str, str]:
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    raw = stream.read(8193)
+    if isinstance(raw, str):
+        raw_bytes = raw.encode("utf-8")
+    else:
+        raw_bytes = raw
+    if len(raw_bytes) > 8192:
+        raise ValueError("--password-stdin input is too large")
+    if raw_bytes.count(b"\n") != 2 or not raw_bytes.endswith(b"\n"):
+        raise ValueError("--password-stdin requires exactly two newline-terminated lines")
+    try:
+        lines = raw_bytes.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError("--password-stdin must be UTF-8") from exc
+    if len(lines) != 2:
+        raise ValueError("--password-stdin requires exactly two lines")
+    return lines[0], lines[1]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ktdctl",
@@ -249,6 +302,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pair_rollback.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
     pair_rollback.set_defaults(func=_cmd_pinvi_pair)
+
+    map_ui_auth = subparsers.add_parser(
+        "map-ui-auth",
+        help="production Map UI 인증 credential을 감사 가능한 workflow로 회전합니다.",
+    )
+    map_ui_auth_subparsers = map_ui_auth.add_subparsers(
+        dest="map_ui_auth_action",
+        required=True,
+    )
+    map_ui_auth_rotate = map_ui_auth_subparsers.add_parser(
+        "rotate",
+        help="Map UI password hash와 session secret을 함께 회전합니다.",
+    )
+    map_ui_auth_rotate.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="현재 password와 새 password를 stdin 두 줄로 입력합니다.",
+    )
+    map_ui_auth_rotate.add_argument(
+        "--project-root",
+        help="docker-compose.yml과 .env가 있는 canonical manager checkout 경로입니다.",
+    )
+    map_ui_auth_rotate.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
+    map_ui_auth_rotate.set_defaults(func=_cmd_map_ui_auth_rotate)
 
     return parser
 

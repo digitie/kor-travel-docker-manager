@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
+
+T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`
+입력 경계와 Map UI PBKDF2 hash 정본을 먼저 고정하고, 이후 같은 PR에 production
+transaction·journal/recovery·UI-only recreate 검증을 누적한다.
+
+---
+
 ## 2026-07-31 (T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거, issue #88)
 
 kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행하는데, `_run_up_stage`가
