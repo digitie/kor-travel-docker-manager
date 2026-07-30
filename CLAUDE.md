@@ -2,28 +2,35 @@
 
 이 파일은 에이전트(Claude Code, Antigravity, Codex 등)가 세션 시작 시 가장 먼저 읽는 컨텍스트 문서다.
 
-## 프로젝트 현황 (2026-07-20)
+## 프로젝트 현황 (2026-07-31)
 
 PinVi 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
 
-C7 C6c image provenance PR #61은 병합됐다. issue #63/T-035는 Map #780/#782의 production
-admin/service/public/debug/cursor 설정을 manager C6c env/preflight에 결박하는 중이다. production compatible-pair는 Map·PinVi exact
-clean `HEAD`의 Git archive build context와 OCI revision label을 검증하고, manifest v4에 Map
-API·UI·Dagster web·daemon 네 immutable image ID와 공통 revision, PinVi API image ID와
-revision을 하나의 fail-closed runtime-set 계약으로 기록한다.
+2026-07-27 기준 compatible-pair와 C7 production live 인수는 완료됐다. production compatible-pair는
+Map·PinVi exact clean `HEAD`의 Git archive build context와 OCI revision label을 검증하고,
+manifest v4에 Map API·UI·Dagster web·daemon 네 immutable image ID와 공통 revision,
+PinVi API image ID와 revision을 하나의 fail-closed runtime-set 계약으로 기록한다. 일반
+production mutation은 계속 차단하고 전역 lock을 소유하는 `pinvi-pair` workflow만 이 다섯
+runtime을 같은 generation으로 변경한다.
 
-T-039는 n150 C6c capture의 PinVi login shell 오탐을 수정한다. PinVi `/admin/login`은
-`Suspense fallback={null}` 아래의 client component라 SSR HTML에 `admin-login-form`이 없을 수 있다.
-Manager의 HTTP shell smoke는 200·`text/html`·비어 있지 않은 body·일반 Next.js static marker와
-`admin/login` 전용 page chunk를 검증하고, hydration 후 form과 로그인 동작은 최종 Playwright가 검증한다.
-일반 fallback shell이 route chunk 없이 통과하는 완화는 허용하지 않는다.
+Manager는 Map API의 destructive/features route를 production에서 literal `true`로 명시 승인하고,
+read/cancel principal은 Map API와 PinVi API에만 격리한다. Map UI는 `/ops/datasets` 기준의
+login/protected/logout lifecycle, PinVi login은 HTTP route chunk와 hydrated form의 분리된
+smoke 계약을 사용한다. PR #73의 content-addressed reference는 active/rollback image 세대를
+보존하고 manifest commit 뒤 불필요한 reference를 정리한다.
 
-T-040/issue #70은 Map production API의 feature 관리 REST가 image 기본값 `true`로 동작하더라도
-Manager source가 이를 명시 승인했다는 사실을 C7 attestation이 증명할 수 있도록 canonical Compose에
-`KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED=true`를 literal로 결선한다. C6c는
-source/resolved/runtime의 API exact path와 다른 service·channel의 이름 부재를 모두 검증한 뒤에만
-compatible-pair를 승인한다.
+2026-07-26 C7 공식 gate에서 read-auth `7/7`, KMA active/cap/empty 각 `2/2`,
+schedule-write `2/2`, POI-cache-causal `2/2`, `BLOCKED` 0건과 상태 복구를 확인했다.
+2026-07-27 compatible-pair에서도 C6c principal smoke와 targeted live, active/rollback
+reference 가용성과 cleanup을 확인했다. T-037/038/039/040/041은
+`docs/tasks-done.md`로 이관됐다.
+
+T-031은 새 official deploy가 아직 끝나지 않아 활성 상태다. canonical Manager `.env`의
+Map UI hash/session은 running UI와 일치하지만 manager smoke 평문은 hash를 검증하지 못해
+preflight가 mutation 전에 중단된다. T-045에서 Map UI credential rotation을 `ktdctl`의
+audited production workflow로 제품화하고, hash/session 동시 회전·복구·감사와 n150
+official deploy/live 인수 뒤 T-031과 함께 완료한다.
 
 - **Backend**: Python FastAPI 기반 (`backend/`)
 - **Frontend**: Next.js 14+ TypeScript 기반 (`frontend/`)

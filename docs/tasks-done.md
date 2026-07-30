@@ -40,6 +40,11 @@
 | **T-027** | PinVi public API URL·CORS origin 환경변수화 | 2026-06-28 | prod public Web/API origin을 gitignore `.env`에서 주입하도록 변경 |
 | **T-028** | Linux 전용 개발·버전관리·CodeGraph 실행 위치 정책 정리 | 2026-06-28 | `git`/CodeGraph는 Linux, Playwright E2E는 n150 우선·불가 시 Windows fallback |
 | **T-032** | C6c Map·PinVi image source provenance fail-close | 2026-07-19 | PR #58 squash merge, clean HEAD→Git archive→OCI label→manifest v3 결박 |
+| **T-037** | C6c Map UI 통합 경로 smoke 정렬 | 2026-07-27 | PR #67, `/ops/datasets` login/protected/logout lifecycle을 n150에서 확인 |
+| **T-038** | Map destructive production 명시 승인 결선 | 2026-07-26 | PR #68, Map issue #796 closed, destructive live gate와 actor 감사 증거 완료 |
+| **T-039** | C6c PinVi login SSR shell 판정 정렬 | 2026-07-27 | PR #69, route chunk HTTP smoke와 hydrated login form을 n150에서 확인 |
+| **T-040** | C7 Map features routes production 명시 결선 | 2026-07-27 | PR #71, issue #70 closed, features route production live gate 완료 |
+| **T-041** | C6c rollback image retention 보장 | 2026-07-27 | PR #73, issue #72 closed, active/rollback reference 가용성과 cleanup 성공 확인 |
 | **T-021** | PR #36 후속 하드닝(신뢰 프록시 시크릿·brute-force durable·공개키 DB 직접조회·모달 a11y) | 2026-06-24 | AUTH-3/AUTH-6/APIKEY-1/FE-4, PR #38 머지·prod 검증 |
 | **T-025** | 배포 런북 + push 전 보안 감사 절차 | 2026-06-24 | `deploy-runbook.local.md`(gitignore), AGENTS.md 절차·DO NOT #13/#14 |
 | **T-042** | C7 WebSocket 종료 코드 계약(accept-then-close) 결선 | 2026-07-28 | PR #75, n150 프록시 경유 실브라우저에서 `4401`/`wasClean` 확인, settle 실측 |
@@ -242,6 +247,64 @@
       strict mypy, Ruff, production Compose `config --quiet`/resolved exact build mapping 통과
 - [x] PR #58을 squash merge(`ecaab504e63a99cb757318d3b67337bec962d90b`)하고 상위 C7
       완료 흐름의 n150 production gate까지 마감
+
+### T-037: C6c Map UI 통합 경로 smoke 정렬
+
+- [x] 제거된 `/ops/providers`를 smoke 대상에서 삭제하고 provider/job 운용 정본인
+      `/ops/datasets`로 login `next`, 보호 GET, logout 뒤 재차단을 통합했다.
+- [x] auth lifecycle 단위 테스트와 Docker 관리 문서를 같은 경로로 정렬하고 PR #67의
+      단일 적대적 리뷰, backend/focused 테스트, Ruff, strict mypy와 CI를 통과했다.
+- [x] 2026-07-27 n150 compatible-pair에서 실제 로그인, `/ops/datasets` 200, logout 뒤
+      재차단을 확인했다.
+
+### T-038: Map destructive production 명시 승인 결선
+
+- [x] canonical `kor-travel-map-api`에
+      `KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED=true`를 literal로 두고 raw/resolved/runtime에서
+      API에만 존재하는지 fail-closed로 검증했다. standalone Map 기본값 `false`와 Manager의
+      production 명시 승인을 분리했다.
+- [x] compatible-pair manifest v4와 C7 attestation의 Map API environment hash가 이 승인을
+      포함하도록 했고, destructive backup 감사 actor가 실제 인증 principal을 기록하도록
+      Map issue #796의 OpenAPI/actor 변경과 함께 완결했다.
+- [x] PR #68과 Map 후속 변경의 리뷰·CI를 통과했다. 2026-07-26 n150 C7 destructive live
+      gate를 통과하고 Map issue #796이 closed된 것을 확인했다.
+
+### T-039: C6c PinVi login SSR shell 판정 정렬
+
+- [x] PinVi `/admin/login`의 `Suspense fallback={null}` client page는 SSR HTML에 form이 없을
+      수 있으므로 HTTP smoke를 200·`text/html`·비어 있지 않은 body·일반 Next.js static
+      marker·`admin/login` 전용 page chunk 계약으로 한정했다.
+- [x] generic fallback이나 다른 route chunk는 계속 거부하고 hydration 뒤 form과 실제 로그인은
+      browser smoke가 소유하도록 책임을 분리했다. PR #69의 단일 적대적 리뷰, focused/full
+      테스트, Ruff, strict mypy와 CI를 통과했다.
+- [x] 2026-07-27 n150 compatible-pair에서 HTTP shell 계약과 최종 Playwright hydrated login
+      form·로그인 동작을 함께 확인했다.
+
+### T-040: C7 Map features routes production 명시 결선
+
+- [x] canonical `kor-travel-map-api`에
+      `KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED=true`를 literal로 두고 다른 service,
+      `env_file`, build arg, command, label, config, secret 경로에는 이름 자체가 없도록
+      raw/resolved/runtime 계약과 음성 회귀 테스트로 고정했다.
+- [x] PR #71의 focused 42개, C6c·Docker config 849개, backend 907개, Ruff baseline 제외,
+      strict mypy, canonical Compose gate, 단일 적대적 리뷰와 CI를 통과했다.
+- [x] 2026-07-27 newer compatible-pair와 C7 live에서 feature 관리 REST를 확인했고 manager
+      issue #70이 closed된 것을 확인했다.
+
+### T-041: C6c rollback image retention 보장
+
+- [x] PR #73(`c7328ed9`)에서 deploy/rollback 시작 전 manifest active/rollback과 candidate
+      다섯 image를 service+전체 image SHA 기반 content-addressed reference로 보존하고 exact
+      image ID를 재검증하도록 했다.
+- [x] retention 실패는 첫 container mutation 전에 중단한다. manifest commit 뒤 새 rollback
+      세대 밖 reference를 정리하고 cleanup residue는 다음 mutation 전에 해소하도록 했다.
+- [x] moving tag rollover, 일부 tag 실패, wrong-ID collision, candidate 실패 정리,
+      active=rollback dedupe, no-build/rollback/capture, post-commit cleanup pending 차단을
+      실행형 회귀로 검증했다. retention 과정의 프로세스 `SIGKILL` 주입은 완료 증거로
+      과장하지 않으며, 현재 완료 판정은 content-addressed 불변성·복구 보존·실운영 검증에
+      근거한다.
+- [x] 2026-07-27 n150 production에서 active/rollback retention reference의 가용성과
+      cleanup 성공을 확인했다. issue #72가 closed된 것을 확인했다.
 
 ### T-021: PR #36 후속 하드닝(신뢰 프록시 시크릿·brute-force durable·공개키 DB 직접조회·모달 a11y)
 

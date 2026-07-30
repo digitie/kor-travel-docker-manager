@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-07-31 (C6c/C7 완료 태스크 이관과 credential blocker 분리)
+
+`docs/tasks.md`에 남은 C6c/C7 태스크의 GitHub·운영 증거를 다시 대조했다. 실제 인수까지
+끝난 T-037/038/039/040/041은 `docs/tasks-done.md`로 이관했다. T-031은 구현과 기존
+live가 충족됐지만 새 official deploy의 credential preflight가 막혀 있어 활성 상태를
+유지하고, 제품화 작업을 T-045로 분리했다.
+
+- T-037/039: PR #67/#69의 Map UI 통합 경로와 PinVi login shell 계약을 2026-07-27
+  compatible-pair에서 확인했다. Map UI는 login→`/ops/datasets` 보호 GET→logout→재차단을,
+  PinVi는 SSR route chunk와 hydrated login form을 각각 책임 경계대로 통과했다.
+- T-038/040: Manager가 Map API의 destructive와 features route를 production에서 literal
+  `true`로 승인하고 다른 service/channel에는 이름이 없는 계약을 유지했다. 2026-07-26 C7
+  destructive live와 2026-07-27 pair/live를 통과했고 Map issue #796 및 manager
+  issue #70은 closed 상태다.
+- T-041: PR #73(`c7328ed9`)의 content-addressed rollback reference와 cleanup 구현을 기준으로
+  n150에서 active/rollback reference 가용성과 cleanup 성공을 확인했다. manager issue #72는
+  closed 상태다. 프로세스 `SIGKILL` 주입 테스트는 실행했다고 과장하지 않고, 완료 근거를
+  불변 reference·복구 보존 회귀·실운영 가용성으로 명시했다.
+- 교차 C7 공식 증거는 2026-07-26 Map 조합에서 read-auth `7/7`, KMA active/cap/empty 각
+  `2/2`, schedule-write `2/2`, POI-cache-causal `2/2`, `BLOCKED` 0건, 상태 복구와 active
+  target 0이었다.
+- T-031/T-045: canonical Manager `.env`의 Map UI hash/session은 running UI와 일치하지만
+  manager smoke 평문은 hash 검증에 실패한다. 새 official deploy는 mutation 전에
+  중단되는 것이 올바른 fail-closed 동작이다. `ktdctl` 전용 audited production workflow로
+  hash와 session을 함께 회전하고 복구·감사·실운영 인수를 마칠 때까지 T-031을 완료로
+  기록하지 않는다.
+
+이 변경은 문서 전용이다. 코드, runtime, compose, 운영 환경은 변경하지 않았다.
+
+---
+
 ## 2026-07-28 (tasks.md 정리 보정 — T-011/T-012/T-043/T-044 완료 이력 이관 누락 수정)
 
 T-033/034/035/036을 tasks-done.md로 이관하면서, 같은 세션에서 이미 `[x]` 완료 처리했던
