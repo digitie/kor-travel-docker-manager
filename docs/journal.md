@@ -10,6 +10,13 @@ T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl 
 입력 경계와 Map UI PBKDF2 hash 정본을 먼저 고정하고, 이후 같은 PR에 production
 transaction·journal/recovery·UI-only recreate 검증을 누적한다.
 
+rebase 후 hardening checkpoint에서 production C6c/rotation mutation을 root-only
+`/run/lock/kor-travel-docker-manager/global-mutation.lock` hardened lock으로 통일했다.
+Map UI rotation은 lock 내부에서 canonical `.env`를 다시 읽어 pre-lock 값과 SHA/hash를
+재검증하고, journal/backup/frozen compose는 root-owned private file 검증을 통과한 경우에만
+읽거나 정리한다. source snapshot 배포는 `.ktdm-source-revision` 또는
+`KTDM_MANAGER_SOURCE_REVISION` exact git SHA를 evidence로 제공해야 한다.
+
 ---
 
 ## 2026-07-31 (T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거, issue #88)

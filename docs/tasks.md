@@ -60,7 +60,10 @@
 
 - [ ] production에서만 실행되는 전용 `ktdctl` command를 추가하고 C6c 전역 lock,
       canonical manager checkout/Compose/`.env`, 실행 중 Map UI identity와 immutable image를
-      mutation 전에 fail-closed로 검증한다.
+      mutation 전에 fail-closed로 검증한다. production C6c/rotation mutation은
+      `/run/lock/kor-travel-docker-manager/global-mutation.lock`의 root-only hardened lock을
+      공유하며, git checkout이 아닌 배포 snapshot은 `.ktdm-source-revision` 또는
+      `KTDM_MANAGER_SOURCE_REVISION`의 exact git SHA로 source evidence를 제공해야 한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
       environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
       독립 검증하고 hash와 session secret은 항상 함께 회전한다.

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import io
 import json
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.cli import build_parser, main
@@ -64,7 +65,13 @@ def test_map_pbkdf2_hash_is_exact_map_format():
 def test_map_ui_auth_rotate_stdin_does_not_echo_secrets(capsys, monkeypatch):
     current_password = "current-password-with-length"
     new_password = "new-password-with-length"
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(
+        "sys.stdin",
+        SimpleNamespace(
+            buffer=io.BytesIO(f"{current_password}\n{new_password}\n".encode()),
+            isatty=lambda: False,
+        ),
+    )
 
     class Result:
         def as_process_result(self):
@@ -77,10 +84,7 @@ def test_map_ui_auth_rotate_stdin_does_not_echo_secrets(capsys, monkeypatch):
                 "stderr": "",
             }
 
-    with patch(
-        "sys.stdin.readlines",
-        return_value=[f"{current_password}\n", f"{new_password}\n"],
-    ), patch("kor_travel_docker_manager.cli.rotate_map_ui_auth", return_value=Result()) as rotate:
+    with patch("kor_travel_docker_manager.cli.rotate_map_ui_auth", return_value=Result()) as rotate:
         code = main(
             [
                 "map-ui-auth",
@@ -100,6 +104,18 @@ def test_map_ui_auth_rotate_stdin_does_not_echo_secrets(capsys, monkeypatch):
     combined = captured.out + captured.err
     assert current_password not in combined
     assert new_password not in combined
+
+
+def test_map_ui_auth_rotate_stdin_rejects_extra_line(monkeypatch):
+    monkeypatch.setattr(
+        "sys.stdin",
+        SimpleNamespace(
+            buffer=io.BytesIO(b"current-password-with-length\nnew-password-with-length\nextra\n"),
+            isatty=lambda: False,
+        ),
+    )
+
+    assert main(["map-ui-auth", "rotate", "--password-stdin"]) == 2
 
 
 def test_project_root_uses_explicit_canonical_checkout(tmp_path: Path, monkeypatch):
@@ -130,36 +146,23 @@ def test_inspect_container_invokes_docker_with_single_argv(monkeypatch):
     monkeypatch.setattr(rotation.subprocess, "run", fake_run)
 
     assert rotation._inspect_container("kor-travel-map-ui-latest")["Id"] == "container-id"
-    assert calls[0][0] == (["docker", "inspect", "kor-travel-map-ui-latest"],)
+    assert calls[0][0] == (
+        [rotation._DOCKER_BIN, "inspect", "kor-travel-map-ui-latest"],
+    )
+    assert calls[0][1]["env"]["DOCKER_HOST"] == rotation._DOCKER_HOST
     assert calls[0][1]["text"] is True
     assert calls[0][1]["capture_output"] is True
     assert calls[0][1]["timeout"] == 30
 
 
-def test_compose_file_args_include_canonical_override(tmp_path: Path):
+def test_compose_override_file_is_rejected(tmp_path: Path):
     compose_path = tmp_path / "docker-compose.yml"
     override_path = tmp_path / "docker-compose.override.yml"
-    compose_path.write_text("name: base\n", encoding="utf-8")
+    compose_path.write_text("services: {}\n", encoding="utf-8")
     override_path.write_text("services: {}\n", encoding="utf-8")
-    paths = RotationPaths(
-        project_root=tmp_path,
-        compose_path=compose_path,
-        env_path=tmp_path / ".env",
-        state_dir=tmp_path / "state",
-        manifest_path=tmp_path / "state" / "compatible-pair-v4.json",
-        lock_path=tmp_path / "state" / "global-mutation.lock",
-        rotation_dir=tmp_path / "state" / "map-ui-auth-rotation",
-        journal_path=tmp_path / "state" / "map-ui-auth-rotation" / "journal.json",
-        backup_path=tmp_path / "state" / "map-ui-auth-rotation" / "env.backup",
-        audit_path=tmp_path / "state" / "map-ui-auth-rotation" / "audit.jsonl",
-    )
 
-    assert rotation._compose_file_args(paths) == [
-        "-f",
-        str(compose_path),
-        "-f",
-        str(override_path.resolve()),
-    ]
+    with pytest.raises(Exception, match="single compose file"):
+        rotation._validate_single_file_compose_boundary(compose_path)
 
 
 def test_ui_stable_signature_ignores_recreate_volatile_paths_and_config_hash():
@@ -209,21 +212,89 @@ def test_auth_lifecycle_requires_exact_login_json_and_logout_clear_cookie():
             raise AssertionError("invalid login JSON must fail")
 
 
+def test_auth_lifecycle_preserves_active_cookie_and_checks_revoked_cookie():
+    responses = iter(
+        [
+            {
+                "status": 200,
+                "set_cookie": "ktm_admin_session=active; HttpOnly; Secure; SameSite=Strict; Path=/",
+                "payload": {"ok": True, "next": "/ops/datasets"},
+            },
+            {"status": 200, "set_cookie": "", "payload": None},
+            {
+                "status": 200,
+                "set_cookie": "ktm_admin_session=logout-target; HttpOnly; Secure; SameSite=Strict; Path=/",
+                "payload": {"ok": True, "next": "/ops/datasets"},
+            },
+            {"status": 200, "set_cookie": "", "payload": None},
+            {
+                "status": 200,
+                "set_cookie": (
+                    "ktm_admin_session=; Max-Age=0; HttpOnly; Secure; "
+                    "SameSite=Strict; Path=/"
+                ),
+                "payload": {"ok": True},
+            },
+            {"status": 302, "location": "/login", "set_cookie": "", "payload": None},
+            {"status": 302, "location": "/login", "set_cookie": "", "payload": None},
+        ]
+    )
+    seen_cookies: list[str] = []
+
+    def fake_request(_opener, _url, **kwargs):
+        headers = kwargs.get("headers", {})
+        if "Cookie" in headers:
+            seen_cookies.append(headers["Cookie"])
+        return next(responses)
+
+    with patch.object(rotation, "_http_request", side_effect=fake_request):
+        cookie = rotation._verify_auth_lifecycle(
+            origin="https://map.example.test",
+            username="admin",
+            password="password-with-length",
+            expect_cookie_reject=None,
+            preserve_active_session=True,
+        )
+
+    assert cookie == "ktm_admin_session=active"
+    assert seen_cookies == ["ktm_admin_session=logout-target"]
+
+
+def test_cookie_parser_rejects_duplicate_or_future_logout_cookie():
+    assert not rotation._valid_login_cookie(
+        "ktm_admin_session=value; HttpOnly; Secure; SameSite=Strict; Path=/; Path=/x"
+    )
+    assert not rotation._valid_login_cookie(
+        "ktm_admin_session=value; HttpOnly; Secure; SameSite=Strict; Path=/, other=x"
+    )
+    assert not rotation._valid_logout_cookie(
+        "ktm_admin_session=; Expires=Wed, 01 Jan 3000 00:00:00 GMT; Path=/"
+    )
+
+
 def test_journal_phase_update_preserves_env_sha(tmp_path: Path):
     journal_path = tmp_path / "journal.json"
+    old_sha = "0" * 64
+    new_sha = "1" * 64
+    operation_id = "op-1"
 
     rotation._write_journal(
         journal_path,
-        {"old_env_sha256": "old", "new_env_sha256": "new", "phase": "prepared"},
+        {
+            "operation_id": operation_id,
+            "version": rotation._ROTATION_JOURNAL_VERSION,
+            "old_env_sha256": old_sha,
+            "new_env_sha256": new_sha,
+            "phase": "prepared",
+        },
     )
-    rotation._write_journal(journal_path, {"phase": "env_new"})
+    rotation._write_journal(journal_path, {"operation_id": operation_id, "phase": "env_new"})
 
     payload = json.loads(journal_path.read_text(encoding="utf-8"))
-    assert payload == {
-        "old_env_sha256": "old",
-        "new_env_sha256": "new",
-        "phase": "env_new",
-    }
+    assert payload["old_env_sha256"] == old_sha
+    assert payload["new_env_sha256"] == new_sha
+    assert payload["phase"] == "env_new"
+    assert payload["version"] == rotation._ROTATION_JOURNAL_VERSION
 
 
 def test_pending_journal_unknown_env_sha_blocks_without_recovery(tmp_path: Path):
@@ -231,11 +302,17 @@ def test_pending_journal_unknown_env_sha_blocks_without_recovery(tmp_path: Path)
         tmp_path,
         "current-password-with-length",
     )
-    paths.rotation_dir.mkdir(parents=True)
-    paths.backup_path.write_bytes(env_path.read_bytes())
-    paths.journal_path.write_text(
-        json.dumps({"old_env_sha256": "old", "new_env_sha256": "new"}),
-        encoding="utf-8",
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    rotation._write_secret_backup(paths.backup_path, env_path.read_bytes())
+    rotation._write_journal(
+        paths.journal_path,
+        {
+            "operation_id": "op-1",
+            "version": rotation._ROTATION_JOURNAL_VERSION,
+            "phase": "env_new",
+            "old_env_sha256": "0" * 64,
+            "new_env_sha256": "1" * 64,
+        },
     )
 
     try:
@@ -248,6 +325,90 @@ def test_pending_journal_unknown_env_sha_blocks_without_recovery(tmp_path: Path)
         assert "does not match the current .env" in str(exc)
     else:
         raise AssertionError("unknown .env sha must block recovery")
+
+
+def test_committed_journal_residue_cleans_without_rollback(tmp_path: Path):
+    env_path, _compose_path, paths = _rotation_fixture(
+        tmp_path,
+        "current-password-with-length",
+    )
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    current_sha = rotation._sha256(env_path.read_bytes())
+    rotation._write_secret_backup(paths.backup_path, env_path.read_bytes())
+    rotation._write_journal(
+        paths.journal_path,
+        {
+            "operation_id": "op-committed",
+            "version": rotation._ROTATION_JOURNAL_VERSION,
+            "phase": "committed",
+            "old_env_sha256": "0" * 64,
+            "new_env_sha256": current_sha,
+        },
+    )
+
+    result = rotation._recover_pending_journal(
+        paths=paths,
+        env_values={},
+        runner=lambda *_: (_ for _ in ()).throw(AssertionError("rollback not expected")),
+    )
+
+    assert result is not None
+    assert result.phase == "cleared_committed_journal"
+    assert not paths.journal_path.exists()
+
+
+def test_old_env_with_forward_phase_fails_closed(tmp_path: Path):
+    env_path, _compose_path, paths = _rotation_fixture(
+        tmp_path,
+        "current-password-with-length",
+    )
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    current_sha = rotation._sha256(env_path.read_bytes())
+    rotation._write_secret_backup(paths.backup_path, env_path.read_bytes())
+    rotation._write_journal(
+        paths.journal_path,
+        {
+            "operation_id": "op-bad-phase",
+            "version": rotation._ROTATION_JOURNAL_VERSION,
+            "phase": "env_new",
+            "old_env_sha256": current_sha,
+            "new_env_sha256": "1" * 64,
+        },
+    )
+
+    with pytest.raises(Exception, match="phase conflicts"):
+        rotation._recover_pending_journal(
+            paths=paths,
+            env_values={},
+            runner=lambda *_: CommandResult(returncode=0),
+        )
+
+
+def test_orphan_backup_matching_current_env_is_cleared(tmp_path: Path):
+    env_path, _compose_path, paths = _rotation_fixture(
+        tmp_path,
+        "current-password-with-length",
+    )
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    rotation._write_secret_backup(paths.backup_path, env_path.read_bytes())
+
+    result = rotation._recover_orphan_rotation_artifacts(paths)
+
+    assert result is not None
+    assert result.phase == "cleared_orphan_backup_on_current_env"
+    assert not paths.backup_path.exists()
+
+
+def test_orphan_backup_drift_fails_closed(tmp_path: Path):
+    env_path, _compose_path, paths = _rotation_fixture(
+        tmp_path,
+        "current-password-with-length",
+    )
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    rotation._write_secret_backup(paths.backup_path, env_path.read_bytes() + b"# drift\n")
+
+    with pytest.raises(Exception, match="ambiguous orphan backup"):
+        rotation._recover_orphan_rotation_artifacts(paths)
 
 
 def test_rotate_map_ui_auth_rewrites_three_env_keys_and_uses_sanitized_child_env(
@@ -269,12 +430,15 @@ def test_rotate_map_ui_auth_rewrites_three_env_keys_and_uses_sanitized_child_env
         assert cwd == tmp_path
         assert timeout in {120, 180}
         command_calls.append((argv, dict(env)))
+        if argv[-1] == "config":
+            return CommandResult(returncode=0, stdout="services:\n  kor-travel-map-ui: {}\n")
         return CommandResult(returncode=0)
 
     with _patched_rotation_runtime(paths):
         result = rotate_map_ui_auth(
             current_password=current_password,
             new_password=new_password,
+            project_root=str(tmp_path),
             compose_path=str(compose_path),
             env_path=str(env_path),
             command_runner=runner,
@@ -291,19 +455,17 @@ def test_rotate_map_ui_auth_rewrites_three_env_keys_and_uses_sanitized_child_env
     )
     assert values["KOR_TRAVEL_MAP_UI_SESSION_SECRET"] != "old-session-secret-value-xxxxxxxxxxxx"
     assert values["KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"] == "map-ui-admin"
-    assert len(command_calls) == 2
-    up_command = command_calls[1][0]
-    assert up_command[-9:] == [
-        "up",
-        "-d",
-        "--no-deps",
-        "--force-recreate",
-        "--no-build",
-        "--pull",
-        "never",
-        "--wait",
-        "--wait-timeout",
-    ] or up_command[-11:] == [
+    assert len(command_calls) == 3
+    assert command_calls[1][0] == [
+        rotation._DOCKER_BIN,
+        "compose",
+        "-f",
+        str(paths.frozen_compose_path),
+        "config",
+        "--quiet",
+    ]
+    up_command = command_calls[2][0]
+    assert up_command[-11:] == [
         "up",
         "-d",
         "--no-deps",
@@ -339,6 +501,8 @@ def test_rotate_map_ui_auth_rolls_back_with_fresh_session_after_recreate_failure
         timeout: int,
     ) -> CommandResult:
         del cwd, env, stdin, timeout
+        if argv[-1] == "config":
+            return CommandResult(returncode=0, stdout="services:\n  kor-travel-map-ui: {}\n")
         if "up" in argv:
             call_count["up"] += 1
             if call_count["up"] == 1:
@@ -349,6 +513,7 @@ def test_rotate_map_ui_auth_rolls_back_with_fresh_session_after_recreate_failure
         result = rotate_map_ui_auth(
             current_password=current_password,
             new_password=new_password,
+            project_root=str(tmp_path),
             compose_path=str(compose_path),
             env_path=str(env_path),
             command_runner=runner,
@@ -394,6 +559,7 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
                 f"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN={'r' * 40}",
                 f"KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN={'c' * 40}",
                 "KTDM_C6C_CONTRACT_GENERATION=c6c-ops-v1",
+                f"{rotation._MANAGER_SOURCE_REVISION_ENV}={'2' * 40}",
                 "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME=map-ui-admin",
                 f"KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH='{current_hash}'",
                 "KOR_TRAVEL_MAP_UI_SESSION_SECRET='old-session-secret-value-xxxxxxxxxxxx'",
@@ -421,6 +587,7 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
         journal_path=tmp_path / "state" / "map-ui-auth-rotation" / "journal.json",
         backup_path=tmp_path / "state" / "map-ui-auth-rotation" / "env.backup",
         audit_path=tmp_path / "state" / "map-ui-auth-rotation" / "audit.jsonl",
+        frozen_compose_path=tmp_path / "state" / "map-ui-auth-rotation" / "frozen-compose.yml",
     )
     return env_path, compose_path, paths
 
@@ -429,25 +596,26 @@ def _patched_rotation_runtime(paths: RotationPaths):
     image_id = "sha256:" + "a" * 64
     manifest = SimpleNamespace(active=SimpleNamespace(map_ui_image_id=image_id))
 
-    @contextmanager
-    def lock_noop(_path: Path):
-        yield
-
     def relaxed_env_document(path: Path):
-        raw = path.read_bytes()
-        return rotation._env_document_from_bytes(raw, path.stat())
+        evidence = rotation._capture_strict_child_file(path.parent, path.name, kind="env")
+        return rotation._env_document_from_bytes(
+            evidence.raw,
+            evidence.parent_stat,
+            evidence.stat_result,
+        )
 
     return patch.multiple(
         rotation,
         _rotation_paths=lambda **_: paths,
-        _hardened_lock=lock_noop,
         _read_strict_env_document=relaxed_env_document,
+        _validate_manager_source_evidence=lambda *_: "2" * 40,
+        _validate_active_pair_runtime=lambda *_: None,
         load_pair_manifest=lambda _: manifest,
         _inspect_container=lambda _: {"Image": image_id, "Config": {}, "State": {}},
         _validate_map_ui_container=lambda *_, **__: None,
         _ui_stable_signature=lambda _: "stable-ui",
-        _non_ui_snapshot=lambda: {"pinvi-api-latest": {"Id": "1"}},
-        _assert_non_ui_unchanged=lambda _: None,
+        _non_ui_snapshot=lambda _project: {"pinvi-api": {"Id": "1"}},
+        _assert_non_ui_unchanged=lambda *_: None,
         _assert_plaintext_absent=lambda *_, **__: None,
         _verify_auth_lifecycle=lambda **_: "ktm_admin_session=old-cookie",
     )

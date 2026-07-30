@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 import yaml
+
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
@@ -56,10 +57,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_runtime_secret_isolation,
     write_pair_manifest,
 )
-from kor_travel_docker_manager.services.c6c_image_retention import RetentionReport
 from kor_travel_docker_manager.services.c6c_deployment import (
     new_image_pair as _build_image_pair,
 )
+from kor_travel_docker_manager.services.c6c_image_retention import RetentionReport
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
     ComposeEnvironmentSnapshot,
@@ -1149,13 +1150,7 @@ def test_production_state_paths_are_checkout_independent_and_project_scoped(
         tmp_path / ".local" / "state" / "kor-travel-docker-manager" / "pinvi-prod"
     )
     assert Path(manifest) == state_dir / "compatible-pair-v4.json"
-    assert Path(lock) == (
-        tmp_path
-        / ".local"
-        / "state"
-        / "kor-travel-docker-manager"
-        / "global-mutation.lock"
-    )
+    assert Path(lock) == Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
 
 
 @pytest.mark.parametrize(
@@ -1188,6 +1183,27 @@ def test_production_state_paths_cannot_split_one_project_lock(tmp_path: Path) ->
                 "KTDM_C6C_DEPLOYMENT_LOCK": str(tmp_path / "second.lock"),
             }
         )
+
+
+def test_production_c6c_lock_requires_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(c6c_deployment.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(DeploymentContractError, match="requires root"):
+        with c6c_deployment_lock(
+            "/run/lock/kor-travel-docker-manager/global-mutation.lock"
+        ):
+            raise AssertionError("lock must not be acquired by non-root production")
+
+
+def test_c6c_lock_rejects_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.lock"
+    target.write_text("", encoding="utf-8")
+    lock = tmp_path / "deployment.lock"
+    lock.symlink_to(target)
+
+    with pytest.raises(DeploymentContractError, match="cannot acquire"):
+        with c6c_deployment_lock(str(lock)):
+            raise AssertionError("symlink lock must not be acquired")
 
 
 def test_map_env_migration_pending_is_atomic_mode_600_and_retryable(
@@ -3090,6 +3106,7 @@ def test_compose_candidate_rejects_manager_state_directory_bind(
             compose_path=str(tmp_path / "docker-compose.yml"),
             root_env_path=str(tmp_path / ".env"),
             environment=_raw_candidate_environment(
+                KTDM_DEPLOYMENT_ENVIRONMENT="local",
                 KTDM_C6C_COMPATIBLE_PAIR_MANIFEST=str(manifest.resolve()),
                 KTDM_C6C_DEPLOYMENT_LOCK=str(lock.resolve()),
             ),

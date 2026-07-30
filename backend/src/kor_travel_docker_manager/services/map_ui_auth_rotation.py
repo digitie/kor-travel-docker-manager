@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import fcntl
 import hashlib
 import hmac
 import http.cookies
@@ -14,7 +13,6 @@ import secrets
 import signal
 import stat
 import subprocess
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +32,7 @@ from dotenv import dotenv_values
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     assert_manager_mutation_allowed,
+    c6c_deployment_lock,
     c6c_global_mutation_lock_path,
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
@@ -294,7 +293,7 @@ def rotate_map_ui_auth(
         env_values=env_values,
     )
 
-    with _masked_rotation_signals(), _hardened_lock(paths.lock_path):
+    with _masked_rotation_signals(), c6c_deployment_lock(str(paths.lock_path)):
         _prepare_private_state_dir(paths.rotation_dir)
         recovered = _recover_pending_journal(
             paths=paths,
@@ -303,8 +302,20 @@ def rotate_map_ui_auth(
         )
         if recovered is not None:
             return recovered
-        _assert_no_stale_rotation_artifacts(paths)
+        orphan_recovery = _recover_orphan_rotation_artifacts(paths)
+        if orphan_recovery is not None:
+            return orphan_recovery
 
+        locked_env_values = _load_env_file_values(paths.env_path)
+        if locked_env_values != env_values:
+            raise DeploymentContractError("canonical manager .env changed before lock acquisition")
+        if not verify_map_pbkdf2_hash(
+            current_password,
+            locked_env_values[MAP_UI_PASSWORD_HASH_ENV],
+        ):
+            raise DeploymentContractError("current Map UI password no longer matches .env")
+        origin = _production_map_ui_origin(locked_env_values)
+        env_values = locked_env_values
         env_document = _read_strict_env_document(paths.env_path)
         _validate_manager_source_evidence(paths.project_root, env_values)
         manifest = load_pair_manifest(str(paths.manifest_path))
@@ -486,13 +497,25 @@ def _project_child_path(project_root: Path, configured: str | None, name: str) -
     return candidate
 
 
+def _child_exists_nofollow(parent: Path, name: str) -> bool:
+    try:
+        os.lstat(parent / name)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise DeploymentContractError(f"canonical manager {name} is unavailable") from exc
+    return True
+
+
 def _load_env_file_values(env_path: Path) -> dict[str, str]:
     evidence = _capture_strict_child_file(env_path.parent, env_path.name, kind="env")
+    try:
+        text = evidence.raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DeploymentContractError("canonical manager .env must be UTF-8") from exc
     values = {
         key: value or ""
-        for key, value in dotenv_values(
-            stream=StringIO(evidence.raw.decode("utf-8"))
-        ).items()
+        for key, value in dotenv_values(stream=StringIO(text)).items()
         if isinstance(key, str)
     }
     missing = [name for name in ROTATED_ENV_NAMES if name not in values]
@@ -563,7 +586,7 @@ def _rotation_paths(
         env_path=env_path,
         state_dir=state_dir,
         manifest_path=state_dir / "compatible-pair-v4.json",
-        lock_path=Path(c6c_global_mutation_lock_path()),
+        lock_path=Path(c6c_global_mutation_lock_path(env_values)),
         rotation_dir=rotation_dir,
         journal_path=rotation_dir / "journal.json",
         backup_path=rotation_dir / "env.backup",
@@ -602,9 +625,13 @@ def _validate_manager_source_evidence(
     env_values: Mapping[str, str],
 ) -> str:
     expected_revision = env_values.get(_MANAGER_SOURCE_REVISION_ENV, "").strip()
-    revision_file = project_root / _MANAGER_SOURCE_REVISION_FILE
-    if revision_file.exists():
-        file_revision = revision_file.read_text(encoding="utf-8").strip()
+    if _child_exists_nofollow(project_root, _MANAGER_SOURCE_REVISION_FILE):
+        revision_evidence = _capture_strict_child_file(
+            project_root,
+            _MANAGER_SOURCE_REVISION_FILE,
+            kind="revision",
+        )
+        file_revision = revision_evidence.raw.decode("utf-8").strip()
         if expected_revision and expected_revision != file_revision:
             raise DeploymentContractError("manager source revision evidence is inconsistent")
         expected_revision = file_revision
@@ -650,38 +677,6 @@ def _git_output(project_root: Path, argv: list[str]) -> str:
 def _validate_git_revision(value: str) -> None:
     if not _GIT_REVISION_RE.fullmatch(value):
         raise DeploymentContractError("manager source revision must be an exact git SHA-1")
-
-
-@contextmanager
-def _hardened_lock(path: Path) -> Iterator[None]:
-    _prepare_private_state_dir(path.parent)
-    flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        fd = os.open(path, flags, 0o600)
-    except OSError as exc:
-        raise DeploymentContractError("cannot acquire C6c global mutation lock") from exc
-    try:
-        st = os.fstat(fd)
-        if (
-            not stat.S_ISREG(st.st_mode)
-            or st.st_nlink != 1
-            or stat.S_IMODE(st.st_mode) != 0o600
-        ):
-            raise DeploymentContractError("C6c global mutation lock is unsafe")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise DeploymentContractError(
-                "another C6c compatible-pair operation is already active"
-            ) from exc
-        yield
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
 
 
 @contextmanager
@@ -778,16 +773,16 @@ def _atomic_replace_file(
     stat_result: os.stat_result,
     expected_sha256: str,
 ) -> None:
-    _revalidate_env_file(
-        path,
-        parent_stat=parent_stat,
-        stat_result=stat_result,
-        expected_sha256=expected_sha256,
-    )
+    dir_fd = _open_strict_directory(path.parent)
     tmp_fd: int | None = None
     tmp_name: str | None = None
     try:
-        tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        _validate_parent_stat(os.fstat(dir_fd), parent_stat)
+        tmp_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        tmp_fd = os.open(tmp_name, flags, 0o600, dir_fd=dir_fd)
         os.fchown(tmp_fd, stat_result.st_uid, stat_result.st_gid)
         os.fchmod(tmp_fd, 0o600)
         with os.fdopen(tmp_fd, "wb", closefd=True) as handle:
@@ -795,22 +790,44 @@ def _atomic_replace_file(
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
+        _revalidate_env_file_at(
+            dir_fd,
+            path.parent,
+            path.name,
+            parent_stat=parent_stat,
+            stat_result=stat_result,
+            expected_sha256=expected_sha256,
+        )
+        os.replace(tmp_name, path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         tmp_name = None
-        _fsync_directory(path.parent)
+        os.fsync(dir_fd)
     finally:
         if tmp_fd is not None:
             os.close(tmp_fd)
         if tmp_name is not None:
             try:
-                os.unlink(tmp_name)
+                os.unlink(tmp_name, dir_fd=dir_fd)
             except FileNotFoundError:
                 pass
+        os.close(dir_fd)
 
 
 def _capture_strict_child_file(parent: Path, name: str, *, kind: str) -> StrictFileEvidence:
-    fd: int | None = None
     dir_fd = _open_strict_directory(parent)
+    try:
+        return _capture_strict_child_file_at(dir_fd, parent, name, kind=kind)
+    finally:
+        os.close(dir_fd)
+
+
+def _capture_strict_child_file_at(
+    dir_fd: int,
+    parent: Path,
+    name: str,
+    *,
+    kind: str,
+) -> StrictFileEvidence:
+    fd: int | None = None
     try:
         parent_stat = os.fstat(dir_fd)
         flags = os.O_RDONLY | os.O_CLOEXEC
@@ -822,6 +839,8 @@ def _capture_strict_child_file(parent: Path, name: str, *, kind: str) -> StrictF
             _validate_env_stat(st, expected_uid=st.st_uid)
         elif kind == "compose":
             _validate_compose_stat(st)
+        elif kind == "revision":
+            _validate_revision_stat(st)
         else:
             _validate_private_file_stat(st, label=kind)
         raw = _read_all_from_fd(fd)
@@ -837,7 +856,6 @@ def _capture_strict_child_file(parent: Path, name: str, *, kind: str) -> StrictF
     finally:
         if fd is not None:
             os.close(fd)
-        os.close(dir_fd)
 
 
 def _open_strict_directory(path: Path) -> int:
@@ -885,24 +903,42 @@ def _validate_compose_stat(st: os.stat_result) -> None:
         )
 
 
-def _revalidate_env_file(
-    path: Path,
+def _validate_revision_stat(st: os.stat_result) -> None:
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_nlink != 1
+        or (stat.S_IMODE(st.st_mode) & 0o022)
+    ):
+        raise DeploymentContractError("manager source revision file is unsafe")
+
+
+def _revalidate_env_file_at(
+    dir_fd: int,
+    parent: Path,
+    name: str,
     *,
     parent_stat: os.stat_result,
     stat_result: os.stat_result,
     expected_sha256: str,
 ) -> None:
-    evidence = _capture_strict_child_file(path.parent, path.name, kind="env")
+    evidence = _capture_strict_child_file_at(dir_fd, parent, name, kind="env")
     if (
-        evidence.parent_stat.st_dev != parent_stat.st_dev
-        or evidence.parent_stat.st_ino != parent_stat.st_ino
-        or
-        evidence.stat_result.st_dev != stat_result.st_dev
+        not _same_dir_stat(evidence.parent_stat, parent_stat)
+        or evidence.stat_result.st_dev != stat_result.st_dev
         or evidence.stat_result.st_ino != stat_result.st_ino
     ):
         raise DeploymentContractError("canonical manager .env changed during rotation")
     if not hmac.compare_digest(evidence.sha256, expected_sha256):
         raise DeploymentContractError("canonical manager .env changed during rotation")
+
+
+def _validate_parent_stat(current: os.stat_result, expected: os.stat_result) -> None:
+    if not _same_dir_stat(current, expected):
+        raise DeploymentContractError("canonical manager directory changed during rotation")
+
+
+def _same_dir_stat(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
 
 
 def _revalidate_file_evidence(evidence: StrictFileEvidence, *, kind: str) -> None:
@@ -926,10 +962,10 @@ def _write_secret_backup(path: Path, data: bytes) -> None:
 
 def _write_journal(path: Path, payload: Mapping[str, Any]) -> None:
     merged: dict[str, Any] = {}
-    if path.exists():
+    if _private_file_exists(path):
         try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            existing = json.loads(_read_private_file(path, label="Map UI auth journal"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise DeploymentContractError("pending Map UI auth rotation journal is invalid") from exc
         if not isinstance(existing, dict):
             raise DeploymentContractError("pending Map UI auth rotation journal is invalid")
@@ -1005,16 +1041,65 @@ def _unlink_private(path: Path) -> None:
     _fsync_directory(path.parent)
 
 
-def _assert_no_stale_rotation_artifacts(paths: RotationPaths) -> None:
-    stale = [
-        path.name
-        for path in (paths.backup_path, paths.frozen_compose_path)
-        if path.exists()
-    ]
-    if stale:
+def _recover_orphan_rotation_artifacts(
+    paths: RotationPaths,
+) -> MapUiAuthRotationResult | None:
+    backup_exists = _private_file_exists(paths.backup_path)
+    frozen_exists = _private_file_exists(paths.frozen_compose_path)
+    if not backup_exists and not frozen_exists:
+        return None
+    if frozen_exists:
         raise DeploymentContractError(
-            "Map UI auth rotation has stale private artifacts without a journal"
+            "Map UI auth rotation has stale frozen compose without a journal"
         )
+    current_sha = _capture_strict_child_file(
+        paths.env_path.parent,
+        paths.env_path.name,
+        kind="env",
+    ).sha256
+    backup_sha = _sha256(_read_private_file_bytes(paths.backup_path, label="Map UI auth backup"))
+    if current_sha != backup_sha:
+        raise DeploymentContractError(
+            "Map UI auth rotation has ambiguous orphan backup without a journal"
+        )
+    _write_audit(
+        paths.audit_path,
+        {
+            "result": "cleared_orphan_backup_on_current_env",
+            "recorded_at": _utc_now(),
+        },
+    )
+    _unlink_private(paths.backup_path)
+    return MapUiAuthRotationResult(
+        success=False,
+        returncode=1,
+        phase="cleared_orphan_backup_on_current_env",
+        audit_path=str(paths.audit_path),
+        stderr="orphan Map UI auth backup matched current .env and was cleared",
+    )
+
+
+def _read_private_file(path: Path, *, label: str) -> str:
+    raw = _read_private_file_bytes(path, label=label)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DeploymentContractError(f"{label} file is not UTF-8") from exc
+
+
+def _read_private_file_bytes(path: Path, *, label: str) -> bytes:
+    return _capture_strict_child_file(path.parent, path.name, kind=label).raw
+
+
+def _private_file_exists(path: Path) -> bool:
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise DeploymentContractError("Map UI auth state file is unavailable") from exc
+    _validate_private_file_stat(st, label="Map UI auth state")
+    return True
 
 
 def _prepare_private_state_dir(path: Path) -> None:
@@ -1716,7 +1801,7 @@ def _recover_pending_journal(
     env_values: Mapping[str, str],
     runner: CommandRunner,
 ) -> MapUiAuthRotationResult | None:
-    if not paths.journal_path.exists():
+    if not _private_file_exists(paths.journal_path):
         return None
     journal = _read_journal(paths.journal_path)
     phase = str(journal["phase"])
@@ -1752,7 +1837,7 @@ def _recover_pending_journal(
             audit_path=str(paths.audit_path),
             stderr="previous committed Map UI auth journal residue was cleared",
         )
-    if not paths.backup_path.exists():
+    if not _private_file_exists(paths.backup_path):
         raise DeploymentContractError("pending Map UI auth rotation journal has no backup")
     if current_sha == old_sha and phase in {"prepared", "rolled_back"}:
         _write_audit(
@@ -1811,8 +1896,8 @@ def _recover_pending_journal(
 
 def _read_journal(path: Path) -> Mapping[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = json.loads(_read_private_file(path, label="Map UI auth journal"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DeploymentContractError("pending Map UI auth rotation journal is invalid") from exc
     if not isinstance(payload, Mapping):
         raise DeploymentContractError("pending Map UI auth rotation journal is invalid")
@@ -1893,7 +1978,7 @@ def _restore_backup_with_recovery_session(
 ) -> dict[str, str]:
     current_evidence = _capture_strict_child_file(paths.env_path.parent, paths.env_path.name, kind="env")
     backup_document = _env_document_from_bytes(
-        paths.backup_path.read_bytes(),
+        _read_private_file_bytes(paths.backup_path, label="Map UI auth backup"),
         current_evidence.parent_stat,
         current_evidence.stat_result,
     )

@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 import yaml
@@ -43,6 +43,9 @@ _MAP_RUNTIME_CONTAINERS = {
     _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
     _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
 }
+_C6C_GLOBAL_MUTATION_LOCK = Path(
+    "/run/lock/kor-travel-docker-manager/global-mutation.lock"
+)
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
@@ -620,22 +623,25 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
     """배포 preflight부터 manifest commit/복구까지 host-wide nonblocking lock."""
 
     lock_path = Path(path)
-    lock_key = str(lock_path.resolve(strict=False))
+    lock_key = str(lock_path if lock_path.is_absolute() else lock_path.absolute())
     held_locks = _HELD_DEPLOYMENT_LOCKS.get()
     if lock_key in held_locks:
         yield
         return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle: BinaryIO | None = None
+    _prepare_c6c_lock_directory(lock_path.parent)
+    fd: int | None = None
     context_token = None
     try:
         try:
-            handle = lock_path.open("a+b")
-            os.chmod(lock_path, 0o600)
+            flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(lock_path, flags, 0o600)
+            _validate_c6c_lock_fd(fd, production=lock_path == _C6C_GLOBAL_MUTATION_LOCK)
         except OSError as exc:
             raise DeploymentContractError("cannot acquire C6c deployment lock") from exc
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise DeploymentContractError(
                 "another C6c compatible-pair operation is already active"
@@ -645,11 +651,39 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
     finally:
         if context_token is not None:
             _HELD_DEPLOYMENT_LOCKS.reset(context_token)
-        if handle is not None:
+        if fd is not None:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
-                handle.close()
+                os.close(fd)
+
+
+def _prepare_c6c_lock_directory(path: Path) -> None:
+    if path == _C6C_GLOBAL_MUTATION_LOCK.parent and os.geteuid() != 0:
+        raise DeploymentContractError(
+            "production compatible-pair managed workflow requires root"
+        )
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path == _C6C_GLOBAL_MUTATION_LOCK.parent:
+        st = path.lstat()
+        if (
+            not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != 0
+            or stat.S_IMODE(st.st_mode) != 0o700
+        ):
+            raise DeploymentContractError("production C6c deployment lock directory is unsafe")
+
+
+def _validate_c6c_lock_fd(fd: int, *, production: bool) -> None:
+    st = os.fstat(fd)
+    expected_uid = 0 if production else os.geteuid()
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_nlink != 1
+        or st.st_uid != expected_uid
+        or stat.S_IMODE(st.st_mode) != 0o600
+    ):
+        raise DeploymentContractError("C6c deployment lock is unsafe")
 
 
 def effective_environment(env_path: str) -> dict[str, str]:
@@ -703,15 +737,18 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
         manifest_override or str(state_dir / "compatible-pair-v4.json"),
         "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
     )
-    lock = Path(c6c_global_mutation_lock_path())
+    lock = Path(c6c_global_mutation_lock_path(values))
     if manifest == lock:
         raise DeploymentContractError("C6c manifest and lock paths must differ")
     return str(manifest), str(lock)
 
 
-def c6c_global_mutation_lock_path() -> str:
+def c6c_global_mutation_lock_path(
+    environment: Mapping[str, str] | None = None,
+) -> str:
     """모든 Compose mutation이 공유하는 `.env` 비의존 host-global lock."""
 
+    values = os.environ if environment is None else environment
     default = (
         Path.home()
         / ".local"
@@ -719,8 +756,8 @@ def c6c_global_mutation_lock_path() -> str:
         / "kor-travel-docker-manager"
         / "global-mutation.lock"
     )
-    override = os.environ.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
-    process_mode = os.environ.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
+    override = values.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
+    process_mode = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
     if override:
         if process_mode != "local":
             raise DeploymentContractError(
@@ -729,6 +766,8 @@ def c6c_global_mutation_lock_path() -> str:
         return str(
             _canonical_absolute_path(override, "KTDM_C6C_DEPLOYMENT_LOCK")
         )
+    if process_mode == "production":
+        return str(_C6C_GLOBAL_MUTATION_LOCK)
     return str(default.resolve(strict=False))
 
 
