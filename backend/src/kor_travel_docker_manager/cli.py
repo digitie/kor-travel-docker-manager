@@ -3,7 +3,10 @@ import json
 import sys
 from typing import Any
 
-from kor_travel_docker_manager.services.compose_service import compose_service
+from kor_travel_docker_manager.services.compose_service import (
+    _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+    compose_service,
+)
 from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.registry import list_targets
 
@@ -120,11 +123,13 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             result = compose_service.deploy_compatible_pinvi_pair(
                 build=args.build,
                 recreate=True,
+                wait_timeout=args.wait_timeout,
             )
         elif args.pair_action == "capture":
             result = compose_service.capture_compatible_pinvi_pair(
                 verified_compatible=args.verified_compatible,
                 build=args.build,
+                wait_timeout=args.wait_timeout,
             )
         else:
             result = compose_service.rollback_compatible_pinvi_pair()
@@ -200,6 +205,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="production Map+PinVi compatible pair를 단계 검증하며 배포합니다.",
     )
     pair_deploy.add_argument("--build", action="store_true", help="이미지를 먼저 빌드합니다.")
+    pair_deploy.add_argument(
+        "--wait-timeout",
+        type=int,
+        default=_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+        help=(
+            f"각 활성화 단계가 healthy를 기다리는 초 단위 상한(기본 "
+            f"{_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS}초). "
+            "kor-travel-map API는 uvicorn 기동 전에 alembic 마이그레이션을 실행하므로, "
+            "긴 마이그레이션을 수반하는 배포는 더 큰 값을 지정해야 timeout으로 인한 "
+            "오발동 rollback을 피할 수 있다(issue #88)."
+        ),
+    )
     pair_deploy.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
     pair_deploy.set_defaults(func=_cmd_pinvi_pair)
     pair_capture = pair_subparsers.add_parser(
@@ -208,6 +225,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pair_capture.add_argument(
         "--build", action="store_true", help="candidate runtime 이미지를 먼저 빌드합니다."
+    )
+    pair_capture.add_argument(
+        "--wait-timeout",
+        type=int,
+        default=_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+        help=(
+            f"각 부트스트랩 단계가 healthy를 기다리는 초 단위 상한(기본 "
+            f"{_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS}초). clean bootstrap은 전체 마이그레이션 "
+            "이력을 처음부터 실행할 수 있어 증분 배포보다 오래 걸릴 수 있다(issue #88)."
+        ),
     )
     pair_capture.add_argument(
         "--verified-compatible",

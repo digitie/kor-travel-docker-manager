@@ -398,6 +398,9 @@ payload를 읽어 자동 변환하지 않으며 symlink·비정규 파일·다�
 ```bash
 ktdctl pinvi-pair capture --verified-compatible --build
 # 기본 manifest: ~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/compatible-pair-v4.json
+# clean bootstrap도 kor-travel-map API의 alembic 마이그레이션을 처음부터 실행할 수 있어
+# deploy와 같은 이유(issue #88)로 --wait-timeout이 필요할 수 있다.
+ktdctl pinvi-pair capture --verified-compatible --build --wait-timeout 1200
 ```
 
 capture는 host lock 안에서 base dependency → Map API signed smoke → Map UI/Dagster → PinVi →
@@ -416,7 +419,18 @@ capability 없이 허용하며, 일반 인프라 mutation도 `ensure`/config 같
 
 ```bash
 ktdctl pinvi-pair deploy --build
+# 마이그레이션을 수반하는 배포는 각 활성화 단계의 healthy 대기 상한(기본 120초)을
+# 늘려야 timeout으로 인한 오발동 rollback을 피할 수 있다(issue #88).
+ktdctl pinvi-pair deploy --build --wait-timeout 1200
 ```
+
+kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한다. 대상 마이그레이션이
+`CREATE INDEX CONCURRENTLY` 등 `autocommit_block()`을 쓰면 수십 분이 걸릴 수 있는데, `--wait-timeout`
+기본값(`docker compose up --wait`의 초 단위 상한, 120)을 넘기면 deploy가 실패로 판정되어
+`_recover_previous_pair` rollback이 발동하고 **진행 중이던 마이그레이션 컨테이너가 뜯긴다** —
+대상 마이그레이션이 durable한 부분 적용 상태로 남을 수 있다. `--wait-timeout <seconds>`로
+1~3600초 사이 값을 지정하면 이 상한을 늘릴 수 있다(범위 밖 값과 int가 아닌 값은 lock 진입 전에
+거부한다). 값을 지정하지 않으면 기존과 동일하게 120초를 쓴다.
 
 전용 deploy는 다음 순서를 코드로 강제한다.
 

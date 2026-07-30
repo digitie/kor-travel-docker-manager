@@ -1382,6 +1382,30 @@ def _atomic_restore_compose_source(
                 pass
 
 
+# compatible-pair 활성화 단계의 `docker compose up --wait --wait-timeout` 상한(초).
+# kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행하므로(issue #88),
+# 긴 마이그레이션을 수반하는 배포는 기본값보다 큰 값이 필요하다. 하한/상한은 pathological
+# 값(0·음수·사실상 무한대)을 막는 sanity bound다 — 실측된 최장 마이그레이션(8~18분)에
+# 여유를 둔 1시간을 상한으로 잡는다.
+_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS = 120
+_MIN_C6C_WAIT_TIMEOUT_SECONDS = 1
+_MAX_C6C_WAIT_TIMEOUT_SECONDS = 3600
+
+
+def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
+    """`deploy`/`capture`가 공유하는 `wait_timeout` 검증. lock 진입 전에 호출해야 한다."""
+    if not isinstance(wait_timeout, int) or isinstance(wait_timeout, bool):
+        raise DeploymentContractError("wait_timeout must be an int")
+    if not (
+        _MIN_C6C_WAIT_TIMEOUT_SECONDS <= wait_timeout <= _MAX_C6C_WAIT_TIMEOUT_SECONDS
+    ):
+        raise DeploymentContractError(
+            "wait_timeout must be between "
+            f"{_MIN_C6C_WAIT_TIMEOUT_SECONDS} and "
+            f"{_MAX_C6C_WAIT_TIMEOUT_SECONDS} seconds"
+        )
+
+
 class ComposeService:
     def _capture_transaction_unlocked(
         self,
@@ -2929,8 +2953,19 @@ class ComposeService:
         *,
         build: bool = False,
         recreate: bool = True,
+        wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
-        """production Map runtime+PinVi API set의 유일한 배포 mutation 진입점."""
+        """production Map runtime+PinVi API set의 유일한 배포 mutation 진입점.
+
+        `wait_timeout`은 각 활성화 단계의 `docker compose up --wait`가 healthy를
+        기다리는 초 단위 상한이다. kor-travel-map API는 uvicorn 기동 전에
+        `alembic upgrade head`를 실행하므로(issue #88), 긴 마이그레이션을 수반하는
+        배포는 기본값(120초)보다 큰 값을 명시적으로 지정해야 한다 — 그렇지 않으면
+        마이그레이션이 끝나기 전에 timeout으로 실패 판정되어 `_recover_previous_pair`
+        rollback이 발동하고, 진행 중이던 마이그레이션 컨테이너가 뜯긴다.
+        """
+
+        _validate_c6c_wait_timeout(wait_timeout)
 
         with c6c_deployment_lock(get_c6c_deployment_lock_path()):
             transaction, _ = self._capture_transaction_unlocked(
@@ -2962,6 +2997,7 @@ class ComposeService:
                 capture_output=True,
                 transaction=transaction,
                 build_provenance=build_provenance,
+                wait_timeout=wait_timeout,
             )
 
     def _ensure_production_pinvi_target(
@@ -2974,6 +3010,7 @@ class ComposeService:
         capture_output: bool,
         transaction: ComposeTransactionSnapshot,
         build_provenance: C6cBuildProvenance | None = None,
+        wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         """C6c compatible runtime set을 Map 검증 뒤 PinVi로 단계 배포한다."""
 
@@ -3083,6 +3120,7 @@ class ComposeService:
                 stage_prefix="deploy",
                 cancel_probe_state=cancel_probe_state,
                 transaction=transaction,
+                wait_timeout=wait_timeout,
             )
             result["smoke"] = verification["map_smoke"]
             result["pinvi_smoke"] = verification["pinvi_smoke"]
@@ -3531,6 +3569,7 @@ class ComposeService:
         recreate: bool,
         no_deps: bool,
         wait: bool = False,
+        wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
         capture_output: bool,
         environment: Mapping[str, str] | None = None,
         mutation_capability: object | None = None,
@@ -3554,7 +3593,7 @@ class ComposeService:
         if no_deps:
             args.append("--no-deps")
         if wait:
-            args.extend(["--wait", "--wait-timeout", "120"])
+            args.extend(["--wait", "--wait-timeout", str(wait_timeout)])
         if build:
             args.append("--build")
         if recreate:
@@ -3839,6 +3878,7 @@ class ComposeService:
         cancel_probe_state: PinviCancelProbeState | None = None,
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
+        wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         """혼합 set 실행 없이 Map runtime 검증 뒤 PinVi와 전체 계약을 복원한다."""
 
@@ -3866,6 +3906,7 @@ class ComposeService:
             recreate=True,
             no_deps=True,
             wait=True,
+            wait_timeout=wait_timeout,
             capture_output=True,
             environment=environment,
             mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -3888,6 +3929,7 @@ class ComposeService:
             recreate=True,
             no_deps=True,
             wait=True,
+            wait_timeout=wait_timeout,
             capture_output=True,
             environment=environment,
             mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -3908,6 +3950,7 @@ class ComposeService:
             recreate=True,
             no_deps=True,
             wait=True,
+            wait_timeout=wait_timeout,
             capture_output=True,
             environment=environment,
             mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -3973,13 +4016,21 @@ class ComposeService:
         *,
         verified_compatible: bool,
         build: bool = False,
+        wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
-        """clean 환경에서 candidate runtime set을 단계 검증해 최초 v4를 기록한다."""
+        """clean 환경에서 candidate runtime set을 단계 검증해 최초 v4를 기록한다.
+
+        `bootstrap_map_api` 단계는 `deploy_compatible_pinvi_pair`와 마찬가지로
+        kor-travel-map API의 `alembic upgrade head`(uvicorn 기동 전 실행)를 기다린다
+        (issue #88). clean bootstrap은 전체 마이그레이션 이력을 처음부터 실행할 수
+        있어 증분 배포보다 오래 걸릴 수 있으므로 같은 `wait_timeout`을 노출한다.
+        """
 
         if not verified_compatible:
             raise DeploymentContractError(
                 "capturing a rollback pair requires --verified-compatible"
             )
+        _validate_c6c_wait_timeout(wait_timeout)
         with c6c_deployment_lock(get_c6c_deployment_lock_path()):
             transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
@@ -4104,6 +4155,7 @@ class ComposeService:
                         recreate=False,
                         no_deps=True,
                         wait=True,
+                        wait_timeout=wait_timeout,
                         capture_output=True,
                         mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                         transaction=transaction,
@@ -4156,6 +4208,7 @@ class ComposeService:
                     recreate=True,
                     no_deps=True,
                     wait=True,
+                    wait_timeout=wait_timeout,
                     capture_output=True,
                     environment=candidate_environment,
                     mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -4179,6 +4232,7 @@ class ComposeService:
                     recreate=True,
                     no_deps=True,
                     wait=True,
+                    wait_timeout=wait_timeout,
                     capture_output=True,
                     environment=candidate_environment,
                     mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -4202,6 +4256,7 @@ class ComposeService:
                     recreate=True,
                     no_deps=True,
                     wait=True,
+                    wait_timeout=wait_timeout,
                     capture_output=True,
                     environment=candidate_environment,
                     mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
@@ -4229,6 +4284,7 @@ class ComposeService:
                     recreate=False,
                     no_deps=True,
                     wait=True,
+                    wait_timeout=wait_timeout,
                     capture_output=True,
                     mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                     transaction=transaction,
