@@ -62,14 +62,18 @@
       canonical manager checkout/Compose/`.env`, 실행 중 Map UI identity와 immutable image를
       mutation 전에 fail-closed로 검증한다. production C6c/rotation mutation은
       `/run/lock/kor-travel-docker-manager/global-mutation.lock`의 root-only hardened lock을
-      공유하며, git checkout이 아닌 배포 snapshot은 `.ktdm-source-revision` 또는
-      `KTDM_MANAGER_SOURCE_REVISION`의 exact git SHA로 source evidence를 제공해야 한다.
+      공유한다. production source는 root-owned/non-writable checkout과 root-owned
+      `.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 제공하며,
+      `KTDM_MANAGER_SOURCE_REVISION`은 있을 때 파일과 일치해야 하는 보조 검증값이다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
       environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
       독립 검증하고 hash와 session secret은 항상 함께 회전한다.
-- [ ] canonical `.env`의 Map UI hash/session 두 항목만 원자 교체하고 같은 immutable image로
-      Map UI service만 `--no-deps --force-recreate --no-build --pull never --wait` 재생성한다.
-      다른 project container와 manifest/image generation은 변경하지 않는다.
+- [ ] canonical `.env`의 manager smoke 평문 password, Map UI PBKDF2 hash, session secret
+      세 항목만 원자 교체하고 같은 immutable image로 Map UI service만
+      `--no-deps --force-recreate --no-build --pull never --wait` 재생성한다.
+      frozen compose는 mutation/rollback 모두 기존 C6c raw/resolved protected value·system bind·
+      secret isolation 검증을 통과한 동일 resolved 문서만 사용한다. 다른 project container와
+      manifest/image generation은 변경하지 않는다.
 - [ ] 새 login→`/ops/datasets` 보호 GET→logout→재차단, 회전 전 session 거부를 검증한 뒤
       durable audit를 commit한다. forward 실패 시 이전 hash/image와 새로운 recovery session
       secret으로 UI를 복구해 partial-forward session까지 무효화하고 실제 복구 상태를 정직하게

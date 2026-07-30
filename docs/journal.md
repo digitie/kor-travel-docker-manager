@@ -14,8 +14,15 @@ rebase 후 hardening checkpoint에서 production C6c/rotation mutation을 root-o
 `/run/lock/kor-travel-docker-manager/global-mutation.lock` hardened lock으로 통일했다.
 Map UI rotation은 lock 내부에서 canonical `.env`를 다시 읽어 pre-lock 값과 SHA/hash를
 재검증하고, journal/backup/frozen compose는 root-owned private file 검증을 통과한 경우에만
-읽거나 정리한다. source snapshot 배포는 `.ktdm-source-revision` 또는
-`KTDM_MANAGER_SOURCE_REVISION` exact git SHA를 evidence로 제공해야 한다.
+읽거나 정리한다. source snapshot 배포는 root-owned/non-writable checkout과 root-owned
+`.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 요구하며, root process가
+user-owned `.git/config`를 실행하지 않도록 git 명령 검증을 제거했다.
+
+추가 hardening에서 `.env` owner를 `SUDO_UID`(없으면 root direct는 root, non-root 테스트는 현재
+UID)로 산출한 뒤 최초 read/re-read/replace/recovery까지 같은 expected owner로 전파했다. frozen
+compose 생성은 현재 `.env`와 root-owned compose evidence를 전후 재검증하고, 기존 C6c
+raw/resolved protected value·system bind·secret isolation validator를 통과한 resolved 문서만
+UI recreate와 rollback recovery에 사용한다.
 
 ---
 

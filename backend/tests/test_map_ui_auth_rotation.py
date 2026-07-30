@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -60,6 +61,27 @@ def test_map_pbkdf2_hash_is_exact_map_format():
     assert MAP_PBKDF2_DIGEST_BYTES == 32
     assert verify_map_pbkdf2_hash("new-password-with-length", encoded)
     assert not verify_map_pbkdf2_hash("wrong-password-with-length", encoded)
+
+
+@pytest.mark.parametrize("password", ["current\x00password", "current\rpassword", "current\npassword"])
+def test_current_password_rejects_unsafe_control_characters(password: str):
+    with pytest.raises(Exception, match="forbidden character"):
+        rotation._validate_current_password(password)
+
+
+@pytest.mark.parametrize(
+    "password",
+    [
+        "new-password-with-\x00-nul",
+        "new-password-with-\r-cr",
+        "new-password-with-\n-lf",
+        "new-password-with-'quote",
+        "new-password-with-\t-tab",
+    ],
+)
+def test_new_password_rejects_env_unsafe_characters(password: str):
+    with pytest.raises(Exception, match="forbidden character|whitespace"):
+        rotation._validate_new_password(password)
 
 
 def test_map_ui_auth_rotate_stdin_does_not_echo_secrets(capsys, monkeypatch):
@@ -132,6 +154,60 @@ def test_project_root_uses_validated_current_working_directory(tmp_path: Path, m
     assert rotation._project_root() == tmp_path.resolve()
 
 
+def test_env_capture_requires_canonical_owner(tmp_path: Path):
+    path = tmp_path / ".env"
+    path.write_text("KEY=value\n", encoding="utf-8")
+    path.chmod(0o600)
+
+    with pytest.raises(Exception, match="private regular file"):
+        rotation._capture_strict_child_file(
+            tmp_path,
+            ".env",
+            kind="env",
+            expected_uid=os.geteuid() + 1,
+        )
+
+
+def test_source_boundary_rejects_unexpected_owner(tmp_path: Path):
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+    with pytest.raises(Exception, match="owner-locked"):
+        rotation._validate_manager_source_boundary(tmp_path, source_owner_uid=os.geteuid() + 1)
+
+
+def test_source_revision_evidence_uses_root_owned_file_without_git_execution(
+    tmp_path: Path,
+    monkeypatch,
+):
+    revision = "2" * 40
+    (tmp_path / ".git").mkdir()
+    evidence = tmp_path / rotation._MANAGER_SOURCE_REVISION_FILE
+    evidence.write_text(f"{revision}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        rotation.subprocess,
+        "run",
+        lambda *_, **__: (_ for _ in ()).throw(AssertionError("git must not execute")),
+    )
+
+    assert (
+        rotation._validate_manager_source_evidence(
+            tmp_path,
+            {rotation._MANAGER_SOURCE_REVISION_ENV: revision},
+            source_owner_uid=os.geteuid(),
+        )
+        == revision
+    )
+
+
+def test_source_revision_evidence_file_is_required(tmp_path: Path):
+    with pytest.raises(Exception, match="evidence file is required"):
+        rotation._validate_manager_source_evidence(
+            tmp_path,
+            {rotation._MANAGER_SOURCE_REVISION_ENV: "2" * 40},
+            source_owner_uid=os.geteuid(),
+        )
+
+
 def test_inspect_container_invokes_docker_with_single_argv(monkeypatch):
     calls = []
 
@@ -162,7 +238,10 @@ def test_compose_override_file_is_rejected(tmp_path: Path):
     override_path.write_text("services: {}\n", encoding="utf-8")
 
     with pytest.raises(Exception, match="single compose file"):
-        rotation._validate_single_file_compose_boundary(compose_path)
+        rotation._validate_single_file_compose_boundary(
+            compose_path,
+            source_owner_uid=os.geteuid(),
+        )
 
 
 def test_ui_stable_signature_ignores_recreate_volatile_paths_and_config_hash():
@@ -580,6 +659,8 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
         project_root=tmp_path,
         compose_path=compose_path,
         env_path=env_path,
+        env_owner_uid=os.geteuid(),
+        source_owner_uid=os.geteuid(),
         state_dir=tmp_path / "state",
         manifest_path=tmp_path / "state" / "compatible-pair-v4.json",
         lock_path=tmp_path / "state" / "global-mutation.lock",
@@ -596,8 +677,13 @@ def _patched_rotation_runtime(paths: RotationPaths):
     image_id = "sha256:" + "a" * 64
     manifest = SimpleNamespace(active=SimpleNamespace(map_ui_image_id=image_id))
 
-    def relaxed_env_document(path: Path):
-        evidence = rotation._capture_strict_child_file(path.parent, path.name, kind="env")
+    def relaxed_env_document(path: Path, *, expected_uid: int):
+        evidence = rotation._capture_strict_child_file(
+            path.parent,
+            path.name,
+            kind="env",
+            expected_uid=expected_uid,
+        )
         return rotation._env_document_from_bytes(
             evidence.raw,
             evidence.parent_stat,
@@ -608,7 +694,10 @@ def _patched_rotation_runtime(paths: RotationPaths):
         rotation,
         _rotation_paths=lambda **_: paths,
         _read_strict_env_document=relaxed_env_document,
-        _validate_manager_source_evidence=lambda *_: "2" * 40,
+        _validate_manager_source_evidence=lambda *_, **__: "2" * 40,
+        validate_compose_candidate_protected_values=lambda *_, **__: (),
+        validate_resolved_compose_candidate_protected_values=lambda *_, **__: (),
+        validate_resolved_compose_secret_isolation=lambda *_: None,
         _validate_active_pair_runtime=lambda *_: None,
         load_pair_manifest=lambda _: manifest,
         _inspect_container=lambda _: {"Image": image_id, "Config": {}, "State": {}},
@@ -619,6 +708,67 @@ def _patched_rotation_runtime(paths: RotationPaths):
         _assert_plaintext_absent=lambda *_, **__: None,
         _verify_auth_lifecycle=lambda **_: "ktm_admin_session=old-cookie",
     )
+
+
+def test_write_frozen_compose_reuses_c6c_raw_and_resolved_validators(
+    tmp_path: Path,
+    monkeypatch,
+):
+    current_password = "current-password-with-length"
+    env_path, _compose_path, paths = _rotation_fixture(tmp_path, current_password)
+    active_image = "sha256:" + "f" * 64
+    calls: dict[str, object] = {}
+
+    def raw_validator(*args, **kwargs):
+        candidate = args[0]
+        calls["raw_candidate"] = candidate
+        calls["raw_kwargs"] = kwargs
+        return ("bind-snapshot",)
+
+    def resolved_validator(*args, **kwargs):
+        resolved = args[0]
+        calls["resolved_candidate"] = resolved
+        calls["resolved_kwargs"] = kwargs
+        return ("bind-snapshot",)
+
+    def isolation_validator(resolved, config):
+        calls["isolation"] = (resolved, config.map_ui_password_hash)
+
+    def runner(
+        argv: list[str],
+        cwd: Path,
+        env: dict[str, str],
+        stdin: str | None,
+        timeout: int,
+    ) -> CommandResult:
+        del cwd, env, stdin, timeout
+        if argv[-1] == "config":
+            return CommandResult(returncode=0, stdout="services:\n  kor-travel-map-ui: {}\n")
+        return CommandResult(returncode=0)
+
+    monkeypatch.setattr(rotation, "validate_compose_candidate_protected_values", raw_validator)
+    monkeypatch.setattr(
+        rotation,
+        "validate_resolved_compose_candidate_protected_values",
+        resolved_validator,
+    )
+    monkeypatch.setattr(rotation, "validate_resolved_compose_secret_isolation", isolation_validator)
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+
+    rotation._write_frozen_compose(paths, active_image, runner)
+
+    raw_kwargs = calls["raw_kwargs"]
+    resolved_kwargs = calls["resolved_kwargs"]
+    assert isinstance(raw_kwargs, dict)
+    assert isinstance(resolved_kwargs, dict)
+    assert raw_kwargs["compose_path"] == str(paths.compose_path)
+    assert raw_kwargs["root_env_path"] == str(env_path)
+    assert raw_kwargs["environment"][rotation.MAP_UI_IMAGE_ENV] == active_image
+    assert raw_kwargs["environment"][rotation.MAP_UI_PASSWORD_ENV] == current_password
+    assert resolved_kwargs["environment"] == raw_kwargs["environment"]
+    assert calls["resolved_candidate"] == {"services": {"kor-travel-map-ui": {}}}
+    assert calls["isolation"][0] == calls["resolved_candidate"]
+    assert paths.frozen_compose_path.exists()
 
 
 def _ui_inspect_payload(

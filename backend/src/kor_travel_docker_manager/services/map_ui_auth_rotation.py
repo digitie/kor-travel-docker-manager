@@ -36,6 +36,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_global_mutation_lock_path,
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
+    validate_compose_candidate_protected_values,
+    validate_resolved_compose_candidate_protected_values,
+    validate_resolved_compose_secret_isolation,
 )
 
 MAP_UI_PASSWORD_ENV = "KTDM_C6C_MAP_UI_ADMIN_PASSWORD"
@@ -152,6 +155,8 @@ class RotationPaths:
     project_root: Path
     compose_path: Path
     env_path: Path
+    env_owner_uid: int
+    source_owner_uid: int
     state_dir: Path
     manifest_path: Path
     lock_path: Path
@@ -264,6 +269,8 @@ def rotate_map_ui_auth(
         )
 
     runner = _default_command_runner if command_runner is None else command_runner
+    env_owner_uid = _deployment_owner_uid()
+    source_owner_uid = _manager_source_owner_uid(require_root=require_root)
     resolved_project_root = _project_root(project_root)
     resolved_env_path = _project_child_path(
         resolved_project_root,
@@ -276,7 +283,8 @@ def rotate_map_ui_auth(
         "docker-compose.yml",
     )
     _reject_process_env_overrides()
-    env_values = _load_env_file_values(resolved_env_path)
+    _validate_manager_source_boundary(resolved_project_root, source_owner_uid=source_owner_uid)
+    env_values = _load_env_file_values(resolved_env_path, expected_uid=env_owner_uid)
     assert_manager_mutation_allowed(environment=env_values)
     config = load_c6c_deployment_config_from_environment(env_values)
     if not config.production:
@@ -290,6 +298,8 @@ def rotate_map_ui_auth(
         project_root=resolved_project_root,
         compose_path=resolved_compose_path,
         env_path=resolved_env_path,
+        env_owner_uid=env_owner_uid,
+        source_owner_uid=source_owner_uid,
         env_values=env_values,
     )
 
@@ -306,7 +316,7 @@ def rotate_map_ui_auth(
         if orphan_recovery is not None:
             return orphan_recovery
 
-        locked_env_values = _load_env_file_values(paths.env_path)
+        locked_env_values = _load_env_file_values(paths.env_path, expected_uid=paths.env_owner_uid)
         if locked_env_values != env_values:
             raise DeploymentContractError("canonical manager .env changed before lock acquisition")
         if not verify_map_pbkdf2_hash(
@@ -316,8 +326,12 @@ def rotate_map_ui_auth(
             raise DeploymentContractError("current Map UI password no longer matches .env")
         origin = _production_map_ui_origin(locked_env_values)
         env_values = locked_env_values
-        env_document = _read_strict_env_document(paths.env_path)
-        _validate_manager_source_evidence(paths.project_root, env_values)
+        env_document = _read_strict_env_document(paths.env_path, expected_uid=paths.env_owner_uid)
+        _validate_manager_source_evidence(
+            paths.project_root,
+            env_values,
+            source_owner_uid=paths.source_owner_uid,
+        )
         manifest = load_pair_manifest(str(paths.manifest_path))
         _validate_active_pair_runtime(manifest.active, env_values)
         active_ui_image = manifest.active.map_ui_image_id
@@ -441,13 +455,15 @@ def rotate_map_ui_auth(
 def _validate_current_password(password: str) -> None:
     if not isinstance(password, str) or not password:
         raise DeploymentContractError("current Map UI password is empty")
-    if "\r" in password or "\n" in password:
-        raise DeploymentContractError("current Map UI password must not contain line breaks")
+    if "\0" in password or "\r" in password or "\n" in password:
+        raise DeploymentContractError("current Map UI password contains a forbidden character")
 
 
 def _validate_new_password(password: str) -> None:
     if not isinstance(password, str) or len(password) < 16:
         raise DeploymentContractError("new Map UI password is too short")
+    if "\0" in password or "\r" in password or "\n" in password or "'" in password:
+        raise DeploymentContractError("new Map UI password contains a forbidden character")
     if any(character.isspace() for character in password):
         raise DeploymentContractError("new Map UI password must not contain whitespace")
 
@@ -485,6 +501,27 @@ def _project_root(configured_root: str | None = None) -> Path:
     )
 
 
+def _deployment_owner_uid() -> int:
+    euid = os.geteuid()
+    if euid != 0:
+        return euid
+    sudo_uid = os.environ.get("SUDO_UID", "").strip()
+    if not sudo_uid:
+        return 0
+    try:
+        uid = int(sudo_uid)
+        if uid < 0:
+            raise ValueError
+        pwd.getpwuid(uid)
+    except (KeyError, ValueError) as exc:
+        raise DeploymentContractError("SUDO_UID must identify the canonical deployment owner") from exc
+    return uid
+
+
+def _manager_source_owner_uid(*, require_root: bool) -> int:
+    return 0 if require_root else os.geteuid()
+
+
 def _project_child_path(project_root: Path, configured: str | None, name: str) -> Path:
     expected = project_root / name
     if configured is None:
@@ -507,10 +544,19 @@ def _child_exists_nofollow(parent: Path, name: str) -> bool:
     return True
 
 
-def _load_env_file_values(env_path: Path) -> dict[str, str]:
-    evidence = _capture_strict_child_file(env_path.parent, env_path.name, kind="env")
+def _load_env_file_values(env_path: Path, *, expected_uid: int) -> dict[str, str]:
+    evidence = _capture_strict_child_file(
+        env_path.parent,
+        env_path.name,
+        kind="env",
+        expected_uid=expected_uid,
+    )
+    return _env_values_from_bytes(evidence.raw)
+
+
+def _env_values_from_bytes(raw: bytes) -> dict[str, str]:
     try:
-        text = evidence.raw.decode("utf-8")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise DeploymentContractError("canonical manager .env must be UTF-8") from exc
     values = {
@@ -558,12 +604,19 @@ def _rotation_paths(
     project_root: Path,
     compose_path: Path,
     env_path: Path,
+    env_owner_uid: int,
+    source_owner_uid: int,
     env_values: Mapping[str, str],
 ) -> RotationPaths:
     _project_child_path(project_root, str(compose_path), "docker-compose.yml")
     _project_child_path(project_root, str(env_path), ".env")
-    _validate_single_file_compose_boundary(compose_path)
-    env_evidence = _capture_strict_child_file(env_path.parent, env_path.name, kind="env")
+    _validate_single_file_compose_boundary(compose_path, source_owner_uid=source_owner_uid)
+    env_evidence = _capture_strict_child_file(
+        env_path.parent,
+        env_path.name,
+        kind="env",
+        expected_uid=env_owner_uid,
+    )
     env_stat = env_evidence.stat_result
     owner_home = Path(pwd.getpwuid(env_stat.st_uid).pw_dir).resolve(strict=True)
     project_name = env_values.get(COMPOSE_PROJECT_ENV, "").strip().lower()
@@ -584,6 +637,8 @@ def _rotation_paths(
         project_root=project_root,
         compose_path=compose_path,
         env_path=env_path,
+        env_owner_uid=env_owner_uid,
+        source_owner_uid=source_owner_uid,
         state_dir=state_dir,
         manifest_path=state_dir / "compatible-pair-v4.json",
         lock_path=Path(c6c_global_mutation_lock_path(env_values)),
@@ -595,7 +650,7 @@ def _rotation_paths(
     )
 
 
-def _validate_single_file_compose_boundary(compose_path: Path) -> None:
+def _validate_single_file_compose_boundary(compose_path: Path, *, source_owner_uid: int) -> None:
     override_path = compose_path.with_name("docker-compose.override.yml")
     if override_path.exists() or override_path.is_symlink():
         raise DeploymentContractError("Map UI auth rotation requires a single compose file")
@@ -603,13 +658,9 @@ def _validate_single_file_compose_boundary(compose_path: Path) -> None:
         compose_path.parent,
         compose_path.name,
         kind="compose",
+        expected_uid=source_owner_uid,
     )
-    try:
-        payload = yaml.safe_load(evidence.raw.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise DeploymentContractError("canonical docker-compose.yml is invalid") from exc
-    if not isinstance(payload, Mapping):
-        raise DeploymentContractError("canonical docker-compose.yml is invalid")
+    payload = _compose_yaml_mapping(evidence.raw, label="canonical docker-compose.yml")
     if "include" in payload:
         raise DeploymentContractError("compose include is forbidden for Map UI auth rotation")
     services = payload.get("services", {})
@@ -620,58 +671,63 @@ def _validate_single_file_compose_boundary(compose_path: Path) -> None:
             raise DeploymentContractError("compose extends is forbidden for Map UI auth rotation")
 
 
+def _compose_yaml_mapping(raw: bytes, *, label: str) -> Mapping[str, Any]:
+    try:
+        payload = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise DeploymentContractError(f"{label} is invalid") from exc
+    if not isinstance(payload, Mapping):
+        raise DeploymentContractError(f"{label} is invalid")
+    return payload
+
+
+def _validate_manager_source_boundary(project_root: Path, *, source_owner_uid: int) -> None:
+    _validate_source_path_stat(
+        project_root.stat(),
+        expected_uid=source_owner_uid,
+        label="canonical manager project root",
+        require_regular=False,
+    )
+    git_path = project_root / ".git"
+    try:
+        git_stat = git_path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError("canonical manager .git metadata is unavailable") from exc
+    if not (stat.S_ISDIR(git_stat.st_mode) or stat.S_ISREG(git_stat.st_mode)):
+        raise DeploymentContractError("canonical manager .git metadata is unsafe")
+    _validate_source_path_stat(
+        git_stat,
+        expected_uid=source_owner_uid,
+        label="canonical manager .git metadata",
+        require_regular=False,
+    )
+
+
 def _validate_manager_source_evidence(
     project_root: Path,
     env_values: Mapping[str, str],
+    *,
+    source_owner_uid: int,
 ) -> str:
     expected_revision = env_values.get(_MANAGER_SOURCE_REVISION_ENV, "").strip()
-    if _child_exists_nofollow(project_root, _MANAGER_SOURCE_REVISION_FILE):
-        revision_evidence = _capture_strict_child_file(
-            project_root,
-            _MANAGER_SOURCE_REVISION_FILE,
-            kind="revision",
-        )
-        file_revision = revision_evidence.raw.decode("utf-8").strip()
-        if expected_revision and expected_revision != file_revision:
-            raise DeploymentContractError("manager source revision evidence is inconsistent")
-        expected_revision = file_revision
-    git_dir = project_root / ".git"
-    if git_dir.exists():
-        revision = _git_output(project_root, ["rev-parse", "HEAD"])
-        dirty = _git_output(
-            project_root,
-            ["status", "--porcelain=v1", "--untracked-files=normal"],
-        )
-        if dirty:
-            raise DeploymentContractError("manager source checkout must be clean")
-        if expected_revision and expected_revision != revision:
-            raise DeploymentContractError("manager source revision differs from .env evidence")
-        _validate_git_revision(revision)
-        return revision
-    _validate_git_revision(expected_revision)
-    return expected_revision
-
-
-def _git_output(project_root: Path, argv: list[str]) -> str:
+    if not _child_exists_nofollow(project_root, _MANAGER_SOURCE_REVISION_FILE):
+        raise DeploymentContractError("manager source revision evidence file is required")
+    revision_evidence = _capture_strict_child_file(
+        project_root,
+        _MANAGER_SOURCE_REVISION_FILE,
+        kind="revision",
+        expected_uid=source_owner_uid,
+    )
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(project_root), *argv],
-            text=True,
-            capture_output=True,
-            timeout=20,
-            check=False,
-            env={
-                "PATH": "/usr/bin:/bin",
-                "HOME": "/root",
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-            },
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise DeploymentContractError("manager source revision cannot be verified") from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError("manager source revision cannot be verified")
-    return completed.stdout.strip()
+        file_revision = revision_evidence.raw.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise DeploymentContractError("manager source revision evidence must be UTF-8") from exc
+    if expected_revision and expected_revision != file_revision:
+        raise DeploymentContractError("manager source revision evidence is inconsistent")
+    _validate_git_revision(file_revision)
+    return file_revision
 
 
 def _validate_git_revision(value: str) -> None:
@@ -700,8 +756,13 @@ def _masked_rotation_signals() -> Iterator[None]:
             os.kill(os.getpid(), int(pending[0]))
 
 
-def _read_strict_env_document(env_path: Path) -> EnvDocument:
-    evidence = _capture_strict_child_file(env_path.parent, env_path.name, kind="env")
+def _read_strict_env_document(env_path: Path, *, expected_uid: int) -> EnvDocument:
+    evidence = _capture_strict_child_file(
+        env_path.parent,
+        env_path.name,
+        kind="env",
+        expected_uid=expected_uid,
+    )
     st = evidence.stat_result
     raw = evidence.raw
     try:
@@ -812,10 +873,22 @@ def _atomic_replace_file(
         os.close(dir_fd)
 
 
-def _capture_strict_child_file(parent: Path, name: str, *, kind: str) -> StrictFileEvidence:
+def _capture_strict_child_file(
+    parent: Path,
+    name: str,
+    *,
+    kind: str,
+    expected_uid: int | None = None,
+) -> StrictFileEvidence:
     dir_fd = _open_strict_directory(parent)
     try:
-        return _capture_strict_child_file_at(dir_fd, parent, name, kind=kind)
+        return _capture_strict_child_file_at(
+            dir_fd,
+            parent,
+            name,
+            kind=kind,
+            expected_uid=expected_uid,
+        )
     finally:
         os.close(dir_fd)
 
@@ -826,6 +899,7 @@ def _capture_strict_child_file_at(
     name: str,
     *,
     kind: str,
+    expected_uid: int | None = None,
 ) -> StrictFileEvidence:
     fd: int | None = None
     try:
@@ -836,11 +910,17 @@ def _capture_strict_child_file_at(
         fd = os.open(name, flags, dir_fd=dir_fd)
         st = os.fstat(fd)
         if kind == "env":
-            _validate_env_stat(st, expected_uid=st.st_uid)
+            if expected_uid is None:
+                raise DeploymentContractError("canonical manager .env owner is not configured")
+            _validate_env_stat(st, expected_uid=expected_uid)
         elif kind == "compose":
-            _validate_compose_stat(st)
+            if expected_uid is None:
+                raise DeploymentContractError("canonical manager source owner is not configured")
+            _validate_compose_stat(st, expected_uid=expected_uid)
         elif kind == "revision":
-            _validate_revision_stat(st)
+            if expected_uid is None:
+                raise DeploymentContractError("canonical manager source owner is not configured")
+            _validate_revision_stat(st, expected_uid=expected_uid)
         else:
             _validate_private_file_stat(st, label=kind)
         raw = _read_all_from_fd(fd)
@@ -892,20 +972,37 @@ def _validate_env_stat(st: os.stat_result, *, expected_uid: int) -> None:
         raise DeploymentContractError("canonical manager .env must be a private regular file")
 
 
-def _validate_compose_stat(st: os.stat_result) -> None:
+def _validate_source_path_stat(
+    st: os.stat_result,
+    *,
+    expected_uid: int,
+    label: str,
+    require_regular: bool,
+) -> None:
     if (
-        not stat.S_ISREG(st.st_mode)
+        st.st_uid != expected_uid
+        or (require_regular and (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1))
+        or (stat.S_IMODE(st.st_mode) & 0o022)
+    ):
+        raise DeploymentContractError(f"{label} must be owner-locked and non-writable")
+
+
+def _validate_compose_stat(st: os.stat_result, *, expected_uid: int) -> None:
+    if (
+        st.st_uid != expected_uid
+        or not stat.S_ISREG(st.st_mode)
         or st.st_nlink != 1
         or (stat.S_IMODE(st.st_mode) & 0o022)
     ):
         raise DeploymentContractError(
-            "canonical docker-compose.yml must be a non-writable regular file"
+            "canonical docker-compose.yml must be an owner-locked non-writable regular file"
         )
 
 
-def _validate_revision_stat(st: os.stat_result) -> None:
+def _validate_revision_stat(st: os.stat_result, *, expected_uid: int) -> None:
     if (
-        not stat.S_ISREG(st.st_mode)
+        st.st_uid != expected_uid
+        or not stat.S_ISREG(st.st_mode)
         or st.st_nlink != 1
         or (stat.S_IMODE(st.st_mode) & 0o022)
     ):
@@ -921,7 +1018,13 @@ def _revalidate_env_file_at(
     stat_result: os.stat_result,
     expected_sha256: str,
 ) -> None:
-    evidence = _capture_strict_child_file_at(dir_fd, parent, name, kind="env")
+    evidence = _capture_strict_child_file_at(
+        dir_fd,
+        parent,
+        name,
+        kind="env",
+        expected_uid=stat_result.st_uid,
+    )
     if (
         not _same_dir_stat(evidence.parent_stat, parent_stat)
         or evidence.stat_result.st_dev != stat_result.st_dev
@@ -942,7 +1045,13 @@ def _same_dir_stat(left: os.stat_result, right: os.stat_result) -> bool:
 
 
 def _revalidate_file_evidence(evidence: StrictFileEvidence, *, kind: str) -> None:
-    current = _capture_strict_child_file(evidence.path.parent, evidence.path.name, kind=kind)
+    expected_uid = evidence.stat_result.st_uid if kind in {"env", "compose", "revision"} else None
+    current = _capture_strict_child_file(
+        evidence.path.parent,
+        evidence.path.name,
+        kind=kind,
+        expected_uid=expected_uid,
+    )
     if (
         current.parent_stat.st_dev != evidence.parent_stat.st_dev
         or current.parent_stat.st_ino != evidence.parent_stat.st_ino
@@ -1056,6 +1165,7 @@ def _recover_orphan_rotation_artifacts(
         paths.env_path.parent,
         paths.env_path.name,
         kind="env",
+        expected_uid=paths.env_owner_uid,
     ).sha256
     backup_sha = _sha256(_read_private_file_bytes(paths.backup_path, label="Map UI auth backup"))
     if current_sha != backup_sha:
@@ -1190,10 +1300,29 @@ def _write_frozen_compose(
     active_ui_image: str,
     runner: CommandRunner,
 ) -> None:
+    env_evidence = _capture_strict_child_file(
+        paths.env_path.parent,
+        paths.env_path.name,
+        kind="env",
+        expected_uid=paths.env_owner_uid,
+    )
+    environment = {
+        **_env_values_from_bytes(env_evidence.raw),
+        MAP_UI_IMAGE_ENV: active_ui_image,
+    }
+    config = load_c6c_deployment_config_from_environment(environment)
     compose_evidence = _capture_strict_child_file(
         paths.compose_path.parent,
         paths.compose_path.name,
         kind="compose",
+        expected_uid=paths.source_owner_uid,
+    )
+    raw_compose = _compose_yaml_mapping(compose_evidence.raw, label="canonical docker-compose.yml")
+    raw_snapshots = validate_compose_candidate_protected_values(
+        raw_compose,
+        compose_path=str(paths.compose_path),
+        root_env_path=str(paths.env_path),
+        environment=environment,
     )
     resolved = runner(
         [
@@ -1210,9 +1339,23 @@ def _write_frozen_compose(
         None,
         120,
     )
+    _revalidate_file_evidence(env_evidence, kind="env")
     _revalidate_file_evidence(compose_evidence, kind="compose")
     if resolved.returncode != 0 or not resolved.stdout:
         raise DeploymentContractError("docker compose config validation failed")
+    resolved_compose = _compose_yaml_mapping(
+        resolved.stdout.encode("utf-8"),
+        label="resolved docker compose config",
+    )
+    resolved_snapshots = validate_resolved_compose_candidate_protected_values(
+        resolved_compose,
+        environment=environment,
+        compose_path=str(paths.compose_path),
+        root_env_path=str(paths.env_path),
+    )
+    if resolved_snapshots != raw_snapshots:
+        raise DeploymentContractError("resolved compose system bind snapshot differs from raw compose")
+    validate_resolved_compose_secret_isolation(resolved_compose, config)
     _write_private_file(
         paths.frozen_compose_path,
         resolved.stdout.encode("utf-8"),
@@ -1232,6 +1375,7 @@ def _write_frozen_compose(
         None,
         120,
     )
+    _revalidate_file_evidence(env_evidence, kind="env")
     _revalidate_file_evidence(compose_evidence, kind="compose")
     if result.returncode != 0:
         raise DeploymentContractError("frozen docker compose config validation failed")
@@ -1811,6 +1955,7 @@ def _recover_pending_journal(
         paths.env_path.parent,
         paths.env_path.name,
         kind="env",
+        expected_uid=paths.env_owner_uid,
     ).sha256
     if current_sha not in {old_sha, new_sha}:
         raise DeploymentContractError(
@@ -1976,7 +2121,12 @@ def _restore_backup_with_recovery_session(
     active_ui_image: str,
     runner: CommandRunner,
 ) -> dict[str, str]:
-    current_evidence = _capture_strict_child_file(paths.env_path.parent, paths.env_path.name, kind="env")
+    current_evidence = _capture_strict_child_file(
+        paths.env_path.parent,
+        paths.env_path.name,
+        kind="env",
+        expected_uid=paths.env_owner_uid,
+    )
     backup_document = _env_document_from_bytes(
         _read_private_file_bytes(paths.backup_path, label="Map UI auth backup"),
         current_evidence.parent_stat,
@@ -1997,7 +2147,7 @@ def _restore_backup_with_recovery_session(
         pass
     _write_frozen_compose(paths, active_ui_image, runner)
     _compose_recreate_map_ui(paths, active_ui_image, runner)
-    values = _load_env_file_values(paths.env_path)
+    values = _load_env_file_values(paths.env_path, expected_uid=paths.env_owner_uid)
     values[MAP_UI_SESSION_SECRET_ENV] = recovery_session
     return values
 
