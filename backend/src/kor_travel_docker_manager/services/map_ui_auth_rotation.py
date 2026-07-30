@@ -548,13 +548,19 @@ def _parse_env_line(line: str) -> tuple[str, str] | None:
     stripped = line.rstrip("\r\n")
     if not stripped or stripped.lstrip().startswith("#"):
         return None
+    exported = False
     if stripped.startswith("export "):
-        raise DeploymentContractError("Map UI auth keys must not use export syntax")
+        exported = True
+        stripped = stripped.removeprefix("export ").lstrip()
     key, separator, value_text = stripped.partition("=")
     if separator != "=":
         return None
     if key != key.strip() or not _ENV_KEY_RE.fullmatch(key):
-        raise DeploymentContractError("canonical manager .env contains an invalid key")
+        return None
+    if key not in ROTATED_ENV_NAMES:
+        return None
+    if exported:
+        raise DeploymentContractError("Map UI auth keys must not use export syntax")
     if value_text.startswith("'") and value_text.endswith("'") and len(value_text) >= 2:
         value = value_text[1:-1]
     elif value_text.startswith('"') or value_text.endswith('"'):
@@ -602,9 +608,19 @@ def _write_secret_backup(path: Path, data: bytes) -> None:
 
 
 def _write_journal(path: Path, payload: Mapping[str, Any]) -> None:
+    merged: dict[str, Any] = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DeploymentContractError("pending Map UI auth rotation journal is invalid") from exc
+        if not isinstance(existing, dict):
+            raise DeploymentContractError("pending Map UI auth rotation journal is invalid")
+        merged.update(existing)
+    merged.update(payload)
     _write_private_file(
         path,
-        (json.dumps(dict(payload), ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
+        (json.dumps(merged, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"),
     )
 
 
@@ -804,7 +820,7 @@ def _validate_map_ui_container(
         raise DeploymentContractError("running Map UI image differs from active manifest")
     if labels.get("com.docker.compose.service") != _MAP_UI_SERVICE:
         raise DeploymentContractError("running Map UI service identity is invalid")
-    if labels.get("com.docker.compose.project") != "kor-travel-docker-manager":
+    if labels.get("com.docker.compose.project") != env_values.get(COMPOSE_PROJECT_ENV):
         raise DeploymentContractError("running Map UI compose project is invalid")
     if state.get("Running") is not True:
         raise DeploymentContractError("running Map UI is not running")
@@ -857,6 +873,7 @@ def _ui_stable_signature(inspect_payload: Mapping[str, Any]) -> str:
         copy.pop(key, None)
     config = copy.get("Config")
     if isinstance(config, dict):
+        config.pop("Hostname", None)
         env = []
         for item in config.get("Env") or []:
             if isinstance(item, str) and item.split("=", 1)[0] in ROTATED_ENV_NAMES:
@@ -1044,6 +1061,31 @@ def _recover_pending_journal(
         return None
     if not paths.backup_path.exists():
         raise DeploymentContractError("pending Map UI auth rotation journal has no backup")
+    journal = _read_journal(paths.journal_path)
+    old_sha = str(journal.get("old_env_sha256", ""))
+    new_sha = str(journal.get("new_env_sha256", ""))
+    current_sha = _sha256(paths.env_path.read_bytes())
+    if current_sha not in {old_sha, new_sha}:
+        raise DeploymentContractError(
+            "pending Map UI auth rotation journal does not match the current .env"
+        )
+    if current_sha == old_sha:
+        _write_audit(
+            paths.audit_path,
+            {
+                "result": "cleared_pending_journal_on_old_env",
+                "recorded_at": _utc_now(),
+            },
+        )
+        _unlink_private(paths.backup_path)
+        _unlink_private(paths.journal_path)
+        return MapUiAuthRotationResult(
+            success=False,
+            returncode=1,
+            phase="cleared_pending_journal_on_old_env",
+            audit_path=str(paths.audit_path),
+            stderr="pending Map UI auth rotation journal was already back on the old env",
+        )
     manifest = load_pair_manifest(str(paths.manifest_path))
     _restore_backup_with_recovery_session(
         paths,
@@ -1069,6 +1111,16 @@ def _recover_pending_journal(
         rollback_state="rolled_back_password_state_with_irreversible_session_invalidation",
         stderr="pending Map UI auth rotation was recovered before starting a new rotation",
     )
+
+
+def _read_journal(path: Path) -> Mapping[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DeploymentContractError("pending Map UI auth rotation journal is invalid") from exc
+    if not isinstance(payload, Mapping):
+        raise DeploymentContractError("pending Map UI auth rotation journal is invalid")
+    return payload
 
 
 def _rollback_after_failure(

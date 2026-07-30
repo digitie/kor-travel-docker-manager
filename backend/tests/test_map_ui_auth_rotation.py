@@ -209,6 +209,47 @@ def test_auth_lifecycle_requires_exact_login_json_and_logout_clear_cookie():
             raise AssertionError("invalid login JSON must fail")
 
 
+def test_journal_phase_update_preserves_env_sha(tmp_path: Path):
+    journal_path = tmp_path / "journal.json"
+
+    rotation._write_journal(
+        journal_path,
+        {"old_env_sha256": "old", "new_env_sha256": "new", "phase": "prepared"},
+    )
+    rotation._write_journal(journal_path, {"phase": "env_new"})
+
+    payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert payload == {
+        "old_env_sha256": "old",
+        "new_env_sha256": "new",
+        "phase": "env_new",
+    }
+
+
+def test_pending_journal_unknown_env_sha_blocks_without_recovery(tmp_path: Path):
+    env_path, _compose_path, paths = _rotation_fixture(
+        tmp_path,
+        "current-password-with-length",
+    )
+    paths.rotation_dir.mkdir(parents=True)
+    paths.backup_path.write_bytes(env_path.read_bytes())
+    paths.journal_path.write_text(
+        json.dumps({"old_env_sha256": "old", "new_env_sha256": "new"}),
+        encoding="utf-8",
+    )
+
+    try:
+        rotation._recover_pending_journal(
+            paths=paths,
+            env_values={},
+            runner=lambda *_: CommandResult(returncode=0),
+        )
+    except Exception as exc:
+        assert "does not match the current .env" in str(exc)
+    else:
+        raise AssertionError("unknown .env sha must block recovery")
+
+
 def test_rotate_map_ui_auth_rewrites_three_env_keys_and_uses_sanitized_child_env(
     tmp_path: Path,
 ):
@@ -346,6 +387,7 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
                 "KOR_TRAVEL_MAP_UI_PORT=12705",
                 "PINVI_API_PORT=12801",
                 "PINVI_WEB_PORT=12805",
+                "export NON_TARGET=value",
                 "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL=http://127.0.0.1:12701",
                 "KTDM_PROD_URL_MAP=https://map.example.test",
                 "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true",
@@ -439,6 +481,7 @@ def _ui_inspect_payload(
         "HostConfig": {"Binds": binds},
         "Mounts": [{"Destination": "/data", "Source": "/data", "Mode": "ro"}],
         "Config": {
+            "Hostname": container_id,
             "Image": "sha256:" + "a" * 64,
             "Env": [
                 "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH=hash",
