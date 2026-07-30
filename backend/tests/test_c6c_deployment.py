@@ -1146,9 +1146,7 @@ def test_production_state_paths_are_checkout_independent_and_project_scoped(
             }
         )
 
-    state_dir = (
-        tmp_path / ".local" / "state" / "kor-travel-docker-manager" / "pinvi-prod"
-    )
+    state_dir = Path("/var/lib/kor-travel-docker-manager/pinvi-prod")
     assert Path(manifest) == state_dir / "compatible-pair-v4.json"
     assert Path(lock) == Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
 

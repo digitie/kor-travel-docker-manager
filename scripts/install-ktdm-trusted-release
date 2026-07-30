@@ -1,0 +1,316 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+APP_ROOT="/opt/kor-travel-docker-manager"
+APP_PARENT="/opt"
+SOURCE_ROOT=""
+ENV_FILE=""
+WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-}"
+STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage.$$"
+ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback.$$"
+ARCHIVE="${APP_PARENT}/.kor-travel-docker-manager.archive.$$.tar"
+
+die() {
+  echo "$1" >&2
+  exit 126
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --env-file)
+      shift
+      [[ "$#" -gt 0 ]] || die "--env-file requires a path"
+      ENV_FILE="$1"
+      ;;
+    --wheelhouse)
+      shift
+      [[ "$#" -gt 0 ]] || die "--wheelhouse requires a path"
+      WHEELHOUSE="$1"
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      [[ -z "${SOURCE_ROOT}" ]] || die "source checkout was provided more than once"
+      SOURCE_ROOT="$1"
+      ;;
+  esac
+  shift
+done
+
+SOURCE_ROOT="${SOURCE_ROOT:-$PWD}"
+if [[ -z "${WHEELHOUSE}" ]]; then
+  WHEELHOUSE="${SOURCE_ROOT}/dist/wheelhouse"
+fi
+if [[ -z "${ENV_FILE}" ]]; then
+  ENV_FILE="${APP_ROOT}/.env"
+fi
+
+if [[ "$(/usr/bin/id -u)" != "0" ]]; then
+  die "trusted release install must run as root"
+fi
+if [[ ! -d "${SOURCE_ROOT}" ]]; then
+  die "source checkout is missing"
+fi
+if [[ ! -d "${WHEELHOUSE}" ]]; then
+  die "trusted offline wheelhouse is missing"
+fi
+if [[ ! -f "${ENV_FILE}" ]]; then
+  die "deployment .env evidence is missing"
+fi
+
+source_uid="$(/usr/bin/stat -c '%u' "${SOURCE_ROOT}")"
+source_gid="$(/usr/bin/stat -c '%g' "${SOURCE_ROOT}")"
+env_uid="$(/usr/bin/stat -c '%u' "${ENV_FILE}")"
+env_gid="$(/usr/bin/stat -c '%g' "${ENV_FILE}")"
+
+require_file_mode() {
+  local path="$1"
+  local mode="$2"
+  if [[ -L "${path}" || ! -f "${path}" ]]; then
+    die "trusted file evidence is not a regular file: ${path}"
+  fi
+  local actual links
+  actual="$(/usr/bin/stat -c '%a' "${path}")"
+  links="$(/usr/bin/stat -c '%h' "${path}")"
+  if [[ "${actual}" != "${mode}" || "${links}" != "1" ]]; then
+    die "trusted file evidence has invalid mode or links: ${path}"
+  fi
+}
+
+require_root_locked_dir() {
+  local path="$1"
+  if [[ -L "${path}" || ! -d "${path}" ]]; then
+    die "trusted directory is not a real directory: ${path}"
+  fi
+  local uid mode
+  uid="$(/usr/bin/stat -c '%u' "${path}")"
+  mode="$(/usr/bin/stat -c '%a' "${path}")"
+  if [[ "${uid}" != "0" || $((8#${mode} & 022)) != "0" ]]; then
+    die "trusted directory is writable or not root-owned: ${path}"
+  fi
+}
+
+require_file_mode "${ENV_FILE}" "600"
+require_root_locked_dir "${WHEELHOUSE}"
+
+run_source_git() {
+  /usr/bin/sudo -H -u "#${source_uid}" -- /usr/bin/git -C "${SOURCE_ROOT}" "$@"
+}
+
+revision="$(run_source_git rev-parse HEAD)"
+if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  die "source revision is invalid"
+fi
+if ! run_source_git diff-index --quiet HEAD --; then
+  die "source checkout must be clean before trusted release install"
+fi
+run_source_git archive --format=tar HEAD > "${ARCHIVE}"
+/usr/bin/chown root:root "${ARCHIVE}"
+/usr/bin/chmod 0600 "${ARCHIVE}"
+
+cleanup() {
+  /usr/bin/rm -rf "${STAGING}" "${ARCHIVE}"
+  if [[ -d "${ROLLBACK}" && ! -d "${APP_ROOT}" ]]; then
+    /usr/bin/mv -T "${ROLLBACK}" "${APP_ROOT}"
+  elif [[ -d "${ROLLBACK}" ]]; then
+    /usr/bin/rm -rf "${ROLLBACK}"
+  fi
+}
+trap cleanup EXIT
+
+/usr/bin/install -d -o root -g root -m 0755 "${STAGING}"
+/usr/bin/tar -x -f "${ARCHIVE}" -C "${STAGING}"
+/usr/bin/chown -R root:root "${STAGING}"
+/usr/bin/find "${STAGING}" -type d -exec /usr/bin/chmod 0755 {} +
+/usr/bin/find "${STAGING}" -type f -exec /usr/bin/chmod 0644 {} +
+/usr/bin/chmod 0755 "${STAGING}/scripts/ktdctl-map-ui-auth-rotate" \
+  "${STAGING}/scripts/install-ktdctl-map-ui-auth-rotate" \
+  "${STAGING}/scripts/install-ktdm-trusted-release"
+
+/usr/bin/install -o "${env_uid}" -g "${env_gid}" -m 0600 "${ENV_FILE}" "${STAGING}/.env"
+/usr/bin/printf '%s\n' "${revision}" > "${STAGING}/.ktdm-source-revision"
+/usr/bin/chown root:root "${STAGING}/.ktdm-source-revision"
+/usr/bin/chmod 0644 "${STAGING}/.ktdm-source-revision"
+
+/usr/bin/python3 -m venv "${STAGING}/backend/.venv"
+shopt -s nullglob
+backend_wheels=("${WHEELHOUSE}"/kor_travel_docker_manager_backend-*.whl)
+shopt -u nullglob
+if [[ "${#backend_wheels[@]}" != "1" ]]; then
+  die "trusted wheelhouse must contain exactly one manager backend wheel"
+fi
+"${STAGING}/backend/.venv/bin/python" -I -m pip install \
+  --no-index \
+  --find-links "${WHEELHOUSE}" \
+  "${backend_wheels[0]}"
+
+KTDM_SOURCE_OWNER_UID="${source_uid}" \
+KTDM_SOURCE_OWNER_GID="${source_gid}" \
+KTDM_ENV_OWNER_UID="${env_uid}" \
+KTDM_ENV_OWNER_GID="${env_gid}" \
+KTDM_WHEELHOUSE="${WHEELHOUSE}" \
+/usr/bin/python3 -I -S - "${STAGING}" "${revision}" <<'PY'
+from __future__ import annotations
+
+import csv
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+from datetime import UTC, datetime
+
+root = pathlib.Path(sys.argv[1]).resolve(strict=True)
+revision = sys.argv[2]
+env_uid = int(os.environ["KTDM_ENV_OWNER_UID"])
+env_gid = int(os.environ["KTDM_ENV_OWNER_GID"])
+wheelhouse = pathlib.Path(os.environ["KTDM_WHEELHOUSE"]).resolve(strict=True)
+site_packages_candidates = list((root / "backend" / ".venv" / "lib").glob(
+    "python*/site-packages"
+))
+if len(site_packages_candidates) != 1:
+    raise SystemExit("trusted release site-packages is ambiguous")
+site_packages = site_packages_candidates[0]
+package_dir = site_packages / "kor_travel_docker_manager"
+dist_infos = list(site_packages.glob("kor_travel_docker_manager_backend-*.dist-info"))
+if len(dist_infos) != 1:
+    raise SystemExit("trusted release dist-info is ambiguous")
+dist_info = dist_infos[0]
+record = dist_info / "RECORD"
+
+def assert_root_locked(path: pathlib.Path) -> None:
+    st = path.lstat()
+    if st.st_uid != 0 or (stat.S_IMODE(st.st_mode) & 0o022):
+        raise SystemExit(f"trusted release path is writable or not root-owned: {path}")
+    if path.is_file() and st.st_nlink != 1:
+        raise SystemExit(f"trusted release file has hardlinks: {path}")
+
+def assert_env(path: pathlib.Path) -> None:
+    st = path.lstat()
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_uid != env_uid
+        or st.st_gid != env_gid
+        or st.st_nlink != 1
+        or stat.S_IMODE(st.st_mode) != 0o600
+    ):
+        raise SystemExit("deployment .env evidence is invalid")
+
+for required in (
+    root,
+    root / "docker-compose.yml",
+    root / ".ktdm-source-revision",
+    site_packages,
+    package_dir,
+    dist_info,
+    record,
+    wheelhouse,
+):
+    assert_root_locked(required)
+assert_env(root / ".env")
+
+wheelhouse_hash = hashlib.sha256()
+for wheel in sorted(wheelhouse.glob("*.whl")):
+    assert_root_locked(wheel)
+    wheelhouse_hash.update(wheel.name.encode("utf-8") + b"\0")
+    wheelhouse_hash.update(hashlib.sha256(wheel.read_bytes()).hexdigest().encode("ascii"))
+    wheelhouse_hash.update(b"\0")
+
+record_hash = hashlib.sha256(record.read_bytes()).hexdigest()
+package_files = 0
+with record.open(newline="", encoding="utf-8") as handle:
+    for row in csv.reader(handle):
+        if len(row) < 3:
+            raise SystemExit("wheel RECORD row is invalid")
+        relative, digest, _size = row[:3]
+        target = (site_packages / relative).resolve(strict=True)
+        try:
+            target.relative_to(site_packages)
+        except ValueError as exc:
+            raise SystemExit("wheel RECORD escapes site-packages") from exc
+        assert_root_locked(target)
+        if package_dir == target or package_dir in target.parents:
+            package_files += 1
+        if digest:
+            algorithm, separator, encoded = digest.partition("=")
+            if separator != "=" or algorithm != "sha256":
+                raise SystemExit("wheel RECORD digest must be sha256")
+if package_files == 0:
+    raise SystemExit("wheel RECORD does not cover manager package")
+
+manifest = {
+    "manager_source_revision": revision,
+    "installed_at": datetime.now(UTC).isoformat(),
+    "source_owner_uid": int(os.environ["KTDM_SOURCE_OWNER_UID"]),
+    "source_owner_gid": int(os.environ["KTDM_SOURCE_OWNER_GID"]),
+    "env_owner_uid": env_uid,
+    "env_owner_gid": env_gid,
+    "backend_distribution": dist_info.name,
+    "wheel_record_sha256": record_hash,
+    "wheelhouse_sha256": wheelhouse_hash.hexdigest(),
+}
+(root / ".ktdm-release-manifest.json").write_text(
+    json.dumps(manifest, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+os.chown(root / ".ktdm-release-manifest.json", 0, 0)
+os.chmod(root / ".ktdm-release-manifest.json", 0o644)
+PY
+
+/usr/bin/python3 -I -S - "${STAGING}" <<'PY'
+from __future__ import annotations
+
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+seen: set[pathlib.Path] = set()
+for path in (
+    root,
+    root / ".env",
+    root / ".ktdm-source-revision",
+    root / ".ktdm-release-manifest.json",
+    root / "docker-compose.yml",
+    root / "backend" / ".venv",
+):
+    directory = path if path.is_dir() else path.parent
+    if directory in seen:
+        continue
+    seen.add(directory)
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+PY
+
+if [[ -e "${ROLLBACK}" ]]; then
+  die "rollback staging path already exists"
+fi
+if [[ -e "${APP_ROOT}" ]]; then
+  /usr/bin/mv -T "${APP_ROOT}" "${ROLLBACK}"
+fi
+/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
+/usr/bin/python3 - <<'PY'
+from __future__ import annotations
+
+import os
+
+fd = os.open("/opt", os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+
+"${APP_ROOT}/scripts/install-ktdctl-map-ui-auth-rotate" "${APP_ROOT}/scripts/ktdctl-map-ui-auth-rotate"
+/usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null
+
+/usr/bin/rm -rf "${ROLLBACK}" "${ARCHIVE}"
+trap - EXIT

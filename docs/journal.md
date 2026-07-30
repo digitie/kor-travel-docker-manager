@@ -24,6 +24,36 @@ compose 생성은 현재 `.env`와 root-owned compose evidence를 전후 재검�
 raw/resolved protected value·system bind·secret isolation validator를 통과한 resolved 문서만
 UI recreate와 rollback recovery에 사용한다.
 
+두 번째 rereview checkpoint에서는 production state를 env-owner `$HOME` 추론에서 FHS 정본으로
+clean-cut했다. C6c pair와 Map UI rotation은 모두 `/run/lock/kor-travel-docker-manager/global-mutation.lock`
+및 `/var/lib/kor-travel-docker-manager/<compose-project>/compatible-pair-v4.json`를 같은
+`c6c_state_paths()` 결과로 사용한다. root 실행은 user-writable venv를 직접 `sudo`하지 않고,
+root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate` → root-owned `/opt/kor-travel-docker-manager`
+isolated venv/package 경계를 통해서만 rotation module을 import한다.
+
+rollback/recovery journal은 fresh recovery session으로 생기는 세 번째 `.env` SHA를
+`recovery_env_sha256`으로 기록하고 `rollback_prepared`→`rollback_recreate_started`→
+`rollback_verified`→`rolled_back` phase를 둔다. pending recovery는 pre-rotation UI stable
+signature와 non-UI snapshot을 journal evidence로 읽어 active image, UI health/auth, non-UI
+불변성을 재검증하고, terminal cleanup에서 backup·journal·frozen compose를 함께 정리한다.
+
+세 번째 hardening에서는 journal evidence를 secret-free로 재정의했다. UI runtime은 stable canonical
+bytes의 SHA-256만 저장하고, non-UI runtime은 service별 allowlist metadata digest만 저장한다.
+rollback은 root-private `env.recovery` bytes를 먼저 fsync한 뒤 journal에 SHA를 기록하고, 재실행은
+old/new/recovery SHA 각각에서 같은 recovery bytes로만 resume한다. `committed`/`rolled_back` terminal
+journal은 cleanup 중 backup·recovery artifact가 이미 지워진 crash도 current terminal SHA와 runtime/auth
+검증 후 같은 operation audit을 보충하고 남은 artifact를 정리한다. env_new/committed crash 뒤 같은
+stdin 두 줄을 replay해도 pending journal recovery가 일반 current-hash 검증보다 먼저 실행되도록 했다.
+
+trusted root launcher는 `/usr/bin/python3 -I -S`로 wheel `RECORD`와 root-owned site-packages/package를
+검증한 뒤에만 venv Python을 exec한다. venv `bin/python` symlink는 canonical root-owned
+`/usr/bin/python3.x` target chain으로 resolve될 때만 허용한다. 추가로
+`scripts/install-ktdm-trusted-release`를 도입해 clean checkout의 tracked `git archive`를 root-owned
+staging에 푼다. git archive는 source owner 권한으로 만들고, root는 root-owned/non-writable offline
+wheelhouse만 `pip --no-index --find-links`로 소비한다. 기존 또는 명시 deployment-owner 0600 `.env`를
+보존하며, isolated wheel venv·wheelhouse SHA·wheel `RECORD` SHA·`.ktdm-release-manifest.json`을 만든 뒤
+`/opt/kor-travel-docker-manager` activation/rollback 및 launcher self-check까지 이어지게 했다.
+
 ---
 
 ## 2026-07-31 (T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거, issue #88)

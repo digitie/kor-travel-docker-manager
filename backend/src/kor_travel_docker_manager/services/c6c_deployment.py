@@ -46,6 +46,7 @@ _MAP_RUNTIME_CONTAINERS = {
 _C6C_GLOBAL_MUTATION_LOCK = Path(
     "/run/lock/kor-travel-docker-manager/global-mutation.lock"
 )
+_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
@@ -703,7 +704,7 @@ def effective_environment(env_path: str) -> dict[str, str]:
 
 
 def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
-    """Frozen environment로 manifest를, process policy로 global lock을 정한다."""
+    """Frozen environment로 manifest와 host-global lock을 함께 정한다."""
 
     production = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() == "production"
     project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()
@@ -713,16 +714,17 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
         raise DeploymentContractError(
             "COMPOSE_PROJECT_NAME must be explicit and canonical for C6c state"
         )
-    default_root = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
     configured_root = values.get("KTDM_C6C_STATE_ROOT", "").strip()
-    if production and configured_root and Path(configured_root) != default_root:
-        raise DeploymentContractError(
-            "production KTDM_C6C_STATE_ROOT is fixed to the canonical manager state root"
+    if production:
+        if configured_root:
+            raise DeploymentContractError("production C6c state root path is fixed")
+        root = _C6C_PRODUCTION_STATE_ROOT
+    else:
+        default_root = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
+        root = _canonical_absolute_path(
+            configured_root or str(default_root),
+            "KTDM_C6C_STATE_ROOT",
         )
-    root = _canonical_absolute_path(
-        configured_root or str(default_root),
-        "KTDM_C6C_STATE_ROOT",
-    )
     state_dir = _canonical_absolute_path(
         str(root / project_name),
         "C6c deployment state directory",

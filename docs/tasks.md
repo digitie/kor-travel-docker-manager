@@ -61,10 +61,16 @@
 - [ ] production에서만 실행되는 전용 `ktdctl` command를 추가하고 C6c 전역 lock,
       canonical manager checkout/Compose/`.env`, 실행 중 Map UI identity와 immutable image를
       mutation 전에 fail-closed로 검증한다. production C6c/rotation mutation은
-      `/run/lock/kor-travel-docker-manager/global-mutation.lock`의 root-only hardened lock을
+      `/run/lock/kor-travel-docker-manager/global-mutation.lock`의 root-only hardened lock과
+      `/var/lib/kor-travel-docker-manager/<compose-project>/compatible-pair-v4.json` manifest를
       공유한다. production source는 root-owned/non-writable checkout과 root-owned
-      `.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 제공하며,
-      `KTDM_MANAGER_SOURCE_REVISION`은 있을 때 파일과 일치해야 하는 보조 검증값이다.
+      `/opt/kor-travel-docker-manager` package, `/usr/local/sbin/ktdctl-map-ui-auth-rotate`
+      trusted launcher, root-owned `.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 제공하며,
+      `KTDM_MANAGER_SOURCE_REVISION`은 있을 때 파일과 일치해야 하는 보조 검증값이다. trusted release
+      설치는 source owner 권한에서 clean checkout의 tracked `git archive`를 만들고 root-owned offline
+      wheelhouse만 소비한다. 기존 또는 명시 deployment-owner 0600 `.env`를 보존한 뒤 isolated wheel
+      venv, wheelhouse SHA, wheel `RECORD` SHA, release manifest revision을 결박해 activation/rollback
+      가능한 제품 경로로 제공한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
       environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
       독립 검증하고 hash와 session secret은 항상 함께 회전한다.
@@ -72,12 +78,16 @@
       세 항목만 원자 교체하고 같은 immutable image로 Map UI service만
       `--no-deps --force-recreate --no-build --pull never --wait` 재생성한다.
       frozen compose는 mutation/rollback 모두 기존 C6c raw/resolved protected value·system bind·
-      secret isolation 검증을 통과한 동일 resolved 문서만 사용한다. 다른 project container와
-      manifest/image generation은 변경하지 않는다.
+      secret isolation 검증과 compatible-pair image/provenance/container-name 검증을 통과한 동일
+      resolved 문서만 사용한다. 다른 project container와 manifest/image generation은 변경하지 않는다.
 - [ ] 새 login→`/ops/datasets` 보호 GET→logout→재차단, 회전 전 session 거부를 검증한 뒤
-      durable audit를 commit한다. forward 실패 시 이전 hash/image와 새로운 recovery session
-      secret으로 UI를 복구해 partial-forward session까지 무효화하고 실제 복구 상태를 정직하게
-      기록한다.
+      durable journal terminal state를 audit보다 먼저 commit한다. forward 실패 시 operator가 입력해
+      hash와 대조 완료한 current password만 메모리에서 auth 검증에 쓰고, 이전 hash/image와 새로운
+      recovery session secret으로 UI를 복구해 partial-forward session까지 무효화한다. rollback은
+      root-private `env.recovery` bytes를 먼저 fsync한 뒤 그 SHA와 `rollback_*` phase를 journal에
+      기록한다. journal은 raw Docker inspect나 secret-bearing env를 저장하지 않고 UI/non-UI evidence를
+      digest만으로 보존한다. crash 재실행 시 old/new/recovery SHA 각각을 phase matrix로 resume하고
+      terminal private artifact는 idempotent하게 정리한다.
 - [ ] crash/signal/재실행 recovery journal, foreign container/name collision, `.env` drift,
       Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다.
 - [ ] 단일 적대적 리뷰, focused/backend 전체 테스트, Ruff, strict mypy, canonical Compose gate,

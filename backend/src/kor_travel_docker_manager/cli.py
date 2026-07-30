@@ -1,7 +1,9 @@
 import argparse
 import getpass
 import json
+import os
 import sys
+from collections.abc import Callable
 from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
@@ -10,8 +12,10 @@ from kor_travel_docker_manager.services.compose_service import (
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
-from kor_travel_docker_manager.services.map_ui_auth_rotation import rotate_map_ui_auth
 from kor_travel_docker_manager.services.registry import list_targets
+
+_TRUSTED_ROOT_LAUNCHER_ENV = "KTDM_TRUSTED_ROOT_LAUNCHER"
+_TRUSTED_ROOT_LAUNCHER_VALUE = "ktdctl-map-ui-auth-rotate-v1"
 
 DIRECT_ENSURE_ALIASES = {
     alias
@@ -144,10 +148,11 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
 
 def _cmd_map_ui_auth_rotate(args: argparse.Namespace) -> int:
     try:
+        _require_trusted_map_ui_auth_launcher()
         current_password, new_password = _read_map_ui_auth_passwords(
             password_stdin=args.password_stdin,
         )
-        result = rotate_map_ui_auth(
+        result = _load_map_ui_auth_rotator()(
             current_password=current_password,
             new_password=new_password,
             project_root=args.project_root,
@@ -156,6 +161,21 @@ def _cmd_map_ui_auth_rotate(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     return _emit_process_result(result, json_output=args.json)
+
+
+def _require_trusted_map_ui_auth_launcher() -> None:
+    if os.geteuid() != 0:
+        return
+    if os.environ.get(_TRUSTED_ROOT_LAUNCHER_ENV) != _TRUSTED_ROOT_LAUNCHER_VALUE:
+        raise DeploymentContractError(
+            "root Map UI auth rotation must be launched through /usr/local/sbin/ktdctl-map-ui-auth-rotate"
+        )
+
+
+def _load_map_ui_auth_rotator() -> Callable[..., Any]:
+    from kor_travel_docker_manager.services.map_ui_auth_rotation import rotate_map_ui_auth
+
+    return rotate_map_ui_auth
 
 
 def _read_map_ui_auth_passwords(*, password_stdin: bool) -> tuple[str, str]:

@@ -165,6 +165,36 @@ n150 read-only preflight에서는 일반 scalar의 username 문자열 일치를 
 확인했으며 container mutation은 없었다. 위 identity/confidential 분리 반영 뒤 root 권한이 필요한 Map UI
 비밀번호 회전과 cross-repo smoke·실제 로그인을 다시 수행하기 전까지 production 전환은 완료로 보지 않는다.
 
+Map UI credential rotation은 user-writable checkout이나 venv를 `sudo`로 직접 실행하지 않는다.
+운영 설치는 `scripts/install-ktdm-trusted-release <clean-checkout> --env-file <canonical-env>
+--wheelhouse <root-owned-wheelhouse>`로 user-owned checkout의 tracked `git archive`를 source owner 권한에서
+만들고, root는 그 tar archive와 root-owned/non-writable offline wheelhouse만 소비한다. staging은
+`/opt/.kor-travel-docker-manager.stage.*`에 root-owned/non-writable source·compose·
+`.ktdm-source-revision`·isolated backend wheel venv·`.ktdm-release-manifest.json`을 만든 뒤
+`/opt/kor-travel-docker-manager`로 activation한다. 운영 `.env`는 source snapshot에서 가져오지 않고
+명시 `--env-file` 또는 기존 app root의 owner/group을 유지한 0600 regular file로 보존한다. wheel install은
+`pip --no-index --find-links`만 사용하며, wheelhouse 전체 SHA와 설치된 wheel `RECORD` SHA를 release
+manifest에 결박한다. 설치·launcher self-check가 실패하면 기존 app root를 rollback directory에서 복구한다.
+
+root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate`는 `scripts/install-ktdctl-map-ui-auth-rotate`가
+staging 파일을 fsync한 뒤 설치한다. launcher는 `/usr/local/sbin`, `/opt`, app root, source evidence,
+release manifest, backend venv/site-packages/package/dist-info/`RECORD`를 확인한다. `RECORD` 검증은
+venv Python이 아니라 exact root-owned `/usr/bin/python3 -I -S`로 먼저 실행해 `.pth`/`sitecustomize`
+pre-import gap을 막고, venv `bin/python`은 canonical root-owned `/usr/bin/python3.x` symlink chain으로
+resolve될 때만 허용한다. 모든 검증을 통과한 뒤에만
+`KTDM_TRUSTED_ROOT_LAUNCHER=ktdctl-map-ui-auth-rotate-v1`을 설정하고 `python -I -m
+kor_travel_docker_manager.cli map-ui-auth rotate`를 실행한다. `sudo
+<user-writable-venv>/bin/ktdctl map-ui-auth rotate` 경로는 root가 사용자 소유 Python script/import
+chain을 먼저 실행하므로 금지하며, CLI도 launcher marker가 없으면 password 입력 전에 fail-close한다.
+
+rotation journal은 비밀값과 raw Docker inspect를 저장하지 않는다. UI runtime evidence는 stable canonical
+bytes의 SHA-256만 저장하고, non-UI evidence는 service별 allowlist metadata digest만 저장한다.
+rollback은 root-private `env.recovery` bytes를 먼저 fsync하고 그 SHA를 journal에 기록한 뒤 `.env`를
+replace한다. 재실행 시 current `.env`가 old/new/recovery 어느 SHA에 있든 phase별 password evidence를
+메모리에서 검증하고 같은 recovery bytes로만 resume한다. terminal `committed`/`rolled_back` journal은
+backup·recovery artifact 일부가 이미 삭제된 cleanup crash 뒤에도 current terminal SHA와 runtime/auth를
+확인하고 같은 operation audit을 보충한 뒤 남은 artifact를 idempotent하게 정리한다.
+
 최초 설치에서 manifest가 없으면 capture가 같은 host lock 안에서 base dependency, Map API,
 Map UI/Dagster, PinVi API, PinVi Web/Dagster 순으로 전체 토폴로지를 단계 bootstrap한다.
 merged compose, canonical runtime image, UI auth, runtime secret 격리를 모두 통과한 뒤 최초 v4를

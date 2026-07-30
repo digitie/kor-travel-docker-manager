@@ -33,11 +33,12 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     assert_manager_mutation_allowed,
     c6c_deployment_lock,
-    c6c_global_mutation_lock_path,
+    c6c_state_paths,
     load_c6c_deployment_config_from_environment,
     load_pair_manifest,
     validate_compose_candidate_protected_values,
     validate_resolved_compose_candidate_protected_values,
+    validate_resolved_compose_image_pair,
     validate_resolved_compose_secret_isolation,
 )
 
@@ -85,6 +86,9 @@ _JOURNAL_PHASES = frozenset(
         "ui_new_healthy",
         "login_verified",
         "committed",
+        "rollback_prepared",
+        "rollback_recreate_started",
+        "rollback_verified",
         "rolled_back",
     }
 )
@@ -165,6 +169,13 @@ class RotationPaths:
     backup_path: Path
     audit_path: Path
     frozen_compose_path: Path
+    recovery_path: Path
+
+
+@dataclass(frozen=True)
+class RecoveryState:
+    values: Mapping[str, str]
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -291,8 +302,6 @@ def rotate_map_ui_auth(
         raise DeploymentContractError("Map UI auth rotation is production-only")
     if require_root and os.geteuid() != 0:
         raise DeploymentContractError("Map UI auth rotation requires root privileges")
-    if not verify_map_pbkdf2_hash(current_password, env_values[MAP_UI_PASSWORD_HASH_ENV]):
-        raise DeploymentContractError("current Map UI password does not match the frozen hash")
     origin = _production_map_ui_origin(env_values)
     paths = _rotation_paths(
         project_root=resolved_project_root,
@@ -309,12 +318,17 @@ def rotate_map_ui_auth(
             paths=paths,
             env_values=env_values,
             runner=runner,
+            current_password=current_password,
+            new_password=new_password,
         )
         if recovered is not None:
             return recovered
         orphan_recovery = _recover_orphan_rotation_artifacts(paths)
         if orphan_recovery is not None:
             return orphan_recovery
+
+        if not verify_map_pbkdf2_hash(current_password, env_values[MAP_UI_PASSWORD_HASH_ENV]):
+            raise DeploymentContractError("current Map UI password does not match the frozen hash")
 
         locked_env_values = _load_env_file_values(paths.env_path, expected_uid=paths.env_owner_uid)
         if locked_env_values != env_values:
@@ -327,7 +341,7 @@ def rotate_map_ui_auth(
         origin = _production_map_ui_origin(locked_env_values)
         env_values = locked_env_values
         env_document = _read_strict_env_document(paths.env_path, expected_uid=paths.env_owner_uid)
-        _validate_manager_source_evidence(
+        manager_source_revision = _validate_manager_source_evidence(
             paths.project_root,
             env_values,
             source_owner_uid=paths.source_owner_uid,
@@ -337,7 +351,7 @@ def rotate_map_ui_auth(
         active_ui_image = manifest.active.map_ui_image_id
         before_ui = _inspect_container(env_values.get(MAP_UI_CONTAINER_ENV, _MAP_UI_CONTAINER))
         _validate_map_ui_container(before_ui, env_values, active_ui_image)
-        before_ui_signature = _ui_stable_signature(before_ui)
+        before_ui_sha256 = _ui_stable_signature(before_ui)
         before_non_ui = _non_ui_snapshot(env_values[COMPOSE_PROJECT_ENV])
         old_cookie = _verify_auth_lifecycle(
             origin=origin,
@@ -366,6 +380,8 @@ def rotate_map_ui_auth(
                 "phase": "prepared",
                 "old_env_sha256": _sha256(env_document.original_bytes),
                 "new_env_sha256": _sha256(new_env_bytes),
+                "before_ui_sha256": before_ui_sha256,
+                "before_non_ui": before_non_ui,
                 "prepared_at": _utc_now(),
             },
         )
@@ -379,7 +395,7 @@ def rotate_map_ui_auth(
                 expected_sha256=env_document.sha256,
             )
             _write_journal(paths.journal_path, {"operation_id": operation_id, "phase": "env_new"})
-            _write_frozen_compose(paths, active_ui_image, runner)
+            _write_frozen_compose(paths, manifest.active, runner)
             _write_journal(
                 paths.journal_path,
                 {"operation_id": operation_id, "phase": "recreate_started"},
@@ -391,7 +407,7 @@ def rotate_map_ui_auth(
             )
             after_ui = _inspect_container(env_values.get(MAP_UI_CONTAINER_ENV, _MAP_UI_CONTAINER))
             _validate_map_ui_container(after_ui, {**env_values, **new_values}, active_ui_image)
-            if _ui_stable_signature(after_ui) != before_ui_signature:
+            if _ui_stable_signature(after_ui) != before_ui_sha256:
                 raise DeploymentContractError("Map UI runtime config drifted during rotation")
             _assert_non_ui_unchanged(before_non_ui, env_values[COMPOSE_PROJECT_ENV])
             _assert_plaintext_absent(after_ui, current_password, new_password)
@@ -405,11 +421,27 @@ def rotate_map_ui_auth(
                 paths.journal_path,
                 {"operation_id": operation_id, "phase": "login_verified"},
             )
+            _require_env_sha(paths, _sha256(new_env_bytes), label="new Map UI auth env")
+            _write_journal(
+                paths.journal_path,
+                {"operation_id": operation_id, "phase": "committed"},
+            )
             _write_audit(
                 paths.audit_path,
                 {
                     "operation_id": operation_id,
                     "result": "committed",
+                    "operator_uid": _operator_uid(),
+                    "manager_source_revision": manager_source_revision,
+                    "active_pair": _active_pair_audit(manifest.active),
+                    "env_sha256": {
+                        "old": _sha256(env_document.original_bytes),
+                        "new": _sha256(new_env_bytes),
+                    },
+                    "runtime_sha256": {
+                        "before_ui": before_ui_sha256,
+                        "before_non_ui": _digest_json(before_non_ui),
+                    },
                     "checks": [
                         "current_hash_verified",
                         "ui_only_recreated",
@@ -420,13 +452,7 @@ def rotate_map_ui_auth(
                     "recorded_at": _utc_now(),
                 },
             )
-            _write_journal(
-                paths.journal_path,
-                {"operation_id": operation_id, "phase": "committed"},
-            )
-            _unlink_private(paths.frozen_compose_path)
-            _unlink_private(paths.backup_path)
-            _unlink_private(paths.journal_path)
+            _cleanup_rotation_artifacts(paths)
             return MapUiAuthRotationResult(
                 success=True,
                 returncode=0,
@@ -449,6 +475,9 @@ def rotate_map_ui_auth(
                 runner=runner,
                 original_error=exc,
                 operation_id=operation_id,
+                current_password=current_password,
+                before_ui_sha256=before_ui_sha256,
+                old_env_sha256=_sha256(env_document.original_bytes),
             )
 
 
@@ -518,6 +547,16 @@ def _deployment_owner_uid() -> int:
     return uid
 
 
+def _operator_uid() -> int:
+    sudo_uid = os.environ.get("SUDO_UID", "").strip()
+    if sudo_uid:
+        try:
+            return int(sudo_uid)
+        except ValueError as exc:
+            raise DeploymentContractError("SUDO_UID must be numeric") from exc
+    return os.getuid()
+
+
 def _manager_source_owner_uid(*, require_root: bool) -> int:
     return 0 if require_root else os.geteuid()
 
@@ -572,6 +611,10 @@ def _env_values_from_bytes(raw: bytes) -> dict[str, str]:
     )
     if missing:
         raise DeploymentContractError("canonical manager .env is missing Map UI auth values")
+    strict_spans = _strict_rotated_env_spans(tuple(text.splitlines(keepends=True)))
+    for key, span in strict_spans.items():
+        if values.get(key) != span.value:
+            raise DeploymentContractError("canonical manager .env parser disagreement on Map UI auth")
     return values
 
 
@@ -611,27 +654,17 @@ def _rotation_paths(
     _project_child_path(project_root, str(compose_path), "docker-compose.yml")
     _project_child_path(project_root, str(env_path), ".env")
     _validate_single_file_compose_boundary(compose_path, source_owner_uid=source_owner_uid)
-    env_evidence = _capture_strict_child_file(
+    _capture_strict_child_file(
         env_path.parent,
         env_path.name,
         kind="env",
         expected_uid=env_owner_uid,
     )
-    env_stat = env_evidence.stat_result
-    owner_home = Path(pwd.getpwuid(env_stat.st_uid).pw_dir).resolve(strict=True)
     project_name = env_values.get(COMPOSE_PROJECT_ENV, "").strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", project_name):
         raise DeploymentContractError("COMPOSE_PROJECT_NAME must be explicit and canonical")
-    default_root = owner_home / ".local" / "state" / "kor-travel-docker-manager"
-    if env_values.get("KTDM_C6C_STATE_ROOT", "").strip():
-        configured = Path(env_values["KTDM_C6C_STATE_ROOT"]).resolve(strict=False)
-        if configured != default_root:
-            raise DeploymentContractError("production C6c state root is fixed")
-    if env_values.get("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", "").strip():
-        raise DeploymentContractError("production compatible-pair manifest path is fixed")
-    if env_values.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip():
-        raise DeploymentContractError("production C6c lock path is fixed")
-    state_dir = default_root / project_name
+    manifest_path, lock_path = c6c_state_paths(env_values)
+    state_dir = Path(manifest_path).parent
     rotation_dir = _ROTATION_STATE_ROOT / project_name
     return RotationPaths(
         project_root=project_root,
@@ -640,13 +673,14 @@ def _rotation_paths(
         env_owner_uid=env_owner_uid,
         source_owner_uid=source_owner_uid,
         state_dir=state_dir,
-        manifest_path=state_dir / "compatible-pair-v4.json",
-        lock_path=Path(c6c_global_mutation_lock_path(env_values)),
+        manifest_path=Path(manifest_path),
+        lock_path=Path(lock_path),
         rotation_dir=rotation_dir,
         journal_path=rotation_dir / "journal.json",
         backup_path=rotation_dir / "env.backup",
         audit_path=rotation_dir / "audit.jsonl",
         frozen_compose_path=rotation_dir / "frozen-compose.yml",
+        recovery_path=rotation_dir / "env.recovery",
     )
 
 
@@ -770,6 +804,18 @@ def _read_strict_env_document(env_path: Path, *, expected_uid: int) -> EnvDocume
     except UnicodeDecodeError as exc:
         raise DeploymentContractError("canonical manager .env must be UTF-8") from exc
     lines = tuple(text.splitlines(keepends=True))
+    found = _strict_rotated_env_spans(lines)
+    return EnvDocument(
+        lines=lines,
+        spans=found,
+        original_bytes=raw,
+        parent_stat=evidence.parent_stat,
+        stat_result=st,
+        sha256=evidence.sha256,
+    )
+
+
+def _strict_rotated_env_spans(lines: tuple[str, ...]) -> dict[str, EnvSpan]:
     found: dict[str, EnvSpan] = {}
     for index, line in enumerate(lines):
         parsed = _parse_env_line(line)
@@ -782,14 +828,7 @@ def _read_strict_env_document(env_path: Path, *, expected_uid: int) -> EnvDocume
             found[key] = EnvSpan(key=key, value=value, index=index)
     if set(found) != set(ROTATED_ENV_NAMES):
         raise DeploymentContractError("canonical manager .env is missing Map UI auth keys")
-    return EnvDocument(
-        lines=lines,
-        spans=found,
-        original_bytes=raw,
-        parent_stat=evidence.parent_stat,
-        stat_result=st,
-        sha256=evidence.sha256,
-    )
+    return found
 
 
 def _parse_env_line(line: str) -> tuple[str, str] | None:
@@ -846,11 +885,10 @@ def _atomic_replace_file(
         tmp_fd = os.open(tmp_name, flags, 0o600, dir_fd=dir_fd)
         os.fchown(tmp_fd, stat_result.st_uid, stat_result.st_gid)
         os.fchmod(tmp_fd, 0o600)
-        with os.fdopen(tmp_fd, "wb", closefd=True) as handle:
-            tmp_fd = None
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
+        _write_all_fd(tmp_fd, data)
+        os.fsync(tmp_fd)
+        os.close(tmp_fd)
+        tmp_fd = None
         _revalidate_env_file_at(
             dir_fd,
             path.parent,
@@ -960,6 +998,16 @@ def _read_all_from_fd(fd: int) -> bytes:
         if not chunk:
             return b"".join(chunks)
         chunks.append(chunk)
+
+
+def _write_all_fd(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    offset = 0
+    while offset < len(view):
+        written = os.write(fd, view[offset:])
+        if written <= 0:
+            raise DeploymentContractError("managed file write made no progress")
+        offset += written
 
 
 def _validate_env_stat(st: os.stat_result, *, expected_uid: int) -> None:
@@ -1096,7 +1144,7 @@ def _write_audit(path: Path, payload: Mapping[str, Any]) -> None:
     try:
         _validate_private_file_fd(fd, label="Map UI auth audit")
         line = json.dumps(dict(payload), ensure_ascii=False, sort_keys=True) + "\n"
-        os.write(fd, line.encode("utf-8"))
+        _write_all_fd(fd, line.encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -1115,7 +1163,7 @@ def _write_private_file(path: Path, data: bytes, *, create_exclusive: bool = Fal
     fd = os.open(path, flags, 0o600)
     try:
         _validate_private_file_fd(fd, label="Map UI auth state")
-        os.write(fd, data)
+        _write_all_fd(fd, data)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -1150,23 +1198,36 @@ def _unlink_private(path: Path) -> None:
     _fsync_directory(path.parent)
 
 
+def _cleanup_rotation_artifacts(paths: RotationPaths) -> None:
+    _unlink_private(paths.frozen_compose_path)
+    _unlink_private(paths.backup_path)
+    _unlink_private(paths.recovery_path)
+    _unlink_private(paths.journal_path)
+
+
 def _recover_orphan_rotation_artifacts(
     paths: RotationPaths,
 ) -> MapUiAuthRotationResult | None:
     backup_exists = _private_file_exists(paths.backup_path)
     frozen_exists = _private_file_exists(paths.frozen_compose_path)
-    if not backup_exists and not frozen_exists:
+    recovery_exists = _private_file_exists(paths.recovery_path)
+    if not backup_exists and not frozen_exists and not recovery_exists:
         return None
+    if recovery_exists:
+        raise DeploymentContractError(
+            "Map UI auth rotation has stale recovery env without a journal"
+        )
     if frozen_exists:
         raise DeploymentContractError(
             "Map UI auth rotation has stale frozen compose without a journal"
         )
-    current_sha = _capture_strict_child_file(
+    current_evidence = _capture_strict_child_file(
         paths.env_path.parent,
         paths.env_path.name,
         kind="env",
         expected_uid=paths.env_owner_uid,
-    ).sha256
+    )
+    current_sha = current_evidence.sha256
     backup_sha = _sha256(_read_private_file_bytes(paths.backup_path, label="Map UI auth backup"))
     if current_sha != backup_sha:
         raise DeploymentContractError(
@@ -1199,6 +1260,27 @@ def _read_private_file(path: Path, *, label: str) -> str:
 
 def _read_private_file_bytes(path: Path, *, label: str) -> bytes:
     return _capture_strict_child_file(path.parent, path.name, kind=label).raw
+
+
+def _require_env_sha(paths: RotationPaths, expected_sha256: str, *, label: str) -> None:
+    evidence = _capture_strict_child_file(
+        paths.env_path.parent,
+        paths.env_path.name,
+        kind="env",
+        expected_uid=paths.env_owner_uid,
+    )
+    if not hmac.compare_digest(evidence.sha256, expected_sha256):
+        raise DeploymentContractError(f"{label} SHA evidence no longer matches canonical .env")
+
+
+def _verify_env_password_for_phase(
+    env_values: Mapping[str, str],
+    *,
+    password: str,
+    label: str,
+) -> None:
+    if not verify_map_pbkdf2_hash(password, env_values[MAP_UI_PASSWORD_HASH_ENV]):
+        raise DeploymentContractError(f"{label} password evidence is invalid")
 
 
 def _private_file_exists(path: Path) -> bool:
@@ -1285,6 +1367,14 @@ def _validate_journal_payload(payload: Mapping[str, Any]) -> None:
             raise DeploymentContractError("Map UI auth journal is missing required evidence")
         if key.endswith("_sha256") and not _SHA256_RE.fullmatch(value):
             raise DeploymentContractError("Map UI auth journal SHA evidence is invalid")
+    before_ui_sha = payload.get("before_ui_sha256")
+    if not isinstance(before_ui_sha, str) or not _SHA256_RE.fullmatch(before_ui_sha):
+        raise DeploymentContractError("Map UI auth journal UI evidence is invalid")
+    _journal_before_non_ui(payload)
+    if phase in {"rollback_prepared", "rollback_recreate_started", "rollback_verified", "rolled_back"}:
+        recovery_sha = payload.get("recovery_env_sha256")
+        if not isinstance(recovery_sha, str) or not _SHA256_RE.fullmatch(recovery_sha):
+            raise DeploymentContractError("Map UI auth journal recovery SHA evidence is invalid")
 
 
 def _fsync_directory(path: Path) -> None:
@@ -1297,9 +1387,10 @@ def _fsync_directory(path: Path) -> None:
 
 def _write_frozen_compose(
     paths: RotationPaths,
-    active_ui_image: str,
+    active_pair: Any,
     runner: CommandRunner,
 ) -> None:
+    active_ui_image = str(active_pair.map_ui_image_id)
     env_evidence = _capture_strict_child_file(
         paths.env_path.parent,
         paths.env_path.name,
@@ -1356,6 +1447,7 @@ def _write_frozen_compose(
     if resolved_snapshots != raw_snapshots:
         raise DeploymentContractError("resolved compose system bind snapshot differs from raw compose")
     validate_resolved_compose_secret_isolation(resolved_compose, config)
+    validate_resolved_compose_image_pair(resolved_compose, config, active_pair)
     _write_private_file(
         paths.frozen_compose_path,
         resolved.stdout.encode("utf-8"),
@@ -1537,14 +1629,19 @@ def _validate_map_ui_container(
 
 def _validate_active_pair_runtime(active_pair: Any, env_values: Mapping[str, str]) -> None:
     project = env_values.get(COMPOSE_PROJECT_ENV)
+    if active_pair.contract_generation != env_values.get("KTDM_C6C_CONTRACT_GENERATION"):
+        raise DeploymentContractError("running active compatible pair generation drifted")
     project_snapshot = _compose_project_snapshot(str(project), include_ui=True)
-    for _container_name, (service_name, image_attr) in _ACTIVE_PAIR_RUNTIME.items():
+    for container_name, (service_name, image_attr) in _ACTIVE_PAIR_RUNTIME.items():
         payload = project_snapshot.get(service_name, {}).get("_payload")
         if not isinstance(payload, Mapping):
             raise DeploymentContractError("running active compatible pair service is missing")
         expected_image = getattr(active_pair, image_attr)
         labels = _mapping_at(payload, "Config", "Labels")
         state = _mapping_at(payload, "State")
+        runtime_name = str(payload.get("Name", "")).lstrip("/")
+        if runtime_name != container_name:
+            raise DeploymentContractError("running active compatible pair container name drifted")
         if payload.get("Image") != expected_image:
             raise DeploymentContractError("running active compatible pair image drifted")
         if labels.get("com.docker.compose.project") != project:
@@ -1601,7 +1698,10 @@ def _ui_stable_signature(inspect_payload: Mapping[str, Any]) -> str:
         labels = config.get("Labels")
         if isinstance(labels, dict):
             labels.pop("com.docker.compose.config-hash", None)
-    return json.dumps(copy, sort_keys=True, separators=(",", ":"))
+            labels.pop("com.docker.compose.project.config_files", None)
+            labels.pop("com.docker.compose.project.environment_file", None)
+    stable = json.dumps(copy, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _sha256(stable)
 
 
 def _compose_project_snapshot(
@@ -1670,20 +1770,21 @@ def _project_container_names(project: str) -> tuple[str, ...]:
     return names
 
 
-def _non_ui_snapshot(project: str) -> dict[str, Mapping[str, Any]]:
+def _non_ui_snapshot(project: str) -> dict[str, str]:
     snapshot = _compose_project_snapshot(project, include_ui=False)
-    return {
-        service: {
+    result: dict[str, str] = {}
+    for service, metadata in snapshot.items():
+        allowed = {
             key: value
             for key, value in metadata.items()
-            if key != "_payload"
+            if key in {"Id", "Image", "StartedAt", "RestartCount", "Name"}
         }
-        for service, metadata in snapshot.items()
-    }
+        result[service] = _digest_json(allowed)
+    return result
 
 
 def _assert_non_ui_unchanged(
-    before: Mapping[str, Mapping[str, Any]],
+    before: Mapping[str, str],
     project: str,
 ) -> None:
     if _non_ui_snapshot(project) != before:
@@ -1737,7 +1838,7 @@ def _verify_auth_lifecycle(
             method="GET",
             headers={"Cookie": expect_cookie_reject},
         )
-        if not _is_login_redirect(rejected):
+        if not _is_login_redirect(rejected, origin=origin):
             raise DeploymentContractError("Map UI pre-rotation session was not rejected")
     return _cookie_header_from_set_cookie(str(set_cookie))
 
@@ -1796,7 +1897,7 @@ def _logout_and_verify(
         method="GET",
         headers={},
     )
-    if not _is_login_redirect(post_logout):
+    if not _is_login_redirect(post_logout, origin=origin):
         raise DeploymentContractError("Map UI post-logout protection verification failed")
     revoked_rejected = _http_request(
         _cookie_opener(),
@@ -1804,7 +1905,7 @@ def _logout_and_verify(
         method="GET",
         headers={"Cookie": active_cookie},
     )
-    if not _is_login_redirect(revoked_rejected):
+    if not _is_login_redirect(revoked_rejected, origin=origin):
         raise DeploymentContractError("Map UI revoked logout cookie was not rejected")
 
 
@@ -1934,9 +2035,15 @@ def _json_payload(raw: bytes) -> Any | None:
         return None
 
 
-def _is_login_redirect(response: Mapping[str, Any]) -> bool:
-    location_path = urllib.parse.urlsplit(str(response.get("location", ""))).path
-    return response.get("status") in {302, 303, 307, 308} and location_path == "/login"
+def _is_login_redirect(response: Mapping[str, Any], *, origin: str) -> bool:
+    if response.get("status") not in {302, 303, 307, 308}:
+        return False
+    location = urllib.parse.urlsplit(str(response.get("location", "")))
+    if location.scheme or location.netloc:
+        expected = urllib.parse.urlsplit(origin)
+        if location.scheme != expected.scheme or location.netloc != expected.netloc:
+            return False
+    return location.path == "/login" and not location.query and not location.fragment
 
 
 def _recover_pending_journal(
@@ -1944,6 +2051,8 @@ def _recover_pending_journal(
     paths: RotationPaths,
     env_values: Mapping[str, str],
     runner: CommandRunner,
+    current_password: str,
+    new_password: str,
 ) -> MapUiAuthRotationResult | None:
     if not _private_file_exists(paths.journal_path):
         return None
@@ -1951,83 +2060,150 @@ def _recover_pending_journal(
     phase = str(journal["phase"])
     old_sha = str(journal.get("old_env_sha256", ""))
     new_sha = str(journal.get("new_env_sha256", ""))
-    current_sha = _capture_strict_child_file(
+    recovery_sha = str(journal.get("recovery_env_sha256", ""))
+    current_evidence = _capture_strict_child_file(
         paths.env_path.parent,
         paths.env_path.name,
         kind="env",
         expected_uid=paths.env_owner_uid,
-    ).sha256
-    if current_sha not in {old_sha, new_sha}:
+    )
+    current_sha = current_evidence.sha256
+    current_env_values = _env_values_from_bytes(current_evidence.raw)
+    allowed_sha = {old_sha, new_sha}
+    if recovery_sha:
+        allowed_sha.add(recovery_sha)
+    if current_sha not in allowed_sha:
         raise DeploymentContractError(
             "pending Map UI auth rotation journal does not match the current .env"
         )
     if phase == "committed":
-        if current_sha != new_sha:
-            raise DeploymentContractError("committed Map UI auth journal is inconsistent")
-        _write_audit(
-            paths.audit_path,
-            {
-                "operation_id": journal["operation_id"],
-                "result": "cleared_committed_journal",
-                "recorded_at": _utc_now(),
-            },
+        _verify_env_password_for_phase(
+            current_env_values,
+            password=new_password,
+            label="committed Map UI auth env",
         )
-        _unlink_private(paths.backup_path)
-        _unlink_private(paths.journal_path)
-        _unlink_private(paths.frozen_compose_path)
-        return MapUiAuthRotationResult(
-            success=True,
-            returncode=0,
-            phase="cleared_committed_journal",
-            audit_path=str(paths.audit_path),
-            stderr="previous committed Map UI auth journal residue was cleared",
+        return _complete_committed_journal(
+            paths=paths,
+            journal=journal,
+            current_sha=current_sha,
+            current_password=new_password,
+        )
+    if phase == "rolled_back":
+        _verify_env_password_for_phase(
+            current_env_values,
+            password=current_password,
+            label="rolled back Map UI auth env",
+        )
+        return _complete_rolled_back_journal(
+            paths=paths,
+            journal=journal,
+            current_sha=current_sha,
+            current_password=current_password,
         )
     if not _private_file_exists(paths.backup_path):
         raise DeploymentContractError("pending Map UI auth rotation journal has no backup")
-    if current_sha == old_sha and phase in {"prepared", "rolled_back"}:
+    backup_sha = _sha256(_read_private_file_bytes(paths.backup_path, label="Map UI auth backup"))
+    if not hmac.compare_digest(backup_sha, old_sha):
+        raise DeploymentContractError("pending Map UI auth rotation backup does not match journal")
+    if current_sha == old_sha and phase == "prepared":
+        _verify_env_password_for_phase(
+            current_env_values,
+            password=current_password,
+            label="prepared Map UI auth env",
+        )
         _write_audit(
             paths.audit_path,
             {
                 "operation_id": journal["operation_id"],
-                "result": f"cleared_pending_journal_on_{phase}",
+                "result": "cleared_pending_journal_on_prepared",
                 "recorded_at": _utc_now(),
             },
         )
-        _unlink_private(paths.backup_path)
-        _unlink_private(paths.journal_path)
-        _unlink_private(paths.frozen_compose_path)
+        _cleanup_rotation_artifacts(paths)
         return MapUiAuthRotationResult(
             success=False,
             returncode=1,
-            phase=f"cleared_pending_journal_on_{phase}",
+            phase="cleared_pending_journal_on_prepared",
             audit_path=str(paths.audit_path),
             stderr="pending Map UI auth rotation journal was already on a terminal old env",
         )
-    if current_sha == old_sha and phase in {
-        "env_new",
-        "recreate_started",
-        "ui_new_healthy",
-        "login_verified",
-    }:
+    rollback_phases = {"rollback_prepared", "rollback_recreate_started", "rollback_verified"}
+    if current_sha == old_sha and phase not in rollback_phases:
         raise DeploymentContractError("pending Map UI auth journal phase conflicts with old .env")
-    if current_sha != new_sha:
+    if phase in rollback_phases:
+        if current_sha not in {old_sha, new_sha, recovery_sha}:
+            raise DeploymentContractError("pending Map UI auth journal phase is not recoverable")
+    elif current_sha != new_sha:
         raise DeploymentContractError("pending Map UI auth journal phase is not recoverable")
+    if current_sha == new_sha:
+        _verify_env_password_for_phase(
+            current_env_values,
+            password=new_password,
+            label="pending new Map UI auth env",
+        )
+    elif current_sha in {old_sha, recovery_sha}:
+        _verify_env_password_for_phase(
+            current_env_values,
+            password=current_password,
+            label="pending rollback Map UI auth env",
+        )
     manifest = load_pair_manifest(str(paths.manifest_path))
-    _restore_backup_with_recovery_session(
+    before_non_ui = _journal_before_non_ui(journal)
+    before_ui_sha256 = _journal_before_ui_sha256(journal)
+    restored = _restore_backup_with_recovery_session(
         paths,
-        active_ui_image=manifest.active.map_ui_image_id,
+        active_pair=manifest.active,
         runner=runner,
+        operation_id=str(journal["operation_id"]),
+        current_password=current_password,
+        old_env_sha256=old_sha,
+        expected_recovery_sha256=recovery_sha or None,
+    )
+    _verify_restored_runtime(
+        restored_values=restored.values,
+        active_ui_image=manifest.active.map_ui_image_id,
+        before_non_ui=before_non_ui,
+        before_ui_sha256=before_ui_sha256,
+        current_password=current_password,
+    )
+    _require_env_sha(paths, restored.sha256, label="recovered Map UI auth env")
+    _write_journal(
+        paths.journal_path,
+        {
+            "operation_id": journal["operation_id"],
+            "phase": "rollback_verified",
+            "recovery_env_sha256": restored.sha256,
+        },
+    )
+    _write_journal(
+        paths.journal_path,
+        {
+            "operation_id": journal["operation_id"],
+            "phase": "rolled_back",
+            "recovery_env_sha256": restored.sha256,
+        },
     )
     _write_audit(
         paths.audit_path,
         {
+            "operation_id": journal["operation_id"],
             "result": "recovered_pending_journal",
             "rollback_state": "rolled_back_password_state_with_irreversible_session_invalidation",
+            "operator_uid": _operator_uid(),
+            "active_pair": _active_pair_audit(manifest.active),
+            "env_sha256": {
+                "old": old_sha,
+                "new": new_sha,
+                "recovery": restored.sha256,
+            },
+            "runtime_sha256": {
+                "before_ui": before_ui_sha256,
+                "before_non_ui": _digest_json(before_non_ui),
+            },
             "recorded_at": _utc_now(),
         },
     )
-    _unlink_private(paths.backup_path)
-    _unlink_private(paths.journal_path)
+    _cleanup_rotation_artifacts(paths)
     del env_values
     return MapUiAuthRotationResult(
         success=False,
@@ -2037,6 +2213,141 @@ def _recover_pending_journal(
         rollback_state="rolled_back_password_state_with_irreversible_session_invalidation",
         stderr="pending Map UI auth rotation was recovered before starting a new rotation",
     )
+
+
+def _complete_committed_journal(
+    *,
+    paths: RotationPaths,
+    journal: Mapping[str, Any],
+    current_sha: str,
+    current_password: str,
+) -> MapUiAuthRotationResult:
+    new_sha = str(journal["new_env_sha256"])
+    if current_sha != new_sha:
+        raise DeploymentContractError("committed Map UI auth journal is inconsistent")
+    manifest = load_pair_manifest(str(paths.manifest_path))
+    values = _load_env_file_values(paths.env_path, expected_uid=paths.env_owner_uid)
+    if not verify_map_pbkdf2_hash(current_password, values[MAP_UI_PASSWORD_HASH_ENV]):
+        raise DeploymentContractError("committed Map UI auth journal current password is invalid")
+    _validate_terminal_runtime(
+        paths=paths,
+        journal=journal,
+        values=values,
+        active_ui_image=manifest.active.map_ui_image_id,
+        current_password=current_password,
+        expected_env_sha256=new_sha,
+    )
+    manager_source_revision = _validate_manager_source_evidence(
+        paths.project_root,
+        values,
+        source_owner_uid=paths.source_owner_uid,
+    )
+    _write_audit(
+        paths.audit_path,
+        {
+            "operation_id": journal["operation_id"],
+            "result": "committed",
+            "operator_uid": _operator_uid(),
+            "manager_source_revision": manager_source_revision,
+            "active_pair": _active_pair_audit(manifest.active),
+            "env_sha256": {
+                "old": journal["old_env_sha256"],
+                "new": new_sha,
+            },
+            "runtime_sha256": {
+                "before_ui": _journal_before_ui_sha256(journal),
+                "before_non_ui": _digest_json(_journal_before_non_ui(journal)),
+            },
+            "checks": [
+                "current_hash_verified",
+                "ui_only_recreated",
+                "runtime_auth_verified",
+                "old_session_rejected",
+                "non_ui_unchanged",
+            ],
+            "recorded_at": _utc_now(),
+        },
+    )
+    _cleanup_rotation_artifacts(paths)
+    return MapUiAuthRotationResult(
+        success=True,
+        returncode=0,
+        phase="committed",
+        audit_path=str(paths.audit_path),
+        stderr="previous committed Map UI auth journal residue was completed",
+    )
+
+
+def _complete_rolled_back_journal(
+    *,
+    paths: RotationPaths,
+    journal: Mapping[str, Any],
+    current_sha: str,
+    current_password: str,
+) -> MapUiAuthRotationResult:
+    recovery_sha = str(journal["recovery_env_sha256"])
+    if current_sha != recovery_sha:
+        raise DeploymentContractError("rolled back Map UI auth journal is inconsistent")
+    manifest = load_pair_manifest(str(paths.manifest_path))
+    values = _load_env_file_values(paths.env_path, expected_uid=paths.env_owner_uid)
+    if not verify_map_pbkdf2_hash(current_password, values[MAP_UI_PASSWORD_HASH_ENV]):
+        raise DeploymentContractError("rolled back Map UI auth journal current password is invalid")
+    _validate_terminal_runtime(
+        paths=paths,
+        journal=journal,
+        values=values,
+        active_ui_image=manifest.active.map_ui_image_id,
+        current_password=current_password,
+        expected_env_sha256=recovery_sha,
+    )
+    _write_audit(
+        paths.audit_path,
+        {
+            "operation_id": journal["operation_id"],
+            "result": "rolled_back",
+            "rollback_state": "rolled_back_password_state_with_irreversible_session_invalidation",
+            "operator_uid": _operator_uid(),
+            "active_pair": _active_pair_audit(manifest.active),
+            "env_sha256": {
+                "old": journal["old_env_sha256"],
+                "new": journal["new_env_sha256"],
+                "recovery": recovery_sha,
+            },
+            "runtime_sha256": {
+                "before_ui": _journal_before_ui_sha256(journal),
+                "before_non_ui": _digest_json(_journal_before_non_ui(journal)),
+            },
+            "recorded_at": _utc_now(),
+        },
+    )
+    _cleanup_rotation_artifacts(paths)
+    return MapUiAuthRotationResult(
+        success=False,
+        returncode=1,
+        phase="rolled_back",
+        audit_path=str(paths.audit_path),
+        rollback_state="rolled_back_password_state_with_irreversible_session_invalidation",
+        stderr="previous rolled back Map UI auth journal residue was completed",
+    )
+
+
+def _validate_terminal_runtime(
+    *,
+    paths: RotationPaths,
+    journal: Mapping[str, Any],
+    values: Mapping[str, str],
+    active_ui_image: str,
+    current_password: str,
+    expected_env_sha256: str,
+) -> None:
+    _verify_restored_runtime(
+        restored_values=values,
+        active_ui_image=active_ui_image,
+        before_non_ui=_journal_before_non_ui(journal),
+        before_ui_sha256=_journal_before_ui_sha256(journal),
+        current_password=current_password,
+    )
+    _require_env_sha(paths, expected_env_sha256, label="terminal Map UI auth env")
 
 
 def _read_journal(path: Path) -> Mapping[str, Any]:
@@ -2050,30 +2361,98 @@ def _read_journal(path: Path) -> Mapping[str, Any]:
     return payload
 
 
+def _journal_before_non_ui(journal: Mapping[str, Any]) -> Mapping[str, str]:
+    value = journal.get("before_non_ui")
+    if not isinstance(value, Mapping):
+        raise DeploymentContractError("Map UI auth journal is missing runtime recovery evidence")
+    result: dict[str, str] = {}
+    for service, digest in value.items():
+        if (
+            not isinstance(service, str)
+            or not service
+            or not isinstance(digest, str)
+            or not _SHA256_RE.fullmatch(digest)
+        ):
+            raise DeploymentContractError("Map UI auth journal runtime recovery evidence is invalid")
+        result[service] = digest
+    return result
+
+
+def _journal_before_ui_sha256(journal: Mapping[str, Any]) -> str:
+    value = journal.get("before_ui_sha256")
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+        raise DeploymentContractError("Map UI auth journal is missing UI recovery evidence")
+    return value
+
+
+def _verify_restored_runtime(
+    *,
+    restored_values: Mapping[str, str],
+    active_ui_image: str,
+    before_non_ui: Mapping[str, str],
+    before_ui_sha256: str,
+    current_password: str,
+) -> None:
+    restored_ui = _inspect_container(restored_values.get(MAP_UI_CONTAINER_ENV, _MAP_UI_CONTAINER))
+    _validate_map_ui_container(restored_ui, restored_values, active_ui_image)
+    if _ui_stable_signature(restored_ui) != before_ui_sha256:
+        raise DeploymentContractError("restored Map UI runtime config drifted during rollback")
+    _assert_non_ui_unchanged(before_non_ui, restored_values[COMPOSE_PROJECT_ENV])
+    _verify_auth_lifecycle(
+        origin=_production_map_ui_origin(restored_values),
+        username=restored_values[MAP_UI_USERNAME_ENV],
+        password=current_password,
+        expect_cookie_reject=None,
+    )
+
+
 def _rollback_after_failure(
     *,
     paths: RotationPaths,
     env_values: Mapping[str, str],
     active_ui_image: str,
-    before_non_ui: Mapping[str, Mapping[str, Any]],
+    before_non_ui: Mapping[str, str],
     runner: CommandRunner,
     original_error: Exception,
     operation_id: str,
+    current_password: str,
+    before_ui_sha256: str,
+    old_env_sha256: str,
 ) -> MapUiAuthRotationResult:
     try:
-        restored_values = _restore_backup_with_recovery_session(
+        manifest = load_pair_manifest(str(paths.manifest_path))
+        restored = _restore_backup_with_recovery_session(
             paths,
-            active_ui_image=active_ui_image,
+            active_pair=manifest.active,
             runner=runner,
+            operation_id=operation_id,
+            current_password=current_password,
+            old_env_sha256=old_env_sha256,
+            expected_recovery_sha256=None,
         )
-        restored_ui = _inspect_container(restored_values.get(MAP_UI_CONTAINER_ENV, _MAP_UI_CONTAINER))
-        _validate_map_ui_container(restored_ui, restored_values, active_ui_image)
-        _assert_non_ui_unchanged(before_non_ui, restored_values[COMPOSE_PROJECT_ENV])
-        _verify_auth_lifecycle(
-            origin=_production_map_ui_origin(restored_values),
-            username=restored_values[MAP_UI_USERNAME_ENV],
-            password=env_values[MAP_UI_PASSWORD_ENV],
-            expect_cookie_reject=None,
+        _verify_restored_runtime(
+            restored_values=restored.values,
+            active_ui_image=active_ui_image,
+            before_non_ui=before_non_ui,
+            before_ui_sha256=before_ui_sha256,
+            current_password=current_password,
+        )
+        _require_env_sha(paths, restored.sha256, label="rolled back Map UI auth env")
+        _write_journal(
+            paths.journal_path,
+            {
+                "operation_id": operation_id,
+                "phase": "rollback_verified",
+                "recovery_env_sha256": restored.sha256,
+            },
+        )
+        _write_journal(
+            paths.journal_path,
+            {
+                "operation_id": operation_id,
+                "phase": "rolled_back",
+                "recovery_env_sha256": restored.sha256,
+            },
         )
         _write_audit(
             paths.audit_path,
@@ -2081,12 +2460,20 @@ def _rollback_after_failure(
                 "operation_id": operation_id,
                 "result": "rolled_back",
                 "rollback_state": "rolled_back_password_state_with_irreversible_session_invalidation",
+                "operator_uid": _operator_uid(),
+                "active_pair": _active_pair_audit(manifest.active),
+                "env_sha256": {
+                    "old": old_env_sha256,
+                    "recovery": restored.sha256,
+                },
+                "runtime_sha256": {
+                    "before_ui": before_ui_sha256,
+                    "before_non_ui": _digest_json(before_non_ui),
+                },
                 "recorded_at": _utc_now(),
             },
         )
-        _unlink_private(paths.backup_path)
-        _unlink_private(paths.journal_path)
-        _unlink_private(paths.frozen_compose_path)
+        _cleanup_rotation_artifacts(paths)
         return MapUiAuthRotationResult(
             success=False,
             returncode=1,
@@ -2118,38 +2505,89 @@ def _rollback_after_failure(
 def _restore_backup_with_recovery_session(
     paths: RotationPaths,
     *,
-    active_ui_image: str,
+    active_pair: Any,
     runner: CommandRunner,
-) -> dict[str, str]:
+    operation_id: str,
+    current_password: str,
+    old_env_sha256: str,
+    expected_recovery_sha256: str | None,
+) -> RecoveryState:
     current_evidence = _capture_strict_child_file(
         paths.env_path.parent,
         paths.env_path.name,
         kind="env",
         expected_uid=paths.env_owner_uid,
     )
+    backup_raw = _read_private_file_bytes(paths.backup_path, label="Map UI auth backup")
+    if not hmac.compare_digest(_sha256(backup_raw), old_env_sha256):
+        raise DeploymentContractError("Map UI auth backup does not match journal old env")
     backup_document = _env_document_from_bytes(
-        _read_private_file_bytes(paths.backup_path, label="Map UI auth backup"),
+        backup_raw,
         current_evidence.parent_stat,
         current_evidence.stat_result,
     )
-    recovery_session = _new_session_secret()
-    restored = backup_document.rewritten({MAP_UI_SESSION_SECRET_ENV: recovery_session})
-    _atomic_replace_file(
-        paths.env_path,
+    if not verify_map_pbkdf2_hash(
+        current_password,
+        backup_document.spans[MAP_UI_PASSWORD_HASH_ENV].value,
+    ):
+        raise DeploymentContractError("Map UI auth backup does not match current password")
+    if _private_file_exists(paths.recovery_path):
+        restored = _read_private_file_bytes(paths.recovery_path, label="Map UI auth recovery")
+        recovery_sha256 = _sha256(restored)
+        if expected_recovery_sha256 is None:
+            raise DeploymentContractError("Map UI auth recovery env is not expected")
+        if not hmac.compare_digest(recovery_sha256, expected_recovery_sha256):
+            raise DeploymentContractError("Map UI auth recovery env does not match journal")
+    else:
+        if expected_recovery_sha256 is not None:
+            raise DeploymentContractError("Map UI auth recovery env is missing")
+        recovery_session = _new_session_secret()
+        restored = backup_document.rewritten({MAP_UI_SESSION_SECRET_ENV: recovery_session})
+        recovery_sha256 = _sha256(restored)
+        _write_private_file(paths.recovery_path, restored, create_exclusive=True)
+    recovery_document = _env_document_from_bytes(
         restored,
-        parent_stat=current_evidence.parent_stat,
-        stat_result=current_evidence.stat_result,
-        expected_sha256=current_evidence.sha256,
+        current_evidence.parent_stat,
+        current_evidence.stat_result,
     )
+    if not verify_map_pbkdf2_hash(
+        current_password,
+        recovery_document.spans[MAP_UI_PASSWORD_HASH_ENV].value,
+    ):
+        raise DeploymentContractError("Map UI auth recovery env does not match current password")
+    _write_journal(
+        paths.journal_path,
+        {
+            "operation_id": operation_id,
+            "phase": "rollback_prepared",
+            "recovery_env_sha256": recovery_sha256,
+        },
+    )
+    if not hmac.compare_digest(current_evidence.sha256, recovery_sha256):
+        _atomic_replace_file(
+            paths.env_path,
+            restored,
+            parent_stat=current_evidence.parent_stat,
+            stat_result=current_evidence.stat_result,
+            expected_sha256=current_evidence.sha256,
+        )
+    _require_env_sha(paths, recovery_sha256, label="recovery Map UI auth env")
     try:
         _unlink_private(paths.frozen_compose_path)
     except DeploymentContractError:
         pass
-    _write_frozen_compose(paths, active_ui_image, runner)
-    _compose_recreate_map_ui(paths, active_ui_image, runner)
+    _write_frozen_compose(paths, active_pair, runner)
+    _write_journal(
+        paths.journal_path,
+        {
+            "operation_id": operation_id,
+            "phase": "rollback_recreate_started",
+            "recovery_env_sha256": recovery_sha256,
+        },
+    )
+    _compose_recreate_map_ui(paths, str(active_pair.map_ui_image_id), runner)
     values = _load_env_file_values(paths.env_path, expected_uid=paths.env_owner_uid)
-    values[MAP_UI_SESSION_SECRET_ENV] = recovery_session
-    return values
+    return RecoveryState(values=values, sha256=recovery_sha256)
 
 
 def _env_document_from_bytes(
@@ -2166,6 +2604,8 @@ def _env_document_from_bytes(
             continue
         key, value = parsed
         if key in ROTATED_ENV_NAMES:
+            if key in found:
+                raise DeploymentContractError("backup .env has duplicate Map UI auth keys")
             found[key] = EnvSpan(key=key, value=value, index=index)
     if set(found) != set(ROTATED_ENV_NAMES):
         raise DeploymentContractError("backup .env is missing Map UI auth keys")
@@ -2194,6 +2634,23 @@ def _new_session_secret() -> str:
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _digest_json(payload: Mapping[str, Any]) -> str:
+    return _sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def _active_pair_audit(active_pair: Any) -> Mapping[str, str]:
+    return {
+        "map_image_id": str(active_pair.map_image_id),
+        "map_ui_image_id": str(active_pair.map_ui_image_id),
+        "map_dagster_image_id": str(active_pair.map_dagster_image_id),
+        "map_dagster_daemon_image_id": str(active_pair.map_dagster_daemon_image_id),
+        "pinvi_image_id": str(active_pair.pinvi_image_id),
+        "map_source_revision": str(active_pair.map_source_revision),
+        "pinvi_source_revision": str(active_pair.pinvi_source_revision),
+        "contract_generation": str(active_pair.contract_generation),
+    }
 
 
 def _utc_now() -> str:
