@@ -120,7 +120,9 @@ evidence, target revision, 새 launcher SHA와 `preparing|prepared|committed` ph
 전역 lock 획득 직후 stale state를 먼저 reconcile하므로 non-committed는 old app/launcher exact
 rollback, committed는 active revision/launcher digest 검증 뒤 idempotent GC를 끝내야 새 install을
 시작할 수 있다. state가 없는데 artifact가 있거나 legacy PID/foreign collision이면 mutation 전에
-fail-close한다.
+fail-close한다. 새 app root의 dev/ino도 activation 전에 기록하므로 cleanup이 일부 파일을 지운 뒤
+중단돼 manifest가 불완전해져도 transaction이 만든 exact directory만 제거하고 old rollback을
+복원하며, 같은 경로의 foreign directory는 삭제하지 않는다.
 
 launcher installer도 고정 root-owned staging file, destination regular-file shape 검증,
 `mv -T`, 설치 후 owner/mode/nlink/SHA 재검증으로 바꿨다. disposable Debian 실제 gate에서 정상

@@ -324,6 +324,12 @@ def read_state() -> dict[str, Any]:
         or not isinstance(value.get("old_launcher"), dict)
     ):
         raise SystemExit("trusted release transaction state is invalid")
+    if value["phase"] in {"prepared", "committed"} and (
+        not isinstance(value.get("new_app_root_dev"), int)
+        or not isinstance(value.get("new_app_root_ino"), int)
+        or not isinstance(value.get("new_launcher_sha256"), str)
+    ):
+        raise SystemExit("trusted release transaction target evidence is invalid")
     return value
 
 
@@ -375,6 +381,22 @@ def remove_tree(path: pathlib.Path, expected: dict[str, Any] | None = None) -> N
         or stat.S_IMODE(metadata.st_mode) & 0o022
     ):
         raise SystemExit(f"trusted release directory residue is invalid: {path}")
+    shutil.rmtree(path)
+    fsync_dir(path.parent)
+
+
+def remove_transaction_tree(path: pathlib.Path, state: dict[str, Any]) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+        or metadata.st_dev != state.get("new_app_root_dev")
+        or metadata.st_ino != state.get("new_app_root_ino")
+    ):
+        raise SystemExit(f"foreign app root blocks trusted release recovery: {path}")
     shutil.rmtree(path)
     fsync_dir(path.parent)
 
@@ -450,7 +472,6 @@ def reconcile_committed(state: dict[str, Any]) -> None:
 def restore_noncommitted(state: dict[str, Any]) -> None:
     old_app = state["old_app"]
     old_launcher = state["old_launcher"]
-    target_revision = state["target_revision"]
     expected_new_launcher_sha = state.get("new_launcher_sha256")
 
     rollback_exists = rollback.exists() or rollback.is_symlink()
@@ -460,10 +481,7 @@ def restore_noncommitted(state: dict[str, Any]) -> None:
             if app_evidence(rollback) != old_app:
                 raise SystemExit("rollback app residue does not match original release")
             if app_exists:
-                active = app_evidence(app_root)
-                if active.get("revision") != target_revision:
-                    raise SystemExit("foreign active app blocks trusted release rollback")
-                remove_tree(app_root, active)
+                remove_transaction_tree(app_root, state)
             os.rename(rollback, app_root)
             fsync_dir(app_root.parent)
             if app_evidence(app_root) != old_app:
@@ -474,10 +492,7 @@ def restore_noncommitted(state: dict[str, Any]) -> None:
         if rollback_exists:
             raise SystemExit("unexpected rollback app exists for initial install")
         if app_exists:
-            active = app_evidence(app_root)
-            if active.get("revision") != target_revision:
-                raise SystemExit("foreign active app blocks initial install rollback")
-            remove_tree(app_root, active)
+            remove_transaction_tree(app_root, state)
 
     backup_exists = launcher_rollback.exists() or launcher_rollback.is_symlink()
     launcher_exists = launcher.exists() or launcher.is_symlink()
@@ -512,7 +527,11 @@ def restore_noncommitted(state: dict[str, Any]) -> None:
         if current.get("sha256") != expected_new_launcher_sha:
             raise SystemExit("foreign launcher install residue blocks rollback")
         remove_regular(launcher_install_tmp, current)
-    remove_tree(staging)
+    if staging.exists() or staging.is_symlink():
+        if state.get("new_app_root_dev") is None:
+            remove_tree(staging)
+        else:
+            remove_transaction_tree(staging, state)
     remove_regular(archive)
     state_path.unlink()
     fsync_dir(state_path.parent)
@@ -560,6 +579,8 @@ elif action == "begin":
             "target_revision": arguments[0],
             "old_app": app_evidence(app_root),
             "old_launcher": launcher_evidence(launcher),
+            "new_app_root_dev": None,
+            "new_app_root_ino": None,
             "new_launcher_sha256": None,
         }
     )
@@ -573,7 +594,15 @@ elif action == "set-new-launcher":
         raise SystemExit("active app changed while trusted release was staged")
     if launcher_evidence(launcher) != current_state["old_launcher"]:
         raise SystemExit("active launcher changed while trusted release was staged")
+    staged_app = app_evidence(staging)
+    if (
+        not staged_app.get("present")
+        or staged_app.get("revision") != current_state["target_revision"]
+    ):
+        raise SystemExit("staged app does not match trusted release target")
     current_state["phase"] = "prepared"
+    current_state["new_app_root_dev"] = staged_app["root_dev"]
+    current_state["new_app_root_ino"] = staged_app["root_ino"]
     current_state["new_launcher_sha256"] = arguments[0]
     write_state(current_state)
 elif action == "commit":
