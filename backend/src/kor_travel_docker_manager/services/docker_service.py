@@ -16,7 +16,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     ComposePostMutationContractError,
     assert_c6c_mutation_allowed,
     assert_manager_mutation_allowed,
-    c6c_deployment_lock,
     compose_volume_graph_hash,
     revalidate_candidate_system_bind_snapshots,
 )
@@ -25,8 +24,9 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeTransactionSnapshot,
     ValidatedComposeCandidate,
     _capture_compose_environment_snapshot,
+    assert_environment_snapshot_matches_c6c_lock,
+    c6c_deployment_lock_from_environment,
     compose_service,
-    get_c6c_deployment_lock_path,
     get_compose_path,
 )
 from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
@@ -126,9 +126,13 @@ def _validate_compose_candidate(
 def save_compose_config(config: dict[str, Any]) -> None:
     """검증·host lock을 거친 manager compose 파일 변경 진입점."""
 
-    with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+    with c6c_deployment_lock_from_environment() as lock_snapshot:
         environment_snapshot = _capture_compose_environment_snapshot(
             environment_override=None
+        )
+        assert_environment_snapshot_matches_c6c_lock(
+            environment_snapshot,
+            lock_snapshot,
         )
         assert_manager_mutation_allowed(
             environment=environment_snapshot.effective
@@ -473,13 +477,13 @@ def validate_container_config_update(
 
 
 class DockerService:
-    def __init__(self):
-        self._client = None
+    def __init__(self) -> None:
+        self._client: docker.DockerClient | None = None
         self._initialized = False
-        self._default_compose_config = None
+        self._default_compose_config: dict[str, Any] | None = None
         self._backup_default_config()
 
-    def _backup_default_config(self):
+    def _backup_default_config(self) -> None:
         try:
             cfg = get_compose_config()
             import copy
@@ -498,6 +502,8 @@ class DockerService:
             except DockerException as e:
                 logger.error(f"Failed to connect to Docker daemon: {e}")
                 raise RuntimeError("Docker daemon is not accessible.") from e
+        if self._client is None:
+            raise RuntimeError("Docker client initialization is inconsistent.")
         return self._client
 
     def get_containers_status(self) -> list[dict[str, Any]]:
@@ -562,7 +568,8 @@ class DockerService:
                             f"{host_ports[0].get('HostPort')}:{container_port.split('/')[0]}"
                         )
 
-                image_tags = container.image.tags
+                image = container.image
+                image_tags = image.tags if image is not None else []
                 status_list.append(
                     {
                         "id": key,
@@ -572,7 +579,11 @@ class DockerService:
                         "connection": spec["connection"],
                         "public_url": _public_url(spec),
                         "expected_ports": spec["expected_ports"],
-                        "image": image_tags[0] if image_tags else container.image.short_id,
+                        "image": (
+                            image_tags[0]
+                            if image_tags
+                            else image.short_id if image is not None else "unknown"
+                        ),
                         "status": container.status,  # e.g., 'running', 'exited', 'paused'
                         "state": container.attrs.get("State", {}).get("Status", "unknown"),
                         "ports": ports,
@@ -652,9 +663,13 @@ class DockerService:
             return {"success": False, "error": f"Container {container_id} is not managed."}
         if action not in {"start", "stop", "restart"}:
             return {"success": False, "error": f"Invalid action: {action}"}
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None
+            )
+            assert_environment_snapshot_matches_c6c_lock(
+                environment_snapshot,
+                lock_snapshot,
             )
             assert_manager_mutation_allowed(
                 environment=environment_snapshot.effective
@@ -878,9 +893,13 @@ class DockerService:
             networks=new_networks,
             baseline_env=baseline_env if isinstance(baseline_env, dict) else {},
         )
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None
+            )
+            assert_environment_snapshot_matches_c6c_lock(
+                environment_snapshot,
+                lock_snapshot,
             )
             assert_manager_mutation_allowed(
                 environment=environment_snapshot.effective
@@ -1209,9 +1228,13 @@ class DockerService:
         """Reset container configuration in docker-compose.yml to default and recreate it."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None
+            )
+            assert_environment_snapshot_matches_c6c_lock(
+                environment_snapshot,
+                lock_snapshot,
             )
             assert_manager_mutation_allowed(
                 environment=environment_snapshot.effective

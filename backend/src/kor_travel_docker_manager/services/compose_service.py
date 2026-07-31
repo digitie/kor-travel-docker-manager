@@ -926,7 +926,7 @@ def _revalidate_c6c_deployment_lock_snapshot(
 
 
 @contextmanager
-def _c6c_deployment_lock_from_env() -> Iterator[C6cDeploymentLockSnapshot]:
+def c6c_deployment_lock_from_environment() -> Iterator[C6cDeploymentLockSnapshot]:
     snapshot = _capture_c6c_deployment_lock_snapshot()
     with c6c_deployment_lock(snapshot.lock_path):
         _revalidate_c6c_deployment_lock_snapshot(snapshot)
@@ -956,7 +956,7 @@ def _c6c_deployment_lock_from_transaction(
         yield snapshot
 
 
-def _assert_environment_snapshot_matches_c6c_lock(
+def assert_environment_snapshot_matches_c6c_lock(
     environment_snapshot: "ComposeEnvironmentSnapshot",
     lock_snapshot: C6cDeploymentLockSnapshot,
 ) -> None:
@@ -985,7 +985,7 @@ def _assert_transaction_matches_c6c_lock(
     transaction: "ComposeTransactionSnapshot",
     lock_snapshot: C6cDeploymentLockSnapshot,
 ) -> None:
-    _assert_environment_snapshot_matches_c6c_lock(
+    assert_environment_snapshot_matches_c6c_lock(
         transaction.environment,
         lock_snapshot,
     )
@@ -1958,7 +1958,7 @@ class ComposeService:
                         external_input_snapshot=None,
                         materialized_compose=resolved,
                     )
-            with _c6c_deployment_lock_from_env() as lock_snapshot:
+            with c6c_deployment_lock_from_environment() as lock_snapshot:
                 captured_validation: ValidatedComposeCandidate | None = None
                 if transaction is None and expected_environment_snapshot is None:
                     transaction, captured_validation = (
@@ -1976,7 +1976,7 @@ class ComposeService:
                     raise ComposeCandidateContractError(
                         "compose transaction has no environment snapshot"
                     )
-                _assert_environment_snapshot_matches_c6c_lock(
+                assert_environment_snapshot_matches_c6c_lock(
                     environment_snapshot,
                     lock_snapshot,
                 )
@@ -2106,7 +2106,7 @@ class ComposeService:
     ) -> ValidatedComposeCandidate:
         """mutex 안의 config transaction이 재검증할 candidate identity를 반환한다."""
 
-        with _c6c_deployment_lock_from_env() as lock_snapshot:
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             transaction, persisted = self._capture_transaction_unlocked(
                 environment_override=environment_override,
                 environment_snapshot=environment_snapshot,
@@ -2831,7 +2831,7 @@ class ComposeService:
                 "production ensure is not permitted; "
                 "manage this service directly on the host instead"
             )
-        with _c6c_deployment_lock_from_env() as lock_snapshot:
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             transaction, validation = self._capture_transaction_unlocked()
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             mode = assert_manager_mutation_allowed(
@@ -3157,7 +3157,7 @@ class ComposeService:
 
         _validate_c6c_wait_timeout(wait_timeout)
 
-        with _c6c_deployment_lock_from_env() as lock_snapshot:
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
             )
@@ -4213,7 +4213,7 @@ class ComposeService:
                 "capturing a rollback pair requires --verified-compatible"
             )
         _validate_c6c_wait_timeout(wait_timeout)
-        with _c6c_deployment_lock_from_env() as lock_snapshot:
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
             )
@@ -4668,7 +4668,7 @@ class ComposeService:
     def rollback_compatible_pinvi_pair(self) -> dict[str, Any]:
         """manifest pair를 Map smoke 뒤 PinVi 순서로 복원해 혼합 실행을 막는다."""
 
-        with _c6c_deployment_lock_from_env() as lock_snapshot:
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
             transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
             )

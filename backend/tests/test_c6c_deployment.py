@@ -1295,7 +1295,7 @@ def test_pair_entry_lock_rejects_env_file_appearing_after_absent_snapshot(
     )
 
     with pytest.raises(ComposeCandidateContractError, match="identity differs"):
-        compose_service_module._assert_environment_snapshot_matches_c6c_lock(
+        compose_service_module.assert_environment_snapshot_matches_c6c_lock(
             transaction_environment,
             snapshot,
         )
@@ -1327,7 +1327,7 @@ def test_pair_entry_lock_rejects_transaction_env_path_drift(tmp_path: Path) -> N
     )
 
     with pytest.raises(ComposeCandidateContractError, match="path differs"):
-        compose_service_module._assert_environment_snapshot_matches_c6c_lock(
+        compose_service_module.assert_environment_snapshot_matches_c6c_lock(
             transaction_environment,
             snapshot,
         )

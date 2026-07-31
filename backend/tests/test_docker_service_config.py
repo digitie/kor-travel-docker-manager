@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
@@ -6,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
@@ -952,7 +954,7 @@ def test_update_container_config_validates_before_lock_or_environment_snapshot(
     service = DockerService()
     monkeypatch.setattr(
         docker_service_module,
-        "c6c_deployment_lock",
+        "c6c_deployment_lock_from_environment",
         Mock(side_effect=AssertionError("lock을 잡기 전에 검증에서 걸러야 한다")),
     )
     monkeypatch.setattr(
@@ -1044,11 +1046,6 @@ def _prepare_candidate_transaction(
     )
     monkeypatch.setattr(
         docker_service_module, "assert_manager_mutation_allowed", Mock()
-    )
-    monkeypatch.setattr(
-        docker_service_module,
-        "c6c_deployment_lock",
-        Mock(return_value=nullcontext()),
     )
     compose_run = Mock()
     monkeypatch.setattr(docker_service_module.compose_service, "run", compose_run)
@@ -1681,8 +1678,19 @@ def test_reset_config_uses_one_locked_update_transaction(
     monkeypatch.setattr(
         docker_service_module, "assert_manager_mutation_allowed", lambda **_kwargs: "local"
     )
-    lock = Mock(return_value=nullcontext())
-    monkeypatch.setattr(docker_service_module, "c6c_deployment_lock", lock)
+    lock_snapshot = object()
+    lock = Mock(return_value=nullcontext(lock_snapshot))
+    monkeypatch.setattr(
+        docker_service_module,
+        "c6c_deployment_lock_from_environment",
+        lock,
+    )
+    lock_binding = Mock()
+    monkeypatch.setattr(
+        docker_service_module,
+        "assert_environment_snapshot_matches_c6c_lock",
+        lock_binding,
+    )
     update = Mock(return_value={"success": True})
     monkeypatch.setattr(service, "_update_container_config_unlocked", update)
 
@@ -1690,6 +1698,8 @@ def test_reset_config_uses_one_locked_update_transaction(
 
     assert result["success"] is True
     lock.assert_called_once()
+    lock_binding.assert_called_once()
+    assert lock_binding.call_args.args[1] is lock_snapshot
     update.assert_called_once()
     assert update.call_args.args == (
         "rustfs",
@@ -1705,3 +1715,54 @@ def test_reset_config_uses_one_locked_update_transaction(
         update.call_args.kwargs["environment_snapshot"],
         ComposeEnvironmentSnapshot,
     )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda service: docker_service_module.save_compose_config({}),
+        lambda service: service.control_container("rustfs", "restart"),
+        lambda service: service.update_container_config("rustfs", [], {}, [], []),
+        lambda service: service.reset_container_config("rustfs"),
+    ],
+)
+def test_all_docker_mutation_entries_bind_transaction_to_selected_c6c_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: Callable[[DockerService], object],
+) -> None:
+    service = DockerService()
+    snapshot = ComposeEnvironmentSnapshot(
+        effective={},
+        env_path="/tmp/.env",
+        compose_path="/tmp/docker-compose.yml",
+        override_path="/tmp/docker-compose.override.yml",
+        env_file_identity=ComposeEnvFileIdentity(exists=False),
+        env_file_bytes=b"",
+    )
+    lock_snapshot = object()
+    monkeypatch.setattr(
+        docker_service_module,
+        "c6c_deployment_lock_from_environment",
+        Mock(return_value=nullcontext(lock_snapshot)),
+    )
+    monkeypatch.setattr(
+        docker_service_module,
+        "_capture_compose_environment_snapshot",
+        Mock(return_value=snapshot),
+    )
+    mismatch = Mock(side_effect=DeploymentContractError("lock snapshot mismatch"))
+    monkeypatch.setattr(
+        docker_service_module,
+        "assert_environment_snapshot_matches_c6c_lock",
+        mismatch,
+    )
+    monkeypatch.setattr(
+        docker_service_module,
+        "get_compose_config",
+        Mock(return_value={"services": {"rustfs": {"environment": {}}}}),
+    )
+
+    with pytest.raises(DeploymentContractError, match="lock snapshot mismatch"):
+        mutation(service)
+
+    mismatch.assert_called_once_with(snapshot, lock_snapshot)

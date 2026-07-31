@@ -73,6 +73,11 @@
       wheel SHA, wheel `RECORD` SHA, release manifest revision을 결박해 app root와 launcher까지
       activation/rollback 가능한 제품 경로로 제공한다. wheelhouse는 root `pip`가 읽기 전에 ancestor와
       각 wheel의 owner/mode/nlink/inode/digest를 snapshot하고 각 소비 단계 뒤 exact 재검증한다.
+      installer도 rotation/pair workflow와 같은 host-global lock을 source `.env` snapshot부터 app root·
+      launcher activation/rollback 종료까지 소유한다. lock 전후 `.env` identity·mode·owner·SHA가
+      달라지면 설치를 시작하지 않으며, 처음 고정한 source revision exact commit만 archive·기록한다.
+      staging venv의 `ktdctl`은 canonical installed root를 고정한 실행 가능한 entrypoint로 만들고
+      바뀐 bytes를 wheel `RECORD` digest·size와 release manifest에 다시 결박한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
       environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
       독립 검증하고 hash와 session secret은 항상 함께 회전한다.
@@ -90,7 +95,9 @@
       한쪽만 남아도 expected bytes로 양방향 수렴한다. journal은 raw Docker inspect나 secret-bearing
       env를 저장하지 않고 UI/non-UI evidence를 digest만으로 보존한다. crash 재실행 시
       old/new/recovery SHA 각각을 phase matrix로 resume하고 foreign `.env`는 덮지 않으며 terminal
-      audit·private artifact는 operation ID 기준 idempotent하게 정리한다.
+      audit·private artifact는 operation ID 기준 idempotent하게 정리한다. terminal result vocabulary는
+      `committed`/`rolled_back`/`aborted`로 제한하고 prepared/orphan abort도 결정적 operation ID로
+      cleanup crash 재실행에서 한 번만 기록한다.
 - [ ] crash/signal/재실행 recovery journal, foreign container/name collision, `.env` drift,
       Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다.
 - [ ] 단일 적대적 리뷰, focused/backend 전체 테스트, Ruff, strict mypy, canonical Compose gate,

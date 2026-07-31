@@ -79,11 +79,34 @@ package의 registry가 source-layout 상대 경로를 사용해 `.venv/lib/confi
 `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`를 Compose와 registry의 공통 root resolver가 사용하도록
 바꿔 source checkout과 installed `/opt` layout을 같은 명시 root 계약으로 수렴시켰다.
 
-최종 로컬 회귀는 C6c deployment 856건과 credential rotation 60건, touched Ruff·strict mypy·
-shell syntax를 통과했다. 수정한 exact clean Git tree로 Debian disposable container에서
+네 번째 exact-head 적대적 리뷰는 DockerService의 네 일반 mutation 진입점이 production lock을
+선택한 뒤 새 effective environment를 별도로 캡처해 다른 transaction을 실행할 수 있는 결함,
+installer가 고정 revision 대신 움직이는 `HEAD`를 archive하는 결함, installer가 rotation과 다른
+lock 경계에서 오래된 `.env`를 활성화할 수 있는 결함, prepared/orphan recovery audit의 cleanup
+crash 재시도 중복을 차단점으로 판정했다. DockerService는 공용 lock snapshot context가 반환한
+identity·bytes와 실제 environment transaction을 exact 결박하도록 네 진입점을 통일했다.
+
+trusted installer는 처음 읽은 exact commit SHA로 `diff-index`와 `git archive`를 모두 수행한다.
+또한 source `.env`의 inode·mode·owner·size·mtime/ctime·SHA snapshot을 잡은 뒤
+`/run/lock/kor-travel-docker-manager/global-mutation.lock`을 root-only/nonblocking 방식으로
+획득하고, lock 안에서 같은 snapshot임을 재검증한다. 그 lock은 wheel build부터 app root·launcher
+activation/rollback이 끝날 때까지 inherited descriptor로 유지되어 rotation과 두 installer의
+경쟁을 모두 차단한다. terminal audit은 `committed`/`rolled_back`/`aborted` 세 상태로 clean-cut하고,
+prepared residue와 orphan backup은 결정적 operation identity로 audit write 뒤 cleanup이
+중단되어도 한 terminal result만 남긴다. staging venv의 generated `ktdctl`은 canonical `/opt`
+Python과 project root를 고정하는 entrypoint로 다시 만들고 해당 wheel `RECORD` digest·size를
+재산출해, atomic activation 뒤에도 직접 CLI와 trusted rotation launcher가 모두 같은 installed
+root를 사용한다.
+
+최종 로컬 회귀는 backend 1,145건, C6c deployment 856건, Docker config 92건, credential
+rotation 64건과 touched Ruff·strict mypy·shell syntax를 통과했다. 수정한 exact clean Git tree로
+Debian disposable container에서
 root-owned offline wheelhouse를 새로 만들고 실제 Poetry backend wheel을 build/install했다.
 설치된 `RECORD`의 유일한 site-packages 밖 항목이 exact `.venv/bin/ktdctl`임을 확인하고,
-release manifest↔source revision, `/opt` installed config, trusted launcher `--help`까지 통과했다.
+release manifest↔source revision, canonical `/opt` installed `ktdctl`, installed config,
+trusted launcher `--help`까지 통과했다. 별도 실제 process contention gate에서 같은 global lock을
+다른 process가 보유하면 installer가 source/archive/wheel/app mutation 전에 즉시 중단하는 것도
+확인했다.
 이 checkpoint를 push한 뒤 같은 단일 적대 리뷰어의 exact-head 재리뷰와 n150 검증으로 이어간다.
 
 ---

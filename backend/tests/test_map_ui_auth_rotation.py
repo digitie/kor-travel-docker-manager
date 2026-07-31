@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -507,6 +509,58 @@ def test_pending_journal_unknown_env_sha_blocks_without_recovery(tmp_path: Path)
         raise AssertionError("unknown .env sha must block recovery")
 
 
+def test_prepared_recovery_audit_is_single_terminal_result_across_cleanup_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current_password = "current-password-with-length"
+    env_path, _compose_path, paths = _rotation_fixture(tmp_path, current_password)
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    old_env = env_path.read_bytes()
+    rotation._write_secret_backup(paths.backup_path, old_env)
+    rotation._write_journal(
+        paths.journal_path,
+        _journal_payload(
+            operation_id="op-prepared-cleanup-crash",
+            phase="prepared",
+            old_env_sha256=rotation._sha256(old_env),
+            new_env_sha256="1" * 64,
+        ),
+    )
+    real_cleanup = rotation._cleanup_rotation_artifacts
+    monkeypatch.setattr(
+        rotation,
+        "_cleanup_rotation_artifacts",
+        lambda _paths: (_ for _ in ()).throw(OSError("cleanup crash")),
+    )
+
+    with pytest.raises(OSError, match="cleanup crash"):
+        rotation._recover_pending_journal(
+            paths=paths,
+            env_values={},
+            runner=lambda *_args, **_kwargs: CommandResult(returncode=0),
+            current_password=current_password,
+            new_password="new-password-with-length",
+        )
+
+    audit = _audit_lines(paths.audit_path)
+    assert [line["result"] for line in audit] == ["aborted"]
+    assert audit[0]["abort_reason"] == "prepared_journal_without_env_mutation"
+
+    monkeypatch.setattr(rotation, "_cleanup_rotation_artifacts", real_cleanup)
+    result = rotation._recover_pending_journal(
+        paths=paths,
+        env_values={},
+        runner=lambda *_args, **_kwargs: CommandResult(returncode=0),
+        current_password=current_password,
+        new_password="new-password-with-length",
+    )
+
+    assert result is not None
+    assert [line["result"] for line in _audit_lines(paths.audit_path)] == ["aborted"]
+    assert not paths.journal_path.exists()
+
+
 def test_committed_journal_residue_cleans_without_rollback(tmp_path: Path):
     env_path, _compose_path, paths = _rotation_fixture(
         tmp_path,
@@ -621,6 +675,86 @@ def test_pending_forward_phase_recovery_records_rollback_sha_and_cleans_frozen(
     assert not paths.backup_path.exists()
     assert not paths.frozen_compose_path.exists()
     assert not paths.recovery_path.exists()
+    audit = _audit_lines(paths.audit_path)
+    assert [line["result"] for line in audit] == ["rolled_back"]
+    assert audit[0]["recovery_trigger"] == "pending_journal"
+
+
+def test_pending_recovery_audit_is_single_terminal_result_across_cleanup_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    current_password = "current-password-with-length"
+    new_password = "new-password-with-length"
+    env_path, _compose_path, paths = _rotation_fixture(tmp_path, current_password)
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    env_document = rotation._read_strict_env_document(
+        env_path,
+        expected_uid=paths.env_owner_uid,
+    )
+    new_env = env_document.rewritten(
+        {
+            rotation.MAP_UI_PASSWORD_ENV: new_password,
+            rotation.MAP_UI_PASSWORD_HASH_ENV: generate_map_pbkdf2_hash(new_password),
+            rotation.MAP_UI_SESSION_SECRET_ENV: "new-session-secret-value-xxxxxxxxxxxx",
+        }
+    )
+    rotation._write_secret_backup(paths.backup_path, env_document.original_bytes)
+    env_path.write_bytes(new_env)
+    env_path.chmod(0o600)
+    rotation._write_journal(
+        paths.journal_path,
+        _journal_payload(
+            operation_id="op-recovery-audit-cleanup-crash",
+            phase="env_new",
+            old_env_sha256=rotation._sha256(env_document.original_bytes),
+            new_env_sha256=rotation._sha256(new_env),
+        ),
+    )
+
+    def runner(*args, **_kwargs) -> CommandResult:
+        if args[0][-1] == "config":
+            return CommandResult(
+                returncode=0,
+                stdout="services:\n  kor-travel-map-ui: {}\n",
+            )
+        return CommandResult(returncode=0)
+
+    real_cleanup = rotation._cleanup_rotation_artifacts
+
+    def crash_cleanup(_paths: rotation.RotationPaths) -> None:
+        raise OSError("cleanup crash")
+
+    monkeypatch.setattr(rotation, "_cleanup_rotation_artifacts", crash_cleanup)
+    with _patched_rotation_runtime(paths):
+        with pytest.raises(OSError, match="cleanup crash"):
+            rotation._recover_pending_journal(
+                paths=paths,
+                env_values={},
+                runner=runner,
+                current_password=current_password,
+                new_password=new_password,
+            )
+
+    assert rotation._read_journal(paths.journal_path)["phase"] == "rolled_back"
+    assert [line["result"] for line in _audit_lines(paths.audit_path)] == ["rolled_back"]
+
+    monkeypatch.setattr(rotation, "_cleanup_rotation_artifacts", real_cleanup)
+    with _patched_rotation_runtime(paths):
+        result = rotation._recover_pending_journal(
+            paths=paths,
+            env_values={},
+            runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("runner not expected")
+            ),
+            current_password=current_password,
+            new_password=new_password,
+        )
+
+    assert result is not None
+    assert result.phase == "rolled_back"
+    assert [line["result"] for line in _audit_lines(paths.audit_path)] == ["rolled_back"]
+    assert not paths.journal_path.exists()
 
 
 def test_same_stdin_replay_after_env_new_crash_reaches_recovery_before_hash_check(
@@ -823,6 +957,41 @@ def test_orphan_backup_matching_current_env_is_cleared(tmp_path: Path):
 
     assert result is not None
     assert result.phase == "cleared_orphan_backup_on_current_env"
+    assert [line["result"] for line in _audit_lines(paths.audit_path)] == ["aborted"]
+    assert _audit_lines(paths.audit_path)[0]["abort_reason"] == (
+        "orphan_backup_matches_current_env"
+    )
+    assert not paths.backup_path.exists()
+
+
+def test_orphan_backup_audit_is_single_terminal_result_across_unlink_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    env_path, _compose_path, paths = _rotation_fixture(
+        tmp_path,
+        "current-password-with-length",
+    )
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+    rotation._write_secret_backup(paths.backup_path, env_path.read_bytes())
+    real_unlink = rotation._unlink_private
+
+    monkeypatch.setattr(
+        rotation,
+        "_unlink_private",
+        lambda _path: (_ for _ in ()).throw(OSError("unlink crash")),
+    )
+    with pytest.raises(OSError, match="unlink crash"):
+        rotation._recover_orphan_rotation_artifacts(paths)
+
+    assert [line["result"] for line in _audit_lines(paths.audit_path)] == ["aborted"]
+    assert paths.backup_path.exists()
+
+    monkeypatch.setattr(rotation, "_unlink_private", real_unlink)
+    result = rotation._recover_orphan_rotation_artifacts(paths)
+
+    assert result is not None
+    assert [line["result"] for line in _audit_lines(paths.audit_path)] == ["aborted"]
     assert not paths.backup_path.exists()
 
 
@@ -921,7 +1090,14 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     )
 
     assert "/usr/bin/sudo -H -u \"#${source_uid}\" -- /usr/bin/git" in script
-    assert "run_source_git archive --format=tar HEAD > \"${ARCHIVE}\"" in script
+    assert 'GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"' in script
+    assert 'fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' in script
+    assert 'KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD' in script
+    assert 'ENV_FILE_SNAPSHOT_BEFORE_LOCK="$(snapshot_env_file "${ENV_FILE}")"' in script
+    assert 'ENV_FILE_SNAPSHOT_AFTER_LOCK="$(snapshot_env_file "${ENV_FILE}")"' in script
+    assert "deployment .env changed before trusted installer lock acquisition" in script
+    assert 'run_source_git diff-index --quiet "${revision}" --' in script
+    assert 'run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"' in script
     assert "/usr/bin/install -o \"${env_uid}\" -g \"${env_gid}\" -m 0600" in script
     assert "-m pip wheel" in script
     assert "--wheel-dir \"${STAGING}/.wheelhouse\"" in script
@@ -939,6 +1115,11 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     assert "backend_wheel_sha256" in script
     assert "wheel_record_sha256" in script
     assert "wheelhouse_sha256" in script
+    assert "trusted release entrypoint shebang is unexpected" in script
+    assert 'f"#!{app_root}/backend/.venv/bin/python\\n"' in script
+    assert 'os.environ["KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"]' in script
+    assert "wheel RECORD must contain exactly one manager entrypoint" in script
+    assert "wheel RECORD digest mismatch" in script
     assert "mv -T \"${APP_ROOT}\" \"${ROLLBACK}\"" in script
     assert "LAUNCHER_ROLLBACK" in script
     assert "rm -rf \"${APP_ROOT}\"" in script
@@ -946,6 +1127,61 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
         "rm -rf \"${ROLLBACK}\""
     )
     assert "/usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null" in script
+    assert script.index("ENV_FILE_SNAPSHOT_AFTER_LOCK=") < script.index(
+        '/usr/bin/install -o "${env_uid}" -g "${env_gid}" -m 0600'
+    )
+    assert script.index("ENV_FILE_SNAPSHOT_AFTER_LOCK=") < script.index(
+        '/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"'
+    )
+
+
+def test_trusted_release_installer_archives_frozen_revision_when_head_moves(
+    tmp_path: Path,
+):
+    script = (
+        Path(__file__).parents[2] / "scripts" / "install-ktdm-trusted-release"
+    ).read_text(encoding="utf-8")
+    assert 'run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"' in script
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repository,
+        check=True,
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_text("revision-a\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "revision a"], cwd=repository, check=True)
+    frozen_revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tracked.write_text("revision-b\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "-qam", "revision b"], cwd=repository, check=True)
+
+    archive = tmp_path / "release.tar"
+    with archive.open("wb") as handle:
+        subprocess.run(
+            ["git", "archive", "--format=tar", frozen_revision],
+            cwd=repository,
+            check=True,
+            stdout=handle,
+        )
+    with tarfile.open(archive) as release:
+        archived = release.extractfile("tracked.txt")
+        assert archived is not None
+        assert archived.read() == b"revision-a\n"
 
 
 def test_rotate_map_ui_auth_rewrites_three_env_keys_and_uses_sanitized_child_env(

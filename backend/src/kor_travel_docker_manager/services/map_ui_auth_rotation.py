@@ -1176,7 +1176,8 @@ def _write_audit(path: Path, payload: Mapping[str, Any]) -> None:
 def _write_terminal_audit_once(path: Path, payload: Mapping[str, Any]) -> None:
     operation_id = payload.get("operation_id")
     result = payload.get("result")
-    if result not in {"committed", "rolled_back"}:
+    terminal_results = {"aborted", "committed", "rolled_back"}
+    if result not in terminal_results:
         _write_audit(path, payload)
         return
     if not isinstance(operation_id, str) or not operation_id:
@@ -1194,7 +1195,7 @@ def _write_terminal_audit_once(path: Path, payload: Mapping[str, Any]) -> None:
             if existing.get("operation_id") != operation_id:
                 continue
             existing_result = existing.get("result")
-            if existing_result not in {"committed", "rolled_back"}:
+            if existing_result not in terminal_results:
                 continue
             if existing_result != result:
                 raise DeploymentContractError(
@@ -1281,15 +1282,27 @@ def _recover_orphan_rotation_artifacts(
         expected_uid=paths.env_owner_uid,
     )
     current_sha = current_evidence.sha256
-    backup_sha = _sha256(_read_private_file_bytes(paths.backup_path, label="Map UI auth backup"))
+    backup_evidence = _capture_strict_child_file(
+        paths.backup_path.parent,
+        paths.backup_path.name,
+        kind="Map UI auth backup",
+    )
+    backup_sha = backup_evidence.sha256
     if current_sha != backup_sha:
         raise DeploymentContractError(
             "Map UI auth rotation has ambiguous orphan backup without a journal"
         )
-    _write_audit(
+    backup_stat = backup_evidence.stat_result
+    artifact_identity = (
+        f"{backup_sha}:{backup_stat.st_dev}:{backup_stat.st_ino}:{backup_stat.st_ctime_ns}"
+    )
+    operation_id = f"orphan-backup-{_sha256(artifact_identity.encode('ascii'))}"
+    _write_terminal_audit_once(
         paths.audit_path,
         {
-            "result": "cleared_orphan_backup_on_current_env",
+            "operation_id": operation_id,
+            "result": "aborted",
+            "abort_reason": "orphan_backup_matches_current_env",
             "recorded_at": _utc_now(),
         },
     )
@@ -2218,7 +2231,8 @@ def _recover_pending_journal(
             paths.audit_path,
             {
                 "operation_id": journal["operation_id"],
-                "result": "cleared_pending_journal_on_prepared",
+                "result": "aborted",
+                "abort_reason": "prepared_journal_without_env_mutation",
                 "recorded_at": _utc_now(),
             },
         )
@@ -2305,7 +2319,8 @@ def _recover_pending_journal(
         paths.audit_path,
         {
             "operation_id": journal["operation_id"],
-            "result": "recovered_pending_journal",
+            "result": "rolled_back",
+            "recovery_trigger": "pending_journal",
             "rollback_state": "rolled_back_password_state_with_irreversible_session_invalidation",
             "operator_uid": _operator_uid(),
             "manager_source_revision": manager_source_revision,

@@ -168,7 +168,13 @@ n150 read-only preflight에서는 일반 scalar의 username 문자열 일치를 
 Map UI credential rotation은 user-writable checkout이나 venv를 `sudo`로 직접 실행하지 않는다.
 운영 설치는 `scripts/install-ktdm-trusted-release <clean-checkout> --env-file <canonical-env>
 --wheelhouse <root-owned-wheelhouse>`로 user-owned checkout의 tracked `git archive`를 source owner 권한에서
-만들고, root는 그 tar archive와 root-owned/non-writable offline wheelhouse만 소비한다. staging은
+만들고, root는 그 tar archive와 root-owned/non-writable offline wheelhouse만 소비한다. 처음 읽은
+40자 commit SHA를 clean check와 archive에 모두 사용하므로 설치 도중 checkout `HEAD`가 움직여도
+recorded revision과 source bytes가 달라질 수 없다. installer는 canonical `.env`의
+identity·mode·owner·SHA snapshot을 잡은 뒤 rotation/pair workflow와 같은 root-only
+`/run/lock/kor-travel-docker-manager/global-mutation.lock`을 nonblocking으로 획득하고, lock 내부에서
+snapshot을 exact 재검증한다. lock은 source archive부터 app root·launcher activation/rollback
+종료까지 유지되므로 credential rotation과 두 installer가 서로의 state를 되감을 수 없다. staging은
 `/opt/.kor-travel-docker-manager.stage.*`에 root-owned/non-writable source·compose·
 `.ktdm-source-revision`·isolated backend wheel venv·`.ktdm-release-manifest.json`을 만든 뒤
 `/opt/kor-travel-docker-manager`로 activation한다. 운영 `.env`는 source snapshot에서 가져오지 않고
@@ -188,7 +194,11 @@ venv Python이 아니라 exact root-owned `/usr/bin/python3 -I -S`로 먼저 실
 pre-import gap을 막고, venv `bin/python`은 canonical root-owned `/usr/bin/python3.x` symlink chain으로
 resolve될 때만 허용한다. 또한 설치된 wheel `RECORD` SHA가 release manifest의 `wheel_record_sha256`과
 일치해야 한다. `RECORD`의 site-packages 밖 항목은 Poetry가 만든 exact
-`.venv/bin/ktdctl` entrypoint 하나만 허용한다. 모든 검증을 통과한 뒤에만
+`.venv/bin/ktdctl` entrypoint 하나만 허용한다. installer는 staging 절대경로 shebang을
+canonical `/opt` Python과 project root를 고정하는 installed
+`ktdctl` entrypoint로 바꾸고, 바뀐 bytes의 SHA-256·size를 wheel `RECORD`에 다시 기록한다. 따라서
+atomic activation 뒤 direct `ktdctl`과 trusted rotation launcher가 같은 installed source를 사용한다.
+launcher는 모든 검증을 통과한 뒤에만
 `KTDM_TRUSTED_ROOT_LAUNCHER=ktdctl-map-ui-auth-rotate-v1`을 설정하고 `python -I -m
 kor_travel_docker_manager.cli map-ui-auth rotate`를 실행한다. `sudo
 <user-writable-venv>/bin/ktdctl map-ui-auth rotate` 경로는 root가 사용자 소유 Python script/import
@@ -201,7 +211,10 @@ rollback은 `rollback_preparing` journal을 먼저 fsync한 뒤 root-private `en
 재실행 시 current `.env`가 old/new/recovery 어느 SHA에 있든 phase별 password evidence를
 메모리에서 검증하고 같은 recovery bytes로만 resume한다. terminal `committed`/`rolled_back` journal은
 backup·recovery artifact 일부가 이미 삭제된 cleanup crash 뒤에도 current terminal SHA와 runtime/auth를
-확인하고 같은 operation audit을 한 번만 보충한 뒤 남은 artifact를 idempotent하게 정리한다. current
+확인하고 같은 operation audit을 한 번만 보충한 뒤 남은 artifact를 idempotent하게 정리한다.
+forward mutation 전 prepared residue와 current `.env`와 같은 orphan backup도 terminal
+`aborted`로 기록하며, journal operation ID 또는 artifact identity에서 만든 결정적 operation ID로
+cleanup crash 재실행 중 중복 audit을 막는다. current
 `.env`가 journal의 어떤 SHA에도 속하지 않으면 외부 변경으로 보고 덮어쓰지 않는다.
 
 최초 설치에서 manifest가 없으면 capture가 같은 host lock 안에서 base dependency, Map API,

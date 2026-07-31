@@ -4,6 +4,7 @@ set -euo pipefail
 PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
+ORIGINAL_ARGS=("$@")
 APP_ROOT="/opt/kor-travel-docker-manager"
 APP_PARENT="/opt"
 SOURCE_ROOT=""
@@ -15,11 +16,90 @@ ARCHIVE="${APP_PARENT}/.kor-travel-docker-manager.archive.$$.tar"
 LAUNCHER_PATH="/usr/local/sbin/ktdctl-map-ui-auth-rotate"
 LAUNCHER_ROLLBACK="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback.$$"
 STATE_ROOT="/var/lib/kor-travel-docker-manager"
+GLOBAL_LOCK_DIR="/run/lock/kor-travel-docker-manager"
+GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"
 ACTIVATED=0
 
 die() {
   echo "$1" >&2
   exit 126
+}
+
+snapshot_env_file() {
+  local path="$1"
+  /usr/bin/python3 -I -S - "${path}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_absolute() or path != path.resolve(strict=True):
+    raise SystemExit("deployment .env path must be canonical and contain no symlinks")
+flags = os.O_RDONLY | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(path, flags)
+try:
+    before = os.fstat(fd)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != 0o600
+    ):
+        raise SystemExit("deployment .env evidence is invalid")
+    digest = hashlib.sha256()
+    while chunk := os.read(fd, 1024 * 1024):
+        digest.update(chunk)
+    after = os.fstat(fd)
+finally:
+    os.close(fd)
+identity = (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+if identity != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    raise SystemExit("deployment .env changed while it was being captured")
+print(
+    json.dumps(
+        {
+            "dev": before.st_dev,
+            "ino": before.st_ino,
+            "mode": stat.S_IMODE(before.st_mode),
+            "uid": before.st_uid,
+            "gid": before.st_gid,
+            "nlink": before.st_nlink,
+            "size": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+            "ctime_ns": before.st_ctime_ns,
+            "sha256": digest.hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
+PY
 }
 
 while [[ "$#" -gt 0 ]]; do
@@ -67,6 +147,94 @@ fi
 if [[ ! -f "${ENV_FILE}" ]]; then
   die "deployment .env evidence is missing"
 fi
+
+ENV_FILE_SNAPSHOT_BEFORE_LOCK="$(snapshot_env_file "${ENV_FILE}")"
+if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
+  export KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT="${ENV_FILE_SNAPSHOT_BEFORE_LOCK}"
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+arguments = sys.argv[2:]
+lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
+lock_path = lock_dir / "global-mutation.lock"
+lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+directory_stat = lock_dir.lstat()
+if (
+    not stat.S_ISDIR(directory_stat.st_mode)
+    or directory_stat.st_uid != 0
+    or stat.S_IMODE(directory_stat.st_mode) != 0o700
+):
+    raise SystemExit("production global mutation lock directory is unsafe")
+flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(lock_path, flags, 0o600)
+lock_stat = os.fstat(fd)
+if (
+    not stat.S_ISREG(lock_stat.st_mode)
+    or lock_stat.st_nlink != 1
+    or lock_stat.st_uid != 0
+    or stat.S_IMODE(lock_stat.st_mode) != 0o600
+):
+    os.close(fd)
+    raise SystemExit("production global mutation lock is unsafe")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as exc:
+    os.close(fd)
+    raise SystemExit("another manager mutation is already active") from exc
+os.set_inheritable(fd, True)
+environment = dict(os.environ)
+environment["KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD"] = str(fd)
+os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
+PY
+fi
+
+lock_fd="${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD}"
+if [[ ! "${lock_fd}" =~ ^[0-9]+$ ]]; then
+  die "production global mutation lock descriptor is invalid"
+fi
+/usr/bin/python3 -I -S - "${lock_fd}" "${GLOBAL_LOCK}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+fd = int(sys.argv[1])
+path = pathlib.Path(sys.argv[2])
+descriptor_stat = os.fstat(fd)
+path_stat = path.lstat()
+if (
+    (descriptor_stat.st_dev, descriptor_stat.st_ino)
+    != (path_stat.st_dev, path_stat.st_ino)
+    or not stat.S_ISREG(descriptor_stat.st_mode)
+    or descriptor_stat.st_nlink != 1
+    or descriptor_stat.st_uid != 0
+    or stat.S_IMODE(descriptor_stat.st_mode) != 0o600
+):
+    raise SystemExit("production global mutation lock descriptor is unsafe")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as exc:
+    raise SystemExit("production global mutation lock is not held") from exc
+PY
+unset KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD
+
+ENV_FILE_SNAPSHOT_AFTER_LOCK="$(snapshot_env_file "${ENV_FILE}")"
+if [[ "${ENV_FILE_SNAPSHOT_AFTER_LOCK}" != "${KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT:-}" ]]; then
+  die "deployment .env changed before trusted installer lock acquisition"
+fi
+unset KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT
 
 /usr/bin/install -d -o root -g root -m 0700 "${STATE_ROOT}"
 
@@ -186,10 +354,10 @@ revision="$(run_source_git rev-parse HEAD)"
 if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
   die "source revision is invalid"
 fi
-if ! run_source_git diff-index --quiet HEAD --; then
+if ! run_source_git diff-index --quiet "${revision}" --; then
   die "source checkout must be clean before trusted release install"
 fi
-run_source_git archive --format=tar HEAD > "${ARCHIVE}"
+run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
 /usr/bin/chown root:root "${ARCHIVE}"
 /usr/bin/chmod 0600 "${ARCHIVE}"
 
@@ -248,6 +416,67 @@ verify_wheelhouse_snapshot "${WHEELHOUSE}" "${WHEELHOUSE_SNAPSHOT}"
   "${built_backend_wheels[0]}"
 verify_wheelhouse_snapshot "${WHEELHOUSE}" "${WHEELHOUSE_SNAPSHOT}"
 
+/usr/bin/python3 -I -S - "${STAGING}" "${APP_ROOT}" <<'PY'
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import io
+import pathlib
+import sys
+
+staging = pathlib.Path(sys.argv[1]).resolve(strict=True)
+app_root = pathlib.Path(sys.argv[2])
+site_packages_candidates = list(
+    (staging / "backend" / ".venv" / "lib").glob("python*/site-packages")
+)
+if len(site_packages_candidates) != 1:
+    raise SystemExit("trusted release site-packages is ambiguous")
+site_packages = site_packages_candidates[0]
+dist_infos = list(
+    site_packages.glob("kor_travel_docker_manager_backend-*.dist-info")
+)
+if len(dist_infos) != 1:
+    raise SystemExit("trusted release dist-info is ambiguous")
+record = dist_infos[0] / "RECORD"
+entrypoint = staging / "backend" / ".venv" / "bin" / "ktdctl"
+payload = entrypoint.read_bytes()
+lines = payload.splitlines(keepends=True)
+expected_shebang = f"#!{staging}/backend/.venv/bin/python".encode("utf-8")
+if not lines or lines[0].rstrip(b"\r\n") != expected_shebang:
+    raise SystemExit("trusted release entrypoint shebang is unexpected")
+rewritten = (
+    f"#!{app_root}/backend/.venv/bin/python\n"
+    "import os\n"
+    "import sys\n"
+    f'os.environ["KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"] = "{app_root}"\n'
+    "from kor_travel_docker_manager.cli import main\n"
+    'if __name__ == "__main__":\n'
+    "    raise SystemExit(main())\n"
+).encode("utf-8")
+entrypoint.write_bytes(rewritten)
+
+rows = list(csv.reader(record.read_text(encoding="utf-8").splitlines()))
+entrypoint_rows = 0
+for row in rows:
+    if len(row) < 3:
+        raise SystemExit("wheel RECORD row is invalid")
+    target = (site_packages / row[0]).resolve(strict=True)
+    if target != entrypoint:
+        continue
+    entrypoint_rows += 1
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(rewritten).digest()).rstrip(b"=")
+    row[1] = f"sha256={encoded.decode('ascii')}"
+    row[2] = str(len(rewritten))
+if entrypoint_rows != 1:
+    raise SystemExit("wheel RECORD must contain exactly one manager entrypoint")
+output = io.StringIO(newline="")
+writer = csv.writer(output, lineterminator="\n")
+writer.writerows(rows)
+record.write_text(output.getvalue(), encoding="utf-8")
+PY
+
 KTDM_SOURCE_OWNER_UID="${source_uid}" \
 KTDM_SOURCE_OWNER_GID="${source_gid}" \
 KTDM_ENV_OWNER_UID="${env_uid}" \
@@ -257,6 +486,7 @@ KTDM_BUILT_BACKEND_WHEEL="${built_backend_wheels[0]}" \
 /usr/bin/python3 -I -S - "${STAGING}" "${revision}" <<'PY'
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import json
@@ -358,6 +588,12 @@ with record.open(newline="", encoding="utf-8") as handle:
             algorithm, separator, encoded = digest.partition("=")
             if separator != "=" or algorithm != "sha256":
                 raise SystemExit("wheel RECORD digest must be sha256")
+            actual = hashlib.sha256(target.read_bytes()).digest()
+            expected = base64.urlsafe_b64decode(
+                encoded + "=" * (-len(encoded) % 4)
+            )
+            if actual != expected:
+                raise SystemExit(f"wheel RECORD digest mismatch: {relative}")
 if package_files == 0:
     raise SystemExit("wheel RECORD does not cover manager package")
 
