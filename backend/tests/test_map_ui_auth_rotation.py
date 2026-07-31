@@ -1093,9 +1093,15 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     assert 'GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"' in script
     assert 'fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' in script
     assert 'KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD' in script
-    assert 'ENV_FILE_SNAPSHOT_BEFORE_LOCK="$(snapshot_env_file "${ENV_FILE}")"' in script
     assert 'ENV_FILE_SNAPSHOT_AFTER_LOCK="$(snapshot_env_file "${ENV_FILE}")"' in script
-    assert "deployment .env changed before trusted installer lock acquisition" in script
+    assert "deployment .env changed after trusted installer lock acquisition" in script
+    assert 'STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage"' in script
+    assert 'TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"' in script
+    assert "unclassified PID-scoped trusted release residue" in script
+    assert "trusted_release_transaction reconcile" in script
+    assert 'trusted_release_transaction begin "${revision}"' in script
+    assert 'trusted_release_transaction set-new-launcher "${new_launcher_sha256}"' in script
+    assert "trusted_release_transaction commit" in script
     assert 'run_source_git diff-index --quiet "${revision}" --' in script
     assert 'run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"' in script
     assert 'environment["KTDM_TRUSTED_INSTALL_ENV_FD"] = str(env_fd)' in script
@@ -1125,11 +1131,8 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     assert "wheel RECORD must contain exactly one manager entrypoint" in script
     assert "wheel RECORD digest mismatch" in script
     assert "mv -T \"${APP_ROOT}\" \"${ROLLBACK}\"" in script
+    assert "mv -T \"${LAUNCHER_PATH}\" \"${LAUNCHER_ROLLBACK}\"" in script
     assert "LAUNCHER_ROLLBACK" in script
-    assert "rm -rf \"${APP_ROOT}\"" in script
-    assert script.rindex("install-ktdctl-map-ui-auth-rotate") < script.rindex(
-        "rm -rf \"${ROLLBACK}\""
-    )
     assert "/usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null" in script
     assert script.index("ENV_FILE_SNAPSHOT_AFTER_LOCK=") < script.index(
         "ENV_FD_SNAPSHOT_BEFORE_COPY="
@@ -1137,13 +1140,19 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     assert script.index("ENV_FILE_SNAPSHOT_AFTER_LOCK=") < script.index(
         '/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"'
     )
-    assert "cleanup() {\n  set +e" in script
+    assert 'cleanup() {\n  local status="$?"\n  set +e' in script
     cleanup = script[script.index("cleanup() {") : script.index("trap cleanup EXIT")]
-    assert '/usr/bin/rm -rf "${ROLLBACK}"' not in cleanup
-    assert "rollback residue preserved" in cleanup
-    assert script.index("trap - EXIT\nACTIVATED=0") < script.rindex(
-        '/usr/bin/rm -rf "${ROLLBACK}"'
+    assert "trusted_release_transaction reconcile" in cleanup
+    assert script.index("trusted_release_transaction commit") < script.index(
+        "trap - EXIT"
     )
+
+    launcher_installer = (
+        Path(__file__).parents[2] / "scripts" / "install-ktdctl-map-ui-auth-rotate"
+    ).read_text(encoding="utf-8")
+    assert 'TMP_PATH="${DEST_DIR}/.ktdctl-map-ui-auth-rotate.installing"' in launcher_installer
+    assert '/usr/bin/mv -T -f "${TMP_PATH}" "${DEST_PATH}"' in launcher_installer
+    assert "installed trusted launcher evidence is invalid" in launcher_installer
 
 
 def test_trusted_release_installer_archives_frozen_revision_when_head_moves(

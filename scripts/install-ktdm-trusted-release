@@ -10,15 +10,17 @@ APP_PARENT="/opt"
 SOURCE_ROOT=""
 ENV_FILE=""
 WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-/var/lib/kor-travel-docker-manager/wheelhouse}"
-STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage.$$"
-ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback.$$"
-ARCHIVE="${APP_PARENT}/.kor-travel-docker-manager.archive.$$.tar"
+STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage"
+ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback"
+ARCHIVE="/var/lib/kor-travel-docker-manager/trusted-release.archive"
 LAUNCHER_PATH="/usr/local/sbin/ktdctl-map-ui-auth-rotate"
-LAUNCHER_ROLLBACK="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback.$$"
+LAUNCHER_ROLLBACK="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback"
+LAUNCHER_INSTALL_TMP="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.installing"
 STATE_ROOT="/var/lib/kor-travel-docker-manager"
+TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"
+TRANSACTION_STATE_TMP="${STATE_ROOT}/.trusted-release-transaction.json.tmp"
 GLOBAL_LOCK_DIR="/run/lock/kor-travel-docker-manager"
 GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"
-ACTIVATED=0
 
 die() {
   echo "$1" >&2
@@ -173,6 +175,422 @@ print(
 PY
 }
 
+trusted_release_transaction() {
+  local action="$1"
+  shift
+  /usr/bin/python3 -I -S - \
+    "${action}" \
+    "${TRANSACTION_STATE}" \
+    "${TRANSACTION_STATE_TMP}" \
+    "${APP_ROOT}" \
+    "${STAGING}" \
+    "${ROLLBACK}" \
+    "${ARCHIVE}" \
+    "${LAUNCHER_PATH}" \
+    "${LAUNCHER_ROLLBACK}" \
+    "${LAUNCHER_INSTALL_TMP}" \
+    "$@" <<'PY'
+from __future__ import annotations
+
+import glob
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import stat
+import sys
+from typing import Any
+
+action = sys.argv[1]
+state_path = pathlib.Path(sys.argv[2])
+state_tmp = pathlib.Path(sys.argv[3])
+app_root = pathlib.Path(sys.argv[4])
+staging = pathlib.Path(sys.argv[5])
+rollback = pathlib.Path(sys.argv[6])
+archive = pathlib.Path(sys.argv[7])
+launcher = pathlib.Path(sys.argv[8])
+launcher_rollback = pathlib.Path(sys.argv[9])
+launcher_install_tmp = pathlib.Path(sys.argv[10])
+arguments = sys.argv[11:]
+
+
+def fsync_dir(path: pathlib.Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def regular_evidence(
+    path: pathlib.Path,
+    *,
+    expected_uid: int | None = None,
+    expected_mode: int | None = None,
+) -> dict[str, Any]:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or (expected_uid is not None and metadata.st_uid != expected_uid)
+        or (expected_mode is not None and stat.S_IMODE(metadata.st_mode) != expected_mode)
+    ):
+        raise SystemExit(f"trusted release file evidence is invalid: {path}")
+    return {
+        "sha256": sha256_file(path),
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "uid": metadata.st_uid,
+        "gid": metadata.st_gid,
+        "nlink": metadata.st_nlink,
+        "size": metadata.st_size,
+    }
+
+
+def launcher_evidence(path: pathlib.Path) -> dict[str, Any]:
+    if not path.exists() and not path.is_symlink():
+        return {"present": False}
+    evidence = regular_evidence(path, expected_uid=0, expected_mode=0o755)
+    return {"present": True, **evidence}
+
+
+def app_evidence(path: pathlib.Path) -> dict[str, Any]:
+    if not path.exists() and not path.is_symlink():
+        return {"present": False}
+    root_metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(root_metadata.st_mode)
+        or root_metadata.st_uid != 0
+        or stat.S_IMODE(root_metadata.st_mode) & 0o022
+    ):
+        raise SystemExit(f"trusted release app root is invalid: {path}")
+    revision_path = path / ".ktdm-source-revision"
+    manifest_path = path / ".ktdm-release-manifest.json"
+    env_path = path / ".env"
+    revision_evidence = regular_evidence(
+        revision_path,
+        expected_uid=0,
+        expected_mode=0o644,
+    )
+    manifest_evidence = regular_evidence(
+        manifest_path,
+        expected_uid=0,
+        expected_mode=0o644,
+    )
+    env_evidence = regular_evidence(env_path, expected_mode=0o600)
+    revision = revision_path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise SystemExit(f"trusted release revision is invalid: {path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("manager_source_revision") != revision:
+        raise SystemExit(f"trusted release manifest revision mismatch: {path}")
+    return {
+        "present": True,
+        "root_dev": root_metadata.st_dev,
+        "root_ino": root_metadata.st_ino,
+        "revision": revision,
+        "revision_sha256": revision_evidence["sha256"],
+        "manifest_sha256": manifest_evidence["sha256"],
+        "env_sha256": env_evidence["sha256"],
+        "env_mode": env_evidence["mode"],
+        "env_uid": env_evidence["uid"],
+        "env_gid": env_evidence["gid"],
+        "env_size": env_evidence["size"],
+    }
+
+
+def validate_state_file(path: pathlib.Path) -> None:
+    regular_evidence(path, expected_uid=0, expected_mode=0o600)
+
+
+def read_state() -> dict[str, Any]:
+    validate_state_file(state_path)
+    value = json.loads(state_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != 1
+        or value.get("phase") not in {"preparing", "prepared", "committed"}
+        or not re.fullmatch(r"[0-9a-f]{40}", str(value.get("target_revision", "")))
+        or not isinstance(value.get("old_app"), dict)
+        or not isinstance(value.get("old_launcher"), dict)
+    ):
+        raise SystemExit("trusted release transaction state is invalid")
+    return value
+
+
+def write_state(value: dict[str, Any]) -> None:
+    if state_tmp.exists() or state_tmp.is_symlink():
+        raise SystemExit("trusted release transaction temp state already exists")
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(state_tmp, flags, 0o600)
+    try:
+        os.fchown(descriptor, 0, 0)
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise SystemExit("trusted release transaction state write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(state_tmp, state_path)
+    fsync_dir(state_path.parent)
+
+
+def remove_regular(path: pathlib.Path, expected: dict[str, Any] | None = None) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    actual = regular_evidence(path, expected_uid=0)
+    if expected is not None and actual != {
+        key: expected[key]
+        for key in ("sha256", "mode", "uid", "gid", "nlink", "size")
+    }:
+        raise SystemExit(f"trusted release file residue changed: {path}")
+    path.unlink()
+    fsync_dir(path.parent)
+
+
+def remove_tree(path: pathlib.Path, expected: dict[str, Any] | None = None) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if expected is not None and app_evidence(path) != expected:
+        raise SystemExit(f"trusted release app residue changed: {path}")
+    metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise SystemExit(f"trusted release directory residue is invalid: {path}")
+    shutil.rmtree(path)
+    fsync_dir(path.parent)
+
+
+def exact_match(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return actual == expected
+
+
+def validate_new_app(state: dict[str, Any]) -> dict[str, Any]:
+    actual = app_evidence(app_root)
+    if (
+        not actual.get("present")
+        or actual.get("revision") != state["target_revision"]
+    ):
+        raise SystemExit("active trusted release does not match transaction target")
+    return actual
+
+
+def validate_new_launcher(state: dict[str, Any]) -> dict[str, Any]:
+    expected_sha = state.get("new_launcher_sha256")
+    actual = launcher_evidence(launcher)
+    if (
+        not isinstance(expected_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+        or not actual.get("present")
+        or actual.get("sha256") != expected_sha
+    ):
+        raise SystemExit("active trusted launcher does not match transaction target")
+    return actual
+
+
+def reject_legacy_residue() -> None:
+    patterns = (
+        "/opt/.kor-travel-docker-manager.stage.*",
+        "/opt/.kor-travel-docker-manager.rollback.*",
+        "/opt/.kor-travel-docker-manager.archive.*",
+        "/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback.*",
+        "/usr/local/sbin/.ktdctl-map-ui-auth-rotate.[0-9]*",
+    )
+    residue = sorted(item for pattern in patterns for item in glob.glob(pattern))
+    if residue:
+        raise SystemExit(
+            "unclassified PID-scoped trusted release residue requires operator cleanup"
+        )
+
+
+def reconcile_committed(state: dict[str, Any]) -> None:
+    validate_new_app(state)
+    validate_new_launcher(state)
+    old_app = state["old_app"]
+    old_launcher = state["old_launcher"]
+    if rollback.exists() or rollback.is_symlink():
+        if not old_app.get("present") or app_evidence(rollback) != old_app:
+            raise SystemExit("committed rollback app residue is invalid")
+        remove_tree(rollback, old_app)
+    if staging.exists() or staging.is_symlink():
+        raise SystemExit("committed transaction unexpectedly retained staging")
+    if launcher_rollback.exists() or launcher_rollback.is_symlink():
+        if not old_launcher.get("present"):
+            raise SystemExit("committed launcher rollback residue is unexpected")
+        remove_regular(launcher_rollback, old_launcher)
+    if launcher_install_tmp.exists() or launcher_install_tmp.is_symlink():
+        expected_sha = state.get("new_launcher_sha256")
+        evidence = launcher_evidence(launcher_install_tmp)
+        if evidence.get("sha256") != expected_sha:
+            raise SystemExit("committed launcher install residue is invalid")
+        remove_regular(launcher_install_tmp, evidence)
+    remove_regular(archive)
+    state_path.unlink()
+    fsync_dir(state_path.parent)
+
+
+def restore_noncommitted(state: dict[str, Any]) -> None:
+    old_app = state["old_app"]
+    old_launcher = state["old_launcher"]
+    target_revision = state["target_revision"]
+    expected_new_launcher_sha = state.get("new_launcher_sha256")
+
+    rollback_exists = rollback.exists() or rollback.is_symlink()
+    app_exists = app_root.exists() or app_root.is_symlink()
+    if old_app.get("present"):
+        if rollback_exists:
+            if app_evidence(rollback) != old_app:
+                raise SystemExit("rollback app residue does not match original release")
+            if app_exists:
+                active = app_evidence(app_root)
+                if active.get("revision") != target_revision:
+                    raise SystemExit("foreign active app blocks trusted release rollback")
+                remove_tree(app_root, active)
+            os.rename(rollback, app_root)
+            fsync_dir(app_root.parent)
+            if app_evidence(app_root) != old_app:
+                raise SystemExit("restored app does not match original release")
+        elif not app_exists or app_evidence(app_root) != old_app:
+            raise SystemExit("original app release cannot be recovered")
+    else:
+        if rollback_exists:
+            raise SystemExit("unexpected rollback app exists for initial install")
+        if app_exists:
+            active = app_evidence(app_root)
+            if active.get("revision") != target_revision:
+                raise SystemExit("foreign active app blocks initial install rollback")
+            remove_tree(app_root, active)
+
+    backup_exists = launcher_rollback.exists() or launcher_rollback.is_symlink()
+    launcher_exists = launcher.exists() or launcher.is_symlink()
+    if old_launcher.get("present"):
+        if backup_exists:
+            if launcher_evidence(launcher_rollback) != old_launcher:
+                raise SystemExit("launcher rollback residue does not match original")
+            if launcher_exists:
+                current = launcher_evidence(launcher)
+                if current.get("sha256") != expected_new_launcher_sha:
+                    raise SystemExit(
+                        "foreign launcher target blocks trusted release rollback"
+                    )
+                remove_regular(launcher, current)
+            os.rename(launcher_rollback, launcher)
+            fsync_dir(launcher.parent)
+            if launcher_evidence(launcher) != old_launcher:
+                raise SystemExit("restored launcher does not match original")
+        elif not launcher_exists or launcher_evidence(launcher) != old_launcher:
+            raise SystemExit("original launcher cannot be recovered")
+    else:
+        if backup_exists:
+            raise SystemExit("unexpected launcher rollback exists for initial install")
+        if launcher_exists:
+            current = launcher_evidence(launcher)
+            if current.get("sha256") != expected_new_launcher_sha:
+                raise SystemExit("foreign launcher blocks initial install rollback")
+            remove_regular(launcher, current)
+
+    if launcher_install_tmp.exists() or launcher_install_tmp.is_symlink():
+        current = launcher_evidence(launcher_install_tmp)
+        if current.get("sha256") != expected_new_launcher_sha:
+            raise SystemExit("foreign launcher install residue blocks rollback")
+        remove_regular(launcher_install_tmp, current)
+    remove_tree(staging)
+    remove_regular(archive)
+    state_path.unlink()
+    fsync_dir(state_path.parent)
+
+
+reject_legacy_residue()
+if state_tmp.exists() or state_tmp.is_symlink():
+    validate_state_file(state_tmp)
+    if state_path.exists() or state_path.is_symlink():
+        state_tmp.unlink()
+        fsync_dir(state_tmp.parent)
+    else:
+        os.replace(state_tmp, state_path)
+        fsync_dir(state_path.parent)
+
+fixed_artifacts = (
+    staging,
+    rollback,
+    archive,
+    launcher_rollback,
+    launcher_install_tmp,
+)
+
+if action == "reconcile":
+    if not state_path.exists() and not state_path.is_symlink():
+        if any(path.exists() or path.is_symlink() for path in fixed_artifacts):
+            raise SystemExit("unclassified trusted release residue blocks installation")
+        raise SystemExit(0)
+    current_state = read_state()
+    if current_state["phase"] == "committed":
+        reconcile_committed(current_state)
+    else:
+        restore_noncommitted(current_state)
+elif action == "begin":
+    if len(arguments) != 1 or not re.fullmatch(r"[0-9a-f]{40}", arguments[0]):
+        raise SystemExit("trusted release target revision is invalid")
+    if state_path.exists() or state_path.is_symlink():
+        raise SystemExit("trusted release transaction is already active")
+    if any(path.exists() or path.is_symlink() for path in fixed_artifacts):
+        raise SystemExit("trusted release artifact exists before transaction begin")
+    write_state(
+        {
+            "version": 1,
+            "phase": "preparing",
+            "target_revision": arguments[0],
+            "old_app": app_evidence(app_root),
+            "old_launcher": launcher_evidence(launcher),
+            "new_launcher_sha256": None,
+        }
+    )
+elif action == "set-new-launcher":
+    if len(arguments) != 1 or not re.fullmatch(r"[0-9a-f]{64}", arguments[0]):
+        raise SystemExit("trusted release launcher digest is invalid")
+    current_state = read_state()
+    if current_state["phase"] != "preparing":
+        raise SystemExit("trusted release transaction phase cannot stage launcher")
+    if app_evidence(app_root) != current_state["old_app"]:
+        raise SystemExit("active app changed while trusted release was staged")
+    if launcher_evidence(launcher) != current_state["old_launcher"]:
+        raise SystemExit("active launcher changed while trusted release was staged")
+    current_state["phase"] = "prepared"
+    current_state["new_launcher_sha256"] = arguments[0]
+    write_state(current_state)
+elif action == "commit":
+    if arguments:
+        raise SystemExit("trusted release commit takes no arguments")
+    current_state = read_state()
+    if current_state["phase"] != "prepared":
+        raise SystemExit("trusted release transaction phase cannot commit")
+    validate_new_app(current_state)
+    validate_new_launcher(current_state)
+    current_state["phase"] = "committed"
+    write_state(current_state)
+else:
+    raise SystemExit("unknown trusted release transaction action")
+PY
+}
+
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --env-file)
@@ -215,31 +633,18 @@ fi
 if [[ ! -d "${WHEELHOUSE}" ]]; then
   die "trusted offline wheelhouse is missing"
 fi
-if [[ ! -f "${ENV_FILE}" ]]; then
-  die "deployment .env evidence is missing"
-fi
-
-ENV_FILE_SNAPSHOT_BEFORE_LOCK="$(snapshot_env_file "${ENV_FILE}")"
 if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
-  export KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT="${ENV_FILE_SNAPSHOT_BEFORE_LOCK}"
-  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ENV_FILE}" "${ORIGINAL_ARGS[@]}" <<'PY'
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
-import hashlib
-import json
 import os
 import pathlib
 import stat
 import sys
 
 script = pathlib.Path(sys.argv[1]).resolve(strict=True)
-env_path = pathlib.Path(sys.argv[2])
-arguments = sys.argv[3:]
-expected_env_snapshot = os.environ.get(
-    "KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT",
-    "",
-)
+arguments = sys.argv[2:]
 lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
 lock_path = lock_dir / "global-mutation.lock"
 lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -268,83 +673,16 @@ try:
 except BlockingIOError as exc:
     os.close(fd)
     raise SystemExit("another manager mutation is already active") from exc
-if not env_path.is_absolute() or env_path != env_path.resolve(strict=True):
-    os.close(fd)
-    raise SystemExit("deployment .env path must be canonical and contain no symlinks")
-env_flags = os.O_RDONLY | os.O_CLOEXEC
-if hasattr(os, "O_NOFOLLOW"):
-    env_flags |= os.O_NOFOLLOW
-env_fd = os.open(env_path, env_flags)
-env_before = os.fstat(env_fd)
-if (
-    not stat.S_ISREG(env_before.st_mode)
-    or env_before.st_nlink != 1
-    or stat.S_IMODE(env_before.st_mode) != 0o600
-):
-    os.close(env_fd)
-    os.close(fd)
-    raise SystemExit("deployment .env evidence is invalid")
-env_digest = hashlib.sha256()
-while chunk := os.read(env_fd, 1024 * 1024):
-    env_digest.update(chunk)
-env_after = os.fstat(env_fd)
-env_snapshot = json.dumps(
-    {
-        "dev": env_before.st_dev,
-        "ino": env_before.st_ino,
-        "mode": stat.S_IMODE(env_before.st_mode),
-        "uid": env_before.st_uid,
-        "gid": env_before.st_gid,
-        "nlink": env_before.st_nlink,
-        "size": env_before.st_size,
-        "mtime_ns": env_before.st_mtime_ns,
-        "ctime_ns": env_before.st_ctime_ns,
-        "sha256": env_digest.hexdigest(),
-    },
-    sort_keys=True,
-    separators=(",", ":"),
-)
-if (
-    env_before.st_dev,
-    env_before.st_ino,
-    env_before.st_mode,
-    env_before.st_uid,
-    env_before.st_gid,
-    env_before.st_nlink,
-    env_before.st_size,
-    env_before.st_mtime_ns,
-    env_before.st_ctime_ns,
-) != (
-    env_after.st_dev,
-    env_after.st_ino,
-    env_after.st_mode,
-    env_after.st_uid,
-    env_after.st_gid,
-    env_after.st_nlink,
-    env_after.st_size,
-    env_after.st_mtime_ns,
-    env_after.st_ctime_ns,
-):
-    os.close(env_fd)
-    os.close(fd)
-    raise SystemExit("deployment .env changed while it was being captured")
-if env_snapshot != expected_env_snapshot:
-    os.close(env_fd)
-    os.close(fd)
-    raise SystemExit("deployment .env changed before trusted installer lock acquisition")
 os.set_inheritable(fd, True)
-os.set_inheritable(env_fd, True)
 environment = dict(os.environ)
 environment["KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD"] = str(fd)
-environment["KTDM_TRUSTED_INSTALL_ENV_FD"] = str(env_fd)
 os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
 PY
 fi
 
 lock_fd="${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD}"
-env_fd="${KTDM_TRUSTED_INSTALL_ENV_FD:-}"
-if [[ ! "${lock_fd}" =~ ^[0-9]+$ || ! "${env_fd}" =~ ^[0-9]+$ ]]; then
-  die "trusted installer descriptor evidence is invalid"
+if [[ ! "${lock_fd}" =~ ^[0-9]+$ ]]; then
+  die "trusted installer lock descriptor evidence is invalid"
 fi
 /usr/bin/python3 -I -S - "${lock_fd}" "${GLOBAL_LOCK}" <<'PY'
 from __future__ import annotations
@@ -373,8 +711,103 @@ try:
 except BlockingIOError as exc:
     raise SystemExit("production global mutation lock is not held") from exc
 PY
-unset KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD
 
+/usr/bin/install -d -o root -g root -m 0700 "${STATE_ROOT}"
+trusted_release_transaction reconcile
+
+if [[ -z "${KTDM_TRUSTED_INSTALL_ENV_FD:-}" ]]; then
+  if [[ ! -f "${ENV_FILE}" ]]; then
+    die "deployment .env evidence is missing after transaction recovery"
+  fi
+  exec /usr/bin/python3 -I -S - \
+    "${BASH_SOURCE[0]}" \
+    "${ENV_FILE}" \
+    "${lock_fd}" \
+    "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+env_path = pathlib.Path(sys.argv[2])
+lock_fd = int(sys.argv[3])
+arguments = sys.argv[4:]
+if not env_path.is_absolute() or env_path != env_path.resolve(strict=True):
+    raise SystemExit("deployment .env path must be canonical and contain no symlinks")
+flags = os.O_RDONLY | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+env_fd = os.open(env_path, flags)
+before = os.fstat(env_fd)
+if (
+    not stat.S_ISREG(before.st_mode)
+    or before.st_nlink != 1
+    or stat.S_IMODE(before.st_mode) != 0o600
+):
+    os.close(env_fd)
+    raise SystemExit("deployment .env evidence is invalid")
+digest = hashlib.sha256()
+while chunk := os.read(env_fd, 1024 * 1024):
+    digest.update(chunk)
+after = os.fstat(env_fd)
+identity = (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+if identity != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    os.close(env_fd)
+    raise SystemExit("deployment .env changed while it was being captured")
+snapshot = json.dumps(
+    {
+        "dev": before.st_dev,
+        "ino": before.st_ino,
+        "mode": stat.S_IMODE(before.st_mode),
+        "uid": before.st_uid,
+        "gid": before.st_gid,
+        "nlink": before.st_nlink,
+        "size": before.st_size,
+        "mtime_ns": before.st_mtime_ns,
+        "ctime_ns": before.st_ctime_ns,
+        "sha256": digest.hexdigest(),
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+)
+os.set_inheritable(lock_fd, True)
+os.set_inheritable(env_fd, True)
+environment = dict(os.environ)
+environment["KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT"] = snapshot
+environment["KTDM_TRUSTED_INSTALL_ENV_FD"] = str(env_fd)
+os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
+PY
+fi
+
+env_fd="${KTDM_TRUSTED_INSTALL_ENV_FD}"
+if [[ ! "${env_fd}" =~ ^[0-9]+$ ]]; then
+  die "trusted installer env descriptor evidence is invalid"
+fi
 expected_env_snapshot="${KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT:-}"
 ENV_FILE_SNAPSHOT_AFTER_LOCK="$(snapshot_env_file "${ENV_FILE}")"
 ENV_FD_SNAPSHOT_AFTER_LOCK="$(snapshot_env_fd "${env_fd}")"
@@ -382,11 +815,11 @@ if (
   [[ "${ENV_FILE_SNAPSHOT_AFTER_LOCK}" != "${expected_env_snapshot}" ]] ||
   [[ "${ENV_FD_SNAPSHOT_AFTER_LOCK}" != "${expected_env_snapshot}" ]]
 ); then
-  die "deployment .env changed before trusted installer lock acquisition"
+  die "deployment .env changed after trusted installer lock acquisition"
 fi
-unset KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT KTDM_TRUSTED_INSTALL_ENV_FD
-
-/usr/bin/install -d -o root -g root -m 0700 "${STATE_ROOT}"
+unset KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT \
+  KTDM_TRUSTED_INSTALL_ENV_FD \
+  KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD
 
 source_uid="$(/usr/bin/stat -c '%u' "${SOURCE_ROOT}")"
 source_gid="$(/usr/bin/stat -c '%g' "${SOURCE_ROOT}")"
@@ -489,35 +922,24 @@ revision="$(run_source_git rev-parse HEAD)"
 if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
   die "source revision is invalid"
 fi
+
+cleanup() {
+  local status="$?"
+  set +e
+  if ! trusted_release_transaction reconcile; then
+    echo "trusted release recovery remains pending; rerun the installer after correcting the reported collision" >&2
+  fi
+  return "${status}"
+}
+trap cleanup EXIT
+
+trusted_release_transaction begin "${revision}"
 if ! run_source_git diff-index --quiet "${revision}" --; then
   die "source checkout must be clean before trusted release install"
 fi
 run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
 /usr/bin/chown root:root "${ARCHIVE}"
 /usr/bin/chmod 0600 "${ARCHIVE}"
-
-cleanup() {
-  set +e
-  /usr/bin/rm -rf "${STAGING}" "${ARCHIVE}"
-  if [[ "${ACTIVATED}" == "1" && -d "${APP_ROOT}" ]]; then
-    /usr/bin/rm -rf "${APP_ROOT}"
-  fi
-  if [[ -d "${ROLLBACK}" && ! -d "${APP_ROOT}" ]]; then
-    if ! /usr/bin/mv -T "${ROLLBACK}" "${APP_ROOT}"; then
-      echo "failed to restore previous app root; rollback residue preserved at ${ROLLBACK}" >&2
-    fi
-  elif [[ -d "${ROLLBACK}" ]]; then
-    echo "active app root still exists; rollback residue preserved at ${ROLLBACK}" >&2
-  fi
-  if [[ -e "${LAUNCHER_ROLLBACK}" ]]; then
-    if ! /usr/bin/mv -f "${LAUNCHER_ROLLBACK}" "${LAUNCHER_PATH}"; then
-      echo "failed to restore previous launcher; rollback residue preserved at ${LAUNCHER_ROLLBACK}" >&2
-    fi
-  elif [[ "${ACTIVATED}" == "1" ]]; then
-    /usr/bin/rm -f "${LAUNCHER_PATH}"
-  fi
-}
-trap cleanup EXIT
 
 /usr/bin/install -d -o root -g root -m 0700 "${STAGING}"
 /usr/bin/tar -x -f "${ARCHIVE}" -C "${STAGING}"
@@ -892,16 +1314,14 @@ if (
   die "deployment .env changed during trusted release staging"
 fi
 
-if [[ -e "${ROLLBACK}" ]]; then
-  die "rollback staging path already exists"
-fi
+new_launcher_sha256="$(/usr/bin/sha256sum "${STAGING}/scripts/ktdctl-map-ui-auth-rotate" | /usr/bin/cut -d ' ' -f 1)"
+trusted_release_transaction set-new-launcher "${new_launcher_sha256}"
 if [[ -e "${APP_ROOT}" ]]; then
   /usr/bin/mv -T "${APP_ROOT}" "${ROLLBACK}"
 fi
 if [[ -e "${LAUNCHER_PATH}" ]]; then
-  /usr/bin/cp -a "${LAUNCHER_PATH}" "${LAUNCHER_ROLLBACK}"
+  /usr/bin/mv -T "${LAUNCHER_PATH}" "${LAUNCHER_ROLLBACK}"
 fi
-ACTIVATED=1
 /usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
 /usr/bin/chmod 0755 "${APP_ROOT}"
 INSTALLED_ENV_SNAPSHOT="$(snapshot_env_file "${APP_ROOT}/.env")"
@@ -934,8 +1354,8 @@ PY
 "${APP_ROOT}/scripts/install-ktdctl-map-ui-auth-rotate" "${APP_ROOT}/scripts/ktdctl-map-ui-auth-rotate"
 /usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null
 
+trusted_release_transaction commit
 trap - EXIT
-ACTIVATED=0
-if ! /usr/bin/rm -rf "${ROLLBACK}" "${ARCHIVE}" "${LAUNCHER_ROLLBACK}"; then
+if ! trusted_release_transaction reconcile; then
   echo "trusted release committed; post-commit cleanup requires attention" >&2
 fi

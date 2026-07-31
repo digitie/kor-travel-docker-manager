@@ -8,7 +8,7 @@ SOURCE_LAUNCHER="${1:-scripts/ktdctl-map-ui-auth-rotate}"
 DEST_DIR="/usr/local/sbin"
 DEST_PATH="${DEST_DIR}/ktdctl-map-ui-auth-rotate"
 APP_ROOT="/opt/kor-travel-docker-manager"
-TMP_PATH="${DEST_DIR}/.ktdctl-map-ui-auth-rotate.$$"
+TMP_PATH="${DEST_DIR}/.ktdctl-map-ui-auth-rotate.installing"
 
 die() {
   echo "$1" >&2
@@ -92,7 +92,17 @@ done
 for trusted_file in "${APP_ROOT}/.ktdm-source-revision" "${APP_ROOT}/.ktdm-release-manifest.json"; do
   require_root_owned_non_writable "${trusted_file}" file
 done
+require_root_owned_non_writable "${SOURCE_LAUNCHER}" file
 require_trusted_python "${APP_ROOT}/backend/.venv/bin/python"
+if [[ -e "${TMP_PATH}" || -L "${TMP_PATH}" ]]; then
+  die "trusted launcher staging path already exists"
+fi
+if [[ -e "${DEST_PATH}" || -L "${DEST_PATH}" ]]; then
+  require_root_owned_non_writable "${DEST_PATH}" file
+  if [[ "$(/usr/bin/stat -c '%a' "${DEST_PATH}")" != "755" ]]; then
+    die "existing trusted launcher mode is invalid"
+  fi
+fi
 
 cleanup() {
   /usr/bin/rm -f "${TMP_PATH}"
@@ -100,7 +110,8 @@ cleanup() {
 trap cleanup EXIT
 
 /usr/bin/install -o root -g root -m 0755 "${SOURCE_LAUNCHER}" "${TMP_PATH}"
-/usr/bin/python3 - "${TMP_PATH}" "${DEST_DIR}" <<'PY'
+expected_sha256="$(/usr/bin/sha256sum "${TMP_PATH}" | /usr/bin/cut -d ' ' -f 1)"
+/usr/bin/python3 -I -S - "${TMP_PATH}" "${DEST_DIR}" <<'PY'
 from __future__ import annotations
 
 import os
@@ -123,14 +134,29 @@ try:
 finally:
     os.close(fd)
 PY
-/usr/bin/mv -f "${TMP_PATH}" "${DEST_PATH}"
-/usr/bin/python3 - "${DEST_DIR}" <<'PY'
+/usr/bin/mv -T -f "${TMP_PATH}" "${DEST_PATH}"
+/usr/bin/python3 -I -S - "${DEST_PATH}" "${DEST_DIR}" "${expected_sha256}" <<'PY'
 from __future__ import annotations
 
+import hashlib
 import os
+import pathlib
+import stat
 import sys
 
-fd = os.open(sys.argv[1], os.O_RDONLY)
+destination = pathlib.Path(sys.argv[1])
+directory = pathlib.Path(sys.argv[2])
+expected_sha256 = sys.argv[3]
+metadata = destination.lstat()
+if (
+    not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_uid != 0
+    or metadata.st_nlink != 1
+    or stat.S_IMODE(metadata.st_mode) != 0o755
+    or hashlib.sha256(destination.read_bytes()).hexdigest() != expected_sha256
+):
+    raise SystemExit("installed trusted launcher evidence is invalid")
+fd = os.open(directory, os.O_RDONLY)
 try:
     os.fsync(fd)
 finally:
