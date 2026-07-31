@@ -10,6 +10,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
@@ -1045,6 +1046,82 @@ class ComposeTransactionSnapshot:
 
     def __repr__(self) -> str:
         return "ComposeTransactionSnapshot(<redacted>)"
+
+
+class _ServiceReadinessPolicy(StrEnum):
+    RUNNING = "running"
+    HEALTHY = "healthy"
+
+
+def _service_readiness_policy(
+    service_name: str,
+    service: Mapping[str, Any],
+) -> _ServiceReadinessPolicy:
+    healthcheck = service.get("healthcheck")
+    if healthcheck is None:
+        return _ServiceReadinessPolicy.RUNNING
+    if not isinstance(healthcheck, Mapping):
+        raise DeploymentContractError(
+            f"canonical readiness healthcheck is invalid: {service_name}"
+        )
+    disabled = healthcheck.get("disable")
+    if disabled is not None and not isinstance(disabled, bool):
+        raise DeploymentContractError(
+            f"canonical readiness healthcheck disable flag is invalid: {service_name}"
+        )
+    test = healthcheck.get("test")
+    if disabled is True:
+        if test not in (None, "NONE", ["NONE"]):
+            raise DeploymentContractError(
+                f"canonical readiness healthcheck is ambiguous: {service_name}"
+            )
+        return _ServiceReadinessPolicy.RUNNING
+    if isinstance(test, str):
+        normalized = test.strip()
+        if not normalized:
+            raise DeploymentContractError(
+                f"canonical readiness healthcheck test is empty: {service_name}"
+            )
+        if normalized.upper() == "NONE":
+            return _ServiceReadinessPolicy.RUNNING
+        return _ServiceReadinessPolicy.HEALTHY
+    if not isinstance(test, Sequence) or isinstance(test, (bytes, bytearray)):
+        raise DeploymentContractError(
+            f"canonical readiness healthcheck test is invalid: {service_name}"
+        )
+    commands = list(test)
+    if not commands or any(not isinstance(item, str) for item in commands):
+        raise DeploymentContractError(
+            f"canonical readiness healthcheck test is invalid: {service_name}"
+        )
+    directive = commands[0].strip().upper()
+    if directive == "NONE" and len(commands) == 1:
+        return _ServiceReadinessPolicy.RUNNING
+    if directive not in {"CMD", "CMD-SHELL"} or len(commands) < 2:
+        raise DeploymentContractError(
+            f"canonical readiness healthcheck test is unsupported: {service_name}"
+        )
+    return _ServiceReadinessPolicy.HEALTHY
+
+
+def _resolved_service_readiness_policies(
+    resolved: Mapping[str, Any],
+    services: Sequence[str],
+) -> dict[str, _ServiceReadinessPolicy]:
+    resolved_services = resolved.get("services")
+    if not isinstance(resolved_services, Mapping):
+        raise DeploymentContractError(
+            "canonical resolved compose has no readiness service mapping"
+        )
+    policies: dict[str, _ServiceReadinessPolicy] = {}
+    for service_name in services:
+        service = resolved_services.get(service_name)
+        if not isinstance(service, Mapping):
+            raise DeploymentContractError(
+                f"canonical resolved compose is missing readiness service: {service_name}"
+            )
+        policies[service_name] = _service_readiness_policy(service_name, service)
+    return policies
 
 
 @dataclass(frozen=True)
@@ -5020,11 +5097,15 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
     ) -> list[Mapping[str, Any]]:
-        """필수 서비스가 canonical healthcheck까지 healthy인지 확인한다."""
+        """필수 서비스가 canonical resolved Compose readiness인지 확인한다."""
 
         expected = list(dict.fromkeys(services))
         if not expected:
             return []
+        policies = _resolved_service_readiness_policies(
+            transaction.resolved,
+            expected,
+        )
         if frozen_recovery:
             ps_result = self._run_frozen_recovery(
                 ["ps", "--format", "json", *expected],
@@ -5049,11 +5130,18 @@ class ComposeService:
             record = by_service[service]
             state = str(record.get("State", "")).strip().lower()
             health = str(record.get("Health", "")).strip().lower()
-            if state != "running" or health != "healthy":
+            if state != "running":
+                not_ready.append(service)
+                continue
+            if (
+                policies[service] is _ServiceReadinessPolicy.HEALTHY
+                and health != "healthy"
+            ):
                 not_ready.append(service)
         if not_ready:
             raise DeploymentContractError(
-                "mandatory services are not running/healthy: " + ", ".join(not_ready)
+                "mandatory services do not satisfy canonical readiness: "
+                + ", ".join(not_ready)
             )
         return [by_service[service] for service in expected]
 

@@ -5988,7 +5988,7 @@ def test_runtime_secret_gate_rejects_duplicate_authorized_env() -> None:
         validate_runtime_secret_isolation(runtime, config)
 
 
-def test_mandatory_service_readiness_requires_running_and_canonical_health_without_all(
+def test_mandatory_service_readiness_uses_canonical_healthcheck_policy_without_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
@@ -6007,7 +6007,7 @@ def test_mandatory_service_readiness_requires_running_and_canonical_health_witho
                         "Service": "pinvi-api",
                         "Name": "pinvi-api-latest",
                         "State": "running",
-                        "Health": "healthy",
+                        "Health": "",
                     },
                 ]
             ),
@@ -6015,6 +6015,14 @@ def test_mandatory_service_readiness_requires_running_and_canonical_health_witho
     )
     monkeypatch.setattr(service, "run", run)
     transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "kor-travel-map-api": {
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+            "pinvi-api": {},
+        }
+    }
 
     records = service._require_services_ready(
         ["kor-travel-map-api", "pinvi-api"],
@@ -6071,12 +6079,101 @@ def test_mandatory_service_readiness_rejects_missing_exited_or_unhealthy(
         },
     )
     transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "kor-travel-map-api": {
+                "healthcheck": {"test": ["CMD", "true"]},
+            }
+        }
+    }
 
     with pytest.raises(DeploymentContractError):
         service._require_services_ready(
             ["kor-travel-map-api"],
             transaction=transaction,
         )
+
+
+@pytest.mark.parametrize(
+    "healthcheck",
+    [
+        {"disable": True},
+        {"test": ["NONE"]},
+    ],
+)
+def test_mandatory_service_readiness_accepts_running_with_disabled_healthcheck(
+    monkeypatch: pytest.MonkeyPatch,
+    healthcheck: dict[str, object],
+) -> None:
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "run",
+        lambda *_args, **_kwargs: {
+            **_success(["ps"]),
+            "stdout": json.dumps(
+                [
+                    {
+                        "Service": "worker",
+                        "Name": "worker-1",
+                        "State": "running",
+                        "Health": "",
+                    }
+                ]
+            ),
+        },
+    )
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "worker": {
+                "healthcheck": healthcheck,
+            }
+        }
+    }
+
+    records = service._require_services_ready(
+        ["worker"],
+        transaction=transaction,
+    )
+
+    assert [record["Service"] for record in records] == ["worker"]
+
+
+@pytest.mark.parametrize(
+    "healthcheck",
+    [
+        {},
+        {"disable": "true"},
+        {"disable": True, "test": ["CMD", "true"]},
+        {"test": []},
+        {"test": ["NONE", "unexpected"]},
+        {"test": ["UNKNOWN", "true"]},
+    ],
+)
+def test_mandatory_service_readiness_rejects_ambiguous_canonical_healthcheck(
+    monkeypatch: pytest.MonkeyPatch,
+    healthcheck: dict[str, object],
+) -> None:
+    service = ComposeService()
+    run = Mock()
+    monkeypatch.setattr(service, "run", run)
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "worker": {
+                "healthcheck": healthcheck,
+            }
+        }
+    }
+
+    with pytest.raises(DeploymentContractError, match="canonical readiness"):
+        service._require_services_ready(
+            ["worker"],
+            transaction=transaction,
+        )
+
+    run.assert_not_called()
 
 
 def test_map_smoke_uses_exact_status_gates_without_returning_bodies() -> None:
