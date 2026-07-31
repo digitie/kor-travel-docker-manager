@@ -122,7 +122,9 @@ rollback, committed는 active revision/launcher digest 검증 뒤 idempotent GC�
 시작할 수 있다. state가 없는데 artifact가 있거나 legacy PID/foreign collision이면 mutation 전에
 fail-close한다. 새 app root의 dev/ino도 activation 전에 기록하므로 cleanup이 일부 파일을 지운 뒤
 중단돼 manifest가 불완전해져도 transaction이 만든 exact directory만 제거하고 old rollback을
-복원하며, 같은 경로의 foreign directory는 삭제하지 않는다.
+복원하며, 같은 경로의 foreign directory는 삭제하지 않는다. `preparing`은 activation artifact가
+생기기 전 phase라 canonical app/env가 정상 운영 변경으로 달라져 staging 검증이 중단돼도
+staging/archive/state만 폐기하고 active baseline을 건드리지 않은 채 다음 실행에서 다시 snapshot한다.
 
 launcher installer도 고정 root-owned staging file, destination regular-file shape 검증,
 `mv -T`, 설치 후 owner/mode/nlink/SHA 재검증으로 바꿨다. disposable Debian 실제 gate에서 정상

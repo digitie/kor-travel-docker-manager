@@ -470,6 +470,24 @@ def reconcile_committed(state: dict[str, Any]) -> None:
 
 
 def restore_noncommitted(state: dict[str, Any]) -> None:
+    if state["phase"] == "preparing":
+        if (
+            rollback.exists()
+            or rollback.is_symlink()
+            or launcher_rollback.exists()
+            or launcher_rollback.is_symlink()
+            or launcher_install_tmp.exists()
+            or launcher_install_tmp.is_symlink()
+        ):
+            raise SystemExit(
+                "preparing transaction unexpectedly contains activation residue"
+            )
+        remove_tree(staging)
+        remove_regular(archive)
+        state_path.unlink()
+        fsync_dir(state_path.parent)
+        return
+
     old_app = state["old_app"]
     old_launcher = state["old_launcher"]
     expected_new_launcher_sha = state.get("new_launcher_sha256")
