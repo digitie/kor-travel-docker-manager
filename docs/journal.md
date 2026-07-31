@@ -127,7 +127,9 @@ fail-close한다. 새 app root의 dev/ino도 activation 전에 기록하므로 c
 staging/archive/state만 폐기하고 active baseline을 건드리지 않은 채 다음 실행에서 다시 snapshot한다.
 `committed` GC도 old rollback의 recorded root dev/ino를 사용하므로 이전 GC가 old tree 내부를
 부분 삭제해 revision/manifest evidence가 사라진 뒤 중단돼도 같은 transaction-owned directory만
-계속 삭제해 수렴하고, 다른 inode로 바뀐 경로는 fail-close한다.
+계속 삭제해 수렴하고, 다른 inode로 바뀐 경로는 fail-close한다. 실제 gate에서 old rollback 하위
+mount로 GC를 중단해 `.ktdm-source-revision`이 이미 사라진 committed residue를 만든 뒤, mount 해제
+후 재실행이 traceback 없이 남은 old tree를 제거하고 새 install까지 residue 0으로 완료했다.
 
 launcher installer도 고정 root-owned staging file, destination regular-file shape 검증,
 `mv -T`, 설치 후 owner/mode/nlink/SHA 재검증으로 바꿨다. disposable Debian 실제 gate에서 정상
