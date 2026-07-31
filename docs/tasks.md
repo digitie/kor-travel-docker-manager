@@ -71,7 +71,8 @@
       wheelhouse만 소비한다. staging exact source에서 backend wheel을 offline build해 설치하고, 기존
       또는 명시 deployment-owner 0600 `.env`를 보존한 뒤 isolated wheel venv, wheelhouse SHA, backend
       wheel SHA, wheel `RECORD` SHA, release manifest revision을 결박해 app root와 launcher까지
-      activation/rollback 가능한 제품 경로로 제공한다.
+      activation/rollback 가능한 제품 경로로 제공한다. wheelhouse는 root `pip`가 읽기 전에 ancestor와
+      각 wheel의 owner/mode/nlink/inode/digest를 snapshot하고 각 소비 단계 뒤 exact 재검증한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
       environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
       독립 검증하고 hash와 session secret은 항상 함께 회전한다.
@@ -85,10 +86,11 @@
       durable journal terminal state를 audit보다 먼저 commit한다. forward 실패 시 operator가 입력해
       hash와 대조 완료한 current password만 메모리에서 auth 검증에 쓰고, 이전 hash/image와 새로운
       recovery session secret으로 UI를 복구해 partial-forward session까지 무효화한다. rollback은
-      root-private `env.recovery` bytes를 먼저 fsync한 뒤 그 SHA와 `rollback_*` phase를 journal에
-      기록한다. journal은 raw Docker inspect나 secret-bearing env를 저장하지 않고 UI/non-UI evidence를
-      digest만으로 보존한다. crash 재실행 시 old/new/recovery SHA 각각을 phase matrix로 resume하고
-      terminal private artifact는 idempotent하게 정리한다.
+      `rollback_preparing` journal을 먼저 fsync한 뒤 root-private `env.recovery`를 생성하고, 어느
+      한쪽만 남아도 expected bytes로 양방향 수렴한다. journal은 raw Docker inspect나 secret-bearing
+      env를 저장하지 않고 UI/non-UI evidence를 digest만으로 보존한다. crash 재실행 시
+      old/new/recovery SHA 각각을 phase matrix로 resume하고 foreign `.env`는 덮지 않으며 terminal
+      audit·private artifact는 operation ID 기준 idempotent하게 정리한다.
 - [ ] crash/signal/재실행 recovery journal, foreign container/name collision, `.env` drift,
       Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다.
 - [ ] 단일 적대적 리뷰, focused/backend 전체 테스트, Ruff, strict mypy, canonical Compose gate,

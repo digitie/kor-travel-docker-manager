@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager import cli as cli_module
@@ -102,6 +103,7 @@ def test_current_password_rejects_unsafe_control_characters(password: str):
         "new-password-with-\r-cr",
         "new-password-with-\n-lf",
         "new-password-with-'quote",
+        "new-password-with-\\-backslash",
         "new-password-with-\t-tab",
     ],
 )
@@ -905,6 +907,12 @@ def test_trusted_launcher_verifies_package_with_system_python_before_venv_exec()
     assert "trusted package path is writable or not root-owned" in script
     assert "site_packages, package_dir, dist_info, record" in script
     assert "wheel RECORD digest does not match release manifest" in script
+    assert 'expected_entrypoint = venv_root / "bin" / "ktdctl"' in script
+    assert "if target != expected_entrypoint:" in script
+    assert (
+        'map-ui-auth rotate "$@" --project-root "${APP_ROOT}"'
+        in script
+    )
 
 
 def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
@@ -917,6 +925,12 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     assert "/usr/bin/install -o \"${env_uid}\" -g \"${env_gid}\" -m 0600" in script
     assert "-m pip wheel" in script
     assert "--wheel-dir \"${STAGING}/.wheelhouse\"" in script
+    assert "default wheelhouse: /var/lib/kor-travel-docker-manager/wheelhouse" in script
+    assert '/usr/bin/install -d -o root -g root -m 0700 "${STATE_ROOT}"' in script
+    assert "snapshot_wheelhouse()" in script
+    assert "verify_wheelhouse_snapshot" in script
+    assert "wheelhouse path component must not be a symlink" in script
+    assert "trusted offline wheelhouse changed during root pip execution" in script
     assert "KTDM_SOURCE_OWNER_UID=\"${source_uid}\" \\" in script
     assert "/usr/bin/python3 -I -S - \"${STAGING}\" \"${revision}\"" in script
     assert "--no-index" in script
@@ -1054,6 +1068,87 @@ def test_rotate_map_ui_auth_rolls_back_with_fresh_session_after_recreate_failure
     )
     assert values["KOR_TRAVEL_MAP_UI_SESSION_SECRET"] != "old-session-secret-value-xxxxxxxxxxxx"
     assert call_count["up"] == 2
+    audit = _audit_lines(paths.audit_path)[-1]
+    assert audit["result"] == "rolled_back"
+    assert audit["manager_source_revision"] == "2" * 40
+    assert set(audit["env_sha256"]) == {"old", "new", "recovery"}
+    assert set(audit["runtime_sha256"]) == {"before_ui", "before_non_ui"}
+    assert audit["journal_phase"] == "rolled_back"
+    assert audit["active_pair"]["map_source_revision"] == "2" * 40
+
+
+def test_rollback_failed_audit_contains_retriable_evidence(tmp_path: Path):
+    current_password = "current-password-with-length"
+    new_password = "new-password-with-length"
+    env_path, compose_path, paths = _rotation_fixture(tmp_path, current_password)
+
+    def runner(
+        argv: list[str],
+        cwd: Path,
+        env: dict[str, str],
+        stdin: str | None,
+        timeout: int,
+    ) -> CommandResult:
+        del cwd, env, stdin, timeout
+        if argv[-1] == "config":
+            return CommandResult(returncode=0, stdout="services:\n  kor-travel-map-ui: {}\n")
+        if "up" in argv:
+            return CommandResult(returncode=1, stderr="compose failed")
+        return CommandResult(returncode=0)
+
+    with _patched_rotation_runtime(paths):
+        result = rotate_map_ui_auth(
+            current_password=current_password,
+            new_password=new_password,
+            project_root=str(tmp_path),
+            compose_path=str(compose_path),
+            env_path=str(env_path),
+            command_runner=runner,
+            require_root=False,
+        )
+
+    assert result.phase == "rollback_failed"
+    audit = _audit_lines(paths.audit_path)[-1]
+    assert audit["result"] == "rollback_attempt_failed"
+    assert audit["phase"] == "rollback_failed"
+    assert audit["manager_source_revision"] == "2" * 40
+    assert set(audit["env_sha256"]) == {"old", "new", "current"}
+    assert set(audit["runtime_sha256"]) == {"before_ui", "before_non_ui"}
+    assert audit["journal_phase"] == "rollback_recreate_started"
+    assert audit["error_code"] == {
+        "original": "deployment_contract_error",
+        "rollback": "deployment_contract_error",
+    }
+    assert audit["active_pair"]["pinvi_source_revision"] == "3" * 40
+
+
+def test_rollback_failed_audit_does_not_block_later_rolled_back_terminal(tmp_path: Path):
+    audit_path = tmp_path / "audit.jsonl"
+    operation_id = "op-retry-after-rollback-failed"
+    rotation._write_audit(
+        audit_path,
+        {
+            "operation_id": operation_id,
+            "event_id": "event-1",
+            "phase": "rollback_failed",
+            "result": "rollback_attempt_failed",
+            "recorded_at": rotation._utc_now(),
+        },
+    )
+
+    terminal = {
+        "operation_id": operation_id,
+        "result": "rolled_back",
+        "recorded_at": rotation._utc_now(),
+    }
+    rotation._write_terminal_audit_once(audit_path, terminal)
+    rotation._write_terminal_audit_once(audit_path, terminal)
+
+    lines = _audit_lines(audit_path)
+    assert [line["result"] for line in lines] == [
+        "rollback_attempt_failed",
+        "rolled_back",
+    ]
 
 
 def test_rollback_auth_uses_operator_current_password_not_stale_env_plaintext(
@@ -1167,6 +1262,14 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
     return env_path, compose_path, paths
 
 
+def _audit_lines(path: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def _patched_rotation_runtime(paths: RotationPaths, auth_passwords: list[str] | None = None):
     image_id = "sha256:" + "a" * 64
     manifest = SimpleNamespace(
@@ -1265,8 +1368,9 @@ def test_write_frozen_compose_reuses_c6c_raw_and_resolved_validators(
         stdin: str | None,
         timeout: int,
     ) -> CommandResult:
-        del cwd, env, stdin, timeout
+        del cwd, stdin, timeout
         if argv[-1] == "config":
+            calls["runner_env"] = env
             return CommandResult(returncode=0, stdout="services:\n  kor-travel-map-ui: {}\n")
         return CommandResult(returncode=0)
 
@@ -1288,6 +1392,20 @@ def test_write_frozen_compose_reuses_c6c_raw_and_resolved_validators(
     assert isinstance(resolved_kwargs, dict)
     assert raw_kwargs["compose_path"] == str(paths.compose_path)
     assert raw_kwargs["root_env_path"] == str(env_path)
+    pair_environment = rotation.compatible_pair_image_environment(active_pair)
+    assert calls["runner_env"] == {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/root",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "DOCKER_HOST": rotation._DOCKER_HOST,
+        "HTTP_PROXY": "",
+        "HTTPS_PROXY": "",
+        "NO_PROXY": "*",
+        **pair_environment,
+    }
+    for key, value in pair_environment.items():
+        assert raw_kwargs["environment"][key] == value
     assert raw_kwargs["environment"][rotation.MAP_UI_IMAGE_ENV] == active_image
     assert raw_kwargs["environment"][rotation.MAP_UI_PASSWORD_ENV] == current_password
     assert resolved_kwargs["environment"] == raw_kwargs["environment"]
@@ -1301,7 +1419,70 @@ def test_write_frozen_compose_reuses_c6c_raw_and_resolved_validators(
     assert paths.frozen_compose_path.exists()
 
 
-def test_active_pair_runtime_requires_canonical_container_name_and_generation(monkeypatch):
+def test_write_frozen_compose_uses_active_pair_for_real_resolved_contract(
+    tmp_path: Path,
+    monkeypatch,
+):
+    current_password = "current-password-with-length"
+    env_path, _compose_path, paths = _rotation_fixture(tmp_path, current_password)
+    active_pair = SimpleNamespace(
+        map_image_id="sha256:" + "1" * 64,
+        map_ui_image_id="sha256:" + "2" * 64,
+        map_dagster_image_id="sha256:" + "3" * 64,
+        map_dagster_daemon_image_id="sha256:" + "4" * 64,
+        pinvi_image_id="sha256:" + "5" * 64,
+        map_source_revision="6" * 40,
+        pinvi_source_revision="7" * 40,
+        contract_generation="c6c-ops-v1",
+    )
+    env_values = {
+        key: value or ""
+        for key, value in dotenv_values(env_path).items()
+        if isinstance(key, str)
+    }
+    pair_environment = rotation.compatible_pair_image_environment(active_pair)
+    resolved = _resolved_compose_for_pair({**env_values, **pair_environment}, active_pair)
+
+    def runner(
+        argv: list[str],
+        cwd: Path,
+        env: dict[str, str],
+        stdin: str | None,
+        timeout: int,
+    ) -> CommandResult:
+        del cwd, env, stdin, timeout
+        if "--quiet" in argv:
+            return CommandResult(returncode=0)
+        return CommandResult(returncode=0, stdout=yaml.safe_dump(resolved, sort_keys=False))
+
+    monkeypatch.setattr(
+        rotation,
+        "validate_compose_candidate_protected_values",
+        lambda *_args, **_kwargs: (),
+    )
+    rotation._prepare_private_state_dir(paths.rotation_dir)
+
+    rotation._write_frozen_compose(paths, active_pair, runner)
+
+    frozen = yaml.safe_load(paths.frozen_compose_path.read_text(encoding="utf-8"))
+    services = frozen["services"]
+    assert services["kor-travel-map-api"]["image"] == active_pair.map_image_id
+    assert services["kor-travel-map-ui"]["image"] == active_pair.map_ui_image_id
+    assert services["kor-travel-map-dagster"]["image"] == active_pair.map_dagster_image_id
+    assert services["kor-travel-map-dagster-daemon"]["image"] == (
+        active_pair.map_dagster_daemon_image_id
+    )
+    assert services["pinvi-api"]["image"] == active_pair.pinvi_image_id
+    assert services["pinvi-api"]["build"]["args"]["PINVI_SOURCE_REVISION"] == (
+        active_pair.pinvi_source_revision
+    )
+    assert services["pinvi-api"]["build"]["args"]["PINVI_BUILD_ENVIRONMENT"] == "production"
+
+
+def test_active_pair_runtime_requires_canonical_container_name_and_generation(
+    tmp_path: Path,
+    monkeypatch,
+):
     image_id = "sha256:" + "a" * 64
     active_pair = SimpleNamespace(
         map_image_id=image_id,
@@ -1309,12 +1490,32 @@ def test_active_pair_runtime_requires_canonical_container_name_and_generation(mo
         map_dagster_image_id=image_id,
         map_dagster_daemon_image_id=image_id,
         pinvi_image_id=image_id,
+        map_source_revision="1" * 40,
+        pinvi_source_revision="2" * 40,
         contract_generation="c6c-ops-v1",
+    )
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text(
+        yaml.safe_dump(
+            {
+                "services": {
+                    service: {}
+                    for service, _image_attr in rotation._ACTIVE_PAIR_RUNTIME.values()
+                }
+            }
+        ),
+        encoding="utf-8",
     )
     env_values = {
         rotation.COMPOSE_PROJECT_ENV: "kor-travel-docker-manager",
         "KTDM_C6C_CONTRACT_GENERATION": "c6c-ops-v1",
     }
+    verified_pairs = []
+    monkeypatch.setattr(
+        rotation,
+        "verify_compatible_pair_image_provenance",
+        lambda pair, **_kwargs: verified_pairs.append(pair),
+    )
 
     def payload(container_name: str, service_name: str):
         return {
@@ -1338,11 +1539,12 @@ def test_active_pair_runtime_requires_canonical_container_name_and_generation(mo
         },
     )
 
-    rotation._validate_active_pair_runtime(active_pair, env_values)
+    rotation._validate_active_pair_runtime(active_pair, env_values, compose_path)
+    assert verified_pairs == [active_pair]
 
     drifted_pair = SimpleNamespace(**{**active_pair.__dict__, "contract_generation": "c6c-ops-v2"})
     with pytest.raises(Exception, match="generation drifted"):
-        rotation._validate_active_pair_runtime(drifted_pair, env_values)
+        rotation._validate_active_pair_runtime(drifted_pair, env_values, compose_path)
 
     def drifted_snapshot(*_args, **_kwargs):
         snapshot = {
@@ -1354,7 +1556,173 @@ def test_active_pair_runtime_requires_canonical_container_name_and_generation(mo
 
     monkeypatch.setattr(rotation, "_compose_project_snapshot", drifted_snapshot)
     with pytest.raises(Exception, match="container name drifted"):
-        rotation._validate_active_pair_runtime(active_pair, env_values)
+        rotation._validate_active_pair_runtime(active_pair, env_values, compose_path)
+
+    def unknown_service_snapshot(*_args, **_kwargs):
+        snapshot = {
+            service: {"_payload": payload(container, service)}
+            for container, (service, _image_attr) in rotation._ACTIVE_PAIR_RUNTIME.items()
+        }
+        snapshot["untracked-debug-service"] = {
+            "_payload": payload("untracked-debug-service-1", "untracked-debug-service")
+        }
+        return snapshot
+
+    monkeypatch.setattr(rotation, "_compose_project_snapshot", unknown_service_snapshot)
+    with pytest.raises(Exception, match="outside the canonical compose file"):
+        rotation._validate_active_pair_runtime(active_pair, env_values, compose_path)
+
+    def missing_health_snapshot(*_args, **_kwargs):
+        snapshot = {
+            service: {"_payload": payload(container, service)}
+            for container, (service, _image_attr) in rotation._ACTIVE_PAIR_RUNTIME.items()
+        }
+        snapshot["kor-travel-map-ui"]["_payload"]["State"].pop("Health")
+        return snapshot
+
+    monkeypatch.setattr(rotation, "_compose_project_snapshot", missing_health_snapshot)
+    with pytest.raises(Exception, match="not healthy"):
+        rotation._validate_active_pair_runtime(active_pair, env_values, compose_path)
+
+    monkeypatch.setattr(
+        rotation,
+        "_compose_project_snapshot",
+        lambda *_args, **_kwargs: {
+            service: {"_payload": payload(container, service)}
+            for container, (service, _image_attr) in rotation._ACTIVE_PAIR_RUNTIME.items()
+        },
+    )
+
+    def reject_provenance(*_args, **_kwargs):
+        raise rotation.DeploymentContractError(
+            "compatible pair image labels differ from manifest source provenance"
+        )
+
+    monkeypatch.setattr(rotation, "verify_compatible_pair_image_provenance", reject_provenance)
+    with pytest.raises(Exception, match="labels differ from manifest source provenance"):
+        rotation._validate_active_pair_runtime(active_pair, env_values, compose_path)
+
+
+def _resolved_compose_for_pair(
+    env: dict[str, str],
+    active_pair: SimpleNamespace,
+) -> dict[str, object]:
+    def resolved_env(name: str) -> str:
+        return str(env[name]).replace("$", "$$")
+
+    map_build = {
+        "context": "/opt/map",
+        "dockerfile": "docker/api.Dockerfile",
+        "args": {"KOR_TRAVEL_MAP_GIT_COMMIT": active_pair.map_source_revision},
+    }
+    dagster_build = {
+        "context": "/opt/map",
+        "dockerfile": "docker/dagster.Dockerfile",
+        "args": {"KOR_TRAVEL_MAP_GIT_COMMIT": active_pair.map_source_revision},
+    }
+    return {
+        "services": {
+            "kor-travel-map-api": {
+                "image": active_pair.map_image_id,
+                "container_name": "kor-travel-map-api-latest",
+                "network_mode": "host",
+                "build": map_build,
+                "environment": {
+                    "KOR_TRAVEL_MAP_API_PORT": "12701",
+                    "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": resolved_env(
+                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
+                    ),
+                    "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": resolved_env(
+                        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
+                    ),
+                    "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+                    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": resolved_env(
+                        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+                    ),
+                    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": resolved_env(
+                        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+                    ),
+                    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": resolved_env(
+                        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+                    ),
+                    "KOR_TRAVEL_MAP_API_PROFILE": "production",
+                    "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
+                    "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
+                    "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED": "true",
+                    "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
+                    "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
+                    "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
+                        '["127.0.0.1/32","::1/128"]'
+                    ),
+                },
+            },
+            "kor-travel-map-ui": {
+                "image": active_pair.map_ui_image_id,
+                "container_name": "kor-travel-map-ui-latest",
+                "network_mode": "host",
+                "build": {
+                    "context": "/opt/map",
+                    "dockerfile": "docker/frontend.Dockerfile",
+                    "args": {
+                        "KOR_TRAVEL_MAP_GIT_COMMIT": active_pair.map_source_revision,
+                        "NEXT_PUBLIC_KOR_TRAVEL_MAP_API": "http://127.0.0.1:12701",
+                        "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL": "http://127.0.0.1:12702",
+                        "NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL": "http://127.0.0.1:12501",
+                        "NEXT_PUBLIC_VWORLD_API_KEY": "",
+                    },
+                },
+                "environment": {
+                    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": resolved_env(
+                        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
+                    ),
+                    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": resolved_env(
+                        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
+                    ),
+                    "KOR_TRAVEL_MAP_UI_SESSION_SECRET": resolved_env(
+                        "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
+                    ),
+                    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": resolved_env(
+                        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+                    ),
+                },
+            },
+            "kor-travel-map-dagster": {
+                "image": active_pair.map_dagster_image_id,
+                "container_name": "kor-travel-map-dagster-latest",
+                "build": dagster_build,
+            },
+            "kor-travel-map-dagster-daemon": {
+                "image": active_pair.map_dagster_daemon_image_id,
+                "container_name": "kor-travel-map-dagster-daemon-latest",
+                "build": dagster_build,
+            },
+            "pinvi-api": {
+                "image": active_pair.pinvi_image_id,
+                "container_name": "pinvi-api-latest",
+                "network_mode": "host",
+                "build": {
+                    "context": "/opt/pinvi",
+                    "dockerfile": "apps/api/Dockerfile",
+                    "args": {
+                        "PINVI_SOURCE_REVISION": active_pair.pinvi_source_revision,
+                        "PINVI_BUILD_ENVIRONMENT": "production",
+                    },
+                },
+                "environment": {
+                    "PINVI_ENVIRONMENT": "production",
+                    "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL": (
+                        "http://127.0.0.1:12701"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": resolved_env(
+                        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": resolved_env(
+                        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
+                    ),
+                },
+            },
+        }
+    }
 
 
 def _ui_inspect_payload(

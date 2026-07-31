@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import stat
 import subprocess
 import urllib.error
+from collections.abc import Iterator
 from contextlib import nullcontext
 from contextvars import Context
 from copy import deepcopy
@@ -18,6 +20,7 @@ import pytest
 import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     C6cDeploymentConfig,
@@ -76,6 +79,7 @@ from kor_travel_docker_manager.services.compose_service import (
     _derive_c6c_build_provenance,
     _map_source_environment_contract_version,
     _resolved_compose_document_hash,
+    get_c6c_deployment_lock_path,
 )
 from kor_travel_docker_manager.services.docker_service import DockerService
 
@@ -305,6 +309,19 @@ def _clear_c6c_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_manager_path_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    names = (
+        "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE",
+        "KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE",
+    )
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    yield
+    for name in names:
+        os.environ.pop(name, None)
+
+
+@pytest.fixture(autouse=True)
 def _stub_c6c_image_retention(monkeypatch: pytest.MonkeyPatch) -> None:
     """기존 배포 테스트는 Docker local tag 대신 별도 retention 단위 테스트를 사용한다."""
 
@@ -325,6 +342,7 @@ def _stub_c6c_image_retention(monkeypatch: pytest.MonkeyPatch) -> None:
 def _set_production_guard_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "production")
     monkeypatch.setenv("PINVI_ENVIRONMENT", "production")
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "kor-travel-test")
     monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "true")
     monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_READ_TOKEN", _READ_TOKEN)
     monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN", _CANCEL_TOKEN)
@@ -393,18 +411,33 @@ def _frozen_external_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
     resolved = {"services": {"worker": {"environment": {"SAFE": "1"}}}}
     compose_path.write_bytes(source_bytes)
     env_path.write_text("SAFE=initial\n", encoding="utf-8")
+    os.environ["KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE"] = str(env_path)
     external_path.write_text("WORKER_SAFE=initial\n", encoding="utf-8")
+    effective = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
+        "PINVI_ENVIRONMENT": "development",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
+    }
+    for name in (
+        "KTDM_DEPLOYMENT_ENVIRONMENT",
+        "PINVI_ENVIRONMENT",
+        "COMPOSE_PROJECT_NAME",
+        "KTDM_C6C_STATE_ROOT",
+        "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
+        "KTDM_C6C_DEPLOYMENT_LOCK",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN",
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN",
+    ):
+        if name in os.environ:
+            effective[name] = os.environ[name]
     return ComposeTransactionSnapshot(
         environment=ComposeEnvironmentSnapshot(
-            effective={
-                "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
-                "PINVI_ENVIRONMENT": "development",
-                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
-            },
+            effective=effective,
             env_path=str(env_path),
             compose_path=str(compose_path),
             override_path=str(tmp_path / "missing.override.yml"),
-            env_file_identity=ComposeEnvFileIdentity(exists=True),
+            env_file_identity=compose_service_module._env_file_identity(env_path),
             env_file_bytes=b"SAFE=initial\n",
         ),
         external_inputs=ComposeExternalInputSnapshot(
@@ -439,17 +472,25 @@ def _frozen_external_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
     )
 
 
-def _production_guard_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
+def _production_guard_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> ComposeTransactionSnapshot:
     transaction = _frozen_external_transaction(tmp_path)
+    effective = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
+        "PINVI_ENVIRONMENT": "production",
+        "COMPOSE_PROJECT_NAME": "kor-travel-test",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+    }
+    if monkeypatch is not None:
+        for name, value in effective.items():
+            monkeypatch.setenv(name, value)
     environment = replace(
         transaction.environment,
-        effective={
-            "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
-            "PINVI_ENVIRONMENT": "production",
-            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
-            "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
-        },
+        effective=effective,
     )
     return replace(transaction, environment=environment)
 
@@ -1149,6 +1190,163 @@ def test_production_state_paths_are_checkout_independent_and_project_scoped(
     state_dir = Path("/var/lib/kor-travel-docker-manager/pinvi-prod")
     assert Path(manifest) == state_dir / "compatible-pair-v4.json"
     assert Path(lock) == Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
+
+
+def test_pair_entry_lock_uses_production_env_file_without_process_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_c6c_process_environment(monkeypatch)
+    env_path = tmp_path / ".env"
+    _write_env(
+        env_path,
+        KTDM_DEPLOYMENT_ENVIRONMENT="production",
+        COMPOSE_PROJECT_NAME="pinvi-prod",
+    )
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+
+    lock = get_c6c_deployment_lock_path()
+
+    assert lock == "/run/lock/kor-travel-docker-manager/global-mutation.lock"
+    assert lock == c6c_state_paths(
+        {
+            "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
+            "COMPOSE_PROJECT_NAME": "pinvi-prod",
+        }
+    )[1]
+
+
+def test_pair_entry_lock_preserves_explicit_local_lock_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_c6c_process_environment(monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text("SAFE=1\n", encoding="utf-8")
+    local_lock = tmp_path / "local.lock"
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(local_lock))
+
+    assert get_c6c_deployment_lock_path() == str(local_lock)
+
+
+def test_pair_entry_lock_rejects_env_file_mode_change_after_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_c6c_process_environment(monkeypatch)
+    env_path = tmp_path / ".env"
+    env_path.write_text("SAFE=1\n", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+    service = ComposeService()
+
+    def capture_transaction(**_kwargs: object):
+        _write_env(
+            env_path,
+            KTDM_DEPLOYMENT_ENVIRONMENT="production",
+            COMPOSE_PROJECT_NAME="pinvi-prod",
+        )
+        environment = _capture_compose_environment_snapshot(
+            environment_override=None,
+        )
+        return (
+            replace(_frozen_external_transaction(tmp_path), environment=environment),
+            Mock(spec=ValidatedComposeCandidate),
+        )
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        capture_transaction,
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match="differ"):
+        service.deploy_compatible_pinvi_pair()
+
+
+def test_pair_entry_lock_rejects_env_file_appearing_after_absent_snapshot(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".env"
+    environment = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
+        "PINVI_ENVIRONMENT": "development",
+    }
+    snapshot = compose_service_module.C6cDeploymentLockSnapshot(
+        lock_path=c6c_state_paths(environment)[1],
+        env_path=env_path.resolve(strict=False),
+        env_file_identity=ComposeEnvFileIdentity(exists=False),
+        env_file_sha256=hashlib.sha256(b"").hexdigest(),
+    )
+    env_path.write_text("SAFE=1\n", encoding="utf-8")
+    transaction_environment = ComposeEnvironmentSnapshot(
+        effective=environment,
+        env_path=str(env_path),
+        compose_path=str(tmp_path / "docker-compose.yml"),
+        override_path=str(tmp_path / "missing.override.yml"),
+        env_file_identity=compose_service_module._env_file_identity(env_path),
+        env_file_bytes=b"SAFE=1\n",
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match="identity differs"):
+        compose_service_module._assert_environment_snapshot_matches_c6c_lock(
+            transaction_environment,
+            snapshot,
+        )
+
+
+def test_pair_entry_lock_rejects_transaction_env_path_drift(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    drifted_env_path = tmp_path / "drifted.env"
+    raw = b"SAFE=1\n"
+    env_path.write_bytes(raw)
+    drifted_env_path.write_bytes(raw)
+    environment = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
+        "PINVI_ENVIRONMENT": "development",
+    }
+    snapshot = compose_service_module.C6cDeploymentLockSnapshot(
+        lock_path=c6c_state_paths(environment)[1],
+        env_path=env_path.resolve(strict=False),
+        env_file_identity=compose_service_module._env_file_identity(env_path),
+        env_file_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+    transaction_environment = ComposeEnvironmentSnapshot(
+        effective=environment,
+        env_path=str(drifted_env_path),
+        compose_path=str(tmp_path / "docker-compose.yml"),
+        override_path=str(tmp_path / "missing.override.yml"),
+        env_file_identity=compose_service_module._env_file_identity(drifted_env_path),
+        env_file_bytes=raw,
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match="path differs"):
+        compose_service_module._assert_environment_snapshot_matches_c6c_lock(
+            transaction_environment,
+            snapshot,
+        )
+
+
+def test_pair_manifest_writer_creates_production_state_root_private(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_root = tmp_path / "var-lib" / "kor-travel-docker-manager"
+    monkeypatch.setattr(c6c_deployment, "_C6C_PRODUCTION_STATE_ROOT", state_root)
+    manifest_path = state_root / "pinvi-prod" / "compatible-pair-v4.json"
+    state_root.mkdir(parents=True)
+    state_root.chmod(0o755)
+
+    write_pair_manifest(str(manifest_path), _manifest())
+
+    assert stat.S_IMODE(state_root.lstat().st_mode) == 0o700
+    assert stat.S_IMODE(manifest_path.parent.lstat().st_mode) == 0o700
+    assert stat.S_IMODE(manifest_path.lstat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize(
@@ -5764,7 +5962,7 @@ def test_runtime_secret_gate_rejects_duplicate_authorized_env() -> None:
         validate_runtime_secret_isolation(runtime, config)
 
 
-def test_mandatory_service_readiness_requires_running_and_healthy_without_all(
+def test_mandatory_service_readiness_requires_running_and_canonical_health_without_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
@@ -5783,7 +5981,7 @@ def test_mandatory_service_readiness_requires_running_and_healthy_without_all(
                         "Service": "pinvi-api",
                         "Name": "pinvi-api-latest",
                         "State": "running",
-                        "Health": "",
+                        "Health": "healthy",
                     },
                 ]
             ),
@@ -5821,6 +6019,14 @@ def test_mandatory_service_readiness_requires_running_and_healthy_without_all(
                 "Name": "kor-travel-map-api-latest",
                 "State": "running",
                 "Health": "unhealthy",
+            }
+        ],
+        [
+            {
+                "Service": "kor-travel-map-api",
+                "Name": "kor-travel-map-api-latest",
+                "State": "running",
+                "Health": "",
             }
         ],
     ],
@@ -7282,7 +7488,7 @@ def test_production_generic_mutation_guard_rejects_every_api_entrypoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_production_guard_environment(monkeypatch)
-    transaction = _production_guard_transaction(tmp_path)
+    transaction = _production_guard_transaction(tmp_path, monkeypatch)
     environment = transaction.environment
     monkeypatch.setattr(
         ComposeService,
@@ -7350,7 +7556,7 @@ def test_ensure_target_rejects_non_c6c_target_in_production(
     `transaction.environment.effective`에서만 오고 실제 `os.environ`은 읽지 않는다 —
     그래서 이 테스트는 `monkeypatch.setenv`가 아니라 `_production_guard_transaction`의
     production 환경 값으로만 검증한다."""
-    transaction = _production_guard_transaction(tmp_path)
+    transaction = _production_guard_transaction(tmp_path, monkeypatch)
     monkeypatch.setattr(
         ComposeService,
         "_capture_transaction_unlocked",
@@ -7376,6 +7582,10 @@ def test_ensure_target_allows_non_c6c_target_in_local_mode(
 ) -> None:
     """production 전면 차단이 local/개발 모드의 정상 `ensure` 흐름을 막지 않는지 확인한다."""
     service = ComposeService()
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    monkeypatch.setenv("PINVI_ENVIRONMENT", "development")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "false")
+    monkeypatch.setenv("KTDM_C6C_DEPLOYMENT_LOCK", str(tmp_path / "ensure.lock"))
     transaction = _frozen_external_transaction(tmp_path)
     Path(transaction.environment.compose_path).chmod(transaction.compose_source_mode)
     validation = SimpleNamespace(
@@ -7659,7 +7869,7 @@ def test_production_low_level_compose_mutation_requires_managed_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_production_guard_environment(monkeypatch)
-    transaction = _production_guard_transaction(tmp_path)
+    transaction = _production_guard_transaction(tmp_path, monkeypatch)
     monkeypatch.setattr(
         ComposeService,
         "_capture_transaction_unlocked",
@@ -7739,7 +7949,7 @@ def test_production_compose_classifier_is_default_deny_for_api_mutations(
     args: list[str],
 ) -> None:
     _set_production_guard_environment(monkeypatch)
-    transaction = _production_guard_transaction(tmp_path)
+    transaction = _production_guard_transaction(tmp_path, monkeypatch)
     monkeypatch.setattr(
         ComposeService,
         "_capture_transaction_unlocked",
@@ -8769,7 +8979,7 @@ def test_production_compose_config_output_or_ambiguity_is_default_deny(
     args: list[str],
 ) -> None:
     _set_production_guard_environment(monkeypatch)
-    transaction = _production_guard_transaction(tmp_path)
+    transaction = _production_guard_transaction(tmp_path, monkeypatch)
     monkeypatch.setattr(
         ComposeService,
         "_capture_transaction_unlocked",
@@ -9824,6 +10034,7 @@ def test_public_c6c_deploy_build_passes_clean_head_provenance_before_mutation(
             base_transaction.environment,
             compose_path=str(compose_path),
             effective={
+                **base_transaction.environment.effective,
                 "KOR_TRAVEL_MAP_REPO_DIR": "../map",
                 "PINVI_REPO_DIR": "../pinvi",
             },

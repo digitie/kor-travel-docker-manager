@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 from dotenv import dotenv_values
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     _COMPATIBLE_PAIR_MUTATION_CAPABILITY,
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
@@ -45,14 +46,17 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_deployment_lock,
     c6c_global_mutation_lock_path,
     c6c_state_paths,
+    compatible_pair_image_environment,
     complete_map_production_env_migration,
     compose_volume_graph_hash,
     initial_pair_manifest,
+    inspect_c6c_image_source_revision,
     load_c6c_deployment_config_from_environment,
     load_or_create_map_production_env_migration,
     load_pair_manifest,
     manifest_with_active_pair,
     new_image_pair,
+    require_local_c6c_image,
     revalidate_candidate_system_bind_snapshots,
     run_map_ops_smoke,
     run_map_ui_auth_preflight,
@@ -66,6 +70,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_resolved_compose_image_pair,
     validate_resolved_compose_secret_isolation,
     validate_runtime_secret_isolation,
+    verify_compatible_pair_image_provenance,
     write_pair_manifest,
 )
 from kor_travel_docker_manager.services.c6c_image_retention import (
@@ -811,7 +816,7 @@ def get_compatible_pair_manifest_path(
 
 
 def get_c6c_deployment_lock_path() -> str:
-    return c6c_global_mutation_lock_path()
+    return _capture_c6c_deployment_lock_snapshot().lock_path
 
 
 @dataclass(frozen=True)
@@ -822,6 +827,165 @@ class ComposeEnvFileIdentity:
     mode: int | None = None
     uid: int | None = None
     gid: int | None = None
+
+
+@dataclass(frozen=True, repr=False)
+class C6cDeploymentLockSnapshot:
+    lock_path: str
+    env_path: Path
+    env_file_identity: ComposeEnvFileIdentity
+    env_file_sha256: str
+
+
+def _capture_c6c_deployment_lock_snapshot() -> C6cDeploymentLockSnapshot:
+    env_path = Path(get_env_path()).resolve(strict=False)
+    before = _env_file_identity(env_path)
+    raw = b""
+    values: dict[str, str] = {}
+    if before.exists:
+        try:
+            raw = env_path.read_bytes()
+            decoded = raw.decode("utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise ComposeCandidateContractError(
+                "compose env-file lock path snapshot cannot be read"
+            ) from exc
+        after = _env_file_identity(env_path)
+        if after != before:
+            raise ComposeCandidateContractError(
+                "compose env-file identity changed during lock path capture"
+            )
+        try:
+            values.update(
+                {
+                    key: value or ""
+                    for key, value in dotenv_values(stream=StringIO(decoded)).items()
+                    if isinstance(key, str)
+                }
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ComposeCandidateContractError(
+                "compose env-file lock path snapshot cannot be parsed"
+            ) from exc
+    elif _env_file_identity(env_path).exists:
+        raise ComposeCandidateContractError(
+            "compose env-file appeared during lock path capture"
+        )
+    lock_path = _c6c_lock_path_from_values(values)
+    return C6cDeploymentLockSnapshot(
+        lock_path=lock_path,
+        env_path=env_path,
+        env_file_identity=before,
+        env_file_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _c6c_lock_path_from_values(env_values: Mapping[str, str]) -> str:
+    if env_values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() == "production":
+        return c6c_state_paths(env_values)[1]
+
+    effective: dict[str, str] = dict(env_values)
+    for name in (
+        "KTDM_DEPLOYMENT_ENVIRONMENT",
+        "COMPOSE_PROJECT_NAME",
+        "KTDM_C6C_STATE_ROOT",
+        "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
+        "KTDM_C6C_DEPLOYMENT_LOCK",
+    ):
+        if name not in effective and name in os.environ:
+            effective[name] = os.environ[name]
+    if effective:
+        return c6c_state_paths(effective)[1]
+    return c6c_global_mutation_lock_path({})
+
+
+def _revalidate_c6c_deployment_lock_snapshot(
+    snapshot: C6cDeploymentLockSnapshot,
+) -> None:
+    current = _env_file_identity(snapshot.env_path)
+    if current != snapshot.env_file_identity:
+        raise ComposeCandidateContractError(
+            "compose env-file identity changed before deployment lock acquisition"
+        )
+    if not current.exists:
+        current_sha256 = hashlib.sha256(b"").hexdigest()
+    else:
+        try:
+            current_sha256 = hashlib.sha256(snapshot.env_path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise ComposeCandidateContractError(
+                "compose env-file lock path snapshot cannot be revalidated"
+            ) from exc
+    if current_sha256 != snapshot.env_file_sha256:
+        raise ComposeCandidateContractError(
+            "compose env-file changed before deployment lock acquisition"
+        )
+
+
+@contextmanager
+def _c6c_deployment_lock_from_env() -> Iterator[C6cDeploymentLockSnapshot]:
+    snapshot = _capture_c6c_deployment_lock_snapshot()
+    with c6c_deployment_lock(snapshot.lock_path):
+        _revalidate_c6c_deployment_lock_snapshot(snapshot)
+        yield snapshot
+
+
+def _c6c_deployment_lock_snapshot_from_environment(
+    environment_snapshot: "ComposeEnvironmentSnapshot",
+) -> C6cDeploymentLockSnapshot:
+    return C6cDeploymentLockSnapshot(
+        lock_path=c6c_state_paths(environment_snapshot.effective)[1],
+        env_path=Path(environment_snapshot.env_path).resolve(strict=False),
+        env_file_identity=environment_snapshot.env_file_identity,
+        env_file_sha256=hashlib.sha256(environment_snapshot.env_file_bytes).hexdigest(),
+    )
+
+
+@contextmanager
+def _c6c_deployment_lock_from_transaction(
+    transaction: "ComposeTransactionSnapshot",
+) -> Iterator[C6cDeploymentLockSnapshot]:
+    snapshot = _c6c_deployment_lock_snapshot_from_environment(
+        transaction.environment,
+    )
+    with c6c_deployment_lock(snapshot.lock_path):
+        _assert_transaction_matches_c6c_lock(transaction, snapshot)
+        yield snapshot
+
+
+def _assert_environment_snapshot_matches_c6c_lock(
+    environment_snapshot: "ComposeEnvironmentSnapshot",
+    lock_snapshot: C6cDeploymentLockSnapshot,
+) -> None:
+    transaction_env_path = Path(environment_snapshot.env_path).resolve(strict=False)
+    if transaction_env_path != lock_snapshot.env_path:
+        raise ComposeCandidateContractError(
+            "compose transaction env-file path differs from deployment lock snapshot"
+        )
+    if environment_snapshot.env_file_identity != lock_snapshot.env_file_identity:
+        raise ComposeCandidateContractError(
+            "compose transaction env-file identity differs from deployment lock snapshot"
+        )
+    if hashlib.sha256(environment_snapshot.env_file_bytes).hexdigest() != (
+        lock_snapshot.env_file_sha256
+    ):
+        raise ComposeCandidateContractError(
+            "compose transaction env-file bytes differ from deployment lock snapshot"
+        )
+    if c6c_state_paths(environment_snapshot.effective)[1] != lock_snapshot.lock_path:
+        raise ComposeCandidateContractError(
+            "compose transaction deployment lock differs from env-file snapshot"
+        )
+
+
+def _assert_transaction_matches_c6c_lock(
+    transaction: "ComposeTransactionSnapshot",
+    lock_snapshot: C6cDeploymentLockSnapshot,
+) -> None:
+    _assert_environment_snapshot_matches_c6c_lock(
+        transaction.environment,
+        lock_snapshot,
+    )
 
 
 @dataclass(frozen=True, eq=False, repr=False)
@@ -1764,12 +1928,12 @@ class ComposeService:
             or transaction is not None
             or expected_environment_snapshot is not None
         ):
-            with c6c_deployment_lock(get_c6c_deployment_lock_path()):
-                if frozen_recovery:
-                    if transaction is None or environment is not None:
-                        raise ComposeCandidateContractError(
-                            "frozen recovery requires one closed transaction"
-                        )
+            if frozen_recovery:
+                if transaction is None or environment is not None:
+                    raise ComposeCandidateContractError(
+                        "frozen recovery requires one closed transaction"
+                    )
+                with _c6c_deployment_lock_from_transaction(transaction):
                     assert_compose_mutation_allowed(
                         mutation_identifiers,
                         environment=transaction.environment.effective,
@@ -1791,6 +1955,7 @@ class ComposeService:
                         external_input_snapshot=None,
                         materialized_compose=resolved,
                     )
+            with _c6c_deployment_lock_from_env() as lock_snapshot:
                 captured_validation: ValidatedComposeCandidate | None = None
                 if transaction is None and expected_environment_snapshot is None:
                     transaction, captured_validation = (
@@ -1798,6 +1963,7 @@ class ComposeService:
                             environment_override=environment,
                         )
                     )
+                    _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
                 environment_snapshot = (
                     transaction.environment
                     if transaction is not None
@@ -1807,6 +1973,10 @@ class ComposeService:
                     raise ComposeCandidateContractError(
                         "compose transaction has no environment snapshot"
                     )
+                _assert_environment_snapshot_matches_c6c_lock(
+                    environment_snapshot,
+                    lock_snapshot,
+                )
                 assert_compose_mutation_allowed(
                     mutation_identifiers,
                     environment=environment_snapshot.effective,
@@ -1933,11 +2103,12 @@ class ComposeService:
     ) -> ValidatedComposeCandidate:
         """mutex 안의 config transaction이 재검증할 candidate identity를 반환한다."""
 
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        with _c6c_deployment_lock_from_env() as lock_snapshot:
             transaction, persisted = self._capture_transaction_unlocked(
                 environment_override=environment_override,
                 environment_snapshot=environment_snapshot,
             )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             return self._capture_candidate_transaction_unlocked(
                 candidate,
                 baseline_transaction=transaction,
@@ -2642,8 +2813,24 @@ class ComposeService:
     ) -> dict[str, Any]:
         target_sequence = target_sequence_for_target(target)
         services = services_for_target(target)
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        preflight_environment = _capture_compose_environment_snapshot(
+            environment_override=None,
+        )
+        preflight_mode = assert_manager_mutation_allowed(
+            environment=preflight_environment.effective
+        )
+        if preflight_mode == "production":
+            assert_c6c_mutation_allowed(
+                services,
+                environment=preflight_environment.effective,
+            )
+            raise DeploymentContractError(
+                "production ensure is not permitted; "
+                "manage this service directly on the host instead"
+            )
+        with _c6c_deployment_lock_from_env() as lock_snapshot:
             transaction, validation = self._capture_transaction_unlocked()
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             mode = assert_manager_mutation_allowed(
                 environment=transaction.environment.effective
             )
@@ -2967,10 +3154,11 @@ class ComposeService:
 
         _validate_c6c_wait_timeout(wait_timeout)
 
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        with _c6c_deployment_lock_from_env() as lock_snapshot:
             transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
             )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             assert_manager_mutation_allowed(
                 environment=transaction.environment.effective
             )
@@ -3744,16 +3932,7 @@ class ComposeService:
 
     @staticmethod
     def _pair_image_environment(pair: CompatibleImagePair) -> dict[str, str]:
-        return {
-            "KOR_TRAVEL_MAP_API_IMAGE": pair.map_image_id,
-            "KOR_TRAVEL_MAP_UI_IMAGE": pair.map_ui_image_id,
-            "KOR_TRAVEL_MAP_DAGSTER_IMAGE": pair.map_dagster_image_id,
-            "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE": pair.map_dagster_daemon_image_id,
-            "KOR_TRAVEL_MAP_GIT_COMMIT": pair.map_source_revision,
-            "PINVI_API_IMAGE": pair.pinvi_image_id,
-            "PINVI_SOURCE_REVISION": pair.pinvi_source_revision,
-            "PINVI_BUILD_ENVIRONMENT": "production",
-        }
+        return compatible_pair_image_environment(pair)
 
     def _verify_active_contract(
         self,
@@ -4031,10 +4210,11 @@ class ComposeService:
                 "capturing a rollback pair requires --verified-compatible"
             )
         _validate_c6c_wait_timeout(wait_timeout)
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        with _c6c_deployment_lock_from_env() as lock_snapshot:
             transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
             )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             assert_manager_mutation_allowed(
                 environment=transaction.environment.effective
             )
@@ -4485,10 +4665,11 @@ class ComposeService:
     def rollback_compatible_pinvi_pair(self) -> dict[str, Any]:
         """manifest pair를 Map smoke 뒤 PinVi 순서로 복원해 혼합 실행을 막는다."""
 
-        with c6c_deployment_lock(get_c6c_deployment_lock_path()):
+        with _c6c_deployment_lock_from_env() as lock_snapshot:
             transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
             )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             assert_manager_mutation_allowed(
                 environment=transaction.environment.effective
             )
@@ -4727,20 +4908,7 @@ class ComposeService:
 
     @staticmethod
     def _require_local_image(image_id: str) -> None:
-        try:
-            completed = subprocess.run(
-                ["docker", "image", "inspect", "--format={{.Id}}", image_id],
-                cwd=get_project_root(),
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-        except OSError as exc:
-            raise DeploymentContractError(
-                "compatible pair image ID cannot be inspected locally"
-            ) from exc
-        if completed.returncode != 0 or completed.stdout.strip() != image_id:
-            raise DeploymentContractError("compatible pair image ID is not available locally")
+        require_local_c6c_image(image_id, cwd=get_project_root())
 
     @staticmethod
     def _inspect_image_reference_id(image_reference: str, *, label: str) -> str:
@@ -4770,37 +4938,11 @@ class ComposeService:
         return image_id
 
     def _require_pair_image_provenance(self, pair: CompatibleImagePair) -> None:
-        map_image_ids = {
-            _MAP_API_SERVICE: pair.map_image_id,
-            _MAP_UI_SERVICE: pair.map_ui_image_id,
-            _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
-            _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
-        }
-        for image_id in map_image_ids.values():
-            self._require_local_image(image_id)
-        self._require_local_image(pair.pinvi_image_id)
-        map_revisions = {
-            service_name: self._inspect_image_source_revision(
-                image_id,
-                label=service_name,
-            )
-            for service_name, image_id in map_image_ids.items()
-        }
-        pinvi_revision = self._inspect_image_source_revision(
-            pair.pinvi_image_id,
-            label="PinVi",
-            expected_build_environment="production",
+        verify_compatible_pair_image_provenance(
+            pair,
+            require_local_image=self._require_local_image,
+            inspect_source_revision=self._inspect_image_source_revision,
         )
-        if (
-            any(
-                revision != pair.map_source_revision
-                for revision in map_revisions.values()
-            )
-            or pinvi_revision != pair.pinvi_source_revision
-        ):
-            raise DeploymentContractError(
-                "compatible pair image labels differ from manifest source provenance"
-            )
 
     @staticmethod
     def _inspect_image_source_revision(
@@ -4809,50 +4951,12 @@ class ComposeService:
         label: str,
         expected_build_environment: str | None = None,
     ) -> str:
-        try:
-            completed = subprocess.run(
-                [
-                    "docker",
-                    "image",
-                    "inspect",
-                    "--format={{json .Config.Labels}}",
-                    image_id,
-                ],
-                cwd=get_project_root(),
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-        except OSError as exc:
-            raise DeploymentContractError(
-                f"cannot inspect {label} image source provenance"
-            ) from exc
-        if completed.returncode != 0:
-            raise DeploymentContractError(
-                f"cannot inspect {label} image source provenance"
-            )
-        try:
-            labels = json.loads(completed.stdout)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise DeploymentContractError(
-                f"{label} image provenance labels are invalid"
-            ) from exc
-        if not isinstance(labels, Mapping):
-            raise DeploymentContractError(
-                f"{label} image provenance labels are missing"
-            )
-        revision = labels.get("org.opencontainers.image.revision")
-        if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
-            raise DeploymentContractError(
-                f"{label} image source revision label is invalid"
-            )
-        if expected_build_environment is not None and labels.get(
-            "io.pinvi.build.environment"
-        ) != expected_build_environment:
-            raise DeploymentContractError(
-                f"{label} image build environment label is invalid"
-            )
-        return revision
+        return inspect_c6c_image_source_revision(
+            image_id,
+            label=label,
+            expected_build_environment=expected_build_environment,
+            cwd=get_project_root(),
+        )
 
     def _inspect_c6c_runtime_configs(
         self,
@@ -4913,7 +5017,7 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
     ) -> list[Mapping[str, Any]]:
-        """필수 서비스가 실행 중이고 healthcheck가 있으면 healthy인지 확인한다."""
+        """필수 서비스가 canonical healthcheck까지 healthy인지 확인한다."""
 
         expected = list(dict.fromkeys(services))
         if not expected:
@@ -4942,7 +5046,7 @@ class ComposeService:
             record = by_service[service]
             state = str(record.get("State", "")).strip().lower()
             health = str(record.get("Health", "")).strip().lower()
-            if state != "running" or health not in {"", "healthy"}:
+            if state != "running" or health != "healthy":
                 not_ready.append(service)
         if not_ready:
             raise DeploymentContractError(

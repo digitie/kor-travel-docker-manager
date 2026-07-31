@@ -56,6 +56,27 @@ wheelhouse SHA·backend wheel SHA·wheel `RECORD` SHA·`.ktdm-release-manifest.j
 `/opt/kor-travel-docker-manager` activation/rollback 및 launcher self-check까지 이어지게 했다. launcher
 self-check 실패 시에도 새 app root와 새 launcher를 제거하고 이전 app root와 launcher bytes/mode를 복구한다.
 
+단일 적대 리뷰어의 세 번째 exact-head 리뷰는 production lock 선택, state root mode, active pair
+provenance, 실제 wheel `RECORD`, wheelhouse 신뢰 시점, recovery file/journal crash window를
+P0으로 지적했다. 이를 반영해 pair deploy/capture/rollback과 rotation은 canonical `.env`의
+identity·bytes로 같은 lock을 선택하고 lock 획득 직후 transaction snapshot과 다시 결박한다.
+`.env`가 없었다가 생기거나 경로·inode·bytes가 바뀌면 mutation 전에 중단한다. production state
+root는 공용 primitive가 root-owned 0700으로 만들며, frozen rotation Compose에는 active pair의
+다섯 immutable image ID와 Map/PinVi revision·production provenance를 모두 주입한다.
+
+trusted installer는 canonical root-owned wheelhouse의 모든 ancestor와 각 wheel의
+owner/mode/nlink/inode/digest를 root `pip` 실행 전에 snapshot하고 각 소비 단계 뒤에 exact
+재검증한다. 실제 Poetry console script의 `../../../bin/ktdctl`은 exact venv entrypoint 하나만
+허용하고 나머지 `RECORD` escape는 거부한다. recovery는 `rollback_preparing` journal을 먼저
+fsync하고 orphan recovery와 양방향으로 수렴하며, foreign `.env`는 덮지 않는다. terminal audit은
+operation ID당 한 번만 보충하고, 실패한 rollback 시도는 재시도 가능한 non-terminal evidence로
+남긴다. active runtime은 canonical service 집합·container name·healthy 상태·OCI source revision을
+모두 fail-close로 검증한다.
+
+최종 로컬 회귀는 C6c deployment 855건과 credential rotation 60건, touched Ruff·strict mypy·
+shell syntax를 통과했다. 실제 offline wheel과 launcher 설치는 disposable Linux 경계에서 확인한
+뒤 같은 exact SHA의 단일 적대 재리뷰와 n150 검증으로 이어간다.
+
 ---
 
 ## 2026-07-31 (T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거, issue #88)

@@ -128,6 +128,8 @@ revision_file = pathlib.Path(sys.argv[3]).resolve(strict=True)
 release_manifest = pathlib.Path(sys.argv[4]).resolve(strict=True)
 site_packages = dist_info.parent
 record = dist_info / "RECORD"
+venv_root = site_packages.parent.parent.parent
+expected_entrypoint = venv_root / "bin" / "ktdctl"
 
 revision = revision_file.read_text(encoding="utf-8").strip()
 manifest = json.loads(release_manifest.read_text(encoding="utf-8"))
@@ -156,7 +158,8 @@ with record.open(newline="", encoding="utf-8") as handle:
         try:
             target.relative_to(site_packages)
         except ValueError as exc:
-            raise SystemExit("wheel RECORD escapes site-packages") from exc
+            if target != expected_entrypoint:
+                raise SystemExit("wheel RECORD escapes site-packages") from exc
         if target == package_dir or package_dir in target.parents:
             seen_package = True
         assert_locked(target)
@@ -176,4 +179,4 @@ PY
 export KTDM_TRUSTED_ROOT_LAUNCHER="ktdctl-map-ui-auth-rotate-v1"
 export KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${APP_ROOT}"
 
-exec "${PYTHON_BIN}" -I -m kor_travel_docker_manager.cli map-ui-auth rotate --project-root "${APP_ROOT}" "$@"
+exec "${PYTHON_BIN}" -I -m kor_travel_docker_manager.cli map-ui-auth rotate "$@" --project-root "${APP_ROOT}"

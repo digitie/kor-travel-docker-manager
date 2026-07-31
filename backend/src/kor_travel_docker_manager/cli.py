@@ -16,6 +16,7 @@ from kor_travel_docker_manager.services.registry import list_targets
 
 _TRUSTED_ROOT_LAUNCHER_ENV = "KTDM_TRUSTED_ROOT_LAUNCHER"
 _TRUSTED_ROOT_LAUNCHER_VALUE = "ktdctl-map-ui-auth-rotate-v1"
+_TRUSTED_ROOT_PROJECT_ROOT = "/opt/kor-travel-docker-manager"
 
 DIRECT_ENSURE_ALIASES = {
     alias
@@ -149,6 +150,7 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
 def _cmd_map_ui_auth_rotate(args: argparse.Namespace) -> int:
     try:
         _require_trusted_map_ui_auth_launcher()
+        _reject_trusted_root_project_override(args.project_root)
         current_password, new_password = _read_map_ui_auth_passwords(
             password_stdin=args.password_stdin,
         )
@@ -169,6 +171,17 @@ def _require_trusted_map_ui_auth_launcher() -> None:
     if os.environ.get(_TRUSTED_ROOT_LAUNCHER_ENV) != _TRUSTED_ROOT_LAUNCHER_VALUE:
         raise DeploymentContractError(
             "root Map UI auth rotation must be launched through /usr/local/sbin/ktdctl-map-ui-auth-rotate"
+        )
+
+
+def _reject_trusted_root_project_override(project_root: str | None) -> None:
+    if os.geteuid() != 0:
+        return
+    if os.environ.get(_TRUSTED_ROOT_LAUNCHER_ENV) != _TRUSTED_ROOT_LAUNCHER_VALUE:
+        return
+    if project_root != _TRUSTED_ROOT_PROJECT_ROOT:
+        raise DeploymentContractError(
+            "trusted root Map UI auth launcher forbids --project-root override"
         )
 
 
