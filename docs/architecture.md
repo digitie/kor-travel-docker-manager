@@ -85,6 +85,10 @@ graph TD
 - **설정 파일**: target 정의, alias, 의존 순서, 초기화 단계는 `config/docker-targets.yml`에서 읽는다.
 - **의존 순서**: 기본 순서는 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이며, 각 target은 자기 앞 단계까지 누적 실행한다.
 - **초기화 단계**: `db`는 database/role/schema 복구, `storage`는 RustFS bucket 복구, `geo`는 `kor-travel-geo` API/Web UI 실행과 원천 DB 적재 검증을 수행한다.
+- **배포 readiness**: compatible-pair transaction에 고정된 canonical resolved Compose를 정본으로
+  service별 readiness를 파생한다. 활성 healthcheck가 있으면 `running + healthy`, 없거나 명시적으로
+  비활성화됐으면 `running`을 요구하며, 이름별 예외 목록이나 프로세스 생존만 보는 가짜 probe는 두지
+  않는다.
 
 ### 2.3 API 엔드포인트 설계
 - `GET /api/v1/targets`: 앱 관점 target 목록 반환.

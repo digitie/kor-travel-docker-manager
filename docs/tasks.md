@@ -156,14 +156,14 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 선언하지 않는다. 그 결과 Docker가 정상 `running`으로 판정한 service도 mutation 전 preflight에서
 항상 거부된다.
 
-- [ ] readiness policy는 별도 하드코딩 목록이 아니라 transaction에 고정된 canonical resolved
+- [x] readiness policy는 별도 하드코딩 목록이 아니라 transaction에 고정된 canonical resolved
       Compose의 service spec에서 파생한다. 명시적으로 활성화된 healthcheck가 있는 service는
       `running + healthy`, healthcheck가 없거나 Compose 표준으로 비활성화된 service는
       `running`을 요구한다.
-- [ ] service 누락·종료, healthcheck 선언 service의 빈/`starting`/`unhealthy` health,
+- [x] service 누락·종료, healthcheck 선언 service의 빈/`starting`/`unhealthy` health,
       malformed/모호한 healthcheck 정의는 mutation 전에 fail-close한다. image 상속 probe나
       `kill -0 1` 같은 가짜 readiness를 새 계약으로 만들지 않는다.
-- [ ] unit 회귀에서 선언/미선언/비활성 policy와 missing/exited/unhealthy/starting을 모두
+- [x] unit 회귀에서 선언/미선언/비활성 policy와 missing/exited/unhealthy/starting을 모두
       고정한다. 실제 disposable Docker Compose에서 healthcheck 없는 long-running service와
       실제 healthcheck가 `healthy`인 service 조합은 통과하고, 실제 `unhealthy` service는
       거부되는 것을 검증한다.

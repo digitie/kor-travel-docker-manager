@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
+
+production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,
+Concierge MCP·Scheduler·UI, Map Dagster daemon까지 일률적으로 `Health=healthy`를 요구해
+정상 `running` runtime을 mutation 전에 영구 차단하는 결함을 확인했다.
+
+ADR-27에 따라 frozen transaction의 canonical resolved Compose service spec에서 typed readiness
+policy를 직접 파생한다. 활성 healthcheck는 `running + healthy`, healthcheck가 없거나 Compose
+표준으로 비활성화됐으면 `running`을 요구한다. service 누락·종료, 선언된 healthcheck의 빈/
+`starting`/`unhealthy` 상태, malformed/모호한 정의는 Docker 조회 전 또는 mutation 전에
+fail-close한다. 이름별 예외 목록, image 상속 probe 추측, `kill -0 1` 같은 가짜 probe는 추가하지
+않았다.
+
+unit 회귀는 선언/미선언/비활성 healthcheck와 missing/exited/starting/unhealthy/malformed를
+고정했다. 로컬 `alpine:3.20`을 `pull_policy: never`로 사용하는 폐기형 실제 Compose에서는
+healthcheck가 healthy인 service와 healthcheck 없는 long-running service 조합이 통과하고 실제
+unhealthy service가 거부되는 것을 확인했다. focused 결과는 `14 passed`이며 변경 source/test
+Ruff도 통과했다.
+
 ## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
 
 T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`
