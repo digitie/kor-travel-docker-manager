@@ -120,7 +120,9 @@ root-owned offline wheelhouse를 새로 만들고 실제 Poetry backend wheel을
 release manifest↔source revision, canonical `/opt` installed `ktdctl`, installed config,
 trusted launcher `--help`까지 통과했다. 별도 실제 process contention gate에서 같은 global lock을
 다른 process가 보유하면 installer가 source/archive/wheel/app mutation 전에 즉시 중단하는 것도
-확인했다.
+확인했다. held `.env` FD 보강 뒤에도 동일한 실제 Debian offline build/install을 다시 통과했고,
+staging 중 env-owner가 canonical 경로를 다른 inode로 교체하는 공격을 주입했을 때 active app을
+만들지 않고 실패하는 actual TOCTOU gate도 통과했다.
 이 checkpoint를 push한 뒤 같은 단일 적대 리뷰어의 exact-head 재리뷰와 n150 검증으로 이어간다.
 
 ---
