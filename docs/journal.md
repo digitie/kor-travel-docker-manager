@@ -128,7 +128,9 @@ launcher installer도 고정 root-owned staging file, destination regular-file s
 `mv -T`, 설치 후 owner/mode/nlink/SHA 재검증으로 바꿨다. disposable Debian 실제 gate에서 정상
 offline build/install, committed GC 중 rollback mount failure→state/residue 보존→unmount 후 재실행
 자동 GC, launcher destination directory collision→old app/launcher residue 보존→collision 제거 후
-재실행 exact 복구·설치를 모두 통과했다.
+재실행 exact 복구·설치, 새 app 하위 mount로 cleanup을 부분 삭제 상태에서 중단→mount 해제 후
+기록한 root dev/ino로 transaction-owned partial tree만 제거하고 old release 복구·재설치를 모두
+통과했다.
 
 최종 로컬 회귀는 backend 1,146건, C6c deployment 856건, Docker config 93건, credential
 rotation 64건과 touched Ruff·strict mypy·shell syntax를 통과했다. 수정한 exact clean Git tree로
