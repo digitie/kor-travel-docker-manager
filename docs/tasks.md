@@ -16,6 +16,7 @@
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | 구현·기존 live 충족, T-045 회전과 새 official deploy 미완료 |
 | **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[/]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
 | **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
+| **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
 
 ---
 
@@ -146,3 +147,27 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
 - [ ] n150에서 실제 긴 마이그레이션을 수반하는 `pinvi-pair deploy --wait-timeout <n>`
       (또는 `capture`)을 실행해 오발동 rollback 없이 통과하는 것을 확인한 뒤 완료 이력으로
       옮긴다.
+
+### T-047: compatible-pair canonical Compose readiness 계약 정렬
+
+production compatible-pair deploy의 `_require_services_ready`는 모든 필수 service에
+`State=running`과 `Health=healthy`를 동시에 요구한다. 그러나 canonical resolved Compose에서
+Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 healthcheck를
+선언하지 않는다. 그 결과 Docker가 정상 `running`으로 판정한 service도 mutation 전 preflight에서
+항상 거부된다.
+
+- [ ] readiness policy는 별도 하드코딩 목록이 아니라 transaction에 고정된 canonical resolved
+      Compose의 service spec에서 파생한다. 명시적으로 활성화된 healthcheck가 있는 service는
+      `running + healthy`, healthcheck가 없거나 Compose 표준으로 비활성화된 service는
+      `running`을 요구한다.
+- [ ] service 누락·종료, healthcheck 선언 service의 빈/`starting`/`unhealthy` health,
+      malformed/모호한 healthcheck 정의는 mutation 전에 fail-close한다. image 상속 probe나
+      `kill -0 1` 같은 가짜 readiness를 새 계약으로 만들지 않는다.
+- [ ] unit 회귀에서 선언/미선언/비활성 policy와 missing/exited/unhealthy/starting을 모두
+      고정한다. 실제 disposable Docker Compose에서 healthcheck 없는 long-running service와
+      실제 healthcheck가 `healthy`인 service 조합은 통과하고, 실제 `unhealthy` service는
+      거부되는 것을 검증한다.
+- [ ] backend 전체 pytest, Ruff, strict mypy, canonical Compose config, frontend
+      type-check/build, 보안 감사를 통과하고 draft PR에 정확한 gate를 기록한다.
+- [ ] n150에서는 부모 에이전트가 read-only exact preflight를 재검증한 뒤에만 별도 승인된
+      compatible-pair mutation을 수행한다.

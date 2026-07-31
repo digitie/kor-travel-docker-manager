@@ -1049,3 +1049,60 @@ post-commit cleanup 실패는 이미 검증·commit된 runtime을 과거 pair로
 ### 후속
 
 - (open) issue #72/T-041 구현·단일 적대적 리뷰·CI와 n150 rollback/live E2E를 완료한다.
+
+## ADR-27: compatible-pair readiness는 canonical resolved Compose의 healthcheck 선언을 따른다
+
+- 상태: accepted
+- 날짜: 2026-07-31
+- 결정자: human, Codex
+
+### 컨텍스트
+
+production compatible-pair의 mutation 전 preflight는 `services_for_target("pinvi")`의 모든
+필수 service를 검사한다. 기존 `_require_services_ready`는 service별 Compose 계약을 보지 않고
+무조건 Docker `State=running`과 `Health=healthy`를 요구했다. canonical resolved Compose에는
+실제 HTTP/native readiness를 제공하는 service에만 healthcheck가 있고, Grafana, Prometheus,
+Concierge MCP·Scheduler·UI, Map Dagster daemon 등에는 healthcheck가 없다. Docker Compose가
+정상 `running`으로 관리하는 이 service들의 `Health`는 빈 값이므로 production deploy가 mutation
+전에 항상 fail-close했다.
+
+### 결정
+
+readiness requirement는 transaction에 고정된 canonical resolved Compose service spec에서
+service별 typed policy로 파생한다. 명시적으로 활성화된 canonical healthcheck가 있는 service는
+`running + healthy`, healthcheck가 없거나 Compose 표준으로 명시 비활성화된 service는
+`running`을 요구한다. service 누락, malformed/모호한 healthcheck, healthcheck 선언 service의
+빈 health 또는 `starting`/`unhealthy`, 모든 service의 비-running 상태는 fail-close한다.
+
+새 healthcheck는 실제 service-native readiness를 증명할 수 있을 때만 canonical Compose에
+추가한다. scheduler/daemon의 PID 1 생존만 확인하는 probe나 HTTP 의미를 검증하지 않는 임의
+socket probe를 이 문제의 우회책으로 추가하지 않는다. image에 상속된 healthcheck도 canonical
+resolved Compose에 명시되지 않으면 production readiness 정본으로 채택하지 않는다.
+
+### 근거
+
+- Docker Compose `up --wait`는 healthcheck가 있는 service는 healthy, 없는 service는 running을
+  기다린다. preflight와 activation이 같은 선언적 계약을 사용해야 정상 runtime을 서로 다르게
+  판정하지 않는다.
+- service 이름별 예외 목록은 Compose 변경 때 drift하므로 frozen resolved document에서 직접
+  policy를 파생해야 한다.
+- 실제 readiness가 없는 worker에 가짜 healthcheck를 추가하면 `healthy`가 업무 준비 상태라는
+  잘못된 증거가 된다.
+- malformed policy를 `running`으로 낮추지 않고 거부하면 canonical source 손상이나 지원하지 않는
+  Compose 의미를 안전하게 탐지할 수 있다.
+
+### 결과(긍정)
+
+- healthcheck가 없는 정상 장기 실행 service 때문에 compatible-pair deploy가 영구 차단되지 않는다.
+- API·UI·Dagster web·cAdvisor 등 canonical healthcheck service의 실제 장애는 계속 fail-close한다.
+- 새 service가 healthcheck를 추가하거나 제거하면 같은 resolved Compose snapshot에서 preflight
+  의미도 함께 바뀌어 별도 목록 drift가 없다.
+
+### 결과(부정)
+
+- healthcheck가 없는 service는 Docker process가 `running`이라는 liveness까지만 증명한다.
+  더 강한 readiness가 필요하면 해당 service가 제공하는 authoritative probe를 먼저 설계해야 한다.
+
+### 후속
+
+- (open) T-047의 unit·실제 disposable Compose gate와 n150 read-only exact preflight를 완료한다.
