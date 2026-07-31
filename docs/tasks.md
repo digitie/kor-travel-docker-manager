@@ -148,7 +148,7 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
       (또는 `capture`)을 실행해 오발동 rollback 없이 통과하는 것을 확인한 뒤 완료 이력으로
       옮긴다.
 
-### T-047: compatible-pair canonical Compose readiness 계약 정렬
+### T-047: compatible-pair canonical Compose readiness 계약 정렬 (issue #90)
 
 production compatible-pair deploy의 `_require_services_ready`는 모든 필수 service에
 `State=running`과 `Health=healthy`를 동시에 요구한다. 그러나 canonical resolved Compose에서

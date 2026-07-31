@@ -1105,4 +1105,4 @@ resolved Compose에 명시되지 않으면 production readiness 정본으로 채
 
 ### 후속
 
-- (open) T-047의 unit·실제 disposable Compose gate와 n150 read-only exact preflight를 완료한다.
+- (open) issue #90/T-047의 단일 적대적 리뷰·CI와 n150 read-only exact preflight를 완료한다.

@@ -23,6 +23,12 @@ healthcheck가 healthy인 service와 healthcheck 없는 long-running service 조
 unhealthy service가 거부되는 것을 확인했다. focused 결과는 `14 passed`이며 변경 source/test
 Ruff도 통과했다.
 
+전체 backend `1,155 passed`, frontend `type-check`/production build, 공개 placeholder를 사용한
+canonical Compose `config --quiet`/resolved 22-service 분류도 통과했다. 저장소 전체 Ruff에는
+이번 변경과 무관한 `test_api.py`/`test_c6c_image_retention.py` import 정렬 6건, strict mypy에는
+`registry.py`의 기존 `no-any-return` 1건만 남았고, touched source/test에는 새 오류가 없다.
+추적 이슈는 #90이다.
+
 ## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
 
 T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`
