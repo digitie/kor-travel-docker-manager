@@ -189,9 +189,17 @@ root를 제거하고 기존 app root와 이전 launcher bytes/mode를 rollback�
 실행하기 전에 wheelhouse의 전체 ancestor와 각 wheel의 owner/mode/nlink/inode/digest를 snapshot하고,
 build·install 각 단계 뒤 같은 snapshot인지 다시 확인한다. 기본 wheelhouse는 root-private
 `/var/lib/kor-travel-docker-manager/wheelhouse`이며 user-writable 경로는 허용하지 않는다.
-새 app root와 launcher self-check가 모두 끝나면 rollback trap부터 해제해 active release를 commit하고,
-이전 app/archive/launcher backup 삭제는 post-commit best-effort로 수행한다. backup GC가 실패해도
-이미 검증한 active release를 되돌리거나 삭제하지 않는다.
+새 app root와 launcher self-check가 모두 끝나면 active revision·launcher digest를 durable
+`committed` state로 먼저 fsync한다. EXIT cleanup도 이 state에서는 rollback하지 않으며,
+이전 app/archive/launcher backup 삭제만 post-commit best-effort로 수행한다. backup GC가 실패해도
+이미 검증한 active release를 되돌리거나 삭제하지 않는다. app/staging/rollback/archive/launcher
+artifact는 PID별 이름을 쓰지 않고 host-global 고정 경로와 root-private
+`/var/lib/kor-travel-docker-manager/trusted-release-transaction.json`에 결박한다. state에는
+secret bytes를 넣지 않고 old app/launcher evidence digest, target revision, 새 launcher digest와
+`preparing|prepared|committed` phase만 atomic fsync한다. 다음 installer는 같은 전역 lock 아래서
+non-committed state를 exact rollback하거나 committed cleanup residue를 idempotent GC한 뒤에만
+새 transaction을 시작한다. state로 분류할 수 없는 legacy PID artifact나 foreign path collision은
+자동 삭제하지 않고 fail-close한다.
 
 root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate`는 `scripts/install-ktdctl-map-ui-auth-rotate`가
 staging 파일을 fsync한 뒤 설치한다. launcher는 `/usr/local/sbin`, `/opt`, app root, source evidence,

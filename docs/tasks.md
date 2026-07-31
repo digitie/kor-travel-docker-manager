@@ -78,8 +78,11 @@
       달라지면 설치를 시작하지 않는다. lock 안에서 canonical `.env`를 `O_NOFOLLOW` read-only FD로
       한 번 열어 exact bytes를 끝까지 보유하고, root-only 0700 staging에는 그 FD에서만 복사한다.
       따라서 검증 뒤 경로를 바꾸거나 같은 경로에 다른 inode를 끼워도 활성화할 수 없다. 처음 고정한
-      source revision exact commit만 archive·기록하며, 활성 release commit 뒤에는 rollback trap을
-      먼저 해제하고 이전 backup 정리를 post-commit best-effort로 수행한다.
+      source revision exact commit만 archive·기록한다. PID별 임시 경로 대신 host-global 고정
+      transaction state가 old app/launcher evidence와 target revision, 새 launcher digest,
+      `preparing|prepared|committed` phase를 fsync한다. 다음 실행은 lock 안에서 non-committed
+      transaction을 exact rollback하고 committed cleanup residue를 idempotent GC한 뒤에만 새 설치를
+      허용하며, 분류할 수 없는 legacy/foreign residue는 mutation 전에 fail-close한다.
       staging venv의 `ktdctl`은 canonical installed root를 고정한 실행 가능한 entrypoint로 만들고
       바뀐 bytes를 wheel `RECORD` digest·size와 release manifest에 다시 결박한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child

@@ -108,10 +108,25 @@ staging에 그 descriptor의 exact bytes만 복사하도록 바꿨다. 경로와
 
 DockerService는 lock 안 exact Compose transaction bytes에서 대상 service의 environment baseline을
 다시 읽어 secret interpolation 의미를 재검증한 뒤에만 candidate를 만든다. release commit은
-rollback trap을 먼저 해제한 뒤 state를 terminal로 바꾸며, 이전 app/archive/launcher backup
-삭제는 post-commit best-effort로 분리했다. 실패 경로 cleanup은 `errexit`와 무관하게 이전 app과
-launcher 복구를 끝까지 시도하고, 새 app 제거 또는 이전 app/launcher 복구가 실패하면 유일한
-rollback residue를 삭제하지 않고 root-only 경로에 보존한다.
+검증된 active app/launcher evidence를 durable `committed` state로 먼저 fsync하고, EXIT cleanup도
+그 state를 보면 rollback 대신 active를 보존한 채 post-commit GC만 수행한다. 실패 경로는 이전
+app/launcher 복구가 완결되지 않으면 state와 유일한 rollback residue를 root-only 경로에 보존한다.
+
+여섯 번째 exact-head 적대적 리뷰는 보존한 PID-scoped app/launcher residue가 다음 실행의 recovery
+state와 연결되지 않는 문제와, launcher destination이 directory일 때 `mv -f`가 backup을 그 안으로
+옮기고 성공으로 오인하는 두 P1을 재현했다. installer artifact를 PID 경로에서 host-global 고정
+경로로 clean-cut하고, root-private `trusted-release-transaction.json`에 old app/launcher exact
+evidence, target revision, 새 launcher SHA와 `preparing|prepared|committed` phase를 atomic fsync한다.
+전역 lock 획득 직후 stale state를 먼저 reconcile하므로 non-committed는 old app/launcher exact
+rollback, committed는 active revision/launcher digest 검증 뒤 idempotent GC를 끝내야 새 install을
+시작할 수 있다. state가 없는데 artifact가 있거나 legacy PID/foreign collision이면 mutation 전에
+fail-close한다.
+
+launcher installer도 고정 root-owned staging file, destination regular-file shape 검증,
+`mv -T`, 설치 후 owner/mode/nlink/SHA 재검증으로 바꿨다. disposable Debian 실제 gate에서 정상
+offline build/install, committed GC 중 rollback mount failure→state/residue 보존→unmount 후 재실행
+자동 GC, launcher destination directory collision→old app/launcher residue 보존→collision 제거 후
+재실행 exact 복구·설치를 모두 통과했다.
 
 최종 로컬 회귀는 backend 1,146건, C6c deployment 856건, Docker config 93건, credential
 rotation 64건과 touched Ruff·strict mypy·shell syntax를 통과했다. 수정한 exact clean Git tree로
