@@ -35,7 +35,8 @@ official deploy/live 인수 뒤 T-031과 함께 완료한다.
 T-047은 production compatible-pair readiness를 frozen canonical resolved Compose와 정렬한다.
 활성 healthcheck service는 `running + healthy`, healthcheck가 없거나 명시 비활성화된 service는
 `running`을 요구한다. service별 예외 목록과 가짜 probe는 금지하며, malformed 계약과 선언된
-healthcheck의 비정상 상태는 mutation 전에 fail-close한다.
+healthcheck의 비정상 상태는 mutation 전에 fail-close한다. `ps --all`의 service별 record와
+canonical scale/replica/container name은 exact singleton이어야 한다.
 
 - **Backend**: Python FastAPI 기반 (`backend/`)
 - **Frontend**: Next.js 14+ TypeScript 기반 (`frontend/`)

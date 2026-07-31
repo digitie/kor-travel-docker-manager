@@ -279,7 +279,10 @@ read 200 envelope·무토큰 401·존재하지 않는 import-job cancel 404·can
 readiness는 `ps --all` 존재 여부나 모든 service에 일률적으로 `Health=healthy`를 요구하지 않는다.
 canonical healthcheck가 활성화된 service는 `running + healthy`, healthcheck가 없거나 Compose 표준으로
 비활성화된 service는 `running`을 요구한다. service 누락·종료, 선언된 healthcheck의 빈/`starting`/
-`unhealthy` 상태와 malformed/모호한 healthcheck는 모두 fail-close한다. runtime
+`unhealthy` 상태와 malformed/모호한 healthcheck는 모두 fail-close한다. readiness 조회는
+`ps --all`을 사용하고 canonical scale/`deploy.replicas`, service별 runtime record,
+`container_name`을 singleton exact 계약으로 검증한다. stopped/stale duplicate나 malformed/예상 밖
+record를 정상 record로 덮어쓰지 않는다. runtime
 inspect는 실제 값을 출력하지 않고 `.Config` 전체의 안전 scalar를 순회해 ops token이 두 API의 정확한
 Env path에만, Map UI username Env 이름과 exact 값이 Map UI의 정확한 path에 있는지 검사한다. hash·session
 secret과 평문 UI smoke 비밀번호가 허용 path 밖 어떤 container scalar에도 존재하면 실패한다.

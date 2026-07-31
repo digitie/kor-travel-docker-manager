@@ -29,6 +29,21 @@ canonical Compose `config --quiet`/resolved 22-service 분류도 통과했다. �
 `registry.py`의 기존 `no-any-return` 1건만 남았고, touched source/test에는 새 오류가 없다.
 추적 이슈는 #90이다.
 
+단일 적대 리뷰어의 exact `9759d969` 리뷰는 P1으로 기본 `compose ps`가 같은 service의 stopped
+replica를 숨기고 dict가 duplicate를 덮어쓰는 mutation 전 fail-open을 실제 Docker에서 재현했다.
+P2로 실제 Docker test가 clean runner에서 image 부재를 silent skip하고 `compose down` 실패와
+residue를 검사하지 않는 증거 공백도 지적했다.
+
+이를 반영해 normal/frozen recovery readiness는 모두 `ps --all`을 사용한다. canonical
+`scale`/`deploy.replicas`와 runtime record는 service별 exact singleton이며 canonical
+`container_name`도 exact 일치해야 한다. 예상 밖 service, duplicate, mixed malformed record는
+하나도 버리지 않고 전체 payload를 거부한다. 필수 실제 gate는
+`KTDM_REQUIRE_DOCKER_INTEGRATION=1`에서 Docker 부재를 실패로 만들고, image가 없으면 명시적으로
+준비한 뒤 immutable image ID를 Compose에 사용한다. 실제 scale 2에서 replica 하나를 stop해
+기본 `ps`가 running 하나만 숨겨 보이는 조건을 재현했고 새 `ps --all` 경로가
+stopped+running duplicate를 거부했다. `down` 반환 코드와 사후 project container/network/volume
+0개도 검증한다. 보강 focused unit `34 passed`, 필수 actual Docker gate `1 passed`다.
+
 ## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
 
 T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`

@@ -1074,6 +1074,13 @@ service별 typed policy로 파생한다. 명시적으로 활성화된 canonical 
 `running`을 요구한다. service 누락, malformed/모호한 healthcheck, healthcheck 선언 service의
 빈 health 또는 `starting`/`unhealthy`, 모든 service의 비-running 상태는 fail-close한다.
 
+compatible-pair의 필수 service는 singleton으로 고정한다. canonical `scale`과
+`deploy.replicas`가 있으면 정확히 정수 `1`이어야 하고 비-singleton deploy mode는 거부한다.
+runtime 조회는 `docker compose ps --all`을 사용하며 service별 record가 정확히 하나여야 한다.
+canonical `container_name`이 있으면 runtime `Name`도 exact 일치해야 한다. 종료 record를 기본
+`ps` 필터로 숨기거나 같은 service의 여러 record를 dict로 덮어쓰지 않으며, payload 안의
+예상 밖 service와 구조가 잘못된 record 하나라도 전체 readiness를 fail-close한다.
+
 새 healthcheck는 실제 service-native readiness를 증명할 수 있을 때만 canonical Compose에
 추가한다. scheduler/daemon의 PID 1 생존만 확인하는 probe나 HTTP 의미를 검증하지 않는 임의
 socket probe를 이 문제의 우회책으로 추가하지 않는다. image에 상속된 healthcheck도 canonical
@@ -1090,6 +1097,8 @@ resolved Compose에 명시되지 않으면 production readiness 정본으로 채
   잘못된 증거가 된다.
 - malformed policy를 `running`으로 낮추지 않고 거부하면 canonical source 손상이나 지원하지 않는
   Compose 의미를 안전하게 탐지할 수 있다.
+- `ps --all`과 exact singleton cardinality는 stopped/stale replica가 다른 running record 뒤에
+  가려져 destructive mutation 전 preflight를 우회하는 것을 막는다.
 
 ### 결과(긍정)
 
@@ -1097,6 +1106,8 @@ resolved Compose에 명시되지 않으면 production readiness 정본으로 채
 - API·UI·Dagster web·cAdvisor 등 canonical healthcheck service의 실제 장애는 계속 fail-close한다.
 - 새 service가 healthcheck를 추가하거나 제거하면 같은 resolved Compose snapshot에서 preflight
   의미도 함께 바뀌어 별도 목록 drift가 없다.
+- stale·scaled·이름 drift container가 있으면 정상 record가 함께 있어도 operator 조치 전에는
+  compatible-pair mutation을 시작하지 않는다.
 
 ### 결과(부정)
 

@@ -456,7 +456,10 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
    service별 readiness 계약을 만족하는지 확인한다. 활성 healthcheck가 있으면 `running + healthy`,
    healthcheck가 없거나 명시적으로 비활성화됐으면 `running`을 요구한다. service 누락·종료,
    선언된 healthcheck의 빈/`starting`/`unhealthy` 상태, malformed/모호한 healthcheck는 모두
-   mutation 전에 거부한다. 현재 Map UI
+   mutation 전에 거부한다. 조회는 `ps --all`을 사용하고 canonical scale/`deploy.replicas`와
+   service별 runtime record를 정확히 singleton으로 고정한다. stopped/stale duplicate, 예상 밖
+   service, canonical `container_name` drift, payload의 malformed record는 정상 record가 함께
+   있어도 거부한다. 현재 Map UI
    container를 inspect해 username·hash·session secret이 frozen environment와 정확히 같은지 검증한 다음,
    login→`/ops/datasets`→logout→재차단 lifecycle을 통과해야 한다. 어느 단계든 실패하면 Docker mutation은
    0이며 기존 runtime도 중지하지 않는다. 통과하면 다섯 runtime을 함께 중지해 mixed set 노출을 막은 뒤

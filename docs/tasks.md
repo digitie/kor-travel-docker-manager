@@ -166,7 +166,10 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 - [x] unit 회귀에서 선언/미선언/비활성 policy와 missing/exited/unhealthy/starting을 모두
       고정한다. 실제 disposable Docker Compose에서 healthcheck 없는 long-running service와
       실제 healthcheck가 `healthy`인 service 조합은 통과하고, 실제 `unhealthy` service는
-      거부되는 것을 검증한다.
+      거부되는 것을 검증한다. `ps --all`과 canonical singleton 계약으로 stopped+running
+      duplicate/scale/name drift를 fail-close하고 mixed malformed payload도 한 건도 버리지 않는다.
+      `KTDM_REQUIRE_DOCKER_INTEGRATION=1` 필수 gate는 Docker/image 부재를 skip하지 않으며,
+      cleanup의 container/network/volume residue 0까지 검증한다.
 - [ ] backend 전체 pytest, Ruff, strict mypy, canonical Compose config, frontend
       type-check/build, 보안 감사를 통과하고 draft PR에 정확한 gate를 기록한다.
 - [ ] n150에서는 부모 에이전트가 read-only exact preflight를 재검증한 뒤에만 별도 승인된

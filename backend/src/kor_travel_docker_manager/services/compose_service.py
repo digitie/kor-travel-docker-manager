@@ -1053,13 +1053,19 @@ class _ServiceReadinessPolicy(StrEnum):
     HEALTHY = "healthy"
 
 
+@dataclass(frozen=True)
+class _ServiceReadinessContract:
+    policy: _ServiceReadinessPolicy
+    container_name: str | None
+
+
 def _service_readiness_policy(
     service_name: str,
     service: Mapping[str, Any],
 ) -> _ServiceReadinessPolicy:
-    healthcheck = service.get("healthcheck")
-    if healthcheck is None:
+    if "healthcheck" not in service:
         return _ServiceReadinessPolicy.RUNNING
+    healthcheck = service["healthcheck"]
     if not isinstance(healthcheck, Mapping):
         raise DeploymentContractError(
             f"canonical readiness healthcheck is invalid: {service_name}"
@@ -1104,24 +1110,111 @@ def _service_readiness_policy(
     return _ServiceReadinessPolicy.HEALTHY
 
 
-def _resolved_service_readiness_policies(
+def _service_singleton_container_name(
+    service_name: str,
+    service: Mapping[str, Any],
+) -> str | None:
+    if "scale" in service:
+        scale = service["scale"]
+        if type(scale) is not int or scale != 1:
+            raise DeploymentContractError(
+                f"canonical readiness service is not singleton: {service_name}"
+            )
+    if "deploy" in service:
+        deploy = service["deploy"]
+        if not isinstance(deploy, Mapping):
+            raise DeploymentContractError(
+                f"canonical readiness deploy contract is invalid: {service_name}"
+            )
+        mode = deploy.get("mode")
+        if mode is not None and mode != "replicated":
+            raise DeploymentContractError(
+                f"canonical readiness deploy mode is not singleton: {service_name}"
+            )
+        if "replicas" in deploy:
+            replicas = deploy["replicas"]
+            if type(replicas) is not int or replicas != 1:
+                raise DeploymentContractError(
+                    f"canonical readiness replicas are not singleton: {service_name}"
+                )
+    if "container_name" not in service:
+        return None
+    container_name = service["container_name"]
+    if not isinstance(container_name, str) or not container_name.strip():
+        raise DeploymentContractError(
+            f"canonical readiness container name is invalid: {service_name}"
+        )
+    return container_name
+
+
+def _resolved_service_readiness_contracts(
     resolved: Mapping[str, Any],
     services: Sequence[str],
-) -> dict[str, _ServiceReadinessPolicy]:
+) -> dict[str, _ServiceReadinessContract]:
     resolved_services = resolved.get("services")
     if not isinstance(resolved_services, Mapping):
         raise DeploymentContractError(
             "canonical resolved compose has no readiness service mapping"
         )
-    policies: dict[str, _ServiceReadinessPolicy] = {}
+    contracts: dict[str, _ServiceReadinessContract] = {}
     for service_name in services:
         service = resolved_services.get(service_name)
         if not isinstance(service, Mapping):
             raise DeploymentContractError(
                 f"canonical resolved compose is missing readiness service: {service_name}"
             )
-        policies[service_name] = _service_readiness_policy(service_name, service)
-    return policies
+        contracts[service_name] = _ServiceReadinessContract(
+            policy=_service_readiness_policy(service_name, service),
+            container_name=_service_singleton_container_name(
+                service_name,
+                service,
+            ),
+        )
+    return contracts
+
+
+def _index_singleton_service_records(
+    records: Sequence[Mapping[str, Any]],
+    services: Sequence[str],
+    contracts: Mapping[str, _ServiceReadinessContract],
+    *,
+    allow_missing: bool,
+) -> dict[str, Mapping[str, Any]]:
+    expected = set(services)
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for record in records:
+        service_name = str(record["Service"])
+        if service_name not in expected:
+            raise DeploymentContractError(
+                f"compose readiness returned unexpected service: {service_name}"
+            )
+        grouped.setdefault(service_name, []).append(record)
+    duplicate = [
+        service_name
+        for service_name, service_records in grouped.items()
+        if len(service_records) != 1
+    ]
+    if duplicate:
+        raise DeploymentContractError(
+            "compose readiness returned duplicate singleton services: "
+            + ", ".join(duplicate)
+        )
+    missing = [service_name for service_name in services if service_name not in grouped]
+    if missing and not allow_missing:
+        raise DeploymentContractError(
+            "mandatory services are not running: " + ", ".join(missing)
+        )
+    indexed = {
+        service_name: service_records[0]
+        for service_name, service_records in grouped.items()
+    }
+    for service_name, record in indexed.items():
+        canonical_name = contracts[service_name].container_name
+        if canonical_name is not None and record["Name"] != canonical_name:
+            raise DeploymentContractError(
+                f"compose readiness container name drifted: {service_name}"
+            )
+    return indexed
 
 
 @dataclass(frozen=True)
@@ -4653,11 +4746,23 @@ class ComposeService:
         )
         if not ps_result["success"]:
             raise DeploymentContractError("cannot capture bootstrap service state")
+        records = self._compose_ps_records(
+            str(ps_result.get("stdout", "")),
+            allow_empty=True,
+        )
+        contracts = _resolved_service_readiness_contracts(
+            transaction.resolved,
+            services,
+        )
+        indexed = _index_singleton_service_records(
+            records,
+            services,
+            contracts,
+            allow_missing=True,
+        )
         return {
             str(record["Service"]): str(record.get("State", "")).strip().lower()
-            for record in self._compose_ps_records(
-                str(ps_result.get("stdout", "")), allow_empty=True
-            )
+            for record in indexed.values()
         }
 
     def _cleanup_bootstrap(
@@ -5073,7 +5178,14 @@ class ComposeService:
     ) -> list[Mapping[str, Any]]:
         try:
             parsed = json.loads(payload)
-            records = parsed if isinstance(parsed, list) else [parsed]
+            if isinstance(parsed, list):
+                records = parsed
+            elif isinstance(parsed, Mapping):
+                records = [parsed]
+            else:
+                raise DeploymentContractError(
+                    "docker compose ps returned invalid container metadata"
+                )
         except json.JSONDecodeError:
             try:
                 records = [json.loads(line) for line in payload.splitlines() if line.strip()]
@@ -5081,14 +5193,27 @@ class ComposeService:
                 raise DeploymentContractError(
                     "docker compose ps returned invalid container metadata"
                 ) from exc
-        valid_records = [
-            record
-            for record in records
-            if isinstance(record, Mapping) and record.get("Name") and record.get("Service")
-        ]
-        if not valid_records and not allow_empty:
+        validated: list[Mapping[str, Any]] = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise DeploymentContractError(
+                    "docker compose ps returned invalid container metadata"
+                )
+            for field_name in ("Name", "Service", "State"):
+                value = record.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    raise DeploymentContractError(
+                        "docker compose ps returned invalid container metadata"
+                    )
+            health = record.get("Health")
+            if health is not None and not isinstance(health, str):
+                raise DeploymentContractError(
+                    "docker compose ps returned invalid container metadata"
+                )
+            validated.append(record)
+        if not validated and not allow_empty:
             raise DeploymentContractError("docker compose ps returned no managed containers")
-        return valid_records
+        return validated
 
     def _require_services_ready(
         self,
@@ -5102,29 +5227,29 @@ class ComposeService:
         expected = list(dict.fromkeys(services))
         if not expected:
             return []
-        policies = _resolved_service_readiness_policies(
+        contracts = _resolved_service_readiness_contracts(
             transaction.resolved,
             expected,
         )
         if frozen_recovery:
             ps_result = self._run_frozen_recovery(
-                ["ps", "--format", "json", *expected],
+                ["ps", "--all", "--format", "json", *expected],
                 transaction=transaction,
             )
         else:
             ps_result = self.run(
-                ["ps", "--format", "json", *expected],
+                ["ps", "--all", "--format", "json", *expected],
                 transaction=transaction,
             )
         if not ps_result["success"]:
             raise DeploymentContractError("cannot inspect mandatory service readiness")
         records = self._compose_ps_records(str(ps_result.get("stdout", "")))
-        by_service = {str(record["Service"]): record for record in records}
-        missing = [service for service in expected if service not in by_service]
-        if missing:
-            raise DeploymentContractError(
-                "mandatory services are not running: " + ", ".join(missing)
-            )
+        by_service = _index_singleton_service_records(
+            records,
+            expected,
+            contracts,
+            allow_missing=False,
+        )
         not_ready: list[str] = []
         for service in expected:
             record = by_service[service]
@@ -5134,7 +5259,7 @@ class ComposeService:
                 not_ready.append(service)
                 continue
             if (
-                policies[service] is _ServiceReadinessPolicy.HEALTHY
+                contracts[service].policy is _ServiceReadinessPolicy.HEALTHY
                 and health != "healthy"
             ):
                 not_ready.append(service)

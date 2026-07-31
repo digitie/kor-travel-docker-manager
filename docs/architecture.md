@@ -87,8 +87,9 @@ graph TD
 - **초기화 단계**: `db`는 database/role/schema 복구, `storage`는 RustFS bucket 복구, `geo`는 `kor-travel-geo` API/Web UI 실행과 원천 DB 적재 검증을 수행한다.
 - **배포 readiness**: compatible-pair transaction에 고정된 canonical resolved Compose를 정본으로
   service별 readiness를 파생한다. 활성 healthcheck가 있으면 `running + healthy`, 없거나 명시적으로
-  비활성화됐으면 `running`을 요구하며, 이름별 예외 목록이나 프로세스 생존만 보는 가짜 probe는 두지
-  않는다.
+  비활성화됐으면 `running`을 요구한다. `ps --all`의 service별 record는 정확히 하나여야 하고
+  canonical scale/replica와 container name도 singleton으로 검증한다. 이름별 예외 목록이나 프로세스
+  생존만 보는 가짜 probe는 두지 않는다.
 
 ### 2.3 API 엔드포인트 설계
 - `GET /api/v1/targets`: 앱 관점 target 목록 반환.
