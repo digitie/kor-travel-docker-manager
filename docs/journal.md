@@ -45,6 +45,11 @@ stopped+running duplicate를 거부했다. `down` 반환 코드와 사후 projec
 0개도 검증한다. 보강 focused unit `37 passed`, 필수 actual Docker gate `1 passed`, backend
 전체 `1,179 passed`다.
 
+같은 단일 리뷰어가 exact `fd61c16f`를 다시 검토해 이전 P1/P2가 모두 해소됐고 새 blocker가
+없다고 판정했다. 최종 판정은 `P0 0 / P1 0 / P2 0`, `ACCEPT FOR TESTS`이며 PR #91은
+draft/mergeable, 원격 check가 구성되지 않은 상태다. n150 mutation은 수행하지 않았고 부모
+작업의 read-only exact preflight와 별도 승인된 compatible-pair 실행만 남겼다.
+
 ## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
 
 T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`

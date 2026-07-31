@@ -1116,4 +1116,5 @@ resolved Compose에 명시되지 않으면 production readiness 정본으로 채
 
 ### 후속
 
-- (open) issue #90/T-047의 단일 적대적 리뷰·CI와 n150 read-only exact preflight를 완료한다.
+- (open) issue #90/T-047의 n150 read-only exact preflight와 별도 승인된 compatible-pair
+  실행을 완료한다. 단일 적대적 exact-head 리뷰는 `P0 0 / P1 0 / P2 0`으로 통과했다.

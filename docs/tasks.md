@@ -170,7 +170,7 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       duplicate/scale/name drift를 fail-close하고 mixed malformed payload도 한 건도 버리지 않는다.
       `KTDM_REQUIRE_DOCKER_INTEGRATION=1` 필수 gate는 Docker/image 부재를 skip하지 않으며,
       cleanup의 container/network/volume residue 0까지 검증한다.
-- [ ] backend 전체 pytest, Ruff, strict mypy, canonical Compose config, frontend
+- [x] backend 전체 pytest, Ruff, strict mypy, canonical Compose config, frontend
       type-check/build, 보안 감사를 통과하고 draft PR에 정확한 gate를 기록한다.
 - [ ] n150에서는 부모 에이전트가 read-only exact preflight를 재검증한 뒤에만 별도 승인된
       compatible-pair mutation을 수행한다.
