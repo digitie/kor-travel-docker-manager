@@ -42,7 +42,8 @@ residue를 검사하지 않는 증거 공백도 지적했다.
 준비한 뒤 immutable image ID를 Compose에 사용한다. 실제 scale 2에서 replica 하나를 stop해
 기본 `ps`가 running 하나만 숨겨 보이는 조건을 재현했고 새 `ps --all` 경로가
 stopped+running duplicate를 거부했다. `down` 반환 코드와 사후 project container/network/volume
-0개도 검증한다. 보강 focused unit `34 passed`, 필수 actual Docker gate `1 passed`다.
+0개도 검증한다. 보강 focused unit `37 passed`, 필수 actual Docker gate `1 passed`, backend
+전체 `1,179 passed`다.
 
 ## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
 
