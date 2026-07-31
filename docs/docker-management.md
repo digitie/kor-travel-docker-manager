@@ -452,7 +452,14 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
    reference를 덮어쓰지 않은 채 mutation 전에 중단한다. manifest commit 뒤 새 rollback 밖 tag의
    cleanup 실패는 commit된 runtime을 복구하지 않고 다음 pair mutation 전에 해소한다. explicit
    rollback과 최초 capture도 같은 retention 경계를 사용한다.
-2. 현재 active set과 공용 dependency·Map/PinVi UI·Dagster의 running/healthy를 확인한다. 현재 Map UI
+2. 현재 active set과 공용 dependency·Map/PinVi UI·Dagster가 canonical resolved Compose의
+   service별 readiness 계약을 만족하는지 확인한다. 활성 healthcheck가 있으면 `running + healthy`,
+   healthcheck가 없거나 명시적으로 비활성화됐으면 `running`을 요구한다. service 누락·종료,
+   선언된 healthcheck의 빈/`starting`/`unhealthy` 상태, malformed/모호한 healthcheck는 모두
+   mutation 전에 거부한다. 조회는 `ps --all`을 사용하고 canonical scale/`deploy.replicas`와
+   service별 runtime record를 정확히 singleton으로 고정한다. stopped/stale duplicate, 예상 밖
+   service, canonical `container_name` drift, payload의 malformed record는 정상 record가 함께
+   있어도 거부한다. 현재 Map UI
    container를 inspect해 username·hash·session secret이 frozen environment와 정확히 같은지 검증한 다음,
    login→`/ops/datasets`→logout→재차단 lifecycle을 통과해야 한다. 어느 단계든 실패하면 Docker mutation은
    0이며 기존 runtime도 중지하지 않는다. 통과하면 다섯 runtime을 함께 중지해 mixed set 노출을 막은 뒤
@@ -470,7 +477,7 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
    200인지 확인한다. owned fixture 취소는 409 `PIPELINE_CANCELLATION_IN_PROGRESS`,
    502 `DAGSTER_TERMINATE_FAILED`, 503 `DAGSTER_UNAVAILABLE` 중 status/code/details/retryability가 정확히
    일치하고 양의 `Retry-After`를 보존해야 한다. 429나 generic code는 실패다.
-4. 변경하지 않은 모든 필수 service가 계속 running/healthy인지 확인한 뒤 managed container를 `docker inspect`로
+4. 변경하지 않은 모든 필수 service가 같은 canonical readiness를 계속 만족하는지 확인한 뒤 managed container를 `docker inspect`로
    검사한다. Map API에는 Map 이름 세 개(read/cancel/required), PinVi API에는 대응 token 두 개만,
    Map UI에는 username·PBKDF2 hash·session secret 세 개만 존재해야 한다. runtime `.Config`의
    Env/Cmd/Entrypoint/Labels와 안전하게 순회할 수 있는 모든 scalar에서 confidential 이름·값을 찾고 각

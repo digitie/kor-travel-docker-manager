@@ -5988,7 +5988,7 @@ def test_runtime_secret_gate_rejects_duplicate_authorized_env() -> None:
         validate_runtime_secret_isolation(runtime, config)
 
 
-def test_mandatory_service_readiness_requires_running_and_canonical_health_without_all(
+def test_mandatory_service_readiness_uses_canonical_healthcheck_policy_with_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
@@ -6007,7 +6007,7 @@ def test_mandatory_service_readiness_requires_running_and_canonical_health_witho
                         "Service": "pinvi-api",
                         "Name": "pinvi-api-latest",
                         "State": "running",
-                        "Health": "healthy",
+                        "Health": "",
                     },
                 ]
             ),
@@ -6015,6 +6015,17 @@ def test_mandatory_service_readiness_requires_running_and_canonical_health_witho
     )
     monkeypatch.setattr(service, "run", run)
     transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "kor-travel-map-api": {
+                "container_name": "kor-travel-map-api-latest",
+                "healthcheck": {"test": ["CMD", "true"]},
+            },
+            "pinvi-api": {
+                "container_name": "pinvi-api-latest",
+            },
+        }
+    }
 
     records = service._require_services_ready(
         ["kor-travel-map-api", "pinvi-api"],
@@ -6023,8 +6034,7 @@ def test_mandatory_service_readiness_requires_running_and_canonical_health_witho
 
     assert len(records) == 2
     args = run.call_args.args[0]
-    assert args[:3] == ["ps", "--format", "json"]
-    assert "--all" not in args
+    assert args[:4] == ["ps", "--all", "--format", "json"]
 
 
 @pytest.mark.parametrize(
@@ -6071,12 +6081,327 @@ def test_mandatory_service_readiness_rejects_missing_exited_or_unhealthy(
         },
     )
     transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "kor-travel-map-api": {
+                "healthcheck": {"test": ["CMD", "true"]},
+            }
+        }
+    }
 
     with pytest.raises(DeploymentContractError):
         service._require_services_ready(
             ["kor-travel-map-api"],
             transaction=transaction,
         )
+
+
+@pytest.mark.parametrize(
+    "healthcheck",
+    [
+        {"disable": True},
+        {"test": ["NONE"]},
+    ],
+)
+def test_mandatory_service_readiness_accepts_running_with_disabled_healthcheck(
+    monkeypatch: pytest.MonkeyPatch,
+    healthcheck: dict[str, object],
+) -> None:
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "run",
+        lambda *_args, **_kwargs: {
+            **_success(["ps"]),
+            "stdout": json.dumps(
+                [
+                    {
+                        "Service": "worker",
+                        "Name": "worker-1",
+                        "State": "running",
+                        "Health": "",
+                    }
+                ]
+            ),
+        },
+    )
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "worker": {
+                "healthcheck": healthcheck,
+            }
+        }
+    }
+
+    records = service._require_services_ready(
+        ["worker"],
+        transaction=transaction,
+    )
+
+    assert [record["Service"] for record in records] == ["worker"]
+
+
+@pytest.mark.parametrize(
+    "healthcheck",
+    [
+        None,
+        {},
+        {"disable": "true"},
+        {"disable": True, "test": ["CMD", "true"]},
+        {"test": []},
+        {"test": ["NONE", "unexpected"]},
+        {"test": ["UNKNOWN", "true"]},
+    ],
+)
+def test_mandatory_service_readiness_rejects_ambiguous_canonical_healthcheck(
+    monkeypatch: pytest.MonkeyPatch,
+    healthcheck: object,
+) -> None:
+    service = ComposeService()
+    run = Mock()
+    monkeypatch.setattr(service, "run", run)
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "worker": {
+                "healthcheck": healthcheck,
+            }
+        }
+    }
+
+    with pytest.raises(DeploymentContractError, match="canonical readiness"):
+        service._require_services_ready(
+            ["worker"],
+            transaction=transaction,
+        )
+
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "service_spec",
+    [
+        {"scale": 0},
+        {"scale": 2},
+        {"scale": True},
+        {"container_name": None},
+        {"deploy": None},
+        {"deploy": []},
+        {"deploy": {"mode": "global"}},
+        {"deploy": {"replicas": 0}},
+        {"deploy": {"replicas": 2}},
+        {"deploy": {"replicas": True}},
+    ],
+)
+def test_mandatory_service_readiness_rejects_non_singleton_canonical_service(
+    monkeypatch: pytest.MonkeyPatch,
+    service_spec: dict[str, object],
+) -> None:
+    service = ComposeService()
+    run = Mock()
+    monkeypatch.setattr(service, "run", run)
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {"services": {"worker": service_spec}}
+
+    with pytest.raises(DeploymentContractError, match="canonical readiness"):
+        service._require_services_ready(
+            ["worker"],
+            transaction=transaction,
+        )
+
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "service_spec",
+    [
+        {"scale": 1},
+        {"deploy": {"replicas": 1}},
+        {"scale": 1, "deploy": {"mode": "replicated", "replicas": 1}},
+    ],
+)
+def test_mandatory_service_readiness_accepts_explicit_singleton_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    service_spec: dict[str, object],
+) -> None:
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "run",
+        lambda *_args, **_kwargs: {
+            **_success(["ps"]),
+            "stdout": json.dumps(
+                [
+                    {
+                        "Service": "worker",
+                        "Name": "worker-1",
+                        "State": "running",
+                        "Health": "",
+                    }
+                ]
+            ),
+        },
+    )
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {"services": {"worker": service_spec}}
+
+    records = service._require_services_ready(
+        ["worker"],
+        transaction=transaction,
+    )
+
+    assert [record["Name"] for record in records] == ["worker-1"]
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [
+            {
+                "Service": "worker",
+                "Name": "worker-1",
+                "State": "exited",
+                "Health": "",
+            },
+            {
+                "Service": "worker",
+                "Name": "worker-2",
+                "State": "running",
+                "Health": "",
+            },
+        ],
+        [
+            {
+                "Service": "worker",
+                "Name": "worker-1",
+                "State": "running",
+                "Health": "",
+            },
+            {
+                "Service": "unexpected",
+                "Name": "unexpected-1",
+                "State": "running",
+                "Health": "",
+            },
+        ],
+        [
+            {
+                "Service": "worker",
+                "Name": "not-the-canonical-name",
+                "State": "running",
+                "Health": "",
+            },
+        ],
+    ],
+)
+def test_mandatory_service_readiness_rejects_duplicate_unexpected_or_name_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    records: list[dict[str, str]],
+) -> None:
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "run",
+        lambda *_args, **_kwargs: {
+            **_success(["ps"]),
+            "stdout": json.dumps(records),
+        },
+    )
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {
+        "services": {
+            "worker": {
+                "container_name": "worker-1",
+            }
+        }
+    }
+
+    with pytest.raises(DeploymentContractError, match="readiness"):
+        service._require_services_ready(
+            ["worker"],
+            transaction=transaction,
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_record",
+    [
+        None,
+        "invalid",
+        {},
+        {"Name": "worker-1", "Service": "worker"},
+        {"Name": "worker-1", "Service": 1, "State": "running"},
+        {
+            "Name": "worker-1",
+            "Service": "worker",
+            "State": "running",
+            "Health": 1,
+        },
+    ],
+)
+def test_compose_ps_records_rejects_any_malformed_record_in_mixed_payload(
+    invalid_record: object,
+) -> None:
+    valid_record = {
+        "Name": "worker-1",
+        "Service": "worker",
+        "State": "running",
+        "Health": "",
+    }
+
+    with pytest.raises(DeploymentContractError, match="invalid container metadata"):
+        ComposeService._compose_ps_records(
+            json.dumps([valid_record, invalid_record]),
+        )
+
+
+def test_frozen_service_readiness_uses_all_and_rejects_duplicate_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    frozen_run = Mock(
+        return_value={
+            **_success(["ps"]),
+            "stdout": json.dumps(
+                [
+                    {
+                        "Service": "worker",
+                        "Name": "worker-1",
+                        "State": "exited",
+                        "Health": "",
+                    },
+                    {
+                        "Service": "worker",
+                        "Name": "worker-2",
+                        "State": "running",
+                        "Health": "",
+                    },
+                ]
+            ),
+        }
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", frozen_run)
+    run = Mock()
+    monkeypatch.setattr(service, "run", run)
+    transaction = Mock(spec=ComposeTransactionSnapshot)
+    transaction.resolved = {"services": {"worker": {}}}
+
+    with pytest.raises(DeploymentContractError, match="duplicate singleton"):
+        service._require_services_ready(
+            ["worker"],
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+
+    assert frozen_run.call_args.args[0] == [
+        "ps",
+        "--all",
+        "--format",
+        "json",
+        "worker",
+    ]
+    run.assert_not_called()
 
 
 def test_map_smoke_uses_exact_status_gates_without_returning_bodies() -> None:

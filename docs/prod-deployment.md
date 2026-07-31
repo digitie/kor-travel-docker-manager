@@ -251,7 +251,8 @@ build context가 exact Git worktree root이고 clean인지 검증한다. manager
 mutation 전에 중단한다.
 
 두 번째 명령은 host-wide lock 안에서
-현재 active set과 필수 서비스의 running/healthy를 확인한 다음 현재 Map UI container를 inspect해
+현재 active set과 필수 서비스가 frozen canonical resolved Compose의 service별 readiness를
+만족하는지 확인한 다음 현재 Map UI container를 inspect해
 username·hash·session secret이 frozen environment와 정확히 같은지 확인하고, login→보호 화면→logout→
 재차단 lifecycle을 통과한 뒤에만 다섯 runtime을 함께 중지한다. 이후 Map API, signed 권한
 smoke, Map UI·Dagster web·daemon, PinVi API, UI auth를 단계 실행한다. build/recreate는 `--no-deps`로
@@ -275,7 +276,13 @@ read 200 envelope·무토큰 401·존재하지 않는 import-job cancel 404·can
 503 `DAGSTER_UNAVAILABLE`와 canonical details/retryability/양의 `Retry-After`만 허용하고 429·generic 오류는
 거부한다. details의 canonical import root ID도 `KTDM_C6C_CANCEL_PROBE_JOB_ID`와 같아야 한다. 모든 중간 실패는 시작 시점 active pair를
 복구해 전체 계약을 재검사하며, 복구도 실패하면 다섯 runtime을 중지하고 operator 조치를 요구한다. 최종
-readiness는 `ps --all` 존재 여부가 아니라 모든 필수 service의 running/healthy 상태를 요구한다. runtime
+readiness는 `ps --all` 존재 여부나 모든 service에 일률적으로 `Health=healthy`를 요구하지 않는다.
+canonical healthcheck가 활성화된 service는 `running + healthy`, healthcheck가 없거나 Compose 표준으로
+비활성화된 service는 `running`을 요구한다. service 누락·종료, 선언된 healthcheck의 빈/`starting`/
+`unhealthy` 상태와 malformed/모호한 healthcheck는 모두 fail-close한다. readiness 조회는
+`ps --all`을 사용하고 canonical scale/`deploy.replicas`, service별 runtime record,
+`container_name`을 singleton exact 계약으로 검증한다. stopped/stale duplicate나 malformed/예상 밖
+record를 정상 record로 덮어쓰지 않는다. runtime
 inspect는 실제 값을 출력하지 않고 `.Config` 전체의 안전 scalar를 순회해 ops token이 두 API의 정확한
 Env path에만, Map UI username Env 이름과 exact 값이 Map UI의 정확한 path에 있는지 검사한다. hash·session
 secret과 평문 UI smoke 비밀번호가 허용 path 밖 어떤 container scalar에도 존재하면 실패한다.

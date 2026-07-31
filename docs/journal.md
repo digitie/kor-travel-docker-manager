@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
+
+production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,
+Concierge MCP·Scheduler·UI, Map Dagster daemon까지 일률적으로 `Health=healthy`를 요구해
+정상 `running` runtime을 mutation 전에 영구 차단하는 결함을 확인했다.
+
+ADR-27에 따라 frozen transaction의 canonical resolved Compose service spec에서 typed readiness
+policy를 직접 파생한다. 활성 healthcheck는 `running + healthy`, healthcheck가 없거나 Compose
+표준으로 비활성화됐으면 `running`을 요구한다. service 누락·종료, 선언된 healthcheck의 빈/
+`starting`/`unhealthy` 상태, malformed/모호한 정의는 Docker 조회 전 또는 mutation 전에
+fail-close한다. 이름별 예외 목록, image 상속 probe 추측, `kill -0 1` 같은 가짜 probe는 추가하지
+않았다.
+
+unit 회귀는 선언/미선언/비활성 healthcheck와 missing/exited/starting/unhealthy/malformed를
+고정했다. 로컬 `alpine:3.20`을 `pull_policy: never`로 사용하는 폐기형 실제 Compose에서는
+healthcheck가 healthy인 service와 healthcheck 없는 long-running service 조합이 통과하고 실제
+unhealthy service가 거부되는 것을 확인했다. focused 결과는 `14 passed`이며 변경 source/test
+Ruff도 통과했다.
+
+전체 backend `1,155 passed`, frontend `type-check`/production build, 공개 placeholder를 사용한
+canonical Compose `config --quiet`/resolved 22-service 분류도 통과했다. 저장소 전체 Ruff에는
+이번 변경과 무관한 `test_api.py`/`test_c6c_image_retention.py` import 정렬 6건, strict mypy에는
+`registry.py`의 기존 `no-any-return` 1건만 남았고, touched source/test에는 새 오류가 없다.
+추적 이슈는 #90이다.
+
+단일 적대 리뷰어의 exact `9759d969` 리뷰는 P1으로 기본 `compose ps`가 같은 service의 stopped
+replica를 숨기고 dict가 duplicate를 덮어쓰는 mutation 전 fail-open을 실제 Docker에서 재현했다.
+P2로 실제 Docker test가 clean runner에서 image 부재를 silent skip하고 `compose down` 실패와
+residue를 검사하지 않는 증거 공백도 지적했다.
+
+이를 반영해 normal/frozen recovery readiness는 모두 `ps --all`을 사용한다. canonical
+`scale`/`deploy.replicas`와 runtime record는 service별 exact singleton이며 canonical
+`container_name`도 exact 일치해야 한다. 예상 밖 service, duplicate, mixed malformed record는
+하나도 버리지 않고 전체 payload를 거부한다. 필수 실제 gate는
+`KTDM_REQUIRE_DOCKER_INTEGRATION=1`에서 Docker 부재를 실패로 만들고, image가 없으면 명시적으로
+준비한 뒤 immutable image ID를 Compose에 사용한다. 실제 scale 2에서 replica 하나를 stop해
+기본 `ps`가 running 하나만 숨겨 보이는 조건을 재현했고 새 `ps --all` 경로가
+stopped+running duplicate를 거부했다. `down` 반환 코드와 사후 project container/network/volume
+0개도 검증한다. 보강 focused unit `37 passed`, 필수 actual Docker gate `1 passed`, backend
+전체 `1,179 passed`다.
+
+같은 단일 리뷰어가 exact `fd61c16f`를 다시 검토해 이전 P1/P2가 모두 해소됐고 새 blocker가
+없다고 판정했다. 최종 판정은 `P0 0 / P1 0 / P2 0`, `ACCEPT FOR TESTS`이며 PR #91은
+draft/mergeable, 원격 check가 구성되지 않은 상태다. n150 mutation은 수행하지 않았고 부모
+작업의 read-only exact preflight와 별도 승인된 compatible-pair 실행만 남겼다.
+
 ## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
 
 T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`
