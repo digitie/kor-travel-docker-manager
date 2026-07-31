@@ -21,6 +21,7 @@ import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services import compose_service as compose_service_module
+from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     C6cDeploymentConfig,
@@ -1330,6 +1331,31 @@ def test_pair_entry_lock_rejects_transaction_env_path_drift(tmp_path: Path) -> N
             transaction_environment,
             snapshot,
         )
+
+
+def test_installed_manager_project_root_drives_compose_and_registry_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_root = tmp_path / "trusted-manager"
+    project_root.mkdir()
+    monkeypatch.setenv(
+        "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT",
+        str(project_root),
+    )
+
+    assert compose_service_module.get_project_root() == str(project_root)
+    assert compose_service_module.get_compose_path() == str(
+        project_root / "docker-compose.yml"
+    )
+    assert compose_service_module.get_env_path() == str(project_root / ".env")
+    assert compose_service_module.get_override_path() == str(
+        project_root / "docker-compose.override.yml"
+    )
+    assert registry_module.get_project_root() == str(project_root)
+    assert registry_module.get_targets_config_path() == str(
+        project_root / "config" / "docker-targets.yml"
+    )
 
 
 def test_pair_manifest_writer_creates_production_state_root_private(

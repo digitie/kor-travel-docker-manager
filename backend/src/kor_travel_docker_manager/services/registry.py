@@ -6,6 +6,9 @@ import yaml
 
 
 def get_project_root() -> str:
+    configured = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "").strip()
+    if configured:
+        return os.path.abspath(configured)
     current_dir = os.path.dirname(os.path.abspath(__file__))
     return os.path.abspath(os.path.join(current_dir, "../../../../"))
 

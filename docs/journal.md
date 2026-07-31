@@ -73,8 +73,14 @@ operation ID당 한 번만 보충하고, 실패한 rollback 시도는 재시도 
 남긴다. active runtime은 canonical service 집합·container name·healthy 상태·OCI source revision을
 모두 fail-close로 검증한다.
 
-최종 로컬 회귀는 C6c deployment 855건과 credential rotation 60건, touched Ruff·strict mypy·
-shell syntax를 통과했다. 실제 offline wheel과 launcher 설치는 disposable Linux 경계에서 확인한
+첫 disposable Linux 설치는 실제 wheel build/install과 `RECORD` 검증까지 통과한 뒤, installed
+package의 registry가 source-layout 상대 경로를 사용해 `.venv/lib/config/docker-targets.yml`을
+찾는 제품 경계 결함을 드러냈다. trusted launcher가 고정하는
+`KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`를 Compose와 registry의 공통 root resolver가 사용하도록
+바꿔 source checkout과 installed `/opt` layout을 같은 명시 root 계약으로 수렴시켰다.
+
+최종 로컬 회귀는 C6c deployment와 credential rotation 전체, touched Ruff·strict mypy·shell
+syntax를 통과했다. 실제 offline wheel과 launcher 설치도 disposable Linux 경계에서 다시 확인한
 뒤 같은 exact SHA의 단일 적대 재리뷰와 n150 검증으로 이어간다.
 
 ---
