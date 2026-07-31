@@ -79,9 +79,12 @@ package의 registry가 source-layout 상대 경로를 사용해 `.venv/lib/confi
 `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`를 Compose와 registry의 공통 root resolver가 사용하도록
 바꿔 source checkout과 installed `/opt` layout을 같은 명시 root 계약으로 수렴시켰다.
 
-최종 로컬 회귀는 C6c deployment와 credential rotation 전체, touched Ruff·strict mypy·shell
-syntax를 통과했다. 실제 offline wheel과 launcher 설치도 disposable Linux 경계에서 다시 확인한
-뒤 같은 exact SHA의 단일 적대 재리뷰와 n150 검증으로 이어간다.
+최종 로컬 회귀는 C6c deployment 856건과 credential rotation 60건, touched Ruff·strict mypy·
+shell syntax를 통과했다. 수정한 exact clean Git tree로 Debian disposable container에서
+root-owned offline wheelhouse를 새로 만들고 실제 Poetry backend wheel을 build/install했다.
+설치된 `RECORD`의 유일한 site-packages 밖 항목이 exact `.venv/bin/ktdctl`임을 확인하고,
+release manifest↔source revision, `/opt` installed config, trusted launcher `--help`까지 통과했다.
+이 checkpoint를 push한 뒤 같은 단일 적대 리뷰어의 exact-head 재리뷰와 n150 검증으로 이어간다.
 
 ---
 
