@@ -4,6 +4,156 @@
 
 ---
 
+## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
+
+T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`
+입력 경계와 Map UI PBKDF2 hash 정본을 먼저 고정하고, 이후 같은 PR에 production
+transaction·journal/recovery·UI-only recreate 검증을 누적한다.
+
+rebase 후 hardening checkpoint에서 production C6c/rotation mutation을 root-only
+`/run/lock/kor-travel-docker-manager/global-mutation.lock` hardened lock으로 통일했다.
+Map UI rotation은 lock 내부에서 canonical `.env`를 다시 읽어 pre-lock 값과 SHA/hash를
+재검증하고, journal/backup/frozen compose는 root-owned private file 검증을 통과한 경우에만
+읽거나 정리한다. source snapshot 배포는 root-owned/non-writable checkout과 root-owned
+`.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 요구하며, root process가
+user-owned `.git/config`를 실행하지 않도록 git 명령 검증을 제거했다.
+
+추가 hardening에서 `.env` owner를 `SUDO_UID`(없으면 root direct는 root, non-root 테스트는 현재
+UID)로 산출한 뒤 최초 read/re-read/replace/recovery까지 같은 expected owner로 전파했다. frozen
+compose 생성은 현재 `.env`와 root-owned compose evidence를 전후 재검증하고, 기존 C6c
+raw/resolved protected value·system bind·secret isolation validator를 통과한 resolved 문서만
+UI recreate와 rollback recovery에 사용한다.
+
+두 번째 rereview checkpoint에서는 production state를 env-owner `$HOME` 추론에서 FHS 정본으로
+clean-cut했다. C6c pair와 Map UI rotation은 모두 `/run/lock/kor-travel-docker-manager/global-mutation.lock`
+및 `/var/lib/kor-travel-docker-manager/<compose-project>/compatible-pair-v4.json`를 같은
+`c6c_state_paths()` 결과로 사용한다. root 실행은 user-writable venv를 직접 `sudo`하지 않고,
+root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate` → root-owned `/opt/kor-travel-docker-manager`
+isolated venv/package 경계를 통해서만 rotation module을 import한다.
+
+rollback/recovery journal은 fresh recovery session으로 생기는 세 번째 `.env` SHA를
+`recovery_env_sha256`으로 기록하고 `rollback_prepared`→`rollback_recreate_started`→
+`rollback_verified`→`rolled_back` phase를 둔다. pending recovery는 pre-rotation UI stable
+signature와 non-UI snapshot을 journal evidence로 읽어 active image, UI health/auth, non-UI
+불변성을 재검증하고, terminal cleanup에서 backup·journal·frozen compose를 함께 정리한다.
+
+세 번째 hardening에서는 journal evidence를 secret-free로 재정의했다. UI runtime은 stable canonical
+bytes의 SHA-256만 저장하고, non-UI runtime은 service별 allowlist metadata digest만 저장한다.
+rollback은 root-private `env.recovery` bytes를 먼저 fsync한 뒤 journal에 SHA를 기록하고, 재실행은
+old/new/recovery SHA 각각에서 같은 recovery bytes로만 resume한다. `committed`/`rolled_back` terminal
+journal은 cleanup 중 backup·recovery artifact가 이미 지워진 crash도 current terminal SHA와 runtime/auth
+검증 후 같은 operation audit을 보충하고 남은 artifact를 정리한다. env_new/committed crash 뒤 같은
+stdin 두 줄을 replay해도 pending journal recovery가 일반 current-hash 검증보다 먼저 실행되도록 했다.
+
+trusted root launcher는 `/usr/bin/python3 -I -S`로 wheel `RECORD`와 root-owned site-packages/package를
+검증한 뒤에만 venv Python을 exec한다. venv `bin/python` symlink는 canonical root-owned
+`/usr/bin/python3.x` target chain으로 resolve될 때만 허용한다. 추가로
+`scripts/install-ktdm-trusted-release`를 도입해 clean checkout의 tracked `git archive`를 root-owned
+staging에 푼다. git archive는 source owner 권한으로 만들고, root는 root-owned/non-writable offline
+wheelhouse만 `pip --no-index --find-links`로 소비한다. 기존 또는 명시 deployment-owner 0600 `.env`를
+보존하며, staging exact source에서 backend wheel을 offline build해 설치한다. isolated wheel venv·
+wheelhouse SHA·backend wheel SHA·wheel `RECORD` SHA·`.ktdm-release-manifest.json`을 만든 뒤
+`/opt/kor-travel-docker-manager` activation/rollback 및 launcher self-check까지 이어지게 했다. launcher
+self-check 실패 시에도 새 app root와 새 launcher를 제거하고 이전 app root와 launcher bytes/mode를 복구한다.
+
+단일 적대 리뷰어의 세 번째 exact-head 리뷰는 production lock 선택, state root mode, active pair
+provenance, 실제 wheel `RECORD`, wheelhouse 신뢰 시점, recovery file/journal crash window를
+P0으로 지적했다. 이를 반영해 pair deploy/capture/rollback과 rotation은 canonical `.env`의
+identity·bytes로 같은 lock을 선택하고 lock 획득 직후 transaction snapshot과 다시 결박한다.
+`.env`가 없었다가 생기거나 경로·inode·bytes가 바뀌면 mutation 전에 중단한다. production state
+root는 공용 primitive가 root-owned 0700으로 만들며, frozen rotation Compose에는 active pair의
+다섯 immutable image ID와 Map/PinVi revision·production provenance를 모두 주입한다.
+
+trusted installer는 canonical root-owned wheelhouse의 모든 ancestor와 각 wheel의
+owner/mode/nlink/inode/digest를 root `pip` 실행 전에 snapshot하고 각 소비 단계 뒤에 exact
+재검증한다. 실제 Poetry console script의 `../../../bin/ktdctl`은 exact venv entrypoint 하나만
+허용하고 나머지 `RECORD` escape는 거부한다. recovery는 `rollback_preparing` journal을 먼저
+fsync하고 orphan recovery와 양방향으로 수렴하며, foreign `.env`는 덮지 않는다. terminal audit은
+operation ID당 한 번만 보충하고, 실패한 rollback 시도는 재시도 가능한 non-terminal evidence로
+남긴다. active runtime은 canonical service 집합·container name·healthy 상태·OCI source revision을
+모두 fail-close로 검증한다.
+
+첫 disposable Linux 설치는 실제 wheel build/install과 `RECORD` 검증까지 통과한 뒤, installed
+package의 registry가 source-layout 상대 경로를 사용해 `.venv/lib/config/docker-targets.yml`을
+찾는 제품 경계 결함을 드러냈다. trusted launcher가 고정하는
+`KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`를 Compose와 registry의 공통 root resolver가 사용하도록
+바꿔 source checkout과 installed `/opt` layout을 같은 명시 root 계약으로 수렴시켰다.
+
+네 번째 exact-head 적대적 리뷰는 DockerService의 네 일반 mutation 진입점이 production lock을
+선택한 뒤 새 effective environment를 별도로 캡처해 다른 transaction을 실행할 수 있는 결함,
+installer가 고정 revision 대신 움직이는 `HEAD`를 archive하는 결함, installer가 rotation과 다른
+lock 경계에서 오래된 `.env`를 활성화할 수 있는 결함, prepared/orphan recovery audit의 cleanup
+crash 재시도 중복을 차단점으로 판정했다. DockerService는 공용 lock snapshot context가 반환한
+identity·bytes와 실제 environment transaction을 exact 결박하도록 네 진입점을 통일했다.
+
+trusted installer는 처음 읽은 exact commit SHA로 `diff-index`와 `git archive`를 모두 수행한다.
+또한 source `.env`의 inode·mode·owner·size·mtime/ctime·SHA snapshot을 잡은 뒤
+`/run/lock/kor-travel-docker-manager/global-mutation.lock`을 root-only/nonblocking 방식으로
+획득하고, lock 안에서 같은 snapshot임을 재검증한다. 그 lock은 wheel build부터 app root·launcher
+activation/rollback이 끝날 때까지 inherited descriptor로 유지되어 rotation과 두 installer의
+경쟁을 모두 차단한다. terminal audit은 `committed`/`rolled_back`/`aborted` 세 상태로 clean-cut하고,
+prepared residue와 orphan backup은 결정적 operation identity로 audit write 뒤 cleanup이
+중단되어도 한 terminal result만 남긴다. staging venv의 generated `ktdctl`은 canonical `/opt`
+Python과 project root를 고정하는 entrypoint로 다시 만들고 해당 wheel `RECORD` digest·size를
+재산출해, atomic activation 뒤에도 직접 CLI와 trusted rotation launcher가 모두 같은 installed
+root를 사용한다.
+
+다섯 번째 exact-head 적대적 리뷰는 installer가 `.env` snapshot 검증 뒤 경로를 다시 열어
+복사하는 TOCTOU, 일반 config mutation이 lock 밖에서 읽은 stale secret interpolation baseline을
+사용하는 문제, 새 release 검증 뒤 이전 backup 삭제 실패가 EXIT rollback trap을 다시 발동할 수
+있는 문제를 차단점으로 판정했다. installer는 전역 lock 안에서 canonical `.env`를
+`O_NOFOLLOW` read-only FD로 한 번 열고 identity·mode·owner·SHA를 결박한 뒤, root-only 0700
+staging에 그 descriptor의 exact bytes만 복사하도록 바꿨다. 경로와 descriptor는 copy 전후에
+각각 재검증하고 installed `.env`도 owner/mode/nlink/size/SHA를 확인한다.
+
+DockerService는 lock 안 exact Compose transaction bytes에서 대상 service의 environment baseline을
+다시 읽어 secret interpolation 의미를 재검증한 뒤에만 candidate를 만든다. release commit은
+검증된 active app/launcher evidence를 durable `committed` state로 먼저 fsync하고, EXIT cleanup도
+그 state를 보면 rollback 대신 active를 보존한 채 post-commit GC만 수행한다. 실패 경로는 이전
+app/launcher 복구가 완결되지 않으면 state와 유일한 rollback residue를 root-only 경로에 보존한다.
+
+여섯 번째 exact-head 적대적 리뷰는 보존한 PID-scoped app/launcher residue가 다음 실행의 recovery
+state와 연결되지 않는 문제와, launcher destination이 directory일 때 `mv -f`가 backup을 그 안으로
+옮기고 성공으로 오인하는 두 P1을 재현했다. installer artifact를 PID 경로에서 host-global 고정
+경로로 clean-cut하고, root-private `trusted-release-transaction.json`에 old app/launcher exact
+evidence, target revision, 새 launcher SHA와 `preparing|prepared|committed` phase를 atomic fsync한다.
+전역 lock 획득 직후 stale state를 먼저 reconcile하므로 non-committed는 old app/launcher exact
+rollback, committed는 active revision/launcher digest 검증 뒤 idempotent GC를 끝내야 새 install을
+시작할 수 있다. state가 없는데 artifact가 있거나 legacy PID/foreign collision이면 mutation 전에
+fail-close한다. 새 app root의 dev/ino도 activation 전에 기록하므로 cleanup이 일부 파일을 지운 뒤
+중단돼 manifest가 불완전해져도 transaction이 만든 exact directory만 제거하고 old rollback을
+복원하며, 같은 경로의 foreign directory는 삭제하지 않는다. `preparing`은 activation artifact가
+생기기 전 phase라 canonical app/env가 정상 운영 변경으로 달라져 staging 검증이 중단돼도
+staging/archive/state만 폐기하고 active baseline을 건드리지 않은 채 다음 실행에서 다시 snapshot한다.
+`committed` GC도 old rollback의 recorded root dev/ino를 사용하므로 이전 GC가 old tree 내부를
+부분 삭제해 revision/manifest evidence가 사라진 뒤 중단돼도 같은 transaction-owned directory만
+계속 삭제해 수렴하고, 다른 inode로 바뀐 경로는 fail-close한다. 실제 gate에서 old rollback 하위
+mount로 GC를 중단해 `.ktdm-source-revision`이 이미 사라진 committed residue를 만든 뒤, mount 해제
+후 재실행이 traceback 없이 남은 old tree를 제거하고 새 install까지 residue 0으로 완료했다.
+
+launcher installer도 고정 root-owned staging file, destination regular-file shape 검증,
+`mv -T`, 설치 후 owner/mode/nlink/SHA 재검증으로 바꿨다. disposable Debian 실제 gate에서 정상
+offline build/install, committed GC 중 rollback mount failure→state/residue 보존→unmount 후 재실행
+자동 GC, launcher destination directory collision→old app/launcher residue 보존→collision 제거 후
+재실행 exact 복구·설치, 새 app 하위 mount로 cleanup을 부분 삭제 상태에서 중단→mount 해제 후
+기록한 root dev/ino로 transaction-owned partial tree만 제거하고 old release 복구·재설치를 모두
+통과했다.
+
+최종 로컬 회귀는 backend 1,146건, C6c deployment 856건, Docker config 93건, credential
+rotation 64건과 touched Ruff·strict mypy·shell syntax를 통과했다. 수정한 exact clean Git tree로
+Debian disposable container에서
+root-owned offline wheelhouse를 새로 만들고 실제 Poetry backend wheel을 build/install했다.
+설치된 `RECORD`의 유일한 site-packages 밖 항목이 exact `.venv/bin/ktdctl`임을 확인하고,
+release manifest↔source revision, canonical `/opt` installed `ktdctl`, installed config,
+trusted launcher `--help`까지 통과했다. 별도 실제 process contention gate에서 같은 global lock을
+다른 process가 보유하면 installer가 source/archive/wheel/app mutation 전에 즉시 중단하는 것도
+확인했다. held `.env` FD 보강 뒤에도 동일한 실제 Debian offline build/install을 다시 통과했고,
+staging 중 env-owner가 canonical 경로를 다른 inode로 교체하는 공격을 주입했을 때 active app을
+만들지 않고 실패하는 actual TOCTOU gate도 통과했다.
+이 checkpoint를 push한 뒤 같은 단일 적대 리뷰어의 exact-head 재리뷰와 n150 검증으로 이어간다.
+
+---
+
 ## 2026-07-31 (T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거, issue #88)
 
 kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행하는데, `_run_up_stage`가

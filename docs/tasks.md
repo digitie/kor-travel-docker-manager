@@ -14,7 +14,7 @@
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
 | **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | 구현·기존 live 충족, T-045 회전과 새 official deploy 미완료 |
-| **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[ ]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
+| **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[/]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
 | **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
 
 ---
@@ -60,19 +60,55 @@
 
 - [ ] production에서만 실행되는 전용 `ktdctl` command를 추가하고 C6c 전역 lock,
       canonical manager checkout/Compose/`.env`, 실행 중 Map UI identity와 immutable image를
-      mutation 전에 fail-closed로 검증한다.
+      mutation 전에 fail-closed로 검증한다. production C6c/rotation mutation은
+      `/run/lock/kor-travel-docker-manager/global-mutation.lock`의 root-only hardened lock과
+      `/var/lib/kor-travel-docker-manager/<compose-project>/compatible-pair-v4.json` manifest를
+      공유한다. production source는 root-owned/non-writable checkout과 root-owned
+      `/opt/kor-travel-docker-manager` package, `/usr/local/sbin/ktdctl-map-ui-auth-rotate`
+      trusted launcher, root-owned `.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 제공하며,
+      `KTDM_MANAGER_SOURCE_REVISION`은 있을 때 파일과 일치해야 하는 보조 검증값이다. trusted release
+      설치는 source owner 권한에서 clean checkout의 tracked `git archive`를 만들고 root-owned offline
+      wheelhouse만 소비한다. staging exact source에서 backend wheel을 offline build해 설치하고, 기존
+      또는 명시 deployment-owner 0600 `.env`를 보존한 뒤 isolated wheel venv, wheelhouse SHA, backend
+      wheel SHA, wheel `RECORD` SHA, release manifest revision을 결박해 app root와 launcher까지
+      activation/rollback 가능한 제품 경로로 제공한다. wheelhouse는 root `pip`가 읽기 전에 ancestor와
+      각 wheel의 owner/mode/nlink/inode/digest를 snapshot하고 각 소비 단계 뒤 exact 재검증한다.
+      installer도 rotation/pair workflow와 같은 host-global lock을 source `.env` snapshot부터 app root·
+      launcher activation/rollback 종료까지 소유한다. lock 전후 `.env` identity·mode·owner·SHA가
+      달라지면 설치를 시작하지 않는다. lock 안에서 canonical `.env`를 `O_NOFOLLOW` read-only FD로
+      한 번 열어 exact bytes를 끝까지 보유하고, root-only 0700 staging에는 그 FD에서만 복사한다.
+      따라서 검증 뒤 경로를 바꾸거나 같은 경로에 다른 inode를 끼워도 활성화할 수 없다. 처음 고정한
+      source revision exact commit만 archive·기록한다. PID별 임시 경로 대신 host-global 고정
+      transaction state가 old app/launcher evidence와 target revision, 새 launcher digest,
+      `preparing|prepared|committed` phase를 fsync한다. 다음 실행은 lock 안에서 non-committed
+      transaction을 exact rollback하고 committed cleanup residue를 idempotent GC한 뒤에만 새 설치를
+      허용하며, 분류할 수 없는 legacy/foreign residue는 mutation 전에 fail-close한다.
+      staging venv의 `ktdctl`은 canonical installed root를 고정한 실행 가능한 entrypoint로 만들고
+      바뀐 bytes를 wheel `RECORD` digest·size와 release manifest에 다시 결박한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
       environment·Docker metadata에 노출하지 않는다. PBKDF2 format과 평문↔hash 일치를
       독립 검증하고 hash와 session secret은 항상 함께 회전한다.
-- [ ] canonical `.env`의 Map UI hash/session 두 항목만 원자 교체하고 같은 immutable image로
-      Map UI service만 `--no-deps --force-recreate --no-build --pull never --wait` 재생성한다.
-      다른 project container와 manifest/image generation은 변경하지 않는다.
+- [ ] canonical `.env`의 manager smoke 평문 password, Map UI PBKDF2 hash, session secret
+      세 항목만 원자 교체하고 같은 immutable image로 Map UI service만
+      `--no-deps --force-recreate --no-build --pull never --wait` 재생성한다.
+      frozen compose는 mutation/rollback 모두 기존 C6c raw/resolved protected value·system bind·
+      secret isolation 검증과 compatible-pair image/provenance/container-name 검증을 통과한 동일
+      resolved 문서만 사용한다. 다른 project container와 manifest/image generation은 변경하지 않는다.
 - [ ] 새 login→`/ops/datasets` 보호 GET→logout→재차단, 회전 전 session 거부를 검증한 뒤
-      durable audit를 commit한다. forward 실패 시 이전 hash/image와 새로운 recovery session
-      secret으로 UI를 복구해 partial-forward session까지 무효화하고 실제 복구 상태를 정직하게
-      기록한다.
+      durable journal terminal state를 audit보다 먼저 commit한다. forward 실패 시 operator가 입력해
+      hash와 대조 완료한 current password만 메모리에서 auth 검증에 쓰고, 이전 hash/image와 새로운
+      recovery session secret으로 UI를 복구해 partial-forward session까지 무효화한다. rollback은
+      `rollback_preparing` journal을 먼저 fsync한 뒤 root-private `env.recovery`를 생성하고, 어느
+      한쪽만 남아도 expected bytes로 양방향 수렴한다. journal은 raw Docker inspect나 secret-bearing
+      env를 저장하지 않고 UI/non-UI evidence를 digest만으로 보존한다. crash 재실행 시
+      old/new/recovery SHA 각각을 phase matrix로 resume하고 foreign `.env`는 덮지 않으며 terminal
+      audit·private artifact는 operation ID 기준 idempotent하게 정리한다. terminal result vocabulary는
+      `committed`/`rolled_back`/`aborted`로 제한하고 prepared/orphan abort도 결정적 operation ID로
+      cleanup crash 재실행에서 한 번만 기록한다.
 - [ ] crash/signal/재실행 recovery journal, foreign container/name collision, `.env` drift,
-      Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다.
+      Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다. 일반 container config
+      변경은 lock 밖 preflight 결과를 신뢰하지 않고 lock 안에서 캡처한 exact Compose baseline으로
+      secret interpolation 의미를 다시 검증한 뒤에만 candidate를 만든다.
 - [ ] 단일 적대적 리뷰, focused/backend 전체 테스트, Ruff, strict mypy, canonical Compose gate,
       CI green을 통과한 별도 코드 PR을 병합한다.
 - [ ] n150에서 전용 command로 실제 회전하고 official compatible-pair deploy, C6c principal

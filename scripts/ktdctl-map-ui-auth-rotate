@@ -1,0 +1,182 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+APP_ROOT="/opt/kor-travel-docker-manager"
+LAUNCHER_PATH="/usr/local/sbin/ktdctl-map-ui-auth-rotate"
+PYTHON_BIN="${APP_ROOT}/backend/.venv/bin/python"
+REVISION_FILE="${APP_ROOT}/.ktdm-source-revision"
+RELEASE_MANIFEST="${APP_ROOT}/.ktdm-release-manifest.json"
+
+die() {
+  echo "$1" >&2
+  exit 126
+}
+
+require_root_owned_non_writable() {
+  local path="$1"
+  local kind="$2"
+  if [[ -L "${path}" ]]; then
+    die "trusted path must not be a symlink: ${path}"
+  fi
+  if [[ "${kind}" == "dir" && ! -d "${path}" ]]; then
+    die "trusted path is not a directory: ${path}"
+  fi
+  if [[ "${kind}" == "file" && ! -f "${path}" ]]; then
+    die "trusted path is not a file: ${path}"
+  fi
+  local uid mode links
+  uid="$(/usr/bin/stat -c '%u' "${path}")"
+  mode="$(/usr/bin/stat -c '%a' "${path}")"
+  links="$(/usr/bin/stat -c '%h' "${path}")"
+  if [[ "${uid}" != "0" ]]; then
+    die "trusted path is not root-owned: ${path}"
+  fi
+  if (( (8#${mode} & 022) != 0 )); then
+    die "trusted path is group/world writable: ${path}"
+  fi
+  if [[ "${kind}" == "file" && "${links}" != "1" ]]; then
+    die "trusted file must not have hardlinks: ${path}"
+  fi
+}
+
+require_trusted_python() {
+  local path="$1"
+  if [[ ! -e "${path}" ]]; then
+    die "trusted Python is missing: ${path}"
+  fi
+  local current="${path}"
+  local depth=0
+  while [[ -L "${current}" ]]; do
+    local uid target next
+    uid="$(/usr/bin/stat -c '%u' "${current}")"
+    if [[ "${uid}" != "0" ]]; then
+      die "trusted Python symlink is not root-owned: ${current}"
+    fi
+    target="$(/usr/bin/readlink "${current}")"
+    if [[ -z "${target}" ]]; then
+      die "trusted Python symlink target is empty: ${current}"
+    fi
+    if [[ "${target}" = /* ]]; then
+      next="${target}"
+    else
+      next="$(/usr/bin/dirname "${current}")/${target}"
+    fi
+    current="${next}"
+    depth=$((depth + 1))
+    if (( depth > 8 )); then
+      die "trusted Python symlink chain is too deep"
+    fi
+  done
+  local canonical
+  canonical="$(/usr/bin/readlink -f "${path}")"
+  if [[ ! "${canonical}" =~ ^/usr/bin/python3(\.[0-9]+)?$ ]]; then
+    die "trusted Python must resolve to /usr/bin/python3.x"
+  fi
+  require_root_owned_non_writable "${canonical}" file
+}
+
+if [[ "$(/usr/bin/id -u)" != "0" ]]; then
+  die "Map UI auth rotation launcher must run as root"
+fi
+
+for trusted_dir in /usr /usr/local /usr/local/sbin /opt "${APP_ROOT}" \
+  "${APP_ROOT}/backend" "${APP_ROOT}/backend/.venv" "${APP_ROOT}/backend/.venv/bin"; do
+  require_root_owned_non_writable "${trusted_dir}" dir
+done
+for trusted_file in "${LAUNCHER_PATH}" "${REVISION_FILE}" "${RELEASE_MANIFEST}"; do
+  require_root_owned_non_writable "${trusted_file}" file
+done
+require_trusted_python "${PYTHON_BIN}"
+
+revision="$(/usr/bin/tr -d '\n\r' < "${REVISION_FILE}")"
+if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  die "manager source revision evidence is invalid"
+fi
+
+shopt -s nullglob
+package_dirs=("${APP_ROOT}"/backend/.venv/lib/python*/site-packages/kor_travel_docker_manager)
+dist_infos=("${APP_ROOT}"/backend/.venv/lib/python*/site-packages/kor_travel_docker_manager_backend-*.dist-info)
+shopt -u nullglob
+if [[ "${#package_dirs[@]}" != "1" || "${#dist_infos[@]}" != "1" ]]; then
+  die "trusted manager package installation is ambiguous"
+fi
+PACKAGE_DIR="${package_dirs[0]}"
+DIST_INFO="${dist_infos[0]}"
+RECORD_FILE="${DIST_INFO}/RECORD"
+require_root_owned_non_writable "${PACKAGE_DIR}" dir
+require_root_owned_non_writable "${DIST_INFO}" dir
+require_root_owned_non_writable "${RECORD_FILE}" file
+
+/usr/bin/python3 -I -S - "${PACKAGE_DIR}" "${DIST_INFO}" "${REVISION_FILE}" "${RELEASE_MANIFEST}" <<'PY'
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+package_dir = pathlib.Path(sys.argv[1]).resolve(strict=True)
+dist_info = pathlib.Path(sys.argv[2]).resolve(strict=True)
+revision_file = pathlib.Path(sys.argv[3]).resolve(strict=True)
+release_manifest = pathlib.Path(sys.argv[4]).resolve(strict=True)
+site_packages = dist_info.parent
+record = dist_info / "RECORD"
+venv_root = site_packages.parent.parent.parent
+expected_entrypoint = venv_root / "bin" / "ktdctl"
+
+revision = revision_file.read_text(encoding="utf-8").strip()
+manifest = json.loads(release_manifest.read_text(encoding="utf-8"))
+if manifest.get("manager_source_revision") != revision:
+    raise SystemExit("release manifest revision does not match source evidence")
+expected_record_hash = manifest.get("wheel_record_sha256")
+
+def assert_locked(path: pathlib.Path) -> None:
+    st = path.lstat()
+    if st.st_uid != 0 or (stat.S_IMODE(st.st_mode) & 0o022):
+        raise SystemExit(f"trusted package path is writable or not root-owned: {path}")
+    if path.is_file() and st.st_nlink != 1:
+        raise SystemExit(f"trusted package file has hardlinks: {path}")
+
+for path in (site_packages, package_dir, dist_info, record):
+    assert_locked(path)
+if hashlib.sha256(record.read_bytes()).hexdigest() != expected_record_hash:
+    raise SystemExit("wheel RECORD digest does not match release manifest")
+seen_package = False
+with record.open(newline="", encoding="utf-8") as handle:
+    for row in csv.reader(handle):
+        if len(row) < 3:
+            raise SystemExit("wheel RECORD row is invalid")
+        relative, digest, _size = row[:3]
+        target = (site_packages / relative).resolve(strict=True)
+        try:
+            target.relative_to(site_packages)
+        except ValueError as exc:
+            if target != expected_entrypoint:
+                raise SystemExit("wheel RECORD escapes site-packages") from exc
+        if target == package_dir or package_dir in target.parents:
+            seen_package = True
+        assert_locked(target)
+        if not digest:
+            continue
+        algorithm, separator, encoded = digest.partition("=")
+        if separator != "=" or algorithm != "sha256":
+            raise SystemExit("wheel RECORD digest must be sha256")
+        actual = hashlib.sha256(target.read_bytes()).digest()
+        expected = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        if actual != expected:
+            raise SystemExit(f"wheel RECORD digest mismatch: {relative}")
+if not seen_package:
+    raise SystemExit("wheel RECORD does not cover manager package")
+PY
+
+export KTDM_TRUSTED_ROOT_LAUNCHER="ktdctl-map-ui-auth-rotate-v1"
+export KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${APP_ROOT}"
+
+exec "${PYTHON_BIN}" -I -m kor_travel_docker_manager.cli map-ui-auth rotate "$@" --project-root "${APP_ROOT}"

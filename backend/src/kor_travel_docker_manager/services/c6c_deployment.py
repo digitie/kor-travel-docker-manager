@@ -9,18 +9,19 @@ import json
 import os
 import re
 import stat
+import subprocess
 import tempfile
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 
 import yaml
@@ -43,6 +44,11 @@ _MAP_RUNTIME_CONTAINERS = {
     _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
     _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
 }
+_C6C_GLOBAL_MUTATION_LOCK = Path(
+    "/run/lock/kor-travel-docker-manager/global-mutation.lock"
+)
+_DEFAULT_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
+_C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
@@ -466,6 +472,21 @@ class C6cBuildProvenance:
         }
 
 
+def compatible_pair_image_environment(pair: CompatibleImagePair) -> dict[str, str]:
+    """Active/rollback manifest pair를 compose override environment로 변환한다."""
+
+    return {
+        "KOR_TRAVEL_MAP_API_IMAGE": pair.map_image_id,
+        "KOR_TRAVEL_MAP_UI_IMAGE": pair.map_ui_image_id,
+        "KOR_TRAVEL_MAP_DAGSTER_IMAGE": pair.map_dagster_image_id,
+        "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE": pair.map_dagster_daemon_image_id,
+        "KOR_TRAVEL_MAP_GIT_COMMIT": pair.map_source_revision,
+        "PINVI_API_IMAGE": pair.pinvi_image_id,
+        "PINVI_SOURCE_REVISION": pair.pinvi_source_revision,
+        "PINVI_BUILD_ENVIRONMENT": "production",
+    }
+
+
 @dataclass(frozen=True)
 class CompatiblePairManifest:
     version: int
@@ -620,22 +641,25 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
     """배포 preflight부터 manifest commit/복구까지 host-wide nonblocking lock."""
 
     lock_path = Path(path)
-    lock_key = str(lock_path.resolve(strict=False))
+    lock_key = str(lock_path if lock_path.is_absolute() else lock_path.absolute())
     held_locks = _HELD_DEPLOYMENT_LOCKS.get()
     if lock_key in held_locks:
         yield
         return
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle: BinaryIO | None = None
+    _prepare_c6c_lock_directory(lock_path.parent)
+    fd: int | None = None
     context_token = None
     try:
         try:
-            handle = lock_path.open("a+b")
-            os.chmod(lock_path, 0o600)
+            flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(lock_path, flags, 0o600)
+            _validate_c6c_lock_fd(fd, production=lock_path == _C6C_GLOBAL_MUTATION_LOCK)
         except OSError as exc:
             raise DeploymentContractError("cannot acquire C6c deployment lock") from exc
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise DeploymentContractError(
                 "another C6c compatible-pair operation is already active"
@@ -645,11 +669,39 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
     finally:
         if context_token is not None:
             _HELD_DEPLOYMENT_LOCKS.reset(context_token)
-        if handle is not None:
+        if fd is not None:
             try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
-                handle.close()
+                os.close(fd)
+
+
+def _prepare_c6c_lock_directory(path: Path) -> None:
+    if path == _C6C_GLOBAL_MUTATION_LOCK.parent and os.geteuid() != 0:
+        raise DeploymentContractError(
+            "production compatible-pair managed workflow requires root"
+        )
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path == _C6C_GLOBAL_MUTATION_LOCK.parent:
+        st = path.lstat()
+        if (
+            not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != 0
+            or stat.S_IMODE(st.st_mode) != 0o700
+        ):
+            raise DeploymentContractError("production C6c deployment lock directory is unsafe")
+
+
+def _validate_c6c_lock_fd(fd: int, *, production: bool) -> None:
+    st = os.fstat(fd)
+    expected_uid = 0 if production else os.geteuid()
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_nlink != 1
+        or st.st_uid != expected_uid
+        or stat.S_IMODE(st.st_mode) != 0o600
+    ):
+        raise DeploymentContractError("C6c deployment lock is unsafe")
 
 
 def effective_environment(env_path: str) -> dict[str, str]:
@@ -669,7 +721,7 @@ def effective_environment(env_path: str) -> dict[str, str]:
 
 
 def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
-    """Frozen environment로 manifest를, process policy로 global lock을 정한다."""
+    """Frozen environment로 manifest와 host-global lock을 함께 정한다."""
 
     production = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() == "production"
     project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()
@@ -679,16 +731,17 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
         raise DeploymentContractError(
             "COMPOSE_PROJECT_NAME must be explicit and canonical for C6c state"
         )
-    default_root = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
     configured_root = values.get("KTDM_C6C_STATE_ROOT", "").strip()
-    if production and configured_root and Path(configured_root) != default_root:
-        raise DeploymentContractError(
-            "production KTDM_C6C_STATE_ROOT is fixed to the canonical manager state root"
+    if production:
+        if configured_root:
+            raise DeploymentContractError("production C6c state root path is fixed")
+        root = _C6C_PRODUCTION_STATE_ROOT
+    else:
+        default_root = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
+        root = _canonical_absolute_path(
+            configured_root or str(default_root),
+            "KTDM_C6C_STATE_ROOT",
         )
-    root = _canonical_absolute_path(
-        configured_root or str(default_root),
-        "KTDM_C6C_STATE_ROOT",
-    )
     state_dir = _canonical_absolute_path(
         str(root / project_name),
         "C6c deployment state directory",
@@ -703,15 +756,88 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
         manifest_override or str(state_dir / "compatible-pair-v4.json"),
         "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
     )
-    lock = Path(c6c_global_mutation_lock_path())
+    lock = Path(c6c_global_mutation_lock_path(values))
     if manifest == lock:
         raise DeploymentContractError("C6c manifest and lock paths must differ")
     return str(manifest), str(lock)
 
 
-def c6c_global_mutation_lock_path() -> str:
+def ensure_c6c_state_directory(path: str | Path) -> None:
+    """C6c state directory를 production/local 모두 owner-only 정책으로 준비한다."""
+
+    target = Path(path)
+    if _is_relative_to(target.resolve(strict=False), _C6C_PRODUCTION_STATE_ROOT):
+        expected_uid = _production_state_owner_uid()
+        _ensure_single_c6c_state_directory(
+            _C6C_PRODUCTION_STATE_ROOT,
+            expected_uid=expected_uid,
+        )
+        current = _C6C_PRODUCTION_STATE_ROOT
+        for part in target.resolve(strict=False).relative_to(_C6C_PRODUCTION_STATE_ROOT).parts:
+            current = current / part
+            _ensure_single_c6c_state_directory(current, expected_uid=expected_uid)
+        return
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _validate_c6c_state_directory(target, expected_uid=os.geteuid())
+
+
+def _ensure_single_c6c_state_directory(path: Path, *, expected_uid: int) -> None:
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise DeploymentContractError("C6c state directory is unavailable") from exc
+    directory_stat = _c6c_state_directory_stat(path, expected_uid=expected_uid)
+    if stat.S_IMODE(directory_stat.st_mode) != 0o700:
+        try:
+            os.chmod(path, 0o700)
+        except OSError as exc:
+            raise DeploymentContractError("C6c state directory mode cannot be fixed") from exc
+        _validate_c6c_state_directory(path, expected_uid=expected_uid)
+
+
+def _production_state_owner_uid() -> int:
+    if _C6C_PRODUCTION_STATE_ROOT == _DEFAULT_C6C_PRODUCTION_STATE_ROOT:
+        return 0
+    return os.geteuid()
+
+
+def _c6c_state_directory_stat(path: Path, *, expected_uid: int) -> os.stat_result:
+    try:
+        directory_stat = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError("C6c state directory is unavailable") from exc
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != expected_uid
+    ):
+        raise DeploymentContractError("C6c state directory is unsafe")
+    return directory_stat
+
+
+def _validate_c6c_state_directory(path: Path, *, expected_uid: int) -> None:
+    directory_stat = _c6c_state_directory_stat(path, expected_uid=expected_uid)
+    if (
+        stat.S_IMODE(directory_stat.st_mode) != 0o700
+    ):
+        raise DeploymentContractError("C6c state directory is unsafe")
+
+
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def c6c_global_mutation_lock_path(
+    environment: Mapping[str, str] | None = None,
+) -> str:
     """모든 Compose mutation이 공유하는 `.env` 비의존 host-global lock."""
 
+    values = os.environ if environment is None else environment
     default = (
         Path.home()
         / ".local"
@@ -719,8 +845,8 @@ def c6c_global_mutation_lock_path() -> str:
         / "kor-travel-docker-manager"
         / "global-mutation.lock"
     )
-    override = os.environ.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
-    process_mode = os.environ.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
+    override = values.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
+    process_mode = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
     if override:
         if process_mode != "local":
             raise DeploymentContractError(
@@ -729,6 +855,8 @@ def c6c_global_mutation_lock_path() -> str:
         return str(
             _canonical_absolute_path(override, "KTDM_C6C_DEPLOYMENT_LOCK")
         )
+    if process_mode == "production":
+        return str(_C6C_GLOBAL_MUTATION_LOCK)
     return str(default.resolve(strict=False))
 
 
@@ -4215,21 +4343,13 @@ def _map_production_env_migration_bytes(
 
 
 def _validate_map_production_env_state_directory(path: Path) -> None:
+    ensure_c6c_state_directory(path)
     try:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        directory_stat = path.lstat()
+        _validate_c6c_state_directory(path, expected_uid=Path(path).lstat().st_uid)
     except OSError as exc:
         raise DeploymentContractError(
-            "Map production env migration state directory is unavailable"
-        ) from exc
-    if (
-        not stat.S_ISDIR(directory_stat.st_mode)
-        or directory_stat.st_uid != os.geteuid()
-        or directory_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-    ):
-        raise DeploymentContractError(
             "Map production env migration state directory is unsafe"
-        )
+        ) from exc
 
 
 def _write_map_production_env_migration_temp(
@@ -4350,7 +4470,7 @@ def _pair_manifest_artifact_exists(path: Path) -> bool:
 def write_pair_manifest(path: str, manifest: CompatiblePairManifest) -> None:
     _validate_pair_manifest_contract(manifest)
     manifest_path = Path(path)
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_c6c_state_directory(manifest_path.parent)
     payload = json.dumps(asdict(manifest), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     payload_bytes = payload.encode("utf-8")
     previous_bytes = manifest_path.read_bytes() if manifest_path.exists() else None
@@ -4510,6 +4630,112 @@ def _validate_source_revision(revision: str, label: str) -> None:
     if not isinstance(revision, str) or not _SOURCE_REVISION_PATTERN.fullmatch(revision):
         raise DeploymentContractError(
             f"{label} image source revision must be an exact lowercase commit"
+        )
+
+
+def require_local_c6c_image(
+    image_id: str,
+    *,
+    docker_bin: str = "docker",
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    _validate_image_id(image_id, "compatible pair")
+    try:
+        completed = subprocess.run(
+            [docker_bin, "image", "inspect", "--format={{.Id}}", image_id],
+            cwd=cwd,
+            env=dict(env) if env is not None else None,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise DeploymentContractError(
+            "compatible pair image ID cannot be inspected locally"
+        ) from exc
+    if completed.returncode != 0 or completed.stdout.strip() != image_id:
+        raise DeploymentContractError("compatible pair image ID is not available locally")
+
+
+def inspect_c6c_image_source_revision(
+    image_id: str,
+    *,
+    label: str,
+    expected_build_environment: str | None = None,
+    docker_bin: str = "docker",
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    _validate_image_id(image_id, label)
+    try:
+        completed = subprocess.run(
+            [
+                docker_bin,
+                "image",
+                "inspect",
+                "--format={{json .Config.Labels}}",
+                image_id,
+            ],
+            cwd=cwd,
+            env=dict(env) if env is not None else None,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise DeploymentContractError(
+            f"cannot inspect {label} image source provenance"
+        ) from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError(f"cannot inspect {label} image source provenance")
+    try:
+        labels = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise DeploymentContractError(f"{label} image provenance labels are invalid") from exc
+    if not isinstance(labels, Mapping):
+        raise DeploymentContractError(f"{label} image provenance labels are missing")
+    revision = labels.get("org.opencontainers.image.revision")
+    if not isinstance(revision, str) or _SOURCE_REVISION_PATTERN.fullmatch(revision) is None:
+        raise DeploymentContractError(f"{label} image source revision label is invalid")
+    if expected_build_environment is not None and labels.get(
+        "io.pinvi.build.environment"
+    ) != expected_build_environment:
+        raise DeploymentContractError(f"{label} image build environment label is invalid")
+    return revision
+
+
+def verify_compatible_pair_image_provenance(
+    pair: CompatibleImagePair,
+    *,
+    require_local_image: Callable[[str], None] | None = None,
+    inspect_source_revision: Callable[..., str] | None = None,
+) -> None:
+    local_checker = require_local_image or require_local_c6c_image
+    revision_inspector = inspect_source_revision or inspect_c6c_image_source_revision
+    map_image_ids = {
+        _MAP_API_SERVICE: pair.map_image_id,
+        _MAP_UI_SERVICE: pair.map_ui_image_id,
+        _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
+        _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
+    }
+    for image_id in (*map_image_ids.values(), pair.pinvi_image_id):
+        local_checker(image_id)
+    map_revisions = {
+        service_name: revision_inspector(image_id, label=service_name)
+        for service_name, image_id in map_image_ids.items()
+    }
+    pinvi_revision = revision_inspector(
+        pair.pinvi_image_id,
+        label="PinVi",
+        expected_build_environment="production",
+    )
+    if (
+        any(revision != pair.map_source_revision for revision in map_revisions.values())
+        or pinvi_revision != pair.pinvi_source_revision
+    ):
+        raise DeploymentContractError(
+            "compatible pair image labels differ from manifest source provenance"
         )
 
 

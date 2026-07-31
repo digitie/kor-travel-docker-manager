@@ -1,0 +1,1425 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+PATH="/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+ORIGINAL_ARGS=("$@")
+APP_ROOT="/opt/kor-travel-docker-manager"
+APP_PARENT="/opt"
+SOURCE_ROOT=""
+ENV_FILE=""
+WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-/var/lib/kor-travel-docker-manager/wheelhouse}"
+STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage"
+ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback"
+ARCHIVE="/var/lib/kor-travel-docker-manager/trusted-release.archive"
+LAUNCHER_PATH="/usr/local/sbin/ktdctl-map-ui-auth-rotate"
+LAUNCHER_ROLLBACK="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback"
+LAUNCHER_INSTALL_TMP="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.installing"
+STATE_ROOT="/var/lib/kor-travel-docker-manager"
+TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"
+TRANSACTION_STATE_TMP="${STATE_ROOT}/.trusted-release-transaction.json.tmp"
+GLOBAL_LOCK_DIR="/run/lock/kor-travel-docker-manager"
+GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"
+
+die() {
+  echo "$1" >&2
+  exit 126
+}
+
+snapshot_env_file() {
+  local path="$1"
+  /usr/bin/python3 -I -S - "${path}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_absolute() or path != path.resolve(strict=True):
+    raise SystemExit("deployment .env path must be canonical and contain no symlinks")
+flags = os.O_RDONLY | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(path, flags)
+try:
+    before = os.fstat(fd)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != 0o600
+    ):
+        raise SystemExit("deployment .env evidence is invalid")
+    digest = hashlib.sha256()
+    while chunk := os.read(fd, 1024 * 1024):
+        digest.update(chunk)
+    after = os.fstat(fd)
+finally:
+    os.close(fd)
+identity = (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+if identity != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    raise SystemExit("deployment .env changed while it was being captured")
+print(
+    json.dumps(
+        {
+            "dev": before.st_dev,
+            "ino": before.st_ino,
+            "mode": stat.S_IMODE(before.st_mode),
+            "uid": before.st_uid,
+            "gid": before.st_gid,
+            "nlink": before.st_nlink,
+            "size": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+            "ctime_ns": before.st_ctime_ns,
+            "sha256": digest.hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
+PY
+}
+
+snapshot_env_fd() {
+  local fd="$1"
+  /usr/bin/python3 -I -S - "${fd}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
+    raise SystemExit("deployment .env descriptor is not read-only")
+os.lseek(fd, 0, os.SEEK_SET)
+before = os.fstat(fd)
+if (
+    not stat.S_ISREG(before.st_mode)
+    or before.st_nlink != 1
+    or stat.S_IMODE(before.st_mode) != 0o600
+):
+    raise SystemExit("deployment .env descriptor is invalid")
+digest = hashlib.sha256()
+while chunk := os.read(fd, 1024 * 1024):
+    digest.update(chunk)
+after = os.fstat(fd)
+identity = (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+if identity != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    raise SystemExit("deployment .env descriptor changed while it was being captured")
+print(
+    json.dumps(
+        {
+            "dev": before.st_dev,
+            "ino": before.st_ino,
+            "mode": stat.S_IMODE(before.st_mode),
+            "uid": before.st_uid,
+            "gid": before.st_gid,
+            "nlink": before.st_nlink,
+            "size": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+            "ctime_ns": before.st_ctime_ns,
+            "sha256": digest.hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
+PY
+}
+
+trusted_release_transaction() {
+  local action="$1"
+  shift
+  /usr/bin/python3 -I -S - \
+    "${action}" \
+    "${TRANSACTION_STATE}" \
+    "${TRANSACTION_STATE_TMP}" \
+    "${APP_ROOT}" \
+    "${STAGING}" \
+    "${ROLLBACK}" \
+    "${ARCHIVE}" \
+    "${LAUNCHER_PATH}" \
+    "${LAUNCHER_ROLLBACK}" \
+    "${LAUNCHER_INSTALL_TMP}" \
+    "$@" <<'PY'
+from __future__ import annotations
+
+import glob
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import stat
+import sys
+from typing import Any
+
+action = sys.argv[1]
+state_path = pathlib.Path(sys.argv[2])
+state_tmp = pathlib.Path(sys.argv[3])
+app_root = pathlib.Path(sys.argv[4])
+staging = pathlib.Path(sys.argv[5])
+rollback = pathlib.Path(sys.argv[6])
+archive = pathlib.Path(sys.argv[7])
+launcher = pathlib.Path(sys.argv[8])
+launcher_rollback = pathlib.Path(sys.argv[9])
+launcher_install_tmp = pathlib.Path(sys.argv[10])
+arguments = sys.argv[11:]
+
+
+def fsync_dir(path: pathlib.Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def regular_evidence(
+    path: pathlib.Path,
+    *,
+    expected_uid: int | None = None,
+    expected_mode: int | None = None,
+) -> dict[str, Any]:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or (expected_uid is not None and metadata.st_uid != expected_uid)
+        or (expected_mode is not None and stat.S_IMODE(metadata.st_mode) != expected_mode)
+    ):
+        raise SystemExit(f"trusted release file evidence is invalid: {path}")
+    return {
+        "sha256": sha256_file(path),
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "uid": metadata.st_uid,
+        "gid": metadata.st_gid,
+        "nlink": metadata.st_nlink,
+        "size": metadata.st_size,
+    }
+
+
+def launcher_evidence(path: pathlib.Path) -> dict[str, Any]:
+    if not path.exists() and not path.is_symlink():
+        return {"present": False}
+    evidence = regular_evidence(path, expected_uid=0, expected_mode=0o755)
+    return {"present": True, **evidence}
+
+
+def app_evidence(path: pathlib.Path) -> dict[str, Any]:
+    if not path.exists() and not path.is_symlink():
+        return {"present": False}
+    root_metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(root_metadata.st_mode)
+        or root_metadata.st_uid != 0
+        or stat.S_IMODE(root_metadata.st_mode) & 0o022
+    ):
+        raise SystemExit(f"trusted release app root is invalid: {path}")
+    revision_path = path / ".ktdm-source-revision"
+    manifest_path = path / ".ktdm-release-manifest.json"
+    env_path = path / ".env"
+    revision_evidence = regular_evidence(
+        revision_path,
+        expected_uid=0,
+        expected_mode=0o644,
+    )
+    manifest_evidence = regular_evidence(
+        manifest_path,
+        expected_uid=0,
+        expected_mode=0o644,
+    )
+    env_evidence = regular_evidence(env_path, expected_mode=0o600)
+    revision = revision_path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise SystemExit(f"trusted release revision is invalid: {path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("manager_source_revision") != revision:
+        raise SystemExit(f"trusted release manifest revision mismatch: {path}")
+    return {
+        "present": True,
+        "root_dev": root_metadata.st_dev,
+        "root_ino": root_metadata.st_ino,
+        "revision": revision,
+        "revision_sha256": revision_evidence["sha256"],
+        "manifest_sha256": manifest_evidence["sha256"],
+        "env_sha256": env_evidence["sha256"],
+        "env_mode": env_evidence["mode"],
+        "env_uid": env_evidence["uid"],
+        "env_gid": env_evidence["gid"],
+        "env_size": env_evidence["size"],
+    }
+
+
+def validate_state_file(path: pathlib.Path) -> None:
+    regular_evidence(path, expected_uid=0, expected_mode=0o600)
+
+
+def read_state() -> dict[str, Any]:
+    validate_state_file(state_path)
+    value = json.loads(state_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != 1
+        or value.get("phase") not in {"preparing", "prepared", "committed"}
+        or not re.fullmatch(r"[0-9a-f]{40}", str(value.get("target_revision", "")))
+        or not isinstance(value.get("old_app"), dict)
+        or not isinstance(value.get("old_launcher"), dict)
+    ):
+        raise SystemExit("trusted release transaction state is invalid")
+    if value["phase"] in {"prepared", "committed"} and (
+        not isinstance(value.get("new_app_root_dev"), int)
+        or not isinstance(value.get("new_app_root_ino"), int)
+        or not isinstance(value.get("new_launcher_sha256"), str)
+    ):
+        raise SystemExit("trusted release transaction target evidence is invalid")
+    return value
+
+
+def write_state(value: dict[str, Any]) -> None:
+    if state_tmp.exists() or state_tmp.is_symlink():
+        raise SystemExit("trusted release transaction temp state already exists")
+    payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(state_tmp, flags, 0o600)
+    try:
+        os.fchown(descriptor, 0, 0)
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise SystemExit("trusted release transaction state write made no progress")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(state_tmp, state_path)
+    fsync_dir(state_path.parent)
+
+
+def remove_regular(path: pathlib.Path, expected: dict[str, Any] | None = None) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    actual = regular_evidence(path, expected_uid=0)
+    if expected is not None and actual != {
+        key: expected[key]
+        for key in ("sha256", "mode", "uid", "gid", "nlink", "size")
+    }:
+        raise SystemExit(f"trusted release file residue changed: {path}")
+    path.unlink()
+    fsync_dir(path.parent)
+
+
+def remove_tree(path: pathlib.Path, expected: dict[str, Any] | None = None) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if expected is not None and app_evidence(path) != expected:
+        raise SystemExit(f"trusted release app residue changed: {path}")
+    metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise SystemExit(f"trusted release directory residue is invalid: {path}")
+    shutil.rmtree(path)
+    fsync_dir(path.parent)
+
+
+def remove_tree_by_identity(
+    path: pathlib.Path,
+    *,
+    expected_dev: int,
+    expected_ino: int,
+) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+        or metadata.st_dev != expected_dev
+        or metadata.st_ino != expected_ino
+    ):
+        raise SystemExit(f"foreign app root blocks trusted release recovery: {path}")
+    shutil.rmtree(path)
+    fsync_dir(path.parent)
+
+
+def remove_transaction_tree(path: pathlib.Path, state: dict[str, Any]) -> None:
+    remove_tree_by_identity(
+        path,
+        expected_dev=state["new_app_root_dev"],
+        expected_ino=state["new_app_root_ino"],
+    )
+
+
+def exact_match(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return actual == expected
+
+
+def validate_new_app(state: dict[str, Any]) -> dict[str, Any]:
+    actual = app_evidence(app_root)
+    if (
+        not actual.get("present")
+        or actual.get("revision") != state["target_revision"]
+    ):
+        raise SystemExit("active trusted release does not match transaction target")
+    return actual
+
+
+def validate_new_launcher(state: dict[str, Any]) -> dict[str, Any]:
+    expected_sha = state.get("new_launcher_sha256")
+    actual = launcher_evidence(launcher)
+    if (
+        not isinstance(expected_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
+        or not actual.get("present")
+        or actual.get("sha256") != expected_sha
+    ):
+        raise SystemExit("active trusted launcher does not match transaction target")
+    return actual
+
+
+def reject_legacy_residue() -> None:
+    patterns = (
+        "/opt/.kor-travel-docker-manager.stage.*",
+        "/opt/.kor-travel-docker-manager.rollback.*",
+        "/opt/.kor-travel-docker-manager.archive.*",
+        "/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback.*",
+        "/usr/local/sbin/.ktdctl-map-ui-auth-rotate.[0-9]*",
+    )
+    residue = sorted(item for pattern in patterns for item in glob.glob(pattern))
+    if residue:
+        raise SystemExit(
+            "unclassified PID-scoped trusted release residue requires operator cleanup"
+        )
+
+
+def reconcile_committed(state: dict[str, Any]) -> None:
+    validate_new_app(state)
+    validate_new_launcher(state)
+    old_app = state["old_app"]
+    old_launcher = state["old_launcher"]
+    if rollback.exists() or rollback.is_symlink():
+        if not old_app.get("present"):
+            raise SystemExit("committed rollback app residue is invalid")
+        remove_tree_by_identity(
+            rollback,
+            expected_dev=old_app["root_dev"],
+            expected_ino=old_app["root_ino"],
+        )
+    if staging.exists() or staging.is_symlink():
+        raise SystemExit("committed transaction unexpectedly retained staging")
+    if launcher_rollback.exists() or launcher_rollback.is_symlink():
+        if not old_launcher.get("present"):
+            raise SystemExit("committed launcher rollback residue is unexpected")
+        remove_regular(launcher_rollback, old_launcher)
+    if launcher_install_tmp.exists() or launcher_install_tmp.is_symlink():
+        expected_sha = state.get("new_launcher_sha256")
+        evidence = launcher_evidence(launcher_install_tmp)
+        if evidence.get("sha256") != expected_sha:
+            raise SystemExit("committed launcher install residue is invalid")
+        remove_regular(launcher_install_tmp, evidence)
+    remove_regular(archive)
+    state_path.unlink()
+    fsync_dir(state_path.parent)
+
+
+def restore_noncommitted(state: dict[str, Any]) -> None:
+    if state["phase"] == "preparing":
+        if (
+            rollback.exists()
+            or rollback.is_symlink()
+            or launcher_rollback.exists()
+            or launcher_rollback.is_symlink()
+            or launcher_install_tmp.exists()
+            or launcher_install_tmp.is_symlink()
+        ):
+            raise SystemExit(
+                "preparing transaction unexpectedly contains activation residue"
+            )
+        remove_tree(staging)
+        remove_regular(archive)
+        state_path.unlink()
+        fsync_dir(state_path.parent)
+        return
+
+    old_app = state["old_app"]
+    old_launcher = state["old_launcher"]
+    expected_new_launcher_sha = state.get("new_launcher_sha256")
+
+    rollback_exists = rollback.exists() or rollback.is_symlink()
+    app_exists = app_root.exists() or app_root.is_symlink()
+    if old_app.get("present"):
+        if rollback_exists:
+            if app_evidence(rollback) != old_app:
+                raise SystemExit("rollback app residue does not match original release")
+            if app_exists:
+                remove_transaction_tree(app_root, state)
+            os.rename(rollback, app_root)
+            fsync_dir(app_root.parent)
+            if app_evidence(app_root) != old_app:
+                raise SystemExit("restored app does not match original release")
+        elif not app_exists or app_evidence(app_root) != old_app:
+            raise SystemExit("original app release cannot be recovered")
+    else:
+        if rollback_exists:
+            raise SystemExit("unexpected rollback app exists for initial install")
+        if app_exists:
+            remove_transaction_tree(app_root, state)
+
+    backup_exists = launcher_rollback.exists() or launcher_rollback.is_symlink()
+    launcher_exists = launcher.exists() or launcher.is_symlink()
+    if old_launcher.get("present"):
+        if backup_exists:
+            if launcher_evidence(launcher_rollback) != old_launcher:
+                raise SystemExit("launcher rollback residue does not match original")
+            if launcher_exists:
+                current = launcher_evidence(launcher)
+                if current.get("sha256") != expected_new_launcher_sha:
+                    raise SystemExit(
+                        "foreign launcher target blocks trusted release rollback"
+                    )
+                remove_regular(launcher, current)
+            os.rename(launcher_rollback, launcher)
+            fsync_dir(launcher.parent)
+            if launcher_evidence(launcher) != old_launcher:
+                raise SystemExit("restored launcher does not match original")
+        elif not launcher_exists or launcher_evidence(launcher) != old_launcher:
+            raise SystemExit("original launcher cannot be recovered")
+    else:
+        if backup_exists:
+            raise SystemExit("unexpected launcher rollback exists for initial install")
+        if launcher_exists:
+            current = launcher_evidence(launcher)
+            if current.get("sha256") != expected_new_launcher_sha:
+                raise SystemExit("foreign launcher blocks initial install rollback")
+            remove_regular(launcher, current)
+
+    if launcher_install_tmp.exists() or launcher_install_tmp.is_symlink():
+        current = launcher_evidence(launcher_install_tmp)
+        if current.get("sha256") != expected_new_launcher_sha:
+            raise SystemExit("foreign launcher install residue blocks rollback")
+        remove_regular(launcher_install_tmp, current)
+    if staging.exists() or staging.is_symlink():
+        if state.get("new_app_root_dev") is None:
+            remove_tree(staging)
+        else:
+            remove_transaction_tree(staging, state)
+    remove_regular(archive)
+    state_path.unlink()
+    fsync_dir(state_path.parent)
+
+
+reject_legacy_residue()
+if state_tmp.exists() or state_tmp.is_symlink():
+    validate_state_file(state_tmp)
+    if state_path.exists() or state_path.is_symlink():
+        state_tmp.unlink()
+        fsync_dir(state_tmp.parent)
+    else:
+        os.replace(state_tmp, state_path)
+        fsync_dir(state_path.parent)
+
+fixed_artifacts = (
+    staging,
+    rollback,
+    archive,
+    launcher_rollback,
+    launcher_install_tmp,
+)
+
+if action == "reconcile":
+    if not state_path.exists() and not state_path.is_symlink():
+        if any(path.exists() or path.is_symlink() for path in fixed_artifacts):
+            raise SystemExit("unclassified trusted release residue blocks installation")
+        raise SystemExit(0)
+    current_state = read_state()
+    if current_state["phase"] == "committed":
+        reconcile_committed(current_state)
+    else:
+        restore_noncommitted(current_state)
+elif action == "begin":
+    if len(arguments) != 1 or not re.fullmatch(r"[0-9a-f]{40}", arguments[0]):
+        raise SystemExit("trusted release target revision is invalid")
+    if state_path.exists() or state_path.is_symlink():
+        raise SystemExit("trusted release transaction is already active")
+    if any(path.exists() or path.is_symlink() for path in fixed_artifacts):
+        raise SystemExit("trusted release artifact exists before transaction begin")
+    write_state(
+        {
+            "version": 1,
+            "phase": "preparing",
+            "target_revision": arguments[0],
+            "old_app": app_evidence(app_root),
+            "old_launcher": launcher_evidence(launcher),
+            "new_app_root_dev": None,
+            "new_app_root_ino": None,
+            "new_launcher_sha256": None,
+        }
+    )
+elif action == "set-new-launcher":
+    if len(arguments) != 1 or not re.fullmatch(r"[0-9a-f]{64}", arguments[0]):
+        raise SystemExit("trusted release launcher digest is invalid")
+    current_state = read_state()
+    if current_state["phase"] != "preparing":
+        raise SystemExit("trusted release transaction phase cannot stage launcher")
+    if app_evidence(app_root) != current_state["old_app"]:
+        raise SystemExit("active app changed while trusted release was staged")
+    if launcher_evidence(launcher) != current_state["old_launcher"]:
+        raise SystemExit("active launcher changed while trusted release was staged")
+    staged_app = app_evidence(staging)
+    if (
+        not staged_app.get("present")
+        or staged_app.get("revision") != current_state["target_revision"]
+    ):
+        raise SystemExit("staged app does not match trusted release target")
+    current_state["phase"] = "prepared"
+    current_state["new_app_root_dev"] = staged_app["root_dev"]
+    current_state["new_app_root_ino"] = staged_app["root_ino"]
+    current_state["new_launcher_sha256"] = arguments[0]
+    write_state(current_state)
+elif action == "commit":
+    if arguments:
+        raise SystemExit("trusted release commit takes no arguments")
+    current_state = read_state()
+    if current_state["phase"] != "prepared":
+        raise SystemExit("trusted release transaction phase cannot commit")
+    validate_new_app(current_state)
+    validate_new_launcher(current_state)
+    current_state["phase"] = "committed"
+    write_state(current_state)
+else:
+    raise SystemExit("unknown trusted release transaction action")
+PY
+}
+
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --env-file)
+      shift
+      [[ "$#" -gt 0 ]] || die "--env-file requires a path"
+      ENV_FILE="$1"
+      ;;
+    --wheelhouse)
+      shift
+      [[ "$#" -gt 0 ]] || die "--wheelhouse requires a path"
+      WHEELHOUSE="$1"
+      ;;
+    --help|-h)
+      echo "usage: install-ktdm-trusted-release [--env-file PATH] [--wheelhouse ROOT_OWNED_WHEELHOUSE] [SOURCE_ROOT]"
+      echo "default wheelhouse: /var/lib/kor-travel-docker-manager/wheelhouse"
+      exit 0
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      [[ -z "${SOURCE_ROOT}" ]] || die "source checkout was provided more than once"
+      SOURCE_ROOT="$1"
+      ;;
+  esac
+  shift
+done
+
+SOURCE_ROOT="${SOURCE_ROOT:-$PWD}"
+if [[ -z "${ENV_FILE}" ]]; then
+  ENV_FILE="${APP_ROOT}/.env"
+fi
+
+if [[ "$(/usr/bin/id -u)" != "0" ]]; then
+  die "trusted release install must run as root"
+fi
+if [[ ! -d "${SOURCE_ROOT}" ]]; then
+  die "source checkout is missing"
+fi
+if [[ ! -d "${WHEELHOUSE}" ]]; then
+  die "trusted offline wheelhouse is missing"
+fi
+if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+arguments = sys.argv[2:]
+lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
+lock_path = lock_dir / "global-mutation.lock"
+lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+directory_stat = lock_dir.lstat()
+if (
+    not stat.S_ISDIR(directory_stat.st_mode)
+    or directory_stat.st_uid != 0
+    or stat.S_IMODE(directory_stat.st_mode) != 0o700
+):
+    raise SystemExit("production global mutation lock directory is unsafe")
+flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(lock_path, flags, 0o600)
+lock_stat = os.fstat(fd)
+if (
+    not stat.S_ISREG(lock_stat.st_mode)
+    or lock_stat.st_nlink != 1
+    or lock_stat.st_uid != 0
+    or stat.S_IMODE(lock_stat.st_mode) != 0o600
+):
+    os.close(fd)
+    raise SystemExit("production global mutation lock is unsafe")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as exc:
+    os.close(fd)
+    raise SystemExit("another manager mutation is already active") from exc
+os.set_inheritable(fd, True)
+environment = dict(os.environ)
+environment["KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD"] = str(fd)
+os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
+PY
+fi
+
+lock_fd="${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD}"
+if [[ ! "${lock_fd}" =~ ^[0-9]+$ ]]; then
+  die "trusted installer lock descriptor evidence is invalid"
+fi
+/usr/bin/python3 -I -S - "${lock_fd}" "${GLOBAL_LOCK}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+fd = int(sys.argv[1])
+path = pathlib.Path(sys.argv[2])
+descriptor_stat = os.fstat(fd)
+path_stat = path.lstat()
+if (
+    (descriptor_stat.st_dev, descriptor_stat.st_ino)
+    != (path_stat.st_dev, path_stat.st_ino)
+    or not stat.S_ISREG(descriptor_stat.st_mode)
+    or descriptor_stat.st_nlink != 1
+    or descriptor_stat.st_uid != 0
+    or stat.S_IMODE(descriptor_stat.st_mode) != 0o600
+):
+    raise SystemExit("production global mutation lock descriptor is unsafe")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as exc:
+    raise SystemExit("production global mutation lock is not held") from exc
+PY
+
+/usr/bin/install -d -o root -g root -m 0700 "${STATE_ROOT}"
+trusted_release_transaction reconcile
+
+if [[ -z "${KTDM_TRUSTED_INSTALL_ENV_FD:-}" ]]; then
+  if [[ ! -f "${ENV_FILE}" ]]; then
+    die "deployment .env evidence is missing after transaction recovery"
+  fi
+  exec /usr/bin/python3 -I -S - \
+    "${BASH_SOURCE[0]}" \
+    "${ENV_FILE}" \
+    "${lock_fd}" \
+    "${ORIGINAL_ARGS[@]}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+env_path = pathlib.Path(sys.argv[2])
+lock_fd = int(sys.argv[3])
+arguments = sys.argv[4:]
+if not env_path.is_absolute() or env_path != env_path.resolve(strict=True):
+    raise SystemExit("deployment .env path must be canonical and contain no symlinks")
+flags = os.O_RDONLY | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+env_fd = os.open(env_path, flags)
+before = os.fstat(env_fd)
+if (
+    not stat.S_ISREG(before.st_mode)
+    or before.st_nlink != 1
+    or stat.S_IMODE(before.st_mode) != 0o600
+):
+    os.close(env_fd)
+    raise SystemExit("deployment .env evidence is invalid")
+digest = hashlib.sha256()
+while chunk := os.read(env_fd, 1024 * 1024):
+    digest.update(chunk)
+after = os.fstat(env_fd)
+identity = (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+if identity != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    os.close(env_fd)
+    raise SystemExit("deployment .env changed while it was being captured")
+snapshot = json.dumps(
+    {
+        "dev": before.st_dev,
+        "ino": before.st_ino,
+        "mode": stat.S_IMODE(before.st_mode),
+        "uid": before.st_uid,
+        "gid": before.st_gid,
+        "nlink": before.st_nlink,
+        "size": before.st_size,
+        "mtime_ns": before.st_mtime_ns,
+        "ctime_ns": before.st_ctime_ns,
+        "sha256": digest.hexdigest(),
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+)
+os.set_inheritable(lock_fd, True)
+os.set_inheritable(env_fd, True)
+environment = dict(os.environ)
+environment["KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT"] = snapshot
+environment["KTDM_TRUSTED_INSTALL_ENV_FD"] = str(env_fd)
+os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
+PY
+fi
+
+env_fd="${KTDM_TRUSTED_INSTALL_ENV_FD}"
+if [[ ! "${env_fd}" =~ ^[0-9]+$ ]]; then
+  die "trusted installer env descriptor evidence is invalid"
+fi
+expected_env_snapshot="${KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT:-}"
+ENV_FILE_SNAPSHOT_AFTER_LOCK="$(snapshot_env_file "${ENV_FILE}")"
+ENV_FD_SNAPSHOT_AFTER_LOCK="$(snapshot_env_fd "${env_fd}")"
+if (
+  [[ "${ENV_FILE_SNAPSHOT_AFTER_LOCK}" != "${expected_env_snapshot}" ]] ||
+  [[ "${ENV_FD_SNAPSHOT_AFTER_LOCK}" != "${expected_env_snapshot}" ]]
+); then
+  die "deployment .env changed after trusted installer lock acquisition"
+fi
+unset KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT \
+  KTDM_TRUSTED_INSTALL_ENV_FD \
+  KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD
+
+source_uid="$(/usr/bin/stat -c '%u' "${SOURCE_ROOT}")"
+source_gid="$(/usr/bin/stat -c '%g' "${SOURCE_ROOT}")"
+env_uid="$(/usr/bin/python3 -I -S -c 'import json,sys; print(json.loads(sys.argv[1])["uid"])' "${expected_env_snapshot}")"
+env_gid="$(/usr/bin/python3 -I -S -c 'import json,sys; print(json.loads(sys.argv[1])["gid"])' "${expected_env_snapshot}")"
+
+require_root_locked_dir() {
+  local path="$1"
+  if [[ -L "${path}" || ! -d "${path}" ]]; then
+    die "trusted directory is not a real directory: ${path}"
+  fi
+  local uid mode
+  uid="$(/usr/bin/stat -c '%u' "${path}")"
+  mode="$(/usr/bin/stat -c '%a' "${path}")"
+  if [[ "${uid}" != "0" || $((8#${mode} & 022)) != "0" ]]; then
+    die "trusted directory is writable or not root-owned: ${path}"
+  fi
+}
+
+snapshot_wheelhouse() {
+  local path="$1"
+  /usr/bin/python3 -I -S - "${path}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import pathlib
+import stat
+import sys
+
+raw = pathlib.Path(sys.argv[1])
+absolute = raw if raw.is_absolute() else pathlib.Path.cwd() / raw
+current = pathlib.Path(absolute.anchor)
+for part in absolute.parts[1:]:
+    current = current / part
+    try:
+        st = current.lstat()
+    except OSError as exc:
+        raise SystemExit(f"wheelhouse path component is unavailable: {current}") from exc
+    if stat.S_ISLNK(st.st_mode):
+        raise SystemExit(f"wheelhouse path component must not be a symlink: {current}")
+
+root = absolute.resolve(strict=True)
+for ancestor in (root, *root.parents):
+    st = ancestor.lstat()
+    if (
+        not stat.S_ISDIR(st.st_mode)
+        or st.st_uid != 0
+        or (stat.S_IMODE(st.st_mode) & 0o022)
+    ):
+        raise SystemExit(f"wheelhouse ancestor is writable or not root-owned: {ancestor}")
+
+wheels = []
+for wheel in sorted(root.glob("*.whl")):
+    st = wheel.lstat()
+    if (
+        not stat.S_ISREG(st.st_mode)
+        or st.st_uid != 0
+        or st.st_nlink != 1
+        or (stat.S_IMODE(st.st_mode) & 0o022)
+    ):
+        raise SystemExit(f"wheelhouse wheel is unsafe: {wheel}")
+    wheels.append(
+        {
+            "name": wheel.name,
+            "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+            "size": st.st_size,
+            "dev": st.st_dev,
+            "ino": st.st_ino,
+            "mode": stat.S_IMODE(st.st_mode),
+            "uid": st.st_uid,
+            "gid": st.st_gid,
+            "nlink": st.st_nlink,
+        }
+    )
+if not wheels:
+    raise SystemExit("trusted offline wheelhouse has no wheels")
+print(json.dumps({"root": str(root), "wheels": wheels}, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+verify_wheelhouse_snapshot() {
+  local path="$1"
+  local expected="$2"
+  local actual
+  actual="$(snapshot_wheelhouse "${path}")"
+  if [[ "${actual}" != "${expected}" ]]; then
+    die "trusted offline wheelhouse changed during root pip execution"
+  fi
+}
+
+require_root_locked_dir "${WHEELHOUSE}"
+WHEELHOUSE_SNAPSHOT="$(snapshot_wheelhouse "${WHEELHOUSE}")"
+
+run_source_git() {
+  /usr/bin/sudo -H -u "#${source_uid}" -- /usr/bin/git -C "${SOURCE_ROOT}" "$@"
+}
+
+revision="$(run_source_git rev-parse HEAD)"
+if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  die "source revision is invalid"
+fi
+
+cleanup() {
+  local status="$?"
+  set +e
+  if ! trusted_release_transaction reconcile; then
+    echo "trusted release recovery remains pending; rerun the installer after correcting the reported collision" >&2
+  fi
+  return "${status}"
+}
+trap cleanup EXIT
+
+trusted_release_transaction begin "${revision}"
+if ! run_source_git diff-index --quiet "${revision}" --; then
+  die "source checkout must be clean before trusted release install"
+fi
+run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
+/usr/bin/chown root:root "${ARCHIVE}"
+/usr/bin/chmod 0600 "${ARCHIVE}"
+
+/usr/bin/install -d -o root -g root -m 0700 "${STAGING}"
+/usr/bin/tar -x -f "${ARCHIVE}" -C "${STAGING}"
+/usr/bin/chown -R root:root "${STAGING}"
+/usr/bin/find "${STAGING}" -type d -exec /usr/bin/chmod 0755 {} +
+/usr/bin/find "${STAGING}" -type f -exec /usr/bin/chmod 0644 {} +
+/usr/bin/chmod 0700 "${STAGING}"
+/usr/bin/chmod 0755 "${STAGING}/scripts/ktdctl-map-ui-auth-rotate" \
+  "${STAGING}/scripts/install-ktdctl-map-ui-auth-rotate" \
+  "${STAGING}/scripts/install-ktdm-trusted-release"
+
+/usr/bin/printf '%s\n' "${revision}" > "${STAGING}/.ktdm-source-revision"
+/usr/bin/chown root:root "${STAGING}/.ktdm-source-revision"
+/usr/bin/chmod 0644 "${STAGING}/.ktdm-source-revision"
+
+/usr/bin/python3 -m venv "${STAGING}/backend/.venv"
+/usr/bin/install -d -o root -g root -m 0755 "${STAGING}/.wheelhouse"
+verify_wheelhouse_snapshot "${WHEELHOUSE}" "${WHEELHOUSE_SNAPSHOT}"
+"${STAGING}/backend/.venv/bin/python" -I -m pip wheel \
+  --no-index \
+  --find-links "${WHEELHOUSE}" \
+  --wheel-dir "${STAGING}/.wheelhouse" \
+  "${STAGING}/backend"
+verify_wheelhouse_snapshot "${WHEELHOUSE}" "${WHEELHOUSE_SNAPSHOT}"
+shopt -s nullglob
+built_backend_wheels=("${STAGING}"/.wheelhouse/kor_travel_docker_manager_backend-*.whl)
+shopt -u nullglob
+if [[ "${#built_backend_wheels[@]}" != "1" ]]; then
+  die "trusted release build must produce exactly one manager backend wheel"
+fi
+verify_wheelhouse_snapshot "${WHEELHOUSE}" "${WHEELHOUSE_SNAPSHOT}"
+"${STAGING}/backend/.venv/bin/python" -I -m pip install \
+  --no-index \
+  --find-links "${WHEELHOUSE}" \
+  --find-links "${STAGING}/.wheelhouse" \
+  "${built_backend_wheels[0]}"
+verify_wheelhouse_snapshot "${WHEELHOUSE}" "${WHEELHOUSE_SNAPSHOT}"
+
+/usr/bin/python3 -I -S - "${STAGING}" "${APP_ROOT}" <<'PY'
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import io
+import pathlib
+import sys
+
+staging = pathlib.Path(sys.argv[1]).resolve(strict=True)
+app_root = pathlib.Path(sys.argv[2])
+site_packages_candidates = list(
+    (staging / "backend" / ".venv" / "lib").glob("python*/site-packages")
+)
+if len(site_packages_candidates) != 1:
+    raise SystemExit("trusted release site-packages is ambiguous")
+site_packages = site_packages_candidates[0]
+dist_infos = list(
+    site_packages.glob("kor_travel_docker_manager_backend-*.dist-info")
+)
+if len(dist_infos) != 1:
+    raise SystemExit("trusted release dist-info is ambiguous")
+record = dist_infos[0] / "RECORD"
+entrypoint = staging / "backend" / ".venv" / "bin" / "ktdctl"
+payload = entrypoint.read_bytes()
+lines = payload.splitlines(keepends=True)
+expected_shebang = f"#!{staging}/backend/.venv/bin/python".encode("utf-8")
+if not lines or lines[0].rstrip(b"\r\n") != expected_shebang:
+    raise SystemExit("trusted release entrypoint shebang is unexpected")
+rewritten = (
+    f"#!{app_root}/backend/.venv/bin/python\n"
+    "import os\n"
+    "import sys\n"
+    f'os.environ["KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"] = "{app_root}"\n'
+    "from kor_travel_docker_manager.cli import main\n"
+    'if __name__ == "__main__":\n'
+    "    raise SystemExit(main())\n"
+).encode("utf-8")
+entrypoint.write_bytes(rewritten)
+
+rows = list(csv.reader(record.read_text(encoding="utf-8").splitlines()))
+entrypoint_rows = 0
+for row in rows:
+    if len(row) < 3:
+        raise SystemExit("wheel RECORD row is invalid")
+    target = (site_packages / row[0]).resolve(strict=True)
+    if target != entrypoint:
+        continue
+    entrypoint_rows += 1
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(rewritten).digest()).rstrip(b"=")
+    row[1] = f"sha256={encoded.decode('ascii')}"
+    row[2] = str(len(rewritten))
+if entrypoint_rows != 1:
+    raise SystemExit("wheel RECORD must contain exactly one manager entrypoint")
+output = io.StringIO(newline="")
+writer = csv.writer(output, lineterminator="\n")
+writer.writerows(rows)
+record.write_text(output.getvalue(), encoding="utf-8")
+PY
+
+KTDM_SOURCE_OWNER_UID="${source_uid}" \
+KTDM_SOURCE_OWNER_GID="${source_gid}" \
+KTDM_ENV_OWNER_UID="${env_uid}" \
+KTDM_ENV_OWNER_GID="${env_gid}" \
+KTDM_WHEELHOUSE="${WHEELHOUSE}" \
+KTDM_BUILT_BACKEND_WHEEL="${built_backend_wheels[0]}" \
+/usr/bin/python3 -I -S - "${STAGING}" "${revision}" <<'PY'
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+from datetime import UTC, datetime
+
+root = pathlib.Path(sys.argv[1]).resolve(strict=True)
+revision = sys.argv[2]
+env_uid = int(os.environ["KTDM_ENV_OWNER_UID"])
+env_gid = int(os.environ["KTDM_ENV_OWNER_GID"])
+wheelhouse = pathlib.Path(os.environ["KTDM_WHEELHOUSE"]).resolve(strict=True)
+built_backend_wheel = pathlib.Path(os.environ["KTDM_BUILT_BACKEND_WHEEL"]).resolve(strict=True)
+site_packages_candidates = list((root / "backend" / ".venv" / "lib").glob(
+    "python*/site-packages"
+))
+if len(site_packages_candidates) != 1:
+    raise SystemExit("trusted release site-packages is ambiguous")
+site_packages = site_packages_candidates[0]
+package_dir = site_packages / "kor_travel_docker_manager"
+dist_infos = list(site_packages.glob("kor_travel_docker_manager_backend-*.dist-info"))
+if len(dist_infos) != 1:
+    raise SystemExit("trusted release dist-info is ambiguous")
+dist_info = dist_infos[0]
+record = dist_info / "RECORD"
+venv_root = site_packages.parent.parent.parent
+expected_entrypoint = venv_root / "bin" / "ktdctl"
+
+def assert_root_locked(path: pathlib.Path, *, regular_file: bool = False) -> None:
+    st = path.lstat()
+    if stat.S_ISLNK(st.st_mode):
+        raise SystemExit(f"trusted release path is a symlink: {path}")
+    if regular_file and not stat.S_ISREG(st.st_mode):
+        raise SystemExit(f"trusted release path is not a regular file: {path}")
+    if st.st_uid != 0 or (stat.S_IMODE(st.st_mode) & 0o022):
+        raise SystemExit(f"trusted release path is writable or not root-owned: {path}")
+    if stat.S_ISREG(st.st_mode) and st.st_nlink != 1:
+        raise SystemExit(f"trusted release file has hardlinks: {path}")
+
+for required in (
+    root,
+    root / "docker-compose.yml",
+    root / ".ktdm-source-revision",
+    site_packages,
+    package_dir,
+    dist_info,
+    record,
+    wheelhouse,
+    built_backend_wheel,
+):
+    assert_root_locked(
+        required,
+        regular_file=required in {
+            root / "docker-compose.yml",
+            root / ".ktdm-source-revision",
+            record,
+            built_backend_wheel,
+        },
+    )
+
+wheelhouse_hash = hashlib.sha256()
+for wheel in sorted(wheelhouse.glob("*.whl")):
+    assert_root_locked(wheel, regular_file=True)
+    wheelhouse_hash.update(wheel.name.encode("utf-8") + b"\0")
+    wheelhouse_hash.update(hashlib.sha256(wheel.read_bytes()).hexdigest().encode("ascii"))
+    wheelhouse_hash.update(b"\0")
+
+record_hash = hashlib.sha256(record.read_bytes()).hexdigest()
+package_files = 0
+with record.open(newline="", encoding="utf-8") as handle:
+    for row in csv.reader(handle):
+        if len(row) < 3:
+            raise SystemExit("wheel RECORD row is invalid")
+        relative, digest, _size = row[:3]
+        target = (site_packages / relative).resolve(strict=True)
+        try:
+            target.relative_to(site_packages)
+        except ValueError as exc:
+            if target != expected_entrypoint:
+                raise SystemExit("wheel RECORD escapes site-packages") from exc
+        assert_root_locked(target)
+        if package_dir == target or package_dir in target.parents:
+            package_files += 1
+        if digest:
+            algorithm, separator, encoded = digest.partition("=")
+            if separator != "=" or algorithm != "sha256":
+                raise SystemExit("wheel RECORD digest must be sha256")
+            actual = hashlib.sha256(target.read_bytes()).digest()
+            expected = base64.urlsafe_b64decode(
+                encoded + "=" * (-len(encoded) % 4)
+            )
+            if actual != expected:
+                raise SystemExit(f"wheel RECORD digest mismatch: {relative}")
+if package_files == 0:
+    raise SystemExit("wheel RECORD does not cover manager package")
+
+manifest = {
+    "manager_source_revision": revision,
+    "installed_at": datetime.now(UTC).isoformat(),
+    "source_owner_uid": int(os.environ["KTDM_SOURCE_OWNER_UID"]),
+    "source_owner_gid": int(os.environ["KTDM_SOURCE_OWNER_GID"]),
+    "env_owner_uid": env_uid,
+    "env_owner_gid": env_gid,
+    "backend_distribution": dist_info.name,
+    "backend_wheel_sha256": hashlib.sha256(built_backend_wheel.read_bytes()).hexdigest(),
+    "wheel_record_sha256": record_hash,
+    "wheelhouse_sha256": wheelhouse_hash.hexdigest(),
+}
+(root / ".ktdm-release-manifest.json").write_text(
+    json.dumps(manifest, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+os.chown(root / ".ktdm-release-manifest.json", 0, 0)
+os.chmod(root / ".ktdm-release-manifest.json", 0o644)
+PY
+
+/usr/bin/python3 -I -S - "${STAGING}" <<'PY'
+from __future__ import annotations
+
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+seen: set[pathlib.Path] = set()
+for path in (
+    root,
+    root / ".ktdm-source-revision",
+    root / ".ktdm-release-manifest.json",
+    root / "docker-compose.yml",
+    root / "backend" / ".venv",
+):
+    directory = path if path.is_dir() else path.parent
+    if directory in seen:
+        continue
+    seen.add(directory)
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+PY
+
+ENV_FILE_SNAPSHOT_BEFORE_COPY="$(snapshot_env_file "${ENV_FILE}")"
+ENV_FD_SNAPSHOT_BEFORE_COPY="$(snapshot_env_fd "${env_fd}")"
+if (
+  [[ "${ENV_FILE_SNAPSHOT_BEFORE_COPY}" != "${expected_env_snapshot}" ]] ||
+  [[ "${ENV_FD_SNAPSHOT_BEFORE_COPY}" != "${expected_env_snapshot}" ]]
+); then
+  die "deployment .env changed before trusted release staging"
+fi
+
+/usr/bin/python3 -I -S - \
+  "${env_fd}" \
+  "${STAGING}/.env" \
+  "${env_uid}" \
+  "${env_gid}" \
+  "${expected_env_snapshot}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+source_fd = int(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+env_uid = int(sys.argv[3])
+env_gid = int(sys.argv[4])
+expected = json.loads(sys.argv[5])
+parent_stat = destination.parent.lstat()
+if (
+    not stat.S_ISDIR(parent_stat.st_mode)
+    or parent_stat.st_uid != 0
+    or stat.S_IMODE(parent_stat.st_mode) != 0o700
+):
+    raise SystemExit("trusted release staging root is unsafe")
+before = os.fstat(source_fd)
+os.lseek(source_fd, 0, os.SEEK_SET)
+flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+destination_fd = os.open(destination, flags, 0o600)
+digest = hashlib.sha256()
+size = 0
+try:
+    os.fchown(destination_fd, env_uid, env_gid)
+    os.fchmod(destination_fd, 0o600)
+    while chunk := os.read(source_fd, 1024 * 1024):
+        digest.update(chunk)
+        size += len(chunk)
+        view = memoryview(chunk)
+        while view:
+            written = os.write(destination_fd, view)
+            if written <= 0:
+                raise SystemExit("deployment .env staging write made no progress")
+            view = view[written:]
+    os.fsync(destination_fd)
+    destination_stat = os.fstat(destination_fd)
+finally:
+    os.close(destination_fd)
+after = os.fstat(source_fd)
+actual = {
+    "dev": before.st_dev,
+    "ino": before.st_ino,
+    "mode": stat.S_IMODE(before.st_mode),
+    "uid": before.st_uid,
+    "gid": before.st_gid,
+    "nlink": before.st_nlink,
+    "size": before.st_size,
+    "mtime_ns": before.st_mtime_ns,
+    "ctime_ns": before.st_ctime_ns,
+    "sha256": digest.hexdigest(),
+}
+if actual != expected or (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+) != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    raise SystemExit("deployment .env descriptor changed during staging")
+if (
+    not stat.S_ISREG(destination_stat.st_mode)
+    or destination_stat.st_uid != env_uid
+    or destination_stat.st_gid != env_gid
+    or destination_stat.st_nlink != 1
+    or stat.S_IMODE(destination_stat.st_mode) != 0o600
+    or destination_stat.st_size != size
+):
+    raise SystemExit("staged deployment .env evidence is invalid")
+directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_CLOEXEC)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+
+ENV_FILE_SNAPSHOT_AFTER_COPY="$(snapshot_env_file "${ENV_FILE}")"
+ENV_FD_SNAPSHOT_AFTER_COPY="$(snapshot_env_fd "${env_fd}")"
+if (
+  [[ "${ENV_FILE_SNAPSHOT_AFTER_COPY}" != "${expected_env_snapshot}" ]] ||
+  [[ "${ENV_FD_SNAPSHOT_AFTER_COPY}" != "${expected_env_snapshot}" ]]
+); then
+  die "deployment .env changed during trusted release staging"
+fi
+
+new_launcher_sha256="$(/usr/bin/sha256sum "${STAGING}/scripts/ktdctl-map-ui-auth-rotate" | /usr/bin/cut -d ' ' -f 1)"
+trusted_release_transaction set-new-launcher "${new_launcher_sha256}"
+if [[ -e "${APP_ROOT}" ]]; then
+  /usr/bin/mv -T "${APP_ROOT}" "${ROLLBACK}"
+fi
+if [[ -e "${LAUNCHER_PATH}" ]]; then
+  /usr/bin/mv -T "${LAUNCHER_PATH}" "${LAUNCHER_ROLLBACK}"
+fi
+/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
+/usr/bin/chmod 0755 "${APP_ROOT}"
+INSTALLED_ENV_SNAPSHOT="$(snapshot_env_file "${APP_ROOT}/.env")"
+/usr/bin/python3 -I -S - \
+  "${expected_env_snapshot}" \
+  "${INSTALLED_ENV_SNAPSHOT}" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+expected = json.loads(sys.argv[1])
+installed = json.loads(sys.argv[2])
+copy_contract = ("mode", "uid", "gid", "nlink", "size", "sha256")
+if any(installed[key] != expected[key] for key in copy_contract):
+    raise SystemExit("installed deployment .env does not match validated evidence")
+PY
+/usr/bin/python3 - <<'PY'
+from __future__ import annotations
+
+import os
+
+fd = os.open("/opt", os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+
+"${APP_ROOT}/scripts/install-ktdctl-map-ui-auth-rotate" "${APP_ROOT}/scripts/ktdctl-map-ui-auth-rotate"
+/usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null
+
+trusted_release_transaction commit
+trap - EXIT
+if ! trusted_release_transaction reconcile; then
+  echo "trusted release committed; post-commit cleanup requires attention" >&2
+fi
