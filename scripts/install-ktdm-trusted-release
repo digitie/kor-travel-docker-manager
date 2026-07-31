@@ -385,7 +385,12 @@ def remove_tree(path: pathlib.Path, expected: dict[str, Any] | None = None) -> N
     fsync_dir(path.parent)
 
 
-def remove_transaction_tree(path: pathlib.Path, state: dict[str, Any]) -> None:
+def remove_tree_by_identity(
+    path: pathlib.Path,
+    *,
+    expected_dev: int,
+    expected_ino: int,
+) -> None:
     if not path.exists() and not path.is_symlink():
         return
     metadata = path.lstat()
@@ -393,12 +398,20 @@ def remove_transaction_tree(path: pathlib.Path, state: dict[str, Any]) -> None:
         not stat.S_ISDIR(metadata.st_mode)
         or metadata.st_uid != 0
         or stat.S_IMODE(metadata.st_mode) & 0o022
-        or metadata.st_dev != state.get("new_app_root_dev")
-        or metadata.st_ino != state.get("new_app_root_ino")
+        or metadata.st_dev != expected_dev
+        or metadata.st_ino != expected_ino
     ):
         raise SystemExit(f"foreign app root blocks trusted release recovery: {path}")
     shutil.rmtree(path)
     fsync_dir(path.parent)
+
+
+def remove_transaction_tree(path: pathlib.Path, state: dict[str, Any]) -> None:
+    remove_tree_by_identity(
+        path,
+        expected_dev=state["new_app_root_dev"],
+        expected_ino=state["new_app_root_ino"],
+    )
 
 
 def exact_match(actual: dict[str, Any], expected: dict[str, Any]) -> bool:
@@ -449,9 +462,13 @@ def reconcile_committed(state: dict[str, Any]) -> None:
     old_app = state["old_app"]
     old_launcher = state["old_launcher"]
     if rollback.exists() or rollback.is_symlink():
-        if not old_app.get("present") or app_evidence(rollback) != old_app:
+        if not old_app.get("present"):
             raise SystemExit("committed rollback app residue is invalid")
-        remove_tree(rollback, old_app)
+        remove_tree_by_identity(
+            rollback,
+            expected_dev=old_app["root_dev"],
+            expected_ino=old_app["root_ino"],
+        )
     if staging.exists() or staging.is_symlink():
         raise SystemExit("committed transaction unexpectedly retained staging")
     if launcher_rollback.exists() or launcher_rollback.is_symlink():
