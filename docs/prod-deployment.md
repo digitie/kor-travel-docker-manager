@@ -173,7 +173,10 @@ Map UI credential rotation은 user-writable checkout이나 venv를 `sudo`로 직
 recorded revision과 source bytes가 달라질 수 없다. installer는 canonical `.env`의
 identity·mode·owner·SHA snapshot을 잡은 뒤 rotation/pair workflow와 같은 root-only
 `/run/lock/kor-travel-docker-manager/global-mutation.lock`을 nonblocking으로 획득하고, lock 내부에서
-snapshot을 exact 재검증한다. lock은 source archive부터 app root·launcher activation/rollback
+snapshot을 exact 재검증한다. 이때 canonical `.env`를 `O_NOFOLLOW` read-only FD로 한 번 열어
+validated identity와 exact bytes를 설치 종료까지 유지한다. root-only 0700 staging의 `.env`는
+경로 재조회나 일반 file copy가 아니라 그 held FD에서만 만들고, copy 전후 경로·descriptor와
+설치된 owner/mode/nlink/size/SHA를 다시 확인한다. lock은 source archive부터 app root·launcher activation/rollback
 종료까지 유지되므로 credential rotation과 두 installer가 서로의 state를 되감을 수 없다. staging은
 `/opt/.kor-travel-docker-manager.stage.*`에 root-owned/non-writable source·compose·
 `.ktdm-source-revision`·isolated backend wheel venv·`.ktdm-release-manifest.json`을 만든 뒤
@@ -186,6 +189,9 @@ root를 제거하고 기존 app root와 이전 launcher bytes/mode를 rollback�
 실행하기 전에 wheelhouse의 전체 ancestor와 각 wheel의 owner/mode/nlink/inode/digest를 snapshot하고,
 build·install 각 단계 뒤 같은 snapshot인지 다시 확인한다. 기본 wheelhouse는 root-private
 `/var/lib/kor-travel-docker-manager/wheelhouse`이며 user-writable 경로는 허용하지 않는다.
+새 app root와 launcher self-check가 모두 끝나면 rollback trap부터 해제해 active release를 commit하고,
+이전 app/archive/launcher backup 삭제는 post-commit best-effort로 수행한다. backup GC가 실패해도
+이미 검증한 active release를 되돌리거나 삭제하지 않는다.
 
 root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate`는 `scripts/install-ktdctl-map-ui-auth-rotate`가
 staging 파일을 fsync한 뒤 설치한다. launcher는 `/usr/local/sbin`, `/opt`, app root, source evidence,

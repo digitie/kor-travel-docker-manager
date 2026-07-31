@@ -98,7 +98,21 @@ Python과 project root를 고정하는 entrypoint로 다시 만들고 해당 whe
 재산출해, atomic activation 뒤에도 직접 CLI와 trusted rotation launcher가 모두 같은 installed
 root를 사용한다.
 
-최종 로컬 회귀는 backend 1,145건, C6c deployment 856건, Docker config 92건, credential
+다섯 번째 exact-head 적대적 리뷰는 installer가 `.env` snapshot 검증 뒤 경로를 다시 열어
+복사하는 TOCTOU, 일반 config mutation이 lock 밖에서 읽은 stale secret interpolation baseline을
+사용하는 문제, 새 release 검증 뒤 이전 backup 삭제 실패가 EXIT rollback trap을 다시 발동할 수
+있는 문제를 차단점으로 판정했다. installer는 전역 lock 안에서 canonical `.env`를
+`O_NOFOLLOW` read-only FD로 한 번 열고 identity·mode·owner·SHA를 결박한 뒤, root-only 0700
+staging에 그 descriptor의 exact bytes만 복사하도록 바꿨다. 경로와 descriptor는 copy 전후에
+각각 재검증하고 installed `.env`도 owner/mode/nlink/size/SHA를 확인한다.
+
+DockerService는 lock 안 exact Compose transaction bytes에서 대상 service의 environment baseline을
+다시 읽어 secret interpolation 의미를 재검증한 뒤에만 candidate를 만든다. release commit은
+rollback trap을 먼저 해제한 뒤 state를 terminal로 바꾸며, 이전 app/archive/launcher backup
+삭제는 post-commit best-effort로 분리했다. 실패 경로 cleanup은 `errexit`와 무관하게 이전 app과
+launcher 복구를 끝까지 시도한다.
+
+최종 로컬 회귀는 backend 1,146건, C6c deployment 856건, Docker config 93건, credential
 rotation 64건과 touched Ruff·strict mypy·shell syntax를 통과했다. 수정한 exact clean Git tree로
 Debian disposable container에서
 root-owned offline wheelhouse를 새로 만들고 실제 Poetry backend wheel을 build/install했다.

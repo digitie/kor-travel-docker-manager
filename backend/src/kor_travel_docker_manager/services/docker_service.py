@@ -953,6 +953,27 @@ class DockerService:
             loaded = yaml.safe_load(original_bytes.decode("utf-8")) or {}
             if not isinstance(loaded, dict) or not loaded:
                 return {"success": False, "error": "Failed to read docker-compose.yml."}
+            locked_services = loaded.get("services", {})
+            locked_service = (
+                locked_services.get(svc_name, {})
+                if isinstance(locked_services, dict)
+                else {}
+            )
+            locked_baseline_env = (
+                locked_service.get("environment", {})
+                if isinstance(locked_service, dict)
+                else {}
+            )
+            validate_container_config_update(
+                ports=new_ports,
+                env=new_env,
+                networks=new_networks,
+                baseline_env=(
+                    locked_baseline_env
+                    if isinstance(locked_baseline_env, dict)
+                    else {}
+                ),
+            )
             compose_cfg = deepcopy(loaded)
             baseline_volume_hash = compose_volume_graph_hash(compose_cfg)
 

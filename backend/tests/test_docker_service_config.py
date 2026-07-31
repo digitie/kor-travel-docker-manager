@@ -271,6 +271,57 @@ def test_nontrivial_config_change_runs_candidate_transaction(
     assert forward.call_args.kwargs["transaction"] is candidate
 
 
+def test_locked_config_transaction_revalidates_secret_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compose_path = tmp_path / "docker-compose.yml"
+    current_config: dict[str, object] = {
+        "services": {
+            "kor-travel-geo-postgres": {
+                "image": "postgres:16",
+                "environment": {
+                    "DATABASE_PASSWORD": "${DATABASE_PASSWORD}",
+                },
+                "volumes": [],
+            }
+        }
+    }
+    baseline, baseline_validation = _config_transaction(
+        compose_path,
+        current_config,
+    )
+    compose_path.write_bytes(baseline.compose_source_bytes)
+    compose_path.chmod(baseline.compose_source_mode)
+    monkeypatch.setattr(
+        docker_service_module.compose_service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(baseline, baseline_validation)),
+    )
+    capture_candidate = Mock(
+        side_effect=AssertionError("invalid locked candidate must not be captured")
+    )
+    monkeypatch.setattr(
+        docker_service_module.compose_service,
+        "_capture_candidate_transaction_unlocked",
+        capture_candidate,
+    )
+
+    result = DockerService()._update_container_config_unlocked(
+        "kor-travel-geo-postgresql",
+        [],
+        {"DATABASE_PASSWORD": "new-literal-secret"},
+        [],
+        [],
+        environment_snapshot=baseline.environment,
+    )
+
+    assert result["success"] is False
+    assert "리터럴로 바꾸면" in result["error"]
+    assert compose_path.read_bytes() == baseline.compose_source_bytes
+    capture_candidate.assert_not_called()
+
+
 def test_candidate_failure_restores_exact_baseline_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

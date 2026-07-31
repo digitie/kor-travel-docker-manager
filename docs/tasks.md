@@ -75,7 +75,11 @@
       각 wheel의 owner/mode/nlink/inode/digest를 snapshot하고 각 소비 단계 뒤 exact 재검증한다.
       installer도 rotation/pair workflow와 같은 host-global lock을 source `.env` snapshot부터 app root·
       launcher activation/rollback 종료까지 소유한다. lock 전후 `.env` identity·mode·owner·SHA가
-      달라지면 설치를 시작하지 않으며, 처음 고정한 source revision exact commit만 archive·기록한다.
+      달라지면 설치를 시작하지 않는다. lock 안에서 canonical `.env`를 `O_NOFOLLOW` read-only FD로
+      한 번 열어 exact bytes를 끝까지 보유하고, root-only 0700 staging에는 그 FD에서만 복사한다.
+      따라서 검증 뒤 경로를 바꾸거나 같은 경로에 다른 inode를 끼워도 활성화할 수 없다. 처음 고정한
+      source revision exact commit만 archive·기록하며, 활성 release commit 뒤에는 rollback trap을
+      먼저 해제하고 이전 backup 정리를 post-commit best-effort로 수행한다.
       staging venv의 `ktdctl`은 canonical installed root를 고정한 실행 가능한 entrypoint로 만들고
       바뀐 bytes를 wheel `RECORD` digest·size와 release manifest에 다시 결박한다.
 - [ ] 새 password 평문, PBKDF2 hash, session secret을 argv·stdout/stderr·audit·child
@@ -99,7 +103,9 @@
       `committed`/`rolled_back`/`aborted`로 제한하고 prepared/orphan abort도 결정적 operation ID로
       cleanup crash 재실행에서 한 번만 기록한다.
 - [ ] crash/signal/재실행 recovery journal, foreign container/name collision, `.env` drift,
-      Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다.
+      Compose/runtime drift, auth 실패, rollback 실패의 음성 회귀를 추가한다. 일반 container config
+      변경은 lock 밖 preflight 결과를 신뢰하지 않고 lock 안에서 캡처한 exact Compose baseline으로
+      secret interpolation 의미를 다시 검증한 뒤에만 candidate를 만든다.
 - [ ] 단일 적대적 리뷰, focused/backend 전체 테스트, Ruff, strict mypy, canonical Compose gate,
       CI green을 통과한 별도 코드 PR을 병합한다.
 - [ ] n150에서 전용 command로 실제 회전하고 official compatible-pair deploy, C6c principal

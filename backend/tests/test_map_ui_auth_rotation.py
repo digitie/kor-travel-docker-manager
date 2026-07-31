@@ -1098,7 +1098,11 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     assert "deployment .env changed before trusted installer lock acquisition" in script
     assert 'run_source_git diff-index --quiet "${revision}" --' in script
     assert 'run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"' in script
-    assert "/usr/bin/install -o \"${env_uid}\" -g \"${env_gid}\" -m 0600" in script
+    assert 'environment["KTDM_TRUSTED_INSTALL_ENV_FD"] = str(env_fd)' in script
+    assert '"${env_fd}" \\' in script
+    assert '"${STAGING}/.env" \\' in script
+    assert "deployment .env descriptor changed during staging" in script
+    assert "installed deployment .env does not match validated evidence" in script
     assert "-m pip wheel" in script
     assert "--wheel-dir \"${STAGING}/.wheelhouse\"" in script
     assert "default wheelhouse: /var/lib/kor-travel-docker-manager/wheelhouse" in script
@@ -1128,10 +1132,14 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
     )
     assert "/usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null" in script
     assert script.index("ENV_FILE_SNAPSHOT_AFTER_LOCK=") < script.index(
-        '/usr/bin/install -o "${env_uid}" -g "${env_gid}" -m 0600'
+        "ENV_FD_SNAPSHOT_BEFORE_COPY="
     )
     assert script.index("ENV_FILE_SNAPSHOT_AFTER_LOCK=") < script.index(
         '/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"'
+    )
+    assert "cleanup() {\n  set +e" in script
+    assert script.index("trap - EXIT\nACTIVATED=0") < script.rindex(
+        '/usr/bin/rm -rf "${ROLLBACK}"'
     )
 
 

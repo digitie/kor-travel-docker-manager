@@ -102,6 +102,77 @@ print(
 PY
 }
 
+snapshot_env_fd() {
+  local fd="$1"
+  /usr/bin/python3 -I -S - "${fd}" <<'PY'
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import json
+import os
+import stat
+import sys
+
+fd = int(sys.argv[1])
+if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
+    raise SystemExit("deployment .env descriptor is not read-only")
+os.lseek(fd, 0, os.SEEK_SET)
+before = os.fstat(fd)
+if (
+    not stat.S_ISREG(before.st_mode)
+    or before.st_nlink != 1
+    or stat.S_IMODE(before.st_mode) != 0o600
+):
+    raise SystemExit("deployment .env descriptor is invalid")
+digest = hashlib.sha256()
+while chunk := os.read(fd, 1024 * 1024):
+    digest.update(chunk)
+after = os.fstat(fd)
+identity = (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+)
+if identity != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    raise SystemExit("deployment .env descriptor changed while it was being captured")
+print(
+    json.dumps(
+        {
+            "dev": before.st_dev,
+            "ino": before.st_ino,
+            "mode": stat.S_IMODE(before.st_mode),
+            "uid": before.st_uid,
+            "gid": before.st_gid,
+            "nlink": before.st_nlink,
+            "size": before.st_size,
+            "mtime_ns": before.st_mtime_ns,
+            "ctime_ns": before.st_ctime_ns,
+            "sha256": digest.hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+)
+PY
+}
+
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --env-file)
@@ -151,17 +222,24 @@ fi
 ENV_FILE_SNAPSHOT_BEFORE_LOCK="$(snapshot_env_file "${ENV_FILE}")"
 if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
   export KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT="${ENV_FILE_SNAPSHOT_BEFORE_LOCK}"
-  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ENV_FILE}" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import json
 import os
 import pathlib
 import stat
 import sys
 
 script = pathlib.Path(sys.argv[1]).resolve(strict=True)
-arguments = sys.argv[2:]
+env_path = pathlib.Path(sys.argv[2])
+arguments = sys.argv[3:]
+expected_env_snapshot = os.environ.get(
+    "KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT",
+    "",
+)
 lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
 lock_path = lock_dir / "global-mutation.lock"
 lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -190,16 +268,83 @@ try:
 except BlockingIOError as exc:
     os.close(fd)
     raise SystemExit("another manager mutation is already active") from exc
+if not env_path.is_absolute() or env_path != env_path.resolve(strict=True):
+    os.close(fd)
+    raise SystemExit("deployment .env path must be canonical and contain no symlinks")
+env_flags = os.O_RDONLY | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    env_flags |= os.O_NOFOLLOW
+env_fd = os.open(env_path, env_flags)
+env_before = os.fstat(env_fd)
+if (
+    not stat.S_ISREG(env_before.st_mode)
+    or env_before.st_nlink != 1
+    or stat.S_IMODE(env_before.st_mode) != 0o600
+):
+    os.close(env_fd)
+    os.close(fd)
+    raise SystemExit("deployment .env evidence is invalid")
+env_digest = hashlib.sha256()
+while chunk := os.read(env_fd, 1024 * 1024):
+    env_digest.update(chunk)
+env_after = os.fstat(env_fd)
+env_snapshot = json.dumps(
+    {
+        "dev": env_before.st_dev,
+        "ino": env_before.st_ino,
+        "mode": stat.S_IMODE(env_before.st_mode),
+        "uid": env_before.st_uid,
+        "gid": env_before.st_gid,
+        "nlink": env_before.st_nlink,
+        "size": env_before.st_size,
+        "mtime_ns": env_before.st_mtime_ns,
+        "ctime_ns": env_before.st_ctime_ns,
+        "sha256": env_digest.hexdigest(),
+    },
+    sort_keys=True,
+    separators=(",", ":"),
+)
+if (
+    env_before.st_dev,
+    env_before.st_ino,
+    env_before.st_mode,
+    env_before.st_uid,
+    env_before.st_gid,
+    env_before.st_nlink,
+    env_before.st_size,
+    env_before.st_mtime_ns,
+    env_before.st_ctime_ns,
+) != (
+    env_after.st_dev,
+    env_after.st_ino,
+    env_after.st_mode,
+    env_after.st_uid,
+    env_after.st_gid,
+    env_after.st_nlink,
+    env_after.st_size,
+    env_after.st_mtime_ns,
+    env_after.st_ctime_ns,
+):
+    os.close(env_fd)
+    os.close(fd)
+    raise SystemExit("deployment .env changed while it was being captured")
+if env_snapshot != expected_env_snapshot:
+    os.close(env_fd)
+    os.close(fd)
+    raise SystemExit("deployment .env changed before trusted installer lock acquisition")
 os.set_inheritable(fd, True)
+os.set_inheritable(env_fd, True)
 environment = dict(os.environ)
 environment["KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD"] = str(fd)
+environment["KTDM_TRUSTED_INSTALL_ENV_FD"] = str(env_fd)
 os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
 PY
 fi
 
 lock_fd="${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD}"
-if [[ ! "${lock_fd}" =~ ^[0-9]+$ ]]; then
-  die "production global mutation lock descriptor is invalid"
+env_fd="${KTDM_TRUSTED_INSTALL_ENV_FD:-}"
+if [[ ! "${lock_fd}" =~ ^[0-9]+$ || ! "${env_fd}" =~ ^[0-9]+$ ]]; then
+  die "trusted installer descriptor evidence is invalid"
 fi
 /usr/bin/python3 -I -S - "${lock_fd}" "${GLOBAL_LOCK}" <<'PY'
 from __future__ import annotations
@@ -230,32 +375,23 @@ except BlockingIOError as exc:
 PY
 unset KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD
 
+expected_env_snapshot="${KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT:-}"
 ENV_FILE_SNAPSHOT_AFTER_LOCK="$(snapshot_env_file "${ENV_FILE}")"
-if [[ "${ENV_FILE_SNAPSHOT_AFTER_LOCK}" != "${KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT:-}" ]]; then
+ENV_FD_SNAPSHOT_AFTER_LOCK="$(snapshot_env_fd "${env_fd}")"
+if (
+  [[ "${ENV_FILE_SNAPSHOT_AFTER_LOCK}" != "${expected_env_snapshot}" ]] ||
+  [[ "${ENV_FD_SNAPSHOT_AFTER_LOCK}" != "${expected_env_snapshot}" ]]
+); then
   die "deployment .env changed before trusted installer lock acquisition"
 fi
-unset KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT
+unset KTDM_TRUSTED_INSTALL_EXPECTED_ENV_SNAPSHOT KTDM_TRUSTED_INSTALL_ENV_FD
 
 /usr/bin/install -d -o root -g root -m 0700 "${STATE_ROOT}"
 
 source_uid="$(/usr/bin/stat -c '%u' "${SOURCE_ROOT}")"
 source_gid="$(/usr/bin/stat -c '%g' "${SOURCE_ROOT}")"
-env_uid="$(/usr/bin/stat -c '%u' "${ENV_FILE}")"
-env_gid="$(/usr/bin/stat -c '%g' "${ENV_FILE}")"
-
-require_file_mode() {
-  local path="$1"
-  local mode="$2"
-  if [[ -L "${path}" || ! -f "${path}" ]]; then
-    die "trusted file evidence is not a regular file: ${path}"
-  fi
-  local actual links
-  actual="$(/usr/bin/stat -c '%a' "${path}")"
-  links="$(/usr/bin/stat -c '%h' "${path}")"
-  if [[ "${actual}" != "${mode}" || "${links}" != "1" ]]; then
-    die "trusted file evidence has invalid mode or links: ${path}"
-  fi
-}
+env_uid="$(/usr/bin/python3 -I -S -c 'import json,sys; print(json.loads(sys.argv[1])["uid"])' "${expected_env_snapshot}")"
+env_gid="$(/usr/bin/python3 -I -S -c 'import json,sys; print(json.loads(sys.argv[1])["gid"])' "${expected_env_snapshot}")"
 
 require_root_locked_dir() {
   local path="$1"
@@ -342,7 +478,6 @@ verify_wheelhouse_snapshot() {
   fi
 }
 
-require_file_mode "${ENV_FILE}" "600"
 require_root_locked_dir "${WHEELHOUSE}"
 WHEELHOUSE_SNAPSHOT="$(snapshot_wheelhouse "${WHEELHOUSE}")"
 
@@ -362,6 +497,7 @@ run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
 /usr/bin/chmod 0600 "${ARCHIVE}"
 
 cleanup() {
+  set +e
   /usr/bin/rm -rf "${STAGING}" "${ARCHIVE}"
   if [[ "${ACTIVATED}" == "1" && -d "${APP_ROOT}" ]]; then
     /usr/bin/rm -rf "${APP_ROOT}"
@@ -379,16 +515,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-/usr/bin/install -d -o root -g root -m 0755 "${STAGING}"
+/usr/bin/install -d -o root -g root -m 0700 "${STAGING}"
 /usr/bin/tar -x -f "${ARCHIVE}" -C "${STAGING}"
 /usr/bin/chown -R root:root "${STAGING}"
 /usr/bin/find "${STAGING}" -type d -exec /usr/bin/chmod 0755 {} +
 /usr/bin/find "${STAGING}" -type f -exec /usr/bin/chmod 0644 {} +
+/usr/bin/chmod 0700 "${STAGING}"
 /usr/bin/chmod 0755 "${STAGING}/scripts/ktdctl-map-ui-auth-rotate" \
   "${STAGING}/scripts/install-ktdctl-map-ui-auth-rotate" \
   "${STAGING}/scripts/install-ktdm-trusted-release"
 
-/usr/bin/install -o "${env_uid}" -g "${env_gid}" -m 0600 "${ENV_FILE}" "${STAGING}/.env"
 /usr/bin/printf '%s\n' "${revision}" > "${STAGING}/.ktdm-source-revision"
 /usr/bin/chown root:root "${STAGING}/.ktdm-source-revision"
 /usr/bin/chmod 0644 "${STAGING}/.ktdm-source-revision"
@@ -528,17 +664,6 @@ def assert_root_locked(path: pathlib.Path, *, regular_file: bool = False) -> Non
     if stat.S_ISREG(st.st_mode) and st.st_nlink != 1:
         raise SystemExit(f"trusted release file has hardlinks: {path}")
 
-def assert_env(path: pathlib.Path) -> None:
-    st = path.lstat()
-    if (
-        not stat.S_ISREG(st.st_mode)
-        or st.st_uid != env_uid
-        or st.st_gid != env_gid
-        or st.st_nlink != 1
-        or stat.S_IMODE(st.st_mode) != 0o600
-    ):
-        raise SystemExit("deployment .env evidence is invalid")
-
 for required in (
     root,
     root / "docker-compose.yml",
@@ -559,7 +684,6 @@ for required in (
             built_backend_wheel,
         },
     )
-assert_env(root / ".env")
 
 wheelhouse_hash = hashlib.sha256()
 for wheel in sorted(wheelhouse.glob("*.whl")):
@@ -628,7 +752,6 @@ root = pathlib.Path(sys.argv[1])
 seen: set[pathlib.Path] = set()
 for path in (
     root,
-    root / ".env",
     root / ".ktdm-source-revision",
     root / ".ktdm-release-manifest.json",
     root / "docker-compose.yml",
@@ -645,6 +768,126 @@ for path in (
         os.close(fd)
 PY
 
+ENV_FILE_SNAPSHOT_BEFORE_COPY="$(snapshot_env_file "${ENV_FILE}")"
+ENV_FD_SNAPSHOT_BEFORE_COPY="$(snapshot_env_fd "${env_fd}")"
+if (
+  [[ "${ENV_FILE_SNAPSHOT_BEFORE_COPY}" != "${expected_env_snapshot}" ]] ||
+  [[ "${ENV_FD_SNAPSHOT_BEFORE_COPY}" != "${expected_env_snapshot}" ]]
+); then
+  die "deployment .env changed before trusted release staging"
+fi
+
+/usr/bin/python3 -I -S - \
+  "${env_fd}" \
+  "${STAGING}/.env" \
+  "${env_uid}" \
+  "${env_gid}" \
+  "${expected_env_snapshot}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+source_fd = int(sys.argv[1])
+destination = pathlib.Path(sys.argv[2])
+env_uid = int(sys.argv[3])
+env_gid = int(sys.argv[4])
+expected = json.loads(sys.argv[5])
+parent_stat = destination.parent.lstat()
+if (
+    not stat.S_ISDIR(parent_stat.st_mode)
+    or parent_stat.st_uid != 0
+    or stat.S_IMODE(parent_stat.st_mode) != 0o700
+):
+    raise SystemExit("trusted release staging root is unsafe")
+before = os.fstat(source_fd)
+os.lseek(source_fd, 0, os.SEEK_SET)
+flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+destination_fd = os.open(destination, flags, 0o600)
+digest = hashlib.sha256()
+size = 0
+try:
+    os.fchown(destination_fd, env_uid, env_gid)
+    os.fchmod(destination_fd, 0o600)
+    while chunk := os.read(source_fd, 1024 * 1024):
+        digest.update(chunk)
+        size += len(chunk)
+        view = memoryview(chunk)
+        while view:
+            written = os.write(destination_fd, view)
+            if written <= 0:
+                raise SystemExit("deployment .env staging write made no progress")
+            view = view[written:]
+    os.fsync(destination_fd)
+    destination_stat = os.fstat(destination_fd)
+finally:
+    os.close(destination_fd)
+after = os.fstat(source_fd)
+actual = {
+    "dev": before.st_dev,
+    "ino": before.st_ino,
+    "mode": stat.S_IMODE(before.st_mode),
+    "uid": before.st_uid,
+    "gid": before.st_gid,
+    "nlink": before.st_nlink,
+    "size": before.st_size,
+    "mtime_ns": before.st_mtime_ns,
+    "ctime_ns": before.st_ctime_ns,
+    "sha256": digest.hexdigest(),
+}
+if actual != expected or (
+    before.st_dev,
+    before.st_ino,
+    before.st_mode,
+    before.st_uid,
+    before.st_gid,
+    before.st_nlink,
+    before.st_size,
+    before.st_mtime_ns,
+    before.st_ctime_ns,
+) != (
+    after.st_dev,
+    after.st_ino,
+    after.st_mode,
+    after.st_uid,
+    after.st_gid,
+    after.st_nlink,
+    after.st_size,
+    after.st_mtime_ns,
+    after.st_ctime_ns,
+):
+    raise SystemExit("deployment .env descriptor changed during staging")
+if (
+    not stat.S_ISREG(destination_stat.st_mode)
+    or destination_stat.st_uid != env_uid
+    or destination_stat.st_gid != env_gid
+    or destination_stat.st_nlink != 1
+    or stat.S_IMODE(destination_stat.st_mode) != 0o600
+    or destination_stat.st_size != size
+):
+    raise SystemExit("staged deployment .env evidence is invalid")
+directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_CLOEXEC)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+
+ENV_FILE_SNAPSHOT_AFTER_COPY="$(snapshot_env_file "${ENV_FILE}")"
+ENV_FD_SNAPSHOT_AFTER_COPY="$(snapshot_env_fd "${env_fd}")"
+if (
+  [[ "${ENV_FILE_SNAPSHOT_AFTER_COPY}" != "${expected_env_snapshot}" ]] ||
+  [[ "${ENV_FD_SNAPSHOT_AFTER_COPY}" != "${expected_env_snapshot}" ]]
+); then
+  die "deployment .env changed during trusted release staging"
+fi
+
 if [[ -e "${ROLLBACK}" ]]; then
   die "rollback staging path already exists"
 fi
@@ -654,8 +897,24 @@ fi
 if [[ -e "${LAUNCHER_PATH}" ]]; then
   /usr/bin/cp -a "${LAUNCHER_PATH}" "${LAUNCHER_ROLLBACK}"
 fi
-/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
 ACTIVATED=1
+/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
+/usr/bin/chmod 0755 "${APP_ROOT}"
+INSTALLED_ENV_SNAPSHOT="$(snapshot_env_file "${APP_ROOT}/.env")"
+/usr/bin/python3 -I -S - \
+  "${expected_env_snapshot}" \
+  "${INSTALLED_ENV_SNAPSHOT}" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+expected = json.loads(sys.argv[1])
+installed = json.loads(sys.argv[2])
+copy_contract = ("mode", "uid", "gid", "nlink", "size", "sha256")
+if any(installed[key] != expected[key] for key in copy_contract):
+    raise SystemExit("installed deployment .env does not match validated evidence")
+PY
 /usr/bin/python3 - <<'PY'
 from __future__ import annotations
 
@@ -671,5 +930,8 @@ PY
 "${APP_ROOT}/scripts/install-ktdctl-map-ui-auth-rotate" "${APP_ROOT}/scripts/ktdctl-map-ui-auth-rotate"
 /usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null
 
-/usr/bin/rm -rf "${ROLLBACK}" "${ARCHIVE}" "${LAUNCHER_ROLLBACK}"
 trap - EXIT
+ACTIVATED=0
+if ! /usr/bin/rm -rf "${ROLLBACK}" "${ARCHIVE}" "${LAUNCHER_ROLLBACK}"; then
+  echo "trusted release committed; post-commit cleanup requires attention" >&2
+fi
