@@ -503,12 +503,16 @@ cleanup() {
     /usr/bin/rm -rf "${APP_ROOT}"
   fi
   if [[ -d "${ROLLBACK}" && ! -d "${APP_ROOT}" ]]; then
-    /usr/bin/mv -T "${ROLLBACK}" "${APP_ROOT}"
+    if ! /usr/bin/mv -T "${ROLLBACK}" "${APP_ROOT}"; then
+      echo "failed to restore previous app root; rollback residue preserved at ${ROLLBACK}" >&2
+    fi
   elif [[ -d "${ROLLBACK}" ]]; then
-    /usr/bin/rm -rf "${ROLLBACK}"
+    echo "active app root still exists; rollback residue preserved at ${ROLLBACK}" >&2
   fi
   if [[ -e "${LAUNCHER_ROLLBACK}" ]]; then
-    /usr/bin/mv -f "${LAUNCHER_ROLLBACK}" "${LAUNCHER_PATH}"
+    if ! /usr/bin/mv -f "${LAUNCHER_ROLLBACK}" "${LAUNCHER_PATH}"; then
+      echo "failed to restore previous launcher; rollback residue preserved at ${LAUNCHER_ROLLBACK}" >&2
+    fi
   elif [[ "${ACTIVATED}" == "1" ]]; then
     /usr/bin/rm -f "${LAUNCHER_PATH}"
   fi

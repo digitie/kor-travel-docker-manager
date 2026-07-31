@@ -1138,6 +1138,9 @@ def test_trusted_release_installer_uses_staged_git_archive_and_preserves_env():
         '/usr/bin/mv -T "${STAGING}" "${APP_ROOT}"'
     )
     assert "cleanup() {\n  set +e" in script
+    cleanup = script[script.index("cleanup() {") : script.index("trap cleanup EXIT")]
+    assert '/usr/bin/rm -rf "${ROLLBACK}"' not in cleanup
+    assert "rollback residue preserved" in cleanup
     assert script.index("trap - EXIT\nACTIVATED=0") < script.rindex(
         '/usr/bin/rm -rf "${ROLLBACK}"'
     )
