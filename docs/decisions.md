@@ -1182,6 +1182,14 @@ critical section에서 수행한다. 명시적으로 lock을 재획득하는 재
 rollback pair, initial receipt를 전부 refreeze해 journal transaction identity와 다시 대조한다. mixed/foreign
 evidence는 자동 덮어쓰지 않는다.
 
+production 실행 권한은 코드에 추적되는 단일 pin manifest로 추가 결박한다. manifest는 contract generation,
+Map OpenAPI SHA-256, Map functional owner revision, PinVi reviewed candidate와 별도의 PinVi release revision을
+기록한다. reviewed candidate는 감사 정보일 뿐 실행 가능한 release fallback이 아니다. 두 적대적 GO review와
+PinVi merge SHA가 확정되기 전에는 release를 비워 두고 initial/enable 및 compatible-pair capture/deploy/
+rollback을 모두 mutation 전에 차단한다. 최종 pin commit 뒤에도 active와 rollback pair 모두 exact PinVi
+release provenance를 가져야 한다. cache-target contract가 미설정인 기존 C6c 배포에는 이 추가 gate를
+적용하지 않는다.
+
 ### 근거
 
 - default-off runner는 ordinary lifespan worker와 최초 snapshot/backfill의 lease 경쟁을 제거한다.
@@ -1201,6 +1209,8 @@ evidence는 자동 덮어쓰지 않는다.
   검증한다.
 - 같은 active image 재생성과 full pair attestation은 환경 전환을 image generation 변경과 분리하면서도
   compatible-pair 정합성을 유지한다.
+- candidate와 release를 분리한 tracked gate는 review 중인 commit이 운영 pair로 조용히 승격되는 것을 막고,
+  release 확정 전 모든 mutation을 결정적으로 차단한다.
 
 ### 결과(긍정)
 

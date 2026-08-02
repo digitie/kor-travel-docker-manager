@@ -154,6 +154,7 @@ def execute_cache_target_causal_canary(
         "--timeout-seconds",
         str(timeout_seconds),
     )
+    timed_out = False
     try:
         completed = (
             docker_exec(command)
@@ -167,13 +168,15 @@ def execute_cache_target_causal_canary(
             )
         )
     except subprocess.TimeoutExpired:
-        raise DeploymentContractError(
-            "cache-target causal canary docker exec timed out"
-        ) from None
+        timed_out = True
     except OSError as exc:
         raise DeploymentContractError(
             "cache-target causal canary docker exec failed"
         ) from exc
+    if timed_out:
+        raise DeploymentContractError(
+            "cache-target causal canary docker exec timed out"
+        )
     if completed.returncode != 0 or completed.stderr:
         raise DeploymentContractError("cache-target causal canary docker exec failed")
     return parse_cache_target_causal_canary_receipt(completed.stdout)

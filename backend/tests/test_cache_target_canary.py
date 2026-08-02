@@ -162,3 +162,4 @@ def test_causal_canary_real_docker_exec_has_bounded_redacted_timeout(
     assert observed_timeout == [150]
     assert "raw-secret" not in str(raised.value)
     assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None

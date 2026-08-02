@@ -102,6 +102,9 @@ from kor_travel_docker_manager.services.cache_target_enable import (
     read_enable_cutover_journal,
     replace_canonical_env_file,
 )
+from kor_travel_docker_manager.services.cache_target_production_manifest import (
+    require_cache_target_production_release,
+)
 from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
@@ -197,6 +200,21 @@ def _enable_journal_process_result(
         "cutover_id": cutover_id,
         "phase": phase,
     }
+
+
+def _require_cache_target_release(
+    config: C6cDeploymentConfig,
+    *,
+    pairs: tuple[CompatibleImagePair, ...] = (),
+    candidate_source_revision: str | None = None,
+) -> None:
+    if config.cache_target is None:
+        return
+    require_cache_target_production_release(
+        config.cache_target,
+        pairs=pairs,
+        candidate_source_revision=candidate_source_revision,
+    )
 
 
 def _derive_c6c_build_provenance(
@@ -3415,6 +3433,7 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible-pair deploy is available only in production mode"
                 )
+            _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
                     transaction.environment.effective,
@@ -3423,6 +3442,11 @@ class ComposeService:
                 if build
                 else None
             )
+            if build_provenance is not None:
+                _require_cache_target_release(
+                    config,
+                    candidate_source_revision=build_provenance.pinvi_source_revision,
+                )
             return self._ensure_production_pinvi_target(
                 "pinvi",
                 config=config,
@@ -3497,6 +3521,10 @@ class ComposeService:
                 raise DeploymentContractError(
                     "cache-target cutover requires an attested rollback pair"
                 )
+            _require_cache_target_release(
+                config,
+                pairs=(manifest.active, manifest.rollback),
+            )
             attestor = pair_contract_attestor or self._attest_cache_target_pair
             attestor(config, manifest, transaction)
             evidence = CacheTargetFrozenEvidence(
@@ -3623,6 +3651,7 @@ class ComposeService:
                 raise DeploymentContractError(
                     "cache-target enable requires the production contract"
                 )
+            _require_cache_target_release(config)
             self._validate_resolved_compose_contract(
                 config,
                 transaction=transaction,
@@ -3744,6 +3773,10 @@ class ComposeService:
                     raise DeploymentContractError(
                         "cache-target enable requires an attested rollback pair"
                     )
+                _require_cache_target_release(
+                    current_config,
+                    pairs=(current_manifest.active, current_manifest.rollback),
+                )
                 if (
                     hashlib.sha256(current.compose_source_bytes).hexdigest()
                     != receipt.evidence.raw_compose_sha256
@@ -3882,6 +3915,10 @@ class ComposeService:
         manifest: CompatiblePairManifest,
         transaction: ComposeTransactionSnapshot,
     ) -> None:
+        _require_cache_target_release(
+            config,
+            pairs=(manifest.active, manifest.rollback),
+        )
         services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
         self._require_services_ready(
             services,
@@ -4183,6 +4220,10 @@ class ComposeService:
                 "compatible-pair transaction has no manifest path"
             )
         manifest = load_pair_manifest(transaction.manifest_path)
+        _require_cache_target_release(
+            config,
+            pairs=(manifest.rollback, manifest.active),
+        )
         for pair in (manifest.rollback, manifest.active):
             if pair.contract_generation != config.contract_generation:
                 raise DeploymentContractError(
@@ -4293,14 +4334,16 @@ class ComposeService:
                 "C6c build flag and source provenance must be provided together"
             )
         if build_provenance is None:
-            return (
-                self._inspect_c6c_candidate_pair(
-                    config,
-                    environment_override=None,
-                    transaction=transaction,
-                ),
-                None,
+            pair = self._inspect_c6c_candidate_pair(
+                config,
+                environment_override=None,
+                transaction=transaction,
             )
+            _require_cache_target_release(
+                config,
+                candidate_source_revision=pair.pinvi_source_revision,
+            )
+            return pair, None
         self._revalidate_c6c_build_provenance(
             build_provenance,
             transaction=transaction,
@@ -4337,6 +4380,10 @@ class ComposeService:
                 transaction=transaction,
             )
         self._require_expected_source_provenance(pair, build_provenance)
+        _require_cache_target_release(
+            config,
+            candidate_source_revision=pair.pinvi_source_revision,
+        )
         return pair, build_result
 
     def _inspect_c6c_candidate_pair(
@@ -5005,6 +5052,7 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible pair capture is available only in production mode"
                 )
+            _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
                     transaction.environment.effective,
@@ -5013,6 +5061,11 @@ class ComposeService:
                 if build
                 else None
             )
+            if build_provenance is not None:
+                _require_cache_target_release(
+                    config,
+                    candidate_source_revision=build_provenance.pinvi_source_revision,
+                )
             self._validate_resolved_compose_contract(
                 config,
                 transaction=transaction,
@@ -5480,6 +5533,10 @@ class ComposeService:
             manifest = load_pair_manifest(manifest_path)
             active_at_start = manifest.active
             rollback = manifest.rollback
+            _require_cache_target_release(
+                config,
+                pairs=(active_at_start, rollback),
+            )
             for pair in (active_at_start, rollback):
                 if pair.contract_generation != config.contract_generation:
                     raise DeploymentContractError(

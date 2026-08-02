@@ -191,6 +191,13 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       external system을 원문 token과 교차 검증한다. registry는 정확히 네 principal, role별 최소 scope,
       `["pinvi"]`만 허용하고 extra principal/scope/system을 거부한다. registry JSON과 digest를 포함해
       raw/resolved/runtime 비인가 노출과 audit/log 누출을 차단한다.
+- [x] tracked production pin manifest에 generation `7`, exact Map OpenAPI SHA-256, Map functional owner
+      revision과 PinVi reviewed candidate를 기록했다. `pinvi_release_revision`은 비워 두고 candidate 자동
+      승격 없이 initial/enable 및 production pair capture/deploy/rollback을 mutation 전에 fail-close한다.
+      cache-target contract 미설정 경로는 회귀 없이 유지한다.
+- [ ] PinVi 두 적대적 GO review와 merge가 끝나면 별도 final pin commit에서 exact merge/release SHA를
+      채우고 active·rollback pair provenance를 같은 SHA에 결박한다. review candidate나 후속 review-fix
+      head를 merge 전에 release로 확정하지 않는다.
 - [ ] restore-fence/recovery 원문 token은 ordinary PinVi API와 다른 장기 실행 service에 주입하지
       않는다. C6c 전역 lock과 frozen canonical `.env`/Compose/active pair를 검증한 전용
       initial-cutover runner에는 command/consumer/recovery만 실행 시간 동안 전달하고, restore-fence는

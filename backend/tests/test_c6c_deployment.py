@@ -20,6 +20,9 @@ import pytest
 import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import (
+    cache_target_production_manifest as cache_target_production_manifest_module,
+)
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -12536,12 +12539,107 @@ def _cache_target_enable_adapter_fixture(
     return transaction, manifest
 
 
+def _allow_cache_target_release(
+    monkeypatch: pytest.MonkeyPatch,
+    transaction: ComposeTransactionSnapshot,
+    manifest: CompatiblePairManifest,
+) -> None:
+    contract = load_c6c_deployment_config_from_environment(
+        transaction.environment.effective
+    ).cache_target
+    assert contract is not None
+    assert manifest.rollback is not None
+    assert manifest.active.pinvi_source_revision == manifest.rollback.pinvi_source_revision
+    monkeypatch.setattr(
+        cache_target_production_manifest_module,
+        "CACHE_TARGET_PRODUCTION_PINS",
+        replace(
+            cache_target_production_manifest_module.CACHE_TARGET_PRODUCTION_PINS,
+            contract_generation=contract.expected_contract_generation,
+            service_openapi_sha256=contract.expected_openapi_sha256,
+            map_functional_owner_revision=contract.expected_source_revision,
+            pinvi_release_revision=manifest.active.pinvi_source_revision,
+        ),
+    )
+
+
+def test_cache_target_initial_cutover_blocks_unpinned_release_before_attestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    attestor = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+
+    with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
+        service.run_cache_target_initial_cutover(
+            cutover_id="11111111-1111-4111-8111-111111111111",
+            expected_restore_epoch=3,
+            reason="production initial cutover",
+            pair_contract_attestor=attestor,
+        )
+
+    attestor.assert_not_called()
+
+
+def test_cache_target_enable_blocks_unpinned_release_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction, _ = _cache_target_enable_adapter_fixture(tmp_path)
+    env_path = Path(transaction.environment.env_path)
+    original_env = env_path.read_bytes()
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    capture = Mock(return_value=(transaction, None))
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+
+    with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
+        service.enable_cache_target_sync(pair_contract_attestor=Mock())
+
+    assert capture.call_count == 1
+    assert env_path.read_bytes() == original_env
+
+
 def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
     transaction, manifest = _cache_target_enable_adapter_fixture(tmp_path)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
     env_path = Path(transaction.environment.env_path)
     enabled_resolved_sha = "a" * 64
     foreign_enabled_sha: list[str | None] = [None]
@@ -12657,6 +12755,7 @@ def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
 ) -> None:
     service = ComposeService()
     transaction, manifest = _cache_target_enable_adapter_fixture(tmp_path)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
     env_path = Path(transaction.environment.env_path)
     enabled_resolved_sha = "a" * 64
 
@@ -12751,6 +12850,7 @@ def test_cache_target_initial_cutover_runs_frozen_secret_bundle_and_commits_rece
     service = ComposeService()
     transaction = _cache_target_cutover_transaction(tmp_path)
     manifest = replace(_manifest(), rollback=_manifest().active)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
     runner = Mock(
         return_value={
             "success": True,
@@ -12822,6 +12922,7 @@ def test_cache_target_initial_cutover_exact_receipt_retry_does_not_rerun(
     service = ComposeService()
     transaction = _cache_target_cutover_transaction(tmp_path)
     manifest = replace(_manifest(), rollback=_manifest().active)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
     runner = Mock(
         return_value={
             "success": True,

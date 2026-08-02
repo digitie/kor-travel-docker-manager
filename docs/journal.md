@@ -54,6 +54,15 @@ create metadata에는 원문/digest가 남지 않는다. fixed one-off container
 Compose one-off label을 대조한 뒤에만 success/failure/retry orphan으로 제거한다. exact receipt retry는 runner를
 재실행하지 않고 secret-free 결과로 수렴하며, final cross-repo pin attestor는 주입 계약으로 남겼다.
 
+production pin checkpoint에서는 generation `7`, Map OpenAPI SHA-256
+`622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2`, Map functional owner
+`9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`와 PinVi reviewed candidate
+`6ac8baae2814fae5b16c95846ee40d77cc7fe283`를 tracked manifest에 기록했다. candidate는 감사 정보로만
+취급하고 `pinvi_release_revision`은 비워 두었다. 따라서 두 적대적 GO review와 PinVi merge 뒤 별도 final
+pin commit 전에는 production initial/enable과 compatible-pair capture/deploy/rollback이 모두 mutation 전에
+fail-close한다. 주입 attestor도 이 release gate를 우회할 수 없고, timeout 오류는 Python exception context에
+원래 subprocess payload를 남기지 않는다. cache-target contract 미설정 경로는 기존 동작을 유지한다.
+
 ## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
 
 production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,

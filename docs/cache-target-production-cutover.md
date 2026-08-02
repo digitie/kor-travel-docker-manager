@@ -45,11 +45,26 @@ extra principal·scope·external system은 허용하지 않는다. registry JSON
 role→(digest, consumer ID, exact scopes, external system) binding 전체의 logical SHA-256과 구조 검증 결과만
 남긴다.
 
+production cutover pin의 tracked 정본은
+`cache_target_production_manifest.py`다. 현재 고정값은 contract generation `7`, Map cache-target
+OpenAPI SHA-256
+`622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2`, Map functional owner revision
+`9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`이다. PinVi reviewed candidate
+`6ac8baae2814fae5b16c95846ee40d77cc7fe283`는 review 출발점의 감사 정보일 뿐 release가 아니며,
+`pinvi_release_revision`은 두 적대적 GO review와 merge 전까지 명시적으로 비어 있다. 이 상태에서는
+production initial, enable, compatible-pair capture/deploy/rollback을 모두 mutation 전에 fail-close한다.
+candidate를 release로 자동 승격하거나 fallback으로 쓰지 않는다. PinVi merge 뒤 별도 final pin commit이
+merge/release SHA를 채우고 active와 rollback pair의 PinVi source provenance를 그 exact SHA에 결박해야만
+cutover를 진행할 수 있다. cache-target contract가 아예 설정되지 않은 기존 production C6c 경로에는 이
+gate를 적용하지 않는다.
+
 ## 2. 사전 조건
 
 1. Manager, Map, PinVi exact source revision이 review된 compatible pair이고 manifest active와 rollback image가
    local Docker에서 immutable ID로 존재하는지 확인한다. 두 pair 모두 같은 cache-target generation/contract를
    지원해야 하며 PinVi API cache health/pin smoke를 통과해야 한다.
+   tracked `pinvi_release_revision`이 비어 있거나 두 pair 중 하나라도 그 exact release SHA와 다르면 이
+   단계에서 중단한다.
 2. C6c canonical `.env`, Compose path, project name, source revision evidence와 production root owner/mode를
    검증한다. `.env`의 cache-target sync는 literal `false`여야 한다.
 3. raw Compose에 credential literal이 없고 resolved Compose에서 registry와 ordinary 7개 변수가 허가된
