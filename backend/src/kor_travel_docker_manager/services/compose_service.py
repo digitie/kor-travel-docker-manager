@@ -130,11 +130,13 @@ from kor_travel_docker_manager.services.cache_target_production_manifest import 
 )
 from kor_travel_docker_manager.services.cache_target_window import (
     CacheTargetWindowJournal,
+    DatabaseBackupReceipt,
     MapHelperOperation,
     MapHelperReceipt,
     PinBoundaryOperation,
     PinBoundaryReceipt,
     PinMigrationReceipt,
+    WindowPhase,
     map_final_evidence_sha256,
     map_helper_receipt_sha256,
     old_restore_is_authorized,
@@ -4098,8 +4100,8 @@ class ComposeService:
                 current_config = load_c6c_deployment_config_from_environment(
                     current.environment.effective
                 )
-                final_fence_sha256 = journal.final_writer_fence_sha256
-                if final_fence_sha256 is None:
+                expected_final_fence_sha256 = journal.final_writer_fence_sha256
+                if expected_final_fence_sha256 is None:
                     raise DeploymentContractError(
                         "cache-target final writer fence evidence is missing"
                     )
@@ -4111,7 +4113,7 @@ class ComposeService:
                         boundary="final",
                     )
                 )
-                if live_final_fence != final_fence_sha256 or (
+                if live_final_fence != expected_final_fence_sha256 or (
                     self._cache_target_map_write_counters_sha256(
                         before_finalize_counters
                     )
@@ -4159,7 +4161,7 @@ class ComposeService:
                         boundary="final",
                     )
                 )
-                if live_after_finalize != final_fence_sha256 or (
+                if live_after_finalize != expected_final_fence_sha256 or (
                     self._cache_target_map_write_counters_sha256(
                         after_finalize_counters
                     )
@@ -5153,7 +5155,11 @@ class ComposeService:
             raise DeploymentContractError(
                 "cache-target writer fence retained in-flight database transactions"
             )
-        counters = tuple(read_database_write_counter(runtime) for runtime in runtimes)
+        counters = (
+            read_database_write_counter(runtimes[0]),
+            read_database_write_counter(runtimes[1]),
+            read_database_write_counter(runtimes[2]),
+        )
         evidence: dict[str, Any] = {
             "transaction_id": journal.transaction_id,
             "boundary": boundary,
@@ -5699,7 +5705,10 @@ class ComposeService:
             raise DeploymentContractError(
                 "cache-target coupled rollback backup set is inconsistent"
             )
-        restore_steps = (
+        restore_steps: tuple[
+            tuple[WindowPhase, WindowPhase, DatabaseRuntime, DatabaseBackupReceipt | None],
+            ...,
+        ] = (
             ("new_runtime_stopped", "map_db_restored", runtimes[0], receipts[0]),
             (
                 "map_db_restored",
