@@ -151,6 +151,10 @@ from kor_travel_docker_manager.services.cache_target_window import (
     validate_map_final_evidence_binding,
     write_cache_target_window,
 )
+from kor_travel_docker_manager.services.cache_target_writer_fence import (
+    attest_cache_target_global_writer_fence,
+    cache_target_writer_environments_from_resolved_compose,
+)
 from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
@@ -5174,6 +5178,16 @@ class ComposeService:
             raise DeploymentContractError(
                 "cache-target writer fence does not contain five stopped runtimes"
             )
+        expected_writer_environments = (
+            cache_target_writer_environments_from_resolved_compose(
+                transaction.resolved,
+                ordered_writers,
+            )
+        )
+        global_fence = attest_cache_target_global_writer_fence(
+            expected_stopped_writers=expected_writer_environments,
+            cwd=get_project_root(),
+        )
         inflight_after_stop = tuple(
             read_database_inflight_count(runtime) for runtime in runtimes
         )
@@ -5194,6 +5208,14 @@ class ComposeService:
             "compose_sha256": journal.compose_sha256,
             "writer_registry_sha256": cache_target_writer_registry_sha256(
                 ordered_writers
+            ),
+            "global_writer_fence_contract": global_fence.contract_version,
+            "global_writer_inventory_sha256": global_fence.inventory_sha256,
+            "global_writer_protected_target_count": (
+                global_fence.protected_target_count
+            ),
+            "global_writer_stopped_count": (
+                global_fence.expected_stopped_writer_count
             ),
             "writers": {name: states.get(name, "absent") for name in ordered_writers},
             "inflight_transactions": list(inflight_after_stop),

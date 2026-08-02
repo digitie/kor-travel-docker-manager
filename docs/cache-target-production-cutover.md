@@ -94,7 +94,14 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
 2. resolved Compose에서 DB 쓰기 capability를 가진 service가 Map API·Dagster web·Dagster daemon,
    PinVi API·Dagster의 정확한 5개인지 확인하고 in-flight DB transaction과 Map Dagster run이 0일 때만
    모두 정지한다. 이 writer registry의 canonical digest는
-   `526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c`다. old
+   `526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c`다.
+   정확한 5개가 `exited`임을 확인한 직후 Docker의 **모든 running container**를 두 번 list/inspect한다.
+   frozen 5 writer의 resolved environment에서 세 PostgreSQL target을 credential 제외 canonical hash로 만들고,
+   같은 target에 접속 가능한 foreign/stale/one-off container가 하나라도 실행 중이면 fail-close한다. 두 inventory
+   사이 create/remove/rename race도 거부하며, raw Env·DSN·credential은 반환·journal·예외에 보존하지 않는다.
+   global fence contract와 inventory SHA는 initial/final writer-fence SHA에 포함되어 journal과 Pin final audit에
+   함께 결박된다.
+   old
    manifest/env/manager state와 Map application DB, Map Dagster DB, PinVi DB의 typed backup identity를 frozen
    rollback bundle에 결박한다. 세 dump와 scratch restore rehearsal 전체의 앞뒤에서 DB별 insert/update/delete
    counter와 `stats_reset` identity, in-flight 0, Map Dagster run 0을 다시 읽어 exact 동일해야만 commit한다.
@@ -104,7 +111,8 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    resolved Compose의 `kor-travel-geo-postgres.environment.POSTGRES_USER`를 canonical admin role로 exact
    검증해 모든 `psql`/`pg_dump`/`pg_restore`/`dropdb`/`createdb` 호출에 `--username`으로 명시한다. n150처럼
    SQL role `postgres`가 존재하지 않는 구성을 기본값으로 추측하지 않으며 admin role은 receipt와 운영 로그에
-   기록하지 않는다.
+   기록하지 않는다. schema revision도 search path에 맡기지 않고 Map application과 Map Dagster는
+   `public.alembic_version`, PinVi는 `app.alembic_version`을 완전 한정해 조회한다.
 3. exact Map/Pin release source에서 candidate image를 완성하고 `sync=false`로 전체 runtime을 검증한다.
    Map·Pin DB migration과 Map의 H35 CSV 전환을 service-owned typed CLI로 수행한 뒤, cache health와 source
    provenance가 맞는 첫 generation 7 pair를 v4 manifest의 active와 rollback 양쪽에 원자 commit한다. old pair는

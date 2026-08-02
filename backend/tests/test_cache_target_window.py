@@ -170,6 +170,101 @@ def test_map_final_evidence_rejects_drift_from_initial_baseline(
         )
 
 
+def test_writer_fence_binds_global_container_inventory_before_db_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    ordered_writers = tuple(
+        sorted(
+            (
+                "kor-travel-map-api",
+                "kor-travel-map-dagster",
+                "kor-travel-map-dagster-daemon",
+                "pinvi-api",
+                "pinvi-dagster",
+            )
+        )
+    )
+    transaction = SimpleNamespace(resolved={"services": {}})
+    expected_environments = {name: {"DATABASE_URL": name} for name in ordered_writers}
+    environment_builder = Mock(return_value=expected_environments)
+    global_evidence = [
+        SimpleNamespace(
+            contract_version="ktdm-cache-target-global-writer-fence/v1",
+            inventory_sha256="a" * 64,
+            protected_target_count=3,
+            expected_stopped_writer_count=5,
+        ),
+        SimpleNamespace(
+            contract_version="ktdm-cache-target-global-writer-fence/v1",
+            inventory_sha256="b" * 64,
+            protected_target_count=3,
+            expected_stopped_writer_count=5,
+        ),
+    ]
+    global_attestor = Mock()
+    events: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_snapshot_service_states",
+        Mock(return_value={name: "exited" for name in ordered_writers}),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.cache_target_writer_environments_from_resolved_compose",
+        environment_builder,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.attest_cache_target_global_writer_fence",
+        global_attestor,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.read_database_inflight_count",
+        lambda _runtime: events.append("db_probe") or 0,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
+        lambda _runtime: 0,
+    )
+    counter = SimpleNamespace(
+        inserted=0,
+        updated=0,
+        deleted=0,
+        stats_reset_identity="never",
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.read_database_write_counter",
+        lambda _runtime: counter,
+    )
+    def attest_in_order(**kwargs: object) -> object:
+        del kwargs
+        events.append("global_fence")
+        return global_evidence.pop(0)
+
+    global_attestor.side_effect = attest_in_order
+    runtimes = (Mock(), Mock(), Mock())
+
+    first_sha, _ = service._read_cache_target_writer_fence_evidence(
+        journal=_prepared(),
+        transaction=transaction,
+        runtimes=runtimes,
+        ordered_writers=ordered_writers,
+    )
+    second_sha, _ = service._read_cache_target_writer_fence_evidence(
+        journal=_prepared(),
+        transaction=transaction,
+        runtimes=runtimes,
+        ordered_writers=ordered_writers,
+    )
+
+    assert first_sha != second_sha
+    assert events[0:2] == ["global_fence", "db_probe"]
+    environment_builder.assert_called_with(transaction.resolved, ordered_writers)
+    assert all(
+        call.kwargs["expected_stopped_writers"] == expected_environments
+        for call in global_attestor.call_args_list
+    )
+
+
 def _map_gc_receipt(prior_receipt_digest: str) -> MapHelperReceipt:
     return MapHelperReceipt(
         contract_version="h35-map/v1",

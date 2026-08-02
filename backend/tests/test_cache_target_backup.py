@@ -556,6 +556,7 @@ def test_post_backup_fence_revalidates_inflight_and_dagster_fresh(
 ) -> None:
     service = ComposeService()
     transaction = SimpleNamespace(resolved={"services": _writer_services()})
+    _mock_global_writer_inventory(monkeypatch)
     monkeypatch.setattr(
         service,
         "_snapshot_service_states",
@@ -598,6 +599,7 @@ def test_final_fence_allows_only_pin_audit_counter_delta(
 ) -> None:
     service = ComposeService()
     transaction = SimpleNamespace(resolved={"services": _writer_services()})
+    _mock_global_writer_inventory(monkeypatch)
     monkeypatch.setattr(
         service,
         "_snapshot_service_states",
@@ -682,20 +684,63 @@ def test_writer_fence_rejects_absent_runtime_before_database_probes(
     database_probe.assert_not_called()
 
 
-def _writer_services() -> dict[str, dict[str, dict[str, str]]]:
+def _writer_services() -> dict[str, dict[str, object]]:
     return {
         "kor-travel-map-api": {
-            "environment": {"KOR_TRAVEL_MAP_PG_DSN": "redacted"}
+            "container_name": "kor-travel-map-api-latest",
+            "environment": {
+                "KOR_TRAVEL_MAP_PG_DSN": (
+                    "postgresql://map:redacted@postgres/map"
+                )
+            },
         },
         "kor-travel-map-dagster": {
-            "environment": {"KOR_TRAVEL_MAP_DAGSTER_PG_URL": "redacted"}
+            "container_name": "kor-travel-map-dagster-latest",
+            "environment": {
+                "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
+                    "postgresql://map:redacted@postgres/map_dagster"
+                )
+            },
         },
         "kor-travel-map-dagster-daemon": {
-            "environment": {"KOR_TRAVEL_MAP_DAGSTER_PG_URL": "redacted"}
+            "container_name": "kor-travel-map-dagster-daemon-latest",
+            "environment": {
+                "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
+                    "postgresql://map:redacted@postgres/map_dagster"
+                )
+            },
         },
-        "pinvi-api": {"environment": {"PINVI_DATABASE_URL": "redacted"}},
-        "pinvi-dagster": {"environment": {"PINVI_DATABASE_URL": "redacted"}},
+        "pinvi-api": {
+            "container_name": "pinvi-api-latest",
+            "environment": {
+                "PINVI_DATABASE_URL": (
+                    "postgresql://pinvi:redacted@postgres/pinvi"
+                )
+            },
+        },
+        "pinvi-dagster": {
+            "container_name": "pinvi-dagster-latest",
+            "environment": {
+                "PINVI_DATABASE_URL": (
+                    "postgresql://pinvi:redacted@postgres/pinvi"
+                )
+            },
+        },
     }
+
+
+def _mock_global_writer_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.attest_cache_target_global_writer_fence",
+        Mock(
+            return_value=SimpleNamespace(
+                contract_version="ktdm-cache-target-global-writer-fence/v1",
+                inventory_sha256="e" * 64,
+                protected_target_count=3,
+                expected_stopped_writer_count=5,
+            )
+        ),
+    )
 
 
 def _writer_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
