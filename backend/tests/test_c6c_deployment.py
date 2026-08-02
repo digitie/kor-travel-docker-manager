@@ -6849,6 +6849,85 @@ def test_session_request_default_does_not_retry_connection_refused() -> None:
     sleep.assert_not_called()
 
 
+def test_session_request_safe_get_readiness_retries_timeout_once() -> None:
+    response = Mock(status=200, headers={})
+    response.read.return_value = b'{}'
+    opener = Mock()
+    opener.open.side_effect = [TimeoutError(), nullcontext(response)]
+
+    with patch.object(c6c_deployment.time, "sleep") as sleep:
+        result = c6c_deployment._session_request(
+            opener,
+            "http://127.0.0.1:12801/admin/etl/summary",
+            method="GET",
+            headers={},
+            read_error_body=False,
+            retry_safe_get_readiness=True,
+        )
+
+    assert result.status == 200
+    assert opener.open.call_count == 2
+    sleep.assert_called_once_with(1.0)
+
+
+def test_session_request_safe_get_readiness_retries_urlerror_timeout_once() -> None:
+    response = Mock(status=200, headers={})
+    response.read.return_value = b'{}'
+    opener = Mock()
+    opener.open.side_effect = [urllib.error.URLError(TimeoutError()), nullcontext(response)]
+
+    with patch.object(c6c_deployment.time, "sleep") as sleep:
+        result = c6c_deployment._session_request(
+            opener,
+            "http://127.0.0.1:12801/admin/provider-sync",
+            method="GET",
+            headers={},
+            read_error_body=False,
+            retry_safe_get_readiness=True,
+        )
+
+    assert result.status == 200
+    assert opener.open.call_count == 2
+    sleep.assert_called_once_with(1.0)
+
+
+def test_session_request_default_get_does_not_retry_timeout() -> None:
+    opener = Mock()
+    opener.open.side_effect = TimeoutError()
+
+    with (
+        patch.object(c6c_deployment.time, "sleep") as sleep,
+        pytest.raises(DeploymentContractError, match="endpoint is unavailable"),
+    ):
+        c6c_deployment._session_request(
+            opener,
+            "http://127.0.0.1:12801/admin/etl/summary",
+            method="GET",
+            headers={},
+            read_error_body=False,
+        )
+
+    opener.open.assert_called_once()
+    sleep.assert_not_called()
+
+
+def test_session_request_safe_get_readiness_rejects_mutating_request() -> None:
+    opener = Mock()
+
+    with pytest.raises(ValueError, match="bodyless GET"):
+        c6c_deployment._session_request(
+            opener,
+            "http://127.0.0.1:12801/admin/provider-sync/import-jobs/example/cancel",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            body=b"{}",
+            read_error_body=True,
+            retry_safe_get_readiness=True,
+        )
+
+    opener.open.assert_not_called()
+
+
 def test_pinvi_canonical_smoke_requires_envelopes_typed_cancel_and_logout() -> None:
     responses = [
         HttpProbeResponse(200, {"data": {"roles": ["admin"]}}, set_cookie=True),
@@ -6876,6 +6955,9 @@ def test_pinvi_canonical_smoke_requires_envelopes_typed_cancel_and_logout() -> N
     assert [item["status"] for item in result] == [200, 200, 200, 409, 204, 401]
     assert request.call_count == 6
     assert request.call_args_list[0].args[1].endswith("/auth/login")
+    assert request.call_args_list[1].kwargs["retry_safe_get_readiness"] is True
+    assert request.call_args_list[2].kwargs["retry_safe_get_readiness"] is True
+    assert "retry_safe_get_readiness" not in request.call_args_list[3].kwargs
     assert request.call_args_list[4].args[1].endswith("/auth/logout")
     serialized = json.dumps(result)
     assert _PINVI_ADMIN_PASSWORD not in serialized

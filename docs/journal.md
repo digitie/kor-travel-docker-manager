@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-03 (T-048 PinVi authenticated-readiness GET timeout 보강)
+
+결합 rollback이 old runtime을 재기동한 뒤 PinVi login은 성공했지만, 바로 다음 canonical
+`GET /admin/etl/summary`가 response-header 전에 한 번 timeout 났다. 같은 session의 다음 실행에서는
+ETL summary·provider sync·typed cancel·logout·post-logout protection이 모두 정상 통과했으므로, login credential이나
+canonical response 계약이 아니라 authenticated read readiness race로 분리했다.
+
+`run_pinvi_canonical_smoke`의 session cookie가 있는 두 idempotent admin GET만 `ConnectionRefusedError` 또는
+`TimeoutError`를 한 번(최대 두 attempt) 재시도한다. retry opt-in은 body 없는 `GET`만 허용하며, login/logout,
+post-logout protection, cancel을 포함한 모든 `POST`는 opt-in 자체를 거부한다. 단, login의 기존 요청 전
+`ConnectionRefusedError` retry는 유지하고 timeout은 계속 fail-close한다. default timeout fail-close와 destructive
+request 차단, direct·`URLError` timeout의 마지막 attempt 성공 회귀를 함께 고정했다.
+
 ## 2026-08-03 (T-048 authenticated smoke readiness window 보강)
 
 n150에서 pre-forward 실패 뒤 결합 rollback을 같은 cutover ID로 재개했을 때, 구 runtime은 정상 복원됐지만
