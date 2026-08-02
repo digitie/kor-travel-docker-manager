@@ -11,7 +11,10 @@ n150 최초 결합 전환의 pre-forward rollback에서 Compose health 통과 �
 첫 Map signed read와 기존 read-only PinVi Web login shell 호출에서 exact `ConnectionRefusedError`만
 5회·1초 간격으로 재시도한다. 각 HTTP 호출의 10초 timeout까지 포함한 최악 상한은 14초다. timeout·DNS 등
 다른 `OSError`, typed HTTP 응답, envelope/인증/권한 오류와 PinVi destructive cancel probe는 재시도하지
-않는다. exact unavailable+cause 조합, 비재시도 오류와 시도 상한 회귀를 추가했다.
+않는다. recovery에서 Map UI 또는 PinVi login port가 같은 race를 보인 후에는 두 로그인에만 opt-in flag를
+추가했다. exact 연결 거부는 TCP handshake 전에 실패하므로 요청 재전송 불확실성이 없고, destructive cancel과
+후속 admin 요청은 기본값 `false`를 유지한다. exact unavailable+cause 조합, 비재시도 오류와 시도 상한 회귀를
+추가했다.
 
 ## 2026-08-02 (T-048 PinVi release pin과 Map GC observation 계약 정렬)
 

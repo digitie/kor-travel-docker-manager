@@ -2472,6 +2472,7 @@ def run_pinvi_canonical_smoke(
             {"email": smoke.pinvi_admin_email, "password": smoke.pinvi_admin_password}
         ).encode(),
         read_error_body=False,
+        retry_connection_refused=True,
     )
     if (
         login.status != 200
@@ -3156,6 +3157,7 @@ def run_map_ui_auth_preflight(
             }
         ).encode(),
         read_error_body=False,
+        retry_connection_refused=True,
     )
     if login.status != 200 or not login.set_cookie:
         raise DeploymentContractError("C6c Map UI login smoke failed")
@@ -3201,15 +3203,13 @@ def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
     map_ui_smoke = run_map_ui_auth_preflight(config)
     smoke = config.smoke
 
-    pinvi_login_shell = _retry_smoke_connection(
-        lambda: _session_request(
-            _cookie_opener(follow_redirects=False),
-            f"{smoke.pinvi_web_base_url}/admin/login",
-            method="GET",
-            headers={},
-            read_error_body=False,
-        ),
-        unavailable_message="C6c authenticated smoke endpoint is unavailable",
+    pinvi_login_shell = _session_request(
+        _cookie_opener(follow_redirects=False),
+        f"{smoke.pinvi_web_base_url}/admin/login",
+        method="GET",
+        headers={},
+        read_error_body=False,
+        retry_connection_refused=True,
     )
     pinvi_content_type = (
         (pinvi_login_shell.content_type or "").partition(";")[0].strip().lower()
@@ -4056,41 +4056,52 @@ def _session_request(
     headers: Mapping[str, str],
     body: bytes | None = None,
     read_error_body: bool,
+    retry_connection_refused: bool = False,
 ) -> HttpProbeResponse:
     request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
-    try:
-        with opener.open(  # noqa: S310 - production config validates loopback URLs
-            request, timeout=10
-        ) as response:
-            raw = response.read(65_537)
-            retry_after_raw = _response_header(response.headers, "Retry-After")
+    unavailable_message = "C6c authenticated smoke endpoint is unavailable"
+
+    def request_once() -> HttpProbeResponse:
+        try:
+            with opener.open(  # noqa: S310 - production config validates loopback URLs
+                request, timeout=10
+            ) as response:
+                raw = response.read(65_537)
+                retry_after_raw = _response_header(response.headers, "Retry-After")
+                return HttpProbeResponse(
+                    status=response.status,
+                    payload=_read_json_payload(raw),
+                    retry_after=_retry_after_header(retry_after_raw),
+                    retry_after_present=_has_response_header(
+                        response.headers, "Retry-After"
+                    ),
+                    set_cookie=_has_response_header(response.headers, "Set-Cookie"),
+                    location=_response_header(response.headers, "Location"),
+                    body_text=_read_text_payload(raw),
+                    content_type=_response_header(response.headers, "Content-Type"),
+                )
+        except urllib.error.HTTPError as exc:
+            raw = exc.read(65_537) if read_error_body else b""
+            retry_after_raw = _response_header(exc.headers, "Retry-After")
             return HttpProbeResponse(
-                status=response.status,
-                payload=_read_json_payload(raw),
+                status=exc.code,
+                payload=_read_json_payload(raw) if read_error_body else None,
                 retry_after=_retry_after_header(retry_after_raw),
-                retry_after_present=_has_response_header(
-                    response.headers, "Retry-After"
-                ),
-                set_cookie=_has_response_header(response.headers, "Set-Cookie"),
-                location=_response_header(response.headers, "Location"),
-                body_text=_read_text_payload(raw),
-                content_type=_response_header(response.headers, "Content-Type"),
+                retry_after_present=_has_response_header(exc.headers, "Retry-After"),
+                set_cookie=_has_response_header(exc.headers, "Set-Cookie"),
+                location=_response_header(exc.headers, "Location"),
+                body_text=_read_text_payload(raw) if read_error_body else None,
+                content_type=_response_header(exc.headers, "Content-Type"),
             )
-    except urllib.error.HTTPError as exc:
-        raw = exc.read(65_537) if read_error_body else b""
-        retry_after_raw = _response_header(exc.headers, "Retry-After")
-        return HttpProbeResponse(
-            status=exc.code,
-            payload=_read_json_payload(raw) if read_error_body else None,
-            retry_after=_retry_after_header(retry_after_raw),
-            retry_after_present=_has_response_header(exc.headers, "Retry-After"),
-            set_cookie=_has_response_header(exc.headers, "Set-Cookie"),
-            location=_response_header(exc.headers, "Location"),
-            body_text=_read_text_payload(raw) if read_error_body else None,
-            content_type=_response_header(exc.headers, "Content-Type"),
+        except OSError as exc:
+            raise DeploymentContractError(unavailable_message) from exc
+
+    if retry_connection_refused:
+        return _retry_smoke_connection(
+            request_once,
+            unavailable_message=unavailable_message,
         )
-    except OSError as exc:
-        raise DeploymentContractError("C6c authenticated smoke endpoint is unavailable") from exc
+    return request_once()
 
 
 def _retry_smoke_connection(
