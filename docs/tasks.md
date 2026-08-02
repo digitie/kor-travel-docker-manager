@@ -191,7 +191,8 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       external system을 원문 token과 교차 검증하고 raw/resolved/runtime 비인가 노출을 차단한다.
 - [ ] restore-fence/recovery 원문 token은 ordinary PinVi API와 다른 장기 실행 service에 주입하지
       않는다. C6c 전역 lock과 frozen canonical `.env`/Compose/active pair를 검증한 전용
-      initial-cutover runner에만 실행 시간 동안 전달하고 종료 뒤 ephemeral container를 제거한다.
+      initial-cutover runner에는 command/consumer/recovery만 실행 시간 동안 전달하고, restore-fence는
+      Map registry와 향후 별도 restore 작업 경계에만 보관한다. 종료 뒤 ephemeral container를 제거한다.
 - [ ] production `sync=false`에서 고정 cutover UUID/epoch/reason으로 전용 runner를 실행하고,
       contract pin·active image pair·source revision·safe 결과 identity를 secret-free durable receipt로
       원자 기록한다. 같은 입력 retry는 같은 receipt로 수렴하고 다른 입력은 fail-close한다.

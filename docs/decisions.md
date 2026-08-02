@@ -1139,8 +1139,9 @@ canonical `.env`/Compose, raw/resolved/runtime secret isolation을 이미 강제
 Map API에는 digest 기반 `KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS` registry만 전달한다.
 PinVi ordinary API에는 sync flag, command/consumer token, consumer ID와 OpenAPI/source/contract
 generation pin의 정확한 7개 변수만 전달한다. restore-fence/recovery 원문 token은 ordinary API를 포함한
-장기 실행 service에 전달하지 않고, `sync=false`에서 C6c 전역 lock과 frozen canonical evidence를
-검증한 dedicated initial-cutover runner에만 실행 시간 동안 주입한다.
+장기 실행 service에 전달하지 않는다. `sync=false`에서 C6c 전역 lock과 frozen canonical evidence를
+검증한 dedicated initial-cutover runner에는 실제 사용하는 command·consumer·recovery token만 실행 시간
+동안 주입한다. restore-fence token은 Map registry와 향후 별도 restore 작업 경계에만 보관한다.
 
 네 role token은 서로 및 기존 Map/PinVi service/admin/ops credential과 달라야 한다. Map registry의
 SHA-256 digest, principal ID, 같은 consumer ID, 최소 scope와 `pinvi` external system을 원문 token에
@@ -1158,7 +1159,8 @@ ordinary startup readiness와 기존 full compatible-pair image/provenance/runti
 ### 근거
 
 - default-off runner는 ordinary lifespan worker와 최초 snapshot/backfill의 lease 경쟁을 제거한다.
-- recovery credential을 ephemeral 경계에만 두면 ordinary API 탈취가 restore/cutover 권한으로 확장되지 않는다.
+- recovery credential을 ephemeral 경계에만 두고 쓰지 않는 restore-fence credential도 주입하지 않으면
+  ordinary API나 initial runner 탈취가 불필요한 restore 권한으로 확장되지 않는다.
 - C6c lock/frozen evidence를 재사용하면 cache-target 전환과 compatible-pair·credential rotation이 서로의
   검증 뒤 runtime을 바꾸지 못한다.
 - receipt-before-enable은 원격 cutover 성공 뒤 process crash가 나도 sync를 추측으로 열지 않게 한다.

@@ -9,7 +9,8 @@
 ADR-28과 전용 runbook으로 cache-target production 경계를 먼저 고정했다. Map API에는 digest 기반
 4-role registry만, PinVi ordinary API에는 sync/command/consumer/consumer ID/세 contract pin의 정확한
 7개 변수만 전달한다. restore-fence/recovery 원문은 ordinary runtime에서 제외하고 C6c 전역 lock과
-frozen canonical evidence를 검증한 일회성 initial-cutover runner에서만 사용한다.
+frozen canonical evidence를 검증한 일회성 initial-cutover runner에는 실제 사용하는 command·consumer·
+recovery만 주입한다. restore-fence는 Map registry와 향후 별도 restore 작업 경계에만 보관한다.
 
 최초 runner 결과를 secret-free durable receipt로 먼저 commit한 뒤에만 sync를 `true`로 원자 전환한다.
 동일 immutable PinVi API image를 재생성하고 기존 full compatible-pair attestation까지 통과해야 enable을

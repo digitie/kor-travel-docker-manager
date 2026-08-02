@@ -24,12 +24,17 @@ PinVi ordinary API에는 정확히 다음 7개만 전달한다.
 
 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RESTORE_FENCE_TOKEN`과
 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RECOVERY_TOKEN`은 ordinary API, PinVi Web/Dagster, Map UI/Dagster와
-다른 장기 실행 container에 전달하지 않는다. 전용 initial-cutover runner에만 실행 시간 동안 전달한다.
+다른 장기 실행 container에 전달하지 않는다. 전용 initial-cutover runner에는 실제 사용하는 recovery
+token만 실행 시간 동안 전달한다. restore-fence token은 Map registry와 향후 별도 restore 작업 경계에만
+보관하며 initial-cutover runner에도 전달하지 않는다.
 
 네 role token은 모두 32자 이상·공백 없음이며 서로 달라야 한다. 기존 Map/PinVi service, admin,
 ops read/cancel token과도 같을 수 없다. Map registry에는 원문 token을 넣지 않고 lowercase SHA-256
-digest만 넣는다. command principal은 source mutation, consumer principal은 read/claim/ack/nack/snapshot과
-completion, restore-fence principal은 epoch fence, recovery principal은 begin/seal 권한만 가진다.
+digest만 넣는다. command principal은 `cache-target:consumer`, consumer principal은
+`cache-target:read`·`cache-target:claim`·`cache-target:ack`·`cache-target:nack`·
+`cache-target:snapshot`, restore-fence principal은 `cache-target:restore-fence`, recovery principal은
+initial begin/seal에 필요한 `cache-target:recovery`만 가진다. `cache-target:recovery-replay`는 향후 replay
+작업이 실제 필요할 때 별도 검토하며 initial-cutover 권한에 미리 포함하지 않는다.
 
 ## 2. 사전 조건
 
@@ -39,7 +44,7 @@ completion, restore-fence principal은 epoch fence, recovery principal은 begin/
    검증한다. `.env`의 cache-target sync는 literal `false`여야 한다.
 3. raw Compose에 credential literal이 없고 resolved Compose에서 registry와 ordinary 7개 변수가 허가된
    service의 정확한 environment path에만 있는지 확인한다.
-4. running Map API에는 registry만, running PinVi API에는 ordinary 7개만 있고 restore/recovery 원문이
+4. running Map API에는 registry만, running PinVi API에는 ordinary 7개만 있고 restore-fence/recovery 원문이
    없는지 inspect digest 비교로 확인한다. 다른 container에는 네 role 이름·값이 없어야 한다.
 5. Map/PinVi DB migration head, active compatible pair readiness, backlog/DLQ/epoch 전제와 pinned
    OpenAPI/source/contract generation을 확인한다.
@@ -51,8 +56,9 @@ completion, restore-fence principal은 epoch fence, recovery principal은 begin/
 
 1. operator가 재사용 가능한 고정 `cutover_id`, positive expected restore epoch와 감사 reason을 준비한다.
 2. manager 전용 command가 C6c 전역 lock을 획득하고 non-committed 기존 receipt를 먼저 분류한다.
-3. active PinVi immutable image로 일회성 runner를 시작한다. ordinary command/consumer와 전용
-   restore-fence/recovery credential은 runner process에만 전달하며 argv·stdout/stderr에는 값을 넣지 않는다.
+3. active PinVi immutable image로 일회성 runner를 시작한다. ordinary command/consumer와 전용 recovery
+   credential만 runner process에 전달하며 argv·stdout/stderr에는 값을 넣지 않는다. restore-fence
+   credential은 이 runner에 전달하지 않는다.
 4. runner는 `sync=false`를 확인하고 pinned contract, source count/Merkle, recovery reconciliation과 completion을
    수행한다. 같은 cutover ID retry는 PinVi의 durable ledger와 idempotency key로 같은 결과에 수렴해야 한다.
 5. manager는 원문 credential과 resolved environment를 제외한 cutover ID, request ID, epoch, count,
@@ -88,6 +94,7 @@ Docker inspect 원문, `.env` bytes, bearer header는 audit·JSON 출력·로그
 다음은 금지한다.
 
 - ordinary PinVi API에 restore-fence/recovery token 주입
+- initial-cutover runner에 쓰지 않는 restore-fence token 주입
 - Map principal registry에 원문 token 저장
 - `docker compose config` resolved 결과를 파일·CI artifact·로그로 보존
 - C6c 전역 lock 밖에서 `.env`, PinVi API runtime 또는 receipt 변경
