@@ -10,6 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
+import kor_travel_docker_manager.services.cache_target_backup as backup_service
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_backup import (
     _COUPLED_ROLLBACK_CAPABILITY,
@@ -82,6 +83,39 @@ def test_pin_boundary_audit_requires_one_exact_typed_row(
     runner.return_value = b""
     with pytest.raises(DeploymentContractError, match="audit row"):
         read_pin_boundary_audit(runtime, _TRANSACTION_ID)
+
+
+def test_restore_rehearsal_never_drops_foreign_owned_scratch_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(side_effect=AssertionError("foreign scratch must not be mutated"))
+    monkeypatch.setattr(backup_service, "_validate_archive_structure", Mock())
+    monkeypatch.setattr(
+        backup_service,
+        "_read_database_owner",
+        Mock(return_value="foreign_owner"),
+    )
+    monkeypatch.setattr(backup_service, "_run_checked", runner)
+
+    with pytest.raises(DeploymentContractError, match="foreign role"):
+        backup_service._rehearse_database_restore(
+            backup_path=tmp_path / "backup.dump",
+            runtime=DatabaseRuntime(
+                role="map_application",
+                container_name="postgres-production",
+                database_name="map_app",
+                owner_name="map_owner",
+            ),
+            transaction_id=_TRANSACTION_ID,
+            source_database_identity="1" * 64,
+            archive_sha256="2" * 64,
+            expected_schema_revision="0063_pipeline_root_id",
+            expected_schema_inventory_sha256="3" * 64,
+            expected_data_inventory_sha256="4" * 64,
+        )
+
+    runner.assert_not_called()
 
 
 def test_writer_registry_matches_cross_repository_golden_vector() -> None:
