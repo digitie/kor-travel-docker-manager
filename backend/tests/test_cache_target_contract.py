@@ -154,6 +154,8 @@ def test_local_unconfigured_cache_target_contract_is_absent() -> None:
     [
         (PINVI_SYNC_ENV, "true"),
         (PINVI_SYNC_ENV, "invalid"),
+        (PINVI_SYNC_ENV, " TRUE "),
+        (PINVI_SYNC_ENV, "False"),
         (PINVI_CONSUMER_ID_ENV, "foreign-consumer"),
     ],
 )

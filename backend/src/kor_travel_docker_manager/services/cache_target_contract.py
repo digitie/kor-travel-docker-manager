@@ -128,7 +128,7 @@ def load_cache_target_runtime_contract(
     values = {name: environment.get(name, "") for name in PROTECTED_ENV_NAMES}
     configured_values = (
         values[MAP_REGISTRY_ENV] not in {"", "[]"}
-        or values[PINVI_SYNC_ENV].strip().lower() not in {"", "false"}
+        or values[PINVI_SYNC_ENV] not in {"", "false"}
         or values[PINVI_CONSUMER_ID_ENV]
         not in {"", "pinvi-cache-target-consumer"}
         or any(values[name] for name in _TOKEN_ENV_BY_ROLE.values())
@@ -144,7 +144,7 @@ def load_cache_target_runtime_contract(
     if not require_nonempty and not configured_values:
         return None
 
-    sync_enabled = values[PINVI_SYNC_ENV].strip().lower()
+    sync_enabled = values[PINVI_SYNC_ENV]
     if sync_enabled not in {"false", "true"}:
         raise error_type(f"{PINVI_SYNC_ENV} must be literal true or false")
     consumer_id = values[PINVI_CONSUMER_ID_ENV]
