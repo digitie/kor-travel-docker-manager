@@ -5145,8 +5145,10 @@ class ComposeService:
             list(ordered_writers),
             transaction=transaction,
         )
-        if any(state == "running" for state in states.values()):
-            raise DeploymentContractError("cache-target writer fence is incomplete")
+        if any(states.get(name) != "exited" for name in ordered_writers):
+            raise DeploymentContractError(
+                "cache-target writer fence does not contain five stopped runtimes"
+            )
         inflight_after_stop = tuple(
             read_database_inflight_count(runtime) for runtime in runtimes
         )

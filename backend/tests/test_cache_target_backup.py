@@ -509,6 +509,32 @@ def test_final_fence_allows_only_pin_audit_counter_delta(
     )
 
 
+def test_writer_fence_rejects_absent_runtime_before_database_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    writers = tuple(sorted(_writer_services()))
+    states = {name: "exited" for name in writers}
+    states[writers[0]] = "absent"
+    monkeypatch.setattr(service, "_snapshot_service_states", Mock(return_value=states))
+    database_probe = Mock(side_effect=AssertionError("must follow exact runtime proof"))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.read_database_inflight_count",
+        database_probe,
+    )
+
+    with pytest.raises(DeploymentContractError, match="five stopped runtimes"):
+        service._read_cache_target_writer_fence_evidence(
+            journal=_writer_journal(),
+            transaction=SimpleNamespace(resolved={"services": _writer_services()}),
+            runtimes=_writer_runtimes(),
+            ordered_writers=writers,
+            boundary="final",
+        )
+
+    database_probe.assert_not_called()
+
+
 def _writer_services() -> dict[str, dict[str, dict[str, str]]]:
     return {
         "kor-travel-map-api": {
