@@ -119,7 +119,7 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
 ) | CACHE_TARGET_MANAGER_ONLY_ENV_NAMES
 _CACHE_TARGET_MAP_ENV_NAMES = frozenset({CACHE_TARGET_REGISTRY_ENV})
 _CACHE_TARGET_PINVI_ENV_NAMES = CACHE_TARGET_ORDINARY_ENV_NAMES
-_SMOKE_CONNECTION_ATTEMPTS = 20
+_SMOKE_CONNECTION_ATTEMPTS = 5
 _SMOKE_CONNECTION_RETRY_SECONDS = 1.0
 _T = TypeVar("_T")
 _CACHE_TARGET_ALLOWED_API_ENV_SOURCES = {
@@ -4104,7 +4104,14 @@ def _retry_smoke_connection(
         try:
             return operation()
         except DeploymentContractError as exc:
-            if str(exc) != unavailable_message or attempt + 1 == _SMOKE_CONNECTION_ATTEMPTS:
+            retry_cause: object = exc.__cause__
+            if isinstance(retry_cause, urllib.error.URLError):
+                retry_cause = retry_cause.reason
+            if (
+                str(exc) != unavailable_message
+                or not isinstance(retry_cause, ConnectionRefusedError)
+                or attempt + 1 == _SMOKE_CONNECTION_ATTEMPTS
+            ):
                 raise
             time.sleep(_SMOKE_CONNECTION_RETRY_SECONDS)
     raise AssertionError("unreachable smoke retry state")

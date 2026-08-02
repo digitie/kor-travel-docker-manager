@@ -213,8 +213,9 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       확인한 다음 durable final fence로 exact 5 writer를 정지한다. stopped Map final evidence와 Pin finalize audit
       exact 1행을 결박하고 forward fsync 뒤 writer 재기동·health를 crash-resume한다.
 - [/] n150 rollback에서 Compose health 직후 Map loopback smoke가 일시적인 연결 거부로 실패해 원래 cutover
-      오류를 덮어쓰는 문제를 보강한다. 첫 Map signed read와 read-only PinVi Web shell만 최대 20초 재시도하고,
-      HTTP 계약 오류·인증 실패·destructive probe는 재시도하지 않는다.
+      오류를 덮어쓰는 문제를 보강한다. 첫 Map signed read와 read-only PinVi Web shell의 exact
+      `ConnectionRefusedError`만 5회·1초 간격으로 재시도한다. 호출 timeout을 포함한 최악 상한은 14초이며,
+      다른 `OSError`·HTTP 계약 오류·인증 실패·destructive probe는 재시도하지 않는다.
 - [/] pre-forward 실패는 new runtime stop 뒤 Map application→Dagster→Pin DB→manager env/state/manifest를 복구하고
       old image를 마지막에 기동한다. migration 뒤 일반 image-only rollback을 금지하고 forward commit/최초 외부
       event 뒤 old restore를 거부한다. DB rewind 뒤 stale receipt가 성공하지 않도록 live schema/epoch/cutover/

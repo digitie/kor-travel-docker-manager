@@ -6705,10 +6705,14 @@ def test_http_error_body_is_never_read_or_exposed(monkeypatch: pytest.MonkeyPatc
 
 def test_smoke_connection_retry_recovers_only_exact_unavailable_error() -> None:
     unavailable = "C6c Map smoke endpoint is unavailable"
+    first = DeploymentContractError(unavailable)
+    first.__cause__ = urllib.error.URLError(ConnectionRefusedError())
+    second = DeploymentContractError(unavailable)
+    second.__cause__ = ConnectionRefusedError()
     operation = Mock(
         side_effect=[
-            DeploymentContractError(unavailable),
-            DeploymentContractError(unavailable),
+            first,
+            second,
             "ready",
         ]
     )
@@ -6740,9 +6744,30 @@ def test_smoke_connection_retry_does_not_retry_contract_failure() -> None:
     sleep.assert_not_called()
 
 
+def test_smoke_connection_retry_does_not_retry_timeout() -> None:
+    unavailable = "C6c Map smoke endpoint is unavailable"
+    timeout = DeploymentContractError(unavailable)
+    timeout.__cause__ = TimeoutError()
+    operation = Mock(side_effect=timeout)
+
+    with (
+        patch.object(c6c_deployment.time, "sleep") as sleep,
+        pytest.raises(DeploymentContractError, match="endpoint is unavailable"),
+    ):
+        c6c_deployment._retry_smoke_connection(
+            operation,
+            unavailable_message=unavailable,
+        )
+
+    operation.assert_called_once_with()
+    sleep.assert_not_called()
+
+
 def test_smoke_connection_retry_is_bounded() -> None:
     unavailable = "C6c Map smoke endpoint is unavailable"
-    operation = Mock(side_effect=DeploymentContractError(unavailable))
+    refused = DeploymentContractError(unavailable)
+    refused.__cause__ = ConnectionRefusedError()
+    operation = Mock(side_effect=refused)
 
     with (
         patch.object(c6c_deployment, "_SMOKE_CONNECTION_ATTEMPTS", 3),
