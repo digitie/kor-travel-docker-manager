@@ -201,26 +201,31 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       candidate를 검증한 뒤 active=rollback으로 원자 bootstrap하고, old pair는 coupled rollback bundle에만
       보존한다. backup/build/migrate/CSV/bootstrap/initial/enable/canary/GC/verify/forward commit을 한 process의
       C6c lock과 `0600` journal로 묶으며 non-terminal transaction은 다른 mutation을 차단한다.
-- [ ] production cache-target의 모든 값이 unset/default이면 기존 C6c 경로를 유지하고 부분 설정만 거부한다.
+- [x] production cache-target의 모든 값이 unset/default이면 기존 C6c 경로를 유지하고 부분 설정만 거부한다.
       Map·Pin release revision을 별도로 tracked pin에 두고 active/rollback source를 양쪽 모두 exact 검증한다.
-- [ ] 기존 v4 manifest 전용 one-time generation bootstrap을 구현한다. sync=false candidate 전체 attestation 후
+- [/] 기존 v4 manifest 전용 one-time generation bootstrap을 구현한다. sync=false candidate 전체 attestation 후
       active=rollback atomic commit, old pair coupled rollback bundle 보존, crash/retry/foreign manifest와
       deploy/capture/rollback/bootstrap mutation-zero 회귀를 포함한다.
-- [ ] H35×T-VN-41 결합 orchestrator를 구현한다. Map application·Dagster와 Pin DB backup identity, image build,
+- [/] H35×T-VN-41 결합 orchestrator를 구현한다. Map application·Dagster와 Pin DB backup identity, image build,
       migration/CSV, bootstrap, initial, enable, canary, GC, verify, forward commit의 phase를 단일 process lock과
       owner-only journal로 수행하고 unfinished journal이면 same resume/coupled rollback 외 mutation을 차단한다.
-- [ ] pre-forward 실패는 new runtime stop 뒤 Map application→Dagster→Pin DB→manager env/state/manifest를 복구하고
+      writer fence 뒤 세 DB dump와 실제 scratch restore rehearsal 전체의 앞뒤에서 write counter·stats reset,
+      DB in-flight와 Map Dagster run을 재검증하고, Pin read-only preflight와 append-only final audit receipt를
+      각각 별도 phase에 결박한다. canary 뒤 Map-owned typed GC를 실제 실행하고 backlog 0/referenced observation을
+      확인한 다음 durable final fence로 exact 5 writer를 정지한다. stopped Map final evidence와 Pin finalize audit
+      exact 1행을 결박하고 forward fsync 뒤 writer 재기동·health를 crash-resume한다.
+- [/] pre-forward 실패는 new runtime stop 뒤 Map application→Dagster→Pin DB→manager env/state/manifest를 복구하고
       old image를 마지막에 기동한다. migration 뒤 일반 image-only rollback을 금지하고 forward commit/최초 외부
       event 뒤 old restore를 거부한다. DB rewind 뒤 stale receipt가 성공하지 않도록 live schema/epoch/cutover/
       convergence를 재검증한다.
-- [ ] Map candidate image의 typed helper CLI
-      `python scripts/h35/h35_cutover.py {preflight,migrate,csv5,verify}` exact JSON receipt를 소비한다. backup/
+- [/] Map candidate image의 typed helper CLI
+      `python scripts/h35/h35_cutover.py {preflight,migrate,csv5,gc,verify}` exact JSON receipt를 소비한다. backup/
       restore/finalize와 runtime lifecycle은 manager가 소유하며 helper에는 넘기지 않는다. manager는 SQL/CSV
       의미, DSN, backup path, credential을 request나 코드에 하드코딩하지 않는다. production initial/enable에서는
       injected attestor/canary/rollback-smoke 인자를 제거한다.
 - [ ] release unset, contract/pair/candidate mismatch에 대해 deploy/capture/rollback/initial/enable/bootstrap 각각의
       Docker/subprocess/env/manifest/retention/DB mutation이 0회임을 증명하는 행렬을 추가한다.
-- [ ] PinVi 두 적대적 GO review와 merge가 끝나면 별도 final pin commit에서 exact merge/release SHA를
+- [ ] PinVi 최종 exact HEAD의 단일 독립 적대적 GO review와 merge가 끝나면 별도 final pin commit에서 exact merge/release SHA를
       채우고 active·rollback pair provenance를 같은 SHA에 결박한다. review candidate나 후속 review-fix
       head를 merge 전에 release로 확정하지 않는다.
 - [ ] restore-fence/recovery 원문 token은 ordinary PinVi API와 다른 장기 실행 service에 주입하지
@@ -249,5 +254,5 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 - [ ] Compose/CLI/config 회귀, 4-role distinct·scope/digest 음성 회귀, runner argv/stdout/stderr/
       long-running runtime 비노출, lock 경합, foreign env/receipt, cutover retry/crash, enable rollback을
       검증하고 backend 전체·Ruff·strict mypy·canonical Compose gate를 통과한다.
-- [ ] 두 적대적 리뷰와 CI green 뒤 n150에서 별도 승인된 initial cutover→receipt→sync enable→
+- [ ] 최종 exact HEAD의 단일 독립 적대적 리뷰와 CI green 뒤 n150에서 별도 승인된 initial cutover→receipt→sync enable→
       pair attestation을 실행하고 live backlog/DLQ/epoch/snapshot readiness를 확인한다.

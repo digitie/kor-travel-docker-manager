@@ -514,6 +514,37 @@ def test_cli_rolls_back_only_the_whole_compatible_pair(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_runs_cache_target_cutover_as_one_process_window(
+    mock_compose_service,
+):
+    mock_compose_service.run_cache_target_cutover.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert main(
+        [
+            "cache-target",
+            "cutover",
+            "--cutover-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--expected-restore-epoch",
+            "3",
+            "--reason",
+            "production cutover",
+            "--wait-timeout",
+            "1200",
+        ]
+    ) == 0
+    mock_compose_service.run_cache_target_cutover.assert_called_once_with(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production cutover",
+        wait_timeout=1200,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_runs_cache_target_initial_cutover_with_explicit_evidence(
     mock_compose_service,
 ):

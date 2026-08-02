@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-08-02 (T-048 race-free final fence와 실제 GC checkpoint D)
+
+causal canary 뒤 running writer의 순간적인 in-flight 0을 최종 경계로 승인하던 경쟁 조건을 제거했다. Map
+H35 helper chain에 실제 `gc` operation을 추가해 acquired/non-skipped, remaining backlog 0, referenced 보존과
+deterministic observation 일치를 typed receipt로 먼저 fsync한다. 그 뒤 `final_writers_fencing`을 durable하게
+기록하고 exact 5 writer를 모두 정지한 상태에서 세 DB in-flight 0, Map Dagster run 0, registry/state의 별도
+final fence와 Map application/Dagster write-counter hash를 결박한다.
+
+stopped Map `verify`는 stream/control/restore epoch/etag/high-watermark/snapshot count·Merkle와 네 backlog 0의
+full typed evidence를 반환한다. Pin finalize request는 initial/final fence와 full Map evidence+SHA를 전달하며,
+Manager는 append-only audit receipt를 fresh Pin DB의 exact 1행과 request/evidence/fence/prior/canary 전체로
+대조한다. Pin audit INSERT는 final fence hash에 포함하지 않되 Map 두 DB counter는 verify 전·finalize 전후
+불변이어야 한다. audit commit 뒤 Manager journal fsync가 유실되어도 같은 request의 동일 audit row replay만
+허용한다.
+
+forward boundary는 writer가 stopped인 상태에서 먼저 fsync한다. 이후 exact 5 writer를 idempotent하게 재기동하고
+health와 compatible-pair attestation을 통과한 `runtime_activated`에서만 성공한다. GC backlog/observation 실패,
+foreign audit row, Map counter drift, finalize 응답 유실 재개와 forward-commit 뒤 재기동 재개 회귀를 제품 경계에
+추가했다.
+
+## 2026-08-02 (T-048 결합 window 구현 checkpoint C)
+
+`prepared` journal 뒤 exact 5-writer registry를 먼저 검증하고 DB in-flight와 Map Dagster run 0에서 모든
+writer를 정지하는 `writers_fenced` phase를 추가했다. Map application·Dagster와 Pin DB는 custom dump를
+owner-only transaction directory에 직접 stream하고, 각각 별도 scratch DB에 실제 restore해 Alembic head와
+schema/data logical inventory가 일치해야만 typed backup receipt를 만든다. 세 backup 전체 앞뒤의
+insert/update/delete counter와 `stats_reset` identity, in-flight 0, Map Dagster run 0이 같아야
+`backups_committed`에 도달한다.
+
+DB identity는 cross-repo `h35-db-identity-v1`의 prefix·필드별 NUL·terminal NUL exact bytes로 통일했다.
+scratch DB는 운영 identity를 가장하지 않고 별도 rehearsal identity를 원 archive SHA와 inventory에 결박한다.
+manager env/manifest/initial/enable 상태도 같은 transaction의 rollback bundle에 넣고, rollback은 세 DB 전체
+restore 뒤 manager state와 old runtime을 순서대로 복구하는 private capability에서만 허용한다.
+
+Pin 경계는 read-only schema `0047` preflight와 schema `0048` append-only final audit를 분리한다. 따라서
+window는 `candidate_built`, `pin_preflight_verified`, `map_preflight_verified`와 terminal 직전
+`final_boundary_verified`를 각각 durable phase로 기록한다. final audit row는 app-level DELETE하지 않으며,
+pre-forward rollback에서는 schema `0047` Pin DB 전체 restore로만 제거된다. release unset은 journal·Docker·
+DB mutation 전에 차단하는 회귀를 추가했다.
+
 ## 2026-08-02 (T-048 NO-GO 반영: generation bootstrap과 H35 결합 전환 재설계)
 
 exact head `58ca4491` 적대 리뷰에서 기존 v4 active/rollback이 old Pin인 production은 새 release gate와 일반

@@ -12644,6 +12644,51 @@ def test_cache_target_initial_cutover_blocks_unpinned_release_before_attestor(
     attestor.assert_not_called()
 
 
+def test_cache_target_window_blocks_unpinned_release_before_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    inspect_pair = Mock()
+    write_journal = Mock()
+    docker_run = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_inspect_current_pair", inspect_pair)
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_cache_target_window",
+        write_journal,
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", docker_run)
+
+    with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
+        service.run_cache_target_cutover(
+            cutover_id="11111111-1111-4111-8111-111111111111",
+            expected_restore_epoch=3,
+            reason="production H35 and generation 7 cutover",
+        )
+
+    inspect_pair.assert_not_called()
+    write_journal.assert_not_called()
+    docker_run.assert_not_called()
+
+
 def test_cache_target_enable_blocks_unpinned_release_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

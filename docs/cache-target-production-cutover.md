@@ -52,7 +52,7 @@ OpenAPI SHA-256
 `9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`, Map release revision
 `0b0a0cb5767f25284506cb76d47c10ebce8fa84f`다. PinVi reviewed candidate
 `6ac8baae2814fae5b16c95846ee40d77cc7fe283`는 review 출발점의 감사 정보일 뿐 release가 아니며,
-`pinvi_release_revision`은 두 적대적 GO review와 merge 전까지 명시적으로 비어 있다. 이 상태에서는
+`pinvi_release_revision`은 최종 exact HEAD의 단일 독립 적대적 GO review와 merge 전까지 명시적으로 비어 있다. 이 상태에서는
 production initial, enable, compatible-pair capture/deploy/rollback을 모두 mutation 전에 fail-close한다.
 candidate를 release로 자동 승격하거나 fallback으로 쓰지 않는다. PinVi merge 뒤 별도 final pin commit이
 merge/release SHA를 채우고 Map과 PinVi 각각의 build/release SHA를 active와 rollback pair 양쪽에 결박해야만
@@ -91,31 +91,47 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
 1. 하나의 process가 C6c 전역 lock을 획득하고 transaction UUID와 owner-only `0600` durable journal을
    `prepared`로 먼저 fsync한다. journal이 non-terminal인 동안 같은 transaction의 resume/coupled rollback을
    제외한 모든 manager mutation은 subprocess·Docker·DB·env·manifest write 전에 차단한다.
-2. old manifest/env/manager state와 Map application DB, Map Dagster DB, PinVi DB의 typed backup identity를
-   frozen rollback bundle에 결박한다. backup receipt는 database identity, schema revision, logical backup ID,
-   byte size와 SHA-256만 기록하며 DSN, path, credential, dump stdout/stderr는 기록하지 않는다.
+2. resolved Compose에서 DB 쓰기 capability를 가진 service가 Map API·Dagster web·Dagster daemon,
+   PinVi API·Dagster의 정확한 5개인지 확인하고 in-flight DB transaction과 Map Dagster run이 0일 때만
+   모두 정지한다. 이 writer registry의 canonical digest는
+   `526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c`다. old
+   manifest/env/manager state와 Map application DB, Map Dagster DB, PinVi DB의 typed backup identity를 frozen
+   rollback bundle에 결박한다. 세 dump와 scratch restore rehearsal 전체의 앞뒤에서 DB별 insert/update/delete
+   counter와 `stats_reset` identity, in-flight 0, Map Dagster run 0을 다시 읽어 exact 동일해야만 commit한다.
+   receipt는 archive SHA, schema/data logical inventory, 별도 scratch DB identity를 가진 restore rehearsal까지
+   포함하며 DSN, path, credential, dump stdout/stderr는 기록하지 않는다.
 3. exact Map/Pin release source에서 candidate image를 완성하고 `sync=false`로 전체 runtime을 검증한다.
    Map·Pin DB migration과 Map의 H35 CSV 전환을 service-owned typed CLI로 수행한 뒤, cache health와 source
    provenance가 맞는 첫 generation 7 pair를 v4 manifest의 active와 rollback 양쪽에 원자 commit한다. old pair는
    compatible-pair rollback slot에 남기지 않고 frozen coupled rollback bundle에만 보존한다.
-4. 같은 lock/process에서 initial runner, sync enable, causal canary, backlog/DLQ/cursor/count/Merkle 검증,
-   cache GC와 최종 live verification까지 수행한다. 모두 성공한 뒤 `forward_committed`를 먼저 fsync하고
-   old restore 권한을 폐기한다. 외부 cache-target event를 하나라도 관측한 뒤에는 old DB/image restore를
-   허용하지 않는다.
+4. 같은 lock/process에서 initial runner, sync enable, causal canary를 수행한 뒤 Map-owned `gc` helper로
+   deterministic observation run에 결박된 실제 snapshot GC를 실행한다. acquired/non-skipped, bounded batch,
+   remaining backlog 0, referenced 보존과 observation-current 일치를 typed receipt로 검증한다. 그 다음
+   `final_writers_fencing`을 먼저 fsync하고 exact 5 writer를 모두 정지한다. 세 DB in-flight 0, Map Dagster run
+   0, registry와 stopped state의 fresh final fence를 확정하고 Map 두 DB write-counter hash를 별도 결박한다.
+   stopped DB에서 Map `verify`가 stream/control/epoch/etag/high-watermark/count/Merkle/backlog 0의 full typed
+   final evidence를 발행한다. Pin-owned final-boundary helper는 schema `0047` read-only preflight와 schema
+   `0048` append-only finalize를 분리하고 initial/final fence, full Map evidence+SHA, initial/canary provenance를
+   exact audit row에 결박한다. Manager는 fresh Pin DB audit row가 같은 request/evidence/fence이고 정확히 1행인지
+   대조한다. final audit row는 개별 삭제하지 않는다. 모두 성공한 뒤 `forward_committed`를 먼저 fsync하고,
+   exact 5 writer를 idempotent하게 재기동·health/attestation한 `runtime_activated`에서만 성공을 반환한다.
 5. forward boundary 전 실패는 new runtime을 먼저 중지하고 Map application DB → Map Dagster DB → PinVi DB →
    manager env/state/manifest를 frozen bundle로 복구한 뒤 old image를 마지막에 기동·검증한다. migration 이후
    일반 image-only rollback은 금지한다. forward boundary 이후 실패는 old schema restore 대신 새 generation의
    fix-forward 또는 같은-generation recovery만 허용한다.
 
-허용 phase는 `prepared → backups_committed → candidate_built → databases_forwarded → csv_forwarded →
-generation_bootstrapped → initial_committed → sync_enabled → canary_verified → gc_verified →
-forward_committed`다. rollback은 forward boundary 전에만 `rollback_preparing → new_runtime_stopped →
+허용 phase는 `prepared → writers_fencing → writers_fenced → backups_committed → candidate_built →
+pin_preflight_verified → map_preflight_verified → map_database_forwarded → databases_forwarded → csv_forwarded →
+generation_bootstrapped → initial_committed → sync_enabled → canary_verified → gc_started → gc_verified →
+final_writers_fencing → final_writers_fenced → map_final_verified → final_boundary_verified → forward_committed →
+runtime_activated`다. rollback은
+forward boundary 전에만 `rollback_preparing → new_runtime_stopped →
 map_db_restored → map_dagster_db_restored → pinvi_db_restored → manager_state_restored → old_runtime_restored →
 rolled_back` 순서로 진행한다. phase를 건너뛰거나 뒤로 이동하지 않으며 각 전이는 owner-only atomic replace와
 directory fsync 뒤에만 다음 mutation을 허용한다.
 
 Map helper는 manager가 SQL/schema/CSV 의미를 재구현하지 않도록 candidate image에 포함된
-`python scripts/h35/h35_cutover.py {preflight,migrate,csv5,verify}` 네 operation만 제공한다. request는 stdin
+`python scripts/h35/h35_cutover.py {preflight,migrate,csv5,gc,verify}` 다섯 operation만 제공한다. request는 stdin
 단일 JSON, receipt는 stdout 단일 JSON line이며 helper는 runtime stop/start/recreate, lock/journal,
 credential/path 탐색, backup/restore/finalize를 하지 않는다. 이 lifecycle은 manager가 소유한다. DB 연결은
 manager가 exact candidate image의 기존 runtime environment로 주입하고 request에는 DSN, credential, path를
@@ -123,16 +139,25 @@ manager가 exact candidate image의 기존 runtime environment로 주입하고 r
 
 helper receipt의 exact 공통 key는 `contract_version`, `operation`, `transaction_id`, `status`,
 `source_revision`, `database_identity`, `request_digest`, `prior_receipt_digest`, `schema_before`, `schema_after`,
-`forward_boundary`, `row_counts`, `checks`, `runtime_mutation_count`, `external_event_count`다. `database_identity`는
+`forward_boundary`, `row_counts`, `checks`, `gc_evidence`, `cache_target_evidence`, `runtime_mutation_count`,
+`external_event_count`다. `database_identity`는
 manager backup receipt의 DB identity/schema/transaction UUID에 결박하는 non-secret opaque digest다.
-`prior_receipt_digest`는 `preflight=null`, `migrate=preflight digest`, `csv5=migrate digest`, `verify=csv5 digest`로
+`prior_receipt_digest`는 `preflight=null`, `migrate=preflight digest`, `csv5=migrate digest`, `gc=csv5 digest`,
+`verify=gc digest`로
 연결하고 모든 phase에서 `runtime_mutation_count=0`, `external_event_count=0`을 요구한다. stdout에 extra/missing
 field가 있거나 stderr가 있거나 foreign transaction/source/schema/digest면 진행하지 않는다. 같은
 transaction/request/prior digest의 재실행만 idempotent receipt를 허용한다.
 
+DB identity는 Map·Pin·Manager가 공유하는 `h35-db-identity-v1`이다. bytes는
+`b"h35-db-identity-v1\0" + transaction_uuid + b"\0" + role + b"\0" + database_name + b"\0" +
+system_identifier_decimal + b"\0"`의 SHA-256이며 UUID·role·DB 이름·decimal을 canonical 검증한다. scratch
+rehearsal DB는 이름이 다르므로 운영 DB identity를 재사용하지 않고 별도 identity를 기록해 원 archive SHA와
+schema/data inventory에 결박한다.
+
 `preflight`는 schema `0063`/public row `3265`와 0075 기존행 identity/NFC/trim/length/CHECK/FK 위반 0,
 `migrate`는 schema `0078`/public row `3043`과 0064/0068/0069 partial residue 0, `csv5`는 file count 5,
-accepted 222, rejected 0, public row 3265, `verify`는 schema `0078`/public row `3265`와 0075~0078
+accepted 222, rejected 0, public row 3265, `gc`는 acquired=true/skipped=false, remaining 0, referenced observation
+일치를 반환한다. `verify`는 stopped schema `0078`/public row `3265`와 0075~0078
 schema/index/outbox/receipt/GC 전수 PASS를 exact checks로 반환한다. `forward_boundary`의 결정·영속은 manager가
 소유하고 helper는 `preflight=not_crossed`, migrate 이후 `schema_0078` 관측값만 반환한다. manager 코드와
 문서에 실제 DSN, backup path, host, credential을 하드코딩하지 않는다.

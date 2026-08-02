@@ -1184,7 +1184,7 @@ evidence는 자동 덮어쓰지 않는다.
 
 production 실행 권한은 코드에 추적되는 단일 pin manifest로 추가 결박한다. manifest는 contract generation,
 Map OpenAPI SHA-256, Map functional owner revision, Map build/release revision, PinVi reviewed candidate와 별도의 PinVi release revision을
-기록한다. reviewed candidate는 감사 정보일 뿐 실행 가능한 release fallback이 아니다. 두 적대적 GO review와
+기록한다. reviewed candidate는 감사 정보일 뿐 실행 가능한 release fallback이 아니다. 최종 exact HEAD의 단일 독립 적대적 GO review와
 PinVi merge SHA가 확정되기 전에는 release를 비워 두고 initial/enable 및 compatible-pair capture/deploy/
 rollback을 모두 mutation 전에 차단한다. 최종 pin commit 뒤에도 active와 rollback pair 모두 exact Map·PinVi
 release provenance를 가져야 한다. functional owner와 실제 image build/release owner를 혼용하지 않는다.
@@ -1208,6 +1208,22 @@ forward boundary 전 실패는 new runtime stop 뒤 Map application/Dagster/Pin 
 Map schema/CSV 의미는 Map-owned typed CLI가 수행하고 manager는 transaction/source/schema/backup identity에
 결박된 exact secret-free JSON receipt만 소비한다. production public method에는 호출자 제공 attestor/canary/smoke
 주입점을 두지 않는다.
+
+DB backup은 파일 존재나 archive list 성공만으로 승인하지 않는다. exact 5-writer registry를 정지한 하나의
+fence에서 세 DB의 write counter와 stats reset identity, in-flight transaction, Map Dagster run을 전체 작업
+앞뒤로 대조하고, 각 dump를 별도 scratch DB에 실제 restore해 schema/data logical inventory까지 검증한다.
+cross-repo DB identity는 prefix와 terminal NUL을 포함한 `h35-db-identity-v1` 하나만 사용하며 scratch identity는
+원본 identity와 분리한다.
+
+Pin 최종 경계의 cache command/claim/app queue 의미는 Manager가 재구현하지 않고 Pin-owned typed helper가 같은
+DB snapshot에서 검증한다. schema `0047` preflight는 read-only이고 schema `0048` final audit row는 append-only다.
+causal canary 뒤 Map-owned `gc` helper가 실제 bounded GC와 deterministic observation의 backlog 0/referenced 보존을
+증명한 뒤, Manager가 exact 5 writer를 모두 정지하고 별도 final fence를 확정한다. stopped Map verify의 full
+stream/control/count/Merkle evidence를 Pin finalize request에 전달하며, Manager는 Pin receipt를 fresh DB audit
+exact 1행의 request/evidence/initial·final fence/prior/canary와 다시 대조한다. Pin audit INSERT는 stable final
+fence에서 제외하지만 Map application·Dagster write-counter hash는 verify 전과 finalize 전후 불변이어야 한다.
+pre-forward rollback은 Pin DB 전체 restore를 사용하며 audit row를 개별 삭제하지 않는다. forward fsync 뒤에는
+exact writer 재기동과 health/attestation을 재개해 `runtime_activated`에서만 성공한다.
 
 ### 근거
 
@@ -1247,5 +1263,5 @@ Map schema/CSV 의미는 Map-owned typed CLI가 수행하고 manager는 transact
 
 ### 후속
 
-- (open) T-048 구현·CI·두 적대적 리뷰를 완료한다.
+- (open) T-048 구현·CI·최종 exact HEAD의 단일 독립 적대적 리뷰를 완료한다.
 - (open) 별도 승인 아래 n150 initial cutover와 live receipt/pair attestation을 수행한다.
