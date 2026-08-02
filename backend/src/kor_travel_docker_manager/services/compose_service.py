@@ -6,7 +6,8 @@ import stat
 import subprocess
 import tarfile
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+import uuid
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -80,6 +81,17 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     require_empty_retention_namespace,
     validate_retention_namespace_is_reserved,
 )
+from kor_travel_docker_manager.services.cache_target_cutover import (
+    CacheTargetFrozenEvidence,
+    InitialCutoverReceipt,
+    InitialCutoverResult,
+    build_initial_cutover_receipt,
+    commit_initial_cutover_receipt,
+    initial_runner_compose_arguments,
+    parse_initial_cutover_output,
+    read_initial_cutover_receipt,
+    with_initial_runner_secret_bundle,
+)
 from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
@@ -124,6 +136,42 @@ def get_override_path() -> str:
     return os.path.join(
         os.path.dirname(get_compose_path()), "docker-compose.override.yml"
     )
+
+
+def _compatible_pair_logical_sha256(pair: CompatibleImagePair) -> str:
+    payload = {
+        "contract_generation": pair.contract_generation,
+        "map_dagster_daemon_image_id": pair.map_dagster_daemon_image_id,
+        "map_dagster_image_id": pair.map_dagster_image_id,
+        "map_image_id": pair.map_image_id,
+        "map_source_revision": pair.map_source_revision,
+        "map_ui_image_id": pair.map_ui_image_id,
+        "pinvi_image_id": pair.pinvi_image_id,
+        "pinvi_source_revision": pair.pinvi_source_revision,
+        "recorded_at": pair.recorded_at,
+    }
+    serialized = json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def _initial_receipt_process_result(
+    receipt: InitialCutoverReceipt,
+    *,
+    resumed: bool,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "returncode": 0,
+        "cutover_id": receipt.cutover_id,
+        "request_id": receipt.request_id,
+        "expected_restore_epoch": receipt.expected_restore_epoch,
+        "count": receipt.count,
+        "merkle_root": receipt.merkle_root,
+        "published": receipt.published,
+        "resumed": resumed,
+    }
 
 
 def _derive_c6c_build_provenance(
@@ -3361,6 +3409,198 @@ class ComposeService:
                 wait_timeout=wait_timeout,
             )
 
+    def run_cache_target_initial_cutover(
+        self,
+        *,
+        cutover_id: str,
+        expected_restore_epoch: int,
+        reason: str,
+        pair_contract_attestor: Callable[
+            [C6cDeploymentConfig, CompatiblePairManifest, ComposeTransactionSnapshot],
+            None,
+        ],
+    ) -> dict[str, Any]:
+        """frozen compatible pair에서 default-off initial runner를 한 번 실행한다."""
+
+        try:
+            canonical_cutover_id = str(uuid.UUID(cutover_id))
+        except ValueError as exc:
+            raise DeploymentContractError("cache-target cutover ID is invalid") from exc
+        if canonical_cutover_id != cutover_id:
+            raise DeploymentContractError(
+                "cache-target cutover ID must be canonical lowercase UUID"
+            )
+        if expected_restore_epoch <= 0:
+            raise DeploymentContractError(
+                "cache-target expected restore epoch must be positive"
+            )
+        if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
+            raise DeploymentContractError("cache-target cutover reason is invalid")
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            contract = config.cache_target
+            if not config.production or contract is None:
+                raise DeploymentContractError(
+                    "cache-target initial cutover requires the production contract"
+                )
+            if contract.sync_enabled != "false":
+                raise DeploymentContractError(
+                    "cache-target initial cutover requires sync=false"
+                )
+            self._validate_resolved_compose_contract(
+                config,
+                transaction=transaction,
+            )
+            manifest_path = transaction.manifest_path
+            if manifest_path is None:
+                raise DeploymentContractError(
+                    "cache-target cutover transaction has no pair manifest"
+                )
+            manifest = load_pair_manifest(manifest_path)
+            if manifest.rollback is None:
+                raise DeploymentContractError(
+                    "cache-target cutover requires an attested rollback pair"
+                )
+            pair_contract_attestor(config, manifest, transaction)
+            evidence = CacheTargetFrozenEvidence(
+                env_sha256=hashlib.sha256(
+                    transaction.environment.env_file_bytes
+                ).hexdigest(),
+                raw_compose_sha256=hashlib.sha256(
+                    transaction.compose_source_bytes
+                ).hexdigest(),
+                resolved_compose_sha256=transaction.resolved_document_hash,
+                active_pair_sha256=_compatible_pair_logical_sha256(manifest.active),
+                rollback_pair_sha256=_compatible_pair_logical_sha256(
+                    manifest.rollback
+                ),
+                role_binding_sha256=contract.role_binding_sha256,
+                expected_openapi_sha256=contract.expected_openapi_sha256,
+                expected_source_revision=contract.expected_source_revision,
+                expected_contract_generation=(
+                    contract.expected_contract_generation
+                ),
+            )
+            state_directory = Path(manifest_path).parent
+            receipt_path = state_directory / "cache-target-initial-cutover-v1.json"
+            if receipt_path.exists():
+                receipt = read_initial_cutover_receipt(receipt_path)
+                expected_reason_sha = hashlib.sha256(reason.encode()).hexdigest()
+                if (
+                    receipt.cutover_id != cutover_id
+                    or receipt.expected_restore_epoch != expected_restore_epoch
+                    or receipt.reason_sha256 != expected_reason_sha
+                    or receipt.evidence != evidence
+                ):
+                    raise DeploymentContractError(
+                        "existing initial cutover receipt belongs to foreign evidence"
+                    )
+                return _initial_receipt_process_result(receipt, resumed=True)
+
+            runner_name = f"ktdm-cache-target-initial-{cutover_id}"
+            self._cleanup_cache_target_initial_runner(
+                runner_name,
+                expected_image_id=manifest.active.pinvi_image_id,
+            )
+
+            def run(secret_path: Path) -> InitialCutoverResult:
+                arguments = initial_runner_compose_arguments(
+                    secret_path=secret_path,
+                    cutover_id=cutover_id,
+                    expected_restore_epoch=expected_restore_epoch,
+                    reason=reason,
+                )
+                try:
+                    result = self._run_frozen_recovery(
+                        arguments,
+                        transaction=transaction,
+                        mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                        redact_config=config,
+                    )
+                    if not result.get("success"):
+                        raise DeploymentContractError(
+                            "cache-target initial runner failed"
+                        )
+                    return parse_initial_cutover_output(str(result.get("stdout", "")))
+                finally:
+                    self._cleanup_cache_target_initial_runner(
+                        runner_name,
+                        expected_image_id=manifest.active.pinvi_image_id,
+                    )
+
+            runner_result = with_initial_runner_secret_bundle(
+                state_directory,
+                contract.command_token,
+                contract.consumer_token,
+                contract.recovery_token,
+                run,
+            )
+            receipt = build_initial_cutover_receipt(
+                cutover_id=cutover_id,
+                expected_restore_epoch=expected_restore_epoch,
+                reason=reason,
+                evidence=evidence,
+                result=runner_result,
+            )
+            commit_initial_cutover_receipt(receipt_path, receipt)
+            return _initial_receipt_process_result(receipt, resumed=False)
+
+    @staticmethod
+    def _cleanup_cache_target_initial_runner(
+        container_name: str,
+        *,
+        expected_image_id: str,
+    ) -> None:
+        inspected = subprocess.run(
+            ["docker", "container", "inspect", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if inspected.returncode != 0:
+            if "No such" in inspected.stderr:
+                return
+            raise DeploymentContractError(
+                "cache-target runner orphan classification failed"
+            )
+        try:
+            payload = json.loads(inspected.stdout)
+            container = payload[0]
+            labels = container["Config"]["Labels"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise DeploymentContractError(
+                "cache-target runner orphan evidence is invalid"
+            ) from exc
+        if (
+            container.get("Image") != expected_image_id
+            or not isinstance(labels, Mapping)
+            or labels.get("com.docker.compose.service") != _PINVI_API_SERVICE
+            or labels.get("com.docker.compose.oneoff") != "True"
+        ):
+            raise DeploymentContractError(
+                "foreign container occupies the cache-target runner identity"
+            )
+        removed = subprocess.run(
+            ["docker", "container", "rm", "--force", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if removed.returncode != 0:
+            raise DeploymentContractError("cache-target runner orphan cleanup failed")
+
     def _ensure_production_pinvi_target(
         self,
         target: str,
@@ -4058,6 +4298,11 @@ class ComposeService:
                 config.smoke.pinvi_admin_password,
                 config.smoke.cancel_probe_job_id,
                 config.contract_generation,
+                *(
+                    config.cache_target.protected_values
+                    if config.cache_target is not None
+                    else ()
+                ),
             )
             if value
         }

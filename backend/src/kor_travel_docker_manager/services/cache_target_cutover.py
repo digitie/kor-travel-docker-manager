@@ -13,6 +13,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.cache_target_contract import (
+    PINVI_COMMAND_TOKEN_ENV,
+    PINVI_CONSUMER_TOKEN_ENV,
+    PINVI_RECOVERY_TOKEN_ENV,
+    PINVI_SYNC_ENV,
+)
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _INITIAL_OUTPUT_PATTERN = re.compile(
@@ -207,6 +213,39 @@ def prepare_enable_journal(
     )
 
 
+def render_cache_target_sync_env(
+    raw: bytes,
+    *,
+    expected: Literal["false", "true"],
+    replacement: Literal["false", "true"],
+) -> bytes:
+    if expected == replacement:
+        raise DeploymentContractError("cache-target sync env transition must change value")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DeploymentContractError("canonical env must be UTF-8") from exc
+    lines = text.splitlines(keepends=True)
+    prefix = f"{PINVI_SYNC_ENV}="
+    indexes = [index for index, line in enumerate(lines) if line.startswith(prefix)]
+    if len(indexes) != 1:
+        raise DeploymentContractError("canonical env must contain one exact cache-target sync line")
+    index = indexes[0]
+    line = lines[index]
+    ending = "\n" if line.endswith("\n") else ""
+    content = line[:-1] if ending else line
+    if content.endswith("\r"):
+        content = content[:-1]
+        ending = "\r\n"
+    if content != f"{prefix}{expected}":
+        raise DeploymentContractError("canonical env cache-target sync value drifted")
+    lines[index] = f"{prefix}{replacement}{ending}"
+    rendered = "".join(lines).encode()
+    if hashlib.sha256(rendered).digest() == hashlib.sha256(raw).digest():
+        raise DeploymentContractError("canonical env cache-target transition is a no-op")
+    return rendered
+
+
 def transition_enable_journal(
     journal: EnableCutoverJournal,
     phase: EnablePhase,
@@ -278,13 +317,23 @@ def write_cutover_state(path: Path, state: InitialCutoverReceipt | EnableCutover
     return hashlib.sha256(payload).hexdigest()
 
 
-def with_recovery_secret_file(
+def with_initial_runner_secret_bundle(
     state_directory: Path,
+    command_token: str,
+    consumer_token: str,
     recovery_token: str,
     runner: Callable[[Path], InitialCutoverResult],
 ) -> InitialCutoverResult:
-    if len(recovery_token) < 32 or any(character.isspace() for character in recovery_token):
-        raise DeploymentContractError("recovery token must be whitespace-free and 32+ chars")
+    tokens = (command_token, consumer_token, recovery_token)
+    if any(
+        len(token) < 32 or any(character.isspace() for character in token)
+        for token in tokens
+    ):
+        raise DeploymentContractError(
+            "initial runner tokens must be whitespace-free and 32+ chars"
+        )
+    if len(set(tokens)) != 3:
+        raise DeploymentContractError("initial runner tokens must be distinct")
     state_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory_stat = state_directory.lstat()
     if (
@@ -294,19 +343,74 @@ def with_recovery_secret_file(
     ):
         raise DeploymentContractError("cache-target secret directory is unsafe")
     descriptor, name = tempfile.mkstemp(
-        dir=state_directory, prefix=".cache-target-recovery.", suffix=".secret"
+        dir=state_directory, prefix=".cache-target-initial.", suffix=".secret"
     )
     secret_path = Path(name)
     try:
         with os.fdopen(descriptor, "wb") as stream:
             os.fchmod(stream.fileno(), 0o600)
-            stream.write(recovery_token.encode())
-            stream.write(b"\n")
+            for token in tokens:
+                stream.write(token.encode())
+                stream.write(b"\n")
             stream.flush()
             os.fsync(stream.fileno())
         return runner(secret_path)
     finally:
         secret_path.unlink(missing_ok=True)
+
+
+def initial_runner_compose_arguments(
+    *,
+    secret_path: Path,
+    cutover_id: str,
+    expected_restore_epoch: int,
+    reason: str,
+) -> tuple[str, ...]:
+    canonical_cutover_id = _canonical_uuid(cutover_id, "cutover ID")
+    if expected_restore_epoch <= 0:
+        raise DeploymentContractError("expected restore epoch must be positive")
+    if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
+        raise DeploymentContractError("initial cutover reason is invalid")
+    if not secret_path.is_absolute():
+        raise DeploymentContractError("initial runner secret path must be absolute")
+    container_secret_path = "/run/secrets/ktdm-cache-target-initial"
+    wrapper = (
+        "set -eu; "
+        f"IFS= read -r command_token < {container_secret_path}; "
+        f"consumer_token=$(sed -n '2p' {container_secret_path}); "
+        f"recovery_token=$(sed -n '3p' {container_secret_path}); "
+        f"export {PINVI_COMMAND_TOKEN_ENV}=$command_token; "
+        f"export {PINVI_CONSUMER_TOKEN_ENV}=$consumer_token; "
+        f"export {PINVI_RECOVERY_TOKEN_ENV}=$recovery_token; "
+        'exec pinvi-cache-target-initial-cutover "$@"'
+    )
+    container_name = f"ktdm-cache-target-initial-{canonical_cutover_id}"
+    return (
+        "run",
+        "--rm",
+        "--no-deps",
+        "--name",
+        container_name,
+        "--volume",
+        f"{secret_path}:{container_secret_path}:ro",
+        "--env",
+        f"{PINVI_COMMAND_TOKEN_ENV}=",
+        "--env",
+        f"{PINVI_CONSUMER_TOKEN_ENV}=",
+        "--env",
+        f"{PINVI_RECOVERY_TOKEN_ENV}=",
+        "pinvi-api",
+        "sh",
+        "-ec",
+        wrapper,
+        "--",
+        "--cutover-id",
+        canonical_cutover_id,
+        "--expected-restore-epoch",
+        str(expected_restore_epoch),
+        "--reason",
+        reason,
+    )
 
 
 def _allowed_next_phases(phase: EnablePhase) -> frozenset[EnablePhase]:

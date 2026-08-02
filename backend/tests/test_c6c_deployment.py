@@ -14,7 +14,7 @@ from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 import yaml
@@ -557,6 +557,29 @@ def _production_guard_transaction(
         effective=effective,
     )
     return replace(transaction, environment=environment)
+
+
+def _cache_target_cutover_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
+    transaction = _frozen_external_transaction(tmp_path)
+    effective = {
+        key: value
+        for key, value in _production_environment().items()
+        if value is not None
+    }
+    environment = replace(
+        transaction.environment,
+        effective=effective,
+        env_file_bytes=(
+            b"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=false\n"
+        ),
+    )
+    state_directory = tmp_path / "state"
+    state_directory.mkdir(mode=0o700)
+    return replace(
+        transaction,
+        environment=environment,
+        manifest_path=str(state_directory / "compatible-pair-v4.json"),
+    )
 
 
 def _cancel_error_details(
@@ -12436,3 +12459,207 @@ def test_c6c_redactor_removes_overlapping_credentials_without_suffix_residue() -
         config.smoke.map_ui_password,
     ):
         assert secret not in redacted
+
+
+def test_cache_target_initial_cutover_runs_frozen_secret_bundle_and_commits_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    runner = Mock(
+        return_value={
+            "success": True,
+            "returncode": 0,
+            "stdout": (
+                "initial cutover complete "
+                "cutover_id=11111111-1111-4111-8111-111111111111 "
+                "request_id=22222222-2222-4222-8222-222222222222 "
+                f"count=12 merkle_root={'9' * 64} published=12\n"
+            ),
+            "stderr": "",
+        }
+    )
+    cleanup = Mock()
+    attestor = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(service, "_cleanup_cache_target_initial_runner", cleanup)
+
+    result = service.run_cache_target_initial_cutover(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+        pair_contract_attestor=attestor,
+    )
+
+    assert result["success"] is True
+    assert result["resumed"] is False
+    attestor.assert_called_once_with(ANY, manifest, transaction)
+    arguments = runner.call_args.args[0]
+    serialized = json.dumps(arguments)
+    for token in _CACHE_TARGET_TOKENS.values():
+        assert token not in serialized
+        assert hashlib.sha256(token.encode()).hexdigest() not in serialized
+    assert "RESTORE_FENCE_TOKEN" not in serialized
+    assert cleanup.call_count == 2
+    receipt_path = (
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-initial-cutover-v1.json"
+    )
+    assert receipt_path.is_file()
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+
+
+def test_cache_target_initial_cutover_exact_receipt_retry_does_not_rerun(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    runner = Mock(
+        return_value={
+            "success": True,
+            "returncode": 0,
+            "stdout": (
+                "initial cutover complete "
+                "cutover_id=11111111-1111-4111-8111-111111111111 "
+                "request_id=22222222-2222-4222-8222-222222222222 "
+                f"count=12 merkle_root={'9' * 64} published=12\n"
+            ),
+            "stderr": "",
+        }
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(service, "_cleanup_cache_target_initial_runner", Mock())
+    attestor = Mock()
+    first = service.run_cache_target_initial_cutover(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+        pair_contract_attestor=attestor,
+    )
+    second = service.run_cache_target_initial_cutover(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+        pair_contract_attestor=attestor,
+    )
+
+    assert first["resumed"] is False
+    assert second["resumed"] is True
+    assert runner.call_count == 1
+
+
+def test_cache_target_runner_orphan_cleanup_removes_only_exact_oneoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_id = f"sha256:{'a' * 64}"
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Image": image_id,
+                            "Config": {
+                                "Labels": {
+                                    "com.docker.compose.service": "pinvi-api",
+                                    "com.docker.compose.oneoff": "True",
+                                }
+                            },
+                        }
+                    ]
+                ),
+                stderr="",
+            ),
+            subprocess.CompletedProcess([], 0, stdout="runner\n", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    ComposeService._cleanup_cache_target_initial_runner(
+        "ktdm-cache-target-initial-11111111-1111-4111-8111-111111111111",
+        expected_image_id=image_id,
+    )
+
+    assert run.call_count == 2
+    assert run.call_args_list[1].args[0][:4] == [
+        "docker",
+        "container",
+        "rm",
+        "--force",
+    ]
+
+
+def test_cache_target_runner_orphan_cleanup_rejects_foreign_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=json.dumps(
+                [
+                    {
+                        "Image": f"sha256:{'f' * 64}",
+                        "Config": {"Labels": {"com.docker.compose.service": "other"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="foreign container"):
+        ComposeService._cleanup_cache_target_initial_runner(
+            "ktdm-cache-target-initial-11111111-1111-4111-8111-111111111111",
+            expected_image_id=f"sha256:{'a' * 64}",
+        )
+    assert run.call_count == 1

@@ -40,6 +40,12 @@ terminal commit 거부를 독립 테스트로 고정했다. recovery principal�
 `cache-target:recovery` + `cache-target:recovery-replay` exact 두 scope로 정렬하되 별도 replay token은 만들지
 않는다.
 
+frozen initial runner adapter는 command/consumer/recovery 세 token을 단일 owner-only bundle mount로 전달하고
+ephemeral container의 세 env를 빈 값으로 override한다. restore-fence는 bundle API에 받지 않으며 argv·Docker
+create metadata에는 원문/digest가 남지 않는다. fixed one-off container identity는 active immutable image와
+Compose one-off label을 대조한 뒤에만 success/failure/retry orphan으로 제거한다. exact receipt retry는 runner를
+재실행하지 않고 secret-free 결과로 수렴하며, final cross-repo pin attestor는 주입 계약으로 남겼다.
+
 ## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
 
 production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,
