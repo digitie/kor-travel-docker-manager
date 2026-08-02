@@ -17,6 +17,7 @@
 | **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[/]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
 | **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
 | **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
+| **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
 
 ---
 
@@ -174,3 +175,32 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       type-check/build, 보안 감사를 통과하고 draft PR에 정확한 gate를 기록한다.
 - [ ] n150에서는 부모 에이전트가 read-only exact preflight를 재검증한 뒤에만 별도 승인된
       compatible-pair mutation을 수행한다.
+
+### T-048: T-VN-41 cache-target production manifest와 최초 cutover 제품화
+
+- [x] ADR-28과 [`cache-target-production-cutover.md`](cache-target-production-cutover.md)에
+      ordinary runtime 최소 권한, 4-role/legacy 상호 분리, default-off 최초 cutover와 receipt,
+      sync enable 뒤 compatible-pair attestation 순서를 먼저 고정한다.
+- [ ] Map API에는 `KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS` JSON registry만 전달하고,
+      PinVi ordinary API에는 정확히 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED`,
+      `..._COMMAND_TOKEN`, `..._CONSUMER_TOKEN`, `..._CONSUMER_ID`,
+      `..._EXPECTED_OPENAPI_SHA256`, `..._EXPECTED_SOURCE_REVISION`,
+      `..._EXPECTED_CONTRACT_GENERATION`만 전달한다.
+- [ ] command/consumer/restore-fence/recovery 네 token은 서로 및 기존 Map/PinVi
+      service/admin/ops token과 달라야 한다. Map registry의 digest·principal·consumer·scope·
+      external system을 원문 token과 교차 검증하고 raw/resolved/runtime 비인가 노출을 차단한다.
+- [ ] restore-fence/recovery 원문 token은 ordinary PinVi API와 다른 장기 실행 service에 주입하지
+      않는다. C6c 전역 lock과 frozen canonical `.env`/Compose/active pair를 검증한 전용
+      initial-cutover runner에만 실행 시간 동안 전달하고 종료 뒤 ephemeral container를 제거한다.
+- [ ] production `sync=false`에서 고정 cutover UUID/epoch/reason으로 전용 runner를 실행하고,
+      contract pin·active image pair·source revision·safe 결과 identity를 secret-free durable receipt로
+      원자 기록한다. 같은 입력 retry는 같은 receipt로 수렴하고 다른 입력은 fail-close한다.
+- [ ] 성공 receipt가 있을 때만 canonical `.env`의 sync를 `true`로 원자 전환하고 동일 immutable
+      active pair의 PinVi API만 재생성한다. startup readiness와 full compatible-pair runtime/image/
+      provenance/secret-isolation attestation이 모두 통과해야 commit하며, 실패·crash는 `sync=false`
+      env/runtime으로 복구한다.
+- [ ] Compose/CLI/config 회귀, 4-role distinct·scope/digest 음성 회귀, runner argv/stdout/stderr/
+      long-running runtime 비노출, lock 경합, foreign env/receipt, cutover retry/crash, enable rollback을
+      검증하고 backend 전체·Ruff·strict mypy·canonical Compose gate를 통과한다.
+- [ ] 두 적대적 리뷰와 CI green 뒤 n150에서 별도 승인된 initial cutover→receipt→sync enable→
+      pair attestation을 실행하고 live backlog/DLQ/epoch/snapshot readiness를 확인한다.

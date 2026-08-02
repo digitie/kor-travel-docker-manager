@@ -1118,3 +1118,65 @@ resolved Compose에 명시되지 않으면 production readiness 정본으로 채
 
 - (open) issue #90/T-047의 n150 read-only exact preflight와 별도 승인된 compatible-pair
   실행을 완료한다. 단일 적대적 exact-head 리뷰는 `P0 0 / P1 0 / P2 0`으로 통과했다.
+
+## ADR-28: cache-target 최초 production 전환은 default-off runner와 durable receipt로 수행한다
+
+- 상태: accepted
+- 날짜: 2026-08-02
+- 결정자: human, Codex
+
+### 컨텍스트
+
+T-VN-41은 Map의 cache-target service stream과 PinVi의 generation/outbox consumer를 production에서
+처음 연결한다. command·consumer·restore-fence·recovery는 서로 다른 권한이며, 최초 0→N backfill은
+ordinary worker가 먼저 command를 lease하면 재현 가능한 snapshot/cutover 순서를 잃는다. 기존 C6c는
+Map runtime 네 개와 PinVi API를 immutable compatible pair로 결박하고 전역 mutation lock, frozen
+canonical `.env`/Compose, raw/resolved/runtime secret isolation을 이미 강제한다. 새 전환이 이 경계를
+우회하거나 recovery credential을 ordinary API에 상시 주입하면 기존 보안·rollback 계약이 깨진다.
+
+### 결정
+
+Map API에는 digest 기반 `KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS` registry만 전달한다.
+PinVi ordinary API에는 sync flag, command/consumer token, consumer ID와 OpenAPI/source/contract
+generation pin의 정확한 7개 변수만 전달한다. restore-fence/recovery 원문 token은 ordinary API를 포함한
+장기 실행 service에 전달하지 않고, `sync=false`에서 C6c 전역 lock과 frozen canonical evidence를
+검증한 dedicated initial-cutover runner에만 실행 시간 동안 주입한다.
+
+네 role token은 서로 및 기존 Map/PinVi service/admin/ops credential과 달라야 한다. Map registry의
+SHA-256 digest, principal ID, 같은 consumer ID, 최소 scope와 `pinvi` external system을 원문 token에
+교차 결박한다. raw Compose에는 secret literal을 두지 않고, resolved/runtime validator는 각 값이 허가된
+경로 밖에 나타나면 fail-close한다. runner argv·출력·receipt에는 원문 token이나 resolved environment를
+남기지 않는다.
+
+최초 runner 성공은 고정 cutover ID, epoch, contract pin, active compatible-pair identity와 PinVi가 반환한
+request/count/Merkle/published 결과를 owner-only durable receipt로 먼저 commit한다. 성공 receipt가 있어야
+canonical `.env`의 sync를 `true`로 원자 변경하고 같은 immutable active image의 PinVi API를 재생성한다.
+ordinary startup readiness와 기존 full compatible-pair image/provenance/runtime/secret-isolation attestation이
+모두 통과해야 enable을 commit한다. 실패나 crash는 receipt phase에 따라 재개하거나 exact 이전
+`sync=false` env/runtime으로 복구하며, mixed/foreign evidence는 자동 덮어쓰지 않는다.
+
+### 근거
+
+- default-off runner는 ordinary lifespan worker와 최초 snapshot/backfill의 lease 경쟁을 제거한다.
+- recovery credential을 ephemeral 경계에만 두면 ordinary API 탈취가 restore/cutover 권한으로 확장되지 않는다.
+- C6c lock/frozen evidence를 재사용하면 cache-target 전환과 compatible-pair·credential rotation이 서로의
+  검증 뒤 runtime을 바꾸지 못한다.
+- receipt-before-enable은 원격 cutover 성공 뒤 process crash가 나도 sync를 추측으로 열지 않게 한다.
+- 같은 active image 재생성과 full pair attestation은 환경 전환을 image generation 변경과 분리하면서도
+  compatible-pair 정합성을 유지한다.
+
+### 결과(긍정)
+
+- ordinary runtime은 최소 권한 7개 변수만 가지며 restore/recovery 원문을 보유하지 않는다.
+- 최초 backfill, crash retry, sync enable과 rollback이 durable evidence로 판정된다.
+- 기존 C6c production mutation 차단, frozen env, immutable image와 secret non-leak 보호가 유지된다.
+
+### 결과(부정)
+
+- initial cutover와 enable이 별도 phase가 되어 operator 절차와 회귀 테스트가 늘어난다.
+- 전용 runner가 실행되는 짧은 동안에는 해당 ephemeral container process만 recovery credential을 가진다.
+
+### 후속
+
+- (open) T-048 구현·CI·두 적대적 리뷰를 완료한다.
+- (open) 별도 승인 아래 n150 initial cutover와 live receipt/pair attestation을 수행한다.
