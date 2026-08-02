@@ -212,11 +212,12 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       각각 별도 phase에 결박한다. canary 뒤 Map-owned typed GC를 실제 실행하고 backlog 0/referenced observation을
       확인한 다음 durable final fence로 exact 5 writer를 정지한다. stopped Map final evidence와 Pin finalize audit
       exact 1행을 결박하고 forward fsync 뒤 writer 재기동·health를 crash-resume한다.
-- [/] n150 rollback에서 Compose health 직후 Map loopback smoke가 일시적인 연결 거부로 실패해 원래 cutover
-      오류를 덮어쓰는 문제를 보강한다. 첫 Map signed read와 read-only PinVi Web shell의 exact
-      `ConnectionRefusedError`만 5회·1초 간격으로 재시도한다. 호출 timeout을 포함한 최악 상한은 14초이며,
-      Map UI·PinVi 로그인은 요청 전 TCP 연결 거부에만 opt-in한다. 다른 `OSError`·HTTP 계약 오류·인증 실패·
-      destructive probe와 후속 admin 요청은 재시도하지 않는다.
+- [/] n150 rollback에서 Compose health 직후 authenticated smoke가 일시적인 연결 거부로 실패해 원래 cutover
+      오류를 덮어쓰는 문제를 보강한다. Map signed read, Map UI login, PinVi admin login, read-only PinVi Web
+      shell의 **첫 요청**은 exact `ConnectionRefusedError`만 healthcheck `start_period`와 같은 30초의 bounded
+      window에서 재시도한다. 다른 `OSError`·HTTP 계약 오류·인증 실패·destructive probe와 후속 admin 요청은
+      재시도하지 않는다. n150에서 5초 window를 두 차례 모두 넘긴 뒤 runtime이 정상 authenticated smoke를
+      통과한 재현을 회귀로 고정한다.
 - [x] n150 실제 Map `pg_dump --data-only`가 순환 FK의 복원 주의 warning을 stderr로 출력하면서 종료 코드는
       0인 경우를 처리한다. data-only logical inventory는 heading·detail·두 hint가 모두 일치하는 정확한
       circular-FK advisory만 허용하고 schema-only·다른 warning·`pg_dump` nonzero exit는 fail-close한다.
