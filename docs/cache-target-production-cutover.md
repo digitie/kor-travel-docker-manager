@@ -139,7 +139,7 @@ manager가 exact candidate image의 기존 runtime environment로 주입하고 r
 
 helper receipt의 exact 공통 key는 `contract_version`, `operation`, `transaction_id`, `status`,
 `source_revision`, `database_identity`, `request_digest`, `prior_receipt_digest`, `schema_before`, `schema_after`,
-`forward_boundary`, `row_counts`, `checks`, `gc_evidence`, `cache_target_evidence`, `runtime_mutation_count`,
+`forward_boundary`, `row_counts`, `checks`, `cache_target_evidence`, `runtime_mutation_count`,
 `external_event_count`다. `database_identity`는
 manager backup receipt의 DB identity/schema/transaction UUID에 결박하는 non-secret opaque digest다.
 `prior_receipt_digest`는 `preflight=null`, `migrate=preflight digest`, `csv5=migrate digest`, `gc=csv5 digest`,

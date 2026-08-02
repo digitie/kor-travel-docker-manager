@@ -17,7 +17,6 @@ from kor_travel_docker_manager.services.cache_target_window import (
     DatabaseBackupReceipt,
     DatabaseRestoreRehearsalReceipt,
     MapFinalEvidence,
-    MapGcEvidence,
     MapHelperCheck,
     MapHelperReceipt,
     PinBoundaryReceipt,
@@ -116,7 +115,6 @@ def _map_receipt(
         forward_boundary="not_crossed" if preflight else "schema_0078",
         row_counts={"public_item_count": 3265},
         checks=(MapHelperCheck("identity", 0, 0, True),),
-        gc_evidence=None,
         cache_target_evidence=(
             _map_final_evidence() if operation == "verify" else None
         ),
@@ -157,27 +155,41 @@ def _map_gc_receipt(prior_receipt_digest: str) -> MapHelperReceipt:
         schema_before="0078_cache_target",
         schema_after="0078_cache_target",
         forward_boundary="schema_0078",
-        row_counts={"public_item_count": 3265},
-        checks=(MapHelperCheck("gc_converged", 0, 0, True),),
-        gc_evidence=MapGcEvidence(
-            contract_version="h35-map-gc/v1",
-            observation_run_id=f"h35:{_TRANSACTION_ID}:gc",
-            acquired=True,
-            skipped=False,
-            batches=1,
-            deleted_items=2,
-            deleted_headers=1,
-            remaining_items=0,
-            remaining_headers=0,
-            total_items=12,
-            total_headers=4,
-            unexpired_unreferenced_items=3,
-            unexpired_unreferenced_headers=1,
-            referenced_items=9,
-            referenced_headers=3,
-            observation_referenced_items=9,
-            observation_referenced_headers=3,
-            observation_matches_current=True,
+        row_counts={
+            "batches": 1,
+            "deleted_headers": 1,
+            "deleted_items": 2,
+            "referenced_headers": 3,
+            "referenced_items": 9,
+            "remaining_headers": 0,
+            "remaining_items": 0,
+        },
+        checks=(
+            MapHelperCheck("gc_lock_acquired", True, True, True),
+            MapHelperCheck("gc_not_skipped", False, False, True),
+            MapHelperCheck("gc_remaining_items", 0, 0, True),
+            MapHelperCheck("gc_remaining_headers", 0, 0, True),
+            MapHelperCheck("gc_referenced_items_preserved", 9, 9, True),
+            MapHelperCheck("gc_referenced_headers_preserved", 3, 3, True),
+            MapHelperCheck(
+                "gc_observation_run_id",
+                f"h35:{_TRANSACTION_ID}:gc",
+                f"h35:{_TRANSACTION_ID}:gc",
+                True,
+            ),
+            MapHelperCheck(
+                "gc_observation_referenced_items_fresh",
+                9,
+                9,
+                True,
+            ),
+            MapHelperCheck(
+                "gc_observation_referenced_headers_fresh",
+                3,
+                3,
+                True,
+            ),
+            MapHelperCheck("gc_observation_timestamp_present", True, True, True),
         ),
         cache_target_evidence=None,
         runtime_mutation_count=0,
@@ -933,7 +945,6 @@ def test_map_helper_receipt_requires_exact_secret_free_binding() -> None:
                 "passed": True,
             },
             ],
-            "gc_evidence": None,
             "cache_target_evidence": None,
             "runtime_mutation_count": 0,
         "external_event_count": 0,
@@ -990,7 +1001,6 @@ def test_map_helper_receipt_rejects_runtime_mutation_and_extra_key() -> None:
         "checks": [
             {"name": "identity", "expected": 0, "observed": 0, "passed": True}
         ],
-        "gc_evidence": None,
         "cache_target_evidence": None,
         "runtime_mutation_count": 1,
         "external_event_count": 0,
@@ -1028,8 +1038,8 @@ def test_map_helper_receipt_rejects_runtime_mutation_and_extra_key() -> None:
     ("field", "value"),
     [
         ("remaining_items", 1),
-        ("observation_matches_current", False),
-        ("observation_referenced_items", 8),
+        ("gc_lock_acquired", False),
+        ("gc_observation_run_id", "h35:foreign:gc"),
     ],
 )
 def test_map_gc_receipt_rejects_backlog_or_unobserved_state(
@@ -1049,11 +1059,19 @@ def test_map_gc_receipt_rejects_backlog_or_unobserved_state(
     receipt = _map_gc_receipt(prior_digest)
     document = asdict(receipt)
     document["request_digest"] = logical_sha256(request)
-    gc_evidence = dict(document["gc_evidence"])
-    gc_evidence[field] = value
-    document["gc_evidence"] = gc_evidence
+    if field == "remaining_items":
+        row_counts = dict(document["row_counts"])
+        row_counts[field] = value
+        document["row_counts"] = row_counts
+    else:
+        checks = list(document["checks"])
+        for check in checks:
+            if check["name"] == field:
+                check["observed"] = value
+                break
+        document["checks"] = checks
 
-    with pytest.raises(DeploymentContractError, match="receipt is invalid"):
+    with pytest.raises(DeploymentContractError, match="Map"):
         parse_map_helper_receipt(
             stdout=json.dumps(document, separators=(",", ":")) + "\n",
             stderr="",

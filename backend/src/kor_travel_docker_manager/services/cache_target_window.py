@@ -161,7 +161,6 @@ _HELPER_FIELDS = frozenset(
         "forward_boundary",
         "row_counts",
         "checks",
-        "gc_evidence",
         "cache_target_evidence",
         "runtime_mutation_count",
         "external_event_count",
@@ -309,7 +308,6 @@ class MapHelperReceipt:
     forward_boundary: Literal["not_crossed", "schema_0078"]
     row_counts: dict[str, int]
     checks: tuple[MapHelperCheck, ...]
-    gc_evidence: MapGcEvidence | None
     cache_target_evidence: MapFinalEvidence | None
     runtime_mutation_count: Literal[0]
     external_event_count: Literal[0]
@@ -331,28 +329,6 @@ class MapFinalEvidence:
     outbox_backlog_count: Literal[0]
     claim_backlog_count: Literal[0]
     delivery_backlog_count: Literal[0]
-
-
-@dataclass(frozen=True)
-class MapGcEvidence:
-    contract_version: Literal["h35-map-gc/v1"]
-    observation_run_id: str
-    acquired: Literal[True]
-    skipped: Literal[False]
-    batches: int
-    deleted_items: int
-    deleted_headers: int
-    remaining_items: Literal[0]
-    remaining_headers: Literal[0]
-    total_items: int
-    total_headers: int
-    unexpired_unreferenced_items: int
-    unexpired_unreferenced_headers: int
-    referenced_items: int
-    referenced_headers: int
-    observation_referenced_items: int
-    observation_referenced_headers: int
-    observation_matches_current: Literal[True]
 
 
 @dataclass(frozen=True)
@@ -702,12 +678,6 @@ def _map_helper_receipt_from_document(value: Any) -> MapHelperReceipt:
                 passed=raw_check["passed"],
             )
         )
-    raw_gc_evidence = value["gc_evidence"]
-    gc_evidence = (
-        None
-        if raw_gc_evidence is None
-        else _map_gc_evidence_from_document(raw_gc_evidence)
-    )
     raw_evidence = value["cache_target_evidence"]
     evidence = (
         None if raw_evidence is None else _map_final_evidence_from_document(raw_evidence)
@@ -716,7 +686,6 @@ def _map_helper_receipt_from_document(value: Any) -> MapHelperReceipt:
         **{
             **value,
             "checks": tuple(checks),
-            "gc_evidence": gc_evidence,
             "cache_target_evidence": evidence,
         }
     )
@@ -831,33 +800,6 @@ def _map_final_evidence_from_document(value: Any) -> MapFinalEvidence:
         raise TypeError
     evidence = MapFinalEvidence(**value)
     _validate_map_final_evidence(evidence)
-    return evidence
-
-
-def _map_gc_evidence_from_document(value: Any) -> MapGcEvidence:
-    if not isinstance(value, dict) or set(value) != {
-        "contract_version",
-        "observation_run_id",
-        "acquired",
-        "skipped",
-        "batches",
-        "deleted_items",
-        "deleted_headers",
-        "remaining_items",
-        "remaining_headers",
-        "total_items",
-        "total_headers",
-        "unexpired_unreferenced_items",
-        "unexpired_unreferenced_headers",
-        "referenced_items",
-        "referenced_headers",
-        "observation_referenced_items",
-        "observation_referenced_headers",
-        "observation_matches_current",
-    }:
-        raise TypeError
-    evidence = MapGcEvidence(**value)
-    _validate_map_gc_evidence(evidence)
     return evidence
 
 
@@ -1135,62 +1077,60 @@ def _validate_map_helper_receipt(receipt: MapHelperReceipt) -> None:
         or check.name != check.name.strip()
         or not check.passed
         or type(check.passed) is not bool
+        or check.expected != check.observed
         or not _valid_map_check_evidence(check.expected)
         or not _valid_map_check_evidence(check.observed)
         for check in receipt.checks
     ):
         raise DeploymentContractError("Map helper checks are invalid")
     if receipt.operation == "gc":
-        if receipt.gc_evidence is None or receipt.cache_target_evidence is not None:
-            raise DeploymentContractError("Map GC evidence is missing")
-        _validate_map_gc_evidence(receipt.gc_evidence)
-        if (
-            receipt.gc_evidence.observation_run_id
-            != f"h35:{receipt.transaction_id}:gc"
-        ):
-            raise DeploymentContractError("Map GC evidence transaction is foreign")
+        _validate_map_gc_receipt(receipt)
+        if receipt.cache_target_evidence is not None:
+            raise DeploymentContractError("Map GC final evidence is unexpected")
     elif receipt.operation == "verify":
         if receipt.cache_target_evidence is None:
             raise DeploymentContractError("Map final evidence is missing")
-        if receipt.gc_evidence is not None:
-            raise DeploymentContractError("Map GC evidence is unexpected")
         _validate_map_final_evidence(receipt.cache_target_evidence)
-    elif receipt.gc_evidence is not None or receipt.cache_target_evidence is not None:
+    elif receipt.cache_target_evidence is not None:
         raise DeploymentContractError("Map operation evidence is unexpected")
 
 
-def _validate_map_gc_evidence(evidence: MapGcEvidence) -> None:
-    run_id_parts = evidence.observation_run_id.split(":")
-    if len(run_id_parts) != 3 or run_id_parts[0] != "h35" or run_id_parts[2] != "gc":
-        raise DeploymentContractError("Map GC run ID is invalid")
-    _canonical_uuid(run_id_parts[1], "Map GC transaction ID")
-    observed_counts = (
-        evidence.batches,
-        evidence.deleted_items,
-        evidence.deleted_headers,
-        evidence.remaining_items,
-        evidence.remaining_headers,
-        evidence.total_items,
-        evidence.total_headers,
-        evidence.unexpired_unreferenced_items,
-        evidence.unexpired_unreferenced_headers,
-        evidence.referenced_items,
-        evidence.referenced_headers,
-        evidence.observation_referenced_items,
-        evidence.observation_referenced_headers,
-    )
-    if (
-        evidence.contract_version != "h35-map-gc/v1"
-        or evidence.acquired is not True
-        or evidence.skipped is not False
-        or any(type(value) is not int or value < 0 for value in observed_counts)
-        or evidence.remaining_items != 0
-        or evidence.remaining_headers != 0
-        or evidence.observation_referenced_items != evidence.referenced_items
-        or evidence.observation_referenced_headers != evidence.referenced_headers
-        or evidence.observation_matches_current is not True
-    ):
-        raise DeploymentContractError("Map GC evidence is invalid")
+def _validate_map_gc_receipt(receipt: MapHelperReceipt) -> None:
+    if set(receipt.row_counts) != {
+        "batches",
+        "deleted_headers",
+        "deleted_items",
+        "referenced_headers",
+        "referenced_items",
+        "remaining_headers",
+        "remaining_items",
+    } or (
+        receipt.row_counts["remaining_headers"],
+        receipt.row_counts["remaining_items"],
+    ) != (0, 0):
+        raise DeploymentContractError("Map GC row-count evidence is invalid")
+    checks = {check.name: check for check in receipt.checks}
+    expected_run_id = f"h35:{receipt.transaction_id}:gc"
+    exact = {
+        "gc_lock_acquired": (True, True),
+        "gc_not_skipped": (False, False),
+        "gc_remaining_items": (0, 0),
+        "gc_remaining_headers": (0, 0),
+        "gc_observation_run_id": (expected_run_id, expected_run_id),
+        "gc_observation_timestamp_present": (True, True),
+    }
+    required_equal = {
+        "gc_referenced_items_preserved",
+        "gc_referenced_headers_preserved",
+        "gc_observation_referenced_items_fresh",
+        "gc_observation_referenced_headers_fresh",
+    }
+    if any(
+        name not in checks
+        or (checks[name].expected, checks[name].observed) != evidence
+        for name, evidence in exact.items()
+    ) or any(name not in checks for name in required_equal):
+        raise DeploymentContractError("Map GC observation evidence is invalid")
 
 
 def _validate_map_final_evidence(evidence: MapFinalEvidence) -> None:
