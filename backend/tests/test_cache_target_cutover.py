@@ -309,3 +309,38 @@ def test_initial_runner_compose_arguments_never_contain_role_values_or_digests(
     )
     assert "RESTORE_FENCE" not in serialized
     assert str(secret_path) in serialized
+    assert "production initial cutover" in arguments
+    wrapper = arguments[arguments.index("-ec") + 1]
+    for variable in (
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RECOVERY_TOKEN",
+    ):
+        assert f'export {variable}="$' in wrapper
+
+
+def test_initial_runner_secret_bundle_preserves_shell_metacharacters(
+    tmp_path: Path,
+) -> None:
+    state_directory = tmp_path / "state"
+    state_directory.mkdir(mode=0o700)
+    tokens = (
+        "command-$*?[];&-token-000000000001",
+        "consumer-$(x)`y`-token-000000000002",
+        "recovery-${x}!#-token-0000000000003",
+    )
+
+    def runner(path: Path) -> InitialCutoverResult:
+        assert path.read_text(encoding="utf-8").splitlines() == list(tokens)
+        return _result()
+
+    assert (
+        with_initial_runner_secret_bundle(
+            state_directory,
+            tokens[0],
+            tokens[1],
+            tokens[2],
+            runner,
+        )
+        == _result()
+    )

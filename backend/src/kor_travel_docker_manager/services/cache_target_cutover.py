@@ -170,7 +170,7 @@ def commit_initial_cutover_receipt(
 
 
 def read_initial_cutover_receipt(path: Path) -> InitialCutoverReceipt:
-    payload = _read_owner_only_state(path)
+    payload = read_owner_only_state(path)
     try:
         document = json.loads(payload)
         if not isinstance(document, dict):
@@ -290,7 +290,13 @@ def write_cutover_state(path: Path, state: InitialCutoverReceipt | EnableCutover
         or stat.S_IMODE(directory_stat.st_mode) != 0o700
     ):
         raise DeploymentContractError("cache-target state directory is unsafe")
-    if path.exists():
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise DeploymentContractError("cache-target state path is unavailable") from exc
+    else:
         _read_owner_only_state(path)
     temporary_path: Path | None = None
     try:
@@ -315,6 +321,12 @@ def write_cutover_state(path: Path, state: InitialCutoverReceipt | EnableCutover
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
     return hashlib.sha256(payload).hexdigest()
+
+
+def read_owner_only_state(path: Path) -> bytes:
+    """receipt/journal이 공유하는 owner-only no-follow state reader."""
+
+    return _read_owner_only_state(path)
 
 
 def with_initial_runner_secret_bundle(
@@ -379,9 +391,9 @@ def initial_runner_compose_arguments(
         f"IFS= read -r command_token < {container_secret_path}; "
         f"consumer_token=$(sed -n '2p' {container_secret_path}); "
         f"recovery_token=$(sed -n '3p' {container_secret_path}); "
-        f"export {PINVI_COMMAND_TOKEN_ENV}=$command_token; "
-        f"export {PINVI_CONSUMER_TOKEN_ENV}=$consumer_token; "
-        f"export {PINVI_RECOVERY_TOKEN_ENV}=$recovery_token; "
+        f'export {PINVI_COMMAND_TOKEN_ENV}="$command_token"; '
+        f'export {PINVI_CONSUMER_TOKEN_ENV}="$consumer_token"; '
+        f'export {PINVI_RECOVERY_TOKEN_ENV}="$recovery_token"; '
         'exec pinvi-cache-target-initial-cutover "$@"'
     )
     container_name = f"ktdm-cache-target-initial-{canonical_cutover_id}"
@@ -423,7 +435,7 @@ def _allowed_next_phases(phase: EnablePhase) -> frozenset[EnablePhase]:
         )
         rollback: frozenset[EnablePhase] = (
             frozenset({"rollback_preparing"})
-            if phase not in {"committed", "enable_preparing"}
+            if phase != "committed"
             else frozenset()
         )
         return frozenset((*forward, *rollback))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -29,6 +30,51 @@ from kor_travel_docker_manager.services.map_ui_auth_rotation import (
 
 _STABLE_UI_SHA = "a" * 64
 _NON_UI_SHA = "b" * 64
+
+
+def _cache_target_env_lines() -> list[str]:
+    consumer_id = "pinvi-cache-target-consumer"
+    tokens = {
+        "command": "command-role-token-00000000000000000001",
+        "consumer": "consumer-role-token-0000000000000000002",
+        "restore-fence": "restore-fence-token-000000000000000003",
+        "recovery": "recovery-role-token-0000000000000000004",
+    }
+    scopes = {
+        "command": ["cache-target:command"],
+        "consumer": [
+            "cache-target:read",
+            "cache-target:claim",
+            "cache-target:ack",
+            "cache-target:nack",
+            "cache-target:snapshot",
+        ],
+        "restore-fence": ["cache-target:restore-fence"],
+        "recovery": ["cache-target:recovery", "cache-target:recovery-replay"],
+    }
+    registry = [
+        {
+            "principal_id": f"pinvi-cache-target-{role}",
+            "consumer_id": consumer_id,
+            "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+            "scopes": scopes[role],
+            "external_systems": ["pinvi"],
+        }
+        for role, token in tokens.items()
+    ]
+    return [
+        "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS="
+        + json.dumps(registry, separators=(",", ":")),
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=false",
+        f"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN={tokens['command']}",
+        f"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN={tokens['consumer']}",
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID=" + consumer_id,
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256=" + "3" * 64,
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION=" + "3" * 40,
+        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION=7",
+        f"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RESTORE_FENCE_TOKEN={tokens['restore-fence']}",
+        f"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RECOVERY_TOKEN={tokens['recovery']}",
+    ]
 
 
 def _journal_payload(
@@ -1477,6 +1523,8 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
                 "PINVI_WEB_PORT=12805",
                 "export NON_TARGET=value",
                 "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL=http://127.0.0.1:12701",
+                "PINVI_KOR_TRAVEL_MAP_API_BASE_URL=http://127.0.0.1:12701",
+                *_cache_target_env_lines(),
                 "KTDM_PROD_URL_MAP=https://map.example.test",
                 "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true",
                 f"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN={'r' * 40}",
@@ -1901,6 +1949,9 @@ def _resolved_compose_for_pair(
                     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": resolved_env(
                         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
                     ),
+                    "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS": resolved_env(
+                        "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS"
+                    ),
                     "KOR_TRAVEL_MAP_API_PROFILE": "production",
                     "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
                     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
@@ -1968,6 +2019,30 @@ def _resolved_compose_for_pair(
                     "PINVI_ENVIRONMENT": "production",
                     "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL": (
                         "http://127.0.0.1:12701"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": (
+                        "http://127.0.0.1:12701"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": resolved_env(
+                        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": resolved_env(
+                        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": resolved_env(
+                        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": resolved_env(
+                        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": resolved_env(
+                        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": resolved_env(
+                        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": resolved_env(
+                        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION"
                     ),
                     "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": resolved_env(
                         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
