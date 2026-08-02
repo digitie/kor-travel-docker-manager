@@ -11,6 +11,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -21,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import quote, urlencode, urlsplit
 
 import yaml
@@ -118,6 +119,9 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
 ) | CACHE_TARGET_MANAGER_ONLY_ENV_NAMES
 _CACHE_TARGET_MAP_ENV_NAMES = frozenset({CACHE_TARGET_REGISTRY_ENV})
 _CACHE_TARGET_PINVI_ENV_NAMES = CACHE_TARGET_ORDINARY_ENV_NAMES
+_SMOKE_CONNECTION_ATTEMPTS = 5
+_SMOKE_CONNECTION_RETRY_SECONDS = 1.0
+_T = TypeVar("_T")
 _CACHE_TARGET_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): CACHE_TARGET_REGISTRY_ENV,
     **{
@@ -2343,10 +2347,13 @@ def run_map_ops_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
     }
     results: list[dict[str, int | str]] = []
 
-    status, payload = _request_json(
-        f"{base_url}/v1/ops/datasets",
-        method="GET",
-        headers=read_headers,
+    status, payload = _retry_smoke_connection(
+        lambda: _request_json(
+            f"{base_url}/v1/ops/datasets",
+            method="GET",
+            headers=read_headers,
+        ),
+        unavailable_message="C6c Map smoke endpoint is unavailable",
     )
     if status != 200 or not _validate_map_datasets_envelope(payload):
         raise DeploymentContractError("C6c signed canonical read smoke did not return 200 envelope")
@@ -3194,12 +3201,15 @@ def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
     map_ui_smoke = run_map_ui_auth_preflight(config)
     smoke = config.smoke
 
-    pinvi_login_shell = _session_request(
-        _cookie_opener(follow_redirects=False),
-        f"{smoke.pinvi_web_base_url}/admin/login",
-        method="GET",
-        headers={},
-        read_error_body=False,
+    pinvi_login_shell = _retry_smoke_connection(
+        lambda: _session_request(
+            _cookie_opener(follow_redirects=False),
+            f"{smoke.pinvi_web_base_url}/admin/login",
+            method="GET",
+            headers={},
+            read_error_body=False,
+        ),
+        unavailable_message="C6c authenticated smoke endpoint is unavailable",
     )
     pinvi_content_type = (
         (pinvi_login_shell.content_type or "").partition(";")[0].strip().lower()
@@ -4081,6 +4091,30 @@ def _session_request(
         )
     except OSError as exc:
         raise DeploymentContractError("C6c authenticated smoke endpoint is unavailable") from exc
+
+
+def _retry_smoke_connection(
+    operation: Callable[[], _T],
+    *,
+    unavailable_message: str,
+) -> _T:
+    """컨테이너 health 직후의 loopback 연결 race만 제한적으로 재시도한다."""
+
+    for attempt in range(_SMOKE_CONNECTION_ATTEMPTS):
+        try:
+            return operation()
+        except DeploymentContractError as exc:
+            retry_cause: object = exc.__cause__
+            if isinstance(retry_cause, urllib.error.URLError):
+                retry_cause = retry_cause.reason
+            if (
+                str(exc) != unavailable_message
+                or not isinstance(retry_cause, ConnectionRefusedError)
+                or attempt + 1 == _SMOKE_CONNECTION_ATTEMPTS
+            ):
+                raise
+            time.sleep(_SMOKE_CONNECTION_RETRY_SECONDS)
+    raise AssertionError("unreachable smoke retry state")
 
 
 def _read_json_payload(raw: bytes) -> Any | None:

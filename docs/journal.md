@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-02 (T-048 production rollback smoke readiness 보강)
+
+n150 최초 결합 전환의 pre-forward rollback에서 Compose health 통과 직후 Map loopback endpoint가 잠깐
+연결을 거부해, 원래 backup/fence 오류 대신 recovery smoke 오류가 최종 원인으로 덮이는 현상을 확인했다.
+첫 Map signed read와 기존 read-only PinVi Web login shell 호출에서 exact `ConnectionRefusedError`만
+5회·1초 간격으로 재시도한다. 각 HTTP 호출의 10초 timeout까지 포함한 최악 상한은 14초다. timeout·DNS 등
+다른 `OSError`, typed HTTP 응답, envelope/인증/권한 오류와 PinVi destructive cancel probe는 재시도하지
+않는다. exact unavailable+cause 조합, 비재시도 오류와 시도 상한 회귀를 추가했다.
+
 ## 2026-08-02 (T-048 PinVi release pin과 Map GC observation 계약 정렬)
 
 PinVi #424가 단일 적대적 GO review 뒤 squash merge되어 exact release SHA

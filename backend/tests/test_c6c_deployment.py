@@ -6703,6 +6703,86 @@ def test_http_error_body_is_never_read_or_exposed(monkeypatch: pytest.MonkeyPatc
     assert body.tell() == 0
 
 
+def test_smoke_connection_retry_recovers_only_exact_unavailable_error() -> None:
+    unavailable = "C6c Map smoke endpoint is unavailable"
+    first = DeploymentContractError(unavailable)
+    first.__cause__ = urllib.error.URLError(ConnectionRefusedError())
+    second = DeploymentContractError(unavailable)
+    second.__cause__ = ConnectionRefusedError()
+    operation = Mock(
+        side_effect=[
+            first,
+            second,
+            "ready",
+        ]
+    )
+
+    with patch.object(c6c_deployment.time, "sleep") as sleep:
+        result = c6c_deployment._retry_smoke_connection(
+            operation,
+            unavailable_message=unavailable,
+        )
+
+    assert result == "ready"
+    assert operation.call_count == 3
+    assert sleep.call_count == 2
+
+
+def test_smoke_connection_retry_does_not_retry_contract_failure() -> None:
+    operation = Mock(side_effect=DeploymentContractError("typed envelope is invalid"))
+
+    with (
+        patch.object(c6c_deployment.time, "sleep") as sleep,
+        pytest.raises(DeploymentContractError, match="typed envelope"),
+    ):
+        c6c_deployment._retry_smoke_connection(
+            operation,
+            unavailable_message="C6c Map smoke endpoint is unavailable",
+        )
+
+    operation.assert_called_once_with()
+    sleep.assert_not_called()
+
+
+def test_smoke_connection_retry_does_not_retry_timeout() -> None:
+    unavailable = "C6c Map smoke endpoint is unavailable"
+    timeout = DeploymentContractError(unavailable)
+    timeout.__cause__ = TimeoutError()
+    operation = Mock(side_effect=timeout)
+
+    with (
+        patch.object(c6c_deployment.time, "sleep") as sleep,
+        pytest.raises(DeploymentContractError, match="endpoint is unavailable"),
+    ):
+        c6c_deployment._retry_smoke_connection(
+            operation,
+            unavailable_message=unavailable,
+        )
+
+    operation.assert_called_once_with()
+    sleep.assert_not_called()
+
+
+def test_smoke_connection_retry_is_bounded() -> None:
+    unavailable = "C6c Map smoke endpoint is unavailable"
+    refused = DeploymentContractError(unavailable)
+    refused.__cause__ = ConnectionRefusedError()
+    operation = Mock(side_effect=refused)
+
+    with (
+        patch.object(c6c_deployment, "_SMOKE_CONNECTION_ATTEMPTS", 3),
+        patch.object(c6c_deployment.time, "sleep") as sleep,
+        pytest.raises(DeploymentContractError, match="endpoint is unavailable"),
+    ):
+        c6c_deployment._retry_smoke_connection(
+            operation,
+            unavailable_message=unavailable,
+        )
+
+    assert operation.call_count == 3
+    assert sleep.call_count == 2
+
+
 def test_pinvi_canonical_smoke_requires_envelopes_typed_cancel_and_logout() -> None:
     responses = [
         HttpProbeResponse(200, {"data": {"roles": ["admin"]}}, set_cookie=True),
