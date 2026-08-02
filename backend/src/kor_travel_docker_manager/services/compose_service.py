@@ -5058,7 +5058,7 @@ class ComposeService:
                 "cache-target final writer activation failed"
             )
         states = self._snapshot_service_states(
-            ordered_writers,
+            list(ordered_writers),
             transaction=transaction,
         )
         if any(states.get(name) != "running" for name in ordered_writers):
@@ -5140,7 +5140,7 @@ class ComposeService:
         tuple[DatabaseWriteCounter, DatabaseWriteCounter, DatabaseWriteCounter],
     ]:
         states = self._snapshot_service_states(
-            ordered_writers,
+            list(ordered_writers),
             transaction=transaction,
         )
         if any(state == "running" for state in states.values()):

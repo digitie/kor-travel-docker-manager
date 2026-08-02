@@ -881,12 +881,10 @@ def _allowed_next_phases(journal: CacheTargetWindowJournal) -> frozenset[WindowP
             if index + 1 < len(FORWARD_PHASES)
             else frozenset()
         )
-        rollback = (
-            frozenset({"rollback_preparing"})
-            if journal.forward_boundary == "not_crossed"
-            else frozenset()
-        )
-        return frozenset((*next_phase, *rollback))
+        allowed: set[WindowPhase] = set(next_phase)
+        if journal.forward_boundary == "not_crossed":
+            allowed.add("rollback_preparing")
+        return frozenset(allowed)
     index = ROLLBACK_PHASES.index(journal.phase)
     return (
         frozenset({ROLLBACK_PHASES[index + 1]})
@@ -910,7 +908,7 @@ def _validate_journal(journal: CacheTargetWindowJournal) -> None:
         ("old manifest", journal.old_manifest_sha256),
     ):
         _validate_sha256(digest, label)
-    for label, digest in (
+    for label, optional_digest in (
         ("initial writer fence", journal.initial_writer_fence_sha256),
         ("final writer fence", journal.final_writer_fence_sha256),
         ("final Map write counters", journal.final_map_write_counters_sha256),
@@ -924,8 +922,8 @@ def _validate_journal(journal: CacheTargetWindowJournal) -> None:
         ("initial receipt", journal.initial_receipt_sha256),
         ("Pin final receipt", journal.pin_final_receipt_sha256),
     ):
-        if digest is not None:
-            _validate_sha256(digest, label)
+        if optional_digest is not None:
+            _validate_sha256(optional_digest, label)
     if journal.last_map_receipt is not None:
         _validate_map_helper_receipt(journal.last_map_receipt)
         if (
@@ -1364,7 +1362,7 @@ def _validate_pin_boundary_receipt(
         != map_final_evidence_sha256(receipt.map_final_evidence)
     ):
         raise DeploymentContractError("Pin Map final evidence digest is invalid")
-    for label, digest in zip(
+    for label, optional_digest in zip(
         (
             "Pin initial evidence",
             "Pin canary provenance",
@@ -1373,9 +1371,9 @@ def _validate_pin_boundary_receipt(
         evidence_hashes,
         strict=True,
     ):
-        if digest is None:
+        if optional_digest is None:
             raise DeploymentContractError(f"{label} is missing")
-        _validate_sha256(digest, label)
+        _validate_sha256(optional_digest, label)
 
 
 def _validate_sha256(value: str, label: str) -> None:
