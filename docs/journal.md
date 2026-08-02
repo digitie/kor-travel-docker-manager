@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-03 (T-048 authenticated smoke readiness window 보강)
+
+n150에서 pre-forward 실패 뒤 결합 rollback을 같은 cutover ID로 재개했을 때, 구 runtime은 정상 복원됐지만
+Compose health 직후 authenticated smoke의 첫 TCP 연결이 두 번 연속 5초 window를 넘겼다. 이후 동일 runtime의
+Map UI login/logout/protected-page와 PinVi admin session·canonical read/cancel smoke는 모두 통과했으므로,
+credential·계약 오류가 아니라 readiness race로 분류했다.
+
+첫 signed read와 Map UI·PinVi admin login, PinVi Web shell의 `ConnectionRefusedError` 재시도만 기존 5회에서
+30회(1초 간격)로 늘려 Compose healthcheck `start_period`와 같은 bounded window로 맞췄다. timeout·DNS 등 다른
+`OSError`, HTTP/envelope/인증 오류, destructive cancel과 후속 admin 요청은 계속 즉시 실패한다. 마지막(30번째)
+attempt에서만 성공하는 회귀를 추가해 window 축소를 막았다. endpoint·credential·응답 본문은 journal에 기록하지
+않는다.
+
 ## 2026-08-03 (T-048 production logical inventory warning 판정 보강)
 
 n150의 실제 Map logical inventory에서 `pg_dump --data-only`가 순환 FK의 restore-advisory warning을 stderr로

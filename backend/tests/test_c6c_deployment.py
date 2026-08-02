@@ -6728,6 +6728,27 @@ def test_smoke_connection_retry_recovers_only_exact_unavailable_error() -> None:
     assert sleep.call_count == 2
 
 
+def test_smoke_connection_retry_covers_full_authenticated_readiness_window() -> None:
+    unavailable = "C6c authenticated smoke endpoint is unavailable"
+    refused = DeploymentContractError(unavailable)
+    refused.__cause__ = ConnectionRefusedError()
+    operation = Mock(
+        side_effect=[refused] * (c6c_deployment._SMOKE_CONNECTION_ATTEMPTS - 1)
+        + ["ready"]
+    )
+
+    with patch.object(c6c_deployment.time, "sleep") as sleep:
+        result = c6c_deployment._retry_smoke_connection(
+            operation,
+            unavailable_message=unavailable,
+        )
+
+    assert c6c_deployment._SMOKE_CONNECTION_ATTEMPTS == 30
+    assert result == "ready"
+    assert operation.call_count == 30
+    assert sleep.call_count == 29
+
+
 def test_smoke_connection_retry_does_not_retry_contract_failure() -> None:
     operation = Mock(side_effect=DeploymentContractError("typed envelope is invalid"))
 
