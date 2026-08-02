@@ -33,6 +33,13 @@ count/Merkle를 확인하는 n150 causal canary를 필수 rollback gate로 추�
 네 role/legacy token 상호 분리와 pin 형식을 검증한다. restore-fence/recovery 원문은 manager-only로 분류하고
 raw/resolved/runtime protected name/value 경계에 registry JSON과 digest까지 포함했다.
 
+두 번째 구현 checkpoint로 frozen env/raw·resolved Compose/active·rollback pair/role-binding hash에 결박된
+initial receipt와 enable/rollback durable phase 모델을 추가했다. owner-only state의 atomic fsync/replace,
+동일 receipt retry 수렴·foreign evidence 거부, recovery secret-file의 성공/실패 cleanup, causal evidence 없는
+terminal commit 거부를 독립 테스트로 고정했다. recovery principal은 같은 trust domain의
+`cache-target:recovery` + `cache-target:recovery-replay` exact 두 scope로 정렬하되 별도 replay token은 만들지
+않는다.
+
 ## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
 
 production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,

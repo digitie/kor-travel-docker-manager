@@ -61,7 +61,9 @@ _SCOPES_BY_ROLE = {
         }
     ),
     "restore-fence": frozenset({"cache-target:restore-fence"}),
-    "recovery": frozenset({"cache-target:recovery"}),
+    "recovery": frozenset(
+        {"cache-target:recovery", "cache-target:recovery-replay"}
+    ),
 }
 _PRINCIPAL_KEYS = frozenset(
     {"principal_id", "consumer_id", "token_sha256", "scopes", "external_systems"}

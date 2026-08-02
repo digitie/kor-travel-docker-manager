@@ -38,9 +38,9 @@ ops read/cancel token과도 같을 수 없다. Map registry에는 원문 token�
 digest만 넣는다. command principal은 `cache-target:command`, consumer principal은
 `cache-target:read`·`cache-target:claim`·`cache-target:ack`·`cache-target:nack`·
 `cache-target:snapshot`, restore-fence principal은 `cache-target:restore-fence`, recovery principal은
-initial begin/seal에 필요한 `cache-target:recovery`만 가진다. `cache-target:recovery-replay`는 향후 replay
-작업이 실제 필요할 때 별도 검토하며 initial-cutover 권한에 미리 포함하지 않는다. extra principal·scope·
-external system은 허용하지 않는다. registry JSON과 각 token digest도 secret redaction/protected-value
+같은 recovery trust domain인 `cache-target:recovery`와 `cache-target:recovery-replay`의 정확한 두 scope를
+가진다. initial runner는 replay를 호출하지 않지만 별도 replay principal·다섯 번째 token은 만들지 않는다.
+extra principal·scope·external system은 허용하지 않는다. registry JSON과 각 token digest도 secret redaction/protected-value
 검사의 대상이다. 안전한 audit/receipt에는 registry JSON이나 개별 digest 대신 canonical
 role→(digest, consumer ID, exact scopes, external system) binding 전체의 logical SHA-256과 구조 검증 결과만
 남긴다.

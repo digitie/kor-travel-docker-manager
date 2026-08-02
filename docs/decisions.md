@@ -1149,7 +1149,8 @@ admin base URL과 같은 production loopback root에 결박한다. consumer ID�
 네 role token은 서로 및 기존 Map/PinVi service/admin/ops credential과 달라야 한다. Map registry는
 command·consumer·restore-fence·recovery 정확히 네 principal만 허용한다. 각 principal은 각각
 `cache-target:command`, consumer의 read/claim/ack/nack/snapshot, `cache-target:restore-fence`,
-`cache-target:recovery`의 정확한 최소 scope만 가지며 `external_systems`는 정확히 `["pinvi"]`다. SHA-256
+recovery trust domain의 `cache-target:recovery` + `cache-target:recovery-replay`의 정확한 scope만 가지며
+`external_systems`는 정확히 `["pinvi"]`다. 별도 replay principal·다섯 번째 token은 만들지 않는다. SHA-256
 digest, 고유 principal ID, 같은 consumer ID와 이 구조를 원문 token에 교차 결박하고 extra principal·scope·
 external system은 거부한다. raw Compose에는 secret literal을 두지 않고, registry JSON 자체와 네 token
 digest도 protected/redaction 대상으로 다룬다. resolved/runtime validator는 각 값이 허가된 경로 밖에

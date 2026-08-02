@@ -36,7 +36,7 @@ _SCOPES = {
         "cache-target:snapshot",
     ],
     "restore-fence": ["cache-target:restore-fence"],
-    "recovery": ["cache-target:recovery"],
+    "recovery": ["cache-target:recovery", "cache-target:recovery-replay"],
 }
 
 
