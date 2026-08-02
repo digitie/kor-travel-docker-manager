@@ -407,6 +407,9 @@ _LEGACY_PAIR_MANIFEST_FILENAMES = (
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
+_ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION: ContextVar[str | None] = ContextVar(
+    "active_cache_target_window_transaction", default=None
+)
 
 
 class _CompatiblePairMutationCapability:
@@ -417,8 +420,13 @@ class _ManagedComposeMutationCapability:
     __slots__ = ()
 
 
+class _CacheTargetWindowMutationCapability:
+    __slots__ = ()
+
+
 _COMPATIBLE_PAIR_MUTATION_CAPABILITY = _CompatiblePairMutationCapability()
 _MANAGED_COMPOSE_MUTATION_CAPABILITY = _ManagedComposeMutationCapability()
+_CACHE_TARGET_WINDOW_MUTATION_CAPABILITY = _CacheTargetWindowMutationCapability()
 
 
 class DeploymentContractError(ValueError):
@@ -609,7 +617,9 @@ def assert_manager_mutation_allowed(
                 "manager mutation requires a frozen environment"
             )
         environment = effective_environment(env_path)
-    return _validate_mutation_environment(environment)
+    mode = _validate_mutation_environment(environment)
+    _assert_cache_target_window_allows_mutation(environment, mode=mode)
+    return mode
 
 
 def assert_c6c_mutation_allowed(
@@ -631,7 +641,7 @@ def assert_c6c_mutation_allowed(
             )
         environment = effective_environment(env_path)
     values = environment
-    mode = _validate_mutation_environment(values)
+    mode = assert_manager_mutation_allowed(environment=values)
     if mode == "production" and capability is not _COMPATIBLE_PAIR_MUTATION_CAPABILITY:
         raise DeploymentContractError(
             "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
@@ -707,6 +717,90 @@ def _validate_mutation_environment(values: Mapping[str, str]) -> str:
         require_nonempty=deployment_environment == "production",
     )
     return deployment_environment
+
+
+@contextmanager
+def cache_target_window_mutation_scope(
+    transaction_id: str,
+    *,
+    capability: object | None = None,
+) -> Iterator[None]:
+    """단일 cutover orchestrator에만 non-terminal journal mutation을 허용한다."""
+
+    if capability is not _CACHE_TARGET_WINDOW_MUTATION_CAPABILITY:
+        raise DeploymentContractError(
+            "cache-target window requires the internal orchestrator capability"
+        )
+    try:
+        canonical = str(uuid.UUID(transaction_id))
+    except ValueError as exc:
+        raise DeploymentContractError(
+            "cache-target window transaction ID is invalid"
+        ) from exc
+    if canonical != transaction_id:
+        raise DeploymentContractError(
+            "cache-target window transaction ID must be canonical"
+        )
+    token = _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.set(transaction_id)
+    try:
+        yield
+    finally:
+        _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.reset(token)
+
+
+def cache_target_window_journal_path(values: Mapping[str, str]) -> Path:
+    manifest_path, _ = c6c_state_paths(values)
+    return Path(manifest_path).with_name("cache-target-window-v1.json")
+
+
+def _assert_cache_target_window_allows_mutation(
+    values: Mapping[str, str],
+    *,
+    mode: str,
+) -> None:
+    if mode != "production":
+        return
+    path = cache_target_window_journal_path(values)
+    try:
+        file_stat = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target window journal cannot be inspected"
+        ) from exc
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid != os.geteuid()
+        or file_stat.st_nlink != 1
+        or stat.S_IMODE(file_stat.st_mode) != 0o600
+    ):
+        raise DeploymentContractError("cache-target window journal is unsafe")
+    try:
+        raw = path.read_bytes()
+        if not raw or len(raw) > 65_536:
+            raise ValueError
+        document = json.loads(raw)
+        if not isinstance(document, Mapping):
+            raise TypeError
+        transaction_id = document["transaction_id"]
+        phase = document["phase"]
+        if (
+            not isinstance(transaction_id, str)
+            or str(uuid.UUID(transaction_id)) != transaction_id
+            or not isinstance(phase, str)
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
+        raise DeploymentContractError(
+            "cache-target window journal header is invalid"
+        ) from exc
+    if phase in {"forward_committed", "rolled_back"}:
+        return
+    if _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.get() != transaction_id:
+        raise DeploymentContractError(
+            "unfinished cache-target window blocks every other manager mutation"
+        )
 
 
 @contextmanager
