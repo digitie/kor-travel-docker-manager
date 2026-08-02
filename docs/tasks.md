@@ -218,6 +218,12 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       window에서 재시도한다. 다른 `OSError`·HTTP 계약 오류·인증 실패·destructive probe와 후속 admin 요청은
       재시도하지 않는다. n150에서 5초 window를 두 차례 모두 넘긴 뒤 runtime이 정상 authenticated smoke를
       통과한 재현을 회귀로 고정한다.
+- [/] PinVi login 뒤 첫 canonical admin `GET`이 connection은 수립됐지만 응답을 주기 전에 timeout 나는
+      readiness race를 별도 처리한다. session cookie가 있는 idempotent `GET /admin/etl/summary`와
+      `GET /admin/provider-sync`만 `ConnectionRefusedError` 또는 timeout을 한 번 더 재시도하고,
+      login은 기존 요청 전 `ConnectionRefusedError` 재시도만 유지한다. login timeout, logout·post-logout
+      protection, 그 밖의 모든 `POST`와 destructive cancel probe는 timeout/connection failure 모두 즉시
+      fail-close한다.
 - [x] n150 실제 Map `pg_dump --data-only`가 순환 FK의 복원 주의 warning을 stderr로 출력하면서 종료 코드는
       0인 경우를 처리한다. data-only logical inventory는 heading·detail·두 hint가 모두 일치하는 정확한
       circular-FK advisory만 허용하고 schema-only·다른 warning·`pg_dump` nonzero exit는 fail-close한다.

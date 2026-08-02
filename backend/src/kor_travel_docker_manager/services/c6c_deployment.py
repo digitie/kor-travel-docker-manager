@@ -121,6 +121,7 @@ _CACHE_TARGET_MAP_ENV_NAMES = frozenset({CACHE_TARGET_REGISTRY_ENV})
 _CACHE_TARGET_PINVI_ENV_NAMES = CACHE_TARGET_ORDINARY_ENV_NAMES
 _SMOKE_CONNECTION_ATTEMPTS = 30
 _SMOKE_CONNECTION_RETRY_SECONDS = 1.0
+_SAFE_GET_READINESS_ATTEMPTS = 2
 _T = TypeVar("_T")
 _CACHE_TARGET_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): CACHE_TARGET_REGISTRY_ENV,
@@ -2492,6 +2493,7 @@ def run_pinvi_canonical_smoke(
             method="GET",
             headers={},
             read_error_body=False,
+            retry_safe_get_readiness=True,
         )
         validator = (
             _validate_pinvi_etl_summary
@@ -4057,7 +4059,10 @@ def _session_request(
     body: bytes | None = None,
     read_error_body: bool,
     retry_connection_refused: bool = False,
+    retry_safe_get_readiness: bool = False,
 ) -> HttpProbeResponse:
+    if retry_safe_get_readiness and (method != "GET" or body is not None):
+        raise ValueError("safe readiness retry requires a bodyless GET")
     request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
     unavailable_message = "C6c authenticated smoke endpoint is unavailable"
 
@@ -4096,10 +4101,16 @@ def _session_request(
         except OSError as exc:
             raise DeploymentContractError(unavailable_message) from exc
 
-    if retry_connection_refused:
+    if retry_connection_refused or retry_safe_get_readiness:
         return _retry_smoke_connection(
             request_once,
             unavailable_message=unavailable_message,
+            attempt_count=(
+                _SAFE_GET_READINESS_ATTEMPTS
+                if retry_safe_get_readiness
+                else _SMOKE_CONNECTION_ATTEMPTS
+            ),
+            retry_timeout=retry_safe_get_readiness,
         )
     return request_once()
 
@@ -4108,10 +4119,15 @@ def _retry_smoke_connection(
     operation: Callable[[], _T],
     *,
     unavailable_message: str,
+    attempt_count: int | None = None,
+    retry_timeout: bool = False,
 ) -> _T:
     """컨테이너 health 직후의 loopback 연결 race만 제한적으로 재시도한다."""
 
-    for attempt in range(_SMOKE_CONNECTION_ATTEMPTS):
+    attempt_count = _SMOKE_CONNECTION_ATTEMPTS if attempt_count is None else attempt_count
+    if attempt_count < 1:
+        raise ValueError("smoke retry attempt count must be positive")
+    for attempt in range(attempt_count):
         try:
             return operation()
         except DeploymentContractError as exc:
@@ -4120,8 +4136,13 @@ def _retry_smoke_connection(
                 retry_cause = retry_cause.reason
             if (
                 str(exc) != unavailable_message
-                or not isinstance(retry_cause, ConnectionRefusedError)
-                or attempt + 1 == _SMOKE_CONNECTION_ATTEMPTS
+                or not isinstance(
+                    retry_cause,
+                    (ConnectionRefusedError, TimeoutError)
+                    if retry_timeout
+                    else ConnectionRefusedError,
+                )
+                or attempt + 1 == attempt_count
             ):
                 raise
             time.sleep(_SMOKE_CONNECTION_RETRY_SECONDS)
