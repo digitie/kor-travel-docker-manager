@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -14,12 +15,15 @@ from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import (
+    cache_target_production_manifest as cache_target_production_manifest_module,
+)
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -65,6 +69,29 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     new_image_pair as _build_image_pair,
 )
 from kor_travel_docker_manager.services.c6c_image_retention import RetentionReport
+from kor_travel_docker_manager.services.cache_target_contract import (
+    MAP_REGISTRY_ENV,
+    PINVI_COMMAND_TOKEN_ENV,
+    PINVI_CONSUMER_ID_ENV,
+    PINVI_CONSUMER_TOKEN_ENV,
+    PINVI_CONTRACT_GENERATION_ENV,
+    PINVI_OPENAPI_SHA_ENV,
+    PINVI_RECOVERY_TOKEN_ENV,
+    PINVI_RESTORE_FENCE_TOKEN_ENV,
+    PINVI_SOURCE_REVISION_ENV,
+    PINVI_SYNC_ENV,
+    PROTECTED_ENV_NAMES,
+)
+from kor_travel_docker_manager.services.cache_target_cutover import (
+    CacheTargetFrozenEvidence,
+    InitialCutoverResult,
+    build_initial_cutover_receipt,
+    commit_initial_cutover_receipt,
+)
+from kor_travel_docker_manager.services.cache_target_enable import (
+    CacheTargetEnableRolledBackError,
+    read_enable_cutover_journal,
+)
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
     ComposeEnvironmentSnapshot,
@@ -165,6 +192,12 @@ _UNICODE_WHITESPACE = tuple(
     )
 )
 _PINVI_ADMIN_PASSWORD = "pinvi-admin-password-strong"
+_CACHE_TARGET_TOKENS = {
+    "command": "m" * 32,
+    "consumer": "n" * 32,
+    "restore-fence": "o" * 32,
+    "recovery": "p" * 32,
+}
 _CANCEL_PROBE_JOB_ID = "77777777-7777-4777-8777-777777777777"
 _OPERATION_MEMBER_ID = "88888888-8888-4888-8888-888888888888"
 _C6C_ENV_NAMES = (
@@ -176,6 +209,17 @@ _C6C_ENV_NAMES = (
     "PINVI_API_PORT",
     "PINVI_WEB_PORT",
     "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL",
+    "PINVI_KOR_TRAVEL_MAP_API_BASE_URL",
+    MAP_REGISTRY_ENV,
+    PINVI_SYNC_ENV,
+    PINVI_COMMAND_TOKEN_ENV,
+    PINVI_CONSUMER_TOKEN_ENV,
+    PINVI_RESTORE_FENCE_TOKEN_ENV,
+    PINVI_RECOVERY_TOKEN_ENV,
+    PINVI_CONSUMER_ID_ENV,
+    PINVI_OPENAPI_SHA_ENV,
+    PINVI_SOURCE_REVISION_ENV,
+    PINVI_CONTRACT_GENERATION_ENV,
     "KOR_TRAVEL_MAP_API_CONTAINER",
     "KOR_TRAVEL_MAP_UI_CONTAINER",
     "PINVI_API_CONTAINER",
@@ -271,6 +315,29 @@ def _manifest() -> CompatiblePairManifest:
 
 
 def _production_environment() -> dict[str, str | None]:
+    consumer_id = "pinvi-cache-target-consumer"
+    scopes = {
+        "command": ["cache-target:command"],
+        "consumer": [
+            "cache-target:read",
+            "cache-target:claim",
+            "cache-target:ack",
+            "cache-target:nack",
+            "cache-target:snapshot",
+        ],
+        "restore-fence": ["cache-target:restore-fence"],
+        "recovery": ["cache-target:recovery", "cache-target:recovery-replay"],
+    }
+    registry = [
+        {
+            "principal_id": f"pinvi-{role}",
+            "consumer_id": consumer_id,
+            "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+            "scopes": scopes[role],
+            "external_systems": ["pinvi"],
+        }
+        for role, token in _CACHE_TARGET_TOKENS.items()
+    ]
     return {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
         "PINVI_ENVIRONMENT": "production",
@@ -278,6 +345,17 @@ def _production_environment() -> dict[str, str | None]:
         "KTDM_DOCKER_NETWORK_MODE": "host",
         "KOR_TRAVEL_MAP_API_CONTAINER_PORT": "12701",
         "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL": "http://127.0.0.1:12701",
+        "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": "http://127.0.0.1:12701",
+        MAP_REGISTRY_ENV: json.dumps(registry, separators=(",", ":")),
+        PINVI_SYNC_ENV: "false",
+        PINVI_COMMAND_TOKEN_ENV: _CACHE_TARGET_TOKENS["command"],
+        PINVI_CONSUMER_TOKEN_ENV: _CACHE_TARGET_TOKENS["consumer"],
+        PINVI_RESTORE_FENCE_TOKEN_ENV: _CACHE_TARGET_TOKENS["restore-fence"],
+        PINVI_RECOVERY_TOKEN_ENV: _CACHE_TARGET_TOKENS["recovery"],
+        PINVI_CONSUMER_ID_ENV: consumer_id,
+        PINVI_OPENAPI_SHA_ENV: "3" * 64,
+        PINVI_SOURCE_REVISION_ENV: "4" * 40,
+        PINVI_CONTRACT_GENERATION_ENV: "7",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
@@ -302,6 +380,43 @@ def _write_env(path: Path, **overrides: str | None) -> None:
         "".join(f"{key}={value}\n" for key, value in values.items() if value is not None),
         encoding="utf-8",
     )
+
+
+def test_production_config_accepts_canonical_cache_target_unset() -> None:
+    values = {
+        name: value
+        for name, value in _production_environment().items()
+        if value is not None and name not in PROTECTED_ENV_NAMES
+    }
+
+    loaded = load_c6c_deployment_config_from_environment(values)
+
+    assert loaded.production is True
+    assert loaded.cache_target is None
+
+
+def test_production_config_rejects_partial_cache_target_configuration() -> None:
+    values = {
+        name: value
+        for name, value in _production_environment().items()
+        if value is not None and name not in PROTECTED_ENV_NAMES
+    }
+    values[PINVI_COMMAND_TOKEN_ENV] = _CACHE_TARGET_TOKENS["command"]
+
+    with pytest.raises(DeploymentContractError):
+        load_c6c_deployment_config_from_environment(values)
+
+
+def test_production_cache_target_entrypoints_have_no_injected_verifier() -> None:
+    initial_parameters = inspect.signature(
+        ComposeService.run_cache_target_initial_cutover
+    ).parameters
+    enable_parameters = inspect.signature(ComposeService.enable_cache_target_sync).parameters
+
+    assert "pair_contract_attestor" not in initial_parameters
+    assert "pair_contract_attestor" not in enable_parameters
+    assert "causal_canary" not in enable_parameters
+    assert "rollback_health_smoke" not in enable_parameters
 
 
 def _clear_c6c_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -494,6 +609,29 @@ def _production_guard_transaction(
         effective=effective,
     )
     return replace(transaction, environment=environment)
+
+
+def _cache_target_cutover_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
+    transaction = _frozen_external_transaction(tmp_path)
+    effective = {
+        key: value
+        for key, value in _production_environment().items()
+        if value is not None
+    }
+    environment = replace(
+        transaction.environment,
+        effective=effective,
+        env_file_bytes=(
+            b"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=false\n"
+        ),
+    )
+    state_directory = tmp_path / "state"
+    state_directory.mkdir(mode=0o700)
+    return replace(
+        transaction,
+        environment=environment,
+        manifest_path=str(state_directory / "compatible-pair-v4.json"),
+    )
 
 
 def _cancel_error_details(
@@ -826,6 +964,7 @@ def _resolved_compose() -> dict[str, object]:
                         _MAP_CURSOR_SIGNING_SECRET
                     ),
                     **_MAP_PRODUCTION_API_LITERALS,
+                    "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS": "[]",
                     "KOR_TRAVEL_MAP_API_PORT": "12701",
                 }
             },
@@ -846,6 +985,16 @@ def _resolved_compose() -> dict[str, object]:
                     "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
                     "PINVI_ENVIRONMENT": "production",
                     "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL": "http://127.0.0.1:12701",
+                    "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": "http://127.0.0.1:12701",
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": "false",
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": "",
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": "",
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": (
+                        "pinvi-cache-target-consumer"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": "",
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": "",
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": "",
                 }
             },
             "kor-travel-map-ui": {
@@ -1022,6 +1171,9 @@ def _source_compose() -> dict[str, object]:
                         "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
                         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
                     ),
+                    "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS": (
+                        "${KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS:-[]}"
+                    ),
                 }
             },
             "pinvi-api": {
@@ -1031,6 +1183,32 @@ def _source_compose() -> dict[str, object]:
                     ),
                     "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": (
                         "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": (
+                        "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:"
+                        "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": (
+                        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED:-false}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": (
+                        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN:-}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": (
+                        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN:-}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": (
+                        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID:-"
+                        "pinvi-cache-target-consumer}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": (
+                        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256:-}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": (
+                        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION:-}"
+                    ),
+                    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": (
+                        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION:-}"
                     ),
                 }
             },
@@ -12333,3 +12511,634 @@ def test_c6c_redactor_removes_overlapping_credentials_without_suffix_residue() -
         config.smoke.map_ui_password,
     ):
         assert secret not in redacted
+
+
+def _cache_target_enable_adapter_fixture(
+    tmp_path: Path,
+) -> tuple[ComposeTransactionSnapshot, CompatiblePairManifest]:
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    env_path = Path(transaction.environment.env_path)
+    env_bytes = b"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=false\n"
+    env_path.write_bytes(env_bytes)
+    env_path.chmod(0o600)
+    transaction = replace(
+        transaction,
+        environment=replace(
+            transaction.environment,
+            env_file_bytes=env_bytes,
+            env_file_identity=compose_service_module._env_file_identity(env_path),
+        ),
+    )
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    config = load_c6c_deployment_config_from_environment(
+        transaction.environment.effective
+    )
+    contract = config.cache_target
+    assert contract is not None
+    receipt = build_initial_cutover_receipt(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+        evidence=CacheTargetFrozenEvidence(
+            env_sha256=hashlib.sha256(env_bytes).hexdigest(),
+            raw_compose_sha256=hashlib.sha256(
+                transaction.compose_source_bytes
+            ).hexdigest(),
+            resolved_compose_sha256=transaction.resolved_document_hash,
+            active_pair_sha256=(
+                compose_service_module._compatible_pair_logical_sha256(
+                    manifest.active
+                )
+            ),
+            rollback_pair_sha256=(
+                compose_service_module._compatible_pair_logical_sha256(
+                    manifest.rollback
+                )
+            ),
+            role_binding_sha256=contract.role_binding_sha256,
+            expected_openapi_sha256=contract.expected_openapi_sha256,
+            expected_source_revision=contract.expected_source_revision,
+            expected_contract_generation=(
+                contract.expected_contract_generation
+            ),
+        ),
+        result=InitialCutoverResult(
+            cutover_id="11111111-1111-4111-8111-111111111111",
+            request_id="22222222-2222-4222-8222-222222222222",
+            count=12,
+            merkle_root="9" * 64,
+            published=12,
+        ),
+    )
+    commit_initial_cutover_receipt(
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-initial-cutover-v1.json",
+        receipt,
+    )
+    return transaction, manifest
+
+
+def _allow_cache_target_release(
+    monkeypatch: pytest.MonkeyPatch,
+    transaction: ComposeTransactionSnapshot,
+    manifest: CompatiblePairManifest,
+) -> None:
+    contract = load_c6c_deployment_config_from_environment(
+        transaction.environment.effective
+    ).cache_target
+    assert contract is not None
+    assert manifest.rollback is not None
+    assert manifest.active.pinvi_source_revision == manifest.rollback.pinvi_source_revision
+    monkeypatch.setattr(
+        cache_target_production_manifest_module,
+        "CACHE_TARGET_PRODUCTION_PINS",
+        replace(
+            cache_target_production_manifest_module.CACHE_TARGET_PRODUCTION_PINS,
+            contract_generation=contract.expected_contract_generation,
+            service_openapi_sha256=contract.expected_openapi_sha256,
+            map_functional_owner_revision=contract.expected_source_revision,
+            map_release_revision=manifest.active.map_source_revision,
+            pinvi_release_revision=manifest.active.pinvi_source_revision,
+        ),
+    )
+
+
+def test_cache_target_initial_cutover_blocks_foreign_contract_before_attestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    attestor = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
+
+    with pytest.raises(DeploymentContractError, match="tracked pin manifest"):
+        service.run_cache_target_initial_cutover(
+            cutover_id="11111111-1111-4111-8111-111111111111",
+            expected_restore_epoch=3,
+            reason="production initial cutover",
+        )
+
+    attestor.assert_not_called()
+
+
+def test_cache_target_window_blocks_foreign_contract_before_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    inspect_pair = Mock()
+    write_journal = Mock()
+    docker_run = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_inspect_current_pair", inspect_pair)
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_cache_target_window",
+        write_journal,
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", docker_run)
+
+    with pytest.raises(DeploymentContractError, match="tracked pin manifest"):
+        service.run_cache_target_cutover(
+            cutover_id="11111111-1111-4111-8111-111111111111",
+            expected_restore_epoch=3,
+            reason="production H35 and generation 7 cutover",
+        )
+
+    inspect_pair.assert_not_called()
+    write_journal.assert_not_called()
+    docker_run.assert_not_called()
+
+
+def test_cache_target_enable_blocks_foreign_contract_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction, _ = _cache_target_enable_adapter_fixture(tmp_path)
+    env_path = Path(transaction.environment.env_path)
+    original_env = env_path.read_bytes()
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    capture = Mock(return_value=(transaction, None))
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    attestor = Mock()
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
+
+    with pytest.raises(DeploymentContractError, match="tracked pin manifest"):
+        service.enable_cache_target_sync()
+
+    assert capture.call_count == 1
+    attestor.assert_not_called()
+    assert env_path.read_bytes() == original_env
+
+
+def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction, manifest = _cache_target_enable_adapter_fixture(tmp_path)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
+    env_path = Path(transaction.environment.env_path)
+    enabled_resolved_sha = "a" * 64
+    foreign_enabled_sha: list[str | None] = [None]
+
+    def capture(**kwargs: object) -> tuple[ComposeTransactionSnapshot, None]:
+        environment_override = kwargs.get("environment_override")
+        environment_snapshot = kwargs.get("environment_snapshot")
+        if environment_override is not None:
+            assert environment_snapshot is not None
+            return (
+                replace(
+                    transaction,
+                    environment=environment_snapshot,
+                    resolved_document_hash=enabled_resolved_sha,
+                ),
+                None,
+            )
+        raw = env_path.read_bytes()
+        enabled = raw.endswith(b"=true\n")
+        effective = dict(transaction.environment.effective)
+        effective[PINVI_SYNC_ENV] = "true" if enabled else "false"
+        return (
+            replace(
+                transaction,
+                environment=replace(
+                    transaction.environment,
+                    effective=effective,
+                    env_file_bytes=raw,
+                    env_file_identity=compose_service_module._env_file_identity(
+                        env_path
+                    ),
+                ),
+                resolved_document_hash=(
+                    foreign_enabled_sha[0] or enabled_resolved_sha
+                    if enabled
+                    else transaction.resolved_document_hash
+                ),
+            ),
+            None,
+        )
+
+    runner = Mock(return_value={"success": True, "returncode": 0})
+    attestor = Mock()
+    docker_canary = Mock(
+        side_effect=lambda **kwargs: {
+            "status": "succeeded",
+            "run_id": kwargs["run_id"],
+            "local_count": 12,
+            "remote_count": 12,
+            "local_merkle_root": "9" * 64,
+            "remote_merkle_root": "9" * 64,
+        }
+    )
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(
+        compose_service_module,
+        "execute_cache_target_causal_canary",
+        docker_canary,
+    )
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
+
+    result = service.enable_cache_target_sync()
+
+    assert result["success"] is True
+    assert result["phase"] == "committed"
+    assert env_path.read_bytes().endswith(b"=true\n")
+    assert runner.call_args.args[0] == [
+        "up",
+        "-d",
+        "--no-deps",
+        "--force-recreate",
+        "--no-build",
+        "--pull",
+        "never",
+        "--wait",
+        "pinvi-api",
+    ]
+    journal = read_enable_cutover_journal(
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-enable-v1.json"
+    )
+    assert journal.enabled_resolved_compose_sha256 == enabled_resolved_sha
+    docker_canary.assert_called_once_with(
+        container_name=_production_config().pinvi_container,
+        run_id=journal.transaction_id,
+    )
+
+    foreign_enabled_sha[0] = "b" * 64
+    with pytest.raises(DeploymentContractError, match="resolved compose evidence"):
+        service.enable_cache_target_sync()
+
+
+def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction, manifest = _cache_target_enable_adapter_fixture(tmp_path)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
+    env_path = Path(transaction.environment.env_path)
+    enabled_resolved_sha = "a" * 64
+
+    def capture(**kwargs: object) -> tuple[ComposeTransactionSnapshot, None]:
+        environment_override = kwargs.get("environment_override")
+        environment_snapshot = kwargs.get("environment_snapshot")
+        if environment_override is not None:
+            assert environment_snapshot is not None
+            return (
+                replace(
+                    transaction,
+                    environment=environment_snapshot,
+                    resolved_document_hash=enabled_resolved_sha,
+                ),
+                None,
+            )
+        raw = env_path.read_bytes()
+        enabled = raw.endswith(b"=true\n")
+        effective = dict(transaction.environment.effective)
+        effective[PINVI_SYNC_ENV] = "true" if enabled else "false"
+        return (
+            replace(
+                transaction,
+                environment=replace(
+                    transaction.environment,
+                    effective=effective,
+                    env_file_bytes=raw,
+                    env_file_identity=compose_service_module._env_file_identity(
+                        env_path
+                    ),
+                ),
+                resolved_document_hash=(
+                    enabled_resolved_sha
+                    if enabled
+                    else transaction.resolved_document_hash
+                ),
+            ),
+            None,
+        )
+
+    runner = Mock(
+        side_effect=[
+            {"success": False, "returncode": 1},
+            {"success": True, "returncode": 0},
+        ]
+    )
+    health_smoke = Mock()
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(service, "_attest_cache_target_pair", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "execute_cache_target_causal_canary",
+        Mock(side_effect=AssertionError("canary must not run")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_cache_target_rollback_health_smoke",
+        health_smoke,
+    )
+
+    with pytest.raises(CacheTargetEnableRolledBackError):
+        service.enable_cache_target_sync()
+
+    assert env_path.read_bytes().endswith(b"=false\n")
+    assert [call.args[0][-1] for call in runner.call_args_list] == [
+        "pinvi-api",
+        "pinvi-api",
+    ]
+    journal = read_enable_cutover_journal(
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-enable-v1.json"
+    )
+    assert journal.phase == "rolled_back"
+    health_smoke.assert_called_once_with(ANY, ANY)
+
+
+def test_cache_target_initial_cutover_runs_frozen_secret_bundle_and_commits_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
+    runner = Mock(
+        return_value={
+            "success": True,
+            "returncode": 0,
+            "stdout": (
+                "initial cutover complete "
+                "cutover_id=11111111-1111-4111-8111-111111111111 "
+                "request_id=22222222-2222-4222-8222-222222222222 "
+                f"count=12 merkle_root={'9' * 64} published=12\n"
+            ),
+            "stderr": "",
+        }
+    )
+    cleanup = Mock()
+    attestor = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(service, "_cleanup_cache_target_initial_runner", cleanup)
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
+
+    result = service.run_cache_target_initial_cutover(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+    )
+
+    assert result["success"] is True
+    assert result["resumed"] is False
+    attestor.assert_called_once_with(ANY, manifest, transaction)
+    arguments = runner.call_args.args[0]
+    serialized = json.dumps(arguments)
+    for token in _CACHE_TARGET_TOKENS.values():
+        assert token not in serialized
+        assert hashlib.sha256(token.encode()).hexdigest() not in serialized
+    assert "RESTORE_FENCE_TOKEN" not in serialized
+    assert cleanup.call_count == 2
+    receipt_path = (
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-initial-cutover-v1.json"
+    )
+    assert receipt_path.is_file()
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o600
+
+
+def test_cache_target_initial_cutover_exact_receipt_retry_does_not_rerun(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    _allow_cache_target_release(monkeypatch, transaction, manifest)
+    runner = Mock(
+        return_value={
+            "success": True,
+            "returncode": 0,
+            "stdout": (
+                "initial cutover complete "
+                "cutover_id=11111111-1111-4111-8111-111111111111 "
+                "request_id=22222222-2222-4222-8222-222222222222 "
+                f"count=12 merkle_root={'9' * 64} published=12\n"
+            ),
+            "stderr": "",
+        }
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(service, "_cleanup_cache_target_initial_runner", Mock())
+    attestor = Mock()
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
+    first = service.run_cache_target_initial_cutover(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+    )
+    second = service.run_cache_target_initial_cutover(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+    )
+
+    assert first["resumed"] is False
+    assert second["resumed"] is True
+    assert runner.call_count == 1
+
+
+def test_cache_target_runner_orphan_cleanup_removes_only_exact_oneoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_id = f"sha256:{'a' * 64}"
+    run = Mock(
+        side_effect=[
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Image": image_id,
+                            "Config": {
+                                "Labels": {
+                                    "com.docker.compose.service": "pinvi-api",
+                                    "com.docker.compose.oneoff": "True",
+                                }
+                            },
+                        }
+                    ]
+                ),
+                stderr="",
+            ),
+            subprocess.CompletedProcess([], 0, stdout="runner\n", stderr=""),
+        ]
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    ComposeService._cleanup_cache_target_initial_runner(
+        "ktdm-cache-target-initial-11111111-1111-4111-8111-111111111111",
+        expected_image_id=image_id,
+    )
+
+    assert run.call_count == 2
+    assert run.call_args_list[1].args[0][:4] == [
+        "docker",
+        "container",
+        "rm",
+        "--force",
+    ]
+
+
+def test_cache_target_runner_orphan_cleanup_rejects_foreign_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = Mock(
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=json.dumps(
+                [
+                    {
+                        "Image": f"sha256:{'f' * 64}",
+                        "Config": {"Labels": {"com.docker.compose.service": "other"}},
+                    }
+                ]
+            ),
+            stderr="",
+        )
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="foreign container"):
+        ComposeService._cleanup_cache_target_initial_runner(
+            "ktdm-cache-target-initial-11111111-1111-4111-8111-111111111111",
+            expected_image_id=f"sha256:{'a' * 64}",
+        )
+    assert run.call_count == 1

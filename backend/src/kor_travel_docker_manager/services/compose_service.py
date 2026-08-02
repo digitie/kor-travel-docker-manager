@@ -6,20 +6,22 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
+    _CACHE_TARGET_WINDOW_MUTATION_CAPABILITY,
     _COMPATIBLE_PAIR_MUTATION_CAPABILITY,
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_API_SERVICE,
@@ -47,6 +49,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_deployment_lock,
     c6c_global_mutation_lock_path,
     c6c_state_paths,
+    cache_target_window_journal_path,
+    cache_target_window_mutation_scope,
     compatible_pair_image_environment,
     complete_map_production_env_migration,
     compose_volume_graph_hash,
@@ -80,6 +84,77 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     require_empty_retention_namespace,
     validate_retention_namespace_is_reserved,
 )
+from kor_travel_docker_manager.services.cache_target_backup import (
+    _COUPLED_ROLLBACK_CAPABILITY,
+    DatabaseRuntime,
+    DatabaseWriteCounter,
+    PinBoundaryAuditRow,
+    assert_cutover_backup_space_available,
+    create_database_backup,
+    create_manager_rollback_bundle,
+    database_runtimes_from_frozen_contract,
+    read_dagster_inflight_run_count,
+    read_database_identity,
+    read_database_inflight_count,
+    read_database_schema_revision,
+    read_database_write_counter,
+    read_pin_boundary_audit,
+    restore_database_backup,
+    restore_manager_rollback_bundle,
+    verify_manager_rollback_bundle,
+)
+from kor_travel_docker_manager.services.cache_target_canary import (
+    execute_cache_target_causal_canary,
+)
+from kor_travel_docker_manager.services.cache_target_contract import PINVI_SYNC_ENV
+from kor_travel_docker_manager.services.cache_target_cutover import (
+    CacheTargetFrozenEvidence,
+    InitialCutoverReceipt,
+    InitialCutoverResult,
+    build_initial_cutover_receipt,
+    commit_initial_cutover_receipt,
+    initial_receipt_logical_sha256,
+    initial_runner_compose_arguments,
+    parse_initial_cutover_output,
+    read_initial_cutover_receipt,
+    scavenge_initial_runner_secret_bundle,
+    with_initial_runner_secret_bundle,
+)
+from kor_travel_docker_manager.services.cache_target_enable import (
+    execute_cache_target_enable,
+    read_canonical_env_file,
+    read_enable_cutover_journal,
+    replace_canonical_env_file,
+)
+from kor_travel_docker_manager.services.cache_target_production_manifest import (
+    require_cache_target_production_release,
+)
+from kor_travel_docker_manager.services.cache_target_window import (
+    CacheTargetWindowJournal,
+    DatabaseBackupReceipt,
+    MapHelperOperation,
+    MapHelperReceipt,
+    PinBoundaryOperation,
+    PinBoundaryReceipt,
+    PinMigrationReceipt,
+    WindowPhase,
+    map_final_evidence_sha256,
+    map_helper_receipt_sha256,
+    old_restore_is_authorized,
+    parse_map_helper_receipt,
+    parse_pin_boundary_receipt,
+    pin_boundary_receipt_sha256,
+    pin_migration_receipt_sha256,
+    prepare_cache_target_window,
+    read_cache_target_window,
+    transition_cache_target_window,
+    validate_map_final_evidence_binding,
+    write_cache_target_window,
+)
+from kor_travel_docker_manager.services.cache_target_writer_fence import (
+    attest_cache_target_global_writer_fence,
+    cache_target_writer_environments_from_resolved_compose,
+)
 from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
@@ -88,6 +163,58 @@ from kor_travel_docker_manager.services.registry import (
     services_for_target,
     target_sequence_for_target,
 )
+
+_CACHE_TARGET_WRITER_SERVICES = frozenset(
+    {
+        _MAP_API_SERVICE,
+        _MAP_DAGSTER_SERVICE,
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        _PINVI_API_SERVICE,
+        "pinvi-dagster",
+    }
+)
+_CACHE_TARGET_WRITER_REGISTRY_SHA256 = (
+    "526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c"
+)
+_CACHE_TARGET_POST_INITIAL_PHASES = frozenset(
+    {
+        "initial_committed",
+        "sync_enabled",
+        "canary_verified",
+        "gc_started",
+        "gc_verified",
+        "final_writers_fencing",
+        "final_writers_fenced",
+        "map_final_verified",
+        "final_boundary_verified",
+        "forward_committed",
+        "runtime_activated",
+    }
+)
+
+
+def cache_target_writer_registry_sha256(names: Sequence[str]) -> str:
+    ordered = tuple(sorted(names))
+    if len(ordered) != len(set(ordered)) or frozenset(ordered) != (
+        _CACHE_TARGET_WRITER_SERVICES
+    ):
+        raise DeploymentContractError(
+            "cache-target writer capability registry is incomplete or unknown"
+        )
+    try:
+        payload = b"pinvi-cache-target-writer-registry-v1\0" + b"".join(
+            name.encode("ascii") + b"\0" for name in ordered
+        )
+    except UnicodeEncodeError as exc:
+        raise DeploymentContractError(
+            "cache-target writer registry identity is invalid"
+        ) from exc
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != _CACHE_TARGET_WRITER_REGISTRY_SHA256:
+        raise DeploymentContractError(
+            "cache-target writer registry identity is invalid"
+        )
+    return digest
 
 
 def get_project_root() -> str:
@@ -123,6 +250,106 @@ def get_override_path() -> str:
         return override
     return os.path.join(
         os.path.dirname(get_compose_path()), "docker-compose.override.yml"
+    )
+
+
+def _compatible_pair_logical_sha256(pair: CompatibleImagePair) -> str:
+    payload = {
+        "contract_generation": pair.contract_generation,
+        "map_dagster_daemon_image_id": pair.map_dagster_daemon_image_id,
+        "map_dagster_image_id": pair.map_dagster_image_id,
+        "map_image_id": pair.map_image_id,
+        "map_source_revision": pair.map_source_revision,
+        "map_ui_image_id": pair.map_ui_image_id,
+        "pinvi_image_id": pair.pinvi_image_id,
+        "pinvi_source_revision": pair.pinvi_source_revision,
+        "recorded_at": pair.recorded_at,
+    }
+    serialized = json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    )
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def _initial_receipt_process_result(
+    receipt: InitialCutoverReceipt,
+    *,
+    resumed: bool,
+) -> dict[str, Any]:
+    return {
+        "success": True,
+        "returncode": 0,
+        "cutover_id": receipt.cutover_id,
+        "request_id": receipt.request_id,
+        "expected_restore_epoch": receipt.expected_restore_epoch,
+        "count": receipt.count,
+        "merkle_root": receipt.merkle_root,
+        "published": receipt.published,
+        "resumed": resumed,
+    }
+
+
+def _read_bound_cache_target_initial_receipt(
+    state_directory: Path,
+    journal: CacheTargetWindowJournal,
+) -> InitialCutoverReceipt:
+    """post-initial 단계가 journal에 commit된 exact receipt만 사용하게 한다."""
+
+    expected_digest = journal.initial_receipt_sha256
+    candidate_pair_sha256 = journal.candidate_pair_sha256
+    if expected_digest is None or candidate_pair_sha256 is None:
+        raise DeploymentContractError(
+            "cache-target initial receipt binding is missing from the window"
+        )
+    receipt = read_initial_cutover_receipt(
+        state_directory / "cache-target-initial-cutover-v1.json"
+    )
+    evidence = receipt.evidence
+    if (
+        initial_receipt_logical_sha256(receipt) != expected_digest
+        or receipt.cutover_id != journal.cutover_id
+        or receipt.expected_restore_epoch != journal.expected_restore_epoch
+        or evidence.env_sha256 != journal.environment_sha256
+        or evidence.raw_compose_sha256 != journal.compose_sha256
+        or evidence.resolved_compose_sha256 != journal.resolved_compose_sha256
+        or evidence.active_pair_sha256 != candidate_pair_sha256
+        or evidence.rollback_pair_sha256 != candidate_pair_sha256
+    ):
+        raise DeploymentContractError(
+            "cache-target initial receipt differs from the committed window"
+        )
+    return receipt
+
+
+def _enable_journal_process_result(
+    *,
+    transaction_id: str,
+    cutover_id: str,
+    phase: str,
+) -> dict[str, Any]:
+    return {
+        "success": phase == "committed",
+        "returncode": 0 if phase == "committed" else 1,
+        "transaction_id": transaction_id,
+        "cutover_id": cutover_id,
+        "phase": phase,
+    }
+
+
+def _require_cache_target_release(
+    config: C6cDeploymentConfig,
+    *,
+    pairs: tuple[CompatibleImagePair, ...] = (),
+    candidate_map_source_revision: str | None = None,
+    candidate_source_revision: str | None = None,
+) -> None:
+    if config.cache_target is None:
+        return
+    require_cache_target_production_release(
+        config.cache_target,
+        pairs=pairs,
+        candidate_map_source_revision=candidate_map_source_revision,
+        candidate_source_revision=candidate_source_revision,
     )
 
 
@@ -3342,6 +3569,7 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible-pair deploy is available only in production mode"
                 )
+            _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
                     transaction.environment.effective,
@@ -3350,6 +3578,12 @@ class ComposeService:
                 if build
                 else None
             )
+            if build_provenance is not None:
+                _require_cache_target_release(
+                    config,
+                    candidate_map_source_revision=build_provenance.map_source_revision,
+                    candidate_source_revision=build_provenance.pinvi_source_revision,
+                )
             return self._ensure_production_pinvi_target(
                 "pinvi",
                 config=config,
@@ -3360,6 +3594,2524 @@ class ComposeService:
                 build_provenance=build_provenance,
                 wait_timeout=wait_timeout,
             )
+
+    def run_cache_target_cutover(
+        self,
+        *,
+        cutover_id: str,
+        expected_restore_epoch: int,
+        reason: str,
+        wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
+        """H35와 generation 7 전환을 하나의 lock/process journal로 완료한다."""
+
+        _validate_c6c_wait_timeout(wait_timeout)
+        try:
+            canonical_cutover_id = str(uuid.UUID(cutover_id))
+        except ValueError as exc:
+            raise DeploymentContractError("cache-target cutover ID is invalid") from exc
+        if canonical_cutover_id != cutover_id:
+            raise DeploymentContractError(
+                "cache-target cutover ID must be canonical lowercase UUID"
+            )
+        if expected_restore_epoch <= 0:
+            raise DeploymentContractError(
+                "cache-target expected restore epoch must be positive"
+            )
+        if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
+            raise DeploymentContractError("cache-target cutover reason is invalid")
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            contract = config.cache_target
+            if not config.production or contract is None:
+                raise DeploymentContractError(
+                    "cache-target cutover requires the production contract"
+                )
+            if contract.sync_enabled not in {"false", "true"}:
+                raise DeploymentContractError(
+                    "cache-target cutover sync state is invalid"
+                )
+            _require_cache_target_release(config)
+            manifest_path_text = transaction.manifest_path
+            if manifest_path_text is None:
+                raise DeploymentContractError(
+                    "cache-target cutover transaction has no pair manifest"
+                )
+            manifest_path = Path(manifest_path_text)
+            journal_path = cache_target_window_journal_path(
+                transaction.environment.effective
+            )
+            try:
+                journal_path.lstat()
+            except FileNotFoundError:
+                assert_manager_mutation_allowed(
+                    environment=transaction.environment.effective
+                )
+                if contract.sync_enabled != "false":
+                    raise DeploymentContractError(
+                        "new cache-target cutover requires sync=false"
+                    ) from None
+                old_manifest = load_pair_manifest(manifest_path_text)
+                current_pair = self._inspect_current_pair(config)
+                if not self._pair_matches(current_pair, old_manifest.active):
+                    raise DeploymentContractError(
+                        "running old pair differs from the pre-cutover manifest"
+                    ) from None
+                for pair in (old_manifest.active, old_manifest.rollback):
+                    self._require_pair_image_provenance(pair)
+                build_provenance = _derive_c6c_build_provenance(
+                    transaction.environment.effective,
+                    compose_path=transaction.environment.compose_path,
+                )
+                _require_cache_target_release(
+                    config,
+                    candidate_map_source_revision=(
+                        build_provenance.map_source_revision
+                    ),
+                    candidate_source_revision=(
+                        build_provenance.pinvi_source_revision
+                    ),
+                )
+                journal = prepare_cache_target_window(
+                    transaction_id=str(uuid.uuid4()),
+                    cutover_id=cutover_id,
+                    expected_restore_epoch=expected_restore_epoch,
+                    reason=reason,
+                    environment_sha256=hashlib.sha256(
+                        transaction.environment.env_file_bytes
+                    ).hexdigest(),
+                    compose_sha256=hashlib.sha256(
+                        transaction.compose_source_bytes
+                    ).hexdigest(),
+                    resolved_compose_sha256=transaction.resolved_document_hash,
+                    old_manifest_sha256=hashlib.sha256(
+                        manifest_path.read_bytes()
+                    ).hexdigest(),
+                )
+                write_cache_target_window(journal_path, journal)
+            except OSError as exc:
+                raise DeploymentContractError(
+                    "cache-target window journal path is unavailable"
+                ) from exc
+            else:
+                journal = read_cache_target_window(journal_path)
+                if (
+                    journal.cutover_id != cutover_id
+                    or journal.expected_restore_epoch != expected_restore_epoch
+                    or journal.reason_sha256
+                    != hashlib.sha256(reason.encode()).hexdigest()
+                ):
+                    raise DeploymentContractError(
+                        "existing cache-target window belongs to another request"
+                    )
+            if journal.phase == "rolled_back":
+                return self._cache_target_window_result(journal, resumed=True)
+            if journal.phase == "runtime_activated":
+                self._validate_cache_target_runtime_activated_terminal(
+                    journal_path=journal_path,
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                )
+                return self._cache_target_window_result(journal, resumed=True)
+            with cache_target_window_mutation_scope(
+                journal.transaction_id,
+                capability=_CACHE_TARGET_WINDOW_MUTATION_CAPABILITY,
+            ):
+                assert_manager_mutation_allowed(
+                    environment=transaction.environment.effective
+                )
+                return self._run_cache_target_window_unlocked(
+                    journal_path=journal_path,
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                    reason=reason,
+                    wait_timeout=wait_timeout,
+                    lock_path=lock_snapshot.lock_path,
+                )
+
+    def _validate_cache_target_runtime_activated_terminal(
+        self,
+        *,
+        journal_path: Path,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+    ) -> None:
+        """완료 journal도 current receipt/pair attestation 뒤에만 성공 재보고한다."""
+
+        contract = config.cache_target
+        manifest_path = transaction.manifest_path
+        candidate_pair_sha256 = journal.candidate_pair_sha256
+        if (
+            journal.phase != "runtime_activated"
+            or not config.production
+            or contract is None
+            or contract.sync_enabled != "true"
+            or manifest_path is None
+            or candidate_pair_sha256 is None
+        ):
+            raise DeploymentContractError(
+                "cache-target activated terminal contract is invalid"
+            )
+        self._validate_resolved_compose_contract(config, transaction=transaction)
+        receipt = _read_bound_cache_target_initial_receipt(
+            journal_path.parent,
+            journal,
+        )
+        enable_journal = read_enable_cutover_journal(
+            journal_path.parent / "cache-target-enable-v1.json"
+        )
+        if (
+            enable_journal.phase != "committed"
+            or enable_journal.cutover_id != journal.cutover_id
+            or enable_journal.window_transaction_id != journal.transaction_id
+            or enable_journal.initial_receipt_sha256
+            != initial_receipt_logical_sha256(receipt)
+            or enable_journal.active_pair_sha256 != candidate_pair_sha256
+            or enable_journal.rollback_pair_sha256 != candidate_pair_sha256
+        ):
+            raise DeploymentContractError(
+                "cache-target activated enable evidence is foreign"
+            )
+        manifest = load_pair_manifest(manifest_path)
+        if (
+            manifest.rollback is None
+            or _compatible_pair_logical_sha256(manifest.active)
+            != candidate_pair_sha256
+            or _compatible_pair_logical_sha256(manifest.rollback)
+            != candidate_pair_sha256
+        ):
+            raise DeploymentContractError(
+                "cache-target activated manifest is foreign"
+            )
+        _require_cache_target_release(
+            config,
+            pairs=(manifest.active, manifest.rollback),
+        )
+        current_pair = self._inspect_current_pair(config)
+        if not self._pair_matches(current_pair, manifest.active):
+            raise DeploymentContractError(
+                "cache-target activated runtime differs from the manifest"
+            )
+        self._attest_cache_target_pair(config, manifest, transaction)
+
+    def _run_cache_target_window_unlocked(
+        self,
+        *,
+        journal_path: Path,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        reason: str,
+        wait_timeout: int,
+        lock_path: str,
+    ) -> dict[str, Any]:
+        state_directory = journal_path.parent
+        manifest_path = Path(transaction.manifest_path or "")
+        runtimes = database_runtimes_from_frozen_contract(
+            resolved=transaction.resolved,
+            environment=transaction.environment.effective,
+        )
+        if journal.phase in {
+            "rollback_preparing",
+            "new_runtime_stopped",
+            "map_db_restored",
+            "map_dagster_db_restored",
+            "pinvi_db_restored",
+            "manager_state_restored",
+            "old_runtime_restored",
+        }:
+            rolled_back = self._resume_cache_target_coupled_rollback(
+                journal_path=journal_path,
+                journal=journal,
+                transaction=transaction,
+                config=config,
+                runtimes=runtimes,
+                wait_timeout=wait_timeout,
+            )
+            return self._cache_target_window_result(rolled_back, resumed=True)
+        bound_initial_receipt = (
+            _read_bound_cache_target_initial_receipt(
+                state_directory,
+                journal,
+            )
+            if journal.phase in _CACHE_TARGET_POST_INITIAL_PHASES
+            else None
+        )
+        try:
+            if journal.phase == "prepared":
+                journal = transition_cache_target_window(
+                    journal,
+                    "writers_fencing",
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "writers_fencing":
+                initial_writer_fence_sha256, _ = (
+                    self._establish_cache_target_writer_fence(
+                        journal=journal,
+                        transaction=transaction,
+                        runtimes=runtimes,
+                        boundary="initial",
+                    )
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "writers_fenced",
+                    initial_writer_fence_sha256=initial_writer_fence_sha256,
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "writers_fenced":
+                expected_writer_fence = journal.initial_writer_fence_sha256
+                if expected_writer_fence is None:
+                    raise DeploymentContractError(
+                        "cache-target writer fence evidence is missing"
+                    )
+                writer_fence_sha256, before_writes = (
+                    self._establish_cache_target_writer_fence(
+                        journal=journal,
+                        transaction=transaction,
+                        runtimes=runtimes,
+                        boundary="initial",
+                    )
+                )
+                if writer_fence_sha256 != expected_writer_fence:
+                    raise DeploymentContractError(
+                        "cache-target live writer fence differs on resume"
+                    )
+                assert_cutover_backup_space_available(
+                    state_directory=state_directory,
+                    runtimes=runtimes,
+                )
+                rollback_bundle_sha256 = create_manager_rollback_bundle(
+                    state_directory=state_directory,
+                    transaction_id=journal.transaction_id,
+                    env_path=Path(transaction.environment.env_path),
+                    manifest_path=manifest_path,
+                    environment_bytes=transaction.environment.env_file_bytes,
+                    manifest_bytes=manifest_path.read_bytes(),
+                )
+                backups = tuple(
+                    create_database_backup(
+                        state_directory=state_directory,
+                        transaction_id=journal.transaction_id,
+                        runtime=runtime,
+                        writer_fence_sha256=expected_writer_fence,
+                    )
+                    for runtime in runtimes
+                )
+                after_writes = self._revalidate_cache_target_writer_fence(
+                    journal=journal,
+                    transaction=transaction,
+                    runtimes=runtimes,
+                    expected_writer_fence_sha256=expected_writer_fence,
+                    boundary="initial",
+                )
+                if after_writes != before_writes:
+                    raise DeploymentContractError(
+                        "database writes occurred inside the cutover backup fence"
+                    )
+                journal = transition_cache_target_window(
+                    journal,
+                    "backups_committed",
+                    rollback_bundle_sha256=rollback_bundle_sha256,
+                    map_application_backup=backups[0],
+                    map_dagster_backup=backups[1],
+                    pinvi_backup=backups[2],
+                )
+                write_cache_target_window(journal_path, journal)
+
+            candidate = self._load_or_build_window_candidate(
+                journal=journal,
+                transaction=transaction,
+                config=config,
+            )
+            map_backup = journal.map_application_backup
+            pin_backup = journal.pinvi_backup
+            if map_backup is None or pin_backup is None:
+                raise DeploymentContractError(
+                    "cache-target database backup evidence is missing"
+                )
+            if journal.phase == "backups_committed":
+                journal = transition_cache_target_window(
+                    journal,
+                    "candidate_built",
+                    candidate_pair_sha256=_compatible_pair_logical_sha256(candidate),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "candidate_built":
+                pin_preflight = self._run_pin_boundary_helper(
+                    operation="preflight",
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                    candidate=candidate,
+                    database_identity=pin_backup.database_identity,
+                    prior_receipt_sha256=None,
+                    canary_run_id=None,
+                    expected_initial_count=0,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "pin_preflight_verified",
+                    pin_preflight_receipt_sha256=pin_boundary_receipt_sha256(
+                        pin_preflight
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "pin_preflight_verified":
+                map_preflight = self._run_map_h35_helper(
+                    operation="preflight",
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                    candidate=candidate,
+                    database_identity=map_backup.database_identity,
+                    prior_receipt_digest=None,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "map_preflight_verified",
+                    last_map_receipt=map_preflight,
+                    last_map_receipt_sha256=map_helper_receipt_sha256(
+                        map_preflight
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "map_preflight_verified":
+                map_migration = self._run_map_h35_helper(
+                    operation="migrate",
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                    candidate=candidate,
+                    database_identity=map_backup.database_identity,
+                    prior_receipt_digest=journal.last_map_receipt_sha256,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "map_database_forwarded",
+                    last_map_receipt=map_migration,
+                    last_map_receipt_sha256=map_helper_receipt_sha256(
+                        map_migration
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "map_database_forwarded":
+                preflight_sha256 = journal.pin_preflight_receipt_sha256
+                if preflight_sha256 is None:
+                    raise DeploymentContractError(
+                        "Pin migration preflight evidence is missing"
+                    )
+                pin_migration = self._run_pin_database_migration(
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                    candidate=candidate,
+                    runtime=runtimes[2],
+                    database_identity=pin_backup.database_identity,
+                    prior_receipt_sha256=preflight_sha256,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "databases_forwarded",
+                    pin_migration_receipt_sha256=(
+                        pin_migration_receipt_sha256(pin_migration)
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "databases_forwarded":
+                csv_receipt = self._run_map_h35_helper(
+                    operation="csv5",
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                    candidate=candidate,
+                    database_identity=map_backup.database_identity,
+                    prior_receipt_digest=journal.last_map_receipt_sha256,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "csv_forwarded",
+                    last_map_receipt=csv_receipt,
+                    last_map_receipt_sha256=map_helper_receipt_sha256(csv_receipt),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "csv_forwarded":
+                self._bootstrap_cache_target_generation(
+                    config=config,
+                    transaction=transaction,
+                    candidate=candidate,
+                    wait_timeout=wait_timeout,
+                )
+                self._restart_cache_target_auxiliary_writer(
+                    transaction=transaction,
+                    config=config,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "generation_bootstrapped",
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "generation_bootstrapped":
+                # initial runner는 remote event를 만들 수 있다. 응답 유실 시 성공을
+                # 추측해 old restore하지 않도록 invocation 전에 권한을 폐기한다.
+                if journal.external_event_count == 0:
+                    journal = replace(journal, external_event_count=1)
+                    write_cache_target_window(journal_path, journal)
+                self._run_cache_target_initial_cutover_unlocked(
+                    transaction=transaction,
+                    config=config,
+                    cutover_id=journal.cutover_id,
+                    expected_restore_epoch=journal.expected_restore_epoch,
+                    reason=reason,
+                )
+                initial_receipt = read_initial_cutover_receipt(
+                    state_directory / "cache-target-initial-cutover-v1.json"
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "initial_committed",
+                    initial_receipt_sha256=initial_receipt_logical_sha256(
+                        initial_receipt
+                    ),
+                    external_event_count=max(1, initial_receipt.published),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "initial_committed":
+                bound_initial_receipt = (
+                    _read_bound_cache_target_initial_receipt(
+                        state_directory,
+                        journal,
+                    )
+                )
+                enabled = self._enable_cache_target_sync_unlocked(
+                    transaction=transaction,
+                    config=config,
+                    lock_path=lock_path,
+                    window_transaction_id=journal.transaction_id,
+                    receipt=bound_initial_receipt,
+                )
+                if not enabled.get("success") or enabled.get("phase") != "committed":
+                    raise DeploymentContractError(
+                        "cache-target sync enable did not commit"
+                    )
+                journal = transition_cache_target_window(journal, "sync_enabled")
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "sync_enabled":
+                enable_journal = read_enable_cutover_journal(
+                    state_directory / "cache-target-enable-v1.json"
+                )
+                if enable_journal.phase != "committed":
+                    raise DeploymentContractError(
+                        "cache-target causal canary evidence is not committed"
+                    )
+                journal = transition_cache_target_window(
+                    journal,
+                    "canary_verified",
+                    external_event_count=journal.external_event_count + 2,
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "canary_verified":
+                journal = transition_cache_target_window(journal, "gc_started")
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "gc_started":
+                current, _ = self._capture_transaction_unlocked(
+                    derive_manifest_path=True,
+                )
+                current_config = load_c6c_deployment_config_from_environment(
+                    current.environment.effective
+                )
+                map_gc = self._run_map_h35_helper(
+                    operation="gc",
+                    journal=journal,
+                    transaction=current,
+                    config=current_config,
+                    candidate=candidate,
+                    database_identity=map_backup.database_identity,
+                    prior_receipt_digest=journal.last_map_receipt_sha256,
+                )
+                manifest = load_pair_manifest(str(manifest_path))
+                self._attest_cache_target_pair(current_config, manifest, current)
+                journal = transition_cache_target_window(
+                    journal,
+                    "gc_verified",
+                    last_map_receipt=map_gc,
+                    last_map_receipt_sha256=map_helper_receipt_sha256(map_gc),
+                    gc_receipt_sha256=map_helper_receipt_sha256(map_gc),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "gc_verified":
+                journal = transition_cache_target_window(
+                    journal,
+                    "final_writers_fencing",
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "final_writers_fencing":
+                current, _ = self._capture_transaction_unlocked(
+                    derive_manifest_path=True,
+                )
+                final_fence_sha256, final_counters = (
+                    self._establish_cache_target_writer_fence(
+                    journal=journal,
+                    transaction=current,
+                    runtimes=runtimes,
+                    boundary="final",
+                    )
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "final_writers_fenced",
+                    final_writer_fence_sha256=final_fence_sha256,
+                    final_map_write_counters_sha256=(
+                        self._cache_target_map_write_counters_sha256(
+                            final_counters
+                        )
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "final_writers_fenced":
+                current, _ = self._capture_transaction_unlocked(
+                    derive_manifest_path=True,
+                )
+                current_config = load_c6c_deployment_config_from_environment(
+                    current.environment.effective
+                )
+                expected_final_fence = journal.final_writer_fence_sha256
+                if expected_final_fence is None:
+                    raise DeploymentContractError(
+                        "cache-target final writer fence evidence is missing"
+                    )
+                actual_final_fence, actual_final_counters = (
+                    self._establish_cache_target_writer_fence(
+                    journal=journal,
+                    transaction=current,
+                    runtimes=runtimes,
+                    boundary="final",
+                    )
+                )
+                if actual_final_fence != expected_final_fence:
+                    raise DeploymentContractError(
+                        "cache-target final writer fence changed on resume"
+                    )
+                if (
+                    self._cache_target_map_write_counters_sha256(
+                        actual_final_counters
+                    )
+                    != journal.final_map_write_counters_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target Map writes changed after final fencing"
+                    )
+                map_verify = self._run_map_h35_helper(
+                    operation="verify",
+                    journal=journal,
+                    transaction=current,
+                    config=current_config,
+                    candidate=candidate,
+                    database_identity=map_backup.database_identity,
+                    prior_receipt_digest=journal.last_map_receipt_sha256,
+                )
+                final_evidence = map_verify.cache_target_evidence
+                if final_evidence is None:
+                    raise DeploymentContractError(
+                        "cache-target Map final evidence is missing"
+                    )
+                initial_receipt = _read_bound_cache_target_initial_receipt(
+                    state_directory,
+                    journal,
+                )
+                current_contract = current_config.cache_target
+                if current_contract is None:
+                    raise DeploymentContractError(
+                        "cache-target final contract is missing"
+                    )
+                validate_map_final_evidence_binding(
+                    final_evidence,
+                    consumer_id=current_contract.consumer_id,
+                    restore_epoch=journal.expected_restore_epoch,
+                    snapshot_count=initial_receipt.count,
+                    snapshot_merkle_root=initial_receipt.merkle_root,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "map_final_verified",
+                    last_map_receipt=map_verify,
+                    last_map_receipt_sha256=map_helper_receipt_sha256(map_verify),
+                    map_final_evidence=final_evidence,
+                    map_final_evidence_sha256=map_final_evidence_sha256(
+                        final_evidence
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "map_final_verified":
+                current, _ = self._capture_transaction_unlocked(
+                    derive_manifest_path=True,
+                )
+                current_config = load_c6c_deployment_config_from_environment(
+                    current.environment.effective
+                )
+                expected_final_fence_sha256 = journal.final_writer_fence_sha256
+                if expected_final_fence_sha256 is None:
+                    raise DeploymentContractError(
+                        "cache-target final writer fence evidence is missing"
+                    )
+                live_final_fence, before_finalize_counters = (
+                    self._establish_cache_target_writer_fence(
+                        journal=journal,
+                        transaction=current,
+                        runtimes=runtimes,
+                        boundary="final",
+                    )
+                )
+                if live_final_fence != expected_final_fence_sha256 or (
+                    self._cache_target_map_write_counters_sha256(
+                        before_finalize_counters
+                    )
+                    != journal.final_map_write_counters_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target final evidence drifted before Pin finalize"
+                    )
+                initial_receipt = _read_bound_cache_target_initial_receipt(
+                    state_directory,
+                    journal,
+                )
+                enable_journal = read_enable_cutover_journal(
+                    state_directory / "cache-target-enable-v1.json"
+                )
+                preflight_sha256 = journal.pin_preflight_receipt_sha256
+                if preflight_sha256 is None:
+                    raise DeploymentContractError(
+                        "Pin final preflight evidence is missing"
+                    )
+                final_receipt = self._run_pin_boundary_helper(
+                    operation="finalize",
+                    journal=journal,
+                    transaction=current,
+                    config=current_config,
+                    candidate=candidate,
+                    database_identity=pin_backup.database_identity,
+                    prior_receipt_sha256=preflight_sha256,
+                    canary_run_id=enable_journal.transaction_id,
+                    expected_initial_count=initial_receipt.count,
+                )
+                audit_row = read_pin_boundary_audit(
+                    runtimes[2],
+                    journal.transaction_id,
+                )
+                self._assert_cache_target_pin_audit_receipt(
+                    receipt=final_receipt,
+                    audit_row=audit_row,
+                )
+                live_after_finalize, after_finalize_counters = (
+                    self._read_cache_target_writer_fence_evidence(
+                        journal=journal,
+                        transaction=current,
+                        runtimes=runtimes,
+                        ordered_writers=self._cache_target_writer_names(current),
+                        boundary="final",
+                    )
+                )
+                if live_after_finalize != expected_final_fence_sha256 or (
+                    self._cache_target_map_write_counters_sha256(
+                        after_finalize_counters
+                    )
+                    != journal.final_map_write_counters_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target Map writes changed during Pin finalize"
+                    )
+                journal = transition_cache_target_window(
+                    journal,
+                    "final_boundary_verified",
+                    pin_final_receipt_sha256=pin_boundary_receipt_sha256(
+                        final_receipt
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "final_boundary_verified":
+                journal = transition_cache_target_window(
+                    journal,
+                    "forward_committed",
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "forward_committed":
+                current, _ = self._capture_transaction_unlocked(
+                    derive_manifest_path=True,
+                )
+                current_config = load_c6c_deployment_config_from_environment(
+                    current.environment.effective
+                )
+                self._activate_cache_target_writers(
+                    transaction=current,
+                    config=current_config,
+                )
+                manifest = load_pair_manifest(str(manifest_path))
+                self._attest_cache_target_pair(current_config, manifest, current)
+                reconcile_pair_references((candidate,), cwd=get_project_root())
+                journal = transition_cache_target_window(
+                    journal,
+                    "runtime_activated",
+                )
+                write_cache_target_window(journal_path, journal)
+            return self._cache_target_window_result(journal, resumed=False)
+        except Exception:
+            latest = read_cache_target_window(journal_path)
+            if latest.phase == "prepared":
+                try:
+                    journal_path.unlink()
+                    directory_fd = os.open(
+                        journal_path.parent,
+                        os.O_RDONLY | os.O_DIRECTORY,
+                    )
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                except OSError as cleanup_error:
+                    raise DeploymentContractError(
+                        "prepared cache-target window cleanup failed"
+                    ) from cleanup_error
+            elif old_restore_is_authorized(latest):
+                self._resume_cache_target_coupled_rollback(
+                    journal_path=journal_path,
+                    journal=latest,
+                    transaction=transaction,
+                    config=config,
+                    runtimes=runtimes,
+                    wait_timeout=wait_timeout,
+                )
+            raise
+
+    def _load_or_build_window_candidate(
+        self,
+        *,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+    ) -> CompatibleImagePair:
+        if journal.phase == "prepared":
+            raise DeploymentContractError(
+                "cache-target backups must commit before candidate build"
+            )
+        build = journal.phase == "backups_committed"
+        build_provenance = (
+            _derive_c6c_build_provenance(
+                transaction.environment.effective,
+                compose_path=transaction.environment.compose_path,
+            )
+            if build
+            else None
+        )
+        candidate, _ = self._prepare_c6c_candidate_pair(
+            config,
+            build=build,
+            build_provenance=build_provenance,
+            transaction=transaction,
+        )
+        if (
+            journal.candidate_pair_sha256 is not None
+            and _compatible_pair_logical_sha256(candidate)
+            != journal.candidate_pair_sha256
+        ):
+            raise DeploymentContractError(
+                "cache-target candidate differs from the window journal"
+            )
+        return candidate
+
+    @staticmethod
+    def _cache_target_window_result(
+        journal: CacheTargetWindowJournal,
+        *,
+        resumed: bool,
+    ) -> dict[str, Any]:
+        success = journal.phase == "runtime_activated"
+        return {
+            "success": success,
+            "returncode": 0 if success else 1,
+            "transaction_id": journal.transaction_id,
+            "cutover_id": journal.cutover_id,
+            "phase": journal.phase,
+            "forward_boundary": journal.forward_boundary,
+            "external_event_count": journal.external_event_count,
+            "resumed": resumed,
+        }
+
+    def run_cache_target_initial_cutover(
+        self,
+        *,
+        cutover_id: str,
+        expected_restore_epoch: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        """frozen compatible pair에서 default-off initial runner를 한 번 실행한다."""
+
+        try:
+            canonical_cutover_id = str(uuid.UUID(cutover_id))
+        except ValueError as exc:
+            raise DeploymentContractError("cache-target cutover ID is invalid") from exc
+        if canonical_cutover_id != cutover_id:
+            raise DeploymentContractError(
+                "cache-target cutover ID must be canonical lowercase UUID"
+            )
+        if expected_restore_epoch <= 0:
+            raise DeploymentContractError(
+                "cache-target expected restore epoch must be positive"
+            )
+        if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
+            raise DeploymentContractError("cache-target cutover reason is invalid")
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            return self._run_cache_target_initial_cutover_unlocked(
+                transaction=transaction,
+                config=config,
+                cutover_id=cutover_id,
+                expected_restore_epoch=expected_restore_epoch,
+                reason=reason,
+            )
+
+    def _run_cache_target_initial_cutover_unlocked(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        cutover_id: str,
+        expected_restore_epoch: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        contract = config.cache_target
+        if not config.production or contract is None:
+            raise DeploymentContractError(
+                "cache-target initial cutover requires the production contract"
+            )
+        if contract.sync_enabled != "false":
+            raise DeploymentContractError(
+                "cache-target initial cutover requires sync=false"
+            )
+        self._validate_resolved_compose_contract(
+            config,
+            transaction=transaction,
+        )
+        manifest_path = transaction.manifest_path
+        if manifest_path is None:
+            raise DeploymentContractError(
+                "cache-target cutover transaction has no pair manifest"
+            )
+        manifest = load_pair_manifest(manifest_path)
+        if manifest.rollback is None:
+            raise DeploymentContractError(
+                "cache-target cutover requires an attested rollback pair"
+            )
+        _require_cache_target_release(
+            config,
+            pairs=(manifest.active, manifest.rollback),
+        )
+        self._attest_cache_target_pair(config, manifest, transaction)
+        evidence = CacheTargetFrozenEvidence(
+            env_sha256=hashlib.sha256(
+                transaction.environment.env_file_bytes
+            ).hexdigest(),
+            raw_compose_sha256=hashlib.sha256(
+                transaction.compose_source_bytes
+            ).hexdigest(),
+            resolved_compose_sha256=transaction.resolved_document_hash,
+            active_pair_sha256=_compatible_pair_logical_sha256(manifest.active),
+            rollback_pair_sha256=_compatible_pair_logical_sha256(
+                manifest.rollback
+            ),
+            role_binding_sha256=contract.role_binding_sha256,
+            expected_openapi_sha256=contract.expected_openapi_sha256,
+            expected_source_revision=contract.expected_source_revision,
+            expected_contract_generation=(contract.expected_contract_generation),
+        )
+        state_directory = Path(manifest_path).parent
+        receipt_path = state_directory / "cache-target-initial-cutover-v1.json"
+        runner_name = f"ktdm-cache-target-initial-{cutover_id}"
+        self._cleanup_cache_target_initial_runner(
+            runner_name,
+            expected_image_id=manifest.active.pinvi_image_id,
+        )
+        scavenge_initial_runner_secret_bundle(state_directory, cutover_id)
+        if receipt_path.exists():
+            receipt = read_initial_cutover_receipt(receipt_path)
+            expected_reason_sha = hashlib.sha256(reason.encode()).hexdigest()
+            if (
+                receipt.cutover_id != cutover_id
+                or receipt.expected_restore_epoch != expected_restore_epoch
+                or receipt.reason_sha256 != expected_reason_sha
+                or receipt.evidence != evidence
+            ):
+                raise DeploymentContractError(
+                    "existing initial cutover receipt belongs to foreign evidence"
+                )
+            return _initial_receipt_process_result(receipt, resumed=True)
+
+        def run(secret_path: Path) -> InitialCutoverResult:
+            arguments = initial_runner_compose_arguments(
+                secret_path=secret_path,
+                cutover_id=cutover_id,
+                expected_restore_epoch=expected_restore_epoch,
+                reason=reason,
+            )
+            try:
+                result = self._run_frozen_recovery(
+                    arguments,
+                    transaction=transaction,
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    redact_config=config,
+                )
+                if not result.get("success"):
+                    raise DeploymentContractError(
+                        "cache-target initial runner failed"
+                    )
+                return parse_initial_cutover_output(str(result.get("stdout", "")))
+            finally:
+                self._cleanup_cache_target_initial_runner(
+                    runner_name,
+                    expected_image_id=manifest.active.pinvi_image_id,
+                )
+
+        runner_result = with_initial_runner_secret_bundle(
+            state_directory,
+            cutover_id,
+            contract.command_token,
+            contract.consumer_token,
+            contract.recovery_token,
+            run,
+        )
+        receipt = build_initial_cutover_receipt(
+            cutover_id=cutover_id,
+            expected_restore_epoch=expected_restore_epoch,
+            reason=reason,
+            evidence=evidence,
+            result=runner_result,
+        )
+        commit_initial_cutover_receipt(receipt_path, receipt)
+        return _initial_receipt_process_result(receipt, resumed=False)
+
+    def enable_cache_target_sync(self) -> dict[str, Any]:
+        """하나의 C6c lock에서 durable sync enable 또는 rollback resume를 수행한다."""
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production or config.cache_target is None:
+                raise DeploymentContractError(
+                    "cache-target enable requires the production contract"
+                )
+            _require_cache_target_release(config)
+            self._validate_resolved_compose_contract(
+                config,
+                transaction=transaction,
+            )
+            manifest_path = transaction.manifest_path
+            if manifest_path is None:
+                raise DeploymentContractError(
+                    "cache-target enable transaction has no pair manifest"
+                )
+            state_directory = Path(manifest_path).parent
+            receipt = read_initial_cutover_receipt(
+                state_directory / "cache-target-initial-cutover-v1.json"
+            )
+            journal_path = state_directory / "cache-target-enable-v1.json"
+            env_path = Path(transaction.environment.env_path).resolve(strict=False)
+            try:
+                journal_path.lstat()
+            except FileNotFoundError:
+                enabled_effective = dict(transaction.environment.effective)
+                enabled_effective[PINVI_SYNC_ENV] = "true"
+                enabled_snapshot = replace(
+                    transaction.environment,
+                    effective=enabled_effective,
+                )
+                enabled_candidate, _ = self._capture_transaction_unlocked(
+                    environment_override={PINVI_SYNC_ENV: "true"},
+                    derive_manifest_path=True,
+                    environment_snapshot=enabled_snapshot,
+                )
+                if (
+                    enabled_candidate.environment != enabled_snapshot
+                    or enabled_candidate.external_inputs != transaction.external_inputs
+                    or enabled_candidate.compose_source_bytes
+                    != transaction.compose_source_bytes
+                    or enabled_candidate.compose_source_mode
+                    != transaction.compose_source_mode
+                    or enabled_candidate.system_bind_snapshots
+                    != transaction.system_bind_snapshots
+                    or enabled_candidate.raw_volume_graph_hash
+                    != transaction.raw_volume_graph_hash
+                    or enabled_candidate.resolved_volume_graph_hash
+                    != transaction.resolved_volume_graph_hash
+                    or enabled_candidate.manifest_path != manifest_path
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enabled compose candidate drifted"
+                    ) from None
+                enabled_config = load_c6c_deployment_config_from_environment(
+                    enabled_effective
+                )
+                self._validate_resolved_compose_contract(
+                    enabled_config,
+                    transaction=enabled_candidate,
+                )
+                enabled_resolved_compose_sha256 = (
+                    enabled_candidate.resolved_document_hash
+                )
+            except OSError as exc:
+                raise DeploymentContractError(
+                    "cache-target enable journal path is unavailable"
+                ) from exc
+            else:
+                enabled_resolved_compose_sha256 = (
+                    read_enable_cutover_journal(
+                        journal_path
+                    ).enabled_resolved_compose_sha256
+                )
+
+            def capture_current(
+                enabled: bool,
+                *,
+                attest_pair: bool,
+            ) -> tuple[
+                C6cDeploymentConfig,
+                CompatiblePairManifest,
+                ComposeTransactionSnapshot,
+            ]:
+                current, _ = self._capture_transaction_unlocked(
+                    derive_manifest_path=True,
+                )
+                if c6c_state_paths(current.environment.effective)[1] != (
+                    lock_snapshot.lock_path
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enable drifted outside the held global lock"
+                    )
+                if Path(current.environment.env_path).resolve(strict=False) != env_path:
+                    raise DeploymentContractError(
+                        "cache-target enable canonical env path drifted"
+                    )
+                assert_manager_mutation_allowed(
+                    environment=current.environment.effective
+                )
+                current_config = load_c6c_deployment_config_from_environment(
+                    current.environment.effective
+                )
+                current_contract = current_config.cache_target
+                expected_sync = "true" if enabled else "false"
+                if (
+                    not current_config.production
+                    or current_contract is None
+                    or current_contract.sync_enabled != expected_sync
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enable canonical sync state is invalid"
+                    )
+                self._validate_resolved_compose_contract(
+                    current_config,
+                    transaction=current,
+                )
+                if current.manifest_path != manifest_path:
+                    raise DeploymentContractError(
+                        "cache-target enable pair manifest path drifted"
+                    )
+                current_manifest = load_pair_manifest(manifest_path)
+                if current_manifest.rollback is None:
+                    raise DeploymentContractError(
+                        "cache-target enable requires an attested rollback pair"
+                    )
+                _require_cache_target_release(
+                    current_config,
+                    pairs=(current_manifest.active, current_manifest.rollback),
+                )
+                if (
+                    hashlib.sha256(current.compose_source_bytes).hexdigest()
+                    != receipt.evidence.raw_compose_sha256
+                    or _compatible_pair_logical_sha256(current_manifest.active)
+                    != receipt.evidence.active_pair_sha256
+                    or _compatible_pair_logical_sha256(current_manifest.rollback)
+                    != receipt.evidence.rollback_pair_sha256
+                    or current_contract.role_binding_sha256
+                    != receipt.evidence.role_binding_sha256
+                    or current_contract.expected_openapi_sha256
+                    != receipt.evidence.expected_openapi_sha256
+                    or current_contract.expected_source_revision
+                    != receipt.evidence.expected_source_revision
+                    or current_contract.expected_contract_generation
+                    != receipt.evidence.expected_contract_generation
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enable frozen evidence drifted"
+                    )
+                if not enabled and (
+                    hashlib.sha256(current.environment.env_file_bytes).hexdigest()
+                    != receipt.evidence.env_sha256
+                    or current.resolved_document_hash
+                    != receipt.evidence.resolved_compose_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target disabled evidence differs from initial receipt"
+                    )
+                if enabled and (
+                    current.resolved_document_hash
+                    != enabled_resolved_compose_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enabled resolved compose evidence drifted"
+                    )
+                if attest_pair:
+                    self._attest_cache_target_pair(
+                        current_config,
+                        current_manifest,
+                        current,
+                    )
+                return current_config, current_manifest, current
+
+            capture_current(
+                config.cache_target.sync_enabled == "true",
+                attest_pair=True,
+            )
+
+            def recreate_pinvi_api(enabled: bool) -> None:
+                current_config, _current_manifest, current = capture_current(
+                    enabled,
+                    attest_pair=False,
+                )
+                result = self._run_frozen_recovery(
+                    [
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        "--force-recreate",
+                        "--no-build",
+                        "--pull",
+                        "never",
+                        "--wait",
+                        _PINVI_API_SERVICE,
+                    ],
+                    transaction=current,
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    redact_config=current_config,
+                )
+                if not result.get("success"):
+                    raise DeploymentContractError(
+                        "cache-target PinVi API recreate failed"
+                    )
+                if not enabled:
+                    self._run_cache_target_rollback_health_smoke(
+                        current_config,
+                        current,
+                    )
+
+            def attest(enabled: bool) -> None:
+                capture_current(enabled, attest_pair=True)
+
+            def run_canary(run_id: str) -> Mapping[str, Any]:
+                current_config, current_manifest, current = capture_current(
+                    True,
+                    attest_pair=False,
+                )
+                raw_receipt = execute_cache_target_causal_canary(
+                    container_name=current_config.pinvi_container,
+                    run_id=run_id,
+                )
+                return {
+                    **raw_receipt,
+                    "cutover_id": receipt.cutover_id,
+                    "active_pair_sha256": receipt.evidence.active_pair_sha256,
+                    "contract_generation": (
+                        receipt.evidence.expected_contract_generation
+                    ),
+                }
+
+            journal = execute_cache_target_enable(
+                receipt=receipt,
+                journal_path=journal_path,
+                enabled_resolved_compose_sha256=(
+                    enabled_resolved_compose_sha256
+                ),
+                read_env=lambda: read_canonical_env_file(env_path),
+                replace_env=lambda expected, replacement: (
+                    replace_canonical_env_file(
+                        env_path,
+                        expected_sha256=expected,
+                        replacement=replacement,
+                    )
+                ),
+                attest=attest,
+                recreate_pinvi_api=recreate_pinvi_api,
+                causal_canary=run_canary,
+            )
+            return _enable_journal_process_result(
+                transaction_id=journal.transaction_id,
+                cutover_id=journal.cutover_id,
+                phase=journal.phase,
+            )
+
+    def _enable_cache_target_sync_unlocked(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        lock_path: str,
+        window_transaction_id: str,
+        receipt: InitialCutoverReceipt,
+    ) -> dict[str, Any]:
+        if not config.production or config.cache_target is None:
+            raise DeploymentContractError(
+                "cache-target enable requires the production contract"
+            )
+        _require_cache_target_release(config)
+        self._validate_resolved_compose_contract(config, transaction=transaction)
+        manifest_path = transaction.manifest_path
+        if manifest_path is None:
+            raise DeploymentContractError(
+                "cache-target enable transaction has no pair manifest"
+            )
+        state_directory = Path(manifest_path).parent
+        journal_path = state_directory / "cache-target-enable-v1.json"
+        env_path = Path(transaction.environment.env_path).resolve(strict=False)
+        try:
+            journal_path.lstat()
+        except FileNotFoundError:
+            enabled_effective = dict(transaction.environment.effective)
+            enabled_effective[PINVI_SYNC_ENV] = "true"
+            enabled_snapshot = replace(
+                transaction.environment,
+                effective=enabled_effective,
+            )
+            enabled_candidate, _ = self._capture_transaction_unlocked(
+                environment_override={PINVI_SYNC_ENV: "true"},
+                derive_manifest_path=True,
+                environment_snapshot=enabled_snapshot,
+            )
+            if (
+                enabled_candidate.environment != enabled_snapshot
+                or enabled_candidate.external_inputs != transaction.external_inputs
+                or enabled_candidate.compose_source_bytes
+                != transaction.compose_source_bytes
+                or enabled_candidate.compose_source_mode
+                != transaction.compose_source_mode
+                or enabled_candidate.system_bind_snapshots
+                != transaction.system_bind_snapshots
+                or enabled_candidate.raw_volume_graph_hash
+                != transaction.raw_volume_graph_hash
+                or enabled_candidate.resolved_volume_graph_hash
+                != transaction.resolved_volume_graph_hash
+                or enabled_candidate.manifest_path != manifest_path
+            ):
+                raise DeploymentContractError(
+                    "cache-target enabled compose candidate drifted"
+                ) from None
+            enabled_config = load_c6c_deployment_config_from_environment(
+                enabled_effective
+            )
+            self._validate_resolved_compose_contract(
+                enabled_config,
+                transaction=enabled_candidate,
+            )
+            enabled_resolved_compose_sha256 = (
+                enabled_candidate.resolved_document_hash
+            )
+        except OSError as exc:
+            raise DeploymentContractError(
+                "cache-target enable journal path is unavailable"
+            ) from exc
+        else:
+            enabled_resolved_compose_sha256 = read_enable_cutover_journal(
+                journal_path
+            ).enabled_resolved_compose_sha256
+
+        def capture_current(
+            enabled: bool,
+            *,
+            attest_pair: bool,
+        ) -> tuple[
+            C6cDeploymentConfig,
+            CompatiblePairManifest,
+            ComposeTransactionSnapshot,
+        ]:
+            current, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            if c6c_state_paths(current.environment.effective)[1] != lock_path:
+                raise DeploymentContractError(
+                    "cache-target enable drifted outside the held global lock"
+                )
+            if Path(current.environment.env_path).resolve(strict=False) != env_path:
+                raise DeploymentContractError(
+                    "cache-target enable canonical env path drifted"
+                )
+            assert_manager_mutation_allowed(
+                environment=current.environment.effective
+            )
+            current_config = load_c6c_deployment_config_from_environment(
+                current.environment.effective
+            )
+            current_contract = current_config.cache_target
+            expected_sync = "true" if enabled else "false"
+            if (
+                not current_config.production
+                or current_contract is None
+                or current_contract.sync_enabled != expected_sync
+            ):
+                raise DeploymentContractError(
+                    "cache-target enable canonical sync state is invalid"
+                )
+            self._validate_resolved_compose_contract(
+                current_config,
+                transaction=current,
+            )
+            if current.manifest_path != manifest_path:
+                raise DeploymentContractError(
+                    "cache-target enable pair manifest path drifted"
+                )
+            current_manifest = load_pair_manifest(manifest_path)
+            if current_manifest.rollback is None:
+                raise DeploymentContractError(
+                    "cache-target enable requires an attested rollback pair"
+                )
+            _require_cache_target_release(
+                current_config,
+                pairs=(current_manifest.active, current_manifest.rollback),
+            )
+            if (
+                hashlib.sha256(current.compose_source_bytes).hexdigest()
+                != receipt.evidence.raw_compose_sha256
+                or _compatible_pair_logical_sha256(current_manifest.active)
+                != receipt.evidence.active_pair_sha256
+                or _compatible_pair_logical_sha256(current_manifest.rollback)
+                != receipt.evidence.rollback_pair_sha256
+                or current_contract.role_binding_sha256
+                != receipt.evidence.role_binding_sha256
+                or current_contract.expected_openapi_sha256
+                != receipt.evidence.expected_openapi_sha256
+                or current_contract.expected_source_revision
+                != receipt.evidence.expected_source_revision
+                or current_contract.expected_contract_generation
+                != receipt.evidence.expected_contract_generation
+            ):
+                raise DeploymentContractError(
+                    "cache-target enable frozen evidence drifted"
+                )
+            if not enabled and (
+                hashlib.sha256(current.environment.env_file_bytes).hexdigest()
+                != receipt.evidence.env_sha256
+                or current.resolved_document_hash
+                != receipt.evidence.resolved_compose_sha256
+            ):
+                raise DeploymentContractError(
+                    "cache-target disabled evidence differs from initial receipt"
+                )
+            if (
+                enabled
+                and current.resolved_document_hash
+                != enabled_resolved_compose_sha256
+            ):
+                raise DeploymentContractError(
+                    "cache-target enabled resolved compose evidence drifted"
+                )
+            if attest_pair:
+                self._attest_cache_target_pair(
+                    current_config,
+                    current_manifest,
+                    current,
+                )
+            return current_config, current_manifest, current
+
+        capture_current(
+            config.cache_target.sync_enabled == "true",
+            attest_pair=True,
+        )
+
+        def recreate_pinvi_api(enabled: bool) -> None:
+            current_config, _current_manifest, current = capture_current(
+                enabled,
+                attest_pair=False,
+            )
+            result = self._run_frozen_recovery(
+                [
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--force-recreate",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                    "--wait",
+                    _PINVI_API_SERVICE,
+                ],
+                transaction=current,
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                redact_config=current_config,
+            )
+            if not result.get("success"):
+                raise DeploymentContractError(
+                    "cache-target PinVi API recreate failed"
+                )
+            if not enabled:
+                self._run_cache_target_rollback_health_smoke(
+                    current_config,
+                    current,
+                )
+
+        def attest(enabled: bool) -> None:
+            capture_current(enabled, attest_pair=True)
+
+        def run_canary(run_id: str) -> Mapping[str, Any]:
+            current_config, _current_manifest, _current = capture_current(
+                True,
+                attest_pair=False,
+            )
+            raw_receipt = execute_cache_target_causal_canary(
+                container_name=current_config.pinvi_container,
+                run_id=run_id,
+            )
+            return {
+                **raw_receipt,
+                "cutover_id": receipt.cutover_id,
+                "active_pair_sha256": receipt.evidence.active_pair_sha256,
+                "contract_generation": (
+                    receipt.evidence.expected_contract_generation
+                ),
+            }
+
+        journal = execute_cache_target_enable(
+            receipt=receipt,
+            journal_path=journal_path,
+            enabled_resolved_compose_sha256=(
+                enabled_resolved_compose_sha256
+            ),
+            read_env=lambda: read_canonical_env_file(env_path),
+            replace_env=lambda expected, replacement: (
+                replace_canonical_env_file(
+                    env_path,
+                    expected_sha256=expected,
+                    replacement=replacement,
+                )
+            ),
+            attest=attest,
+            recreate_pinvi_api=recreate_pinvi_api,
+            causal_canary=run_canary,
+            window_transaction_id=window_transaction_id,
+        )
+        return _enable_journal_process_result(
+            transaction_id=journal.transaction_id,
+            cutover_id=journal.cutover_id,
+            phase=journal.phase,
+        )
+
+    def _attest_cache_target_pair(
+        self,
+        config: C6cDeploymentConfig,
+        manifest: CompatiblePairManifest,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        _require_cache_target_release(
+            config,
+            pairs=(manifest.active, manifest.rollback),
+        )
+        services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        self._require_services_ready(
+            services,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        self._validate_resolved_compose_contract(
+            config,
+            expected_pair=manifest.active,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        if not self._pair_matches(self._inspect_current_pair(config), manifest.active):
+            raise DeploymentContractError(
+                "cache-target running pair differs from the attested active pair"
+            )
+        runtime_configs = self._inspect_c6c_runtime_configs(
+            config,
+            services,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        validate_runtime_secret_isolation(runtime_configs, config)
+
+    def _run_cache_target_rollback_health_smoke(
+        self,
+        _config: C6cDeploymentConfig,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        self._require_services_ready(
+            [_PINVI_API_SERVICE],
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+
+    def _restart_cache_target_auxiliary_writer(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+    ) -> None:
+        result = self._run_frozen_recovery(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--no-build",
+                "--pull",
+                "never",
+                "--wait",
+                "pinvi-dagster",
+            ],
+            transaction=transaction,
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+            redact_config=config,
+        )
+        if not result.get("success"):
+            raise DeploymentContractError(
+                "cache-target PinVi Dagster restart failed"
+            )
+
+    def _activate_cache_target_writers(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+    ) -> None:
+        ordered_writers = self._cache_target_writer_names(transaction)
+        result = self._run_frozen_recovery(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--no-build",
+                "--pull",
+                "never",
+                "--wait",
+                *ordered_writers,
+            ],
+            transaction=transaction,
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+            redact_config=config,
+        )
+        if not result.get("success"):
+            raise DeploymentContractError(
+                "cache-target final writer activation failed"
+            )
+        states = self._snapshot_service_states(
+            list(ordered_writers),
+            transaction=transaction,
+        )
+        if any(states.get(name) != "running" for name in ordered_writers):
+            raise DeploymentContractError(
+                "cache-target activated writer runtime is not fully running"
+            )
+
+    def _establish_cache_target_writer_fence(
+        self,
+        *,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        boundary: Literal["initial", "final"] = "initial",
+    ) -> tuple[
+        str,
+        tuple[DatabaseWriteCounter, DatabaseWriteCounter, DatabaseWriteCounter],
+    ]:
+        ordered_writers = self._cache_target_writer_names(transaction)
+        if boundary == "initial":
+            inflight_before_stop = tuple(
+                read_database_inflight_count(runtime) for runtime in runtimes
+            )
+            dagster_runs_before_stop = read_dagster_inflight_run_count(runtimes[1])
+            if any(inflight_before_stop) or dagster_runs_before_stop:
+                raise DeploymentContractError(
+                    "cache-target writer fence has in-flight database transactions"
+                )
+        stopped = self._run_frozen_recovery(
+            ["stop", *ordered_writers],
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+            transaction=transaction,
+        )
+        if not stopped.get("success"):
+            raise DeploymentContractError("cache-target writer fence stop failed")
+        return self._read_cache_target_writer_fence_evidence(
+            journal=journal,
+            transaction=transaction,
+            runtimes=runtimes,
+            ordered_writers=ordered_writers,
+            boundary=boundary,
+        )
+
+    @staticmethod
+    def _cache_target_writer_names(
+        transaction: ComposeTransactionSnapshot,
+    ) -> tuple[str, ...]:
+        services = transaction.resolved.get("services")
+        if not isinstance(services, Mapping):
+            raise DeploymentContractError("cutover resolved services are invalid")
+        database_environment_names = {
+            "KOR_TRAVEL_MAP_PG_DSN",
+            "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+            "PINVI_DATABASE_URL",
+        }
+        discovered_writers: set[str] = set()
+        for service_name, service in services.items():
+            environment = service.get("environment") if isinstance(service, Mapping) else None
+            if (
+                isinstance(service_name, str)
+                and isinstance(environment, Mapping)
+                and database_environment_names.intersection(environment)
+            ):
+                discovered_writers.add(service_name)
+        ordered_writers = tuple(sorted(discovered_writers))
+        cache_target_writer_registry_sha256(ordered_writers)
+        return ordered_writers
+
+    def _read_cache_target_writer_fence_evidence(
+        self,
+        *,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        ordered_writers: tuple[str, ...],
+        boundary: Literal["initial", "final"] = "initial",
+    ) -> tuple[
+        str,
+        tuple[DatabaseWriteCounter, DatabaseWriteCounter, DatabaseWriteCounter],
+    ]:
+        states = self._snapshot_service_states(
+            list(ordered_writers),
+            transaction=transaction,
+        )
+        if any(states.get(name) != "exited" for name in ordered_writers):
+            raise DeploymentContractError(
+                "cache-target writer fence does not contain five stopped runtimes"
+            )
+        expected_writer_environments = (
+            cache_target_writer_environments_from_resolved_compose(
+                transaction.resolved,
+                ordered_writers,
+            )
+        )
+        global_fence = attest_cache_target_global_writer_fence(
+            expected_stopped_writers=expected_writer_environments,
+            cwd=get_project_root(),
+        )
+        inflight_after_stop = tuple(
+            read_database_inflight_count(runtime) for runtime in runtimes
+        )
+        dagster_runs_after_stop = read_dagster_inflight_run_count(runtimes[1])
+        if any(inflight_after_stop) or dagster_runs_after_stop:
+            raise DeploymentContractError(
+                "cache-target writer fence retained in-flight database transactions"
+            )
+        counters = (
+            read_database_write_counter(runtimes[0]),
+            read_database_write_counter(runtimes[1]),
+            read_database_write_counter(runtimes[2]),
+        )
+        evidence: dict[str, Any] = {
+            "transaction_id": journal.transaction_id,
+            "boundary": boundary,
+            "environment_sha256": journal.environment_sha256,
+            "compose_sha256": journal.compose_sha256,
+            "writer_registry_sha256": cache_target_writer_registry_sha256(
+                ordered_writers
+            ),
+            "global_writer_fence_contract": global_fence.contract_version,
+            "global_writer_inventory_sha256": global_fence.inventory_sha256,
+            "global_writer_protected_target_count": (
+                global_fence.protected_target_count
+            ),
+            "global_writer_stopped_count": (
+                global_fence.expected_stopped_writer_count
+            ),
+            "writers": {name: states.get(name, "absent") for name in ordered_writers},
+            "inflight_transactions": list(inflight_after_stop),
+            "inflight_dagster_runs": dagster_runs_after_stop,
+        }
+        if boundary == "initial":
+            evidence["write_counters"] = [
+                {
+                    "inserted": counter.inserted,
+                    "updated": counter.updated,
+                    "deleted": counter.deleted,
+                    "stats_reset_identity": counter.stats_reset_identity,
+                }
+                for counter in counters
+            ]
+        payload = json.dumps(
+            evidence,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode()).hexdigest(), counters
+
+    def _revalidate_cache_target_writer_fence(
+        self,
+        *,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        expected_writer_fence_sha256: str,
+        boundary: Literal["initial", "final"] = "initial",
+    ) -> tuple[DatabaseWriteCounter, DatabaseWriteCounter, DatabaseWriteCounter]:
+        ordered_writers = self._cache_target_writer_names(transaction)
+        actual_fence, counters = self._read_cache_target_writer_fence_evidence(
+            journal=journal,
+            transaction=transaction,
+            runtimes=runtimes,
+            ordered_writers=ordered_writers,
+            boundary=boundary,
+        )
+        if actual_fence != expected_writer_fence_sha256:
+            raise DeploymentContractError(
+                "cache-target writer fence changed during backup"
+            )
+        return counters
+
+    @staticmethod
+    def _cache_target_map_write_counters_sha256(
+        counters: tuple[
+            DatabaseWriteCounter,
+            DatabaseWriteCounter,
+            DatabaseWriteCounter,
+        ],
+    ) -> str:
+        payload = [
+            {
+                "inserted": counter.inserted,
+                "updated": counter.updated,
+                "deleted": counter.deleted,
+                "stats_reset_identity": counter.stats_reset_identity,
+            }
+            for counter in counters[:2]
+        ]
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+
+    def _run_map_h35_helper(
+        self,
+        *,
+        operation: MapHelperOperation,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        candidate: CompatibleImagePair,
+        database_identity: str,
+        prior_receipt_digest: str | None,
+    ) -> MapHelperReceipt:
+        prior_receipt = journal.last_map_receipt
+        actual_prior_digest = (
+            map_helper_receipt_sha256(prior_receipt)
+            if prior_receipt is not None
+            else None
+        )
+        if actual_prior_digest != prior_receipt_digest:
+            raise DeploymentContractError(
+                "Map H35 prior receipt payload differs from its digest"
+            )
+        request: dict[str, Any] = {
+            "contract_version": "h35-map/v1",
+            "operation": operation,
+            "transaction_id": journal.transaction_id,
+            "source_revision": candidate.map_source_revision,
+            "database_identity": database_identity,
+            "prior_receipt": (
+                asdict(prior_receipt) if prior_receipt is not None else None
+            ),
+            "prior_receipt_digest": prior_receipt_digest,
+        }
+        candidate_transaction = self._materialize_active_recovery_transaction_unlocked(
+            transaction,
+            config,
+            candidate,
+        )
+        runner_name = f"ktdm-h35-{journal.transaction_id}-{operation}"
+        self._cleanup_map_h35_runner(
+            runner_name,
+            expected_image_id=candidate.map_image_id,
+        )
+        descriptor: int | None = None
+        try:
+            descriptor = os.memfd_create("ktdm-h35-compose", flags=os.MFD_CLOEXEC)
+            os.write(
+                descriptor,
+                json.dumps(
+                    candidate_transaction.resolved,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode(),
+            )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            command = [
+                "docker",
+                "compose",
+                "--env-file",
+                "/dev/null",
+                "--project-directory",
+                str(Path(transaction.environment.compose_path).parent),
+                "-f",
+                f"/proc/self/fd/{descriptor}",
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "--name",
+                runner_name,
+                "--entrypoint",
+                "python",
+                _MAP_API_SERVICE,
+                "scripts/h35/h35_cutover.py",
+                operation,
+            ]
+            completed = subprocess.run(
+                command,
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+                env=dict(transaction.environment.effective),
+                pass_fds=(descriptor,),
+                input=json.dumps(
+                    request,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n",
+                timeout=3600,
+            )
+            if completed.returncode != 0:
+                raise DeploymentContractError(f"Map H35 {operation} helper failed")
+            return parse_map_helper_receipt(
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                operation=operation,
+                transaction_id=journal.transaction_id,
+                source_revision=candidate.map_source_revision,
+                database_identity=database_identity,
+                request=request,
+                prior_receipt_digest=prior_receipt_digest,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                f"Map H35 {operation} helper could not run"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            self._cleanup_map_h35_runner(
+                runner_name,
+                expected_image_id=candidate.map_image_id,
+            )
+
+    def _bootstrap_cache_target_generation(
+        self,
+        *,
+        config: C6cDeploymentConfig,
+        transaction: ComposeTransactionSnapshot,
+        candidate: CompatibleImagePair,
+        wait_timeout: int,
+    ) -> None:
+        if config.cache_target is None or config.cache_target.sync_enabled != "false":
+            raise DeploymentContractError(
+                "generation bootstrap requires the sync=false contract"
+            )
+        manifest_path = transaction.manifest_path
+        if manifest_path is None:
+            raise DeploymentContractError(
+                "generation bootstrap has no compatible-pair manifest"
+            )
+        old_manifest = load_pair_manifest(manifest_path)
+        if not self._pair_matches(self._inspect_current_pair(config), old_manifest.active):
+            raise DeploymentContractError(
+                "generation bootstrap running old pair drifted"
+            )
+        _require_cache_target_release(
+            config,
+            candidate_map_source_revision=candidate.map_source_revision,
+            candidate_source_revision=candidate.pinvi_source_revision,
+        )
+        ensure_pair_references(
+            (old_manifest.active, old_manifest.rollback, candidate),
+            cwd=get_project_root(),
+        )
+        result: dict[str, Any] = {
+            "success": True,
+            "returncode": 0,
+            "stages": [],
+            "command": [],
+            "stdout": "",
+            "stderr": "",
+        }
+        candidate_transaction = self._materialize_active_recovery_transaction_unlocked(
+            transaction,
+            config,
+            candidate,
+        )
+        self._activate_pair_sequentially(
+            result,
+            config,
+            candidate,
+            [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE],
+            stage_prefix="generation_bootstrap",
+            cancel_probe_state=PinviCancelProbeState(),
+            transaction=transaction,
+            wait_timeout=wait_timeout,
+        )
+        candidate_manifest = initial_pair_manifest(candidate)
+        self._attest_cache_target_pair(
+            config,
+            candidate_manifest,
+            candidate_transaction,
+        )
+        write_pair_manifest(manifest_path, candidate_manifest)
+        reconcile_pair_references(
+            (old_manifest.active, old_manifest.rollback, candidate),
+            cwd=get_project_root(),
+        )
+
+    def _run_pin_boundary_helper(
+        self,
+        *,
+        operation: PinBoundaryOperation,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        candidate: CompatibleImagePair,
+        database_identity: str,
+        prior_receipt_sha256: str | None,
+        canary_run_id: str | None,
+        expected_initial_count: int,
+    ) -> PinBoundaryReceipt:
+        initial_fence_sha256 = journal.initial_writer_fence_sha256
+        if initial_fence_sha256 is None:
+            raise DeploymentContractError("Pin initial writer fence is missing")
+        final_fence_sha256 = (
+            journal.final_writer_fence_sha256 if operation == "finalize" else None
+        )
+        final_evidence = (
+            journal.map_final_evidence if operation == "finalize" else None
+        )
+        final_evidence_sha256 = (
+            journal.map_final_evidence_sha256 if operation == "finalize" else None
+        )
+        if operation == "finalize" and (
+            final_fence_sha256 is None
+            or final_evidence is None
+            or final_evidence_sha256 is None
+        ):
+            raise DeploymentContractError("Pin final boundary evidence is missing")
+        request: dict[str, Any] = {
+            "contract_version": "pinvi-cache-target-final-boundary/v1",
+            "operation": operation,
+            "transaction_id": journal.transaction_id,
+            "cutover_id": journal.cutover_id,
+            "source_revision": candidate.pinvi_source_revision,
+            "database_identity": database_identity,
+            "writer_registry_sha256": _CACHE_TARGET_WRITER_REGISTRY_SHA256,
+            "initial_writer_fence_sha256": initial_fence_sha256,
+            "final_writer_fence_sha256": final_fence_sha256,
+            "prior_receipt_sha256": prior_receipt_sha256,
+            "canary_run_id": canary_run_id,
+            "map_final_evidence": (
+                asdict(final_evidence) if final_evidence is not None else None
+            ),
+            "map_final_evidence_sha256": final_evidence_sha256,
+        }
+        completed = self._run_pin_candidate_oneoff(
+            transaction=transaction,
+            config=config,
+            candidate=candidate,
+            runner_name=(
+                f"ktdm-pin-boundary-{journal.transaction_id}-{operation}"
+            ),
+            entrypoint="pinvi-cache-target-final-boundary",
+            arguments=[operation],
+            stdin=json.dumps(
+                request,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n",
+        )
+        if completed.returncode != 0:
+            raise DeploymentContractError(
+                f"Pin final-boundary {operation} helper failed"
+            )
+        return parse_pin_boundary_receipt(
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            request=request,
+            expected_initial_count=expected_initial_count,
+        )
+
+    @staticmethod
+    def _assert_cache_target_pin_audit_receipt(
+        *,
+        receipt: PinBoundaryReceipt,
+        audit_row: PinBoundaryAuditRow,
+    ) -> None:
+        if (
+            receipt.audit_row_count != 1
+            or receipt.audit_id != audit_row.audit_id
+            or receipt.audit_request_sha256 != audit_row.audit_request_sha256
+            or receipt.evidence_sha256 != audit_row.evidence_sha256
+            or receipt.map_final_evidence_sha256
+            != audit_row.map_final_evidence_sha256
+            or receipt.initial_writer_fence_sha256
+            != audit_row.initial_writer_fence_sha256
+            or receipt.final_writer_fence_sha256
+            != audit_row.final_writer_fence_sha256
+            or receipt.prior_receipt_sha256 != audit_row.prior_receipt_sha256
+            or receipt.canary_run_id != audit_row.canary_run_id
+        ):
+            raise DeploymentContractError(
+                "Pin final boundary audit row differs from its receipt"
+            )
+
+    def _run_pin_database_migration(
+        self,
+        *,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        candidate: CompatibleImagePair,
+        runtime: DatabaseRuntime,
+        database_identity: str,
+        prior_receipt_sha256: str,
+    ) -> PinMigrationReceipt:
+        writer_fence_sha256 = journal.initial_writer_fence_sha256
+        if writer_fence_sha256 is None:
+            raise DeploymentContractError("Pin migration writer fence is missing")
+        schema_before = read_database_schema_revision(runtime)
+        if schema_before not in {"20260801_0047", "20260802_0048"}:
+            raise DeploymentContractError("Pin migration source schema is invalid")
+        if read_database_identity(runtime, journal.transaction_id) != database_identity:
+            raise DeploymentContractError("Pin migration database identity drifted")
+        completed = self._run_pin_candidate_oneoff(
+            transaction=transaction,
+            config=config,
+            candidate=candidate,
+            runner_name=f"ktdm-pin-migrate-{journal.transaction_id}",
+            entrypoint="alembic",
+            arguments=["upgrade", "head"],
+            stdin=None,
+        )
+        if completed.returncode != 0:
+            raise DeploymentContractError("Pin database migration failed")
+        if read_database_schema_revision(runtime) != "20260802_0048":
+            raise DeploymentContractError("Pin database migration head is invalid")
+        if read_database_identity(runtime, journal.transaction_id) != database_identity:
+            raise DeploymentContractError("Pin migration database identity changed")
+        receipt = PinMigrationReceipt(
+            contract_version="pinvi-cache-target-migration/v1",
+            transaction_id=journal.transaction_id,
+            source_revision=candidate.pinvi_source_revision,
+            database_identity=database_identity,
+            writer_registry_sha256=_CACHE_TARGET_WRITER_REGISTRY_SHA256,
+            initial_writer_fence_sha256=writer_fence_sha256,
+            prior_receipt_sha256=prior_receipt_sha256,
+            candidate_image_id=candidate.pinvi_image_id,
+            schema_before="20260801_0047",
+            schema_after="20260802_0048",
+            command_sha256=hashlib.sha256(
+                b"pinvi-cache-target-migration-v1\0alembic\0upgrade\0head\0"
+            ).hexdigest(),
+            status="succeeded",
+        )
+        pin_migration_receipt_sha256(receipt)
+        return receipt
+
+    def _run_pin_candidate_oneoff(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        candidate: CompatibleImagePair,
+        runner_name: str,
+        entrypoint: str,
+        arguments: list[str],
+        stdin: str | None,
+    ) -> subprocess.CompletedProcess[str]:
+        candidate_transaction = self._materialize_active_recovery_transaction_unlocked(
+            transaction,
+            config,
+            candidate,
+        )
+        self._cleanup_pin_candidate_runner(
+            runner_name,
+            expected_image_id=candidate.pinvi_image_id,
+        )
+        descriptor: int | None = None
+        try:
+            descriptor = os.memfd_create("ktdm-pin-compose", flags=os.MFD_CLOEXEC)
+            os.write(
+                descriptor,
+                json.dumps(
+                    candidate_transaction.resolved,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode(),
+            )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            return subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "--env-file",
+                    "/dev/null",
+                    "--project-directory",
+                    str(Path(transaction.environment.compose_path).parent),
+                    "-f",
+                    f"/proc/self/fd/{descriptor}",
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "-T",
+                    "--name",
+                    runner_name,
+                    "--entrypoint",
+                    entrypoint,
+                    _PINVI_API_SERVICE,
+                    *arguments,
+                ],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+                env=dict(transaction.environment.effective),
+                pass_fds=(descriptor,),
+                input=stdin,
+                timeout=3600,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError("Pin candidate one-off could not run") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            self._cleanup_pin_candidate_runner(
+                runner_name,
+                expected_image_id=candidate.pinvi_image_id,
+            )
+
+    def _resume_cache_target_coupled_rollback(
+        self,
+        *,
+        journal_path: Path,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        wait_timeout: int,
+    ) -> CacheTargetWindowJournal:
+        if journal.phase not in {
+            "rollback_preparing",
+            "new_runtime_stopped",
+            "map_db_restored",
+            "map_dagster_db_restored",
+            "pinvi_db_restored",
+            "manager_state_restored",
+            "old_runtime_restored",
+        }:
+            journal = transition_cache_target_window(journal, "rollback_preparing")
+            write_cache_target_window(journal_path, journal)
+        state_directory = journal_path.parent
+        if journal.phase == "rollback_preparing":
+            stopped = self._run_frozen_recovery(
+                [
+                    "stop",
+                    "pinvi-dagster",
+                    _PINVI_API_SERVICE,
+                    *_MAP_RUNTIME_SERVICES,
+                ],
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                transaction=transaction,
+            )
+            if not stopped.get("success"):
+                raise DeploymentContractError(
+                    "cache-target coupled rollback could not stop new runtime"
+                )
+            journal = transition_cache_target_window(journal, "new_runtime_stopped")
+            write_cache_target_window(journal_path, journal)
+        receipts = (
+            journal.map_application_backup,
+            journal.map_dagster_backup,
+            journal.pinvi_backup,
+        )
+        present_receipts = tuple(receipt for receipt in receipts if receipt is not None)
+        if present_receipts and (
+            len(present_receipts) != 3
+            or {receipt.transaction_id for receipt in present_receipts}
+            != {journal.transaction_id}
+            or len({receipt.writer_fence_sha256 for receipt in present_receipts}) != 1
+            or any(
+                receipt.writer_mutation_count != 0
+                or receipt.restore_rehearsal.verified is not True
+                for receipt in present_receipts
+            )
+        ):
+            raise DeploymentContractError(
+                "cache-target coupled rollback backup set is inconsistent"
+            )
+        restore_steps: tuple[
+            tuple[WindowPhase, WindowPhase, DatabaseRuntime, DatabaseBackupReceipt | None],
+            ...,
+        ] = (
+            ("new_runtime_stopped", "map_db_restored", runtimes[0], receipts[0]),
+            (
+                "map_db_restored",
+                "map_dagster_db_restored",
+                runtimes[1],
+                receipts[1],
+            ),
+            (
+                "map_dagster_db_restored",
+                "pinvi_db_restored",
+                runtimes[2],
+                receipts[2],
+            ),
+        )
+        for current_phase, next_phase, runtime, receipt in restore_steps:
+            if journal.phase != current_phase:
+                continue
+            if receipt is not None:
+                restore_database_backup(
+                    state_directory=state_directory,
+                    transaction_id=journal.transaction_id,
+                    runtime=runtime,
+                    receipt=receipt,
+                    capability=_COUPLED_ROLLBACK_CAPABILITY,
+                )
+            journal = transition_cache_target_window(journal, next_phase)
+            write_cache_target_window(journal_path, journal)
+        if journal.phase == "pinvi_db_restored":
+            if journal.rollback_bundle_sha256 is not None:
+                verify_manager_rollback_bundle(
+                    state_directory=state_directory,
+                    transaction_id=journal.transaction_id,
+                    expected_sha256=journal.rollback_bundle_sha256,
+                )
+                restore_manager_rollback_bundle(
+                    state_directory=state_directory,
+                    transaction_id=journal.transaction_id,
+                    expected_sha256=journal.rollback_bundle_sha256,
+                    env_path=Path(transaction.environment.env_path),
+                    manifest_path=Path(transaction.manifest_path or ""),
+                )
+            journal = transition_cache_target_window(journal, "manager_state_restored")
+            write_cache_target_window(journal_path, journal)
+        if journal.phase == "manager_state_restored":
+            restored_transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            restored_config = load_c6c_deployment_config_from_environment(
+                restored_transaction.environment.effective
+            )
+            old_manifest = load_pair_manifest(restored_transaction.manifest_path or "")
+            result: dict[str, Any] = {
+                "success": True,
+                "returncode": 0,
+                "stages": [],
+                "command": [],
+                "stdout": "",
+                "stderr": "",
+            }
+            self._activate_pair_sequentially(
+                result,
+                restored_config,
+                old_manifest.active,
+                [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE],
+                stage_prefix="coupled_rollback",
+                transaction=restored_transaction,
+                wait_timeout=wait_timeout,
+            )
+            self._restart_cache_target_auxiliary_writer(
+                transaction=restored_transaction,
+                config=restored_config,
+            )
+            journal = transition_cache_target_window(journal, "old_runtime_restored")
+            write_cache_target_window(journal_path, journal)
+        if journal.phase == "old_runtime_restored":
+            journal = transition_cache_target_window(journal, "rolled_back")
+            write_cache_target_window(journal_path, journal)
+        return journal
+
+    @staticmethod
+    def _cleanup_map_h35_runner(
+        container_name: str,
+        *,
+        expected_image_id: str,
+    ) -> None:
+        inspected = subprocess.run(
+            ["docker", "container", "inspect", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if inspected.returncode != 0:
+            if "No such" in inspected.stderr:
+                return
+            raise DeploymentContractError("Map H35 runner classification failed")
+        try:
+            payload = json.loads(inspected.stdout)
+            container = payload[0]
+            labels = container["Config"]["Labels"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise DeploymentContractError("Map H35 runner evidence is invalid") from exc
+        if (
+            container.get("Image") != expected_image_id
+            or not isinstance(labels, Mapping)
+            or labels.get("com.docker.compose.service") != _MAP_API_SERVICE
+            or labels.get("com.docker.compose.oneoff") != "True"
+        ):
+            raise DeploymentContractError(
+                "foreign container occupies the Map H35 runner identity"
+            )
+        removed = subprocess.run(
+            ["docker", "container", "rm", "--force", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if (
+            removed.returncode != 0
+            or removed.stderr
+            or removed.stdout != f"{container_name}\n"
+        ):
+            raise DeploymentContractError("Map H35 runner cleanup failed")
+
+    @staticmethod
+    def _cleanup_pin_candidate_runner(
+        container_name: str,
+        *,
+        expected_image_id: str,
+    ) -> None:
+        inspected = subprocess.run(
+            ["docker", "container", "inspect", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if inspected.returncode != 0:
+            if "No such" in inspected.stderr:
+                return
+            raise DeploymentContractError("Pin candidate runner classification failed")
+        try:
+            payload = json.loads(inspected.stdout)
+            container = payload[0]
+            labels = container["Config"]["Labels"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise DeploymentContractError(
+                "Pin candidate runner evidence is invalid"
+            ) from exc
+        if (
+            container.get("Image") != expected_image_id
+            or not isinstance(labels, Mapping)
+            or labels.get("com.docker.compose.service") != _PINVI_API_SERVICE
+            or labels.get("com.docker.compose.oneoff") != "True"
+        ):
+            raise DeploymentContractError(
+                "foreign container occupies the Pin candidate runner identity"
+            )
+        removed = subprocess.run(
+            ["docker", "container", "rm", "--force", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if (
+            removed.returncode != 0
+            or removed.stderr
+            or removed.stdout != f"{container_name}\n"
+        ):
+            raise DeploymentContractError("Pin candidate runner cleanup failed")
+
+    @staticmethod
+    def _cleanup_cache_target_initial_runner(
+        container_name: str,
+        *,
+        expected_image_id: str,
+    ) -> None:
+        inspected = subprocess.run(
+            ["docker", "container", "inspect", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if inspected.returncode != 0:
+            if "No such" in inspected.stderr:
+                return
+            raise DeploymentContractError(
+                "cache-target runner orphan classification failed"
+            )
+        try:
+            payload = json.loads(inspected.stdout)
+            container = payload[0]
+            labels = container["Config"]["Labels"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise DeploymentContractError(
+                "cache-target runner orphan evidence is invalid"
+            ) from exc
+        if (
+            container.get("Image") != expected_image_id
+            or not isinstance(labels, Mapping)
+            or labels.get("com.docker.compose.service") != _PINVI_API_SERVICE
+            or labels.get("com.docker.compose.oneoff") != "True"
+        ):
+            raise DeploymentContractError(
+                "foreign container occupies the cache-target runner identity"
+            )
+        removed = subprocess.run(
+            ["docker", "container", "rm", "--force", container_name],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if removed.returncode != 0:
+            raise DeploymentContractError("cache-target runner orphan cleanup failed")
 
     def _ensure_production_pinvi_target(
         self,
@@ -3581,6 +6333,10 @@ class ComposeService:
                 "compatible-pair transaction has no manifest path"
             )
         manifest = load_pair_manifest(transaction.manifest_path)
+        _require_cache_target_release(
+            config,
+            pairs=(manifest.rollback, manifest.active),
+        )
         for pair in (manifest.rollback, manifest.active):
             if pair.contract_generation != config.contract_generation:
                 raise DeploymentContractError(
@@ -3691,14 +6447,17 @@ class ComposeService:
                 "C6c build flag and source provenance must be provided together"
             )
         if build_provenance is None:
-            return (
-                self._inspect_c6c_candidate_pair(
-                    config,
-                    environment_override=None,
-                    transaction=transaction,
-                ),
-                None,
+            pair = self._inspect_c6c_candidate_pair(
+                config,
+                environment_override=None,
+                transaction=transaction,
             )
+            _require_cache_target_release(
+                config,
+                candidate_map_source_revision=pair.map_source_revision,
+                candidate_source_revision=pair.pinvi_source_revision,
+            )
+            return pair, None
         self._revalidate_c6c_build_provenance(
             build_provenance,
             transaction=transaction,
@@ -3735,6 +6494,11 @@ class ComposeService:
                 transaction=transaction,
             )
         self._require_expected_source_provenance(pair, build_provenance)
+        _require_cache_target_release(
+            config,
+            candidate_map_source_revision=pair.map_source_revision,
+            candidate_source_revision=pair.pinvi_source_revision,
+        )
         return pair, build_result
 
     def _inspect_c6c_candidate_pair(
@@ -4058,6 +6822,11 @@ class ComposeService:
                 config.smoke.pinvi_admin_password,
                 config.smoke.cancel_probe_job_id,
                 config.contract_generation,
+                *(
+                    config.cache_target.protected_values
+                    if config.cache_target is not None
+                    else ()
+                ),
             )
             if value
         }
@@ -4398,6 +7167,7 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible pair capture is available only in production mode"
                 )
+            _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
                     transaction.environment.effective,
@@ -4406,6 +7176,12 @@ class ComposeService:
                 if build
                 else None
             )
+            if build_provenance is not None:
+                _require_cache_target_release(
+                    config,
+                    candidate_map_source_revision=build_provenance.map_source_revision,
+                    candidate_source_revision=build_provenance.pinvi_source_revision,
+                )
             self._validate_resolved_compose_contract(
                 config,
                 transaction=transaction,
@@ -4873,6 +7649,10 @@ class ComposeService:
             manifest = load_pair_manifest(manifest_path)
             active_at_start = manifest.active
             rollback = manifest.rollback
+            _require_cache_target_release(
+                config,
+                pairs=(active_at_start, rollback),
+            )
             for pair in (active_at_start, rollback):
                 if pair.contract_generation != config.contract_generation:
                     raise DeploymentContractError(

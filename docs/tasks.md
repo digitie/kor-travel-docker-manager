@@ -17,6 +17,7 @@
 | **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[/]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
 | **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
 | **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
+| **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
 
 ---
 
@@ -174,3 +175,83 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       type-check/build, 보안 감사를 통과하고 draft PR에 정확한 gate를 기록한다.
 - [ ] n150에서는 부모 에이전트가 read-only exact preflight를 재검증한 뒤에만 별도 승인된
       compatible-pair mutation을 수행한다.
+
+### T-048: T-VN-41 cache-target production manifest와 최초 cutover 제품화
+
+- [x] ADR-28과 [`cache-target-production-cutover.md`](cache-target-production-cutover.md)에
+      ordinary runtime 최소 권한, 4-role/legacy 상호 분리, default-off 최초 cutover와 receipt,
+      sync enable 뒤 compatible-pair attestation 순서를 먼저 고정한다.
+- [x] Map API에는 `KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS` JSON registry만 전달하고,
+      PinVi ordinary API에는 정확히 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED`,
+      `..._COMMAND_TOKEN`, `..._CONSUMER_TOKEN`, `..._CONSUMER_ID`,
+      `..._EXPECTED_OPENAPI_SHA256`, `..._EXPECTED_SOURCE_REVISION`,
+      `..._EXPECTED_CONTRACT_GENERATION`만 전달한다.
+- [x] command/consumer/restore-fence/recovery 네 token은 서로 및 기존 Map/PinVi
+      service/admin/ops token과 달라야 한다. Map registry의 digest·principal·consumer·scope·
+      external system을 원문 token과 교차 검증한다. registry는 정확히 네 principal, role별 최소 scope,
+      `["pinvi"]`만 허용하고 extra principal/scope/system을 거부한다. registry JSON과 digest를 포함해
+      raw/resolved/runtime 비인가 노출과 audit/log 누출을 차단한다.
+- [x] tracked production pin manifest에 generation `7`, exact Map OpenAPI SHA-256, Map functional owner
+      revision과 PinVi reviewed candidate를 기록했다. reviewed candidate는 자동 승격하지 않고 별도
+      release pin이 확정되기 전 initial/enable 및 production pair capture/deploy/rollback을 mutation 전에
+      fail-close하도록 했다. cache-target contract 미설정 경로는 회귀 없이 유지한다.
+- [x] NO-GO 리뷰의 결합 전환 설계를 문서에 반영했다. 기존 v4 old pair에서 sync=false exact generation 7
+      candidate를 검증한 뒤 active=rollback으로 원자 bootstrap하고, old pair는 coupled rollback bundle에만
+      보존한다. backup/build/migrate/CSV/bootstrap/initial/enable/canary/GC/verify/forward commit을 한 process의
+      C6c lock과 `0600` journal로 묶으며 non-terminal transaction은 다른 mutation을 차단한다.
+- [x] production cache-target의 모든 값이 unset/default이면 기존 C6c 경로를 유지하고 부분 설정만 거부한다.
+      Map·Pin release revision을 별도로 tracked pin에 두고 active/rollback source를 양쪽 모두 exact 검증한다.
+- [/] 기존 v4 manifest 전용 one-time generation bootstrap을 구현한다. sync=false candidate 전체 attestation 후
+      active=rollback atomic commit, old pair coupled rollback bundle 보존, crash/retry/foreign manifest와
+      deploy/capture/rollback/bootstrap mutation-zero 회귀를 포함한다.
+- [/] H35×T-VN-41 결합 orchestrator를 구현한다. Map application·Dagster와 Pin DB backup identity, image build,
+      migration/CSV, bootstrap, initial, enable, canary, GC, verify, forward commit의 phase를 단일 process lock과
+      owner-only journal로 수행하고 unfinished journal이면 same resume/coupled rollback 외 mutation을 차단한다.
+      writer fence 뒤 세 DB dump와 실제 scratch restore rehearsal 전체의 앞뒤에서 write counter·stats reset,
+      DB in-flight와 Map Dagster run을 재검증하고, Pin read-only preflight와 append-only final audit receipt를
+      각각 별도 phase에 결박한다. canary 뒤 Map-owned typed GC를 실제 실행하고 backlog 0/referenced observation을
+      확인한 다음 durable final fence로 exact 5 writer를 정지한다. stopped Map final evidence와 Pin finalize audit
+      exact 1행을 결박하고 forward fsync 뒤 writer 재기동·health를 crash-resume한다.
+- [/] pre-forward 실패는 new runtime stop 뒤 Map application→Dagster→Pin DB→manager env/state/manifest를 복구하고
+      old image를 마지막에 기동한다. migration 뒤 일반 image-only rollback을 금지하고 forward commit/최초 외부
+      event 뒤 old restore를 거부한다. DB rewind 뒤 stale receipt가 성공하지 않도록 live schema/epoch/cutover/
+      convergence를 재검증한다.
+- [/] Map candidate image의 typed helper CLI
+      `python scripts/h35/h35_cutover.py {preflight,migrate,csv5,gc,verify}` exact JSON receipt를 소비한다. backup/
+      restore/finalize와 runtime lifecycle은 manager가 소유하며 helper에는 넘기지 않는다. manager는 SQL/CSV
+      의미, DSN, backup path, credential을 request나 코드에 하드코딩하지 않는다. production initial/enable에서는
+      injected attestor/canary/rollback-smoke 인자를 제거한다.
+- [ ] release unset, contract/pair/candidate mismatch에 대해 deploy/capture/rollback/initial/enable/bootstrap 각각의
+      Docker/subprocess/env/manifest/retention/DB mutation이 0회임을 증명하는 행렬을 추가한다.
+- [/] PinVi 최종 exact HEAD는 단일 독립 적대적 GO review 뒤 squash merge됐고, tracked
+      `pinvi_release_revision`과 production candidate·active·rollback pair provenance gate를 exact merge SHA
+      `4943282006139fa3b4ef3cb247780bfd9721b4c7`로 결박했다. Map #924 merge SHA가 확정되면
+      `map_release_revision`을 최종 고정하고 exact-head Manager 리뷰를 진행한다.
+- [ ] restore-fence/recovery 원문 token은 ordinary PinVi API와 다른 장기 실행 service에 주입하지
+      않는다. C6c 전역 lock과 frozen canonical `.env`/Compose/active pair를 검증한 전용
+      initial-cutover runner에는 command/consumer/recovery만 실행 시간 동안 전달하고, restore-fence는
+      Map registry와 향후 별도 restore 작업 경계에만 보관한다. 종료 뒤 ephemeral container를 제거한다.
+- [ ] production `sync=false`에서 고정 cutover UUID/epoch/reason으로 전용 runner를 실행하고,
+      contract pin, frozen env/raw·resolved Compose logical SHA, active/rollback pair, source revision,
+      protected 4-role binding logical SHA와 safe 결과 identity를 secret-free durable receipt로 원자 기록한다.
+      registry JSON/개별 digest는 기록하지 않으며 같은 입력 retry는 같은 receipt로 수렴하고 다른 입력은
+      fail-close한다.
+- [ ] 성공 receipt가 있을 때만 canonical `.env`의 sync를 `true`로 원자 전환하고 동일 immutable
+      active pair의 PinVi API만 재생성한다. startup readiness와 full compatible-pair runtime/image/
+      provenance/secret-isolation attestation이 모두 통과해야 commit하며, 실패·crash는 `sync=false`
+      env/runtime으로 복구한다.
+- [ ] active와 rollback pair 모두 같은 cache-target generation/contract 및 cache health/pin smoke에 exact
+      결박한다. generic rollback도 이 gate를 재사용하고 stale rollback image를 허용하지 않는다.
+- [ ] `.env=true` 전에 `enable_preparing`을 fsync하고 initial receipt, active/rollback pair, old/new env SHA를
+      묶는다. `env_committed→recreate_started→verified→committed`와
+      `rollback_preparing→rollback_env_restored→rollback_recreate_started→rolled_back`을 durable phase로
+      기록한다. 전체 cutover/enable은 단일 전역 critical section에서 수행하고 재획득 시 전부 refreeze한다.
+- [ ] elevated recovery token은 Docker `-e value`/Compose env가 아닌 owner-only secret file과 고정 runner
+      entrypoint로 전달한다. success/failure/signal 모든 경로에서 orphan container/mount/file을 분류·정리한다.
+- [ ] terminal commit 전에 n150 causal canary로 고유 command→Map event→PinVi DB/cache→ACK, lag 0, DLQ 0,
+      initial count/Merkle 일치를 검증하고 실패하면 `sync=false` rollback으로 전이한다.
+- [ ] Compose/CLI/config 회귀, 4-role distinct·scope/digest 음성 회귀, runner argv/stdout/stderr/
+      long-running runtime 비노출, lock 경합, foreign env/receipt, cutover retry/crash, enable rollback을
+      검증하고 backend 전체·Ruff·strict mypy·canonical Compose gate를 통과한다.
+- [ ] 최종 exact HEAD의 단일 독립 적대적 리뷰와 CI green 뒤 n150에서 별도 승인된 initial cutover→receipt→sync enable→
+      pair attestation을 실행하고 live backlog/DLQ/epoch/snapshot readiness를 확인한다.
