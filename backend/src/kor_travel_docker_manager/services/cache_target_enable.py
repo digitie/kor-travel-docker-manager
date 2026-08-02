@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
+import tempfile
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
@@ -46,10 +49,104 @@ class CacheTargetEnableRolledBackError(DeploymentContractError):
         self.cause = cause
 
 
+def read_canonical_env_file(path: Path) -> bytes:
+    """canonical production env를 no-follow owner-only regular file로 읽는다."""
+
+    before = _validate_canonical_env_file(path)
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise DeploymentContractError("canonical env cannot be read") from exc
+    if not payload or len(payload) > 1_048_576:
+        raise DeploymentContractError("canonical env size is invalid")
+    after = _validate_canonical_env_file(path)
+    if after != before:
+        raise DeploymentContractError("canonical env identity changed during read")
+    return payload
+
+
+def replace_canonical_env_file(
+    path: Path,
+    *,
+    expected_sha256: str,
+    replacement: bytes,
+) -> None:
+    """기대 SHA와 owner/mode/identity가 맞는 canonical env만 원자 교체한다."""
+
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise DeploymentContractError("canonical env expected digest is invalid")
+    if not replacement or len(replacement) > 1_048_576:
+        raise DeploymentContractError("canonical env replacement size is invalid")
+    before = _validate_canonical_env_file(path)
+    current = read_canonical_env_file(path)
+    if hashlib.sha256(current).hexdigest() != expected_sha256:
+        raise DeploymentContractError("canonical env changed before atomic replace")
+    try:
+        parent_stat = path.parent.lstat()
+    except OSError as exc:
+        raise DeploymentContractError("canonical env parent is unavailable") from exc
+    if (
+        not stat.S_ISDIR(parent_stat.st_mode)
+        or parent_stat.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_stat.st_mode) & 0o022
+    ):
+        raise DeploymentContractError("canonical env parent is unsafe")
+
+    temporary: Path | None = None
+    try:
+        descriptor, name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(name)
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), stat.S_IMODE(before.st_mode))
+            os.fchown(stream.fileno(), before.st_uid, before.st_gid)
+            stream.write(replacement)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if _validate_canonical_env_file(path) != before:
+            raise DeploymentContractError(
+                "canonical env identity changed before atomic replace"
+            )
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256:
+            raise DeploymentContractError("canonical env changed before atomic replace")
+        os.replace(temporary, path)
+        temporary = None
+        _validate_canonical_env_file(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as exc:
+        raise DeploymentContractError("canonical env atomic replace failed") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _validate_canonical_env_file(path: Path) -> os.stat_result:
+    try:
+        file_stat = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError("canonical env is unavailable") from exc
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid != os.geteuid()
+        or file_stat.st_nlink != 1
+        or stat.S_IMODE(file_stat.st_mode) != 0o600
+    ):
+        raise DeploymentContractError("canonical env file is unsafe")
+    return file_stat
+
+
 def execute_cache_target_enable(
     *,
     receipt: InitialCutoverReceipt,
     journal_path: Path,
+    enabled_resolved_compose_sha256: str,
     read_env: Callable[[], bytes],
     replace_env: Callable[[str, bytes], None],
     attest: Callable[[bool], None],
@@ -63,6 +160,7 @@ def execute_cache_target_enable(
         receipt=receipt,
         journal_path=journal_path,
         env_bytes=env_bytes,
+        enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
         attest=attest,
     )
     old_env, new_env = _bound_env_versions(receipt, journal, env_bytes)
@@ -172,6 +270,7 @@ def read_enable_cutover_journal(path: Path) -> EnableCutoverJournal:
         journal.initial_receipt_sha256,
         journal.old_env_sha256,
         journal.new_env_sha256,
+        journal.enabled_resolved_compose_sha256,
         journal.active_pair_sha256,
         journal.rollback_pair_sha256,
     ):
@@ -200,6 +299,7 @@ def _load_or_prepare_journal(
     receipt: InitialCutoverReceipt,
     journal_path: Path,
     env_bytes: bytes,
+    enabled_resolved_compose_sha256: str,
     attest: Callable[[bool], None],
 ) -> EnableCutoverJournal:
     try:
@@ -213,6 +313,13 @@ def _load_or_prepare_journal(
     else:
         journal = read_enable_cutover_journal(journal_path)
         _validate_journal_binding(journal, receipt)
+        if (
+            journal.enabled_resolved_compose_sha256
+            != enabled_resolved_compose_sha256
+        ):
+            raise DeploymentContractError(
+                "cache-target enabled resolved compose evidence drifted"
+            )
         return journal
     env_sha = hashlib.sha256(env_bytes).hexdigest()
     if env_sha != receipt.evidence.env_sha256:
@@ -227,6 +334,7 @@ def _load_or_prepare_journal(
         receipt=receipt,
         old_env_sha256=env_sha,
         new_env_sha256=hashlib.sha256(new_env).hexdigest(),
+        enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
     )
     write_cutover_state(journal_path, journal)
     return journal

@@ -77,6 +77,16 @@ from kor_travel_docker_manager.services.cache_target_contract import (
     PINVI_SOURCE_REVISION_ENV,
     PINVI_SYNC_ENV,
 )
+from kor_travel_docker_manager.services.cache_target_cutover import (
+    CacheTargetFrozenEvidence,
+    InitialCutoverResult,
+    build_initial_cutover_receipt,
+    commit_initial_cutover_receipt,
+)
+from kor_travel_docker_manager.services.cache_target_enable import (
+    CacheTargetEnableRolledBackError,
+    read_enable_cutover_journal,
+)
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
     ComposeEnvironmentSnapshot,
@@ -12459,6 +12469,276 @@ def test_c6c_redactor_removes_overlapping_credentials_without_suffix_residue() -
         config.smoke.map_ui_password,
     ):
         assert secret not in redacted
+
+
+def _cache_target_enable_adapter_fixture(
+    tmp_path: Path,
+) -> tuple[ComposeTransactionSnapshot, CompatiblePairManifest]:
+    transaction = _cache_target_cutover_transaction(tmp_path)
+    env_path = Path(transaction.environment.env_path)
+    env_bytes = b"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=false\n"
+    env_path.write_bytes(env_bytes)
+    env_path.chmod(0o600)
+    transaction = replace(
+        transaction,
+        environment=replace(
+            transaction.environment,
+            env_file_bytes=env_bytes,
+            env_file_identity=compose_service_module._env_file_identity(env_path),
+        ),
+    )
+    manifest = replace(_manifest(), rollback=_manifest().active)
+    config = load_c6c_deployment_config_from_environment(
+        transaction.environment.effective
+    )
+    contract = config.cache_target
+    assert contract is not None
+    receipt = build_initial_cutover_receipt(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+        evidence=CacheTargetFrozenEvidence(
+            env_sha256=hashlib.sha256(env_bytes).hexdigest(),
+            raw_compose_sha256=hashlib.sha256(
+                transaction.compose_source_bytes
+            ).hexdigest(),
+            resolved_compose_sha256=transaction.resolved_document_hash,
+            active_pair_sha256=(
+                compose_service_module._compatible_pair_logical_sha256(
+                    manifest.active
+                )
+            ),
+            rollback_pair_sha256=(
+                compose_service_module._compatible_pair_logical_sha256(
+                    manifest.rollback
+                )
+            ),
+            role_binding_sha256=contract.role_binding_sha256,
+            expected_openapi_sha256=contract.expected_openapi_sha256,
+            expected_source_revision=contract.expected_source_revision,
+            expected_contract_generation=(
+                contract.expected_contract_generation
+            ),
+        ),
+        result=InitialCutoverResult(
+            cutover_id="11111111-1111-4111-8111-111111111111",
+            request_id="22222222-2222-4222-8222-222222222222",
+            count=12,
+            merkle_root="9" * 64,
+            published=12,
+        ),
+    )
+    commit_initial_cutover_receipt(
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-initial-cutover-v1.json",
+        receipt,
+    )
+    return transaction, manifest
+
+
+def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction, manifest = _cache_target_enable_adapter_fixture(tmp_path)
+    env_path = Path(transaction.environment.env_path)
+    enabled_resolved_sha = "a" * 64
+    foreign_enabled_sha: list[str | None] = [None]
+
+    def capture(**kwargs: object) -> tuple[ComposeTransactionSnapshot, None]:
+        environment_override = kwargs.get("environment_override")
+        environment_snapshot = kwargs.get("environment_snapshot")
+        if environment_override is not None:
+            assert environment_snapshot is not None
+            return (
+                replace(
+                    transaction,
+                    environment=environment_snapshot,
+                    resolved_document_hash=enabled_resolved_sha,
+                ),
+                None,
+            )
+        raw = env_path.read_bytes()
+        enabled = raw.endswith(b"=true\n")
+        effective = dict(transaction.environment.effective)
+        effective[PINVI_SYNC_ENV] = "true" if enabled else "false"
+        return (
+            replace(
+                transaction,
+                environment=replace(
+                    transaction.environment,
+                    effective=effective,
+                    env_file_bytes=raw,
+                    env_file_identity=compose_service_module._env_file_identity(
+                        env_path
+                    ),
+                ),
+                resolved_document_hash=(
+                    foreign_enabled_sha[0] or enabled_resolved_sha
+                    if enabled
+                    else transaction.resolved_document_hash
+                ),
+            ),
+            None,
+        )
+
+    runner = Mock(return_value={"success": True, "returncode": 0})
+    attestor = Mock()
+    canary = Mock(
+        side_effect=lambda run_id, _config, _manifest, _transaction: {
+            "run_id": run_id,
+            "cutover_id": "11111111-1111-4111-8111-111111111111",
+            "active_pair_sha256": (
+                compose_service_module._compatible_pair_logical_sha256(
+                    manifest.active
+                )
+            ),
+            "contract_generation": "7",
+        }
+    )
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    result = service.enable_cache_target_sync(
+        pair_contract_attestor=attestor,
+        causal_canary=canary,
+    )
+
+    assert result["success"] is True
+    assert result["phase"] == "committed"
+    assert env_path.read_bytes().endswith(b"=true\n")
+    assert runner.call_args.args[0] == [
+        "up",
+        "-d",
+        "--no-deps",
+        "--force-recreate",
+        "--no-build",
+        "--pull",
+        "never",
+        "--wait",
+        "pinvi-api",
+    ]
+    journal = read_enable_cutover_journal(
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-enable-v1.json"
+    )
+    assert journal.enabled_resolved_compose_sha256 == enabled_resolved_sha
+    canary.assert_called_once()
+
+    foreign_enabled_sha[0] = "b" * 64
+    with pytest.raises(DeploymentContractError, match="resolved compose evidence"):
+        service.enable_cache_target_sync(
+            pair_contract_attestor=attestor,
+            causal_canary=canary,
+        )
+
+
+def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction, manifest = _cache_target_enable_adapter_fixture(tmp_path)
+    env_path = Path(transaction.environment.env_path)
+    enabled_resolved_sha = "a" * 64
+
+    def capture(**kwargs: object) -> tuple[ComposeTransactionSnapshot, None]:
+        environment_override = kwargs.get("environment_override")
+        environment_snapshot = kwargs.get("environment_snapshot")
+        if environment_override is not None:
+            assert environment_snapshot is not None
+            return (
+                replace(
+                    transaction,
+                    environment=environment_snapshot,
+                    resolved_document_hash=enabled_resolved_sha,
+                ),
+                None,
+            )
+        raw = env_path.read_bytes()
+        enabled = raw.endswith(b"=true\n")
+        effective = dict(transaction.environment.effective)
+        effective[PINVI_SYNC_ENV] = "true" if enabled else "false"
+        return (
+            replace(
+                transaction,
+                environment=replace(
+                    transaction.environment,
+                    effective=effective,
+                    env_file_bytes=raw,
+                    env_file_identity=compose_service_module._env_file_identity(
+                        env_path
+                    ),
+                ),
+                resolved_document_hash=(
+                    enabled_resolved_sha
+                    if enabled
+                    else transaction.resolved_document_hash
+                ),
+            ),
+            None,
+        )
+
+    runner = Mock(
+        side_effect=[
+            {"success": False, "returncode": 1},
+            {"success": True, "returncode": 0},
+        ]
+    )
+    lock_path = c6c_state_paths(transaction.environment.effective)[1]
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=lock_path)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(CacheTargetEnableRolledBackError):
+        service.enable_cache_target_sync(
+            pair_contract_attestor=Mock(),
+            causal_canary=Mock(),
+        )
+
+    assert env_path.read_bytes().endswith(b"=false\n")
+    assert [call.args[0][-1] for call in runner.call_args_list] == [
+        "pinvi-api",
+        "pinvi-api",
+    ]
+    journal = read_enable_cutover_journal(
+        Path(transaction.manifest_path or "").parent
+        / "cache-target-enable-v1.json"
+    )
+    assert journal.phase == "rolled_back"
 
 
 def test_cache_target_initial_cutover_runs_frozen_secret_bundle_and_commits_receipt(

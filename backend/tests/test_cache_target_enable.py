@@ -22,12 +22,15 @@ from kor_travel_docker_manager.services.cache_target_cutover import (
 from kor_travel_docker_manager.services.cache_target_enable import (
     CacheTargetEnableRolledBackError,
     execute_cache_target_enable,
+    read_canonical_env_file,
     read_enable_cutover_journal,
+    replace_canonical_env_file,
 )
 
 _CUTOVER_ID = "11111111-1111-4111-8111-111111111111"
 _ENV_FALSE = b"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=false\n"
 _ENV_TRUE = b"PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=true\n"
+_ENABLED_RESOLVED_COMPOSE_SHA256 = "a" * 64
 
 
 def _receipt() -> InitialCutoverReceipt:
@@ -82,6 +85,7 @@ def test_execute_enable_orders_env_recreate_attest_canary_and_commit(
     journal = execute_cache_target_enable(
         receipt=_receipt(),
         journal_path=state / "enable.json",
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
         read_env=environment.read,
         replace_env=environment.replace,
         attest=lambda enabled: calls.append(("attest", enabled)),
@@ -122,6 +126,7 @@ def test_execute_enable_canary_failure_rolls_back_false_runtime(
         execute_cache_target_enable(
             receipt=_receipt(),
             journal_path=state / "enable.json",
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
             read_env=environment.read,
             replace_env=environment.replace,
             attest=lambda enabled: calls.append(("attest", enabled)),
@@ -145,6 +150,7 @@ def test_execute_enable_resumes_crash_after_env_commit(
         receipt=receipt,
         old_env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         new_env_sha256=hashlib.sha256(_ENV_TRUE).hexdigest(),
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     journal = transition_enable_journal(journal, "env_committed")
     write_cutover_state(state / "enable.json", journal)
@@ -153,6 +159,7 @@ def test_execute_enable_resumes_crash_after_env_commit(
     result = execute_cache_target_enable(
         receipt=receipt,
         journal_path=state / "enable.json",
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
         read_env=environment.read,
         replace_env=environment.replace,
         attest=lambda _enabled: None,
@@ -184,6 +191,7 @@ def test_execute_enable_resumes_rollback_after_env_restored(
         receipt=receipt,
         old_env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         new_env_sha256=hashlib.sha256(_ENV_TRUE).hexdigest(),
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     journal = transition_enable_journal(journal, "env_committed")
     journal = transition_enable_journal(journal, "rollback_preparing")
@@ -194,6 +202,7 @@ def test_execute_enable_resumes_rollback_after_env_restored(
     result = execute_cache_target_enable(
         receipt=receipt,
         journal_path=state / "enable.json",
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
         read_env=environment.read,
         replace_env=environment.replace,
         attest=lambda _enabled: None,
@@ -216,6 +225,7 @@ def test_execute_enable_rejects_foreign_journal_binding(tmp_path: Path) -> None:
         receipt=receipt,
         old_env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         new_env_sha256=hashlib.sha256(_ENV_TRUE).hexdigest(),
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     foreign = type(journal)(
         **{**asdict(journal), "active_pair_sha256": "f" * 64}
@@ -226,6 +236,7 @@ def test_execute_enable_rejects_foreign_journal_binding(tmp_path: Path) -> None:
         execute_cache_target_enable(
             receipt=receipt,
             journal_path=state / "enable.json",
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
             read_env=environment.read,
             replace_env=environment.replace,
             attest=lambda _enabled: None,
@@ -258,6 +269,7 @@ def test_execute_enable_reuses_transaction_id_for_causal_canary_retry(
         receipt=receipt,
         old_env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         new_env_sha256=hashlib.sha256(_ENV_TRUE).hexdigest(),
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     journal = transition_enable_journal(journal, "env_committed")
     journal = transition_enable_journal(journal, "recreate_started")
@@ -267,6 +279,7 @@ def test_execute_enable_reuses_transaction_id_for_causal_canary_retry(
     result = execute_cache_target_enable(
         receipt=receipt,
         journal_path=state / "enable.json",
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
         read_env=environment.read,
         replace_env=environment.replace,
         attest=lambda _enabled: None,
@@ -299,6 +312,7 @@ def test_execute_enable_replace_failure_rolls_back_from_preparing(
         execute_cache_target_enable(
             receipt=_receipt(),
             journal_path=state / "enable.json",
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
             read_env=environment.read,
             replace_env=fail_replace,
             attest=lambda _enabled: None,
@@ -335,6 +349,7 @@ def test_read_enable_journal_rejects_invalid_contract(
         receipt=_receipt(),
         old_env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         new_env_sha256=hashlib.sha256(_ENV_TRUE).hexdigest(),
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     document = {**asdict(journal), field: value}
     if field == "verified_evidence_sha256" and value is None:
@@ -354,6 +369,7 @@ def test_read_enable_journal_rejects_extra_field(tmp_path: Path) -> None:
         receipt=_receipt(),
         old_env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         new_env_sha256=hashlib.sha256(_ENV_TRUE).hexdigest(),
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     path = state / "enable.json"
     path.write_text(json.dumps({**asdict(journal), "unexpected": True}))
@@ -372,6 +388,7 @@ def test_read_enable_journal_rejects_symlink_and_insecure_mode(
         receipt=_receipt(),
         old_env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         new_env_sha256=hashlib.sha256(_ENV_TRUE).hexdigest(),
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     target = state / "target.json"
     write_cutover_state(target, journal)
@@ -406,6 +423,7 @@ def test_execute_enable_rejects_dangling_journal_symlink_without_attestation(
         execute_cache_target_enable(
             receipt=_receipt(),
             journal_path=journal_path,
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
             read_env=_Environment().read,
             replace_env=lambda _expected, _replacement: None,
             attest=attestations.append,
@@ -414,3 +432,44 @@ def test_execute_enable_rejects_dangling_journal_symlink_without_attestation(
         )
 
     assert attestations == []
+
+
+def test_canonical_env_atomic_replace_preserves_owner_only_mode(tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_bytes(_ENV_FALSE)
+    env_path.chmod(0o600)
+
+    replace_canonical_env_file(
+        env_path,
+        expected_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
+        replacement=_ENV_TRUE,
+    )
+
+    assert read_canonical_env_file(env_path) == _ENV_TRUE
+    assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_canonical_env_atomic_replace_rejects_drift_and_unsafe_links(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_bytes(_ENV_FALSE)
+    env_path.chmod(0o600)
+
+    with pytest.raises(DeploymentContractError, match="changed"):
+        replace_canonical_env_file(
+            env_path,
+            expected_sha256="f" * 64,
+            replacement=_ENV_TRUE,
+        )
+
+    hardlink = tmp_path / "hardlink"
+    os.link(env_path, hardlink)
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        read_canonical_env_file(env_path)
+    hardlink.unlink()
+
+    link = tmp_path / "link"
+    link.symlink_to(env_path)
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        read_canonical_env_file(link)

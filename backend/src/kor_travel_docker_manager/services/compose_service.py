@@ -81,6 +81,7 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     require_empty_retention_namespace,
     validate_retention_namespace_is_reserved,
 )
+from kor_travel_docker_manager.services.cache_target_contract import PINVI_SYNC_ENV
 from kor_travel_docker_manager.services.cache_target_cutover import (
     CacheTargetFrozenEvidence,
     InitialCutoverReceipt,
@@ -91,6 +92,12 @@ from kor_travel_docker_manager.services.cache_target_cutover import (
     parse_initial_cutover_output,
     read_initial_cutover_receipt,
     with_initial_runner_secret_bundle,
+)
+from kor_travel_docker_manager.services.cache_target_enable import (
+    execute_cache_target_enable,
+    read_canonical_env_file,
+    read_enable_cutover_journal,
+    replace_canonical_env_file,
 )
 from kor_travel_docker_manager.services.registry import (
     get_target,
@@ -171,6 +178,21 @@ def _initial_receipt_process_result(
         "merkle_root": receipt.merkle_root,
         "published": receipt.published,
         "resumed": resumed,
+    }
+
+
+def _enable_journal_process_result(
+    *,
+    transaction_id: str,
+    cutover_id: str,
+    phase: str,
+) -> dict[str, Any]:
+    return {
+        "success": phase == "committed",
+        "returncode": 0 if phase == "committed" else 1,
+        "transaction_id": transaction_id,
+        "cutover_id": cutover_id,
+        "phase": phase,
     }
 
 
@@ -3554,6 +3576,273 @@ class ComposeService:
             )
             commit_initial_cutover_receipt(receipt_path, receipt)
             return _initial_receipt_process_result(receipt, resumed=False)
+
+    def enable_cache_target_sync(
+        self,
+        *,
+        pair_contract_attestor: Callable[
+            [C6cDeploymentConfig, CompatiblePairManifest, ComposeTransactionSnapshot],
+            None,
+        ],
+        causal_canary: Callable[
+            [
+                str,
+                C6cDeploymentConfig,
+                CompatiblePairManifest,
+                ComposeTransactionSnapshot,
+            ],
+            Mapping[str, Any],
+        ],
+    ) -> dict[str, Any]:
+        """하나의 C6c lock에서 durable sync enable 또는 rollback resume를 수행한다."""
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production or config.cache_target is None:
+                raise DeploymentContractError(
+                    "cache-target enable requires the production contract"
+                )
+            self._validate_resolved_compose_contract(
+                config,
+                transaction=transaction,
+            )
+            manifest_path = transaction.manifest_path
+            if manifest_path is None:
+                raise DeploymentContractError(
+                    "cache-target enable transaction has no pair manifest"
+                )
+            state_directory = Path(manifest_path).parent
+            receipt = read_initial_cutover_receipt(
+                state_directory / "cache-target-initial-cutover-v1.json"
+            )
+            journal_path = state_directory / "cache-target-enable-v1.json"
+            env_path = Path(transaction.environment.env_path).resolve(strict=False)
+
+            try:
+                journal_path.lstat()
+            except FileNotFoundError:
+                enabled_effective = dict(transaction.environment.effective)
+                enabled_effective[PINVI_SYNC_ENV] = "true"
+                enabled_snapshot = replace(
+                    transaction.environment,
+                    effective=enabled_effective,
+                )
+                enabled_candidate, _ = self._capture_transaction_unlocked(
+                    environment_override={PINVI_SYNC_ENV: "true"},
+                    derive_manifest_path=True,
+                    environment_snapshot=enabled_snapshot,
+                )
+                if (
+                    enabled_candidate.environment != enabled_snapshot
+                    or enabled_candidate.external_inputs != transaction.external_inputs
+                    or enabled_candidate.compose_source_bytes
+                    != transaction.compose_source_bytes
+                    or enabled_candidate.compose_source_mode
+                    != transaction.compose_source_mode
+                    or enabled_candidate.system_bind_snapshots
+                    != transaction.system_bind_snapshots
+                    or enabled_candidate.raw_volume_graph_hash
+                    != transaction.raw_volume_graph_hash
+                    or enabled_candidate.resolved_volume_graph_hash
+                    != transaction.resolved_volume_graph_hash
+                    or enabled_candidate.manifest_path != manifest_path
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enabled compose candidate drifted"
+                    ) from None
+                enabled_config = load_c6c_deployment_config_from_environment(
+                    enabled_effective
+                )
+                self._validate_resolved_compose_contract(
+                    enabled_config,
+                    transaction=enabled_candidate,
+                )
+                enabled_resolved_compose_sha256 = (
+                    enabled_candidate.resolved_document_hash
+                )
+            except OSError as exc:
+                raise DeploymentContractError(
+                    "cache-target enable journal path is unavailable"
+                ) from exc
+            else:
+                enabled_resolved_compose_sha256 = (
+                    read_enable_cutover_journal(
+                        journal_path
+                    ).enabled_resolved_compose_sha256
+                )
+
+            def capture_current(
+                enabled: bool,
+                *,
+                attest_pair: bool,
+            ) -> tuple[
+                C6cDeploymentConfig,
+                CompatiblePairManifest,
+                ComposeTransactionSnapshot,
+            ]:
+                current, _ = self._capture_transaction_unlocked(
+                    derive_manifest_path=True,
+                )
+                if c6c_state_paths(current.environment.effective)[1] != (
+                    lock_snapshot.lock_path
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enable drifted outside the held global lock"
+                    )
+                if Path(current.environment.env_path).resolve(strict=False) != env_path:
+                    raise DeploymentContractError(
+                        "cache-target enable canonical env path drifted"
+                    )
+                assert_manager_mutation_allowed(
+                    environment=current.environment.effective
+                )
+                current_config = load_c6c_deployment_config_from_environment(
+                    current.environment.effective
+                )
+                current_contract = current_config.cache_target
+                expected_sync = "true" if enabled else "false"
+                if (
+                    not current_config.production
+                    or current_contract is None
+                    or current_contract.sync_enabled != expected_sync
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enable canonical sync state is invalid"
+                    )
+                self._validate_resolved_compose_contract(
+                    current_config,
+                    transaction=current,
+                )
+                if current.manifest_path != manifest_path:
+                    raise DeploymentContractError(
+                        "cache-target enable pair manifest path drifted"
+                    )
+                current_manifest = load_pair_manifest(manifest_path)
+                if current_manifest.rollback is None:
+                    raise DeploymentContractError(
+                        "cache-target enable requires an attested rollback pair"
+                    )
+                if (
+                    hashlib.sha256(current.compose_source_bytes).hexdigest()
+                    != receipt.evidence.raw_compose_sha256
+                    or _compatible_pair_logical_sha256(current_manifest.active)
+                    != receipt.evidence.active_pair_sha256
+                    or _compatible_pair_logical_sha256(current_manifest.rollback)
+                    != receipt.evidence.rollback_pair_sha256
+                    or current_contract.role_binding_sha256
+                    != receipt.evidence.role_binding_sha256
+                    or current_contract.expected_openapi_sha256
+                    != receipt.evidence.expected_openapi_sha256
+                    or current_contract.expected_source_revision
+                    != receipt.evidence.expected_source_revision
+                    or current_contract.expected_contract_generation
+                    != receipt.evidence.expected_contract_generation
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enable frozen evidence drifted"
+                    )
+                if not enabled and (
+                    hashlib.sha256(current.environment.env_file_bytes).hexdigest()
+                    != receipt.evidence.env_sha256
+                    or current.resolved_document_hash
+                    != receipt.evidence.resolved_compose_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target disabled evidence differs from initial receipt"
+                    )
+                if enabled and (
+                    current.resolved_document_hash
+                    != enabled_resolved_compose_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target enabled resolved compose evidence drifted"
+                    )
+                if attest_pair:
+                    pair_contract_attestor(
+                        current_config,
+                        current_manifest,
+                        current,
+                    )
+                return current_config, current_manifest, current
+
+            capture_current(
+                config.cache_target.sync_enabled == "true",
+                attest_pair=True,
+            )
+
+            def recreate_pinvi_api(enabled: bool) -> None:
+                current_config, _current_manifest, current = capture_current(
+                    enabled,
+                    attest_pair=False,
+                )
+                result = self._run_frozen_recovery(
+                    [
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        "--force-recreate",
+                        "--no-build",
+                        "--pull",
+                        "never",
+                        "--wait",
+                        _PINVI_API_SERVICE,
+                    ],
+                    transaction=current,
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    redact_config=current_config,
+                )
+                if not result.get("success"):
+                    raise DeploymentContractError(
+                        "cache-target PinVi API recreate failed"
+                    )
+
+            def attest(enabled: bool) -> None:
+                capture_current(enabled, attest_pair=True)
+
+            def run_canary(run_id: str) -> Mapping[str, Any]:
+                current_config, current_manifest, current = capture_current(
+                    True,
+                    attest_pair=False,
+                )
+                return causal_canary(
+                    run_id,
+                    current_config,
+                    current_manifest,
+                    current,
+                )
+
+            journal = execute_cache_target_enable(
+                receipt=receipt,
+                journal_path=journal_path,
+                enabled_resolved_compose_sha256=(
+                    enabled_resolved_compose_sha256
+                ),
+                read_env=lambda: read_canonical_env_file(env_path),
+                replace_env=lambda expected, replacement: (
+                    replace_canonical_env_file(
+                        env_path,
+                        expected_sha256=expected,
+                        replacement=replacement,
+                    )
+                ),
+                attest=attest,
+                recreate_pinvi_api=recreate_pinvi_api,
+                causal_canary=run_canary,
+            )
+            return _enable_journal_process_result(
+                transaction_id=journal.transaction_id,
+                cutover_id=journal.cutover_id,
+                phase=journal.phase,
+            )
 
     @staticmethod
     def _cleanup_cache_target_initial_runner(

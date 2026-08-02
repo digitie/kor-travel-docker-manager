@@ -114,7 +114,10 @@ def test_initial_receipt_rejects_foreign_result_and_stale_hash() -> None:
 
 def test_enable_journal_requires_ordered_forward_and_causal_verification() -> None:
     journal = prepare_enable_journal(
-        receipt=_receipt(), old_env_sha256="a" * 64, new_env_sha256="b" * 64
+        receipt=_receipt(),
+        old_env_sha256="a" * 64,
+        new_env_sha256="b" * 64,
+        enabled_resolved_compose_sha256="c" * 64,
     )
     assert journal.phase == "enable_preparing"
     with pytest.raises(DeploymentContractError):
@@ -180,7 +183,10 @@ def test_render_cache_target_sync_env_rejects_ambiguous_or_inexact_line(
 
 def test_enable_journal_rollback_is_ordered_and_terminal() -> None:
     journal = prepare_enable_journal(
-        receipt=_receipt(), old_env_sha256="a" * 64, new_env_sha256="b" * 64
+        receipt=_receipt(),
+        old_env_sha256="a" * 64,
+        new_env_sha256="b" * 64,
+        enabled_resolved_compose_sha256="c" * 64,
     )
     journal = transition_enable_journal(journal, "env_committed")
     journal = transition_enable_journal(journal, "rollback_preparing")

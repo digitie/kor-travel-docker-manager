@@ -99,6 +99,7 @@ class EnableCutoverJournal:
     initial_receipt_sha256: str
     old_env_sha256: str
     new_env_sha256: str
+    enabled_resolved_compose_sha256: str
     active_pair_sha256: str
     rollback_pair_sha256: str
     verified_evidence_sha256: str | None = None
@@ -195,9 +196,14 @@ def prepare_enable_journal(
     receipt: InitialCutoverReceipt,
     old_env_sha256: str,
     new_env_sha256: str,
+    enabled_resolved_compose_sha256: str,
 ) -> EnableCutoverJournal:
     _validate_sha256(old_env_sha256, "old env")
     _validate_sha256(new_env_sha256, "new env")
+    _validate_sha256(
+        enabled_resolved_compose_sha256,
+        "enabled resolved compose",
+    )
     if old_env_sha256 == new_env_sha256:
         raise DeploymentContractError("enable env transition must change canonical bytes")
     return EnableCutoverJournal(
@@ -208,6 +214,7 @@ def prepare_enable_journal(
         initial_receipt_sha256=initial_receipt_logical_sha256(receipt),
         old_env_sha256=old_env_sha256,
         new_env_sha256=new_env_sha256,
+        enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
         active_pair_sha256=receipt.evidence.active_pair_sha256,
         rollback_pair_sha256=receipt.evidence.rollback_pair_sha256,
     )
