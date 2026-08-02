@@ -22,6 +22,12 @@ recovery만 주입한다. restore-fence는 Map registry와 향후 별도 restore
 env 변경 전 `enable_preparing`부터 enable/rollback 전 단계를 fsync하는 crash journal과 전체 전역 critical
 section을 구현 계약으로 추가했다.
 
+추가 적대 리뷰에 따라 initial receipt는 frozen env/raw·resolved Compose, active/rollback pair와 protected
+4-role binding의 logical SHA를 함께 묶되 registry JSON·개별 digest는 기록하지 않는다. elevated recovery
+token은 Docker inspect metadata에 남지 않는 owner-only secret-file/고정 entrypoint 경계로 전달하고 모든
+종료 경로에서 orphan을 정리한다. terminal enable 전에는 command→Map event→PinVi DB/cache→ACK, lag/DLQ,
+count/Merkle를 확인하는 n150 causal canary를 필수 rollback gate로 추가했다.
+
 ## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
 
 production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,

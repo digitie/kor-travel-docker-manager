@@ -196,8 +196,10 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       initial-cutover runner에는 command/consumer/recovery만 실행 시간 동안 전달하고, restore-fence는
       Map registry와 향후 별도 restore 작업 경계에만 보관한다. 종료 뒤 ephemeral container를 제거한다.
 - [ ] production `sync=false`에서 고정 cutover UUID/epoch/reason으로 전용 runner를 실행하고,
-      contract pin·active image pair·source revision·safe 결과 identity를 secret-free durable receipt로
-      원자 기록한다. 같은 입력 retry는 같은 receipt로 수렴하고 다른 입력은 fail-close한다.
+      contract pin, frozen env/raw·resolved Compose logical SHA, active/rollback pair, source revision,
+      protected 4-role binding logical SHA와 safe 결과 identity를 secret-free durable receipt로 원자 기록한다.
+      registry JSON/개별 digest는 기록하지 않으며 같은 입력 retry는 같은 receipt로 수렴하고 다른 입력은
+      fail-close한다.
 - [ ] 성공 receipt가 있을 때만 canonical `.env`의 sync를 `true`로 원자 전환하고 동일 immutable
       active pair의 PinVi API만 재생성한다. startup readiness와 full compatible-pair runtime/image/
       provenance/secret-isolation attestation이 모두 통과해야 commit하며, 실패·crash는 `sync=false`
@@ -208,6 +210,10 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       묶는다. `env_committed→recreate_started→verified→committed`와
       `rollback_preparing→rollback_env_restored→rollback_recreate_started→rolled_back`을 durable phase로
       기록한다. 전체 cutover/enable은 단일 전역 critical section에서 수행하고 재획득 시 전부 refreeze한다.
+- [ ] elevated recovery token은 Docker `-e value`/Compose env가 아닌 owner-only secret file과 고정 runner
+      entrypoint로 전달한다. success/failure/signal 모든 경로에서 orphan container/mount/file을 분류·정리한다.
+- [ ] terminal commit 전에 n150 causal canary로 고유 command→Map event→PinVi DB/cache→ACK, lag 0, DLQ 0,
+      initial count/Merkle 일치를 검증하고 실패하면 `sync=false` rollback으로 전이한다.
 - [ ] Compose/CLI/config 회귀, 4-role distinct·scope/digest 음성 회귀, runner argv/stdout/stderr/
       long-running runtime 비노출, lock 경합, foreign env/receipt, cutover retry/crash, enable rollback을
       검증하고 backend 전체·Ruff·strict mypy·canonical Compose gate를 통과한다.

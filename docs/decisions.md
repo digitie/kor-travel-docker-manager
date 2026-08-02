@@ -1151,11 +1151,19 @@ digest, 고유 principal ID, 같은 consumer ID와 이 구조를 원문 token에
 external system은 거부한다. raw Compose에는 secret literal을 두지 않고, registry JSON 자체와 네 token
 digest도 protected/redaction 대상으로 다룬다. resolved/runtime validator는 각 값이 허가된 경로 밖에
 나타나면 fail-close한다. runner argv·출력·receipt에는 원문 token이나 resolved environment를 남기지 않는다.
+receipt와 audit에는 registry JSON이나 개별 digest 대신 canonical role→(digest, consumer ID, exact scopes,
+external system) binding 전체의 logical SHA-256만 기록한다.
 
-최초 runner 성공은 고정 cutover ID, epoch, contract pin, active와 rollback compatible-pair identity와 PinVi가
-반환한 request/count/Merkle/published 결과를 owner-only durable receipt로 먼저 commit한다. active와 rollback
-pair 모두 같은 cache-target generation/contract를 지원해야 하며 generic rollback도 cache health/pin smoke를
-통과해야 한다. stale rollback image는 cutover와 이후 rollback 후보로 허용하지 않는다.
+initial runner의 elevated recovery token은 Docker `-e NAME=value`나 Compose environment로 전달하지 않는다.
+manager가 owner-only 임시 secret file을 만들고 runner 내부의 고정 entrypoint가 읽은 뒤 process environment로
+올리는 경계만 허용한다. host secret file, ephemeral container와 mount는 success/failure/signal 모든 종료
+경로에서 분류·정리하며 정리 결과를 secret-free evidence로 남긴다.
+
+최초 runner 성공은 고정 cutover ID, epoch, contract pin, frozen env SHA, raw/resolved Compose logical SHA,
+active와 rollback compatible-pair identity, protected role-binding logical SHA와 PinVi가 반환한
+request/count/Merkle/published 결과를 owner-only durable receipt로 먼저 commit한다. active와 rollback pair
+모두 같은 cache-target generation/contract를 지원해야 하며 generic rollback도 cache health/pin smoke를
+통과해야 한다. stale receipt나 stale rollback image는 cutover와 이후 rollback 후보로 허용하지 않는다.
 
 성공 initial receipt가 있어야 enable journal을 `enable_preparing`으로 먼저 fsync한다. 이 단계는 initial
 receipt hash, active/rollback pair logical hash, 이전/새 canonical env SHA를 한 transaction identity로 묶는다.
@@ -1163,7 +1171,9 @@ receipt hash, active/rollback pair logical hash, 이전/새 canonical env SHA를
 canonical `.env`의 sync를 `true`로 바꾸고 같은 immutable active image의 PinVi API를 재생성한다. 실패·crash
 복구도 `rollback_preparing` → `rollback_env_restored` → `rollback_recreate_started` → `rolled_back`의 durable
 phase로 기록한다. ordinary startup cache health/pin smoke와 기존 full compatible-pair image/provenance/runtime/
-secret-isolation attestation이 모두 통과해야 enable을 commit한다. 전체 initial/enable은 하나의 C6c 전역
+secret-isolation attestation과 production causal canary가 모두 통과해야 enable을 commit한다. canary는 고유
+command가 Map event가 되고 PinVi DB/cache에 반영된 뒤 ACK되는 인과 사슬, lag 0, DLQ 0, 예상 count/Merkle를
+검증한다. 전체 initial/enable은 하나의 C6c 전역
 critical section에서 수행한다. 명시적으로 lock을 재획득하는 재개 경로라면 canonical env/Compose와 active·
 rollback pair, initial receipt를 전부 refreeze해 journal transaction identity와 다시 대조한다. mixed/foreign
 evidence는 자동 덮어쓰지 않는다.
@@ -1181,6 +1191,10 @@ evidence는 자동 덮어쓰지 않는다.
   sync 상태와 복구 행동을 추측하지 않게 한다.
 - active/rollback pair의 같은-generation 검증은 generic rollback이 cache-target을 모르는 stale image로
   production을 되돌리는 것을 막는다.
+- Docker metadata 밖 secret-file 경계는 elevated recovery token이 종료된 runner의 inspect evidence에
+  장기 잔류하는 것을 막는다.
+- causal canary는 단순 readiness가 놓치는 Map→PinVi 실제 데이터 경로와 ACK 완료를 terminal commit 전에
+  검증한다.
 - 같은 active image 재생성과 full pair attestation은 환경 전환을 image generation 변경과 분리하면서도
   compatible-pair 정합성을 유지한다.
 

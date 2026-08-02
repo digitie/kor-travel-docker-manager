@@ -36,7 +36,9 @@ digest만 넣는다. command principal은 `cache-target:command`, consumer princ
 initial begin/seal에 필요한 `cache-target:recovery`만 가진다. `cache-target:recovery-replay`는 향후 replay
 작업이 실제 필요할 때 별도 검토하며 initial-cutover 권한에 미리 포함하지 않는다. extra principal·scope·
 external system은 허용하지 않는다. registry JSON과 각 token digest도 secret redaction/protected-value
-검사의 대상이며 안전한 audit 출력에는 registry의 구조 검증 결과와 SHA-256만 남긴다.
+검사의 대상이다. 안전한 audit/receipt에는 registry JSON이나 개별 digest 대신 canonical
+role→(digest, consumer ID, exact scopes, external system) binding 전체의 logical SHA-256과 구조 검증 결과만
+남긴다.
 
 ## 2. 사전 조건
 
@@ -46,7 +48,8 @@ external system은 허용하지 않는다. registry JSON과 각 token digest도 
 2. C6c canonical `.env`, Compose path, project name, source revision evidence와 production root owner/mode를
    검증한다. `.env`의 cache-target sync는 literal `false`여야 한다.
 3. raw Compose에 credential literal이 없고 resolved Compose에서 registry와 ordinary 7개 변수가 허가된
-   service의 정확한 environment path에만 있는지 확인한다.
+   service의 정확한 environment path에만 있는지 확인한다. frozen env SHA, raw/resolved Compose logical SHA,
+   protected role-binding logical SHA를 계산한다.
 4. running Map API에는 registry만, running PinVi API에는 ordinary 7개만 있고 restore-fence/recovery 원문이
    없는지 inspect digest 비교로 확인한다. 다른 container에는 네 role 이름·값이 없어야 한다.
 5. Map/PinVi DB migration head, active compatible pair readiness, backlog/DLQ/epoch 전제와 pinned
@@ -60,16 +63,20 @@ external system은 허용하지 않는다. registry JSON과 각 token digest도 
 1. operator가 재사용 가능한 고정 `cutover_id`, positive expected restore epoch와 감사 reason을 준비한다.
 2. manager 전용 command가 C6c 전역 lock을 획득하고 non-committed 기존 receipt/journal을 먼저 분류한다.
 3. active PinVi immutable image로 일회성 runner를 시작한다. ordinary command/consumer와 전용 recovery
-   credential만 runner process에 전달하며 argv·stdout/stderr에는 값을 넣지 않는다. restore-fence
-   credential은 이 runner에 전달하지 않는다.
+   credential만 runner process에 전달하며 argv·stdout/stderr에는 값을 넣지 않는다. Docker `-e value`나
+   Compose environment를 쓰지 않고 manager가 만든 owner-only 임시 secret file을 read-only mount한 뒤
+   고정 runner entrypoint가 내부에서 읽어 export한다. restore-fence credential은 이 runner에 전달하지 않는다.
 4. runner는 `sync=false`를 확인하고 pinned contract, source count/Merkle, recovery reconciliation과 completion을
    수행한다. 같은 cutover ID retry는 PinVi의 durable ledger와 idempotency key로 같은 결과에 수렴해야 한다.
 5. manager는 원문 credential과 resolved environment를 제외한 cutover ID, request ID, epoch, count,
    Merkle root, published count, contract pin, active/rollback image·source·logical identity를 owner-only
-   receipt에 fsync 후 원자 replace한다. runner container가 제거됐는지도 확인한다.
+   receipt에 frozen env/raw Compose/resolved Compose/role-binding logical SHA와 함께 fsync 후 원자 replace한다.
+   registry JSON과 개별 token digest는 receipt에 넣지 않는다. runner container/mount와 host secret file이
+   제거됐는지도 확인한다.
 
-runner 실패, signal, lock 경합, 결과 parse 오류, foreign receipt는 sync를 열지 않는다. 원격 성공 여부가
-불확실하면 같은 cutover ID로 재실행해 PinVi durable state가 결과를 확정하게 한다.
+runner 실패, signal, lock 경합, 결과 parse 오류, foreign/stale receipt는 sync를 열지 않는다. 모든 종료
+경로에서 orphan container/mount/secret file을 분류·정리한다. 원격 성공 여부가 불확실하면 같은 cutover
+ID로 재실행해 PinVi durable state가 결과를 확정하게 한다.
 
 ## 4. sync enable phase
 
@@ -86,7 +93,9 @@ runner 실패, signal, lock 경합, 결과 parse 오류, foreign receipt는 sync
    count/Merkle/high-watermark를 통과하는지 확인한다.
 6. 기존 full compatible-pair validator로 Map runtime 네 개와 PinVi API의 image ID, source provenance,
    singleton/container name/readiness와 모든 protected secret isolation을 다시 attestation한다.
-7. 검증 증거를 `verified`, terminal 결과를 `committed`로 각각 fsync한 뒤 성공을 반환한다.
+7. n150 causal canary로 고유 command→Map event→PinVi DB/cache 반영→ACK의 인과 사슬과 lag 0, DLQ 0,
+   initial receipt의 count/Merkle 일치를 확인한다. 하나라도 실패하면 rollback으로 전이한다.
+8. 검증 증거를 `verified`, terminal 결과를 `committed`로 각각 fsync한 뒤 성공을 반환한다.
 
 재생성 또는 attestation 실패 시 `rollback_preparing`을 먼저 기록하고 frozen 이전 `.env`를 복원한 뒤
 `rollback_env_restored`를 기록한다. `rollback_recreate_started` 뒤 같은 immutable image의 PinVi API를
@@ -100,8 +109,8 @@ freeze하고 journal의 transaction identity와 exact 대조한 뒤에만 다음
 
 ## 5. 완료 증거와 금지 사항
 
-완료 증거는 initial/enable receipt ID와 SHA, active/rollback pair logical hash, old/new env SHA,
-각 durable journal phase, Map/PinVi source revision,
+완료 증거는 initial/enable receipt ID와 SHA, frozen env/raw Compose/resolved Compose/role-binding logical SHA,
+active/rollback pair logical hash, old/new env SHA, 각 durable journal phase, Map/PinVi source revision,
 contract pin, safe count/Merkle/published 값, startup/pair attestation 결과다. 원문 token, resolved Compose,
 Docker inspect 원문, `.env` bytes, bearer header는 audit·JSON 출력·로그·receipt에 남기지 않는다.
 
@@ -110,10 +119,13 @@ Docker inspect 원문, `.env` bytes, bearer header는 audit·JSON 출력·로그
 - ordinary PinVi API에 restore-fence/recovery token 주입
 - initial-cutover runner에 쓰지 않는 restore-fence token 주입
 - Map principal registry에 원문 token 저장
+- registry JSON이나 개별 token digest를 receipt/audit/log에 출력
+- elevated recovery token을 Docker `-e value` 또는 Compose environment로 전달
 - `docker compose config` resolved 결과를 파일·CI artifact·로그로 보존
 - C6c 전역 lock 밖에서 `.env`, PinVi API runtime 또는 receipt 변경
 - mutable tag로 runner/recreate 실행
 - initial receipt 없이 sync enable
 - `enable_preparing` fsync 없이 `.env`를 `true`로 변경
 - cache-target generation/health/pin 검증을 통과하지 않은 stale rollback pair 보존 또는 실행
+- causal canary 실패를 무시하고 terminal enable commit
 - pair attestation 실패를 warning으로 낮춰 계속 진행
