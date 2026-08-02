@@ -37,7 +37,7 @@ CACHE_TARGET_PRODUCTION_PINS = CacheTargetProductionPinManifest(
         "622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2"
     ),
     map_functional_owner_revision="9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0",
-    map_release_revision="0b0a0cb5767f25284506cb76d47c10ebce8fa84f",
+    map_release_revision="d50bb2c53c179d182b9cf017308df075b691414e",
     pinvi_reviewed_candidate_revision="6ac8baae2814fae5b16c95846ee40d77cc7fe283",
     pinvi_release_revision="4943282006139fa3b4ef3cb247780bfd9721b4c7",
 )
