@@ -76,6 +76,8 @@ def test_pin_boundary_audit_requires_one_exact_typed_row(
     command = runner.call_args.args[0]
     assert f"transaction_id={_TRANSACTION_ID}" in command
     assert not any("password" in argument.lower() for argument in command)
+    assert command[-1].count("encode(") == 6
+    assert "\\x" not in command[-1]
 
     runner.return_value = b""
     with pytest.raises(DeploymentContractError, match="audit row"):
