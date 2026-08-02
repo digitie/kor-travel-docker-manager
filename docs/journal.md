@@ -28,6 +28,11 @@ token은 Docker inspect metadata에 남지 않는 owner-only secret-file/고정 
 종료 경로에서 orphan을 정리한다. terminal enable 전에는 command→Map event→PinVi DB/cache→ACK, lag/DLQ,
 count/Merkle를 확인하는 n150 causal canary를 필수 rollback gate로 추가했다.
 
+첫 구현 checkpoint로 Map API registry와 PinVi ordinary 7개 변수 및 명시 API base URL을 Compose에 배치했다.
+별도 contract validator는 canonical consumer ID, 정확한 네 principal·role scope·`["pinvi"]`, token digest,
+네 role/legacy token 상호 분리와 pin 형식을 검증한다. restore-fence/recovery 원문은 manager-only로 분류하고
+raw/resolved/runtime protected name/value 경계에 registry JSON과 digest까지 포함했다.
+
 ## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
 
 production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,

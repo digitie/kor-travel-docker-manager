@@ -27,6 +27,23 @@ from urllib.parse import quote, urlencode, urlsplit
 import yaml
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services.cache_target_contract import (
+    MANAGER_ONLY_TOKEN_ENV_NAMES as CACHE_TARGET_MANAGER_ONLY_ENV_NAMES,
+)
+from kor_travel_docker_manager.services.cache_target_contract import (
+    MAP_REGISTRY_ENV as CACHE_TARGET_REGISTRY_ENV,
+)
+from kor_travel_docker_manager.services.cache_target_contract import (
+    PINVI_ORDINARY_ENV_NAMES as CACHE_TARGET_ORDINARY_ENV_NAMES,
+)
+from kor_travel_docker_manager.services.cache_target_contract import (
+    PROTECTED_ENV_NAMES as CACHE_TARGET_PROTECTED_ENV_NAMES,
+)
+from kor_travel_docker_manager.services.cache_target_contract import (
+    CacheTargetRuntimeContract,
+    load_cache_target_runtime_contract,
+)
+
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
@@ -54,6 +71,7 @@ _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
 _PINVI_READ_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
 _PINVI_CANCEL_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"
+_PINVI_CACHE_API_BASE_URL_ENV = "PINVI_KOR_TRAVEL_MAP_API_BASE_URL"
 _MAP_UI_USERNAME_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
 _MAP_UI_PASSWORD_HASH_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
 _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
@@ -97,7 +115,59 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
         _PINVI_ADMIN_PASSWORD_ENV,
         "KTDM_C6C_CANCEL_PROBE_JOB_ID",
     }
-)
+) | CACHE_TARGET_MANAGER_ONLY_ENV_NAMES
+_CACHE_TARGET_MAP_ENV_NAMES = frozenset({CACHE_TARGET_REGISTRY_ENV})
+_CACHE_TARGET_PINVI_ENV_NAMES = CACHE_TARGET_ORDINARY_ENV_NAMES
+_CACHE_TARGET_ALLOWED_API_ENV_SOURCES = {
+    (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): CACHE_TARGET_REGISTRY_ENV,
+    **{
+        (_PINVI_API_SERVICE, env_name): env_name
+        for env_name in CACHE_TARGET_ORDINARY_ENV_NAMES
+    },
+    (_PINVI_API_SERVICE, _PINVI_CACHE_API_BASE_URL_ENV): (
+        _PINVI_CACHE_API_BASE_URL_ENV
+    ),
+}
+_CACHE_TARGET_CANONICAL_API_ENV_VALUES = {
+    (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): (
+        "${KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS:-[]}"
+    ),
+    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED"): (
+        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED:-false}"
+    ),
+    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN"): (
+        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN:-}"
+    ),
+    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN"): (
+        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN:-}"
+    ),
+    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID"): (
+        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID:-pinvi-cache-target-consumer}"
+    ),
+    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256"): (
+        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256:-}"
+    ),
+    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION"): (
+        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION:-}"
+    ),
+    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION"): (
+        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION:-}"
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CACHE_API_BASE_URL_ENV): (
+        "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
+    ),
+}
+_CACHE_TARGET_RESOLVED_DEFAULTS = {
+    CACHE_TARGET_REGISTRY_ENV: "[]",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": "false",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": "pinvi-cache-target-consumer",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": "",
+    _PINVI_CACHE_API_BASE_URL_ENV: "http://127.0.0.1:12701",
+}
 _MAP_UI_AUTH_ENV_NAMES = frozenset(
     {
         _MAP_UI_USERNAME_ENV,
@@ -156,6 +226,7 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         _MAP_CURSOR_SIGNING_SECRET_ENV
     ),
+    **_CACHE_TARGET_ALLOWED_API_ENV_SOURCES,
 }
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
@@ -200,6 +271,7 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         (_MAP_API_SERVICE, env_name): value
         for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
     },
+    **_CACHE_TARGET_CANONICAL_API_ENV_VALUES,
 }
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
@@ -209,6 +281,7 @@ _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
     }
+    | CACHE_TARGET_PROTECTED_ENV_NAMES
 )
 _C6C_RUNTIME_IDENTIFIERS = frozenset(
     {
@@ -440,6 +513,7 @@ class C6cDeploymentConfig:
     pinvi_container: str
     contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
+    cache_target: CacheTargetRuntimeContract | None = field(default=None, repr=False)
 
     @property
     def production(self) -> bool:
@@ -932,6 +1006,23 @@ def load_c6c_deployment_config_from_environment(
             "Map UI runtime authentication environment is invalid"
         )
 
+    cache_target = load_cache_target_runtime_contract(
+        values,
+        require_nonempty=deployment_environment == "production",
+        legacy_tokens=(
+            values.get(_MAP_READ_ENV, ""),
+            values.get(_MAP_CANCEL_ENV, ""),
+            values.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
+            values.get(_MAP_UI_SESSION_SECRET_ENV, ""),
+            values.get(_MAP_ADMIN_PROXY_ENV, ""),
+            values.get(_MAP_SERVICE_TOKEN_ENV, ""),
+            values.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
+            values.get(_MAP_UI_PASSWORD_ENV, ""),
+            values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
+            values.get("PINVI_JWT_SECRET_KEY", ""),
+        ),
+        error_type=DeploymentContractError,
+    )
     config = C6cDeploymentConfig(
         deployment_environment=deployment_environment,
         pinvi_environment=pinvi_environment,
@@ -950,6 +1041,7 @@ def load_c6c_deployment_config_from_environment(
         map_cursor_signing_secret=values.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
         pinvi_container=values.get("PINVI_API_CONTAINER", "pinvi-api-latest"),
         contract_generation=contract_generation,
+        cache_target=cache_target,
         smoke=C6cSmokeConfig(
             pinvi_api_base_url=f"http://127.0.0.1:{pinvi_api_port}",
             map_ui_base_url=f"http://127.0.0.1:{map_ui_port}",
@@ -1154,6 +1246,11 @@ def _validate_production_config(
         raise DeploymentContractError(
             "production C6c deployment requires an explicit PinVi Map base URL"
         )
+    if values.get(_PINVI_CACHE_API_BASE_URL_ENV, "").strip() != config.base_url:
+        raise DeploymentContractError(
+            "production PINVI_KOR_TRAVEL_MAP_API_BASE_URL must exactly match "
+            "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL"
+        )
 
     try:
         parsed = urlsplit(config.base_url)
@@ -1259,6 +1356,13 @@ def validate_resolved_compose_secret_isolation(
         raise DeploymentContractError("resolved compose PinVi mode must be production")
     if pinvi_environment.get("PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL") != config.base_url:
         raise DeploymentContractError("resolved compose PinVi Map base URL is invalid")
+    if (
+        config.cache_target is not None
+        and pinvi_environment.get(_PINVI_CACHE_API_BASE_URL_ENV) != config.base_url
+    ):
+        raise DeploymentContractError(
+            "resolved compose PinVi cache-target Map base URL is invalid"
+        )
 
     expected = {
         _MAP_API_SERVICE: {
@@ -1295,6 +1399,34 @@ def validate_resolved_compose_secret_isolation(
             ),
         },
     }
+    if config.cache_target is not None:
+        expected[_MAP_API_SERVICE][CACHE_TARGET_REGISTRY_ENV] = (
+            _compose_resolved_escaped_value(config.cache_target.registry_json)
+        )
+        expected[_PINVI_API_SERVICE].update(
+            {
+                name: _compose_resolved_escaped_value(value)
+                for name, value in config.cache_target.ordinary_environment.items()
+            }
+        )
+    elif (
+        CACHE_TARGET_REGISTRY_ENV in map_environment
+        or CACHE_TARGET_ORDINARY_ENV_NAMES.intersection(pinvi_environment)
+    ):
+        expected[_MAP_API_SERVICE][CACHE_TARGET_REGISTRY_ENV] = "[]"
+        expected[_PINVI_API_SERVICE].update(
+            {
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": "false",
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": "",
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": "",
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": (
+                    "pinvi-cache-target-consumer"
+                ),
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": "",
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": "",
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": "",
+            }
+        )
     for service_name, expected_environment in expected.items():
         service = _service_mapping(services, service_name)
         environment = _environment_mapping(service.get("environment"))
@@ -1378,6 +1510,29 @@ def validate_resolved_compose_secret_isolation(
             for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
         },
     }
+    if config.cache_target is not None:
+        allowed_paths[
+            ("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)
+        ] = _compose_resolved_escaped_value(config.cache_target.registry_json)
+        allowed_paths.update(
+            {
+                ("services", _PINVI_API_SERVICE, "environment", name): (
+                    _compose_resolved_escaped_value(value)
+                )
+                for name, value in config.cache_target.ordinary_environment.items()
+            }
+        )
+    elif CACHE_TARGET_REGISTRY_ENV in map_environment:
+        allowed_paths[
+            ("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)
+        ] = "[]"
+        allowed_paths.update(
+            {
+                ("services", _PINVI_API_SERVICE, "environment", name): value
+                for name, value in expected[_PINVI_API_SERVICE].items()
+                if name in CACHE_TARGET_ORDINARY_ENV_NAMES
+            }
+        )
     for path, scalar in _walk_scalars(resolved):
         if path in allowed_paths or (
             path[-1:] == ("<key>",) and path[:-1] in allowed_paths
@@ -1392,6 +1547,7 @@ def validate_resolved_compose_secret_isolation(
                 | _MAP_UI_AUTH_ENV_NAMES
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+                | CACHE_TARGET_PROTECTED_ENV_NAMES
             )
         ):
             raise DeploymentContractError(
@@ -1412,6 +1568,14 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
                 _compose_resolved_escaped_value(config.smoke.cancel_probe_job_id),
                 _compose_resolved_escaped_value(config.contract_generation),
+                *(
+                    _compose_resolved_escaped_value(value)
+                    for value in (
+                        config.cache_target.protected_values
+                        if config.cache_target is not None
+                        else ()
+                    )
+                ),
             )
         ):
             raise DeploymentContractError(
@@ -1435,6 +1599,7 @@ def validate_resolved_compose_candidate_protected_values(
             environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
         ),
     )
+    cache_target = _load_candidate_cache_target_contract(environment)
     _assert_candidate_single_file_boundary(resolved, environment=environment)
     services = resolved.get("services")
     if not isinstance(services, Mapping):
@@ -1453,11 +1618,20 @@ def validate_resolved_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | CACHE_TARGET_PROTECTED_ENV_NAMES
     )
-    protected_values = tuple(
+    protected_values = (
+        *(
         _compose_resolved_escaped_value(value)
         for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
         if (value := environment.get(name, ""))
+        ),
+        *(
+            _compose_resolved_escaped_value(value)
+            for value in (
+                cache_target.protected_values if cache_target is not None else ()
+            )
+        ),
     )
     allowed_paths = {
         ("services", service_name, "environment", target_name)
@@ -1494,13 +1668,15 @@ def validate_resolved_compose_candidate_protected_values(
             source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get(
                 (allowed_service, target_name)
             )
-            expected = (
-                _compose_resolved_escaped_value(environment.get(source_name, ""))
-                if source_name is not None
-                else _CANDIDATE_CANONICAL_API_ENV_VALUES[
+            if source_name is not None:
+                source_value = environment.get(source_name)
+                if source_value is None:
+                    source_value = _CACHE_TARGET_RESOLVED_DEFAULTS.get(source_name, "")
+                expected = _compose_resolved_escaped_value(source_value)
+            else:
+                expected = _CANDIDATE_CANONICAL_API_ENV_VALUES[
                     (allowed_service, target_name)
                 ]
-            )
             if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
                 raise ComposeCandidateContractError(
                     f"resolved compose candidate {service_name}.{target_name} wiring is invalid"
@@ -1555,6 +1731,31 @@ def validate_resolved_compose_candidate_protected_values(
         protected_names=protected_names,
         protected_values=protected_values,
         resolved_document=True,
+    )
+
+
+def _load_candidate_cache_target_contract(
+    environment: Mapping[str, str],
+) -> CacheTargetRuntimeContract | None:
+    return load_cache_target_runtime_contract(
+        environment,
+        require_nonempty=(
+            environment.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
+            == "production"
+        ),
+        legacy_tokens=(
+            environment.get(_MAP_READ_ENV, ""),
+            environment.get(_MAP_CANCEL_ENV, ""),
+            environment.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
+            environment.get(_MAP_UI_SESSION_SECRET_ENV, ""),
+            environment.get(_MAP_ADMIN_PROXY_ENV, ""),
+            environment.get(_MAP_SERVICE_TOKEN_ENV, ""),
+            environment.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
+            environment.get(_MAP_UI_PASSWORD_ENV, ""),
+            environment.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
+            environment.get("PINVI_JWT_SECRET_KEY", ""),
+        ),
+        error_type=ComposeCandidateContractError,
     )
 
 
@@ -1831,6 +2032,7 @@ def validate_compose_env_file_isolation(
                         | _MAP_UI_AUTH_ENV_NAMES
                         | _MAP_PRODUCTION_SECRET_ENV_NAMES
                         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+                        | CACHE_TARGET_PROTECTED_ENV_NAMES
                     )
                     for key in env_keys
                 ):
@@ -1858,6 +2060,7 @@ def validate_compose_candidate_protected_values(
                 environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
             ),
         )
+    cache_target = _load_candidate_cache_target_contract(environment)
     _assert_candidate_single_file_boundary(candidate, environment=environment)
     services = candidate.get("services")
     if not isinstance(services, Mapping):
@@ -1876,11 +2079,15 @@ def validate_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | CACHE_TARGET_PROTECTED_ENV_NAMES
     )
-    protected_values = tuple(
+    protected_values = (
+        *(
         value
         for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
         if (value := environment.get(name, ""))
+        ),
+        *(cache_target.protected_values if cache_target is not None else ()),
     )
     allowed_paths = {
         ("services", service_name, "environment", target_name)
@@ -3968,6 +4175,13 @@ def validate_runtime_secret_isolation(
             _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
         },
     }
+    if config.cache_target is not None:
+        expected[config.map_container][CACHE_TARGET_REGISTRY_ENV] = (
+            config.cache_target.registry_json
+        )
+        expected[config.pinvi_container].update(
+            config.cache_target.ordinary_environment
+        )
     for required_container in expected:
         if required_container not in container_configs:
             raise DeploymentContractError(
@@ -3988,6 +4202,11 @@ def validate_runtime_secret_isolation(
             config.smoke.pinvi_admin_password,
             config.smoke.cancel_probe_job_id,
             config.contract_generation,
+            *(
+                config.cache_target.protected_values
+                if config.cache_target is not None
+                else ()
+            ),
         )
         if secret
     )
@@ -3997,6 +4216,7 @@ def validate_runtime_secret_isolation(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | CACHE_TARGET_PROTECTED_ENV_NAMES
     )
     for container_name, runtime_config in container_configs.items():
         if not isinstance(runtime_config, Mapping):
@@ -4020,6 +4240,7 @@ def validate_runtime_secret_isolation(
                 | _MAP_UI_AUTH_ENV_NAMES
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+                | CACHE_TARGET_PROTECTED_ENV_NAMES
             ):
                 if env_name not in allowed:
                     raise DeploymentContractError(

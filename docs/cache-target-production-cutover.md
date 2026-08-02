@@ -22,6 +22,11 @@ PinVi ordinary API에는 정확히 다음 7개만 전달한다.
 - `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION`
 - `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION`
 
+이 7개 기능 변수와 별도로 Map cache-target HTTP endpoint는
+`PINVI_KOR_TRAVEL_MAP_API_BASE_URL=http://127.0.0.1:12701`을 명시 전달한다. 암묵 localhost default에
+의존하지 않으며 기존 admin base URL과 같은 production root로 exact 검증한다. consumer ID는 PinVi 정본인
+`pinvi-cache-target-consumer`로 고정한다.
+
 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RESTORE_FENCE_TOKEN`과
 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RECOVERY_TOKEN`은 ordinary API, PinVi Web/Dagster, Map UI/Dagster와
 다른 장기 실행 container에 전달하지 않는다. 전용 initial-cutover runner에는 실제 사용하는 recovery

@@ -1142,6 +1142,9 @@ generation pin의 정확한 7개 변수만 전달한다. restore-fence/recovery 
 장기 실행 service에 전달하지 않는다. `sync=false`에서 C6c 전역 lock과 frozen canonical evidence를
 검증한 dedicated initial-cutover runner에는 실제 사용하는 command·consumer·recovery token만 실행 시간
 동안 주입한다. restore-fence token은 Map registry와 향후 별도 restore 작업 경계에만 보관한다.
+Map cache-target endpoint는 7개 기능 변수와 별개인 `PINVI_KOR_TRAVEL_MAP_API_BASE_URL`로 명시하고 기존
+admin base URL과 같은 production loopback root에 결박한다. consumer ID는
+`pinvi-cache-target-consumer`만 허용한다.
 
 네 role token은 서로 및 기존 Map/PinVi service/admin/ops credential과 달라야 한다. Map registry는
 command·consumer·restore-fence·recovery 정확히 네 principal만 허용한다. 각 principal은 각각

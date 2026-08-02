@@ -181,12 +181,12 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 - [x] ADR-28과 [`cache-target-production-cutover.md`](cache-target-production-cutover.md)에
       ordinary runtime 최소 권한, 4-role/legacy 상호 분리, default-off 최초 cutover와 receipt,
       sync enable 뒤 compatible-pair attestation 순서를 먼저 고정한다.
-- [ ] Map API에는 `KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS` JSON registry만 전달하고,
+- [x] Map API에는 `KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS` JSON registry만 전달하고,
       PinVi ordinary API에는 정확히 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED`,
       `..._COMMAND_TOKEN`, `..._CONSUMER_TOKEN`, `..._CONSUMER_ID`,
       `..._EXPECTED_OPENAPI_SHA256`, `..._EXPECTED_SOURCE_REVISION`,
       `..._EXPECTED_CONTRACT_GENERATION`만 전달한다.
-- [ ] command/consumer/restore-fence/recovery 네 token은 서로 및 기존 Map/PinVi
+- [x] command/consumer/restore-fence/recovery 네 token은 서로 및 기존 Map/PinVi
       service/admin/ops token과 달라야 한다. Map registry의 digest·principal·consumer·scope·
       external system을 원문 token과 교차 검증한다. registry는 정확히 네 principal, role별 최소 scope,
       `["pinvi"]`만 허용하고 extra principal/scope/system을 거부한다. registry JSON과 digest를 포함해
