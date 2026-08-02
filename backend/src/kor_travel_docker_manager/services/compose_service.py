@@ -3711,7 +3711,15 @@ class ComposeService:
                     raise DeploymentContractError(
                         "existing cache-target window belongs to another request"
                     )
-            if journal.phase in {"runtime_activated", "rolled_back"}:
+            if journal.phase == "rolled_back":
+                return self._cache_target_window_result(journal, resumed=True)
+            if journal.phase == "runtime_activated":
+                self._validate_cache_target_runtime_activated_terminal(
+                    journal_path=journal_path,
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                )
                 return self._cache_target_window_result(journal, resumed=True)
             with cache_target_window_mutation_scope(
                 journal.transaction_id,
@@ -3729,6 +3737,72 @@ class ComposeService:
                     wait_timeout=wait_timeout,
                     lock_path=lock_snapshot.lock_path,
                 )
+
+    def _validate_cache_target_runtime_activated_terminal(
+        self,
+        *,
+        journal_path: Path,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+    ) -> None:
+        """완료 journal도 current receipt/pair attestation 뒤에만 성공 재보고한다."""
+
+        contract = config.cache_target
+        manifest_path = transaction.manifest_path
+        candidate_pair_sha256 = journal.candidate_pair_sha256
+        if (
+            journal.phase != "runtime_activated"
+            or not config.production
+            or contract is None
+            or contract.sync_enabled != "true"
+            or manifest_path is None
+            or candidate_pair_sha256 is None
+        ):
+            raise DeploymentContractError(
+                "cache-target activated terminal contract is invalid"
+            )
+        self._validate_resolved_compose_contract(config, transaction=transaction)
+        receipt = _read_bound_cache_target_initial_receipt(
+            journal_path.parent,
+            journal,
+        )
+        enable_journal = read_enable_cutover_journal(
+            journal_path.parent / "cache-target-enable-v1.json"
+        )
+        if (
+            enable_journal.phase != "committed"
+            or enable_journal.cutover_id != journal.cutover_id
+            or enable_journal.window_transaction_id != journal.transaction_id
+            or enable_journal.initial_receipt_sha256
+            != initial_receipt_logical_sha256(receipt)
+            or enable_journal.active_pair_sha256 != candidate_pair_sha256
+            or enable_journal.rollback_pair_sha256 != candidate_pair_sha256
+        ):
+            raise DeploymentContractError(
+                "cache-target activated enable evidence is foreign"
+            )
+        manifest = load_pair_manifest(manifest_path)
+        if (
+            manifest.rollback is None
+            or _compatible_pair_logical_sha256(manifest.active)
+            != candidate_pair_sha256
+            or _compatible_pair_logical_sha256(manifest.rollback)
+            != candidate_pair_sha256
+        ):
+            raise DeploymentContractError(
+                "cache-target activated manifest is foreign"
+            )
+        _require_cache_target_release(
+            config,
+            pairs=(manifest.active, manifest.rollback),
+        )
+        current_pair = self._inspect_current_pair(config)
+        if not self._pair_matches(current_pair, manifest.active):
+            raise DeploymentContractError(
+                "cache-target activated runtime differs from the manifest"
+            )
+        self._attest_cache_target_pair(config, manifest, transaction)
 
     def _run_cache_target_window_unlocked(
         self,

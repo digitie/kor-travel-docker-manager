@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,13 +11,21 @@ from unittest.mock import Mock
 import pytest
 
 from kor_travel_docker_manager.services import c6c_deployment
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.c6c_deployment import (
+    CompatibleImagePair,
+    CompatiblePairManifest,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.cache_target_backup import PinBoundaryAuditRow
 from kor_travel_docker_manager.services.cache_target_cutover import (
     CacheTargetFrozenEvidence,
+    EnableCutoverJournal,
     InitialCutoverReceipt,
     initial_receipt_logical_sha256,
     write_cutover_state,
+)
+from kor_travel_docker_manager.services.cache_target_enable import (
+    read_enable_cutover_journal,
 )
 from kor_travel_docker_manager.services.cache_target_window import (
     CacheTargetWindowJournal,
@@ -40,6 +49,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
 )
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
+    _compatible_pair_logical_sha256,
     _read_bound_cache_target_initial_receipt,
 )
 
@@ -122,6 +132,69 @@ def _initial_committed_journal() -> tuple[
             external_event_count=receipt.published,
         ),
         receipt,
+    )
+
+
+def _terminal_pair() -> CompatibleImagePair:
+    return CompatibleImagePair(
+        map_image_id=f"sha256:{'1' * 64}",
+        map_ui_image_id=f"sha256:{'2' * 64}",
+        map_dagster_image_id=f"sha256:{'3' * 64}",
+        map_dagster_daemon_image_id=f"sha256:{'4' * 64}",
+        map_source_revision="a" * 40,
+        pinvi_image_id=f"sha256:{'5' * 64}",
+        pinvi_source_revision="b" * 40,
+        contract_generation="7",
+        recorded_at="2026-08-02T00:00:00+00:00",
+    )
+
+
+def _runtime_activated_journal(
+    pair: CompatibleImagePair,
+) -> tuple[CacheTargetWindowJournal, InitialCutoverReceipt]:
+    journal = replace(
+        _map_final_verified_journal(),
+        candidate_pair_sha256=_compatible_pair_logical_sha256(pair),
+    )
+    receipt = _initial_receipt_for_journal(journal)
+    journal = replace(
+        journal,
+        initial_receipt_sha256=initial_receipt_logical_sha256(receipt),
+    )
+    journal = transition_cache_target_window(
+        journal,
+        "final_boundary_verified",
+        pin_final_receipt_sha256="8" * 64,
+    )
+    journal = transition_cache_target_window(journal, "forward_committed")
+    return transition_cache_target_window(journal, "runtime_activated"), receipt
+
+
+def _write_terminal_enable_journal(
+    state_directory: Path,
+    journal: CacheTargetWindowJournal,
+    receipt: InitialCutoverReceipt,
+) -> None:
+    pair_sha256 = journal.candidate_pair_sha256
+    assert pair_sha256 is not None
+    write_cutover_state(
+        state_directory / "cache-target-enable-v1.json",
+        EnableCutoverJournal(
+            version=2,
+            transaction_id="55555555-5555-4555-8555-555555555555",
+            cutover_id=journal.cutover_id,
+            window_transaction_id=journal.transaction_id,
+            attempt=1,
+            supersedes_transaction_id=None,
+            phase="committed",
+            initial_receipt_sha256=initial_receipt_logical_sha256(receipt),
+            old_env_sha256="1" * 64,
+            new_env_sha256="2" * 64,
+            enabled_resolved_compose_sha256="3" * 64,
+            active_pair_sha256=pair_sha256,
+            rollback_pair_sha256=pair_sha256,
+            verified_evidence_sha256="4" * 64,
+        ),
     )
 
 
@@ -896,6 +969,209 @@ def test_every_post_initial_resume_rejects_replaced_receipt_before_mutation(
         )
 
     mutation.assert_not_called()
+
+
+def _install_public_terminal_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    ComposeService,
+    CacheTargetWindowJournal,
+    InitialCutoverReceipt,
+    Path,
+    Mock,
+    Mock,
+]:
+    service = ComposeService()
+    pair = _terminal_pair()
+    journal, receipt = _runtime_activated_journal(pair)
+    journal_path = tmp_path / "cache-target-window-v1.json"
+    manifest_path = tmp_path / "compatible-pair-v4.json"
+    write_cache_target_window(journal_path, journal)
+    write_cutover_state(
+        tmp_path / "cache-target-initial-cutover-v1.json",
+        receipt,
+    )
+    _write_terminal_enable_journal(tmp_path, journal, receipt)
+    transaction = SimpleNamespace(
+        manifest_path=str(manifest_path),
+        resolved={},
+        environment=SimpleNamespace(effective={}),
+    )
+    config = SimpleNamespace(
+        production=True,
+        cache_target=SimpleNamespace(sync_enabled="true"),
+    )
+    manifest = CompatiblePairManifest(version=4, active=pair, rollback=pair)
+    mutation = Mock(side_effect=AssertionError("terminal mutation must not run"))
+    attestor = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace(lock_path=str(tmp_path / "lock"))),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=config),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._require_cache_target_release",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.cache_target_window_journal_path",
+        Mock(return_value=journal_path),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_pair_manifest",
+        Mock(return_value=manifest),
+    )
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", Mock())
+    monkeypatch.setattr(service, "_inspect_current_pair", Mock(return_value=pair))
+    monkeypatch.setattr(service, "_pair_matches", Mock(return_value=True))
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
+    monkeypatch.setattr(service, "_run_cache_target_window_unlocked", mutation)
+    monkeypatch.setattr(service, "_run_frozen_recovery", mutation)
+    return service, journal, receipt, journal_path, mutation, attestor
+
+
+def test_public_runtime_activated_retry_revalidates_terminal_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, journal, _receipt, _path, mutation, attestor = (
+        _install_public_terminal_context(tmp_path, monkeypatch)
+    )
+
+    result = service.run_cache_target_cutover(
+        cutover_id=journal.cutover_id,
+        expected_restore_epoch=journal.expected_restore_epoch,
+        reason="production H35 and generation 7 cutover",
+    )
+
+    assert result["success"] is True
+    assert result["resumed"] is True
+    mutation.assert_not_called()
+    attestor.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "replacement_kind",
+    [
+        "missing",
+        "digest_replacement",
+        "foreign_cutover",
+        "foreign_epoch",
+        "foreign_compose",
+        "foreign_pair",
+    ],
+)
+def test_public_runtime_activated_retry_rejects_foreign_initial_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_kind: str,
+) -> None:
+    service, journal, receipt, _path, mutation, attestor = (
+        _install_public_terminal_context(tmp_path, monkeypatch)
+    )
+    receipt_path = tmp_path / "cache-target-initial-cutover-v1.json"
+    if replacement_kind == "missing":
+        receipt_path.unlink()
+    else:
+        replacement = receipt
+        if replacement_kind == "digest_replacement":
+            replacement = replace(
+                receipt,
+                request_id="66666666-6666-4666-8666-666666666666",
+            )
+        elif replacement_kind == "foreign_cutover":
+            replacement = replace(
+                receipt,
+                cutover_id="44444444-4444-4444-8444-444444444444",
+            )
+        elif replacement_kind == "foreign_epoch":
+            replacement = replace(receipt, expected_restore_epoch=4)
+        elif replacement_kind == "foreign_compose":
+            replacement = replace(
+                receipt,
+                evidence=replace(
+                    receipt.evidence,
+                    raw_compose_sha256="f" * 64,
+                ),
+            )
+        elif replacement_kind == "foreign_pair":
+            replacement = replace(
+                receipt,
+                evidence=replace(
+                    receipt.evidence,
+                    rollback_pair_sha256="f" * 64,
+                ),
+            )
+        write_cutover_state(receipt_path, replacement)
+
+    with pytest.raises(DeploymentContractError):
+        service.run_cache_target_cutover(
+            cutover_id=journal.cutover_id,
+            expected_restore_epoch=journal.expected_restore_epoch,
+            reason="production H35 and generation 7 cutover",
+        )
+
+    mutation.assert_not_called()
+    attestor.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "foreign_boundary",
+    ["enable_evidence", "manifest", "current_pair"],
+)
+def test_public_runtime_activated_retry_rejects_foreign_terminal_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    foreign_boundary: str,
+) -> None:
+    service, journal, _receipt, _path, mutation, attestor = (
+        _install_public_terminal_context(tmp_path, monkeypatch)
+    )
+    if foreign_boundary == "enable_evidence":
+        enable_path = tmp_path / "cache-target-enable-v1.json"
+        enable_journal = read_enable_cutover_journal(enable_path)
+        write_cutover_state(
+            enable_path,
+            replace(enable_journal, active_pair_sha256="f" * 64),
+        )
+    elif foreign_boundary == "manifest":
+        active = _terminal_pair()
+        foreign = replace(active, pinvi_source_revision="c" * 40)
+        monkeypatch.setattr(
+            "kor_travel_docker_manager.services.compose_service.load_pair_manifest",
+            Mock(
+                return_value=CompatiblePairManifest(
+                    version=4,
+                    active=active,
+                    rollback=foreign,
+                )
+            ),
+        )
+    elif foreign_boundary == "current_pair":
+        monkeypatch.setattr(service, "_pair_matches", Mock(return_value=False))
+
+    with pytest.raises(DeploymentContractError):
+        service.run_cache_target_cutover(
+            cutover_id=journal.cutover_id,
+            expected_restore_epoch=journal.expected_restore_epoch,
+            reason="production H35 and generation 7 cutover",
+        )
+
+    mutation.assert_not_called()
+    attestor.assert_not_called()
 
 
 def test_writer_fencing_failure_keeps_durable_nonterminal_journal(

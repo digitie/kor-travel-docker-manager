@@ -143,6 +143,9 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    cutover ID, restore epoch, env/raw·resolved Compose, active·rollback candidate identity와 exact 대조한다. 파일이
    없어졌거나 extra field가 생겼거나, 형식상 유효하더라도 다른 receipt로 교체됐으면 어떤 mutation도 시작하지
    않는다. 검증된 receipt 객체만 enable과 Map/Pin final baseline에 전달한다.
+   `runtime_activated` terminal 재호출도 단순 success fast path가 아니다. 같은 global lock에서 bound initial
+   receipt, committed enable evidence, final active·rollback manifest, 현재 running pair와 pair attestation을 다시
+   검증한 뒤에만 성공을 재보고한다. initial receipt가 없을 수 있는 `rolled_back` terminal은 이 규칙과 분리한다.
 
 허용 phase는 `prepared → writers_fencing → writers_fenced → backups_committed → candidate_built →
 pin_preflight_verified → map_preflight_verified → map_database_forwarded → databases_forwarded → csv_forwarded →
