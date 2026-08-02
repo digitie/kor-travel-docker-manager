@@ -1191,6 +1191,11 @@ release provenance를 가져야 한다. functional owner와 실제 image build/r
 cache-target contract의 모든 값이 canonical unset/default인 기존 C6c 배포에는 이 추가 gate를 적용하지 않고,
 부분 설정만 fail-close한다.
 
+PinVi #424의 단일 적대적 GO review와 squash merge가 완료되어 PinVi release는
+`4943282006139fa3b4ef3cb247780bfd9721b4c7`로 확정한다. Map release는 #924의 수정·merge SHA가 확정될
+때까지 기존 merge #923 값을 유지하며, 두 release가 모두 최종 고정되기 전에는 Manager exact-head 리뷰와
+운영 전환을 시작하지 않는다.
+
 2026-08-02 NO-GO 리뷰에서 기존 v4 old pair는 일반 deploy로 generation 7의 active=rollback 상태에 도달할 수
 없음이 확인됐다. 따라서 기존 manifest가 있는 production에는 one-time generation bootstrap을 둔다. 이 경로는
 sync=false exact candidate의 image/source/cache contract를 검증한 뒤 v4 active와 rollback을 같은 첫 generation 7
@@ -1218,7 +1223,9 @@ cross-repo DB identity는 prefix와 terminal NUL을 포함한 `h35-db-identity-v
 Pin 최종 경계의 cache command/claim/app queue 의미는 Manager가 재구현하지 않고 Pin-owned typed helper가 같은
 DB snapshot에서 검증한다. schema `0047` preflight는 read-only이고 schema `0048` final audit row는 append-only다.
 causal canary 뒤 Map-owned `gc` helper가 실제 bounded GC와 deterministic observation의 backlog 0/referenced 보존을
-증명한 뒤, Manager가 exact 5 writer를 모두 정지하고 별도 final fence를 확정한다. stopped Map verify의 full
+증명한 뒤, Manager가 exact 5 writer를 모두 정지하고 별도 final fence를 확정한다. deterministic observation
+ID는 versioned namespace `h35:{transaction_id}:cache-target-snapshot-gc:v1` 하나이며 이전 축약형은
+fail-close한다. stopped Map verify의 full
 stream/control/count/Merkle evidence를 Pin finalize request에 전달하며, Manager는 Pin receipt를 fresh DB audit
 exact 1행의 request/evidence/initial·final fence/prior/canary와 다시 대조한다. Pin audit INSERT는 stable final
 fence에서 제외하지만 Map application·Dagster write-counter hash는 verify 전과 finalize 전후 불변이어야 한다.

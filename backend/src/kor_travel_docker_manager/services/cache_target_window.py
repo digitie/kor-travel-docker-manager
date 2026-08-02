@@ -1110,7 +1110,9 @@ def _validate_map_gc_receipt(receipt: MapHelperReceipt) -> None:
     ) != (0, 0):
         raise DeploymentContractError("Map GC row-count evidence is invalid")
     checks = {check.name: check for check in receipt.checks}
-    expected_run_id = f"h35:{receipt.transaction_id}:gc"
+    expected_run_id = (
+        f"h35:{receipt.transaction_id}:cache-target-snapshot-gc:v1"
+    )
     exact = {
         "gc_lock_acquired": (True, True),
         "gc_not_skipped": (False, False),

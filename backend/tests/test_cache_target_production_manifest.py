@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from kor_travel_docker_manager.services import cache_target_production_manifest as manifest_module
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_contract import CacheTargetRuntimeContract
 from kor_travel_docker_manager.services.cache_target_production_manifest import (
@@ -35,29 +34,22 @@ def _contract() -> CacheTargetRuntimeContract:
     )
 
 
-def test_tracked_candidate_is_not_implicitly_promoted_to_release() -> None:
+def test_tracked_release_is_the_reviewed_pinvi_merge() -> None:
     assert CACHE_TARGET_PRODUCTION_PINS.pinvi_reviewed_candidate_revision == (
         "6ac8baae2814fae5b16c95846ee40d77cc7fe283"
     )
-    assert CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision is None
-
-    with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
-        require_cache_target_production_release(_contract())
+    assert CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision == (
+        "4943282006139fa3b4ef3cb247780bfd9721b4c7"
+    )
 
 
 def test_unconfigured_cache_target_does_not_require_release_pin() -> None:
     _require_cache_target_release(SimpleNamespace(cache_target=None))  # type: ignore[arg-type]
 
 
-def test_release_requires_exact_contract_candidate_and_both_pairs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    release = "a" * 40
-    monkeypatch.setattr(
-        manifest_module,
-        "CACHE_TARGET_PRODUCTION_PINS",
-        replace(CACHE_TARGET_PRODUCTION_PINS, pinvi_release_revision=release),
-    )
+def test_release_requires_exact_contract_candidate_and_both_pairs() -> None:
+    release = CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision
+    assert release is not None
     pairs = (
         SimpleNamespace(
             map_source_revision=CACHE_TARGET_PRODUCTION_PINS.map_release_revision,

@@ -52,11 +52,11 @@ OpenAPI SHA-256
 `9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`, Map release revision
 `0b0a0cb5767f25284506cb76d47c10ebce8fa84f`다. PinVi reviewed candidate
 `6ac8baae2814fae5b16c95846ee40d77cc7fe283`는 review 출발점의 감사 정보일 뿐 release가 아니며,
-`pinvi_release_revision`은 최종 exact HEAD의 단일 독립 적대적 GO review와 merge 전까지 명시적으로 비어 있다. 이 상태에서는
-production initial, enable, compatible-pair capture/deploy/rollback을 모두 mutation 전에 fail-close한다.
-candidate를 release로 자동 승격하거나 fallback으로 쓰지 않는다. PinVi merge 뒤 별도 final pin commit이
-merge/release SHA를 채우고 Map과 PinVi 각각의 build/release SHA를 active와 rollback pair 양쪽에 결박해야만
-cutover를 진행할 수 있다. functional owner revision은 API 계약 소유자를, build/release revision은 실제
+PinVi release revision은 적대적 GO review 뒤 squash merge된
+`4943282006139fa3b4ef3cb247780bfd9721b4c7`로 고정한다. candidate를 release로 자동 승격하거나
+fallback으로 쓰지 않는다. Map과 PinVi 각각의 build/release SHA를 active와 rollback pair 양쪽에 결박해야만
+cutover를 진행할 수 있다. Map #924 merge 뒤에는 이 문서와 tracked manifest의 Map release revision도 그
+exact merge SHA로 최종 고정해야 한다. functional owner revision은 API 계약 소유자를, build/release revision은 실제
 immutable image 출처를 뜻하므로 서로 대체하지 않는다. cache-target contract가 아예 설정되지 않은 기존
 production C6c 경로에는 이 gate를 적용하지 않는다. 모든 필드가 canonical unset/default이면 contract가
 없는 것으로 처리하되, 하나라도 부분 설정됐으면 기존 경로로 내려가지 않고 fail-close한다.
@@ -106,7 +106,9 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    compatible-pair rollback slot에 남기지 않고 frozen coupled rollback bundle에만 보존한다.
 4. 같은 lock/process에서 initial runner, sync enable, causal canary를 수행한 뒤 Map-owned `gc` helper로
    deterministic observation run에 결박된 실제 snapshot GC를 실행한다. acquired/non-skipped, bounded batch,
-   remaining backlog 0, referenced 보존과 observation-current 일치를 typed receipt로 검증한다. 그 다음
+   remaining backlog 0, referenced 보존과 observation-current 일치를 typed receipt로 검증한다. observation
+   ID는 `h35:{transaction_id}:cache-target-snapshot-gc:v1`이며 이전 축약형 `h35:{transaction_id}:gc`는
+   fail-close한다. 그 다음
    `final_writers_fencing`을 먼저 fsync하고 exact 5 writer를 모두 정지한다. 세 DB in-flight 0, Map Dagster run
    0, registry와 stopped state의 fresh final fence를 확정하고 Map 두 DB write-counter hash를 별도 결박한다.
    stopped DB에서 Map `verify`가 stream/control/epoch/etag/high-watermark/count/Merkle/backlog 0의 full typed

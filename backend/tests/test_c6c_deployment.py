@@ -12603,7 +12603,7 @@ def _allow_cache_target_release(
     )
 
 
-def test_cache_target_initial_cutover_blocks_unpinned_release_before_attestor(
+def test_cache_target_initial_cutover_blocks_foreign_contract_before_attestor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -12634,7 +12634,7 @@ def test_cache_target_initial_cutover_blocks_unpinned_release_before_attestor(
     )
     monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
 
-    with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
+    with pytest.raises(DeploymentContractError, match="tracked pin manifest"):
         service.run_cache_target_initial_cutover(
             cutover_id="11111111-1111-4111-8111-111111111111",
             expected_restore_epoch=3,
@@ -12644,7 +12644,7 @@ def test_cache_target_initial_cutover_blocks_unpinned_release_before_attestor(
     attestor.assert_not_called()
 
 
-def test_cache_target_window_blocks_unpinned_release_before_any_mutation(
+def test_cache_target_window_blocks_foreign_contract_before_any_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -12677,7 +12677,7 @@ def test_cache_target_window_blocks_unpinned_release_before_any_mutation(
     )
     monkeypatch.setattr(compose_service_module.subprocess, "run", docker_run)
 
-    with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
+    with pytest.raises(DeploymentContractError, match="tracked pin manifest"):
         service.run_cache_target_cutover(
             cutover_id="11111111-1111-4111-8111-111111111111",
             expected_restore_epoch=3,
@@ -12689,7 +12689,7 @@ def test_cache_target_window_blocks_unpinned_release_before_any_mutation(
     docker_run.assert_not_called()
 
 
-def test_cache_target_enable_blocks_unpinned_release_before_mutation(
+def test_cache_target_enable_blocks_foreign_contract_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -12713,7 +12713,7 @@ def test_cache_target_enable_blocks_unpinned_release_before_mutation(
     attestor = Mock()
     monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
 
-    with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
+    with pytest.raises(DeploymentContractError, match="tracked pin manifest"):
         service.enable_cache_target_sync()
 
     assert capture.call_count == 1

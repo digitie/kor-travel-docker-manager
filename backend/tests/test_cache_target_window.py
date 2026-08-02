@@ -173,8 +173,8 @@ def _map_gc_receipt(prior_receipt_digest: str) -> MapHelperReceipt:
             MapHelperCheck("gc_referenced_headers_preserved", 3, 3, True),
             MapHelperCheck(
                 "gc_observation_run_id",
-                f"h35:{_TRANSACTION_ID}:gc",
-                f"h35:{_TRANSACTION_ID}:gc",
+                f"h35:{_TRANSACTION_ID}:cache-target-snapshot-gc:v1",
+                f"h35:{_TRANSACTION_ID}:cache-target-snapshot-gc:v1",
                 True,
             ),
             MapHelperCheck(
@@ -1039,7 +1039,7 @@ def test_map_helper_receipt_rejects_runtime_mutation_and_extra_key() -> None:
     [
         ("remaining_items", 1),
         ("gc_lock_acquired", False),
-        ("gc_observation_run_id", "h35:foreign:gc"),
+        ("gc_observation_run_id", f"h35:{_TRANSACTION_ID}:gc"),
     ],
 )
 def test_map_gc_receipt_rejects_backlog_or_unobserved_state(

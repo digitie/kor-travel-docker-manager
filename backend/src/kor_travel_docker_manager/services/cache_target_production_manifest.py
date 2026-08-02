@@ -29,7 +29,7 @@ class CacheTargetPairProvenance(Protocol):
 
 
 # T-VN-41 production cutover의 tracked 정본이다. reviewed candidate는 감사 정보일
-# 뿐 release fallback이 아니다. PR merge 뒤 별도 final pin commit에서 release를 채운다.
+# 뿐 release fallback이 아니다. release는 적대적 리뷰를 통과한 exact squash merge SHA다.
 CACHE_TARGET_PRODUCTION_PINS = CacheTargetProductionPinManifest(
     version=1,
     contract_generation="7",
@@ -39,7 +39,7 @@ CACHE_TARGET_PRODUCTION_PINS = CacheTargetProductionPinManifest(
     map_functional_owner_revision="9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0",
     map_release_revision="0b0a0cb5767f25284506cb76d47c10ebce8fa84f",
     pinvi_reviewed_candidate_revision="6ac8baae2814fae5b16c95846ee40d77cc7fe283",
-    pinvi_release_revision=None,
+    pinvi_release_revision="4943282006139fa3b4ef3cb247780bfd9721b4c7",
 )
 
 

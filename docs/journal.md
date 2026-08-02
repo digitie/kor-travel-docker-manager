@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-02 (T-048 PinVi release pin과 Map GC observation 계약 정렬)
+
+PinVi #424가 단일 적대적 GO review 뒤 squash merge되어 exact release SHA
+`4943282006139fa3b4ef3cb247780bfd9721b4c7`가 확정됐다. tracked production manifest에 이 SHA를
+release로 고정해 candidate와 active·rollback pair provenance가 다른 PinVi source를 mutation 전에
+거부하도록 했다. reviewed candidate SHA는 자동 승격 근거가 아닌 감사 출발점으로 그대로 보존했다.
+
+merged PinVi의 final-boundary request 13개 필드와 append-only audit row의 request/evidence/Map evidence/
+initial·final fence/prior/canary 8개 대조 필드를 Manager parser·fresh DB query와 다시 대조해 동일함을
+확인했다. Map GC observation ID는 versioned namespace 정본인
+`h35:{transaction_id}:cache-target-snapshot-gc:v1`로 정렬하고 이전 `h35:{transaction_id}:gc` receipt를
+fail-close하는 회귀를 추가했다. Map #924 merge 뒤 `map_release_revision`을 final merge SHA로 바꾸고
+Manager exact-head 단일 적대적 리뷰를 진행한다.
+
 ## 2026-08-02 (T-048 race-free final fence와 실제 GC checkpoint D)
 
 causal canary 뒤 running writer의 순간적인 in-flight 0을 최종 경계로 승인하던 경쟁 조건을 제거했다. Map

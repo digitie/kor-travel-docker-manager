@@ -192,11 +192,9 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       `["pinvi"]`만 허용하고 extra principal/scope/system을 거부한다. registry JSON과 digest를 포함해
       raw/resolved/runtime 비인가 노출과 audit/log 누출을 차단한다.
 - [x] tracked production pin manifest에 generation `7`, exact Map OpenAPI SHA-256, Map functional owner
-      revision과 PinVi reviewed candidate를 기록했다. 문서 정본에는 Map release
-      `0b0a0cb5767f25284506cb76d47c10ebce8fa84f`를 확정했으며 코드 manifest 반영은 아래 구현 항목에서
-      수행한다. `pinvi_release_revision`은 비워 두고 candidate 자동
-      승격 없이 initial/enable 및 production pair capture/deploy/rollback을 mutation 전에 fail-close한다.
-      cache-target contract 미설정 경로는 회귀 없이 유지한다.
+      revision과 PinVi reviewed candidate를 기록했다. reviewed candidate는 자동 승격하지 않고 별도
+      release pin이 확정되기 전 initial/enable 및 production pair capture/deploy/rollback을 mutation 전에
+      fail-close하도록 했다. cache-target contract 미설정 경로는 회귀 없이 유지한다.
 - [x] NO-GO 리뷰의 결합 전환 설계를 문서에 반영했다. 기존 v4 old pair에서 sync=false exact generation 7
       candidate를 검증한 뒤 active=rollback으로 원자 bootstrap하고, old pair는 coupled rollback bundle에만
       보존한다. backup/build/migrate/CSV/bootstrap/initial/enable/canary/GC/verify/forward commit을 한 process의
@@ -225,9 +223,10 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       injected attestor/canary/rollback-smoke 인자를 제거한다.
 - [ ] release unset, contract/pair/candidate mismatch에 대해 deploy/capture/rollback/initial/enable/bootstrap 각각의
       Docker/subprocess/env/manifest/retention/DB mutation이 0회임을 증명하는 행렬을 추가한다.
-- [ ] PinVi 최종 exact HEAD의 단일 독립 적대적 GO review와 merge가 끝나면 별도 final pin commit에서 exact merge/release SHA를
-      채우고 active·rollback pair provenance를 같은 SHA에 결박한다. review candidate나 후속 review-fix
-      head를 merge 전에 release로 확정하지 않는다.
+- [/] PinVi 최종 exact HEAD는 단일 독립 적대적 GO review 뒤 squash merge됐고, tracked
+      `pinvi_release_revision`과 production candidate·active·rollback pair provenance gate를 exact merge SHA
+      `4943282006139fa3b4ef3cb247780bfd9721b4c7`로 결박했다. Map #924 merge SHA가 확정되면
+      `map_release_revision`을 최종 고정하고 exact-head Manager 리뷰를 진행한다.
 - [ ] restore-fence/recovery 원문 token은 ordinary PinVi API와 다른 장기 실행 service에 주입하지
       않는다. C6c 전역 lock과 frozen canonical `.env`/Compose/active pair를 검증한 전용
       initial-cutover runner에는 command/consumer/recovery만 실행 시간 동안 전달하고, restore-fence는
