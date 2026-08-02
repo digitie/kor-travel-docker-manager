@@ -139,6 +139,10 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    cutover의 idempotent resume 또는 새 generation fix-forward만 허용한다. `forward_committed` fsync는 final Pin
    audit까지 끝난 뒤 writer 재기동을 허용하는 별도 최종 경계다. migration 이후 일반 image-only rollback은
    언제나 금지한다.
+   `initial_committed` 이후 모든 resume phase는 initial receipt 파일을 다시 읽을 때마다 journal의 receipt SHA,
+   cutover ID, restore epoch, env/raw·resolved Compose, active·rollback candidate identity와 exact 대조한다. 파일이
+   없어졌거나 extra field가 생겼거나, 형식상 유효하더라도 다른 receipt로 교체됐으면 어떤 mutation도 시작하지
+   않는다. 검증된 receipt 객체만 enable과 Map/Pin final baseline에 전달한다.
 
 허용 phase는 `prepared → writers_fencing → writers_fenced → backups_committed → candidate_built →
 pin_preflight_verified → map_preflight_verified → map_database_forwarded → databases_forwarded → csv_forwarded →

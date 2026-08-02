@@ -176,6 +176,21 @@ _CACHE_TARGET_WRITER_SERVICES = frozenset(
 _CACHE_TARGET_WRITER_REGISTRY_SHA256 = (
     "526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c"
 )
+_CACHE_TARGET_POST_INITIAL_PHASES = frozenset(
+    {
+        "initial_committed",
+        "sync_enabled",
+        "canary_verified",
+        "gc_started",
+        "gc_verified",
+        "final_writers_fencing",
+        "final_writers_fenced",
+        "map_final_verified",
+        "final_boundary_verified",
+        "forward_committed",
+        "runtime_activated",
+    }
+)
 
 
 def cache_target_writer_registry_sha256(names: Sequence[str]) -> str:
@@ -272,6 +287,38 @@ def _initial_receipt_process_result(
         "published": receipt.published,
         "resumed": resumed,
     }
+
+
+def _read_bound_cache_target_initial_receipt(
+    state_directory: Path,
+    journal: CacheTargetWindowJournal,
+) -> InitialCutoverReceipt:
+    """post-initial 단계가 journal에 commit된 exact receipt만 사용하게 한다."""
+
+    expected_digest = journal.initial_receipt_sha256
+    candidate_pair_sha256 = journal.candidate_pair_sha256
+    if expected_digest is None or candidate_pair_sha256 is None:
+        raise DeploymentContractError(
+            "cache-target initial receipt binding is missing from the window"
+        )
+    receipt = read_initial_cutover_receipt(
+        state_directory / "cache-target-initial-cutover-v1.json"
+    )
+    evidence = receipt.evidence
+    if (
+        initial_receipt_logical_sha256(receipt) != expected_digest
+        or receipt.cutover_id != journal.cutover_id
+        or receipt.expected_restore_epoch != journal.expected_restore_epoch
+        or evidence.env_sha256 != journal.environment_sha256
+        or evidence.raw_compose_sha256 != journal.compose_sha256
+        or evidence.resolved_compose_sha256 != journal.resolved_compose_sha256
+        or evidence.active_pair_sha256 != candidate_pair_sha256
+        or evidence.rollback_pair_sha256 != candidate_pair_sha256
+    ):
+        raise DeploymentContractError(
+            "cache-target initial receipt differs from the committed window"
+        )
+    return receipt
 
 
 def _enable_journal_process_result(
@@ -3718,6 +3765,14 @@ class ComposeService:
                 wait_timeout=wait_timeout,
             )
             return self._cache_target_window_result(rolled_back, resumed=True)
+        bound_initial_receipt = (
+            _read_bound_cache_target_initial_receipt(
+                state_directory,
+                journal,
+            )
+            if journal.phase in _CACHE_TARGET_POST_INITIAL_PHASES
+            else None
+        )
         try:
             if journal.phase == "prepared":
                 journal = transition_cache_target_window(
@@ -3958,11 +4013,18 @@ class ComposeService:
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "initial_committed":
+                bound_initial_receipt = (
+                    _read_bound_cache_target_initial_receipt(
+                        state_directory,
+                        journal,
+                    )
+                )
                 enabled = self._enable_cache_target_sync_unlocked(
                     transaction=transaction,
                     config=config,
                     lock_path=lock_path,
                     window_transaction_id=journal.transaction_id,
+                    receipt=bound_initial_receipt,
                 )
                 if not enabled.get("success") or enabled.get("phase") != "committed":
                     raise DeploymentContractError(
@@ -4089,8 +4151,9 @@ class ComposeService:
                     raise DeploymentContractError(
                         "cache-target Map final evidence is missing"
                     )
-                initial_receipt = read_initial_cutover_receipt(
-                    state_directory / "cache-target-initial-cutover-v1.json"
+                initial_receipt = _read_bound_cache_target_initial_receipt(
+                    state_directory,
+                    journal,
                 )
                 current_contract = current_config.cache_target
                 if current_contract is None:
@@ -4144,8 +4207,9 @@ class ComposeService:
                     raise DeploymentContractError(
                         "cache-target final evidence drifted before Pin finalize"
                     )
-                initial_receipt = read_initial_cutover_receipt(
-                    state_directory / "cache-target-initial-cutover-v1.json"
+                initial_receipt = _read_bound_cache_target_initial_receipt(
+                    state_directory,
+                    journal,
                 )
                 enable_journal = read_enable_cutover_journal(
                     state_directory / "cache-target-enable-v1.json"
@@ -4743,6 +4807,7 @@ class ComposeService:
         config: C6cDeploymentConfig,
         lock_path: str,
         window_transaction_id: str,
+        receipt: InitialCutoverReceipt,
     ) -> dict[str, Any]:
         if not config.production or config.cache_target is None:
             raise DeploymentContractError(
@@ -4756,9 +4821,6 @@ class ComposeService:
                 "cache-target enable transaction has no pair manifest"
             )
         state_directory = Path(manifest_path).parent
-        receipt = read_initial_cutover_receipt(
-            state_directory / "cache-target-initial-cutover-v1.json"
-        )
         journal_path = state_directory / "cache-target-enable-v1.json"
         env_path = Path(transaction.environment.env_path).resolve(strict=False)
         try:

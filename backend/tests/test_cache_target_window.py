@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -12,6 +12,12 @@ import pytest
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_backup import PinBoundaryAuditRow
+from kor_travel_docker_manager.services.cache_target_cutover import (
+    CacheTargetFrozenEvidence,
+    InitialCutoverReceipt,
+    initial_receipt_logical_sha256,
+    write_cutover_state,
+)
 from kor_travel_docker_manager.services.cache_target_window import (
     CacheTargetWindowJournal,
     DatabaseBackupReceipt,
@@ -32,7 +38,10 @@ from kor_travel_docker_manager.services.cache_target_window import (
     validate_map_final_evidence_binding,
     write_cache_target_window,
 )
-from kor_travel_docker_manager.services.compose_service import ComposeService
+from kor_travel_docker_manager.services.compose_service import (
+    ComposeService,
+    _read_bound_cache_target_initial_receipt,
+)
 
 _TRANSACTION_ID = "11111111-1111-4111-8111-111111111111"
 _CUTOVER_ID = "22222222-2222-4222-8222-222222222222"
@@ -50,6 +59,69 @@ def _prepared() -> CacheTargetWindowJournal:
         compose_sha256="2" * 64,
         resolved_compose_sha256="3" * 64,
         old_manifest_sha256="4" * 64,
+    )
+
+
+def _initial_receipt_for_journal(
+    journal: CacheTargetWindowJournal,
+    *,
+    cutover_id: str | None = None,
+    expected_restore_epoch: int | None = None,
+    count: int = 12,
+    merkle_root: str = "9" * 64,
+) -> InitialCutoverReceipt:
+    candidate_pair_sha256 = journal.candidate_pair_sha256 or "6" * 64
+    return InitialCutoverReceipt(
+        version=1,
+        cutover_id=cutover_id or journal.cutover_id,
+        expected_restore_epoch=(
+            expected_restore_epoch or journal.expected_restore_epoch
+        ),
+        reason_sha256="5" * 64,
+        request_id="33333333-3333-4333-8333-333333333333",
+        count=count,
+        merkle_root=merkle_root,
+        published=count,
+        evidence=CacheTargetFrozenEvidence(
+            env_sha256=journal.environment_sha256,
+            raw_compose_sha256=journal.compose_sha256,
+            resolved_compose_sha256=journal.resolved_compose_sha256,
+            active_pair_sha256=candidate_pair_sha256,
+            rollback_pair_sha256=candidate_pair_sha256,
+            role_binding_sha256="7" * 64,
+            expected_openapi_sha256="8" * 64,
+            expected_source_revision="a" * 40,
+            expected_contract_generation="7",
+        ),
+    )
+
+
+def _write_initial_receipt_for_journal(
+    state_directory: Path,
+    journal: CacheTargetWindowJournal,
+) -> InitialCutoverReceipt:
+    receipt = _initial_receipt_for_journal(journal)
+    write_cutover_state(
+        state_directory / "cache-target-initial-cutover-v1.json",
+        receipt,
+    )
+    return receipt
+
+
+def _initial_committed_journal() -> tuple[
+    CacheTargetWindowJournal,
+    InitialCutoverReceipt,
+]:
+    journal = _generation_bootstrapped_journal()
+    receipt = _initial_receipt_for_journal(journal)
+    return (
+        transition_cache_target_window(
+            journal,
+            "initial_committed",
+            initial_receipt_sha256=initial_receipt_logical_sha256(receipt),
+            external_event_count=receipt.published,
+        ),
+        receipt,
     )
 
 
@@ -400,10 +472,11 @@ def _map_final_verified_journal() -> CacheTargetWindowJournal:
         last_map_receipt_sha256=map_helper_receipt_sha256(csv_receipt),
     )
     journal = transition_cache_target_window(journal, "generation_bootstrapped")
+    initial_receipt = _initial_receipt_for_journal(journal)
     journal = transition_cache_target_window(
         journal,
         "initial_committed",
-        initial_receipt_sha256="d" * 64,
+        initial_receipt_sha256=initial_receipt_logical_sha256(initial_receipt),
         external_event_count=12,
     )
     journal = transition_cache_target_window(journal, "sync_enabled")
@@ -645,14 +718,6 @@ def test_initial_response_loss_forbids_restore_and_same_cutover_resumes(
     )
     monkeypatch.setattr(service, "_resume_cache_target_coupled_rollback", rollback)
     monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_initial_cutover_receipt",
-        Mock(return_value=SimpleNamespace(published=12)),
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.initial_receipt_logical_sha256",
-        Mock(return_value="d" * 64),
-    )
-    monkeypatch.setattr(
         service,
         "_enable_cache_target_sync_unlocked",
         Mock(side_effect=DeploymentContractError("stop after initial resume")),
@@ -673,6 +738,7 @@ def test_initial_response_loss_forbids_restore_and_same_cutover_resumes(
     assert event_bounded.phase == "generation_bootstrapped"
     assert event_bounded.external_event_count == 1
     assert old_restore_is_authorized(event_bounded) is False
+    _write_initial_receipt_for_journal(tmp_path, event_bounded)
 
     with pytest.raises(DeploymentContractError, match="stop after initial resume"):
         service._run_cache_target_window_unlocked(
@@ -692,6 +758,144 @@ def test_initial_response_loss_forbids_restore_and_same_cutover_resumes(
     assert resumed.external_event_count == 12
     assert initial.call_count == 2
     rollback.assert_not_called()
+
+
+def test_bound_initial_receipt_legitimate_crash_resume_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    journal, receipt = _initial_committed_journal()
+    write_cutover_state(
+        tmp_path / "cache-target-initial-cutover-v1.json",
+        receipt,
+    )
+
+    assert _read_bound_cache_target_initial_receipt(tmp_path, journal) == receipt
+    assert _read_bound_cache_target_initial_receipt(tmp_path, journal) == receipt
+
+
+@pytest.mark.parametrize(
+    "replacement_kind",
+    [
+        "foreign_cutover_same_snapshot",
+        "different_count",
+        "different_merkle",
+        "different_restore_epoch",
+        "different_pair_provenance",
+    ],
+)
+def test_bound_initial_receipt_rejects_valid_post_commit_replacement(
+    tmp_path: Path,
+    replacement_kind: str,
+) -> None:
+    journal, receipt = _initial_committed_journal()
+    replacement = receipt
+    if replacement_kind == "foreign_cutover_same_snapshot":
+        replacement = replace(
+            receipt,
+            cutover_id="44444444-4444-4444-8444-444444444444",
+        )
+    elif replacement_kind == "different_count":
+        replacement = replace(receipt, count=11, published=11)
+    elif replacement_kind == "different_merkle":
+        replacement = replace(receipt, merkle_root="8" * 64)
+    elif replacement_kind == "different_restore_epoch":
+        replacement = replace(receipt, expected_restore_epoch=4)
+    elif replacement_kind == "different_pair_provenance":
+        replacement = replace(
+            receipt,
+            evidence=replace(
+                receipt.evidence,
+                active_pair_sha256="f" * 64,
+            ),
+        )
+    else:  # pragma: no cover - parameter list가 정본이다.
+        raise AssertionError(replacement_kind)
+    write_cutover_state(
+        tmp_path / "cache-target-initial-cutover-v1.json",
+        replacement,
+    )
+
+    with pytest.raises(DeploymentContractError, match="committed window"):
+        _read_bound_cache_target_initial_receipt(tmp_path, journal)
+
+
+def test_bound_initial_receipt_rejects_missing_or_extra_fields(
+    tmp_path: Path,
+) -> None:
+    journal, receipt = _initial_committed_journal()
+    with pytest.raises(DeploymentContractError, match="state is unavailable"):
+        _read_bound_cache_target_initial_receipt(tmp_path, journal)
+
+    path = tmp_path / "cache-target-initial-cutover-v1.json"
+    write_cutover_state(path, receipt)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["unexpected"] = "field"
+    path.write_text(
+        json.dumps(document, separators=(",", ":"), sort_keys=True),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+
+    with pytest.raises(DeploymentContractError, match="receipt is invalid"):
+        _read_bound_cache_target_initial_receipt(tmp_path, journal)
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "initial_committed",
+        "sync_enabled",
+        "canary_verified",
+        "gc_started",
+        "gc_verified",
+        "final_writers_fencing",
+        "final_writers_fenced",
+        "map_final_verified",
+        "final_boundary_verified",
+        "forward_committed",
+        "runtime_activated",
+    ],
+)
+def test_every_post_initial_resume_rejects_replaced_receipt_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    service = ComposeService()
+    committed, receipt = _initial_committed_journal()
+    journal = replace(committed, phase=phase)
+    write_cutover_state(
+        tmp_path / "cache-target-initial-cutover-v1.json",
+        replace(
+            receipt,
+            cutover_id="44444444-4444-4444-8444-444444444444",
+        ),
+    )
+    transaction = SimpleNamespace(
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+        resolved={},
+        environment=SimpleNamespace(effective={}),
+    )
+    mutation = Mock(side_effect=AssertionError("mutation must not run"))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=(Mock(), Mock(), Mock())),
+    )
+    monkeypatch.setattr(service, "_load_or_build_window_candidate", mutation)
+    monkeypatch.setattr(service, "_enable_cache_target_sync_unlocked", mutation)
+
+    with pytest.raises(DeploymentContractError, match="committed window"):
+        service._run_cache_target_window_unlocked(
+            journal_path=tmp_path / "cache-target-window-v1.json",
+            journal=journal,
+            transaction=transaction,
+            config=Mock(),
+            reason="test",
+            wait_timeout=1,
+            lock_path=str(tmp_path / "lock"),
+        )
+
+    mutation.assert_not_called()
 
 
 def test_writer_fencing_failure_keeps_durable_nonterminal_journal(
@@ -846,11 +1050,7 @@ def test_window_uses_private_locked_executors_and_requires_final_receipt(
         map_image_id=f"sha256:{'1' * 64}",
         pinvi_image_id=f"sha256:{'2' * 64}",
     )
-    initial_receipt = SimpleNamespace(
-        published=12,
-        count=12,
-        merkle_root="9" * 64,
-    )
+    initial_receipt = _write_initial_receipt_for_journal(tmp_path, journal)
     enable_journal = SimpleNamespace(
         phase="committed",
         transaction_id="33333333-3333-4333-8333-333333333333",
@@ -878,14 +1078,6 @@ def test_window_uses_private_locked_executors_and_requires_final_receipt(
     monkeypatch.setattr(service, "enable_cache_target_sync", Mock(side_effect=AssertionError))
     monkeypatch.setattr(service, "_run_cache_target_initial_cutover_unlocked", private_initial)
     monkeypatch.setattr(service, "_enable_cache_target_sync_unlocked", private_enable)
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_initial_cutover_receipt",
-        Mock(return_value=initial_receipt),
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.initial_receipt_logical_sha256",
-        Mock(return_value="d" * 64),
-    )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.read_enable_cutover_journal",
         Mock(return_value=enable_journal),
@@ -972,6 +1164,7 @@ def test_window_uses_private_locked_executors_and_requires_final_receipt(
     assert read_cache_target_window(path).phase == "runtime_activated"
     private_initial.assert_called_once()
     private_enable.assert_called_once()
+    assert private_enable.call_args.kwargs["receipt"] == initial_receipt
 
 
 def test_finalize_audit_commit_response_loss_replays_exact_receipt(
@@ -982,6 +1175,7 @@ def test_finalize_audit_commit_response_loss_replays_exact_receipt(
     path = tmp_path / "cache-target-window-v1.json"
     journal = _map_final_verified_journal()
     write_cache_target_window(path, journal)
+    _write_initial_receipt_for_journal(tmp_path, journal)
     transaction = SimpleNamespace(
         manifest_path=str(tmp_path / "compatible-pair-v4.json"),
         resolved={},
@@ -1035,10 +1229,6 @@ def test_finalize_audit_commit_response_loss_replays_exact_receipt(
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
         Mock(return_value=Mock()),
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_initial_cutover_receipt",
-        Mock(return_value=SimpleNamespace(count=12)),
     )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.read_enable_cutover_journal",
@@ -1137,6 +1327,7 @@ def test_forward_commit_restart_failure_resumes_activation(
     )
     journal = transition_cache_target_window(journal, "forward_committed")
     write_cache_target_window(path, journal)
+    _write_initial_receipt_for_journal(tmp_path, journal)
     transaction = SimpleNamespace(
         manifest_path=str(tmp_path / "compatible-pair-v4.json"),
         resolved={},
