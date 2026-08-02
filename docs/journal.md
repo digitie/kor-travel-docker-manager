@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-08-02 (T-048 NO-GO 반영: generation bootstrap과 H35 결합 전환 재설계)
+
+exact head `58ca4491` 적대 리뷰에서 기존 v4 active/rollback이 old Pin인 production은 새 release gate와 일반
+manifest 승격 규칙 때문에 generation 7 active=rollback pair를 만들 수 없는 순환 의존이 확인됐다. initial과
+enable도 별도 CLI가 각각 lock을 잡아 그 사이 H35 DB/CSV 변경이나 DB rewind를 막지 못하고, host receipt만
+일치하면 live cutover state를 다시 보지 않는 문제가 있었다.
+
+ADR-28과 runbook을 보강해 existing-v4 전용 one-time generation bootstrap을 정본화했다. sync=false exact
+candidate를 검증·배포한 뒤 v4 active/rollback을 같은 첫 generation 7 pair로 원자 commit하고, old pair는
+일반 rollback slot이 아니라 Map application·Dagster·Pin DB와 manager env/state/manifest를 함께 복구하는
+coupled rollback bundle에만 둔다.
+
+backup→build→DB migration→H35 CSV→bootstrap→initial→enable→causal canary→GC→verify→forward commit 전체를
+한 process의 C6c lock과 owner-only `0600` durable journal로 수행한다. non-terminal journal은 same transaction
+resume/coupled rollback 외 manager mutation을 subprocess 전에 차단한다. pre-forward 실패는 new runtime을
+먼저 중지하고 세 DB와 manager state를 복구한 뒤 old image를 마지막에 기동한다. migration 뒤 image-only
+rollback은 금지하며 forward commit 또는 최초 외부 event 뒤에는 old restore를 거부한다.
+
+Map schema/CSV 동작은 candidate image의 `h35_cutover.py`가 `preflight/migrate/csv5/verify`만 소유하고,
+backup/restore/finalize와 runtime lifecycle은 manager가 소유한다. manager는 transaction/source/schema/backup
+identity에 결박된 secret-free exact JSON receipt만 소비한다. cache-target 전체가 unset/default인 기존 production C6c는
+유지하고 부분 설정만 fail-close하며, Map·Pin actual release source를 active/rollback 양쪽에 결박한다.
+production initial/enable의 호출자 제공 attestor/canary/smoke 주입은 제거하고, 모든 public mutation entrypoint에
+release/pair/candidate 오류의 mutation-zero 행렬을 추가하는 구현 계획으로 전환했다.
+
 ## 2026-08-02 (T-048 T-VN-41 production cutover docs-first 착수)
 
 ADR-28과 전용 runbook으로 cache-target production 경계를 먼저 고정했다. Map API에는 digest 기반

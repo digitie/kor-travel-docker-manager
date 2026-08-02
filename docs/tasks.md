@@ -192,9 +192,34 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       `["pinvi"]`만 허용하고 extra principal/scope/system을 거부한다. registry JSON과 digest를 포함해
       raw/resolved/runtime 비인가 노출과 audit/log 누출을 차단한다.
 - [x] tracked production pin manifest에 generation `7`, exact Map OpenAPI SHA-256, Map functional owner
-      revision과 PinVi reviewed candidate를 기록했다. `pinvi_release_revision`은 비워 두고 candidate 자동
+      revision과 PinVi reviewed candidate를 기록했다. 문서 정본에는 Map release
+      `0b0a0cb5767f25284506cb76d47c10ebce8fa84f`를 확정했으며 코드 manifest 반영은 아래 구현 항목에서
+      수행한다. `pinvi_release_revision`은 비워 두고 candidate 자동
       승격 없이 initial/enable 및 production pair capture/deploy/rollback을 mutation 전에 fail-close한다.
       cache-target contract 미설정 경로는 회귀 없이 유지한다.
+- [x] NO-GO 리뷰의 결합 전환 설계를 문서에 반영했다. 기존 v4 old pair에서 sync=false exact generation 7
+      candidate를 검증한 뒤 active=rollback으로 원자 bootstrap하고, old pair는 coupled rollback bundle에만
+      보존한다. backup/build/migrate/CSV/bootstrap/initial/enable/canary/GC/verify/forward commit을 한 process의
+      C6c lock과 `0600` journal로 묶으며 non-terminal transaction은 다른 mutation을 차단한다.
+- [ ] production cache-target의 모든 값이 unset/default이면 기존 C6c 경로를 유지하고 부분 설정만 거부한다.
+      Map·Pin release revision을 별도로 tracked pin에 두고 active/rollback source를 양쪽 모두 exact 검증한다.
+- [ ] 기존 v4 manifest 전용 one-time generation bootstrap을 구현한다. sync=false candidate 전체 attestation 후
+      active=rollback atomic commit, old pair coupled rollback bundle 보존, crash/retry/foreign manifest와
+      deploy/capture/rollback/bootstrap mutation-zero 회귀를 포함한다.
+- [ ] H35×T-VN-41 결합 orchestrator를 구현한다. Map application·Dagster와 Pin DB backup identity, image build,
+      migration/CSV, bootstrap, initial, enable, canary, GC, verify, forward commit의 phase를 단일 process lock과
+      owner-only journal로 수행하고 unfinished journal이면 same resume/coupled rollback 외 mutation을 차단한다.
+- [ ] pre-forward 실패는 new runtime stop 뒤 Map application→Dagster→Pin DB→manager env/state/manifest를 복구하고
+      old image를 마지막에 기동한다. migration 뒤 일반 image-only rollback을 금지하고 forward commit/최초 외부
+      event 뒤 old restore를 거부한다. DB rewind 뒤 stale receipt가 성공하지 않도록 live schema/epoch/cutover/
+      convergence를 재검증한다.
+- [ ] Map candidate image의 typed helper CLI
+      `python scripts/h35/h35_cutover.py {preflight,migrate,csv5,verify}` exact JSON receipt를 소비한다. backup/
+      restore/finalize와 runtime lifecycle은 manager가 소유하며 helper에는 넘기지 않는다. manager는 SQL/CSV
+      의미, DSN, backup path, credential을 request나 코드에 하드코딩하지 않는다. production initial/enable에서는
+      injected attestor/canary/rollback-smoke 인자를 제거한다.
+- [ ] release unset, contract/pair/candidate mismatch에 대해 deploy/capture/rollback/initial/enable/bootstrap 각각의
+      Docker/subprocess/env/manifest/retention/DB mutation이 0회임을 증명하는 행렬을 추가한다.
 - [ ] PinVi 두 적대적 GO review와 merge가 끝나면 별도 final pin commit에서 exact merge/release SHA를
       채우고 active·rollback pair provenance를 같은 SHA에 결박한다. review candidate나 후속 review-fix
       head를 merge 전에 release로 확정하지 않는다.

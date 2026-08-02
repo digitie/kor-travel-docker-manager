@@ -49,14 +49,17 @@ production cutover pin의 tracked 정본은
 `cache_target_production_manifest.py`다. 현재 고정값은 contract generation `7`, Map cache-target
 OpenAPI SHA-256
 `622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2`, Map functional owner revision
-`9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`이다. PinVi reviewed candidate
+`9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`, Map release revision
+`0b0a0cb5767f25284506cb76d47c10ebce8fa84f`다. PinVi reviewed candidate
 `6ac8baae2814fae5b16c95846ee40d77cc7fe283`는 review 출발점의 감사 정보일 뿐 release가 아니며,
 `pinvi_release_revision`은 두 적대적 GO review와 merge 전까지 명시적으로 비어 있다. 이 상태에서는
 production initial, enable, compatible-pair capture/deploy/rollback을 모두 mutation 전에 fail-close한다.
 candidate를 release로 자동 승격하거나 fallback으로 쓰지 않는다. PinVi merge 뒤 별도 final pin commit이
-merge/release SHA를 채우고 active와 rollback pair의 PinVi source provenance를 그 exact SHA에 결박해야만
-cutover를 진행할 수 있다. cache-target contract가 아예 설정되지 않은 기존 production C6c 경로에는 이
-gate를 적용하지 않는다.
+merge/release SHA를 채우고 Map과 PinVi 각각의 build/release SHA를 active와 rollback pair 양쪽에 결박해야만
+cutover를 진행할 수 있다. functional owner revision은 API 계약 소유자를, build/release revision은 실제
+immutable image 출처를 뜻하므로 서로 대체하지 않는다. cache-target contract가 아예 설정되지 않은 기존
+production C6c 경로에는 이 gate를 적용하지 않는다. 모든 필드가 canonical unset/default이면 contract가
+없는 것으로 처리하되, 하나라도 부분 설정됐으면 기존 경로로 내려가지 않고 fail-close한다.
 
 ## 2. 사전 조건
 
@@ -78,7 +81,63 @@ gate를 적용하지 않는다.
 사전 조건은 `/run/lock/kor-travel-docker-manager/global-mutation.lock` 획득 뒤 frozen canonical
 `.env`/Compose identity로 다시 검증한다. lock 밖 결과를 mutation 권한으로 사용하지 않는다.
 
-## 3. 최초 cutover phase
+## 3. generation 7 최초 bootstrap과 결합 전환 window
+
+기존 v4 manifest의 active와 rollback이 generation 7 이전 pair인 상태에서는 일반 pair deploy를 반복해
+bootstrap하지 않는다. 첫 deploy는 `active=new, rollback=old`를 만들고 같은 candidate의 재배포는 old
+rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial gate에 영구 도달하지 못한다. 전용
+`cache-target cutover` command만 다음 전환을 한 번 허용한다.
+
+1. 하나의 process가 C6c 전역 lock을 획득하고 transaction UUID와 owner-only `0600` durable journal을
+   `prepared`로 먼저 fsync한다. journal이 non-terminal인 동안 같은 transaction의 resume/coupled rollback을
+   제외한 모든 manager mutation은 subprocess·Docker·DB·env·manifest write 전에 차단한다.
+2. old manifest/env/manager state와 Map application DB, Map Dagster DB, PinVi DB의 typed backup identity를
+   frozen rollback bundle에 결박한다. backup receipt는 database identity, schema revision, logical backup ID,
+   byte size와 SHA-256만 기록하며 DSN, path, credential, dump stdout/stderr는 기록하지 않는다.
+3. exact Map/Pin release source에서 candidate image를 완성하고 `sync=false`로 전체 runtime을 검증한다.
+   Map·Pin DB migration과 Map의 H35 CSV 전환을 service-owned typed CLI로 수행한 뒤, cache health와 source
+   provenance가 맞는 첫 generation 7 pair를 v4 manifest의 active와 rollback 양쪽에 원자 commit한다. old pair는
+   compatible-pair rollback slot에 남기지 않고 frozen coupled rollback bundle에만 보존한다.
+4. 같은 lock/process에서 initial runner, sync enable, causal canary, backlog/DLQ/cursor/count/Merkle 검증,
+   cache GC와 최종 live verification까지 수행한다. 모두 성공한 뒤 `forward_committed`를 먼저 fsync하고
+   old restore 권한을 폐기한다. 외부 cache-target event를 하나라도 관측한 뒤에는 old DB/image restore를
+   허용하지 않는다.
+5. forward boundary 전 실패는 new runtime을 먼저 중지하고 Map application DB → Map Dagster DB → PinVi DB →
+   manager env/state/manifest를 frozen bundle로 복구한 뒤 old image를 마지막에 기동·검증한다. migration 이후
+   일반 image-only rollback은 금지한다. forward boundary 이후 실패는 old schema restore 대신 새 generation의
+   fix-forward 또는 같은-generation recovery만 허용한다.
+
+허용 phase는 `prepared → backups_committed → candidate_built → databases_forwarded → csv_forwarded →
+generation_bootstrapped → initial_committed → sync_enabled → canary_verified → gc_verified →
+forward_committed`다. rollback은 forward boundary 전에만 `rollback_preparing → new_runtime_stopped →
+map_db_restored → map_dagster_db_restored → pinvi_db_restored → manager_state_restored → old_runtime_restored →
+rolled_back` 순서로 진행한다. phase를 건너뛰거나 뒤로 이동하지 않으며 각 전이는 owner-only atomic replace와
+directory fsync 뒤에만 다음 mutation을 허용한다.
+
+Map helper는 manager가 SQL/schema/CSV 의미를 재구현하지 않도록 candidate image에 포함된
+`python scripts/h35/h35_cutover.py {preflight,migrate,csv5,verify}` 네 operation만 제공한다. request는 stdin
+단일 JSON, receipt는 stdout 단일 JSON line이며 helper는 runtime stop/start/recreate, lock/journal,
+credential/path 탐색, backup/restore/finalize를 하지 않는다. 이 lifecycle은 manager가 소유한다. DB 연결은
+manager가 exact candidate image의 기존 runtime environment로 주입하고 request에는 DSN, credential, path를
+싣지 않는다. `csv5`는 image-bundled canonical 5-file bundle만 사용하고 host path 인자를 받지 않는다.
+
+helper receipt의 exact 공통 key는 `contract_version`, `operation`, `transaction_id`, `status`,
+`source_revision`, `database_identity`, `request_digest`, `prior_receipt_digest`, `schema_before`, `schema_after`,
+`forward_boundary`, `row_counts`, `checks`, `runtime_mutation_count`, `external_event_count`다. `database_identity`는
+manager backup receipt의 DB identity/schema/transaction UUID에 결박하는 non-secret opaque digest다.
+`prior_receipt_digest`는 `preflight=null`, `migrate=preflight digest`, `csv5=migrate digest`, `verify=csv5 digest`로
+연결하고 모든 phase에서 `runtime_mutation_count=0`, `external_event_count=0`을 요구한다. stdout에 extra/missing
+field가 있거나 stderr가 있거나 foreign transaction/source/schema/digest면 진행하지 않는다. 같은
+transaction/request/prior digest의 재실행만 idempotent receipt를 허용한다.
+
+`preflight`는 schema `0063`/public row `3265`와 0075 기존행 identity/NFC/trim/length/CHECK/FK 위반 0,
+`migrate`는 schema `0078`/public row `3043`과 0064/0068/0069 partial residue 0, `csv5`는 file count 5,
+accepted 222, rejected 0, public row 3265, `verify`는 schema `0078`/public row `3265`와 0075~0078
+schema/index/outbox/receipt/GC 전수 PASS를 exact checks로 반환한다. `forward_boundary`의 결정·영속은 manager가
+소유하고 helper는 `preflight=not_crossed`, migrate 이후 `schema_0078` 관측값만 반환한다. manager 코드와
+문서에 실제 DSN, backup path, host, credential을 하드코딩하지 않는다.
+
+## 4. 최초 cutover phase
 
 1. operator가 재사용 가능한 고정 `cutover_id`, positive expected restore epoch와 감사 reason을 준비한다.
    reason은 secret이 아니며 Docker argv/운영 감사에 노출될 수 있으므로 credential·개인정보를 넣지 않는다.
@@ -108,7 +167,7 @@ runner 실패, signal, lock 경합, 결과 parse 오류, foreign/stale receipt�
 경로에서 orphan container/mount/secret file을 분류·정리한다. 원격 성공 여부가 불확실하면 같은 cutover
 ID로 재실행해 PinVi durable state가 결과를 확정하게 한다.
 
-## 4. sync enable phase
+## 5. sync enable phase
 
 1. committed initial-cutover receipt가 frozen env와 active/rollback compatible pair에 exact하게 맞는지
    확인한다. generic rollback 후보도 같은 generation/contract와 cache health/pin smoke를 통과해야 한다.
@@ -141,11 +200,12 @@ ID로 재실행해 PinVi durable state가 결과를 확정하게 한다.
 evidence를 보존하고 추가 mutation을 차단한다. active/rollback compatible-pair manifest는 이 환경 전환에서
 변경하지 않는다.
 
-initial부터 enable terminal phase까지 하나의 C6c 전역 lock critical section을 유지한다. crash 재개처럼
-lock을 새로 획득해야 한다면 canonical `.env`/Compose, active와 rollback pair, initial receipt를 모두 다시
-freeze하고 journal의 transaction identity와 exact 대조한 뒤에만 다음 phase 또는 rollback을 수행한다.
+backup부터 forward terminal phase까지 하나의 process가 하나의 C6c 전역 lock critical section을 유지한다.
+crash 때문에 lock을 새로 획득하는 경우 canonical `.env`/Compose, active와 rollback pair, DB backup/schema
+identity, initial receipt를 모두 다시 freeze하고 window journal의 transaction identity와 exact 대조한 뒤에만
+같은 phase resume 또는 coupled rollback을 수행한다.
 
-## 5. 완료 증거와 금지 사항
+## 6. 완료 증거와 금지 사항
 
 완료 증거는 initial/enable receipt ID와 SHA, frozen env/raw Compose/resolved Compose/role-binding logical SHA,
 active/rollback pair logical hash, old/new env SHA, 각 durable journal phase, Map/PinVi source revision,
@@ -167,3 +227,8 @@ Docker inspect 원문, `.env` bytes, bearer header는 audit·JSON 출력·로그
 - cache-target generation/health/pin 검증을 통과하지 않은 stale rollback pair 보존 또는 실행
 - causal canary 실패를 무시하고 terminal enable commit
 - pair attestation 실패를 warning으로 낮춰 계속 진행
+- old v4 pair를 일반 rollback slot에 둔 채 generation 7 initial을 시작
+- migration 뒤 DB를 복구하지 않고 image만 old generation으로 rollback
+- non-terminal window journal이 있는데 다른 manager mutation을 실행
+- stored host receipt만 보고 live DB epoch/schema/cutover/convergence 재검증을 생략
+- production entrypoint에 호출자 제공 attestor, canary, rollback smoke를 주입

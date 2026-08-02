@@ -1183,12 +1183,31 @@ rollback pair, initial receipt를 전부 refreeze해 journal transaction identit
 evidence는 자동 덮어쓰지 않는다.
 
 production 실행 권한은 코드에 추적되는 단일 pin manifest로 추가 결박한다. manifest는 contract generation,
-Map OpenAPI SHA-256, Map functional owner revision, PinVi reviewed candidate와 별도의 PinVi release revision을
+Map OpenAPI SHA-256, Map functional owner revision, Map build/release revision, PinVi reviewed candidate와 별도의 PinVi release revision을
 기록한다. reviewed candidate는 감사 정보일 뿐 실행 가능한 release fallback이 아니다. 두 적대적 GO review와
 PinVi merge SHA가 확정되기 전에는 release를 비워 두고 initial/enable 및 compatible-pair capture/deploy/
-rollback을 모두 mutation 전에 차단한다. 최종 pin commit 뒤에도 active와 rollback pair 모두 exact PinVi
-release provenance를 가져야 한다. cache-target contract가 미설정인 기존 C6c 배포에는 이 추가 gate를
-적용하지 않는다.
+rollback을 모두 mutation 전에 차단한다. 최종 pin commit 뒤에도 active와 rollback pair 모두 exact Map·PinVi
+release provenance를 가져야 한다. functional owner와 실제 image build/release owner를 혼용하지 않는다.
+cache-target contract의 모든 값이 canonical unset/default인 기존 C6c 배포에는 이 추가 gate를 적용하지 않고,
+부분 설정만 fail-close한다.
+
+2026-08-02 NO-GO 리뷰에서 기존 v4 old pair는 일반 deploy로 generation 7의 active=rollback 상태에 도달할 수
+없음이 확인됐다. 따라서 기존 manifest가 있는 production에는 one-time generation bootstrap을 둔다. 이 경로는
+sync=false exact candidate의 image/source/cache contract를 검증한 뒤 v4 active와 rollback을 같은 첫 generation 7
+pair로 원자 전환한다. old pair는 v4 rollback slot이 아니라 H35 coupled rollback bundle에만 보존한다.
+
+H35와 T-VN-41은 별도 명령의 느슨한 조합이 아니라 하나의 결합 전환 transaction이다. backup, image build,
+Map/Pin DB migration, H35 CSV, generation bootstrap, initial, enable, causal canary, GC, 최종 verify와 forward commit을
+한 process의 C6c lock과 owner-only durable journal로 수행한다. non-terminal journal은 same resume/coupled rollback
+외 모든 manager mutation을 차단한다. host receipt 재사용만으로 DB 신선도를 추정하지 않고, resume마다 backup
+identity, schema revision, restore epoch, cutover ledger와 local/remote convergence를 fresh 검증한다.
+
+forward boundary 전 실패는 new runtime stop 뒤 Map application/Dagster/Pin DB와 manager env/state/manifest를
+결합 복구하고 old image를 마지막에 기동한다. migration 뒤 일반 image-only rollback은 금지한다. forward commit
+또는 최초 외부 event 뒤에는 old schema restore를 거부하고 same-generation recovery/fix-forward만 허용한다.
+Map schema/CSV 의미는 Map-owned typed CLI가 수행하고 manager는 transaction/source/schema/backup identity에
+결박된 exact secret-free JSON receipt만 소비한다. production public method에는 호출자 제공 attestor/canary/smoke
+주입점을 두지 않는다.
 
 ### 근거
 
@@ -1211,6 +1230,9 @@ release provenance를 가져야 한다. cache-target contract가 미설정인 �
   compatible-pair 정합성을 유지한다.
 - candidate와 release를 분리한 tracked gate는 review 중인 commit이 운영 pair로 조용히 승격되는 것을 막고,
   release 확정 전 모든 mutation을 결정적으로 차단한다.
+- one-time generation bootstrap은 old rollback 때문에 새 exact pair 자체를 만들 수 없는 순환 의존을 제거한다.
+- 결합 journal과 DB identity 재검증은 host receipt만 남고 DB가 rewind된 상태의 stale resume를 막는다.
+- forward boundary는 schema가 바뀐 뒤 image만 되돌리는 혼합 generation 복구를 금지한다.
 
 ### 결과(긍정)
 
