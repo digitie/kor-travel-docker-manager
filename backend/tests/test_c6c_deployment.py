@@ -6783,6 +6783,51 @@ def test_smoke_connection_retry_is_bounded() -> None:
     assert sleep.call_count == 2
 
 
+def test_session_request_opt_in_retries_only_pre_submit_connection_refused() -> None:
+    response = Mock(status=200, headers={})
+    response.read.return_value = b'{}'
+    opener = Mock()
+    opener.open.side_effect = [
+        urllib.error.URLError(ConnectionRefusedError()),
+        nullcontext(response),
+    ]
+
+    with patch.object(c6c_deployment.time, "sleep") as sleep:
+        result = c6c_deployment._session_request(
+            opener,
+            "http://127.0.0.1:12801/auth/login",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            body=b'{}',
+            read_error_body=False,
+            retry_connection_refused=True,
+        )
+
+    assert result.status == 200
+    assert opener.open.call_count == 2
+    sleep.assert_called_once_with(1.0)
+
+
+def test_session_request_default_does_not_retry_connection_refused() -> None:
+    opener = Mock()
+    opener.open.side_effect = urllib.error.URLError(ConnectionRefusedError())
+
+    with (
+        patch.object(c6c_deployment.time, "sleep") as sleep,
+        pytest.raises(DeploymentContractError, match="endpoint is unavailable"),
+    ):
+        c6c_deployment._session_request(
+            opener,
+            "http://127.0.0.1:12801/admin/provider-sync",
+            method="GET",
+            headers={},
+            read_error_body=False,
+        )
+
+    opener.open.assert_called_once()
+    sleep.assert_not_called()
+
+
 def test_pinvi_canonical_smoke_requires_envelopes_typed_cancel_and_logout() -> None:
     responses = [
         HttpProbeResponse(200, {"data": {"roles": ["admin"]}}, set_cookie=True),
