@@ -1143,27 +1143,44 @@ generation pin의 정확한 7개 변수만 전달한다. restore-fence/recovery 
 검증한 dedicated initial-cutover runner에는 실제 사용하는 command·consumer·recovery token만 실행 시간
 동안 주입한다. restore-fence token은 Map registry와 향후 별도 restore 작업 경계에만 보관한다.
 
-네 role token은 서로 및 기존 Map/PinVi service/admin/ops credential과 달라야 한다. Map registry의
-SHA-256 digest, principal ID, 같은 consumer ID, 최소 scope와 `pinvi` external system을 원문 token에
-교차 결박한다. raw Compose에는 secret literal을 두지 않고, resolved/runtime validator는 각 값이 허가된
-경로 밖에 나타나면 fail-close한다. runner argv·출력·receipt에는 원문 token이나 resolved environment를
-남기지 않는다.
+네 role token은 서로 및 기존 Map/PinVi service/admin/ops credential과 달라야 한다. Map registry는
+command·consumer·restore-fence·recovery 정확히 네 principal만 허용한다. 각 principal은 각각
+`cache-target:command`, consumer의 read/claim/ack/nack/snapshot, `cache-target:restore-fence`,
+`cache-target:recovery`의 정확한 최소 scope만 가지며 `external_systems`는 정확히 `["pinvi"]`다. SHA-256
+digest, 고유 principal ID, 같은 consumer ID와 이 구조를 원문 token에 교차 결박하고 extra principal·scope·
+external system은 거부한다. raw Compose에는 secret literal을 두지 않고, registry JSON 자체와 네 token
+digest도 protected/redaction 대상으로 다룬다. resolved/runtime validator는 각 값이 허가된 경로 밖에
+나타나면 fail-close한다. runner argv·출력·receipt에는 원문 token이나 resolved environment를 남기지 않는다.
 
-최초 runner 성공은 고정 cutover ID, epoch, contract pin, active compatible-pair identity와 PinVi가 반환한
-request/count/Merkle/published 결과를 owner-only durable receipt로 먼저 commit한다. 성공 receipt가 있어야
-canonical `.env`의 sync를 `true`로 원자 변경하고 같은 immutable active image의 PinVi API를 재생성한다.
-ordinary startup readiness와 기존 full compatible-pair image/provenance/runtime/secret-isolation attestation이
-모두 통과해야 enable을 commit한다. 실패나 crash는 receipt phase에 따라 재개하거나 exact 이전
-`sync=false` env/runtime으로 복구하며, mixed/foreign evidence는 자동 덮어쓰지 않는다.
+최초 runner 성공은 고정 cutover ID, epoch, contract pin, active와 rollback compatible-pair identity와 PinVi가
+반환한 request/count/Merkle/published 결과를 owner-only durable receipt로 먼저 commit한다. active와 rollback
+pair 모두 같은 cache-target generation/contract를 지원해야 하며 generic rollback도 cache health/pin smoke를
+통과해야 한다. stale rollback image는 cutover와 이후 rollback 후보로 허용하지 않는다.
+
+성공 initial receipt가 있어야 enable journal을 `enable_preparing`으로 먼저 fsync한다. 이 단계는 initial
+receipt hash, active/rollback pair logical hash, 이전/새 canonical env SHA를 한 transaction identity로 묶는다.
+그 뒤에만 journal을 `env_committed` → `recreate_started` → `verified` → `committed` 순으로 원자 전이하면서
+canonical `.env`의 sync를 `true`로 바꾸고 같은 immutable active image의 PinVi API를 재생성한다. 실패·crash
+복구도 `rollback_preparing` → `rollback_env_restored` → `rollback_recreate_started` → `rolled_back`의 durable
+phase로 기록한다. ordinary startup cache health/pin smoke와 기존 full compatible-pair image/provenance/runtime/
+secret-isolation attestation이 모두 통과해야 enable을 commit한다. 전체 initial/enable은 하나의 C6c 전역
+critical section에서 수행한다. 명시적으로 lock을 재획득하는 재개 경로라면 canonical env/Compose와 active·
+rollback pair, initial receipt를 전부 refreeze해 journal transaction identity와 다시 대조한다. mixed/foreign
+evidence는 자동 덮어쓰지 않는다.
 
 ### 근거
 
 - default-off runner는 ordinary lifespan worker와 최초 snapshot/backfill의 lease 경쟁을 제거한다.
 - recovery credential을 ephemeral 경계에만 두고 쓰지 않는 restore-fence credential도 주입하지 않으면
   ordinary API나 initial runner 탈취가 불필요한 restore 권한으로 확장되지 않는다.
+- command 전용 scope와 정확한 4-principal registry는 source mutation 권한이 consumer 동작으로 번지는 것을
+  막고, 허용 목록의 조용한 확장을 차단한다.
 - C6c lock/frozen evidence를 재사용하면 cache-target 전환과 compatible-pair·credential rotation이 서로의
   검증 뒤 runtime을 바꾸지 못한다.
-- receipt-before-enable은 원격 cutover 성공 뒤 process crash가 나도 sync를 추측으로 열지 않게 한다.
+- env 변경 전 journal과 단계별 fsync는 원격 cutover 성공이나 runtime 재생성 중 process crash가 나도
+  sync 상태와 복구 행동을 추측하지 않게 한다.
+- active/rollback pair의 같은-generation 검증은 generic rollback이 cache-target을 모르는 stale image로
+  production을 되돌리는 것을 막는다.
 - 같은 active image 재생성과 full pair attestation은 환경 전환을 image generation 변경과 분리하면서도
   compatible-pair 정합성을 유지한다.
 

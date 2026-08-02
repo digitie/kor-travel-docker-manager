@@ -188,7 +188,9 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       `..._EXPECTED_CONTRACT_GENERATION`만 전달한다.
 - [ ] command/consumer/restore-fence/recovery 네 token은 서로 및 기존 Map/PinVi
       service/admin/ops token과 달라야 한다. Map registry의 digest·principal·consumer·scope·
-      external system을 원문 token과 교차 검증하고 raw/resolved/runtime 비인가 노출을 차단한다.
+      external system을 원문 token과 교차 검증한다. registry는 정확히 네 principal, role별 최소 scope,
+      `["pinvi"]`만 허용하고 extra principal/scope/system을 거부한다. registry JSON과 digest를 포함해
+      raw/resolved/runtime 비인가 노출과 audit/log 누출을 차단한다.
 - [ ] restore-fence/recovery 원문 token은 ordinary PinVi API와 다른 장기 실행 service에 주입하지
       않는다. C6c 전역 lock과 frozen canonical `.env`/Compose/active pair를 검증한 전용
       initial-cutover runner에는 command/consumer/recovery만 실행 시간 동안 전달하고, restore-fence는
@@ -200,6 +202,12 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       active pair의 PinVi API만 재생성한다. startup readiness와 full compatible-pair runtime/image/
       provenance/secret-isolation attestation이 모두 통과해야 commit하며, 실패·crash는 `sync=false`
       env/runtime으로 복구한다.
+- [ ] active와 rollback pair 모두 같은 cache-target generation/contract 및 cache health/pin smoke에 exact
+      결박한다. generic rollback도 이 gate를 재사용하고 stale rollback image를 허용하지 않는다.
+- [ ] `.env=true` 전에 `enable_preparing`을 fsync하고 initial receipt, active/rollback pair, old/new env SHA를
+      묶는다. `env_committed→recreate_started→verified→committed`와
+      `rollback_preparing→rollback_env_restored→rollback_recreate_started→rolled_back`을 durable phase로
+      기록한다. 전체 cutover/enable은 단일 전역 critical section에서 수행하고 재획득 시 전부 refreeze한다.
 - [ ] Compose/CLI/config 회귀, 4-role distinct·scope/digest 음성 회귀, runner argv/stdout/stderr/
       long-running runtime 비노출, lock 경합, foreign env/receipt, cutover retry/crash, enable rollback을
       검증하고 backend 전체·Ruff·strict mypy·canonical Compose gate를 통과한다.

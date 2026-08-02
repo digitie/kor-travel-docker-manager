@@ -16,6 +16,12 @@ recovery만 주입한다. restore-fence는 Map registry와 향후 별도 restore
 동일 immutable PinVi API image를 재생성하고 기존 full compatible-pair attestation까지 통과해야 enable을
 확정하며, 실패·crash는 `sync=false` env/runtime으로 수렴하도록 구현 범위를 정했다.
 
+적대 설계 리뷰를 반영해 Map registry는 신규 `cache-target:command`를 포함한 정확한 네 principal·role별
+최소 scope·`["pinvi"]`만 허용하도록 강화했다. initial runner에는 실제 쓰는 command/consumer/recovery만
+주입한다. active뿐 아니라 rollback pair도 같은 generation/contract와 cache health/pin smoke에 결박하며,
+env 변경 전 `enable_preparing`부터 enable/rollback 전 단계를 fsync하는 crash journal과 전체 전역 critical
+section을 구현 계약으로 추가했다.
+
 ## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
 
 production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,
