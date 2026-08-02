@@ -4197,12 +4197,12 @@ class ComposeService:
                 )
                 manifest = load_pair_manifest(str(manifest_path))
                 self._attest_cache_target_pair(current_config, manifest, current)
+                reconcile_pair_references((candidate,), cwd=get_project_root())
                 journal = transition_cache_target_window(
                     journal,
                     "runtime_activated",
                 )
                 write_cache_target_window(journal_path, journal)
-                reconcile_pair_references((candidate,), cwd=get_project_root())
             return self._cache_target_window_result(journal, resumed=False)
         except Exception:
             latest = read_cache_target_window(journal_path)
