@@ -7,7 +7,7 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -206,6 +206,7 @@ def _require_cache_target_release(
     config: C6cDeploymentConfig,
     *,
     pairs: tuple[CompatibleImagePair, ...] = (),
+    candidate_map_source_revision: str | None = None,
     candidate_source_revision: str | None = None,
 ) -> None:
     if config.cache_target is None:
@@ -213,6 +214,7 @@ def _require_cache_target_release(
     require_cache_target_production_release(
         config.cache_target,
         pairs=pairs,
+        candidate_map_source_revision=candidate_map_source_revision,
         candidate_source_revision=candidate_source_revision,
     )
 
@@ -3445,6 +3447,7 @@ class ComposeService:
             if build_provenance is not None:
                 _require_cache_target_release(
                     config,
+                    candidate_map_source_revision=build_provenance.map_source_revision,
                     candidate_source_revision=build_provenance.pinvi_source_revision,
                 )
             return self._ensure_production_pinvi_target(
@@ -3464,11 +3467,6 @@ class ComposeService:
         cutover_id: str,
         expected_restore_epoch: int,
         reason: str,
-        pair_contract_attestor: Callable[
-            [C6cDeploymentConfig, CompatiblePairManifest, ComposeTransactionSnapshot],
-            None,
-        ]
-        | None = None,
     ) -> dict[str, Any]:
         """frozen compatible pair에서 default-off initial runner를 한 번 실행한다."""
 
@@ -3525,8 +3523,7 @@ class ComposeService:
                 config,
                 pairs=(manifest.active, manifest.rollback),
             )
-            attestor = pair_contract_attestor or self._attest_cache_target_pair
-            attestor(config, manifest, transaction)
+            self._attest_cache_target_pair(config, manifest, transaction)
             evidence = CacheTargetFrozenEvidence(
                 env_sha256=hashlib.sha256(
                     transaction.environment.env_file_bytes
@@ -3610,30 +3607,7 @@ class ComposeService:
             commit_initial_cutover_receipt(receipt_path, receipt)
             return _initial_receipt_process_result(receipt, resumed=False)
 
-    def enable_cache_target_sync(
-        self,
-        *,
-        pair_contract_attestor: Callable[
-            [C6cDeploymentConfig, CompatiblePairManifest, ComposeTransactionSnapshot],
-            None,
-        ]
-        | None = None,
-        causal_canary: Callable[
-            [
-                str,
-                C6cDeploymentConfig,
-                CompatiblePairManifest,
-                ComposeTransactionSnapshot,
-            ],
-            Mapping[str, Any],
-        ]
-        | None = None,
-        rollback_health_smoke: Callable[
-            [C6cDeploymentConfig, ComposeTransactionSnapshot],
-            None,
-        ]
-        | None = None,
-    ) -> dict[str, Any]:
+    def enable_cache_target_sync(self) -> dict[str, Any]:
         """하나의 C6c lock에서 durable sync enable 또는 rollback resume를 수행한다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
@@ -3667,8 +3641,6 @@ class ComposeService:
             )
             journal_path = state_directory / "cache-target-enable-v1.json"
             env_path = Path(transaction.environment.env_path).resolve(strict=False)
-            attestor = pair_contract_attestor or self._attest_cache_target_pair
-
             try:
                 journal_path.lstat()
             except FileNotFoundError:
@@ -3813,7 +3785,7 @@ class ComposeService:
                         "cache-target enabled resolved compose evidence drifted"
                     )
                 if attest_pair:
-                    attestor(
+                    self._attest_cache_target_pair(
                         current_config,
                         current_manifest,
                         current,
@@ -3851,11 +3823,10 @@ class ComposeService:
                         "cache-target PinVi API recreate failed"
                     )
                 if not enabled:
-                    smoke = (
-                        rollback_health_smoke
-                        or self._run_cache_target_rollback_health_smoke
+                    self._run_cache_target_rollback_health_smoke(
+                        current_config,
+                        current,
                     )
-                    smoke(current_config, current)
 
             def attest(enabled: bool) -> None:
                 capture_current(enabled, attest_pair=True)
@@ -3865,13 +3836,6 @@ class ComposeService:
                     True,
                     attest_pair=False,
                 )
-                if causal_canary is not None:
-                    return causal_canary(
-                        run_id,
-                        current_config,
-                        current_manifest,
-                        current,
-                    )
                 raw_receipt = execute_cache_target_causal_canary(
                     container_name=current_config.pinvi_container,
                     run_id=run_id,
@@ -4341,6 +4305,7 @@ class ComposeService:
             )
             _require_cache_target_release(
                 config,
+                candidate_map_source_revision=pair.map_source_revision,
                 candidate_source_revision=pair.pinvi_source_revision,
             )
             return pair, None
@@ -4382,6 +4347,7 @@ class ComposeService:
         self._require_expected_source_provenance(pair, build_provenance)
         _require_cache_target_release(
             config,
+            candidate_map_source_revision=pair.map_source_revision,
             candidate_source_revision=pair.pinvi_source_revision,
         )
         return pair, build_result
@@ -5064,6 +5030,7 @@ class ComposeService:
             if build_provenance is not None:
                 _require_cache_target_release(
                     config,
+                    candidate_map_source_revision=build_provenance.map_source_revision,
                     candidate_source_revision=build_provenance.pinvi_source_revision,
                 )
             self._validate_resolved_compose_contract(

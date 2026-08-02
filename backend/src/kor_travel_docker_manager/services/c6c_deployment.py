@@ -1007,7 +1007,9 @@ def load_c6c_deployment_config_from_environment(
 
     cache_target = load_cache_target_runtime_contract(
         values,
-        require_nonempty=deployment_environment == "production",
+        # production에도 cache-target 도입 전 compatible-pair가 존재한다. 전체
+        # canonical unset/default는 None으로 유지하고 부분 설정만 fail-close한다.
+        require_nonempty=False,
         legacy_tokens=(
             values.get(_MAP_READ_ENV, ""),
             values.get(_MAP_CANCEL_ENV, ""),
@@ -1738,10 +1740,7 @@ def _load_candidate_cache_target_contract(
 ) -> CacheTargetRuntimeContract | None:
     return load_cache_target_runtime_contract(
         environment,
-        require_nonempty=(
-            environment.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
-            == "production"
-        ),
+        require_nonempty=False,
         legacy_tokens=(
             environment.get(_MAP_READ_ENV, ""),
             environment.get(_MAP_CANCEL_ENV, ""),

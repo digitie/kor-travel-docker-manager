@@ -59,13 +59,22 @@ def test_release_requires_exact_contract_candidate_and_both_pairs(
         replace(CACHE_TARGET_PRODUCTION_PINS, pinvi_release_revision=release),
     )
     pairs = (
-        SimpleNamespace(pinvi_source_revision=release),
-        SimpleNamespace(pinvi_source_revision=release),
+        SimpleNamespace(
+            map_source_revision=CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
+            pinvi_source_revision=release,
+        ),
+        SimpleNamespace(
+            map_source_revision=CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
+            pinvi_source_revision=release,
+        ),
     )
 
     require_cache_target_production_release(
         _contract(),
         pairs=pairs,
+        candidate_map_source_revision=(
+            CACHE_TARGET_PRODUCTION_PINS.map_release_revision
+        ),
         candidate_source_revision=release,
     )
 
@@ -78,8 +87,32 @@ def test_release_requires_exact_contract_candidate_and_both_pairs(
             _contract(),
             candidate_source_revision="b" * 40,
         )
+    with pytest.raises(DeploymentContractError, match="Map candidate differs"):
+        require_cache_target_production_release(
+            _contract(),
+            candidate_map_source_revision="b" * 40,
+        )
     with pytest.raises(DeploymentContractError, match="compatible pair differs"):
         require_cache_target_production_release(
             _contract(),
-            pairs=(pairs[0], SimpleNamespace(pinvi_source_revision="b" * 40)),
+            pairs=(
+                pairs[0],
+                SimpleNamespace(
+                    map_source_revision=(
+                        CACHE_TARGET_PRODUCTION_PINS.map_release_revision
+                    ),
+                    pinvi_source_revision="b" * 40,
+                ),
+            ),
+        )
+    with pytest.raises(DeploymentContractError, match="compatible pair differs"):
+        require_cache_target_production_release(
+            _contract(),
+            pairs=(
+                pairs[0],
+                SimpleNamespace(
+                    map_source_revision="c" * 40,
+                    pinvi_source_revision=release,
+                ),
+            ),
         )

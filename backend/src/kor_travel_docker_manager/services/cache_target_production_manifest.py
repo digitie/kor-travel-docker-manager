@@ -15,11 +15,15 @@ class CacheTargetProductionPinManifest:
     contract_generation: str
     service_openapi_sha256: str
     map_functional_owner_revision: str
+    map_release_revision: str
     pinvi_reviewed_candidate_revision: str
     pinvi_release_revision: str | None
 
 
 class CacheTargetPairProvenance(Protocol):
+    @property
+    def map_source_revision(self) -> str: ...
+
     @property
     def pinvi_source_revision(self) -> str: ...
 
@@ -33,6 +37,7 @@ CACHE_TARGET_PRODUCTION_PINS = CacheTargetProductionPinManifest(
         "622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2"
     ),
     map_functional_owner_revision="9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0",
+    map_release_revision="0b0a0cb5767f25284506cb76d47c10ebce8fa84f",
     pinvi_reviewed_candidate_revision="6ac8baae2814fae5b16c95846ee40d77cc7fe283",
     pinvi_release_revision=None,
 )
@@ -42,6 +47,7 @@ def require_cache_target_production_release(
     contract: CacheTargetRuntimeContract,
     *,
     pairs: tuple[CacheTargetPairProvenance, ...] = (),
+    candidate_map_source_revision: str | None = None,
     candidate_source_revision: str | None = None,
 ) -> CacheTargetProductionPinManifest:
     """명시 release와 exact contract/pair provenance 없이는 production을 차단한다."""
@@ -65,8 +71,19 @@ def require_cache_target_production_release(
         raise DeploymentContractError(
             "cache-target PinVi candidate differs from the pinned release revision"
         )
-    if any(pair.pinvi_source_revision != release_revision for pair in pairs):
+    if (
+        candidate_map_source_revision is not None
+        and candidate_map_source_revision != manifest.map_release_revision
+    ):
         raise DeploymentContractError(
-            "cache-target compatible pair differs from the pinned PinVi release revision"
+            "cache-target Map candidate differs from the pinned release revision"
+        )
+    if any(
+        pair.pinvi_source_revision != release_revision
+        or pair.map_source_revision != manifest.map_release_revision
+        for pair in pairs
+    ):
+        raise DeploymentContractError(
+            "cache-target compatible pair differs from the pinned Map/PinVi release revision"
         )
     return manifest

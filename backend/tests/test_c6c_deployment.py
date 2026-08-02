@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -79,6 +80,7 @@ from kor_travel_docker_manager.services.cache_target_contract import (
     PINVI_RESTORE_FENCE_TOKEN_ENV,
     PINVI_SOURCE_REVISION_ENV,
     PINVI_SYNC_ENV,
+    PROTECTED_ENV_NAMES,
 )
 from kor_travel_docker_manager.services.cache_target_cutover import (
     CacheTargetFrozenEvidence,
@@ -378,6 +380,43 @@ def _write_env(path: Path, **overrides: str | None) -> None:
         "".join(f"{key}={value}\n" for key, value in values.items() if value is not None),
         encoding="utf-8",
     )
+
+
+def test_production_config_accepts_canonical_cache_target_unset() -> None:
+    values = {
+        name: value
+        for name, value in _production_environment().items()
+        if value is not None and name not in PROTECTED_ENV_NAMES
+    }
+
+    loaded = load_c6c_deployment_config_from_environment(values)
+
+    assert loaded.production is True
+    assert loaded.cache_target is None
+
+
+def test_production_config_rejects_partial_cache_target_configuration() -> None:
+    values = {
+        name: value
+        for name, value in _production_environment().items()
+        if value is not None and name not in PROTECTED_ENV_NAMES
+    }
+    values[PINVI_COMMAND_TOKEN_ENV] = _CACHE_TARGET_TOKENS["command"]
+
+    with pytest.raises(DeploymentContractError):
+        load_c6c_deployment_config_from_environment(values)
+
+
+def test_production_cache_target_entrypoints_have_no_injected_verifier() -> None:
+    initial_parameters = inspect.signature(
+        ComposeService.run_cache_target_initial_cutover
+    ).parameters
+    enable_parameters = inspect.signature(ComposeService.enable_cache_target_sync).parameters
+
+    assert "pair_contract_attestor" not in initial_parameters
+    assert "pair_contract_attestor" not in enable_parameters
+    assert "causal_canary" not in enable_parameters
+    assert "rollback_health_smoke" not in enable_parameters
 
 
 def _clear_c6c_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -12558,6 +12597,7 @@ def _allow_cache_target_release(
             contract_generation=contract.expected_contract_generation,
             service_openapi_sha256=contract.expected_openapi_sha256,
             map_functional_owner_revision=contract.expected_source_revision,
+            map_release_revision=manifest.active.map_source_revision,
             pinvi_release_revision=manifest.active.pinvi_source_revision,
         ),
     )
@@ -12592,13 +12632,13 @@ def test_cache_target_initial_cutover_blocks_unpinned_release_before_attestor(
         "load_pair_manifest",
         Mock(return_value=manifest),
     )
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
 
     with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
         service.run_cache_target_initial_cutover(
             cutover_id="11111111-1111-4111-8111-111111111111",
             expected_restore_epoch=3,
             reason="production initial cutover",
-            pair_contract_attestor=attestor,
         )
 
     attestor.assert_not_called()
@@ -12625,11 +12665,14 @@ def test_cache_target_enable_blocks_unpinned_release_before_mutation(
         Mock(),
     )
     monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    attestor = Mock()
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
 
     with pytest.raises(DeploymentContractError, match="release revision is not pinned"):
-        service.enable_cache_target_sync(pair_contract_attestor=Mock())
+        service.enable_cache_target_sync()
 
     assert capture.call_count == 1
+    attestor.assert_not_called()
     assert env_path.read_bytes() == original_env
 
 
@@ -12713,10 +12756,9 @@ def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
         "execute_cache_target_causal_canary",
         docker_canary,
     )
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
 
-    result = service.enable_cache_target_sync(
-        pair_contract_attestor=attestor,
-    )
+    result = service.enable_cache_target_sync()
 
     assert result["success"] is True
     assert result["phase"] == "committed"
@@ -12744,9 +12786,7 @@ def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
 
     foreign_enabled_sha[0] = "b" * 64
     with pytest.raises(DeploymentContractError, match="resolved compose evidence"):
-        service.enable_cache_target_sync(
-            pair_contract_attestor=attestor,
-        )
+        service.enable_cache_target_sync()
 
 
 def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
@@ -12822,13 +12862,20 @@ def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
         Mock(return_value=manifest),
     )
     monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(service, "_attest_cache_target_pair", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "execute_cache_target_causal_canary",
+        Mock(side_effect=AssertionError("canary must not run")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_cache_target_rollback_health_smoke",
+        health_smoke,
+    )
 
     with pytest.raises(CacheTargetEnableRolledBackError):
-        service.enable_cache_target_sync(
-            pair_contract_attestor=Mock(),
-            causal_canary=Mock(),
-            rollback_health_smoke=health_smoke,
-        )
+        service.enable_cache_target_sync()
 
     assert env_path.read_bytes().endswith(b"=false\n")
     assert [call.args[0][-1] for call in runner.call_args_list] == [
@@ -12889,12 +12936,12 @@ def test_cache_target_initial_cutover_runs_frozen_secret_bundle_and_commits_rece
     )
     monkeypatch.setattr(service, "_run_frozen_recovery", runner)
     monkeypatch.setattr(service, "_cleanup_cache_target_initial_runner", cleanup)
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
 
     result = service.run_cache_target_initial_cutover(
         cutover_id="11111111-1111-4111-8111-111111111111",
         expected_restore_epoch=3,
         reason="production initial cutover",
-        pair_contract_attestor=attestor,
     )
 
     assert result["success"] is True
@@ -12960,17 +13007,16 @@ def test_cache_target_initial_cutover_exact_receipt_retry_does_not_rerun(
     monkeypatch.setattr(service, "_run_frozen_recovery", runner)
     monkeypatch.setattr(service, "_cleanup_cache_target_initial_runner", Mock())
     attestor = Mock()
+    monkeypatch.setattr(service, "_attest_cache_target_pair", attestor)
     first = service.run_cache_target_initial_cutover(
         cutover_id="11111111-1111-4111-8111-111111111111",
         expected_restore_epoch=3,
         reason="production initial cutover",
-        pair_contract_attestor=attestor,
     )
     second = service.run_cache_target_initial_cutover(
         cutover_id="11111111-1111-4111-8111-111111111111",
         expected_restore_epoch=3,
         reason="production initial cutover",
-        pair_contract_attestor=attestor,
     )
 
     assert first["resumed"] is False
