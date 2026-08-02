@@ -95,6 +95,10 @@ def test_execute_enable_orders_env_recreate_attest_canary_and_commit(
             "cutover_id": _CUTOVER_ID,
             "active_pair_sha256": "4" * 64,
             "contract_generation": "7",
+            "local_count": 12,
+            "remote_count": 12,
+            "local_merkle_root": "9" * 64,
+            "remote_merkle_root": "9" * 64,
             "command_id": "33333333-3333-4333-8333-333333333333",
             "acked": True,
             "lag": 0,
@@ -112,6 +116,47 @@ def test_execute_enable_orders_env_recreate_attest_canary_and_commit(
         ("attest", True),
         ("attest", True),
     ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("local_count", 11),
+        ("remote_count", 11),
+        ("local_merkle_root", "8" * 64),
+        ("remote_merkle_root", "8" * 64),
+    ],
+)
+def test_execute_enable_rejects_canary_snapshot_drift_from_initial(
+    tmp_path: Path,
+    field: str,
+    value: int | str,
+) -> None:
+    environment = _Environment()
+    evidence: dict[str, object] = {
+        "cutover_id": _CUTOVER_ID,
+        "active_pair_sha256": "4" * 64,
+        "contract_generation": "7",
+        "local_count": 12,
+        "remote_count": 12,
+        "local_merkle_root": "9" * 64,
+        "remote_merkle_root": "9" * 64,
+    }
+    evidence[field] = value
+
+    with pytest.raises(CacheTargetEnableRolledBackError):
+        execute_cache_target_enable(
+            receipt=_receipt(),
+            journal_path=tmp_path / "enable.json",
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
+            read_env=environment.read,
+            replace_env=environment.replace,
+            attest=lambda _enabled: None,
+            recreate_pinvi_api=lambda _enabled: None,
+            causal_canary=lambda run_id: {"run_id": run_id, **evidence},
+        )
+
+    assert environment.value == _ENV_FALSE
 
 
 def test_execute_enable_canary_failure_rolls_back_false_runtime(
@@ -169,6 +214,10 @@ def test_execute_enable_resumes_crash_after_env_commit(
             "cutover_id": _CUTOVER_ID,
             "active_pair_sha256": "4" * 64,
             "contract_generation": "7",
+            "local_count": 12,
+            "remote_count": 12,
+            "local_merkle_root": "9" * 64,
+            "remote_merkle_root": "9" * 64,
             "acked": True,
             "lag": 0,
             "dlq": 0,
@@ -290,6 +339,10 @@ def test_execute_enable_reuses_transaction_id_for_causal_canary_retry(
             "cutover_id": _CUTOVER_ID,
             "active_pair_sha256": "4" * 64,
             "contract_generation": "7",
+            "local_count": 12,
+            "remote_count": 12,
+            "local_merkle_root": "9" * 64,
+            "remote_merkle_root": "9" * 64,
         },
     )
 

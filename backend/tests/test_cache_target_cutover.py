@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import uuid
 from dataclasses import asdict
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from kor_travel_docker_manager.services import cache_target_cutover
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_cutover import (
     CacheTargetFrozenEvidence,
@@ -18,9 +20,11 @@ from kor_travel_docker_manager.services.cache_target_cutover import (
     commit_initial_cutover_receipt,
     initial_receipt_logical_sha256,
     initial_runner_compose_arguments,
+    initial_runner_secret_path,
     parse_initial_cutover_output,
     prepare_enable_journal,
     render_cache_target_sync_env,
+    scavenge_initial_runner_secret_bundle,
     transition_enable_journal,
     with_initial_runner_secret_bundle,
     write_cutover_state,
@@ -270,6 +274,7 @@ def test_initial_runner_secret_bundle_is_owner_only_and_removed_on_all_paths(
         with pytest.raises(RuntimeError, match="runner failed"):
             with_initial_runner_secret_bundle(
                 state_directory,
+                _CUTOVER_ID,
                 command_token,
                 consumer_token,
                 recovery_token,
@@ -279,6 +284,7 @@ def test_initial_runner_secret_bundle_is_owner_only_and_removed_on_all_paths(
         assert (
             with_initial_runner_secret_bundle(
                 state_directory,
+                _CUTOVER_ID,
                 command_token,
                 consumer_token,
                 recovery_token,
@@ -343,6 +349,7 @@ def test_initial_runner_secret_bundle_preserves_shell_metacharacters(
     assert (
         with_initial_runner_secret_bundle(
             state_directory,
+            _CUTOVER_ID,
             tokens[0],
             tokens[1],
             tokens[2],
@@ -350,3 +357,66 @@ def test_initial_runner_secret_bundle_preserves_shell_metacharacters(
         )
         == _result()
     )
+
+
+def test_initial_runner_secret_scavenger_zeroizes_crash_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    state_directory.mkdir(mode=0o700)
+    secret_path = initial_runner_secret_path(state_directory, _CUTOVER_ID)
+    secret_path.write_bytes(b"sensitive-token-material\n")
+    secret_path.chmod(0o600)
+    writes: list[bytes] = []
+    original_write = os.write
+
+    def capture_write(descriptor: int, payload: bytes) -> int:
+        writes.append(payload)
+        return original_write(descriptor, payload)
+
+    monkeypatch.setattr(cache_target_cutover.os, "write", capture_write)
+
+    scavenge_initial_runner_secret_bundle(state_directory, _CUTOVER_ID)
+
+    assert not secret_path.exists()
+    assert writes and set(b"".join(writes)) == {0}
+
+
+@pytest.mark.parametrize("artifact_kind", ["symlink", "hardlink"])
+def test_initial_runner_secret_scavenger_rejects_link_artifacts(
+    tmp_path: Path,
+    artifact_kind: str,
+) -> None:
+    state_directory = tmp_path / "state"
+    state_directory.mkdir(mode=0o700)
+    secret_path = initial_runner_secret_path(state_directory, _CUTOVER_ID)
+    target = state_directory / "foreign"
+    target.write_bytes(b"must-not-change")
+    target.chmod(0o600)
+    if artifact_kind == "symlink":
+        secret_path.symlink_to(target)
+    else:
+        os.link(target, secret_path)
+
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        scavenge_initial_runner_secret_bundle(state_directory, _CUTOVER_ID)
+
+    assert target.read_bytes() == b"must-not-change"
+
+
+def test_initial_runner_secret_scavenger_rejects_foreign_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_directory = tmp_path / "state"
+    state_directory.mkdir(mode=0o700)
+    secret_path = initial_runner_secret_path(state_directory, _CUTOVER_ID)
+    secret_path.write_bytes(b"must-not-change")
+    secret_path.chmod(0o600)
+    monkeypatch.setattr(cache_target_cutover.os, "geteuid", lambda: os.getuid() + 1)
+
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        scavenge_initial_runner_secret_bundle(state_directory, _CUTOVER_ID)
+
+    assert secret_path.read_bytes() == b"must-not-change"

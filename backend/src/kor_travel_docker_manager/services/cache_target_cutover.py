@@ -338,11 +338,13 @@ def read_owner_only_state(path: Path) -> bytes:
 
 def with_initial_runner_secret_bundle(
     state_directory: Path,
+    artifact_id: str,
     command_token: str,
     consumer_token: str,
     recovery_token: str,
     runner: Callable[[Path], InitialCutoverResult],
 ) -> InitialCutoverResult:
+    secret_path = initial_runner_secret_path(state_directory, artifact_id)
     tokens = (command_token, consumer_token, recovery_token)
     if any(
         len(token) < 32 or any(character.isspace() for character in token)
@@ -361,10 +363,16 @@ def with_initial_runner_secret_bundle(
         or stat.S_IMODE(directory_stat.st_mode) != 0o700
     ):
         raise DeploymentContractError("cache-target secret directory is unsafe")
-    descriptor, name = tempfile.mkstemp(
-        dir=state_directory, prefix=".cache-target-initial.", suffix=".secret"
-    )
-    secret_path = Path(name)
+    scavenge_initial_runner_secret_bundle(state_directory, artifact_id)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(secret_path, flags, 0o600)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target deterministic secret artifact creation failed"
+        ) from exc
     try:
         with os.fdopen(descriptor, "wb") as stream:
             os.fchmod(stream.fileno(), 0o600)
@@ -373,9 +381,107 @@ def with_initial_runner_secret_bundle(
                 stream.write(b"\n")
             stream.flush()
             os.fsync(stream.fileno())
+        _fsync_directory(state_directory)
         return runner(secret_path)
     finally:
-        secret_path.unlink(missing_ok=True)
+        _zeroize_and_unlink_secret_artifact(secret_path)
+
+
+def initial_runner_secret_path(state_directory: Path, artifact_id: str) -> Path:
+    canonical_id = _canonical_uuid(artifact_id, "initial runner artifact ID")
+    return state_directory / f".cache-target-initial-{canonical_id}.secret"
+
+
+def scavenge_initial_runner_secret_bundle(
+    state_directory: Path,
+    artifact_id: str,
+) -> None:
+    """중단된 deterministic runner credential을 owner-only 경계에서 폐기한다."""
+
+    secret_path = initial_runner_secret_path(state_directory, artifact_id)
+    try:
+        secret_path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target secret artifact is unavailable"
+        ) from exc
+    _zeroize_and_unlink_secret_artifact(secret_path)
+
+
+def _zeroize_and_unlink_secret_artifact(path: Path) -> None:
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target secret artifact is unavailable"
+        ) from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != 0o600
+        or not 0 <= before.st_size <= 1_048_576
+    ):
+        raise DeploymentContractError("cache-target secret artifact is unsafe")
+    flags = os.O_WRONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                opened.st_dev != before.st_dev
+                or opened.st_ino != before.st_ino
+                or opened.st_uid != before.st_uid
+                or opened.st_nlink != 1
+                or not stat.S_ISREG(opened.st_mode)
+                or stat.S_IMODE(opened.st_mode) != 0o600
+            ):
+                raise DeploymentContractError(
+                    "cache-target secret artifact changed during cleanup"
+                )
+            remaining = opened.st_size
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            zeroes = b"\0" * 65_536
+            while remaining:
+                written = os.write(descriptor, zeroes[: min(remaining, len(zeroes))])
+                if written <= 0:
+                    raise OSError("zero-length secret overwrite")
+                remaining -= written
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        after = path.lstat()
+        if after.st_dev != before.st_dev or after.st_ino != before.st_ino:
+            raise DeploymentContractError(
+                "cache-target secret artifact changed before unlink"
+            )
+        path.unlink()
+        _fsync_directory(path.parent)
+    except DeploymentContractError:
+        raise
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target secret artifact cleanup failed"
+        ) from exc
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target secret directory fsync failed"
+        ) from exc
 
 
 def initial_runner_compose_arguments(

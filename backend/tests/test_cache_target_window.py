@@ -29,6 +29,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
     prepare_cache_target_window,
     read_cache_target_window,
     transition_cache_target_window,
+    validate_map_final_evidence_binding,
     write_cache_target_window,
 )
 from kor_travel_docker_manager.services.compose_service import ComposeService
@@ -128,7 +129,7 @@ def _map_final_evidence() -> MapFinalEvidence:
         contract_version="ktm-cache-target-final-evidence/v1",
         external_system="pinvi",
         stream_state="ready",
-        consumer_id="pinvi-production",
+        consumer_id="pinvi-cache-target-consumer",
         restore_epoch=3,
         control_version=7,
         stream_control_etag="etag-7",
@@ -140,6 +141,33 @@ def _map_final_evidence() -> MapFinalEvidence:
         claim_backlog_count=0,
         delivery_backlog_count=0,
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("consumer_id", "foreign-consumer"),
+        ("restore_epoch", 4),
+        ("snapshot_count", 11),
+        ("snapshot_merkle_root", "8" * 64),
+    ],
+)
+def test_map_final_evidence_rejects_drift_from_initial_baseline(
+    field: str,
+    value: object,
+) -> None:
+    evidence = MapFinalEvidence(
+        **{**asdict(_map_final_evidence()), field: value}
+    )
+
+    with pytest.raises(DeploymentContractError, match="initial baseline"):
+        validate_map_final_evidence_binding(
+            evidence,
+            consumer_id="pinvi-cache-target-consumer",
+            restore_epoch=3,
+            snapshot_count=12,
+            snapshot_merkle_root="9" * 64,
+        )
 
 
 def _map_gc_receipt(prior_receipt_digest: str) -> MapHelperReceipt:
@@ -169,8 +197,8 @@ def _map_gc_receipt(prior_receipt_digest: str) -> MapHelperReceipt:
             MapHelperCheck("gc_not_skipped", False, False, True),
             MapHelperCheck("gc_remaining_items", 0, 0, True),
             MapHelperCheck("gc_remaining_headers", 0, 0, True),
-            MapHelperCheck("gc_referenced_items_preserved", 9, 9, True),
-            MapHelperCheck("gc_referenced_headers_preserved", 3, 3, True),
+            MapHelperCheck("gc_referenced_items_preserved", True, True, True),
+            MapHelperCheck("gc_referenced_headers_preserved", True, True, True),
             MapHelperCheck(
                 "gc_observation_run_id",
                 f"h35:{_TRANSACTION_ID}:cache-target-snapshot-gc:v1",
@@ -179,14 +207,14 @@ def _map_gc_receipt(prior_receipt_digest: str) -> MapHelperReceipt:
             ),
             MapHelperCheck(
                 "gc_observation_referenced_items_fresh",
-                9,
-                9,
+                True,
+                True,
                 True,
             ),
             MapHelperCheck(
                 "gc_observation_referenced_headers_fresh",
-                3,
-                3,
+                True,
+                True,
                 True,
             ),
             MapHelperCheck("gc_observation_timestamp_present", True, True, True),
@@ -195,6 +223,47 @@ def _map_gc_receipt(prior_receipt_digest: str) -> MapHelperReceipt:
         runtime_mutation_count=0,
         external_event_count=0,
     )
+
+
+def _generation_bootstrapped_journal() -> CacheTargetWindowJournal:
+    journal = _backups_committed()
+    journal = transition_cache_target_window(
+        journal,
+        "candidate_built",
+        candidate_pair_sha256="6" * 64,
+    )
+    journal = transition_cache_target_window(
+        journal,
+        "pin_preflight_verified",
+        pin_preflight_receipt_sha256="a" * 64,
+    )
+    preflight = _map_receipt("preflight", None)
+    journal = transition_cache_target_window(
+        journal,
+        "map_preflight_verified",
+        last_map_receipt=preflight,
+        last_map_receipt_sha256=map_helper_receipt_sha256(preflight),
+    )
+    migration = _map_receipt("migrate", map_helper_receipt_sha256(preflight))
+    journal = transition_cache_target_window(
+        journal,
+        "map_database_forwarded",
+        last_map_receipt=migration,
+        last_map_receipt_sha256=map_helper_receipt_sha256(migration),
+    )
+    journal = transition_cache_target_window(
+        journal,
+        "databases_forwarded",
+        pin_migration_receipt_sha256="b" * 64,
+    )
+    csv_receipt = _map_receipt("csv5", map_helper_receipt_sha256(migration))
+    journal = transition_cache_target_window(
+        journal,
+        "csv_forwarded",
+        last_map_receipt=csv_receipt,
+        last_map_receipt_sha256=map_helper_receipt_sha256(csv_receipt),
+    )
+    return transition_cache_target_window(journal, "generation_bootstrapped")
 
 
 def _map_final_verified_journal() -> CacheTargetWindowJournal:
@@ -377,6 +446,159 @@ def test_window_allows_ordered_pre_event_coupled_rollback() -> None:
     assert old_restore_is_authorized(journal) is False
 
 
+def test_initial_event_boundary_fsync_failure_never_invokes_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    path = tmp_path / "cache-target-window-v1.json"
+    journal = _generation_bootstrapped_journal()
+    write_cache_target_window(path, journal)
+    candidate = SimpleNamespace()
+    transaction = SimpleNamespace(
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+        resolved={},
+        environment=SimpleNamespace(effective={}),
+    )
+    initial = Mock(side_effect=AssertionError("runner must follow durable boundary"))
+    rollback = Mock(return_value=journal)
+    original_write = write_cache_target_window
+
+    def fail_event_boundary_fsync(
+        target: Path,
+        updated: CacheTargetWindowJournal,
+    ) -> str:
+        if (
+            updated.phase == "generation_bootstrapped"
+            and updated.external_event_count == 1
+        ):
+            raise OSError("simulated external-event boundary fsync failure")
+        return original_write(target, updated)
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=(Mock(), Mock(), Mock())),
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_or_build_window_candidate",
+        Mock(return_value=candidate),
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_cache_target_initial_cutover_unlocked",
+        initial,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.write_cache_target_window",
+        fail_event_boundary_fsync,
+    )
+    monkeypatch.setattr(service, "_resume_cache_target_coupled_rollback", rollback)
+
+    with pytest.raises(OSError, match="boundary fsync failure"):
+        service._run_cache_target_window_unlocked(
+            journal_path=path,
+            journal=journal,
+            transaction=transaction,
+            config=Mock(),
+            reason="test",
+            wait_timeout=1,
+            lock_path=str(tmp_path / "lock"),
+        )
+
+    persisted = read_cache_target_window(path)
+    assert persisted.external_event_count == 0
+    assert old_restore_is_authorized(persisted) is True
+    initial.assert_not_called()
+    assert rollback.call_args.kwargs["journal"] == persisted
+
+
+def test_initial_response_loss_forbids_restore_and_same_cutover_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    path = tmp_path / "cache-target-window-v1.json"
+    journal = _generation_bootstrapped_journal()
+    write_cache_target_window(path, journal)
+    candidate = SimpleNamespace()
+    transaction = SimpleNamespace(
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+        resolved={},
+        environment=SimpleNamespace(effective={}),
+    )
+    initial = Mock(
+        side_effect=[
+            DeploymentContractError("simulated initial response loss"),
+            {"success": True},
+        ]
+    )
+    rollback = Mock(side_effect=AssertionError("old restore must remain forbidden"))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=(Mock(), Mock(), Mock())),
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_or_build_window_candidate",
+        Mock(return_value=candidate),
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_cache_target_initial_cutover_unlocked",
+        initial,
+    )
+    monkeypatch.setattr(service, "_resume_cache_target_coupled_rollback", rollback)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.read_initial_cutover_receipt",
+        Mock(return_value=SimpleNamespace(published=12)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.initial_receipt_logical_sha256",
+        Mock(return_value="d" * 64),
+    )
+    monkeypatch.setattr(
+        service,
+        "_enable_cache_target_sync_unlocked",
+        Mock(side_effect=DeploymentContractError("stop after initial resume")),
+    )
+
+    with pytest.raises(DeploymentContractError, match="response loss"):
+        service._run_cache_target_window_unlocked(
+            journal_path=path,
+            journal=journal,
+            transaction=transaction,
+            config=Mock(),
+            reason="test",
+            wait_timeout=1,
+            lock_path=str(tmp_path / "lock"),
+        )
+
+    event_bounded = read_cache_target_window(path)
+    assert event_bounded.phase == "generation_bootstrapped"
+    assert event_bounded.external_event_count == 1
+    assert old_restore_is_authorized(event_bounded) is False
+
+    with pytest.raises(DeploymentContractError, match="stop after initial resume"):
+        service._run_cache_target_window_unlocked(
+            journal_path=path,
+            journal=event_bounded,
+            transaction=transaction,
+            config=Mock(),
+            reason="test",
+            wait_timeout=1,
+            lock_path=str(tmp_path / "lock"),
+        )
+
+    resumed = read_cache_target_window(path)
+    assert resumed.transaction_id == event_bounded.transaction_id
+    assert resumed.cutover_id == event_bounded.cutover_id
+    assert resumed.phase == "initial_committed"
+    assert resumed.external_event_count == 12
+    assert initial.call_count == 2
+    rollback.assert_not_called()
+
+
 def test_writer_fencing_failure_keeps_durable_nonterminal_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -529,7 +751,11 @@ def test_window_uses_private_locked_executors_and_requires_final_receipt(
         map_image_id=f"sha256:{'1' * 64}",
         pinvi_image_id=f"sha256:{'2' * 64}",
     )
-    initial_receipt = SimpleNamespace(published=12, count=12)
+    initial_receipt = SimpleNamespace(
+        published=12,
+        count=12,
+        merkle_root="9" * 64,
+    )
     enable_journal = SimpleNamespace(
         phase="committed",
         transaction_id="33333333-3333-4333-8333-333333333333",
@@ -617,7 +843,13 @@ def test_window_uses_private_locked_executors_and_requires_final_receipt(
     monkeypatch.setattr(service, "_capture_transaction_unlocked", Mock(return_value=(transaction, None)))
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
-        Mock(return_value=Mock()),
+        Mock(
+            return_value=SimpleNamespace(
+                cache_target=SimpleNamespace(
+                    consumer_id="pinvi-cache-target-consumer"
+                )
+            )
+        ),
     )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.load_pair_manifest",
@@ -1072,6 +1304,51 @@ def test_map_gc_receipt_rejects_backlog_or_unobserved_state(
         document["checks"] = checks
 
     with pytest.raises(DeploymentContractError, match="Map"):
+        parse_map_helper_receipt(
+            stdout=json.dumps(document, separators=(",", ":")) + "\n",
+            stderr="",
+            operation="gc",
+            transaction_id=_TRANSACTION_ID,
+            source_revision=_MAP_REVISION,
+            database_identity=_DATABASE_IDENTITY,
+            request=request,
+            prior_receipt_digest=prior_digest,
+        )
+
+
+@pytest.mark.parametrize(
+    "check_name",
+    [
+        "gc_referenced_items_preserved",
+        "gc_referenced_headers_preserved",
+        "gc_observation_referenced_items_fresh",
+        "gc_observation_referenced_headers_fresh",
+    ],
+)
+def test_map_gc_receipt_rejects_false_equals_false_required_checks(
+    check_name: str,
+) -> None:
+    prior_digest = "a" * 64
+    request = {
+        "contract_version": "h35-map/v1",
+        "operation": "gc",
+        "transaction_id": _TRANSACTION_ID,
+        "source_revision": _MAP_REVISION,
+        "database_identity": _DATABASE_IDENTITY,
+        "prior_receipt": asdict(_map_receipt("csv5", None)),
+        "prior_receipt_digest": prior_digest,
+    }
+    document = asdict(_map_gc_receipt(prior_digest))
+    document["request_digest"] = logical_sha256(request)
+    checks = list(document["checks"])
+    for check in checks:
+        if check["name"] == check_name:
+            check["expected"] = False
+            check["observed"] = False
+            break
+    document["checks"] = checks
+
+    with pytest.raises(DeploymentContractError, match="observation evidence"):
         parse_map_helper_receipt(
             stdout=json.dumps(document, separators=(",", ":")) + "\n",
             stderr="",

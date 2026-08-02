@@ -445,6 +445,10 @@ def _validate_causal_evidence_binding(
         "cutover_id": receipt.cutover_id,
         "active_pair_sha256": receipt.evidence.active_pair_sha256,
         "contract_generation": receipt.evidence.expected_contract_generation,
+        "local_count": receipt.count,
+        "remote_count": receipt.count,
+        "local_merkle_root": receipt.merkle_root,
+        "remote_merkle_root": receipt.merkle_root,
     }
     if any(evidence.get(name) != value for name, value in expected.items()):
         raise DeploymentContractError("causal canary evidence binding is invalid")

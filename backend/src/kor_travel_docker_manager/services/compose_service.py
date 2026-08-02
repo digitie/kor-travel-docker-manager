@@ -117,6 +117,7 @@ from kor_travel_docker_manager.services.cache_target_cutover import (
     initial_runner_compose_arguments,
     parse_initial_cutover_output,
     read_initial_cutover_receipt,
+    scavenge_initial_runner_secret_bundle,
     with_initial_runner_secret_bundle,
 )
 from kor_travel_docker_manager.services.cache_target_enable import (
@@ -147,6 +148,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
     prepare_cache_target_window,
     read_cache_target_window,
     transition_cache_target_window,
+    validate_map_final_evidence_binding,
     write_cache_target_window,
 )
 from kor_travel_docker_manager.services.registry import (
@@ -4082,6 +4084,21 @@ class ComposeService:
                     raise DeploymentContractError(
                         "cache-target Map final evidence is missing"
                     )
+                initial_receipt = read_initial_cutover_receipt(
+                    state_directory / "cache-target-initial-cutover-v1.json"
+                )
+                current_contract = current_config.cache_target
+                if current_contract is None:
+                    raise DeploymentContractError(
+                        "cache-target final contract is missing"
+                    )
+                validate_map_final_evidence_binding(
+                    final_evidence,
+                    consumer_id=current_contract.consumer_id,
+                    restore_epoch=journal.expected_restore_epoch,
+                    snapshot_count=initial_receipt.count,
+                    snapshot_merkle_root=initial_receipt.merkle_root,
+                )
                 journal = transition_cache_target_window(
                     journal,
                     "map_final_verified",
@@ -4385,6 +4402,12 @@ class ComposeService:
         )
         state_directory = Path(manifest_path).parent
         receipt_path = state_directory / "cache-target-initial-cutover-v1.json"
+        runner_name = f"ktdm-cache-target-initial-{cutover_id}"
+        self._cleanup_cache_target_initial_runner(
+            runner_name,
+            expected_image_id=manifest.active.pinvi_image_id,
+        )
+        scavenge_initial_runner_secret_bundle(state_directory, cutover_id)
         if receipt_path.exists():
             receipt = read_initial_cutover_receipt(receipt_path)
             expected_reason_sha = hashlib.sha256(reason.encode()).hexdigest()
@@ -4398,12 +4421,6 @@ class ComposeService:
                     "existing initial cutover receipt belongs to foreign evidence"
                 )
             return _initial_receipt_process_result(receipt, resumed=True)
-
-        runner_name = f"ktdm-cache-target-initial-{cutover_id}"
-        self._cleanup_cache_target_initial_runner(
-            runner_name,
-            expected_image_id=manifest.active.pinvi_image_id,
-        )
 
         def run(secret_path: Path) -> InitialCutoverResult:
             arguments = initial_runner_compose_arguments(
@@ -4432,6 +4449,7 @@ class ComposeService:
 
         runner_result = with_initial_runner_secret_bundle(
             state_directory,
+            cutover_id,
             contract.command_token,
             contract.consumer_token,
             contract.recovery_token,

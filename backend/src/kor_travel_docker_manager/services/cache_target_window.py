@@ -457,7 +457,8 @@ def transition_cache_target_window(
         raise DeploymentContractError("cache-target window phase transition is invalid")
     if phase == "rollback_preparing" and not old_restore_is_authorized(journal):
         raise DeploymentContractError(
-            "cache-target old restore is forbidden after the forward boundary"
+            "cache-target old restore is forbidden after the external-event or "
+            "final forward boundary"
         )
     updated = replace(
         journal,
@@ -780,6 +781,28 @@ def map_final_evidence_sha256(evidence: MapFinalEvidence) -> str:
     return logical_sha256(asdict(evidence))
 
 
+def validate_map_final_evidence_binding(
+    evidence: MapFinalEvidence,
+    *,
+    consumer_id: str,
+    restore_epoch: int,
+    snapshot_count: int,
+    snapshot_merkle_root: str,
+) -> None:
+    """Map 최종 증거를 manager가 동결한 initial baseline에 exact 결박한다."""
+
+    _validate_map_final_evidence(evidence)
+    if (
+        evidence.consumer_id != consumer_id
+        or evidence.restore_epoch != restore_epoch
+        or evidence.snapshot_count != snapshot_count
+        or evidence.snapshot_merkle_root != snapshot_merkle_root
+    ):
+        raise DeploymentContractError(
+            "Map final evidence differs from the frozen initial baseline"
+        )
+
+
 def _map_final_evidence_from_document(value: Any) -> MapFinalEvidence:
     if not isinstance(value, dict) or set(value) != {
         "contract_version",
@@ -804,7 +827,13 @@ def _map_final_evidence_from_document(value: Any) -> MapFinalEvidence:
 
 
 def _map_check_evidence(value: Any) -> JsonEvidence:
-    if type(value) in {str, int, bool, type(None)}:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
         return value
     if (
         isinstance(value, list)
@@ -1120,18 +1149,16 @@ def _validate_map_gc_receipt(receipt: MapHelperReceipt) -> None:
         "gc_remaining_headers": (0, 0),
         "gc_observation_run_id": (expected_run_id, expected_run_id),
         "gc_observation_timestamp_present": (True, True),
-    }
-    required_equal = {
-        "gc_referenced_items_preserved",
-        "gc_referenced_headers_preserved",
-        "gc_observation_referenced_items_fresh",
-        "gc_observation_referenced_headers_fresh",
+        "gc_referenced_items_preserved": (True, True),
+        "gc_referenced_headers_preserved": (True, True),
+        "gc_observation_referenced_items_fresh": (True, True),
+        "gc_observation_referenced_headers_fresh": (True, True),
     }
     if any(
         name not in checks
         or (checks[name].expected, checks[name].observed) != evidence
         for name, evidence in exact.items()
-    ) or any(name not in checks for name in required_equal):
+    ):
         raise DeploymentContractError("Map GC observation evidence is invalid")
 
 
