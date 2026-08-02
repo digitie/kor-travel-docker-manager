@@ -217,6 +217,10 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       `ConnectionRefusedError`만 5회·1초 간격으로 재시도한다. 호출 timeout을 포함한 최악 상한은 14초이며,
       Map UI·PinVi 로그인은 요청 전 TCP 연결 거부에만 opt-in한다. 다른 `OSError`·HTTP 계약 오류·인증 실패·
       destructive probe와 후속 admin 요청은 재시도하지 않는다.
+- [x] n150 실제 Map `pg_dump --data-only`가 순환 FK의 복원 주의 warning을 stderr로 출력하면서 종료 코드는
+      0인 경우를 처리한다. data-only logical inventory는 heading·detail·두 hint가 모두 일치하는 정확한
+      circular-FK advisory만 허용하고 schema-only·다른 warning·`pg_dump` nonzero exit는 fail-close한다.
+      허용·비허용 warning 및 nonzero 실패를 각각 회귀로 고정한다.
 - [/] pre-forward 실패는 new runtime stop 뒤 Map application→Dagster→Pin DB→manager env/state/manifest를 복구하고
       old image를 마지막에 기동한다. migration 뒤 일반 image-only rollback을 금지하고 forward commit/최초 외부
       event 뒤 old restore를 거부한다. DB rewind 뒤 stale receipt가 성공하지 않도록 live schema/epoch/cutover/

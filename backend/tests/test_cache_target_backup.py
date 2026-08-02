@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import stat
 import subprocess
@@ -364,6 +365,119 @@ def test_backup_and_restore_stream_without_dsn_or_credential(
         in {"dropdb", "createdb"}
     ]
     assert scratch_lifecycle[:2] == ["dropdb", "createdb"]
+
+
+def test_logical_inventory_accepts_pg_dump_restore_advisory_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"deterministic-logical-inventory"
+    advisory = (
+        b"pg_dump: warning: there are circular foreign-key constraints on this table:\n"
+        b"pg_dump: detail: features\n"
+        b"pg_dump: hint: You might not be able to restore the dump without using "
+        b"--disable-triggers or temporarily dropping the constraints.\n"
+        b"pg_dump: hint: Consider using a full dump instead of a --data-only dump "
+        b"to avoid this problem.\n"
+        b"pg_dump: warning: there are circular foreign-key constraints among these tables:\n"
+        b"pg_dump: detail: source_records\n"
+        b"pg_dump: detail: source_entities\n"
+        b"pg_dump: hint: You might not be able to restore the dump without using "
+        b"--disable-triggers or temporarily dropping the constraints.\n"
+        b"pg_dump: hint: Consider using a full dump instead of a --data-only dump "
+        b"to avoid this problem.\n"
+    )
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        kwargs["stdout"].write(payload)
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout=b"",
+            stderr=advisory,
+        )
+
+    monkeypatch.setattr(backup_service.subprocess, "run", run)
+    runtime = DatabaseRuntime(
+        role="map_application",
+        container_name="postgres-production",
+        database_name="map_app",
+        owner_name="map_owner",
+        admin_name="cluster_admin",
+    )
+
+    assert backup_service._logical_inventory_sha256(  # noqa: SLF001
+        runtime,
+        schema_only=False,
+    ) == hashlib.sha256(payload).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("schema_only", "stderr"),
+    [
+        (
+            True,
+            b"pg_dump: warning: there are circular foreign-key constraints on this table:\n"
+            b"pg_dump: detail: features\n"
+            b"pg_dump: hint: You might not be able to restore the dump without using "
+            b"--disable-triggers or temporarily dropping the constraints.\n"
+            b"pg_dump: hint: Consider using a full dump instead of a --data-only dump "
+            b"to avoid this problem.\n",
+        ),
+        (
+            False,
+            b"pg_dump: warning: there are circular foreign-key constraints on this table:\n"
+            b"pg_dump: detail: features\n"
+            b"pg_dump: hint: You might not be able to restore the dump without using "
+            b"--disable-triggers or temporarily dropping the constraints.\n"
+            b"pg_dump: hint: Consider using a full dump instead of a --data-only dump "
+            b"to avoid this problem.\n"
+            b"pg_dump: warning: unknown logical inventory warning\n",
+        ),
+    ],
+)
+def test_logical_inventory_rejects_schema_or_unknown_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    schema_only: bool,
+    stderr: bytes,
+) -> None:
+    def run(arguments: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=stderr)
+
+    monkeypatch.setattr(backup_service.subprocess, "run", run)
+    runtime = DatabaseRuntime(
+        role="map_application",
+        container_name="postgres-production",
+        database_name="map_app",
+        owner_name="map_owner",
+        admin_name="cluster_admin",
+    )
+
+    with pytest.raises(DeploymentContractError, match="logical inventory failed"):
+        backup_service._logical_inventory_sha256(runtime, schema_only=schema_only)  # noqa: SLF001
+
+
+def test_logical_inventory_rejects_pg_dump_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(arguments: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            arguments,
+            1,
+            stdout=b"",
+            stderr=b"pg_dump: fatal: failed\n",
+        )
+
+    monkeypatch.setattr(backup_service.subprocess, "run", run)
+    runtime = DatabaseRuntime(
+        role="map_application",
+        container_name="postgres-production",
+        database_name="map_app",
+        owner_name="map_owner",
+        admin_name="cluster_admin",
+    )
+
+    with pytest.raises(DeploymentContractError, match="logical inventory failed"):
+        backup_service._logical_inventory_sha256(runtime, schema_only=True)  # noqa: SLF001
 
 
 def test_manager_bundle_restores_env_manifest_and_exact_state(tmp_path: Path) -> None:

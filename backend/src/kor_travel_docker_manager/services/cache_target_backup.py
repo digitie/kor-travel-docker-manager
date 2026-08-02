@@ -55,6 +55,18 @@ _MANAGER_STATE_FILENAMES = {
     "initial_receipt": "cache-target-initial-cutover-v1.json",
     "enable_journal": "cache-target-enable-v1.json",
 }
+_CIRCULAR_FOREIGN_KEY_WARNING_HEADINGS = frozenset(
+    {
+        "pg_dump: warning: there are circular foreign-key constraints on this table:",
+        "pg_dump: warning: there are circular foreign-key constraints among these tables:",
+    }
+)
+_CIRCULAR_FOREIGN_KEY_WARNING_HINTS = (
+    "pg_dump: hint: You might not be able to restore the dump without using "
+    "--disable-triggers or temporarily dropping the constraints.",
+    "pg_dump: hint: Consider using a full dump instead of a --data-only dump "
+    "to avoid this problem.",
+)
 
 
 @dataclass(frozen=True)
@@ -843,7 +855,18 @@ def _logical_inventory_sha256(
                 check=False,
                 timeout=3600,
             )
-            if completed.returncode != 0 or completed.stderr:
+            # ``pg_dump --data-only`` emits this exact restore advisory for
+            # valid circular foreign-key graphs.  Other stderr is fail-closed:
+            # inventory equality is a source-to-scratch integrity boundary.
+            if completed.returncode != 0 or (
+                completed.stderr
+                and (
+                    schema_only
+                    or not _is_circular_foreign_key_restore_advisory(
+                        completed.stderr
+                    )
+                )
+            ):
                 raise DeploymentContractError(
                     f"{runtime.role} logical inventory failed"
                 )
@@ -856,6 +879,35 @@ def _logical_inventory_sha256(
             f"{runtime.role} logical inventory could not run"
         ) from exc
     return digest.hexdigest()
+
+
+def _is_circular_foreign_key_restore_advisory(stderr: bytes) -> bool:
+    """data-only dump의 알려진 circular-FK advisory block만 허용한다."""
+
+    try:
+        lines = stderr.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return False
+    index = 0
+    matched = False
+    while index < len(lines):
+        if lines[index] not in _CIRCULAR_FOREIGN_KEY_WARNING_HEADINGS:
+            return False
+        index += 1
+        detail_count = 0
+        while index < len(lines) and lines[index].startswith("pg_dump: detail: "):
+            detail = lines[index].removeprefix("pg_dump: detail: ")
+            if not detail or not detail.isprintable():
+                return False
+            detail_count += 1
+            index += 1
+        if detail_count == 0 or tuple(lines[index : index + 2]) != (
+            _CIRCULAR_FOREIGN_KEY_WARNING_HINTS
+        ):
+            return False
+        index += 2
+        matched = True
+    return matched
 
 
 def _scratch_database_name(role: DatabaseRole, transaction_id: str) -> str:
