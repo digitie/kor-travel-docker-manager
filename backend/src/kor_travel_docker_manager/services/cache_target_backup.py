@@ -45,6 +45,11 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str]] = {
         "pinvi",
     ),
 }
+_SCHEMA_REVISION_LOCATION: dict[DatabaseRole, tuple[str, str]] = {
+    "map_application": ("public", "alembic_version"),
+    "map_dagster": ("public", "alembic_version"),
+    "pinvi": ("app", "alembic_version"),
+}
 _MANAGER_STATE_FILENAMES = {
     "map_env_migration": "map-production-env-migration-v1.json",
     "initial_receipt": "cache-target-initial-cutover-v1.json",
@@ -58,6 +63,7 @@ class DatabaseRuntime:
     container_name: str
     database_name: str
     owner_name: str
+    admin_name: str
 
 
 @dataclass(frozen=True)
@@ -101,6 +107,18 @@ def database_runtimes_from_frozen_contract(
         raise DeploymentContractError(
             "cutover PostgreSQL container identity is invalid"
         )
+    postgres_environment = (
+        postgres.get("environment") if isinstance(postgres, Mapping) else None
+    )
+    admin_name = (
+        postgres_environment.get("POSTGRES_USER")
+        if isinstance(postgres_environment, Mapping)
+        else None
+    )
+    if not isinstance(admin_name, str) or not _DATABASE_IDENTIFIER.fullmatch(
+        admin_name
+    ):
+        raise DeploymentContractError("cutover PostgreSQL admin role is invalid")
     runtimes: list[DatabaseRuntime] = []
     for role, (database_env, database_default, owner_env, owner_default) in (
         _ROLE_CONFIG.items()
@@ -117,6 +135,7 @@ def database_runtimes_from_frozen_contract(
                 container_name=container_name,
                 database_name=database_name,
                 owner_name=owner_name,
+                admin_name=admin_name,
             )
         )
     return runtimes[0], runtimes[1], runtimes[2]
@@ -145,12 +164,7 @@ def read_database_write_counter(runtime: DatabaseRuntime) -> DatabaseWriteCounte
     _validate_runtime(runtime)
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
@@ -196,12 +210,7 @@ def read_database_inflight_count(runtime: DatabaseRuntime) -> int:
     _validate_runtime(runtime)
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
@@ -230,12 +239,7 @@ def read_dagster_inflight_run_count(runtime: DatabaseRuntime) -> int:
         )
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
@@ -274,12 +278,7 @@ def read_pin_boundary_audit(
         )
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
@@ -464,12 +463,7 @@ def restore_database_backup(
         )
     _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "dropdb",
+            *_database_admin_command(runtime, "dropdb"),
             "--if-exists",
             "--force",
             runtime.database_name,
@@ -478,12 +472,7 @@ def restore_database_backup(
     )
     _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "createdb",
+            *_database_admin_command(runtime, "createdb"),
             "--owner",
             runtime.owner_name,
             runtime.database_name,
@@ -494,13 +483,11 @@ def restore_database_backup(
         with backup_path.open("rb") as dump:
             completed = subprocess.run(
                 [
-                    "docker",
-                    "exec",
-                    "--interactive",
-                    "--user",
-                    "postgres",
-                    runtime.container_name,
-                    "pg_restore",
+                    *_database_admin_command(
+                        runtime,
+                        "pg_restore",
+                        interactive=True,
+                    ),
                     "--exit-on-error",
                     "--no-owner",
                     "--no-acl",
@@ -672,6 +659,7 @@ def _rehearse_database_restore(
         container_name=runtime.container_name,
         database_name=scratch_name,
         owner_name=runtime.owner_name,
+        admin_name=runtime.admin_name,
     )
     stale_owner = _read_database_owner(scratch_runtime)
     if stale_owner not in {None, runtime.owner_name}:
@@ -680,12 +668,7 @@ def _rehearse_database_restore(
         )
     _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "dropdb",
+            *_database_admin_command(runtime, "dropdb"),
             "--if-exists",
             "--force",
             scratch_name,
@@ -698,12 +681,7 @@ def _rehearse_database_restore(
     try:
         _run_checked(
             [
-                "docker",
-                "exec",
-                "--user",
-                "postgres",
-                runtime.container_name,
-                "createdb",
+                *_database_admin_command(runtime, "createdb"),
                 "--owner",
                 runtime.owner_name,
                 scratch_name,
@@ -756,12 +734,7 @@ def _rehearse_database_restore(
             try:
                 _run_checked(
                     [
-                        "docker",
-                        "exec",
-                        "--user",
-                        "postgres",
-                        runtime.container_name,
-                        "dropdb",
+                        *_database_admin_command(runtime, "dropdb"),
                         "--if-exists",
                         "--force",
                         scratch_name,
@@ -792,13 +765,11 @@ def _restore_archive_into_database(
         with backup_path.open("rb") as dump:
             completed = subprocess.run(
                 [
-                    "docker",
-                    "exec",
-                    "--interactive",
-                    "--user",
-                    "postgres",
-                    runtime.container_name,
-                    "pg_restore",
+                    *_database_admin_command(
+                        runtime,
+                        "pg_restore",
+                        interactive=True,
+                    ),
                     "--exit-on-error",
                     "--no-owner",
                     "--no-acl",
@@ -826,13 +797,11 @@ def _validate_archive_structure(
         with backup_path.open("rb") as dump:
             completed = subprocess.run(
                 [
-                    "docker",
-                    "exec",
-                    "--interactive",
-                    "--user",
-                    "postgres",
-                    runtime.container_name,
-                    "pg_restore",
+                    *_database_admin_command(
+                        runtime,
+                        "pg_restore",
+                        interactive=True,
+                    ),
                     "--list",
                 ],
                 stdin=dump,
@@ -857,12 +826,7 @@ def _logical_inventory_sha256(
     schema_only: bool,
 ) -> str:
     arguments = [
-        "docker",
-        "exec",
-        "--user",
-        "postgres",
-        runtime.container_name,
-        "pg_dump",
+        *_database_admin_command(runtime, "pg_dump"),
         "--no-owner",
         "--no-acl",
         "--schema-only" if schema_only else "--data-only",
@@ -972,21 +936,24 @@ def _load_manager_rollback_bundle(
 
 
 def _read_schema_revision(runtime: DatabaseRuntime) -> str:
+    _validate_runtime(runtime)
+    schema_name, table_name = _SCHEMA_REVISION_LOCATION[runtime.role]
+    if not _DATABASE_IDENTIFIER.fullmatch(
+        schema_name
+    ) or not _DATABASE_IDENTIFIER.fullmatch(table_name):
+        raise DeploymentContractError(
+            f"{runtime.role} canonical schema revision location is invalid"
+        )
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
             "--dbname",
             runtime.database_name,
             "--command",
-            "SELECT version_num FROM alembic_version",
+            f'SELECT version_num FROM "{schema_name}"."{table_name}"',
         ],
         label=f"{runtime.role} schema revision",
     ).decode("ascii").strip()
@@ -1001,12 +968,7 @@ def _read_schema_revision(runtime: DatabaseRuntime) -> str:
 def _read_database_owner(runtime: DatabaseRuntime) -> str | None:
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
@@ -1032,12 +994,7 @@ def _read_database_owner(runtime: DatabaseRuntime) -> str | None:
 def _read_database_size(runtime: DatabaseRuntime) -> int:
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
@@ -1080,12 +1037,7 @@ def _read_postgres_free_bytes(runtime: DatabaseRuntime) -> int:
 def _read_database_identity(runtime: DatabaseRuntime, transaction_id: str) -> str:
     output = _run_checked(
         [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            runtime.container_name,
-            "psql",
+            *_database_admin_command(runtime, "psql"),
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
@@ -1154,12 +1106,7 @@ def _write_pg_dump(path: Path, runtime: DatabaseRuntime) -> None:
             os.fchmod(output.fileno(), 0o600)
             completed = subprocess.run(
                 [
-                    "docker",
-                    "exec",
-                    "--user",
-                    "postgres",
-                    runtime.container_name,
-                    "pg_dump",
+                    *_database_admin_command(runtime, "pg_dump"),
                     "--format=custom",
                     "--no-owner",
                     "--no-acl",
@@ -1387,6 +1334,28 @@ def _validate_runtime(runtime: DatabaseRuntime) -> None:
         raise DeploymentContractError("cache-target database name is invalid")
     if not _DATABASE_IDENTIFIER.fullmatch(runtime.owner_name):
         raise DeploymentContractError("cache-target database owner is invalid")
+    if not _DATABASE_IDENTIFIER.fullmatch(runtime.admin_name):
+        raise DeploymentContractError("cache-target database admin role is invalid")
+
+
+def _database_admin_command(
+    runtime: DatabaseRuntime,
+    executable: Literal["psql", "pg_dump", "pg_restore", "dropdb", "createdb"],
+    *,
+    interactive: bool = False,
+) -> list[str]:
+    _validate_runtime(runtime)
+    return [
+        "docker",
+        "exec",
+        *(["--interactive"] if interactive else []),
+        "--user",
+        "postgres",
+        runtime.container_name,
+        executable,
+        "--username",
+        runtime.admin_name,
+    ]
 
 
 def _fsync_directory(path: Path) -> None:

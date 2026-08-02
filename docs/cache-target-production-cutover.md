@@ -100,6 +100,11 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    counter와 `stats_reset` identity, in-flight 0, Map Dagster run 0을 다시 읽어 exact 동일해야만 commit한다.
    receipt는 archive SHA, schema/data logical inventory, 별도 scratch DB identity를 가진 restore rehearsal까지
    포함하며 DSN, path, credential, dump stdout/stderr는 기록하지 않는다.
+   PostgreSQL container 안에서 command를 실행하는 OS user는 `postgres`로 유지하되, SQL 접속 role은 frozen
+   resolved Compose의 `kor-travel-geo-postgres.environment.POSTGRES_USER`를 canonical admin role로 exact
+   검증해 모든 `psql`/`pg_dump`/`pg_restore`/`dropdb`/`createdb` 호출에 `--username`으로 명시한다. n150처럼
+   SQL role `postgres`가 존재하지 않는 구성을 기본값으로 추측하지 않으며 admin role은 receipt와 운영 로그에
+   기록하지 않는다.
 3. exact Map/Pin release source에서 candidate image를 완성하고 `sync=false`로 전체 runtime을 검증한다.
    Map·Pin DB migration과 Map의 H35 CSV 전환을 service-owned typed CLI로 수행한 뒤, cache health와 source
    provenance가 맞는 첫 generation 7 pair를 v4 manifest의 active와 rollback 양쪽에 원자 commit한다. old pair는
@@ -117,17 +122,22 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    exact audit row에 결박한다. Manager는 fresh Pin DB audit row가 같은 request/evidence/fence이고 정확히 1행인지
    대조한다. final audit row는 개별 삭제하지 않는다. 모두 성공한 뒤 `forward_committed`를 먼저 fsync하고,
    exact 5 writer를 idempotent하게 재기동·health/attestation한 `runtime_activated`에서만 성공을 반환한다.
-5. forward boundary 전 실패는 new runtime을 먼저 중지하고 Map application DB → Map Dagster DB → PinVi DB →
-   manager env/state/manifest를 frozen bundle로 복구한 뒤 old image를 마지막에 기동·검증한다. migration 이후
-   일반 image-only rollback은 금지한다. forward boundary 이후 실패는 old schema restore 대신 새 generation의
-   fix-forward 또는 같은-generation recovery만 허용한다.
+5. coupled restore 권한의 경계는 final audit의 `forward_committed`만이 아니다. initial runner가 첫 external
+   event를 만들 수 있으므로 invocation **직전** `generation_bootstrapped` journal의 `external_event_count`를
+   1로 올려 directory fsync까지 끝낸 뒤 runner를 호출한다. 이 durable external-event boundary 전 실패만 new
+   runtime을 먼저 중지하고 Map application DB → Map Dagster DB → PinVi DB → manager env/state/manifest를
+   frozen bundle로 복구한 뒤 old image를 마지막에 기동·검증한다. boundary 기록이 실패하면 runner를 호출하지
+   않는다. boundary 뒤 응답 유실·crash·initial/canary/GC 실패는 old DB restore를 금지하고 같은 transaction/
+   cutover의 idempotent resume 또는 새 generation fix-forward만 허용한다. `forward_committed` fsync는 final Pin
+   audit까지 끝난 뒤 writer 재기동을 허용하는 별도 최종 경계다. migration 이후 일반 image-only rollback은
+   언제나 금지한다.
 
 허용 phase는 `prepared → writers_fencing → writers_fenced → backups_committed → candidate_built →
 pin_preflight_verified → map_preflight_verified → map_database_forwarded → databases_forwarded → csv_forwarded →
 generation_bootstrapped → initial_committed → sync_enabled → canary_verified → gc_started → gc_verified →
 final_writers_fencing → final_writers_fenced → map_final_verified → final_boundary_verified → forward_committed →
-runtime_activated`다. rollback은
-forward boundary 전에만 `rollback_preparing → new_runtime_stopped →
+runtime_activated`다. rollback은 durable external-event boundary 전에만
+`rollback_preparing → new_runtime_stopped →
 map_db_restored → map_dagster_db_restored → pinvi_db_restored → manager_state_restored → old_runtime_restored →
 rolled_back` 순서로 진행한다. phase를 건너뛰거나 뒤로 이동하지 않으며 각 전이는 owner-only atomic replace와
 directory fsync 뒤에만 다음 mutation을 허용한다.

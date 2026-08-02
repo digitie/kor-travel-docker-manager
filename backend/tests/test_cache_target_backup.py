@@ -20,6 +20,7 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     create_manager_rollback_bundle,
     database_identity_v1,
     database_runtimes_from_frozen_contract,
+    read_database_schema_revision,
     read_pin_boundary_audit,
     restore_database_backup,
     restore_manager_rollback_bundle,
@@ -71,11 +72,14 @@ def test_pin_boundary_audit_requires_one_exact_typed_row(
         container_name="postgres-production",
         database_name="pinvi",
         owner_name="pinvi",
+        admin_name="cluster_admin",
     )
 
     assert read_pin_boundary_audit(runtime, _TRANSACTION_ID).evidence_sha256 == "2" * 64
     command = runner.call_args.args[0]
     assert f"transaction_id={_TRANSACTION_ID}" in command
+    assert command[command.index("--user") + 1] == "postgres"
+    assert command[command.index("--username") + 1] == "cluster_admin"
     assert not any("password" in argument.lower() for argument in command)
     assert command[-1].count("encode(") == 6
     assert "\\x" not in command[-1]
@@ -106,6 +110,7 @@ def test_restore_rehearsal_never_drops_foreign_owned_scratch_database(
                 container_name="postgres-production",
                 database_name="map_app",
                 owner_name="map_owner",
+                admin_name="cluster_admin",
             ),
             transaction_id=_TRANSACTION_ID,
             source_database_identity="1" * 64,
@@ -129,6 +134,7 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         "services": {
             "kor-travel-geo-postgres": {
                 "container_name": "postgres-production",
+                "environment": {"POSTGRES_USER": "cluster_admin"},
             }
         }
     }
@@ -145,14 +151,104 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         environment=environment,
     )
 
-    assert [(runtime.role, runtime.database_name, runtime.owner_name) for runtime in runtimes] == [
-        ("map_application", "map_app", "map_owner"),
-        ("map_dagster", "map_dagster", "map_owner"),
-        ("pinvi", "pin_app", "pin_owner"),
+    assert [
+        (runtime.role, runtime.database_name, runtime.owner_name, runtime.admin_name)
+        for runtime in runtimes
+    ] == [
+        ("map_application", "map_app", "map_owner", "cluster_admin"),
+        ("map_dagster", "map_dagster", "map_owner", "cluster_admin"),
+        ("pinvi", "pin_app", "pin_owner", "cluster_admin"),
     ]
     assert {runtime.container_name for runtime in runtimes} == {
         "postgres-production"
     }
+
+
+@pytest.mark.parametrize(
+    "postgres_environment",
+    [
+        {},
+        {"POSTGRES_USER": ""},
+        {"POSTGRES_USER": "cluster-admin"},
+        {"POSTGRES_USER": ["cluster_admin"]},
+    ],
+)
+def test_database_runtime_rejects_missing_or_invalid_canonical_admin_role(
+    postgres_environment: object,
+) -> None:
+    resolved = {
+        "services": {
+            "kor-travel-geo-postgres": {
+                "container_name": "postgres-production",
+                "environment": postgres_environment,
+            }
+        }
+    }
+
+    with pytest.raises(DeploymentContractError, match="admin role"):
+        database_runtimes_from_frozen_contract(
+            resolved=resolved,
+            environment={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("role", "database_name", "canonical_table"),
+    [
+        ("map_application", "map_app", '"public"."alembic_version"'),
+        ("map_dagster", "map_dagster", '"public"."alembic_version"'),
+        ("pinvi", "pin_app", '"app"."alembic_version"'),
+    ],
+)
+def test_schema_revision_uses_role_canonical_table_despite_search_path_poison(
+    role: backup_service.DatabaseRole,
+    database_name: str,
+    canonical_table: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_query = f"SELECT version_num FROM {canonical_table}"
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        del label
+        if arguments[-1] == expected_query:
+            return b"canonical_revision\n"
+        return b"poison_same_name_revision\n"
+
+    runner = Mock(side_effect=run_checked)
+    monkeypatch.setattr(backup_service, "_run_checked", runner)
+    runtime = DatabaseRuntime(
+        role=role,
+        container_name="postgres-production",
+        database_name=database_name,
+        owner_name="database_owner",
+        admin_name="cluster_admin",
+    )
+
+    assert read_database_schema_revision(runtime) == "canonical_revision"
+    command = runner.call_args.args[0]
+    assert command[command.index("--dbname") + 1] == database_name
+    assert command[-1] == expected_query
+    assert "FROM alembic_version" not in command[-1]
+
+
+def test_schema_revision_rejects_ambiguous_canonical_table_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        backup_service,
+        "_run_checked",
+        Mock(return_value=b"canonical_revision\npoison_same_name_revision\n"),
+    )
+    runtime = DatabaseRuntime(
+        role="map_application",
+        container_name="postgres-production",
+        database_name="map_app",
+        owner_name="map_owner",
+        admin_name="cluster_admin",
+    )
+
+    with pytest.raises(DeploymentContractError, match="revision output"):
+        read_database_schema_revision(runtime)
 
 
 def test_backup_and_restore_stream_without_dsn_or_credential(
@@ -194,6 +290,7 @@ def test_backup_and_restore_stream_without_dsn_or_credential(
         container_name="postgres-production",
         database_name="map_app",
         owner_name="map_owner",
+        admin_name="cluster_admin",
     )
 
     receipt = create_database_backup(
@@ -235,6 +332,21 @@ def test_backup_and_restore_stream_without_dsn_or_credential(
     assert "postgresql://" not in serialized_commands
     assert "password" not in serialized_commands.lower()
     assert "secret" not in serialized_commands.lower()
+    database_commands = {
+        command[command.index("postgres-production") + 1]
+        for command in calls
+        if command[0:2] == ["docker", "exec"]
+        and command[command.index("postgres-production") + 1]
+        in {"psql", "pg_dump", "pg_restore", "dropdb", "createdb"}
+    }
+    assert database_commands == {"psql", "pg_dump", "pg_restore", "dropdb", "createdb"}
+    for command in calls:
+        if not any(executable in command for executable in database_commands):
+            continue
+        assert command[command.index("--user") + 1] == "postgres"
+        assert command[command.index("--username") + 1] == "cluster_admin"
+        assert "--username=postgres" not in command
+    assert "cluster_admin" not in repr(receipt)
     restore_commands = [
         command[command.index("postgres-production") + 1]
         for command in calls
@@ -361,6 +473,7 @@ def test_backup_rehearsal_rejects_restore_schema_and_content_mismatch(
         container_name="postgres-production",
         database_name="map_app",
         owner_name="map_owner",
+        admin_name="cluster_admin",
     )
 
     with pytest.raises(DeploymentContractError, match="restore rehearsal failed"):
@@ -587,9 +700,9 @@ def _writer_services() -> dict[str, dict[str, dict[str, str]]]:
 
 def _writer_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
     return (
-        DatabaseRuntime("map_application", "postgres", "map", "map"),
-        DatabaseRuntime("map_dagster", "postgres", "map_dagster", "map"),
-        DatabaseRuntime("pinvi", "postgres", "pinvi", "pinvi"),
+        DatabaseRuntime("map_application", "postgres", "map", "map", "cluster_admin"),
+        DatabaseRuntime("map_dagster", "postgres", "map_dagster", "map", "cluster_admin"),
+        DatabaseRuntime("pinvi", "postgres", "pinvi", "pinvi", "cluster_admin"),
     )
 
 
