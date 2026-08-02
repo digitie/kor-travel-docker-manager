@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-03 (T-048 production logical inventory warning 판정 보강)
+
+n150의 실제 Map logical inventory에서 `pg_dump --data-only`가 순환 FK의 restore-advisory warning을 stderr로
+출력했지만 exit code는 0이었다. 기존 구현은 stderr가 비어 있지 않다는 이유만으로 정상 dump를 실패 처리해
+pre-forward cutover를 coupled rollback으로 되돌렸다. data-only dump에서는 heading·detail·두 고정 hint가
+모두 일치하는 circular-FK advisory block만 허용하고, schema-only·다른 warning·nonzero exit는 계속
+fail-close하도록 고정했다. 허용·비허용 warning 및 nonzero exit 회귀를 추가했다. 경고 원문·DB DSN·credential은
+journal이나 receipt에 기록하지 않는다.
+
 ## 2026-08-02 (T-048 production rollback smoke readiness 보강)
 
 n150 최초 결합 전환의 pre-forward rollback에서 Compose health 통과 직후 Map loopback endpoint가 잠깐
