@@ -12585,16 +12585,10 @@ def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
 
     runner = Mock(return_value={"success": True, "returncode": 0})
     attestor = Mock()
-    canary = Mock(
-        side_effect=lambda run_id, _config, _manifest, _transaction: {
-            "run_id": run_id,
-            "cutover_id": "11111111-1111-4111-8111-111111111111",
-            "active_pair_sha256": (
-                compose_service_module._compatible_pair_logical_sha256(
-                    manifest.active
-                )
-            ),
-            "contract_generation": "7",
+    docker_canary = Mock(
+        side_effect=lambda **kwargs: {
+            "status": "succeeded",
+            "run_id": kwargs["run_id"],
         }
     )
     lock_path = c6c_state_paths(transaction.environment.effective)[1]
@@ -12616,10 +12610,14 @@ def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
         Mock(return_value=manifest),
     )
     monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+    monkeypatch.setattr(
+        compose_service_module,
+        "execute_cache_target_causal_canary",
+        docker_canary,
+    )
 
     result = service.enable_cache_target_sync(
         pair_contract_attestor=attestor,
-        causal_canary=canary,
     )
 
     assert result["success"] is True
@@ -12641,13 +12639,15 @@ def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
         / "cache-target-enable-v1.json"
     )
     assert journal.enabled_resolved_compose_sha256 == enabled_resolved_sha
-    canary.assert_called_once()
+    docker_canary.assert_called_once_with(
+        container_name=_production_config().pinvi_container,
+        run_id=journal.transaction_id,
+    )
 
     foreign_enabled_sha[0] = "b" * 64
     with pytest.raises(DeploymentContractError, match="resolved compose evidence"):
         service.enable_cache_target_sync(
             pair_contract_attestor=attestor,
-            causal_canary=canary,
         )
 
 
@@ -12703,6 +12703,7 @@ def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
             {"success": True, "returncode": 0},
         ]
     )
+    health_smoke = Mock()
     lock_path = c6c_state_paths(transaction.environment.effective)[1]
     monkeypatch.setattr(
         compose_service_module,
@@ -12727,6 +12728,7 @@ def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
         service.enable_cache_target_sync(
             pair_contract_attestor=Mock(),
             causal_canary=Mock(),
+            rollback_health_smoke=health_smoke,
         )
 
     assert env_path.read_bytes().endswith(b"=false\n")
@@ -12739,6 +12741,7 @@ def test_cache_target_enable_adapter_recreates_disabled_runtime_after_failure(
         / "cache-target-enable-v1.json"
     )
     assert journal.phase == "rolled_back"
+    health_smoke.assert_called_once_with(ANY, ANY)
 
 
 def test_cache_target_initial_cutover_runs_frozen_secret_bundle_and_commits_receipt(

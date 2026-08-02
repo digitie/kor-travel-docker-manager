@@ -67,6 +67,15 @@ role→(digest, consumer ID, exact scopes, external system) binding 전체의 lo
 
 1. operator가 재사용 가능한 고정 `cutover_id`, positive expected restore epoch와 감사 reason을 준비한다.
    reason은 secret이 아니며 Docker argv/운영 감사에 노출될 수 있으므로 credential·개인정보를 넣지 않는다.
+   실행 command는 다음 하나다.
+
+   ```bash
+   ktdctl cache-target initial \
+     --cutover-id <canonical-uuid> \
+     --expected-restore-epoch <positive-int> \
+     --reason '<non-secret-audit-reason>' \
+     --json
+   ```
 2. manager 전용 command가 C6c 전역 lock을 획득하고 non-committed 기존 receipt/journal을 먼저 분류한다.
 3. active PinVi immutable image로 일회성 runner를 시작한다. ordinary command/consumer와 전용 recovery
    credential만 runner process에 전달하며 argv·stdout/stderr에는 값을 넣지 않는다. Docker `-e value`나
@@ -89,8 +98,9 @@ ID로 재실행해 PinVi durable state가 결과를 확정하게 한다.
 1. committed initial-cutover receipt가 frozen env와 active/rollback compatible pair에 exact하게 맞는지
    확인한다. generic rollback 후보도 같은 generation/contract와 cache health/pin smoke를 통과해야 한다.
 2. `.env` 변경 전에 `enable_preparing` journal을 fsync한다. journal은 initial receipt SHA, active/rollback
-   pair logical SHA, old/new env SHA와 transaction ID를 묶는다. journal은 owner-only regular file(`0600`,
-   hardlink·symlink 금지)이며 crash 재개에서도 같은 transaction ID를 유지한다.
+   pair logical SHA, old/new env SHA, `sync=true`로 사전 resolve한 enabled Compose SHA와 transaction ID를
+   묶는다. journal은 owner-only regular file(`0600`, hardlink·symlink 금지)이며 crash 재개에서도 같은
+   transaction ID를 유지한다. 실행 command는 `ktdctl cache-target enable --json`이다.
 3. canonical `.env`의 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED=false` 한 항목만 `true`로 원자
    변경한다. identity·owner·mode·이전 SHA가 다르면 덮어쓰지 않고 성공 뒤 `env_committed`를 기록한다.
 4. 재생성 직전 `recreate_started`를 기록하고 frozen Compose와 active PinVi immutable image로 PinVi API만
@@ -102,12 +112,17 @@ ID로 재실행해 PinVi durable state가 결과를 확정하게 한다.
    singleton/container name/readiness와 모든 protected secret isolation을 다시 attestation한다.
 7. n150 causal canary로 고유 command→Map event→PinVi DB/cache 반영→ACK의 인과 사슬과 lag 0, DLQ 0,
    initial receipt의 count/Merkle 일치를 확인한다. journal transaction ID를 canary run ID로 재사용하고
-   cutover ID·active pair hash·contract generation이 맞는 증거만 받는다. 하나라도 실패하면 rollback으로 전이한다.
+   running ordinary API container에서 `docker exec`로 실행한다. manager는 bounded timeout과 exact 단일 JSON
+   parser를 적용하고 raw stdout/stderr를 보관·반환하지 않는다. 고정 synthetic target UUID, 서로 다른
+   run/target/command/event UUID, 연속 generation/relay order, 증가하는 cache generation, backlog/dead 0,
+   cursor/count/Merkle 수렴을 확인한 뒤 cutover ID·active pair hash·contract generation을 결박한다. 하나라도
+   실패하면 rollback으로 전이한다.
 8. 검증 증거를 `verified`, terminal 결과를 `committed`로 각각 fsync한 뒤 성공을 반환한다.
 
 재생성 또는 attestation 실패 시 `rollback_preparing`을 먼저 기록하고 frozen 이전 `.env`를 복원한 뒤
 `rollback_env_restored`를 기록한다. `rollback_recreate_started` 뒤 같은 immutable image의 PinVi API를
-`sync=false`로 재생성·검증하고 terminal `rolled_back`을 기록한다. 복구도 실패하면 마지막 phase와 관련
+`sync=false`로 재생성하고 canonical Compose health smoke와 pair attestation을 통과한 뒤 terminal
+`rolled_back`을 기록한다. 복구도 실패하면 마지막 phase와 관련
 evidence를 보존하고 추가 mutation을 차단한다. active/rollback compatible-pair manifest는 이 환경 전환에서
 변경하지 않는다.
 

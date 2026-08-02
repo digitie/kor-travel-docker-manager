@@ -511,3 +511,42 @@ def test_cli_rolls_back_only_the_whole_compatible_pair(mock_compose_service):
 
     assert main(["pinvi-pair", "rollback"]) == 0
     mock_compose_service.rollback_compatible_pinvi_pair.assert_called_once_with()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_runs_cache_target_initial_cutover_with_explicit_evidence(
+    mock_compose_service,
+):
+    mock_compose_service.run_cache_target_initial_cutover.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert main(
+        [
+            "cache-target",
+            "initial",
+            "--cutover-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--expected-restore-epoch",
+            "3",
+            "--reason",
+            "production initial cutover",
+        ]
+    ) == 0
+    mock_compose_service.run_cache_target_initial_cutover.assert_called_once_with(
+        cutover_id="11111111-1111-4111-8111-111111111111",
+        expected_restore_epoch=3,
+        reason="production initial cutover",
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_enables_cache_target_through_durable_coordinator(mock_compose_service):
+    mock_compose_service.enable_cache_target_sync.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert main(["cache-target", "enable"]) == 0
+    mock_compose_service.enable_cache_target_sync.assert_called_once_with()

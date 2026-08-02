@@ -147,6 +147,22 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _cmd_cache_target(args: argparse.Namespace) -> int:
+    try:
+        if args.cache_target_action == "initial":
+            result = compose_service.run_cache_target_initial_cutover(
+                cutover_id=args.cutover_id,
+                expected_restore_epoch=args.expected_restore_epoch,
+                reason=args.reason,
+            )
+        else:
+            result = compose_service.enable_cache_target_sync()
+    except (DeploymentContractError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return _emit_process_result(result, json_output=args.json)
+
+
 def _cmd_map_ui_auth_rotate(args: argparse.Namespace) -> int:
     try:
         _require_trusted_map_ui_auth_launcher()
@@ -335,6 +351,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pair_rollback.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
     pair_rollback.set_defaults(func=_cmd_pinvi_pair)
+
+    cache_target = subparsers.add_parser(
+        "cache-target",
+        help="production cache-target initial cutover와 durable sync enable을 실행합니다.",
+    )
+    cache_target_subparsers = cache_target.add_subparsers(
+        dest="cache_target_action",
+        required=True,
+    )
+    cache_target_initial = cache_target_subparsers.add_parser(
+        "initial",
+        help="sync=false frozen pair에서 idempotent initial cutover runner를 실행합니다.",
+    )
+    cache_target_initial.add_argument("--cutover-id", required=True)
+    cache_target_initial.add_argument(
+        "--expected-restore-epoch",
+        required=True,
+        type=int,
+    )
+    cache_target_initial.add_argument("--reason", required=True)
+    cache_target_initial.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON으로 출력합니다.",
+    )
+    cache_target_initial.set_defaults(func=_cmd_cache_target)
+    cache_target_enable = cache_target_subparsers.add_parser(
+        "enable",
+        help="durable journal과 causal canary로 sync를 활성화하거나 rollback합니다.",
+    )
+    cache_target_enable.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON으로 출력합니다.",
+    )
+    cache_target_enable.set_defaults(func=_cmd_cache_target)
 
     map_ui_auth = subparsers.add_parser(
         "map-ui-auth",

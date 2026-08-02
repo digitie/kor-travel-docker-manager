@@ -28,6 +28,14 @@ token은 Docker inspect metadata에 남지 않는 owner-only secret-file/고정 
 종료 경로에서 orphan을 정리한다. terminal enable 전에는 command→Map event→PinVi DB/cache→ACK, lag/DLQ,
 count/Merkle를 확인하는 n150 causal canary를 필수 rollback gate로 추가했다.
 
+운영 adapter는 canonical `.env`를 owner-only 단일 링크 regular file로 검증하고 기대 SHA에서만 원자 교체한다.
+enable 전에는 `sync=true` Compose 후보를 별도로 resolve해 journal에 SHA를 고정하므로 crash 재개 시 process
+override가 달라져도 거부한다. `ktdctl cache-target initial|enable` command를 추가하고, causal canary는 running
+PinVi API container의 `pinvi-cache-target-causal-canary`를 bounded `docker exec`로 호출한다. stdout의 exact
+receipt만 parse하며 고정 target, UUID identity, 연속 generation/order, backlog 0, cursor/count/Merkle 수렴을
+검증하고 raw stdout/stderr는 남기지 않는다. enable 실패 시 `sync=false` runtime 재생성 뒤 generic Compose
+health smoke까지 통과해야 `rolled_back`에 도달한다.
+
 첫 구현 checkpoint로 Map API registry와 PinVi ordinary 7개 변수 및 명시 API base URL을 Compose에 배치했다.
 별도 contract validator는 canonical consumer ID, 정확한 네 principal·role scope·`["pinvi"]`, token digest,
 네 role/legacy token 상호 분리와 pin 형식을 검증한다. restore-fence/recovery 원문은 manager-only로 분류하고

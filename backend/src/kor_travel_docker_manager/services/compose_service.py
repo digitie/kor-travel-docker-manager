@@ -81,6 +81,9 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     require_empty_retention_namespace,
     validate_retention_namespace_is_reserved,
 )
+from kor_travel_docker_manager.services.cache_target_canary import (
+    execute_cache_target_causal_canary,
+)
 from kor_travel_docker_manager.services.cache_target_contract import PINVI_SYNC_ENV
 from kor_travel_docker_manager.services.cache_target_cutover import (
     CacheTargetFrozenEvidence,
@@ -3440,7 +3443,8 @@ class ComposeService:
         pair_contract_attestor: Callable[
             [C6cDeploymentConfig, CompatiblePairManifest, ComposeTransactionSnapshot],
             None,
-        ],
+        ]
+        | None = None,
     ) -> dict[str, Any]:
         """frozen compatible pair에서 default-off initial runner를 한 번 실행한다."""
 
@@ -3493,7 +3497,8 @@ class ComposeService:
                 raise DeploymentContractError(
                     "cache-target cutover requires an attested rollback pair"
                 )
-            pair_contract_attestor(config, manifest, transaction)
+            attestor = pair_contract_attestor or self._attest_cache_target_pair
+            attestor(config, manifest, transaction)
             evidence = CacheTargetFrozenEvidence(
                 env_sha256=hashlib.sha256(
                     transaction.environment.env_file_bytes
@@ -3583,7 +3588,8 @@ class ComposeService:
         pair_contract_attestor: Callable[
             [C6cDeploymentConfig, CompatiblePairManifest, ComposeTransactionSnapshot],
             None,
-        ],
+        ]
+        | None = None,
         causal_canary: Callable[
             [
                 str,
@@ -3592,7 +3598,13 @@ class ComposeService:
                 ComposeTransactionSnapshot,
             ],
             Mapping[str, Any],
-        ],
+        ]
+        | None = None,
+        rollback_health_smoke: Callable[
+            [C6cDeploymentConfig, ComposeTransactionSnapshot],
+            None,
+        ]
+        | None = None,
     ) -> dict[str, Any]:
         """하나의 C6c lock에서 durable sync enable 또는 rollback resume를 수행한다."""
 
@@ -3626,6 +3638,7 @@ class ComposeService:
             )
             journal_path = state_directory / "cache-target-enable-v1.json"
             env_path = Path(transaction.environment.env_path).resolve(strict=False)
+            attestor = pair_contract_attestor or self._attest_cache_target_pair
 
             try:
                 journal_path.lstat()
@@ -3767,7 +3780,7 @@ class ComposeService:
                         "cache-target enabled resolved compose evidence drifted"
                     )
                 if attest_pair:
-                    pair_contract_attestor(
+                    attestor(
                         current_config,
                         current_manifest,
                         current,
@@ -3804,6 +3817,12 @@ class ComposeService:
                     raise DeploymentContractError(
                         "cache-target PinVi API recreate failed"
                     )
+                if not enabled:
+                    smoke = (
+                        rollback_health_smoke
+                        or self._run_cache_target_rollback_health_smoke
+                    )
+                    smoke(current_config, current)
 
             def attest(enabled: bool) -> None:
                 capture_current(enabled, attest_pair=True)
@@ -3813,12 +3832,25 @@ class ComposeService:
                     True,
                     attest_pair=False,
                 )
-                return causal_canary(
-                    run_id,
-                    current_config,
-                    current_manifest,
-                    current,
+                if causal_canary is not None:
+                    return causal_canary(
+                        run_id,
+                        current_config,
+                        current_manifest,
+                        current,
+                    )
+                raw_receipt = execute_cache_target_causal_canary(
+                    container_name=current_config.pinvi_container,
+                    run_id=run_id,
                 )
+                return {
+                    **raw_receipt,
+                    "cutover_id": receipt.cutover_id,
+                    "active_pair_sha256": receipt.evidence.active_pair_sha256,
+                    "contract_generation": (
+                        receipt.evidence.expected_contract_generation
+                    ),
+                }
 
             journal = execute_cache_target_enable(
                 receipt=receipt,
@@ -3843,6 +3875,47 @@ class ComposeService:
                 cutover_id=journal.cutover_id,
                 phase=journal.phase,
             )
+
+    def _attest_cache_target_pair(
+        self,
+        config: C6cDeploymentConfig,
+        manifest: CompatiblePairManifest,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        self._require_services_ready(
+            services,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        self._validate_resolved_compose_contract(
+            config,
+            expected_pair=manifest.active,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        if not self._pair_matches(self._inspect_current_pair(config), manifest.active):
+            raise DeploymentContractError(
+                "cache-target running pair differs from the attested active pair"
+            )
+        runtime_configs = self._inspect_c6c_runtime_configs(
+            config,
+            services,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        validate_runtime_secret_isolation(runtime_configs, config)
+
+    def _run_cache_target_rollback_health_smoke(
+        self,
+        _config: C6cDeploymentConfig,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        self._require_services_ready(
+            [_PINVI_API_SERVICE],
+            transaction=transaction,
+            frozen_recovery=True,
+        )
 
     @staticmethod
     def _cleanup_cache_target_initial_runner(
