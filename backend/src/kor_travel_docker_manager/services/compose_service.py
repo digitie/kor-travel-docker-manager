@@ -3958,6 +3958,7 @@ class ComposeService:
                     transaction=transaction,
                     config=config,
                     lock_path=lock_path,
+                    window_transaction_id=journal.transaction_id,
                 )
                 if not enabled.get("success") or enabled.get("phase") != "committed":
                     raise DeploymentContractError(
@@ -4737,6 +4738,7 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         config: C6cDeploymentConfig,
         lock_path: str,
+        window_transaction_id: str,
     ) -> dict[str, Any]:
         if not config.production or config.cache_target is None:
             raise DeploymentContractError(
@@ -4963,16 +4965,21 @@ class ComposeService:
         journal = execute_cache_target_enable(
             receipt=receipt,
             journal_path=journal_path,
-            enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
+            enabled_resolved_compose_sha256=(
+                enabled_resolved_compose_sha256
+            ),
             read_env=lambda: read_canonical_env_file(env_path),
-            replace_env=lambda expected, replacement: replace_canonical_env_file(
-                env_path,
-                expected_sha256=expected,
-                replacement=replacement,
+            replace_env=lambda expected, replacement: (
+                replace_canonical_env_file(
+                    env_path,
+                    expected_sha256=expected,
+                    replacement=replacement,
+                )
             ),
             attest=attest,
             recreate_pinvi_api=recreate_pinvi_api,
             causal_canary=run_canary,
+            window_transaction_id=window_transaction_id,
         )
         return _enable_journal_process_result(
             transaction_id=journal.transaction_id,

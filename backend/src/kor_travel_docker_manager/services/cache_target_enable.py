@@ -152,6 +152,7 @@ def execute_cache_target_enable(
     attest: Callable[[bool], None],
     recreate_pinvi_api: Callable[[bool], None],
     causal_canary: Callable[[str], Mapping[str, Any]],
+    window_transaction_id: str | None = None,
 ) -> EnableCutoverJournal:
     """caller가 잡은 하나의 global lock 안에서 enable 또는 crash resume를 완료한다."""
 
@@ -162,6 +163,7 @@ def execute_cache_target_enable(
         env_bytes=env_bytes,
         enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
         attest=attest,
+        window_transaction_id=window_transaction_id,
     )
     old_env, new_env = _bound_env_versions(receipt, journal, env_bytes)
     if journal.phase == "committed":
@@ -242,10 +244,25 @@ def read_enable_cutover_journal(path: Path) -> EnableCutoverJournal:
         document = json.loads(payload)
         if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
             raise TypeError
-        required_strings = _JOURNAL_FIELDS - {"version", "verified_evidence_sha256"}
+        required_strings = _JOURNAL_FIELDS - {
+            "version",
+            "window_transaction_id",
+            "attempt",
+            "supersedes_transaction_id",
+            "verified_evidence_sha256",
+        }
         if (
             type(document["version"]) is not int
+            or type(document["attempt"]) is not int
             or any(not isinstance(document[name], str) for name in required_strings)
+            or (
+                document["window_transaction_id"] is not None
+                and not isinstance(document["window_transaction_id"], str)
+            )
+            or (
+                document["supersedes_transaction_id"] is not None
+                and not isinstance(document["supersedes_transaction_id"], str)
+            )
             or (
                 document["verified_evidence_sha256"] is not None
                 and not isinstance(document["verified_evidence_sha256"], str)
@@ -257,12 +274,22 @@ def read_enable_cutover_journal(path: Path) -> EnableCutoverJournal:
         raise
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise DeploymentContractError("cache-target enable journal is invalid") from exc
-    if journal.version != 1 or journal.phase not in _FORWARD_PHASES | _ROLLBACK_PHASES:
+    if journal.version != 2 or journal.phase not in _FORWARD_PHASES | _ROLLBACK_PHASES:
         raise DeploymentContractError("cache-target enable journal contract is invalid")
     try:
         if str(uuid.UUID(journal.transaction_id)) != journal.transaction_id:
             raise ValueError
         if str(uuid.UUID(journal.cutover_id)) != journal.cutover_id:
+            raise ValueError
+        if journal.window_transaction_id is not None and (
+            str(uuid.UUID(journal.window_transaction_id))
+            != journal.window_transaction_id
+        ):
+            raise ValueError
+        if journal.supersedes_transaction_id is not None and (
+            str(uuid.UUID(journal.supersedes_transaction_id))
+            != journal.supersedes_transaction_id
+        ):
             raise ValueError
     except ValueError as exc:
         raise DeploymentContractError("cache-target enable journal UUID is invalid") from exc
@@ -284,6 +311,11 @@ def read_enable_cutover_journal(path: Path) -> EnableCutoverJournal:
         raise DeploymentContractError("cache-target verified evidence digest is invalid")
     if journal.old_env_sha256 == journal.new_env_sha256:
         raise DeploymentContractError("cache-target enable journal env transition is invalid")
+    if (
+        journal.attempt <= 0
+        or (journal.attempt == 1) != (journal.supersedes_transaction_id is None)
+    ):
+        raise DeploymentContractError("cache-target enable attempt chain is invalid")
     if journal.phase in {"verified", "committed"} and journal.verified_evidence_sha256 is None:
         raise DeploymentContractError("cache-target verified journal evidence is missing")
     if (
@@ -301,6 +333,7 @@ def _load_or_prepare_journal(
     env_bytes: bytes,
     enabled_resolved_compose_sha256: str,
     attest: Callable[[bool], None],
+    window_transaction_id: str | None,
 ) -> EnableCutoverJournal:
     try:
         journal_path.lstat()
@@ -320,6 +353,21 @@ def _load_or_prepare_journal(
             raise DeploymentContractError(
                 "cache-target enabled resolved compose evidence drifted"
             )
+        if journal.window_transaction_id != window_transaction_id:
+            raise DeploymentContractError(
+                "cache-target enable window transaction drifted"
+            )
+        if journal.phase == "rolled_back" and window_transaction_id is not None:
+            attest(False)
+            return _supersede_rolled_back_journal(
+                journal_path=journal_path,
+                journal=journal,
+                receipt=receipt,
+                env_bytes=env_bytes,
+                enabled_resolved_compose_sha256=(
+                    enabled_resolved_compose_sha256
+                ),
+            )
         return journal
     env_sha = hashlib.sha256(env_bytes).hexdigest()
     if env_sha != receipt.evidence.env_sha256:
@@ -335,9 +383,65 @@ def _load_or_prepare_journal(
         old_env_sha256=env_sha,
         new_env_sha256=hashlib.sha256(new_env).hexdigest(),
         enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
+        window_transaction_id=window_transaction_id,
     )
     write_cutover_state(journal_path, journal)
     return journal
+
+
+def _supersede_rolled_back_journal(
+    *,
+    journal_path: Path,
+    journal: EnableCutoverJournal,
+    receipt: InitialCutoverReceipt,
+    env_bytes: bytes,
+    enabled_resolved_compose_sha256: str,
+) -> EnableCutoverJournal:
+    if hashlib.sha256(env_bytes).hexdigest() != journal.old_env_sha256:
+        raise DeploymentContractError(
+            "canonical env is not disabled before enable retry"
+        )
+    window_transaction_id = journal.window_transaction_id
+    if window_transaction_id is None:
+        raise DeploymentContractError(
+            "cache-target enable retry has no window transaction"
+        )
+    history_directory = journal_path.parent / "cache-target-enable-history-v2"
+    history_directory.mkdir(mode=0o700, parents=False, exist_ok=True)
+    history_path = history_directory / (
+        f"{window_transaction_id}-attempt-{journal.attempt}-"
+        f"{journal.transaction_id}.json"
+    )
+    try:
+        history_path.lstat()
+    except FileNotFoundError:
+        write_cutover_state(history_path, journal)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target enable retry history is unavailable"
+        ) from exc
+    else:
+        archived = read_enable_cutover_journal(history_path)
+        if archived != journal:
+            raise DeploymentContractError(
+                "cache-target enable retry history is foreign"
+            )
+    enabled_env = render_cache_target_sync_env(
+        env_bytes,
+        expected="false",
+        replacement="true",
+    )
+    successor = prepare_enable_journal(
+        receipt=receipt,
+        old_env_sha256=journal.old_env_sha256,
+        new_env_sha256=hashlib.sha256(enabled_env).hexdigest(),
+        enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
+        window_transaction_id=window_transaction_id,
+        attempt=journal.attempt + 1,
+        supersedes_transaction_id=journal.transaction_id,
+    )
+    write_cutover_state(journal_path, successor)
+    return successor
 
 
 def _bound_env_versions(

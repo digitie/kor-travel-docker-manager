@@ -12775,6 +12775,10 @@ def test_cache_target_enable_adapter_holds_frozen_pair_and_commits(
         side_effect=lambda **kwargs: {
             "status": "succeeded",
             "run_id": kwargs["run_id"],
+            "local_count": 12,
+            "remote_count": 12,
+            "local_merkle_root": "9" * 64,
+            "remote_merkle_root": "9" * 64,
         }
     )
     lock_path = c6c_state_paths(transaction.environment.effective)[1]

@@ -92,9 +92,12 @@ class InitialCutoverReceipt:
 
 @dataclass(frozen=True)
 class EnableCutoverJournal:
-    version: Literal[1]
+    version: Literal[2]
     transaction_id: str
     cutover_id: str
+    window_transaction_id: str | None
+    attempt: int
+    supersedes_transaction_id: str | None
     phase: EnablePhase
     initial_receipt_sha256: str
     old_env_sha256: str
@@ -197,6 +200,9 @@ def prepare_enable_journal(
     old_env_sha256: str,
     new_env_sha256: str,
     enabled_resolved_compose_sha256: str,
+    window_transaction_id: str | None = None,
+    attempt: int = 1,
+    supersedes_transaction_id: str | None = None,
 ) -> EnableCutoverJournal:
     _validate_sha256(old_env_sha256, "old env")
     _validate_sha256(new_env_sha256, "new env")
@@ -206,10 +212,24 @@ def prepare_enable_journal(
     )
     if old_env_sha256 == new_env_sha256:
         raise DeploymentContractError("enable env transition must change canonical bytes")
+    if window_transaction_id is not None:
+        _canonical_uuid(window_transaction_id, "window transaction ID")
+    if type(attempt) is not int or attempt <= 0:
+        raise DeploymentContractError("enable attempt must be positive")
+    if supersedes_transaction_id is not None:
+        _canonical_uuid(
+            supersedes_transaction_id,
+            "superseded enable transaction ID",
+        )
+    if (attempt == 1) != (supersedes_transaction_id is None):
+        raise DeploymentContractError("enable supersession chain is invalid")
     return EnableCutoverJournal(
-        version=1,
+        version=2,
         transaction_id=str(uuid.uuid4()),
         cutover_id=receipt.cutover_id,
+        window_transaction_id=window_transaction_id,
+        attempt=attempt,
+        supersedes_transaction_id=supersedes_transaction_id,
         phase="enable_preparing",
         initial_receipt_sha256=initial_receipt_logical_sha256(receipt),
         old_env_sha256=old_env_sha256,

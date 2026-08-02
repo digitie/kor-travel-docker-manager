@@ -184,6 +184,101 @@ def test_execute_enable_canary_failure_rolls_back_false_runtime(
     assert calls[-2:] == [("recreate", False), ("attest", False)]
 
 
+def test_execute_enable_supersedes_rolled_back_attempt_for_same_window(
+    tmp_path: Path,
+) -> None:
+    environment = _Environment()
+    journal_path = tmp_path / "enable.json"
+    window_transaction_id = "33333333-3333-4333-8333-333333333333"
+
+    with pytest.raises(CacheTargetEnableRolledBackError):
+        execute_cache_target_enable(
+            receipt=_receipt(),
+            journal_path=journal_path,
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
+            read_env=environment.read,
+            replace_env=environment.replace,
+            attest=lambda _enabled: None,
+            recreate_pinvi_api=lambda _enabled: None,
+            causal_canary=lambda _run_id: {},
+            window_transaction_id=window_transaction_id,
+        )
+    rolled_back = read_enable_cutover_journal(journal_path)
+    assert rolled_back.phase == "rolled_back"
+    assert rolled_back.attempt == 1
+    assert rolled_back.window_transaction_id == window_transaction_id
+
+    committed = execute_cache_target_enable(
+        receipt=_receipt(),
+        journal_path=journal_path,
+        enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
+        read_env=environment.read,
+        replace_env=environment.replace,
+        attest=lambda _enabled: None,
+        recreate_pinvi_api=lambda _enabled: None,
+        causal_canary=lambda run_id: {
+            "run_id": run_id,
+            "cutover_id": _CUTOVER_ID,
+            "active_pair_sha256": "4" * 64,
+            "contract_generation": "7",
+            "local_count": 12,
+            "remote_count": 12,
+            "local_merkle_root": "9" * 64,
+            "remote_merkle_root": "9" * 64,
+        },
+        window_transaction_id=window_transaction_id,
+    )
+
+    assert committed.phase == "committed"
+    assert committed.attempt == 2
+    assert committed.supersedes_transaction_id == rolled_back.transaction_id
+    assert committed.window_transaction_id == window_transaction_id
+    history = (
+        tmp_path
+        / "cache-target-enable-history-v2"
+        / (
+            f"{window_transaction_id}-attempt-1-"
+            f"{rolled_back.transaction_id}.json"
+        )
+    )
+    assert read_enable_cutover_journal(history) == rolled_back
+
+
+def test_execute_enable_rejects_foreign_window_for_rolled_back_attempt(
+    tmp_path: Path,
+) -> None:
+    environment = _Environment()
+    journal_path = tmp_path / "enable.json"
+    window_transaction_id = "33333333-3333-4333-8333-333333333333"
+    with pytest.raises(CacheTargetEnableRolledBackError):
+        execute_cache_target_enable(
+            receipt=_receipt(),
+            journal_path=journal_path,
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
+            read_env=environment.read,
+            replace_env=environment.replace,
+            attest=lambda _enabled: None,
+            recreate_pinvi_api=lambda _enabled: None,
+            causal_canary=lambda _run_id: {},
+            window_transaction_id=window_transaction_id,
+        )
+
+    with pytest.raises(DeploymentContractError, match="window transaction"):
+        execute_cache_target_enable(
+            receipt=_receipt(),
+            journal_path=journal_path,
+            enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
+            read_env=environment.read,
+            replace_env=environment.replace,
+            attest=lambda _enabled: None,
+            recreate_pinvi_api=lambda _enabled: None,
+            causal_canary=lambda _run_id: {},
+            window_transaction_id=(
+                "44444444-4444-4444-8444-444444444444"
+            ),
+        )
+
+
 def test_execute_enable_resumes_crash_after_env_commit(
     tmp_path: Path,
 ) -> None:
