@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-03 (T-049 cutover 사전 진단과 abort budget 설계)
+
+T-VN-41에서 production Map data logical inventory가 fail-close된 뒤 full pre-forward window를
+반복 실행해 원인을 찾는 방식이 길어지는 문제가 드러났다. `cache-target diagnose`가 C6c lock과
+writer fence 안에서 DB별 archive·schema/data inventory·scratch restore rehearsal과 canonical
+authenticated smoke를 별도 transaction으로 확인하도록 설계했다. 이 경로는 candidate build, migration,
+initial event, sync enable, `.env`/manifest mutation을 하지 않으며 `external_event_count=0`을 보장한다.
+
+진단과 cutover journal은 raw stderr/stdout, DSN, credential, resolved Compose, backup path를 남기지 않고
+typed stage/failure class와 logical identity만 owner-only receipt에 기록한다. diagnostic archive는 최신
+cutover backup으로 재사용하지 않으며, actual cutover는 writer fence 뒤 fresh backup/rehearsal을 다시
+만든다. 같은 input의 반복 failure에는 bounded abort budget을 적용해 regression을 포함한 수정과 새
+diagnostic receipt 없이는 재시도를 막는다. 상세 정본은
+[`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)와 ADR-29다.
+
 ## 2026-08-03 (T-048 PinVi authenticated-readiness GET timeout 보강)
 
 결합 rollback이 old runtime을 재기동한 뒤 PinVi login은 성공했지만, 바로 다음 canonical
