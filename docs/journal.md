@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-08-03 (T-049C: cache-target 진단 writer fence·orchestration·abort budget 구현)
+
+이슈 #99에 새 댓글이 달려 실측 확정값과 함께 Map 쪽 문서 PR 머지 시점 조율 요청이
+왔지만, T-049C 범위와는 무관하고(cutover-retry 기대값 대조는 T-049D/E) 응답은
+사용자 판단으로 보류했다.
+
+`ktdctl cache-target diagnose`를 신설해 T-049A(journal 모델)·T-049B(DB stage
+primitive)를 기존 cutover와 같은 C6c 전역 lock·writer-fence 기계 안에 결선했다.
+설계 문서 5절의 abort budget(24시간 2회, 재현 실패 시 자동 재시도 대신 aborted)을
+새 `DiagnosticAttemptRecord`/`DiagnosticAttemptLog`로 구현했다.
+
+production-critical 코드라 적대적 리뷰어 2명을 병렬로(락/동시성 담당, 데이터
+안전성/writer-fence 담당) 투입했고, 겹치지 않는 세 가지 실공백을 각각 찾았다.
+가장 심각한 것은 writer stop에 엉뚱한 mutation capability sentinel을 써서
+production에서 이 명령 자체가 항상 막혀 있던 것이었다 — 배포 전에 잡혔다는 점이
+이 리뷰 단계의 존재 이유를 그대로 보여준다. 나머지 둘(부분 stop 실패 시 writer
+방치, 재기동 뒤 pair 재-attestation 누락)도 모두 고치고 각각의 회귀 테스트를
+추가했다. backend 전체 1483 passed, ruff/mypy 유지.
+
+T-049D(cutover gate)부터는 이 diagnose 결과를 실제로 cutover 시작 조건에 묶는다.
+
+---
+
 ## 2026-08-03 (T-049B: cache-target 진단 DB stage primitive 구현)
 
 open issue 확인 결과 이슈 #99(H35 Map 쪽 `0063→0078` 실 prod 데이터 실측 확정값)만

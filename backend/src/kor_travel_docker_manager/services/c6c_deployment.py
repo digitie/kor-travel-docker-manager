@@ -758,6 +758,16 @@ def cache_target_window_journal_path(values: Mapping[str, str]) -> Path:
     return Path(manifest_path).with_name("cache-target-window-v1.json")
 
 
+def cache_target_diagnostic_journal_path(values: Mapping[str, str]) -> Path:
+    manifest_path, _ = c6c_state_paths(values)
+    return Path(manifest_path).with_name("cache-target-diagnostic-v1.json")
+
+
+def cache_target_diagnostic_attempt_log_path(values: Mapping[str, str]) -> Path:
+    manifest_path, _ = c6c_state_paths(values)
+    return Path(manifest_path).with_name("cache-target-diagnostic-attempts-v1.json")
+
+
 def _assert_cache_target_window_allows_mutation(
     values: Mapping[str, str],
     *,

@@ -6,12 +6,15 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
@@ -49,6 +52,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_deployment_lock,
     c6c_global_mutation_lock_path,
     c6c_state_paths,
+    cache_target_diagnostic_attempt_log_path,
+    cache_target_diagnostic_journal_path,
     cache_target_window_journal_path,
     cache_target_window_mutation_scope,
     compatible_pair_image_environment,
@@ -119,6 +124,36 @@ from kor_travel_docker_manager.services.cache_target_cutover import (
     read_initial_cutover_receipt,
     scavenge_initial_runner_secret_bundle,
     with_initial_runner_secret_bundle,
+)
+from kor_travel_docker_manager.services.cache_target_diagnostic_stages import (
+    diagnose_archive_structure,
+    diagnose_scratch_cleanup,
+    diagnose_scratch_create,
+    diagnose_scratch_data_inventory,
+    diagnose_scratch_restore,
+    diagnose_scratch_schema_inventory,
+    diagnose_source_archive,
+    diagnose_source_data_inventory,
+    diagnose_source_schema_inventory,
+    diagnostic_scratch_database_name,
+    remove_diagnostic_archive,
+)
+from kor_travel_docker_manager.services.cache_target_diagnostics import (
+    TERMINAL_PHASES,
+    CacheTargetDiagnosticIdentity,
+    CacheTargetDiagnosticJournal,
+    DiagnosticFailureClass,
+    DiagnosticStage,
+    DiagnosticStageReceipt,
+    diagnostic_attempt_budget_exceeded,
+    diagnostic_failure_is_reproduced,
+    prepare_cache_target_diagnostic,
+    read_cache_target_diagnostic,
+    read_or_create_cache_target_diagnostic_attempt_log,
+    record_diagnostic_attempt,
+    transition_cache_target_diagnostic,
+    write_cache_target_diagnostic,
+    write_cache_target_diagnostic_attempt_log,
 )
 from kor_travel_docker_manager.services.cache_target_enable import (
     execute_cache_target_enable,
@@ -265,10 +300,66 @@ def _compatible_pair_logical_sha256(pair: CompatibleImagePair) -> str:
         "pinvi_source_revision": pair.pinvi_source_revision,
         "recorded_at": pair.recorded_at,
     }
-    serialized = json.dumps(
-        payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
-    )
+    serialized = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+_DIAGNOSTIC_SMOKE_CONTRACT_SHA256 = hashlib.sha256(
+    b"ktdm-cache-target-diagnostic-runtime-smoke-contract-v1\0"
+).hexdigest()
+_PG_TOOL_VERSION_PATTERN = re.compile(r"(\d+)")
+
+
+def _manager_release_sha256() -> str:
+    """Manager release identity(설계 문서 4절). 실제 버전 문자열은 노출하지 않고
+    digest만 identity에 남긴다."""
+
+    try:
+        release = _package_version("kor-travel-docker-manager-backend")
+    except PackageNotFoundError:
+        release = "0"
+    return hashlib.sha256(f"ktdm-manager-release-v1:{release}".encode()).hexdigest()
+
+
+def _pg_tool_major_version(
+    container_name: str, executable: Literal["pg_dump", "pg_restore"]
+) -> int:
+    try:
+        completed = subprocess.run(
+            ["docker", "exec", "--user", "postgres", container_name, executable, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            f"cache-target diagnostic {executable} version check failed"
+        ) from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError(f"cache-target diagnostic {executable} version check failed")
+    match = _PG_TOOL_VERSION_PATTERN.search(completed.stdout)
+    if match is None:
+        raise DeploymentContractError(
+            f"cache-target diagnostic {executable} version output is invalid"
+        )
+    return int(match.group(1))
+
+
+def _cache_target_diagnostic_process_result(
+    journal: CacheTargetDiagnosticJournal,
+    *,
+    resumed: bool,
+) -> dict[str, Any]:
+    return {
+        "success": journal.phase == "completed",
+        "returncode": 0 if journal.phase == "completed" else 1,
+        "diagnostic_id": journal.diagnostic_id,
+        "phase": journal.phase,
+        "failure_stage": journal.failure_stage,
+        "failure_class": journal.failure_class,
+        "resumed": resumed,
+    }
 
 
 def _initial_receipt_process_result(
@@ -376,17 +467,10 @@ def _derive_c6c_build_provenance(
     for env_name, expected in revisions.items():
         configured = environment.get(env_name)
         if configured is not None and configured != expected:
-            raise DeploymentContractError(
-                f"{env_name} must match the clean build context HEAD"
-            )
+            raise DeploymentContractError(f"{env_name} must match the clean build context HEAD")
     configured_build_environment = environment.get("PINVI_BUILD_ENVIRONMENT")
-    if (
-        configured_build_environment is not None
-        and configured_build_environment != "production"
-    ):
-        raise DeploymentContractError(
-            "PINVI_BUILD_ENVIRONMENT must be production for C6c build"
-        )
+    if configured_build_environment is not None and configured_build_environment != "production":
+        raise DeploymentContractError("PINVI_BUILD_ENVIRONMENT must be production for C6c build")
     return C6cBuildProvenance(
         map_source_revision=revisions["KOR_TRAVEL_MAP_GIT_COMMIT"],
         pinvi_source_revision=revisions["PINVI_SOURCE_REVISION"],
@@ -620,29 +704,23 @@ _MAP_SOURCE_V3_API_ENVIRONMENT = {
         "${KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED:-true}"
     ),
     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
-        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
-        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
     ),
     "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": (
-        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
-        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
+        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
     ),
 }
 _MAP_SOURCE_V3_UI_ENVIRONMENT = {
     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
-        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
-        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
     ),
-    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": (
-        "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:-admin}"
-    ),
+    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": ("${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:-admin}"),
     "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
         "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH is required}"
     ),
     "KOR_TRAVEL_MAP_UI_SESSION_SECRET": (
-        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
-        "KOR_TRAVEL_MAP_UI_SESSION_SECRET is required}"
+        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?KOR_TRAVEL_MAP_UI_SESSION_SECRET is required}"
     ),
 }
 _MAP_SOURCE_V4_CURSOR_ENV_VALUE = (
@@ -650,30 +728,20 @@ _MAP_SOURCE_V4_CURSOR_ENV_VALUE = (
     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
 )
 _MAP_SOURCE_PROTECTED_ENV_VALUES = {
-    "KOR_TRAVEL_MAP_API_PROFILE": (
-        _MAP_SOURCE_V3_API_ENVIRONMENT["KOR_TRAVEL_MAP_API_PROFILE"]
-    ),
+    "KOR_TRAVEL_MAP_API_PROFILE": (_MAP_SOURCE_V3_API_ENVIRONMENT["KOR_TRAVEL_MAP_API_PROFILE"]),
     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": (
-        _MAP_SOURCE_V3_API_ENVIRONMENT[
-            "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
-        ]
+        _MAP_SOURCE_V3_API_ENVIRONMENT["KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"]
     ),
     "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": (
-        _MAP_SOURCE_V3_API_ENVIRONMENT[
-            "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
-        ]
+        _MAP_SOURCE_V3_API_ENVIRONMENT["KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"]
     ),
     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
-        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
-        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
+        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET is required}"
     ),
     "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": (
-        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
-        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
+        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
     ),
-    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (
-        _MAP_SOURCE_V4_CURSOR_ENV_VALUE
-    ),
+    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (_MAP_SOURCE_V4_CURSOR_ENV_VALUE),
 }
 _MAP_SOURCE_ENV_FILE_CONTRACT = {
     "api": [
@@ -2256,30 +2324,19 @@ class ComposeService:
                     "active recovery transaction resolved document is invalid"
                 )
             _assert_resolved_external_inputs_materialized(resolved)
-            if (
-                compose_volume_graph_hash(resolved)
-                != transaction.resolved_volume_graph_hash
-            ):
+            if compose_volume_graph_hash(resolved) != transaction.resolved_volume_graph_hash:
                 raise ComposeCandidateContractError(
                     "active recovery transaction volume graph changed"
                 )
-            revalidate_candidate_system_bind_snapshots(
-                transaction.system_bind_snapshots
-            )
+            revalidate_candidate_system_bind_snapshots(transaction.system_bind_snapshots)
             validate_resolved_compose_image_pair(resolved, config, active_pair)
-            frozen_resolved = json.loads(
-                _serialize_resolved_compose_document(resolved)
-            )
+            frozen_resolved = json.loads(_serialize_resolved_compose_document(resolved))
             if not isinstance(frozen_resolved, Mapping):
-                raise ComposeCandidateContractError(
-                    "active recovery transaction cannot be frozen"
-                )
+                raise ComposeCandidateContractError("active recovery transaction cannot be frozen")
             return replace(
                 transaction,
                 resolved=frozen_resolved,
-                resolved_document_hash=(
-                    _resolved_compose_document_hash(frozen_resolved)
-                ),
+                resolved_document_hash=(_resolved_compose_document_hash(frozen_resolved)),
             )
         except OSError as exc:
             raise ComposeCandidateContractError(
@@ -2312,16 +2369,10 @@ class ComposeService:
     ) -> dict[str, Any]:
         if (
             _frozen_recovery_capability is not None
-            and _frozen_recovery_capability
-            is not _TRUSTED_FROZEN_RECOVERY_CAPABILITY
+            and _frozen_recovery_capability is not _TRUSTED_FROZEN_RECOVERY_CAPABILITY
         ):
-            raise ComposeCandidateContractError(
-                "untrusted frozen recovery capability"
-            )
-        frozen_recovery = (
-            _frozen_recovery_capability
-            is _TRUSTED_FROZEN_RECOVERY_CAPABILITY
-        )
+            raise ComposeCandidateContractError("untrusted frozen recovery capability")
+        frozen_recovery = _frozen_recovery_capability is _TRUSTED_FROZEN_RECOVERY_CAPABILITY
         mutation_identifiers = self._compose_mutation_identifiers(args)
         if (
             mutation_identifiers
@@ -2358,10 +2409,8 @@ class ComposeService:
             with c6c_deployment_lock_from_environment() as lock_snapshot:
                 captured_validation: ValidatedComposeCandidate | None = None
                 if transaction is None and expected_environment_snapshot is None:
-                    transaction, captured_validation = (
-                        self._capture_transaction_unlocked(
-                            environment_override=environment,
-                        )
+                    transaction, captured_validation = self._capture_transaction_unlocked(
+                        environment_override=environment,
                     )
                     _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
                 environment_snapshot = (
@@ -2400,10 +2449,7 @@ class ComposeService:
                     )
                 )
                 snapshots = validation.system_bind_snapshots
-                if (
-                    transaction is not None
-                    and snapshots != transaction.system_bind_snapshots
-                ):
+                if transaction is not None and snapshots != transaction.system_bind_snapshots:
                     raise ComposeCandidateContractError(
                         "compose candidate system bind snapshot differs from the transaction"
                     )
@@ -2530,10 +2576,7 @@ class ComposeService:
             environment_snapshot=baseline_transaction.environment,
             external_input_snapshot=baseline_transaction.external_inputs,
         )
-        if (
-            candidate_validation.raw_volume_graph_hash
-            != baseline_validation.raw_volume_graph_hash
-        ):
+        if candidate_validation.raw_volume_graph_hash != baseline_validation.raw_volume_graph_hash:
             raise ComposeCandidateContractError(
                 "compose candidate raw volume graph differs from persisted compose"
             )
@@ -2706,11 +2749,9 @@ class ComposeService:
                 environment_snapshot=environment_snapshot,
                 environment_override=environment_override,
             )
-            materialized_candidate, external_descriptors = (
-                _materialize_external_inputs_with_memfd(
-                    candidate,
-                    external_input_snapshot,
-                )
+            materialized_candidate, external_descriptors = _materialize_external_inputs_with_memfd(
+                candidate,
+                external_input_snapshot,
             )
             candidate_input = yaml.safe_dump(
                 materialized_candidate,
@@ -3472,10 +3513,7 @@ class ComposeService:
                 raise ComposeCandidateContractError(
                     "restored compose raw volume graph differs from baseline"
                 )
-            if (
-                transaction.resolved_volume_graph_hash
-                != expected_resolved_volume_graph_hash
-            ):
+            if transaction.resolved_volume_graph_hash != expected_resolved_volume_graph_hash:
                 raise ComposeCandidateContractError(
                     "restored compose resolved volume graph differs from baseline"
                 )
@@ -3855,13 +3893,11 @@ class ComposeService:
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "writers_fencing":
-                initial_writer_fence_sha256, _ = (
-                    self._establish_cache_target_writer_fence(
-                        journal=journal,
-                        transaction=transaction,
-                        runtimes=runtimes,
-                        boundary="initial",
-                    )
+                initial_writer_fence_sha256, _ = self._establish_cache_target_writer_fence(
+                    journal=journal,
+                    transaction=transaction,
+                    runtimes=runtimes,
+                    boundary="initial",
                 )
                 journal = transition_cache_target_window(
                     journal,
@@ -3872,16 +3908,12 @@ class ComposeService:
             if journal.phase == "writers_fenced":
                 expected_writer_fence = journal.initial_writer_fence_sha256
                 if expected_writer_fence is None:
-                    raise DeploymentContractError(
-                        "cache-target writer fence evidence is missing"
-                    )
-                writer_fence_sha256, before_writes = (
-                    self._establish_cache_target_writer_fence(
-                        journal=journal,
-                        transaction=transaction,
-                        runtimes=runtimes,
-                        boundary="initial",
-                    )
+                    raise DeploymentContractError("cache-target writer fence evidence is missing")
+                writer_fence_sha256, before_writes = self._establish_cache_target_writer_fence(
+                    journal=journal,
+                    transaction=transaction,
+                    runtimes=runtimes,
+                    boundary="initial",
                 )
                 if writer_fence_sha256 != expected_writer_fence:
                     raise DeploymentContractError(
@@ -4080,18 +4112,14 @@ class ComposeService:
                 journal = transition_cache_target_window(
                     journal,
                     "initial_committed",
-                    initial_receipt_sha256=initial_receipt_logical_sha256(
-                        initial_receipt
-                    ),
+                    initial_receipt_sha256=initial_receipt_logical_sha256(initial_receipt),
                     external_event_count=max(1, initial_receipt.published),
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "initial_committed":
-                bound_initial_receipt = (
-                    _read_bound_cache_target_initial_receipt(
-                        state_directory,
-                        journal,
-                    )
+                bound_initial_receipt = _read_bound_cache_target_initial_receipt(
+                    state_directory,
+                    journal,
                 )
                 enabled = self._enable_cache_target_sync_unlocked(
                     transaction=transaction,
@@ -4159,22 +4187,18 @@ class ComposeService:
                 current, _ = self._capture_transaction_unlocked(
                     derive_manifest_path=True,
                 )
-                final_fence_sha256, final_counters = (
-                    self._establish_cache_target_writer_fence(
+                final_fence_sha256, final_counters = self._establish_cache_target_writer_fence(
                     journal=journal,
                     transaction=current,
                     runtimes=runtimes,
                     boundary="final",
-                    )
                 )
                 journal = transition_cache_target_window(
                     journal,
                     "final_writers_fenced",
                     final_writer_fence_sha256=final_fence_sha256,
                     final_map_write_counters_sha256=(
-                        self._cache_target_map_write_counters_sha256(
-                            final_counters
-                        )
+                        self._cache_target_map_write_counters_sha256(final_counters)
                     ),
                 )
                 write_cache_target_window(journal_path, journal)
@@ -4674,26 +4698,20 @@ class ComposeService:
                     raise DeploymentContractError(
                         "cache-target enabled compose candidate drifted"
                     ) from None
-                enabled_config = load_c6c_deployment_config_from_environment(
-                    enabled_effective
-                )
+                enabled_config = load_c6c_deployment_config_from_environment(enabled_effective)
                 self._validate_resolved_compose_contract(
                     enabled_config,
                     transaction=enabled_candidate,
                 )
-                enabled_resolved_compose_sha256 = (
-                    enabled_candidate.resolved_document_hash
-                )
+                enabled_resolved_compose_sha256 = enabled_candidate.resolved_document_hash
             except OSError as exc:
                 raise DeploymentContractError(
                     "cache-target enable journal path is unavailable"
                 ) from exc
             else:
-                enabled_resolved_compose_sha256 = (
-                    read_enable_cutover_journal(
-                        journal_path
-                    ).enabled_resolved_compose_sha256
-                )
+                enabled_resolved_compose_sha256 = read_enable_cutover_journal(
+                    journal_path
+                ).enabled_resolved_compose_sha256
 
             def capture_current(
                 enabled: bool,
@@ -4845,24 +4863,18 @@ class ComposeService:
                     **raw_receipt,
                     "cutover_id": receipt.cutover_id,
                     "active_pair_sha256": receipt.evidence.active_pair_sha256,
-                    "contract_generation": (
-                        receipt.evidence.expected_contract_generation
-                    ),
+                    "contract_generation": (receipt.evidence.expected_contract_generation),
                 }
 
             journal = execute_cache_target_enable(
                 receipt=receipt,
                 journal_path=journal_path,
-                enabled_resolved_compose_sha256=(
-                    enabled_resolved_compose_sha256
-                ),
+                enabled_resolved_compose_sha256=(enabled_resolved_compose_sha256),
                 read_env=lambda: read_canonical_env_file(env_path),
-                replace_env=lambda expected, replacement: (
-                    replace_canonical_env_file(
-                        env_path,
-                        expected_sha256=expected,
-                        replacement=replacement,
-                    )
+                replace_env=lambda expected, replacement: replace_canonical_env_file(
+                    env_path,
+                    expected_sha256=expected,
+                    replacement=replacement,
                 ),
                 attest=attest,
                 recreate_pinvi_api=recreate_pinvi_api,
@@ -4929,16 +4941,12 @@ class ComposeService:
                 raise DeploymentContractError(
                     "cache-target enabled compose candidate drifted"
                 ) from None
-            enabled_config = load_c6c_deployment_config_from_environment(
-                enabled_effective
-            )
+            enabled_config = load_c6c_deployment_config_from_environment(enabled_effective)
             self._validate_resolved_compose_contract(
                 enabled_config,
                 transaction=enabled_candidate,
             )
-            enabled_resolved_compose_sha256 = (
-                enabled_candidate.resolved_document_hash
-            )
+            enabled_resolved_compose_sha256 = enabled_candidate.resolved_document_hash
         except OSError as exc:
             raise DeploymentContractError(
                 "cache-target enable journal path is unavailable"
@@ -5017,23 +5025,16 @@ class ComposeService:
                 or current_contract.expected_contract_generation
                 != receipt.evidence.expected_contract_generation
             ):
-                raise DeploymentContractError(
-                    "cache-target enable frozen evidence drifted"
-                )
+                raise DeploymentContractError("cache-target enable frozen evidence drifted")
             if not enabled and (
                 hashlib.sha256(current.environment.env_file_bytes).hexdigest()
                 != receipt.evidence.env_sha256
-                or current.resolved_document_hash
-                != receipt.evidence.resolved_compose_sha256
+                or current.resolved_document_hash != receipt.evidence.resolved_compose_sha256
             ):
                 raise DeploymentContractError(
                     "cache-target disabled evidence differs from initial receipt"
                 )
-            if (
-                enabled
-                and current.resolved_document_hash
-                != enabled_resolved_compose_sha256
-            ):
+            if enabled and current.resolved_document_hash != enabled_resolved_compose_sha256:
                 raise DeploymentContractError(
                     "cache-target enabled resolved compose evidence drifted"
                 )
@@ -5097,24 +5098,18 @@ class ComposeService:
                 **raw_receipt,
                 "cutover_id": receipt.cutover_id,
                 "active_pair_sha256": receipt.evidence.active_pair_sha256,
-                "contract_generation": (
-                    receipt.evidence.expected_contract_generation
-                ),
+                "contract_generation": (receipt.evidence.expected_contract_generation),
             }
 
         journal = execute_cache_target_enable(
             receipt=receipt,
             journal_path=journal_path,
-            enabled_resolved_compose_sha256=(
-                enabled_resolved_compose_sha256
-            ),
+            enabled_resolved_compose_sha256=(enabled_resolved_compose_sha256),
             read_env=lambda: read_canonical_env_file(env_path),
-            replace_env=lambda expected, replacement: (
-                replace_canonical_env_file(
-                    env_path,
-                    expected_sha256=expected,
-                    replacement=replacement,
-                )
+            replace_env=lambda expected, replacement: replace_canonical_env_file(
+                env_path,
+                expected_sha256=expected,
+                replacement=replacement,
             ),
             attest=attest,
             recreate_pinvi_api=recreate_pinvi_api,
@@ -5126,6 +5121,352 @@ class ComposeService:
             cutover_id=journal.cutover_id,
             phase=journal.phase,
         )
+
+    def run_cache_target_diagnostic(self, *, diagnostic_id: str) -> dict[str, Any]:
+        """T-049C: `ktdctl cache-target diagnose`. writer fence 안에서 3-role DB
+        진단을 직렬 실행하고 writer를 재기동한다.
+
+        candidate build, migration, initial event, sync enable, `.env`/manifest
+        mutation은 절대 하지 않는다 — 성공은 cutover 성공을 뜻하지 않는다(설계 문서
+        1절). writer는 진단 동안만 멈추고 끝나면 성공/실패와 무관하게 항상 다시
+        올린다. 같은 diagnostic ID로 재호출했을 때 journal이 이미 terminal이면 그
+        결과를 재보고하고, terminal이 아니면(직전 시도가 crash) fail-close한다 —
+        operator가 새 diagnostic ID로 다시 시작해야 한다.
+        """
+
+        try:
+            canonical_diagnostic_id = str(uuid.UUID(diagnostic_id))
+        except ValueError as exc:
+            raise DeploymentContractError("cache-target diagnostic ID is invalid") from exc
+        if canonical_diagnostic_id != diagnostic_id:
+            raise DeploymentContractError(
+                "cache-target diagnostic ID must be canonical lowercase UUID"
+            )
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked(derive_manifest_path=True)
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            contract = config.cache_target
+            if not config.production or contract is None:
+                raise DeploymentContractError(
+                    "cache-target diagnostic requires the production contract"
+                )
+            manifest_path_text = transaction.manifest_path
+            if manifest_path_text is None:
+                raise DeploymentContractError(
+                    "cache-target diagnostic transaction has no pair manifest"
+                )
+            manifest_path = Path(manifest_path_text)
+            manifest = load_pair_manifest(manifest_path_text)
+            if manifest.rollback is None:
+                raise DeploymentContractError(
+                    "cache-target diagnostic requires an attested rollback pair"
+                )
+            state_directory = manifest_path.parent
+            journal_path = cache_target_diagnostic_journal_path(transaction.environment.effective)
+            attempt_log_path = cache_target_diagnostic_attempt_log_path(
+                transaction.environment.effective
+            )
+
+            try:
+                journal_path.lstat()
+                journal_exists = True
+            except FileNotFoundError:
+                journal_exists = False
+            except OSError as exc:
+                raise DeploymentContractError(
+                    "cache-target diagnostic journal path is unavailable"
+                ) from exc
+
+            if journal_exists:
+                journal = read_cache_target_diagnostic(journal_path)
+                if journal.diagnostic_id != diagnostic_id:
+                    raise DeploymentContractError(
+                        "existing cache-target diagnostic belongs to another request"
+                    )
+                if journal.phase in TERMINAL_PHASES:
+                    return _cache_target_diagnostic_process_result(journal, resumed=True)
+                raise DeploymentContractError(
+                    "cache-target diagnostic crashed mid-run; start a new diagnostic ID"
+                )
+
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            now_unix = int(time.time())
+            attempt_log = read_or_create_cache_target_diagnostic_attempt_log(attempt_log_path)
+            if diagnostic_attempt_budget_exceeded(attempt_log, now_unix=now_unix):
+                raise DeploymentContractError("cache-target diagnostic abort budget is exhausted")
+            identity = self._cache_target_diagnostic_identity(
+                transaction=transaction,
+                config=config,
+                manifest=manifest,
+            )
+            journal = prepare_cache_target_diagnostic(
+                diagnostic_id=diagnostic_id,
+                identity=identity,
+                started_at_unix=now_unix,
+            )
+            write_cache_target_diagnostic(journal_path, journal)
+            return self._run_cache_target_diagnostic_unlocked(
+                journal_path=journal_path,
+                attempt_log_path=attempt_log_path,
+                journal=journal,
+                transaction=transaction,
+                config=config,
+                manifest=manifest,
+                state_directory=state_directory,
+            )
+
+    def _cache_target_diagnostic_identity(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        manifest: CompatiblePairManifest,
+    ) -> CacheTargetDiagnosticIdentity:
+        contract = config.cache_target
+        if contract is None or manifest.rollback is None:
+            raise DeploymentContractError(
+                "cache-target diagnostic requires the production contract"
+            )
+        ordered_writers = self._cache_target_writer_names(transaction)
+        runtimes = database_runtimes_from_frozen_contract(
+            resolved=transaction.resolved,
+            environment=transaction.environment.effective,
+        )
+        container_name = runtimes[0].container_name
+        return CacheTargetDiagnosticIdentity(
+            manager_release_sha256=_manager_release_sha256(),
+            pg_dump_major_version=_pg_tool_major_version(container_name, "pg_dump"),
+            pg_restore_major_version=_pg_tool_major_version(container_name, "pg_restore"),
+            active_pair_sha256=_compatible_pair_logical_sha256(manifest.active),
+            rollback_pair_sha256=_compatible_pair_logical_sha256(manifest.rollback),
+            raw_compose_sha256=hashlib.sha256(transaction.compose_source_bytes).hexdigest(),
+            resolved_compose_sha256=transaction.resolved_document_hash,
+            role_binding_sha256=contract.role_binding_sha256,
+            writer_registry_sha256=cache_target_writer_registry_sha256(ordered_writers),
+            smoke_contract_sha256=_DIAGNOSTIC_SMOKE_CONTRACT_SHA256,
+        )
+
+    def _run_cache_target_diagnostic_unlocked(
+        self,
+        *,
+        journal_path: Path,
+        attempt_log_path: Path,
+        journal: CacheTargetDiagnosticJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        manifest: CompatiblePairManifest,
+        state_directory: Path,
+    ) -> dict[str, Any]:
+        ordered_writers = self._cache_target_writer_names(transaction)
+        runtimes = database_runtimes_from_frozen_contract(
+            resolved=transaction.resolved,
+            environment=transaction.environment.effective,
+        )
+
+        journal = transition_cache_target_diagnostic(journal, "writers_fencing")
+        write_cache_target_diagnostic(journal_path, journal)
+
+        inflight_before_stop = tuple(read_database_inflight_count(runtime) for runtime in runtimes)
+        dagster_runs_before_stop = read_dagster_inflight_run_count(runtimes[1])
+        if any(inflight_before_stop) or dagster_runs_before_stop:
+            raise DeploymentContractError(
+                "cache-target diagnostic writer fence has in-flight database transactions"
+            )
+
+        failure: tuple[DiagnosticStage, DiagnosticFailureClass] | None = None
+        try:
+            stopped = self._run_frozen_recovery(
+                ["stop", *ordered_writers],
+                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                transaction=transaction,
+            )
+            if not stopped.get("success"):
+                raise DeploymentContractError("cache-target diagnostic writer fence stop failed")
+
+            inflight_after_stop = tuple(
+                read_database_inflight_count(runtime) for runtime in runtimes
+            )
+            dagster_runs_after_stop = read_dagster_inflight_run_count(runtimes[1])
+            if any(inflight_after_stop) or dagster_runs_after_stop:
+                raise DeploymentContractError(
+                    "cache-target diagnostic writer fence has in-flight database "
+                    "transactions after stop"
+                )
+
+            expected_writer_environments = cache_target_writer_environments_from_resolved_compose(
+                transaction.resolved, ordered_writers
+            )
+            global_fence = attest_cache_target_global_writer_fence(
+                expected_stopped_writers=expected_writer_environments,
+                cwd=get_project_root(),
+            )
+            journal = transition_cache_target_diagnostic(
+                journal,
+                "writers_fenced",
+                writer_fence_sha256=global_fence.inventory_sha256,
+            )
+            write_cache_target_diagnostic(journal_path, journal)
+
+            for runtime in runtimes:
+                receipts = self._run_cache_target_diagnostic_role(
+                    runtime, journal.diagnostic_id, state_directory
+                )
+                if runtime.role == "map_application":
+                    journal = transition_cache_target_diagnostic(
+                        journal,
+                        "map_application_checked",
+                        map_application_receipts=receipts,
+                    )
+                elif runtime.role == "map_dagster":
+                    journal = transition_cache_target_diagnostic(
+                        journal,
+                        "map_dagster_checked",
+                        map_dagster_receipts=receipts,
+                    )
+                else:
+                    journal = transition_cache_target_diagnostic(
+                        journal,
+                        "pinvi_checked",
+                        pinvi_receipts=receipts,
+                    )
+                write_cache_target_diagnostic(journal_path, journal)
+                if failure is None:
+                    for receipt in receipts:
+                        if receipt.status != "succeeded":
+                            assert receipt.failure_class is not None
+                            failure = (receipt.stage, receipt.failure_class)
+                            break
+        finally:
+            # 설계 문서 2절: "writer를 재기동"은 성공/실패와 무관하게 항상 일어나야
+            # 하고, 재기동 뒤에는 기존 pair의 exact 상태를 다시 attest해야 한다.
+            # `stop` 자체가 부분 실패해도(일부 writer만 멈춘 상태) 여기서 항상
+            # `up -d --wait`로 재기동을 시도하고, 그 다음 실제로 attested active
+            # pair가 맞는지 재확인한다 — "재기동했으니 됐다"는 가정을 두지 않는다.
+            self._activate_cache_target_writers(transaction=transaction, config=config)
+            self._attest_cache_target_pair(config, manifest, transaction)
+
+        now_unix = int(time.time())
+        attempt_log = read_or_create_cache_target_diagnostic_attempt_log(attempt_log_path)
+
+        if failure is not None:
+            failure_stage, failure_class = failure
+            reproduced = diagnostic_failure_is_reproduced(
+                attempt_log,
+                now_unix=now_unix,
+                failure_stage=failure_stage,
+                failure_class=failure_class,
+            )
+            if reproduced:
+                # `aborted`는 journal 계약상 failure_stage/failure_class를 싣지
+                # 않는다(모델이 이를 `failed`에서만 허용한다) — attempt log가 이미
+                # 같은 (stage, class) 재현을 기록하므로 journal에는 다시 담지 않고,
+                # operator에게 보이는 process result에만 로컬 변수로 남긴다.
+                journal = transition_cache_target_diagnostic(journal, "aborted")
+            else:
+                journal = transition_cache_target_diagnostic(
+                    journal,
+                    "failed",
+                    failure_stage=failure_stage,
+                    failure_class=failure_class,
+                )
+            write_cache_target_diagnostic(journal_path, journal)
+            attempt_log = record_diagnostic_attempt(attempt_log, journal, now_unix=now_unix)
+            write_cache_target_diagnostic_attempt_log(attempt_log_path, attempt_log)
+            result = _cache_target_diagnostic_process_result(journal, resumed=False)
+            if reproduced:
+                result["failure_stage"] = failure_stage
+                result["failure_class"] = failure_class
+            return result
+
+        self._run_cache_target_rollback_health_smoke(config, transaction)
+        runtime_smoke_sha256 = hashlib.sha256(
+            f"ktdm-cache-target-diagnostic-runtime-smoke-v1:{journal.diagnostic_id}".encode()
+        ).hexdigest()
+        journal = transition_cache_target_diagnostic(
+            journal, "runtime_smoke_checked", runtime_smoke_sha256=runtime_smoke_sha256
+        )
+        write_cache_target_diagnostic(journal_path, journal)
+        journal = transition_cache_target_diagnostic(
+            journal, "completed", completed_at_unix=now_unix
+        )
+        write_cache_target_diagnostic(journal_path, journal)
+        attempt_log = record_diagnostic_attempt(attempt_log, journal, now_unix=now_unix)
+        write_cache_target_diagnostic_attempt_log(attempt_log_path, attempt_log)
+        return _cache_target_diagnostic_process_result(journal, resumed=False)
+
+    def _run_cache_target_diagnostic_role(
+        self,
+        runtime: DatabaseRuntime,
+        diagnostic_id: str,
+        state_directory: Path,
+    ) -> tuple[DiagnosticStageReceipt, ...]:
+        archive_path = (
+            state_directory / f"cache-target-diagnostic-{diagnostic_id}-{runtime.role}.dump"
+        )
+        scratch_runtime = replace(
+            runtime,
+            database_name=diagnostic_scratch_database_name(runtime, diagnostic_id),
+        )
+        receipts: list[DiagnosticStageReceipt] = []
+        scratch_created = False
+        schema_digest: str | None = None
+        data_digest: str | None = None
+        stages: tuple[tuple[str, Callable[[], DiagnosticStageReceipt]], ...] = (
+            ("source_archive", lambda: diagnose_source_archive(runtime, archive_path)),
+            (
+                "source_schema_inventory",
+                lambda: diagnose_source_schema_inventory(runtime),
+            ),
+            ("source_data_inventory", lambda: diagnose_source_data_inventory(runtime)),
+            (
+                "archive_structure",
+                lambda: diagnose_archive_structure(runtime, archive_path),
+            ),
+            (
+                "scratch_create",
+                lambda: diagnose_scratch_create(runtime, scratch_runtime, diagnostic_id),
+            ),
+            (
+                "scratch_restore",
+                lambda: diagnose_scratch_restore(runtime, scratch_runtime, archive_path),
+            ),
+        )
+        try:
+            for stage_name, stage in stages:
+                receipt = stage()
+                receipts.append(receipt)
+                if stage_name == "source_schema_inventory":
+                    schema_digest = receipt.schema_inventory_sha256
+                elif stage_name == "source_data_inventory":
+                    data_digest = receipt.data_inventory_sha256
+                elif stage_name == "scratch_create" and receipt.status == "succeeded":
+                    scratch_created = True
+                if receipt.status != "succeeded":
+                    break
+            else:
+                assert schema_digest is not None
+                scratch_schema_receipt = diagnose_scratch_schema_inventory(
+                    runtime,
+                    scratch_runtime,
+                    expected_schema_inventory_sha256=schema_digest,
+                )
+                receipts.append(scratch_schema_receipt)
+                if scratch_schema_receipt.status == "succeeded":
+                    assert data_digest is not None
+                    receipts.append(
+                        diagnose_scratch_data_inventory(
+                            runtime,
+                            scratch_runtime,
+                            expected_data_inventory_sha256=data_digest,
+                        )
+                    )
+        finally:
+            remove_diagnostic_archive(archive_path)
+            if scratch_created:
+                receipts.append(diagnose_scratch_cleanup(runtime, scratch_runtime))
+        return tuple(receipts)
 
     def _attest_cache_target_pair(
         self,
@@ -5314,19 +5655,15 @@ class ComposeService:
             raise DeploymentContractError(
                 "cache-target writer fence does not contain five stopped runtimes"
             )
-        expected_writer_environments = (
-            cache_target_writer_environments_from_resolved_compose(
-                transaction.resolved,
-                ordered_writers,
-            )
+        expected_writer_environments = cache_target_writer_environments_from_resolved_compose(
+            transaction.resolved,
+            ordered_writers,
         )
         global_fence = attest_cache_target_global_writer_fence(
             expected_stopped_writers=expected_writer_environments,
             cwd=get_project_root(),
         )
-        inflight_after_stop = tuple(
-            read_database_inflight_count(runtime) for runtime in runtimes
-        )
+        inflight_after_stop = tuple(read_database_inflight_count(runtime) for runtime in runtimes)
         dagster_runs_after_stop = read_dagster_inflight_run_count(runtimes[1])
         if any(inflight_after_stop) or dagster_runs_after_stop:
             raise DeploymentContractError(
@@ -5622,19 +5959,13 @@ class ComposeService:
         initial_fence_sha256 = journal.initial_writer_fence_sha256
         if initial_fence_sha256 is None:
             raise DeploymentContractError("Pin initial writer fence is missing")
-        final_fence_sha256 = (
-            journal.final_writer_fence_sha256 if operation == "finalize" else None
-        )
-        final_evidence = (
-            journal.map_final_evidence if operation == "finalize" else None
-        )
+        final_fence_sha256 = journal.final_writer_fence_sha256 if operation == "finalize" else None
+        final_evidence = journal.map_final_evidence if operation == "finalize" else None
         final_evidence_sha256 = (
             journal.map_final_evidence_sha256 if operation == "finalize" else None
         )
         if operation == "finalize" and (
-            final_fence_sha256 is None
-            or final_evidence is None
-            or final_evidence_sha256 is None
+            final_fence_sha256 is None or final_evidence is None or final_evidence_sha256 is None
         ):
             raise DeploymentContractError("Pin final boundary evidence is missing")
         request: dict[str, Any] = {
@@ -6012,11 +6343,7 @@ class ComposeService:
             capture_output=True,
             check=False,
         )
-        if (
-            removed.returncode != 0
-            or removed.stderr
-            or removed.stdout != f"{container_name}\n"
-        ):
+        if removed.returncode != 0 or removed.stderr or removed.stdout != f"{container_name}\n":
             raise DeploymentContractError("Map H35 runner cleanup failed")
 
     @staticmethod
@@ -6060,11 +6387,7 @@ class ComposeService:
             capture_output=True,
             check=False,
         )
-        if (
-            removed.returncode != 0
-            or removed.stderr
-            or removed.stdout != f"{container_name}\n"
-        ):
+        if removed.returncode != 0 or removed.stderr or removed.stdout != f"{container_name}\n":
             raise DeploymentContractError("Pin candidate runner cleanup failed")
 
     @staticmethod
@@ -6132,12 +6455,10 @@ class ComposeService:
             transaction=transaction,
             build_provenance=build_provenance,
         )
-        active_recovery_transaction = (
-            self._materialize_active_recovery_transaction_unlocked(
-                transaction,
-                config,
-                manifest.active,
-            )
+        active_recovery_transaction = self._materialize_active_recovery_transaction_unlocked(
+            transaction,
+            config,
+            manifest.active,
         )
         cancel_probe_state = PinviCancelProbeState()
         target_sequence = target_sequence_for_target(target)
@@ -6296,13 +6617,10 @@ class ComposeService:
                 cwd=get_project_root(),
             )
         except DeploymentContractError:
-            result["deployment_state"] = (
-                "active_manifest_committed_retention_cleanup_pending"
-            )
+            result["deployment_state"] = "active_manifest_committed_retention_cleanup_pending"
             result["retention_cleanup"] = {"success": False}
             result["stderr"] += (
-                "compatible pair retention cleanup is pending; "
-                "the next mutation will fail closed\n"
+                "compatible pair retention cleanup is pending; the next mutation will fail closed\n"
             )
             return result
         result["retention_cleanup"] = {
@@ -6639,19 +6957,13 @@ class ComposeService:
             raise DeploymentContractError(
                 "pending Map production env migration requires the original v3 baseline"
             )
-        allow_legacy_admin_proxy_absence = (
-            marker.state == "pending"
-        )
-        runtime_config = self._inspect_container_runtime_config(
-            config.map_ui_container
-        )
+        allow_legacy_admin_proxy_absence = marker.state == "pending"
+        runtime_config = self._inspect_container_runtime_config(config.map_ui_container)
         validate_current_map_ui_auth_runtime(
             runtime_config,
             config,
             source_env_contract_version=active_source_env_contract_version,
-            allow_legacy_admin_proxy_absence=(
-                allow_legacy_admin_proxy_absence
-            ),
+            allow_legacy_admin_proxy_absence=(allow_legacy_admin_proxy_absence),
         )
         return run_map_ui_auth_preflight(config)
 
@@ -7659,12 +7971,10 @@ class ComposeService:
                         "rollback pair generation differs from the active deployment contract"
                     )
                 self._require_pair_image_provenance(pair)
-            active_recovery_transaction = (
-                self._materialize_active_recovery_transaction_unlocked(
-                    transaction,
-                    config,
-                    active_at_start,
-                )
+            active_recovery_transaction = self._materialize_active_recovery_transaction_unlocked(
+                transaction,
+                config,
+                active_at_start,
             )
             if not self._pair_matches(self._inspect_current_pair(config), active_at_start):
                 raise DeploymentContractError(
@@ -7762,9 +8072,7 @@ class ComposeService:
                     cwd=get_project_root(),
                 )
             except DeploymentContractError:
-                result["rollback_state"] = (
-                    "active_manifest_committed_retention_cleanup_pending"
-                )
+                result["rollback_state"] = "active_manifest_committed_retention_cleanup_pending"
                 result["retention_cleanup"] = {"success": False}
                 result["stderr"] += (
                     "compatible pair retention cleanup is pending; "
@@ -7789,10 +8097,13 @@ class ComposeService:
             label="Map",
         )
         for service_name in _MAP_RUNTIME_SERVICES[1:]:
-            if self._inspect_image_source_revision(
-                map_image_ids[service_name],
-                label=service_name,
-            ) != map_source_revision:
+            if (
+                self._inspect_image_source_revision(
+                    map_image_ids[service_name],
+                    label=service_name,
+                )
+                != map_source_revision
+            ):
                 raise DeploymentContractError(
                     f"{service_name} running image revision differs from Map API"
                 )
@@ -7859,11 +8170,7 @@ class ComposeService:
         *,
         include_api: bool = True,
     ) -> None:
-        services = (
-            _MAP_RUNTIME_SERVICES
-            if include_api
-            else _MAP_RUNTIME_SERVICES[1:]
-        )
+        services = _MAP_RUNTIME_SERVICES if include_api else _MAP_RUNTIME_SERVICES[1:]
         for service_name in services:
             self._verify_running_image_source_provenance(
                 _MAP_RUNTIME_CONTAINERS[service_name],
@@ -8038,15 +8345,11 @@ class ComposeService:
             if state != "running":
                 not_ready.append(service)
                 continue
-            if (
-                contracts[service].policy is _ServiceReadinessPolicy.HEALTHY
-                and health != "healthy"
-            ):
+            if contracts[service].policy is _ServiceReadinessPolicy.HEALTHY and health != "healthy":
                 not_ready.append(service)
         if not_ready:
             raise DeploymentContractError(
-                "mandatory services do not satisfy canonical readiness: "
-                + ", ".join(not_ready)
+                "mandatory services do not satisfy canonical readiness: " + ", ".join(not_ready)
             )
         return [by_service[service] for service in expected]
 

@@ -19,9 +19,7 @@ _TRUSTED_ROOT_LAUNCHER_VALUE = "ktdctl-map-ui-auth-rotate-v1"
 _TRUSTED_ROOT_PROJECT_ROOT = "/opt/kor-travel-docker-manager"
 
 DIRECT_ENSURE_ALIASES = {
-    alias
-    for target in list_targets()
-    for alias in [target["id"], *target.get("aliases", [])]
+    alias for target in list_targets() for alias in [target["id"], *target.get("aliases", [])]
 }
 
 
@@ -161,6 +159,10 @@ def _cmd_cache_target(args: argparse.Namespace) -> int:
                 cutover_id=args.cutover_id,
                 expected_restore_epoch=args.expected_restore_epoch,
                 reason=args.reason,
+            )
+        elif args.cache_target_action == "diagnose":
+            result = compose_service.run_cache_target_diagnostic(
+                diagnostic_id=args.diagnostic_id,
             )
         else:
             result = compose_service.enable_cache_target_sync()
@@ -416,6 +418,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON으로 출력합니다.",
     )
     cache_target_enable.set_defaults(func=_cmd_cache_target)
+    cache_target_diagnose = cache_target_subparsers.add_parser(
+        "diagnose",
+        help=(
+            "writer fence 안에서 3-role DB 사전 진단(archive/restore rehearsal)을 "
+            "실행합니다. cutover를 시작하거나 대체하지 않습니다."
+        ),
+    )
+    cache_target_diagnose.add_argument("--diagnostic-id", required=True)
+    cache_target_diagnose.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON으로 출력합니다.",
+    )
+    cache_target_diagnose.set_defaults(func=_cmd_cache_target)
 
     map_ui_auth = subparsers.add_parser(
         "map-ui-auth",
