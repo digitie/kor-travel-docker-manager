@@ -230,7 +230,9 @@ _CACHE_TARGET_POST_INITIAL_PHASES = frozenset(
 
 def cache_target_writer_registry_sha256(names: Sequence[str]) -> str:
     ordered = tuple(sorted(names))
-    if len(ordered) != len(set(ordered)) or frozenset(ordered) != (_CACHE_TARGET_WRITER_SERVICES):
+    if len(ordered) != len(set(ordered)) or frozenset(ordered) != (
+        _CACHE_TARGET_WRITER_SERVICES
+    ):
         raise DeploymentContractError(
             "cache-target writer capability registry is incomplete or unknown"
         )
@@ -239,10 +241,14 @@ def cache_target_writer_registry_sha256(names: Sequence[str]) -> str:
             name.encode("ascii") + b"\0" for name in ordered
         )
     except UnicodeEncodeError as exc:
-        raise DeploymentContractError("cache-target writer registry identity is invalid") from exc
+        raise DeploymentContractError(
+            "cache-target writer registry identity is invalid"
+        ) from exc
     digest = hashlib.sha256(payload).hexdigest()
     if digest != _CACHE_TARGET_WRITER_REGISTRY_SHA256:
-        raise DeploymentContractError("cache-target writer registry identity is invalid")
+        raise DeploymentContractError(
+            "cache-target writer registry identity is invalid"
+        )
     return digest
 
 
@@ -277,7 +283,9 @@ def get_override_path() -> str:
     override = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE")
     if override:
         return override
-    return os.path.join(os.path.dirname(get_compose_path()), "docker-compose.override.yml")
+    return os.path.join(
+        os.path.dirname(get_compose_path()), "docker-compose.override.yml"
+    )
 
 
 def _compatible_pair_logical_sha256(pair: CompatibleImagePair) -> str:
@@ -384,7 +392,9 @@ def _read_bound_cache_target_initial_receipt(
         raise DeploymentContractError(
             "cache-target initial receipt binding is missing from the window"
         )
-    receipt = read_initial_cutover_receipt(state_directory / "cache-target-initial-cutover-v1.json")
+    receipt = read_initial_cutover_receipt(
+        state_directory / "cache-target-initial-cutover-v1.json"
+    )
     evidence = receipt.evidence
     if (
         initial_receipt_logical_sha256(receipt) != expected_digest
@@ -485,7 +495,9 @@ def _clean_repository_revision(
     except (OSError, RuntimeError) as exc:
         raise DeploymentContractError(f"{label} Git root cannot be resolved") from exc
     if git_root != repository:
-        raise DeploymentContractError(f"{label} build context must be the exact Git worktree root")
+        raise DeploymentContractError(
+            f"{label} build context must be the exact Git worktree root"
+        )
     status = _run_git_read(
         repository,
         ["status", "--porcelain=v1", "--untracked-files=normal"],
@@ -518,7 +530,9 @@ def _resolve_repository_path(
     try:
         repository = path.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
-        raise DeploymentContractError(f"{label} build context cannot be resolved") from exc
+        raise DeploymentContractError(
+            f"{label} build context cannot be resolved"
+        ) from exc
     if not repository.is_dir():
         raise DeploymentContractError(f"{label} build context is not a directory")
     return repository
@@ -579,7 +593,9 @@ def _export_git_tree(
         allow_output_whitespace=True,
     )
     if re.search(r"(?m)^160000 ", tree) is not None:
-        raise DeploymentContractError(f"{label} build context Git submodules are not supported")
+        raise DeploymentContractError(
+            f"{label} build context Git submodules are not supported"
+        )
     archive_path = target.parent / f"{target.name}.tar"
     try:
         completed = subprocess.run(
@@ -598,9 +614,13 @@ def _export_git_tree(
             check=False,
         )
     except OSError as exc:
-        raise DeploymentContractError(f"cannot snapshot {label} build context Git tree") from exc
+        raise DeploymentContractError(
+            f"cannot snapshot {label} build context Git tree"
+        ) from exc
     if completed.returncode != 0:
-        raise DeploymentContractError(f"cannot snapshot {label} build context Git tree")
+        raise DeploymentContractError(
+            f"cannot snapshot {label} build context Git tree"
+        )
     try:
         with tarfile.open(archive_path, mode="r:") as archive:
             for member in archive.getmembers():
@@ -616,7 +636,9 @@ def _export_git_tree(
                     )
             archive.extractall(target)
     except (OSError, tarfile.TarError) as exc:
-        raise DeploymentContractError(f"cannot extract {label} build context Git tree") from exc
+        raise DeploymentContractError(
+            f"cannot extract {label} build context Git tree"
+        ) from exc
     finally:
         archive_path.unlink(missing_ok=True)
 
@@ -637,9 +659,13 @@ def _run_git_read(
             check=False,
         )
     except OSError as exc:
-        raise DeploymentContractError(f"cannot inspect {label} build context Git state") from exc
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        ) from exc
     if completed.returncode != 0:
-        raise DeploymentContractError(f"cannot inspect {label} build context Git state")
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        )
     if allow_output_whitespace:
         return completed.stdout.rstrip("\r\n")
     return completed.stdout.strip()
@@ -659,9 +685,13 @@ def _run_git_bytes(
             check=False,
         )
     except OSError as exc:
-        raise DeploymentContractError(f"cannot inspect {label} build context Git state") from exc
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        ) from exc
     if completed.returncode != 0:
-        raise DeploymentContractError(f"cannot inspect {label} build context Git state")
+        raise DeploymentContractError(
+            f"cannot inspect {label} build context Git state"
+        )
     return completed.stdout
 
 
@@ -722,7 +752,9 @@ _MAP_SOURCE_ENV_FILE_CONTRACT = {
         }
     ],
     "dagster": [{"path": ".env", "required": False, "format": "raw"}],
-    "dagster-daemon": [{"path": ".env", "required": False, "format": "raw"}],
+    "dagster-daemon": [
+        {"path": ".env", "required": False, "format": "raw"}
+    ],
 }
 _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES = 64 * 1024
 
@@ -802,37 +834,49 @@ def _validate_map_source_protected_scalar_tree(
             "api",
             "environment",
             "KOR_TRAVEL_MAP_API_PROFILE",
-        ): _MAP_SOURCE_PROTECTED_ENV_VALUES["KOR_TRAVEL_MAP_API_PROFILE"],
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_PROFILE"
+        ],
         (
             "services",
             "api",
             "environment",
             "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED",
-        ): _MAP_SOURCE_PROTECTED_ENV_VALUES["KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"],
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
+        ],
         (
             "services",
             "api",
             "environment",
             "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED",
-        ): _MAP_SOURCE_PROTECTED_ENV_VALUES["KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"],
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
+        ],
         (
             "services",
             "api",
             "environment",
             "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
-        ): _MAP_SOURCE_PROTECTED_ENV_VALUES["KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"],
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+        ],
         (
             "services",
             "frontend",
             "environment",
             "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
-        ): _MAP_SOURCE_PROTECTED_ENV_VALUES["KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"],
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+        ],
         (
             "services",
             "api",
             "environment",
             "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
-        ): _MAP_SOURCE_PROTECTED_ENV_VALUES["KOR_TRAVEL_MAP_API_SERVICE_TOKEN"],
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+        ],
     }
     if contract_version == 4:
         allowed_values[
@@ -842,7 +886,9 @@ def _validate_map_source_protected_scalar_tree(
                 "environment",
                 "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
             )
-        ] = _MAP_SOURCE_PROTECTED_ENV_VALUES["KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"]
+        ] = _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+        ]
 
     seen_key_paths: set[tuple[str, ...]] = set()
     seen_value_paths: set[tuple[str, ...]] = set()
@@ -887,14 +933,18 @@ def _validate_map_source_env_files(
 
     services = payload.get("services")
     if not isinstance(services, Mapping):
-        raise DeploymentContractError("Map source environment contract manifest has no services")
+        raise DeploymentContractError(
+            "Map source environment contract manifest has no services"
+        )
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
             raise DeploymentContractError(
                 "Map source environment contract service shape is invalid"
             )
         expected = _MAP_SOURCE_ENV_FILE_CONTRACT.get(str(service_name))
-        if "env_file" in service and (expected is None or service.get("env_file") != expected):
+        if "env_file" in service and (
+            expected is None or service.get("env_file") != expected
+        ):
             raise DeploymentContractError(
                 "Map source environment contract env_file shape is invalid"
             )
@@ -1013,7 +1063,9 @@ def _map_source_environment_contract_version(
     ui = services.get("frontend") if isinstance(services, Mapping) else None
     api_environment = api.get("environment") if isinstance(api, Mapping) else None
     ui_environment = ui.get("environment") if isinstance(ui, Mapping) else None
-    if not isinstance(api_environment, Mapping) or not isinstance(ui_environment, Mapping):
+    if not isinstance(api_environment, Mapping) or not isinstance(
+        ui_environment, Mapping
+    ):
         raise DeploymentContractError(
             "Map source environment contract manifest has no canonical services"
         )
@@ -1027,7 +1079,9 @@ def _map_source_environment_contract_version(
         raise DeploymentContractError(
             "Map source environment contract is outside the supported v3/v4 range"
         )
-    cursor_value = api_environment.get("KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET")
+    cursor_value = api_environment.get(
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+    )
     if cursor_value is None:
         contract_version = 3
     elif cursor_value == _MAP_SOURCE_V4_CURSOR_ENV_VALUE:
@@ -1113,7 +1167,9 @@ def _capture_c6c_deployment_lock_snapshot() -> C6cDeploymentLockSnapshot:
                 "compose env-file lock path snapshot cannot be parsed"
             ) from exc
     elif _env_file_identity(env_path).exists:
-        raise ComposeCandidateContractError("compose env-file appeared during lock path capture")
+        raise ComposeCandidateContractError(
+            "compose env-file appeared during lock path capture"
+        )
     lock_path = _c6c_lock_path_from_values(values)
     return C6cDeploymentLockSnapshot(
         lock_path=lock_path,
@@ -1306,7 +1362,9 @@ def _service_readiness_policy(
         return _ServiceReadinessPolicy.RUNNING
     healthcheck = service["healthcheck"]
     if not isinstance(healthcheck, Mapping):
-        raise DeploymentContractError(f"canonical readiness healthcheck is invalid: {service_name}")
+        raise DeploymentContractError(
+            f"canonical readiness healthcheck is invalid: {service_name}"
+        )
     disabled = healthcheck.get("disable")
     if disabled is not None and not isinstance(disabled, bool):
         raise DeploymentContractError(
@@ -1390,7 +1448,9 @@ def _resolved_service_readiness_contracts(
 ) -> dict[str, _ServiceReadinessContract]:
     resolved_services = resolved.get("services")
     if not isinstance(resolved_services, Mapping):
-        raise DeploymentContractError("canonical resolved compose has no readiness service mapping")
+        raise DeploymentContractError(
+            "canonical resolved compose has no readiness service mapping"
+        )
     contracts: dict[str, _ServiceReadinessContract] = {}
     for service_name in services:
         service = resolved_services.get(service_name)
@@ -1431,13 +1491,17 @@ def _index_singleton_service_records(
     ]
     if duplicate:
         raise DeploymentContractError(
-            "compose readiness returned duplicate singleton services: " + ", ".join(duplicate)
+            "compose readiness returned duplicate singleton services: "
+            + ", ".join(duplicate)
         )
     missing = [service_name for service_name in services if service_name not in grouped]
     if missing and not allow_missing:
-        raise DeploymentContractError("mandatory services are not running: " + ", ".join(missing))
+        raise DeploymentContractError(
+            "mandatory services are not running: " + ", ".join(missing)
+        )
     indexed = {
-        service_name: service_records[0] for service_name, service_records in grouped.items()
+        service_name: service_records[0]
+        for service_name, service_records in grouped.items()
     }
     for service_name, record in indexed.items():
         canonical_name = contracts[service_name].container_name
@@ -1518,14 +1582,19 @@ def _external_reference_graph(
             raise ComposeCandidateContractError(
                 f"compose candidate top-level {collection_name} is invalid"
             )
-        if any(isinstance(source, Mapping) and "file" in source for source in collection.values()):
+        if any(
+            isinstance(source, Mapping) and "file" in source
+            for source in collection.values()
+        ):
             raise ComposeCandidateContractError(
                 f"compose candidate top-level {collection_name} file resources are unsupported"
             )
 
     services = candidate.get("services")
     if not isinstance(services, Mapping):
-        raise ComposeCandidateContractError("compose candidate has no valid services mapping")
+        raise ComposeCandidateContractError(
+            "compose candidate has no valid services mapping"
+        )
     try:
         compose_directory = Path(compose_path).resolve().parent
         root_env = Path(root_env_path).resolve()
@@ -1543,7 +1612,9 @@ def _external_reference_graph(
         if raw_entries is None:
             continue
         if not isinstance(raw_entries, list):
-            raise ComposeCandidateContractError("compose candidate env_file syntax is unsupported")
+            raise ComposeCandidateContractError(
+                "compose candidate env_file syntax is unsupported"
+            )
         for index, entry in enumerate(raw_entries):
             if (
                 not isinstance(entry, Mapping)
@@ -1557,7 +1628,9 @@ def _external_reference_graph(
                 )
             raw_path = str(entry["path"])
             if not raw_path:
-                raise ComposeCandidateContractError("compose candidate env_file path is empty")
+                raise ComposeCandidateContractError(
+                    "compose candidate env_file path is empty"
+                )
             try:
                 expanded = _expand_env_path(raw_path, environment)
                 path = Path(expanded)
@@ -1604,7 +1677,8 @@ def _capture_compose_external_input_snapshot(
     required_by_path: dict[str, bool] = {}
     for reference in references:
         required_by_path[reference.resolved_path] = (
-            required_by_path.get(reference.resolved_path, False) or reference.required
+            required_by_path.get(reference.resolved_path, False)
+            or reference.required
         )
 
     files: list[ComposeExternalFileSnapshot] = []
@@ -1613,7 +1687,9 @@ def _capture_compose_external_input_snapshot(
         before = _env_file_identity(path)
         if not before.exists:
             if required_by_path[path_text]:
-                raise ComposeCandidateContractError("required compose external env_file is missing")
+                raise ComposeCandidateContractError(
+                    "required compose external env_file is missing"
+                )
             if _env_file_identity(path).exists:
                 raise ComposeCandidateContractError(
                     "compose external env_file appeared during snapshot"
@@ -1627,7 +1703,9 @@ def _capture_compose_external_input_snapshot(
             )
             continue
         if before.mode is None or not stat.S_ISREG(before.mode):
-            raise ComposeCandidateContractError("compose external env_file is not a regular file")
+            raise ComposeCandidateContractError(
+                "compose external env_file is not a regular file"
+            )
         try:
             contents = path.read_bytes()
         except OSError as exc:
@@ -1751,13 +1829,19 @@ def _materialize_external_inputs_with_memfd(
         for reference in snapshot.references:
             service = services.get(reference.service)
             if not isinstance(service, dict):
-                raise ComposeCandidateContractError("compose external reference service changed")
+                raise ComposeCandidateContractError(
+                    "compose external reference service changed"
+                )
             entries = service.get("env_file")
             if not isinstance(entries, list) or reference.index >= len(entries):
-                raise ComposeCandidateContractError("compose external reference graph changed")
+                raise ComposeCandidateContractError(
+                    "compose external reference graph changed"
+                )
             entry = entries[reference.index]
             if not isinstance(entry, dict):
-                raise ComposeCandidateContractError("compose external reference syntax changed")
+                raise ComposeCandidateContractError(
+                    "compose external reference syntax changed"
+                )
             entry["path"] = f"/proc/self/fd/{descriptors[reference.resolved_path]}"
         return document, tuple(opened)
     except Exception:
@@ -1774,15 +1858,21 @@ def _assert_resolved_external_inputs_materialized(
 ) -> None:
     services = resolved.get("services")
     if not isinstance(services, Mapping):
-        raise ComposeCandidateContractError("resolved compose has no services mapping")
+        raise ComposeCandidateContractError(
+            "resolved compose has no services mapping"
+        )
     if any(
-        isinstance(service, Mapping) and service.get("env_file") for service in services.values()
+        isinstance(service, Mapping) and service.get("env_file")
+        for service in services.values()
     ):
-        raise ComposeCandidateContractError("resolved compose retained a live env_file reference")
+        raise ComposeCandidateContractError(
+            "resolved compose retained a live env_file reference"
+        )
     for collection_name in ("secrets", "configs"):
         collection = resolved.get(collection_name)
         if isinstance(collection, Mapping) and any(
-            isinstance(source, Mapping) and source.get("file") for source in collection.values()
+            isinstance(source, Mapping) and source.get("file")
+            for source in collection.values()
         ):
             raise ComposeCandidateContractError(
                 "resolved compose retained an external file resource"
@@ -1823,15 +1913,21 @@ def _capture_compose_environment_snapshot(
             env_file_bytes = env_path.read_bytes()
             decoded = env_file_bytes.decode("utf-8")
         except (OSError, UnicodeError) as exc:
-            raise ComposeCandidateContractError("compose env-file snapshot cannot be read") from exc
+            raise ComposeCandidateContractError(
+                "compose env-file snapshot cannot be read"
+            ) from exc
         after = _env_file_identity(env_path)
         if after != before:
-            raise ComposeCandidateContractError("compose env-file identity changed during snapshot")
+            raise ComposeCandidateContractError(
+                "compose env-file identity changed during snapshot"
+            )
         try:
             values.update(
                 {
                     key: value or ""
-                    for key, value in dotenv_values(stream=StringIO(decoded)).items()
+                    for key, value in dotenv_values(
+                        stream=StringIO(decoded)
+                    ).items()
                     if isinstance(key, str)
                 }
             )
@@ -1840,7 +1936,9 @@ def _capture_compose_environment_snapshot(
                 "compose env-file snapshot cannot be parsed"
             ) from exc
     elif _env_file_identity(env_path).exists:
-        raise ComposeCandidateContractError("compose env-file appeared during snapshot")
+        raise ComposeCandidateContractError(
+            "compose env-file appeared during snapshot"
+        )
     values.update(dict(os.environ))
     if environment_override is not None:
         values.update(environment_override)
@@ -1868,11 +1966,17 @@ def _revalidate_compose_environment_snapshot(
     try:
         current_bytes = env_path.read_bytes()
     except OSError as exc:
-        raise ComposeCandidateContractError("compose env-file cannot be revalidated") from exc
+        raise ComposeCandidateContractError(
+            "compose env-file cannot be revalidated"
+        ) from exc
     if current_bytes != snapshot.env_file_bytes:
-        raise ComposeCandidateContractError("compose env-file bytes changed during the transaction")
+        raise ComposeCandidateContractError(
+            "compose env-file bytes changed during the transaction"
+        )
     if _env_file_identity(env_path) != current_identity:
-        raise ComposeCandidateContractError("compose env-file identity changed during revalidation")
+        raise ComposeCandidateContractError(
+            "compose env-file identity changed during revalidation"
+        )
 
 
 def _atomic_restore_compose_source(
@@ -1924,7 +2028,9 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
     """`deploy`/`capture`가 공유하는 `wait_timeout` 검증. lock 진입 전에 호출해야 한다."""
     if not isinstance(wait_timeout, int) or isinstance(wait_timeout, bool):
         raise DeploymentContractError("wait_timeout must be an int")
-    if not (_MIN_C6C_WAIT_TIMEOUT_SECONDS <= wait_timeout <= _MAX_C6C_WAIT_TIMEOUT_SECONDS):
+    if not (
+        _MIN_C6C_WAIT_TIMEOUT_SECONDS <= wait_timeout <= _MAX_C6C_WAIT_TIMEOUT_SECONDS
+    ):
         raise DeploymentContractError(
             "wait_timeout must be between "
             f"{_MIN_C6C_WAIT_TIMEOUT_SECONDS} and "
@@ -1965,7 +2071,9 @@ class ComposeService:
                     "compose transaction source cannot be loaded"
                 ) from exc
             if not isinstance(source_document, Mapping):
-                raise ComposeCandidateContractError("compose transaction source is not a mapping")
+                raise ComposeCandidateContractError(
+                    "compose transaction source is not a mapping"
+                )
             external_inputs = _capture_compose_external_input_snapshot(
                 source_document,
                 environment_snapshot=environment_snapshot,
@@ -1982,7 +2090,9 @@ class ComposeService:
             )
         resolved = json.loads(_serialize_resolved_compose_document(validation.resolved))
         if not isinstance(resolved, Mapping):
-            raise ComposeCandidateContractError("compose transaction resolved document is invalid")
+            raise ComposeCandidateContractError(
+                "compose transaction resolved document is invalid"
+            )
         transaction = ComposeTransactionSnapshot(
             environment=environment_snapshot,
             external_inputs=external_inputs,
@@ -2041,15 +2151,23 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
     ) -> Mapping[str, Any]:
         try:
-            source = yaml.safe_load(transaction.compose_source_bytes.decode("utf-8")) or {}
+            source = yaml.safe_load(
+                transaction.compose_source_bytes.decode("utf-8")
+            ) or {}
         except (UnicodeError, ValueError, yaml.YAMLError) as exc:
             raise ComposeCandidateContractError(
                 "frozen compose transaction source is invalid"
             ) from exc
-        if not isinstance(source, Mapping) or not isinstance(transaction.resolved, Mapping):
-            raise ComposeCandidateContractError("frozen compose transaction document is invalid")
+        if not isinstance(source, Mapping) or not isinstance(
+            transaction.resolved, Mapping
+        ):
+            raise ComposeCandidateContractError(
+                "frozen compose transaction document is invalid"
+            )
         if transaction.compose_source_mode & ~0o777:
-            raise ComposeCandidateContractError("frozen compose transaction mode is invalid")
+            raise ComposeCandidateContractError(
+                "frozen compose transaction mode is invalid"
+            )
         source_references: list[tuple[str, int, str, bool, str]] = []
         services = source.get("services")
         if not isinstance(services, Mapping):
@@ -2112,7 +2230,9 @@ class ComposeService:
                 "frozen compose transaction resolved document is inconsistent"
             )
         _assert_resolved_external_inputs_materialized(transaction.resolved)
-        revalidate_candidate_system_bind_snapshots(transaction.system_bind_snapshots)
+        revalidate_candidate_system_bind_snapshots(
+            transaction.system_bind_snapshots
+        )
         return transaction.resolved
 
     def _run_frozen_recovery(
@@ -2143,7 +2263,9 @@ class ComposeService:
 
         self._validate_frozen_transaction_unlocked(transaction)
         try:
-            source = yaml.safe_load(transaction.compose_source_bytes.decode("utf-8")) or {}
+            source = yaml.safe_load(
+                transaction.compose_source_bytes.decode("utf-8")
+            ) or {}
         except (UnicodeError, ValueError, yaml.YAMLError) as exc:
             raise ComposeCandidateContractError(
                 "active recovery transaction source is invalid"
@@ -2188,7 +2310,9 @@ class ComposeService:
                 ),
             )
             if completed.returncode != 0:
-                raise ComposeCandidateContractError("active recovery transaction resolution failed")
+                raise ComposeCandidateContractError(
+                    "active recovery transaction resolution failed"
+                )
             try:
                 resolved = json.loads(completed.stdout)
             except (TypeError, json.JSONDecodeError) as exc:
@@ -2233,7 +2357,9 @@ class ComposeService:
         environment: Mapping[str, str] | None = None,
         mutation_capability: object | None = None,
         redact_config: C6cDeploymentConfig | None = None,
-        expected_system_bind_snapshots: tuple[CandidateSystemBindSnapshot, ...] | None = None,
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ] | None = None,
         expected_raw_volume_graph_hash: str | None = None,
         expected_resolved_volume_graph_hash: str | None = None,
         expected_environment_snapshot: ComposeEnvironmentSnapshot | None = None,
@@ -2264,13 +2390,17 @@ class ComposeService:
                         environment=transaction.environment.effective,
                         capability=mutation_capability,
                     )
-                    resolved = self._validate_frozen_transaction_unlocked(transaction)
+                    resolved = self._validate_frozen_transaction_unlocked(
+                        transaction
+                    )
                     return self._run_unlocked(
                         args,
                         capture_output=capture_output,
                         environment=None,
                         redact_config=redact_config,
-                        expected_system_bind_snapshots=(transaction.system_bind_snapshots),
+                        expected_system_bind_snapshots=(
+                            transaction.system_bind_snapshots
+                        ),
                         expected_compose_source_bytes=None,
                         environment_snapshot=transaction.environment,
                         external_input_snapshot=None,
@@ -2331,7 +2461,8 @@ class ComposeService:
                     snapshots = expected_system_bind_snapshots
                 if (
                     transaction is not None
-                    and validation.raw_volume_graph_hash != transaction.raw_volume_graph_hash
+                    and validation.raw_volume_graph_hash
+                    != transaction.raw_volume_graph_hash
                 ):
                     raise ComposeCandidateContractError(
                         "compose raw volume graph changed during the transaction"
@@ -2346,21 +2477,24 @@ class ComposeService:
                     )
                 if (
                     expected_raw_volume_graph_hash is not None
-                    and validation.raw_volume_graph_hash != expected_raw_volume_graph_hash
+                    and validation.raw_volume_graph_hash
+                    != expected_raw_volume_graph_hash
                 ):
                     raise ComposeCandidateContractError(
                         "compose raw volume graph changed during the request"
                     )
                 if (
                     expected_resolved_volume_graph_hash is not None
-                    and validation.resolved_volume_graph_hash != expected_resolved_volume_graph_hash
+                    and validation.resolved_volume_graph_hash
+                    != expected_resolved_volume_graph_hash
                 ):
                     raise ComposeCandidateContractError(
                         "compose resolved volume graph changed during the request"
                     )
                 try:
                     source_unchanged = (
-                        Path(environment_snapshot.compose_path).read_bytes() == compose_source_bytes
+                        Path(environment_snapshot.compose_path).read_bytes()
+                        == compose_source_bytes
                     )
                 except OSError as exc:
                     raise ComposeCandidateContractError(
@@ -2459,9 +2593,13 @@ class ComposeService:
             sort_keys=False,
             allow_unicode=True,
         ).encode("utf-8")
-        resolved = json.loads(_serialize_resolved_compose_document(candidate_validation.resolved))
+        resolved = json.loads(
+            _serialize_resolved_compose_document(candidate_validation.resolved)
+        )
         if not isinstance(resolved, Mapping):
-            raise ComposeCandidateContractError("compose candidate resolved document is invalid")
+            raise ComposeCandidateContractError(
+                "compose candidate resolved document is invalid"
+            )
         candidate_transaction = ComposeTransactionSnapshot(
             environment=baseline_transaction.environment,
             external_inputs=baseline_transaction.external_inputs,
@@ -2469,7 +2607,9 @@ class ComposeService:
             compose_source_mode=baseline_transaction.compose_source_mode,
             system_bind_snapshots=candidate_validation.system_bind_snapshots,
             raw_volume_graph_hash=candidate_validation.raw_volume_graph_hash,
-            resolved_volume_graph_hash=(candidate_validation.resolved_volume_graph_hash),
+            resolved_volume_graph_hash=(
+                candidate_validation.resolved_volume_graph_hash
+            ),
             resolved=resolved,
             resolved_document_hash=_resolved_compose_document_hash(resolved),
             manifest_path=baseline_transaction.manifest_path,
@@ -2498,7 +2638,9 @@ class ComposeService:
                 "compose candidate source cannot be loaded"
             ) from exc
         if not isinstance(loaded, Mapping):
-            raise ComposeCandidateContractError("compose candidate source is not a mapping")
+            raise ComposeCandidateContractError(
+                "compose candidate source is not a mapping"
+            )
         return self._validate_compose_candidate_document_unlocked(
             loaded,
             environment_override=environment_override,
@@ -2540,7 +2682,9 @@ class ComposeService:
             compose_path=environment_snapshot.compose_path,
             root_env_path=environment_snapshot.env_path,
             environment=environment,
-            external_file_contents=_external_snapshot_contents(external_input_snapshot),
+            external_file_contents=_external_snapshot_contents(
+                external_input_snapshot
+            ),
         )
 
         try:
@@ -2589,7 +2733,9 @@ class ComposeService:
         candidate: Mapping[str, Any],
         *,
         environment: Mapping[str, str],
-        expected_system_bind_snapshots: tuple[CandidateSystemBindSnapshot, ...],
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ],
         environment_snapshot: ComposeEnvironmentSnapshot,
         environment_override: Mapping[str, str] | None,
         external_input_snapshot: ComposeExternalInputSnapshot,
@@ -2618,7 +2764,9 @@ class ComposeService:
             command.extend(["--project-directory", str(compose_path.parent)])
             command.extend(["-f", "-"])
             command.extend(["config", "--format", "json"])
-            revalidate_candidate_system_bind_snapshots(expected_system_bind_snapshots)
+            revalidate_candidate_system_bind_snapshots(
+                expected_system_bind_snapshots
+            )
             try:
                 completed = subprocess.run(
                     command,
@@ -2641,7 +2789,9 @@ class ComposeService:
                 environment_override=environment_override,
             )
             if completed.returncode != 0:
-                raise ComposeCandidateContractError("compose candidate resolution failed")
+                raise ComposeCandidateContractError(
+                    "compose candidate resolution failed"
+                )
             try:
                 resolved = json.loads(completed.stdout)
             except (TypeError, json.JSONDecodeError) as exc:
@@ -2655,7 +2805,9 @@ class ComposeService:
             _assert_resolved_external_inputs_materialized(resolved)
             return resolved
         except (OSError, RuntimeError, ValueError, yaml.YAMLError) as exc:
-            raise ComposeCandidateContractError("compose candidate cannot be materialized") from exc
+            raise ComposeCandidateContractError(
+                "compose candidate cannot be materialized"
+            ) from exc
         finally:
             for descriptor in external_descriptors:
                 try:
@@ -2670,7 +2822,9 @@ class ComposeService:
         capture_output: bool,
         environment: Mapping[str, str] | None,
         redact_config: C6cDeploymentConfig | None,
-        expected_system_bind_snapshots: tuple[CandidateSystemBindSnapshot, ...] | None,
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ] | None,
         expected_compose_source_bytes: bytes | None,
         environment_snapshot: ComposeEnvironmentSnapshot | None,
         external_input_snapshot: ComposeExternalInputSnapshot | None,
@@ -2680,7 +2834,9 @@ class ComposeService:
             args,
             canonical_single_file=materialized_compose is not None,
             compose_path=(
-                environment_snapshot.compose_path if environment_snapshot is not None else None
+                environment_snapshot.compose_path
+                if environment_snapshot is not None
+                else None
             ),
         )
         process_environment = None
@@ -2691,7 +2847,9 @@ class ComposeService:
         elif environment is not None:
             process_environment = {**os.environ, **environment}
         if expected_system_bind_snapshots is not None:
-            revalidate_candidate_system_bind_snapshots(expected_system_bind_snapshots)
+            revalidate_candidate_system_bind_snapshots(
+                expected_system_bind_snapshots
+            )
         if expected_compose_source_bytes is not None:
             self._revalidate_mutation_single_file_boundary(
                 expected_compose_source_bytes,
@@ -2764,7 +2922,9 @@ class ComposeService:
                 "compose candidate source changed before Docker mutation"
             )
         if not isinstance(loaded, Mapping):
-            raise ComposeCandidateContractError("compose candidate source is not a mapping")
+            raise ComposeCandidateContractError(
+                "compose candidate source is not a mapping"
+            )
         _revalidate_compose_environment_snapshot(environment_snapshot)
         if external_input_snapshot is None:
             raise ComposeCandidateContractError(
@@ -2830,7 +2990,8 @@ class ComposeService:
                 (
                     option
                     for option in global_options_with_value
-                    if option.startswith("--") and item.startswith(f"{option}=")
+                    if option.startswith("--")
+                    and item.startswith(f"{option}=")
                 ),
                 None,
             )
@@ -2881,7 +3042,11 @@ class ComposeService:
                     skip_next = True
                     continue
                 inline_read_option = next(
-                    (option for option in read_options_with_value if item.startswith(f"{option}=")),
+                    (
+                        option
+                        for option in read_options_with_value
+                        if item.startswith(f"{option}=")
+                    ),
                     None,
                 )
                 if inline_read_option is not None:
@@ -2905,7 +3070,10 @@ class ComposeService:
         if command in read_only:
             return []
         if command == "wait":
-            if any(item == "--down-project" or item.startswith("--down-project=") for item in args):
+            if any(
+                item == "--down-project" or item.startswith("--down-project=")
+                for item in args
+            ):
                 return runtime_identifiers
             wait_items = args[command_index + 1 :]
             if any(item.startswith("-") for item in wait_items):
@@ -3037,7 +3205,8 @@ class ComposeService:
                 (
                     option
                     for option in options_with_value
-                    if option.startswith("--") and item.startswith(f"{option}=")
+                    if option.startswith("--")
+                    and item.startswith(f"{option}=")
                 ),
                 None,
             )
@@ -3052,7 +3221,9 @@ class ComposeService:
             explicit_services.append(item)
         if explicit_services:
             explicit_services.extend(
-                item.partition(":")[0] for item in tuple(explicit_services) if ":" in item
+                item.partition(":")[0]
+                for item in tuple(explicit_services)
+                if ":" in item
             )
             if command in {"up", "create", "restart", "watch"} and "--no-deps" not in args:
                 api_dependencies = {
@@ -3101,7 +3272,9 @@ class ComposeService:
         with c6c_deployment_lock_from_environment() as lock_snapshot:
             transaction, validation = self._capture_transaction_unlocked()
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            mode = assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            mode = assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
             assert_c6c_mutation_allowed(
                 services,
                 environment=transaction.environment.effective,
@@ -3127,7 +3300,8 @@ class ComposeService:
             try:
                 baseline_unchanged = (
                     compose_path.read_bytes() == transaction.compose_source_bytes
-                    and compose_path.stat().st_mode & 0o777 == transaction.compose_source_mode
+                    and compose_path.stat().st_mode & 0o777
+                    == transaction.compose_source_mode
                 )
             except OSError as exc:
                 raise ComposeCandidateContractError(
@@ -3146,11 +3320,15 @@ class ComposeService:
                 capture_output=capture_output,
                 expected_system_bind_snapshots=validation.system_bind_snapshots,
                 expected_raw_volume_graph_hash=validation.raw_volume_graph_hash,
-                expected_resolved_volume_graph_hash=(validation.resolved_volume_graph_hash),
+                expected_resolved_volume_graph_hash=(
+                    validation.resolved_volume_graph_hash
+                ),
                 original_compose_bytes=transaction.compose_source_bytes,
                 original_compose_mode=transaction.compose_source_mode,
                 expected_environment_snapshot=transaction.environment,
-                expected_external_input_snapshot=(transaction.external_inputs),
+                expected_external_input_snapshot=(
+                    transaction.external_inputs
+                ),
                 transaction=transaction,
             )
 
@@ -3163,7 +3341,9 @@ class ComposeService:
         build: bool,
         recreate: bool,
         capture_output: bool,
-        expected_system_bind_snapshots: tuple[CandidateSystemBindSnapshot, ...],
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ],
         expected_raw_volume_graph_hash: str,
         expected_resolved_volume_graph_hash: str,
         original_compose_bytes: bytes,
@@ -3203,9 +3383,13 @@ class ComposeService:
                     mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                     expected_system_bind_snapshots=expected_system_bind_snapshots,
                     expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
-                    expected_resolved_volume_graph_hash=(expected_resolved_volume_graph_hash),
+                    expected_resolved_volume_graph_hash=(
+                        expected_resolved_volume_graph_hash
+                    ),
                     expected_environment_snapshot=expected_environment_snapshot,
-                    expected_external_input_snapshot=(expected_external_input_snapshot),
+                    expected_external_input_snapshot=(
+                        expected_external_input_snapshot
+                    ),
                     transaction=transaction,
                 )
                 commands.append(up_result["command"])
@@ -3226,9 +3410,13 @@ class ComposeService:
                     mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                     expected_system_bind_snapshots=expected_system_bind_snapshots,
                     expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
-                    expected_resolved_volume_graph_hash=(expected_resolved_volume_graph_hash),
+                    expected_resolved_volume_graph_hash=(
+                        expected_resolved_volume_graph_hash
+                    ),
                     expected_environment_snapshot=expected_environment_snapshot,
-                    expected_external_input_snapshot=(expected_external_input_snapshot),
+                    expected_external_input_snapshot=(
+                        expected_external_input_snapshot
+                    ),
                     transaction=transaction,
                 )
                 step_result = {
@@ -3257,7 +3445,9 @@ class ComposeService:
                 original_compose_mode=original_compose_mode,
                 expected_system_bind_snapshots=expected_system_bind_snapshots,
                 expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
-                expected_resolved_volume_graph_hash=(expected_resolved_volume_graph_hash),
+                expected_resolved_volume_graph_hash=(
+                    expected_resolved_volume_graph_hash
+                ),
                 expected_environment_snapshot=expected_environment_snapshot,
                 expected_external_input_snapshot=expected_external_input_snapshot,
                 transaction=transaction,
@@ -3266,7 +3456,9 @@ class ComposeService:
                 exc,
                 recovery_attempted=True,
                 recovery_succeeded=bool(recovery.get("success")),
-                recovery_error=(None if recovery.get("success") else str(recovery.get("error"))),
+                recovery_error=(
+                    None if recovery.get("success") else str(recovery.get("error"))
+                ),
                 restoration=recovery,
             ) from exc
 
@@ -3280,7 +3472,9 @@ class ComposeService:
         capture_output: bool,
         original_compose_bytes: bytes,
         original_compose_mode: int,
-        expected_system_bind_snapshots: tuple[CandidateSystemBindSnapshot, ...],
+        expected_system_bind_snapshots: tuple[
+            CandidateSystemBindSnapshot, ...
+        ],
         expected_raw_volume_graph_hash: str,
         expected_resolved_volume_graph_hash: str,
         expected_environment_snapshot: ComposeEnvironmentSnapshot,
@@ -3374,9 +3568,9 @@ class ComposeService:
             "contract_revalidated": True,
             "runtime_recovery_attempted": True,
             "baseline": baseline,
-            "error": None
-            if recovery.get("success")
-            else (recovery.get("stderr") or recovery.get("stdout") or "recovery failed"),
+            "error": None if recovery.get("success") else (
+                recovery.get("stderr") or recovery.get("stdout") or "recovery failed"
+            ),
         }
 
     def deploy_compatible_pinvi_pair(
@@ -3403,8 +3597,12 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
             if not config.production:
                 raise DeploymentContractError(
                     "compatible-pair deploy is available only in production mode"
@@ -3455,7 +3653,9 @@ class ComposeService:
                 "cache-target cutover ID must be canonical lowercase UUID"
             )
         if expected_restore_epoch <= 0:
-            raise DeploymentContractError("cache-target expected restore epoch must be positive")
+            raise DeploymentContractError(
+                "cache-target expected restore epoch must be positive"
+            )
         if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
             raise DeploymentContractError("cache-target cutover reason is invalid")
 
@@ -3464,14 +3664,18 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
             contract = config.cache_target
             if not config.production or contract is None:
                 raise DeploymentContractError(
                     "cache-target cutover requires the production contract"
                 )
             if contract.sync_enabled not in {"false", "true"}:
-                raise DeploymentContractError("cache-target cutover sync state is invalid")
+                raise DeploymentContractError(
+                    "cache-target cutover sync state is invalid"
+                )
             _require_cache_target_release(config)
             manifest_path_text = transaction.manifest_path
             if manifest_path_text is None:
@@ -3479,11 +3683,15 @@ class ComposeService:
                     "cache-target cutover transaction has no pair manifest"
                 )
             manifest_path = Path(manifest_path_text)
-            journal_path = cache_target_window_journal_path(transaction.environment.effective)
+            journal_path = cache_target_window_journal_path(
+                transaction.environment.effective
+            )
             try:
                 journal_path.lstat()
             except FileNotFoundError:
-                assert_manager_mutation_allowed(environment=transaction.environment.effective)
+                assert_manager_mutation_allowed(
+                    environment=transaction.environment.effective
+                )
                 if contract.sync_enabled != "false":
                     raise DeploymentContractError(
                         "new cache-target cutover requires sync=false"
@@ -3502,8 +3710,12 @@ class ComposeService:
                 )
                 _require_cache_target_release(
                     config,
-                    candidate_map_source_revision=(build_provenance.map_source_revision),
-                    candidate_source_revision=(build_provenance.pinvi_source_revision),
+                    candidate_map_source_revision=(
+                        build_provenance.map_source_revision
+                    ),
+                    candidate_source_revision=(
+                        build_provenance.pinvi_source_revision
+                    ),
                 )
                 journal = prepare_cache_target_window(
                     transaction_id=str(uuid.uuid4()),
@@ -3513,9 +3725,13 @@ class ComposeService:
                     environment_sha256=hashlib.sha256(
                         transaction.environment.env_file_bytes
                     ).hexdigest(),
-                    compose_sha256=hashlib.sha256(transaction.compose_source_bytes).hexdigest(),
+                    compose_sha256=hashlib.sha256(
+                        transaction.compose_source_bytes
+                    ).hexdigest(),
                     resolved_compose_sha256=transaction.resolved_document_hash,
-                    old_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                    old_manifest_sha256=hashlib.sha256(
+                        manifest_path.read_bytes()
+                    ).hexdigest(),
                 )
                 write_cache_target_window(journal_path, journal)
             except OSError as exc:
@@ -3527,7 +3743,8 @@ class ComposeService:
                 if (
                     journal.cutover_id != cutover_id
                     or journal.expected_restore_epoch != expected_restore_epoch
-                    or journal.reason_sha256 != hashlib.sha256(reason.encode()).hexdigest()
+                    or journal.reason_sha256
+                    != hashlib.sha256(reason.encode()).hexdigest()
                 ):
                     raise DeploymentContractError(
                         "existing cache-target window belongs to another request"
@@ -3546,7 +3763,9 @@ class ComposeService:
                 journal.transaction_id,
                 capability=_CACHE_TARGET_WINDOW_MUTATION_CAPABILITY,
             ):
-                assert_manager_mutation_allowed(environment=transaction.environment.effective)
+                assert_manager_mutation_allowed(
+                    environment=transaction.environment.effective
+                )
                 return self._run_cache_target_window_unlocked(
                     journal_path=journal_path,
                     journal=journal,
@@ -3578,7 +3797,9 @@ class ComposeService:
             or manifest_path is None
             or candidate_pair_sha256 is None
         ):
-            raise DeploymentContractError("cache-target activated terminal contract is invalid")
+            raise DeploymentContractError(
+                "cache-target activated terminal contract is invalid"
+            )
         self._validate_resolved_compose_contract(config, transaction=transaction)
         receipt = _read_bound_cache_target_initial_receipt(
             journal_path.parent,
@@ -3591,18 +3812,25 @@ class ComposeService:
             enable_journal.phase != "committed"
             or enable_journal.cutover_id != journal.cutover_id
             or enable_journal.window_transaction_id != journal.transaction_id
-            or enable_journal.initial_receipt_sha256 != initial_receipt_logical_sha256(receipt)
+            or enable_journal.initial_receipt_sha256
+            != initial_receipt_logical_sha256(receipt)
             or enable_journal.active_pair_sha256 != candidate_pair_sha256
             or enable_journal.rollback_pair_sha256 != candidate_pair_sha256
         ):
-            raise DeploymentContractError("cache-target activated enable evidence is foreign")
+            raise DeploymentContractError(
+                "cache-target activated enable evidence is foreign"
+            )
         manifest = load_pair_manifest(manifest_path)
         if (
             manifest.rollback is None
-            or _compatible_pair_logical_sha256(manifest.active) != candidate_pair_sha256
-            or _compatible_pair_logical_sha256(manifest.rollback) != candidate_pair_sha256
+            or _compatible_pair_logical_sha256(manifest.active)
+            != candidate_pair_sha256
+            or _compatible_pair_logical_sha256(manifest.rollback)
+            != candidate_pair_sha256
         ):
-            raise DeploymentContractError("cache-target activated manifest is foreign")
+            raise DeploymentContractError(
+                "cache-target activated manifest is foreign"
+            )
         _require_cache_target_release(
             config,
             pairs=(manifest.active, manifest.rollback),
@@ -3741,7 +3969,9 @@ class ComposeService:
             map_backup = journal.map_application_backup
             pin_backup = journal.pinvi_backup
             if map_backup is None or pin_backup is None:
-                raise DeploymentContractError("cache-target database backup evidence is missing")
+                raise DeploymentContractError(
+                    "cache-target database backup evidence is missing"
+                )
             if journal.phase == "backups_committed":
                 journal = transition_cache_target_window(
                     journal,
@@ -3764,7 +3994,9 @@ class ComposeService:
                 journal = transition_cache_target_window(
                     journal,
                     "pin_preflight_verified",
-                    pin_preflight_receipt_sha256=pin_boundary_receipt_sha256(pin_preflight),
+                    pin_preflight_receipt_sha256=pin_boundary_receipt_sha256(
+                        pin_preflight
+                    ),
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "pin_preflight_verified":
@@ -3781,7 +4013,9 @@ class ComposeService:
                     journal,
                     "map_preflight_verified",
                     last_map_receipt=map_preflight,
-                    last_map_receipt_sha256=map_helper_receipt_sha256(map_preflight),
+                    last_map_receipt_sha256=map_helper_receipt_sha256(
+                        map_preflight
+                    ),
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "map_preflight_verified":
@@ -3798,13 +4032,17 @@ class ComposeService:
                     journal,
                     "map_database_forwarded",
                     last_map_receipt=map_migration,
-                    last_map_receipt_sha256=map_helper_receipt_sha256(map_migration),
+                    last_map_receipt_sha256=map_helper_receipt_sha256(
+                        map_migration
+                    ),
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "map_database_forwarded":
                 preflight_sha256 = journal.pin_preflight_receipt_sha256
                 if preflight_sha256 is None:
-                    raise DeploymentContractError("Pin migration preflight evidence is missing")
+                    raise DeploymentContractError(
+                        "Pin migration preflight evidence is missing"
+                    )
                 pin_migration = self._run_pin_database_migration(
                     journal=journal,
                     transaction=transaction,
@@ -3817,7 +4055,9 @@ class ComposeService:
                 journal = transition_cache_target_window(
                     journal,
                     "databases_forwarded",
-                    pin_migration_receipt_sha256=(pin_migration_receipt_sha256(pin_migration)),
+                    pin_migration_receipt_sha256=(
+                        pin_migration_receipt_sha256(pin_migration)
+                    ),
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "databases_forwarded":
@@ -3889,7 +4129,9 @@ class ComposeService:
                     receipt=bound_initial_receipt,
                 )
                 if not enabled.get("success") or enabled.get("phase") != "committed":
-                    raise DeploymentContractError("cache-target sync enable did not commit")
+                    raise DeploymentContractError(
+                        "cache-target sync enable did not commit"
+                    )
                 journal = transition_cache_target_window(journal, "sync_enabled")
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "sync_enabled":
@@ -3974,10 +4216,10 @@ class ComposeService:
                     )
                 actual_final_fence, actual_final_counters = (
                     self._establish_cache_target_writer_fence(
-                        journal=journal,
-                        transaction=current,
-                        runtimes=runtimes,
-                        boundary="final",
+                    journal=journal,
+                    transaction=current,
+                    runtimes=runtimes,
+                    boundary="final",
                     )
                 )
                 if actual_final_fence != expected_final_fence:
@@ -3985,7 +4227,9 @@ class ComposeService:
                         "cache-target final writer fence changed on resume"
                     )
                 if (
-                    self._cache_target_map_write_counters_sha256(actual_final_counters)
+                    self._cache_target_map_write_counters_sha256(
+                        actual_final_counters
+                    )
                     != journal.final_map_write_counters_sha256
                 ):
                     raise DeploymentContractError(
@@ -4002,14 +4246,18 @@ class ComposeService:
                 )
                 final_evidence = map_verify.cache_target_evidence
                 if final_evidence is None:
-                    raise DeploymentContractError("cache-target Map final evidence is missing")
+                    raise DeploymentContractError(
+                        "cache-target Map final evidence is missing"
+                    )
                 initial_receipt = _read_bound_cache_target_initial_receipt(
                     state_directory,
                     journal,
                 )
                 current_contract = current_config.cache_target
                 if current_contract is None:
-                    raise DeploymentContractError("cache-target final contract is missing")
+                    raise DeploymentContractError(
+                        "cache-target final contract is missing"
+                    )
                 validate_map_final_evidence_binding(
                     final_evidence,
                     consumer_id=current_contract.consumer_id,
@@ -4023,7 +4271,9 @@ class ComposeService:
                     last_map_receipt=map_verify,
                     last_map_receipt_sha256=map_helper_receipt_sha256(map_verify),
                     map_final_evidence=final_evidence,
-                    map_final_evidence_sha256=map_final_evidence_sha256(final_evidence),
+                    map_final_evidence_sha256=map_final_evidence_sha256(
+                        final_evidence
+                    ),
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "map_final_verified":
@@ -4047,7 +4297,9 @@ class ComposeService:
                     )
                 )
                 if live_final_fence != expected_final_fence_sha256 or (
-                    self._cache_target_map_write_counters_sha256(before_finalize_counters)
+                    self._cache_target_map_write_counters_sha256(
+                        before_finalize_counters
+                    )
                     != journal.final_map_write_counters_sha256
                 ):
                     raise DeploymentContractError(
@@ -4062,7 +4314,9 @@ class ComposeService:
                 )
                 preflight_sha256 = journal.pin_preflight_receipt_sha256
                 if preflight_sha256 is None:
-                    raise DeploymentContractError("Pin final preflight evidence is missing")
+                    raise DeploymentContractError(
+                        "Pin final preflight evidence is missing"
+                    )
                 final_receipt = self._run_pin_boundary_helper(
                     operation="finalize",
                     journal=journal,
@@ -4092,7 +4346,9 @@ class ComposeService:
                     )
                 )
                 if live_after_finalize != expected_final_fence_sha256 or (
-                    self._cache_target_map_write_counters_sha256(after_finalize_counters)
+                    self._cache_target_map_write_counters_sha256(
+                        after_finalize_counters
+                    )
                     != journal.final_map_write_counters_sha256
                 ):
                     raise DeploymentContractError(
@@ -4101,7 +4357,9 @@ class ComposeService:
                 journal = transition_cache_target_window(
                     journal,
                     "final_boundary_verified",
-                    pin_final_receipt_sha256=pin_boundary_receipt_sha256(final_receipt),
+                    pin_final_receipt_sha256=pin_boundary_receipt_sha256(
+                        final_receipt
+                    ),
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "final_boundary_verified":
@@ -4166,7 +4424,9 @@ class ComposeService:
         config: C6cDeploymentConfig,
     ) -> CompatibleImagePair:
         if journal.phase == "prepared":
-            raise DeploymentContractError("cache-target backups must commit before candidate build")
+            raise DeploymentContractError(
+                "cache-target backups must commit before candidate build"
+            )
         build = journal.phase == "backups_committed"
         build_provenance = (
             _derive_c6c_build_provenance(
@@ -4184,9 +4444,12 @@ class ComposeService:
         )
         if (
             journal.candidate_pair_sha256 is not None
-            and _compatible_pair_logical_sha256(candidate) != journal.candidate_pair_sha256
+            and _compatible_pair_logical_sha256(candidate)
+            != journal.candidate_pair_sha256
         ):
-            raise DeploymentContractError("cache-target candidate differs from the window journal")
+            raise DeploymentContractError(
+                "cache-target candidate differs from the window journal"
+            )
         return candidate
 
     @staticmethod
@@ -4225,7 +4488,9 @@ class ComposeService:
                 "cache-target cutover ID must be canonical lowercase UUID"
             )
         if expected_restore_epoch <= 0:
-            raise DeploymentContractError("cache-target expected restore epoch must be positive")
+            raise DeploymentContractError(
+                "cache-target expected restore epoch must be positive"
+            )
         if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
             raise DeploymentContractError("cache-target cutover reason is invalid")
 
@@ -4234,8 +4499,12 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
             return self._run_cache_target_initial_cutover_unlocked(
                 transaction=transaction,
                 config=config,
@@ -4259,28 +4528,40 @@ class ComposeService:
                 "cache-target initial cutover requires the production contract"
             )
         if contract.sync_enabled != "false":
-            raise DeploymentContractError("cache-target initial cutover requires sync=false")
+            raise DeploymentContractError(
+                "cache-target initial cutover requires sync=false"
+            )
         self._validate_resolved_compose_contract(
             config,
             transaction=transaction,
         )
         manifest_path = transaction.manifest_path
         if manifest_path is None:
-            raise DeploymentContractError("cache-target cutover transaction has no pair manifest")
+            raise DeploymentContractError(
+                "cache-target cutover transaction has no pair manifest"
+            )
         manifest = load_pair_manifest(manifest_path)
         if manifest.rollback is None:
-            raise DeploymentContractError("cache-target cutover requires an attested rollback pair")
+            raise DeploymentContractError(
+                "cache-target cutover requires an attested rollback pair"
+            )
         _require_cache_target_release(
             config,
             pairs=(manifest.active, manifest.rollback),
         )
         self._attest_cache_target_pair(config, manifest, transaction)
         evidence = CacheTargetFrozenEvidence(
-            env_sha256=hashlib.sha256(transaction.environment.env_file_bytes).hexdigest(),
-            raw_compose_sha256=hashlib.sha256(transaction.compose_source_bytes).hexdigest(),
+            env_sha256=hashlib.sha256(
+                transaction.environment.env_file_bytes
+            ).hexdigest(),
+            raw_compose_sha256=hashlib.sha256(
+                transaction.compose_source_bytes
+            ).hexdigest(),
             resolved_compose_sha256=transaction.resolved_document_hash,
             active_pair_sha256=_compatible_pair_logical_sha256(manifest.active),
-            rollback_pair_sha256=_compatible_pair_logical_sha256(manifest.rollback),
+            rollback_pair_sha256=_compatible_pair_logical_sha256(
+                manifest.rollback
+            ),
             role_binding_sha256=contract.role_binding_sha256,
             expected_openapi_sha256=contract.expected_openapi_sha256,
             expected_source_revision=contract.expected_source_revision,
@@ -4323,7 +4604,9 @@ class ComposeService:
                     redact_config=config,
                 )
                 if not result.get("success"):
-                    raise DeploymentContractError("cache-target initial runner failed")
+                    raise DeploymentContractError(
+                        "cache-target initial runner failed"
+                    )
                 return parse_initial_cutover_output(str(result.get("stdout", "")))
             finally:
                 self._cleanup_cache_target_initial_runner(
@@ -4357,8 +4640,12 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
             if not config.production or config.cache_target is None:
                 raise DeploymentContractError(
                     "cache-target enable requires the production contract"
@@ -4396,10 +4683,14 @@ class ComposeService:
                 if (
                     enabled_candidate.environment != enabled_snapshot
                     or enabled_candidate.external_inputs != transaction.external_inputs
-                    or enabled_candidate.compose_source_bytes != transaction.compose_source_bytes
-                    or enabled_candidate.compose_source_mode != transaction.compose_source_mode
-                    or enabled_candidate.system_bind_snapshots != transaction.system_bind_snapshots
-                    or enabled_candidate.raw_volume_graph_hash != transaction.raw_volume_graph_hash
+                    or enabled_candidate.compose_source_bytes
+                    != transaction.compose_source_bytes
+                    or enabled_candidate.compose_source_mode
+                    != transaction.compose_source_mode
+                    or enabled_candidate.system_bind_snapshots
+                    != transaction.system_bind_snapshots
+                    or enabled_candidate.raw_volume_graph_hash
+                    != transaction.raw_volume_graph_hash
                     or enabled_candidate.resolved_volume_graph_hash
                     != transaction.resolved_volume_graph_hash
                     or enabled_candidate.manifest_path != manifest_path
@@ -4434,13 +4725,19 @@ class ComposeService:
                 current, _ = self._capture_transaction_unlocked(
                     derive_manifest_path=True,
                 )
-                if c6c_state_paths(current.environment.effective)[1] != (lock_snapshot.lock_path):
+                if c6c_state_paths(current.environment.effective)[1] != (
+                    lock_snapshot.lock_path
+                ):
                     raise DeploymentContractError(
                         "cache-target enable drifted outside the held global lock"
                     )
                 if Path(current.environment.env_path).resolve(strict=False) != env_path:
-                    raise DeploymentContractError("cache-target enable canonical env path drifted")
-                assert_manager_mutation_allowed(environment=current.environment.effective)
+                    raise DeploymentContractError(
+                        "cache-target enable canonical env path drifted"
+                    )
+                assert_manager_mutation_allowed(
+                    environment=current.environment.effective
+                )
                 current_config = load_c6c_deployment_config_from_environment(
                     current.environment.effective
                 )
@@ -4459,7 +4756,9 @@ class ComposeService:
                     transaction=current,
                 )
                 if current.manifest_path != manifest_path:
-                    raise DeploymentContractError("cache-target enable pair manifest path drifted")
+                    raise DeploymentContractError(
+                        "cache-target enable pair manifest path drifted"
+                    )
                 current_manifest = load_pair_manifest(manifest_path)
                 if current_manifest.rollback is None:
                     raise DeploymentContractError(
@@ -4476,7 +4775,8 @@ class ComposeService:
                     != receipt.evidence.active_pair_sha256
                     or _compatible_pair_logical_sha256(current_manifest.rollback)
                     != receipt.evidence.rollback_pair_sha256
-                    or current_contract.role_binding_sha256 != receipt.evidence.role_binding_sha256
+                    or current_contract.role_binding_sha256
+                    != receipt.evidence.role_binding_sha256
                     or current_contract.expected_openapi_sha256
                     != receipt.evidence.expected_openapi_sha256
                     or current_contract.expected_source_revision
@@ -4484,16 +4784,22 @@ class ComposeService:
                     or current_contract.expected_contract_generation
                     != receipt.evidence.expected_contract_generation
                 ):
-                    raise DeploymentContractError("cache-target enable frozen evidence drifted")
+                    raise DeploymentContractError(
+                        "cache-target enable frozen evidence drifted"
+                    )
                 if not enabled and (
                     hashlib.sha256(current.environment.env_file_bytes).hexdigest()
                     != receipt.evidence.env_sha256
-                    or current.resolved_document_hash != receipt.evidence.resolved_compose_sha256
+                    or current.resolved_document_hash
+                    != receipt.evidence.resolved_compose_sha256
                 ):
                     raise DeploymentContractError(
                         "cache-target disabled evidence differs from initial receipt"
                     )
-                if enabled and (current.resolved_document_hash != enabled_resolved_compose_sha256):
+                if enabled and (
+                    current.resolved_document_hash
+                    != enabled_resolved_compose_sha256
+                ):
                     raise DeploymentContractError(
                         "cache-target enabled resolved compose evidence drifted"
                     )
@@ -4532,7 +4838,9 @@ class ComposeService:
                     redact_config=current_config,
                 )
                 if not result.get("success"):
-                    raise DeploymentContractError("cache-target PinVi API recreate failed")
+                    raise DeploymentContractError(
+                        "cache-target PinVi API recreate failed"
+                    )
                 if not enabled:
                     self._run_cache_target_rollback_health_smoke(
                         current_config,
@@ -4588,12 +4896,16 @@ class ComposeService:
         receipt: InitialCutoverReceipt,
     ) -> dict[str, Any]:
         if not config.production or config.cache_target is None:
-            raise DeploymentContractError("cache-target enable requires the production contract")
+            raise DeploymentContractError(
+                "cache-target enable requires the production contract"
+            )
         _require_cache_target_release(config)
         self._validate_resolved_compose_contract(config, transaction=transaction)
         manifest_path = transaction.manifest_path
         if manifest_path is None:
-            raise DeploymentContractError("cache-target enable transaction has no pair manifest")
+            raise DeploymentContractError(
+                "cache-target enable transaction has no pair manifest"
+            )
         state_directory = Path(manifest_path).parent
         journal_path = state_directory / "cache-target-enable-v1.json"
         env_path = Path(transaction.environment.env_path).resolve(strict=False)
@@ -4614,10 +4926,14 @@ class ComposeService:
             if (
                 enabled_candidate.environment != enabled_snapshot
                 or enabled_candidate.external_inputs != transaction.external_inputs
-                or enabled_candidate.compose_source_bytes != transaction.compose_source_bytes
-                or enabled_candidate.compose_source_mode != transaction.compose_source_mode
-                or enabled_candidate.system_bind_snapshots != transaction.system_bind_snapshots
-                or enabled_candidate.raw_volume_graph_hash != transaction.raw_volume_graph_hash
+                or enabled_candidate.compose_source_bytes
+                != transaction.compose_source_bytes
+                or enabled_candidate.compose_source_mode
+                != transaction.compose_source_mode
+                or enabled_candidate.system_bind_snapshots
+                != transaction.system_bind_snapshots
+                or enabled_candidate.raw_volume_graph_hash
+                != transaction.raw_volume_graph_hash
                 or enabled_candidate.resolved_volume_graph_hash
                 != transaction.resolved_volume_graph_hash
                 or enabled_candidate.manifest_path != manifest_path
@@ -4657,8 +4973,12 @@ class ComposeService:
                     "cache-target enable drifted outside the held global lock"
                 )
             if Path(current.environment.env_path).resolve(strict=False) != env_path:
-                raise DeploymentContractError("cache-target enable canonical env path drifted")
-            assert_manager_mutation_allowed(environment=current.environment.effective)
+                raise DeploymentContractError(
+                    "cache-target enable canonical env path drifted"
+                )
+            assert_manager_mutation_allowed(
+                environment=current.environment.effective
+            )
             current_config = load_c6c_deployment_config_from_environment(
                 current.environment.effective
             )
@@ -4669,13 +4989,17 @@ class ComposeService:
                 or current_contract is None
                 or current_contract.sync_enabled != expected_sync
             ):
-                raise DeploymentContractError("cache-target enable canonical sync state is invalid")
+                raise DeploymentContractError(
+                    "cache-target enable canonical sync state is invalid"
+                )
             self._validate_resolved_compose_contract(
                 current_config,
                 transaction=current,
             )
             if current.manifest_path != manifest_path:
-                raise DeploymentContractError("cache-target enable pair manifest path drifted")
+                raise DeploymentContractError(
+                    "cache-target enable pair manifest path drifted"
+                )
             current_manifest = load_pair_manifest(manifest_path)
             if current_manifest.rollback is None:
                 raise DeploymentContractError(
@@ -4692,7 +5016,8 @@ class ComposeService:
                 != receipt.evidence.active_pair_sha256
                 or _compatible_pair_logical_sha256(current_manifest.rollback)
                 != receipt.evidence.rollback_pair_sha256
-                or current_contract.role_binding_sha256 != receipt.evidence.role_binding_sha256
+                or current_contract.role_binding_sha256
+                != receipt.evidence.role_binding_sha256
                 or current_contract.expected_openapi_sha256
                 != receipt.evidence.expected_openapi_sha256
                 or current_contract.expected_source_revision
@@ -4748,7 +5073,9 @@ class ComposeService:
                 redact_config=current_config,
             )
             if not result.get("success"):
-                raise DeploymentContractError("cache-target PinVi API recreate failed")
+                raise DeploymentContractError(
+                    "cache-target PinVi API recreate failed"
+                )
             if not enabled:
                 self._run_cache_target_rollback_health_smoke(
                     current_config,
@@ -5208,7 +5535,9 @@ class ComposeService:
             redact_config=config,
         )
         if not result.get("success"):
-            raise DeploymentContractError("cache-target PinVi Dagster restart failed")
+            raise DeploymentContractError(
+                "cache-target PinVi Dagster restart failed"
+            )
 
     def _activate_cache_target_writers(
         self,
@@ -5233,7 +5562,9 @@ class ComposeService:
             redact_config=config,
         )
         if not result.get("success"):
-            raise DeploymentContractError("cache-target final writer activation failed")
+            raise DeploymentContractError(
+                "cache-target final writer activation failed"
+            )
         states = self._snapshot_service_states(
             list(ordered_writers),
             transaction=transaction,
@@ -5348,11 +5679,17 @@ class ComposeService:
             "boundary": boundary,
             "environment_sha256": journal.environment_sha256,
             "compose_sha256": journal.compose_sha256,
-            "writer_registry_sha256": cache_target_writer_registry_sha256(ordered_writers),
+            "writer_registry_sha256": cache_target_writer_registry_sha256(
+                ordered_writers
+            ),
             "global_writer_fence_contract": global_fence.contract_version,
             "global_writer_inventory_sha256": global_fence.inventory_sha256,
-            "global_writer_protected_target_count": (global_fence.protected_target_count),
-            "global_writer_stopped_count": (global_fence.expected_stopped_writer_count),
+            "global_writer_protected_target_count": (
+                global_fence.protected_target_count
+            ),
+            "global_writer_stopped_count": (
+                global_fence.expected_stopped_writer_count
+            ),
             "writers": {name: states.get(name, "absent") for name in ordered_writers},
             "inflight_transactions": list(inflight_after_stop),
             "inflight_dagster_runs": dagster_runs_after_stop,
@@ -5393,7 +5730,9 @@ class ComposeService:
             boundary=boundary,
         )
         if actual_fence != expected_writer_fence_sha256:
-            raise DeploymentContractError("cache-target writer fence changed during backup")
+            raise DeploymentContractError(
+                "cache-target writer fence changed during backup"
+            )
         return counters
 
     @staticmethod
@@ -5435,17 +5774,23 @@ class ComposeService:
     ) -> MapHelperReceipt:
         prior_receipt = journal.last_map_receipt
         actual_prior_digest = (
-            map_helper_receipt_sha256(prior_receipt) if prior_receipt is not None else None
+            map_helper_receipt_sha256(prior_receipt)
+            if prior_receipt is not None
+            else None
         )
         if actual_prior_digest != prior_receipt_digest:
-            raise DeploymentContractError("Map H35 prior receipt payload differs from its digest")
+            raise DeploymentContractError(
+                "Map H35 prior receipt payload differs from its digest"
+            )
         request: dict[str, Any] = {
             "contract_version": "h35-map/v1",
             "operation": operation,
             "transaction_id": journal.transaction_id,
             "source_revision": candidate.map_source_revision,
             "database_identity": database_identity,
-            "prior_receipt": (asdict(prior_receipt) if prior_receipt is not None else None),
+            "prior_receipt": (
+                asdict(prior_receipt) if prior_receipt is not None else None
+            ),
             "prior_receipt_digest": prior_receipt_digest,
         }
         candidate_transaction = self._materialize_active_recovery_transaction_unlocked(
@@ -5521,7 +5866,9 @@ class ComposeService:
                 prior_receipt_digest=prior_receipt_digest,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise DeploymentContractError(f"Map H35 {operation} helper could not run") from exc
+            raise DeploymentContractError(
+                f"Map H35 {operation} helper could not run"
+            ) from exc
         finally:
             if descriptor is not None:
                 os.close(descriptor)
@@ -5539,13 +5886,19 @@ class ComposeService:
         wait_timeout: int,
     ) -> None:
         if config.cache_target is None or config.cache_target.sync_enabled != "false":
-            raise DeploymentContractError("generation bootstrap requires the sync=false contract")
+            raise DeploymentContractError(
+                "generation bootstrap requires the sync=false contract"
+            )
         manifest_path = transaction.manifest_path
         if manifest_path is None:
-            raise DeploymentContractError("generation bootstrap has no compatible-pair manifest")
+            raise DeploymentContractError(
+                "generation bootstrap has no compatible-pair manifest"
+            )
         old_manifest = load_pair_manifest(manifest_path)
         if not self._pair_matches(self._inspect_current_pair(config), old_manifest.active):
-            raise DeploymentContractError("generation bootstrap running old pair drifted")
+            raise DeploymentContractError(
+                "generation bootstrap running old pair drifted"
+            )
         _require_cache_target_release(
             config,
             candidate_map_source_revision=candidate.map_source_revision,
@@ -5627,14 +5980,18 @@ class ComposeService:
             "final_writer_fence_sha256": final_fence_sha256,
             "prior_receipt_sha256": prior_receipt_sha256,
             "canary_run_id": canary_run_id,
-            "map_final_evidence": (asdict(final_evidence) if final_evidence is not None else None),
+            "map_final_evidence": (
+                asdict(final_evidence) if final_evidence is not None else None
+            ),
             "map_final_evidence_sha256": final_evidence_sha256,
         }
         completed = self._run_pin_candidate_oneoff(
             transaction=transaction,
             config=config,
             candidate=candidate,
-            runner_name=(f"ktdm-pin-boundary-{journal.transaction_id}-{operation}"),
+            runner_name=(
+                f"ktdm-pin-boundary-{journal.transaction_id}-{operation}"
+            ),
             entrypoint="pinvi-cache-target-final-boundary",
             arguments=[operation],
             stdin=json.dumps(
@@ -5646,7 +6003,9 @@ class ComposeService:
             + "\n",
         )
         if completed.returncode != 0:
-            raise DeploymentContractError(f"Pin final-boundary {operation} helper failed")
+            raise DeploymentContractError(
+                f"Pin final-boundary {operation} helper failed"
+            )
         return parse_pin_boundary_receipt(
             stdout=completed.stdout,
             stderr=completed.stderr,
@@ -5665,13 +6024,18 @@ class ComposeService:
             or receipt.audit_id != audit_row.audit_id
             or receipt.audit_request_sha256 != audit_row.audit_request_sha256
             or receipt.evidence_sha256 != audit_row.evidence_sha256
-            or receipt.map_final_evidence_sha256 != audit_row.map_final_evidence_sha256
-            or receipt.initial_writer_fence_sha256 != audit_row.initial_writer_fence_sha256
-            or receipt.final_writer_fence_sha256 != audit_row.final_writer_fence_sha256
+            or receipt.map_final_evidence_sha256
+            != audit_row.map_final_evidence_sha256
+            or receipt.initial_writer_fence_sha256
+            != audit_row.initial_writer_fence_sha256
+            or receipt.final_writer_fence_sha256
+            != audit_row.final_writer_fence_sha256
             or receipt.prior_receipt_sha256 != audit_row.prior_receipt_sha256
             or receipt.canary_run_id != audit_row.canary_run_id
         ):
-            raise DeploymentContractError("Pin final boundary audit row differs from its receipt")
+            raise DeploymentContractError(
+                "Pin final boundary audit row differs from its receipt"
+            )
 
     def _run_pin_database_migration(
         self,
@@ -5845,10 +6209,12 @@ class ComposeService:
         present_receipts = tuple(receipt for receipt in receipts if receipt is not None)
         if present_receipts and (
             len(present_receipts) != 3
-            or {receipt.transaction_id for receipt in present_receipts} != {journal.transaction_id}
+            or {receipt.transaction_id for receipt in present_receipts}
+            != {journal.transaction_id}
             or len({receipt.writer_fence_sha256 for receipt in present_receipts}) != 1
             or any(
-                receipt.writer_mutation_count != 0 or receipt.restore_rehearsal.verified is not True
+                receipt.writer_mutation_count != 0
+                or receipt.restore_rehearsal.verified is not True
                 for receipt in present_receipts
             )
         ):
@@ -5967,7 +6333,9 @@ class ComposeService:
             or labels.get("com.docker.compose.service") != _MAP_API_SERVICE
             or labels.get("com.docker.compose.oneoff") != "True"
         ):
-            raise DeploymentContractError("foreign container occupies the Map H35 runner identity")
+            raise DeploymentContractError(
+                "foreign container occupies the Map H35 runner identity"
+            )
         removed = subprocess.run(
             ["docker", "container", "rm", "--force", container_name],
             cwd=get_project_root(),
@@ -6000,7 +6368,9 @@ class ComposeService:
             container = payload[0]
             labels = container["Config"]["Labels"]
         except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise DeploymentContractError("Pin candidate runner evidence is invalid") from exc
+            raise DeploymentContractError(
+                "Pin candidate runner evidence is invalid"
+            ) from exc
         if (
             container.get("Image") != expected_image_id
             or not isinstance(labels, Mapping)
@@ -6036,13 +6406,17 @@ class ComposeService:
         if inspected.returncode != 0:
             if "No such" in inspected.stderr:
                 return
-            raise DeploymentContractError("cache-target runner orphan classification failed")
+            raise DeploymentContractError(
+                "cache-target runner orphan classification failed"
+            )
         try:
             payload = json.loads(inspected.stdout)
             container = payload[0]
             labels = container["Config"]["Labels"]
         except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise DeploymentContractError("cache-target runner orphan evidence is invalid") from exc
+            raise DeploymentContractError(
+                "cache-target runner orphan evidence is invalid"
+            ) from exc
         if (
             container.get("Image") != expected_image_id
             or not isinstance(labels, Mapping)
@@ -6143,7 +6517,9 @@ class ComposeService:
                 prebuild_result,
                 config,
             )
-        result["candidate_image_provenance"] = self._pair_provenance_payload(candidate_pair)
+        result["candidate_image_provenance"] = self._pair_provenance_payload(
+            candidate_pair
+        )
 
         try:
             candidate_retention = ensure_pair_references(
@@ -6187,7 +6563,9 @@ class ComposeService:
             result["activation_verification"] = verification
             result["image_provenance"] = self._pair_provenance_payload(candidate_pair)
             if transaction.manifest_path is None:
-                raise DeploymentContractError("compatible-pair transaction has no manifest path")
+                raise DeploymentContractError(
+                    "compatible-pair transaction has no manifest path"
+                )
             updated_manifest = manifest_with_active_pair(manifest, candidate_pair)
             manifest_commit_started = True
             write_pair_manifest(transaction.manifest_path, updated_manifest)
@@ -6269,7 +6647,9 @@ class ComposeService:
         )
 
         if transaction.manifest_path is None:
-            raise DeploymentContractError("compatible-pair transaction has no manifest path")
+            raise DeploymentContractError(
+                "compatible-pair transaction has no manifest path"
+            )
         manifest = load_pair_manifest(transaction.manifest_path)
         _require_cache_target_release(
             config,
@@ -6311,11 +6691,17 @@ class ComposeService:
                 "C6c build context revision changed during the transaction"
             )
         try:
-            source = yaml.safe_load(transaction.compose_source_bytes.decode("utf-8")) or {}
+            source = yaml.safe_load(
+                transaction.compose_source_bytes.decode("utf-8")
+            ) or {}
         except (UnicodeError, ValueError, yaml.YAMLError) as exc:
-            raise ComposeCandidateContractError("C6c provenance compose source is invalid") from exc
+            raise ComposeCandidateContractError(
+                "C6c provenance compose source is invalid"
+            ) from exc
         if not isinstance(source, Mapping):
-            raise ComposeCandidateContractError("C6c provenance compose source is not a mapping")
+            raise ComposeCandidateContractError(
+                "C6c provenance compose source is not a mapping"
+            )
         validate_c6c_build_source_wiring(source)
         validation = self._validate_current_compose_candidate_unlocked(
             environment_override=expected.compose_environment(),
@@ -6324,7 +6710,8 @@ class ComposeService:
         )
         if (
             validation.raw_volume_graph_hash != transaction.raw_volume_graph_hash
-            or validation.resolved_volume_graph_hash != transaction.resolved_volume_graph_hash
+            or validation.resolved_volume_graph_hash
+            != transaction.resolved_volume_graph_hash
         ):
             raise ComposeCandidateContractError(
                 "C6c provenance resolution changed the frozen volume graph"
@@ -6345,7 +6732,8 @@ class ComposeService:
         )
         if (
             validation.raw_volume_graph_hash != transaction.raw_volume_graph_hash
-            or validation.resolved_volume_graph_hash != transaction.resolved_volume_graph_hash
+            or validation.resolved_volume_graph_hash
+            != transaction.resolved_volume_graph_hash
         ):
             raise ComposeCandidateContractError(
                 "C6c source snapshot resolution changed the frozen volume graph"
@@ -6447,7 +6835,9 @@ class ComposeService:
         )
         services = validation.resolved.get("services")
         if not isinstance(services, Mapping):
-            raise DeploymentContractError("resolved compose config has no services mapping")
+            raise DeploymentContractError(
+                "resolved compose config has no services mapping"
+            )
         image_references: dict[str, str] = {}
         for service_name in (*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE):
             service = services.get(service_name)
@@ -6474,7 +6864,9 @@ class ComposeService:
             config.contract_generation,
             map_ui_image_id=map_image_ids[_MAP_UI_SERVICE],
             map_dagster_image_id=map_image_ids[_MAP_DAGSTER_SERVICE],
-            map_dagster_daemon_image_id=map_image_ids[_MAP_DAGSTER_DAEMON_SERVICE],
+            map_dagster_daemon_image_id=map_image_ids[
+                _MAP_DAGSTER_DAEMON_SERVICE
+            ],
             map_source_revision=self._inspect_image_source_revision(
                 map_image_ids[_MAP_API_SERVICE],
                 label="Map",
@@ -6624,7 +7016,9 @@ class ComposeService:
         build_provenance: C6cBuildProvenance | None = None,
     ) -> bool:
         if frozen_recovery and build_provenance is not None:
-            raise ComposeCandidateContractError("frozen recovery must not carry build provenance")
+            raise ComposeCandidateContractError(
+                "frozen recovery must not carry build provenance"
+            )
         self._revalidate_c6c_build_provenance(
             build_provenance,
             transaction=transaction,
@@ -6740,7 +7134,11 @@ class ComposeService:
                 config.smoke.pinvi_admin_password,
                 config.smoke.cancel_probe_job_id,
                 config.contract_generation,
-                *(config.cache_target.protected_values if config.cache_target is not None else ()),
+                *(
+                    config.cache_target.protected_values
+                    if config.cache_target is not None
+                    else ()
+                ),
             )
             if value
         }
@@ -6759,9 +7157,15 @@ class ComposeService:
         config: C6cDeploymentConfig,
     ) -> None:
         result["command"].append(stage_result["command"])
-        result["stages"].append({"name": stage, "services": [], "success": stage_result["success"]})
-        result["stdout"] += self._redact_c6c_output(str(stage_result.get("stdout", "")), config)
-        result["stderr"] += self._redact_c6c_output(str(stage_result.get("stderr", "")), config)
+        result["stages"].append(
+            {"name": stage, "services": [], "success": stage_result["success"]}
+        )
+        result["stdout"] += self._redact_c6c_output(
+            str(stage_result.get("stdout", "")), config
+        )
+        result["stderr"] += self._redact_c6c_output(
+            str(stage_result.get("stderr", "")), config
+        )
         if not stage_result["success"]:
             result["success"] = False
             result["returncode"] = int(stage_result["returncode"])
@@ -6772,7 +7176,8 @@ class ComposeService:
             first.map_image_id == second.map_image_id
             and first.map_ui_image_id == second.map_ui_image_id
             and first.map_dagster_image_id == second.map_dagster_image_id
-            and first.map_dagster_daemon_image_id == second.map_dagster_daemon_image_id
+            and first.map_dagster_daemon_image_id
+            == second.map_dagster_daemon_image_id
             and first.map_source_revision == second.map_source_revision
             and first.pinvi_image_id == second.pinvi_image_id
             and first.pinvi_source_revision == second.pinvi_source_revision
@@ -6801,7 +7206,9 @@ class ComposeService:
         self._validate_resolved_compose_contract(
             config,
             environment_override=(
-                None if frozen_recovery else self._pair_image_environment(expected_pair)
+                None
+                if frozen_recovery
+                else self._pair_image_environment(expected_pair)
             ),
             expected_pair=expected_pair,
             transaction=transaction,
@@ -6828,7 +7235,9 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible-pair transaction has no migration marker path"
                 )
-            complete_map_production_env_migration(transaction.manifest_path)
+            complete_map_production_env_migration(
+                transaction.manifest_path
+            )
         return {
             "contract_generation": expected_pair.contract_generation,
             "image_provenance": self._pair_provenance_payload(expected_pair),
@@ -7012,7 +7421,9 @@ class ComposeService:
                 mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
                 transaction=transaction,
             )
-            self._append_stage_result(result, "halt_unverified_pair", halt_result, config)
+            self._append_stage_result(
+                result, "halt_unverified_pair", halt_result, config
+            )
             result[state_key] = (
                 "halted_requires_operator"
                 if halt_result["success"]
@@ -7058,8 +7469,12 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
             if not config.production:
                 raise DeploymentContractError(
                     "compatible pair capture is available only in production mode"
@@ -7089,7 +7504,9 @@ class ComposeService:
             )
             manifest_path = transaction.manifest_path
             if manifest_path is None:
-                raise DeploymentContractError("compatible-pair transaction has no manifest path")
+                raise DeploymentContractError(
+                    "compatible-pair transaction has no manifest path"
+                )
             assert_pair_manifest_bootstrap_allowed(manifest_path)
             require_empty_retention_namespace(cwd=get_project_root())
             load_or_create_map_production_env_migration(
@@ -7109,7 +7526,9 @@ class ComposeService:
                     "Map target must contain the canonical runtime service set"
                 )
             map_dependents = list(_MAP_RUNTIME_SERVICES[1:])
-            pinvi_dependents = [service for service in pinvi_services if service != "pinvi-api"]
+            pinvi_dependents = [
+                service for service in pinvi_services if service != "pinvi-api"
+            ]
             initial_states = self._snapshot_service_states(
                 services,
                 transaction=transaction,
@@ -7143,7 +7562,9 @@ class ComposeService:
                     config,
                 )
             candidate_environment = self._pair_image_environment(candidate_pair)
-            result["candidate_image_provenance"] = self._pair_provenance_payload(candidate_pair)
+            result["candidate_image_provenance"] = self._pair_provenance_payload(
+                candidate_pair
+            )
             try:
                 candidate_retention = ensure_pair_references(
                     (candidate_pair,),
@@ -7181,7 +7602,9 @@ class ComposeService:
                         transaction=transaction,
                         build_provenance=build_provenance,
                     ):
-                        raise DeploymentContractError("bootstrap base service deployment failed")
+                        raise DeploymentContractError(
+                            "bootstrap base service deployment failed"
+                        )
                     direct_init_steps = [
                         {"target": target_name, **step}
                         for step in target_config.get("init_steps", [])
@@ -7196,7 +7619,9 @@ class ComposeService:
                         capture_output=True,
                         transaction=transaction,
                     ):
-                        raise DeploymentContractError("bootstrap init command failed")
+                        raise DeploymentContractError(
+                            "bootstrap init command failed"
+                        )
                 self._revalidate_c6c_build_provenance(
                     build_provenance,
                     transaction=transaction,
@@ -7256,7 +7681,9 @@ class ComposeService:
                     transaction=transaction,
                     build_provenance=build_provenance,
                 ):
-                    raise DeploymentContractError("bootstrap Map dependents failed")
+                    raise DeploymentContractError(
+                        "bootstrap Map dependents failed"
+                    )
                 self._verify_map_runtime_source_provenance(
                     candidate_pair.map_source_revision,
                     include_api=False,
@@ -7304,7 +7731,9 @@ class ComposeService:
                     transaction=transaction,
                     build_provenance=build_provenance,
                 ):
-                    raise DeploymentContractError("bootstrap PinVi dependents failed")
+                    raise DeploymentContractError(
+                        "bootstrap PinVi dependents failed"
+                    )
                 pair = self._inspect_current_pair(config)
                 self._require_expected_source_provenance(pair, build_provenance)
                 if not self._pair_matches(pair, candidate_pair):
@@ -7448,7 +7877,9 @@ class ComposeService:
             self._fail_result(result, "bootstrap halt command raised unexpectedly")
             result["deployment_state"] = "halt_failed_requires_operator"
         protected_runtime_services = {*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE}
-        created = sorted(service for service in touched_services if service not in initial_states)
+        created = sorted(
+            service for service in touched_services if service not in initial_states
+        )
         restore_stopped = sorted(
             service
             for service in touched_services - protected_runtime_services
@@ -7467,10 +7898,14 @@ class ComposeService:
                     mutation_capability=removal_capability,
                     transaction=transaction,
                 )
-                self._append_stage_result(result, "bootstrap_remove_created", remove_result, config)
+                self._append_stage_result(
+                    result, "bootstrap_remove_created", remove_result, config
+                )
                 cleanup_ok = cleanup_ok and bool(remove_result["success"])
             except Exception:
-                self._fail_result(result, "bootstrap created-service cleanup raised unexpectedly")
+                self._fail_result(
+                    result, "bootstrap created-service cleanup raised unexpectedly"
+                )
                 cleanup_ok = False
         if restore_stopped:
             try:
@@ -7479,10 +7914,14 @@ class ComposeService:
                     mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                     transaction=transaction,
                 )
-                self._append_stage_result(result, "bootstrap_restore_stopped", stop_result, config)
+                self._append_stage_result(
+                    result, "bootstrap_restore_stopped", stop_result, config
+                )
                 cleanup_ok = cleanup_ok and bool(stop_result["success"])
             except Exception:
-                self._fail_result(result, "bootstrap stopped-service restore raised unexpectedly")
+                self._fail_result(
+                    result, "bootstrap stopped-service restore raised unexpectedly"
+                )
                 cleanup_ok = False
         if not cleanup_ok:
             result["deployment_state"] = (
@@ -7504,15 +7943,21 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            assert_manager_mutation_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
             if not config.production:
                 raise DeploymentContractError(
                     "compatible pair rollback is available only in production mode"
                 )
             manifest_path = transaction.manifest_path
             if manifest_path is None:
-                raise DeploymentContractError("compatible-pair transaction has no manifest path")
+                raise DeploymentContractError(
+                    "compatible-pair transaction has no manifest path"
+                )
             manifest = load_pair_manifest(manifest_path)
             active_at_start = manifest.active
             rollback = manifest.rollback
@@ -7668,7 +8113,9 @@ class ComposeService:
             config.contract_generation,
             map_ui_image_id=map_image_ids[_MAP_UI_SERVICE],
             map_dagster_image_id=map_image_ids[_MAP_DAGSTER_SERVICE],
-            map_dagster_daemon_image_id=map_image_ids[_MAP_DAGSTER_DAEMON_SERVICE],
+            map_dagster_daemon_image_id=map_image_ids[
+                _MAP_DAGSTER_DAEMON_SERVICE
+            ],
             map_source_revision=map_source_revision,
             pinvi_source_revision=self._inspect_image_source_revision(
                 pinvi_image_id,
@@ -7752,10 +8199,14 @@ class ComposeService:
                 check=False,
             )
         except OSError as exc:
-            raise DeploymentContractError(f"cannot inspect {label} candidate image ID") from exc
+            raise DeploymentContractError(
+                f"cannot inspect {label} candidate image ID"
+            ) from exc
         image_id = completed.stdout.strip()
         if completed.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
-            raise DeploymentContractError(f"{label} candidate image ID is not immutable")
+            raise DeploymentContractError(
+                f"{label} candidate image ID is not immutable"
+            )
         return image_id
 
     def _require_pair_image_provenance(self, pair: CompatibleImagePair) -> None:
@@ -7913,7 +8364,9 @@ class ComposeService:
                 check=False,
             )
         except OSError as exc:
-            raise DeploymentContractError("cannot verify C6c runtime secret isolation") from exc
+            raise DeploymentContractError(
+                "cannot verify C6c runtime secret isolation"
+            ) from exc
         if completed.returncode != 0:
             raise DeploymentContractError("cannot verify C6c runtime secret isolation")
         try:

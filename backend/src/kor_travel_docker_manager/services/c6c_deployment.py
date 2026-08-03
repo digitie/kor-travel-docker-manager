@@ -62,7 +62,9 @@ _MAP_RUNTIME_CONTAINERS = {
     _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
     _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
 }
-_C6C_GLOBAL_MUTATION_LOCK = Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
+_C6C_GLOBAL_MUTATION_LOCK = Path(
+    "/run/lock/kor-travel-docker-manager/global-mutation.lock"
+)
 _DEFAULT_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
 _C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
@@ -82,8 +84,12 @@ _MAP_PUBLIC_API_KEY_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
 _MAP_DEBUG_ROUTES_ENABLED_ENV = "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
 _MAP_FEATURES_ROUTES_ENABLED_ENV = "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED"
 _MAP_DESTRUCTIVE_ENABLED_ENV = "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED"
-_MAP_PROMETHEUS_METRICS_ENABLED_ENV = "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED"
-_MAP_ADMIN_TRUSTED_PROXY_CIDRS_ENV = "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS"
+_MAP_PROMETHEUS_METRICS_ENABLED_ENV = (
+    "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED"
+)
+_MAP_ADMIN_TRUSTED_PROXY_CIDRS_ENV = (
+    "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS"
+)
 _MAP_UI_PASSWORD_ENV = "KTDM_C6C_MAP_UI_ADMIN_PASSWORD"
 _MAP_UI_PROTECTED_PATH = "/ops/datasets"
 _PINVI_ADMIN_PASSWORD_ENV = "KTDM_C6C_PINVI_ADMIN_PASSWORD"
@@ -102,18 +108,15 @@ _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = frozenset(
         "KOR_TRAVEL_MAP_API_ETL_LIVE_PREVIEW_ENABLED",
     }
 )
-_MANAGER_ONLY_CREDENTIAL_NAMES = (
-    frozenset(
-        {
-            "KTDM_C6C_CONTRACT_GENERATION",
-            _MAP_UI_PASSWORD_ENV,
-            "KTDM_C6C_PINVI_ADMIN_EMAIL",
-            _PINVI_ADMIN_PASSWORD_ENV,
-            "KTDM_C6C_CANCEL_PROBE_JOB_ID",
-        }
-    )
-    | CACHE_TARGET_MANAGER_ONLY_ENV_NAMES
-)
+_MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
+    {
+        "KTDM_C6C_CONTRACT_GENERATION",
+        _MAP_UI_PASSWORD_ENV,
+        "KTDM_C6C_PINVI_ADMIN_EMAIL",
+        _PINVI_ADMIN_PASSWORD_ENV,
+        "KTDM_C6C_CANCEL_PROBE_JOB_ID",
+    }
+) | CACHE_TARGET_MANAGER_ONLY_ENV_NAMES
 _CACHE_TARGET_MAP_ENV_NAMES = frozenset({CACHE_TARGET_REGISTRY_ENV})
 _CACHE_TARGET_PINVI_ENV_NAMES = CACHE_TARGET_ORDINARY_ENV_NAMES
 _SMOKE_CONNECTION_ATTEMPTS = 30
@@ -122,8 +125,13 @@ _SAFE_GET_READINESS_ATTEMPTS = 2
 _T = TypeVar("_T")
 _CACHE_TARGET_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): CACHE_TARGET_REGISTRY_ENV,
-    **{(_PINVI_API_SERVICE, env_name): env_name for env_name in CACHE_TARGET_ORDINARY_ENV_NAMES},
-    (_PINVI_API_SERVICE, _PINVI_CACHE_API_BASE_URL_ENV): (_PINVI_CACHE_API_BASE_URL_ENV),
+    **{
+        (_PINVI_API_SERVICE, env_name): env_name
+        for env_name in CACHE_TARGET_ORDINARY_ENV_NAMES
+    },
+    (_PINVI_API_SERVICE, _PINVI_CACHE_API_BASE_URL_ENV): (
+        _PINVI_CACHE_API_BASE_URL_ENV
+    ),
 }
 _CACHE_TARGET_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): (
@@ -193,7 +201,9 @@ _MAP_PRODUCTION_API_LITERAL_VALUES = {
     _MAP_PROMETHEUS_METRICS_ENABLED_ENV: "false",
     _MAP_ADMIN_TRUSTED_PROXY_CIDRS_ENV: '["127.0.0.1/32","::1/128"]',
 }
-_MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(_MAP_PRODUCTION_API_LITERAL_VALUES)
+_MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
+    _MAP_PRODUCTION_API_LITERAL_VALUES
+)
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
     {_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE}
 )
@@ -218,7 +228,9 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
     (_MAP_UI_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
     (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): _MAP_SERVICE_TOKEN_ENV,
-    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (_MAP_CURSOR_SIGNING_SECRET_ENV),
+    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
+        _MAP_CURSOR_SIGNING_SECRET_ENV
+    ),
     **_CACHE_TARGET_ALLOWED_API_ENV_SOURCES,
 }
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
@@ -229,7 +241,9 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
     ),
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
-    (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): ("${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"),
+    (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): (
+        "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+    ),
     (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): (
         "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
@@ -286,7 +300,9 @@ _ISO8601_DATETIME_WITH_OFFSET = re.compile(
     r"(?:[Zz]|[+-]\d{2}:?\d{2})$"
 )
 _OPERATION_STATES = frozenset({"queued", "running", "done", "failed", "cancelled"})
-_PROVIDER_SYNC_STATUSES = frozenset({"active", "paused", "disabled", "failed", "never_run"})
+_PROVIDER_SYNC_STATUSES = frozenset(
+    {"active", "paused", "disabled", "failed", "never_run"}
+)
 _RETRYABLE_CANCELLATION_ERROR_CODES = frozenset(
     {
         "DAGSTER_TERMINATE_FAILED",
@@ -316,7 +332,9 @@ _MAP_UI_PASSWORD_HASH_PATTERN = re.compile(
     r"^pbkdf2_sha256\$([0-9]+)\$[0-9A-Za-z_-]+\$[0-9A-Za-z_-]+$"
 )
 _CANDIDATE_EXTERNAL_FILE_MAX_BYTES = 1_048_576
-_CANDIDATE_ALLOWED_EXTERNAL_RESOURCE_REFERENCES: frozenset[tuple[str, str, str]] = frozenset()
+_CANDIDATE_ALLOWED_EXTERNAL_RESOURCE_REFERENCES: frozenset[
+    tuple[str, str, str]
+] = frozenset()
 _CANDIDATE_ALLOWED_SYSTEM_BINDS = {
     ("cadvisor", "/sys", True): "/sys",
     ("cadvisor", "/var/run/docker.sock", True): "/var/run/docker.sock",
@@ -347,7 +365,9 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
         "/opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh",
         True,
     ): "./scripts/verify-kor-travel-geo-source.sh",
-    ("rustfs", "/data", False): ("${RUSTFS_DATA_DIR:-/home/digitie/kor-travel-geo-data/rustfs}"),
+    ("rustfs", "/data", False): (
+        "${RUSTFS_DATA_DIR:-/home/digitie/kor-travel-geo-data/rustfs}"
+    ),
     (
         "rustfs-init",
         "/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh",
@@ -359,7 +379,9 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     ("kor-travel-geo-api", "/app/data/backups", False): (
         "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
     ),
-    ("prometheus", "/etc/prometheus/prometheus.yml", True): ("./config/prometheus/prometheus.yml"),
+    ("prometheus", "/etc/prometheus/prometheus.yml", True): (
+        "./config/prometheus/prometheus.yml"
+    ),
     ("prometheus", "/prometheus", False): (
         "${PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-geo-data/prometheus}"
     ),
@@ -379,7 +401,9 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _PAIR_MANIFEST_VERSION = 4
 _MAP_PRODUCTION_ENV_MIGRATION_VERSION = 1
-_MAP_PRODUCTION_ENV_MIGRATION_FILENAME = "map-production-env-migration-v1.json"
+_MAP_PRODUCTION_ENV_MIGRATION_FILENAME = (
+    "map-production-env-migration-v1.json"
+)
 _SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _LEGACY_PAIR_MANIFEST_FILENAMES = (
     "compatible-pair-v2.json",
@@ -594,7 +618,9 @@ def assert_manager_mutation_allowed(
 
     if environment is None:
         if env_path is None:
-            raise DeploymentContractError("manager mutation requires a frozen environment")
+            raise DeploymentContractError(
+                "manager mutation requires a frozen environment"
+            )
         environment = effective_environment(env_path)
     mode = _validate_mutation_environment(environment)
     _assert_cache_target_window_allows_mutation(environment, mode=mode)
@@ -615,7 +641,9 @@ def assert_c6c_mutation_allowed(
         return
     if environment is None:
         if env_path is None:
-            raise DeploymentContractError("C6c mutation requires a frozen environment")
+            raise DeploymentContractError(
+                "C6c mutation requires a frozen environment"
+            )
         environment = effective_environment(env_path)
     values = environment
     mode = assert_manager_mutation_allowed(environment=values)
@@ -711,9 +739,13 @@ def cache_target_window_mutation_scope(
     try:
         canonical = str(uuid.UUID(transaction_id))
     except ValueError as exc:
-        raise DeploymentContractError("cache-target window transaction ID is invalid") from exc
+        raise DeploymentContractError(
+            "cache-target window transaction ID is invalid"
+        ) from exc
     if canonical != transaction_id:
-        raise DeploymentContractError("cache-target window transaction ID must be canonical")
+        raise DeploymentContractError(
+            "cache-target window transaction ID must be canonical"
+        )
     token = _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.set(transaction_id)
     try:
         yield
@@ -749,7 +781,9 @@ def _assert_cache_target_window_allows_mutation(
     except FileNotFoundError:
         return
     except OSError as exc:
-        raise DeploymentContractError("cache-target window journal cannot be inspected") from exc
+        raise DeploymentContractError(
+            "cache-target window journal cannot be inspected"
+        ) from exc
     if (
         not stat.S_ISREG(file_stat.st_mode)
         or file_stat.st_uid != os.geteuid()
@@ -773,7 +807,9 @@ def _assert_cache_target_window_allows_mutation(
         ):
             raise ValueError
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
-        raise DeploymentContractError("cache-target window journal header is invalid") from exc
+        raise DeploymentContractError(
+            "cache-target window journal header is invalid"
+        ) from exc
     if phase in {"forward_committed", "rolled_back"}:
         return
     if _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.get() != transaction_id:
@@ -824,11 +860,17 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
 
 def _prepare_c6c_lock_directory(path: Path) -> None:
     if path == _C6C_GLOBAL_MUTATION_LOCK.parent and os.geteuid() != 0:
-        raise DeploymentContractError("production compatible-pair managed workflow requires root")
+        raise DeploymentContractError(
+            "production compatible-pair managed workflow requires root"
+        )
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path == _C6C_GLOBAL_MUTATION_LOCK.parent:
         st = path.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
+        if (
+            not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != 0
+            or stat.S_IMODE(st.st_mode) != 0o700
+        ):
             raise DeploymentContractError("production C6c deployment lock directory is unsafe")
 
 
@@ -889,7 +931,9 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
     manifest_override = values.get("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", "").strip()
     lock_override = values.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
     if production and (manifest_override or lock_override):
-        raise DeploymentContractError("production C6c manifest and global lock paths are fixed")
+        raise DeploymentContractError(
+            "production C6c manifest and global lock paths are fixed"
+        )
     manifest = _canonical_absolute_path(
         manifest_override or str(state_dir / "compatible-pair-v4.json"),
         "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
@@ -946,14 +990,19 @@ def _c6c_state_directory_stat(path: Path, *, expected_uid: int) -> os.stat_resul
         directory_stat = path.lstat()
     except OSError as exc:
         raise DeploymentContractError("C6c state directory is unavailable") from exc
-    if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != expected_uid:
+    if (
+        not stat.S_ISDIR(directory_stat.st_mode)
+        or directory_stat.st_uid != expected_uid
+    ):
         raise DeploymentContractError("C6c state directory is unsafe")
     return directory_stat
 
 
 def _validate_c6c_state_directory(path: Path, *, expected_uid: int) -> None:
     directory_stat = _c6c_state_directory_stat(path, expected_uid=expected_uid)
-    if stat.S_IMODE(directory_stat.st_mode) != 0o700:
+    if (
+        stat.S_IMODE(directory_stat.st_mode) != 0o700
+    ):
         raise DeploymentContractError("C6c state directory is unsafe")
 
 
@@ -972,14 +1021,22 @@ def c6c_global_mutation_lock_path(
 
     values = os.environ if environment is None else environment
     default = (
-        Path.home() / ".local" / "state" / "kor-travel-docker-manager" / "global-mutation.lock"
+        Path.home()
+        / ".local"
+        / "state"
+        / "kor-travel-docker-manager"
+        / "global-mutation.lock"
     )
     override = values.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
     process_mode = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
     if override:
         if process_mode != "local":
-            raise DeploymentContractError("production C6c global mutation lock path is fixed")
-        return str(_canonical_absolute_path(override, "KTDM_C6C_DEPLOYMENT_LOCK"))
+            raise DeploymentContractError(
+                "production C6c global mutation lock path is fixed"
+            )
+        return str(
+            _canonical_absolute_path(override, "KTDM_C6C_DEPLOYMENT_LOCK")
+        )
     if process_mode == "production":
         return str(_C6C_GLOBAL_MUTATION_LOCK)
     return str(default.resolve(strict=False))
@@ -993,7 +1050,9 @@ def _canonical_absolute_path(value: str, env_name: str) -> Path:
 
 
 def load_c6c_deployment_config(env_path: str) -> C6cDeploymentConfig:
-    return load_c6c_deployment_config_from_environment(effective_environment(env_path))
+    return load_c6c_deployment_config_from_environment(
+        effective_environment(env_path)
+    )
 
 
 def load_c6c_deployment_config_from_environment(
@@ -1051,7 +1110,9 @@ def load_c6c_deployment_config_from_environment(
             "KTDM_C6C_CONTRACT_GENERATION must be an explicit stable identifier"
         )
     if not _map_ui_auth_values_are_valid(values):
-        raise DeploymentContractError("Map UI runtime authentication environment is invalid")
+        raise DeploymentContractError(
+            "Map UI runtime authentication environment is invalid"
+        )
 
     cache_target = load_cache_target_runtime_contract(
         values,
@@ -1080,7 +1141,9 @@ def load_c6c_deployment_config_from_environment(
         read_token=values.get(_MAP_READ_ENV, ""),
         cancel_token=values.get(_MAP_CANCEL_ENV, ""),
         map_container=values.get("KOR_TRAVEL_MAP_API_CONTAINER", "kor-travel-map-api-latest"),
-        map_ui_container=values.get("KOR_TRAVEL_MAP_UI_CONTAINER", "kor-travel-map-ui-latest"),
+        map_ui_container=values.get(
+            "KOR_TRAVEL_MAP_UI_CONTAINER", "kor-travel-map-ui-latest"
+        ),
         map_ui_password_hash=values.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
         map_ui_session_secret=values.get(_MAP_UI_SESSION_SECRET_ENV, ""),
         map_admin_proxy_secret=values.get(_MAP_ADMIN_PROXY_ENV, ""),
@@ -1112,9 +1175,16 @@ def _map_ui_auth_values_are_valid(values: Mapping[str, str]) -> bool:
     username = values.get(_MAP_UI_USERNAME_ENV, "")
     password_hash = values.get(_MAP_UI_PASSWORD_HASH_ENV, "")
     session_secret = values.get(_MAP_UI_SESSION_SECRET_ENV, "")
-    if not all(isinstance(value, str) for value in (username, password_hash, session_secret)):
+    if not all(
+        isinstance(value, str) for value in (username, password_hash, session_secret)
+    ):
         return False
-    if not username or username != username.strip() or "\r" in username or "\n" in username:
+    if (
+        not username
+        or username != username.strip()
+        or "\r" in username
+        or "\n" in username
+    ):
         return False
     match = _MAP_UI_PASSWORD_HASH_PATTERN.fullmatch(password_hash)
     if match is None:
@@ -1218,7 +1288,9 @@ def _validate_map_production_secret_values(
     )
     for env_name, secret in new_secrets:
         if not isinstance(secret, str) or len(secret) < 32:
-            raise error_type(f"{env_name} must contain at least 32 characters")
+            raise error_type(
+                f"{env_name} must contain at least 32 characters"
+            )
         if any(character.isspace() for character in secret):
             raise error_type(f"{env_name} must not contain whitespace")
         if reject_published_examples and hmac.compare_digest(
@@ -1226,7 +1298,8 @@ def _validate_map_production_secret_values(
             _MAP_PUBLISHED_EXAMPLE_SECRET_VALUES[env_name],
         ):
             raise error_type(
-                f"{env_name} must not use the published local example value in production"
+                f"{env_name} must not use the published local example value "
+                "in production"
             )
 
     protected_credential_names = (
@@ -1249,7 +1322,9 @@ def _validate_map_production_secret_values(
             continue
         for previous_name, previous_secret in compared:
             if hmac.compare_digest(secret, previous_secret):
-                raise error_type(f"{env_name} must differ from {previous_name}")
+                raise error_type(
+                    f"{env_name} must differ from {previous_name}"
+                )
         compared.append((env_name, secret))
 
 
@@ -1305,7 +1380,8 @@ def _validate_production_config(
         or port != 12701
     ):
         raise DeploymentContractError(
-            "production PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL must be exactly http://127.0.0.1:12701"
+            "production PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL must be "
+            "exactly http://127.0.0.1:12701"
         )
 
     smoke = config.smoke
@@ -1351,7 +1427,9 @@ def validate_resolved_compose_secret_isolation(
     map_ui_service = _service_mapping(services, _MAP_UI_SERVICE)
     map_environment = _environment_mapping(map_service.get("environment"))
     pinvi_environment = _environment_mapping(pinvi_service.get("environment"))
-    removed_provider_names = _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(map_environment)
+    removed_provider_names = _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(
+        map_environment
+    )
     if removed_provider_names:
         raise DeploymentContractError(
             "resolved compose Map API includes removed provider runtime environment"
@@ -1371,13 +1449,17 @@ def validate_resolved_compose_secret_isolation(
                 f"resolved compose requires host network for {service_name}"
             )
         if service.get("env_file"):
-            raise DeploymentContractError(f"resolved compose forbids env_file on {service_name}")
+            raise DeploymentContractError(
+                f"resolved compose forbids env_file on {service_name}"
+            )
     if map_service.get("container_name") != config.map_container:
         raise DeploymentContractError("resolved compose Map API container identity is invalid")
     if pinvi_service.get("container_name") != config.pinvi_container:
         raise DeploymentContractError("resolved compose PinVi API container identity is invalid")
     if map_ui_service.get("container_name") != config.map_ui_container:
-        raise DeploymentContractError("resolved compose Map UI container identity is invalid")
+        raise DeploymentContractError(
+            "resolved compose Map UI container identity is invalid"
+        )
     if map_environment.get("KOR_TRAVEL_MAP_API_PORT") != str(config.map_container_port):
         raise DeploymentContractError("resolved compose Map API bind port is invalid")
     if pinvi_environment.get("PINVI_ENVIRONMENT") != "production":
@@ -1388,15 +1470,21 @@ def validate_resolved_compose_secret_isolation(
         config.cache_target is not None
         and pinvi_environment.get(_PINVI_CACHE_API_BASE_URL_ENV) != config.base_url
     ):
-        raise DeploymentContractError("resolved compose PinVi cache-target Map base URL is invalid")
+        raise DeploymentContractError(
+            "resolved compose PinVi cache-target Map base URL is invalid"
+        )
 
     expected = {
         _MAP_API_SERVICE: {
             _MAP_READ_ENV: _compose_resolved_escaped_value(config.read_token),
             _MAP_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
             _MAP_REQUIRED_ENV: "true",
-            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(config.map_admin_proxy_secret),
-            _MAP_SERVICE_TOKEN_ENV: _compose_resolved_escaped_value(config.map_service_token),
+            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
+                config.map_admin_proxy_secret
+            ),
+            _MAP_SERVICE_TOKEN_ENV: _compose_resolved_escaped_value(
+                config.map_service_token
+            ),
             _MAP_CURSOR_SIGNING_SECRET_ENV: _compose_resolved_escaped_value(
                 config.map_cursor_signing_secret
             ),
@@ -1407,17 +1495,23 @@ def validate_resolved_compose_secret_isolation(
             _PINVI_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
         },
         _MAP_UI_SERVICE: {
-            _MAP_UI_USERNAME_ENV: _compose_resolved_escaped_value(config.smoke.map_ui_username),
-            _MAP_UI_PASSWORD_HASH_ENV: _compose_resolved_escaped_value(config.map_ui_password_hash),
+            _MAP_UI_USERNAME_ENV: _compose_resolved_escaped_value(
+                config.smoke.map_ui_username
+            ),
+            _MAP_UI_PASSWORD_HASH_ENV: _compose_resolved_escaped_value(
+                config.map_ui_password_hash
+            ),
             _MAP_UI_SESSION_SECRET_ENV: _compose_resolved_escaped_value(
                 config.map_ui_session_secret
             ),
-            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(config.map_admin_proxy_secret),
+            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
+                config.map_admin_proxy_secret
+            ),
         },
     }
     if config.cache_target is not None:
-        expected[_MAP_API_SERVICE][CACHE_TARGET_REGISTRY_ENV] = _compose_resolved_escaped_value(
-            config.cache_target.registry_json
+        expected[_MAP_API_SERVICE][CACHE_TARGET_REGISTRY_ENV] = (
+            _compose_resolved_escaped_value(config.cache_target.registry_json)
         )
         expected[_PINVI_API_SERVICE].update(
             {
@@ -1435,7 +1529,9 @@ def validate_resolved_compose_secret_isolation(
                 "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": "false",
                 "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": "",
                 "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": "",
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": ("pinvi-cache-target-consumer"),
+                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": (
+                    "pinvi-cache-target-consumer"
+                ),
                 "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": "",
                 "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": "",
                 "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": "",
@@ -1525,9 +1621,9 @@ def validate_resolved_compose_secret_isolation(
         },
     }
     if config.cache_target is not None:
-        allowed_paths[("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)] = (
-            _compose_resolved_escaped_value(config.cache_target.registry_json)
-        )
+        allowed_paths[
+            ("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)
+        ] = _compose_resolved_escaped_value(config.cache_target.registry_json)
         allowed_paths.update(
             {
                 ("services", _PINVI_API_SERVICE, "environment", name): (
@@ -1537,9 +1633,9 @@ def validate_resolved_compose_secret_isolation(
             }
         )
     elif CACHE_TARGET_REGISTRY_ENV in map_environment:
-        allowed_paths[("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)] = (
-            "[]"
-        )
+        allowed_paths[
+            ("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)
+        ] = "[]"
         allowed_paths.update(
             {
                 ("services", _PINVI_API_SERVICE, "environment", name): value
@@ -1548,7 +1644,9 @@ def validate_resolved_compose_secret_isolation(
             }
         )
     for path, scalar in _walk_scalars(resolved):
-        if path in allowed_paths or (path[-1:] == ("<key>",) and path[:-1] in allowed_paths):
+        if path in allowed_paths or (
+            path[-1:] == ("<key>",) and path[:-1] in allowed_paths
+        ):
             continue
         text = str(scalar)
         if any(
@@ -1590,7 +1688,9 @@ def validate_resolved_compose_secret_isolation(
                 ),
             )
         ):
-            raise DeploymentContractError("C6c protected value leaks outside its exact wiring")
+            raise DeploymentContractError(
+                "C6c protected value leaks outside its exact wiring"
+            )
 
 
 def validate_resolved_compose_candidate_protected_values(
@@ -1605,7 +1705,9 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_map_production_secret_values(
         environment,
         error_type=ComposeCandidateContractError,
-        reject_published_examples=(environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"),
+        reject_published_examples=(
+            environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
+        ),
     )
     cache_target = _load_candidate_cache_target_contract(environment)
     _assert_candidate_single_file_boundary(resolved, environment=environment)
@@ -1630,13 +1732,15 @@ def validate_resolved_compose_candidate_protected_values(
     )
     protected_values = (
         *(
-            _compose_resolved_escaped_value(value)
-            for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
-            if (value := environment.get(name, ""))
+        _compose_resolved_escaped_value(value)
+        for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
+        if (value := environment.get(name, ""))
         ),
         *(
             _compose_resolved_escaped_value(value)
-            for value in (cache_target.protected_values if cache_target is not None else ())
+            for value in (
+                cache_target.protected_values if cache_target is not None else ()
+            )
         ),
     )
     allowed_paths = {
@@ -1671,19 +1775,25 @@ def validate_resolved_compose_candidate_protected_values(
             if allowed_service != service_name:
                 continue
             actual = service_environment.get(target_name)
-            source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get((allowed_service, target_name))
+            source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get(
+                (allowed_service, target_name)
+            )
             if source_name is not None:
                 source_value = environment.get(source_name)
                 if source_value is None:
                     source_value = _CACHE_TARGET_RESOLVED_DEFAULTS.get(source_name, "")
                 expected = _compose_resolved_escaped_value(source_value)
             else:
-                expected = _CANDIDATE_CANONICAL_API_ENV_VALUES[(allowed_service, target_name)]
+                expected = _CANDIDATE_CANONICAL_API_ENV_VALUES[
+                    (allowed_service, target_name)
+                ]
             if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
                 raise ComposeCandidateContractError(
                     f"resolved compose candidate {service_name}.{target_name} wiring is invalid"
                 )
-        if service_name == _MAP_UI_SERVICE and not _map_ui_auth_values_are_valid(environment):
+        if service_name == _MAP_UI_SERVICE and not _map_ui_auth_values_are_valid(
+            environment
+        ):
             raise ComposeCandidateContractError(
                 "resolved compose candidate Map UI authentication is invalid"
             )
@@ -1693,7 +1803,9 @@ def validate_resolved_compose_candidate_protected_values(
             )
 
     for path, scalar in _walk_scalars(resolved):
-        if path in allowed_paths or (path[-1:] == ("<key>",) and path[:-1] in allowed_paths):
+        if path in allowed_paths or (
+            path[-1:] == ("<key>",) and path[:-1] in allowed_paths
+        ):
             continue
         text = "" if scalar is None else str(scalar)
         if any(name in text for name in protected_names) or any(
@@ -1826,7 +1938,8 @@ def validate_resolved_c6c_build_provenance(
         },
     }
     expected_arg_names = {
-        service_name: set(args) for service_name, args in expected_provenance_args.items()
+        service_name: set(args)
+        for service_name, args in expected_provenance_args.items()
     }
     expected_arg_names[_MAP_UI_SERVICE].update(
         {
@@ -1884,9 +1997,9 @@ def validate_resolved_c6c_build_provenance(
             if not dockerfile_path.is_absolute():
                 dockerfile_path = context_path / dockerfile_path
             dockerfile_path = dockerfile_path.resolve(strict=True)
-            expected_dockerfile = (context_path / expected_dockerfiles[service_name]).resolve(
-                strict=True
-            )
+            expected_dockerfile = (
+                context_path / expected_dockerfiles[service_name]
+            ).resolve(strict=True)
         except (OSError, RuntimeError, ValueError) as exc:
             raise DeploymentContractError(
                 f"resolved compose {service_name} build path is invalid"
@@ -1921,7 +2034,8 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
             "args": {
                 "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
                 "NEXT_PUBLIC_KOR_TRAVEL_MAP_API": (
-                    "${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_PORT:-12701}}"
+                    "${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:"
+                    "${KOR_TRAVEL_MAP_API_PORT:-12701}}"
                 ),
                 "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL": (
                     "${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:"
@@ -2002,7 +2116,8 @@ def validate_compose_env_file_isolation(
                     _MAP_UI_SERVICE,
                 }:
                     raise DeploymentContractError(
-                        "C6c protected services must use explicit environment, not env_file"
+                        "C6c protected services must use explicit environment, "
+                        "not env_file"
                     )
                 expanded = _expand_env_path(env_file, environment)
                 path = Path(expanded)
@@ -2056,7 +2171,9 @@ def validate_compose_candidate_protected_values(
     _assert_candidate_single_file_boundary(candidate, environment=environment)
     services = candidate.get("services")
     if not isinstance(services, Mapping):
-        raise ComposeCandidateContractError("compose candidate has no valid services mapping")
+        raise ComposeCandidateContractError(
+            "compose candidate has no valid services mapping"
+        )
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -2073,9 +2190,9 @@ def validate_compose_candidate_protected_values(
     )
     protected_values = (
         *(
-            value
-            for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
-            if (value := environment.get(name, ""))
+        value
+        for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
+        if (value := environment.get(name, ""))
         ),
         *(cache_target.protected_values if cache_target is not None else ()),
     )
@@ -2115,7 +2232,9 @@ def validate_compose_candidate_protected_values(
             if not require_api_wiring and target_name not in raw_environment:
                 continue
             raw_value = raw_environment.get(target_name)
-            canonical = _CANDIDATE_CANONICAL_API_ENV_VALUES[(service_name, target_name)]
+            canonical = _CANDIDATE_CANONICAL_API_ENV_VALUES[
+                (service_name, target_name)
+            ]
             if raw_value != canonical:
                 raise ComposeCandidateContractError(
                     f"compose candidate {service_name}.{target_name} wiring is invalid"
@@ -2142,7 +2261,9 @@ def validate_compose_candidate_protected_values(
         if any(name in text for name in protected_names) or any(
             value in text for value in protected_values
         ):
-            raise ComposeCandidateContractError("compose candidate leaks a protected C6c reference")
+            raise ComposeCandidateContractError(
+                "compose candidate leaks a protected C6c reference"
+            )
 
     try:
         compose_directory = Path(compose_path).resolve().parent
@@ -2260,7 +2381,9 @@ def run_map_ops_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
         expected_status=401,
         expected_code="OPS_TOKEN_REQUIRED",
     ):
-        raise DeploymentContractError("C6c tokenless canonical read smoke did not return typed 401")
+        raise DeploymentContractError(
+            "C6c tokenless canonical read smoke did not return typed 401"
+        )
     results.append({"name": "tokenless_read", "status": status})
 
     status, payload = _request_json(
@@ -2280,7 +2403,10 @@ def run_map_ops_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
     results.append({"name": "cancel_token_read_rejection", "status": status})
 
     missing_execution_id = uuid.uuid4()
-    cancel_url = f"{base_url}/v1/ops/pipeline/executions/import_job/{missing_execution_id}/cancel"
+    cancel_url = (
+        f"{base_url}/v1/ops/pipeline/executions/import_job/"
+        f"{missing_execution_id}/cancel"
+    )
     status, payload = _request_json(
         cancel_url,
         method="POST",
@@ -2295,7 +2421,9 @@ def run_map_ops_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
         expected_status=403,
         expected_code="OPS_SCOPE_FORBIDDEN",
     ):
-        raise DeploymentContractError("C6c read token exact cancel smoke did not return typed 403")
+        raise DeploymentContractError(
+            "C6c read token exact cancel smoke did not return typed 403"
+        )
     results.append({"name": "read_token_cancel_rejection", "status": status})
 
     status, payload = _request_json(
@@ -2357,7 +2485,11 @@ def run_pinvi_canonical_smoke(
         read_error_body=False,
         retry_connection_refused=True,
     )
-    if login.status != 200 or not login.set_cookie or not _pinvi_envelope_ok(login.payload):
+    if (
+        login.status != 200
+        or not login.set_cookie
+        or not _pinvi_envelope_ok(login.payload)
+    ):
         raise DeploymentContractError("C6c PinVi admin login smoke failed")
 
     results: list[dict[str, int | str]] = [{"name": "pinvi_login", "status": 200}]
@@ -2403,7 +2535,11 @@ def run_pinvi_canonical_smoke(
             ),
             read_error_body=True,
         )
-        error = cancel.payload.get("error") if isinstance(cancel.payload, Mapping) else None
+        error = (
+            cancel.payload.get("error")
+            if isinstance(cancel.payload, Mapping)
+            else None
+        )
         error_code = error.get("code") if isinstance(error, Mapping) else None
         if not isinstance(error_code, str):
             raise DeploymentContractError(
@@ -2427,11 +2563,14 @@ def run_pinvi_canonical_smoke(
             or (
                 expected_retry_after
                 and (
-                    not retry_after_present or cancel.retry_after is None or cancel.retry_after <= 0
+                    not retry_after_present
+                    or cancel.retry_after is None
+                    or cancel.retry_after <= 0
                 )
             )
             or (
-                not expected_retry_after and (retry_after_present or cancel.retry_after is not None)
+                not expected_retry_after
+                and (retry_after_present or cancel.retry_after is not None)
             )
         ):
             raise DeploymentContractError(
@@ -2449,7 +2588,9 @@ def run_pinvi_canonical_smoke(
             "code": error_code,
         }
     if not _validate_pinvi_cancel_probe_result(state.result):
-        raise DeploymentContractError("C6c cached PinVi cancel probe evidence is invalid")
+        raise DeploymentContractError(
+            "C6c cached PinVi cancel probe evidence is invalid"
+        )
     assert state.result is not None
     results.append(dict(state.result))
 
@@ -2487,13 +2628,17 @@ def _validate_pinvi_cancel_probe_result(value: Any) -> bool:
     code = value.get("code")
     if type(status) is not int or not isinstance(code, str):
         return False
-    return value.get("name") == "pinvi_cancel_error" and (status, code) in {
-        (409, "PIPELINE_CANCELLATION_IN_PROGRESS"),
-        (409, "PIPELINE_CANCELLATION_UNSAFE"),
-        (502, "DAGSTER_TERMINATE_FAILED"),
-        (503, "DAGSTER_UNAVAILABLE"),
-        (503, "DAGSTER_TERMINATION_TIMEOUT"),
-    }
+    return (
+        value.get("name") == "pinvi_cancel_error"
+        and (status, code)
+        in {
+            (409, "PIPELINE_CANCELLATION_IN_PROGRESS"),
+            (409, "PIPELINE_CANCELLATION_UNSAFE"),
+            (502, "DAGSTER_TERMINATE_FAILED"),
+            (503, "DAGSTER_UNAVAILABLE"),
+            (503, "DAGSTER_TERMINATION_TIMEOUT"),
+        }
+    )
 
 
 def _validate_owned_cancel_error_details(
@@ -2513,11 +2658,13 @@ def _validate_owned_cancel_error_details(
         (503, "DAGSTER_TERMINATION_TIMEOUT"): ("retryable", True),
     }.get((expected_status, expected_code))
     if expected_attempt is None:
-        raise DeploymentContractError("C6c PinVi cancel fixture status/code pair is unsupported")
-    if expected_code == "PIPELINE_CANCELLATION_IN_PROGRESS" and set(details) == {
-        "root",
-        "cancellation",
-    }:
+        raise DeploymentContractError(
+            "C6c PinVi cancel fixture status/code pair is unsupported"
+        )
+    if (
+        expected_code == "PIPELINE_CANCELLATION_IN_PROGRESS"
+        and set(details) == {"root", "cancellation"}
+    ):
         root = details.get("root")
         if (
             not isinstance(root, Mapping)
@@ -2527,7 +2674,9 @@ def _validate_owned_cancel_error_details(
             or not _is_uuid(root.get("id"))
             or details.get("cancellation") is not None
         ):
-            raise DeploymentContractError("C6c PinVi root-only cancellation detail is invalid")
+            raise DeploymentContractError(
+                "C6c PinVi root-only cancellation detail is invalid"
+            )
         return
 
     status_text, retryable = expected_attempt
@@ -2569,25 +2718,34 @@ def _validate_owned_cancel_error_details(
         or not _is_nullable_iso8601(details.get("finished_at"))
         or details.get("committed_data_rolled_back") is not False
     ):
-        raise DeploymentContractError("C6c PinVi cancel attempt lifecycle contract diverged")
+        raise DeploymentContractError(
+            "C6c PinVi cancel attempt lifecycle contract diverged"
+        )
     if retryable and (
         not isinstance(details.get("error"), Mapping)
         or details["error"].get("code") != expected_code
     ):
-        raise DeploymentContractError("C6c retryable cancel attempt requires a structured error")
+        raise DeploymentContractError(
+            "C6c retryable cancel attempt requires a structured error"
+        )
     cancellation_id = str(details["cancellation_id"])
     previous_cancellation_id = details.get("previous_cancellation_id")
     finished_at = details.get("finished_at")
     attempt_error = details.get("error")
     if (
-        (status_text == "in_progress" and (finished_at is not None or attempt_error is not None))
+        (
+            status_text == "in_progress"
+            and (finished_at is not None or attempt_error is not None)
+        )
         or (
             status_text in {"retryable", "failed"}
             and (finished_at is None or attempt_error is None)
         )
         or previous_cancellation_id == cancellation_id
     ):
-        raise DeploymentContractError("C6c PinVi cancel attempt DB lifecycle contract diverged")
+        raise DeploymentContractError(
+            "C6c PinVi cancel attempt DB lifecycle contract diverged"
+        )
     unresolved = details.get("unresolved_member_count")
     members = details.get("members")
     dagster_runs = details.get("dagster_runs")
@@ -2602,8 +2760,12 @@ def _validate_owned_cancel_error_details(
     ):
         raise DeploymentContractError("C6c PinVi cancel Dagster runs are invalid")
     member_ids = [str(member["job_id"]) for member in members]
-    unresolved_count = sum(member.get("result") in unresolved_results for member in members)
-    owned_members = [member for member in members if member.get("job_id") == expected_root_id]
+    unresolved_count = sum(
+        member.get("result") in unresolved_results for member in members
+    )
+    owned_members = [
+        member for member in members if member.get("job_id") == expected_root_id
+    ]
     run_ids = [str(run["dagster_run_id"]) for run in dagster_runs]
     member_run_ids = {
         str(member["dagster_run_id"])
@@ -2614,11 +2776,20 @@ def _validate_owned_cancel_error_details(
         not _is_nonnegative_int(unresolved)
         or not member_ids
         or len(member_ids) != len(set(member_ids))
-        or (previous_cancellation_id is None and len(owned_members) != 1)
-        or (previous_cancellation_id is not None and len(owned_members) > 1)
+        or (
+            previous_cancellation_id is None
+            and len(owned_members) != 1
+        )
         or (
             previous_cancellation_id is not None
-            and any(member.get("requires_run_termination") is not True for member in members)
+            and len(owned_members) > 1
+        )
+        or (
+            previous_cancellation_id is not None
+            and any(
+                member.get("requires_run_termination") is not True
+                for member in members
+            )
         )
         or unresolved != unresolved_count
         or len(run_ids) != len(set(run_ids))
@@ -2627,15 +2798,21 @@ def _validate_owned_cancel_error_details(
         or not warnings
         or not all(isinstance(item, str) for item in warnings)
     ):
-        raise DeploymentContractError("C6c PinVi cancel member/run/warning detail is invalid")
+        raise DeploymentContractError(
+            "C6c PinVi cancel member/run/warning detail is invalid"
+        )
     if status_text == "retryable" and (
         any(member.get("result") == "pending" for member in members)
         or any(run.get("result") == "pending" for run in dagster_runs)
         or not any(member.get("result") == "cancel_failed" for member in members)
     ):
-        raise DeploymentContractError("C6c retryable cancellation lifecycle is invalid")
+        raise DeploymentContractError(
+            "C6c retryable cancellation lifecycle is invalid"
+        )
     run_by_id = {str(run["dagster_run_id"]): run for run in dagster_runs}
-    canonical_error_codes = _RETRYABLE_CANCELLATION_ERROR_CODES | _FAILED_CANCELLATION_ERROR_CODES
+    canonical_error_codes = (
+        _RETRYABLE_CANCELLATION_ERROR_CODES | _FAILED_CANCELLATION_ERROR_CODES
+    )
     if status_text == "retryable":
         for member in members:
             if member.get("result") != "cancel_failed":
@@ -2646,7 +2823,8 @@ def _validate_owned_cancel_error_details(
                 member.get("requires_run_termination") is not True
                 or not isinstance(run_id, str)
                 or not isinstance(member_error, Mapping)
-                or member_error.get("code") not in _RETRYABLE_CANCELLATION_ERROR_CODES
+                or member_error.get("code")
+                not in _RETRYABLE_CANCELLATION_ERROR_CODES
             ):
                 raise DeploymentContractError(
                     "C6c retryable cancellation member evidence is invalid"
@@ -2656,22 +2834,29 @@ def _validate_owned_cancel_error_details(
             if (
                 run.get("result") != "cancel_failed"
                 or not isinstance(run_error, Mapping)
-                or run_error.get("code") not in _RETRYABLE_CANCELLATION_ERROR_CODES
+                or run_error.get("code")
+                not in _RETRYABLE_CANCELLATION_ERROR_CODES
             ):
-                raise DeploymentContractError("C6c retryable cancellation run evidence is invalid")
+                raise DeploymentContractError(
+                    "C6c retryable cancellation run evidence is invalid"
+                )
     if status_text == "failed":
         attempt_error = details.get("error")
         if (
             not isinstance(attempt_error, Mapping)
             or attempt_error.get("code") not in _FAILED_CANCELLATION_ERROR_CODES
         ):
-            raise DeploymentContractError("C6c failed cancellation attempt error is invalid")
+            raise DeploymentContractError(
+                "C6c failed cancellation attempt error is invalid"
+            )
         for member in members:
             if member.get("result") != "cancel_failed":
                 continue
             member_error = member.get("error")
             member_error_code = (
-                member_error.get("code") if isinstance(member_error, Mapping) else None
+                member_error.get("code")
+                if isinstance(member_error, Mapping)
+                else None
             )
             if member_error_code in _RETRYABLE_CANCELLATION_ERROR_CODES:
                 run_id = member.get("dagster_run_id")
@@ -2691,7 +2876,9 @@ def _validate_owned_cancel_error_details(
                 member.get("initial_status") != "running"
                 and member.get("requires_run_termination") is not True
             ):
-                raise DeploymentContractError("C6c failed cancellation member error is invalid")
+                raise DeploymentContractError(
+                    "C6c failed cancellation member error is invalid"
+                )
         for run in dagster_runs:
             if run.get("result") != "cancel_failed":
                 continue
@@ -2700,14 +2887,18 @@ def _validate_owned_cancel_error_details(
                 not isinstance(run_error, Mapping)
                 or run_error.get("code") not in canonical_error_codes
             ):
-                raise DeploymentContractError("C6c failed cancellation run error is invalid")
+                raise DeploymentContractError(
+                    "C6c failed cancellation run error is invalid"
+                )
     if status_text == "in_progress":
         attempt_error = details.get("error")
         if (
             isinstance(attempt_error, Mapping)
             and attempt_error.get("code") not in canonical_error_codes
         ):
-            raise DeploymentContractError("C6c in-progress cancellation attempt error is invalid")
+            raise DeploymentContractError(
+                "C6c in-progress cancellation attempt error is invalid"
+            )
         for member in members:
             if member.get("result") != "cancel_failed":
                 continue
@@ -2766,7 +2957,8 @@ def _validate_owned_cancel_error_details(
                     "C6c queued cancellation requires the explicit DB cancel path"
                 )
             if initial_status in {"done", "failed", "cancelled"} and (
-                result != "already_terminal" or member.get("terminal_status") != initial_status
+                result != "already_terminal"
+                or member.get("terminal_status") != initial_status
             ):
                 raise DeploymentContractError(
                     "C6c initially terminal member must remain already-terminal"
@@ -2774,7 +2966,9 @@ def _validate_owned_cancel_error_details(
             continue
         run_id = member.get("dagster_run_id")
         if not isinstance(run_id, str):
-            raise DeploymentContractError("C6c run-backed cancellation member has no Dagster run")
+            raise DeploymentContractError(
+                "C6c run-backed cancellation member has no Dagster run"
+            )
         run = run_by_id[run_id]
         if result == "cancel_failed":
             transient_terminal_run = (
@@ -2806,7 +3000,10 @@ def _validate_owned_cancel_error_details(
             and run_id in success_tracking_run_ids
             and actual_run_terminal == ("already_terminal", "SUCCESS")
         )
-        if expected_run_terminal != actual_run_terminal and not tracking_failure_after_success:
+        if (
+            expected_run_terminal != actual_run_terminal
+            and not tracking_failure_after_success
+        ):
             raise DeploymentContractError(
                 "C6c resolved member status does not match Dagster terminal result"
             )
@@ -2850,7 +3047,8 @@ def _validate_cancellation_member(value: Any) -> bool:
         initial_status == "running"
         or (
             initial_status == "queued"
-            and operation_kind in {"provider_feature_load_run", "provider_feature_load"}
+            and operation_kind
+            in {"provider_feature_load_run", "provider_feature_load"}
         )
     )
     return (
@@ -2906,7 +3104,8 @@ def _validate_cancellation_run(value: Any) -> bool:
         and isinstance(value.get("initial_status"), (str, type(None)))
         and _is_nullable_iso8601(value.get("termination_reserved_at"))
         and (
-            value.get("termination_reserved_at") is None or value.get("initial_status") is not None
+            value.get("termination_reserved_at") is None
+            or value.get("initial_status") is not None
         )
         and result in {"pending", "cancelled", "already_terminal", "cancel_failed"}
         and isinstance(terminal_status, (str, type(None)))
@@ -2944,7 +3143,8 @@ def _validate_cancellation_engine_times(
     finished = _parse_iso8601_datetime(engine_finished_at)
     started = _parse_iso8601_datetime(engine_started_at)
     return finished is not None and (
-        engine_started_at is None or (started is not None and started <= finished)
+        engine_started_at is None
+        or (started is not None and started <= finished)
     )
 
 
@@ -3023,7 +3223,9 @@ def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
         read_error_body=False,
         retry_connection_refused=True,
     )
-    pinvi_content_type = (pinvi_login_shell.content_type or "").partition(";")[0].strip().lower()
+    pinvi_content_type = (
+        (pinvi_login_shell.content_type or "").partition(";")[0].strip().lower()
+    )
     if (
         pinvi_login_shell.status != 200
         or pinvi_content_type != "text/html"
@@ -3076,7 +3278,8 @@ def _validate_map_datasets_envelope(payload: Any | None) -> bool:
         and data.get("schedule_source_status") in {"ok", "unavailable", "error"}
         and isinstance(data.get("schedule_source_errors"), list)
         and all(isinstance(item, str) for item in data["schedule_source_errors"])
-        and data.get("execution_coverage") == "db_recorded_canonical_operations"
+        and data.get("execution_coverage")
+        == "db_recorded_canonical_operations"
         and all(_validate_map_dataset_row(item) for item in data["items"])
         and isinstance(meta, Mapping)
         and _is_nonnegative_number(meta.get("duration_ms"))
@@ -3146,7 +3349,8 @@ def _validate_pinvi_etl_summary(payload: Any | None) -> bool:
         )
         and all(_validate_dagster_run(item) for item in kor_travel_map["recent_runs"])
         and all(
-            _validate_provider_import_job(item) for item in kor_travel_map["recent_import_jobs"]
+            _validate_provider_import_job(item)
+            for item in kor_travel_map["recent_import_jobs"]
         )
         and all(isinstance(item, str) for item in kor_travel_map["dagster_errors"])
         and all(isinstance(item, str) for item in kor_travel_map["errors"])
@@ -3223,13 +3427,16 @@ def _validate_map_dataset_row(value: Any) -> bool:
     dataset_issues = value.get("dataset_issues")
     provider_issues = value.get("provider_issues")
     catalog_state = value.get("catalog_state")
-    expected_detail_url = "/v1/ops/datasets/detail?" + urlencode(
-        {
-            "provider": provider,
-            "dataset_key": dataset_key,
-            "sync_scope": sync_scope,
-        },
-        quote_via=quote,
+    expected_detail_url = (
+        "/v1/ops/datasets/detail?"
+        + urlencode(
+            {
+                "provider": provider,
+                "dataset_key": dataset_key,
+                "sync_scope": sync_scope,
+            },
+            quote_via=quote,
+        )
     )
     return (
         all(
@@ -3309,20 +3516,26 @@ def _validate_dataset_execution(
     if (
         kind not in {"import_job", "update_request"}
         or not _is_uuid(execution_id)
-        or value.get("detail_url") != f"/v1/ops/pipeline/executions/{kind}/{execution_id}"
+        or value.get("detail_url")
+        != f"/v1/ops/pipeline/executions/{kind}/{execution_id}"
         or value.get("status") not in _OPERATION_STATES
         or value.get("pair_status") not in _OPERATION_STATES
         or not _is_uuid(operation_member_id)
-        or not (execution_scope is None or _is_canonical_sync_scope(execution_scope))
+        or not (
+            execution_scope is None or _is_canonical_sync_scope(execution_scope)
+        )
         or not isinstance(providers, list)
         or not all(isinstance(item, str) and bool(item) for item in providers)
         or not isinstance(dataset_keys, list)
         or not all(isinstance(item, str) and bool(item) for item in dataset_keys)
         or not isinstance(provider_datasets, list)
-        or not all(_validate_dataset_provider_identity(item) for item in provider_datasets)
+        or not all(
+            _validate_dataset_provider_identity(item) for item in provider_datasets
+        )
         or not _is_iso8601(value.get("created_at"))
         or not all(
-            _is_nullable_iso8601(value.get(field)) for field in ("started_at", "finished_at")
+            _is_nullable_iso8601(value.get(field))
+            for field in ("started_at", "finished_at")
         )
         or not all(
             isinstance(value.get(field), (str, type(None)))
@@ -3354,15 +3567,11 @@ def _validate_dataset_execution(
     logical_scope_matches = execution_scope == sync_scope or (
         sync_scope == "dataset_wide" and execution_scope is None
     )
-    allowed_pair_states = (
-        {"queued", "running"}
-        if active
-        else {
-            "done",
-            "failed",
-            "cancelled",
-        }
-    )
+    allowed_pair_states = {"queued", "running"} if active else {
+        "done",
+        "failed",
+        "cancelled",
+    }
     return (
         len(member_keys) == len(set(member_keys))
         and set(providers) == {item[0] for item in member_keys}
@@ -3382,7 +3591,10 @@ def _validate_dataset_provider_identity(value: Any) -> bool:
             isinstance(value.get(field), str) and bool(value[field])
             for field in ("provider", "dataset_key")
         )
-        and (value.get("sync_scope") is None or _is_canonical_sync_scope(value.get("sync_scope")))
+        and (
+            value.get("sync_scope") is None
+            or _is_canonical_sync_scope(value.get("sync_scope"))
+        )
         and _is_uuid(value.get("operation_member_id"))
         and value.get("status") in _OPERATION_STATES
     )
@@ -3408,9 +3620,13 @@ def _validate_dataset_projected_job(value: Any) -> bool:
             )
         )
         and _is_iso8601(value.get("created_at"))
-        and all(_is_nullable_iso8601(value.get(field)) for field in ("started_at", "finished_at"))
+        and all(
+            _is_nullable_iso8601(value.get(field))
+            for field in ("started_at", "finished_at")
+        )
         and _is_nonnegative_int(value.get("depth"))
-        and value.get("detail_url") == f"/v1/ops/pipeline/executions/import_job/{value['id']}"
+        and value.get("detail_url")
+        == f"/v1/ops/pipeline/executions/import_job/{value['id']}"
     )
 
 
@@ -3460,7 +3676,10 @@ def _validate_dataset_catalog(value: Any) -> bool:
                 and scope_refresh.get("reason") is None
             )
         )
-        and (value.get("is_refreshable") is True or scope_refresh.get("selector") == "none")
+        and (
+            value.get("is_refreshable") is True
+            or scope_refresh.get("selector") == "none"
+        )
         and isinstance(preview, Mapping)
         and isinstance(preview.get("supported"), bool)
         and isinstance(preview.get("sources"), list)
@@ -3520,9 +3739,13 @@ def _validate_refresh_policy(
 def _validate_dataset_freshness(value: Any) -> bool:
     return (
         isinstance(value, Mapping)
-        and value.get("state") in {"never_run", "fresh", "overdue", "disabled", "unknown"}
+        and value.get("state")
+        in {"never_run", "fresh", "overdue", "disabled", "unknown"}
         and value.get("basis") in {"policy_stale_after", "unknown", "disabled"}
-        and (value.get("sla_seconds") is None or _is_nonnegative_int(value.get("sla_seconds")))
+        and (
+            value.get("sla_seconds") is None
+            or _is_nonnegative_int(value.get("sla_seconds"))
+        )
         and _is_nullable_iso8601(value.get("due_at"))
         and isinstance(value.get("is_overdue"), bool)
         and _is_nonnegative_int(value.get("overdue_by_seconds"))
@@ -3536,7 +3759,8 @@ def _validate_dataset_schedule(value: Any) -> bool:
     active_names = value.get("active_schedule_names")
     return (
         value.get("source") == "dagster_graphql"
-        and value.get("basis") in {"dagster_definition_tags", "not_scheduled", "unknown"}
+        and value.get("basis")
+        in {"dagster_definition_tags", "not_scheduled", "unknown"}
         and isinstance(value.get("status"), (str, type(None)))
         and isinstance(schedule_names, list)
         and all(isinstance(item, str) for item in schedule_names)
@@ -3560,12 +3784,15 @@ def _validate_nonnegative_int_mapping(
     *,
     allowed_keys: frozenset[str] | None = None,
 ) -> bool:
-    return isinstance(value, Mapping) and all(
-        isinstance(key, str)
-        and bool(key)
-        and (allowed_keys is None or key in allowed_keys)
-        and _is_nonnegative_int(item)
-        for key, item in value.items()
+    return (
+        isinstance(value, Mapping)
+        and all(
+            isinstance(key, str)
+            and bool(key)
+            and (allowed_keys is None or key in allowed_keys)
+            and _is_nonnegative_int(item)
+            for key, item in value.items()
+        )
     )
 
 
@@ -3705,7 +3932,10 @@ def _validate_provider_import_job(value: Any) -> bool:
             for field in ("status_url", "current_stage", "error_message")
         )
         and _is_iso8601(value.get("created_at"))
-        and all(_is_nullable_iso8601(value.get(field)) for field in ("started_at", "finished_at"))
+        and all(
+            _is_nullable_iso8601(value.get(field))
+            for field in ("started_at", "finished_at")
+        )
         and _validate_provider_links(value.get("links"))
     )
 
@@ -3717,7 +3947,8 @@ def _validate_cancellation_summary(value: Any) -> bool:
         return False
     return (
         _is_uuid(value.get("cancellation_id"))
-        and value.get("status") in {"in_progress", "retryable", "completed", "failed"}
+        and value.get("status")
+        in {"in_progress", "retryable", "completed", "failed"}
         and _is_iso8601(value.get("requested_at"))
         and isinstance(value.get("requested_by"), str)
         and bool(value["requested_by"])
@@ -3756,7 +3987,9 @@ def _is_nonnegative_int(value: Any) -> bool:
 
 
 def _is_nullable_int(value: Any) -> bool:
-    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+    return value is None or (
+        isinstance(value, int) and not isinstance(value, bool)
+    )
 
 
 def _is_progress(value: Any) -> bool:
@@ -3768,7 +4001,11 @@ def _is_nullable_progress(value: Any) -> bool:
 
 
 def _is_nonnegative_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+    )
 
 
 def _is_nullable_number(value: Any) -> bool:
@@ -3783,7 +4020,9 @@ def _parse_iso8601_datetime(value: Any) -> datetime | None:
     if not isinstance(value, str) or not _ISO8601_DATETIME_WITH_OFFSET.fullmatch(value):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
+        parsed = datetime.fromisoformat(
+            value.replace("Z", "+00:00").replace("z", "+00:00")
+        )
     except ValueError:
         return None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
@@ -3848,7 +4087,9 @@ def _session_request(
                     status=response.status,
                     payload=_read_json_payload(raw),
                     retry_after=_retry_after_header(retry_after_raw),
-                    retry_after_present=_has_response_header(response.headers, "Retry-After"),
+                    retry_after_present=_has_response_header(
+                        response.headers, "Retry-After"
+                    ),
                     set_cookie=_has_response_header(response.headers, "Set-Cookie"),
                     location=_response_header(response.headers, "Location"),
                     body_text=_read_text_payload(raw),
@@ -4005,7 +4246,8 @@ def validate_current_map_ui_auth_runtime(
     }
     optional_expected = (
         {_MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret}
-        if source_env_contract_version == 3 and allow_legacy_admin_proxy_absence
+        if source_env_contract_version == 3
+        and allow_legacy_admin_proxy_absence
         else {}
     )
     if not optional_expected:
@@ -4013,7 +4255,9 @@ def validate_current_map_ui_auth_runtime(
     actual: dict[str, str] = {}
     allowed_paths: set[tuple[str, ...]] = set()
     plaintext = config.smoke.map_ui_password
-    for env_name, value, scalar_paths in _runtime_environment_entries(runtime_config.get("Env")):
+    for env_name, value, scalar_paths in _runtime_environment_entries(
+        runtime_config.get("Env")
+    ):
         if env_name in _MANAGER_ONLY_CREDENTIAL_NAMES:
             raise DeploymentContractError(
                 "a C6c manager-only credential is present in the current Map UI"
@@ -4068,7 +4312,8 @@ def validate_current_map_ui_auth_runtime(
             value and value in text for value in protected_values
         ):
             raise DeploymentContractError(
-                "the current Map UI authentication leaks outside its exact environment path"
+                "the current Map UI authentication leaks outside its exact "
+                "environment path"
             )
 
 
@@ -4102,7 +4347,9 @@ def validate_runtime_secret_isolation(
         expected[config.map_container][CACHE_TARGET_REGISTRY_ENV] = (
             config.cache_target.registry_json
         )
-        expected[config.pinvi_container].update(config.cache_target.ordinary_environment)
+        expected[config.pinvi_container].update(
+            config.cache_target.ordinary_environment
+        )
     for required_container in expected:
         if required_container not in container_configs:
             raise DeploymentContractError(
@@ -4123,7 +4370,11 @@ def validate_runtime_secret_isolation(
             config.smoke.pinvi_admin_password,
             config.smoke.cancel_probe_job_id,
             config.contract_generation,
-            *(config.cache_target.protected_values if config.cache_target is not None else ()),
+            *(
+                config.cache_target.protected_values
+                if config.cache_target is not None
+                else ()
+            ),
         )
         if secret
     )
@@ -4161,10 +4412,13 @@ def validate_runtime_secret_isolation(
             ):
                 if env_name not in allowed:
                     raise DeploymentContractError(
-                        "a C6c runtime protected value is present in an unauthorized container"
+                        "a C6c runtime protected value is present in an "
+                        "unauthorized container"
                     )
                 if not hmac.compare_digest(value, allowed[env_name]):
-                    raise DeploymentContractError("C6c runtime protected value wiring is invalid")
+                    raise DeploymentContractError(
+                        "C6c runtime protected value wiring is invalid"
+                    )
                 allowed_paths.update(scalar_paths)
             elif any(secret in value for secret in secret_values):
                 raise DeploymentContractError(
@@ -4172,7 +4426,9 @@ def validate_runtime_secret_isolation(
                 )
         for env_name in allowed:
             if env_name not in environment:
-                raise DeploymentContractError("C6c runtime protected value wiring is missing")
+                raise DeploymentContractError(
+                    "C6c runtime protected value wiring is missing"
+                )
         for path, scalar in _walk_scalars(runtime_config):
             if path in allowed_paths:
                 continue
@@ -4188,9 +4444,9 @@ def validate_runtime_secret_isolation(
                 raise DeploymentContractError(
                     "Map API runtime includes forbidden provider environment"
                 )
-            if runtime_config.get("Entrypoint") is not None or runtime_config.get("Cmd") != [
-                "./docker/api-entrypoint.sh"
-            ]:
+            if runtime_config.get("Entrypoint") is not None or runtime_config.get(
+                "Cmd"
+            ) != ["./docker/api-entrypoint.sh"]:
                 raise DeploymentContractError(
                     "Map API runtime must use the immutable image entrypoint and command"
                 )
@@ -4259,7 +4515,10 @@ def load_pair_manifest(path: str) -> CompatiblePairManifest:
         }
         for pair_name in ("rollback", "active"):
             pair_payload = payload.get(pair_name)
-            if not isinstance(pair_payload, Mapping) or set(pair_payload) != expected_pair_keys:
+            if (
+                not isinstance(pair_payload, Mapping)
+                or set(pair_payload) != expected_pair_keys
+            ):
                 raise TypeError("manifest pair shape is invalid")
         manifest = CompatiblePairManifest(
             version=payload["version"],
@@ -4311,7 +4570,10 @@ def load_or_create_map_production_env_migration(
         else None
     )
     if existing is not None:
-        if existing.state == "pending" and existing.baseline_manifest_sha256 != expected_baseline:
+        if (
+            existing.state == "pending"
+            and existing.baseline_manifest_sha256 != expected_baseline
+        ):
             raise DeploymentContractError(
                 "Map production env migration baseline changed while pending"
             )
@@ -4341,7 +4603,9 @@ def complete_map_production_env_migration(
     marker_path = Path(map_production_env_migration_path(manifest_path))
     current = _load_map_production_env_migration(marker_path, allow_missing=False)
     if current is None:
-        raise DeploymentContractError("Map production env migration marker is missing")
+        raise DeploymentContractError(
+            "Map production env migration marker is missing"
+        )
     if current.state == "complete":
         return current
     completed = MapProductionEnvMigrationState(
@@ -4365,7 +4629,9 @@ def _load_map_production_env_migration(
     except FileNotFoundError:
         if allow_missing:
             return None
-        raise DeploymentContractError("Map production env migration marker is missing") from None
+        raise DeploymentContractError(
+            "Map production env migration marker is missing"
+        ) from None
     except OSError as exc:
         raise DeploymentContractError(
             "Map production env migration marker cannot be opened safely"
@@ -4385,7 +4651,9 @@ def _load_map_production_env_migration(
             descriptor = -1
             payload = json.load(handle)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DeploymentContractError("Map production env migration marker is invalid") from exc
+        raise DeploymentContractError(
+            "Map production env migration marker is invalid"
+        ) from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -4397,7 +4665,9 @@ def _load_map_production_env_migration(
         "completed_at",
     }
     if not isinstance(payload, Mapping) or set(payload) != expected_keys:
-        raise DeploymentContractError("Map production env migration marker shape is invalid")
+        raise DeploymentContractError(
+            "Map production env migration marker shape is invalid"
+        )
     state = MapProductionEnvMigrationState(
         version=payload["version"],
         state=payload["state"],
@@ -4421,17 +4691,25 @@ def _validate_map_production_env_migration(
             state.baseline_manifest_sha256 is not None
             and (
                 not isinstance(state.baseline_manifest_sha256, str)
-                or _SHA256_HEX_PATTERN.fullmatch(state.baseline_manifest_sha256) is None
+                or _SHA256_HEX_PATTERN.fullmatch(
+                    state.baseline_manifest_sha256
+                )
+                is None
             )
         )
         or not isinstance(state.prepared_at, str)
         or not _is_iso8601(state.prepared_at)
     ):
-        raise DeploymentContractError("Map production env migration marker contract is invalid")
+        raise DeploymentContractError(
+            "Map production env migration marker contract is invalid"
+        )
     if state.state == "pending" and state.completed_at is not None:
-        raise DeploymentContractError("pending Map production env migration cannot be completed")
+        raise DeploymentContractError(
+            "pending Map production env migration cannot be completed"
+        )
     if state.state == "complete" and (
-        not isinstance(state.completed_at, str) or not _is_iso8601(state.completed_at)
+        not isinstance(state.completed_at, str)
+        or not _is_iso8601(state.completed_at)
     ):
         raise DeploymentContractError(
             "complete Map production env migration needs a completion time"
@@ -4486,7 +4764,9 @@ def _write_map_production_env_migration_temp(
     except OSError as exc:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-        raise DeploymentContractError("Map production env migration marker write failed") from exc
+        raise DeploymentContractError(
+            "Map production env migration marker write failed"
+        ) from exc
 
 
 def _create_map_production_env_migration(
@@ -4502,7 +4782,9 @@ def _create_map_production_env_migration(
             "Map production env migration marker appeared concurrently"
         ) from exc
     except OSError as exc:
-        raise DeploymentContractError("Map production env migration marker create failed") from exc
+        raise DeploymentContractError(
+            "Map production env migration marker create failed"
+        ) from exc
     finally:
         temporary_path.unlink(missing_ok=True)
 
@@ -4549,7 +4831,9 @@ def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
         raise DeploymentContractError(
             "compatible pair manifest v4 already exists; use deploy or rollback"
         )
-    raise DeploymentContractError("legacy compatible pair manifest has no source provenance")
+    raise DeploymentContractError(
+        "legacy compatible pair manifest has no source provenance"
+    )
 
 
 def _pair_manifest_artifact_exists(path: Path) -> bool:
@@ -4579,7 +4863,9 @@ def write_pair_manifest(path: str, manifest: CompatiblePairManifest) -> None:
     payload = json.dumps(asdict(manifest), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     payload_bytes = payload.encode("utf-8")
     previous_bytes = manifest_path.read_bytes() if manifest_path.exists() else None
-    previous_mode = manifest_path.stat().st_mode & 0o777 if previous_bytes is not None else None
+    previous_mode = (
+        manifest_path.stat().st_mode & 0o777 if previous_bytes is not None else None
+    )
     temp_path: Path | None = None
     replaced = False
     try:
@@ -4699,7 +4985,8 @@ def manifest_with_active_pair(
         active.map_image_id == manifest.active.map_image_id
         and active.map_ui_image_id == manifest.active.map_ui_image_id
         and active.map_dagster_image_id == manifest.active.map_dagster_image_id
-        and active.map_dagster_daemon_image_id == manifest.active.map_dagster_daemon_image_id
+        and active.map_dagster_daemon_image_id
+        == manifest.active.map_dagster_daemon_image_id
         and active.map_source_revision == manifest.active.map_source_revision
         and active.pinvi_image_id == manifest.active.pinvi_image_id
         and active.pinvi_source_revision == manifest.active.pinvi_source_revision
@@ -4786,7 +5073,9 @@ def inspect_c6c_image_source_revision(
             check=False,
         )
     except OSError as exc:
-        raise DeploymentContractError(f"cannot inspect {label} image source provenance") from exc
+        raise DeploymentContractError(
+            f"cannot inspect {label} image source provenance"
+        ) from exc
     if completed.returncode != 0:
         raise DeploymentContractError(f"cannot inspect {label} image source provenance")
     try:
@@ -4798,10 +5087,9 @@ def inspect_c6c_image_source_revision(
     revision = labels.get("org.opencontainers.image.revision")
     if not isinstance(revision, str) or _SOURCE_REVISION_PATTERN.fullmatch(revision) is None:
         raise DeploymentContractError(f"{label} image source revision label is invalid")
-    if (
-        expected_build_environment is not None
-        and labels.get("io.pinvi.build.environment") != expected_build_environment
-    ):
+    if expected_build_environment is not None and labels.get(
+        "io.pinvi.build.environment"
+    ) != expected_build_environment:
         raise DeploymentContractError(f"{label} image build environment label is invalid")
     return revision
 
@@ -4969,7 +5257,9 @@ def _expand_env_path(value: str, environment: Mapping[str, str]) -> str:
         index += len(name) + 1
     expanded = "".join(result)
     if not expanded:
-        raise ComposeCandidateContractError("compose candidate path resolves to an empty value")
+        raise ComposeCandidateContractError(
+            "compose candidate path resolves to an empty value"
+        )
     return expanded
 
 
@@ -4980,13 +5270,17 @@ def _resolve_candidate_path(value: str, compose_directory: Path) -> Path:
             path = compose_directory / path
         return path.resolve()
     except (OSError, RuntimeError, ValueError) as exc:
-        raise ComposeCandidateContractError("compose candidate path cannot be resolved") from exc
+        raise ComposeCandidateContractError(
+            "compose candidate path cannot be resolved"
+        ) from exc
 
 
 def compose_volume_graph_hash(document: Mapping[str, Any]) -> str:
     services = document.get("services", {})
     if not isinstance(services, Mapping):
-        raise ComposeCandidateContractError("compose candidate has no valid services mapping")
+        raise ComposeCandidateContractError(
+            "compose candidate has no valid services mapping"
+        )
     graph = {
         "volumes": document.get("volumes"),
         "services": {
@@ -5033,7 +5327,9 @@ def _assert_candidate_single_file_boundary(
         isinstance(service, Mapping) and service.get("extends") is not None
         for service in services.values()
     ):
-        raise ComposeCandidateContractError("compose candidate service extends is not supported")
+        raise ComposeCandidateContractError(
+            "compose candidate service extends is not supported"
+        )
 
 
 def revalidate_candidate_system_bind_snapshots(
@@ -5075,7 +5371,8 @@ def _validate_candidate_volume_graph(
     if root_env is not None:
         try:
             state_paths = tuple(
-                Path(path).expanduser().resolve() for path in c6c_state_paths(environment)
+                Path(path).expanduser().resolve()
+                for path in c6c_state_paths(environment)
             )
         except (DeploymentContractError, OSError, RuntimeError, ValueError) as exc:
             raise ComposeCandidateContractError(
@@ -5125,7 +5422,8 @@ def _validate_candidate_volume_graph(
                 compose_directory,
             )
             if any(
-                resolved_source == manager_path or resolved_source in manager_path.parents
+                resolved_source == manager_path
+                or resolved_source in manager_path.parents
                 for manager_path in manager_paths
             ):
                 raise ComposeCandidateContractError(
@@ -5143,7 +5441,9 @@ def _validate_candidate_volume_graph(
                     system_source,
                     compose_directory,
                 )
-                source_is_exact = (mount.declared_source or mount.source) == system_source
+                source_is_exact = (
+                    mount.declared_source or mount.source
+                ) == system_source
                 if resolved_document:
                     source_is_exact = resolved_source == expected_source
                 if not source_is_exact or resolved_source != expected_source:
@@ -5216,7 +5516,10 @@ def _assert_candidate_cadvisor_mount_set(
         "/sys": "/sys",
         "/var/run/docker.sock": "/var/run/docker.sock",
     }
-    expected = {("bind", source, target, True) for source, target in expected_sources.items()}
+    expected = {
+        ("bind", source, target, True)
+        for source, target in expected_sources.items()
+    }
     if resolved_document:
         if compose_directory is None:
             raise ComposeCandidateContractError(
@@ -5255,7 +5558,9 @@ def _candidate_named_volume_definitions(
     if value is None:
         return frozenset()
     if not isinstance(value, Mapping):
-        raise ComposeCandidateContractError("compose candidate top-level volumes must be a mapping")
+        raise ComposeCandidateContractError(
+            "compose candidate top-level volumes must be a mapping"
+        )
     if resolved_document and (
         not isinstance(compose_project_name, str)
         or not _COMPOSE_PROJECT_PATTERN.fullmatch(compose_project_name)
@@ -5294,7 +5599,9 @@ def _candidate_named_volume_definitions(
                 f"compose candidate named volume {name} has an unsupported driver"
             )
         driver_opts = definition.get("driver_opts")
-        if driver_opts is not None and (not isinstance(driver_opts, Mapping) or bool(driver_opts)):
+        if driver_opts is not None and (
+            not isinstance(driver_opts, Mapping) or bool(driver_opts)
+        ):
             raise ComposeCandidateContractError(
                 f"compose candidate named volume {name} driver options are not allowed"
             )
@@ -5322,7 +5629,9 @@ def _candidate_volume_mounts(
     if value is None:
         return
     if not isinstance(value, list):
-        raise ComposeCandidateContractError("compose candidate service volumes must be a list")
+        raise ComposeCandidateContractError(
+            "compose candidate service volumes must be a list"
+        )
     for entry in value:
         if isinstance(entry, str):
             declared_source: str | None = None
@@ -5369,23 +5678,37 @@ def _candidate_volume_mounts(
             )
             continue
         if not isinstance(entry, Mapping):
-            raise ComposeCandidateContractError("compose candidate volume entry is invalid")
+            raise ComposeCandidateContractError(
+                "compose candidate volume entry is invalid"
+            )
         raw_type = entry.get("type")
         if not isinstance(raw_type, str):
-            raise ComposeCandidateContractError("compose candidate long volume has no valid type")
+            raise ComposeCandidateContractError(
+                "compose candidate long volume has no valid type"
+            )
         volume_type = raw_type.strip().lower()
         if volume_type not in {"bind", "volume"}:
-            raise ComposeCandidateContractError("compose candidate long volume type is not allowed")
+            raise ComposeCandidateContractError(
+                "compose candidate long volume type is not allowed"
+            )
         if "source" in entry and "src" in entry:
-            raise ComposeCandidateContractError("compose candidate long volume source is ambiguous")
+            raise ComposeCandidateContractError(
+                "compose candidate long volume source is ambiguous"
+            )
         if "target" in entry and "dst" in entry:
-            raise ComposeCandidateContractError("compose candidate long volume target is ambiguous")
+            raise ComposeCandidateContractError(
+                "compose candidate long volume target is ambiguous"
+            )
         raw_source = entry.get("source", entry.get("src"))
         raw_target = entry.get("target", entry.get("dst"))
         if not isinstance(raw_source, str):
-            raise ComposeCandidateContractError("compose candidate bind volume has no valid source")
+            raise ComposeCandidateContractError(
+                "compose candidate bind volume has no valid source"
+            )
         if not isinstance(raw_target, str) or not raw_target:
-            raise ComposeCandidateContractError("compose candidate bind volume has no valid target")
+            raise ComposeCandidateContractError(
+                "compose candidate bind volume has no valid target"
+            )
         read_only = entry.get("read_only", False)
         if type(read_only) is not bool:
             raise ComposeCandidateContractError(
@@ -5404,7 +5727,9 @@ def _candidate_volume_mounts(
                 raise ComposeCandidateContractError(
                     "compose candidate long volume options are invalid"
                 )
-            allowed_options = {"create_host_path"} if volume_type == "bind" else set()
+            allowed_options = (
+                {"create_host_path"} if volume_type == "bind" else set()
+            )
             if set(options) - allowed_options:
                 raise ComposeCandidateContractError(
                     "compose candidate long volume options are not allowed"
@@ -5416,7 +5741,9 @@ def _candidate_volume_mounts(
         source = _expand_env_path(raw_source, environment)
         target = _expand_env_path(raw_target, environment)
         if volume_type == "volume" and not _is_named_volume_source(source):
-            raise ComposeCandidateContractError("compose candidate named volume source is invalid")
+            raise ComposeCandidateContractError(
+                "compose candidate named volume source is invalid"
+            )
         yield CandidateVolumeMount(
             kind=volume_type,
             source=source,
@@ -5476,7 +5803,9 @@ def _capture_candidate_system_bind_snapshot(
                 "compose candidate Docker socket is not owned by the docker group"
             )
         if source_stat.st_mode & stat.S_IWOTH:
-            raise ComposeCandidateContractError("compose candidate Docker socket is world-writable")
+            raise ComposeCandidateContractError(
+                "compose candidate Docker socket is world-writable"
+            )
         if stat.S_IMODE(source_stat.st_mode) != 0o660:
             raise ComposeCandidateContractError(
                 "compose candidate Docker socket mode is not root:docker 0660"
@@ -5508,7 +5837,9 @@ def _capture_candidate_system_bind_snapshot(
             raise ComposeCandidateContractError(
                 f"compose candidate {service} system bind parent is writable"
             )
-        if first and source == "/sys" and current_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        if first and source == "/sys" and current_stat.st_mode & (
+            stat.S_IWGRP | stat.S_IWOTH
+        ):
             raise ComposeCandidateContractError(
                 "compose candidate cAdvisor /sys source is writable"
             )
@@ -5608,7 +5939,8 @@ def _validate_candidate_external_resource_references(
                 placement = (str(service_name), collection_name, alias)
                 if (
                     alias in external_aliases
-                    and placement not in _CANDIDATE_ALLOWED_EXTERNAL_RESOURCE_REFERENCES
+                    and placement
+                    not in _CANDIDATE_ALLOWED_EXTERNAL_RESOURCE_REFERENCES
                 ):
                     raise ComposeCandidateContractError(
                         f"compose candidate {service_name} uses uninspectable external {collection_name}"
@@ -5630,7 +5962,9 @@ def _candidate_resource_references(
         if isinstance(entry, str):
             yield entry
             continue
-        if not isinstance(entry, Mapping) or not isinstance(entry.get("source"), str):
+        if not isinstance(entry, Mapping) or not isinstance(
+            entry.get("source"), str
+        ):
             raise ComposeCandidateContractError(
                 f"compose candidate service {collection_name} reference is invalid"
             )
