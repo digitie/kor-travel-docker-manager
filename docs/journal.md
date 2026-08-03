@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-08-04 (T-049E: pre-bootstrap diagnostic attestation 경계 수정)
+
+final cache-target cutover의 사전 조건을 n150에서 다시 확인하는 중, tracked Map·PinVi
+release pin은 이미 generation 7 candidate를 가리키지만 현재 compatible-pair manifest는
+bootstrap 전 old pair를 가리키는 상태를 확인했다. 이는 정상적인 one-time generation
+bootstrap의 출발 상태다. 그러나 `cache-target diagnose`의 writer 재기동 직후 일반
+`_attest_cache_target_pair`를 호출해 old pair에도 candidate release pin을 요구하고 있었다.
+그 결과 diagnostic은 모든 DB role 검사 뒤에도 fresh receipt를 완료할 수 없고, final
+cutover가 요구하는 gate가 스스로 막혔다.
+
+diagnostic 전용 `_attest_cache_target_prebootstrap_pair`를 추가해 old pair에는 manifest,
+frozen Compose, runtime readiness·image identity와 secret isolation만 다시 검증하도록
+분리했다. receipt identity는 candidate bootstrap에 쓸 canonical transaction으로 유지하고,
+old pair attestation에만 그 transaction의 raw Compose·external input에서 old image·source
+provenance를 materialize한 frozen transaction을 사용한다. 따라서 현재 candidate를 기준으로
+fresh receipt를 만들고 cutover에서 그대로 재검증할 수 있으며, old pair가 새 release로
+승인되거나 manifest가 진단 중 바뀌는 경로는 만들지 않는다. tracked release pin은 candidate
+build/generation bootstrap과 bootstrap 이후 일반 attestation에 그대로 남긴다.
+
+검토 중 singleton diagnostic journal의 복구 경로도 보강했다. 이전 process가 nonterminal
+journal을 남긴 경우 새 UUID가 단순히 거부돼, `aborted` attempt를 기록해도 새 rehearsal을
+시작할 제품 인터페이스가 없었다. 새 UUID는 C6c lock 안에서 해당 journal을 typed `aborted`
+terminal로 전이하고 attempt record와 대조·기록한 뒤, owner-only archive로 원자 이동한다.
+terminal receipt의 archive는 새 UUID가 명시적으로 supersede할 때만 허용하며, 충돌·검증·fsync
+실패는 fail-close한다. `PR #108`의 restore/dropdb 보정과는 별개의 production 발견이라 별도
+수정으로 관리한다. focused backend 회귀, Ruff 및 strict mypy(변경 서비스)를 다시 확인한다.
+
+---
+
 ## 2026-08-04 (T-050: 배포 alembic head 재발 방지 게이트, issue #109)
 
 prod에서 `kor-travel-map-api-latest`의 공개 큐레이션 표면이 0으로 떨어진 사고(issue #109)를

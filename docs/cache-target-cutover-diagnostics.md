@@ -35,7 +35,7 @@ boundary, C6c 전역 lock 및 owner-only journal 계약을 대체하지 않고 �
 새 명령은 다음 한 가지다.
 
 ```bash
-ktdctl cache-target diagnose --json
+ktdctl cache-target diagnose --diagnostic-id <canonical-lowercase-uuid> --json
 ```
 
 명령은 production에서 C6c 전역 lock을 취득한 뒤 canonical `.env`, raw/resolved
@@ -63,9 +63,31 @@ build·기동하지 않고, `.env`/manifest/active pair/Map·PinVi 운영 데이
 없는 경우 진단 자체를 security failure로 취급한다.
 
 `writers_fencing`은 production backup과 같은 exact writer registry 및 foreign-writer
-검사를 재사용한다. 모든 검사가 끝나거나 실패하면 기존 pair의 exact 상태를 다시
-attest하고 writer를 재기동한다. 이로써 진단이 잠깐 writer를 멈추더라도 forward runtime,
+검사를 재사용한다. 모든 검사가 끝나거나 실패하면 기존 **pre-bootstrap** pair의 exact
+상태를 manifest와 다시 대조하고 writer를 재기동한다. 이때 diagnostic receipt identity는
+후속 candidate bootstrap에 쓸 canonical transaction으로 유지하되, old runtime 재-attestation만
+그 transaction의 raw Compose·external input에서 old pair image와 source provenance를
+materialize한 frozen 문서로 수행한다. 이 시점의 old pair는 generation bootstrap이 아직
+수행되지 않았으므로 tracked release pin과 같을 필요가 없다. release pin은 후속 cutover가 새
+candidate를 build·bootstrap하기 직전에만 강제한다. 이 경계를 섞으면 diagnostic이 성공할 수
+없거나 receipt가 즉시 stale해져 cutover gate 자체가 막히므로, 진단은 old pair를 새 release로
+승격하거나 manifest를 바꾸지 않는다. 이로써 진단이 잠깐 writer를 멈추더라도 forward runtime,
 migration, initial event, sync enable을 실행하지 않는다.
+
+### Diagnostic ID 수명
+
+canonical journal 경로에는 현재 diagnostic 하나만 둔다. 같은 ID로 재호출한 terminal
+journal은 기존 결과만 재보고하며, 같은 ID의 nonterminal journal은 이전 process crash로
+간주해 fail-close한다. 반대로 operator가 **새 UUID**를 명시하면 C6c 전역 lock 안에서
+기존 journal을 먼저 typed read한다. nonterminal이면 `aborted`로 terminal 전이·fsync하고,
+terminal journal과 정확히 같은 attempt record를 기록 또는 대조·fsync한 뒤, owner-only
+archive로 원자 이동한다. 그 다음에만 새 canonical journal을 쓴다.
+
+archive의 이름 충돌·owner/mode·내용 재검증·directory fsync 중 하나라도 실패하면 새 진단을
+시작하지 않는다. 따라서 receipt/attempt는 삭제되지 않으며, archive 직후 새 journal을 쓰기
+전에 process가 죽어도 다음 새 UUID가 안전하게 진행할 수 있다. 기존 `completed` receipt도
+operator가 새 UUID 진단을 요청한 경우에만 archive한다. 이는 기존 receipt의 freshness gate를
+의도적으로 무효화하므로, 새 receipt가 완료되기 전에는 cutover를 계속 거부한다.
 
 ## 3. DB별 stage와 비밀 없는 증적
 

@@ -145,6 +145,7 @@ from kor_travel_docker_manager.services.cache_target_diagnostics import (
     DiagnosticFailureClass,
     DiagnosticStage,
     DiagnosticStageReceipt,
+    archive_cache_target_diagnostic,
     diagnostic_attempt_budget_exceeded,
     diagnostic_failure_is_reproduced,
     diagnostic_receipt_is_fresh,
@@ -5255,8 +5256,9 @@ class ComposeService:
         mutation은 절대 하지 않는다 — 성공은 cutover 성공을 뜻하지 않는다(설계 문서
         1절). writer는 진단 동안만 멈추고 끝나면 성공/실패와 무관하게 항상 다시
         올린다. 같은 diagnostic ID로 재호출했을 때 journal이 이미 terminal이면 그
-        결과를 재보고하고, terminal이 아니면(직전 시도가 crash) fail-close한다 —
-        operator가 새 diagnostic ID로 다시 시작해야 한다.
+        결과를 재보고한다. 같은 ID의 nonterminal journal은 crash로 보고 fail-close한다.
+        새 ID는 이전 journal을 lock 안에서 terminal attempt로 확정·archive한 뒤에만
+        시작한다. 따라서 새 rehearsal이 기존 receipt를 삭제하거나 덮어쓰지 않는다.
         """
 
         try:
@@ -5306,14 +5308,18 @@ class ComposeService:
 
             if journal_exists:
                 journal = read_cache_target_diagnostic(journal_path)
-                if journal.diagnostic_id != diagnostic_id:
+                if journal.diagnostic_id == diagnostic_id:
+                    if journal.phase in TERMINAL_PHASES:
+                        return _cache_target_diagnostic_process_result(journal, resumed=True)
                     raise DeploymentContractError(
-                        "existing cache-target diagnostic belongs to another request"
+                        "cache-target diagnostic crashed mid-run; start a new diagnostic ID"
                     )
-                if journal.phase in TERMINAL_PHASES:
-                    return _cache_target_diagnostic_process_result(journal, resumed=True)
-                raise DeploymentContractError(
-                    "cache-target diagnostic crashed mid-run; start a new diagnostic ID"
+                assert_manager_mutation_allowed(environment=transaction.environment.effective)
+                self._archive_superseded_cache_target_diagnostic(
+                    journal_path=journal_path,
+                    attempt_log_path=attempt_log_path,
+                    journal=journal,
+                    now_unix=int(time.time()),
                 )
 
             assert_manager_mutation_allowed(environment=transaction.environment.effective)
@@ -5341,6 +5347,44 @@ class ComposeService:
                 manifest=manifest,
                 state_directory=state_directory,
             )
+
+    @staticmethod
+    def _archive_superseded_cache_target_diagnostic(
+        *,
+        journal_path: Path,
+        attempt_log_path: Path,
+        journal: CacheTargetDiagnosticJournal,
+        now_unix: int,
+    ) -> None:
+        """새 diagnostic ID 전의 receipt를 terminal attempt로 보존·archive한다."""
+
+        if journal.phase not in TERMINAL_PHASES:
+            journal = transition_cache_target_diagnostic(journal, "aborted")
+            write_cache_target_diagnostic(journal_path, journal)
+
+        attempt_log = read_or_create_cache_target_diagnostic_attempt_log(attempt_log_path)
+        matching_attempts = tuple(
+            attempt
+            for attempt in attempt_log.attempts
+            if attempt.diagnostic_id == journal.diagnostic_id
+        )
+        if not matching_attempts:
+            attempt_log = record_diagnostic_attempt(
+                attempt_log,
+                journal,
+                now_unix=now_unix,
+            )
+            write_cache_target_diagnostic_attempt_log(attempt_log_path, attempt_log)
+        elif len(matching_attempts) != 1 or (
+            matching_attempts[0].started_at_unix != journal.started_at_unix
+            or matching_attempts[0].phase != journal.phase
+            or matching_attempts[0].failure_stage != journal.failure_stage
+            or matching_attempts[0].failure_class != journal.failure_class
+        ):
+            raise DeploymentContractError(
+                "cache-target diagnostic attempt does not match the terminal journal"
+            )
+        archive_cache_target_diagnostic(journal_path, journal)
 
     def _cache_target_diagnostic_identity(
         self,
@@ -5525,7 +5569,7 @@ class ComposeService:
                     "cache-target diagnostic writer restart activated a different "
                     "image pair than was running before the writer fence"
                 )
-            self._attest_cache_target_pair(config, manifest, transaction)
+            self._attest_cache_target_prebootstrap_pair(config, manifest, transaction)
 
         now_unix = int(time.time())
         attempt_log = read_or_create_cache_target_diagnostic_attempt_log(attempt_log_path)
@@ -5678,6 +5722,49 @@ class ComposeService:
             config,
             services,
             transaction=transaction,
+            frozen_recovery=True,
+        )
+        validate_runtime_secret_isolation(runtime_configs, config)
+
+    def _attest_cache_target_prebootstrap_pair(
+        self,
+        config: C6cDeploymentConfig,
+        manifest: CompatiblePairManifest,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """진단 재기동 뒤 old pair가 frozen 계약과 같은지 확인한다.
+
+        generation bootstrap 전 diagnostic은 아직 tracked release로 바뀌지 않은
+        active/rollback pair를 검사한다. 따라서 이 경로에서 새 release pin을 요구하면
+        fresh diagnostic receipt를 만들 수 없다. candidate bootstrap과 그 이후 runtime은
+        `_attest_cache_target_pair`가 release provenance까지 계속 검증한다.
+        """
+
+        prebootstrap_transaction = self._materialize_active_recovery_transaction_unlocked(
+            transaction,
+            config,
+            manifest.active,
+        )
+        services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        self._require_services_ready(
+            services,
+            transaction=prebootstrap_transaction,
+            frozen_recovery=True,
+        )
+        self._validate_resolved_compose_contract(
+            config,
+            expected_pair=manifest.active,
+            transaction=prebootstrap_transaction,
+            frozen_recovery=True,
+        )
+        if not self._pair_matches(self._inspect_current_pair(config), manifest.active):
+            raise DeploymentContractError(
+                "cache-target pre-bootstrap running pair differs from the attested active pair"
+            )
+        runtime_configs = self._inspect_c6c_runtime_configs(
+            config,
+            services,
+            transaction=prebootstrap_transaction,
             frozen_recovery=True,
         )
         validate_runtime_secret_isolation(runtime_configs, config)
