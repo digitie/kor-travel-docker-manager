@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-08-03 (T-049B: cache-target 진단 DB stage primitive 구현)
+
+open issue 확인 결과 이슈 #99(H35 Map 쪽 `0063→0078` 실 prod 데이터 실측 확정값)만
+있었고 T-049B 범위와는 무관해(T-049D/E의 cutover-retry 기대값 대조용) 이번 phase에는
+반영하지 않았다.
+
+`cache_target_diagnostic_stages.py`를 신설해 설계 문서 3절의 9개 DB stage를
+`cache_target_backup.py`의 기존 pg_dump/pg_restore helper 위에서 typed
+`DiagnosticStageReceipt`로 분해했다. 적대적 리뷰어 2명이 독립적으로 같은 핵심 공백을
+찾았다: scratch schema/data inventory 비교 stage가 `_run_logical_inventory`의 실제
+실패 원인(timeout/subprocess 실패/정책 위반 stderr)을 버리고 전부
+`inventory_mismatch`로 뭉뚱그려, 설계 문서가 명시한 "원인을 stderr_policy_rejected와
+다른 subprocess failure class로 분리한다"는 목적을 무너뜨리고 있었다 — 고쳤다.
+리뷰어 1은 추가로 archive 파일 open 지점에 `cache_target_backup.py`의 owner-only
+디렉터리 검증이 빠져 있었던 것과, scratch 관련 4개 함수가 production과의 이름 충돌을
+`diagnose_scratch_create`만큼 방어하지 않던 것을 지적해 반영했다. 회귀 테스트
+28건으로 backend 전체 1459 passed, ruff/mypy clean을 확인했다.
+
+T-049C(writer fence·orchestration)부터는 이 primitive들을 순서대로 호출하고,
+mid-sequence 실패 시 `diagnose_scratch_cleanup` 호출을 보장하는 책임을 진다.
+
+---
+
 ## 2026-08-03 (T-049A: cache-target 진단 typed 모델·storage 구현)
 
 설계 문서 6절이 고정한 5-phase 순서의 첫 PR로 `cache_target_diagnostics.py`를 신설했다.

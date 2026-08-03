@@ -75,7 +75,7 @@ migration, initial event, sync enable을 실행하지 않는다.
 | stage | 작업 | 성공 증적 | 실패 분류 예 |
 |---|---|---|---|
 | `source_archive` | custom `pg_dump` 생성 | archive byte bucket·SHA-256 | `subprocess_nonzero`, `stderr_policy_rejected`, `timeout` |
-| `source_schema_inventory` | schema-only logical inventory | SHA-256 | `subprocess_nonzero`, `unexpected_stderr`, `timeout` |
+| `source_schema_inventory` | schema-only logical inventory | SHA-256 | `subprocess_nonzero`, `stderr_policy_rejected`, `timeout` |
 | `source_data_inventory` | data-only deterministic inventory | SHA-256 | `subprocess_nonzero`, `stderr_policy_rejected`, `timeout` |
 | `archive_structure` | archive list 검증 | pass | `archive_invalid` |
 | `scratch_create` | owner 전용 scratch DB 생성 | opaque scratch identity | `admin_command_failed` |
