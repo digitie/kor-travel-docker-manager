@@ -16,11 +16,20 @@ cutover가 요구하는 gate가 스스로 막혔다.
 
 diagnostic 전용 `_attest_cache_target_prebootstrap_pair`를 추가해 old pair에는 manifest,
 frozen Compose, runtime readiness·image identity와 secret isolation만 다시 검증하도록
-분리했다. tracked release pin은 candidate build/generation bootstrap과 bootstrap 이후
-일반 attestation에 그대로 남아 있어, old pair가 새 release로 승인되거나 manifest가
-진단 중 바뀌는 경로는 만들지 않는다. `PR #108`의 restore/dropdb 보정과는 별개의
-production 발견이라 별도 수정으로 관리한다. focused backend 24 passed, Ruff 및 strict
-mypy(변경 서비스) 통과를 확인했다.
+분리했다. receipt identity는 candidate bootstrap에 쓸 canonical transaction으로 유지하고,
+old pair attestation에만 그 transaction의 raw Compose·external input에서 old image·source
+provenance를 materialize한 frozen transaction을 사용한다. 따라서 현재 candidate를 기준으로
+fresh receipt를 만들고 cutover에서 그대로 재검증할 수 있으며, old pair가 새 release로
+승인되거나 manifest가 진단 중 바뀌는 경로는 만들지 않는다. tracked release pin은 candidate
+build/generation bootstrap과 bootstrap 이후 일반 attestation에 그대로 남긴다.
+
+검토 중 singleton diagnostic journal의 복구 경로도 보강했다. 이전 process가 nonterminal
+journal을 남긴 경우 새 UUID가 단순히 거부돼, `aborted` attempt를 기록해도 새 rehearsal을
+시작할 제품 인터페이스가 없었다. 새 UUID는 C6c lock 안에서 해당 journal을 typed `aborted`
+terminal로 전이하고 attempt record와 대조·기록한 뒤, owner-only archive로 원자 이동한다.
+terminal receipt의 archive는 새 UUID가 명시적으로 supersede할 때만 허용하며, 충돌·검증·fsync
+실패는 fail-close한다. `PR #108`의 restore/dropdb 보정과는 별개의 production 발견이라 별도
+수정으로 관리한다. focused backend 회귀, Ruff 및 strict mypy(변경 서비스)를 다시 확인한다.
 
 ---
 

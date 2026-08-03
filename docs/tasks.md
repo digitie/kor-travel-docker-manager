@@ -437,8 +437,12 @@ phase는 별도 PR로 검증한다.
       적용하면 generation bootstrap 전의 old pair가 항상 거부되어 fresh receipt를 만들 수
       없다. diagnostic 전용 attestation은 old pair의 runtime 계약만 확인하고, tracked Map·PinVi
       release pin은 candidate build/bootstrap 및 그 이후의 일반 attestation에서 계속 강제한다.
-      n150에서 이 경계로 stale diagnostic을 durable `aborted` attempt로 보존한 뒤 새 rehearsal을
-      실행해 완료 receipt와 final cutover gate를 확인한다.
+      receipt identity는 candidate bootstrap과 같은 canonical transaction을 계속 쓰고, old
+      runtime 재-attestation만 그 raw/external input에서 old pair image·source provenance를
+      materialize한 frozen transaction으로 수행한다. 새 diagnostic UUID는 C6c lock 안에서 stale
+      journal을 `aborted` terminal attempt로 보존·대조하고 owner-only archive로 원자 회전한
+      뒤에만 시작한다. n150에서 이 경계로 새 rehearsal을 실행해 완료 receipt와 final cutover
+      gate를 확인한다.
 - [ ] **T-049E 후속 조사 필요(미해결) — 스키마/데이터 inventory 해시 비교의
       근본 한계.** 같은 재실행에서 map_dagster의 `scratch_data_inventory`와
       pinvi의 `scratch_schema_inventory`가 `inventory_mismatch`로 실패했다.

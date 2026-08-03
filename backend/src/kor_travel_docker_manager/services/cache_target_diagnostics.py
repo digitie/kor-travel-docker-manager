@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -336,6 +337,58 @@ def read_cache_target_diagnostic(path: Path) -> CacheTargetDiagnosticJournal:
     _validate_journal(journal)
     _validate_phase_evidence(journal)
     return journal
+
+
+def archive_cache_target_diagnostic(
+    path: Path,
+    journal: CacheTargetDiagnosticJournal,
+) -> Path:
+    """검증을 마친 terminal journal을 owner-only archive로 원자 이동한다.
+
+    canonical path에는 현재 diagnostic 하나만 둘 수 있다. 새 ID가 terminal 이전
+    receipt를 명시적으로 supersede할 때, receipt와 attempt log는 보존하면서 이 함수로
+    canonical path를 비운다. archive target 충돌은 기록 유실 가능성이므로 fail-close한다.
+    """
+
+    _validate_journal(journal)
+    _validate_phase_evidence(journal)
+    if journal.phase not in TERMINAL_PHASES:
+        raise DeploymentContractError(
+            "cache-target diagnostic archive requires a terminal journal phase"
+        )
+    if read_cache_target_diagnostic(path) != journal:
+        raise DeploymentContractError(
+            "cache-target diagnostic journal changed before archive"
+        )
+    archive_path = path.with_name(
+        f"cache-target-diagnostic-archive-v1-{journal.diagnostic_id}-{journal.phase}.json"
+    )
+    try:
+        archive_path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise DeploymentContractError(
+            "cache-target diagnostic archive path is unavailable"
+        ) from exc
+    else:
+        raise DeploymentContractError("cache-target diagnostic archive already exists")
+    try:
+        os.replace(path, archive_path)
+        if read_cache_target_diagnostic(archive_path) != journal:
+            raise DeploymentContractError(
+                "cache-target diagnostic archive verification failed"
+            )
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except DeploymentContractError:
+        raise
+    except OSError as exc:
+        raise DeploymentContractError("cache-target diagnostic archive failed") from exc
+    return archive_path
 
 
 def _allowed_next_phases(
