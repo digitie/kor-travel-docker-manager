@@ -55,8 +55,9 @@ yarn-error.log*
 memory/
 .local/
 
-# Local-only docs (민감 운영 접속 정보 등) — 커밋 금지
+# Local-only docs/scripts (민감 운영 접속 정보 등) — 커밋 금지
 *.local.md
+*.local.sh
 
 # Local databases, virtualenvs and log directories
 pinvi_metrics.db
