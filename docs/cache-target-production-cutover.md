@@ -4,6 +4,11 @@
 manager 제품 경로의 정본이다. 실제 credential·호스트·도메인은 기록하지 않는다. 민감 접속값은
 gitignore된 `docs/deploy-runbook.local.md`와 canonical `.env`에만 둔다.
 
+전환의 긴 pre-forward 검증을 반복 실행하지 않기 위한 사전 진단의 역할·phase·비밀 비노출
+증적·시간 budget은 [`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)가
+정본이다. 이 runbook의 writer fence와 실제 최신 backup은 그 사전 진단으로 대체하거나 재사용하지
+않는다.
+
 ## 1. 고정 배포 계약
 
 Map API에만 다음 registry를 전달한다.

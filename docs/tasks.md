@@ -18,6 +18,7 @@
 | **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
 | **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
 | **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
+| **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[ ]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 
 ---
 
@@ -271,3 +272,22 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
       검증하고 backend 전체·Ruff·strict mypy·canonical Compose gate를 통과한다.
 - [ ] 최종 exact HEAD의 단일 독립 적대적 리뷰와 CI green 뒤 n150에서 별도 승인된 initial cutover→receipt→sync enable→
       pair attestation을 실행하고 live backlog/DLQ/epoch/snapshot readiness를 확인한다.
+
+### T-049: cache-target 사전 진단·cutover abort budget 제품화
+
+설계 정본은 [`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)다.
+
+- [ ] `ktdctl cache-target diagnose --json`의 typed diagnostic journal/receipt와 input identity·owner-only
+      storage를 구현한다. raw stderr/stdout, DSN, credential, resolved Compose, artifact path는 어떤 결과에도
+      남기지 않는다.
+- [ ] Map application → Map Dagster → PinVi 순서의 source archive/schema/data inventory/scratch restore
+      rehearsal을 stage·failure class로 기록하고, cleanup·foreign writer·runtime re-attestation 실패를
+      fail-close한다.
+- [ ] PostgreSQL major별 circular-FK advisory grammar를 integration fixture로 고정한다. data-only에서
+      실제로 지원하는 exact advisory만 허용하고 schema-only/unknown warning/nonzero exit는 거부한다.
+- [ ] stale/foreign/expired diagnostic receipt 및 24시간 budget 초과를 새 cutover 전에 거부하고, actual
+      cutover의 fresh backup receipt와 사전 archive를 절대로 혼용하지 않는다.
+- [ ] pre-forward failure의 마지막 stage/class를 owner-only window journal에 보존하고, initial external
+      event 전후의 abort/resume/fix-forward 경계를 회귀로 검증한다.
+- [ ] backend 전체·Ruff·strict mypy·canonical Compose와 n150 sync=false diagnostic rehearsal을 통과한 뒤,
+      final T-VN-41 cutover를 정확히 한 번 실행한다.

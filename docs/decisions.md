@@ -1272,3 +1272,58 @@ exact writer 재기동과 health/attestation을 재개해 `runtime_activated`에
 
 - (open) T-048 구현·CI·최종 exact HEAD의 단일 독립 적대적 리뷰를 완료한다.
 - (open) 별도 승인 아래 n150 initial cutover와 live receipt/pair attestation을 수행한다.
+
+## ADR-29: cache-target의 긴 pre-forward 검증은 독립 사전 진단 gate로 분리한다
+
+- 상태: accepted
+- 날짜: 2026-08-03
+- 결정자: human, Codex
+
+### 컨텍스트
+
+T-VN-41의 결합 cutover는 외부 event 전에 DB dump·logical inventory·scratch restore rehearsal과
+authenticated runtime smoke를 수행한다. 이들은 failure를 fail-close해야 하지만, 실제 production DB의
+`pg_dump` advisory grammar나 Compose 직후 readiness처럼 긴 primitive가 실패하면 entire cutover를 반복해
+원인을 확인하게 된다. 그러면 old runtime 복구와 writer fence가 불필요하게 반복되고, terminal
+`rolled_back`만으로는 어느 primitive가 실패했는지 충분히 분리되지 않는다.
+
+### 결정
+
+Docker Manager가 `cache-target diagnose`라는 별도 사전 진단 transaction을 제공한다. 이 경로는 C6c
+global lock과 exact writer fence를 사용해 세 DB의 archive/inventory/scratch rehearsal과 canonical
+authenticated smoke를 수행하지만, candidate build·migration·initial event·sync enable·manifest/.env
+mutation은 하지 않는다. diagnostic receipt는 input logical identity와 typed stage/failure class만 남기며,
+원문 stderr/stdout, DSN, credential, resolved Compose, artifact path는 남기지 않는다.
+
+new cutover는 같은 Manager/tool/pair/Compose/DB-schema/writer-registry identity를 가진 fresh completed
+diagnostic receipt를 요구한다. 다만 diagnostic archive나 row inventory는 current data backup의 대체물이
+아니므로 actual cutover는 writer fence 뒤 fresh backup/rehearsal을 다시 만든다. 동일 input에서 diagnostic
+failure가 반복되면 제한된 시간/횟수 budget 뒤 abort하고, regression이 포함된 수정과 새 receipt 없이는
+new cutover를 시작하지 않는다.
+
+### 근거
+
+- capability failure를 forward window와 분리하면 external-event 경계, coupled rollback 및 data-freshness
+  계약을 약화하지 않고 원인을 한 stage로 확정할 수 있다.
+- typed error class는 production raw log를 보존하지 않고도 exact test fixture와 코드 수정으로 연결된다.
+- `pg_dump` warning grammar를 major-version fixture로 고정하면 broad stderr allowlist로 보안을 낮추지 않는다.
+- retry budget을 transport-ready GET에만 한정하면 mutating operation의 결과를 추측하지 않는다.
+
+### 결과(긍정)
+
+- operator는 long-running pre-forward failure 뒤 full cutover를 반복하지 않고 diagnostic receipt에서
+  next action을 결정한다.
+- cutover journal은 final `rolled_back` 외에 마지막 safe failure stage/class를 갖게 된다.
+- Map/PinVi HTTP 의미와 Docker Manager lifecycle/retry 책임이 분리된다.
+
+### 결과(부정)
+
+- production 전환 전 writer를 잠깐 멈추는 별도 diagnostic window와 receipt lifecycle이 추가된다.
+- archive와 scratch rehearsal을 diagnostic과 actual cutover에서 각각 수행하므로 happy path의 실행 시간은
+  늘어난다. 이는 stale backup 재사용보다 data integrity를 우선한 의도적 비용이다.
+
+### 후속
+
+- (open) T-049A~E를 구현하고 n150 sync=false diagnostic rehearsal을 먼저 통과한다.
+- (open) Map production data-only inventory failure를 typed failure class와 exact fixture로 재현해
+  허용 grammar 또는 별도 fail-close 원인을 보강한다.
