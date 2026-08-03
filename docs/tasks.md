@@ -440,9 +440,11 @@ phase는 별도 PR로 검증한다.
       receipt identity는 candidate bootstrap과 같은 canonical transaction을 계속 쓰고, old
       runtime 재-attestation만 그 raw/external input에서 old pair image·source provenance를
       materialize한 frozen transaction으로 수행한다. 새 diagnostic UUID는 C6c lock 안에서 stale
-      journal을 `aborted` terminal attempt로 보존·대조하고 owner-only archive로 원자 회전한
-      뒤에만 시작한다. n150에서 이 경계로 새 rehearsal을 실행해 완료 receipt와 final cutover
-      gate를 확인한다.
+      journal을 `aborted`로 보존한다. writer fence 전 quiescence preflight는 archive만 하고
+      budget을 소모하지 않는다. `writers_stopping` durable boundary 이후에는 global fence digest
+      전의 partial writer stop/crash도 mutation 가능 상태로 보고 terminal attempt로 대조·기록한
+      owner-only archive를 거친 뒤에만 새 진단을 시작한다. n150에서 이 경계로 새 rehearsal을
+      실행해 완료 receipt와 final cutover gate를 확인한다.
 - [ ] **T-049E 후속 조사 필요(미해결) — 스키마/데이터 inventory 해시 비교의
       근본 한계.** 같은 재실행에서 map_dagster의 `scratch_data_inventory`와
       pinvi의 `scratch_schema_inventory`가 `inventory_mismatch`로 실패했다.

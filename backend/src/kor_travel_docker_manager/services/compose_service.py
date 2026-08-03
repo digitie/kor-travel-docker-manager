@@ -5358,9 +5358,19 @@ class ComposeService:
     ) -> None:
         """새 diagnostic ID 전의 receipt를 terminal attempt로 보존·archive한다."""
 
+        reached_writer_stop_boundary = journal.phase not in {"prepared", "writers_fencing"}
         if journal.phase not in TERMINAL_PHASES:
             journal = transition_cache_target_diagnostic(journal, "aborted")
             write_cache_target_diagnostic(journal_path, journal)
+
+        # `prepared`/`writers_fencing`은 writer가 멈추기 전의 quiescence preflight다.
+        # 이 지점의 crash/거부는 DB·runtime을 바꾸지 않았으므로 24시간 내 두 번이라는
+        # expensive rehearsal attempt budget을 소모시키지 않는다. stop 직전 durable
+        # `writers_stopping` phase부터는 partial stop/crash 가능성이 있으므로 digest가
+        # 아직 없어도 실제 rehearsal attempt로 보존한다.
+        if not reached_writer_stop_boundary:
+            archive_cache_target_diagnostic(journal_path, journal)
+            return
 
         attempt_log = read_or_create_cache_target_diagnostic_attempt_log(attempt_log_path)
         matching_attempts = tuple(
@@ -5495,6 +5505,8 @@ class ComposeService:
         # pair와만 비교하므로, manifest 자체가 이미 stale하면 이 drift를 못 잡는다.
         pre_stop_pair = self._inspect_current_pair(config)
         failure: tuple[DiagnosticStage, DiagnosticFailureClass] | None = None
+        journal = transition_cache_target_diagnostic(journal, "writers_stopping")
+        write_cache_target_diagnostic(journal_path, journal)
         try:
             stopped = self._run_frozen_recovery(
                 ["stop", *ordered_writers],
