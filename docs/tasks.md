@@ -305,9 +305,27 @@ phase는 별도 PR로 검증한다.
       carry-forward 의미론, freshness 판정 4가지 경로, tamper된 JSON 필드(extra/missing)
       거부, 0600 round-trip). backend 1431 passed, ruff 기존 baseline 유지(6건, 무관
       파일), mypy clean.
-- [ ] **T-049B — DB diagnostic primitive**: 현재 backup helper를 typed stage 결과로
-      분해하고 source/scratch cleanup, 지원 `pg_dump` advisory grammar 및 exact
-      fail-close test를 만든다.
+- [x] **T-049B — DB diagnostic primitive.** `cache_target_diagnostic_stages.py` 신설.
+      `cache_target_backup.py`의 기존 pg_dump/pg_restore subprocess 패턴과
+      circular-FK advisory grammar(`_is_circular_foreign_key_restore_advisory`)를
+      재사용해 9개 stage(`source_archive`, `source_schema_inventory`,
+      `source_data_inventory`, `archive_structure`, `scratch_create`,
+      `scratch_restore`, `scratch_schema_inventory`, `scratch_data_inventory`,
+      `scratch_cleanup`)를 각각 독립 호출 가능한 `diagnose_*` 함수로 분해했다. 각
+      함수는 예상 가능한 실패를 raise 대신 `status="failed"` typed receipt로
+      반환하고, 계약 위반(runtime 검증, scratch/production 이름 충돌)만
+      `DeploymentContractError`로 raise한다. 적대적 리뷰어 2명이 독립적으로 같은
+      실공백을 찾았다: `scratch_schema_inventory`/`scratch_data_inventory`가
+      `_run_logical_inventory`의 실제 `failure_class`(timeout/subprocess_nonzero/
+      stderr_policy_rejected)를 버리고 전부 `inventory_mismatch`로 뭉뚱그려
+      원인 분리라는 설계 문서 3절의 취지를 무너뜨리던 것 — 실제 실패 class를
+      그대로 propagate하도록 고쳤다. 추가로 리뷰에서 나온: production과 이름이
+      같은 scratch runtime을 나머지 4개 scratch 함수도 방어적으로 거부하도록
+      `_assert_scratch_does_not_collide_with_production` 공통화, archive 파일을
+      여는 3개 지점에 `_validate_owner_only_directory` 방어, cleanup이 caller
+      책임이라는 모듈 docstring 경고를 추가했다. 회귀 테스트 28건(기존 20 +
+      failure_class propagation 2, 충돌 거부 4, restore 성공, 빈 archive 거부).
+      backend 1459 passed, ruff/mypy clean.
 - [ ] **T-049C — writer fence와 orchestration**: global lock, foreign writer 검사, 3-role
       serial diagnostic, runtime re-attestation, abort budget을
       `ktdctl cache-target diagnose`에 결선한다.
