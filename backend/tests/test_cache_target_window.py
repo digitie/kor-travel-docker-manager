@@ -43,6 +43,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
     pin_boundary_receipt_sha256,
     prepare_cache_target_window,
     read_cache_target_window,
+    record_window_failure,
     transition_cache_target_window,
     validate_map_final_evidence_binding,
     write_cache_target_window,
@@ -610,6 +611,64 @@ def test_window_journal_is_owner_only_and_exactly_round_trips(tmp_path: Path) ->
     assert read_cache_target_window(path) == journal
 
 
+def test_record_window_failure_freezes_last_safe_phase_and_class(
+    tmp_path: Path,
+) -> None:
+    journal = _backups_committed()
+    journal = transition_cache_target_window(
+        journal, "candidate_built", candidate_pair_sha256="6" * 64
+    )
+
+    failed = record_window_failure(journal, failure_class="contract_violation")
+
+    assert failed.failure_stage == "candidate_built"
+    assert failed.failure_class == "contract_violation"
+    assert failed.phase == "candidate_built"
+
+    path = tmp_path / "state" / "cache-target-window-v1.json"
+    path.parent.mkdir(mode=0o700)
+    write_cache_target_window(path, failed)
+    assert read_cache_target_window(path) == failed
+
+    rolled = transition_cache_target_window(failed, "rollback_preparing")
+    assert rolled.failure_stage == "candidate_built"
+    assert rolled.failure_class == "contract_violation"
+
+
+def test_record_window_failure_rejects_non_forward_phase() -> None:
+    journal = transition_cache_target_window(_prepared(), "rollback_preparing")
+    with pytest.raises(DeploymentContractError, match="forward phase"):
+        record_window_failure(journal, failure_class="unexpected_error")
+
+
+def test_window_rejects_mismatched_failure_stage_and_class_pairing() -> None:
+    journal = replace(_backups_committed(), failure_stage="backups_committed")
+    with pytest.raises(DeploymentContractError, match="must be set together"):
+        write_cache_target_window(Path("/nonexistent/unused.json"), journal)
+
+    journal = replace(_backups_committed(), failure_class="contract_violation")
+    with pytest.raises(DeploymentContractError, match="must be set together"):
+        write_cache_target_window(Path("/nonexistent/unused.json"), journal)
+
+
+def test_window_rejects_invalid_failure_stage_and_class_values() -> None:
+    journal = replace(
+        _backups_committed(),
+        failure_stage="rolled_back",  # not a forward phase
+        failure_class="contract_violation",
+    )
+    with pytest.raises(DeploymentContractError, match="failure stage is invalid"):
+        write_cache_target_window(Path("/nonexistent/unused.json"), journal)
+
+    journal = replace(
+        _backups_committed(),
+        failure_stage="backups_committed",
+        failure_class="bogus",  # type: ignore[arg-type]
+    )
+    with pytest.raises(DeploymentContractError, match="failure class is invalid"):
+        write_cache_target_window(Path("/nonexistent/unused.json"), journal)
+
+
 def test_window_rejects_phase_skip_and_old_restore_after_external_event() -> None:
     with pytest.raises(DeploymentContractError, match="phase transition"):
         transition_cache_target_window(_prepared(), "candidate_built")
@@ -751,7 +810,17 @@ def test_initial_event_boundary_fsync_failure_never_invokes_runner(
     assert persisted.external_event_count == 0
     assert old_restore_is_authorized(persisted) is True
     initial.assert_not_called()
-    assert rollback.call_args.kwargs["journal"] == persisted
+    # T-049D: pre-forward-boundary 실패 시 rollback으로 넘어가기 직전 마지막 안전
+    # phase/class를 얼린다 — disk에 남은 `persisted`에는 아직 없고(그 상태에서 다시
+    # 읽었을 뿐), 실제로 rollback에 전달되는 in-memory journal에만 기록된다.
+    rollback_journal = rollback.call_args.kwargs["journal"]
+    assert rollback_journal.failure_stage == "generation_bootstrapped"
+    assert rollback_journal.failure_class == "unexpected_error"
+    assert rollback_journal == replace(
+        persisted,
+        failure_stage="generation_bootstrapped",
+        failure_class="unexpected_error",
+    )
 
 
 def test_initial_response_loss_forbids_restore_and_same_cutover_resumes(
