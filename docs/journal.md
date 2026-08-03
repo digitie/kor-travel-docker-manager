@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-08-04 (T-051: Map DB naming 정리 착수 + issue #111/#114 결선)
+
+이슈 #109 사고 조사 도중 n150 postgres에 `kor_travel_map`(rev 0036, 오래된 leftover)과
+`krtour_map`(rev 0078, 실제 최신 데이터)이 공존한다는 것을 발견했다. 사용자 확인:
+`kor_travel_map`이 canonical 이름이 맞고, `krtour_map`은 legacy naming — 오래된
+`kor_travel_map`을 DROP하고 `krtour_map`을 `kor_travel_map`으로 RENAME해야 한다.
+map_dagster도 동일 패턴(`kor_travel_map_dagster` 80MB 낡음 vs `krtour_map_dagster`
+819MB 최신).
+
+같은 조사 중 새 이슈 3건이 열렸다: #111(Map PR #931의 `KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD`
+게이트를 Manager compose가 아직 결선 안 함), #114(`KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`
+결선 누락으로 map dagster provider ETL 전체가 fail-close), #115(cache-target
+writer-drain 관련 대형 신규 기능 — 완료 전까지 진단/rehearsal 중단하라는 임시 운영
+결론 포함).
+
+이번 커밋에서 코드/설정 정렬만 반영했다: `docker-compose.yml`·`.env.example`·
+`cache_target_backup.py`의 DB 이름 기본값을 `kor_travel_map`/`kor_travel_map_dagster`로
+정렬하고, #111·#114 결선을 추가했다. n150의 실제 DROP/RENAME과 재기동은 아직
+실행하지 않았다(다음 단계). #115는 범위가 커서 별도 태스크로 분리하고, 지시대로
+cache-target 진단/rehearsal(T-049E)은 여기서 중단한다.
+
+---
+
 ## 2026-08-04 (T-049E: pre-bootstrap diagnostic attestation 경계 수정)
 
 final cache-target cutover의 사전 조건을 n150에서 다시 확인하는 중, tracked Map·PinVi

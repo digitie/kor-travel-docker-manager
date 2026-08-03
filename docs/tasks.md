@@ -20,6 +20,7 @@
 | **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
+| **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[/]` | - | compose/backend 기본값 정렬 완료, n150 실제 DROP/RENAME 실행 대기 |
 
 ---
 
@@ -513,3 +514,35 @@ head`가 조용히 실행돼 `0063`→`0072`까지만 올라갔다. `0073`(공�
       1건). backend 전체 1515 passed, ruff/mypy clean(touched files).
 - [ ] Map 팀이 entrypoint의 무조건 `alembic upgrade head`를 손보는 별도 작업(issue
       #109 코멘트에서 예고)이 나오면 이 게이트와의 관계를 재검토한다.
+
+### T-051: Map DB naming 정리(krtour_map → kor_travel_map) + issue #111/#114 결선
+
+n150 postgres 인스턴스에 `kor_travel_map`(rev `0036`, 오래된 leftover)과 `krtour_map`
+(rev `0078`, 실제 최신 데이터)이 공존하고 있었다. `docker-compose.yml`의 모든 관련
+기본값(`KOR_TRAVEL_MAP_PG_DSN`·`KOR_TRAVEL_MAP_DAGSTER_PG_URL`·postgres init용
+`KRTOUR_MAP_POSTGRES_DB`)과 `cache_target_backup.py`의 `_ROLE_CONFIG` 기본값은 모두
+`krtour_map`/`krtour_map_dagster`를 가리키고 있었는데, canonical 이름은
+`kor_travel_map`/`kor_travel_map_dagster`가 맞다(사용자 확인). `krtour_map`은 legacy
+naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(구식)을 DROP하고
+`krtour_map`을 `kor_travel_map`으로 RENAME하는 것이 올바른 정리 방향이다.
+
+- [x] `docker-compose.yml`의 네 개 DSN/URL 기본값과 postgres init `KRTOUR_MAP_POSTGRES_DB`
+      기본값을 `kor_travel_map`/`kor_travel_map_dagster`로 정렬했다. `.env.example`도
+      동일하게 갱신했다.
+- [x] `cache_target_backup.py`의 `_ROLE_CONFIG` database 기본값(owner 기본값은 postgres
+      role 이름이라 그대로 유지)을 같은 이름으로 정렬했다. backend 전체 1527 passed,
+      ruff/mypy clean(touched files), compose/contract 관련 회귀 453건 포함.
+- [x] issue #114 — `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`를 map-api·map-dagster·
+      map-dagster-daemon 세 서비스 `environment:`에 결선했다(host `.env`엔 이미 값이
+      있었으나 compose가 전달하지 않아 `reverse_geocoder` 전역 필수 리소스가
+      `GeoAuthNotConfiguredError`로 fail-close되고 있었다).
+- [x] issue #111 — `KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD: "0078_cache_target_gc_observe"`를
+      map-api에 명시 literal 값으로 결선했다(Map PR #931의 배포 게이트 활성화 — 이미지
+      alembic head가 이 값과 다르면 DB 연결 전에 기동 자체를 거부한다). release pin
+      갱신 때마다 이 값도 함께 갱신해야 한다.
+- [ ] n150에서 실제로: (1) `kor_travel_map`/`kor_travel_map_dagster` 백업 후 DROP,
+      (2) `krtour_map`→`kor_travel_map`, `krtour_map_dagster`→`kor_travel_map_dagster`
+      RENAME, (3) 이 커밋 배포, (4) map-api/map-dagster/map-dagster-daemon 재기동해
+      정상 연결 확인.
+- [ ] issue #115(durable Dagster writer drain)는 별도 태스크(T-052 후보)로 다룬다 —
+      사용자 결정으로 구현 완료 전까지 cache-target 진단/rehearsal은 중단한다.

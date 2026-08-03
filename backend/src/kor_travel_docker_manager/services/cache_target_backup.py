@@ -36,13 +36,13 @@ _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str]] = {
     "map_application": (
         "KRTOUR_MAP_POSTGRES_DB",
-        "krtour_map",
+        "kor_travel_map",
         "KRTOUR_MAP_POSTGRES_USER",
         "krtour_map",
     ),
     "map_dagster": (
         "KRTOUR_MAP_DAGSTER_POSTGRES_DB",
-        "krtour_map_dagster",
+        "kor_travel_map_dagster",
         "KRTOUR_MAP_POSTGRES_USER",
         "krtour_map",
     ),
