@@ -177,7 +177,7 @@ def test_diagnose_rejects_crashed_nonterminal_journal(
         service.run_cache_target_diagnostic(diagnostic_id=_DIAGNOSTIC_ID)
 
 
-def test_diagnose_new_id_aborts_and_archives_crashed_journal_before_starting(
+def test_diagnose_new_id_records_crash_after_writer_stop_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service, journal_path, attempt_log_path = _install_diagnostic_context(tmp_path, monkeypatch)
@@ -188,11 +188,7 @@ def test_diagnose_new_id_aborts_and_archives_crashed_journal_before_starting(
         started_at_unix=1_700_000_000,
     )
     journal = transition_cache_target_diagnostic(journal, "writers_fencing")
-    journal = transition_cache_target_diagnostic(
-        journal,
-        "writers_fenced",
-        writer_fence_sha256="f" * 64,
-    )
+    journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     write_cache_target_diagnostic(journal_path, journal)
     unlocked = Mock(return_value={"phase": "prepared"})
     monkeypatch.setattr(service, "_run_cache_target_diagnostic_unlocked", unlocked)

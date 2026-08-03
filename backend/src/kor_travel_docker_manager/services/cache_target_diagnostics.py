@@ -34,6 +34,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
 DiagnosticPhase = Literal[
     "prepared",
     "writers_fencing",
+    "writers_stopping",
     "writers_fenced",
     "map_application_checked",
     "map_dagster_checked",
@@ -69,6 +70,7 @@ DiagnosticStageStatus = Literal["succeeded", "failed"]
 _FORWARD_PHASES: tuple[DiagnosticPhase, ...] = (
     "prepared",
     "writers_fencing",
+    "writers_stopping",
     "writers_fenced",
     "map_application_checked",
     "map_dagster_checked",
