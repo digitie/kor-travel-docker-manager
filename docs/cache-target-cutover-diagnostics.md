@@ -79,9 +79,12 @@ migration, initial event, sync enable을 실행하지 않는다.
 canonical journal 경로에는 현재 diagnostic 하나만 둔다. 같은 ID로 재호출한 terminal
 journal은 기존 결과만 재보고하며, 같은 ID의 nonterminal journal은 이전 process crash로
 간주해 fail-close한다. 반대로 operator가 **새 UUID**를 명시하면 C6c 전역 lock 안에서
-기존 journal을 먼저 typed read한다. nonterminal이면 `aborted`로 terminal 전이·fsync하고,
-terminal journal과 정확히 같은 attempt record를 기록 또는 대조·fsync한 뒤, owner-only
-archive로 원자 이동한다. 그 다음에만 새 canonical journal을 쓴다.
+기존 journal을 먼저 typed read한다. nonterminal이면 `aborted`로 terminal 전이·fsync한다.
+writer fence digest가 이미 있는 실제 rehearsal은 terminal journal과 정확히 같은 attempt
+record를 기록 또는 대조·fsync한 뒤 owner-only archive로 원자 이동한다. 반대로
+`prepared`/`writers_fencing`의 quiescence preflight는 writer를 멈추거나 DB/runtime을 바꾸기
+전이므로 archive만 하고 expensive rehearsal attempt budget은 소모하지 않는다. 그 다음에만
+새 canonical journal을 쓴다.
 
 archive의 이름 충돌·owner/mode·내용 재검증·directory fsync 중 하나라도 실패하면 새 진단을
 시작하지 않는다. 따라서 receipt/attempt는 삭제되지 않으며, archive 직후 새 journal을 쓰기

@@ -31,6 +31,12 @@ terminal receipt의 archive는 새 UUID가 명시적으로 supersede할 때만 �
 실패는 fail-close한다. `PR #108`의 restore/dropdb 보정과는 별개의 production 발견이라 별도
 수정으로 관리한다. focused backend 회귀, Ruff 및 strict mypy(변경 서비스)를 다시 확인한다.
 
+같은 흐름의 n150 실행에서 `writers_fencing` 전 quiescence가 0이 아니어 process가 종료한
+사례를 확인했다. 이 단계는 writer stop과 DB/runtime mutation보다 앞선 preflight인데도,
+crash journal을 회전할 때 full rehearsal과 같은 abort budget을 소모했다. writer fence digest가
+없으면 archive만 하고 attempt record를 남기지 않도록 경계를 분리한다. fence digest가 남은
+실제 rehearsal은 기존처럼 terminal attempt로 보존한다.
+
 ---
 
 ## 2026-08-04 (T-050: 배포 alembic head 재발 방지 게이트, issue #109)

@@ -18,6 +18,7 @@ from kor_travel_docker_manager.services.cache_target_diagnostics import (
     read_cache_target_diagnostic,
     read_cache_target_diagnostic_attempt_log,
     record_diagnostic_attempt,
+    transition_cache_target_diagnostic,
     write_cache_target_diagnostic,
     write_cache_target_diagnostic_attempt_log,
 )
@@ -186,6 +187,12 @@ def test_diagnose_new_id_aborts_and_archives_crashed_journal_before_starting(
         identity=_identity(),
         started_at_unix=1_700_000_000,
     )
+    journal = transition_cache_target_diagnostic(journal, "writers_fencing")
+    journal = transition_cache_target_diagnostic(
+        journal,
+        "writers_fenced",
+        writer_fence_sha256="f" * 64,
+    )
     write_cache_target_diagnostic(journal_path, journal)
     unlocked = Mock(return_value={"phase": "prepared"})
     monkeypatch.setattr(service, "_run_cache_target_diagnostic_unlocked", unlocked)
@@ -204,6 +211,38 @@ def test_diagnose_new_id_aborts_and_archives_crashed_journal_before_starting(
     assert [(item.diagnostic_id, item.phase) for item in attempts.attempts] == [
         (previous_id, "aborted")
     ]
+    unlocked.assert_called_once()
+
+
+def test_diagnose_new_id_archives_preflight_crash_without_spending_attempt_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, journal_path, attempt_log_path = _install_diagnostic_context(tmp_path, monkeypatch)
+    previous_id = "99999999-9999-4999-8999-999999999999"
+    journal = transition_cache_target_diagnostic(
+        prepare_cache_target_diagnostic(
+            diagnostic_id=previous_id,
+            identity=_identity(),
+            started_at_unix=1_700_000_000,
+        ),
+        "writers_fencing",
+    )
+    write_cache_target_diagnostic(journal_path, journal)
+    unlocked = Mock(return_value={"phase": "prepared"})
+    monkeypatch.setattr(service, "_run_cache_target_diagnostic_unlocked", unlocked)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.time.time",
+        lambda: 1_700_000_100,
+    )
+
+    service.run_cache_target_diagnostic(diagnostic_id=_DIAGNOSTIC_ID)
+
+    archived = list(
+        tmp_path.glob(f"cache-target-diagnostic-archive-v1-{previous_id}-aborted.json")
+    )
+    assert len(archived) == 1
+    assert read_cache_target_diagnostic(archived[0]).phase == "aborted"
+    assert not attempt_log_path.exists()
     unlocked.assert_called_once()
 
 

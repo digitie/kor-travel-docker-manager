@@ -5358,9 +5358,18 @@ class ComposeService:
     ) -> None:
         """새 diagnostic ID 전의 receipt를 terminal attempt로 보존·archive한다."""
 
+        reached_writer_fence = journal.writer_fence_sha256 is not None
         if journal.phase not in TERMINAL_PHASES:
             journal = transition_cache_target_diagnostic(journal, "aborted")
             write_cache_target_diagnostic(journal_path, journal)
+
+        # `prepared`/`writers_fencing`은 writer가 멈추기 전의 quiescence preflight다.
+        # 이 지점의 crash/거부는 DB·runtime을 바꾸지 않았으므로 24시간 내 두 번이라는
+        # expensive rehearsal attempt budget을 소모시키지 않는다. writer fence digest가
+        # durable journal에 기록된 뒤부터만 실제 rehearsal attempt로 보존한다.
+        if not reached_writer_fence:
+            archive_cache_target_diagnostic(journal_path, journal)
+            return
 
         attempt_log = read_or_create_cache_target_diagnostic_attempt_log(attempt_log_path)
         matching_attempts = tuple(
