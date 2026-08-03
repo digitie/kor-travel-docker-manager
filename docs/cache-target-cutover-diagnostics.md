@@ -136,11 +136,20 @@ pre-forward failure는 기존 coupled rollback으로 복구하되, 최종 journa
   fail-close한다. DB archive/inventory/restore stage 역시 자동 재시도하지 않는다.
 
 하나의 diagnostic input identity에는 자동 재시도를 하지 않는다. operator가 명시적으로
-새 diagnostic UUID를 시작할 수 있는 횟수와 total elapsed budget을 production policy로
-고정한다(초기값: 24시간 내 2회, 각 60분). budget을 넘기거나 같은
-`failure_stage`/`failure_class`가 재현되면 Manager는 `aborted` terminal을 남기고 cutover
-시작을 거부한다. operator는 해당 class가 재현되는 integration regression을 포함한 수정 PR과
-새 진단 receipt 없이는 다시 실행할 수 없다.
+새 diagnostic UUID를 시작할 수 있는 횟수는 production policy로 고정한다(초기값:
+24시간 내 2회 — abort budget은 attempt 횟수 기준이며 attempt당 고정 시간 상한을
+강제하지 않는다). budget을 넘기거나 같은 `failure_stage`/`failure_class`가 재현되면
+Manager는 `aborted` terminal을 남기고 cutover 시작을 거부한다. operator는 해당
+class가 재현되는 integration regression을 포함한 수정 PR과 새 진단 receipt 없이는
+다시 실행할 수 없다.
+
+n150 실측(2026-08-03): 대용량 테이블(1,780만 행) 하나의 `pg_restore`만으로도 약
+97분이 걸릴 수 있어, DB archive/restore stage의 subprocess timeout은
+`_DATABASE_RESTORE_TIMEOUT_SECONDS`(3시간, `cache_target_backup.py`)로 고정했다.
+즉 하나의 `cache-target diagnose` 호출이 role 3개를 순차 진단하는 동안 정상적으로
+여러 시간 걸릴 수 있다 — operator는 "각 60분" 같은 고정 시간을 기대하지 말고,
+진행 중인 journal의 phase가 실제로 전진하고 있는지(non-terminal이지만 stuck이
+아닌지)로 판단해야 한다.
 
 이는 external event 이전에만 적용한다. 진단과 pre-forward backup은 external event가 0인
 경우만 abort/rollback할 수 있다. initial runner 호출 직전 durable external-event boundary가

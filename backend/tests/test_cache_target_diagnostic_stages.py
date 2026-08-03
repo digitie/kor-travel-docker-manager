@@ -7,7 +7,10 @@ from unittest.mock import patch
 
 import pytest
 
-from kor_travel_docker_manager.services.cache_target_backup import DatabaseRuntime
+from kor_travel_docker_manager.services.cache_target_backup import (
+    _DATABASE_RESTORE_TIMEOUT_SECONDS,
+    DatabaseRuntime,
+)
 from kor_travel_docker_manager.services.cache_target_diagnostic_stages import (
     diagnose_archive_structure,
     diagnose_scratch_cleanup,
@@ -45,9 +48,10 @@ def _scratch_runtime() -> DatabaseRuntime:
 
 
 class _Completed:
-    def __init__(self, returncode: int = 0, stderr: bytes = b"") -> None:
+    def __init__(self, returncode: int = 0, stderr: bytes = b"", stdout: bytes = b"") -> None:
         self.returncode = returncode
         self.stderr = stderr
+        self.stdout = stdout
 
 
 def test_diagnostic_scratch_database_name_is_deterministic_and_valid() -> None:
@@ -203,6 +207,55 @@ def test_diagnose_scratch_create_rejects_colliding_database_name() -> None:
         diagnose_scratch_create(_RUNTIME, _RUNTIME, _DIAGNOSTIC_ID)
 
 
+def test_diagnose_scratch_create_skips_dropdb_when_nothing_stale_exists() -> None:
+    """`dropdb --if-exists`는 scratch DB가 원래 없을 때도 "does not exist, skipping"
+    NOTICE를 stderr에 낸다. `_read_database_owner`가 이미 존재하지 않음(None)을
+    확인해준 일반적인 경우, 이 무해한 NOTICE가 `_run_checked`의 any-stderr-is-failure
+    정책에 걸려 매번 admin_command_failed로 오탐하지 않도록 dropdb 자체를 생략해야
+    한다(실 production에서 재현된 회귀)."""
+    scratch_runtime = _scratch_runtime()
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: Any) -> _Completed:
+        calls.append(args)
+        return _Completed(stdout=b"123456789012345")
+
+    with (
+        patch(
+            "kor_travel_docker_manager.services.cache_target_diagnostic_stages._read_database_owner",
+            return_value=None,
+        ),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        receipt = diagnose_scratch_create(_RUNTIME, scratch_runtime, _DIAGNOSTIC_ID)
+
+    assert receipt.status == "succeeded"
+    assert receipt.failure_class is None
+    assert not any("dropdb" in call for call in calls)
+    assert any("createdb" in call for call in calls)
+
+
+def test_diagnose_scratch_create_runs_dropdb_when_reusable_stale_database_exists() -> None:
+    scratch_runtime = _scratch_runtime()
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: Any) -> _Completed:
+        calls.append(args)
+        return _Completed(stdout=b"123456789012345")
+
+    with (
+        patch(
+            "kor_travel_docker_manager.services.cache_target_diagnostic_stages._read_database_owner",
+            return_value=_RUNTIME.owner_name,
+        ),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        receipt = diagnose_scratch_create(_RUNTIME, scratch_runtime, _DIAGNOSTIC_ID)
+
+    assert receipt.status == "succeeded"
+    assert any("dropdb" in call for call in calls)
+
+
 def test_diagnose_scratch_restore_reports_restore_failure(tmp_path: Path) -> None:
     scratch_runtime = _scratch_runtime()
     archive_path = tmp_path / "map_application.dump"
@@ -221,6 +274,29 @@ def test_diagnose_scratch_restore_succeeds(tmp_path: Path) -> None:
         receipt = diagnose_scratch_restore(_RUNTIME, scratch_runtime, archive_path)
     assert receipt.status == "succeeded"
     assert receipt.failure_class is None
+
+
+def test_diagnose_scratch_restore_uses_shared_restore_timeout(tmp_path: Path) -> None:
+    """n150 실측(2026-08-03): map_application의 feature.feature_weather_values
+    단일 테이블만으로 pg_restore가 약 97분 걸려 기존 3600초(60분) timeout에
+    걸렸다. `_DATABASE_RESTORE_TIMEOUT_SECONDS`(cache_target_backup.py 공유
+    상수)를 실제로 쓰는지 확인한다 — 하드코딩된 3600으로 되돌아가면 이 회귀가
+    다시 재현된다."""
+    scratch_runtime = _scratch_runtime()
+    archive_path = tmp_path / "map_application.dump"
+    archive_path.write_bytes(b"fake-archive")
+    captured_kwargs: dict[str, Any] = {}
+
+    def fake_run(args: list[str], **kwargs: Any) -> _Completed:
+        captured_kwargs.update(kwargs)
+        return _Completed()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        receipt = diagnose_scratch_restore(_RUNTIME, scratch_runtime, archive_path)
+
+    assert receipt.status == "succeeded"
+    assert captured_kwargs["timeout"] == _DATABASE_RESTORE_TIMEOUT_SECONDS
+    assert captured_kwargs["timeout"] > 3600
 
 
 def test_diagnose_scratch_restore_rejects_colliding_scratch_runtime(

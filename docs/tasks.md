@@ -391,6 +391,65 @@ phase는 별도 PR로 검증한다.
       검증 포함). backend 전체 1492 passed, ruff/mypy clean(touched files —
       `ruff format`은 이 환경 버전이 무관한 기존 줄까지 재포맷하려 해서 실행하지
       않음, T-049C에서 배운 교훈).
+- [x] **T-049E 착수 중 발견·수정: `scratch_create`/production restore의
+      dropdb NOTICE 오탐.** n150에서 실제로 `ktdctl cache-target diagnose`를
+      처음 실행해보니 map_application/map_dagster/pinvi **3개 role 전부**에서
+      `scratch_create`가 `admin_command_failed`로 100% 재현성 있게 실패했다.
+      원인: `dropdb --if-exists --force`는 대상이 원래 없을 때도(진단마다 매번
+      해당하는 일반적인 경우) "does not exist, skipping" NOTICE를 stderr에 내는데,
+      공유 헬퍼 `_run_checked`가 `stderr`가 하나라도 있으면 무조건 실패로
+      처리한다. `diagnose_scratch_create`(T-049B)가 이 dropdb를 무조건 실행하고
+      있어서 매번 걸렸다. `_read_database_owner`가 이미 대상 부재(None)를
+      확인해준 경우엔 dropdb 자체를 생략하도록 고쳤다. 같은 코드 리뷰에서
+      적대적 리뷰어가 동일 패턴의 두 sibling도 찾아 같이 고쳤다:
+      `_rehearse_database_restore`(scratch DB, cache_target_backup.py)와
+      `restore_database_backup`(**production** DB, dropdb 전 존재 확인 자체가
+      없었음) — 둘 다 실제 backup/restore/cutover 경로에서 도달 가능한 코드였다.
+      적대적 리뷰어 2명이 스크래치 생성 함수 자체와 회귀 스위트를 검토했고
+      confirmed 실공백은 없었다(TOCTOU는 fail-close라 안전, 재사용 가능한
+      stale DB 분기는 실제 drop이라 같은 NOTICE 함정에 안 걸림). 회귀 테스트
+      6건 추가(스킵/실행 조건 각각 diagnostic stage·rehearsal·production restore
+      경로). backend 전체 1496 passed, ruff/mypy clean(touched files).
+- [x] **T-049E 착수 중 발견·수정: `pg_restore` 60분 timeout이 실제 대용량 테이블
+      복원 시간보다 짧음.** dropdb 수정 반영 후 n150에서 진단을 재실행하니
+      writer fence·3-role 진단 stage 자체는 모두 정상 진행됐지만, map_application의
+      `scratch_restore`가 `failure_class="timeout"`(정확히 3600000ms)으로
+      실패했다. 실측: `feature.feature_weather_values`(1,780만 행) 단일 테이블의
+      COPY + constraint 검증 + index 4개 재생성만으로 pg_restore가 약 **97분**
+      걸렸다(2026-08-03, n150 수동 재현으로 완주까지 확인). 기존
+      `timeout=3600`(60분) 하드코딩 3곳
+      (`restore_database_backup`·`_restore_archive_into_database`·
+      `diagnose_scratch_restore`)을 공유 상수
+      `_DATABASE_RESTORE_TIMEOUT_SECONDS=10800`(3시간, 실측치에 여유를 더한
+      잠정값)으로 교체했다. 이 archive는 stdin으로 스트리밍돼 `pg_restore --jobs`
+      병렬 복원을 못 쓰므로(seekable archive 필요) 근본 해결은 아니며, 테이블이
+      계속 커지면 이 값도 다시 부족해진다 — 코드 주석에 이를 명시했다. **중요**:
+      `restore_database_backup`은 실제 production coupled-rollback 경로이므로,
+      이 발견은 T-VN-41 실제 cutover/rollback이 이 테이블에서도 같은 문제를
+      겪을 수 있었음을 뜻한다 — 진단 도구가 설계 의도대로 작동한 사례다.
+      적대적 리뷰어 2명이 검증. 회귀 테스트 1건 추가(공유 상수가 실제
+      `subprocess.run`에 전달되는지 확인). backend 전체 1497 passed, ruff/mypy
+      clean(touched files).
+- [ ] **T-049E 후속 조사 필요(미해결) — 스키마/데이터 inventory 해시 비교의
+      근본 한계.** 같은 재실행에서 map_dagster의 `scratch_data_inventory`와
+      pinvi의 `scratch_schema_inventory`가 `inventory_mismatch`로 실패했다.
+      n150에서 writer를 실제로 멈추고 원인을 재현·격리했다: (1) **pinvi
+      스키마**는 PostgreSQL이 `CHECK (x = ANY (ARRAY[...]::text[]))` 형태의
+      제약을 최초 생성 시와 dump→restore→재생성 뒤에 **의미는 동일하지만
+      텍스트 표현이 다르게**(배열 전체에 한 번 cast vs 원소별 cast) 저장하는
+      알려진 동작 때문— 실제 데이터/스키마 손상이 아니다. (2) **map_dagster
+      데이터**는 `event_logs`/`job_ticks` 같이 자주 갱신되는 테이블에서
+      `pg_dump --data-only --inserts`가 **행 내용은 완전히 동일한데 emission
+      순서가 두 번의 별도 dump 호출 사이에 달라짐**을 확인했다(writer를 멈춘
+      상태에서도 재현 — 새 쓰기 때문이 아니라 순서 비결정성 자체가 원인).
+      두 사례 모두 이 진단의 schema/data inventory hash 비교 설계
+      전체가 "동일 데이터의 pg_dump 출력은 byte-identical하다"는, PostgreSQL이
+      실제로 보장하지 않는 가정 위에 서 있음을 보여준다. 이건 코드 한 줄
+      수정으로 안전하게 고칠 수 있는 범위가 아니다(원소별 cast로 정규화하는
+      스키마 텍스트 canonicalization, 또는 raw text 대신 행 단위 해시를
+      정렬해 비교하는 순서-무관 데이터 비교 방식 등 별도 설계가 필요) —
+      **의도적으로 이번에 고치지 않고 미해결로 남긴다.** 재현 절차와 근거는
+      2026-08-03 journal 항목에 기록.
 - [ ] **T-049E — n150 production rehearsal**: sync=false에서 diagnostic을 한 번 실행하고
       receipt identity·artifact cleanup·runtime recovery를 확인한 뒤에만 final initial
       cutover를 한 번 실행한다.

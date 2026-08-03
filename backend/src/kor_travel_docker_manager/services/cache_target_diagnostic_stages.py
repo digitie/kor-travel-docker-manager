@@ -28,6 +28,7 @@ from pathlib import Path
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_backup import (
     _DATABASE_IDENTIFIER,
+    _DATABASE_RESTORE_TIMEOUT_SECONDS,
     DatabaseRuntime,
     _database_admin_command,
     _is_circular_foreign_key_restore_advisory,
@@ -188,15 +189,22 @@ def diagnose_scratch_create(
             return _stage_receipt(
                 runtime.role, "scratch_create", start, failure_class="admin_command_failed"
             )
-        _run_checked(
-            [
-                *_database_admin_command(runtime, "dropdb"),
-                "--if-exists",
-                "--force",
-                scratch_runtime.database_name,
-            ],
-            label=f"{runtime.role} stale diagnostic scratch database cleanup",
-        )
+        # `dropdb --if-exists`는 scratch DB가 원래 없는(diagnostic의 일반적인) 경우에도
+        # "does not exist, skipping" NOTICE를 stderr에 낸다. `_run_checked`는 stderr가
+        # 하나라도 있으면 실패로 처리하므로, `_read_database_owner`가 이미 존재하지
+        # 않음(None)을 확인해준 경우엔 dropdb 자체를 생략해 이 무해한 NOTICE가 매번
+        # scratch_create를 거짓으로 실패시키는 것을 막는다. stale_owner가
+        # runtime.owner_name과 일치하는(재사용 가능한) 경우에만 실제로 정리한다.
+        if stale_owner is not None:
+            _run_checked(
+                [
+                    *_database_admin_command(runtime, "dropdb"),
+                    "--if-exists",
+                    "--force",
+                    scratch_runtime.database_name,
+                ],
+                label=f"{runtime.role} stale diagnostic scratch database cleanup",
+            )
         _run_checked(
             [
                 *_database_admin_command(runtime, "createdb"),
@@ -244,7 +252,7 @@ def diagnose_scratch_restore(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 check=False,
-                timeout=3600,
+                timeout=_DATABASE_RESTORE_TIMEOUT_SECONDS,
             )
     except subprocess.TimeoutExpired:
         return _stage_receipt(runtime.role, "scratch_restore", start, failure_class="timeout")
