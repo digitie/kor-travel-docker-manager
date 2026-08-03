@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-08-03 (T-049D: cache-target cutover gate와 window failure propagation 구현)
+
+이슈 #99에 Map 쪽 적대 리뷰 결과가 추가로 달렸다 — 현재 pinned `map_release_revision`
+(`d50bb2c5`)에 실제 결함 2건(migrate 재시도 영구 거부 위험, 공개 item 카운트
+`source_present` 누락)이 있고 수정은 kor-travel-map PR #925에 있다. 사용자 판단으로
+T-049D(pin과 무관한 gate 로직)는 지금 진행하고, pin 갱신은 PR #925 머지 후 별도
+처리하기로 했다.
+
+`cache-target cutover`가 T-049C 진단 receipt 없이 새 forward window를 열 수 없게
+`_require_fresh_cache_target_diagnostic` gate를 결선하고, pre-forward 실패가
+coupled rollback으로 넘어갈 때 window journal에 마지막 안전 phase와 실패 분류를
+남기는 `record_window_failure`를 추가했다. 적대적 리뷰어 2명(gate 담당·
+failure-propagation 담당)이 같은 strict mypy 실공백(삼항식이 literal이 아닌 str로
+추론됨)을 독립적으로 찾아 고쳤고, 그 외에는 실공백이 없었다.
+
+T-049C에서 배운 교훈대로 이번에도 `ruff format` 전체 실행 대신 diff를 무관한
+재포맷 없이 최소로 유지했다. backend 전체 1492 passed.
+
+T-049E(n150 production rehearsal)가 마지막 phase다 — 그 전에 Map PR #925 머지와
+pin 갱신이 필요하다.
+
+---
+
 ## 2026-08-03 (T-049C: cache-target 진단 writer fence·orchestration·abort budget 구현)
 
 이슈 #99에 새 댓글이 달려 실측 확정값과 함께 Map 쪽 문서 PR 머지 시점 조율 요청이

@@ -48,6 +48,7 @@ WindowPhase = Literal[
 ]
 MapHelperOperation = Literal["preflight", "migrate", "csv5", "gc", "verify"]
 PinBoundaryOperation = Literal["preflight", "finalize"]
+WindowFailureClass = Literal["contract_violation", "unexpected_error"]
 JsonScalar = str | int | bool | None
 JsonEvidence = JsonScalar | tuple[str, ...]
 
@@ -117,6 +118,8 @@ _JOURNAL_FIELDS = frozenset(
         "pin_final_receipt_sha256",
         "external_event_count",
         "forward_boundary",
+        "failure_stage",
+        "failure_class",
     }
 )
 _BACKUP_FIELDS = frozenset(
@@ -283,6 +286,8 @@ class CacheTargetWindowJournal:
     pin_final_receipt_sha256: str | None = None
     external_event_count: int = 0
     forward_boundary: Literal["not_crossed", "committed"] = "not_crossed"
+    failure_stage: WindowPhase | None = None
+    failure_class: WindowFailureClass | None = None
 
 
 @dataclass(frozen=True)
@@ -555,6 +560,26 @@ def transition_cache_target_window(
     )
     _validate_journal(updated)
     _validate_phase_evidence(updated)
+    return updated
+
+
+def record_window_failure(
+    journal: CacheTargetWindowJournal,
+    *,
+    failure_class: WindowFailureClass,
+) -> CacheTargetWindowJournal:
+    """설계 문서 4절: pre-forward-boundary 실패로 coupled rollback에 들어가기 직전,
+    마지막으로 안전했던 forward phase와 실패 분류를 얼린다. `journal.phase` 자체는
+    바꾸지 않는다 — caller가 뒤이어 호출하는
+    `transition_cache_target_window(..., "rollback_preparing")`가 이 값을 그대로
+    carry-forward한다. raw process output/stderr는 여기서도 확장하지 않는다."""
+
+    if journal.phase not in FORWARD_PHASES:
+        raise DeploymentContractError(
+            "cache-target window failure can only be recorded from a forward phase"
+        )
+    updated = replace(journal, failure_stage=journal.phase, failure_class=failure_class)
+    _validate_journal(updated)
     return updated
 
 
@@ -929,6 +954,17 @@ def _validate_journal(journal: CacheTargetWindowJournal) -> None:
         "runtime_activated",
     }:
         raise DeploymentContractError("cache-target forward boundary phase is invalid")
+    if journal.failure_stage is not None and journal.failure_stage not in FORWARD_PHASES:
+        raise DeploymentContractError("cache-target window failure stage is invalid")
+    if journal.failure_class is not None and journal.failure_class not in (
+        "contract_violation",
+        "unexpected_error",
+    ):
+        raise DeploymentContractError("cache-target window failure class is invalid")
+    if (journal.failure_stage is None) != (journal.failure_class is None):
+        raise DeploymentContractError(
+            "cache-target window failure stage and class must be set together"
+        )
 
 
 def _validate_phase_evidence(journal: CacheTargetWindowJournal) -> None:

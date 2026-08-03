@@ -359,8 +359,38 @@ phase는 별도 PR로 검증한다.
       mypy clean(src). candidate build/migration/initial event/sync enable/
       `.env`·manifest mutation은 여전히 하지 않는다 — 진단 성공은 cutover 성공을
       뜻하지 않는다.
-- [ ] **T-049D — cutover gate와 failure propagation**: fresh diagnostic receipt 없이는
-      forward window를 열지 않게 하고, window journal에 마지막 safe stage/class를 남긴다.
+- [x] **T-049D — cutover gate와 failure propagation.** 설계 문서 4절을 두 부분으로
+      구현했다. (1) **gate**: `run_cache_target_cutover`가 새 forward window를 여는
+      단 하나의 지점(`prepare_cache_target_window` 직전, 기존 journal이 없을 때만)에
+      `_require_fresh_cache_target_diagnostic`을 결선했다 — T-049C 진단 journal이
+      없거나 `completed`가 아니거나, T-049C가 계산하는 것과 같은 input logical
+      identity(diagnostic 시점과 동일하게 old/현재 manifest 기준)로 fresh하지 않으면
+      즉시 거부한다. 신선도 window는 새 상수
+      `_CUTOVER_GATE_MAX_DIAGNOSTIC_AGE_SECONDS`(30분)로, T-049C의 abort-budget
+      window(24시간, 진단 *재시도* 횟수 정책)와는 목적이 다른 별도 정책임을 주석으로
+      명시했다. (2) **failure propagation**: `CacheTargetWindowJournal`에
+      `failure_stage: WindowPhase | None`·`failure_class: WindowFailureClass | None`
+      (`"contract_violation" | "unexpected_error"`, raw exception 내용은 절대 담지
+      않음)을 추가하고, 새 `record_window_failure`가 coupled rollback으로 넘어가기
+      직전(`journal.phase in FORWARD_PHASES`일 때만) 마지막 안전 phase와 실패
+      분류를 얼린다. pre-forward 실패를 rollback으로 보내는 유일한 지점(
+      `_run_cache_target_window_unlocked`의 `except Exception`)에 결선했고, 이미
+      rollback 진행 중(재시작 후 resume)이면 최초 값을 그대로 보존한다.
+
+      적대적 리뷰어 2명(gate 담당, failure-propagation 담당)이 독립적으로 같은
+      mypy 실공백을 찾았다: `"contract_violation" if ... else "unexpected_error"`
+      삼항식이 `WindowFailureClass` literal이 아니라 `str`로 추론돼 strict mypy가
+      깨졌다 — 변수에 명시 타입 annotation을 붙여 고쳤다(런타임 동작은 항상 정확한
+      literal이라 버그는 아니었음). 그 외 두 리뷰어 모두 실공백을 찾지 못했다:
+      gate는 lock 안에서 TOCTOU 없이 동작하고, resume 경로는 의도대로 gate를
+      재검사하지 않으며(design doc의 "새" window 문구와 일치), failure 필드는
+      `transition_cache_target_window`의 carry-forward로 rollback_preparing까지
+      정확히 보존되고 FORWARD phase 상태에서는 절대 disk에 쓰이지 않는다. 회귀
+      테스트: gate 5건(missing/non-completed/stale/identity-mismatch/fresh-pass) +
+      `record_window_failure` 4건 + 기존 rollback 테스트 1건 갱신(end-to-end 값
+      검증 포함). backend 전체 1492 passed, ruff/mypy clean(touched files —
+      `ruff format`은 이 환경 버전이 무관한 기존 줄까지 재포맷하려 해서 실행하지
+      않음, T-049C에서 배운 교훈).
 - [ ] **T-049E — n150 production rehearsal**: sync=false에서 diagnostic을 한 번 실행하고
       receipt identity·artifact cleanup·runtime recovery를 확인한 뒤에만 final initial
       cutover를 한 번 실행한다.

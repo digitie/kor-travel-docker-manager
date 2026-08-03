@@ -147,6 +147,7 @@ from kor_travel_docker_manager.services.cache_target_diagnostics import (
     DiagnosticStageReceipt,
     diagnostic_attempt_budget_exceeded,
     diagnostic_failure_is_reproduced,
+    diagnostic_receipt_is_fresh,
     prepare_cache_target_diagnostic,
     read_cache_target_diagnostic,
     read_or_create_cache_target_diagnostic_attempt_log,
@@ -165,6 +166,7 @@ from kor_travel_docker_manager.services.cache_target_production_manifest import 
     require_cache_target_production_release,
 )
 from kor_travel_docker_manager.services.cache_target_window import (
+    FORWARD_PHASES,
     CacheTargetWindowJournal,
     DatabaseBackupReceipt,
     MapHelperOperation,
@@ -172,6 +174,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
     PinBoundaryOperation,
     PinBoundaryReceipt,
     PinMigrationReceipt,
+    WindowFailureClass,
     WindowPhase,
     map_final_evidence_sha256,
     map_helper_receipt_sha256,
@@ -182,6 +185,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
     pin_migration_receipt_sha256,
     prepare_cache_target_window,
     read_cache_target_window,
+    record_window_failure,
     transition_cache_target_window,
     validate_map_final_evidence_binding,
     write_cache_target_window,
@@ -308,6 +312,12 @@ _DIAGNOSTIC_SMOKE_CONTRACT_SHA256 = hashlib.sha256(
     b"ktdm-cache-target-diagnostic-runtime-smoke-contract-v1\0"
 ).hexdigest()
 _PG_TOOL_VERSION_PATTERN = re.compile(r"(\d+)")
+# 설계 문서 4절: "만료 시간은 운영 정책으로 짧게 고정" — cutover gate가 요구하는
+# 진단 receipt의 신선도 window다. T-049C의 abort budget(24시간, 몇 번 *재시도*를
+# 허용하는지에 대한 정책)과는 목적이 다르다: 여기는 그 receipt를 실제 cutover의
+# 근거로 얼마나 오래 신뢰할지를 정한다. 짧게 고정해 schema/pair/Compose가 진단
+# 이후 조용히 바뀌는 창을 최소화한다.
+_CUTOVER_GATE_MAX_DIAGNOSTIC_AGE_SECONDS = 1_800
 
 
 def _manager_release_sha256() -> str:
@@ -3717,6 +3727,11 @@ class ComposeService:
                         build_provenance.pinvi_source_revision
                     ),
                 )
+                self._require_fresh_cache_target_diagnostic(
+                    transaction=transaction,
+                    config=config,
+                    manifest=old_manifest,
+                )
                 journal = prepare_cache_target_window(
                     transaction_id=str(uuid.uuid4()),
                     cutover_id=cutover_id,
@@ -4388,7 +4403,7 @@ class ComposeService:
                 )
                 write_cache_target_window(journal_path, journal)
             return self._cache_target_window_result(journal, resumed=False)
-        except Exception:
+        except Exception as exc:
             latest = read_cache_target_window(journal_path)
             if latest.phase == "prepared":
                 try:
@@ -4406,6 +4421,19 @@ class ComposeService:
                         "prepared cache-target window cleanup failed"
                     ) from cleanup_error
             elif old_restore_is_authorized(latest):
+                # 설계 문서 4절: pre-forward-boundary 실패로 처음 rollback에 들어갈
+                # 때만(아직 FORWARD_PHASES인 동안만) 마지막 안전 stage/class를
+                # 얼린다. 이미 rollback 도중(재시작 후 resume)이면 최초 진입 때
+                # 남긴 값을 그대로 둔다 — raw exception 내용은 어디에도 남기지
+                # 않고 두 개의 sealed 값(마지막 안전 phase, contract_violation
+                # 여부)만 기록한다.
+                if latest.phase in FORWARD_PHASES:
+                    failure_class: WindowFailureClass = (
+                        "contract_violation"
+                        if isinstance(exc, DeploymentContractError)
+                        else "unexpected_error"
+                    )
+                    latest = record_window_failure(latest, failure_class=failure_class)
                 self._resume_cache_target_coupled_rollback(
                     journal_path=journal_path,
                     journal=latest,
@@ -5247,6 +5275,49 @@ class ComposeService:
             writer_registry_sha256=cache_target_writer_registry_sha256(ordered_writers),
             smoke_contract_sha256=_DIAGNOSTIC_SMOKE_CONTRACT_SHA256,
         )
+
+    def _require_fresh_cache_target_diagnostic(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        manifest: CompatiblePairManifest,
+    ) -> None:
+        """설계 문서 4절: 새 forward window는 지금과 같은 input logical identity로
+        만족하는 `completed`·미만료 진단 receipt 없이는 열리지 않는다. receipt가
+        없거나 `failed`/non-terminal이거나 identity가 다르거나 만료됐으면 즉시
+        거부한다 — 사전 진단의 backup/inventory는 여기서 재사용하지 않는다."""
+
+        journal_path = cache_target_diagnostic_journal_path(transaction.environment.effective)
+        try:
+            journal_path.lstat()
+        except FileNotFoundError:
+            raise DeploymentContractError(
+                "cache-target cutover requires a completed diagnostic receipt"
+            ) from None
+        except OSError as exc:
+            raise DeploymentContractError(
+                "cache-target diagnostic journal path is unavailable"
+            ) from exc
+        diagnostic_journal = read_cache_target_diagnostic(journal_path)
+        if diagnostic_journal.phase != "completed":
+            raise DeploymentContractError(
+                "cache-target cutover requires a completed diagnostic receipt"
+            )
+        current_identity = self._cache_target_diagnostic_identity(
+            transaction=transaction,
+            config=config,
+            manifest=manifest,
+        )
+        if not diagnostic_receipt_is_fresh(
+            diagnostic_journal,
+            current_identity=current_identity,
+            now_unix=int(time.time()),
+            max_age_seconds=_CUTOVER_GATE_MAX_DIAGNOSTIC_AGE_SECONDS,
+        ):
+            raise DeploymentContractError(
+                "cache-target cutover requires a fresh diagnostic receipt"
+            )
 
     def _run_cache_target_diagnostic_unlocked(
         self,
