@@ -326,9 +326,39 @@ phase는 별도 PR로 검증한다.
       책임이라는 모듈 docstring 경고를 추가했다. 회귀 테스트 28건(기존 20 +
       failure_class propagation 2, 충돌 거부 4, restore 성공, 빈 archive 거부).
       backend 1459 passed, ruff/mypy clean.
-- [ ] **T-049C — writer fence와 orchestration**: global lock, foreign writer 검사, 3-role
-      serial diagnostic, runtime re-attestation, abort budget을
-      `ktdctl cache-target diagnose`에 결선한다.
+- [x] **T-049C — writer fence와 orchestration.** `ComposeService.run_cache_target_diagnostic`을
+      신설해 `ktdctl cache-target diagnose --diagnostic-id ...`에 결선했다. 기존
+      cutover와 같은 C6c 전역 lock 안에서(diagnose/cutover, diagnose/diagnose 동시
+      실행 불가) foreign-writer 검사(`attest_cache_target_global_writer_fence`)를
+      거친 뒤 3-role(map_application → map_dagster → pinvi) 직렬 진단을 T-049B
+      stage primitive로 실행하고, 새 `DiagnosticAttemptRecord`/`DiagnosticAttemptLog`
+      모델(owner-only atomic storage)로 설계 문서 5절의 abort budget(24시간 내 2회,
+      같은 (failure_stage, failure_class) 재현 시 자동 재시도 대신 `aborted`
+      terminal)을 구현했다. journal이 이미 terminal이면 재호출은 재실행 없이
+      그 결과를 재보고하고, non-terminal(crash) journal은 fail-close해 새
+      diagnostic ID로만 재시작할 수 있다.
+
+      적대적 리뷰어 2명이 독립적으로 서로 다른 실공백 3가지를 찾았다:
+      (1) writer stop에 다른 mutation capability sentinel
+      (`_CACHE_TARGET_WINDOW_MUTATION_CAPABILITY`)을 잘못 써서 production에서
+      `assert_compose_mutation_allowed`에 항상 막혀 명령 자체가 동작하지
+      않던 것 — 다른 모든 writer stop/start 지점과 같은
+      `_COMPATIBLE_PAIR_MUTATION_CAPABILITY`로 고쳤다. (2) `docker compose stop`이
+      일부 writer만 내리고 실패를 반환해도 `try/finally`가 stop 호출 *뒤*부터만
+      writer 재기동을 보장해, 부분 실패 시 global lock은 풀리는데 production
+      writer는 방치되던 것 — stop 호출 자체를 `try` 안으로 옮겨 재기동이 항상
+      실행되도록 고쳤다. (3) writer 재기동 뒤 "재기동했으니 됐다"만 확인하고
+      기존 cutover 경로가 다 하는 `_attest_cache_target_pair`(active pair 일치·
+      resolved compose 계약·runtime secret 격리 재검증)를 하지 않던 것 — 재기동
+      직후 재-attestation을 추가했다. 부수적으로 stop 뒤 in-flight transaction
+      재확인(cutover의 fence와 대칭), `aborted` attempt가 재현 판정 기준(최신
+      **`failed`** attempt)을 흐리지 않도록 `diagnostic_failure_is_reproduced`도
+      고쳤다. 회귀 테스트: orchestration 14건(mutation capability 검증, 부분
+      stop 실패에도 재기동·재-attestation 보장 포함) + attempt-budget/reproduction
+      12건. backend 전체 1483 passed, ruff 기존 baseline 유지(6건, 무관 파일),
+      mypy clean(src). candidate build/migration/initial event/sync enable/
+      `.env`·manifest mutation은 여전히 하지 않는다 — 진단 성공은 cutover 성공을
+      뜻하지 않는다.
 - [ ] **T-049D — cutover gate와 failure propagation**: fresh diagnostic receipt 없이는
       forward window를 열지 않게 하고, window journal에 마지막 safe stage/class를 남긴다.
 - [ ] **T-049E — n150 production rehearsal**: sync=false에서 diagnostic을 한 번 실행하고

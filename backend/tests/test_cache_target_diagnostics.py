@@ -10,12 +10,19 @@ from kor_travel_docker_manager.services.c6c_deployment import DeploymentContract
 from kor_travel_docker_manager.services.cache_target_diagnostics import (
     CacheTargetDiagnosticIdentity,
     CacheTargetDiagnosticJournal,
+    DiagnosticAttemptLog,
     DiagnosticStageReceipt,
+    diagnostic_attempt_budget_exceeded,
+    diagnostic_failure_is_reproduced,
     diagnostic_receipt_is_fresh,
     prepare_cache_target_diagnostic,
     read_cache_target_diagnostic,
+    read_cache_target_diagnostic_attempt_log,
+    read_or_create_cache_target_diagnostic_attempt_log,
+    record_diagnostic_attempt,
     transition_cache_target_diagnostic,
     write_cache_target_diagnostic,
+    write_cache_target_diagnostic_attempt_log,
 )
 
 _DIAGNOSTIC_ID = "8a3e6b2c-8f1e-4c8b-9c3d-0f1a2b3c4d5e"
@@ -433,6 +440,163 @@ def test_diagnostic_receipt_is_stale_when_expired() -> None:
         now_unix=journal.completed_at_unix + 3601,  # type: ignore[operator]
         max_age_seconds=3600,
     )
+
+
+def test_attempt_log_budget_allows_first_two_attempts_then_exhausts() -> None:
+    log = DiagnosticAttemptLog(version=1)
+    journal = replace(
+        _completed(), phase="failed", failure_stage="source_archive", failure_class="timeout"
+    )
+    now = 1_700_000_000
+
+    assert not diagnostic_attempt_budget_exceeded(log, now_unix=now)
+    log = record_diagnostic_attempt(
+        log, replace(journal, diagnostic_id=_DIAGNOSTIC_ID), now_unix=now
+    )
+
+    assert not diagnostic_attempt_budget_exceeded(log, now_unix=now + 10)
+    log = record_diagnostic_attempt(
+        log,
+        replace(journal, diagnostic_id="99999999-9999-4999-8999-999999999999"),
+        now_unix=now + 10,
+    )
+
+    assert diagnostic_attempt_budget_exceeded(log, now_unix=now + 20)
+
+
+def test_attempt_log_budget_prunes_attempts_outside_the_window() -> None:
+    log = DiagnosticAttemptLog(version=1)
+    journal = replace(
+        _completed(), phase="failed", failure_stage="source_archive", failure_class="timeout"
+    )
+    now = 1_700_000_000
+    log = record_diagnostic_attempt(
+        log, replace(journal, diagnostic_id=_DIAGNOSTIC_ID), now_unix=now
+    )
+    log = record_diagnostic_attempt(
+        log,
+        replace(journal, diagnostic_id="99999999-9999-4999-8999-999999999999"),
+        now_unix=now,
+    )
+
+    assert diagnostic_attempt_budget_exceeded(log, now_unix=now + 100)
+    assert not diagnostic_attempt_budget_exceeded(log, now_unix=now + 86_401)
+
+
+def test_diagnostic_failure_is_reproduced_matches_latest_same_class() -> None:
+    log = DiagnosticAttemptLog(version=1)
+    journal = replace(
+        _completed(),
+        diagnostic_id=_DIAGNOSTIC_ID,
+        phase="failed",
+        failure_stage="source_archive",
+        failure_class="timeout",
+    )
+    now = 1_700_000_000
+    log = record_diagnostic_attempt(log, journal, now_unix=now)
+
+    assert diagnostic_failure_is_reproduced(
+        log, now_unix=now + 10, failure_stage="source_archive", failure_class="timeout"
+    )
+    assert not diagnostic_failure_is_reproduced(
+        log, now_unix=now + 10, failure_stage="source_archive", failure_class="subprocess_nonzero"
+    )
+    assert not diagnostic_failure_is_reproduced(
+        log, now_unix=now + 10, failure_stage="archive_structure", failure_class="timeout"
+    )
+
+
+def test_diagnostic_failure_is_reproduced_ignores_a_succeeded_latest_attempt() -> None:
+    log = DiagnosticAttemptLog(version=1)
+    journal = replace(_completed(), diagnostic_id=_DIAGNOSTIC_ID)
+    log = record_diagnostic_attempt(log, journal, now_unix=1_700_000_000)
+
+    assert not diagnostic_failure_is_reproduced(
+        log,
+        now_unix=1_700_000_010,
+        failure_stage="source_archive",
+        failure_class="timeout",
+    )
+
+
+def test_diagnostic_failure_is_reproduced_ignores_an_aborted_latest_attempt() -> None:
+    """`aborted` attempt는 journal 계약상 failure_stage/failure_class를 싣지 않는다.
+    최신 attempt가 아니라 최신 **failed** attempt와 비교해야, `aborted` 뒤에도
+    원래의 (stage, class) 재현 판정이 계속 유지된다."""
+    log = DiagnosticAttemptLog(version=1)
+    failed_journal = replace(
+        _completed(),
+        diagnostic_id=_DIAGNOSTIC_ID,
+        phase="failed",
+        failure_stage="source_archive",
+        failure_class="timeout",
+    )
+    now = 1_700_000_000
+    log = record_diagnostic_attempt(log, failed_journal, now_unix=now)
+    aborted_journal = replace(
+        _completed(),
+        diagnostic_id="99999999-9999-4999-8999-999999999999",
+        phase="aborted",
+    )
+    log = record_diagnostic_attempt(log, aborted_journal, now_unix=now + 10)
+
+    assert diagnostic_failure_is_reproduced(
+        log, now_unix=now + 20, failure_stage="source_archive", failure_class="timeout"
+    )
+
+
+def test_record_diagnostic_attempt_rejects_non_terminal_journal() -> None:
+    log = DiagnosticAttemptLog(version=1)
+    with pytest.raises(DeploymentContractError, match="terminal"):
+        record_diagnostic_attempt(log, _prepared(), now_unix=1_700_000_000)
+
+
+def test_record_diagnostic_attempt_rejects_duplicate_diagnostic_id() -> None:
+    log = DiagnosticAttemptLog(version=1)
+    journal = replace(_completed(), diagnostic_id=_DIAGNOSTIC_ID)
+    log = record_diagnostic_attempt(log, journal, now_unix=1_700_000_000)
+    with pytest.raises(DeploymentContractError, match="already recorded"):
+        record_diagnostic_attempt(log, journal, now_unix=1_700_000_010)
+
+
+def test_attempt_log_round_trips_and_is_owner_only(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-diagnostic-attempts-v1.json"
+    path.parent.mkdir(mode=0o700)
+    log = DiagnosticAttemptLog(version=1)
+    journal = replace(_completed(), diagnostic_id=_DIAGNOSTIC_ID)
+    log = record_diagnostic_attempt(log, journal, now_unix=1_700_000_000)
+
+    write_cache_target_diagnostic_attempt_log(path, log)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert read_cache_target_diagnostic_attempt_log(path) == log
+
+
+def test_read_or_create_attempt_log_returns_empty_when_absent(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-diagnostic-attempts-v1.json"
+    assert read_or_create_cache_target_diagnostic_attempt_log(path) == DiagnosticAttemptLog(
+        version=1
+    )
+
+
+def test_attempt_log_rejects_duplicate_diagnostic_ids_on_read(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "state" / "cache-target-diagnostic-attempts-v1.json"
+    path.parent.mkdir(mode=0o700)
+    journal = replace(_completed(), diagnostic_id=_DIAGNOSTIC_ID)
+    log = record_diagnostic_attempt(
+        DiagnosticAttemptLog(version=1), journal, now_unix=1_700_000_000
+    )
+    write_cache_target_diagnostic_attempt_log(path, log)
+
+    document = json.loads(path.read_bytes())
+    document["attempts"].append(document["attempts"][0])
+    path.write_bytes(json.dumps(document).encode())
+    path.chmod(0o600)
+
+    with pytest.raises(DeploymentContractError, match="duplicate"):
+        read_cache_target_diagnostic_attempt_log(path)
 
 
 def test_diagnostic_read_rejects_tampered_field_set(tmp_path: Path) -> None:

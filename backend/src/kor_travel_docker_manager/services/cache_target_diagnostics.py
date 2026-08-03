@@ -493,6 +493,192 @@ def _validate_journal(journal: CacheTargetDiagnosticJournal) -> None:
         )
 
 
+# T-049C: 설계 문서 5절의 abort budget(24시간 내 2회, 같은 failure_stage/failure_class
+# 재현 시 aborted) 모델. orchestration(T-049C)이 진단을 시작하기 전에 이 log를 읽어
+# budget 초과를 거부하고, 진단이 끝나면(모든 terminal phase) attempt를 기록한다. 이
+# 파일도 cache_target_cutover의 owner-only atomic storage를 재사용한다.
+
+_ATTEMPT_FIELDS = frozenset(
+    {
+        "diagnostic_id",
+        "started_at_unix",
+        "phase",
+        "failure_stage",
+        "failure_class",
+    }
+)
+_ATTEMPT_LOG_FIELDS = frozenset({"version", "attempts"})
+_ABORT_BUDGET_WINDOW_SECONDS = 86_400
+_ABORT_BUDGET_MAX_ATTEMPTS = 2
+
+
+@dataclass(frozen=True)
+class DiagnosticAttemptRecord:
+    diagnostic_id: str
+    started_at_unix: int
+    phase: DiagnosticPhase
+    failure_stage: DiagnosticStage | None
+    failure_class: DiagnosticFailureClass | None
+
+
+@dataclass(frozen=True)
+class DiagnosticAttemptLog:
+    version: Literal[1]
+    attempts: tuple[DiagnosticAttemptRecord, ...] = ()
+
+
+def _validate_attempt_record(record: DiagnosticAttemptRecord) -> None:
+    _canonical_uuid(record.diagnostic_id, "diagnostic attempt ID")
+    if record.started_at_unix <= 0:
+        raise DeploymentContractError("cache-target diagnostic attempt start time is invalid")
+    if record.phase not in TERMINAL_PHASES:
+        raise DeploymentContractError("cache-target diagnostic attempt phase is invalid")
+    if record.failure_stage is not None and record.failure_stage not in _DIAGNOSTIC_STAGES:
+        raise DeploymentContractError("cache-target diagnostic attempt failure stage is invalid")
+    if record.failure_class is not None and record.failure_class not in _DIAGNOSTIC_FAILURE_CLASSES:
+        raise DeploymentContractError("cache-target diagnostic attempt failure class is invalid")
+    if record.phase == "failed" and record.failure_class is None:
+        raise DeploymentContractError(
+            "cache-target diagnostic attempt failed phase requires a failure class"
+        )
+    if record.phase != "failed" and (
+        record.failure_stage is not None or record.failure_class is not None
+    ):
+        raise DeploymentContractError(
+            "cache-target diagnostic attempt failure evidence is only valid in the failed phase"
+        )
+
+
+def _validate_attempt_log(log: DiagnosticAttemptLog) -> None:
+    if log.version != 1:
+        raise DeploymentContractError("cache-target diagnostic attempt log contract is invalid")
+    for record in log.attempts:
+        _validate_attempt_record(record)
+    ids = [record.diagnostic_id for record in log.attempts]
+    if len(ids) != len(set(ids)):
+        raise DeploymentContractError(
+            "cache-target diagnostic attempt log contains duplicate diagnostic IDs"
+        )
+
+
+def prune_diagnostic_attempt_log(
+    log: DiagnosticAttemptLog,
+    *,
+    now_unix: int,
+    window_seconds: int = _ABORT_BUDGET_WINDOW_SECONDS,
+) -> DiagnosticAttemptLog:
+    """`window_seconds` 밖의 attempt를 제거한다. budget 판정 전에 항상 호출한다."""
+
+    pruned = tuple(
+        record for record in log.attempts if now_unix - record.started_at_unix <= window_seconds
+    )
+    return replace(log, attempts=pruned)
+
+
+def diagnostic_attempt_budget_exceeded(
+    log: DiagnosticAttemptLog,
+    *,
+    now_unix: int,
+    window_seconds: int = _ABORT_BUDGET_WINDOW_SECONDS,
+    max_attempts: int = _ABORT_BUDGET_MAX_ATTEMPTS,
+) -> bool:
+    """새 진단을 시작하기 전에 호출한다. 이미 window 안에 `max_attempts`회를 다 썼으면
+    새 attempt를 시작해선 안 된다(설계 문서 5절 — 자동 재시도가 아니라 operator가
+    명시적으로 시작할 수 있는 횟수 자체의 상한)."""
+
+    pruned = prune_diagnostic_attempt_log(log, now_unix=now_unix, window_seconds=window_seconds)
+    return len(pruned.attempts) >= max_attempts
+
+
+def diagnostic_failure_is_reproduced(
+    log: DiagnosticAttemptLog,
+    *,
+    now_unix: int,
+    failure_stage: DiagnosticStage,
+    failure_class: DiagnosticFailureClass,
+    window_seconds: int = _ABORT_BUDGET_WINDOW_SECONDS,
+) -> bool:
+    """가장 최근 window 내 `failed` attempt가 같은 (failure_stage, failure_class)로
+    실패했는지 확인한다. 같으면 orchestration은 `failed` 대신 `aborted`로 끝내야 한다.
+
+    `aborted` attempt는 journal 계약상 failure_stage/failure_class를 싣지 않으므로
+    (`_validate_attempt_record`가 `failed`에서만 허용) 단순히 "가장 최근 attempt"가
+    아니라 가장 최근 **`failed`** attempt와 비교해야 한다. `max_attempts`가 2보다
+    커지거나 window 안에 `failed` 뒤에 `aborted`가 이어져도, 재현 여부는 항상 마지막
+    실제 실패와 비교되도록 한다.
+    """
+
+    pruned = prune_diagnostic_attempt_log(log, now_unix=now_unix, window_seconds=window_seconds)
+    failed_attempts = [record for record in pruned.attempts if record.phase == "failed"]
+    if not failed_attempts:
+        return False
+    latest = max(failed_attempts, key=lambda record: record.started_at_unix)
+    return latest.failure_stage == failure_stage and latest.failure_class == failure_class
+
+
+def record_diagnostic_attempt(
+    log: DiagnosticAttemptLog,
+    journal: CacheTargetDiagnosticJournal,
+    *,
+    now_unix: int,
+) -> DiagnosticAttemptLog:
+    if journal.phase not in TERMINAL_PHASES:
+        raise DeploymentContractError(
+            "cache-target diagnostic attempt requires a terminal journal phase"
+        )
+    pruned = prune_diagnostic_attempt_log(log, now_unix=now_unix)
+    if any(record.diagnostic_id == journal.diagnostic_id for record in pruned.attempts):
+        raise DeploymentContractError(
+            "cache-target diagnostic attempt already recorded for this diagnostic ID"
+        )
+    record = DiagnosticAttemptRecord(
+        diagnostic_id=journal.diagnostic_id,
+        started_at_unix=journal.started_at_unix,
+        phase=journal.phase,
+        failure_stage=journal.failure_stage,
+        failure_class=journal.failure_class,
+    )
+    updated = replace(pruned, attempts=(*pruned.attempts, record))
+    _validate_attempt_log(updated)
+    return updated
+
+
+def write_cache_target_diagnostic_attempt_log(path: Path, log: DiagnosticAttemptLog) -> str:
+    _validate_attempt_log(log)
+    return write_cutover_state(path, log)  # type: ignore[arg-type]
+
+
+def read_cache_target_diagnostic_attempt_log(path: Path) -> DiagnosticAttemptLog:
+    try:
+        document = json.loads(read_owner_only_state(path))
+        if not isinstance(document, dict) or set(document) != _ATTEMPT_LOG_FIELDS:
+            raise TypeError
+        attempts_value = document["attempts"]
+        if not isinstance(attempts_value, list):
+            raise TypeError
+        parsed: list[DiagnosticAttemptRecord] = []
+        for item in attempts_value:
+            if not isinstance(item, dict) or set(item) != _ATTEMPT_FIELDS:
+                raise TypeError
+            parsed.append(DiagnosticAttemptRecord(**item))
+        document["attempts"] = tuple(parsed)
+        log = DiagnosticAttemptLog(**document)
+    except DeploymentContractError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DeploymentContractError("cache-target diagnostic attempt log is invalid") from exc
+    _validate_attempt_log(log)
+    return log
+
+
+def read_or_create_cache_target_diagnostic_attempt_log(path: Path) -> DiagnosticAttemptLog:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return DiagnosticAttemptLog(version=1)
+    return read_cache_target_diagnostic_attempt_log(path)
+
+
 def _validate_phase_evidence(journal: CacheTargetDiagnosticJournal) -> None:
     if journal.phase in ("failed", "aborted"):
         return
