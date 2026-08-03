@@ -59,6 +59,7 @@ def _completed_diagnostic(
         started_at_unix=completed_at_unix - 100,
     )
     journal = transition_cache_target_diagnostic(journal, "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
     )
