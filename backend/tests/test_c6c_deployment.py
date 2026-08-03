@@ -101,12 +101,14 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ComposeTransactionSnapshot,
     ValidatedComposeCandidate,
+    _assert_candidate_image_alembic_head,
     _c6c_source_snapshot_environment,
     _capture_compose_environment_snapshot,
     _capture_compose_external_input_snapshot,
     _derive_c6c_build_provenance,
     _map_source_environment_contract_version,
     _resolved_compose_document_hash,
+    _validate_expected_alembic_head,
     get_c6c_deployment_lock_path,
 )
 from kor_travel_docker_manager.services.docker_service import DockerService
@@ -10909,6 +10911,328 @@ def test_deploy_compatible_pinvi_pair_defaults_wait_timeout_to_120(
 
     assert service.deploy_compatible_pinvi_pair() == {"success": True}
     assert ensure.call_args.kwargs["wait_timeout"] == 120
+
+
+def test_deploy_compatible_pinvi_pair_passes_expected_alembic_head_through(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`expected_alembic_head`가 `_ensure_production_pinvi_target`까지 그대로
+    전달돼야 한다 — 실제 검사는 그 안에서(build 뒤 immutable 이미지 기준으로)
+    일어난다(아래 `test_ensure_production_pinvi_target_checks_alembic_head_of_the_built_image_not_the_pre_build_tag`)."""
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    base_transaction = _frozen_external_transaction(transaction_root)
+    transaction = replace(
+        base_transaction,
+        environment=replace(base_transaction.environment, compose_path=str(compose_path)),
+    )
+    service = ComposeService()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
+        Mock(return_value="production"),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=_production_config()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    ensure = Mock(return_value={"success": True})
+    monkeypatch.setattr(service, "_ensure_production_pinvi_target", ensure)
+
+    assert service.deploy_compatible_pinvi_pair(
+        expected_alembic_head="0078_cache_target_gc_observe"
+    ) == {"success": True}
+
+    assert ensure.call_args.kwargs["expected_alembic_head"] == (
+        "0078_cache_target_gc_observe"
+    )
+
+
+def test_ensure_production_pinvi_target_checks_alembic_head_of_the_built_image_not_the_pre_build_tag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """issue #109 적대적 리뷰로 확인된 실공백: build 전 floating tag를 검사하면
+    build가 그 태그를 새 이미지로 덮어써서 검사가 무의미해진다. 반드시
+    `_prepare_c6c_candidate_pair`가 돌려준(= build 뒤) `candidate_pair.map_image_id`
+    (immutable ID)를 검사해야 하고, 그 뒤에야 활성화(retention 등)로 넘어가야 한다."""
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    transaction = replace(
+        _frozen_external_transaction(transaction_root),
+        environment=replace(
+            _frozen_external_transaction(transaction_root).environment,
+            compose_path=str(compose_path),
+        ),
+    )
+    config = _production_config()
+    service = ComposeService()
+    calls: list[str] = []
+
+    manifest = Mock(active=Mock(), rollback=Mock())
+    monkeypatch.setattr(service, "_production_preflight", Mock(return_value=manifest))
+    monkeypatch.setattr(
+        service,
+        "_materialize_active_recovery_transaction_unlocked",
+        Mock(return_value=transaction),
+    )
+    monkeypatch.setattr(service, "_require_services_ready", Mock())
+    monkeypatch.setattr(service, "_preflight_current_map_ui_auth", Mock(return_value=[]))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
+        Mock(return_value=Mock(ensured=[], removed=[])),
+    )
+    built_pair = Mock(map_image_id="sha256:freshly-built-image-id")
+    monkeypatch.setattr(
+        service,
+        "_prepare_c6c_candidate_pair",
+        Mock(side_effect=lambda *_a, **_k: (calls.append("prepare"), (built_pair, None))[-1]),
+    )
+    head_check = Mock(side_effect=lambda *_a, **_k: calls.append("head_check"))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._assert_candidate_image_alembic_head",
+        head_check,
+    )
+    monkeypatch.setattr(service, "_pair_provenance_payload", Mock(return_value={}))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.ensure_pair_references",
+        Mock(side_effect=RuntimeError("stop here, past the check")),
+    )
+
+    with pytest.raises(RuntimeError, match="stop here"):
+        service._ensure_production_pinvi_target(
+            "pinvi",
+            config=config,
+            build=True,
+            recreate=True,
+            capture_output=True,
+            transaction=transaction,
+            expected_alembic_head="0078_cache_target_gc_observe",
+        )
+
+    head_check.assert_called_once_with(
+        "sha256:freshly-built-image-id",
+        expected_alembic_head="0078_cache_target_gc_observe",
+        label="Map API",
+    )
+    assert calls.index("prepare") < calls.index("head_check")
+
+
+def test_deploy_compatible_pinvi_pair_skips_alembic_head_check_when_not_specified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """기존 동작 회귀 방지: `expected_alembic_head`를 생략하면 이 검사를 전혀 하지
+    않는다(명시적 opt-in)."""
+    manager = tmp_path / "manager"
+    manager.mkdir()
+    compose_path = manager / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    transaction_root = tmp_path / "transaction"
+    transaction_root.mkdir()
+    base_transaction = _frozen_external_transaction(transaction_root)
+    transaction = replace(
+        base_transaction,
+        environment=replace(base_transaction.environment, compose_path=str(compose_path)),
+    )
+    service = ComposeService()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        Mock(return_value=nullcontext()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
+        Mock(return_value="production"),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=_production_config()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, Mock(spec=ValidatedComposeCandidate))),
+    )
+    head_check = Mock(side_effect=AssertionError("must not run when not requested"))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._assert_candidate_image_alembic_head",
+        head_check,
+    )
+    monkeypatch.setattr(
+        service, "_ensure_production_pinvi_target", Mock(return_value={"success": True})
+    )
+
+    assert service.deploy_compatible_pinvi_pair() == {"success": True}
+    head_check.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    ["", " x", "x ", "x\ny", "x\ry", "x" * 129],
+)
+def test_deploy_compatible_pinvi_pair_rejects_invalid_alembic_head_before_any_mutation(
+    bad_value: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """공백/개행/과도한 길이는 lock 진입 전에 거부돼야 한다."""
+    lock = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock",
+        lock,
+    )
+    service = ComposeService()
+
+    with pytest.raises(DeploymentContractError, match="alembic head"):
+        service.deploy_compatible_pinvi_pair(expected_alembic_head=bad_value)
+    lock.assert_not_called()
+
+
+def test_validate_expected_alembic_head_accepts_a_plain_revision() -> None:
+    _validate_expected_alembic_head("0078_cache_target_gc_observe")
+
+
+def test_assert_candidate_image_alembic_head_accepts_a_matching_single_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["docker"], returncode=0, stdout="0078_cache_target_gc_observe (head)\n", stderr=""
+    )
+    run = Mock(return_value=completed)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run", run
+    )
+
+    _assert_candidate_image_alembic_head(
+        "kor-travel-map-api:0dbbd0b5",
+        expected_alembic_head="0078_cache_target_gc_observe",
+        label="Map API",
+    )
+
+    args = run.call_args.args[0]
+    assert args[:3] == ["docker", "run", "--rm"]
+    assert "kor-travel-map-api:0dbbd0b5" in args
+    assert "alembic heads" in args[-1]
+
+
+def test_assert_candidate_image_alembic_head_rejects_a_mismatched_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["docker"], returncode=0, stdout="0072_curation_provenance (head)\n", stderr=""
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        Mock(return_value=completed),
+    )
+
+    with pytest.raises(DeploymentContractError, match="differs from the expected head"):
+        _assert_candidate_image_alembic_head(
+            "kor-travel-map-api:latest-main",
+            expected_alembic_head="0078_cache_target_gc_observe",
+            label="Map API",
+        )
+
+
+def test_assert_candidate_image_alembic_head_rejects_multiple_heads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """merge migration 누락 등으로 head가 두 개 이상이면 어느 것도 신뢰할 수 없으므로
+    거부한다."""
+    completed = subprocess.CompletedProcess(
+        args=["docker"],
+        returncode=0,
+        stdout="0078_cache_target_gc_observe (head)\n0079_orphan_branch (head)\n",
+        stderr="",
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        Mock(return_value=completed),
+    )
+
+    with pytest.raises(DeploymentContractError, match="differs from the expected head"):
+        _assert_candidate_image_alembic_head(
+            "kor-travel-map-api:broken",
+            expected_alembic_head="0078_cache_target_gc_observe",
+            label="Map API",
+        )
+
+
+def test_assert_candidate_image_alembic_head_rejects_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["docker"], returncode=1, stdout="", stderr="no such image"
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        Mock(return_value=completed),
+    )
+
+    with pytest.raises(DeploymentContractError, match="inspection failed"):
+        _assert_candidate_image_alembic_head(
+            "kor-travel-map-api:missing",
+            expected_alembic_head="0078_cache_target_gc_observe",
+            label="Map API",
+        )
+
+
+def test_assert_candidate_image_alembic_head_rejects_subprocess_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        Mock(side_effect=subprocess.TimeoutExpired(cmd="docker", timeout=60)),
+    )
+
+    with pytest.raises(DeploymentContractError, match="could not be inspected"):
+        _assert_candidate_image_alembic_head(
+            "kor-travel-map-api:hangs",
+            expected_alembic_head="0078_cache_target_gc_observe",
+            label="Map API",
+        )
+
+
+def test_assert_candidate_image_alembic_head_does_not_leak_raw_output_in_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실패 메시지에 이미지 내부 경로/의존성 등 raw stdout/stderr가 노출되지 않아야
+    한다."""
+    completed = subprocess.CompletedProcess(
+        args=["docker"],
+        returncode=1,
+        stdout="",
+        stderr="ModuleNotFoundError: /app/venv/lib/python3.12/site-packages missing secretlib",
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.subprocess.run",
+        Mock(return_value=completed),
+    )
+
+    with pytest.raises(DeploymentContractError) as excinfo:
+        _assert_candidate_image_alembic_head(
+            "kor-travel-map-api:broken-venv",
+            expected_alembic_head="0078_cache_target_gc_observe",
+            label="Map API",
+        )
+    assert "/app" not in str(excinfo.value)
+    assert "secretlib" not in str(excinfo.value)
 
 
 @pytest.mark.parametrize(

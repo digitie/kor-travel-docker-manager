@@ -2048,6 +2048,77 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
         )
 
 
+# issue #109: `kor-travel-map-api`의 entrypoint는 기동마다 무조건 `alembic upgrade
+# head`를 실행한다. floating tag(`latest-main`)로 배포된 이미지가 pin보다 오래
+# 빌드된 채였고, 그 이미지의 alembic head(0072)까지만 prod schema가 조용히
+# 올라가 공개 표면이 0이 됐다(issue #109). candidate image 자체를 절대 기동하지
+# 않고 `alembic heads`만 읽어(DB에 아무 것도 하지 않는 static inspection) operator가
+# 명시한 기대 head와 다르면 배포를 시작하기 전에 fail-close한다.
+_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 60
+
+
+def _validate_expected_alembic_head(expected_alembic_head: str) -> None:
+    if (
+        not expected_alembic_head
+        or expected_alembic_head != expected_alembic_head.strip()
+        or "\n" in expected_alembic_head
+        or "\r" in expected_alembic_head
+        or len(expected_alembic_head) > 128
+    ):
+        raise DeploymentContractError("expected alembic head is invalid")
+
+
+def _assert_candidate_image_alembic_head(
+    image: str,
+    *,
+    expected_alembic_head: str,
+    label: str,
+) -> None:
+    """candidate `image`를 기동하지 않고 `alembic heads`만 정적으로 읽어 비교한다.
+
+    DB에 연결하지 않는 `--entrypoint sh ... alembic heads`만 실행하므로 실제
+    migration은 절대 실행되지 않는다. 여러 head(merge 누락 등)나 예상과 다른 head,
+    실행 자체의 실패는 모두 배포를 막는 동일한 fail-close 사유다. raw stdout/stderr는
+    노출하지 않는다 — 어느 head들이 나왔는지는 운영 감사에 필요하지 않고, 이미지
+    내부 경로/의존성 정보를 노출할 수 있다.
+    """
+
+    try:
+        completed = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--entrypoint",
+                "sh",
+                image,
+                "-c",
+                "cd /app && alembic heads",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            f"{label} candidate image alembic head could not be inspected"
+        ) from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError(
+            f"{label} candidate image alembic head inspection failed"
+        )
+    heads = [
+        line.split()[0]
+        for line in completed.stdout.splitlines()
+        if line.strip() and "(head)" in line
+    ]
+    if len(heads) != 1 or heads[0] != expected_alembic_head:
+        raise DeploymentContractError(
+            f"{label} candidate image alembic head differs from the expected head"
+        )
+
+
 class ComposeService:
     def _capture_transaction_unlocked(
         self,
@@ -3589,6 +3660,7 @@ class ComposeService:
         build: bool = False,
         recreate: bool = True,
         wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+        expected_alembic_head: str | None = None,
     ) -> dict[str, Any]:
         """production Map runtime+PinVi API set의 유일한 배포 mutation 진입점.
 
@@ -3598,9 +3670,33 @@ class ComposeService:
         배포는 기본값(120초)보다 큰 값을 명시적으로 지정해야 한다 — 그렇지 않으면
         마이그레이션이 끝나기 전에 timeout으로 실패 판정되어 `_recover_previous_pair`
         rollback이 발동하고, 진행 중이던 마이그레이션 컨테이너가 뜯긴다.
+
+        `expected_alembic_head`(issue #109)를 명시하면 candidate Map API 이미지의
+        `alembic heads`를 기동/DB 접속 없이 정적으로 읽어 이 값과 다르면 mutation
+        전에 fail-close한다. floating tag(`latest-main`)가 pin보다 오래 빌드된
+        이미지를 가리키고 있어도(git revision provenance 검증만으로는 놓치는
+        경우 — provenance는 `build=True`일 때만, 그것도 소스 checkout 기준으로
+        검증되고 실제 이미지 안 migration chain의 head까지는 보지 않는다) 이 값을
+        생략하지 않는 한 여기서 잡힌다. 생략하면(`None`) 기존 동작과 완전히
+        동일하다 — 이 게이트는 명시적 opt-in이며, 이미 이 값이 알려진 배포에서는
+        항상 지정해야 한다. `_prepare_c6c_candidate_pair`가 돌려준
+        `candidate_pair.map_image_id`(빌드가 있었다면 그 결과 immutable ID)를
+        검사한다 — build 전 floating tag를 검사하면 build가 그 태그를 덮어써서
+        검사가 무의미해지므로, 반드시 build 뒤(또는 build가 없으면 현재 resolve된)
+        exact 이미지를 검사해야 한다.
+
+        Map API만 검사하고 PinVi는 대칭으로 검사하지 않는다: PinVi의 alembic
+        migration은 이 경로의 일반 컨테이너 기동에서 자동 실행되지 않는다 —
+        오직 cache-target cutover의 receipt-gated one-off runner
+        (`_run_pin_candidate_oneoff`, `schema_before`/`schema_after` 검증 포함)에서만
+        명시적으로 실행된다. 반면 Map API 이미지는 이 경로가 기동시키는 순간
+        entrypoint가 조건 없이 `alembic upgrade head`를 실행하므로(issue #88/#109),
+        위험이 비대칭이다.
         """
 
         _validate_c6c_wait_timeout(wait_timeout)
+        if expected_alembic_head is not None:
+            _validate_expected_alembic_head(expected_alembic_head)
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
             transaction, _ = self._capture_transaction_unlocked(
@@ -3641,6 +3737,7 @@ class ComposeService:
                 transaction=transaction,
                 build_provenance=build_provenance,
                 wait_timeout=wait_timeout,
+                expected_alembic_head=expected_alembic_head,
             )
 
     def run_cache_target_cutover(
@@ -5346,6 +5443,13 @@ class ComposeService:
                 "cache-target diagnostic writer fence has in-flight database transactions"
             )
 
+        # 진단은 read-mostly라 writer를 멈췄다 재기동하는 것 자체가 새 candidate를
+        # 활성화하는 수단이 되면 안 된다. 재기동 직전(여기)의 exact running pair를
+        # 찍어 두고, finally에서 재기동 뒤 pair가 조금이라도 달라졌으면(예: floating
+        # tag가 stop~restart 사이 다른 이미지로 이미 바뀌어 있던 경우) 즉시
+        # fail-close한다 — `_attest_cache_target_pair`는 manifest에 기록된 active
+        # pair와만 비교하므로, manifest 자체가 이미 stale하면 이 drift를 못 잡는다.
+        pre_stop_pair = self._inspect_current_pair(config)
         failure: tuple[DiagnosticStage, DiagnosticFailureClass] | None = None
         try:
             stopped = self._run_frozen_recovery(
@@ -5416,6 +5520,11 @@ class ComposeService:
             # `up -d --wait`로 재기동을 시도하고, 그 다음 실제로 attested active
             # pair가 맞는지 재확인한다 — "재기동했으니 됐다"는 가정을 두지 않는다.
             self._activate_cache_target_writers(transaction=transaction, config=config)
+            if not self._pair_matches(self._inspect_current_pair(config), pre_stop_pair):
+                raise DeploymentContractError(
+                    "cache-target diagnostic writer restart activated a different "
+                    "image pair than was running before the writer fence"
+                )
             self._attest_cache_target_pair(config, manifest, transaction)
 
         now_unix = int(time.time())
@@ -6518,6 +6627,7 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         build_provenance: C6cBuildProvenance | None = None,
         wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+        expected_alembic_head: str | None = None,
     ) -> dict[str, Any]:
         """C6c compatible runtime set을 Map 검증 뒤 PinVi로 단계 배포한다."""
 
@@ -6581,6 +6691,17 @@ class ComposeService:
             build_provenance=build_provenance,
             transaction=transaction,
         )
+        if expected_alembic_head is not None:
+            # `candidate_pair.map_image_id`는 `build=True`일 때 방금 끝난 build로
+            # 새로 만들어진 immutable ID다(위 `_prepare_c6c_candidate_pair` 참고) —
+            # build 전 floating tag를 검사하면 build가 그 태그를 덮어써서 검사가
+            # 무의미해진다(issue #109 재현 실공백, 적대적 리뷰로 확인). 반드시
+            # 실제로 활성화될 exact 이미지를 여기서 검사한다.
+            _assert_candidate_image_alembic_head(
+                candidate_pair.map_image_id,
+                expected_alembic_head=expected_alembic_head,
+                label="Map API",
+            )
         if prebuild_result is not None:
             self._append_stage_result(
                 result,

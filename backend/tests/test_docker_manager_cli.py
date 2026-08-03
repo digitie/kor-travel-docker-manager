@@ -441,6 +441,7 @@ def test_cli_deploys_only_through_compatible_pair_workflow(mock_compose_service)
         build=True,
         recreate=True,
         wait_timeout=120,
+        expected_alembic_head=None,
     )
 
 
@@ -459,6 +460,36 @@ def test_cli_deploy_passes_explicit_wait_timeout(mock_compose_service):
         build=False,
         recreate=True,
         wait_timeout=1200,
+        expected_alembic_head=None,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_deploy_passes_expected_alembic_head(mock_compose_service):
+    """issue #109: candidate image의 alembic head를 명시하면 그대로 전달돼야 한다."""
+    mock_compose_service.deploy_compatible_pinvi_pair.return_value = {
+        "success": True,
+        "returncode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+    assert (
+        main(
+            [
+                "pinvi-pair",
+                "deploy",
+                "--expected-alembic-head",
+                "0078_cache_target_gc_observe",
+            ]
+        )
+        == 0
+    )
+    mock_compose_service.deploy_compatible_pinvi_pair.assert_called_once_with(
+        build=False,
+        recreate=True,
+        wait_timeout=120,
+        expected_alembic_head="0078_cache_target_gc_observe",
     )
 
 

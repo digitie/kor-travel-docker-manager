@@ -247,12 +247,56 @@ def _install_unlocked_context(
         "kor_travel_docker_manager.services.compose_service.attest_cache_target_global_writer_fence",
         Mock(return_value=SimpleNamespace(inventory_sha256="e" * 64)),
     )
+    monkeypatch.setattr(
+        service, "_inspect_current_pair", Mock(return_value=SimpleNamespace(id="stable-pair"))
+    )
+    monkeypatch.setattr(
+        service, "_pair_matches", Mock(side_effect=lambda a, b: a is b or a == b)
+    )
     activated = Mock()
     monkeypatch.setattr(service, "_activate_cache_target_writers", activated)
     monkeypatch.setattr(service, "_attest_cache_target_pair", Mock())
     smoke = Mock()
     monkeypatch.setattr(service, "_run_cache_target_rollback_health_smoke", smoke)
     return service, journal_path, attempt_log_path, transaction, activated, smoke
+
+
+def test_unlocked_diagnostic_rejects_writer_restart_onto_a_drifted_image_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """진단은 read-mostly라 writer stop/restart가 새 candidate 활성화 수단이 되면
+    안 된다. floating tag가 stop~restart 사이 다른 이미지로 이미 바뀌어 있어서
+    재기동 뒤 pair가 재기동 전과 달라지면(manifest의 active pair와는 우연히 같더라도)
+    즉시 거부해야 한다 — 실 production에서 이 정확한 경로로 재현된 사고(issue #109)."""
+    service, journal_path, attempt_log_path, transaction, activated, _smoke = (
+        _install_unlocked_context(tmp_path, monkeypatch)
+    )
+    pairs = iter([SimpleNamespace(id="before"), SimpleNamespace(id="after-drifted")])
+    monkeypatch.setattr(service, "_inspect_current_pair", Mock(side_effect=lambda _c: next(pairs)))
+    monkeypatch.setattr(service, "_pair_matches", Mock(side_effect=lambda a, b: a.id == b.id))
+    journal = prepare_cache_target_diagnostic(
+        diagnostic_id=_DIAGNOSTIC_ID, identity=_identity(), started_at_unix=1_700_000_000
+    )
+    write_cache_target_diagnostic(journal_path, journal)
+    monkeypatch.setattr(
+        service,
+        "_run_cache_target_diagnostic_role",
+        Mock(side_effect=lambda runtime, *_a: (_receipt(runtime.role, "source_archive"),)),
+    )
+
+    with pytest.raises(DeploymentContractError, match="different image pair"):
+        service._run_cache_target_diagnostic_unlocked(
+            journal_path=journal_path,
+            attempt_log_path=attempt_log_path,
+            journal=journal,
+            transaction=transaction,
+            config=SimpleNamespace(),
+            manifest=SimpleNamespace(),
+            state_directory=tmp_path,
+        )
+
+    activated.assert_called_once()
+    service._attest_cache_target_pair.assert_not_called()
 
 
 def test_unlocked_diagnostic_completes_and_always_restarts_writers(
