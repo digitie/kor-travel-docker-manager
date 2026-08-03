@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-08-03 (T-049A: cache-target 진단 typed 모델·storage 구현)
+
+설계 문서 6절이 고정한 5-phase 순서의 첫 PR로 `cache_target_diagnostics.py`를 신설했다.
+`DiagnosticPhase`/`DiagnosticStage`/`DiagnosticFailureClass` sealed Literal union,
+`CacheTargetDiagnosticIdentity`(설계 문서 4절의 input logical identity), 비밀 없는
+`DiagnosticStageReceipt`, `CacheTargetDiagnosticJournal`을 `cache_target_window.py`의
+frozen-dataclass phase-state-machine 패턴을 그대로 따라 정의했다. storage는 기존
+`cache_target_cutover.write_cutover_state`/`read_owner_only_state`를 재사용해 0600/0700
+atomic write 계약을 그대로 물려받는다.
+
+적대적 리뷰어 2명(Agent tool, 독립·병렬)이 코드를 리뷰했다. 두 실공백을 확인:
+(1) `DiagnosticStageReceipt.role`이 그 receipt가 저장된 evidence tuple
+(`map_application_receipts`/`map_dagster_receipts`/`pinvi_receipts`)과 실제로 일치하는지
+아무도 검사하지 않아, `map_application_receipts`에 `role="pinvi"` receipt가 그대로
+통과했다. (2) `completed` phase 진입 시 모든 receipt의 `status="succeeded"`를 요구하지
+않아, 하나 이상의 stage가 실패한 채로도 진단이 `completed`로 끝날 수 있었다. 둘 다
+`_validate_journal`에 명시적 검사를 추가해 고쳤고, 각각의 회귀 테스트를 추가했다.
+리뷰 중 나온 사소한 지적(`external_event_count: int` → `Literal[0]`로 타입 강화, 테스트
+이름 개선, missing-field tamper 테스트 추가, write-never-persists-invalid 테스트 추가,
+carry-forward 의미론 테스트 추가)도 모두 반영했다. 최종 36건의 회귀 테스트로 backend
+전체 1431 passed, ruff 기존 baseline 유지, mypy clean을 확인했다.
+
+T-049B(DB diagnostic primitive)부터는 매 phase 착수 전 open issue를 먼저 확인한다.
+issue #99(H35 Map 쪽 `0063→0078` 실 prod 데이터 실측 확정값)는 T-049A 범위와 무관하고
+T-049D/E의 cutover-retry 기대값 대조에 필요하므로 해당 phase에서 반영한다.
+
+---
+
 ## 2026-08-03 (T-049 cutover 사전 진단과 abort budget 설계)
 
 T-VN-41에서 production Map data logical inventory가 fail-close된 뒤 full pre-forward window를

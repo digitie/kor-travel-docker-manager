@@ -276,18 +276,43 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 ### T-049: cache-target 사전 진단·cutover abort budget 제품화
 
 설계 정본은 [`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)다.
+구현 순서는 설계 문서 6절이 고정한다: T-049A(모델·storage) → T-049B(DB primitive) →
+T-049C(writer fence·orchestration) → T-049D(cutover gate) → T-049E(n150 rehearsal). 각
+phase는 별도 PR로 검증한다.
 
-- [ ] `ktdctl cache-target diagnose --json`의 typed diagnostic journal/receipt와 input identity·owner-only
-      storage를 구현한다. raw stderr/stdout, DSN, credential, resolved Compose, artifact path는 어떤 결과에도
-      남기지 않는다.
-- [ ] Map application → Map Dagster → PinVi 순서의 source archive/schema/data inventory/scratch restore
-      rehearsal을 stage·failure class로 기록하고, cleanup·foreign writer·runtime re-attestation 실패를
-      fail-close한다.
-- [ ] PostgreSQL major별 circular-FK advisory grammar를 integration fixture로 고정한다. data-only에서
-      실제로 지원하는 exact advisory만 허용하고 schema-only/unknown warning/nonzero exit는 거부한다.
-- [ ] stale/foreign/expired diagnostic receipt 및 24시간 budget 초과를 새 cutover 전에 거부하고, actual
-      cutover의 fresh backup receipt와 사전 archive를 절대로 혼용하지 않는다.
-- [ ] pre-forward failure의 마지막 stage/class를 owner-only window journal에 보존하고, initial external
-      event 전후의 abort/resume/fix-forward 경계를 회귀로 검증한다.
-- [ ] backend 전체·Ruff·strict mypy·canonical Compose와 n150 sync=false diagnostic rehearsal을 통과한 뒤,
-      final T-VN-41 cutover를 정확히 한 번 실행한다.
+- [x] **T-049A — typed diagnostic model과 storage.** `cache_target_diagnostics.py` 신설.
+      sealed `DiagnosticPhase`(prepared→writers_fencing→writers_fenced→
+      map_application_checked→map_dagster_checked→pinvi_checked→runtime_smoke_checked→
+      completed, 그리고 failed/aborted 두 terminal) · `DiagnosticStage`(9종) ·
+      `DiagnosticFailureClass`(8종) Literal union과 `CacheTargetDiagnosticIdentity`(설계
+      문서 4절의 input logical identity 9개 필드) · `DiagnosticStageReceipt`(role·stage·
+      status·failure_class·bounded elapsed time·digest만, raw stdout/stderr/DSN/경로는
+      타입에 아예 없음) · `CacheTargetDiagnosticJournal`을 frozen dataclass로 정의했다.
+      저장은 기존 `cache_target_cutover.write_cutover_state`/`read_owner_only_state`를
+      재사용해 0600 파일·0700 부모 디렉터리·atomic replace+fsync를 그대로 물려받는다
+      (`cache_target_window.py`가 세 번째 journal 타입에 쓰는 것과 같은
+      `# type: ignore[arg-type]` 패턴). phase state machine(`_allowed_next_phases`),
+      단계별 evidence 요구(`_validate_phase_evidence`), `external_event_count != 0`을
+      즉시 security failure로 거부하는 불변식, `diagnostic_receipt_is_fresh`(T-049D가
+      재사용할 stale/identity-mismatch/expired 판정)를 구현했다. 적대적 리뷰어 2명이
+      독립적으로 찾은 두 실공백 — receipt의 `role`이 그 receipt가 담긴 evidence
+      tuple(map_application/map_dagster/pinvi)과 실제로 일치하는지 아무도 검사하지
+      않던 것, `completed` phase가 하나 이상의 `status="failed"` receipt를 포함해도
+      막지 않던 것 — 을 `_validate_journal`에서 고쳤다. 회귀 테스트 36건
+      추가(phase skip 거부, phase별 evidence 누락 거부, identity/receipt 필드 검증,
+      role/evidence-tuple mismatch 거부, completed 상태의 failed receipt 거부, invalid
+      journal이 disk에 절대 쓰이지 않음, 빈 receipt tuple round-trip, transition의
+      carry-forward 의미론, freshness 판정 4가지 경로, tamper된 JSON 필드(extra/missing)
+      거부, 0600 round-trip). backend 1431 passed, ruff 기존 baseline 유지(6건, 무관
+      파일), mypy clean.
+- [ ] **T-049B — DB diagnostic primitive**: 현재 backup helper를 typed stage 결과로
+      분해하고 source/scratch cleanup, 지원 `pg_dump` advisory grammar 및 exact
+      fail-close test를 만든다.
+- [ ] **T-049C — writer fence와 orchestration**: global lock, foreign writer 검사, 3-role
+      serial diagnostic, runtime re-attestation, abort budget을
+      `ktdctl cache-target diagnose`에 결선한다.
+- [ ] **T-049D — cutover gate와 failure propagation**: fresh diagnostic receipt 없이는
+      forward window를 열지 않게 하고, window journal에 마지막 safe stage/class를 남긴다.
+- [ ] **T-049E — n150 production rehearsal**: sync=false에서 diagnostic을 한 번 실행하고
+      receipt identity·artifact cleanup·runtime recovery를 확인한 뒤에만 final initial
+      cutover를 한 번 실행한다.
