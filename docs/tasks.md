@@ -19,6 +19,7 @@
 | **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
 | **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[ ]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
+| **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
 
 ---
 
@@ -453,3 +454,48 @@ phase는 별도 PR로 검증한다.
 - [ ] **T-049E — n150 production rehearsal**: sync=false에서 diagnostic을 한 번 실행하고
       receipt identity·artifact cleanup·runtime recovery를 확인한 뒤에만 final initial
       cutover를 한 번 실행한다.
+
+### T-050: 배포 alembic head 재발 방지 게이트 (issue #109)
+
+2026-08-03 prod 사고: `kor-travel-map-api-latest`가 floating tag `latest-main`(7/31
+빌드, alembic head `0072`)으로 재기동되면서 entrypoint의 무조건 `alembic upgrade
+head`가 조용히 실행돼 `0063`→`0072`까지만 올라갔다. `0073`(공개 링크 신뢰도 복구)이
+빠져 공개 큐레이션 표면이 0으로 떨어졌다. 원인은 이 세션 자신의 T-049C cache-target
+진단 writer 재기동(`_activate_cache_target_writers`)이 stale 이미지로 컨테이너를
+다시 만든 것으로 추적됐다(재기동 시각 `2026-08-03T11:31:35Z`가 컨테이너
+`StartedAt`과 정확히 일치). 사용자 결정으로 데이터는 복구하지 않고 폐기·재생성하며,
+이 태스크는 재발 방지만 다룬다.
+
+- [x] **candidate 이미지 alembic head 정적 검사(`--expected-alembic-head`).**
+      `_assert_candidate_image_alembic_head`가 `docker run --rm --entrypoint sh
+      <image> -c 'cd /app && alembic heads'`로 DB 접속·앱 기동 없이 candidate의
+      alembic head만 읽어 operator가 명시한 값과 다르면(또는 head가 여럿이거나
+      명령 자체가 실패하면) `deploy_compatible_pinvi_pair`를 mutation 전에
+      fail-close한다. `ktdctl pinvi-pair deploy --expected-alembic-head <rev>`로
+      노출했다. 생략(`None`)하면 기존 동작과 완전히 동일한 명시적 opt-in이다.
+      **적대적 리뷰어 1명이 실공백을 찾았다**: 최초 구현은 `build=True`일 때도
+      build **이전**의 floating tag를 검사해서, build가 그 태그를 새 이미지로
+      덮어쓰면 검사가 실제로 활성화되는 이미지와 무관해지는 문제가 있었다(사고
+      자체의 재발 방지 게이트 안에 사고와 같은 클래스의 결함이 있었던 셈). 검사
+      위치를 `_ensure_production_pinvi_target` 안, `_prepare_c6c_candidate_pair`가
+      build 뒤 돌려주는 `candidate_pair.map_image_id`(immutable ID) 직후로
+      옮겨 고쳤다. PinVi는 대칭으로 검사하지 않는다 — PinVi alembic migration은
+      이 경로의 일반 기동에서 자동 실행되지 않고 cache-target cutover의
+      receipt-gated one-off runner에서만 실행되므로 위험이 비대칭이다(docstring에
+      명시).
+- [x] **진단 writer 재기동의 image drift 거부.** `_run_cache_target_diagnostic_unlocked`가
+      writer를 멈추기 직전 `_inspect_current_pair(config)`로 exact running pair(5개
+      writer의 immutable image ID·source revision·contract generation)를 찍어 두고,
+      `finally`의 `_activate_cache_target_writers` 재기동 직후 다시 찍어 `_pair_matches`로
+      비교한다 — 조금이라도 다르면(예: floating tag가 stop~restart 사이 이미
+      다른 이미지를 가리키고 있던 경우) 기존 `_attest_cache_target_pair`(manifest의
+      active pair와만 비교 — manifest 자체가 stale하면 이 drift를 못 잡음)보다
+      먼저 fail-close한다. 진단은 read-mostly라 writer stop/restart 자체가 새
+      candidate 활성화 수단이 되면 안 된다는 불변식을 명시적으로 강제한다.
+      적대적 리뷰어 2명(게이트 자체 담당, drift 감지 담당) 모두 검증했고
+      drift 감지 쪽은 confirmed 실공백 없음. 회귀 테스트 다수 추가(정적 검사
+      성공/불일치/head 여럿/nonzero exit/timeout/raw output 비노출 6건, 배포
+      게이트 pass-through·build-후-이미지 검사·opt-in skip 3건, 진단 drift 거부
+      1건). backend 전체 1515 passed, ruff/mypy clean(touched files).
+- [ ] Map 팀이 entrypoint의 무조건 `alembic upgrade head`를 손보는 별도 작업(issue
+      #109 코멘트에서 예고)이 나오면 이 게이트와의 관계를 재검토한다.

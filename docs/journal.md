@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-08-04 (T-050: 배포 alembic head 재발 방지 게이트, issue #109)
+
+prod에서 `kor-travel-map-api-latest`의 공개 큐레이션 표면이 0으로 떨어진 사고(issue #109)를
+조사했다. 원인은 floating tag `latest-main`(7/31 빌드, alembic head `0072`)으로 컨테이너가
+재기동되면서 entrypoint의 무조건 `alembic upgrade head`가 `0063`→`0072`까지만 조용히
+올리고, 공개 링크 신뢰도를 복구하는 `0073`이 빠진 것이었다. 컨테이너 `StartedAt`
+(`2026-08-03T11:31:35Z`)이 이 세션 자신의 T-049C cache-target 진단 writer 재기동
+시각과 정확히 일치해, 원인을 이 세션의 라이브 테스트 작업으로 추적했다. 사용자는
+데이터 복구 대신 폐기·재생성을 택했고, 이 작업은 재발 방지만 다뤘다.
+
+두 게이트를 구현했다: (1) `pinvi-pair deploy --expected-alembic-head`로 candidate Map
+API 이미지의 alembic head를 DB 접속 없이 정적으로 검사해 mutation 전 fail-close, (2)
+cache-target 진단의 writer 재기동에 exact image pair drift 검사를 추가해 read-mostly
+작업이 새 candidate를 조용히 활성화하지 못하게 함. 적대적 리뷰어 2명 중 1명이 (1)의
+실공백을 찾았다 — 최초 구현이 build 이전 tag를 검사해서 build가 그 태그를 덮어쓰면
+검사가 무의미해지는, 사고 자체와 같은 클래스의 결함이었다. build 뒤 immutable image
+ID를 검사하도록 고쳤다. (2)는 confirmed 실공백 없음. 회귀 테스트 10건 추가, backend
+전체 1515 passed, ruff/mypy clean.
+
+---
+
 ## 2026-08-03 (T-049E 재실행: pg_restore timeout 수정 + inventory 해시 비교의 근본 한계 확인)
 
 dropdb NOTICE 수정을 n150에 배포하고 진단을 재실행했다. writer fence·3-role 진단

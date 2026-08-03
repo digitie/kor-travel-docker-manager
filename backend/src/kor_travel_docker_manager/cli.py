@@ -130,6 +130,7 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 build=args.build,
                 recreate=True,
                 wait_timeout=args.wait_timeout,
+                expected_alembic_head=args.expected_alembic_head,
             )
         elif args.pair_action == "capture":
             result = compose_service.capture_compatible_pinvi_pair(
@@ -326,6 +327,16 @@ def build_parser() -> argparse.ArgumentParser:
             "kor-travel-map API는 uvicorn 기동 전에 alembic 마이그레이션을 실행하므로, "
             "긴 마이그레이션을 수반하는 배포는 더 큰 값을 지정해야 timeout으로 인한 "
             "오발동 rollback을 피할 수 있다(issue #88)."
+        ),
+    )
+    pair_deploy.add_argument(
+        "--expected-alembic-head",
+        default=None,
+        help=(
+            "candidate Map API 이미지의 alembic head가 이 값과 다르면 배포를 "
+            "시작하기 전에 거부합니다(기동/DB 접속 없이 이미지만 정적으로 확인, "
+            "issue #109). 생략하면 이 검사를 하지 않습니다 — 알고 있는 배포에서는 "
+            "항상 지정해야 합니다."
         ),
     )
     pair_deploy.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
