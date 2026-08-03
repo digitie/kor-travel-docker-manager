@@ -124,6 +124,56 @@ def test_restore_rehearsal_never_drops_foreign_owned_scratch_database(
     runner.assert_not_called()
 
 
+def test_restore_rehearsal_skips_stale_scratch_dropdb_when_nothing_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`dropdb --if-exists`는 scratch database가 원래 없을 때도 "does not exist,
+    skipping" NOTICE를 stderr에 낸다. `_run_checked`는 stderr가 하나라도 있으면
+    실패로 처리하므로, 존재하지 않음(None)이 이미 확인된 경우엔 dropdb 자체를
+    생략해야 한다(cache-target diagnostic에서 실 production 재현된 회귀와 동일 패턴)."""
+    calls: list[list[str]] = []
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        del label
+        calls.append(arguments)
+        return b"placeholder"
+
+    monkeypatch.setattr(backup_service, "_validate_archive_structure", Mock())
+    monkeypatch.setattr(backup_service, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(backup_service, "_run_checked", Mock(side_effect=run_checked))
+    monkeypatch.setattr(
+        backup_service,
+        "_restore_archive_into_database",
+        Mock(side_effect=DeploymentContractError("stop after createdb")),
+    )
+
+    with pytest.raises(DeploymentContractError):
+        backup_service._rehearse_database_restore(
+            backup_path=tmp_path / "backup.dump",
+            runtime=DatabaseRuntime(
+                role="map_application",
+                container_name="postgres-production",
+                database_name="map_app",
+                owner_name="map_owner",
+                admin_name="cluster_admin",
+            ),
+            transaction_id=_TRANSACTION_ID,
+            source_database_identity="1" * 64,
+            archive_sha256="2" * 64,
+            expected_schema_revision="0063_pipeline_root_id",
+            expected_schema_inventory_sha256="3" * 64,
+            expected_data_inventory_sha256="4" * 64,
+        )
+
+    assert any("createdb" in call for call in calls)
+    # 유일하게 남는 dropdb 호출은 finally의 최종 cleanup(createdb 성공 뒤 실제 scratch
+    # database가 존재하므로 무조건 정리)뿐이다 — 시작 시점의 stale-cleanup dropdb는
+    # 생략돼야 한다.
+    dropdb_calls = [call for call in calls if "dropdb" in call]
+    assert len(dropdb_calls) == 1
+
+
 def test_writer_registry_matches_cross_repository_golden_vector() -> None:
     assert cache_target_writer_registry_sha256(_writer_services()) == (
         "526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c"
@@ -365,6 +415,56 @@ def test_backup_and_restore_stream_without_dsn_or_credential(
         in {"dropdb", "createdb"}
     ]
     assert scratch_lifecycle[:2] == ["dropdb", "createdb"]
+
+
+def test_restore_database_backup_skips_dropdb_when_target_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`restore_database_backup`도 `_rehearse_database_restore`와 같은 stderr-NOTICE
+    함정을 갖고 있었다: production database가 없을 때도 `dropdb --if-exists`가
+    무해한 NOTICE를 stderr에 내고 `_run_checked`가 이를 실패로 처리한다. 존재하지
+    않음(None)이 이미 확인된 경우엔 dropdb 자체를 생략해야 한다."""
+    calls: list[list[str]] = []
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        del label
+        calls.append(arguments)
+        return b"placeholder"
+
+    monkeypatch.setattr(backup_service, "_validate_runtime", Mock())
+    monkeypatch.setattr(
+        backup_service,
+        "_backup_path",
+        Mock(return_value=Path("/nonexistent/backup.dump")),
+    )
+    monkeypatch.setattr(
+        backup_service, "_file_sha256", Mock(return_value=("sha", 0))
+    )
+    monkeypatch.setattr(backup_service, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(backup_service, "_run_checked", Mock(side_effect=run_checked))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        Mock(side_effect=OSError("stop after createdb")),
+    )
+    receipt = Mock(sha256="sha", byte_size=0)
+
+    with pytest.raises(DeploymentContractError):
+        restore_database_backup(
+            state_directory=Path("/nonexistent"),
+            transaction_id=_TRANSACTION_ID,
+            runtime=DatabaseRuntime(
+                role="map_application",
+                container_name="postgres-production",
+                database_name="map_app",
+                owner_name="map_owner",
+                admin_name="cluster_admin",
+            ),
+            receipt=receipt,
+            capability=_COUPLED_ROLLBACK_CAPABILITY,
+        )
+
+    assert not any("dropdb" in call for call in calls)
+    assert any("createdb" in call for call in calls)
 
 
 def test_logical_inventory_accepts_pg_dump_restore_advisory_warning(

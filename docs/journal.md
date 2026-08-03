@@ -4,6 +4,80 @@
 
 ---
 
+## 2026-08-03 (T-049E 재실행: pg_restore timeout 수정 + inventory 해시 비교의 근본 한계 확인)
+
+dropdb NOTICE 수정을 n150에 배포하고 진단을 재실행했다. writer fence·3-role 진단
+stage가 정상 진행되어 `scratch_create`는 3개 role 전부 통과했지만, 이번엔 다른
+문제 2건이 나왔다.
+
+**1) map_application `scratch_restore` timeout(수정함).** `feature.feature_weather_values`
+(1,780만 행) 단일 테이블만으로 pg_restore가 기존 60분 timeout을 넘겼다. n150에서
+같은 아카이브를 수동으로 복원해 **끝까지 완주시켜 실측**했다: COPY ~19분,
+constraint 검증 ~7분, index 4개(개당 2~10분) — 총 약 97분. archive가 stdin
+스트리밍이라 `pg_restore --jobs` 병렬화를 못 쓰는 구조적 제약을 확인했다(파일
+기반 seekable archive가 필요). 공유 상수 `_DATABASE_RESTORE_TIMEOUT_SECONDS=10800`
+(3시간, 실측 + 여유)으로 3곳(`restore_database_backup`·
+`_restore_archive_into_database`·`diagnose_scratch_restore`)의 하드코딩
+`timeout=3600`을 교체했다. **이 발견의 무게**: `restore_database_backup`은
+실제 production coupled-rollback 경로다 — 즉 실제 T-VN-41 cutover가 롤백을
+타야 했다면 이 테이블에서 같은 timeout에 걸렸을 수 있다. 진단 도구가 정확히
+설계 의도대로("production을 실제로 만지기 전에 문제를 찾아낸다") 작동한 사례다.
+적대적 리뷰어 2명 검증, 회귀 테스트 1건 추가, backend 전체 1497 passed.
+
+**2) map_dagster/pinvi `inventory_mismatch`(의도적으로 미해결).** n150에서 writer를
+실제로 멈추고 원인을 격리했다:
+- pinvi 스키마: `CHECK (x = ANY (ARRAY[...]::text[]))` 형태 제약이 최초 생성과
+  dump→restore→재생성 뒤 **의미는 같지만 텍스트 표현이 다르게**(배열 전체 cast vs
+  원소별 cast) 저장되는 PostgreSQL의 알려진 동작. 실제 스키마 손상이 아니다.
+- map_dagster 데이터: `event_logs`/`job_ticks`처럼 자주 갱신되는 테이블에서
+  `pg_dump --data-only --inserts`의 **행 emission 순서가 두 번의 별도 dump
+  호출 사이에 달라짐**을 확인했다 — writer를 완전히 멈춘 상태에서도 재현되어,
+  새 쓰기가 아니라 순서 비결정성 자체가 원인임을 확인했다(diff에서 동일 행이
+  다른 줄 위치에 나타남, 내용은 100% 동일).
+
+두 사례 모두 이 진단의 schema/data inventory 비교 설계 자체가 "동일 데이터의
+pg_dump 출력은 byte-identical"이라는, PostgreSQL이 실제로 보장하지 않는 가정
+위에 있다는 걸 보여준다. 코드 한 줄로 안전하게 고칠 범위가 아니라고 판단해
+**의도적으로 미해결로 남겼다** — canonicalization이나 순서-무관 비교 같은 별도
+설계가 필요하다. docs/tasks.md에 미해결 항목으로 기록.
+
+---
+
+## 2026-08-03 (issue #99 pin 갱신 + T-049E 착수 중 n150 실측으로 dropdb NOTICE 오탐 발견·수정)
+
+issue #99에 Map 쪽에서 실측 확정값과 함께 pin 갱신 요청·PR #925 머지 알림·PR #928 알림이
+연달아 왔다. `map_release_revision`을 `d50bb2c5`(결함 포함, PR #925로 확인) →
+`0dbbd0b5`(PR #925 반영) → `4a764a4f`(PR #928, 문서 전용)로 순서대로 갱신·병합했다(PR #104,
+#105).
+
+pin 갱신 뒤 n150에 실제 배포하고 `ktdctl cache-target diagnose`를 처음으로 production에서
+실행했다. 여러 겹의 실제 운영 문제를 순서대로 만나 해결했다:
+
+1. **배포 자체 실패**: 백엔드 재기동이 `pkill` 권한 부족(기존 프로세스가 root 소유)으로
+   조용히 실패해 옛 코드가 계속 떠 있었다. sudo로 재기동해 해결.
+2. **writer 재기동 부분 실패**: 진단 중 3개 서비스(`map-dagster-daemon`, `map-dagster`,
+   `pinvi-api`)가 `Created` 상태로 멈췄다. `docker compose up -d --wait`로 명시적 재기동.
+3. **`/tmp` tmpfs 용량 부족**: `source_data_inventory`가 `--inserts --rows-per-insert=1`
+   dump를 기본 `/tmp`(7.5GB tmpfs)에 써서 `disk quota exceeded`. `TMPDIR`을 디스크 기반
+   경로로 지정해 우회.
+4. **stuck Dagster run이 in-flight 체크를 막음**: `feature_price_krex_rest_areas_job`이
+   `RESOURCE_INIT_FAILURE`로 계속 재시도 중이었다. 서브에이전트로 근본 원인을 조사해
+   `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`가 `.env`엔 있는데 `docker-compose.yml`에
+   연결이 안 돼 있던 것으로 확인, kor-travel-map#930 등록. 진단 동안만
+   `map-dagster-daemon`을 잠시 멈추는 방식으로 우회.
+5. **`scratch_create`가 3개 role 전부에서 100% 재현 실패**: 진짜 코드 버그였다.
+   `dropdb --if-exists`가 대상 부재 시에도 내는 NOTICE를 `_run_checked`가 stderr
+   존재만으로 실패 처리. `diagnose_scratch_create`와 sibling
+   `_rehearse_database_restore`/`restore_database_backup`(production restore 경로)을
+   모두 고쳤다. 적대적 리뷰어 2명이 검증했고 confirmed 실공백 없음. 회귀 6건 추가,
+   backend 전체 1496 passed.
+
+T-049 진단 도구가 설계 의도대로 "production을 실제로 만지기 전에 문제를 찾아낸다"는
+목적을 그대로 증명한 하루였다 — 5건 모두 코드 병합 전에는 드러나지 않았을 실제 운영/코드
+결함이었다.
+
+---
+
 ## 2026-08-03 (T-049D: cache-target cutover gate와 window failure propagation 구현)
 
 이슈 #99에 Map 쪽 적대 리뷰 결과가 추가로 달렸다 — 현재 pinned `map_release_revision`

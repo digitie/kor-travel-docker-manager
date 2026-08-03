@@ -24,6 +24,14 @@ DatabaseRole = Literal["map_application", "map_dagster", "pinvi"]
 
 _DATABASE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _SCHEMA_REVISION = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
+# n150 production에서 map_application(krtour_map)의 feature.feature_weather_values
+# 단일 테이블(1,780만 행)만으로 pg_restore(COPY + constraint + 4개 index 재생성)가
+# 실측 약 97분 걸렸다(2026-08-03, cache-target diagnose 실측). stdin으로 archive를
+# 스트리밍하는 현재 구조는 pg_restore --jobs 병렬화를 쓸 수 없어(seekable archive가
+# 필요) 단일 스레드로 순차 처리한다. 이 값은 그 실측에 여유를 더한 잠정 값이며,
+# 테이블이 계속 커지면 다시 부족해진다 — 근본 해결(파일 기반 병렬 restore 등)은
+# 별도 후속 작업이 필요하다.
+_DATABASE_RESTORE_TIMEOUT_SECONDS = 10_800
 _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str]] = {
     "map_application": (
@@ -473,15 +481,21 @@ def restore_database_backup(
         raise DeploymentContractError(
             f"{runtime.role} backup payload identity is invalid"
         )
-    _run_checked(
-        [
-            *_database_admin_command(runtime, "dropdb"),
-            "--if-exists",
-            "--force",
-            runtime.database_name,
-        ],
-        label=f"{runtime.role} database drop",
-    )
+    # `dropdb --if-exists`는 database가 원래 없을 때도 "does not exist, skipping"
+    # NOTICE를 stderr에 낸다. `_run_checked`는 stderr가 하나라도 있으면 실패로
+    # 처리하므로, database가 실제로 존재할 때만 drop을 실행해 이 무해한 NOTICE가
+    # restore 자체를 거짓으로 실패시키지 않게 한다(cache-target diagnostic의 동일
+    # 실공백에서 확인된 패턴).
+    if _read_database_owner(runtime) is not None:
+        _run_checked(
+            [
+                *_database_admin_command(runtime, "dropdb"),
+                "--if-exists",
+                "--force",
+                runtime.database_name,
+            ],
+            label=f"{runtime.role} database drop",
+        )
     _run_checked(
         [
             *_database_admin_command(runtime, "createdb"),
@@ -510,7 +524,7 @@ def restore_database_backup(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 check=False,
-                timeout=3600,
+                timeout=_DATABASE_RESTORE_TIMEOUT_SECONDS,
             )
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError(
@@ -678,15 +692,21 @@ def _rehearse_database_restore(
         raise DeploymentContractError(
             f"{runtime.role} scratch database is owned by a foreign role"
         )
-    _run_checked(
-        [
-            *_database_admin_command(runtime, "dropdb"),
-            "--if-exists",
-            "--force",
-            scratch_name,
-        ],
-        label=f"{runtime.role} stale scratch database cleanup",
-    )
+    # `dropdb --if-exists`는 scratch database가 원래 없을 때도 "does not exist,
+    # skipping" NOTICE를 stderr에 낸다. `_run_checked`는 stderr가 하나라도 있으면
+    # 실패로 처리하므로, `_read_database_owner`가 이미 존재하지 않음(None)을 확인해준
+    # 일반적인 경우엔 dropdb 자체를 생략해 이 무해한 NOTICE가 매번 rehearsal을 거짓으로
+    # 실패시키는 것을 막는다(cache-target diagnostic의 동일 실공백에서 확인된 패턴).
+    if stale_owner is not None:
+        _run_checked(
+            [
+                *_database_admin_command(runtime, "dropdb"),
+                "--if-exists",
+                "--force",
+                scratch_name,
+            ],
+            label=f"{runtime.role} stale scratch database cleanup",
+        )
     created = False
     failure: Exception | None = None
     receipt: DatabaseRestoreRehearsalReceipt | None = None
@@ -792,7 +812,7 @@ def _restore_archive_into_database(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 check=False,
-                timeout=3600,
+                timeout=_DATABASE_RESTORE_TIMEOUT_SECONDS,
             )
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError(f"{label} could not run") from exc
