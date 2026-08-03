@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-04 (T-049E: pre-bootstrap diagnostic attestation 경계 수정)
+
+final cache-target cutover의 사전 조건을 n150에서 다시 확인하는 중, tracked Map·PinVi
+release pin은 이미 generation 7 candidate를 가리키지만 현재 compatible-pair manifest는
+bootstrap 전 old pair를 가리키는 상태를 확인했다. 이는 정상적인 one-time generation
+bootstrap의 출발 상태다. 그러나 `cache-target diagnose`의 writer 재기동 직후 일반
+`_attest_cache_target_pair`를 호출해 old pair에도 candidate release pin을 요구하고 있었다.
+그 결과 diagnostic은 모든 DB role 검사 뒤에도 fresh receipt를 완료할 수 없고, final
+cutover가 요구하는 gate가 스스로 막혔다.
+
+diagnostic 전용 `_attest_cache_target_prebootstrap_pair`를 추가해 old pair에는 manifest,
+frozen Compose, runtime readiness·image identity와 secret isolation만 다시 검증하도록
+분리했다. tracked release pin은 candidate build/generation bootstrap과 bootstrap 이후
+일반 attestation에 그대로 남아 있어, old pair가 새 release로 승인되거나 manifest가
+진단 중 바뀌는 경로는 만들지 않는다. `PR #108`의 restore/dropdb 보정과는 별개의
+production 발견이라 별도 수정으로 관리한다. focused backend 24 passed, Ruff 및 strict
+mypy(변경 서비스) 통과를 확인했다.
+
+---
+
 ## 2026-08-04 (T-050: 배포 alembic head 재발 방지 게이트, issue #109)
 
 prod에서 `kor-travel-map-api-latest`의 공개 큐레이션 표면이 0으로 떨어진 사고(issue #109)를

@@ -256,9 +256,46 @@ def _install_unlocked_context(
     activated = Mock()
     monkeypatch.setattr(service, "_activate_cache_target_writers", activated)
     monkeypatch.setattr(service, "_attest_cache_target_pair", Mock())
+    monkeypatch.setattr(service, "_attest_cache_target_prebootstrap_pair", Mock())
     smoke = Mock()
     monkeypatch.setattr(service, "_run_cache_target_rollback_health_smoke", smoke)
     return service, journal_path, attempt_log_path, transaction, activated, smoke
+
+
+def test_prebootstrap_attestation_keeps_release_pin_gate_for_candidate_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """old runtime은 manifest와만 대조하고, 새 release pin은 bootstrap에 남긴다."""
+    service = ComposeService()
+    active_pair = SimpleNamespace()
+    manifest = SimpleNamespace(active=active_pair, rollback=SimpleNamespace())
+    transaction = SimpleNamespace()
+    release_gate = Mock(side_effect=AssertionError("diagnostic must not require candidate release"))
+    ready = Mock()
+    resolved = Mock()
+    runtime_configs = [SimpleNamespace()]
+    secret_isolation = Mock()
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._require_cache_target_release",
+        release_gate,
+    )
+    monkeypatch.setattr(service, "_require_services_ready", ready)
+    monkeypatch.setattr(service, "_validate_resolved_compose_contract", resolved)
+    monkeypatch.setattr(service, "_inspect_current_pair", Mock(return_value=active_pair))
+    monkeypatch.setattr(service, "_pair_matches", Mock(return_value=True))
+    monkeypatch.setattr(service, "_inspect_c6c_runtime_configs", Mock(return_value=runtime_configs))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.validate_runtime_secret_isolation",
+        secret_isolation,
+    )
+
+    config = SimpleNamespace()
+    service._attest_cache_target_prebootstrap_pair(config, manifest, transaction)
+
+    release_gate.assert_not_called()
+    ready.assert_called_once()
+    resolved.assert_called_once()
+    secret_isolation.assert_called_once_with(runtime_configs, config)
 
 
 def test_unlocked_diagnostic_rejects_writer_restart_onto_a_drifted_image_pair(
@@ -297,6 +334,7 @@ def test_unlocked_diagnostic_rejects_writer_restart_onto_a_drifted_image_pair(
 
     activated.assert_called_once()
     service._attest_cache_target_pair.assert_not_called()
+    service._attest_cache_target_prebootstrap_pair.assert_not_called()
 
 
 def test_unlocked_diagnostic_completes_and_always_restarts_writers(
@@ -332,7 +370,8 @@ def test_unlocked_diagnostic_completes_and_always_restarts_writers(
     assert result["success"] is True
     assert result["phase"] == "completed"
     activated.assert_called_once()
-    service._attest_cache_target_pair.assert_called_once()
+    service._attest_cache_target_prebootstrap_pair.assert_called_once()
+    service._attest_cache_target_pair.assert_not_called()
     smoke.assert_called_once()
     final_journal = read_cache_target_diagnostic(journal_path)
     assert final_journal.phase == "completed"
@@ -405,7 +444,8 @@ def test_unlocked_diagnostic_restarts_writers_and_reattests_pair_even_when_stop_
         )
 
     activated.assert_called_once()
-    service._attest_cache_target_pair.assert_called_once()
+    service._attest_cache_target_prebootstrap_pair.assert_called_once()
+    service._attest_cache_target_pair.assert_not_called()
 
 
 def test_unlocked_diagnostic_stage_failure_still_restarts_writers_and_marks_failed(

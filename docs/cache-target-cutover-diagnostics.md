@@ -63,8 +63,12 @@ build·기동하지 않고, `.env`/manifest/active pair/Map·PinVi 운영 데이
 없는 경우 진단 자체를 security failure로 취급한다.
 
 `writers_fencing`은 production backup과 같은 exact writer registry 및 foreign-writer
-검사를 재사용한다. 모든 검사가 끝나거나 실패하면 기존 pair의 exact 상태를 다시
-attest하고 writer를 재기동한다. 이로써 진단이 잠깐 writer를 멈추더라도 forward runtime,
+검사를 재사용한다. 모든 검사가 끝나거나 실패하면 기존 **pre-bootstrap** pair의 exact
+상태를 manifest와 다시 대조하고 writer를 재기동한다. 이 시점의 old pair는 generation
+bootstrap이 아직 수행되지 않았으므로 tracked release pin과 같을 필요가 없다. release pin은
+후속 cutover가 새 candidate를 build·bootstrap하기 직전에만 강제한다. 이 경계를 섞으면
+diagnostic이 성공할 수 없어 cutover gate 자체가 막히므로, 진단은 old pair를 새 release로
+승격하거나 manifest를 바꾸지 않는다. 이로써 진단이 잠깐 writer를 멈추더라도 forward runtime,
 migration, initial event, sync enable을 실행하지 않는다.
 
 ## 3. DB별 stage와 비밀 없는 증적

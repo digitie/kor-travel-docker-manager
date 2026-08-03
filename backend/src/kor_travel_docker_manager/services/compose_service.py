@@ -5525,7 +5525,7 @@ class ComposeService:
                     "cache-target diagnostic writer restart activated a different "
                     "image pair than was running before the writer fence"
                 )
-            self._attest_cache_target_pair(config, manifest, transaction)
+            self._attest_cache_target_prebootstrap_pair(config, manifest, transaction)
 
         now_unix = int(time.time())
         attempt_log = read_or_create_cache_target_diagnostic_attempt_log(attempt_log_path)
@@ -5673,6 +5673,44 @@ class ComposeService:
         if not self._pair_matches(self._inspect_current_pair(config), manifest.active):
             raise DeploymentContractError(
                 "cache-target running pair differs from the attested active pair"
+            )
+        runtime_configs = self._inspect_c6c_runtime_configs(
+            config,
+            services,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        validate_runtime_secret_isolation(runtime_configs, config)
+
+    def _attest_cache_target_prebootstrap_pair(
+        self,
+        config: C6cDeploymentConfig,
+        manifest: CompatiblePairManifest,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """진단 재기동 뒤 old pair가 frozen 계약과 같은지 확인한다.
+
+        generation bootstrap 전 diagnostic은 아직 tracked release로 바뀌지 않은
+        active/rollback pair를 검사한다. 따라서 이 경로에서 새 release pin을 요구하면
+        fresh diagnostic receipt를 만들 수 없다. candidate bootstrap과 그 이후 runtime은
+        `_attest_cache_target_pair`가 release provenance까지 계속 검증한다.
+        """
+
+        services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        self._require_services_ready(
+            services,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        self._validate_resolved_compose_contract(
+            config,
+            expected_pair=manifest.active,
+            transaction=transaction,
+            frozen_recovery=True,
+        )
+        if not self._pair_matches(self._inspect_current_pair(config), manifest.active):
+            raise DeploymentContractError(
+                "cache-target pre-bootstrap running pair differs from the attested active pair"
             )
         runtime_configs = self._inspect_c6c_runtime_configs(
             config,

@@ -18,7 +18,7 @@
 | **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
 | **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
 | **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
-| **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[ ]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
+| **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
 
 ---
@@ -431,6 +431,14 @@ phase는 별도 PR로 검증한다.
       적대적 리뷰어 2명이 검증. 회귀 테스트 1건 추가(공유 상수가 실제
       `subprocess.run`에 전달되는지 확인). backend 전체 1497 passed, ruff/mypy
       clean(touched files).
+- [/] **T-049E 후속 수정: pre-bootstrap diagnostic attestation 경계.** generation 7
+      최초 cutover 전 diagnostic은 현재 old compatible pair가 manifest·frozen Compose·runtime
+      secret isolation과 정확히 일치하는지를 검증해야 한다. 이 단계에 candidate release pin을
+      적용하면 generation bootstrap 전의 old pair가 항상 거부되어 fresh receipt를 만들 수
+      없다. diagnostic 전용 attestation은 old pair의 runtime 계약만 확인하고, tracked Map·PinVi
+      release pin은 candidate build/bootstrap 및 그 이후의 일반 attestation에서 계속 강제한다.
+      n150에서 이 경계로 stale diagnostic을 durable `aborted` attempt로 보존한 뒤 새 rehearsal을
+      실행해 완료 receipt와 final cutover gate를 확인한다.
 - [ ] **T-049E 후속 조사 필요(미해결) — 스키마/데이터 inventory 해시 비교의
       근본 한계.** 같은 재실행에서 map_dagster의 `scratch_data_inventory`와
       pinvi의 `scratch_schema_inventory`가 `inventory_mismatch`로 실패했다.
