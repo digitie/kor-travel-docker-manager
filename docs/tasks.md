@@ -26,7 +26,7 @@
 | **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[x]` | 2026-08-04 | cache-target cutover window와 분리, C6c lock·owner-only 저장·적대적 리뷰 2명 완료 |
 | **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[x]` | 2026-08-04 | T-053 manifest 기반, age/count 보존, 적대적 리뷰 2명 완료 |
 | **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[x]` | 2026-08-04 | fail-close 2중 방어(--confirm·capability sentinel), 적대적 리뷰 2명 완료 |
-| **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[ ]` | - | mutation은 CLI 전용 유지, 조회만 HTTP 노출(T-053~055 의존) |
+| **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[x]` | 2026-08-04 | GET /backups(mutation 경로 없음), BackupHistoryPanel, 적대적 리뷰 2명 완료 |
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
 
 ---
@@ -726,10 +726,24 @@ T-053~055 의존. mutation(백업 생성·복구)은 계속 CLI 전용으로 남
 기존 권한 경계(cache-target/pinvi-pair/map-ui-auth 모두 API에 노출되지 않고 CLI
 전용인 것과 동일한 패턴)를 유지하고, HTTP 표면을 조회로만 넓힌다.
 
-- [ ] `GET /backups`(목록 전용, mutation 없음)를 추가한다.
-- [ ] 대시보드에 백업 이력 페이지를 추가해 이 목록을 보여준다.
-- [ ] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/frontend type-check·build,
+- [x] `GET /backups`(목록 전용, mutation 없음)를 추가한다.
+- [x] 대시보드에 백업 이력 페이지를 추가해 이 목록을 보여준다.
+- [x] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/frontend type-check·build,
       ruff/mypy 통과 후 병합.
+
+backend `GET /api/v1/backups`(role 옵션, `list_standalone_backups(gc=False)` 그대로
+노출 — `gc`/create/restore로 가는 코드 경로 자체가 없음, 알 수 없는 role은 400,
+`DeploymentContractError`는 409)와 회귀 테스트 6건, 프론트 `BackupHistoryPanel`
+(TanStack Query, role 필터, 새로고침, timestamp/role/schema revision/size/sha256/
+파일명 표시, mutation UI 없음)을 추가했다. 적대적 리뷰어 2명(백엔드 인증/mutation
+경계/응답 내용 담당, 프론트 렌더링/build 담당). 백엔드 쪽은 confirmed 실공백
+없음(role validation이 파일시스템 경로에 직접 쓰이지 않음을 실제 adversarial
+요청으로 확인, warnings에도 raw stdout/전체 경로 없음). 프론트 리뷰어가 실제
+버그를 찾았다: `useQuery`에 `retry: false`가 빠져 있어 400/409 같은 영구 에러도
+TanStack 기본 재시도(~7초)를 다 거친 뒤에야 에러로 표시돼, 그동안 "로딩 중"으로
+오해하게 만들었다 — `DashboardClient`의 `auth-me` 쿼리와 같은 이유로 `retry: false`
+를 추가해 고쳤다. backend 전체 1595 passed, frontend type-check/lint/build 전부
+통과, ruff/mypy(신규 코드 범위) clean.
 
 ### T-057: cache-target cutover 내장 백업 호출을 T-053 primitive로 통합
 

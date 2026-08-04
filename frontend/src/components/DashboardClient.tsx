@@ -28,6 +28,7 @@ import dynamic from 'next/dynamic';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
+import BackupHistoryPanel from './BackupHistoryPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
 import {
@@ -195,6 +196,7 @@ const getContainerPresentation = (container: ContainerStatus) => {
 export default function DashboardClient() {
   const queryClient = useQueryClient();
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
+  const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
 
   const {
     data: auth,
@@ -817,6 +819,14 @@ export default function DashboardClient() {
             </button>
             <button
               type="button"
+              onClick={() => setIsBackupHistoryOpen(true)}
+              className="flex items-center gap-2 bg-card hover:bg-subtle border border-line px-3 py-2 rounded-card text-xs font-semibold text-ink"
+            >
+              <Database className="w-4 h-4 text-brand" />
+              백업 이력
+            </button>
+            <button
+              type="button"
               onClick={() => logoutMutation.mutate()}
               disabled={logoutMutation.isPending}
               className="flex items-center gap-2 bg-card hover:bg-subtle border border-line px-3 py-2 rounded-card text-xs font-semibold text-ink disabled:opacity-60"
@@ -1168,6 +1178,12 @@ export default function DashboardClient() {
       {isAdminSettingsOpen && (
         <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300 select-text">
           <AdminSettingsPanel onClose={() => setIsAdminSettingsOpen(false)} />
+        </div>
+      )}
+
+      {isBackupHistoryOpen && (
+        <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300 select-text">
+          <BackupHistoryPanel onClose={() => setIsBackupHistoryOpen(false)} />
         </div>
       )}
 

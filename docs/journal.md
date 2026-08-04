@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-08-04 (T-056 완료 — 읽기 전용 백업 이력 API + Web UI 페이지)
+
+fork가 멈춰둔 T-056을 이어받아 적대적 리뷰어 2명을 돌렸다(백엔드 인증/mutation
+경계/응답 내용 담당, 프론트 렌더링/build 담당). 백엔드는 confirmed 실공백
+없음 — 실제 adversarial 요청(`role=../../etc/passwd` 등)으로 직접 확인했고,
+`GET /backups`는 구조적으로 `gc`/create/restore 코드 경로 자체가 없어 이
+저장소의 CLI-전용 mutation 권한 경계를 그대로 유지한다. 프론트 리뷰어가
+실제 버그를 찾았다: `useQuery`에 `retry: false`가 빠져서 400/409 같은
+영구 에러도 TanStack 기본 재시도(~7초)를 다 거친 뒤에야 에러로 표시됐다
+— `DashboardClient`의 `auth-me` 쿼리와 같은 이유로 `retry: false`를
+추가해 고쳤다.
+
+backend 전체 1595 passed, frontend type-check/lint/build 전부 통과. 이로써
+T-053~T-057(백업 생성→목록/GC→복구→내장 통합→읽기 전용 API/UI) 백업/복구
+트랙 전체가 완료됐다. 남은 건 T-058 후보(receipt/journal/manifest 스키마
+통합 재설계, 별도 설계 필요)와 T-049E(map-ui/map-api revision drift로
+중단된 재검증)뿐이다.
+
+---
+
+## 2026-08-04 (T-056 구현 — 읽기 전용 백업 이력 API + Web UI 페이지, 리뷰 대기)
+
+T-053~055가 남긴 standalone DB backup(`ktdctl db-backup create/list/restore`,
+CLI 전용)에 읽기 전용 HTTP 표면을 추가했다. `GET /api/v1/backups`(`?role=`
+옵션)는 `ComposeService.list_standalone_backups(gc=False)`를 그대로 노출하며,
+알 수 없는 role은 400, `DeploymentContractError`는 409로 매핑한다. mutation
+(생성·GC·복구)은 이 API에 두지 않는다 — cache-target/pinvi-pair/map-ui-auth와
+동일하게 CLI 전용 권한 경계를 그대로 유지한다. 프론트엔드는 `AdminSettingsPanel`과
+같은 모달 패턴으로 `BackupHistoryPanel`을 추가해 role 필터·새로고침과 함께
+timestamp/role/schema revision/size/sha256/파일명을 표시한다(트리거 UI 없음).
+
+backend 회귀 테스트 6건 추가(세션 인증 필요, 목록 반환, 빈 목록, role 필터,
+알 수 없는 role 400, contract 실패 409) — 전체 스위트 1595 passed, ruff/mypy
+(신규 코드 범위) 통과. frontend type-check·lint·build(WSL, `next build` 성공,
+`✓ Compiled successfully`) 모두 통과.
+
+fork로 구현했으나 fork는 Agent tool로 subagent를 만들 수 없어(T-054/T-055와
+같은 제약) 적대적 리뷰어 2명·커밋·PR·병합 전 단계에서 멈췄다. 부모 세션이
+리뷰와 이후 단계를 이어받아야 한다.
+
+---
+
 ## 2026-08-04 (T-057 완료 + 방향 전환 판단 — 안전한 helper 통합만 반영, 전체 스키마 재설계는 보류)
 
 T-057 진행 중 사용자가 지시를 바꿨다: "호환성, 기존계약 유지보다는 설계적
