@@ -19,7 +19,7 @@
 | **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
 | **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
-| **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
+| **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[x]` | 2026-08-04 | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부. Manager 측 완료, issue #109 종료 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-052** | cache-target 진단의 direct daemon writer-drain 초안 (issue #115) | `[x]` | 2026-08-04 | **T-049F로 대체됨** — daemon 직접 중지·직접 cancel은 최종 구현 경계가 아님 |
 | **T-049F** | isolated durable writer-drain (Map-owned lease/receipt, issue #115) | `[x]` | 2026-08-04 | T-052를 대체하는 최종 구현 — begin/attest/restore lease chain, journal v2 |
@@ -517,8 +517,10 @@ head`가 조용히 실행돼 `0063`→`0072`까지만 올라갔다. `0073`(공�
       성공/불일치/head 여럿/nonzero exit/timeout/raw output 비노출 6건, 배포
       게이트 pass-through·build-후-이미지 검사·opt-in skip 3건, 진단 drift 거부
       1건). backend 전체 1515 passed, ruff/mypy clean(touched files).
-- [ ] Map 팀이 entrypoint의 무조건 `alembic upgrade head`를 손보는 별도 작업(issue
-      #109 코멘트에서 예고)이 나오면 이 게이트와의 관계를 재검토한다.
+- [x] Manager 측 재발 방지 게이트는 완료로 issue #109를 종료했다(2026-08-04).
+      Map 팀이 entrypoint의 무조건 `alembic upgrade head`를 손보는 별도 작업이
+      나오면 이 게이트와의 관계를 별도로 재검토한다(coupled follow-up, blocker
+      아님).
 
 ### T-051: Map DB naming 정리(krtour_map → kor_travel_map) + issue #111/#114 결선
 
