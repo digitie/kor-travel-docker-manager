@@ -21,8 +21,11 @@
   rollback `writers_restored` phase에 lease/receipt SHA-256을 fsync한다. pre-backup·superseded
   diagnostic recovery는 restore 뒤 exact previous pair re-attestation 전 writer/archive를
   허용하지 않으며, backup rollback은 Map Dagster webserver-only restore receipt 뒤 daemon을
-  포함한 old runtime을 연다. public GraphQL/token/일반 Compose bypass는 없다. strict Manager
-  regression 143건과 actual ephemeral Docker Compose rehearsal 1건을 통과했고 n150/prod는
+  포함한 old runtime을 연다. `writers_restored` crash는 top-level rollback 재개로 old runtime
+  activation까지 수렴하고, superseded recovery는 manifest identity를 Map restore보다 먼저
+  대조한다. version `1` state는 자동 migration 없이 mutation 전에 거부하며 recreate한다.
+  public GraphQL/token/일반 Compose bypass는 없다. strict Manager regression 148건과 actual
+  ephemeral Docker Compose rehearsal 1건을 통과했고 n150/prod는
   사용하지 않았다.
 
 ---

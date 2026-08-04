@@ -117,8 +117,10 @@ race를 operator가 Manager 밖의 GraphQL 호출이나 일반 Compose 명령으
 5. `writers_drained` 뒤 기존 `writers_stopping` fence를 수행한다.
    full writer stop 뒤에도 DB transaction 또는 Dagster run이 남으면 fail-close한다.
 6. diagnostic의 성공·실패·예외와 superseded non-terminal journal recovery 모두에서
-   Manager는 Map Dagster webserver만 먼저 세워 Map의 exact lease를 restore·attest하고,
-   daemon 포함 writer를 다시 열어 exact prior pair를 re-attest한 뒤에만 archive/resume한다.
+   Manager는 현재 manifest의 active-pair logical digest가 stop 전 journal identity와 같은지
+   **Map restore 이전에** 확인한다. 일치할 때만 Map Dagster webserver을 먼저 세워 exact
+   lease를 restore·attest하고, daemon 포함 writer를 다시 열어 exact prior pair를 re-attest한
+   뒤에만 archive/resume한다.
    journal phase가 `writers_draining` 이상이면 이 pre-backup recovery가 성공하기 전
    coupled DB rollback이나 archive를 허용하지 않는다.
 
@@ -131,6 +133,13 @@ GraphQL 우회는 금지한다.
 재실행으로 재생성한다. 다만 **최종 DB schema**에서의 backup/restore rehearsal과 실제
 cutover backup은 계속 필수이며, drain은 그 검증을 race 없이 시작하기 위한 runtime
 제어 경계다.
+
+writer-drain을 넣은 window·diagnostic journal은 version `2` 전용 exact schema다. 이전
+version `1` journal은 안전한 lease/receipt·phase 대응이 없으므로 자동 migration이나
+archive를 시도하지 않고, Docker·DB·Map command mutation보다 먼저 명시적으로 거부한다.
+TVN41의 격리/recreate 환경에서는 legacy state directory를 정리한 뒤 새 journal을 만들어
+다시 시작한다. 이는 서비스 데이터 보존을 위한 compatibility shim이 아니라, 불완전한
+crash recovery를 실행하지 않는 fail-closed cutover 경계다.
 
 archive의 이름 충돌·owner/mode·내용 재검증·directory fsync 중 하나라도 실패하면 새 진단을
 시작하지 않는다. 따라서 receipt/attempt는 삭제되지 않으며, archive 직후 새 journal을 쓰기

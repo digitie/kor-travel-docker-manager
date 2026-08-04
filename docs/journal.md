@@ -15,8 +15,12 @@ pair attestation을 연다.
 
 단일 적대 리뷰가 발견한 begin JSON null-key·forbidden argv, actual Compose progress stderr, late
 Dagster run cancel, pre-backup/superseded diagnostic pair re-attestation 누락을 모두 수정했다.
-Manager regression 143건과 actual ephemeral Docker Compose rehearsal 1건, Map strict command 5건과
-isolated PostgreSQL migration/CAS 3건이 통과했다. production/n150·기존 데이터는 접근하지 않았다.
+후속 단일 적대 리뷰에서 `writers_restored` fsync 직후 crash 재개 누락, v1 journal의 불명확한
+upgrade 경계, stale pair 대조보다 이른 writer restore, JSON boolean `run_count` 수락을 발견해
+수정했다. v1 journal은 compatibility migration 대신 모든 mutation 전에 명시적으로 거부하고
+격리 state를 새로 만들도록 고정했다. Manager regression 148건과 actual ephemeral Docker Compose
+rehearsal 1건, Map strict command 5건과 isolated PostgreSQL migration/CAS 3건이 통과했다.
+production/n150·기존 데이터는 접근하지 않았다.
 
 ## 2026-08-04 (T-049E 후속: inventory hash canonicalization으로 미해결 사항 해결)
 

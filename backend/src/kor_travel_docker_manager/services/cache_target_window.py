@@ -635,6 +635,11 @@ def write_cache_target_window(
 def read_cache_target_window(path: Path) -> CacheTargetWindowJournal:
     try:
         document = json.loads(read_owner_only_state(path))
+        if isinstance(document, dict) and document.get("version") == 1:
+            raise DeploymentContractError(
+                "cache-target window journal v1 is unsupported; "
+                "reset the isolated state before TVN41"
+            )
         if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
             raise TypeError
         for field_name in (

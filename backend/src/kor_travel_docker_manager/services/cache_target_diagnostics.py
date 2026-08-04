@@ -343,6 +343,11 @@ def write_cache_target_diagnostic(path: Path, journal: CacheTargetDiagnosticJour
 def read_cache_target_diagnostic(path: Path) -> CacheTargetDiagnosticJournal:
     try:
         document = json.loads(read_owner_only_state(path))
+        if isinstance(document, dict) and document.get("version") == 1:
+            raise DeploymentContractError(
+                "cache-target diagnostic journal v1 is unsupported; "
+                "reset the isolated state before TVN41"
+            )
         if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
             raise TypeError
         identity_value = document["identity"]

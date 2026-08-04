@@ -626,6 +626,24 @@ def test_window_journal_is_owner_only_and_exactly_round_trips(tmp_path: Path) ->
     assert read_cache_target_window(path) == journal
 
 
+def test_window_rejects_legacy_v1_state_before_any_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-window-v1.json"
+    path.parent.mkdir(mode=0o700)
+    document = asdict(_prepared())
+    document["version"] = 1
+    for field_name in (
+        "writer_drain_lease_id",
+        "writer_drain_receipt_sha256",
+        "writer_drain_restore_receipt_sha256",
+    ):
+        del document[field_name]
+    path.write_text(json.dumps(document))
+    path.chmod(0o600)
+
+    with pytest.raises(DeploymentContractError, match="v1 is unsupported"):
+        read_cache_target_window(path)
+
+
 def test_record_window_failure_freezes_last_safe_phase_and_class(
     tmp_path: Path,
 ) -> None:
@@ -772,6 +790,60 @@ def test_window_allows_ordered_pre_event_coupled_rollback() -> None:
 
     assert journal.phase == "rolled_back"
     assert old_restore_is_authorized(journal) is False
+
+
+def test_writers_restored_crash_resumes_coupled_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    path = tmp_path / "cache-target-window-v1.json"
+    journal = replace(
+        _prepared(),
+        writer_drain_lease_id="44444444-4444-4444-8444-444444444444",
+        writer_drain_receipt_sha256="d" * 64,
+    )
+    for phase in (
+        "rollback_preparing",
+        "new_runtime_stopped",
+        "map_db_restored",
+        "map_dagster_db_restored",
+        "pinvi_db_restored",
+        "manager_state_restored",
+    ):
+        journal = transition_cache_target_window(journal, phase)  # type: ignore[arg-type]
+    journal = transition_cache_target_window(
+        journal,
+        "writers_restored",
+        writer_drain_restore_receipt_sha256="e" * 64,
+    )
+    write_cache_target_window(path, journal)
+    rolled_back = transition_cache_target_window(journal, "old_runtime_restored")
+    rolled_back = transition_cache_target_window(rolled_back, "rolled_back")
+    rollback = Mock(return_value=rolled_back)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=(Mock(), Mock(), Mock())),
+    )
+    monkeypatch.setattr(service, "_resume_cache_target_coupled_rollback", rollback)
+
+    result = service._run_cache_target_window_unlocked(
+        journal_path=path,
+        journal=journal,
+        transaction=SimpleNamespace(
+            manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+            resolved={},
+            environment=SimpleNamespace(effective={}),
+        ),
+        config=Mock(),
+        reason="crash resume",
+        wait_timeout=1,
+        lock_path=str(tmp_path / "lock"),
+    )
+
+    assert result["phase"] == "rolled_back"
+    assert result["resumed"] is True
+    assert rollback.call_args.kwargs["journal"].phase == "writers_restored"
 
 
 def test_initial_event_boundary_fsync_failure_never_invokes_runner(

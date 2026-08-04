@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import stat
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -132,6 +133,24 @@ def test_diagnostic_journal_is_owner_only_and_exactly_round_trips(
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert read_cache_target_diagnostic(path) == journal
+
+
+def test_diagnostic_rejects_legacy_v1_state_before_any_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-diagnostic-v1.json"
+    path.parent.mkdir(mode=0o700)
+    document = asdict(_prepared())
+    document["version"] = 1
+    for field_name in (
+        "writer_drain_lease_id",
+        "writer_drain_receipt_sha256",
+        "writer_drain_restore_receipt_sha256",
+    ):
+        del document[field_name]
+    path.write_text(json.dumps(document))
+    path.chmod(0o600)
+
+    with pytest.raises(DeploymentContractError, match="v1 is unsupported"):
+        read_cache_target_diagnostic(path)
 
 
 def test_diagnostic_rejects_phase_skip() -> None:

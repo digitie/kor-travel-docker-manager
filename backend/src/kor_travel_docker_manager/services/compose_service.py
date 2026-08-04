@@ -303,9 +303,10 @@ def get_override_path() -> str:
 def _create_frozen_compose_descriptor(label: str) -> int:
     """child process에만 `/proc/self/fd`로 보이는 unlinked Compose descriptor를 연다."""
 
-    memfd_create = getattr(os, "memfd_create", None)
-    if memfd_create is not None:
-        return memfd_create(label, flags=os.MFD_CLOEXEC)
+    try:
+        return os.memfd_create(label, flags=os.MFD_CLOEXEC)
+    except AttributeError:
+        pass
     descriptor, temporary_path = tempfile.mkstemp(prefix=f"{label}-")
     try:
         os.unlink(temporary_path)
@@ -4006,6 +4007,7 @@ class ComposeService:
             "map_dagster_db_restored",
             "pinvi_db_restored",
             "manager_state_restored",
+            "writers_restored",
             "old_runtime_restored",
         }:
             rolled_back = self._resume_cache_target_coupled_rollback(
@@ -5452,17 +5454,6 @@ class ComposeService:
                         ),
                     )
                     write_cache_target_diagnostic(journal_path, journal)
-                restore_receipt = self._restore_cache_target_writer_drain(
-                    owner_kind="diagnostic",
-                    owner_id=journal.diagnostic_id,
-                    transaction=transaction,
-                    lease_id=journal.writer_drain_lease_id,
-                    prior_receipt_sha256=journal.writer_drain_receipt_sha256,
-                )
-                self._activate_cache_target_writers(
-                    transaction=transaction,
-                    config=config,
-                )
                 manifest_path = transaction.manifest_path
                 if manifest_path is None:
                     raise DeploymentContractError(
@@ -5477,6 +5468,23 @@ class ComposeService:
                         "cache-target diagnostic recovery pair differs from the "
                         "pre-stop pair"
                     )
+                lease_id = journal.writer_drain_lease_id
+                prior_receipt_sha256 = journal.writer_drain_receipt_sha256
+                if lease_id is None or prior_receipt_sha256 is None:
+                    raise DeploymentContractError(
+                        "cache-target diagnostic drain recovery evidence is missing"
+                    )
+                restore_receipt = self._restore_cache_target_writer_drain(
+                    owner_kind="diagnostic",
+                    owner_id=journal.diagnostic_id,
+                    transaction=transaction,
+                    lease_id=lease_id,
+                    prior_receipt_sha256=prior_receipt_sha256,
+                )
+                self._activate_cache_target_writers(
+                    transaction=transaction,
+                    config=config,
+                )
                 self._attest_cache_target_prebootstrap_pair(
                     config,
                     manifest,
@@ -6310,12 +6318,18 @@ class ComposeService:
                 ),
             )
             write_cache_target_window(journal_path, journal)
+        lease_id = journal.writer_drain_lease_id
+        prior_receipt_sha256 = journal.writer_drain_receipt_sha256
+        if lease_id is None or prior_receipt_sha256 is None:
+            raise DeploymentContractError(
+                "pre-backup writer drain recovery evidence is missing"
+            )
         self._restore_cache_target_writer_drain(
             owner_kind="cutover",
             owner_id=journal.cutover_id,
             transaction=transaction,
-            lease_id=journal.writer_drain_lease_id,
-            prior_receipt_sha256=journal.writer_drain_receipt_sha256,
+            lease_id=lease_id,
+            prior_receipt_sha256=prior_receipt_sha256,
         )
         self._activate_cache_target_writers(transaction=transaction, config=config)
         manifest_path = transaction.manifest_path

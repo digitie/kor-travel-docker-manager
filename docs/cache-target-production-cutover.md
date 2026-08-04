@@ -213,9 +213,16 @@ Map writer-drain runner는 H35 helper와 별도 typed command다. `begin|attest|
 opaque lease ID, prior receipt SHA-256만 받고 stdout 단일 secret-free receipt를 반환한다. runner가 pause한
 instigation/run identity는 Map DB에만 저장하며 Manager journal, manager CLI JSON, Docker argv/stderr에는 넣지
 않는다. writer stop 뒤 crash/new owner recovery는 Map Dagster **webserver만** 먼저 재기동하고 daemon은 계속
-멈춘 채 `restore` receipt를 확인한다. 그 다음 old/current pair를 exact re-attest한 뒤에만 writer를 재기동한다.
+멈춘 채 `restore` receipt를 확인한다. superseded diagnostic recovery는 현재 manifest active pair가 journal의
+pre-stop logical identity와 같은지를 이 restore보다 먼저 대조한다. 그 다음 old/current pair를 exact
+re-attest한 뒤에만 writer를 재기동한다. coupled rollback의 `writers_restored` fsync 직후 crash는 terminal로
+취급하지 않고 같은 rollback을 재개해 old runtime activation과 pair attestation까지 수렴한다.
 backup bundle 전 drain 실패는 이 lease-only pre-backup recovery로 끝내며 full runtime stop 또는 DB restore를
 수행하지 않는다. backup bundle commit 뒤 실패만 기존 coupled DB rollback에 들어간다.
+
+writer-drain을 도입한 window·diagnostic journal은 version `2` exact schema이며 version `1`을 자동 변환하거나
+resume하지 않는다. legacy journal은 모든 mutation 전에 fail-close하며, 현재 서비스 전 격리 환경에서는 state
+directory를 폐기하고 source/ETL로 data를 재생성한 새 transaction으로 시작한다.
 
 ## 4. 최초 cutover phase
 

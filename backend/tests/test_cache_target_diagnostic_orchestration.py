@@ -245,6 +245,39 @@ def test_diagnose_new_id_records_crash_after_writer_stop_boundary(
     unlocked.assert_called_once()
 
 
+def test_diagnose_rejects_stale_pair_before_restoring_or_activating_writers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, journal_path, _attempt_log_path = _install_diagnostic_context(
+        tmp_path,
+        monkeypatch,
+    )
+    previous_id = "99999999-9999-4999-8999-999999999999"
+    journal = prepare_cache_target_diagnostic(
+        diagnostic_id=previous_id,
+        identity=_identity(),
+        started_at_unix=1_700_000_000,
+    )
+    journal = transition_cache_target_diagnostic(journal, "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained_diagnostic(journal)
+    journal = transition_cache_target_diagnostic(journal, "writers_stopping")
+    write_cache_target_diagnostic(journal_path, journal)
+    restore = service._restore_cache_target_writer_drain
+    activate = service._activate_cache_target_writers
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._compatible_pair_logical_sha256",
+        Mock(return_value="f" * 64),
+    )
+
+    with pytest.raises(DeploymentContractError, match="differs from the pre-stop pair"):
+        service.run_cache_target_diagnostic(diagnostic_id=_DIAGNOSTIC_ID)
+
+    restore.assert_not_called()
+    activate.assert_not_called()
+
+
 def test_diagnose_new_id_archives_preflight_crash_without_spending_attempt_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

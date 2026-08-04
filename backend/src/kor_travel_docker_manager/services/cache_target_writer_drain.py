@@ -155,7 +155,7 @@ def _validate_receipt(receipt: WriterDrainReceipt) -> None:
     )
     if receipt.state != expected_state:
         raise DeploymentContractError("writer drain receipt state is invalid")
-    if receipt.run_count != 0:
+    if type(receipt.run_count) is not int or receipt.run_count != 0:
         raise DeploymentContractError("writer drain receipt retained active runs")
     if (
         type(receipt.terminal_cancel_count) is not int

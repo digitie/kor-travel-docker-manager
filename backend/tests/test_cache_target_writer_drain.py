@@ -82,6 +82,30 @@ def test_receipt_rejects_unbound_or_nonzero_evidence(mutate, message: str) -> No
         )
 
 
+def test_receipt_rejects_boolean_zero_run_count_even_with_a_valid_digest() -> None:
+    request = build_writer_drain_request(
+        operation="begin", owner_kind="diagnostic", owner_id=_OWNER_ID
+    )
+    document = asdict(_receipt(operation="begin"))
+    document["run_count"] = False
+    digest_payload = {
+        key: value for key, value in document.items() if key != "receipt_sha256"
+    }
+    document["receipt_sha256"] = hashlib.sha256(
+        json.dumps(
+            digest_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+
+    with pytest.raises(DeploymentContractError, match="retained active runs"):
+        parse_writer_drain_receipt(
+            stdout=json.dumps(document) + "\n", stderr="", request=request
+        )
+
+
 def test_attest_and_restore_bind_previous_receipt() -> None:
     begin = _receipt(operation="begin")
     attest = _receipt(operation="attest", prior=begin.receipt_sha256)
