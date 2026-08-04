@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -19,6 +20,7 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     DatabaseWriteCounter,
     create_database_backup,
     create_manager_rollback_bundle,
+    create_standalone_database_backup,
     database_identity_v1,
     database_runtimes_from_frozen_contract,
     read_database_schema_revision,
@@ -415,6 +417,282 @@ def test_backup_and_restore_stream_without_dsn_or_credential(
         in {"dropdb", "createdb"}
     ]
     assert scratch_lifecycle[:2] == ["dropdb", "createdb"]
+
+
+def test_standalone_backup_writes_owner_only_dump_and_manifest_without_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(arguments)
+        if "pg_dump" in arguments:
+            kwargs["stdout"].write(b"standalone-dump-bytes")
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        run,
+    )
+    backups_root = tmp_path / "backups"
+    runtime = DatabaseRuntime(
+        role="map_application",
+        container_name="postgres-production",
+        database_name="kor_travel_map",
+        owner_name="krtour_map",
+        admin_name="cluster_admin",
+    )
+
+    manifest = create_standalone_database_backup(
+        backups_root=backups_root,
+        runtime=runtime,
+        created_at_unix=1_700_000_000,
+    )
+
+    assert manifest.role == "map_application"
+    assert manifest.schema_revision == "0078_cache_target_gc_observe"
+    assert manifest.byte_size == len(b"standalone-dump-bytes")
+
+    role_directory = backups_root / "map_application"
+    assert stat.S_IMODE(backups_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(role_directory.stat().st_mode) == 0o700
+    dump_path = role_directory / manifest.backup_filename
+    assert dump_path.read_bytes() == b"standalone-dump-bytes"
+    assert stat.S_IMODE(dump_path.stat().st_mode) == 0o600
+    manifest_path = role_directory / dump_path.name.replace(".dump", ".manifest.json")
+    assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o600
+    manifest_document = json.loads(manifest_path.read_bytes())
+    assert manifest_document["sha256"] == hashlib.sha256(b"standalone-dump-bytes").hexdigest()
+    assert manifest_document["byte_size"] == len(b"standalone-dump-bytes")
+
+    serialized_commands = "\n".join(" ".join(command) for command in calls)
+    assert "postgresql://" not in serialized_commands
+    assert "password" not in serialized_commands.lower()
+    assert "secret" not in serialized_commands.lower()
+    assert "cluster_admin" not in json.dumps(manifest_document)
+
+
+def test_standalone_backup_rejects_repeat_call_at_same_timestamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if "pg_dump" in arguments:
+            kwargs["stdout"].write(b"dump-bytes")
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        run,
+    )
+    backups_root = tmp_path / "backups"
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-production",
+        database_name="pinvi",
+        owner_name="pinvi",
+        admin_name="cluster_admin",
+    )
+
+    create_standalone_database_backup(
+        backups_root=backups_root,
+        runtime=runtime,
+        created_at_unix=1_700_000_000,
+    )
+    with pytest.raises(DeploymentContractError, match="already exists"):
+        create_standalone_database_backup(
+            backups_root=backups_root,
+            runtime=runtime,
+            created_at_unix=1_700_000_000,
+        )
+
+
+def test_standalone_backup_rejects_concurrent_reservation_of_same_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """존재-확인과 실제 pg_dump 시작 사이에 다른 프로세스가 같은 최종 파일명을
+    먼저 만들면(예: 거의 동시에 같은 초에 재호출됨), `O_CREAT|O_EXCL`이 이를
+    감지해 조용히 재사용하지 않고 거부해야 한다 — `_write_pg_dump`의 idempotent
+    재사용 분기(cutover window 전용 의미론)로 빠지면 안 된다."""
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        raise AssertionError("pg_dump must not run once the filename is contended")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        run,
+    )
+    backups_root = tmp_path / "backups"
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-production",
+        database_name="pinvi",
+        owner_name="pinvi",
+        admin_name="cluster_admin",
+    )
+    role_directory = backups_root / "pinvi"
+    backups_root.mkdir(mode=0o700)
+    role_directory.mkdir(mode=0o700)
+    # 다른 호출이 먼저 같은 최종 파일명을 선점한 상태를 흉내낸다 — 이 파일에는
+    # 진짜 dump 데이터가 없다(아직 쓰는 중인 다른 호출이라는 뜻).
+    contended_path = role_directory / "20261116T000000Z_pinvi_0078_cache_target_gc_observe.dump"
+    contended_path.write_bytes(b"")
+    os.chmod(contended_path, 0o600)
+
+    with pytest.raises(DeploymentContractError, match="already exists"):
+        create_standalone_database_backup(
+            backups_root=backups_root,
+            runtime=runtime,
+            created_at_unix=1_794_787_200,
+        )
+    # 선점 파일이 조용히 유효한 백업으로 받아들여지지 않았는지 확인한다.
+    assert contended_path.read_bytes() == b""
+
+
+def test_standalone_backup_rejects_nonpositive_timestamp(tmp_path: Path) -> None:
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-production",
+        database_name="pinvi",
+        owner_name="pinvi",
+        admin_name="cluster_admin",
+    )
+    with pytest.raises(DeploymentContractError, match="timestamp is invalid"):
+        create_standalone_database_backup(
+            backups_root=tmp_path / "backups",
+            runtime=runtime,
+            created_at_unix=0,
+        )
+
+
+def test_create_standalone_backup_selects_runtime_by_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = SimpleNamespace(
+        resolved={}, environment=SimpleNamespace(effective={})
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock_from_environment",
+        lambda: _null_lock_context(SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    runtimes = (
+        DatabaseRuntime(
+            role="map_application",
+            container_name="postgres-production",
+            database_name="kor_travel_map",
+            owner_name="krtour_map",
+            admin_name="cluster_admin",
+        ),
+        DatabaseRuntime(
+            role="map_dagster",
+            container_name="postgres-production",
+            database_name="kor_travel_map_dagster",
+            owner_name="krtour_map",
+            admin_name="cluster_admin",
+        ),
+        DatabaseRuntime(
+            role="pinvi",
+            container_name="postgres-production",
+            database_name="pinvi",
+            owner_name="pinvi",
+            admin_name="cluster_admin",
+        ),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=runtimes),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_create(*, backups_root: Path, runtime: DatabaseRuntime, created_at_unix: int):
+        captured["runtime"] = runtime
+        return backup_service.StandaloneBackupManifest(
+            role=runtime.role,
+            created_at_unix=created_at_unix,
+            schema_revision="0078_cache_target_gc_observe",
+            sha256="a" * 64,
+            byte_size=123,
+            backup_filename="fake.dump",
+        )
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.create_standalone_database_backup",
+        fake_create,
+    )
+
+    result = service.create_standalone_backup(role="pinvi")
+
+    assert captured["runtime"].role == "pinvi"
+    assert result["success"] is True
+    assert result["returncode"] == 0
+    assert result["role"] == "pinvi"
+    assert result["sha256"] == "a" * 64
+
+
+def test_create_standalone_backup_rejects_unknown_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = SimpleNamespace(
+        resolved={}, environment=SimpleNamespace(effective={})
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock_from_environment",
+        lambda: _null_lock_context(SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=()),
+    )
+
+    with pytest.raises(DeploymentContractError, match="role is invalid"):
+        service.create_standalone_backup(role="map_application")
+
+
+class _null_lock_context:
+    def __init__(self, snapshot: object) -> None:
+        self._snapshot = snapshot
+
+    def __enter__(self) -> object:
+        return self._snapshot
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
 
 
 def test_restore_database_backup_skips_dropdb_when_target_does_not_exist(

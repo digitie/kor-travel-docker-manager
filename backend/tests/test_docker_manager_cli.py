@@ -576,6 +576,26 @@ def test_cli_runs_cache_target_cutover_as_one_process_window(
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_runs_db_backup_create_with_selected_role(mock_compose_service):
+    mock_compose_service.create_standalone_backup.return_value = {
+        "success": True,
+        "returncode": 0,
+        "role": "pinvi",
+        "backup_filename": "20260101T000000Z_pinvi_0001.dump",
+    }
+
+    assert main(["db-backup", "create", "--role", "pinvi"]) == 0
+    mock_compose_service.create_standalone_backup.assert_called_once_with(role="pinvi")
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_db_backup_create_rejects_unknown_role(mock_compose_service):
+    with pytest.raises(SystemExit):
+        main(["db-backup", "create", "--role", "not_a_role"])
+    mock_compose_service.create_standalone_backup.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_runs_cache_target_initial_cutover_with_explicit_evidence(
     mock_compose_service,
 ):

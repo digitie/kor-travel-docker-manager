@@ -91,12 +91,15 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
 )
 from kor_travel_docker_manager.services.cache_target_backup import (
     _COUPLED_ROLLBACK_CAPABILITY,
+    DatabaseRole,
     DatabaseRuntime,
     DatabaseWriteCounter,
     PinBoundaryAuditRow,
+    StandaloneBackupManifest,
     assert_cutover_backup_space_available,
     create_database_backup,
     create_manager_rollback_bundle,
+    create_standalone_database_backup,
     database_runtimes_from_frozen_contract,
     read_dagster_inflight_run_count,
     read_database_identity,
@@ -5287,6 +5290,52 @@ class ComposeService:
             cutover_id=journal.cutover_id,
             phase=journal.phase,
         )
+
+    def create_standalone_backup(self, *, role: DatabaseRole) -> dict[str, Any]:
+        """T-053: `ktdctl db-backup create`. cache-target cutover window/journal과
+        완전히 분리된, 언제든 단독 호출 가능한 DB 백업이다. 성공/실패와 무관하게
+        어떤 mutation도 하지 않는다(순수 `pg_dump`) — writer를 멈추지 않고,
+        `.env`/manifest/candidate build를 건드리지 않는다.
+
+        production에서는 C6c 전역 lock을 짧게(스냅샷 캡처와 백업 실행 동안만) 잡고,
+        frozen resolved Compose 계약에서 파생한 `DatabaseRuntime`(container·
+        database_name·owner)로만 대상을 식별한다 — role 문자열 하나로 임의 DSN을
+        조립하지 않으므로 잘못된 DB를 실수로 백업할 위험이 없다.
+        """
+
+        def _run(
+            transaction: ComposeTransactionSnapshot,
+        ) -> StandaloneBackupManifest:
+            runtimes = database_runtimes_from_frozen_contract(
+                resolved=transaction.resolved,
+                environment=transaction.environment.effective,
+            )
+            try:
+                runtime = next(candidate for candidate in runtimes if candidate.role == role)
+            except StopIteration as exc:
+                raise DeploymentContractError(
+                    "standalone database backup role is invalid"
+                ) from exc
+            return create_standalone_database_backup(
+                backups_root=Path.home() / "backups",
+                runtime=runtime,
+                created_at_unix=int(time.time()),
+            )
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked()
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            manifest = _run(transaction)
+        return {
+            "success": True,
+            "returncode": 0,
+            "role": manifest.role,
+            "created_at_unix": manifest.created_at_unix,
+            "schema_revision": manifest.schema_revision,
+            "sha256": manifest.sha256,
+            "byte_size": manifest.byte_size,
+            "backup_filename": manifest.backup_filename,
+        }
 
     def run_cache_target_diagnostic(self, *, diagnostic_id: str) -> dict[str, Any]:
         """T-049C: `ktdctl cache-target diagnose`. writer fence 안에서 3-role DB

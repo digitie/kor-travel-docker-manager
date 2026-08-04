@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-08-04 (백업/복구 기능 gap 분석 + T-053 독립 DB 백업 CLI)
+
+T-049E n150 재검증 중 `kor-travel-map-ui`/`kor-travel-map-api` revision drift로
+막힌 시점에, 사용자가 "전체 구현을 재검토해서 백업 리스토어에 필요한 기능을
+찾고 개선할 부분을 찾아 구현 계획을 세우라"고 방향을 크게 틀었다 — Map/PinVi
+프로젝트가 명확한 설계 없이 구현되고 있다는 문제의식.
+
+서브에이전트로 전체 조사(backend/CLI/API/Web UI/ADR)를 돌린 결과: **독립적으로
+호출 가능한 DB 백업 도구가 전혀 없다**는 게 가장 큰 공백으로 확인됐다. 모든
+`pg_dump`는 cache-target cutover window 안에 내장된 private 스텝일 뿐이었고,
+이슈 #109 때 운영자가 손으로 `pg_dump`/`psql DROP/RENAME`을 실행해야 했던 게
+바로 이 공백 때문이었다. CLI만 유일한 노출 경로였고(API/Web UI는 백업/복구
+관련 기능 0건, grep 확인 — 다만 이건 mutation을 CLI 전용으로 유지하는 기존
+권한 경계와 일치해서 버그가 아니라 지켜야 할 설계일 가능성이 큼), ADR 37개
+어디에도 백업/복구를 1급 기능으로 다룬 곳이 없어 사용자의 진단이 맞았음을
+확인했다.
+
+조사 결과를 T-053(백업 생성)→T-054(목록/GC)→T-055(안전장치 있는 복구)→
+T-057(cache-target 통합)→T-056(읽기 전용 API/Web UI) 5개 태스크로 tasks.md에
+공식 등록하고, T-053부터 순차 구현을 시작했다.
+
+**T-053**: `ktdctl db-backup create --role {map_application,map_dagster,pinvi}`.
+cache_target_backup.py의 기존 typed pg_dump/digest/owner-only-storage primitive를
+재사용하되 cutover window/journal과 완전히 분리했다. 구현 중 두 실공백을
+발견·수정했다: (1) `Path.mkdir(mode=..., parents=True)`가 자동 생성되는 상위
+디렉터리에는 `mode`를 적용하지 않아 `~/backups`가 0700이 아니게 될 뻔한 것,
+(2) 적대적 리뷰어 1명이 찾은 TOCTOU — 존재-확인 뒤 cutover-window 전용
+idempotent-재사용 헬퍼(`_write_pg_dump`)를 그대로 쓰면 동시 재호출이 "거부"
+계약을 어기고 조용히 성공할 수 있었던 것 — `O_CREAT|O_EXCL`로 최종 파일명을
+원자적으로 선점하는 방식으로 고쳤다. 리뷰어 2(lock 범위·identity 신뢰 모델)는
+confirmed 실공백 없음. backend 전체 1553 passed.
+
+다음은 T-054(목록/GC)부터 순서대로 이어간다. T-049E(map-ui/map-api revision
+drift로 중단된 상태)는 이 백업/복구 트랙이 끝난 뒤 재개한다.
+
+---
+
 ## 2026-08-04 (T-049E 후속: inventory hash canonicalization으로 미해결 사항 해결)
 
 2026-08-03 journal에 미해결로 남겼던 schema/data inventory hash 오탐(pg_dump

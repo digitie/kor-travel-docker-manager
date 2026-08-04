@@ -8,9 +8,10 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -457,6 +458,118 @@ def verify_database_backup(
         raise DeploymentContractError(
             f"{runtime.role} backup restore rehearsal evidence differs"
         )
+
+
+@dataclass(frozen=True)
+class StandaloneBackupManifest:
+    """T-053: cache-target cutover window와 무관하게 언제든 단독으로 만드는 백업의
+    증적. raw stdout/stderr/DSN/credential/path는 담지 않는다 — typed digest·size·
+    timestamp·schema revision만 남긴다."""
+
+    role: DatabaseRole
+    created_at_unix: int
+    schema_revision: str
+    sha256: str
+    byte_size: int
+    backup_filename: str
+
+
+def create_standalone_database_backup(
+    *,
+    backups_root: Path,
+    runtime: DatabaseRuntime,
+    created_at_unix: int,
+) -> StandaloneBackupManifest:
+    """cache-target cutover window/journal과 완전히 분리된, 언제든 단독 호출
+    가능한 백업. `~/backups/<role>/`에 owner-only(0700 디렉터리·0600 파일) `.dump`와
+    같은 이름의 `.manifest.json`을 원자적으로 남긴다. 같은 초 안에 같은 role로
+    재호출되면(동일 timestamp) 충돌을 조용히 덮지 않고 거부한다."""
+
+    _validate_runtime(runtime)
+    if created_at_unix <= 0:
+        raise DeploymentContractError("standalone database backup timestamp is invalid")
+    role_directory = backups_root / runtime.role
+    # `Path.mkdir(mode=..., parents=True)`는 `mode`를 마지막(leaf) 디렉터리에만
+    # 적용하고 자동 생성되는 상위 디렉터리는 시스템 기본 권한(umask 적용)으로
+    # 만든다 — `backups_root`가 아직 없으면 leaf만 0700이 되고 `backups_root` 자체는
+    # 0700이 아니게 된다. 두 단계를 각각 명시적으로 만들어 이 함정을 피한다.
+    backups_root.mkdir(mode=0o700, exist_ok=True)
+    _validate_owner_only_directory(backups_root)
+    role_directory.mkdir(mode=0o700, exist_ok=True)
+    _validate_owner_only_directory(role_directory)
+    schema_revision = _read_schema_revision(runtime)
+    if not _SCHEMA_REVISION.fullmatch(schema_revision):
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup schema revision is invalid"
+        )
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(created_at_unix))
+    filename_stem = f"{timestamp}_{runtime.role}_{schema_revision}"
+    backup_path = role_directory / f"{filename_stem}.dump"
+    manifest_path = role_directory / f"{filename_stem}.manifest.json"
+    # `_write_pg_dump`는 대상이 이미 있으면 조용히 재사용을 허용한다(cutover
+    # window의 idempotent 재시도 의미론). 이 독립 백업 경로는 "같은 초에 재호출되면
+    # 거부"가 계약이므로 그 헬퍼를 재사용하지 않는다 — `O_CREAT|O_EXCL`로 최종
+    # 파일명 자체를 원자적으로 선점한 뒤 그 fd에 직접 pg_dump를 스트리밍해,
+    # 존재-확인과 쓰기 사이의 race에서 두 번째 호출이 조용히 성공하는 경로를
+    # 원천적으로 없앤다.
+    if manifest_path.exists():
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup already exists for this timestamp"
+        )
+    try:
+        descriptor = os.open(
+            backup_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+        )
+    except FileExistsError as exc:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup already exists for this timestamp"
+        ) from exc
+    wrote_backup = False
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            completed = subprocess.run(
+                [
+                    *_database_admin_command(runtime, "pg_dump"),
+                    "--format=custom",
+                    "--no-owner",
+                    "--no-acl",
+                    "--dbname",
+                    runtime.database_name,
+                ],
+                stdout=output,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=3600,
+            )
+            output.flush()
+            os.fsync(output.fileno())
+        if completed.returncode != 0 or completed.stderr:
+            raise DeploymentContractError(f"{runtime.role} standalone backup failed")
+        if backup_path.stat().st_size <= 0:
+            raise DeploymentContractError(f"{runtime.role} standalone backup is empty")
+        wrote_backup = True
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup could not run"
+        ) from exc
+    finally:
+        if not wrote_backup:
+            backup_path.unlink(missing_ok=True)
+    _fsync_directory(role_directory)
+    payload_sha256, byte_size = _file_sha256(backup_path)
+    manifest = StandaloneBackupManifest(
+        role=runtime.role,
+        created_at_unix=created_at_unix,
+        schema_revision=schema_revision,
+        sha256=payload_sha256,
+        byte_size=byte_size,
+        backup_filename=backup_path.name,
+    )
+    payload = json.dumps(
+        asdict(manifest), sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    _atomic_replace_owner_file(manifest_path, payload)
+    return manifest
 
 
 def restore_database_backup(

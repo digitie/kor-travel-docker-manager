@@ -20,9 +20,9 @@
 | **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
-| **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[/]` | - | compose/backend 기본값 정렬 완료, n150 실제 DROP/RENAME 실행 대기 |
+| **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-052** | cache-target 진단의 durable Dagster writer drain (issue #115) | `[x]` | 2026-08-04 | writers_draining phase 신설, daemon 선-정지·bounded drain·terminal cancel |
-| **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[ ]` | - | cache-target 내장 pg_dump primitive를 cutover 밖에서도 단독 호출 가능하게 |
+| **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[x]` | 2026-08-04 | cache-target cutover window와 분리, C6c lock·owner-only 저장·적대적 리뷰 2명 완료 |
 | **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[ ]` | - | T-053 manifest 기반, cache-target snapshot-GC 패턴 재사용 |
 | **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[ ]` | - | `--expected-alembic-head`류 fail-close opt-in 패턴, 대상 identity 사전 검증 |
 | **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[ ]` | - | mutation은 CLI 전용 유지, 조회만 HTTP 노출(T-053~055 의존) |
@@ -544,10 +544,11 @@ naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(�
       map-api에 명시 literal 값으로 결선했다(Map PR #931의 배포 게이트 활성화 — 이미지
       alembic head가 이 값과 다르면 DB 연결 전에 기동 자체를 거부한다). release pin
       갱신 때마다 이 값도 함께 갱신해야 한다.
-- [ ] n150에서 실제로: (1) `kor_travel_map`/`kor_travel_map_dagster` 백업 후 DROP,
+- [x] n150에서 실제로: (1) `kor_travel_map`/`kor_travel_map_dagster` 백업 후 DROP,
       (2) `krtour_map`→`kor_travel_map`, `krtour_map_dagster`→`kor_travel_map_dagster`
       RENAME, (3) 이 커밋 배포, (4) map-api/map-dagster/map-dagster-daemon 재기동해
-      정상 연결 확인.
+      정상 연결 확인. alembic head `0078`, 공개 큐레이션 4,424건(0 아님), geo API key
+      정상 결선 확인.
 - [x] issue #115(durable Dagster writer drain)는 T-052로 분리해 구현했다.
 
 ### T-052: cache-target 진단의 durable Dagster writer drain (issue #115)
@@ -620,21 +621,33 @@ Dagster GraphQL로 수동 취소해야 하는 임시방편이었다.
 window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 손으로 `pg_dump`를
 실행해야 했다.
 
-- [ ] `ktdctl db-backup create --role {map_application,map_dagster,pinvi}`를
-      신설한다. `cache_target_backup.py`의 기존 typed `pg_dump`/digest/owner-only
-      storage primitive(`_database_admin_command`, `_run_checked`, `_hash_file`
-      등)를 재사용하되 cutover window/journal에 결합하지 않는다 — cutover 안
-      백업과 별개의, 언제든 단독 호출 가능한 경로다.
-- [ ] `~/backups/<role>/`에 canonical 이름(timestamp·역할·source revision 포함)으로
-      쓰고, 같은 디렉터리에 manifest(timestamp, source revision, schema head,
-      sha256, byte size)를 owner-only(0600)로 남긴다. 오늘 사고 때 수동으로 만든
-      dump처럼 이름만으로 추측해야 하는 상태를 없앤다.
-- [ ] production에서는 C6c 전역 lock을 짧게 잡고 대상 DB identity(container·
-      database_name·owner)를 검증한 뒤에만 실행한다 — 실수로 엉뚱한 DB를
-      백업하는 것을 막는다.
-- [ ] raw stdout/stderr/DSN/credential은 CLI 출력·로그에 넣지 않는다(이 세션
-      전체에 걸친 secret-redaction-by-construction 관례를 따른다).
-- [ ] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+- [x] `ktdctl db-backup create --role {map_application,map_dagster,pinvi}`를
+      신설했다. `ComposeService.create_standalone_backup`이 C6c 전역 lock을 pg_dump
+      전체 동안 잡고, `database_runtimes_from_frozen_contract`로 frozen resolved
+      Compose에서 파생한 `DatabaseRuntime`만 사용한다 — cutover window/journal과
+      결합하지 않는, 언제든 단독 호출 가능한 경로다.
+- [x] `~/backups/<role>/`에 canonical 이름(timestamp·역할·source revision 포함)의
+      `.dump`와 같은 이름의 `.manifest.json`(timestamp, schema revision, sha256,
+      byte size)을 owner-only(0700 디렉터리·0600 파일)로 남긴다. `Path.mkdir(mode=...,
+      parents=True)`가 자동 생성되는 상위 디렉터리에는 `mode`를 적용하지 않는다는
+      실공백을 구현 중 발견·수정했다(두 디렉터리를 각각 명시적으로 `mkdir`).
+- [x] C6c 전역 lock을 pg_dump 전체 동안 유지하고 frozen resolved Compose 계약에서
+      파생한 identity만 쓴다 — role 문자열로 임의 DSN을 조립하지 않는다.
+- [x] raw stdout/stderr/DSN/credential을 매니페스트·CLI 출력·예외 메시지 어디에도
+      넣지 않는다(secret-redaction-by-construction).
+- [x] 적대적 리뷰어 2명이 검토했다. 리뷰어 1이 실공백을 찾았다: 존재-확인 뒤
+      `_write_pg_dump`(cutover window용 idempotent 재사용 헬퍼)를 그대로 호출하면,
+      존재-확인과 실제 쓰기 사이의 race에서 동시 재호출이 "거부" 계약을 어기고
+      그 재사용 분기로 조용히 성공할 수 있었다 — `_write_pg_dump`를 재사용하지
+      않고 `O_CREAT|O_EXCL`로 최종 파일명을 원자적으로 선점한 뒤 그 fd에 직접
+      pg_dump를 스트리밍하도록 고쳤다. 리뷰어 2(lock 범위·identity 신뢰 모델·CLI
+      검증·mutation 안전성 담당)는 confirmed 실공백 없음 — identity가 frozen
+      resolved Compose를 그대로 신뢰하는 것은 새 공백이 아니라 기존 cache-target
+      cutover/diagnose 경로와 같은, 이미 검증된 패턴임을 확인했다. 회귀 테스트
+      8건 추가(owner-only 저장 검증, 동일 timestamp 재호출 거부, race 상황에서
+      선점 파일이 조용히 유효한 백업으로 받아들여지지 않음을 직접 검증, 잘못된
+      timestamp 거부, role별 runtime 선택, 잘못된 role 거부, CLI 결선 2건).
+      backend 전체 1553 passed, ruff/mypy clean(touched files).
 
 ### T-054: 백업 목록/보존 관리 (`ktdctl db-backup list`, GC)
 
