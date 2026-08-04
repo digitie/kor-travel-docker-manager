@@ -9,6 +9,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     ComposePostMutationContractError,
     DeploymentContractError,
 )
+from kor_travel_docker_manager.services.cache_target_backup import DatabaseRole
 from kor_travel_docker_manager.services.compose_service import compose_service
 from kor_travel_docker_manager.services.docker_service import (
     ContainerConfigValidationError,
@@ -87,6 +88,28 @@ def _post_mutation_contract_detail(
 def get_targets():
     """Retrieve application-oriented infrastructure targets for UI and CLI parity."""
     return list_targets()
+
+
+_STANDALONE_BACKUP_ROLES: tuple[DatabaseRole, ...] = (
+    "map_application",
+    "map_dagster",
+    "pinvi",
+)
+
+
+@router.get("/backups")
+def list_backups(role: str | None = None):
+    """T-056: T-053/054가 남긴 standalone DB backup manifest를 읽기 전용으로 조회한다.
+
+    mutation(생성·GC·복구)은 이 API에 노출하지 않는다 — cache-target/pinvi-pair/
+    map-ui-auth와 동일하게 CLI 전용으로 남긴다(`ktdctl db-backup create/list --gc/restore`).
+    """
+    if role is not None and role not in _STANDALONE_BACKUP_ROLES:
+        raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
+    try:
+        return compose_service.list_standalone_backups(role=role)  # type: ignore[arg-type]
+    except DeploymentContractError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/targets/{target}/ensure")

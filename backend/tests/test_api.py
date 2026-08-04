@@ -870,6 +870,88 @@ def test_get_targets():
     assert any(target["id"] == "all" for target in data)
 
 
+def test_list_backups_requires_session():
+    client.cookies.clear()
+    response = client.get("/api/v1/backups")
+    assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_list_backups_returns_manifest_list(mock_compose_service):
+    login_client()
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [
+            {
+                "role": "pinvi",
+                "created_at_unix": 1_700_000_000,
+                "schema_revision": "0001_abc",
+                "sha256": "a" * 64,
+                "byte_size": 5,
+                "backup_filename": "20231114T221320Z_pinvi_0001_abc.dump",
+            }
+        ],
+        "warnings": [],
+    }
+
+    response = client.get("/api/v1/backups")
+
+    assert response.status_code == 200
+    assert response.json()["backups"][0]["role"] == "pinvi"
+    mock_compose_service.list_standalone_backups.assert_called_once_with(role=None)
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_list_backups_returns_empty_list_when_none_exist(mock_compose_service):
+    login_client()
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [],
+        "warnings": [],
+    }
+
+    response = client.get("/api/v1/backups")
+
+    assert response.status_code == 200
+    assert response.json()["backups"] == []
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_list_backups_filters_by_role(mock_compose_service):
+    login_client()
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [],
+        "warnings": [],
+    }
+
+    response = client.get("/api/v1/backups", params={"role": "map_dagster"})
+
+    assert response.status_code == 200
+    mock_compose_service.list_standalone_backups.assert_called_once_with(role="map_dagster")
+
+
+def test_list_backups_rejects_unknown_role():
+    login_client()
+    response = client.get("/api/v1/backups", params={"role": "not-a-real-role"})
+    assert response.status_code == 400
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_list_backups_contract_failure_is_conflict(mock_compose_service):
+    login_client()
+    mock_compose_service.list_standalone_backups.side_effect = DeploymentContractError(
+        "standalone database backup role is invalid"
+    )
+
+    response = client.get("/api/v1/backups")
+
+    assert response.status_code == 409
+
+
 @patch("kor_travel_docker_manager.api.routes.compose_service")
 def test_ensure_target_success(mock_compose_service):
     login_client()

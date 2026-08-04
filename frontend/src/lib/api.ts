@@ -117,6 +117,24 @@ export type LoginAuditEvent = {
   detail?: Record<string, unknown>;
 };
 
+/** T-053/054가 생성하는 standalone DB backup manifest 항목. `GET /api/v1/backups` 응답 요소. */
+export type StandaloneBackupManifest = {
+  role: 'map_application' | 'map_dagster' | 'pinvi';
+  created_at_unix: number;
+  schema_revision: string;
+  sha256: string;
+  byte_size: number;
+  backup_filename: string;
+};
+
+/** T-056 `GET /api/v1/backups` 응답. mutation은 노출하지 않는 읽기 전용 목록이다. */
+export type BackupListResponse = {
+  success: boolean;
+  returncode: number;
+  backups: StandaloneBackupManifest[];
+  warnings: string[];
+};
+
 type ApiRequestInit = RequestInit & {
   redirectOnUnauthorized?: boolean;
 };
