@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-04 (T-049E 후속: inventory hash canonicalization으로 미해결 사항 해결)
+
+2026-08-03 journal에 미해결로 남겼던 schema/data inventory hash 오탐(pg_dump
+dump→restore→dump 비결정성)을 실제로 고쳤다. 데이터는 SQL문 정렬로 순서-무관
+비교, 스키마는 source를 scratch와 같은 dump→restore→dump 변환에 한 번 통과시켜
+비교하는 방식으로 문제 클래스 전체를 닫았다 — 개별 비결정성 패턴을 regex로
+쫓는 대신 근본 메커니즘 자체를 무력화했다. n150 실측(job_ticks 557줄 diff→0,
+map_application schema hash 일치)으로 검증했고 적대적 리뷰어 2명이 order-
+insensitivity의 오탐지 여부와 canonicalization 철저함을 각각 확인했다.
+
+T-052(durable Dagster writer drain, PR #117)가 먼저 병합된 뒤 이 작업을 이어받아
+최신 코드에 재통합했다(stash pop, 충돌 없음, backend 1545 passed). 다음 단계는
+실제 n150에서 `ktdctl cache-target diagnose`를 끝까지 돌려 `completed` phase
+도달을 확인하는 것 — T-049E의 마지막 남은 검증이다.
+
+---
+
 ## 2026-08-04 (T-052: cache-target 진단의 durable Dagster writer drain, issue #115)
 
 issue #115가 요구한 6단계 설계를 그대로 구현했다: `writers_fencing`(순수 preflight)과

@@ -447,26 +447,24 @@ phase는 별도 PR로 검증한다.
       전의 partial writer stop/crash도 mutation 가능 상태로 보고 terminal attempt로 대조·기록한
       owner-only archive를 거친 뒤에만 새 진단을 시작한다. n150에서 이 경계로 새 rehearsal을
       실행해 완료 receipt와 final cutover gate를 확인한다.
-- [ ] **T-049E 후속 조사 필요(미해결) — 스키마/데이터 inventory 해시 비교의
-      근본 한계.** 같은 재실행에서 map_dagster의 `scratch_data_inventory`와
-      pinvi의 `scratch_schema_inventory`가 `inventory_mismatch`로 실패했다.
-      n150에서 writer를 실제로 멈추고 원인을 재현·격리했다: (1) **pinvi
-      스키마**는 PostgreSQL이 `CHECK (x = ANY (ARRAY[...]::text[]))` 형태의
-      제약을 최초 생성 시와 dump→restore→재생성 뒤에 **의미는 동일하지만
-      텍스트 표현이 다르게**(배열 전체에 한 번 cast vs 원소별 cast) 저장하는
-      알려진 동작 때문— 실제 데이터/스키마 손상이 아니다. (2) **map_dagster
-      데이터**는 `event_logs`/`job_ticks` 같이 자주 갱신되는 테이블에서
-      `pg_dump --data-only --inserts`가 **행 내용은 완전히 동일한데 emission
-      순서가 두 번의 별도 dump 호출 사이에 달라짐**을 확인했다(writer를 멈춘
-      상태에서도 재현 — 새 쓰기 때문이 아니라 순서 비결정성 자체가 원인).
-      두 사례 모두 이 진단의 schema/data inventory hash 비교 설계
-      전체가 "동일 데이터의 pg_dump 출력은 byte-identical하다"는, PostgreSQL이
-      실제로 보장하지 않는 가정 위에 서 있음을 보여준다. 이건 코드 한 줄
-      수정으로 안전하게 고칠 수 있는 범위가 아니다(원소별 cast로 정규화하는
-      스키마 텍스트 canonicalization, 또는 raw text 대신 행 단위 해시를
-      정렬해 비교하는 순서-무관 데이터 비교 방식 등 별도 설계가 필요) —
-      **의도적으로 이번에 고치지 않고 미해결로 남긴다.** 재현 절차와 근거는
-      2026-08-03 journal 항목에 기록.
+- [x] **T-049E 후속 조사 해결 — 스키마/데이터 inventory 해시 비교의 canonicalization.**
+      map_dagster의 `scratch_data_inventory`와 pinvi의 `scratch_schema_inventory`가
+      `inventory_mismatch`로 실패하던 원인(PostgreSQL의 dump→restore→dump
+      비결정성 — CHECK 제약 텍스트 렌더링, `--inserts` 데이터 행 emission 순서)을
+      실제로 고쳤다. 데이터 비교는 `_canonicalize_data_dump`(quote-aware SQL문
+      분리·정렬)로 순서-무관하게 만들었다 — n150 `map_dagster.job_ticks` 실측으로
+      검증(정규화 전 557줄 diff → 정규화 후 0). 스키마 비교는 처음엔
+      `_canonicalize_schema_dump`(ARRAY cast 정규화 regex)로 시작했으나, 적대적
+      리뷰어가 PostgreSQL이 `(A AND B) AND (C AND D)` → `A AND B AND (C AND D)`처럼
+      중첩 AND도 재작성한다는 걸 map_application에서 추가로 찾아냈다 — 개별 패턴을
+      계속 쫓는 대신, source의 schema-only dump를 scratch에 적용한 뒤 한 번 더
+      재-dump해서(scratch가 자연히 겪는 것과 같은 dump→restore→dump 변환을 source
+      쪽도 거치게 하는) `_run_normalized_source_schema_inventory`로 이 문제
+      클래스 전체를 닫았다. n150 `map_application` 실측으로 검증(정규화된
+      source hash == scratch hash, MATCH: True). 적대적 리뷰어 2명이 각각
+      order-insensitivity의 진짜 오탐지 여부(다른 데이터가 같은 해시로 뭉개지지
+      않는지)와 canonicalization의 철저함을 실측 기반으로 검증, confirmed 실공백
+      없음. backend 전체 1545 passed, ruff/mypy clean(touched files).
 - [ ] **T-049E — n150 production rehearsal**: sync=false에서 diagnostic을 한 번 실행하고
       receipt identity·artifact cleanup·runtime recovery를 확인한 뒤에만 final initial
       cutover를 한 번 실행한다.

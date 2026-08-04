@@ -5713,7 +5713,7 @@ class ComposeService:
             ("source_archive", lambda: diagnose_source_archive(runtime, archive_path)),
             (
                 "source_schema_inventory",
-                lambda: diagnose_source_schema_inventory(runtime),
+                lambda: diagnose_source_schema_inventory(runtime, diagnostic_id),
             ),
             ("source_data_inventory", lambda: diagnose_source_data_inventory(runtime)),
             (
