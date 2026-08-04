@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import IO, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_window import (
@@ -527,24 +527,11 @@ def create_standalone_database_backup(
     wrote_backup = False
     try:
         with os.fdopen(descriptor, "wb") as output:
-            completed = subprocess.run(
-                [
-                    *_database_admin_command(runtime, "pg_dump"),
-                    "--format=custom",
-                    "--no-owner",
-                    "--no-acl",
-                    "--dbname",
-                    runtime.database_name,
-                ],
-                stdout=output,
-                stderr=subprocess.PIPE,
-                check=False,
-                timeout=3600,
+            _stream_pg_dump_custom_format(
+                output,
+                runtime,
+                subprocess_failure_message=f"{runtime.role} standalone backup failed",
             )
-            output.flush()
-            os.fsync(output.fileno())
-        if completed.returncode != 0 or completed.stderr:
-            raise DeploymentContractError(f"{runtime.role} standalone backup failed")
         if backup_path.stat().st_size <= 0:
             raise DeploymentContractError(f"{runtime.role} standalone backup is empty")
         wrote_backup = True
@@ -1615,6 +1602,39 @@ def database_identity_v1(
     return hashlib.sha256(payload).hexdigest()
 
 
+def _stream_pg_dump_custom_format(
+    output: IO[bytes],
+    runtime: DatabaseRuntime,
+    *,
+    subprocess_failure_message: str,
+) -> None:
+    """T-057: cutover 내장 백업(`_write_pg_dump`)과 독립 백업
+    (`create_standalone_database_backup`)이 각자 인라인으로 들고 있던 동일한
+    `pg_dump --format=custom` subprocess 호출·fsync·성공 판정을 하나로 모았다.
+    파일 생성 전략(idempotent 재사용 vs `O_CREAT|O_EXCL` 원자 선점)은 서로
+    의미가 달라 호출자가 각자 소유하고, 이 함수는 그 사이에서 실제로 pg_dump를
+    실행하는 부분만 공유한다. 에러 메시지는 호출자가 그대로 넘겨 기존 텍스트를
+    바꾸지 않는다."""
+    completed = subprocess.run(
+        [
+            *_database_admin_command(runtime, "pg_dump"),
+            "--format=custom",
+            "--no-owner",
+            "--no-acl",
+            "--dbname",
+            runtime.database_name,
+        ],
+        stdout=output,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=3600,
+    )
+    output.flush()
+    os.fsync(output.fileno())
+    if completed.returncode != 0 or completed.stderr:
+        raise DeploymentContractError(subprocess_failure_message)
+
+
 def _write_pg_dump(path: Path, runtime: DatabaseRuntime) -> None:
     temporary: Path | None = None
     try:
@@ -1626,24 +1646,11 @@ def _write_pg_dump(path: Path, runtime: DatabaseRuntime) -> None:
         temporary = Path(temporary_name)
         with os.fdopen(descriptor, "wb") as output:
             os.fchmod(output.fileno(), 0o600)
-            completed = subprocess.run(
-                [
-                    *_database_admin_command(runtime, "pg_dump"),
-                    "--format=custom",
-                    "--no-owner",
-                    "--no-acl",
-                    "--dbname",
-                    runtime.database_name,
-                ],
-                stdout=output,
-                stderr=subprocess.PIPE,
-                check=False,
-                timeout=3600,
+            _stream_pg_dump_custom_format(
+                output,
+                runtime,
+                subprocess_failure_message=f"{runtime.role} database backup failed",
             )
-            output.flush()
-            os.fsync(output.fileno())
-        if completed.returncode != 0 or completed.stderr:
-            raise DeploymentContractError(f"{runtime.role} database backup failed")
         if temporary.stat().st_size <= 0:
             raise DeploymentContractError(
                 f"{runtime.role} database backup is empty"
