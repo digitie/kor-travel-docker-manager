@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-04 (issue #107 — map_release_revision re-pin `4a764a4f` → `6b537ed9`)
+
+Map PR #929(머지 SHA `6b537ed99aecb583805f3cde2ce7a9fcf8d14329`, MERGED
+2026-08-03T08:27:48Z)가 GC receipt `row_counts`에 `quarantine_candidates_before`
+preflight 게이트를 추가로 도입했다. 이슈 #107은 현재 pin `4a764a4f`에
+알려진 결함이 없다고 명시했고(선택적/저긴급), 이번 변경은 순수 additive라
+Manager의 기존 검증기와 호환된다는 점도 함께 확인했다: `row_counts`는
+`quarantine_candidates`/`quarantine_collections`/`quarantine_items` 키를
+새로 얻지만 migrate/verify receipt 검증은 key set에 대해 loose하고,
+`_validate_map_gc_receipt`는 GC receipt 전용이라 영향받지 않는다.
+`cache_target_production_manifest.py`의 tracked `map_release_revision`과
+`docs/cache-target-production-cutover.md`의 pin 이력 문단을 갱신했다.
+`service_openapi_sha256`(PinVi 소유, Map release revision과 무관)은
+변경하지 않았다. 백엔드 전체 스위트(1595 passed) 통과 확인.
+
+---
+
 ## 2026-08-04 (T-056 완료 — 읽기 전용 백업 이력 API + Web UI 페이지)
 
 fork가 멈춰둔 T-056을 이어받아 적대적 리뷰어 2명을 돌렸다(백엔드 인증/mutation
