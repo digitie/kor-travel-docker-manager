@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-08-04 (T-055 완료 — 안전장치 있는 DB 복구 CLI)
+
+fork가 멈춰둔 T-055(`ktdctl db-backup restore`)를 이어받아 적대적 리뷰어 2명을
+돌렸다(confirmation-gate 우회 가능성·role/backup-id 대상 오지정 담당,
+stderr-NOTICE 회귀·백업 무결성·복구 후 검증 담당) — 이 세션 전체에서 가장
+위험도 높은 명령(실 DB를 파괴적으로 덮어씀)이라 특히 꼼꼼히 봤다. 둘 다
+confirmed 실공백 없음: `_STANDALONE_RESTORE_CAPABILITY`는 진짜
+module-private singleton이라 CLI `--confirm` 우회 경로가 없고, dropdb는
+이 세션 초반 실제 사고로 고쳤던 조건부 패턴을 정확히 재사용했고, role/
+backup-id는 파일명·manifest JSON·요청 파라미터 3중 교차검증이라 다른
+role의 백업을 잘못 복구할 수 없다. 리뷰어 2가 지적한 사소한 커버리지
+공백(pg_restore가 exit 0인데 결과 schema가 틀린 경우의 음성 테스트 부재)만
+추가로 메꿨다. backend 전체 1589 passed.
+
+이로써 T-053→T-054→T-055(백업 생성→목록/GC→복구) 체인이 전부 완료됐다.
+남은 건 T-057(cache-target cutover 내장 백업을 이 primitive로 통합)과
+T-056(읽기 전용 API/Web UI)이다.
+
+---
+
+## 2026-08-04 (T-055: 안전장치 있는 DB 복구 CLI — 리뷰 대기 중, 미병합)
+
+`ktdctl db-backup restore --role ... --backup-id ... --expected-schema-revision ...
+--confirm`를 구현했다. T-050의 `--expected-alembic-head` fail-close opt-in 패턴을
+그대로 따라, 복구 대상 DB의 **현재** schema revision을 읽어 operator가 명시한
+값과 다르면 어떤 mutation도 없이 즉시 거부한다. `--confirm`이 1차 방어(없으면
+CLI가 `compose_service`를 아예 호출하지 않음), 새 `_STANDALONE_RESTORE_CAPABILITY`
+sentinel이 2차 방어(함수 자체 호출에도 요구)다. 복구 직전 백업 파일을 재-해시해
+manifest sha256과 대조하고, dropdb/createdb/pg_restore는 기존
+`restore_database_backup`과 동일한 stderr-NOTICE-안전 조건부 dropdb 패턴을
+그대로 따랐다.
+
+fork로 구현했으나 T-054와 같은 제약(fork는 Agent tool로 subagent를 만들 수
+없음)으로 적대적 리뷰어 2명 단계 전에 멈췄다 — **아직 커밋·PR·병합 전이다.**
+회귀 테스트는 추가했고 backend 전체 1578 passed, ruff/mypy clean(touched
+files) 확인까지만 마쳤다. 부모 세션이 적대적 리뷰어 2명(confirmation-gate
+우회 가능성 담당, 복구 메커니즘 정확성 담당)을 돌리고 커밋해야 한다.
+
+---
+
 ## 2026-08-04 (PR #119/T-049F 병합 조정 — T-052 대체, evidence-validation 공백 수정)
 
 사용자 지시로 GitHub PR #119(다른 세션이 만든 것으로 보임 — 이 세션의 T-052(PR #117)가

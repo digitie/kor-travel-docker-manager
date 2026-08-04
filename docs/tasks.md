@@ -25,7 +25,7 @@
 | **T-049F** | isolated durable writer-drain (Map-owned lease/receipt, issue #115) | `[x]` | 2026-08-04 | T-052를 대체하는 최종 구현 — begin/attest/restore lease chain, journal v2 |
 | **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[x]` | 2026-08-04 | cache-target cutover window와 분리, C6c lock·owner-only 저장·적대적 리뷰 2명 완료 |
 | **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[x]` | 2026-08-04 | T-053 manifest 기반, age/count 보존, 적대적 리뷰 2명 완료 |
-| **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[/]` | - | 구현 완료, 적대적 리뷰 대기 중 |
+| **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[x]` | 2026-08-04 | fail-close 2중 방어(--confirm·capability sentinel), 적대적 리뷰 2명 완료 |
 | **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[ ]` | - | mutation은 CLI 전용 유지, 조회만 HTTP 노출(T-053~055 의존) |
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[ ]` | - | 이중 백업 메커니즘 제거, naming drift 재발 방지(T-053 의존) |
 
@@ -692,16 +692,33 @@ window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 
 
 ### T-055: 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`)
 
-- [ ] `ktdctl db-backup restore --role ... --backup-id ...`를 신설한다.
-      T-050의 `--expected-alembic-head` fail-close opt-in 패턴을 그대로
-      따른다 — 복구 대상 DB의 현재 identity(schema revision 등)를 operator가
-      명시한 기대값과 대조하고 다르면 즉시 거부한다. `--confirm` 또는
-      dry-run-first 없이는 실제 덮어쓰기를 하지 않는다.
-- [ ] production 대상은 C6c 전역 lock 안에서 실행하고, 대상이 실수로 엉뚱한
-      DB(예: 이번에 발견된 `kor_travel_map`/`krtour_map`류 naming drift)가
-      되지 않도록 명시 확인 단계를 둔다.
-- [ ] 회귀 테스트(정상 복구, identity mismatch 거부, confirm 없이 거부, 손상된
-      백업 파일 거부), 적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+- [x] `ktdctl db-backup restore --role ... --backup-id ... --expected-schema-revision ... --confirm`를
+      신설했다. T-050의 `--expected-alembic-head` fail-close opt-in 패턴을 그대로
+      따른다 — 복구 대상 DB의 **현재** schema revision을 `_read_schema_revision`으로
+      읽어 operator가 `--expected-schema-revision`으로 명시한 값과 대조하고 다르면
+      어떤 mutation도 하지 않고 즉시 거부한다. `--confirm`(store_true, 기본 False)
+      없이는 CLI가 `compose_service`를 아예 호출하지 않는다(1차 방어) — 새
+      `_STANDALONE_RESTORE_CAPABILITY` sentinel이 함수 자체 호출에도 한 번 더
+      요구된다(2차 방어). 복구 직전 백업 파일을 재-해시해 manifest의 `sha256`과
+      대조하고, dropdb/createdb/pg_restore는 기존 `restore_database_backup`과
+      동일한 stderr-NOTICE-안전 조건부 dropdb 패턴을 그대로 따른다. 복구 뒤
+      결과 DB의 schema revision이 manifest 기록값과 일치하는지 재확인한다.
+- [x] production 대상은 C6c 전역 lock 안에서 실행하고, frozen resolved Compose
+      계약에서 파생한 `DatabaseRuntime`으로만 대상을 식별한다(T-053/054와 동일
+      패턴) — role 문자열로 임의 DSN을 조립하지 않는다.
+- [x] 회귀 테스트 추가(capability 없이 거부, identity mismatch 거부 시 mutation
+      0건, 존재하지 않는 backup-id 거부, 손상된 백업 payload(sha256 불일치) 거부
+      시 mutation 0건, 정상 복구 end-to-end 및 결과가 manifest와 일치, secret
+      비노출, CLI `--confirm` 없이 compose_service 미호출/있으면 정확한 인자로
+      호출/에러 전파). fork로 구현했고 fork는 Agent tool로 subagent를 만들 수
+      없어(T-054와 같은 제약) 리뷰 단계 전에 멈췄다 — 부모 세션이 이어받아
+      적대적 리뷰어 2명(confirmation-gate 우회 가능성·role/backup-id 대상
+      오지정 담당, stderr-NOTICE 회귀·백업 무결성·복구 후 검증 담당)을 돌렸다.
+      둘 다 confirmed 실공백 없음 — capability sentinel은 진짜 module-private
+      singleton이라 우회 경로 없음, dropdb는 fixed된 조건부 패턴을 정확히
+      재사용, role/backup-id는 3중 교차검증. 리뷰어 2가 지적한 테스트 커버리지
+      공백(post-restore schema mismatch 음성 테스트 부재)을 추가로 메꿨다.
+      backend 전체 1589 passed, ruff/mypy clean(touched files).
 
 ### T-056: 읽기 전용 백업 이력 API + Web UI 페이지
 

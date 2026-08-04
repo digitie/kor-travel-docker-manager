@@ -91,6 +91,7 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
 )
 from kor_travel_docker_manager.services.cache_target_backup import (
     _COUPLED_ROLLBACK_CAPABILITY,
+    _STANDALONE_RESTORE_CAPABILITY,
     STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
     STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
     DatabaseRole,
@@ -113,6 +114,7 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     read_pin_boundary_audit,
     restore_database_backup,
     restore_manager_rollback_bundle,
+    restore_standalone_database_backup,
     verify_manager_rollback_bundle,
 )
 from kor_travel_docker_manager.services.cache_target_canary import (
@@ -5448,6 +5450,61 @@ class ComposeService:
         if gc:
             result["gc"] = gc_summaries
         return result
+
+    def restore_standalone_backup(
+        self,
+        *,
+        role: DatabaseRole,
+        backup_filename: str,
+        expected_schema_revision: str,
+    ) -> dict[str, Any]:
+        """T-055: `ktdctl db-backup restore`. cache-target cutover window와
+        완전히 분리된, 언제든 단독 호출 가능한 복구다 — 이 CLI 명령 밖에서는
+        `_STANDALONE_RESTORE_CAPABILITY`를 아무도 얻지 못하므로, 실제 실행 경로는
+        `--confirm`을 명시한 이 메서드 호출 하나뿐이다.
+
+        production에서는 C6c 전역 lock을 잡고 frozen resolved Compose 계약에서
+        파생한 `DatabaseRuntime`으로만 대상을 식별한다. 복구 전 대상 DB의 현재
+        schema revision을 `expected_schema_revision`과 대조해 다르면 어떤
+        mutation도 하지 않고 거부한다 — 실수로 엉뚱한 DB(naming drift 등)를
+        덮어쓰는 것을 막는다.
+        """
+
+        def _run(
+            transaction: ComposeTransactionSnapshot,
+        ) -> StandaloneBackupManifest:
+            runtimes = database_runtimes_from_frozen_contract(
+                resolved=transaction.resolved,
+                environment=transaction.environment.effective,
+            )
+            try:
+                runtime = next(candidate for candidate in runtimes if candidate.role == role)
+            except StopIteration as exc:
+                raise DeploymentContractError(
+                    "standalone database restore role is invalid"
+                ) from exc
+            return restore_standalone_database_backup(
+                backups_root=Path.home() / "backups",
+                runtime=runtime,
+                backup_filename=backup_filename,
+                expected_schema_revision=expected_schema_revision,
+                capability=_STANDALONE_RESTORE_CAPABILITY,
+            )
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked()
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            manifest = _run(transaction)
+        return {
+            "success": True,
+            "returncode": 0,
+            "role": manifest.role,
+            "created_at_unix": manifest.created_at_unix,
+            "schema_revision": manifest.schema_revision,
+            "sha256": manifest.sha256,
+            "byte_size": manifest.byte_size,
+            "backup_filename": manifest.backup_filename,
+        }
 
     def run_cache_target_diagnostic(self, *, diagnostic_id: str) -> dict[str, Any]:
         """T-049C: `ktdctl cache-target diagnose`. writer fence 안에서 3-role DB
