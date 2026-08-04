@@ -22,6 +22,11 @@
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[/]` | - | compose/backend 기본값 정렬 완료, n150 실제 DROP/RENAME 실행 대기 |
 | **T-052** | cache-target 진단의 durable Dagster writer drain (issue #115) | `[x]` | 2026-08-04 | writers_draining phase 신설, daemon 선-정지·bounded drain·terminal cancel |
+| **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[ ]` | - | cache-target 내장 pg_dump primitive를 cutover 밖에서도 단독 호출 가능하게 |
+| **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[ ]` | - | T-053 manifest 기반, cache-target snapshot-GC 패턴 재사용 |
+| **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[ ]` | - | `--expected-alembic-head`류 fail-close opt-in 패턴, 대상 identity 사전 검증 |
+| **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[ ]` | - | mutation은 CLI 전용 유지, 조회만 HTTP 노출(T-053~055 의존) |
+| **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[ ]` | - | 이중 백업 메커니즘 제거, naming drift 재발 방지(T-053 의존) |
 
 ---
 
@@ -606,3 +611,73 @@ Dagster GraphQL로 수동 취소해야 하는 임시방편이었다.
 - [ ] n150에서 실제 diagnose를 재실행해 `writers_draining`이 실제 schedule/sensor와
       맞물려 정상 동작하는지 확인한다(사용자 결정으로 데이터는 보존 대상이
       아니므로, 이 검증은 별도 승인 아래 진행한다).
+
+### T-053: 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`)
+
+2026-08-04 issue #109 조사에서 확인한 근본 공백: 이 저장소 어디에도 **독립적으로
+호출 가능한 DB 백업 도구가 없다.** 모든 `pg_dump`(`cache_target_backup.py`의
+`create_database_backup`/`_rehearse_database_restore` 등)는 cache-target cutover
+window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 손으로 `pg_dump`를
+실행해야 했다.
+
+- [ ] `ktdctl db-backup create --role {map_application,map_dagster,pinvi}`를
+      신설한다. `cache_target_backup.py`의 기존 typed `pg_dump`/digest/owner-only
+      storage primitive(`_database_admin_command`, `_run_checked`, `_hash_file`
+      등)를 재사용하되 cutover window/journal에 결합하지 않는다 — cutover 안
+      백업과 별개의, 언제든 단독 호출 가능한 경로다.
+- [ ] `~/backups/<role>/`에 canonical 이름(timestamp·역할·source revision 포함)으로
+      쓰고, 같은 디렉터리에 manifest(timestamp, source revision, schema head,
+      sha256, byte size)를 owner-only(0600)로 남긴다. 오늘 사고 때 수동으로 만든
+      dump처럼 이름만으로 추측해야 하는 상태를 없앤다.
+- [ ] production에서는 C6c 전역 lock을 짧게 잡고 대상 DB identity(container·
+      database_name·owner)를 검증한 뒤에만 실행한다 — 실수로 엉뚱한 DB를
+      백업하는 것을 막는다.
+- [ ] raw stdout/stderr/DSN/credential은 CLI 출력·로그에 넣지 않는다(이 세션
+      전체에 걸친 secret-redaction-by-construction 관례를 따른다).
+- [ ] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+
+### T-054: 백업 목록/보존 관리 (`ktdctl db-backup list`, GC)
+
+- [ ] `ktdctl db-backup list [--role ...]`가 T-053 manifest를 읽어 사람이 읽을 수
+      있는 목록(시각·역할·revision·크기·sha256)을 출력한다.
+- [ ] `cache_target_diagnostics.py`의 snapshot-GC 패턴(참조 카운트·보존 기간
+      기반)을 재사용해 age 또는 count 기반 보존 정책을 구현한다. 무제한 누적을
+      막되, 최근 N개/최근 N일은 항상 보존한다.
+- [ ] GC가 지운 백업과 보존한 백업을 CLI 출력에 명시(silent truncation 금지).
+- [ ] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+
+### T-055: 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`)
+
+- [ ] `ktdctl db-backup restore --role ... --backup-id ...`를 신설한다.
+      T-050의 `--expected-alembic-head` fail-close opt-in 패턴을 그대로
+      따른다 — 복구 대상 DB의 현재 identity(schema revision 등)를 operator가
+      명시한 기대값과 대조하고 다르면 즉시 거부한다. `--confirm` 또는
+      dry-run-first 없이는 실제 덮어쓰기를 하지 않는다.
+- [ ] production 대상은 C6c 전역 lock 안에서 실행하고, 대상이 실수로 엉뚱한
+      DB(예: 이번에 발견된 `kor_travel_map`/`krtour_map`류 naming drift)가
+      되지 않도록 명시 확인 단계를 둔다.
+- [ ] 회귀 테스트(정상 복구, identity mismatch 거부, confirm 없이 거부, 손상된
+      백업 파일 거부), 적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+
+### T-056: 읽기 전용 백업 이력 API + Web UI 페이지
+
+T-053~055 의존. mutation(백업 생성·복구)은 계속 CLI 전용으로 남긴다 — 이 저장소의
+기존 권한 경계(cache-target/pinvi-pair/map-ui-auth 모두 API에 노출되지 않고 CLI
+전용인 것과 동일한 패턴)를 유지하고, HTTP 표면을 조회로만 넓힌다.
+
+- [ ] `GET /backups`(목록 전용, mutation 없음)를 추가한다.
+- [ ] 대시보드에 백업 이력 페이지를 추가해 이 목록을 보여준다.
+- [ ] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/frontend type-check·build,
+      ruff/mypy 통과 후 병합.
+
+### T-057: cache-target cutover 내장 백업 호출을 T-053 primitive로 통합
+
+T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 독립 백업
+도구가 같은 일을 서로 다른 코드 경로로 한다 — 오늘 있었던 naming drift 같은
+사고의 재발 위험을 낮추려면 하나로 합쳐야 한다.
+
+- [ ] `cache_target_backup.py`의 `create_database_backup`/`verify_database_backup`이
+      T-053의 공통 primitive를 호출하도록 리팩터링한다(cutover journal/receipt
+      계약은 그대로 유지, 내부 구현만 통합).
+- [ ] 기존 cache-target 회귀 전체가 그대로 통과하는 것으로 동작 불변을 확인한다.
+      적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
