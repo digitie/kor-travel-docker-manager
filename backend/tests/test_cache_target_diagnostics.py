@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import stat
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,17 @@ def _prepared() -> CacheTargetDiagnosticJournal:
     )
 
 
+def _drained(
+    journal: CacheTargetDiagnosticJournal,
+) -> CacheTargetDiagnosticJournal:
+    return transition_cache_target_diagnostic(
+        journal,
+        "writers_drained",
+        writer_drain_lease_id="99999999-9999-4999-8999-999999999999",
+        writer_drain_receipt_sha256="f" * 64,
+    )
+
+
 def _receipt(
     role: str = "map_application",
     stage: str = "source_archive",
@@ -77,6 +89,7 @@ def _completed() -> CacheTargetDiagnosticJournal:
     journal = _prepared()
     journal = transition_cache_target_diagnostic(journal, "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -101,7 +114,12 @@ def _completed() -> CacheTargetDiagnosticJournal:
         "runtime_smoke_checked",
         runtime_smoke_sha256="e" * 64,
     )
-    return transition_cache_target_diagnostic(journal, "completed", completed_at_unix=1_700_000_500)
+    return transition_cache_target_diagnostic(
+        journal,
+        "completed",
+        completed_at_unix=1_700_000_500,
+        writer_drain_restore_receipt_sha256="e" * 64,
+    )
 
 
 def test_diagnostic_journal_is_owner_only_and_exactly_round_trips(
@@ -115,6 +133,24 @@ def test_diagnostic_journal_is_owner_only_and_exactly_round_trips(
 
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert read_cache_target_diagnostic(path) == journal
+
+
+def test_diagnostic_rejects_legacy_v1_state_before_any_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-diagnostic-v1.json"
+    path.parent.mkdir(mode=0o700)
+    document = asdict(_prepared())
+    document["version"] = 1
+    for field_name in (
+        "writer_drain_lease_id",
+        "writer_drain_receipt_sha256",
+        "writer_drain_restore_receipt_sha256",
+    ):
+        del document[field_name]
+    path.write_text(json.dumps(document))
+    path.chmod(0o600)
+
+    with pytest.raises(DeploymentContractError, match="v1 is unsupported"):
+        read_cache_target_diagnostic(path)
 
 
 def test_diagnostic_rejects_phase_skip() -> None:
@@ -137,7 +173,7 @@ def test_diagnostic_requires_durable_stop_boundary_before_writer_fence() -> None
             "writers_fenced",
             writer_fence_sha256="d" * 64,
         )
-    assert transition_cache_target_diagnostic(journal, "writers_stopping").phase == (
+    assert transition_cache_target_diagnostic(_drained(journal), "writers_stopping").phase == (
         "writers_stopping"
     )
 
@@ -164,14 +200,31 @@ def test_diagnostic_rejects_transition_out_of_terminal_phase() -> None:
 
 
 def test_diagnostic_rejects_writers_fenced_without_writer_fence_evidence() -> None:
-    journal = replace(_prepared(), phase="writers_fenced")
+    journal = replace(
+        _prepared(),
+        phase="writers_fenced",
+        writer_drain_lease_id="99999999-9999-4999-8999-999999999999",
+        writer_drain_receipt_sha256="f" * 64,
+    )
     with pytest.raises(DeploymentContractError, match="writer fence evidence"):
+        write_cache_target_diagnostic(Path("/nonexistent/unused.json"), journal)
+
+
+def test_diagnostic_rejects_restore_receipt_without_prior_lease() -> None:
+    """적대적 리뷰가 찾은 공백: restore receipt만 있고 lease/receipt는 없는
+    논리적으로 불가능한 조합이 phase 문턱 검사만으로는 걸러지지 않았다."""
+    journal = replace(
+        _prepared(),
+        writer_drain_restore_receipt_sha256="9" * 64,
+    )
+    with pytest.raises(DeploymentContractError, match="precedes its lease"):
         write_cache_target_diagnostic(Path("/nonexistent/unused.json"), journal)
 
 
 def test_diagnostic_rejects_map_application_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -184,6 +237,7 @@ def test_diagnostic_rejects_map_application_checked_without_its_evidence() -> No
 def test_diagnostic_rejects_map_dagster_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -201,6 +255,7 @@ def test_diagnostic_rejects_map_dagster_checked_without_its_evidence() -> None:
 def test_diagnostic_rejects_pinvi_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -223,6 +278,7 @@ def test_diagnostic_rejects_pinvi_checked_without_its_evidence() -> None:
 def test_diagnostic_rejects_runtime_smoke_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -305,6 +361,7 @@ def test_diagnostic_rejects_succeeded_receipt_with_failure_class() -> None:
     receipt = _receipt(status="succeeded", failure_class="timeout")
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -321,6 +378,7 @@ def test_diagnostic_rejects_failed_receipt_without_failure_class() -> None:
     receipt = _receipt(status="failed", failure_class=None)
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -340,6 +398,7 @@ def test_diagnostic_rejects_out_of_bounds_stage_elapsed_time(
     receipt = replace(_receipt(), elapsed_ms=bad_elapsed_ms)  # type: ignore[arg-type]
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -356,6 +415,7 @@ def test_diagnostic_rejects_receipt_role_not_matching_its_evidence_group() -> No
     mismatched = _receipt(role="pinvi")
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -394,6 +454,7 @@ def test_diagnostic_round_trips_with_empty_receipt_tuples_at_early_phase(
     path.parent.mkdir(mode=0o700)
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
 
     write_cache_target_diagnostic(path, journal)
@@ -404,6 +465,7 @@ def test_diagnostic_round_trips_with_empty_receipt_tuples_at_early_phase(
 def test_diagnostic_transition_carries_forward_prior_evidence_when_unspecified() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64

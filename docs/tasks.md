@@ -21,10 +21,11 @@
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
-| **T-052** | cache-target 진단의 durable Dagster writer drain (issue #115) | `[x]` | 2026-08-04 | writers_draining phase 신설, daemon 선-정지·bounded drain·terminal cancel |
+| **T-052** | cache-target 진단의 direct daemon writer-drain 초안 (issue #115) | `[x]` | 2026-08-04 | **T-049F로 대체됨** — daemon 직접 중지·직접 cancel은 최종 구현 경계가 아님 |
+| **T-049F** | isolated durable writer-drain (Map-owned lease/receipt, issue #115) | `[x]` | 2026-08-04 | T-052를 대체하는 최종 구현 — begin/attest/restore lease chain, journal v2 |
 | **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[x]` | 2026-08-04 | cache-target cutover window와 분리, C6c lock·owner-only 저장·적대적 리뷰 2명 완료 |
-| **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[ ]` | - | T-053 manifest 기반, cache-target snapshot-GC 패턴 재사용 |
-| **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[ ]` | - | `--expected-alembic-head`류 fail-close opt-in 패턴, 대상 identity 사전 검증 |
+| **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[x]` | 2026-08-04 | T-053 manifest 기반, age/count 보존, 적대적 리뷰 2명 완료 |
+| **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[/]` | - | 구현 완료, 적대적 리뷰 대기 중 |
 | **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[ ]` | - | mutation은 CLI 전용 유지, 조회만 HTTP 노출(T-053~055 의존) |
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[ ]` | - | 이중 백업 메커니즘 제거, naming drift 재발 방지(T-053 의존) |
 
@@ -552,6 +553,12 @@ naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(�
 - [x] issue #115(durable Dagster writer drain)는 T-052로 분리해 구현했다.
 
 ### T-052: cache-target 진단의 durable Dagster writer drain (issue #115)
+
+> **대체됨 — 구현·검증 정본이 아니다.** 이 기록은 direct daemon stop 초안의 이력을
+> 보존할 뿐이다. 현재 정본은 T-049F와
+> `docs/cache-target-cutover-diagnostics.md`의 Map-owned durable lease/typed
+> private command 설계이며, Manager는 Dagster daemon·GraphQL·DB를 직접 조작하지
+> 않는다.
 
 n150에서 `ktdctl cache-target diagnose`를 반복 실행하며 같은 문제를 계속 만났다:
 `writers_fencing`의 preflight가 PostgreSQL 진행 중 트랜잭션과 Dagster 비종료 run이

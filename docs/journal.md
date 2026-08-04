@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-08-04 (PR #119/T-049F 병합 조정 — T-052 대체, evidence-validation 공백 수정)
+
+사용자 지시로 GitHub PR #119(다른 세션이 만든 것으로 보임 — 이 세션의 T-052(PR #117)가
+이미 병합된 뒤에 브랜치됐는데도 완전히 별도 모듈로 같은 issue #115를 다시 구현)를
+서브에이전트로 먼저 충돌·중복 여부 분석했다. 결론: 중복이 아니라 **T-052를 대체하는
+더 완성도 높은 구현**(Map 자체의 begin/attest/restore lease/receipt 프로토콜, cutover까지
+커버) — 코드는 깨끗이 auto-merge됐고 docs만 append 충돌, T-050의 gate 테스트 3건만
+v1 journal 픽스처 때문에 깨짐(v2 계약에 맞게 고침).
+
+병합 전 적대적 리뷰어 2명을 추가로 돌렸다(레이스/crash-recovery/rollback-claim 검증
+담당, secret 비노출/schema 검증 담당). 리뷰어가 `_validate_phase_evidence`(diagnostics·
+window 양쪽)의 실공백을 찾았다: restore receipt만 있고 그 전에 있어야 할 lease/receipt는
+없는 불가능한 조합이 phase 문턱 검사로는 안 걸러졌다 — phase 무관 무조건 검사를
+추가해 고쳤다. 다른 리뷰어는 crash-recovery 전체가 Map의 `begin` idempotency에
+의존한다는 medium 우려를 남겼는데, 이 저장소만으로는 검증 불가능해 fix 없이 열어둔다
+(Map 쪽 확인 필요, `docs/tasks-done.md`에 기록).
+
+backend 전체 1580 passed, ruff/mypy clean. T-052는 "대체됨" 표시로 남기고 T-049F를
+정본으로 `tasks.md`/`tasks-done.md`에 반영했다.
+
+---
+
+## 2026-08-04 (T-049F: isolated durable writer-drain 완료)
+
+Map-owned lease/receipt chain을 Manager diagnostic·cutover journal에 결선했다. initial fence는
+`writers_draining → writers_drained → writers_stopping`을 fsync하며, pre-backup crash는 DB
+rollback 없이 Map restore → full writer activation → prior pair re-attestation으로만 복구한다.
+backup 뒤 coupled rollback은 Map DB의 drained state를 되돌리는 특성상 `manager_state_restored`
+뒤 webserver-only restore receipt를 `writers_restored`로 fsync하고, 그 뒤 daemon 포함 old runtime과
+pair attestation을 연다.
+
+단일 적대 리뷰가 발견한 begin JSON null-key·forbidden argv, actual Compose progress stderr, late
+Dagster run cancel, pre-backup/superseded diagnostic pair re-attestation 누락을 모두 수정했다.
+후속 단일 적대 리뷰에서 `writers_restored` fsync 직후 crash 재개 누락, v1 journal의 불명확한
+upgrade 경계, stale pair 대조보다 이른 writer restore, JSON boolean `run_count` 수락을 발견해
+수정했다. v1 journal은 compatibility migration 대신 모든 mutation 전에 명시적으로 거부하고
+격리 state를 새로 만들도록 고정했다. Manager regression 148건과 actual ephemeral Docker Compose
+rehearsal 1건, Map strict command 5건과 isolated PostgreSQL migration/CAS 3건이 통과했다.
+production/n150·기존 데이터는 접근하지 않았다.
+
+---
+
 ## 2026-08-04 (T-054: 백업 목록/보존 관리 완료)
 
 T-053(`ktdctl db-backup create`)이 남긴 owner-only manifest를 읽는
@@ -108,9 +150,8 @@ ruff/mypy clean(touched files).
 
 n150 실제 재검증(schedule과 맞물린 실제 drain 동작 확인)은 별도 승인 아래 진행한다 —
 이슈 #115 자체의 "현재 데이터는 보존 대상이 아니다"라는 임시 운영 결론에 따라
-지금 당장 cache-target 진단을 다시 돌리지는 않았다.
-
----
+지금 당장 cache-target 진단을 다시 돌리지는 않았다. 이 초안은 Map durable lease/receipt와
+crash recovery를 보존하지 못하므로, T-049F가 재작성한다.
 
 ## 2026-08-04 (T-051: Map DB naming 정리 착수 + issue #111/#114 결선)
 

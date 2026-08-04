@@ -35,6 +35,7 @@ DiagnosticPhase = Literal[
     "prepared",
     "writers_fencing",
     "writers_draining",
+    "writers_drained",
     "writers_stopping",
     "writers_fenced",
     "map_application_checked",
@@ -74,6 +75,7 @@ _FORWARD_PHASES: tuple[DiagnosticPhase, ...] = (
     "prepared",
     "writers_fencing",
     "writers_draining",
+    "writers_drained",
     "writers_stopping",
     "writers_fenced",
     "map_application_checked",
@@ -151,6 +153,9 @@ _JOURNAL_FIELDS = frozenset(
         "identity",
         "started_at_unix",
         "external_event_count",
+        "writer_drain_lease_id",
+        "writer_drain_receipt_sha256",
+        "writer_drain_restore_receipt_sha256",
         "writer_fence_sha256",
         "map_application_receipts",
         "map_dagster_receipts",
@@ -202,12 +207,15 @@ class DiagnosticStageReceipt:
 
 @dataclass(frozen=True)
 class CacheTargetDiagnosticJournal:
-    version: Literal[1]
+    version: Literal[2]
     diagnostic_id: str
     phase: DiagnosticPhase
     identity: CacheTargetDiagnosticIdentity
     started_at_unix: int
     external_event_count: Literal[0] = 0
+    writer_drain_lease_id: str | None = None
+    writer_drain_receipt_sha256: str | None = None
+    writer_drain_restore_receipt_sha256: str | None = None
     writer_fence_sha256: str | None = None
     map_application_receipts: tuple[DiagnosticStageReceipt, ...] = ()
     map_dagster_receipts: tuple[DiagnosticStageReceipt, ...] = ()
@@ -229,7 +237,7 @@ def prepare_cache_target_diagnostic(
     if started_at_unix <= 0:
         raise DeploymentContractError("cache-target diagnostic start time is invalid")
     return CacheTargetDiagnosticJournal(
-        version=1,
+        version=2,
         diagnostic_id=diagnostic_id,
         phase="prepared",
         identity=identity,
@@ -241,6 +249,9 @@ def transition_cache_target_diagnostic(
     journal: CacheTargetDiagnosticJournal,
     phase: DiagnosticPhase,
     *,
+    writer_drain_lease_id: str | None = None,
+    writer_drain_receipt_sha256: str | None = None,
+    writer_drain_restore_receipt_sha256: str | None = None,
     writer_fence_sha256: str | None = None,
     map_application_receipts: tuple[DiagnosticStageReceipt, ...] | None = None,
     map_dagster_receipts: tuple[DiagnosticStageReceipt, ...] | None = None,
@@ -255,6 +266,21 @@ def transition_cache_target_diagnostic(
     updated = replace(
         journal,
         phase=phase,
+        writer_drain_lease_id=(
+            writer_drain_lease_id
+            if writer_drain_lease_id is not None
+            else journal.writer_drain_lease_id
+        ),
+        writer_drain_receipt_sha256=(
+            writer_drain_receipt_sha256
+            if writer_drain_receipt_sha256 is not None
+            else journal.writer_drain_receipt_sha256
+        ),
+        writer_drain_restore_receipt_sha256=(
+            writer_drain_restore_receipt_sha256
+            if writer_drain_restore_receipt_sha256 is not None
+            else journal.writer_drain_restore_receipt_sha256
+        ),
         writer_fence_sha256=(
             writer_fence_sha256 if writer_fence_sha256 is not None else journal.writer_fence_sha256
         ),
@@ -317,6 +343,11 @@ def write_cache_target_diagnostic(path: Path, journal: CacheTargetDiagnosticJour
 def read_cache_target_diagnostic(path: Path) -> CacheTargetDiagnosticJournal:
     try:
         document = json.loads(read_owner_only_state(path))
+        if isinstance(document, dict) and document.get("version") == 1:
+            raise DeploymentContractError(
+                "cache-target diagnostic journal v1 is unsupported; "
+                "reset the isolated state before TVN41"
+            )
         if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
             raise TypeError
         identity_value = document["identity"]
@@ -474,9 +505,21 @@ def _validate_stage_receipt(receipt: DiagnosticStageReceipt) -> None:
 
 
 def _validate_journal(journal: CacheTargetDiagnosticJournal) -> None:
-    if journal.version != 1 or journal.phase not in (*_FORWARD_PHASES, "failed", "aborted"):
+    if journal.version != 2 or journal.phase not in (*_FORWARD_PHASES, "failed", "aborted"):
         raise DeploymentContractError("cache-target diagnostic journal contract is invalid")
     _canonical_uuid(journal.diagnostic_id, "diagnostic ID")
+    if journal.writer_drain_lease_id is not None:
+        _canonical_uuid(journal.writer_drain_lease_id, "diagnostic writer drain lease ID")
+    if journal.writer_drain_receipt_sha256 is not None:
+        _validate_sha256(
+            journal.writer_drain_receipt_sha256,
+            "diagnostic writer drain receipt",
+        )
+    if journal.writer_drain_restore_receipt_sha256 is not None:
+        _validate_sha256(
+            journal.writer_drain_restore_receipt_sha256,
+            "diagnostic writer drain restore receipt",
+        )
     _validate_identity(journal.identity)
     if journal.started_at_unix <= 0:
         raise DeploymentContractError("cache-target diagnostic start time is invalid")
@@ -744,6 +787,29 @@ def _validate_phase_evidence(journal: CacheTargetDiagnosticJournal) -> None:
     if journal.phase in ("failed", "aborted"):
         return
     index = _FORWARD_PHASES.index(journal.phase)
+    # 적대적 리뷰(2명)가 찾은 공백: 아래 두 검사는 각각 phase 문턱으로만 걸려 있어서,
+    # restore receipt가 있는데 그보다 먼저 있어야 할 lease/receipt가 없는(논리적으로
+    # 불가능한) journal이 어느 phase에서든 통과할 수 있었다 — restore는 lease/receipt
+    # 없이는 절대 존재할 수 없다는 불변식을 phase와 무관하게 명시적으로 강제한다.
+    if journal.writer_drain_restore_receipt_sha256 is not None and (
+        journal.writer_drain_lease_id is None or journal.writer_drain_receipt_sha256 is None
+    ):
+        raise DeploymentContractError(
+            "cache-target diagnostic writer drain restore evidence precedes its lease"
+        )
+    if index >= _FORWARD_PHASES.index("writers_drained") and (
+        journal.writer_drain_lease_id is None
+        or journal.writer_drain_receipt_sha256 is None
+    ):
+        raise DeploymentContractError(
+            "cache-target diagnostic writer drain evidence is missing"
+        )
+    if index >= _FORWARD_PHASES.index("completed") and (
+        journal.writer_drain_restore_receipt_sha256 is None
+    ):
+        raise DeploymentContractError(
+            "cache-target diagnostic writer drain restore evidence is missing"
+        )
     if index >= _FORWARD_PHASES.index("writers_fenced") and journal.writer_fence_sha256 is None:
         raise DeploymentContractError("cache-target diagnostic writer fence evidence is missing")
     if (

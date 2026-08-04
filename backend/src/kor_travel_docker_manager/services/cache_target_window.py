@@ -17,6 +17,9 @@ from kor_travel_docker_manager.services.cache_target_cutover import (
 WindowPhase = Literal[
     "prepared",
     "writers_fencing",
+    "writers_draining",
+    "writers_drained",
+    "writers_stopping",
     "writers_fenced",
     "backups_committed",
     "candidate_built",
@@ -43,6 +46,7 @@ WindowPhase = Literal[
     "map_dagster_db_restored",
     "pinvi_db_restored",
     "manager_state_restored",
+    "writers_restored",
     "old_runtime_restored",
     "rolled_back",
 ]
@@ -55,6 +59,9 @@ JsonEvidence = JsonScalar | tuple[str, ...]
 FORWARD_PHASES: tuple[WindowPhase, ...] = (
     "prepared",
     "writers_fencing",
+    "writers_draining",
+    "writers_drained",
+    "writers_stopping",
     "writers_fenced",
     "backups_committed",
     "candidate_built",
@@ -83,6 +90,7 @@ ROLLBACK_PHASES: tuple[WindowPhase, ...] = (
     "map_dagster_db_restored",
     "pinvi_db_restored",
     "manager_state_restored",
+    "writers_restored",
     "old_runtime_restored",
     "rolled_back",
 )
@@ -99,6 +107,9 @@ _JOURNAL_FIELDS = frozenset(
         "compose_sha256",
         "resolved_compose_sha256",
         "old_manifest_sha256",
+        "writer_drain_lease_id",
+        "writer_drain_receipt_sha256",
+        "writer_drain_restore_receipt_sha256",
         "initial_writer_fence_sha256",
         "final_writer_fence_sha256",
         "final_map_write_counters_sha256",
@@ -257,7 +268,7 @@ class DatabaseBackupReceipt:
 
 @dataclass(frozen=True)
 class CacheTargetWindowJournal:
-    version: Literal[1]
+    version: Literal[2]
     transaction_id: str
     cutover_id: str
     phase: WindowPhase
@@ -267,6 +278,9 @@ class CacheTargetWindowJournal:
     compose_sha256: str
     resolved_compose_sha256: str
     old_manifest_sha256: str
+    writer_drain_lease_id: str | None = None
+    writer_drain_receipt_sha256: str | None = None
+    writer_drain_restore_receipt_sha256: str | None = None
     initial_writer_fence_sha256: str | None = None
     final_writer_fence_sha256: str | None = None
     final_map_write_counters_sha256: str | None = None
@@ -422,7 +436,7 @@ def prepare_cache_target_window(
     ):
         _validate_sha256(digest, label)
     return CacheTargetWindowJournal(
-        version=1,
+        version=2,
         transaction_id=transaction_id,
         cutover_id=cutover_id,
         phase="prepared",
@@ -439,6 +453,9 @@ def transition_cache_target_window(
     journal: CacheTargetWindowJournal,
     phase: WindowPhase,
     *,
+    writer_drain_lease_id: str | None = None,
+    writer_drain_receipt_sha256: str | None = None,
+    writer_drain_restore_receipt_sha256: str | None = None,
     rollback_bundle_sha256: str | None = None,
     initial_writer_fence_sha256: str | None = None,
     final_writer_fence_sha256: str | None = None,
@@ -468,6 +485,21 @@ def transition_cache_target_window(
     updated = replace(
         journal,
         phase=phase,
+        writer_drain_lease_id=(
+            writer_drain_lease_id
+            if writer_drain_lease_id is not None
+            else journal.writer_drain_lease_id
+        ),
+        writer_drain_receipt_sha256=(
+            writer_drain_receipt_sha256
+            if writer_drain_receipt_sha256 is not None
+            else journal.writer_drain_receipt_sha256
+        ),
+        writer_drain_restore_receipt_sha256=(
+            writer_drain_restore_receipt_sha256
+            if writer_drain_restore_receipt_sha256 is not None
+            else journal.writer_drain_restore_receipt_sha256
+        ),
         initial_writer_fence_sha256=(
             initial_writer_fence_sha256
             if initial_writer_fence_sha256 is not None
@@ -603,6 +635,11 @@ def write_cache_target_window(
 def read_cache_target_window(path: Path) -> CacheTargetWindowJournal:
     try:
         document = json.loads(read_owner_only_state(path))
+        if isinstance(document, dict) and document.get("version") == 1:
+            raise DeploymentContractError(
+                "cache-target window journal v1 is unsupported; "
+                "reset the isolated state before TVN41"
+            )
         if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
             raise TypeError
         for field_name in (
@@ -890,10 +927,12 @@ def _allowed_next_phases(journal: CacheTargetWindowJournal) -> frozenset[WindowP
 
 
 def _validate_journal(journal: CacheTargetWindowJournal) -> None:
-    if journal.version != 1 or journal.phase not in (*FORWARD_PHASES, *ROLLBACK_PHASES):
+    if journal.version != 2 or journal.phase not in (*FORWARD_PHASES, *ROLLBACK_PHASES):
         raise DeploymentContractError("cache-target window journal contract is invalid")
     _canonical_uuid(journal.transaction_id, "transaction ID")
     _canonical_uuid(journal.cutover_id, "cutover ID")
+    if journal.writer_drain_lease_id is not None:
+        _canonical_uuid(journal.writer_drain_lease_id, "writer drain lease ID")
     if journal.expected_restore_epoch <= 0:
         raise DeploymentContractError("cache-target restore epoch must be positive")
     for label, digest in (
@@ -905,6 +944,8 @@ def _validate_journal(journal: CacheTargetWindowJournal) -> None:
     ):
         _validate_sha256(digest, label)
     for label, optional_digest in (
+        ("writer drain receipt", journal.writer_drain_receipt_sha256),
+        ("writer drain restore receipt", journal.writer_drain_restore_receipt_sha256),
         ("initial writer fence", journal.initial_writer_fence_sha256),
         ("final writer fence", journal.final_writer_fence_sha256),
         ("final Map write counters", journal.final_map_write_counters_sha256),
@@ -968,6 +1009,17 @@ def _validate_journal(journal: CacheTargetWindowJournal) -> None:
 
 
 def _validate_phase_evidence(journal: CacheTargetWindowJournal) -> None:
+    # 적대적 리뷰(2명)가 cache_target_diagnostics.py에서 찾은 것과 같은 공백:
+    # 아래 phase 문턱 검사들은 각각 독립적이라, restore receipt가 있는데 그보다
+    # 먼저 있어야 할 lease/receipt가 없는(논리적으로 불가능한) journal이 phase와
+    # 무관하게 통과할 수 있었다. restore는 lease/receipt 없이는 절대 존재할 수
+    # 없다는 불변식을 rollback/forward 어느 쪽이든, phase와 무관하게 강제한다.
+    if journal.writer_drain_restore_receipt_sha256 is not None and (
+        journal.writer_drain_lease_id is None or journal.writer_drain_receipt_sha256 is None
+    ):
+        raise DeploymentContractError(
+            "cache-target writer drain restore evidence precedes its lease"
+        )
     if journal.phase in ROLLBACK_PHASES:
         rollback_evidence = (
             journal.rollback_bundle_sha256,
@@ -984,10 +1036,31 @@ def _validate_phase_evidence(journal: CacheTargetWindowJournal) -> None:
             raise DeploymentContractError(
                 "cache-target rollback backup evidence is incomplete"
             )
+        if ROLLBACK_PHASES.index(journal.phase) >= ROLLBACK_PHASES.index(
+            "writers_restored"
+        ) and (
+            journal.writer_drain_lease_id is None
+            or journal.writer_drain_receipt_sha256 is None
+            or journal.writer_drain_restore_receipt_sha256 is None
+        ):
+            raise DeploymentContractError(
+                "cache-target rollback writer drain restore evidence is missing"
+            )
         return
     phase_index = (
         FORWARD_PHASES.index(journal.phase)
     )
+    if phase_index >= FORWARD_PHASES.index("writers_drained") and (
+        journal.writer_drain_lease_id is None
+        or journal.writer_drain_receipt_sha256 is None
+    ):
+        raise DeploymentContractError("cache-target writer drain evidence is missing")
+    if phase_index >= FORWARD_PHASES.index("runtime_activated") and (
+        journal.writer_drain_restore_receipt_sha256 is None
+    ):
+        raise DeploymentContractError(
+            "cache-target writer drain restore evidence is missing"
+        )
     if phase_index >= FORWARD_PHASES.index("writers_fenced") and (
         journal.initial_writer_fence_sha256 is None
     ):

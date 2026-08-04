@@ -198,6 +198,13 @@ from kor_travel_docker_manager.services.cache_target_window import (
     validate_map_final_evidence_binding,
     write_cache_target_window,
 )
+from kor_travel_docker_manager.services.cache_target_writer_drain import (
+    WriterDrainOwnerKind,
+    WriterDrainReceipt,
+    build_writer_drain_request,
+    parse_writer_drain_receipt,
+    writer_drain_receipt_sha256,
+)
 from kor_travel_docker_manager.services.cache_target_writer_fence import (
     attest_cache_target_global_writer_fence,
     cache_target_writer_environments_from_resolved_compose,
@@ -300,6 +307,22 @@ def get_override_path() -> str:
     )
 
 
+def _create_frozen_compose_descriptor(label: str) -> int:
+    """child process에만 `/proc/self/fd`로 보이는 unlinked Compose descriptor를 연다."""
+
+    try:
+        return os.memfd_create(label, flags=os.MFD_CLOEXEC)
+    except AttributeError:
+        pass
+    descriptor, temporary_path = tempfile.mkstemp(prefix=f"{label}-")
+    try:
+        os.unlink(temporary_path)
+    except OSError:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def _compatible_pair_logical_sha256(pair: CompatibleImagePair) -> str:
     payload = {
         "contract_generation": pair.contract_generation,
@@ -331,8 +354,6 @@ _CUTOVER_GATE_MAX_DIAGNOSTIC_AGE_SECONDS = 1_800
 # per-attempt 예산보다 훨씬 짧게 잡아, drain 자체가 그 예산을 다 써버리지 않게
 # 한다 — timeout에 도달하면 graceful 대기를 포기하고 정식 run-terminate API로
 # 넘어간다.
-_CACHE_TARGET_DRAIN_TIMEOUT_SECONDS = 300
-_CACHE_TARGET_DRAIN_POLL_INTERVAL_SECONDS = 5
 
 
 def _manager_release_sha256() -> str:
@@ -369,39 +390,6 @@ def _pg_tool_major_version(
             f"cache-target diagnostic {executable} version output is invalid"
         )
     return int(match.group(1))
-
-
-def _cancel_dagster_nonterminal_runs(container_name: str) -> None:
-    """issue #115: bounded graceful wait이 끝나도 여전히 남아있는 run만, Dagster의
-    표준 run-terminate API(`DagsterInstance.report_run_canceled`)로 정식 취소한다.
-    run ID·payload는 절대 stdout/journal에 남기지 않는다 — 이 함수는 아무 값도
-    반환하지 않고, 실패는 예외로만 전달한다. raw GraphQL이나 compose 출력은
-    전혀 쓰지 않는다."""
-
-    script = (
-        "from dagster import DagsterInstance\n"
-        "instance = DagsterInstance.get()\n"
-        "runs = instance.get_runs(limit=200)\n"
-        "nonterminal = [r for r in runs if str(r.status) in ("
-        "'DagsterRunStatus.QUEUED', 'DagsterRunStatus.STARTING', "
-        "'DagsterRunStatus.STARTED', 'DagsterRunStatus.CANCELING')]\n"
-        "for r in nonterminal:\n"
-        "    instance.report_run_canceled(r)\n"
-    )
-    try:
-        completed = subprocess.run(
-            ["docker", "exec", container_name, "python3", "-c", script],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise DeploymentContractError(
-            "cache-target diagnostic writer drain cancel could not run"
-        ) from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError("cache-target diagnostic writer drain cancel failed")
 
 
 def _cache_target_diagnostic_process_result(
@@ -4037,6 +4025,7 @@ class ComposeService:
             "map_dagster_db_restored",
             "pinvi_db_restored",
             "manager_state_restored",
+            "writers_restored",
             "old_runtime_restored",
         }:
             rolled_back = self._resume_cache_target_coupled_rollback(
@@ -4064,6 +4053,27 @@ class ComposeService:
                 )
                 write_cache_target_window(journal_path, journal)
             if journal.phase == "writers_fencing":
+                journal = transition_cache_target_window(journal, "writers_draining")
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "writers_draining":
+                drain_receipt = self._begin_cache_target_writer_drain(
+                    owner_kind="cutover",
+                    owner_id=journal.cutover_id,
+                    transaction=transaction,
+                )
+                journal = transition_cache_target_window(
+                    journal,
+                    "writers_drained",
+                    writer_drain_lease_id=drain_receipt.lease_id,
+                    writer_drain_receipt_sha256=writer_drain_receipt_sha256(
+                        drain_receipt
+                    ),
+                )
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "writers_drained":
+                journal = transition_cache_target_window(journal, "writers_stopping")
+                write_cache_target_window(journal_path, journal)
+            if journal.phase == "writers_stopping":
                 initial_writer_fence_sha256, _ = self._establish_cache_target_writer_fence(
                     journal=journal,
                     transaction=transaction,
@@ -4546,6 +4556,20 @@ class ComposeService:
                 current_config = load_c6c_deployment_config_from_environment(
                     current.environment.effective
                 )
+                if (
+                    journal.writer_drain_lease_id is None
+                    or journal.writer_drain_receipt_sha256 is None
+                ):
+                    raise DeploymentContractError(
+                        "cache-target writer drain receipt is missing before runtime activation"
+                    )
+                restore_receipt = self._restore_cache_target_writer_drain(
+                    owner_kind="cutover",
+                    owner_id=journal.cutover_id,
+                    transaction=current,
+                    lease_id=journal.writer_drain_lease_id,
+                    prior_receipt_sha256=journal.writer_drain_receipt_sha256,
+                )
                 self._activate_cache_target_writers(
                     transaction=current,
                     config=current_config,
@@ -4556,26 +4580,29 @@ class ComposeService:
                 journal = transition_cache_target_window(
                     journal,
                     "runtime_activated",
+                    writer_drain_restore_receipt_sha256=writer_drain_receipt_sha256(
+                        restore_receipt
+                    ),
                 )
                 write_cache_target_window(journal_path, journal)
             return self._cache_target_window_result(journal, resumed=False)
         except Exception as exc:
             latest = read_cache_target_window(journal_path)
             if latest.phase == "prepared":
-                try:
-                    journal_path.unlink()
-                    directory_fd = os.open(
-                        journal_path.parent,
-                        os.O_RDONLY | os.O_DIRECTORY,
-                    )
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
-                except OSError as cleanup_error:
-                    raise DeploymentContractError(
-                        "prepared cache-target window cleanup failed"
-                    ) from cleanup_error
+                self._discard_prebackup_cache_target_window(journal_path)
+            elif latest.phase in {
+                "writers_fencing",
+                "writers_draining",
+                "writers_drained",
+                "writers_stopping",
+                "writers_fenced",
+            }:
+                self._unwind_prebackup_cache_target_writer_drain(
+                    journal_path=journal_path,
+                    journal=latest,
+                    transaction=transaction,
+                    config=config,
+                )
             elif old_restore_is_authorized(latest):
                 # 설계 문서 4절: pre-forward-boundary 실패로 처음 rollback에 들어갈
                 # 때만(아직 FORWARD_PHASES인 동안만) 마지막 안전 stage/class를
@@ -5493,6 +5520,8 @@ class ComposeService:
                     journal_path=journal_path,
                     attempt_log_path=attempt_log_path,
                     journal=journal,
+                    transaction=transaction,
+                    config=config,
                     now_unix=int(time.time()),
                 )
 
@@ -5522,19 +5551,88 @@ class ComposeService:
                 state_directory=state_directory,
             )
 
-    @staticmethod
     def _archive_superseded_cache_target_diagnostic(
+        self,
         *,
         journal_path: Path,
         attempt_log_path: Path,
         journal: CacheTargetDiagnosticJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
         now_unix: int,
     ) -> None:
         """새 diagnostic ID 전의 receipt를 terminal attempt로 보존·archive한다."""
 
         reached_writer_stop_boundary = journal.phase not in {"prepared", "writers_fencing"}
         if journal.phase not in TERMINAL_PHASES:
-            journal = transition_cache_target_diagnostic(journal, "aborted")
+            if journal.phase not in {"prepared", "writers_fencing"}:
+                if (
+                    journal.writer_drain_lease_id is None
+                    or journal.writer_drain_receipt_sha256 is None
+                ):
+                    if journal.phase != "writers_draining":
+                        raise DeploymentContractError(
+                            "cache-target diagnostic drain recovery evidence is missing"
+                        )
+                    drain_receipt = self._begin_cache_target_writer_drain(
+                        owner_kind="diagnostic",
+                        owner_id=journal.diagnostic_id,
+                        transaction=transaction,
+                    )
+                    journal = transition_cache_target_diagnostic(
+                        journal,
+                        "writers_drained",
+                        writer_drain_lease_id=drain_receipt.lease_id,
+                        writer_drain_receipt_sha256=writer_drain_receipt_sha256(
+                            drain_receipt
+                        ),
+                    )
+                    write_cache_target_diagnostic(journal_path, journal)
+                manifest_path = transaction.manifest_path
+                if manifest_path is None:
+                    raise DeploymentContractError(
+                        "cache-target diagnostic recovery has no pair manifest"
+                    )
+                manifest = load_pair_manifest(manifest_path)
+                if (
+                    _compatible_pair_logical_sha256(manifest.active)
+                    != journal.identity.active_pair_sha256
+                ):
+                    raise DeploymentContractError(
+                        "cache-target diagnostic recovery pair differs from the "
+                        "pre-stop pair"
+                    )
+                lease_id = journal.writer_drain_lease_id
+                prior_receipt_sha256 = journal.writer_drain_receipt_sha256
+                if lease_id is None or prior_receipt_sha256 is None:
+                    raise DeploymentContractError(
+                        "cache-target diagnostic drain recovery evidence is missing"
+                    )
+                restore_receipt = self._restore_cache_target_writer_drain(
+                    owner_kind="diagnostic",
+                    owner_id=journal.diagnostic_id,
+                    transaction=transaction,
+                    lease_id=lease_id,
+                    prior_receipt_sha256=prior_receipt_sha256,
+                )
+                self._activate_cache_target_writers(
+                    transaction=transaction,
+                    config=config,
+                )
+                self._attest_cache_target_prebootstrap_pair(
+                    config,
+                    manifest,
+                    transaction,
+                )
+                journal = transition_cache_target_diagnostic(
+                    journal,
+                    "aborted",
+                    writer_drain_restore_receipt_sha256=writer_drain_receipt_sha256(
+                        restore_receipt
+                    ),
+                )
+            else:
+                journal = transition_cache_target_diagnostic(journal, "aborted")
             write_cache_target_diagnostic(journal_path, journal)
 
         # `prepared`/`writers_fencing`은 writer가 멈추기 전의 quiescence preflight다.
@@ -5678,23 +5776,31 @@ class ComposeService:
         # pair와만 비교하므로, manifest 자체가 이미 stale하면 이 drift를 못 잡는다.
         pre_stop_pair = self._inspect_current_pair(config)
         failure: tuple[DiagnosticStage, DiagnosticFailureClass] | None = None
-        # issue #115: preflight 검사(위)와 실제 writer stop 사이에 schedule/sensor
-        # daemon이 새 run을 만드는 race가 있었다. daemon 자체를 먼저(cache-target
-        # writer 목록에 이미 포함된 compatible-pair capability로) 멈춰 race를
-        # 구조적으로 없애고, 이미 떠 있던 run만 bounded wait으로 drain한다.
+        writer_drain_restore_receipt: WriterDrainReceipt | None = None
+        # writer stop 전 Map이 자기 소유 schedule/sensor를 durable lease로 멈추고
+        # terminal run=0 receipt를 낸다. Manager가 daemon/GraphQL을 직접 다루지
+        # 않으므로 resume/retry도 exact owner ID의 Map lease로만 이어진다.
         journal = transition_cache_target_diagnostic(journal, "writers_draining")
         write_cache_target_diagnostic(journal_path, journal)
         try:
-            drain_failure_class = self._drain_cache_target_dagster_writer(
-                transaction=transaction, dagster_runtime=runtimes[1]
+            drain_receipt = self._begin_cache_target_writer_drain(
+                owner_kind="diagnostic",
+                owner_id=journal.diagnostic_id,
+                transaction=transaction,
             )
-            if drain_failure_class is not None:
-                failure = ("writer_drain", drain_failure_class)
-            elif any(read_database_inflight_count(runtime) for runtime in runtimes) or (
-                read_dagster_inflight_run_count(runtimes[1]) != 0
-            ):
-                failure = ("writer_drain", "drain_timeout")
+            journal = transition_cache_target_diagnostic(
+                journal,
+                "writers_drained",
+                writer_drain_lease_id=drain_receipt.lease_id,
+                writer_drain_receipt_sha256=writer_drain_receipt_sha256(
+                    drain_receipt
+                ),
+            )
+            write_cache_target_diagnostic(journal_path, journal)
+        except DeploymentContractError:
+            failure = ("writer_drain", "admin_command_failed")
 
+        try:
             if failure is None:
                 journal = transition_cache_target_diagnostic(journal, "writers_stopping")
                 write_cache_target_diagnostic(journal_path, journal)
@@ -5769,6 +5875,39 @@ class ComposeService:
             # `stop` 자체가 부분 실패해도(일부 writer만 멈춘 상태) 여기서 항상
             # `up -d --wait`로 재기동을 시도하고, 그 다음 실제로 attested active
             # pair가 맞는지 재확인한다 — "재기동했으니 됐다"는 가정을 두지 않는다.
+            if (
+                journal.writer_drain_lease_id is None
+                or journal.writer_drain_receipt_sha256 is None
+            ) and journal.phase == "writers_draining":
+                # begin의 process 응답 유실은 Map lease가 없었다는 증거가 아니다.
+                # 동일 owner 재호출은 Map의 idempotent receipt replay이므로, restore
+                # 전 exact lease/digest를 다시 얻을 수 없으면 writer를 재기동하지
+                # 않고 fail-close한다.
+                drain_receipt = self._begin_cache_target_writer_drain(
+                    owner_kind="diagnostic",
+                    owner_id=journal.diagnostic_id,
+                    transaction=transaction,
+                )
+                journal = transition_cache_target_diagnostic(
+                    journal,
+                    "writers_drained",
+                    writer_drain_lease_id=drain_receipt.lease_id,
+                    writer_drain_receipt_sha256=writer_drain_receipt_sha256(
+                        drain_receipt
+                    ),
+                )
+                write_cache_target_diagnostic(journal_path, journal)
+            if (
+                journal.writer_drain_lease_id is not None
+                and journal.writer_drain_receipt_sha256 is not None
+            ):
+                writer_drain_restore_receipt = self._restore_cache_target_writer_drain(
+                    owner_kind="diagnostic",
+                    owner_id=journal.diagnostic_id,
+                    transaction=transaction,
+                    lease_id=journal.writer_drain_lease_id,
+                    prior_receipt_sha256=journal.writer_drain_receipt_sha256,
+                )
             self._activate_cache_target_writers(transaction=transaction, config=config)
             if not self._pair_matches(self._inspect_current_pair(config), pre_stop_pair):
                 raise DeploymentContractError(
@@ -5793,13 +5932,26 @@ class ComposeService:
                 # 않는다(모델이 이를 `failed`에서만 허용한다) — attempt log가 이미
                 # 같은 (stage, class) 재현을 기록하므로 journal에는 다시 담지 않고,
                 # operator에게 보이는 process result에만 로컬 변수로 남긴다.
-                journal = transition_cache_target_diagnostic(journal, "aborted")
+                journal = transition_cache_target_diagnostic(
+                    journal,
+                    "aborted",
+                    writer_drain_restore_receipt_sha256=(
+                        writer_drain_receipt_sha256(writer_drain_restore_receipt)
+                        if writer_drain_restore_receipt is not None
+                        else None
+                    ),
+                )
             else:
                 journal = transition_cache_target_diagnostic(
                     journal,
                     "failed",
                     failure_stage=failure_stage,
                     failure_class=failure_class,
+                    writer_drain_restore_receipt_sha256=(
+                        writer_drain_receipt_sha256(writer_drain_restore_receipt)
+                        if writer_drain_restore_receipt is not None
+                        else None
+                    ),
                 )
             write_cache_target_diagnostic(journal_path, journal)
             attempt_log = record_diagnostic_attempt(attempt_log, journal, now_unix=now_unix)
@@ -5819,7 +5971,14 @@ class ComposeService:
         )
         write_cache_target_diagnostic(journal_path, journal)
         journal = transition_cache_target_diagnostic(
-            journal, "completed", completed_at_unix=now_unix
+            journal,
+            "completed",
+            completed_at_unix=now_unix,
+            writer_drain_restore_receipt_sha256=(
+                writer_drain_receipt_sha256(writer_drain_restore_receipt)
+                if writer_drain_restore_receipt is not None
+                else None
+            ),
         )
         write_cache_target_diagnostic(journal_path, journal)
         attempt_log = record_diagnostic_attempt(attempt_log, journal, now_unix=now_unix)
@@ -6108,62 +6267,240 @@ class ComposeService:
         cache_target_writer_registry_sha256(ordered_writers)
         return ordered_writers
 
+    def _run_map_writer_drain(
+        self,
+        *,
+        operation: Literal["begin", "attest", "restore"],
+        owner_kind: WriterDrainOwnerKind,
+        owner_id: str,
+        transaction: ComposeTransactionSnapshot,
+        lease_id: str | None = None,
+        prior_receipt_sha256: str | None = None,
+    ) -> WriterDrainReceipt:
+        """동결 Compose의 Map API image에서만 private drain command를 실행한다."""
+
+        request = build_writer_drain_request(
+            operation=operation,
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            lease_id=lease_id,
+            prior_receipt_sha256=prior_receipt_sha256,
+        )
+        expected_image_id = self._map_api_image_id(transaction)
+        runner_name = f"ktdm-writer-drain-{owner_id}-{operation}"
+        self._cleanup_map_h35_runner(runner_name, expected_image_id=expected_image_id)
+        descriptor: int | None = None
+        try:
+            descriptor = _create_frozen_compose_descriptor("ktdm-writer-drain-compose")
+            os.write(
+                descriptor,
+                json.dumps(
+                    transaction.resolved,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode(),
+            )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            command = [
+                "docker",
+                "compose",
+                "--progress",
+                "quiet",
+                "--env-file",
+                "/dev/null",
+                "--project-directory",
+                str(Path(transaction.environment.compose_path).parent),
+                "-f",
+                f"/proc/self/fd/{descriptor}",
+                "run",
+                "--rm",
+                "--no-deps",
+                "-T",
+                "--name",
+                runner_name,
+                "--entrypoint",
+                "python",
+                _MAP_API_SERVICE,
+                "-m",
+                "kortravelmap.api.writer_drain_command",
+            ]
+            completed = subprocess.run(
+                command,
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+                env=dict(transaction.environment.effective),
+                pass_fds=(descriptor,),
+                input=json.dumps(
+                    request,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n",
+                timeout=600,
+            )
+            if completed.returncode != 0:
+                raise DeploymentContractError(
+                    f"Map writer drain {operation} command failed"
+                )
+            return parse_writer_drain_receipt(
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                request=request,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                f"Map writer drain {operation} command could not run"
+            ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            self._cleanup_map_h35_runner(runner_name, expected_image_id=expected_image_id)
+
+    def _begin_cache_target_writer_drain(
+        self,
+        *,
+        owner_kind: WriterDrainOwnerKind,
+        owner_id: str,
+        transaction: ComposeTransactionSnapshot,
+    ) -> WriterDrainReceipt:
+        begin = self._run_map_writer_drain(
+            operation="begin",
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            transaction=transaction,
+        )
+        return self._run_map_writer_drain(
+            operation="attest",
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            transaction=transaction,
+            lease_id=begin.lease_id,
+            prior_receipt_sha256=writer_drain_receipt_sha256(begin),
+        )
+
+    def _restore_cache_target_writer_drain(
+        self,
+        *,
+        owner_kind: WriterDrainOwnerKind,
+        owner_id: str,
+        transaction: ComposeTransactionSnapshot,
+        lease_id: str,
+        prior_receipt_sha256: str,
+    ) -> WriterDrainReceipt:
+        self._start_cache_target_drain_control_webserver(transaction=transaction)
+        return self._run_map_writer_drain(
+            operation="restore",
+            owner_kind=owner_kind,
+            owner_id=owner_id,
+            transaction=transaction,
+            lease_id=lease_id,
+            prior_receipt_sha256=prior_receipt_sha256,
+        )
+
+    def _start_cache_target_drain_control_webserver(
+        self, *, transaction: ComposeTransactionSnapshot
+    ) -> None:
+        result = self._run_frozen_recovery(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--no-build",
+                "--pull",
+                "never",
+                "--wait",
+                _MAP_DAGSTER_SERVICE,
+            ],
+            transaction=transaction,
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+        )
+        if not result.get("success"):
+            raise DeploymentContractError(
+                "cache-target writer drain control webserver start failed"
+            )
+
+    def _unwind_prebackup_cache_target_writer_drain(
+        self,
+        *,
+        journal_path: Path,
+        journal: CacheTargetWindowJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+    ) -> None:
+        """backup 전 실패는 DB rollback 없이 Map lease만 exact 복구한다."""
+
+        if (
+            journal.writer_drain_lease_id is None
+            or journal.writer_drain_receipt_sha256 is None
+        ):
+            # begin command 응답이 유실됐어도 owner ID는 고정이다. Map은 동일 owner의
+            # lease/receipt를 재생하므로 새 실행을 만들지 않고 recovery evidence를
+            # 다시 얻을 수 있다.
+            drain_receipt = self._begin_cache_target_writer_drain(
+                owner_kind="cutover",
+                owner_id=journal.cutover_id,
+                transaction=transaction,
+            )
+            journal = replace(
+                journal,
+                writer_drain_lease_id=drain_receipt.lease_id,
+                writer_drain_receipt_sha256=writer_drain_receipt_sha256(
+                    drain_receipt
+                ),
+            )
+            write_cache_target_window(journal_path, journal)
+        lease_id = journal.writer_drain_lease_id
+        prior_receipt_sha256 = journal.writer_drain_receipt_sha256
+        if lease_id is None or prior_receipt_sha256 is None:
+            raise DeploymentContractError(
+                "pre-backup writer drain recovery evidence is missing"
+            )
+        self._restore_cache_target_writer_drain(
+            owner_kind="cutover",
+            owner_id=journal.cutover_id,
+            transaction=transaction,
+            lease_id=lease_id,
+            prior_receipt_sha256=prior_receipt_sha256,
+        )
+        self._activate_cache_target_writers(transaction=transaction, config=config)
+        manifest_path = transaction.manifest_path
+        if manifest_path is None:
+            raise DeploymentContractError(
+                "pre-backup writer recovery has no compatible-pair manifest"
+            )
+        self._attest_cache_target_prebootstrap_pair(
+            config,
+            load_pair_manifest(manifest_path),
+            transaction,
+        )
+        self._discard_prebackup_cache_target_window(journal_path)
+
     @staticmethod
-    def _map_dagster_container_name(transaction: ComposeTransactionSnapshot) -> str:
+    def _discard_prebackup_cache_target_window(journal_path: Path) -> None:
+        try:
+            journal_path.unlink()
+            directory_fd = os.open(journal_path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError as exc:
+            raise DeploymentContractError(
+                "pre-backup cache-target window cleanup failed"
+            ) from exc
+
+    def _map_api_image_id(self, transaction: ComposeTransactionSnapshot) -> str:
         services = transaction.resolved.get("services")
         if not isinstance(services, Mapping):
             raise DeploymentContractError("cutover resolved services are invalid")
-        service = services.get(_MAP_DAGSTER_SERVICE)
-        if not isinstance(service, Mapping):
-            raise DeploymentContractError("cache-target Map Dagster service is invalid")
-        container_name = _service_singleton_container_name(_MAP_DAGSTER_SERVICE, service)
-        if container_name is None:
-            raise DeploymentContractError(
-                "cache-target Map Dagster container identity is missing"
-            )
-        return container_name
-
-    def _drain_cache_target_dagster_writer(
-        self,
-        *,
-        transaction: ComposeTransactionSnapshot,
-        dagster_runtime: DatabaseRuntime,
-    ) -> DiagnosticFailureClass | None:
-        """issue #115: writer 전체를 멈추기 전 Map Dagster daemon(schedule/sensor
-        producer)만 먼저 멈춘다 — preflight in-flight run count 검사와 실제 writer
-        stop 사이에 daemon이 새 run을 만드는 race를 구조적으로 없앤다. 기존
-        writer 목록에 이미 포함된 것과 같은 compatible-pair capability로만
-        멈추므로 일반 compose mutation 권한을 넓히지 않는다. 이미 떠 있던 run은
-        bounded graceful wait으로 기다리고, timeout 시에만 Dagster 표준
-        run-terminate API로 정식 취소한다. 성공하면 `None`, 실패하면 실패
-        분류만 반환한다(호출자가 journal typed receipt로 기록한다) — 예외로
-        전파하지 않는다. writer 재기동은 이 함수의 책임이 아니라 호출자의
-        finally가 `_activate_cache_target_writers`로 항상 보장한다."""
-
-        stopped = self._run_frozen_recovery(
-            ["stop", _MAP_DAGSTER_DAEMON_SERVICE],
-            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
-            transaction=transaction,
-        )
-        if not stopped.get("success"):
-            return "admin_command_failed"
-
-        deadline = time.monotonic() + _CACHE_TARGET_DRAIN_TIMEOUT_SECONDS
-        while True:
-            if read_dagster_inflight_run_count(dagster_runtime) == 0:
-                return None
-            if time.monotonic() >= deadline:
-                break
-            time.sleep(_CACHE_TARGET_DRAIN_POLL_INTERVAL_SECONDS)
-
-        try:
-            container_name = self._map_dagster_container_name(transaction)
-            _cancel_dagster_nonterminal_runs(container_name)
-        except DeploymentContractError:
-            return "admin_command_failed"
-        if read_dagster_inflight_run_count(dagster_runtime) != 0:
-            return "drain_timeout"
-        return None
+        service = services.get(_MAP_API_SERVICE)
+        image = service.get("image") if isinstance(service, Mapping) else None
+        if not isinstance(image, str) or not image:
+            raise DeploymentContractError("cache-target Map API image is missing")
+        return self._inspect_image_reference_id(image, label="Map API")
 
     def _read_cache_target_writer_fence_evidence(
         self,
@@ -6335,7 +6672,7 @@ class ComposeService:
         )
         descriptor: int | None = None
         try:
-            descriptor = os.memfd_create("ktdm-h35-compose", flags=os.MFD_CLOEXEC)
+            descriptor = _create_frozen_compose_descriptor("ktdm-h35-compose")
             os.write(
                 descriptor,
                 json.dumps(
@@ -6709,6 +7046,7 @@ class ComposeService:
             "map_dagster_db_restored",
             "pinvi_db_restored",
             "manager_state_restored",
+            "writers_restored",
             "old_runtime_restored",
         }:
             journal = transition_cache_target_window(journal, "rollback_preparing")
@@ -6798,7 +7136,7 @@ class ComposeService:
                 )
             journal = transition_cache_target_window(journal, "manager_state_restored")
             write_cache_target_window(journal_path, journal)
-        if journal.phase == "manager_state_restored":
+        if journal.phase in {"manager_state_restored", "writers_restored"}:
             restored_transaction, _ = self._capture_transaction_unlocked(
                 derive_manifest_path=True,
             )
@@ -6806,6 +7144,30 @@ class ComposeService:
                 restored_transaction.environment.effective
             )
             old_manifest = load_pair_manifest(restored_transaction.manifest_path or "")
+        if journal.phase == "manager_state_restored":
+            if (
+                journal.writer_drain_lease_id is None
+                or journal.writer_drain_receipt_sha256 is None
+            ):
+                raise DeploymentContractError(
+                    "cache-target rollback writer drain evidence is missing"
+                )
+            restore_receipt = self._restore_cache_target_writer_drain(
+                owner_kind="cutover",
+                owner_id=journal.cutover_id,
+                transaction=restored_transaction,
+                lease_id=journal.writer_drain_lease_id,
+                prior_receipt_sha256=journal.writer_drain_receipt_sha256,
+            )
+            journal = transition_cache_target_window(
+                journal,
+                "writers_restored",
+                writer_drain_restore_receipt_sha256=writer_drain_receipt_sha256(
+                    restore_receipt
+                ),
+            )
+            write_cache_target_window(journal_path, journal)
+        if journal.phase == "writers_restored":
             result: dict[str, Any] = {
                 "success": True,
                 "returncode": 0,
@@ -6826,6 +7188,11 @@ class ComposeService:
             self._restart_cache_target_auxiliary_writer(
                 transaction=restored_transaction,
                 config=restored_config,
+            )
+            self._attest_cache_target_prebootstrap_pair(
+                restored_config,
+                old_manifest,
+                restored_transaction,
             )
             journal = transition_cache_target_window(journal, "old_runtime_restored")
             write_cache_target_window(journal_path, journal)

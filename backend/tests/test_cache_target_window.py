@@ -168,7 +168,14 @@ def _runtime_activated_journal(
         pin_final_receipt_sha256="8" * 64,
     )
     journal = transition_cache_target_window(journal, "forward_committed")
-    return transition_cache_target_window(journal, "runtime_activated"), receipt
+    return (
+        transition_cache_target_window(
+            journal,
+            "runtime_activated",
+            writer_drain_restore_receipt_sha256="f" * 64,
+        ),
+        receipt,
+    )
 
 
 def _write_terminal_enable_journal(
@@ -228,8 +235,16 @@ def _backup(seed: str, schema: str) -> DatabaseBackupReceipt:
 
 def _backups_committed() -> CacheTargetWindowJournal:
     fencing = transition_cache_target_window(_prepared(), "writers_fencing")
+    draining = transition_cache_target_window(fencing, "writers_draining")
+    drained = transition_cache_target_window(
+        draining,
+        "writers_drained",
+        writer_drain_lease_id="44444444-4444-4444-8444-444444444444",
+        writer_drain_receipt_sha256="d" * 64,
+    )
+    stopping = transition_cache_target_window(drained, "writers_stopping")
     fenced = transition_cache_target_window(
-        fencing,
+        stopping,
         "writers_fenced",
         initial_writer_fence_sha256="c" * 64,
     )
@@ -611,6 +626,24 @@ def test_window_journal_is_owner_only_and_exactly_round_trips(tmp_path: Path) ->
     assert read_cache_target_window(path) == journal
 
 
+def test_window_rejects_legacy_v1_state_before_any_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-window-v1.json"
+    path.parent.mkdir(mode=0o700)
+    document = asdict(_prepared())
+    document["version"] = 1
+    for field_name in (
+        "writer_drain_lease_id",
+        "writer_drain_receipt_sha256",
+        "writer_drain_restore_receipt_sha256",
+    ):
+        del document[field_name]
+    path.write_text(json.dumps(document))
+    path.chmod(0o600)
+
+    with pytest.raises(DeploymentContractError, match="v1 is unsupported"):
+        read_cache_target_window(path)
+
+
 def test_record_window_failure_freezes_last_safe_phase_and_class(
     tmp_path: Path,
 ) -> None:
@@ -633,6 +666,15 @@ def test_record_window_failure_freezes_last_safe_phase_and_class(
     rolled = transition_cache_target_window(failed, "rollback_preparing")
     assert rolled.failure_stage == "candidate_built"
     assert rolled.failure_class == "contract_violation"
+
+
+def test_window_rejects_restore_receipt_without_prior_lease() -> None:
+    """적대적 리뷰가 cache_target_diagnostics.py에서 찾은 것과 같은 공백:
+    restore receipt만 있고 lease/receipt는 없는 논리적으로 불가능한 조합이
+    phase 문턱 검사만으로는 걸러지지 않았다."""
+    journal = replace(_prepared(), writer_drain_restore_receipt_sha256="9" * 64)
+    with pytest.raises(DeploymentContractError, match="precedes its lease"):
+        write_cache_target_window(Path("/nonexistent/unused.json"), journal)
 
 
 def test_record_window_failure_rejects_non_forward_phase() -> None:
@@ -730,20 +772,87 @@ def test_window_rejects_phase_skip_and_old_restore_after_external_event() -> Non
 
 
 def test_window_allows_ordered_pre_event_coupled_rollback() -> None:
-    journal = transition_cache_target_window(_prepared(), "rollback_preparing")
+    journal = replace(
+        _prepared(),
+        writer_drain_lease_id="44444444-4444-4444-8444-444444444444",
+        writer_drain_receipt_sha256="d" * 64,
+    )
+    journal = transition_cache_target_window(journal, "rollback_preparing")
     for phase in (
         "new_runtime_stopped",
         "map_db_restored",
         "map_dagster_db_restored",
         "pinvi_db_restored",
         "manager_state_restored",
+        "writers_restored",
         "old_runtime_restored",
         "rolled_back",
     ):
-        journal = transition_cache_target_window(journal, phase)  # type: ignore[arg-type]
+        if phase == "writers_restored":
+            journal = transition_cache_target_window(
+                journal,
+                phase,
+                writer_drain_restore_receipt_sha256="e" * 64,
+            )
+        else:
+            journal = transition_cache_target_window(journal, phase)  # type: ignore[arg-type]
 
     assert journal.phase == "rolled_back"
     assert old_restore_is_authorized(journal) is False
+
+
+def test_writers_restored_crash_resumes_coupled_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    path = tmp_path / "cache-target-window-v1.json"
+    journal = replace(
+        _prepared(),
+        writer_drain_lease_id="44444444-4444-4444-8444-444444444444",
+        writer_drain_receipt_sha256="d" * 64,
+    )
+    for phase in (
+        "rollback_preparing",
+        "new_runtime_stopped",
+        "map_db_restored",
+        "map_dagster_db_restored",
+        "pinvi_db_restored",
+        "manager_state_restored",
+    ):
+        journal = transition_cache_target_window(journal, phase)  # type: ignore[arg-type]
+    journal = transition_cache_target_window(
+        journal,
+        "writers_restored",
+        writer_drain_restore_receipt_sha256="e" * 64,
+    )
+    write_cache_target_window(path, journal)
+    rolled_back = transition_cache_target_window(journal, "old_runtime_restored")
+    rolled_back = transition_cache_target_window(rolled_back, "rolled_back")
+    rollback = Mock(return_value=rolled_back)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=(Mock(), Mock(), Mock())),
+    )
+    monkeypatch.setattr(service, "_resume_cache_target_coupled_rollback", rollback)
+
+    result = service._run_cache_target_window_unlocked(
+        journal_path=path,
+        journal=journal,
+        transaction=SimpleNamespace(
+            manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+            resolved={},
+            environment=SimpleNamespace(effective={}),
+        ),
+        config=Mock(),
+        reason="crash resume",
+        wait_timeout=1,
+        lock_path=str(tmp_path / "lock"),
+    )
+
+    assert result["phase"] == "rolled_back"
+    assert result["resumed"] is True
+    assert rollback.call_args.kwargs["journal"].phase == "writers_restored"
 
 
 def test_initial_event_boundary_fsync_failure_never_invokes_runner(
@@ -1243,17 +1352,13 @@ def test_public_runtime_activated_retry_rejects_foreign_terminal_evidence(
     attestor.assert_not_called()
 
 
-def test_writer_fencing_failure_keeps_durable_nonterminal_journal(
+def test_prebackup_writer_fence_failure_restores_drain_without_db_rollback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
     path = tmp_path / "cache-target-window-v1.json"
     write_cache_target_window(path, _prepared())
-    rollback = Mock(return_value=transition_cache_target_window(
-        transition_cache_target_window(_prepared(), "rollback_preparing"),
-        "new_runtime_stopped",
-    ))
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
         Mock(return_value=(Mock(), Mock(), Mock())),
@@ -1263,7 +1368,25 @@ def test_writer_fencing_failure_keeps_durable_nonterminal_journal(
         "_establish_cache_target_writer_fence",
         Mock(side_effect=RuntimeError("partial stop")),
     )
-    monkeypatch.setattr(service, "_resume_cache_target_coupled_rollback", rollback)
+    monkeypatch.setattr(
+        service,
+        "_begin_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace(lease_id="4" * 8 + "-4444-4444-8444-" + "4" * 12)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="d" * 64),
+    )
+    restore = Mock()
+    activate = Mock()
+    monkeypatch.setattr(service, "_restore_cache_target_writer_drain", restore)
+    monkeypatch.setattr(service, "_activate_cache_target_writers", activate)
+    attest = Mock()
+    monkeypatch.setattr(service, "_attest_cache_target_prebootstrap_pair", attest)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_pair_manifest",
+        Mock(return_value=SimpleNamespace(active=SimpleNamespace())),
+    )
 
     with pytest.raises(RuntimeError, match="partial stop"):
         service._run_cache_target_window_unlocked(
@@ -1280,8 +1403,91 @@ def test_writer_fencing_failure_keeps_durable_nonterminal_journal(
             lock_path=tmp_path / "lock",
         )
 
-    assert read_cache_target_window(path).phase == "writers_fencing"
-    assert rollback.call_args.kwargs["journal"].phase == "writers_fencing"
+    assert not path.exists()
+    restore.assert_called_once()
+    activate.assert_called_once()
+    attest.assert_called_once()
+
+
+def test_coupled_rollback_restores_map_lease_before_daemon_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """backup에 든 drained Map state는 daemon을 열기 전에 Map이 복구한다."""
+
+    service = ComposeService()
+    path = tmp_path / "cache-target-window-v1.json"
+    journal = replace(
+        _prepared(),
+        writer_drain_lease_id="44444444-4444-4444-8444-444444444444",
+        writer_drain_receipt_sha256="d" * 64,
+    )
+    journal = transition_cache_target_window(journal, "rollback_preparing")
+    write_cache_target_window(path, journal)
+    transaction = SimpleNamespace(
+        manifest_path=str(tmp_path / "compatible-pair-v4.json"),
+        resolved={},
+        environment=SimpleNamespace(effective={}, env_path=str(tmp_path / ".env")),
+    )
+    order: list[str] = []
+
+    def record_stop(*_args: object, **_kwargs: object) -> dict[str, bool]:
+        order.append("new_runtime_stop")
+        return {"success": True}
+
+    def record_restore(**_kwargs: object) -> SimpleNamespace:
+        order.append("map_restore")
+        return SimpleNamespace()
+
+    def record_activation(*_args: object, **_kwargs: object) -> None:
+        order.append("runtime_activation")
+
+    def record_auxiliary(*_args: object, **_kwargs: object) -> None:
+        order.append("pinvi_writer_activation")
+
+    def record_attestation(*_args: object, **_kwargs: object) -> None:
+        order.append("pair_attestation")
+
+    monkeypatch.setattr(service, "_run_frozen_recovery", record_stop)
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
+        Mock(return_value=SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_pair_manifest",
+        Mock(return_value=SimpleNamespace(active=SimpleNamespace())),
+    )
+    monkeypatch.setattr(service, "_restore_cache_target_writer_drain", record_restore)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="e" * 64),
+    )
+    monkeypatch.setattr(service, "_activate_pair_sequentially", record_activation)
+    monkeypatch.setattr(service, "_restart_cache_target_auxiliary_writer", record_auxiliary)
+    monkeypatch.setattr(
+        service,
+        "_attest_cache_target_prebootstrap_pair",
+        record_attestation,
+    )
+
+    restored = service._resume_cache_target_coupled_rollback(
+        journal_path=path,
+        journal=journal,
+        transaction=transaction,
+        config=SimpleNamespace(),
+        runtimes=(Mock(), Mock(), Mock()),
+        wait_timeout=1,
+    )
+
+    assert restored.phase == "rolled_back"
+    assert restored.writer_drain_restore_receipt_sha256 == "e" * 64
+    assert order.index("map_restore") < order.index("runtime_activation")
+    assert order.index("runtime_activation") < order.index("pair_attestation")
 
 
 def test_writers_fenced_journal_write_crash_resumes_from_fencing(
@@ -1298,7 +1504,6 @@ def test_writers_fenced_journal_write_crash_resumes_from_fencing(
             raise OSError("simulated fsync crash")
         return original_write(path, journal)
 
-    rollback = Mock(return_value=_prepared())
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
         Mock(return_value=(Mock(), Mock(), Mock())),
@@ -1312,7 +1517,22 @@ def test_writers_fenced_journal_write_crash_resumes_from_fencing(
         "kor_travel_docker_manager.services.compose_service.write_cache_target_window",
         crash_on_fenced,
     )
-    monkeypatch.setattr(service, "_resume_cache_target_coupled_rollback", rollback)
+    monkeypatch.setattr(
+        service,
+        "_begin_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace(lease_id="4" * 8 + "-4444-4444-8444-" + "4" * 12)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="d" * 64),
+    )
+    monkeypatch.setattr(service, "_restore_cache_target_writer_drain", Mock())
+    monkeypatch.setattr(service, "_activate_cache_target_writers", Mock())
+    monkeypatch.setattr(service, "_attest_cache_target_prebootstrap_pair", Mock())
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.load_pair_manifest",
+        Mock(return_value=SimpleNamespace(active=SimpleNamespace())),
+    )
 
     with pytest.raises(OSError, match="fsync crash"):
         service._run_cache_target_window_unlocked(
@@ -1329,8 +1549,7 @@ def test_writers_fenced_journal_write_crash_resumes_from_fencing(
             lock_path=tmp_path / "lock",
         )
 
-    assert read_cache_target_window(path).phase == "writers_fencing"
-    assert rollback.call_args.kwargs["journal"].phase == "writers_fencing"
+    assert not path.exists()
 
 
 def test_window_uses_private_locked_executors_and_requires_final_receipt(
@@ -1489,6 +1708,15 @@ def test_window_uses_private_locked_executors_and_requires_final_receipt(
     )
     monkeypatch.setattr(service, "_attest_cache_target_pair", Mock())
     monkeypatch.setattr(service, "_cache_target_writer_names", Mock(return_value=tuple()))
+    monkeypatch.setattr(
+        service,
+        "_restore_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="f" * 64),
+    )
     monkeypatch.setattr(service, "_activate_cache_target_writers", Mock())
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.reconcile_pair_references",
@@ -1604,6 +1832,15 @@ def test_finalize_audit_commit_response_loss_replays_exact_receipt(
         "_cache_target_writer_names",
         Mock(return_value=tuple()),
     )
+    monkeypatch.setattr(
+        service,
+        "_restore_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="f" * 64),
+    )
     monkeypatch.setattr(service, "_activate_cache_target_writers", Mock())
     monkeypatch.setattr(service, "_attest_cache_target_pair", Mock())
     monkeypatch.setattr(
@@ -1694,6 +1931,15 @@ def test_forward_commit_restart_failure_resumes_activation(
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.load_c6c_deployment_config_from_environment",
         Mock(return_value=Mock()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_restore_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="f" * 64),
     )
     monkeypatch.setattr(service, "_activate_cache_target_writers", activation)
     monkeypatch.setattr(service, "_attest_cache_target_pair", Mock())
