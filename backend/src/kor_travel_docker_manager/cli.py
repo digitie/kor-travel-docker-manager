@@ -173,6 +173,15 @@ def _cmd_cache_target(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _cmd_db_backup(args: argparse.Namespace) -> int:
+    try:
+        result = compose_service.create_standalone_backup(role=args.role)
+    except (DeploymentContractError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return _emit_process_result(result, json_output=args.json)
+
+
 def _cmd_map_ui_auth_rotate(args: argparse.Namespace) -> int:
     try:
         _require_trusted_map_ui_auth_launcher()
@@ -443,6 +452,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON으로 출력합니다.",
     )
     cache_target_diagnose.set_defaults(func=_cmd_cache_target)
+
+    db_backup = subparsers.add_parser(
+        "db-backup",
+        help="cache-target cutover와 무관하게 언제든 단독으로 DB 백업을 만듭니다.",
+    )
+    db_backup_subparsers = db_backup.add_subparsers(
+        dest="db_backup_action",
+        required=True,
+    )
+    db_backup_create = db_backup_subparsers.add_parser(
+        "create",
+        help="pg_dump 백업을 만들고 owner-only manifest를 남깁니다. mutation 없음.",
+    )
+    db_backup_create.add_argument(
+        "--role",
+        required=True,
+        choices=["map_application", "map_dagster", "pinvi"],
+    )
+    db_backup_create.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON으로 출력합니다.",
+    )
+    db_backup_create.set_defaults(func=_cmd_db_backup)
 
     map_ui_auth = subparsers.add_parser(
         "map-ui-auth",
