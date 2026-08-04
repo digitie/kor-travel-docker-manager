@@ -1,3 +1,4 @@
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -593,6 +594,111 @@ def test_cli_db_backup_create_rejects_unknown_role(mock_compose_service):
     with pytest.raises(SystemExit):
         main(["db-backup", "create", "--role", "not_a_role"])
     mock_compose_service.create_standalone_backup.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_runs_db_backup_list_with_defaults(mock_compose_service):
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [],
+        "warnings": [],
+    }
+
+    assert main(["db-backup", "list"]) == 0
+    mock_compose_service.list_standalone_backups.assert_called_once_with(
+        role=None, gc=False, keep_count=5, keep_days=14
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_runs_db_backup_list_with_gc_and_explicit_role(mock_compose_service):
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [],
+        "warnings": [],
+        "gc": [],
+    }
+
+    assert (
+        main(
+            [
+                "db-backup",
+                "list",
+                "--role",
+                "pinvi",
+                "--gc",
+                "--keep-count",
+                "2",
+                "--keep-days",
+                "7",
+            ]
+        )
+        == 0
+    )
+    mock_compose_service.list_standalone_backups.assert_called_once_with(
+        role="pinvi", gc=True, keep_count=2, keep_days=7
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_db_backup_list_prints_warnings_to_stderr(mock_compose_service, capsys):
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [],
+        "warnings": ["map_application: corrupt.manifest.json is invalid"],
+    }
+
+    assert main(["db-backup", "list"]) == 0
+    captured = capsys.readouterr()
+    assert "corrupt.manifest.json" in captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_db_backup_list_json_output_includes_warnings_and_backups(
+    mock_compose_service, capsys
+):
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [{"role": "pinvi", "backup_filename": "x.dump"}],
+        "warnings": [],
+    }
+
+    assert main(["db-backup", "list", "--json"]) == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["backups"][0]["role"] == "pinvi"
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_db_backup_list_human_readable_output_includes_timestamp(
+    mock_compose_service, capsys
+):
+    """적대적 리뷰에서 human-readable 출력에 시각 필드가 빠져 있던 것을 찾았다 —
+    코드를 요구사항에 맞추는 대신 요구사항 문구를 코드에 맞춰 낮춰놨던 실수를
+    바로잡는 회귀 테스트."""
+    mock_compose_service.list_standalone_backups.return_value = {
+        "success": True,
+        "returncode": 0,
+        "backups": [
+            {
+                "role": "pinvi",
+                "backup_filename": "20260101T000000Z_pinvi_0001_abc.dump",
+                "schema_revision": "0001_abc",
+                "byte_size": 5,
+                "sha256": "a" * 64,
+                "created_at_unix": 1_735_689_600,
+            }
+        ],
+        "warnings": [],
+    }
+
+    assert main(["db-backup", "list"]) == 0
+    captured = capsys.readouterr()
+    assert "2025-01-01T00:00:00Z" in captured.out
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")

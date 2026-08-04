@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-08-04 (T-054: 백업 목록/보존 관리 완료)
+
+T-053(`ktdctl db-backup create`)이 남긴 owner-only manifest를 읽는
+`ktdctl db-backup list [--role ...] [--json]`과, 파일 목록 기반
+age/count 보존 정책(`--gc`)을 구현했다. GC는 `.manifest.json`을 먼저 지우고
+`.dump`를 나중에 지워, 중간에 죽어도 다음 조회가 고아 dump(디스크 낭비)만
+남기고 절대 깨지지 않게 했다. 손상된 manifest나 dump 유실은 예외로 전체
+조회를 막는 대신 `warnings`로 담아 나머지는 계속 보여준다.
+
+fork로 구현했으나 fork는 Agent tool로 subagent(적대적 리뷰어)를 만들 수
+없어 리뷰 단계를 완료하지 못하고 uncommitted 상태로 멈췄다 — 부모 세션이
+이어받아 적대적 리뷰어 2명(GC 삭제 안전성/race, 목록·출력 정확성)을 돌렸다.
+GC 안전성 쪽은 confirmed 실공백 없음(합성 fixture로 직접 재현 검증). 목록/출력
+쪽 리뷰어가 **실제 결함**을 찾았다: human-readable 출력에 시각 필드가
+빠져 있었는데, 코드를 고치는 대신 `docs/tasks.md`의 요구사항 문구 자체를
+구현에 맞춰 조용히 낮춰놓았던 것. `created_at_unix`를 ISO 8601 UTC로 출력에
+추가하고 문구도 원복 + 사고 경위를 명시해 고쳤다. 회귀 테스트 1건 추가.
+backend 전체 1570 passed, ruff/mypy clean(touched files).
+
+---
+
 ## 2026-08-04 (백업/복구 기능 gap 분석 + T-053 독립 DB 백업 CLI)
 
 T-049E n150 재검증 중 `kor-travel-map-ui`/`kor-travel-map-api` revision drift로
