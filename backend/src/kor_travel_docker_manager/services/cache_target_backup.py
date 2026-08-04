@@ -865,6 +865,137 @@ def restore_database_backup(
         )
 
 
+class _StandaloneRestoreCapability:
+    __slots__ = ()
+
+
+_STANDALONE_RESTORE_CAPABILITY = _StandaloneRestoreCapability()
+
+
+def restore_standalone_database_backup(
+    *,
+    backups_root: Path,
+    runtime: DatabaseRuntime,
+    backup_filename: str,
+    expected_schema_revision: str,
+    capability: object | None = None,
+) -> StandaloneBackupManifest:
+    """T-055: `ktdctl db-backup restore`. cache-target cutover window/journal과
+    완전히 분리된, 언제든 단독 호출 가능한 복구다 — 그만큼 위험도 가장 크므로
+    이중으로 fail-close한다.
+
+    1차 방어는 CLI의 `--confirm` 없이는 이 함수 자체가 호출되지 않는 것이고,
+    2차 방어는 이 `capability` sentinel이다 — 둘 중 하나가 뚫려도 나머지가 막는다.
+
+    복구 전 대상 DB의 **현재** schema revision을 읽어 operator가 명시한
+    `expected_schema_revision`과 정확히 일치하는지 대조하고, 다르면(또는 대상
+    DB를 아예 읽을 수 없으면) 어떤 mutation도 하지 않고 즉시 거부한다 — T-050의
+    `--expected-alembic-head` opt-in 패턴과 동일한 철학이다: "지금 무엇을
+    덮어쓰는지 operator가 명시적으로 안다"는 것을 코드가 스스로 확인하기 전에는
+    절대 진행하지 않는다.
+
+    복구 직전 백업 파일을 재-해시해 manifest의 `sha256`과 대조한다 — 손상되거나
+    변조된 백업으로부터는 복구하지 않는다. dropdb/createdb/pg_restore 시퀀스는
+    기존 `restore_database_backup`과 동일한 stderr-정책-안전 패턴(존재 확인 뒤에만
+    조건부 `dropdb`)을 따른다. 복구 뒤에는 결과 DB의 schema revision이 백업
+    manifest가 기록한 값과 일치하는지 재확인한다.
+    """
+
+    if capability is not _STANDALONE_RESTORE_CAPABILITY:
+        raise DeploymentContractError(
+            "standalone database restore requires the restore capability"
+        )
+    _validate_runtime(runtime)
+    if not _SCHEMA_REVISION.fullmatch(expected_schema_revision):
+        raise DeploymentContractError(
+            "standalone database restore expected schema revision is invalid"
+        )
+    current_schema_revision = _read_schema_revision(runtime)
+    if current_schema_revision != expected_schema_revision:
+        raise DeploymentContractError(
+            f"{runtime.role} current schema revision differs from the "
+            "operator-confirmed expectation"
+        )
+    role_directory = backups_root / runtime.role
+    manifest_filename = (
+        backup_filename.removesuffix(_STANDALONE_BACKUP_FILE_SUFFIX)
+        + _STANDALONE_BACKUP_MANIFEST_SUFFIX
+    )
+    manifest_path = role_directory / manifest_filename
+    try:
+        manifest = _read_standalone_backup_manifest(
+            manifest_path, expected_role=runtime.role
+        )
+    except DeploymentContractError as exc:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup is not found or invalid"
+        ) from exc
+    if manifest.backup_filename != backup_filename:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup id is invalid"
+        )
+    backup_path = role_directory / manifest.backup_filename
+    payload_sha256, byte_size = _file_sha256(backup_path)
+    if payload_sha256 != manifest.sha256 or byte_size != manifest.byte_size:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup payload identity is invalid"
+        )
+    # `dropdb --if-exists`는 database가 원래 없을 때도 "does not exist, skipping"
+    # NOTICE를 stderr에 낸다. `_run_checked`는 stderr가 하나라도 있으면 실패로
+    # 처리하므로, database가 실제로 존재할 때만 drop을 실행한다(cache-target의
+    # 동일 실공백에서 확인된 패턴 — `restore_database_backup`과 동일).
+    if _read_database_owner(runtime) is not None:
+        _run_checked(
+            [
+                *_database_admin_command(runtime, "dropdb"),
+                "--if-exists",
+                "--force",
+                runtime.database_name,
+            ],
+            label=f"{runtime.role} standalone restore database drop",
+        )
+    _run_checked(
+        [
+            *_database_admin_command(runtime, "createdb"),
+            "--owner",
+            runtime.owner_name,
+            runtime.database_name,
+        ],
+        label=f"{runtime.role} standalone restore database create",
+    )
+    try:
+        with backup_path.open("rb") as dump:
+            completed = subprocess.run(
+                [
+                    *_database_admin_command(runtime, "pg_restore", interactive=True),
+                    "--exit-on-error",
+                    "--no-owner",
+                    "--no-acl",
+                    "--dbname",
+                    runtime.database_name,
+                ],
+                stdin=dump,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=_DATABASE_RESTORE_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone database restore could not run"
+        ) from exc
+    if completed.returncode != 0 or completed.stderr:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone database restore failed"
+        )
+    if _read_schema_revision(runtime) != manifest.schema_revision:
+        raise DeploymentContractError(
+            f"{runtime.role} restored database schema revision differs from "
+            "the backup manifest"
+        )
+    return manifest
+
+
 def create_manager_rollback_bundle(
     *,
     state_directory: Path,

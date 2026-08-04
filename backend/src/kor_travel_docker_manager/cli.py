@@ -185,6 +185,25 @@ def _cmd_db_backup_create(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _cmd_db_backup_restore(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print(
+            "db-backup restore requires --confirm (no destructive action was attempted)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        result = compose_service.restore_standalone_backup(
+            role=args.role,
+            backup_filename=args.backup_id,
+            expected_schema_revision=args.expected_schema_revision,
+        )
+    except (DeploymentContractError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return _emit_process_result(result, json_output=args.json)
+
+
 def _cmd_db_backup_list(args: argparse.Namespace) -> int:
     try:
         result = compose_service.list_standalone_backups(
@@ -546,6 +565,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON으로 출력합니다.",
     )
     db_backup_list.set_defaults(func=_cmd_db_backup_list)
+    db_backup_restore = db_backup_subparsers.add_parser(
+        "restore",
+        help=(
+            "선택한 백업으로 database를 복구합니다. --confirm과 "
+            "--expected-schema-revision(현재 상태 명시) 없이는 절대 실행하지 않습니다."
+        ),
+    )
+    db_backup_restore.add_argument(
+        "--role",
+        required=True,
+        choices=["map_application", "map_dagster", "pinvi"],
+    )
+    db_backup_restore.add_argument(
+        "--backup-id",
+        required=True,
+        help="`db-backup list`가 보여주는 backup_filename(예: ..._map_application_....dump).",
+    )
+    db_backup_restore.add_argument(
+        "--expected-schema-revision",
+        required=True,
+        help=(
+            "복구 대상 database의 현재 schema revision을 명시합니다. 실제 값과 "
+            "다르면 어떤 mutation도 없이 즉시 거부합니다."
+        ),
+    )
+    db_backup_restore.add_argument(
+        "--confirm",
+        action="store_true",
+        help="명시하지 않으면 아무 것도 하지 않고 거부합니다(fail-closed 기본값).",
+    )
+    db_backup_restore.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON으로 출력합니다.",
+    )
+    db_backup_restore.set_defaults(func=_cmd_db_backup_restore)
 
     map_ui_auth = subparsers.add_parser(
         "map-ui-auth",

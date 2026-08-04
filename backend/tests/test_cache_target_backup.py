@@ -16,6 +16,7 @@ import kor_travel_docker_manager.services.cache_target_backup as backup_service
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_backup import (
     _COUPLED_ROLLBACK_CAPABILITY,
+    _STANDALONE_RESTORE_CAPABILITY,
     DatabaseRuntime,
     DatabaseWriteCounter,
     create_database_backup,
@@ -29,6 +30,7 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     read_pin_boundary_audit,
     restore_database_backup,
     restore_manager_rollback_bundle,
+    restore_standalone_database_backup,
     verify_database_backup,
     verify_manager_rollback_bundle,
 )
@@ -717,6 +719,232 @@ def _write_standalone_backup_fixture(
     }
     manifest_path.write_bytes(json.dumps(manifest, sort_keys=True).encode())
     os.chmod(manifest_path, 0o600)
+
+
+def _standalone_restore_runtime(
+    *, database_name: str = "kor_travel_map", role: str = "map_application"
+) -> DatabaseRuntime:
+    return DatabaseRuntime(
+        role=role,  # type: ignore[arg-type]
+        container_name="postgres-production",
+        database_name=database_name,
+        owner_name="krtour_map",
+        admin_name="cluster_admin",
+    )
+
+
+def test_restore_standalone_backup_requires_capability(tmp_path: Path) -> None:
+    _write_standalone_backup_fixture(tmp_path, created_at_unix=1_700_000_000)
+    with pytest.raises(DeploymentContractError, match="restore capability"):
+        restore_standalone_database_backup(
+            backups_root=tmp_path,
+            runtime=_standalone_restore_runtime(),
+            backup_filename="20231114T221320Z_map_application_0078_cache_target_gc_observe.dump",
+            expected_schema_revision="0078_cache_target_gc_observe",
+            capability=None,
+        )
+
+
+def test_restore_standalone_backup_rejects_current_schema_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """operator가 명시한 현재 상태와 실제 상태가 다르면 dropdb/createdb 전에
+    거부해야 한다 — 어떤 mutation도 시도하지 않는다."""
+    monkeypatch.setattr(backup_service, "_validate_runtime", Mock())
+    monkeypatch.setattr(
+        backup_service, "_read_schema_revision", Mock(return_value="0001_other")
+    )
+    run_checked = Mock(side_effect=AssertionError("must not mutate"))
+    monkeypatch.setattr(backup_service, "_run_checked", run_checked)
+
+    with pytest.raises(DeploymentContractError, match="differs from the"):
+        restore_standalone_database_backup(
+            backups_root=tmp_path,
+            runtime=_standalone_restore_runtime(),
+            backup_filename="20231114T221320Z_map_application_0078_cache_target_gc_observe.dump",
+            expected_schema_revision="0078_cache_target_gc_observe",
+            capability=_STANDALONE_RESTORE_CAPABILITY,
+        )
+    run_checked.assert_not_called()
+
+
+def test_restore_standalone_backup_rejects_unknown_backup_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(backup_service, "_validate_runtime", Mock())
+    monkeypatch.setattr(
+        backup_service,
+        "_read_schema_revision",
+        Mock(return_value="0078_cache_target_gc_observe"),
+    )
+
+    with pytest.raises(DeploymentContractError, match="not found or invalid"):
+        restore_standalone_database_backup(
+            backups_root=tmp_path,
+            runtime=_standalone_restore_runtime(),
+            backup_filename="20231114T221320Z_map_application_0078_cache_target_gc_observe.dump",
+            expected_schema_revision="0078_cache_target_gc_observe",
+            capability=_STANDALONE_RESTORE_CAPABILITY,
+        )
+
+
+def test_restore_standalone_backup_rejects_corrupted_backup_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_standalone_backup_fixture(
+        tmp_path, created_at_unix=1_700_000_000, payload=b"original-bytes-14"
+    )
+    role_directory = tmp_path / "map_application"
+    dump_path = next(role_directory.glob("*.dump"))
+    # 매니페스트의 자체 size 검증(`_read_standalone_backup_manifest`)을 통과하도록
+    # 같은 길이로 내용만 바꿔, 이후의 sha256 재검증이 실제로 잡아내는지 확인한다.
+    assert len(b"tampered-bytes-14") == len(b"original-bytes-14")
+    dump_path.write_bytes(b"tampered-bytes-14")
+
+    monkeypatch.setattr(backup_service, "_validate_runtime", Mock())
+    monkeypatch.setattr(
+        backup_service,
+        "_read_schema_revision",
+        Mock(return_value="0078_cache_target_gc_observe"),
+    )
+    run_checked = Mock(side_effect=AssertionError("must not mutate"))
+    monkeypatch.setattr(backup_service, "_run_checked", run_checked)
+
+    with pytest.raises(DeploymentContractError, match="payload identity is invalid"):
+        restore_standalone_database_backup(
+            backups_root=tmp_path,
+            runtime=_standalone_restore_runtime(),
+            backup_filename=dump_path.name,
+            expected_schema_revision="0078_cache_target_gc_observe",
+            capability=_STANDALONE_RESTORE_CAPABILITY,
+        )
+    run_checked.assert_not_called()
+
+
+def test_restore_standalone_backup_succeeds_and_verifies_post_restore_revision(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    backups_root = tmp_path / "backups"
+
+    def create_run(
+        arguments: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        if "pg_dump" in arguments:
+            kwargs["stdout"].write(b"standalone-dump-bytes")
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        create_run,
+    )
+    runtime = _standalone_restore_runtime()
+    manifest = create_standalone_database_backup(
+        backups_root=backups_root, runtime=runtime, created_at_unix=1_700_000_000
+    )
+
+    calls: list[list[str]] = []
+
+    def restore_run(
+        arguments: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(arguments)
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        del label
+        calls.append(arguments)
+        if "psql" in arguments:
+            return b"0078_cache_target_gc_observe\n"
+        return b""
+
+    monkeypatch.setattr(backup_service, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        restore_run,
+    )
+    monkeypatch.setattr(backup_service, "_run_checked", Mock(side_effect=run_checked))
+
+    restored = restore_standalone_database_backup(
+        backups_root=backups_root,
+        runtime=runtime,
+        backup_filename=manifest.backup_filename,
+        expected_schema_revision="0078_cache_target_gc_observe",
+        capability=_STANDALONE_RESTORE_CAPABILITY,
+    )
+
+    assert restored == manifest
+    assert not any("dropdb" in call for call in calls)
+    assert any("createdb" in call for call in calls)
+    serialized_commands = "\n".join(" ".join(command) for command in calls)
+    assert "postgresql://" not in serialized_commands
+    assert "password" not in serialized_commands.lower()
+
+
+def test_restore_standalone_backup_rejects_post_restore_schema_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """적대적 리뷰가 지적한 커버리지 공백: pg_restore가 returncode 0으로 끝나도
+    복원된 DB의 실제 schema revision이 manifest와 다르면(손상된 archive가
+    조용히 부분 복원되는 경우 등) 거부해야 한다."""
+    backups_root = tmp_path / "backups"
+
+    def create_run(
+        arguments: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        if "pg_dump" in arguments:
+            kwargs["stdout"].write(b"standalone-dump-bytes")
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        create_run,
+    )
+    runtime = _standalone_restore_runtime()
+    manifest = create_standalone_database_backup(
+        backups_root=backups_root, runtime=runtime, created_at_unix=1_700_000_000
+    )
+
+    def restore_run(
+        arguments: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        del label
+        if "psql" in arguments:
+            # 복원 뒤 실제로는 다른(손상됐거나 잘못된) revision이 나온 상황을 흉내낸다.
+            return b"0099_wrong_head\n"
+        return b""
+
+    monkeypatch.setattr(backup_service, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        restore_run,
+    )
+    monkeypatch.setattr(backup_service, "_run_checked", Mock(side_effect=run_checked))
+
+    with pytest.raises(DeploymentContractError, match="schema revision differs"):
+        restore_standalone_database_backup(
+            backups_root=backups_root,
+            runtime=runtime,
+            backup_filename=manifest.backup_filename,
+            expected_schema_revision="0078_cache_target_gc_observe",
+            capability=_STANDALONE_RESTORE_CAPABILITY,
+        )
 
 
 def test_list_standalone_backups_returns_newest_first(tmp_path: Path) -> None:

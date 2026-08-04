@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from kor_travel_docker_manager.cli import build_parser, main
+from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ValidatedComposeCandidate,
@@ -671,6 +672,94 @@ def test_cli_db_backup_list_json_output_includes_warnings_and_backups(
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload["backups"][0]["role"] == "pinvi"
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_db_backup_restore_refuses_without_confirm(
+    mock_compose_service, capsys
+) -> None:
+    """T-055: --confirm 없이는 compose_service를 아예 호출하지 않는다 —
+    fail-closed 기본값."""
+    assert (
+        main(
+            [
+                "db-backup",
+                "restore",
+                "--role",
+                "pinvi",
+                "--backup-id",
+                "x.dump",
+                "--expected-schema-revision",
+                "0001_abc",
+            ]
+        )
+        == 2
+    )
+    mock_compose_service.restore_standalone_backup.assert_not_called()
+    captured = capsys.readouterr()
+    assert "--confirm" in captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_db_backup_restore_runs_with_confirm(mock_compose_service) -> None:
+    mock_compose_service.restore_standalone_backup.return_value = {
+        "success": True,
+        "returncode": 0,
+        "role": "pinvi",
+        "backup_filename": "x.dump",
+        "schema_revision": "0001_abc",
+        "sha256": "a" * 64,
+        "byte_size": 5,
+        "created_at_unix": 1_700_000_000,
+    }
+
+    assert (
+        main(
+            [
+                "db-backup",
+                "restore",
+                "--role",
+                "pinvi",
+                "--backup-id",
+                "x.dump",
+                "--expected-schema-revision",
+                "0001_abc",
+                "--confirm",
+            ]
+        )
+        == 0
+    )
+    mock_compose_service.restore_standalone_backup.assert_called_once_with(
+        role="pinvi", backup_filename="x.dump", expected_schema_revision="0001_abc"
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_db_backup_restore_propagates_contract_error(
+    mock_compose_service, capsys
+) -> None:
+    mock_compose_service.restore_standalone_backup.side_effect = DeploymentContractError(
+        "pinvi current schema revision differs from the operator-confirmed expectation"
+    )
+
+    assert (
+        main(
+            [
+                "db-backup",
+                "restore",
+                "--role",
+                "pinvi",
+                "--backup-id",
+                "x.dump",
+                "--expected-schema-revision",
+                "0001_abc",
+                "--confirm",
+            ]
+        )
+        == 2
+    )
+    captured = capsys.readouterr()
+    assert "differs from the operator-confirmed expectation" in captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
