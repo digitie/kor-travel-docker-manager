@@ -319,6 +319,13 @@ _PG_TOOL_VERSION_PATTERN = re.compile(r"(\d+)")
 # 근거로 얼마나 오래 신뢰할지를 정한다. 짧게 고정해 schema/pair/Compose가 진단
 # 이후 조용히 바뀌는 창을 최소화한다.
 _CUTOVER_GATE_MAX_DIAGNOSTIC_AGE_SECONDS = 1_800
+# issue #115: writer 전체를 멈추기 전 Dagster daemon만 먼저 멈추고 이미 떠 있던
+# run이 스스로 끝나기를 기다리는 bounded wait 상한이다. 설계 문서 5절의 60분
+# per-attempt 예산보다 훨씬 짧게 잡아, drain 자체가 그 예산을 다 써버리지 않게
+# 한다 — timeout에 도달하면 graceful 대기를 포기하고 정식 run-terminate API로
+# 넘어간다.
+_CACHE_TARGET_DRAIN_TIMEOUT_SECONDS = 300
+_CACHE_TARGET_DRAIN_POLL_INTERVAL_SECONDS = 5
 
 
 def _manager_release_sha256() -> str:
@@ -355,6 +362,39 @@ def _pg_tool_major_version(
             f"cache-target diagnostic {executable} version output is invalid"
         )
     return int(match.group(1))
+
+
+def _cancel_dagster_nonterminal_runs(container_name: str) -> None:
+    """issue #115: bounded graceful wait이 끝나도 여전히 남아있는 run만, Dagster의
+    표준 run-terminate API(`DagsterInstance.report_run_canceled`)로 정식 취소한다.
+    run ID·payload는 절대 stdout/journal에 남기지 않는다 — 이 함수는 아무 값도
+    반환하지 않고, 실패는 예외로만 전달한다. raw GraphQL이나 compose 출력은
+    전혀 쓰지 않는다."""
+
+    script = (
+        "from dagster import DagsterInstance\n"
+        "instance = DagsterInstance.get()\n"
+        "runs = instance.get_runs(limit=200)\n"
+        "nonterminal = [r for r in runs if str(r.status) in ("
+        "'DagsterRunStatus.QUEUED', 'DagsterRunStatus.STARTING', "
+        "'DagsterRunStatus.STARTED', 'DagsterRunStatus.CANCELING')]\n"
+        "for r in nonterminal:\n"
+        "    instance.report_run_canceled(r)\n"
+    )
+    try:
+        completed = subprocess.run(
+            ["docker", "exec", container_name, "python3", "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            "cache-target diagnostic writer drain cancel could not run"
+        ) from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError("cache-target diagnostic writer drain cancel failed")
 
 
 def _cache_target_diagnostic_process_result(
@@ -5491,8 +5531,7 @@ class ComposeService:
         write_cache_target_diagnostic(journal_path, journal)
 
         inflight_before_stop = tuple(read_database_inflight_count(runtime) for runtime in runtimes)
-        dagster_runs_before_stop = read_dagster_inflight_run_count(runtimes[1])
-        if any(inflight_before_stop) or dagster_runs_before_stop:
+        if any(inflight_before_stop):
             raise DeploymentContractError(
                 "cache-target diagnostic writer fence has in-flight database transactions"
             )
@@ -5505,70 +5544,91 @@ class ComposeService:
         # pair와만 비교하므로, manifest 자체가 이미 stale하면 이 drift를 못 잡는다.
         pre_stop_pair = self._inspect_current_pair(config)
         failure: tuple[DiagnosticStage, DiagnosticFailureClass] | None = None
-        journal = transition_cache_target_diagnostic(journal, "writers_stopping")
+        # issue #115: preflight 검사(위)와 실제 writer stop 사이에 schedule/sensor
+        # daemon이 새 run을 만드는 race가 있었다. daemon 자체를 먼저(cache-target
+        # writer 목록에 이미 포함된 compatible-pair capability로) 멈춰 race를
+        # 구조적으로 없애고, 이미 떠 있던 run만 bounded wait으로 drain한다.
+        journal = transition_cache_target_diagnostic(journal, "writers_draining")
         write_cache_target_diagnostic(journal_path, journal)
         try:
-            stopped = self._run_frozen_recovery(
-                ["stop", *ordered_writers],
-                mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
-                transaction=transaction,
+            drain_failure_class = self._drain_cache_target_dagster_writer(
+                transaction=transaction, dagster_runtime=runtimes[1]
             )
-            if not stopped.get("success"):
-                raise DeploymentContractError("cache-target diagnostic writer fence stop failed")
+            if drain_failure_class is not None:
+                failure = ("writer_drain", drain_failure_class)
+            elif any(read_database_inflight_count(runtime) for runtime in runtimes) or (
+                read_dagster_inflight_run_count(runtimes[1]) != 0
+            ):
+                failure = ("writer_drain", "drain_timeout")
 
-            inflight_after_stop = tuple(
-                read_database_inflight_count(runtime) for runtime in runtimes
-            )
-            dagster_runs_after_stop = read_dagster_inflight_run_count(runtimes[1])
-            if any(inflight_after_stop) or dagster_runs_after_stop:
-                raise DeploymentContractError(
-                    "cache-target diagnostic writer fence has in-flight database "
-                    "transactions after stop"
-                )
-
-            expected_writer_environments = cache_target_writer_environments_from_resolved_compose(
-                transaction.resolved, ordered_writers
-            )
-            global_fence = attest_cache_target_global_writer_fence(
-                expected_stopped_writers=expected_writer_environments,
-                cwd=get_project_root(),
-            )
-            journal = transition_cache_target_diagnostic(
-                journal,
-                "writers_fenced",
-                writer_fence_sha256=global_fence.inventory_sha256,
-            )
-            write_cache_target_diagnostic(journal_path, journal)
-
-            for runtime in runtimes:
-                receipts = self._run_cache_target_diagnostic_role(
-                    runtime, journal.diagnostic_id, state_directory
-                )
-                if runtime.role == "map_application":
-                    journal = transition_cache_target_diagnostic(
-                        journal,
-                        "map_application_checked",
-                        map_application_receipts=receipts,
-                    )
-                elif runtime.role == "map_dagster":
-                    journal = transition_cache_target_diagnostic(
-                        journal,
-                        "map_dagster_checked",
-                        map_dagster_receipts=receipts,
-                    )
-                else:
-                    journal = transition_cache_target_diagnostic(
-                        journal,
-                        "pinvi_checked",
-                        pinvi_receipts=receipts,
-                    )
+            if failure is None:
+                journal = transition_cache_target_diagnostic(journal, "writers_stopping")
                 write_cache_target_diagnostic(journal_path, journal)
-                if failure is None:
-                    for receipt in receipts:
-                        if receipt.status != "succeeded":
-                            assert receipt.failure_class is not None
-                            failure = (receipt.stage, receipt.failure_class)
-                            break
+                stopped = self._run_frozen_recovery(
+                    ["stop", *ordered_writers],
+                    mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+                    transaction=transaction,
+                )
+                if not stopped.get("success"):
+                    raise DeploymentContractError(
+                        "cache-target diagnostic writer fence stop failed"
+                    )
+
+                inflight_after_stop = tuple(
+                    read_database_inflight_count(runtime) for runtime in runtimes
+                )
+                dagster_runs_after_stop = read_dagster_inflight_run_count(runtimes[1])
+                if any(inflight_after_stop) or dagster_runs_after_stop:
+                    raise DeploymentContractError(
+                        "cache-target diagnostic writer fence has in-flight database "
+                        "transactions after stop"
+                    )
+
+                expected_writer_environments = (
+                    cache_target_writer_environments_from_resolved_compose(
+                        transaction.resolved, ordered_writers
+                    )
+                )
+                global_fence = attest_cache_target_global_writer_fence(
+                    expected_stopped_writers=expected_writer_environments,
+                    cwd=get_project_root(),
+                )
+                journal = transition_cache_target_diagnostic(
+                    journal,
+                    "writers_fenced",
+                    writer_fence_sha256=global_fence.inventory_sha256,
+                )
+                write_cache_target_diagnostic(journal_path, journal)
+
+                for runtime in runtimes:
+                    receipts = self._run_cache_target_diagnostic_role(
+                        runtime, journal.diagnostic_id, state_directory
+                    )
+                    if runtime.role == "map_application":
+                        journal = transition_cache_target_diagnostic(
+                            journal,
+                            "map_application_checked",
+                            map_application_receipts=receipts,
+                        )
+                    elif runtime.role == "map_dagster":
+                        journal = transition_cache_target_diagnostic(
+                            journal,
+                            "map_dagster_checked",
+                            map_dagster_receipts=receipts,
+                        )
+                    else:
+                        journal = transition_cache_target_diagnostic(
+                            journal,
+                            "pinvi_checked",
+                            pinvi_receipts=receipts,
+                        )
+                    write_cache_target_diagnostic(journal_path, journal)
+                    if failure is None:
+                        for receipt in receipts:
+                            if receipt.status != "succeeded":
+                                assert receipt.failure_class is not None
+                                failure = (receipt.stage, receipt.failure_class)
+                                break
         finally:
             # 설계 문서 2절: "writer를 재기동"은 성공/실패와 무관하게 항상 일어나야
             # 하고, 재기동 뒤에는 기존 pair의 exact 상태를 다시 attest해야 한다.
@@ -5913,6 +5973,63 @@ class ComposeService:
         ordered_writers = tuple(sorted(discovered_writers))
         cache_target_writer_registry_sha256(ordered_writers)
         return ordered_writers
+
+    @staticmethod
+    def _map_dagster_container_name(transaction: ComposeTransactionSnapshot) -> str:
+        services = transaction.resolved.get("services")
+        if not isinstance(services, Mapping):
+            raise DeploymentContractError("cutover resolved services are invalid")
+        service = services.get(_MAP_DAGSTER_SERVICE)
+        if not isinstance(service, Mapping):
+            raise DeploymentContractError("cache-target Map Dagster service is invalid")
+        container_name = _service_singleton_container_name(_MAP_DAGSTER_SERVICE, service)
+        if container_name is None:
+            raise DeploymentContractError(
+                "cache-target Map Dagster container identity is missing"
+            )
+        return container_name
+
+    def _drain_cache_target_dagster_writer(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        dagster_runtime: DatabaseRuntime,
+    ) -> DiagnosticFailureClass | None:
+        """issue #115: writer 전체를 멈추기 전 Map Dagster daemon(schedule/sensor
+        producer)만 먼저 멈춘다 — preflight in-flight run count 검사와 실제 writer
+        stop 사이에 daemon이 새 run을 만드는 race를 구조적으로 없앤다. 기존
+        writer 목록에 이미 포함된 것과 같은 compatible-pair capability로만
+        멈추므로 일반 compose mutation 권한을 넓히지 않는다. 이미 떠 있던 run은
+        bounded graceful wait으로 기다리고, timeout 시에만 Dagster 표준
+        run-terminate API로 정식 취소한다. 성공하면 `None`, 실패하면 실패
+        분류만 반환한다(호출자가 journal typed receipt로 기록한다) — 예외로
+        전파하지 않는다. writer 재기동은 이 함수의 책임이 아니라 호출자의
+        finally가 `_activate_cache_target_writers`로 항상 보장한다."""
+
+        stopped = self._run_frozen_recovery(
+            ["stop", _MAP_DAGSTER_DAEMON_SERVICE],
+            mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+            transaction=transaction,
+        )
+        if not stopped.get("success"):
+            return "admin_command_failed"
+
+        deadline = time.monotonic() + _CACHE_TARGET_DRAIN_TIMEOUT_SECONDS
+        while True:
+            if read_dagster_inflight_run_count(dagster_runtime) == 0:
+                return None
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_CACHE_TARGET_DRAIN_POLL_INTERVAL_SECONDS)
+
+        try:
+            container_name = self._map_dagster_container_name(transaction)
+            _cancel_dagster_nonterminal_runs(container_name)
+        except DeploymentContractError:
+            return "admin_command_failed"
+        if read_dagster_inflight_run_count(dagster_runtime) != 0:
+            return "drain_timeout"
+        return None
 
     def _read_cache_target_writer_fence_evidence(
         self,

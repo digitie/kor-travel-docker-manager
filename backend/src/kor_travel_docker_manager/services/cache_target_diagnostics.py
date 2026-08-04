@@ -34,6 +34,7 @@ from kor_travel_docker_manager.services.cache_target_window import (
 DiagnosticPhase = Literal[
     "prepared",
     "writers_fencing",
+    "writers_draining",
     "writers_stopping",
     "writers_fenced",
     "map_application_checked",
@@ -54,6 +55,7 @@ DiagnosticStage = Literal[
     "scratch_schema_inventory",
     "scratch_data_inventory",
     "scratch_cleanup",
+    "writer_drain",
 ]
 DiagnosticFailureClass = Literal[
     "subprocess_nonzero",
@@ -64,12 +66,14 @@ DiagnosticFailureClass = Literal[
     "restore_failed",
     "inventory_mismatch",
     "cleanup_failed",
+    "drain_timeout",
 ]
 DiagnosticStageStatus = Literal["succeeded", "failed"]
 
 _FORWARD_PHASES: tuple[DiagnosticPhase, ...] = (
     "prepared",
     "writers_fencing",
+    "writers_draining",
     "writers_stopping",
     "writers_fenced",
     "map_application_checked",
@@ -91,6 +95,7 @@ _DIAGNOSTIC_STAGES: frozenset[DiagnosticStage] = frozenset(
         "scratch_schema_inventory",
         "scratch_data_inventory",
         "scratch_cleanup",
+        "writer_drain",
     }
 )
 _DIAGNOSTIC_FAILURE_CLASSES: frozenset[DiagnosticFailureClass] = frozenset(
@@ -103,6 +108,7 @@ _DIAGNOSTIC_FAILURE_CLASSES: frozenset[DiagnosticFailureClass] = frozenset(
         "restore_failed",
         "inventory_mismatch",
         "cleanup_failed",
+        "drain_timeout",
     }
 )
 # 설계 문서 5절의 "각 60분" 시도별 budget과 같은 상한(ms). 진단 하나의 개별 stage가

@@ -76,6 +76,7 @@ def _receipt(
 def _completed() -> CacheTargetDiagnosticJournal:
     journal = _prepared()
     journal = transition_cache_target_diagnostic(journal, "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -129,6 +130,13 @@ def test_diagnostic_requires_durable_stop_boundary_before_writer_fence() -> None
             "writers_fenced",
             writer_fence_sha256="d" * 64,
         )
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    with pytest.raises(DeploymentContractError, match="phase transition"):
+        transition_cache_target_diagnostic(
+            journal,
+            "writers_fenced",
+            writer_fence_sha256="d" * 64,
+        )
     assert transition_cache_target_diagnostic(journal, "writers_stopping").phase == (
         "writers_stopping"
     )
@@ -163,6 +171,7 @@ def test_diagnostic_rejects_writers_fenced_without_writer_fence_evidence() -> No
 
 def test_diagnostic_rejects_map_application_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -174,6 +183,7 @@ def test_diagnostic_rejects_map_application_checked_without_its_evidence() -> No
 
 def test_diagnostic_rejects_map_dagster_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -190,6 +200,7 @@ def test_diagnostic_rejects_map_dagster_checked_without_its_evidence() -> None:
 
 def test_diagnostic_rejects_pinvi_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -211,6 +222,7 @@ def test_diagnostic_rejects_pinvi_checked_without_its_evidence() -> None:
 
 def test_diagnostic_rejects_runtime_smoke_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -292,6 +304,7 @@ def test_diagnostic_rejects_invalid_identity_fields(
 def test_diagnostic_rejects_succeeded_receipt_with_failure_class() -> None:
     receipt = _receipt(status="succeeded", failure_class="timeout")
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -307,6 +320,7 @@ def test_diagnostic_rejects_succeeded_receipt_with_failure_class() -> None:
 def test_diagnostic_rejects_failed_receipt_without_failure_class() -> None:
     receipt = _receipt(status="failed", failure_class=None)
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -325,6 +339,7 @@ def test_diagnostic_rejects_out_of_bounds_stage_elapsed_time(
 ) -> None:
     receipt = replace(_receipt(), elapsed_ms=bad_elapsed_ms)  # type: ignore[arg-type]
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -340,6 +355,7 @@ def test_diagnostic_rejects_out_of_bounds_stage_elapsed_time(
 def test_diagnostic_rejects_receipt_role_not_matching_its_evidence_group() -> None:
     mismatched = _receipt(role="pinvi")
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -377,6 +393,7 @@ def test_diagnostic_round_trips_with_empty_receipt_tuples_at_early_phase(
     path = tmp_path / "state" / "cache-target-diagnostic-v1.json"
     path.parent.mkdir(mode=0o700)
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
 
     write_cache_target_diagnostic(path, journal)
@@ -386,6 +403,7 @@ def test_diagnostic_round_trips_with_empty_receipt_tuples_at_early_phase(
 
 def test_diagnostic_transition_carries_forward_prior_evidence_when_unspecified() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
+    journal = transition_cache_target_diagnostic(journal, "writers_draining")
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64

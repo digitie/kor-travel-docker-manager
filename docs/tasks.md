@@ -21,6 +21,7 @@
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[/]` | - | compose/backend 기본값 정렬 완료, n150 실제 DROP/RENAME 실행 대기 |
+| **T-052** | cache-target 진단의 durable Dagster writer drain (issue #115) | `[x]` | 2026-08-04 | writers_draining phase 신설, daemon 선-정지·bounded drain·terminal cancel |
 
 ---
 
@@ -544,5 +545,66 @@ naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(�
       (2) `krtour_map`→`kor_travel_map`, `krtour_map_dagster`→`kor_travel_map_dagster`
       RENAME, (3) 이 커밋 배포, (4) map-api/map-dagster/map-dagster-daemon 재기동해
       정상 연결 확인.
-- [ ] issue #115(durable Dagster writer drain)는 별도 태스크(T-052 후보)로 다룬다 —
-      사용자 결정으로 구현 완료 전까지 cache-target 진단/rehearsal은 중단한다.
+- [x] issue #115(durable Dagster writer drain)는 T-052로 분리해 구현했다.
+
+### T-052: cache-target 진단의 durable Dagster writer drain (issue #115)
+
+n150에서 `ktdctl cache-target diagnose`를 반복 실행하며 같은 문제를 계속 만났다:
+`writers_fencing`의 preflight가 PostgreSQL 진행 중 트랜잭션과 Dagster 비종료 run이
+모두 0임을 확인한 직후, 실제 writer stop 사이의 짧은 창에서 `kor-travel-map-dagster-daemon`의
+schedule/sensor가 새 run을 만들어 매번 재시작해야 했다 — 운영자가 manager 경계 밖에서
+Dagster GraphQL로 수동 취소해야 하는 임시방편이었다.
+
+- [x] **`writers_draining` phase 신설.** `DiagnosticPhase`에 `writers_fencing`과
+      `writers_stopping` 사이 새 phase를 추가했다(`_FORWARD_PHASES`가 index 기반이라
+      `_allowed_next_phases`/`_validate_phase_evidence`는 코드 변경 없이 그대로
+      맞물린다). preflight(검사와 stop 사이의 race를 만드는 지점)를 없애기 위해,
+      DB in-flight 확인 뒤 dagster run count는 여기서 더 이상 확인하지 않고 바로
+      `writers_draining`으로 전이해 daemon부터 멈춘다.
+- [x] **daemon 선-정지로 race를 구조적으로 제거.** `_drain_cache_target_dagster_writer`가
+      `["stop", "kor-travel-map-dagster-daemon"]`을 기존 writer stop/start와 **같은**
+      `_COMPATIBLE_PAIR_MUTATION_CAPABILITY`로 호출한다 — 일반 compose mutation
+      권한을 넓히지 않고, 이미 writer 목록에 포함된 서비스 하나만 먼저 멈추는 것뿐이다.
+      daemon이 멈추면 새 run이 더 이상 생기지 않으므로, 이미 떠 있던 run만 남는다.
+- [x] **bounded graceful wait → timeout 시에만 terminal cancel.**
+      `_CACHE_TARGET_DRAIN_TIMEOUT_SECONDS`(5분, 설계 문서 5절의 60분 per-attempt
+      예산보다 훨씬 짧게 잡아 drain 자체가 예산을 다 쓰지 않게 함) 동안
+      `read_dagster_inflight_run_count`를 폴링하고, 그 안에 0이 되지 않으면
+      `_cancel_dagster_nonterminal_runs`가 Dagster 표준 `DagsterInstance.report_run_canceled`
+      API로만 정식 취소한다(raw GraphQL/compose 출력 없음). 스크립트는 완전히 고정된
+      텍스트고 run ID·payload·credential은 어디에도(journal·CLI JSON·stdout) 남기지
+      않는다 — count만 계산하고 취소하지, 식별자를 반환하지 않는다.
+- [x] **재확인 후에만 `writers_stopping` 진행, 실패는 typed receipt로.** drain 성공
+      뒤 DB in-flight와 dagster run count를 다시 확인하고, 하나라도 남아 있으면
+      전체 writer stop(`writers_stopping`)로 절대 진행하지 않는다. 새
+      `DiagnosticStage="writer_drain"`/`DiagnosticFailureClass="drain_timeout"`을
+      추가해 drain 실패를 기존 per-role DB stage 실패와 같은 `failure` 튜플
+      메커니즘으로 흘려보낸다 — abort-budget의 reproduced-failure 판정(같은
+      원인 반복 시 `failed` 대신 `aborted`)을 drain 실패에도 그대로 적용한다.
+      daemon pause 자체가 실패하면 `"admin_command_failed"`.
+- [x] **모든 종료 경로에서 원복 보장.** `writers_draining`부터 이미 존재하던 하나의
+      `try/finally`로 감싸, drain 실패·timeout·이후 단계 실패 어느 경우에도 기존
+      `_activate_cache_target_writers`(전체 writer 재기동)와
+      `_attest_cache_target_prebootstrap_pair`(pair 재검증)가 항상 실행된다 — daemon도
+      writer 목록의 일부이므로 별도 resume 코드가 필요 없다.
+- [x] **#113 불변식 확장 확인.** `writers_fencing`까지는(순수 preflight) crash 시
+      attempt budget을 소모하지 않는 기존 규칙은 그대로 유지되지만, `writers_draining`은
+      실제 daemon mutation이 일어난 뒤라 `_archive_superseded_cache_target_diagnostic`의
+      기존 `reached_writer_stop_boundary` 판정(코드 변경 없음, exempt set에
+      `writers_draining`을 추가하지 않아 자동으로 포함됨)에 따라 crash해도 attempt
+      budget을 소모한다 — 새 회귀로 고정했다.
+- [x] 적대적 리뷰어 2명(drain race/timeout/cancel 정책·compatible-pair 보호 미우회
+      담당, secret/식별자 비노출·모든 종료 경로 원복·typed receipt 정확성 담당)이
+      검토했다. 회귀 테스트 11건 추가(daemon pause 실패/성공, capability 확인,
+      즉시 quiescent, schedule이 서서히 줄어드는 경우, timeout 후 cancel로 해소되는
+      경우, cancel 후에도 남는 경우(`drain_timeout`), cancel 자체 실패
+      (`admin_command_failed`), cancel 스크립트에 식별자/secret 없음 직접 검증,
+      계속 run을 만드는 schedule을 흉내낸 통합 시나리오가 race 없이 완주,
+      drain 이후 writer 재발생 시 전체 stop이 절대 호출되지 않고 fail-close,
+      `writers_draining` crash가 attempt budget을 소모함). backend 전체 1533
+      passed, ruff check/mypy clean(touched files) — `ruff format`은 이 환경
+      버전이 무관한 기존 줄까지 재포맷하려 해서 실행하지 않음(T-049C에서 배운
+      교훈).
+- [ ] n150에서 실제 diagnose를 재실행해 `writers_draining`이 실제 schedule/sensor와
+      맞물려 정상 동작하는지 확인한다(사용자 결정으로 데이터는 보존 대상이
+      아니므로, 이 검증은 별도 승인 아래 진행한다).

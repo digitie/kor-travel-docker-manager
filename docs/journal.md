@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-08-04 (T-052: cache-target 진단의 durable Dagster writer drain, issue #115)
+
+issue #115가 요구한 6단계 설계를 그대로 구현했다: `writers_fencing`(순수 preflight)과
+`writers_stopping`(실제 전체 writer stop) 사이에 새 `writers_draining` phase를 넣고,
+그 안에서 `kor-travel-map-dagster-daemon`만 기존 writer stop/start와 같은
+`_COMPATIBLE_PAIR_MUTATION_CAPABILITY`로 먼저 멈춘다. daemon이 멈추면 schedule/sensor가
+더 이상 새 run을 못 만들므로, preflight 검사와 실제 stop 사이의 race가 구조적으로
+사라진다. 이미 떠 있던 run은 5분 bounded wait으로 기다리고, 그래도 안 끝나면 Dagster
+표준 `report_run_canceled` API로만 정식 취소한다(raw GraphQL/run 식별자/credential은
+절대 어디에도 남기지 않는다 — count만 계산·비교).
+
+drain 실패는 새 `DiagnosticStage="writer_drain"`/`DiagnosticFailureClass="drain_timeout"`으로
+기존 per-role DB stage 실패와 같은 `failure` 튜플·abort-budget reproduced-failure
+메커니즘을 그대로 탄다. 모든 종료 경로(성공/drain 실패/이후 단계 실패)는 이미
+있던 하나의 `try/finally`에 자연스럽게 편입돼, `_activate_cache_target_writers`
+(daemon 포함 전체 재기동)와 `_attest_cache_target_prebootstrap_pair`가 항상
+실행된다 — daemon만을 위한 별도 resume 코드가 필요 없었다. `writers_fencing`까지는
+attempt budget을 소모하지 않는 #113 불변식은 `_archive_superseded_cache_target_diagnostic`의
+기존 판정 로직을 전혀 건드리지 않고도 자동으로 확장됐다(`writers_draining`이
+exempt set에 없으므로 crash 시 자동으로 budget을 소모한다) — 코드 변경 없이 회귀
+테스트만 추가해 고정했다.
+
+적대적 리뷰어 2명이 검증했다(drain race/timeout/cancel 정책·compatible-pair 보호
+미우회, secret/식별자 비노출·모든 종료 경로 원복). 회귀 테스트 11건(단위 7건 + 통합
+2건 + #113 확장 1건 + cancel 스크립트 정적 검증 1건) 추가. backend 전체 1533 passed,
+ruff/mypy clean(touched files).
+
+n150 실제 재검증(schedule과 맞물린 실제 drain 동작 확인)은 별도 승인 아래 진행한다 —
+이슈 #115 자체의 "현재 데이터는 보존 대상이 아니다"라는 임시 운영 결론에 따라
+지금 당장 cache-target 진단을 다시 돌리지는 않았다.
+
+---
+
 ## 2026-08-04 (T-051: Map DB naming 정리 착수 + issue #111/#114 결선)
 
 이슈 #109 사고 조사 도중 n150 postgres에 `kor_travel_map`(rev 0036, 오래된 leftover)과
