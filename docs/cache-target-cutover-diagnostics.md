@@ -49,6 +49,8 @@ resolved Compose 원문은 receipt나 출력에 넣지 않는다.
 ```text
 prepared
   -> writers_fencing
+  -> writers_draining
+  -> writers_drained
   -> writers_stopping
   -> writers_fenced
   -> map_application_checked
@@ -90,6 +92,44 @@ journal은 기존 결과만 재보고하며, 같은 ID의 nonterminal journal은
 `writers_stopping`은 `docker compose stop`을 호출하기 **직전** fsync하는 durable boundary다.
 stop의 부분 실패 또는 process crash로 global writer-fence digest를 쓰지 못해도 이 phase가
 남으므로, mutation 가능성이 있는 journal을 preflight로 오분류해 budget을 우회하지 않는다.
+
+### Dagster writer-drain
+
+`writers_fencing`만으로는 schedule/sensor daemon이 그 직후 새 run을 만들 수 있다. 이
+race를 operator가 Manager 밖의 GraphQL 호출이나 일반 Compose 명령으로 해결하면 C6c
+보호 경계와 journal 증적이 무너진다. 따라서 diagnostic과 cutover의 initial writer fence는
+다음의 durable drain을 먼저 수행한다.
+
+1. `writers_fencing`은 writer registry·current pair·Map drain capability를
+   preflight한다. 이 단계에는 schedule/sensor·container·DB mutation이 없다.
+2. `writers_draining`을 먼저 fsync한다. 이 phase는 Map control plane mutation을
+   시작할 수 있는 경계이므로 `prepared`/`writers_fencing`과 달리 diagnostic attempt
+   budget을 소모한다.
+3. Map이 **writer-drain lease**를 소유한다. Manager는 frozen Compose의 Map control
+   command만 호출하고, 그 명령은 Map DB에 이전 schedule/sensor 상태를 durable하게
+   보존한 뒤 새 run 생성을 pause한다. 반환값은 opaque lease ID와 secret-free receipt
+   digest뿐이다. Manager journal에는 run ID·schedule 이름·GraphQL 원문·credential을
+   저장하지 않는다.
+4. Map은 이미 실행 중인 Map Dagster run을 bounded grace window에서 terminal 상태가
+   되기를 기다리고, 만료 때만 Map-owned typed terminal-cancel 정책으로 수렴시킨다.
+   lease가 active이고 run count가 0일 때만 Manager가 `writers_drained`를 fsync한다.
+   timeout은 terminal abort이며, data 보존을 위한 DB restore를 시도하지 않는다.
+5. `writers_drained` 뒤 기존 `writers_stopping` fence를 수행한다.
+   full writer stop 뒤에도 DB transaction 또는 Dagster run이 남으면 fail-close한다.
+6. diagnostic의 성공·실패·예외와 superseded non-terminal journal recovery 모두에서
+   Manager는 Map의 exact lease를 restore·attest한 뒤에만 archive/resume한다. journal
+   phase가 `writers_draining` 이상이면 이 pre-backup recovery가 성공하기 전
+   coupled DB rollback이나 archive를 허용하지 않는다.
+
+Map control command는 기존 cache-target 4-token registry를 재사용하거나 다섯 번째
+장기 token을 추가하지 않는다. Map runtime 안에서 실행되는 narrow typed command와
+Map-owned durable lease가 유일한 control boundary이며, Manager의 일반 Compose/외부
+GraphQL 우회는 금지한다.
+
+이 흐름은 개발 중간 데이터의 보존 수단이 아니다. 데이터 유실은 file source 또는 ETL
+재실행으로 재생성한다. 다만 **최종 DB schema**에서의 backup/restore rehearsal과 실제
+cutover backup은 계속 필수이며, drain은 그 검증을 race 없이 시작하기 위한 runtime
+제어 경계다.
 
 archive의 이름 충돌·owner/mode·내용 재검증·directory fsync 중 하나라도 실패하면 새 진단을
 시작하지 않는다. 따라서 receipt/attempt는 삭제되지 않으며, archive 직후 새 journal을 쓰기

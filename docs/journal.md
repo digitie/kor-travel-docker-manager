@@ -50,9 +50,8 @@ ruff/mypy clean(touched files).
 
 n150 실제 재검증(schedule과 맞물린 실제 drain 동작 확인)은 별도 승인 아래 진행한다 —
 이슈 #115 자체의 "현재 데이터는 보존 대상이 아니다"라는 임시 운영 결론에 따라
-지금 당장 cache-target 진단을 다시 돌리지는 않았다.
-
----
+지금 당장 cache-target 진단을 다시 돌리지는 않았다. 이 초안은 Map durable lease/receipt와
+crash recovery를 보존하지 못하므로, T-049F가 재작성한다.
 
 ## 2026-08-04 (T-051: Map DB naming 정리 착수 + issue #111/#114 결선)
 
