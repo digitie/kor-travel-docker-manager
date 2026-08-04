@@ -91,6 +91,8 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
 )
 from kor_travel_docker_manager.services.cache_target_backup import (
     _COUPLED_ROLLBACK_CAPABILITY,
+    STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
+    STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
     DatabaseRole,
     DatabaseRuntime,
     DatabaseWriteCounter,
@@ -101,6 +103,8 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     create_manager_rollback_bundle,
     create_standalone_database_backup,
     database_runtimes_from_frozen_contract,
+    gc_standalone_database_backups,
+    list_standalone_database_backups,
     read_dagster_inflight_run_count,
     read_database_identity,
     read_database_inflight_count,
@@ -413,6 +417,17 @@ def _cache_target_diagnostic_process_result(
         "failure_stage": journal.failure_stage,
         "failure_class": journal.failure_class,
         "resumed": resumed,
+    }
+
+
+def _standalone_backup_manifest_dict(manifest: StandaloneBackupManifest) -> dict[str, Any]:
+    return {
+        "role": manifest.role,
+        "created_at_unix": manifest.created_at_unix,
+        "schema_revision": manifest.schema_revision,
+        "sha256": manifest.sha256,
+        "byte_size": manifest.byte_size,
+        "backup_filename": manifest.backup_filename,
     }
 
 
@@ -5336,6 +5351,76 @@ class ComposeService:
             "byte_size": manifest.byte_size,
             "backup_filename": manifest.backup_filename,
         }
+
+    def list_standalone_backups(
+        self,
+        *,
+        role: DatabaseRole | None = None,
+        gc: bool = False,
+        keep_count: int = STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
+        keep_days: int = STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
+    ) -> dict[str, Any]:
+        """T-054: `ktdctl db-backup list`. T-053이 남긴 owner-only manifest를 읽는
+        순수 조회 작업이다 — mutation이 없으므로 C6c lock이나 frozen Compose
+        transaction이 필요 없다. `gc=True`면 조회 직후 같은 role(들)에 보존
+        정책(최근 `keep_count`개는 나이 무관 보존, 나머지는 `keep_days`일 이내만
+        보존)을 적용하고 지운 것·남긴 것을 모두 결과에 담는다(silent truncation
+        금지)."""
+
+        backups_root = Path.home() / "backups"
+        roles: tuple[DatabaseRole, ...] = (
+            (role,) if role is not None else ("map_application", "map_dagster", "pinvi")
+        )
+        entries: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        gc_summaries: list[dict[str, Any]] = []
+        now_unix = int(time.time())
+        for candidate_role in roles:
+            if gc:
+                gc_result = gc_standalone_database_backups(
+                    backups_root,
+                    role=candidate_role,
+                    now_unix=now_unix,
+                    keep_count=keep_count,
+                    keep_days=keep_days,
+                )
+                warnings.extend(gc_result.warnings)
+                gc_summaries.append(
+                    {
+                        "role": gc_result.role,
+                        "kept": [
+                            _standalone_backup_manifest_dict(manifest)
+                            for manifest in gc_result.kept
+                        ],
+                        "deleted": [
+                            _standalone_backup_manifest_dict(manifest)
+                            for manifest in gc_result.deleted
+                        ],
+                    }
+                )
+                entries.extend(
+                    _standalone_backup_manifest_dict(manifest)
+                    for manifest in gc_result.kept
+                )
+            else:
+                listing = list_standalone_database_backups(
+                    backups_root, role=candidate_role
+                )
+                warnings.extend(listing.warnings)
+                entries.extend(
+                    _standalone_backup_manifest_dict(manifest)
+                    for manifest in listing.manifests
+                )
+        entries.sort(key=lambda item: item["created_at_unix"], reverse=True)
+        result: dict[str, Any] = {
+            "success": True,
+            "returncode": 0,
+            "backups": entries,
+            "warnings": warnings,
+        }
+        if gc:
+            result["gc"] = gc_summaries
+        return result
 
     def run_cache_target_diagnostic(self, *, diagnostic_id: str) -> dict[str, Any]:
         """T-049C: `ktdctl cache-target diagnose`. writer fence 안에서 3-role DB

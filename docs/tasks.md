@@ -651,13 +651,37 @@ window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 
 
 ### T-054: 백업 목록/보존 관리 (`ktdctl db-backup list`, GC)
 
-- [ ] `ktdctl db-backup list [--role ...]`가 T-053 manifest를 읽어 사람이 읽을 수
-      있는 목록(시각·역할·revision·크기·sha256)을 출력한다.
-- [ ] `cache_target_diagnostics.py`의 snapshot-GC 패턴(참조 카운트·보존 기간
-      기반)을 재사용해 age 또는 count 기반 보존 정책을 구현한다. 무제한 누적을
-      막되, 최근 N개/최근 N일은 항상 보존한다.
-- [ ] GC가 지운 백업과 보존한 백업을 CLI 출력에 명시(silent truncation 금지).
-- [ ] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+- [x] `ktdctl db-backup list [--role ...] [--json]`이 T-053 manifest를 읽어
+      사람이 읽을 수 있는 목록(시각·role·파일명·schema revision·크기·sha256)이나
+      JSON을 출력한다. mutation이 없으므로 C6c lock/frozen transaction이
+      필요 없는 순수 조회다. **적대적 리뷰어가 human-readable 출력에 시각
+      필드가 빠져 있던 것을 찾았다** — 첫 구현이 이 항목의 요구사항을 만족
+      못 하자 코드 대신 이 체크리스트 문구를 요구사항에 맞춰 낮춰놓았던
+      실수를 바로잡고, 실제로 `created_at_unix`를 사람이 읽을 수 있는
+      ISO 8601 UTC 문자열로 출력에 추가했다.
+- [x] `cache_target_diagnostics.py`의 GC 개념(참조 보존 계약)을 filesystem
+      retention에 맞게 적용했다 — 파일 목록/카운트 기반 참조가 없는 순수
+      파일시스템 정리라 그 모듈의 헬퍼를 직접 재사용하진 않았지만 같은 원칙
+      (무엇을 왜 지우는지 항상 typed 결과로 드러냄)을 따랐다. `--gc`로
+      `keep_count`(기본 5, 나이 무관 항상 보존)와 `keep_days`(기본 14, 그
+      이상은 그 안에서만 보존) 두 knob을 구현했다.
+- [x] GC가 지운 백업(`deleted`)과 보존한 백업(`kept`)을 결과에 항상 명시한다
+      (silent truncation 금지). manifest 자체가 손상됐거나 참조하는 `.dump`가
+      없는 경우도 예외로 전체 조회를 막는 대신 `warnings`에 담아 CLI stderr에
+      출력하고 나머지는 계속 보여준다.
+- [x] GC 삭제는 `.manifest.json`을 먼저 지운 뒤 `.dump`를 지운다 — 중간에
+      죽어도 다음 `list`가 고아 dump(디스크만 낭비)만 남기고 절대 깨지지
+      않는다. 삭제 직전 owner-only 소유를 다시 검증해 다른 프로세스가 같은
+      이름에 다른 파일을 심는 race를 배제하고, 백업 디렉터리의 무관한 파일은
+      절대 건드리지 않는다(회귀로 고정).
+- [x] 회귀 테스트 18건 추가(정렬·role 필터·빈 디렉터리·손상 manifest 경고·
+      dump 유실 경고·count 기반 보존·days 기반 보존·dump+manifest 쌍 동시
+      삭제·무관 파일 미접촉·잘못된 keep_count/keep_days 거부·CLI list 기본값/
+      `--gc`/경고 stderr 출력/JSON 출력). backend 전체 1569 passed, ruff
+      check/mypy clean(touched files).
+- [ ] 적대적 리뷰어 2명 검토 대기 — fork는 Agent tool로 subagent를 만들 수
+      없어 이 단계를 완료하지 못했다. 부모 세션이 리뷰를 진행한 뒤 커밋·
+      PR·병합해야 한다.
 
 ### T-055: 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`)
 

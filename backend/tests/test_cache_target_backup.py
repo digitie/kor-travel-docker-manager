@@ -23,6 +23,8 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     create_standalone_database_backup,
     database_identity_v1,
     database_runtimes_from_frozen_contract,
+    gc_standalone_database_backups,
+    list_standalone_database_backups,
     read_database_schema_revision,
     read_pin_boundary_audit,
     restore_database_backup,
@@ -682,6 +684,258 @@ def test_create_standalone_backup_rejects_unknown_role(
 
     with pytest.raises(DeploymentContractError, match="role is invalid"):
         service.create_standalone_backup(role="map_application")
+
+
+def _write_standalone_backup_fixture(
+    backups_root: Path,
+    *,
+    role: str = "map_application",
+    created_at_unix: int,
+    schema_revision: str = "0078_cache_target_gc_observe",
+    payload: bytes = b"fixture-dump-bytes",
+) -> None:
+    """`create_standalone_database_backup`가 실제로 만드는 것과 같은 형태의
+    dump+manifest 쌍을 subprocess 없이 직접 써서 list/GC fixture를 빠르게
+    준비한다."""
+    import time as time_module
+
+    role_directory = backups_root / role
+    role_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    timestamp = time_module.strftime("%Y%m%dT%H%M%SZ", time_module.gmtime(created_at_unix))
+    stem = f"{timestamp}_{role}_{schema_revision}"
+    dump_path = role_directory / f"{stem}.dump"
+    manifest_path = role_directory / f"{stem}.manifest.json"
+    dump_path.write_bytes(payload)
+    os.chmod(dump_path, 0o600)
+    manifest = {
+        "role": role,
+        "created_at_unix": created_at_unix,
+        "schema_revision": schema_revision,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "byte_size": len(payload),
+        "backup_filename": dump_path.name,
+    }
+    manifest_path.write_bytes(json.dumps(manifest, sort_keys=True).encode())
+    os.chmod(manifest_path, 0o600)
+
+
+def test_list_standalone_backups_returns_newest_first(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_000_000)
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_100_000)
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_050_000)
+
+    result = list_standalone_database_backups(backups_root, role="map_application")
+
+    assert [m.created_at_unix for m in result.manifests] == [
+        1_700_100_000,
+        1_700_050_000,
+        1_700_000_000,
+    ]
+    assert result.warnings == ()
+
+
+def test_list_standalone_backups_filters_by_role(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(
+        backups_root, role="map_application", created_at_unix=1_700_000_000
+    )
+    _write_standalone_backup_fixture(
+        backups_root, role="pinvi", created_at_unix=1_700_000_100
+    )
+
+    all_roles = list_standalone_database_backups(backups_root)
+    only_pinvi = list_standalone_database_backups(backups_root, role="pinvi")
+
+    assert {m.role for m in all_roles.manifests} == {"map_application", "pinvi"}
+    assert {m.role for m in only_pinvi.manifests} == {"pinvi"}
+
+
+def test_list_standalone_backups_returns_empty_for_missing_role_directory(
+    tmp_path: Path,
+) -> None:
+    result = list_standalone_database_backups(tmp_path / "backups", role="pinvi")
+    assert result.manifests == ()
+    assert result.warnings == ()
+
+
+def test_list_standalone_backups_warns_instead_of_raising_on_corrupt_manifest(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_000_000)
+    role_directory = backups_root / "map_application"
+    corrupt_manifest = role_directory / "20260101T000000Z_map_application_0001_bad.manifest.json"
+    corrupt_manifest.write_bytes(b"{not valid json")
+    os.chmod(corrupt_manifest, 0o600)
+
+    result = list_standalone_database_backups(backups_root, role="map_application")
+
+    assert len(result.manifests) == 1
+    assert len(result.warnings) == 1
+    assert "0001_bad" in result.warnings[0]
+
+
+def test_list_standalone_backups_warns_when_dump_payload_missing(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_000_000)
+    role_directory = backups_root / "map_application"
+    dump_path = next(role_directory.glob("*.dump"))
+    dump_path.unlink()
+
+    result = list_standalone_database_backups(backups_root, role="map_application")
+
+    assert result.manifests == ()
+    assert len(result.warnings) == 1
+
+
+def test_gc_standalone_backups_keeps_recent_count_regardless_of_age(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(10):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+
+    result = gc_standalone_database_backups(
+        backups_root,
+        role="map_application",
+        now_unix=now,
+        keep_count=3,
+        keep_days=0,
+    )
+
+    assert len(result.kept) == 3
+    assert len(result.deleted) == 7
+    role_directory = backups_root / "map_application"
+    assert len(list(role_directory.glob("*.dump"))) == 3
+    assert len(list(role_directory.glob("*.manifest.json"))) == 3
+
+
+def test_gc_standalone_backups_keeps_recent_days_beyond_keep_count(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    # keep_count=1 (뒤덮힐 가장 최근 하나) + keep_days=5로 5일 이내 나머지도 보존.
+    for offset_days in (0, 1, 3, 6, 10):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+
+    result = gc_standalone_database_backups(
+        backups_root,
+        role="map_application",
+        now_unix=now,
+        keep_count=1,
+        keep_days=5,
+    )
+
+    kept_offsets = sorted((now - m.created_at_unix) // day for m in result.kept)
+    deleted_offsets = sorted((now - m.created_at_unix) // day for m in result.deleted)
+    assert kept_offsets == [0, 1, 3]
+    assert deleted_offsets == [6, 10]
+
+
+def test_gc_standalone_backups_deletes_dump_and_manifest_together(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(5):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+    role_directory = backups_root / "map_application"
+    before_dumps = set(role_directory.glob("*.dump"))
+    before_manifests = set(role_directory.glob("*.manifest.json"))
+
+    result = gc_standalone_database_backups(
+        backups_root, role="map_application", now_unix=now, keep_count=1, keep_days=0
+    )
+
+    assert len(result.deleted) == 4
+    after_dumps = set(role_directory.glob("*.dump"))
+    after_manifests = set(role_directory.glob("*.manifest.json"))
+    assert len(before_dumps) - len(after_dumps) == 4
+    assert len(before_manifests) - len(after_manifests) == 4
+    # 남은 dump/manifest는 항상 1:1 — 고아가 생기지 않았다.
+    remaining_stems = {p.name.removesuffix(".dump") for p in after_dumps}
+    remaining_manifest_stems = {
+        p.name.removesuffix(".manifest.json") for p in after_manifests
+    }
+    assert remaining_stems == remaining_manifest_stems
+
+
+def test_gc_standalone_backups_never_touches_unrelated_files(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(5):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+    role_directory = backups_root / "map_application"
+    stray_file = role_directory / "operator-notes.txt"
+    stray_file.write_bytes(b"do not touch me")
+    os.chmod(stray_file, 0o600)
+
+    gc_standalone_database_backups(
+        backups_root, role="map_application", now_unix=now, keep_count=1, keep_days=0
+    )
+
+    assert stray_file.exists()
+    assert stray_file.read_bytes() == b"do not touch me"
+
+
+def test_gc_standalone_backups_rejects_invalid_keep_count(tmp_path: Path) -> None:
+    with pytest.raises(DeploymentContractError, match="keep_count"):
+        gc_standalone_database_backups(
+            tmp_path / "backups",
+            role="map_application",
+            now_unix=1_700_000_000,
+            keep_count=0,
+            keep_days=1,
+        )
+
+
+def test_gc_standalone_backups_rejects_invalid_keep_days(tmp_path: Path) -> None:
+    with pytest.raises(DeploymentContractError, match="keep_days"):
+        gc_standalone_database_backups(
+            tmp_path / "backups",
+            role="map_application",
+            now_unix=1_700_000_000,
+            keep_count=1,
+            keep_days=-1,
+        )
+
+
+def test_list_standalone_backups_service_list_reports_warnings_and_gc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(5):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+    service = ComposeService()
+
+    result = service.list_standalone_backups(
+        role="map_application", gc=True, keep_count=1, keep_days=0
+    )
+
+    assert result["success"] is True
+    assert len(result["backups"]) == 1
+    assert len(result["gc"][0]["deleted"]) == 4
+    assert result["warnings"] == []
 
 
 class _null_lock_context:

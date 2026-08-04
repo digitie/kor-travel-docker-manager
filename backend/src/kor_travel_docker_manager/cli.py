@@ -3,12 +3,15 @@ import getpass
 import json
 import os
 import sys
+import time
 from collections.abc import Callable
 from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import (
     _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+    STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
+    STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
@@ -173,13 +176,47 @@ def _cmd_cache_target(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
-def _cmd_db_backup(args: argparse.Namespace) -> int:
+def _cmd_db_backup_create(args: argparse.Namespace) -> int:
     try:
         result = compose_service.create_standalone_backup(role=args.role)
     except (DeploymentContractError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     return _emit_process_result(result, json_output=args.json)
+
+
+def _cmd_db_backup_list(args: argparse.Namespace) -> int:
+    try:
+        result = compose_service.list_standalone_backups(
+            role=args.role,
+            gc=args.gc,
+            keep_count=args.keep_count,
+            keep_days=args.keep_days,
+        )
+    except (DeploymentContractError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not args.json:
+        for warning in result["warnings"]:
+            print(f"warning: {warning}", file=sys.stderr)
+        if args.gc:
+            for summary in result["gc"]:
+                for deleted in summary["deleted"]:
+                    print(
+                        f"deleted: {deleted['role']} {deleted['backup_filename']}",
+                        file=sys.stderr,
+                    )
+        for backup in result["backups"]:
+            created_at = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(backup["created_at_unix"])
+            )
+            print(
+                f"{created_at}\t{backup['role']}\t{backup['backup_filename']}\t"
+                f"schema={backup['schema_revision']}\tsize={backup['byte_size']}\t"
+                f"sha256={backup['sha256']}"
+            )
+        return 0
+    return _emit_process_result(result, json_output=True)
 
 
 def _cmd_map_ui_auth_rotate(args: argparse.Namespace) -> int:
@@ -475,7 +512,40 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="JSON으로 출력합니다.",
     )
-    db_backup_create.set_defaults(func=_cmd_db_backup)
+    db_backup_create.set_defaults(func=_cmd_db_backup_create)
+    db_backup_list = db_backup_subparsers.add_parser(
+        "list",
+        help="owner-only manifest를 읽어 백업 목록을 보여줍니다. --gc로 보존 정책을 적용합니다.",
+    )
+    db_backup_list.add_argument(
+        "--role",
+        choices=["map_application", "map_dagster", "pinvi"],
+        default=None,
+        help="생략하면 세 role 모두를 보여줍니다.",
+    )
+    db_backup_list.add_argument(
+        "--gc",
+        action="store_true",
+        help="조회 직후 보존 정책(--keep-count/--keep-days)을 적용해 오래된 백업을 지웁니다.",
+    )
+    db_backup_list.add_argument(
+        "--keep-count",
+        type=int,
+        default=STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
+        help="나이와 무관하게 항상 보존할 최근 백업 개수(role별). 기본 5.",
+    )
+    db_backup_list.add_argument(
+        "--keep-days",
+        type=int,
+        default=STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
+        help="keep-count를 넘는 백업 중 보존할 최대 일수. 기본 14.",
+    )
+    db_backup_list.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON으로 출력합니다.",
+    )
+    db_backup_list.set_defaults(func=_cmd_db_backup_list)
 
     map_ui_auth = subparsers.add_parser(
         "map-ui-auth",
