@@ -47,6 +47,15 @@ def _identity(**overrides: object) -> CacheTargetDiagnosticIdentity:
     return CacheTargetDiagnosticIdentity(**fields)  # type: ignore[arg-type]
 
 
+def _drained_diagnostic(journal):
+    return transition_cache_target_diagnostic(
+        journal,
+        "writers_drained",
+        writer_drain_lease_id="99999999-9999-4999-8999-999999999999",
+        writer_drain_receipt_sha256="f" * 64,
+    )
+
+
 def _receipt(
     role: str,
     stage: str,
@@ -140,6 +149,30 @@ def _install_diagnostic_context(
         "_cache_target_diagnostic_identity",
         Mock(return_value=_identity()),
     )
+    monkeypatch.setattr(
+        service,
+        "_begin_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace(lease_id="99999999-9999-4999-8999-999999999999")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_restore_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_activate_cache_target_writers",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_attest_cache_target_prebootstrap_pair", Mock())
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._compatible_pair_logical_sha256",
+        Mock(return_value="2" * 64),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="f" * 64),
+    )
     return service, journal_path, attempt_log_path
 
 
@@ -189,6 +222,7 @@ def test_diagnose_new_id_records_crash_after_writer_stop_boundary(
     )
     journal = transition_cache_target_diagnostic(journal, "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = _drained_diagnostic(journal)
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     write_cache_target_diagnostic(journal_path, journal)
     unlocked = Mock(return_value={"phase": "prepared"})
@@ -383,6 +417,20 @@ def _install_unlocked_context(
     transaction = SimpleNamespace(resolved={}, environment=SimpleNamespace(effective={}))
     runtimes = (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
     monkeypatch.setattr(service, "_cache_target_writer_names", Mock(return_value=("svc",)))
+    monkeypatch.setattr(
+        service,
+        "_begin_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace(lease_id="99999999-9999-4999-8999-999999999999")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_restore_cache_target_writer_drain",
+        Mock(return_value=SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="f" * 64),
+    )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
         Mock(return_value=runtimes),
@@ -965,248 +1013,65 @@ def test_diagnostic_role_runs_all_nine_stages_on_full_success(
     assert all(receipt.role == "map_application" for receipt in receipts)
 
 
-def test_drain_returns_admin_command_failed_when_daemon_pause_fails(
+def test_durable_drain_uses_map_private_command_and_receipt_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
-    monkeypatch.setattr(service, "_run_frozen_recovery", Mock(return_value={"success": False}))
-    poll = Mock(return_value=0)
+    transaction = SimpleNamespace()
+    begin = SimpleNamespace(lease_id="99999999-9999-4999-8999-999999999999")
+    attest = SimpleNamespace()
+    command = Mock(side_effect=[begin, attest])
+    monkeypatch.setattr(service, "_run_map_writer_drain", command)
     monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        poll,
+        "kor_travel_docker_manager.services.compose_service.writer_drain_receipt_sha256",
+        Mock(return_value="a" * 64),
     )
 
-    result = service._drain_cache_target_dagster_writer(
-        transaction=SimpleNamespace(resolved={}), dagster_runtime=_runtime("map_dagster")
+    assert (
+        service._begin_cache_target_writer_drain(
+            owner_kind="diagnostic",
+            owner_id=_DIAGNOSTIC_ID,
+            transaction=transaction,
+        )
+        is attest
     )
+    assert command.call_args_list[0].kwargs["operation"] == "begin"
+    assert command.call_args_list[1].kwargs == {
+        "operation": "attest",
+        "owner_kind": "diagnostic",
+        "owner_id": _DIAGNOSTIC_ID,
+        "transaction": transaction,
+        "lease_id": begin.lease_id,
+        "prior_receipt_sha256": "a" * 64,
+    }
 
-    assert result == "admin_command_failed"
-    poll.assert_not_called()
 
-
-def test_drain_uses_compatible_pair_capability_for_daemon_pause(
+def test_restore_starts_only_map_dagster_webserver_before_map_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """issue #115 완료 기준: 일반 compose mutation 권한을 넓히지 않는다 — daemon만
-    멈추는 이 호출도 다른 모든 writer stop/start 지점과 같은 capability를 써야
-    한다."""
     service = ComposeService()
-    recovery = Mock(return_value={"success": True})
-    monkeypatch.setattr(service, "_run_frozen_recovery", recovery)
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(return_value=0),
-    )
-    transaction = SimpleNamespace(resolved={})
+    transaction = SimpleNamespace()
+    start_webserver = Mock()
+    command = Mock(return_value=SimpleNamespace())
+    monkeypatch.setattr(service, "_start_cache_target_drain_control_webserver", start_webserver)
+    monkeypatch.setattr(service, "_run_map_writer_drain", command)
 
-    result = service._drain_cache_target_dagster_writer(
-        transaction=transaction, dagster_runtime=_runtime("map_dagster")
-    )
-
-    assert result is None
-    recovery.assert_called_once_with(
-        ["stop", "kor-travel-map-dagster-daemon"],
-        mutation_capability=_COMPATIBLE_PAIR_MUTATION_CAPABILITY,
+    service._restore_cache_target_writer_drain(
+        owner_kind="diagnostic",
+        owner_id=_DIAGNOSTIC_ID,
         transaction=transaction,
+        lease_id="99999999-9999-4999-8999-999999999999",
+        prior_receipt_sha256="a" * 64,
     )
 
-
-def test_drain_succeeds_immediately_when_no_runs_are_inflight(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    monkeypatch.setattr(service, "_run_frozen_recovery", Mock(return_value={"success": True}))
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(return_value=0),
-    )
-    cancel = Mock()
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service._cancel_dagster_nonterminal_runs",
-        cancel,
-    )
-
-    result = service._drain_cache_target_dagster_writer(
-        transaction=SimpleNamespace(resolved={}), dagster_runtime=_runtime("map_dagster")
-    )
-
-    assert result is None
-    cancel.assert_not_called()
+    start_webserver.assert_called_once_with(transaction=transaction)
+    assert command.call_args.kwargs["operation"] == "restore"
 
 
-def test_drain_waits_for_a_schedule_producing_runs_and_succeeds_once_it_stops(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """issue #115 완료 기준: schedule이 계속 run을 만들어도 race 없이 drain한다.
-    daemon을 먼저 멈췄으므로 이미 떠 있던 run만 남고, 그 run들이 스스로 끝나면
-    (schedule이 새 run을 못 만드므로) bounded wait 안에서 성공해야 한다."""
-    service = ComposeService()
-    monkeypatch.setattr(service, "_run_frozen_recovery", Mock(return_value={"success": True}))
-    counts = iter([3, 1, 0])
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(side_effect=lambda *_a: next(counts)),
-    )
-    monkeypatch.setattr("kor_travel_docker_manager.services.compose_service.time.sleep", Mock())
-    cancel = Mock()
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service._cancel_dagster_nonterminal_runs",
-        cancel,
-    )
-
-    result = service._drain_cache_target_dagster_writer(
-        transaction=SimpleNamespace(resolved={}), dagster_runtime=_runtime("map_dagster")
-    )
-
-    assert result is None
-    cancel.assert_not_called()
-
-
-def test_drain_cancels_after_timeout_and_succeeds_if_cancel_clears_remaining_runs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    monkeypatch.setattr(service, "_run_frozen_recovery", Mock(return_value={"success": True}))
-    monkeypatch.setattr(
-        service,
-        "_map_dagster_container_name",
-        Mock(return_value="kor-travel-map-dagster-latest"),
-    )
-    # 항상 nonzero -> 첫 while loop이 바로 deadline을 넘겨 cancel 경로로 간 뒤,
-    # cancel 이후 재확인에서만 0을 반환한다.
-    counts = iter([2, 0])
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(side_effect=lambda *_a: next(counts)),
-    )
-    times = iter([0.0, 10_000.0])
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.time.monotonic",
-        Mock(side_effect=lambda: next(times)),
-    )
-    monkeypatch.setattr("kor_travel_docker_manager.services.compose_service.time.sleep", Mock())
-    cancel = Mock()
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service._cancel_dagster_nonterminal_runs",
-        cancel,
-    )
-
-    result = service._drain_cache_target_dagster_writer(
-        transaction=SimpleNamespace(resolved={}), dagster_runtime=_runtime("map_dagster")
-    )
-
-    assert result is None
-    cancel.assert_called_once_with("kor-travel-map-dagster-latest")
-
-
-def test_drain_reports_timeout_when_still_nonzero_after_cancel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    monkeypatch.setattr(service, "_run_frozen_recovery", Mock(return_value={"success": True}))
-    monkeypatch.setattr(
-        service,
-        "_map_dagster_container_name",
-        Mock(return_value="kor-travel-map-dagster-latest"),
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(return_value=1),
-    )
-    times = iter([0.0, 10_000.0])
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.time.monotonic",
-        Mock(side_effect=lambda: next(times)),
-    )
-    monkeypatch.setattr("kor_travel_docker_manager.services.compose_service.time.sleep", Mock())
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service._cancel_dagster_nonterminal_runs",
-        Mock(),
-    )
-
-    result = service._drain_cache_target_dagster_writer(
-        transaction=SimpleNamespace(resolved={}), dagster_runtime=_runtime("map_dagster")
-    )
-
-    assert result == "drain_timeout"
-
-
-def test_drain_reports_admin_command_failed_when_cancel_itself_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    monkeypatch.setattr(service, "_run_frozen_recovery", Mock(return_value={"success": True}))
-    monkeypatch.setattr(
-        service,
-        "_map_dagster_container_name",
-        Mock(return_value="kor-travel-map-dagster-latest"),
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(return_value=1),
-    )
-    times = iter([0.0, 10_000.0])
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.time.monotonic",
-        Mock(side_effect=lambda: next(times)),
-    )
-    monkeypatch.setattr("kor_travel_docker_manager.services.compose_service.time.sleep", Mock())
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service._cancel_dagster_nonterminal_runs",
-        Mock(side_effect=DeploymentContractError("cancel failed")),
-    )
-
-    result = service._drain_cache_target_dagster_writer(
-        transaction=SimpleNamespace(resolved={}), dagster_runtime=_runtime("map_dagster")
-    )
-
-    assert result == "admin_command_failed"
-
-
-def test_cancel_dagster_nonterminal_runs_script_contains_no_run_identifiers_or_secrets(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """issue #115 완료 기준: run ID·payload·credential을 어디에도 남기지 않는다.
-    실제 docker exec에 넘기는 커맨드/스크립트가 정적 텍스트(고정 count/status
-    필터링)뿐이고, 어떤 run의 식별자도 문자열로 끼워 넣지 않는다는 것을
-    직접 검증한다."""
-    from kor_travel_docker_manager.services.compose_service import (
-        _cancel_dagster_nonterminal_runs,
-    )
-
-    captured: dict[str, object] = {}
-
-    class _Completed:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def fake_run(args: list[str], **kwargs: object) -> _Completed:
-        captured["args"] = args
-        return _Completed()
-
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.subprocess.run", fake_run
-    )
-
-    _cancel_dagster_nonterminal_runs("kor-travel-map-dagster-latest")
-
-    args = captured["args"]
-    assert args[:3] == ["docker", "exec", "kor-travel-map-dagster-latest"]
-    script = args[-1]
-    assert "report_run_canceled" in script
-    # run_id/token/password 류의 동적 값이 스크립트에 절대 문자열로 끼어들지 않는다 —
-    # 스크립트는 완전히 고정된 텍스트고 실행 시점에 조립되는 f-string이 아니다.
-    assert "run_id" not in script
-    assert "{" not in script and "}" not in script
-
-
-def test_unlocked_diagnostic_drains_a_continuously_scheduling_dagster_before_full_stop(
+def test_unlocked_diagnostic_uses_map_drain_receipt_before_full_stop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """issue #115 완료 기준(통합): schedule이 계속 run을 만드는 상황에서도
-    diagnostic이 race 없이 drain하고 정상적으로 `writers_stopping` 이후까지
-    진행한다."""
+    """Map receipt가 terminal run=0을 증명한 뒤에만 full writer stop을 한다."""
     service, journal_path, attempt_log_path, transaction, activated, smoke = (
         _install_unlocked_context(tmp_path, monkeypatch)
     )
@@ -1219,14 +1084,10 @@ def test_unlocked_diagnostic_drains_a_continuously_scheduling_dagster_before_ful
         "_run_cache_target_diagnostic_role",
         Mock(side_effect=lambda runtime, *_a: (_receipt(runtime.role, "source_archive"),)),
     )
-    # daemon이 멈춘 뒤에도 이미 떠 있던 run들이 서서히 줄어드는 schedule을
-    # 흉내낸다.
-    dagster_counts = iter([5, 2, 0, 0])
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(side_effect=lambda *_a: next(dagster_counts, 0)),
+        Mock(return_value=0),
     )
-    monkeypatch.setattr("kor_travel_docker_manager.services.compose_service.time.sleep", Mock())
 
     result = service._run_cache_target_diagnostic_unlocked(
         journal_path=journal_path,
@@ -1244,11 +1105,10 @@ def test_unlocked_diagnostic_drains_a_continuously_scheduling_dagster_before_ful
     activated.assert_called_once()
 
 
-def test_unlocked_diagnostic_fails_closed_when_writer_reappears_after_drain(
+def test_unlocked_diagnostic_fails_closed_when_map_drain_command_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """issue #115 완료 기준: drain 이후 writer가 다시 생기면 `writers_stopping`
-    전에 fail-close한다 — 실제 전체 writer stop은 절대 호출되지 않는다."""
+    """Map이 terminal receipt를 내지 못하면 full writer stop은 실행하지 않는다."""
     service, journal_path, attempt_log_path, transaction, activated, _smoke = (
         _install_unlocked_context(tmp_path, monkeypatch)
     )
@@ -1256,22 +1116,6 @@ def test_unlocked_diagnostic_fails_closed_when_writer_reappears_after_drain(
         diagnostic_id=_DIAGNOSTIC_ID, identity=_identity(), started_at_unix=1_700_000_000
     )
     write_cache_target_diagnostic(journal_path, journal)
-    # drain 자체는 성공(dagster count가 0으로 수렴)하지만, 그 직후 재확인 시점에는
-    # DB에 다시 in-flight transaction이 생겨 있다.
-    inflight_calls = {"n": 0}
-
-    def fake_inflight(_runtime: object) -> int:
-        inflight_calls["n"] += 1
-        return 1 if inflight_calls["n"] > 3 else 0
-
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_database_inflight_count",
-        fake_inflight,
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.compose_service.read_dagster_inflight_run_count",
-        Mock(return_value=0),
-    )
     stop_calls: list[list[str]] = []
 
     def fake_run_frozen_recovery(args: list[str], **_kwargs: object) -> dict[str, object]:
@@ -1281,20 +1125,23 @@ def test_unlocked_diagnostic_fails_closed_when_writer_reappears_after_drain(
     monkeypatch.setattr(
         service, "_run_frozen_recovery", Mock(side_effect=fake_run_frozen_recovery)
     )
-
-    result = service._run_cache_target_diagnostic_unlocked(
-        journal_path=journal_path,
-        attempt_log_path=attempt_log_path,
-        journal=journal,
-        transaction=transaction,
-        config=SimpleNamespace(),
-        manifest=SimpleNamespace(),
-        state_directory=tmp_path,
+    monkeypatch.setattr(
+        service,
+        "_begin_cache_target_writer_drain",
+        Mock(side_effect=DeploymentContractError("Map drain receipt rejected")),
     )
 
-    assert result["success"] is False
-    final_journal = read_cache_target_diagnostic(journal_path)
-    assert final_journal.phase in {"failed", "aborted"}
-    # 전체 writer("svc") stop은 절대 시도되지 않았다 — daemon-only pause만 있었다.
+    with pytest.raises(DeploymentContractError, match="Map drain receipt rejected"):
+        service._run_cache_target_diagnostic_unlocked(
+            journal_path=journal_path,
+            attempt_log_path=attempt_log_path,
+            journal=journal,
+            transaction=transaction,
+            config=SimpleNamespace(),
+            manifest=SimpleNamespace(),
+            state_directory=tmp_path,
+        )
+
+    # 전체 writer("svc") stop은 terminal Map receipt 전에는 절대 시도되지 않는다.
     assert not any(call == ["stop", "svc"] for call in stop_calls)
-    activated.assert_called_once()
+    activated.assert_not_called()

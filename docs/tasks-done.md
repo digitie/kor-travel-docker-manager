@@ -12,6 +12,19 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+## 2026-08-04 — T-049F durable Map writer-drain (issue #115)
+
+- [x] **T-049F — durable Map writer-drain**
+
+  Manager는 frozen Compose의 Map API one-shot private command만 `begin → attest → restore`
+  체인으로 실행한다. journal은 `writers_draining`, `writers_drained`, `writers_stopping`과
+  rollback `writers_restored` phase에 lease/receipt SHA-256을 fsync한다. pre-backup·superseded
+  diagnostic recovery는 restore 뒤 exact previous pair re-attestation 전 writer/archive를
+  허용하지 않으며, backup rollback은 Map Dagster webserver-only restore receipt 뒤 daemon을
+  포함한 old runtime을 연다. public GraphQL/token/일반 Compose bypass는 없다. strict Manager
+  regression 143건과 actual ephemeral Docker Compose rehearsal 1건을 통과했고 n150/prod는
+  사용하지 않았다.
+
 ---
 
 ## 완료 현황 요약

@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-04 (T-049F: isolated durable writer-drain 완료)
+
+Map-owned lease/receipt chain을 Manager diagnostic·cutover journal에 결선했다. initial fence는
+`writers_draining → writers_drained → writers_stopping`을 fsync하며, pre-backup crash는 DB
+rollback 없이 Map restore → full writer activation → prior pair re-attestation으로만 복구한다.
+backup 뒤 coupled rollback은 Map DB의 drained state를 되돌리는 특성상 `manager_state_restored`
+뒤 webserver-only restore receipt를 `writers_restored`로 fsync하고, 그 뒤 daemon 포함 old runtime과
+pair attestation을 연다.
+
+단일 적대 리뷰가 발견한 begin JSON null-key·forbidden argv, actual Compose progress stderr, late
+Dagster run cancel, pre-backup/superseded diagnostic pair re-attestation 누락을 모두 수정했다.
+Manager regression 143건과 actual ephemeral Docker Compose rehearsal 1건, Map strict command 5건과
+isolated PostgreSQL migration/CAS 3건이 통과했다. production/n150·기존 데이터는 접근하지 않았다.
+
 ## 2026-08-04 (T-049E 후속: inventory hash canonicalization으로 미해결 사항 해결)
 
 2026-08-03 journal에 미해결로 남겼던 schema/data inventory hash 오탐(pg_dump

@@ -21,7 +21,7 @@
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[/]` | - | compose/backend 기본값 정렬 완료, n150 실제 DROP/RENAME 실행 대기 |
-| **T-052** | cache-target 진단의 durable Dagster writer drain (issue #115) | `[x]` | 2026-08-04 | writers_draining phase 신설, daemon 선-정지·bounded drain·terminal cancel |
+| **T-052** | cache-target 진단의 direct daemon writer-drain 초안 (issue #115) | `[x]` | 2026-08-04 | **T-049F로 대체됨** — daemon 직접 중지·직접 cancel은 구현 경계가 아님 |
 
 ---
 
@@ -546,6 +546,12 @@ naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(�
 - [x] issue #115(durable Dagster writer drain)는 T-052로 분리해 구현했다.
 
 ### T-052: cache-target 진단의 durable Dagster writer drain (issue #115)
+
+> **대체됨 — 구현·검증 정본이 아니다.** 이 기록은 direct daemon stop 초안의 이력을
+> 보존할 뿐이다. 현재 정본은 T-049F와
+> `docs/cache-target-cutover-diagnostics.md`의 Map-owned durable lease/typed
+> private command 설계이며, Manager는 Dagster daemon·GraphQL·DB를 직접 조작하지
+> 않는다.
 
 n150에서 `ktdctl cache-target diagnose`를 반복 실행하며 같은 문제를 계속 만났다:
 `writers_fencing`의 preflight가 PostgreSQL 진행 중 트랜잭션과 Dagster 비종료 run이

@@ -105,9 +105,10 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    read-only로 확인한다. 이어 `writers_draining`을 owner-only journal에 fsync한 뒤 Map-owned
    durable lease를 `begin → attest`한다. Map이 schedule/sensor의 기존 상태를 own DB에 보존·pause하고,
    bounded grace와 one-shot terminal cancel 뒤 Map Dagster run 0을 attest한 receipt가 있을 때만
-   `writers_drained`를 fsync한다. Manager journal에는 opaque lease UUID와 secret-free receipt SHA-256만
-   보존한다. 이 단계에서 기존 cache-target 4-role credential, admin/ops endpoint, 외부 GraphQL, 일반
-   Compose command는 사용하지 않는다. 그 뒤에만 resolved Compose에서 DB 쓰기 capability를 가진 service가
+   `writers_drained`를 fsync한다. 이어 `writers_stopping`을 fsync한 뒤에만 writer stop을 호출한다.
+   Manager journal에는 opaque lease UUID와 secret-free receipt SHA-256만 보존한다. 이 단계에서 기존
+   cache-target 4-role credential, admin/ops endpoint, 외부 GraphQL, 일반 Compose command는 사용하지 않는다.
+   그 뒤에만 resolved Compose에서 DB 쓰기 capability를 가진 service가
    Map API·Dagster web·Dagster daemon, PinVi API·Dagster의 정확한 5개인지 확인하고 모두 정지한다. 이 writer
    registry의 canonical digest는
    `526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c`다.
@@ -150,7 +151,10 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    event를 만들 수 있으므로 invocation **직전** `generation_bootstrapped` journal의 `external_event_count`를
    1로 올려 directory fsync까지 끝낸 뒤 runner를 호출한다. 이 durable external-event boundary 전 실패만 new
    runtime을 먼저 중지하고 Map application DB → Map Dagster DB → PinVi DB → manager env/state/manifest를
-   frozen bundle로 복구한 뒤 old image를 마지막에 기동·검증한다. boundary 기록이 실패하면 runner를 호출하지
+   frozen bundle로 복구한다. 이 backup은 Map의 `drained` lease와 paused instigation도 되돌리므로,
+   `manager_state_restored` 뒤에는 Map Dagster webserver만 먼저 기동해 같은 cutover lease를
+   `restore`하고 receipt SHA-256을 `writers_restored`로 fsync한다. 그 뒤에만 daemon을 포함한
+   old image를 기동·prior pair attest한다. boundary 기록이 실패하면 runner를 호출하지
    않는다. boundary 뒤 응답 유실·crash·initial/canary/GC 실패는 old DB restore를 금지하고 같은 transaction/
    cutover의 idempotent resume 또는 새 generation fix-forward만 허용한다. `forward_committed` fsync는 final Pin
    audit까지 끝난 뒤 writer 재기동을 허용하는 별도 최종 경계다. migration 이후 일반 image-only rollback은
@@ -163,13 +167,13 @@ rollback을 유지하므로, 양쪽 모두 exact release여야 하는 initial ga
    receipt, committed enable evidence, final active·rollback manifest, 현재 running pair와 pair attestation을 다시
    검증한 뒤에만 성공을 재보고한다. initial receipt가 없을 수 있는 `rolled_back` terminal은 이 규칙과 분리한다.
 
-허용 phase는 `prepared → writers_fencing → writers_draining → writers_drained → writers_fenced → backups_committed → candidate_built →
+허용 phase는 `prepared → writers_fencing → writers_draining → writers_drained → writers_stopping → writers_fenced → backups_committed → candidate_built →
 pin_preflight_verified → map_preflight_verified → map_database_forwarded → databases_forwarded → csv_forwarded →
 generation_bootstrapped → initial_committed → sync_enabled → canary_verified → gc_started → gc_verified →
 final_writers_fencing → final_writers_fenced → map_final_verified → final_boundary_verified → forward_committed →
 runtime_activated`다. rollback은 durable external-event boundary 전에만
 `rollback_preparing → new_runtime_stopped →
-map_db_restored → map_dagster_db_restored → pinvi_db_restored → manager_state_restored → old_runtime_restored →
+map_db_restored → map_dagster_db_restored → pinvi_db_restored → manager_state_restored → writers_restored → old_runtime_restored →
 rolled_back` 순서로 진행한다. phase를 건너뛰거나 뒤로 이동하지 않으며 각 전이는 owner-only atomic replace와
 directory fsync 뒤에만 다음 mutation을 허용한다.
 

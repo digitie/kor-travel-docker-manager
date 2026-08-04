@@ -117,8 +117,9 @@ race를 operator가 Manager 밖의 GraphQL 호출이나 일반 Compose 명령으
 5. `writers_drained` 뒤 기존 `writers_stopping` fence를 수행한다.
    full writer stop 뒤에도 DB transaction 또는 Dagster run이 남으면 fail-close한다.
 6. diagnostic의 성공·실패·예외와 superseded non-terminal journal recovery 모두에서
-   Manager는 Map의 exact lease를 restore·attest한 뒤에만 archive/resume한다. journal
-   phase가 `writers_draining` 이상이면 이 pre-backup recovery가 성공하기 전
+   Manager는 Map Dagster webserver만 먼저 세워 Map의 exact lease를 restore·attest하고,
+   daemon 포함 writer를 다시 열어 exact prior pair를 re-attest한 뒤에만 archive/resume한다.
+   journal phase가 `writers_draining` 이상이면 이 pre-backup recovery가 성공하기 전
    coupled DB rollback이나 archive를 허용하지 않는다.
 
 Map control command는 기존 cache-target 4-token registry를 재사용하거나 다섯 번째
