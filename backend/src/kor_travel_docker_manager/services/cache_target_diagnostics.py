@@ -787,6 +787,16 @@ def _validate_phase_evidence(journal: CacheTargetDiagnosticJournal) -> None:
     if journal.phase in ("failed", "aborted"):
         return
     index = _FORWARD_PHASES.index(journal.phase)
+    # 적대적 리뷰(2명)가 찾은 공백: 아래 두 검사는 각각 phase 문턱으로만 걸려 있어서,
+    # restore receipt가 있는데 그보다 먼저 있어야 할 lease/receipt가 없는(논리적으로
+    # 불가능한) journal이 어느 phase에서든 통과할 수 있었다 — restore는 lease/receipt
+    # 없이는 절대 존재할 수 없다는 불변식을 phase와 무관하게 명시적으로 강제한다.
+    if journal.writer_drain_restore_receipt_sha256 is not None and (
+        journal.writer_drain_lease_id is None or journal.writer_drain_receipt_sha256 is None
+    ):
+        raise DeploymentContractError(
+            "cache-target diagnostic writer drain restore evidence precedes its lease"
+        )
     if index >= _FORWARD_PHASES.index("writers_drained") and (
         journal.writer_drain_lease_id is None
         or journal.writer_drain_receipt_sha256 is None

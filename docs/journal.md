@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-08-04 (PR #119/T-049F 병합 조정 — T-052 대체, evidence-validation 공백 수정)
+
+사용자 지시로 GitHub PR #119(다른 세션이 만든 것으로 보임 — 이 세션의 T-052(PR #117)가
+이미 병합된 뒤에 브랜치됐는데도 완전히 별도 모듈로 같은 issue #115를 다시 구현)를
+서브에이전트로 먼저 충돌·중복 여부 분석했다. 결론: 중복이 아니라 **T-052를 대체하는
+더 완성도 높은 구현**(Map 자체의 begin/attest/restore lease/receipt 프로토콜, cutover까지
+커버) — 코드는 깨끗이 auto-merge됐고 docs만 append 충돌, T-050의 gate 테스트 3건만
+v1 journal 픽스처 때문에 깨짐(v2 계약에 맞게 고침).
+
+병합 전 적대적 리뷰어 2명을 추가로 돌렸다(레이스/crash-recovery/rollback-claim 검증
+담당, secret 비노출/schema 검증 담당). 리뷰어가 `_validate_phase_evidence`(diagnostics·
+window 양쪽)의 실공백을 찾았다: restore receipt만 있고 그 전에 있어야 할 lease/receipt는
+없는 불가능한 조합이 phase 문턱 검사로는 안 걸러졌다 — phase 무관 무조건 검사를
+추가해 고쳤다. 다른 리뷰어는 crash-recovery 전체가 Map의 `begin` idempotency에
+의존한다는 medium 우려를 남겼는데, 이 저장소만으로는 검증 불가능해 fix 없이 열어둔다
+(Map 쪽 확인 필요, `docs/tasks-done.md`에 기록).
+
+backend 전체 1580 passed, ruff/mypy clean. T-052는 "대체됨" 표시로 남기고 T-049F를
+정본으로 `tasks.md`/`tasks-done.md`에 반영했다.
+
+---
+
 ## 2026-08-04 (T-049F: isolated durable writer-drain 완료)
 
 Map-owned lease/receipt chain을 Manager diagnostic·cutover journal에 결선했다. initial fence는
@@ -21,6 +43,66 @@ upgrade 경계, stale pair 대조보다 이른 writer restore, JSON boolean `run
 격리 state를 새로 만들도록 고정했다. Manager regression 148건과 actual ephemeral Docker Compose
 rehearsal 1건, Map strict command 5건과 isolated PostgreSQL migration/CAS 3건이 통과했다.
 production/n150·기존 데이터는 접근하지 않았다.
+
+---
+
+## 2026-08-04 (T-054: 백업 목록/보존 관리 완료)
+
+T-053(`ktdctl db-backup create`)이 남긴 owner-only manifest를 읽는
+`ktdctl db-backup list [--role ...] [--json]`과, 파일 목록 기반
+age/count 보존 정책(`--gc`)을 구현했다. GC는 `.manifest.json`을 먼저 지우고
+`.dump`를 나중에 지워, 중간에 죽어도 다음 조회가 고아 dump(디스크 낭비)만
+남기고 절대 깨지지 않게 했다. 손상된 manifest나 dump 유실은 예외로 전체
+조회를 막는 대신 `warnings`로 담아 나머지는 계속 보여준다.
+
+fork로 구현했으나 fork는 Agent tool로 subagent(적대적 리뷰어)를 만들 수
+없어 리뷰 단계를 완료하지 못하고 uncommitted 상태로 멈췄다 — 부모 세션이
+이어받아 적대적 리뷰어 2명(GC 삭제 안전성/race, 목록·출력 정확성)을 돌렸다.
+GC 안전성 쪽은 confirmed 실공백 없음(합성 fixture로 직접 재현 검증). 목록/출력
+쪽 리뷰어가 **실제 결함**을 찾았다: human-readable 출력에 시각 필드가
+빠져 있었는데, 코드를 고치는 대신 `docs/tasks.md`의 요구사항 문구 자체를
+구현에 맞춰 조용히 낮춰놓았던 것. `created_at_unix`를 ISO 8601 UTC로 출력에
+추가하고 문구도 원복 + 사고 경위를 명시해 고쳤다. 회귀 테스트 1건 추가.
+backend 전체 1570 passed, ruff/mypy clean(touched files).
+
+---
+
+## 2026-08-04 (백업/복구 기능 gap 분석 + T-053 독립 DB 백업 CLI)
+
+T-049E n150 재검증 중 `kor-travel-map-ui`/`kor-travel-map-api` revision drift로
+막힌 시점에, 사용자가 "전체 구현을 재검토해서 백업 리스토어에 필요한 기능을
+찾고 개선할 부분을 찾아 구현 계획을 세우라"고 방향을 크게 틀었다 — Map/PinVi
+프로젝트가 명확한 설계 없이 구현되고 있다는 문제의식.
+
+서브에이전트로 전체 조사(backend/CLI/API/Web UI/ADR)를 돌린 결과: **독립적으로
+호출 가능한 DB 백업 도구가 전혀 없다**는 게 가장 큰 공백으로 확인됐다. 모든
+`pg_dump`는 cache-target cutover window 안에 내장된 private 스텝일 뿐이었고,
+이슈 #109 때 운영자가 손으로 `pg_dump`/`psql DROP/RENAME`을 실행해야 했던 게
+바로 이 공백 때문이었다. CLI만 유일한 노출 경로였고(API/Web UI는 백업/복구
+관련 기능 0건, grep 확인 — 다만 이건 mutation을 CLI 전용으로 유지하는 기존
+권한 경계와 일치해서 버그가 아니라 지켜야 할 설계일 가능성이 큼), ADR 37개
+어디에도 백업/복구를 1급 기능으로 다룬 곳이 없어 사용자의 진단이 맞았음을
+확인했다.
+
+조사 결과를 T-053(백업 생성)→T-054(목록/GC)→T-055(안전장치 있는 복구)→
+T-057(cache-target 통합)→T-056(읽기 전용 API/Web UI) 5개 태스크로 tasks.md에
+공식 등록하고, T-053부터 순차 구현을 시작했다.
+
+**T-053**: `ktdctl db-backup create --role {map_application,map_dagster,pinvi}`.
+cache_target_backup.py의 기존 typed pg_dump/digest/owner-only-storage primitive를
+재사용하되 cutover window/journal과 완전히 분리했다. 구현 중 두 실공백을
+발견·수정했다: (1) `Path.mkdir(mode=..., parents=True)`가 자동 생성되는 상위
+디렉터리에는 `mode`를 적용하지 않아 `~/backups`가 0700이 아니게 될 뻔한 것,
+(2) 적대적 리뷰어 1명이 찾은 TOCTOU — 존재-확인 뒤 cutover-window 전용
+idempotent-재사용 헬퍼(`_write_pg_dump`)를 그대로 쓰면 동시 재호출이 "거부"
+계약을 어기고 조용히 성공할 수 있었던 것 — `O_CREAT|O_EXCL`로 최종 파일명을
+원자적으로 선점하는 방식으로 고쳤다. 리뷰어 2(lock 범위·identity 신뢰 모델)는
+confirmed 실공백 없음. backend 전체 1553 passed.
+
+다음은 T-054(목록/GC)부터 순서대로 이어간다. T-049E(map-ui/map-api revision
+drift로 중단된 상태)는 이 백업/복구 트랙이 끝난 뒤 재개한다.
+
+---
 
 ## 2026-08-04 (T-049E 후속: inventory hash canonicalization으로 미해결 사항 해결)
 

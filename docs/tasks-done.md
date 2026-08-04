@@ -28,6 +28,21 @@
   ephemeral Docker Compose rehearsal 1건을 통과했고 n150/prod는
   사용하지 않았다.
 
+  **병합 시 추가 확인·수정**(부모 세션, 2026-08-04): 이미 병합된 T-052(direct
+  daemon stop 초안, PR #117)를 대체하므로, T-052가 남긴 `test_cache_target_cutover_gate.py`의
+  v1 phase 픽스처(`writers_drained`·lease/receipt evidence 누락)를 v2 계약에 맞게
+  고쳤다. 적대적 리뷰어 2명(레이스/crash-recovery/rollback 담당, secret 비노출/
+  schema 검증 담당)을 추가로 돌렸다. 리뷰어가 **실제 결함**을 찾았다:
+  `_validate_phase_evidence`(diagnostics·window 양쪽)가 phase 문턱으로만 검사해서,
+  `writer_drain_restore_receipt_sha256`만 있고 그보다 먼저 있어야 할
+  `writer_drain_lease_id`/`writer_drain_receipt_sha256`은 없는 논리적으로 불가능한
+  journal이 어느 phase에서든 통과할 수 있었다 — phase와 무관한 무조건 검사를
+  추가해 고쳤다(회귀 테스트 2건 추가). 리뷰어 1은 crash-recovery 전체가 "Map의
+  `begin`이 owner_id 기준으로 idempotent하다"는, 이 저장소만으로는 검증 불가능한
+  가정에 의존한다는 medium 등급 우려를 남겼다 — Map 쪽 구현 소유자 확인 필요
+  (fix되지 않고 열린 채로 남김, kor-travel-map 쪽에 별도 확인 요청 필요).
+  backend 전체 1580 passed, ruff/mypy clean(touched files).
+
 ---
 
 ## 완료 현황 요약

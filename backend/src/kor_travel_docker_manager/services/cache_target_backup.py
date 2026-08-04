@@ -8,9 +8,10 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -457,6 +458,324 @@ def verify_database_backup(
         raise DeploymentContractError(
             f"{runtime.role} backup restore rehearsal evidence differs"
         )
+
+
+@dataclass(frozen=True)
+class StandaloneBackupManifest:
+    """T-053: cache-target cutover window와 무관하게 언제든 단독으로 만드는 백업의
+    증적. raw stdout/stderr/DSN/credential/path는 담지 않는다 — typed digest·size·
+    timestamp·schema revision만 남긴다."""
+
+    role: DatabaseRole
+    created_at_unix: int
+    schema_revision: str
+    sha256: str
+    byte_size: int
+    backup_filename: str
+
+
+def create_standalone_database_backup(
+    *,
+    backups_root: Path,
+    runtime: DatabaseRuntime,
+    created_at_unix: int,
+) -> StandaloneBackupManifest:
+    """cache-target cutover window/journal과 완전히 분리된, 언제든 단독 호출
+    가능한 백업. `~/backups/<role>/`에 owner-only(0700 디렉터리·0600 파일) `.dump`와
+    같은 이름의 `.manifest.json`을 원자적으로 남긴다. 같은 초 안에 같은 role로
+    재호출되면(동일 timestamp) 충돌을 조용히 덮지 않고 거부한다."""
+
+    _validate_runtime(runtime)
+    if created_at_unix <= 0:
+        raise DeploymentContractError("standalone database backup timestamp is invalid")
+    role_directory = backups_root / runtime.role
+    # `Path.mkdir(mode=..., parents=True)`는 `mode`를 마지막(leaf) 디렉터리에만
+    # 적용하고 자동 생성되는 상위 디렉터리는 시스템 기본 권한(umask 적용)으로
+    # 만든다 — `backups_root`가 아직 없으면 leaf만 0700이 되고 `backups_root` 자체는
+    # 0700이 아니게 된다. 두 단계를 각각 명시적으로 만들어 이 함정을 피한다.
+    backups_root.mkdir(mode=0o700, exist_ok=True)
+    _validate_owner_only_directory(backups_root)
+    role_directory.mkdir(mode=0o700, exist_ok=True)
+    _validate_owner_only_directory(role_directory)
+    schema_revision = _read_schema_revision(runtime)
+    if not _SCHEMA_REVISION.fullmatch(schema_revision):
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup schema revision is invalid"
+        )
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(created_at_unix))
+    filename_stem = f"{timestamp}_{runtime.role}_{schema_revision}"
+    backup_path = role_directory / f"{filename_stem}.dump"
+    manifest_path = role_directory / f"{filename_stem}.manifest.json"
+    # `_write_pg_dump`는 대상이 이미 있으면 조용히 재사용을 허용한다(cutover
+    # window의 idempotent 재시도 의미론). 이 독립 백업 경로는 "같은 초에 재호출되면
+    # 거부"가 계약이므로 그 헬퍼를 재사용하지 않는다 — `O_CREAT|O_EXCL`로 최종
+    # 파일명 자체를 원자적으로 선점한 뒤 그 fd에 직접 pg_dump를 스트리밍해,
+    # 존재-확인과 쓰기 사이의 race에서 두 번째 호출이 조용히 성공하는 경로를
+    # 원천적으로 없앤다.
+    if manifest_path.exists():
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup already exists for this timestamp"
+        )
+    try:
+        descriptor = os.open(
+            backup_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+        )
+    except FileExistsError as exc:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup already exists for this timestamp"
+        ) from exc
+    wrote_backup = False
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            completed = subprocess.run(
+                [
+                    *_database_admin_command(runtime, "pg_dump"),
+                    "--format=custom",
+                    "--no-owner",
+                    "--no-acl",
+                    "--dbname",
+                    runtime.database_name,
+                ],
+                stdout=output,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=3600,
+            )
+            output.flush()
+            os.fsync(output.fileno())
+        if completed.returncode != 0 or completed.stderr:
+            raise DeploymentContractError(f"{runtime.role} standalone backup failed")
+        if backup_path.stat().st_size <= 0:
+            raise DeploymentContractError(f"{runtime.role} standalone backup is empty")
+        wrote_backup = True
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            f"{runtime.role} standalone backup could not run"
+        ) from exc
+    finally:
+        if not wrote_backup:
+            backup_path.unlink(missing_ok=True)
+    _fsync_directory(role_directory)
+    payload_sha256, byte_size = _file_sha256(backup_path)
+    manifest = StandaloneBackupManifest(
+        role=runtime.role,
+        created_at_unix=created_at_unix,
+        schema_revision=schema_revision,
+        sha256=payload_sha256,
+        byte_size=byte_size,
+        backup_filename=backup_path.name,
+    )
+    payload = json.dumps(
+        asdict(manifest), sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    _atomic_replace_owner_file(manifest_path, payload)
+    return manifest
+
+
+_STANDALONE_BACKUP_FILE_SUFFIX = ".dump"
+_STANDALONE_BACKUP_MANIFEST_SUFFIX = ".manifest.json"
+_STANDALONE_BACKUP_MANIFEST_FIELDS = frozenset(
+    {"role", "created_at_unix", "schema_revision", "sha256", "byte_size", "backup_filename"}
+)
+_STANDALONE_BACKUP_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_STANDALONE_BACKUP_STEM = re.compile(
+    r"^(?P<timestamp>\d{8}T\d{6}Z)_(?P<role>[a-z_]+)_(?P<schema_revision>[0-9a-z][0-9a-z_.-]{0,127})$"
+)
+STANDALONE_BACKUP_DEFAULT_KEEP_COUNT = 5
+STANDALONE_BACKUP_DEFAULT_KEEP_DAYS = 14
+
+
+@dataclass(frozen=True)
+class StandaloneBackupListResult:
+    """`list_standalone_database_backups`의 결과. `warnings`는 손상되었거나
+    계약을 벗어난 manifest를 가리키는 사람이 읽을 수 있는 설명이며, 그런 항목은
+    `manifests`에서 조용히 빠지는 대신 항상 `warnings`에 남는다(silent truncation
+    금지). 파일명만 담고 raw 파일 내용은 절대 넣지 않는다."""
+
+    manifests: tuple[StandaloneBackupManifest, ...]
+    warnings: tuple[str, ...]
+
+
+def list_standalone_database_backups(
+    backups_root: Path,
+    *,
+    role: DatabaseRole | None = None,
+) -> StandaloneBackupListResult:
+    """`~/backups/<role>/`의 T-053 백업 manifest를 읽는다. 각 항목은 파일명 패턴·
+    manifest JSON 스키마·참조된 `.dump` 파일의 owner-only 소유·크기 일치를 모두
+    통과해야 유효로 인정한다 — 이 디렉터리에 있는 임의 파일을 신뢰하지 않는다.
+    손상되거나 계약을 벗어난 manifest는 예외를 던져 전체 조회를 막는 대신
+    `warnings`에 담아 나머지는 계속 보여준다(disaster-recovery 도구가 항목 하나
+    손상됐다고 전체를 못 보여주면 더 위험하다)."""
+
+    roles = (role,) if role is not None else tuple(_ROLE_CONFIG)
+    manifests: list[StandaloneBackupManifest] = []
+    warnings: list[str] = []
+    for candidate_role in roles:
+        if candidate_role not in _ROLE_CONFIG:
+            raise DeploymentContractError("standalone database backup role is invalid")
+        role_directory = backups_root / candidate_role
+        try:
+            _validate_owner_only_directory(role_directory)
+        except DeploymentContractError:
+            continue
+        for manifest_path in sorted(
+            role_directory.glob(f"*{_STANDALONE_BACKUP_MANIFEST_SUFFIX}")
+        ):
+            try:
+                manifest = _read_standalone_backup_manifest(
+                    manifest_path, expected_role=candidate_role
+                )
+            except DeploymentContractError:
+                warnings.append(
+                    f"{candidate_role}: {manifest_path.name} is invalid or its "
+                    "backup payload is missing/altered"
+                )
+                continue
+            manifests.append(manifest)
+    manifests.sort(key=lambda item: item.created_at_unix, reverse=True)
+    return StandaloneBackupListResult(
+        manifests=tuple(manifests), warnings=tuple(warnings)
+    )
+
+
+def _read_standalone_backup_manifest(
+    manifest_path: Path, *, expected_role: DatabaseRole
+) -> StandaloneBackupManifest:
+    stem_match = _STANDALONE_BACKUP_STEM.fullmatch(
+        manifest_path.name.removesuffix(_STANDALONE_BACKUP_MANIFEST_SUFFIX)
+    )
+    if stem_match is None or stem_match.group("role") != expected_role:
+        raise DeploymentContractError("standalone database backup filename is invalid")
+    _validate_owner_only_file(manifest_path)
+    try:
+        payload = json.loads(manifest_path.read_bytes())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DeploymentContractError(
+            "standalone database backup manifest is invalid"
+        ) from exc
+    if not isinstance(payload, dict) or set(payload) != _STANDALONE_BACKUP_MANIFEST_FIELDS:
+        raise DeploymentContractError("standalone database backup manifest is invalid")
+    role = payload["role"]
+    created_at_unix = payload["created_at_unix"]
+    schema_revision = payload["schema_revision"]
+    sha256 = payload["sha256"]
+    byte_size = payload["byte_size"]
+    backup_filename = payload["backup_filename"]
+    if (
+        role != expected_role
+        or role != stem_match.group("role")
+        or not isinstance(created_at_unix, int)
+        or isinstance(created_at_unix, bool)
+        or created_at_unix <= 0
+        or not isinstance(schema_revision, str)
+        or not _SCHEMA_REVISION.fullmatch(schema_revision)
+        or schema_revision != stem_match.group("schema_revision")
+        or not isinstance(sha256, str)
+        or not _STANDALONE_BACKUP_SHA256.fullmatch(sha256)
+        or not isinstance(byte_size, int)
+        or isinstance(byte_size, bool)
+        or byte_size <= 0
+        or not isinstance(backup_filename, str)
+        or backup_filename
+        != manifest_path.name.removesuffix(_STANDALONE_BACKUP_MANIFEST_SUFFIX)
+        + _STANDALONE_BACKUP_FILE_SUFFIX
+    ):
+        raise DeploymentContractError("standalone database backup manifest is invalid")
+    backup_path = manifest_path.parent / backup_filename
+    _validate_owner_only_file(backup_path)
+    if backup_path.stat().st_size != byte_size:
+        raise DeploymentContractError(
+            "standalone database backup payload size differs from manifest"
+        )
+    return StandaloneBackupManifest(
+        role=role,
+        created_at_unix=created_at_unix,
+        schema_revision=schema_revision,
+        sha256=sha256,
+        byte_size=byte_size,
+        backup_filename=backup_filename,
+    )
+
+
+@dataclass(frozen=True)
+class StandaloneBackupGcResult:
+    """`gc_standalone_database_backups`의 결과. `kept`/`deleted` 모두 명시적으로
+    담아 무엇이 지워지고 무엇이 남았는지 항상 CLI 출력에 드러낼 수 있게 한다
+    (silent truncation 금지)."""
+
+    role: DatabaseRole
+    kept: tuple[StandaloneBackupManifest, ...]
+    deleted: tuple[StandaloneBackupManifest, ...]
+    warnings: tuple[str, ...]
+
+
+def gc_standalone_database_backups(
+    backups_root: Path,
+    *,
+    role: DatabaseRole,
+    now_unix: int,
+    keep_count: int = STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
+    keep_days: int = STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
+) -> StandaloneBackupGcResult:
+    """가장 최근 `keep_count`개는 나이와 무관하게 항상 보존하고, 그 나머지 중
+    `keep_days`일 이내인 것도 보존한다. 그 외는 지운다. 삭제는 manifest를 먼저
+    지워 목록에서 즉시 빠지게 한 뒤 `.dump`를 지운다 — 중간에 죽어도 다음
+    `list_standalone_database_backups` 호출이 고아 `.dump`(디스크만 낭비, 목록엔
+    영향 없음) 이상으로 깨지지 않는다. 삭제 직전 owner-only 소유를 다시 검증해
+    race로 다른 파일이 같은 이름에 끼어든 경우를 배제한다."""
+
+    if role not in _ROLE_CONFIG:
+        raise DeploymentContractError("standalone database backup role is invalid")
+    if keep_count < 1:
+        raise DeploymentContractError(
+            "standalone database backup GC keep_count is invalid"
+        )
+    if keep_days < 0:
+        raise DeploymentContractError(
+            "standalone database backup GC keep_days is invalid"
+        )
+    if now_unix <= 0:
+        raise DeploymentContractError(
+            "standalone database backup GC timestamp is invalid"
+        )
+    listing = list_standalone_database_backups(backups_root, role=role)
+    cutoff_unix = now_unix - keep_days * 86_400
+    kept: list[StandaloneBackupManifest] = []
+    to_delete: list[StandaloneBackupManifest] = []
+    for index, manifest in enumerate(listing.manifests):
+        if index < keep_count or manifest.created_at_unix >= cutoff_unix:
+            kept.append(manifest)
+        else:
+            to_delete.append(manifest)
+    role_directory = backups_root / role
+    deleted: list[StandaloneBackupManifest] = []
+    for manifest in to_delete:
+        _delete_standalone_database_backup(role_directory, manifest)
+        deleted.append(manifest)
+    return StandaloneBackupGcResult(
+        role=role,
+        kept=tuple(kept),
+        deleted=tuple(deleted),
+        warnings=listing.warnings,
+    )
+
+
+def _delete_standalone_database_backup(
+    role_directory: Path, manifest: StandaloneBackupManifest
+) -> None:
+    _validate_owner_only_directory(role_directory)
+    backup_path = role_directory / manifest.backup_filename
+    manifest_filename = (
+        manifest.backup_filename.removesuffix(_STANDALONE_BACKUP_FILE_SUFFIX)
+        + _STANDALONE_BACKUP_MANIFEST_SUFFIX
+    )
+    manifest_path = role_directory / manifest_filename
+    _validate_owner_only_file(manifest_path)
+    _validate_owner_only_file(backup_path)
+    manifest_path.unlink()
+    backup_path.unlink()
+    _fsync_directory(role_directory)
 
 
 def restore_database_backup(

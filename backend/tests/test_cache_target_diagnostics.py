@@ -210,6 +210,17 @@ def test_diagnostic_rejects_writers_fenced_without_writer_fence_evidence() -> No
         write_cache_target_diagnostic(Path("/nonexistent/unused.json"), journal)
 
 
+def test_diagnostic_rejects_restore_receipt_without_prior_lease() -> None:
+    """적대적 리뷰가 찾은 공백: restore receipt만 있고 lease/receipt는 없는
+    논리적으로 불가능한 조합이 phase 문턱 검사만으로는 걸러지지 않았다."""
+    journal = replace(
+        _prepared(),
+        writer_drain_restore_receipt_sha256="9" * 64,
+    )
+    with pytest.raises(DeploymentContractError, match="precedes its lease"):
+        write_cache_target_diagnostic(Path("/nonexistent/unused.json"), journal)
+
+
 def test_diagnostic_rejects_map_application_checked_without_its_evidence() -> None:
     journal = transition_cache_target_diagnostic(_prepared(), "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")

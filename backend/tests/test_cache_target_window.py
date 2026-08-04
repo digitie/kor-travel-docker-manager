@@ -668,6 +668,15 @@ def test_record_window_failure_freezes_last_safe_phase_and_class(
     assert rolled.failure_class == "contract_violation"
 
 
+def test_window_rejects_restore_receipt_without_prior_lease() -> None:
+    """적대적 리뷰가 cache_target_diagnostics.py에서 찾은 것과 같은 공백:
+    restore receipt만 있고 lease/receipt는 없는 논리적으로 불가능한 조합이
+    phase 문턱 검사만으로는 걸러지지 않았다."""
+    journal = replace(_prepared(), writer_drain_restore_receipt_sha256="9" * 64)
+    with pytest.raises(DeploymentContractError, match="precedes its lease"):
+        write_cache_target_window(Path("/nonexistent/unused.json"), journal)
+
+
 def test_record_window_failure_rejects_non_forward_phase() -> None:
     journal = transition_cache_target_window(_prepared(), "rollback_preparing")
     with pytest.raises(DeploymentContractError, match="forward phase"):

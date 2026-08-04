@@ -60,6 +60,12 @@ def _completed_diagnostic(
     )
     journal = transition_cache_target_diagnostic(journal, "writers_fencing")
     journal = transition_cache_target_diagnostic(journal, "writers_draining")
+    journal = transition_cache_target_diagnostic(
+        journal,
+        "writers_drained",
+        writer_drain_lease_id="99999999-1111-2222-3333-444444444444",
+        writer_drain_receipt_sha256="e" * 64,
+    )
     journal = transition_cache_target_diagnostic(journal, "writers_stopping")
     journal = transition_cache_target_diagnostic(
         journal, "writers_fenced", writer_fence_sha256="d" * 64
@@ -83,7 +89,10 @@ def _completed_diagnostic(
         journal, "runtime_smoke_checked", runtime_smoke_sha256="e" * 64
     )
     return transition_cache_target_diagnostic(
-        journal, "completed", completed_at_unix=completed_at_unix
+        journal,
+        "completed",
+        completed_at_unix=completed_at_unix,
+        writer_drain_restore_receipt_sha256="f" * 64,
     )
 
 

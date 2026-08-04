@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -19,8 +20,11 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     DatabaseWriteCounter,
     create_database_backup,
     create_manager_rollback_bundle,
+    create_standalone_database_backup,
     database_identity_v1,
     database_runtimes_from_frozen_contract,
+    gc_standalone_database_backups,
+    list_standalone_database_backups,
     read_database_schema_revision,
     read_pin_boundary_audit,
     restore_database_backup,
@@ -415,6 +419,534 @@ def test_backup_and_restore_stream_without_dsn_or_credential(
         in {"dropdb", "createdb"}
     ]
     assert scratch_lifecycle[:2] == ["dropdb", "createdb"]
+
+
+def test_standalone_backup_writes_owner_only_dump_and_manifest_without_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(arguments)
+        if "pg_dump" in arguments:
+            kwargs["stdout"].write(b"standalone-dump-bytes")
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        run,
+    )
+    backups_root = tmp_path / "backups"
+    runtime = DatabaseRuntime(
+        role="map_application",
+        container_name="postgres-production",
+        database_name="kor_travel_map",
+        owner_name="krtour_map",
+        admin_name="cluster_admin",
+    )
+
+    manifest = create_standalone_database_backup(
+        backups_root=backups_root,
+        runtime=runtime,
+        created_at_unix=1_700_000_000,
+    )
+
+    assert manifest.role == "map_application"
+    assert manifest.schema_revision == "0078_cache_target_gc_observe"
+    assert manifest.byte_size == len(b"standalone-dump-bytes")
+
+    role_directory = backups_root / "map_application"
+    assert stat.S_IMODE(backups_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(role_directory.stat().st_mode) == 0o700
+    dump_path = role_directory / manifest.backup_filename
+    assert dump_path.read_bytes() == b"standalone-dump-bytes"
+    assert stat.S_IMODE(dump_path.stat().st_mode) == 0o600
+    manifest_path = role_directory / dump_path.name.replace(".dump", ".manifest.json")
+    assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o600
+    manifest_document = json.loads(manifest_path.read_bytes())
+    assert manifest_document["sha256"] == hashlib.sha256(b"standalone-dump-bytes").hexdigest()
+    assert manifest_document["byte_size"] == len(b"standalone-dump-bytes")
+
+    serialized_commands = "\n".join(" ".join(command) for command in calls)
+    assert "postgresql://" not in serialized_commands
+    assert "password" not in serialized_commands.lower()
+    assert "secret" not in serialized_commands.lower()
+    assert "cluster_admin" not in json.dumps(manifest_document)
+
+
+def test_standalone_backup_rejects_repeat_call_at_same_timestamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if "pg_dump" in arguments:
+            kwargs["stdout"].write(b"dump-bytes")
+            return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        return subprocess.CompletedProcess(arguments, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        run,
+    )
+    backups_root = tmp_path / "backups"
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-production",
+        database_name="pinvi",
+        owner_name="pinvi",
+        admin_name="cluster_admin",
+    )
+
+    create_standalone_database_backup(
+        backups_root=backups_root,
+        runtime=runtime,
+        created_at_unix=1_700_000_000,
+    )
+    with pytest.raises(DeploymentContractError, match="already exists"):
+        create_standalone_database_backup(
+            backups_root=backups_root,
+            runtime=runtime,
+            created_at_unix=1_700_000_000,
+        )
+
+
+def test_standalone_backup_rejects_concurrent_reservation_of_same_filename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """존재-확인과 실제 pg_dump 시작 사이에 다른 프로세스가 같은 최종 파일명을
+    먼저 만들면(예: 거의 동시에 같은 초에 재호출됨), `O_CREAT|O_EXCL`이 이를
+    감지해 조용히 재사용하지 않고 거부해야 한다 — `_write_pg_dump`의 idempotent
+    재사용 분기(cutover window 전용 의미론)로 빠지면 안 된다."""
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if "psql" in arguments:
+            return subprocess.CompletedProcess(
+                arguments, 0, stdout=b"0078_cache_target_gc_observe\n", stderr=b""
+            )
+        raise AssertionError("pg_dump must not run once the filename is contended")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.cache_target_backup.subprocess.run",
+        run,
+    )
+    backups_root = tmp_path / "backups"
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-production",
+        database_name="pinvi",
+        owner_name="pinvi",
+        admin_name="cluster_admin",
+    )
+    role_directory = backups_root / "pinvi"
+    backups_root.mkdir(mode=0o700)
+    role_directory.mkdir(mode=0o700)
+    # 다른 호출이 먼저 같은 최종 파일명을 선점한 상태를 흉내낸다 — 이 파일에는
+    # 진짜 dump 데이터가 없다(아직 쓰는 중인 다른 호출이라는 뜻).
+    contended_path = role_directory / "20261116T000000Z_pinvi_0078_cache_target_gc_observe.dump"
+    contended_path.write_bytes(b"")
+    os.chmod(contended_path, 0o600)
+
+    with pytest.raises(DeploymentContractError, match="already exists"):
+        create_standalone_database_backup(
+            backups_root=backups_root,
+            runtime=runtime,
+            created_at_unix=1_794_787_200,
+        )
+    # 선점 파일이 조용히 유효한 백업으로 받아들여지지 않았는지 확인한다.
+    assert contended_path.read_bytes() == b""
+
+
+def test_standalone_backup_rejects_nonpositive_timestamp(tmp_path: Path) -> None:
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-production",
+        database_name="pinvi",
+        owner_name="pinvi",
+        admin_name="cluster_admin",
+    )
+    with pytest.raises(DeploymentContractError, match="timestamp is invalid"):
+        create_standalone_database_backup(
+            backups_root=tmp_path / "backups",
+            runtime=runtime,
+            created_at_unix=0,
+        )
+
+
+def test_create_standalone_backup_selects_runtime_by_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = SimpleNamespace(
+        resolved={}, environment=SimpleNamespace(effective={})
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock_from_environment",
+        lambda: _null_lock_context(SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    runtimes = (
+        DatabaseRuntime(
+            role="map_application",
+            container_name="postgres-production",
+            database_name="kor_travel_map",
+            owner_name="krtour_map",
+            admin_name="cluster_admin",
+        ),
+        DatabaseRuntime(
+            role="map_dagster",
+            container_name="postgres-production",
+            database_name="kor_travel_map_dagster",
+            owner_name="krtour_map",
+            admin_name="cluster_admin",
+        ),
+        DatabaseRuntime(
+            role="pinvi",
+            container_name="postgres-production",
+            database_name="pinvi",
+            owner_name="pinvi",
+            admin_name="cluster_admin",
+        ),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=runtimes),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_create(*, backups_root: Path, runtime: DatabaseRuntime, created_at_unix: int):
+        captured["runtime"] = runtime
+        return backup_service.StandaloneBackupManifest(
+            role=runtime.role,
+            created_at_unix=created_at_unix,
+            schema_revision="0078_cache_target_gc_observe",
+            sha256="a" * 64,
+            byte_size=123,
+            backup_filename="fake.dump",
+        )
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.create_standalone_database_backup",
+        fake_create,
+    )
+
+    result = service.create_standalone_backup(role="pinvi")
+
+    assert captured["runtime"].role == "pinvi"
+    assert result["success"] is True
+    assert result["returncode"] == 0
+    assert result["role"] == "pinvi"
+    assert result["sha256"] == "a" * 64
+
+
+def test_create_standalone_backup_rejects_unknown_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = SimpleNamespace(
+        resolved={}, environment=SimpleNamespace(effective={})
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.c6c_deployment_lock_from_environment",
+        lambda: _null_lock_context(SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service._assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.database_runtimes_from_frozen_contract",
+        Mock(return_value=()),
+    )
+
+    with pytest.raises(DeploymentContractError, match="role is invalid"):
+        service.create_standalone_backup(role="map_application")
+
+
+def _write_standalone_backup_fixture(
+    backups_root: Path,
+    *,
+    role: str = "map_application",
+    created_at_unix: int,
+    schema_revision: str = "0078_cache_target_gc_observe",
+    payload: bytes = b"fixture-dump-bytes",
+) -> None:
+    """`create_standalone_database_backup`가 실제로 만드는 것과 같은 형태의
+    dump+manifest 쌍을 subprocess 없이 직접 써서 list/GC fixture를 빠르게
+    준비한다."""
+    import time as time_module
+
+    role_directory = backups_root / role
+    role_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    timestamp = time_module.strftime("%Y%m%dT%H%M%SZ", time_module.gmtime(created_at_unix))
+    stem = f"{timestamp}_{role}_{schema_revision}"
+    dump_path = role_directory / f"{stem}.dump"
+    manifest_path = role_directory / f"{stem}.manifest.json"
+    dump_path.write_bytes(payload)
+    os.chmod(dump_path, 0o600)
+    manifest = {
+        "role": role,
+        "created_at_unix": created_at_unix,
+        "schema_revision": schema_revision,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "byte_size": len(payload),
+        "backup_filename": dump_path.name,
+    }
+    manifest_path.write_bytes(json.dumps(manifest, sort_keys=True).encode())
+    os.chmod(manifest_path, 0o600)
+
+
+def test_list_standalone_backups_returns_newest_first(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_000_000)
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_100_000)
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_050_000)
+
+    result = list_standalone_database_backups(backups_root, role="map_application")
+
+    assert [m.created_at_unix for m in result.manifests] == [
+        1_700_100_000,
+        1_700_050_000,
+        1_700_000_000,
+    ]
+    assert result.warnings == ()
+
+
+def test_list_standalone_backups_filters_by_role(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(
+        backups_root, role="map_application", created_at_unix=1_700_000_000
+    )
+    _write_standalone_backup_fixture(
+        backups_root, role="pinvi", created_at_unix=1_700_000_100
+    )
+
+    all_roles = list_standalone_database_backups(backups_root)
+    only_pinvi = list_standalone_database_backups(backups_root, role="pinvi")
+
+    assert {m.role for m in all_roles.manifests} == {"map_application", "pinvi"}
+    assert {m.role for m in only_pinvi.manifests} == {"pinvi"}
+
+
+def test_list_standalone_backups_returns_empty_for_missing_role_directory(
+    tmp_path: Path,
+) -> None:
+    result = list_standalone_database_backups(tmp_path / "backups", role="pinvi")
+    assert result.manifests == ()
+    assert result.warnings == ()
+
+
+def test_list_standalone_backups_warns_instead_of_raising_on_corrupt_manifest(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_000_000)
+    role_directory = backups_root / "map_application"
+    corrupt_manifest = role_directory / "20260101T000000Z_map_application_0001_bad.manifest.json"
+    corrupt_manifest.write_bytes(b"{not valid json")
+    os.chmod(corrupt_manifest, 0o600)
+
+    result = list_standalone_database_backups(backups_root, role="map_application")
+
+    assert len(result.manifests) == 1
+    assert len(result.warnings) == 1
+    assert "0001_bad" in result.warnings[0]
+
+
+def test_list_standalone_backups_warns_when_dump_payload_missing(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    _write_standalone_backup_fixture(backups_root, created_at_unix=1_700_000_000)
+    role_directory = backups_root / "map_application"
+    dump_path = next(role_directory.glob("*.dump"))
+    dump_path.unlink()
+
+    result = list_standalone_database_backups(backups_root, role="map_application")
+
+    assert result.manifests == ()
+    assert len(result.warnings) == 1
+
+
+def test_gc_standalone_backups_keeps_recent_count_regardless_of_age(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(10):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+
+    result = gc_standalone_database_backups(
+        backups_root,
+        role="map_application",
+        now_unix=now,
+        keep_count=3,
+        keep_days=0,
+    )
+
+    assert len(result.kept) == 3
+    assert len(result.deleted) == 7
+    role_directory = backups_root / "map_application"
+    assert len(list(role_directory.glob("*.dump"))) == 3
+    assert len(list(role_directory.glob("*.manifest.json"))) == 3
+
+
+def test_gc_standalone_backups_keeps_recent_days_beyond_keep_count(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    # keep_count=1 (뒤덮힐 가장 최근 하나) + keep_days=5로 5일 이내 나머지도 보존.
+    for offset_days in (0, 1, 3, 6, 10):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+
+    result = gc_standalone_database_backups(
+        backups_root,
+        role="map_application",
+        now_unix=now,
+        keep_count=1,
+        keep_days=5,
+    )
+
+    kept_offsets = sorted((now - m.created_at_unix) // day for m in result.kept)
+    deleted_offsets = sorted((now - m.created_at_unix) // day for m in result.deleted)
+    assert kept_offsets == [0, 1, 3]
+    assert deleted_offsets == [6, 10]
+
+
+def test_gc_standalone_backups_deletes_dump_and_manifest_together(
+    tmp_path: Path,
+) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(5):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+    role_directory = backups_root / "map_application"
+    before_dumps = set(role_directory.glob("*.dump"))
+    before_manifests = set(role_directory.glob("*.manifest.json"))
+
+    result = gc_standalone_database_backups(
+        backups_root, role="map_application", now_unix=now, keep_count=1, keep_days=0
+    )
+
+    assert len(result.deleted) == 4
+    after_dumps = set(role_directory.glob("*.dump"))
+    after_manifests = set(role_directory.glob("*.manifest.json"))
+    assert len(before_dumps) - len(after_dumps) == 4
+    assert len(before_manifests) - len(after_manifests) == 4
+    # 남은 dump/manifest는 항상 1:1 — 고아가 생기지 않았다.
+    remaining_stems = {p.name.removesuffix(".dump") for p in after_dumps}
+    remaining_manifest_stems = {
+        p.name.removesuffix(".manifest.json") for p in after_manifests
+    }
+    assert remaining_stems == remaining_manifest_stems
+
+
+def test_gc_standalone_backups_never_touches_unrelated_files(tmp_path: Path) -> None:
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(5):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+    role_directory = backups_root / "map_application"
+    stray_file = role_directory / "operator-notes.txt"
+    stray_file.write_bytes(b"do not touch me")
+    os.chmod(stray_file, 0o600)
+
+    gc_standalone_database_backups(
+        backups_root, role="map_application", now_unix=now, keep_count=1, keep_days=0
+    )
+
+    assert stray_file.exists()
+    assert stray_file.read_bytes() == b"do not touch me"
+
+
+def test_gc_standalone_backups_rejects_invalid_keep_count(tmp_path: Path) -> None:
+    with pytest.raises(DeploymentContractError, match="keep_count"):
+        gc_standalone_database_backups(
+            tmp_path / "backups",
+            role="map_application",
+            now_unix=1_700_000_000,
+            keep_count=0,
+            keep_days=1,
+        )
+
+
+def test_gc_standalone_backups_rejects_invalid_keep_days(tmp_path: Path) -> None:
+    with pytest.raises(DeploymentContractError, match="keep_days"):
+        gc_standalone_database_backups(
+            tmp_path / "backups",
+            role="map_application",
+            now_unix=1_700_000_000,
+            keep_count=1,
+            keep_days=-1,
+        )
+
+
+def test_list_standalone_backups_service_list_reports_warnings_and_gc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    backups_root = tmp_path / "backups"
+    now = 1_700_000_000
+    day = 86_400
+    for offset_days in range(5):
+        _write_standalone_backup_fixture(
+            backups_root, created_at_unix=now - offset_days * day
+        )
+    service = ComposeService()
+
+    result = service.list_standalone_backups(
+        role="map_application", gc=True, keep_count=1, keep_days=0
+    )
+
+    assert result["success"] is True
+    assert len(result["backups"]) == 1
+    assert len(result["gc"][0]["deleted"]) == 4
+    assert result["warnings"] == []
+
+
+class _null_lock_context:
+    def __init__(self, snapshot: object) -> None:
+        self._snapshot = snapshot
+
+    def __enter__(self) -> object:
+        return self._snapshot
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
 
 
 def test_restore_database_backup_skips_dropdb_when_target_does_not_exist(

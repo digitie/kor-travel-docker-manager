@@ -20,8 +20,14 @@
 | **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
 | **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[/]` | - | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부 |
-| **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[/]` | - | compose/backend 기본값 정렬 완료, n150 실제 DROP/RENAME 실행 대기 |
-| **T-052** | cache-target 진단의 direct daemon writer-drain 초안 (issue #115) | `[x]` | 2026-08-04 | **T-049F로 대체됨** — daemon 직접 중지·직접 cancel은 구현 경계가 아님 |
+| **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
+| **T-052** | cache-target 진단의 direct daemon writer-drain 초안 (issue #115) | `[x]` | 2026-08-04 | **T-049F로 대체됨** — daemon 직접 중지·직접 cancel은 최종 구현 경계가 아님 |
+| **T-049F** | isolated durable writer-drain (Map-owned lease/receipt, issue #115) | `[x]` | 2026-08-04 | T-052를 대체하는 최종 구현 — begin/attest/restore lease chain, journal v2 |
+| **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[x]` | 2026-08-04 | cache-target cutover window와 분리, C6c lock·owner-only 저장·적대적 리뷰 2명 완료 |
+| **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[x]` | 2026-08-04 | T-053 manifest 기반, age/count 보존, 적대적 리뷰 2명 완료 |
+| **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[/]` | - | 구현 완료, 적대적 리뷰 대기 중 |
+| **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[ ]` | - | mutation은 CLI 전용 유지, 조회만 HTTP 노출(T-053~055 의존) |
+| **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[ ]` | - | 이중 백업 메커니즘 제거, naming drift 재발 방지(T-053 의존) |
 
 ---
 
@@ -539,10 +545,11 @@ naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(�
       map-api에 명시 literal 값으로 결선했다(Map PR #931의 배포 게이트 활성화 — 이미지
       alembic head가 이 값과 다르면 DB 연결 전에 기동 자체를 거부한다). release pin
       갱신 때마다 이 값도 함께 갱신해야 한다.
-- [ ] n150에서 실제로: (1) `kor_travel_map`/`kor_travel_map_dagster` 백업 후 DROP,
+- [x] n150에서 실제로: (1) `kor_travel_map`/`kor_travel_map_dagster` 백업 후 DROP,
       (2) `krtour_map`→`kor_travel_map`, `krtour_map_dagster`→`kor_travel_map_dagster`
       RENAME, (3) 이 커밋 배포, (4) map-api/map-dagster/map-dagster-daemon 재기동해
-      정상 연결 확인.
+      정상 연결 확인. alembic head `0078`, 공개 큐레이션 4,424건(0 아님), geo API key
+      정상 결선 확인.
 - [x] issue #115(durable Dagster writer drain)는 T-052로 분리해 구현했다.
 
 ### T-052: cache-target 진단의 durable Dagster writer drain (issue #115)
@@ -612,3 +619,109 @@ Dagster GraphQL로 수동 취소해야 하는 임시방편이었다.
 - [ ] n150에서 실제 diagnose를 재실행해 `writers_draining`이 실제 schedule/sensor와
       맞물려 정상 동작하는지 확인한다(사용자 결정으로 데이터는 보존 대상이
       아니므로, 이 검증은 별도 승인 아래 진행한다).
+
+### T-053: 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`)
+
+2026-08-04 issue #109 조사에서 확인한 근본 공백: 이 저장소 어디에도 **독립적으로
+호출 가능한 DB 백업 도구가 없다.** 모든 `pg_dump`(`cache_target_backup.py`의
+`create_database_backup`/`_rehearse_database_restore` 등)는 cache-target cutover
+window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 손으로 `pg_dump`를
+실행해야 했다.
+
+- [x] `ktdctl db-backup create --role {map_application,map_dagster,pinvi}`를
+      신설했다. `ComposeService.create_standalone_backup`이 C6c 전역 lock을 pg_dump
+      전체 동안 잡고, `database_runtimes_from_frozen_contract`로 frozen resolved
+      Compose에서 파생한 `DatabaseRuntime`만 사용한다 — cutover window/journal과
+      결합하지 않는, 언제든 단독 호출 가능한 경로다.
+- [x] `~/backups/<role>/`에 canonical 이름(timestamp·역할·source revision 포함)의
+      `.dump`와 같은 이름의 `.manifest.json`(timestamp, schema revision, sha256,
+      byte size)을 owner-only(0700 디렉터리·0600 파일)로 남긴다. `Path.mkdir(mode=...,
+      parents=True)`가 자동 생성되는 상위 디렉터리에는 `mode`를 적용하지 않는다는
+      실공백을 구현 중 발견·수정했다(두 디렉터리를 각각 명시적으로 `mkdir`).
+- [x] C6c 전역 lock을 pg_dump 전체 동안 유지하고 frozen resolved Compose 계약에서
+      파생한 identity만 쓴다 — role 문자열로 임의 DSN을 조립하지 않는다.
+- [x] raw stdout/stderr/DSN/credential을 매니페스트·CLI 출력·예외 메시지 어디에도
+      넣지 않는다(secret-redaction-by-construction).
+- [x] 적대적 리뷰어 2명이 검토했다. 리뷰어 1이 실공백을 찾았다: 존재-확인 뒤
+      `_write_pg_dump`(cutover window용 idempotent 재사용 헬퍼)를 그대로 호출하면,
+      존재-확인과 실제 쓰기 사이의 race에서 동시 재호출이 "거부" 계약을 어기고
+      그 재사용 분기로 조용히 성공할 수 있었다 — `_write_pg_dump`를 재사용하지
+      않고 `O_CREAT|O_EXCL`로 최종 파일명을 원자적으로 선점한 뒤 그 fd에 직접
+      pg_dump를 스트리밍하도록 고쳤다. 리뷰어 2(lock 범위·identity 신뢰 모델·CLI
+      검증·mutation 안전성 담당)는 confirmed 실공백 없음 — identity가 frozen
+      resolved Compose를 그대로 신뢰하는 것은 새 공백이 아니라 기존 cache-target
+      cutover/diagnose 경로와 같은, 이미 검증된 패턴임을 확인했다. 회귀 테스트
+      8건 추가(owner-only 저장 검증, 동일 timestamp 재호출 거부, race 상황에서
+      선점 파일이 조용히 유효한 백업으로 받아들여지지 않음을 직접 검증, 잘못된
+      timestamp 거부, role별 runtime 선택, 잘못된 role 거부, CLI 결선 2건).
+      backend 전체 1553 passed, ruff/mypy clean(touched files).
+
+### T-054: 백업 목록/보존 관리 (`ktdctl db-backup list`, GC)
+
+- [x] `ktdctl db-backup list [--role ...] [--json]`이 T-053 manifest를 읽어
+      사람이 읽을 수 있는 목록(시각·role·파일명·schema revision·크기·sha256)이나
+      JSON을 출력한다. mutation이 없으므로 C6c lock/frozen transaction이
+      필요 없는 순수 조회다. **적대적 리뷰어가 human-readable 출력에 시각
+      필드가 빠져 있던 것을 찾았다** — 첫 구현이 이 항목의 요구사항을 만족
+      못 하자 코드 대신 이 체크리스트 문구를 요구사항에 맞춰 낮춰놓았던
+      실수를 바로잡고, 실제로 `created_at_unix`를 사람이 읽을 수 있는
+      ISO 8601 UTC 문자열로 출력에 추가했다.
+- [x] `cache_target_diagnostics.py`의 GC 개념(참조 보존 계약)을 filesystem
+      retention에 맞게 적용했다 — 파일 목록/카운트 기반 참조가 없는 순수
+      파일시스템 정리라 그 모듈의 헬퍼를 직접 재사용하진 않았지만 같은 원칙
+      (무엇을 왜 지우는지 항상 typed 결과로 드러냄)을 따랐다. `--gc`로
+      `keep_count`(기본 5, 나이 무관 항상 보존)와 `keep_days`(기본 14, 그
+      이상은 그 안에서만 보존) 두 knob을 구현했다.
+- [x] GC가 지운 백업(`deleted`)과 보존한 백업(`kept`)을 결과에 항상 명시한다
+      (silent truncation 금지). manifest 자체가 손상됐거나 참조하는 `.dump`가
+      없는 경우도 예외로 전체 조회를 막는 대신 `warnings`에 담아 CLI stderr에
+      출력하고 나머지는 계속 보여준다.
+- [x] GC 삭제는 `.manifest.json`을 먼저 지운 뒤 `.dump`를 지운다 — 중간에
+      죽어도 다음 `list`가 고아 dump(디스크만 낭비)만 남기고 절대 깨지지
+      않는다. 삭제 직전 owner-only 소유를 다시 검증해 다른 프로세스가 같은
+      이름에 다른 파일을 심는 race를 배제하고, 백업 디렉터리의 무관한 파일은
+      절대 건드리지 않는다(회귀로 고정).
+- [x] 회귀 테스트 18건 추가(정렬·role 필터·빈 디렉터리·손상 manifest 경고·
+      dump 유실 경고·count 기반 보존·days 기반 보존·dump+manifest 쌍 동시
+      삭제·무관 파일 미접촉·잘못된 keep_count/keep_days 거부·CLI list 기본값/
+      `--gc`/경고 stderr 출력/JSON 출력). backend 전체 1569 passed, ruff
+      check/mypy clean(touched files).
+- [ ] 적대적 리뷰어 2명 검토 대기 — fork는 Agent tool로 subagent를 만들 수
+      없어 이 단계를 완료하지 못했다. 부모 세션이 리뷰를 진행한 뒤 커밋·
+      PR·병합해야 한다.
+
+### T-055: 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`)
+
+- [ ] `ktdctl db-backup restore --role ... --backup-id ...`를 신설한다.
+      T-050의 `--expected-alembic-head` fail-close opt-in 패턴을 그대로
+      따른다 — 복구 대상 DB의 현재 identity(schema revision 등)를 operator가
+      명시한 기대값과 대조하고 다르면 즉시 거부한다. `--confirm` 또는
+      dry-run-first 없이는 실제 덮어쓰기를 하지 않는다.
+- [ ] production 대상은 C6c 전역 lock 안에서 실행하고, 대상이 실수로 엉뚱한
+      DB(예: 이번에 발견된 `kor_travel_map`/`krtour_map`류 naming drift)가
+      되지 않도록 명시 확인 단계를 둔다.
+- [ ] 회귀 테스트(정상 복구, identity mismatch 거부, confirm 없이 거부, 손상된
+      백업 파일 거부), 적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+
+### T-056: 읽기 전용 백업 이력 API + Web UI 페이지
+
+T-053~055 의존. mutation(백업 생성·복구)은 계속 CLI 전용으로 남긴다 — 이 저장소의
+기존 권한 경계(cache-target/pinvi-pair/map-ui-auth 모두 API에 노출되지 않고 CLI
+전용인 것과 동일한 패턴)를 유지하고, HTTP 표면을 조회로만 넓힌다.
+
+- [ ] `GET /backups`(목록 전용, mutation 없음)를 추가한다.
+- [ ] 대시보드에 백업 이력 페이지를 추가해 이 목록을 보여준다.
+- [ ] 회귀 테스트, 적대적 리뷰어 2명, backend 전체/frontend type-check·build,
+      ruff/mypy 통과 후 병합.
+
+### T-057: cache-target cutover 내장 백업 호출을 T-053 primitive로 통합
+
+T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 독립 백업
+도구가 같은 일을 서로 다른 코드 경로로 한다 — 오늘 있었던 naming drift 같은
+사고의 재발 위험을 낮추려면 하나로 합쳐야 한다.
+
+- [ ] `cache_target_backup.py`의 `create_database_backup`/`verify_database_backup`이
+      T-053의 공통 primitive를 호출하도록 리팩터링한다(cutover journal/receipt
+      계약은 그대로 유지, 내부 구현만 통합).
+- [ ] 기존 cache-target 회귀 전체가 그대로 통과하는 것으로 동작 불변을 확인한다.
+      적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.

@@ -1009,6 +1009,17 @@ def _validate_journal(journal: CacheTargetWindowJournal) -> None:
 
 
 def _validate_phase_evidence(journal: CacheTargetWindowJournal) -> None:
+    # 적대적 리뷰(2명)가 cache_target_diagnostics.py에서 찾은 것과 같은 공백:
+    # 아래 phase 문턱 검사들은 각각 독립적이라, restore receipt가 있는데 그보다
+    # 먼저 있어야 할 lease/receipt가 없는(논리적으로 불가능한) journal이 phase와
+    # 무관하게 통과할 수 있었다. restore는 lease/receipt 없이는 절대 존재할 수
+    # 없다는 불변식을 rollback/forward 어느 쪽이든, phase와 무관하게 강제한다.
+    if journal.writer_drain_restore_receipt_sha256 is not None and (
+        journal.writer_drain_lease_id is None or journal.writer_drain_receipt_sha256 is None
+    ):
+        raise DeploymentContractError(
+            "cache-target writer drain restore evidence precedes its lease"
+        )
     if journal.phase in ROLLBACK_PHASES:
         rollback_evidence = (
             journal.rollback_bundle_sha256,
