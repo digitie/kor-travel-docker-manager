@@ -27,7 +27,7 @@
 | **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[x]` | 2026-08-04 | T-053 manifest 기반, age/count 보존, 적대적 리뷰 2명 완료 |
 | **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[x]` | 2026-08-04 | fail-close 2중 방어(--confirm·capability sentinel), 적대적 리뷰 2명 완료 |
 | **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[ ]` | - | mutation은 CLI 전용 유지, 조회만 HTTP 노출(T-053~055 의존) |
-| **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[ ]` | - | 이중 백업 메커니즘 제거, naming drift 재발 방지(T-053 의존) |
+| **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
 
 ---
 
@@ -737,8 +737,30 @@ T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 �
 도구가 같은 일을 서로 다른 코드 경로로 한다 — 오늘 있었던 naming drift 같은
 사고의 재발 위험을 낮추려면 하나로 합쳐야 한다.
 
-- [ ] `cache_target_backup.py`의 `create_database_backup`/`verify_database_backup`이
-      T-053의 공통 primitive를 호출하도록 리팩터링한다(cutover journal/receipt
-      계약은 그대로 유지, 내부 구현만 통합).
-- [ ] 기존 cache-target 회귀 전체가 그대로 통과하는 것으로 동작 불변을 확인한다.
-      적대적 리뷰어 2명, backend 전체/ruff/mypy 통과 후 병합.
+- [x] `_write_pg_dump`(cutover, idempotent 재사용 의미론)와
+      `create_standalone_database_backup`(T-053, `O_CREAT|O_EXCL` 원자 선점
+      의미론)이 각자 인라인으로 들고 있던 동일한 `pg_dump --format=custom`
+      subprocess 호출·fsync·성공 판정을 새 `_stream_pg_dump_custom_format`
+      공통 헬퍼로 뽑아냈다. 파일 생성 전략(두 함수의 의미가 서로 달라 통합할
+      수 없음)은 호출자가 그대로 소유하고, 실제 pg_dump 실행 부분만
+      공유한다. 기존 에러 메시지 텍스트는 호출자가 그대로 넘겨 바뀌지
+      않았다(`match=`로 이 텍스트를 검사하는 테스트가 없음을 grep으로
+      확인). `restore_database_backup`/`restore_standalone_database_backup`
+      (T-055)은 이 태스크 범위 밖(체크리스트가 create/verify만 명시)이라
+      건드리지 않았다.
+- [x] 기존 cache-target 회귀 전체가 그대로 통과하는 것으로 동작 불변을
+      확인했다(backend 전체 1589 passed, 리팩터링 전후 동일 count — 어떤
+      테스트도 새로 고치지 않음). ruff/mypy clean(touched files). 적대적
+      리뷰어 2명(behavior-equivalence 담당, 구조적 건전성·stderr-NOTICE
+      안전 패턴 양방향 보존 담당) 완료 — 둘 다 confirmed 실공백 없음(에러
+      메시지 텍스트·empty-output 검사·OSError 처리·fsync 순서 모두 리팩터링
+      전후 byte-for-byte 동일 확인).
+- [ ] **범위 재확인(사용자 지시로 방향 전환)**: 사용자가 호환성보다 설계적
+      우월성·최적화·유지보수성 우선, 대대적 코드/schema 변경도 고려하라고
+      지시를 바꿨다. fork는 receipt/journal/manifest 스키마 전체 통합
+      재설계까지 밀어붙이는 대신, 오늘 이미 v1→v2로 한 번 바뀐
+      production-critical journal(n150에 실 데이터 있음)을 같은 세션에서
+      또 바꾸는 리스크를 이유로 멈추고 보고했다 — 사용자가 이 판단(안전한
+      helper 추출만 반영, 전체 재설계는 별도 설계 단계를 먼저 거쳐 진행)에
+      동의해 지금은 여기까지만 반영한다. journal/receipt/manifest 통합
+      재설계는 별도 태스크(T-058 후보)로 남긴다.

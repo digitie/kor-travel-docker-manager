@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-08-04 (T-057 완료 + 방향 전환 판단 — 안전한 helper 통합만 반영, 전체 스키마 재설계는 보류)
+
+T-057 진행 중 사용자가 지시를 바꿨다: "호환성, 기존계약 유지보다는 설계적
+우월성·최적화·유지보수성을 중점적으로, 대대적인 코드 변경 및 DB schema
+변경도 고려." fork에게 즉시 전달했다.
+
+fork는 이미 완료한 안전한 부분(`_write_pg_dump`/`create_standalone_database_backup`의
+중복 pg_dump subprocess 로직을 `_stream_pg_dump_custom_format` 공통
+헬퍼로 추출, 테스트 1589건 변경 없이 그대로 통과)은 유지하되, receipt/
+journal/manifest 스키마 전체를 하나로 재설계하는 더 큰 작업은 **스스로
+멈추고 보고**했다 — 이유: 오늘 이미 T-049F에서 journal을 v1→v2로 한 번
+바꿨고 n150에 그 v2 상태가 실제로 남아있는데, 같은 세션에서 또 한 번
+cutover-critical journal 스키마를 바꾸는 건 리스크가 크니 별도 설계
+단계를 먼저 거쳐야 한다는 판단이었다. 이 판단이 타당하다고 보고 사용자에게
+확인한 결과, 동의를 받아 안전한 부분만 반영하고 전체 재설계는 별도 태스크
+(T-058 후보)로 미뤘다.
+
+적대적 리뷰어 2명(behavior-equivalence 담당, 구조적 건전성 담당) 확인 —
+에러 메시지 텍스트·empty-output 검사·OSError 처리·fsync 순서 모두
+리팩터링 전후 byte-for-byte 동일, confirmed 실공백 없음.
+
+T-053→T-054→T-055→T-057(안전 범위) 백업/복구 체인이 완료됐다. 남은 건
+T-056(읽기 전용 API/Web UI), T-058 후보(스키마 통합 재설계, 별도 설계
+필요), T-049E(map-ui/map-api revision drift로 중단된 재검증)다.
+
+`_write_pg_dump`(cutover, idempotent 재사용)와 `create_standalone_database_backup`
+(T-053, `O_CREAT|O_EXCL` 원자 선점)이 각자 인라인으로 들고 있던 동일한
+`pg_dump --format=custom` subprocess 호출을 `_stream_pg_dump_custom_format`
+공유 헬퍼로 뽑아냈다. 파일 생성 전략은 두 함수의 계약이 근본적으로 달라(하나는
+재사용 허용, 하나는 재사용 거부) 통합하지 않고 각자 소유하게 두었다 — 실제
+pg_dump 실행 부분만 공유한다. 에러 메시지 텍스트는 호출자가 그대로 넘겨
+바뀌지 않았음을 확인(패턴매치하는 테스트 없음도 grep으로 확인). 범위는
+체크리스트가 명시한 create/verify만 — restore 쪽(T-055)은 건드리지 않았다.
+
+fork로 구현했으나 T-054/T-055와 같은 제약(fork는 Agent tool로 subagent를
+만들 수 없음)으로 리뷰 단계 전에 멈췄다 — **아직 커밋·PR·병합 전이다.**
+backend 전체 1589 passed(리팩터링 전후 동일 count, 테스트 변경 없음 —
+동작 불변의 직접 증거), ruff/mypy clean(touched files) 확인까지만 마쳤다.
+부모 세션이 적대적 리뷰어 2명을 돌리고 커밋해야 한다.
+
+---
+
 ## 2026-08-04 (T-055 완료 — 안전장치 있는 DB 복구 CLI)
 
 fork가 멈춰둔 T-055(`ktdctl db-backup restore`)를 이어받아 적대적 리뷰어 2명을
