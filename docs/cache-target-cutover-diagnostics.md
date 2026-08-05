@@ -135,17 +135,39 @@ cutover backup은 계속 필수이며, drain은 그 검증을 race 없이 시작
 제어 경계다.
 
 writer-drain을 넣은 window·diagnostic journal은 version `2` 전용 exact schema다. 이전
-version `1` journal은 안전한 lease/receipt·phase 대응이 없으므로 자동 migration이나
+version `1` journal은 안전한 lease/receipt·phase 대응이 없으므로 자동 migration이나 일반
 archive를 시도하지 않고, Docker·DB·Map command mutation보다 먼저 명시적으로 거부한다.
-TVN41의 격리/recreate 환경에서는 legacy state directory를 정리한 뒤 새 journal을 만들어
-다시 시작한다. 이는 서비스 데이터 보존을 위한 compatibility shim이 아니라, 불완전한
-crash recovery를 실행하지 않는 fail-closed cutover 경계다.
 
-archive의 이름 충돌·owner/mode·내용 재검증·directory fsync 중 하나라도 실패하면 새 진단을
-시작하지 않는다. 따라서 receipt/attempt는 삭제되지 않으며, archive 직후 새 journal을 쓰기
-전에 process가 죽어도 다음 새 UUID가 안전하게 진행할 수 있다. 기존 `completed` receipt도
-operator가 새 UUID 진단을 요청한 경우에만 archive한다. 이는 기존 receipt의 freshness gate를
-의도적으로 무효화하므로, 새 receipt가 완료되기 전에는 cutover를 계속 거부한다.
+TVN41의 서비스 전 격리 환경에서만, **v1 diagnostic이 `prepared` 또는
+`writers_fencing`(writer stop 이전)인 경우** 다음 Manager command가 그 파일 하나를 퇴역시킬 수 있다.
+
+```bash
+ktdctl cache-target retire-legacy-diagnostic --confirm --json
+```
+
+명령은 C6c global lock과 frozen canonical environment 아래에서 exact diagnostic path의
+regular·root-owned·single-link·`0600` 파일, v1 exact field set, pre-stop phase와 raw-byte SHA를
+다시 확인한다. 이어 secret-free retirement receipt(`version`, old raw SHA, phase, retired time)를
+owner-only state directory에 fsync하고, 같은 inode·mode·SHA를 재확인한 뒤 journal만 unlink하고
+directory fsync한다. 중간 crash 뒤 receipt와 source journal이 함께 남으면 같은 SHA/phase인 경우에만
+idempotent하게 unlink를 끝낼 수 있다. unlink 뒤 directory fsync 또는 반환 전에 process가 중단되어
+source journal만 사라진 경우에도 valid canonical receipt를 성공 결과로 재보고한다. receipt 충돌·owner/mode·
+내용·inode·directory fsync 중 하나라도 실패하면 새 diagnostic은 시작하지 않는다. frozen environment와 terminal window는 공통 mutation gate에서
+read-only로 다시 검사하며, non-terminal 또는 invalid window는 retirement도 fail-close한다.
+
+`writers_drained` 이후·terminal·v2·손상된 journal은 이 command가 절대 폐기하지 않는다. 그런 상태는
+Map-owned lease/receipt recovery 또는 해당 transaction의 durable resume/rollback이 유일한 경로다.
+현재 형식의 diagnostic attempt log는 abort budget의 정본이므로 절대 지우지 않는다. terminal window
+journal과 canonical `.env`는 공통 gate에서 read-only로만 검사하고, compatible-pair manifest, Docker runtime
+및 DB도 이 command의 변경 대상이 아니다.
+이는 서비스 데이터 보존용 compatibility shim이 아니라 불완전한 crash recovery를 추측해 실행하지 않는
+fail-closed boundary이며, 수동 `rm`/state-directory 삭제는 어떤 경우에도 대체 경로가 아니다.
+
+정상 v2 diagnostic의 supersede archive는 이름 충돌·owner/mode·내용 재검증·directory fsync 중 하나라도
+실패하면 새 진단을 시작하지 않는다. 따라서 receipt/attempt는 삭제되지 않으며, archive 직후 새 journal을
+쓰기 전에 process가 죽어도 다음 새 UUID가 안전하게 진행할 수 있다. 기존 `completed` receipt도 operator가
+새 UUID 진단을 요청한 경우에만 archive한다. 이는 기존 receipt의 freshness gate를 의도적으로 무효화하므로,
+새 receipt가 완료되기 전에는 cutover를 계속 거부한다.
 
 ## 3. DB별 stage와 비밀 없는 증적
 

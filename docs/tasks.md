@@ -30,7 +30,8 @@
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
 | **T-VN-41-F1** | cache-target production pair re-pin (issue #129) | `[x]` | 2026-08-05 | exact provenance·runbook·회귀를 갱신하고 Manager production 설치까지 완료 |
 | **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[/]` | - | 완전 미구성 canonical `.env`에만 4-role 계약을 원자 생성하고 F2 진단의 입력을 준비 |
-| **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[/]` | - | deployment-owner `0600` env를 frozen owner identity로 결박해 root Manager mutation이 안전하게 갱신 |
+| **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[x]` | 2026-08-05 | deployment-owner `0600` env를 frozen owner identity로 결박; trusted release 설치·default-off bootstrap·secret-free attestation 완료 |
+| **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[/]` | - | v1 `prepared`/`writers_fencing` journal만 receipt를 남기고 폐기해 F2 fresh diagnostic을 재개; attempt budget·window·runtime·DB·`.env`·manifest는 보존 |
 
 ---
 

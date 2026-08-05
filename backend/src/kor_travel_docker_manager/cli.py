@@ -8,10 +8,12 @@ from collections.abc import Callable
 from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
-from kor_travel_docker_manager.services.compose_service import (
-    _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+from kor_travel_docker_manager.services.cache_target_backup import (
     STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
     STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
+)
+from kor_travel_docker_manager.services.compose_service import (
+    _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
@@ -176,6 +178,15 @@ def _cmd_cache_target(args: argparse.Namespace) -> int:
                 )
                 return 2
             result = compose_service.bootstrap_cache_target_default_off()
+        elif args.cache_target_action == "retire-legacy-diagnostic":
+            if not args.confirm:
+                print(
+                    "cache-target retire-legacy-diagnostic requires --confirm "
+                    "(no mutation was attempted)",
+                    file=sys.stderr,
+                )
+                return 2
+            result = compose_service.retire_legacy_pre_stop_cache_target_diagnostic()
         else:
             result = compose_service.enable_cache_target_sync()
     except (DeploymentContractError, ValueError) as exc:
@@ -527,6 +538,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cache_target_bootstrap.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
     cache_target_bootstrap.set_defaults(func=_cmd_cache_target)
+    cache_target_retire_legacy_diagnostic = cache_target_subparsers.add_parser(
+        "retire-legacy-diagnostic",
+        help="writer stop 이전의 legacy v1 diagnostic journal 하나를 receipt-first로 퇴역합니다.",
+    )
+    cache_target_retire_legacy_diagnostic.add_argument(
+        "--confirm",
+        action="store_true",
+        help="exact legacy pre-stop diagnostic journal의 퇴역에 동의합니다.",
+    )
+    cache_target_retire_legacy_diagnostic.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON으로 출력합니다.",
+    )
+    cache_target_retire_legacy_diagnostic.set_defaults(func=_cmd_cache_target)
 
     db_backup = subparsers.add_parser(
         "db-backup",
