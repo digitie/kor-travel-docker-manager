@@ -230,11 +230,11 @@ def test_compose_service_retirement_uses_narrow_legacy_window_gate(
         retired_phase="rolled_back",
         retired_at_unix=1_700_000_100,
     )
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(
-            effective={"KTDM_DEPLOYMENT_ENVIRONMENT": "production"},
-        )
+    environment = SimpleNamespace(
+        effective={"KTDM_DEPLOYMENT_ENVIRONMENT": "production"},
+        compose_path=str(tmp_path / "compose.yml"),
     )
+    source_identity = object()
     called: list[object] = []
 
     @contextmanager
@@ -242,15 +242,41 @@ def test_compose_service_retirement_uses_narrow_legacy_window_gate(
         yield SimpleNamespace(lock_path="/lock")
 
     monkeypatch.setattr(compose_service_module, "c6c_deployment_lock_from_environment", lock)
+
+    def unexpected_candidate_materialization(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("legacy retirement must not materialize a compose candidate")
+
     monkeypatch.setattr(
         ComposeService,
         "_capture_transaction_unlocked",
-        lambda _self: (transaction, None),
+        unexpected_candidate_materialization,
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_assert_transaction_matches_c6c_lock",
-        lambda _transaction, _lock: called.append("lock"),
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: called.append("environment") or environment,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_frozen_compose_source",
+        lambda _environment: (b"services: {}\n", source_identity),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "assert_environment_snapshot_matches_c6c_lock",
+        lambda _environment, _lock: called.append("lock"),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_revalidate_compose_environment_snapshot",
+        lambda _environment: called.append("env-revalidated"),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_revalidate_frozen_compose_source",
+        lambda _environment, *, source_bytes, source_identity: called.append(
+            (source_bytes, source_identity)
+        ),
     )
     monkeypatch.setattr(
         compose_service_module,
@@ -277,6 +303,27 @@ def test_compose_service_retirement_uses_narrow_legacy_window_gate(
 
     assert result["retired_phase"] == "rolled_back"
     assert result["retired_journal_sha256"] == "a" * 64
-    assert called[0] == "lock"
-    assert transaction.environment.effective in called
+    assert called[:3] == ["environment", "lock", environment.effective]
+    assert "env-revalidated" in called
+    assert (b"services: {}\n", source_identity) in called
     assert journal_path in called
+
+
+def test_frozen_compose_source_rejects_change_before_legacy_retirement(
+    tmp_path: Path,
+) -> None:
+    compose_path = tmp_path / "compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    environment = SimpleNamespace(compose_path=str(compose_path))
+
+    source_bytes, source_identity = compose_service_module._capture_frozen_compose_source(
+        environment
+    )
+    compose_path.write_text("services:\n  changed: {}\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError, match="compose source"):
+        compose_service_module._revalidate_frozen_compose_source(
+            environment,
+            source_bytes=source_bytes,
+            source_identity=source_identity,
+        )

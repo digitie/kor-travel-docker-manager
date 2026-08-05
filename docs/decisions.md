@@ -1588,7 +1588,8 @@ production Manager는 `retire-legacy-window --confirm`으로 exact owner-only v1
 command는 raw SHA와 phase만 가진 root-owned receipt를 atomic fsync하고 재검증한 뒤 source journal을 unlink한다.
 receipt가 이미 있으면 같은 SHA/phase일 때만 unlink cleanup을 idempotently 재개한다. nonterminal/다른 terminal
 phase, v2, malformed/foreign file, receipt conflict는 모두 실패한다. global lock과 frozen canonical input 검증은
-유지하며, Docker·Compose·DB·runtime·manifest·backup은 mutation 대상이 아니다.
+유지하며, raw Compose source는 bytes와 file identity만 동결·재검증한다. F1F input이 아직 없는 old production env를
+candidate로 materialize하지 않으므로, Docker·Compose·DB·runtime·manifest·backup은 mutation 대상이 아니다.
 
 ### 결과
 

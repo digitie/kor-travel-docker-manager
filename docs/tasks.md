@@ -998,7 +998,9 @@ rollback evidence를 표현하지 못하므로, 새 v2 input/F1D authority로 �
       v1 `rolled_back` journal 한 개만 수용하고, raw SHA와 phase만 갖는 root-owned retirement receipt를 fsync한
       뒤 journal을 unlink한다. `prepared` 등 nonterminal v1, `runtime_activated` 또는 그 밖의 v1 phase, v2,
       malformed/foreign/hardlink/symlink journal과 receipt conflict는 fail-close한다.
-- [ ] command는 C6c global lock과 frozen canonical env/Compose identity를 먼저 다시 확인하고, Docker·Compose·
+- [/] command는 C6c global lock과 frozen canonical env/raw Compose source identity를 먼저 다시 확인한다. F1F
+      input이 아직 없는 old production env에서도 실행되도록 Docker Compose candidate materialization은 하지 않으며,
+      Docker·Compose·
       DB·runtime·manifest·cache-target credential·backup을 전혀 변경하지 않는다. receipt write와 unlink 사이
       crash는 같은 raw SHA/phase로만 idempotently resume한다.
 - [ ] focused/full backend 검증과 단일 적대적 리뷰 뒤 PR merge·trusted release 설치를 거쳐 n150의 exact

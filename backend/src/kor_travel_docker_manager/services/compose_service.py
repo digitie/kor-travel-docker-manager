@@ -2079,6 +2079,50 @@ def _revalidate_compose_environment_snapshot(
         )
 
 
+def _capture_frozen_compose_source(
+    environment: ComposeEnvironmentSnapshot,
+) -> tuple[bytes, ComposeEnvFileIdentity]:
+    """candidate를 materialize하지 않고 compose source identity만 동결한다."""
+
+    compose_path = Path(environment.compose_path)
+    before = _env_file_identity(compose_path)
+    if not before.exists:
+        raise ComposeCandidateContractError("compose source is unavailable")
+    try:
+        source_bytes = compose_path.read_bytes()
+    except OSError as exc:
+        raise ComposeCandidateContractError("compose source cannot be snapshotted") from exc
+    if _env_file_identity(compose_path) != before:
+        raise ComposeCandidateContractError(
+            "compose source identity changed during snapshot"
+        )
+    return source_bytes, before
+
+
+def _revalidate_frozen_compose_source(
+    environment: ComposeEnvironmentSnapshot,
+    *,
+    source_bytes: bytes,
+    source_identity: ComposeEnvFileIdentity,
+) -> None:
+    compose_path = Path(environment.compose_path)
+    current_identity = _env_file_identity(compose_path)
+    if current_identity != source_identity:
+        raise ComposeCandidateContractError(
+            "compose source identity changed during legacy window retirement"
+        )
+    try:
+        current_bytes = compose_path.read_bytes()
+    except OSError as exc:
+        raise ComposeCandidateContractError(
+            "compose source cannot be revalidated during legacy window retirement"
+        ) from exc
+    if current_bytes != source_bytes or _env_file_identity(compose_path) != current_identity:
+        raise ComposeCandidateContractError(
+            "compose source changed during legacy window retirement"
+        )
+
+
 def _atomic_restore_compose_source(
     path: Path,
     payload: bytes,
@@ -4506,18 +4550,27 @@ class ComposeService:
         """F1G: exact terminal v1 window 하나만 receipt-first로 퇴역한다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            transaction, _ = self._capture_transaction_unlocked()
-            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            mode = assert_legacy_window_retirement_allowed(
-                environment=transaction.environment.effective
+            environment = _capture_compose_environment_snapshot(
+                environment_override=None,
             )
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            source_bytes, source_identity = _capture_frozen_compose_source(environment)
+            assert_environment_snapshot_matches_c6c_lock(environment, lock_snapshot)
+            mode = assert_legacy_window_retirement_allowed(
+                environment=environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(environment.effective)
             if mode != "production" or not config.production or config.cache_target is None:
                 raise DeploymentContractError(
                     "legacy window retirement requires the production cache-target contract"
                 )
+            _revalidate_compose_environment_snapshot(environment)
+            _revalidate_frozen_compose_source(
+                environment,
+                source_bytes=source_bytes,
+                source_identity=source_identity,
+            )
             receipt = retire_legacy_terminal_cache_target_window_journal(
-                cache_target_window_journal_path(transaction.environment.effective),
+                cache_target_window_journal_path(environment.effective),
                 retired_at_unix=int(time.time()),
             )
             return {
