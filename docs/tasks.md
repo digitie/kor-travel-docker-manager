@@ -34,6 +34,7 @@
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
 | **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
 | **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
+| **T-VN-41-F1H** | inert v2 diagnostic journal의 Manager 소유 퇴역 | `[/]` | - | writer drain 전 exact v2 state만 receipt-first로 퇴역해 F1F input rotation을 재개 |
 
 ---
 
@@ -1006,3 +1007,26 @@ rollback evidence를 표현하지 못하므로, 새 v2 input/F1D authority로 �
 - [ ] focused/full backend 검증과 단일 적대적 리뷰 뒤 PR merge·trusted release 설치를 거쳐 n150의 exact
       `rolled_back` v1 receipt를 민감값 없는 result로 퇴역한다. 그 뒤에만 F1F input first-run/idempotent rerun을
       재개한다.
+
+### T-VN-41-F1H: inert v2 diagnostic journal 퇴역
+
+F1C가 퇴역한 v1 pre-stop diagnostic 뒤에 실행했던 새 v2 diagnostic도 `writers_fencing`에서 stale runtime
+tuple을 발견해 writer-drain을 시작하기 전에 멈췄다. n150의 현재 journal은 `external_event_count=0`이며
+writer drain lease/receipt, writer fence, stage receipt, runtime smoke, failure/completion evidence가 모두 없다.
+F1F input rotation은 올바르게 non-terminal diagnostic을 막으므로, 이 *inert* 상태를 raw 삭제나 일반
+diagnostic resume으로 넘기지 않는다.
+
+- [/] production 전용 `ktdctl cache-target retire-inert-diagnostic --confirm --json`을 추가한다. exact current
+      v2 schema와 strict scalar type(`version`은 exact `int` 2, `started_at_unix`는 `bool`이 아닌 양의 `int`)의 `prepared` 또는
+      `writers_fencing`만 typed reader로 재검증한 뒤, 위의 모든 writer/post-stage
+      evidence가 비어 있고 `external_event_count=0`일 때만 `cache-target-diagnostic-inert-retirement-v1.json`에
+      source version·raw SHA·phase를 가진 별도 receipt를 fsync한 뒤 journal을 unlink한다. F1C의
+      `cache-target-diagnostic-retirement-v1.json`과 namespace를 공유하지 않으며, source-missing replay는 같은
+      source version/SHA/phase receipt만 idempotently 완료한다.
+- [ ] writer drain lease/receipt/fence, 역할별 receipt, runtime smoke, external event, failure/completion evidence 중
+      하나라도 있거나 `diagnosing` 이후 phase·다른 schema·foreign file·receipt conflict이면 fail-close한다.
+      command는 F1G와 같이 C6c global lock과 frozen canonical env/raw Compose source identity만 동결·재검증하고,
+      Docker Compose candidate·runtime·DB·manifest·backup·credential은 변경하지 않는다. 일반 Manager mutation의
+      non-terminal diagnostic 차단은 계속 유지한다.
+- [ ] 단일 적대적 리뷰와 focused/full backend 검증 뒤 PR merge·trusted release 설치를 거쳐 n150에서 first-run과
+      idempotent rerun을 확인하고, 그 뒤 F1F input first-run/idempotent rerun을 재개한다.
