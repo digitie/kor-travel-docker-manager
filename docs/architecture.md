@@ -221,13 +221,15 @@ graph TD
      않는 기존 감사 근거이므로 차단 조건이 아니다. current runtime과 old manifest를 새 rollback source로 채택하지
      않는다. 성공 manifest는 active와 rollback
      모두 같은 candidate이며, candidate activation 실패는 old image rollback 대신 five-runtime halt로
-     fail-close한다. canonical `.env`의 source checkout 갱신은 별도 trusted
-     source-installer transaction이 소유한다. 이 installer는 user-owned checkout의 Git config를 root에서
+     fail-close한다. canonical `.env`의 source checkout과 release-bound runtime contract 갱신은 별도 trusted
+     pinned deployment input transaction이 소유한다. 이 installer는 user-owned checkout의 Git config를 root에서
      실행하지 않고 source-owner의 read-only origin identity와 code-owned canonical HTTPS URL을 exact 대조한다.
      root-owned bare staging repo가 tracked full SHA 하나만 sanitized fetch해 immutable detached worktree를
-     만들며, source-root와 revision scalar를 하나의 atomic env keyset으로 교체한다. private old-env backup과
-     durable journal이 terminal이 아니면 모든 pair mutation은 fail-close한다. installer 자체는 Docker·Compose·
-     DB·runtime·image build를 호출하지 않는다.
+     만든다. source-root·revision scalar와 Map migration expected head·PinVi cache-target contract scalar를
+     하나의 atomic env keyset으로 교체한다. prior terminal input receipt와 canonical env가 exact predecessor
+     pinset임을 검증한 rotation preflight만 old→new input 교체를 허용한다. private old-env backup과 durable
+     journal이 terminal이 아니면 모든 pair mutation은 fail-close한다. installer 자체는 Docker·Compose·DB·runtime·
+     image build를 호출하지 않는다.
    - Map production API 인증은 ADR-23의 exact runtime 경계를 따른다. admin proxy secret은
      Map API와 UI BFF에만 공유하고 service token·cursor signing secret은 Map API에만 둔다.
      production profile/public-key-required/debug-off는 literal로 고정하며, 인증된 Prometheus
