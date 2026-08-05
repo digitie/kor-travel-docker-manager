@@ -28,6 +28,7 @@
 | **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[x]` | 2026-08-04 | fail-close 2중 방어(--confirm·capability sentinel), 적대적 리뷰 2명 완료 |
 | **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[x]` | 2026-08-04 | GET /backups(mutation 경로 없음), BackupHistoryPanel, 적대적 리뷰 2명 완료 |
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
+| **T-VN-41-F1** | cache-target production pair re-pin (issue #129) | `[/]` | - | 최신 generation 7 Map/PinVi exact provenance·runbook·회귀를 함께 갱신 |
 
 ---
 
@@ -780,3 +781,12 @@ T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 �
       helper 추출만 반영, 전체 재설계는 별도 설계 단계를 먼저 거쳐 진행)에
       동의해 지금은 여기까지만 반영한다. journal/receipt/manifest 통합
       재설계는 별도 태스크(T-058 후보)로 남긴다.
+
+### T-VN-41-F1: cache-target production pair re-pin (issue #129)
+
+- [x] Map #940의 service artifact/functional owner와 현재 production Map release,
+      PinVi #428의 reviewed candidate/squash release를 GitHub merge provenance와 n150 배포
+      receipt로 교차 확인했다.
+- [/] `CacheTargetProductionPinManifest`의 generation 7 exact pair, 전체 pin 회귀,
+      production cutover runbook을 한 PR에서 갱신한다. 이 PR은 Manager production 배포와
+      적대적 리뷰 1건을 통과해야 F2 진단/cutover를 열 수 있다.
