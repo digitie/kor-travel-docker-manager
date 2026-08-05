@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1J — Map 소유 cancel-probe fixture lifecycle 설계)
+
+F1I의 safe checkpoint로 마지막 F1D candidate attempt 하나를 분리한 결과, PinVi login·ETL summary·provider
+sync는 모두 `200`이고 configured cancel probe만 `404`였다. 이는 Manager runtime, PinVi session/role 또는
+read-route 문제가 아니라 static probe UUID에 대응하는 Map execution fixture의 lifecycle owner가 없다는
+결론이다.
+
+단일 적대적 설계 리뷰를 반영해 Manager는 candidate Map API가 준비된 뒤 PinVi smoke 전 Map의 전용 internal
+lifecycle API를 호출한다. Map은 transaction-scoped dynamic fixture, dedicated `ops:fixture` principal, canonical
+cancellation record FK와 `armed → consumed → finalized` durable state를 소유한다. PinVi는 기존 normal cancel
+relay만 수행하고 Manager는 정확한 `409 PIPELINE_CANCELLATION_UNSAFE` 하나만 성공으로 인정한다. static UUID,
+Manager direct DB/`docker exec`, Map startup seed, Dagster failure `502/503` 허용은 모두 제거 대상이다.
+
+Map → pair rebind → Manager → n150 destructive verification의 네 PR/운영 단계와 crash recovery 조건은
+[`tvn41-f1j-cancel-probe-fixture.md`](tvn41-f1j-cancel-probe-fixture.md)에 고정했다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1G — legacy terminal window 퇴역 설계)
 
 n150 trusted Manager release `067a851…`의 F1F input installer는 Docker·DB·runtime mutation 전에 legacy

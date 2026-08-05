@@ -34,7 +34,7 @@
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
 | **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
 | **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
-| **T-VN-41-F1I** | F1D fail-close checkpoint 관측성 | `[ ]` | - | fail-close 원인을 비밀값 없이 durable journal·CLI에 결박하여 same-candidate 재개를 판단 |
+| **T-VN-41-F1J** | Map 소유 cancel-probe fixture lifecycle | `[/]` | - | 동적 fixture·전용 principal·정확한 PinVi relay 계약으로 F1D false-green 없이 수렴 |
 | **T-VN-41-F1H** | inert v2 diagnostic journal의 Manager 소유 퇴역 | `[/]` | - | writer drain 전 exact v2 state만 receipt-first로 퇴역해 F1F input rotation을 재개 |
 
 ---
@@ -989,21 +989,34 @@ canonical source cache와 tracked exact production pin이 모두 달라 일반 d
 - [x] F1F-A/B와 v2 input install 코드를 n150 trusted release로 설치하고 installer first-run/idempotent rerun을
       검증했다. F1D destructive bootstrap은 동일 frozen candidate로 두 차례 `prepared` 단계에서 fail-close했고,
       manifest는 바꾸지 않고 five-runtime을 halt했다.
-- [ ] **F1I (issue #136 보강)** — post-mutation fail-close가 raw exception·로그·credential을 내보내지 않으면서도
-      조작자가 반복 실패 지점을 구별할 수 있게 한다. journal에는 allowlist checkpoint, 마지막 실패 checkpoint/UTC
-      시각, exact integer failure count만 저장하고 CLI JSON에는 그 값과 halt 상태만 낸다. 현재 n150의 base v2
-      journal은 strict legacy shape로 읽어 null/0으로 normalize하고, 새 extended v2 shape는 네 diagnostic field가
-      모두 있는 경우만 엄격히 수용한다. 따라서 same-pinset frozen candidate resume을 차단하지 않는다.
-- [ ] candidate action 직전에는 checkpoint를 atomic fsync하고, 실패 catch는 root checkpoint evidence를 halt 전에
-      persist한다. persist 자체가 실패해도 `finally` 성격의 halt는 반드시 실행하며, halt failure가 원래 activation
-      checkpoint를 덮어쓰지 않는다. 이 checkpoint는 phase resume cursor가 아니므로 F1D 재실행은 항상 기존 phase의
-      full activation/verification을 수행한다. exception→CLI는 `result`가 아닌 safe enum 전용 경계로 전달한다.
-      이 process가 새 `prepared` journal을 fsync한 직후의 `stop_pair` 전 최초 checkpoint 실패만 pre-mutation
-      error로 끝내고, 이미 존재한 base/extended v2 journal 또는 그 호출 시작 뒤의 checkpoint/실패 evidence
-      persistence 실패는 반드시 halt한다. generic pair mutation·input rotation은 nonterminal journal 동안 계속
-      거부한다.
-- [ ] F1I trusted release 설치 뒤 같은 F1D command의 same-candidate resume 결과를 확인하고, 성공 시 idempotent
-      rerun·n150 admin UI E2E를 완료한 뒤 issue #136을 닫는다.
+
+### T-VN-41-F1J: Map 소유 cancel-probe fixture lifecycle (issue #136 보강)
+
+F1I의 safe checkpoint가 분리한 마지막 F1D smoke는 PinVi login·ETL·provider-sync가 모두 `200`인 뒤,
+configured cancel probe만 `404`였다. 따라서 Manager runtime·PinVi session/role·일반 read route가 아니라,
+Manager가 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`만 전달하고 실제 Map pipeline execution fixture의 생성·소비·정리를
+어느 구성요소도 소유하지 않는 것이 원인이다. 자세한 정본은
+[`tvn41-f1j-cancel-probe-fixture.md`](tvn41-f1j-cancel-probe-fixture.md)다.
+
+- [ ] **F1J-A (Map PR)** — Map이 `ops.c6c_cancel_probe_fixtures` migration과 전용 repository를 추가한다. F1D
+      durable transaction ID마다 Map이 새 `job_id`를 생성하며, `armed → consumed → finalized` 상태와 canonical
+      cancellation record를 FK·CHECK로 결박한다. `PUT/GET/POST finalize` 내부 lifecycle API와 별도
+      `ops:fixture` principal을 추가하고, 기존 일반 cancellation 경로가 `armed` fixture에서 정확히
+      `409 PIPELINE_CANCELLATION_UNSAFE`를 만들어 consumed 상태를 원자적으로 기록하게 한다. generic job API,
+      startup hook, raw SQL script, static UUID는 사용하지 않는다.
+- [ ] **F1J-B (Manager PR)** — `KTDM_C6C_CANCEL_PROBE_JOB_ID`와 409/502/503의 넓은 success 집합을 제거한다.
+      candidate Map readiness 뒤 PinVi smoke 전 Manager가 전용 credential로 Map fixture를 ensure하고, 반환된
+      dynamic `job_id`만 PinVi의 기존 cancel relay에 전달한다. 성공은 exact canonical
+      `409 PIPELINE_CANCELLATION_UNSAFE` 하나뿐이다. Manager journal receipt는 transaction ID·job ID·Map lifecycle
+      state·response 검증 시각만 저장하며, crash recovery는 Map의 durable state를 먼저 읽어 POST를 중복하지 않는다.
+      response 검증 뒤에만 Map finalize를 호출한다.
+- [ ] **F1J-C (pair 재결박 PR)** — Map lifecycle API generation을 Map release provenance와 compatible-pair input의
+      required capability로 승격한다. 새 Map release/artifact가 PinVi metadata와 Manager pinset에 byte-exact로
+      재결박되기 전에는 F1D candidate를 만들지 않는다. PinVi는 fixture 생성 권한을 받지 않으며 기존 relay의
+      structured error 보존 회귀만 추가한다. lifecycle API가 없는 old Map image로의 rollback은 fail-close한다.
+- [ ] **F1J-D (n150 final verification)** — trusted release 순서(Map → PinVi metadata/pair pin → Manager)로 설치한
+      뒤 새 F1D transaction을 실행한다. `ensure → PinVi cancel 1회 → exact 409 → finalize` receipt, idempotent
+      crash-recovery rerun, 관리 UI 로그인·ETL·provider 상태와 live Playwright E2E를 확인하고 issue #136을 닫는다.
 
 ### T-VN-41-F1G: legacy terminal window journal 퇴역
 
