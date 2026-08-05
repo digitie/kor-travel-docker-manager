@@ -895,53 +895,55 @@ F1D의 n150 static preflight는 의도대로 mutation 전에 중단했다. live 
 `8c5bdcf8…`과 그 service OpenAPI contract를 수용한 PinVi release를 하나의 새 input generation으로
 재결박해야 한다.
 
-- [/] **F1F-A (PinVi PR)** — Map `8c5bdcf8…` service artifact를 byte-exact 재vendor하고
+- [x] **F1F-A (PinVi PR)** — Map `8c5bdcf8…` service artifact를 byte-exact 재vendor하고
       `derivation_enforced` required field를 수용한다. service SHA와 **Map exact release revision**,
       `.env.example` cache-target source revision을 함께 회전한다. PinVi exact merge SHA가 확정되기
-      전에는 Manager production manifest를 추측값으로 갱신하지 않는다.
-- [/] **F1F-B (Manager PR)** — `CacheTargetProductionPinManifest`를 input generation v2로 올려
+      전에는 Manager production manifest를 추측값으로 갱신하지 않는다. PR #434 merge SHA
+      `3b87c19c…`를 release authority로 확정했다.
+- [x] **F1F-B (Manager PR)** — `CacheTargetProductionPinManifest`를 input generation v2로 올려
       Map application alembic head와 PinVi의 세 runtime contract scalar(OpenAPI SHA, Map expected source
       revision, generation)를 release pair와 같은 tracked 정본으로 둔다. 기존 trusted source-installer를
       versioned **pinned deployment input** transaction으로 승격해 Map/PinVi source root·revision,
       Map expected migration head, PinVi contract scalar를 owner-preserving atomic env replace 한 번으로
-      설치한다. F1D는 v2 committed evidence 없이는 실행하지 않는다.
-- [ ] v1 committed source journal은 과거 감사 증적으로 보존하되 v2 authority가 아니다. v1
+      설치한다. F1D는 v2 committed evidence 없이는 실행하지 않는다. PR #149 squash merge
+      `8329f834…`로 완료했다.
+- [x] v1 committed source journal은 과거 감사 증적으로 보존하되 v2 authority가 아니다. v1
       non-terminal/foreign residue는 모든 pair mutation을 계속 막고, v2 journal·backup·immutable
       worktree는 v1과 별도 path에서 crash resume·rollback을 수행한다. v2 installer는 v1 terminal
       evidence가 가리키는 root-owned immutable source만 predecessor로 수용하며, 임의 root-owned path나
       old revision scalar는 수용하지 않는다.
-- [ ] installer 진입 전의 일반 production-release gate는 새 manifest와 아직 old canonical env가
+- [x] installer 진입 전의 일반 production-release gate는 새 manifest와 아직 old canonical env가
       다르다는 이유만으로 rotation 자체를 막으므로 F1F에는 별도 predecessor rotation preflight를 둔다.
       이 preflight는 prior terminal input receipt와 현재 env가 **정확한 이전 pinset**임을 증명할 때만
       old→new replacement를 허용한다. manifest·env 어느 한쪽만 임의 값이거나 non-terminal state면
       기존처럼 fail-close한다.
-- [ ] v2 pinset은 canonical manifest serialization SHA-256으로 식별한다. source input journal은 old/new
+- [x] v2 pinset은 canonical manifest serialization SHA-256으로 식별한다. source input journal은 old/new
       pinset SHA, old/new env SHA와 exact worktree tree를 모두 기록한다. production control plane에는
       Map functional-owner와 reviewed PinVi candidate 같은 별도 audit ref를 남기지 않고, exact Map release와
       exact PinVi release를 유일 source authority로 사용한다. PinVi가 요구하는 source revision도 Map
       release와 동일해야 한다.
-- [ ] F1F-A는 PinVi source 안에 versioned cache-target upstream metadata를 추가한다. metadata는 Map
+- [x] F1F-A는 PinVi source 안에 versioned cache-target upstream metadata를 추가한다. metadata는 Map
       release, service artifact SHA, contract generation을 exact 기록하고 vendored `openapi.service.json`과
       byte-exact로 대조된다. Manager F1F-B는 trusted exact Map/PinVi worktree에서 Map artifact SHA,
       PinVi metadata, PinVi vendored artifact, manifest pinset을 read-only로 네 방향 대조한다. 이 verifier는
       Docker·Compose·DB·runtime을 호출하지 않으며 어느 one-sided 상수 변경도 candidate build 전에 막는다.
-- [ ] prior F1D journal도 static filename으로 재사용하지 않는다. non-terminal journal은 새 input
+- [x] prior F1D journal도 static filename으로 재사용하지 않는다. non-terminal journal은 새 input
       generation을 막고, terminal journal은 validated pin fingerprint 경로로 receipt-first archive한 뒤에만
       새 generation journal을 연다. 따라서 future re-pin이 terminal receipt를 덮거나 frozen input 비교에서
       영구 차단되는 일이 없다.
-- [/] v2 input journal과 backup도 static path가 아니라 `history/<pinset_sha256>` 불변 세대로
+- [x] v2 input journal과 backup도 static path가 아니라 `history/<pinset_sha256>` 불변 세대로
       보관한다. next rotation과 B→A rollback 재시도는 predecessor의 exact `new_env_sha256`, exact worktree
       tree, archive된 F1D receipt를 다시 대조한다. current pinset의 receipt나 backup을 덮어 재시도를
       불가능하게 만들지 않는다.
-- [ ] v2 input install의 terminal state는 F1D handoff가 pending임을 durable하게 보존한다. pending 동안
+- [x] v2 input install의 terminal state는 F1D handoff가 pending임을 durable하게 보존한다. pending 동안
       일반 deploy/rollback/diagnostic/enable/writer-drain은 모두 거부하고 같은 pinset F1D만 시작할 수 있다.
       F1D journal 생성 전 crash는 pending에서 재시도하며, F1D non-terminal·candidate halt failure는 같은
       pinset/candidate resume 외의 rotation·pair mutation을 허용하지 않는다. rotation preflight는 cache-target
       window·diagnostic·enable·writer-drain 등 모든 durable state가 terminal인지도 확인한다.
-- [ ] `docker-compose.yml`의 Map migration expected head는 stale literal을 제거하고 v2 installer가
+- [x] `docker-compose.yml`의 Map migration expected head는 stale literal을 제거하고 v2 installer가
       기록한 required env scalar만 받는다. candidate image static head, live DB head, resolved runtime
       expected head가 모두 한 manifest field에 정확히 일치해야 한다.
-- [ ] 각 PR은 단일 적대적 리뷰와 focused/full backend 검증을 통과한다. 두 PR merge 뒤 trusted
+- [x] 각 PR은 단일 적대적 리뷰와 focused/full backend 검증을 통과했다. 두 PR merge 뒤 trusted
       Manager release를 설치하고 F1F input transaction의 first-run/idempotent rerun(무 Docker/DB/runtime
       mutation)을 확인한 다음에만 F1D destructive bootstrap을 재개한다.
 
@@ -982,5 +984,5 @@ canonical source cache와 tracked exact production pin이 모두 달라 일반 d
 - [x] 단일 적대적 리뷰의 F1E committed source evidence, manifest/journal crash resume, old·live·candidate
       Map/PinVi head, halt 수렴, terminal frozen evidence, CLI failure result 지적을 보강했다. focused 85 passed,
       backend 전체 1655 passed, Ruff, 변경 source strict mypy를 통과했다.
-- [ ] F1F-A/B와 v2 input install이 완료된 뒤 n150 trusted release로 설치하고 destructive live
+- [ ] F1F-A/B와 v2 input install 코드 merge를 완료했다. 다음으로 n150 trusted release로 설치하고 destructive live
       bootstrap·idempotent 재실행·admin UI E2E를 완료한 뒤 issue #136을 닫는다.

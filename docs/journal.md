@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1F-B — Manager merge 완료)
+
+PR #149는 squash merge `8329f834…`로 Manager `main`에 반영됐다. Map `8c5bdcf8…`, PinVi
+`3b87c19c…`, service artifact SHA `c7838b20…`, contract generation `7`, Map application head
+`0083_nonderived_uuid_generator`를 v2 pin manifest의 유일 authority로 만들고, static compose literal을
+required canonical env scalar로 치환했다.
+
+단일 적대적 리뷰는 archive 직후 crash, input과 F1D receipt의 frozen env binding, B→A(v2) rollback
+재시도를 재검토해 P0/P1 없음으로 종료했다. focused regression 143건, 전체 `backend/tests`, 변경 파일
+Ruff와 diff check를 통과했다. remote GitHub CI workflow는 구성돼 있지 않아 PR check는 없었다. 다음
+mutation은 이 merge를 n150 trusted Manager release로 설치해 F1F first-run/idempotent rerun을 무 Docker/DB/
+runtime mutation으로 증명한 뒤에만 F1D destructive bootstrap으로 진행한다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1F-B — versioned input/F1D receipt 재시도 보강 중)
 
 F1F-B는 Map `8c5bdcf8…`, PinVi `3b87c19c…`, service OpenAPI SHA와 Map application head를 v2
