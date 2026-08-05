@@ -28,6 +28,7 @@ from kor_travel_docker_manager.services import compose_service as compose_servic
 from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
+    C6cCancelProbeFixture,
     C6cDeploymentConfig,
     C6cSmokeConfig,
     CompatibleImagePair,
@@ -115,6 +116,7 @@ from kor_travel_docker_manager.services.docker_service import DockerService
 
 _READ_TOKEN = "r" * 32
 _CANCEL_TOKEN = "c" * 32
+_FIXTURE_TOKEN = "f" * 32
 _MAP_IMAGE_ID = f"sha256:{'a' * 64}"
 _PINVI_IMAGE_ID = f"sha256:{'b' * 64}"
 _MAP_UI_IMAGE_ID = f"sha256:{'e' * 64}"
@@ -202,6 +204,14 @@ _CACHE_TARGET_TOKENS = {
 }
 _CANCEL_PROBE_JOB_ID = "77777777-7777-4777-8777-777777777777"
 _OPERATION_MEMBER_ID = "88888888-8888-4888-8888-888888888888"
+_CANCEL_PROBE_OUTCOME = {
+    "name": "pinvi_cancel_error",
+    "status": 409,
+    "code": "PIPELINE_CANCELLATION_UNSAFE",
+}
+_REAL_ENSURE_CANCEL_PROBE_FIXTURE = c6c_deployment._ensure_c6c_cancel_probe_fixture
+_REAL_READ_CANCEL_PROBE_FIXTURE = c6c_deployment._read_c6c_cancel_probe_fixture
+_REAL_FINALIZE_CANCEL_PROBE_FIXTURE = c6c_deployment._finalize_c6c_cancel_probe_fixture
 _C6C_ENV_NAMES = (
     "KTDM_DEPLOYMENT_ENVIRONMENT",
     "PINVI_ENVIRONMENT",
@@ -227,6 +237,7 @@ _C6C_ENV_NAMES = (
     "PINVI_API_CONTAINER",
     "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN",
     "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN",
+    "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN",
     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED",
     "KTDM_C6C_CONTRACT_GENERATION",
     "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
@@ -238,7 +249,6 @@ _C6C_ENV_NAMES = (
     "KTDM_C6C_MAP_UI_ADMIN_PASSWORD",
     "KTDM_C6C_PINVI_ADMIN_EMAIL",
     "KTDM_C6C_PINVI_ADMIN_PASSWORD",
-    "KTDM_C6C_CANCEL_PROBE_JOB_ID",
     "COMPOSE_PROJECT_NAME",
     "KTDM_C6C_STATE_ROOT",
     "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
@@ -282,6 +292,7 @@ def _production_config() -> C6cDeploymentConfig:
         map_container_port=12701,
         read_token=_READ_TOKEN,
         cancel_token=_CANCEL_TOKEN,
+        fixture_token=_FIXTURE_TOKEN,
         map_container="kor-travel-map-api-latest",
         map_ui_container="kor-travel-map-ui-latest",
         map_ui_password_hash=_MAP_UI_PASSWORD_HASH,
@@ -299,9 +310,63 @@ def _production_config() -> C6cDeploymentConfig:
             map_ui_password=_MAP_UI_PASSWORD,
             pinvi_admin_email="admin@example.test",
             pinvi_admin_password=_PINVI_ADMIN_PASSWORD,
-            cancel_probe_job_id=_CANCEL_PROBE_JOB_ID,
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_map_cancel_probe_fixture_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기존 PinVi DTO 회귀는 Map HTTP가 아니라 relay shape만 검증한다.
+
+    F1J lifecycle HTTP 자체는 아래 전용 회귀에서 실제 parser를 호출한다. 이 stub은
+    이전 cancel-detail matrix가 외부 Map transport에 의존하지 않게 유지한다.
+    """
+
+    cancellation_id = "22222222-2222-4222-8222-222222222222"
+
+    def ensure(
+        _config: C6cDeploymentConfig,
+        state: PinviCancelProbeState,
+    ) -> C6cCancelProbeFixture:
+        if state.fixture is None:
+            state.fixture = C6cCancelProbeFixture(
+                transaction_id=state.transaction_id,
+                job_id=_CANCEL_PROBE_JOB_ID,
+                state="armed",
+                cancellation_id=None,
+                canonical_unsafe_outcome=None,
+            )
+        return state.fixture
+
+    def read(
+        _config: C6cDeploymentConfig,
+        transaction_id: str,
+    ) -> C6cCancelProbeFixture:
+        return C6cCancelProbeFixture(
+            transaction_id=transaction_id,
+            job_id=_CANCEL_PROBE_JOB_ID,
+            state="consumed",
+            cancellation_id=cancellation_id,
+            canonical_unsafe_outcome=_CANCEL_PROBE_OUTCOME,
+        )
+
+    def finalize(
+        _config: C6cDeploymentConfig,
+        state: PinviCancelProbeState,
+    ) -> C6cCancelProbeFixture:
+        assert state.fixture is not None
+        state.fixture = C6cCancelProbeFixture(
+            transaction_id=state.fixture.transaction_id,
+            job_id=state.fixture.job_id,
+            state="finalized",
+            cancellation_id=state.fixture.cancellation_id,
+            canonical_unsafe_outcome=_CANCEL_PROBE_OUTCOME,
+        )
+        return state.fixture
+
+    monkeypatch.setattr(c6c_deployment, "_ensure_c6c_cancel_probe_fixture", ensure)
+    monkeypatch.setattr(c6c_deployment, "_read_c6c_cancel_probe_fixture", read)
+    monkeypatch.setattr(c6c_deployment, "_finalize_c6c_cancel_probe_fixture", finalize)
 
 
 def _manifest() -> CompatiblePairManifest:
@@ -360,6 +425,7 @@ def _production_environment() -> dict[str, str | None]:
         PINVI_CONTRACT_GENERATION_ENV: "7",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _FIXTURE_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
@@ -371,7 +437,6 @@ def _production_environment() -> dict[str, str | None]:
         "KTDM_C6C_MAP_UI_ADMIN_PASSWORD": _MAP_UI_PASSWORD,
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": _PINVI_ADMIN_PASSWORD,
-        "KTDM_C6C_CANCEL_PROBE_JOB_ID": _CANCEL_PROBE_JOB_ID,
     }
 
 
@@ -478,6 +543,7 @@ def _set_production_guard_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "true")
     monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_READ_TOKEN", _READ_TOKEN)
     monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN", _CANCEL_TOKEN)
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN", _FIXTURE_TOKEN)
 
 
 def _allow_manager_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -560,6 +626,7 @@ def _frozen_external_transaction(tmp_path: Path) -> ComposeTransactionSnapshot:
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN",
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN",
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN",
     ):
         if name in os.environ:
             effective[name] = os.environ[name]
@@ -616,6 +683,7 @@ def _production_guard_transaction(
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _FIXTURE_TOKEN,
     }
     if monkeypatch is not None:
         for name, value in effective.items():
@@ -973,6 +1041,7 @@ def _resolved_compose() -> dict[str, object]:
                 "environment": {
                     "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
                     "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+                    "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _FIXTURE_TOKEN,
                     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
                     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": _MAP_ADMIN_PROXY_SECRET,
                     "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": _MAP_SERVICE_TOKEN,
@@ -1075,6 +1144,7 @@ def _resolved_candidate_environment() -> dict[str, str]:
     return {
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _FIXTURE_TOKEN,
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
@@ -1087,6 +1157,9 @@ def _resolved_candidate_environment() -> dict[str, str]:
 
 def _raw_candidate_environment(**overrides: str) -> dict[str, str]:
     environment = {
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _FIXTURE_TOKEN,
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _MAP_UI_USERNAME,
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET": _MAP_UI_SESSION_SECRET,
@@ -1108,6 +1181,7 @@ def _runtime_secret_configs(
             "Env": {
                 "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _READ_TOKEN,
                 "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _CANCEL_TOKEN,
+                "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _FIXTURE_TOKEN,
                 "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
                 "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": _MAP_ADMIN_PROXY_SECRET,
                 "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": _MAP_SERVICE_TOKEN,
@@ -1161,6 +1235,9 @@ def _source_compose() -> dict[str, object]:
                     ),
                     "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": (
                         "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+                    ),
+                    "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": (
+                        "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}"
                     ),
                     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": (
                         "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
@@ -1289,6 +1366,7 @@ def _resolve_dollar_auth_candidate_with_docker_compose(
         "PINVI_ENVIRONMENT": "development",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "",
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "",
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "",
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": _DOLLAR_MAP_UI_USERNAME,
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": _MAP_UI_PASSWORD_HASH,
@@ -1804,7 +1882,7 @@ def test_map_env_migration_wrong_owner_fails_closed(
         {"KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": _MAP_UI_SESSION_SECRET},
         {"KTDM_C6C_MAP_UI_ADMIN_PASSWORD": None},
         {"KTDM_C6C_PINVI_ADMIN_EMAIL": None},
-        {"KTDM_C6C_CANCEL_PROBE_JOB_ID": "not-a-uuid"},
+        {"KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _READ_TOKEN},
         {"KOR_TRAVEL_MAP_API_CONTAINER": "attacker-map"},
         {"KOR_TRAVEL_MAP_UI_CONTAINER": "attacker-map-ui"},
         {"PINVI_API_CONTAINER": "attacker-pinvi"},
@@ -1927,6 +2005,7 @@ def test_local_mode_allows_published_map_secret_examples(
         PINVI_ENVIRONMENT="development",
         KOR_TRAVEL_MAP_API_OPS_READ_TOKEN="",
         KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN="",
+        KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN="",
         KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED="false",
         **_MAP_PUBLISHED_EXAMPLE_SECRETS,
     )
@@ -1984,6 +2063,7 @@ def test_explicit_local_mode_keeps_tokenless_development_path(
         PINVI_ENVIRONMENT="development",
         KOR_TRAVEL_MAP_API_OPS_READ_TOKEN="",
         KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN="",
+        KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN="",
         KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED="false",
     )
 
@@ -2018,6 +2098,7 @@ def test_local_mode_rejects_partial_or_weak_token_pair(
         PINVI_ENVIRONMENT="development",
         KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=f'"{read_token}"',
         KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=f'"{cancel_token}"',
+        KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN=f'"{_FIXTURE_TOKEN}"',
         KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED="false",
     )
 
@@ -2572,6 +2653,7 @@ def test_compose_candidate_accepts_only_exact_api_source_wiring() -> None:
         environment=_raw_candidate_environment(
             KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=_READ_TOKEN,
             KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=_CANCEL_TOKEN,
+            KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN=_FIXTURE_TOKEN,
             KTDM_C6C_CONTRACT_GENERATION=_CONTRACT_GENERATION,
         ),
     )
@@ -6953,14 +7035,15 @@ def test_pinvi_canonical_smoke_requires_envelopes_typed_cancel_and_logout() -> N
             409,
             {
                 "error": {
-                    "code": "PIPELINE_CANCELLATION_IN_PROGRESS",
+                    "code": "PIPELINE_CANCELLATION_UNSAFE",
                     "message": "redacted",
                     "details": _cancel_error_details(
-                        status="in_progress", retryable=False
+                        status="failed",
+                        retryable=False,
+                        error_code="PIPELINE_CANCELLATION_UNSAFE",
                     ),
                 }
             },
-            retry_after=17,
         ),
         HttpProbeResponse(204, None, set_cookie=True),
         HttpProbeResponse(401, None),
@@ -6979,6 +7062,254 @@ def test_pinvi_canonical_smoke_requires_envelopes_typed_cancel_and_logout() -> N
     assert _PINVI_ADMIN_PASSWORD not in serialized
     assert _READ_TOKEN not in serialized
     assert _CANCEL_TOKEN not in serialized
+    assert _FIXTURE_TOKEN not in serialized
+
+
+def test_pinvi_canonical_smoke_owns_dynamic_map_fixture_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = "11111111-1111-4111-8111-111111111111"
+    cancellation_id = "22222222-2222-4222-8222-222222222222"
+
+    def fixture_payload(state: str) -> dict[str, object]:
+        consumed = state in {"consumed", "finalized"}
+        finalized = state == "finalized"
+        return {
+            "data": {
+                "fixture": {
+                    "transaction_id": transaction_id,
+                    "job_id": _CANCEL_PROBE_JOB_ID,
+                    "state": state,
+                    "cancellation_id": cancellation_id if consumed else None,
+                    "created_at": "2026-08-06T00:00:00Z",
+                    "consumed_at": "2026-08-06T00:00:01Z" if consumed else None,
+                    "finalized_at": "2026-08-06T00:00:02Z" if finalized else None,
+                    "canonical_unsafe_outcome": (
+                        {
+                            "http_status": 409,
+                            "code": "PIPELINE_CANCELLATION_UNSAFE",
+                            "root_job_id": _CANCEL_PROBE_JOB_ID,
+                            "cancellation_id": cancellation_id,
+                        }
+                        if consumed
+                        else None
+                    ),
+                    "capability_generation": 2,
+                }
+            },
+            "meta": {},
+        }
+
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_ensure_c6c_cancel_probe_fixture",
+        _REAL_ENSURE_CANCEL_PROBE_FIXTURE,
+    )
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_read_c6c_cancel_probe_fixture",
+        _REAL_READ_CANCEL_PROBE_FIXTURE,
+    )
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_finalize_c6c_cancel_probe_fixture",
+        _REAL_FINALIZE_CANCEL_PROBE_FIXTURE,
+    )
+    lifecycle_states: list[tuple[str, bool, str | None]] = []
+
+    def record(state: PinviCancelProbeState) -> None:
+        assert state.fixture is not None
+        lifecycle_states.append(
+            (state.fixture.state, state.attempted, state.fixture.cancellation_id)
+        )
+
+    session_responses = [
+        HttpProbeResponse(200, {"data": {}}, set_cookie=True),
+        HttpProbeResponse(200, _pinvi_etl_envelope()),
+        HttpProbeResponse(200, _pinvi_provider_envelope()),
+        HttpProbeResponse(
+            409,
+            {
+                "error": {
+                    "code": "PIPELINE_CANCELLATION_UNSAFE",
+                    "details": _cancel_error_details(
+                        status="failed",
+                        retryable=False,
+                        error_code="PIPELINE_CANCELLATION_UNSAFE",
+                    ),
+                }
+            },
+        ),
+        HttpProbeResponse(204, None, set_cookie=True),
+        HttpProbeResponse(401, None),
+    ]
+    with (
+        patch.object(
+            c6c_deployment,
+            "_request_json",
+            side_effect=[
+                (200, fixture_payload("armed")),
+                (200, fixture_payload("consumed")),
+                (200, fixture_payload("finalized")),
+            ],
+        ) as map_request,
+        patch.object(
+            c6c_deployment,
+            "_session_request",
+            side_effect=session_responses,
+        ) as pinvi_request,
+    ):
+        result = run_pinvi_canonical_smoke(
+            _production_config(),
+            cancel_probe_state=PinviCancelProbeState(transaction_id=transaction_id),
+            state_recorder=record,
+        )
+
+    assert result[3] == {
+        "name": "pinvi_cancel_error",
+        "status": 409,
+        "code": "PIPELINE_CANCELLATION_UNSAFE",
+    }
+    assert [call.kwargs["method"] for call in map_request.call_args_list] == [
+        "PUT",
+        "GET",
+        "POST",
+    ]
+    assert all(
+        call.kwargs["headers"]
+        == {
+            "X-Kor-Travel-Map-Ops-Token": _FIXTURE_TOKEN,
+            "X-Kor-Travel-Map-Ops-Scope": "ops:fixture",
+        }
+        or call.kwargs["headers"]
+        == {
+            "X-Kor-Travel-Map-Ops-Token": _FIXTURE_TOKEN,
+            "X-Kor-Travel-Map-Ops-Scope": "ops:fixture",
+            "Content-Type": "application/json",
+        }
+        for call in map_request.call_args_list
+    )
+    assert lifecycle_states == [
+        ("armed", False, None),
+        ("armed", True, None),
+        ("consumed", True, cancellation_id),
+        ("finalized", True, cancellation_id),
+    ]
+    assert pinvi_request.call_args_list[3].args[1].endswith(
+        f"/{_CANCEL_PROBE_JOB_ID}/cancel"
+    )
+
+
+def test_pinvi_canonical_smoke_resumes_consumed_map_outcome_without_reposting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction_id = "11111111-1111-4111-8111-111111111111"
+    cancellation_id = "22222222-2222-4222-8222-222222222222"
+    state = PinviCancelProbeState(
+        transaction_id=transaction_id,
+        fixture=C6cCancelProbeFixture(
+            transaction_id=transaction_id,
+            job_id=_CANCEL_PROBE_JOB_ID,
+            state="armed",
+            cancellation_id=None,
+            canonical_unsafe_outcome=None,
+        ),
+        attempted=True,
+    )
+
+    def fixture_payload(state_name: str) -> dict[str, object]:
+        consumed = state_name in {"consumed", "finalized"}
+        return {
+            "data": {
+                "fixture": {
+                    "transaction_id": transaction_id,
+                    "job_id": _CANCEL_PROBE_JOB_ID,
+                    "state": state_name,
+                    "cancellation_id": cancellation_id if consumed else None,
+                    "created_at": "2026-08-06T00:00:00Z",
+                    "consumed_at": "2026-08-06T00:00:01Z" if consumed else None,
+                    "finalized_at": (
+                        "2026-08-06T00:00:02Z" if state_name == "finalized" else None
+                    ),
+                    "canonical_unsafe_outcome": (
+                        {
+                            "http_status": 409,
+                            "code": "PIPELINE_CANCELLATION_UNSAFE",
+                            "root_job_id": _CANCEL_PROBE_JOB_ID,
+                            "cancellation_id": cancellation_id,
+                        }
+                        if consumed
+                        else None
+                    ),
+                    "capability_generation": 2,
+                }
+            },
+            "meta": {},
+        }
+
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_ensure_c6c_cancel_probe_fixture",
+        _REAL_ENSURE_CANCEL_PROBE_FIXTURE,
+    )
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_read_c6c_cancel_probe_fixture",
+        _REAL_READ_CANCEL_PROBE_FIXTURE,
+    )
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_finalize_c6c_cancel_probe_fixture",
+        _REAL_FINALIZE_CANCEL_PROBE_FIXTURE,
+    )
+    recorded: list[tuple[str, bool, dict[str, int | str] | None]] = []
+    session_responses = [
+        HttpProbeResponse(200, {"data": {}}, set_cookie=True),
+        HttpProbeResponse(200, _pinvi_etl_envelope()),
+        HttpProbeResponse(200, _pinvi_provider_envelope()),
+        HttpProbeResponse(204, None, set_cookie=True),
+        HttpProbeResponse(401, None),
+    ]
+    with (
+        patch.object(
+            c6c_deployment,
+            "_request_json",
+            side_effect=[
+                (200, fixture_payload("consumed")),
+                (200, fixture_payload("finalized")),
+            ],
+        ) as map_request,
+        patch.object(
+            c6c_deployment,
+            "_session_request",
+            side_effect=session_responses,
+        ) as pinvi_request,
+    ):
+        result = run_pinvi_canonical_smoke(
+            _production_config(),
+            cancel_probe_state=state,
+            state_recorder=lambda current: recorded.append(
+                (
+                    current.fixture.state if current.fixture is not None else "missing",
+                    current.attempted,
+                    dict(current.result) if current.result is not None else None,
+                )
+            ),
+        )
+
+    assert result[3] == _CANCEL_PROBE_OUTCOME
+    assert [call.kwargs["method"] for call in map_request.call_args_list] == [
+        "GET",
+        "POST",
+    ]
+    assert all(
+        "/import-jobs/" not in str(call.args[1])
+        for call in pinvi_request.call_args_list
+    )
+    assert recorded == [
+        ("consumed", True, _CANCEL_PROBE_OUTCOME),
+        ("finalized", True, _CANCEL_PROBE_OUTCOME),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -6994,7 +7325,7 @@ def test_pinvi_iso8601_contract_requires_datetime_offset(value: str) -> None:
     assert c6c_deployment._is_iso8601(value) is False
 
 
-def test_pinvi_canonical_smoke_rejects_missing_retry_after() -> None:
+def test_pinvi_canonical_smoke_rejects_noncanonical_cancellation_result() -> None:
     responses = [
         HttpProbeResponse(200, {"data": {}, "meta": {}}, set_cookie=True),
         HttpProbeResponse(200, _pinvi_etl_envelope()),
@@ -7013,7 +7344,7 @@ def test_pinvi_canonical_smoke_rejects_missing_retry_after() -> None:
     ]
     with (
         patch.object(c6c_deployment, "_session_request", side_effect=responses),
-        pytest.raises(DeploymentContractError, match="Retry-After"),
+        pytest.raises(DeploymentContractError, match="exact PIPELINE_CANCELLATION_UNSAFE"),
     ):
         run_pinvi_canonical_smoke(_production_config())
 
@@ -7022,8 +7353,6 @@ def test_pinvi_canonical_smoke_rejects_missing_retry_after() -> None:
     ("status_code", "error_code", "attempt_status", "retryable"),
     [
         (409, "PIPELINE_CANCELLATION_UNSAFE", "failed", False),
-        (502, "DAGSTER_TERMINATE_FAILED", "retryable", True),
-        (503, "DAGSTER_TERMINATION_TIMEOUT", "retryable", True),
     ],
 )
 def test_pinvi_cancel_rejects_present_but_invalid_retry_after(
@@ -7055,7 +7384,7 @@ def test_pinvi_cancel_rejects_present_but_invalid_retry_after(
 
     with (
         patch.object(c6c_deployment, "_session_request", side_effect=responses),
-        pytest.raises(DeploymentContractError, match="Retry-After"),
+        pytest.raises(DeploymentContractError, match="exact PIPELINE_CANCELLATION_UNSAFE"),
     ):
         run_pinvi_canonical_smoke(_production_config())
 
@@ -7076,11 +7405,7 @@ def test_retry_after_parser_rejects_noncanonical_or_out_of_range(raw: str) -> No
 @pytest.mark.parametrize(
     ("status_code", "error_code", "attempt_status", "retryable", "retry_after"),
     [
-        (409, "PIPELINE_CANCELLATION_IN_PROGRESS", "in_progress", False, 7),
         (409, "PIPELINE_CANCELLATION_UNSAFE", "failed", False, None),
-        (502, "DAGSTER_TERMINATE_FAILED", "retryable", True, 7),
-        (503, "DAGSTER_UNAVAILABLE", "retryable", True, 7),
-        (503, "DAGSTER_TERMINATION_TIMEOUT", "retryable", True, 7),
     ],
 )
 def test_pinvi_cancel_fixture_accepts_only_owned_typed_contract(
@@ -7122,7 +7447,7 @@ def test_pinvi_cancel_fixture_accepts_only_owned_typed_contract(
     }
 
 
-def test_pinvi_cancel_fixture_accepts_canonical_409_root_without_attempt() -> None:
+def test_pinvi_cancel_fixture_rejects_root_without_canonical_failure() -> None:
     responses = [
         HttpProbeResponse(200, {"data": {}}, set_cookie=True),
         HttpProbeResponse(200, _pinvi_etl_envelope()),
@@ -7141,10 +7466,11 @@ def test_pinvi_cancel_fixture_accepts_canonical_409_root_without_attempt() -> No
         HttpProbeResponse(401, None),
     ]
 
-    with patch.object(c6c_deployment, "_session_request", side_effect=responses):
-        result = run_pinvi_canonical_smoke(_production_config())
-
-    assert result[3]["code"] == "PIPELINE_CANCELLATION_IN_PROGRESS"
+    with (
+        patch.object(c6c_deployment, "_session_request", side_effect=responses),
+        pytest.raises(DeploymentContractError, match="exact PIPELINE_CANCELLATION_UNSAFE"),
+    ):
+        run_pinvi_canonical_smoke(_production_config())
 
 
 def test_pinvi_full_409_accepts_actual_resolved_and_cas_drift_matrix() -> None:
@@ -7728,7 +8054,10 @@ def test_pinvi_cancel_fixture_rejects_root_only_shape_for_non_409_code() -> None
 
     with (
         patch.object(c6c_deployment, "_session_request", side_effect=responses),
-        pytest.raises(DeploymentContractError, match="attempt lifecycle"),
+        pytest.raises(
+            DeploymentContractError,
+            match="exact PIPELINE_CANCELLATION_UNSAFE",
+        ),
     ):
         run_pinvi_canonical_smoke(_production_config())
 
@@ -7764,7 +8093,10 @@ def test_pinvi_cancel_fixture_rejects_rate_limit_or_generic_mismatch(
 
     with (
         patch.object(c6c_deployment, "_session_request", side_effect=responses),
-        pytest.raises(DeploymentContractError, match="typed error"),
+        pytest.raises(
+            DeploymentContractError,
+            match="exact PIPELINE_CANCELLATION_UNSAFE",
+        ),
     ):
         run_pinvi_canonical_smoke(_production_config())
 
@@ -7892,14 +8224,14 @@ def test_pinvi_destructive_cancel_probe_runs_once_and_reuses_evidence() -> None:
             409,
             {
                 "error": {
-                    "code": "PIPELINE_CANCELLATION_IN_PROGRESS",
+                    "code": "PIPELINE_CANCELLATION_UNSAFE",
                     "details": _cancel_error_details(
-                        status="in_progress",
+                        status="failed",
                         retryable=False,
+                        error_code="PIPELINE_CANCELLATION_UNSAFE",
                     ),
                 }
             },
-            retry_after=7,
         ),
         HttpProbeResponse(204, None, set_cookie=True),
         HttpProbeResponse(401, None),
@@ -12958,6 +13290,7 @@ def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) 
     secrets = (
         _READ_TOKEN,
         _CANCEL_TOKEN,
+        _FIXTURE_TOKEN,
         _MAP_UI_PASSWORD_HASH,
         _MAP_UI_SESSION_SECRET,
         _MAP_ADMIN_PROXY_SECRET,
@@ -12966,7 +13299,6 @@ def test_stage_output_redacts_every_c6c_secret(monkeypatch: pytest.MonkeyPatch) 
         _MAP_UI_PASSWORD,
         config.smoke.pinvi_admin_email,
         _PINVI_ADMIN_PASSWORD,
-        _CANCEL_PROBE_JOB_ID,
         _CONTRACT_GENERATION,
     )
     stage_output = " ".join((_MAP_UI_USERNAME, *secrets))
@@ -13013,6 +13345,7 @@ def test_c6c_config_repr_error_and_redactor_never_expose_credentials() -> None:
     secrets = (
         config.read_token,
         config.cancel_token,
+        config.fixture_token,
         config.map_ui_password_hash,
         config.map_ui_session_secret,
         config.map_admin_proxy_secret,
@@ -13021,7 +13354,6 @@ def test_c6c_config_repr_error_and_redactor_never_expose_credentials() -> None:
         config.smoke.map_ui_password,
         config.smoke.pinvi_admin_email,
         config.smoke.pinvi_admin_password,
-        config.smoke.cancel_probe_job_id,
         config.contract_generation,
     )
     raw = " | ".join((config.smoke.map_ui_username, *secrets))

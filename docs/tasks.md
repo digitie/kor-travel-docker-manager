@@ -1008,8 +1008,10 @@ Manager가 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`만 전달하고 실제 Map pipe
       candidate Map readiness 뒤 PinVi smoke 전 Manager가 전용 credential로 Map fixture를 ensure하고, 반환된
       dynamic `job_id`만 PinVi의 기존 cancel relay에 전달한다. 성공은 exact canonical
       `409 PIPELINE_CANCELLATION_UNSAFE` 하나뿐이다. Manager journal receipt는 transaction ID·job ID·Map lifecycle
-      state·response 검증 시각만 저장하며, crash recovery는 Map의 durable state를 먼저 읽어 POST를 중복하지 않는다.
-      response 검증 뒤에만 Map finalize를 호출한다.
+      state·cancellation ID·POST 직전 attempted flag·response 검증/종결 시각만 저장하며, receipt state는
+      `armed → consumed → finalized`로만 단조 전이한다. crash recovery는 Map durable state와 immutable
+      canonical outcome을 먼저 읽어 POST를 중복하지 않고, 검증 뒤에만 Map finalize를 호출한다. 구현·전체
+      backend 검증·적대 리뷰 1인 GO는 완료했고 Manager PR CI/merge가 남았다.
 - [ ] **F1J-C (pair 재결박 PR)** — Map lifecycle API generation을 Map release provenance와 compatible-pair input의
       required capability로 승격한다. 새 Map release/artifact가 PinVi metadata와 Manager pinset에 byte-exact로
       재결박되기 전에는 F1D candidate를 만들지 않는다. PinVi는 fixture 생성 권한을 받지 않으며 기존 relay의

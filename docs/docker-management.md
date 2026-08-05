@@ -338,11 +338,13 @@ API 외 service에 전달하지 않는다. profile은 `production`, public API k
 trusted CIDR는 `127.0.0.1/32`·`::1/128` exact JSON으로 명시한다. 실제 값·길이·digest는 로그에
 남기지 않고 shape, 상호 불일치, 허용 service별 존재 여부만 증거로 남긴다.
 
-- manager `.env`가 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`과
-  `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`의 단일 source다. 두 값은 각각 32자 이상이고 공백 문자가
-  하나도 없으며 서로 달라야 한다.
-- Map API에는 같은 이름으로 전달한다. PinVi API에는 각각
+- manager `.env`가 `KOR_TRAVEL_MAP_API_OPS_READ_TOKEN`,
+  `KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN`, `KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN`의 단일 source다.
+  세 값은 각각 32자 이상이고 공백 문자가 하나도 없으며 서로 달라야 한다.
+- Map API에는 세 값을 같은 이름으로 전달한다. PinVi API에는 read/cancel만 각각
   `PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN`과 `PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN`으로 전달한다.
+  fixture token은 Map의 exact fixture lifecycle route와 `service:docker-manager` actor에만 결박되어
+  PinVi나 Map UI/Dagster에는 전달하지 않는다.
 - mode는 추론하지 않는다. 개발 PC는 `KTDM_DEPLOYMENT_ENVIRONMENT=local`,
   `PINVI_ENVIRONMENT=development`, `KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=false`, n150은 각각
   `production`, `production`, `true`를 명시한다. 세 값이 없거나 서로 맞지 않으면 manager는 어떤
@@ -382,8 +384,8 @@ source의 service별 path/options만 허용하고, 허용 파일이 exact commit
 보호 이름·placeholder가 다른 service나 build/label/command/config/secret
 등 다른 source path에 있으면 거부한다. manager candidate와 runtime의 metrics-off·trusted
 loopback 검사는 이 source 세대 판정과 섞지 않고 기존 raw/resolved/runtime validator가 담당한다.
-`KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정, owned typed-failure
-`KTDM_C6C_CANCEL_PROBE_JOB_ID`는 manager `.env`에만 둔다. 이 값들은 compose service env나 다른
+`KTDM_C6C_CONTRACT_GENERATION`, Map UI smoke 평문 비밀번호, PinVi admin smoke 계정은 manager `.env`에만 둔다.
+이 값들은 compose service env나 다른
 `env_file`에 주입하지 않는다. 특히 contract generation은 secret이 아니더라도 배포 판단용 manager-only
 값이므로 resolved compose의 command·label·build arg를 포함한 scalar와 runtime Env 어디에도 전달하지
 않는다. frozen snapshot과 rollback도 최초 environment snapshot의 Map UI 인증값만 해석하고 hash·session

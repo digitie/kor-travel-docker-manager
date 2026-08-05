@@ -48,6 +48,7 @@ _MAP_UI_SERVICE = "kor-travel-map-ui"
 _PINVI_API_SERVICE = "pinvi-api"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
 _OPS_CANCEL_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+_OPS_FIXTURE_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}"
 _PINVI_MAP_BASE_URL_SOURCE = (
     "${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:"
     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
@@ -150,6 +151,7 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+                "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": _OPS_FIXTURE_SOURCE,
                 "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": (
                     "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
                     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
@@ -507,6 +509,7 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
 
     assert map_environment["KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"] == _OPS_READ_SOURCE
     assert map_environment["KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"] == _OPS_CANCEL_SOURCE
+    assert map_environment["KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN"] == _OPS_FIXTURE_SOURCE
     assert map_environment["KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"] == (
         "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
@@ -526,6 +529,7 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
         for service_name, service in services.items()
         if "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN" in service.get("environment", {})
         or "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN" in service.get("environment", {})
+        or "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN" in service.get("environment", {})
         or "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED" in service.get("environment", {})
     } == {_MAP_API_SERVICE}
     assert {
@@ -593,6 +597,7 @@ def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> Non
     for key in (
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN",
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN",
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN",
     ):
         assert [line for line in env_example_lines if line.startswith(f"{key}=")] == [
             f"{key}="
@@ -613,7 +618,6 @@ def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> Non
         "KTDM_C6C_MAP_UI_ADMIN_PASSWORD",
         "KTDM_C6C_PINVI_ADMIN_EMAIL",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD",
-        "KTDM_C6C_CANCEL_PROBE_JOB_ID",
     }
     for name in manager_only_names:
         assert any(line.startswith(f"{name}=") for line in env_example_lines)
@@ -1128,6 +1132,7 @@ def _prepare_candidate_transaction(
         monkeypatch.setenv("PINVI_ENVIRONMENT", "development")
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_READ_TOKEN", "")
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN", "")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN", "")
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "false")
         monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", _MAP_UI_USERNAME)
         monkeypatch.setenv(

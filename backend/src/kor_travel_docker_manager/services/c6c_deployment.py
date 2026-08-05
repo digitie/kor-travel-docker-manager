@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar, cast
 from urllib.parse import quote, urlencode, urlsplit
 
 import yaml
@@ -69,6 +69,7 @@ _DEFAULT_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
 _C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
+_MAP_FIXTURE_ENV = "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
 _PINVI_READ_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
 _PINVI_CANCEL_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"
@@ -114,7 +115,6 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
         _MAP_UI_PASSWORD_ENV,
         "KTDM_C6C_PINVI_ADMIN_EMAIL",
         _PINVI_ADMIN_PASSWORD_ENV,
-        "KTDM_C6C_CANCEL_PROBE_JOB_ID",
     }
 ) | CACHE_TARGET_MANAGER_ONLY_ENV_NAMES
 _CACHE_TARGET_MAP_ENV_NAMES = frozenset({CACHE_TARGET_REGISTRY_ENV})
@@ -211,6 +211,7 @@ _OPS_ENV_NAMES = frozenset(
     {
         _MAP_READ_ENV,
         _MAP_CANCEL_ENV,
+        _MAP_FIXTURE_ENV,
         _MAP_REQUIRED_ENV,
         _PINVI_READ_ENV,
         _PINVI_CANCEL_ENV,
@@ -219,6 +220,7 @@ _OPS_ENV_NAMES = frozenset(
 _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): _MAP_READ_ENV,
     (_MAP_API_SERVICE, _MAP_CANCEL_ENV): _MAP_CANCEL_ENV,
+    (_MAP_API_SERVICE, _MAP_FIXTURE_ENV): _MAP_FIXTURE_ENV,
     (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): _MAP_REQUIRED_ENV,
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
     (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
@@ -236,6 +238,7 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
     (_MAP_API_SERVICE, _MAP_CANCEL_ENV): "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}",
+    (_MAP_API_SERVICE, _MAP_FIXTURE_ENV): "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}",
     (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): (
         "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
@@ -504,7 +507,6 @@ class C6cSmokeConfig:
     map_ui_password: str = field(repr=False)
     pinvi_admin_email: str = field(repr=False)
     pinvi_admin_password: str = field(repr=False)
-    cancel_probe_job_id: str = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -515,6 +517,7 @@ class C6cDeploymentConfig:
     map_container_port: int
     read_token: str = field(repr=False)
     cancel_token: str = field(repr=False)
+    fixture_token: str = field(repr=False)
     map_container: str
     map_ui_container: str
     map_ui_password_hash: str = field(repr=False)
@@ -603,10 +606,28 @@ class HttpProbeResponse:
 
 @dataclass
 class PinviCancelProbeState:
-    """한 compatible-pair transaction의 파괴적 cancel probe 1회 상태."""
+    """한 compatible-pair transaction의 C6c fixture cancel 상태.
 
+    ``transaction_id``는 Manager durable journal의 값이어야 한다. 기본값은 단위
+    검증과 non-F1D caller의 안전한 일회성 상태를 위한 것이며, F1D resume 경로는
+    반드시 기존 journal의 transaction ID를 명시적으로 전달한다.
+    """
+
+    transaction_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    fixture: C6cCancelProbeFixture | None = None
     attempted: bool = False
     result: dict[str, int | str] | None = None
+
+
+@dataclass(frozen=True)
+class C6cCancelProbeFixture:
+    """Map fixture lifecycle API가 반환하는 secret-free durable 상태."""
+
+    transaction_id: str
+    job_id: str
+    state: Literal["armed", "consumed", "finalized"]
+    cancellation_id: str | None
+    canonical_unsafe_outcome: dict[str, int | str] | None
 
 
 def assert_manager_mutation_allowed(
@@ -733,6 +754,7 @@ def _validate_mutation_environment(values: Mapping[str, str]) -> str:
     _validate_raw_token_pair(
         values.get(_MAP_READ_ENV, ""),
         values.get(_MAP_CANCEL_ENV, ""),
+        values.get(_MAP_FIXTURE_ENV, ""),
         require_nonempty=deployment_environment == "production",
     )
     return deployment_environment
@@ -1136,6 +1158,7 @@ def load_c6c_deployment_config_from_environment(
         legacy_tokens=(
             values.get(_MAP_READ_ENV, ""),
             values.get(_MAP_CANCEL_ENV, ""),
+            values.get(_MAP_FIXTURE_ENV, ""),
             values.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
             values.get(_MAP_UI_SESSION_SECRET_ENV, ""),
             values.get(_MAP_ADMIN_PROXY_ENV, ""),
@@ -1154,6 +1177,7 @@ def load_c6c_deployment_config_from_environment(
         map_container_port=map_container_port,
         read_token=values.get(_MAP_READ_ENV, ""),
         cancel_token=values.get(_MAP_CANCEL_ENV, ""),
+        fixture_token=values.get(_MAP_FIXTURE_ENV, ""),
         map_container=values.get("KOR_TRAVEL_MAP_API_CONTAINER", "kor-travel-map-api-latest"),
         map_ui_container=values.get(
             "KOR_TRAVEL_MAP_UI_CONTAINER", "kor-travel-map-ui-latest"
@@ -1174,7 +1198,6 @@ def load_c6c_deployment_config_from_environment(
             map_ui_password=values.get(_MAP_UI_PASSWORD_ENV, ""),
             pinvi_admin_email=values.get("KTDM_C6C_PINVI_ADMIN_EMAIL", ""),
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
-            cancel_probe_job_id=values.get("KTDM_C6C_CANCEL_PROBE_JOB_ID", ""),
         ),
     )
     _validate_token_pair(config, require_nonempty=config.production)
@@ -1238,6 +1261,7 @@ def _validate_token_pair(
     _validate_raw_token_pair(
         config.read_token,
         config.cancel_token,
+        config.fixture_token,
         require_nonempty=require_nonempty,
     )
 
@@ -1245,25 +1269,28 @@ def _validate_token_pair(
 def _validate_raw_token_pair(
     read_token: str,
     cancel_token: str,
+    fixture_token: str,
     *,
     require_nonempty: bool,
 ) -> None:
-    if not read_token and not cancel_token:
-        if require_nonempty:
-            raise DeploymentContractError("production C6c tokens must both be configured")
-        return
-    if not read_token or not cancel_token:
-        raise DeploymentContractError("C6c read and cancel tokens must be configured as a pair")
-    for env_name, token in (
+    tokens = (
         (_MAP_READ_ENV, read_token),
         (_MAP_CANCEL_ENV, cancel_token),
-    ):
+        (_MAP_FIXTURE_ENV, fixture_token),
+    )
+    if not any(token for _, token in tokens):
+        if require_nonempty:
+            raise DeploymentContractError("production C6c tokens must all be configured")
+        return
+    if any(not token for _, token in tokens):
+        raise DeploymentContractError("C6c read, cancel, and fixture tokens must be configured together")
+    for env_name, token in tokens:
         if len(token) < 32:
             raise DeploymentContractError(f"{env_name} must contain at least 32 characters")
         if any(character.isspace() for character in token):
             raise DeploymentContractError(f"{env_name} must not contain whitespace")
-    if hmac.compare_digest(read_token, cancel_token):
-        raise DeploymentContractError("C6c read and cancel tokens must differ")
+    if len({read_token, cancel_token, fixture_token}) != 3:
+        raise DeploymentContractError("C6c read, cancel, and fixture tokens must differ")
 
 
 def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
@@ -1274,12 +1301,12 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
             _MAP_CURSOR_SIGNING_SECRET_ENV: config.map_cursor_signing_secret,
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
+            _MAP_FIXTURE_ENV: config.fixture_token,
             _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
             _MAP_UI_PASSWORD_ENV: config.smoke.map_ui_password,
             "KTDM_C6C_PINVI_ADMIN_EMAIL": config.smoke.pinvi_admin_email,
             _PINVI_ADMIN_PASSWORD_ENV: config.smoke.pinvi_admin_password,
-            "KTDM_C6C_CANCEL_PROBE_JOB_ID": config.smoke.cancel_probe_job_id,
             "KTDM_C6C_CONTRACT_GENERATION": config.contract_generation,
         },
         reject_published_examples=config.production,
@@ -1292,6 +1319,16 @@ def _validate_map_production_secret_values(
     error_type: type[DeploymentContractError] = DeploymentContractError,
     reject_published_examples: bool = False,
 ) -> None:
+    if values.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production":
+        try:
+            _validate_raw_token_pair(
+                values.get(_MAP_READ_ENV, ""),
+                values.get(_MAP_CANCEL_ENV, ""),
+                values.get(_MAP_FIXTURE_ENV, ""),
+                require_nonempty=True,
+            )
+        except DeploymentContractError as exc:
+            raise error_type(str(exc)) from exc
     new_secrets = tuple(
         (env_name, values.get(env_name, ""))
         for env_name in (
@@ -1319,12 +1356,12 @@ def _validate_map_production_secret_values(
     protected_credential_names = (
         _MAP_READ_ENV,
         _MAP_CANCEL_ENV,
+        _MAP_FIXTURE_ENV,
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
         _MAP_UI_PASSWORD_ENV,
         "KTDM_C6C_PINVI_ADMIN_EMAIL",
         _PINVI_ADMIN_PASSWORD_ENV,
-        "KTDM_C6C_CANCEL_PROBE_JOB_ID",
         "KTDM_C6C_CONTRACT_GENERATION",
     )
     compared: list[tuple[str, str]] = []
@@ -1422,12 +1459,6 @@ def _validate_production_config(
             )
         if "\r" in value or "\n" in value:
             raise DeploymentContractError(f"{env_name} must not contain line breaks")
-    try:
-        uuid.UUID(smoke.cancel_probe_job_id)
-    except ValueError as exc:
-        raise DeploymentContractError(
-            "KTDM_C6C_CANCEL_PROBE_JOB_ID must be an owned typed-failure UUID fixture"
-        ) from exc
 
 
 def validate_resolved_compose_secret_isolation(
@@ -1495,6 +1526,7 @@ def validate_resolved_compose_secret_isolation(
         _MAP_API_SERVICE: {
             _MAP_READ_ENV: _compose_resolved_escaped_value(config.read_token),
             _MAP_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
+            _MAP_FIXTURE_ENV: _compose_resolved_escaped_value(config.fixture_token),
             _MAP_REQUIRED_ENV: "true",
             _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
                 config.map_admin_proxy_secret
@@ -1577,6 +1609,12 @@ def validate_resolved_compose_secret_isolation(
             "environment",
             _MAP_CANCEL_ENV,
         ): _compose_resolved_escaped_value(config.cancel_token),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_FIXTURE_ENV,
+        ): _compose_resolved_escaped_value(config.fixture_token),
         ("services", _MAP_API_SERVICE, "environment", _MAP_REQUIRED_ENV): "true",
         (
             "services",
@@ -1665,6 +1703,11 @@ def validate_resolved_compose_secret_isolation(
             path[-1:] == ("<key>",) and path[:-1] in allowed_paths
         ):
             continue
+        # OCI image digest는 임의의 16진 문자열이다. capability 값이 우연히 digest의
+        # 부분 문자열과 같아도 credential 전달이 아니므로, 고정된 image field는
+        # value-leak 검사 대상에서 제외한다.
+        if len(path) == 3 and path[0] == "services" and path[-1] == "image":
+            continue
         text = str(scalar)
         if any(
             env_name in text
@@ -1685,6 +1728,7 @@ def validate_resolved_compose_secret_isolation(
             for escaped in (
                 _compose_resolved_escaped_value(config.read_token),
                 _compose_resolved_escaped_value(config.cancel_token),
+                _compose_resolved_escaped_value(config.fixture_token),
                 _compose_resolved_escaped_value(config.map_ui_password_hash),
                 _compose_resolved_escaped_value(config.map_ui_session_secret),
                 _compose_resolved_escaped_value(config.map_admin_proxy_secret),
@@ -1693,7 +1737,6 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.smoke.map_ui_password),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
-                _compose_resolved_escaped_value(config.smoke.cancel_probe_job_id),
                 _compose_resolved_escaped_value(config.contract_generation),
                 *(
                     _compose_resolved_escaped_value(value)
@@ -2482,14 +2525,233 @@ def run_map_ops_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]
     return results
 
 
+def _fixture_headers(config: C6cDeploymentConfig) -> dict[str, str]:
+    return {
+        "X-Kor-Travel-Map-Ops-Token": config.fixture_token,
+        "X-Kor-Travel-Map-Ops-Scope": "ops:fixture",
+    }
+
+
+def _parse_c6c_canonical_unsafe_outcome(
+    value: object,
+    *,
+    job_id: str,
+    cancellation_id: str | None,
+) -> dict[str, int | str] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, Mapping)
+        or set(value)
+        != {"http_status", "code", "root_job_id", "cancellation_id"}
+        or value.get("http_status") != 409
+        or value.get("code") != "PIPELINE_CANCELLATION_UNSAFE"
+        or value.get("root_job_id") != job_id
+        or value.get("cancellation_id") != cancellation_id
+    ):
+        raise DeploymentContractError("C6c fixture canonical unsafe outcome is invalid")
+    return {
+        "name": "pinvi_cancel_error",
+        "status": 409,
+        "code": "PIPELINE_CANCELLATION_UNSAFE",
+    }
+
+
+def _parse_c6c_cancel_probe_fixture(
+    payload: Any,
+    *,
+    expected_transaction_id: str,
+) -> C6cCancelProbeFixture:
+    if not isinstance(payload, Mapping) or set(payload) != {"data", "meta"}:
+        raise DeploymentContractError("C6c fixture lifecycle envelope is invalid")
+    data = payload.get("data")
+    fixture = data.get("fixture") if isinstance(data, Mapping) else None
+    expected_fields = {
+        "transaction_id",
+        "job_id",
+        "state",
+        "cancellation_id",
+        "created_at",
+        "consumed_at",
+        "finalized_at",
+        "canonical_unsafe_outcome",
+        "capability_generation",
+    }
+    if (
+        not isinstance(fixture, Mapping)
+        or set(fixture) != expected_fields
+        or fixture.get("transaction_id") != expected_transaction_id
+        or not _is_uuid(fixture.get("transaction_id"))
+        or not _is_uuid(fixture.get("job_id"))
+        or fixture.get("state") not in {"armed", "consumed", "finalized"}
+        or fixture.get("capability_generation") != 2
+        or not _is_iso8601(fixture.get("created_at"))
+        or not _is_nullable_iso8601(fixture.get("consumed_at"))
+        or not _is_nullable_iso8601(fixture.get("finalized_at"))
+        or not _is_nullable_uuid(fixture.get("cancellation_id"))
+    ):
+        raise DeploymentContractError("C6c fixture lifecycle response is invalid")
+    state = cast(Literal["armed", "consumed", "finalized"], fixture["state"])
+    cancellation_id = fixture.get("cancellation_id")
+    consumed_at = fixture.get("consumed_at")
+    finalized_at = fixture.get("finalized_at")
+    if (
+        (
+            state == "armed"
+            and (
+                cancellation_id is not None
+                or consumed_at is not None
+                or finalized_at is not None
+            )
+        )
+        or (
+            state == "consumed"
+            and (cancellation_id is None or consumed_at is None or finalized_at is not None)
+        )
+        or (
+            state == "finalized"
+            and (cancellation_id is None or consumed_at is None or finalized_at is None)
+        )
+    ):
+        raise DeploymentContractError("C6c fixture lifecycle state is invalid")
+    outcome = _parse_c6c_canonical_unsafe_outcome(
+        fixture.get("canonical_unsafe_outcome"),
+        job_id=str(fixture["job_id"]),
+        cancellation_id=str(cancellation_id) if cancellation_id is not None else None,
+    )
+    if (state == "armed") != (outcome is None):
+        raise DeploymentContractError("C6c fixture canonical outcome state is invalid")
+    return C6cCancelProbeFixture(
+        transaction_id=expected_transaction_id,
+        job_id=str(fixture["job_id"]),
+        state=state,
+        cancellation_id=str(cancellation_id) if cancellation_id is not None else None,
+        canonical_unsafe_outcome=outcome,
+    )
+
+
+def _read_c6c_cancel_probe_fixture(
+    config: C6cDeploymentConfig,
+    transaction_id: str,
+) -> C6cCancelProbeFixture:
+    status, payload = _request_json(
+        (
+            f"{config.base_url.rstrip('/')}/v1/ops/contract-fixtures/"
+            f"c6c-cancel-probe/{transaction_id}"
+        ),
+        method="GET",
+        headers=_fixture_headers(config),
+        read_error_body=True,
+    )
+    if status != 200:
+        raise DeploymentContractError("C6c fixture lifecycle read failed")
+    return _parse_c6c_cancel_probe_fixture(
+        payload,
+        expected_transaction_id=transaction_id,
+    )
+
+
+def _ensure_c6c_cancel_probe_fixture(
+    config: C6cDeploymentConfig,
+    state: PinviCancelProbeState,
+) -> C6cCancelProbeFixture:
+    transaction_id = state.transaction_id
+    if not _is_uuid(transaction_id):
+        raise DeploymentContractError("C6c fixture transaction ID is invalid")
+    if state.fixture is not None:
+        fixture = _read_c6c_cancel_probe_fixture(config, transaction_id)
+        if fixture.job_id != state.fixture.job_id:
+            raise DeploymentContractError("C6c fixture job identity drifted")
+        state.fixture = fixture
+        return fixture
+    status, payload = _request_json(
+        (
+            f"{config.base_url.rstrip('/')}/v1/ops/contract-fixtures/"
+            f"c6c-cancel-probe/{transaction_id}"
+        ),
+        method="PUT",
+        headers=_fixture_headers(config),
+        read_error_body=True,
+    )
+    if status != 200:
+        raise DeploymentContractError("C6c fixture lifecycle ensure failed")
+    fixture = _parse_c6c_cancel_probe_fixture(
+        payload,
+        expected_transaction_id=transaction_id,
+    )
+    state.fixture = fixture
+    return fixture
+
+
+def _finalize_c6c_cancel_probe_fixture(
+    config: C6cDeploymentConfig,
+    state: PinviCancelProbeState,
+) -> C6cCancelProbeFixture:
+    fixture = state.fixture
+    if (
+        fixture is None
+        or fixture.state != "consumed"
+        or fixture.cancellation_id is None
+    ):
+        raise DeploymentContractError("C6c fixture is not ready for finalization")
+    status, payload = _request_json(
+        (
+            f"{config.base_url.rstrip('/')}/v1/ops/contract-fixtures/"
+            f"c6c-cancel-probe/{fixture.transaction_id}/finalize"
+        ),
+        method="POST",
+        headers={**_fixture_headers(config), "Content-Type": "application/json"},
+        body=json.dumps({"cancellation_id": fixture.cancellation_id}).encode(),
+        read_error_body=True,
+    )
+    if status != 200:
+        raise DeploymentContractError("C6c fixture lifecycle finalization failed")
+    finalized = _parse_c6c_cancel_probe_fixture(
+        payload,
+        expected_transaction_id=fixture.transaction_id,
+    )
+    if (
+        finalized.state != "finalized"
+        or finalized.job_id != fixture.job_id
+        or finalized.cancellation_id != fixture.cancellation_id
+    ):
+        raise DeploymentContractError("C6c fixture finalization receipt drifted")
+    state.fixture = finalized
+    return finalized
+
+
 def run_pinvi_canonical_smoke(
     config: C6cDeploymentConfig,
     *,
     cancel_probe_state: PinviCancelProbeState | None = None,
+    state_recorder: Callable[[PinviCancelProbeState], None] | None = None,
 ) -> list[dict[str, int | str]]:
     """PinVi admin session이 canonical Map read/cancel 계약을 보존하는지 검사한다."""
 
     smoke = config.smoke
+    state = cancel_probe_state or PinviCancelProbeState()
+    fixture = _ensure_c6c_cancel_probe_fixture(config, state)
+    if fixture.state == "armed":
+        if state.attempted:
+            raise DeploymentContractError(
+                "C6c destructive PinVi cancel probe cannot be repeated after an uncertain result"
+            )
+        if state.result is not None:
+            raise DeploymentContractError("C6c armed fixture has cancellation evidence")
+    else:
+        if not state.attempted:
+            raise DeploymentContractError(
+                "C6c consumed fixture has no durable cancellation attempt"
+            )
+        if fixture.canonical_unsafe_outcome is None:
+            raise DeploymentContractError("C6c fixture has no canonical unsafe outcome")
+        if state.result is None:
+            state.result = dict(fixture.canonical_unsafe_outcome)
+        elif state.result != fixture.canonical_unsafe_outcome:
+            raise DeploymentContractError("C6c fixture cancellation evidence drifted")
+    if state_recorder is not None:
+        state_recorder(state)
+
     opener = _cookie_opener(follow_redirects=False)
     login = _session_request(
         opener,
@@ -2531,18 +2793,17 @@ def run_pinvi_canonical_smoke(
             raise DeploymentContractError(f"C6c {name} canonical envelope smoke failed")
         results.append({"name": name, "status": 200})
 
-    state = cancel_probe_state or PinviCancelProbeState()
     if state.result is None:
-        if state.attempted:
-            raise DeploymentContractError(
-                "C6c destructive PinVi cancel probe cannot be repeated after an uncertain result"
-            )
+        if state.fixture is None or state.fixture.state != "armed":
+            raise DeploymentContractError("C6c fixture is not armed for PinVi cancellation")
         state.attempted = True
+        if state_recorder is not None:
+            state_recorder(state)
         cancel = _session_request(
             opener,
             (
                 f"{smoke.pinvi_api_base_url}/admin/provider-sync/import-jobs/"
-                f"{smoke.cancel_probe_job_id}/cancel"
+                f"{state.fixture.job_id}/cancel"
             ),
             method="POST",
             headers={"Content-Type": "application/json"},
@@ -2562,52 +2823,54 @@ def run_pinvi_canonical_smoke(
             raise DeploymentContractError(
                 "C6c PinVi cancel typed error/Retry-After preservation smoke failed"
             )
-        expected_pairs = {
-            (409, "PIPELINE_CANCELLATION_IN_PROGRESS"): True,
-            (409, "PIPELINE_CANCELLATION_UNSAFE"): False,
-            (502, "DAGSTER_TERMINATE_FAILED"): True,
-            (503, "DAGSTER_UNAVAILABLE"): True,
-            (503, "DAGSTER_TERMINATION_TIMEOUT"): True,
-        }
-        expected_retry_after = expected_pairs.get((cancel.status, error_code))
         retry_after_present = (
             cancel.retry_after is not None
             if cancel.retry_after_present is None
             else cancel.retry_after_present
         )
         if (
-            expected_retry_after is None
-            or (
-                expected_retry_after
-                and (
-                    not retry_after_present
-                    or cancel.retry_after is None
-                    or cancel.retry_after <= 0
-                )
-            )
-            or (
-                not expected_retry_after
-                and (retry_after_present or cancel.retry_after is not None)
-            )
+            cancel.status != 409
+            or error_code != "PIPELINE_CANCELLATION_UNSAFE"
+            or retry_after_present
+            or cancel.retry_after is not None
         ):
             raise DeploymentContractError(
-                "C6c PinVi cancel typed error/Retry-After preservation smoke failed"
+                "C6c PinVi cancel must return exact PIPELINE_CANCELLATION_UNSAFE"
             )
-        _validate_owned_cancel_error_details(
+        cancellation_id = _validate_owned_cancel_error_details(
             error.get("details") if isinstance(error, Mapping) else None,
             expected_status=cancel.status,
             expected_code=error_code,
-            expected_root_id=smoke.cancel_probe_job_id,
+            expected_root_id=state.fixture.job_id,
         )
+        if cancellation_id is None:
+            raise DeploymentContractError("C6c unsafe cancellation has no canonical identity")
         state.result = {
             "name": "pinvi_cancel_error",
             "status": cancel.status,
             "code": error_code,
         }
+        state.fixture = _read_c6c_cancel_probe_fixture(config, state.transaction_id)
+        if (
+            state.fixture.state != "consumed"
+            or state.fixture.cancellation_id != cancellation_id
+            or state.fixture.canonical_unsafe_outcome != state.result
+        ):
+            raise DeploymentContractError("C6c fixture was not consumed by canonical cancellation")
+        if state_recorder is not None:
+            state_recorder(state)
     if not _validate_pinvi_cancel_probe_result(state.result):
         raise DeploymentContractError(
             "C6c cached PinVi cancel probe evidence is invalid"
         )
+    if state.fixture is None:
+        raise DeploymentContractError("C6c fixture receipt is missing")
+    if state.fixture.state == "consumed":
+        _finalize_c6c_cancel_probe_fixture(config, state)
+        if state_recorder is not None:
+            state_recorder(state)
+    if state.fixture.state != "finalized":
+        raise DeploymentContractError("C6c fixture finalization is incomplete")
     assert state.result is not None
     results.append(dict(state.result))
 
@@ -2647,14 +2910,7 @@ def _validate_pinvi_cancel_probe_result(value: Any) -> bool:
         return False
     return (
         value.get("name") == "pinvi_cancel_error"
-        and (status, code)
-        in {
-            (409, "PIPELINE_CANCELLATION_IN_PROGRESS"),
-            (409, "PIPELINE_CANCELLATION_UNSAFE"),
-            (502, "DAGSTER_TERMINATE_FAILED"),
-            (503, "DAGSTER_UNAVAILABLE"),
-            (503, "DAGSTER_TERMINATION_TIMEOUT"),
-        }
+        and (status, code) == (409, "PIPELINE_CANCELLATION_UNSAFE")
     )
 
 
@@ -2664,7 +2920,7 @@ def _validate_owned_cancel_error_details(
     expected_status: int,
     expected_code: str,
     expected_root_id: str,
-) -> None:
+) -> str | None:
     if not isinstance(details, Mapping):
         raise DeploymentContractError("C6c PinVi cancel fixture details are missing")
     expected_attempt = {
@@ -2694,7 +2950,7 @@ def _validate_owned_cancel_error_details(
             raise DeploymentContractError(
                 "C6c PinVi root-only cancellation detail is invalid"
             )
-        return
+        return None
 
     status_text, retryable = expected_attempt
     expected_fields = {
@@ -3024,6 +3280,7 @@ def _validate_owned_cancel_error_details(
             raise DeploymentContractError(
                 "C6c resolved member status does not match Dagster terminal result"
             )
+    return cancellation_id
 
 
 def _validate_cancellation_error(value: Any) -> bool:
@@ -4343,6 +4600,7 @@ def validate_runtime_secret_isolation(
         config.map_container: {
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
+            _MAP_FIXTURE_ENV: config.fixture_token,
             _MAP_REQUIRED_ENV: "true",
             _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
             _MAP_SERVICE_TOKEN_ENV: config.map_service_token,
@@ -4377,6 +4635,7 @@ def validate_runtime_secret_isolation(
         for secret in (
             config.read_token,
             config.cancel_token,
+            config.fixture_token,
             config.map_ui_password_hash,
             config.map_ui_session_secret,
             config.map_admin_proxy_secret,
@@ -4385,7 +4644,6 @@ def validate_runtime_secret_isolation(
             config.smoke.map_ui_password,
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,
-            config.smoke.cancel_probe_job_id,
             config.contract_generation,
             *(
                 config.cache_target.protected_values

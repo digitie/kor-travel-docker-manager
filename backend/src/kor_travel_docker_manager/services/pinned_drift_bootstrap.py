@@ -40,6 +40,7 @@ _PHASES = frozenset(
 )
 _DATABASE_ROLES = frozenset({"map_application", "map_dagster", "pinvi"})
 _MAX_FAILURE_COUNT = 1_000_000
+_CANCEL_PROBE_STATE_ORDER = {"armed": 0, "consumed": 1, "finalized": 2}
 PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS = frozenset(
     {
         "prepared.stop_pair",
@@ -106,10 +107,25 @@ class PinnedDriftBootstrapJournal:
     runtime_activated_at: str | None
     manifest_committing_at: str | None
     committed_at: str | None
+    cancel_probe: PinnedDriftCancelProbeReceipt | None = None
     attempt_checkpoint: str | None = None
     last_failure_checkpoint: str | None = None
     last_failed_at: str | None = None
     failure_count: int = 0
+
+
+@dataclass(frozen=True)
+class PinnedDriftCancelProbeReceipt:
+    """F1D transaction이 소유한 Map cancel-probe fixture의 durable receipt."""
+
+    job_id: str
+    state: Literal["armed", "consumed", "finalized"]
+    cancellation_id: str | None
+    attempted: bool
+    response_status: int | None
+    response_code: str | None
+    response_verified_at: str | None
+    finalized_at: str | None
 
 
 def pinned_drift_bootstrap_journal_path(
@@ -362,6 +378,22 @@ def record_pinned_drift_bootstrap_failure(
     return updated
 
 
+def record_pinned_drift_bootstrap_cancel_probe(
+    journal: PinnedDriftBootstrapJournal,
+    receipt: PinnedDriftCancelProbeReceipt,
+) -> PinnedDriftBootstrapJournal:
+    """Map lifecycle 관측 직후 fixture receipt를 같은 F1D journal에 원자적으로 결박한다."""
+
+    _validate_journal(journal)
+    _validate_cancel_probe_receipt(receipt)
+    existing = journal.cancel_probe
+    if existing is not None:
+        _assert_cancel_probe_receipt_monotonic(existing, receipt)
+    updated = replace(journal, cancel_probe=receipt)
+    _validate_journal(updated)
+    return updated
+
+
 def read_pinned_drift_bootstrap(
     path: Path,
     *,
@@ -596,6 +628,7 @@ def _journal_from_payload(payload: object) -> PinnedDriftBootstrapJournal:
         "manifest_committing_at",
         "committed_at",
     }
+    receipt_keys = {"cancel_probe"}
     diagnostic_keys = {
         "attempt_checkpoint",
         "last_failure_checkpoint",
@@ -612,7 +645,16 @@ def _journal_from_payload(payload: object) -> PinnedDriftBootstrapJournal:
             "last_failed_at": None,
             "failure_count": 0,
         }
+    elif keys == base_keys | receipt_keys:
+        diagnostics = {
+            "attempt_checkpoint": None,
+            "last_failure_checkpoint": None,
+            "last_failed_at": None,
+            "failure_count": 0,
+        }
     elif keys == base_keys | diagnostic_keys:
+        diagnostics = payload
+    elif keys == base_keys | receipt_keys | diagnostic_keys:
         diagnostics = payload
     else:
         raise DeploymentContractError("pinned drift bootstrap journal shape is invalid")
@@ -634,6 +676,7 @@ def _journal_from_payload(payload: object) -> PinnedDriftBootstrapJournal:
         runtime_activated_at=payload["runtime_activated_at"],
         manifest_committing_at=payload["manifest_committing_at"],
         committed_at=payload["committed_at"],
+        cancel_probe=_cancel_probe_from_payload(payload.get("cancel_probe")),
         attempt_checkpoint=cast(str | None, diagnostics["attempt_checkpoint"]),
         last_failure_checkpoint=cast(
             str | None, diagnostics["last_failure_checkpoint"]
@@ -650,6 +693,21 @@ def _pair_from_payload(payload: object) -> CompatibleImagePair:
         return CompatibleImagePair(**dict(payload))
     except TypeError as exc:
         raise DeploymentContractError("pinned drift bootstrap journal pair is invalid") from exc
+
+
+def _cancel_probe_from_payload(
+    payload: object,
+) -> PinnedDriftCancelProbeReceipt | None:
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise DeploymentContractError("pinned drift cancel probe receipt is invalid")
+    try:
+        return PinnedDriftCancelProbeReceipt(**dict(payload))
+    except TypeError as exc:
+        raise DeploymentContractError(
+            "pinned drift cancel probe receipt is invalid"
+        ) from exc
 
 
 def _validate_journal(journal: PinnedDriftBootstrapJournal) -> None:
@@ -676,6 +734,8 @@ def _validate_journal(journal: PinnedDriftBootstrapJournal) -> None:
         raise DeploymentContractError("pinned drift bootstrap journal contract is invalid")
     if journal.attempt_checkpoint is not None:
         _validate_checkpoint(journal.attempt_checkpoint)
+    if journal.cancel_probe is not None:
+        _validate_cancel_probe_receipt(journal.cancel_probe)
     failure_is_empty = (
         journal.last_failure_checkpoint is None
         and journal.last_failed_at is None
@@ -734,6 +794,82 @@ def _valid_database_heads(heads: Mapping[str, str]) -> bool:
             for head in heads.values()
         )
     )
+
+
+def _validate_cancel_probe_receipt(receipt: PinnedDriftCancelProbeReceipt) -> None:
+    if (
+        not _canonical_uuid(receipt.job_id)
+        or receipt.state not in {"armed", "consumed", "finalized"}
+        or type(receipt.attempted) is not bool
+    ):
+        raise DeploymentContractError("pinned drift cancel probe receipt is invalid")
+    result_is_absent = (
+        receipt.response_status is None
+        and receipt.response_code is None
+        and receipt.response_verified_at is None
+    )
+    result_is_exact = (
+        receipt.response_status == 409
+        and receipt.response_code == "PIPELINE_CANCELLATION_UNSAFE"
+        and _timestamp(receipt.response_verified_at)
+    )
+    if not (result_is_absent or result_is_exact):
+        raise DeploymentContractError("pinned drift cancel probe response is invalid")
+    if receipt.state == "armed":
+        if receipt.cancellation_id is not None or receipt.finalized_at is not None:
+            raise DeploymentContractError("armed pinned drift cancel probe is invalid")
+        if not result_is_absent:
+            raise DeploymentContractError("armed pinned drift cancel probe has a result")
+        return
+    if (
+        not _canonical_uuid(receipt.cancellation_id)
+        or not receipt.attempted
+        or not result_is_exact
+    ):
+        raise DeploymentContractError("consumed pinned drift cancel probe is invalid")
+    if receipt.state == "consumed":
+        if receipt.finalized_at is not None:
+            raise DeploymentContractError("consumed pinned drift cancel probe is invalid")
+        return
+    if not _timestamp(receipt.finalized_at):
+        raise DeploymentContractError("finalized pinned drift cancel probe is invalid")
+
+
+def _assert_cancel_probe_receipt_monotonic(
+    existing: PinnedDriftCancelProbeReceipt,
+    incoming: PinnedDriftCancelProbeReceipt,
+) -> None:
+    """stale callback이 durable fixture evidence를 후퇴시키지 못하게 한다."""
+
+    if existing.job_id != incoming.job_id:
+        raise DeploymentContractError("pinned drift cancel probe job identity changed")
+    if _CANCEL_PROBE_STATE_ORDER[incoming.state] < _CANCEL_PROBE_STATE_ORDER[
+        existing.state
+    ]:
+        raise DeploymentContractError("pinned drift cancel probe state regressed")
+    if existing.attempted and not incoming.attempted:
+        raise DeploymentContractError("pinned drift cancel probe attempt regressed")
+    if (
+        existing.cancellation_id is not None
+        and incoming.cancellation_id != existing.cancellation_id
+    ):
+        raise DeploymentContractError(
+            "pinned drift cancel probe cancellation identity changed"
+        )
+    if (
+        existing.response_status is not None
+        and (
+            incoming.response_status != existing.response_status
+            or incoming.response_code != existing.response_code
+            or incoming.response_verified_at != existing.response_verified_at
+        )
+    ):
+        raise DeploymentContractError("pinned drift cancel probe response evidence changed")
+    if (
+        existing.finalized_at is not None
+        and incoming.finalized_at != existing.finalized_at
+    ):
+        raise DeploymentContractError("pinned drift cancel probe finalization evidence changed")
 
 
 def _validate_checkpoint(checkpoint: object) -> None:

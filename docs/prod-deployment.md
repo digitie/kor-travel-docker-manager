@@ -118,6 +118,7 @@ PINVI_ENVIRONMENT=production
 KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true
 KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=<공백 없는 32자 이상 secret>
 KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=<read와 다른 공백 없는 32자 이상 secret>
+KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN=<read/cancel과 다른 공백 없는 32자 이상 secret>
 KOR_TRAVEL_MAP_API_CONTAINER_PORT=12701
 PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL=http://127.0.0.1:12701
 KTDM_C6C_CONTRACT_GENERATION=c6c-ops-v1
@@ -127,7 +128,6 @@ KOR_TRAVEL_MAP_UI_SESSION_SECRET=<공백 없는 32자 이상 session secret>
 KTDM_C6C_MAP_UI_ADMIN_PASSWORD=<16자 이상 Map UI 관리자 비밀번호>
 KTDM_C6C_PINVI_ADMIN_EMAIL=<PinVi admin email>
 KTDM_C6C_PINVI_ADMIN_PASSWORD=<16자 이상 PinVi admin 비밀번호>
-KTDM_C6C_CANCEL_PROBE_JOB_ID=<owned typed-failure UUID fixture>
 ```
 
 Map의 standalone compose는 destructive 기능을 기본 `false`로 해석한다. Manager production은
@@ -271,10 +271,11 @@ tag를 additive 생성·exact 검증한 뒤 stale tag 정리를 성공시켜야 
 `cleanup_pending`으로 보고하며 다음 pair mutation 전에 해소한다. explicit rollback과 최초 capture도 같은
 retention 경계를 사용한다. Map
 read 200 envelope·무토큰 401·존재하지 않는 import-job cancel 404·cancel token의 non-cancel mutation
-403 가운데 하나라도 다르면 새 pair를 활성화하지 않는다. PinVi owned cancel fixture는 정확한
-409 `PIPELINE_CANCELLATION_IN_PROGRESS`, 502 `DAGSTER_TERMINATE_FAILED`,
-503 `DAGSTER_UNAVAILABLE`와 canonical details/retryability/양의 `Retry-After`만 허용하고 429·generic 오류는
-거부한다. details의 canonical import root ID도 `KTDM_C6C_CANCEL_PROBE_JOB_ID`와 같아야 한다. 모든 중간 실패는 시작 시점 active pair를
+403 가운데 하나라도 다르면 새 pair를 활성화하지 않는다. Docker Manager는 durable transaction ID로
+Map-owned fixture를 ensure하고, 반환된 dynamic `job_id`만 PinVi cancel relay에 보낸다. 성공은 exact
+409 `PIPELINE_CANCELLATION_UNSAFE`이며 Retry-After·502·503·generic 오류는 모두 거부한다. canonical
+details의 import root와 Map fixture의 소비 receipt가 같은 dynamic job/cancellation identity를 가져야 한다.
+모든 중간 실패는 시작 시점 active pair를
 복구해 전체 계약을 재검사하며, 복구도 실패하면 다섯 runtime을 중지하고 operator 조치를 요구한다. 최종
 readiness는 `ps --all` 존재 여부나 모든 service에 일률적으로 `Health=healthy`를 요구하지 않는다.
 canonical healthcheck가 활성화된 service는 `running + healthy`, healthcheck가 없거나 Compose 표준으로

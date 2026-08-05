@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1J-B — dynamic fixture와 F1D durable receipt 구현)
+
+Manager는 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`를 완전히 제거하고 Map API에만 주입되는 별도 fixture
+capability로 lifecycle API를 호출한다. candidate Map readiness 뒤에 dynamic fixture를 ensure하고 반환된 job ID만
+PinVi의 기존 cancellation relay에 전달한다. 성공 결과는 canonical detail을 포함한 정확한
+`409 PIPELINE_CANCELLATION_UNSAFE` 하나이며, `404`·`429`·`502`·`503`·다른 `409`·재시도 지시는 모두 fail-close다.
+
+F1D journal은 fixture의 job/cancellation identity, lifecycle, POST 전 attempted 상태와 exact result/finalization
+receipt를 각 전이 직후 durable write한다. receipt는 `armed → consumed → finalized` 및 attempted false→true만
+허용하고 확정 identity/result/timestamp를 후퇴시키지 않는다. response loss 뒤에는 Map의 immutable canonical outcome을
+읽어 same durable receipt를 확정하고 같은 destructive POST 없이 finalize를 재개한다. focused C6c 923개와 Manager
+receipt regression 939개, 전체 backend suite 1,708개를 Linux tmpfs에서 통과했다. strict mypy는 fixture
+lifecycle state와 receipt response의 exact type을 다시 좁혔고, 적대적 코드 리뷰 1인은 dynamic ensure·POST 전
+attempted fsync·response-loss 재개·단조 receipt·credential isolation·정적 UUID 제거를 재검토해 GO로 판정했다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1J — Map 소유 cancel-probe fixture lifecycle 설계)
 
 F1I의 safe checkpoint로 마지막 F1D candidate attempt 하나를 분리한 결과, PinVi login·ETL summary·provider

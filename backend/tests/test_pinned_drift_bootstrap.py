@@ -24,12 +24,14 @@ from kor_travel_docker_manager.services.cache_target_production_manifest import 
 from kor_travel_docker_manager.services.compose_service import ComposeService
 from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     PinnedDriftBootstrapJournal,
+    PinnedDriftCancelProbeReceipt,
     assert_pinned_drift_bootstrap_allows_pair_mutation,
     assert_pinned_drift_bootstrap_frozen_inputs,
     assert_pinned_drift_bootstrap_inputs,
     prepare_pinned_drift_bootstrap,
     read_pinned_drift_bootstrap,
     record_pinned_drift_bootstrap_attempt,
+    record_pinned_drift_bootstrap_cancel_probe,
     record_pinned_drift_bootstrap_failure,
     transition_pinned_drift_bootstrap,
     write_pinned_drift_bootstrap,
@@ -331,6 +333,110 @@ def test_pinned_drift_failure_evidence_preserves_prior_failure_on_retry() -> Non
     assert retried.last_failure_checkpoint == "prepared.stop_pair"
     assert retried.last_failed_at == failed.last_failed_at
     assert retried.failure_count == 1
+
+
+def test_pinned_drift_cancel_probe_receipt_is_monotonic_and_reconstructible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id = "77777777-7777-4777-8777-777777777777"
+    cancellation_id = "22222222-2222-4222-8222-222222222222"
+    armed = PinnedDriftCancelProbeReceipt(
+        job_id=job_id,
+        state="armed",
+        cancellation_id=None,
+        attempted=False,
+        response_status=None,
+        response_code=None,
+        response_verified_at=None,
+        finalized_at=None,
+    )
+    journal = record_pinned_drift_bootstrap_cancel_probe(_journal(), armed)
+    tracker = compose_service_module._PinnedDriftCheckpointTracker(
+        journal_path=Path("/non-persistent-fixture.json"),
+        journal=journal,
+        fresh_journal=True,
+    )
+    state = tracker.cancel_probe_state()
+    assert state.transaction_id == journal.transaction_id
+    assert state.fixture is not None
+    assert state.fixture.job_id == job_id
+    assert state.attempted is False
+    assert state.result is None
+
+    writes: list[PinnedDriftBootstrapJournal] = []
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_drift_bootstrap",
+        lambda _path, persisted: writes.append(persisted),
+    )
+    state.attempted = True
+    state.fixture = state.fixture.__class__(
+        transaction_id=state.transaction_id,
+        job_id=job_id,
+        state="consumed",
+        cancellation_id=cancellation_id,
+        canonical_unsafe_outcome=dict(state.result or {}),
+    )
+    state.result = {
+        "name": "pinvi_cancel_error",
+        "status": 409,
+        "code": "PIPELINE_CANCELLATION_UNSAFE",
+    }
+    tracker.persist_cancel_probe(state)
+
+    consumed = tracker.journal.cancel_probe
+    assert consumed is not None
+    assert consumed.state == "consumed"
+    assert consumed.response_status == 409
+    assert consumed.response_verified_at is not None
+    assert len(writes) == 1
+
+    state.fixture = state.fixture.__class__(
+        transaction_id=state.transaction_id,
+        job_id=job_id,
+        state="finalized",
+        cancellation_id=cancellation_id,
+        canonical_unsafe_outcome=dict(state.result or {}),
+    )
+    tracker.persist_cancel_probe(state)
+
+    finalized = tracker.journal.cancel_probe
+    assert finalized is not None
+    assert finalized.state == "finalized"
+    assert finalized.finalized_at is not None
+    assert tracker.cancel_probe_state().result == state.result
+
+    with pytest.raises(DeploymentContractError, match="regressed"):
+        record_pinned_drift_bootstrap_cancel_probe(
+            tracker.journal,
+            PinnedDriftCancelProbeReceipt(
+                job_id=job_id,
+                state="armed",
+                cancellation_id=None,
+                attempted=False,
+                response_status=None,
+                response_code=None,
+                response_verified_at=None,
+                finalized_at=None,
+            ),
+        )
+
+
+def test_pinned_drift_cancel_probe_rejects_unverified_consumed_receipt() -> None:
+    with pytest.raises(DeploymentContractError, match="consumed"):
+        record_pinned_drift_bootstrap_cancel_probe(
+            _journal(),
+            PinnedDriftCancelProbeReceipt(
+                job_id="77777777-7777-4777-8777-777777777777",
+                state="consumed",
+                cancellation_id="22222222-2222-4222-8222-222222222222",
+                attempted=True,
+                response_status=None,
+                response_code=None,
+                response_verified_at=None,
+                finalized_at=None,
+            ),
+        )
 
 
 def test_pinned_drift_journal_reads_exact_base_v2_shape_and_rewrites_extended_shape(
