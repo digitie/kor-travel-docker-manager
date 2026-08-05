@@ -1628,3 +1628,46 @@ diagnostic의 recovery/termination을 추측하지 않는다.
 - F1F input rotation은 안전하지 않은 active diagnostic을 계속 차단하되, stale inert state가 영구 차단기가 되지
   않는다.
 - raw deletion이나 v2→terminal 변환 없이 final F1D authority를 향한 durable state 경계를 유지한다.
+
+## F1I: F1D fail-close의 안전한 checkpoint 관측성
+
+### 컨텍스트
+
+n150에서 F1D `bootstrap-pinned-drift`는 동일 frozen candidate를 두 번 activation한 뒤 five-runtime을
+halt했다. bootstrap manifest는 여전히 old pair이고 F1D journal phase도 `prepared`라 same-pinset resume은
+가능하지만, 기존 CLI는 post-mutation exception·Compose output·credential의 노출을 막기 위해
+`halted_requires_operator`만 반환했다. 이 형식만으로는 candidate의 어느 bounded operation이 반복 실패했는지
+구별할 수 없어, 안전한 재개 판단보다 무의미한 재시도가 먼저 일어난다.
+
+### 결정
+
+F1D는 activation·candidate re-verification의 closed allowlist checkpoint를 journal에 durable하게 기록한다.
+각 checkpoint는 side effect 또는 검증 직전에 atomic write+fsync한다. `attempt_checkpoint`는 현재 시도 중인
+operation의 audit field일 뿐 phase resume cursor가 아니며, same-pinset 재실행은 항상 기존 phase의 full
+activation/verification을 다시 수행한다. failure catch는 raw exception을 기록하거나 출력하지 않고,
+`last_failure_checkpoint`·UTC 시각·strict integer failure count만 journal에 쓴 뒤 protected runtime halt를
+시도한다. 새 attempt checkpoint write는 이전 failure evidence를 지우지 않는다. validator는 failure checkpoint와
+시각의 nullability, non-bool count의 0/양수 관계, checkpoint allowlist와 최대 count를 엄격히 검증한다.
+
+`stop_pair` 실제 호출 전에는 이번 process가 새 `prepared` journal을 fsync했는지와
+`runtime_mutation_started`를 함께 판단한다. 새 journal의 첫 checkpoint fsync만 runtime을 건드리지 않은
+pre-mutation error로 끝내며 halt하지 않는다. 이미 존재한 base/extended v2 journal은 checkpoint가 없어도 과거
+mutation 미시도의 증거가 아니므로 보수적으로 halt한다. `stop_pair` 호출 직전 true가 된 뒤 checkpoint 또는
+failure evidence persistence가 실패하면, persistence failure가 원래 cause를 가리지 않더라도 독립 `finally`
+경로로 반드시 halt한다. halt failure는 original activation checkpoint evidence를 대체하지 않는다. CLI JSON은
+exception이 아닌 safe enum 전용 exception attribute를 통해 allowlist checkpoint·count·halt state만 반환한다.
+
+현재 production의 base v2 journal은 F1D가 이미 만든 frozen candidate authority다. reader는 이 exact base
+shape를 `attempt checkpoint 없음/실패 없음/count 0`으로만 normalize하며, 새 extended v2 shape는 모든 diagnostic
+field가 있고 type·enum·timestamp·count 관계가 정확한 경우만 수용한다. 임의 partial field나 다른 shape는
+fail-close한다.
+첫 same-pinset resume은 기존 lock과 frozen-input 검증을 통과한 뒤에만 extended shape를 fsync한다. version을
+느슨하게 해석하거나 old candidate/manifest를 fallback으로 삼지 않는다.
+
+### 결과
+
+- fail-close는 비밀값을 보존·노출하지 않으면서 재현 가능한 operator evidence를 남긴다.
+- n150의 현재 `prepared` v2 transaction은 upgrade parser 때문에 차단되지 않고, 동일 candidate의 유일한
+  resume authority를 유지한다.
+- journal 기록 실패와 halt 실패 모두 후보 runtime을 계속 실행하게 만들지 않으며, generic mutation/rotation
+  차단도 변하지 않는다.
