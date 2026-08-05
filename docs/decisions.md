@@ -1431,3 +1431,55 @@ transaction이다. drift bootstrap은 그 값을 암묵적으로 수정하지 �
 - source checkout 갱신과 runtime drift 복구의 책임이 분리되어 다음 deploy의 provenance failure를 숨기지
   않는다.
 - normal deploy/rollback의 strict active-manifest precondition은 약화되지 않는다.
+
+## ADR-32: pinned source selection은 user-owned Git checkout과 분리한 trusted transaction이다
+
+- 상태: accepted
+- 날짜: 2026-08-05
+- 결정자: human, Codex
+
+### 컨텍스트
+
+F1D drift bootstrap은 tracked exact Map·PinVi release commit을 source authority로 사용해야 한다. n150의
+current source cache는 user-owned `0700` Git worktree이며 required commit object도 없다. root가 이
+worktree에서 `git fetch`, `git archive`, `git config`를 실행하면 repository-local include, URL rewrite,
+custom transport, hook 또는 credential 설정을 root execution boundary로 올릴 수 있다. source-root만 바꿔도
+canonical `.env`의 `KOR_TRAVEL_MAP_GIT_COMMIT`/`PINVI_SOURCE_REVISION` scalar가 이전 값이면 normal builder는
+여전히 fail-close한다.
+
+### 결정
+
+trusted root 전용 `ktdctl pinvi-pair install-pinned-sources --confirm` transaction을 둔다. source owner
+checkout은 source-owner helper가 origin identity를 읽어 code-owned canonical HTTPS `RepoSpec`과 exact 비교하는
+read-only input일 뿐이다. root는 user-owned Git config를 해석하지 않고, compiled URL과
+`CACHE_TARGET_PRODUCTION_PINS` full SHA만 empty root-owned bare staging repo에 sanitized Git environment로
+fetch한다. hooks, global/system/repository config, prompt, local/file/ext protocol, submodule, branch/tag/refspec
+전체 fetch는 모두 금지한다.
+
+exact commit과 tree를 검증한 뒤 root-owned non-writable stable path에 detached immutable worktree를 만든다.
+frozen canonical `.env`에서 Map/PinVi source root와 revision scalar의 source-selection keyset을 strict parser로
+정확히 한 번만 읽으며, revision scalar는 unset 또는 tracked pin이어야 한다. source root·revision scalar는
+owner-preserving atomic replace 하나로만 새 value로 수렴하고 다른 bytes는 보존한다.
+
+env replace 전 old env의 root-private `0600` backup과 secret-free journal을 fsync한다. journal은 old/new env
+SHA, owner identity, old/new root, pin/tree evidence 및 `prepared → env_replaced → committed` phase를 담는다.
+crash resume은 env가 old/new SHA 중 하나인 경우에만 진행하고, foreign/corrupt/non-terminal journal·backup·
+worktree는 cleanup과 모든 pair mutation을 막는다. F1E는 Docker, Compose, DB, runtime inspect/recreate,
+image build를 호출하지 않는다.
+
+### 근거
+
+- source owner의 repository-local configuration을 root Git process에서 분리하면 cache checkout이 신뢰 경계를
+  우회하지 못한다.
+- full SHA와 canonical URL을 code-owned authority로 두면 current HEAD, branch, tag, URL alias가 release source를
+  바꾸지 못한다.
+- source-root와 revision scalar를 하나의 keyset으로 바꾸면 다음 normal builder가 같은 clean pinned HEAD를
+  유일 provenance로 파생한다.
+- private backup과 durable journal이 없으면 atomic replace/fsync 경계 crash에서 secret-bearing old env를
+  안전하게 복구할 수 없다.
+
+### 결과
+
+- F1D는 source cache의 stale HEAD와 무관하게 root-owned exact build input을 받는다.
+- production runtime/DB/manifest를 전혀 바꾸지 않은 상태에서 source authority만 독립적으로 수렴한다.
+- non-terminal source installation residue가 subsequent pair mutation을 허용해 crash state를 덮는 일이 없다.

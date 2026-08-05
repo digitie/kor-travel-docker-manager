@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1E — trusted pinned source-installer 설계, issue #138)
+
+F1D candidate가 source authority로 쓸 tracked Map·PinVi commit object는 n150의 current source cache에
+없다. 이 cache는 user-owned `0700` Git worktree이므로 root가 그 Git config·hook·remote를 실행해
+fetch/clone/archive하는 것은 P0다. canonical HTTPS origin 문자열만 맞아도 `include`, URL rewrite,
+custom upload-pack, credential 설정 같은 repository-local 입력을 root가 해석해서는 안 된다.
+
+F1E는 source owner checkout을 read-only origin identity helper input으로만 읽는다. root는 코드에 고정한
+canonical HTTPS `RepoSpec`과 tracked release SHA만 사용해 empty bare staging repo를 만들고, sanitized Git
+environment에서 exact commit 하나만 fetch한다. commit/tree를 다시 검증한 root-owned immutable detached
+worktree가 normal builder의 clean HEAD/`git archive` input이 된다.
+
+source root 두 값뿐 아니라 source-selection revision scalar도 unset-or-pin 조건으로 함께 검증·원자 교체한다.
+private `0600` old-env backup과 secret-free durable journal이 env replace 전 fsync되며, crash resume은 old/new
+SHA만 인정한다. F1E는 Docker·Compose·DB·runtime·image build를 호출하지 않고, 성공 뒤 F1D가 새 frozen
+transaction에서 exact candidate를 build한다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1D — pinned compatible-pair drift bootstrap 설계, issue #136)
 
 F2 fresh v2 diagnostic은 writer stop 전 `writers_fencing`에서 Map API/UI, Map Dagster web/daemon,
