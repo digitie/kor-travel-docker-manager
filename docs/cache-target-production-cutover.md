@@ -53,21 +53,20 @@ role→(digest, consumer ID, exact scopes, external system) binding 전체의 lo
 production cutover pin의 tracked 정본은
 `cache_target_production_manifest.py`다. 현재 고정값은 contract generation `7`, Map cache-target
 OpenAPI SHA-256
-`622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2`, Map functional owner revision
-`9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`, Map release revision
-`6b537ed99aecb583805f3cde2ce7a9fcf8d14329`다. PinVi reviewed candidate
-`6ac8baae2814fae5b16c95846ee40d77cc7fe283`는 review 출발점의 감사 정보일 뿐 release가 아니며,
+`144b4335d98fc021368b3297f5b8ed7b1c560e9850ebbdd8af71e45623ba7b3d`, Map functional owner revision
+`e12494bd5c4b5b2e1d51c72b6ddcf18eead0e53f`, Map release revision
+`c0afaa4e318a2e2e6d85f53bb889af3e6adec8c1`다. PinVi reviewed candidate
+`51289cb1651e7771b0ff5c685989a9768d81b870`는 review 출발점의 감사 정보일 뿐 release가 아니며,
 PinVi release revision은 적대적 GO review 뒤 squash merge된
-`4943282006139fa3b4ef3cb247780bfd9721b4c7`로 고정한다. candidate를 release로 자동 승격하거나
+`3ff54b8b15965c6ecd5c55b1419208e65831c7fe`로 고정한다. candidate를 release로 자동 승격하거나
 fallback으로 쓰지 않는다. Map과 PinVi 각각의 build/release SHA를 active와 rollback pair 양쪽에 결박해야만
-cutover를 진행할 수 있다. Map #928(문서 전용 — H31 등대 provider 신설 취소 반영, tasks.md 정정) 머지
-SHA를 이 문서와 tracked manifest의 Map release revision에 고정했다. 이전 pin은
-`d50bb2c53c179d182b9cf017308df075b691414e`(Map #924, migrate 재시도 영구 거부·공개 카운트
-`source_present` 누락 결함 포함, issue #99 적대 리뷰로 확인) →
-`0dbbd0b5510562e05bd86f2cee572f2483e4ed26`(Map #925, 위 두 결함 수정) →
-`4a764a4f43e3affc13671cb08b6defbd7974404f`(Map #928, 문서 전용) →
-`6b537ed99aecb583805f3cde2ce7a9fcf8d14329`(Map #929, `quarantine_candidates_before`
-preflight 게이트 추가 — issue #107)로 이어졌다. functional owner
+cutover를 진행할 수 있다. 이번 재pin은 Map #940의 additive service 계약 artifact와 functional owner,
+그 뒤 production에 실제 배포된 Map release를 한 pair로 결박한다. 이전 Map release pin은
+`d50bb2c53c179d182b9cf017308df075b691414e`(Map #924) →
+`0dbbd0b5510562e05bd86f2cee572f2483e4ed26`(Map #925) →
+`4a764a4f43e3affc13671cb08b6defbd7974404f`(Map #928) →
+`6b537ed99aecb583805f3cde2ce7a9fcf8d14329`(Map #929) →
+`c0afaa4e318a2e2e6d85f53bb889af3e6adec8c1`(현재 production release)로 이어졌다. functional owner
 revision은 API 계약 소유자를, build/release revision은 실제
 immutable image 출처를 뜻하므로 서로 대체하지 않는다. cache-target contract가 아예 설정되지 않은 기존
 production C6c 경로에는 이 gate를 적용하지 않는다. 모든 필드가 canonical unset/default이면 contract가

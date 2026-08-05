@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-08-05 (issue #129 — T-VN-41-F1 production pair re-pin 시작)
+
+T-VN-41 production final boundary를 시작하기 전 Manager tracked manifest가 이전
+generation 7 pair를 가리키는 drift를 확인했다. production에 실제 배포된 Map release와 PinVi
+release, PinVi가 독립 검증한 service OpenAPI artifact/functional owner, PinVi PR #428의 review
+candidate를 GitHub merge provenance 및 n150 배포 receipt로 교차 확인했다. Map release는
+`c0afaa4e318a2e2e6d85f53bb889af3e6adec8c1`, functional owner는
+`e12494bd5c4b5b2e1d51c72b6ddcf18eead0e53f`, service OpenAPI SHA-256은
+`144b4335d98fc021368b3297f5b8ed7b1c560e9850ebbdd8af71e45623ba7b3d`다. PinVi
+reviewed candidate `51289cb1651e7771b0ff5c685989a9768d81b870`와 squash release
+`3ff54b8b15965c6ecd5c55b1419208e65831c7fe`는 역할이 다르므로 각각 보존한다.
+
+이 값은 Manager manifest, 전체 pin 회귀, runbook에서 동시에 갱신한다. exact contract와
+active/rollback pair가 모두 일치하지 않으면 기존 fail-close gate가 mutation 전에 중단한다.
+Manager를 production에 배포하고 적대적 리뷰 1건을 통과하기 전에는 F2 diagnose/cutover를
+실행하지 않는다.
+
+---
+
 ## 2026-08-04 (issue #107 — map_release_revision re-pin `4a764a4f` → `6b537ed9`)
 
 Map PR #929(머지 SHA `6b537ed99aecb583805f3cde2ce7a9fcf8d14329`, MERGED

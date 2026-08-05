@@ -33,13 +33,11 @@ class CacheTargetPairProvenance(Protocol):
 CACHE_TARGET_PRODUCTION_PINS = CacheTargetProductionPinManifest(
     version=1,
     contract_generation="7",
-    service_openapi_sha256=(
-        "622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2"
-    ),
-    map_functional_owner_revision="9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0",
-    map_release_revision="6b537ed99aecb583805f3cde2ce7a9fcf8d14329",
-    pinvi_reviewed_candidate_revision="6ac8baae2814fae5b16c95846ee40d77cc7fe283",
-    pinvi_release_revision="4943282006139fa3b4ef3cb247780bfd9721b4c7",
+    service_openapi_sha256=("144b4335d98fc021368b3297f5b8ed7b1c560e9850ebbdd8af71e45623ba7b3d"),
+    map_functional_owner_revision="e12494bd5c4b5b2e1d51c72b6ddcf18eead0e53f",
+    map_release_revision="c0afaa4e318a2e2e6d85f53bb889af3e6adec8c1",
+    pinvi_reviewed_candidate_revision="51289cb1651e7771b0ff5c685989a9768d81b870",
+    pinvi_release_revision="3ff54b8b15965c6ecd5c55b1419208e65831c7fe",
 )
 
 
@@ -61,8 +59,7 @@ def require_cache_target_production_release(
     if (
         contract.expected_contract_generation != manifest.contract_generation
         or contract.expected_openapi_sha256 != manifest.service_openapi_sha256
-        or contract.expected_source_revision
-        != manifest.map_functional_owner_revision
+        or contract.expected_source_revision != manifest.map_functional_owner_revision
     ):
         raise DeploymentContractError(
             "cache-target production contract differs from the tracked pin manifest"
