@@ -1364,6 +1364,20 @@ class ComposeEnvironmentSnapshot:
         return "ComposeEnvironmentSnapshot(<redacted>)"
 
 
+def _frozen_canonical_env_owner(
+    environment: ComposeEnvironmentSnapshot,
+) -> dict[str, int]:
+    """root trusted mutation도 lock 안에서 고정한 env owner만 신뢰한다."""
+
+    uid = environment.env_file_identity.uid
+    gid = environment.env_file_identity.gid
+    if uid is None or gid is None:
+        raise DeploymentContractError(
+            "canonical env frozen identity has no owner evidence"
+        )
+    return {"expected_owner_uid": uid, "expected_owner_gid": gid}
+
+
 @dataclass(frozen=True, repr=False)
 class ComposeExternalReference:
     service: str
@@ -3984,6 +3998,7 @@ class ComposeService:
                     transaction.environment.env_file_bytes
                 ).hexdigest(),
                 replacement=bootstrap.replacement,
+                **_frozen_canonical_env_owner(transaction.environment),
             )
             return {
                 "success": True,
@@ -5144,11 +5159,15 @@ class ComposeService:
                 receipt=receipt,
                 journal_path=journal_path,
                 enabled_resolved_compose_sha256=(enabled_resolved_compose_sha256),
-                read_env=lambda: read_canonical_env_file(env_path),
+                read_env=lambda: read_canonical_env_file(
+                    env_path,
+                    **_frozen_canonical_env_owner(transaction.environment),
+                ),
                 replace_env=lambda expected, replacement: replace_canonical_env_file(
                     env_path,
                     expected_sha256=expected,
                     replacement=replacement,
+                    **_frozen_canonical_env_owner(transaction.environment),
                 ),
                 attest=attest,
                 recreate_pinvi_api=recreate_pinvi_api,
@@ -5379,11 +5398,15 @@ class ComposeService:
             receipt=receipt,
             journal_path=journal_path,
             enabled_resolved_compose_sha256=(enabled_resolved_compose_sha256),
-            read_env=lambda: read_canonical_env_file(env_path),
+            read_env=lambda: read_canonical_env_file(
+                env_path,
+                **_frozen_canonical_env_owner(transaction.environment),
+            ),
             replace_env=lambda expected, replacement: replace_canonical_env_file(
                 env_path,
                 expected_sha256=expected,
                 replacement=replacement,
+                **_frozen_canonical_env_owner(transaction.environment),
             ),
             attest=attest,
             recreate_pinvi_api=recreate_pinvi_api,

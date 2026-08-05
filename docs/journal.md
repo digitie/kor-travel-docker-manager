@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1B — trusted root canonical env 소유권 결박)
+
+F1A가 merge된 exact trusted Manager release를 n150에 설치하고 bootstrap을 실행했지만, command는
+canonical `.env` 교체 전에 `canonical env file is unsafe`로 fail-close했다. read-only metadata에서
+파일은 regular·single link·`0600`, app root는 root-owned/non-writable였고, 유일한 불일치는 trusted
+installer가 의도대로 보존한 deployment owner UID와 root command의 effective UID였다. 따라서 이 실패는
+raw env/Compose나 runtime mutation으로 넘어가지 않았고 container·DB·pair manifest·cutover journal도
+바꾸지 않았다.
+
+해결은 수동 `chown`이 아니라 frozen C6c transaction snapshot의 owner UID/GID를 canonical env helper에
+explicit expected identity로 전달하는 것이다. replacement는 여전히 root-owned parent, no-follow regular
+file, `0600`, single link, expected SHA/identity 재검증과 atomic replace를 강제하고 UID/GID를 보존한다.
+직접 호출자가 arbitrary owner를 넣는 CLI/config 표면은 추가하지 않는다. F1B를 별도 reviewable PR로
+보강한 뒤에만 F1A bootstrap과 F2 diagnostic을 재개한다.
+
+단일 적대적 리뷰는 bootstrap·일반 enable·window enable 세 경로가 frozen transaction의
+`env_file_identity.uid/gid`만 전달하고 receipt/journal SHA까지 다시 결박함을 확인했다. 임의 owner
+identity는 CLI/config에 노출되지 않으며, expected identity를 생략한 non-root 호출은 기존 current-EUID
+검사를 유지한다. 새 P0/P1/P2는 없었고 backend 전체 suite는 `1605 passed`다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1A — default-off cache-target bootstrap)
 
 F1 Manager production 재pin을 설치한 뒤 F2 `cache-target diagnose`를 read-only로 재시도하기 전,

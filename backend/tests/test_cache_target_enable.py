@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import kor_travel_docker_manager.services.cache_target_enable as cache_target_enable_module
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_cutover import (
     CacheTargetFrozenEvidence,
@@ -621,3 +622,29 @@ def test_canonical_env_atomic_replace_rejects_drift_and_unsafe_links(
     link.symlink_to(env_path)
     with pytest.raises(DeploymentContractError, match="unsafe"):
         read_canonical_env_file(link)
+
+
+def test_canonical_env_read_accepts_only_the_frozen_owner_when_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_bytes(_ENV_FALSE)
+    env_path.chmod(0o600)
+
+    monkeypatch.setattr(cache_target_enable_module.os, "geteuid", lambda: 0)
+
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        read_canonical_env_file(env_path)
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        read_canonical_env_file(
+            env_path,
+            expected_owner_uid=os.getuid(),
+            expected_owner_gid=os.getgid() + 1,
+        )
+
+    assert read_canonical_env_file(
+        env_path,
+        expected_owner_uid=os.getuid(),
+        expected_owner_gid=os.getgid(),
+    ) == _ENV_FALSE

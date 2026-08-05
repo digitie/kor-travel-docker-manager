@@ -49,17 +49,30 @@ class CacheTargetEnableRolledBackError(DeploymentContractError):
         self.cause = cause
 
 
-def read_canonical_env_file(path: Path) -> bytes:
-    """canonical production env를 no-follow owner-only regular file로 읽는다."""
+def read_canonical_env_file(
+    path: Path,
+    *,
+    expected_owner_uid: int | None = None,
+    expected_owner_gid: int | None = None,
+) -> bytes:
+    """frozen owner identity의 canonical env를 no-follow로 읽는다."""
 
-    before = _validate_canonical_env_file(path)
+    before = _validate_canonical_env_file(
+        path,
+        expected_owner_uid=expected_owner_uid,
+        expected_owner_gid=expected_owner_gid,
+    )
     try:
         payload = path.read_bytes()
     except OSError as exc:
         raise DeploymentContractError("canonical env cannot be read") from exc
     if not payload or len(payload) > 1_048_576:
         raise DeploymentContractError("canonical env size is invalid")
-    after = _validate_canonical_env_file(path)
+    after = _validate_canonical_env_file(
+        path,
+        expected_owner_uid=expected_owner_uid,
+        expected_owner_gid=expected_owner_gid,
+    )
     if after != before:
         raise DeploymentContractError("canonical env identity changed during read")
     return payload
@@ -70,15 +83,25 @@ def replace_canonical_env_file(
     *,
     expected_sha256: str,
     replacement: bytes,
+    expected_owner_uid: int | None = None,
+    expected_owner_gid: int | None = None,
 ) -> None:
-    """기대 SHA와 owner/mode/identity가 맞는 canonical env만 원자 교체한다."""
+    """기대 SHA와 frozen owner/mode/identity가 맞는 env만 원자 교체한다."""
 
     if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
         raise DeploymentContractError("canonical env expected digest is invalid")
     if not replacement or len(replacement) > 1_048_576:
         raise DeploymentContractError("canonical env replacement size is invalid")
-    before = _validate_canonical_env_file(path)
-    current = read_canonical_env_file(path)
+    before = _validate_canonical_env_file(
+        path,
+        expected_owner_uid=expected_owner_uid,
+        expected_owner_gid=expected_owner_gid,
+    )
+    current = read_canonical_env_file(
+        path,
+        expected_owner_uid=expected_owner_uid,
+        expected_owner_gid=expected_owner_gid,
+    )
     if hashlib.sha256(current).hexdigest() != expected_sha256:
         raise DeploymentContractError("canonical env changed before atomic replace")
     try:
@@ -106,7 +129,11 @@ def replace_canonical_env_file(
             stream.write(replacement)
             stream.flush()
             os.fsync(stream.fileno())
-        if _validate_canonical_env_file(path) != before:
+        if _validate_canonical_env_file(
+            path,
+            expected_owner_uid=expected_owner_uid,
+            expected_owner_gid=expected_owner_gid,
+        ) != before:
             raise DeploymentContractError(
                 "canonical env identity changed before atomic replace"
             )
@@ -114,7 +141,11 @@ def replace_canonical_env_file(
             raise DeploymentContractError("canonical env changed before atomic replace")
         os.replace(temporary, path)
         temporary = None
-        _validate_canonical_env_file(path)
+        _validate_canonical_env_file(
+            path,
+            expected_owner_uid=expected_owner_uid,
+            expected_owner_gid=expected_owner_gid,
+        )
         directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(directory_fd)
@@ -127,14 +158,26 @@ def replace_canonical_env_file(
             temporary.unlink(missing_ok=True)
 
 
-def _validate_canonical_env_file(path: Path) -> os.stat_result:
+def _validate_canonical_env_file(
+    path: Path,
+    *,
+    expected_owner_uid: int | None = None,
+    expected_owner_gid: int | None = None,
+) -> os.stat_result:
+    """호출자 소유 또는 frozen transaction의 명시 owner만 허용한다."""
+
     try:
         file_stat = path.lstat()
     except OSError as exc:
         raise DeploymentContractError("canonical env is unavailable") from exc
     if (
         not stat.S_ISREG(file_stat.st_mode)
-        or file_stat.st_uid != os.geteuid()
+        or file_stat.st_uid
+        != (os.geteuid() if expected_owner_uid is None else expected_owner_uid)
+        or (
+            expected_owner_gid is not None
+            and file_stat.st_gid != expected_owner_gid
+        )
         or file_stat.st_nlink != 1
         or stat.S_IMODE(file_stat.st_mode) != 0o600
     ):
