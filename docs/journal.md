@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1D — legacy old-image head gate 정정)
+
+병합한 F1D trusted release의 첫 product preflight는 old active Map API image head와 live DB head가 다르다는
+evidence에서 mutation 없이 종료했다. 이 사실은 F1D가 해결해야 할 기존 drift이며, old image는 새 rollback으로
+승격하거나 재기동하지 않는다. 따라서 old image static head를 candidate build/activation의 hard gate로 둔 ADR-31
+문구는 transaction 목적과 맞지 않았다.
+
+후속 수정은 old manifest·local immutable provenance는 유지하되, DB schema hard gate를 candidate Map/PinVi image와
+live DB head의 일치로 한정한다. candidate/live mismatch는 계속 H35 coupled recovery만 허용한다. 이 변경 뒤 같은
+product command를 재실행해 candidate activation과 final UI E2E를 확인한다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1D — durable bootstrap 구현 중)
 
 F1E terminal source selection 뒤에만 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm`이 candidate를
@@ -17,7 +30,7 @@ fsync한다. `manifest_committing` intent는 manifest fsync와 terminal journal 
 manifest를 구분해 같은 candidate로 수렴하게 한다. non-terminal journal은 일반 deploy/capture/rollback을 차단하고,
 F1D만 동일 candidate로 재개한다. candidate activation·재검증·DB head 검증이 실패하면 old image rollback 대신
 protected Map 네 runtime과 PinVi API를 halt한다. 단일 적대적 코드 리뷰의 F1E committed source evidence,
-manifest/journal crash resume, old·live·candidate DB head, halt 수렴, terminal frozen input, CLI 출력 계약 지적을
+manifest/journal crash resume, candidate/live DB head와 old provenance, halt 수렴, terminal frozen input, CLI 출력 계약 지적을
 보강했다. focused 85 passed, backend 전체 1655 passed, Ruff와 변경 source strict mypy를 통과했다. 다음 단계는
 PR merge 뒤 trusted release 설치와 destructive live bootstrap·idempotent 재실행·admin UI E2E다.
 
@@ -86,9 +99,9 @@ rollback은 모두 의도대로 거부한다. 이 상태에서 raw Docker·Compo
 단일 적대적 설계 리뷰의 P1 세 건을 반영해 일반 deploy 예외 대신 one-shot
 `pinvi-pair bootstrap-pinned-drift --confirm` transaction으로 한정한다. source authority는 tracked
 Map·PinVi release pin뿐이며 current runtime이나 `.env` HEAD를 candidate/rollback source로 채택하지
-않는다. candidate·live·old Map/PinVi DB head가 동일한 expected head인 경우에만 runtime을 바꾸고,
-candidate 실패 시 old image rollback 대신 다섯 runtime을 halt한다. 성공 manifest는 active와 rollback을
-동일 candidate로 bootstrap한다.
+않는다. candidate·live Map/PinVi DB head가 동일한 expected head인 경우에만 runtime을 바꾸며, old image static
+head drift는 재기동하지 않는 기존 감사 근거로만 남긴다. candidate 실패 시 old image rollback 대신 다섯
+runtime을 halt한다. 성공 manifest는 active와 rollback을 동일 candidate로 bootstrap한다.
 
 candidate build 뒤 runtime stop 전 owner-only durable journal에 original manifest SHA, frozen env/Compose
 identity, candidate immutable IDs·source revision, DB head와 phase를 기록한다. non-terminal·foreign·손상

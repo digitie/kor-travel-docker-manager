@@ -3820,10 +3820,6 @@ class ComposeService:
             if journal is None:
                 for pair in (manifest.active, manifest.rollback):
                     self._require_pair_image_provenance(pair)
-                self._assert_pinned_drift_old_database_heads(
-                    manifest.active,
-                    database_heads,
-                )
                 self._validate_resolved_compose_contract(config, transaction=transaction)
                 self._require_services_ready(services, transaction=transaction)
                 current_pair = self._inspect_current_pair(config)
@@ -3918,10 +3914,6 @@ class ComposeService:
                 if manifest_state == "old":
                     for pair in (manifest.active, manifest.rollback):
                         self._require_pair_image_provenance(pair)
-                    self._assert_pinned_drift_old_database_heads(
-                        manifest.active,
-                        database_heads,
-                    )
                 candidate = journal.candidate
                 self._require_pair_image_provenance(candidate)
                 _require_cache_target_release(
@@ -4179,19 +4171,6 @@ class ComposeService:
             raise DeploymentContractError(
                 "pinned drift bootstrap database schema heads changed"
             )
-
-    @staticmethod
-    def _assert_pinned_drift_old_database_heads(
-        old_active: CompatibleImagePair,
-        database_heads: Mapping[str, str],
-    ) -> None:
-        """전환 전 active Map/PinVi image도 live schema와 같아야 한다."""
-
-        ComposeService._assert_pinned_drift_pair_database_heads(
-            old_active,
-            database_heads,
-            label_prefix="old active",
-        )
 
     @staticmethod
     def _assert_pinned_drift_candidate_database_heads(
