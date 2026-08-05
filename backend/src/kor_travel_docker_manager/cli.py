@@ -130,7 +130,17 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
 def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     try:
-        if args.pair_action == "deploy":
+        if args.pair_action == "install-pinned-sources":
+            if not args.confirm:
+                print(
+                    "pinvi-pair install-pinned-sources requires --confirm "
+                    "(no mutation was attempted)",
+                    file=sys.stderr,
+                )
+                return 2
+            _require_trusted_pinned_source_installer()
+            result = compose_service.install_pinned_sources()
+        elif args.pair_action == "deploy":
             result = compose_service.deploy_compatible_pinvi_pair(
                 build=args.build,
                 recreate=True,
@@ -149,6 +159,18 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     return _emit_process_result(result, json_output=args.json)
+
+
+def _require_trusted_pinned_source_installer() -> None:
+    """installed root entrypoint 이외의 source authority mutation을 거부한다."""
+
+    if os.geteuid() != 0:
+        raise DeploymentContractError("pinned source installation requires root")
+    project_root = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "")
+    if project_root != _TRUSTED_ROOT_PROJECT_ROOT:
+        raise DeploymentContractError(
+            "pinned source installation requires the trusted installed manager root"
+        )
 
 
 def _cmd_cache_target(args: argparse.Namespace) -> int:
@@ -396,6 +418,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="검증된 Map+PinVi immutable image pair를 기록하거나 함께 rollback합니다.",
     )
     pair_subparsers = pinvi_pair.add_subparsers(dest="pair_action", required=True)
+    pair_install_sources = pair_subparsers.add_parser(
+        "install-pinned-sources",
+        help="tracked Map·PinVi release source만 root-owned immutable worktree로 설치합니다.",
+    )
+    pair_install_sources.add_argument(
+        "--confirm",
+        action="store_true",
+        help="canonical source selection env keyset을 원자 교체함을 확인합니다.",
+    )
+    pair_install_sources.add_argument(
+        "--json",
+        action="store_true",
+        help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
+    )
+    pair_install_sources.set_defaults(func=_cmd_pinvi_pair)
     pair_deploy = pair_subparsers.add_parser(
         "deploy",
         help="production Map+PinVi compatible pair를 단계 검증하며 배포합니다.",

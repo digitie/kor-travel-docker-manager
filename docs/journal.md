@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1E — trusted pinned source-installer 구현·검증)
+
+`ktdctl pinvi-pair install-pinned-sources --confirm`은 trusted installed Manager root와 root EUID를 먼저
+확인한 뒤, C6c global lock과 frozen canonical env snapshot 안에서 source authority만 수렴한다. 이 경로는
+Compose transaction, Docker SDK/CLI, DB, runtime inspect/recreate, image build를 호출하지 않는다.
+
+source-owner helper만 기존 user-owned checkout의 local canonical origin을 읽고, root는 code-owned canonical
+HTTPS URL과 tracked full SHA를 root-owned empty bare staging에만 sanitized fetch한다. 모든 root Git 명령은
+hook, file/ext protocol, credential helper와 global/system config를 차단한다. gitlink/submodule은 worktree 생성
+전과 crash 뒤 기존 worktree 재사용 경로 모두에서 거부한다.
+
+source root·revision scalar 네 key는 strict dotenv parser로 하나의 owner-preserving atomic replace에서 바뀐다.
+private old-env backup과 owner-only journal은 replace 전에 fsync하고, foreign/non-terminal residue는 deploy,
+capture, rollback을 막는다. rollback 완료 journal도 original env SHA가 아니면 pair mutation을 허용하지 않는다.
+
+단일 적대적 코드 리뷰의 P1 두 건(submodule 재진입, root worktree hook)을 반영했다. focused 71 passed,
+backend 전체 1641 passed(기존 deprecation warning 2건), Ruff 및 strict mypy가 통과했다. 다음 단계는 코드 PR
+merge와 n150 trusted release 설치·secret-free production 실행이다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1E — trusted pinned source-installer 설계, issue #138)
 
 F1D candidate가 source authority로 쓸 tracked Map·PinVi commit object는 n150의 current source cache에
