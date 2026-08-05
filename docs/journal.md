@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1E — production 완료)
+
+PR #140을 n150 trusted Manager release로 설치한 뒤 `install-pinned-sources --confirm`은 source authority
+transaction을 `committed`로 끝냈다. 이 실행은 root-owned exact detached worktree와 canonical source selection만
+수렴했으며 Docker·Compose·DB·runtime·image build를 호출하지 않았다.
+
+첫 실행은 JSON success와 `committed` 상태에도 CLI 공통 process-result의 `returncode`가 빠져 shell 종료 코드
+`1`을 냈다. 후속 PR #141은 Compose service 경계에서 성공 결과에 `returncode: 0`을 명시하고 그 회귀를 고정했다.
+trusted release 갱신 후 같은 product command는 `committed`, `resumed: true`, `returncode: 0`으로 재실행됐으므로
+F1E를 완료한다. 다음 작업은 F1D의 one-shot pinned drift bootstrap이다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1E — trusted pinned source-installer 구현·검증)
 
 `ktdctl pinvi-pair install-pinned-sources --confirm`은 trusted installed Manager root와 root EUID를 먼저
