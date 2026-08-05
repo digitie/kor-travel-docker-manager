@@ -4,7 +4,28 @@
 
 ---
 
-## 2026-08-05 (T-VN-41-F1C — legacy pre-stop diagnostic journal 퇴역 설계)
+## 2026-08-05 (T-VN-41-F1D — pinned compatible-pair drift bootstrap 설계, issue #136)
+
+F2 fresh v2 diagnostic은 writer stop 전 `writers_fencing`에서 Map API/UI, Map Dagster web/daemon,
+PinVi API가 active compatible-pair manifest와 다른 tuple임을 감지해 fail-close했다. 현재 canonical
+source cache의 clean HEAD도 tracked cache-target production pin과 다르므로, 일반 `pinvi-pair deploy`와
+rollback은 모두 의도대로 거부한다. 이 상태에서 raw Docker·Compose·`.env`로 수렴시키지 않는다.
+
+단일 적대적 설계 리뷰의 P1 세 건을 반영해 일반 deploy 예외 대신 one-shot
+`pinvi-pair bootstrap-pinned-drift --confirm` transaction으로 한정한다. source authority는 tracked
+Map·PinVi release pin뿐이며 current runtime이나 `.env` HEAD를 candidate/rollback source로 채택하지
+않는다. candidate·live·old Map/PinVi DB head가 동일한 expected head인 경우에만 runtime을 바꾸고,
+candidate 실패 시 old image rollback 대신 다섯 runtime을 halt한다. 성공 manifest는 active와 rollback을
+동일 candidate로 bootstrap한다.
+
+candidate build 뒤 runtime stop 전 owner-only durable journal에 original manifest SHA, frozen env/Compose
+identity, candidate immutable IDs·source revision, DB head와 phase를 기록한다. non-terminal·foreign·손상
+journal은 다른 pair mutation을 막으며 동일 candidate resume만 허용한다. `.env` source checkout의 장기
+갱신은 별도 trusted source-installer transaction으로 분리한다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1C — legacy pre-stop diagnostic journal 퇴역 완료)
 
 F1B trusted release의 default-off bootstrap과 secret-free contract attestation은 n150에서 성공했다. 이어
 새 UUID로 F2 `cache-target diagnose`를 시작하기 직전, Manager는 Docker·DB·runtime mutation 전에 기존
@@ -16,7 +37,14 @@ version `1` diagnostic journal을 발견하고 fail-close했다. secret-free met
 이라는 단일 제품 경로를 설계했다. command는 root-only state의 exact v1 pre-stop diagnostic 하나만 receipt를
 남기고 퇴역시킨다. post-drain/terminal/v2/suspicious state는 recovery를 추측하지 않고 계속 fail-close한다.
 attempt log, window, manifest, canonical env, Docker runtime, DB는 변경하지 않아 abort budget과 cutover boundary를
-우회하지 않는다. 구현·적대적 리뷰·trusted release 설치 후 이 경로로만 F2를 재개한다.
+우회하지 않는다. PR #135에서 strict parser·receipt-first crash resume·directory fsync 재시도와 CLI
+confirmation 회귀를 보강하고 단일 적대적 리뷰를 통과했다. focused 115 passed, backend 전체 1621 passed,
+Ruff와 strict mypy를 통과한 뒤 trusted release를 n150에 설치했다.
+
+`retire-legacy-diagnostic --confirm --json`은 owner-only receipt를 남기고 성공했으며, 같은 command의
+재실행도 같은 receipt를 반환해 idempotence를 확인했다. 이후 새 v2 diagnostic은 stale v1 state가 아니라
+runtime tuple drift에서 writer stop 전에 fail-close했다. 따라서 F1C는 완료이고 F1D의 Manager-only
+drift bootstrap이 다음 작업이다.
 
 ---
 

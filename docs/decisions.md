@@ -1376,3 +1376,58 @@ CLI `--confirm`이 없으면 process는 어떠한 mutation도 시도하지 않�
 - post-drain crash recovery는 이전처럼 fail-close하므로 일부 runtime이 정지된 채로 방치될 위험을
   "정리" 명목으로 키우지 않는다.
 - operator는 manual file deletion 대신 audit 가능한 Manager 경로 하나를 사용한다.
+
+## ADR-31: pinned compatible-pair drift는 one-shot bootstrap transaction으로만 수렴한다
+
+- 상태: accepted
+- 날짜: 2026-08-05
+- 결정자: human, Codex
+
+### 컨텍스트
+
+F2 fresh diagnostic은 writer fence 전 Map API/UI·Dagster web·Dagster daemon·PinVi API의 실행 image tuple이
+active compatible-pair manifest와 다름을 확인하고 종료했다. 일반 `pinvi-pair deploy`와 rollback은 current
+tuple이 manifest active와 동일할 때만 동작한다. 그 전제를 무시하면 mixed generation을 정상 rollback source로
+오인하게 된다. 또한 canonical source cache의 clean HEAD도 tracked cache-target exact release pin과 달라
+기존 `--build` source authority로 candidate를 만들 수 없다.
+
+### 결정
+
+일반 deploy의 우회 flag를 만들지 않고, production에서 한 번만 쓸
+`ktdctl pinvi-pair bootstrap-pinned-drift --confirm`을 별도 transaction으로 둔다. command는 CLI로 image,
+source revision, arbitrary migration head, force를 받지 않는다. candidate source authority는 코드에 tracked된
+`CACHE_TARGET_PRODUCTION_PINS`이며, clean configured repository가 그 exact commit object를 보유한 경우에만
+해당 Git archive를 일회성 build context로 사용한다. canonical `.env`는 frozen input identity로만 읽고
+수정하지 않으며 그 source HEAD는 candidate authority가 아니다.
+
+mutation 전 C6c global lock, frozen env·raw/resolved Compose·external input identity, strict old manifest와
+retention image evidence, complete/ready current five-runtime drift, secret isolation/UI auth, candidate·live·old
+Map/PinVi DB head equality를 모두 검증한다. head가 하나라도 다르면 이 command는 runtime을 바꾸지 않고 H35
+coupled DB recovery만 허용한다.
+
+candidate build·immutable image attestation 뒤, runtime stop 전에 owner-only durable journal을 fsync한다.
+journal은 original manifest SHA, frozen input digest, candidate five image IDs/source revisions, expected DB heads,
+release pin version과 phase를 보존한다. non-terminal·foreign·손상 journal은 다른 pair mutation을 막고 동일
+candidate의 resume만 허용한다. candidate activation 실패 시 old image를 다시 기동하지 않고 다섯 runtime을
+halt한다. 성공 뒤에만 `active = rollback = candidate`인 bootstrap manifest를 원자 기록한다. old manifest는
+commit 전 recovery evidence일 뿐 새 rollback slot으로 승격하지 않는다.
+
+`.env`가 가리키는 source checkout을 장기적으로 새 release로 바꾸는 일은 trusted source-installer의 별도
+transaction이다. drift bootstrap은 그 값을 암묵적으로 수정하지 않는다.
+
+### 근거
+
+- release pin을 유일한 source authority로 삼으면 stale checkout/current runtime을 승인하지 않는다.
+- old active를 rollback slot으로 옮기지 않으면 완료 뒤 일반 preflight도 새 active와 rollback을 모두
+  release pin으로 증명할 수 있다.
+- Map API의 자동 migration 뒤 old image rollback은 schema-incompatible할 수 있으므로 DB head 불변 gate와
+  halt 정책이 image-only recovery보다 안전하다.
+- durable journal이 없으면 candidate activation과 manifest commit 사이 crash가 새 candidate build로 덮여
+  복구 대상이 사라진다.
+
+### 결과
+
+- n150 F2는 raw Docker·Compose·`.env` 우회 없이 tracked exact immutable pair로 수렴할 수 있다.
+- source checkout 갱신과 runtime drift 복구의 책임이 분리되어 다음 deploy의 provenance failure를 숨기지
+  않는다.
+- normal deploy/rollback의 strict active-manifest precondition은 약화되지 않는다.

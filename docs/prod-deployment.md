@@ -358,3 +358,20 @@ PinVi HTTP shell은 200·`text/html`·비어 있지 않은 body·`/_next/static/
 `Suspense fallback={null}` client page이므로 raw SSR HTML의 `admin-login-form` 존재 여부를 shell
 판정에 사용하지 않는다. route chunk가 없는 generic Next.js fallback은 실패하며, hydration 후 form과
 실제 로그인 동작은 최종 n150 Playwright에서 확인한다.
+
+### 8.1 pinned runtime drift 복구
+
+일반 `ktdctl pinvi-pair deploy`와 `rollback`은 current five-runtime tuple이 active manifest와 같은
+정상 상태만 받는다. 이 전제가 깨졌다면 raw Docker·Compose·`.env` 변경, `--force`, 임의 image/source
+revision으로 복구하지 않는다. 구현 후 사용 가능한 유일한 경로는 다음 one-shot command다.
+
+```bash
+ktdctl pinvi-pair bootstrap-pinned-drift --confirm
+```
+
+이 command는 `CACHE_TARGET_PRODUCTION_PINS`에 tracked된 exact Map·PinVi commit만 Git archive build
+source로 쓰며 `.env`가 가리키는 checkout HEAD는 후보 권한이 아니다. immutable candidate, runtime/secret
+isolation, UI auth, Map·PinVi live/candidate/old DB head, frozen input과 owner-only transaction journal을
+검증한 후에만 다섯 runtime을 staged activation한다. candidate 실패 시 old image를 재기동하지 않고 다섯
+runtime을 중지한다. 성공 manifest의 active와 rollback은 동일 candidate이며, source checkout의 장기
+갱신은 별도 trusted source-installer 작업이다.
