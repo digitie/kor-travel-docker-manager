@@ -1597,3 +1597,34 @@ candidate로 materialize하지 않으므로, Docker·Compose·DB·runtime·manif
 - F1F installer는 명시적으로 퇴역한 legacy state 뒤에만 canonical env와 source authority를 교체한다.
 - 현재 서비스 데이터는 변경하지 않으며, F1D의 destructive runtime transaction은 F1F first-run 검증 뒤에도
   별도 단계로 남는다.
+
+## F1H: writer-drain 전 inert v2 diagnostic은 별도 receipt로만 퇴역한다
+
+### 컨텍스트
+
+n150에서 F1C의 v1 diagnostic을 퇴역한 뒤 시작한 v2 diagnostic은 stale runtime tuple을 발견해
+`writers_fencing`에서 멈췄다. typed journal의 `external_event_count`는 `0`이며 writer-drain lease/receipt와
+writer fence, 역할별 stage receipt, runtime smoke, failure/completion evidence도 없다. 즉 writer stop이나 DB
+side effect가 시작되지 않은 inert state이지만, F1F installer는 non-terminal diagnostic을 정확히 차단한다.
+
+### 결정
+
+production Manager는 `retire-inert-diagnostic --confirm`으로 exact current v2 `prepared` 또는
+`writers_fencing` journal만 퇴역한다. typed reader의 exact schema와 strict scalar type(`version`은 exact `int` 2,
+`started_at_unix`는 `bool`이 아닌 양의 `int`) 검증 뒤 모든 writer/post-stage evidence가
+비어 있고 external event가 `0`일 때만, source version·raw SHA·phase를 담은 전용 receipt를 atomic fsync하고
+source journal을 재검증한 후 unlink한다. companion path는 F1C legacy receipt와 분리한
+`cache-target-diagnostic-inert-retirement-v1.json`이고, source가 없을 때는 이 receipt의 같은 source version/SHA/phase만
+cleanup을 재개한다. writer evidence, stage receipt, runtime smoke, external event, failure/completion evidence, 이후
+phase, 다른 schema, foreign file 또는 receipt conflict는 모두 fail-close한다.
+
+F1G와 동일하게 global lock 아래 frozen canonical env와 raw Compose source bytes/file identity만 동결·재검증한다.
+candidate materialization, Docker/Compose/runtime/DB/manifest/backup/credential 및 일반 mutation gate는 바꾸지
+않는다. 따라서 이 명령은 pre-writer inert journal 하나만 auditably 퇴역할 수 있고, 실제 실행이 시작된
+diagnostic의 recovery/termination을 추측하지 않는다.
+
+### 결과
+
+- F1F input rotation은 안전하지 않은 active diagnostic을 계속 차단하되, stale inert state가 영구 차단기가 되지
+  않는다.
+- raw deletion이나 v2→terminal 변환 없이 final F1D authority를 향한 durable state 경계를 유지한다.
