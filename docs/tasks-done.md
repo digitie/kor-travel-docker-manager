@@ -12,6 +12,22 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+## 2026-08-05 — T-VN-41-F1I F1D fail-close checkpoint 관측성 (issue #136 보강)
+
+- [x] **T-VN-41-F1I — F1D fail-close checkpoint 관측성**
+
+  F1D journal과 CLI는 raw exception·로그·credential을 보존하거나 출력하지 않고, allowlist checkpoint,
+  마지막 실패 checkpoint/UTC 시각, strict integer failure count, halt 상태만 durable하게 남긴다. extended
+  journal reader는 네 diagnostic field가 모두 갖춰진 정확한 shape만 수용하고 기존 production base-v2는
+  `null/null/0`으로 정규화한다. candidate action 직전 checkpoint fsync, failure evidence persistence,
+  persistence 실패 뒤에도 유지되는 `finally` halt, original evidence를 덮지 않는 halt failure를 회귀로
+  고정했다.
+
+  PR #156(문서)과 PR #157(구현)을 병합하고 trusted Manager release를 n150에 설치했다. 동일 frozen
+  candidate의 다음 F1D 실행에서 `prepared.contract.pinvi_smoke`와 failure count `1`을 안전하게 확인했다.
+  마지막 시도만 분리한 결과 login·ETL·provider-sync는 `200`, configured cancel probe만 `404`였으므로,
+  후속 F1J가 Map-owned fixture lifecycle을 구현한다.
+
 ## 2026-08-04 — T-049F durable Map writer-drain (issue #115)
 
 - [x] **T-049F — durable Map writer-drain**

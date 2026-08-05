@@ -1671,3 +1671,43 @@ fail-close한다.
   resume authority를 유지한다.
 - journal 기록 실패와 halt 실패 모두 후보 runtime을 계속 실행하게 만들지 않으며, generic mutation/rotation
   차단도 변하지 않는다.
+
+## F1J: cancel probe는 Map 소유 transaction-scoped fixture lifecycle로 만든다
+
+### 컨텍스트
+
+F1I가 n150의 마지막 F1D attempt를 safe checkpoint로 분리했다. PinVi login, ETL summary, provider-sync는
+모두 성공했지만 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`를 이용한 cancel probe만 `404`였다. Manager는 UUID의
+문법을 검증하고 PinVi relay에 전달할 뿐, 그 UUID에 대응하는 Map `import_job`·cancellation attempt를
+생성하거나 정리하지 않는다. 따라서 같은 frozen candidate를 재시도해도 real cancellation contract가 생기지
+않고, `409/502/503`을 모두 success로 수용하는 기존 smoke는 Dagster outage를 false-green으로 만들 수 있다.
+
+### 결정
+
+Map API가 fixture lifecycle의 유일한 owner다. Map migration은 `ops.c6c_cancel_probe_fixtures`를 추가하여 F1D
+durable transaction ID와 Map-generated `job_id`, lifecycle state(`armed`, `consumed`, `finalized`), canonical
+cancellation identity·UTC를 FK, unique key, exact `CHECK`로 결박한다. Map은 dedicated `ops:fixture` principal만
+받는 internal `ensure`, `read`, `finalize` lifecycle API를 제공한다. Map startup hook, Manager direct DB,
+`docker exec`, generic job API 또는 static fixture UUID로 이 record를 만들지 않는다.
+
+Manager는 candidate Map migration·authenticated readiness 뒤 PinVi smoke 전에 `ensure`를 호출해 dynamic job ID를
+durable receipt에 기록한다. `armed`일 때만 PinVi의 현행 normal cancel relay를 한 번 호출한다. normal Map
+cancellation path는 fixture record를 원자적으로 `consumed`로 바꾸고 canonical
+`409 PIPELINE_CANCELLATION_UNSAFE` detail을 남긴다. Manager는 이 single response와 root ID만 성공으로
+인정하고, response가 유실된 crash recovery에서는 Map lifecycle state를 읽어 same transaction POST를
+재전송하지 않는다. exact response가 검증된 뒤 Map `finalize`만 fixture job을 terminal로 정리하며 cancellation
+attempt, member, `cancellation_id`와 receipt는 삭제하지 않는다.
+
+이 lifecycle capability generation은 Map release artifact와 compatible-pair pinset의 required field다. Manager는
+Map candidate에 그 endpoint/generation이 없거나 PinVi metadata·Map artifact·pinset이 서로 다르면 mutation 전에
+fail-close한다. 따라서 이전 image fallback으로 endpoint 부재를 숨기지 않는다. PinVi에는 fixture token이나
+생성 endpoint를 주지 않으며 existing relay의 structured error preservation만 회귀로 확인한다.
+
+### 결과
+
+- F1D가 존재하지 않는 execution을 취소해 `404`가 되는 상태와 Dagster outage를 success로 오인하는 상태를
+  동시에 제거한다.
+- fixture UUID와 lifecycle row는 Map에만 있고, Manager journal은 안전한 transaction/job identity와 검증
+  receipt만 보관한다. 재시작·response-loss·finalize 중단도 각 상태를 명시적으로 재개하거나 fail-close한다.
+- Map schema/API 변경은 F1J-A, pair provenance 재결박은 F1J-C, Manager orchestration은 F1J-B로 분리해
+  독립 리뷰·검증 가능하게 한다.
