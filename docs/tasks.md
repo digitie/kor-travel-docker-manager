@@ -898,9 +898,10 @@ canonical source cache와 tracked exact production pin이 모두 달라 일반 d
       `.env` HEAD나 CLI revision이 아니라 `CACHE_TARGET_PRODUCTION_PINS`의 exact Map·PinVi revision만
       archive build source로 사용한다.
 - [x] C6c lock, frozen env/Compose/external input identity, strict old manifest·local image evidence,
-      complete/ready current five-runtime drift, runtime secret isolation·UI auth, candidate/live Map·PinVi DB head
-      불변을 mutation 전에 검증한다. old image는 재기동하지 않는 기존 감사 근거이므로 static head drift는
-      bootstrap을 막지 않으며, candidate/live head가 다를 때만 H35 coupled recovery 외에는 거부한다.
+      complete/ready current five-runtime, runtime secret isolation·UI auth, candidate/live Map·PinVi DB head
+      불변을 mutation 전에 검증한다. legacy runtime은 active와 완전히 같은 다섯 image tuple인지로만 판별하며
+      Map runtime 내부 source revision 또는 old image static head drift는 bootstrap을 막지 않는다. candidate/live
+      head가 다를 때만 H35 coupled recovery 외에는 거부한다.
 - [x] owner-only durable journal에 original manifest SHA, frozen input digest, candidate immutable IDs·
       source revision, expected DB head와 `prepared → runtime_activated → manifest_committing → committed` phase를
       기록한다. non-terminal·foreign·손상 journal은 모든 pair mutation을 막고 동일 candidate resume만 허용한다.

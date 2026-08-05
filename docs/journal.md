@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1D — legacy runtime tuple gate 정정)
+
+candidate/live DB head gate를 정정한 trusted release의 다음 product preflight는 기존 Map UI와 Map API의 source
+revision이 다르다는 evidence에서 mutation 없이 종료했다. F1D의 목적은 바로 이 legacy runtime drift를 candidate로
+수렴하는 것이므로, 일반 deploy의 current-pair provenance 검증을 시작 조건으로 재사용한 것은 과도했다.
+
+후속 수정은 시작 runtime이 manifest active와 완전히 같은 다섯 immutable image ID인지로만 이미 수렴한 상태를
+판별한다. 시작 Map service의 source revision은 읽지 않으며, old image·manifest는 새 rollback source로 채택하지
+않는다. candidate provenance, secret/UI, candidate/live DB head, durable journal, activation 뒤 halt 정책은 그대로
+유지한다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1D — legacy old-image head gate 정정)
 
 병합한 F1D trusted release의 첫 product preflight는 old active Map API image head와 live DB head가 다르다는
