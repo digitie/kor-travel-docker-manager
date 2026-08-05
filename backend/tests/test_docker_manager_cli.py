@@ -480,7 +480,7 @@ def test_cli_dispatches_confirmed_pinned_drift_bootstrap(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_pinned_drift_bootstrap_returns_halt_state_as_secret_free_json(
+def test_cli_pinned_drift_bootstrap_returns_halt_state_as_safe_json(
     mock_compose_service,
     capsys,
 ):
@@ -490,7 +490,13 @@ def test_cli_pinned_drift_bootstrap_returns_halt_state_as_secret_free_json(
             recovery_attempted=True,
             recovery_succeeded=False,
             recovery_error="halted_requires_operator",
-            restoration={"state": "halted_requires_operator", "command": ["redacted"]},
+            restoration={
+                "state": "halted_requires_operator",
+                "command": ["redacted"],
+                "failure_checkpoint": "prepared.contract.ui_auth",
+                "failure_count": 2,
+                "failure_evidence_persisted": True,
+            },
         )
     )
 
@@ -509,6 +515,9 @@ def test_cli_pinned_drift_bootstrap_returns_halt_state_as_secret_free_json(
         "recovery_attempted": True,
         "recovery_succeeded": False,
         "recovery_error": "halted_requires_operator",
+        "failure_checkpoint": "prepared.contract.ui_auth",
+        "failure_count": 2,
+        "failure_evidence_persisted": True,
     }
 
 

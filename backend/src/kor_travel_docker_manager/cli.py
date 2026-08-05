@@ -20,6 +20,9 @@ from kor_travel_docker_manager.services.compose_service import (
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
+from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
+    PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS,
+)
 from kor_travel_docker_manager.services.registry import list_targets
 
 _TRUSTED_ROOT_LAUNCHER_ENV = "KTDM_TRUSTED_ROOT_LAUNCHER"
@@ -173,6 +176,19 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             return 1
         restoration = exc.restoration or {}
         state = str(restoration.get("state", "halt_failed_requires_operator"))
+        checkpoint_value = restoration.get("failure_checkpoint")
+        failure_checkpoint = (
+            checkpoint_value
+            if isinstance(checkpoint_value, str)
+            and checkpoint_value in PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS
+            else None
+        )
+        failure_count_value = restoration.get("failure_count")
+        failure_count = (
+            failure_count_value
+            if type(failure_count_value) is int and failure_count_value >= 0
+            else 0
+        )
         result = {
             "success": False,
             "returncode": 1,
@@ -186,6 +202,11 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             "recovery_attempted": exc.recovery_attempted,
             "recovery_succeeded": exc.recovery_succeeded,
             "recovery_error": exc.recovery_error,
+            "failure_checkpoint": failure_checkpoint,
+            "failure_count": failure_count,
+            "failure_evidence_persisted": bool(
+                restoration.get("failure_evidence_persisted", False)
+            ),
         }
         return _emit_process_result(result, json_output=args.json)
     except DeploymentContractError as exc:

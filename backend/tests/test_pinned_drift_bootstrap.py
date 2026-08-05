@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from contextlib import nullcontext
 from hashlib import sha256
@@ -28,6 +29,8 @@ from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     assert_pinned_drift_bootstrap_inputs,
     prepare_pinned_drift_bootstrap,
     read_pinned_drift_bootstrap,
+    record_pinned_drift_bootstrap_attempt,
+    record_pinned_drift_bootstrap_failure,
     transition_pinned_drift_bootstrap,
     write_pinned_drift_bootstrap,
 )
@@ -244,7 +247,7 @@ def test_manifest_commit_crash_resumes_from_candidate_only_manifest(
     monkeypatch.setattr(compose_service_module, "ensure_pair_references", Mock())
     monkeypatch.setattr(
         service,
-        "_verify_pinned_drift_candidate_or_halt",
+        "_verify_pinned_drift_candidate",
         Mock(return_value={"verified": True}),
     )
     monkeypatch.setattr(
@@ -268,22 +271,16 @@ def test_manifest_commit_crash_resumes_from_candidate_only_manifest(
     assert writes[-1].phase == "committed"
 
 
-def test_runtime_reverification_failure_halts_without_old_pair_recovery(
+def test_runtime_reverification_failure_bubbles_to_bootstrap_fail_close_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
-    result = {"success": True, "returncode": 0, "stderr": "", "stages": []}
     verification = Mock(side_effect=DeploymentContractError("verification failed"))
-    halt = Mock(return_value={"success": True, "state": "halted_requires_operator"})
-    old_recovery = Mock()
 
     monkeypatch.setattr(service, "_verify_active_contract", verification)
-    monkeypatch.setattr(service, "_halt_c6c_pair", halt)
-    monkeypatch.setattr(service, "_recover_previous_pair", old_recovery)
 
-    with pytest.raises(ComposePostMutationContractError) as caught:
-        service._verify_pinned_drift_candidate_or_halt(
-            result=result,
+    with pytest.raises(DeploymentContractError, match="verification failed"):
+        service._verify_pinned_drift_candidate(
             config=SimpleNamespace(),
             candidate=_pair("c"),
             services=["kor-travel-map-api", "pinvi-api"],
@@ -293,14 +290,153 @@ def test_runtime_reverification_failure_halts_without_old_pair_recovery(
                 "map_dagster": "abc123",
                 "pinvi": "20260802_0048",
             },
+            checkpoint_recorder=Mock(),
+        )
+
+
+def test_runtime_reverification_prefixes_contract_checkpoint_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    checkpoints: list[str] = []
+
+    def verify(*_args, checkpoint_recorder, **_kwargs):
+        checkpoint_recorder("services_ready")
+        return {"verified": True}
+
+    monkeypatch.setattr(service, "_verify_active_contract", verify)
+    monkeypatch.setattr(service, "_assert_pinned_drift_database_heads", Mock())
+
+    assert service._verify_pinned_drift_candidate(
+        config=SimpleNamespace(),
+        candidate=_pair("c"),
+        services=["kor-travel-map-api", "pinvi-api"],
+        transaction=SimpleNamespace(),
+        expected_database_heads={
+            "map_application": "0078_cache_target_gc_observe",
+            "map_dagster": "abc123",
+            "pinvi": "20260802_0048",
+        },
+        checkpoint_recorder=checkpoints.append,
+    ) == {"verified": True}
+    assert checkpoints == ["contract.services_ready", "database_heads"]
+
+
+def test_pinned_drift_failure_evidence_preserves_prior_failure_on_retry() -> None:
+    journal = record_pinned_drift_bootstrap_attempt(_journal(), "prepared.stop_pair")
+    failed = record_pinned_drift_bootstrap_failure(journal, "prepared.stop_pair")
+    retried = record_pinned_drift_bootstrap_attempt(failed, "prepared.map_api_up")
+
+    assert retried.attempt_checkpoint == "prepared.map_api_up"
+    assert retried.last_failure_checkpoint == "prepared.stop_pair"
+    assert retried.last_failed_at == failed.last_failed_at
+    assert retried.failure_count == 1
+
+
+def test_pinned_drift_journal_reads_exact_base_v2_shape_and_rewrites_extended_shape(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "pinned-drift-bootstrap-v2.json"
+    write_pinned_drift_bootstrap(journal_path, _journal())
+    payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    for key in (
+        "attempt_checkpoint",
+        "last_failure_checkpoint",
+        "last_failed_at",
+        "failure_count",
+    ):
+        del payload[key]
+    journal_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    legacy = read_pinned_drift_bootstrap(journal_path)
+
+    assert legacy is not None
+    assert legacy.attempt_checkpoint is None
+    assert legacy.last_failure_checkpoint is None
+    assert legacy.last_failed_at is None
+    assert legacy.failure_count == 0
+
+    write_pinned_drift_bootstrap(
+        journal_path,
+        record_pinned_drift_bootstrap_attempt(legacy, "prepared.stop_pair"),
+    )
+    rewritten = json.loads(journal_path.read_text(encoding="utf-8"))
+    assert rewritten["attempt_checkpoint"] == "prepared.stop_pair"
+    assert rewritten["last_failure_checkpoint"] is None
+    assert rewritten["failure_count"] == 0
+
+
+def test_pinned_drift_failure_evidence_requires_complete_typed_triplet(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "pinned-drift-bootstrap-v2.json"
+    write_pinned_drift_bootstrap(journal_path, _journal())
+    payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    payload["failure_count"] = True
+    journal_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError, match="failure evidence"):
+        read_pinned_drift_bootstrap(journal_path)
+
+
+def test_fresh_pre_mutation_checkpoint_failure_does_not_halt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = ComposeService()
+    tracker = compose_service_module._PinnedDriftCheckpointTracker(
+        journal_path=tmp_path / "pinned-drift-bootstrap-v2.json",
+        journal=_journal(),
+        fresh_journal=True,
+        current_checkpoint="prepared.stop_pair",
+    )
+    halt = Mock()
+    monkeypatch.setattr(service, "_halt_c6c_pair", halt)
+
+    with pytest.raises(DeploymentContractError, match="before runtime mutation"):
+        service._raise_pinned_drift_bootstrap_failure(
+            result={"success": True, "returncode": 0, "stderr": ""},
+            config=SimpleNamespace(),
+            transaction=SimpleNamespace(),
+            error=DeploymentContractError("journal write failed"),
+            checkpoint_tracker=tracker,
+        )
+
+    halt.assert_not_called()
+
+
+def test_post_mutation_failure_halts_when_failure_evidence_cannot_persist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = ComposeService()
+    tracker = compose_service_module._PinnedDriftCheckpointTracker(
+        journal_path=tmp_path / "pinned-drift-bootstrap-v2.json",
+        journal=_journal(),
+        fresh_journal=False,
+        current_checkpoint="prepared.contract.ui_auth",
+    )
+    halt = Mock(return_value={"success": True, "state": "halted_requires_operator"})
+    monkeypatch.setattr(tracker, "persist_failure", Mock(side_effect=OSError("fsync failed")))
+    monkeypatch.setattr(service, "_halt_c6c_pair", halt)
+
+    with pytest.raises(ComposePostMutationContractError) as caught:
+        service._raise_pinned_drift_bootstrap_failure(
+            result={"success": True, "returncode": 0, "stderr": ""},
+            config=SimpleNamespace(),
+            transaction=SimpleNamespace(),
+            error=DeploymentContractError("candidate verification failed"),
+            checkpoint_tracker=tracker,
         )
 
     assert caught.value.restoration == {
         "success": True,
         "state": "halted_requires_operator",
+        "failure_checkpoint": "prepared.contract.ui_auth",
+        "failure_count": 0,
+        "failure_evidence_persisted": False,
     }
     halt.assert_called_once()
-    old_recovery.assert_not_called()
 
 
 def test_pinned_drift_candidate_head_mismatch_blocks_before_runtime_mutation(

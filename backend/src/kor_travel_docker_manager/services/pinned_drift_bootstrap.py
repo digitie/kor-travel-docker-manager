@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     CompatibleImagePair,
@@ -39,6 +39,50 @@ _PHASES = frozenset(
     {"prepared", "runtime_activated", "manifest_committing", "committed"}
 )
 _DATABASE_ROLES = frozenset({"map_application", "map_dagster", "pinvi"})
+_MAX_FAILURE_COUNT = 1_000_000
+PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS = frozenset(
+    {
+        "prepared.stop_pair",
+        "prepared.map_api_up",
+        "prepared.map_api_provenance",
+        "prepared.map_smoke",
+        "prepared.map_runtime_dependents_up",
+        "prepared.map_runtime_provenance",
+        "prepared.pinvi_api_up",
+        "prepared.pinvi_api_provenance",
+        "prepared.contract.services_ready",
+        "prepared.contract.resolved_compose",
+        "prepared.contract.image_provenance",
+        "prepared.contract.map_smoke",
+        "prepared.contract.pinvi_smoke",
+        "prepared.contract.ui_auth",
+        "prepared.contract.runtime_isolation",
+        "prepared.contract.map_env_migration",
+        "prepared.database_heads",
+        "prepared.runtime_activated_journal",
+        "runtime_activated.contract.services_ready",
+        "runtime_activated.contract.resolved_compose",
+        "runtime_activated.contract.image_provenance",
+        "runtime_activated.contract.map_smoke",
+        "runtime_activated.contract.pinvi_smoke",
+        "runtime_activated.contract.ui_auth",
+        "runtime_activated.contract.runtime_isolation",
+        "runtime_activated.contract.map_env_migration",
+        "runtime_activated.database_heads",
+        "runtime_activated.manifest_committing_journal",
+        "manifest_committing.contract.services_ready",
+        "manifest_committing.contract.resolved_compose",
+        "manifest_committing.contract.image_provenance",
+        "manifest_committing.contract.map_smoke",
+        "manifest_committing.contract.pinvi_smoke",
+        "manifest_committing.contract.ui_auth",
+        "manifest_committing.contract.runtime_isolation",
+        "manifest_committing.contract.map_env_migration",
+        "manifest_committing.database_heads",
+        "manifest_committing.manifest_write",
+        "manifest_committing.committed_journal",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +106,10 @@ class PinnedDriftBootstrapJournal:
     runtime_activated_at: str | None
     manifest_committing_at: str | None
     committed_at: str | None
+    attempt_checkpoint: str | None = None
+    last_failure_checkpoint: str | None = None
+    last_failed_at: str | None = None
+    failure_count: int = 0
 
 
 def pinned_drift_bootstrap_journal_path(
@@ -276,6 +324,40 @@ def transition_pinned_drift_bootstrap(
         updated = replace(journal, phase=phase, committed_at=_now())
     else:
         raise DeploymentContractError("pinned drift bootstrap journal transition is invalid")
+    _validate_journal(updated)
+    return updated
+
+
+def record_pinned_drift_bootstrap_attempt(
+    journal: PinnedDriftBootstrapJournal,
+    checkpoint: str,
+) -> PinnedDriftBootstrapJournal:
+    """side effect 전 closed checkpoint를 durable journal에 기록할 값을 만든다."""
+
+    _validate_journal(journal)
+    _validate_checkpoint(checkpoint)
+    updated = replace(journal, attempt_checkpoint=checkpoint)
+    _validate_journal(updated)
+    return updated
+
+
+def record_pinned_drift_bootstrap_failure(
+    journal: PinnedDriftBootstrapJournal,
+    checkpoint: str,
+) -> PinnedDriftBootstrapJournal:
+    """비밀값 없는 failure evidence를 현재 checkpoint에 결박한다."""
+
+    _validate_journal(journal)
+    _validate_checkpoint(checkpoint)
+    if journal.failure_count >= _MAX_FAILURE_COUNT:
+        raise DeploymentContractError("pinned drift bootstrap failure count is exhausted")
+    updated = replace(
+        journal,
+        attempt_checkpoint=checkpoint,
+        last_failure_checkpoint=checkpoint,
+        last_failed_at=_now(),
+        failure_count=journal.failure_count + 1,
+    )
     _validate_journal(updated)
     return updated
 
@@ -495,7 +577,7 @@ def _parse_legacy_v1_payload(raw: bytes) -> Mapping[str, object]:
 
 
 def _journal_from_payload(payload: object) -> PinnedDriftBootstrapJournal:
-    keys = {
+    base_keys = {
         "version",
         "phase",
         "transaction_id",
@@ -514,7 +596,25 @@ def _journal_from_payload(payload: object) -> PinnedDriftBootstrapJournal:
         "manifest_committing_at",
         "committed_at",
     }
-    if not isinstance(payload, Mapping) or set(payload) != keys:
+    diagnostic_keys = {
+        "attempt_checkpoint",
+        "last_failure_checkpoint",
+        "last_failed_at",
+        "failure_count",
+    }
+    if not isinstance(payload, Mapping):
+        raise DeploymentContractError("pinned drift bootstrap journal shape is invalid")
+    keys = set(payload)
+    if keys == base_keys:
+        diagnostics: Mapping[str, object] = {
+            "attempt_checkpoint": None,
+            "last_failure_checkpoint": None,
+            "last_failed_at": None,
+            "failure_count": 0,
+        }
+    elif keys == base_keys | diagnostic_keys:
+        diagnostics = payload
+    else:
         raise DeploymentContractError("pinned drift bootstrap journal shape is invalid")
     return PinnedDriftBootstrapJournal(
         version=payload["version"],
@@ -534,6 +634,12 @@ def _journal_from_payload(payload: object) -> PinnedDriftBootstrapJournal:
         runtime_activated_at=payload["runtime_activated_at"],
         manifest_committing_at=payload["manifest_committing_at"],
         committed_at=payload["committed_at"],
+        attempt_checkpoint=cast(str | None, diagnostics["attempt_checkpoint"]),
+        last_failure_checkpoint=cast(
+            str | None, diagnostics["last_failure_checkpoint"]
+        ),
+        last_failed_at=cast(str | None, diagnostics["last_failed_at"]),
+        failure_count=cast(int, diagnostics["failure_count"]),
     )
 
 
@@ -568,6 +674,23 @@ def _validate_journal(journal: PinnedDriftBootstrapJournal) -> None:
         or not _valid_database_heads(journal.database_heads)
     ):
         raise DeploymentContractError("pinned drift bootstrap journal contract is invalid")
+    if journal.attempt_checkpoint is not None:
+        _validate_checkpoint(journal.attempt_checkpoint)
+    failure_is_empty = (
+        journal.last_failure_checkpoint is None
+        and journal.last_failed_at is None
+        and type(journal.failure_count) is int
+        and journal.failure_count == 0
+    )
+    failure_is_complete = (
+        isinstance(journal.last_failure_checkpoint, str)
+        and journal.last_failure_checkpoint in PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS
+        and _timestamp(journal.last_failed_at)
+        and type(journal.failure_count) is int
+        and 0 < journal.failure_count <= _MAX_FAILURE_COUNT
+    )
+    if not (failure_is_empty or failure_is_complete):
+        raise DeploymentContractError("pinned drift bootstrap failure evidence is invalid")
     for pair in (journal.old_active, journal.old_rollback, journal.candidate):
         try:
             compatible_pair_manifest_logical_hash(initial_pair_manifest(pair))
@@ -611,6 +734,14 @@ def _valid_database_heads(heads: Mapping[str, str]) -> bool:
             for head in heads.values()
         )
     )
+
+
+def _validate_checkpoint(checkpoint: object) -> None:
+    if (
+        not isinstance(checkpoint, str)
+        or checkpoint not in PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS
+    ):
+        raise DeploymentContractError("pinned drift bootstrap checkpoint is invalid")
 
 
 def _canonical_uuid(value: object) -> bool:
