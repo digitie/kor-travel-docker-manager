@@ -34,6 +34,7 @@
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
 | **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
 | **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
+| **T-VN-41-F1I** | F1D fail-close checkpoint 관측성 | `[ ]` | - | fail-close 원인을 비밀값 없이 durable journal·CLI에 결박하여 same-candidate 재개를 판단 |
 | **T-VN-41-F1H** | inert v2 diagnostic journal의 Manager 소유 퇴역 | `[/]` | - | writer drain 전 exact v2 state만 receipt-first로 퇴역해 F1F input rotation을 재개 |
 
 ---
@@ -985,8 +986,24 @@ canonical source cache와 tracked exact production pin이 모두 달라 일반 d
 - [x] 단일 적대적 리뷰의 F1E committed source evidence, manifest/journal crash resume, old·live·candidate
       Map/PinVi head, halt 수렴, terminal frozen evidence, CLI failure result 지적을 보강했다. focused 85 passed,
       backend 전체 1655 passed, Ruff, 변경 source strict mypy를 통과했다.
-- [ ] F1F-A/B와 v2 input install 코드 merge를 완료했다. 다음으로 n150 trusted release로 설치하고 destructive live
-      bootstrap·idempotent 재실행·admin UI E2E를 완료한 뒤 issue #136을 닫는다.
+- [x] F1F-A/B와 v2 input install 코드를 n150 trusted release로 설치하고 installer first-run/idempotent rerun을
+      검증했다. F1D destructive bootstrap은 동일 frozen candidate로 두 차례 `prepared` 단계에서 fail-close했고,
+      manifest는 바꾸지 않고 five-runtime을 halt했다.
+- [ ] **F1I (issue #136 보강)** — post-mutation fail-close가 raw exception·로그·credential을 내보내지 않으면서도
+      조작자가 반복 실패 지점을 구별할 수 있게 한다. journal에는 allowlist checkpoint, 마지막 실패 checkpoint/UTC
+      시각, exact integer failure count만 저장하고 CLI JSON에는 그 값과 halt 상태만 낸다. 현재 n150의 base v2
+      journal은 strict legacy shape로 읽어 null/0으로 normalize하고, 새 extended v2 shape는 네 diagnostic field가
+      모두 있는 경우만 엄격히 수용한다. 따라서 same-pinset frozen candidate resume을 차단하지 않는다.
+- [ ] candidate action 직전에는 checkpoint를 atomic fsync하고, 실패 catch는 root checkpoint evidence를 halt 전에
+      persist한다. persist 자체가 실패해도 `finally` 성격의 halt는 반드시 실행하며, halt failure가 원래 activation
+      checkpoint를 덮어쓰지 않는다. 이 checkpoint는 phase resume cursor가 아니므로 F1D 재실행은 항상 기존 phase의
+      full activation/verification을 수행한다. exception→CLI는 `result`가 아닌 safe enum 전용 경계로 전달한다.
+      이 process가 새 `prepared` journal을 fsync한 직후의 `stop_pair` 전 최초 checkpoint 실패만 pre-mutation
+      error로 끝내고, 이미 존재한 base/extended v2 journal 또는 그 호출 시작 뒤의 checkpoint/실패 evidence
+      persistence 실패는 반드시 halt한다. generic pair mutation·input rotation은 nonterminal journal 동안 계속
+      거부한다.
+- [ ] F1I trusted release 설치 뒤 같은 F1D command의 same-candidate resume 결과를 확인하고, 성공 시 idempotent
+      rerun·n150 admin UI E2E를 완료한 뒤 issue #136을 닫는다.
 
 ### T-VN-41-F1G: legacy terminal window journal 퇴역
 
