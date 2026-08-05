@@ -893,16 +893,21 @@ F2가 확인한 drift는 일반 `pinvi-pair deploy`가 고의로 거부한다. a
 canonical source cache와 tracked exact production pin이 모두 달라 일반 deploy/rollback이나 raw Docker·
 `.env` 우회로는 안전하게 수렴할 수 없다.
 
-- [ ] F1E trusted source-installer가 root-owned detached exact source selection을 commit한 뒤에만 시작한다.
-- [ ] 단발성 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm` transaction을 추가한다. candidate는
+- [x] F1E trusted source-installer가 root-owned detached exact source selection을 commit한 뒤에만 시작한다.
+- [x] 단발성 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm` transaction을 추가했다. candidate는
       `.env` HEAD나 CLI revision이 아니라 `CACHE_TARGET_PRODUCTION_PINS`의 exact Map·PinVi revision만
       archive build source로 사용한다.
-- [ ] C6c lock, frozen env/Compose/external input identity, strict old manifest·local image evidence,
+- [x] C6c lock, frozen env/Compose/external input identity, strict old manifest·local image evidence,
       complete/ready current five-runtime drift, runtime secret isolation·UI auth, candidate/live/old Map·PinVi
       DB head 불변을 mutation 전에 모두 검증한다. DB head가 다르면 H35 coupled recovery 외에는 거부한다.
-- [ ] owner-only durable journal에 original manifest SHA, frozen input digest, candidate immutable IDs·
-      source revision, expected DB head와 phase를 기록한다. non-terminal·foreign·손상 journal은 모든
-      pair mutation을 막고 동일 candidate resume만 허용한다.
-- [ ] candidate activation은 기존 staged sequence를 재사용하되 실패 시 구 image를 재기동하지 않고
+- [x] owner-only durable journal에 original manifest SHA, frozen input digest, candidate immutable IDs·
+      source revision, expected DB head와 `prepared → runtime_activated → manifest_committing → committed` phase를
+      기록한다. non-terminal·foreign·손상 journal은 모든 pair mutation을 막고 동일 candidate resume만 허용한다.
+- [x] candidate activation은 기존 staged sequence를 재사용하되 실패 시 구 image를 재기동하지 않고
       다섯 runtime을 halt한다. 성공 후에만 `active = rollback = candidate` bootstrap manifest를 원자
       기록한다. source checkout의 장기 갱신은 이 transaction과 분리한다.
+- [x] 단일 적대적 리뷰의 F1E committed source evidence, manifest/journal crash resume, old·live·candidate
+      Map/PinVi head, halt 수렴, terminal frozen evidence, CLI failure result 지적을 보강했다. focused 85 passed,
+      backend 전체 1655 passed, Ruff, 변경 source strict mypy를 통과했다.
+- [ ] PR merge 뒤 n150 trusted release로 설치하고 destructive live bootstrap·idempotent 재실행·admin UI E2E를
+      완료한 뒤 issue #136을 닫는다.

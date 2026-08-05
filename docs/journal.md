@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1D — durable bootstrap 구현 중)
+
+F1E terminal source selection 뒤에만 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm`이 candidate를
+빌드한다. 이 command는 stale runtime과 old manifest를 rollback source로 승격하지 않으며, tracked release
+pin의 clean build provenance·immutable image provenance와 current Map/PinVi database head의 static candidate
+Alembic head를 mutation 전에 일치시킨다.
+
+owner-only `pinned-drift-bootstrap-v1.json`은 frozen env/Compose digest, old manifest SHA와 pair, candidate
+immutable IDs/source revisions, 세 database head를 `prepared → runtime_activated → manifest_committing → committed`로
+fsync한다. `manifest_committing` intent는 manifest fsync와 terminal journal 기록 사이 crash에서도 old/candidate-only
+manifest를 구분해 같은 candidate로 수렴하게 한다. non-terminal journal은 일반 deploy/capture/rollback을 차단하고,
+F1D만 동일 candidate로 재개한다. candidate activation·재검증·DB head 검증이 실패하면 old image rollback 대신
+protected Map 네 runtime과 PinVi API를 halt한다. 단일 적대적 코드 리뷰의 F1E committed source evidence,
+manifest/journal crash resume, old·live·candidate DB head, halt 수렴, terminal frozen input, CLI 출력 계약 지적을
+보강했다. focused 85 passed, backend 전체 1655 passed, Ruff와 변경 source strict mypy를 통과했다. 다음 단계는
+PR merge 뒤 trusted release 설치와 destructive live bootstrap·idempotent 재실행·admin UI E2E다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1E — production 완료)
 
 PR #140을 n150 trusted Manager release로 설치한 뒤 `install-pinned-sources --confirm`은 source authority

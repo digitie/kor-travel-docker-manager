@@ -18,7 +18,7 @@ from importlib.metadata import version as _package_version
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 import yaml
 from dotenv import dotenv_values
@@ -217,8 +217,19 @@ from kor_travel_docker_manager.services.cache_target_writer_fence import (
     attest_cache_target_global_writer_fence,
     cache_target_writer_environments_from_resolved_compose,
 )
+from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
+    PinnedDriftBootstrapJournal,
+    assert_pinned_drift_bootstrap_allows_pair_mutation,
+    assert_pinned_drift_bootstrap_frozen_inputs,
+    pinned_drift_bootstrap_journal_path,
+    prepare_pinned_drift_bootstrap,
+    read_pinned_drift_bootstrap,
+    transition_pinned_drift_bootstrap,
+    write_pinned_drift_bootstrap,
+)
 from kor_travel_docker_manager.services.pinned_source_install import (
     assert_pinned_source_installation_allows_pair_mutation,
+    require_committed_pinned_source_installation,
 )
 from kor_travel_docker_manager.services.pinned_source_install import (
     install_pinned_sources as install_trusted_pinned_sources,
@@ -3754,6 +3765,467 @@ class ComposeService:
             )
             return {**result, "returncode": 0 if result.get("success") else 1}
 
+    def bootstrap_pinned_drift(self) -> dict[str, Any]:
+        """F1D: tracked release pin으로만 production pair drift를 한 번 수렴한다.
+
+        일반 deploy와 달리 현재 runtime/old manifest를 rollback source로 취급하지
+        않는다. candidate가 활성화 단계에서 실패하면 같은 candidate만 durable
+        journal에 남기고 다섯 protected runtime을 halt한다.
+        """
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked(
+                derive_manifest_path=True,
+            )
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production:
+                raise DeploymentContractError(
+                    "pinned drift bootstrap is available only in production mode"
+                )
+            require_committed_pinned_source_installation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+            )
+            _require_cache_target_release(config)
+            manifest_path_text = transaction.manifest_path
+            if manifest_path_text is None:
+                raise DeploymentContractError(
+                    "pinned drift bootstrap has no compatible-pair manifest path"
+                )
+            manifest_path = Path(manifest_path_text)
+            journal_path = pinned_drift_bootstrap_journal_path(
+                transaction.environment.effective
+            )
+            journal = read_pinned_drift_bootstrap(journal_path, allow_missing=True)
+
+            if journal is not None and journal.phase == "committed":
+                return self._validate_committed_pinned_drift_bootstrap(
+                    journal=journal,
+                    transaction=transaction,
+                    config=config,
+                    manifest_path=manifest_path,
+                )
+
+            manifest = load_pair_manifest(manifest_path_text)
+            manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            database_heads = self._pinned_drift_database_heads(transaction)
+            services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+            manifest_state: Literal["old", "candidate"]
+
+            if journal is None:
+                for pair in (manifest.active, manifest.rollback):
+                    self._require_pair_image_provenance(pair)
+                self._assert_pinned_drift_old_database_heads(
+                    manifest.active,
+                    database_heads,
+                )
+                self._validate_resolved_compose_contract(config, transaction=transaction)
+                self._require_services_ready(services, transaction=transaction)
+                current_pair = self._inspect_current_pair(config)
+                if self._pair_matches(current_pair, manifest.active):
+                    raise DeploymentContractError(
+                        "pinned drift bootstrap requires a runtime tuple that differs from manifest active"
+                    )
+                runtime_configs = self._inspect_c6c_runtime_configs(
+                    config,
+                    services,
+                    transaction=transaction,
+                )
+                validate_runtime_secret_isolation(runtime_configs, config)
+                preflight_ui_smoke = run_map_ui_auth_preflight(config)
+                build_provenance = _derive_c6c_build_provenance(
+                    transaction.environment.effective,
+                    compose_path=transaction.environment.compose_path,
+                )
+                _require_cache_target_release(
+                    config,
+                    candidate_map_source_revision=build_provenance.map_source_revision,
+                    candidate_source_revision=build_provenance.pinvi_source_revision,
+                )
+                candidate, prebuild_result = self._prepare_c6c_candidate_pair(
+                    config,
+                    build=True,
+                    build_provenance=build_provenance,
+                    transaction=transaction,
+                )
+                self._assert_pinned_drift_candidate_database_heads(
+                    candidate,
+                    database_heads,
+                )
+                ensure_pair_references(
+                    (manifest.active, manifest.rollback, candidate),
+                    cwd=get_project_root(),
+                )
+                journal = prepare_pinned_drift_bootstrap(
+                    production_pin_version=CACHE_TARGET_PRODUCTION_PINS.version,
+                    environment_sha256=hashlib.sha256(
+                        transaction.environment.env_file_bytes
+                    ).hexdigest(),
+                    compose_sha256=hashlib.sha256(transaction.compose_source_bytes).hexdigest(),
+                    resolved_compose_sha256=transaction.resolved_document_hash,
+                    old_manifest_sha256=manifest_sha256,
+                    old_active=manifest.active,
+                    old_rollback=manifest.rollback,
+                    candidate=candidate,
+                    database_heads=database_heads,
+                )
+                write_pinned_drift_bootstrap(journal_path, journal)
+                resumed = False
+                manifest_state = "old"
+            else:
+                assert_pinned_drift_bootstrap_frozen_inputs(
+                    journal,
+                    production_pin_version=CACHE_TARGET_PRODUCTION_PINS.version,
+                    environment_sha256=hashlib.sha256(
+                        transaction.environment.env_file_bytes
+                    ).hexdigest(),
+                    compose_sha256=hashlib.sha256(transaction.compose_source_bytes).hexdigest(),
+                    resolved_compose_sha256=transaction.resolved_document_hash,
+                    database_heads=database_heads,
+                )
+                manifest_is_old = (
+                    self._pair_matches(manifest.active, journal.old_active)
+                    and self._pair_matches(manifest.rollback, journal.old_rollback)
+                )
+                manifest_is_candidate = (
+                    self._pair_matches(manifest.active, journal.candidate)
+                    and self._pair_matches(manifest.rollback, journal.candidate)
+                )
+                if journal.phase == "manifest_committing":
+                    if manifest_is_old:
+                        if manifest_sha256 != journal.old_manifest_sha256:
+                            raise DeploymentContractError(
+                                "pinned drift bootstrap old manifest digest differs from its durable journal"
+                            )
+                        manifest_state = "old"
+                    elif manifest_is_candidate:
+                        manifest_state = "candidate"
+                    else:
+                        raise DeploymentContractError(
+                            "pinned drift bootstrap manifest differs from its durable journal"
+                        )
+                elif not manifest_is_old or manifest_sha256 != journal.old_manifest_sha256:
+                    raise DeploymentContractError(
+                        "pinned drift bootstrap manifest differs from its durable journal"
+                    )
+                else:
+                    manifest_state = "old"
+                if manifest_state == "old":
+                    for pair in (manifest.active, manifest.rollback):
+                        self._require_pair_image_provenance(pair)
+                    self._assert_pinned_drift_old_database_heads(
+                        manifest.active,
+                        database_heads,
+                    )
+                candidate = journal.candidate
+                self._require_pair_image_provenance(candidate)
+                _require_cache_target_release(
+                    config,
+                    candidate_map_source_revision=candidate.map_source_revision,
+                    candidate_source_revision=candidate.pinvi_source_revision,
+                )
+                self._assert_pinned_drift_candidate_database_heads(
+                    candidate,
+                    database_heads,
+                )
+                ensure_pair_references(
+                    (manifest.active, manifest.rollback, candidate),
+                    cwd=get_project_root(),
+                )
+                prebuild_result = None
+                preflight_ui_smoke = []
+                resumed = True
+
+            result: dict[str, Any] = {
+                "success": True,
+                "returncode": 0,
+                "state": journal.phase,
+                "resumed": resumed,
+                "services": services,
+                "stages": [],
+                "command": [],
+                "stdout": "",
+                "stderr": "",
+                "preflight_ui_smoke": preflight_ui_smoke,
+                "database_heads": dict(database_heads),
+                "candidate_image_provenance": self._pair_provenance_payload(candidate),
+            }
+            if prebuild_result is not None:
+                self._append_stage_result(
+                    result,
+                    "build_pinned_candidate_pair",
+                    prebuild_result,
+                    config,
+                )
+
+            if journal.phase == "prepared":
+                try:
+                    verification = self._activate_pair_sequentially(
+                        result,
+                        config,
+                        candidate,
+                        services,
+                        stage_prefix="pinned_drift_bootstrap",
+                        cancel_probe_state=PinviCancelProbeState(),
+                        transaction=transaction,
+                    )
+                    self._assert_pinned_drift_database_heads(
+                        transaction,
+                        journal.database_heads,
+                    )
+                except Exception as exc:
+                    self._raise_pinned_drift_bootstrap_failure(
+                        result=result,
+                        config=config,
+                        transaction=transaction,
+                        error=exc,
+                    )
+                result["activation_verification"] = verification
+                journal = transition_pinned_drift_bootstrap(
+                    journal,
+                    "runtime_activated",
+                )
+                write_pinned_drift_bootstrap(journal_path, journal)
+
+            if journal.phase == "runtime_activated":
+                verification = self._verify_pinned_drift_candidate_or_halt(
+                    result=result,
+                    config=config,
+                    candidate=candidate,
+                    services=services,
+                    transaction=transaction,
+                    expected_database_heads=journal.database_heads,
+                )
+                journal = transition_pinned_drift_bootstrap(
+                    journal,
+                    "manifest_committing",
+                )
+                write_pinned_drift_bootstrap(journal_path, journal)
+
+            if journal.phase == "manifest_committing":
+                verification = self._verify_pinned_drift_candidate_or_halt(
+                    result=result,
+                    config=config,
+                    candidate=candidate,
+                    services=services,
+                    transaction=transaction,
+                    expected_database_heads=journal.database_heads,
+                )
+                if manifest_state == "old":
+                    write_pair_manifest(
+                        manifest_path_text,
+                        initial_pair_manifest(candidate),
+                    )
+                journal = transition_pinned_drift_bootstrap(journal, "committed")
+                write_pinned_drift_bootstrap(journal_path, journal)
+
+            result["activation_verification"] = verification
+            result["state"] = "committed"
+            result["image_provenance"] = self._pair_provenance_payload(candidate)
+            try:
+                cleanup = reconcile_pair_references((candidate,), cwd=get_project_root())
+            except DeploymentContractError:
+                result["retention_cleanup"] = {"success": False}
+                result["stderr"] += "pinned drift bootstrap retention cleanup is pending\n"
+            else:
+                result["retention_cleanup"] = {
+                    "success": True,
+                    "removed": cleanup.removed,
+                }
+            return result
+
+    def _verify_pinned_drift_candidate_or_halt(
+        self,
+        *,
+        result: dict[str, Any],
+        config: C6cDeploymentConfig,
+        candidate: CompatibleImagePair,
+        services: list[str],
+        transaction: ComposeTransactionSnapshot,
+        expected_database_heads: Mapping[str, str],
+    ) -> dict[str, Any]:
+        """candidate 재검증 실패는 old image 복귀 없이 protected runtime을 halt한다."""
+
+        try:
+            verification = self._verify_active_contract(
+                config,
+                candidate,
+                services,
+                cancel_probe_state=PinviCancelProbeState(),
+                transaction=transaction,
+            )
+            self._assert_pinned_drift_database_heads(
+                transaction,
+                expected_database_heads,
+            )
+        except Exception as exc:
+            self._raise_pinned_drift_bootstrap_failure(
+                result=result,
+                config=config,
+                transaction=transaction,
+                error=exc,
+            )
+        return verification
+
+    def _raise_pinned_drift_bootstrap_failure(
+        self,
+        *,
+        result: dict[str, Any],
+        config: C6cDeploymentConfig,
+        transaction: ComposeTransactionSnapshot,
+        error: Exception,
+    ) -> NoReturn:
+        self._fail_result(
+            result,
+            str(error)
+            if isinstance(error, DeploymentContractError)
+            else "unexpected pinned drift bootstrap activation failure",
+        )
+        halt = self._halt_c6c_pair(
+            result,
+            config,
+            "state",
+            transaction=transaction,
+        )
+        raise ComposePostMutationContractError(
+            error,
+            recovery_attempted=True,
+            recovery_succeeded=False,
+            recovery_error=str(halt.get("state") or "candidate pair halted"),
+            restoration=halt,
+        ) from error
+
+    def _validate_committed_pinned_drift_bootstrap(
+        self,
+        *,
+        journal: PinnedDriftBootstrapJournal,
+        transaction: ComposeTransactionSnapshot,
+        config: C6cDeploymentConfig,
+        manifest_path: Path,
+    ) -> dict[str, Any]:
+        """terminal journal은 candidate-only manifest/runtime을 재검증해 idempotent로 보고한다."""
+
+        database_heads = self._pinned_drift_database_heads(transaction)
+        assert_pinned_drift_bootstrap_frozen_inputs(
+            journal,
+            production_pin_version=CACHE_TARGET_PRODUCTION_PINS.version,
+            environment_sha256=hashlib.sha256(
+                transaction.environment.env_file_bytes
+            ).hexdigest(),
+            compose_sha256=hashlib.sha256(transaction.compose_source_bytes).hexdigest(),
+            resolved_compose_sha256=transaction.resolved_document_hash,
+            database_heads=database_heads,
+        )
+        candidate = journal.candidate
+        self._require_pair_image_provenance(candidate)
+        _require_cache_target_release(
+            config,
+            candidate_map_source_revision=candidate.map_source_revision,
+            candidate_source_revision=candidate.pinvi_source_revision,
+        )
+        self._assert_pinned_drift_candidate_database_heads(
+            candidate,
+            database_heads,
+        )
+        manifest = load_pair_manifest(str(manifest_path))
+        if not (
+            self._pair_matches(manifest.active, candidate)
+            and self._pair_matches(manifest.rollback, candidate)
+        ):
+            raise DeploymentContractError(
+                "committed pinned drift bootstrap manifest is not candidate-only"
+            )
+        services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        verification = self._verify_active_contract(
+            config,
+            candidate,
+            services,
+            cancel_probe_state=PinviCancelProbeState(),
+            transaction=transaction,
+        )
+        self._assert_pinned_drift_database_heads(transaction, journal.database_heads)
+        return {
+            "success": True,
+            "returncode": 0,
+            "state": "committed",
+            "resumed": True,
+            "services": services,
+            "database_heads": dict(journal.database_heads),
+            "image_provenance": self._pair_provenance_payload(candidate),
+            "activation_verification": verification,
+        }
+
+    @staticmethod
+    def _pinned_drift_database_heads(
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, str]:
+        runtimes = database_runtimes_from_frozen_contract(
+            resolved=transaction.resolved,
+            environment=transaction.environment.effective,
+        )
+        return {runtime.role: read_database_schema_revision(runtime) for runtime in runtimes}
+
+    def _assert_pinned_drift_database_heads(
+        self,
+        transaction: ComposeTransactionSnapshot,
+        expected: Mapping[str, str],
+    ) -> None:
+        if self._pinned_drift_database_heads(transaction) != dict(expected):
+            raise DeploymentContractError(
+                "pinned drift bootstrap database schema heads changed"
+            )
+
+    @staticmethod
+    def _assert_pinned_drift_old_database_heads(
+        old_active: CompatibleImagePair,
+        database_heads: Mapping[str, str],
+    ) -> None:
+        """전환 전 active Map/PinVi image도 live schema와 같아야 한다."""
+
+        ComposeService._assert_pinned_drift_pair_database_heads(
+            old_active,
+            database_heads,
+            label_prefix="old active",
+        )
+
+    @staticmethod
+    def _assert_pinned_drift_candidate_database_heads(
+        candidate: CompatibleImagePair,
+        database_heads: Mapping[str, str],
+    ) -> None:
+        """candidate API image의 static Alembic head가 live DB와 같은지 확인한다."""
+
+        ComposeService._assert_pinned_drift_pair_database_heads(
+            candidate,
+            database_heads,
+            label_prefix="candidate",
+        )
+
+    @staticmethod
+    def _assert_pinned_drift_pair_database_heads(
+        pair: CompatibleImagePair,
+        database_heads: Mapping[str, str],
+        *,
+        label_prefix: str,
+    ) -> None:
+        """Map/PinVi API image의 static head를 live database head와 비교한다."""
+
+        _assert_candidate_image_alembic_head(
+            pair.map_image_id,
+            expected_alembic_head=database_heads["map_application"],
+            label=f"{label_prefix} Map API",
+        )
+        _assert_candidate_image_alembic_head(
+            pair.pinvi_image_id,
+            expected_alembic_head=database_heads["pinvi"],
+            label=f"{label_prefix} PinVi API",
+        )
+
     def deploy_compatible_pinvi_pair(
         self,
         *,
@@ -3817,6 +4289,9 @@ class ComposeService:
                 environment=transaction.environment.effective,
                 env_path=Path(transaction.environment.env_path),
                 **_frozen_canonical_env_owner(transaction.environment),
+            )
+            assert_pinned_drift_bootstrap_allows_pair_mutation(
+                transaction.environment.effective
             )
             _require_cache_target_release(config)
             build_provenance = (
@@ -8597,6 +9072,9 @@ class ComposeService:
                 env_path=Path(transaction.environment.env_path),
                 **_frozen_canonical_env_owner(transaction.environment),
             )
+            assert_pinned_drift_bootstrap_allows_pair_mutation(
+                transaction.environment.effective
+            )
             _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
@@ -9075,6 +9553,9 @@ class ComposeService:
                 environment=transaction.environment.effective,
                 env_path=Path(transaction.environment.env_path),
                 **_frozen_canonical_env_owner(transaction.environment),
+            )
+            assert_pinned_drift_bootstrap_allows_pair_mutation(
+                transaction.environment.effective
             )
             manifest_path = transaction.manifest_path
             if manifest_path is None:

@@ -6,6 +6,7 @@ import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -21,6 +22,7 @@ from kor_travel_docker_manager.services.pinned_source_install import (
     canonical_source_identity,
     parse_pinned_source_selection,
     pinned_source_install_paths,
+    require_committed_pinned_source_installation,
 )
 
 _MAP = RepoSpec(
@@ -386,6 +388,83 @@ def test_nonterminal_source_installation_blocks_pair_mutation(tmp_path: Path) ->
             expected_owner_uid=os.getuid(),
             expected_owner_gid=os.getgid(),
         )
+
+
+def test_pinned_drift_requires_committed_source_installation_before_build(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_bytes(b"UNRELATED=value\n")
+    env_path.chmod(0o600)
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
+        "COMPOSE_PROJECT_NAME": "pinned-source-test",
+        "KTDM_C6C_STATE_ROOT": str(tmp_path / "state"),
+    }
+
+    with pytest.raises(DeploymentContractError, match="requires a committed"):
+        require_committed_pinned_source_installation(
+            environment=values,
+            env_path=env_path,
+            expected_owner_uid=os.getuid(),
+            expected_owner_gid=os.getgid(),
+        )
+
+
+def test_bootstrap_pinned_drift_stops_before_provenance_when_f1e_is_not_committed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = ComposeService()
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(
+            effective={"KTDM_DEPLOYMENT_ENVIRONMENT": "production"},
+            env_path=str(tmp_path / ".env"),
+            env_file_identity=SimpleNamespace(uid=1000, gid=1000),
+        )
+    )
+    provenance = Mock()
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_transaction_matches_c6c_lock",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        Mock(return_value=(transaction, None)),
+    )
+    monkeypatch.setattr(compose_service_module, "assert_manager_mutation_allowed", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_c6c_deployment_config_from_environment",
+        Mock(return_value=SimpleNamespace(production=True)),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "require_committed_pinned_source_installation",
+        Mock(
+            side_effect=DeploymentContractError(
+                "pinned drift bootstrap requires a committed pinned source installation"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_derive_c6c_build_provenance",
+        provenance,
+    )
+
+    with pytest.raises(DeploymentContractError, match="requires a committed"):
+        service.bootstrap_pinned_drift()
+
+    provenance.assert_not_called()
 
 
 def test_rolled_back_source_installation_requires_the_original_env_bytes(

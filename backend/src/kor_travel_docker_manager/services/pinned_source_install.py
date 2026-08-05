@@ -1061,3 +1061,36 @@ def assert_pinned_source_installation_allows_pair_mutation(
             expected_owner_uid=expected_owner_uid,
             expected_owner_gid=expected_owner_gid,
         )
+
+
+def require_committed_pinned_source_installation(
+    *,
+    environment: Mapping[str, str],
+    env_path: Path,
+    expected_owner_uid: int,
+    expected_owner_gid: int,
+) -> None:
+    """F1D가 신뢰된 exact source selection 뒤에만 실행되도록 강제한다.
+
+    일반 pair mutation은 F1E가 도입되기 전의 정상 상태도 허용할 수 있지만, F1D는
+    root가 build provenance를 읽기 전에 F1E의 committed evidence와 root-owned
+    exact worktree를 반드시 확인해야 한다.
+    """
+
+    paths = pinned_source_install_paths(environment)
+    if not _path_exists_lstat(paths.journal):
+        raise DeploymentContractError(
+            "pinned drift bootstrap requires a committed pinned source installation"
+        )
+    journal = _read_journal(paths.journal)
+    if journal["phase"] != "committed":
+        raise DeploymentContractError(
+            "pinned drift bootstrap requires a committed pinned source installation"
+        )
+    _verify_committed_journal(
+        paths=paths,
+        journal=journal,
+        env_path=env_path,
+        expected_owner_uid=expected_owner_uid,
+        expected_owner_gid=expected_owner_gid,
+    )

@@ -1400,6 +1400,11 @@ source revision, arbitrary migration head, force를 받지 않는다. candidate 
 해당 Git archive를 일회성 build context로 사용한다. canonical `.env`는 frozen input identity로만 읽고
 수정하지 않으며 그 source HEAD는 candidate authority가 아니다.
 
+F1D는 candidate source provenance를 읽기 전에 F1E trusted source-installer의 `committed` journal,
+root-owned detached exact worktree, pin/tree evidence를 모두 재검증한다. F1E journal이 없거나 non-terminal,
+foreign, 손상 상태면 normal pair mutation과 달리 기존 source cache를 fallback으로 취급하지 않고 즉시
+거부한다.
+
 mutation 전 C6c global lock, frozen env·raw/resolved Compose·external input identity, strict old manifest와
 retention image evidence, complete/ready current five-runtime drift, secret isolation/UI auth, candidate·live·old
 Map/PinVi DB head equality를 모두 검증한다. head가 하나라도 다르면 이 command는 runtime을 바꾸지 않고 H35
@@ -1411,6 +1416,12 @@ release pin version과 phase를 보존한다. non-terminal·foreign·손상 jour
 candidate의 resume만 허용한다. candidate activation 실패 시 old image를 다시 기동하지 않고 다섯 runtime을
 halt한다. 성공 뒤에만 `active = rollback = candidate`인 bootstrap manifest를 원자 기록한다. old manifest는
 commit 전 recovery evidence일 뿐 새 rollback slot으로 승격하지 않는다.
+
+journal phase는 `prepared → runtime_activated → manifest_committing → committed`다. manifest write 전에
+`manifest_committing` intent를 fsync하므로, manifest fsync와 terminal journal write 사이 crash도 original-old
+manifest 또는 candidate-only manifest를 구분해 같은 candidate 검증·commit으로 재개한다. runtime activation 뒤의
+contract/DB-head 재검증 실패는 모두 다섯 runtime halt로 수렴하며, manifest write/fsync 실패는 검증된 candidate와
+intent journal을 보존해 재시도한다.
 
 `.env`가 가리키는 source checkout을 장기적으로 새 release로 바꾸는 일은 trusted source-installer의 별도
 transaction이다. drift bootstrap은 그 값을 암묵적으로 수정하지 않는다.
