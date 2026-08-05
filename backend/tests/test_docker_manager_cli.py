@@ -8,7 +8,10 @@ import pytest
 
 import kor_travel_docker_manager.cli as cli_module
 from kor_travel_docker_manager.cli import build_parser, main
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.c6c_deployment import (
+    ComposePostMutationContractError,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ValidatedComposeCandidate,
@@ -454,6 +457,96 @@ def test_cli_pinned_source_install_requires_confirmation(mock_compose_service, c
 
     assert "requires --confirm" in capsys.readouterr().err
     mock_compose_service.install_pinned_sources.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_pinned_drift_bootstrap_requires_confirmation(mock_compose_service, capsys):
+    assert main(["pinvi-pair", "bootstrap-pinned-drift"]) == 2
+
+    assert "requires --confirm" in capsys.readouterr().err
+    mock_compose_service.bootstrap_pinned_drift.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_dispatches_confirmed_pinned_drift_bootstrap(mock_compose_service):
+    mock_compose_service.bootstrap_pinned_drift.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm", "--json"]) == 0
+
+    mock_compose_service.bootstrap_pinned_drift.assert_called_once_with()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_pinned_drift_bootstrap_returns_halt_state_as_secret_free_json(
+    mock_compose_service,
+    capsys,
+):
+    mock_compose_service.bootstrap_pinned_drift.side_effect = (
+        ComposePostMutationContractError(
+            DeploymentContractError("candidate verification failed"),
+            recovery_attempted=True,
+            recovery_succeeded=False,
+            recovery_error="halted_requires_operator",
+            restoration={"state": "halted_requires_operator", "command": ["redacted"]},
+        )
+    )
+
+    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm", "--json"]) == 1
+
+    assert json.loads(capsys.readouterr().out) == {
+        "success": False,
+        "returncode": 1,
+        "state": "halted_requires_operator",
+        "error": "pinned drift bootstrap failed after runtime mutation",
+        "stdout": "",
+        "stderr": (
+            "pinned drift bootstrap failed after runtime mutation: "
+            "halted_requires_operator\n"
+        ),
+        "recovery_attempted": True,
+        "recovery_succeeded": False,
+        "recovery_error": "halted_requires_operator",
+    }
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_pinned_drift_bootstrap_prints_halt_state_without_json(
+    mock_compose_service,
+    capsys,
+):
+    mock_compose_service.bootstrap_pinned_drift.side_effect = (
+        ComposePostMutationContractError(
+            DeploymentContractError("candidate verification failed"),
+            recovery_attempted=True,
+            recovery_succeeded=False,
+            recovery_error="halted_requires_operator",
+            restoration={"state": "halted_requires_operator"},
+        )
+    )
+
+    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm"]) == 1
+
+    assert capsys.readouterr().err == (
+        "pinned drift bootstrap failed after runtime mutation: "
+        "halted_requires_operator\n"
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_pinned_drift_bootstrap_reports_pre_mutation_contract_error(
+    mock_compose_service,
+    capsys,
+):
+    mock_compose_service.bootstrap_pinned_drift.side_effect = DeploymentContractError(
+        "pinned drift bootstrap requires a committed pinned source installation"
+    )
+
+    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm"]) == 2
+
+    assert "requires a committed" in capsys.readouterr().err
 
 
 @patch("kor_travel_docker_manager.cli._require_trusted_pinned_source_installer")

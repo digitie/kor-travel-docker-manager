@@ -7,7 +7,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.c6c_deployment import (
+    ComposePostMutationContractError,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.cache_target_backup import (
     STANDALONE_BACKUP_DEFAULT_KEEP_COUNT,
     STANDALONE_BACKUP_DEFAULT_KEEP_DAYS,
@@ -140,6 +143,15 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 return 2
             _require_trusted_pinned_source_installer()
             result = compose_service.install_pinned_sources()
+        elif args.pair_action == "bootstrap-pinned-drift":
+            if not args.confirm:
+                print(
+                    "pinvi-pair bootstrap-pinned-drift requires --confirm "
+                    "(no mutation was attempted)",
+                    file=sys.stderr,
+                )
+                return 2
+            result = compose_service.bootstrap_pinned_drift()
         elif args.pair_action == "deploy":
             result = compose_service.deploy_compatible_pinvi_pair(
                 build=args.build,
@@ -155,6 +167,30 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             )
         else:
             result = compose_service.rollback_compatible_pinvi_pair()
+    except ComposePostMutationContractError as exc:
+        if args.pair_action != "bootstrap-pinned-drift":
+            print(str(exc), file=sys.stderr)
+            return 1
+        restoration = exc.restoration or {}
+        state = str(restoration.get("state", "halt_failed_requires_operator"))
+        result = {
+            "success": False,
+            "returncode": 1,
+            "state": state,
+            "error": "pinned drift bootstrap failed after runtime mutation",
+            "stdout": "",
+            "stderr": (
+                "pinned drift bootstrap failed after runtime mutation: "
+                f"{state}\n"
+            ),
+            "recovery_attempted": exc.recovery_attempted,
+            "recovery_succeeded": exc.recovery_succeeded,
+            "recovery_error": exc.recovery_error,
+        }
+        return _emit_process_result(result, json_output=args.json)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -433,6 +469,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
     pair_install_sources.set_defaults(func=_cmd_pinvi_pair)
+    pair_bootstrap_drift = pair_subparsers.add_parser(
+        "bootstrap-pinned-drift",
+        help="tracked exact release pair로 production runtime drift를 한 번만 수렴합니다.",
+    )
+    pair_bootstrap_drift.add_argument(
+        "--confirm",
+        action="store_true",
+        help="기존 rollback 대신 failure 시 다섯 runtime을 halt함을 확인합니다.",
+    )
+    pair_bootstrap_drift.add_argument(
+        "--json",
+        action="store_true",
+        help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
+    )
+    pair_bootstrap_drift.set_defaults(func=_cmd_pinvi_pair)
     pair_deploy = pair_subparsers.add_parser(
         "deploy",
         help="production Map+PinVi compatible pair를 단계 검증하며 배포합니다.",
