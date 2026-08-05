@@ -460,7 +460,8 @@ def test_compose_service_pinned_source_entrypoint_never_captures_or_runs_compose
         env_file_bytes=b"frozen-env",
         env_file_identity=SimpleNamespace(uid=1000, gid=1000),
     )
-    expected = {"success": True, "state": "committed", "resumed": False}
+    installer_result = {"success": True, "state": "committed", "resumed": False}
+    expected = {**installer_result, "returncode": 0}
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
@@ -492,7 +493,7 @@ def test_compose_service_pinned_source_entrypoint_never_captures_or_runs_compose
 
     def install(**kwargs: object) -> dict[str, object]:
         captured.update(kwargs)
-        return expected
+        return installer_result
 
     monkeypatch.setattr(compose_service_module, "install_trusted_pinned_sources", install)
     monkeypatch.setattr(

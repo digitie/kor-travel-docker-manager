@@ -3745,13 +3745,14 @@ class ComposeService:
                 )
             _require_cache_target_release(config)
             owner = _frozen_canonical_env_owner(environment)
-            return install_trusted_pinned_sources(
+            result = install_trusted_pinned_sources(
                 environment=environment.effective,
                 env_path=Path(environment.env_path),
                 env_bytes=environment.env_file_bytes,
                 expected_owner_uid=owner["expected_owner_uid"],
                 expected_owner_gid=owner["expected_owner_gid"],
             )
+            return {**result, "returncode": 0 if result.get("success") else 1}
 
     def deploy_compatible_pinvi_pair(
         self,
