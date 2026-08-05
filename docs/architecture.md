@@ -212,6 +212,14 @@ graph TD
      active/rollback 각 set에 함께 결박하며 provenance가 없는 이전 version을 거부한다.
      실패·rollback도 같은 frozen transaction의 다섯 image ID를 복원하고, 완전한 복원이
      불가능하면 다섯 runtime을 모두 중지해 혼합 generation 노출을 막는다.
+     active manifest와 current five-runtime tuple이 이미 다른 production drift는 일반
+     `deploy`/rollback의 입력이 아니다. 이 경우에만 one-shot
+     `pinvi-pair bootstrap-pinned-drift --confirm`이 tracked exact release pin의 Git archive로
+     candidate를 만들고, frozen input·runtime security·candidate/live/old DB head·durable journal을
+     검증한다. current runtime과 old manifest는 새 rollback source로 채택하지 않는다. 성공 manifest는
+     active와 rollback 모두 같은 candidate이며, candidate activation 실패는 old image rollback 대신
+     five-runtime halt로 fail-close한다. canonical `.env`의 source checkout 갱신은 별도 trusted
+     source-installer transaction이 소유한다.
    - Map production API 인증은 ADR-23의 exact runtime 경계를 따른다. admin proxy secret은
      Map API와 UI BFF에만 공유하고 service token·cursor signing secret은 Map API에만 둔다.
      production profile/public-key-required/debug-off는 literal로 고정하며, 인증된 Prometheus

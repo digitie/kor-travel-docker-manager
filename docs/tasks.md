@@ -29,9 +29,10 @@
 | **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[x]` | 2026-08-04 | GET /backups(mutation 경로 없음), BackupHistoryPanel, 적대적 리뷰 2명 완료 |
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
 | **T-VN-41-F1** | cache-target production pair re-pin (issue #129) | `[x]` | 2026-08-05 | exact provenance·runbook·회귀를 갱신하고 Manager production 설치까지 완료 |
-| **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[/]` | - | 완전 미구성 canonical `.env`에만 4-role 계약을 원자 생성하고 F2 진단의 입력을 준비 |
+| **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[x]` | 2026-08-05 | trusted release에서 4-role 계약 bootstrap과 secret-free attestation 완료 |
 | **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[x]` | 2026-08-05 | deployment-owner `0600` env를 frozen owner identity로 결박; trusted release 설치·default-off bootstrap·secret-free attestation 완료 |
-| **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[/]` | - | v1 `prepared`/`writers_fencing` journal만 receipt를 남기고 폐기해 F2 fresh diagnostic을 재개; attempt budget·window·runtime·DB·`.env`·manifest는 보존 |
+| **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
+| **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
 
 ---
 
@@ -802,14 +803,14 @@ F2 사전 진단은 canonical `.env`에 Map registry·PinVi ordinary binding·ge
 
 - [x] F1 production 재pin 뒤 read-only preflight로 cache-target contract가 완전 미구성임을
       확인하고, partial state를 자동 보정하지 않는 Manager-only bootstrap 경계를 설계했다.
-- [/] `ktdctl cache-target bootstrap --confirm --json`을 추가한다. 이 command는 C6c global lock,
+- [x] `ktdctl cache-target bootstrap --confirm --json`을 추가했다. 이 command는 C6c global lock,
       frozen canonical env SHA, manager mutation capability 아래에서만 실행하며 production과
       완전 미구성 상태를 다시 검증한 뒤 단 한 번의 atomic replace로 기록한다.
-- [/] 생성 값은 4개의 서로 다른 무작위 token과 최소 권한 registry다. Map에는 digest registry만,
+- [x] 생성 값은 4개의 서로 다른 무작위 token과 최소 권한 registry다. Map에는 digest registry만,
       PinVi ordinary runtime에는 command/consumer token·consumer ID·sync=false·exact pin만 전달할
       수 있게 구성하며 restore-fence/recovery 원문은 Manager canonical env에만 둔다. stdout·journal·
       result에는 token 또는 registry 원문을 넣지 않고 role binding SHA와 env SHA만 남긴다.
-- [/] process environment override, partial/기존 contract, 비production, admin/cache base 불일치,
+- [x] process environment override, partial/기존 contract, 비production, admin/cache base 불일치,
       static production pin 불일치는 write 전에 fail-close한다. bootstrap은 container, DB, pair
       manifest, durable cutover journal을 전혀 변경하지 않는다.
 - [x] 단일 적대적 리뷰에서 `export NAME=...` 또는 값 없는 dotenv 선언을 raw 검사에서 놓쳐
@@ -820,8 +821,8 @@ F2 사전 진단은 canonical `.env`에 Map registry·PinVi ordinary binding·ge
 - [x] PR #131을 merge하고 exact trusted Manager release를 production에 설치했다. 최초 bootstrap은
       trusted installer가 보존한 deployment-owner `0600` env와 root-only replacement helper의 owner
       가정이 충돌해 write 전 fail-close했다. 이 ownership model 보강은 T-VN-41-F1B가 소유한다.
-- [ ] F1B가 완료된 뒤 production에서 command를 한 번 실행하고 secret-free attestation을 다시 확인한 뒤
-      F2 diagnostic을 새 transaction ID로 재개한다.
+- [x] F1B trusted release 설치 뒤 production에서 command를 한 번 실행하고 secret-free attestation을
+      확인했다. F2는 새 diagnostic ID로 재개했다.
 
 ### T-VN-41-F1B: trusted root canonical env 소유권 결박 (issue #132)
 
@@ -839,4 +840,40 @@ env 편집은 하지 않는다.
       보존을 함께 강제한다. 임의 UID를 caller가 지정해 우회하는 공개 CLI/config 경로는 만들지 않는다.
 - [x] direct/root·unprivileged owner·owner/GID drift·hardlink/symlink·digest drift의 음성 회귀와 단일
       적대적 리뷰를 통과했다. 보정본 backend 전체 suite `1605 passed`.
-- [ ] 별도 PR을 merge·trusted install한 뒤, F1A bootstrap과 F2 diagnose를 재개한다.
+- [x] PR #133을 merge·trusted install한 뒤 F1A bootstrap을 완료하고 F2 diagnose를 재개했다.
+
+### T-VN-41-F1C: legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134)
+
+v1 diagnostic은 durable writer-drain lease/receipt 이전 schema라 post-drain recovery를 추론할 수 없다.
+n150에 남은 것은 `writers_fencing` pre-stop state였으므로, state directory 삭제 대신 좁은 Manager
+command로 receipt-first 퇴역해야 했다.
+
+- [x] `ktdctl cache-target retire-legacy-diagnostic --confirm --json`이 exact v1
+      `prepared`/`writers_fencing` journal만 owner-only receipt를 먼저 남기고 퇴역하도록 구현했다.
+      attempt log·window·canonical `.env`·manifest·runtime·DB는 변경하지 않는다.
+- [x] malformed/foreign/post-drain/v2 state 거부, receipt-first crash resume·directory fsync 재시도,
+      CLI confirmation 회귀와 단일 적대적 리뷰를 통과했다. focused 115 passed, backend 전체
+      1621 passed, Ruff와 strict mypy도 통과했다.
+- [x] PR #135를 merge하고 trusted release를 n150에 설치했다. legacy journal 퇴역과 동일 receipt의
+      idempotent 재실행을 secret-free attestation으로 확인했다.
+- [x] F2 fresh v2 diagnostic은 writer stop 전 `writers_fencing`에서 Map runtime tuple drift를 감지해
+      fail-close했다. DB·writer·runtime mutation은 없었다.
+
+### T-VN-41-F1D: pinned compatible-pair drift bootstrap (issue #136)
+
+F2가 확인한 drift는 일반 `pinvi-pair deploy`가 고의로 거부한다. active manifest와 runtime tuple,
+canonical source cache와 tracked exact production pin이 모두 달라 일반 deploy/rollback이나 raw Docker·
+`.env` 우회로는 안전하게 수렴할 수 없다.
+
+- [ ] 단발성 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm` transaction을 추가한다. candidate는
+      `.env` HEAD나 CLI revision이 아니라 `CACHE_TARGET_PRODUCTION_PINS`의 exact Map·PinVi revision만
+      archive build source로 사용한다.
+- [ ] C6c lock, frozen env/Compose/external input identity, strict old manifest·local image evidence,
+      complete/ready current five-runtime drift, runtime secret isolation·UI auth, candidate/live/old Map·PinVi
+      DB head 불변을 mutation 전에 모두 검증한다. DB head가 다르면 H35 coupled recovery 외에는 거부한다.
+- [ ] owner-only durable journal에 original manifest SHA, frozen input digest, candidate immutable IDs·
+      source revision, expected DB head와 phase를 기록한다. non-terminal·foreign·손상 journal은 모든
+      pair mutation을 막고 동일 candidate resume만 허용한다.
+- [ ] candidate activation은 기존 staged sequence를 재사용하되 실패 시 구 image를 재기동하지 않고
+      다섯 runtime을 halt한다. 성공 후에만 `active = rollback = candidate` bootstrap manifest를 원자
+      기록한다. source checkout의 장기 갱신은 이 transaction과 분리한다.
