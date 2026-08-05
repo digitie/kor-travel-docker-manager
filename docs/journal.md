@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1G — legacy terminal window 퇴역 설계)
+
+n150 trusted Manager release `067a851…`의 F1F input installer는 Docker·DB·runtime mutation 전에 legacy
+`cache-target-window-v1.json`의 terminal `rolled_back` state를 발견해 fail-close했다. v1 window는 현재
+writer-drain/rollback schema의 정본이 아니므로 raw state-directory 삭제나 자동 migration으로 넘기지 않는다.
+
+F1G는 production 전용 receipt-first retirement command로 exact owner-only v1 `rolled_back`만 SHA/phase
+evidence를 durable하게 남기고 unlink한다. global lock/frozen input revalidation은 유지하며 other manager
+state·Docker·Compose·DB·runtime·manifest·backup은 변경하지 않는다. 이 PR merge와 n150 민감값 없는 retirement
+뒤 F1F input first-run/idempotent rerun을 재개한다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1F-B — Manager merge 완료)
 
 PR #149는 squash merge `8329f834…`로 Manager `main`에 반영됐다. Map `8c5bdcf8…`, PinVi
