@@ -238,6 +238,8 @@ from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     pinned_drift_bootstrap_journal_path,
     prepare_pinned_drift_bootstrap,
     read_pinned_drift_bootstrap,
+    record_pinned_drift_bootstrap_attempt,
+    record_pinned_drift_bootstrap_failure,
     transition_pinned_drift_bootstrap,
     write_pinned_drift_bootstrap,
 )
@@ -2281,6 +2283,42 @@ def _assert_candidate_image_alembic_head(
         )
 
 
+@dataclass
+class _PinnedDriftCheckpointTracker:
+    """F1D journal의 safe checkpoint만 fail-close 경계로 전달한다."""
+
+    journal_path: Path
+    journal: PinnedDriftBootstrapJournal
+    fresh_journal: bool
+    current_checkpoint: str | None = None
+    runtime_mutation_started: bool = False
+
+    def persist_attempt(self, checkpoint: str) -> None:
+        self.current_checkpoint = checkpoint
+        updated = record_pinned_drift_bootstrap_attempt(self.journal, checkpoint)
+        write_pinned_drift_bootstrap(self.journal_path, updated)
+        self.journal = updated
+
+    def persist_failure(self) -> None:
+        if self.current_checkpoint is None:
+            raise DeploymentContractError(
+                "pinned drift bootstrap failure has no safe checkpoint"
+            )
+        updated = record_pinned_drift_bootstrap_failure(
+            self.journal,
+            self.current_checkpoint,
+        )
+        write_pinned_drift_bootstrap(self.journal_path, updated)
+        self.journal = updated
+
+    def mark_runtime_mutation_started(self) -> None:
+        self.runtime_mutation_started = True
+
+    @property
+    def requires_halt(self) -> bool:
+        return self.runtime_mutation_started or not self.fresh_journal
+
+
 class ComposeService:
     def _capture_transaction_unlocked(
         self,
@@ -3875,6 +3913,7 @@ class ComposeService:
             manifest_path = Path(manifest_path_text)
             journal_path = pinned_drift_bootstrap_journal_path(transaction.environment.effective)
             journal = read_pinned_drift_bootstrap(journal_path, allow_missing=True)
+            fresh_journal = journal is None
 
             # F1D journal write 직후의 process crash도 재개 가능해야 한다. journal이
             # 이미 존재하면 input 전이를 먼저 idempotently 맞춰 놓아야 terminal
@@ -3998,6 +4037,12 @@ class ComposeService:
                 prebuild_result = None
                 resumed = True
 
+            checkpoint_tracker = _PinnedDriftCheckpointTracker(
+                journal_path=journal_path,
+                journal=journal,
+                fresh_journal=fresh_journal,
+            )
+
             result: dict[str, Any] = {
                 "success": True,
                 "returncode": 0,
@@ -4019,8 +4064,8 @@ class ComposeService:
                     config,
                 )
 
-            if journal.phase == "prepared":
-                try:
+            try:
+                if journal.phase == "prepared":
                     verification = self._activate_pair_sequentially(
                         result,
                         config,
@@ -4029,56 +4074,86 @@ class ComposeService:
                         stage_prefix="pinned_drift_bootstrap",
                         cancel_probe_state=PinviCancelProbeState(),
                         transaction=transaction,
+                        checkpoint_recorder=lambda checkpoint: checkpoint_tracker.persist_attempt(
+                            f"prepared.{checkpoint}"
+                        ),
+                        before_runtime_mutation=checkpoint_tracker.mark_runtime_mutation_started,
                     )
+                    checkpoint_tracker.persist_attempt("prepared.database_heads")
                     self._assert_pinned_drift_database_heads(
                         transaction,
                         journal.database_heads,
                     )
-                except Exception as exc:
-                    self._raise_pinned_drift_bootstrap_failure(
-                        result=result,
+                    result["activation_verification"] = verification
+                    checkpoint_tracker.persist_attempt(
+                        "prepared.runtime_activated_journal"
+                    )
+                    journal = transition_pinned_drift_bootstrap(
+                        checkpoint_tracker.journal,
+                        "runtime_activated",
+                    )
+                    write_pinned_drift_bootstrap(journal_path, journal)
+                    checkpoint_tracker.journal = journal
+
+                if journal.phase == "runtime_activated":
+                    verification = self._verify_pinned_drift_candidate(
                         config=config,
+                        candidate=candidate,
+                        services=services,
                         transaction=transaction,
-                        error=exc,
+                        expected_database_heads=journal.database_heads,
+                        checkpoint_recorder=lambda checkpoint: checkpoint_tracker.persist_attempt(
+                            f"runtime_activated.{checkpoint}"
+                        ),
                     )
-                result["activation_verification"] = verification
-                journal = transition_pinned_drift_bootstrap(
-                    journal,
-                    "runtime_activated",
-                )
-                write_pinned_drift_bootstrap(journal_path, journal)
+                    checkpoint_tracker.persist_attempt(
+                        "runtime_activated.manifest_committing_journal"
+                    )
+                    journal = transition_pinned_drift_bootstrap(
+                        checkpoint_tracker.journal,
+                        "manifest_committing",
+                    )
+                    write_pinned_drift_bootstrap(journal_path, journal)
+                    checkpoint_tracker.journal = journal
 
-            if journal.phase == "runtime_activated":
-                verification = self._verify_pinned_drift_candidate_or_halt(
+                if journal.phase == "manifest_committing":
+                    verification = self._verify_pinned_drift_candidate(
+                        config=config,
+                        candidate=candidate,
+                        services=services,
+                        transaction=transaction,
+                        expected_database_heads=journal.database_heads,
+                        checkpoint_recorder=lambda checkpoint: checkpoint_tracker.persist_attempt(
+                            f"manifest_committing.{checkpoint}"
+                        ),
+                    )
+                    if manifest_state == "old":
+                        checkpoint_tracker.persist_attempt(
+                            "manifest_committing.manifest_write"
+                        )
+                        write_pair_manifest(
+                            manifest_path_text,
+                            initial_pair_manifest(candidate),
+                        )
+                    checkpoint_tracker.persist_attempt(
+                        "manifest_committing.committed_journal"
+                    )
+                    journal = transition_pinned_drift_bootstrap(
+                        checkpoint_tracker.journal,
+                        "committed",
+                    )
+                    write_pinned_drift_bootstrap(journal_path, journal)
+                    checkpoint_tracker.journal = journal
+            except Exception as exc:
+                self._raise_pinned_drift_bootstrap_failure(
                     result=result,
                     config=config,
-                    candidate=candidate,
-                    services=services,
                     transaction=transaction,
-                    expected_database_heads=journal.database_heads,
+                    error=exc,
+                    checkpoint_tracker=checkpoint_tracker,
                 )
-                journal = transition_pinned_drift_bootstrap(
-                    journal,
-                    "manifest_committing",
-                )
-                write_pinned_drift_bootstrap(journal_path, journal)
 
-            if journal.phase == "manifest_committing":
-                verification = self._verify_pinned_drift_candidate_or_halt(
-                    result=result,
-                    config=config,
-                    candidate=candidate,
-                    services=services,
-                    transaction=transaction,
-                    expected_database_heads=journal.database_heads,
-                )
-                if manifest_state == "old":
-                    write_pair_manifest(
-                        manifest_path_text,
-                        initial_pair_manifest(candidate),
-                    )
-                journal = transition_pinned_drift_bootstrap(journal, "committed")
-                write_pinned_drift_bootstrap(journal_path, journal)
+            if journal.phase == "committed":
                 mark_pinned_deployment_input_f1d_completed(transaction.environment.effective)
 
             result["activation_verification"] = verification
@@ -4096,37 +4171,33 @@ class ComposeService:
                 }
             return result
 
-    def _verify_pinned_drift_candidate_or_halt(
+    def _verify_pinned_drift_candidate(
         self,
         *,
-        result: dict[str, Any],
         config: C6cDeploymentConfig,
         candidate: CompatibleImagePair,
         services: list[str],
         transaction: ComposeTransactionSnapshot,
         expected_database_heads: Mapping[str, str],
+        checkpoint_recorder: Callable[[str], None],
     ) -> dict[str, Any]:
-        """candidate 재검증 실패는 old image 복귀 없이 protected runtime을 halt한다."""
+        """F1D resume verification은 outer fail-close 경계가 단 한 번 halt한다."""
 
-        try:
-            verification = self._verify_active_contract(
-                config,
-                candidate,
-                services,
-                cancel_probe_state=PinviCancelProbeState(),
-                transaction=transaction,
-            )
-            self._assert_pinned_drift_database_heads(
-                transaction,
-                expected_database_heads,
-            )
-        except Exception as exc:
-            self._raise_pinned_drift_bootstrap_failure(
-                result=result,
-                config=config,
-                transaction=transaction,
-                error=exc,
-            )
+        verification = self._verify_active_contract(
+            config,
+            candidate,
+            services,
+            cancel_probe_state=PinviCancelProbeState(),
+            transaction=transaction,
+            checkpoint_recorder=lambda checkpoint: checkpoint_recorder(
+                f"contract.{checkpoint}"
+            ),
+        )
+        checkpoint_recorder("database_heads")
+        self._assert_pinned_drift_database_heads(
+            transaction,
+            expected_database_heads,
+        )
         return verification
 
     def _raise_pinned_drift_bootstrap_failure(
@@ -4136,6 +4207,7 @@ class ComposeService:
         config: C6cDeploymentConfig,
         transaction: ComposeTransactionSnapshot,
         error: Exception,
+        checkpoint_tracker: _PinnedDriftCheckpointTracker,
     ) -> NoReturn:
         self._fail_result(
             result,
@@ -4143,12 +4215,24 @@ class ComposeService:
             if isinstance(error, DeploymentContractError)
             else "unexpected pinned drift bootstrap activation failure",
         )
+        if not checkpoint_tracker.requires_halt:
+            raise DeploymentContractError(
+                "pinned drift bootstrap checkpoint persistence failed before runtime mutation"
+            ) from error
+        failure_evidence_persisted = True
+        try:
+            checkpoint_tracker.persist_failure()
+        except Exception:
+            failure_evidence_persisted = False
         halt = self._halt_c6c_pair(
             result,
             config,
             "state",
             transaction=transaction,
         )
+        halt["failure_checkpoint"] = checkpoint_tracker.current_checkpoint
+        halt["failure_count"] = checkpoint_tracker.journal.failure_count
+        halt["failure_evidence_persisted"] = failure_evidence_persisted
         raise ComposePostMutationContractError(
             error,
             recovery_attempted=True,
@@ -8830,12 +8914,19 @@ class ComposeService:
         cancel_probe_state: PinviCancelProbeState | None = None,
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
+        checkpoint_recorder: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
+        def checkpoint(name: str) -> None:
+            if checkpoint_recorder is not None:
+                checkpoint_recorder(name)
+
+        checkpoint("services_ready")
         self._require_services_ready(
             services,
             transaction=transaction,
             frozen_recovery=frozen_recovery,
         )
+        checkpoint("resolved_compose")
         self._validate_resolved_compose_contract(
             config,
             environment_override=(
@@ -8847,15 +8938,20 @@ class ComposeService:
             transaction=transaction,
             frozen_recovery=frozen_recovery,
         )
+        checkpoint("image_provenance")
         actual = self._inspect_current_pair(config)
         if not self._pair_matches(actual, expected_pair):
             raise DeploymentContractError("compatible pair image verification failed")
+        checkpoint("map_smoke")
         map_smoke = run_map_ops_smoke(config)
+        checkpoint("pinvi_smoke")
         pinvi_smoke = run_pinvi_canonical_smoke(
             config,
             cancel_probe_state=cancel_probe_state,
         )
+        checkpoint("ui_auth")
         ui_smoke = run_ui_auth_smoke(config)
+        checkpoint("runtime_isolation")
         runtime_configs = self._inspect_c6c_runtime_configs(
             config,
             services,
@@ -8864,6 +8960,7 @@ class ComposeService:
         )
         validate_runtime_secret_isolation(runtime_configs, config)
         if not frozen_recovery:
+            checkpoint("map_env_migration")
             if transaction.manifest_path is None:
                 raise DeploymentContractError(
                     "compatible-pair transaction has no migration marker path"
@@ -8945,10 +9042,19 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
         wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
+        checkpoint_recorder: Callable[[str], None] | None = None,
+        before_runtime_mutation: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """혼합 set 실행 없이 Map runtime 검증 뒤 PinVi와 전체 계약을 복원한다."""
 
+        def checkpoint(name: str) -> None:
+            if checkpoint_recorder is not None:
+                checkpoint_recorder(name)
+
         environment = None if frozen_recovery else self._pair_image_environment(pair)
+        checkpoint("stop_pair")
+        if before_runtime_mutation is not None:
+            before_runtime_mutation()
         if frozen_recovery:
             stop_result = self._run_frozen_recovery(
                 ["stop", _PINVI_API_SERVICE, *_MAP_RUNTIME_SERVICES],
@@ -8964,6 +9070,7 @@ class ComposeService:
         self._append_stage_result(result, f"{stage_prefix}_stop_pair", stop_result, config)
         if not stop_result["success"]:
             raise DeploymentContractError("compatible pair stop failed")
+        checkpoint("map_api_up")
         if not self._run_up_stage(
             result,
             f"{stage_prefix}_map_api",
@@ -8981,12 +9088,15 @@ class ComposeService:
             frozen_recovery=frozen_recovery,
         ):
             raise DeploymentContractError("Map API pair restoration failed")
+        checkpoint("map_api_provenance")
         self._verify_running_image_source_provenance(
             config.map_container,
             label="Map",
             expected_revision=pair.map_source_revision,
         )
+        checkpoint("map_smoke")
         result[f"{stage_prefix}_map_smoke"] = run_map_ops_smoke(config)
+        checkpoint("map_runtime_dependents_up")
         if not self._run_up_stage(
             result,
             f"{stage_prefix}_map_runtime_dependents",
@@ -9004,10 +9114,12 @@ class ComposeService:
             frozen_recovery=frozen_recovery,
         ):
             raise DeploymentContractError("Map runtime dependent restoration failed")
+        checkpoint("map_runtime_provenance")
         self._verify_map_runtime_source_provenance(
             pair.map_source_revision,
             include_api=False,
         )
+        checkpoint("pinvi_api_up")
         if not self._run_up_stage(
             result,
             f"{stage_prefix}_pinvi_api",
@@ -9025,6 +9137,7 @@ class ComposeService:
             frozen_recovery=frozen_recovery,
         ):
             raise DeploymentContractError("PinVi API pair restoration failed")
+        checkpoint("pinvi_api_provenance")
         self._verify_running_image_source_provenance(
             config.pinvi_container,
             label="PinVi",
@@ -9038,6 +9151,11 @@ class ComposeService:
             cancel_probe_state=cancel_probe_state,
             transaction=transaction,
             frozen_recovery=frozen_recovery,
+            checkpoint_recorder=(
+                None
+                if checkpoint_recorder is None
+                else lambda name: checkpoint_recorder(f"contract.{name}")
+            ),
         )
 
     def _halt_c6c_pair(
