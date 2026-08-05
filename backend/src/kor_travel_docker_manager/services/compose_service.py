@@ -217,6 +217,12 @@ from kor_travel_docker_manager.services.cache_target_writer_fence import (
     attest_cache_target_global_writer_fence,
     cache_target_writer_environments_from_resolved_compose,
 )
+from kor_travel_docker_manager.services.pinned_source_install import (
+    assert_pinned_source_installation_allows_pair_mutation,
+)
+from kor_travel_docker_manager.services.pinned_source_install import (
+    install_pinned_sources as install_trusted_pinned_sources,
+)
 from kor_travel_docker_manager.services.registry import (
     get_target,
     init_steps_for_target,
@@ -3723,6 +3729,30 @@ class ComposeService:
             ),
         }
 
+    def install_pinned_sources(self) -> dict[str, Any]:
+        """F1E source authority만 수렴한다; Compose/Docker transaction은 열지 않는다."""
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            environment = _capture_compose_environment_snapshot(
+                environment_override=None,
+            )
+            assert_environment_snapshot_matches_c6c_lock(environment, lock_snapshot)
+            assert_manager_mutation_allowed(environment=environment.effective)
+            config = load_c6c_deployment_config_from_environment(environment.effective)
+            if not config.production:
+                raise DeploymentContractError(
+                    "pinned source installation is available only in production mode"
+                )
+            _require_cache_target_release(config)
+            owner = _frozen_canonical_env_owner(environment)
+            return install_trusted_pinned_sources(
+                environment=environment.effective,
+                env_path=Path(environment.env_path),
+                env_bytes=environment.env_file_bytes,
+                expected_owner_uid=owner["expected_owner_uid"],
+                expected_owner_gid=owner["expected_owner_gid"],
+            )
+
     def deploy_compatible_pinvi_pair(
         self,
         *,
@@ -3782,6 +3812,11 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible-pair deploy is available only in production mode"
                 )
+            assert_pinned_source_installation_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+            )
             _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
@@ -8556,6 +8591,11 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible pair capture is available only in production mode"
                 )
+            assert_pinned_source_installation_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+            )
             _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
@@ -9030,6 +9070,11 @@ class ComposeService:
                 raise DeploymentContractError(
                     "compatible pair rollback is available only in production mode"
                 )
+            assert_pinned_source_installation_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+            )
             manifest_path = transaction.manifest_path
             if manifest_path is None:
                 raise DeploymentContractError(

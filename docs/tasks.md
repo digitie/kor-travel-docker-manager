@@ -866,20 +866,24 @@ n150 canonical source cache는 user-owned `0700` checkout이고 tracked Map·Pin
 root가 이 repository의 Git config·hook·remote 설정을 해석하거나 fetch하면 source owner boundary를 깨고,
 F1D candidate는 여전히 build할 수 없다.
 
-- [ ] trusted root 전용 `ktdctl pinvi-pair install-pinned-sources --confirm`을 추가한다. 코드의
+- [x] trusted root 전용 `ktdctl pinvi-pair install-pinned-sources --confirm`을 추가했다. 코드의
       canonical HTTPS `RepoSpec`과 `CACHE_TARGET_PRODUCTION_PINS` exact SHA만 root-owned empty bare staging
       repository로 fetch하며 hook·global/system/repository config·prompt·local/file/ext protocol·submodule·
       branch/tag 전체 fetch를 금지한다.
-- [ ] source-owner checkout은 read-only origin identity를 canonical URL과 대조하는 helper input으로만 쓴다.
+- [x] source-owner checkout은 read-only origin identity를 canonical URL과 대조하는 helper input으로만 쓴다.
       URL alias/userinfo/query/fragment/port, Map↔PinVi swap, source-root symlink/hardlink, relative/interpolated/
       duplicate/export dotenv 선언과 wrong tree/commit은 env write 전에 거부한다.
-- [ ] stable commit path에 root-owned immutable detached worktree를 만들고, source-root와
+- [x] stable commit path에 root-owned immutable detached worktree를 만들고, source-root와
       `KOR_TRAVEL_MAP_GIT_COMMIT`/`PINVI_SOURCE_REVISION`의 source selection keyset을 unset-or-pin 규칙으로
       한 번에 검증·원자 교체한다. 다른 canonical env bytes는 보존한다.
-- [ ] private `0600` old-env backup과 secret-free durable journal(`prepared` → `env_replaced` → `committed`,
+- [x] private `0600` old-env backup과 secret-free durable journal(`prepared` → `env_replaced` → `committed`,
       rollback phase)을 fsync한다. crash resume은 old/new env SHA만 받아 수렴하고 foreign backup/worktree/
       journal은 cleanup이나 pair mutation을 막는다. F1E는 Docker·Compose·DB·runtime·image build를 0회로
       유지한다.
+- [x] 단일 적대적 리뷰에서 submodule 재진입·root hook 경계를 보강하고, focused 71 passed, backend 전체
+      1641 passed, Ruff, strict mypy를 통과했다.
+- [ ] 코드 PR을 merge한 뒤 trusted release를 n150에 설치하고 command의 secret-free attestation과 idempotent
+      재실행을 확인한 후 F1D를 시작한다.
 
 ### T-VN-41-F1D: pinned compatible-pair drift bootstrap (issue #136)
 
