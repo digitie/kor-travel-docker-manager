@@ -1406,9 +1406,11 @@ foreign, 손상 상태면 normal pair mutation과 달리 기존 source cache를 
 거부한다.
 
 mutation 전 C6c global lock, frozen env·raw/resolved Compose·external input identity, strict old manifest와
-retention image evidence, complete/ready current five-runtime drift, secret isolation/UI auth, candidate·live·old
-Map/PinVi DB head equality를 모두 검증한다. head가 하나라도 다르면 이 command는 runtime을 바꾸지 않고 H35
-coupled DB recovery만 허용한다.
+retention image evidence, complete/ready current five-runtime drift, secret isolation/UI auth, candidate·live
+Map/PinVi DB head equality를 모두 검증한다. candidate와 live head가 하나라도 다르면 이 command는 runtime을
+바꾸지 않고 H35 coupled DB recovery만 허용한다. old active image의 static head는 기존 drift를 설명하는 감사
+근거일 뿐이다. 이 transaction은 old image를 rollback slot으로 승격하거나 재기동하지 않으므로 old head가
+live DB와 다르다는 사실은 candidate build/activation을 막지 않는다.
 
 candidate build·immutable image attestation 뒤, runtime stop 전에 owner-only durable journal을 fsync한다.
 journal은 original manifest SHA, frozen input digest, candidate five image IDs/source revisions, expected DB heads,

@@ -293,12 +293,13 @@ def test_runtime_reverification_failure_halts_without_old_pair_recovery(
     old_recovery.assert_not_called()
 
 
-def test_old_image_head_mismatch_blocks_candidate_build_before_mutation(
+def test_candidate_image_head_mismatch_blocks_activation_before_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     service = ComposeService()
     old = _pair("a")
+    candidate = _pair("c")
     manifest = initial_pair_manifest(old)
     manifest_path = tmp_path / "compatible-pair-v4.json"
     manifest_path.write_text("old-pair\n", encoding="utf-8")
@@ -314,7 +315,14 @@ def test_old_image_head_mismatch_blocks_candidate_build_before_mutation(
         resolved_document_hash="3" * 64,
         manifest_path=str(manifest_path),
     )
-    candidate_build = Mock()
+    candidate_build = Mock(
+        return_value=SimpleNamespace(
+            map_source_revision=candidate.map_source_revision,
+            pinvi_source_revision=candidate.pinvi_source_revision,
+        )
+    )
+    prepare_candidate = Mock(return_value=(candidate, None))
+    activate_candidate = Mock()
     retention = Mock()
 
     monkeypatch.setattr(
@@ -373,8 +381,27 @@ def test_old_image_head_mismatch_blocks_candidate_build_before_mutation(
     monkeypatch.setattr(service, "_require_pair_image_provenance", Mock())
     monkeypatch.setattr(
         service,
-        "_assert_pinned_drift_old_database_heads",
-        Mock(side_effect=DeploymentContractError("old active Map API head differs")),
+        "_validate_resolved_compose_contract",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_require_services_ready", Mock())
+    monkeypatch.setattr(service, "_inspect_current_pair", Mock(return_value=_pair("d")))
+    monkeypatch.setattr(service, "_inspect_c6c_runtime_configs", Mock(return_value={}))
+    monkeypatch.setattr(
+        compose_service_module,
+        "validate_runtime_secret_isolation",
+        Mock(),
+    )
+    monkeypatch.setattr(compose_service_module, "run_map_ui_auth_preflight", Mock(return_value=[]))
+    monkeypatch.setattr(
+        service,
+        "_prepare_c6c_candidate_pair",
+        prepare_candidate,
+    )
+    monkeypatch.setattr(
+        service,
+        "_assert_pinned_drift_candidate_database_heads",
+        Mock(side_effect=DeploymentContractError("candidate Map API head differs")),
     )
     monkeypatch.setattr(
         compose_service_module,
@@ -382,9 +409,12 @@ def test_old_image_head_mismatch_blocks_candidate_build_before_mutation(
         candidate_build,
     )
     monkeypatch.setattr(compose_service_module, "ensure_pair_references", retention)
+    monkeypatch.setattr(service, "_activate_pair_sequentially", activate_candidate)
 
-    with pytest.raises(DeploymentContractError, match="old active Map API"):
+    with pytest.raises(DeploymentContractError, match="candidate Map API"):
         service.bootstrap_pinned_drift()
 
-    candidate_build.assert_not_called()
+    candidate_build.assert_called_once()
+    prepare_candidate.assert_called_once()
     retention.assert_not_called()
+    activate_candidate.assert_not_called()
