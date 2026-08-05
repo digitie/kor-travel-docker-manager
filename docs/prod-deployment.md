@@ -359,7 +359,23 @@ PinVi HTTP shell은 200·`text/html`·비어 있지 않은 body·`/_next/static/
 판정에 사용하지 않는다. route chunk가 없는 generic Next.js fallback은 실패하며, hydration 후 form과
 실제 로그인 동작은 최종 n150 Playwright에서 확인한다.
 
-### 8.1 pinned runtime drift 복구
+### 8.1 pinned source selection 설치
+
+canonical source cache가 tracked Map·PinVi release SHA를 보유하지 않거나 source-root/revision scalar가
+release pin과 다르면 raw `.env` 편집이나 root가 user-owned repository에서 Git을 실행하는 방식으로 고치지
+않는다. 구현 후 다음 trusted Manager command가 source authority만 먼저 수렴한다.
+
+```bash
+ktdctl pinvi-pair install-pinned-sources --confirm
+```
+
+이 command는 source-owner checkout에서 canonical origin identity를 read-only로 확인할 뿐, root가 그 Git
+config·hook·remote를 해석하지 않는다. root-owned empty bare staging repository는 code-owned canonical HTTPS
+URL과 tracked full SHA 하나만 sanitized fetch하며, 검증된 detached immutable worktree를 만든다. canonical
+`.env`의 Map/PinVi source root와 revision scalar는 private backup·durable journal 아래 owner-preserving atomic
+replace 하나로 함께 바뀐다. Docker·Compose·DB·runtime·image build는 이 command의 범위 밖이다.
+
+### 8.2 pinned runtime drift 복구
 
 일반 `ktdctl pinvi-pair deploy`와 `rollback`은 current five-runtime tuple이 active manifest와 같은
 정상 상태만 받는다. 이 전제가 깨졌다면 raw Docker·Compose·`.env` 변경, `--force`, 임의 image/source

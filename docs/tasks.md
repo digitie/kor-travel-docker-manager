@@ -32,6 +32,7 @@
 | **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[x]` | 2026-08-05 | trusted release에서 4-role 계약 bootstrap과 secret-free attestation 완료 |
 | **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[x]` | 2026-08-05 | deployment-owner `0600` env를 frozen owner identity로 결박; trusted release 설치·default-off bootstrap·secret-free attestation 완료 |
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
+| **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[/]` | - | user-owned stale checkout을 root Git 실행 없이 Manager-owned exact source selection으로 교체 |
 | **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
 
 ---
@@ -859,12 +860,34 @@ command로 receipt-first 퇴역해야 했다.
 - [x] F2 fresh v2 diagnostic은 writer stop 전 `writers_fencing`에서 Map runtime tuple drift를 감지해
       fail-close했다. DB·writer·runtime mutation은 없었다.
 
+### T-VN-41-F1E: trusted pinned source-installer (issue #138)
+
+n150 canonical source cache는 user-owned `0700` checkout이고 tracked Map·PinVi production pin object가 없다.
+root가 이 repository의 Git config·hook·remote 설정을 해석하거나 fetch하면 source owner boundary를 깨고,
+F1D candidate는 여전히 build할 수 없다.
+
+- [ ] trusted root 전용 `ktdctl pinvi-pair install-pinned-sources --confirm`을 추가한다. 코드의
+      canonical HTTPS `RepoSpec`과 `CACHE_TARGET_PRODUCTION_PINS` exact SHA만 root-owned empty bare staging
+      repository로 fetch하며 hook·global/system/repository config·prompt·local/file/ext protocol·submodule·
+      branch/tag 전체 fetch를 금지한다.
+- [ ] source-owner checkout은 read-only origin identity를 canonical URL과 대조하는 helper input으로만 쓴다.
+      URL alias/userinfo/query/fragment/port, Map↔PinVi swap, source-root symlink/hardlink, relative/interpolated/
+      duplicate/export dotenv 선언과 wrong tree/commit은 env write 전에 거부한다.
+- [ ] stable commit path에 root-owned immutable detached worktree를 만들고, source-root와
+      `KOR_TRAVEL_MAP_GIT_COMMIT`/`PINVI_SOURCE_REVISION`의 source selection keyset을 unset-or-pin 규칙으로
+      한 번에 검증·원자 교체한다. 다른 canonical env bytes는 보존한다.
+- [ ] private `0600` old-env backup과 secret-free durable journal(`prepared` → `env_replaced` → `committed`,
+      rollback phase)을 fsync한다. crash resume은 old/new env SHA만 받아 수렴하고 foreign backup/worktree/
+      journal은 cleanup이나 pair mutation을 막는다. F1E는 Docker·Compose·DB·runtime·image build를 0회로
+      유지한다.
+
 ### T-VN-41-F1D: pinned compatible-pair drift bootstrap (issue #136)
 
 F2가 확인한 drift는 일반 `pinvi-pair deploy`가 고의로 거부한다. active manifest와 runtime tuple,
 canonical source cache와 tracked exact production pin이 모두 달라 일반 deploy/rollback이나 raw Docker·
 `.env` 우회로는 안전하게 수렴할 수 없다.
 
+- [ ] F1E trusted source-installer가 root-owned detached exact source selection을 commit한 뒤에만 시작한다.
 - [ ] 단발성 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm` transaction을 추가한다. candidate는
       `.env` HEAD나 CLI revision이 아니라 `CACHE_TARGET_PRODUCTION_PINS`의 exact Map·PinVi revision만
       archive build source로 사용한다.
