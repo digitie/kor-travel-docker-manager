@@ -32,7 +32,7 @@
 | **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[x]` | 2026-08-05 | trusted release에서 4-role 계약 bootstrap과 secret-free attestation 완료 |
 | **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[x]` | 2026-08-05 | deployment-owner `0600` env를 frozen owner identity로 결박; trusted release 설치·default-off bootstrap·secret-free attestation 완료 |
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
-| **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[/]` | - | user-owned stale checkout을 root Git 실행 없이 Manager-owned exact source selection으로 교체 |
+| **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
 | **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
 
 ---
@@ -882,8 +882,10 @@ F1D candidate는 여전히 build할 수 없다.
       유지한다.
 - [x] 단일 적대적 리뷰에서 submodule 재진입·root hook 경계를 보강하고, focused 71 passed, backend 전체
       1641 passed, Ruff, strict mypy를 통과했다.
-- [ ] 코드 PR을 merge한 뒤 trusted release를 n150에 설치하고 command의 secret-free attestation과 idempotent
-      재실행을 확인한 후 F1D를 시작한다.
+- [x] PR #140과 exit-status 후속 PR #141을 merge한 뒤 trusted release를 n150에 설치했다. command는
+      최초 transaction을 `committed`로 완료했고, 수정 릴리스에서 returncode `0`과 `resumed: true`를
+      반환하는 idempotent 재실행까지 확인했다. F1E 경로는 Docker·Compose·DB·runtime·image build를
+      호출하지 않았다.
 
 ### T-VN-41-F1D: pinned compatible-pair drift bootstrap (issue #136)
 
