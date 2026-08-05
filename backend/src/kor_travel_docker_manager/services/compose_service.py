@@ -217,6 +217,13 @@ from kor_travel_docker_manager.services.cache_target_writer_fence import (
     attest_cache_target_global_writer_fence,
     cache_target_writer_environments_from_resolved_compose,
 )
+from kor_travel_docker_manager.services.pinned_deployment_input import (
+    assert_pinned_deployment_input_allows_pair_mutation,
+    install_pinned_deployment_inputs,
+    mark_pinned_deployment_input_f1d_completed,
+    mark_pinned_deployment_input_f1d_started,
+    require_pinned_deployment_input_handoff,
+)
 from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     PinnedDriftBootstrapJournal,
     assert_pinned_drift_bootstrap_allows_pair_mutation,
@@ -226,13 +233,6 @@ from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     read_pinned_drift_bootstrap,
     transition_pinned_drift_bootstrap,
     write_pinned_drift_bootstrap,
-)
-from kor_travel_docker_manager.services.pinned_source_install import (
-    assert_pinned_source_installation_allows_pair_mutation,
-    require_committed_pinned_source_installation,
-)
-from kor_travel_docker_manager.services.pinned_source_install import (
-    install_pinned_sources as install_trusted_pinned_sources,
 )
 from kor_travel_docker_manager.services.registry import (
     get_target,
@@ -3741,7 +3741,7 @@ class ComposeService:
         }
 
     def install_pinned_sources(self) -> dict[str, Any]:
-        """F1E source authority만 수렴한다; Compose/Docker transaction은 열지 않는다."""
+        """F1F deployment input만 수렴한다; Compose/Docker transaction은 열지 않는다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
             environment = _capture_compose_environment_snapshot(
@@ -3754,14 +3754,14 @@ class ComposeService:
                 raise DeploymentContractError(
                     "pinned source installation is available only in production mode"
                 )
-            _require_cache_target_release(config)
             owner = _frozen_canonical_env_owner(environment)
-            result = install_trusted_pinned_sources(
+            result = install_pinned_deployment_inputs(
                 environment=environment.effective,
                 env_path=Path(environment.env_path),
                 env_bytes=environment.env_file_bytes,
                 expected_owner_uid=owner["expected_owner_uid"],
                 expected_owner_gid=owner["expected_owner_gid"],
+                runner=subprocess.run,
             )
             return {**result, "returncode": 0 if result.get("success") else 1}
 
@@ -3779,17 +3779,16 @@ class ComposeService:
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             if not config.production:
                 raise DeploymentContractError(
                     "pinned drift bootstrap is available only in production mode"
                 )
-            require_committed_pinned_source_installation(
+            require_pinned_deployment_input_handoff(
                 environment=transaction.environment.effective,
                 env_path=Path(transaction.environment.env_path),
                 **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
             )
             _require_cache_target_release(config)
             manifest_path_text = transaction.manifest_path
@@ -3798,18 +3797,23 @@ class ComposeService:
                     "pinned drift bootstrap has no compatible-pair manifest path"
                 )
             manifest_path = Path(manifest_path_text)
-            journal_path = pinned_drift_bootstrap_journal_path(
-                transaction.environment.effective
-            )
+            journal_path = pinned_drift_bootstrap_journal_path(transaction.environment.effective)
             journal = read_pinned_drift_bootstrap(journal_path, allow_missing=True)
 
+            # F1D journal write 직후의 process crash도 재개 가능해야 한다. journal이
+            # 이미 존재하면 input 전이를 먼저 idempotently 맞춰 놓아야 terminal
+            # receipt를 다시 읽는 경로가 handoff_pending에 영구 정지하지 않는다.
+            if journal is not None:
+                mark_pinned_deployment_input_f1d_started(transaction.environment.effective)
             if journal is not None and journal.phase == "committed":
-                return self._validate_committed_pinned_drift_bootstrap(
+                committed_result = self._validate_committed_pinned_drift_bootstrap(
                     journal=journal,
                     transaction=transaction,
                     config=config,
                     manifest_path=manifest_path,
                 )
+                mark_pinned_deployment_input_f1d_completed(transaction.environment.effective)
+                return committed_result
 
             manifest = load_pair_manifest(manifest_path_text)
             manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -3858,6 +3862,7 @@ class ComposeService:
                     database_heads=database_heads,
                 )
                 write_pinned_drift_bootstrap(journal_path, journal)
+                mark_pinned_deployment_input_f1d_started(transaction.environment.effective)
                 resumed = False
                 manifest_state = "old"
             else:
@@ -3871,14 +3876,12 @@ class ComposeService:
                     resolved_compose_sha256=transaction.resolved_document_hash,
                     database_heads=database_heads,
                 )
-                manifest_is_old = (
-                    self._pair_matches(manifest.active, journal.old_active)
-                    and self._pair_matches(manifest.rollback, journal.old_rollback)
-                )
-                manifest_is_candidate = (
-                    self._pair_matches(manifest.active, journal.candidate)
-                    and self._pair_matches(manifest.rollback, journal.candidate)
-                )
+                manifest_is_old = self._pair_matches(
+                    manifest.active, journal.old_active
+                ) and self._pair_matches(manifest.rollback, journal.old_rollback)
+                manifest_is_candidate = self._pair_matches(
+                    manifest.active, journal.candidate
+                ) and self._pair_matches(manifest.rollback, journal.candidate)
                 if journal.phase == "manifest_committing":
                     if manifest_is_old:
                         if manifest_sha256 != journal.old_manifest_sha256:
@@ -4000,6 +4003,7 @@ class ComposeService:
                     )
                 journal = transition_pinned_drift_bootstrap(journal, "committed")
                 write_pinned_drift_bootstrap(journal_path, journal)
+                mark_pinned_deployment_input_f1d_completed(transaction.environment.effective)
 
             result["activation_verification"] = verification
             result["state"] = "committed"
@@ -4239,24 +4243,19 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(
-                environment=transaction.environment.effective
-            )
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             if not config.production:
                 raise DeploymentContractError(
                     "compatible-pair deploy is available only in production mode"
                 )
-            assert_pinned_source_installation_allows_pair_mutation(
+            assert_pinned_deployment_input_allows_pair_mutation(
                 environment=transaction.environment.effective,
                 env_path=Path(transaction.environment.env_path),
                 **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
             )
-            assert_pinned_drift_bootstrap_allows_pair_mutation(
-                transaction.environment.effective
-            )
+            assert_pinned_drift_bootstrap_allows_pair_mutation(transaction.environment.effective)
             _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
@@ -4304,9 +4303,7 @@ class ComposeService:
                 "cache-target cutover ID must be canonical lowercase UUID"
             )
         if expected_restore_epoch <= 0:
-            raise DeploymentContractError(
-                "cache-target expected restore epoch must be positive"
-            )
+            raise DeploymentContractError("cache-target expected restore epoch must be positive")
         if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
             raise DeploymentContractError("cache-target cutover reason is invalid")
 
@@ -4315,18 +4312,20 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             contract = config.cache_target
             if not config.production or contract is None:
                 raise DeploymentContractError(
                     "cache-target cutover requires the production contract"
                 )
             if contract.sync_enabled not in {"false", "true"}:
-                raise DeploymentContractError(
-                    "cache-target cutover sync state is invalid"
-                )
+                raise DeploymentContractError("cache-target cutover sync state is invalid")
+            assert_pinned_deployment_input_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
+            )
             _require_cache_target_release(config)
             manifest_path_text = transaction.manifest_path
             if manifest_path_text is None:
@@ -4334,15 +4333,11 @@ class ComposeService:
                     "cache-target cutover transaction has no pair manifest"
                 )
             manifest_path = Path(manifest_path_text)
-            journal_path = cache_target_window_journal_path(
-                transaction.environment.effective
-            )
+            journal_path = cache_target_window_journal_path(transaction.environment.effective)
             try:
                 journal_path.lstat()
             except FileNotFoundError:
-                assert_manager_mutation_allowed(
-                    environment=transaction.environment.effective
-                )
+                assert_manager_mutation_allowed(environment=transaction.environment.effective)
                 if contract.sync_enabled != "false":
                     raise DeploymentContractError(
                         "new cache-target cutover requires sync=false"
@@ -4361,12 +4356,8 @@ class ComposeService:
                 )
                 _require_cache_target_release(
                     config,
-                    candidate_map_source_revision=(
-                        build_provenance.map_source_revision
-                    ),
-                    candidate_source_revision=(
-                        build_provenance.pinvi_source_revision
-                    ),
+                    candidate_map_source_revision=(build_provenance.map_source_revision),
+                    candidate_source_revision=(build_provenance.pinvi_source_revision),
                 )
                 self._require_fresh_cache_target_diagnostic(
                     transaction=transaction,
@@ -4381,13 +4372,9 @@ class ComposeService:
                     environment_sha256=hashlib.sha256(
                         transaction.environment.env_file_bytes
                     ).hexdigest(),
-                    compose_sha256=hashlib.sha256(
-                        transaction.compose_source_bytes
-                    ).hexdigest(),
+                    compose_sha256=hashlib.sha256(transaction.compose_source_bytes).hexdigest(),
                     resolved_compose_sha256=transaction.resolved_document_hash,
-                    old_manifest_sha256=hashlib.sha256(
-                        manifest_path.read_bytes()
-                    ).hexdigest(),
+                    old_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
                 )
                 write_cache_target_window(journal_path, journal)
             except OSError as exc:
@@ -4399,8 +4386,7 @@ class ComposeService:
                 if (
                     journal.cutover_id != cutover_id
                     or journal.expected_restore_epoch != expected_restore_epoch
-                    or journal.reason_sha256
-                    != hashlib.sha256(reason.encode()).hexdigest()
+                    or journal.reason_sha256 != hashlib.sha256(reason.encode()).hexdigest()
                 ):
                     raise DeploymentContractError(
                         "existing cache-target window belongs to another request"
@@ -4419,9 +4405,7 @@ class ComposeService:
                 journal.transaction_id,
                 capability=_CACHE_TARGET_WINDOW_MUTATION_CAPABILITY,
             ):
-                assert_manager_mutation_allowed(
-                    environment=transaction.environment.effective
-                )
+                assert_manager_mutation_allowed(environment=transaction.environment.effective)
                 return self._run_cache_target_window_unlocked(
                     journal_path=journal_path,
                     journal=journal,
@@ -4443,13 +4427,17 @@ class ComposeService:
             transaction, _ = self._capture_transaction_unlocked()
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             if not config.production:
                 raise DeploymentContractError(
                     "cache-target default-off bootstrap is available only in production mode"
                 )
+            assert_pinned_deployment_input_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
+            )
             if config.cache_target is not None:
                 raise DeploymentContractError(
                     "cache-target default-off bootstrap requires an unconfigured contract"
@@ -4457,22 +4445,14 @@ class ComposeService:
             bootstrap = prepare_default_off_cache_target_bootstrap(
                 transaction.environment.env_file_bytes,
                 base_url=config.base_url,
-                expected_openapi_sha256=(
-                    CACHE_TARGET_PRODUCTION_PINS.service_openapi_sha256
-                ),
-                expected_source_revision=(
-                    CACHE_TARGET_PRODUCTION_PINS.map_functional_owner_revision
-                ),
-                expected_contract_generation=(
-                    CACHE_TARGET_PRODUCTION_PINS.contract_generation
-                ),
+                expected_openapi_sha256=(CACHE_TARGET_PRODUCTION_PINS.service_openapi_sha256),
+                expected_source_revision=(CACHE_TARGET_PRODUCTION_PINS.map_release_revision),
+                expected_contract_generation=(CACHE_TARGET_PRODUCTION_PINS.contract_generation),
             )
             require_cache_target_production_release(bootstrap.contract)
             replace_canonical_env_file(
                 Path(transaction.environment.env_path),
-                expected_sha256=hashlib.sha256(
-                    transaction.environment.env_file_bytes
-                ).hexdigest(),
+                expected_sha256=hashlib.sha256(transaction.environment.env_file_bytes).hexdigest(),
                 replacement=bootstrap.replacement,
                 **_frozen_canonical_env_owner(transaction.environment),
             )
@@ -4484,7 +4464,6 @@ class ComposeService:
                 "environment_sha256": hashlib.sha256(bootstrap.replacement).hexdigest(),
                 "contract_generation": bootstrap.contract.expected_contract_generation,
                 "service_openapi_sha256": bootstrap.contract.expected_openapi_sha256,
-                "map_functional_owner_revision": bootstrap.contract.expected_source_revision,
                 "map_release_revision": CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
                 "pinvi_release_revision": CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision,
             }
@@ -4496,13 +4475,17 @@ class ComposeService:
             transaction, _ = self._capture_transaction_unlocked()
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             if not config.production or config.cache_target is None:
                 raise DeploymentContractError(
                     "legacy diagnostic retirement requires the production cache-target contract"
                 )
+            assert_pinned_deployment_input_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
+            )
             receipt = retire_legacy_pre_stop_cache_target_diagnostic(
                 cache_target_diagnostic_journal_path(transaction.environment.effective),
                 retired_at_unix=int(time.time()),
@@ -5279,9 +5262,7 @@ class ComposeService:
                 "cache-target cutover ID must be canonical lowercase UUID"
             )
         if expected_restore_epoch <= 0:
-            raise DeploymentContractError(
-                "cache-target expected restore epoch must be positive"
-            )
+            raise DeploymentContractError("cache-target expected restore epoch must be positive")
         if not reason or reason != reason.strip() or "\n" in reason or "\r" in reason:
             raise DeploymentContractError("cache-target cutover reason is invalid")
 
@@ -5290,11 +5271,13 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(
-                environment=transaction.environment.effective
-            )
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            assert_pinned_deployment_input_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
             )
             return self._run_cache_target_initial_cutover_unlocked(
                 transaction=transaction,
@@ -5431,16 +5414,18 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(
-                environment=transaction.environment.effective
-            )
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             if not config.production or config.cache_target is None:
                 raise DeploymentContractError(
                     "cache-target enable requires the production contract"
                 )
+            assert_pinned_deployment_input_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
+            )
             _require_cache_target_release(config)
             self._validate_resolved_compose_contract(
                 config,
@@ -5474,14 +5459,10 @@ class ComposeService:
                 if (
                     enabled_candidate.environment != enabled_snapshot
                     or enabled_candidate.external_inputs != transaction.external_inputs
-                    or enabled_candidate.compose_source_bytes
-                    != transaction.compose_source_bytes
-                    or enabled_candidate.compose_source_mode
-                    != transaction.compose_source_mode
-                    or enabled_candidate.system_bind_snapshots
-                    != transaction.system_bind_snapshots
-                    or enabled_candidate.raw_volume_graph_hash
-                    != transaction.raw_volume_graph_hash
+                    or enabled_candidate.compose_source_bytes != transaction.compose_source_bytes
+                    or enabled_candidate.compose_source_mode != transaction.compose_source_mode
+                    or enabled_candidate.system_bind_snapshots != transaction.system_bind_snapshots
+                    or enabled_candidate.raw_volume_graph_hash != transaction.raw_volume_graph_hash
                     or enabled_candidate.resolved_volume_graph_hash
                     != transaction.resolved_volume_graph_hash
                     or enabled_candidate.manifest_path != manifest_path
@@ -5516,19 +5497,13 @@ class ComposeService:
                 current, _ = self._capture_transaction_unlocked(
                     derive_manifest_path=True,
                 )
-                if c6c_state_paths(current.environment.effective)[1] != (
-                    lock_snapshot.lock_path
-                ):
+                if c6c_state_paths(current.environment.effective)[1] != (lock_snapshot.lock_path):
                     raise DeploymentContractError(
                         "cache-target enable drifted outside the held global lock"
                     )
                 if Path(current.environment.env_path).resolve(strict=False) != env_path:
-                    raise DeploymentContractError(
-                        "cache-target enable canonical env path drifted"
-                    )
-                assert_manager_mutation_allowed(
-                    environment=current.environment.effective
-                )
+                    raise DeploymentContractError("cache-target enable canonical env path drifted")
+                assert_manager_mutation_allowed(environment=current.environment.effective)
                 current_config = load_c6c_deployment_config_from_environment(
                     current.environment.effective
                 )
@@ -5547,9 +5522,7 @@ class ComposeService:
                     transaction=current,
                 )
                 if current.manifest_path != manifest_path:
-                    raise DeploymentContractError(
-                        "cache-target enable pair manifest path drifted"
-                    )
+                    raise DeploymentContractError("cache-target enable pair manifest path drifted")
                 current_manifest = load_pair_manifest(manifest_path)
                 if current_manifest.rollback is None:
                     raise DeploymentContractError(
@@ -5566,8 +5539,7 @@ class ComposeService:
                     != receipt.evidence.active_pair_sha256
                     or _compatible_pair_logical_sha256(current_manifest.rollback)
                     != receipt.evidence.rollback_pair_sha256
-                    or current_contract.role_binding_sha256
-                    != receipt.evidence.role_binding_sha256
+                    or current_contract.role_binding_sha256 != receipt.evidence.role_binding_sha256
                     or current_contract.expected_openapi_sha256
                     != receipt.evidence.expected_openapi_sha256
                     or current_contract.expected_source_revision
@@ -5575,22 +5547,16 @@ class ComposeService:
                     or current_contract.expected_contract_generation
                     != receipt.evidence.expected_contract_generation
                 ):
-                    raise DeploymentContractError(
-                        "cache-target enable frozen evidence drifted"
-                    )
+                    raise DeploymentContractError("cache-target enable frozen evidence drifted")
                 if not enabled and (
                     hashlib.sha256(current.environment.env_file_bytes).hexdigest()
                     != receipt.evidence.env_sha256
-                    or current.resolved_document_hash
-                    != receipt.evidence.resolved_compose_sha256
+                    or current.resolved_document_hash != receipt.evidence.resolved_compose_sha256
                 ):
                     raise DeploymentContractError(
                         "cache-target disabled evidence differs from initial receipt"
                     )
-                if enabled and (
-                    current.resolved_document_hash
-                    != enabled_resolved_compose_sha256
-                ):
+                if enabled and (current.resolved_document_hash != enabled_resolved_compose_sha256):
                     raise DeploymentContractError(
                         "cache-target enabled resolved compose evidence drifted"
                     )
@@ -5629,9 +5595,7 @@ class ComposeService:
                     redact_config=current_config,
                 )
                 if not result.get("success"):
-                    raise DeploymentContractError(
-                        "cache-target PinVi API recreate failed"
-                    )
+                    raise DeploymentContractError("cache-target PinVi API recreate failed")
                 if not enabled:
                     self._run_cache_target_rollback_health_smoke(
                         current_config,
@@ -6123,6 +6087,12 @@ class ComposeService:
                 raise DeploymentContractError(
                     "cache-target diagnostic requires the production contract"
                 )
+            assert_pinned_deployment_input_allows_pair_mutation(
+                environment=transaction.environment.effective,
+                env_path=Path(transaction.environment.env_path),
+                **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
+            )
             manifest_path_text = transaction.manifest_path
             if manifest_path_text is None:
                 raise DeploymentContractError(
@@ -9021,24 +8991,19 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(
-                environment=transaction.environment.effective
-            )
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             if not config.production:
                 raise DeploymentContractError(
                     "compatible pair capture is available only in production mode"
                 )
-            assert_pinned_source_installation_allows_pair_mutation(
+            assert_pinned_deployment_input_allows_pair_mutation(
                 environment=transaction.environment.effective,
                 env_path=Path(transaction.environment.env_path),
                 **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
             )
-            assert_pinned_drift_bootstrap_allows_pair_mutation(
-                transaction.environment.effective
-            )
+            assert_pinned_drift_bootstrap_allows_pair_mutation(transaction.environment.effective)
             _require_cache_target_release(config)
             build_provenance = (
                 _derive_c6c_build_provenance(
@@ -9064,9 +9029,7 @@ class ComposeService:
             )
             manifest_path = transaction.manifest_path
             if manifest_path is None:
-                raise DeploymentContractError(
-                    "compatible-pair transaction has no manifest path"
-                )
+                raise DeploymentContractError("compatible-pair transaction has no manifest path")
             assert_pair_manifest_bootstrap_allowed(manifest_path)
             require_empty_retention_namespace(cwd=get_project_root())
             load_or_create_map_production_env_migration(
@@ -9086,9 +9049,7 @@ class ComposeService:
                     "Map target must contain the canonical runtime service set"
                 )
             map_dependents = list(_MAP_RUNTIME_SERVICES[1:])
-            pinvi_dependents = [
-                service for service in pinvi_services if service != "pinvi-api"
-            ]
+            pinvi_dependents = [service for service in pinvi_services if service != "pinvi-api"]
             initial_states = self._snapshot_service_states(
                 services,
                 transaction=transaction,
@@ -9122,9 +9083,7 @@ class ComposeService:
                     config,
                 )
             candidate_environment = self._pair_image_environment(candidate_pair)
-            result["candidate_image_provenance"] = self._pair_provenance_payload(
-                candidate_pair
-            )
+            result["candidate_image_provenance"] = self._pair_provenance_payload(candidate_pair)
             try:
                 candidate_retention = ensure_pair_references(
                     (candidate_pair,),
@@ -9162,9 +9121,7 @@ class ComposeService:
                         transaction=transaction,
                         build_provenance=build_provenance,
                     ):
-                        raise DeploymentContractError(
-                            "bootstrap base service deployment failed"
-                        )
+                        raise DeploymentContractError("bootstrap base service deployment failed")
                     direct_init_steps = [
                         {"target": target_name, **step}
                         for step in target_config.get("init_steps", [])
@@ -9179,9 +9136,7 @@ class ComposeService:
                         capture_output=True,
                         transaction=transaction,
                     ):
-                        raise DeploymentContractError(
-                            "bootstrap init command failed"
-                        )
+                        raise DeploymentContractError("bootstrap init command failed")
                 self._revalidate_c6c_build_provenance(
                     build_provenance,
                     transaction=transaction,
@@ -9241,9 +9196,7 @@ class ComposeService:
                     transaction=transaction,
                     build_provenance=build_provenance,
                 ):
-                    raise DeploymentContractError(
-                        "bootstrap Map dependents failed"
-                    )
+                    raise DeploymentContractError("bootstrap Map dependents failed")
                 self._verify_map_runtime_source_provenance(
                     candidate_pair.map_source_revision,
                     include_api=False,
@@ -9291,9 +9244,7 @@ class ComposeService:
                     transaction=transaction,
                     build_provenance=build_provenance,
                 ):
-                    raise DeploymentContractError(
-                        "bootstrap PinVi dependents failed"
-                    )
+                    raise DeploymentContractError("bootstrap PinVi dependents failed")
                 pair = self._inspect_current_pair(config)
                 self._require_expected_source_provenance(pair, build_provenance)
                 if not self._pair_matches(pair, candidate_pair):
@@ -9503,29 +9454,22 @@ class ComposeService:
                 derive_manifest_path=True,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(
-                environment=transaction.environment.effective
-            )
-            config = load_c6c_deployment_config_from_environment(
-                transaction.environment.effective
-            )
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
             if not config.production:
                 raise DeploymentContractError(
                     "compatible pair rollback is available only in production mode"
                 )
-            assert_pinned_source_installation_allows_pair_mutation(
+            assert_pinned_deployment_input_allows_pair_mutation(
                 environment=transaction.environment.effective,
                 env_path=Path(transaction.environment.env_path),
                 **_frozen_canonical_env_owner(transaction.environment),
+                runner=subprocess.run,
             )
-            assert_pinned_drift_bootstrap_allows_pair_mutation(
-                transaction.environment.effective
-            )
+            assert_pinned_drift_bootstrap_allows_pair_mutation(transaction.environment.effective)
             manifest_path = transaction.manifest_path
             if manifest_path is None:
-                raise DeploymentContractError(
-                    "compatible-pair transaction has no manifest path"
-                )
+                raise DeploymentContractError("compatible-pair transaction has no manifest path")
             manifest = load_pair_manifest(manifest_path)
             active_at_start = manifest.active
             rollback = manifest.rollback

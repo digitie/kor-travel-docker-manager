@@ -430,12 +430,10 @@ services:
       # provider ETL job 전체가 fail-close된다(GeoAuthNotConfiguredError). API 자체는
       # geo client를 직접 쓰지 않지만 세 서비스를 동일하게 결선해 drift를 막는다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
-      # issue #111 — Map PR #931의 배포 게이트. 이미지가 담은 alembic head가 이 값과
-      # 다르면 DB 연결 전에 기동을 거부한다. 값의 정본은 pin된 release의 alembic head이며
-      # release pin 갱신(map_release_revision) 때마다 함께 갱신해야 한다. 8/3 사고
-      # (chain이 0072까지만 담긴 이미지 배포로 prod schema가 중간에 멈춘 사고, issue #109)의
-      # 재발을 이 게이트가 막는다. 빈 문자열은 기동 거부이므로 반드시 명시 literal 값을 쓴다.
-      KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD: "0078_cache_target_gc_observe"
+      # issue #111 — Map image의 alembic head가 v2 pinned deployment input과 다르면
+      # DB 연결 전에 기동을 거부한다. 이 값은 installer가 canonical env에 명시하며,
+      # 빈 값이나 Compose 기본값은 허용하지 않는다.
+      KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD: ${KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD:?KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD must be explicitly set}
     ports:
     - ${KOR_TRAVEL_MAP_API_PORT:-12701}:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}
     healthcheck:

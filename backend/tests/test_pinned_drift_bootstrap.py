@@ -209,7 +209,17 @@ def test_manifest_commit_crash_resumes_from_candidate_only_manifest(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "require_committed_pinned_source_installation",
+        "require_pinned_deployment_input_handoff",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "mark_pinned_deployment_input_f1d_completed",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "mark_pinned_deployment_input_f1d_started",
         Mock(),
     )
     monkeypatch.setattr(compose_service_module, "_require_cache_target_release", Mock())
@@ -348,7 +358,12 @@ def test_pinned_drift_candidate_head_mismatch_blocks_before_runtime_mutation(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "require_committed_pinned_source_installation",
+        "require_pinned_deployment_input_handoff",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "mark_pinned_deployment_input_f1d_started",
         Mock(),
     )
     monkeypatch.setattr(compose_service_module, "_require_cache_target_release", Mock())

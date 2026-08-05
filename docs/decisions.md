@@ -1548,7 +1548,10 @@ predecessor pinset임을 확인할 때만 실행한다. v1 root-owned immutable 
 F1D journal도 pin fingerprint별 versioned history로 rotate한다. non-terminal journal은 새로운 generation을
 막고, terminal journal은 validation 후 immutable history path로 receipt-first archive한 뒤 새 generation
 journal만 연다. F1D는 v2 committed input evidence와 candidate/live static head equality를 모두 요구한다.
-input install은 F1D handoff pending을 durable하게 기록한다. pending 중 일반 pair mutation과
+input journal과 backup 자체도 `history/<pinset_sha256>` immutable generation으로 보관한다. 후속 rotation은
+predecessor input의 exact `new_env_sha256`, root-owned exact worktree tree와 archived F1D frozen-env digest를
+모두 다시 대조한다. 그래서 B pinset rollback 뒤 canonical env가 A v2 input으로 돌아온 재시도도 legacy v1로
+오인하지 않고 A receipt를 검증해 B generation을 다시 연다. input install은 F1D handoff pending을 durable하게 기록한다. pending 중 일반 pair mutation과
 diagnostic/enable/writer-drain은 거부하고 같은 pinset F1D만 시작할 수 있다. rotation은 모든 relevant durable
 state가 terminal이고 prior F1D가 terminal history로 archive된 경우에만 시작한다. installer와 artifact verifier는
 Docker, Compose, DB, runtime, image build를 실행하지 않는다.

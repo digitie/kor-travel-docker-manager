@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,8 @@ from kor_travel_docker_manager.services.compose_service import (
     _require_cache_target_release,
 )
 
+_ROOT = Path(__file__).resolve().parents[2]
+
 
 def _contract() -> CacheTargetRuntimeContract:
     return CacheTargetRuntimeContract(
@@ -27,7 +30,7 @@ def _contract() -> CacheTargetRuntimeContract:
         recovery_token="v" * 32,
         consumer_id="pinvi-cache-target-consumer",
         expected_openapi_sha256=CACHE_TARGET_PRODUCTION_PINS.service_openapi_sha256,
-        expected_source_revision=(CACHE_TARGET_PRODUCTION_PINS.map_functional_owner_revision),
+        expected_source_revision=CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
         expected_contract_generation=CACHE_TARGET_PRODUCTION_PINS.contract_generation,
         role_binding_sha256="b" * 64,
     )
@@ -35,14 +38,75 @@ def _contract() -> CacheTargetRuntimeContract:
 
 def test_tracked_release_is_the_current_generation_seven_pair() -> None:
     assert CACHE_TARGET_PRODUCTION_PINS == CacheTargetProductionPinManifest(
-        version=1,
+        version=2,
+        map_release_revision="8c5bdcf8ce892439a8bb8e0013edf74127bf076a",
+        pinvi_release_revision="3b87c19cc78a07121c27df7d7a4c382c2d3aa068",
+        service_openapi_sha256=(
+            "c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd"
+        ),
         contract_generation="7",
-        service_openapi_sha256=("144b4335d98fc021368b3297f5b8ed7b1c560e9850ebbdd8af71e45623ba7b3d"),
-        map_functional_owner_revision="e12494bd5c4b5b2e1d51c72b6ddcf18eead0e53f",
-        map_release_revision="c0afaa4e318a2e2e6d85f53bb889af3e6adec8c1",
-        pinvi_reviewed_candidate_revision="51289cb1651e7771b0ff5c685989a9768d81b870",
-        pinvi_release_revision="3ff54b8b15965c6ecd5c55b1419208e65831c7fe",
+        map_application_alembic_head="0083_nonderived_uuid_generator",
     )
+    assert tuple(CACHE_TARGET_PRODUCTION_PINS.__dataclass_fields__) == (
+        "version",
+        "map_release_revision",
+        "pinvi_release_revision",
+        "service_openapi_sha256",
+        "contract_generation",
+        "map_application_alembic_head",
+    )
+
+
+def test_pinset_sha256_uses_only_compact_sorted_v2_semantic_fields() -> None:
+    canonical_json = (
+        '{"contract_generation":"7","map_application_alembic_head":'
+        '"0083_nonderived_uuid_generator","map_release_revision":'
+        '"8c5bdcf8ce892439a8bb8e0013edf74127bf076a","pinvi_release_revision":'
+        '"3b87c19cc78a07121c27df7d7a4c382c2d3aa068","service_openapi_sha256":'
+        '"c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd",'
+        '"version":2}'
+    )
+
+    assert CACHE_TARGET_PRODUCTION_PINS.canonical_pinset_json() == canonical_json
+    assert (
+        CACHE_TARGET_PRODUCTION_PINS.pinset_sha256
+        == "ff9b9e2d327d15727cb29fd085bb4d12dcab91c061d8d52263902421a51d66f3"
+    )
+
+
+@pytest.mark.parametrize(
+    ("changes", "field"),
+    [
+        ({"version": 1}, "version"),
+        ({"version": True}, "version"),
+        ({"map_release_revision": "A" * 40}, "map_release_revision"),
+        ({"pinvi_release_revision": "x" * 40}, "pinvi_release_revision"),
+        ({"service_openapi_sha256": "0" * 63}, "service_openapi_sha256"),
+        ({"contract_generation": 7}, "contract_generation"),
+        ({"contract_generation": "07"}, "contract_generation"),
+        ({"map_application_alembic_head": "0083-bad"}, "map_application_alembic_head"),
+    ],
+)
+def test_pin_manifest_rejects_noncanonical_semantic_fields(
+    changes: dict[str, object], field: str
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        replace(CACHE_TARGET_PRODUCTION_PINS, **changes)
+
+
+def test_map_migration_head_is_required_compose_input_with_v2_example_default() -> None:
+    compose = (_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    example = (_ROOT / ".env.example").read_text(encoding="utf-8")
+
+    assert (
+        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD: "
+        "${KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD:?KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD "
+        "must be explicitly set}"
+    ) in compose
+    assert "0078_cache_target_gc_observe" not in compose
+    assert (
+        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0083_nonderived_uuid_generator"
+    ) in example
 
 
 def test_unconfigured_cache_target_does_not_require_release_pin() -> None:
@@ -51,7 +115,6 @@ def test_unconfigured_cache_target_does_not_require_release_pin() -> None:
 
 def test_release_requires_exact_contract_candidate_and_both_pairs() -> None:
     release = CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision
-    assert release is not None
     pairs = (
         SimpleNamespace(
             map_source_revision=CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
@@ -74,6 +137,13 @@ def test_release_requires_exact_contract_candidate_and_both_pairs() -> None:
         require_cache_target_production_release(
             replace(_contract(), expected_contract_generation="6"),
         )
+    with pytest.raises(DeploymentContractError, match="tracked pin manifest"):
+        require_cache_target_production_release(
+            replace(
+                _contract(),
+                expected_source_revision="e12494bd5c4b5b2e1d51c72b6ddcf18eead0e53f",
+            ),
+        )
     with pytest.raises(DeploymentContractError, match="candidate differs"):
         require_cache_target_production_release(
             _contract(),
@@ -82,9 +152,7 @@ def test_release_requires_exact_contract_candidate_and_both_pairs() -> None:
     with pytest.raises(DeploymentContractError, match="candidate differs"):
         require_cache_target_production_release(
             _contract(),
-            candidate_source_revision=(
-                CACHE_TARGET_PRODUCTION_PINS.pinvi_reviewed_candidate_revision
-            ),
+            candidate_source_revision="a" * 40,
         )
     with pytest.raises(DeploymentContractError, match="Map candidate differs"):
         require_cache_target_production_release(

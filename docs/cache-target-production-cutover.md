@@ -83,7 +83,10 @@ Map exact release 하나를 source authority로 정규화해 이 별도 refs를 
 > 개별 Docker Compose literal 또는 운영자 수동 env 편집으로 회전하지 않는다. v2 trusted input installer가
 > source selection과 함께 owner-preserving atomic replace로만 기록하고, F1D는 그 terminal evidence를
 > 요구한다. 이 installer는 일반 release gate 대신 prior terminal receipt와 current env의 exact predecessor
-> pinset을 확인하는 rotation preflight를 써서 old→new transition만 허용한다.
+> pinset을 확인하는 rotation preflight를 써서 old→new transition만 허용한다. 각 v2 input은
+> `history/<pinset_sha256>` 불변 세대로 보존하고, 그 세대의 F1D receipt가 동일 env
+> digest를 증명한 receipt-first archive를 마친 뒤에만 다음 pinset을 연다. 따라서 B pinset이 A로 rollback된
+> 재시도도 A v2 predecessor를 다시 검증하며, v1 legacy predecessor로 오인하지 않는다.
 
 ### 1.1 완전 미구성 상태의 default-off bootstrap
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -99,7 +100,11 @@ def _install_diagnostic_context(
     transaction = SimpleNamespace(
         manifest_path=str(manifest_path),
         resolved={},
-        environment=SimpleNamespace(effective={}),
+        environment=SimpleNamespace(
+            effective={},
+            env_path=str(tmp_path / ".env"),
+            env_file_identity=SimpleNamespace(uid=os.geteuid(), gid=os.getegid()),
+        ),
         compose_source_bytes=b"",
         resolved_document_hash="0" * 64,
     )
@@ -142,6 +147,10 @@ def _install_diagnostic_context(
     )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.assert_manager_mutation_allowed",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_pinned_deployment_input_allows_pair_mutation",
         Mock(),
     )
     monkeypatch.setattr(
