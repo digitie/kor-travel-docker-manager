@@ -1410,7 +1410,9 @@ retention image evidence, complete/ready current five-runtime drift, secret isol
 Map/PinVi DB head equality를 모두 검증한다. candidate와 live head가 하나라도 다르면 이 command는 runtime을
 바꾸지 않고 H35 coupled DB recovery만 허용한다. old active image의 static head는 기존 drift를 설명하는 감사
 근거일 뿐이다. 이 transaction은 old image를 rollback slot으로 승격하거나 재기동하지 않으므로 old head가
-live DB와 다르다는 사실은 candidate build/activation을 막지 않는다.
+live DB와 다르다는 사실은 candidate build/activation을 막지 않는다. 같은 이유로 시작 Map runtime 내부의
+source revision 불일치도 legacy drift evidence일 뿐이다. 시작 image tuple이 manifest active와 완전히 같아 이미
+수렴했는지만 image ID로 판단하며, legacy revision을 해석하거나 공통 revision을 요구하지 않는다.
 
 candidate build·immutable image attestation 뒤, runtime stop 전에 owner-only durable journal을 fsync한다.
 journal은 original manifest SHA, frozen input digest, candidate five image IDs/source revisions, expected DB heads,

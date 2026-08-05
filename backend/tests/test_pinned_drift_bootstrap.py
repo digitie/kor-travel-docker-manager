@@ -293,9 +293,20 @@ def test_runtime_reverification_failure_halts_without_old_pair_recovery(
     old_recovery.assert_not_called()
 
 
-def test_candidate_image_head_mismatch_blocks_activation_before_mutation(
+@pytest.mark.parametrize(
+    ("runtime_tuple_matches", "expected_error", "build_expected"),
+    (
+        (False, "candidate Map API", True),
+        (True, "requires a runtime tuple", False),
+    ),
+    ids=("candidate_head_mismatch", "already_active_tuple"),
+)
+def test_pinned_drift_preflight_blocks_before_runtime_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    runtime_tuple_matches: bool,
+    expected_error: str,
+    build_expected: bool,
 ) -> None:
     service = ComposeService()
     old = _pair("a")
@@ -385,7 +396,11 @@ def test_candidate_image_head_mismatch_blocks_activation_before_mutation(
         Mock(),
     )
     monkeypatch.setattr(service, "_require_services_ready", Mock())
-    monkeypatch.setattr(service, "_inspect_current_pair", Mock(return_value=_pair("d")))
+    monkeypatch.setattr(
+        service,
+        "_current_runtime_image_tuple_matches_pair",
+        Mock(return_value=runtime_tuple_matches),
+    )
     monkeypatch.setattr(service, "_inspect_c6c_runtime_configs", Mock(return_value={}))
     monkeypatch.setattr(
         compose_service_module,
@@ -411,10 +426,74 @@ def test_candidate_image_head_mismatch_blocks_activation_before_mutation(
     monkeypatch.setattr(compose_service_module, "ensure_pair_references", retention)
     monkeypatch.setattr(service, "_activate_pair_sequentially", activate_candidate)
 
-    with pytest.raises(DeploymentContractError, match="candidate Map API"):
+    with pytest.raises(DeploymentContractError, match=expected_error):
         service.bootstrap_pinned_drift()
 
-    candidate_build.assert_called_once()
-    prepare_candidate.assert_called_once()
+    if build_expected:
+        candidate_build.assert_called_once()
+        prepare_candidate.assert_called_once()
+    else:
+        candidate_build.assert_not_called()
+        prepare_candidate.assert_not_called()
     retention.assert_not_called()
     activate_candidate.assert_not_called()
+
+
+def test_pinned_drift_start_tuple_check_allows_mixed_legacy_revisions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    pair = new_image_pair(
+        "sha256:" + "a" * 64,
+        "sha256:" + "e" * 64,
+        "gen7",
+        map_ui_image_id="sha256:" + "b" * 64,
+        map_dagster_image_id="sha256:" + "c" * 64,
+        map_dagster_daemon_image_id="sha256:" + "d" * 64,
+        map_source_revision="f" * 40,
+        pinvi_source_revision="0" * 40,
+    )
+    service_images = dict(
+        zip(
+            compose_service_module._MAP_RUNTIME_SERVICES,
+            (
+                pair.map_image_id,
+                pair.map_ui_image_id,
+                pair.map_dagster_image_id,
+                pair.map_dagster_daemon_image_id,
+            ),
+            strict=True,
+        )
+    )
+    container_images = {
+        container_name: service_images[service_name]
+        for service_name, container_name in compose_service_module._MAP_RUNTIME_CONTAINERS.items()
+    }
+    container_images["pinvi-api"] = pair.pinvi_image_id
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_image_id",
+        Mock(side_effect=lambda container: container_images[container]),
+    )
+    source_revision = Mock(side_effect=AssertionError("legacy revisions are not read"))
+    monkeypatch.setattr(service, "_inspect_image_source_revision", source_revision)
+
+    assert service._current_runtime_image_tuple_matches_pair(
+        SimpleNamespace(pinvi_container="pinvi-api"), pair
+    )
+    for container_name in (
+        compose_service_module._MAP_RUNTIME_CONTAINERS[
+            compose_service_module._MAP_UI_SERVICE
+        ],
+        compose_service_module._MAP_RUNTIME_CONTAINERS[
+            compose_service_module._MAP_DAGSTER_SERVICE
+        ],
+        "pinvi-api",
+    ):
+        original_image = container_images[container_name]
+        container_images[container_name] = "sha256:" + "9" * 64
+        assert not service._current_runtime_image_tuple_matches_pair(
+            SimpleNamespace(pinvi_container="pinvi-api"), pair
+        )
+        container_images[container_name] = original_image
+    source_revision.assert_not_called()
