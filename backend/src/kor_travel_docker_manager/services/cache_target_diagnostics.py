@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_backup import DatabaseRole
@@ -70,6 +72,7 @@ DiagnosticFailureClass = Literal[
     "drain_timeout",
 ]
 DiagnosticStageStatus = Literal["succeeded", "failed"]
+LegacyDiagnosticRetirementPhase = Literal["prepared", "writers_fencing"]
 
 _FORWARD_PHASES: tuple[DiagnosticPhase, ...] = (
     "prepared",
@@ -166,6 +169,21 @@ _JOURNAL_FIELDS = frozenset(
         "completed_at_unix",
     }
 )
+_LEGACY_V1_JOURNAL_FIELDS = _JOURNAL_FIELDS.difference(
+    {
+        "writer_drain_lease_id",
+        "writer_drain_receipt_sha256",
+        "writer_drain_restore_receipt_sha256",
+    }
+)
+_LEGACY_RETIREMENT_RECEIPT_FIELDS = frozenset(
+    {
+        "version",
+        "retired_journal_sha256",
+        "retired_phase",
+        "retired_at_unix",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -224,6 +242,16 @@ class CacheTargetDiagnosticJournal:
     failure_stage: DiagnosticStage | None = None
     failure_class: DiagnosticFailureClass | None = None
     completed_at_unix: int | None = None
+
+
+@dataclass(frozen=True)
+class LegacyDiagnosticRetirementReceipt:
+    """v1 pre-stop diagnostic을 폐기했다는 최소 secret-free evidence다."""
+
+    version: Literal[1]
+    retired_journal_sha256: str
+    retired_phase: LegacyDiagnosticRetirementPhase
+    retired_at_unix: int
 
 
 def prepare_cache_target_diagnostic(
@@ -376,6 +404,217 @@ def read_cache_target_diagnostic(path: Path) -> CacheTargetDiagnosticJournal:
     _validate_journal(journal)
     _validate_phase_evidence(journal)
     return journal
+
+
+def retire_legacy_pre_stop_cache_target_diagnostic(
+    path: Path,
+    *,
+    retired_at_unix: int,
+) -> LegacyDiagnosticRetirementReceipt:
+    """writer stop 이전 v1 diagnostic만 receipt-first로 퇴역한다.
+
+    v1은 durable writer-drain lease/restore evidence가 없으므로 post-drain state를
+    migrate하거나 recovery하지 않는다. 이 함수는 exact source journal 하나만
+    unlink하고, current attempt log와 다른 C6c state는 호출자가 접근할 수 없다.
+    """
+
+    if retired_at_unix <= 0:
+        raise DeploymentContractError("legacy diagnostic retirement time is invalid")
+    receipt_path = legacy_diagnostic_retirement_receipt_path(path)
+    try:
+        receipt_path.lstat()
+    except FileNotFoundError:
+        existing_receipt = None
+    except OSError as exc:
+        raise DeploymentContractError(
+            "legacy diagnostic retirement receipt path is unavailable"
+        ) from exc
+    else:
+        existing_receipt = read_legacy_diagnostic_retirement_receipt(receipt_path)
+
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        if existing_receipt is not None:
+            try:
+                _fsync_state_directory(path.parent)
+            except OSError as exc:
+                raise DeploymentContractError(
+                    "legacy diagnostic journal retirement recovery failed"
+                ) from exc
+            return existing_receipt
+        raise DeploymentContractError("legacy diagnostic journal is unavailable") from None
+    except OSError as exc:
+        raise DeploymentContractError("legacy diagnostic journal is unavailable") from exc
+
+    raw, source_identity, phase = _read_legacy_pre_stop_diagnostic(path)
+    retired_journal_sha256 = hashlib.sha256(raw).hexdigest()
+    receipt = LegacyDiagnosticRetirementReceipt(
+        version=1,
+        retired_journal_sha256=retired_journal_sha256,
+        retired_phase=phase,
+        retired_at_unix=retired_at_unix,
+    )
+    _validate_legacy_retirement_receipt(receipt)
+    if existing_receipt is None:
+        write_legacy_diagnostic_retirement_receipt(receipt_path, receipt)
+    else:
+        if (
+            existing_receipt.retired_journal_sha256 != receipt.retired_journal_sha256
+            or existing_receipt.retired_phase != receipt.retired_phase
+        ):
+            raise DeploymentContractError(
+                "legacy diagnostic retirement receipt conflicts with the journal"
+            )
+        receipt = existing_receipt
+
+    current_raw, current_identity, current_phase = _read_legacy_pre_stop_diagnostic(path)
+    if (
+        current_raw != raw
+        or current_identity != source_identity
+        or current_phase != phase
+    ):
+        raise DeploymentContractError("legacy diagnostic journal changed before retirement")
+    try:
+        path.unlink()
+        _fsync_state_directory(path.parent)
+    except OSError as exc:
+        raise DeploymentContractError("legacy diagnostic journal retirement failed") from exc
+    return receipt
+
+
+def legacy_diagnostic_retirement_receipt_path(
+    path: Path,
+) -> Path:
+    return path.with_name("cache-target-diagnostic-retirement-v1.json")
+
+
+def write_legacy_diagnostic_retirement_receipt(
+    path: Path,
+    receipt: LegacyDiagnosticRetirementReceipt,
+) -> str:
+    _validate_legacy_retirement_receipt(receipt)
+    return write_cutover_state(path, receipt)  # type: ignore[arg-type]
+
+
+def read_legacy_diagnostic_retirement_receipt(
+    path: Path,
+) -> LegacyDiagnosticRetirementReceipt:
+    try:
+        document = json.loads(read_owner_only_state(path))
+        if not isinstance(document, dict) or set(document) != _LEGACY_RETIREMENT_RECEIPT_FIELDS:
+            raise TypeError
+        receipt = LegacyDiagnosticRetirementReceipt(**document)
+    except DeploymentContractError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DeploymentContractError("legacy diagnostic retirement receipt is invalid") from exc
+    _validate_legacy_retirement_receipt(receipt)
+    return receipt
+
+
+def _read_legacy_pre_stop_diagnostic(
+    path: Path,
+) -> tuple[bytes, tuple[int, int, int, int, int, int], LegacyDiagnosticRetirementPhase]:
+    source_identity = _owner_only_file_identity(path)
+    try:
+        raw = read_owner_only_state(path)
+        document = json.loads(raw)
+        if not isinstance(document, dict) or set(document) != _LEGACY_V1_JOURNAL_FIELDS:
+            raise TypeError
+        if type(document["version"]) is not int or document["version"] != 1:
+            raise ValueError
+        phase = document["phase"]
+        if not isinstance(phase, str) or phase not in {"prepared", "writers_fencing"}:
+            raise ValueError
+        diagnostic_id = document["diagnostic_id"]
+        if not isinstance(diagnostic_id, str):
+            raise TypeError
+        _canonical_uuid(diagnostic_id, "legacy diagnostic ID")
+        identity_value = document["identity"]
+        if (
+            not isinstance(identity_value, dict)
+            or set(identity_value) != _IDENTITY_FIELDS
+            or type(document["started_at_unix"]) is not int
+            or document["started_at_unix"] <= 0
+            or type(document["external_event_count"]) is not int
+            or document["external_event_count"] != 0
+            or document["writer_fence_sha256"] is not None
+            or any(
+                not isinstance(document[field], list) or document[field]
+                for field in (
+                    "map_application_receipts",
+                    "map_dagster_receipts",
+                    "pinvi_receipts",
+                )
+            )
+            or document["runtime_smoke_sha256"] is not None
+            or document["failure_stage"] is not None
+            or document["failure_class"] is not None
+            or document["completed_at_unix"] is not None
+        ):
+            raise ValueError
+        _validate_identity(CacheTargetDiagnosticIdentity(**identity_value))
+    except DeploymentContractError:
+        raise
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise DeploymentContractError(
+            "legacy diagnostic journal is not an eligible pre-stop v1 state"
+        ) from exc
+    current_identity = _owner_only_file_identity(path)
+    if current_identity != source_identity:
+        raise DeploymentContractError("legacy diagnostic journal changed while reading")
+    return raw, source_identity, cast(LegacyDiagnosticRetirementPhase, phase)
+
+
+def _owner_only_file_identity(path: Path) -> tuple[int, int, int, int, int, int]:
+    try:
+        file_stat = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError("legacy diagnostic journal is unavailable") from exc
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid != os.geteuid()
+        or file_stat.st_nlink != 1
+        or stat.S_IMODE(file_stat.st_mode) != 0o600
+    ):
+        raise DeploymentContractError("legacy diagnostic journal is unsafe")
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_uid,
+        file_stat.st_nlink,
+        stat.S_IMODE(file_stat.st_mode),
+        file_stat.st_size,
+    )
+
+
+def _validate_legacy_retirement_receipt(
+    receipt: LegacyDiagnosticRetirementReceipt,
+) -> None:
+    if type(receipt.version) is not int or receipt.version != 1:
+        raise DeploymentContractError("legacy diagnostic retirement receipt version is invalid")
+    if not isinstance(receipt.retired_journal_sha256, str):
+        raise DeploymentContractError("legacy diagnostic retirement journal is invalid")
+    _validate_sha256(
+        receipt.retired_journal_sha256,
+        "legacy diagnostic retirement journal",
+    )
+    if (
+        not isinstance(receipt.retired_phase, str)
+        or receipt.retired_phase not in {"prepared", "writers_fencing"}
+    ):
+        raise DeploymentContractError("legacy diagnostic retirement phase is invalid")
+    if type(receipt.retired_at_unix) is not int or receipt.retired_at_unix <= 0:
+        raise DeploymentContractError("legacy diagnostic retirement time is invalid")
+
+
+def _fsync_state_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def archive_cache_target_diagnostic(

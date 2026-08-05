@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1C — legacy pre-stop diagnostic journal 퇴역 설계)
+
+F1B trusted release의 default-off bootstrap과 secret-free contract attestation은 n150에서 성공했다. 이어
+새 UUID로 F2 `cache-target diagnose`를 시작하기 직전, Manager는 Docker·DB·runtime mutation 전에 기존
+version `1` diagnostic journal을 발견하고 fail-close했다. secret-free metadata로 이 journal은
+`writers_fencing`(writer stop 전)이고, window journal은 `rolled_back` terminal이며, 현재 attempt log는
+별도 abort-budget 정본임을 확인했다.
+
+수동 state-directory 삭제나 `.env`/Compose 우회 대신, `ktdctl cache-target retire-legacy-diagnostic --confirm`
+이라는 단일 제품 경로를 설계했다. command는 root-only state의 exact v1 pre-stop diagnostic 하나만 receipt를
+남기고 퇴역시킨다. post-drain/terminal/v2/suspicious state는 recovery를 추측하지 않고 계속 fail-close한다.
+attempt log, window, manifest, canonical env, Docker runtime, DB는 변경하지 않아 abort budget과 cutover boundary를
+우회하지 않는다. 구현·적대적 리뷰·trusted release 설치 후 이 경로로만 F2를 재개한다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1B — trusted root canonical env 소유권 결박)
 
 F1A가 merge된 exact trusted Manager release를 n150에 설치하고 bootstrap을 실행했지만, command는
@@ -22,7 +38,9 @@ file, `0600`, single link, expected SHA/identity 재검증과 atomic replace를 
 단일 적대적 리뷰는 bootstrap·일반 enable·window enable 세 경로가 frozen transaction의
 `env_file_identity.uid/gid`만 전달하고 receipt/journal SHA까지 다시 결박함을 확인했다. 임의 owner
 identity는 CLI/config에 노출되지 않으며, expected identity를 생략한 non-root 호출은 기존 current-EUID
-검사를 유지한다. 새 P0/P1/P2는 없었고 backend 전체 suite는 `1605 passed`다.
+검사를 유지한다. 새 P0/P1/P2는 없었고 backend 전체 suite는 `1605 passed`다. 이후 trusted F1B release를
+n150에 설치해 `cache-target bootstrap --confirm --json`과 4-role default-off secret-free attestation을
+성공적으로 완료했다.
 
 ---
 

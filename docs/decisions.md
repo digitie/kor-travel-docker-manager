@@ -1327,3 +1327,52 @@ new cutover를 시작하지 않는다.
 - (open) T-049A~E를 구현하고 n150 sync=false diagnostic rehearsal을 먼저 통과한다.
 - (open) Map production data-only inventory failure를 typed failure class와 exact fixture로 재현해
   허용 grammar 또는 별도 fail-close 원인을 보강한다.
+
+## ADR-30: legacy pre-stop diagnostic은 제한된 Manager receipt로만 퇴역한다
+
+- 상태: accepted
+- 날짜: 2026-08-05
+- 결정자: human, Codex
+
+### 컨텍스트
+
+T-049F가 Map-owned durable writer-drain lease/receipt를 도입하면서 diagnostic과 window journal의
+schema를 version `2`로 올렸다. 이전 version `1` diagnostic에는 lease/restore evidence가 없어
+`writers_drained` 이후의 crash recovery를 안전하게 추론할 수 없다. n150 F2 재개 전 남아 있던 v1
+diagnostic은 `writers_fencing`에 있어 Docker·DB·runtime mutation 이전에 fail-close됐고, 같은 state
+directory의 window는 `rolled_back` terminal이었다. direct `rm`이나 state-directory 통째 삭제는
+abort-budget attempt log와 terminal evidence까지 조용히 지울 수 있다.
+
+### 결정
+
+`ktdctl cache-target retire-legacy-diagnostic --confirm`을 production 전용 Manager command로 둔다.
+명령은 C6c global lock과 frozen canonical environment 아래 exact diagnostic path 하나만 읽고,
+owner-only regular/root-owned/single-link/`0600`, bounded raw JSON, v1 exact field set과
+`prepared` 또는 `writers_fencing` phase를 강제한다. raw SHA와 phase만 담은 owner-only retirement
+receipt를 먼저 fsync하고 source inode·mode·SHA를 다시 확인한 후 journal을 unlink하고 directory를 fsync한다.
+receipt가 이미 있으면 동일 SHA/phase만 idempotent하게 마무리할 수 있다. unlink 뒤 directory fsync나
+return 전에 process가 중단되어 journal이 이미 없으면 valid canonical receipt를 성공으로 재보고한다.
+
+`writers_drained` 이후, terminal, v2, 손상·foreign journal은 퇴역 대상이 아니다. Map-owned durable
+lease/receipt recovery 또는 existing transaction resume/rollback이 유일한 경로다. 현재 diagnostic
+attempt log, window journal, compatible-pair manifest, canonical `.env`, Docker runtime, DB는 이 command가
+변경하지 않는다. lock을 잡은 뒤 frozen transaction environment의 `assert_manager_mutation_allowed`와
+production contract를 read-only로 다시 검사하므로 non-terminal 또는 invalid window도 retirement를 막는다.
+CLI `--confirm`이 없으면 process는 어떠한 mutation도 시도하지 않는다.
+
+### 근거
+
+- v1 post-drain state를 자동 변환·삭제하지 않으면 writer stop/recovery를 추측해 실행하지 않는다.
+- receipt-first와 inode/SHA 재검증은 process crash나 path replacement가 journal을 무증적으로 사라지게
+  하는 것을 막는다.
+- attempt log를 보존하면 service 전 환경에서 legacy state를 폐기해도 expensive rehearsal retry budget을
+  우회하지 않는다.
+- narrow command가 state directory 전체 삭제보다 점검 가능하고, raw journal/credential을 stdout이나
+  tracked 문서에 노출하지 않는다.
+
+### 결과
+
+- F2는 safe pre-stop legacy state 뒤 fresh v2 diagnostic으로 재개할 수 있다.
+- post-drain crash recovery는 이전처럼 fail-close하므로 일부 runtime이 정지된 채로 방치될 위험을
+  "정리" 명목으로 키우지 않는다.
+- operator는 manual file deletion 대신 audit 가능한 Manager 경로 하나를 사용한다.

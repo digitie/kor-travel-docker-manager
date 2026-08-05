@@ -97,6 +97,24 @@ bootstrap 성공은 F2의 runtime attestation이나 cutover 성공이 아니며,
 다시 실행할 수 있는 configuration input만 만든다. raw Compose와 수동 `.env` 편집은 어떤 경우에도
 대체 경로가 아니다.
 
+### 1.2 legacy pre-stop diagnostic journal 퇴역
+
+F2를 시작하기 전에 이전 implementation의 version `1` diagnostic journal이 `prepared` 또는
+`writers_fencing`에서 남아 있으면, operator는 state directory를 직접 지우거나 journal을 수동 편집하지
+않는다. 다음 한 Manager command만 허용된다.
+
+```bash
+ktdctl cache-target retire-legacy-diagnostic --confirm --json
+```
+
+이 명령은 C6c global lock 아래 exact owner-only v1 diagnostic file을 다시 검증하고, old raw SHA와
+pre-stop phase만 담은 retirement receipt를 먼저 durable commit한 뒤 해당 journal만 unlink한다.
+새 writer-drain lease/receipt가 필요한 `writers_drained` 이후, terminal journal, version `2`, invalid state는
+절대 퇴역하지 않는다. frozen canonical `.env`와 terminal window journal은 공통 mutation gate에서 read-only로
+확인하고, non-terminal/invalid window는 이 command도 fail-close한다. 현재 diagnostic attempt log의 abort
+budget, window journal, canonical `.env`, compatible-pair manifest, runtime, DB는 변경하지 않는다. stdout도 raw
+journal 또는 credential을 보이지 않는다. 성공 뒤에만 새 UUID의 `cache-target diagnose`를 시작한다.
+
 ## 2. 사전 조건
 
 1. Manager, Map, PinVi exact source revision이 review된 compatible pair이고 manifest active와 rollback image가
@@ -247,8 +265,9 @@ backup bundle 전 drain 실패는 이 lease-only pre-backup recovery로 끝내�
 수행하지 않는다. backup bundle commit 뒤 실패만 기존 coupled DB rollback에 들어간다.
 
 writer-drain을 도입한 window·diagnostic journal은 version `2` exact schema이며 version `1`을 자동 변환하거나
-resume하지 않는다. legacy journal은 모든 mutation 전에 fail-close하며, 현재 서비스 전 격리 환경에서는 state
-directory를 폐기하고 source/ETL로 data를 재생성한 새 transaction으로 시작한다.
+resume하지 않는다. legacy journal은 모든 mutation 전에 fail-close한다. 다만 `prepared`/`writers_fencing`의
+v1 diagnostic만 1.2절의 Manager-owned retirement receipt를 남긴 뒤 폐기할 수 있다. state directory를 직접
+폐기하거나 source/ETL 재생성을 journal recovery의 대체 수단으로 쓰지 않는다.
 
 ## 4. 최초 cutover phase
 

@@ -166,6 +166,7 @@ from kor_travel_docker_manager.services.cache_target_diagnostics import (
     read_cache_target_diagnostic,
     read_or_create_cache_target_diagnostic_attempt_log,
     record_diagnostic_attempt,
+    retire_legacy_pre_stop_cache_target_diagnostic,
     transition_cache_target_diagnostic,
     write_cache_target_diagnostic,
     write_cache_target_diagnostic_attempt_log,
@@ -4011,6 +4012,32 @@ class ComposeService:
                 "map_functional_owner_revision": bootstrap.contract.expected_source_revision,
                 "map_release_revision": CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
                 "pinvi_release_revision": CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision,
+            }
+
+    def retire_legacy_pre_stop_cache_target_diagnostic(self) -> dict[str, Any]:
+        """F1C: v1 pre-stop diagnostic 하나만 receipt-first로 퇴역한다."""
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked()
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production or config.cache_target is None:
+                raise DeploymentContractError(
+                    "legacy diagnostic retirement requires the production cache-target contract"
+                )
+            receipt = retire_legacy_pre_stop_cache_target_diagnostic(
+                cache_target_diagnostic_journal_path(transaction.environment.effective),
+                retired_at_unix=int(time.time()),
+            )
+            return {
+                "success": True,
+                "returncode": 0,
+                "retired_phase": receipt.retired_phase,
+                "retired_journal_sha256": receipt.retired_journal_sha256,
+                "retired_at_unix": receipt.retired_at_unix,
             }
 
     def _validate_cache_target_runtime_activated_terminal(
