@@ -1501,3 +1501,71 @@ image build를 호출하지 않는다.
 - F1D는 source cache의 stale HEAD와 무관하게 root-owned exact build input을 받는다.
 - production runtime/DB/manifest를 전혀 바꾸지 않은 상태에서 source authority만 독립적으로 수렴한다.
 - non-terminal source installation residue가 subsequent pair mutation을 허용해 crash state를 덮는 일이 없다.
+
+## ADR-33: release pin 교체는 source와 runtime contract input을 같은 generation으로 설치한다
+
+- 상태: proposed
+- 날짜: 2026-08-05
+- 결정자: human, Codex
+
+### 컨텍스트
+
+F1D의 static candidate gate가 live Map application DB head
+`0083_nonderived_uuid_generator`와 v1 Map release pin `c0af…`의 static head
+`0082_legacy_write_fence` 불일치를 mutation 전에 잡았다. 그 뒤 Map release만 바꾸면
+PinVi가 요구하는 service OpenAPI SHA와 Map functional owner가 예전 canonical `.env` 값에 남고,
+Map API entrypoint의 migration expected head가 Compose source의 stale literal에 남는다. 반대로
+각 값을 raw `.env`나 Compose로 순서대로 바꾸면 source, contract, image head가 서로 다른 release를
+가리키는 중간 상태를 durable하게 만들 수 있다.
+
+현 source-only v1 installer도 그대로 재실행할 수 없다. committed journal은 new manifest revision과
+다르면 거부되고, canonical env의 source root는 이미 root-owned immutable worktree라 user-owned input
+검사에 맞지 않는다. 또 static F1D journal은 terminal frozen input을 새 pin과 비교해 future re-pin을
+영구 차단할 수 있다.
+
+### 결정
+
+`CACHE_TARGET_PRODUCTION_PINS` v2는 Map/PinVi exact release와 cache-target service contract뿐 아니라
+Map application Alembic head를 한 input generation으로 기록한다. Map functional owner와 reviewed PinVi
+candidate는 control-plane pin에서 제거한다. cache-target source identity는 Map **release** 하나로 정규화해
+PinVi expected source revision, Map artifact provenance, candidate source 모두 같은 exact SHA를 쓴다. pinset
+identity는 canonical manifest serialization의 SHA-256이며 모든 v2 durable receipt가 이 identity를 기록한다.
+
+PinVi release는 versioned upstream metadata(Map release, service artifact SHA, contract generation)를 source에
+포함하고 vendored service OpenAPI bytes와 대조한다. Manager는 trusted exact Map/PinVi worktree에서 Map
+artifact hash, PinVi vendored bytes와 metadata, manifest pinset을 read-only로 교차검증한 뒤에만 source input을
+설치한다. trusted installer는 source-only v1
+receipt를 재사용하지 않고 versioned v2 journal/backup/worktree에서 Map·PinVi source root/revision,
+Map expected migration head, PinVi expected OpenAPI SHA/source revision/generation을 한 번의
+owner-preserving atomic canonical-env replace로 설치한다. Map Compose는 hard-coded head를 가지지 않고
+이 required scalar를 사용한다.
+
+v2 rotation preflight는 current env가 arbitrary old state가 아니라 validated v1 terminal receipt의 exact
+predecessor pinset임을 확인할 때만 실행한다. v1 root-owned immutable target은 verified predecessor로만
+수용하며, 임의 root-owned path 또는 revision scalar는 수용하지 않는다. v1 terminal receipt는 감사용으로
+남지만 v2 F1D authority가 아니며, v1 non-terminal 또는 foreign residue는 기존처럼 pair mutation을 막는다.
+
+F1D journal도 pin fingerprint별 versioned history로 rotate한다. non-terminal journal은 새로운 generation을
+막고, terminal journal은 validation 후 immutable history path로 receipt-first archive한 뒤 새 generation
+journal만 연다. F1D는 v2 committed input evidence와 candidate/live static head equality를 모두 요구한다.
+input install은 F1D handoff pending을 durable하게 기록한다. pending 중 일반 pair mutation과
+diagnostic/enable/writer-drain은 거부하고 같은 pinset F1D만 시작할 수 있다. rotation은 모든 relevant durable
+state가 terminal이고 prior F1D가 terminal history로 archive된 경우에만 시작한다. installer와 artifact verifier는
+Docker, Compose, DB, runtime, image build를 실행하지 않는다.
+
+### 근거
+
+- release source, cache-target contract, Map entrypoint head는 모두 candidate가 실제 기동되기 전에
+  일치해야 하는 하나의 deployment input이다.
+- predecessor proof와 versioned durable state는 새 pin이 기존 terminal receipt의 의미를 바꾸거나 old
+  backup을 덮는 것을 막는다.
+- required Compose interpolation은 release head를 소스 코드 literal과 canonical env 두 곳에서 따로
+  관리하는 drift를 제거한다.
+- one-sided Map/PinVi 상수 변경을 exact source artifact verifier가 candidate build 전에 차단한다.
+
+### 결과
+
+- F1D는 schema-ahead live DB에 stale candidate를 기동하거나, 새 image에 구 contract를 주입하지 않는다.
+- PinVi vendor release가 확정된 뒤에만 Manager manifest가 exact pair를 기록하므로 placeholder SHA 또는
+  guessed revision을 production authority로 만들지 않는다.
+- future release rotation도 terminal historical receipt를 보존하면서 같은 procedure로 재실행할 수 있다.

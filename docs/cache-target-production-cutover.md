@@ -72,6 +72,19 @@ immutable image 출처를 뜻하므로 서로 대체하지 않는다. cache-targ
 production C6c 경로에는 이 gate를 적용하지 않는다. 모든 필드가 canonical unset/default이면 contract가
 없는 것으로 처리하되, 하나라도 부분 설정됐으면 기존 경로로 내려가지 않고 fail-close한다.
 
+이 문단의 functional owner와 reviewed candidate는 **v1 historical pin model** 설명이다. F1F v2는
+Map exact release 하나를 source authority로 정규화해 이 별도 refs를 runtime manifest와 canonical env에서
+제거한다.
+
+> **F1F 전환 예정**: 위 v1 pin은 Map DB가 `0083_nonderived_uuid_generator`에 도달한 뒤에도
+> Map `c0af…`(static head `0082_legacy_write_fence`)를 가리켜 F1D candidate static inspection에서
+> 정확히 차단됐다. F1F는 실제 배포 Map `8c5bdcf8…`, 그 service artifact를 재vendor한 PinVi release,
+> Map application expected head와 PinVi 세 contract scalar를 v2 manifest 하나로 재결박한다. value를
+> 개별 Docker Compose literal 또는 운영자 수동 env 편집으로 회전하지 않는다. v2 trusted input installer가
+> source selection과 함께 owner-preserving atomic replace로만 기록하고, F1D는 그 terminal evidence를
+> 요구한다. 이 installer는 일반 release gate 대신 prior terminal receipt와 current env의 exact predecessor
+> pinset을 확인하는 rotation preflight를 써서 old→new transition만 허용한다.
+
 ### 1.1 완전 미구성 상태의 default-off bootstrap
 
 production canonical `.env`에 cache-target contract가 아예 없으면, F2 사전 진단 전에 다음 한
