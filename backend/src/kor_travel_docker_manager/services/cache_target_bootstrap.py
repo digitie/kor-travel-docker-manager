@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from io import StringIO
+
+from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_contract import (
@@ -52,16 +56,24 @@ def prepare_default_off_cache_target_bootstrap(
     if not text:
         raise DeploymentContractError("canonical env is empty")
     lines = text.splitlines(keepends=True)
-    admin_base_url = _read_single_env_value(lines, PINVI_ADMIN_BASE_URL_ENV)
+    values = {
+        key: value
+        for key, value in dotenv_values(
+            stream=StringIO(text), interpolate=False
+        ).items()
+        if isinstance(key, str)
+    }
+    admin_base_url = _read_single_env_value(
+        lines, values, PINVI_ADMIN_BASE_URL_ENV
+    )
     if admin_base_url != base_url:
         raise DeploymentContractError(
             "canonical env PinVi Map admin base URL differs from the frozen contract"
         )
-    for env_name in DEFAULT_OFF_BOOTSTRAP_ENV_NAMES:
-        if _find_env_lines(lines, env_name):
-            raise DeploymentContractError(
-                "cache-target default-off bootstrap requires a wholly unconfigured env"
-            )
+    if DEFAULT_OFF_BOOTSTRAP_ENV_NAMES.intersection(values):
+        raise DeploymentContractError(
+            "cache-target default-off bootstrap requires a wholly unconfigured env"
+        )
 
     contract = create_default_off_cache_target_runtime_contract(
         expected_openapi_sha256=expected_openapi_sha256,
@@ -87,21 +99,24 @@ def prepare_default_off_cache_target_bootstrap(
     return DefaultOffCacheTargetBootstrap(replacement=replacement, contract=contract)
 
 
-def _read_single_env_value(lines: list[str], env_name: str) -> str:
+def _read_single_env_value(
+    lines: list[str],
+    values: dict[str, str | None],
+    env_name: str,
+) -> str:
     matches = _find_env_lines(lines, env_name)
     if len(matches) != 1:
         raise DeploymentContractError(f"canonical env must contain exactly one {env_name}")
-    _, line = matches[0]
-    value = line.split("=", 1)[1].rstrip("\r\n")
-    if not value:
+    value = values.get(env_name)
+    if not isinstance(value, str) or not value:
         raise DeploymentContractError(f"canonical env {env_name} is empty")
     return value
 
 
 def _find_env_lines(lines: list[str], env_name: str) -> list[tuple[int, str]]:
-    prefix = f"{env_name}="
+    pattern = re.compile(rf"^\s*(?:export\s+)?{re.escape(env_name)}\s*(?:=|$)")
     return [
         (index, line)
         for index, line in enumerate(lines)
-        if line.startswith(prefix)
+        if pattern.match(line)
     ]

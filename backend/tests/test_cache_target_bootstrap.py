@@ -81,7 +81,17 @@ def test_bootstrap_creates_exact_default_off_four_role_contract() -> None:
     assert len(contract.role_binding_sha256) == 64
 
 
-def test_bootstrap_rejects_partial_state_without_generating_tokens() -> None:
+@pytest.mark.parametrize(
+    "partial_declaration",
+    [
+        f"{PINVI_SYNC_ENV}=false",
+        f"export {PINVI_SYNC_ENV}=false",
+        f"export {PINVI_CACHE_API_BASE_URL_ENV}",
+    ],
+)
+def test_bootstrap_rejects_partial_state_without_generating_tokens(
+    partial_declaration: str,
+) -> None:
     generated = False
 
     def token_factory() -> str:
@@ -91,7 +101,7 @@ def test_bootstrap_rejects_partial_state_without_generating_tokens() -> None:
 
     with pytest.raises(DeploymentContractError, match="wholly unconfigured"):
         prepare_default_off_cache_target_bootstrap(
-            _raw_env(f"{PINVI_SYNC_ENV}=false"),
+            _raw_env(partial_declaration),
             base_url=_BASE_URL,
             expected_openapi_sha256=_OPENAPI_SHA,
             expected_source_revision=_SOURCE_REVISION,

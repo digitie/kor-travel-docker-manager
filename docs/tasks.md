@@ -810,6 +810,11 @@ F2 사전 진단은 canonical `.env`에 Map registry·PinVi ordinary binding·ge
 - [/] process environment override, partial/기존 contract, 비production, admin/cache base 불일치,
       static production pin 불일치는 write 전에 fail-close한다. bootstrap은 container, DB, pair
       manifest, durable cutover journal을 전혀 변경하지 않는다.
-- [ ] 단일 적대적 리뷰와 focused/backend 전체 테스트 후 PR을 merge·production 설치한다. 그 뒤
+- [x] 단일 적대적 리뷰에서 `export NAME=...` 또는 값 없는 dotenv 선언을 raw 검사에서 놓쳐
+      duplicate key를 append할 수 있는 P2를 확인했다. dotenv parser의 key set으로 모든 선언을
+      존재로 판정하도록 고치고 direct/export/blank 회귀를 추가했다.
+- [x] 보정 뒤 단일 적대적 재검토에서 새 P0/P1/P2가 없음을 확인했다. focused 회귀와 backend 전체
+      suite를 통과했다.
+- [ ] PR을 merge·production 설치한다. 그 뒤
       production에서 command를 한 번 실행하고 secret-free attestation을 다시 확인한 뒤에만 F2
       diagnostic을 새 transaction ID로 재개한다.
