@@ -28,7 +28,8 @@
 | **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[x]` | 2026-08-04 | fail-close 2중 방어(--confirm·capability sentinel), 적대적 리뷰 2명 완료 |
 | **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[x]` | 2026-08-04 | GET /backups(mutation 경로 없음), BackupHistoryPanel, 적대적 리뷰 2명 완료 |
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
-| **T-VN-41-F1** | cache-target production pair re-pin (issue #129) | `[/]` | - | 최신 generation 7 Map/PinVi exact provenance·runbook·회귀를 함께 갱신 |
+| **T-VN-41-F1** | cache-target production pair re-pin (issue #129) | `[x]` | 2026-08-05 | exact provenance·runbook·회귀를 갱신하고 Manager production 설치까지 완료 |
+| **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[/]` | - | 완전 미구성 canonical `.env`에만 4-role 계약을 원자 생성하고 F2 진단의 입력을 준비 |
 
 ---
 
@@ -787,6 +788,28 @@ T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 �
 - [x] Map #940의 service artifact/functional owner와 현재 production Map release,
       PinVi #428의 reviewed candidate/squash release를 GitHub merge provenance와 n150 배포
       receipt로 교차 확인했다.
-- [/] `CacheTargetProductionPinManifest`의 generation 7 exact pair, 전체 pin 회귀,
-      production cutover runbook을 한 PR에서 갱신한다. 이 PR은 Manager production 배포와
-      적대적 리뷰 1건을 통과해야 F2 진단/cutover를 열 수 있다.
+- [x] `CacheTargetProductionPinManifest`의 generation 7 exact pair, 전체 pin 회귀,
+      production cutover runbook을 한 PR에서 갱신했다. 적대적 리뷰 1건과 focused 검증을 통과하고
+      reviewed exact Manager release를 production에 설치했다.
+
+### T-VN-41-F1A: cache-target default-off 계약의 Manager 소유 bootstrap
+
+F2 사전 진단은 canonical `.env`에 Map registry·PinVi ordinary binding·generation pin이 모두
+존재하는 것을 전제로 한다. 기존 production은 이 계약이 전혀 없어 diagnose가 mutation 전에
+중단했다. 운영자가 raw Compose 또는 `.env`를 손으로 고치는 우회는 허용하지 않는다.
+
+- [x] F1 production 재pin 뒤 read-only preflight로 cache-target contract가 완전 미구성임을
+      확인하고, partial state를 자동 보정하지 않는 Manager-only bootstrap 경계를 설계했다.
+- [/] `ktdctl cache-target bootstrap --confirm --json`을 추가한다. 이 command는 C6c global lock,
+      frozen canonical env SHA, manager mutation capability 아래에서만 실행하며 production과
+      완전 미구성 상태를 다시 검증한 뒤 단 한 번의 atomic replace로 기록한다.
+- [/] 생성 값은 4개의 서로 다른 무작위 token과 최소 권한 registry다. Map에는 digest registry만,
+      PinVi ordinary runtime에는 command/consumer token·consumer ID·sync=false·exact pin만 전달할
+      수 있게 구성하며 restore-fence/recovery 원문은 Manager canonical env에만 둔다. stdout·journal·
+      result에는 token 또는 registry 원문을 넣지 않고 role binding SHA와 env SHA만 남긴다.
+- [/] process environment override, partial/기존 contract, 비production, admin/cache base 불일치,
+      static production pin 불일치는 write 전에 fail-close한다. bootstrap은 container, DB, pair
+      manifest, durable cutover journal을 전혀 변경하지 않는다.
+- [ ] 단일 적대적 리뷰와 focused/backend 전체 테스트 후 PR을 merge·production 설치한다. 그 뒤
+      production에서 command를 한 번 실행하고 secret-free attestation을 다시 확인한 뒤에만 F2
+      diagnostic을 새 transaction ID로 재개한다.

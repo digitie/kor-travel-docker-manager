@@ -117,6 +117,10 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     restore_standalone_database_backup,
     verify_manager_rollback_bundle,
 )
+from kor_travel_docker_manager.services.cache_target_bootstrap import (
+    DEFAULT_OFF_BOOTSTRAP_ENV_NAMES,
+    prepare_default_off_cache_target_bootstrap,
+)
 from kor_travel_docker_manager.services.cache_target_canary import (
     execute_cache_target_causal_canary,
 )
@@ -173,6 +177,7 @@ from kor_travel_docker_manager.services.cache_target_enable import (
     replace_canonical_env_file,
 )
 from kor_travel_docker_manager.services.cache_target_production_manifest import (
+    CACHE_TARGET_PRODUCTION_PINS,
     require_cache_target_production_release,
 )
 from kor_travel_docker_manager.services.cache_target_window import (
@@ -3936,6 +3941,62 @@ class ComposeService:
                     wait_timeout=wait_timeout,
                     lock_path=lock_snapshot.lock_path,
                 )
+
+    def bootstrap_cache_target_default_off(self) -> dict[str, Any]:
+        """Manager만 production cache-target의 첫 default-off contract를 provision한다."""
+
+        if any(env_name in os.environ for env_name in DEFAULT_OFF_BOOTSTRAP_ENV_NAMES):
+            raise DeploymentContractError(
+                "cache-target default-off bootstrap forbids process environment overrides"
+            )
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked()
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            assert_manager_mutation_allowed(environment=transaction.environment.effective)
+            config = load_c6c_deployment_config_from_environment(
+                transaction.environment.effective
+            )
+            if not config.production:
+                raise DeploymentContractError(
+                    "cache-target default-off bootstrap is available only in production mode"
+                )
+            if config.cache_target is not None:
+                raise DeploymentContractError(
+                    "cache-target default-off bootstrap requires an unconfigured contract"
+                )
+            bootstrap = prepare_default_off_cache_target_bootstrap(
+                transaction.environment.env_file_bytes,
+                base_url=config.base_url,
+                expected_openapi_sha256=(
+                    CACHE_TARGET_PRODUCTION_PINS.service_openapi_sha256
+                ),
+                expected_source_revision=(
+                    CACHE_TARGET_PRODUCTION_PINS.map_functional_owner_revision
+                ),
+                expected_contract_generation=(
+                    CACHE_TARGET_PRODUCTION_PINS.contract_generation
+                ),
+            )
+            require_cache_target_production_release(bootstrap.contract)
+            replace_canonical_env_file(
+                Path(transaction.environment.env_path),
+                expected_sha256=hashlib.sha256(
+                    transaction.environment.env_file_bytes
+                ).hexdigest(),
+                replacement=bootstrap.replacement,
+            )
+            return {
+                "success": True,
+                "returncode": 0,
+                "sync_enabled": bootstrap.contract.sync_enabled,
+                "role_binding_sha256": bootstrap.contract.role_binding_sha256,
+                "environment_sha256": hashlib.sha256(bootstrap.replacement).hexdigest(),
+                "contract_generation": bootstrap.contract.expected_contract_generation,
+                "service_openapi_sha256": bootstrap.contract.expected_openapi_sha256,
+                "map_functional_owner_revision": bootstrap.contract.expected_source_revision,
+                "map_release_revision": CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
+                "pinvi_release_revision": CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision,
+            }
 
     def _validate_cache_target_runtime_activated_terminal(
         self,

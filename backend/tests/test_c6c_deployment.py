@@ -397,6 +397,20 @@ def test_production_config_accepts_canonical_cache_target_unset() -> None:
     assert loaded.cache_target is None
 
 
+def test_production_config_accepts_absent_cache_target_api_base_when_unset() -> None:
+    values = {
+        name: value
+        for name, value in _production_environment().items()
+        if value is not None and name not in PROTECTED_ENV_NAMES
+    }
+    values.pop("PINVI_KOR_TRAVEL_MAP_API_BASE_URL")
+
+    loaded = load_c6c_deployment_config_from_environment(values)
+
+    assert loaded.production is True
+    assert loaded.cache_target is None
+
+
 def test_production_config_rejects_partial_cache_target_configuration() -> None:
     values = {
         name: value

@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1A — default-off cache-target bootstrap)
+
+F1 Manager production 재pin을 설치한 뒤 F2 `cache-target diagnose`를 read-only로 재시도하기 전,
+기존 canonical `.env`에 cache-target 4-role contract와 cache API base가 아예 없음을 확인했다.
+이 상태에서는 diagnose가 base URL equality gate에서 fail-close하며, raw Compose 또는 수동 `.env`
+편집으로 계약을 보충하는 것은 final boundary의 단일 정본 원칙을 깬다.
+
+따라서 `ktdctl cache-target bootstrap --confirm --json`을 설계·구현한다. 이 command는 C6c global
+lock과 frozen env SHA 아래에서 완전 미구성 상태만 받아 네 개의 독립 token·최소 권한 registry·
+`sync=false`·production pin을 한 번에 원자 기록한다. 부분 설정/재실행/환경 override는 write 전
+거부하고, container·DB·pair manifest·cutover journal에는 손대지 않는다. 출력에는 환경과 role binding의
+digest만 포함한다. 이 PR의 적대적 리뷰와 production 설치·secret-free attestation 뒤에만 새
+diagnostic ID로 F2를 재개한다.
+
+---
+
 ## 2026-08-05 (issue #129 — T-VN-41-F1 production pair re-pin 시작)
 
 T-VN-41 production final boundary를 시작하기 전 Manager tracked manifest가 이전

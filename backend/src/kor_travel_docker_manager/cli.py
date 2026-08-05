@@ -168,6 +168,14 @@ def _cmd_cache_target(args: argparse.Namespace) -> int:
             result = compose_service.run_cache_target_diagnostic(
                 diagnostic_id=args.diagnostic_id,
             )
+        elif args.cache_target_action == "bootstrap":
+            if not args.confirm:
+                print(
+                    "cache-target bootstrap requires --confirm (no mutation was attempted)",
+                    file=sys.stderr,
+                )
+                return 2
+            result = compose_service.bootstrap_cache_target_default_off()
         else:
             result = compose_service.enable_cache_target_sync()
     except (DeploymentContractError, ValueError) as exc:
@@ -508,6 +516,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON으로 출력합니다.",
     )
     cache_target_diagnose.set_defaults(func=_cmd_cache_target)
+    cache_target_bootstrap = cache_target_subparsers.add_parser(
+        "bootstrap",
+        help="완전 미구성 production env에 cache-target default-off 4-role contract를 원자 provision합니다.",
+    )
+    cache_target_bootstrap.add_argument(
+        "--confirm",
+        action="store_true",
+        help="canonical .env의 secret-free default-off binding 생성에 동의합니다.",
+    )
+    cache_target_bootstrap.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
+    cache_target_bootstrap.set_defaults(func=_cmd_cache_target)
 
     db_backup = subparsers.add_parser(
         "db-backup",

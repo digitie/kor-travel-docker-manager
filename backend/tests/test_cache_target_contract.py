@@ -17,6 +17,7 @@ from kor_travel_docker_manager.services.cache_target_contract import (
     PINVI_RESTORE_FENCE_TOKEN_ENV,
     PINVI_SOURCE_REVISION_ENV,
     PINVI_SYNC_ENV,
+    create_default_off_cache_target_runtime_contract,
     load_cache_target_runtime_contract,
 )
 
@@ -89,6 +90,21 @@ def test_load_cache_target_runtime_contract_accepts_exact_four_role_binding() ->
         PINVI_SOURCE_REVISION_ENV,
         PINVI_CONTRACT_GENERATION_ENV,
     }
+
+
+def test_default_off_factory_creates_valid_distinct_four_role_contract() -> None:
+    tokens = iter(_TOKENS.values())
+
+    contract = create_default_off_cache_target_runtime_contract(
+        expected_openapi_sha256="a" * 64,
+        expected_source_revision="b" * 40,
+        expected_contract_generation="7",
+        token_factory=lambda: next(tokens),
+    )
+
+    assert contract.sync_enabled == "false"
+    assert contract.consumer_id == "pinvi-cache-target-consumer"
+    assert len(set(contract.role_tokens)) == 4
 
 
 @pytest.mark.parametrize(
