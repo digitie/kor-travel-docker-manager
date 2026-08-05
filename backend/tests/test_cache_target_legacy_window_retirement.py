@@ -219,7 +219,7 @@ def test_retirement_replays_receipt_after_unlink_before_directory_fsync(
     assert receipt.retired_at_unix == 1_700_000_100
 
 
-def test_compose_service_retirement_uses_narrow_legacy_window_gate(
+def test_compose_service_retirement_uses_inert_state_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -280,7 +280,7 @@ def test_compose_service_retirement_uses_narrow_legacy_window_gate(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "assert_legacy_window_retirement_allowed",
+        "assert_inert_cache_target_state_retirement_allowed",
         lambda *, environment: called.append(environment) or "production",
     )
     monkeypatch.setattr(
