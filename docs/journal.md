@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1D — legacy protected-value gate 정정)
+
+legacy image tuple을 허용한 trusted release의 다음 product preflight는 현재 protected-value wiring이 frozen
+candidate 환경과 다르다는 evidence에서 mutation 없이 종료했다. F1D는 old runtime을 rollback/candidate authority로
+재사용하지 않고 five-runtime을 exact candidate 환경으로 재생성하므로, 일반 deploy의 current runtime secret/UI
+equality와 active image tuple equality를 시작 조건으로 재사용한 것도 수렴 목적과 맞지 않았다.
+
+후속 수정은 candidate resolved Compose의 secret isolation을 mutation 전에 계속 강제하되, runtime secret isolation과
+UI auth는 candidate activation 뒤 exact image·frozen environment에서만 검증한다. 이 뒤 검증 실패는 old image를
+되살리지 않고 five-runtime halt로 수렴한다. legacy runtime protected value와 image tuple은 비교·재사용하지 않는다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1D — legacy runtime tuple gate 정정)
 
 candidate/live DB head gate를 정정한 trusted release의 다음 product preflight는 기존 Map UI와 Map API의 source
