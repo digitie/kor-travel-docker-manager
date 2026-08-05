@@ -47,7 +47,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _expand_env_path,
     assert_c6c_mutation_allowed,
     assert_compose_mutation_allowed,
-    assert_legacy_window_retirement_allowed,
+    assert_inert_cache_target_state_retirement_allowed,
     assert_manager_mutation_allowed,
     assert_pair_manifest_bootstrap_allowed,
     c6c_deployment_lock,
@@ -171,6 +171,9 @@ from kor_travel_docker_manager.services.cache_target_diagnostics import (
     transition_cache_target_diagnostic,
     write_cache_target_diagnostic,
     write_cache_target_diagnostic_attempt_log,
+)
+from kor_travel_docker_manager.services.cache_target_diagnostics import (
+    retire_inert_cache_target_diagnostic as retire_inert_cache_target_diagnostic_journal,
 )
 from kor_travel_docker_manager.services.cache_target_enable import (
     execute_cache_target_enable,
@@ -2121,6 +2124,31 @@ def _revalidate_frozen_compose_source(
         raise ComposeCandidateContractError(
             "compose source changed during legacy window retirement"
         )
+
+
+def _prepare_inert_cache_target_state_retirement(
+    lock_snapshot: C6cDeploymentLockSnapshot,
+) -> ComposeEnvironmentSnapshot:
+    """F1G/F1H의 state-only receipt mutation 전 frozen input을 검증한다."""
+
+    environment = _capture_compose_environment_snapshot(environment_override=None)
+    source_bytes, source_identity = _capture_frozen_compose_source(environment)
+    assert_environment_snapshot_matches_c6c_lock(environment, lock_snapshot)
+    mode = assert_inert_cache_target_state_retirement_allowed(
+        environment=environment.effective
+    )
+    config = load_c6c_deployment_config_from_environment(environment.effective)
+    if mode != "production" or not config.production or config.cache_target is None:
+        raise DeploymentContractError(
+            "inert cache-target state retirement requires the production cache-target contract"
+        )
+    _revalidate_compose_environment_snapshot(environment)
+    _revalidate_frozen_compose_source(
+        environment,
+        source_bytes=source_bytes,
+        source_identity=source_identity,
+    )
+    return environment
 
 
 def _atomic_restore_compose_source(
@@ -4550,25 +4578,7 @@ class ComposeService:
         """F1G: exact terminal v1 window 하나만 receipt-first로 퇴역한다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            environment = _capture_compose_environment_snapshot(
-                environment_override=None,
-            )
-            source_bytes, source_identity = _capture_frozen_compose_source(environment)
-            assert_environment_snapshot_matches_c6c_lock(environment, lock_snapshot)
-            mode = assert_legacy_window_retirement_allowed(
-                environment=environment.effective
-            )
-            config = load_c6c_deployment_config_from_environment(environment.effective)
-            if mode != "production" or not config.production or config.cache_target is None:
-                raise DeploymentContractError(
-                    "legacy window retirement requires the production cache-target contract"
-                )
-            _revalidate_compose_environment_snapshot(environment)
-            _revalidate_frozen_compose_source(
-                environment,
-                source_bytes=source_bytes,
-                source_identity=source_identity,
-            )
+            environment = _prepare_inert_cache_target_state_retirement(lock_snapshot)
             receipt = retire_legacy_terminal_cache_target_window_journal(
                 cache_target_window_journal_path(environment.effective),
                 retired_at_unix=int(time.time()),
@@ -4576,6 +4586,24 @@ class ComposeService:
             return {
                 "success": True,
                 "returncode": 0,
+                "retired_phase": receipt.retired_phase,
+                "retired_journal_sha256": receipt.retired_journal_sha256,
+                "retired_at_unix": receipt.retired_at_unix,
+            }
+
+    def retire_inert_cache_target_diagnostic(self) -> dict[str, Any]:
+        """F1H: writer-drain 전 exact v2 diagnostic 하나만 receipt-first로 퇴역한다."""
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            environment = _prepare_inert_cache_target_state_retirement(lock_snapshot)
+            receipt = retire_inert_cache_target_diagnostic_journal(
+                cache_target_diagnostic_journal_path(environment.effective),
+                retired_at_unix=int(time.time()),
+            )
+            return {
+                "success": True,
+                "returncode": 0,
+                "retired_diagnostic_version": receipt.retired_diagnostic_version,
                 "retired_phase": receipt.retired_phase,
                 "retired_journal_sha256": receipt.retired_journal_sha256,
                 "retired_at_unix": receipt.retired_at_unix,

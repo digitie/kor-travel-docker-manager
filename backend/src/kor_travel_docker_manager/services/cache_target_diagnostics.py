@@ -73,6 +73,7 @@ DiagnosticFailureClass = Literal[
 ]
 DiagnosticStageStatus = Literal["succeeded", "failed"]
 LegacyDiagnosticRetirementPhase = Literal["prepared", "writers_fencing"]
+InertDiagnosticRetirementPhase = Literal["prepared", "writers_fencing"]
 
 _FORWARD_PHASES: tuple[DiagnosticPhase, ...] = (
     "prepared",
@@ -184,6 +185,15 @@ _LEGACY_RETIREMENT_RECEIPT_FIELDS = frozenset(
         "retired_at_unix",
     }
 )
+_INERT_RETIREMENT_RECEIPT_FIELDS = frozenset(
+    {
+        "version",
+        "retired_diagnostic_version",
+        "retired_journal_sha256",
+        "retired_phase",
+        "retired_at_unix",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -251,6 +261,17 @@ class LegacyDiagnosticRetirementReceipt:
     version: Literal[1]
     retired_journal_sha256: str
     retired_phase: LegacyDiagnosticRetirementPhase
+    retired_at_unix: int
+
+
+@dataclass(frozen=True)
+class InertDiagnosticRetirementReceipt:
+    """writer-drain 전 v2 diagnostic 퇴역의 최소 비밀값 없는 evidence다."""
+
+    version: Literal[1]
+    retired_diagnostic_version: Literal[2]
+    retired_journal_sha256: str
+    retired_phase: InertDiagnosticRetirementPhase
     retired_at_unix: int
 
 
@@ -371,36 +392,41 @@ def write_cache_target_diagnostic(path: Path, journal: CacheTargetDiagnosticJour
 def read_cache_target_diagnostic(path: Path) -> CacheTargetDiagnosticJournal:
     try:
         document = json.loads(read_owner_only_state(path))
-        if isinstance(document, dict) and document.get("version") == 1:
-            raise DeploymentContractError(
-                "cache-target diagnostic journal v1 is unsupported; "
-                "reset the isolated state before TVN41"
-            )
-        if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
-            raise TypeError
-        identity_value = document["identity"]
-        if not isinstance(identity_value, dict) or set(identity_value) != _IDENTITY_FIELDS:
-            raise TypeError
-        document["identity"] = CacheTargetDiagnosticIdentity(**identity_value)
-        for field_name in (
-            "map_application_receipts",
-            "map_dagster_receipts",
-            "pinvi_receipts",
-        ):
-            receipts_value = document[field_name]
-            if not isinstance(receipts_value, list):
-                raise TypeError
-            parsed_receipts: list[DiagnosticStageReceipt] = []
-            for item in receipts_value:
-                if not isinstance(item, dict) or set(item) != _RECEIPT_FIELDS:
-                    raise TypeError
-                parsed_receipts.append(DiagnosticStageReceipt(**item))
-            document[field_name] = tuple(parsed_receipts)
-        journal = CacheTargetDiagnosticJournal(**document)
+        return _diagnostic_journal_from_document(document)
     except DeploymentContractError:
         raise
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         raise DeploymentContractError("cache-target diagnostic journal is invalid") from exc
+
+
+def _diagnostic_journal_from_document(document: object) -> CacheTargetDiagnosticJournal:
+    if isinstance(document, dict) and document.get("version") == 1:
+        raise DeploymentContractError(
+            "cache-target diagnostic journal v1 is unsupported; "
+            "reset the isolated state before TVN41"
+        )
+    if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
+        raise TypeError
+    parsed = dict(document)
+    identity_value = parsed["identity"]
+    if not isinstance(identity_value, dict) or set(identity_value) != _IDENTITY_FIELDS:
+        raise TypeError
+    parsed["identity"] = CacheTargetDiagnosticIdentity(**identity_value)
+    for field_name in (
+        "map_application_receipts",
+        "map_dagster_receipts",
+        "pinvi_receipts",
+    ):
+        receipts_value = parsed[field_name]
+        if not isinstance(receipts_value, list):
+            raise TypeError
+        parsed_receipts: list[DiagnosticStageReceipt] = []
+        for item in receipts_value:
+            if not isinstance(item, dict) or set(item) != _RECEIPT_FIELDS:
+                raise TypeError
+            parsed_receipts.append(DiagnosticStageReceipt(**item))
+        parsed[field_name] = tuple(parsed_receipts)
+    journal = CacheTargetDiagnosticJournal(**parsed)
     _validate_journal(journal)
     _validate_phase_evidence(journal)
     return journal
@@ -511,6 +537,176 @@ def read_legacy_diagnostic_retirement_receipt(
         raise DeploymentContractError("legacy diagnostic retirement receipt is invalid") from exc
     _validate_legacy_retirement_receipt(receipt)
     return receipt
+
+
+def retire_inert_cache_target_diagnostic(
+    path: Path,
+    *,
+    retired_at_unix: int,
+) -> InertDiagnosticRetirementReceipt:
+    """writer-drain 전 exact v2 diagnostic만 receipt-first로 퇴역한다."""
+
+    if type(retired_at_unix) is not int or retired_at_unix <= 0:
+        raise DeploymentContractError("inert diagnostic retirement time is invalid")
+    receipt_path = inert_diagnostic_retirement_receipt_path(path)
+    try:
+        receipt_path.lstat()
+    except FileNotFoundError:
+        existing_receipt = None
+    except OSError as exc:
+        raise DeploymentContractError(
+            "inert diagnostic retirement receipt path is unavailable"
+        ) from exc
+    else:
+        existing_receipt = read_inert_diagnostic_retirement_receipt(receipt_path)
+
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        if existing_receipt is not None:
+            try:
+                _fsync_state_directory(path.parent)
+            except OSError as exc:
+                raise DeploymentContractError(
+                    "inert diagnostic retirement recovery failed"
+                ) from exc
+            return existing_receipt
+        raise DeploymentContractError("inert diagnostic journal is unavailable") from None
+    except OSError as exc:
+        raise DeploymentContractError("inert diagnostic journal is unavailable") from exc
+
+    raw, source_identity, phase = _read_inert_current_diagnostic(path)
+    receipt = InertDiagnosticRetirementReceipt(
+        version=1,
+        retired_diagnostic_version=2,
+        retired_journal_sha256=hashlib.sha256(raw).hexdigest(),
+        retired_phase=phase,
+        retired_at_unix=retired_at_unix,
+    )
+    _validate_inert_retirement_receipt(receipt)
+    if existing_receipt is None:
+        write_inert_diagnostic_retirement_receipt(receipt_path, receipt)
+    else:
+        if (
+            existing_receipt.retired_diagnostic_version
+            != receipt.retired_diagnostic_version
+            or existing_receipt.retired_journal_sha256 != receipt.retired_journal_sha256
+            or existing_receipt.retired_phase != receipt.retired_phase
+        ):
+            raise DeploymentContractError(
+                "inert diagnostic retirement receipt conflicts with the journal"
+            )
+        receipt = existing_receipt
+
+    current_raw, current_identity, current_phase = _read_inert_current_diagnostic(path)
+    if (
+        current_raw != raw
+        or current_identity != source_identity
+        or current_phase != phase
+    ):
+        raise DeploymentContractError("inert diagnostic journal changed before retirement")
+    try:
+        path.unlink()
+        _fsync_state_directory(path.parent)
+    except OSError as exc:
+        raise DeploymentContractError("inert diagnostic retirement failed") from exc
+    return receipt
+
+
+def inert_diagnostic_retirement_receipt_path(path: Path) -> Path:
+    return path.with_name("cache-target-diagnostic-inert-retirement-v1.json")
+
+
+def write_inert_diagnostic_retirement_receipt(
+    path: Path,
+    receipt: InertDiagnosticRetirementReceipt,
+) -> str:
+    _validate_inert_retirement_receipt(receipt)
+    return write_cutover_state(path, receipt)  # type: ignore[arg-type]
+
+
+def read_inert_diagnostic_retirement_receipt(
+    path: Path,
+) -> InertDiagnosticRetirementReceipt:
+    try:
+        document = json.loads(read_owner_only_state(path))
+        if not isinstance(document, dict) or set(document) != _INERT_RETIREMENT_RECEIPT_FIELDS:
+            raise TypeError
+        receipt = InertDiagnosticRetirementReceipt(**document)
+    except DeploymentContractError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DeploymentContractError("inert diagnostic retirement receipt is invalid") from exc
+    _validate_inert_retirement_receipt(receipt)
+    return receipt
+
+
+def _read_inert_current_diagnostic(
+    path: Path,
+) -> tuple[bytes, tuple[int, int, int, int, int, int], InertDiagnosticRetirementPhase]:
+    source_identity = _owner_only_file_identity(path)
+    try:
+        raw = read_owner_only_state(path)
+        journal = _diagnostic_journal_from_document(json.loads(raw))
+    except DeploymentContractError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DeploymentContractError(
+            "current diagnostic journal is not eligible for inert retirement"
+        ) from exc
+    if not _is_inert_diagnostic(journal):
+        raise DeploymentContractError(
+            "current diagnostic journal is not eligible for inert retirement"
+        )
+    current_identity = _owner_only_file_identity(path)
+    if current_identity != source_identity:
+        raise DeploymentContractError("inert diagnostic journal changed while reading")
+    return raw, source_identity, cast(InertDiagnosticRetirementPhase, journal.phase)
+
+
+def _is_inert_diagnostic(journal: CacheTargetDiagnosticJournal) -> bool:
+    return (
+        journal.phase in {"prepared", "writers_fencing"}
+        and journal.external_event_count == 0
+        and journal.writer_drain_lease_id is None
+        and journal.writer_drain_receipt_sha256 is None
+        and journal.writer_drain_restore_receipt_sha256 is None
+        and journal.writer_fence_sha256 is None
+        and not journal.map_application_receipts
+        and not journal.map_dagster_receipts
+        and not journal.pinvi_receipts
+        and journal.runtime_smoke_sha256 is None
+        and journal.failure_stage is None
+        and journal.failure_class is None
+        and journal.completed_at_unix is None
+    )
+
+
+def _validate_inert_retirement_receipt(
+    receipt: InertDiagnosticRetirementReceipt,
+) -> None:
+    if type(receipt.version) is not int or receipt.version != 1:
+        raise DeploymentContractError("inert diagnostic retirement receipt version is invalid")
+    if (
+        type(receipt.retired_diagnostic_version) is not int
+        or receipt.retired_diagnostic_version != 2
+    ):
+        raise DeploymentContractError(
+            "inert diagnostic retirement source version is invalid"
+        )
+    if not isinstance(receipt.retired_journal_sha256, str):
+        raise DeploymentContractError("inert diagnostic retirement journal is invalid")
+    _validate_sha256(
+        receipt.retired_journal_sha256,
+        "inert diagnostic retirement journal",
+    )
+    if (
+        not isinstance(receipt.retired_phase, str)
+        or receipt.retired_phase not in {"prepared", "writers_fencing"}
+    ):
+        raise DeploymentContractError("inert diagnostic retirement phase is invalid")
+    if type(receipt.retired_at_unix) is not int or receipt.retired_at_unix <= 0:
+        raise DeploymentContractError("inert diagnostic retirement time is invalid")
 
 
 def _read_legacy_pre_stop_diagnostic(
@@ -744,7 +940,11 @@ def _validate_stage_receipt(receipt: DiagnosticStageReceipt) -> None:
 
 
 def _validate_journal(journal: CacheTargetDiagnosticJournal) -> None:
-    if journal.version != 2 or journal.phase not in (*_FORWARD_PHASES, "failed", "aborted"):
+    if (
+        type(journal.version) is not int
+        or journal.version != 2
+        or journal.phase not in (*_FORWARD_PHASES, "failed", "aborted")
+    ):
         raise DeploymentContractError("cache-target diagnostic journal contract is invalid")
     _canonical_uuid(journal.diagnostic_id, "diagnostic ID")
     if journal.writer_drain_lease_id is not None:
@@ -760,7 +960,7 @@ def _validate_journal(journal: CacheTargetDiagnosticJournal) -> None:
             "diagnostic writer drain restore receipt",
         )
     _validate_identity(journal.identity)
-    if journal.started_at_unix <= 0:
+    if type(journal.started_at_unix) is not int or journal.started_at_unix <= 0:
         raise DeploymentContractError("cache-target diagnostic start time is invalid")
     # 설계 문서 2절: 진단은 read-mostly라 external event는 절대 0이어야 한다. 0이 아니면
     # 진단 자체를 security failure로 취급한다(단순 계약 위반이 아니라 즉시 fail-close).
