@@ -132,9 +132,7 @@ def test_compose_service_bootstrap_only_replaces_canonical_env(
         _raw_env(),
         base_url=_BASE_URL,
         expected_openapi_sha256=CACHE_TARGET_PRODUCTION_PINS.service_openapi_sha256,
-        expected_source_revision=(
-            CACHE_TARGET_PRODUCTION_PINS.map_functional_owner_revision
-        ),
+        expected_source_revision=CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
         expected_contract_generation=CACHE_TARGET_PRODUCTION_PINS.contract_generation,
         token_factory=lambda: next(tokens),
     )
@@ -171,6 +169,11 @@ def test_compose_service_bootstrap_only_replaces_canonical_env(
         compose_service_module,
         "assert_manager_mutation_allowed",
         lambda *, environment: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "assert_pinned_deployment_input_allows_pair_mutation",
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         compose_service_module,

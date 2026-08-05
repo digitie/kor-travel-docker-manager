@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-08-05 (T-VN-41-F1F-B — versioned input/F1D receipt 재시도 보강 중)
+
+F1F-B는 Map `8c5bdcf8…`, PinVi `3b87c19c…`, service OpenAPI SHA와 Map application head를 v2
+pin manifest의 유일 release authority로 승격했다. trusted installer는 source root/revision, PinVi
+contract scalar, migration expected head를 Docker·Compose·DB·runtime 없이 owner-preserving atomic `.env`
+replace 한 번으로 설치하고, F1D는 해당 handoff receipt 없이는 시작하지 않는다.
+
+적대적 리뷰에서 future re-pin이 static state를 덮거나 B→A(v2) rollback 재시도가 legacy v1 predecessor로
+잘못 분기할 수 있는 결함을 발견했다. 이를 `pinned-deployment-inputs-v2/history/<pinset_sha256>` 불변
+세대로 정리하고, predecessor input의 frozen env SHA·검증된 worktree tree·pinset별 archive된 F1D
+receipt를 교차검증하도록 보강했다. F1D journal을 archive한 직후 process가 종료돼도 archive receipt를 다시
+엄격하게 검증해 재개한다. 같은 pinset의 `prepared → env_replaced → handoff_pending → f1d_in_progress →
+f1d_completed` 재개와 B rollback 재시도를 모두 fail-closed로 처리한다. focused regression 143건과
+Ruff를 통과했고, 변경 모듈 strict mypy는 기존 `registry.py:39` 반환형 오류 외 새 오류가 없다. 다음은
+전체 backend 검증과 Manager PR의 CI/merge, 이후 n150 trusted release first-run·F1D live bootstrap·idempotent
+rerun·admin UI E2E다.
+
+---
+
 ## 2026-08-05 (T-VN-41-F1D — legacy protected-value gate 정정)
 
 legacy image tuple을 허용한 trusted release의 다음 product preflight는 현재 protected-value wiring이 frozen

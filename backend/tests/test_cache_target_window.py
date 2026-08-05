@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from contextlib import nullcontext
 from dataclasses import asdict, replace
@@ -867,7 +868,11 @@ def test_initial_event_boundary_fsync_failure_never_invokes_runner(
     transaction = SimpleNamespace(
         manifest_path=str(tmp_path / "compatible-pair-v4.json"),
         resolved={},
-        environment=SimpleNamespace(effective={}),
+        environment=SimpleNamespace(
+            effective={},
+            env_path=str(tmp_path / ".env"),
+            env_file_identity=SimpleNamespace(uid=os.geteuid(), gid=os.getegid()),
+        ),
     )
     initial = Mock(side_effect=AssertionError("runner must follow durable boundary"))
     rollback = Mock(return_value=journal)
@@ -1174,7 +1179,11 @@ def _install_public_terminal_context(
     transaction = SimpleNamespace(
         manifest_path=str(manifest_path),
         resolved={},
-        environment=SimpleNamespace(effective={}),
+        environment=SimpleNamespace(
+            effective={},
+            env_path=str(tmp_path / ".env"),
+            env_file_identity=SimpleNamespace(uid=os.geteuid(), gid=os.getegid()),
+        ),
     )
     config = SimpleNamespace(
         production=True,
@@ -1202,6 +1211,10 @@ def _install_public_terminal_context(
     )
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service._require_cache_target_release",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.compose_service.assert_pinned_deployment_input_allows_pair_mutation",
         Mock(),
     )
     monkeypatch.setattr(

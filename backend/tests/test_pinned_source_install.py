@@ -448,10 +448,10 @@ def test_bootstrap_pinned_drift_stops_before_provenance_when_f1e_is_not_committe
     )
     monkeypatch.setattr(
         compose_service_module,
-        "require_committed_pinned_source_installation",
+        "require_pinned_deployment_input_handoff",
         Mock(
             side_effect=DeploymentContractError(
-                "pinned drift bootstrap requires a committed pinned source installation"
+                "pinned drift bootstrap requires a v2 deployment input handoff"
             )
         ),
     )
@@ -461,7 +461,7 @@ def test_bootstrap_pinned_drift_stops_before_provenance_when_f1e_is_not_committe
         provenance,
     )
 
-    with pytest.raises(DeploymentContractError, match="requires a committed"):
+    with pytest.raises(DeploymentContractError, match="requires a v2 deployment"):
         service.bootstrap_pinned_drift()
 
     provenance.assert_not_called()
@@ -539,7 +539,7 @@ def test_compose_service_pinned_source_entrypoint_never_captures_or_runs_compose
         env_file_bytes=b"frozen-env",
         env_file_identity=SimpleNamespace(uid=1000, gid=1000),
     )
-    installer_result = {"success": True, "state": "committed", "resumed": False}
+    installer_result = {"success": True, "state": "handoff_pending", "resumed": False}
     expected = {**installer_result, "returncode": 0}
     captured: dict[str, object] = {}
 
@@ -568,13 +568,11 @@ def test_compose_service_pinned_source_entrypoint_never_captures_or_runs_compose
         "load_c6c_deployment_config_from_environment",
         lambda values: SimpleNamespace(production=True),
     )
-    monkeypatch.setattr(compose_service_module, "_require_cache_target_release", lambda config: None)
-
     def install(**kwargs: object) -> dict[str, object]:
         captured.update(kwargs)
         return installer_result
 
-    monkeypatch.setattr(compose_service_module, "install_trusted_pinned_sources", install)
+    monkeypatch.setattr(compose_service_module, "install_pinned_deployment_inputs", install)
     monkeypatch.setattr(
         service,
         "_capture_transaction_unlocked",
@@ -588,4 +586,5 @@ def test_compose_service_pinned_source_entrypoint_never_captures_or_runs_compose
         "env_bytes": snapshot.env_file_bytes,
         "expected_owner_uid": 1000,
         "expected_owner_gid": 1000,
+        "runner": subprocess.run,
     }

@@ -228,6 +228,9 @@ graph TD
      만든다. source-root·revision scalar와 Map migration expected head·PinVi cache-target contract scalar를
      하나의 atomic env keyset으로 교체한다. prior terminal input receipt와 canonical env가 exact predecessor
      pinset임을 검증한 rotation preflight만 old→new input 교체를 허용한다. private old-env backup과 durable
+     journal은 `pinned-deployment-inputs-v2/history/<pinset_sha256>/`의 불변 세대로 남겨
+     future re-pin이 성공 receipt나 backup을 덮지 못하게 한다. 이전 v2 generation의 F1D receipt는 frozen
+     canonical-env digest까지 대조한 receipt-first archive가 끝난 경우에만 후속 rotation의 predecessor가 된다.
      journal이 terminal이 아니면 모든 pair mutation은 fail-close한다. installer 자체는 Docker·Compose·DB·runtime·
      image build를 호출하지 않는다.
    - Map production API 인증은 ADR-23의 exact runtime 경계를 따른다. admin proxy secret은

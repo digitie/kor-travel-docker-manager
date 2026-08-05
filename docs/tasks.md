@@ -899,7 +899,7 @@ F1D의 n150 static preflight는 의도대로 mutation 전에 중단했다. live 
       `derivation_enforced` required field를 수용한다. service SHA와 **Map exact release revision**,
       `.env.example` cache-target source revision을 함께 회전한다. PinVi exact merge SHA가 확정되기
       전에는 Manager production manifest를 추측값으로 갱신하지 않는다.
-- [ ] **F1F-B (Manager PR)** — `CacheTargetProductionPinManifest`를 input generation v2로 올려
+- [/] **F1F-B (Manager PR)** — `CacheTargetProductionPinManifest`를 input generation v2로 올려
       Map application alembic head와 PinVi의 세 runtime contract scalar(OpenAPI SHA, Map expected source
       revision, generation)를 release pair와 같은 tracked 정본으로 둔다. 기존 trusted source-installer를
       versioned **pinned deployment input** transaction으로 승격해 Map/PinVi source root·revision,
@@ -929,6 +929,10 @@ F1D의 n150 static preflight는 의도대로 mutation 전에 중단했다. live 
       generation을 막고, terminal journal은 validated pin fingerprint 경로로 receipt-first archive한 뒤에만
       새 generation journal을 연다. 따라서 future re-pin이 terminal receipt를 덮거나 frozen input 비교에서
       영구 차단되는 일이 없다.
+- [/] v2 input journal과 backup도 static path가 아니라 `history/<pinset_sha256>` 불변 세대로
+      보관한다. next rotation과 B→A rollback 재시도는 predecessor의 exact `new_env_sha256`, exact worktree
+      tree, archive된 F1D receipt를 다시 대조한다. current pinset의 receipt나 backup을 덮어 재시도를
+      불가능하게 만들지 않는다.
 - [ ] v2 input install의 terminal state는 F1D handoff가 pending임을 durable하게 보존한다. pending 동안
       일반 deploy/rollback/diagnostic/enable/writer-drain은 모두 거부하고 같은 pinset F1D만 시작할 수 있다.
       F1D journal 생성 전 crash는 pending에서 재시도하며, F1D non-terminal·candidate halt failure는 같은
