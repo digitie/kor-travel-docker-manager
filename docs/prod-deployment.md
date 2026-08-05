@@ -386,10 +386,11 @@ ktdctl pinvi-pair bootstrap-pinned-drift --confirm
 ```
 
 이 command는 `CACHE_TARGET_PRODUCTION_PINS`에 tracked된 exact Map·PinVi commit만 Git archive build
-source로 쓰며 `.env`가 가리키는 checkout HEAD는 후보 권한이 아니다. immutable candidate, runtime/secret
-isolation, UI auth, Map·PinVi candidate/live DB head, frozen input과 owner-only transaction journal을
-검증한 후에만 다섯 runtime을 staged activation한다. old image는 rollback으로 재기동하지 않는 기존 감사
-근거이므로 static head drift만으로는 bootstrap을 막지 않는다. 시작 Map runtime들이 서로 다른 source revision인
-legacy drift도 active와 완전히 같은 다섯 image tuple인지 확인하는 데만 쓰며 bootstrap을 막지 않는다. candidate 실패 시 old image를 재기동하지 않고
+source로 쓰며 `.env`가 가리키는 checkout HEAD는 후보 권한이 아니다. immutable candidate, candidate resolved
+Compose의 secret isolation, Map·PinVi candidate/live DB head, frozen input과 owner-only transaction journal을
+검증한 후에만 다섯 runtime을 staged activation한다. candidate runtime의 secret isolation과 UI auth는 activation
+뒤 exact image·환경에서 검증한다. old image는 rollback으로 재기동하지 않는 기존 감사
+근거이므로 static head drift만으로는 bootstrap을 막지 않는다. 시작 Map runtime들의 source revision, image tuple,
+과거 protected-value/UI wiring은 candidate authority가 아닌 legacy 감사 근거이므로 bootstrap을 막지 않는다. candidate 실패 시 old image를 재기동하지 않고
 다섯 runtime을 중지한다. 성공 manifest의 active와 rollback은 동일 candidate이며, source checkout의 장기 갱신은
 별도 trusted source-installer 작업이다.

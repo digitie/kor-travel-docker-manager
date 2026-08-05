@@ -215,10 +215,11 @@ graph TD
      active manifest와 current five-runtime tuple이 이미 다른 production drift는 일반
      `deploy`/rollback의 입력이 아니다. 이 경우에만 one-shot
      `pinvi-pair bootstrap-pinned-drift --confirm`이 tracked exact release pin의 Git archive로
-     candidate를 만들고, frozen input·runtime security·candidate/live DB head·durable journal을
-     검증한다. old image static head drift와 시작 Map runtime 간 source revision drift는 재기동하지 않는 기존
-     감사 근거이므로 차단 조건이 아니다. current runtime은 active와 완전히 같은 다섯 image tuple인지 판별하는 데만
-     쓰고 old manifest와 함께 새 rollback source로 채택하지 않는다. 성공 manifest는 active와 rollback
+     candidate를 만들고, frozen input·candidate resolved Compose security·candidate/live DB head·durable journal을
+     검증한다. candidate runtime security와 UI auth는 activation 뒤에 exact image에서 검증한다. old image static
+     head drift, 시작 Map runtime 간 source revision drift, image tuple 및 과거 protected-value wiring은 재기동하지
+     않는 기존 감사 근거이므로 차단 조건이 아니다. current runtime과 old manifest를 새 rollback source로 채택하지
+     않는다. 성공 manifest는 active와 rollback
      모두 같은 candidate이며, candidate activation 실패는 old image rollback 대신 five-runtime halt로
      fail-close한다. canonical `.env`의 source checkout 갱신은 별도 trusted
      source-installer transaction이 소유한다. 이 installer는 user-owned checkout의 Git config를 root에서

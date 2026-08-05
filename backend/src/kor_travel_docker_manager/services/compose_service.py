@@ -3821,20 +3821,6 @@ class ComposeService:
                 for pair in (manifest.active, manifest.rollback):
                     self._require_pair_image_provenance(pair)
                 self._validate_resolved_compose_contract(config, transaction=transaction)
-                self._require_services_ready(services, transaction=transaction)
-                if self._current_runtime_image_tuple_matches_pair(
-                    config, manifest.active
-                ):
-                    raise DeploymentContractError(
-                        "pinned drift bootstrap requires a runtime tuple that differs from manifest active"
-                    )
-                runtime_configs = self._inspect_c6c_runtime_configs(
-                    config,
-                    services,
-                    transaction=transaction,
-                )
-                validate_runtime_secret_isolation(runtime_configs, config)
-                preflight_ui_smoke = run_map_ui_auth_preflight(config)
                 build_provenance = _derive_c6c_build_provenance(
                     transaction.environment.effective,
                     compose_path=transaction.environment.compose_path,
@@ -3931,7 +3917,6 @@ class ComposeService:
                     cwd=get_project_root(),
                 )
                 prebuild_result = None
-                preflight_ui_smoke = []
                 resumed = True
 
             result: dict[str, Any] = {
@@ -3944,7 +3929,6 @@ class ComposeService:
                 "command": [],
                 "stdout": "",
                 "stderr": "",
-                "preflight_ui_smoke": preflight_ui_smoke,
                 "database_heads": dict(database_heads),
                 "candidate_image_provenance": self._pair_provenance_payload(candidate),
             }
@@ -9706,37 +9690,6 @@ class ComposeService:
                 label="PinVi",
                 expected_build_environment="production",
             ),
-        )
-
-    def _current_runtime_image_tuple_matches_pair(
-        self,
-        config: C6cDeploymentConfig,
-        pair: CompatibleImagePair,
-    ) -> bool:
-        """F1D 시작점이 active pair인지 image ID만으로 확인한다.
-
-        F1D는 legacy runtime drift를 candidate 정본으로 일회 수렴하는 경로다.
-        따라서 시작 runtime의 각 Map service가 같은 source revision인지 요구하면,
-        바로 그 drift를 가진 환경에서 bootstrap을 시작할 수 없다. 이 preflight는
-        legacy source provenance를 해석하지 않고, active pair와 완전히 같은 image
-        tuple인 경우만 이미 수렴한 상태로 판단한다.
-        """
-
-        expected_image_ids = {
-            _MAP_API_SERVICE: pair.map_image_id,
-            _MAP_UI_SERVICE: pair.map_ui_image_id,
-            _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
-            _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
-            _PINVI_API_SERVICE: pair.pinvi_image_id,
-        }
-        container_names = {
-            **_MAP_RUNTIME_CONTAINERS,
-            _PINVI_API_SERVICE: config.pinvi_container,
-        }
-        return all(
-            self._inspect_container_image_id(container_names[service_name])
-            == image_id
-            for service_name, image_id in expected_image_ids.items()
         )
 
     @staticmethod
