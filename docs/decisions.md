@@ -1572,3 +1572,27 @@ Docker, Compose, DB, runtime, image build를 실행하지 않는다.
 - PinVi vendor release가 확정된 뒤에만 Manager manifest가 exact pair를 기록하므로 placeholder SHA 또는
   guessed revision을 production authority로 만들지 않는다.
 - future release rotation도 terminal historical receipt를 보존하면서 같은 procedure로 재실행할 수 있다.
+
+## F1G: legacy terminal window는 receipt-first 퇴역 뒤 새 v2 authority만 수용한다
+
+### 컨텍스트
+
+n150의 F1F input installer preflight는 old `cache-target-window-v1.json`이 terminal `rolled_back` 상태로
+남아 있음을 발견했다. 이 schema는 현재 writer-drain lease/receipt와 v2 rollback evidence를 표현하지 못해
+새 F1F/F1D transaction의 predecessor로 읽을 수 없다. 운영 데이터는 중간 cutover state 보존보다 final schema의
+backup/restore와 source ETL 재생성을 우선하므로, raw directory 삭제나 v1→v2 자동 변환도 정본을 만들지 못한다.
+
+### 결정
+
+production Manager는 `retire-legacy-window --confirm`으로 exact owner-only v1 `rolled_back` journal만 퇴역한다.
+command는 raw SHA와 phase만 가진 root-owned receipt를 atomic fsync하고 재검증한 뒤 source journal을 unlink한다.
+receipt가 이미 있으면 같은 SHA/phase일 때만 unlink cleanup을 idempotently 재개한다. nonterminal/다른 terminal
+phase, v2, malformed/foreign file, receipt conflict는 모두 실패한다. global lock과 frozen canonical input 검증은
+유지하며, Docker·Compose·DB·runtime·manifest·backup은 mutation 대상이 아니다.
+
+### 결과
+
+- v1 crash-state를 새 release authority로 오인하거나 수동 삭제로 감사 증거를 잃지 않는다.
+- F1F installer는 명시적으로 퇴역한 legacy state 뒤에만 canonical env와 source authority를 교체한다.
+- 현재 서비스 데이터는 변경하지 않으며, F1D의 destructive runtime transaction은 F1F first-run 검증 뒤에도
+  별도 단계로 남는다.

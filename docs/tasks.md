@@ -986,3 +986,21 @@ canonical source cache와 tracked exact production pin이 모두 달라 일반 d
       backend 전체 1655 passed, Ruff, 변경 source strict mypy를 통과했다.
 - [ ] F1F-A/B와 v2 input install 코드 merge를 완료했다. 다음으로 n150 trusted release로 설치하고 destructive live
       bootstrap·idempotent 재실행·admin UI E2E를 완료한 뒤 issue #136을 닫는다.
+
+### T-VN-41-F1G: legacy terminal window journal 퇴역
+
+n150 F1F input installer의 read-only mutation gate가 legacy `cache-target-window-v1.json`의 terminal
+`rolled_back` receipt를 발견했다. 이 v1 schema는 durable writer-drain lease/receipt 및 current v2
+rollback evidence를 표현하지 못하므로, 새 v2 input/F1D authority로 해석하거나 raw state-directory 삭제로
+우회하지 않는다.
+
+- [/] production 전용 `ktdctl cache-target retire-legacy-window --confirm --json`을 추가한다. exact owner-only
+      v1 `rolled_back` journal 한 개만 수용하고, raw SHA와 phase만 갖는 root-owned retirement receipt를 fsync한
+      뒤 journal을 unlink한다. `prepared` 등 nonterminal v1, `runtime_activated` 또는 그 밖의 v1 phase, v2,
+      malformed/foreign/hardlink/symlink journal과 receipt conflict는 fail-close한다.
+- [ ] command는 C6c global lock과 frozen canonical env/Compose identity를 먼저 다시 확인하고, Docker·Compose·
+      DB·runtime·manifest·cache-target credential·backup을 전혀 변경하지 않는다. receipt write와 unlink 사이
+      crash는 같은 raw SHA/phase로만 idempotently resume한다.
+- [ ] focused/full backend 검증과 단일 적대적 리뷰 뒤 PR merge·trusted release 설치를 거쳐 n150의 exact
+      `rolled_back` v1 receipt를 민감값 없는 result로 퇴역한다. 그 뒤에만 F1F input first-run/idempotent rerun을
+      재개한다.
