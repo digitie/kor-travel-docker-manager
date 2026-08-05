@@ -72,6 +72,31 @@ immutable image 출처를 뜻하므로 서로 대체하지 않는다. cache-targ
 production C6c 경로에는 이 gate를 적용하지 않는다. 모든 필드가 canonical unset/default이면 contract가
 없는 것으로 처리하되, 하나라도 부분 설정됐으면 기존 경로로 내려가지 않고 fail-close한다.
 
+### 1.1 완전 미구성 상태의 default-off bootstrap
+
+production canonical `.env`에 cache-target contract가 아예 없으면, F2 사전 진단 전에 다음 한
+Manager command로만 최초 binding을 만든다.
+
+```bash
+ktdctl cache-target bootstrap --confirm --json
+```
+
+이 command는 C6c global lock 안에서 frozen canonical `.env`를 다시 읽고, Map admin base URL과
+production 고정 base URL을 대조한다. cache API base, registry, 네 role token, consumer ID, sync,
+OpenAPI SHA, source revision, contract generation 중 하나라도 이미 존재하면 거부한다. 따라서 부분
+설정·재실행·process environment override를 자동 보정하거나 기존 credential을 덮어쓰지 않는다.
+
+허용된 단 한 상태에서는 Manager가 네 개의 서로 다른 무작위 token과 exact 최소 권한 registry를 만들고
+canonical env 파일을 기대 SHA 기준 원자 교체한다. Map registry에는 token SHA-256만, PinVi ordinary
+runtime에는 command/consumer binding·consumer ID·`sync=false`·세 production pin만 전달할 수 있게
+기록한다. restore-fence/recovery 원문은 Manager가 소유하는 canonical env에만 남는다. 결과·stdout·
+journal에는 token이나 registry 원문 대신 environment SHA와 role-binding logical SHA만 낸다.
+
+bootstrap은 container·DB·compatible-pair manifest·cache-target journal을 변경하지 않는다. 따라서
+bootstrap 성공은 F2의 runtime attestation이나 cutover 성공이 아니며, 새 diagnostic ID로 `diagnose`를
+다시 실행할 수 있는 configuration input만 만든다. raw Compose와 수동 `.env` 편집은 어떤 경우에도
+대체 경로가 아니다.
+
 ## 2. 사전 조건
 
 1. Manager, Map, PinVi exact source revision이 review된 compatible pair이고 manifest active와 rollback image가

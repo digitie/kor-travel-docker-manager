@@ -1356,7 +1356,10 @@ def _validate_production_config(
         raise DeploymentContractError(
             "production C6c deployment requires an explicit PinVi Map base URL"
         )
-    if values.get(_PINVI_CACHE_API_BASE_URL_ENV, "").strip() != config.base_url:
+    if (
+        config.cache_target is not None
+        and values.get(_PINVI_CACHE_API_BASE_URL_ENV, "").strip() != config.base_url
+    ):
         raise DeploymentContractError(
             "production PINVI_KOR_TRAVEL_MAP_API_BASE_URL must exactly match "
             "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL"

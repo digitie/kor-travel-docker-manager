@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -118,6 +118,49 @@ class CacheTargetRuntimeContract:
             self.restore_fence_token,
             self.recovery_token,
         )
+
+
+def create_default_off_cache_target_runtime_contract(
+    *,
+    expected_openapi_sha256: str,
+    expected_source_revision: str,
+    expected_contract_generation: str,
+    token_factory: Callable[[], str],
+) -> CacheTargetRuntimeContract:
+    """새 production bootstrap용 4-role contract를 생성·자체 검증한다.
+
+    생성된 원문 token은 반환 contract 외의 결과에 넣지 않는다. 호출자는 canonical
+    env에 원자 기록한 뒤에도 secret-free digest만 외부에 노출해야 한다.
+    """
+
+    consumer_id = "pinvi-cache-target-consumer"
+    tokens = {role: token_factory() for role in _TOKEN_ENV_BY_ROLE}
+    registry = [
+        {
+            "principal_id": f"pinvi-cache-target-{role}",
+            "consumer_id": consumer_id,
+            "token_sha256": hashlib.sha256(tokens[role].encode()).hexdigest(),
+            "scopes": sorted(_SCOPES_BY_ROLE[role]),
+            "external_systems": ["pinvi"],
+        }
+        for role in sorted(tokens)
+    ]
+    environment = {
+        MAP_REGISTRY_ENV: json.dumps(registry, ensure_ascii=True, separators=(",", ":")),
+        PINVI_SYNC_ENV: "false",
+        PINVI_COMMAND_TOKEN_ENV: tokens["command"],
+        PINVI_CONSUMER_TOKEN_ENV: tokens["consumer"],
+        PINVI_RESTORE_FENCE_TOKEN_ENV: tokens["restore-fence"],
+        PINVI_RECOVERY_TOKEN_ENV: tokens["recovery"],
+        PINVI_CONSUMER_ID_ENV: consumer_id,
+        PINVI_OPENAPI_SHA_ENV: expected_openapi_sha256,
+        PINVI_SOURCE_REVISION_ENV: expected_source_revision,
+        PINVI_CONTRACT_GENERATION_ENV: expected_contract_generation,
+    }
+    contract = load_cache_target_runtime_contract(environment, require_nonempty=True)
+    if contract is None:  # pragma: no cover - require_nonempty=True가 보장한다.
+        raise RuntimeError("default-off cache-target contract was not created")
+    return contract
 
 
 def load_cache_target_runtime_contract(

@@ -578,6 +578,28 @@ def test_cli_runs_cache_target_cutover_as_one_process_window(
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_bootstraps_default_off_contract_only_with_explicit_confirmation(
+    mock_compose_service, capsys
+):
+    assert main(["cache-target", "bootstrap"]) == 2
+    mock_compose_service.bootstrap_cache_target_default_off.assert_not_called()
+    assert "requires --confirm" in capsys.readouterr().err
+
+    mock_compose_service.bootstrap_cache_target_default_off.return_value = {
+        "success": True,
+        "returncode": 0,
+        "sync_enabled": "false",
+        "role_binding_sha256": "a" * 64,
+    }
+
+    assert main(["cache-target", "bootstrap", "--confirm", "--json"]) == 0
+    mock_compose_service.bootstrap_cache_target_default_off.assert_called_once_with()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sync_enabled"] == "false"
+    assert payload["role_binding_sha256"] == "a" * 64
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_runs_db_backup_create_with_selected_role(mock_compose_service):
     mock_compose_service.create_standalone_backup.return_value = {
         "success": True,
