@@ -627,6 +627,21 @@ def assert_manager_mutation_allowed(
     return mode
 
 
+def assert_legacy_window_retirement_allowed(
+    *,
+    environment: Mapping[str, str],
+) -> str:
+    """F1G의 exact legacy window 퇴역에만 window gate를 재귀 적용하지 않는다.
+
+    이 operation은 runtime/Compose/DB/manifest를 바꾸지 않고, 바로 그 legacy
+    window file 하나를 receipt-first로 제거하는 유일한 owner다. 일반 Manager
+    mutation은 계속 ``assert_manager_mutation_allowed``를 거쳐 해당 file에서
+    fail-close한다.
+    """
+
+    return _validate_mutation_environment(environment)
+
+
 def assert_c6c_mutation_allowed(
     identifiers: Iterable[str],
     *,

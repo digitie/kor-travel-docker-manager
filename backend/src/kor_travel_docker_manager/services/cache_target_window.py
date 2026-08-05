@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import stat
 import uuid
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -53,6 +55,7 @@ WindowPhase = Literal[
 MapHelperOperation = Literal["preflight", "migrate", "csv5", "gc", "verify"]
 PinBoundaryOperation = Literal["preflight", "finalize"]
 WindowFailureClass = Literal["contract_violation", "unexpected_error"]
+LegacyWindowRetirementPhase = Literal["rolled_back"]
 JsonScalar = str | int | bool | None
 JsonEvidence = JsonScalar | tuple[str, ...]
 
@@ -132,6 +135,45 @@ _JOURNAL_FIELDS = frozenset(
         "failure_stage",
         "failure_class",
     }
+)
+# durable writer-drain 도입 직전의 exact v1 schema다. F1G는 이 legacy
+# ``rolled_back`` receipt만 receipt-first로 퇴역하며, 이를 current v2 journal로
+# 해석하거나 자동 변환하지 않는다.
+_LEGACY_V1_JOURNAL_FIELDS = frozenset(
+    {
+        "version",
+        "transaction_id",
+        "cutover_id",
+        "phase",
+        "expected_restore_epoch",
+        "reason_sha256",
+        "environment_sha256",
+        "compose_sha256",
+        "resolved_compose_sha256",
+        "old_manifest_sha256",
+        "initial_writer_fence_sha256",
+        "final_writer_fence_sha256",
+        "final_map_write_counters_sha256",
+        "map_final_evidence",
+        "map_final_evidence_sha256",
+        "gc_receipt_sha256",
+        "pin_preflight_receipt_sha256",
+        "pin_migration_receipt_sha256",
+        "rollback_bundle_sha256",
+        "map_application_backup",
+        "map_dagster_backup",
+        "pinvi_backup",
+        "candidate_pair_sha256",
+        "last_map_receipt",
+        "last_map_receipt_sha256",
+        "initial_receipt_sha256",
+        "pin_final_receipt_sha256",
+        "external_event_count",
+        "forward_boundary",
+    }
+)
+_LEGACY_RETIREMENT_RECEIPT_FIELDS = frozenset(
+    {"version", "retired_journal_sha256", "retired_phase", "retired_at_unix"}
 )
 _BACKUP_FIELDS = frozenset(
     {
@@ -302,6 +344,16 @@ class CacheTargetWindowJournal:
     forward_boundary: Literal["not_crossed", "committed"] = "not_crossed"
     failure_stage: WindowPhase | None = None
     failure_class: WindowFailureClass | None = None
+
+
+@dataclass(frozen=True)
+class LegacyWindowRetirementReceipt:
+    """F1G가 남기는 legacy terminal window 퇴역 증거다."""
+
+    version: Literal[1]
+    retired_journal_sha256: str
+    retired_phase: LegacyWindowRetirementPhase
+    retired_at_unix: int
 
 
 @dataclass(frozen=True)
@@ -678,6 +730,243 @@ def read_cache_target_window(path: Path) -> CacheTargetWindowJournal:
     return journal
 
 
+def retire_legacy_terminal_cache_target_window(
+    path: Path,
+    *,
+    retired_at_unix: int,
+) -> LegacyWindowRetirementReceipt:
+    """exact v1 ``rolled_back`` window만 receipt-first로 퇴역한다.
+
+    legacy v1 state는 durable writer-drain evidence가 없어서 현재 v2 recovery에
+    참여할 수 없다. 이 함수는 해당 source journal과 companion receipt 외에는
+    어떤 Manager/Docker/DB state도 읽거나 쓰지 않는다.
+    """
+
+    if type(retired_at_unix) is not int or retired_at_unix <= 0:
+        raise DeploymentContractError("legacy window retirement time is invalid")
+    receipt_path = legacy_window_retirement_receipt_path(path)
+    try:
+        receipt_path.lstat()
+    except FileNotFoundError:
+        existing_receipt = None
+    except OSError as exc:
+        raise DeploymentContractError(
+            "legacy window retirement receipt path is unavailable"
+        ) from exc
+    else:
+        existing_receipt = read_legacy_window_retirement_receipt(receipt_path)
+
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        if existing_receipt is not None:
+            try:
+                _fsync_state_directory(path.parent)
+            except OSError as exc:
+                raise DeploymentContractError(
+                    "legacy window retirement recovery failed"
+                ) from exc
+            return existing_receipt
+        raise DeploymentContractError("legacy terminal window journal is unavailable") from None
+    except OSError as exc:
+        raise DeploymentContractError("legacy terminal window journal is unavailable") from exc
+
+    raw, source_identity, phase = _read_legacy_terminal_window(path)
+    receipt = LegacyWindowRetirementReceipt(
+        version=1,
+        retired_journal_sha256=hashlib.sha256(raw).hexdigest(),
+        retired_phase=phase,
+        retired_at_unix=retired_at_unix,
+    )
+    _validate_legacy_window_retirement_receipt(receipt)
+    if existing_receipt is None:
+        write_legacy_window_retirement_receipt(receipt_path, receipt)
+    else:
+        if (
+            existing_receipt.retired_journal_sha256 != receipt.retired_journal_sha256
+            or existing_receipt.retired_phase != receipt.retired_phase
+        ):
+            raise DeploymentContractError(
+                "legacy window retirement receipt conflicts with the journal"
+            )
+        receipt = existing_receipt
+
+    current_raw, current_identity, current_phase = _read_legacy_terminal_window(path)
+    if (
+        current_raw != raw
+        or current_identity != source_identity
+        or current_phase != phase
+    ):
+        raise DeploymentContractError(
+            "legacy terminal window journal changed before retirement"
+        )
+    try:
+        path.unlink()
+        _fsync_state_directory(path.parent)
+    except OSError as exc:
+        raise DeploymentContractError("legacy window retirement failed") from exc
+    return receipt
+
+
+def legacy_window_retirement_receipt_path(path: Path) -> Path:
+    return path.with_name("cache-target-window-retirement-v1.json")
+
+
+def write_legacy_window_retirement_receipt(
+    path: Path,
+    receipt: LegacyWindowRetirementReceipt,
+) -> str:
+    _validate_legacy_window_retirement_receipt(receipt)
+    return write_cutover_state(path, receipt)  # type: ignore[arg-type]
+
+
+def read_legacy_window_retirement_receipt(path: Path) -> LegacyWindowRetirementReceipt:
+    try:
+        document = json.loads(read_owner_only_state(path))
+        if not isinstance(document, dict) or set(document) != _LEGACY_RETIREMENT_RECEIPT_FIELDS:
+            raise TypeError
+        receipt = LegacyWindowRetirementReceipt(**document)
+    except DeploymentContractError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DeploymentContractError("legacy window retirement receipt is invalid") from exc
+    _validate_legacy_window_retirement_receipt(receipt)
+    return receipt
+
+
+def _read_legacy_terminal_window(
+    path: Path,
+) -> tuple[bytes, tuple[int, int, int, int, int, int], LegacyWindowRetirementPhase]:
+    source_identity = _owner_only_file_identity(path)
+    try:
+        raw = read_owner_only_state(path)
+        document = json.loads(raw)
+        phase = _validate_legacy_terminal_window_document(document)
+    except DeploymentContractError:
+        raise
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise DeploymentContractError(
+            "legacy terminal window journal is not eligible for retirement"
+        ) from exc
+    current_identity = _owner_only_file_identity(path)
+    if current_identity != source_identity:
+        raise DeploymentContractError(
+            "legacy terminal window journal changed while reading"
+        )
+    return raw, source_identity, phase
+
+
+def _validate_legacy_terminal_window_document(document: object) -> LegacyWindowRetirementPhase:
+    if not isinstance(document, dict) or set(document) != _LEGACY_V1_JOURNAL_FIELDS:
+        raise DeploymentContractError("legacy terminal window journal is not eligible for retirement")
+    if type(document["version"]) is not int or document["version"] != 1:
+        raise DeploymentContractError("legacy terminal window journal is not eligible for retirement")
+    if document["phase"] != "rolled_back":
+        raise DeploymentContractError("legacy terminal window journal is not eligible for retirement")
+
+    # 기존 v1 payload를 current typed receipt parser로만 검증하기 위해 누락된
+    # v2 field를 ``None``으로 보완한다. phase evidence는 v1 rollback 규칙을 아래에서
+    # 별도로 검사하므로 durable writer-drain evidence를 거꾸로 요구하지 않는다.
+    current_document = dict(document)
+    current_document.update(
+        {
+            "version": 2,
+            "writer_drain_lease_id": None,
+            "writer_drain_receipt_sha256": None,
+            "writer_drain_restore_receipt_sha256": None,
+            "failure_stage": None,
+            "failure_class": None,
+        }
+    )
+    try:
+        for field_name in (
+            "map_application_backup",
+            "map_dagster_backup",
+            "pinvi_backup",
+        ):
+            value = current_document[field_name]
+            if value is not None:
+                if not isinstance(value, dict) or set(value) != _BACKUP_FIELDS:
+                    raise TypeError
+                rehearsal = value["restore_rehearsal"]
+                if not isinstance(rehearsal, dict) or set(rehearsal) != _REHEARSAL_FIELDS:
+                    raise TypeError
+                current_document[field_name] = DatabaseBackupReceipt(
+                    **{**value, "restore_rehearsal": DatabaseRestoreRehearsalReceipt(**rehearsal)}
+                )
+        raw_map_receipt = current_document["last_map_receipt"]
+        if raw_map_receipt is not None:
+            current_document["last_map_receipt"] = _map_helper_receipt_from_document(
+                raw_map_receipt
+            )
+        raw_final_evidence = current_document["map_final_evidence"]
+        if raw_final_evidence is not None:
+            current_document["map_final_evidence"] = _map_final_evidence_from_document(
+                raw_final_evidence
+            )
+        journal = CacheTargetWindowJournal(**current_document)
+        _validate_journal(journal)
+    except (DeploymentContractError, KeyError, TypeError, ValueError) as exc:
+        raise DeploymentContractError(
+            "legacy terminal window journal is not eligible for retirement"
+        ) from exc
+    if journal.forward_boundary != "not_crossed" or journal.external_event_count != 0:
+        raise DeploymentContractError("legacy terminal window journal is not eligible for retirement")
+    rollback_evidence = (
+        journal.rollback_bundle_sha256,
+        journal.map_application_backup,
+        journal.map_dagster_backup,
+        journal.pinvi_backup,
+    )
+    if any(value is not None for value in rollback_evidence) and any(
+        value is None for value in rollback_evidence
+    ):
+        raise DeploymentContractError("legacy terminal window journal is not eligible for retirement")
+    return "rolled_back"
+
+
+def _validate_legacy_window_retirement_receipt(
+    receipt: LegacyWindowRetirementReceipt,
+) -> None:
+    if type(receipt.version) is not int or receipt.version != 1:
+        raise DeploymentContractError("legacy window retirement receipt is invalid")
+    _validate_sha256(receipt.retired_journal_sha256, "legacy window retirement journal")
+    if receipt.retired_phase != "rolled_back":
+        raise DeploymentContractError("legacy window retirement receipt phase is invalid")
+    if type(receipt.retired_at_unix) is not int or receipt.retired_at_unix <= 0:
+        raise DeploymentContractError("legacy window retirement time is invalid")
+
+
+def _owner_only_file_identity(path: Path) -> tuple[int, int, int, int, int, int]:
+    try:
+        file_stat = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError("legacy terminal window journal is unavailable") from exc
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid != os.geteuid()
+        or file_stat.st_nlink != 1
+        or stat.S_IMODE(file_stat.st_mode) != 0o600
+    ):
+        raise DeploymentContractError("legacy terminal window journal is unsafe")
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_uid,
+        file_stat.st_nlink,
+        stat.S_IMODE(file_stat.st_mode),
+        file_stat.st_size,
+    )
+
+
+def _fsync_state_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def parse_map_helper_receipt(
     *,
     stdout: str,
@@ -933,7 +1222,10 @@ def _validate_journal(journal: CacheTargetWindowJournal) -> None:
     _canonical_uuid(journal.cutover_id, "cutover ID")
     if journal.writer_drain_lease_id is not None:
         _canonical_uuid(journal.writer_drain_lease_id, "writer drain lease ID")
-    if journal.expected_restore_epoch <= 0:
+    if (
+        type(journal.expected_restore_epoch) is not int
+        or journal.expected_restore_epoch <= 0
+    ):
         raise DeploymentContractError("cache-target restore epoch must be positive")
     for label, digest in (
         ("reason", journal.reason_sha256),

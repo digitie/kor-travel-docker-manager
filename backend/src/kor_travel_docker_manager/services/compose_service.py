@@ -47,6 +47,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _expand_env_path,
     assert_c6c_mutation_allowed,
     assert_compose_mutation_allowed,
+    assert_legacy_window_retirement_allowed,
     assert_manager_mutation_allowed,
     assert_pair_manifest_bootstrap_allowed,
     c6c_deployment_lock,
@@ -205,6 +206,9 @@ from kor_travel_docker_manager.services.cache_target_window import (
     transition_cache_target_window,
     validate_map_final_evidence_binding,
     write_cache_target_window,
+)
+from kor_travel_docker_manager.services.cache_target_window import (
+    retire_legacy_terminal_cache_target_window as retire_legacy_terminal_cache_target_window_journal,
 )
 from kor_travel_docker_manager.services.cache_target_writer_drain import (
     WriterDrainOwnerKind,
@@ -4488,6 +4492,32 @@ class ComposeService:
             )
             receipt = retire_legacy_pre_stop_cache_target_diagnostic(
                 cache_target_diagnostic_journal_path(transaction.environment.effective),
+                retired_at_unix=int(time.time()),
+            )
+            return {
+                "success": True,
+                "returncode": 0,
+                "retired_phase": receipt.retired_phase,
+                "retired_journal_sha256": receipt.retired_journal_sha256,
+                "retired_at_unix": receipt.retired_at_unix,
+            }
+
+    def retire_legacy_terminal_cache_target_window(self) -> dict[str, Any]:
+        """F1G: exact terminal v1 window 하나만 receipt-first로 퇴역한다."""
+
+        with c6c_deployment_lock_from_environment() as lock_snapshot:
+            transaction, _ = self._capture_transaction_unlocked()
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            mode = assert_legacy_window_retirement_allowed(
+                environment=transaction.environment.effective
+            )
+            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
+            if mode != "production" or not config.production or config.cache_target is None:
+                raise DeploymentContractError(
+                    "legacy window retirement requires the production cache-target contract"
+                )
+            receipt = retire_legacy_terminal_cache_target_window_journal(
+                cache_target_window_journal_path(transaction.environment.effective),
                 retired_at_unix=int(time.time()),
             )
             return {

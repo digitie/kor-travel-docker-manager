@@ -280,6 +280,7 @@ def test_compose_service_retirement_uses_common_gate_and_changes_only_journal(
     transaction = SimpleNamespace(
         environment=SimpleNamespace(
             effective={"KTDM_DEPLOYMENT_ENVIRONMENT": "production"},
+            env_path=str(tmp_path / ".env"),
         )
     )
     called: list[object] = []
@@ -312,6 +313,16 @@ def test_compose_service_retirement_uses_common_gate_and_changes_only_journal(
         compose_service_module,
         "load_c6c_deployment_config_from_environment",
         lambda _environment: SimpleNamespace(production=True, cache_target=object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_frozen_canonical_env_owner",
+        lambda _environment: {},
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "assert_pinned_deployment_input_allows_pair_mutation",
+        lambda **_kwargs: called.append("pinned_input"),
     )
     monkeypatch.setattr(
         compose_service_module,

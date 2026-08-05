@@ -755,6 +755,27 @@ def test_cli_retires_legacy_diagnostic_only_with_explicit_confirmation(
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_retires_legacy_terminal_window_only_with_explicit_confirmation(
+    mock_compose_service, capsys
+):
+    assert main(["cache-target", "retire-legacy-window"]) == 2
+    mock_compose_service.retire_legacy_terminal_cache_target_window.assert_not_called()
+    assert "requires --confirm" in capsys.readouterr().err
+
+    mock_compose_service.retire_legacy_terminal_cache_target_window.return_value = {
+        "success": True,
+        "returncode": 0,
+        "retired_phase": "rolled_back",
+        "retired_journal_sha256": "a" * 64,
+    }
+
+    assert main(["cache-target", "retire-legacy-window", "--confirm", "--json"]) == 0
+    mock_compose_service.retire_legacy_terminal_cache_target_window.assert_called_once_with()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["retired_phase"] == "rolled_back"
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_runs_db_backup_create_with_selected_role(mock_compose_service):
     mock_compose_service.create_standalone_backup.return_value = {
         "success": True,
