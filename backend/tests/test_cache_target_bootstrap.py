@@ -143,9 +143,10 @@ def test_compose_service_bootstrap_only_replaces_canonical_env(
             effective={"KTDM_DEPLOYMENT_ENVIRONMENT": "production"},
             env_file_bytes=_raw_env(),
             env_path="/canonical/.env",
+            env_file_identity=SimpleNamespace(uid=1000, gid=1000),
         )
     )
-    replacements: list[tuple[str, str, bytes]] = []
+    replacements: list[tuple[str, str, bytes, int, int]] = []
 
     @contextmanager
     def lock():
@@ -186,8 +187,14 @@ def test_compose_service_bootstrap_only_replaces_canonical_env(
     monkeypatch.setattr(
         compose_service_module,
         "replace_canonical_env_file",
-        lambda path, *, expected_sha256, replacement: replacements.append(
-            (str(path), expected_sha256, replacement)
+        lambda path, *, expected_sha256, replacement, expected_owner_uid, expected_owner_gid: replacements.append(
+            (
+                str(path),
+                expected_sha256,
+                replacement,
+                expected_owner_uid,
+                expected_owner_gid,
+            )
         ),
     )
 
@@ -198,6 +205,8 @@ def test_compose_service_bootstrap_only_replaces_canonical_env(
             "/canonical/.env",
             hashlib.sha256(_raw_env()).hexdigest(),
             bootstrap.replacement,
+            1000,
+            1000,
         )
     ]
     assert result["sync_enabled"] == "false"

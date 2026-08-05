@@ -30,6 +30,7 @@
 | **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
 | **T-VN-41-F1** | cache-target production pair re-pin (issue #129) | `[x]` | 2026-08-05 | exact provenance·runbook·회귀를 갱신하고 Manager production 설치까지 완료 |
 | **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[/]` | - | 완전 미구성 canonical `.env`에만 4-role 계약을 원자 생성하고 F2 진단의 입력을 준비 |
+| **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[/]` | - | deployment-owner `0600` env를 frozen owner identity로 결박해 root Manager mutation이 안전하게 갱신 |
 
 ---
 
@@ -815,6 +816,26 @@ F2 사전 진단은 canonical `.env`에 Map registry·PinVi ordinary binding·ge
       존재로 판정하도록 고치고 direct/export/blank 회귀를 추가했다.
 - [x] 보정 뒤 단일 적대적 재검토에서 새 P0/P1/P2가 없음을 확인했다. focused 회귀와 backend 전체
       suite를 통과했다.
-- [ ] PR을 merge·production 설치한다. 그 뒤
-      production에서 command를 한 번 실행하고 secret-free attestation을 다시 확인한 뒤에만 F2
-      diagnostic을 새 transaction ID로 재개한다.
+- [x] PR #131을 merge하고 exact trusted Manager release를 production에 설치했다. 최초 bootstrap은
+      trusted installer가 보존한 deployment-owner `0600` env와 root-only replacement helper의 owner
+      가정이 충돌해 write 전 fail-close했다. 이 ownership model 보강은 T-VN-41-F1B가 소유한다.
+- [ ] F1B가 완료된 뒤 production에서 command를 한 번 실행하고 secret-free attestation을 다시 확인한 뒤
+      F2 diagnostic을 새 transaction ID로 재개한다.
+
+### T-VN-41-F1B: trusted root canonical env 소유권 결박 (issue #132)
+
+trusted installer는 canonical `.env`의 owner/group/mode를 immutable release manifest에 기록하고
+deployment owner의 `0600` ownership을 보존한다. 그러나 cache-target env helper는 호출 process의 UID만
+owner로 허용해 root trusted mutation이 file replacement 전에 fail-close한다. 수동 `chown`이나 raw
+env 편집은 하지 않는다.
+
+- [x] n150에서 F1A bootstrap이 file type·mode·link·parent가 모두 안전한 상태에서도 owner UID 불일치로
+      write 전에 거부됨을 secret-free metadata로 재현했다. container·DB·manifest·journal mutation은 없었다.
+- [x] canonical env read/atomic replace가 frozen transaction snapshot의 UID/GID를 expected owner로
+      명시 전달받게 한다. 이 값이 없으면 기존 current-process owner-only 검사를 유지한다.
+- [x] root trusted Manager path에서는 snapshot의 owner identity와 path/bytes/expected SHA를 lock 안에서
+      모두 재검증하고, parent root ownership·regular file·`0600`·single link와 replacement 후 UID/GID
+      보존을 함께 강제한다. 임의 UID를 caller가 지정해 우회하는 공개 CLI/config 경로는 만들지 않는다.
+- [x] direct/root·unprivileged owner·owner/GID drift·hardlink/symlink·digest drift의 음성 회귀와 단일
+      적대적 리뷰를 통과했다. 보정본 backend 전체 suite `1605 passed`.
+- [ ] 별도 PR을 merge·trusted install한 뒤, F1A bootstrap과 F2 diagnose를 재개한다.
