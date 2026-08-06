@@ -44,6 +44,9 @@ from kor_travel_docker_manager.services.cache_target_contract import (
     CacheTargetRuntimeContract,
     load_cache_target_runtime_contract,
 )
+from kor_travel_docker_manager.services.map_service_contract import (
+    C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+)
 
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
@@ -2584,7 +2587,7 @@ def _parse_c6c_cancel_probe_fixture(
         or not _is_uuid(fixture.get("transaction_id"))
         or not _is_uuid(fixture.get("job_id"))
         or fixture.get("state") not in {"armed", "consumed", "finalized"}
-        or fixture.get("capability_generation") != 2
+        or fixture.get("capability_generation") != C6C_CANCEL_PROBE_CAPABILITY_GENERATION
         or not _is_iso8601(fixture.get("created_at"))
         or not _is_nullable_iso8601(fixture.get("consumed_at"))
         or not _is_nullable_iso8601(fixture.get("finalized_at"))

@@ -41,6 +41,9 @@ from kor_travel_docker_manager.services.cache_target_window import (
 from kor_travel_docker_manager.services.cache_target_window import (
     read_cache_target_window,
 )
+from kor_travel_docker_manager.services.map_service_contract import (
+    C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+)
 from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     archive_terminal_legacy_pinned_drift_bootstrap,
     archive_terminal_pinned_drift_bootstrap,
@@ -957,11 +960,11 @@ def _verify_pinned_artifacts(
     pinvi_root = paths.sources_directory / "pinvi" / by_label["pinvi"].revision
     map_service = map_root / "packages/kor-travel-map-api/openapi.service.json"
     pinvi_service = pinvi_root / "apps/api/tests/contract/kor-travel-map-openapi-service.json"
-    metadata_path = pinvi_root / "contracts/cache-target-upstream-map-v1.json"
+    provenance_path = pinvi_root / "contracts/kor-travel-map-service-provenance-v1.json"
     for path, label in (
         (map_service, "Map service artifact"),
         (pinvi_service, "PinVi service vendor"),
-        (metadata_path, "PinVi service metadata"),
+        (provenance_path, "PinVi Map service provenance"),
     ):
         _require_root_owned_file(path, label=label)
     map_bytes = map_service.read_bytes()
@@ -972,17 +975,20 @@ def _verify_pinned_artifacts(
     ):
         raise DeploymentContractError("pinned Map and PinVi service artifacts differ from manifest")
     try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DeploymentContractError("pinned PinVi service metadata is invalid") from exc
+        raise DeploymentContractError("pinned PinVi Map service provenance is invalid") from exc
     expected = {
-        "contract_generation": int(pins.contract_generation),
+        "capabilities": {
+            "cache_target": {"generation": int(pins.contract_generation)},
+            "c6c_cancel_probe": {"generation": C6C_CANCEL_PROBE_CAPABILITY_GENERATION},
+        },
         "map_release_revision": pins.map_release_revision,
         "service_openapi_sha256": pins.service_openapi_sha256,
         "version": 1,
     }
-    if metadata != expected:
-        raise DeploymentContractError("pinned PinVi service metadata differs from manifest")
+    if provenance != expected:
+        raise DeploymentContractError("pinned PinVi Map service provenance differs from manifest")
     # immutable worktree evidence를 다시 읽어 artifact path가 worktree 밖으로 escape하지 않음을 보장한다.
     _validate_existing_pinned_worktree(map_root, spec=by_label["map"], runner=runner)
     _validate_existing_pinned_worktree(pinvi_root, spec=by_label["pinvi"], runner=runner)

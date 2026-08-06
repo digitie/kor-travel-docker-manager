@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -10,6 +12,10 @@ from kor_travel_docker_manager.services import pinned_deployment_input as input_
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_production_manifest import (
     CACHE_TARGET_PRODUCTION_PINS,
+    CacheTargetProductionPinManifest,
+)
+from kor_travel_docker_manager.services.map_service_contract import (
+    C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
 from kor_travel_docker_manager.services.pinned_deployment_input import (
     PinnedDeploymentInputPaths,
@@ -20,6 +26,7 @@ from kor_travel_docker_manager.services.pinned_deployment_input import (
     pinned_deployment_repo_specs,
     production_pinset_sha256,
 )
+from kor_travel_docker_manager.services.pinned_source_install import RepoSpec
 
 
 def _paths(tmp_path: Path) -> PinnedDeploymentInputPaths:
@@ -41,6 +48,106 @@ def test_v2_pinset_digest_uses_manifest_canonical_serialization() -> None:
     assert len(production_pinset_sha256()) == 64
 
 
+def _write_trusted_service_provenance(
+    paths: PinnedDeploymentInputPaths,
+    *,
+    c6c_generation: int = C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+) -> tuple[CacheTargetProductionPinManifest, tuple[RepoSpec, RepoSpec]]:
+    service_bytes = b'{"openapi":"3.1.0"}\n'
+    pins = replace(
+        CACHE_TARGET_PRODUCTION_PINS,
+        service_openapi_sha256=hashlib.sha256(service_bytes).hexdigest(),
+    )
+    map_root = paths.sources_directory / "map" / pins.map_release_revision
+    pinvi_root = paths.sources_directory / "pinvi" / pins.pinvi_release_revision
+    map_service = map_root / "packages/kor-travel-map-api/openapi.service.json"
+    pinvi_service = pinvi_root / "apps/api/tests/contract/kor-travel-map-openapi-service.json"
+    provenance = pinvi_root / "contracts/kor-travel-map-service-provenance-v1.json"
+    for path in (map_service, pinvi_service, provenance):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    map_service.write_bytes(service_bytes)
+    pinvi_service.write_bytes(service_bytes)
+    provenance.write_text(
+        json.dumps(
+            {
+                "capabilities": {
+                    "cache_target": {"generation": int(pins.contract_generation)},
+                    "c6c_cancel_probe": {"generation": c6c_generation},
+                },
+                "map_release_revision": pins.map_release_revision,
+                "service_openapi_sha256": pins.service_openapi_sha256,
+                "version": 1,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    specs = (
+        RepoSpec(
+            "map",
+            "KOR_TRAVEL_MAP_REPO_DIR",
+            "KOR_TRAVEL_MAP_GIT_COMMIT",
+            "https://github.com/digitie/kor-travel-map.git",
+            pins.map_release_revision,
+        ),
+        RepoSpec(
+            "pinvi",
+            "PINVI_REPO_DIR",
+            "PINVI_SOURCE_REVISION",
+            "https://github.com/digitie/pinvi.git",
+            pins.pinvi_release_revision,
+        ),
+    )
+    return pins, specs
+
+
+def test_pinned_artifact_preflight_requires_general_service_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    pins, specs = _write_trusted_service_provenance(paths)
+    monkeypatch.setattr(input_module, "CACHE_TARGET_PRODUCTION_PINS", pins)
+    monkeypatch.setattr(input_module, "_require_root_owned_file", lambda *_args, **_kwargs: None)
+    verified: list[Path] = []
+    monkeypatch.setattr(
+        input_module,
+        "_validate_existing_pinned_worktree",
+        lambda path, **_kwargs: verified.append(path),
+    )
+
+    input_module._verify_pinned_artifacts(
+        paths=paths,
+        specs=specs,
+        runner=lambda *_args, **_kwargs: pytest.fail("git must not run"),
+    )
+
+    assert verified == [
+        paths.sources_directory / "map" / pins.map_release_revision,
+        paths.sources_directory / "pinvi" / pins.pinvi_release_revision,
+    ]
+
+
+def test_pinned_artifact_preflight_rejects_c6c_capability_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    pins, specs = _write_trusted_service_provenance(
+        paths,
+        c6c_generation=C6C_CANCEL_PROBE_CAPABILITY_GENERATION + 1,
+    )
+    monkeypatch.setattr(input_module, "CACHE_TARGET_PRODUCTION_PINS", pins)
+    monkeypatch.setattr(input_module, "_require_root_owned_file", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(DeploymentContractError, match="service provenance differs"):
+        input_module._verify_pinned_artifacts(
+            paths=paths,
+            specs=specs,
+            runner=lambda *_args, **_kwargs: pytest.fail("git must not run"),
+        )
+
+
 def test_v2_env_render_replaces_every_deployment_scalar_atomically(tmp_path: Path) -> None:
     specs = pinned_deployment_repo_specs()
     raw = (
@@ -59,16 +166,16 @@ def test_v2_env_render_replaces_every_deployment_scalar_atomically(tmp_path: Pat
     rendered = _render_v2_env(raw, paths=_paths(tmp_path), specs=specs).decode()
 
     assert "UNRELATED=value\n" in rendered
-    assert "KOR_TRAVEL_MAP_GIT_COMMIT=8c5bdcf8ce892439a8bb8e0013edf74127bf076a\n" in rendered
-    assert "PINVI_SOURCE_REVISION=3b87c19cc78a07121c27df7d7a4c382c2d3aa068\n" in rendered
-    assert "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0083_nonderived_uuid_generator\n" in rendered
+    assert "KOR_TRAVEL_MAP_GIT_COMMIT=1df45b57f55b8d517bb1f2c12a869d032d70453e\n" in rendered
+    assert "PINVI_SOURCE_REVISION=2d598551287d84c3af13510f8cab7f8bec547715\n" in rendered
+    assert "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0084_c6c_cancel_probe_fixtures\n" in rendered
     assert (
         "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256="
-        "c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd\n"
+        "6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e\n"
     ) in rendered
     assert (
         "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION="
-        "8c5bdcf8ce892439a8bb8e0013edf74127bf076a\n"
+        "1df45b57f55b8d517bb1f2c12a869d032d70453e\n"
     ) in rendered
 
 

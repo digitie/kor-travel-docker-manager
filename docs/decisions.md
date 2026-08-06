@@ -1698,10 +1698,13 @@ cancellation path는 fixture record를 원자적으로 `consumed`로 바꾸고 c
 재전송하지 않는다. exact response가 검증된 뒤 Map `finalize`만 fixture job을 terminal로 정리하며 cancellation
 attempt, member, `cancellation_id`와 receipt는 삭제하지 않는다.
 
-이 lifecycle capability generation은 Map release artifact와 compatible-pair pinset의 required field다. Manager는
-Map candidate에 그 endpoint/generation이 없거나 PinVi metadata·Map artifact·pinset이 서로 다르면 mutation 전에
-fail-close한다. 따라서 이전 image fallback으로 endpoint 부재를 숨기지 않는다. PinVi에는 fixture token이나
-생성 endpoint를 주지 않으며 existing relay의 structured error preservation만 회귀로 확인한다.
+이 lifecycle capability generation은 PinVi가 소유하는 일반 Map service provenance artifact의 capability다.
+artifact는 Map release revision·service OpenAPI SHA와 `cache_target`/`c6c_cancel_probe` generation을 함께
+선언하며, Manager는 trusted PinVi source의 그 정확한 bytes를 기존 Map artifact·cache-target pin과 교차
+검증한다. 기존 compatible-pair manifest v4에는 F1J 전용 필드를 추가하지 않는다. Manager는 Map candidate에
+endpoint/generation이 없거나 PinVi provenance·Map artifact·pin이 서로 다르면 mutation 전에 fail-close한다.
+따라서 이전 image fallback으로 endpoint 부재를 숨기지 않는다. PinVi에는 fixture token이나 생성 endpoint를
+주지 않으며 existing relay의 structured error preservation만 회귀로 확인한다.
 
 ### 결과
 

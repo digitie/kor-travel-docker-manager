@@ -113,6 +113,9 @@ from kor_travel_docker_manager.services.compose_service import (
     get_c6c_deployment_lock_path,
 )
 from kor_travel_docker_manager.services.docker_service import DockerService
+from kor_travel_docker_manager.services.map_service_contract import (
+    C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+)
 
 _READ_TOKEN = "r" * 32
 _CANCEL_TOKEN = "c" * 32
@@ -312,6 +315,41 @@ def _production_config() -> C6cDeploymentConfig:
             pinvi_admin_password=_PINVI_ADMIN_PASSWORD,
         ),
     )
+
+
+def test_cancel_probe_fixture_requires_the_service_contract_generation() -> None:
+    transaction_id = "11111111-1111-4111-8111-111111111111"
+    payload = {
+        "data": {
+            "fixture": {
+                "transaction_id": transaction_id,
+                "job_id": "22222222-2222-4222-8222-222222222222",
+                "state": "armed",
+                "cancellation_id": None,
+                "created_at": "2026-08-06T00:00:00+00:00",
+                "consumed_at": None,
+                "finalized_at": None,
+                "canonical_unsafe_outcome": None,
+                "capability_generation": C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+            }
+        },
+        "meta": {},
+    }
+
+    fixture = c6c_deployment._parse_c6c_cancel_probe_fixture(
+        payload,
+        expected_transaction_id=transaction_id,
+    )
+
+    assert fixture.job_id == "22222222-2222-4222-8222-222222222222"
+    payload["data"]["fixture"]["capability_generation"] = (
+        C6C_CANCEL_PROBE_CAPABILITY_GENERATION + 1
+    )
+    with pytest.raises(DeploymentContractError, match="fixture lifecycle response"):
+        c6c_deployment._parse_c6c_cancel_probe_fixture(
+            payload,
+            expected_transaction_id=transaction_id,
+        )
 
 
 @pytest.fixture(autouse=True)
