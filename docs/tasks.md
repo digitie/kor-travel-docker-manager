@@ -950,12 +950,9 @@ n150은 운영 서비스가 아니므로, old manifest·non-terminal F1D journal
 runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계는
 [`tvn41-f1d-destructive-rebootstrap.md`](tvn41-f1d-destructive-rebootstrap.md)다.
 
-- [/] **F1D-C3 (Manager PR #167)** — 기존 Map-owned F1J fixture lifecycle을 v5
-      `rebuild-pinned` durable transaction에 직접 결선한다. candidate Map readiness 뒤 journal transaction
-      ID로 fixture ensure→PinVi의 단 한 번의 canonical cancel→exact `409 PIPELINE_CANCELLATION_UNSAFE`
-      receipt 대조→finalize를 수행하고, `armed → consumed → finalized`와 POST 전 attempted 상태를
-      journal에 단조 기록한다. response loss 재개는 Map immutable outcome을 읽은 뒤 cancel POST를 재발행하지
-      않으며, fixture credential은 Map API와 Manager에만 둔다.
-- [ ] **F1D-D (docs-only PR)** — C3가 결선된 n150 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
-      E2E·PinVi mutating E2E를 통과시킨 결과를 기록한다. data source/ETL 재적재는 이 transaction 뒤의 별도
-      작업으로 handoff한다.
+- [/] **F1D-D (docs-only PR)** — C3가 결선된 n150 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
+      E2E·PinVi mutating E2E 결과를 기록한다. 2026-08-06 파기형 rebuild는 committed했고 Map application
+      `0087_route_area_subtypes`, Map Dagster `29b539ebc72a`, PinVi `20260804_0049`와 v7 fixture
+      `finalized`/exact `409 PIPELINE_CANCELLATION_UNSAFE`까지 확인했다. 로그인과 data-independent live UI
+      smoke는 통과했으나, 비어 있는 새 DB에서 고정 curated/feature ID를 전제한 기존 suite는 ETL 재적재 뒤 별도
+      acceptance로 재실행한다. data source/ETL 재적재는 이 transaction 뒤의 별도 작업으로 handoff한다.

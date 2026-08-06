@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C3 — n150 파기형 rebuild 실증)
+
+최신 Map typed-subtype pin으로 n150에서 `rebuild-pinned --confirm`을 실행해 새 generation을 `committed`로
+결선했다. Map application `0087_route_area_subtypes`, Map Dagster `29b539ebc72a`, PinVi `20260804_0049`
+schema head와 일곱 runtime container health를 확인했다. v7 journal receipt는 Map fixture가
+`armed → consumed → finalized`로 단조 전이했고 PinVi canonical cancel outcome이 exact
+`409 PIPELINE_CANCELLATION_UNSAFE`였음을 보존한다.
+
+Map UI 로그인 POST는 `200`과 session cookie를 반환했다. n150 live UI E2E에서 운영 홈·파이프라인 catalog
+6건과 Feature 목록·지도 초기 surface 10건을 통과했다. 새 DB에는 source/ETL data를 의도적으로 다시 적재하지
+않았으므로, 고정 curated/feature ID를 요구한 기존 full suite의 일부는 data-dependent failure로 분리했다.
+이는 C3 transaction 실패가 아니며 final-schema ETL 재적재 뒤 F1D-D acceptance에서 재실행한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-C3 — Map typed-subtype release pin 갱신)
 
 Map `main`의 typed subtype 단일 정본 schema release(새 application head `0087`)를 F1D
