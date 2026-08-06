@@ -160,7 +160,11 @@ def materialize_pinned_runtime_sources(
     revision만 사용한다.
     """
 
-    _require_canonical_rebuildable_state_paths(state_paths=state_paths, values=values)
+    _require_canonical_rebuildable_state_paths(
+        state_paths=state_paths,
+        values=values,
+        release=release,
+    )
     paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
     source_roots = {
         source.role: _validated_source_root(values, source=source)
@@ -186,10 +190,14 @@ def _require_canonical_rebuildable_state_paths(
     *,
     state_paths: PinnedRuntimeStatePaths,
     values: Mapping[str, str],
+    release: PinnedRuntimeRelease,
 ) -> None:
     """호출자가 v5 rebuild state 밖으로 source를 유도하지 못하게 막는다."""
 
-    expected = canonical_pinned_runtime_state_paths(values)
+    expected = canonical_pinned_runtime_state_paths(
+        values,
+        pinset_sha256=release.pinset_sha256,
+    )
     if state_paths != expected:
         raise DeploymentContractError(
             "pinned runtime source state paths differ from canonical rebuildable state"

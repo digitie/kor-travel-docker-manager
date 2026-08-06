@@ -305,7 +305,10 @@ def _require_canonical_rebuildable_state_paths(
 ) -> None:
     """호출자가 임의 0700 directory로 credential을 유도하지 못하게 막는다."""
 
-    expected = canonical_pinned_runtime_state_paths(values)
+    expected = canonical_pinned_runtime_state_paths(
+        values,
+        pinset_sha256=state_paths.pinset_sha256,
+    )
     if state_paths != expected:
         raise DeploymentContractError(
             "PinVi bootstrap state paths differ from canonical rebuildable state"

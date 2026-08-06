@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C3 — Map typed-subtype release pin 갱신)
+
+Map `main`의 typed subtype 단일 정본 schema release(새 application head `0087`)를 F1D
+candidate source pin으로 고정한다. 이 release는 Map core의 `detail`/`geom` legacy 정본을
+제거하므로, 기존 DB를 보전하거나 intermediate schema에 맞추는 경로를 만들지 않는다. C3의
+candidate static attestation과 파기형 세 DB 재생성은 새 Map head만 수용한다. v7
+journal/tombstone filename도 pinset SHA로 분리해 old same-version state가 이 release의 새
+generation을 차단하지 않게 한다.
+
+---
+
+## 2026-08-06 (T-VN-41-F1D-C3 — tombstone resume fail-close 보강)
+
+적대적 리뷰에서 v7 journal을 쓴 직후 legacy tombstone이 실패하거나 process가 종료되면 다음 resume이
+tombstone을 건너뛰어 destructive reset으로 갈 수 있음을 확인했다. 새 journal과 existing journal 모두
+runtime/DB mutation 전에 동일 transaction/candidate의 tombstone receipt를 idempotently 재검증하도록
+수렴시킨다. fixture `armed` receipt 전에는 기존처럼 세 DB를 다시 만들고, receipt 후에는 Map GET으로
+immutable outcome을 수렴해야 하므로 DB를 보존한다. journal receipt에는 Map lifecycle의 creation,
+consumption, finalization UTC evidence도 함께 고정한다. 이 필드가 없던 draft v6 journal/receipt는
+v7 reader가 해석하지 않고 allowlisted legacy tombstone으로 퇴역한다.
+
+---
+
+## 2026-08-06 (T-VN-41-F1D-C3 — dynamic fixture 결선 설계)
+
+v5 rebuild의 core path는 Map-owned F1J fixture helper를 실제 호출하지 않는다. C3는 이를
+`rebuild-pinned` transaction에 결선하면서 journal을 v7 단일 형식으로 교체한다. fixture `armed`,
+cancel/finalize POST 전 `attempted`, immutable `consumed` outcome, `finalized`를 secret 없이 매 전이에
+fsync한다. 응답 유실 재개는 Map GET만 허용하며, attempted 뒤 같은 POST를 추측 재발행하지 않는다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-C2 완료 이관)
 
 v5 single-active generation과 candidate-first destructive rebuild, Map Dagster/application 및 PinVi

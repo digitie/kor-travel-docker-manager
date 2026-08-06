@@ -11,11 +11,16 @@ from unittest.mock import Mock
 import pytest
 
 from kor_travel_docker_manager.services import compose_service as compose_service_module
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.c6c_deployment import (
+    C6cCancelProbeFixture,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.compose_service import ComposeService
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     REBUILD_PHASES,
     RUNTIME_SERVICES,
+    PinnedRuntimeCancelProbeOutcome,
+    PinnedRuntimeCancelProbeReceipt,
     pinned_runtime_state_paths,
     read_rebuild_journal,
     write_rebuild_journal,
@@ -27,7 +32,14 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     new_candidate_journal,
     parse_candidate_static_head,
 )
-from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    CANONICAL_RUNTIME_SOURCE_URLS,
+    PINNED_RUNTIME_RELEASE,
+    PINVI_PINNED_RUNTIME_SOURCE,
+    PinnedRuntimeRelease,
+    PinnedRuntimeSourceSpec,
+    canonical_pinset_sha256,
+)
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     MaterializedRuntimeSource,
     PinnedRuntimeSourceMaterialization,
@@ -51,6 +63,42 @@ def _sources() -> PinnedRuntimeSourceMaterialization:
                 tree="b" * 40,
             ),
         ),
+    )
+
+
+def _sources_for(release: PinnedRuntimeRelease) -> PinnedRuntimeSourceMaterialization:
+    return PinnedRuntimeSourceMaterialization(
+        release=release,
+        sources=(
+            MaterializedRuntimeSource(
+                role="map",
+                root=Path("/state/map"),
+                revision=release.source_for("map").revision,
+                tree="a" * 40,
+            ),
+            MaterializedRuntimeSource(
+                role="pinvi",
+                root=Path("/state/pinvi"),
+                revision=release.source_for("pinvi").revision,
+                tree="b" * 40,
+            ),
+        ),
+    )
+
+
+def _release_with_map_revision(map_revision: str) -> PinnedRuntimeRelease:
+    sources = (
+        PinnedRuntimeSourceSpec(
+            role="map",
+            canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["map"],
+            revision=map_revision,
+        ),
+        PINVI_PINNED_RUNTIME_SOURCE,
+    )
+    return PinnedRuntimeRelease(
+        version=5,
+        sources=sources,
+        pinset_sha256=canonical_pinset_sha256(version=5, sources=sources),
     )
 
 
@@ -737,6 +785,66 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         lambda _runtime: next(revisions),
     )
     monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_c6c_deployment_config_from_environment",
+        lambda _values: object(),
+    )
+    def run_pinvi_smoke(
+        _config: object,
+        *,
+        cancel_probe_state: object,
+        state_recorder: object,
+    ) -> list[dict[str, int | str]]:
+        assert callable(state_recorder)
+        state = cast(Any, cancel_probe_state)
+        state.fixture = C6cCancelProbeFixture(
+            transaction_id=state.transaction_id,
+            job_id="0" * 8 + "-0000-0000-0000-000000000000",
+            state="armed",
+            cancellation_id=None,
+            canonical_unsafe_outcome=None,
+            created_at="2026-08-06T00:00:00+00:00",
+        )
+        state_recorder(state)
+        state.attempted = True
+        state_recorder(state)
+        outcome: dict[str, int | str] = {
+            "name": "pinvi_cancel_error",
+            "status": 409,
+            "code": "PIPELINE_CANCELLATION_UNSAFE",
+        }
+        state.fixture = C6cCancelProbeFixture(
+            transaction_id=state.transaction_id,
+            job_id=state.fixture.job_id,
+            state="consumed",
+            cancellation_id="1" * 8 + "-1111-1111-1111-111111111111",
+            canonical_unsafe_outcome=outcome,
+            created_at="2026-08-06T00:00:00+00:00",
+            consumed_at="2026-08-06T00:01:00+00:00",
+        )
+        state.result = outcome
+        state_recorder(state)
+        state.finalize_attempted = True
+        state_recorder(state)
+        state.fixture = C6cCancelProbeFixture(
+            transaction_id=state.transaction_id,
+            job_id=state.fixture.job_id,
+            state="finalized",
+            cancellation_id=state.fixture.cancellation_id,
+            canonical_unsafe_outcome=outcome,
+            created_at="2026-08-06T00:00:00+00:00",
+            consumed_at="2026-08-06T00:01:00+00:00",
+            finalized_at="2026-08-06T00:02:00+00:00",
+        )
+        state_recorder(state)
+        return []
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "run_pinvi_canonical_smoke",
+        run_pinvi_smoke,
+    )
     monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
     monkeypatch.setattr(compose_service_module, "reconcile_generation_references", Mock())
     monkeypatch.setattr(compose_service_module, "retire_f1d_legacy_artifacts", Mock())
@@ -745,6 +853,13 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
 
     assert result["success"] is True
     assert result["phase"] == "committed"
+    final_journal = read_rebuild_journal(
+        pinned_runtime_state_paths(
+            values,
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        ).journal
+    )
+    assert final_journal.cancel_probe.stage == "finalized"
     assert captured[0] is not None
     assert captured[0]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == expected_candidate_head
     assert captured[-1] is not None
@@ -797,6 +912,74 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     ).exists()
 
 
+def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() -> None:
+    journal = new_candidate_journal(
+        candidate=build_candidate_generation(
+            sources=_sources(),
+            image_ids={
+                service: f"sha256:{index:064x}"
+                for index, service in enumerate(RUNTIME_SERVICES)
+            },
+            map_application_head="map-application-head",
+            map_dagster_head="map-dagster-head",
+            pinvi_head="pinvi-head",
+        ),
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+    for phase in REBUILD_PHASES[1 : REBUILD_PHASES.index("pinvi_api_ready") + 1]:
+        journal = journal.transition(phase)
+    armed = PinnedRuntimeCancelProbeReceipt().transition(
+        "armed",
+        job_id="22222222-2222-2222-2222-222222222222",
+        fixture_created_at="2026-08-06T00:00:00+00:00",
+    )
+    journal = journal.with_cancel_probe(armed)
+    journal = journal.with_cancel_probe(armed.transition("cancel_post_attempted"))
+
+    resumed = compose_service_module._pinvi_cancel_probe_state_from_journal(journal)
+
+    assert resumed.transaction_id == journal.transaction_id
+    assert resumed.fixture is not None
+    assert resumed.fixture.job_id == "22222222-2222-2222-2222-222222222222"
+    assert resumed.fixture.state == "armed"
+    assert resumed.attempted is True
+    assert resumed.finalize_attempted is False
+
+
+def test_database_reset_is_required_only_before_durable_fixture_arm() -> None:
+    journal = new_candidate_journal(
+        candidate=build_candidate_generation(
+            sources=_sources(),
+            image_ids={
+                service: f"sha256:{index:064x}"
+                for index, service in enumerate(RUNTIME_SERVICES)
+            },
+            map_application_head="map-application-head",
+            map_dagster_head="map-dagster-head",
+            pinvi_head="pinvi-head",
+        ),
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+
+    assert compose_service_module._pinned_runtime_reset_required(journal) is True
+
+    for phase in REBUILD_PHASES[1 : REBUILD_PHASES.index("pinvi_api_ready") + 1]:
+        journal = journal.transition(phase)
+    journal = journal.with_cancel_probe(
+        PinnedRuntimeCancelProbeReceipt().transition(
+            "armed",
+            job_id="22222222-2222-2222-2222-222222222222",
+            fixture_created_at="2026-08-06T00:00:00+00:00",
+        )
+    )
+
+    assert compose_service_module._pinned_runtime_reset_required(journal) is False
+
+
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -825,7 +1008,228 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     assert [command[2] for command in operations] == ["rm", "ps"]
 
 
-def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
+def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-tombstone-retry",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    candidate = build_candidate_generation(
+        sources=_sources(),
+        image_ids={
+            service: f"sha256:{index:064x}"
+            for index, service in enumerate(RUNTIME_SERVICES)
+        },
+        map_application_head="map-application-head",
+        map_dagster_head="map-dagster-head",
+        pinvi_head="pinvi-head",
+    )
+    journal = new_candidate_journal(
+        candidate=candidate,
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+    state_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    )
+    state_paths.state_root.mkdir(parents=True, mode=0o700)
+    write_rebuild_journal(state_paths.journal, journal)
+
+    service = ComposeService()
+    database_reset = Mock()
+    run_compose = Mock()
+    tombstone = Mock(side_effect=DeploymentContractError("legacy tombstone failed"))
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
+    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
+    monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        lambda **_kwargs: _sources(),
+    )
+    monkeypatch.setattr(service, "_attest_pinned_runtime_candidate_images", Mock())
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
+    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
+    monkeypatch.setattr(compose_service_module, "retire_f1d_legacy_artifacts", tombstone)
+
+    for _attempt in range(2):
+        with pytest.raises(DeploymentContractError, match="legacy tombstone failed"):
+            service.rebuild_pinned_runtime()
+
+    assert tombstone.call_count == 2
+    run_compose.assert_not_called()
+    database_reset.assert_not_called()
+
+
+def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-pinset-rotation",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    previous_release = _release_with_map_revision("d" * 40)
+    next_release = _release_with_map_revision("e" * 40)
+    previous_sources = _sources_for(previous_release)
+    previous_candidate = build_candidate_generation(
+        sources=previous_sources,
+        image_ids={
+            service: f"sha256:{index:064x}"
+            for index, service in enumerate(RUNTIME_SERVICES)
+        },
+        map_application_head="map-application-head",
+        map_dagster_head="map-dagster-head",
+        pinvi_head="pinvi-head",
+    )
+    previous_journal = new_candidate_journal(
+        candidate=previous_candidate,
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+    previous_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=previous_release.pinset_sha256,
+    )
+    previous_paths.state_root.mkdir(parents=True, mode=0o700)
+    write_rebuild_journal(previous_paths.journal, previous_journal)
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    service = ComposeService()
+    compose_calls: list[tuple[str, ...]] = []
+
+    def run_compose(
+        args: list[str],
+        *,
+        transaction: object,
+        retryable: bool = False,
+    ) -> dict[str, object]:
+        del transaction
+        del retryable
+        compose_calls.append(tuple(args))
+        return {"success": True, "stdout": ""}
+
+    def static_command(_image: str, command: tuple[str, ...], *, label: str) -> str:
+        del label
+        return {
+            "ktm-application-schema": '{"head":"map-application-head","schema":"kor-travel-map.application-head.v1"}\n',
+            "ktm-dagster-storage": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
+            "pinvi-admin-bootstrap": '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
+        }[command[0]]
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
+    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "current_pinned_runtime_release",
+        lambda: next_release,
+    )
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
+    monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        lambda **_kwargs: _sources_for(next_release),
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(
+        service,
+        "_attest_pinned_runtime_candidate_images",
+        lambda *, build: {
+            service_name: f"sha256:{index:064x}"
+            for index, service_name in enumerate(RUNTIME_SERVICES)
+        },
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_run_pinned_runtime_static_command",
+        static_command,
+    )
+    monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "retire_f1d_legacy_artifacts",
+        Mock(side_effect=DeploymentContractError("stop after new journal")),
+    )
+
+    with pytest.raises(DeploymentContractError, match="stop after new journal"):
+        service.rebuild_pinned_runtime()
+
+    next_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=next_release.pinset_sha256,
+    )
+    assert read_rebuild_journal(previous_paths.journal) == previous_journal
+    assert read_rebuild_journal(next_paths.journal).candidate.map_source_revision == "e" * 40
+    assert compose_calls[0] == ("build", *RUNTIME_SERVICES)
+    assert compose_calls[1][-2:] == ("pinvi-admin-bootstrap", "head")
+
+
+def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -866,8 +1270,40 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         resolved_compose_sha256="c" * 64,
     )
     for phase in REBUILD_PHASES[1:-1]:
+        if phase == "cancel_probe_finalized":
+            armed = PinnedRuntimeCancelProbeReceipt().transition(
+                "armed",
+                job_id="0" * 8 + "-0000-0000-0000-000000000000",
+                fixture_created_at="2026-08-06T00:00:00+00:00",
+            )
+            cancel_attempted = armed.transition("cancel_post_attempted")
+            consumed = cancel_attempted.transition(
+                "consumed",
+                cancellation_id="1" * 8 + "-1111-1111-1111-111111111111",
+                outcome=PinnedRuntimeCancelProbeOutcome(
+                    name="pinvi_cancel_error",
+                    status=409,
+                    code="PIPELINE_CANCELLATION_UNSAFE",
+                ),
+                fixture_consumed_at="2026-08-06T00:01:00+00:00",
+            )
+            finalize_attempted = consumed.transition("finalize_post_attempted")
+            for receipt in (
+                armed,
+                cancel_attempted,
+                consumed,
+                finalize_attempted,
+                finalize_attempted.transition(
+                    "finalized",
+                    fixture_finalized_at="2026-08-06T00:02:00+00:00",
+                ),
+            ):
+                journal = journal.with_cancel_probe(receipt)
         journal = journal.transition(phase)
-    state_paths = pinned_runtime_state_paths(values)
+    state_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    )
     state_paths.state_root.mkdir(parents=True, mode=0o700)
     write_rebuild_journal(state_paths.journal, journal)
 
@@ -884,6 +1320,7 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         )
     )
     reconcile_attempts = 0
+    database_reset = Mock()
 
     def capture(**_kwargs: object) -> tuple[SimpleNamespace, None]:
         return transaction, None
@@ -939,7 +1376,7 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         "database_runtimes_from_frozen_contract",
         lambda **_kwargs: (object(), object(), object()),
     )
-    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", Mock())
+    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
     monkeypatch.setattr(
         compose_service_module,
         "read_database_schema_revision",
@@ -958,4 +1395,27 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
 
     assert result["phase"] == "committed"
     assert reconcile_attempts == 2
+    assert operations[:3] == [
+        ("stop", *RUNTIME_SERVICES),
+        (
+            "--profile",
+            "bootstrap",
+            "rm",
+            "-f",
+            "-s",
+            "kor-travel-map-dagster-storage-migrate",
+            "pinvi-admin-bootstrap",
+        ),
+        (
+            "--profile",
+            "bootstrap",
+            "ps",
+            "--all",
+            "--format",
+            "json",
+            "kor-travel-map-dagster-storage-migrate",
+            "pinvi-admin-bootstrap",
+        ),
+    ]
     assert operations.count(("stop", *RUNTIME_SERVICES)) == 3
+    database_reset.assert_not_called()

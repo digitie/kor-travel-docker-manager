@@ -182,7 +182,7 @@ def new_candidate_journal(
         raise DeploymentContractError("pinned runtime frozen input bytes are invalid")
     timestamp = created_at or datetime.now(UTC).isoformat()
     return PinnedRuntimeRebuildJournal(
-        version=5,
+        version=7,
         transaction_id=str(uuid.uuid4()),
         phase="candidate_attested",
         candidate=candidate,

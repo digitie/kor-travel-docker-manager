@@ -489,16 +489,17 @@ class HttpProbeResponse:
 
 @dataclass
 class PinviCancelProbeState:
-    """한 compatible-pair transaction의 C6c fixture cancel 상태.
+    """한 runtime generation transaction의 C6c fixture cancel 상태.
 
     ``transaction_id``는 Manager durable journal의 값이어야 한다. 기본값은 단위
-    검증과 non-F1D caller의 안전한 일회성 상태를 위한 것이며, F1D resume 경로는
-    반드시 기존 journal의 transaction ID를 명시적으로 전달한다.
+    검증과 non-F1D caller의 안전한 일회성 상태를 위한 것이며, F1D v6 resume 경로는
+    반드시 기존 journal의 transaction ID와 attempted high-watermark를 복원한다.
     """
 
     transaction_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     fixture: C6cCancelProbeFixture | None = None
     attempted: bool = False
+    finalize_attempted: bool = False
     result: dict[str, int | str] | None = None
 
 
@@ -511,6 +512,9 @@ class C6cCancelProbeFixture:
     state: Literal["armed", "consumed", "finalized"]
     cancellation_id: str | None
     canonical_unsafe_outcome: dict[str, int | str] | None
+    created_at: str | None = None
+    consumed_at: str | None = None
+    finalized_at: str | None = None
 
 
 def assert_manager_mutation_allowed(
@@ -865,16 +869,18 @@ def load_c6c_deployment_config_from_environment(
     deployment_environment = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
     pinvi_environment = values.get("PINVI_ENVIRONMENT", "").strip().lower()
 
-    if deployment_environment not in {"local", "production"}:
+    if deployment_environment not in {"local", "rehearsal", "production"}:
         raise DeploymentContractError(
-            "KTDM_DEPLOYMENT_ENVIRONMENT must be explicitly set to local or production"
+            "KTDM_DEPLOYMENT_ENVIRONMENT must be explicitly set to local, rehearsal, or production"
         )
     if pinvi_environment not in {"development", "production"}:
         raise DeploymentContractError(
             "PINVI_ENVIRONMENT must be explicitly set to development or production"
         )
     expected_pinvi_environment = (
-        "production" if deployment_environment == "production" else "development"
+        "production"
+        if deployment_environment in {"rehearsal", "production"}
+        else "development"
     )
     if pinvi_environment != expected_pinvi_environment:
         raise DeploymentContractError(
@@ -883,7 +889,9 @@ def load_c6c_deployment_config_from_environment(
         )
 
     required_text = values.get(_MAP_REQUIRED_ENV, "").strip().lower()
-    expected_required = "true" if deployment_environment == "production" else "false"
+    expected_required = (
+        "true" if deployment_environment in {"rehearsal", "production"} else "false"
+    )
     if required_text != expected_required:
         raise DeploymentContractError(
             f"{_MAP_REQUIRED_ENV} must be explicitly set to {expected_required} "
@@ -946,7 +954,10 @@ def load_c6c_deployment_config_from_environment(
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
         ),
     )
-    validate_c6c_operation_tokens(values, require_nonempty=config.production)
+    validate_c6c_operation_tokens(
+        values,
+        require_nonempty=deployment_environment in {"rehearsal", "production"},
+    )
     _validate_map_production_secrets(config)
     if config.production:
         c6c_state_paths(values)
@@ -2264,6 +2275,9 @@ def _parse_c6c_cancel_probe_fixture(
         state=state,
         cancellation_id=str(cancellation_id) if cancellation_id is not None else None,
         canonical_unsafe_outcome=outcome,
+        created_at=cast(str, fixture["created_at"]),
+        consumed_at=cast(str | None, consumed_at),
+        finalized_at=cast(str | None, finalized_at),
     )
 
 
@@ -2503,9 +2517,20 @@ def run_pinvi_canonical_smoke(
     if state.fixture is None:
         raise DeploymentContractError("C6c fixture receipt is missing")
     if state.fixture.state == "consumed":
+        if state.finalize_attempted:
+            raise DeploymentContractError(
+                "C6c fixture finalization cannot be repeated after an uncertain result"
+            )
+        state.finalize_attempted = True
+        if state_recorder is not None:
+            state_recorder(state)
         _finalize_c6c_cancel_probe_fixture(config, state)
         if state_recorder is not None:
             state_recorder(state)
+    elif state.fixture.state == "finalized" and not state.finalize_attempted:
+        raise DeploymentContractError(
+            "C6c finalized fixture has no durable finalization attempt"
+        )
     if state.fixture.state != "finalized":
         raise DeploymentContractError("C6c fixture finalization is incomplete")
     assert state.result is not None
