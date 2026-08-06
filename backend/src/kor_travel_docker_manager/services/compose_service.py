@@ -172,6 +172,24 @@ def _json_object_without_duplicate_keys(
     return payload
 
 
+def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | None:
+    """정확한 Compose service attach prefix 뒤의 JSON 한 줄만 반환한다."""
+
+    prefix, separator, candidate = line.partition(" | ")
+    if not separator:
+        return None
+    normalized_prefix = prefix.strip()
+    if normalized_prefix == target:
+        return candidate
+    replica_prefix = f"{target}-"
+    if not normalized_prefix.startswith(replica_prefix):
+        return None
+    replica_suffix = normalized_prefix.removeprefix(replica_prefix)
+    if replica_suffix and replica_suffix.isdecimal():
+        return candidate
+    return None
+
+
 def _require_pinned_runtime_rebuild_root() -> None:
     """source staging·state owner와 Docker mutation authority를 root로 고정한다."""
 
@@ -3390,37 +3408,42 @@ class ComposeService:
             if not isinstance(output, str):
                 continue
             for line in output.splitlines():
-                try:
-                    payload = json.loads(
-                        line,
-                        object_pairs_hook=_json_object_without_duplicate_keys,
-                    )
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if not isinstance(payload, Mapping):
-                    continue
-                if target == "kor-travel-map-dagster-storage-migrate":
-                    code = payload.get("code")
-                    if (
-                        set(payload) == {"code", "schema"}
-                        and payload.get("schema")
-                        == _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
-                        and isinstance(code, str)
-                        and code in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
-                    ):
-                        return f"; {code}"
-                    continue
-                if target == "pinvi-admin-bootstrap":
-                    code = payload.get("error_code")
-                    phase = payload.get("phase")
-                    if (
-                        set(payload) == {"error_code", "phase"}
-                        and isinstance(code, str)
-                        and isinstance(phase, str)
-                        and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
-                        == phase
-                    ):
-                        return f"; pinvi:{code}"
+                candidates: tuple[str, ...] = (line,)
+                prefixed = _compose_prefixed_typed_error_candidate(line, target=target)
+                if prefixed is not None:
+                    candidates += (prefixed,)
+                for candidate in candidates:
+                    try:
+                        payload = json.loads(
+                            candidate,
+                            object_pairs_hook=_json_object_without_duplicate_keys,
+                        )
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if not isinstance(payload, Mapping):
+                        continue
+                    if target == "kor-travel-map-dagster-storage-migrate":
+                        code = payload.get("code")
+                        if (
+                            set(payload) == {"code", "schema"}
+                            and payload.get("schema")
+                            == _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
+                            and isinstance(code, str)
+                            and code in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
+                        ):
+                            return f"; {code}"
+                        continue
+                    if target == "pinvi-admin-bootstrap":
+                        code = payload.get("error_code")
+                        phase = payload.get("phase")
+                        if (
+                            set(payload) == {"error_code", "phase"}
+                            and isinstance(code, str)
+                            and isinstance(phase, str)
+                            and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
+                            == phase
+                        ):
+                            return f"; pinvi:{code}"
         return ""
 
     def _retire_pinned_runtime_oneshot_writers(
