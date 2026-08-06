@@ -310,6 +310,16 @@ def _materialize_source(
             runner=runner,
         )
         _validate_private_staging_worktree(staging)
+        try:
+            # Git은 private parent 아래에도 새 worktree root를 보통 0755로
+            # 만든다. parent가 이미 root-only임을 검증한 뒤 즉시 0700으로
+            # 좁혀 이후 clean/seal/promotion 구간을 private하게 유지한다.
+            os.chmod(staging, 0o700)
+        except OSError as exc:
+            raise DeploymentContractError(
+                "pinned runtime source staging worktree cannot be secured"
+            ) from exc
+        _validate_private_staging_worktree(staging)
         _assert_worktree_clean(target=staging, runner=runner)
         _make_worktree_immutable(staging)
         materialized = _validate_existing_worktree(
@@ -524,7 +534,10 @@ def _validate_private_staging_worktree(path: Path) -> None:
     if (
         not stat.S_ISDIR(path_stat.st_mode)
         or path_stat.st_uid != os.geteuid()
-        or stat.S_IMODE(path_stat.st_mode) not in {0o700, 0o555}
+        # Git default worktree root는 0755일 수 있다. parent는 이미 0700으로
+        # 검증했으며, materialize 직후 즉시 0700으로 seal한다. cleanup은 seal
+        # 이전 실패도 처리해야 하므로 이 transient mode만 추가로 허용한다.
+        or stat.S_IMODE(path_stat.st_mode) not in {0o700, 0o755, 0o555}
     ):
         raise DeploymentContractError("pinned runtime source staging worktree is unsafe")
 

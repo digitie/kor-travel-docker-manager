@@ -62,6 +62,7 @@ def _runner_for_materialization(
     paths: PinnedRuntimeStatePaths,
     calls: list[GitInvocation],
     fail_status_once: bool = False,
+    staging_mode: int = 0o700,
 ) -> GitRunner:
     release = PINNED_RUNTIME_RELEASE
     runtime_paths = pinned_runtime_source_paths(state_paths=paths, release=release)
@@ -89,6 +90,7 @@ def _runner_for_materialization(
         if "worktree" in command and "add" in command:
             target = Path(command[command.index("--detach") + 1])
             target.mkdir(mode=0o700)
+            os.chmod(target, staging_mode)
             (target / ".git").write_text("gitdir: managed\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         if "worktree" in command and "move" in command:
@@ -351,6 +353,28 @@ def test_existing_materialization_is_idempotently_validated_without_refetch(tmp_
     assert second == first
     assert all("fetch" not in command for command, _kwargs in second_calls)
     assert stat.S_IMODE(first.source_for("map").root.stat().st_mode) == 0o555
+
+
+def test_materialization_seals_git_default_staging_mode_before_inspection(
+    tmp_path: Path,
+) -> None:
+    paths = _state_paths(tmp_path)
+    values, _map_source, _pinvi_source = _values(tmp_path)
+    calls: list[GitInvocation] = []
+
+    result = materialize_pinned_runtime_sources(
+        release=PINNED_RUNTIME_RELEASE,
+        state_paths=paths,
+        values=values,
+        runner=_runner_for_materialization(
+            paths=paths,
+            calls=calls,
+            staging_mode=0o755,
+        ),
+    )
+
+    assert stat.S_IMODE(result.source_for("map").root.stat().st_mode) == 0o555
+    assert stat.S_IMODE(result.source_for("pinvi").root.stat().st_mode) == 0o555
 
 
 def test_later_staging_failure_is_cleaned_and_same_pinset_retry_succeeds(tmp_path: Path) -> None:
