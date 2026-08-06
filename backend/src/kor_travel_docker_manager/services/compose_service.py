@@ -136,6 +136,7 @@ def _pinvi_cancel_probe_state_from_journal(
             state="armed",
             cancellation_id=None,
             canonical_unsafe_outcome=None,
+            created_at=receipt.fixture_created_at,
         )
         return PinviCancelProbeState(
             transaction_id=journal.transaction_id,
@@ -151,6 +152,9 @@ def _pinvi_cancel_probe_state_from_journal(
         state="finalized" if receipt.stage == "finalized" else "consumed",
         cancellation_id=receipt.cancellation_id,
         canonical_unsafe_outcome=outcome.to_payload(),
+        created_at=receipt.fixture_created_at,
+        consumed_at=receipt.fixture_consumed_at,
+        finalized_at=receipt.fixture_finalized_at,
     )
     return PinviCancelProbeState(
         transaction_id=journal.transaction_id,
@@ -177,6 +181,7 @@ def _cancel_probe_receipt_from_pinvi_state(
         return PinnedRuntimeCancelProbeReceipt(
             stage="cancel_post_attempted" if state.attempted else "armed",
             job_id=fixture.job_id,
+            fixture_created_at=fixture.created_at,
         )
     if (
         fixture.cancellation_id is None
@@ -222,7 +227,24 @@ def _cancel_probe_receipt_from_pinvi_state(
         job_id=fixture.job_id,
         cancellation_id=fixture.cancellation_id,
         outcome=outcome,
+        fixture_created_at=fixture.created_at,
+        fixture_consumed_at=fixture.consumed_at,
+        fixture_finalized_at=fixture.finalized_at,
     )
+
+
+def _pinned_runtime_reset_required(journal: PinnedRuntimeRebuildJournal) -> bool:
+    """Map fixture POST를 아직 durable하게 시도하지 않았을 때만 3 DB를 재생성한다.
+
+    ``armed`` receipt부터는 Map이 transaction ID에 귀속한 fixture outcome을 읽어
+    cancel/finalize POST 재발행 없이 수렴해야 한다. 그 evidence를 파기하는 DB reset은
+    허용하지 않는다. ``uninitialized`` resume은 기존 F1D 정책대로 partial DB를
+    절대 재사용하지 않고 새로 만든다.
+    """
+
+    return journal.cancel_probe.stage == "uninitialized"
+
+
 _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA = (
     "kor-travel-map.dagster-storage-migration-error.v1"
 )
@@ -3938,12 +3960,16 @@ class ComposeService:
                 )
                 write_pinned_runtime_rebuild_journal(state_paths.journal, journal)
                 ensure_generation_references((candidate,), cwd=get_project_root())
-                retire_f1d_legacy_artifacts(
-                    state_root=state_paths.state_root,
-                    transaction_id=journal.transaction_id,
-                    candidate=candidate,
-                    recorded_at=journal.created_at,
-                )
+
+            # legacy journal이 이미 남았더라도 tombstone write/unlink 사이의 crash 또는
+            # 검증 실패를 건너뛰면 안 된다. idempotent receipt 검증은 runtime/DB
+            # mutation 전에 매 실행한다.
+            retire_f1d_legacy_artifacts(
+                state_root=state_paths.state_root,
+                transaction_id=journal.transaction_id,
+                candidate=journal.candidate,
+                recorded_at=journal.created_at,
+            )
 
             runtime_environment = {
                 **build.compose_environment(),
@@ -3974,27 +4000,32 @@ class ComposeService:
                 )
                 return self._pinned_runtime_result(journal, resumed=True)
             try:
-                if REBUILD_PHASES.index(journal.phase) < REBUILD_PHASES.index(
-                    "databases_recreated"
-                ):
+                if _pinned_runtime_reset_required(journal):
                     updated = self._advance_pinned_runtime_journal(
                         journal, "reset_intent_durable"
                     )
                     if updated != journal:
                         write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                         journal = updated
-                    self._run_pinned_runtime_rebuild_compose(
-                        ["stop", *RUNTIME_SERVICES],
-                        transaction=runtime_transaction,
-                    )
-                    self._retire_pinned_runtime_oneshot_writers(
-                        transaction=runtime_transaction,
-                    )
-                    retire_stale_pinvi_bootstrap_credential(
-                        state_paths=state_paths,
-                        values=environment_snapshot.effective,
-                        transaction_id=journal.transaction_id,
-                    )
+
+                # fixture receipt가 있는 resume도 Map/PinVi writer와 one-shot
+                # bootstrap을 정지·부재 검증한 뒤에만 controlled startup으로 간다.
+                # fixture outcome만 보존하며, live runtime/partial writer를
+                # 재사용하지는 않는다.
+                self._run_pinned_runtime_rebuild_compose(
+                    ["stop", *RUNTIME_SERVICES],
+                    transaction=runtime_transaction,
+                )
+                self._retire_pinned_runtime_oneshot_writers(
+                    transaction=runtime_transaction,
+                )
+                retire_stale_pinvi_bootstrap_credential(
+                    state_paths=state_paths,
+                    values=environment_snapshot.effective,
+                    transaction_id=journal.transaction_id,
+                )
+
+                if _pinned_runtime_reset_required(journal):
                     recreate_empty_databases(runtimes)
                     updated = self._advance_pinned_runtime_journal(
                         journal, "databases_recreated"

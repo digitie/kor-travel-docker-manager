@@ -110,8 +110,8 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCHEMA_HEAD = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
 _MAX_STATE_BYTES = 64 * 1024
 _MANIFEST_VERSION = 5
-_REBUILD_JOURNAL_VERSION = 6
-_TOMBSTONE_VERSION = 6
+_REBUILD_JOURNAL_VERSION = 7
+_TOMBSTONE_VERSION = 7
 _F1D_LEGACY_ARTIFACTS: tuple[str, ...] = (
     "compatible-pair-v2.json",
     "compatible-pair-v3.json",
@@ -121,14 +121,16 @@ _F1D_LEGACY_ARTIFACTS: tuple[str, ...] = (
     "cache-target-diagnostic-v1.json",
     "cache-target-diagnostic-attempts-v1.json",
     "pinned-runtime-rebuild-v5.json",
+    "pinned-runtime-rebuild-v6.json",
+    "pinned-runtime-v6/legacy-tombstone-v6.json",
 )
-_TOMBSTONE_DIRECTORY = "pinned-runtime-v6"
-_TOMBSTONE_FILENAME = "legacy-tombstone-v6.json"
+_TOMBSTONE_DIRECTORY = "pinned-runtime-v7"
+_TOMBSTONE_FILENAME = "legacy-tombstone-v7.json"
 _STATE_ROOT_ENV = "KTDM_PINNED_RUNTIME_STATE_ROOT"
 _PROJECT_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
 _DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
 _MANIFEST_FILENAME = "pinned-runtime-generation-v5.json"
-_JOURNAL_FILENAME = "pinned-runtime-rebuild-v6.json"
+_JOURNAL_FILENAME = "pinned-runtime-rebuild-v7.json"
 _CANCEL_PROBE_STAGES: tuple[CancelProbeStage, ...] = (
     "uninitialized",
     "armed",
@@ -155,7 +157,7 @@ class DeploymentMode:
 
 @dataclass(frozen=True)
 class PinnedRuntimeStatePaths:
-    """v5 generation과 v6 rebuild journal이 소유하는 project-scoped owner-only state 경로.
+    """v5 generation과 v7 rebuild journal이 소유하는 project-scoped owner-only state 경로.
 
     v4 manifest나 F1F handoff path를 재사용하지 않는다. ``rebuild-pinned``는 이
     세 경로만 읽고 쓰므로, legacy artifact는 같은 state directory에서 tombstone
@@ -376,23 +378,52 @@ class PinnedRuntimeCancelProbeOutcome:
 
 @dataclass(frozen=True)
 class PinnedRuntimeCancelProbeReceipt:
-    """cancel/finalize 재발행을 막는 v6 transaction-local high-watermark."""
+    """cancel/finalize 재발행을 막는 v7 transaction-local high-watermark.
+
+    Map fixture가 응답한 lifecycle UTC evidence도 함께 보존한다. 이 값은 Map
+    lifecycle 상태를 다시 읽어 수렴할 때 같은 transaction의 immutable evidence인지
+    검증하는 기준이며, retry 시 새 시각으로 덮어쓰지 않는다.
+    """
 
     stage: CancelProbeStage = "uninitialized"
     job_id: str | None = None
     cancellation_id: str | None = None
     outcome: PinnedRuntimeCancelProbeOutcome | None = None
+    fixture_created_at: str | None = None
+    fixture_consumed_at: str | None = None
+    fixture_finalized_at: str | None = None
 
     def __post_init__(self) -> None:
         if self.stage not in _CANCEL_PROBE_STAGES:
             raise DeploymentContractError("pinned runtime cancel probe stage is invalid")
         if self.stage == "uninitialized":
-            if any(value is not None for value in (self.job_id, self.cancellation_id, self.outcome)):
+            if any(
+                value is not None
+                for value in (
+                    self.job_id,
+                    self.cancellation_id,
+                    self.outcome,
+                    self.fixture_created_at,
+                    self.fixture_consumed_at,
+                    self.fixture_finalized_at,
+                )
+            ):
                 raise DeploymentContractError("uninitialized cancel probe receipt has evidence")
             return
         _validate_canonical_uuid(self.job_id, "pinned runtime cancel probe job ID")
+        if self.fixture_created_at is None:
+            raise DeploymentContractError("pinned runtime cancel probe has no creation timestamp")
+        _validate_utc_timestamp(
+            self.fixture_created_at,
+            "pinned runtime cancel probe creation timestamp",
+        )
         if self.stage in {"armed", "cancel_post_attempted"}:
-            if self.cancellation_id is not None or self.outcome is not None:
+            if (
+                self.cancellation_id is not None
+                or self.outcome is not None
+                or self.fixture_consumed_at is not None
+                or self.fixture_finalized_at is not None
+            ):
                 raise DeploymentContractError("armed cancel probe receipt has cancellation evidence")
             return
         _validate_canonical_uuid(
@@ -401,6 +432,22 @@ class PinnedRuntimeCancelProbeReceipt:
         )
         if self.outcome is None:
             raise DeploymentContractError("consumed cancel probe receipt has no outcome")
+        if self.fixture_consumed_at is None:
+            raise DeploymentContractError("pinned runtime cancel probe has no consumption timestamp")
+        _validate_utc_timestamp(
+            self.fixture_consumed_at,
+            "pinned runtime cancel probe consumption timestamp",
+        )
+        if self.stage in {"consumed", "finalize_post_attempted"}:
+            if self.fixture_finalized_at is not None:
+                raise DeploymentContractError("consumed cancel probe receipt has finalization evidence")
+            return
+        if self.fixture_finalized_at is None:
+            raise DeploymentContractError("pinned runtime cancel probe has no finalization timestamp")
+        _validate_utc_timestamp(
+            self.fixture_finalized_at,
+            "pinned runtime cancel probe finalization timestamp",
+        )
 
     def transition(
         self,
@@ -409,25 +456,37 @@ class PinnedRuntimeCancelProbeReceipt:
         job_id: str | None = None,
         cancellation_id: str | None = None,
         outcome: PinnedRuntimeCancelProbeOutcome | None = None,
+        fixture_created_at: str | None = None,
+        fixture_consumed_at: str | None = None,
+        fixture_finalized_at: str | None = None,
     ) -> PinnedRuntimeCancelProbeReceipt:
         current_index = _CANCEL_PROBE_STAGES.index(self.stage)
         next_index = _CANCEL_PROBE_STAGES.index(stage)
         if next_index != current_index + 1:
             raise DeploymentContractError("pinned runtime cancel probe transition is invalid")
         if self.stage == "uninitialized":
-            return PinnedRuntimeCancelProbeReceipt(stage=stage, job_id=job_id)
+            return PinnedRuntimeCancelProbeReceipt(
+                stage=stage,
+                job_id=job_id,
+                fixture_created_at=fixture_created_at,
+            )
         if self.stage in {"armed", "cancel_post_attempted"}:
             return PinnedRuntimeCancelProbeReceipt(
                 stage=stage,
                 job_id=self.job_id,
                 cancellation_id=cancellation_id,
                 outcome=outcome,
+                fixture_created_at=self.fixture_created_at,
+                fixture_consumed_at=fixture_consumed_at,
             )
         return PinnedRuntimeCancelProbeReceipt(
             stage=stage,
             job_id=self.job_id,
             cancellation_id=self.cancellation_id,
             outcome=self.outcome,
+            fixture_created_at=self.fixture_created_at,
+            fixture_consumed_at=self.fixture_consumed_at,
+            fixture_finalized_at=fixture_finalized_at,
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -436,14 +495,17 @@ class PinnedRuntimeCancelProbeReceipt:
             "job_id": self.job_id,
             "cancellation_id": self.cancellation_id,
             "outcome": None if self.outcome is None else self.outcome.to_payload(),
+            "fixture_created_at": self.fixture_created_at,
+            "fixture_consumed_at": self.fixture_consumed_at,
+            "fixture_finalized_at": self.fixture_finalized_at,
         }
 
 
 @dataclass(frozen=True)
 class PinnedRuntimeRebuildJournal:
-    """candidate image 보존부터 v5 manifest commit까지의 v6 same-pinset resume receipt."""
+    """candidate image 보존부터 v5 manifest commit까지의 v7 same-pinset resume receipt."""
 
-    version: Literal[6]
+    version: Literal[7]
     transaction_id: str
     phase: RebuildPhase
     candidate: PinnedRuntimeGeneration
@@ -492,6 +554,22 @@ class PinnedRuntimeRebuildJournal:
         next_index = _CANCEL_PROBE_STAGES.index(receipt.stage)
         if next_index < current_index or next_index > current_index + 1:
             raise DeploymentContractError("pinned runtime cancel probe receipt regressed")
+        if self.cancel_probe.stage != "uninitialized":
+            if (
+                receipt.job_id != self.cancel_probe.job_id
+                or receipt.fixture_created_at != self.cancel_probe.fixture_created_at
+            ):
+                raise DeploymentContractError("pinned runtime cancel probe receipt identity drifted")
+        if self.cancel_probe.stage in {
+            "consumed",
+            "finalize_post_attempted",
+            "finalized",
+        } and (
+            receipt.cancellation_id != self.cancel_probe.cancellation_id
+            or receipt.outcome != self.cancel_probe.outcome
+            or receipt.fixture_consumed_at != self.cancel_probe.fixture_consumed_at
+        ):
+            raise DeploymentContractError("pinned runtime cancel probe receipt outcome drifted")
         if next_index == current_index and receipt != self.cancel_probe:
             raise DeploymentContractError("pinned runtime cancel probe receipt drifted")
         return replace(self, cancel_probe=receipt)
@@ -529,9 +607,9 @@ class LegacyTombstoneEntry:
 
 @dataclass(frozen=True)
 class LegacyTombstoneReceipt:
-    """candidate-attested 뒤에만 쓰는 v6 legacy state 퇴역 receipt."""
+    """candidate-attested 뒤에만 쓰는 v7 legacy state 퇴역 receipt."""
 
-    version: Literal[6]
+    version: Literal[7]
     transaction_id: str
     candidate_generation_sha256: str
     requested_paths: tuple[str, ...]
@@ -653,7 +731,7 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
     ):
         raise DeploymentContractError("pinned runtime rebuild journal payload is invalid")
     return PinnedRuntimeRebuildJournal(
-        version=6,
+        version=7,
         transaction_id=cast(str, transaction_id),
         phase=cast(RebuildPhase, phase),
         candidate=generation_from_payload(payload.get("candidate")),
@@ -673,16 +751,25 @@ def _cancel_probe_receipt_from_payload(
         "job_id",
         "cancellation_id",
         "outcome",
+        "fixture_created_at",
+        "fixture_consumed_at",
+        "fixture_finalized_at",
     }:
         raise DeploymentContractError("pinned runtime cancel probe receipt is invalid")
     stage = payload.get("stage")
     job_id = payload.get("job_id")
     cancellation_id = payload.get("cancellation_id")
     outcome_payload = payload.get("outcome")
+    fixture_created_at = payload.get("fixture_created_at")
+    fixture_consumed_at = payload.get("fixture_consumed_at")
+    fixture_finalized_at = payload.get("fixture_finalized_at")
     if (
         not isinstance(stage, str)
         or (job_id is not None and not isinstance(job_id, str))
         or (cancellation_id is not None and not isinstance(cancellation_id, str))
+        or (fixture_created_at is not None and not isinstance(fixture_created_at, str))
+        or (fixture_consumed_at is not None and not isinstance(fixture_consumed_at, str))
+        or (fixture_finalized_at is not None and not isinstance(fixture_finalized_at, str))
     ):
         raise DeploymentContractError("pinned runtime cancel probe receipt is invalid")
     outcome: PinnedRuntimeCancelProbeOutcome | None
@@ -710,6 +797,9 @@ def _cancel_probe_receipt_from_payload(
         job_id=job_id,
         cancellation_id=cancellation_id,
         outcome=outcome,
+        fixture_created_at=fixture_created_at,
+        fixture_consumed_at=fixture_consumed_at,
+        fixture_finalized_at=fixture_finalized_at,
     )
 
 
@@ -736,7 +826,7 @@ def f1d_legacy_artifact_paths() -> tuple[str, ...]:
 
 
 def legacy_tombstone_receipt_path(state_root: Path) -> Path:
-    """v6 receipt는 legacy file과 분리된 manager-owned directory에만 기록한다."""
+    """v7 receipt는 legacy file과 분리된 manager-owned directory에만 기록한다."""
 
     return state_root / _TOMBSTONE_DIRECTORY / _TOMBSTONE_FILENAME
 
@@ -786,7 +876,7 @@ def retire_f1d_legacy_artifacts(
         if entry is not None
     )
     receipt = LegacyTombstoneReceipt(
-        version=6,
+        version=7,
         transaction_id=transaction_id,
         candidate_generation_sha256=expected_generation_sha256,
         requested_paths=normalized_paths,
@@ -874,7 +964,7 @@ def _legacy_tombstone_receipt_from_payload(payload: object) -> LegacyTombstoneRe
             )
         )
     return LegacyTombstoneReceipt(
-        version=6,
+        version=7,
         transaction_id=transaction_id,
         candidate_generation_sha256=candidate_generation_sha256,
         requested_paths=tuple(requested_paths),

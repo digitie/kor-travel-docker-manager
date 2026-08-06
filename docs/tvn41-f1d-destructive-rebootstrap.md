@@ -74,15 +74,23 @@ frozen environment/Compose digest와 pinset digest를 owner-only journal에 fsyn
 건드리지 않는다. `reset_intent_durable` 이후 process crash 재실행은 journal에 기록된 exact candidate만
 사용한다. candidate image가 사라진 경우에는 새 build로 덮어쓰지 않고 fail-close한다.
 
-같은 pinset의 non-terminal journal은 같은 phase를 idempotently 재개한다. `reset_intent_durable` 뒤
-실패한 phase의 재실행은 세 DB를 partial state에서 재사용하지 않고 다시 모두 drop/create한다. 다른 pinset의 새 rebuild는
-Manager가 소유한 F1D/F1F v1~v4 state와 mutation gate를 v5 authority로 완전히 교체한다. legacy tombstone은
+같은 pinset의 non-terminal journal은 같은 phase를 idempotently 재개한다. Map fixture `armed` receipt를
+fsync하기 전(`cancel_probe=uninitialized`)의 재실행은 세 DB를 partial state에서 재사용하지 않고 다시 모두
+drop/create한다. 반대로 `armed`부터 `finalized`까지의 receipt가 있는 재실행은 Map-owned fixture outcome을
+GET으로 수렴해 cancel/finalize POST를 재발행하지 않아야 하므로 세 DB를 보존한다. 이는 중간 데이터를 살리기 위한
+정책이 아니라 immutable fixture transaction의 exactly-once evidence를 보존하는 유일한 예외다. 다만 이 예외도
+runtime 재사용을 뜻하지는 않는다. 모든 resume은 DB reset 여부와 무관하게 일곱 service를 정지하고 one-shot writer의
+부재를 확인한 뒤 controlled startup/migration으로만 진행한다. 다른 pinset의 새
+rebuild는 Manager가 소유한 F1D/F1F v1~v4 state와 mutation gate를 v5 authority로 완전히 교체한다. legacy tombstone은
 코드에 고정한 path allowlist만 대상으로 하며, 각 parent가 canonical state root 아래 owner-owned `0700` directory인지,
 각 file이 `lstat` 기준 regular file·manager owner·`0600`·link count 1·bounded size인지 확인한다. `dir_fd`와
 `O_NOFOLLOW`로 열어 pre/post `fstat` inode가 같은지도 대조한 뒤 bounded bytes의 SHA-256만 receipt에 fsync한다.
 foreign/symlink/hardlink/owner·mode·size·JSON shape 손상은 모두 fail-close하며 어떠한 DB/runtime mutation도 하지
 않는다. 검증한 tombstone receipt를 먼저 fsync한 뒤에만 같은 `dir_fd`로 legacy file을 unlink하고 old reader와
 `assert_*_allows_pair_mutation` gate를 제거한다. 사람이 state file을 삭제하거나 legacy receipt를 변환하지 않는다.
+v7 journal은 tombstone보다 먼저 생길 수 있으므로, 새 journal과 resume journal 모두 tombstone receipt를 같은
+transaction/candidate로 idempotently 다시 검증한다. tombstone write/unlink가 실패하거나 그 사이에 crash가 나면
+다음 실행도 tombstone부터 재시도하며 DB reset 또는 runtime mutation으로 진행하지 않는다.
 
 ## 파기 범위와 schema 초기화
 
@@ -158,7 +166,7 @@ foreign/symlink/hardlink/owner·mode·size·JSON shape 손상은 모두 fail-clo
    구현한다. explicit rebuildable lifecycle, candidate-first attestation/retention, scoped DB recreate,
    Map Dagster migration-only invocation, one-shot credential-file mount, generation build/start, F1J canonical
    smoke를 실행할 준비와 core crash resume을 포함한다. F1J dynamic fixture lifecycle 자체는 C3가 소유한다.
-6. **F1D-C3 (Manager PR)**: v5 rebuild journal과 reader를 호환 shim 없이 v6 단일 형식으로 치환한다.
+6. **F1D-C3 (Manager PR)**: v5/v6 rebuild journal과 reader를 호환 shim 없이 v7 단일 형식으로 치환한다.
    `fixture armed`/`cancel_post_attempted`/`consumed`/`finalize_post_attempted`/`finalized`의 secret-free
    receipt를 전부 fsync하고, `run_pinvi_canonical_smoke`를 Map runtime·PinVi API ready 뒤 transaction
    ID와 journal writer로 실제 호출한다. response loss는 Map fixture GET의 immutable outcome으로만

@@ -761,11 +761,12 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
             state="armed",
             cancellation_id=None,
             canonical_unsafe_outcome=None,
+            created_at="2026-08-06T00:00:00+00:00",
         )
         state_recorder(state)
         state.attempted = True
         state_recorder(state)
-        outcome = {
+        outcome: dict[str, int | str] = {
             "name": "pinvi_cancel_error",
             "status": 409,
             "code": "PIPELINE_CANCELLATION_UNSAFE",
@@ -776,6 +777,8 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
             state="consumed",
             cancellation_id="1" * 8 + "-1111-1111-1111-111111111111",
             canonical_unsafe_outcome=outcome,
+            created_at="2026-08-06T00:00:00+00:00",
+            consumed_at="2026-08-06T00:01:00+00:00",
         )
         state.result = outcome
         state_recorder(state)
@@ -787,6 +790,9 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
             state="finalized",
             cancellation_id=state.fixture.cancellation_id,
             canonical_unsafe_outcome=outcome,
+            created_at="2026-08-06T00:00:00+00:00",
+            consumed_at="2026-08-06T00:01:00+00:00",
+            finalized_at="2026-08-06T00:02:00+00:00",
         )
         state_recorder(state)
         return []
@@ -881,6 +887,7 @@ def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() ->
     armed = PinnedRuntimeCancelProbeReceipt().transition(
         "armed",
         job_id="22222222-2222-2222-2222-222222222222",
+        fixture_created_at="2026-08-06T00:00:00+00:00",
     )
     journal = journal.with_cancel_probe(armed)
     journal = journal.with_cancel_probe(armed.transition("cancel_post_attempted"))
@@ -893,6 +900,38 @@ def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() ->
     assert resumed.fixture.state == "armed"
     assert resumed.attempted is True
     assert resumed.finalize_attempted is False
+
+
+def test_database_reset_is_required_only_before_durable_fixture_arm() -> None:
+    journal = new_candidate_journal(
+        candidate=build_candidate_generation(
+            sources=_sources(),
+            image_ids={
+                service: f"sha256:{index:064x}"
+                for index, service in enumerate(RUNTIME_SERVICES)
+            },
+            map_application_head="map-application-head",
+            map_dagster_head="map-dagster-head",
+            pinvi_head="pinvi-head",
+        ),
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+
+    assert compose_service_module._pinned_runtime_reset_required(journal) is True
+
+    for phase in REBUILD_PHASES[1 : REBUILD_PHASES.index("pinvi_api_ready") + 1]:
+        journal = journal.transition(phase)
+    journal = journal.with_cancel_probe(
+        PinnedRuntimeCancelProbeReceipt().transition(
+            "armed",
+            job_id="22222222-2222-2222-2222-222222222222",
+            fixture_created_at="2026-08-06T00:00:00+00:00",
+        )
+    )
+
+    assert compose_service_module._pinned_runtime_reset_required(journal) is False
 
 
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
@@ -923,7 +962,93 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     assert [command[2] for command in operations] == ["rm", "ps"]
 
 
-def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
+def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-tombstone-retry",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    candidate = build_candidate_generation(
+        sources=_sources(),
+        image_ids={
+            service: f"sha256:{index:064x}"
+            for index, service in enumerate(RUNTIME_SERVICES)
+        },
+        map_application_head="map-application-head",
+        map_dagster_head="map-dagster-head",
+        pinvi_head="pinvi-head",
+    )
+    journal = new_candidate_journal(
+        candidate=candidate,
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+    state_paths = pinned_runtime_state_paths(values)
+    state_paths.state_root.mkdir(parents=True, mode=0o700)
+    write_rebuild_journal(state_paths.journal, journal)
+
+    service = ComposeService()
+    database_reset = Mock()
+    run_compose = Mock()
+    tombstone = Mock(side_effect=DeploymentContractError("legacy tombstone failed"))
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
+    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
+    monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        lambda **_kwargs: _sources(),
+    )
+    monkeypatch.setattr(service, "_attest_pinned_runtime_candidate_images", Mock())
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
+    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
+    monkeypatch.setattr(compose_service_module, "retire_f1d_legacy_artifacts", tombstone)
+
+    for _attempt in range(2):
+        with pytest.raises(DeploymentContractError, match="legacy tombstone failed"):
+            service.rebuild_pinned_runtime()
+
+    assert tombstone.call_count == 2
+    run_compose.assert_not_called()
+    database_reset.assert_not_called()
+
+
+def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -968,6 +1093,7 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
             armed = PinnedRuntimeCancelProbeReceipt().transition(
                 "armed",
                 job_id="0" * 8 + "-0000-0000-0000-000000000000",
+                fixture_created_at="2026-08-06T00:00:00+00:00",
             )
             cancel_attempted = armed.transition("cancel_post_attempted")
             consumed = cancel_attempted.transition(
@@ -978,6 +1104,7 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
                     status=409,
                     code="PIPELINE_CANCELLATION_UNSAFE",
                 ),
+                fixture_consumed_at="2026-08-06T00:01:00+00:00",
             )
             finalize_attempted = consumed.transition("finalize_post_attempted")
             for receipt in (
@@ -985,7 +1112,10 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
                 cancel_attempted,
                 consumed,
                 finalize_attempted,
-                finalize_attempted.transition("finalized"),
+                finalize_attempted.transition(
+                    "finalized",
+                    fixture_finalized_at="2026-08-06T00:02:00+00:00",
+                ),
             ):
                 journal = journal.with_cancel_probe(receipt)
         journal = journal.transition(phase)
@@ -1006,6 +1136,7 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         )
     )
     reconcile_attempts = 0
+    database_reset = Mock()
 
     def capture(**_kwargs: object) -> tuple[SimpleNamespace, None]:
         return transaction, None
@@ -1061,7 +1192,7 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         "database_runtimes_from_frozen_contract",
         lambda **_kwargs: (object(), object(), object()),
     )
-    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", Mock())
+    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
     monkeypatch.setattr(
         compose_service_module,
         "read_database_schema_revision",
@@ -1080,4 +1211,27 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
 
     assert result["phase"] == "committed"
     assert reconcile_attempts == 2
-    assert operations.count(("stop", *RUNTIME_SERVICES)) == 1
+    assert operations[:3] == [
+        ("stop", *RUNTIME_SERVICES),
+        (
+            "--profile",
+            "bootstrap",
+            "rm",
+            "-f",
+            "-s",
+            "kor-travel-map-dagster-storage-migrate",
+            "pinvi-admin-bootstrap",
+        ),
+        (
+            "--profile",
+            "bootstrap",
+            "ps",
+            "--all",
+            "--format",
+            "json",
+            "kor-travel-map-dagster-storage-migrate",
+            "pinvi-admin-bootstrap",
+        ),
+    ]
+    assert operations.count(("stop", *RUNTIME_SERVICES)) == 3
+    database_reset.assert_not_called()

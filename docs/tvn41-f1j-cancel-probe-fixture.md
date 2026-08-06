@@ -78,7 +78,8 @@ Manager는 fixture 경로에서 `409 PIPELINE_CANCELLATION_UNSAFE` 이외 `404`,
 envelope, wrong root ID, response/detail drift를 모두 failure로 취급하고 protected runtime halt 규칙을 유지한다.
 `PinviCancelProbeState` 같은 process-local 값은 recovery authority가 아니다. journal에는 safe transaction ID,
 job ID, Map lifecycle state, cancellation ID, POST 직전 attempted flag, exact canonical response fingerprint,
-verification/finalization UTC만 기록하고 credential, raw response, exception은 기록하지 않는다. receipt 전이는
+Map이 반환한 `created_at`·`consumed_at`·`finalized_at` UTC를 stage별 immutable evidence로 기록하고 credential,
+raw response, exception은 기록하지 않는다. receipt 전이는
 `armed → consumed → finalized` 및 attempted false→true로만 단조 진행하며, job/cancellation identity와
 검증·종결 시각은 확정 뒤 바뀔 수 없다. 특히 POST 전에
 `attempted=true`를 durable write하므로 response loss 후 armed fixture에 같은 cancel POST를 재시도할 수 없다.

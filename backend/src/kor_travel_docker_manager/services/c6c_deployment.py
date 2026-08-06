@@ -512,6 +512,9 @@ class C6cCancelProbeFixture:
     state: Literal["armed", "consumed", "finalized"]
     cancellation_id: str | None
     canonical_unsafe_outcome: dict[str, int | str] | None
+    created_at: str | None = None
+    consumed_at: str | None = None
+    finalized_at: str | None = None
 
 
 def assert_manager_mutation_allowed(
@@ -2272,6 +2275,9 @@ def _parse_c6c_cancel_probe_fixture(
         state=state,
         cancellation_id=str(cancellation_id) if cancellation_id is not None else None,
         canonical_unsafe_outcome=outcome,
+        created_at=cast(str, fixture["created_at"]),
+        consumed_at=cast(str | None, consumed_at),
+        finalized_at=cast(str | None, finalized_at),
     )
 
 
