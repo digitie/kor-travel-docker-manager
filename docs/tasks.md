@@ -1012,19 +1012,19 @@ Manager가 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`만 전달하고 실제 Map pipe
       `armed → consumed → finalized`로만 단조 전이한다. crash recovery는 Map durable state와 immutable
       canonical outcome을 먼저 읽어 POST를 중복하지 않고, 검증 뒤에만 Map finalize를 호출한다. 구현·전체
       backend 검증·적대 리뷰 1인 GO를 거쳐 merge됐다.
-- [/] **F1J-C (service provenance 재결박 PR)** — Map lifecycle API generation을 PinVi의 일반
+- [x] **F1J-C (PinVi PR #435 · Manager PR #160)** — Map lifecycle API generation을 PinVi의 일반
       `kor-travel-map-service-provenance-v1.json` artifact에 선언하고, Manager preflight가 trusted PinVi source,
       Map release/OpenAPI artifact, cache-target/C6c capability를 byte-exact로 교차 검증하게 한다. 기존
-      compatible-pair manifest v4에는 F1J 전용 필드를 넣지 않는다. PinVi PR #435가 merge되어 provenance artifact와
-      consumer를 구현했으며, Manager PR #160이 pin/preflight consumer를 반영 중이다. PinVi는 fixture 생성 권한을
+      compatible-pair manifest v4에는 F1J 전용 필드를 넣지 않는다. PinVi PR #435와 Manager PR #160이 merge되어
+      provenance artifact와 pin/preflight consumer를 구현했다. PinVi는 fixture 생성 권한을
       받지 않으며 existing relay의 structured error 보존 회귀만 유지한다. lifecycle API가 없는 old Map image로의
       rollback은 fail-close한다.
-- [ ] **F1J-D (n150 isolated final verification)** — 격리 stack에서 trusted release 순서(Map → PinVi
+- [/] **F1J-D (n150 isolated final verification)** — 격리 stack에서 trusted release 순서(Map → PinVi
       provenance/pin → Manager)로 설치한 뒤 새 destructive F1D transaction을 실행한다. `ensure → PinVi cancel
       1회 → exact 409 → finalize` receipt, idempotent crash-recovery rerun, 관리 UI 로그인·ETL·provider 상태와
       live Playwright E2E를 확인하고 issue #136을 닫는다. 현 DB/data는 production data가 아니므로 백업·복원·중간
       상태 보존을 하지 않으며, 필요 시 최종 schema에 맞춰 source/ETL로 재생성한다. production runtime/data는
-      이 검증 범위에서 제외한다.
+      이 검증 범위에서 제외한다. 두 code PR merge 뒤 격리 rehearsal 준비를 시작했다.
 
 ### T-VN-41-F1G: legacy terminal window journal 퇴역
 
