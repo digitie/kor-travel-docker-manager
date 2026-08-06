@@ -46,6 +46,7 @@ _MAP_INGESTION_SERVICES = (
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _PINVI_API_SERVICE = "pinvi-api"
+_PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
 _OPS_CANCEL_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
 _OPS_FIXTURE_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}"
@@ -214,6 +215,14 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
                 ),
             }
+        },
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE: {
+            "image": "fixture.invalid/pinvi-api:test",
+            "network_mode": "host",
+            "environment": {
+                "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
+                "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+            },
         },
     }
     assert not protected_services.keys() & services.keys()
@@ -512,7 +521,7 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
         for service_name, service in services.items()
         if "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN" in service.get("environment", {})
         or "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN" in service.get("environment", {})
-    } == {_PINVI_API_SERVICE}
+    } == {_PINVI_API_SERVICE, _PINVI_ADMIN_BOOTSTRAP_SERVICE}
 
 
 def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> None:

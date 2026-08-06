@@ -187,6 +187,12 @@ def test_resolved_pinvi_api_has_no_implicit_schema_mutation_or_bootstrap_secret(
     assert bootstrap["restart"] == "no"
     assert bootstrap["network_mode"] == "host"
     assert "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE" not in bootstrap["environment"]
+    for name in (
+        "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL",
+        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
+    ):
+        assert bootstrap["environment"][name] == api["environment"][name]
 
 
 def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> None:

@@ -36,6 +36,7 @@ _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _PINVI_API_SERVICE = "pinvi-api"
+_PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DAGSTER_SERVICE = "pinvi-dagster"
 _MAP_RUNTIME_SERVICES = (
@@ -140,7 +141,12 @@ _MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
     _MAP_PRODUCTION_API_LITERAL_VALUES
 )
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
-    {_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE}
+    {
+        _MAP_API_SERVICE,
+        _PINVI_API_SERVICE,
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _MAP_UI_SERVICE,
+    }
 )
 _OPS_ENV_NAMES = frozenset(
     {
@@ -159,6 +165,8 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): _MAP_REQUIRED_ENV,
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
     (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): _MAP_UI_USERNAME_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): _MAP_UI_PASSWORD_HASH_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): _MAP_UI_SESSION_SECRET_ENV,
@@ -179,6 +187,12 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     ),
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
     (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): (
+        "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+    ),
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): (
+        "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
+    ),
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): (
         "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
     ),
     (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): (
@@ -1461,7 +1475,12 @@ def validate_resolved_compose_candidate_protected_values(
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
     }
 
-    for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
+    for service_name in (
+        _MAP_API_SERVICE,
+        _PINVI_API_SERVICE,
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _MAP_UI_SERVICE,
+    ):
         service = services[service_name]
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
@@ -1874,7 +1893,12 @@ def validate_compose_candidate_protected_values(
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
     }
 
-    for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
+    for service_name in (
+        _MAP_API_SERVICE,
+        _PINVI_API_SERVICE,
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _MAP_UI_SERVICE,
+    ):
         service = services[service_name]
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(

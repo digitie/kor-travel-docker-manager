@@ -662,6 +662,7 @@ services:
       PINVI_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       PINVI_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       PINVI_CORS_ALLOWED_ORIGINS: '${PINVI_CORS_ALLOWED_ORIGINS:-["http://127.0.0.1:12805","http://localhost:12805"]}'
+      # PinVi production Settings는 import 시 이 Map capability pair를 검증한다.
       PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
       PINVI_KOR_TRAVEL_MAP_API_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
       PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}
@@ -692,8 +693,12 @@ services:
     command:
     - pinvi-admin-bootstrap
     environment:
+      # one-shot도 API와 같은 production Settings를 import하므로 필요한 Map 검증값만 둔다.
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
       PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
+      PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
+      PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}
+      PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}
   pinvi-web:
     image: ${PINVI_WEB_IMAGE:-pinvi-web:latest-main}
     build:
