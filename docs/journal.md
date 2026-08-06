@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1J-C — 일반 Map service provenance preflight 착수)
+
+F1J-A(Map PR #960)와 F1J-B(Manager PR #159)가 merge되어 dynamic fixture lifecycle과 durable receipt가
+각 소유 경계에 반영됐다. F1J-C는 C6c 전용 값을 기존 compatible-pair manifest v4에 덧붙이지 않고, PinVi가
+Map release revision·service OpenAPI SHA·`cache_target`/`c6c_cancel_probe` generation을 함께 소유하는 일반
+service provenance artifact로 정리한다. Manager는 trusted PinVi source의 exact artifact를 현 Map artifact 및
+cache-target pin과 preflight에서 교차 검증하고 어느 값이라도 drift하면 Docker/DB/runtime mutation 전에
+fail-close한다.
+
+최종 F1J-D는 production data를 보존·복원하는 작업이 아니라 n150 격리 stack의 파괴적 검증이다. 현 data는
+유실돼도 최종 schema 기준 source/ETL로 재적재하며, 검증 중 backup/restore 또는 실제 production runtime 조작은
+하지 않는다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1J-B — dynamic fixture와 F1D durable receipt 구현)
 
 Manager는 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`를 완전히 제거하고 Map API에만 주입되는 별도 fixture

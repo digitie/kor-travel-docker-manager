@@ -83,23 +83,32 @@ verification/finalization UTC만 기록하고 credential, raw response, exceptio
 검증·종결 시각은 확정 뒤 바뀔 수 없다. 특히 POST 전에
 `attempted=true`를 durable write하므로 response loss 후 armed fixture에 같은 cancel POST를 재시도할 수 없다.
 
-## Pair provenance와 rollout
+## 서비스 provenance와 rollout
 
-Map lifecycle capability generation은 service OpenAPI artifact/Map revision/Map Alembic head와 함께
-compatible-pair pinset의 required field가 된다. F1J Map release 뒤 PinVi metadata와 Manager input manifest는
-그 exact generation을 재결박한다. endpoint 또는 generation이 없는 old Map image는 F1D rollback candidate가
-아니며, Manager preflight에서 fail-close한다.
+Map lifecycle capability는 compatible-pair manifest의 임의 확장 필드가 아니라 PinVi가 소유하는 단일
+`contracts/kor-travel-map-service-provenance-v1.json`에서 선언한다. 이 artifact는 Map release revision과
+service OpenAPI SHA, `cache_target` 및 `c6c_cancel_probe` capability generation을 한 byte-exact 단위로
+결박한다. Manager는 trusted PinVi source에서 이 artifact를 읽어 기존 cache-target production pin과 Map
+artifact를 교차 검증한 뒤에만 candidate mutation을 시작한다. 기존 compatible-pair manifest v4의 schema를
+F1J 전용 capability로 확장하지 않는다.
+
+endpoint 또는 C6c generation이 없는 old Map image, provenance가 없는 PinVi release, 혹은 서로 다른
+Map revision/OpenAPI SHA/capability 값을 가진 artifact는 F1D candidate가 아니며 Manager preflight에서
+fail-close한다. PinVi에는 fixture token이나 lifecycle endpoint 호출 권한을 주지 않는다.
 
 다음 PR 순서를 지킨다.
 
 1. **F1J-A Map**: migration, repository, internal API/auth, cancellation integration, OpenAPI export와 unit/integration
    tests. Map 문서와 task 기록을 먼저 별도 문서 PR로 반영한다.
-2. **F1J-C pair**: Map release artifact를 PinVi metadata에 반영하고 compatible-pair pinset/installer capability를
-   재결박한다. PinVi code는 existing relay structured-error regression만 담당한다.
+2. **F1J-C provenance**: Map release artifact를 PinVi의 일반 service provenance에 반영하고 Manager가
+   trusted PinVi source와 Map artifact를 preflight에서 교차 검증하게 한다. PinVi code는 fixture 생성 권한을
+   받지 않으며 existing relay structured-error regression만 담당한다.
 3. **F1J-B Manager**: static UUID/broad success removal, fixture credential wiring, durable receipt와 state-machine
    tests를 구현한다.
-4. **F1J-D n150**: trusted installer로 Map → pair metadata/pin → Manager 순서로 설치한 뒤 destructive F1D,
-   idempotent recovery, admin live Playwright E2E를 실행한다.
+4. **F1J-D n150**: 격리 stack에서 Map → PinVi provenance/pin → Manager 순서로 설치한 뒤 destructive F1D,
+   idempotent recovery, admin live Playwright E2E를 실행한다. 현 DB/data는 백업·복원·보존하지 않으며,
+   손상 시 최종 schema에 맞춰 ETL/file source로 다시 적재한다. 실제 production runtime과 data에는 접근하지
+   않는다.
 
 각 code PR은 implementation 전에 codegraph 영향도를 확인하고 단일 적대적 리뷰를 반영한다. 문서 전용 PR은
 리뷰된 본 계획을 그대로 반영해 CI 대기 없이 merge한다.
