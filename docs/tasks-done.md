@@ -12,6 +12,21 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+## 2026-08-06 — T-VN-41-F1D-A 파기형 runtime generation 재bootstrap 설계
+
+- [x] **T-VN-41-F1D-A — v5 rebuild 설계·ADR·task 정렬**
+
+  비운영 n150에서는 중간 DB·backup·old runtime을 복구하지 않는다는 결정에 따라, Map 네 service와
+  PinVi 세 service를 하나로 묶는 `PinnedRuntimeGeneration` v5, 세 scoped DB의 fresh recreate,
+  candidate-first attestation, single-active manifest를 정본으로 기록했다. `local/development`,
+  `rehearsal/rebuildable`, `production/operational` typed environment/lifecycle pair와 rebuildable의
+  exclusive mutation policy를 결정했고, PinVi는 credential-file one-shot migration→admin bootstrap으로
+  전환한다. old F1D/F1F state는 safe tombstone 뒤 v5 authority로 교체하며 ADR-31과 ADR-33의 해당
+  legacy contract를 supersede 처리했다.
+
+  단일 적대적 설계 리뷰는 candidate/image-before-reset, PinVi migration 순서, typed lifecycle,
+  Map Dagster expected head, legacy file lstat/`O_NOFOLLOW` 경계를 보강한 뒤 GO를 받았다.
+
 ## 2026-08-06 — T-VN-41-F1J Map 소유 cancel-probe fixture lifecycle
 
 - [x] **T-VN-41-F1J — dynamic fixture·정확한 PinVi cancel relay·isolated final verification**

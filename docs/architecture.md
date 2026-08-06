@@ -198,30 +198,32 @@ graph TD
      `127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}`.
    - worker 수: PinVi 실시간 WebSocket broadcast broker는 shared broker 도입 전까지 process-local이므로 `PINVI_API_WORKERS=1`을 기본값으로 둔다. worker를 2 이상으로 올리려면 PinVi 쪽 broadcast broker가 프로세스 간 전달을 지원해야 한다.
    - public URL/CORS: dev 기본값은 `http://127.0.0.1:12801`/로컬 Web origin이며, prod에서는 gitignore된 `.env`의 `PINVI_PUBLIC_API_URL`과 `PINVI_CORS_ALLOWED_ORIGINS`로 공개 API 주소와 Web origin을 주입한다.
+   - C6c deployment lifecycle: `KTDM_DEPLOYMENT_ENVIRONMENT`와 `KTDM_DEPLOYMENT_LIFECYCLE`은 서로
+     독립 flag가 아니라 typed pair다. `local/development`, `rehearsal/rebuildable`,
+     `production/operational`만 유효하며 PinVi mode는 각각 `development`, `production`, `production`이고
+     Map ops-principal-required는 각각 `false`, `true`, `true`여야 한다. 따라서 기존 production canonical
+     env에 `rebuildable` 한 값만 추가해 destructive mutation을 열 수 없다. rebuildable에서는
+     `rebuild-pinned --confirm` 외 managed runtime/DB mutation을 모두 거부한다.
    - C6c production: manager mode와 PinVi mode를 모두 `production`, Map의
      `KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED`를 `true`로 명시한다. production의 일반
-     `ensure`/container action·config·reset/direct Compose 경로는 다섯 runtime을 변경할 수 없고,
-     host-wide lock을 잡는 `pinvi-pair deploy`만 generation이 같은 Map+PinVi runtime set을 단계 기동한다.
-     transaction은 Map API·UI·Dagster web·Dagster daemon과 PinVi API를 하나의 immutable
-     runtime set으로 다룬다. 다섯 service를 같은 Git snapshot build에서 먼저 완성하고,
-     Map API smoke 뒤 나머지 Map runtime과 PinVi API를 exact image ID로 재생성한 다음
-     모든 Map runtime의 OCI revision이 같은 `KOR_TRAVEL_MAP_GIT_COMMIT`인지 확인한다.
-     manifest가 없을 때만 `pinvi-pair capture`가 같은 lock 안에서 candidate set을
-     bootstrap하고 전체 계약 성공 뒤 최초 v4를 기록한다. v4는 Map runtime 네 immutable
-     image ID와 공통 clean source revision, PinVi immutable image ID와 clean source revision을
-     active/rollback 각 set에 함께 결박하며 provenance가 없는 이전 version을 거부한다.
-     실패·rollback도 같은 frozen transaction의 다섯 image ID를 복원하고, 완전한 복원이
-     불가능하면 다섯 runtime을 모두 중지해 혼합 generation 노출을 막는다.
-     active manifest와 current five-runtime tuple이 이미 다른 production drift는 일반
-     `deploy`/rollback의 입력이 아니다. 이 경우에만 one-shot
-     `pinvi-pair bootstrap-pinned-drift --confirm`이 tracked exact release pin의 Git archive로
-     candidate를 만들고, frozen input·candidate resolved Compose security·candidate/live DB head·durable journal을
-     검증한다. candidate runtime security와 UI auth는 activation 뒤에 exact image에서 검증한다. old image static
-     head drift, 시작 Map runtime 간 source revision drift, image tuple 및 과거 protected-value wiring은 재기동하지
-     않는 기존 감사 근거이므로 차단 조건이 아니다. current runtime과 old manifest를 새 rollback source로 채택하지
-     않는다. 성공 manifest는 active와 rollback
-     모두 같은 candidate이며, candidate activation 실패는 old image rollback 대신 five-runtime halt로
-     fail-close한다. canonical `.env`의 source checkout과 release-bound runtime contract 갱신은 별도 trusted
+     `ensure`/container action·config·reset/direct Compose 경로는 일곱 runtime을 변경할 수 없고,
+     host-wide lock을 잡는 `pinvi-pair` workflow만 generation이 같은 Map+PinVi runtime set을 단계 기동한다.
+     transaction은 Map API·UI·Dagster web·Dagster daemon과 PinVi API·Web·Dagster를 하나의 immutable
+     runtime generation으로 다룬다. 일곱 service를 같은 Git snapshot build에서 먼저 완성하고,
+     Map API smoke 뒤 나머지 Map runtime과 PinVi API·Web·Dagster를 exact image ID로 재생성한 다음
+     Map 네 runtime과 PinVi 세 runtime의 OCI revision이 각각 같은 source revision인지 확인한다.
+     manifest는 `PinnedRuntimeGeneration` v5이며, 일곱 immutable image ID, 두 clean source revision,
+     Map application/Dagster와 PinVi schema head를 active generation 하나에 결박한다. 이전 pair version과
+     rollback slot은 수용하지 않는다. 완전한 수렴이 불가능하면 일곱 runtime을 모두 중지해 혼합 generation
+     노출을 막는다.
+     비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 stale runtime/DB/state를 새 release pin으로
+     수렴할 유일한 경로는 `pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
+     candidate resolved Compose security를 검증하고, 일곱 candidate image ID·세 expected schema head를
+     durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. candidate runtime의
+     Map API와 Map Dagster migration-only command, PinVi migration+credential-file one-shot CLI는 각각 별도
+     DB head를 exact 대조한다. security·UI auth·F1J fixture smoke는 activation 뒤 exact image에서 검증한다. old image, old manifest,
+     old DB와 backup은 candidate 또는 rollback authority가 아니다. candidate 실패는 old runtime 복원 대신
+     일곱 runtime 중지로 fail-close한다. canonical `.env`의 source checkout과 release-bound runtime contract 갱신은 별도 trusted
      pinned deployment input transaction이 소유한다. 이 installer는 user-owned checkout의 Git config를 root에서
      실행하지 않고 source-owner의 read-only origin identity와 code-owned canonical HTTPS URL을 exact 대조한다.
      root-owned bare staging repo가 tracked full SHA 하나만 sanitized fetch해 immutable detached worktree를
@@ -229,9 +231,8 @@ graph TD
      하나의 atomic env keyset으로 교체한다. prior terminal input receipt와 canonical env가 exact predecessor
      pinset임을 검증한 rotation preflight만 old→new input 교체를 허용한다. private old-env backup과 durable
      journal은 `pinned-deployment-inputs-v2/history/<pinset_sha256>/`의 불변 세대로 남겨
-     future re-pin이 성공 receipt나 backup을 덮지 못하게 한다. 이전 v2 generation의 F1D receipt는 frozen
-     canonical-env digest까지 대조한 receipt-first archive가 끝난 경우에만 후속 rotation의 predecessor가 된다.
-     journal이 terminal이 아니면 모든 pair mutation은 fail-close한다. installer 자체는 Docker·Compose·DB·runtime·
+     future re-pin이 성공 receipt나 backup을 덮지 못하게 한다. legacy F1D/F1F receipt는 typed tombstone으로
+     폐기할 뿐 rebuild/rotation의 predecessor authority가 아니다. installer 자체는 Docker·Compose·DB·runtime·
      image build를 호출하지 않는다.
    - Map production API 인증은 ADR-23의 exact runtime 경계를 따른다. admin proxy secret은
      Map API와 UI BFF에만 공유하고 service token·cursor signing secret은 Map API에만 둔다.
