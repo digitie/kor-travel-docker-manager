@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C3 — dynamic fixture 결선 설계)
+
+v5 rebuild의 core path는 Map-owned F1J fixture helper를 실제 호출하지 않는다. C3는 이를
+`rebuild-pinned` transaction에 결선하면서 journal을 v6 단일 형식으로 교체한다. fixture `armed`,
+cancel/finalize POST 전 `attempted`, immutable `consumed` outcome, `finalized`를 secret 없이 매 전이에
+fsync한다. 응답 유실 재개는 Map GET만 허용하며, attempted 뒤 같은 POST를 추측 재발행하지 않는다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-C2 완료 이관)
 
 v5 single-active generation과 candidate-first destructive rebuild, Map Dagster/application 및 PinVi

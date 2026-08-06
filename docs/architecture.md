@@ -223,7 +223,10 @@ graph TD
      source revision 추정값이 아니라 candidate Dagster image가 직접 출력한 storage migration head다. candidate
      runtime의 Map API와 Map Dagster migration-only command, PinVi migration+credential-file one-shot CLI는
      각각 별도 DB head를 exact 대조한다. Map Dagster command는 `dagster instance migrate` 뒤 strict single-row
-     `public.alembic_version` 검증을 수행한다. security·UI auth·F1J fixture smoke는 activation 뒤 exact image에서 검증한다. old image, old manifest,
+     `public.alembic_version` 검증을 수행한다. F1J fixture smoke는 Map runtime·PinVi API ready 뒤 같은
+     rebuild journal transaction ID로 실행하며, cancel/finalize POST 직전 attempted receipt를 fsync한다.
+     응답 유실 재개는 Map immutable fixture receipt만 읽고 POST를 재발행하지 않는다. security·UI auth는
+     그 contract verification 뒤 exact image에서 검증한다. old image, old manifest,
      old DB와 backup은 candidate 또는 rollback authority가 아니다. candidate 실패는 old runtime 복원 대신
      일곱 runtime 중지로 fail-close한다. canonical `.env`의 source checkout과 release-bound runtime contract 갱신은 별도 trusted
      pinned deployment input transaction이 소유한다. 이 installer는 user-owned checkout의 Git config를 root에서

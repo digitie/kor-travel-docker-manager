@@ -56,6 +56,7 @@ preflighted
   → map_runtime_ready
   → pinvi_schema_ready
   → pinvi_api_ready
+  → cancel_probe_finalized
   → pinvi_runtime_ready
   → contract_verified
   → manifest_committing
@@ -113,9 +114,14 @@ foreign/symlink/hardlink/owner·mode·size·JSON shape 손상은 모두 fail-clo
    Web, Dagster, Map service에는 이 mount나 credential environment를 주입하지 않는다. 이후 normal PinVi
    API와 Web·Dagster를 credential 없이 같은 candidate image로 기동한다. normal PinVi API는 migration이나
    implicit bootstrap admin을 수행하지 않고, ready 전에 candidate `pinvi_head`를 다시 대조한다.
-7. 세 live schema head와 일곱 immutable image ID를 journal의 candidate와 대조한다. 그 뒤에만
-   F1J fixture ensure → PinVi cancel 한 번 → exact `409 PIPELINE_CANCELLATION_UNSAFE` → finalize,
-   admin UI login/logout, provider/ETL 상태를 검증하고 single active manifest를 commit한다.
+7. C3는 Map runtime과 PinVi API가 준비된 뒤 F1J fixture를 이 journal transaction ID로 ensure한다.
+   fixture가 `armed`인 receipt를 journal에 fsync한 뒤, **PinVi canonical cancel POST 전**
+   `cancel_post_attempted`를 fsync한다. 정확한 `409 PIPELINE_CANCELLATION_UNSAFE`만 수용하고 Map
+   immutable receipt를 다시 읽어 `consumed`와 cancellation identity/outcome을 대조한다. finalize 역시
+   attempt 전 journal을 fsync하고 Map receipt가 `finalized`임을 읽어 확인한다. HTTP 응답이 유실된
+   재개는 Map receipt만 읽는다. `armed`인데 cancel attempt가 이미 기록됐거나 `consumed`인데 finalize
+   attempt가 이미 기록된 경우에는 같은 POST를 재발행하지 않고 fail-close한다. 이 단조 상태가 완료된
+   뒤에만 `cancel_probe_finalized`와 이후 runtime/UI 검증, single active manifest commit으로 진행한다.
 
 실패하면 old runtime·old DB·old manifest를 되살리지 않는다. 해당 generation의 일곱 runtime을
 중지한 채 journal에 실패 checkpoint를 남긴다. 재실행은 새 database에 같은 generation을
@@ -151,6 +157,11 @@ foreign/symlink/hardlink/owner·mode·size·JSON shape 손상은 모두 fail-clo
 5. **F1D-C2 (Manager PR)**: C0 Map과 C1 PinVi source pin을 입력으로 `rebuild-pinned --confirm` transaction을
    구현한다. explicit rebuildable lifecycle, candidate-first attestation/retention, scoped DB recreate,
    Map Dagster migration-only invocation, one-shot credential-file mount, generation build/start, F1J canonical
-   smoke와 crash resume을 포함한다.
-6. **F1D-D (docs-only PR)**: n150에서 파기형 rebuild, final schema head, admin live UI E2E와 PinVi
+   smoke를 실행할 준비와 core crash resume을 포함한다. F1J dynamic fixture lifecycle 자체는 C3가 소유한다.
+6. **F1D-C3 (Manager PR)**: v5 rebuild journal과 reader를 호환 shim 없이 v6 단일 형식으로 치환한다.
+   `fixture armed`/`cancel_post_attempted`/`consumed`/`finalize_post_attempted`/`finalized`의 secret-free
+   receipt를 전부 fsync하고, `run_pinvi_canonical_smoke`를 Map runtime·PinVi API ready 뒤 transaction
+   ID와 journal writer로 실제 호출한다. response loss는 Map fixture GET의 immutable outcome으로만
+   수렴하며 canonical cancel 또는 finalize POST를 추측 재시도하지 않는다.
+7. **F1D-D (docs-only PR)**: n150에서 파기형 rebuild, final schema head, admin live UI E2E와 PinVi
    mutating E2E를 실행한 결과를 기록하고 source/ETL 재적재 작업으로 handoff한다.
