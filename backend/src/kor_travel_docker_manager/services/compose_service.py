@@ -3491,6 +3491,31 @@ class ComposeService:
                 "pinned runtime one-shot writer remained after forced removal"
             )
 
+    def _verify_pinned_runtime_pinvi_bootstrap_settings(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """candidate PinVi가 production Settings를 import할 수 있는지 reset 전에 확인한다.
+
+        credential 파일·DB 의존성 없이 `head`만 실행한다. 따라서 Map/PinVi DB의
+        reset과 journal durable write보다 반드시 앞선 fail-close gate다.
+        """
+
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "pinvi-admin-bootstrap",
+                "pinvi-admin-bootstrap",
+                "head",
+            ],
+            transaction=transaction,
+        )
+
     @staticmethod
     def _inspect_image_reference_id(image_reference: str, *, label: str) -> str:
         try:
@@ -3755,6 +3780,9 @@ class ComposeService:
                     transaction=candidate_transaction,
                 )
                 image_ids = self._attest_pinned_runtime_candidate_images(build=build)
+                self._verify_pinned_runtime_pinvi_bootstrap_settings(
+                    transaction=candidate_transaction,
+                )
                 map_application_output = _run_pinned_runtime_static_command(
                     image_ids["kor-travel-map-api"],
                     ("ktm-application-schema", "head"),

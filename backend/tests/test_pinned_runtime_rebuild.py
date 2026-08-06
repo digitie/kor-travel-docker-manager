@@ -750,9 +750,19 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert captured[-1] is not None
     assert captured[-1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "map-application-head"
     assert operations[0] == ("build", *RUNTIME_SERVICES)
+    assert operations[1] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "pinvi-admin-bootstrap",
+        "pinvi-admin-bootstrap",
+        "head",
+    )
     candidate_contract.assert_called_once_with(transaction, build=CandidateRuntimeBuild(_sources()))
-    assert operations[1] == ("stop", *RUNTIME_SERVICES)
-    assert operations[2] == (
+    assert operations[2] == ("stop", *RUNTIME_SERVICES)
+    assert operations[3] == (
         "--profile",
         "bootstrap",
         "rm",
@@ -761,7 +771,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
-    assert operations[3] == (
+    assert operations[4] == (
         "--profile",
         "bootstrap",
         "ps",
@@ -771,17 +781,17 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
-    assert reset_operation_counts == [4]
+    assert reset_operation_counts == [5]
     assert static_commands == [
         ("ktm-application-schema", "head"),
         ("ktm-dagster-storage", "head"),
         ("pinvi-admin-bootstrap", "head"),
     ]
     assert ("run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate") in operations
-    bootstrap = next(command for command in operations if "pinvi-admin-bootstrap" in command)
-    assert "--profile" in bootstrap
-    assert all("rebuild-admin-password" not in part for part in bootstrap)
-    assert all("pinvi_bootstrap" not in part for part in bootstrap)
+    settings_smoke = operations[1]
+    assert "--profile" in settings_smoke
+    assert all("rebuild-admin-password" not in part for part in settings_smoke)
+    assert all("pinvi_bootstrap" not in part for part in settings_smoke)
     assert not (
         tmp_path / "state" / "f1d-c2" / "bootstrap" / str(result["transaction_id"])
     ).exists()

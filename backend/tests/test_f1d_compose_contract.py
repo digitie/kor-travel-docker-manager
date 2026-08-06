@@ -17,7 +17,9 @@ import yaml
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     DeploymentContractError,
+    validate_compose_candidate_protected_values,
     validate_resolved_c6c_build_provenance,
+    validate_resolved_compose_candidate_protected_values,
 )
 from kor_travel_docker_manager.services.compose_service import ComposeService
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
@@ -40,6 +42,35 @@ _MAP_RUNTIME_SERVICES = (
     "kor-travel-map-dagster-daemon",
 )
 _PINVI_RUNTIME_SERVICES = ("pinvi-api", "pinvi-web", "pinvi-dagster")
+_PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
+    {
+        "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL",
+        "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
+    }
+)
+
+
+def _compose_contract_environment() -> dict[str, str]:
+    return {
+        **os.environ,
+        "COMPOSE_PROJECT_NAME": "ktdm-f1d-compose-contract",
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "a" * 32,
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": "s" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "t" * 32,
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "test-geo-key",
+        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
+            "pbkdf2_sha256$100000$test-salt$test-digest"
+        ),
+        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "admin",
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "u" * 32,
+        "PINVI_ENVIRONMENT": "production",
+    }
 
 
 def _source_compose() -> dict[str, Any]:
@@ -79,20 +110,7 @@ def _resolved_compose(
     if shutil.which("docker") is None:
         pytest.skip("Docker Compose가 없어 resolved Compose 계약을 실행할 수 없음")
 
-    environment = {
-        **os.environ,
-        "COMPOSE_PROJECT_NAME": "ktdm-f1d-compose-contract",
-        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "test-admin-proxy-secret",
-        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": "test-cursor-signing-secret",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "test-service-token",
-        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "test-geo-key",
-        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
-        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": "test-password-hash",
-        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "admin",
-        "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "test-ui-session-secret",
-        "PINVI_ENVIRONMENT": "production",
-    }
+    environment = _compose_contract_environment()
     if environment_update is not None:
         environment.update(environment_update)
     completed = subprocess.run(
@@ -193,6 +211,54 @@ def test_resolved_pinvi_api_has_no_implicit_schema_mutation_or_bootstrap_secret(
         "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
     ):
         assert bootstrap["environment"][name] == api["environment"][name]
+
+
+def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation(
+    tmp_path: Path,
+) -> None:
+    """F1D reset 전에 bootstrap의 실제 profile/production 환경을 정적으로 고정한다."""
+
+    source = _source_compose()
+    assert "x-pinvi-map-ops-validation" not in source
+    candidate = _compose_fragment(
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+    )
+    environment = _compose_contract_environment()
+    root_env = tmp_path / ".env"
+    root_env.write_text("\n", encoding="utf-8")
+
+    raw_snapshots = validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+    resolved = _resolved_compose(
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+    )
+    assert validate_resolved_compose_candidate_protected_values(
+        resolved,
+        environment=environment,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+    ) == raw_snapshots
+
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    bootstrap_environment = services["pinvi-admin-bootstrap"]["environment"]
+    assert isinstance(bootstrap_environment, dict)
+    assert _PINVI_BOOTSTRAP_MAP_ENVIRONMENT.issubset(bootstrap_environment)
+    assert not {
+        "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE",
+        "PINVI_KOR_TRAVEL_MAP_OPS_FIXTURE_TOKEN",
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
+    }.intersection(bootstrap_environment)
 
 
 def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> None:
