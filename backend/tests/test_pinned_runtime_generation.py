@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.c6c_deployment import (
+    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+    DeploymentContractError,
+    assert_compose_mutation_allowed,
+)
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
@@ -84,6 +88,28 @@ def test_rebuildable_rejects_production_environment_even_with_lifecycle_flag() -
 
     with pytest.raises(DeploymentContractError, match="environment/lifecycle"):
         require_rebuildable_mode(values)
+
+
+def test_rebuild_capability_allows_compose_mutation_only_in_rebuildable_mode() -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+    }
+
+    assert_compose_mutation_allowed(
+        ("kor-travel-map-api", "pinvi-api"),
+        environment=values,
+        capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+    )
+
+    with pytest.raises(DeploymentContractError, match="rehearsal/rebuildable"):
+        assert_compose_mutation_allowed(
+            ("kor-travel-map-api",),
+            environment={**values, "KTDM_DEPLOYMENT_LIFECYCLE": "operational"},
+            capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+        )
 
 
 def test_pinned_runtime_state_paths_are_rebuildable_project_scoped(

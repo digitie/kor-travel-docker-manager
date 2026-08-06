@@ -435,9 +435,14 @@ class _CacheTargetWindowMutationCapability:
     __slots__ = ()
 
 
+class _PinnedRuntimeRebuildMutationCapability:
+    __slots__ = ()
+
+
 _COMPATIBLE_PAIR_MUTATION_CAPABILITY = _CompatiblePairMutationCapability()
 _MANAGED_COMPOSE_MUTATION_CAPABILITY = _ManagedComposeMutationCapability()
 _CACHE_TARGET_WINDOW_MUTATION_CAPABILITY = _CacheTargetWindowMutationCapability()
+_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY = _PinnedRuntimeRebuildMutationCapability()
 
 
 class DeploymentContractError(ValueError):
@@ -703,6 +708,12 @@ def assert_compose_mutation_allowed(
     normalized = {str(identifier).strip() for identifier in identifiers}
     if not normalized:
         return
+    if capability is _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY:
+        _assert_pinned_runtime_rebuild_environment(
+            env_path=env_path,
+            environment=environment,
+        )
+        return
     mode = assert_manager_mutation_allowed(
         env_path=env_path,
         environment=environment,
@@ -722,6 +733,32 @@ def assert_compose_mutation_allowed(
     ):
         raise DeploymentContractError(
             "production Compose mutation requires a managed workflow capability"
+        )
+
+
+def _assert_pinned_runtime_rebuild_environment(
+    *,
+    env_path: str | None,
+    environment: Mapping[str, str] | None,
+) -> None:
+    """v5의 파기형 단일-active rebuild에만 별도 mutation capability를 준다."""
+
+    values = environment
+    if values is None:
+        if env_path is None:
+            raise DeploymentContractError(
+                "pinned runtime rebuild requires a frozen environment"
+            )
+        values = effective_environment(env_path)
+    required = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        _MAP_REQUIRED_ENV: "true",
+    }
+    if any(values.get(key, "").strip().lower() != expected for key, expected in required.items()):
+        raise DeploymentContractError(
+            "pinned runtime rebuild requires rehearsal/rebuildable environment"
         )
 
 
