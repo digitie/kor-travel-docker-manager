@@ -11,28 +11,16 @@
 
 ## 작업 현황 요약
 
+> **F1D v5 현재 정본**: 비운영 generation mutation은 `ktdctl pinvi-pair rebuild-pinned --confirm`만
+> 허용한다. 이전 `cache-target`, `db-backup`, `map-ui-auth`와 compatible-pair의
+> `capture`·`deploy`·`rollback` 공개 경로는 모두 퇴역했으며, 아래의 v1–v4 상세 항목은 실행
+> 지침이 아닌 퇴역 기록이다. 최종 schema 상태의 backup/restore가 다시 필요해지면 pair/cache
+> workflow와 독립된 새 Compose primitive·계약으로 별도 태스크를 만든다.
+
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
-| **T-031** | Map↔PinVi C6c ops read/cancel principal 배포 결선 | `[/]` | - | 구현·기존 live 충족, T-045 회전과 새 official deploy 미완료 |
-| **T-045** | Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 | `[/]` | - | 값 비노출·원자 갱신·UI-only recreate·복구·감사 |
-| **T-046** | `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88) | `[/]` | - | 마이그레이션 수반 배포·bootstrap의 오발동 rollback 방지, n150 실제 마이그레이션 배포 검증 대기 |
-| **T-047** | compatible-pair canonical Compose readiness 계약 정렬 | `[/]` | - | healthcheck 선언 여부 기반 typed policy·실제 Compose 회귀 |
-| **T-048** | T-VN-41 cache-target production manifest와 최초 cutover 제품화 | `[/]` | - | 4-role 격리·default-off runner·receipt·sync enable attestation |
-| **T-049** | cache-target 사전 진단·cutover abort budget 제품화 | `[/]` | - | 반복 pre-forward rollback 대신 typed DB rehearsal·sanitized receipt·fresh gate |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[x]` | 2026-08-04 | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부. Manager 측 완료, issue #109 종료 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
-| **T-052** | cache-target 진단의 direct daemon writer-drain 초안 (issue #115) | `[x]` | 2026-08-04 | **T-049F로 대체됨** — daemon 직접 중지·직접 cancel은 최종 구현 경계가 아님 |
-| **T-049F** | isolated durable writer-drain (Map-owned lease/receipt, issue #115) | `[x]` | 2026-08-04 | T-052를 대체하는 최종 구현 — begin/attest/restore lease chain, journal v2 |
-| **T-053** | 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) | `[x]` | 2026-08-04 | cache-target cutover window와 분리, C6c lock·owner-only 저장·적대적 리뷰 2명 완료 |
-| **T-054** | 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) | `[x]` | 2026-08-04 | T-053 manifest 기반, age/count 보존, 적대적 리뷰 2명 완료 |
-| **T-055** | 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) | `[x]` | 2026-08-04 | fail-close 2중 방어(--confirm·capability sentinel), 적대적 리뷰 2명 완료 |
-| **T-056** | 읽기 전용 백업 이력 API + Web UI 페이지 | `[x]` | 2026-08-04 | GET /backups(mutation 경로 없음), BackupHistoryPanel, 적대적 리뷰 2명 완료 |
-| **T-057** | cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 | `[/]` | - | pg_dump 공통 헬퍼 추출 완료, 적대적 리뷰 대기 중 |
-| **T-VN-41-F1** | cache-target production pair re-pin (issue #129) | `[x]` | 2026-08-05 | exact provenance·runbook·회귀를 갱신하고 Manager production 설치까지 완료 |
-| **T-VN-41-F1A** | cache-target default-off 계약의 Manager 소유 bootstrap | `[x]` | 2026-08-05 | trusted release에서 4-role 계약 bootstrap과 secret-free attestation 완료 |
-| **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[x]` | 2026-08-05 | deployment-owner `0600` env를 frozen owner identity로 결박; trusted release 설치·default-off bootstrap·secret-free attestation 완료 |
-| **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
-| **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
 | **T-VN-41-F1D** | 파기형 pinned runtime generation 재bootstrap (issue #136) | `[/]` | - | 비운영 Map·PinVi DB와 stale state를 보전하지 않고 tracked exact generation·새 schema로 수렴 |
 
 ---
@@ -48,7 +36,7 @@
 
 ## 태스크 세부 내역
 
-### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선
+### T-031: Map↔PinVi C6c ops read/cancel principal 배포 결선 (퇴역 기록)
 
 - [x] read/cancel principal을 Map API와 PinVi API에만 결선하고 Map UI·Dagster·daemon,
       PinVi Web·Dagster에는 전달하지 않는 최소 권한 계약을 raw/resolved/runtime 단계에서
@@ -74,7 +62,7 @@
 - [ ] 회전 뒤 최신 exact Map·Manager·PinVi 조합으로 official compatible-pair deploy와
       cross-repo smoke·targeted live를 다시 통과한 뒤 완료 이력으로 옮긴다.
 
-### T-045: Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화
+### T-045: Map UI credential rotation을 `ktdctl`의 audited production workflow로 제품화 (퇴역 기록)
 
 - [ ] production에서만 실행되는 전용 `ktdctl` command를 추가하고 C6c 전역 lock,
       canonical manager checkout/Compose/`.env`, 실행 중 Map UI identity와 immutable image를
@@ -132,7 +120,7 @@
 - [ ] n150에서 전용 command로 실제 회전하고 official compatible-pair deploy, C6c principal
       smoke, C7 targeted live를 통과한 뒤 T-031과 함께 완료 이력으로 옮긴다.
 
-### T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (issue #88)
+### T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거 (퇴역 기록)
 
 kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한다. `_run_up_stage`가
 `docker compose up --wait --wait-timeout 120`을 하드코딩했는데, `CREATE INDEX CONCURRENTLY`
@@ -165,7 +153,7 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
       (또는 `capture`)을 실행해 오발동 rollback 없이 통과하는 것을 확인한 뒤 완료 이력으로
       옮긴다.
 
-### T-047: compatible-pair canonical Compose readiness 계약 정렬 (issue #90)
+### T-047: compatible-pair canonical Compose readiness 계약 정렬 (퇴역 기록)
 
 production compatible-pair deploy의 `_require_services_ready`는 모든 필수 service에
 `State=running`과 `Health=healthy`를 동시에 요구한다. 그러나 canonical resolved Compose에서
@@ -192,7 +180,7 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 - [ ] n150에서는 부모 에이전트가 read-only exact preflight를 재검증한 뒤에만 별도 승인된
       compatible-pair mutation을 수행한다.
 
-### T-048: T-VN-41 cache-target production manifest와 최초 cutover 제품화
+### T-048: T-VN-41 cache-target production manifest와 최초 cutover 제품화 (퇴역 기록)
 
 - [x] ADR-28과 [`cache-target-production-cutover.md`](cache-target-production-cutover.md)에
       ordinary runtime 최소 권한, 4-role/legacy 상호 분리, default-off 최초 cutover와 receipt,
@@ -288,7 +276,7 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 - [ ] 최종 exact HEAD의 단일 독립 적대적 리뷰와 CI green 뒤 n150에서 별도 승인된 initial cutover→receipt→sync enable→
       pair attestation을 실행하고 live backlog/DLQ/epoch/snapshot readiness를 확인한다.
 
-### T-049: cache-target 사전 진단·cutover abort budget 제품화
+### T-049: cache-target 사전 진단·cutover abort budget 제품화 (퇴역 기록)
 
 설계 정본은 [`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)다.
 구현 순서는 설계 문서 6절이 고정한다: T-049A(모델·storage) → T-049B(DB primitive) →
@@ -560,7 +548,7 @@ naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(�
       정상 결선 확인.
 - [x] issue #115(durable Dagster writer drain)는 T-052로 분리해 구현했다.
 
-### T-052: cache-target 진단의 durable Dagster writer drain (issue #115)
+### T-052: cache-target 진단의 durable Dagster writer drain (퇴역 기록)
 
 > **대체됨 — 구현·검증 정본이 아니다.** 이 기록은 direct daemon stop 초안의 이력을
 > 보존할 뿐이다. 현재 정본은 T-049F와
@@ -628,7 +616,7 @@ Dagster GraphQL로 수동 취소해야 하는 임시방편이었다.
       맞물려 정상 동작하는지 확인한다(사용자 결정으로 데이터는 보존 대상이
       아니므로, 이 검증은 별도 승인 아래 진행한다).
 
-### T-053: 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`)
+### T-053: 독립 실행 가능한 DB 백업 CLI (`ktdctl db-backup create`) (퇴역 기록)
 
 2026-08-04 issue #109 조사에서 확인한 근본 공백: 이 저장소 어디에도 **독립적으로
 호출 가능한 DB 백업 도구가 없다.** 모든 `pg_dump`(`cache_target_backup.py`의
@@ -664,7 +652,7 @@ window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 
       timestamp 거부, role별 runtime 선택, 잘못된 role 거부, CLI 결선 2건).
       backend 전체 1553 passed, ruff/mypy clean(touched files).
 
-### T-054: 백업 목록/보존 관리 (`ktdctl db-backup list`, GC)
+### T-054: 백업 목록/보존 관리 (`ktdctl db-backup list`, GC) (퇴역 기록)
 
 - [x] `ktdctl db-backup list [--role ...] [--json]`이 T-053 manifest를 읽어
       사람이 읽을 수 있는 목록(시각·role·파일명·schema revision·크기·sha256)이나
@@ -698,7 +686,7 @@ window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 
       없어 이 단계를 완료하지 못했다. 부모 세션이 리뷰를 진행한 뒤 커밋·
       PR·병합해야 한다.
 
-### T-055: 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`)
+### T-055: 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) (퇴역 기록)
 
 - [x] `ktdctl db-backup restore --role ... --backup-id ... --expected-schema-revision ... --confirm`를
       신설했다. T-050의 `--expected-alembic-head` fail-close opt-in 패턴을 그대로
@@ -728,7 +716,7 @@ window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 
       공백(post-restore schema mismatch 음성 테스트 부재)을 추가로 메꿨다.
       backend 전체 1589 passed, ruff/mypy clean(touched files).
 
-### T-056: 읽기 전용 백업 이력 API + Web UI 페이지
+### T-056: 읽기 전용 백업 이력 API + Web UI 페이지 (퇴역 기록)
 
 T-053~055 의존. mutation(백업 생성·복구)은 계속 CLI 전용으로 남긴다 — 이 저장소의
 기존 권한 경계(cache-target/pinvi-pair/map-ui-auth 모두 API에 노출되지 않고 CLI
@@ -753,7 +741,7 @@ TanStack 기본 재시도(~7초)를 다 거친 뒤에야 에러로 표시돼, �
 를 추가해 고쳤다. backend 전체 1595 passed, frontend type-check/lint/build 전부
 통과, ruff/mypy(신규 코드 범위) clean.
 
-### T-057: cache-target cutover 내장 백업 호출을 T-053 primitive로 통합
+### T-057: cache-target cutover 내장 백업 호출을 T-053 primitive로 통합 (퇴역 기록)
 
 T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 독립 백업
 도구가 같은 일을 서로 다른 코드 경로로 한다 — 오늘 있었던 naming drift 같은
@@ -787,7 +775,7 @@ T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 �
       동의해 지금은 여기까지만 반영한다. journal/receipt/manifest 통합
       재설계는 별도 태스크(T-058 후보)로 남긴다.
 
-### T-VN-41-F1: cache-target production pair re-pin (issue #129)
+### T-VN-41-F1: cache-target production pair re-pin (퇴역 기록)
 
 - [x] Map #940의 service artifact/functional owner와 현재 production Map release,
       PinVi #428의 reviewed candidate/squash release를 GitHub merge provenance와 n150 배포
@@ -796,7 +784,7 @@ T-053 의존. 지금은 cache-target cutover 안의 백업 로직과 T-053의 �
       production cutover runbook을 한 PR에서 갱신했다. 적대적 리뷰 1건과 focused 검증을 통과하고
       reviewed exact Manager release를 production에 설치했다.
 
-### T-VN-41-F1A: cache-target default-off 계약의 Manager 소유 bootstrap
+### T-VN-41-F1A: cache-target default-off 계약의 Manager 소유 bootstrap (퇴역 기록)
 
 F2 사전 진단은 canonical `.env`에 Map registry·PinVi ordinary binding·generation pin이 모두
 존재하는 것을 전제로 한다. 기존 production은 이 계약이 전혀 없어 diagnose가 mutation 전에
@@ -825,7 +813,7 @@ F2 사전 진단은 canonical `.env`에 Map registry·PinVi ordinary binding·ge
 - [x] F1B trusted release 설치 뒤 production에서 command를 한 번 실행하고 secret-free attestation을
       확인했다. F2는 새 diagnostic ID로 재개했다.
 
-### T-VN-41-F1B: trusted root canonical env 소유권 결박 (issue #132)
+### T-VN-41-F1B: trusted root canonical env 소유권 결박 (퇴역 기록)
 
 trusted installer는 canonical `.env`의 owner/group/mode를 immutable release manifest에 기록하고
 deployment owner의 `0600` ownership을 보존한다. 그러나 cache-target env helper는 호출 process의 UID만
@@ -843,7 +831,7 @@ env 편집은 하지 않는다.
       적대적 리뷰를 통과했다. 보정본 backend 전체 suite `1605 passed`.
 - [x] PR #133을 merge·trusted install한 뒤 F1A bootstrap을 완료하고 F2 diagnose를 재개했다.
 
-### T-VN-41-F1C: legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134)
+### T-VN-41-F1C: legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (퇴역 기록)
 
 v1 diagnostic은 durable writer-drain lease/receipt 이전 schema라 post-drain recovery를 추론할 수 없다.
 n150에 남은 것은 `writers_fencing` pre-stop state였으므로, state directory 삭제 대신 좁은 Manager
@@ -860,7 +848,7 @@ command로 receipt-first 퇴역해야 했다.
 - [x] F2 fresh v2 diagnostic은 writer stop 전 `writers_fencing`에서 Map runtime tuple drift를 감지해
       fail-close했다. DB·writer·runtime mutation은 없었다.
 
-### T-VN-41-F1E: trusted pinned source-installer (issue #138)
+### T-VN-41-F1E: trusted pinned source-installer (퇴역 기록)
 
 n150 canonical source cache는 user-owned `0700` checkout이고 tracked Map·PinVi production pin object가 없다.
 root가 이 repository의 Git config·hook·remote 설정을 해석하거나 fetch하면 source owner boundary를 깨고,
@@ -887,7 +875,7 @@ F1D candidate는 여전히 build할 수 없다.
       반환하는 idempotent 재실행까지 확인했다. F1E 경로는 Docker·Compose·DB·runtime·image build를
       호출하지 않았다.
 
-### T-VN-41-F1F: pinned deployment input 재정렬 (F1D 선행, 2 PR)
+### T-VN-41-F1F: pinned deployment input 재정렬 (퇴역 기록)
 
 F1D의 n150 static preflight는 의도대로 mutation 전에 중단했다. live Map application DB는
 `0083_nonderived_uuid_generator`인데 기존 tracked Map release `c0af…`의 image head는
@@ -980,8 +968,10 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       migration과 admin bootstrap의 유일 owner가 되게 한다. normal API의 implicit migration/direct password
       environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test와
       PinVi source pin 회전을 포함한다.
-- [ ] **F1D-C2 (Manager PR)** — C0 Map 및 C1 PinVi source pin을 입력으로 구 `bootstrap-pinned-drift`와 old
-      rollback/backup 중심 resume을 제거하고, `ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. 이 명령은 frozen explicit `rebuildable`
+- [/] **F1D-C2 (Manager PR)** — C0 Map 및 C1 PinVi source pin을 입력으로 구 `bootstrap-pinned-drift`와 old
+      rollback/backup 중심 resume을 제거하고, `ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. legacy
+      `cache-target`, standalone `db-backup`, Map UI 회전과 `capture`·`deploy`·`rollback` 공개 경로는
+      함께 퇴역한다. 이 명령은 frozen explicit `rebuildable`
       lifecycle에서만 candidate-first attestation 뒤 세 scoped DB recreate, 0600 credential file의 one-shot
       read-only mount, Map Dagster migration-only invocation, 일곱 runtime build/start, F1J fixture smoke와
       durable same-pinset resume을 수행한다.

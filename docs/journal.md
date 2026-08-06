@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D — legacy 공개 mutation 경로 퇴역)
+
+F1D v5의 유일한 generation mutation은 비운영 `ktdctl pinvi-pair rebuild-pinned --confirm`으로
+수렴한다. 따라서 구 compatible-pair의 `capture`·`deploy`·`rollback`, `cache-target`, Map UI 회전과
+standalone `db-backup` 공개 명령을 CLI에서 제거했다. Compose의 pair/cache workflow가 backup primitive도
+함께 제거했으므로 `create`·`list` 역시 제거해 dangling 경로를 만들지 않는다.
+
+최종 schema 상태의 backup/restore 필요성은 별도로 유지하되, 이후에는 cache-target/pair 중간 state와
+독립된 Compose contract를 새 태스크에서 설계한다. `tasks.md`와 production runbook은 v1–v4 내용을
+퇴역 기록으로 명시하고, 과거 작업 일지와 완료 이력은 변경하지 않는다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-C0 — Map Dagster storage 계약 병행)
 
 F1D-B 영향도 확인에서 Map application Alembic revision과 Dagster dependency storage revision이 서로 다른
