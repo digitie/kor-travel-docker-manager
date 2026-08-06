@@ -6,6 +6,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
@@ -129,6 +130,8 @@ _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES = frozenset(
         "missing_dagster_yaml",
     }
 )
+_PINNED_RUNTIME_DAGSTER_MIGRATION_ATTEMPTS = 10
+_PINNED_RUNTIME_DAGSTER_MIGRATION_RETRY_SECONDS = 2
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
@@ -3287,23 +3290,38 @@ class ComposeService:
         args: Sequence[str],
         *,
         transaction: ComposeTransactionSnapshot,
+        retryable: bool = False,
     ) -> dict[str, Any]:
-        result = self._run_frozen_recovery(
-            args,
-            transaction=transaction,
-            mutation_capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
-        )
-        if not result["success"]:
-            compose_action = self._pinned_runtime_compose_action(args)
-            diagnostic = self._pinned_runtime_compose_failure_diagnostic(
-                compose_action,
-                result,
-            )
+        if retryable and tuple(args) != (
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-storage-migrate",
+        ):
             raise DeploymentContractError(
-                "pinned runtime rebuild Compose "
-                f"{compose_action} command failed (exit {result['returncode']}{diagnostic})"
+                "only the idempotent Dagster storage migration may retry"
             )
-        return result
+        attempts = _PINNED_RUNTIME_DAGSTER_MIGRATION_ATTEMPTS if retryable else 1
+        result: dict[str, Any] = {}
+        for attempt in range(attempts):
+            result = self._run_frozen_recovery(
+                args,
+                transaction=transaction,
+                mutation_capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+            )
+            if result["success"]:
+                return result
+            if attempt + 1 < attempts:
+                time.sleep(_PINNED_RUNTIME_DAGSTER_MIGRATION_RETRY_SECONDS)
+        compose_action = self._pinned_runtime_compose_action(args)
+        diagnostic = self._pinned_runtime_compose_failure_diagnostic(
+            compose_action,
+            result,
+        )
+        raise DeploymentContractError(
+            "pinned runtime rebuild Compose "
+            f"{compose_action} command failed (exit {result['returncode']}{diagnostic})"
+        )
 
     @staticmethod
     def _pinned_runtime_compose_action(args: Sequence[str]) -> str:
@@ -3776,6 +3794,7 @@ class ComposeService:
                 self._run_pinned_runtime_rebuild_compose(
                     ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
                     transaction=runtime_transaction,
+                    retryable=True,
                 )
                 if read_database_schema_revision(runtimes[1]) != journal.candidate.map_dagster_head:
                     raise DeploymentContractError("Map Dagster schema differs from candidate head")

@@ -192,6 +192,40 @@ def test_rebuild_compose_error_names_the_failed_action(
     assert secret not in str(captured.value)
 
 
+def test_rebuild_retries_only_the_idempotent_dagster_storage_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    run = Mock(
+        side_effect=(
+            {"success": False, "returncode": 1, "stdout": "", "stderr": ""},
+            {"success": True, "returncode": 0, "stdout": "", "stderr": ""},
+        )
+    )
+    sleep = Mock()
+    monkeypatch.setattr(service, "_run_frozen_recovery", run)
+    monkeypatch.setattr(compose_service_module.time, "sleep", sleep)
+
+    result = service._run_pinned_runtime_rebuild_compose(
+        ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+        transaction=object(),
+        retryable=True,
+    )
+
+    assert result["success"] is True
+    assert run.call_count == 2
+    sleep.assert_called_once_with(2)
+
+
+def test_rebuild_rejects_retry_for_any_other_compose_action() -> None:
+    with pytest.raises(DeploymentContractError, match="only the idempotent"):
+        ComposeService()._run_pinned_runtime_rebuild_compose(
+            ["up", "pinvi-api"],
+            transaction=object(),
+            retryable=True,
+        )
+
+
 def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -310,8 +344,14 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "materialize_pinned_runtime_sources",
         lambda **_kwargs: _sources(),
     )
-    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+    def run_compose(
+        args: list[str],
+        *,
+        transaction: object,
+        retryable: bool = False,
+    ) -> dict[str, object]:
         del transaction
+        del retryable
         operations.append(tuple(args))
         return {"success": True, "stdout": "[]" if "ps" in args else ""}
 
@@ -492,8 +532,14 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
     def capture(**_kwargs: object) -> tuple[SimpleNamespace, None]:
         return transaction, None
 
-    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+    def run_compose(
+        args: list[str],
+        *,
+        transaction: object,
+        retryable: bool = False,
+    ) -> dict[str, object]:
         del transaction
+        del retryable
         operations.append(tuple(args))
         return {"success": True, "stdout": "[]" if "ps" in args else ""}
 
