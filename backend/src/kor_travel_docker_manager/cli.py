@@ -134,13 +134,12 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     try:
         if not args.confirm:
             print(
-                "pinvi-pair install-pinned-sources requires --confirm "
+                "pinvi-pair rebuild-pinned requires --confirm "
                 "(no mutation was attempted)",
                 file=sys.stderr,
             )
             return 2
-        _require_trusted_pinned_source_installer()
-        result = compose_service.install_pinned_sources()
+        result = compose_service.rebuild_pinned_runtime()
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -148,18 +147,6 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     return _emit_process_result(result, json_output=args.json)
-
-
-def _require_trusted_pinned_source_installer() -> None:
-    """installed root entrypoint 이외의 source authority mutation을 거부한다."""
-
-    if os.geteuid() != 0:
-        raise DeploymentContractError("pinned source installation requires root")
-    project_root = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "")
-    if project_root != _TRUSTED_ROOT_PROJECT_ROOT:
-        raise DeploymentContractError(
-            "pinned source installation requires the trusted installed manager root"
-        )
 
 
 def _cmd_cache_target(args: argparse.Namespace) -> int:
@@ -395,24 +382,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     pinvi_pair = subparsers.add_parser(
         "pinvi-pair",
-        help="trusted Map·PinVi pinned source를 설치합니다.",
+        help="Map·PinVi seven-service runtime을 candidate-first로 재구축합니다.",
     )
     pair_subparsers = pinvi_pair.add_subparsers(dest="pair_action", required=True)
-    pair_install_sources = pair_subparsers.add_parser(
-        "install-pinned-sources",
-        help="tracked Map·PinVi release source만 root-owned immutable worktree로 설치합니다.",
+    pair_rebuild = pair_subparsers.add_parser(
+        "rebuild-pinned",
+        help="고정 release candidate를 검증한 뒤 세 DB를 비우고 일곱 runtime을 재기동합니다.",
     )
-    pair_install_sources.add_argument(
+    pair_rebuild.add_argument(
         "--confirm",
         action="store_true",
-        help="canonical source selection env keyset을 원자 교체함을 확인합니다.",
+        help="세 Map·Dagster·PinVi DB를 파기형으로 재생성함을 확인합니다.",
     )
-    pair_install_sources.add_argument(
+    pair_rebuild.add_argument(
         "--json",
         action="store_true",
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
-    pair_install_sources.set_defaults(func=_cmd_pinvi_pair)
+    pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
     cache_target = subparsers.add_parser(
         "cache-target",
         help="production cache-target initial cutover와 durable sync enable을 실행합니다.",

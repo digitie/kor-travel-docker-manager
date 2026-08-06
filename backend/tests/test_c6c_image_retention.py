@@ -12,7 +12,7 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     RETENTION_REPOSITORY_PREFIX,
     ensure_generation_references,
     reconcile_generation_references,
-    require_empty_retention_namespace,
+    require_empty_generation_retention_namespace,
     validate_retention_namespace_is_reserved,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
@@ -209,7 +209,7 @@ def test_bootstrap_rejects_unresolved_retention_residue(
     ensure_generation_references((generation,), cwd="/tmp")
 
     with pytest.raises(DeploymentContractError, match="unresolved"):
-        require_empty_retention_namespace(cwd="/tmp")
+        require_empty_generation_retention_namespace(cwd="/tmp")
 
 
 def test_compose_image_cannot_use_retention_namespace() -> None:

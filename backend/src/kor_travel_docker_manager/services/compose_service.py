@@ -34,6 +34,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_RUNTIME_CONTAINERS,
     _MAP_RUNTIME_SERVICES,
     _MAP_UI_SERVICE,
+    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     _PINVI_API_SERVICE,
     C6cBuildProvenance,
     C6cCancelProbeFixture,
@@ -88,7 +89,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 )
 from kor_travel_docker_manager.services.c6c_image_retention import (
     ensure_generation_references,
+    ensure_pair_references,
     reconcile_generation_references,
+    reconcile_pair_references,
     require_empty_retention_namespace,
     validate_retention_namespace_is_reserved,
 )
@@ -115,6 +118,7 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     read_database_schema_revision,
     read_database_write_counter,
     read_pin_boundary_audit,
+    recreate_empty_databases,
     restore_database_backup,
     restore_manager_rollback_bundle,
     restore_standalone_database_backup,
@@ -169,13 +173,9 @@ from kor_travel_docker_manager.services.cache_target_diagnostics import (
     read_cache_target_diagnostic,
     read_or_create_cache_target_diagnostic_attempt_log,
     record_diagnostic_attempt,
-    retire_legacy_pre_stop_cache_target_diagnostic,
     transition_cache_target_diagnostic,
     write_cache_target_diagnostic,
     write_cache_target_diagnostic_attempt_log,
-)
-from kor_travel_docker_manager.services.cache_target_diagnostics import (
-    retire_inert_cache_target_diagnostic as retire_inert_cache_target_diagnostic_journal,
 )
 from kor_travel_docker_manager.services.cache_target_enable import (
     execute_cache_target_enable,
@@ -212,9 +212,6 @@ from kor_travel_docker_manager.services.cache_target_window import (
     validate_map_final_evidence_binding,
     write_cache_target_window,
 )
-from kor_travel_docker_manager.services.cache_target_window import (
-    retire_legacy_terminal_cache_target_window as retire_legacy_terminal_cache_target_window_journal,
-)
 from kor_travel_docker_manager.services.cache_target_writer_drain import (
     WriterDrainOwnerKind,
     WriterDrainReceipt,
@@ -228,7 +225,6 @@ from kor_travel_docker_manager.services.cache_target_writer_fence import (
 )
 from kor_travel_docker_manager.services.pinned_deployment_input import (
     assert_pinned_deployment_input_allows_pair_mutation,
-    install_pinned_deployment_inputs,
     mark_pinned_deployment_input_f1d_completed,
     mark_pinned_deployment_input_f1d_started,
     require_pinned_deployment_input_handoff,
@@ -246,6 +242,46 @@ from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     record_pinned_drift_bootstrap_failure,
     transition_pinned_drift_bootstrap,
     write_pinned_drift_bootstrap,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    REBUILD_PHASES,
+    RUNTIME_SERVICES,
+    PinnedRuntimeManifest,
+    PinnedRuntimeRebuildJournal,
+    RebuildPhase,
+    RuntimeService,
+    ensure_pinned_runtime_state_directory,
+    generation_logical_sha256,
+    pinned_runtime_state_paths,
+    retire_f1d_legacy_artifacts,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    read_manifest as read_pinned_runtime_manifest,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    read_rebuild_journal as read_pinned_runtime_rebuild_journal,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    write_manifest as write_pinned_runtime_manifest,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    write_rebuild_journal as write_pinned_runtime_rebuild_journal,
+)
+from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
+    CandidateRuntimeBuild,
+    build_candidate_generation,
+    generation_compose_environment,
+    new_candidate_journal,
+    parse_candidate_static_head,
+)
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    current_pinned_runtime_release,
+)
+from kor_travel_docker_manager.services.pinned_runtime_sources import (
+    materialize_pinned_runtime_sources,
+)
+from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
+    pinvi_bootstrap_credential_file,
 )
 from kor_travel_docker_manager.services.registry import (
     get_target,
@@ -2223,6 +2259,7 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
 # 않고 `alembic heads`만 읽어(DB에 아무 것도 하지 않는 static inspection) operator가
 # 명시한 기대 head와 다르면 배포를 시작하기 전에 fail-close한다.
 _ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 60
+_PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 60
 
 
 def _validate_expected_alembic_head(expected_alembic_head: str) -> None:
@@ -2285,6 +2322,36 @@ def _assert_candidate_image_alembic_head(
         raise DeploymentContractError(
             f"{label} candidate image alembic head differs from the expected head"
         )
+
+
+def _run_pinned_runtime_static_command(
+    image_id: str,
+    command: Sequence[str],
+    *,
+    label: str,
+) -> str:
+    """candidate artifact를 network 없이 검사하고 raw output은 호출자만 파싱한다."""
+
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        raise DeploymentContractError(f"{label} candidate image ID is invalid")
+    if not command or any(not argument or "\x00" in argument for argument in command):
+        raise DeploymentContractError(f"{label} candidate static command is invalid")
+    try:
+        completed = subprocess.run(
+            ["docker", "run", "--rm", "--network", "none", image_id, *command],
+            cwd=get_project_root(),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=_PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            f"{label} candidate static inspection could not start"
+        ) from exc
+    if completed.returncode != 0 or len(completed.stdout) > 1024 or completed.stderr:
+        raise DeploymentContractError(f"{label} candidate static inspection failed")
+    return completed.stdout
 
 
 def _cancel_probe_state_from_journal(
@@ -3939,30 +4006,382 @@ class ComposeService:
             ),
         }
 
-    def install_pinned_sources(self) -> dict[str, Any]:
-        """F1F deployment input만 수렴한다; Compose/Docker transaction은 열지 않는다."""
+    def _run_pinned_runtime_rebuild_compose(
+        self,
+        args: Sequence[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> dict[str, Any]:
+        result = self._run_frozen_recovery(
+            args,
+            transaction=transaction,
+            mutation_capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+        )
+        if not result["success"]:
+            raise DeploymentContractError("pinned runtime rebuild Compose command failed")
+        return result
+
+    def _attest_pinned_runtime_candidate_images(
+        self,
+        *,
+        build: CandidateRuntimeBuild,
+    ) -> dict[RuntimeService, str]:
+        image_ids = {
+            service: self._inspect_image_reference_id(
+                build.image_names[service],
+                label=service,
+            )
+            for service in RUNTIME_SERVICES
+        }
+        map_revision = build.sources.release.source_for("map").revision
+        pinvi_revision = build.sources.release.source_for("pinvi").revision
+        for service in RUNTIME_SERVICES:
+            expected_revision = map_revision if service.startswith("kor-travel-map-") else pinvi_revision
+            observed_revision = self._inspect_image_source_revision(
+                image_ids[service],
+                label=service,
+                expected_build_environment=("production" if service.startswith("pinvi-") else None),
+            )
+            if observed_revision != expected_revision:
+                raise DeploymentContractError(
+                    f"{service} candidate image revision differs from the release pin"
+                )
+        return image_ids
+
+    @staticmethod
+    def _assert_pinned_runtime_journal_matches_candidate_input(
+        journal: PinnedRuntimeRebuildJournal,
+        *,
+        release_pinset_sha256: str,
+        map_revision: str,
+        pinvi_revision: str,
+        environment_bytes: bytes,
+        compose_source_bytes: bytes,
+        resolved_compose_sha256: str,
+    ) -> None:
+        if (
+            journal.candidate.pinset_sha256 != release_pinset_sha256
+            or journal.candidate.map_source_revision != map_revision
+            or journal.candidate.pinvi_source_revision != pinvi_revision
+            or journal.environment_sha256 != hashlib.sha256(environment_bytes).hexdigest()
+            or journal.compose_sha256 != hashlib.sha256(compose_source_bytes).hexdigest()
+            or journal.resolved_compose_sha256 != resolved_compose_sha256
+        ):
+            raise DeploymentContractError(
+                "pinned runtime rebuild journal differs from frozen candidate input"
+            )
+
+    @staticmethod
+    def _pinned_runtime_result(
+        journal: PinnedRuntimeRebuildJournal,
+        *,
+        resumed: bool,
+    ) -> dict[str, Any]:
+        return {
+            "success": True,
+            "returncode": 0,
+            "resumed": resumed,
+            "transaction_id": journal.transaction_id,
+            "phase": journal.phase,
+            "generation_sha256": generation_logical_sha256(journal.candidate),
+            "pinset_sha256": journal.candidate.pinset_sha256,
+            "schema_heads": dict(journal.candidate.schema_heads),
+        }
+
+    @staticmethod
+    def _advance_pinned_runtime_journal(
+        journal: PinnedRuntimeRebuildJournal,
+        phase: RebuildPhase,
+    ) -> PinnedRuntimeRebuildJournal:
+        """resume의 high-watermark는 보존하고 아직 도달하지 않은 phase만 기록한다."""
+
+        if journal.phase == phase:
+            return journal
+        # `transition` 자체가 enum order를 검증한다. 이미 더 먼 checkpoint면 reset
+        # 뒤 side effect를 다시 실행하더라도 high-watermark는 되돌리지 않는다.
+        if REBUILD_PHASES.index(journal.phase) > REBUILD_PHASES.index(phase):
+            return journal
+        if REBUILD_PHASES.index(journal.phase) + 1 != REBUILD_PHASES.index(phase):
+            raise DeploymentContractError("pinned runtime rebuild phase is inconsistent")
+        return journal.transition(phase)
+
+    def rebuild_pinned_runtime(self) -> dict[str, Any]:
+        """F1D v5의 candidate-first seven-service destructive rebootstrap을 실행한다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            environment = _capture_compose_environment_snapshot(
-                environment_override=None,
+            transaction, _ = self._capture_transaction_unlocked()
+            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
+            state_paths = pinned_runtime_state_paths(transaction.environment.effective)
+            ensure_pinned_runtime_state_directory(state_paths.state_root)
+            release = current_pinned_runtime_release()
+            sources = materialize_pinned_runtime_sources(
+                release=release,
+                state_paths=state_paths,
+                values=transaction.environment.effective,
             )
-            assert_environment_snapshot_matches_c6c_lock(environment, lock_snapshot)
-            assert_manager_mutation_allowed(environment=environment.effective)
-            config = load_c6c_deployment_config_from_environment(environment.effective)
-            if not config.production:
-                raise DeploymentContractError(
-                    "pinned source installation is available only in production mode"
+            build = CandidateRuntimeBuild(sources)
+            candidate_transaction, _ = self._capture_transaction_unlocked(
+                environment_override=build.compose_environment(),
+                environment_snapshot=transaction.environment,
+            )
+            try:
+                state_paths.journal.lstat()
+                journal_exists = True
+            except FileNotFoundError:
+                journal_exists = False
+
+            if journal_exists:
+                journal = read_pinned_runtime_rebuild_journal(state_paths.journal)
+                self._assert_pinned_runtime_journal_matches_candidate_input(
+                    journal,
+                    release_pinset_sha256=release.pinset_sha256,
+                    map_revision=release.source_for("map").revision,
+                    pinvi_revision=release.source_for("pinvi").revision,
+                    environment_bytes=transaction.environment.env_file_bytes,
+                    compose_source_bytes=candidate_transaction.compose_source_bytes,
+                    resolved_compose_sha256=candidate_transaction.resolved_document_hash,
                 )
-            owner = _frozen_canonical_env_owner(environment)
-            result = install_pinned_deployment_inputs(
-                environment=environment.effective,
-                env_path=Path(environment.env_path),
-                env_bytes=environment.env_file_bytes,
-                expected_owner_uid=owner["expected_owner_uid"],
-                expected_owner_gid=owner["expected_owner_gid"],
-                runner=subprocess.run,
+                if journal.phase == "committed":
+                    manifest = read_pinned_runtime_manifest(state_paths.manifest)
+                    if manifest.active_generation != journal.candidate:
+                        raise DeploymentContractError(
+                            "pinned runtime manifest differs from committed journal"
+                        )
+                    return self._pinned_runtime_result(journal, resumed=True)
+                self._attest_pinned_runtime_candidate_images(build=build)
+                ensure_generation_references((journal.candidate,), cwd=get_project_root())
+            else:
+                self._run_pinned_runtime_rebuild_compose(
+                    ["build", *RUNTIME_SERVICES],
+                    transaction=candidate_transaction,
+                )
+                image_ids = self._attest_pinned_runtime_candidate_images(build=build)
+                map_application_output = _run_pinned_runtime_static_command(
+                    image_ids["kor-travel-map-api"],
+                    ("ktm-application-schema", "head"),
+                    label="Map application",
+                )
+                map_application_head = parse_candidate_static_head(
+                    map_application_output,
+                    schema="kor-travel-map.application-head.v1",
+                    field="head",
+                )
+                map_dagster_output = _run_pinned_runtime_static_command(
+                    image_ids["kor-travel-map-dagster"],
+                    ("ktm-dagster-storage", "head"),
+                    label="Map Dagster",
+                )
+                map_dagster_head = parse_candidate_static_head(
+                    map_dagster_output,
+                    schema="kor-travel-map.dagster-storage-head.v1",
+                    field="head",
+                )
+                pinvi_output = _run_pinned_runtime_static_command(
+                    image_ids["pinvi-api"],
+                    ("pinvi-admin-bootstrap", "head"),
+                    label="PinVi",
+                )
+                pinvi_head = parse_candidate_static_head(
+                    pinvi_output,
+                    schema="pinvi.candidate-head.v1",
+                    field="pinvi_head",
+                )
+                candidate = build_candidate_generation(
+                    sources=sources,
+                    image_ids=image_ids,
+                    map_application_head=map_application_head,
+                    map_dagster_head=map_dagster_head,
+                    pinvi_head=pinvi_head,
+                )
+                journal = new_candidate_journal(
+                    candidate=candidate,
+                    environment_bytes=transaction.environment.env_file_bytes,
+                    compose_source_bytes=candidate_transaction.compose_source_bytes,
+                    resolved_compose_sha256=candidate_transaction.resolved_document_hash,
+                )
+                write_pinned_runtime_rebuild_journal(state_paths.journal, journal)
+                ensure_generation_references((candidate,), cwd=get_project_root())
+                retire_f1d_legacy_artifacts(
+                    state_root=state_paths.state_root,
+                    transaction_id=journal.transaction_id,
+                    candidate=candidate,
+                    recorded_at=journal.created_at,
+                )
+
+            runtime_environment = {
+                **build.compose_environment(),
+                **generation_compose_environment(journal.candidate),
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
+                    journal.candidate.map_application_head
+                ),
+            }
+            runtime_transaction, _ = self._capture_transaction_unlocked(
+                environment_override=runtime_environment,
+                environment_snapshot=transaction.environment,
             )
-            return {**result, "returncode": 0 if result.get("success") else 1}
+            runtimes = database_runtimes_from_frozen_contract(
+                resolved=runtime_transaction.resolved,
+                environment=runtime_transaction.environment.effective,
+            )
+            resumed = journal_exists
+            try:
+                updated = self._advance_pinned_runtime_journal(
+                    journal, "reset_intent_durable"
+                )
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                self._run_pinned_runtime_rebuild_compose(
+                    ["stop", *RUNTIME_SERVICES],
+                    transaction=runtime_transaction,
+                )
+                recreate_empty_databases(runtimes)
+                updated = self._advance_pinned_runtime_journal(
+                    journal, "databases_recreated"
+                )
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                self._run_pinned_runtime_rebuild_compose(
+                    ["up", "-d", "--wait", "--wait-timeout", "300", "kor-travel-map-api"],
+                    transaction=runtime_transaction,
+                )
+                if read_database_schema_revision(runtimes[0]) != journal.candidate.map_application_head:
+                    raise DeploymentContractError("Map application schema differs from candidate head")
+                updated = self._advance_pinned_runtime_journal(
+                    journal, "map_application_ready"
+                )
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                self._run_pinned_runtime_rebuild_compose(
+                    ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+                    transaction=runtime_transaction,
+                )
+                if read_database_schema_revision(runtimes[1]) != journal.candidate.map_dagster_head:
+                    raise DeploymentContractError("Map Dagster schema differs from candidate head")
+                updated = self._advance_pinned_runtime_journal(journal, "map_dagster_ready")
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                self._run_pinned_runtime_rebuild_compose(
+                    [
+                        "up",
+                        "-d",
+                        "--wait",
+                        "--wait-timeout",
+                        "300",
+                        "kor-travel-map-ui",
+                        "kor-travel-map-dagster",
+                        "kor-travel-map-dagster-daemon",
+                    ],
+                    transaction=runtime_transaction,
+                )
+                updated = self._advance_pinned_runtime_journal(journal, "map_runtime_ready")
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                with pinvi_bootstrap_credential_file(
+                    state_paths=state_paths,
+                    values=transaction.environment.effective,
+                    transaction_id=journal.transaction_id,
+                    email=transaction.environment.effective["KTDM_C6C_PINVI_ADMIN_EMAIL"],
+                    password=transaction.environment.effective["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
+                ) as credential:
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "-v",
+                            f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
+                            "-e",
+                            "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE="
+                            "/run/pinvi/bootstrap-admin.json",
+                            "pinvi-admin-bootstrap",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
+                    raise DeploymentContractError("PinVi schema differs from candidate head")
+                updated = self._advance_pinned_runtime_journal(
+                    journal, "pinvi_schema_ready"
+                )
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                self._run_pinned_runtime_rebuild_compose(
+                    ["up", "-d", "--wait", "--wait-timeout", "300", "pinvi-api"],
+                    transaction=runtime_transaction,
+                )
+                self._require_services_ready(
+                    ("pinvi-api",),
+                    transaction=runtime_transaction,
+                    frozen_recovery=True,
+                )
+                updated = self._advance_pinned_runtime_journal(journal, "pinvi_api_ready")
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                self._run_pinned_runtime_rebuild_compose(
+                    [
+                        "up",
+                        "-d",
+                        "--wait",
+                        "--wait-timeout",
+                        "300",
+                        "pinvi-web",
+                        "pinvi-dagster",
+                    ],
+                    transaction=runtime_transaction,
+                )
+                self._require_services_ready(
+                    RUNTIME_SERVICES,
+                    transaction=runtime_transaction,
+                    frozen_recovery=True,
+                )
+                updated = self._advance_pinned_runtime_journal(
+                    journal, "pinvi_runtime_ready"
+                )
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                updated = self._advance_pinned_runtime_journal(
+                    journal, "contract_verified"
+                )
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                updated = self._advance_pinned_runtime_journal(
+                    journal, "manifest_committing"
+                )
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                write_pinned_runtime_manifest(
+                    state_paths.manifest,
+                    PinnedRuntimeManifest(version=5, active_generation=journal.candidate),
+                )
+                updated = self._advance_pinned_runtime_journal(journal, "committed")
+                if updated != journal:
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                    journal = updated
+                reconcile_generation_references(
+                    (journal.candidate,),
+                    cwd=get_project_root(),
+                )
+                return self._pinned_runtime_result(journal, resumed=resumed)
+            except Exception:
+                try:
+                    self._run_pinned_runtime_rebuild_compose(
+                        ["stop", *RUNTIME_SERVICES],
+                        transaction=runtime_transaction,
+                    )
+                except Exception:
+                    pass
+                raise
 
     def bootstrap_pinned_drift(self) -> dict[str, Any]:
         """F1D: tracked release pin으로만 production pair drift를 한 번 수렴한다.
@@ -4728,71 +5147,6 @@ class ComposeService:
                 "service_openapi_sha256": bootstrap.contract.expected_openapi_sha256,
                 "map_release_revision": CACHE_TARGET_PRODUCTION_PINS.map_release_revision,
                 "pinvi_release_revision": CACHE_TARGET_PRODUCTION_PINS.pinvi_release_revision,
-            }
-
-    def retire_legacy_pre_stop_cache_target_diagnostic(self) -> dict[str, Any]:
-        """F1C: v1 pre-stop diagnostic 하나만 receipt-first로 퇴역한다."""
-
-        with c6c_deployment_lock_from_environment() as lock_snapshot:
-            transaction, _ = self._capture_transaction_unlocked()
-            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            assert_manager_mutation_allowed(environment=transaction.environment.effective)
-            config = load_c6c_deployment_config_from_environment(transaction.environment.effective)
-            if not config.production or config.cache_target is None:
-                raise DeploymentContractError(
-                    "legacy diagnostic retirement requires the production cache-target contract"
-                )
-            assert_pinned_deployment_input_allows_pair_mutation(
-                environment=transaction.environment.effective,
-                env_path=Path(transaction.environment.env_path),
-                **_frozen_canonical_env_owner(transaction.environment),
-                runner=subprocess.run,
-            )
-            receipt = retire_legacy_pre_stop_cache_target_diagnostic(
-                cache_target_diagnostic_journal_path(transaction.environment.effective),
-                retired_at_unix=int(time.time()),
-            )
-            return {
-                "success": True,
-                "returncode": 0,
-                "retired_phase": receipt.retired_phase,
-                "retired_journal_sha256": receipt.retired_journal_sha256,
-                "retired_at_unix": receipt.retired_at_unix,
-            }
-
-    def retire_legacy_terminal_cache_target_window(self) -> dict[str, Any]:
-        """F1G: exact terminal v1 window 하나만 receipt-first로 퇴역한다."""
-
-        with c6c_deployment_lock_from_environment() as lock_snapshot:
-            environment = _prepare_inert_cache_target_state_retirement(lock_snapshot)
-            receipt = retire_legacy_terminal_cache_target_window_journal(
-                cache_target_window_journal_path(environment.effective),
-                retired_at_unix=int(time.time()),
-            )
-            return {
-                "success": True,
-                "returncode": 0,
-                "retired_phase": receipt.retired_phase,
-                "retired_journal_sha256": receipt.retired_journal_sha256,
-                "retired_at_unix": receipt.retired_at_unix,
-            }
-
-    def retire_inert_cache_target_diagnostic(self) -> dict[str, Any]:
-        """F1H: writer-drain 전 exact v2 diagnostic 하나만 receipt-first로 퇴역한다."""
-
-        with c6c_deployment_lock_from_environment() as lock_snapshot:
-            environment = _prepare_inert_cache_target_state_retirement(lock_snapshot)
-            receipt = retire_inert_cache_target_diagnostic_journal(
-                cache_target_diagnostic_journal_path(environment.effective),
-                retired_at_unix=int(time.time()),
-            )
-            return {
-                "success": True,
-                "returncode": 0,
-                "retired_diagnostic_version": receipt.retired_diagnostic_version,
-                "retired_phase": receipt.retired_phase,
-                "retired_journal_sha256": receipt.retired_journal_sha256,
-                "retired_at_unix": receipt.retired_at_unix,
             }
 
     def _validate_cache_target_runtime_activated_terminal(

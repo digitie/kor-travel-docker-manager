@@ -86,6 +86,19 @@ class CandidateRuntimeBuild:
         return MappingProxyType(values)
 
 
+def generation_compose_environment(
+    generation: PinnedRuntimeGeneration,
+) -> Mapping[str, str]:
+    """attested image ID만으로 seven-service runtime을 기동하는 override."""
+
+    return MappingProxyType(
+        {
+            _IMAGE_ENVIRONMENT[service]: image_id
+            for service, image_id in generation.image_ids.items()
+        }
+    )
+
+
 def parse_candidate_static_head(
     output: str,
     *,

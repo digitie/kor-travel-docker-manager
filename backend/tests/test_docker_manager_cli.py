@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import pytest
 
-import kor_travel_docker_manager.cli as cli_module
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
@@ -433,43 +432,25 @@ def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_pinned_source_install_requires_confirmation(mock_compose_service, capsys):
-    assert main(["pinvi-pair", "install-pinned-sources"]) == 2
+def test_cli_pinned_runtime_rebuild_requires_confirmation(mock_compose_service, capsys):
+    assert main(["pinvi-pair", "rebuild-pinned"]) == 2
 
     assert "requires --confirm" in capsys.readouterr().err
-    mock_compose_service.install_pinned_sources.assert_not_called()
+    mock_compose_service.rebuild_pinned_runtime.assert_not_called()
 
 
-@patch("kor_travel_docker_manager.cli._require_trusted_pinned_source_installer")
 @patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_installs_pinned_sources_only_through_trusted_entrypoint(
-    mock_compose_service,
-    require_trusted_installer,
-):
-    mock_compose_service.install_pinned_sources.return_value = {
+def test_cli_rebuilds_pinned_runtime(mock_compose_service):
+    mock_compose_service.rebuild_pinned_runtime.return_value = {
         "success": True,
         "returncode": 0,
         "stdout": "",
         "stderr": "",
     }
 
-    assert main(["pinvi-pair", "install-pinned-sources", "--confirm", "--json"]) == 0
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 0
 
-    require_trusted_installer.assert_called_once_with()
-    mock_compose_service.install_pinned_sources.assert_called_once_with()
-
-
-def test_pinned_source_installer_rejects_nonroot_or_untrusted_project_root(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(cli_module.os, "geteuid", lambda: 1000)
-    with pytest.raises(DeploymentContractError, match="requires root"):
-        cli_module._require_trusted_pinned_source_installer()
-
-    monkeypatch.setattr(cli_module.os, "geteuid", lambda: 0)
-    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "/tmp/untrusted")
-    with pytest.raises(DeploymentContractError, match="trusted installed"):
-        cli_module._require_trusted_pinned_source_installer()
+    mock_compose_service.rebuild_pinned_runtime.assert_called_once_with()
 
 
 @pytest.mark.parametrize(
