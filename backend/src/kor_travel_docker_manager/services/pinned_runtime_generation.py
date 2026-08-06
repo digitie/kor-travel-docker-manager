@@ -82,6 +82,18 @@ _LIFECYCLE_PAIRS: dict[tuple[str, str], tuple[str, str]] = {
     ("rehearsal", "rebuildable"): ("production", "true"),
     ("production", "operational"): ("production", "true"),
 }
+_REBUILDABLE_CACHE_TARGET_DEFAULTS: dict[str, str] = {
+    "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS": "[]",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": "false",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": "pinvi-cache-target-consumer",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RESTORE_FENCE_TOKEN": "",
+    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RECOVERY_TOKEN": "",
+}
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -167,6 +179,11 @@ def require_rebuildable_mode(values: Mapping[str, str]) -> DeploymentMode:
     mode = load_deployment_mode(values)
     if not mode.rebuildable:
         raise DeploymentContractError("pinned runtime rebuild requires rehearsal/rebuildable")
+    for name, default in _REBUILDABLE_CACHE_TARGET_DEFAULTS.items():
+        if values.get(name, default).strip() != default:
+            raise DeploymentContractError(
+                "pinned runtime rebuild requires an inert cache-target configuration"
+            )
     return mode
 
 

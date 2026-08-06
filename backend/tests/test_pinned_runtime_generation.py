@@ -90,6 +90,30 @@ def test_rebuildable_rejects_production_environment_even_with_lifecycle_flag() -
         require_rebuildable_mode(values)
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS", '[{"id":"configured"}]'),
+        ("PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED", "true"),
+        ("PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN", "configured"),
+        ("PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID", "other-consumer"),
+    ],
+)
+def test_rebuildable_rejects_configured_cache_target_runtime(
+    name: str, value: str
+) -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        name: value,
+    }
+
+    with pytest.raises(DeploymentContractError, match="inert cache-target"):
+        require_rebuildable_mode(values)
+
+
 def test_rebuild_capability_allows_compose_mutation_only_in_rebuildable_mode() -> None:
     values = {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
