@@ -1529,6 +1529,7 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
                 "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true",
                 f"KOR_TRAVEL_MAP_API_OPS_READ_TOKEN={'r' * 40}",
                 f"KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN={'c' * 40}",
+                f"KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN={'f' * 40}",
                 "KTDM_C6C_CONTRACT_GENERATION=c6c-ops-v1",
                 f"{rotation._MANAGER_SOURCE_REVISION_ENV}={'2' * 40}",
                 "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME=map-ui-admin",
@@ -1540,7 +1541,6 @@ def _rotation_fixture(tmp_path: Path, current_password: str):
                 f"KTDM_C6C_MAP_UI_ADMIN_PASSWORD='{current_password}'",
                 "KTDM_C6C_PINVI_ADMIN_EMAIL=pinvi-admin@example.test",
                 f"KTDM_C6C_PINVI_ADMIN_PASSWORD={'p' * 40}",
-                "KTDM_C6C_CANCEL_PROBE_JOB_ID=77777777-7777-4777-8777-777777777777",
             ]
         )
         + "\n",
@@ -1938,6 +1938,9 @@ def _resolved_compose_for_pair(
                     ),
                     "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": resolved_env(
                         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
+                    ),
+                    "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": resolved_env(
+                        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN"
                     ),
                     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
                     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": resolved_env(

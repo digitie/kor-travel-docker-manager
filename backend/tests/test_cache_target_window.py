@@ -2006,10 +2006,11 @@ def test_unfinished_window_blocks_foreign_manager_mutation(
         "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
         "PINVI_ENVIRONMENT": "production",
         "COMPOSE_PROJECT_NAME": "pinvi-prod",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-    }
+            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+            "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+            "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+            "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        }
     path = c6c_deployment.cache_target_window_journal_path(environment)
     path.parent.mkdir(mode=0o700, parents=True)
     write_cache_target_window(path, _prepared())

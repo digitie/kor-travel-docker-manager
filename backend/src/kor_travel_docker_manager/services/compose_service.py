@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
@@ -35,6 +36,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_UI_SERVICE,
     _PINVI_API_SERVICE,
     C6cBuildProvenance,
+    C6cCancelProbeFixture,
     C6cDeploymentConfig,
     CandidateSystemBindSnapshot,
     CompatibleImagePair,
@@ -233,12 +235,14 @@ from kor_travel_docker_manager.services.pinned_deployment_input import (
 )
 from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
     PinnedDriftBootstrapJournal,
+    PinnedDriftCancelProbeReceipt,
     assert_pinned_drift_bootstrap_allows_pair_mutation,
     assert_pinned_drift_bootstrap_frozen_inputs,
     pinned_drift_bootstrap_journal_path,
     prepare_pinned_drift_bootstrap,
     read_pinned_drift_bootstrap,
     record_pinned_drift_bootstrap_attempt,
+    record_pinned_drift_bootstrap_cancel_probe,
     record_pinned_drift_bootstrap_failure,
     transition_pinned_drift_bootstrap,
     write_pinned_drift_bootstrap,
@@ -2283,6 +2287,38 @@ def _assert_candidate_image_alembic_head(
         )
 
 
+def _cancel_probe_state_from_journal(
+    journal: PinnedDriftBootstrapJournal,
+) -> PinviCancelProbeState:
+    receipt = journal.cancel_probe
+    if receipt is None:
+        return PinviCancelProbeState(transaction_id=journal.transaction_id)
+    if receipt.response_status is None:
+        if receipt.response_code is not None:
+            raise DeploymentContractError("pinned drift cancel probe receipt is invalid")
+        result: dict[str, int | str] | None = None
+    else:
+        if receipt.response_code is None:
+            raise DeploymentContractError("pinned drift cancel probe receipt is invalid")
+        result = {
+            "name": "pinvi_cancel_error",
+            "status": receipt.response_status,
+            "code": receipt.response_code,
+        }
+    return PinviCancelProbeState(
+        transaction_id=journal.transaction_id,
+        fixture=C6cCancelProbeFixture(
+            transaction_id=journal.transaction_id,
+            job_id=receipt.job_id,
+            state=receipt.state,
+            cancellation_id=receipt.cancellation_id,
+            canonical_unsafe_outcome=result,
+        ),
+        attempted=receipt.attempted,
+        result=result,
+    )
+
+
 @dataclass
 class _PinnedDriftCheckpointTracker:
     """F1D journal의 safe checkpoint만 fail-close 경계로 전달한다."""
@@ -2308,6 +2344,55 @@ class _PinnedDriftCheckpointTracker:
             self.journal,
             self.current_checkpoint,
         )
+        write_pinned_drift_bootstrap(self.journal_path, updated)
+        self.journal = updated
+
+    def cancel_probe_state(self) -> PinviCancelProbeState:
+        return _cancel_probe_state_from_journal(self.journal)
+
+    def persist_cancel_probe(self, state: PinviCancelProbeState) -> None:
+        fixture = state.fixture
+        if fixture is None or fixture.transaction_id != self.journal.transaction_id:
+            raise DeploymentContractError("pinned drift cancel probe fixture is invalid")
+        result = state.result
+        response_status: int | None = None
+        response_code: str | None = None
+        if result is not None:
+            candidate_status = result.get("status")
+            candidate_code = result.get("code")
+            if type(candidate_status) is not int or not isinstance(candidate_code, str):
+                raise DeploymentContractError("pinned drift cancel probe response is invalid")
+            response_status = candidate_status
+            response_code = candidate_code
+        now = datetime.now(UTC).isoformat()
+        previous = self.journal.cancel_probe
+        receipt = PinnedDriftCancelProbeReceipt(
+            job_id=fixture.job_id,
+            state=fixture.state,
+            cancellation_id=fixture.cancellation_id,
+            attempted=state.attempted,
+            response_status=response_status,
+            response_code=response_code,
+            response_verified_at=(
+                previous.response_verified_at
+                if (
+                    previous is not None
+                    and response_status is not None
+                    and previous.response_verified_at is not None
+                )
+                else (now if response_status is not None else None)
+            ),
+            finalized_at=(
+                previous.finalized_at
+                if (
+                    previous is not None
+                    and fixture.state == "finalized"
+                    and previous.finalized_at is not None
+                )
+                else (now if fixture.state == "finalized" else None)
+            ),
+        )
+        updated = record_pinned_drift_bootstrap_cancel_probe(self.journal, receipt)
         write_pinned_drift_bootstrap(self.journal_path, updated)
         self.journal = updated
 
@@ -4072,7 +4157,8 @@ class ComposeService:
                         candidate,
                         services,
                         stage_prefix="pinned_drift_bootstrap",
-                        cancel_probe_state=PinviCancelProbeState(),
+                        cancel_probe_state=checkpoint_tracker.cancel_probe_state(),
+                        cancel_probe_state_recorder=checkpoint_tracker.persist_cancel_probe,
                         transaction=transaction,
                         checkpoint_recorder=lambda checkpoint: checkpoint_tracker.persist_attempt(
                             f"prepared.{checkpoint}"
@@ -4102,6 +4188,7 @@ class ComposeService:
                         services=services,
                         transaction=transaction,
                         expected_database_heads=journal.database_heads,
+                        checkpoint_tracker=checkpoint_tracker,
                         checkpoint_recorder=lambda checkpoint: checkpoint_tracker.persist_attempt(
                             f"runtime_activated.{checkpoint}"
                         ),
@@ -4123,6 +4210,7 @@ class ComposeService:
                         services=services,
                         transaction=transaction,
                         expected_database_heads=journal.database_heads,
+                        checkpoint_tracker=checkpoint_tracker,
                         checkpoint_recorder=lambda checkpoint: checkpoint_tracker.persist_attempt(
                             f"manifest_committing.{checkpoint}"
                         ),
@@ -4179,6 +4267,7 @@ class ComposeService:
         services: list[str],
         transaction: ComposeTransactionSnapshot,
         expected_database_heads: Mapping[str, str],
+        checkpoint_tracker: _PinnedDriftCheckpointTracker | None = None,
         checkpoint_recorder: Callable[[str], None],
     ) -> dict[str, Any]:
         """F1D resume verification은 outer fail-close 경계가 단 한 번 halt한다."""
@@ -4187,7 +4276,16 @@ class ComposeService:
             config,
             candidate,
             services,
-            cancel_probe_state=PinviCancelProbeState(),
+            cancel_probe_state=(
+                checkpoint_tracker.cancel_probe_state()
+                if checkpoint_tracker is not None
+                else PinviCancelProbeState()
+            ),
+            cancel_probe_state_recorder=(
+                checkpoint_tracker.persist_cancel_probe
+                if checkpoint_tracker is not None
+                else None
+            ),
             transaction=transaction,
             checkpoint_recorder=lambda checkpoint: checkpoint_recorder(
                 f"contract.{checkpoint}"
@@ -4282,11 +4380,15 @@ class ComposeService:
                 "committed pinned drift bootstrap manifest is not candidate-only"
             )
         services = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        if journal.cancel_probe is None or journal.cancel_probe.state != "finalized":
+            raise DeploymentContractError(
+                "committed pinned drift bootstrap has no finalized cancel probe receipt"
+            )
         verification = self._verify_active_contract(
             config,
             candidate,
             services,
-            cancel_probe_state=PinviCancelProbeState(),
+            cancel_probe_state=_cancel_probe_state_from_journal(journal),
             transaction=transaction,
         )
         self._assert_pinned_drift_database_heads(transaction, journal.database_heads)
@@ -8841,6 +8943,7 @@ class ComposeService:
             for value in (
                 config.read_token,
                 config.cancel_token,
+                config.fixture_token,
                 config.map_ui_password_hash,
                 config.map_ui_session_secret,
                 config.map_admin_proxy_secret,
@@ -8849,7 +8952,6 @@ class ComposeService:
                 config.smoke.map_ui_password,
                 config.smoke.pinvi_admin_email,
                 config.smoke.pinvi_admin_password,
-                config.smoke.cancel_probe_job_id,
                 config.contract_generation,
                 *(
                     config.cache_target.protected_values
@@ -8912,6 +9014,7 @@ class ComposeService:
         services: list[str],
         *,
         cancel_probe_state: PinviCancelProbeState | None = None,
+        cancel_probe_state_recorder: Callable[[PinviCancelProbeState], None] | None = None,
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
         checkpoint_recorder: Callable[[str], None] | None = None,
@@ -8948,6 +9051,7 @@ class ComposeService:
         pinvi_smoke = run_pinvi_canonical_smoke(
             config,
             cancel_probe_state=cancel_probe_state,
+            state_recorder=cancel_probe_state_recorder,
         )
         checkpoint("ui_auth")
         ui_smoke = run_ui_auth_smoke(config)
@@ -9039,6 +9143,7 @@ class ComposeService:
         *,
         stage_prefix: str,
         cancel_probe_state: PinviCancelProbeState | None = None,
+        cancel_probe_state_recorder: Callable[[PinviCancelProbeState], None] | None = None,
         transaction: ComposeTransactionSnapshot,
         frozen_recovery: bool = False,
         wait_timeout: int = _DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
@@ -9149,6 +9254,7 @@ class ComposeService:
             pair,
             services,
             cancel_probe_state=cancel_probe_state,
+            cancel_probe_state_recorder=cancel_probe_state_recorder,
             transaction=transaction,
             frozen_recovery=frozen_recovery,
             checkpoint_recorder=(

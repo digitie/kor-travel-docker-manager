@@ -28,7 +28,7 @@ Map은 다음 REST lifecycle API와 전용 `ops:fixture` principal을 소유한�
 
 | 동작 | Map internal API | 호출자 | 결과 |
 | --- | --- | --- | --- |
-| ensure/read | `PUT`/`GET /v1/ops/contract-fixtures/c6c-cancel-probe/{transaction_id}` | Manager | dynamic job ID와 `armed` 또는 durable 상태 반환 |
+| ensure/read | `PUT`/`GET /v1/ops/contract-fixtures/c6c-cancel-probe/{transaction_id}` | Manager | dynamic job ID와 durable 상태, consumed/finalized의 immutable canonical unsafe outcome 반환 |
 | relay 검증 | 기존 PinVi cancel API | Manager → PinVi | PinVi가 기존 `ops:cancel` 경계로 Map normal cancellation 호출 |
 | finalize | `POST /v1/ops/contract-fixtures/c6c-cancel-probe/{transaction_id}/finalize` | Manager | exact consumed fixture만 terminal로 정리 |
 
@@ -66,18 +66,22 @@ generic finish/cancel, marker/history 삭제, finalized job 재무장은 금지�
 candidate Map migration 및 Map authenticated readiness 후, PinVi API smoke 전 아래 상태기를 실행한다.
 
 ```text
-ensure(armed) → journal job identity fsync → PinVi cancel POST 1회
-  → exact 409 + canonical detail 확인 → Map finalize → committed
+ensure(armed) → journal armed receipt fsync → attempted=true receipt fsync
+  → PinVi cancel POST 1회 → exact 409 + canonical detail 확인
+  → Map GET(consumed) → verified receipt fsync → Map finalize → finalized receipt fsync → committed
 
-ensure(consumed) → canonical result 조회·검증 → Map finalize → committed
-ensure(finalized) → existing verified receipt만 허용, 그 밖에는 fail-close
+ensure(consumed) → Map canonical unsafe outcome 조회·검증·receipt fsync → Map finalize → committed
+ensure(finalized) → Map outcome과 existing receipt 일치 확인 → committed
 ```
 
 Manager는 fixture 경로에서 `409 PIPELINE_CANCELLATION_UNSAFE` 이외 `404`, `502`, `503`, timeout, malformed
 envelope, wrong root ID, response/detail drift를 모두 failure로 취급하고 protected runtime halt 규칙을 유지한다.
 `PinviCancelProbeState` 같은 process-local 값은 recovery authority가 아니다. journal에는 safe transaction ID,
-job ID, Map lifecycle state, canonical response fingerprint, verification/finalization UTC만 기록하고 credential,
-raw response, exception은 기록하지 않는다.
+job ID, Map lifecycle state, cancellation ID, POST 직전 attempted flag, exact canonical response fingerprint,
+verification/finalization UTC만 기록하고 credential, raw response, exception은 기록하지 않는다. receipt 전이는
+`armed → consumed → finalized` 및 attempted false→true로만 단조 진행하며, job/cancellation identity와
+검증·종결 시각은 확정 뒤 바뀔 수 없다. 특히 POST 전에
+`attempted=true`를 durable write하므로 response loss 후 armed fixture에 같은 cancel POST를 재시도할 수 없다.
 
 ## Pair provenance와 rollout
 
