@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1J-C — provenance 재결박 merge 완료)
+
+PinVi PR #435(`2d59855…`)와 Manager PR #160(`0ff7f8d…`)이 merge됐다. PinVi는 일반 Map service provenance를
+wheel/Docker runtime과 CI required gate까지 같은 bytes로 소비하고, Manager는 Map `1df45b57…`, PinVi merge,
+service OpenAPI SHA, Map Alembic `0084_c6c_cancel_probe_fixtures`, cache-target/C6c capability를 새 pinset으로
+원자 회전했다. compatible-pair manifest v4는 변경하지 않았다.
+
+적대적 리뷰 1인은 실제 고정 Git artifact·migration·vendor/provenance bytes, root-owned worktree 검증 순서,
+capability drift 음성 회귀를 검토해 P0/P1 없이 GO로 판정했다. 이제 남은 F1J-D는 n150에서 production stack/data를
+읽거나 보존하지 않는 새 isolated Compose stack의 destructive rehearsal과 live UI E2E다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1J-C — 일반 Map service provenance preflight 착수)
 
 F1J-A(Map PR #960), F1J-B(Manager PR #159), 그리고 PinVi PR #435가 merge되어 dynamic fixture lifecycle,
