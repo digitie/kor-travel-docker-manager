@@ -33,7 +33,7 @@
 | **T-VN-41-F1B** | trusted root canonical env 소유권 결박 (issue #132) | `[x]` | 2026-08-05 | deployment-owner `0600` env를 frozen owner identity로 결박; trusted release 설치·default-off bootstrap·secret-free attestation 완료 |
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
 | **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
-| **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
+| **T-VN-41-F1D** | 파기형 pinned runtime generation 재bootstrap (issue #136) | `[/]` | - | 비운영 Map·PinVi DB와 stale state를 보전하지 않고 tracked exact generation·새 schema로 수렴 |
 | **T-VN-41-F1H** | inert v2 diagnostic journal의 Manager 소유 퇴역 | `[/]` | - | writer drain 전 exact v2 state만 receipt-first로 퇴역해 F1F input rotation을 재개 |
 
 ---
@@ -960,34 +960,29 @@ F1D의 n150 static preflight는 의도대로 mutation 전에 중단했다. live 
 SHA-256이다. functional owner와 reviewed candidate는 v1 history에만 남으며 v2 manifest, canonical env,
 PinVi metadata, candidate authority 어느 곳에도 존재하지 않는다.
 
-### T-VN-41-F1D: pinned compatible-pair drift bootstrap (issue #136)
+### T-VN-41-F1D: 파기형 pinned runtime generation 재bootstrap (issue #136)
 
-F2가 확인한 drift는 일반 `pinvi-pair deploy`가 고의로 거부한다. active manifest와 runtime tuple,
-canonical source cache와 tracked exact production pin이 모두 달라 일반 deploy/rollback이나 raw Docker·
-`.env` 우회로는 안전하게 수렴할 수 없다.
+n150은 운영 서비스가 아니므로, old manifest·non-terminal F1D journal·중간 DB schema를 복구
+근거로 보전하지 않는다. 과거 다섯 service compatible pair는 PinVi Web·Dagster를 제외해 실제
+runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계는
+[`tvn41-f1d-destructive-rebootstrap.md`](tvn41-f1d-destructive-rebootstrap.md)다.
 
-- [x] F1E trusted source-installer가 root-owned detached exact source selection을 commit한 뒤에만 시작한다.
-- [x] 단발성 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm` transaction을 추가했다. candidate는
-      `.env` HEAD나 CLI revision이 아니라 `CACHE_TARGET_PRODUCTION_PINS`의 exact Map·PinVi revision만
-      archive build source로 사용한다.
-- [x] C6c lock, frozen env/Compose/external input identity, strict old manifest·local image evidence,
-      candidate resolved Compose secret isolation, candidate/live Map·PinVi DB head 불변을 mutation 전에 검증한다.
-      legacy runtime의 Map source revision, image tuple, old image static head, 과거 protected-value/UI wiring은
-      bootstrap을 막지 않으며 candidate/rollback authority가 아니다. candidate activation 뒤
-      exact runtime secret isolation·UI auth가 실패하면 five-runtime halt로 수렴한다. candidate/live head가 다를 때만
-      H35 coupled recovery 외에는 거부한다.
-- [x] owner-only durable journal에 original manifest SHA, frozen input digest, candidate immutable IDs·
-      source revision, expected DB head와 `prepared → runtime_activated → manifest_committing → committed` phase를
-      기록한다. non-terminal·foreign·손상 journal은 모든 pair mutation을 막고 동일 candidate resume만 허용한다.
-- [x] candidate activation은 기존 staged sequence를 재사용하되 실패 시 구 image를 재기동하지 않고
-      다섯 runtime을 halt한다. 성공 후에만 `active = rollback = candidate` bootstrap manifest를 원자
-      기록한다. source checkout의 장기 갱신은 이 transaction과 분리한다.
-- [x] 단일 적대적 리뷰의 F1E committed source evidence, manifest/journal crash resume, old·live·candidate
-      Map/PinVi head, halt 수렴, terminal frozen evidence, CLI failure result 지적을 보강했다. focused 85 passed,
-      backend 전체 1655 passed, Ruff, 변경 source strict mypy를 통과했다.
-- [x] F1F-A/B와 v2 input install 코드를 n150 trusted release로 설치하고 installer first-run/idempotent rerun을
-      검증했다. F1D destructive bootstrap은 동일 frozen candidate로 두 차례 `prepared` 단계에서 fail-close했고,
-      manifest는 바꾸지 않고 five-runtime을 halt했다.
+- [ ] **F1D-B** — `CompatibleImagePair`/v4 manifest와 old `deploy`·`capture`·`rollback` 및 legacy
+      mutation gate를 제거하고, Map 네 service와 PinVi 세 service를 모두 기록하는 single-active
+      `PinnedRuntimeGeneration` v5로 치환한다. immutable image ID·source revision·세 schema head·
+      tombstone receipt와 manifest/journal/provenance 검증의 정본을 하나로 만든다. typed
+      environment/lifecycle enum pair와 rebuildable exclusive mutation 정책의 loader·회귀 test도 소유한다.
+- [ ] **F1D-C1 (PinVi PR)** — credential-file만 읽는 `pinvi-admin-bootstrap` one-shot CLI가 PinVi Alembic
+      migration과 admin bootstrap의 유일 owner가 되게 한다. normal API의 implicit migration/direct password
+      environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test와
+      PinVi source pin 회전을 포함한다.
+- [ ] **F1D-C2 (Manager PR)** — 구 `bootstrap-pinned-drift`와 old rollback/backup 중심 resume을 제거하고,
+      `ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. 이 명령은 frozen explicit `rebuildable`
+      lifecycle에서만 candidate-first attestation 뒤 세 scoped DB recreate, 0600 credential file의 one-shot
+      read-only mount, 일곱 runtime build/start, F1J fixture smoke와 durable same-pinset resume을 수행한다.
+- [ ] **F1D-D (docs-only PR)** — n150에서 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
+      E2E·PinVi mutating E2E를 통과시킨 결과를 기록한다. data source/ETL 재적재는 이 transaction 뒤의 별도
+      작업으로 handoff한다.
 
 ### T-VN-41-F1G: legacy terminal window journal 퇴역
 
@@ -1010,6 +1005,10 @@ rollback evidence를 표현하지 못하므로, 새 v2 input/F1D authority로 �
       재개한다.
 
 ### T-VN-41-F1H: inert v2 diagnostic journal 퇴역
+
+F1D-B가 legacy F1D/F1F mutation state를 v5 tombstone으로 흡수할 때 이 task는 더 이상
+T-VN-41 완료의 선행 조건이 아니다. F1D-B merge 시 중복된 legacy retirement scope를 완료 이력으로
+옮기고, 별도 일반 cache-target maintenance가 필요하면 T-VN train 밖 backlog로 분리한다.
 
 F1C가 퇴역한 v1 pre-stop diagnostic 뒤에 실행했던 새 v2 diagnostic도 `writers_fencing`에서 stale runtime
 tuple을 발견해 writer-drain을 시작하기 전에 멈췄다. n150의 현재 journal은 `external_event_count=0`이며

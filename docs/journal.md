@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-A — 파기형 runtime generation 재bootstrap 설계)
+
+비운영 n150 state를 read-only로 확인한 결과, 기존 F1D journal은 prior pinset의 `prepared` receipt와
+old Map schema head에 결박돼 있었고 Map 네 service와 PinVi API만 runtime pair에 기록했다. PinVi Web·Dagster는
+같은 source/PinVi DB를 공유하지만 generation 밖에 남으므로, old journal을 복구하거나 다섯 service만
+재기동하는 방식은 완결된 수렴이 아니다.
+
+데이터·중간 DB·backup/restore 보전이 필요 없다는 결정에 따라, F1D는 일곱 service
+`PinnedRuntimeGeneration` v5와 scoped fresh DB recreate를 소유하는 `rebuild-pinned --confirm`으로
+재작성한다. source authority·ops principal 분리는 유지하고, old runtime/DB 복원이나 raw Docker/SQL/state
+삭제는 허용하지 않는다. 상세 설계와 F1D-B/C/D PR 단위는
+[`tvn41-f1d-destructive-rebootstrap.md`](tvn41-f1d-destructive-rebootstrap.md)에 기록했다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1J-D — fresh isolated final rehearsal 완료)
 
 Map #960, PinVi #439, Manager #163 정확한 source에서 새 Compose project·DB·volume·network와 매 run 생성한

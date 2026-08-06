@@ -106,7 +106,12 @@ services:
 - dev HMR이 필요한 revision은 canonical compose의 command를 `npm run dev`로 명시한다. 한 manager mutation
   안에서 prod/dev 파일을 합성하지 않는다.
 
-## 8. Map↔PinVi C6c compatible pair 배포
+## 8. (역사적) Map↔PinVi C6c compatible pair 배포
+
+> 이 절의 `capture`·`deploy`·`rollback` compatible-pair 계약은 ADR-34/F1D-B에 의해 폐기된다.
+> F1D 재구축에는 이 절의 명령을 실행하지 않으며, 새 정본은 §8.2의 `rebuild-pinned --confirm`뿐이다.
+> §8.1의 trusted source selection은 v5 rebuild input 준비로 유지하되, legacy F1D/F1F receipt를
+> predecessor나 recovery authority로 읽지 않는다.
 
 n150의 gitignore된 manager `.env`에는 다음 값을 모두 명시한다. 값이 없거나 mode가 맞지 않으면
 `ktdctl pinvi-pair deploy`는 첫 API container를 변경하기 전에 종료한다.
@@ -376,22 +381,29 @@ URL과 tracked full SHA 하나만 sanitized fetch하며, 검증된 detached immu
 `.env`의 Map/PinVi source root와 revision scalar는 private backup·durable journal 아래 owner-preserving atomic
 replace 하나로 함께 바뀐다. Docker·Compose·DB·runtime·image build는 이 command의 범위 밖이다.
 
-### 8.2 pinned runtime drift 복구
+### 8.2 비운영 pinned runtime generation 재구축
 
-일반 `ktdctl pinvi-pair deploy`와 `rollback`은 current five-runtime tuple이 active manifest와 같은
-정상 상태만 받는다. 이 전제가 깨졌다면 raw Docker·Compose·`.env` 변경, `--force`, 임의 image/source
-revision으로 복구하지 않는다. 구현 후 사용 가능한 유일한 경로는 다음 one-shot command다.
+실제 운영 환경에는 이 절을 적용하지 않는다. typed 환경 pair
+`KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal` 및 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`를 frozen canonical
+environment에서 함께 명시한 비운영 환경만 다음 command를 실행할 수 있다. `local/development`,
+`rehearsal/rebuildable`, `production/operational` 외 조합과 production 환경에 flag만 추가한 조합은 모두
+mutation 전에 거부한다.
 
 ```bash
-ktdctl pinvi-pair bootstrap-pinned-drift --confirm
+ktdctl pinvi-pair rebuild-pinned --confirm
 ```
 
 이 command는 `CACHE_TARGET_PRODUCTION_PINS`에 tracked된 exact Map·PinVi commit만 Git archive build
-source로 쓰며 `.env`가 가리키는 checkout HEAD는 후보 권한이 아니다. immutable candidate, candidate resolved
-Compose의 secret isolation, Map·PinVi candidate/live DB head, frozen input과 owner-only transaction journal을
-검증한 후에만 다섯 runtime을 staged activation한다. candidate runtime의 secret isolation과 UI auth는 activation
-뒤 exact image·환경에서 검증한다. old image는 rollback으로 재기동하지 않는 기존 감사
-근거이므로 static head drift만으로는 bootstrap을 막지 않는다. 시작 Map runtime들의 source revision, image tuple,
-과거 protected-value/UI wiring은 candidate authority가 아닌 legacy 감사 근거이므로 bootstrap을 막지 않는다. candidate 실패 시 old image를 재기동하지 않고
-다섯 runtime을 중지한다. 성공 manifest의 active와 rollback은 동일 candidate이며, source checkout의 장기 갱신은
-별도 trusted source-installer 작업이다.
+source로 쓰며 `.env` checkout HEAD, old image, old manifest, backup을 candidate authority로 쓰지 않는다.
+먼저 Map 네 service와 PinVi 세 service의 immutable candidate image ID, source revision, Map application/Dagster와
+PinVi의 expected schema head를 owner-only journal에 고정한다. candidate artifact 하나라도 없으면 database를
+건드리지 않는다.
+
+후속 phase에서만 Manager가 frozen resolved Compose의 Map application·Map Dagster·PinVi database identity를
+검증해 세 database를 새로 만든다. Map API entrypoint와 Map Dagster migration-only command가 candidate-static
+각 head까지 migration을 적용·검증하고, PinVi migration+admin credential-file one-shot CLI가 `pinvi_head`까지
+적용한 뒤 일곱 runtime을 같은 generation으로 기동한다. Map·PinVi Web·PinVi Dagster와 durable journal/log에는
+credential을 전달하거나 기록하지 않는다. F1J fixture smoke, authenticated UI contract, schema/image attestation이
+모두 성공하면 single active v5 generation manifest를 commit한다. 실패하거나 reset 뒤 재실행하면 일부 DB를
+복원·재사용하지 않고 세 DB를 다시 새로 만든다. candidate runtime을 모두 중지한다. source/ETL 재적재는 committed
+뒤 별도 workflow다.

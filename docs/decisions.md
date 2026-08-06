@@ -1379,7 +1379,7 @@ CLI `--confirm`이 없으면 process는 어떠한 mutation도 시도하지 않�
 
 ## ADR-31: pinned compatible-pair drift는 one-shot bootstrap transaction으로만 수렴한다
 
-- 상태: accepted
+- 상태: superseded (ADR-34, 2026-08-06)
 - 날짜: 2026-08-05
 - 결정자: human, Codex
 
@@ -1504,7 +1504,7 @@ image build를 호출하지 않는다.
 
 ## ADR-33: release pin 교체는 source와 runtime contract input을 같은 generation으로 설치한다
 
-- 상태: proposed
+- 상태: partially superseded (F1D runtime/recovery와 legacy state 부분은 ADR-34, 2026-08-06)
 - 날짜: 2026-08-05
 - 결정자: human, Codex
 
@@ -1572,6 +1572,77 @@ Docker, Compose, DB, runtime, image build를 실행하지 않는다.
 - PinVi vendor release가 확정된 뒤에만 Manager manifest가 exact pair를 기록하므로 placeholder SHA 또는
   guessed revision을 production authority로 만들지 않는다.
 - future release rotation도 terminal historical receipt를 보존하면서 같은 procedure로 재실행할 수 있다.
+
+## ADR-34: 비운영 deployment는 완전한 runtime generation과 새 schema로 재구축한다
+
+- 상태: accepted
+- 날짜: 2026-08-06
+- 결정자: human, Codex
+
+### 컨텍스트
+
+n150은 production 형식의 인증과 Compose contract를 시험하지만 운영 서비스가 아니다. 이전 F1D는
+Map 네 service와 PinVi API만 image pair에 기록했고 PinVi Web·Dagster는 같은 source/PinVi DB를 쓰면서도
+generation 밖에 남았다. 이 상태에서 old F1D journal·old manifest·중간 DB head를 복구하려 하면 새
+release pin installation이 non-terminal receipt에 막히고, 반대로 다섯 service만 다시 기동하면 PinVi
+auxiliary runtime이 다른 source/schema를 계속 사용할 수 있다.
+
+현재 데이터는 final schema에 맞춘 source/ETL 재적재로 재생성할 수 있다. 따라서 backup/restore와
+image rollback으로 중간 상태를 보전하는 것은 이 환경의 correctness를 높이지 않는다.
+
+### 결정
+
+typed environment/lifecycle pair `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`,
+`KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서만 `ktdctl pinvi-pair rebuild-pinned --confirm`을 제공한다.
+유효 pair는 `local/development`, `rehearsal/rebuildable`, `production/operational`뿐이다. 따라서 기존
+production environment에 rebuildable 값 하나를 추가해 destructive command를 열 수 없다. 기존
+`bootstrap-pinned-drift`는 제거하며, compatibility flag나 old journal 변환은 만들지 않는다.
+
+command는 tracked `CACHE_TARGET_PRODUCTION_PINS`와 trusted source staging만 authority로 삼아 Map API,
+UI, Dagster web, Dagster daemon 및 PinVi API, Web, Dagster의 일곱 image를 하나의
+`PinnedRuntimeGeneration` v5로 build·attest한다. v5 manifest와 rebuild journal은 일곱 immutable image
+ID, Map/PinVi exact source revision, Map application/Dagster와 PinVi schema head, pinset digest를 함께
+기록한다. v5 manifest는 `active_generation` 하나만 기록하며 old v4 manifest/image/state는 authority가 아니다.
+
+Manager는 source·Compose를 검증해 일곱 candidate image의 immutable ID/provenance와 세 expected schema head를
+먼저 `candidate_attested` journal에 durable하게 고정한다. 그 뒤 `reset_intent_durable` receipt를 남기고
+일곱 runtime을 중지한 다음 frozen resolved Compose로 확인한 Map application·Map Dagster·PinVi database만
+drop/create 한다. shared
+PostgreSQL의 Geo·Concierge database와 RustFS를 변경하지 않는다. backup, dump, restore, old head
+comparison은 사용하지 않는다. Map API가 Map application migration의, Map Dagster candidate migration-only
+command가 Map Dagster migration의 유일 owner다. 두 static expected head를 각 `alembic_version`과 대조한 뒤
+Map dependents를 기동한다. PinVi의 `pinvi-admin-bootstrap` one-shot CLI가 PinVi migration을 `pinvi_head`까지
+적용·검증하고 fresh admin을 만든 뒤 normal API·Web·Dagster를 기동한다. F1J fixture canonical smoke와 UI
+contract까지 검증한 뒤 committed한다.
+
+fresh PinVi DB admin은 credential file만 읽는 candidate API image의 별도 one-shot CLI가 migration 뒤 만든다.
+Manager는 frozen smoke credential으로 owner-only `0600` file을 만들고 one-shot container에 read-only mount하며,
+container 종료 뒤 안전하게 unlink한다. normal API/Web/Dagster·Map service·Docker metadata·journal/log에는
+원문을 전달하거나 기록하지 않는다.
+
+재실행은 동일 pinset이면 durable phase를 따라 계속한다. 새 pinset rebuild는 Manager가 소유한 typed legacy
+path allowlist에서만 parent `0700`, file `lstat` regular/owner/`0600`/link count/bounded size와 `O_NOFOLLOW`
+open의 same-inode를 검증한다. 그 뒤 raw digest를 tombstone receipt에 fsync하고 same `dir_fd` unlink 후
+reader와 mutation gate를 v5 authority로 교체한다. foreign/corrupt legacy state는 fail-close하며 arbitrary file
+삭제나 shell/SQL input은 허용하지 않는다. 실패 시 old runtime/DB를 복원하지 않고 candidate 일곱 runtime을 중지한다.
+
+### 근거
+
+- PinVi의 API·Web·Dagster를 하나의 source/DB generation으로 결박해야 실제 배포 단위를 완결할 수 있다.
+- explicit `rebuildable` lifecycle은 production-shaped test contract와 실제 운영 데이터 보전 정책을
+  구분하면서 accidental destructive command를 차단한다.
+- scoped database identity와 Manager-owned discard receipt는 raw SSH/Docker/SQL/state deletion보다
+  검증·재현·감사가 쉽다.
+- final schema부터 source/ETL을 재적재하면 schema transition마다 backup compatibility를 유지하는
+  복잡도가 사라진다.
+
+### 결과
+
+- F1D는 stale DB head와 non-terminal old receipt를 되살리는 대신 exact pinned generation과 새 schema를
+  만드는 단일 경로가 된다.
+- 모든 Map·PinVi application runtime이 manifest 안의 immutable generation으로 수렴한다.
+- 일반 운영 lifecycle은 destructive rebuild command를 사용할 수 없고, data recovery는 final-schema
+  backup 또는 source/ETL 재적재 workflow로 분리된다.
 
 ## F1G: legacy terminal window는 receipt-first 퇴역 뒤 새 v2 authority만 수용한다
 
