@@ -121,7 +121,7 @@ environment에서 함께 명시한 비운영 환경만 다음 command를 실행�
 mutation 전에 거부한다.
 
 ```bash
-ktdctl pinvi-pair rebuild-pinned --confirm
+sudo -n ktdctl pinvi-pair rebuild-pinned --confirm
 ```
 
 이 command는 추적된 exact Map·PinVi commit만 Git archive build source로 쓰며 `.env` checkout HEAD,

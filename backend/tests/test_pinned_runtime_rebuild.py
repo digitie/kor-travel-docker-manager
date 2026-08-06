@@ -112,6 +112,13 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
     )
 
 
+def test_rebuild_requires_root_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(compose_service_module.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(DeploymentContractError, match="requires root execution"):
+        ComposeService().rebuild_pinned_runtime()
+
+
 @pytest.mark.parametrize(
     ("configured_candidate_head", "expected_candidate_head"),
     [
@@ -168,6 +175,11 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         compose_service_module,
         "c6c_deployment_lock_from_environment",
         lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
     )
     monkeypatch.setattr(
         compose_service_module,
@@ -374,6 +386,11 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         compose_service_module,
         "c6c_deployment_lock_from_environment",
         lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
     )
     monkeypatch.setattr(
         compose_service_module,

@@ -108,6 +108,13 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
 _CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER = "candidate_static_attestation"
 
 
+def _require_pinned_runtime_rebuild_root() -> None:
+    """source staging·state owner와 Docker mutation authority를 root로 고정한다."""
+
+    if os.geteuid() != 0:
+        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+
+
 def get_project_root() -> str:
     configured = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "").strip()
     if configured:
@@ -3462,6 +3469,7 @@ class ComposeService:
     def rebuild_pinned_runtime(self) -> dict[str, Any]:
         """F1D v5의 candidate-first seven-service destructive rebootstrap을 실행한다."""
 
+        _require_pinned_runtime_rebuild_root()
         with c6c_deployment_lock_from_environment() as lock_snapshot:
             # 새 Map application head는 candidate image가 static command로 직접
             # attest한 뒤에야 알 수 있다. 따라서 아직 실행하지 않는 candidate

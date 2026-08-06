@@ -62,6 +62,11 @@ preflighted
   → committed
 ```
 
+`rebuild-pinned`는 root execution만 허용한다. candidate source staging·v5 state·credential-file은
+root가 소유하고, Map·PinVi source checkout은 source owner 권한으로 origin만 읽는다. 따라서 원격
+operator는 `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
+database를 건드리기 전에 거부된다.
+
 `candidate_attested`는 일곱 candidate image ID, 두 source revision, candidate artifact가 직접 보고한 세 expected schema head,
 frozen environment/Compose digest와 pinset digest를 owner-only journal에 fsync하고 retention reference로
 보존한 상태다. candidate artifact 하나라도 없거나 provenance/schema-head contract가 다르면 DB를

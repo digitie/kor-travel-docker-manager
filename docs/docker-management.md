@@ -373,7 +373,7 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `rehearsal/rebuildable` 환경의 다음 명령 하나다.
 
 ```bash
-ktdctl pinvi-pair rebuild-pinned --confirm
+sudo -n ktdctl pinvi-pair rebuild-pinned --confirm
 ```
 
 이 명령은 tracked Map·PinVi exact source pin으로 일곱 service의 candidate image와 세 schema head를
