@@ -100,6 +100,11 @@ _F1D_LEGACY_ARTIFACTS: tuple[str, ...] = (
 )
 _TOMBSTONE_DIRECTORY = "pinned-runtime-v5"
 _TOMBSTONE_FILENAME = "legacy-tombstone-v5.json"
+_STATE_ROOT_ENV = "KTDM_PINNED_RUNTIME_STATE_ROOT"
+_PROJECT_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
+_DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
+_MANIFEST_FILENAME = "pinned-runtime-generation-v5.json"
+_JOURNAL_FILENAME = "pinned-runtime-rebuild-v5.json"
 
 
 @dataclass(frozen=True)
@@ -114,6 +119,21 @@ class DeploymentMode:
     @property
     def rebuildable(self) -> bool:
         return self.lifecycle == "rebuildable"
+
+
+@dataclass(frozen=True)
+class PinnedRuntimeStatePaths:
+    """v5 authority가 소유하는 project-scoped owner-only state 경로.
+
+    v4 manifest나 F1F handoff path를 재사용하지 않는다. ``rebuild-pinned``는 이
+    세 경로만 읽고 쓰므로, legacy artifact는 같은 state directory에서 tombstone
+    receipt를 남긴 뒤에만 제거할 수 있다.
+    """
+
+    state_root: Path
+    manifest: Path
+    journal: Path
+    tombstone_receipt: Path
 
 
 def load_deployment_mode(values: Mapping[str, str]) -> DeploymentMode:
@@ -148,6 +168,47 @@ def require_rebuildable_mode(values: Mapping[str, str]) -> DeploymentMode:
     if not mode.rebuildable:
         raise DeploymentContractError("pinned runtime rebuild requires rehearsal/rebuildable")
     return mode
+
+
+def pinned_runtime_state_paths(values: Mapping[str, str]) -> PinnedRuntimeStatePaths:
+    """rehearsal project의 v5 state namespace를 결정한다.
+
+    파기형 transaction은 ``rehearsal/rebuildable``에서만 가능한 만큼 production
+    fixed-root 예외나 v4 override를 갖지 않는다. 다만 disposable test/rehearsal은
+    명시한 canonical absolute root로 격리할 수 있다.
+    """
+
+    require_rebuildable_mode(values)
+    project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()
+    if _PROJECT_NAME.fullmatch(project_name) is None:
+        raise DeploymentContractError(
+            "COMPOSE_PROJECT_NAME must be explicit and canonical for pinned runtime state"
+        )
+    configured_root = values.get(_STATE_ROOT_ENV, "").strip()
+    root = Path(configured_root) if configured_root else _DEFAULT_STATE_ROOT
+    if not root.is_absolute() or root != root.resolve(strict=False):
+        raise DeploymentContractError(
+            "KTDM_PINNED_RUNTIME_STATE_ROOT must be a canonical absolute path"
+        )
+    state_root = root / project_name
+    if state_root != state_root.resolve(strict=False):
+        raise DeploymentContractError("pinned runtime state directory is invalid")
+    return PinnedRuntimeStatePaths(
+        state_root=state_root,
+        manifest=state_root / _MANIFEST_FILENAME,
+        journal=state_root / _JOURNAL_FILENAME,
+        tombstone_receipt=legacy_tombstone_receipt_path(state_root),
+    )
+
+
+def ensure_pinned_runtime_state_directory(state_root: Path) -> None:
+    """v5 state root를 current Manager owner의 ``0700``으로 준비한다."""
+
+    try:
+        state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime state directory is unavailable") from exc
+    _validate_state_root(state_root)
 
 
 @dataclass(frozen=True)

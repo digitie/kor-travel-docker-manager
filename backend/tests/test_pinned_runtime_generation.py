@@ -12,10 +12,12 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
+    ensure_pinned_runtime_state_directory,
     f1d_legacy_artifact_paths,
     generation_logical_sha256,
     legacy_tombstone_receipt_path,
     load_deployment_mode,
+    pinned_runtime_state_paths,
     read_manifest,
     read_rebuild_journal,
     require_rebuildable_mode,
@@ -82,6 +84,52 @@ def test_rebuildable_rejects_production_environment_even_with_lifecycle_flag() -
 
     with pytest.raises(DeploymentContractError, match="environment/lifecycle"):
         require_rebuildable_mode(values)
+
+
+def test_pinned_runtime_state_paths_are_rebuildable_project_scoped(
+    tmp_path: Path,
+) -> None:
+    paths = pinned_runtime_state_paths(
+        {
+            "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+            "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+            "PINVI_ENVIRONMENT": "production",
+            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+            "COMPOSE_PROJECT_NAME": "f1d-isolated",
+            "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path),
+        }
+    )
+
+    ensure_pinned_runtime_state_directory(paths.state_root)
+
+    assert paths.state_root == tmp_path / "f1d-isolated"
+    assert paths.manifest == paths.state_root / "pinned-runtime-generation-v5.json"
+    assert paths.journal == paths.state_root / "pinned-runtime-rebuild-v5.json"
+    assert paths.tombstone_receipt == legacy_tombstone_receipt_path(paths.state_root)
+    assert stat.S_IMODE(paths.state_root.stat().st_mode) == 0o700
+
+
+def test_pinned_runtime_state_paths_reject_nonrebuildable_or_invalid_project(
+    tmp_path: Path,
+) -> None:
+    common = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path),
+    }
+
+    with pytest.raises(DeploymentContractError, match="COMPOSE_PROJECT_NAME"):
+        pinned_runtime_state_paths(common)
+    with pytest.raises(DeploymentContractError, match="environment/lifecycle"):
+        pinned_runtime_state_paths(
+            {
+                **common,
+                "COMPOSE_PROJECT_NAME": "f1d-isolated",
+                "KTDM_DEPLOYMENT_LIFECYCLE": "operational",
+            }
+        )
 
 
 def test_manifest_is_single_active_generation_without_rollback(tmp_path: Path) -> None:
