@@ -305,6 +305,164 @@ def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
     assert secret not in str(captured.value)
 
 
+def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_bootstrap_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    secret = "test-pinvi-bootstrap-diagnostic-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": secret,
+                "stderr": (
+                    secret
+                    + "\n"
+                    + '{"error_code":"credential_file_owner_mismatch",'
+                    + '"phase":"credential_file"}'
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose run command failed \(exit 1; pinvi:credential_file_owner_mismatch\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            [
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "-v",
+                "/run/manager/credential.json:/run/pinvi/bootstrap-admin.json:ro",
+                "-e",
+                "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
+                "pinvi-admin-bootstrap",
+            ],
+            transaction=object(),
+        )
+
+    assert secret not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    (
+        '{"error_code":"credential_file_owner_mismatch",'
+        '"phase":"credential_file","extra":"ignored"}',
+        '{"code":"dagster_instance_migrate_failed",'
+        '"schema":"kor-travel-map.dagster-storage-migration-error.v1"}',
+        '{"error_code":"credential_file_owner_mismatch",'
+        '"error_code":"internal_error","phase":"runtime"}',
+    ),
+)
+def test_rebuild_compose_error_rejects_noncanonical_pinvi_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    stderr: str,
+) -> None:
+    service = ComposeService()
+    secret = "test-pinvi-noncanonical-diagnostic-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": secret,
+                "stderr": stderr,
+            }
+        ),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose run command failed \(exit 1\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "pinvi-admin-bootstrap"],
+            transaction=object(),
+        )
+
+    assert secret not in str(captured.value)
+
+
+def test_rebuild_compose_error_rejects_pinvi_payload_for_map_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    secret = "test-map-cross-payload-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": secret,
+                "stderr": json.dumps(
+                    {
+                        "error_code": "credential_file_owner_mismatch",
+                        "phase": "credential_file",
+                    }
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose run command failed \(exit 1\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+            transaction=object(),
+        )
+
+    assert secret not in str(captured.value)
+
+
+def test_rebuild_compose_error_ignores_pinvi_code_with_wrong_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    secret = "test-pinvi-malformed-diagnostic-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": secret,
+                "stderr": json.dumps(
+                    {
+                        "error_code": "credential_file_owner_mismatch",
+                        "phase": "runtime",
+                    }
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose run command failed \(exit 1\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "pinvi-admin-bootstrap"],
+            transaction=object(),
+        )
+
+    assert secret not in str(captured.value)
+
+
 @pytest.mark.parametrize(
     ("configured_candidate_head", "expected_candidate_head"),
     [

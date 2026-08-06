@@ -130,9 +130,43 @@ _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES = frozenset(
         "missing_dagster_yaml",
     }
 )
+_PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE = {
+    "alembic_config_missing": "migration",
+    "credential_file_changed": "credential_file",
+    "credential_file_env_missing": "credential_file",
+    "credential_file_json_invalid": "credential_file",
+    "credential_file_link_count_invalid": "credential_file",
+    "credential_file_missing": "credential_file",
+    "credential_file_mode_invalid": "credential_file",
+    "credential_file_not_regular": "credential_file",
+    "credential_file_owner_mismatch": "credential_file",
+    "credential_file_path_invalid": "credential_file",
+    "credential_file_size_invalid": "credential_file",
+    "credential_file_unavailable": "credential_file",
+    "internal_error": "runtime",
+    "invalid_arguments": "startup",
+    "migration_failed": "migration",
+    "schema_revision_mismatch": "schema_check",
+    "schema_version_invalid": "schema_check",
+    "schema_version_unavailable": "schema_check",
+    "static_head_unavailable": "migration",
+}
 # fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
 _PINNED_RUNTIME_DAGSTER_MIGRATION_ATTEMPTS = 30
 _PINNED_RUNTIME_DAGSTER_MIGRATION_RETRY_SECONDS = 2
+
+
+def _json_object_without_duplicate_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """typed one-shot error envelope의 중복 JSON key를 fail-close한다."""
+
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("duplicate JSON object key")
+        payload[key] = value
+    return payload
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
@@ -3316,7 +3350,7 @@ class ComposeService:
                 time.sleep(_PINNED_RUNTIME_DAGSTER_MIGRATION_RETRY_SECONDS)
         compose_action = self._pinned_runtime_compose_action(args)
         diagnostic = self._pinned_runtime_compose_failure_diagnostic(
-            compose_action,
+            args,
             result,
         )
         raise DeploymentContractError(
@@ -3337,32 +3371,51 @@ class ComposeService:
 
     @staticmethod
     def _pinned_runtime_compose_failure_diagnostic(
-        compose_action: str,
+        args: Sequence[str],
         result: Mapping[str, Any],
     ) -> str:
-        """F1D C0의 allowlist JSON code만 원문 없이 오류에 붙인다."""
+        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다."""
 
+        compose_action = ComposeService._pinned_runtime_compose_action(args)
         if compose_action != "run":
             return ""
+        target = args[-1] if args else ""
         for stream_name in ("stderr", "stdout"):
             output = result.get(stream_name)
             if not isinstance(output, str):
                 continue
             for line in output.splitlines():
                 try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
+                    payload = json.loads(
+                        line,
+                        object_pairs_hook=_json_object_without_duplicate_keys,
+                    )
+                except (json.JSONDecodeError, ValueError):
                     continue
-                code = payload.get("code") if isinstance(payload, Mapping) else None
-                if (
-                    not isinstance(payload, Mapping)
-                    or set(payload) != {"code", "schema"}
-                    or payload.get("schema") != _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
-                    or not isinstance(code, str)
-                    or code not in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
-                ):
+                if not isinstance(payload, Mapping):
                     continue
-                return f"; {code}"
+                if target == "kor-travel-map-dagster-storage-migrate":
+                    code = payload.get("code")
+                    if (
+                        set(payload) == {"code", "schema"}
+                        and payload.get("schema")
+                        == _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
+                        and isinstance(code, str)
+                        and code in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
+                    ):
+                        return f"; {code}"
+                    continue
+                if target == "pinvi-admin-bootstrap":
+                    code = payload.get("error_code")
+                    phase = payload.get("phase")
+                    if (
+                        set(payload) == {"error_code", "phase"}
+                        and isinstance(code, str)
+                        and isinstance(phase, str)
+                        and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
+                        == phase
+                    ):
+                        return f"; pinvi:{code}"
         return ""
 
     def _retire_pinned_runtime_oneshot_writers(
