@@ -3479,10 +3479,17 @@ class ComposeService:
                 values=environment_snapshot.effective,
             )
             build = CandidateRuntimeBuild(sources)
+            # 기존 v5 non-terminal journal은 당시 canonical env에 있던 runtime
+            # head를 포함한 resolved Compose digest를 보존한다. 값이 있으면 이를
+            # candidate에도 byte-for-byte 유지해 same-pin resume을 막지 않는다.
+            # 새 env에서만 candidate-only placeholder를 쓴다.
+            candidate_map_application_head = environment_snapshot.effective.get(
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD", ""
+            ) or _CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER
             candidate_environment = {
                 **build.compose_environment(),
                 "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
-                    _CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER
+                    candidate_map_application_head
                 ),
             }
             candidate_transaction, _ = self._capture_transaction_unlocked(

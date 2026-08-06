@@ -112,9 +112,18 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("configured_candidate_head", "expected_candidate_head"),
+    [
+        (None, "candidate_static_attestation"),
+        ("previous-candidate-head", "previous-candidate-head"),
+    ],
+)
 def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    configured_candidate_head: str | None,
+    expected_candidate_head: str,
 ) -> None:
     values = {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
@@ -126,6 +135,8 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
     }
+    if configured_candidate_head is not None:
+        values["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] = configured_candidate_head
     transaction = SimpleNamespace(
         environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
         compose_source_bytes=b"services: {}\n",
@@ -220,9 +231,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert result["success"] is True
     assert result["phase"] == "committed"
     assert captured[0] is not None
-    assert captured[0]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == (
-        "candidate_static_attestation"
-    )
+    assert captured[0]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == expected_candidate_head
     assert captured[-1] is not None
     assert captured[-1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "map-application-head"
     assert operations[0] == ("build", *RUNTIME_SERVICES)
