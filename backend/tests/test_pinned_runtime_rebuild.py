@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -10,7 +11,13 @@ import pytest
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import ComposeService
-from kor_travel_docker_manager.services.pinned_runtime_generation import RUNTIME_SERVICES
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    REBUILD_PHASES,
+    RUNTIME_SERVICES,
+    pinned_runtime_state_paths,
+    read_rebuild_journal,
+    write_rebuild_journal,
+)
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
     build_candidate_generation,
@@ -246,10 +253,12 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     ).exists()
 
 
-def test_oneshot_writer_liveness_must_be_empty_before_database_reset() -> None:
+def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = ComposeService()
     operations: list[tuple[str, ...]] = []
-    transaction = SimpleNamespace()
+    transaction = cast(Any, SimpleNamespace())
 
     def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
         del transaction
@@ -264,9 +273,121 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset() -> None:
             ),
         }
 
-    service._run_pinned_runtime_rebuild_compose = run_compose  # type: ignore[method-assign]
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
 
     with pytest.raises(DeploymentContractError, match="one-shot writer remained"):
         service._retire_pinned_runtime_oneshot_writers(transaction=transaction)
 
     assert [command[2] for command in operations] == ["rm", "ps"]
+
+
+def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "COMPOSE_PROJECT_NAME": "f1d-retention-retry",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    image_ids = {
+        service_name: f"sha256:{index:064x}"
+        for index, service_name in enumerate(RUNTIME_SERVICES)
+    }
+    candidate = build_candidate_generation(
+        sources=_sources(),
+        image_ids=image_ids,
+        map_application_head="map-application-head",
+        map_dagster_head="map-dagster-head",
+        pinvi_head="pinvi-head",
+    )
+    journal = new_candidate_journal(
+        candidate=candidate,
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+    for phase in REBUILD_PHASES[1:-1]:
+        journal = journal.transition(phase)
+    state_paths = pinned_runtime_state_paths(values)
+    state_paths.state_root.mkdir(parents=True, mode=0o700)
+    write_rebuild_journal(state_paths.journal, journal)
+
+    service = ComposeService()
+    operations: list[tuple[str, ...]] = []
+    revision_heads = iter(
+        (
+            "map-application-head",
+            "map-dagster-head",
+            "pinvi-head",
+            "map-application-head",
+            "map-dagster-head",
+            "pinvi-head",
+        )
+    )
+    reconcile_attempts = 0
+
+    def capture(**_kwargs: object) -> tuple[SimpleNamespace, None]:
+        return transaction, None
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(args))
+        return {"success": True, "stdout": "[]" if "ps" in args else ""}
+
+    def reconcile(*_args: object, **_kwargs: object) -> None:
+        nonlocal reconcile_attempts
+        reconcile_attempts += 1
+        if reconcile_attempts == 1:
+            raise DeploymentContractError("retention failed")
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
+    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        lambda **_kwargs: _sources(),
+    )
+    monkeypatch.setattr(service, "_attest_pinned_runtime_candidate_images", Mock())
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(
+        compose_service_module,
+        "database_runtimes_from_frozen_contract",
+        lambda **_kwargs: (object(), object(), object()),
+    )
+    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_database_schema_revision",
+        lambda _runtime: next(revision_heads),
+    )
+    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
+    monkeypatch.setattr(compose_service_module, "reconcile_generation_references", reconcile)
+
+    with pytest.raises(DeploymentContractError, match="retention failed"):
+        service.rebuild_pinned_runtime()
+
+    assert read_rebuild_journal(state_paths.journal).phase == "manifest_committing"
+
+    result = service.rebuild_pinned_runtime()
+
+    assert result["phase"] == "committed"
+    assert reconcile_attempts == 2
+    assert operations.count(("stop", *RUNTIME_SERVICES)) == 3
