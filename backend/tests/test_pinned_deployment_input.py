@@ -167,7 +167,7 @@ def test_v2_env_render_replaces_every_deployment_scalar_atomically(tmp_path: Pat
 
     assert "UNRELATED=value\n" in rendered
     assert "KOR_TRAVEL_MAP_GIT_COMMIT=1df45b57f55b8d517bb1f2c12a869d032d70453e\n" in rendered
-    assert "PINVI_SOURCE_REVISION=2d598551287d84c3af13510f8cab7f8bec547715\n" in rendered
+    assert "PINVI_SOURCE_REVISION=6a931dc5bed46484c621c00c35165aae7254b689\n" in rendered
     assert "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0084_c6c_cancel_probe_fixtures\n" in rendered
     assert (
         "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256="
