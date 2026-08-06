@@ -217,13 +217,57 @@ def test_rebuild_retries_only_the_idempotent_dagster_storage_migration(
     sleep.assert_called_once_with(2)
 
 
-def test_rebuild_rejects_retry_for_any_other_compose_action() -> None:
+@pytest.mark.parametrize(
+    "args",
+    (
+        ["up", "pinvi-api"],
+        ["run", "--rm", "--no-deps", "pinvi-admin-bootstrap"],
+    ),
+)
+def test_rebuild_rejects_retry_for_any_other_compose_action(args: list[str]) -> None:
     with pytest.raises(DeploymentContractError, match="only the idempotent"):
         ComposeService()._run_pinned_runtime_rebuild_compose(
-            ["up", "pinvi-api"],
+            args,
             transaction=object(),
             retryable=True,
         )
+
+
+def test_rebuild_retry_exhaustion_exposes_only_the_last_allowlist_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    secret = "test-retry-output-must-not-leak"
+    run = Mock(
+        return_value={
+            "success": False,
+            "returncode": 1,
+            "stdout": secret,
+            "stderr": (
+                secret
+                + "\n"
+                + '{"code":"dagster_instance_migrate_failed",'
+                + '"schema":"kor-travel-map.dagster-storage-migration-error.v1"}'
+            ),
+        }
+    )
+    sleep = Mock()
+    monkeypatch.setattr(service, "_run_frozen_recovery", run)
+    monkeypatch.setattr(compose_service_module.time, "sleep", sleep)
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose run command failed \(exit 1; dagster_instance_migrate_failed\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+            transaction=object(),
+            retryable=True,
+        )
+
+    assert run.call_count == compose_service_module._PINNED_RUNTIME_DAGSTER_MIGRATION_ATTEMPTS
+    assert sleep.call_count == compose_service_module._PINNED_RUNTIME_DAGSTER_MIGRATION_ATTEMPTS - 1
+    assert secret not in str(captured.value)
 
 
 def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
