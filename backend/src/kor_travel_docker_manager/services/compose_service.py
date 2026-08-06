@@ -41,6 +41,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     inspect_c6c_image_source_revision,
     revalidate_candidate_system_bind_snapshots,
     validate_c6c_build_source_wiring,
+    validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
@@ -3273,7 +3274,18 @@ class ComposeService:
             mutation_capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
         )
         if not result["success"]:
-            raise DeploymentContractError("pinned runtime rebuild Compose command failed")
+            compose_action = next(
+                (
+                    argument
+                    for argument in args
+                    if argument in {"build", "stop", "rm", "ps", "up", "run"}
+                ),
+                "unknown",
+            )
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose "
+                f"{compose_action} command failed (exit {result['returncode']})"
+            )
         return result
 
     def _retire_pinned_runtime_oneshot_writers(
@@ -3517,6 +3529,10 @@ class ComposeService:
             # runtime transaction에는 journal의 exact head만 넣는다.
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None
+            )
+            validate_c6c_operation_tokens(
+                environment_snapshot.effective,
+                require_nonempty=True,
             )
             state_paths = pinned_runtime_state_paths(environment_snapshot.effective)
             ensure_pinned_runtime_state_directory(state_paths.state_root)

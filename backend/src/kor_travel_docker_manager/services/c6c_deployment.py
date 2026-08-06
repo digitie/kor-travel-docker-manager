@@ -932,7 +932,7 @@ def load_c6c_deployment_config_from_environment(
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
         ),
     )
-    _validate_token_pair(config, require_nonempty=config.production)
+    validate_c6c_operation_tokens(values, require_nonempty=config.production)
     _validate_map_production_secrets(config)
     if config.production:
         c6c_state_paths(values)
@@ -985,15 +985,21 @@ def _parse_port(value: str, env_name: str) -> int:
     return port
 
 
-def _validate_token_pair(
-    config: C6cDeploymentConfig,
+def validate_c6c_operation_tokens(
+    environment: Mapping[str, str],
     *,
     require_nonempty: bool,
 ) -> None:
+    """Map operation capability 세트의 완결성·형식을 검증한다.
+
+    F1D는 final fixture smoke까지 같은 capability 세트를 소비하므로 rehearsal에서도
+    후보 image build나 DB reset보다 먼저 non-empty 세 token을 요구한다.
+    """
+
     _validate_raw_token_pair(
-        config.read_token,
-        config.cancel_token,
-        config.fixture_token,
+        environment.get(_MAP_READ_ENV, ""),
+        environment.get(_MAP_CANCEL_ENV, ""),
+        environment.get(_MAP_FIXTURE_ENV, ""),
         require_nonempty=require_nonempty,
     )
 

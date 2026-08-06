@@ -119,6 +119,57 @@ def test_rebuild_requires_root_execution(monkeypatch: pytest.MonkeyPatch) -> Non
         ComposeService().rebuild_pinned_runtime()
 
 
+def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+    }
+    environment = SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n")
+    materialize = Mock()
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: environment,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        materialize,
+    )
+
+    with pytest.raises(DeploymentContractError, match="tokens must be configured together"):
+        ComposeService().rebuild_pinned_runtime()
+
+    materialize.assert_not_called()
+
+
+def test_rebuild_compose_error_names_the_failed_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(return_value={"success": False, "returncode": 23}),
+    )
+
+    with pytest.raises(DeploymentContractError, match=r"Compose up command failed \(exit 23\)"):
+        service._run_pinned_runtime_rebuild_compose(["up", "kor-travel-map-api"], transaction=object())
+
+
 @pytest.mark.parametrize(
     ("configured_candidate_head", "expected_candidate_head"),
     [
@@ -137,6 +188,9 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
         "PINVI_ENVIRONMENT": "production",
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
         "COMPOSE_PROJECT_NAME": "f1d-c2",
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
@@ -327,6 +381,9 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
         "PINVI_ENVIRONMENT": "production",
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
         "COMPOSE_PROJECT_NAME": "f1d-retention-retry",
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
