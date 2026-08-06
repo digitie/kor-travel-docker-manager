@@ -217,7 +217,7 @@ graph TD
      rollback slot은 수용하지 않는다. 완전한 수렴이 불가능하면 일곱 runtime을 모두 중지해 혼합 generation
      노출을 막는다.
      비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 stale runtime/DB/state를 새 release pin으로
-     수렴할 유일한 경로는 `pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
+     수렴할 유일한 경로는 root execution의 `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
      candidate resolved Compose security를 검증하고, 일곱 candidate image ID·세 expected schema head를
      durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. Map Dagster head는
      source revision 추정값이 아니라 candidate Dagster image가 직접 출력한 storage migration head다. candidate

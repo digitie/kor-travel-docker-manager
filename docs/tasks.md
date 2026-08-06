@@ -11,8 +11,9 @@
 
 ## 작업 현황 요약
 
-> **F1D v5 현재 정본**: 비운영 generation mutation은 `ktdctl pinvi-pair rebuild-pinned --confirm`만
-> 허용한다. 이전 `cache-target`, `db-backup`, `map-ui-auth`와 compatible-pair의
+> **F1D v5 현재 정본**: 비운영 generation mutation은 root execution의
+> `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`만 허용한다. 이전 `cache-target`,
+> `db-backup`, `map-ui-auth`와 compatible-pair의
 > `capture`·`deploy`·`rollback` 공개 경로는 모두 퇴역했으며, 아래의 v1–v4 상세 항목은 실행
 > 지침이 아닌 퇴역 기록이다. 최종 schema 상태의 backup/restore가 다시 필요해지면 pair/cache
 > workflow와 독립된 새 Compose primitive·계약으로 별도 태스크를 만든다.
@@ -964,7 +965,8 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test와
       PinVi source pin 회전을 포함한다.
 - [/] **F1D-C2 (Manager PR)** — C0 Map 및 C1 PinVi source pin을 입력으로 구 `bootstrap-pinned-drift`와 old
-      rollback/backup 중심 resume을 제거하고, `ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. legacy
+      rollback/backup 중심 resume을 제거하고, root execution의
+      `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. legacy
       `cache-target`, standalone `db-backup`, Map UI 회전과 `capture`·`deploy`·`rollback` 공개 경로는
       함께 퇴역한다. 이 명령은 frozen explicit `rebuildable`
       lifecycle에서만 candidate-first attestation 뒤 세 scoped DB recreate, 0600 credential file의 one-shot

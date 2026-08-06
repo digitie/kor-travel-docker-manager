@@ -1593,7 +1593,8 @@ image rollback으로 중간 상태를 보전하는 것은 이 환경의 correctn
 ### 결정
 
 typed environment/lifecycle pair `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`,
-`KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서만 `ktdctl pinvi-pair rebuild-pinned --confirm`을 제공한다.
+`KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서만 root execution의
+`sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`을 제공한다.
 유효 pair는 `local/development`, `rehearsal/rebuildable`, `production/operational`뿐이다. 따라서 기존
 production environment에 rebuildable 값 하나를 추가해 destructive command를 열 수 없다. 기존
 `bootstrap-pinned-drift`는 제거하며, compatibility flag나 old journal 변환은 만들지 않는다.
