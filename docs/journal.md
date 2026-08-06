@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C2 완료 이관)
+
+v5 single-active generation과 candidate-first destructive rebuild, Map Dagster/application 및 PinVi
+one-shot schema bootstrap을 결선했다. candidate source/config의 raw·resolved capability boundary를 DB
+mutation 전에 fail-close하고 bootstrap profile에서 허용한 최소 Map read/cancel capability만 사용한다.
+
+이전 F1J helper는 새 v5 transaction에서 아직 호출되지 않음을 확인했다. 따라서 dynamic fixture
+ensure→one-shot canonical cancel→immutable receipt read→finalize와 response-loss resume은 완료로
+표시하지 않고 열린 F1D-C3에서 journal 상태와 함께 결선한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-C1b — PinVi runtime provenance caller 결선)
 
 PinVi Dockerfile label만으로는 Manager canonical Compose가 Web·Dagster에 revision/environment

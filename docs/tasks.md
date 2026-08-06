@@ -950,28 +950,12 @@ n150은 운영 서비스가 아니므로, old manifest·non-terminal F1D journal
 runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계는
 [`tvn41-f1d-destructive-rebootstrap.md`](tvn41-f1d-destructive-rebootstrap.md)다.
 
-- [/] **F1D-B** — `CompatibleImagePair`/v4 manifest와 old `deploy`·`capture`·`rollback` 및 legacy
-      mutation gate를 제거하고, Map 네 service와 PinVi 세 service를 모두 기록하는 single-active
-      `PinnedRuntimeGeneration` v5로 치환한다. immutable image ID·source revision·세 schema head·
-      tombstone receipt와 manifest/journal/provenance 검증의 정본을 하나로 만든다. 기존 F1G window 및 F1H
-      inert diagnostic receipt 퇴역은 이 typed tombstone allowlist에 흡수하며 별도 T-VN 선행 task로 남기지 않는다. typed
-      environment/lifecycle enum pair와 rebuildable exclusive mutation 정책의 loader·회귀 test도 소유한다.
-- [/] **F1D-C0 (Map PR)** — candidate Map Dagster image가 dependency storage migration head를 기계 판독
-      가능하게 출력하고, 동일 image가 `dagster instance migrate` 뒤 strict single-row
-      `public.alembic_version`을 그 head와 대조하는 migration-only command를 제공한다. Map application
-      Alembic revision을 Dagster storage head로 사용하지 않는다.
-- [/] **F1D-C1 (PinVi PR)** — credential-file만 읽는 `pinvi-admin-bootstrap` one-shot CLI가 PinVi Alembic
-      migration과 admin bootstrap의 유일 owner가 되게 한다. normal API의 implicit migration/direct password
-      environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test,
-      API/Web/Dagster의 exact revision/environment OCI provenance와 PinVi source pin 회전을 포함한다.
-- [/] **F1D-C2 (Manager PR)** — C0 Map 및 C1 PinVi source pin을 입력으로 구 `bootstrap-pinned-drift`와 old
-      rollback/backup 중심 resume을 제거하고, root execution의
-      `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. legacy
-      `cache-target`, standalone `db-backup`, Map UI 회전과 `capture`·`deploy`·`rollback` 공개 경로는
-      함께 퇴역한다. 이 명령은 frozen explicit `rebuildable`
-      lifecycle에서만 candidate-first attestation 뒤 세 scoped DB recreate, 0600 credential file의 one-shot
-      read-only mount, staged source context preflight와 Map Dagster migration-only invocation, PinVi 세 image provenance까지 포함한 일곱 runtime build/start, F1J fixture smoke와
-      durable same-pinset resume을 수행한다.
-- [ ] **F1D-D (docs-only PR)** — n150에서 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
+- [ ] **F1D-C3 (Manager PR)** — 기존 Map-owned F1J fixture lifecycle을 v5
+      `rebuild-pinned` durable transaction에 직접 결선한다. candidate Map readiness 뒤 journal transaction
+      ID로 fixture ensure→PinVi의 단 한 번의 canonical cancel→exact `409 PIPELINE_CANCELLATION_UNSAFE`
+      receipt 대조→finalize를 수행하고, `armed → consumed → finalized`와 POST 전 attempted 상태를
+      journal에 단조 기록한다. response loss 재개는 Map immutable outcome을 읽은 뒤 cancel POST를 재발행하지
+      않으며, fixture credential은 Map API와 Manager에만 둔다.
+- [ ] **F1D-D (docs-only PR)** — C3가 결선된 n150 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
       E2E·PinVi mutating E2E를 통과시킨 결과를 기록한다. data source/ETL 재적재는 이 transaction 뒤의 별도
       작업으로 handoff한다.

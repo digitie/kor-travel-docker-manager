@@ -12,6 +12,22 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+## 2026-08-06 — T-VN-41-F1D-B~C2 파기형 pinned runtime generation 구현
+
+- [x] **F1D-B~C2 — v5 generation·candidate-first rebuild·upstream schema bootstrap 결선**
+
+  `CompatibleImagePair` v4와 공개 pair/cache/backup mutation 경로를 퇴역하고, Map 네 service와
+  PinVi 세 service를 하나의 `PinnedRuntimeGeneration` v5 manifest·journal·tombstone authority로
+  수렴했다. `rehearsal/rebuildable` root 실행만 `pinvi-pair rebuild-pinned --confirm`을 허용하며,
+  candidate 일곱 image를 attest한 뒤 세 scoped DB를 fresh recreate하고 Map application/Dagster 및
+  PinVi schema head를 각각 증명한다.
+
+  Map C0와 PinVi C1의 one-shot schema bootstrap을 frozen Compose profile까지 결박했고, raw/resolved
+  C6c capability boundary와 candidate PinVi production Settings import를 DB reset·journal write 전에
+  fail-close로 검사한다. bootstrap에는 필요한 Map base URL/read/cancel만 허용하며 fixture·관리자
+  credential은 실행 시에만 별도로 주입한다. 기존 F1J fixture lifecycle을 새 v5 transaction에 연결하는
+  작업과 최종 n150 live UI/PinVi mutating E2E 기록은 각각 열린 F1D-C3·F1D-D에서 처리한다.
+
 ## 2026-08-06 — T-VN-41-F1D-A 파기형 runtime generation 재bootstrap 설계
 
 - [x] **T-VN-41-F1D-A — v5 rebuild 설계·ADR·task 정렬**
