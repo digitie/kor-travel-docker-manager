@@ -177,9 +177,6 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
                     '["127.0.0.1/32","::1/128"]'
                 ),
-                "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS": (
-                    "${KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS:-[]}"
-                ),
             }
         },
         _MAP_UI_SERVICE: {
@@ -215,28 +212,6 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": (
                     "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:"
                     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": (
-                    "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED:-false}"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": (
-                    "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN:-}"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": (
-                    "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN:-}"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": (
-                    "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID:-"
-                    "pinvi-cache-target-consumer}"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": (
-                    "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256:-}"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": (
-                    "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION:-}"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": (
-                    "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION:-}"
                 ),
             }
         },
@@ -538,54 +513,6 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
         if "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN" in service.get("environment", {})
         or "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN" in service.get("environment", {})
     } == {_PINVI_API_SERVICE}
-
-
-def test_cache_target_registry_and_ordinary_runtime_are_exactly_scoped() -> None:
-    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
-    services = compose["services"]
-    map_environment = services[_MAP_API_SERVICE]["environment"]
-    pinvi_environment = services[_PINVI_API_SERVICE]["environment"]
-    registry_name = "KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS"
-    ordinary_names = {
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED",
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN",
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN",
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID",
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256",
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION",
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION",
-    }
-
-    assert map_environment[registry_name] == (
-        "${KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS:-[]}"
-    )
-    assert ordinary_names.issubset(pinvi_environment)
-    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_API_BASE_URL"] == (
-        "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:"
-        "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
-    )
-    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID"] == (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID:-"
-        "pinvi-cache-target-consumer}"
-    )
-    assert {
-        service_name
-        for service_name, service in services.items()
-        if registry_name in service.get("environment", {})
-    } == {_MAP_API_SERVICE}
-    assert {
-        service_name
-        for service_name, service in services.items()
-        if ordinary_names.intersection(service.get("environment", {}))
-    } == {_PINVI_API_SERVICE}
-    for forbidden in (
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RESTORE_FENCE_TOKEN",
-        "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_RECOVERY_TOKEN",
-    ):
-        assert all(
-            forbidden not in service.get("environment", {})
-            for service in services.values()
-        )
 
 
 def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> None:

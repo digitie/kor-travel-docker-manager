@@ -21,9 +21,6 @@ from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
-    _MAP_API_SERVICE,
-    _MAP_DAGSTER_DAEMON_SERVICE,
-    _MAP_DAGSTER_SERVICE,
     _MAP_RUNTIME_SERVICES,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     _PINVI_API_SERVICE,
@@ -36,14 +33,12 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _assert_candidate_single_file_boundary,
     _expand_env_path,
     assert_compose_mutation_allowed,
-    assert_inert_cache_target_state_retirement_allowed,
     assert_manager_mutation_allowed,
     c6c_deployment_lock,
     c6c_global_mutation_lock_path,
     c6c_state_paths,
     compose_volume_graph_hash,
     inspect_c6c_image_source_revision,
-    load_c6c_deployment_config_from_environment,
     revalidate_candidate_system_bind_snapshots,
     validate_compose_candidate_protected_values,
     validate_resolved_compose_candidate_protected_values,
@@ -52,7 +47,7 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     ensure_generation_references,
     reconcile_generation_references,
 )
-from kor_travel_docker_manager.services.cache_target_backup import (
+from kor_travel_docker_manager.services.database_runtime import (
     database_runtimes_from_frozen_contract,
     read_database_schema_revision,
     recreate_empty_databases,
@@ -106,62 +101,10 @@ from kor_travel_docker_manager.services.registry import (
     target_sequence_for_target,
 )
 
-_CACHE_TARGET_WRITER_SERVICES = frozenset(
-    {
-        _MAP_API_SERVICE,
-        _MAP_DAGSTER_SERVICE,
-        _MAP_DAGSTER_DAEMON_SERVICE,
-        _PINVI_API_SERVICE,
-        "pinvi-dagster",
-    }
-)
-_CACHE_TARGET_WRITER_REGISTRY_SHA256 = (
-    "526240609e2919357699b90244eb8cc8b9505f37db6c60552a98c7a37ed22d7c"
-)
-_CACHE_TARGET_POST_INITIAL_PHASES = frozenset(
-    {
-        "initial_committed",
-        "sync_enabled",
-        "canary_verified",
-        "gc_started",
-        "gc_verified",
-        "final_writers_fencing",
-        "final_writers_fenced",
-        "map_final_verified",
-        "final_boundary_verified",
-        "forward_committed",
-        "runtime_activated",
-    }
-)
-
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
-
-
-def cache_target_writer_registry_sha256(names: Sequence[str]) -> str:
-    ordered = tuple(sorted(names))
-    if len(ordered) != len(set(ordered)) or frozenset(ordered) != (
-        _CACHE_TARGET_WRITER_SERVICES
-    ):
-        raise DeploymentContractError(
-            "cache-target writer capability registry is incomplete or unknown"
-        )
-    try:
-        payload = b"pinvi-cache-target-writer-registry-v1\0" + b"".join(
-            name.encode("ascii") + b"\0" for name in ordered
-        )
-    except UnicodeEncodeError as exc:
-        raise DeploymentContractError(
-            "cache-target writer registry identity is invalid"
-        ) from exc
-    digest = hashlib.sha256(payload).hexdigest()
-    if digest != _CACHE_TARGET_WRITER_REGISTRY_SHA256:
-        raise DeploymentContractError(
-            "cache-target writer registry identity is invalid"
-        )
-    return digest
 
 
 def get_project_root() -> str:
@@ -1730,75 +1673,6 @@ def _revalidate_compose_environment_snapshot(
         raise ComposeCandidateContractError(
             "compose env-file identity changed during revalidation"
         )
-
-
-def _capture_frozen_compose_source(
-    environment: ComposeEnvironmentSnapshot,
-) -> tuple[bytes, ComposeEnvFileIdentity]:
-    """candidate를 materialize하지 않고 compose source identity만 동결한다."""
-
-    compose_path = Path(environment.compose_path)
-    before = _env_file_identity(compose_path)
-    if not before.exists:
-        raise ComposeCandidateContractError("compose source is unavailable")
-    try:
-        source_bytes = compose_path.read_bytes()
-    except OSError as exc:
-        raise ComposeCandidateContractError("compose source cannot be snapshotted") from exc
-    if _env_file_identity(compose_path) != before:
-        raise ComposeCandidateContractError(
-            "compose source identity changed during snapshot"
-        )
-    return source_bytes, before
-
-
-def _revalidate_frozen_compose_source(
-    environment: ComposeEnvironmentSnapshot,
-    *,
-    source_bytes: bytes,
-    source_identity: ComposeEnvFileIdentity,
-) -> None:
-    compose_path = Path(environment.compose_path)
-    current_identity = _env_file_identity(compose_path)
-    if current_identity != source_identity:
-        raise ComposeCandidateContractError(
-            "compose source identity changed during legacy window retirement"
-        )
-    try:
-        current_bytes = compose_path.read_bytes()
-    except OSError as exc:
-        raise ComposeCandidateContractError(
-            "compose source cannot be revalidated during legacy window retirement"
-        ) from exc
-    if current_bytes != source_bytes or _env_file_identity(compose_path) != current_identity:
-        raise ComposeCandidateContractError(
-            "compose source changed during legacy window retirement"
-        )
-
-
-def _prepare_inert_cache_target_state_retirement(
-    lock_snapshot: C6cDeploymentLockSnapshot,
-) -> ComposeEnvironmentSnapshot:
-    """F1G/F1H의 state-only receipt mutation 전 frozen input을 검증한다."""
-
-    environment = _capture_compose_environment_snapshot(environment_override=None)
-    source_bytes, source_identity = _capture_frozen_compose_source(environment)
-    assert_environment_snapshot_matches_c6c_lock(environment, lock_snapshot)
-    mode = assert_inert_cache_target_state_retirement_allowed(
-        environment=environment.effective
-    )
-    config = load_c6c_deployment_config_from_environment(environment.effective)
-    if mode != "production" or not config.production or config.cache_target is None:
-        raise DeploymentContractError(
-            "inert cache-target state retirement requires the production cache-target contract"
-        )
-    _revalidate_compose_environment_snapshot(environment)
-    _revalidate_frozen_compose_source(
-        environment,
-        source_bytes=source_bytes,
-        source_identity=source_identity,
-    )
-    return environment
 
 
 def _atomic_restore_compose_source(
