@@ -130,7 +130,8 @@ _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES = frozenset(
         "missing_dagster_yaml",
     }
 )
-_PINNED_RUNTIME_DAGSTER_MIGRATION_ATTEMPTS = 10
+# fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
+_PINNED_RUNTIME_DAGSTER_MIGRATION_ATTEMPTS = 30
 _PINNED_RUNTIME_DAGSTER_MIGRATION_RETRY_SECONDS = 2
 
 
