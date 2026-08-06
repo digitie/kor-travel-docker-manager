@@ -19,6 +19,7 @@ from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     cleanup_pinvi_bootstrap_credential,
     create_pinvi_bootstrap_credential,
     pinvi_bootstrap_credential_file,
+    retire_stale_pinvi_bootstrap_credential,
 )
 
 _EMAIL = "admin@example.test"
@@ -165,6 +166,33 @@ def test_second_credential_for_same_transaction_fails_without_overwriting_active
     assert json.loads(first.path.read_text(encoding="utf-8"))["password"] == _PASSWORD
     cleanup_pinvi_bootstrap_credential(
         first,
+        state_paths=state_paths,
+        values=values,
+    )
+
+
+def test_retire_stale_credential_removes_only_exact_transaction_after_runner_exit(
+    tmp_path: Path,
+) -> None:
+    stale, state_paths, values = _credential(tmp_path)
+    other = create_pinvi_bootstrap_credential(
+        state_paths=state_paths,
+        values=values,
+        transaction_id=str(uuid.uuid4()),
+        email=_EMAIL,
+        password=_PASSWORD,
+    )
+
+    retire_stale_pinvi_bootstrap_credential(
+        state_paths=state_paths,
+        values=values,
+        transaction_id=stale.transaction_id,
+    )
+
+    assert not stale.path.exists()
+    assert other.path.exists()
+    cleanup_pinvi_bootstrap_credential(
+        other,
         state_paths=state_paths,
         values=values,
     )

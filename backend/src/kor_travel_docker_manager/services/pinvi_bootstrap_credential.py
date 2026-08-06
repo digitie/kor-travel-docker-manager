@@ -201,6 +201,75 @@ def cleanup_pinvi_bootstrap_credential(
         os.close(bootstrap_fd)
 
 
+def retire_stale_pinvi_bootstrap_credential(
+    *,
+    state_paths: PinnedRuntimeStatePaths,
+    values: Mapping[str, str],
+    transaction_id: str,
+) -> None:
+    """종료가 증명된 one-shot의 exact transaction artifact만 폐기한다.
+
+    이 함수는 runner liveness를 판단하지 않는다. 호출자는 먼저 frozen Compose
+    project에서 `pinvi-admin-bootstrap` container가 없음을 확인해야 한다. 그 뒤에도
+    다른 transaction을 열거하거나 건드리지 않고, journal UUID 아래의 하나만
+    inode/owner/mode를 검증한 다음 zeroize·unlink한다.
+    """
+
+    _require_canonical_rebuildable_state_paths(state_paths=state_paths, values=values)
+    canonical_transaction_id = _canonical_transaction_id(transaction_id)
+    bootstrap_path = state_paths.state_root / _BOOTSTRAP_DIRECTORY
+    try:
+        bootstrap_path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError(
+            "PinVi bootstrap credential directory is unavailable"
+        ) from exc
+
+    bootstrap_fd = _open_bootstrap_directory(state_paths.state_root, create=False)
+    transaction_fd: int | None = None
+    transaction_stat: os.stat_result | None = None
+    try:
+        if (
+            _optional_lstat_at(
+                bootstrap_fd,
+                canonical_transaction_id,
+                "PinVi bootstrap transaction directory",
+            )
+            is None
+        ):
+            return
+        transaction_fd, transaction_stat = _open_transaction_directory(
+            bootstrap_fd,
+            canonical_transaction_id,
+        )
+        artifact = _optional_lstat_at(
+            transaction_fd,
+            _CREDENTIAL_FILENAME,
+            "PinVi bootstrap credential artifact",
+        )
+        if artifact is not None:
+            _validate_private_file_stat(artifact)
+            _zeroize_and_unlink(
+                transaction_fd,
+                _CREDENTIAL_FILENAME,
+                expected_device=artifact.st_dev,
+                expected_inode=artifact.st_ino,
+            )
+    finally:
+        if transaction_fd is not None:
+            os.close(transaction_fd)
+        if transaction_stat is not None:
+            _remove_empty_transaction_directory(
+                bootstrap_fd,
+                canonical_transaction_id,
+                expected_device=transaction_stat.st_dev,
+                expected_inode=transaction_stat.st_ino,
+            )
+        os.close(bootstrap_fd)
+
+
 @contextmanager
 def pinvi_bootstrap_credential_file(
     *,

@@ -138,6 +138,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
 
     service = ComposeService()
     operations: list[tuple[str, ...]] = []
+    reset_operation_counts: list[int] = []
     static_commands: list[tuple[str, ...]] = []
     image_ids = {
         service_name: f"sha256:{index:064x}"
@@ -157,11 +158,12 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "materialize_pinned_runtime_sources",
         lambda **_kwargs: _sources(),
     )
-    monkeypatch.setattr(
-        service,
-        "_run_pinned_runtime_rebuild_compose",
-        lambda args, *, transaction: operations.append(tuple(args)) or {"success": True},
-    )
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(args))
+        return {"success": True, "stdout": "[]" if "ps" in args else ""}
+
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
     monkeypatch.setattr(
         service,
         "_attest_pinned_runtime_candidate_images",
@@ -186,7 +188,11 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "database_runtimes_from_frozen_contract",
         lambda **_kwargs: (object(), object(), object()),
     )
-    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "recreate_empty_databases",
+        lambda _runtimes: reset_operation_counts.append(len(operations)),
+    )
     monkeypatch.setattr(
         compose_service_module,
         "read_database_schema_revision",
@@ -205,6 +211,26 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert captured[-1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "map-application-head"
     assert operations[0] == ("build", *RUNTIME_SERVICES)
     assert operations[1] == ("stop", *RUNTIME_SERVICES)
+    assert operations[2] == (
+        "--profile",
+        "bootstrap",
+        "rm",
+        "-f",
+        "-s",
+        "kor-travel-map-dagster-storage-migrate",
+        "pinvi-admin-bootstrap",
+    )
+    assert operations[3] == (
+        "--profile",
+        "bootstrap",
+        "ps",
+        "--all",
+        "--format",
+        "json",
+        "kor-travel-map-dagster-storage-migrate",
+        "pinvi-admin-bootstrap",
+    )
+    assert reset_operation_counts == [4]
     assert static_commands == [
         ("ktm-application-schema", "head"),
         ("ktm-dagster-storage", "head"),
@@ -218,3 +244,29 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert not (
         tmp_path / "state" / "f1d-c2" / "bootstrap" / str(result["transaction_id"])
     ).exists()
+
+
+def test_oneshot_writer_liveness_must_be_empty_before_database_reset() -> None:
+    service = ComposeService()
+    operations: list[tuple[str, ...]] = []
+    transaction = SimpleNamespace()
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(args))
+        if "ps" not in args:
+            return {"success": True, "stdout": ""}
+        return {
+            "success": True,
+            "stdout": (
+                '[{"Name":"f1d-pinvi-bootstrap",'
+                '"Service":"pinvi-admin-bootstrap","State":"running"}]'
+            ),
+        }
+
+    service._run_pinned_runtime_rebuild_compose = run_compose  # type: ignore[method-assign]
+
+    with pytest.raises(DeploymentContractError, match="one-shot writer remained"):
+        service._retire_pinned_runtime_oneshot_writers(transaction=transaction)
+
+    assert [command[2] for command in operations] == ["rm", "ps"]
