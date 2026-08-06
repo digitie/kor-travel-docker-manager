@@ -102,19 +102,50 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
     assert [label for _, label in calls] == [
         "map_application database destructive drop",
         "map_application database destructive create",
+        "Map application infrastructure provisioning",
         "map_dagster database destructive drop",
         "map_dagster database destructive create",
         "pinvi database destructive drop",
         "pinvi database destructive create",
     ]
-    assert ["dropdb" if "dropdb" in arguments else "createdb" for arguments, _ in calls] == [
+    assert [
+        next(command for command in ("dropdb", "createdb", "psql") if command in arguments)
+        for arguments, _ in calls
+    ] == [
         "dropdb",
         "createdb",
+        "psql",
         "dropdb",
         "createdb",
         "dropdb",
         "createdb",
     ]
+    provision_commands = [
+        arguments
+        for arguments, label in calls
+        if label == "Map application infrastructure provisioning"
+    ]
+    assert len(provision_commands) == 1
+    provision = provision_commands[0]
+    assert provision[provision.index("--dbname") + 1] == "map_app"
+    assert provision[provision.index("--username") + 1] == "cluster_admin"
+    assert provision[provision.index("--command") + 1] == (
+        "CREATE SCHEMA IF NOT EXISTS feature;\n"
+        "CREATE SCHEMA IF NOT EXISTS provider_sync;\n"
+        "CREATE SCHEMA IF NOT EXISTS ops;\n"
+        "CREATE SCHEMA IF NOT EXISTS x_extension;\n"
+        "CREATE EXTENSION IF NOT EXISTS postgis SCHEMA x_extension;\n"
+        "CREATE EXTENSION IF NOT EXISTS postgis_topology;\n"
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA x_extension;\n"
+        "CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA x_extension;\n"
+        "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;\n"
+        "ALTER DATABASE map_app SET search_path = public, x_extension;\n"
+        "GRANT ALL PRIVILEGES ON SCHEMA public TO map_owner;\n"
+        "GRANT ALL PRIVILEGES ON SCHEMA feature TO map_owner;\n"
+        "GRANT ALL PRIVILEGES ON SCHEMA provider_sync TO map_owner;\n"
+        "GRANT ALL PRIVILEGES ON SCHEMA ops TO map_owner;\n"
+        "GRANT ALL PRIVILEGES ON SCHEMA x_extension TO map_owner;"
+    )
     assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
     assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
 

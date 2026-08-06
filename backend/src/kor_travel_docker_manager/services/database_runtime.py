@@ -46,6 +46,17 @@ _SCHEMA_REVISION_LOCATION: dict[DatabaseRole, tuple[str, str]] = {
     "map_dagster": ("public", "alembic_version"),
     "pinvi": ("app", "alembic_version"),
 }
+_MAP_APPLICATION_INFRASTRUCTURE_STATEMENTS = (
+    "CREATE SCHEMA IF NOT EXISTS feature",
+    "CREATE SCHEMA IF NOT EXISTS provider_sync",
+    "CREATE SCHEMA IF NOT EXISTS ops",
+    "CREATE SCHEMA IF NOT EXISTS x_extension",
+    "CREATE EXTENSION IF NOT EXISTS postgis SCHEMA x_extension",
+    "CREATE EXTENSION IF NOT EXISTS postgis_topology",
+    "CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA x_extension",
+    "CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA x_extension",
+    "CREATE EXTENSION IF NOT EXISTS pg_stat_statements",
+)
 
 
 @dataclass(frozen=True)
@@ -127,6 +138,8 @@ def recreate_empty_database(runtime: DatabaseRuntime) -> None:
         ],
         label=f"{runtime.role} database destructive create",
     )
+    if runtime.role == "map_application":
+        _provision_map_application_infrastructure(runtime)
 
 
 def recreate_empty_databases(
@@ -166,6 +179,40 @@ def read_database_schema_revision(runtime: DatabaseRuntime) -> str:
     if len(lines) != 1 or not _SCHEMA_REVISION.fullmatch(lines[0]):
         raise DeploymentContractError(f"{runtime.role} schema revision output is invalid")
     return lines[0]
+
+
+def _provision_map_application_infrastructure(runtime: DatabaseRuntime) -> None:
+    """Map migration 전 infra admin만 만들 수 있는 기반 객체를 설치한다.
+
+    Map application role은 새 DB의 owner지만 extension 설치 권한은 없다. Manager의
+    canonical PostgreSQL bootstrap과 Map의 initial migration이 공유하는 extension·
+    schema 경계를 admin으로 먼저 만들고, application role에는 필요한 schema
+    권한만 부여한다. Dagster와 PinVi는 각자 migration/bootstrap이 전부 소유한다.
+    """
+
+    if runtime.role != "map_application":
+        raise DeploymentContractError("Map infrastructure provisioning requires map application")
+    statements = (
+        *_MAP_APPLICATION_INFRASTRUCTURE_STATEMENTS,
+        f"ALTER DATABASE {runtime.database_name} SET search_path = public, x_extension",
+        f"GRANT ALL PRIVILEGES ON SCHEMA public TO {runtime.owner_name}",
+        f"GRANT ALL PRIVILEGES ON SCHEMA feature TO {runtime.owner_name}",
+        f"GRANT ALL PRIVILEGES ON SCHEMA provider_sync TO {runtime.owner_name}",
+        f"GRANT ALL PRIVILEGES ON SCHEMA ops TO {runtime.owner_name}",
+        f"GRANT ALL PRIVILEGES ON SCHEMA x_extension TO {runtime.owner_name}",
+    )
+    _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--dbname",
+            runtime.database_name,
+            "--command",
+            ";\n".join(statements) + ";",
+        ],
+        label="Map application infrastructure provisioning",
+    )
 
 
 def _read_database_owner(runtime: DatabaseRuntime) -> str | None:
