@@ -169,16 +169,24 @@ def test_rebuild_compose_error_names_the_failed_action(
                 "success": False,
                 "returncode": 23,
                 "stdout": secret,
-                "stderr": secret,
+                "stderr": (
+                    secret
+                    + "\n"
+                    + '{"code":"dagster_instance_migrate_failed",'
+                    + '"schema":"kor-travel-map.dagster-storage-migration-error.v1"}'
+                ),
             }
         ),
     )
 
     with pytest.raises(
         DeploymentContractError,
-        match=r"Compose up command failed \(exit 23\)",
+        match=r"Compose run command failed \(exit 23; dagster_instance_migrate_failed\)",
     ) as captured:
-        service._run_pinned_runtime_rebuild_compose(["up", "kor-travel-map-api"], transaction=object())
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "kor-travel-map-dagster-storage-migrate"],
+            transaction=object(),
+        )
 
     assert secret not in str(captured.value)
 

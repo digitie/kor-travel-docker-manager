@@ -109,6 +109,26 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "pinvi-admin-bootstrap",
 )
 _CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER = "candidate_static_attestation"
+_MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA = (
+    "kor-travel-map.dagster-storage-migration-error.v1"
+)
+_MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES = frozenset(
+    {
+        "dagster_storage_head_ambiguous",
+        "dagster_storage_head_unavailable",
+        "dagster_instance_migrate_failed",
+        "dagster_instance_migrate_unavailable",
+        "dagster_version_mismatch",
+        "dagster_version_row_count_invalid",
+        "dagster_version_table_unavailable",
+        "invalid_arguments",
+        "invalid_dagster_home",
+        "invalid_dagster_yaml",
+        "missing_dagster_home",
+        "missing_dagster_pg_url",
+        "missing_dagster_yaml",
+    }
+)
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
@@ -3274,19 +3294,55 @@ class ComposeService:
             mutation_capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
         )
         if not result["success"]:
-            compose_action = next(
-                (
-                    argument
-                    for argument in args
-                    if argument in {"build", "stop", "rm", "ps", "up", "run"}
-                ),
-                "unknown",
+            compose_action = self._pinned_runtime_compose_action(args)
+            diagnostic = self._pinned_runtime_compose_failure_diagnostic(
+                compose_action,
+                result,
             )
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose "
-                f"{compose_action} command failed (exit {result['returncode']})"
+                f"{compose_action} command failed (exit {result['returncode']}{diagnostic})"
             )
         return result
+
+    @staticmethod
+    def _pinned_runtime_compose_action(args: Sequence[str]) -> str:
+        return next(
+            (
+                argument
+                for argument in args
+                if argument in {"build", "stop", "rm", "ps", "up", "run"}
+            ),
+            "unknown",
+        )
+
+    @staticmethod
+    def _pinned_runtime_compose_failure_diagnostic(
+        compose_action: str,
+        result: Mapping[str, Any],
+    ) -> str:
+        """F1D C0의 allowlist JSON code만 원문 없이 오류에 붙인다."""
+
+        if compose_action != "run":
+            return ""
+        for stream_name in ("stderr", "stdout"):
+            output = result.get(stream_name)
+            if not isinstance(output, str):
+                continue
+            for line in output.splitlines():
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    not isinstance(payload, Mapping)
+                    or set(payload) != {"code", "schema"}
+                    or payload.get("schema") != _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
+                    or payload.get("code") not in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
+                ):
+                    continue
+                return f"; {payload['code']}"
+        return ""
 
     def _retire_pinned_runtime_oneshot_writers(
         self,
