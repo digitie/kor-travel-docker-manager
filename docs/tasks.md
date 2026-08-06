@@ -1025,7 +1025,8 @@ Manager가 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`만 전달하고 실제 Map pipe
       live Playwright E2E를 확인하고 issue #136을 닫는다. 현 DB/data는 production data가 아니므로 백업·복원·중간
       상태 보존을 하지 않으며, 필요 시 최종 schema에 맞춰 source/ETL로 재생성한다. production runtime/data는
       이 검증 범위에서 제외한다. PinVi Docker provenance repair PR #437의 merge revision을 Manager pinset에
-      재결박한 뒤, 그 세 저장소의 exact release로만 격리 rehearsal을 시작한다.
+      재결박했다. 이어 PinVi PR #439의 test-only live assertion 수정 merge revision도 같은 strict pinset에
+      회전한 뒤, 그 세 저장소의 exact release로만 fresh isolated rehearsal을 시작한다.
 
 ### T-VN-41-F1G: legacy terminal window journal 퇴역
 

@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1J-D — live trip E2E revision 재결박)
+
+새 isolated schema에서 Map ops read와 관리자 live UI는 통과했지만, mutating trip E2E 하나가
+`POST /trips`의 `201 Created` 뒤 더는 표시되지 않는 옛 성공 문구를 기다려 실패했다. PinVi PR #439는
+현재 UI의 `초안 여행을 저장했습니다.` assertion으로 이 test-only drift를 바로잡았고 CI를 통과했다.
+
+Manager도 tracked source revision을 이 merge SHA와 canonical pinset digest로 회전한다. 이 값은 Map service
+provenance·Alembic head·capability generation을 변경하지 않으며, 기존 runtime·DB·backup/restore를 쓰지 않는
+fresh isolated F1J-D final run의 exact input만 다시 고정한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1J-D — PinVi Docker provenance repair pin 재결박)
 
 PinVi PR #437(`6a931dc…`)은 Hatch `force-include` source를 두 editable install 전에 Docker build context의
