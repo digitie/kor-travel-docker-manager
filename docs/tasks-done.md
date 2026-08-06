@@ -12,6 +12,22 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+## 2026-08-06 — T-VN-41-F1D-C3 n150 결선
+
+- [x] **F1D-C3 — dynamic fixture durable transaction과 n150 파기형 rebuild**
+
+  Manager PR #167의 latest Map typed-subtype pin으로 n150에서 `rebuild-pinned --confirm`을 실행해 새
+  generation을 committed했다. Map application `0087_route_area_subtypes`, Map Dagster `29b539ebc72a`,
+  PinVi `20260804_0049` head와 일곱 runtime container health를 확인했다. v7 journal은 Map fixture의
+  `armed → consumed → finalized`, PinVi의 exact `409 PIPELINE_CANCELLATION_UNSAFE` outcome, final
+  `committed` phase를 보존했다. 따라서 response-loss 재개를 위해 같은 cancel/finalize POST를 추측
+  재발행하지 않는 C3 transaction 경계도 실제 runtime에서 결선됐다.
+
+  Map UI 로그인 POST는 `200`과 session cookie를 반환했다. data-independent live UI E2E는 운영 홈·파이프라인
+  catalog 6건, Feature 목록·지도 초기 surface 10건을 통과했다. 기존 full suite의 curated detail 및 지도 table
+  landmark 일부는 의도적으로 빈 새 DB에서 사전 적재된 고정 ID를 요구해 실패했으므로, 이는 C3 runtime
+  failure로 처리하지 않고 final-schema ETL 재적재 뒤 F1D-D acceptance에서 다시 실행한다.
+
 ## 2026-08-06 — T-VN-41-F1D-B~C2 파기형 pinned runtime generation 구현
 
 - [x] **F1D-B~C2 — v5 generation·candidate-first rebuild·upstream schema bootstrap 결선**
