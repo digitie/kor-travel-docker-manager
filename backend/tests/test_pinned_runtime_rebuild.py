@@ -158,6 +158,11 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "c6c_deployment_lock_from_environment",
         lambda: __import__("contextlib").nullcontext(object()),
     )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
     monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
     monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
     monkeypatch.setattr(
@@ -214,6 +219,10 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
 
     assert result["success"] is True
     assert result["phase"] == "committed"
+    assert captured[0] is not None
+    assert captured[0]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == (
+        "candidate_static_attestation"
+    )
     assert captured[-1] is not None
     assert captured[-1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "map-application-head"
     assert operations[0] == ("build", *RUNTIME_SERVICES)
@@ -356,6 +365,11 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         compose_service_module,
         "c6c_deployment_lock_from_environment",
         lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
     )
     monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
     monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)

@@ -105,6 +105,7 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
+_CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER = "candidate_static_attestation"
 
 
 def get_project_root() -> str:
@@ -3462,21 +3463,33 @@ class ComposeService:
         """F1D v5의 candidate-first seven-service destructive rebootstrap을 실행한다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            transaction, _ = self._capture_transaction_unlocked()
-            _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            state_paths = pinned_runtime_state_paths(transaction.environment.effective)
+            # 새 Map application head는 candidate image가 static command로 직접
+            # attest한 뒤에야 알 수 있다. 따라서 아직 실행하지 않는 candidate
+            # build/inspection Compose에는 schema-shaped placeholder만 주고, 실제
+            # runtime transaction에는 journal의 exact head만 넣는다.
+            environment_snapshot = _capture_compose_environment_snapshot(
+                environment_override=None
+            )
+            state_paths = pinned_runtime_state_paths(environment_snapshot.effective)
             ensure_pinned_runtime_state_directory(state_paths.state_root)
             release = current_pinned_runtime_release()
             sources = materialize_pinned_runtime_sources(
                 release=release,
                 state_paths=state_paths,
-                values=transaction.environment.effective,
+                values=environment_snapshot.effective,
             )
             build = CandidateRuntimeBuild(sources)
+            candidate_environment = {
+                **build.compose_environment(),
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
+                    _CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER
+                ),
+            }
             candidate_transaction, _ = self._capture_transaction_unlocked(
-                environment_override=build.compose_environment(),
-                environment_snapshot=transaction.environment,
+                environment_override=candidate_environment,
+                environment_snapshot=environment_snapshot,
             )
+            _assert_transaction_matches_c6c_lock(candidate_transaction, lock_snapshot)
             try:
                 state_paths.journal.lstat()
                 journal_exists = True
@@ -3490,7 +3503,7 @@ class ComposeService:
                     release_pinset_sha256=release.pinset_sha256,
                     map_revision=release.source_for("map").revision,
                     pinvi_revision=release.source_for("pinvi").revision,
-                    environment_bytes=transaction.environment.env_file_bytes,
+                    environment_bytes=environment_snapshot.env_file_bytes,
                     compose_source_bytes=candidate_transaction.compose_source_bytes,
                     resolved_compose_sha256=candidate_transaction.resolved_document_hash,
                 )
@@ -3548,7 +3561,7 @@ class ComposeService:
                 )
                 journal = new_candidate_journal(
                     candidate=candidate,
-                    environment_bytes=transaction.environment.env_file_bytes,
+                    environment_bytes=environment_snapshot.env_file_bytes,
                     compose_source_bytes=candidate_transaction.compose_source_bytes,
                     resolved_compose_sha256=candidate_transaction.resolved_document_hash,
                 )
@@ -3570,7 +3583,7 @@ class ComposeService:
             }
             runtime_transaction, _ = self._capture_transaction_unlocked(
                 environment_override=runtime_environment,
-                environment_snapshot=transaction.environment,
+                environment_snapshot=environment_snapshot,
             )
             runtimes = database_runtimes_from_frozen_contract(
                 resolved=runtime_transaction.resolved,
@@ -3605,7 +3618,7 @@ class ComposeService:
                 )
                 retire_stale_pinvi_bootstrap_credential(
                     state_paths=state_paths,
-                    values=transaction.environment.effective,
+                    values=environment_snapshot.effective,
                     transaction_id=journal.transaction_id,
                 )
                 recreate_empty_databases(runtimes)
@@ -3656,10 +3669,10 @@ class ComposeService:
                     journal = updated
                 with pinvi_bootstrap_credential_file(
                     state_paths=state_paths,
-                    values=transaction.environment.effective,
+                    values=environment_snapshot.effective,
                     transaction_id=journal.transaction_id,
-                    email=transaction.environment.effective["KTDM_C6C_PINVI_ADMIN_EMAIL"],
-                    password=transaction.environment.effective["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
+                    email=environment_snapshot.effective["KTDM_C6C_PINVI_ADMIN_EMAIL"],
+                    password=environment_snapshot.effective["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
                 ) as credential:
                     self._run_pinned_runtime_rebuild_compose(
                         [
@@ -3757,7 +3770,7 @@ class ComposeService:
                     )
                     retire_stale_pinvi_bootstrap_credential(
                         state_paths=state_paths,
-                        values=transaction.environment.effective,
+                        values=environment_snapshot.effective,
                         transaction_id=journal.transaction_id,
                     )
                 except Exception as cleanup_error:
