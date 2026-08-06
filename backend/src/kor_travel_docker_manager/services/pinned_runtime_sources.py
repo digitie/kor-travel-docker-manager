@@ -12,6 +12,7 @@ import os
 import re
 import stat
 import subprocess
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,9 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeStatePaths,
     ensure_pinned_runtime_state_directory,
 )
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    pinned_runtime_state_paths as canonical_pinned_runtime_state_paths,
+)
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     RUNTIME_SOURCE_ROLES,
     PinnedRuntimeRelease,
@@ -31,6 +35,7 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 
 _SOURCES_DIRECTORY_NAME = "pinned-runtime-sources-v5"
 _WORKTREES_DIRECTORY_NAME = "worktrees"
+_STAGING_DIRECTORY_NAME = ".staging"
 _BARE_DIRECTORY_NAME = "bare"
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -58,6 +63,14 @@ class PinnedRuntimeSourcePaths:
 
     def worktree(self, source: PinnedRuntimeSourceSpec) -> Path:
         return self.worktrees_directory / source.role / source.revision
+
+    def staging_directory(self, source: PinnedRuntimeSourceSpec) -> Path:
+        return self.worktrees_directory / _STAGING_DIRECTORY_NAME / source.role
+
+    def staging_worktree(self, source: PinnedRuntimeSourceSpec) -> Path:
+        """아직 public source root가 아닌, 단일 시도 전용 worktree 경로."""
+
+        return self.staging_directory(source) / f"{source.revision}-{uuid.uuid4().hex}"
 
 
 @dataclass(frozen=True)
@@ -147,6 +160,7 @@ def materialize_pinned_runtime_sources(
     revision만 사용한다.
     """
 
+    _require_canonical_rebuildable_state_paths(state_paths=state_paths, values=values)
     paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
     source_roots = {
         source.role: _validated_source_root(values, source=source)
@@ -166,6 +180,20 @@ def materialize_pinned_runtime_sources(
         for source in release.sources
     )
     return PinnedRuntimeSourceMaterialization(release=release, sources=materialized)
+
+
+def _require_canonical_rebuildable_state_paths(
+    *,
+    state_paths: PinnedRuntimeStatePaths,
+    values: Mapping[str, str],
+) -> None:
+    """호출자가 v5 rebuild state 밖으로 source를 유도하지 못하게 막는다."""
+
+    expected = canonical_pinned_runtime_state_paths(values)
+    if state_paths != expected:
+        raise DeploymentContractError(
+            "pinned runtime source state paths differ from canonical rebuildable state"
+        )
 
 
 def _validated_source_root(
@@ -274,13 +302,71 @@ def _materialize_source(
         ).stdout,
         label="pinned runtime source tree",
     )
+    staging = paths.staging_worktree(source)
+    _ensure_private_directory(staging.parent)
+    try:
+        _run_root_git(
+            ["--git-dir", str(bare), "worktree", "add", "--detach", str(staging), source.revision],
+            runner=runner,
+        )
+        _validate_private_staging_worktree(staging)
+        _assert_worktree_clean(target=staging, runner=runner)
+        _make_worktree_immutable(staging)
+        materialized = _validate_existing_worktree(
+            target=staging,
+            source=source,
+            runner=runner,
+            expected_tree=tree,
+        )
+        _promote_staging_worktree(
+            bare=bare,
+            staging=staging,
+            target=target,
+            runner=runner,
+        )
+    except BaseException:
+        _cleanup_staging_worktree(bare=bare, staging=staging, runner=runner)
+        raise
+    return MaterializedRuntimeSource(
+        role=materialized.role,
+        root=target,
+        revision=materialized.revision,
+        tree=materialized.tree,
+    )
+
+
+def _promote_staging_worktree(
+    *,
+    bare: Path,
+    staging: Path,
+    target: Path,
+    runner: GitRunner,
+) -> None:
+    """seal 검증된 stage만 Git-owned move로 final source root에 공개한다."""
+
+    if _path_exists(target):
+        raise DeploymentContractError("pinned runtime source worktree target already exists")
     _run_root_git(
-        ["--git-dir", str(bare), "worktree", "add", "--detach", str(target), source.revision],
+        ["--git-dir", str(bare), "worktree", "move", str(staging), str(target)],
         runner=runner,
     )
-    _assert_worktree_clean(target=target, runner=runner)
-    _make_worktree_immutable(target)
-    return _validate_existing_worktree(target=target, source=source, runner=runner, expected_tree=tree)
+
+
+def _cleanup_staging_worktree(*, bare: Path, staging: Path, runner: GitRunner) -> None:
+    """실패한 private stage만 제거한다. final target은 어떤 경우에도 건드리지 않는다."""
+
+    if not _path_exists(staging):
+        return
+    _validate_private_staging_worktree(staging)
+    try:
+        _run_root_git(
+            ["--git-dir", str(bare), "worktree", "remove", "--force", str(staging)],
+            runner=runner,
+        )
+    except DeploymentContractError as exc:
+        raise DeploymentContractError("pinned runtime source staging cleanup failed") from exc
+    if _path_exists(staging):
+        raise DeploymentContractError("pinned runtime source staging cleanup is incomplete")
 
 
 def _validate_existing_worktree(
@@ -422,6 +508,25 @@ def _validate_private_directory(path: Path, *, label: str) -> None:
         or stat.S_IMODE(path_stat.st_mode) != 0o700
     ):
         raise DeploymentContractError(f"{label} is unsafe")
+
+
+def _validate_private_staging_worktree(path: Path) -> None:
+    """정해진 private staging parent 안의 현재 owner worktree만 cleanup한다."""
+
+    _validate_private_directory(path.parent, label="pinned runtime source staging directory")
+    _reject_symlink_components(path, label="pinned runtime source staging worktree")
+    try:
+        path_stat = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            "pinned runtime source staging worktree cannot be inspected"
+        ) from exc
+    if (
+        not stat.S_ISDIR(path_stat.st_mode)
+        or path_stat.st_uid != os.geteuid()
+        or stat.S_IMODE(path_stat.st_mode) not in {0o700, 0o555}
+    ):
+        raise DeploymentContractError("pinned runtime source staging worktree is unsafe")
 
 
 def _validate_immutable_tree(root: Path) -> None:
