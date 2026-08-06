@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -155,6 +156,72 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
         ComposeService().rebuild_pinned_runtime()
 
     materialize.assert_not_called()
+
+
+def test_frozen_compose_resolution_includes_bootstrap_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    commands: list[list[str]] = []
+    candidate = {
+        "services": {
+            "pinvi-admin-bootstrap": {
+                "image": "pinvi-api:test",
+                "profiles": ["bootstrap"],
+            }
+        }
+    }
+    resolved = json.dumps(candidate)
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "_revalidate_compose_external_input_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_materialize_external_inputs_with_memfd",
+        lambda candidate, _inputs: (candidate, ()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "revalidate_candidate_system_bind_snapshots",
+        lambda _snapshots: None,
+    )
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=resolved, stderr="")
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    actual = service._resolve_compose_candidate_unlocked(
+        candidate,
+        environment={},
+        expected_system_bind_snapshots=(),
+        environment_snapshot=SimpleNamespace(compose_path="/tmp/compose.yml"),
+        environment_override=None,
+        external_input_snapshot=object(),
+    )
+
+    assert actual == candidate
+    assert commands == [
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            "/dev/null",
+            "--profile",
+            "bootstrap",
+            "--project-directory",
+            "/tmp",
+            "-f",
+            "-",
+            "config",
+            "--format",
+            "json",
+        ]
+    ]
 
 
 def test_rebuild_compose_error_names_the_failed_action(

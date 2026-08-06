@@ -109,6 +109,9 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
+# frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
+# profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
+_FROZEN_COMPOSE_PROFILES = ("bootstrap",)
 _CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER = "candidate_static_attestation"
 _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA = (
     "kor-travel-map.dagster-storage-migration-error.v1"
@@ -2528,6 +2531,8 @@ class ComposeService:
             )
             command = ["docker", "compose"]
             command.extend(["--env-file", "/dev/null"])
+            for profile in _FROZEN_COMPOSE_PROFILES:
+                command.extend(["--profile", profile])
             command.extend(["--project-directory", str(compose_path.parent)])
             command.extend(["-f", "-"])
             command.extend(["config", "--format", "json"])
