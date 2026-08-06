@@ -106,282 +106,13 @@ services:
 - dev HMR이 필요한 revision은 canonical compose의 command를 `npm run dev`로 명시한다. 한 manager mutation
   안에서 prod/dev 파일을 합성하지 않는다.
 
-## 8. (역사적) Map↔PinVi C6c compatible pair 배포
+## 8. F1D v5 pinned runtime generation 재구축
 
-> 이 절의 `capture`·`deploy`·`rollback` compatible-pair 계약은 ADR-34/F1D-B에 의해 폐기된다.
-> F1D 재구축에는 이 절의 명령을 실행하지 않으며, 새 정본은 §8.2의 `rebuild-pinned --confirm`뿐이다.
-> §8.1의 trusted source selection은 v5 rebuild input 준비로 유지하되, legacy F1D/F1F receipt를
-> predecessor나 recovery authority로 읽지 않는다.
+> F1D v5는 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
+> **공개 CLI 운영 경로**를 모두 퇴역시켰다. 과거 v1–v4 manifest·journal·backup은 실행 근거가 아니며,
+> 아래 비운영 `rebuild-pinned --confirm`만 새 generation을 만드는 정본이다.
 
-n150의 gitignore된 manager `.env`에는 다음 값을 모두 명시한다. 값이 없거나 mode가 맞지 않으면
-`ktdctl pinvi-pair deploy`는 첫 API container를 변경하기 전에 종료한다.
-
-```dotenv
-KTDM_DEPLOYMENT_ENVIRONMENT=production
-COMPOSE_PROJECT_NAME=kor-travel-prod
-PINVI_ENVIRONMENT=production
-KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true
-KOR_TRAVEL_MAP_API_OPS_READ_TOKEN=<공백 없는 32자 이상 secret>
-KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN=<read와 다른 공백 없는 32자 이상 secret>
-KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN=<read/cancel과 다른 공백 없는 32자 이상 secret>
-KOR_TRAVEL_MAP_API_CONTAINER_PORT=12701
-PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL=http://127.0.0.1:12701
-KTDM_C6C_CONTRACT_GENERATION=c6c-ops-v1
-KOR_TRAVEL_MAP_UI_ADMIN_USERNAME=<Map UI 관리자 이름>
-KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH=<Map UI PBKDF2 해시>
-KOR_TRAVEL_MAP_UI_SESSION_SECRET=<공백 없는 32자 이상 session secret>
-KTDM_C6C_MAP_UI_ADMIN_PASSWORD=<16자 이상 Map UI 관리자 비밀번호>
-KTDM_C6C_PINVI_ADMIN_EMAIL=<PinVi admin email>
-KTDM_C6C_PINVI_ADMIN_PASSWORD=<16자 이상 PinVi admin 비밀번호>
-```
-
-Map의 standalone compose는 destructive 기능을 기본 `false`로 해석한다. Manager production은
-canonical `kor-travel-map-api` service에 `KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED=true` literal을
-직접 결선하며 host `.env` 값으로 우회하지 않는다. C6c는 raw/resolved/runtime에서 Map API exact
-`true`와 다른 service의 이름 부재를 mutation 전에 검증하고, compatible-pair/C7 environment hash로
-활성 runtime까지 결박한다. 실제 delete/restore/swap 감사 actor는 Map API의 인증 principal이다.
-
-Map의 feature 관리 REST도 standalone/image 기본값에 의존하지 않는다. Manager production은 같은
-canonical Map API service에 `KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED=true`를 literal로 결선한다.
-C6c는 raw/resolved/runtime의 API exact path와 다른 service·channel의 이름 부재를 모두 검증하며,
-누락 또는 값 변경은 container mutation 전에 fail-close한다.
-
-production compatible-pair 계약은 Map API host bind와 PinVi의 Map base URL을 각각 정확히 `12701`과
-`http://127.0.0.1:12701`로 고정한다. 두 값이 서로 일치해도 다른 포트면 첫 container mutation 전에
-중단한다. 비표준 포트는 local/development에서 두 값을 함께 맞춘 경우에만 허용한다.
-
-Map UI의 username·PBKDF2 hash·session secret은 local/production 모두 기본값 없는 `:?` 보간으로
-명시해야 한다. hash는 `pbkdf2_sha256` 형식과 100,000회 이상의 반복 수를 사용하고, session secret은
-32자 이상이며 위치와 종류를 불문하고 Python `str.isspace()`가 인식하는 모든 Unicode 공백 문자를
-포함하지 않아야 한다. UI smoke의 평문 비밀번호
-`KTDM_C6C_MAP_UI_ADMIN_PASSWORD`는 로그인 검증을 수행하는 manager process에서만 사용하며 compose
-service 환경에는 주입하지 않는다. username은 비밀값이 아닌 로그인 identity이며 runtime 값과 smoke
-로그인 값이 하나의 source를 공유하고 Map UI의 정확한 Env path에서 frozen 값과 같아야 한다. 같은 username
-문자열이 다른 서비스의 일반 scalar에 나타나는 것은 허용하지만, 환경변수 이름
-`KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`을 Map UI 밖에 주입하는 것은 거부한다.
-
-실제 secret은 화면·shell history·로그에 출력하지 않는다. `docker-compose.override.yml`을 포함한 어떤
-서비스도 manager 루트 `.env`를 `env_file`로 읽으면 안 된다. Map API·PinVi API·Map UI는 base
-compose의 명시 보간만 사용한다. frozen snapshot과 rollback 문서는 Map UI hash·session secret을 최초
-environment snapshot에서만 해석한다. ops token·hash·session secret·평문 smoke credential 같은 confidential
-값은 허용된 Env path 밖 모든 scalar 노출을 거부한다.
-
-n150 read-only preflight에서는 일반 scalar의 username 문자열 일치를 secret 누출로 오인한 false-positive를
-확인했으며 container mutation은 없었다. 위 identity/confidential 분리 반영 뒤 root 권한이 필요한 Map UI
-비밀번호 회전과 cross-repo smoke·실제 로그인을 다시 수행하기 전까지 production 전환은 완료로 보지 않는다.
-
-Map UI credential rotation은 user-writable checkout이나 venv를 `sudo`로 직접 실행하지 않는다.
-운영 설치는 `scripts/install-ktdm-trusted-release <clean-checkout> --env-file <canonical-env>
---wheelhouse <root-owned-wheelhouse>`로 user-owned checkout의 tracked `git archive`를 source owner 권한에서
-만들고, root는 그 tar archive와 root-owned/non-writable offline wheelhouse만 소비한다. 처음 읽은
-40자 commit SHA를 clean check와 archive에 모두 사용하므로 설치 도중 checkout `HEAD`가 움직여도
-recorded revision과 source bytes가 달라질 수 없다. installer는 canonical `.env`의
-identity·mode·owner·SHA snapshot을 잡은 뒤 rotation/pair workflow와 같은 root-only
-`/run/lock/kor-travel-docker-manager/global-mutation.lock`을 nonblocking으로 획득하고, lock 내부에서
-snapshot을 exact 재검증한다. 이때 canonical `.env`를 `O_NOFOLLOW` read-only FD로 한 번 열어
-validated identity와 exact bytes를 설치 종료까지 유지한다. root-only 0700 staging의 `.env`는
-경로 재조회나 일반 file copy가 아니라 그 held FD에서만 만들고, copy 전후 경로·descriptor와
-설치된 owner/mode/nlink/size/SHA를 다시 확인한다. lock은 source archive부터 app root·launcher activation/rollback
-종료까지 유지되므로 credential rotation과 두 installer가 서로의 state를 되감을 수 없다. staging은
-`/opt/.kor-travel-docker-manager.stage.*`에 root-owned/non-writable source·compose·
-`.ktdm-source-revision`·isolated backend wheel venv·`.ktdm-release-manifest.json`을 만든 뒤
-`/opt/kor-travel-docker-manager`로 activation한다. 운영 `.env`는 source snapshot에서 가져오지 않고
-명시 `--env-file` 또는 기존 app root의 owner/group을 유지한 0600 regular file로 보존한다. wheel install은
-staging의 exact source에서 `pip wheel --no-index --find-links <root-owned-wheelhouse>`로 backend wheel을
-먼저 빌드한 뒤 그 wheel만 설치한다. wheelhouse 전체 SHA, staging source에서 빌드한 backend wheel SHA,
-설치된 wheel `RECORD` SHA를 release manifest에 결박한다. 설치·launcher self-check가 실패하면 새 app
-root를 제거하고 기존 app root와 이전 launcher bytes/mode를 rollback에서 복구한다. root `pip`를
-실행하기 전에 wheelhouse의 전체 ancestor와 각 wheel의 owner/mode/nlink/inode/digest를 snapshot하고,
-build·install 각 단계 뒤 같은 snapshot인지 다시 확인한다. 기본 wheelhouse는 root-private
-`/var/lib/kor-travel-docker-manager/wheelhouse`이며 user-writable 경로는 허용하지 않는다.
-새 app root와 launcher self-check가 모두 끝나면 active revision·launcher digest를 durable
-`committed` state로 먼저 fsync한다. EXIT cleanup도 이 state에서는 rollback하지 않으며,
-이전 app/archive/launcher backup 삭제만 post-commit best-effort로 수행한다. backup GC가 실패해도
-이미 검증한 active release를 되돌리거나 삭제하지 않는다. app/staging/rollback/archive/launcher
-artifact는 PID별 이름을 쓰지 않고 host-global 고정 경로와 root-private
-`/var/lib/kor-travel-docker-manager/trusted-release-transaction.json`에 결박한다. state에는
-secret bytes를 넣지 않고 old app/launcher evidence digest, target revision, 새 launcher digest와
-`preparing|prepared|committed` phase만 atomic fsync한다. 다음 installer는 같은 전역 lock 아래서
-non-committed state를 exact rollback하거나 committed cleanup residue를 idempotent GC한 뒤에만
-새 transaction을 시작한다. state로 분류할 수 없는 legacy PID artifact나 foreign path collision은
-자동 삭제하지 않고 fail-close한다.
-
-root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate`는 `scripts/install-ktdctl-map-ui-auth-rotate`가
-staging 파일을 fsync한 뒤 설치한다. launcher는 `/usr/local/sbin`, `/opt`, app root, source evidence,
-release manifest, backend venv/site-packages/package/dist-info/`RECORD`를 확인한다. `RECORD` 검증은
-venv Python이 아니라 exact root-owned `/usr/bin/python3 -I -S`로 먼저 실행해 `.pth`/`sitecustomize`
-pre-import gap을 막고, venv `bin/python`은 canonical root-owned `/usr/bin/python3.x` symlink chain으로
-resolve될 때만 허용한다. 또한 설치된 wheel `RECORD` SHA가 release manifest의 `wheel_record_sha256`과
-일치해야 한다. `RECORD`의 site-packages 밖 항목은 Poetry가 만든 exact
-`.venv/bin/ktdctl` entrypoint 하나만 허용한다. installer는 staging 절대경로 shebang을
-canonical `/opt` Python과 project root를 고정하는 installed
-`ktdctl` entrypoint로 바꾸고, 바뀐 bytes의 SHA-256·size를 wheel `RECORD`에 다시 기록한다. 따라서
-atomic activation 뒤 direct `ktdctl`과 trusted rotation launcher가 같은 installed source를 사용한다.
-launcher는 모든 검증을 통과한 뒤에만
-`KTDM_TRUSTED_ROOT_LAUNCHER=ktdctl-map-ui-auth-rotate-v1`을 설정하고 `python -I -m
-kor_travel_docker_manager.cli map-ui-auth rotate`를 실행한다. `sudo
-<user-writable-venv>/bin/ktdctl map-ui-auth rotate` 경로는 root가 사용자 소유 Python script/import
-chain을 먼저 실행하므로 금지하며, CLI도 launcher marker가 없으면 password 입력 전에 fail-close한다.
-
-rotation journal은 비밀값과 raw Docker inspect를 저장하지 않는다. UI runtime evidence는 stable canonical
-bytes의 SHA-256만 저장하고, non-UI evidence는 service별 allowlist metadata digest만 저장한다.
-rollback은 `rollback_preparing` journal을 먼저 fsync한 뒤 root-private `env.recovery`를 만들고,
-두 파일 가운데 하나만 남은 crash도 expected bytes로 양방향 수렴한 뒤 `.env`를 replace한다.
-재실행 시 current `.env`가 old/new/recovery 어느 SHA에 있든 phase별 password evidence를
-메모리에서 검증하고 같은 recovery bytes로만 resume한다. terminal `committed`/`rolled_back` journal은
-backup·recovery artifact 일부가 이미 삭제된 cleanup crash 뒤에도 current terminal SHA와 runtime/auth를
-확인하고 같은 operation audit을 한 번만 보충한 뒤 남은 artifact를 idempotent하게 정리한다.
-forward mutation 전 prepared residue와 current `.env`와 같은 orphan backup도 terminal
-`aborted`로 기록하며, journal operation ID 또는 artifact identity에서 만든 결정적 operation ID로
-cleanup crash 재실행 중 중복 audit을 막는다. current
-`.env`가 journal의 어떤 SHA에도 속하지 않으면 외부 변경으로 보고 덮어쓰지 않는다.
-
-최초 설치에서 manifest가 없으면 capture가 같은 host lock 안에서 base dependency, Map API,
-Map UI/Dagster, PinVi API, PinVi Web/Dagster 순으로 전체 토폴로지를 단계 bootstrap한다.
-merged compose, canonical runtime image, UI auth, runtime secret 격리를 모두 통과한 뒤 최초 v4를
-원자 기록한다. 실패하면 Map runtime 네 service와 PinVi API를 중지하고 이 capture가 새로 만든
-container만 제거한다. Map dependent provenance가 없는 v1/v2/v3와 알 수 없는 manifest는
-덮어쓰지 않고 거부한다.
-
-```bash
-ktdctl pinvi-pair capture --verified-compatible --build
-ktdctl pinvi-pair deploy --build
-```
-
-첫 번째 명령은 manifest가 없을 때만 사용할 수 있다. `--build`는 Map·PinVi 각
-build context가 exact Git worktree root이고 clean인지 검증한다. manager는 각 lowercase 40자
-`HEAD`를 `KOR_TRAVEL_MAP_GIT_COMMIT`/`PINVI_SOURCE_REVISION`으로 직접 파생하고
-`PINVI_BUILD_ENVIRONMENT=production`을 강제한다. 이 세 값을 `.env`에 stale 값으로 고정하지
-않는다. 명시한 값이 파생값과 다르거나 두 worktree 중 하나라도 dirty이면 첫 container
-mutation 전에 중단한다.
-
-두 번째 명령은 host-wide lock 안에서
-현재 active set과 필수 서비스가 frozen canonical resolved Compose의 service별 readiness를
-만족하는지 확인한 다음 현재 Map UI container를 inspect해
-username·hash·session secret이 frozen environment와 정확히 같은지 확인하고, login→보호 화면→logout→
-재차단 lifecycle을 통과한 뒤에만 다섯 runtime을 함께 중지한다. 이후 Map API, signed 권한
-smoke, Map UI·Dagster web·daemon, PinVi API, UI auth를 단계 실행한다. build/recreate는 `--no-deps`로
-다섯 runtime에 적용한다. 다섯 candidate image는 runtime `up`과 분리된 Compose build 단계에서 먼저 만들고, 기존 container를
-중지·재생성하기 전에 immutable image ID와 `org.opencontainers.image.revision`을 파생한
-`HEAD`와 비교한다. build context는 live checkout이 아니라 각 `HEAD`의 일회성 Git archive라서
-build 도중 변경·원복한 파일과 ignored 파일은 image input이 될 수 없다. PinVi는
-`io.pinvi.build.environment=production`도 함께 확인한다. raw/resolved build mapping은 이
-snapshot context와 저장소 내부의 지정 Dockerfile, exact provenance arg만 허용하며 external
-Dockerfile·additional context·secret·target은 거부한다. Map
-build 유무와 무관하게 manifest active/rollback 합집합의 manager 전용 content-addressed local retention
-tag를 additive 생성·exact 검증한 뒤 stale tag 정리를 성공시켜야 다음 단계로 진행한다. build된 candidate도
-첫 container stop 전에 같은 방식으로 보존한다. 이 reference는 moving service tag 교체와 기존 container
-제거 뒤에도 rollback image가 남게 하며, 부분 tag 실패는 container mutation 전에 중단한다. manifest commit
-뒤에는 새 rollback 밖의 manager tag를 정리한다. cleanup 실패는 commit된 runtime을 복구하지 않고
-`cleanup_pending`으로 보고하며 다음 pair mutation 전에 해소한다. explicit rollback과 최초 capture도 같은
-retention 경계를 사용한다. Map
-read 200 envelope·무토큰 401·존재하지 않는 import-job cancel 404·cancel token의 non-cancel mutation
-403 가운데 하나라도 다르면 새 pair를 활성화하지 않는다. Docker Manager는 durable transaction ID로
-Map-owned fixture를 ensure하고, 반환된 dynamic `job_id`만 PinVi cancel relay에 보낸다. 성공은 exact
-409 `PIPELINE_CANCELLATION_UNSAFE`이며 Retry-After·502·503·generic 오류는 모두 거부한다. canonical
-details의 import root와 Map fixture의 소비 receipt가 같은 dynamic job/cancellation identity를 가져야 한다.
-모든 중간 실패는 시작 시점 active pair를
-복구해 전체 계약을 재검사하며, 복구도 실패하면 다섯 runtime을 중지하고 operator 조치를 요구한다. 최종
-readiness는 `ps --all` 존재 여부나 모든 service에 일률적으로 `Health=healthy`를 요구하지 않는다.
-canonical healthcheck가 활성화된 service는 `running + healthy`, healthcheck가 없거나 Compose 표준으로
-비활성화된 service는 `running`을 요구한다. service 누락·종료, 선언된 healthcheck의 빈/`starting`/
-`unhealthy` 상태와 malformed/모호한 healthcheck는 모두 fail-close한다. readiness 조회는
-`ps --all`을 사용하고 canonical scale/`deploy.replicas`, service별 runtime record,
-`container_name`을 singleton exact 계약으로 검증한다. stopped/stale duplicate나 malformed/예상 밖
-record를 정상 record로 덮어쓰지 않는다. runtime
-inspect는 실제 값을 출력하지 않고 `.Config` 전체의 안전 scalar를 순회해 ops token이 두 API의 정확한
-Env path에만, Map UI username Env 이름과 exact 값이 Map UI의 정확한 path에 있는지 검사한다. hash·session
-secret과 평문 UI smoke 비밀번호가 허용 path 밖 어떤 container scalar에도 존재하면 실패한다.
-
-owned cancel POST는 deploy/bootstrap/rollback 각 transaction에서 정확히 한 번만 수행한다. 첫 typed 결과를
-final verification과 같은 transaction의 recovery에 재사용하고, 응답 유실이나 DTO 불일치로 결과가
-불확실하면 두 번째 POST 없이 fail-close한다. full detail은 attempt/member/Dagster run lifecycle과 structured
-error/timestamp/commit 보존 경고를 모두 검사한다. attempt 생성 전 canonical 409는 exact root와
-`cancellation: null`만 허용한다. Map 권한 smoke도 tokenless read, cancel-token read, read-token cancel,
-cancel-token schedule mutation의 HTTP status와 RFC7807 code를 함께 검증한다.
-
-full 409의 unresolved count는 음수가 아닌 exact `pending|cancel_failed` member 개수다. root member 자체가
-resolved여도 child가 unresolved일 수 있고, CAS 전이 중 모든 member가 잠시 resolved되어 count가 0일 수도
-있다. retryable detail은 모든 `cancel_failed` member가 matching Dagster run의 exact `cancel_failed`와
-retryable error를 가져야 하며 `already_terminal` 대체 증거를 허용하지 않는다. in-progress의 definitive
-tracking drift는 member `cancel_failed`와 run `cancelled` 조합을 허용한다.
-runless in-progress 실패는 definitive code만 허용하고, 실패 snapshot이 남은 run-backed member/run은
-retryable/definitive policy group이 일치해야 한다. resolved run-backed 상태는 member의
-`cancelled|done|failed`를 Dagster `CANCELED|SUCCESS|FAILURE`에 정확히 대응한다. feature-load root의
-failed/SUCCESS tracking 예외는 동일 run의 `provider_feature_load` child 성공 추적 증거가 있을 때만 허용한다.
-이 definitive shape는 `409 PIPELINE_CANCELLATION_UNSAFE`+`failed`, termination timeout은
-`503 DAGSTER_TERMINATION_TIMEOUT`+`retryable` pair로 보존하며, non-retryable 409에는
-`Retry-After`를 요구하거나 허용하지 않는다.
-
-failed detail은 definitive top error를 유지하면서 exact run-backed retryable member/run과 definitive
-mismatch member를 함께 보존할 수 있다. `status`별 `finished_at`/`error`, retry lineage, frozen termination
-flag, engine timestamp lifecycle이 DB 정본과 다르면 배포를 중단한다. `Retry-After`가 존재하지만 garbage·0·
-음수이거나 ASCII decimal 1..300 범위를 벗어난 경우도 “헤더 없음”으로 취급하지 않고 실패한다. `+5`,
-앞뒤 공백, Unicode digit, 301도 거부한다. Compose `kill`의 signal option
-값은 service에서 제외하며 service-less/project-wide 또는 unknown option scope는 다섯 runtime을 포함한다고 본다.
-`build --pull`, `run --rm`, `rm -s/--stop`은 command별 boolean flag로 해석한다. `compose config`의
-`-o/--output` 분리·inline·누락 형식은 모두 write-capable mutation으로 분류해 host lock과 전용 capability를
-요구하며, `--format json` 등 명시한 read-only option만 lock 없이 허용한다. bootstrap created cleanup이나
-stopped-service 복원에서 예외가 나면 배포 응답은 operator-required 상태로 수렴한다.
-
-일반 non-API config update/reset/create도 파일 쓰기와 recreate 전에 candidate compose 전체를 검사한다.
-Map runtime 네 service와 PinVi API의 exact build mapping 외 위치에서 보호 이름·현재 값을
-environment, label, command, build arg로
-참조하거나 non-root `env_file`에 alias로 넣으면 typed 409로 거부하고 파일/container 불변을 보장한다.
-
-rollback은 단일 image/tag를 받지 않으며 manifest의 immutable pair만 복원한다.
-
-```bash
-ktdctl pinvi-pair rollback
-```
-
-기본 manifest와 mode 0600 lock은
-`~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`의 고정
-`compatible-pair-v4.json`/`deployment.lock`/`map-production-env-migration-v1.json`에 함께 저장한다.
-production은
-root·manifest·lock path override를
-모두 거부하므로 동일 Compose project가 다른 host lock을 선택할 수 없다. manifest version은 정확한 integer,
-active/rollback은 각각 Map runtime 네 image ID, `map_source_revision`, `pinvi_image_id`,
-`pinvi_source_revision`, `contract_generation`, `recorded_at` exact 9개 필드만 갖는다.
-`recorded_at`은 offset ISO 8601이어야 하며 parent fsync 실패 시 이전 snapshot을 원자 복원한다. manifest와
-capture/deploy/rollback은 같은 filesystem lock과 contract generation을 사용한다.
-deploy/rollback의 현재 UI preflight는 manifest pair의 exact `map_source_revision`에서 Map source
-`docker-compose.yml`을 읽는다. active/rollback 양쪽이 cursor hard-require 전 source env v3이고 marker가
-없을 때 exact manifest hash를 0600 sibling marker의 pending baseline으로 먼저 기록한다. pending은 같은
-baseline에서만 재시도하고 기존 username/hash/session을 exact 검증하며 admin proxy는 없음 또는 frozen
-exact를 허용한다. activation·runtime isolation·전체 smoke 성공 뒤 manifest보다 먼저 marker가 complete가
-되며, 이후 rollback/rotation으로 source slot이 v3/v3가 되어도 admin proxy는 필수 exact다. marker
-손상·symlink·owner/mode drift는 container mutation 전에 거부한다. candidate와 activation 후 검사는
-세대와 무관하게 모두 필수다.
-source Compose의 허용 `env_file`은 service별 exact path/options를 사용하며, exact source revision에
-추적된 파일은 단일 `100644 blob`, 64 KiB 이하, UTF-8이어야 한다. 허용되지 않은 service의
-`env_file` key는 `null`을 포함해 모두 거부한다.
-rollback은 다섯 image environment override의 canonical single-file contract를 stop 전에 검증하고
-Map API 복원·signed smoke와 Map dependent exact revision 검증 뒤 PinVi를 복원한다. 이후 Map/PinVi canonical 조회,
-Map UI 로그인·보호 화면·로그아웃, PinVi Web login shell과 runtime 격리가 모두 통과해야 commit한다.
-PinVi HTTP shell은 200·`text/html`·비어 있지 않은 body·`/_next/static/`과
-`/_next/static/chunks/app/(admin)/admin/login/page-<hex>.js` route chunk를 요구한다. `/admin/login`은
-`Suspense fallback={null}` client page이므로 raw SSR HTML의 `admin-login-form` 존재 여부를 shell
-판정에 사용하지 않는다. route chunk가 없는 generic Next.js fallback은 실패하며, hydration 후 form과
-실제 로그인 동작은 최종 n150 Playwright에서 확인한다.
-
-### 8.1 pinned source selection 설치
-
-canonical source cache가 tracked Map·PinVi release SHA를 보유하지 않거나 source-root/revision scalar가
-release pin과 다르면 raw `.env` 편집이나 root가 user-owned repository에서 Git을 실행하는 방식으로 고치지
-않는다. 구현 후 다음 trusted Manager command가 source authority만 먼저 수렴한다.
-
-```bash
-ktdctl pinvi-pair install-pinned-sources --confirm
-```
-
-이 command는 source-owner checkout에서 canonical origin identity를 read-only로 확인할 뿐, root가 그 Git
-config·hook·remote를 해석하지 않는다. root-owned empty bare staging repository는 code-owned canonical HTTPS
-URL과 tracked full SHA 하나만 sanitized fetch하며, 검증된 detached immutable worktree를 만든다. canonical
-`.env`의 Map/PinVi source root와 revision scalar는 private backup·durable journal 아래 owner-preserving atomic
-replace 하나로 함께 바뀐다. Docker·Compose·DB·runtime·image build는 이 command의 범위 밖이다.
-
-### 8.2 비운영 pinned runtime generation 재구축
+### 8.1 비운영 pinned runtime generation 재구축
 
 실제 운영 환경에는 이 절을 적용하지 않는다. typed 환경 pair
 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal` 및 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`를 frozen canonical
@@ -390,18 +121,20 @@ environment에서 함께 명시한 비운영 환경만 다음 command를 실행�
 mutation 전에 거부한다.
 
 ```bash
-ktdctl pinvi-pair rebuild-pinned --confirm
+sudo -n ktdctl pinvi-pair rebuild-pinned --confirm
 ```
 
-이 command는 `CACHE_TARGET_PRODUCTION_PINS`에 tracked된 exact Map·PinVi commit만 Git archive build
-source로 쓰며 `.env` checkout HEAD, old image, old manifest, backup을 candidate authority로 쓰지 않는다.
+이 command는 추적된 exact Map·PinVi commit만 Git archive build source로 쓰며 `.env` checkout HEAD,
+old image, old manifest를 candidate authority로 쓰지 않는다.
 먼저 Map 네 service와 PinVi 세 service의 immutable candidate image ID, source revision, Map application/Dagster와
-PinVi의 expected schema head를 owner-only journal에 고정한다. candidate artifact 하나라도 없으면 database를
+PinVi의 expected schema head를 owner-only journal에 고정한다. Map Dagster head는 source pin의 추정값이 아니라
+candidate Dagster image의 head-inspection command 출력으로 attest한다. candidate artifact 하나라도 없으면 database를
 건드리지 않는다.
 
 후속 phase에서만 Manager가 frozen resolved Compose의 Map application·Map Dagster·PinVi database identity를
-검증해 세 database를 새로 만든다. Map API entrypoint와 Map Dagster migration-only command가 candidate-static
-각 head까지 migration을 적용·검증하고, PinVi migration+admin credential-file one-shot CLI가 `pinvi_head`까지
+검증해 세 database를 새로 만든다. Map API entrypoint와 Map Dagster migration-only command가 candidate-attested
+각 head까지 migration을 적용·검증한다. Map Dagster command는 `dagster instance migrate` 후 strict single-row
+`public.alembic_version`을 같은 candidate image의 reported head와 대조한다. PinVi migration+admin credential-file one-shot CLI가 `pinvi_head`까지
 적용한 뒤 일곱 runtime을 같은 generation으로 기동한다. Map·PinVi Web·PinVi Dagster와 durable journal/log에는
 credential을 전달하거나 기록하지 않는다. F1J fixture smoke, authenticated UI contract, schema/image attestation이
 모두 성공하면 single active v5 generation manifest를 commit한다. 실패하거나 reset 뒤 재실행하면 일부 DB를

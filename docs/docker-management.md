@@ -366,6 +366,34 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `env_file`을 사용할 수 없다. username은 confidential 값이 아닌 identity라 다른 서비스의 일반 scalar와
 같거나 그 일부여도 허용하지만, Map UI의 exact wiring/runtime equality와 Map UI 밖 username 환경변수 이름
 금지는 유지한다.
+
+### 7.4 F1D v5 비운영 runtime 재구축
+
+새 Map·PinVi generation과 새 schema를 만드는 mutation은 격리된
+`rehearsal/rebuildable` 환경의 다음 명령 하나다.
+
+```bash
+sudo -n ktdctl pinvi-pair rebuild-pinned --confirm
+```
+
+이 명령은 tracked Map·PinVi exact source pin으로 일곱 service의 candidate image와 세 schema head를
+먼저 attest한 뒤, Map application·Map Dagster·PinVi database를 drop/create하고 migration·one-shot
+bootstrap·서비스 readiness·F1J smoke를 순서대로 검증한다. 실패와 재실행 모두 기존 DB, image,
+manifest를 복원하지 않으며 새 database를 다시 만든다. source/ETL 재적재는 committed 뒤의 별도
+workflow다.
+
+rebuildable 환경에서는 cache-target integration이 완전히 inert여야 한다. Map principal registry는 `[]`,
+PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer ID는 Compose 기본값이어야 한다.
+설정된 integration은 candidate build나 DB 변경 전에 거부한다.
+
+`capture`, `deploy`, `rollback`, `cache-target`, `db-backup`, `map-ui-auth` 공개 명령은 없다. 최종
+schema backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primitive로 설계한다.
+
+### 7.5 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
+
+아래는 이전 v4 구현의 근거를 보존한 역사 기록이다. 여기 나오는 command와 state file은 현행
+Manager에 존재하지 않으며 실행하면 안 된다. 현재 운영 절차로 해석하지 않는다.
+
 현재 pair의 exact `map_source_revision`에서 Map source `docker-compose.yml`을 읽었을 때
 admin/service/profile/public/debug hard-require가 있고 cursor가 아직 없는 source env v3가 manifest
 active/rollback 양쪽에만 있고 marker가 없으면, manager는 manifest logical hash를 sibling

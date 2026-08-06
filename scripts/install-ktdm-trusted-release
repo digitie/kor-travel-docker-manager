@@ -13,9 +13,6 @@ WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-/var/lib/kor-travel-docker-manage
 STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage"
 ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback"
 ARCHIVE="/var/lib/kor-travel-docker-manager/trusted-release.archive"
-LAUNCHER_PATH="/usr/local/sbin/ktdctl-map-ui-auth-rotate"
-LAUNCHER_ROLLBACK="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback"
-LAUNCHER_INSTALL_TMP="/usr/local/sbin/.ktdctl-map-ui-auth-rotate.installing"
 STATE_ROOT="/var/lib/kor-travel-docker-manager"
 TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"
 TRANSACTION_STATE_TMP="${STATE_ROOT}/.trusted-release-transaction.json.tmp"
@@ -186,9 +183,6 @@ trusted_release_transaction() {
     "${STAGING}" \
     "${ROLLBACK}" \
     "${ARCHIVE}" \
-    "${LAUNCHER_PATH}" \
-    "${LAUNCHER_ROLLBACK}" \
-    "${LAUNCHER_INSTALL_TMP}" \
     "$@" <<'PY'
 from __future__ import annotations
 
@@ -210,10 +204,7 @@ app_root = pathlib.Path(sys.argv[4])
 staging = pathlib.Path(sys.argv[5])
 rollback = pathlib.Path(sys.argv[6])
 archive = pathlib.Path(sys.argv[7])
-launcher = pathlib.Path(sys.argv[8])
-launcher_rollback = pathlib.Path(sys.argv[9])
-launcher_install_tmp = pathlib.Path(sys.argv[10])
-arguments = sys.argv[11:]
+arguments = sys.argv[8:]
 
 
 def fsync_dir(path: pathlib.Path) -> None:
@@ -254,13 +245,6 @@ def regular_evidence(
         "nlink": metadata.st_nlink,
         "size": metadata.st_size,
     }
-
-
-def launcher_evidence(path: pathlib.Path) -> dict[str, Any]:
-    if not path.exists() and not path.is_symlink():
-        return {"present": False}
-    evidence = regular_evidence(path, expected_uid=0, expected_mode=0o755)
-    return {"present": True, **evidence}
 
 
 def app_evidence(path: pathlib.Path) -> dict[str, Any]:
@@ -317,17 +301,15 @@ def read_state() -> dict[str, Any]:
     value = json.loads(state_path.read_text(encoding="utf-8"))
     if (
         not isinstance(value, dict)
-        or value.get("version") != 1
+        or value.get("version") != 2
         or value.get("phase") not in {"preparing", "prepared", "committed"}
         or not re.fullmatch(r"[0-9a-f]{40}", str(value.get("target_revision", "")))
         or not isinstance(value.get("old_app"), dict)
-        or not isinstance(value.get("old_launcher"), dict)
     ):
         raise SystemExit("trusted release transaction state is invalid")
     if value["phase"] in {"prepared", "committed"} and (
         not isinstance(value.get("new_app_root_dev"), int)
         or not isinstance(value.get("new_app_root_ino"), int)
-        or not isinstance(value.get("new_launcher_sha256"), str)
     ):
         raise SystemExit("trusted release transaction target evidence is invalid")
     return value
@@ -428,26 +410,11 @@ def validate_new_app(state: dict[str, Any]) -> dict[str, Any]:
     return actual
 
 
-def validate_new_launcher(state: dict[str, Any]) -> dict[str, Any]:
-    expected_sha = state.get("new_launcher_sha256")
-    actual = launcher_evidence(launcher)
-    if (
-        not isinstance(expected_sha, str)
-        or not re.fullmatch(r"[0-9a-f]{64}", expected_sha)
-        or not actual.get("present")
-        or actual.get("sha256") != expected_sha
-    ):
-        raise SystemExit("active trusted launcher does not match transaction target")
-    return actual
-
-
 def reject_legacy_residue() -> None:
     patterns = (
         "/opt/.kor-travel-docker-manager.stage.*",
         "/opt/.kor-travel-docker-manager.rollback.*",
         "/opt/.kor-travel-docker-manager.archive.*",
-        "/usr/local/sbin/.ktdctl-map-ui-auth-rotate.rollback.*",
-        "/usr/local/sbin/.ktdctl-map-ui-auth-rotate.[0-9]*",
     )
     residue = sorted(item for pattern in patterns for item in glob.glob(pattern))
     if residue:
@@ -458,9 +425,7 @@ def reject_legacy_residue() -> None:
 
 def reconcile_committed(state: dict[str, Any]) -> None:
     validate_new_app(state)
-    validate_new_launcher(state)
     old_app = state["old_app"]
-    old_launcher = state["old_launcher"]
     if rollback.exists() or rollback.is_symlink():
         if not old_app.get("present"):
             raise SystemExit("committed rollback app residue is invalid")
@@ -471,16 +436,6 @@ def reconcile_committed(state: dict[str, Any]) -> None:
         )
     if staging.exists() or staging.is_symlink():
         raise SystemExit("committed transaction unexpectedly retained staging")
-    if launcher_rollback.exists() or launcher_rollback.is_symlink():
-        if not old_launcher.get("present"):
-            raise SystemExit("committed launcher rollback residue is unexpected")
-        remove_regular(launcher_rollback, old_launcher)
-    if launcher_install_tmp.exists() or launcher_install_tmp.is_symlink():
-        expected_sha = state.get("new_launcher_sha256")
-        evidence = launcher_evidence(launcher_install_tmp)
-        if evidence.get("sha256") != expected_sha:
-            raise SystemExit("committed launcher install residue is invalid")
-        remove_regular(launcher_install_tmp, evidence)
     remove_regular(archive)
     state_path.unlink()
     fsync_dir(state_path.parent)
@@ -488,14 +443,7 @@ def reconcile_committed(state: dict[str, Any]) -> None:
 
 def restore_noncommitted(state: dict[str, Any]) -> None:
     if state["phase"] == "preparing":
-        if (
-            rollback.exists()
-            or rollback.is_symlink()
-            or launcher_rollback.exists()
-            or launcher_rollback.is_symlink()
-            or launcher_install_tmp.exists()
-            or launcher_install_tmp.is_symlink()
-        ):
+        if rollback.exists() or rollback.is_symlink():
             raise SystemExit(
                 "preparing transaction unexpectedly contains activation residue"
             )
@@ -506,9 +454,6 @@ def restore_noncommitted(state: dict[str, Any]) -> None:
         return
 
     old_app = state["old_app"]
-    old_launcher = state["old_launcher"]
-    expected_new_launcher_sha = state.get("new_launcher_sha256")
-
     rollback_exists = rollback.exists() or rollback.is_symlink()
     app_exists = app_root.exists() or app_root.is_symlink()
     if old_app.get("present"):
@@ -529,39 +474,6 @@ def restore_noncommitted(state: dict[str, Any]) -> None:
         if app_exists:
             remove_transaction_tree(app_root, state)
 
-    backup_exists = launcher_rollback.exists() or launcher_rollback.is_symlink()
-    launcher_exists = launcher.exists() or launcher.is_symlink()
-    if old_launcher.get("present"):
-        if backup_exists:
-            if launcher_evidence(launcher_rollback) != old_launcher:
-                raise SystemExit("launcher rollback residue does not match original")
-            if launcher_exists:
-                current = launcher_evidence(launcher)
-                if current.get("sha256") != expected_new_launcher_sha:
-                    raise SystemExit(
-                        "foreign launcher target blocks trusted release rollback"
-                    )
-                remove_regular(launcher, current)
-            os.rename(launcher_rollback, launcher)
-            fsync_dir(launcher.parent)
-            if launcher_evidence(launcher) != old_launcher:
-                raise SystemExit("restored launcher does not match original")
-        elif not launcher_exists or launcher_evidence(launcher) != old_launcher:
-            raise SystemExit("original launcher cannot be recovered")
-    else:
-        if backup_exists:
-            raise SystemExit("unexpected launcher rollback exists for initial install")
-        if launcher_exists:
-            current = launcher_evidence(launcher)
-            if current.get("sha256") != expected_new_launcher_sha:
-                raise SystemExit("foreign launcher blocks initial install rollback")
-            remove_regular(launcher, current)
-
-    if launcher_install_tmp.exists() or launcher_install_tmp.is_symlink():
-        current = launcher_evidence(launcher_install_tmp)
-        if current.get("sha256") != expected_new_launcher_sha:
-            raise SystemExit("foreign launcher install residue blocks rollback")
-        remove_regular(launcher_install_tmp, current)
     if staging.exists() or staging.is_symlink():
         if state.get("new_app_root_dev") is None:
             remove_tree(staging)
@@ -586,8 +498,6 @@ fixed_artifacts = (
     staging,
     rollback,
     archive,
-    launcher_rollback,
-    launcher_install_tmp,
 )
 
 if action == "reconcile":
@@ -609,26 +519,22 @@ elif action == "begin":
         raise SystemExit("trusted release artifact exists before transaction begin")
     write_state(
         {
-            "version": 1,
+            "version": 2,
             "phase": "preparing",
             "target_revision": arguments[0],
             "old_app": app_evidence(app_root),
-            "old_launcher": launcher_evidence(launcher),
             "new_app_root_dev": None,
             "new_app_root_ino": None,
-            "new_launcher_sha256": None,
         }
     )
-elif action == "set-new-launcher":
-    if len(arguments) != 1 or not re.fullmatch(r"[0-9a-f]{64}", arguments[0]):
-        raise SystemExit("trusted release launcher digest is invalid")
+elif action == "set-new-app":
+    if arguments:
+        raise SystemExit("trusted release app staging takes no arguments")
     current_state = read_state()
     if current_state["phase"] != "preparing":
-        raise SystemExit("trusted release transaction phase cannot stage launcher")
+        raise SystemExit("trusted release transaction phase cannot stage app")
     if app_evidence(app_root) != current_state["old_app"]:
         raise SystemExit("active app changed while trusted release was staged")
-    if launcher_evidence(launcher) != current_state["old_launcher"]:
-        raise SystemExit("active launcher changed while trusted release was staged")
     staged_app = app_evidence(staging)
     if (
         not staged_app.get("present")
@@ -638,7 +544,6 @@ elif action == "set-new-launcher":
     current_state["phase"] = "prepared"
     current_state["new_app_root_dev"] = staged_app["root_dev"]
     current_state["new_app_root_ino"] = staged_app["root_ino"]
-    current_state["new_launcher_sha256"] = arguments[0]
     write_state(current_state)
 elif action == "commit":
     if arguments:
@@ -647,7 +552,6 @@ elif action == "commit":
     if current_state["phase"] != "prepared":
         raise SystemExit("trusted release transaction phase cannot commit")
     validate_new_app(current_state)
-    validate_new_launcher(current_state)
     current_state["phase"] = "committed"
     write_state(current_state)
 else:
@@ -1011,9 +915,7 @@ run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
 /usr/bin/find "${STAGING}" -type d -exec /usr/bin/chmod 0755 {} +
 /usr/bin/find "${STAGING}" -type f -exec /usr/bin/chmod 0644 {} +
 /usr/bin/chmod 0700 "${STAGING}"
-/usr/bin/chmod 0755 "${STAGING}/scripts/ktdctl-map-ui-auth-rotate" \
-  "${STAGING}/scripts/install-ktdctl-map-ui-auth-rotate" \
-  "${STAGING}/scripts/install-ktdm-trusted-release"
+/usr/bin/chmod 0755 "${STAGING}/scripts/install-ktdm-trusted-release"
 
 /usr/bin/printf '%s\n' "${revision}" > "${STAGING}/.ktdm-source-revision"
 /usr/bin/chown root:root "${STAGING}/.ktdm-source-revision"
@@ -1378,13 +1280,9 @@ if (
   die "deployment .env changed during trusted release staging"
 fi
 
-new_launcher_sha256="$(/usr/bin/sha256sum "${STAGING}/scripts/ktdctl-map-ui-auth-rotate" | /usr/bin/cut -d ' ' -f 1)"
-trusted_release_transaction set-new-launcher "${new_launcher_sha256}"
+trusted_release_transaction set-new-app
 if [[ -e "${APP_ROOT}" ]]; then
   /usr/bin/mv -T "${APP_ROOT}" "${ROLLBACK}"
-fi
-if [[ -e "${LAUNCHER_PATH}" ]]; then
-  /usr/bin/mv -T "${LAUNCHER_PATH}" "${LAUNCHER_ROLLBACK}"
 fi
 /usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
 /usr/bin/chmod 0755 "${APP_ROOT}"
@@ -1414,9 +1312,6 @@ try:
 finally:
     os.close(fd)
 PY
-
-"${APP_ROOT}/scripts/install-ktdctl-map-ui-auth-rotate" "${APP_ROOT}/scripts/ktdctl-map-ui-auth-rotate"
-/usr/local/sbin/ktdctl-map-ui-auth-rotate --help >/dev/null
 
 trusted_release_transaction commit
 trap - EXIT

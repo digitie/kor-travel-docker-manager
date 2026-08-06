@@ -10,7 +10,6 @@ import os
 import re
 import stat
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -18,8 +17,8 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -28,22 +27,6 @@ from urllib.parse import quote, urlencode, urlsplit
 import yaml
 from dotenv import dotenv_values
 
-from kor_travel_docker_manager.services.cache_target_contract import (
-    MANAGER_ONLY_TOKEN_ENV_NAMES as CACHE_TARGET_MANAGER_ONLY_ENV_NAMES,
-)
-from kor_travel_docker_manager.services.cache_target_contract import (
-    MAP_REGISTRY_ENV as CACHE_TARGET_REGISTRY_ENV,
-)
-from kor_travel_docker_manager.services.cache_target_contract import (
-    PINVI_ORDINARY_ENV_NAMES as CACHE_TARGET_ORDINARY_ENV_NAMES,
-)
-from kor_travel_docker_manager.services.cache_target_contract import (
-    PROTECTED_ENV_NAMES as CACHE_TARGET_PROTECTED_ENV_NAMES,
-)
-from kor_travel_docker_manager.services.cache_target_contract import (
-    CacheTargetRuntimeContract,
-    load_cache_target_runtime_contract,
-)
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
@@ -53,6 +36,9 @@ _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _PINVI_API_SERVICE = "pinvi-api"
+_PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
+_PINVI_WEB_SERVICE = "pinvi-web"
+_PINVI_DAGSTER_SERVICE = "pinvi-dagster"
 _MAP_RUNTIME_SERVICES = (
     _MAP_API_SERVICE,
     _MAP_UI_SERVICE,
@@ -76,7 +62,6 @@ _MAP_FIXTURE_ENV = "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN"
 _MAP_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
 _PINVI_READ_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
 _PINVI_CANCEL_ENV = "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"
-_PINVI_CACHE_API_BASE_URL_ENV = "PINVI_KOR_TRAVEL_MAP_API_BASE_URL"
 _MAP_UI_USERNAME_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
 _MAP_UI_PASSWORD_HASH_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
 _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
@@ -119,63 +104,11 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
         "KTDM_C6C_PINVI_ADMIN_EMAIL",
         _PINVI_ADMIN_PASSWORD_ENV,
     }
-) | CACHE_TARGET_MANAGER_ONLY_ENV_NAMES
-_CACHE_TARGET_MAP_ENV_NAMES = frozenset({CACHE_TARGET_REGISTRY_ENV})
-_CACHE_TARGET_PINVI_ENV_NAMES = CACHE_TARGET_ORDINARY_ENV_NAMES
+)
 _SMOKE_CONNECTION_ATTEMPTS = 30
 _SMOKE_CONNECTION_RETRY_SECONDS = 1.0
 _SAFE_GET_READINESS_ATTEMPTS = 2
 _T = TypeVar("_T")
-_CACHE_TARGET_ALLOWED_API_ENV_SOURCES = {
-    (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): CACHE_TARGET_REGISTRY_ENV,
-    **{
-        (_PINVI_API_SERVICE, env_name): env_name
-        for env_name in CACHE_TARGET_ORDINARY_ENV_NAMES
-    },
-    (_PINVI_API_SERVICE, _PINVI_CACHE_API_BASE_URL_ENV): (
-        _PINVI_CACHE_API_BASE_URL_ENV
-    ),
-}
-_CACHE_TARGET_CANONICAL_API_ENV_VALUES = {
-    (_MAP_API_SERVICE, CACHE_TARGET_REGISTRY_ENV): (
-        "${KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS:-[]}"
-    ),
-    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED"): (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED:-false}"
-    ),
-    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN"): (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN:-}"
-    ),
-    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN"): (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN:-}"
-    ),
-    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID"): (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID:-pinvi-cache-target-consumer}"
-    ),
-    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256"): (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256:-}"
-    ),
-    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION"): (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION:-}"
-    ),
-    (_PINVI_API_SERVICE, "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION"): (
-        "${PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION:-}"
-    ),
-    (_PINVI_API_SERVICE, _PINVI_CACHE_API_BASE_URL_ENV): (
-        "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
-    ),
-}
-_CACHE_TARGET_RESOLVED_DEFAULTS = {
-    CACHE_TARGET_REGISTRY_ENV: "[]",
-    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": "false",
-    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": "",
-    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": "",
-    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": "pinvi-cache-target-consumer",
-    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": "",
-    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": "",
-    "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": "",
-    _PINVI_CACHE_API_BASE_URL_ENV: "http://127.0.0.1:12701",
-}
 _MAP_UI_AUTH_ENV_NAMES = frozenset(
     {
         _MAP_UI_USERNAME_ENV,
@@ -208,7 +141,12 @@ _MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
     _MAP_PRODUCTION_API_LITERAL_VALUES
 )
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
-    {_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE}
+    {
+        _MAP_API_SERVICE,
+        _PINVI_API_SERVICE,
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _MAP_UI_SERVICE,
+    }
 )
 _OPS_ENV_NAMES = frozenset(
     {
@@ -227,6 +165,8 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): _MAP_REQUIRED_ENV,
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
     (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): _MAP_UI_USERNAME_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): _MAP_UI_PASSWORD_HASH_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): _MAP_UI_SESSION_SECRET_ENV,
@@ -236,7 +176,6 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         _MAP_CURSOR_SIGNING_SECRET_ENV
     ),
-    **_CACHE_TARGET_ALLOWED_API_ENV_SOURCES,
 }
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
@@ -248,6 +187,12 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     ),
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
     (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): (
+        "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+    ),
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): (
+        "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
+    ),
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): (
         "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
     ),
     (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): (
@@ -282,7 +227,6 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         (_MAP_API_SERVICE, env_name): value
         for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
     },
-    **_CACHE_TARGET_CANONICAL_API_ENV_VALUES,
 }
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
@@ -405,39 +349,21 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     ),
 }
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
-_PAIR_MANIFEST_VERSION = 4
-_MAP_PRODUCTION_ENV_MIGRATION_VERSION = 1
-_MAP_PRODUCTION_ENV_MIGRATION_FILENAME = (
-    "map-production-env-migration-v1.json"
-)
-_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_LEGACY_PAIR_MANIFEST_FILENAMES = (
-    "compatible-pair-v2.json",
-    "compatible-pair-v3.json",
-)
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
-_ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION: ContextVar[str | None] = ContextVar(
-    "active_cache_target_window_transaction", default=None
-)
-
-
-class _CompatiblePairMutationCapability:
-    __slots__ = ()
 
 
 class _ManagedComposeMutationCapability:
     __slots__ = ()
 
 
-class _CacheTargetWindowMutationCapability:
+class _PinnedRuntimeRebuildMutationCapability:
     __slots__ = ()
 
 
-_COMPATIBLE_PAIR_MUTATION_CAPABILITY = _CompatiblePairMutationCapability()
 _MANAGED_COMPOSE_MUTATION_CAPABILITY = _ManagedComposeMutationCapability()
-_CACHE_TARGET_WINDOW_MUTATION_CAPABILITY = _CacheTargetWindowMutationCapability()
+_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY = _PinnedRuntimeRebuildMutationCapability()
 
 
 class DeploymentContractError(ValueError):
@@ -531,24 +457,10 @@ class C6cDeploymentConfig:
     pinvi_container: str
     contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
-    cache_target: CacheTargetRuntimeContract | None = field(default=None, repr=False)
 
     @property
     def production(self) -> bool:
         return self.deployment_environment == "production"
-
-
-@dataclass(frozen=True)
-class CompatibleImagePair:
-    map_image_id: str
-    map_ui_image_id: str
-    map_dagster_image_id: str
-    map_dagster_daemon_image_id: str
-    map_source_revision: str
-    pinvi_image_id: str
-    pinvi_source_revision: str
-    contract_generation: str
-    recorded_at: str
 
 
 @dataclass(frozen=True)
@@ -562,38 +474,6 @@ class C6cBuildProvenance:
             "PINVI_SOURCE_REVISION": self.pinvi_source_revision,
             "PINVI_BUILD_ENVIRONMENT": "production",
         }
-
-
-def compatible_pair_image_environment(pair: CompatibleImagePair) -> dict[str, str]:
-    """Active/rollback manifest pair를 compose override environment로 변환한다."""
-
-    return {
-        "KOR_TRAVEL_MAP_API_IMAGE": pair.map_image_id,
-        "KOR_TRAVEL_MAP_UI_IMAGE": pair.map_ui_image_id,
-        "KOR_TRAVEL_MAP_DAGSTER_IMAGE": pair.map_dagster_image_id,
-        "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE": pair.map_dagster_daemon_image_id,
-        "KOR_TRAVEL_MAP_GIT_COMMIT": pair.map_source_revision,
-        "PINVI_API_IMAGE": pair.pinvi_image_id,
-        "PINVI_SOURCE_REVISION": pair.pinvi_source_revision,
-        "PINVI_BUILD_ENVIRONMENT": "production",
-    }
-
-
-@dataclass(frozen=True)
-class CompatiblePairManifest:
-    version: int
-    rollback: CompatibleImagePair
-    active: CompatibleImagePair
-
-
-@dataclass(frozen=True)
-class MapProductionEnvMigrationState:
-    version: int
-    state: str
-    baseline_manifest_sha256: str | None
-    prepared_at: str
-    completed_at: str | None
-
 
 @dataclass(frozen=True)
 class HttpProbeResponse:
@@ -646,49 +526,7 @@ def assert_manager_mutation_allowed(
                 "manager mutation requires a frozen environment"
             )
         environment = effective_environment(env_path)
-    mode = _validate_mutation_environment(environment)
-    _assert_cache_target_window_allows_mutation(environment, mode=mode)
-    return mode
-
-
-def assert_inert_cache_target_state_retirement_allowed(
-    *,
-    environment: Mapping[str, str],
-) -> str:
-    """F1G/F1H inert state 퇴역에만 state gate를 재귀 적용하지 않는다.
-
-    이 operation은 runtime/Compose/DB/manifest를 바꾸지 않고, exact inert state file
-    하나를 receipt-first로 제거하는 유일한 owner다. 일반 Manager mutation은 계속
-    ``assert_manager_mutation_allowed``를 거쳐 해당 file에서 fail-close한다.
-    """
-
     return _validate_mutation_environment(environment)
-
-
-def assert_c6c_mutation_allowed(
-    identifiers: Iterable[str],
-    *,
-    env_path: str | None = None,
-    environment: Mapping[str, str] | None = None,
-    capability: object | None = None,
-) -> None:
-    """Map runtime/PinVi API mutation은 production compatible-pair 경로만 허용한다."""
-
-    normalized = {str(identifier).strip() for identifier in identifiers}
-    if not normalized.intersection(_C6C_RUNTIME_IDENTIFIERS):
-        return
-    if environment is None:
-        if env_path is None:
-            raise DeploymentContractError(
-                "C6c mutation requires a frozen environment"
-            )
-        environment = effective_environment(env_path)
-    values = environment
-    mode = assert_manager_mutation_allowed(environment=values)
-    if mode == "production" and capability is not _COMPATIBLE_PAIR_MUTATION_CAPABILITY:
-        raise DeploymentContractError(
-            "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
-        )
 
 
 def assert_compose_mutation_allowed(
@@ -703,25 +541,45 @@ def assert_compose_mutation_allowed(
     normalized = {str(identifier).strip() for identifier in identifiers}
     if not normalized:
         return
+    if capability is _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY:
+        _assert_pinned_runtime_rebuild_environment(
+            env_path=env_path,
+            environment=environment,
+        )
+        return
     mode = assert_manager_mutation_allowed(
         env_path=env_path,
         environment=environment,
     )
-    if (
-        mode == "production"
-        and normalized.intersection(_C6C_RUNTIME_IDENTIFIERS)
-        and capability is not _COMPATIBLE_PAIR_MUTATION_CAPABILITY
-    ):
-        raise DeploymentContractError(
-            "production Map runtime/PinVi API mutation requires the compatible-pair workflow"
-        )
-    if (
-        mode == "production"
-        and capability is not _MANAGED_COMPOSE_MUTATION_CAPABILITY
-        and capability is not _COMPATIBLE_PAIR_MUTATION_CAPABILITY
-    ):
+    if mode == "production" and capability is not _MANAGED_COMPOSE_MUTATION_CAPABILITY:
         raise DeploymentContractError(
             "production Compose mutation requires a managed workflow capability"
+        )
+
+
+def _assert_pinned_runtime_rebuild_environment(
+    *,
+    env_path: str | None,
+    environment: Mapping[str, str] | None,
+) -> None:
+    """v5의 파기형 단일-active rebuild에만 별도 mutation capability를 준다."""
+
+    values = environment
+    if values is None:
+        if env_path is None:
+            raise DeploymentContractError(
+                "pinned runtime rebuild requires a frozen environment"
+            )
+        values = effective_environment(env_path)
+    required = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        _MAP_REQUIRED_ENV: "true",
+    }
+    if any(values.get(key, "").strip().lower() != expected for key, expected in required.items()):
+        raise DeploymentContractError(
+            "pinned runtime rebuild requires rehearsal/rebuildable environment"
         )
 
 
@@ -761,100 +619,6 @@ def _validate_mutation_environment(values: Mapping[str, str]) -> str:
         require_nonempty=deployment_environment == "production",
     )
     return deployment_environment
-
-
-@contextmanager
-def cache_target_window_mutation_scope(
-    transaction_id: str,
-    *,
-    capability: object | None = None,
-) -> Iterator[None]:
-    """단일 cutover orchestrator에만 non-terminal journal mutation을 허용한다."""
-
-    if capability is not _CACHE_TARGET_WINDOW_MUTATION_CAPABILITY:
-        raise DeploymentContractError(
-            "cache-target window requires the internal orchestrator capability"
-        )
-    try:
-        canonical = str(uuid.UUID(transaction_id))
-    except ValueError as exc:
-        raise DeploymentContractError(
-            "cache-target window transaction ID is invalid"
-        ) from exc
-    if canonical != transaction_id:
-        raise DeploymentContractError(
-            "cache-target window transaction ID must be canonical"
-        )
-    token = _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.set(transaction_id)
-    try:
-        yield
-    finally:
-        _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.reset(token)
-
-
-def cache_target_window_journal_path(values: Mapping[str, str]) -> Path:
-    manifest_path, _ = c6c_state_paths(values)
-    return Path(manifest_path).with_name("cache-target-window-v1.json")
-
-
-def cache_target_diagnostic_journal_path(values: Mapping[str, str]) -> Path:
-    manifest_path, _ = c6c_state_paths(values)
-    return Path(manifest_path).with_name("cache-target-diagnostic-v1.json")
-
-
-def cache_target_diagnostic_attempt_log_path(values: Mapping[str, str]) -> Path:
-    manifest_path, _ = c6c_state_paths(values)
-    return Path(manifest_path).with_name("cache-target-diagnostic-attempts-v1.json")
-
-
-def _assert_cache_target_window_allows_mutation(
-    values: Mapping[str, str],
-    *,
-    mode: str,
-) -> None:
-    if mode != "production":
-        return
-    path = cache_target_window_journal_path(values)
-    try:
-        file_stat = path.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise DeploymentContractError(
-            "cache-target window journal cannot be inspected"
-        ) from exc
-    if (
-        not stat.S_ISREG(file_stat.st_mode)
-        or file_stat.st_uid != os.geteuid()
-        or file_stat.st_nlink != 1
-        or stat.S_IMODE(file_stat.st_mode) != 0o600
-    ):
-        raise DeploymentContractError("cache-target window journal is unsafe")
-    try:
-        raw = path.read_bytes()
-        if not raw or len(raw) > 65_536:
-            raise ValueError
-        document = json.loads(raw)
-        if not isinstance(document, Mapping):
-            raise TypeError
-        transaction_id = document["transaction_id"]
-        phase = document["phase"]
-        if (
-            not isinstance(transaction_id, str)
-            or str(uuid.UUID(transaction_id)) != transaction_id
-            or not isinstance(phase, str)
-        ):
-            raise ValueError
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
-        raise DeploymentContractError(
-            "cache-target window journal header is invalid"
-        ) from exc
-    if phase in {"forward_committed", "rolled_back"}:
-        return
-    if _ACTIVE_CACHE_TARGET_WINDOW_TRANSACTION.get() != transaction_id:
-        raise DeploymentContractError(
-            "unfinished cache-target window blocks every other manager mutation"
-        )
 
 
 @contextmanager
@@ -1153,26 +917,6 @@ def load_c6c_deployment_config_from_environment(
             "Map UI runtime authentication environment is invalid"
         )
 
-    cache_target = load_cache_target_runtime_contract(
-        values,
-        # production에도 cache-target 도입 전 compatible-pair가 존재한다. 전체
-        # canonical unset/default는 None으로 유지하고 부분 설정만 fail-close한다.
-        require_nonempty=False,
-        legacy_tokens=(
-            values.get(_MAP_READ_ENV, ""),
-            values.get(_MAP_CANCEL_ENV, ""),
-            values.get(_MAP_FIXTURE_ENV, ""),
-            values.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
-            values.get(_MAP_UI_SESSION_SECRET_ENV, ""),
-            values.get(_MAP_ADMIN_PROXY_ENV, ""),
-            values.get(_MAP_SERVICE_TOKEN_ENV, ""),
-            values.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
-            values.get(_MAP_UI_PASSWORD_ENV, ""),
-            values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
-            values.get("PINVI_JWT_SECRET_KEY", ""),
-        ),
-        error_type=DeploymentContractError,
-    )
     config = C6cDeploymentConfig(
         deployment_environment=deployment_environment,
         pinvi_environment=pinvi_environment,
@@ -1192,7 +936,6 @@ def load_c6c_deployment_config_from_environment(
         map_cursor_signing_secret=values.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
         pinvi_container=values.get("PINVI_API_CONTAINER", "pinvi-api-latest"),
         contract_generation=contract_generation,
-        cache_target=cache_target,
         smoke=C6cSmokeConfig(
             pinvi_api_base_url=f"http://127.0.0.1:{pinvi_api_port}",
             map_ui_base_url=f"http://127.0.0.1:{map_ui_port}",
@@ -1203,7 +946,7 @@ def load_c6c_deployment_config_from_environment(
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
         ),
     )
-    _validate_token_pair(config, require_nonempty=config.production)
+    validate_c6c_operation_tokens(values, require_nonempty=config.production)
     _validate_map_production_secrets(config)
     if config.production:
         c6c_state_paths(values)
@@ -1256,15 +999,21 @@ def _parse_port(value: str, env_name: str) -> int:
     return port
 
 
-def _validate_token_pair(
-    config: C6cDeploymentConfig,
+def validate_c6c_operation_tokens(
+    environment: Mapping[str, str],
     *,
     require_nonempty: bool,
 ) -> None:
+    """Map operation capability 세트의 완결성·형식을 검증한다.
+
+    F1D는 final fixture smoke까지 같은 capability 세트를 소비하므로 rehearsal에서도
+    후보 image build나 DB reset보다 먼저 non-empty 세 token을 요구한다.
+    """
+
     _validate_raw_token_pair(
-        config.read_token,
-        config.cancel_token,
-        config.fixture_token,
+        environment.get(_MAP_READ_ENV, ""),
+        environment.get(_MAP_CANCEL_ENV, ""),
+        environment.get(_MAP_FIXTURE_ENV, ""),
         require_nonempty=require_nonempty,
     )
 
@@ -1410,15 +1159,6 @@ def _validate_production_config(
         raise DeploymentContractError(
             "production C6c deployment requires an explicit PinVi Map base URL"
         )
-    if (
-        config.cache_target is not None
-        and values.get(_PINVI_CACHE_API_BASE_URL_ENV, "").strip() != config.base_url
-    ):
-        raise DeploymentContractError(
-            "production PINVI_KOR_TRAVEL_MAP_API_BASE_URL must exactly match "
-            "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL"
-        )
-
     try:
         parsed = urlsplit(config.base_url)
         port = parsed.port
@@ -1517,14 +1257,6 @@ def validate_resolved_compose_secret_isolation(
         raise DeploymentContractError("resolved compose PinVi mode must be production")
     if pinvi_environment.get("PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL") != config.base_url:
         raise DeploymentContractError("resolved compose PinVi Map base URL is invalid")
-    if (
-        config.cache_target is not None
-        and pinvi_environment.get(_PINVI_CACHE_API_BASE_URL_ENV) != config.base_url
-    ):
-        raise DeploymentContractError(
-            "resolved compose PinVi cache-target Map base URL is invalid"
-        )
-
     expected = {
         _MAP_API_SERVICE: {
             _MAP_READ_ENV: _compose_resolved_escaped_value(config.read_token),
@@ -1561,34 +1293,6 @@ def validate_resolved_compose_secret_isolation(
             ),
         },
     }
-    if config.cache_target is not None:
-        expected[_MAP_API_SERVICE][CACHE_TARGET_REGISTRY_ENV] = (
-            _compose_resolved_escaped_value(config.cache_target.registry_json)
-        )
-        expected[_PINVI_API_SERVICE].update(
-            {
-                name: _compose_resolved_escaped_value(value)
-                for name, value in config.cache_target.ordinary_environment.items()
-            }
-        )
-    elif (
-        CACHE_TARGET_REGISTRY_ENV in map_environment
-        or CACHE_TARGET_ORDINARY_ENV_NAMES.intersection(pinvi_environment)
-    ):
-        expected[_MAP_API_SERVICE][CACHE_TARGET_REGISTRY_ENV] = "[]"
-        expected[_PINVI_API_SERVICE].update(
-            {
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED": "false",
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_COMMAND_TOKEN": "",
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_TOKEN": "",
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_CONSUMER_ID": (
-                    "pinvi-cache-target-consumer"
-                ),
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256": "",
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION": "",
-                "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_CONTRACT_GENERATION": "",
-            }
-        )
     for service_name, expected_environment in expected.items():
         service = _service_mapping(services, service_name)
         environment = _environment_mapping(service.get("environment"))
@@ -1678,29 +1382,6 @@ def validate_resolved_compose_secret_isolation(
             for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
         },
     }
-    if config.cache_target is not None:
-        allowed_paths[
-            ("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)
-        ] = _compose_resolved_escaped_value(config.cache_target.registry_json)
-        allowed_paths.update(
-            {
-                ("services", _PINVI_API_SERVICE, "environment", name): (
-                    _compose_resolved_escaped_value(value)
-                )
-                for name, value in config.cache_target.ordinary_environment.items()
-            }
-        )
-    elif CACHE_TARGET_REGISTRY_ENV in map_environment:
-        allowed_paths[
-            ("services", _MAP_API_SERVICE, "environment", CACHE_TARGET_REGISTRY_ENV)
-        ] = "[]"
-        allowed_paths.update(
-            {
-                ("services", _PINVI_API_SERVICE, "environment", name): value
-                for name, value in expected[_PINVI_API_SERVICE].items()
-                if name in CACHE_TARGET_ORDINARY_ENV_NAMES
-            }
-        )
     for path, scalar in _walk_scalars(resolved):
         if path in allowed_paths or (
             path[-1:] == ("<key>",) and path[:-1] in allowed_paths
@@ -1720,7 +1401,6 @@ def validate_resolved_compose_secret_isolation(
                 | _MAP_UI_AUTH_ENV_NAMES
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-                | CACHE_TARGET_PROTECTED_ENV_NAMES
             )
         ):
             raise DeploymentContractError(
@@ -1741,14 +1421,6 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
                 _compose_resolved_escaped_value(config.contract_generation),
-                *(
-                    _compose_resolved_escaped_value(value)
-                    for value in (
-                        config.cache_target.protected_values
-                        if config.cache_target is not None
-                        else ()
-                    )
-                ),
             )
         ):
             raise DeploymentContractError(
@@ -1772,7 +1444,6 @@ def validate_resolved_compose_candidate_protected_values(
             environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
         ),
     )
-    cache_target = _load_candidate_cache_target_contract(environment)
     _assert_candidate_single_file_boundary(resolved, environment=environment)
     services = resolved.get("services")
     if not isinstance(services, Mapping):
@@ -1791,7 +1462,6 @@ def validate_resolved_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-        | CACHE_TARGET_PROTECTED_ENV_NAMES
     )
     protected_values = (
         *(
@@ -1799,19 +1469,18 @@ def validate_resolved_compose_candidate_protected_values(
         for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
         if (value := environment.get(name, ""))
         ),
-        *(
-            _compose_resolved_escaped_value(value)
-            for value in (
-                cache_target.protected_values if cache_target is not None else ()
-            )
-        ),
     )
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
     }
 
-    for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
+    for service_name in (
+        _MAP_API_SERVICE,
+        _PINVI_API_SERVICE,
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _MAP_UI_SERVICE,
+    ):
         service = services[service_name]
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
@@ -1842,9 +1511,7 @@ def validate_resolved_compose_candidate_protected_values(
                 (allowed_service, target_name)
             )
             if source_name is not None:
-                source_value = environment.get(source_name)
-                if source_value is None:
-                    source_value = _CACHE_TARGET_RESOLVED_DEFAULTS.get(source_name, "")
+                source_value = environment.get(source_name, "")
                 expected = _compose_resolved_escaped_value(source_value)
             else:
                 expected = _CANDIDATE_CANONICAL_API_ENV_VALUES[
@@ -1907,70 +1574,6 @@ def validate_resolved_compose_candidate_protected_values(
     )
 
 
-def _load_candidate_cache_target_contract(
-    environment: Mapping[str, str],
-) -> CacheTargetRuntimeContract | None:
-    return load_cache_target_runtime_contract(
-        environment,
-        require_nonempty=False,
-        legacy_tokens=(
-            environment.get(_MAP_READ_ENV, ""),
-            environment.get(_MAP_CANCEL_ENV, ""),
-            environment.get(_MAP_UI_PASSWORD_HASH_ENV, ""),
-            environment.get(_MAP_UI_SESSION_SECRET_ENV, ""),
-            environment.get(_MAP_ADMIN_PROXY_ENV, ""),
-            environment.get(_MAP_SERVICE_TOKEN_ENV, ""),
-            environment.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
-            environment.get(_MAP_UI_PASSWORD_ENV, ""),
-            environment.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
-            environment.get("PINVI_JWT_SECRET_KEY", ""),
-        ),
-        error_type=ComposeCandidateContractError,
-    )
-
-
-def validate_resolved_compose_image_pair(
-    resolved: Mapping[str, Any],
-    config: C6cDeploymentConfig,
-    pair: CompatibleImagePair,
-) -> None:
-    validate_resolved_compose_secret_isolation(resolved, config)
-    if pair.contract_generation != config.contract_generation:
-        raise DeploymentContractError("compatible pair contract generation is not active")
-    services = resolved.get("services")
-    if not isinstance(services, Mapping):
-        raise DeploymentContractError("resolved compose config has no services mapping")
-    expected_images = {
-        _MAP_API_SERVICE: pair.map_image_id,
-        _MAP_UI_SERVICE: pair.map_ui_image_id,
-        _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
-        _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
-        _PINVI_API_SERVICE: pair.pinvi_image_id,
-    }
-    for service_name, expected_image in expected_images.items():
-        service = _service_mapping(services, service_name)
-        if service.get("image") != expected_image:
-            raise DeploymentContractError(
-                f"resolved compose immutable image does not match {service_name} manifest"
-            )
-        expected_container = (
-            _MAP_RUNTIME_CONTAINERS.get(service_name)
-            if service_name in _MAP_RUNTIME_CONTAINERS
-            else config.pinvi_container
-        )
-        if service.get("container_name") != expected_container:
-            raise DeploymentContractError(
-                f"resolved compose container identity is not canonical for {service_name}"
-            )
-    validate_resolved_c6c_build_provenance(
-        resolved,
-        C6cBuildProvenance(
-            map_source_revision=pair.map_source_revision,
-            pinvi_source_revision=pair.pinvi_source_revision,
-        ),
-    )
-
-
 def validate_resolved_c6c_build_provenance(
     resolved: Mapping[str, Any],
     provenance: C6cBuildProvenance,
@@ -1999,6 +1602,14 @@ def validate_resolved_c6c_build_provenance(
             "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
             "PINVI_BUILD_ENVIRONMENT": "production",
         },
+        _PINVI_WEB_SERVICE: {
+            "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
+        _PINVI_DAGSTER_SERVICE: {
+            "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
     }
     expected_arg_names = {
         service_name: set(args)
@@ -2012,12 +1623,15 @@ def validate_resolved_c6c_build_provenance(
             "NEXT_PUBLIC_VWORLD_API_KEY",
         }
     )
+    expected_arg_names[_PINVI_WEB_SERVICE].add("NEXT_PUBLIC_PINVI_API_URL")
     expected_dockerfiles = {
         _MAP_API_SERVICE: "docker/api.Dockerfile",
         _MAP_UI_SERVICE: "docker/frontend.Dockerfile",
         _MAP_DAGSTER_SERVICE: "docker/dagster.Dockerfile",
         _MAP_DAGSTER_DAEMON_SERVICE: "docker/dagster.Dockerfile",
         _PINVI_API_SERVICE: "apps/api/Dockerfile",
+        _PINVI_WEB_SERVICE: "apps/web/Dockerfile",
+        _PINVI_DAGSTER_SERVICE: "apps/etl/Dockerfile",
     }
     for service_name, service_expected_args in expected_provenance_args.items():
         service = _service_mapping(services, service_name)
@@ -2132,6 +1746,25 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
                 "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
             },
         },
+        _PINVI_WEB_SERVICE: {
+            "context": "${PINVI_REPO_DIR:-../pinvi}",
+            "dockerfile": "apps/web/Dockerfile",
+            "args": {
+                "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
+                "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
+                "NEXT_PUBLIC_PINVI_API_URL": (
+                    "${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}"
+                ),
+            },
+        },
+        _PINVI_DAGSTER_SERVICE: {
+            "context": "${PINVI_REPO_DIR:-../pinvi}",
+            "dockerfile": "apps/etl/Dockerfile",
+            "args": {
+                "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
+                "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
+            },
+        },
     }
     for service_name, expected_build in expected.items():
         service = _service_mapping(services, service_name)
@@ -2202,7 +1835,6 @@ def validate_compose_env_file_isolation(
                         | _MAP_UI_AUTH_ENV_NAMES
                         | _MAP_PRODUCTION_SECRET_ENV_NAMES
                         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-                        | CACHE_TARGET_PROTECTED_ENV_NAMES
                     )
                     for key in env_keys
                 ):
@@ -2230,7 +1862,6 @@ def validate_compose_candidate_protected_values(
                 environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
             ),
         )
-    cache_target = _load_candidate_cache_target_contract(environment)
     _assert_candidate_single_file_boundary(candidate, environment=environment)
     services = candidate.get("services")
     if not isinstance(services, Mapping):
@@ -2249,7 +1880,6 @@ def validate_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-        | CACHE_TARGET_PROTECTED_ENV_NAMES
     )
     protected_values = (
         *(
@@ -2257,14 +1887,18 @@ def validate_compose_candidate_protected_values(
         for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
         if (value := environment.get(name, ""))
         ),
-        *(cache_target.protected_values if cache_target is not None else ()),
     )
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
     }
 
-    for service_name in (_MAP_API_SERVICE, _PINVI_API_SERVICE, _MAP_UI_SERVICE):
+    for service_name in (
+        _MAP_API_SERVICE,
+        _PINVI_API_SERVICE,
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _MAP_UI_SERVICE,
+    ):
         service = services[service_name]
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
@@ -4621,13 +4255,6 @@ def validate_runtime_secret_isolation(
             _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
         },
     }
-    if config.cache_target is not None:
-        expected[config.map_container][CACHE_TARGET_REGISTRY_ENV] = (
-            config.cache_target.registry_json
-        )
-        expected[config.pinvi_container].update(
-            config.cache_target.ordinary_environment
-        )
     for required_container in expected:
         if required_container not in container_configs:
             raise DeploymentContractError(
@@ -4648,11 +4275,6 @@ def validate_runtime_secret_isolation(
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,
             config.contract_generation,
-            *(
-                config.cache_target.protected_values
-                if config.cache_target is not None
-                else ()
-            ),
         )
         if secret
     )
@@ -4662,7 +4284,6 @@ def validate_runtime_secret_isolation(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-        | CACHE_TARGET_PROTECTED_ENV_NAMES
     )
     for container_name, runtime_config in container_configs.items():
         if not isinstance(runtime_config, Mapping):
@@ -4686,7 +4307,6 @@ def validate_runtime_secret_isolation(
                 | _MAP_UI_AUTH_ENV_NAMES
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-                | CACHE_TARGET_PROTECTED_ENV_NAMES
             ):
                 if env_name not in allowed:
                     raise DeploymentContractError(
@@ -4730,562 +4350,6 @@ def validate_runtime_secret_isolation(
                 )
 
 
-def new_image_pair(
-    map_image_id: str,
-    pinvi_image_id: str,
-    contract_generation: str,
-    *,
-    map_ui_image_id: str,
-    map_dagster_image_id: str,
-    map_dagster_daemon_image_id: str,
-    map_source_revision: str,
-    pinvi_source_revision: str,
-) -> CompatibleImagePair:
-    _validate_image_id(map_image_id, "Map")
-    _validate_image_id(map_ui_image_id, "Map UI")
-    _validate_image_id(map_dagster_image_id, "Map Dagster")
-    _validate_image_id(map_dagster_daemon_image_id, "Map Dagster daemon")
-    _validate_image_id(pinvi_image_id, "PinVi")
-    _validate_source_revision(map_source_revision, "Map")
-    _validate_source_revision(pinvi_source_revision, "PinVi")
-    if not isinstance(contract_generation, str) or not _CONTRACT_GENERATION_PATTERN.fullmatch(
-        contract_generation
-    ):
-        raise DeploymentContractError("compatible pair contract generation is invalid")
-    return CompatibleImagePair(
-        map_image_id=map_image_id,
-        map_ui_image_id=map_ui_image_id,
-        map_dagster_image_id=map_dagster_image_id,
-        map_dagster_daemon_image_id=map_dagster_daemon_image_id,
-        map_source_revision=map_source_revision,
-        pinvi_image_id=pinvi_image_id,
-        pinvi_source_revision=pinvi_source_revision,
-        contract_generation=contract_generation,
-        recorded_at=datetime.now(UTC).isoformat(),
-    )
-
-
-def load_pair_manifest(path: str) -> CompatiblePairManifest:
-    manifest_path = Path(path)
-    if not manifest_path.exists():
-        raise DeploymentContractError(
-            "compatible pair manifest is missing; run "
-            "`ktdctl pinvi-pair capture --verified-compatible` first"
-        )
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if (
-            not isinstance(payload, Mapping)
-            or set(payload) != {"version", "rollback", "active"}
-            or type(payload.get("version")) is not int
-        ):
-            raise TypeError("manifest version must be an exact integer")
-        expected_pair_keys = {
-            "map_image_id",
-            "map_ui_image_id",
-            "map_dagster_image_id",
-            "map_dagster_daemon_image_id",
-            "map_source_revision",
-            "pinvi_image_id",
-            "pinvi_source_revision",
-            "contract_generation",
-            "recorded_at",
-        }
-        for pair_name in ("rollback", "active"):
-            pair_payload = payload.get(pair_name)
-            if (
-                not isinstance(pair_payload, Mapping)
-                or set(pair_payload) != expected_pair_keys
-            ):
-                raise TypeError("manifest pair shape is invalid")
-        manifest = CompatiblePairManifest(
-            version=payload["version"],
-            rollback=CompatibleImagePair(**payload["rollback"]),
-            active=CompatibleImagePair(**payload["active"]),
-        )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
-        raise DeploymentContractError("compatible pair manifest is invalid") from exc
-    _validate_pair_manifest_contract(manifest)
-    return manifest
-
-
-def map_production_env_migration_path(manifest_path: str) -> str:
-    """manifest shape를 바꾸지 않는 sibling 단조 migration marker 경로."""
-
-    path = _canonical_absolute_path(
-        manifest_path,
-        "compatible pair manifest path",
-    )
-    return str(path.with_name(_MAP_PRODUCTION_ENV_MIGRATION_FILENAME))
-
-
-def compatible_pair_manifest_logical_hash(
-    manifest: CompatiblePairManifest,
-) -> str:
-    _validate_pair_manifest_contract(manifest)
-    payload = json.dumps(
-        asdict(manifest),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def load_or_create_map_production_env_migration(
-    manifest_path: str,
-    *,
-    baseline_manifest: CompatiblePairManifest | None,
-    allow_create: bool = True,
-) -> MapProductionEnvMigrationState:
-    """missing marker를 pending으로 한 번 만들거나 기존 단조 상태를 검증한다."""
-
-    marker_path = Path(map_production_env_migration_path(manifest_path))
-    existing = _load_map_production_env_migration(marker_path, allow_missing=True)
-    expected_baseline = (
-        compatible_pair_manifest_logical_hash(baseline_manifest)
-        if baseline_manifest is not None
-        else None
-    )
-    if existing is not None:
-        if (
-            existing.state == "pending"
-            and existing.baseline_manifest_sha256 != expected_baseline
-        ):
-            raise DeploymentContractError(
-                "Map production env migration baseline changed while pending"
-            )
-        return existing
-    if not allow_create:
-        raise DeploymentContractError(
-            "Map production env migration marker is missing outside the original v3 baseline"
-        )
-
-    prepared_at = datetime.now(UTC).isoformat()
-    pending = MapProductionEnvMigrationState(
-        version=_MAP_PRODUCTION_ENV_MIGRATION_VERSION,
-        state="pending",
-        baseline_manifest_sha256=expected_baseline,
-        prepared_at=prepared_at,
-        completed_at=None,
-    )
-    _create_map_production_env_migration(marker_path, pending)
-    return pending
-
-
-def complete_map_production_env_migration(
-    manifest_path: str,
-) -> MapProductionEnvMigrationState:
-    """pending marker를 complete로만 전환하고 complete는 그대로 유지한다."""
-
-    marker_path = Path(map_production_env_migration_path(manifest_path))
-    current = _load_map_production_env_migration(marker_path, allow_missing=False)
-    if current is None:
-        raise DeploymentContractError(
-            "Map production env migration marker is missing"
-        )
-    if current.state == "complete":
-        return current
-    completed = MapProductionEnvMigrationState(
-        version=current.version,
-        state="complete",
-        baseline_manifest_sha256=current.baseline_manifest_sha256,
-        prepared_at=current.prepared_at,
-        completed_at=datetime.now(UTC).isoformat(),
-    )
-    _replace_map_production_env_migration(marker_path, completed)
-    return completed
-
-
-def _load_map_production_env_migration(
-    path: Path,
-    *,
-    allow_missing: bool,
-) -> MapProductionEnvMigrationState | None:
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        if allow_missing:
-            return None
-        raise DeploymentContractError(
-            "Map production env migration marker is missing"
-        ) from None
-    except OSError as exc:
-        raise DeploymentContractError(
-            "Map production env migration marker cannot be opened safely"
-        ) from exc
-    try:
-        artifact_stat = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(artifact_stat.st_mode)
-            or artifact_stat.st_uid != os.geteuid()
-            or stat.S_IMODE(artifact_stat.st_mode) != 0o600
-            or artifact_stat.st_size > 4096
-        ):
-            raise DeploymentContractError(
-                "Map production env migration marker type, owner, mode, or size is unsafe"
-            )
-        with os.fdopen(descriptor, mode="r", encoding="utf-8") as handle:
-            descriptor = -1
-            payload = json.load(handle)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DeploymentContractError(
-            "Map production env migration marker is invalid"
-        ) from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    expected_keys = {
-        "version",
-        "state",
-        "baseline_manifest_sha256",
-        "prepared_at",
-        "completed_at",
-    }
-    if not isinstance(payload, Mapping) or set(payload) != expected_keys:
-        raise DeploymentContractError(
-            "Map production env migration marker shape is invalid"
-        )
-    state = MapProductionEnvMigrationState(
-        version=payload["version"],
-        state=payload["state"],
-        baseline_manifest_sha256=payload["baseline_manifest_sha256"],
-        prepared_at=payload["prepared_at"],
-        completed_at=payload["completed_at"],
-    )
-    _validate_map_production_env_migration(state)
-    return state
-
-
-def _validate_map_production_env_migration(
-    state: MapProductionEnvMigrationState,
-) -> None:
-    if (
-        type(state.version) is not int
-        or state.version != _MAP_PRODUCTION_ENV_MIGRATION_VERSION
-        or not isinstance(state.state, str)
-        or state.state not in {"pending", "complete"}
-        or (
-            state.baseline_manifest_sha256 is not None
-            and (
-                not isinstance(state.baseline_manifest_sha256, str)
-                or _SHA256_HEX_PATTERN.fullmatch(
-                    state.baseline_manifest_sha256
-                )
-                is None
-            )
-        )
-        or not isinstance(state.prepared_at, str)
-        or not _is_iso8601(state.prepared_at)
-    ):
-        raise DeploymentContractError(
-            "Map production env migration marker contract is invalid"
-        )
-    if state.state == "pending" and state.completed_at is not None:
-        raise DeploymentContractError(
-            "pending Map production env migration cannot be completed"
-        )
-    if state.state == "complete" and (
-        not isinstance(state.completed_at, str)
-        or not _is_iso8601(state.completed_at)
-    ):
-        raise DeploymentContractError(
-            "complete Map production env migration needs a completion time"
-        )
-
-
-def _map_production_env_migration_bytes(
-    state: MapProductionEnvMigrationState,
-) -> bytes:
-    _validate_map_production_env_migration(state)
-    return (
-        json.dumps(
-            asdict(state),
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
-
-
-def _validate_map_production_env_state_directory(path: Path) -> None:
-    ensure_c6c_state_directory(path)
-    try:
-        _validate_c6c_state_directory(path, expected_uid=Path(path).lstat().st_uid)
-    except OSError as exc:
-        raise DeploymentContractError(
-            "Map production env migration state directory is unsafe"
-        ) from exc
-
-
-def _write_map_production_env_migration_temp(
-    path: Path,
-    state: MapProductionEnvMigrationState,
-) -> Path:
-    _validate_map_production_env_state_directory(path.parent)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temporary:
-            temporary_path = Path(temporary.name)
-            os.fchmod(temporary.fileno(), 0o600)
-            temporary.write(_map_production_env_migration_bytes(state))
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        return temporary_path
-    except OSError as exc:
-        if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
-        raise DeploymentContractError(
-            "Map production env migration marker write failed"
-        ) from exc
-
-
-def _create_map_production_env_migration(
-    path: Path,
-    state: MapProductionEnvMigrationState,
-) -> None:
-    temporary_path = _write_map_production_env_migration_temp(path, state)
-    try:
-        os.link(temporary_path, path, follow_symlinks=False)
-        _fsync_directory(path.parent)
-    except FileExistsError as exc:
-        raise DeploymentContractError(
-            "Map production env migration marker appeared concurrently"
-        ) from exc
-    except OSError as exc:
-        raise DeploymentContractError(
-            "Map production env migration marker create failed"
-        ) from exc
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def _replace_map_production_env_migration(
-    path: Path,
-    state: MapProductionEnvMigrationState,
-) -> None:
-    temporary_path = _write_map_production_env_migration_temp(path, state)
-    try:
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
-    except OSError as exc:
-        raise DeploymentContractError(
-            "Map production env migration marker completion failed"
-        ) from exc
-    finally:
-        temporary_path.unlink(missing_ok=True)
-
-
-def assert_pair_manifest_bootstrap_allowed(path: str) -> None:
-    """manifest가 없는 환경에서만 초기 v4 bootstrap을 허용한다."""
-
-    manifest_path = Path(path)
-    if not _pair_manifest_artifact_exists(manifest_path):
-        if manifest_path.name == "compatible-pair-v4.json" and any(
-            _pair_manifest_artifact_exists(manifest_path.with_name(filename))
-            for filename in _LEGACY_PAIR_MANIFEST_FILENAMES
-        ):
-            raise DeploymentContractError(
-                "legacy compatible pair manifest requires operator migration or removal"
-            )
-        return
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, Mapping) or type(payload.get("version")) is not int:
-            raise TypeError("manifest version must be an exact integer")
-        version = payload["version"]
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as exc:
-        raise DeploymentContractError(
-            "invalid compatible pair manifest cannot be bootstrapped automatically"
-        ) from exc
-    if version == _PAIR_MANIFEST_VERSION:
-        raise DeploymentContractError(
-            "compatible pair manifest v4 already exists; use deploy or rollback"
-        )
-    raise DeploymentContractError(
-        "legacy compatible pair manifest has no source provenance"
-    )
-
-
-def _pair_manifest_artifact_exists(path: Path) -> bool:
-    try:
-        artifact_stat = path.lstat()
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        raise DeploymentContractError(
-            "compatible pair manifest artifact cannot be inspected"
-        ) from exc
-    if (
-        not stat.S_ISREG(artifact_stat.st_mode)
-        or artifact_stat.st_uid != os.geteuid()
-        or artifact_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-    ):
-        raise DeploymentContractError(
-            "compatible pair manifest artifact type, owner, or mode is unsafe"
-        )
-    return True
-
-
-def write_pair_manifest(path: str, manifest: CompatiblePairManifest) -> None:
-    _validate_pair_manifest_contract(manifest)
-    manifest_path = Path(path)
-    ensure_c6c_state_directory(manifest_path.parent)
-    payload = json.dumps(asdict(manifest), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    payload_bytes = payload.encode("utf-8")
-    previous_bytes = manifest_path.read_bytes() if manifest_path.exists() else None
-    previous_mode = (
-        manifest_path.stat().st_mode & 0o777 if previous_bytes is not None else None
-    )
-    temp_path: Path | None = None
-    replaced = False
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=manifest_path.parent,
-            prefix=f".{manifest_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp:
-            temp.write(payload)
-            temp.flush()
-            os.fsync(temp.fileno())
-            temp_path = Path(temp.name)
-        os.chmod(temp_path, 0o600)
-        os.replace(temp_path, manifest_path)
-        replaced = True
-        _fsync_directory(manifest_path.parent)
-    except OSError as exc:
-        if replaced:
-            try:
-                _restore_manifest_snapshot(
-                    manifest_path,
-                    previous_bytes=previous_bytes,
-                    previous_mode=previous_mode,
-                )
-            except OSError:
-                try:
-                    current_bytes = manifest_path.read_bytes()
-                except OSError:
-                    current_bytes = None
-                if current_bytes == payload_bytes:
-                    return
-                if current_bytes != previous_bytes:
-                    raise DeploymentContractError(
-                        "compatible pair manifest commit state is indeterminate"
-                    ) from exc
-        raise DeploymentContractError("compatible pair manifest write failed") from exc
-    finally:
-        if temp_path is not None and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-
-
-def _fsync_directory(path: Path) -> None:
-    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
-
-
-def _restore_manifest_snapshot(
-    manifest_path: Path,
-    *,
-    previous_bytes: bytes | None,
-    previous_mode: int | None,
-) -> None:
-    if previous_bytes is None:
-        manifest_path.unlink(missing_ok=True)
-        _fsync_directory(manifest_path.parent)
-        return
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=manifest_path.parent,
-            prefix=f".{manifest_path.name}.restore.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp:
-            temp.write(previous_bytes)
-            temp.flush()
-            os.fsync(temp.fileno())
-            temp_path = Path(temp.name)
-        if previous_mode is not None:
-            os.chmod(temp_path, previous_mode)
-        os.replace(temp_path, manifest_path)
-        _fsync_directory(manifest_path.parent)
-    finally:
-        if temp_path is not None and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-
-
-def _validate_pair_manifest_contract(manifest: CompatiblePairManifest) -> None:
-    if type(manifest.version) is not int or manifest.version != _PAIR_MANIFEST_VERSION:
-        raise DeploymentContractError("compatible pair manifest version is unsupported")
-    for pair in (manifest.rollback, manifest.active):
-        _validate_image_id(pair.map_image_id, "Map")
-        _validate_image_id(pair.map_ui_image_id, "Map UI")
-        _validate_image_id(pair.map_dagster_image_id, "Map Dagster")
-        _validate_image_id(pair.map_dagster_daemon_image_id, "Map Dagster daemon")
-        _validate_image_id(pair.pinvi_image_id, "PinVi")
-        _validate_source_revision(pair.map_source_revision, "Map")
-        _validate_source_revision(pair.pinvi_source_revision, "PinVi")
-        if not isinstance(
-            pair.contract_generation, str
-        ) or not _CONTRACT_GENERATION_PATTERN.fullmatch(pair.contract_generation):
-            raise DeploymentContractError("compatible pair contract generation is invalid")
-        if not _is_iso8601(pair.recorded_at):
-            raise DeploymentContractError(
-                "compatible pair recorded_at must be an offset ISO 8601 datetime"
-            )
-
-
-def manifest_with_active_pair(
-    manifest: CompatiblePairManifest,
-    active: CompatibleImagePair,
-) -> CompatiblePairManifest:
-    same_active_identity = (
-        active.map_image_id == manifest.active.map_image_id
-        and active.map_ui_image_id == manifest.active.map_ui_image_id
-        and active.map_dagster_image_id == manifest.active.map_dagster_image_id
-        and active.map_dagster_daemon_image_id
-        == manifest.active.map_dagster_daemon_image_id
-        and active.map_source_revision == manifest.active.map_source_revision
-        and active.pinvi_image_id == manifest.active.pinvi_image_id
-        and active.pinvi_source_revision == manifest.active.pinvi_source_revision
-        and active.contract_generation == manifest.active.contract_generation
-    )
-    rollback = manifest.rollback if same_active_identity else manifest.active
-    return CompatiblePairManifest(
-        version=_PAIR_MANIFEST_VERSION,
-        rollback=rollback,
-        active=active,
-    )
-
-
-def initial_pair_manifest(pair: CompatibleImagePair) -> CompatiblePairManifest:
-    return CompatiblePairManifest(
-        version=_PAIR_MANIFEST_VERSION,
-        rollback=pair,
-        active=pair,
-    )
-
-
 def _validate_image_id(image_id: str, label: str) -> None:
     if not isinstance(image_id, str) or not _IMAGE_ID_PATTERN.fullmatch(image_id):
         raise DeploymentContractError(
@@ -5307,7 +4371,7 @@ def require_local_c6c_image(
     cwd: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> None:
-    _validate_image_id(image_id, "compatible pair")
+    _validate_image_id(image_id, "runtime")
     try:
         completed = subprocess.run(
             [docker_bin, "image", "inspect", "--format={{.Id}}", image_id],
@@ -5319,10 +4383,10 @@ def require_local_c6c_image(
         )
     except OSError as exc:
         raise DeploymentContractError(
-            "compatible pair image ID cannot be inspected locally"
+            "runtime image ID cannot be inspected locally"
         ) from exc
     if completed.returncode != 0 or completed.stdout.strip() != image_id:
-        raise DeploymentContractError("compatible pair image ID is not available locally")
+        raise DeploymentContractError("runtime image ID is not available locally")
 
 
 def inspect_c6c_image_source_revision(
@@ -5370,40 +4434,6 @@ def inspect_c6c_image_source_revision(
     ) != expected_build_environment:
         raise DeploymentContractError(f"{label} image build environment label is invalid")
     return revision
-
-
-def verify_compatible_pair_image_provenance(
-    pair: CompatibleImagePair,
-    *,
-    require_local_image: Callable[[str], None] | None = None,
-    inspect_source_revision: Callable[..., str] | None = None,
-) -> None:
-    local_checker = require_local_image or require_local_c6c_image
-    revision_inspector = inspect_source_revision or inspect_c6c_image_source_revision
-    map_image_ids = {
-        _MAP_API_SERVICE: pair.map_image_id,
-        _MAP_UI_SERVICE: pair.map_ui_image_id,
-        _MAP_DAGSTER_SERVICE: pair.map_dagster_image_id,
-        _MAP_DAGSTER_DAEMON_SERVICE: pair.map_dagster_daemon_image_id,
-    }
-    for image_id in (*map_image_ids.values(), pair.pinvi_image_id):
-        local_checker(image_id)
-    map_revisions = {
-        service_name: revision_inspector(image_id, label=service_name)
-        for service_name, image_id in map_image_ids.items()
-    }
-    pinvi_revision = revision_inspector(
-        pair.pinvi_image_id,
-        label="PinVi",
-        expected_build_environment="production",
-    )
-    if (
-        any(revision != pair.map_source_revision for revision in map_revisions.values())
-        or pinvi_revision != pair.pinvi_source_revision
-    ):
-        raise DeploymentContractError(
-            "compatible pair image labels differ from manifest source provenance"
-        )
 
 
 def _environment_mapping(value: Any) -> dict[str, str]:

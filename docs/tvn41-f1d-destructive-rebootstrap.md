@@ -39,7 +39,7 @@ DB preimage가 없는 상황을 rollback slot으로 가장하지 않는다.
 ## 단일 명령과 상태 전이
 
 기존 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm`은 제거하고, 의미가 분명한
-`ktdctl pinvi-pair rebuild-pinned --confirm` 하나로 대체한다. 이 명령은 frozen canonical
+`sudo -n ktdctl pinvi-pair rebuild-pinned --confirm` 하나로 대체한다. 이 명령은 frozen canonical
 environment의 typed pair `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal` 및
 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`가 정확할 때만 동작한다. 환경/lifecycle은
 `local/development`, `rehearsal/rebuildable`, `production/operational`만 유효한 enum pair다.
@@ -62,9 +62,14 @@ preflighted
   → committed
 ```
 
-`candidate_attested`는 일곱 candidate image ID, 두 source revision, 세 expected schema head,
+`rebuild-pinned`는 root execution만 허용한다. candidate source staging·v5 state·credential-file은
+root가 소유하고, Map·PinVi source checkout은 source owner 권한으로 origin만 읽는다. 따라서 원격
+operator는 `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
+database를 건드리기 전에 거부된다.
+
+`candidate_attested`는 일곱 candidate image ID, 두 source revision, candidate artifact가 직접 보고한 세 expected schema head,
 frozen environment/Compose digest와 pinset digest를 owner-only journal에 fsync하고 retention reference로
-보존한 상태다. candidate artifact 하나라도 없거나 provenance/static schema contract가 다르면 DB를
+보존한 상태다. candidate artifact 하나라도 없거나 provenance/schema-head contract가 다르면 DB를
 건드리지 않는다. `reset_intent_durable` 이후 process crash 재실행은 journal에 기록된 exact candidate만
 사용한다. candidate image가 사라진 경우에는 새 build로 덮어쓰지 않고 fail-close한다.
 
@@ -84,17 +89,20 @@ foreign/symlink/hardlink/owner·mode·size·JSON shape 손상은 모두 fail-clo
    database/container/owner identity를 읽는다. 이 세 database 외의 Geo·Concierge·공용 service
    database는 변경하지 않는다.
 2. trusted source staging에서 일곱 image를 먼저 build하고 immutable ID, OCI source revision, Map application·
-   Map Dagster·PinVi static schema head를 candidate journal에 고정한다. source checkout의 local HEAD,
+   Map Dagster·PinVi schema head를 candidate journal에 고정한다. Map Dagster head는 source revision으로
+   추정하지 않고 candidate Dagster image의 head-inspection command가 출력한 dependency storage head만
+   수용한다. source checkout의 local HEAD,
    floating tag, 기존 image는 authority가 아니다.
 3. `reset_intent_durable` 뒤 일곱 runtime을 모두 중지하고 writer가 없음을 확인한다. PinVi Dagster는
    writer이므로 API만 멈춘 채 DB를 재생성하지 않는다.
 4. PostgreSQL owner 권한으로 세 database를 `DROP DATABASE ... WITH (FORCE)` 후 같은 owner로
    `CREATE DATABASE` 한다. dump, backup, restore, old database head 비교는 사용하지 않는다.
-5. Map API candidate entrypoint만 Map application migration owner로 기동해 candidate-static
+5. Map API candidate entrypoint만 Map application migration owner로 기동해 candidate-attested
    `map_application_head`까지 적용하고 health/ops principal을 확인한다. 다음에는 Map Dagster candidate의
-   migration-only command만 `map_dagster_head`까지 적용한다. 둘의 head는 candidate artifact에서 attested한
-   별도 field이며, Manager는 각 DB의 canonical `alembic_version`을 그 field와 대조한다. 그 뒤에만 Map UI,
-   Dagster web·daemon을 같은 candidate image로 기동한다.
+   migration-only command만 실행한다. 이 command는 같은 candidate image의 `dagster instance migrate`로
+   storage migration을 적용하고, `public.alembic_version`의 정확히 한 `version_num`이 candidate가 직전
+   출력한 `map_dagster_head`와 일치할 때만 성공한다. 둘의 head는 candidate artifact에서 attested한 별도
+   field이며, 그 뒤에만 Map UI, Dagster web·daemon을 같은 candidate image로 기동한다.
 6. PinVi 쪽의 별도 `pinvi-admin-bootstrap` one-shot CLI는 먼저 candidate-static `pinvi_head`까지
    `alembic upgrade head`를 실행하고, 같은 transaction에서 그 head를 확인한 후에만
    `PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE`만 받는다. Manager는 frozen smoke credential에서 owner-only
@@ -129,14 +137,20 @@ foreign/symlink/hardlink/owner·mode·size·JSON shape 손상은 모두 fail-clo
 1. **F1D-A**: 이 설계·ADR·task 문서를 병합한다.
 2. **F1D-B**: `CompatibleImagePair`와 v4 manifest, old `deploy`/`capture`/`rollback` 및 legacy
    mutation gate를 제거한다. 일곱 service `PinnedRuntimeGeneration`, single-active v5 manifest,
-   세 schema head와 tombstone receipt를 단일 authority로 구현한다. environment/lifecycle enum pair와
-   rebuildable의 exclusive mutation policy도 이 PR에서 typed loader·회귀 test로 고정한다.
-3. **F1D-C1 (PinVi PR)**: `pinvi-admin-bootstrap` CLI와 credential-file contract를 구현한다. 이 CLI가
+   세 schema head와 tombstone receipt를 단일 authority로 구현한다. 기존 F1G/F1H의 window·inert
+   diagnostic receipt도 이 typed tombstone allowlist에 흡수하며 별도 T-VN 선행 task로 남기지 않는다.
+   environment/lifecycle enum pair와 rebuildable의 exclusive mutation policy도 이 PR에서 typed loader·회귀
+   test로 고정한다.
+3. **F1D-C0 (Map PR)**: candidate Dagster image의 dependency storage head를 기계 판독 가능하게 출력하고,
+   같은 image가 `dagster instance migrate` 뒤 strict `public.alembic_version` 대조를 수행하는
+   migration-only command를 구현한다. Map application Alembic과 Dagster storage revision을 혼용하지 않는다.
+4. **F1D-C1 (PinVi PR)**: `pinvi-admin-bootstrap` CLI와 credential-file contract를 구현한다. 이 CLI가
    PinVi Alembic migration과 admin bootstrap의 유일 owner가 되게 하고 normal API의 implicit migration/direct
    password environment bootstrap을 제거한다. owner/mode/content validation·migration→admin idempotence·
    redaction test를 포함한다.
-4. **F1D-C2 (Manager PR)**: C1 PinVi source pin을 입력으로 `rebuild-pinned --confirm` transaction을
+5. **F1D-C2 (Manager PR)**: C0 Map과 C1 PinVi source pin을 입력으로 `rebuild-pinned --confirm` transaction을
    구현한다. explicit rebuildable lifecycle, candidate-first attestation/retention, scoped DB recreate,
-   one-shot credential-file mount, generation build/start, F1J canonical smoke와 crash resume을 포함한다.
-5. **F1D-D (docs-only PR)**: n150에서 파기형 rebuild, final schema head, admin live UI E2E와 PinVi
+   Map Dagster migration-only invocation, one-shot credential-file mount, generation build/start, F1J canonical
+   smoke와 crash resume을 포함한다.
+6. **F1D-D (docs-only PR)**: n150에서 파기형 rebuild, final schema head, admin live UI E2E와 PinVi
    mutating E2E를 실행한 결과를 기록하고 source/ETL 재적재 작업으로 handoff한다.

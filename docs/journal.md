@@ -4,6 +4,74 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C2 완료 이관)
+
+v5 single-active generation과 candidate-first destructive rebuild, Map Dagster/application 및 PinVi
+one-shot schema bootstrap을 결선했다. candidate source/config의 raw·resolved capability boundary를 DB
+mutation 전에 fail-close하고 bootstrap profile에서 허용한 최소 Map read/cancel capability만 사용한다.
+
+이전 F1J helper는 새 v5 transaction에서 아직 호출되지 않음을 확인했다. 따라서 dynamic fixture
+ensure→one-shot canonical cancel→immutable receipt read→finalize와 response-loss resume은 완료로
+표시하지 않고 열린 F1D-C3에서 journal 상태와 함께 결선한다.
+
+---
+
+## 2026-08-06 (T-VN-41-F1D-C1b — PinVi runtime provenance caller 결선)
+
+PinVi Dockerfile label만으로는 Manager canonical Compose가 Web·Dagster에 revision/environment
+build argument를 전달하지 않아 두 image가 `development` label로 빌드될 수 있었다. F1D candidate의
+image inspect는 이미 일곱 image와 PinVi 세 image의 production label을 확인하므로, 누락된 caller
+경계를 세 service build mapping으로 보강했다.
+
+`validate_c6c_build_source_wiring`과 resolved C6c provenance preflight가 API·Web·Dagster의
+exact source revision, production environment, Dockerfile path를 모두 fail-close로 검사한다. 실제
+Compose resolver regression은 세 service가 같은 candidate argument를 받을 때만 통과하며, Dagster
+argument 하나를 제거하면 preflight가 거부한다. 이 preflight는 이제 `rebuild_pinned_runtime`의
+candidate seven-image build 직전에 staged source root를 expected context로 전달해 실행한다.
+따라서 context가 staged Git snapshot 밖이면 Docker build가 시작되기 전에 중단한다. PinVi PR merge
+SHA를 pinned release input으로 회전한 뒤에만 n150 destructive rebuild를 재개한다.
+
+---
+
+## 2026-08-06 (T-VN-41-F1D — legacy 공개 mutation 경로 퇴역)
+
+F1D v5의 유일한 generation mutation은 비운영 `ktdctl pinvi-pair rebuild-pinned --confirm`으로
+수렴한다. 따라서 구 compatible-pair의 `capture`·`deploy`·`rollback`, `cache-target`, Map UI 회전과
+standalone `db-backup` 공개 명령을 CLI에서 제거했다. Compose의 pair/cache workflow가 backup primitive도
+함께 제거했으므로 `create`·`list` 역시 제거해 dangling 경로를 만들지 않는다.
+
+최종 schema 상태의 backup/restore 필요성은 별도로 유지하되, 이후에는 cache-target/pair 중간 state와
+독립된 Compose contract를 새 태스크에서 설계한다. `tasks.md`와 production runbook은 v1–v4 내용을
+퇴역 기록으로 명시하고, 과거 작업 일지와 완료 이력은 변경하지 않는다.
+
+---
+
+## 2026-08-06 (T-VN-41-F1D-C0 — Map Dagster storage 계약 병행)
+
+F1D-B 영향도 확인에서 Map application Alembic revision과 Dagster dependency storage revision이 서로 다른
+정본임을 확인했다. 따라서 source pin 또는 Map application head로 `map_dagster_head`를 추정하지 않는다.
+Map candidate Dagster image가 자신의 storage head를 출력하고, 같은 image가 `dagster instance migrate` 뒤
+strict single-row `public.alembic_version`을 대조하는 C0 PR을 F1D-C1과 병행한다. C2는 두 upstream PR의
+exact source pin을 입력으로 받는다.
+
+기존 F1G/F1H의 legacy journal 퇴역은 F1D-B typed tombstone allowlist에 흡수했다. 별도 복구·rollback
+authority나 T-VN-41 선행 task로 남기지 않으며, foreign residue는 rebuild 전 fail-close한다.
+
+---
+
+## 2026-08-06 (T-VN-41-F1D-B — v5 generation foundation 진행)
+
+F1D-A 설계 PR #165 병합 뒤, legacy compatible pair와 분리한
+`pinned_runtime_generation` typed model을 추가했다. 이 model은 `local/development`,
+`rehearsal/rebuildable`, `production/operational`의 배타적 lifecycle pair와 Map 네 image·PinVi 세 image,
+세 schema head, single-active v5 manifest, candidate-first rebuild journal의 strict shape를 검증한다.
+
+이 commit은 아직 runtime/DB mutation을 열지 않는다. F1D-B는 legacy reader/gate를 safe tombstone으로
+교체하고, C1 PinVi one-shot migration/admin bootstrap PR과 함께 C2 `rebuild-pinned` orchestration의 입력을
+완성한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-A — 파기형 runtime generation 재bootstrap 설계)
 
 비운영 n150 state를 read-only로 확인한 결과, 기존 F1D journal은 prior pinset의 `prepared` receipt와
@@ -402,8 +470,8 @@ Manager의 기존 검증기와 호환된다는 점도 함께 확인했다: `row_
 `quarantine_candidates`/`quarantine_collections`/`quarantine_items` 키를
 새로 얻지만 migrate/verify receipt 검증은 key set에 대해 loose하고,
 `_validate_map_gc_receipt`는 GC receipt 전용이라 영향받지 않는다.
-`cache_target_production_manifest.py`의 tracked `map_release_revision`과
-`docs/cache-target-production-cutover.md`의 pin 이력 문단을 갱신했다.
+`cache_target_production_manifest.py`의 tracked `map_release_revision`과 당시
+cache-target production cutover 문서의 pin 이력 문단을 갱신했다.
 `service_openapi_sha256`(PinVi 소유, Map release revision과 무관)은
 변경하지 않았다. 백엔드 전체 스위트(1595 passed) 통과 확인.
 
@@ -950,8 +1018,8 @@ initial event, sync enable, `.env`/manifest mutation을 하지 않으며 `extern
 typed stage/failure class와 logical identity만 owner-only receipt에 기록한다. diagnostic archive는 최신
 cutover backup으로 재사용하지 않으며, actual cutover는 writer fence 뒤 fresh backup/rehearsal을 다시
 만든다. 같은 input의 반복 failure에는 bounded abort budget을 적용해 regression을 포함한 수정과 새
-diagnostic receipt 없이는 재시도를 막는다. 상세 정본은
-[`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)와 ADR-29다.
+diagnostic receipt 없이는 재시도를 막는다. 상세 정본은 당시 cache-target cutover 진단 문서와
+ADR-29다.
 
 ## 2026-08-03 (T-048 PinVi authenticated-readiness GET timeout 보강)
 
