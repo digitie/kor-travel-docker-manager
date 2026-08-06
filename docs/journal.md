@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-B — v5 generation foundation 진행)
+
+F1D-A 설계 PR #165 병합 뒤, legacy compatible pair와 분리한
+`pinned_runtime_generation` typed model을 추가했다. 이 model은 `local/development`,
+`rehearsal/rebuildable`, `production/operational`의 배타적 lifecycle pair와 Map 네 image·PinVi 세 image,
+세 schema head, single-active v5 manifest, candidate-first rebuild journal의 strict shape를 검증한다.
+
+이 commit은 아직 runtime/DB mutation을 열지 않는다. F1D-B는 legacy reader/gate를 safe tombstone으로
+교체하고, C1 PinVi one-shot migration/admin bootstrap PR과 함께 C2 `rebuild-pinned` orchestration의 입력을
+완성한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-A — 파기형 runtime generation 재bootstrap 설계)
 
 비운영 n150 state를 read-only로 확인한 결과, 기존 F1D journal은 prior pinset의 `prepared` receipt와

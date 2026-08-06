@@ -967,12 +967,12 @@ n150은 운영 서비스가 아니므로, old manifest·non-terminal F1D journal
 runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계는
 [`tvn41-f1d-destructive-rebootstrap.md`](tvn41-f1d-destructive-rebootstrap.md)다.
 
-- [ ] **F1D-B** — `CompatibleImagePair`/v4 manifest와 old `deploy`·`capture`·`rollback` 및 legacy
+- [/] **F1D-B** — `CompatibleImagePair`/v4 manifest와 old `deploy`·`capture`·`rollback` 및 legacy
       mutation gate를 제거하고, Map 네 service와 PinVi 세 service를 모두 기록하는 single-active
       `PinnedRuntimeGeneration` v5로 치환한다. immutable image ID·source revision·세 schema head·
       tombstone receipt와 manifest/journal/provenance 검증의 정본을 하나로 만든다. typed
       environment/lifecycle enum pair와 rebuildable exclusive mutation 정책의 loader·회귀 test도 소유한다.
-- [ ] **F1D-C1 (PinVi PR)** — credential-file만 읽는 `pinvi-admin-bootstrap` one-shot CLI가 PinVi Alembic
+- [/] **F1D-C1 (PinVi PR)** — credential-file만 읽는 `pinvi-admin-bootstrap` one-shot CLI가 PinVi Alembic
       migration과 admin bootstrap의 유일 owner가 되게 한다. normal API의 implicit migration/direct password
       environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test와
       PinVi source pin 회전을 포함한다.
