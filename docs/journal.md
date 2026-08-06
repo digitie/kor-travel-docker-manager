@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1J-D — PinVi Docker provenance repair pin 재결박)
+
+PinVi PR #437(`6a931dc…`)은 Hatch `force-include` source를 두 editable install 전에 Docker build context의
+`/contracts`에 제공하고, 재설치 뒤 final image에서 제거했다. CI는 실제 root Docker build와 package resource의
+exact bytes/SHA·payload·helper 미잔존을 검사하며, n150의 새 임시 checkout cold build도 같은 검증을 통과했다.
+예약 staleness 실행에는 이 image build를 추가하지 않는다.
+
+Manager의 tracked pinset은 PinVi source revision까지 fail-close로 소유하므로, build 결함이 있는 이전
+`2d59855…`를 유지하지 않고 이 merge revision으로 원자 회전한다. 이 회전 뒤 F1J-D는 Map·PinVi·Manager의 exact
+release만 새 격리 Compose stack에서 사용한다. 기존 runtime/DB를 읽거나 보존·backup/restore하지 않는다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1J-C — provenance 재결박 merge 완료)
 
 PinVi PR #435(`2d59855…`)와 Manager PR #160(`0ff7f8d…`)이 merge됐다. PinVi는 일반 Map service provenance를

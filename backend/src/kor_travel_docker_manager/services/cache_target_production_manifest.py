@@ -26,7 +26,7 @@ class CacheTargetProductionPinManifest:
 
     version: int = 2
     map_release_revision: str = "1df45b57f55b8d517bb1f2c12a869d032d70453e"
-    pinvi_release_revision: str = "2d598551287d84c3af13510f8cab7f8bec547715"
+    pinvi_release_revision: str = "6a931dc5bed46484c621c00c35165aae7254b689"
     service_openapi_sha256: str = (
         "6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e"
     )
