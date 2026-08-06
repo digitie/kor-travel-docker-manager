@@ -160,14 +160,27 @@ def test_rebuild_compose_error_names_the_failed_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
+    secret = "test-compose-output-token-must-not-leak"
     monkeypatch.setattr(
         service,
         "_run_frozen_recovery",
-        Mock(return_value={"success": False, "returncode": 23}),
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 23,
+                "stdout": secret,
+                "stderr": secret,
+            }
+        ),
     )
 
-    with pytest.raises(DeploymentContractError, match=r"Compose up command failed \(exit 23\)"):
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose up command failed \(exit 23\)",
+    ) as captured:
         service._run_pinned_runtime_rebuild_compose(["up", "kor-travel-map-api"], transaction=object())
+
+    assert secret not in str(captured.value)
 
 
 @pytest.mark.parametrize(
