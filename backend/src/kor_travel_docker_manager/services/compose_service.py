@@ -3849,9 +3849,12 @@ class ComposeService:
                 environment_snapshot.effective,
                 require_nonempty=True,
             )
-            state_paths = pinned_runtime_state_paths(environment_snapshot.effective)
-            ensure_pinned_runtime_state_directory(state_paths.state_root)
             release = current_pinned_runtime_release()
+            state_paths = pinned_runtime_state_paths(
+                environment_snapshot.effective,
+                pinset_sha256=release.pinset_sha256,
+            )
+            ensure_pinned_runtime_state_directory(state_paths.state_root)
             sources = materialize_pinned_runtime_sources(
                 release=release,
                 state_paths=state_paths,

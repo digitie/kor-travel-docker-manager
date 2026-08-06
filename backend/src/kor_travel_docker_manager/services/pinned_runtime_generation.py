@@ -123,14 +123,15 @@ _F1D_LEGACY_ARTIFACTS: tuple[str, ...] = (
     "pinned-runtime-rebuild-v5.json",
     "pinned-runtime-rebuild-v6.json",
     "pinned-runtime-v6/legacy-tombstone-v6.json",
+    "pinned-runtime-rebuild-v7.json",
+    "pinned-runtime-v7/legacy-tombstone-v7.json",
 )
-_TOMBSTONE_DIRECTORY = "pinned-runtime-v7"
-_TOMBSTONE_FILENAME = "legacy-tombstone-v7.json"
 _STATE_ROOT_ENV = "KTDM_PINNED_RUNTIME_STATE_ROOT"
 _PROJECT_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
 _DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
 _MANIFEST_FILENAME = "pinned-runtime-generation-v5.json"
-_JOURNAL_FILENAME = "pinned-runtime-rebuild-v7.json"
+_JOURNAL_FILENAME_PREFIX = "pinned-runtime-rebuild-v7-"
+_TOMBSTONE_FILENAME_PREFIX = "legacy-tombstone-v7-"
 _CANCEL_PROBE_STAGES: tuple[CancelProbeStage, ...] = (
     "uninitialized",
     "armed",
@@ -157,14 +158,15 @@ class DeploymentMode:
 
 @dataclass(frozen=True)
 class PinnedRuntimeStatePaths:
-    """v5 generation과 v7 rebuild journal이 소유하는 project-scoped owner-only state 경로.
+    """v5 generation과 pinset별 v7 rebuild journal이 소유하는 owner-only state 경로.
 
-    v4 manifest나 F1F handoff path를 재사용하지 않는다. ``rebuild-pinned``는 이
-    세 경로만 읽고 쓰므로, legacy artifact는 같은 state directory에서 tombstone
-    receipt를 남긴 뒤에만 제거할 수 있다.
+    하나의 pinset은 하나의 journal/tombstone filename을 독점한다. 따라서 새 Map·PinVi
+    release는 old same-pinset crash receipt만 재개하고, 다른 pinset의 immutable
+    history가 새 destructive generation을 막지 않는다.
     """
 
     state_root: Path
+    pinset_sha256: str
     manifest: Path
     journal: Path
     tombstone_receipt: Path
@@ -209,8 +211,12 @@ def require_rebuildable_mode(values: Mapping[str, str]) -> DeploymentMode:
     return mode
 
 
-def pinned_runtime_state_paths(values: Mapping[str, str]) -> PinnedRuntimeStatePaths:
-    """rehearsal project의 v5 state namespace를 결정한다.
+def pinned_runtime_state_paths(
+    values: Mapping[str, str],
+    *,
+    pinset_sha256: str,
+) -> PinnedRuntimeStatePaths:
+    """rehearsal project의 v5 manifest와 pinset별 v7 state namespace를 결정한다.
 
     파기형 transaction은 ``rehearsal/rebuildable``에서만 가능한 만큼 production
     fixed-root 예외나 v4 override를 갖지 않는다. 다만 disposable test/rehearsal은
@@ -218,6 +224,8 @@ def pinned_runtime_state_paths(values: Mapping[str, str]) -> PinnedRuntimeStateP
     """
 
     require_rebuildable_mode(values)
+    if _SHA256.fullmatch(pinset_sha256) is None:
+        raise DeploymentContractError("pinned runtime state pinset digest is invalid")
     project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()
     if _PROJECT_NAME.fullmatch(project_name) is None:
         raise DeploymentContractError(
@@ -234,9 +242,13 @@ def pinned_runtime_state_paths(values: Mapping[str, str]) -> PinnedRuntimeStateP
         raise DeploymentContractError("pinned runtime state directory is invalid")
     return PinnedRuntimeStatePaths(
         state_root=state_root,
+        pinset_sha256=pinset_sha256,
         manifest=state_root / _MANIFEST_FILENAME,
-        journal=state_root / _JOURNAL_FILENAME,
-        tombstone_receipt=legacy_tombstone_receipt_path(state_root),
+        journal=state_root / f"{_JOURNAL_FILENAME_PREFIX}{pinset_sha256}.json",
+        tombstone_receipt=legacy_tombstone_receipt_path(
+            state_root,
+            pinset_sha256=pinset_sha256,
+        ),
     )
 
 
@@ -825,10 +837,16 @@ def f1d_legacy_artifact_paths() -> tuple[str, ...]:
     return tuple(sorted(_F1D_LEGACY_ARTIFACTS))
 
 
-def legacy_tombstone_receipt_path(state_root: Path) -> Path:
-    """v7 receipt는 legacy file과 분리된 manager-owned directory에만 기록한다."""
+def legacy_tombstone_receipt_path(
+    state_root: Path,
+    *,
+    pinset_sha256: str,
+) -> Path:
+    """pinset별 v7 tombstone receipt path를 반환한다."""
 
-    return state_root / _TOMBSTONE_DIRECTORY / _TOMBSTONE_FILENAME
+    if _SHA256.fullmatch(pinset_sha256) is None:
+        raise DeploymentContractError("legacy tombstone pinset digest is invalid")
+    return state_root / f"{_TOMBSTONE_FILENAME_PREFIX}{pinset_sha256}.json"
 
 
 def retire_f1d_legacy_artifacts(
@@ -847,7 +865,10 @@ def retire_f1d_legacy_artifacts(
 
     _validate_state_root(state_root)
     normalized_paths = _normalize_legacy_paths(requested_paths)
-    receipt_path = legacy_tombstone_receipt_path(state_root)
+    receipt_path = legacy_tombstone_receipt_path(
+        state_root,
+        pinset_sha256=candidate.pinset_sha256,
+    )
     expected_generation_sha256 = generation_logical_sha256(candidate)
     try:
         receipt_path.lstat()

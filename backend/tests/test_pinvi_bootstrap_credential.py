@@ -14,6 +14,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeStatePaths,
     pinned_runtime_state_paths,
 )
+from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
 from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     PinviBootstrapCredentialFile,
     cleanup_pinvi_bootstrap_credential,
@@ -40,7 +41,13 @@ def _values(tmp_path: Path) -> dict[str, str]:
 
 def _state_paths(tmp_path: Path) -> tuple[PinnedRuntimeStatePaths, dict[str, str]]:
     values = _values(tmp_path)
-    return pinned_runtime_state_paths(values), values
+    return (
+        pinned_runtime_state_paths(
+            values,
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        ),
+        values,
+    )
 
 
 def _credential(

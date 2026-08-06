@@ -9,7 +9,9 @@
 Map `main`의 typed subtype 단일 정본 schema release(새 application head `0087`)를 F1D
 candidate source pin으로 고정한다. 이 release는 Map core의 `detail`/`geom` legacy 정본을
 제거하므로, 기존 DB를 보전하거나 intermediate schema에 맞추는 경로를 만들지 않는다. C3의
-candidate static attestation과 파기형 세 DB 재생성은 새 Map head만 수용한다.
+candidate static attestation과 파기형 세 DB 재생성은 새 Map head만 수용한다. v7
+journal/tombstone filename도 pinset SHA로 분리해 old same-version state가 이 release의 새
+generation을 차단하지 않게 한다.
 
 ---
 

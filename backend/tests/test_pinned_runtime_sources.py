@@ -31,9 +31,16 @@ def _state_paths(tmp_path: Path) -> PinnedRuntimeStatePaths:
     state_root = tmp_path / "state-root" / _TEST_PROJECT_NAME
     return PinnedRuntimeStatePaths(
         state_root=state_root,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
         manifest=state_root / "pinned-runtime-generation-v5.json",
-        journal=state_root / "pinned-runtime-rebuild-v5.json",
-        tombstone_receipt=state_root / "pinned-runtime-v5" / "legacy-tombstone-v5.json",
+        journal=(
+            state_root
+            / f"pinned-runtime-rebuild-v7-{PINNED_RUNTIME_RELEASE.pinset_sha256}.json"
+        ),
+        tombstone_receipt=(
+            state_root
+            / f"legacy-tombstone-v7-{PINNED_RUNTIME_RELEASE.pinset_sha256}.json"
+        ),
     )
 
 

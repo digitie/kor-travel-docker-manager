@@ -81,7 +81,9 @@ GET으로 수렴해 cancel/finalize POST를 재발행하지 않아야 하므로 
 정책이 아니라 immutable fixture transaction의 exactly-once evidence를 보존하는 유일한 예외다. 다만 이 예외도
 runtime 재사용을 뜻하지는 않는다. 모든 resume은 DB reset 여부와 무관하게 일곱 service를 정지하고 one-shot writer의
 부재를 확인한 뒤 controlled startup/migration으로만 진행한다. 다른 pinset의 새
-rebuild는 Manager가 소유한 F1D/F1F v1~v4 state와 mutation gate를 v5 authority로 완전히 교체한다. legacy tombstone은
+rebuild는 pinset SHA를 포함한 별도 v7 journal/tombstone filename을 사용한다. 따라서 old pinset journal은
+immutable history로 남고 새 Map/PinVi release의 destructive generation을 차단하지 않는다. 이전 static v5~v7
+journal/tombstone만 typed legacy receipt로 퇴역한다. legacy tombstone은
 코드에 고정한 path allowlist만 대상으로 하며, 각 parent가 canonical state root 아래 owner-owned `0700` directory인지,
 각 file이 `lstat` 기준 regular file·manager owner·`0600`·link count 1·bounded size인지 확인한다. `dir_fd`와
 `O_NOFOLLOW`로 열어 pre/post `fstat` inode가 같은지도 대조한 뒤 bounded bytes의 SHA-256만 receipt에 fsync한다.
