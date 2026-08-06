@@ -950,7 +950,7 @@ n150은 운영 서비스가 아니므로, old manifest·non-terminal F1D journal
 runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계는
 [`tvn41-f1d-destructive-rebootstrap.md`](tvn41-f1d-destructive-rebootstrap.md)다.
 
-- [ ] **F1D-C3 (Manager PR)** — 기존 Map-owned F1J fixture lifecycle을 v5
+- [/] **F1D-C3 (Manager PR #167)** — 기존 Map-owned F1J fixture lifecycle을 v5
       `rebuild-pinned` durable transaction에 직접 결선한다. candidate Map readiness 뒤 journal transaction
       ID로 fixture ensure→PinVi의 단 한 번의 canonical cancel→exact `409 PIPELINE_CANCELLATION_UNSAFE`
       receipt 대조→finalize를 수행하고, `armed → consumed → finalized`와 POST 전 attempted 상태를

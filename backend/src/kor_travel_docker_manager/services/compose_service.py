@@ -15,7 +15,7 @@ from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal, cast
 
 import yaml
 from dotenv import dotenv_values
@@ -26,11 +26,13 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     _PINVI_API_SERVICE,
     C6cBuildProvenance,
+    C6cCancelProbeFixture,
     C6cDeploymentConfig,
     CandidateSystemBindSnapshot,
     ComposeCandidateContractError,
     ComposePostMutationContractError,
     DeploymentContractError,
+    PinviCancelProbeState,
     _assert_candidate_single_file_boundary,
     _expand_env_path,
     assert_compose_mutation_allowed,
@@ -40,7 +42,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_state_paths,
     compose_volume_graph_hash,
     inspect_c6c_image_source_revision,
+    load_c6c_deployment_config_from_environment,
     revalidate_candidate_system_bind_snapshots,
+    run_pinvi_canonical_smoke,
     validate_c6c_build_source_wiring,
     validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
@@ -59,6 +63,8 @@ from kor_travel_docker_manager.services.database_runtime import (
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     REBUILD_PHASES,
     RUNTIME_SERVICES,
+    PinnedRuntimeCancelProbeOutcome,
+    PinnedRuntimeCancelProbeReceipt,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
     RebuildPhase,
@@ -113,6 +119,110 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
 _CANDIDATE_MAP_APPLICATION_HEAD_PLACEHOLDER = "candidate_static_attestation"
+
+
+def _pinvi_cancel_probe_state_from_journal(
+    journal: PinnedRuntimeRebuildJournal,
+) -> PinviCancelProbeState:
+    """v6 secret-free receipt만으로 F1J helper의 resume state를 복원한다."""
+
+    receipt = journal.cancel_probe
+    if receipt.stage == "uninitialized":
+        return PinviCancelProbeState(transaction_id=journal.transaction_id)
+    if receipt.stage in {"armed", "cancel_post_attempted"}:
+        fixture = C6cCancelProbeFixture(
+            transaction_id=journal.transaction_id,
+            job_id=receipt.job_id or "",
+            state="armed",
+            cancellation_id=None,
+            canonical_unsafe_outcome=None,
+        )
+        return PinviCancelProbeState(
+            transaction_id=journal.transaction_id,
+            fixture=fixture,
+            attempted=receipt.stage == "cancel_post_attempted",
+        )
+    outcome = receipt.outcome
+    if outcome is None:
+        raise DeploymentContractError("pinned runtime consumed cancel probe has no outcome")
+    fixture = C6cCancelProbeFixture(
+        transaction_id=journal.transaction_id,
+        job_id=receipt.job_id or "",
+        state="finalized" if receipt.stage == "finalized" else "consumed",
+        cancellation_id=receipt.cancellation_id,
+        canonical_unsafe_outcome=outcome.to_payload(),
+    )
+    return PinviCancelProbeState(
+        transaction_id=journal.transaction_id,
+        fixture=fixture,
+        attempted=True,
+        finalize_attempted=receipt.stage in {"finalize_post_attempted", "finalized"},
+        result=outcome.to_payload(),
+    )
+
+
+def _cancel_probe_receipt_from_pinvi_state(
+    state: PinviCancelProbeState,
+) -> PinnedRuntimeCancelProbeReceipt:
+    """helper의 mutable state를 journal high-watermark 하나로 정규화한다."""
+
+    fixture = state.fixture
+    if fixture is None:
+        if state.attempted or state.finalize_attempted or state.result is not None:
+            raise DeploymentContractError("pinned runtime cancel probe state lacks fixture receipt")
+        return PinnedRuntimeCancelProbeReceipt()
+    if fixture.state == "armed":
+        if state.result is not None or state.finalize_attempted:
+            raise DeploymentContractError("armed cancel probe state has cancellation evidence")
+        return PinnedRuntimeCancelProbeReceipt(
+            stage="cancel_post_attempted" if state.attempted else "armed",
+            job_id=fixture.job_id,
+        )
+    if (
+        fixture.cancellation_id is None
+        or fixture.canonical_unsafe_outcome is None
+        or not state.attempted
+    ):
+        raise DeploymentContractError("consumed cancel probe state is incomplete")
+    outcome_payload = fixture.canonical_unsafe_outcome
+    if (
+        set(outcome_payload) != {"name", "status", "code"}
+        or not isinstance(outcome_payload.get("name"), str)
+        or type(outcome_payload.get("status")) is not int
+        or not isinstance(outcome_payload.get("code"), str)
+    ):
+        raise DeploymentContractError("consumed cancel probe outcome is invalid")
+    outcome = PinnedRuntimeCancelProbeOutcome(
+        name=cast(Literal["pinvi_cancel_error"], outcome_payload["name"]),
+        status=cast(Literal[409], outcome_payload["status"]),
+        code=cast(
+            Literal["PIPELINE_CANCELLATION_UNSAFE"],
+            outcome_payload["code"],
+        ),
+    )
+    if state.result != outcome.to_payload():
+        raise DeploymentContractError("consumed cancel probe result differs from fixture")
+    if fixture.state == "consumed":
+        stage = "finalize_post_attempted" if state.finalize_attempted else "consumed"
+    elif fixture.state == "finalized":
+        if not state.finalize_attempted:
+            raise DeploymentContractError("finalized cancel probe has no durable attempt")
+        stage = "finalized"
+    else:
+        raise DeploymentContractError("cancel probe fixture state is invalid")
+    return PinnedRuntimeCancelProbeReceipt(
+        stage=cast(
+            Literal[
+                "consumed",
+                "finalize_post_attempted",
+                "finalized",
+            ],
+            stage,
+        ),
+        job_id=fixture.job_id,
+        cancellation_id=fixture.cancellation_id,
+        outcome=outcome,
+    )
 _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA = (
     "kor-travel-map.dagster-storage-migration-error.v1"
 )
@@ -3864,31 +3974,34 @@ class ComposeService:
                 )
                 return self._pinned_runtime_result(journal, resumed=True)
             try:
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "reset_intent_durable"
-                )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                self._run_pinned_runtime_rebuild_compose(
-                    ["stop", *RUNTIME_SERVICES],
-                    transaction=runtime_transaction,
-                )
-                self._retire_pinned_runtime_oneshot_writers(
-                    transaction=runtime_transaction,
-                )
-                retire_stale_pinvi_bootstrap_credential(
-                    state_paths=state_paths,
-                    values=environment_snapshot.effective,
-                    transaction_id=journal.transaction_id,
-                )
-                recreate_empty_databases(runtimes)
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "databases_recreated"
-                )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
+                if REBUILD_PHASES.index(journal.phase) < REBUILD_PHASES.index(
+                    "databases_recreated"
+                ):
+                    updated = self._advance_pinned_runtime_journal(
+                        journal, "reset_intent_durable"
+                    )
+                    if updated != journal:
+                        write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                        journal = updated
+                    self._run_pinned_runtime_rebuild_compose(
+                        ["stop", *RUNTIME_SERVICES],
+                        transaction=runtime_transaction,
+                    )
+                    self._retire_pinned_runtime_oneshot_writers(
+                        transaction=runtime_transaction,
+                    )
+                    retire_stale_pinvi_bootstrap_credential(
+                        state_paths=state_paths,
+                        values=environment_snapshot.effective,
+                        transaction_id=journal.transaction_id,
+                    )
+                    recreate_empty_databases(runtimes)
+                    updated = self._advance_pinned_runtime_journal(
+                        journal, "databases_recreated"
+                    )
+                    if updated != journal:
+                        write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                        journal = updated
                 self._run_pinned_runtime_rebuild_compose(
                     ["up", "-d", "--wait", "--wait-timeout", "300", "kor-travel-map-api"],
                     transaction=runtime_transaction,
@@ -3973,6 +4086,38 @@ class ComposeService:
                 if updated != journal:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
+                if REBUILD_PHASES.index(journal.phase) < REBUILD_PHASES.index(
+                    "cancel_probe_finalized"
+                ):
+                    config = load_c6c_deployment_config_from_environment(
+                        runtime_transaction.environment.effective
+                    )
+                    cancel_probe_state = _pinvi_cancel_probe_state_from_journal(journal)
+
+                    def record_cancel_probe_state(state: PinviCancelProbeState) -> None:
+                        nonlocal journal
+                        updated = journal.with_cancel_probe(
+                            _cancel_probe_receipt_from_pinvi_state(state)
+                        )
+                        if updated != journal:
+                            write_pinned_runtime_rebuild_journal(
+                                state_paths.journal,
+                                updated,
+                            )
+                            journal = updated
+
+                    run_pinvi_canonical_smoke(
+                        config,
+                        cancel_probe_state=cancel_probe_state,
+                        state_recorder=record_cancel_probe_state,
+                    )
+                    updated = self._advance_pinned_runtime_journal(
+                        journal,
+                        "cancel_probe_finalized",
+                    )
+                    if updated != journal:
+                        write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
+                        journal = updated
                 self._run_pinned_runtime_rebuild_compose(
                     [
                         "up",

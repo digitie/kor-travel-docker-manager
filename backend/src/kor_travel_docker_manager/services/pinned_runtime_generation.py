@@ -14,7 +14,7 @@ import stat
 import tempfile
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
@@ -42,10 +42,19 @@ RebuildPhase = Literal[
     "map_runtime_ready",
     "pinvi_schema_ready",
     "pinvi_api_ready",
+    "cancel_probe_finalized",
     "pinvi_runtime_ready",
     "contract_verified",
     "manifest_committing",
     "committed",
+]
+CancelProbeStage = Literal[
+    "uninitialized",
+    "armed",
+    "cancel_post_attempted",
+    "consumed",
+    "finalize_post_attempted",
+    "finalized",
 ]
 
 RUNTIME_SERVICES: tuple[RuntimeService, ...] = (
@@ -71,6 +80,7 @@ REBUILD_PHASES: tuple[RebuildPhase, ...] = (
     "map_runtime_ready",
     "pinvi_schema_ready",
     "pinvi_api_ready",
+    "cancel_probe_finalized",
     "pinvi_runtime_ready",
     "contract_verified",
     "manifest_committing",
@@ -100,7 +110,8 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCHEMA_HEAD = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
 _MAX_STATE_BYTES = 64 * 1024
 _MANIFEST_VERSION = 5
-_TOMBSTONE_VERSION = 5
+_REBUILD_JOURNAL_VERSION = 6
+_TOMBSTONE_VERSION = 6
 _F1D_LEGACY_ARTIFACTS: tuple[str, ...] = (
     "compatible-pair-v2.json",
     "compatible-pair-v3.json",
@@ -109,14 +120,23 @@ _F1D_LEGACY_ARTIFACTS: tuple[str, ...] = (
     "cache-target-window-v1.json",
     "cache-target-diagnostic-v1.json",
     "cache-target-diagnostic-attempts-v1.json",
+    "pinned-runtime-rebuild-v5.json",
 )
-_TOMBSTONE_DIRECTORY = "pinned-runtime-v5"
-_TOMBSTONE_FILENAME = "legacy-tombstone-v5.json"
+_TOMBSTONE_DIRECTORY = "pinned-runtime-v6"
+_TOMBSTONE_FILENAME = "legacy-tombstone-v6.json"
 _STATE_ROOT_ENV = "KTDM_PINNED_RUNTIME_STATE_ROOT"
 _PROJECT_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
 _DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
 _MANIFEST_FILENAME = "pinned-runtime-generation-v5.json"
-_JOURNAL_FILENAME = "pinned-runtime-rebuild-v5.json"
+_JOURNAL_FILENAME = "pinned-runtime-rebuild-v6.json"
+_CANCEL_PROBE_STAGES: tuple[CancelProbeStage, ...] = (
+    "uninitialized",
+    "armed",
+    "cancel_post_attempted",
+    "consumed",
+    "finalize_post_attempted",
+    "finalized",
+)
 
 
 @dataclass(frozen=True)
@@ -135,7 +155,7 @@ class DeploymentMode:
 
 @dataclass(frozen=True)
 class PinnedRuntimeStatePaths:
-    """v5 authority가 소유하는 project-scoped owner-only state 경로.
+    """v5 generation과 v6 rebuild journal이 소유하는 project-scoped owner-only state 경로.
 
     v4 manifest나 F1F handoff path를 재사용하지 않는다. ``rebuild-pinned``는 이
     세 경로만 읽고 쓰므로, legacy artifact는 같은 state directory에서 tombstone
@@ -335,10 +355,95 @@ class PinnedRuntimeManifest:
 
 
 @dataclass(frozen=True)
-class PinnedRuntimeRebuildJournal:
-    """candidate image 보존부터 v5 manifest commit까지의 same-pinset resume receipt."""
+class PinnedRuntimeCancelProbeOutcome:
+    """Map fixture가 확정한 canonical unsafe cancellation의 secret-free receipt."""
 
-    version: Literal[5]
+    name: Literal["pinvi_cancel_error"]
+    status: Literal[409]
+    code: Literal["PIPELINE_CANCELLATION_UNSAFE"]
+
+    def __post_init__(self) -> None:
+        if (
+            self.name != "pinvi_cancel_error"
+            or self.status != 409
+            or self.code != "PIPELINE_CANCELLATION_UNSAFE"
+        ):
+            raise DeploymentContractError("pinned runtime cancel probe outcome is invalid")
+
+    def to_payload(self) -> dict[str, int | str]:
+        return {"name": self.name, "status": self.status, "code": self.code}
+
+
+@dataclass(frozen=True)
+class PinnedRuntimeCancelProbeReceipt:
+    """cancel/finalize 재발행을 막는 v6 transaction-local high-watermark."""
+
+    stage: CancelProbeStage = "uninitialized"
+    job_id: str | None = None
+    cancellation_id: str | None = None
+    outcome: PinnedRuntimeCancelProbeOutcome | None = None
+
+    def __post_init__(self) -> None:
+        if self.stage not in _CANCEL_PROBE_STAGES:
+            raise DeploymentContractError("pinned runtime cancel probe stage is invalid")
+        if self.stage == "uninitialized":
+            if any(value is not None for value in (self.job_id, self.cancellation_id, self.outcome)):
+                raise DeploymentContractError("uninitialized cancel probe receipt has evidence")
+            return
+        _validate_canonical_uuid(self.job_id, "pinned runtime cancel probe job ID")
+        if self.stage in {"armed", "cancel_post_attempted"}:
+            if self.cancellation_id is not None or self.outcome is not None:
+                raise DeploymentContractError("armed cancel probe receipt has cancellation evidence")
+            return
+        _validate_canonical_uuid(
+            self.cancellation_id,
+            "pinned runtime cancel probe cancellation ID",
+        )
+        if self.outcome is None:
+            raise DeploymentContractError("consumed cancel probe receipt has no outcome")
+
+    def transition(
+        self,
+        stage: CancelProbeStage,
+        *,
+        job_id: str | None = None,
+        cancellation_id: str | None = None,
+        outcome: PinnedRuntimeCancelProbeOutcome | None = None,
+    ) -> PinnedRuntimeCancelProbeReceipt:
+        current_index = _CANCEL_PROBE_STAGES.index(self.stage)
+        next_index = _CANCEL_PROBE_STAGES.index(stage)
+        if next_index != current_index + 1:
+            raise DeploymentContractError("pinned runtime cancel probe transition is invalid")
+        if self.stage == "uninitialized":
+            return PinnedRuntimeCancelProbeReceipt(stage=stage, job_id=job_id)
+        if self.stage in {"armed", "cancel_post_attempted"}:
+            return PinnedRuntimeCancelProbeReceipt(
+                stage=stage,
+                job_id=self.job_id,
+                cancellation_id=cancellation_id,
+                outcome=outcome,
+            )
+        return PinnedRuntimeCancelProbeReceipt(
+            stage=stage,
+            job_id=self.job_id,
+            cancellation_id=self.cancellation_id,
+            outcome=self.outcome,
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "stage": self.stage,
+            "job_id": self.job_id,
+            "cancellation_id": self.cancellation_id,
+            "outcome": None if self.outcome is None else self.outcome.to_payload(),
+        }
+
+
+@dataclass(frozen=True)
+class PinnedRuntimeRebuildJournal:
+    """candidate image 보존부터 v5 manifest commit까지의 v6 same-pinset resume receipt."""
+
+    version: Literal[6]
     transaction_id: str
     phase: RebuildPhase
     candidate: PinnedRuntimeGeneration
@@ -346,16 +451,12 @@ class PinnedRuntimeRebuildJournal:
     compose_sha256: str
     resolved_compose_sha256: str
     created_at: str
+    cancel_probe: PinnedRuntimeCancelProbeReceipt = PinnedRuntimeCancelProbeReceipt()
 
     def __post_init__(self) -> None:
-        if self.version != _MANIFEST_VERSION:
+        if self.version != _REBUILD_JOURNAL_VERSION:
             raise DeploymentContractError("pinned runtime rebuild journal version is invalid")
-        try:
-            canonical = str(uuid.UUID(self.transaction_id))
-        except ValueError as exc:
-            raise DeploymentContractError("pinned runtime rebuild transaction ID is invalid") from exc
-        if canonical != self.transaction_id:
-            raise DeploymentContractError("pinned runtime rebuild transaction ID is not canonical")
+        _validate_canonical_uuid(self.transaction_id, "pinned runtime rebuild transaction ID")
         if self.phase not in REBUILD_PHASES:
             raise DeploymentContractError("pinned runtime rebuild phase is invalid")
         for digest in (
@@ -366,21 +467,34 @@ class PinnedRuntimeRebuildJournal:
             if _SHA256.fullmatch(digest) is None:
                 raise DeploymentContractError("pinned runtime rebuild input digest is invalid")
         _validate_utc_timestamp(self.created_at, "pinned runtime rebuild timestamp")
+        if not isinstance(self.cancel_probe, PinnedRuntimeCancelProbeReceipt):
+            raise DeploymentContractError("pinned runtime cancel probe receipt is invalid")
+        if (
+            REBUILD_PHASES.index(self.phase)
+            >= REBUILD_PHASES.index("cancel_probe_finalized")
+            and self.cancel_probe.stage != "finalized"
+        ):
+            raise DeploymentContractError("pinned runtime phase lacks finalized cancel probe")
 
     def transition(self, phase: RebuildPhase) -> PinnedRuntimeRebuildJournal:
         current_index = REBUILD_PHASES.index(self.phase)
         if current_index == len(REBUILD_PHASES) - 1 or REBUILD_PHASES[current_index + 1] != phase:
             raise DeploymentContractError("pinned runtime rebuild phase transition is invalid")
-        return PinnedRuntimeRebuildJournal(
-            version=5,
-            transaction_id=self.transaction_id,
-            phase=phase,
-            candidate=self.candidate,
-            environment_sha256=self.environment_sha256,
-            compose_sha256=self.compose_sha256,
-            resolved_compose_sha256=self.resolved_compose_sha256,
-            created_at=self.created_at,
-        )
+        return replace(self, phase=phase)
+
+    def with_cancel_probe(
+        self,
+        receipt: PinnedRuntimeCancelProbeReceipt,
+    ) -> PinnedRuntimeRebuildJournal:
+        if REBUILD_PHASES.index(self.phase) < REBUILD_PHASES.index("pinvi_api_ready"):
+            raise DeploymentContractError("pinned runtime cancel probe ran before PinVi API readiness")
+        current_index = _CANCEL_PROBE_STAGES.index(self.cancel_probe.stage)
+        next_index = _CANCEL_PROBE_STAGES.index(receipt.stage)
+        if next_index < current_index or next_index > current_index + 1:
+            raise DeploymentContractError("pinned runtime cancel probe receipt regressed")
+        if next_index == current_index and receipt != self.cancel_probe:
+            raise DeploymentContractError("pinned runtime cancel probe receipt drifted")
+        return replace(self, cancel_probe=receipt)
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -392,6 +506,7 @@ class PinnedRuntimeRebuildJournal:
             "compose_sha256": self.compose_sha256,
             "resolved_compose_sha256": self.resolved_compose_sha256,
             "created_at": self.created_at,
+            "cancel_probe": self.cancel_probe.to_payload(),
         }
 
 
@@ -414,9 +529,9 @@ class LegacyTombstoneEntry:
 
 @dataclass(frozen=True)
 class LegacyTombstoneReceipt:
-    """candidate-attested 뒤에만 쓰는 v5 legacy state 퇴역 receipt."""
+    """candidate-attested 뒤에만 쓰는 v6 legacy state 퇴역 receipt."""
 
-    version: Literal[5]
+    version: Literal[6]
     transaction_id: str
     candidate_generation_sha256: str
     requested_paths: tuple[str, ...]
@@ -508,6 +623,7 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
         "compose_sha256",
         "resolved_compose_sha256",
         "created_at",
+        "cancel_probe",
     }
     if not isinstance(payload, Mapping) or set(payload) != expected:
         raise DeploymentContractError("pinned runtime rebuild journal payload is invalid")
@@ -518,8 +634,10 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
     compose_sha256 = payload.get("compose_sha256")
     resolved_compose_sha256 = payload.get("resolved_compose_sha256")
     created_at = payload.get("created_at")
+    cancel_probe = payload.get("cancel_probe")
     if (
         type(version) is not int
+        or version != _REBUILD_JOURNAL_VERSION
         or not all(
             isinstance(value, str)
             for value in (
@@ -535,7 +653,7 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
     ):
         raise DeploymentContractError("pinned runtime rebuild journal payload is invalid")
     return PinnedRuntimeRebuildJournal(
-        version=5,
+        version=6,
         transaction_id=cast(str, transaction_id),
         phase=cast(RebuildPhase, phase),
         candidate=generation_from_payload(payload.get("candidate")),
@@ -543,6 +661,55 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
         compose_sha256=cast(str, compose_sha256),
         resolved_compose_sha256=cast(str, resolved_compose_sha256),
         created_at=cast(str, created_at),
+        cancel_probe=_cancel_probe_receipt_from_payload(cancel_probe),
+    )
+
+
+def _cancel_probe_receipt_from_payload(
+    payload: object,
+) -> PinnedRuntimeCancelProbeReceipt:
+    if not isinstance(payload, Mapping) or set(payload) != {
+        "stage",
+        "job_id",
+        "cancellation_id",
+        "outcome",
+    }:
+        raise DeploymentContractError("pinned runtime cancel probe receipt is invalid")
+    stage = payload.get("stage")
+    job_id = payload.get("job_id")
+    cancellation_id = payload.get("cancellation_id")
+    outcome_payload = payload.get("outcome")
+    if (
+        not isinstance(stage, str)
+        or (job_id is not None and not isinstance(job_id, str))
+        or (cancellation_id is not None and not isinstance(cancellation_id, str))
+    ):
+        raise DeploymentContractError("pinned runtime cancel probe receipt is invalid")
+    outcome: PinnedRuntimeCancelProbeOutcome | None
+    if outcome_payload is None:
+        outcome = None
+    elif (
+        isinstance(outcome_payload, Mapping)
+        and set(outcome_payload) == {"name", "status", "code"}
+        and isinstance(outcome_payload.get("name"), str)
+        and type(outcome_payload.get("status")) is int
+        and isinstance(outcome_payload.get("code"), str)
+    ):
+        outcome = PinnedRuntimeCancelProbeOutcome(
+            name=cast(Literal["pinvi_cancel_error"], outcome_payload["name"]),
+            status=cast(Literal[409], outcome_payload["status"]),
+            code=cast(
+                Literal["PIPELINE_CANCELLATION_UNSAFE"],
+                outcome_payload["code"],
+            ),
+        )
+    else:
+        raise DeploymentContractError("pinned runtime cancel probe receipt is invalid")
+    return PinnedRuntimeCancelProbeReceipt(
+        stage=cast(CancelProbeStage, stage),
+        job_id=job_id,
+        cancellation_id=cancellation_id,
+        outcome=outcome,
     )
 
 
@@ -569,7 +736,7 @@ def f1d_legacy_artifact_paths() -> tuple[str, ...]:
 
 
 def legacy_tombstone_receipt_path(state_root: Path) -> Path:
-    """v5 receipt는 legacy file과 분리된 manager-owned directory에만 기록한다."""
+    """v6 receipt는 legacy file과 분리된 manager-owned directory에만 기록한다."""
 
     return state_root / _TOMBSTONE_DIRECTORY / _TOMBSTONE_FILENAME
 
@@ -619,7 +786,7 @@ def retire_f1d_legacy_artifacts(
         if entry is not None
     )
     receipt = LegacyTombstoneReceipt(
-        version=5,
+        version=6,
         transaction_id=transaction_id,
         candidate_generation_sha256=expected_generation_sha256,
         requested_paths=normalized_paths,
@@ -638,6 +805,17 @@ def _validate_utc_timestamp(value: str, label: str) -> None:
         raise DeploymentContractError(f"{label} is invalid") from exc
     if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise DeploymentContractError(f"{label} is invalid")
+
+
+def _validate_canonical_uuid(value: object, label: str) -> None:
+    if not isinstance(value, str):
+        raise DeploymentContractError(f"{label} is invalid")
+    try:
+        canonical = str(uuid.UUID(value))
+    except ValueError as exc:
+        raise DeploymentContractError(f"{label} is invalid") from exc
+    if canonical != value:
+        raise DeploymentContractError(f"{label} is not canonical")
 
 
 def _normalize_legacy_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -696,7 +874,7 @@ def _legacy_tombstone_receipt_from_payload(payload: object) -> LegacyTombstoneRe
             )
         )
     return LegacyTombstoneReceipt(
-        version=5,
+        version=6,
         transaction_id=transaction_id,
         candidate_generation_sha256=candidate_generation_sha256,
         requested_paths=tuple(requested_paths),

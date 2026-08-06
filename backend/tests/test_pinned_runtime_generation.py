@@ -13,6 +13,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     assert_compose_mutation_allowed,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    PinnedRuntimeCancelProbeOutcome,
+    PinnedRuntimeCancelProbeReceipt,
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
@@ -154,8 +156,11 @@ def test_pinned_runtime_state_paths_are_rebuildable_project_scoped(
 
     assert paths.state_root == tmp_path / "f1d-isolated"
     assert paths.manifest == paths.state_root / "pinned-runtime-generation-v5.json"
-    assert paths.journal == paths.state_root / "pinned-runtime-rebuild-v5.json"
+    assert paths.journal == paths.state_root / "pinned-runtime-rebuild-v6.json"
     assert paths.tombstone_receipt == legacy_tombstone_receipt_path(paths.state_root)
+    assert paths.tombstone_receipt == (
+        paths.state_root / "pinned-runtime-v6" / "legacy-tombstone-v6.json"
+    )
     assert stat.S_IMODE(paths.state_root.stat().st_mode) == 0o700
 
 
@@ -212,7 +217,7 @@ def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path
     state.mkdir(mode=0o700)
     os.chmod(state, 0o700)
     journal = PinnedRuntimeRebuildJournal(
-        version=5,
+        version=6,
         transaction_id=str(uuid.uuid4()),
         phase="candidate_attested",
         candidate=_generation(),
@@ -221,7 +226,7 @@ def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path
         resolved_compose_sha256="d" * 64,
         created_at="2026-08-06T00:00:00+00:00",
     )
-    path = state / "pinned-runtime-rebuild-v5.json"
+    path = state / "pinned-runtime-rebuild-v6.json"
 
     write_rebuild_journal(path, journal)
     restored = read_rebuild_journal(path)
@@ -230,6 +235,27 @@ def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path
     assert restored.transition("reset_intent_durable").phase == "reset_intent_durable"
     with pytest.raises(DeploymentContractError, match="phase transition"):
         restored.transition("databases_recreated")
+
+
+def test_rebuild_journal_requires_durable_cancel_post_and_finalize_receipts() -> None:
+    receipt = PinnedRuntimeCancelProbeReceipt()
+    armed = receipt.transition("armed", job_id=str(uuid.uuid4()))
+    attempted = armed.transition("cancel_post_attempted")
+    consumed = attempted.transition(
+        "consumed",
+        cancellation_id=str(uuid.uuid4()),
+        outcome=PinnedRuntimeCancelProbeOutcome(
+            name="pinvi_cancel_error",
+            status=409,
+            code="PIPELINE_CANCELLATION_UNSAFE",
+        ),
+    )
+    finalize_attempted = consumed.transition("finalize_post_attempted")
+    finalized = finalize_attempted.transition("finalized")
+
+    assert finalized.stage == "finalized"
+    with pytest.raises(DeploymentContractError, match="transition"):
+        armed.transition("consumed")
 
 
 def test_generation_logical_sha256_excludes_recording_timestamp() -> None:
@@ -300,6 +326,36 @@ def test_legacy_tombstone_rejects_artifact_that_appears_after_receipt(
             candidate=_generation(),
             recorded_at="2026-08-06T00:00:00+00:00",
         )
+
+
+def test_v6_tombstone_retires_v5_journal_without_reusing_v5_receipt(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    os.chmod(state_root, 0o700)
+    old_journal = state_root / "pinned-runtime-rebuild-v5.json"
+    old_journal.write_text('{"version":5}\n', encoding="utf-8")
+    os.chmod(old_journal, 0o600)
+    old_receipt_directory = state_root / "pinned-runtime-v5"
+    old_receipt_directory.mkdir(mode=0o700)
+    os.chmod(old_receipt_directory, 0o700)
+    (old_receipt_directory / "legacy-tombstone-v5.json").write_text(
+        '{"historical":true}\n',
+        encoding="utf-8",
+    )
+    os.chmod(old_receipt_directory / "legacy-tombstone-v5.json", 0o600)
+
+    receipt = retire_f1d_legacy_artifacts(
+        state_root=state_root,
+        transaction_id=str(uuid.uuid4()),
+        candidate=_generation(),
+        recorded_at="2026-08-06T00:00:00+00:00",
+    )
+
+    assert not old_journal.exists()
+    assert "pinned-runtime-rebuild-v5.json" in receipt.requested_paths
+    assert legacy_tombstone_receipt_path(state_root).exists()
 
 
 def test_legacy_tombstone_rejects_unsafe_artifact_before_receipt(tmp_path: Path) -> None:

@@ -11,11 +11,16 @@ from unittest.mock import Mock
 import pytest
 
 from kor_travel_docker_manager.services import compose_service as compose_service_module
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.c6c_deployment import (
+    C6cCancelProbeFixture,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.compose_service import ComposeService
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     REBUILD_PHASES,
     RUNTIME_SERVICES,
+    PinnedRuntimeCancelProbeOutcome,
+    PinnedRuntimeCancelProbeReceipt,
     pinned_runtime_state_paths,
     read_rebuild_journal,
     write_rebuild_journal,
@@ -737,6 +742,60 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         lambda _runtime: next(revisions),
     )
     monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_c6c_deployment_config_from_environment",
+        lambda _values: object(),
+    )
+    def run_pinvi_smoke(
+        _config: object,
+        *,
+        cancel_probe_state: object,
+        state_recorder: object,
+    ) -> list[dict[str, int | str]]:
+        assert callable(state_recorder)
+        state = cast(Any, cancel_probe_state)
+        state.fixture = C6cCancelProbeFixture(
+            transaction_id=state.transaction_id,
+            job_id="0" * 8 + "-0000-0000-0000-000000000000",
+            state="armed",
+            cancellation_id=None,
+            canonical_unsafe_outcome=None,
+        )
+        state_recorder(state)
+        state.attempted = True
+        state_recorder(state)
+        outcome = {
+            "name": "pinvi_cancel_error",
+            "status": 409,
+            "code": "PIPELINE_CANCELLATION_UNSAFE",
+        }
+        state.fixture = C6cCancelProbeFixture(
+            transaction_id=state.transaction_id,
+            job_id=state.fixture.job_id,
+            state="consumed",
+            cancellation_id="1" * 8 + "-1111-1111-1111-111111111111",
+            canonical_unsafe_outcome=outcome,
+        )
+        state.result = outcome
+        state_recorder(state)
+        state.finalize_attempted = True
+        state_recorder(state)
+        state.fixture = C6cCancelProbeFixture(
+            transaction_id=state.transaction_id,
+            job_id=state.fixture.job_id,
+            state="finalized",
+            cancellation_id=state.fixture.cancellation_id,
+            canonical_unsafe_outcome=outcome,
+        )
+        state_recorder(state)
+        return []
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "run_pinvi_canonical_smoke",
+        run_pinvi_smoke,
+    )
     monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
     monkeypatch.setattr(compose_service_module, "reconcile_generation_references", Mock())
     monkeypatch.setattr(compose_service_module, "retire_f1d_legacy_artifacts", Mock())
@@ -745,6 +804,10 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
 
     assert result["success"] is True
     assert result["phase"] == "committed"
+    final_journal = read_rebuild_journal(
+        pinned_runtime_state_paths(values).journal
+    )
+    assert final_journal.cancel_probe.stage == "finalized"
     assert captured[0] is not None
     assert captured[0]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == expected_candidate_head
     assert captured[-1] is not None
@@ -795,6 +858,41 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert not (
         tmp_path / "state" / "f1d-c2" / "bootstrap" / str(result["transaction_id"])
     ).exists()
+
+
+def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() -> None:
+    journal = new_candidate_journal(
+        candidate=build_candidate_generation(
+            sources=_sources(),
+            image_ids={
+                service: f"sha256:{index:064x}"
+                for index, service in enumerate(RUNTIME_SERVICES)
+            },
+            map_application_head="map-application-head",
+            map_dagster_head="map-dagster-head",
+            pinvi_head="pinvi-head",
+        ),
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+    for phase in REBUILD_PHASES[1 : REBUILD_PHASES.index("pinvi_api_ready") + 1]:
+        journal = journal.transition(phase)
+    armed = PinnedRuntimeCancelProbeReceipt().transition(
+        "armed",
+        job_id="22222222-2222-2222-2222-222222222222",
+    )
+    journal = journal.with_cancel_probe(armed)
+    journal = journal.with_cancel_probe(armed.transition("cancel_post_attempted"))
+
+    resumed = compose_service_module._pinvi_cancel_probe_state_from_journal(journal)
+
+    assert resumed.transaction_id == journal.transaction_id
+    assert resumed.fixture is not None
+    assert resumed.fixture.job_id == "22222222-2222-2222-2222-222222222222"
+    assert resumed.fixture.state == "armed"
+    assert resumed.attempted is True
+    assert resumed.finalize_attempted is False
 
 
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
@@ -866,6 +964,30 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
         resolved_compose_sha256="c" * 64,
     )
     for phase in REBUILD_PHASES[1:-1]:
+        if phase == "cancel_probe_finalized":
+            armed = PinnedRuntimeCancelProbeReceipt().transition(
+                "armed",
+                job_id="0" * 8 + "-0000-0000-0000-000000000000",
+            )
+            cancel_attempted = armed.transition("cancel_post_attempted")
+            consumed = cancel_attempted.transition(
+                "consumed",
+                cancellation_id="1" * 8 + "-1111-1111-1111-111111111111",
+                outcome=PinnedRuntimeCancelProbeOutcome(
+                    name="pinvi_cancel_error",
+                    status=409,
+                    code="PIPELINE_CANCELLATION_UNSAFE",
+                ),
+            )
+            finalize_attempted = consumed.transition("finalize_post_attempted")
+            for receipt in (
+                armed,
+                cancel_attempted,
+                consumed,
+                finalize_attempted,
+                finalize_attempted.transition("finalized"),
+            ):
+                journal = journal.with_cancel_probe(receipt)
         journal = journal.transition(phase)
     state_paths = pinned_runtime_state_paths(values)
     state_paths.state_root.mkdir(parents=True, mode=0o700)
@@ -958,4 +1080,4 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
 
     assert result["phase"] == "committed"
     assert reconcile_attempts == 2
-    assert operations.count(("stop", *RUNTIME_SERVICES)) == 3
+    assert operations.count(("stop", *RUNTIME_SERVICES)) == 1
