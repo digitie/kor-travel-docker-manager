@@ -14,7 +14,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     ComposeCandidateContractError,
     ComposePostMutationContractError,
-    assert_c6c_mutation_allowed,
     assert_manager_mutation_allowed,
     compose_volume_graph_hash,
     revalidate_candidate_system_bind_snapshots,
@@ -136,10 +135,6 @@ def save_compose_config(config: dict[str, Any]) -> None:
         )
         assert_manager_mutation_allowed(
             environment=environment_snapshot.effective
-        )
-        assert_c6c_mutation_allowed(
-            ["kor-travel-map-api", "pinvi-api"],
-            environment=environment_snapshot.effective,
         )
         compose_path = Path(environment_snapshot.compose_path)
         original_bytes = compose_path.read_bytes()
@@ -674,10 +669,6 @@ class DockerService:
             assert_manager_mutation_allowed(
                 environment=environment_snapshot.effective
             )
-            assert_c6c_mutation_allowed(
-                [container_id],
-                environment=environment_snapshot.effective,
-            )
             return self._control_container_unlocked(
                 container_id,
                 action,
@@ -903,10 +894,6 @@ class DockerService:
             )
             assert_manager_mutation_allowed(
                 environment=environment_snapshot.effective
-            )
-            assert_c6c_mutation_allowed(
-                [container_id],
-                environment=environment_snapshot.effective,
             )
             return self._update_container_config_unlocked(
                 container_id,
@@ -1259,10 +1246,6 @@ class DockerService:
             )
             assert_manager_mutation_allowed(
                 environment=environment_snapshot.effective
-            )
-            assert_c6c_mutation_allowed(
-                [container_id],
-                environment=environment_snapshot.effective,
             )
             return self._reset_container_config_unlocked(
                 container_id,
