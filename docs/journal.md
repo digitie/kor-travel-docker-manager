@@ -4,6 +4,15 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C3 — Map typed-subtype release pin 갱신)
+
+Map `main`의 typed subtype 단일 정본 schema release(새 application head `0087`)를 F1D
+candidate source pin으로 고정한다. 이 release는 Map core의 `detail`/`geom` legacy 정본을
+제거하므로, 기존 DB를 보전하거나 intermediate schema에 맞추는 경로를 만들지 않는다. C3의
+candidate static attestation과 파기형 세 DB 재생성은 새 Map head만 수용한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-C3 — tombstone resume fail-close 보강)
 
 적대적 리뷰에서 v7 journal을 쓴 직후 legacy tombstone이 실패하거나 process가 종료되면 다음 resume이
