@@ -26,8 +26,8 @@ def test_current_release_is_exact_map_and_pinvi_v5_authority() -> None:
     assert release.version == PINNED_RUNTIME_RELEASE_VERSION == 5
     assert release.source_for("map") == MAP_PINNED_RUNTIME_SOURCE
     assert release.source_for("pinvi") == PINVI_PINNED_RUNTIME_SOURCE
-    assert release.source_for("map").revision == "3262bb0ac8ac4dc7bac00c71dfb6d9dd599809af"
-    assert release.source_for("pinvi").revision == "d5cc24a32a00c73af7418d632c396f49dd85442a"
+    assert release.source_for("map").revision == "443a7ff3ddacb4a43d816fad235833f78b5c6511"
+    assert release.source_for("pinvi").revision == "25505e05630fe167889e8595ee47f1ed0fdff13f"
     assert release.sources_by_role == {
         "map": MAP_PINNED_RUNTIME_SOURCE,
         "pinvi": PINVI_PINNED_RUNTIME_SOURCE,
@@ -38,15 +38,15 @@ def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
     release = PINNED_RUNTIME_RELEASE
 
     assert canonical_pinset_bytes(version=release.version, sources=release.sources) == (
-        b'{"sources":[{"revision":"3262bb0ac8ac4dc7bac00c71dfb6d9dd599809af",'
+        b'{"sources":[{"revision":"443a7ff3ddacb4a43d816fad235833f78b5c6511",'
         b'"role":"map","url":"https://github.com/digitie/kor-travel-map.git"},'
-        b'{"revision":"d5cc24a32a00c73af7418d632c396f49dd85442a",'
+        b'{"revision":"25505e05630fe167889e8595ee47f1ed0fdff13f",'
         b'"role":"pinvi","url":"https://github.com/digitie/pinvi.git"}],"version":5}'
     )
     assert canonical_pinset_sha256(version=release.version, sources=release.sources) == (
-        "c74d87ec762ee9fab4531c4c25a5a0d3347f559818b9bbd65dd767edb5aa88a1"
+        "3db2950b94359697ffcf152c0317fc0f6b06266589ceddb923fe690dfbb3529b"
     )
-    assert release.pinset_sha256 == "c74d87ec762ee9fab4531c4c25a5a0d3347f559818b9bbd65dd767edb5aa88a1"
+    assert release.pinset_sha256 == "3db2950b94359697ffcf152c0317fc0f6b06266589ceddb923fe690dfbb3529b"
 
 
 @pytest.mark.parametrize(
@@ -55,13 +55,13 @@ def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
         (
             "map",
             "https://github.com/digitie/kor-travel-map.git/",
-            "3262bb0ac8ac4dc7bac00c71dfb6d9dd599809af",
+            "443a7ff3ddacb4a43d816fad235833f78b5c6511",
             "URL",
         ),
         (
             "pinvi",
             CANONICAL_RUNTIME_SOURCE_URLS["pinvi"],
-            "D5CC24A32A00C73AF7418D632C396F49DD85442A",
+            "25505E05630FE167889E8595EE47F1ED0FDFF13F",
             "revision",
         ),
         (
