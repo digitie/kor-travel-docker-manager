@@ -182,9 +182,9 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 
 ### T-048: T-VN-41 cache-target production manifest와 최초 cutover 제품화 (퇴역 기록)
 
-- [x] ADR-28과 [`cache-target-production-cutover.md`](cache-target-production-cutover.md)에
-      ordinary runtime 최소 권한, 4-role/legacy 상호 분리, default-off 최초 cutover와 receipt,
-      sync enable 뒤 compatible-pair attestation 순서를 먼저 고정한다.
+- [x] ADR-28에 ordinary runtime 최소 권한, 4-role/legacy 상호 분리, default-off 최초 cutover와
+      receipt, sync enable 뒤 compatible-pair attestation 순서를 기록했다. F1D v5에서 이
+      control plane과 실행 문서는 함께 퇴역했다.
 - [x] Map API에는 `KOR_TRAVEL_MAP_API_CACHE_TARGET_SERVICE_PRINCIPALS` JSON registry만 전달하고,
       PinVi ordinary API에는 정확히 `PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_SYNC_ENABLED`,
       `..._COMMAND_TOKEN`, `..._CONSUMER_TOKEN`, `..._CONSUMER_ID`,
@@ -278,10 +278,7 @@ Grafana, Prometheus, Concierge MCP·Scheduler·UI, Map Dagster daemon 등은 hea
 
 ### T-049: cache-target 사전 진단·cutover abort budget 제품화 (퇴역 기록)
 
-설계 정본은 [`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)다.
-구현 순서는 설계 문서 6절이 고정한다: T-049A(모델·storage) → T-049B(DB primitive) →
-T-049C(writer fence·orchestration) → T-049D(cutover gate) → T-049E(n150 rehearsal). 각
-phase는 별도 PR로 검증한다.
+F1D v5에서 해당 control plane과 실행 문서를 퇴역했다. 아래는 이전 구현의 역사 기록이다.
 
 - [x] **T-049A — typed diagnostic model과 storage.** `cache_target_diagnostics.py` 신설.
       sealed `DiagnosticPhase`(prepared→writers_fencing→writers_fenced→
@@ -551,10 +548,8 @@ naming이며 실제 최신 데이터를 담고 있으므로, `kor_travel_map`(�
 ### T-052: cache-target 진단의 durable Dagster writer drain (퇴역 기록)
 
 > **대체됨 — 구현·검증 정본이 아니다.** 이 기록은 direct daemon stop 초안의 이력을
-> 보존할 뿐이다. 현재 정본은 T-049F와
-> `docs/cache-target-cutover-diagnostics.md`의 Map-owned durable lease/typed
-> private command 설계이며, Manager는 Dagster daemon·GraphQL·DB를 직접 조작하지
-> 않는다.
+> 보존할 뿐이다. F1D v5에서는 해당 diagnostic control plane 자체를 퇴역했으며,
+> Manager는 Dagster daemon·GraphQL·DB를 직접 조작하지 않는다.
 
 n150에서 `ktdctl cache-target diagnose`를 반복 실행하며 같은 문제를 계속 만났다:
 `writers_fencing`의 preflight가 PostgreSQL 진행 중 트랜잭션과 Dagster 비종료 run이

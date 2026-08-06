@@ -441,8 +441,8 @@ Manager의 기존 검증기와 호환된다는 점도 함께 확인했다: `row_
 `quarantine_candidates`/`quarantine_collections`/`quarantine_items` 키를
 새로 얻지만 migrate/verify receipt 검증은 key set에 대해 loose하고,
 `_validate_map_gc_receipt`는 GC receipt 전용이라 영향받지 않는다.
-`cache_target_production_manifest.py`의 tracked `map_release_revision`과
-`docs/cache-target-production-cutover.md`의 pin 이력 문단을 갱신했다.
+`cache_target_production_manifest.py`의 tracked `map_release_revision`과 당시
+cache-target production cutover 문서의 pin 이력 문단을 갱신했다.
 `service_openapi_sha256`(PinVi 소유, Map release revision과 무관)은
 변경하지 않았다. 백엔드 전체 스위트(1595 passed) 통과 확인.
 
@@ -989,8 +989,8 @@ initial event, sync enable, `.env`/manifest mutation을 하지 않으며 `extern
 typed stage/failure class와 logical identity만 owner-only receipt에 기록한다. diagnostic archive는 최신
 cutover backup으로 재사용하지 않으며, actual cutover는 writer fence 뒤 fresh backup/rehearsal을 다시
 만든다. 같은 input의 반복 failure에는 bounded abort budget을 적용해 regression을 포함한 수정과 새
-diagnostic receipt 없이는 재시도를 막는다. 상세 정본은
-[`cache-target-cutover-diagnostics.md`](cache-target-cutover-diagnostics.md)와 ADR-29다.
+diagnostic receipt 없이는 재시도를 막는다. 상세 정본은 당시 cache-target cutover 진단 문서와
+ADR-29다.
 
 ## 2026-08-03 (T-048 PinVi authenticated-readiness GET timeout 보강)
 
