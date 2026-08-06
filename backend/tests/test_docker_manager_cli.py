@@ -9,7 +9,6 @@ import pytest
 import kor_travel_docker_manager.cli as cli_module
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services.c6c_deployment import (
-    ComposePostMutationContractError,
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.compose_service import (
@@ -434,128 +433,11 @@ def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_deploys_only_through_compatible_pair_workflow(mock_compose_service):
-    mock_compose_service.deploy_compatible_pinvi_pair.return_value = {
-        "success": True,
-        "returncode": 0,
-        "stdout": "",
-        "stderr": "",
-    }
-
-    assert main(["pinvi-pair", "deploy", "--build"]) == 0
-    mock_compose_service.deploy_compatible_pinvi_pair.assert_called_once_with(
-        build=True,
-        recreate=True,
-        wait_timeout=120,
-        expected_alembic_head=None,
-    )
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_pinned_source_install_requires_confirmation(mock_compose_service, capsys):
     assert main(["pinvi-pair", "install-pinned-sources"]) == 2
 
     assert "requires --confirm" in capsys.readouterr().err
     mock_compose_service.install_pinned_sources.assert_not_called()
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_pinned_drift_bootstrap_requires_confirmation(mock_compose_service, capsys):
-    assert main(["pinvi-pair", "bootstrap-pinned-drift"]) == 2
-
-    assert "requires --confirm" in capsys.readouterr().err
-    mock_compose_service.bootstrap_pinned_drift.assert_not_called()
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_dispatches_confirmed_pinned_drift_bootstrap(mock_compose_service):
-    mock_compose_service.bootstrap_pinned_drift.return_value = {
-        "success": True,
-        "returncode": 0,
-    }
-
-    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm", "--json"]) == 0
-
-    mock_compose_service.bootstrap_pinned_drift.assert_called_once_with()
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_pinned_drift_bootstrap_returns_halt_state_as_safe_json(
-    mock_compose_service,
-    capsys,
-):
-    mock_compose_service.bootstrap_pinned_drift.side_effect = (
-        ComposePostMutationContractError(
-            DeploymentContractError("candidate verification failed"),
-            recovery_attempted=True,
-            recovery_succeeded=False,
-            recovery_error="halted_requires_operator",
-            restoration={
-                "state": "halted_requires_operator",
-                "command": ["redacted"],
-                "failure_checkpoint": "prepared.contract.ui_auth",
-                "failure_count": 2,
-                "failure_evidence_persisted": True,
-            },
-        )
-    )
-
-    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm", "--json"]) == 1
-
-    assert json.loads(capsys.readouterr().out) == {
-        "success": False,
-        "returncode": 1,
-        "state": "halted_requires_operator",
-        "error": "pinned drift bootstrap failed after runtime mutation",
-        "stdout": "",
-        "stderr": (
-            "pinned drift bootstrap failed after runtime mutation: "
-            "halted_requires_operator\n"
-        ),
-        "recovery_attempted": True,
-        "recovery_succeeded": False,
-        "recovery_error": "halted_requires_operator",
-        "failure_checkpoint": "prepared.contract.ui_auth",
-        "failure_count": 2,
-        "failure_evidence_persisted": True,
-    }
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_pinned_drift_bootstrap_prints_halt_state_without_json(
-    mock_compose_service,
-    capsys,
-):
-    mock_compose_service.bootstrap_pinned_drift.side_effect = (
-        ComposePostMutationContractError(
-            DeploymentContractError("candidate verification failed"),
-            recovery_attempted=True,
-            recovery_succeeded=False,
-            recovery_error="halted_requires_operator",
-            restoration={"state": "halted_requires_operator"},
-        )
-    )
-
-    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm"]) == 1
-
-    assert capsys.readouterr().err == (
-        "pinned drift bootstrap failed after runtime mutation: "
-        "halted_requires_operator\n"
-    )
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_pinned_drift_bootstrap_reports_pre_mutation_contract_error(
-    mock_compose_service,
-    capsys,
-):
-    mock_compose_service.bootstrap_pinned_drift.side_effect = DeploymentContractError(
-        "pinned drift bootstrap requires a committed pinned source installation"
-    )
-
-    assert main(["pinvi-pair", "bootstrap-pinned-drift", "--confirm"]) == 2
-
-    assert "requires a committed" in capsys.readouterr().err
 
 
 @patch("kor_travel_docker_manager.cli._require_trusted_pinned_source_installer")
@@ -590,103 +472,13 @@ def test_pinned_source_installer_rejects_nonroot_or_untrusted_project_root(
         cli_module._require_trusted_pinned_source_installer()
 
 
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_deploy_passes_explicit_wait_timeout(mock_compose_service):
-    """issue #88: 마이그레이션을 수반하는 배포는 기본 120초보다 큰 값을 지정해야 한다."""
-    mock_compose_service.deploy_compatible_pinvi_pair.return_value = {
-        "success": True,
-        "returncode": 0,
-        "stdout": "",
-        "stderr": "",
-    }
-
-    assert main(["pinvi-pair", "deploy", "--wait-timeout", "1200"]) == 0
-    mock_compose_service.deploy_compatible_pinvi_pair.assert_called_once_with(
-        build=False,
-        recreate=True,
-        wait_timeout=1200,
-        expected_alembic_head=None,
-    )
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_deploy_passes_expected_alembic_head(mock_compose_service):
-    """issue #109: candidate image의 alembic head를 명시하면 그대로 전달돼야 한다."""
-    mock_compose_service.deploy_compatible_pinvi_pair.return_value = {
-        "success": True,
-        "returncode": 0,
-        "stdout": "",
-        "stderr": "",
-    }
-
-    assert (
-        main(
-            [
-                "pinvi-pair",
-                "deploy",
-                "--expected-alembic-head",
-                "0078_cache_target_gc_observe",
-            ]
-        )
-        == 0
-    )
-    mock_compose_service.deploy_compatible_pinvi_pair.assert_called_once_with(
-        build=False,
-        recreate=True,
-        wait_timeout=120,
-        expected_alembic_head="0078_cache_target_gc_observe",
-    )
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_captures_only_verified_compatible_pair(mock_compose_service):
-    mock_compose_service.capture_compatible_pinvi_pair.return_value = {
-        "success": True,
-        "returncode": 0,
-        "stdout": "",
-        "stderr": "",
-    }
-
-    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 0
-    mock_compose_service.capture_compatible_pinvi_pair.assert_called_once_with(
-        verified_compatible=True,
-        build=True,
-        wait_timeout=120,
-    )
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_capture_passes_explicit_wait_timeout(mock_compose_service):
-    """issue #88: clean bootstrap capture도 kor-travel-map API의 alembic 마이그레이션을
-    기다려야 하므로 같은 --wait-timeout 오버라이드가 필요하다."""
-    mock_compose_service.capture_compatible_pinvi_pair.return_value = {
-        "success": True,
-        "returncode": 0,
-        "stdout": "",
-        "stderr": "",
-    }
-
-    assert main(
-        ["pinvi-pair", "capture", "--verified-compatible", "--wait-timeout", "1200"]
-    ) == 0
-    mock_compose_service.capture_compatible_pinvi_pair.assert_called_once_with(
-        verified_compatible=True,
-        build=False,
-        wait_timeout=1200,
-    )
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_rolls_back_only_the_whole_compatible_pair(mock_compose_service):
-    mock_compose_service.rollback_compatible_pinvi_pair.return_value = {
-        "success": True,
-        "returncode": 0,
-        "stdout": "",
-        "stderr": "",
-    }
-
-    assert main(["pinvi-pair", "rollback"]) == 0
-    mock_compose_service.rollback_compatible_pinvi_pair.assert_called_once_with()
+@pytest.mark.parametrize(
+    "legacy_action",
+    ["bootstrap-pinned-drift", "deploy", "capture", "rollback"],
+)
+def test_cli_does_not_expose_legacy_pair_actions(legacy_action: str) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["pinvi-pair", legacy_action])
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
@@ -742,68 +534,17 @@ def test_cli_bootstraps_default_off_contract_only_with_explicit_confirmation(
     assert payload["role_binding_sha256"] == "a" * 64
 
 
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_retires_legacy_diagnostic_only_with_explicit_confirmation(
-    mock_compose_service, capsys
-):
-    assert main(["cache-target", "retire-legacy-diagnostic"]) == 2
-    mock_compose_service.retire_legacy_pre_stop_cache_target_diagnostic.assert_not_called()
-    assert "requires --confirm" in capsys.readouterr().err
-
-    mock_compose_service.retire_legacy_pre_stop_cache_target_diagnostic.return_value = {
-        "success": True,
-        "returncode": 0,
-        "retired_phase": "writers_fencing",
-        "retired_journal_sha256": "a" * 64,
-    }
-
-    assert main(["cache-target", "retire-legacy-diagnostic", "--confirm", "--json"]) == 0
-    mock_compose_service.retire_legacy_pre_stop_cache_target_diagnostic.assert_called_once_with()
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["retired_phase"] == "writers_fencing"
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_retires_legacy_terminal_window_only_with_explicit_confirmation(
-    mock_compose_service, capsys
-):
-    assert main(["cache-target", "retire-legacy-window"]) == 2
-    mock_compose_service.retire_legacy_terminal_cache_target_window.assert_not_called()
-    assert "requires --confirm" in capsys.readouterr().err
-
-    mock_compose_service.retire_legacy_terminal_cache_target_window.return_value = {
-        "success": True,
-        "returncode": 0,
-        "retired_phase": "rolled_back",
-        "retired_journal_sha256": "a" * 64,
-    }
-
-    assert main(["cache-target", "retire-legacy-window", "--confirm", "--json"]) == 0
-    mock_compose_service.retire_legacy_terminal_cache_target_window.assert_called_once_with()
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["retired_phase"] == "rolled_back"
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-def test_cli_retires_inert_diagnostic_only_with_explicit_confirmation(
-    mock_compose_service, capsys
-):
-    assert main(["cache-target", "retire-inert-diagnostic"]) == 2
-    mock_compose_service.retire_inert_cache_target_diagnostic.assert_not_called()
-    assert "requires --confirm" in capsys.readouterr().err
-
-    mock_compose_service.retire_inert_cache_target_diagnostic.return_value = {
-        "success": True,
-        "returncode": 0,
-        "retired_diagnostic_version": 2,
-        "retired_phase": "writers_fencing",
-        "retired_journal_sha256": "a" * 64,
-    }
-
-    assert main(["cache-target", "retire-inert-diagnostic", "--confirm", "--json"]) == 0
-    mock_compose_service.retire_inert_cache_target_diagnostic.assert_called_once_with()
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["retired_diagnostic_version"] == 2
+@pytest.mark.parametrize(
+    "legacy_action",
+    [
+        "retire-legacy-diagnostic",
+        "retire-legacy-window",
+        "retire-inert-diagnostic",
+    ],
+)
+def test_cli_does_not_expose_legacy_retirement_actions(legacy_action: str) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["cache-target", legacy_action])
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")

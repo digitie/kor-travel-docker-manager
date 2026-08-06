@@ -798,6 +798,7 @@ def _validate_state_parent(path: Path, label: str) -> None:
         file_stat = path.lstat()
     except FileNotFoundError:
         path.mkdir(mode=0o700, parents=True)
+        _fsync_directory(path.parent)
         file_stat = path.lstat()
     if (
         not stat.S_ISDIR(file_stat.st_mode)

@@ -8,7 +8,6 @@ from collections.abc import Callable
 from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import (
-    ComposePostMutationContractError,
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.cache_target_backup import (
@@ -20,9 +19,6 @@ from kor_travel_docker_manager.services.compose_service import (
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
-from kor_travel_docker_manager.services.pinned_drift_bootstrap import (
-    PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS,
-)
 from kor_travel_docker_manager.services.registry import list_targets
 
 _TRUSTED_ROOT_LAUNCHER_ENV = "KTDM_TRUSTED_ROOT_LAUNCHER"
@@ -136,79 +132,15 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
 def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     try:
-        if args.pair_action == "install-pinned-sources":
-            if not args.confirm:
-                print(
-                    "pinvi-pair install-pinned-sources requires --confirm "
-                    "(no mutation was attempted)",
-                    file=sys.stderr,
-                )
-                return 2
-            _require_trusted_pinned_source_installer()
-            result = compose_service.install_pinned_sources()
-        elif args.pair_action == "bootstrap-pinned-drift":
-            if not args.confirm:
-                print(
-                    "pinvi-pair bootstrap-pinned-drift requires --confirm "
-                    "(no mutation was attempted)",
-                    file=sys.stderr,
-                )
-                return 2
-            result = compose_service.bootstrap_pinned_drift()
-        elif args.pair_action == "deploy":
-            result = compose_service.deploy_compatible_pinvi_pair(
-                build=args.build,
-                recreate=True,
-                wait_timeout=args.wait_timeout,
-                expected_alembic_head=args.expected_alembic_head,
+        if not args.confirm:
+            print(
+                "pinvi-pair install-pinned-sources requires --confirm "
+                "(no mutation was attempted)",
+                file=sys.stderr,
             )
-        elif args.pair_action == "capture":
-            result = compose_service.capture_compatible_pinvi_pair(
-                verified_compatible=args.verified_compatible,
-                build=args.build,
-                wait_timeout=args.wait_timeout,
-            )
-        else:
-            result = compose_service.rollback_compatible_pinvi_pair()
-    except ComposePostMutationContractError as exc:
-        if args.pair_action != "bootstrap-pinned-drift":
-            print(str(exc), file=sys.stderr)
-            return 1
-        restoration = exc.restoration or {}
-        state = str(restoration.get("state", "halt_failed_requires_operator"))
-        checkpoint_value = restoration.get("failure_checkpoint")
-        failure_checkpoint = (
-            checkpoint_value
-            if isinstance(checkpoint_value, str)
-            and checkpoint_value in PINNED_DRIFT_BOOTSTRAP_CHECKPOINTS
-            else None
-        )
-        failure_count_value = restoration.get("failure_count")
-        failure_count = (
-            failure_count_value
-            if type(failure_count_value) is int and failure_count_value >= 0
-            else 0
-        )
-        result = {
-            "success": False,
-            "returncode": 1,
-            "state": state,
-            "error": "pinned drift bootstrap failed after runtime mutation",
-            "stdout": "",
-            "stderr": (
-                "pinned drift bootstrap failed after runtime mutation: "
-                f"{state}\n"
-            ),
-            "recovery_attempted": exc.recovery_attempted,
-            "recovery_succeeded": exc.recovery_succeeded,
-            "recovery_error": exc.recovery_error,
-            "failure_checkpoint": failure_checkpoint,
-            "failure_count": failure_count,
-            "failure_evidence_persisted": bool(
-                restoration.get("failure_evidence_persisted", False)
-            ),
-        }
-        return _emit_process_result(result, json_output=args.json)
+            return 2
+        _require_trusted_pinned_source_installer()
+        result = compose_service.install_pinned_sources()
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -257,33 +189,6 @@ def _cmd_cache_target(args: argparse.Namespace) -> int:
                 )
                 return 2
             result = compose_service.bootstrap_cache_target_default_off()
-        elif args.cache_target_action == "retire-legacy-diagnostic":
-            if not args.confirm:
-                print(
-                    "cache-target retire-legacy-diagnostic requires --confirm "
-                    "(no mutation was attempted)",
-                    file=sys.stderr,
-                )
-                return 2
-            result = compose_service.retire_legacy_pre_stop_cache_target_diagnostic()
-        elif args.cache_target_action == "retire-legacy-window":
-            if not args.confirm:
-                print(
-                    "cache-target retire-legacy-window requires --confirm "
-                    "(no mutation was attempted)",
-                    file=sys.stderr,
-                )
-                return 2
-            result = compose_service.retire_legacy_terminal_cache_target_window()
-        elif args.cache_target_action == "retire-inert-diagnostic":
-            if not args.confirm:
-                print(
-                    "cache-target retire-inert-diagnostic requires --confirm "
-                    "(no mutation was attempted)",
-                    file=sys.stderr,
-                )
-                return 2
-            result = compose_service.retire_inert_cache_target_diagnostic()
         else:
             result = compose_service.enable_cache_target_sync()
     except (DeploymentContractError, ValueError) as exc:
@@ -490,7 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pinvi_pair = subparsers.add_parser(
         "pinvi-pair",
-        help="검증된 Map+PinVi immutable image pair를 기록하거나 함께 rollback합니다.",
+        help="trusted Map·PinVi pinned source를 설치합니다.",
     )
     pair_subparsers = pinvi_pair.add_subparsers(dest="pair_action", required=True)
     pair_install_sources = pair_subparsers.add_parser(
@@ -508,81 +413,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
     pair_install_sources.set_defaults(func=_cmd_pinvi_pair)
-    pair_bootstrap_drift = pair_subparsers.add_parser(
-        "bootstrap-pinned-drift",
-        help="tracked exact release pair로 production runtime drift를 한 번만 수렴합니다.",
-    )
-    pair_bootstrap_drift.add_argument(
-        "--confirm",
-        action="store_true",
-        help="기존 rollback 대신 failure 시 다섯 runtime을 halt함을 확인합니다.",
-    )
-    pair_bootstrap_drift.add_argument(
-        "--json",
-        action="store_true",
-        help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
-    )
-    pair_bootstrap_drift.set_defaults(func=_cmd_pinvi_pair)
-    pair_deploy = pair_subparsers.add_parser(
-        "deploy",
-        help="production Map+PinVi compatible pair를 단계 검증하며 배포합니다.",
-    )
-    pair_deploy.add_argument("--build", action="store_true", help="이미지를 먼저 빌드합니다.")
-    pair_deploy.add_argument(
-        "--wait-timeout",
-        type=int,
-        default=_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
-        help=(
-            f"각 활성화 단계가 healthy를 기다리는 초 단위 상한(기본 "
-            f"{_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS}초). "
-            "kor-travel-map API는 uvicorn 기동 전에 alembic 마이그레이션을 실행하므로, "
-            "긴 마이그레이션을 수반하는 배포는 더 큰 값을 지정해야 timeout으로 인한 "
-            "오발동 rollback을 피할 수 있다(issue #88)."
-        ),
-    )
-    pair_deploy.add_argument(
-        "--expected-alembic-head",
-        default=None,
-        help=(
-            "candidate Map API 이미지의 alembic head가 이 값과 다르면 배포를 "
-            "시작하기 전에 거부합니다(기동/DB 접속 없이 이미지만 정적으로 확인, "
-            "issue #109). 생략하면 이 검사를 하지 않습니다 — 알고 있는 배포에서는 "
-            "항상 지정해야 합니다."
-        ),
-    )
-    pair_deploy.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
-    pair_deploy.set_defaults(func=_cmd_pinvi_pair)
-    pair_capture = pair_subparsers.add_parser(
-        "capture",
-        help="clean 환경에서 candidate runtime set을 검증하고 최초 v4를 기록합니다.",
-    )
-    pair_capture.add_argument(
-        "--build", action="store_true", help="candidate runtime 이미지를 먼저 빌드합니다."
-    )
-    pair_capture.add_argument(
-        "--wait-timeout",
-        type=int,
-        default=_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS,
-        help=(
-            f"각 부트스트랩 단계가 healthy를 기다리는 초 단위 상한(기본 "
-            f"{_DEFAULT_C6C_WAIT_TIMEOUT_SECONDS}초). clean bootstrap은 전체 마이그레이션 "
-            "이력을 처음부터 실행할 수 있어 증분 배포보다 오래 걸릴 수 있다(issue #88)."
-        ),
-    )
-    pair_capture.add_argument(
-        "--verified-compatible",
-        action="store_true",
-        help="candidate Map+PinVi image가 같은 contract generation임을 명시합니다.",
-    )
-    pair_capture.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
-    pair_capture.set_defaults(func=_cmd_pinvi_pair)
-    pair_rollback = pair_subparsers.add_parser(
-        "rollback",
-        help="manifest의 Map+PinVi image ID를 두 서비스 함께 복원합니다.",
-    )
-    pair_rollback.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
-    pair_rollback.set_defaults(func=_cmd_pinvi_pair)
-
     cache_target = subparsers.add_parser(
         "cache-target",
         help="production cache-target initial cutover와 durable sync enable을 실행합니다.",
@@ -665,52 +495,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cache_target_bootstrap.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
     cache_target_bootstrap.set_defaults(func=_cmd_cache_target)
-    cache_target_retire_legacy_diagnostic = cache_target_subparsers.add_parser(
-        "retire-legacy-diagnostic",
-        help="writer stop 이전의 legacy v1 diagnostic journal 하나를 receipt-first로 퇴역합니다.",
-    )
-    cache_target_retire_legacy_diagnostic.add_argument(
-        "--confirm",
-        action="store_true",
-        help="exact legacy pre-stop diagnostic journal의 퇴역에 동의합니다.",
-    )
-    cache_target_retire_legacy_diagnostic.add_argument(
-        "--json",
-        action="store_true",
-        help="JSON으로 출력합니다.",
-    )
-    cache_target_retire_legacy_diagnostic.set_defaults(func=_cmd_cache_target)
-    cache_target_retire_legacy_window = cache_target_subparsers.add_parser(
-        "retire-legacy-window",
-        help="terminal legacy v1 window journal 하나를 receipt-first로 퇴역합니다.",
-    )
-    cache_target_retire_legacy_window.add_argument(
-        "--confirm",
-        action="store_true",
-        help="exact legacy terminal window journal의 퇴역에 동의합니다.",
-    )
-    cache_target_retire_legacy_window.add_argument(
-        "--json",
-        action="store_true",
-        help="JSON으로 출력합니다.",
-    )
-    cache_target_retire_legacy_window.set_defaults(func=_cmd_cache_target)
-    cache_target_retire_inert_diagnostic = cache_target_subparsers.add_parser(
-        "retire-inert-diagnostic",
-        help="writer-drain 전 inert v2 diagnostic journal 하나를 receipt-first로 퇴역합니다.",
-    )
-    cache_target_retire_inert_diagnostic.add_argument(
-        "--confirm",
-        action="store_true",
-        help="exact inert v2 diagnostic journal의 퇴역에 동의합니다.",
-    )
-    cache_target_retire_inert_diagnostic.add_argument(
-        "--json",
-        action="store_true",
-        help="JSON으로 출력합니다.",
-    )
-    cache_target_retire_inert_diagnostic.set_defaults(func=_cmd_cache_target)
-
     db_backup = subparsers.add_parser(
         "db-backup",
         help="cache-target cutover와 무관하게 언제든 단독으로 DB 백업을 만듭니다.",

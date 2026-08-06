@@ -87,8 +87,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     write_pair_manifest,
 )
 from kor_travel_docker_manager.services.c6c_image_retention import (
-    ensure_pair_references,
-    reconcile_pair_references,
+    ensure_generation_references,
+    reconcile_generation_references,
     require_empty_retention_namespace,
     validate_retention_namespace_is_reserved,
 )
