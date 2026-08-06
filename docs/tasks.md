@@ -34,7 +34,6 @@
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
 | **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
 | **T-VN-41-F1D** | pinned compatible-pair drift bootstrap (issue #136) | `[/]` | - | stale manifest/source·mixed runtime을 raw Docker·`.env` 우회 없이 tracked exact candidate로 수렴 |
-| **T-VN-41-F1J** | Map 소유 cancel-probe fixture lifecycle | `[/]` | - | 동적 fixture·전용 principal·정확한 PinVi relay 계약으로 F1D false-green 없이 수렴 |
 | **T-VN-41-F1H** | inert v2 diagnostic journal의 Manager 소유 퇴역 | `[/]` | - | writer drain 전 exact v2 state만 receipt-first로 퇴역해 F1F input rotation을 재개 |
 
 ---
@@ -989,44 +988,6 @@ canonical source cache와 tracked exact production pin이 모두 달라 일반 d
 - [x] F1F-A/B와 v2 input install 코드를 n150 trusted release로 설치하고 installer first-run/idempotent rerun을
       검증했다. F1D destructive bootstrap은 동일 frozen candidate로 두 차례 `prepared` 단계에서 fail-close했고,
       manifest는 바꾸지 않고 five-runtime을 halt했다.
-
-### T-VN-41-F1J: Map 소유 cancel-probe fixture lifecycle (issue #136 보강)
-
-F1I의 safe checkpoint가 분리한 마지막 F1D smoke는 PinVi login·ETL·provider-sync가 모두 `200`인 뒤,
-configured cancel probe만 `404`였다. 따라서 Manager runtime·PinVi session/role·일반 read route가 아니라,
-Manager가 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`만 전달하고 실제 Map pipeline execution fixture의 생성·소비·정리를
-어느 구성요소도 소유하지 않는 것이 원인이다. 자세한 정본은
-[`tvn41-f1j-cancel-probe-fixture.md`](tvn41-f1j-cancel-probe-fixture.md)다.
-
-- [x] **F1J-A (Map PR #960)** — Map이 `ops.c6c_cancel_probe_fixtures` migration과 전용 repository를 추가했다. F1D
-      durable transaction ID마다 Map이 새 `job_id`를 생성하며, `armed → consumed → finalized` 상태와 canonical
-      cancellation record를 FK·CHECK로 결박한다. `PUT/GET/POST finalize` 내부 lifecycle API와 별도
-      `ops:fixture` principal을 추가하고, 기존 일반 cancellation 경로가 `armed` fixture에서 정확히
-      `409 PIPELINE_CANCELLATION_UNSAFE`를 만들어 consumed 상태를 원자적으로 기록하게 한다. generic job API,
-      startup hook, raw SQL script, static UUID는 사용하지 않는다.
-- [x] **F1J-B (Manager PR #159)** — `KTDM_C6C_CANCEL_PROBE_JOB_ID`와 409/502/503의 넓은 success 집합을 제거했다.
-      candidate Map readiness 뒤 PinVi smoke 전 Manager가 전용 credential로 Map fixture를 ensure하고, 반환된
-      dynamic `job_id`만 PinVi의 기존 cancel relay에 전달한다. 성공은 exact canonical
-      `409 PIPELINE_CANCELLATION_UNSAFE` 하나뿐이다. Manager journal receipt는 transaction ID·job ID·Map lifecycle
-      state·cancellation ID·POST 직전 attempted flag·response 검증/종결 시각만 저장하며, receipt state는
-      `armed → consumed → finalized`로만 단조 전이한다. crash recovery는 Map durable state와 immutable
-      canonical outcome을 먼저 읽어 POST를 중복하지 않고, 검증 뒤에만 Map finalize를 호출한다. 구현·전체
-      backend 검증·적대 리뷰 1인 GO를 거쳐 merge됐다.
-- [x] **F1J-C (PinVi PR #435 · Manager PR #160)** — Map lifecycle API generation을 PinVi의 일반
-      `kor-travel-map-service-provenance-v1.json` artifact에 선언하고, Manager preflight가 trusted PinVi source,
-      Map release/OpenAPI artifact, cache-target/C6c capability를 byte-exact로 교차 검증하게 한다. 기존
-      compatible-pair manifest v4에는 F1J 전용 필드를 넣지 않는다. PinVi PR #435와 Manager PR #160이 merge되어
-      provenance artifact와 pin/preflight consumer를 구현했다. PinVi는 fixture 생성 권한을
-      받지 않으며 existing relay의 structured error 보존 회귀만 유지한다. lifecycle API가 없는 old Map image로의
-      rollback은 fail-close한다.
-- [/] **F1J-D (n150 isolated final verification)** — 격리 stack에서 trusted release 순서(Map → PinVi
-      provenance/pin → Manager)로 설치한 뒤 새 destructive F1D transaction을 실행한다. `ensure → PinVi cancel
-      1회 → exact 409 → finalize` receipt, idempotent crash-recovery rerun, 관리 UI 로그인·ETL·provider 상태와
-      live Playwright E2E를 확인하고 issue #136을 닫는다. 현 DB/data는 production data가 아니므로 백업·복원·중간
-      상태 보존을 하지 않으며, 필요 시 최종 schema에 맞춰 source/ETL로 재생성한다. production runtime/data는
-      이 검증 범위에서 제외한다. PinVi Docker provenance repair PR #437의 merge revision을 Manager pinset에
-      재결박했다. 이어 PinVi PR #439의 test-only live assertion 수정 merge revision도 같은 strict pinset에
-      회전한 뒤, 그 세 저장소의 exact release로만 fresh isolated rehearsal을 시작한다.
 
 ### T-VN-41-F1G: legacy terminal window journal 퇴역
 
