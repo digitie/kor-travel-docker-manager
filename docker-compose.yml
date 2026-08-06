@@ -500,6 +500,11 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_healthy
+      # Dagster metadata storage는 Map application Alembic과 별도의 migration
+      # graph다. candidate Dagster image가 one-shot에서 성공한 경우에만 web을
+      # 기동해 application/API readiness와 storage readiness를 혼용하지 않는다.
+      kor-travel-map-dagster-storage-migrate:
+        condition: service_completed_successfully
       kor-travel-map-api:
         condition: service_healthy
     environment:
@@ -543,6 +548,27 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
+  # C0의 candidate-image storage migration command를 Manager runtime에도
+  # 명시한다. 이 service는 Map Dagster web image를 그대로 사용하므로 여덟 번째
+  # runtime image를 만들지 않으며, build는 candidate generation builder가 소유한다.
+  kor-travel-map-dagster-storage-migrate:
+    image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
+    restart: "no"
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+    command:
+    - ktm-dagster-storage
+    - migrate
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DOCKER_DAGSTER_PG_URL:-postgresql://krtour_map:krtour_map_dev_password@127.0.0.1:5432/kor_travel_map_dagster}
+    # C0의 external-DB overlay와 같은 candidate image가 host gateway DSN도
+    # 해석할 수 있게 한다. host network를 쓰는 기본 경로에는 영향이 없다.
+    extra_hosts:
+    - host.docker.internal:host-gateway
   kor-travel-map-dagster-daemon:
     image: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE:-kor-travel-map-dagster-daemon:latest-main}
     build:
@@ -554,6 +580,10 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
+      # daemon도 web readiness의 transitive 의존만 믿지 않는다. candidate
+      # storage migration의 성공을 직접 predecessor로 고정한다.
+      kor-travel-map-dagster-storage-migrate:
+        condition: service_completed_successfully
       kor-travel-map-dagster:
         condition: service_healthy
     command:
@@ -609,12 +639,18 @@ services:
       kor-travel-map-api:
         condition: service_healthy
     command:
-    - sh
-    - -c
     # PinVi realtime broker is process-local until a shared broker lands.
     # Keep the API at one worker unless the deployment has a broker-compatible override.
-    - alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PINVI_API_PORT:-12801}
-      --workers ${PINVI_API_WORKERS:-1}
+    # DB migration/admin bootstrap은 `pinvi-admin-bootstrap` one-shot만 소유한다.
+    # normal API는 schema mutation을 수행하지 않는다.
+    - uvicorn
+    - app.main:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - ${PINVI_API_PORT:-12801}
+    - --workers
+    - ${PINVI_API_WORKERS:-1}
     environment:
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
       PINVI_API_WORKERS: ${PINVI_API_WORKERS:-1}
@@ -648,6 +684,24 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+  # C1의 migration + fresh-admin bootstrap command는 C2 rebuild transaction이
+  # `docker compose --profile bootstrap run`으로만 호출한다. credential file의
+  # 경로는 execution-time environment와 read-only mount로 전달하므로, 정적
+  # Compose 및 normal PinVi runtime의 inspect metadata에는 존재하지 않는다.
+  pinvi-admin-bootstrap:
+    profiles:
+    - bootstrap
+    image: ${PINVI_API_IMAGE:-pinvi-api:latest-main}
+    restart: "no"
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+    command:
+    - pinvi-admin-bootstrap
+    environment:
+      PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
   pinvi-web:
     image: ${PINVI_WEB_IMAGE:-pinvi-web:latest-main}
     build:
