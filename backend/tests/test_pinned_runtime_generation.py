@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import uuid
 from pathlib import Path
 
@@ -11,10 +12,14 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
+    f1d_legacy_artifact_paths,
+    generation_logical_sha256,
+    legacy_tombstone_receipt_path,
     load_deployment_mode,
     read_manifest,
     read_rebuild_journal,
     require_rebuildable_mode,
+    retire_f1d_legacy_artifacts,
     write_manifest,
     write_rebuild_journal,
 )
@@ -127,3 +132,92 @@ def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path
     assert restored.transition("reset_intent_durable").phase == "reset_intent_durable"
     with pytest.raises(DeploymentContractError, match="phase transition"):
         restored.transition("databases_recreated")
+
+
+def test_generation_logical_sha256_excludes_recording_timestamp() -> None:
+    initial = _generation()
+    later = PinnedRuntimeGeneration(
+        **{**initial.to_payload(), "recorded_at": "2026-08-06T01:00:00+00:00"}
+    )
+
+    assert generation_logical_sha256(initial) == generation_logical_sha256(later)
+
+
+def test_legacy_tombstone_receipt_is_fsynced_before_allowlisted_unlink(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    os.chmod(state_root, 0o700)
+    legacy = state_root / "compatible-pair-v4.json"
+    legacy.write_text('{"version":4}\n', encoding="utf-8")
+    os.chmod(legacy, 0o600)
+    transaction_id = str(uuid.uuid4())
+
+    receipt = retire_f1d_legacy_artifacts(
+        state_root=state_root,
+        transaction_id=transaction_id,
+        candidate=_generation(),
+        recorded_at="2026-08-06T00:00:00+00:00",
+    )
+
+    assert receipt.transaction_id == transaction_id
+    assert receipt.requested_paths == f1d_legacy_artifact_paths()
+    assert tuple(entry.relative_path for entry in receipt.retired) == (
+        "compatible-pair-v4.json",
+    )
+    assert not legacy.exists()
+    stored = legacy_tombstone_receipt_path(state_root)
+    assert stored.exists()
+    assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+    assert retire_f1d_legacy_artifacts(
+        state_root=state_root,
+        transaction_id=transaction_id,
+        candidate=_generation(),
+        recorded_at="2026-08-06T00:00:00+00:00",
+    ) == receipt
+
+
+def test_legacy_tombstone_rejects_artifact_that_appears_after_receipt(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    os.chmod(state_root, 0o700)
+    transaction_id = str(uuid.uuid4())
+    retire_f1d_legacy_artifacts(
+        state_root=state_root,
+        transaction_id=transaction_id,
+        candidate=_generation(),
+        recorded_at="2026-08-06T00:00:00+00:00",
+    )
+    foreign = state_root / "cache-target-window-v1.json"
+    foreign.write_text("{}\n", encoding="utf-8")
+    os.chmod(foreign, 0o600)
+
+    with pytest.raises(DeploymentContractError, match="conflicts"):
+        retire_f1d_legacy_artifacts(
+            state_root=state_root,
+            transaction_id=transaction_id,
+            candidate=_generation(),
+            recorded_at="2026-08-06T00:00:00+00:00",
+        )
+
+
+def test_legacy_tombstone_rejects_unsafe_artifact_before_receipt(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    os.chmod(state_root, 0o700)
+    legacy = state_root / "compatible-pair-v4.json"
+    legacy.write_text("{}\n", encoding="utf-8")
+    os.chmod(legacy, 0o644)
+
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        retire_f1d_legacy_artifacts(
+            state_root=state_root,
+            transaction_id=str(uuid.uuid4()),
+            candidate=_generation(),
+            recorded_at="2026-08-06T00:00:00+00:00",
+        )
+
+    assert not legacy_tombstone_receipt_path(state_root).exists()

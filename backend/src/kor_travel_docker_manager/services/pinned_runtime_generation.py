@@ -6,6 +6,7 @@ schema contract를 database reset 전에 고정하고, 한 active generation만 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -87,6 +88,18 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SCHEMA_HEAD = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
 _MAX_STATE_BYTES = 64 * 1024
 _MANIFEST_VERSION = 5
+_TOMBSTONE_VERSION = 5
+_F1D_LEGACY_ARTIFACTS: tuple[str, ...] = (
+    "compatible-pair-v2.json",
+    "compatible-pair-v3.json",
+    "compatible-pair-v4.json",
+    "map-production-env-migration-v1.json",
+    "cache-target-window-v1.json",
+    "cache-target-diagnostic-v1.json",
+    "cache-target-diagnostic-attempts-v1.json",
+)
+_TOMBSTONE_DIRECTORY = "pinned-runtime-v5"
+_TOMBSTONE_FILENAME = "legacy-tombstone-v5.json"
 
 
 @dataclass(frozen=True)
@@ -210,6 +223,21 @@ class PinnedRuntimeGeneration:
         }
 
 
+def generation_logical_sha256(generation: PinnedRuntimeGeneration) -> str:
+    """시간 기록을 제외한 immutable generation identity를 계산한다."""
+
+    payload = generation.to_payload()
+    payload.pop("recorded_at")
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 @dataclass(frozen=True)
 class PinnedRuntimeManifest:
     """v5는 DB preimage가 없는 rollback slot을 보관하지 않는다."""
@@ -286,6 +314,72 @@ class PinnedRuntimeRebuildJournal:
             "compose_sha256": self.compose_sha256,
             "resolved_compose_sha256": self.resolved_compose_sha256,
             "created_at": self.created_at,
+        }
+
+
+@dataclass(frozen=True)
+class LegacyTombstoneEntry:
+    """삭제 전 fsync한 legacy artifact의 path·content evidence."""
+
+    relative_path: str
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if self.relative_path not in _F1D_LEGACY_ARTIFACTS:
+            raise DeploymentContractError("legacy tombstone path is invalid")
+        if _SHA256.fullmatch(self.sha256) is None:
+            raise DeploymentContractError("legacy tombstone digest is invalid")
+
+    def to_payload(self) -> dict[str, str]:
+        return {"relative_path": self.relative_path, "sha256": self.sha256}
+
+
+@dataclass(frozen=True)
+class LegacyTombstoneReceipt:
+    """candidate-attested 뒤에만 쓰는 v5 legacy state 퇴역 receipt."""
+
+    version: Literal[5]
+    transaction_id: str
+    candidate_generation_sha256: str
+    requested_paths: tuple[str, ...]
+    retired: tuple[LegacyTombstoneEntry, ...]
+    recorded_at: str
+
+    def __post_init__(self) -> None:
+        if self.version != _TOMBSTONE_VERSION:
+            raise DeploymentContractError("legacy tombstone version is invalid")
+        try:
+            canonical = str(uuid.UUID(self.transaction_id))
+        except ValueError as exc:
+            raise DeploymentContractError("legacy tombstone transaction ID is invalid") from exc
+        if canonical != self.transaction_id:
+            raise DeploymentContractError("legacy tombstone transaction ID is not canonical")
+        if _SHA256.fullmatch(self.candidate_generation_sha256) is None:
+            raise DeploymentContractError("legacy tombstone generation digest is invalid")
+        if (
+            not self.requested_paths
+            or tuple(sorted(self.requested_paths)) != self.requested_paths
+            or len(set(self.requested_paths)) != len(self.requested_paths)
+            or any(path not in _F1D_LEGACY_ARTIFACTS for path in self.requested_paths)
+        ):
+            raise DeploymentContractError("legacy tombstone requested paths are invalid")
+        if (
+            tuple(sorted(entry.relative_path for entry in self.retired))
+            != tuple(entry.relative_path for entry in self.retired)
+            or len({entry.relative_path for entry in self.retired}) != len(self.retired)
+            or any(entry.relative_path not in self.requested_paths for entry in self.retired)
+        ):
+            raise DeploymentContractError("legacy tombstone retired paths are invalid")
+        _validate_utc_timestamp(self.recorded_at, "legacy tombstone timestamp")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "version": self.version,
+            "transaction_id": self.transaction_id,
+            "candidate_generation_sha256": self.candidate_generation_sha256,
+            "requested_paths": list(self.requested_paths),
+            "retired": [entry.to_payload() for entry in self.retired],
+            "recorded_at": self.recorded_at,
         }
 
 
@@ -390,6 +484,75 @@ def write_rebuild_journal(path: Path, journal: PinnedRuntimeRebuildJournal) -> N
     _write_private_json(path, journal.to_payload(), "pinned runtime rebuild journal")
 
 
+def f1d_legacy_artifact_paths() -> tuple[str, ...]:
+    """C2 preflight가 퇴역할 수 있는 유일한 historical state file 이름."""
+
+    return tuple(sorted(_F1D_LEGACY_ARTIFACTS))
+
+
+def legacy_tombstone_receipt_path(state_root: Path) -> Path:
+    """v5 receipt는 legacy file과 분리된 manager-owned directory에만 기록한다."""
+
+    return state_root / _TOMBSTONE_DIRECTORY / _TOMBSTONE_FILENAME
+
+
+def retire_f1d_legacy_artifacts(
+    *,
+    state_root: Path,
+    transaction_id: str,
+    candidate: PinnedRuntimeGeneration,
+    requested_paths: tuple[str, ...] = tuple(sorted(_F1D_LEGACY_ARTIFACTS)),
+    recorded_at: str,
+) -> LegacyTombstoneReceipt:
+    """candidate attest 뒤 legacy state를 receipt-first·fail-close로 퇴역한다.
+
+    호출자는 candidate journal을 이미 fsync한 뒤에만 이 함수를 실행해야 한다. 이 함수는
+    Docker/Compose/DB를 건드리지 않으며, receipt가 durable해진 뒤에만 allowlist file을 unlink한다.
+    """
+
+    _validate_state_root(state_root)
+    normalized_paths = _normalize_legacy_paths(requested_paths)
+    receipt_path = legacy_tombstone_receipt_path(state_root)
+    expected_generation_sha256 = generation_logical_sha256(candidate)
+    try:
+        receipt_path.lstat()
+        receipt_exists = True
+    except FileNotFoundError:
+        receipt_exists = False
+    if receipt_exists:
+        receipt = _legacy_tombstone_receipt_from_payload(
+            _read_private_json(receipt_path, "legacy tombstone receipt")
+        )
+        if (
+            receipt.transaction_id != transaction_id
+            or receipt.candidate_generation_sha256 != expected_generation_sha256
+            or receipt.requested_paths != normalized_paths
+        ):
+            raise DeploymentContractError("legacy tombstone receipt differs from candidate")
+        _unlink_receipted_legacy_artifacts(state_root=state_root, receipt=receipt)
+        return receipt
+
+    entries = tuple(
+        entry
+        for entry in (
+            _read_legacy_tombstone_entry(state_root, relative_path)
+            for relative_path in normalized_paths
+        )
+        if entry is not None
+    )
+    receipt = LegacyTombstoneReceipt(
+        version=5,
+        transaction_id=transaction_id,
+        candidate_generation_sha256=expected_generation_sha256,
+        requested_paths=normalized_paths,
+        retired=entries,
+        recorded_at=recorded_at,
+    )
+    _write_private_json(receipt_path, receipt.to_payload(), "legacy tombstone receipt")
+    _unlink_receipted_legacy_artifacts(state_root=state_root, receipt=receipt)
+    return receipt
+
+
 def _validate_utc_timestamp(value: str, label: str) -> None:
     try:
         parsed = datetime.fromisoformat(value)
@@ -397,6 +560,190 @@ def _validate_utc_timestamp(value: str, label: str) -> None:
         raise DeploymentContractError(f"{label} is invalid") from exc
     if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise DeploymentContractError(f"{label} is invalid")
+
+
+def _normalize_legacy_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    if not paths:
+        raise DeploymentContractError("legacy tombstone requested paths are invalid")
+    normalized = tuple(sorted(paths))
+    if (
+        normalized != paths
+        or len(set(paths)) != len(paths)
+        or any(path not in _F1D_LEGACY_ARTIFACTS for path in paths)
+    ):
+        raise DeploymentContractError("legacy tombstone requested paths are invalid")
+    return normalized
+
+
+def _legacy_tombstone_receipt_from_payload(payload: object) -> LegacyTombstoneReceipt:
+    expected = {
+        "version",
+        "transaction_id",
+        "candidate_generation_sha256",
+        "requested_paths",
+        "retired",
+        "recorded_at",
+    }
+    if not isinstance(payload, Mapping) or set(payload) != expected:
+        raise DeploymentContractError("legacy tombstone receipt is invalid")
+    version = payload.get("version")
+    transaction_id = payload.get("transaction_id")
+    candidate_generation_sha256 = payload.get("candidate_generation_sha256")
+    requested_paths = payload.get("requested_paths")
+    retired = payload.get("retired")
+    recorded_at = payload.get("recorded_at")
+    if (
+        type(version) is not int
+        or not isinstance(transaction_id, str)
+        or not isinstance(candidate_generation_sha256, str)
+        or not isinstance(requested_paths, list)
+        or not all(isinstance(path, str) for path in requested_paths)
+        or not isinstance(retired, list)
+        or not isinstance(recorded_at, str)
+    ):
+        raise DeploymentContractError("legacy tombstone receipt is invalid")
+    entries: list[LegacyTombstoneEntry] = []
+    for entry in retired:
+        if (
+            not isinstance(entry, Mapping)
+            or set(entry) != {"relative_path", "sha256"}
+            or not isinstance(entry.get("relative_path"), str)
+            or not isinstance(entry.get("sha256"), str)
+        ):
+            raise DeploymentContractError("legacy tombstone receipt is invalid")
+        entries.append(
+            LegacyTombstoneEntry(
+                relative_path=cast(str, entry["relative_path"]),
+                sha256=cast(str, entry["sha256"]),
+            )
+        )
+    return LegacyTombstoneReceipt(
+        version=5,
+        transaction_id=transaction_id,
+        candidate_generation_sha256=candidate_generation_sha256,
+        requested_paths=tuple(requested_paths),
+        retired=tuple(entries),
+        recorded_at=recorded_at,
+    )
+
+
+def _validate_state_root(state_root: Path) -> None:
+    try:
+        state = state_root.lstat()
+    except FileNotFoundError as exc:
+        raise DeploymentContractError("legacy tombstone state root is missing") from exc
+    if (
+        not stat.S_ISDIR(state.st_mode)
+        or state.st_uid != os.geteuid()
+        or stat.S_IMODE(state.st_mode) != 0o700
+    ):
+        raise DeploymentContractError("legacy tombstone state root is unsafe")
+
+
+def _read_legacy_tombstone_entry(
+    state_root: Path, relative_path: str
+) -> LegacyTombstoneEntry | None:
+    artifact = state_root / relative_path
+    try:
+        before = artifact.lstat()
+    except FileNotFoundError:
+        return None
+    _validate_private_file_stat(before, "legacy tombstone artifact")
+    parent_descriptor = _open_legacy_parent(state_root, artifact.parent)
+    try:
+        descriptor = _open_relative_no_follow(
+            parent_descriptor, artifact.name, "legacy tombstone artifact"
+        )
+        try:
+            after = os.fstat(descriptor)
+            _validate_private_file_stat(after, "legacy tombstone artifact")
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise DeploymentContractError("legacy tombstone artifact changed during read")
+            raw = _read_bounded(descriptor, "legacy tombstone artifact")
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(parent_descriptor)
+    return LegacyTombstoneEntry(
+        relative_path=relative_path,
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _unlink_receipted_legacy_artifacts(
+    *, state_root: Path, receipt: LegacyTombstoneReceipt
+) -> None:
+    expected = {entry.relative_path: entry.sha256 for entry in receipt.retired}
+    for relative_path in receipt.requested_paths:
+        artifact = state_root / relative_path
+        if relative_path not in expected:
+            try:
+                artifact.lstat()
+                artifact_exists = True
+            except FileNotFoundError:
+                artifact_exists = False
+            if artifact_exists:
+                raise DeploymentContractError("legacy tombstone receipt conflicts with artifact")
+            continue
+        try:
+            before = artifact.lstat()
+        except FileNotFoundError:
+            continue
+        _validate_private_file_stat(before, "legacy tombstone artifact")
+        parent_descriptor = _open_legacy_parent(state_root, artifact.parent)
+        try:
+            descriptor = _open_relative_no_follow(
+                parent_descriptor, artifact.name, "legacy tombstone artifact"
+            )
+            try:
+                after = os.fstat(descriptor)
+                _validate_private_file_stat(after, "legacy tombstone artifact")
+                if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                    raise DeploymentContractError(
+                        "legacy tombstone artifact changed during unlink"
+                    )
+                raw = _read_bounded(descriptor, "legacy tombstone artifact")
+                if hashlib.sha256(raw).hexdigest() != expected[relative_path]:
+                    raise DeploymentContractError("legacy tombstone artifact content differs")
+            finally:
+                os.close(descriptor)
+            os.unlink(artifact.name, dir_fd=parent_descriptor)
+            os.fsync(parent_descriptor)
+        except OSError as exc:
+            raise DeploymentContractError("legacy tombstone artifact cannot be removed") from exc
+        finally:
+            os.close(parent_descriptor)
+
+
+def _open_legacy_parent(state_root: Path, parent: Path) -> int:
+    try:
+        relative_parent = parent.relative_to(state_root)
+    except ValueError as exc:
+        raise DeploymentContractError("legacy tombstone path escapes state root") from exc
+    cursor = state_root
+    for part in relative_parent.parts:
+        cursor = cursor / part
+        try:
+            cursor_stat = cursor.lstat()
+        except FileNotFoundError as exc:
+            raise DeploymentContractError("legacy tombstone parent is missing") from exc
+        if (
+            not stat.S_ISDIR(cursor_stat.st_mode)
+            or cursor_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(cursor_stat.st_mode) != 0o700
+        ):
+            raise DeploymentContractError("legacy tombstone parent is unsafe")
+    try:
+        return os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise DeploymentContractError("legacy tombstone parent cannot be opened safely") from exc
+
+
+def _open_relative_no_follow(parent_descriptor: int, name: str, label: str) -> int:
+    try:
+        return os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_descriptor)
+    except OSError as exc:
+        raise DeploymentContractError(f"{label} cannot be opened safely") from exc
 
 
 def _read_private_json(path: Path, label: str) -> object:
