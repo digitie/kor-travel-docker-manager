@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -10,6 +12,10 @@ from kor_travel_docker_manager.services import pinned_deployment_input as input_
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_production_manifest import (
     CACHE_TARGET_PRODUCTION_PINS,
+    CacheTargetProductionPinManifest,
+)
+from kor_travel_docker_manager.services.map_service_contract import (
+    C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
 from kor_travel_docker_manager.services.pinned_deployment_input import (
     PinnedDeploymentInputPaths,
@@ -20,6 +26,7 @@ from kor_travel_docker_manager.services.pinned_deployment_input import (
     pinned_deployment_repo_specs,
     production_pinset_sha256,
 )
+from kor_travel_docker_manager.services.pinned_source_install import RepoSpec
 
 
 def _paths(tmp_path: Path) -> PinnedDeploymentInputPaths:
@@ -39,6 +46,106 @@ def _paths(tmp_path: Path) -> PinnedDeploymentInputPaths:
 def test_v2_pinset_digest_uses_manifest_canonical_serialization() -> None:
     assert production_pinset_sha256() == CACHE_TARGET_PRODUCTION_PINS.pinset_sha256
     assert len(production_pinset_sha256()) == 64
+
+
+def _write_trusted_service_provenance(
+    paths: PinnedDeploymentInputPaths,
+    *,
+    c6c_generation: int = C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+) -> tuple[CacheTargetProductionPinManifest, tuple[RepoSpec, RepoSpec]]:
+    service_bytes = b'{"openapi":"3.1.0"}\n'
+    pins = replace(
+        CACHE_TARGET_PRODUCTION_PINS,
+        service_openapi_sha256=hashlib.sha256(service_bytes).hexdigest(),
+    )
+    map_root = paths.sources_directory / "map" / pins.map_release_revision
+    pinvi_root = paths.sources_directory / "pinvi" / pins.pinvi_release_revision
+    map_service = map_root / "packages/kor-travel-map-api/openapi.service.json"
+    pinvi_service = pinvi_root / "apps/api/tests/contract/kor-travel-map-openapi-service.json"
+    provenance = pinvi_root / "contracts/kor-travel-map-service-provenance-v1.json"
+    for path in (map_service, pinvi_service, provenance):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    map_service.write_bytes(service_bytes)
+    pinvi_service.write_bytes(service_bytes)
+    provenance.write_text(
+        json.dumps(
+            {
+                "capabilities": {
+                    "cache_target": {"generation": int(pins.contract_generation)},
+                    "c6c_cancel_probe": {"generation": c6c_generation},
+                },
+                "map_release_revision": pins.map_release_revision,
+                "service_openapi_sha256": pins.service_openapi_sha256,
+                "version": 1,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    specs = (
+        RepoSpec(
+            "map",
+            "KOR_TRAVEL_MAP_REPO_DIR",
+            "KOR_TRAVEL_MAP_GIT_COMMIT",
+            "https://github.com/digitie/kor-travel-map.git",
+            pins.map_release_revision,
+        ),
+        RepoSpec(
+            "pinvi",
+            "PINVI_REPO_DIR",
+            "PINVI_SOURCE_REVISION",
+            "https://github.com/digitie/pinvi.git",
+            pins.pinvi_release_revision,
+        ),
+    )
+    return pins, specs
+
+
+def test_pinned_artifact_preflight_requires_general_service_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    pins, specs = _write_trusted_service_provenance(paths)
+    monkeypatch.setattr(input_module, "CACHE_TARGET_PRODUCTION_PINS", pins)
+    monkeypatch.setattr(input_module, "_require_root_owned_file", lambda *_args, **_kwargs: None)
+    verified: list[Path] = []
+    monkeypatch.setattr(
+        input_module,
+        "_validate_existing_pinned_worktree",
+        lambda path, **_kwargs: verified.append(path),
+    )
+
+    input_module._verify_pinned_artifacts(
+        paths=paths,
+        specs=specs,
+        runner=lambda *_args, **_kwargs: pytest.fail("git must not run"),
+    )
+
+    assert verified == [
+        paths.sources_directory / "map" / pins.map_release_revision,
+        paths.sources_directory / "pinvi" / pins.pinvi_release_revision,
+    ]
+
+
+def test_pinned_artifact_preflight_rejects_c6c_capability_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    pins, specs = _write_trusted_service_provenance(
+        paths,
+        c6c_generation=C6C_CANCEL_PROBE_CAPABILITY_GENERATION + 1,
+    )
+    monkeypatch.setattr(input_module, "CACHE_TARGET_PRODUCTION_PINS", pins)
+    monkeypatch.setattr(input_module, "_require_root_owned_file", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(DeploymentContractError, match="service provenance differs"):
+        input_module._verify_pinned_artifacts(
+            paths=paths,
+            specs=specs,
+            runner=lambda *_args, **_kwargs: pytest.fail("git must not run"),
+        )
 
 
 def test_v2_env_render_replaces_every_deployment_scalar_atomically(tmp_path: Path) -> None:

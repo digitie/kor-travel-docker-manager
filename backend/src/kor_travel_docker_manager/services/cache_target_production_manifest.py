@@ -10,6 +10,9 @@ from kor_travel_docker_manager.services.c6c_deployment import DeploymentContract
 from kor_travel_docker_manager.services.cache_target_contract import (
     CacheTargetRuntimeContract,
 )
+from kor_travel_docker_manager.services.map_service_contract import (
+    CACHE_TARGET_CAPABILITY_GENERATION,
+)
 
 _REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -27,7 +30,7 @@ class CacheTargetProductionPinManifest:
     service_openapi_sha256: str = (
         "c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd"
     )
-    contract_generation: str = "7"
+    contract_generation: str = str(CACHE_TARGET_CAPABILITY_GENERATION)
     map_application_alembic_head: str = "0083_nonderived_uuid_generator"
 
     def __post_init__(self) -> None:
