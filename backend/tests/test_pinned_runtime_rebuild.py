@@ -188,6 +188,12 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     )
     monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
     monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    candidate_contract = Mock()
+    monkeypatch.setattr(
+        service,
+        "_validate_pinned_runtime_candidate_build_contract",
+        candidate_contract,
+    )
     monkeypatch.setattr(
         compose_service_module,
         "materialize_pinned_runtime_sources",
@@ -247,6 +253,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert captured[-1] is not None
     assert captured[-1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "map-application-head"
     assert operations[0] == ("build", *RUNTIME_SERVICES)
+    candidate_contract.assert_called_once_with(transaction, build=CandidateRuntimeBuild(_sources()))
     assert operations[1] == ("stop", *RUNTIME_SERVICES)
     assert operations[2] == (
         "--profile",
@@ -399,6 +406,11 @@ def test_retention_failure_cannot_create_a_terminal_rebuild_receipt(
     )
     monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
     monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    monkeypatch.setattr(
+        service,
+        "_validate_pinned_runtime_candidate_build_contract",
+        Mock(),
+    )
     monkeypatch.setattr(
         compose_service_module,
         "materialize_pinned_runtime_sources",

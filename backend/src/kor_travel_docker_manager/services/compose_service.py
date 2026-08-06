@@ -40,7 +40,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     compose_volume_graph_hash,
     inspect_c6c_image_source_revision,
     revalidate_candidate_system_bind_snapshots,
+    validate_c6c_build_source_wiring,
     validate_compose_candidate_protected_values,
+    validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
 from kor_travel_docker_manager.services.c6c_image_retention import (
@@ -3410,6 +3412,44 @@ class ComposeService:
         return image_ids
 
     @staticmethod
+    def _validate_pinned_runtime_candidate_build_contract(
+        transaction: ComposeTransactionSnapshot,
+        *,
+        build: CandidateRuntimeBuild,
+    ) -> None:
+        """candidate build 전 frozen Compose와 staged source 경계를 함께 고정한다."""
+
+        try:
+            source = yaml.safe_load(transaction.compose_source_bytes.decode("utf-8")) or {}
+        except (UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise DeploymentContractError(
+                "pinned runtime candidate compose source is invalid"
+            ) from exc
+        if not isinstance(source, Mapping):
+            raise DeploymentContractError(
+                "pinned runtime candidate compose source is invalid"
+            )
+        validate_c6c_build_source_wiring(source)
+        map_context = str(build.sources.source_for("map").root)
+        pinvi_context = str(build.sources.source_for("pinvi").root)
+        validate_resolved_c6c_build_provenance(
+            transaction.resolved,
+            C6cBuildProvenance(
+                map_source_revision=build.sources.release.source_for("map").revision,
+                pinvi_source_revision=build.sources.release.source_for("pinvi").revision,
+            ),
+            expected_build_contexts={
+                "kor-travel-map-api": map_context,
+                "kor-travel-map-ui": map_context,
+                "kor-travel-map-dagster": map_context,
+                "kor-travel-map-dagster-daemon": map_context,
+                "pinvi-api": pinvi_context,
+                "pinvi-web": pinvi_context,
+                "pinvi-dagster": pinvi_context,
+            },
+        )
+
+    @staticmethod
     def _assert_pinned_runtime_journal_matches_candidate_input(
         journal: PinnedRuntimeRebuildJournal,
         *,
@@ -3505,6 +3545,10 @@ class ComposeService:
                 environment_snapshot=environment_snapshot,
             )
             _assert_transaction_matches_c6c_lock(candidate_transaction, lock_snapshot)
+            self._validate_pinned_runtime_candidate_build_contract(
+                candidate_transaction,
+                build=build,
+            )
             try:
                 state_paths.journal.lstat()
                 journal_exists = True

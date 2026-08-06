@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,6 +18,17 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     DeploymentContractError,
     validate_resolved_c6c_build_provenance,
+)
+from kor_travel_docker_manager.services.compose_service import ComposeService
+from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
+    CandidateRuntimeBuild,
+)
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    PINNED_RUNTIME_RELEASE,
+)
+from kor_travel_docker_manager.services.pinned_runtime_sources import (
+    MaterializedRuntimeSource,
+    PinnedRuntimeSourceMaterialization,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -233,6 +245,81 @@ def test_c6c_preflight_rejects_any_pinvi_runtime_provenance_gap() -> None:
                 map_source_revision=map_revision,
                 pinvi_source_revision=pinvi_revision,
             ),
+        )
+
+
+def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
+    tmp_path: Path,
+) -> None:
+    map_root = tmp_path / "map"
+    pinvi_root = tmp_path / "pinvi"
+    for root, dockerfiles in {
+        map_root: (
+            "docker/api.Dockerfile",
+            "docker/frontend.Dockerfile",
+            "docker/dagster.Dockerfile",
+        ),
+        pinvi_root: (
+            "apps/api/Dockerfile",
+            "apps/web/Dockerfile",
+            "apps/etl/Dockerfile",
+        ),
+    }.items():
+        for relative in dockerfiles:
+            dockerfile = root / relative
+            dockerfile.parent.mkdir(parents=True, exist_ok=True)
+            dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    map_revision = PINNED_RUNTIME_RELEASE.source_for("map").revision
+    pinvi_revision = PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+    resolved = _resolved_compose(
+        *_MAP_RUNTIME_SERVICES,
+        *_PINVI_RUNTIME_SERVICES,
+        environment_update={
+            "KOR_TRAVEL_MAP_REPO_DIR": str(map_root),
+            "KOR_TRAVEL_MAP_GIT_COMMIT": map_revision,
+            "PINVI_REPO_DIR": str(pinvi_root),
+            "PINVI_SOURCE_REVISION": pinvi_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
+    )
+    build = CandidateRuntimeBuild(
+        PinnedRuntimeSourceMaterialization(
+            release=PINNED_RUNTIME_RELEASE,
+            sources=(
+                MaterializedRuntimeSource(
+                    role="map",
+                    root=map_root,
+                    revision=map_revision,
+                    tree="a" * 40,
+                ),
+                MaterializedRuntimeSource(
+                    role="pinvi",
+                    root=pinvi_root,
+                    revision=pinvi_revision,
+                    tree="b" * 40,
+                ),
+            ),
+        )
+    )
+    transaction = SimpleNamespace(
+        compose_source_bytes=_COMPOSE_PATH.read_bytes(),
+        resolved=resolved,
+    )
+
+    ComposeService._validate_pinned_runtime_candidate_build_contract(
+        transaction,
+        build=build,
+    )
+
+    untrusted_root = tmp_path / "untrusted"
+    untrusted_dockerfile = untrusted_root / "apps/web/Dockerfile"
+    untrusted_dockerfile.parent.mkdir(parents=True)
+    untrusted_dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    resolved["services"]["pinvi-web"]["build"]["context"] = str(untrusted_root)
+    with pytest.raises(DeploymentContractError, match="pinvi-web.*not the Git snapshot"):
+        ComposeService._validate_pinned_runtime_candidate_build_contract(
+            transaction,
+            build=build,
         )
 
 

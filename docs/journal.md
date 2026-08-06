@@ -14,8 +14,10 @@ image inspect는 이미 일곱 image와 PinVi 세 image의 production label을 �
 `validate_c6c_build_source_wiring`과 resolved C6c provenance preflight가 API·Web·Dagster의
 exact source revision, production environment, Dockerfile path를 모두 fail-close로 검사한다. 실제
 Compose resolver regression은 세 service가 같은 candidate argument를 받을 때만 통과하며, Dagster
-argument 하나를 제거하면 preflight가 거부한다. PinVi PR merge SHA를 pinned release input으로
-회전한 뒤에만 n150 destructive rebuild를 재개한다.
+argument 하나를 제거하면 preflight가 거부한다. 이 preflight는 이제 `rebuild_pinned_runtime`의
+candidate seven-image build 직전에 staged source root를 expected context로 전달해 실행한다.
+따라서 context가 staged Git snapshot 밖이면 Docker build가 시작되기 전에 중단한다. PinVi PR merge
+SHA를 pinned release input으로 회전한 뒤에만 n150 destructive rebuild를 재개한다.
 
 ---
 

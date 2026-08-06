@@ -970,7 +970,7 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       `cache-target`, standalone `db-backup`, Map UI 회전과 `capture`·`deploy`·`rollback` 공개 경로는
       함께 퇴역한다. 이 명령은 frozen explicit `rebuildable`
       lifecycle에서만 candidate-first attestation 뒤 세 scoped DB recreate, 0600 credential file의 one-shot
-      read-only mount, Map Dagster migration-only invocation, PinVi 세 image provenance까지 포함한 일곱 runtime build/start, F1J fixture smoke와
+      read-only mount, staged source context preflight와 Map Dagster migration-only invocation, PinVi 세 image provenance까지 포함한 일곱 runtime build/start, F1J fixture smoke와
       durable same-pinset resume을 수행한다.
 - [ ] **F1D-D (docs-only PR)** — n150에서 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
       E2E·PinVi mutating E2E를 통과시킨 결과를 기록한다. data source/ETL 재적재는 이 transaction 뒤의 별도
