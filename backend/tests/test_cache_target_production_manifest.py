@@ -40,7 +40,7 @@ def test_tracked_release_is_the_current_generation_seven_pair() -> None:
     assert CACHE_TARGET_PRODUCTION_PINS == CacheTargetProductionPinManifest(
         version=2,
         map_release_revision="1df45b57f55b8d517bb1f2c12a869d032d70453e",
-        pinvi_release_revision="6a931dc5bed46484c621c00c35165aae7254b689",
+        pinvi_release_revision="ca1001cdb555c1d7a37c0276930cd6fcc16df4f7",
         service_openapi_sha256=(
             "6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e"
         ),
@@ -62,7 +62,7 @@ def test_pinset_sha256_uses_only_compact_sorted_v2_semantic_fields() -> None:
         '{"contract_generation":"7","map_application_alembic_head":'
         '"0084_c6c_cancel_probe_fixtures","map_release_revision":'
         '"1df45b57f55b8d517bb1f2c12a869d032d70453e","pinvi_release_revision":'
-        '"6a931dc5bed46484c621c00c35165aae7254b689","service_openapi_sha256":'
+        '"ca1001cdb555c1d7a37c0276930cd6fcc16df4f7","service_openapi_sha256":'
         '"6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e",'
         '"version":2}'
     )
@@ -70,7 +70,7 @@ def test_pinset_sha256_uses_only_compact_sorted_v2_semantic_fields() -> None:
     assert CACHE_TARGET_PRODUCTION_PINS.canonical_pinset_json() == canonical_json
     assert (
         CACHE_TARGET_PRODUCTION_PINS.pinset_sha256
-        == "9500bbd9963cc14e33d639278d34306cf33f4b20c44499a673555d6cb177dc0b"
+        == "dd361fe462ceae818b669140e0b5d5b2c75e6acd6a6022c521922424e2130e9a"
     )
 
 
