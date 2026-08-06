@@ -39,8 +39,7 @@ def _receipt() -> InitialCutoverReceipt:
         env_sha256=hashlib.sha256(_ENV_FALSE).hexdigest(),
         raw_compose_sha256="2" * 64,
         resolved_compose_sha256="3" * 64,
-        active_pair_sha256="4" * 64,
-        rollback_pair_sha256="5" * 64,
+        runtime_generation_sha256="4" * 64,
         role_binding_sha256="6" * 64,
         expected_openapi_sha256="7" * 64,
         expected_source_revision="8" * 40,
@@ -94,7 +93,7 @@ def test_execute_enable_orders_env_recreate_attest_canary_and_commit(
         causal_canary=lambda run_id: {
             "run_id": run_id,
             "cutover_id": _CUTOVER_ID,
-            "active_pair_sha256": "4" * 64,
+            "runtime_generation_sha256": "4" * 64,
             "contract_generation": "7",
             "local_count": 12,
             "remote_count": 12,
@@ -136,7 +135,7 @@ def test_execute_enable_rejects_canary_snapshot_drift_from_initial(
     environment = _Environment()
     evidence: dict[str, object] = {
         "cutover_id": _CUTOVER_ID,
-        "active_pair_sha256": "4" * 64,
+        "runtime_generation_sha256": "4" * 64,
         "contract_generation": "7",
         "local_count": 12,
         "remote_count": 12,
@@ -220,7 +219,7 @@ def test_execute_enable_supersedes_rolled_back_attempt_for_same_window(
         causal_canary=lambda run_id: {
             "run_id": run_id,
             "cutover_id": _CUTOVER_ID,
-            "active_pair_sha256": "4" * 64,
+            "runtime_generation_sha256": "4" * 64,
             "contract_generation": "7",
             "local_count": 12,
             "remote_count": 12,
@@ -308,7 +307,7 @@ def test_execute_enable_resumes_crash_after_env_commit(
         causal_canary=lambda run_id: {
             "run_id": run_id,
             "cutover_id": _CUTOVER_ID,
-            "active_pair_sha256": "4" * 64,
+            "runtime_generation_sha256": "4" * 64,
             "contract_generation": "7",
             "local_count": 12,
             "remote_count": 12,
@@ -373,7 +372,7 @@ def test_execute_enable_rejects_foreign_journal_binding(tmp_path: Path) -> None:
         enabled_resolved_compose_sha256=_ENABLED_RESOLVED_COMPOSE_SHA256,
     )
     foreign = type(journal)(
-        **{**asdict(journal), "active_pair_sha256": "f" * 64}
+        **{**asdict(journal), "runtime_generation_sha256": "f" * 64}
     )
     write_cutover_state(state / "enable.json", foreign)
 
@@ -433,7 +432,7 @@ def test_execute_enable_reuses_transaction_id_for_causal_canary_retry(
         or {
             "run_id": run_id,
             "cutover_id": _CUTOVER_ID,
-            "active_pair_sha256": "4" * 64,
+            "runtime_generation_sha256": "4" * 64,
             "contract_generation": "7",
             "local_count": 12,
             "remote_count": 12,
@@ -478,7 +477,7 @@ def test_execute_enable_replace_failure_rolls_back_from_preparing(
     ("field", "value", "message"),
     [
         ("transaction_id", "not-a-uuid", "UUID"),
-        ("active_pair_sha256", "A" * 64, "digest"),
+        ("runtime_generation_sha256", "A" * 64, "digest"),
         ("phase", "unknown", "contract"),
         ("version", True, "invalid"),
         ("new_env_sha256", hashlib.sha256(_ENV_FALSE).hexdigest(), "transition"),

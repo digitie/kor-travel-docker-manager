@@ -51,7 +51,6 @@ from kor_travel_docker_manager.services.cache_target_window import (
 )
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
-    _compatible_pair_logical_sha256,
     _read_bound_cache_target_initial_receipt,
 )
 
@@ -82,9 +81,9 @@ def _initial_receipt_for_journal(
     count: int = 12,
     merkle_root: str = "9" * 64,
 ) -> InitialCutoverReceipt:
-    candidate_pair_sha256 = journal.candidate_pair_sha256 or "6" * 64
+    runtime_generation_sha256 = journal.candidate_generation_sha256 or "6" * 64
     return InitialCutoverReceipt(
-        version=1,
+        version=5,
         cutover_id=cutover_id or journal.cutover_id,
         expected_restore_epoch=(
             expected_restore_epoch or journal.expected_restore_epoch
@@ -98,8 +97,7 @@ def _initial_receipt_for_journal(
             env_sha256=journal.environment_sha256,
             raw_compose_sha256=journal.compose_sha256,
             resolved_compose_sha256=journal.resolved_compose_sha256,
-            active_pair_sha256=candidate_pair_sha256,
-            rollback_pair_sha256=candidate_pair_sha256,
+            runtime_generation_sha256=runtime_generation_sha256,
             role_binding_sha256="7" * 64,
             expected_openapi_sha256="8" * 64,
             expected_source_revision="a" * 40,
@@ -156,7 +154,7 @@ def _runtime_activated_journal(
 ) -> tuple[CacheTargetWindowJournal, InitialCutoverReceipt]:
     journal = replace(
         _map_final_verified_journal(),
-        candidate_pair_sha256=_compatible_pair_logical_sha256(pair),
+        candidate_generation_sha256="6" * 64,
     )
     receipt = _initial_receipt_for_journal(journal)
     journal = replace(
@@ -184,12 +182,12 @@ def _write_terminal_enable_journal(
     journal: CacheTargetWindowJournal,
     receipt: InitialCutoverReceipt,
 ) -> None:
-    pair_sha256 = journal.candidate_pair_sha256
-    assert pair_sha256 is not None
+    runtime_generation_sha256 = journal.candidate_generation_sha256
+    assert runtime_generation_sha256 is not None
     write_cutover_state(
         state_directory / "cache-target-enable-v1.json",
         EnableCutoverJournal(
-            version=2,
+            version=5,
             transaction_id="55555555-5555-4555-8555-555555555555",
             cutover_id=journal.cutover_id,
             window_transaction_id=journal.transaction_id,
@@ -200,8 +198,7 @@ def _write_terminal_enable_journal(
             old_env_sha256="1" * 64,
             new_env_sha256="2" * 64,
             enabled_resolved_compose_sha256="3" * 64,
-            active_pair_sha256=pair_sha256,
-            rollback_pair_sha256=pair_sha256,
+            runtime_generation_sha256=runtime_generation_sha256,
             verified_evidence_sha256="4" * 64,
         ),
     )
@@ -487,7 +484,7 @@ def _generation_bootstrapped_journal() -> CacheTargetWindowJournal:
     journal = transition_cache_target_window(
         journal,
         "candidate_built",
-        candidate_pair_sha256="6" * 64,
+        candidate_generation_sha256="6" * 64,
     )
     journal = transition_cache_target_window(
         journal,
@@ -528,7 +525,7 @@ def _map_final_verified_journal() -> CacheTargetWindowJournal:
     journal = transition_cache_target_window(
         journal,
         "candidate_built",
-        candidate_pair_sha256="6" * 64,
+        candidate_generation_sha256="6" * 64,
     )
     journal = transition_cache_target_window(
         journal,
@@ -627,21 +624,15 @@ def test_window_journal_is_owner_only_and_exactly_round_trips(tmp_path: Path) ->
     assert read_cache_target_window(path) == journal
 
 
-def test_window_rejects_legacy_v1_state_before_any_mutation(tmp_path: Path) -> None:
-    path = tmp_path / "state" / "cache-target-window-v1.json"
+def test_window_rejects_noncurrent_state_before_any_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-window-v5.json"
     path.parent.mkdir(mode=0o700)
     document = asdict(_prepared())
-    document["version"] = 1
-    for field_name in (
-        "writer_drain_lease_id",
-        "writer_drain_receipt_sha256",
-        "writer_drain_restore_receipt_sha256",
-    ):
-        del document[field_name]
+    document["version"] = 4
     path.write_text(json.dumps(document))
     path.chmod(0o600)
 
-    with pytest.raises(DeploymentContractError, match="v1 is unsupported"):
+    with pytest.raises(DeploymentContractError, match="window journal contract is invalid"):
         read_cache_target_window(path)
 
 
@@ -650,7 +641,7 @@ def test_record_window_failure_freezes_last_safe_phase_and_class(
 ) -> None:
     journal = _backups_committed()
     journal = transition_cache_target_window(
-        journal, "candidate_built", candidate_pair_sha256="6" * 64
+        journal, "candidate_built", candidate_generation_sha256="6" * 64
     )
 
     failed = record_window_failure(journal, failure_class="contract_violation")
@@ -720,7 +711,7 @@ def test_window_rejects_phase_skip_and_old_restore_after_external_event() -> Non
     journal = transition_cache_target_window(
         journal,
         "candidate_built",
-        candidate_pair_sha256="6" * 64,
+        candidate_generation_sha256="6" * 64,
     )
     journal = transition_cache_target_window(
         journal,
@@ -1036,7 +1027,7 @@ def test_bound_initial_receipt_legitimate_crash_resume_is_idempotent(
         "different_count",
         "different_merkle",
         "different_restore_epoch",
-        "different_pair_provenance",
+        "different_generation_provenance",
     ],
 )
 def test_bound_initial_receipt_rejects_valid_post_commit_replacement(
@@ -1056,12 +1047,12 @@ def test_bound_initial_receipt_rejects_valid_post_commit_replacement(
         replacement = replace(receipt, merkle_root="8" * 64)
     elif replacement_kind == "different_restore_epoch":
         replacement = replace(receipt, expected_restore_epoch=4)
-    elif replacement_kind == "different_pair_provenance":
+    elif replacement_kind == "different_generation_provenance":
         replacement = replace(
             receipt,
             evidence=replace(
                 receipt.evidence,
-                active_pair_sha256="f" * 64,
+                runtime_generation_sha256="f" * 64,
             ),
         )
     else:  # pragma: no cover - parameter list가 정본이다.
@@ -1262,7 +1253,7 @@ def test_public_runtime_activated_retry_revalidates_terminal_evidence(
         "foreign_cutover",
         "foreign_epoch",
         "foreign_compose",
-        "foreign_pair",
+        "foreign_generation",
     ],
 )
 def test_public_runtime_activated_retry_rejects_foreign_initial_receipt(
@@ -1298,12 +1289,12 @@ def test_public_runtime_activated_retry_rejects_foreign_initial_receipt(
                     raw_compose_sha256="f" * 64,
                 ),
             )
-        elif replacement_kind == "foreign_pair":
+        elif replacement_kind == "foreign_generation":
             replacement = replace(
                 receipt,
                 evidence=replace(
                     receipt.evidence,
-                    rollback_pair_sha256="f" * 64,
+                    runtime_generation_sha256="f" * 64,
                 ),
             )
         write_cutover_state(receipt_path, replacement)
@@ -1336,7 +1327,7 @@ def test_public_runtime_activated_retry_rejects_foreign_terminal_evidence(
         enable_journal = read_enable_cutover_journal(enable_path)
         write_cutover_state(
             enable_path,
-            replace(enable_journal, active_pair_sha256="f" * 64),
+            replace(enable_journal, runtime_generation_sha256="f" * 64),
         )
     elif foreign_boundary == "manifest":
         active = _terminal_pair()
@@ -1575,7 +1566,7 @@ def test_window_uses_private_locked_executors_and_requires_final_receipt(
     journal = transition_cache_target_window(
         journal,
         "candidate_built",
-        candidate_pair_sha256="6" * 64,
+        candidate_generation_sha256="6" * 64,
     )
     journal = transition_cache_target_window(
         journal,

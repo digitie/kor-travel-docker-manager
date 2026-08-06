@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.cache_target_backup import DatabaseRole
@@ -72,8 +70,6 @@ DiagnosticFailureClass = Literal[
     "drain_timeout",
 ]
 DiagnosticStageStatus = Literal["succeeded", "failed"]
-LegacyDiagnosticRetirementPhase = Literal["prepared", "writers_fencing"]
-InertDiagnosticRetirementPhase = Literal["prepared", "writers_fencing"]
 
 _FORWARD_PHASES: tuple[DiagnosticPhase, ...] = (
     "prepared",
@@ -127,8 +123,7 @@ _IDENTITY_FIELDS = frozenset(
         "manager_release_sha256",
         "pg_dump_major_version",
         "pg_restore_major_version",
-        "active_pair_sha256",
-        "rollback_pair_sha256",
+        "runtime_generation_sha256",
         "raw_compose_sha256",
         "resolved_compose_sha256",
         "role_binding_sha256",
@@ -170,30 +165,6 @@ _JOURNAL_FIELDS = frozenset(
         "completed_at_unix",
     }
 )
-_LEGACY_V1_JOURNAL_FIELDS = _JOURNAL_FIELDS.difference(
-    {
-        "writer_drain_lease_id",
-        "writer_drain_receipt_sha256",
-        "writer_drain_restore_receipt_sha256",
-    }
-)
-_LEGACY_RETIREMENT_RECEIPT_FIELDS = frozenset(
-    {
-        "version",
-        "retired_journal_sha256",
-        "retired_phase",
-        "retired_at_unix",
-    }
-)
-_INERT_RETIREMENT_RECEIPT_FIELDS = frozenset(
-    {
-        "version",
-        "retired_diagnostic_version",
-        "retired_journal_sha256",
-        "retired_phase",
-        "retired_at_unix",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -201,14 +172,15 @@ class CacheTargetDiagnosticIdentity:
     """T-VN-41 cutover gate가 재사용할 "input logical identity"(설계 문서 4절).
 
     실제 값(도메인, credential, 경로)은 어디에도 없다 — 전부 sha256 digest 또는
-    작은 정수(major version)뿐이다.
+    작은 정수(major version)뿐이다. ``runtime_generation_sha256``는
+    ``generation_logical_sha256(PinnedRuntimeGeneration)``이며, active generation의
+    image ID·source revision·schema head·pinset만 결박한다.
     """
 
     manager_release_sha256: str
     pg_dump_major_version: int
     pg_restore_major_version: int
-    active_pair_sha256: str
-    rollback_pair_sha256: str
+    runtime_generation_sha256: str
     raw_compose_sha256: str
     resolved_compose_sha256: str
     role_binding_sha256: str
@@ -235,7 +207,7 @@ class DiagnosticStageReceipt:
 
 @dataclass(frozen=True)
 class CacheTargetDiagnosticJournal:
-    version: Literal[2]
+    version: Literal[5]
     diagnostic_id: str
     phase: DiagnosticPhase
     identity: CacheTargetDiagnosticIdentity
@@ -254,27 +226,6 @@ class CacheTargetDiagnosticJournal:
     completed_at_unix: int | None = None
 
 
-@dataclass(frozen=True)
-class LegacyDiagnosticRetirementReceipt:
-    """v1 pre-stop diagnostic을 폐기했다는 최소 secret-free evidence다."""
-
-    version: Literal[1]
-    retired_journal_sha256: str
-    retired_phase: LegacyDiagnosticRetirementPhase
-    retired_at_unix: int
-
-
-@dataclass(frozen=True)
-class InertDiagnosticRetirementReceipt:
-    """writer-drain 전 v2 diagnostic 퇴역의 최소 비밀값 없는 evidence다."""
-
-    version: Literal[1]
-    retired_diagnostic_version: Literal[2]
-    retired_journal_sha256: str
-    retired_phase: InertDiagnosticRetirementPhase
-    retired_at_unix: int
-
-
 def prepare_cache_target_diagnostic(
     *,
     diagnostic_id: str,
@@ -286,7 +237,7 @@ def prepare_cache_target_diagnostic(
     if started_at_unix <= 0:
         raise DeploymentContractError("cache-target diagnostic start time is invalid")
     return CacheTargetDiagnosticJournal(
-        version=2,
+        version=5,
         diagnostic_id=diagnostic_id,
         phase="prepared",
         identity=identity,
@@ -400,11 +351,6 @@ def read_cache_target_diagnostic(path: Path) -> CacheTargetDiagnosticJournal:
 
 
 def _diagnostic_journal_from_document(document: object) -> CacheTargetDiagnosticJournal:
-    if isinstance(document, dict) and document.get("version") == 1:
-        raise DeploymentContractError(
-            "cache-target diagnostic journal v1 is unsupported; "
-            "reset the isolated state before TVN41"
-        )
     if not isinstance(document, dict) or set(document) != _JOURNAL_FIELDS:
         raise TypeError
     parsed = dict(document)
@@ -430,387 +376,6 @@ def _diagnostic_journal_from_document(document: object) -> CacheTargetDiagnostic
     _validate_journal(journal)
     _validate_phase_evidence(journal)
     return journal
-
-
-def retire_legacy_pre_stop_cache_target_diagnostic(
-    path: Path,
-    *,
-    retired_at_unix: int,
-) -> LegacyDiagnosticRetirementReceipt:
-    """writer stop 이전 v1 diagnostic만 receipt-first로 퇴역한다.
-
-    v1은 durable writer-drain lease/restore evidence가 없으므로 post-drain state를
-    migrate하거나 recovery하지 않는다. 이 함수는 exact source journal 하나만
-    unlink하고, current attempt log와 다른 C6c state는 호출자가 접근할 수 없다.
-    """
-
-    if retired_at_unix <= 0:
-        raise DeploymentContractError("legacy diagnostic retirement time is invalid")
-    receipt_path = legacy_diagnostic_retirement_receipt_path(path)
-    try:
-        receipt_path.lstat()
-    except FileNotFoundError:
-        existing_receipt = None
-    except OSError as exc:
-        raise DeploymentContractError(
-            "legacy diagnostic retirement receipt path is unavailable"
-        ) from exc
-    else:
-        existing_receipt = read_legacy_diagnostic_retirement_receipt(receipt_path)
-
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        if existing_receipt is not None:
-            try:
-                _fsync_state_directory(path.parent)
-            except OSError as exc:
-                raise DeploymentContractError(
-                    "legacy diagnostic journal retirement recovery failed"
-                ) from exc
-            return existing_receipt
-        raise DeploymentContractError("legacy diagnostic journal is unavailable") from None
-    except OSError as exc:
-        raise DeploymentContractError("legacy diagnostic journal is unavailable") from exc
-
-    raw, source_identity, phase = _read_legacy_pre_stop_diagnostic(path)
-    retired_journal_sha256 = hashlib.sha256(raw).hexdigest()
-    receipt = LegacyDiagnosticRetirementReceipt(
-        version=1,
-        retired_journal_sha256=retired_journal_sha256,
-        retired_phase=phase,
-        retired_at_unix=retired_at_unix,
-    )
-    _validate_legacy_retirement_receipt(receipt)
-    if existing_receipt is None:
-        write_legacy_diagnostic_retirement_receipt(receipt_path, receipt)
-    else:
-        if (
-            existing_receipt.retired_journal_sha256 != receipt.retired_journal_sha256
-            or existing_receipt.retired_phase != receipt.retired_phase
-        ):
-            raise DeploymentContractError(
-                "legacy diagnostic retirement receipt conflicts with the journal"
-            )
-        receipt = existing_receipt
-
-    current_raw, current_identity, current_phase = _read_legacy_pre_stop_diagnostic(path)
-    if (
-        current_raw != raw
-        or current_identity != source_identity
-        or current_phase != phase
-    ):
-        raise DeploymentContractError("legacy diagnostic journal changed before retirement")
-    try:
-        path.unlink()
-        _fsync_state_directory(path.parent)
-    except OSError as exc:
-        raise DeploymentContractError("legacy diagnostic journal retirement failed") from exc
-    return receipt
-
-
-def legacy_diagnostic_retirement_receipt_path(
-    path: Path,
-) -> Path:
-    return path.with_name("cache-target-diagnostic-retirement-v1.json")
-
-
-def write_legacy_diagnostic_retirement_receipt(
-    path: Path,
-    receipt: LegacyDiagnosticRetirementReceipt,
-) -> str:
-    _validate_legacy_retirement_receipt(receipt)
-    return write_cutover_state(path, receipt)  # type: ignore[arg-type]
-
-
-def read_legacy_diagnostic_retirement_receipt(
-    path: Path,
-) -> LegacyDiagnosticRetirementReceipt:
-    try:
-        document = json.loads(read_owner_only_state(path))
-        if not isinstance(document, dict) or set(document) != _LEGACY_RETIREMENT_RECEIPT_FIELDS:
-            raise TypeError
-        receipt = LegacyDiagnosticRetirementReceipt(**document)
-    except DeploymentContractError:
-        raise
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise DeploymentContractError("legacy diagnostic retirement receipt is invalid") from exc
-    _validate_legacy_retirement_receipt(receipt)
-    return receipt
-
-
-def retire_inert_cache_target_diagnostic(
-    path: Path,
-    *,
-    retired_at_unix: int,
-) -> InertDiagnosticRetirementReceipt:
-    """writer-drain 전 exact v2 diagnostic만 receipt-first로 퇴역한다."""
-
-    if type(retired_at_unix) is not int or retired_at_unix <= 0:
-        raise DeploymentContractError("inert diagnostic retirement time is invalid")
-    receipt_path = inert_diagnostic_retirement_receipt_path(path)
-    try:
-        receipt_path.lstat()
-    except FileNotFoundError:
-        existing_receipt = None
-    except OSError as exc:
-        raise DeploymentContractError(
-            "inert diagnostic retirement receipt path is unavailable"
-        ) from exc
-    else:
-        existing_receipt = read_inert_diagnostic_retirement_receipt(receipt_path)
-
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        if existing_receipt is not None:
-            try:
-                _fsync_state_directory(path.parent)
-            except OSError as exc:
-                raise DeploymentContractError(
-                    "inert diagnostic retirement recovery failed"
-                ) from exc
-            return existing_receipt
-        raise DeploymentContractError("inert diagnostic journal is unavailable") from None
-    except OSError as exc:
-        raise DeploymentContractError("inert diagnostic journal is unavailable") from exc
-
-    raw, source_identity, phase = _read_inert_current_diagnostic(path)
-    receipt = InertDiagnosticRetirementReceipt(
-        version=1,
-        retired_diagnostic_version=2,
-        retired_journal_sha256=hashlib.sha256(raw).hexdigest(),
-        retired_phase=phase,
-        retired_at_unix=retired_at_unix,
-    )
-    _validate_inert_retirement_receipt(receipt)
-    if existing_receipt is None:
-        write_inert_diagnostic_retirement_receipt(receipt_path, receipt)
-    else:
-        if (
-            existing_receipt.retired_diagnostic_version
-            != receipt.retired_diagnostic_version
-            or existing_receipt.retired_journal_sha256 != receipt.retired_journal_sha256
-            or existing_receipt.retired_phase != receipt.retired_phase
-        ):
-            raise DeploymentContractError(
-                "inert diagnostic retirement receipt conflicts with the journal"
-            )
-        receipt = existing_receipt
-
-    current_raw, current_identity, current_phase = _read_inert_current_diagnostic(path)
-    if (
-        current_raw != raw
-        or current_identity != source_identity
-        or current_phase != phase
-    ):
-        raise DeploymentContractError("inert diagnostic journal changed before retirement")
-    try:
-        path.unlink()
-        _fsync_state_directory(path.parent)
-    except OSError as exc:
-        raise DeploymentContractError("inert diagnostic retirement failed") from exc
-    return receipt
-
-
-def inert_diagnostic_retirement_receipt_path(path: Path) -> Path:
-    return path.with_name("cache-target-diagnostic-inert-retirement-v1.json")
-
-
-def write_inert_diagnostic_retirement_receipt(
-    path: Path,
-    receipt: InertDiagnosticRetirementReceipt,
-) -> str:
-    _validate_inert_retirement_receipt(receipt)
-    return write_cutover_state(path, receipt)  # type: ignore[arg-type]
-
-
-def read_inert_diagnostic_retirement_receipt(
-    path: Path,
-) -> InertDiagnosticRetirementReceipt:
-    try:
-        document = json.loads(read_owner_only_state(path))
-        if not isinstance(document, dict) or set(document) != _INERT_RETIREMENT_RECEIPT_FIELDS:
-            raise TypeError
-        receipt = InertDiagnosticRetirementReceipt(**document)
-    except DeploymentContractError:
-        raise
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise DeploymentContractError("inert diagnostic retirement receipt is invalid") from exc
-    _validate_inert_retirement_receipt(receipt)
-    return receipt
-
-
-def _read_inert_current_diagnostic(
-    path: Path,
-) -> tuple[bytes, tuple[int, int, int, int, int, int], InertDiagnosticRetirementPhase]:
-    source_identity = _owner_only_file_identity(path)
-    try:
-        raw = read_owner_only_state(path)
-        journal = _diagnostic_journal_from_document(json.loads(raw))
-    except DeploymentContractError:
-        raise
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise DeploymentContractError(
-            "current diagnostic journal is not eligible for inert retirement"
-        ) from exc
-    if not _is_inert_diagnostic(journal):
-        raise DeploymentContractError(
-            "current diagnostic journal is not eligible for inert retirement"
-        )
-    current_identity = _owner_only_file_identity(path)
-    if current_identity != source_identity:
-        raise DeploymentContractError("inert diagnostic journal changed while reading")
-    return raw, source_identity, cast(InertDiagnosticRetirementPhase, journal.phase)
-
-
-def _is_inert_diagnostic(journal: CacheTargetDiagnosticJournal) -> bool:
-    return (
-        journal.phase in {"prepared", "writers_fencing"}
-        and journal.external_event_count == 0
-        and journal.writer_drain_lease_id is None
-        and journal.writer_drain_receipt_sha256 is None
-        and journal.writer_drain_restore_receipt_sha256 is None
-        and journal.writer_fence_sha256 is None
-        and not journal.map_application_receipts
-        and not journal.map_dagster_receipts
-        and not journal.pinvi_receipts
-        and journal.runtime_smoke_sha256 is None
-        and journal.failure_stage is None
-        and journal.failure_class is None
-        and journal.completed_at_unix is None
-    )
-
-
-def _validate_inert_retirement_receipt(
-    receipt: InertDiagnosticRetirementReceipt,
-) -> None:
-    if type(receipt.version) is not int or receipt.version != 1:
-        raise DeploymentContractError("inert diagnostic retirement receipt version is invalid")
-    if (
-        type(receipt.retired_diagnostic_version) is not int
-        or receipt.retired_diagnostic_version != 2
-    ):
-        raise DeploymentContractError(
-            "inert diagnostic retirement source version is invalid"
-        )
-    if not isinstance(receipt.retired_journal_sha256, str):
-        raise DeploymentContractError("inert diagnostic retirement journal is invalid")
-    _validate_sha256(
-        receipt.retired_journal_sha256,
-        "inert diagnostic retirement journal",
-    )
-    if (
-        not isinstance(receipt.retired_phase, str)
-        or receipt.retired_phase not in {"prepared", "writers_fencing"}
-    ):
-        raise DeploymentContractError("inert diagnostic retirement phase is invalid")
-    if type(receipt.retired_at_unix) is not int or receipt.retired_at_unix <= 0:
-        raise DeploymentContractError("inert diagnostic retirement time is invalid")
-
-
-def _read_legacy_pre_stop_diagnostic(
-    path: Path,
-) -> tuple[bytes, tuple[int, int, int, int, int, int], LegacyDiagnosticRetirementPhase]:
-    source_identity = _owner_only_file_identity(path)
-    try:
-        raw = read_owner_only_state(path)
-        document = json.loads(raw)
-        if not isinstance(document, dict) or set(document) != _LEGACY_V1_JOURNAL_FIELDS:
-            raise TypeError
-        if type(document["version"]) is not int or document["version"] != 1:
-            raise ValueError
-        phase = document["phase"]
-        if not isinstance(phase, str) or phase not in {"prepared", "writers_fencing"}:
-            raise ValueError
-        diagnostic_id = document["diagnostic_id"]
-        if not isinstance(diagnostic_id, str):
-            raise TypeError
-        _canonical_uuid(diagnostic_id, "legacy diagnostic ID")
-        identity_value = document["identity"]
-        if (
-            not isinstance(identity_value, dict)
-            or set(identity_value) != _IDENTITY_FIELDS
-            or type(document["started_at_unix"]) is not int
-            or document["started_at_unix"] <= 0
-            or type(document["external_event_count"]) is not int
-            or document["external_event_count"] != 0
-            or document["writer_fence_sha256"] is not None
-            or any(
-                not isinstance(document[field], list) or document[field]
-                for field in (
-                    "map_application_receipts",
-                    "map_dagster_receipts",
-                    "pinvi_receipts",
-                )
-            )
-            or document["runtime_smoke_sha256"] is not None
-            or document["failure_stage"] is not None
-            or document["failure_class"] is not None
-            or document["completed_at_unix"] is not None
-        ):
-            raise ValueError
-        _validate_identity(CacheTargetDiagnosticIdentity(**identity_value))
-    except DeploymentContractError:
-        raise
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        raise DeploymentContractError(
-            "legacy diagnostic journal is not an eligible pre-stop v1 state"
-        ) from exc
-    current_identity = _owner_only_file_identity(path)
-    if current_identity != source_identity:
-        raise DeploymentContractError("legacy diagnostic journal changed while reading")
-    return raw, source_identity, cast(LegacyDiagnosticRetirementPhase, phase)
-
-
-def _owner_only_file_identity(path: Path) -> tuple[int, int, int, int, int, int]:
-    try:
-        file_stat = path.lstat()
-    except OSError as exc:
-        raise DeploymentContractError("legacy diagnostic journal is unavailable") from exc
-    if (
-        not stat.S_ISREG(file_stat.st_mode)
-        or file_stat.st_uid != os.geteuid()
-        or file_stat.st_nlink != 1
-        or stat.S_IMODE(file_stat.st_mode) != 0o600
-    ):
-        raise DeploymentContractError("legacy diagnostic journal is unsafe")
-    return (
-        file_stat.st_dev,
-        file_stat.st_ino,
-        file_stat.st_uid,
-        file_stat.st_nlink,
-        stat.S_IMODE(file_stat.st_mode),
-        file_stat.st_size,
-    )
-
-
-def _validate_legacy_retirement_receipt(
-    receipt: LegacyDiagnosticRetirementReceipt,
-) -> None:
-    if type(receipt.version) is not int or receipt.version != 1:
-        raise DeploymentContractError("legacy diagnostic retirement receipt version is invalid")
-    if not isinstance(receipt.retired_journal_sha256, str):
-        raise DeploymentContractError("legacy diagnostic retirement journal is invalid")
-    _validate_sha256(
-        receipt.retired_journal_sha256,
-        "legacy diagnostic retirement journal",
-    )
-    if (
-        not isinstance(receipt.retired_phase, str)
-        or receipt.retired_phase not in {"prepared", "writers_fencing"}
-    ):
-        raise DeploymentContractError("legacy diagnostic retirement phase is invalid")
-    if type(receipt.retired_at_unix) is not int or receipt.retired_at_unix <= 0:
-        raise DeploymentContractError("legacy diagnostic retirement time is invalid")
-
-
-def _fsync_state_directory(path: Path) -> None:
-    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
 
 
 def archive_cache_target_diagnostic(
@@ -880,8 +445,7 @@ def _allowed_next_phases(
 def _validate_identity(identity: CacheTargetDiagnosticIdentity) -> None:
     for label, digest in (
         ("Manager release", identity.manager_release_sha256),
-        ("active pair", identity.active_pair_sha256),
-        ("rollback pair", identity.rollback_pair_sha256),
+        ("runtime generation", identity.runtime_generation_sha256),
         ("raw compose", identity.raw_compose_sha256),
         ("resolved compose", identity.resolved_compose_sha256),
         ("role binding", identity.role_binding_sha256),
@@ -942,7 +506,7 @@ def _validate_stage_receipt(receipt: DiagnosticStageReceipt) -> None:
 def _validate_journal(journal: CacheTargetDiagnosticJournal) -> None:
     if (
         type(journal.version) is not int
-        or journal.version != 2
+        or journal.version != 5
         or journal.phase not in (*_FORWARD_PHASES, "failed", "aborted")
     ):
         raise DeploymentContractError("cache-target diagnostic journal contract is invalid")

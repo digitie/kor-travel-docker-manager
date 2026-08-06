@@ -34,8 +34,7 @@ def _identity(**overrides: object) -> CacheTargetDiagnosticIdentity:
         "manager_release_sha256": "1" * 64,
         "pg_dump_major_version": 16,
         "pg_restore_major_version": 16,
-        "active_pair_sha256": "2" * 64,
-        "rollback_pair_sha256": "3" * 64,
+        "runtime_generation_sha256": "2" * 64,
         "raw_compose_sha256": "4" * 64,
         "resolved_compose_sha256": "5" * 64,
         "role_binding_sha256": "6" * 64,
@@ -135,21 +134,15 @@ def test_diagnostic_journal_is_owner_only_and_exactly_round_trips(
     assert read_cache_target_diagnostic(path) == journal
 
 
-def test_diagnostic_rejects_legacy_v1_state_before_any_mutation(tmp_path: Path) -> None:
-    path = tmp_path / "state" / "cache-target-diagnostic-v1.json"
+def test_diagnostic_rejects_noncurrent_state_before_any_mutation(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "cache-target-diagnostic-v5.json"
     path.parent.mkdir(mode=0o700)
     document = asdict(_prepared())
-    document["version"] = 1
-    for field_name in (
-        "writer_drain_lease_id",
-        "writer_drain_receipt_sha256",
-        "writer_drain_restore_receipt_sha256",
-    ):
-        del document[field_name]
+    document["version"] = 4
     path.write_text(json.dumps(document))
     path.chmod(0o600)
 
-    with pytest.raises(DeploymentContractError, match="v1 is unsupported"):
+    with pytest.raises(DeploymentContractError, match="journal contract is invalid"):
         read_cache_target_diagnostic(path)
 
 
@@ -339,7 +332,7 @@ def test_diagnostic_rejects_completion_time_before_start_time() -> None:
     "invalid_identity_kwargs",
     [
         {"manager_release_sha256": "not-a-digest"},
-        {"active_pair_sha256": "A" * 64},  # uppercase hex rejected
+        {"runtime_generation_sha256": "A" * 64},  # uppercase hex rejected
         {"raw_compose_sha256": "1" * 63},  # too short
         {"pg_dump_major_version": 0},
         {"pg_restore_major_version": -1},
@@ -527,7 +520,7 @@ def test_diagnostic_receipt_is_stale_when_not_completed() -> None:
 
 def test_diagnostic_receipt_is_stale_when_identity_differs() -> None:
     journal = _completed()
-    other_identity = _identity(active_pair_sha256="9" * 64)
+    other_identity = _identity(runtime_generation_sha256="9" * 64)
     assert not diagnostic_receipt_is_fresh(
         journal,
         current_identity=other_identity,

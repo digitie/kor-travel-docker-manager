@@ -317,7 +317,7 @@ def read_enable_cutover_journal(path: Path) -> EnableCutoverJournal:
         raise
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise DeploymentContractError("cache-target enable journal is invalid") from exc
-    if journal.version != 2 or journal.phase not in _FORWARD_PHASES | _ROLLBACK_PHASES:
+    if journal.version != 5 or journal.phase not in _FORWARD_PHASES | _ROLLBACK_PHASES:
         raise DeploymentContractError("cache-target enable journal contract is invalid")
     try:
         if str(uuid.UUID(journal.transaction_id)) != journal.transaction_id:
@@ -341,8 +341,7 @@ def read_enable_cutover_journal(path: Path) -> EnableCutoverJournal:
         journal.old_env_sha256,
         journal.new_env_sha256,
         journal.enabled_resolved_compose_sha256,
-        journal.active_pair_sha256,
-        journal.rollback_pair_sha256,
+        journal.runtime_generation_sha256,
     ):
         if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise DeploymentContractError("cache-target enable journal digest is invalid")
@@ -569,8 +568,8 @@ def _validate_journal_binding(
         or journal.initial_receipt_sha256
         != initial_receipt_logical_sha256(receipt)
         or journal.old_env_sha256 != receipt.evidence.env_sha256
-        or journal.active_pair_sha256 != receipt.evidence.active_pair_sha256
-        or journal.rollback_pair_sha256 != receipt.evidence.rollback_pair_sha256
+        or journal.runtime_generation_sha256
+        != receipt.evidence.runtime_generation_sha256
     ):
         raise DeploymentContractError("cache-target enable journal is foreign")
     safe_payload = json.dumps(asdict(journal), sort_keys=True)
@@ -590,7 +589,7 @@ def _validate_causal_evidence_binding(
     expected = {
         "run_id": journal.transaction_id,
         "cutover_id": receipt.cutover_id,
-        "active_pair_sha256": receipt.evidence.active_pair_sha256,
+        "runtime_generation_sha256": receipt.evidence.runtime_generation_sha256,
         "contract_generation": receipt.evidence.expected_contract_generation,
         "local_count": receipt.count,
         "remote_count": receipt.count,

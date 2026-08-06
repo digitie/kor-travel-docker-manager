@@ -60,8 +60,11 @@ class CacheTargetFrozenEvidence:
     env_sha256: str
     raw_compose_sha256: str
     resolved_compose_sha256: str
-    active_pair_sha256: str
-    rollback_pair_sha256: str
+    # ``generation_logical_sha256(PinnedRuntimeGeneration)``의 digest다. image ID,
+    # source revision, schema head, pinset만 결박하며 ``recorded_at``은 포함하지
+    # 않는다. v5 manifest의 유일한 active generation이고 DB preimage 또는 rollback
+    # slot을 표현하지 않는다.
+    runtime_generation_sha256: str
     role_binding_sha256: str
     expected_openapi_sha256: str
     expected_source_revision: str
@@ -79,7 +82,7 @@ class InitialCutoverResult:
 
 @dataclass(frozen=True)
 class InitialCutoverReceipt:
-    version: Literal[1]
+    version: Literal[5]
     cutover_id: str
     expected_restore_epoch: int
     reason_sha256: str
@@ -92,7 +95,7 @@ class InitialCutoverReceipt:
 
 @dataclass(frozen=True)
 class EnableCutoverJournal:
-    version: Literal[2]
+    version: Literal[5]
     transaction_id: str
     cutover_id: str
     window_transaction_id: str | None
@@ -103,8 +106,7 @@ class EnableCutoverJournal:
     old_env_sha256: str
     new_env_sha256: str
     enabled_resolved_compose_sha256: str
-    active_pair_sha256: str
-    rollback_pair_sha256: str
+    runtime_generation_sha256: str
     verified_evidence_sha256: str | None = None
 
 
@@ -144,7 +146,7 @@ def build_initial_cutover_receipt(
         raise DeploymentContractError("initial cutover reason is invalid")
     _validate_frozen_evidence(evidence)
     return InitialCutoverReceipt(
-        version=1,
+        version=5,
         cutover_id=canonical_cutover_id,
         expected_restore_epoch=expected_restore_epoch,
         reason_sha256=hashlib.sha256(reason.encode()).hexdigest(),
@@ -188,7 +190,7 @@ def read_initial_cutover_receipt(path: Path) -> InitialCutoverReceipt:
         )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise DeploymentContractError("initial cutover receipt is invalid") from exc
-    if receipt.version != 1:
+    if receipt.version != 5:
         raise DeploymentContractError("initial cutover receipt version is invalid")
     _validate_frozen_evidence(receipt.evidence)
     return receipt
@@ -224,7 +226,7 @@ def prepare_enable_journal(
     if (attempt == 1) != (supersedes_transaction_id is None):
         raise DeploymentContractError("enable supersession chain is invalid")
     return EnableCutoverJournal(
-        version=2,
+        version=5,
         transaction_id=str(uuid.uuid4()),
         cutover_id=receipt.cutover_id,
         window_transaction_id=window_transaction_id,
@@ -235,8 +237,7 @@ def prepare_enable_journal(
         old_env_sha256=old_env_sha256,
         new_env_sha256=new_env_sha256,
         enabled_resolved_compose_sha256=enabled_resolved_compose_sha256,
-        active_pair_sha256=receipt.evidence.active_pair_sha256,
-        rollback_pair_sha256=receipt.evidence.rollback_pair_sha256,
+        runtime_generation_sha256=receipt.evidence.runtime_generation_sha256,
     )
 
 

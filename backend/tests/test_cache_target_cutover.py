@@ -39,8 +39,7 @@ def _evidence() -> CacheTargetFrozenEvidence:
         env_sha256="1" * 64,
         raw_compose_sha256="2" * 64,
         resolved_compose_sha256="3" * 64,
-        active_pair_sha256="4" * 64,
-        rollback_pair_sha256="5" * 64,
+        runtime_generation_sha256="4" * 64,
         role_binding_sha256="6" * 64,
         expected_openapi_sha256="7" * 64,
         expected_source_revision="8" * 40,
@@ -86,6 +85,7 @@ def test_initial_receipt_binds_all_frozen_evidence_without_role_digests() -> Non
 
     assert receipt.reason_sha256 != "production initial cutover"
     assert len(initial_receipt_logical_sha256(receipt)) == 64
+    assert receipt.evidence.runtime_generation_sha256 == "4" * 64
     for forbidden in (
         "registry_json",
         "token_sha256",
