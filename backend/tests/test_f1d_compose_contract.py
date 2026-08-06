@@ -13,6 +13,12 @@ from typing import Any
 import pytest
 import yaml
 
+from kor_travel_docker_manager.services.c6c_deployment import (
+    C6cBuildProvenance,
+    DeploymentContractError,
+    validate_resolved_c6c_build_provenance,
+)
+
 _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE_PATH = _ROOT / "docker-compose.yml"
 _MAP_RUNTIME_SERVICES = (
@@ -54,7 +60,10 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
     return {"services": services}
 
 
-def _resolved_compose(*service_names: str) -> dict[str, Any]:
+def _resolved_compose(
+    *service_names: str,
+    environment_update: dict[str, str] | None = None,
+) -> dict[str, Any]:
     if shutil.which("docker") is None:
         pytest.skip("Docker Compose가 없어 resolved Compose 계약을 실행할 수 없음")
 
@@ -72,6 +81,8 @@ def _resolved_compose(*service_names: str) -> dict[str, Any]:
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "test-ui-session-secret",
         "PINVI_ENVIRONMENT": "production",
     }
+    if environment_update is not None:
+        environment.update(environment_update)
     completed = subprocess.run(
         [
             "docker",
@@ -164,6 +175,65 @@ def test_resolved_pinvi_api_has_no_implicit_schema_mutation_or_bootstrap_secret(
     assert bootstrap["restart"] == "no"
     assert bootstrap["network_mode"] == "host"
     assert "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE" not in bootstrap["environment"]
+
+
+def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> None:
+    revision = "a" * 40
+    resolved = _resolved_compose(
+        *_PINVI_RUNTIME_SERVICES,
+        environment_update={
+            "PINVI_SOURCE_REVISION": revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
+    )
+    services = resolved["services"]
+    assert isinstance(services, dict)
+
+    for service_name, dockerfile in {
+        "pinvi-api": "apps/api/Dockerfile",
+        "pinvi-web": "apps/web/Dockerfile",
+        "pinvi-dagster": "apps/etl/Dockerfile",
+    }.items():
+        build = services[service_name]["build"]
+        assert build["dockerfile"] == dockerfile
+        assert build["args"]["PINVI_SOURCE_REVISION"] == revision
+        assert build["args"]["PINVI_BUILD_ENVIRONMENT"] == "production"
+
+
+def test_c6c_preflight_rejects_any_pinvi_runtime_provenance_gap() -> None:
+    map_revision = "b" * 40
+    pinvi_revision = "a" * 40
+    resolved = _resolved_compose(
+        *_MAP_RUNTIME_SERVICES,
+        *_PINVI_RUNTIME_SERVICES,
+        environment_update={
+            "KOR_TRAVEL_MAP_GIT_COMMIT": map_revision,
+            "PINVI_SOURCE_REVISION": pinvi_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
+    )
+
+    validate_resolved_c6c_build_provenance(
+        resolved,
+        C6cBuildProvenance(
+            map_source_revision=map_revision,
+            pinvi_source_revision=pinvi_revision,
+        ),
+    )
+
+    build = resolved["services"]["pinvi-dagster"]["build"]
+    del build["args"]["PINVI_SOURCE_REVISION"]
+    with pytest.raises(
+        DeploymentContractError,
+        match="pinvi-dagster.*provenance build args",
+    ):
+        validate_resolved_c6c_build_provenance(
+            resolved,
+            C6cBuildProvenance(
+                map_source_revision=map_revision,
+                pinvi_source_revision=pinvi_revision,
+            ),
+        )
 
 
 def test_ordinary_runtime_services_never_receive_bootstrap_credential_contract() -> None:

@@ -700,6 +700,8 @@ services:
       context: ${PINVI_REPO_DIR:-../pinvi}
       dockerfile: apps/web/Dockerfile
       args:
+        PINVI_SOURCE_REVISION: ${PINVI_SOURCE_REVISION:-development}
+        PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
         NEXT_PUBLIC_PINVI_API_URL: ${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}
     container_name: ${PINVI_WEB_CONTAINER:-pinvi-web-latest}
     restart: unless-stopped
@@ -724,6 +726,9 @@ services:
     build:
       context: ${PINVI_REPO_DIR:-../pinvi}
       dockerfile: apps/etl/Dockerfile
+      args:
+        PINVI_SOURCE_REVISION: ${PINVI_SOURCE_REVISION:-development}
+        PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_DAGSTER_CONTAINER:-pinvi-dagster-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}

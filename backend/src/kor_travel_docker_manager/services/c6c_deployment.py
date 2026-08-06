@@ -36,6 +36,8 @@ _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _PINVI_API_SERVICE = "pinvi-api"
+_PINVI_WEB_SERVICE = "pinvi-web"
+_PINVI_DAGSTER_SERVICE = "pinvi-dagster"
 _MAP_RUNTIME_SERVICES = (
     _MAP_API_SERVICE,
     _MAP_UI_SERVICE,
@@ -1575,6 +1577,14 @@ def validate_resolved_c6c_build_provenance(
             "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
             "PINVI_BUILD_ENVIRONMENT": "production",
         },
+        _PINVI_WEB_SERVICE: {
+            "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
+        _PINVI_DAGSTER_SERVICE: {
+            "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
+            "PINVI_BUILD_ENVIRONMENT": "production",
+        },
     }
     expected_arg_names = {
         service_name: set(args)
@@ -1588,12 +1598,15 @@ def validate_resolved_c6c_build_provenance(
             "NEXT_PUBLIC_VWORLD_API_KEY",
         }
     )
+    expected_arg_names[_PINVI_WEB_SERVICE].add("NEXT_PUBLIC_PINVI_API_URL")
     expected_dockerfiles = {
         _MAP_API_SERVICE: "docker/api.Dockerfile",
         _MAP_UI_SERVICE: "docker/frontend.Dockerfile",
         _MAP_DAGSTER_SERVICE: "docker/dagster.Dockerfile",
         _MAP_DAGSTER_DAEMON_SERVICE: "docker/dagster.Dockerfile",
         _PINVI_API_SERVICE: "apps/api/Dockerfile",
+        _PINVI_WEB_SERVICE: "apps/web/Dockerfile",
+        _PINVI_DAGSTER_SERVICE: "apps/etl/Dockerfile",
     }
     for service_name, service_expected_args in expected_provenance_args.items():
         service = _service_mapping(services, service_name)
@@ -1703,6 +1716,25 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
         _PINVI_API_SERVICE: {
             "context": "${PINVI_REPO_DIR:-../pinvi}",
             "dockerfile": "apps/api/Dockerfile",
+            "args": {
+                "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
+                "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
+            },
+        },
+        _PINVI_WEB_SERVICE: {
+            "context": "${PINVI_REPO_DIR:-../pinvi}",
+            "dockerfile": "apps/web/Dockerfile",
+            "args": {
+                "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
+                "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",
+                "NEXT_PUBLIC_PINVI_API_URL": (
+                    "${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}"
+                ),
+            },
+        },
+        _PINVI_DAGSTER_SERVICE: {
+            "context": "${PINVI_REPO_DIR:-../pinvi}",
+            "dockerfile": "apps/etl/Dockerfile",
             "args": {
                 "PINVI_SOURCE_REVISION": "${PINVI_SOURCE_REVISION:-development}",
                 "PINVI_BUILD_ENVIRONMENT": "${PINVI_BUILD_ENVIRONMENT:-development}",

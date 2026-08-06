@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C1b — PinVi runtime provenance caller 결선)
+
+PinVi Dockerfile label만으로는 Manager canonical Compose가 Web·Dagster에 revision/environment
+build argument를 전달하지 않아 두 image가 `development` label로 빌드될 수 있었다. F1D candidate의
+image inspect는 이미 일곱 image와 PinVi 세 image의 production label을 확인하므로, 누락된 caller
+경계를 세 service build mapping으로 보강했다.
+
+`validate_c6c_build_source_wiring`과 resolved C6c provenance preflight가 API·Web·Dagster의
+exact source revision, production environment, Dockerfile path를 모두 fail-close로 검사한다. 실제
+Compose resolver regression은 세 service가 같은 candidate argument를 받을 때만 통과하며, Dagster
+argument 하나를 제거하면 preflight가 거부한다. PinVi PR merge SHA를 pinned release input으로
+회전한 뒤에만 n150 destructive rebuild를 재개한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D — legacy 공개 mutation 경로 퇴역)
 
 F1D v5의 유일한 generation mutation은 비운영 `ktdctl pinvi-pair rebuild-pinned --confirm`으로

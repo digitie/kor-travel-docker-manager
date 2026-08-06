@@ -962,15 +962,15 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       Alembic revision을 Dagster storage head로 사용하지 않는다.
 - [/] **F1D-C1 (PinVi PR)** — credential-file만 읽는 `pinvi-admin-bootstrap` one-shot CLI가 PinVi Alembic
       migration과 admin bootstrap의 유일 owner가 되게 한다. normal API의 implicit migration/direct password
-      environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test와
-      PinVi source pin 회전을 포함한다.
+      environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test,
+      API/Web/Dagster의 exact revision/environment OCI provenance와 PinVi source pin 회전을 포함한다.
 - [/] **F1D-C2 (Manager PR)** — C0 Map 및 C1 PinVi source pin을 입력으로 구 `bootstrap-pinned-drift`와 old
       rollback/backup 중심 resume을 제거하고, root execution의
       `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. legacy
       `cache-target`, standalone `db-backup`, Map UI 회전과 `capture`·`deploy`·`rollback` 공개 경로는
       함께 퇴역한다. 이 명령은 frozen explicit `rebuildable`
       lifecycle에서만 candidate-first attestation 뒤 세 scoped DB recreate, 0600 credential file의 one-shot
-      read-only mount, Map Dagster migration-only invocation, 일곱 runtime build/start, F1J fixture smoke와
+      read-only mount, Map Dagster migration-only invocation, PinVi 세 image provenance까지 포함한 일곱 runtime build/start, F1J fixture smoke와
       durable same-pinset resume을 수행한다.
 - [ ] **F1D-D (docs-only PR)** — n150에서 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
       E2E·PinVi mutating E2E를 통과시킨 결과를 기록한다. data source/ETL 재적재는 이 transaction 뒤의 별도
