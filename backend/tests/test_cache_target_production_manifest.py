@@ -39,13 +39,13 @@ def _contract() -> CacheTargetRuntimeContract:
 def test_tracked_release_is_the_current_generation_seven_pair() -> None:
     assert CACHE_TARGET_PRODUCTION_PINS == CacheTargetProductionPinManifest(
         version=2,
-        map_release_revision="8c5bdcf8ce892439a8bb8e0013edf74127bf076a",
-        pinvi_release_revision="3b87c19cc78a07121c27df7d7a4c382c2d3aa068",
+        map_release_revision="1df45b57f55b8d517bb1f2c12a869d032d70453e",
+        pinvi_release_revision="2d598551287d84c3af13510f8cab7f8bec547715",
         service_openapi_sha256=(
-            "c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd"
+            "6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e"
         ),
         contract_generation="7",
-        map_application_alembic_head="0083_nonderived_uuid_generator",
+        map_application_alembic_head="0084_c6c_cancel_probe_fixtures",
     )
     assert tuple(CACHE_TARGET_PRODUCTION_PINS.__dataclass_fields__) == (
         "version",
@@ -60,17 +60,17 @@ def test_tracked_release_is_the_current_generation_seven_pair() -> None:
 def test_pinset_sha256_uses_only_compact_sorted_v2_semantic_fields() -> None:
     canonical_json = (
         '{"contract_generation":"7","map_application_alembic_head":'
-        '"0083_nonderived_uuid_generator","map_release_revision":'
-        '"8c5bdcf8ce892439a8bb8e0013edf74127bf076a","pinvi_release_revision":'
-        '"3b87c19cc78a07121c27df7d7a4c382c2d3aa068","service_openapi_sha256":'
-        '"c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd",'
+        '"0084_c6c_cancel_probe_fixtures","map_release_revision":'
+        '"1df45b57f55b8d517bb1f2c12a869d032d70453e","pinvi_release_revision":'
+        '"2d598551287d84c3af13510f8cab7f8bec547715","service_openapi_sha256":'
+        '"6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e",'
         '"version":2}'
     )
 
     assert CACHE_TARGET_PRODUCTION_PINS.canonical_pinset_json() == canonical_json
     assert (
         CACHE_TARGET_PRODUCTION_PINS.pinset_sha256
-        == "ff9b9e2d327d15727cb29fd085bb4d12dcab91c061d8d52263902421a51d66f3"
+        == "0144b4c4b6b31b39f2bb32002d8990777e8834e8a5d14cce9b3fee56aa5d0b27"
     )
 
 
@@ -105,7 +105,7 @@ def test_map_migration_head_is_required_compose_input_with_v2_example_default() 
     ) in compose
     assert "0078_cache_target_gc_observe" not in compose
     assert (
-        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0083_nonderived_uuid_generator"
+        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0084_c6c_cancel_probe_fixtures"
     ) in example
 
 

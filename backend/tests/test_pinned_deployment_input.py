@@ -166,16 +166,16 @@ def test_v2_env_render_replaces_every_deployment_scalar_atomically(tmp_path: Pat
     rendered = _render_v2_env(raw, paths=_paths(tmp_path), specs=specs).decode()
 
     assert "UNRELATED=value\n" in rendered
-    assert "KOR_TRAVEL_MAP_GIT_COMMIT=8c5bdcf8ce892439a8bb8e0013edf74127bf076a\n" in rendered
-    assert "PINVI_SOURCE_REVISION=3b87c19cc78a07121c27df7d7a4c382c2d3aa068\n" in rendered
-    assert "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0083_nonderived_uuid_generator\n" in rendered
+    assert "KOR_TRAVEL_MAP_GIT_COMMIT=1df45b57f55b8d517bb1f2c12a869d032d70453e\n" in rendered
+    assert "PINVI_SOURCE_REVISION=2d598551287d84c3af13510f8cab7f8bec547715\n" in rendered
+    assert "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=0084_c6c_cancel_probe_fixtures\n" in rendered
     assert (
         "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_OPENAPI_SHA256="
-        "c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd\n"
+        "6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e\n"
     ) in rendered
     assert (
         "PINVI_KOR_TRAVEL_MAP_CACHE_TARGET_EXPECTED_SOURCE_REVISION="
-        "8c5bdcf8ce892439a8bb8e0013edf74127bf076a\n"
+        "1df45b57f55b8d517bb1f2c12a869d032d70453e\n"
     ) in rendered
 
 

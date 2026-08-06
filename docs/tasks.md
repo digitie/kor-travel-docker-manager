@@ -1015,8 +1015,8 @@ Manager가 static `KTDM_C6C_CANCEL_PROBE_JOB_ID`만 전달하고 실제 Map pipe
 - [/] **F1J-C (service provenance 재결박 PR)** — Map lifecycle API generation을 PinVi의 일반
       `kor-travel-map-service-provenance-v1.json` artifact에 선언하고, Manager preflight가 trusted PinVi source,
       Map release/OpenAPI artifact, cache-target/C6c capability를 byte-exact로 교차 검증하게 한다. 기존
-      compatible-pair manifest v4에는 F1J 전용 필드를 넣지 않는다. PinVi draft PR #435가 provenance artifact와
-      consumer를 구현 중이며, 이어서 Manager pin/preflight consumer를 반영한다. PinVi는 fixture 생성 권한을
+      compatible-pair manifest v4에는 F1J 전용 필드를 넣지 않는다. PinVi PR #435가 merge되어 provenance artifact와
+      consumer를 구현했으며, Manager PR #160이 pin/preflight consumer를 반영 중이다. PinVi는 fixture 생성 권한을
       받지 않으며 existing relay의 structured error 보존 회귀만 유지한다. lifecycle API가 없는 old Map image로의
       rollback은 fail-close한다.
 - [ ] **F1J-D (n150 isolated final verification)** — 격리 stack에서 trusted release 순서(Map → PinVi

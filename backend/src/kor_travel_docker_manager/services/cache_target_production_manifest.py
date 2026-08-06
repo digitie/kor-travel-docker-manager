@@ -25,13 +25,13 @@ class CacheTargetProductionPinManifest:
     """F1F v2 production deployment input의 유일한 release authority다."""
 
     version: int = 2
-    map_release_revision: str = "8c5bdcf8ce892439a8bb8e0013edf74127bf076a"
-    pinvi_release_revision: str = "3b87c19cc78a07121c27df7d7a4c382c2d3aa068"
+    map_release_revision: str = "1df45b57f55b8d517bb1f2c12a869d032d70453e"
+    pinvi_release_revision: str = "2d598551287d84c3af13510f8cab7f8bec547715"
     service_openapi_sha256: str = (
-        "c7838b20bd70bf333590cb440a705dd7e893f9e366078d6c11200d701d40bdcd"
+        "6ad8c1c9c1d391c54e7592b64ed9f0225164b613a5c2824d8eafd3da9bd36f1e"
     )
     contract_generation: str = str(CACHE_TARGET_CAPABILITY_GENERATION)
-    map_application_alembic_head: str = "0083_nonderived_uuid_generator"
+    map_application_alembic_head: str = "0084_c6c_cancel_probe_fixtures"
 
     def __post_init__(self) -> None:
         if type(self.version) is not int or self.version != 2:
