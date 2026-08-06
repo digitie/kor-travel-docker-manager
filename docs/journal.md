@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1D-C0 — Map Dagster storage 계약 병행)
+
+F1D-B 영향도 확인에서 Map application Alembic revision과 Dagster dependency storage revision이 서로 다른
+정본임을 확인했다. 따라서 source pin 또는 Map application head로 `map_dagster_head`를 추정하지 않는다.
+Map candidate Dagster image가 자신의 storage head를 출력하고, 같은 image가 `dagster instance migrate` 뒤
+strict single-row `public.alembic_version`을 대조하는 C0 PR을 F1D-C1과 병행한다. C2는 두 upstream PR의
+exact source pin을 입력으로 받는다.
+
+기존 F1G/F1H의 legacy journal 퇴역은 F1D-B typed tombstone allowlist에 흡수했다. 별도 복구·rollback
+authority나 T-VN-41 선행 task로 남기지 않으며, foreign residue는 rebuild 전 fail-close한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-B — v5 generation foundation 진행)
 
 F1D-A 설계 PR #165 병합 뒤, legacy compatible pair와 분리한

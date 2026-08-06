@@ -219,9 +219,11 @@ graph TD
      비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 stale runtime/DB/state를 새 release pin으로
      수렴할 유일한 경로는 `pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
      candidate resolved Compose security를 검증하고, 일곱 candidate image ID·세 expected schema head를
-     durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. candidate runtime의
-     Map API와 Map Dagster migration-only command, PinVi migration+credential-file one-shot CLI는 각각 별도
-     DB head를 exact 대조한다. security·UI auth·F1J fixture smoke는 activation 뒤 exact image에서 검증한다. old image, old manifest,
+     durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. Map Dagster head는
+     source revision 추정값이 아니라 candidate Dagster image가 직접 출력한 storage migration head다. candidate
+     runtime의 Map API와 Map Dagster migration-only command, PinVi migration+credential-file one-shot CLI는
+     각각 별도 DB head를 exact 대조한다. Map Dagster command는 `dagster instance migrate` 뒤 strict single-row
+     `public.alembic_version` 검증을 수행한다. security·UI auth·F1J fixture smoke는 activation 뒤 exact image에서 검증한다. old image, old manifest,
      old DB와 backup은 candidate 또는 rollback authority가 아니다. candidate 실패는 old runtime 복원 대신
      일곱 runtime 중지로 fail-close한다. canonical `.env`의 source checkout과 release-bound runtime contract 갱신은 별도 trusted
      pinned deployment input transaction이 소유한다. 이 installer는 user-owned checkout의 Git config를 root에서

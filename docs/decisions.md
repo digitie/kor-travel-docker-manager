@@ -1610,7 +1610,9 @@ Manager는 source·Compose를 검증해 일곱 candidate image의 immutable ID/p
 drop/create 한다. shared
 PostgreSQL의 Geo·Concierge database와 RustFS를 변경하지 않는다. backup, dump, restore, old head
 comparison은 사용하지 않는다. Map API가 Map application migration의, Map Dagster candidate migration-only
-command가 Map Dagster migration의 유일 owner다. 두 static expected head를 각 `alembic_version`과 대조한 뒤
+command가 Map Dagster migration의 유일 owner다. Map Dagster head는 source revision으로 추정하지 않고 candidate
+image가 직접 출력한 Dagster dependency storage head다. 그 command가 `dagster instance migrate`를 실행한 뒤
+strict single-row `public.alembic_version`을 해당 head와 대조하고, Map application head도 별도로 대조한 뒤
 Map dependents를 기동한다. PinVi의 `pinvi-admin-bootstrap` one-shot CLI가 PinVi migration을 `pinvi_head`까지
 적용·검증하고 fresh admin을 만든 뒤 normal API·Web·Dagster를 기동한다. F1J fixture canonical smoke와 UI
 contract까지 검증한 뒤 committed한다.
@@ -1646,6 +1648,10 @@ reader와 mutation gate를 v5 authority로 교체한다. foreign/corrupt legacy 
 
 ## F1G: legacy terminal window는 receipt-first 퇴역 뒤 새 v2 authority만 수용한다
 
+> 상태: superseded — ADR-34/F1D-B가 legacy window와 inert diagnostic을 v5 typed tombstone
+> allowlist 하나로 흡수했다. 아래 기록은 당시 v2 판단의 이력일 뿐, 별도 T-VN-41 실행 경로나
+> predecessor authority가 아니다.
+
 ### 컨텍스트
 
 n150의 F1F input installer preflight는 old `cache-target-window-v1.json`이 terminal `rolled_back` 상태로
@@ -1670,6 +1676,10 @@ candidate로 materialize하지 않으므로, Docker·Compose·DB·runtime·manif
   별도 단계로 남는다.
 
 ## F1H: writer-drain 전 inert v2 diagnostic은 별도 receipt로만 퇴역한다
+
+> 상태: superseded — ADR-34/F1D-B가 legacy window와 inert diagnostic을 v5 typed tombstone
+> allowlist 하나로 흡수했다. 아래 기록은 당시 v2 판단의 이력일 뿐, 별도 T-VN-41 실행 경로나
+> predecessor authority가 아니다.
 
 ### 컨텍스트
 

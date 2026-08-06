@@ -396,12 +396,14 @@ ktdctl pinvi-pair rebuild-pinned --confirm
 이 command는 `CACHE_TARGET_PRODUCTION_PINS`에 tracked된 exact Map·PinVi commit만 Git archive build
 source로 쓰며 `.env` checkout HEAD, old image, old manifest, backup을 candidate authority로 쓰지 않는다.
 먼저 Map 네 service와 PinVi 세 service의 immutable candidate image ID, source revision, Map application/Dagster와
-PinVi의 expected schema head를 owner-only journal에 고정한다. candidate artifact 하나라도 없으면 database를
+PinVi의 expected schema head를 owner-only journal에 고정한다. Map Dagster head는 source pin의 추정값이 아니라
+candidate Dagster image의 head-inspection command 출력으로 attest한다. candidate artifact 하나라도 없으면 database를
 건드리지 않는다.
 
 후속 phase에서만 Manager가 frozen resolved Compose의 Map application·Map Dagster·PinVi database identity를
-검증해 세 database를 새로 만든다. Map API entrypoint와 Map Dagster migration-only command가 candidate-static
-각 head까지 migration을 적용·검증하고, PinVi migration+admin credential-file one-shot CLI가 `pinvi_head`까지
+검증해 세 database를 새로 만든다. Map API entrypoint와 Map Dagster migration-only command가 candidate-attested
+각 head까지 migration을 적용·검증한다. Map Dagster command는 `dagster instance migrate` 후 strict single-row
+`public.alembic_version`을 같은 candidate image의 reported head와 대조한다. PinVi migration+admin credential-file one-shot CLI가 `pinvi_head`까지
 적용한 뒤 일곱 runtime을 같은 generation으로 기동한다. Map·PinVi Web·PinVi Dagster와 durable journal/log에는
 credential을 전달하거나 기록하지 않는다. F1J fixture smoke, authenticated UI contract, schema/image attestation이
 모두 성공하면 single active v5 generation manifest를 commit한다. 실패하거나 reset 뒤 재실행하면 일부 DB를

@@ -34,7 +34,6 @@
 | **T-VN-41-F1C** | legacy pre-stop diagnostic journal의 Manager 소유 퇴역 (issue #134) | `[x]` | 2026-08-05 | PR #135·trusted release·n150 receipt-first 퇴역과 idempotence 확인 완료 |
 | **T-VN-41-F1E** | trusted pinned source-installer (issue #138) | `[x]` | 2026-08-05 | root Git 실행 없이 Manager-owned exact source selection을 수렴하고 production 재실행까지 확인 |
 | **T-VN-41-F1D** | 파기형 pinned runtime generation 재bootstrap (issue #136) | `[/]` | - | 비운영 Map·PinVi DB와 stale state를 보전하지 않고 tracked exact generation·새 schema로 수렴 |
-| **T-VN-41-F1H** | inert v2 diagnostic journal의 Manager 소유 퇴역 | `[/]` | - | writer drain 전 exact v2 state만 receipt-first로 퇴역해 F1F input rotation을 재개 |
 
 ---
 
@@ -970,63 +969,22 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
 - [/] **F1D-B** — `CompatibleImagePair`/v4 manifest와 old `deploy`·`capture`·`rollback` 및 legacy
       mutation gate를 제거하고, Map 네 service와 PinVi 세 service를 모두 기록하는 single-active
       `PinnedRuntimeGeneration` v5로 치환한다. immutable image ID·source revision·세 schema head·
-      tombstone receipt와 manifest/journal/provenance 검증의 정본을 하나로 만든다. typed
+      tombstone receipt와 manifest/journal/provenance 검증의 정본을 하나로 만든다. 기존 F1G window 및 F1H
+      inert diagnostic receipt 퇴역은 이 typed tombstone allowlist에 흡수하며 별도 T-VN 선행 task로 남기지 않는다. typed
       environment/lifecycle enum pair와 rebuildable exclusive mutation 정책의 loader·회귀 test도 소유한다.
+- [/] **F1D-C0 (Map PR)** — candidate Map Dagster image가 dependency storage migration head를 기계 판독
+      가능하게 출력하고, 동일 image가 `dagster instance migrate` 뒤 strict single-row
+      `public.alembic_version`을 그 head와 대조하는 migration-only command를 제공한다. Map application
+      Alembic revision을 Dagster storage head로 사용하지 않는다.
 - [/] **F1D-C1 (PinVi PR)** — credential-file만 읽는 `pinvi-admin-bootstrap` one-shot CLI가 PinVi Alembic
       migration과 admin bootstrap의 유일 owner가 되게 한다. normal API의 implicit migration/direct password
       environment bootstrap을 제거하고 owner/mode/content 검증, migration→admin idempotence, redaction test와
       PinVi source pin 회전을 포함한다.
-- [ ] **F1D-C2 (Manager PR)** — 구 `bootstrap-pinned-drift`와 old rollback/backup 중심 resume을 제거하고,
-      `ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. 이 명령은 frozen explicit `rebuildable`
+- [ ] **F1D-C2 (Manager PR)** — C0 Map 및 C1 PinVi source pin을 입력으로 구 `bootstrap-pinned-drift`와 old
+      rollback/backup 중심 resume을 제거하고, `ktdctl pinvi-pair rebuild-pinned --confirm`을 구현한다. 이 명령은 frozen explicit `rebuildable`
       lifecycle에서만 candidate-first attestation 뒤 세 scoped DB recreate, 0600 credential file의 one-shot
-      read-only mount, 일곱 runtime build/start, F1J fixture smoke와 durable same-pinset resume을 수행한다.
+      read-only mount, Map Dagster migration-only invocation, 일곱 runtime build/start, F1J fixture smoke와
+      durable same-pinset resume을 수행한다.
 - [ ] **F1D-D (docs-only PR)** — n150에서 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
       E2E·PinVi mutating E2E를 통과시킨 결과를 기록한다. data source/ETL 재적재는 이 transaction 뒤의 별도
       작업으로 handoff한다.
-
-### T-VN-41-F1G: legacy terminal window journal 퇴역
-
-n150 F1F input installer의 read-only mutation gate가 legacy `cache-target-window-v1.json`의 terminal
-`rolled_back` receipt를 발견했다. 이 v1 schema는 durable writer-drain lease/receipt 및 current v2
-rollback evidence를 표현하지 못하므로, 새 v2 input/F1D authority로 해석하거나 raw state-directory 삭제로
-우회하지 않는다.
-
-- [/] production 전용 `ktdctl cache-target retire-legacy-window --confirm --json`을 추가한다. exact owner-only
-      v1 `rolled_back` journal 한 개만 수용하고, raw SHA와 phase만 갖는 root-owned retirement receipt를 fsync한
-      뒤 journal을 unlink한다. `prepared` 등 nonterminal v1, `runtime_activated` 또는 그 밖의 v1 phase, v2,
-      malformed/foreign/hardlink/symlink journal과 receipt conflict는 fail-close한다.
-- [/] command는 C6c global lock과 frozen canonical env/raw Compose source identity를 먼저 다시 확인한다. F1F
-      input이 아직 없는 old production env에서도 실행되도록 Docker Compose candidate materialization은 하지 않으며,
-      Docker·Compose·
-      DB·runtime·manifest·cache-target credential·backup을 전혀 변경하지 않는다. receipt write와 unlink 사이
-      crash는 같은 raw SHA/phase로만 idempotently resume한다.
-- [ ] focused/full backend 검증과 단일 적대적 리뷰 뒤 PR merge·trusted release 설치를 거쳐 n150의 exact
-      `rolled_back` v1 receipt를 민감값 없는 result로 퇴역한다. 그 뒤에만 F1F input first-run/idempotent rerun을
-      재개한다.
-
-### T-VN-41-F1H: inert v2 diagnostic journal 퇴역
-
-F1D-B가 legacy F1D/F1F mutation state를 v5 tombstone으로 흡수할 때 이 task는 더 이상
-T-VN-41 완료의 선행 조건이 아니다. F1D-B merge 시 중복된 legacy retirement scope를 완료 이력으로
-옮기고, 별도 일반 cache-target maintenance가 필요하면 T-VN train 밖 backlog로 분리한다.
-
-F1C가 퇴역한 v1 pre-stop diagnostic 뒤에 실행했던 새 v2 diagnostic도 `writers_fencing`에서 stale runtime
-tuple을 발견해 writer-drain을 시작하기 전에 멈췄다. n150의 현재 journal은 `external_event_count=0`이며
-writer drain lease/receipt, writer fence, stage receipt, runtime smoke, failure/completion evidence가 모두 없다.
-F1F input rotation은 올바르게 non-terminal diagnostic을 막으므로, 이 *inert* 상태를 raw 삭제나 일반
-diagnostic resume으로 넘기지 않는다.
-
-- [/] production 전용 `ktdctl cache-target retire-inert-diagnostic --confirm --json`을 추가한다. exact current
-      v2 schema와 strict scalar type(`version`은 exact `int` 2, `started_at_unix`는 `bool`이 아닌 양의 `int`)의 `prepared` 또는
-      `writers_fencing`만 typed reader로 재검증한 뒤, 위의 모든 writer/post-stage
-      evidence가 비어 있고 `external_event_count=0`일 때만 `cache-target-diagnostic-inert-retirement-v1.json`에
-      source version·raw SHA·phase를 가진 별도 receipt를 fsync한 뒤 journal을 unlink한다. F1C의
-      `cache-target-diagnostic-retirement-v1.json`과 namespace를 공유하지 않으며, source-missing replay는 같은
-      source version/SHA/phase receipt만 idempotently 완료한다.
-- [ ] writer drain lease/receipt/fence, 역할별 receipt, runtime smoke, external event, failure/completion evidence 중
-      하나라도 있거나 `diagnosing` 이후 phase·다른 schema·foreign file·receipt conflict이면 fail-close한다.
-      command는 F1G와 같이 C6c global lock과 frozen canonical env/raw Compose source identity만 동결·재검증하고,
-      Docker Compose candidate·runtime·DB·manifest·backup·credential은 변경하지 않는다. 일반 Manager mutation의
-      non-terminal diagnostic 차단은 계속 유지한다.
-- [ ] 단일 적대적 리뷰와 focused/full backend 검증 뒤 PR merge·trusted release 설치를 거쳐 n150에서 first-run과
-      idempotent rerun을 확인하고, 그 뒤 F1F input first-run/idempotent rerun을 재개한다.
