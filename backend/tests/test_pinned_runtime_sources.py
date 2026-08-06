@@ -12,6 +12,7 @@ from typing import Literal
 
 import pytest
 
+from kor_travel_docker_manager.services import pinned_runtime_sources
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.pinned_runtime_generation import PinnedRuntimeStatePaths
 from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
@@ -63,6 +64,7 @@ def _runner_for_materialization(
     calls: list[GitInvocation],
     fail_status_once: bool = False,
     staging_mode: int = 0o700,
+    status_modes: list[int] | None = None,
 ) -> GitRunner:
     release = PINNED_RUNTIME_RELEASE
     runtime_paths = pinned_runtime_source_paths(state_paths=paths, release=release)
@@ -105,9 +107,13 @@ def _runner_for_materialization(
             os.chmod(target, 0o700)
             shutil.rmtree(target)
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        if "status" in command and status_failure_pending:
-            status_failure_pending = False
-            return subprocess.CompletedProcess(command, 1, stdout="", stderr="failure")
+        if "status" in command:
+            target = Path(command[command.index("-C") + 1])
+            if status_modes is not None:
+                status_modes.append(stat.S_IMODE(target.stat().st_mode))
+            if status_failure_pending:
+                status_failure_pending = False
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="failure")
         if "rev-parse" in command:
             expression = command[-1]
             if expression == "--verify":
@@ -361,6 +367,7 @@ def test_materialization_seals_git_default_staging_mode_before_inspection(
     paths = _state_paths(tmp_path)
     values, _map_source, _pinvi_source = _values(tmp_path)
     calls: list[GitInvocation] = []
+    status_modes: list[int] = []
 
     result = materialize_pinned_runtime_sources(
         release=PINNED_RUNTIME_RELEASE,
@@ -370,11 +377,67 @@ def test_materialization_seals_git_default_staging_mode_before_inspection(
             paths=paths,
             calls=calls,
             staging_mode=0o755,
+            status_modes=status_modes,
         ),
     )
 
     assert stat.S_IMODE(result.source_for("map").root.stat().st_mode) == 0o555
     assert stat.S_IMODE(result.source_for("pinvi").root.stat().st_mode) == 0o555
+    assert status_modes == [0o700, 0o555, 0o700, 0o555]
+
+
+def test_staging_seal_failure_cleans_default_git_mode_and_retry_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _state_paths(tmp_path)
+    values, _map_source, _pinvi_source = _values(tmp_path)
+    calls: list[GitInvocation] = []
+    runner = _runner_for_materialization(
+        paths=paths,
+        calls=calls,
+        staging_mode=0o755,
+    )
+    original_chmod = os.chmod
+    seal_failed = False
+
+    def fail_first_stage_seal(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], mode: int) -> None:
+        nonlocal seal_failed
+        candidate = Path(path)
+        if (
+            not seal_failed
+            and mode == 0o700
+            and candidate.parent.name == "map"
+            and candidate.parent.parent.name == ".staging"
+            and stat.S_IMODE(candidate.stat().st_mode) == 0o755
+        ):
+            seal_failed = True
+            raise OSError("simulated staging seal failure")
+        original_chmod(path, mode)
+
+    monkeypatch.setattr(pinned_runtime_sources.os, "chmod", fail_first_stage_seal)
+
+    with pytest.raises(DeploymentContractError, match="staging worktree cannot be secured"):
+        materialize_pinned_runtime_sources(
+            release=PINNED_RUNTIME_RELEASE,
+            state_paths=paths,
+            values=values,
+            runner=runner,
+        )
+
+    assert seal_failed
+    assert any(
+        "worktree" in command and "remove" in command for command, _kwargs in calls
+    )
+
+    result = materialize_pinned_runtime_sources(
+        release=PINNED_RUNTIME_RELEASE,
+        state_paths=paths,
+        values=values,
+        runner=runner,
+    )
+
+    assert stat.S_IMODE(result.source_for("map").root.stat().st_mode) == 0o555
 
 
 def test_later_staging_failure_is_cleaned_and_same_pinset_retry_succeeds(tmp_path: Path) -> None:
