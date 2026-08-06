@@ -28,6 +28,8 @@ from kor_travel_docker_manager.services.cache_target_backup import (
     list_standalone_database_backups,
     read_database_schema_revision,
     read_pin_boundary_audit,
+    recreate_empty_database,
+    recreate_empty_databases,
     restore_database_backup,
     restore_manager_rollback_bundle,
     restore_standalone_database_backup,
@@ -219,6 +221,96 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
     assert {runtime.container_name for runtime in runtimes} == {
         "postgres-production"
     }
+
+
+def test_recreate_empty_databases_uses_only_frozen_contract_roles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], str]] = []
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        calls.append((arguments, label))
+        return b""
+
+    runtimes = (
+        DatabaseRuntime(
+            role="map_application",
+            container_name="postgres-rehearsal",
+            database_name="map_app",
+            owner_name="map_owner",
+            admin_name="cluster_admin",
+        ),
+        DatabaseRuntime(
+            role="map_dagster",
+            container_name="postgres-rehearsal",
+            database_name="map_dagster",
+            owner_name="map_owner",
+            admin_name="cluster_admin",
+        ),
+        DatabaseRuntime(
+            role="pinvi",
+            container_name="postgres-rehearsal",
+            database_name="pin_app",
+            owner_name="pin_owner",
+            admin_name="cluster_admin",
+        ),
+    )
+    monkeypatch.setattr(
+        backup_service,
+        "_read_database_owner",
+        Mock(side_effect=lambda runtime: runtime.owner_name),
+    )
+    monkeypatch.setattr(backup_service, "_run_checked", Mock(side_effect=run_checked))
+
+    recreate_empty_databases(runtimes)
+
+    assert [label for _, label in calls] == [
+        "map_application database destructive drop",
+        "map_application database destructive create",
+        "map_dagster database destructive drop",
+        "map_dagster database destructive create",
+        "pinvi database destructive drop",
+        "pinvi database destructive create",
+    ]
+    assert [
+        "dropdb" if "dropdb" in arguments else "createdb" for arguments, _ in calls
+    ] == ["dropdb", "createdb", "dropdb", "createdb", "dropdb", "createdb"]
+    assert all("--user" in arguments for arguments, _ in calls)
+    assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
+    assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
+
+
+def test_recreate_empty_database_refuses_foreign_owned_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-rehearsal",
+        database_name="pin_app",
+        owner_name="pin_owner",
+        admin_name="cluster_admin",
+    )
+    runner = Mock()
+    monkeypatch.setattr(backup_service, "_read_database_owner", Mock(return_value="foreign"))
+    monkeypatch.setattr(backup_service, "_run_checked", runner)
+
+    with pytest.raises(DeploymentContractError, match="owner differs"):
+        recreate_empty_database(runtime)
+
+    runner.assert_not_called()
+
+
+def test_recreate_empty_databases_requires_three_canonical_roles() -> None:
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="postgres-rehearsal",
+        database_name="pin_app",
+        owner_name="pin_owner",
+        admin_name="cluster_admin",
+    )
+
+    with pytest.raises(DeploymentContractError, match="runtime roles"):
+        recreate_empty_databases((runtime, runtime, runtime))
 
 
 @pytest.mark.parametrize(

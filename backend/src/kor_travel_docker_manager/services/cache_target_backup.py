@@ -162,6 +162,56 @@ def database_runtimes_from_frozen_contract(
     return runtimes[0], runtimes[1], runtimes[2]
 
 
+def recreate_empty_database(runtime: DatabaseRuntime) -> None:
+    """동결된 runtime이 가리키는 DB 하나를 빈 소유자 DB로 다시 만든다.
+
+    이 함수는 backup·restore 경로를 전혀 읽지 않는다. F1D의 rebuild caller는
+    runtime을 반드시 frozen resolved Compose에서 얻고 모든 writer를 중지한 뒤에만
+    호출한다. 존재하는 DB의 owner가 예상 owner와 다르면, 파기형 환경이라도 다른
+    DB를 삭제할 수 없도록 fail-close 한다.
+    """
+
+    _validate_runtime(runtime)
+    existing_owner = _read_database_owner(runtime)
+    if existing_owner is not None:
+        if existing_owner != runtime.owner_name:
+            raise DeploymentContractError(
+                f"{runtime.role} database owner differs from the frozen contract"
+            )
+        _run_checked(
+            [
+                *_database_admin_command(runtime, "dropdb"),
+                "--force",
+                runtime.database_name,
+            ],
+            label=f"{runtime.role} database destructive drop",
+        )
+    _run_checked(
+        [
+            *_database_admin_command(runtime, "createdb"),
+            "--owner",
+            runtime.owner_name,
+            runtime.database_name,
+        ],
+        label=f"{runtime.role} database destructive create",
+    )
+
+
+def recreate_empty_databases(
+    runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+) -> None:
+    """Map application·Dagster·PinVi DB를 canonical 순서로 함께 비운다."""
+
+    if tuple(runtime.role for runtime in runtimes) != (
+        "map_application",
+        "map_dagster",
+        "pinvi",
+    ):
+        raise DeploymentContractError("destructive database runtime roles are invalid")
+    for runtime in runtimes:
+        recreate_empty_database(runtime)
+
+
 def assert_cutover_backup_space_available(
     *,
     state_directory: Path,
