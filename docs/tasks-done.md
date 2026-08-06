@@ -12,6 +12,23 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+## 2026-08-06 — T-VN-41-F1J Map 소유 cancel-probe fixture lifecycle
+
+- [x] **T-VN-41-F1J — dynamic fixture·정확한 PinVi cancel relay·isolated final verification**
+
+  Map PR #960(F1J-A)은 transaction-scoped cancel-probe fixture를 Map DB에 `armed → consumed → finalized`
+  상태로 소유하고, 전용 `ops:fixture` principal과 exact `409 PIPELINE_CANCELLATION_UNSAFE`를 추가했다.
+  Manager PR #159(F1J-B)는 static UUID와 넓은 성공 집합을 제거하고, fixture ensure·durable receipt·response-loss
+  resume·finalize를 Map canonical state에만 결박했다. PinVi PR #435와 Manager PR #160(F1J-C)은 Map service
+  provenance bytes, migration head, cache-target/C6c capability를 strict preflight pinset으로 수렴했다.
+
+  final F1J-D는 Map #960, PinVi #439, Manager #163 정확한 source에서 새 Compose project·DB·volume·network만
+  생성해 실행했다. `ops:read` 사전 점검은 `200`, Manager smoke의 로그인·ETL·provider-sync는 모두 `200`, cancel은
+  exact `409`이고 durable rerun 결과도 일치했다. 관리자 live UI E2E는 5/5, 새 PinVi DB의 mutating trip
+  WebSocket/reconnect E2E는 1/1 통과했다. 기존 runtime/data, backup/restore는 전혀 사용하지 않았고 모든
+  일회성 container·volume·network·image tag·scratch를 폐기했다. 이 완료는 issue #136의 F1J 보강 범위만 닫으며,
+  상위 F1D bootstrap task의 별도 잔여 조건은 열린 backlog에 유지한다.
+
 ## 2026-08-05 — T-VN-41-F1I F1D fail-close checkpoint 관측성 (issue #136 보강)
 
 - [x] **T-VN-41-F1I — F1D fail-close checkpoint 관측성**

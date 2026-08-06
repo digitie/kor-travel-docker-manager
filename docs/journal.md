@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-06 (T-VN-41-F1J-D — fresh isolated final rehearsal 완료)
+
+Map #960, PinVi #439, Manager #163 정확한 source에서 새 Compose project·DB·volume·network와 매 run 생성한
+credential만 사용해 F1J-D를 끝냈다. PinVi API는 Map API의 private control-network address로만 연결하고
+`ops:read` 사전 점검을 먼저 통과해야 다음 단계로 진행한다. host loopback publish를 다른 bridge에서
+우회하지 않으며, admin proxy credential을 ops principal 경계에 보내지 않는다.
+
+Map/PinVi health와 fresh migration 뒤 direct ops read는 `200`이었다. Manager canonical smoke의 login·ETL·
+provider-sync는 `200`, cancel은 exact `409 PIPELINE_CANCELLATION_UNSAFE`, durable resume 결과는 동일했다.
+관리자 live UI Playwright는 5/5, 새 PinVi DB의 mutating trip WebSocket/reconnect E2E는 1/1 통과했다. 기존
+runtime/data/backup/restore는 사용하지 않았고, exit cleanup은 root 소유 Playwright dependency까지 일회성
+scratch·container·volume·network·image tag를 폐기했다. F1J 보강은 완료로 이관하며, 별도 F1D bootstrap issue는
+완료로 오인해 닫지 않는다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1J-D — live trip E2E revision 재결박)
 
 새 isolated schema에서 Map ops read와 관리자 live UI는 통과했지만, mutating trip E2E 하나가
