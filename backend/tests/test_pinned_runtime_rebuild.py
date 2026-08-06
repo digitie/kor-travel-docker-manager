@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -182,6 +183,41 @@ def test_rebuild_compose_error_names_the_failed_action(
     with pytest.raises(
         DeploymentContractError,
         match=r"Compose run command failed \(exit 23; dagster_instance_migrate_failed\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "kor-travel-map-dagster-storage-migrate"],
+            transaction=object(),
+        )
+
+    assert secret not in str(captured.value)
+
+
+def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    secret = "test-malformed-diagnostic-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 23,
+                "stdout": secret,
+                "stderr": json.dumps(
+                    {
+                        "code": ["dagster_instance_migrate_failed"],
+                        "schema": "kor-travel-map.dagster-storage-migration-error.v1",
+                    }
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose run command failed \(exit 23\)",
     ) as captured:
         service._run_pinned_runtime_rebuild_compose(
             ["run", "kor-travel-map-dagster-storage-migrate"],

@@ -3334,14 +3334,16 @@ class ComposeService:
                     payload = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                code = payload.get("code") if isinstance(payload, Mapping) else None
                 if (
                     not isinstance(payload, Mapping)
                     or set(payload) != {"code", "schema"}
                     or payload.get("schema") != _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
-                    or payload.get("code") not in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
+                    or not isinstance(code, str)
+                    or code not in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
                 ):
                     continue
-                return f"; {payload['code']}"
+                return f"; {code}"
         return ""
 
     def _retire_pinned_runtime_oneshot_writers(
