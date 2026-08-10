@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-11 (백로그 상태 정리 — F1D-D 수용 검증 범위 명확화)
+
+원격 `main`의 최신 F1D v5 상태를 기준으로, 진행 표의 유일한 미완료 항목을
+`T-VN-41-F1D-D`로 명확히 했다. 2026-08-06 C3 파기형 재구성과 7개 실행 컨테이너·스키마·fixture,
+로그인 및 데이터 비의존 관리자 UI smoke는 완료됐다.
+
+남은 범위는 Manager의 추가 세대 변경이 아니다. 최종 스키마에 맞춘 원천/ETL 재적재는
+별도 작업 흐름으로 인계하며, 재적재 뒤 고정 curated/feature ID를 전제하는 관리자 UI 상세·지도
+표 landmark E2E와 PinVi 변경 E2E를 다시 실행해 결과를 기록한다. 이 수용 검증이 통과하면
+F1D-D를 완료 이력으로 이관한다.
+
+---
+
 ## 2026-08-06 (T-VN-41-F1D-C3 — n150 파기형 rebuild 실증)
 
 최신 Map typed-subtype pin으로 n150에서 `rebuild-pinned --confirm`을 실행해 새 generation을 `committed`로

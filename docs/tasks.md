@@ -22,7 +22,7 @@
 |:---|:---|:---:|:---:|:---|
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[x]` | 2026-08-04 | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부. Manager 측 완료, issue #109 종료 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
-| **T-VN-41-F1D** | 파기형 pinned runtime generation 재bootstrap (issue #136) | `[/]` | - | 비운영 Map·PinVi DB와 stale state를 보전하지 않고 tracked exact generation·새 schema로 수렴 |
+| **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
 
 ---
 
@@ -943,16 +943,20 @@ F1D의 n150 static preflight는 의도대로 mutation 전에 중단했다. live 
 SHA-256이다. functional owner와 reviewed candidate는 v1 history에만 남으며 v2 manifest, canonical env,
 PinVi metadata, candidate authority 어느 곳에도 존재하지 않는다.
 
-### T-VN-41-F1D: 파기형 pinned runtime generation 재bootstrap (issue #136)
+### T-VN-41-F1D-D: 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136)
 
 n150은 운영 서비스가 아니므로, old manifest·non-terminal F1D journal·중간 DB schema를 복구
 근거로 보전하지 않는다. 과거 다섯 service compatible pair는 PinVi Web·Dagster를 제외해 실제
 runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계는
 [`tvn41-f1d-destructive-rebootstrap.md`](tvn41-f1d-destructive-rebootstrap.md)다.
 
-- [/] **F1D-D (docs-only PR)** — C3가 결선된 n150 새 schema rebuild와 final schema head를 검증하고 관리자 live UI
-      E2E·PinVi mutating E2E 결과를 기록한다. 2026-08-06 파기형 rebuild는 committed했고 Map application
+- [x] **C3 runtime 결선** — 2026-08-06 n150 파기형 rebuild가 `committed`했고, Map application
       `0087_route_area_subtypes`, Map Dagster `29b539ebc72a`, PinVi `20260804_0049`와 v7 fixture
-      `finalized`/exact `409 PIPELINE_CANCELLATION_UNSAFE`까지 확인했다. 로그인과 data-independent live UI
-      smoke는 통과했으나, 비어 있는 새 DB에서 고정 curated/feature ID를 전제한 기존 suite는 ETL 재적재 뒤 별도
-      acceptance로 재실행한다. data source/ETL 재적재는 이 transaction 뒤의 별도 작업으로 handoff한다.
+      `finalized`/exact `409 PIPELINE_CANCELLATION_UNSAFE`까지 확인했다. 로그인과 data-independent
+      관리자 live UI smoke도 통과했다.
+- [ ] **원천/ETL 재적재 인계** — 새 DB가 의도적으로 비어 있으므로 최종 스키마에 맞춘 원천/ETL
+      재적재는 이 Manager transaction 밖의 별도 작업 흐름이 수행한다. 이 저장소는 샘플 데이터·백업·복원·
+      데이터 이전을 수행하지 않는다.
+- [ ] **데이터 의존 수용 검증 기록** — 재적재가 끝난 뒤 고정 curated/feature ID를 전제하는 관리자 UI
+      상세·지도 표 landmark E2E와 PinVi 변경 E2E를 다시 실행해 결과를 기록한다. 모두 통과하면
+      F1D-D를 완료 이력으로 이관한다.
