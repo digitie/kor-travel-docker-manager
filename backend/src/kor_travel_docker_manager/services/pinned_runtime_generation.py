@@ -445,7 +445,7 @@ class PinnedRuntimeCancelProbeReceipt:
         _validate_canonical_uuid(self.job_id, "pinned runtime cancel probe job ID")
         if self.fixture_created_at is None:
             raise DeploymentContractError("pinned runtime cancel probe has no creation timestamp")
-        _validate_utc_timestamp(
+        created_at = _parse_utc_timestamp(
             self.fixture_created_at,
             "pinned runtime cancel probe creation timestamp",
         )
@@ -466,20 +466,24 @@ class PinnedRuntimeCancelProbeReceipt:
             raise DeploymentContractError("consumed cancel probe receipt has no outcome")
         if self.fixture_consumed_at is None:
             raise DeploymentContractError("pinned runtime cancel probe has no consumption timestamp")
-        _validate_utc_timestamp(
+        consumed_at = _parse_utc_timestamp(
             self.fixture_consumed_at,
             "pinned runtime cancel probe consumption timestamp",
         )
+        if consumed_at < created_at:
+            raise DeploymentContractError("pinned runtime cancel probe timestamp order is invalid")
         if self.stage in {"consumed", "finalize_post_attempted"}:
             if self.fixture_finalized_at is not None:
                 raise DeploymentContractError("consumed cancel probe receipt has finalization evidence")
             return
         if self.fixture_finalized_at is None:
             raise DeploymentContractError("pinned runtime cancel probe has no finalization timestamp")
-        _validate_utc_timestamp(
+        finalized_at = _parse_utc_timestamp(
             self.fixture_finalized_at,
             "pinned runtime cancel probe finalization timestamp",
         )
+        if finalized_at < consumed_at:
+            raise DeploymentContractError("pinned runtime cancel probe timestamp order is invalid")
 
     def transition(
         self,
@@ -929,13 +933,18 @@ def retire_f1d_legacy_artifacts(
     return receipt
 
 
-def _validate_utc_timestamp(value: str, label: str) -> None:
+def _parse_utc_timestamp(value: str, label: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise DeploymentContractError(f"{label} is invalid") from exc
     if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
         raise DeploymentContractError(f"{label} is invalid")
+    return parsed
+
+
+def _validate_utc_timestamp(value: str, label: str) -> None:
+    _parse_utc_timestamp(value, label)
 
 
 def _validate_canonical_uuid(value: object, label: str) -> None:
