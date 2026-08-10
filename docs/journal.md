@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-11 (T-VN-41-F1D — Map dataset triple consumer 계약 보정)
+
+Manager C6c smoke가 Map dataset grid의 폐기된 provider/dataset pair detail URL을 요구해,
+현재 Map의 `provider_dataset_id × sync_scope × operation_key` membership을 정상 응답이어도
+거부하던 결함을 제거했다. Manager는 exact detail URL, operation별 실행 member, catalog-only
+null operation을 fail-close로 검증한다. fixture receipt도 `created_at ≤ consumed_at ≤ finalized_at`
+순서를 강제해 오래된 receipt가 새 runtime generation 증거로 섞이지 않게 했다.
+
+이 변경은 F1D-D의 원천/ETL 재적재 및 data-dependent n150 인수를 완료 처리하지 않는다. PinVi
+projection도 같은 contract로 동시 정렬하고, 양쪽 적대적 재리뷰와 n150 Playwright gate 뒤에만
+수용 기록을 갱신한다.
+
+---
+
 ## 2026-08-11 (백로그 상태 정리 — F1D-D 수용 검증 범위 명확화)
 
 원격 `main`의 최신 F1D v5 상태를 기준으로, 진행 표의 유일한 미완료 항목을

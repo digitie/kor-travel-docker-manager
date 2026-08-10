@@ -2262,6 +2262,19 @@ def _parse_c6c_cancel_probe_fixture(
         )
     ):
         raise DeploymentContractError("C6c fixture lifecycle state is invalid")
+    created_at = _parse_iso8601_datetime(fixture.get("created_at"))
+    consumed_at_value = _parse_iso8601_datetime(consumed_at)
+    finalized_at_value = _parse_iso8601_datetime(finalized_at)
+    if (
+        created_at is None
+        or (consumed_at_value is not None and consumed_at_value < created_at)
+        or (
+            consumed_at_value is not None
+            and finalized_at_value is not None
+            and finalized_at_value < consumed_at_value
+        )
+    ):
+        raise DeploymentContractError("C6c fixture lifecycle timestamp order is invalid")
     outcome = _parse_c6c_canonical_unsafe_outcome(
         fixture.get("canonical_unsafe_outcome"),
         job_id=str(fixture["job_id"]),
@@ -3352,35 +3365,70 @@ def _is_canonical_sync_scope(value: Any) -> bool:
     )
 
 
+def _map_dataset_detail_url(
+    provider_dataset_id: int,
+    sync_scope: str,
+    operation_key: str | None,
+) -> str:
+    """Map의 dataset membership triple을 lossless detail URL로 표현한다.
+
+    catalog-only 행만 ``operation_key``가 null이다. 그 외에는 같은
+    ``provider_dataset_id × sync_scope`` 형제 operation을 절대 pair로 접지 않는다.
+    """
+
+    return (
+        f"/v1/ops/datasets/{provider_dataset_id}?"
+        + urlencode(
+            {
+                "sync_scope": sync_scope,
+                **({"operation_key": operation_key} if operation_key is not None else {}),
+            },
+            quote_via=quote,
+        )
+    )
+
+
+def _validate_map_dataset_identity(value: Mapping[str, Any]) -> bool:
+    provider_dataset_id = value.get("provider_dataset_id")
+    sync_scope = value.get("sync_scope")
+    operation_key = value.get("operation_key")
+    if (
+        type(provider_dataset_id) is not int
+        or provider_dataset_id <= 0
+        or not isinstance(sync_scope, str)
+        or not _is_canonical_sync_scope(sync_scope)
+        or (
+            operation_key is not None
+            and (not isinstance(operation_key, str) or not operation_key)
+        )
+    ):
+        return False
+    return value.get("detail_url") == _map_dataset_detail_url(
+        provider_dataset_id,
+        sync_scope,
+        operation_key,
+    )
+
+
 def _validate_map_dataset_row(value: Any) -> bool:
     if not isinstance(value, Mapping):
         return False
     provider = value.get("provider")
     dataset_key = value.get("dataset_key")
     sync_scope = value.get("sync_scope")
+    provider_dataset_id = value.get("provider_dataset_id")
+    operation_key = value.get("operation_key")
     freshness = value.get("freshness")
     schedule = value.get("schedule")
     dataset_issues = value.get("dataset_issues")
     provider_issues = value.get("provider_issues")
     catalog_state = value.get("catalog_state")
-    expected_detail_url = (
-        "/v1/ops/datasets/detail?"
-        + urlencode(
-            {
-                "provider": provider,
-                "dataset_key": dataset_key,
-                "sync_scope": sync_scope,
-            },
-            quote_via=quote,
-        )
-    )
     return (
         all(
             isinstance(value.get(field), str) and bool(value[field])
-            for field in ("provider", "dataset_key", "detail_url")
+            for field in ("provider", "dataset_key")
         )
-        and value.get("detail_url") == expected_detail_url
-        and _is_canonical_sync_scope(sync_scope)
+        and _validate_map_dataset_identity(value)
         and value.get("status") in _PROVIDER_SYNC_STATUSES
         and all(
             _is_nullable_iso8601(value.get(field))
@@ -3393,14 +3441,18 @@ def _validate_map_dataset_row(value: Any) -> bool:
             value.get("latest_execution"),
             provider=provider,
             dataset_key=dataset_key,
+            provider_dataset_id=provider_dataset_id,
             sync_scope=sync_scope,
+            operation_key=operation_key,
             active=False,
         )
         and _validate_dataset_execution(
             value.get("active_execution"),
             provider=provider,
             dataset_key=dataset_key,
+            provider_dataset_id=provider_dataset_id,
             sync_scope=sync_scope,
+            operation_key=operation_key,
             active=True,
         )
         and catalog_state in {"canonical", "orphan"}
@@ -3435,9 +3487,13 @@ def _validate_dataset_execution(
     *,
     provider: Any,
     dataset_key: Any,
+    provider_dataset_id: Any,
     sync_scope: Any,
+    operation_key: Any,
     active: bool,
 ) -> bool:
+    if operation_key is None:
+        return value is None
     if value is None:
         return True
     if not isinstance(value, Mapping):
@@ -3446,6 +3502,7 @@ def _validate_dataset_execution(
     execution_id = value.get("id")
     operation_member_id = value.get("operation_member_id")
     execution_scope = value.get("sync_scope")
+    execution_operation_key = value.get("operation_key")
     provider_datasets = value.get("provider_datasets")
     providers = value.get("providers")
     dataset_keys = value.get("dataset_keys")
@@ -3457,9 +3514,8 @@ def _validate_dataset_execution(
         or value.get("status") not in _OPERATION_STATES
         or value.get("pair_status") not in _OPERATION_STATES
         or not _is_uuid(operation_member_id)
-        or not (
-            execution_scope is None or _is_canonical_sync_scope(execution_scope)
-        )
+        or not _is_canonical_sync_scope(execution_scope)
+        or execution_operation_key != operation_key
         or not isinstance(providers, list)
         or not all(isinstance(item, str) and bool(item) for item in providers)
         or not isinstance(dataset_keys, list)
@@ -3488,7 +3544,11 @@ def _validate_dataset_execution(
     ):
         return False
     member_keys = [
-        (item["provider"], item["dataset_key"])
+        (
+            item["provider_dataset_id"],
+            item["sync_scope"],
+            item["operation_key"],
+        )
         for item in provider_datasets
         if isinstance(item, Mapping)
     ]
@@ -3498,11 +3558,11 @@ def _validate_dataset_execution(
         if isinstance(item, Mapping)
         and item.get("provider") == provider
         and item.get("dataset_key") == dataset_key
+        and item.get("provider_dataset_id") == provider_dataset_id
+        and item.get("sync_scope") == sync_scope
+        and item.get("operation_key") == operation_key
         and item.get("operation_member_id") == operation_member_id
     ]
-    logical_scope_matches = execution_scope == sync_scope or (
-        sync_scope == "dataset_wide" and execution_scope is None
-    )
     allowed_pair_states = {"queued", "running"} if active else {
         "done",
         "failed",
@@ -3510,11 +3570,15 @@ def _validate_dataset_execution(
     }
     return (
         len(member_keys) == len(set(member_keys))
-        and set(providers) == {item[0] for item in member_keys}
-        and set(dataset_keys) == {item[1] for item in member_keys}
+        and set(providers) == {
+            item["provider"] for item in provider_datasets if isinstance(item, Mapping)
+        }
+        and set(dataset_keys) == {
+            item["dataset_key"] for item in provider_datasets if isinstance(item, Mapping)
+        }
         and len(matching_members) == 1
-        and logical_scope_matches
-        and matching_members[0].get("sync_scope") == execution_scope
+        and execution_scope == sync_scope
+        and matching_members[0].get("sync_scope") == sync_scope
         and matching_members[0].get("status") == value.get("pair_status")
         and value.get("pair_status") in allowed_pair_states
     )
@@ -3525,12 +3589,11 @@ def _validate_dataset_provider_identity(value: Any) -> bool:
         isinstance(value, Mapping)
         and all(
             isinstance(value.get(field), str) and bool(value[field])
-            for field in ("provider", "dataset_key")
+            for field in ("provider", "dataset_key", "sync_scope", "operation_key")
         )
-        and (
-            value.get("sync_scope") is None
-            or _is_canonical_sync_scope(value.get("sync_scope"))
-        )
+        and type(value.get("provider_dataset_id")) is int
+        and value["provider_dataset_id"] > 0
+        and _is_canonical_sync_scope(value.get("sync_scope"))
         and _is_uuid(value.get("operation_member_id"))
         and value.get("status") in _OPERATION_STATES
     )

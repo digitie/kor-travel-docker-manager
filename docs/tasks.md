@@ -954,6 +954,10 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       `0087_route_area_subtypes`, Map Dagster `29b539ebc72a`, PinVi `20260804_0049`와 v7 fixture
       `finalized`/exact `409 PIPELINE_CANCELLATION_UNSAFE`까지 확인했다. 로그인과 data-independent
       관리자 live UI smoke도 통과했다.
+- [x] **Map ops membership consumer 정렬** — C6c smoke와 PinVi projection이 legacy
+      provider/dataset pair가 아니라 `provider_dataset_id × sync_scope × operation_key`와 exact
+      detail URL을 검증한다. catalog-only null operation, sibling operation 혼동, fixture lifecycle
+      timestamp 역전은 모두 mutation 전 fail-close한다.
 - [ ] **원천/ETL 재적재 인계** — 새 DB가 의도적으로 비어 있으므로 최종 스키마에 맞춘 원천/ETL
       재적재는 이 Manager transaction 밖의 별도 작업 흐름이 수행한다. 이 저장소는 샘플 데이터·백업·복원·
       데이터 이전을 수행하지 않는다.

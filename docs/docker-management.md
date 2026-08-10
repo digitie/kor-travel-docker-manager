@@ -329,6 +329,13 @@ PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회,
 `POST /v1/ops/pipeline/executions/import_job/{job_id}/cancel`만 사용한다. 브라우저 BFF secret,
 public service token, trusted CIDR을 재사용하지 않는다.
 
+Map dataset grid의 행 identity는 provider/dataset display pair가 아니라
+`provider_dataset_id × sync_scope × operation_key`다. Manager와 PinVi는
+`/v1/ops/datasets/{provider_dataset_id}?sync_scope=...&operation_key=...`를 exact membership
+detail URL로 검증하며, refresh operation이 없는 catalog-only 행의 null `operation_key`만 query에서
+생략한다. 따라서 같은 dataset의 형제 operation을 한 행으로 접거나 legacy
+`/v1/ops/datasets/detail?provider=...&dataset_key=...` URL을 허용하지 않는다.
+
 Map API의 production fail-closed 설정은 ops pair만으로 완결되지 않는다. ADR-23에 따라 manager
 `.env`는 admin proxy secret, API-only service token, API-only cursor signing secret도 서로 다른
 값으로 보관한다. admin proxy secret은 Map API와 Map UI BFF에만 전달하고 service/cursor 값은 Map
