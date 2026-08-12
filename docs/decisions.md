@@ -1841,8 +1841,9 @@ resume은 checkpoint와 무관하게 DB reset과 두 Map bootstrap one-shot을 �
 
 전용 PostgreSQL의 초기 superuser password는 long-lived container의 `Config.Env`에 넣지 않는다.
 Compose secret file `POSTGRES_PASSWORD_FILE`로만 초기화 entrypoint에 전달하며, Docker inspect에는 secret
-reference만 남고 password/DSN 원문은 남지 않는다. bootstrap one-shot만 같은 credential을 포함한 DSN을
-받고 `--rm`으로 종료한다.
+reference만 남고 password/DSN 원문은 남지 않는다. 이 secret alias는 PostgreSQL entrypoint의 정확한
+mount 한 곳에서만 소비할 수 있으며 API·Dagster·PinVi 또는 one-shot의 추가 mount는 raw/resolved Compose
+검증에서 fail-close한다. bootstrap one-shot만 같은 credential을 포함한 DSN을 받고 `--rm`으로 종료한다.
 
 새 Map image 및 PinVi compatibility artifact는 upstream에서 merge된 exact revision만
 `PINNED_RUNTIME_RELEASE`에 반영한다. draft source SHA나 `latest-main` tag는 production/rehearsal authority가

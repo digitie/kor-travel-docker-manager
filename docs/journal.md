@@ -17,7 +17,8 @@
   armed 이후 durable fixture resume에서 재검사하지 않으며, `PUBLIC` relation/default ACL은 bootstrap invariant
   위반으로 거부한다.
 - 전용 PostgreSQL initial superuser password는 `POSTGRES_PASSWORD_FILE` Docker secret으로 이동했다. disposable
-  Compose rehearsal에서 PostgreSQL 기동·secret file 인증·`docker inspect Config.Env`의 password 부재를 확인했다.
+  Compose rehearsal에서 PostgreSQL 기동·secret file 인증·`docker inspect Config.Env`의 password 부재를 확인했고,
+  raw/resolved Compose는 해당 secret을 PostgreSQL entrypoint 외 service가 mount하면 거부한다.
 - targeted 회귀 149개와 disposable PostgreSQL 16 catalog rehearsal을 통과했다. upstream exact Map/PinVi pair가
   아직 없으므로 n150 live E2E와 Manager merge는 계속 보류한다.
 

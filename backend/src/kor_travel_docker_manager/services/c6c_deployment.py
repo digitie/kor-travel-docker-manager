@@ -557,7 +557,7 @@ def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
 
 
 def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
-    """전용 PostgreSQL admin password가 long-lived Env에 없는지 고정한다."""
+    """전용 PostgreSQL admin password의 유일한 소비자를 고정한다."""
 
     secrets = document.get("secrets")
     if not isinstance(secrets, Mapping):
@@ -587,6 +587,37 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
         _MAP_POSTGRES_PASSWORD_SECRET
     ) or reference.get("target") != _MAP_POSTGRES_PASSWORD_SECRET:
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+
+    # Compose secret file은 값이 Config.Env에 드러나지 않아도 mount한 container는
+    # 읽을 수 있다. 따라서 initial superuser credential은 PostgreSQL entrypoint의
+    # exact target 한 곳만 소비할 수 있고, API/Dagster/PinVi one-shot을 포함한
+    # 다른 service의 alias reference는 mutation 전에 거부한다.
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
+            raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+        candidate_references = service.get("secrets")
+        if candidate_references is None:
+            continue
+        if not isinstance(candidate_references, list):
+            raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+        for candidate_reference in candidate_references:
+            if isinstance(candidate_reference, str):
+                source_name = candidate_reference
+            elif isinstance(candidate_reference, Mapping):
+                source_name = candidate_reference.get("source")
+            else:
+                raise ComposeCandidateContractError(
+                    "Map PostgreSQL password secret is invalid"
+                )
+            if source_name != _MAP_POSTGRES_PASSWORD_SECRET:
+                continue
+            if (
+                service_name != _MAP_POSTGRES_SERVICE
+                or candidate_reference != reference
+            ):
+                raise ComposeCandidateContractError(
+                    "Map PostgreSQL password secret has an unauthorized consumer"
+                )
 
 
 _C6C_RUNTIME_IDENTIFIERS = frozenset(
