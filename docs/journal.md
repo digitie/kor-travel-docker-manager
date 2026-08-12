@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-08-13 — Hallmark 운영 콘솔 전면 재설계
+
+- Hallmark v1.1.0을 적용해 현재 frontend를 감사했다. 과거 BMW M 기록과 실제 운영 콘솔 사이의
+  디자인 정본 불일치, 동일 KPI 카드 반복, modal blur/중첩 카드, 모바일 가로 스크롤 표, 토큰을 우회한
+  Recharts 색상, `transition-all`을 critical 1·major 5·minor 1로 기록했다.
+- `DESIGN.md`를 Kor Travel 운영 콘솔 정본으로 교체하고 `frontend/tokens.css`에 Cobalt 색상·서체·간격·
+  radius·motion 토큰을 분리했다. display는 Space Grotesk, 본문은 IBM Plex Sans, 데이터는 IBM Plex Mono를
+  사용한다. Hallmark 실행 메타데이터는 `.hallmark/log.json`에 남겼다.
+- 대시보드는 Workbench 구조로 바꿨다. 네 개의 같은 KPI 카드는 하나의 상태 원장과 graphite 동기화 신호면으로
+  합쳤고, `⌘/Ctrl + K` 인라인 명령 팔레트는 인증 설정·백업 이력·상태 새로고침·로그아웃을 실제로 실행한다.
+  서비스 표는 768px 이하에서 셀 레이블이 있는 행 카드로 전환해 가로 스크롤에 의존하지 않는다.
+- 로그인, 오류 화면, inspect·로그·차트·구성 변경·백업·인증 설정 패널을 같은 Cobalt 표면과 `ops-*` 상호작용
+  상태로 수렴했다. 차트는 색상·tooltip·서체를 토큰으로만 참조하고, backdrop blur와 `transition-all`을 제거했다.
+- `npm run type-check`와 `npm run lint`를 통과했다. `npm run build`는 이 worktree에서 Next.js 최적화 단계가
+  120초 안에 끝나지 않아 시간 제한으로 중단했으며, PR CI에서 다시 확인한다. upstream exact Map/PinVi pair
+  부재로 #171의 n150 live E2E와 merge gate는 계속 보류한다.
+
+---
+
 ## 2026-08-12 — #171 전용 Map PostgreSQL P0 재검토 보강
 
 - 2인의 적대적 재검토에서 발견된 P0를 반영했다. 장기 실행 Dagster의 metadata DSN을 전용 non-superuser

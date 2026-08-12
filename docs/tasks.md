@@ -23,7 +23,7 @@
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[x]` | 2026-08-04 | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부. Manager 측 완료, issue #109 종료 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
-| **#171** | Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포 | `[/]` | - | 전용 Map DB/F1D bootstrap 구현 및 upstream exact pair 대기 |
+| **#171** | Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포 | `[/]` | - | 전용 Map DB/F1D bootstrap 구현, Hallmark 운영 콘솔 재설계 반영 및 upstream exact pair 대기 |
 
 ---
 
@@ -977,3 +977,6 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       container의 `Config.Env`도 다시 검사한다.
 - [ ] Map release와 PinVi compatible pair가 merge된 exact revision으로 갱신된 뒤 n150 `rehearsal/rebuildable`
       live E2E를 실행한다. fresh data 재적재가 필요한 data-dependent 검증은 T-VN-41-F1D-D로 분리한다.
+- [x] Hallmark audit의 critical 1·major 5·minor 1 개선을 반영했다. Cobalt 토큰과 Workbench 원장 구조를
+      `DESIGN.md`·`frontend/tokens.css`·모든 운영 UI에 적용했고, 768px 이하에서는 서비스·백업 표를
+      레이블형 행으로 전환했다. 이 변경은 #171의 deployment authority나 live E2E gate를 변경하지 않는다.

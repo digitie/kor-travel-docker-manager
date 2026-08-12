@@ -28,7 +28,7 @@ const IS_DEV = process.env.NODE_ENV !== 'production';
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[minmax(7rem,auto)_1fr] gap-3 py-1.5 border-b border-line/50 last:border-b-0">
+    <div className="grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)] gap-3 py-1.5 border-b border-line/50 last:border-b-0">
       <dt className="text-secondary text-[11px] uppercase tracking-[0.04em] pt-0.5">{label}</dt>
       <dd className="text-ink break-all">{value ?? <span className="text-secondary">—</span>}</dd>
     </div>
@@ -120,15 +120,15 @@ export default function ContainerDetailModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4">
+    <div className="ops-modal-backdrop">
       <div
         aria-label={`${containerLabel} 상세 정보`}
         aria-modal="true"
         role="dialog"
-        className="bg-card border border-line rounded-card w-full max-w-3xl shadow-modal relative flex flex-col max-h-[90vh]"
+        className="ops-modal max-w-3xl relative flex flex-col"
       >
-        <div className="flex justify-between items-center p-6 pb-4 border-b border-line shrink-0">
-          <h3 className="text-sm font-semibold tracking-[0.05em] flex items-center gap-2 text-strong uppercase">
+        <div className="ops-modal__header shrink-0">
+          <h3 className="text-sm font-semibold flex items-center gap-2 text-strong">
             <Boxes className="w-4 h-4 text-brand" />
             <span className="break-all">{containerLabel}</span>
           </h3>
@@ -137,7 +137,7 @@ export default function ContainerDetailModal({
             type="button"
             aria-label="닫기"
             onClick={onClose}
-            className="text-secondary hover:text-strong p-1.5 rounded-full hover:bg-elevated transition-all shrink-0"
+            className="ops-icon-button"
           >
             <X className="w-5 h-5" />
           </button>
@@ -147,7 +147,7 @@ export default function ContainerDetailModal({
         <div
           role="tablist"
           aria-label="상세 정보 분류"
-          className="flex gap-1 px-6 pt-3 border-b border-line overflow-x-auto scrollbar-thin shrink-0"
+          className="grid grid-cols-2 sm:flex gap-1 px-6 pt-3 border-b border-line shrink-0"
         >
           {TABS.map(({ id, label, Icon }) => (
             <button
@@ -176,7 +176,7 @@ export default function ContainerDetailModal({
                 document.getElementById(`container-detail-tab-${TABS[next].id}`)?.focus();
               }}
               onClick={() => setTab(id)}
-              className={`flex items-center gap-1.5 px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors ${
+              className={`flex items-center justify-center gap-1.5 px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors ${
                 tab === id
                   ? 'border-brand text-strong font-semibold'
                   : 'border-transparent text-secondary hover:text-ink'
@@ -235,13 +235,13 @@ export default function ContainerDetailModal({
             mounts.length === 0 ? (
               <EmptyState>마운트가 없습니다.</EmptyState>
             ) : (
-              <div className="overflow-x-auto scrollbar-thin">
-                <table className="w-full text-left min-w-[34rem]">
+              <div>
+                <table className="w-full table-fixed text-left">
                   <thead className="text-secondary text-[11px] uppercase tracking-[0.04em]">
                     <tr>
-                      <th className="py-1.5 pr-3 font-medium">type</th>
-                      <th className="py-1.5 pr-3 font-medium">source</th>
-                      <th className="py-1.5 pr-3 font-medium">destination</th>
+                      <th className="py-1.5 pr-3 font-medium break-all">type</th>
+                      <th className="py-1.5 pr-3 font-medium break-all">source</th>
+                      <th className="py-1.5 pr-3 font-medium break-all">destination</th>
                       <th className="py-1.5 font-medium">mode</th>
                     </tr>
                   </thead>
@@ -329,7 +329,7 @@ export default function ContainerDetailModal({
                     const key = idx === -1 ? pair : pair.slice(0, idx);
                     const value = idx === -1 ? '' : pair.slice(idx + 1);
                     return (
-                      <li key={`${key}-${i}`} className="grid grid-cols-[minmax(9rem,auto)_1fr] gap-3 border-b border-line/50 py-1">
+                      <li key={`${key}-${i}`} className="grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)] gap-3 border-b border-line/50 py-1">
                         <span className="text-secondary break-all">{key}</span>
                         <span className="text-ink break-all">{value || '—'}</span>
                       </li>
@@ -347,7 +347,7 @@ export default function ContainerDetailModal({
               type="button"
               onClick={runEnsure}
               disabled={ensureState === 'running'}
-              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[36px] px-3 text-xs inline-flex items-center gap-1.5 transition-all disabled:opacity-50"
+              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[36px] px-3 text-xs inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
               title={`${targetId} target의 depends_on 폐포 전체를 docker compose up -d --build로 재생성한다`}
             >
               <Hammer className="w-3.5 h-3.5" />

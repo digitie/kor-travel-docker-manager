@@ -58,12 +58,12 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     <div
       aria-labelledby="backup-history-title"
       aria-modal="true"
-      className="bg-card border border-line rounded-card w-full max-w-5xl shadow-modal max-h-[88vh] overflow-hidden flex flex-col outline-hidden"
+      className="ops-modal max-w-5xl flex flex-col outline-hidden"
       ref={dialogRef}
       role="dialog"
       tabIndex={-1}
     >
-      <div className="flex items-center justify-between border-b border-line px-6 py-4">
+      <div className="ops-modal__header">
         <div>
           <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
             Backup History
@@ -76,7 +76,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
           </p>
         </div>
         <button
-          className="text-secondary hover:text-strong p-2 rounded-card hover:bg-subtle"
+          className="ops-icon-button"
           onClick={onClose}
           type="button"
         >
@@ -91,8 +91,8 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
               <button
                 className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
                   role === option.value
-                    ? 'bg-brand text-white border-brand'
-                    : 'bg-card border-line text-ink hover:bg-subtle'
+                    ? 'ops-button ops-button--primary'
+                    : 'ops-button'
                 }`}
                 key={option.value}
                 onClick={() => setRole(option.value)}
@@ -103,7 +103,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             ))}
           </div>
           <button
-            className="inline-flex items-center gap-2 min-h-[36px] bg-card border border-line text-ink rounded-card px-3 text-xs font-semibold disabled:opacity-60"
+            className="ops-button"
             disabled={isFetching}
             onClick={() => void refetch()}
             type="button"
@@ -125,16 +125,16 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             <p className="text-sm">저장된 백업이 없습니다.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto border border-line rounded-card">
-            <table className="w-full text-sm">
+          <div className="border-t border-line pt-2">
+            <table className="ops-archive-table w-full table-fixed text-sm">
               <thead className="bg-subtle text-xs text-secondary uppercase tracking-[0.05em]">
                 <tr>
-                  <th className="text-left py-2 px-3 font-semibold">생성 시각</th>
-                  <th className="text-left py-2 px-3 font-semibold">역할</th>
-                  <th className="text-left py-2 px-3 font-semibold">스키마 리비전</th>
-                  <th className="text-left py-2 px-3 font-semibold">크기</th>
-                  <th className="text-left py-2 px-3 font-semibold">SHA-256</th>
-                  <th className="text-left py-2 px-3 font-semibold">파일명</th>
+                  <th className="text-left py-2 px-3 font-semibold break-all">생성 시각</th>
+                  <th className="text-left py-2 px-3 font-semibold break-all">역할</th>
+                  <th className="text-left py-2 px-3 font-semibold break-all">스키마 리비전</th>
+                  <th className="text-left py-2 px-3 font-semibold break-all">크기</th>
+                  <th className="text-left py-2 px-3 font-semibold break-all">SHA-256</th>
+                  <th className="text-left py-2 px-3 font-semibold break-all">파일명</th>
                 </tr>
               </thead>
               <tbody>
@@ -143,22 +143,24 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
                     className="border-t border-line"
                     key={`${backup.role}-${backup.backup_filename}`}
                   >
-                    <td className="py-2 px-3 text-ink whitespace-nowrap">
+                    <td data-label="생성 시각" className="py-2 px-3 text-ink break-all">
                       {formatTimestamp(backup.created_at_unix)}
                     </td>
-                    <td className="py-2 px-3 text-ink font-mono">{backup.role}</td>
-                    <td className="py-2 px-3 text-ink font-mono">{backup.schema_revision}</td>
-                    <td className="py-2 px-3 text-ink whitespace-nowrap">
+                    <td data-label="역할" className="py-2 px-3 text-ink font-mono">{backup.role}</td>
+                    <td data-label="스키마 리비전" className="py-2 px-3 text-ink font-mono">{backup.schema_revision}</td>
+                    <td data-label="크기" className="py-2 px-3 text-ink break-all">
                       {formatBytes(backup.byte_size)}
                     </td>
                     <td
-                      className="py-2 px-3 text-secondary font-mono text-xs truncate max-w-[10rem]"
+                      className="py-2 px-3 text-secondary font-mono text-xs break-all"
+                      data-label="SHA-256"
                       title={backup.sha256}
                     >
                       {backup.sha256.slice(0, 12)}…
                     </td>
                     <td
-                      className="py-2 px-3 text-secondary font-mono text-xs truncate max-w-[16rem]"
+                      className="py-2 px-3 text-secondary font-mono text-xs break-all"
+                      data-label="파일명"
                       title={backup.backup_filename}
                     >
                       {backup.backup_filename}

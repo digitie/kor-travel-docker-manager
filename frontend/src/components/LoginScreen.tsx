@@ -33,30 +33,35 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
   }
 
   return (
-    <main className="min-h-screen bg-page text-ink flex items-center justify-center px-6 py-10">
-      <section className="w-full max-w-md bg-card border border-line rounded-card shadow-card p-6">
-        <div className="flex items-center gap-3 pb-5 border-b border-line">
-          <div className="p-2 bg-brand-tint text-brand border border-line rounded-card">
-            <LockKeyhole className="w-6 h-6" />
-          </div>
-          <div>
-            <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
-              Kor Travel Docker Manager
-            </p>
-            <h1 className="text-xl font-semibold text-strong mt-1">관리자 로그인</h1>
-          </div>
+    <main className="ops-auth-shell">
+      <section className="ops-auth-frame" aria-labelledby="login-title">
+        <div className="ops-auth-intro">
+          <div className="ops-brand__mark" aria-hidden="true">KT</div>
+          <p className="ops-eyebrow mt-8 text-graphite-ink">Kor Travel Docker Manager</p>
+          <h1>운영 인프라를<br />안전하게 제어합니다.</h1>
+          <p>컨테이너 상태, 로그, 백업 이력과 인증 설정은 승인된 관리자 세션에서만 확인할 수 있습니다.</p>
         </div>
+        <div className="ops-auth-card">
+          <div className="flex items-center gap-3 pb-5 border-b border-line">
+            <div className="p-2 bg-brand-tint text-brand border border-line rounded-card">
+              <LockKeyhole className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="ops-eyebrow">관리자 세션</p>
+              <h2 className="ops-section-title mt-1" id="login-title">로그인</h2>
+            </div>
+          </div>
 
         <form aria-busy={busy} className="pt-5 space-y-4" onSubmit={submit}>
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-secondary" htmlFor="admin-username">
+            <label className="ops-form-label" htmlFor="admin-username">
               아이디
             </label>
             <input
               aria-describedby={error ? 'login-error' : undefined}
               aria-invalid={Boolean(error)}
               autoComplete="username"
-              className="w-full bg-subtle border border-line rounded-card min-h-[44px] px-3 text-sm text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand"
+              className="ops-input"
               disabled={busy}
               id="admin-username"
               value={username}
@@ -64,7 +69,7 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
             />
           </div>
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-secondary" htmlFor="admin-password">
+            <label className="ops-form-label" htmlFor="admin-password">
               비밀번호
             </label>
             <input
@@ -72,7 +77,7 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
               aria-invalid={Boolean(error)}
               autoComplete="current-password"
               autoFocus
-              className="w-full bg-subtle border border-line rounded-card min-h-[44px] px-3 text-sm text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand"
+              className="ops-input"
               disabled={busy}
               id="admin-password"
               type="password"
@@ -81,7 +86,7 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
             />
           </div>
           <button
-            className="w-full inline-flex items-center justify-center gap-2 min-h-[44px] bg-brand text-white rounded-card px-4 text-sm font-semibold disabled:opacity-60"
+            className="ops-button ops-button--primary w-full"
             disabled={busy}
             type="submit"
           >
@@ -99,6 +104,7 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
             </p>
           ) : null}
         </form>
+        </div>
       </section>
     </main>
   );

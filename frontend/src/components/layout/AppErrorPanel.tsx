@@ -56,21 +56,16 @@ export function AppErrorPanel({ error, reset, standalone = false }: AppErrorPane
     }
   };
 
-  const buttonBase =
-    "inline-flex items-center gap-2 min-h-[44px] px-4 py-2 rounded-card border text-sm font-medium transition-colors duration-150 ease-default select-none focus-visible:outline-2 focus-visible:outline-brand";
+  const buttonBase = "ops-button select-none";
 
   return (
     <section
       role="alert"
-      className={`w-full flex items-center justify-center p-6 ${
-        standalone ? "min-h-screen bg-page" : "min-h-[70vh]"
-      }`}
+      className={standalone ? "ops-error-shell" : "w-full min-h-[70vh] flex items-center justify-center p-6"}
     >
-      <div className="w-full max-w-2xl flex flex-col gap-3.5 bg-card border border-line rounded-card shadow-card p-6">
-        <p className="text-secondary text-xs font-bold uppercase tracking-[0.05em]">
-          UI runtime error
-        </p>
-        <h1 className="text-strong text-2xl font-semibold leading-tight">
+      <div className="ops-error-card w-full max-w-2xl flex flex-col gap-3.5 p-6">
+        <p className="ops-eyebrow">UI runtime error</p>
+        <h1 className="font-display text-strong text-2xl font-semibold leading-tight tracking-tight">
           페이지를 다시 불러오지 못했습니다
         </h1>
         <p className="text-secondary text-sm leading-relaxed">
@@ -82,7 +77,7 @@ export function AppErrorPanel({ error, reset, standalone = false }: AppErrorPane
           <button
             type="button"
             onClick={retry}
-            className={`${buttonBase} border-transparent bg-brand text-white shadow-card hover:bg-brand-ink`}
+            className={`${buttonBase} ops-button--primary`}
           >
             <RefreshCw className="w-4 h-4" />
             다시 시도
@@ -90,7 +85,7 @@ export function AppErrorPanel({ error, reset, standalone = false }: AppErrorPane
           <button
             type="button"
             onClick={goBack}
-            className={`${buttonBase} border-line bg-card text-ink hover:bg-subtle`}
+            className={buttonBase}
           >
             <ArrowLeft className="w-4 h-4" />
             이전 화면

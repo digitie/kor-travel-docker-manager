@@ -1859,3 +1859,35 @@ one-shot만 같은 credential을 포함한 DSN을 받고 `--rm`으로 종료한�
   변경하지 않는다.
 - Map release pin이 확정되기 전에는 구현·정적 검증까지만 허용되며, n150 live E2E와 Manager PR merge는
   exact pair authority가 준비된 뒤에만 진행한다.
+
+## ADR-36: 운영 콘솔을 Cobalt Workbench 디자인 시스템으로 수렴한다
+
+- 상태: accepted
+- 날짜: 2026-08-13
+- 결정자: 사용자, Codex
+- 관련: ADR-17, #171
+
+### 컨텍스트
+
+ADR-17의 StyleSeed 라이트 토큰은 화면 공통 표면을 정리했지만, `DESIGN.md`에는 이전 BMW M 시각 기록이
+남아 있고 실제 console은 동일한 KPI 카드, modal blur, 가로 스크롤 표, 차트의 개별 색상처럼 서로 다른
+표현을 병행했다. 이 상태에서는 운영자가 조치·상태·보조 정보를 같은 우선순위로 읽게 되고, 작은 화면에서
+컨테이너와 백업 원장을 안전하게 확인할 수 없다.
+
+### 결정
+
+Hallmark audit을 기준으로 modern-minimal 장르와 Workbench 구조를 채택한다. Cobalt theme의 semantic token은
+`frontend/tokens.css` 한 곳에서 정의하고, display(Space Grotesk)·본문(IBM Plex Sans)·데이터(IBM Plex Mono)
+서체 역할을 분리한다. 모든 화면은 이 token과 공통 `ops-*` 표면·버튼·modal·focus 상태를 사용한다. 임의
+hex, 임의 shadow/radius, `transition-all`, 의미 없는 gradient/glass, 고객용 장식 자산은 새 UI에 넣지 않는다.
+
+대시보드는 상단 명령, 상태 원장, graphite 동기화 신호, 서비스 원장, 단일 상태 footer 순서로 구성한다.
+인라인 명령 팔레트는 장식이 아니라 인증 설정·백업 이력·새로고침·로그아웃에 연결한다. 서비스와 백업 표는
+768px 이하에서 각 셀의 label을 보이는 행 카드로 바뀌며 가로 스크롤을 기본 상호작용으로 사용하지 않는다.
+모든 modal은 같은 사각 작업 표면, Escape, 초기 focus, 명시적 닫기 버튼을 유지한다.
+
+### 결과
+
+- 상태 확인과 조치가 화면 전체에서 동일한 색상·타이포그래피·focus·disabled·loading 규칙을 따른다.
+- 320px, 375px, 414px, 768px에서 운영 원장이 가로 스크롤 없이 읽히도록 구현·검증 대상이 명확해진다.
+- #171의 PostgreSQL bootstrap, exact release pin, n150 live E2E/merge gate에는 영향을 주지 않는다.

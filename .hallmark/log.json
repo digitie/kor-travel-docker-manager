@@ -1,0 +1,14 @@
+{
+  "runs": [
+    {
+      "date": "2026-08-13",
+      "scope": "Kor Travel Docker Manager 전체 운영 콘솔",
+      "genre": "modern-minimal",
+      "macrostructure_family": "Workbench",
+      "theme": "Cobalt",
+      "navigation": "N13 inline command palette",
+      "footer": "Ft2 inline status row",
+      "enrichment": "없음 — 라이브 운영 데이터가 시각적 초점"
+    }
+  ]
+}
