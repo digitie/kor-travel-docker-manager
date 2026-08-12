@@ -30,7 +30,7 @@
 | `prom` | `12400-12499` | API/Web `12401` | Prometheus. |
 | `geo` | `12500-12599` | API `12501`, Web UI `12505` | `kor-travel-geo` REST API와 admin UI. |
 | `conc` | `12600-12699` | API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` API, MCP HTTP, scheduler, Web UI. |
-| `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` admin API, Dagster, admin Web UI. |
+| `map` | `12700-12799` | API `12701`, Dagster `12702`, PostgreSQL `12703`, Web UI `12705` | `kor-travel-map` 전용 PostgreSQL, admin API, Dagster, admin Web UI. |
 | `pinvi` | `12800-12899` | API `12801`, Dagster `12802`, Web UI `12805` | PinVi API/Dagster/Web. `srv`와 `main`은 이 target의 별칭. |
 | `kor-travel-docker-manager` | `12900-12999` | API `12901`, Web UI `12905` | dependency 추가와 무관하게 고정. |
 
@@ -59,7 +59,7 @@
 | `kor-travel-concierge` | Web UI | `9042`, compose 기본 `12405` | `12605` | `.env.example`, `docker-compose.yml`, frontend package |
 | `kor-travel-concierge` | PostgreSQL | `15434` | `5432` | `.env.example`, `docker-compose.yml` |
 | `kor-travel-concierge` | RustFS S3 API/console | `9003` / `9004` | `12101` / `12105` | `.env.example`, `docker-compose.yml` |
-| `kor-travel-map` | Standalone PostgreSQL | `15433` | `5432` | 통합 DB 사용 시 `5432`로 이관 대상. |
+| `kor-travel-map` | 전용 PostgreSQL | `15433` | `12703` | ADR-090 principal·ownership 경계를 위해 통합 DB와 분리한 Map 대역 loopback endpoint. |
 | `kor-travel-map` | Admin API | `9011` | `12701` | `.env.example`, `docker-compose.yml` |
 | `kor-travel-map` | Dagster Webserver | `9013` | `12702` | `.env.example`, `docker-compose.yml` |
 | `kor-travel-map` | Admin Web UI | `9012` | `12705` | `.env.example`, `docker-compose.yml`, frontend package |
@@ -84,7 +84,7 @@
 | Prometheus `12401` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | `kor-travel-geo` API `12501`, Web UI `12505` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | `kor-travel-concierge` API `12601`, MCP `12602`, Web UI `12605` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
-| `kor-travel-map` API `12701`, Dagster `12702`, Web UI `12705` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
+| `kor-travel-map` API `12701`, Dagster `12702`, PostgreSQL `12703`, Web UI `12705` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 예정 |
 | PinVi API `12801`, Web UI `12805` | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml` | 반영 |
 | PinVi Dagster `12802` (host=container) | `.env.example`, `docker-compose.yml`, `config/docker-targets.yml`, pinvi `apps/etl/Dockerfile` | 반영 |
 | host 네트워크 모드 및 컨테이너=호스트 포트 통일 (geo/conc/map/pinvi 및 인프라) | `docker-compose.yml`, `.env.example`, `config/prometheus/prometheus.yml` | 반영 |

@@ -1796,3 +1796,50 @@ endpoint/generation이 없거나 PinVi provenance·Map artifact·pin이 서로 �
   receipt만 보관한다. 재시작·response-loss·finalize 중단도 각 상태를 명시적으로 재개하거나 fail-close한다.
 - Map schema/API 변경은 F1J-A, pair provenance 재결박은 F1J-C, Manager orchestration은 F1J-B로 분리해
   독립 리뷰·검증 가능하게 한다.
+
+## ADR-35: Map ADR-090 principal은 전용 PostgreSQL instance에서만 bootstrap한다
+
+- 상태: accepted
+- 날짜: 2026-08-12
+- 결정자: 사용자, Codex
+- 관련: #171, ADR-5, ADR-9, ADR-16, ADR-34, Map ADR-090
+
+### 컨텍스트
+
+Map ADR-090은 `ktm_feature_migrator`, `ktm_feature_api_runtime`,
+`ktm_feature_dagster_runtime`과 NOLOGIN ownership group을 분리하고, DB owner·schema·extension·ACL을
+전용 superuser로 bootstrap한다. 기존 `kor-travel-geo-postgres`는 Geo·Concierge·PinVi와 legacy Map
+database를 함께 관리하며, recovery script가 `krtour_map` owner와 광범위한 grant를 다시 적용한다.
+따라서 shared instance에서 bootstrap하면 Map 권한 경계를 깨거나 정상 recovery가 그 경계를 무음으로
+되돌린다. host network에서는 두 PostgreSQL이 `5432`를 동시에 bind할 수도 없다.
+
+### 결정
+
+Map application database와 Map Dagster metadata database는 `kor-travel-map-postgres` 전용 PostGIS
+instance로 분리한다. 이 instance는 host network loopback `127.0.0.1:12703`만 listen하며 Map target
+대역을 사용한다. 통합 `kor-travel-geo-postgres:5432`는 Geo·Concierge·PinVi lifecycle만 계속 소유하고,
+`kor_travel_map` 또는 Map role·schema·extension을 생성·복구·reset하지 않는다.
+
+F1D v5는 frozen Compose에서 Map 두 database runtime을 전용 instance로, PinVi runtime을 통합 instance로
+각각 유도한다. reset은 세 DB만 drop/create하며 Map application의 schema/extension/role provisioning은
+Manager가 만들지 않는다. reset 직후 Map 정본 `postgres-role-bootstrap.sh`를 profile one-shot으로 실행하고,
+성공한 경우에만 Map API migration과 Dagster storage migration을 실행한다. one-shot은 `--rm`으로 종료해
+bootstrap superuser DSN과 세 role password가 normal runtime, journal 또는 잔존 container metadata에 남지
+않게 한다. bootstrap profile은 일반 `compose up`에서 비활성화한다.
+
+Map API에는 migrator DSN과 API runtime DSN만, Map Dagster와 daemon에는 Dagster runtime DSN만 전달한다.
+bootstrap DSN과 raw role password는 one-shot service의 유일한 입력이다. Compose candidate validator는 이
+경계와 raw/resolved secret reference를 검증하며, F1D는 bootstrap 뒤 catalog principal/ownership assertion을
+통과하지 못하면 runtime을 기동하지 않고 fail-close한다.
+
+새 Map image 및 PinVi compatibility artifact는 upstream에서 merge된 exact revision만
+`PINNED_RUNTIME_RELEASE`에 반영한다. draft source SHA나 `latest-main` tag는 production/rehearsal authority가
+아니다.
+
+### 결과
+
+- Map ADR-090 privilege boundary가 공용 DB recovery와 독립되어 재현 가능하다.
+- F1D destructive rebuild가 Geo·Concierge database, PinVi database, RustFS 또는 legacy shared Map DB를
+  변경하지 않는다.
+- Map release pin이 확정되기 전에는 구현·정적 검증까지만 허용되며, n150 live E2E와 Manager PR merge는
+  exact pair authority가 준비된 뒤에만 진행한다.

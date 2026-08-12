@@ -23,6 +23,7 @@
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[x]` | 2026-08-04 | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부. Manager 측 완료, issue #109 종료 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
+| **#171** | Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포 | `[/]` | - | 전용 Map DB/F1D bootstrap 구현 및 upstream exact pair 대기 |
 
 ---
 
@@ -960,3 +961,11 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
 - [ ] **데이터 의존 수용 검증 기록** — 재적재가 끝난 뒤 고정 curated/feature ID를 전제하는 관리자 UI
       상세·지도 표 landmark E2E와 PinVi 변경 E2E를 다시 실행해 결과를 기록한다. 모두 통과하면
       F1D-D를 완료 이력으로 이관한다.
+### #171: Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포
+
+- [/] 통합 PostgreSQL의 `kor_travel_map` lifecycle을 제거하고, Map application·Dagster metadata 전용
+      `kor-travel-map-postgres`를 `127.0.0.1:12703`으로 분리한다.
+- [ ] F1D v5가 전용 DB만 reset한 뒤 Map 정본 `postgres-role-bootstrap.sh`를 one-shot으로 실행하고,
+      DSN 세 principal과 Map/Dagster migration을 순서대로 검증한다.
+- [ ] Map release와 PinVi compatible pair가 merge된 exact revision으로 갱신된 뒤 n150 `rehearsal/rebuildable`
+      live E2E를 실행한다. fresh data 재적재가 필요한 data-dependent 검증은 T-VN-41-F1D-D로 분리한다.

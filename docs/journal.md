@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-12 — #171 전용 Map PostgreSQL 경계 승인
+
+- ADR-090의 Map principal bootstrap을 공유 `kor-travel-geo-postgres`에 적용하지 않기로 확정했다.
+  공유 DB recovery가 legacy `krtour_map` ownership·ACL을 복원하므로, shared bootstrap은 권한 경계를
+  무음으로 되돌리고 실패 시 partial mutation도 남긴다.
+- Map application과 Dagster metadata는 전용 `kor-travel-map-postgres`의 loopback `127.0.0.1:12703`으로
+  이동한다. 통합 PostgreSQL `5432`는 Geo·Concierge·PinVi lifecycle만 계속 관리한다.
+- bootstrap은 F1D reset 뒤 Manager가 실행하는 one-shot으로만 허용한다. bootstrap superuser DSN과 세 role
+  password는 normal Map/PinVi runtime, Docker 장기 metadata, journal, stdout에 남기지 않는 것을 구현·검증
+  조건으로 둔다.
+- 정확한 Map release pin은 upstream Map PR의 merge된 revision과 PinVi compatibility artifact가 확정된 뒤에만
+  갱신한다. draft source의 SHA를 production authority로 추정하지 않는다.
+
+---
+
 ## 2026-08-11 (백로그 상태 정리 — F1D-D 수용 검증 범위 명확화)
 
 원격 `main`의 최신 F1D v5 상태를 기준으로, 진행 표의 유일한 미완료 항목을
