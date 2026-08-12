@@ -4077,13 +4077,17 @@ class ComposeService:
                         ],
                         transaction=runtime_transaction,
                     )
-                assert_map_database_principal_bootstrap(
-                    runtimes[0],
-                    runtimes[1],
-                    runtime_transaction.environment.effective.get(
-                        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
-                    ),
-                )
+                    # 이 assertion은 role bootstrap 직후의 빈 application DB를
+                    # 검증한다. 이후 Map migration은 ADR-090이 허용한 runtime ACL을
+                    # 의도적으로 부여하므로 armed resume에서 pre-migration ACL을
+                    # 다시 요구하면 durable fixture를 보존한 정상 재개가 막힌다.
+                    assert_map_database_principal_bootstrap(
+                        runtimes[0],
+                        runtimes[1],
+                        runtime_transaction.environment.effective.get(
+                            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+                        ),
+                    )
                 self._run_pinned_runtime_rebuild_compose(
                     ["up", "-d", "--wait", "--wait-timeout", "300", "kor-travel-map-api"],
                     transaction=runtime_transaction,

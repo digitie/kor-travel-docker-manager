@@ -38,6 +38,7 @@ _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
+_MAP_DEDICATED_POSTGRES_PORT = 12703
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_WEB_SERVICE = "pinvi-web"
@@ -455,12 +456,12 @@ def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> Non
     않는다.
     """
 
-    port_text = environment.get("KOR_TRAVEL_MAP_POSTGRES_PORT", "12703")
+    port_text = environment.get("KOR_TRAVEL_MAP_POSTGRES_PORT", str(_MAP_DEDICATED_POSTGRES_PORT))
     try:
         port = int(port_text)
     except (TypeError, ValueError) as exc:
         raise ComposeCandidateContractError("Map database DSN identity is invalid") from exc
-    if not 1 <= port <= 65535:
+    if port != _MAP_DEDICATED_POSTGRES_PORT:
         raise ComposeCandidateContractError("Map database DSN identity is invalid")
 
     application_database = environment.get("KOR_TRAVEL_MAP_POSTGRES_DB", "")

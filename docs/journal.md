@@ -13,6 +13,9 @@
 - bootstrap catalog assertion은 PostgreSQL 16 membership option, group/login option, ownership, extension schema,
   relation/default ACL과 Dagster metadata DB owner까지 검증한다. pre-probe resume은 기존 checkpoint를 신뢰하지
   않고 reset과 두 bootstrap one-shot을 다시 수행한다.
+- assertion은 bootstrap 직후 빈 application DB에서만 실행한다. upstream migration이 부여한 허용 runtime ACL은
+  armed 이후 durable fixture resume에서 재검사하지 않으며, `PUBLIC` relation/default ACL은 bootstrap invariant
+  위반으로 거부한다.
 - targeted 회귀 149개와 disposable PostgreSQL 16 catalog rehearsal을 통과했다. upstream exact Map/PinVi pair가
   아직 없으므로 n150 live E2E와 Manager merge는 계속 보류한다.
 

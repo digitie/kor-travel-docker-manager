@@ -192,6 +192,8 @@ def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
     assert "pg_auth_members" in command[-1]
     assert "pg_default_acl" in command[-1]
     assert "map_dagster_metadata" in command[-1]
+    assert "granted_role.rolname" in command[-1]
+    assert "privilege.grantee = 0" in command[-1]
 
 
 def test_map_principal_bootstrap_assertion_fails_closed(

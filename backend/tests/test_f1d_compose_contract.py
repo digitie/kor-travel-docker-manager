@@ -394,6 +394,43 @@ def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutatio
         )
 
 
+def test_c6c_rejects_map_database_port_override(
+    tmp_path: Path,
+) -> None:
+    """Map 전용 DB 포트는 ADR-35의 loopback `12703` 계약값으로 고정한다."""
+
+    candidate = _compose_fragment(
+        "kor-travel-map-postgres",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+    )
+    environment = _compose_contract_environment()
+    environment["KOR_TRAVEL_MAP_POSTGRES_PORT"] = "15432"
+    root_env = tmp_path / ".env"
+    root_env.write_text("\n", encoding="utf-8")
+    map_pgdata = tmp_path / "map-pgdata"
+    map_pgdata.mkdir()
+    environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
+    map_source = tmp_path / "map-source"
+    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
+    bootstrap_script.parent.mkdir(parents=True)
+    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+
+    with pytest.raises(DeploymentContractError, match="Map database DSN identity is invalid"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
 def test_c6c_rejects_resolved_map_database_bridge_network(
     tmp_path: Path,
 ) -> None:

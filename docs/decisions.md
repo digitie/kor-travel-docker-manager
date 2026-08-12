@@ -1834,7 +1834,9 @@ role password는 one-shot service의 유일한 입력이다. Compose candidate v
 `127.0.0.1:12703` endpoint·database·principal과 host network를 frozen Compose identity에 결박하고,
 raw/resolved secret reference도 검증한다. F1D는 bootstrap 뒤 database owner, role attribute, PostgreSQL 16
 membership option, schema·relation·routine·type owner, extension schema, runtime/default ACL을 catalog에서
-assertion하며 통과하지 못하면 runtime을 기동하지 않고 fail-close한다. cancel probe가 아직 시작되지 않은
+assertion하며 통과하지 못하면 migration을 시작하지 않고 fail-close한다. 이 assertion은 빈 application DB의
+bootstrap invariant만 검사한다. Map migration이 허용된 runtime relation ACL을 만든 뒤에는 durable cancel
+fixture를 보존하는 resume에서 pre-migration assertion을 반복하지 않는다. cancel probe가 아직 시작되지 않은
 resume은 checkpoint와 무관하게 DB reset과 두 Map bootstrap one-shot을 다시 실행한다.
 
 새 Map image 및 PinVi compatibility artifact는 upstream에서 merge된 exact revision만

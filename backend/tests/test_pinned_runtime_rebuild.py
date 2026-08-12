@@ -804,15 +804,19 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     ) -> list[dict[str, int | str]]:
         assert callable(state_recorder)
         state = cast(Any, cancel_probe_state)
-        state.fixture = C6cCancelProbeFixture(
-            transaction_id=state.transaction_id,
-            job_id="0" * 8 + "-0000-0000-0000-000000000000",
-            state="armed",
-            cancellation_id=None,
-            canonical_unsafe_outcome=None,
-            created_at="2026-08-06T00:00:00+00:00",
-        )
-        state_recorder(state)
+        if state.fixture is None:
+            state.fixture = C6cCancelProbeFixture(
+                transaction_id=state.transaction_id,
+                job_id="0" * 8 + "-0000-0000-0000-000000000000",
+                state="armed",
+                cancellation_id=None,
+                canonical_unsafe_outcome=None,
+                created_at="2026-08-06T00:00:00+00:00",
+            )
+            state_recorder(state)
+        else:
+            assert state.fixture.state == "armed"
+            assert state.fixture.job_id == "0" * 8 + "-0000-0000-0000-000000000000"
         state.attempted = True
         state_recorder(state)
         outcome: dict[str, int | str] = {
@@ -983,9 +987,63 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
             "run",
             "--rm",
             "--no-deps",
-            "kor-travel-map-db-role-bootstrap",
+        "kor-travel-map-db-role-bootstrap",
         )
     ) == 2
+
+    # Map migration은 runtime relation ACL을 의도적으로 부여한다. 이미 armed인
+    # fixture는 DB reset 없이 그 post-migration state에서 이어가야 하며, 빈 DB
+    # bootstrap assertion을 재실행해 정상 ACL을 오인하면 안 된다.
+    armed = PinnedRuntimeCancelProbeReceipt().transition(
+        "armed",
+        job_id="0" * 8 + "-0000-0000-0000-000000000000",
+        fixture_created_at="2026-08-06T00:00:00+00:00",
+    )
+    write_rebuild_journal(
+        pinned_runtime_state_paths(
+            values,
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        ).journal,
+        replace(
+            read_rebuild_journal(
+                pinned_runtime_state_paths(
+                    values,
+                    pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+                ).journal
+            ),
+            phase="map_application_ready",
+            cancel_probe=armed,
+        ),
+    )
+    reset_count_before_armed_resume = len(reset_operation_counts)
+    bootstrap_assertions_before_armed_resume = map_bootstrap_assertion.call_count
+    dagster_db_init_count_before_armed_resume = operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-db-init",
+        )
+    )
+    revisions = iter(("map-application-head", "map-dagster-head", "pinvi-head"))
+
+    armed_resumed = service.rebuild_pinned_runtime()
+
+    assert armed_resumed["phase"] == "committed"
+    assert len(reset_operation_counts) == reset_count_before_armed_resume
+    assert map_bootstrap_assertion.call_count == bootstrap_assertions_before_armed_resume
+    assert operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-db-init",
+        )
+    ) == dagster_db_init_count_before_armed_resume
 
 
 def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() -> None:
