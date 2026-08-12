@@ -17,6 +17,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     DeploymentContractError,
     validate_compose_candidate_protected_values,
+    validate_map_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
@@ -435,6 +436,38 @@ def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
         )
+
+
+def test_map_postgres_runtime_password_secret_isolation_requires_file_only() -> None:
+    """F1D는 실제 PostgreSQL inspect Env에서도 password 노출을 fail-close한다."""
+
+    validate_map_postgres_runtime_secret_isolation(
+        {
+            "Env": [
+                "POSTGRES_DB=kor_travel_map",
+                "POSTGRES_PASSWORD_FILE=/run/secrets/kor-travel-map-postgres-password",
+            ]
+        }
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="exposes the initial superuser password",
+    ):
+        validate_map_postgres_runtime_secret_isolation(
+            {
+                "Env": [
+                    "POSTGRES_PASSWORD=legacy-password",
+                    "POSTGRES_PASSWORD_FILE=/run/secrets/kor-travel-map-postgres-password",
+                ]
+            }
+        )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="password file wiring is invalid",
+    ):
+        validate_map_postgres_runtime_secret_isolation({"Env": []})
 
 
 def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutation(

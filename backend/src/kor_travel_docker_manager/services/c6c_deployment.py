@@ -569,7 +569,9 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
 
     services = document.get("services")
-    postgres = services.get(_MAP_POSTGRES_SERVICE) if isinstance(services, Mapping) else None
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    postgres = services.get(_MAP_POSTGRES_SERVICE)
     if not isinstance(postgres, Mapping):
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
     environment = postgres.get("environment")
@@ -601,6 +603,7 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
         if not isinstance(candidate_references, list):
             raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
         for candidate_reference in candidate_references:
+            source_name: object
             if isinstance(candidate_reference, str):
                 source_name = candidate_reference
             elif isinstance(candidate_reference, Mapping):
@@ -4794,6 +4797,30 @@ def validate_runtime_secret_isolation(
                 raise DeploymentContractError(
                     "Map API runtime must use the immutable image entrypoint and command"
                 )
+
+
+def validate_map_postgres_runtime_secret_isolation(
+    runtime_config: Mapping[str, Any],
+) -> None:
+    """실제 전용 PostgreSQL container가 password Env를 보관하지 않는지 검증한다."""
+
+    environment: dict[str, str] = {}
+    for name, value, _paths in _runtime_environment_entries(runtime_config.get("Env")):
+        if name in environment:
+            raise DeploymentContractError(
+                "Map PostgreSQL runtime has duplicate environment variables"
+            )
+        environment[name] = value
+    if environment.get("POSTGRES_PASSWORD_FILE") != _MAP_POSTGRES_PASSWORD_FILE:
+        raise DeploymentContractError(
+            "Map PostgreSQL runtime password file wiring is invalid"
+        )
+    if {"POSTGRES_PASSWORD", "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"}.intersection(
+        environment
+    ):
+        raise DeploymentContractError(
+            "Map PostgreSQL runtime exposes the initial superuser password"
+        )
 
 
 def _validate_image_id(image_id: str, label: str) -> None:

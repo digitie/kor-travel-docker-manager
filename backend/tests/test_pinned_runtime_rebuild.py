@@ -780,6 +780,17 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "assert_map_database_principal_bootstrap",
         map_bootstrap_assertion,
     )
+    map_postgres_runtime_secret_assertion = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "validate_map_postgres_runtime_secret_isolation",
+        map_postgres_runtime_secret_assertion,
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_runtime_config",
+        Mock(return_value={"Env": []}),
+    )
     monkeypatch.setattr(
         compose_service_module,
         "recreate_empty_databases",
@@ -1034,6 +1045,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert armed_resumed["phase"] == "committed"
     assert len(reset_operation_counts) == reset_count_before_armed_resume
     assert map_bootstrap_assertion.call_count == bootstrap_assertions_before_armed_resume
+    assert map_postgres_runtime_secret_assertion.call_count == 3
     assert operations.count(
         (
             "--profile",
@@ -1514,6 +1526,16 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
         compose_service_module,
         "assert_map_database_principal_bootstrap",
         Mock(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "validate_map_postgres_runtime_secret_isolation",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_runtime_config",
+        Mock(return_value={"Env": []}),
     )
     monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
     monkeypatch.setattr(

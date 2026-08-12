@@ -47,6 +47,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_c6c_build_source_wiring,
     validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
+    validate_map_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
@@ -4043,6 +4044,12 @@ class ComposeService:
                         "kor-travel-map-postgres",
                     ],
                     transaction=runtime_transaction,
+                )
+                # raw/resolved Compose는 secret alias mount를 고정하지만, 실제
+                # long-lived container가 legacy password Env를 보존하지 않았는지도
+                # destructive DB reset 전에 Docker inspect로 fail-close한다.
+                validate_map_postgres_runtime_secret_isolation(
+                    self._inspect_container_runtime_config("kor-travel-map-postgres")
                 )
 
                 reset_required = _pinned_runtime_reset_required(journal)

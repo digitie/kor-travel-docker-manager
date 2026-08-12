@@ -18,7 +18,8 @@
   위반으로 거부한다.
 - 전용 PostgreSQL initial superuser password는 `POSTGRES_PASSWORD_FILE` Docker secret으로 이동했다. disposable
   Compose rehearsal에서 PostgreSQL 기동·secret file 인증·`docker inspect Config.Env`의 password 부재를 확인했고,
-  raw/resolved Compose는 해당 secret을 PostgreSQL entrypoint 외 service가 mount하면 거부한다.
+  raw/resolved Compose는 해당 secret을 PostgreSQL entrypoint 외 service가 mount하면 거부한다. F1D도 reset 전
+  실제 PostgreSQL `Config.Env`의 password 부재와 정확한 secret file 경로를 fail-close한다.
 - targeted 회귀 149개와 disposable PostgreSQL 16 catalog rehearsal을 통과했다. upstream exact Map/PinVi pair가
   아직 없으므로 n150 live E2E와 Manager merge는 계속 보류한다.
 
