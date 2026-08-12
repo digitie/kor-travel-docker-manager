@@ -390,7 +390,7 @@ services:
       retries: 20
 
   # Dagster metadata DB는 Map application role bootstrap의 대상이 아니므로 별도의
-  # Manager one-shot으로만 생성한다. F1D reset에서는 이미 빈 DB가 존재해 no-op이다.
+  # Manager one-shot으로만 생성하고, F1D reset 뒤에는 metadata owner를 다시 고정한다.
   kor-travel-map-dagster-db-init:
     profiles:
     - bootstrap
@@ -402,14 +402,15 @@ services:
         condition: service_healthy
     environment:
       KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN: ${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}
-      KOR_TRAVEL_MAP_POSTGRES_USER: ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB: ${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_METADATA_USER: ${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD: ${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}
     entrypoint:
     - /bin/sh
     - -ec
     command:
     - |
-      for identifier in "$$KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB" "$$KOR_TRAVEL_MAP_POSTGRES_USER"; do
+      for identifier in "$$KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB" "$$KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"; do
         case "$$identifier" in
           '' | *[!A-Za-z0-9_]* | [!A-Za-z_]* )
             echo "invalid PostgreSQL identifier" >&2; exit 1 ;;
@@ -417,9 +418,25 @@ services:
       done
       psql "$$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" --dbname postgres --set ON_ERROR_STOP=1 \
         --set dagster_db="$$KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB" \
-        --set owner="$$KOR_TRAVEL_MAP_POSTGRES_USER" <<'SQL'
-      SELECT format('CREATE DATABASE %I OWNER %I', :'dagster_db', :'owner')
+        --set metadata_user="$$KOR_TRAVEL_MAP_DAGSTER_METADATA_USER" \
+        --set metadata_password="$$KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD" <<'SQL'
+      SELECT format(
+        'CREATE ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION PASSWORD %L',
+        :'metadata_user',
+        :'metadata_password'
+      )
+      WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'metadata_user')
+      \gexec
+      SELECT format(
+        'ALTER ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION PASSWORD %L',
+        :'metadata_user',
+        :'metadata_password'
+      )
+      \gexec
+      SELECT format('CREATE DATABASE %I OWNER %I', :'dagster_db', :'metadata_user')
       WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'dagster_db')
+      \gexec
+      SELECT format('ALTER DATABASE %I OWNER TO %I', :'dagster_db', :'metadata_user')
       \gexec
       SQL
 

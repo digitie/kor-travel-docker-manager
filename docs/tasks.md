@@ -968,6 +968,8 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       extension·database를 더 이상 생성하거나 ownership/ACL을 변경하지 않는다.
 - [x] F1D v5가 전용 DB health 확인·reset 뒤 Map 정본 `postgres-role-bootstrap.sh`와 Dagster DB init을
       `--rm` one-shot으로 실행하고, bootstrap catalog assertion 뒤 Map/Dagster migration을 시작하도록
-      raw/resolved Compose·runtime 회귀를 추가했다.
+      raw/resolved Compose·runtime 회귀를 추가했다. 일반 `ensure`는 해당 one-shot을 실행하지 않으며,
+      DSN endpoint·database·principal, non-superuser Dagster metadata login, PostgreSQL 16 catalog 권한
+      assertion과 pre-probe resume rebootstrap을 fail-close로 고정한다.
 - [ ] Map release와 PinVi compatible pair가 merge된 exact revision으로 갱신된 뒤 n150 `rehearsal/rebuildable`
       live E2E를 실행한다. fresh data 재적재가 필요한 data-dependent 검증은 T-VN-41-F1D-D로 분리한다.

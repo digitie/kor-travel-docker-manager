@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-12 — #171 전용 Map PostgreSQL P0 재검토 보강
+
+- 2인의 적대적 재검토에서 발견된 P0를 반영했다. 장기 실행 Dagster의 metadata DSN을 전용 non-superuser
+  login으로 분리하고, bootstrap superuser/role password는 F1D one-shot 밖으로 전달하지 않는다.
+- C6c가 모든 Map DB DSN의 loopback `12703`, database, principal을 bootstrap 전에 검증하고 Map DB 관련
+  service의 host network 이탈도 거부한다. shared `5432` 오결선·bridge override는 mutation 전에 fail-close한다.
+- bootstrap catalog assertion은 PostgreSQL 16 membership option, group/login option, ownership, extension schema,
+  relation/default ACL과 Dagster metadata DB owner까지 검증한다. pre-probe resume은 기존 checkpoint를 신뢰하지
+  않고 reset과 두 bootstrap one-shot을 다시 수행한다.
+- targeted 회귀 149개와 disposable PostgreSQL 16 catalog rehearsal을 통과했다. upstream exact Map/PinVi pair가
+  아직 없으므로 n150 live E2E와 Manager merge는 계속 보류한다.
+
+---
+
 ## 2026-08-12 — #171 전용 Map PostgreSQL 경계 승인
 
 - ADR-090의 Map principal bootstrap을 공유 `kor-travel-geo-postgres`에 적용하지 않기로 확정했다.
@@ -17,8 +31,8 @@
 - 정확한 Map release pin은 upstream Map PR의 merge된 revision과 PinVi compatibility artifact가 확정된 뒤에만
   갱신한다. draft source의 SHA를 production authority로 추정하지 않는다.
 - Manager 구현은 전용 DB service, strict principal DSN wiring, profile one-shot bootstrap, F1D catalog
-  assertion과 shared recovery의 Map lifecycle 제거까지 완료했다. 전체 회귀 352건과 Ruff를 통과했고 이번
-  서비스 4개는 `mypy` 무오류다. exact upstream pair가 없으므로 n150 live E2E는 아직 실행하지 않았다.
+  assertion과 shared recovery의 Map lifecycle 제거까지 진행했다. exact upstream pair가 없으므로 n150 live
+  E2E는 아직 실행하지 않았다.
 
 ---
 

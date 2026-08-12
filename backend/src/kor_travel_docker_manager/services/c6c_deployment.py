@@ -22,11 +22,10 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import yaml
 from dotenv import dotenv_values
-
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
@@ -151,6 +150,7 @@ _MAP_DATABASE_SECRET_ENV_NAMES = frozenset(
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
@@ -200,11 +200,28 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
         _MAP_CURSOR_SIGNING_SECRET_ENV
     ),
     (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD"): "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): "KOR_TRAVEL_MAP_POSTGRES_DB",
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): "KOR_TRAVEL_MAP_POSTGRES_USER",
     (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
     ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+    ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
+        "KOR_TRAVEL_MAP_POSTGRES_DB"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): (
+        "KOR_TRAVEL_MAP_POSTGRES_DB"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
+        "KOR_TRAVEL_MAP_POSTGRES_USER"
     ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"
@@ -214,6 +231,9 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
     ),
     (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
@@ -251,6 +271,14 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     ),
 }
 _MAP_DATABASE_CANONICAL_ENV_VALUES = {
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
+        "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
+    ),
     (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD"): (
         "${KOR_TRAVEL_MAP_POSTGRES_PASSWORD:?"
         "KOR_TRAVEL_MAP_POSTGRES_PASSWORD must be explicitly set}"
@@ -259,9 +287,33 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
     ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?"
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
+    ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
         "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
+        "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
     ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
         "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
@@ -393,6 +445,113 @@ _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
         _MAP_UI_SESSION_SECRET_ENV,
     }
 )
+
+
+def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> None:
+    """모든 Map DB DSN이 frozen 전용 instance·principal과 일치하는지 확인한다.
+
+    raw Compose는 interpolation 자체만 고정할 수 있으므로, role bootstrap 전에 DSN의
+    endpoint·database·login을 별도로 결박한다. credential은 비교하거나 오류에 넣지
+    않는다.
+    """
+
+    port_text = environment.get("KOR_TRAVEL_MAP_POSTGRES_PORT", "12703")
+    try:
+        port = int(port_text)
+    except (TypeError, ValueError) as exc:
+        raise ComposeCandidateContractError("Map database DSN identity is invalid") from exc
+    if not 1 <= port <= 65535:
+        raise ComposeCandidateContractError("Map database DSN identity is invalid")
+
+    application_database = environment.get("KOR_TRAVEL_MAP_POSTGRES_DB", "")
+    dagster_database = environment.get("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "")
+    bootstrap_user = environment.get("KOR_TRAVEL_MAP_POSTGRES_USER", "")
+    metadata_user = environment.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "")
+    identities = (
+        (
+            "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+            "postgresql",
+            bootstrap_user,
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+            "postgresql+asyncpg",
+            "ktm_feature_migrator",
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+            "postgresql+asyncpg",
+            "ktm_feature_api_runtime",
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+            "postgresql+asyncpg",
+            "ktm_feature_dagster_runtime",
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+            "postgresql",
+            metadata_user,
+            dagster_database,
+        ),
+    )
+    required_principals = frozenset(
+        {
+            "ktm_feature_schema_owner",
+            "ktm_feature_state_procedure_owner",
+            "ktm_feature_audit_writer",
+            "ktm_feature_runtime",
+            "ktm_feature_migrator",
+            "ktm_feature_api_runtime",
+            "ktm_feature_dagster_runtime",
+        }
+    )
+    expected_users = {
+        bootstrap_user,
+        metadata_user,
+        "ktm_feature_migrator",
+        "ktm_feature_api_runtime",
+        "ktm_feature_dagster_runtime",
+    }
+    if (
+        not bootstrap_user
+        or not metadata_user
+        or len(expected_users) != 5
+        or bootstrap_user in required_principals
+        or metadata_user in required_principals
+        or not application_database
+        or not dagster_database
+        or application_database == dagster_database
+    ):
+        raise ComposeCandidateContractError("Map database DSN identity is invalid")
+    for name, scheme, expected_user, expected_database in identities:
+        value = environment.get(name, "")
+        try:
+            parsed = urlsplit(value)
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise ComposeCandidateContractError("Map database DSN identity is invalid") from exc
+        if (
+            parsed.scheme != scheme
+            or parsed.hostname != "127.0.0.1"
+            or parsed_port != port
+            or unquote(parsed.username or "") != expected_user
+            or parsed.path != f"/{expected_database}"
+        ):
+            raise ComposeCandidateContractError("Map database DSN identity is invalid")
+
+
+def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
+    if service.get("network_mode") != "host":
+        raise ComposeCandidateContractError(
+            "resolved Map database runtime must use host network"
+        )
+
+
 _C6C_RUNTIME_IDENTIFIERS = frozenset(
     {
         *_MAP_RUNTIME_SERVICES,
@@ -1622,6 +1781,7 @@ def validate_resolved_compose_candidate_protected_values(
         ),
     )
     _assert_candidate_single_file_boundary(resolved, environment=environment)
+    _validate_map_database_dsn_identities(environment)
     services = resolved.get("services")
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError(
@@ -1670,6 +1830,16 @@ def validate_resolved_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"resolved compose candidate service {service_name} is invalid"
             )
+        if service_name in {
+            _MAP_POSTGRES_SERVICE,
+            _MAP_API_SERVICE,
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+            _MAP_DAGSTER_DB_INIT_SERVICE,
+            _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+        }:
+            _require_map_database_host_network(service)
         service_environment = service.get("environment")
         if not isinstance(service_environment, Mapping):
             raise ComposeCandidateContractError(
@@ -2047,6 +2217,7 @@ def validate_compose_candidate_protected_values(
             ),
         )
     _assert_candidate_single_file_boundary(candidate, environment=environment)
+    _validate_map_database_dsn_identities(environment)
     services = candidate.get("services")
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError(

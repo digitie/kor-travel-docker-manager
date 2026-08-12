@@ -19,7 +19,6 @@ from typing import Any, Literal, cast
 
 import yaml
 from dotenv import dotenv_values
-
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_RUNTIME_SERVICES,
@@ -3275,77 +3274,6 @@ class ComposeService:
 
         mutation_succeeded = False
         try:
-            if "map" in target_sequence:
-                map_database_args = [
-                    "up",
-                    "-d",
-                    "--wait",
-                    "--wait-timeout",
-                    "300",
-                ]
-                if recreate:
-                    map_database_args.append("--force-recreate")
-                map_database_args.append("kor-travel-map-postgres")
-                map_database_result = self.run(
-                    map_database_args,
-                    capture_output=capture_output,
-                    mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
-                    expected_system_bind_snapshots=expected_system_bind_snapshots,
-                    expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
-                    expected_resolved_volume_graph_hash=(
-                        expected_resolved_volume_graph_hash
-                    ),
-                    expected_environment_snapshot=expected_environment_snapshot,
-                    expected_external_input_snapshot=(
-                        expected_external_input_snapshot
-                    ),
-                    transaction=transaction,
-                )
-                commands.append(map_database_result["command"])
-                result["stdout"] += map_database_result.get("stdout", "")
-                result["stderr"] += map_database_result.get("stderr", "")
-                result["returncode"] = map_database_result["returncode"]
-                result["success"] = map_database_result["success"]
-                if not map_database_result["success"]:
-                    result["command"] = commands
-                    return result
-                mutation_succeeded = True
-
-                for bootstrap_service in (
-                    "kor-travel-map-dagster-db-init",
-                    "kor-travel-map-db-role-bootstrap",
-                ):
-                    bootstrap_result = self.run(
-                        [
-                            "--profile",
-                            "bootstrap",
-                            "run",
-                            "--rm",
-                            "--no-deps",
-                            bootstrap_service,
-                        ],
-                        capture_output=capture_output,
-                        mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
-                        expected_system_bind_snapshots=expected_system_bind_snapshots,
-                        expected_raw_volume_graph_hash=expected_raw_volume_graph_hash,
-                        expected_resolved_volume_graph_hash=(
-                            expected_resolved_volume_graph_hash
-                        ),
-                        expected_environment_snapshot=expected_environment_snapshot,
-                        expected_external_input_snapshot=(
-                            expected_external_input_snapshot
-                        ),
-                        transaction=transaction,
-                    )
-                    commands.append(bootstrap_result["command"])
-                    result["stdout"] += bootstrap_result.get("stdout", "")
-                    result["stderr"] += bootstrap_result.get("stderr", "")
-                    result["returncode"] = bootstrap_result["returncode"]
-                    result["success"] = bootstrap_result["success"]
-                    if not bootstrap_result["success"]:
-                        result["command"] = commands
-                        return result
-
             if services:
                 args = ["up", "-d"]
                 if build:
@@ -4117,7 +4045,8 @@ class ComposeService:
                     transaction=runtime_transaction,
                 )
 
-                if _pinned_runtime_reset_required(journal):
+                reset_required = _pinned_runtime_reset_required(journal)
+                if reset_required:
                     recreate_empty_databases(runtimes)
                     updated = self._advance_pinned_runtime_journal(
                         journal, "databases_recreated"
@@ -4125,9 +4054,7 @@ class ComposeService:
                     if updated != journal:
                         write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                         journal = updated
-                if REBUILD_PHASES.index(journal.phase) < REBUILD_PHASES.index(
-                    "map_database_bootstrapped"
-                ):
+                if reset_required:
                     self._run_pinned_runtime_rebuild_compose(
                         [
                             "--profile",
@@ -4150,13 +4077,13 @@ class ComposeService:
                         ],
                         transaction=runtime_transaction,
                     )
-                assert_map_database_principal_bootstrap(runtimes[0])
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "map_database_bootstrapped"
+                assert_map_database_principal_bootstrap(
+                    runtimes[0],
+                    runtimes[1],
+                    runtime_transaction.environment.effective.get(
+                        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+                    ),
                 )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
                 self._run_pinned_runtime_rebuild_compose(
                     ["up", "-d", "--wait", "--wait-timeout", "300", "kor-travel-map-api"],
                     transaction=runtime_transaction,

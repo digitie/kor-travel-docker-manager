@@ -3,13 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
-
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cCancelProbeFixture,
@@ -945,6 +945,47 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert not (
         tmp_path / "state" / "f1d-c2" / "bootstrap" / str(result["transaction_id"])
     ).exists()
+
+    # cancel probe가 아직 durable하게 시작되지 않은 Map migration 실패 뒤에는
+    # checkpoint phase와 관계없이 DB·principal bootstrap을 새로 실행해야 한다.
+    write_rebuild_journal(
+        pinned_runtime_state_paths(
+            values,
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        ).journal,
+        replace(
+            final_journal,
+            phase="map_application_ready",
+            cancel_probe=PinnedRuntimeCancelProbeReceipt(),
+        ),
+    )
+    revisions = iter(("map-application-head", "map-dagster-head", "pinvi-head"))
+
+    resumed = service.rebuild_pinned_runtime()
+
+    assert resumed["phase"] == "committed"
+    assert len(reset_operation_counts) == 2
+    assert map_bootstrap_assertion.call_count == 2
+    assert operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-db-init",
+        )
+    ) == 2
+    assert operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-db-role-bootstrap",
+        )
+    ) == 2
 
 
 def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() -> None:

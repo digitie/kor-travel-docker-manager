@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 import yaml
-
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     DeploymentContractError,
@@ -80,6 +79,8 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": "map-contract-migrator-password",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD": "map-contract-api-password",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD": "map-contract-dagster-password",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_contract_dagster_metadata",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "map-contract-dagster-metadata-password",
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
             "127.0.0.1:12703/map_contract"
@@ -93,7 +94,7 @@ def _compose_contract_environment() -> dict[str, str]:
             "127.0.0.1:12703/map_contract"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
-            "postgresql://map_contract_admin:map-contract-postgres-password@"
+            "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
             "127.0.0.1:12703/map_contract_dagster"
         ),
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
@@ -192,7 +193,7 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         "DAGSTER_DISABLE_TELEMETRY": "yes",
         "DAGSTER_HOME": "/opt/dagster/dagster_home",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
-            "postgresql://map_contract_admin:map-contract-postgres-password@"
+            "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
             "127.0.0.1:12703/map_contract_dagster"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
@@ -342,6 +343,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
     }.intersection(map_api_environment | map_dagster_environment)
     assert map_bootstrap_environment["KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_ENABLED"] == "true"
     assert {
@@ -350,6 +352,85 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
     }.issubset(map_bootstrap_environment)
+
+
+def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutation(
+    tmp_path: Path,
+) -> None:
+    """bootstrap one-shot이 shared 5432를 건드리기 전에 endpoint drift를 차단한다."""
+
+    candidate = _compose_fragment(
+        "kor-travel-map-postgres",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+    )
+    environment = _compose_contract_environment()
+    environment["KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"] = (
+        "postgresql://map_contract_admin:map-contract-postgres-password@"
+        "127.0.0.1:5432/map_contract"
+    )
+    root_env = tmp_path / ".env"
+    root_env.write_text("\n", encoding="utf-8")
+    map_pgdata = tmp_path / "map-pgdata"
+    map_pgdata.mkdir()
+    environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
+    map_source = tmp_path / "map-source"
+    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
+    bootstrap_script.parent.mkdir(parents=True)
+    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+
+    with pytest.raises(DeploymentContractError, match="Map database DSN identity is invalid"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_c6c_rejects_resolved_map_database_bridge_network(
+    tmp_path: Path,
+) -> None:
+    """loopback dedicated DSN은 host-network runtime에서만 유효하다."""
+
+    resolved = _resolved_compose(
+        "kor-travel-map-postgres",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+    )
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-map-api"]["network_mode"] = "bridge"
+    environment = _compose_contract_environment()
+    root_env = tmp_path / ".env"
+    root_env.write_text("\n", encoding="utf-8")
+    map_pgdata = tmp_path / "map-pgdata"
+    map_pgdata.mkdir()
+    environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
+    map_source = tmp_path / "map-source"
+    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
+    bootstrap_script.parent.mkdir(parents=True)
+    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+
+    with pytest.raises(DeploymentContractError, match="must use host network"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
 
 
 def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> None:

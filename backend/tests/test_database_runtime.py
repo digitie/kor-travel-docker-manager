@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-import pytest
-
 import kor_travel_docker_manager.services.database_runtime as database_runtime
+import pytest
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
@@ -48,6 +47,7 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
             "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
             "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
             "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
             "PINVI_POSTGRES_DB": "pin_app",
             "PINVI_POSTGRES_USER": "pin_owner",
         },
@@ -71,6 +71,7 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         "map-postgres-production",
         "postgres-production",
     }
+    assert runtimes[1].additional_owner_names == frozenset({"map_dagster_metadata"})
 
 
 @pytest.mark.parametrize(
@@ -94,7 +95,7 @@ def test_database_runtime_rejects_invalid_frozen_admin_role(
                     },
                 }
             },
-            environment={},
+            environment={"KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata"},
         )
 
 
@@ -178,12 +179,19 @@ def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
     runner = Mock(return_value=b"ok\n")
     monkeypatch.setattr(database_runtime, "_run_checked", runner)
 
-    assert_map_database_principal_bootstrap(_runtime("map_application"))
+    assert_map_database_principal_bootstrap(
+        _runtime("map_application"),
+        _runtime("map_dagster"),
+        "map_dagster_metadata",
+    )
 
     command = runner.call_args.args[0]
     assert command[command.index("--dbname") + 1] == "map_app"
     assert "ktm_feature_schema_owner" in command[-1]
     assert "ktm_feature_api_runtime" in command[-1]
+    assert "pg_auth_members" in command[-1]
+    assert "pg_default_acl" in command[-1]
+    assert "map_dagster_metadata" in command[-1]
 
 
 def test_map_principal_bootstrap_assertion_fails_closed(
@@ -192,7 +200,20 @@ def test_map_principal_bootstrap_assertion_fails_closed(
     monkeypatch.setattr(database_runtime, "_run_checked", Mock(return_value=b"invalid\n"))
 
     with pytest.raises(DeploymentContractError, match="bootstrap assertion failed"):
-        assert_map_database_principal_bootstrap(_runtime("map_application"))
+        assert_map_database_principal_bootstrap(
+            _runtime("map_application"),
+            _runtime("map_dagster"),
+            "map_dagster_metadata",
+        )
+
+
+def test_map_principal_bootstrap_assertion_rejects_metadata_role_collision() -> None:
+    with pytest.raises(DeploymentContractError, match="metadata role is invalid"):
+        assert_map_database_principal_bootstrap(
+            _runtime("map_application"),
+            _runtime("map_dagster"),
+            "ktm_feature_runtime",
+        )
 
 
 def test_recreate_empty_databases_requires_three_canonical_roles() -> None:

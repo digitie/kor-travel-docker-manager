@@ -72,6 +72,7 @@ class DatabaseRuntime:
     database_name: str
     owner_name: str
     admin_name: str
+    additional_owner_names: frozenset[str] = frozenset()
 
 
 def database_runtimes_from_frozen_contract(
@@ -113,6 +114,12 @@ def database_runtimes_from_frozen_contract(
             raise DeploymentContractError(f"{role} database name is invalid")
         if not _DATABASE_IDENTIFIER.fullmatch(owner_name):
             raise DeploymentContractError(f"{role} database owner is invalid")
+        additional_owner_names: frozenset[str] = frozenset()
+        if role == "map_dagster":
+            metadata_owner = environment.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "")
+            if not _DATABASE_IDENTIFIER.fullmatch(metadata_owner):
+                raise DeploymentContractError("Map Dagster metadata role is invalid")
+            additional_owner_names = frozenset({metadata_owner})
         runtimes.append(
             DatabaseRuntime(
                 role=role,
@@ -120,6 +127,7 @@ def database_runtimes_from_frozen_contract(
                 database_name=database_name,
                 owner_name=owner_name,
                 admin_name=admin_name,
+                additional_owner_names=additional_owner_names,
             )
         )
     return runtimes[0], runtimes[1], runtimes[2]
@@ -191,28 +199,129 @@ def read_database_schema_revision(runtime: DatabaseRuntime) -> str:
     return lines[0]
 
 
-def assert_map_database_principal_bootstrap(runtime: DatabaseRuntime) -> None:
-    """Map 정본 bootstrap의 최소 catalog 경계를 admin으로 fail-close 검증한다."""
+def assert_map_database_principal_bootstrap(
+    runtime: DatabaseRuntime,
+    dagster_runtime: DatabaseRuntime,
+    dagster_metadata_user: str | None,
+) -> None:
+    """Map bootstrap의 역할·소유권·ACL 경계를 catalog에서 fail-close 검증한다.
+
+    upstream bootstrap은 PostgreSQL 16 membership option, schema/object ownership,
+    runtime ACL revoke를 모두 신뢰 경계로 정의한다. role 존재 여부만 확인하면
+    checkpoint 뒤의 drift를 정상 bootstrap으로 오인할 수 있으므로, F1D resume은
+    이 전체 catalog 상태를 매번 확인한다.
+    """
 
     _validate_runtime(runtime)
-    if runtime.role != "map_application":
-        raise DeploymentContractError("Map principal assertion requires map application")
+    _validate_runtime(dagster_runtime)
+    if runtime.role != "map_application" or dagster_runtime.role != "map_dagster":
+        raise DeploymentContractError("Map principal assertion requires Map databases")
+    if runtime.container_name != dagster_runtime.container_name:
+        raise DeploymentContractError("Map principal assertion requires one PostgreSQL container")
+    if runtime.admin_name != dagster_runtime.admin_name:
+        raise DeploymentContractError("Map principal assertion requires one PostgreSQL admin")
+    if (
+        not isinstance(dagster_metadata_user, str)
+        or not _DATABASE_IDENTIFIER.fullmatch(dagster_metadata_user)
+        or dagster_metadata_user in (*_MAP_REQUIRED_GROUP_ROLES, *_MAP_REQUIRED_LOGIN_ROLES)
+    ):
+        raise DeploymentContractError("Map Dagster metadata role is invalid")
+
     expected_roles = (*_MAP_REQUIRED_GROUP_ROLES, *_MAP_REQUIRED_LOGIN_ROLES)
     expected_values = ", ".join(f"('{role}')" for role in expected_roles)
     expected_names = ", ".join(f"'{role}'" for role in expected_roles)
+    group_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_GROUP_ROLES)
     login_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_LOGIN_ROLES)
+    runtime_principal_names = ", ".join(
+        f"'{role}'"
+        for role in (
+            "ktm_feature_runtime",
+            "ktm_feature_api_runtime",
+            "ktm_feature_dagster_runtime",
+        )
+    )
     query = (
-        f"WITH expected(role_name) AS (VALUES {expected_values}) "
+        f"WITH expected(role_name) AS (VALUES {expected_values}), "
+        "expected_membership(member_name, role_name, inherit_option, set_option) AS "
+        "(VALUES "
+        "('ktm_feature_migrator', 'ktm_feature_schema_owner', FALSE, TRUE), "
+        "('ktm_feature_api_runtime', 'ktm_feature_runtime', TRUE, FALSE), "
+        "('ktm_feature_dagster_runtime', 'ktm_feature_runtime', TRUE, FALSE), "
+        "('ktm_feature_schema_owner', 'ktm_feature_state_procedure_owner', FALSE, TRUE), "
+        "('ktm_feature_schema_owner', 'ktm_feature_audit_writer', FALSE, TRUE)) "
         "SELECT CASE WHEN "
         "(SELECT pg_get_userbyid(datdba) FROM pg_database "
         f"WHERE datname = '{runtime.database_name}') = '{_MAP_SCHEMA_OWNER}' "
+        "AND (SELECT pg_get_userbyid(datdba) FROM pg_database "
+        f"WHERE datname = '{dagster_runtime.database_name}') = '{dagster_metadata_user}' "
         "AND NOT EXISTS (SELECT 1 FROM expected LEFT JOIN pg_roles "
         "ON rolname = expected.role_name WHERE rolname IS NULL) "
         "AND NOT EXISTS (SELECT 1 FROM pg_roles "
         f"WHERE rolname IN ({expected_names}) "
-        "AND (rolsuper OR rolcreaterole OR rolbypassrls)) "
+        "AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls OR rolreplication)) "
         "AND NOT EXISTS (SELECT 1 FROM pg_roles "
-        f"WHERE rolname IN ({login_names}) AND NOT rolcanlogin) "
+        f"WHERE rolname IN ({group_names}) AND (rolcanlogin OR rolinherit)) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_roles "
+        f"WHERE rolname IN ({login_names}, '{dagster_metadata_user}') "
+        "AND (NOT rolcanlogin OR rolinherit)) "
+        "AND NOT EXISTS (SELECT 1 FROM expected_membership expected "
+        "LEFT JOIN pg_roles member_role ON member_role.rolname = expected.member_name "
+        "LEFT JOIN pg_roles granted_role ON granted_role.rolname = expected.role_name "
+        "LEFT JOIN pg_auth_members membership ON membership.member = member_role.oid "
+        "AND membership.roleid = granted_role.oid "
+        "WHERE membership.member IS NULL "
+        "OR membership.admin_option "
+        "OR membership.inherit_option IS DISTINCT FROM expected.inherit_option "
+        "OR membership.set_option IS DISTINCT FROM expected.set_option) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership "
+        "JOIN pg_roles member_role ON member_role.oid = membership.member "
+        "LEFT JOIN expected_membership expected ON expected.member_name = member_role.rolname "
+        "AND expected.role_name = pg_get_userbyid(membership.roleid) "
+        f"WHERE member_role.rolname IN ({expected_names}, '{dagster_metadata_user}') "
+        "AND expected.member_name IS NULL) "
+        "AND (SELECT count(*) FROM pg_namespace namespace "
+        "JOIN pg_roles owner_role ON owner_role.oid = namespace.nspowner "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops', 'x_extension') "
+        f"AND owner_role.rolname = '{_MAP_SCHEMA_OWNER}') = 4 "
+        "AND NOT EXISTS (SELECT 1 FROM pg_class relation "
+        "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
+        "JOIN pg_roles owner_role ON owner_role.oid = relation.relowner "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        "AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') "
+        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
+        "AND NOT EXISTS (SELECT 1 FROM pg_proc procedure "
+        "JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace "
+        "JOIN pg_roles owner_role ON owner_role.oid = procedure.proowner "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
+        "AND NOT EXISTS (SELECT 1 FROM pg_type data_type "
+        "JOIN pg_namespace namespace ON namespace.oid = data_type.typnamespace "
+        "JOIN pg_roles owner_role ON owner_role.oid = data_type.typowner "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        "AND data_type.typtype IN ('b', 'c', 'd', 'e', 'r') "
+        "AND data_type.typelem = 0 AND data_type.typrelid = 0 "
+        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
+        "AND (SELECT count(*) FROM pg_extension extension "
+        "JOIN pg_namespace namespace ON namespace.oid = extension.extnamespace "
+        "WHERE extension.extname IN ('postgis', 'pg_trgm', 'pgcrypto') "
+        "AND namespace.nspname = 'x_extension') = 3 "
+        "AND NOT EXISTS (SELECT 1 FROM pg_namespace namespace "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        "AND (NOT has_schema_privilege('ktm_feature_runtime', namespace.oid, 'USAGE') "
+        "OR has_schema_privilege('ktm_feature_runtime', namespace.oid, 'CREATE'))) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_class relation "
+        "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
+        "CROSS JOIN LATERAL aclexplode(relation.relacl) privilege "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        "AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') "
+        "AND privilege.grantee IN (SELECT oid FROM pg_roles "
+        f"WHERE rolname IN ({runtime_principal_names}))) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_default_acl default_acl "
+        "CROSS JOIN LATERAL aclexplode(default_acl.defaclacl) privilege "
+        "WHERE default_acl.defaclrole = (SELECT oid FROM pg_roles "
+        f"WHERE rolname = '{_MAP_SCHEMA_OWNER}') "
+        "AND privilege.grantee IN (SELECT oid FROM pg_roles "
+        f"WHERE rolname IN ({runtime_principal_names}))) "
         "THEN 'ok' ELSE 'invalid' END"
     )
     output = _run_checked(
@@ -262,7 +371,7 @@ def _permitted_existing_owners(runtime: DatabaseRuntime) -> frozenset[str]:
 
     if runtime.role == "map_application":
         return frozenset({runtime.owner_name, _MAP_SCHEMA_OWNER})
-    return frozenset({runtime.owner_name})
+    return frozenset({runtime.owner_name, *runtime.additional_owner_names})
 
 
 def _validate_runtime(runtime: DatabaseRuntime) -> None:
@@ -276,6 +385,11 @@ def _validate_runtime(runtime: DatabaseRuntime) -> None:
         raise DeploymentContractError("pinned runtime database owner is invalid")
     if not _DATABASE_IDENTIFIER.fullmatch(runtime.admin_name):
         raise DeploymentContractError("pinned runtime database admin role is invalid")
+    if any(
+        not _DATABASE_IDENTIFIER.fullmatch(owner_name)
+        for owner_name in runtime.additional_owner_names
+    ):
+        raise DeploymentContractError("pinned runtime database owner is invalid")
 
 
 def _database_admin_command(

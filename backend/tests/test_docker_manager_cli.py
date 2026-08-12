@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
@@ -325,12 +324,7 @@ def test_compose_ensure_build_command(
         "map",
         "pinvi",
     ]
-    map_database_command = result["command"][0]
-    assert "kor-travel-map-postgres" in map_database_command
-    assert "--wait" in map_database_command
-    assert result["command"][1][-1] == "kor-travel-map-dagster-db-init"
-    assert result["command"][2][-1] == "kor-travel-map-db-role-bootstrap"
-    up_command = result["command"][3]
+    up_command = result["command"][0]
     assert up_command[:2] == ["docker", "compose"]
     assert "up" in up_command
     assert "--build" in up_command
@@ -344,7 +338,7 @@ def test_compose_ensure_build_command(
     assert "kor-travel-concierge-api" in up_command
     assert "kor-travel-map-api" in up_command
     assert "pinvi-api" in up_command
-    assert mock_run.call_count == 7
+    assert mock_run.call_count == 4
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")

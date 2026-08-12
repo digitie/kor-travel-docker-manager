@@ -1825,12 +1825,17 @@ F1D v5는 frozen Compose에서 Map 두 database runtime을 전용 instance로, P
 Manager가 만들지 않는다. reset 직후 Map 정본 `postgres-role-bootstrap.sh`를 profile one-shot으로 실행하고,
 성공한 경우에만 Map API migration과 Dagster storage migration을 실행한다. one-shot은 `--rm`으로 종료해
 bootstrap superuser DSN과 세 role password가 normal runtime, journal 또는 잔존 container metadata에 남지
-않게 한다. bootstrap profile은 일반 `compose up`에서 비활성화한다.
+않게 한다. bootstrap profile은 일반 `compose up`에서 비활성화하며, 일반 `ensure`는
+role/password/owner/ACL mutation을 절대 실행하지 않는다. 초기화·복구는 F1D reset transaction만 담당한다.
 
-Map API에는 migrator DSN과 API runtime DSN만, Map Dagster와 daemon에는 Dagster runtime DSN만 전달한다.
-bootstrap DSN과 raw role password는 one-shot service의 유일한 입력이다. Compose candidate validator는 이
-경계와 raw/resolved secret reference를 검증하며, F1D는 bootstrap 뒤 catalog principal/ownership assertion을
-통과하지 못하면 runtime을 기동하지 않고 fail-close한다.
+Map API에는 migrator DSN과 API runtime DSN만 전달한다. Map Dagster·daemon·storage migration에는 Dagster
+application runtime DSN과 별도 non-superuser metadata login의 metadata DSN만 전달한다. bootstrap DSN과 raw
+role password는 one-shot service의 유일한 입력이다. Compose candidate validator는 실행 전 DSN의
+`127.0.0.1:12703` endpoint·database·principal과 host network를 frozen Compose identity에 결박하고,
+raw/resolved secret reference도 검증한다. F1D는 bootstrap 뒤 database owner, role attribute, PostgreSQL 16
+membership option, schema·relation·routine·type owner, extension schema, runtime/default ACL을 catalog에서
+assertion하며 통과하지 못하면 runtime을 기동하지 않고 fail-close한다. cancel probe가 아직 시작되지 않은
+resume은 checkpoint와 무관하게 DB reset과 두 Map bootstrap one-shot을 다시 실행한다.
 
 새 Map image 및 PinVi compatibility artifact는 upstream에서 merge된 exact revision만
 `PINNED_RUNTIME_RELEASE`에 반영한다. draft source SHA나 `latest-main` tag는 production/rehearsal authority가
