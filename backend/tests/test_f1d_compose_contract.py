@@ -133,7 +133,16 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
                 # dependency graph를 검증하게 이름만 최소 stub으로 둔다.
                 services[dependency] = {"image": "alpine:3.20"}
 
-    return {"services": services}
+    fragment: dict[str, object] = {"services": services}
+    if "kor-travel-map-postgres" in services:
+        source_secrets = _source_compose().get("secrets")
+        assert isinstance(source_secrets, dict)
+        fragment["secrets"] = {
+            "kor-travel-map-postgres-password": deepcopy(
+                source_secrets["kor-travel-map-postgres-password"]
+            )
+        }
+    return fragment
 
 
 def _resolved_compose(
@@ -312,6 +321,18 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
 
     services = resolved["services"]
     assert isinstance(services, dict)
+    map_postgres_environment = services["kor-travel-map-postgres"]["environment"]
+    assert isinstance(map_postgres_environment, dict)
+    assert map_postgres_environment["POSTGRES_PASSWORD_FILE"] == (
+        "/run/secrets/kor-travel-map-postgres-password"
+    )
+    assert "POSTGRES_PASSWORD" not in map_postgres_environment
+    assert services["kor-travel-map-postgres"]["secrets"] == [
+        {
+            "source": "kor-travel-map-postgres-password",
+            "target": "kor-travel-map-postgres-password",
+        }
+    ]
     bootstrap_environment = services["pinvi-admin-bootstrap"]["environment"]
     assert isinstance(bootstrap_environment, dict)
     assert _PINVI_BOOTSTRAP_MAP_ENVIRONMENT.issubset(bootstrap_environment)

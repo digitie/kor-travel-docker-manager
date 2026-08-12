@@ -971,6 +971,7 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       raw/resolved Compose·runtime 회귀를 추가했다. 일반 `ensure`는 해당 one-shot을 실행하지 않으며,
       DSN endpoint·database·principal, non-superuser Dagster metadata login, PostgreSQL 16 catalog 권한
       assertion과 pre-probe resume rebootstrap을 fail-close로 고정한다. migration 뒤 armed resume은 의도된
-      runtime ACL을 보존하고 pre-migration bootstrap assertion을 재실행하지 않는다.
+      runtime ACL을 보존하고 pre-migration bootstrap assertion을 재실행하지 않는다. long-lived PostgreSQL의
+      superuser password는 Docker secret file로만 전달해 `Config.Env`에서 제거한다.
 - [ ] Map release와 PinVi compatible pair가 merge된 exact revision으로 갱신된 뒤 n150 `rehearsal/rebuildable`
       live E2E를 실행한다. fresh data 재적재가 필요한 data-dependent 검증은 T-VN-41-F1D-D로 분리한다.

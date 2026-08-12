@@ -39,6 +39,8 @@ _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
 _MAP_DEDICATED_POSTGRES_PORT = 12703
+_MAP_POSTGRES_PASSWORD_SECRET = "kor-travel-map-postgres-password"
+_MAP_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_MAP_POSTGRES_PASSWORD_SECRET}"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_WEB_SERVICE = "pinvi-web"
@@ -200,7 +202,6 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         _MAP_CURSOR_SIGNING_SECRET_ENV
     ),
-    (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD"): "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
     (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): "KOR_TRAVEL_MAP_POSTGRES_DB",
     (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): "KOR_TRAVEL_MAP_POSTGRES_USER",
     (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
@@ -280,10 +281,7 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
         "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
     ),
-    (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD"): (
-        "${KOR_TRAVEL_MAP_POSTGRES_PASSWORD:?"
-        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD must be explicitly set}"
-    ),
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD_FILE"): _MAP_POSTGRES_PASSWORD_FILE,
     (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
         "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
@@ -381,6 +379,11 @@ _MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
             _MAP_DAGSTER_DB_INIT_SERVICE,
             "command",
             "0",
+        ),
+        (
+            "secrets",
+            _MAP_POSTGRES_PASSWORD_SECRET,
+            "environment",
         ),
     }
 )
@@ -551,6 +554,39 @@ def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
         raise ComposeCandidateContractError(
             "resolved Map database runtime must use host network"
         )
+
+
+def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
+    """전용 PostgreSQL admin password가 long-lived Env에 없는지 고정한다."""
+
+    secrets = document.get("secrets")
+    if not isinstance(secrets, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    source = secrets.get(_MAP_POSTGRES_PASSWORD_SECRET)
+    if not isinstance(source, Mapping) or source.get("environment") != (
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
+    ):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+
+    services = document.get("services")
+    postgres = services.get(_MAP_POSTGRES_SERVICE) if isinstance(services, Mapping) else None
+    if not isinstance(postgres, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    environment = postgres.get("environment")
+    if not isinstance(environment, Mapping) or environment.get("POSTGRES_PASSWORD_FILE") != (
+        _MAP_POSTGRES_PASSWORD_FILE
+    ):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    if "POSTGRES_PASSWORD" in environment:
+        raise ComposeCandidateContractError("Map PostgreSQL password leaks to container environment")
+    references = postgres.get("secrets")
+    if not isinstance(references, list) or len(references) != 1:
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    reference = references[0]
+    if not isinstance(reference, Mapping) or reference.get("source") != (
+        _MAP_POSTGRES_PASSWORD_SECRET
+    ) or reference.get("target") != _MAP_POSTGRES_PASSWORD_SECRET:
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
 
 
 _C6C_RUNTIME_IDENTIFIERS = frozenset(
@@ -1788,6 +1824,7 @@ def validate_resolved_compose_candidate_protected_values(
         raise ComposeCandidateContractError(
             "resolved compose candidate has no valid services mapping"
         )
+    _validate_map_postgres_password_secret(resolved)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -2224,6 +2261,7 @@ def validate_compose_candidate_protected_values(
         raise ComposeCandidateContractError(
             "compose candidate has no valid services mapping"
         )
+    _validate_map_postgres_password_secret(candidate)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -5604,8 +5642,14 @@ def _validate_candidate_external_resource_references(
                     raise ComposeCandidateContractError(
                         f"compose candidate {collection_name}.{alias} environment is unresolved"
                     )
-                if any(name in environment_name for name in protected_names) or any(
-                    value in environment_value for value in protected_values
+                is_map_postgres_password_secret = (
+                    collection_name == "secrets"
+                    and alias == _MAP_POSTGRES_PASSWORD_SECRET
+                    and environment_name == "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
+                )
+                if not is_map_postgres_password_secret and (
+                    any(name in environment_name for name in protected_names)
+                    or any(value in environment_value for value in protected_values)
                 ):
                     raise ComposeCandidateContractError(
                         f"compose candidate {collection_name}.{alias} environment leaks C6c data"

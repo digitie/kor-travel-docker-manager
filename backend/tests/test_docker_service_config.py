@@ -179,11 +179,14 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
                     "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
                 ),
-                "POSTGRES_PASSWORD": (
-                    "${KOR_TRAVEL_MAP_POSTGRES_PASSWORD:?"
-                    "KOR_TRAVEL_MAP_POSTGRES_PASSWORD must be explicitly set}"
-                ),
+                "POSTGRES_PASSWORD_FILE": "/run/secrets/kor-travel-map-postgres-password",
             },
+            "secrets": [
+                {
+                    "source": "kor-travel-map-postgres-password",
+                    "target": "kor-travel-map-postgres-password",
+                }
+            ],
         },
         _MAP_DAGSTER_DB_INIT_SERVICE: {
             "image": "fixture.invalid/postgres:test",
@@ -343,7 +346,14 @@ def _compose_with_canonical_c6c_services(
     }
     assert not protected_services.keys() & services.keys()
     protected_services.update(deepcopy(services))
-    return {"services": protected_services}
+    return {
+        "services": protected_services,
+        "secrets": {
+            "kor-travel-map-postgres-password": {
+                "environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
+            }
+        },
+    }
 
 
 def test_nontrivial_config_change_runs_candidate_transaction(

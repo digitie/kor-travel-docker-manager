@@ -370,7 +370,9 @@ services:
     environment:
       POSTGRES_DB: ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
       POSTGRES_USER: ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}
-      POSTGRES_PASSWORD: ${KOR_TRAVEL_MAP_POSTGRES_PASSWORD:?KOR_TRAVEL_MAP_POSTGRES_PASSWORD must be explicitly set}
+      # bootstrap superuser password는 long-lived Config.Env가 아니라 Docker secret
+      # file로만 전달한다. role bootstrap one-shot만 DSN에 credential을 보관한다.
+      POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-map-postgres-password
     command:
     - postgres
     - -c
@@ -379,6 +381,9 @@ services:
     - ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}
     volumes:
     - ${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}:/var/lib/postgresql/data
+    secrets:
+    - source: kor-travel-map-postgres-password
+      target: kor-travel-map-postgres-password
     ports:
     - 127.0.0.1:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}
     healthcheck:
@@ -1047,3 +1052,7 @@ services:
     # (or a leaf executed in this container) writes artifacts the geo-api can restore.
     volumes:
     - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
+
+secrets:
+  kor-travel-map-postgres-password:
+    environment: KOR_TRAVEL_MAP_POSTGRES_PASSWORD
