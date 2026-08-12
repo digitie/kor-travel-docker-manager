@@ -4048,8 +4048,15 @@ class ComposeService:
                 # raw/resolved Compose는 secret alias mount를 고정하지만, 실제
                 # long-lived container가 legacy password Env를 보존하지 않았는지도
                 # destructive DB reset 전에 Docker inspect로 fail-close한다.
+                map_postgres_records = self._require_services_ready(
+                    ("kor-travel-map-postgres",),
+                    transaction=runtime_transaction,
+                    frozen_recovery=True,
+                )
                 validate_map_postgres_runtime_secret_isolation(
-                    self._inspect_container_runtime_config("kor-travel-map-postgres")
+                    self._inspect_container_runtime_config(
+                        str(map_postgres_records[0]["Name"])
+                    )
                 )
 
                 reset_required = _pinned_runtime_reset_required(journal)

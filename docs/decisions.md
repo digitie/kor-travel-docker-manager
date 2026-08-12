@@ -1844,8 +1844,9 @@ Compose secret file `POSTGRES_PASSWORD_FILE`로만 초기화 entrypoint에 전�
 reference만 남고 password/DSN 원문은 남지 않는다. 이 secret alias는 PostgreSQL entrypoint의 정확한
 mount 한 곳에서만 소비할 수 있으며 API·Dagster·PinVi 또는 one-shot의 추가 mount는 raw/resolved Compose
 검증에서 fail-close한다. F1D는 database reset 전에 실제 PostgreSQL container의 `Config.Env`를 다시 inspect해
-`POSTGRES_PASSWORD` 부재와 정확한 `POSTGRES_PASSWORD_FILE`만 허용한다. bootstrap one-shot만 같은 credential을
-포함한 DSN을 받고 `--rm`으로 종료한다.
+`POSTGRES_PASSWORD` 부재와 정확한 `POSTGRES_PASSWORD_FILE`만 허용한다. inspect 대상은 고정 이름이 아니라
+frozen resolved Compose와 `compose ps`가 함께 확인한 Map PostgreSQL의 실제 singleton `Name`이다. bootstrap
+one-shot만 같은 credential을 포함한 DSN을 받고 `--rm`으로 종료한다.
 
 새 Map image 및 PinVi compatibility artifact는 upstream에서 merge된 exact revision만
 `PINNED_RUNTIME_RELEASE`에 반영한다. draft source SHA나 `latest-main` tag는 production/rehearsal authority가

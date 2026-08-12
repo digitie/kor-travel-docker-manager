@@ -973,6 +973,7 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       assertion과 pre-probe resume rebootstrap을 fail-close로 고정한다. migration 뒤 armed resume은 의도된
       runtime ACL을 보존하고 pre-migration bootstrap assertion을 재실행하지 않는다. long-lived PostgreSQL의
       superuser password는 Docker secret file로만 전달해 `Config.Env`에서 제거하고, 그 secret mount 소비자를
-      PostgreSQL entrypoint 한 곳으로 제한한다. F1D는 reset 전 실제 `Config.Env`도 다시 검사한다.
+      PostgreSQL entrypoint 한 곳으로 제한한다. F1D는 reset 전 frozen Compose/`compose ps`가 결박한 실제
+      container의 `Config.Env`도 다시 검사한다.
 - [ ] Map release와 PinVi compatible pair가 merge된 exact revision으로 갱신된 뒤 n150 `rehearsal/rebuildable`
       live E2E를 실행한다. fresh data 재적재가 필요한 data-dependent 검증은 T-VN-41-F1D-D로 분리한다.

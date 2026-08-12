@@ -801,7 +801,15 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "read_database_schema_revision",
         lambda _runtime: next(revisions),
     )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    def require_services_ready(
+        services: object,
+        **_kwargs: object,
+    ) -> list[dict[str, str]]:
+        if tuple(services) == ("kor-travel-map-postgres",):
+            return [{"Name": "frozen-map-postgres"}]
+        return []
+
+    monkeypatch.setattr(service, "_require_services_ready", require_services_ready)
     monkeypatch.setattr(
         compose_service_module,
         "load_c6c_deployment_config_from_environment",
@@ -1046,6 +1054,11 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert len(reset_operation_counts) == reset_count_before_armed_resume
     assert map_bootstrap_assertion.call_count == bootstrap_assertions_before_armed_resume
     assert map_postgres_runtime_secret_assertion.call_count == 3
+    assert service._inspect_container_runtime_config.call_args_list == [
+        (("frozen-map-postgres",),),
+        (("frozen-map-postgres",),),
+        (("frozen-map-postgres",),),
+    ]
     assert operations.count(
         (
             "--profile",
@@ -1543,7 +1556,15 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
         "read_database_schema_revision",
         lambda _runtime: next(revision_heads),
     )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    def require_services_ready(
+        services: object,
+        **_kwargs: object,
+    ) -> list[dict[str, str]]:
+        if tuple(services) == ("kor-travel-map-postgres",):
+            return [{"Name": "frozen-map-postgres"}]
+        return []
+
+    monkeypatch.setattr(service, "_require_services_ready", require_services_ready)
     monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
     monkeypatch.setattr(compose_service_module, "reconcile_generation_references", reconcile)
 
