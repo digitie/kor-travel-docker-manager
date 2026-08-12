@@ -35,6 +35,10 @@ _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
+_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
+_MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
+_MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
+_MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_WEB_SERVICE = "pinvi-web"
@@ -140,9 +144,28 @@ _MAP_PRODUCTION_API_LITERAL_VALUES = {
 _MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
     _MAP_PRODUCTION_API_LITERAL_VALUES
 )
+_MAP_DATABASE_SECRET_ENV_NAMES = frozenset(
+    {
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+    }
+)
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
     {
         _MAP_API_SERVICE,
+        _MAP_DAGSTER_SERVICE,
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        _MAP_POSTGRES_SERVICE,
+        _MAP_DAGSTER_DB_INIT_SERVICE,
+        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -176,7 +199,138 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         _MAP_CURSOR_SIGNING_SECRET_ENV
     ),
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD"): "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"): (
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+    ),
+    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+    ),
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
 }
+_MAP_DATABASE_CANONICAL_ENV_VALUES = {
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_PASSWORD:?"
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD:?"
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?"
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+    ),
+    **{
+        (service, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
+            "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+        )
+        for service in (
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        )
+    },
+    **{
+        (service, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
+        )
+        for service in (
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        )
+    },
+    **{
+        (service, "KOR_TRAVEL_MAP_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
+        )
+        for service in (
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        )
+    },
+}
+_MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
+    {
+        (
+            "services",
+            _MAP_DAGSTER_DB_INIT_SERVICE,
+            "command",
+            "0",
+        ),
+    }
+)
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
     (_MAP_API_SERVICE, _MAP_CANCEL_ENV): "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}",
@@ -227,11 +381,13 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         (_MAP_API_SERVICE, env_name): value
         for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
     },
+    **_MAP_DATABASE_CANONICAL_ENV_VALUES,
 }
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES
     | _MAP_PRODUCTION_SECRET_ENV_NAMES
+    | _MAP_DATABASE_SECRET_ENV_NAMES
     | {
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
@@ -290,6 +446,16 @@ _CANDIDATE_ALLOWED_SYSTEM_BINDS = {
     ("cadvisor", "/var/run/docker.sock", True): "/var/run/docker.sock",
 }
 _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
+    (
+        "kor-travel-map-postgres",
+        "/var/lib/postgresql/data",
+        False,
+    ): "${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}",
+    (
+        "kor-travel-map-db-role-bootstrap",
+        "/usr/local/bin/postgres-role-bootstrap",
+        True,
+    ): "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh",
     (
         "kor-travel-geo-postgres",
         "/var/lib/postgresql/data",
@@ -1473,6 +1639,7 @@ def validate_resolved_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | _MAP_DATABASE_SECRET_ENV_NAMES
     )
     protected_values = (
         *(
@@ -1484,10 +1651,16 @@ def validate_resolved_compose_candidate_protected_values(
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    }
+    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS
 
     for service_name in (
         _MAP_API_SERVICE,
+        _MAP_DAGSTER_SERVICE,
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        _MAP_POSTGRES_SERVICE,
+        _MAP_DAGSTER_DB_INIT_SERVICE,
+        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -1891,6 +2064,7 @@ def validate_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | _MAP_DATABASE_SECRET_ENV_NAMES
     )
     protected_values = (
         *(
@@ -1902,10 +2076,16 @@ def validate_compose_candidate_protected_values(
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    }
+    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS
 
     for service_name in (
         _MAP_API_SERVICE,
+        _MAP_DAGSTER_SERVICE,
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        _MAP_POSTGRES_SERVICE,
+        _MAP_DAGSTER_DB_INIT_SERVICE,
+        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -4815,6 +4995,14 @@ def _validate_candidate_volume_graph(
                 ) from exc
             if stat.S_ISREG(source_stat.st_mode):
                 _assert_candidate_regular_file(resolved_source)
+                if (
+                    str(service_name) == _MAP_DB_ROLE_BOOTSTRAP_SERVICE
+                    and mount.target == "/usr/local/bin/postgres-role-bootstrap"
+                ):
+                    # Map release source가 소유한 정본 bootstrap은 role password env
+                    # identifier를 선언한다. candidate source staging/provenance가 이
+                    # exact bind를 동결하므로 일반 C6c secret text 검사 대상이 아니다.
+                    continue
                 try:
                     source_text = resolved_source.read_text(encoding="utf-8")
                 except (OSError, UnicodeError, ValueError) as exc:

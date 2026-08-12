@@ -28,9 +28,17 @@ containers:
     compose_service: kor-travel-geo-postgres
     role: postgresql
     display_name: Kor Travel 통합 PostgreSQL / PostGIS
-    connection: "postgresql://localhost:5432 (DBs: kor_travel_geo, pinvi, kor_travel_concierge, krtour_map)"
+    connection: "postgresql://localhost:5432 (DBs: kor_travel_geo, pinvi, kor_travel_concierge)"
     expected_ports:
       - "5432:5432"
+  kor-travel-map-postgresql:
+    name: kor-travel-map-postgres
+    compose_service: kor-travel-map-postgres
+    role: map-postgresql
+    display_name: Kor Travel Map 전용 PostgreSQL / PostGIS
+    connection: "postgresql://127.0.0.1:12703 (DBs: kor_travel_map, kor_travel_map_dagster)"
+    expected_ports:
+      - "12703:12703"
   rustfs:
     name: kor-travel-rustfs
     compose_service: rustfs
@@ -347,12 +355,13 @@ targets:
     port_band: "12700-12799"
     depends_on: [geo, conc]
     display_name: Kor Travel Map
-    description: Kor Travel Map API/Dagster/Web UI를 실행하며 Kor Travel Geo와 Kor Travel Concierge에 의존한다.
+    description: 전용 PostgreSQL과 Kor Travel Map API/Dagster/Web UI를 실행하며 Kor Travel Geo와 Kor Travel Concierge에 의존한다.
     aliases:
       - kor-travel-map
       - krtour-map
       - python-krtour-map
     services:
+      - kor-travel-map-postgres
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
@@ -364,6 +373,7 @@ targets:
       - kor-travel-map-dagster-daemon
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-map-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
@@ -398,6 +408,7 @@ targets:
       - pinvi-dagster
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-map-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
@@ -433,6 +444,7 @@ targets:
     runtime_services: []
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-map-postgresql
       - rustfs
       - grafana
       - cadvisor

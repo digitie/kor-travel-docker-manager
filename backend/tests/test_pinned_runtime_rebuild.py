@@ -774,6 +774,12 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "database_runtimes_from_frozen_contract",
         lambda **_kwargs: (object(), object(), object()),
     )
+    map_bootstrap_assertion = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "assert_map_database_principal_bootstrap",
+        map_bootstrap_assertion,
+    )
     monkeypatch.setattr(
         compose_service_module,
         "recreate_empty_databases",
@@ -883,6 +889,8 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "rm",
         "-f",
         "-s",
+        "kor-travel-map-dagster-db-init",
+        "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
@@ -893,10 +901,37 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "--all",
         "--format",
         "json",
+        "kor-travel-map-dagster-db-init",
+        "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
-    assert reset_operation_counts == [5]
+    assert operations[5] == (
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        "300",
+        "kor-travel-map-postgres",
+    )
+    assert reset_operation_counts == [6]
+    assert operations[6] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-dagster-db-init",
+    )
+    assert operations[7] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-db-role-bootstrap",
+    )
+    map_bootstrap_assertion.assert_called_once()
     assert static_commands == [
         ("ktm-application-schema", "head"),
         ("ktm-dagster-storage", "head"),
@@ -1376,6 +1411,11 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
         "database_runtimes_from_frozen_contract",
         lambda **_kwargs: (object(), object(), object()),
     )
+    monkeypatch.setattr(
+        compose_service_module,
+        "assert_map_database_principal_bootstrap",
+        Mock(),
+    )
     monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
     monkeypatch.setattr(
         compose_service_module,
@@ -1403,6 +1443,8 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
             "rm",
             "-f",
             "-s",
+            "kor-travel-map-dagster-db-init",
+            "kor-travel-map-db-role-bootstrap",
             "kor-travel-map-dagster-storage-migrate",
             "pinvi-admin-bootstrap",
         ),
@@ -1413,9 +1455,19 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
             "--all",
             "--format",
             "json",
+            "kor-travel-map-dagster-db-init",
+            "kor-travel-map-db-role-bootstrap",
             "kor-travel-map-dagster-storage-migrate",
             "pinvi-admin-bootstrap",
         ),
     ]
     assert operations.count(("stop", *RUNTIME_SERVICES)) == 3
+    assert (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-db-role-bootstrap",
+    ) not in operations
     database_reset.assert_not_called()

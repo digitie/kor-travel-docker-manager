@@ -41,6 +41,11 @@ _MAP_RUNTIME_SERVICES = (
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
 )
+_MAP_DATABASE_ONESHOT_SERVICES = (
+    "kor-travel-map-dagster-db-init",
+    "kor-travel-map-db-role-bootstrap",
+    "kor-travel-map-dagster-storage-migrate",
+)
 _PINVI_RUNTIME_SERVICES = ("pinvi-api", "pinvi-web", "pinvi-dagster")
 _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
     {
@@ -64,6 +69,33 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "t" * 32,
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "test-geo-key",
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
+        "KOR_TRAVEL_MAP_POSTGRES_DB": "map_contract",
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_contract_dagster",
+        "KOR_TRAVEL_MAP_POSTGRES_USER": "map_contract_admin",
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD": "map-contract-postgres-password",
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": (
+            "postgresql://map_contract_admin:map-contract-postgres-password@"
+            "127.0.0.1:12703/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": "map-contract-migrator-password",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD": "map-contract-api-password",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD": "map-contract-dagster-password",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12703/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_api_runtime:map-contract-api-password@"
+            "127.0.0.1:12703/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
+            "127.0.0.1:12703/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
+            "postgresql://map_contract_admin:map-contract-postgres-password@"
+            "127.0.0.1:12703/map_contract_dagster"
+        ),
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
             "pbkdf2_sha256$100000$test-salt$test-digest"
         ),
@@ -160,11 +192,19 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         "DAGSTER_DISABLE_TELEMETRY": "yes",
         "DAGSTER_HOME": "/opt/dagster/dagster_home",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
-            "postgresql://krtour_map:krtour_map_dev_password@127.0.0.1:5432/"
-            "kor_travel_map_dagster"
+            "postgresql://map_contract_admin:map-contract-postgres-password@"
+            "127.0.0.1:12703/map_contract_dagster"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
+            "127.0.0.1:12703/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
+            "127.0.0.1:12703/map_contract"
         ),
     }
-    assert migration["depends_on"]["kor-travel-geo-postgres"]["condition"] == (
+    assert migration["depends_on"]["kor-travel-map-postgres"]["condition"] == (
         "service_healthy"
     )
     assert migration["extra_hosts"] == ["host.docker.internal=host-gateway"]
@@ -221,14 +261,26 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     source = _source_compose()
     assert "x-pinvi-map-ops-validation" not in source
     candidate = _compose_fragment(
+        "kor-travel-map-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
     )
     environment = _compose_contract_environment()
     root_env = tmp_path / ".env"
     root_env.write_text("\n", encoding="utf-8")
+    map_pgdata = tmp_path / "map-pgdata"
+    map_pgdata.mkdir()
+    environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
+    map_source = tmp_path / "map-source"
+    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
+    bootstrap_script.parent.mkdir(parents=True)
+    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
 
     raw_snapshots = validate_compose_candidate_protected_values(
         candidate,
@@ -237,10 +289,18 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         environment=environment,
     )
     resolved = _resolved_compose(
+        "kor-travel-map-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
+        environment_update={
+            "KOR_TRAVEL_MAP_PGDATA": str(map_pgdata),
+            "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
+        },
     )
     assert validate_resolved_compose_candidate_protected_values(
         resolved,
@@ -259,6 +319,37 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "PINVI_KOR_TRAVEL_MAP_OPS_FIXTURE_TOKEN",
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
     }.intersection(bootstrap_environment)
+
+    map_api_environment = services["kor-travel-map-api"]["environment"]
+    map_dagster_environment = services["kor-travel-map-dagster"]["environment"]
+    map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"][
+        "environment"
+    ]
+    assert isinstance(map_api_environment, dict)
+    assert isinstance(map_dagster_environment, dict)
+    assert isinstance(map_bootstrap_environment, dict)
+    assert {
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+    }.issubset(map_api_environment)
+    assert "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN" not in map_api_environment
+    assert {
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+    }.issubset(map_dagster_environment)
+    assert not {
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+    }.intersection(map_api_environment | map_dagster_environment)
+    assert map_bootstrap_environment["KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_ENABLED"] == "true"
+    assert {
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+    }.issubset(map_bootstrap_environment)
 
 
 def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> None:

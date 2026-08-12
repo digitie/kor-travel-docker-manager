@@ -307,6 +307,7 @@ def test_rebuild_journal_rejects_fixture_timestamp_drift() -> None:
         created_at="2026-08-06T00:00:00+00:00",
     ).transition("reset_intent_durable")
     journal = journal.transition("databases_recreated")
+    journal = journal.transition("map_database_bootstrapped")
     journal = journal.transition("map_application_ready")
     journal = journal.transition("map_dagster_ready")
     journal = journal.transition("map_runtime_ready")

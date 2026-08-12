@@ -60,6 +60,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-scheduler",
         "kor-travel-concierge-ui",
+        "kor-travel-map-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -277,6 +278,8 @@ def test_compose_ensure_build_command(
     mock_run.return_value.returncode = 0
     mock_run.return_value.stdout = "started"
     mock_run.return_value.stderr = ""
+    lock_directory = Path("/tmp") / tmp_path.name
+    lock_directory.mkdir(mode=0o700, exist_ok=True)
 
     with patch.dict(
         os.environ,
@@ -284,7 +287,7 @@ def test_compose_ensure_build_command(
             "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
             "PINVI_ENVIRONMENT": "development",
             "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
-            "KTDM_C6C_DEPLOYMENT_LOCK": str(tmp_path / "ensure.lock"),
+            "KTDM_C6C_DEPLOYMENT_LOCK": str(lock_directory / "ensure.lock"),
         },
     ):
         result = ComposeService().ensure_target("srv", build=True, recreate=True)
@@ -302,6 +305,7 @@ def test_compose_ensure_build_command(
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-scheduler",
         "kor-travel-concierge-ui",
+        "kor-travel-map-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -321,7 +325,12 @@ def test_compose_ensure_build_command(
         "map",
         "pinvi",
     ]
-    up_command = result["command"][0]
+    map_database_command = result["command"][0]
+    assert "kor-travel-map-postgres" in map_database_command
+    assert "--wait" in map_database_command
+    assert result["command"][1][-1] == "kor-travel-map-dagster-db-init"
+    assert result["command"][2][-1] == "kor-travel-map-db-role-bootstrap"
+    up_command = result["command"][3]
     assert up_command[:2] == ["docker", "compose"]
     assert "up" in up_command
     assert "--build" in up_command
@@ -335,7 +344,7 @@ def test_compose_ensure_build_command(
     assert "kor-travel-concierge-api" in up_command
     assert "kor-travel-map-api" in up_command
     assert "pinvi-api" in up_command
-    assert mock_run.call_count == 4
+    assert mock_run.call_count == 7
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")

@@ -45,6 +45,12 @@ _MAP_INGESTION_SERVICES = (
 )
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
+_MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
+_MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
+_MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
+_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
+_MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
+_MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
@@ -144,7 +150,55 @@ def _candidate_capture_for(compose_path: Path):  # type: ignore[no-untyped-def]
 def _compose_with_canonical_c6c_services(
     services: dict[str, object],
 ) -> dict[str, object]:
+    bootstrap_dsn = (
+        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
+    )
+    dagster_runtime_dsn = (
+        "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
+    )
+    dagster_pg_url = (
+        "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+    )
     protected_services: dict[str, object] = {
+        _MAP_POSTGRES_SERVICE: {
+            "image": "fixture.invalid/postgis:test",
+            "container_name": "kor-travel-map-postgres",
+            "network_mode": "host",
+            "environment": {
+                "POSTGRES_PASSWORD": (
+                    "${KOR_TRAVEL_MAP_POSTGRES_PASSWORD:?"
+                    "KOR_TRAVEL_MAP_POSTGRES_PASSWORD must be explicitly set}"
+                ),
+            },
+        },
+        _MAP_DAGSTER_DB_INIT_SERVICE: {
+            "image": "fixture.invalid/postgres:test",
+            "network_mode": "host",
+            "environment": {"KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": bootstrap_dsn},
+            "command": ["psql \"$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN\""],
+        },
+        _MAP_DB_ROLE_BOOTSTRAP_SERVICE: {
+            "image": "fixture.invalid/postgres:test",
+            "network_mode": "host",
+            "environment": {
+                "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": bootstrap_dsn,
+                "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": (
+                    "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
+                    "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD": (
+                    "${KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD:?"
+                    "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD": (
+                    "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?"
+                    "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
+                ),
+            },
+        },
         _MAP_API_SERVICE: {
             "image": "fixture.invalid/kor-travel-map-api:test",
             "container_name": "kor-travel-map-api-latest",
@@ -169,6 +223,18 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
                     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
                 ),
+                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+                    "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
+                    "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_PG_DSN": (
+                    "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+                ),
                 "KOR_TRAVEL_MAP_API_PROFILE": "production",
                 "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
                 "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED": "true",
@@ -179,6 +245,22 @@ def _compose_with_canonical_c6c_services(
                     '["127.0.0.1/32","::1/128"]'
                 ),
             }
+        },
+        **{
+            service_name: {
+                "image": "fixture.invalid/kor-travel-map-dagster:test",
+                "network_mode": "host",
+                "environment": {
+                    "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
+                    "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": dagster_runtime_dsn,
+                    "KOR_TRAVEL_MAP_PG_DSN": dagster_runtime_dsn,
+                },
+            }
+            for service_name in (
+                _MAP_DAGSTER_SERVICE,
+                _MAP_DAGSTER_DAEMON_SERVICE,
+                _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+            )
         },
         _MAP_UI_SERVICE: {
             "image": "fixture.invalid/kor-travel-map-ui:test",
@@ -1084,6 +1166,34 @@ def _prepare_candidate_transaction(
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
             _MAP_CURSOR_SIGNING_SECRET,
+        )
+        monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+            "postgresql://map:test-map-postgres-password@127.0.0.1:12703/kor_travel_map",
+        )
+        monkeypatch.setenv("KOR_TRAVEL_MAP_MIGRATOR_PASSWORD", "test-map-migrator")
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD", "test-map-api-runtime"
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD", "test-map-dagster-runtime"
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+            "postgresql://migrator:test-map-migrator@127.0.0.1:12703/kor_travel_map",
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+            "postgresql://api:test-map-api-runtime@127.0.0.1:12703/kor_travel_map",
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+            "postgresql://dagster:test-map-dagster-runtime@127.0.0.1:12703/kor_travel_map",
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+            "postgresql://map:test-map-postgres-password@127.0.0.1:12703/kor_travel_map_dagster",
         )
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(

@@ -16,6 +16,9 @@
   조건으로 둔다.
 - 정확한 Map release pin은 upstream Map PR의 merge된 revision과 PinVi compatibility artifact가 확정된 뒤에만
   갱신한다. draft source의 SHA를 production authority로 추정하지 않는다.
+- Manager 구현은 전용 DB service, strict principal DSN wiring, profile one-shot bootstrap, F1D catalog
+  assertion과 shared recovery의 Map lifecycle 제거까지 완료했다. 전체 회귀 352건과 Ruff를 통과했고 이번
+  서비스 4개는 `mypy` 무오류다. exact upstream pair가 없으므로 n150 live E2E는 아직 실행하지 않았다.
 
 ---
 

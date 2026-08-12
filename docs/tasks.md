@@ -963,9 +963,11 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
       F1D-D를 완료 이력으로 이관한다.
 ### #171: Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포
 
-- [/] 통합 PostgreSQL의 `kor_travel_map` lifecycle을 제거하고, Map application·Dagster metadata 전용
-      `kor-travel-map-postgres`를 `127.0.0.1:12703`으로 분리한다.
-- [ ] F1D v5가 전용 DB만 reset한 뒤 Map 정본 `postgres-role-bootstrap.sh`를 one-shot으로 실행하고,
-      DSN 세 principal과 Map/Dagster migration을 순서대로 검증한다.
+- [x] 통합 PostgreSQL의 `kor_travel_map` lifecycle을 제거하고, Map application·Dagster metadata 전용
+      `kor-travel-map-postgres`를 `127.0.0.1:12703`으로 분리했다. 공용 DB recovery는 Map role·schema·
+      extension·database를 더 이상 생성하거나 ownership/ACL을 변경하지 않는다.
+- [x] F1D v5가 전용 DB health 확인·reset 뒤 Map 정본 `postgres-role-bootstrap.sh`와 Dagster DB init을
+      `--rm` one-shot으로 실행하고, bootstrap catalog assertion 뒤 Map/Dagster migration을 시작하도록
+      raw/resolved Compose·runtime 회귀를 추가했다.
 - [ ] Map release와 PinVi compatible pair가 merge된 exact revision으로 갱신된 뒤 n150 `rehearsal/rebuildable`
       live E2E를 실행한다. fresh data 재적재가 필요한 data-dependent 검증은 T-VN-41-F1D-D로 분리한다.
