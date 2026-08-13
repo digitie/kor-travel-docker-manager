@@ -194,6 +194,11 @@ def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
     assert "map_dagster_metadata" in command[-1]
     assert "granted_role.rolname" in command[-1]
     assert "privilege.grantee = 0" in command[-1]
+    # 실데이터 덤프/복원 경로(#171)에서 이 테이블 소유권이 넘어가지 않으면
+    # migrator가 첫 `SELECT version_num`에서 42501로 죽는다. fresh DB에서는
+    # 테이블이 없어 무증상이라 assertion이 직접 봐야 한다.
+    assert "relation.relname = 'alembic_version'" in command[-1]
+    assert "namespace.nspname = 'public'" in command[-1]
 
 
 def test_map_principal_bootstrap_assertion_fails_closed(

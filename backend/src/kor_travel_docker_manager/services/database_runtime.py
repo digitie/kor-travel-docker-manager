@@ -301,6 +301,17 @@ def assert_map_database_principal_bootstrap(
         "JOIN pg_roles owner_role ON owner_role.oid = procedure.proowner "
         "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
         f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
+        # `public.alembic_version`은 위 세 schema 밖이라 sweep에서도, 이 assertion
+        # 에서도 오래 비어 있었다. 실데이터를 덤프/복원한 DB에서는 이 테이블이 구
+        # superuser 소유로 남고, ADR-090 경로(migrator LOGIN -> SET ROLE schema
+        # owner)가 첫 `SELECT version_num`에서 42501로 죽는다 — 단 한 revision도
+        # 적용되지 못한다. fresh DB에서는 테이블 자체가 없어 무증상이었다.
+        # 존재하면 반드시 schema owner여야 한다(없는 것은 fresh DB의 정상 상태).
+        "AND NOT EXISTS (SELECT 1 FROM pg_class relation "
+        "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
+        "JOIN pg_roles owner_role ON owner_role.oid = relation.relowner "
+        "WHERE namespace.nspname = 'public' AND relation.relname = 'alembic_version' "
+        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
         "AND NOT EXISTS (SELECT 1 FROM pg_type data_type "
         "JOIN pg_namespace namespace ON namespace.oid = data_type.typnamespace "
         "JOIN pg_roles owner_role ON owner_role.oid = data_type.typowner "
