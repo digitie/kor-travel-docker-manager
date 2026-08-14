@@ -473,6 +473,15 @@ services:
       NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}
       NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL: ${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+      # admin UI의 `/api/geo/*` 프록시가 상류 geo에 붙일 **소비자** 키다. 위의 VWorld
+      # 키와는 다른 자격증명이고, geo는 VWorld 키를 401(E0401)로 거절한다.
+      # 이 이름은 `NEXT_PUBLIC_` 접두가 없는 **런타임** 변수라서 이미 구워진 이미지에도
+      # 먹는다 — 재빌드 없이 컨테이너 재생성만으로 반영된다(프록시가 런타임 쪽을 먼저
+      # 읽는다: route.ts의 `KOR_TRAVEL_GEO_API_KEY ?? NEXT_PUBLIC_...`).
+      # 지금까지 이 줄이 없어서 api/dagster/daemon 셋만 키를 받고 UI만 빠져 있었다.
+      # 미설정이면 프록시가 `GEO_API_KEY_NOT_CONFIGURED`로 명시적으로 실패하므로
+      # `:?`로 스택 전체를 세우지 않는다.
+      KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:-}
     ports:
     - ${KOR_TRAVEL_MAP_UI_PORT:-12705}:${KOR_TRAVEL_MAP_UI_CONTAINER_PORT:-12705}
     healthcheck:
