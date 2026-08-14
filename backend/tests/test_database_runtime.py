@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-import pytest
-
 import kor_travel_docker_manager.services.database_runtime as database_runtime
+import pytest
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
+    assert_map_database_principal_bootstrap,
     database_runtimes_from_frozen_contract,
     read_database_schema_revision,
     recreate_empty_database,
@@ -36,27 +36,42 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
                 "kor-travel-geo-postgres": {
                     "container_name": "postgres-production",
                     "environment": {"POSTGRES_USER": "cluster_admin"},
+                },
+                "kor-travel-map-postgres": {
+                    "container_name": "map-postgres-production",
+                    "environment": {"POSTGRES_USER": "map_cluster_admin"},
                 }
             }
         },
         environment={
-            "KRTOUR_MAP_POSTGRES_DB": "map_app",
-            "KRTOUR_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
-            "KRTOUR_MAP_POSTGRES_USER": "map_owner",
+            "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+            "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+            "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
             "PINVI_POSTGRES_DB": "pin_app",
             "PINVI_POSTGRES_USER": "pin_owner",
         },
     )
 
     assert [
-        (runtime.role, runtime.database_name, runtime.owner_name, runtime.admin_name)
+        (
+            runtime.role,
+            runtime.container_name,
+            runtime.database_name,
+            runtime.owner_name,
+            runtime.admin_name,
+        )
         for runtime in runtimes
     ] == [
-        ("map_application", "map_app", "map_owner", "cluster_admin"),
-        ("map_dagster", "map_dagster", "map_owner", "cluster_admin"),
-        ("pinvi", "pin_app", "pin_owner", "cluster_admin"),
+        ("map_application", "map-postgres-production", "map_app", "map_owner", "map_cluster_admin"),
+        ("map_dagster", "map-postgres-production", "map_dagster", "map_owner", "map_cluster_admin"),
+        ("pinvi", "postgres-production", "pin_app", "pin_owner", "cluster_admin"),
     ]
-    assert {runtime.container_name for runtime in runtimes} == {"postgres-production"}
+    assert {runtime.container_name for runtime in runtimes} == {
+        "map-postgres-production",
+        "postgres-production",
+    }
+    assert runtimes[1].additional_owner_names == frozenset({"map_dagster_metadata"})
 
 
 @pytest.mark.parametrize(
@@ -73,10 +88,14 @@ def test_database_runtime_rejects_invalid_frozen_admin_role(
                     "kor-travel-geo-postgres": {
                         "container_name": "postgres-production",
                         "environment": postgres_environment,
-                    }
+                    },
+                    "kor-travel-map-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
                 }
             },
-            environment={},
+            environment={"KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata"},
         )
 
 
@@ -102,7 +121,6 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
     assert [label for _, label in calls] == [
         "map_application database destructive drop",
         "map_application database destructive create",
-        "Map application infrastructure provisioning",
         "map_dagster database destructive drop",
         "map_dagster database destructive create",
         "pinvi database destructive drop",
@@ -114,38 +132,11 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
     ] == [
         "dropdb",
         "createdb",
-        "psql",
         "dropdb",
         "createdb",
         "dropdb",
         "createdb",
     ]
-    provision_commands = [
-        arguments
-        for arguments, label in calls
-        if label == "Map application infrastructure provisioning"
-    ]
-    assert len(provision_commands) == 1
-    provision = provision_commands[0]
-    assert provision[provision.index("--dbname") + 1] == "map_app"
-    assert provision[provision.index("--username") + 1] == "cluster_admin"
-    assert provision[provision.index("--command") + 1] == (
-        "CREATE SCHEMA IF NOT EXISTS feature;\n"
-        "CREATE SCHEMA IF NOT EXISTS provider_sync;\n"
-        "CREATE SCHEMA IF NOT EXISTS ops;\n"
-        "CREATE SCHEMA IF NOT EXISTS x_extension;\n"
-        "CREATE EXTENSION IF NOT EXISTS postgis SCHEMA x_extension;\n"
-        "CREATE EXTENSION IF NOT EXISTS postgis_topology;\n"
-        "CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA x_extension;\n"
-        "CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA x_extension;\n"
-        "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;\n"
-        "ALTER DATABASE map_app SET search_path = public, x_extension;\n"
-        "GRANT ALL PRIVILEGES ON SCHEMA public TO map_owner;\n"
-        "GRANT ALL PRIVILEGES ON SCHEMA feature TO map_owner;\n"
-        "GRANT ALL PRIVILEGES ON SCHEMA provider_sync TO map_owner;\n"
-        "GRANT ALL PRIVILEGES ON SCHEMA ops TO map_owner;\n"
-        "GRANT ALL PRIVILEGES ON SCHEMA x_extension TO map_owner;"
-    )
     assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
     assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
 
@@ -161,6 +152,75 @@ def test_recreate_empty_database_refuses_foreign_owned_database(
         recreate_empty_database(_runtime("pinvi"))
 
     runner.assert_not_called()
+
+
+def test_recreate_empty_map_database_accepts_bootstrap_schema_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(return_value=b"")
+    monkeypatch.setattr(
+        database_runtime,
+        "_read_database_owner",
+        Mock(return_value="ktm_feature_schema_owner"),
+    )
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    recreate_empty_database(_runtime("map_application"))
+
+    assert [call.kwargs["label"] for call in runner.call_args_list] == [
+        "map_application database destructive drop",
+        "map_application database destructive create",
+    ]
+
+
+def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(return_value=b"ok\n")
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    assert_map_database_principal_bootstrap(
+        _runtime("map_application"),
+        _runtime("map_dagster"),
+        "map_dagster_metadata",
+    )
+
+    command = runner.call_args.args[0]
+    assert command[command.index("--dbname") + 1] == "map_app"
+    assert "ktm_feature_schema_owner" in command[-1]
+    assert "ktm_feature_api_runtime" in command[-1]
+    assert "pg_auth_members" in command[-1]
+    assert "pg_default_acl" in command[-1]
+    assert "map_dagster_metadata" in command[-1]
+    assert "granted_role.rolname" in command[-1]
+    assert "privilege.grantee = 0" in command[-1]
+    # 실데이터 덤프/복원 경로(#171)에서 이 테이블 소유권이 넘어가지 않으면
+    # migrator가 첫 `SELECT version_num`에서 42501로 죽는다. fresh DB에서는
+    # 테이블이 없어 무증상이라 assertion이 직접 봐야 한다.
+    assert "relation.relname = 'alembic_version'" in command[-1]
+    assert "namespace.nspname = 'public'" in command[-1]
+
+
+def test_map_principal_bootstrap_assertion_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(database_runtime, "_run_checked", Mock(return_value=b"invalid\n"))
+
+    with pytest.raises(DeploymentContractError, match="bootstrap assertion failed"):
+        assert_map_database_principal_bootstrap(
+            _runtime("map_application"),
+            _runtime("map_dagster"),
+            "map_dagster_metadata",
+        )
+
+
+def test_map_principal_bootstrap_assertion_rejects_metadata_role_collision() -> None:
+    with pytest.raises(DeploymentContractError, match="metadata role is invalid"):
+        assert_map_database_principal_bootstrap(
+            _runtime("map_application"),
+            _runtime("map_dagster"),
+            "ktm_feature_runtime",
+        )
 
 
 def test_recreate_empty_databases_requires_three_canonical_roles() -> None:

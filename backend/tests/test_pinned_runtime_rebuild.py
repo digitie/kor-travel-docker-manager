@@ -3,13 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
-
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cCancelProbeFixture,
@@ -774,6 +774,23 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "database_runtimes_from_frozen_contract",
         lambda **_kwargs: (object(), object(), object()),
     )
+    map_bootstrap_assertion = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "assert_map_database_principal_bootstrap",
+        map_bootstrap_assertion,
+    )
+    map_postgres_runtime_secret_assertion = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "validate_map_postgres_runtime_secret_isolation",
+        map_postgres_runtime_secret_assertion,
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_runtime_config",
+        Mock(return_value={"Env": []}),
+    )
     monkeypatch.setattr(
         compose_service_module,
         "recreate_empty_databases",
@@ -784,7 +801,15 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "read_database_schema_revision",
         lambda _runtime: next(revisions),
     )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    def require_services_ready(
+        services: object,
+        **_kwargs: object,
+    ) -> list[dict[str, str]]:
+        if tuple(services) == ("kor-travel-map-postgres",):
+            return [{"Name": "frozen-map-postgres"}]
+        return []
+
+    monkeypatch.setattr(service, "_require_services_ready", require_services_ready)
     monkeypatch.setattr(
         compose_service_module,
         "load_c6c_deployment_config_from_environment",
@@ -798,15 +823,19 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     ) -> list[dict[str, int | str]]:
         assert callable(state_recorder)
         state = cast(Any, cancel_probe_state)
-        state.fixture = C6cCancelProbeFixture(
-            transaction_id=state.transaction_id,
-            job_id="0" * 8 + "-0000-0000-0000-000000000000",
-            state="armed",
-            cancellation_id=None,
-            canonical_unsafe_outcome=None,
-            created_at="2026-08-06T00:00:00+00:00",
-        )
-        state_recorder(state)
+        if state.fixture is None:
+            state.fixture = C6cCancelProbeFixture(
+                transaction_id=state.transaction_id,
+                job_id="0" * 8 + "-0000-0000-0000-000000000000",
+                state="armed",
+                cancellation_id=None,
+                canonical_unsafe_outcome=None,
+                created_at="2026-08-06T00:00:00+00:00",
+            )
+            state_recorder(state)
+        else:
+            assert state.fixture.state == "armed"
+            assert state.fixture.job_id == "0" * 8 + "-0000-0000-0000-000000000000"
         state.attempted = True
         state_recorder(state)
         outcome: dict[str, int | str] = {
@@ -883,6 +912,8 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "rm",
         "-f",
         "-s",
+        "kor-travel-map-dagster-db-init",
+        "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
@@ -893,10 +924,37 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "--all",
         "--format",
         "json",
+        "kor-travel-map-dagster-db-init",
+        "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
-    assert reset_operation_counts == [5]
+    assert operations[5] == (
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        "300",
+        "kor-travel-map-postgres",
+    )
+    assert reset_operation_counts == [6]
+    assert operations[6] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-dagster-db-init",
+    )
+    assert operations[7] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-db-role-bootstrap",
+    )
+    map_bootstrap_assertion.assert_called_once()
     assert static_commands == [
         ("ktm-application-schema", "head"),
         ("ktm-dagster-storage", "head"),
@@ -910,6 +968,107 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert not (
         tmp_path / "state" / "f1d-c2" / "bootstrap" / str(result["transaction_id"])
     ).exists()
+
+    # cancel probe가 아직 durable하게 시작되지 않은 Map migration 실패 뒤에는
+    # checkpoint phase와 관계없이 DB·principal bootstrap을 새로 실행해야 한다.
+    write_rebuild_journal(
+        pinned_runtime_state_paths(
+            values,
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        ).journal,
+        replace(
+            final_journal,
+            phase="map_application_ready",
+            cancel_probe=PinnedRuntimeCancelProbeReceipt(),
+        ),
+    )
+    revisions = iter(("map-application-head", "map-dagster-head", "pinvi-head"))
+
+    resumed = service.rebuild_pinned_runtime()
+
+    assert resumed["phase"] == "committed"
+    assert len(reset_operation_counts) == 2
+    assert map_bootstrap_assertion.call_count == 2
+    assert operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-db-init",
+        )
+    ) == 2
+    assert operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+        "kor-travel-map-db-role-bootstrap",
+        )
+    ) == 2
+
+    # Map migration은 runtime relation ACL을 의도적으로 부여한다. 이미 armed인
+    # fixture는 DB reset 없이 그 post-migration state에서 이어가야 하며, 빈 DB
+    # bootstrap assertion을 재실행해 정상 ACL을 오인하면 안 된다.
+    armed = PinnedRuntimeCancelProbeReceipt().transition(
+        "armed",
+        job_id="0" * 8 + "-0000-0000-0000-000000000000",
+        fixture_created_at="2026-08-06T00:00:00+00:00",
+    )
+    write_rebuild_journal(
+        pinned_runtime_state_paths(
+            values,
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        ).journal,
+        replace(
+            read_rebuild_journal(
+                pinned_runtime_state_paths(
+                    values,
+                    pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+                ).journal
+            ),
+            phase="map_application_ready",
+            cancel_probe=armed,
+        ),
+    )
+    reset_count_before_armed_resume = len(reset_operation_counts)
+    bootstrap_assertions_before_armed_resume = map_bootstrap_assertion.call_count
+    dagster_db_init_count_before_armed_resume = operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-db-init",
+        )
+    )
+    revisions = iter(("map-application-head", "map-dagster-head", "pinvi-head"))
+
+    armed_resumed = service.rebuild_pinned_runtime()
+
+    assert armed_resumed["phase"] == "committed"
+    assert len(reset_operation_counts) == reset_count_before_armed_resume
+    assert map_bootstrap_assertion.call_count == bootstrap_assertions_before_armed_resume
+    assert map_postgres_runtime_secret_assertion.call_count == 3
+    assert service._inspect_container_runtime_config.call_args_list == [
+        (("frozen-map-postgres",),),
+        (("frozen-map-postgres",),),
+        (("frozen-map-postgres",),),
+    ]
+    assert operations.count(
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-db-init",
+        )
+    ) == dagster_db_init_count_before_armed_resume
 
 
 def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() -> None:
@@ -1376,13 +1535,36 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
         "database_runtimes_from_frozen_contract",
         lambda **_kwargs: (object(), object(), object()),
     )
+    monkeypatch.setattr(
+        compose_service_module,
+        "assert_map_database_principal_bootstrap",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "validate_map_postgres_runtime_secret_isolation",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_runtime_config",
+        Mock(return_value={"Env": []}),
+    )
     monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
     monkeypatch.setattr(
         compose_service_module,
         "read_database_schema_revision",
         lambda _runtime: next(revision_heads),
     )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    def require_services_ready(
+        services: object,
+        **_kwargs: object,
+    ) -> list[dict[str, str]]:
+        if tuple(services) == ("kor-travel-map-postgres",):
+            return [{"Name": "frozen-map-postgres"}]
+        return []
+
+    monkeypatch.setattr(service, "_require_services_ready", require_services_ready)
     monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
     monkeypatch.setattr(compose_service_module, "reconcile_generation_references", reconcile)
 
@@ -1403,6 +1585,8 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
             "rm",
             "-f",
             "-s",
+            "kor-travel-map-dagster-db-init",
+            "kor-travel-map-db-role-bootstrap",
             "kor-travel-map-dagster-storage-migrate",
             "pinvi-admin-bootstrap",
         ),
@@ -1413,9 +1597,19 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
             "--all",
             "--format",
             "json",
+            "kor-travel-map-dagster-db-init",
+            "kor-travel-map-db-role-bootstrap",
             "kor-travel-map-dagster-storage-migrate",
             "pinvi-admin-bootstrap",
         ),
     ]
     assert operations.count(("stop", *RUNTIME_SERVICES)) == 3
+    assert (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-db-role-bootstrap",
+    ) not in operations
     database_reset.assert_not_called()

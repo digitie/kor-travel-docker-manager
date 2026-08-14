@@ -23,6 +23,7 @@
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[x]` | 2026-08-04 | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부. Manager 측 완료, issue #109 종료 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
+| **#171** | Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포 | `[/]` | - | 전용 Map DB/F1D bootstrap, T-VN-40 canonical snapshot principal 최소 권한 결선 및 Hallmark 운영 콘솔 재설계 반영. upstream exact pair의 final receipt/live 검증 대기 |
 
 ---
 
@@ -960,3 +961,22 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
 - [ ] **데이터 의존 수용 검증 기록** — 재적재가 끝난 뒤 고정 curated/feature ID를 전제하는 관리자 UI
       상세·지도 표 landmark E2E와 PinVi 변경 E2E를 다시 실행해 결과를 기록한다. 모두 통과하면
       F1D-D를 완료 이력으로 이관한다.
+### #171: Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포
+
+- [x] 통합 PostgreSQL의 `kor_travel_map` lifecycle을 제거하고, Map application·Dagster metadata 전용
+      `kor-travel-map-postgres`를 `127.0.0.1:12703`으로 분리했다. 공용 DB recovery는 Map role·schema·
+      extension·database를 더 이상 생성하거나 ownership/ACL을 변경하지 않는다.
+- [x] F1D v5가 전용 DB health 확인·reset 뒤 Map 정본 `postgres-role-bootstrap.sh`와 Dagster DB init을
+      `--rm` one-shot으로 실행하고, bootstrap catalog assertion 뒤 Map/Dagster migration을 시작하도록
+      raw/resolved Compose·runtime 회귀를 추가했다. 일반 `ensure`는 해당 one-shot을 실행하지 않으며,
+      DSN endpoint·database·principal, non-superuser Dagster metadata login, PostgreSQL 16 catalog 권한
+      assertion과 pre-probe resume rebootstrap을 fail-close로 고정한다. migration 뒤 armed resume은 의도된
+      runtime ACL을 보존하고 pre-migration bootstrap assertion을 재실행하지 않는다. long-lived PostgreSQL의
+      superuser password는 Docker secret file로만 전달해 `Config.Env`에서 제거하고, 그 secret mount 소비자를
+      PostgreSQL entrypoint 한 곳으로 제한한다. F1D는 reset 전 frozen Compose/`compose ps`가 결박한 실제
+      container의 `Config.Env`도 다시 검사한다.
+- [ ] Map release와 PinVi compatible pair가 merge된 exact revision으로 갱신된 뒤 n150 `rehearsal/rebuildable`
+      live E2E를 실행한다. fresh data 재적재가 필요한 data-dependent 검증은 T-VN-41-F1D-D로 분리한다.
+- [x] Hallmark audit의 critical 1·major 5·minor 1 개선을 반영했다. Cobalt 토큰과 Workbench 원장 구조를
+      `DESIGN.md`·`frontend/tokens.css`·모든 운영 UI에 적용했고, 768px 이하에서는 서비스·백업 표를
+      레이블형 행으로 전환했다. 이 변경은 #171의 deployment authority나 live E2E gate를 변경하지 않는다.

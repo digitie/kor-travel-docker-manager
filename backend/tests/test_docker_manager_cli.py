@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
@@ -60,6 +59,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-scheduler",
         "kor-travel-concierge-ui",
+        "kor-travel-map-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -277,6 +277,8 @@ def test_compose_ensure_build_command(
     mock_run.return_value.returncode = 0
     mock_run.return_value.stdout = "started"
     mock_run.return_value.stderr = ""
+    lock_directory = Path("/tmp") / tmp_path.name
+    lock_directory.mkdir(mode=0o700, exist_ok=True)
 
     with patch.dict(
         os.environ,
@@ -284,7 +286,7 @@ def test_compose_ensure_build_command(
             "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
             "PINVI_ENVIRONMENT": "development",
             "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
-            "KTDM_C6C_DEPLOYMENT_LOCK": str(tmp_path / "ensure.lock"),
+            "KTDM_C6C_DEPLOYMENT_LOCK": str(lock_directory / "ensure.lock"),
         },
     ):
         result = ComposeService().ensure_target("srv", build=True, recreate=True)
@@ -302,6 +304,7 @@ def test_compose_ensure_build_command(
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-scheduler",
         "kor-travel-concierge-ui",
+        "kor-travel-map-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",

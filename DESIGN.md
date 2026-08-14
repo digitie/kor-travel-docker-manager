@@ -1,265 +1,134 @@
-> [!IMPORTANT]
-> **운영 대시보드 UI는 StyleSeed 기반 [`docs/DESIGN-RULES.md`](docs/DESIGN-RULES.md)를 따른다.**
-> 2026-06-20부로 매니저 프론트엔드(`frontend/`)는 Tailwind v4 + StyleSeed 라이트 토큰 체계로 전환되어
-> 아래 BMW M Pure Black 양식을 대체했다(ADR-17). 이 문서는 과거 시각 양식의 기록으로 보존한다.
-> 새 UI 작업은 `docs/DESIGN-RULES.md`의 semantic 토큰(surface/text/brand/status)을 기준으로 한다.
-
-## Overview
-
-BMW M's marketing surface is a near-pure black canvas (`{colors.canvas}` — #000) holding white BMW Type Next Latin headlines in **confident UPPERCASE**. The system has no decorative voltage of its own; brand energy comes from **full-bleed automotive photography** — cars cornering at speed, carbon-fiber wheel detail, driver cockpit shots, motorsport pit lanes — placed as edge-to-edge content that fills entire bands. UI chrome around the photography stays minimal: thin sans-serif copy, dividers as 1px hairlines (`{colors.hairline}`), all-caps button labels with no fill until hovered.
-
-The **M tricolor stripe** — `{colors.m-blue-light}` (#0066b1) → `{colors.m-blue-dark}` (#1c69d4) → `{colors.m-red}` (#e22718) — appears sparingly as the brand's signature accent, used on the M wordmark, motorsport chrome, vehicle-tech callouts, and model badges. It is never a CTA color and never used as a background fill — the tricolor is exclusively a brand-identity marker.
-
-Type voice runs **BMW Type Next Latin** in two cuts: regular for display + nav labels and Light for body + secondary copy. Display sizes use weight 700 (BMW's signature heavy-but-tight setting), while body type drops to weight 300 (Light). The contrast between heavy display and light body is the system's editorial signature.
-
-**Key Characteristics:**
-- Near-pure black canvas (`{colors.canvas}` — #000) with white type. The system inverts almost nothing — there is no light-mode marketing surface.
-- Display headlines in UPPERCASE BMW Type Next Latin at weight 700. Sub-heads stay sentence-case at lighter weight.
-- M tricolor (`{colors.m-blue-light}` / `{colors.m-blue-dark}` / `{colors.m-red}`) used as 4px brand-stripe dividers, M-wordmark accents, and motorsport chrome — never as buttons or fills.
-- Photography fills entire bands edge-to-edge. Cars are always the visual subject; UI chrome backs off to small white labels overlaid on photography.
-- Buttons are flat with `{rounded.none}` (0px) corners and uppercase letterspaced labels. The "industrial precision" rectangular silhouette IS the brand.
-- Border radius is mostly zero across the system. The few exceptions: `{rounded.full}` on circular icon buttons (carousel arrows, chatbot launcher) and `{rounded.sm}` on a handful of small toggle pills.
-- Spacing is generous and grid-aligned: `{spacing.section}` (96px) between major bands; `{spacing.xxl}` (64px) inside hero photo bands; `{spacing.xl}` (40px) inside content cards.
-
-## Colors
-
-### Brand & Accent
-- **Primary** (`{colors.primary}` — #ffffff): The system's primary type and CTA color. Used for h1/h2/h3 display, body text on dark, and primary button labels (the buttons themselves are transparent or canvas-colored — the white text + outline IS the button).
-- **M Blue Light** (`{colors.m-blue-light}` — #0066b1): The first stop in the M tricolor stripe. Used on M-badge accents and motorsport chrome.
-- **M Blue Dark** (`{colors.m-blue-dark}` — #1c69d4): The middle stop. The same hex as `{colors.bmw-blue}` — BMW's heritage corporate blue, repurposed as the middle band of the M stripe.
-- **M Red** (`{colors.m-red}` — #e22718): The third stop. The signature M-power red, used in the stripe and on motorsport-pace callouts.
-- **Electric Blue** (`{colors.electric-blue}` — #0653b6): A separate electric-vehicle accent used on M xDrive electric model pages. Distinct from the heritage blue — feels colder, more digital.
-
-### Surface
-- **Canvas** (`{colors.canvas}` — #000000): The default page floor across every marketing surface. True black.
-- **Surface Soft** (`{colors.surface-soft}` — #0d0d0d): A barely-different-from-black used for spec table cells and footer-adjacent strips.
-- **Surface Card** (`{colors.surface-card}` — #1a1a1a): Cards, secondary buttons, icon-button backgrounds.
-- **Surface Elevated** (`{colors.surface-elevated}` — #262626): One step lighter, used for nested cards inside dark bands.
-- **Carbon Gray** (`{colors.carbon-gray}` — #2b2b2b): Carbon-fiber-inspired surface tone used on technical-spec cards.
-
-### Hairlines & Borders
-- **Hairline** (`{colors.hairline}` — #3c3c3c): The 1px divider tone on dark surfaces. Used between body sections, between table rows, around card outlines.
-- **Hairline Strong** (`{colors.hairline-strong}` — #262626): Same hex as `{colors.surface-elevated}` — borders feel like one-step elevations rather than ink lines.
-
-### Text
-- **Ink / On Dark** (`{colors.on-dark}` — #ffffff): All headline and primary text on dark canvas.
-- **Body** (`{colors.body}` — #bbbbbb): Default running-text color (slightly cooler than pure white). Used for body paragraphs and secondary metadata.
-- **Body Strong** (`{colors.body-strong}` — #e6e6e6): Emphasized body / lead paragraph.
-- **Muted** (`{colors.muted}` — #7e7e7e): Footer links, breadcrumbs, captions.
+# Kor Travel Docker Manager 디자인 시스템
 
-### Semantic
-- **Warning** (`{colors.warning}` — #f4b400): Used very sparingly on technical-warning callouts.
-- **Success** (`{colors.success}` — #0fa336): Order-confirmation states (rare on marketing surfaces).
+## 목적과 범위
 
-## Typography
+이 문서는 Kor Travel Docker Manager 운영 콘솔의 화면 설계 정본이다. 인증, 실시간 컨테이너 현황, 상세 inspect, 로그·성능 차트, 백업 이력, 관리자 인증 설정과 오류 화면이 하나의 언어로 동작하도록 규정한다. 비즈니스 서비스 화면이나 고객용 사이트에는 적용하지 않는다.
 
-### Font Family
-**BMW Type Next Latin** is BMW's licensed display + body typeface. The system uses two cuts: regular and Light. The fallback stack walks `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`.
+이번 시스템은 Hallmark 감사(2026-08-13)를 바탕으로 이전의 브랜드 기록을 대체한다. 화면은 장식보다 운영 판단과 안전한 조치의 순서를 먼저 드러낸다.
 
-The split is a deliberate weight-pair:
-- Display (700) for headlines, navigation labels, button text, and category labels — the "stamped" voice
-- Light (300) for body paragraphs, descriptive copy, and secondary metadata — the "engineered" voice
+## 고정된 방향
 
-The contrast between heavy display and light body is BMW's editorial signature — never blur it by using regular (400) display or medium (500) body.
+| 구분 | 결정 |
+| --- | --- |
+| 장르 | modern-minimal |
+| 앱 구조 | Workbench — 상단 작업 도구, 요약 신호, 서비스 원장, 상세 작업 표면 |
+| 테마 | Cobalt — 차가운 종이 표면, cobalt 조치 신호, graphite 관찰 표면 |
+| 탐색 | N13 인라인 명령 팔레트. `⌘/Ctrl + K`와 버튼이 같은 명령을 연다. |
+| 하단 | Ft2 단일 상태 행. 데이터 원천과 현재 동기화 방식을 짧게 표시한다. |
+| 장식 | 없음. 라이브 인프라 데이터가 시각적 밀도를 담당하며, 의미 없는 이미지·일러스트·그라데이션을 쓰지 않는다. |
 
-### Hierarchy
+## 공통 토큰
 
-| Token | Size | Weight | Line Height | Letter Spacing | Use |
-|---|---|---|---|---|---|
-| `{typography.display-xl}` | 80px | 700 | 1.0 | 0 | Hero h1 ("THE ULTIMATE", "MORE BMW M.") |
-| `{typography.display-lg}` | 56px | 700 | 1.05 | 0 | Section heads ("MORE FROM BMW M MAGAZINE.") |
-| `{typography.display-md}` | 40px | 700 | 1.1 | 0 | Sub-section heads, model names |
-| `{typography.display-sm}` | 32px | 700 | 1.15 | 0 | CTA-band heads, category page titles |
-| `{typography.title-lg}` | 24px | 700 | 1.3 | 0 | Card titles in 3-up grids |
-| `{typography.title-md}` | 20px | 400 | 1.4 | 0 | Card sub-titles, lead paragraphs |
-| `{typography.title-sm}` | 18px | 400 | 1.4 | 0 | Spec callouts, intro paragraphs |
-| `{typography.label-uppercase}` | 14px | 700 | 1.3 | 1.5px | Category tabs, "VIEW MORE" inline labels |
-| `{typography.body-md}` | 16px | 300 (Light) | 1.5 | 0 | Default body — BMW Type Next Latin Light |
-| `{typography.body-sm}` | 14px | 300 (Light) | 1.5 | 0 | Footer body, cookie consent, fine print |
-| `{typography.caption}` | 12px | 400 | 1.4 | 0.5px | Photo captions, image-credit lines |
-| `{typography.button}` | 14px | 700 | 1.0 | 1.5px | All button labels — uppercase, letterspaced |
-| `{typography.nav-link}` | 14px | 400 | 1.4 | 0.5px | Top-nav menu items |
+토큰 구현 정본은 `frontend/tokens.css`다. JSX, 차트 설정, 새 CSS에 별도 색상 값·그림자·radius를 넣지 않는다.
 
-### Principles
-The system contrasts heavy headlines (700) against very light body (300) at all times — the gap is the editorial signature. Letter-spacing is non-trivial: button labels and category labels carry 1.5px tracking that makes them feel "machined" rather than "typed." Display headlines stay at 0 letter-spacing — BMW Type's natural cap-height handles spacing on large sizes.
+### 색상
 
-UPPERCASE display is the default voice for h1/h2 — sentence case appears on body and intro paragraphs but rarely on headlines. The all-caps treatment is a brand-voice signal, not a stylistic choice.
+| 역할 | 토큰 | 값 |
+| --- | --- | --- |
+| 페이지 | `--color-page` | `oklch(98.2% 0.006 255)` |
+| 표면 | `--color-card` | `oklch(100% 0 0)` |
+| 보조 표면 | `--color-subtle` | `oklch(95.9% 0.012 255)` |
+| 구분선 | `--color-line` | `oklch(87.4% 0.018 255)` |
+| 본문 | `--color-ink` | `oklch(35% 0.025 258)` |
+| 강한 본문 | `--color-strong` | `oklch(24.5% 0.021 258)` |
+| 주요 조치 | `--color-brand` | `oklch(56% 0.205 260)` |
+| 성공 | `--color-ok` | `oklch(54% 0.14 150)` |
+| 경고 | `--color-warn` | `oklch(64% 0.16 72)` |
+| 위험 | `--color-danger` | `oklch(53% 0.2 28)` |
+| 관찰 표면 | `--color-graphite` | `oklch(22% 0.025 258)` |
 
-### Note on Font Substitutes
-If BMW Type Next Latin is unavailable, **Inter** (variable) at 700/300 is the closest open-source substitute. Adjust display headline tracking to -0.5px to match BMW Type's tighter spacing at large sizes. **Saira Condensed** is an alternative for headlines if a slightly more compressed feel is desired.
+상태색은 상태 점, 배지, 작은 수치 강조에만 쓴다. 큰 컨테이너 표면 전체를 상태색으로 칠하지 않는다. 위험한 동작은 경고 배너가 아니라 해당 조치 버튼과 확인 문구에 가깝게 둔다.
 
-## Layout
+### 타이포그래피
 
-### Spacing System
-- **Base unit:** 4px.
-- **Tokens:** `{spacing.xxs}` 4px · `{spacing.xs}` 8px · `{spacing.sm}` 12px · `{spacing.md}` 16px · `{spacing.lg}` 24px · `{spacing.xl}` 40px · `{spacing.xxl}` 64px · `{spacing.section}` 96px.
-- **Section padding (vertical):** `{spacing.section}` (96px) between major editorial bands.
-- **Hero photo bands:** `{spacing.xxl}` (64px) internal vertical padding around the hero h1 + sub-headline pair.
-- **Card internal padding:** `{spacing.lg}` (24px) for content and model cards; `{spacing.xl}` (40px) for spec-cell tables.
-- **Gutters:** `{spacing.lg}` (24px) between cards in 3-up grids; `{spacing.md}` (16px) inside footer columns.
+| 용도 | 서체 | 규칙 |
+| --- | --- | --- |
+| 표시 제목 | Space Grotesk | 대시보드 제목·섹션 제목. `600` 중심, 약한 음수 자간 |
+| 본문·폼 | IBM Plex Sans | 14px 이상을 기본으로 하며 긴 문장은 1.5 이상의 행간 |
+| 데이터·코드 | IBM Plex Mono | 컨테이너명, 포트, 해시, 수치, 동기화 상태 |
 
-### Grid & Container
-- **Max content width:** ~1440px centered on marketing pages — wider than typical SaaS to give photography breathing room.
-- **Editorial body:** Single 12-column grid; photo bands bleed full-bleed (no max-width).
-- **Card grids:** 3-up at desktop, 2-up at tablet, 1-up at mobile.
-- **Footer:** 4-column link list at desktop, 2-up at tablet, 1-up at mobile.
+작은 대문자 레이블은 데이터 구획을 알리는 용도만 쓴다. 제목·버튼·설명 전체에 대문자를 남용하지 않는다.
 
-### Whitespace Philosophy
-BMW M trusts photography to do the visual work. Whitespace around photography is restrained — the cars fill the frame, and copy sits below or beside them in tightly-aligned columns. Where whitespace appears (between body sections, around CTAs), it's always uniform `{spacing.section}` (96px). The system never adds atmospheric backdrops, gradients, or decoration — empty space stays as empty black canvas.
+### 간격·형태·모션
 
-## Elevation & Depth
+- 간격은 `--space-3xs`부터 `--space-2xl`까지의 8단계 토큰만 사용한다.
+- 카드와 버튼의 기본 radius는 6px(`--radius-card`), 큰 작업 표면은 10px(`--radius-panel`)다. 큰 pill은 상태 배지에만 쓴다.
+- 그림자는 카드와 모달에만 약하게 사용한다. hover는 그림자보다 테두리와 표면색의 변화로 먼저 전달한다.
+- 전환은 색상·테두리·그림자·변형처럼 필요한 속성만 150ms `--ease-default`로 제한한다. `transition-all`은 사용하지 않는다.
+- `prefers-reduced-motion`에서는 비필수 애니메이션과 전환을 거의 제거한다.
 
-| Level | Treatment | Use |
-|---|---|---|
-| Flat | No shadow, no border | Body sections, top nav, footer, photo bands |
-| Soft hairline | 1px `{colors.hairline}` border | Section dividers, card outlines, table rows |
-| Card surface | `{colors.surface-card}` background over canvas — no shadow | Feature photo cards, magazine cards, chatbot launcher |
-| Photographic depth | Full-bleed photography with edge-to-edge crop | Hero bands, motorsport features — depth via subject matter, not chrome |
+## 화면 구조
 
-The system uses no drop shadows and no layered chrome. Depth comes entirely from photography (subject + lens + lighting) and the contrast between black canvas and slightly-elevated `{colors.surface-card}`.
+### 운영 대시보드
 
-### Decorative Depth
-- **M Stripe Divider** (`{component.m-stripe-divider}`): A 4px-tall horizontal divider carrying the M tricolor (`{colors.m-blue-light}` → `{colors.m-blue-dark}` → `{colors.m-red}`). Used on motorsport chrome, model-detail headers, and brand-identity moments. The stripe is the system's only true "decorative" element — used sparingly to mark significance.
-- **Carbon-fiber surfaces**: The technical-spec page uses `{colors.carbon-gray}` (#2b2b2b) cells with subtle texture overlay. This is a single-page treatment, not a system-wide pattern.
-- **Photographic depth**: Full-bleed cars are the depth. Lighting in the photography (track lights, sunset rim-light) does the elevation work that drop shadows would do in a SaaS system.
+1. 고정 상단: 서비스 식별, 인라인 명령 진입점, 설정·백업·로그아웃, 동기화 상태.
+2. 요약: 동일 카드 네 장이 아니라, 서비스 수를 하나의 수평 원장으로 보이고 우측 graphite 신호면에 실시간/폴백 상태를 둔다.
+3. 서비스 원장: 데스크톱은 표, 768px 이하에서는 레이블이 포함된 행 카드로 자연스럽게 전환한다. 가로 스크롤을 기본 수단으로 삼지 않는다.
+4. 하단: 데이터 원천과 현재 동기화 모드를 한 줄로 표기한다.
 
-## Shapes
+### 인증과 오류
 
-### Border Radius Scale
+인증은 graphite 안내면과 밝은 폼면을 분리한다. 오류는 같은 밝은 작업 카드에서 원인·복구·상세 정보를 순서대로 보인다. 고객 마케팅용 hero, 미확인 통계, 장식 이미지는 사용하지 않는다.
 
-| Token | Value | Use |
-|---|---|---|
-| `{rounded.none}` | 0px | All buttons, cards, photo containers, spec cells, inputs — the dominant radius |
-| `{rounded.xs}` | 2px | Almost no use — reserved for legal CTAs |
-| `{rounded.sm}` | 4px | Small toggle pills on configurator surfaces |
-| `{rounded.md}` | 6px | Rare — small dropdown menu items |
-| `{rounded.full}` | 9999px / 50% | Circular icon buttons, carousel arrows, chatbot launcher |
+### 상세·관리 패널
 
-The radius hierarchy is "almost always 0, sometimes circular." This binary radius decision is a deliberate brand-language choice — sharp rectangles read as engineered precision; circles read as functional controls. Nothing in between.
+상세 inspect, 백업 이력, 인증 설정, 로그, 차트, 구성 변경은 동일한 `ops-modal` 헤더와 닫기 버튼을 쓴다. backdrop blur를 사용하지 않으며, 키보드 Escape와 초기 포커스 처리를 유지한다.
 
-### Photography Geometry
-Hero photography fills full-width with no rounding. Photo cards inside grids retain `{rounded.none}` corners, edge-to-edge images. Carbon-wheel detail shots and motorsport-pit photos use 16:9 or 21:9 cinema-aspect ratios. Driver portraits in racing-team grids use 4:5 portrait crops, also with sharp corners.
+## 상호작용과 상태
 
-## Components
+| 요소 | 기본 | Hover | Focus | Active | Disabled | Loading | Error | Success |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 기본 버튼 | card+line | brand tint | 2px brand outline | 1px 아래 이동 | 50% opacity | spinner+문구 | danger 근접 문구 | 성공 문구 |
+| 주요 버튼 | brand | brand ink | 2px brand outline | 1px 아래 이동 | 50% opacity | spinner+문구 | 위험 문구 | 완료 문구 |
+| 입력 | card+line | tertiary line | brand line+ring | 유지 | 입력 금지 | 제출 버튼에서 표현 | 필드 아래 문구 | 별도 성공색 없음 |
+| 표 행 | card | row surface | 행 안의 조치로 이동 | 해당 조치만 이동 | 조치만 비활성 | 처리 중 레이블 | 상태값과 원인 | 최신 데이터 반영 |
 
-### Top Navigation
+명령 팔레트는 실제 설정·백업·로그아웃 동작을 연다. 모달과 명령 팔레트는 Escape로 닫히며, 모든 클릭 가능한 요소는 키보드 focus를 잃지 않는다.
 
-**`top-nav`** — Black nav bar pinned to the top of every page. 64px tall, `{colors.canvas}` background. Carries the BMW M logo at left (M tricolor + BMW roundel + "M" wordmark), primary horizontal menu (Models, Topics, Magazine, Configurator, Fastlane), right-side cluster with language selector, search icon, account icon. Menu items render in `{typography.nav-link}` with sentence-case labels.
+## 반응형 규칙
 
-### Buttons
+| 폭 | 규칙 |
+| --- | --- |
+| 320px | 상단 제어를 두 열과 명령 한 줄로 배치하고, 모든 조치의 높이를 40px 이상 보장한다. |
+| 375px | 요약 수치를 두 열 원장으로 유지하고 긴 컨테이너명은 줄바꿈한다. |
+| 414px | 서비스 행의 조치·도구를 전체 폭 행으로 배치한다. |
+| 768px 이하 | 표 header를 숨기고 각 셀의 `data-label`을 표시한다. 콘텐츠 가로 스크롤을 만들지 않는다. |
+| 960px 이상 | 서비스 원장을 표로, 요약을 넓은 원장과 우측 신호면으로 배치한다. |
 
-**`button-primary`** — The signature primary CTA. Background `{colors.canvas}` (or transparent over photography), text `{colors.on-dark}` (white), 1px white border outline, rounded `{rounded.none}` (0px), padding 16px × 32px, height 48px. Type `{typography.button}` — uppercase 14px / 700 / 1.5px tracking. The rectangular silhouette and uppercase letterspaced label IS the brand button.
+## 구현 산출물
 
-**`button-primary-outline`** — Same shape as primary but with transparent background and white outline only. Used over photography where a filled button would clash with the image.
+### CSS 변수
 
-**`button-on-light`** — Used on rare light-surface contexts (configurator, account dialogs). Background `{colors.canvas}`, text `{colors.on-dark}` — black button with white text, inverted from the dark-canvas default.
+`frontend/tokens.css`의 `@theme`과 `:root`가 구현 정본이다. 새 화면은 `bg-brand`, `text-secondary`, `border-line`과 `ops-*` 공통 클래스를 사용한다.
 
-**`button-icon`** — Circular icon buttons (carousel controls, share, favorite). 48 × 48px, background `{colors.surface-card}`, white icon centered, rounded `{rounded.full}`. The only non-rectangular button shape in the system.
+### Tailwind v4
 
-**`carousel-arrow`** — Specific 48 × 48 circular arrow used in photo carousels. Same shape as `{component.button-icon}` with chevron glyph.
+`@theme` 토큰으로 Tailwind 유틸리티를 생성한다. 임의 hex, 임의 shadow, 임의 radius 유틸리티를 새로 만들지 않는다.
 
-**`text-link`** — Inline uppercase letterspaced links ("VIEW ALL MODELS", "READ MORE"). `{typography.label-uppercase}`, white on dark, no underline. The chevron arrow → glyph appears next to most link labels.
+### DTCG 대응
 
-### Cards & Containers
+```json
+{
+  "color": {
+    "brand": { "$type": "color", "$value": "oklch(56% 0.205 260)" },
+    "surface": { "$type": "color", "$value": "oklch(100% 0 0)" },
+    "graphite": { "$type": "color", "$value": "oklch(22% 0.025 258)" }
+  },
+  "font": {
+    "display": { "$type": "fontFamily", "$value": "Space Grotesk" },
+    "body": { "$type": "fontFamily", "$value": "IBM Plex Sans" },
+    "mono": { "$type": "fontFamily", "$value": "IBM Plex Mono" }
+  }
+}
+```
 
-**`hero-photo-band`** — Full-width black band with full-bleed automotive photography filling most of the frame. The h1 uses `{typography.display-xl}` (80px / 700) and sits left-aligned over the photo, often with a small subtitle in `{typography.body-md}` below. Vertical padding `{spacing.xxl}` (64px). No card frame — the photo IS the band.
+### shadcn 대응
 
-**`feature-photo-card`** — Used in 3-up grids for "MORE FROM BMW M MAGAZINE" and similar editorial sections. Background `{colors.surface-card}`, rounded `{rounded.none}`, internal padding `{spacing.lg}` (24px). Top half of the card is a 16:9 photo (full-bleed within the card); below the photo, a category tag in `{typography.label-uppercase}`, a `{typography.title-lg}` title, and a short body description.
+기존 shadcn 구성요소를 추가할 때 `background`는 `--color-card`, `foreground`는 `--color-strong`, `primary`는 `--color-brand`, `border`는 `--color-line`, `ring`은 `--color-brand`로 매핑한다. 새 컴포넌트도 동일한 6px 기본 radius와 150ms 속성별 전환을 사용한다.
 
-**`model-card`** — Used in the "MORE NEW M MODELS" 3-up grid. Background `{colors.canvas}` (no card surface — just photo on black), rounded `{rounded.none}`. Top: 16:10 hero shot of the model. Below: model name in `{typography.display-md}` (40px / 700), short specs line in `{typography.body-sm}`, a `{component.text-link}` ("EXPLORE THIS MODEL").
+## 감사 기준
 
-**`magazine-article-card`** — A more text-forward card variant used on the magazine overview page. Background `{colors.canvas}` with hairline border, rounded `{rounded.none}`. Carries a small thumbnail at top, a category label in `{typography.label-uppercase}`, headline in `{typography.title-lg}`, and a body excerpt.
-
-**`spec-cell`** — Technical specification cells used on model-detail pages (engine specs, weight, top speed, 0-100 time). Background `{colors.surface-soft}` (#0d0d0d), rounded `{rounded.none}`, padding `{spacing.lg}` (24px). Each cell holds a value in `{typography.display-sm}` (32px / 700) at top and a label in `{typography.label-uppercase}` below.
-
-**`motorsport-photo-card`** — Edge-to-edge photo cards used in the racing-team / motorsport sections. No card surface — just a full-bleed photograph with a small overlay caption in white text at the bottom-left. The photography IS the brand here.
-
-**`chatbot-launcher`** — A right-side card-style entry point ("BMW M CHATBOT") on the homepage. Background `{colors.surface-card}`, rounded `{rounded.none}`, padding `{spacing.lg}` (24px). Carries an h3 title, a short prompt, and a `{component.button-primary}` to launch.
-
-**`category-tab`** + **`category-tab-active`** — The category selector tabs used on the magazine and topics pages (e.g., "ALL · MAGAZINE · MODELS · LIFESTYLE · MOTORSPORT"). Tabs render as text-only labels in `{typography.label-uppercase}`. Active state changes text color from `{colors.body}` to `{colors.on-dark}` and adds a 2px white underline below the label. No background fill, no rounded corners.
-
-### Inputs & Forms
-
-**`text-input`** — Standard text input on dark surfaces. Background `{colors.surface-card}`, text `{colors.on-dark}`, type `{typography.body-md}`, rounded `{rounded.none}` (0px), padding 12px × 16px, height 48px. 1px hairline border. Focus state thickens the border to white.
-
-**`cookie-consent-card`** — A right-side cookie-banner card visible on the homepage. Background `{colors.canvas}` with 1px hairline, rounded `{rounded.none}`, padding `{spacing.lg}` (24px). Body text in `{typography.body-sm}` (14px / 300) — Light weight even for legal text. Two buttons stacked at bottom: primary outline + text-link.
-
-### Signature Components
-
-**`m-stripe-divider`** — The 4px horizontal stripe carrying the M tricolor (`{colors.m-blue-light}` → `{colors.m-blue-dark}` → `{colors.m-red}`). Used as a divider on motorsport chrome, between brand-identity sections, and as a hover-state indicator on category tabs. The most distinctive non-typographic element in the system.
-
-**`cta-band-photo`** — A pre-footer "Drive an M" CTA band carrying full-bleed photography of a car cornering on a track, with a centered headline in `{typography.display-md}` and a `{component.button-primary-outline}` below. Vertical padding 80px. The CTA inherits the editorial gravity of the rest of the page through full-bleed photography rather than chrome.
-
-### Footer
-
-**`footer`** — Black footer that closes every page. Background `{colors.canvas}`, text `{colors.body}`. 4-column link list at desktop covering BMW M Models / BMW M Lifestyle / Owners / Company. Vertical padding 64px. Bottom row carries the BMW corporate disclaimer in `{typography.caption}` and language selector. The footer never inverts — it stays black even when the body might transition.
-
-## Do's and Don'ts
-
-### Do
-- Anchor every page with full-bleed automotive photography. The cars are the brand voltage; chrome backs off.
-- Use UPPERCASE display headlines in `{typography.display-xl}` or `{typography.display-lg}`. Sentence-case display reads as off-brand.
-- Pair heavy display (700) with light body (300). The weight contrast is the editorial signature.
-- Reserve the M tricolor stripe for brand-identity moments — wordmark accents, motorsport chrome, model badges. Never as a button fill or surface.
-- Use `{rounded.none}` (0px) by default. Reserve `{rounded.full}` for circular icon buttons only.
-- Letter-space all-caps labels at 1.5px. The "machined" feel is non-negotiable.
-- Use `{spacing.section}` (96px) between major editorial bands for grid-aligned vertical rhythm.
-
-### Don't
-- Don't introduce a brand color outside the M tricolor (`{colors.m-blue-light}` / `{colors.m-blue-dark}` / `{colors.m-red}`) and the heritage `{colors.bmw-blue}`.
-- Don't bold body type. Body stays at 300 (Light) — bumping to 400 or 500 makes the page feel marketing-bombastic instead of European-engineered.
-- Don't use rounded buttons. The rectangular silhouette IS the brand. Rounded corners read as consumer-tech, not motorsport.
-- Don't put gradient backdrops behind hero type. The hero IS the photography — the page floor stays pure black, and the photo provides the depth.
-- Don't repeat the same surface mode in two consecutive bands. Rhythm: photo band → spec table → photo band → magazine grid → photo band. Two text-only bands in a row read as a corporate site.
-- Don't use the M stripe as a button fill. The stripe is a divider / accent — never an action surface.
-- Don't bold uppercase tracking under 1.5px on button labels — the spacing is what makes them feel "machined."
-
-## Responsive Behavior
-
-### Breakpoints
-
-| Name | Width | Key Changes |
-|---|---|---|
-| Mobile | < 768px | Hamburger nav; hero h1 scales 80→48px; demo grid 1-up; photo cards stack full-width; footer 4 cols → 1 |
-| Tablet | 768–1024px | Top nav stays horizontal but tightens; 2-up card grids; spec tables 2-up |
-| Desktop | 1024–1440px | Full top-nav; 3-up card grids; spec tables 4-up |
-| Wide | > 1440px | Same as desktop with more breathing room; max content 1440px |
-
-### Touch Targets
-- `{component.button-primary}` renders at 48 × 48px minimum — meets WCAG AAA.
-- `{component.button-icon}` and `{component.carousel-arrow}` are exactly 48 × 48 — comfortably above the 44 × 44 minimum.
-- `{component.text-input}` height is 48px.
-- Category tabs render as text-only labels with 12px vertical padding; effective tap area meets 44px with surrounding spacing.
-
-### Collapsing Strategy
-- Top nav collapses to a hamburger sheet at < 768px; the menu opens as a full-screen black overlay with the M tricolor stripe at the top.
-- Photography stays full-bleed at every breakpoint — never collapses to a margin'd container.
-- Card grids reduce columns rather than scaling cards down; photography retains its native aspect ratio.
-- Spec tables collapse from 4-up to 2-up to 1-up; spec values stay at `{typography.display-sm}` regardless of column count.
-- The M-stripe divider stays at 4px height across all breakpoints.
-
-### Image Behavior
-- Hero photography crops responsively — wider crops at desktop, vertical crops on mobile.
-- Lifestyle and motorsport photos retain native aspect ratios; the system never letterboxes or pillarboxes.
-- The M wordmark + tricolor logo scales proportionally with viewport width.
-
-## Iteration Guide
-
-1. Focus on ONE component at a time. Reference its YAML key (`{component.hero-photo-band}`, `{component.spec-cell}`).
-2. New components default to `{rounded.none}` (0px). Only use `{rounded.full}` if it's a circular icon button.
-3. Variants (`-active`, `-disabled`) live as separate entries in `components:`.
-4. Use `{token.refs}` everywhere — never inline hex.
-5. Never document hover states. Default and Active/Pressed only.
-6. Display headlines stay UPPERCASE 700; body stays sentence-case 300. Never blur the contrast.
-7. The M tricolor is brand-identity-only — never extend it to system tokens for "primary action."
-8. When in doubt about emphasis: bigger photography before bigger type.
-
-## Known Gaps
-
-- The dembrandt frequency analyzer captured the white text (count 955) as the highest-frequency token. The black canvas was inferred from screenshot — dembrandt's body-background sampling didn't surface it as a top palette entry, but the page is unambiguously black-on-white-text.
-- The exact M tricolor stops are documented from public BMW brand guidelines; the screenshots show the stripe as a small element but pixel-sampling at this resolution doesn't reliably distinguish #0066b1 from #1c69d4. Treat the documented stops as canonical based on BMW Design Works' published brand spec.
-- BMW Type Next Latin weight axis values beyond Light (300) and regular (700) are not documented — only the static weights observed in screenshots.
-- Animation and transition timings (photo carousel transitions, hover-reveal effects, configurator interactions) are not in scope.
-- Form validation states beyond `{component.text-input}` defaults are not extracted — error / success input variants would need a configurator or order flow to confirm.
-- The configurator surface (vehicle build pages with color / wheel / interior pickers) was not in the analyzed URL set; its swatch grid, comparison panels, and price-summary card are not documented here.
-- The cookie consent overlay obscured part of the homepage hero in the captured screenshot; secondary hero treatments (different car models cycling through the hero band) may carry variations not captured.
+- 새 화면이 또 다른 비공유 디자인 시스템을 만들면 안 된다.
+- 동일한 동등 카드 그리드, 의미 없는 glass/gradient, 카드 안의 카드, 가로 스크롤 표, `transition-all`은 회귀로 본다.
+- 라이브 데이터가 없는 내용을 수치·차트·배지로 꾸미지 않는다.
+- 320px, 375px, 414px, 768px에서 실제 클릭·입력·닫기 동작을 검증한다.

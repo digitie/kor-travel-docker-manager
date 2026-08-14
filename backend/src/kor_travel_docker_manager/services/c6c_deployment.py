@@ -22,7 +22,7 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import yaml
 from dotenv import dotenv_values
@@ -35,6 +35,13 @@ _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
+_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
+_MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
+_MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
+_MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
+_MAP_DEDICATED_POSTGRES_PORT = 12703
+_MAP_POSTGRES_PASSWORD_SECRET = "kor-travel-map-postgres-password"
+_MAP_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_MAP_POSTGRES_PASSWORD_SECRET}"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_WEB_SERVICE = "pinvi-web"
@@ -68,6 +75,14 @@ _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
 _MAP_ADMIN_PROXY_ENV = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
 _MAP_SERVICE_TOKEN_ENV = "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
 _MAP_CURSOR_SIGNING_SECRET_ENV = "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+_MAP_CURATION_SNAPSHOT_DIGEST_ENV = (
+    "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"
+)
+_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV = (
+    "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
+)
+_PINVI_CURATION_SNAPSHOT_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"
+_PINVI_CUTOVER_MAPPING_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
 _MAP_PROFILE_ENV = "KOR_TRAVEL_MAP_API_PROFILE"
 _MAP_PUBLIC_API_KEY_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
 _MAP_DEBUG_ROUTES_ENABLED_ENV = "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
@@ -123,6 +138,21 @@ _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
         _MAP_CURSOR_SIGNING_SECRET_ENV,
     }
 )
+_CURATION_PRINCIPAL_RAW_ENV_NAMES = frozenset(
+    {
+        _PINVI_CURATION_SNAPSHOT_ENV,
+        _PINVI_CUTOVER_MAPPING_ENV,
+    }
+)
+_CURATION_PRINCIPAL_DIGEST_ENV_NAMES = frozenset(
+    {
+        _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
+        _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+    }
+)
+_CURATION_PRINCIPAL_ENV_NAMES = (
+    _CURATION_PRINCIPAL_RAW_ENV_NAMES | _CURATION_PRINCIPAL_DIGEST_ENV_NAMES
+)
 _MAP_PUBLISHED_EXAMPLE_SECRET_VALUES = {
     _MAP_ADMIN_PROXY_ENV: "local-map-admin-proxy-secret-change-me",
     _MAP_SERVICE_TOKEN_ENV: "local-map-service-token-change-me-now",
@@ -140,9 +170,29 @@ _MAP_PRODUCTION_API_LITERAL_VALUES = {
 _MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
     _MAP_PRODUCTION_API_LITERAL_VALUES
 )
+_MAP_DATABASE_SECRET_ENV_NAMES = frozenset(
+    {
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+    }
+)
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
     {
         _MAP_API_SERVICE,
+        _MAP_DAGSTER_SERVICE,
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        _MAP_POSTGRES_SERVICE,
+        _MAP_DAGSTER_DB_INIT_SERVICE,
+        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -176,7 +226,203 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         _MAP_CURSOR_SIGNING_SECRET_ENV
     ),
+    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
+        _MAP_CURATION_SNAPSHOT_DIGEST_ENV
+    ),
+    (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
+        _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
+        _PINVI_CURATION_SNAPSHOT_ENV
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
+        _PINVI_CUTOVER_MAPPING_ENV
+    ),
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): "KOR_TRAVEL_MAP_POSTGRES_DB",
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): "KOR_TRAVEL_MAP_POSTGRES_USER",
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
+        "KOR_TRAVEL_MAP_POSTGRES_DB"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): (
+        "KOR_TRAVEL_MAP_POSTGRES_DB"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
+        "KOR_TRAVEL_MAP_POSTGRES_USER"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"): (
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+    ),
+    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+    ),
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
 }
+_MAP_DATABASE_CANONICAL_ENV_VALUES = {
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
+        "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
+    ),
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD_FILE"): _MAP_POSTGRES_PASSWORD_FILE,
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?"
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
+        "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
+        "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD:?"
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?"
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+    ),
+    **{
+        (service, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
+            "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+        )
+        for service in (
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        )
+    },
+    **{
+        (service, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
+        )
+        for service in (
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        )
+    },
+    **{
+        (service, "KOR_TRAVEL_MAP_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
+        )
+        for service in (
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        )
+    },
+}
+_MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
+    {
+        (
+            "services",
+            _MAP_DAGSTER_DB_INIT_SERVICE,
+            "command",
+            "0",
+        ),
+        (
+            "secrets",
+            _MAP_POSTGRES_PASSWORD_SECRET,
+            "environment",
+        ),
+    }
+)
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
     (_MAP_API_SERVICE, _MAP_CANCEL_ENV): "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}",
@@ -223,20 +469,209 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
     ),
+    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
+        "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
+    ),
+    (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
+        "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
+        "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
+        "${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}"
+    ),
     **{
         (_MAP_API_SERVICE, env_name): value
         for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
     },
+    **_MAP_DATABASE_CANONICAL_ENV_VALUES,
 }
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES
     | _MAP_PRODUCTION_SECRET_ENV_NAMES
+    | _MAP_DATABASE_SECRET_ENV_NAMES
+    | _CURATION_PRINCIPAL_ENV_NAMES
     | {
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
     }
 )
+
+
+def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> None:
+    """모든 Map DB DSN이 frozen 전용 instance·principal과 일치하는지 확인한다.
+
+    raw Compose는 interpolation 자체만 고정할 수 있으므로, role bootstrap 전에 DSN의
+    endpoint·database·login을 별도로 결박한다. credential은 비교하거나 오류에 넣지
+    않는다.
+    """
+
+    port_text = environment.get("KOR_TRAVEL_MAP_POSTGRES_PORT", str(_MAP_DEDICATED_POSTGRES_PORT))
+    try:
+        port = int(port_text)
+    except (TypeError, ValueError) as exc:
+        raise ComposeCandidateContractError("Map database DSN identity is invalid") from exc
+    if port != _MAP_DEDICATED_POSTGRES_PORT:
+        raise ComposeCandidateContractError("Map database DSN identity is invalid")
+
+    application_database = environment.get("KOR_TRAVEL_MAP_POSTGRES_DB", "")
+    dagster_database = environment.get("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "")
+    bootstrap_user = environment.get("KOR_TRAVEL_MAP_POSTGRES_USER", "")
+    metadata_user = environment.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "")
+    identities = (
+        (
+            "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+            "postgresql",
+            bootstrap_user,
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+            "postgresql+asyncpg",
+            "ktm_feature_migrator",
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+            "postgresql+asyncpg",
+            "ktm_feature_api_runtime",
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+            "postgresql+asyncpg",
+            "ktm_feature_dagster_runtime",
+            application_database,
+        ),
+        (
+            "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+            "postgresql",
+            metadata_user,
+            dagster_database,
+        ),
+    )
+    required_principals = frozenset(
+        {
+            "ktm_feature_schema_owner",
+            "ktm_feature_state_procedure_owner",
+            "ktm_feature_audit_writer",
+            "ktm_feature_runtime",
+            "ktm_feature_migrator",
+            "ktm_feature_api_runtime",
+            "ktm_feature_dagster_runtime",
+        }
+    )
+    expected_users = {
+        bootstrap_user,
+        metadata_user,
+        "ktm_feature_migrator",
+        "ktm_feature_api_runtime",
+        "ktm_feature_dagster_runtime",
+    }
+    if (
+        not bootstrap_user
+        or not metadata_user
+        or len(expected_users) != 5
+        or bootstrap_user in required_principals
+        or metadata_user in required_principals
+        or not application_database
+        or not dagster_database
+        or application_database == dagster_database
+    ):
+        raise ComposeCandidateContractError("Map database DSN identity is invalid")
+    for name, scheme, expected_user, expected_database in identities:
+        value = environment.get(name, "")
+        try:
+            parsed = urlsplit(value)
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise ComposeCandidateContractError("Map database DSN identity is invalid") from exc
+        if (
+            parsed.scheme != scheme
+            or parsed.hostname != "127.0.0.1"
+            or parsed_port != port
+            or unquote(parsed.username or "") != expected_user
+            or parsed.path != f"/{expected_database}"
+        ):
+            raise ComposeCandidateContractError("Map database DSN identity is invalid")
+
+
+def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
+    if service.get("network_mode") != "host":
+        raise ComposeCandidateContractError(
+            "resolved Map database runtime must use host network"
+        )
+
+
+def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
+    """전용 PostgreSQL admin password의 유일한 소비자를 고정한다."""
+
+    secrets = document.get("secrets")
+    if not isinstance(secrets, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    source = secrets.get(_MAP_POSTGRES_PASSWORD_SECRET)
+    if not isinstance(source, Mapping) or source.get("environment") != (
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
+    ):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    postgres = services.get(_MAP_POSTGRES_SERVICE)
+    if not isinstance(postgres, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    environment = postgres.get("environment")
+    if not isinstance(environment, Mapping) or environment.get("POSTGRES_PASSWORD_FILE") != (
+        _MAP_POSTGRES_PASSWORD_FILE
+    ):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    if "POSTGRES_PASSWORD" in environment:
+        raise ComposeCandidateContractError("Map PostgreSQL password leaks to container environment")
+    references = postgres.get("secrets")
+    if not isinstance(references, list) or len(references) != 1:
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    reference = references[0]
+    if not isinstance(reference, Mapping) or reference.get("source") != (
+        _MAP_POSTGRES_PASSWORD_SECRET
+    ) or reference.get("target") != _MAP_POSTGRES_PASSWORD_SECRET:
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+
+    # Compose secret file은 값이 Config.Env에 드러나지 않아도 mount한 container는
+    # 읽을 수 있다. 따라서 initial superuser credential은 PostgreSQL entrypoint의
+    # exact target 한 곳만 소비할 수 있고, API/Dagster/PinVi one-shot을 포함한
+    # 다른 service의 alias reference는 mutation 전에 거부한다.
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
+            raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+        candidate_references = service.get("secrets")
+        if candidate_references is None:
+            continue
+        if not isinstance(candidate_references, list):
+            raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+        for candidate_reference in candidate_references:
+            source_name: object
+            if isinstance(candidate_reference, str):
+                source_name = candidate_reference
+            elif isinstance(candidate_reference, Mapping):
+                source_name = candidate_reference.get("source")
+            else:
+                raise ComposeCandidateContractError(
+                    "Map PostgreSQL password secret is invalid"
+                )
+            if source_name != _MAP_POSTGRES_PASSWORD_SECRET:
+                continue
+            if (
+                service_name != _MAP_POSTGRES_SERVICE
+                or candidate_reference != reference
+            ):
+                raise ComposeCandidateContractError(
+                    "Map PostgreSQL password secret has an unauthorized consumer"
+                )
+
+
 _C6C_RUNTIME_IDENTIFIERS = frozenset(
     {
         *_MAP_RUNTIME_SERVICES,
@@ -290,6 +725,16 @@ _CANDIDATE_ALLOWED_SYSTEM_BINDS = {
     ("cadvisor", "/var/run/docker.sock", True): "/var/run/docker.sock",
 }
 _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
+    (
+        "kor-travel-map-postgres",
+        "/var/lib/postgresql/data",
+        False,
+    ): "${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}",
+    (
+        "kor-travel-map-db-role-bootstrap",
+        "/usr/local/bin/postgres-role-bootstrap",
+        True,
+    ): "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh",
     (
         "kor-travel-geo-postgres",
         "/var/lib/postgresql/data",
@@ -457,6 +902,8 @@ class C6cDeploymentConfig:
     pinvi_container: str
     contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
+    curation_snapshot_token: str = field(default="", repr=False)
+    curation_cutover_mapping_token: str = field(default="", repr=False)
 
     @property
     def production(self) -> bool:
@@ -706,7 +1153,7 @@ def effective_environment(env_path: str) -> dict[str, str]:
             }
         )
     values.update(os.environ)
-    return values
+    return derive_curation_service_principal_environment(values)
 
 
 def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
@@ -865,7 +1312,7 @@ def load_c6c_deployment_config(env_path: str) -> C6cDeploymentConfig:
 def load_c6c_deployment_config_from_environment(
     environment: Mapping[str, str],
 ) -> C6cDeploymentConfig:
-    values = dict(environment)
+    values = derive_curation_service_principal_environment(environment)
     deployment_environment = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
     pinvi_environment = values.get("PINVI_ENVIRONMENT", "").strip().lower()
 
@@ -952,6 +1399,11 @@ def load_c6c_deployment_config_from_environment(
             map_ui_password=values.get(_MAP_UI_PASSWORD_ENV, ""),
             pinvi_admin_email=values.get("KTDM_C6C_PINVI_ADMIN_EMAIL", ""),
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
+        ),
+        curation_snapshot_token=values.get(_PINVI_CURATION_SNAPSHOT_ENV, ""),
+        curation_cutover_mapping_token=values.get(
+            _PINVI_CUTOVER_MAPPING_ENV,
+            "",
         ),
     )
     validate_c6c_operation_tokens(
@@ -1056,6 +1508,78 @@ def _validate_raw_token_pair(
         raise DeploymentContractError("C6c read, cancel, and fixture tokens must differ")
 
 
+def derive_curation_service_principal_environment(
+    environment: Mapping[str, str],
+    *,
+    error_type: type[DeploymentContractError] = DeploymentContractError,
+) -> dict[str, str]:
+    """PinVi 원시 principal pair에서 Map 검증용 digest만 파생한다.
+
+    Map runtime에는 원시 ServiceToken을 전달하지 않는다. 기존 C6c deployment가
+    T-VN-40 service cutover 전에도 계속 동작하도록 pair가 모두 비어 있는 경우만
+    허용하며, digest만 외부에서 주입하는 우회는 fail-close한다.
+    """
+
+    values = dict(environment)
+    snapshot_token = values.get(_PINVI_CURATION_SNAPSHOT_ENV, "")
+    mapping_token = values.get(_PINVI_CUTOVER_MAPPING_ENV, "")
+    declared_snapshot_digest = values.get(_MAP_CURATION_SNAPSHOT_DIGEST_ENV, "")
+    declared_mapping_digest = values.get(
+        _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+        "",
+    )
+    raw_tokens = (
+        (_PINVI_CURATION_SNAPSHOT_ENV, snapshot_token),
+        (_PINVI_CUTOVER_MAPPING_ENV, mapping_token),
+    )
+    declared_digests = (
+        (_MAP_CURATION_SNAPSHOT_DIGEST_ENV, declared_snapshot_digest),
+        (_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV, declared_mapping_digest),
+    )
+
+    if any(not isinstance(value, str) for _, value in (*raw_tokens, *declared_digests)):
+        raise error_type("T-VN-40 curation service principal environment is invalid")
+    if not any(value for _, value in raw_tokens):
+        if any(value for _, value in declared_digests):
+            raise error_type(
+                "Map curation token digests require the corresponding PinVi raw pair"
+            )
+        values[_MAP_CURATION_SNAPSHOT_DIGEST_ENV] = ""
+        values[_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV] = ""
+        return values
+    if any(not value for _, value in raw_tokens):
+        raise error_type(
+            "PinVi curation snapshot and cutover-mapping tokens must be configured together"
+        )
+    for env_name, token in raw_tokens:
+        if len(token) < 32:
+            raise error_type(f"{env_name} must contain at least 32 characters")
+        if any(character.isspace() for character in token):
+            raise error_type(f"{env_name} must not contain whitespace")
+    if hmac.compare_digest(snapshot_token, mapping_token):
+        raise error_type("PinVi curation snapshot and cutover-mapping tokens must differ")
+
+    expected_snapshot_digest = hashlib.sha256(snapshot_token.encode("utf-8")).hexdigest()
+    expected_mapping_digest = hashlib.sha256(mapping_token.encode("utf-8")).hexdigest()
+    for env_name, actual, expected in (
+        (
+            _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
+            declared_snapshot_digest,
+            expected_snapshot_digest,
+        ),
+        (
+            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+            declared_mapping_digest,
+            expected_mapping_digest,
+        ),
+    ):
+        if actual and not hmac.compare_digest(actual, expected):
+            raise error_type(f"{env_name} must be derived from its PinVi raw token")
+    values[_MAP_CURATION_SNAPSHOT_DIGEST_ENV] = expected_snapshot_digest
+    values[_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV] = expected_mapping_digest
+    return values
+
+
 def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
     _validate_map_production_secret_values(
         {
@@ -1065,6 +1589,8 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
             _MAP_FIXTURE_ENV: config.fixture_token,
+            _PINVI_CURATION_SNAPSHOT_ENV: config.curation_snapshot_token,
+            _PINVI_CUTOVER_MAPPING_ENV: config.curation_cutover_mapping_token,
             _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
             _MAP_UI_PASSWORD_ENV: config.smoke.map_ui_password,
@@ -1082,6 +1608,7 @@ def _validate_map_production_secret_values(
     error_type: type[DeploymentContractError] = DeploymentContractError,
     reject_published_examples: bool = False,
 ) -> None:
+    derive_curation_service_principal_environment(values, error_type=error_type)
     if values.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production":
         try:
             _validate_raw_token_pair(
@@ -1120,6 +1647,8 @@ def _validate_map_production_secret_values(
         _MAP_READ_ENV,
         _MAP_CANCEL_ENV,
         _MAP_FIXTURE_ENV,
+        _PINVI_CURATION_SNAPSHOT_ENV,
+        _PINVI_CUTOVER_MAPPING_ENV,
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
         _MAP_UI_PASSWORD_ENV,
@@ -1283,11 +1812,29 @@ def validate_resolved_compose_secret_isolation(
             _MAP_CURSOR_SIGNING_SECRET_ENV: _compose_resolved_escaped_value(
                 config.map_cursor_signing_secret
             ),
+            _MAP_CURATION_SNAPSHOT_DIGEST_ENV: _compose_resolved_escaped_value(
+                hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
+                if config.curation_snapshot_token
+                else ""
+            ),
+            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV: _compose_resolved_escaped_value(
+                hashlib.sha256(
+                    config.curation_cutover_mapping_token.encode("utf-8")
+                ).hexdigest()
+                if config.curation_cutover_mapping_token
+                else ""
+            ),
             **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         _PINVI_API_SERVICE: {
             _PINVI_READ_ENV: _compose_resolved_escaped_value(config.read_token),
             _PINVI_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
+            _PINVI_CURATION_SNAPSHOT_ENV: _compose_resolved_escaped_value(
+                config.curation_snapshot_token
+            ),
+            _PINVI_CUTOVER_MAPPING_ENV: _compose_resolved_escaped_value(
+                config.curation_cutover_mapping_token
+            ),
         },
         _MAP_UI_SERVICE: {
             _MAP_UI_USERNAME_ENV: _compose_resolved_escaped_value(
@@ -1388,6 +1935,40 @@ def validate_resolved_compose_secret_isolation(
             "environment",
             _MAP_CURSOR_SIGNING_SECRET_ENV,
         ): _compose_resolved_escaped_value(config.map_cursor_signing_secret),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
+        ): _compose_resolved_escaped_value(
+            hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
+            if config.curation_snapshot_token
+            else ""
+        ),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+        ): _compose_resolved_escaped_value(
+            hashlib.sha256(
+                config.curation_cutover_mapping_token.encode("utf-8")
+            ).hexdigest()
+            if config.curation_cutover_mapping_token
+            else ""
+        ),
+        (
+            "services",
+            _PINVI_API_SERVICE,
+            "environment",
+            _PINVI_CURATION_SNAPSHOT_ENV,
+        ): _compose_resolved_escaped_value(config.curation_snapshot_token),
+        (
+            "services",
+            _PINVI_API_SERVICE,
+            "environment",
+            _PINVI_CUTOVER_MAPPING_ENV,
+        ): _compose_resolved_escaped_value(config.curation_cutover_mapping_token),
         **{
             ("services", _MAP_API_SERVICE, "environment", env_name): value
             for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
@@ -1412,6 +1993,7 @@ def validate_resolved_compose_secret_isolation(
                 | _MAP_UI_AUTH_ENV_NAMES
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+                | _CURATION_PRINCIPAL_ENV_NAMES
             )
         ):
             raise DeploymentContractError(
@@ -1432,6 +2014,8 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
                 _compose_resolved_escaped_value(config.contract_generation),
+                _compose_resolved_escaped_value(config.curation_snapshot_token),
+                _compose_resolved_escaped_value(config.curation_cutover_mapping_token),
             )
         ):
             raise DeploymentContractError(
@@ -1448,6 +2032,10 @@ def validate_resolved_compose_candidate_protected_values(
 ) -> tuple[CandidateSystemBindSnapshot, ...]:
     """resolved compose 전체 graph의 C6c 보호 이름·현재 값을 검사한다."""
 
+    environment = derive_curation_service_principal_environment(
+        environment,
+        error_type=ComposeCandidateContractError,
+    )
     _validate_map_production_secret_values(
         environment,
         error_type=ComposeCandidateContractError,
@@ -1456,11 +2044,13 @@ def validate_resolved_compose_candidate_protected_values(
         ),
     )
     _assert_candidate_single_file_boundary(resolved, environment=environment)
+    _validate_map_database_dsn_identities(environment)
     services = resolved.get("services")
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError(
             "resolved compose candidate has no valid services mapping"
         )
+    _validate_map_postgres_password_secret(resolved)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -1473,6 +2063,8 @@ def validate_resolved_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | _MAP_DATABASE_SECRET_ENV_NAMES
+        | _CURATION_PRINCIPAL_ENV_NAMES
     )
     protected_values = (
         *(
@@ -1484,10 +2076,16 @@ def validate_resolved_compose_candidate_protected_values(
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    }
+    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS
 
     for service_name in (
         _MAP_API_SERVICE,
+        _MAP_DAGSTER_SERVICE,
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        _MAP_POSTGRES_SERVICE,
+        _MAP_DAGSTER_DB_INIT_SERVICE,
+        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -1497,6 +2095,16 @@ def validate_resolved_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"resolved compose candidate service {service_name} is invalid"
             )
+        if service_name in {
+            _MAP_POSTGRES_SERVICE,
+            _MAP_API_SERVICE,
+            _MAP_DAGSTER_SERVICE,
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+            _MAP_DAGSTER_DB_INIT_SERVICE,
+            _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+        }:
+            _require_map_database_host_network(service)
         service_environment = service.get("environment")
         if not isinstance(service_environment, Mapping):
             raise ComposeCandidateContractError(
@@ -1865,6 +2473,10 @@ def validate_compose_candidate_protected_values(
 ) -> tuple[CandidateSystemBindSnapshot, ...]:
     """파일 반영 전 raw compose 전체의 C6c 보호 이름·값 격리를 검사한다."""
 
+    environment = derive_curation_service_principal_environment(
+        environment,
+        error_type=ComposeCandidateContractError,
+    )
     if require_api_wiring:
         _validate_map_production_secret_values(
             environment,
@@ -1874,11 +2486,13 @@ def validate_compose_candidate_protected_values(
             ),
         )
     _assert_candidate_single_file_boundary(candidate, environment=environment)
+    _validate_map_database_dsn_identities(environment)
     services = candidate.get("services")
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError(
             "compose candidate has no valid services mapping"
         )
+    _validate_map_postgres_password_secret(candidate)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -1891,6 +2505,8 @@ def validate_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | _MAP_DATABASE_SECRET_ENV_NAMES
+        | _CURATION_PRINCIPAL_ENV_NAMES
     )
     protected_values = (
         *(
@@ -1902,10 +2518,16 @@ def validate_compose_candidate_protected_values(
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    }
+    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS
 
     for service_name in (
         _MAP_API_SERVICE,
+        _MAP_DAGSTER_SERVICE,
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        _MAP_POSTGRES_SERVICE,
+        _MAP_DAGSTER_DB_INIT_SERVICE,
+        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -4375,6 +4997,30 @@ def validate_runtime_secret_isolation(
                 )
 
 
+def validate_map_postgres_runtime_secret_isolation(
+    runtime_config: Mapping[str, Any],
+) -> None:
+    """실제 전용 PostgreSQL container가 password Env를 보관하지 않는지 검증한다."""
+
+    environment: dict[str, str] = {}
+    for name, value, _paths in _runtime_environment_entries(runtime_config.get("Env")):
+        if name in environment:
+            raise DeploymentContractError(
+                "Map PostgreSQL runtime has duplicate environment variables"
+            )
+        environment[name] = value
+    if environment.get("POSTGRES_PASSWORD_FILE") != _MAP_POSTGRES_PASSWORD_FILE:
+        raise DeploymentContractError(
+            "Map PostgreSQL runtime password file wiring is invalid"
+        )
+    if {"POSTGRES_PASSWORD", "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"}.intersection(
+        environment
+    ):
+        raise DeploymentContractError(
+            "Map PostgreSQL runtime exposes the initial superuser password"
+        )
+
+
 def _validate_image_id(image_id: str, label: str) -> None:
     if not isinstance(image_id, str) or not _IMAGE_ID_PATTERN.fullmatch(image_id):
         raise DeploymentContractError(
@@ -4815,6 +5461,14 @@ def _validate_candidate_volume_graph(
                 ) from exc
             if stat.S_ISREG(source_stat.st_mode):
                 _assert_candidate_regular_file(resolved_source)
+                if (
+                    str(service_name) == _MAP_DB_ROLE_BOOTSTRAP_SERVICE
+                    and mount.target == "/usr/local/bin/postgres-role-bootstrap"
+                ):
+                    # Map release source가 소유한 정본 bootstrap은 role password env
+                    # identifier를 선언한다. candidate source staging/provenance가 이
+                    # exact bind를 동결하므로 일반 C6c secret text 검사 대상이 아니다.
+                    continue
                 try:
                     source_text = resolved_source.read_text(encoding="utf-8")
                 except (OSError, UnicodeError, ValueError) as exc:
@@ -5244,8 +5898,14 @@ def _validate_candidate_external_resource_references(
                     raise ComposeCandidateContractError(
                         f"compose candidate {collection_name}.{alias} environment is unresolved"
                     )
-                if any(name in environment_name for name in protected_names) or any(
-                    value in environment_value for value in protected_values
+                is_map_postgres_password_secret = (
+                    collection_name == "secrets"
+                    and alias == _MAP_POSTGRES_PASSWORD_SECRET
+                    and environment_name == "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
+                )
+                if not is_map_postgres_password_secret and (
+                    any(name in environment_name for name in protected_names)
+                    or any(value in environment_value for value in protected_values)
                 ):
                     raise ComposeCandidateContractError(
                         f"compose candidate {collection_name}.{alias} environment leaks C6c data"

@@ -22,7 +22,8 @@ import {
   ServerCog,
   Boxes,
   KeyRound,
-  LogOut
+  LogOut,
+  Command
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useForm } from 'react-hook-form';
@@ -197,6 +198,9 @@ export default function DashboardClient() {
   const queryClient = useQueryClient();
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
+  const [commandQuery, setCommandQuery] = useState('');
+  const commandInputRef = useRef<HTMLInputElement>(null);
 
   const {
     data: auth,
@@ -281,10 +285,12 @@ export default function DashboardClient() {
 
   // 모달 접근성: 열린 모달을 Escape 키로 닫는다(AdminSettings 모달은 자체 처리).
   useEffect(() => {
-    if (!isLogModalOpen && !isChartModalOpen && !isConfigModalOpen) return;
+    if (!isLogModalOpen && !isChartModalOpen && !isConfigModalOpen && !isCommandPaletteOpen) return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== 'Escape') return;
-      if (isConfigModalOpen) {
+      if (isCommandPaletteOpen) {
+        setIsCommandPaletteOpen(false);
+      } else if (isConfigModalOpen) {
         setIsConfigModalOpen(false);
       } else if (isChartModalOpen) {
         setIsChartModalOpen(false);
@@ -295,7 +301,26 @@ export default function DashboardClient() {
     }
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isLogModalOpen, isChartModalOpen, isConfigModalOpen]);
+  }, [isLogModalOpen, isChartModalOpen, isConfigModalOpen, isCommandPaletteOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setIsCommandPaletteOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!isCommandPaletteOpen) {
+      setCommandQuery('');
+      return;
+    }
+    commandInputRef.current?.focus();
+  }, [isCommandPaletteOpen]);
 
   // Fallback Polling (Query) - Versioned v1
   const { data: fallbackContainers = [], isLoading, error } = useQuery<ContainerStatus[]>({
@@ -766,6 +791,38 @@ export default function DashboardClient() {
     },
   });
 
+  const commandItems = [
+    {
+      id: 'settings',
+      label: '인증 및 공개 API 키',
+      hint: '설정',
+      run: () => setIsAdminSettingsOpen(true),
+    },
+    {
+      id: 'backups',
+      label: 'DB 백업 이력 열기',
+      hint: '조회',
+      run: () => setIsBackupHistoryOpen(true),
+    },
+    {
+      id: 'refresh',
+      label: '컨테이너 상태 새로고침',
+      hint: '동기화',
+      run: () => void queryClient.invalidateQueries({ queryKey: ['containers'] }),
+    },
+    {
+      id: 'logout',
+      label: '로그아웃',
+      hint: '세션',
+      run: () => logoutMutation.mutate(),
+    },
+  ].filter((item) => item.label.includes(commandQuery.trim()) || item.hint.includes(commandQuery.trim()));
+
+  const runCommand = (run: () => void) => {
+    setIsCommandPaletteOpen(false);
+    run();
+  };
+
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-page text-ink flex items-center justify-center">
@@ -789,39 +846,33 @@ export default function DashboardClient() {
   }
 
   return (
-    <div className="min-h-screen bg-page text-ink flex flex-col relative overflow-hidden select-none">
-      {/* 4px Brand Accent Stripe Pinned to Top */}
-      <div className="h-1 w-full bg-brand fixed top-0 left-0 z-50" />
-
-      {/* Admin Top Bar - Compact header with border-b */}
-      <header className="w-full bg-card border-b border-line mt-1 shadow-card">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-6 md:px-12 py-5">
-          <div className="select-text min-w-0">
-            <span className="inline-block text-[9px] font-semibold tracking-[0.05em] uppercase text-secondary border border-line px-2 py-0.5 bg-subtle rounded-md">
-              PINVI SYSTEM INFRASTRUCTURE
-            </span>
-            <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-strong mt-2">
-              인프라 서비스 컨트롤 센터
-            </h1>
-            <p className="text-secondary text-sm font-sans mt-1 leading-relaxed">
-              공용 데이터베이스, 오브젝트 스토리지, 지오코더, 관측 스택을 제어하고 모니터링하는 통합 인프라 관리 센터입니다.
-            </p>
+    <div className="ops-shell flex flex-col select-none">
+      <header className="ops-topbar">
+        <div className="ops-topbar__inner">
+          <div className="ops-brand select-text">
+            <div aria-hidden="true" className="ops-brand__mark">KT</div>
+            <div className="min-w-0">
+              <p className="ops-eyebrow">Kor Travel / infrastructure control</p>
+              <h1 className="ops-title">인프라 서비스 컨트롤</h1>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 select-none shrink-0 self-start md:self-auto">
+          <div className="ops-topbar__actions flex items-center gap-2 select-none shrink-0">
             <button
+              aria-label="빠른 명령 열기"
+              className="ops-command"
+              onClick={() => setIsCommandPaletteOpen(true)}
               type="button"
-              onClick={() => setIsAdminSettingsOpen(true)}
-              className="flex items-center gap-2 bg-card hover:bg-subtle border border-line px-3 py-2 rounded-card text-xs font-semibold text-ink"
             >
+              <Command className="w-4 h-4 text-brand" />
+              빠른 명령
+              <kbd className="hidden sm:inline font-mono text-[10px] text-secondary">⌘K</kbd>
+            </button>
+            <button type="button" onClick={() => setIsAdminSettingsOpen(true)} className="ops-button">
               <KeyRound className="w-4 h-4 text-brand" />
               인증 설정
             </button>
-            <button
-              type="button"
-              onClick={() => setIsBackupHistoryOpen(true)}
-              className="flex items-center gap-2 bg-card hover:bg-subtle border border-line px-3 py-2 rounded-card text-xs font-semibold text-ink"
-            >
+            <button type="button" onClick={() => setIsBackupHistoryOpen(true)} className="ops-button">
               <Database className="w-4 h-4 text-brand" />
               백업 이력
             </button>
@@ -829,114 +880,79 @@ export default function DashboardClient() {
               type="button"
               onClick={() => logoutMutation.mutate()}
               disabled={logoutMutation.isPending}
-              className="flex items-center gap-2 bg-card hover:bg-subtle border border-line px-3 py-2 rounded-card text-xs font-semibold text-ink disabled:opacity-60"
+              className="ops-button"
             >
-              <LogOut className="w-4 h-4 text-secondary" />
+              <LogOut className="w-4 h-4" />
               로그아웃
             </button>
-            {/* WebSocket Status Indicator */}
-            <div className="flex items-center gap-2 bg-subtle border border-line px-3 py-2 rounded-card text-[10px] tracking-[0.05em] uppercase font-semibold">
-              {isWsConnected ? (
-                <>
-                  <span className="w-2 h-2 rounded-full bg-ok animate-pulse" />
-                  <span className="text-ok">REALTIME WS SYNC</span>
-                </>
-              ) : (
-                <>
-                  <span className="w-2 h-2 rounded-full bg-warn" />
-                  <span className="text-warn">HTTP FALLBACK POLLING</span>
-                </>
-              )}
-            </div>
           </div>
         </div>
       </header>
 
-      {/* Main Container Wrapper with Padding */}
-      <div className="flex-grow w-full px-6 md:px-12 py-6 z-10 flex flex-col select-text">
-        {/* KPI Summary Strip */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          {/* 전체 */}
-          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
-            <span className="text-secondary text-xs font-semibold tracking-[0.05em] uppercase">전체</span>
-            <span className="text-strong text-3xl font-mono tabular-nums font-semibold leading-none">
-              {kpiCounts.total}
-            </span>
+      <main className="ops-workbench select-text">
+        <section className="ops-overview" aria-labelledby="service-summary-title">
+          <div className="ops-summary">
+            <div className="ops-summary__header">
+              <div>
+                <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
+                <p className="ops-section-copy">현재 수집된 컨테이너 원장을 기준으로 집계합니다.</p>
+              </div>
+              <span className="ops-status-badge">
+                <span className={`w-1.5 h-1.5 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+                {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
+              </span>
+            </div>
+            <div className="ops-counts">
+              <div className="ops-count"><span className="ops-count__label">전체</span><strong className="ops-count__value">{kpiCounts.total}</strong></div>
+              <div className="ops-count ops-count--ok"><span className="ops-count__label">실행 중</span><strong className="ops-count__value">{kpiCounts.running}</strong></div>
+              <div className="ops-count"><span className="ops-count__label">중지·미생성</span><strong className="ops-count__value">{kpiCounts.stopped}</strong></div>
+              <div className="ops-count ops-count--danger"><span className="ops-count__label">오류</span><strong className="ops-count__value">{kpiCounts.error}</strong></div>
+            </div>
           </div>
-
-          {/* 실행 중 */}
-          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
-            <span className="flex items-center gap-1.5 text-secondary text-xs font-semibold tracking-[0.05em] uppercase">
-              <span className="w-1.5 h-1.5 rounded-full bg-ok" />
-              실행 중
-            </span>
-            <span className="text-ok text-3xl font-mono tabular-nums font-semibold leading-none">
-              {kpiCounts.running}
-            </span>
-          </div>
-
-          {/* 중지·미생성 */}
-          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
-            <span className="text-secondary text-xs font-semibold tracking-[0.05em] uppercase">중지·미생성</span>
-            <span className="text-strong text-3xl font-mono tabular-nums font-semibold leading-none">
-              {kpiCounts.stopped}
-            </span>
-          </div>
-
-          {/* 오류 */}
-          <div className="bg-card border border-line rounded-card shadow-card px-4 py-3.5 flex flex-col gap-1 min-h-[80px]">
-            <span className="flex items-center gap-1.5 text-secondary text-xs font-semibold tracking-[0.05em] uppercase">
-              <span className="w-1.5 h-1.5 rounded-full bg-danger" />
-              오류
-            </span>
-            <span className="text-danger text-3xl font-mono tabular-nums font-semibold leading-none">
-              {kpiCounts.error}
-            </span>
-          </div>
-        </div>
-
-        {/* API Connection Error Alert */}
-        {error && !isWsConnected && (
-          <div className="mb-8 p-4 bg-danger/5 border border-danger/30 rounded-card shadow-card flex items-start gap-3 text-danger text-sm z-10">
-            <ShieldAlert className="w-5 h-5 text-danger shrink-0 mt-0.5" />
+          <aside className="ops-signal" aria-label="동기화 상태">
             <div>
-              <p className="font-bold text-danger uppercase tracking-[0.05em] text-xs">통신 연결 오류</p>
-              <p className="mt-1 text-ink font-light font-sans">
-                백엔드 서버가 {BACKEND_URL} 에서 실행 중인지 확인해 주세요. (WSL 및 Docker 엔진 기동 점검)
+              <p className="ops-signal__label">observability signal</p>
+              <p className="ops-signal__value">
+                <span className={`w-2 h-2 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+                {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
               </p>
             </div>
-          </div>
+            <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
+          </aside>
+        </section>
+
+        {error && !isWsConnected && (
+          <section className="mb-4 flex items-start gap-3 border border-danger/30 bg-danger/5 p-4 text-sm rounded-panel" role="alert">
+            <ShieldAlert className="w-5 h-5 shrink-0 text-danger" />
+            <div>
+              <p className="font-semibold text-danger">통신 연결 오류</p>
+              <p className="mt-1 text-ink">백엔드 서버가 {BACKEND_URL}에서 실행 중인지와 Docker 엔진 상태를 확인해 주세요.</p>
+            </div>
+          </section>
         )}
 
-        {/* Main Table Layout */}
-        <main className="flex-grow w-full overflow-hidden">
-          <h2 className="text-sm font-semibold tracking-[0.05em] flex items-center gap-2 text-strong mb-6 uppercase">
-            <Activity className="w-4 h-4 text-brand" />
-            인프라 컨테이너 실시간 모니터링 테이블
-          </h2>
+        <section className="ops-ledger" aria-labelledby="service-ledger-title">
+          <div className="ops-ledger__header">
+            <div>
+              <h2 className="ops-section-title" id="service-ledger-title">서비스 원장</h2>
+              <p className="ops-section-copy">수치 버튼은 최근 1시간의 해당 메트릭 차트를 엽니다.</p>
+            </div>
+            <span className="ops-status-badge"><Activity className="w-3 h-3 text-brand" /> 현재 상태</span>
+          </div>
 
           {isLoading && displayContainers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center p-20 bg-card border border-line rounded-card shadow-card">
-              <RefreshCw className="w-8 h-8 text-brand animate-spin mb-4" />
-              <p className="text-ink text-sm font-light">컨테이너 상태를 분석하는 중입니다...</p>
+            <div className="flex flex-col items-center justify-center p-16">
+              <RefreshCw className="mb-3 h-7 w-7 animate-spin text-brand" />
+              <p className="text-sm text-secondary">컨테이너 상태를 분석하는 중입니다.</p>
             </div>
           ) : (
-            <div className="border border-line rounded-card bg-card overflow-x-auto shadow-card">
-              <table className="w-full text-left border-collapse min-w-[1000px]">
+            <table className="ops-fleet-table text-left">
                 <thead className="sticky top-0 z-10">
-                  <tr className="border-b border-line text-secondary font-semibold uppercase tracking-[0.05em] text-xs bg-subtle [&>th]:bg-subtle">
-                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">상태</th>
-                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">컨테이너 명칭</th>
-                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">역할</th>
-                    <th className="py-3 px-6 text-secondary text-xs font-semibold uppercase tracking-[0.05em]">포트 바인딩</th>
-                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">CPU 점유율</th>
-                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">메모리 사용량</th>
-                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">I/O 델타 (Read / Write)</th>
-                    <th className="py-3 px-6 text-center text-secondary text-xs font-semibold uppercase tracking-[0.05em]">기능</th>
-                    <th className="py-3 px-6 text-right text-secondary text-xs font-semibold uppercase tracking-[0.05em]">서비스 통제</th>
+                  <tr>
+                    <th>상태</th><th>컨테이너</th><th>역할</th><th>포트</th><th className="text-center">CPU</th><th className="text-center">메모리</th><th className="text-center">I/O</th><th className="text-center">도구</th><th className="text-right">제어</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-line text-xs md:text-sm">
+                <tbody className="text-xs md:text-sm">
                   {displayContainers.map((container) => {
                     const statusCfg = getStatusConfig(container.status);
                     const { Icon, displayName } = getContainerPresentation(container);
@@ -956,12 +972,9 @@ export default function DashboardClient() {
                     };
 
                     return (
-                      <tr
-                        key={container.id}
-                        className={`transition-colors duration-150 ease-default group relative ${statusCfg.rowClass}`}
-                      >
+                      <tr key={container.id}>
                         {/* Status Indicator */}
-                        <td className="py-3 px-6">
+                        <td data-label="상태">
                           <div className="flex items-center gap-2.5">
                             <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
                             <span className={`${statusCfg.textClass} text-xs md:text-sm uppercase tracking-[0.05em] font-bold`}>
@@ -971,21 +984,21 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Display & Container Name */}
-                        <td className="py-3 px-6">
+                        <td data-label="컨테이너">
                           <div className="flex items-center gap-3">
                             <div className="p-2 bg-subtle border border-line rounded-card shrink-0">
                               <Icon className="w-5 h-5 text-brand" />
                             </div>
                             <div>
-                              <div className="font-sans font-semibold text-strong text-base uppercase">{displayName}</div>
-                              <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums font-light">{container.name}</div>
+                              <div className="font-display font-semibold text-strong text-base">{displayName}</div>
+                              <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums">{container.name}</div>
                               {container.public_url && (
                                 <a
                                   href={container.public_url}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   title="운영(prod) 공개 주소"
-                                  className="block text-brand text-xs md:text-sm mt-0.5 font-mono font-light underline hover:opacity-80 break-all"
+                                  className="block text-brand text-xs md:text-sm mt-0.5 font-mono underline hover:opacity-80 break-all"
                                 >
                                   {container.public_url.replace(/^https?:\/\//, '')}
                                 </a>
@@ -995,50 +1008,42 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Role */}
-                        <td className="py-3 px-6 text-ink font-light uppercase text-xs md:text-sm tracking-[0.05em]">
+                        <td data-label="역할" className="text-ink text-xs md:text-sm">
                           {container.role}
                         </td>
 
                         {/* Port Bindings */}
-                        <td className="py-3 px-6 font-mono tabular-nums text-strong font-light text-xs md:text-sm">
+                        <td data-label="포트" className="font-mono tabular-nums text-strong text-xs md:text-sm break-all">
                           {container.ports.length > 0
                             ? container.ports.join(', ')
-                            : (container.expected_ports || []).join(', ') || 'Exposed internally'
+                            : (container.expected_ports || []).join(', ') || '내부 노출'
                           }
                         </td>
 
                         {/* CPU Metric (Interactive) */}
-                        <td className="py-3 px-6 text-center">
+                        <td data-label="CPU" className="text-center">
                           <button 
                             type="button"
                             disabled={container.status !== 'running'}
                             onClick={() => container.status === 'running' && openChartModal(container.id, 'cpu')}
-                            className={`inline-flex flex-col items-center justify-center min-h-[44px] px-3 py-1.5 rounded-card border border-transparent select-none outline-hidden focus-visible:outline-2 focus-visible:outline-brand ${
-                              container.status === 'running'
-                                ? 'hover:border-line hover:bg-subtle cursor-pointer text-ink'
-                                : 'text-secondary opacity-50 cursor-default'
-                            }`}
+                            className="ops-metric"
                             title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
                           >
                             <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
                               <Cpu className="w-3.5 h-3.5 opacity-80" />
                               {container.status === 'running' ? `${metrics.cpu_pct.toFixed(1)}%` : '0.0%'}
                             </span>
-                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 uppercase tracking-[0.05em] font-bold">실시간 차트</span>
+                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
                           </button>
                         </td>
 
                         {/* Memory Metric (Interactive) */}
-                        <td className="py-3 px-6 text-center">
+                        <td data-label="메모리" className="text-center">
                           <button 
                             type="button"
                             disabled={container.status !== 'running'}
                             onClick={() => container.status === 'running' && openChartModal(container.id, 'memory')}
-                            className={`inline-flex flex-col items-center justify-center min-h-[44px] px-3 py-1.5 rounded-card border border-transparent select-none outline-hidden focus-visible:outline-2 focus-visible:outline-brand ${
-                              container.status === 'running'
-                                ? 'hover:border-line hover:bg-subtle cursor-pointer text-ink'
-                                : 'text-secondary opacity-50 cursor-default'
-                            }`}
+                            className="ops-metric"
                             title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
                           >
                             <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
@@ -1052,33 +1057,29 @@ export default function DashboardClient() {
                         </td>
 
                         {/* I/O Metrics (Interactive) */}
-                        <td className="py-3 px-6 text-center">
+                        <td data-label="I/O" className="text-center">
                           <button 
                             type="button"
                             disabled={container.status !== 'running'}
                             onClick={() => container.status === 'running' && openChartModal(container.id, 'io')}
-                            className={`inline-flex flex-col items-center justify-center min-h-[44px] px-3 py-1.5 rounded-card border border-transparent select-none outline-hidden focus-visible:outline-2 focus-visible:outline-brand ${
-                              container.status === 'running'
-                                ? 'hover:border-line hover:bg-subtle cursor-pointer text-ink'
-                                : 'text-secondary opacity-50 cursor-default'
-                            }`}
+                            className="ops-metric"
                             title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
                           >
                             <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
                               <span className="block text-warn">R: {container.status === 'running' ? formatBytes(metrics.io_read) : '0 B'}</span>
                               <span className="block text-danger">W: {container.status === 'running' ? formatBytes(metrics.io_write) : '0 B'}</span>
                             </span>
-                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 uppercase tracking-[0.05em] font-bold">실시간 차트</span>
+                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
                           </button>
                         </td>
 
                         {/* Terminal Log & Configuration */}
-                        <td className="py-3 px-6 text-center">
+                        <td data-label="도구" className="text-center">
                           <div className="flex items-center justify-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => openLogModal(container.id)}
-                              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default"
+                              className="ops-icon-button"
                               title="실시간 터미널 로그 스트리밍 모달 열기"
                             >
                               <Terminal className="w-4 h-4" />
@@ -1093,12 +1094,7 @@ export default function DashboardClient() {
                                 container.status === 'offline'
                               }
                               onClick={() => setDetailContainer(container)}
-                              className={`border rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default ${
-                                container.status === 'not_created' ||
-                                container.status === 'offline'
-                                  ? 'bg-card border-line text-secondary opacity-50 cursor-default'
-                                  : 'bg-card hover:bg-subtle text-ink border-line'
-                              }`}
+                              className="ops-icon-button"
                               title={
                                 container.status === 'not_created' ||
                                 container.status === 'offline'
@@ -1112,7 +1108,7 @@ export default function DashboardClient() {
                             <button
                               type="button"
                               onClick={() => openConfigModal(container)}
-                              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default"
+                              className="ops-icon-button"
                               title="컨테이너 세부 설정 변경"
                             >
                               <Settings className="w-4 h-4" />
@@ -1121,10 +1117,10 @@ export default function DashboardClient() {
                         </td>
 
                         {/* Controller Actions */}
-                        <td className="py-3 px-6 text-right">
+                        <td data-label="제어" className="text-right">
                           <div className="inline-flex gap-1.5 items-center">
                             {isContainerLoading ? (
-                              <div className="flex items-center gap-1.5 text-xs text-secondary font-bold tracking-[0.05em] uppercase py-2 px-3">
+                              <div className="flex items-center gap-1.5 text-xs text-secondary font-semibold py-2 px-3">
                                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand" />
                                 <span>처리 중</span>
                               </div>
@@ -1134,7 +1130,7 @@ export default function DashboardClient() {
                                   type="button"
                                   onClick={() => handleAction(container.id, 'start')}
                                   disabled={actionMutation.isPending || container.status === 'running'}
-                                  className="flex items-center gap-1.5 bg-card hover:bg-ok hover:text-white disabled:opacity-30 disabled:hover:bg-card disabled:hover:text-ok text-ok border border-ok rounded-card min-h-[44px] py-2 px-3 text-xs font-bold tracking-[0.05em] uppercase transition-all duration-150 ease-default"
+                                  className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
                                   title="컨테이너 가동"
                                 >
                                   <Play className="w-3 h-3" />
@@ -1145,7 +1141,7 @@ export default function DashboardClient() {
                                   type="button"
                                   onClick={() => handleAction(container.id, 'stop')}
                                   disabled={actionMutation.isPending || container.status !== 'running'}
-                                  className="flex items-center gap-1.5 bg-card hover:bg-danger hover:text-white disabled:opacity-30 disabled:hover:bg-card disabled:hover:text-danger text-danger border border-danger rounded-card min-h-[44px] py-2 px-3 text-xs font-bold tracking-[0.05em] uppercase transition-all duration-150 ease-default"
+                                  className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
                                   title="컨테이너 정지"
                                 >
                                   <Square className="w-3 h-3" />
@@ -1156,7 +1152,7 @@ export default function DashboardClient() {
                                   type="button"
                                   onClick={() => handleAction(container.id, 'restart')}
                                   disabled={actionMutation.isPending || container.status !== 'running'}
-                                  className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[44px] p-2 text-xs transition-all duration-150 ease-default"
+                                  className="ops-icon-button"
                                   title="컨테이너 재부팅"
                                 >
                                   <RotateCw className="w-3.5 h-3.5" />
@@ -1170,31 +1166,67 @@ export default function DashboardClient() {
                   })}
                 </tbody>
               </table>
-            </div>
           )}
-        </main>
-      </div>
+        </section>
+        <footer className="ops-footer">
+          <span>Kor Travel Docker Manager · 컨테이너 상태 원장</span>
+          <span>{isWsConnected ? 'WebSocket 수신' : 'HTTP 폴백 조회'}</span>
+        </footer>
+      </main>
+
+      {isCommandPaletteOpen && (
+        <div
+          className="ops-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setIsCommandPaletteOpen(false);
+          }}
+        >
+          <div aria-label="빠른 명령" aria-modal="true" className="ops-command-dialog" role="dialog">
+            <input
+              aria-label="명령 검색"
+              className="ops-command-dialog__input"
+              onChange={(event) => setCommandQuery(event.target.value)}
+              placeholder="명령 검색"
+              ref={commandInputRef}
+              value={commandQuery}
+            />
+            <div className="ops-command-dialog__list" role="list">
+              {commandItems.length ? commandItems.map((item) => (
+                <button
+                  className="ops-command-dialog__option"
+                  key={item.id}
+                  onClick={() => runCommand(item.run)}
+                  type="button"
+                >
+                  <span>{item.label}</span>
+                  <span className="font-mono text-[10px] text-secondary">{item.hint}</span>
+                </button>
+              )) : <p className="px-3 py-5 text-sm text-secondary">일치하는 명령이 없습니다.</p>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {isAdminSettingsOpen && (
-        <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300 select-text">
+        <div className="ops-modal-backdrop select-text">
           <AdminSettingsPanel onClose={() => setIsAdminSettingsOpen(false)} />
         </div>
       )}
 
       {isBackupHistoryOpen && (
-        <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300 select-text">
+        <div className="ops-modal-backdrop select-text">
           <BackupHistoryPanel onClose={() => setIsBackupHistoryOpen(false)} />
         </div>
       )}
 
       {/* Live Log Terminal Modal */}
       {isLogModalOpen && logContainerId && (
-        <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300 select-text">
+        <div className="ops-modal-backdrop select-text">
           <div
             aria-label="실시간 콘솔 로그"
             aria-modal="true"
             role="dialog"
-            className="bg-card border border-line rounded-card w-full max-w-4xl p-6 shadow-modal flex flex-col h-[75vh] relative overflow-hidden"
+            className="ops-modal max-w-4xl p-6 flex flex-col h-[75vh] relative"
           >
 
             {/* Modal Header */}
@@ -1214,7 +1246,7 @@ export default function DashboardClient() {
                 aria-label="닫기"
                 autoFocus
                 onClick={() => setIsLogModalOpen(false)}
-                className="text-secondary hover:text-strong p-2 rounded-full hover:bg-elevated transition-all"
+                className="ops-icon-button"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1244,12 +1276,12 @@ export default function DashboardClient() {
 
       {/* Performance History Chart Modal */}
       {isChartModalOpen && chartContainerId && (
-        <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300">
+        <div className="ops-modal-backdrop">
           <div
             aria-label="실시간 성능 차트"
             aria-modal="true"
             role="dialog"
-            className="bg-card border border-line rounded-card w-full max-w-3xl p-6 shadow-modal flex flex-col relative overflow-hidden"
+            className="ops-modal max-w-3xl p-6 flex flex-col relative"
           >
 
             {/* Modal Header */}
@@ -1272,7 +1304,7 @@ export default function DashboardClient() {
                   setIsChartModalOpen(false);
                   setWsMetricsPoints([]); // 이벤트 핸들러에서 직접 초기화하여 derived-state 경고 방지
                 }}
-                className="text-secondary hover:text-strong p-2 rounded-full hover:bg-elevated transition-all"
+                className="ops-icon-button"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1283,7 +1315,7 @@ export default function DashboardClient() {
               <button
                 type="button"
                 onClick={() => setChartMetricType('cpu')}
-                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-all border-b-2 outline-hidden ${
+                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-colors border-b-2 outline-hidden ${
                   chartMetricType === 'cpu'
                     ? 'border-brand text-brand'
                     : 'border-transparent text-secondary hover:text-strong'
@@ -1294,7 +1326,7 @@ export default function DashboardClient() {
               <button
                 type="button"
                 onClick={() => setChartMetricType('memory')}
-                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-all border-b-2 outline-hidden ${
+                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-colors border-b-2 outline-hidden ${
                   chartMetricType === 'memory'
                     ? 'border-brand text-brand'
                     : 'border-transparent text-secondary hover:text-strong'
@@ -1305,7 +1337,7 @@ export default function DashboardClient() {
               <button
                 type="button"
                 onClick={() => setChartMetricType('io')}
-                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-all border-b-2 outline-hidden ${
+                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-colors border-b-2 outline-hidden ${
                   chartMetricType === 'io'
                     ? 'border-brand text-brand'
                     : 'border-transparent text-secondary hover:text-strong'
@@ -1332,17 +1364,17 @@ export default function DashboardClient() {
                     data={combinedChartData}
                     margin={{ top: 5, right: 10, left: 10, bottom: 5 }}
                   >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#d8dee8" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line)" />
                     <XAxis
                       dataKey="timestamp"
                       tickFormatter={formatTimestamp}
-                      stroke="#667085"
-                      style={{ fontSize: 14, fontFamily: 'monospace' }} // Increased fontSize to 14 to resolve accessibility small text warning
+                      stroke="var(--color-secondary)"
+                      style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
                       dy={5}
                     />
                     <YAxis
-                      stroke="#667085"
-                      style={{ fontSize: 14, fontFamily: 'monospace' }} // Increased fontSize to 14 to resolve accessibility small text warning
+                      stroke="var(--color-secondary)"
+                      style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
                       dx={-5}
                       tickFormatter={(value) => {
                         if (chartMetricType === 'io') {
@@ -1353,12 +1385,12 @@ export default function DashboardClient() {
                     />
                     <RechartsTooltip
                       contentStyle={{
-                        backgroundColor: '#ffffff',
-                        border: '1px solid #d8dee8',
-                        borderRadius: '8px',
+                        backgroundColor: 'var(--color-card)',
+                        border: '1px solid var(--color-line)',
+                        borderRadius: 'var(--radius-card)',
                         fontSize: 14, // Increased fontSize to 14
-                        fontFamily: 'monospace',
-                        color: '#172033'
+                        fontFamily: 'var(--font-mono)',
+                        color: 'var(--color-strong)'
                       }}
                       labelFormatter={(label) => `수집 시각: ${formatTimestamp(label as string)}`}
                       formatter={(value: any, name: any) => {
@@ -1373,7 +1405,7 @@ export default function DashboardClient() {
                       <Line
                         type="monotone"
                         dataKey="cpu_pct"
-                        stroke="#15803d"
+                        stroke="var(--color-ok)"
                         strokeWidth={2}
                         dot={false}
                         activeDot={{ r: 4 }}
@@ -1385,7 +1417,7 @@ export default function DashboardClient() {
                       <Line
                         type="monotone"
                         dataKey="mem_pct"
-                        stroke="#0f766e"
+                        stroke="var(--color-brand)"
                         strokeWidth={2}
                         dot={false}
                         activeDot={{ r: 4 }}
@@ -1398,7 +1430,7 @@ export default function DashboardClient() {
                         <Line
                           type="monotone"
                           dataKey="io_read"
-                          stroke="#b45309"
+                          stroke="var(--color-warn)"
                           strokeWidth={1.5}
                           dot={false}
                           name="io_read"
@@ -1406,7 +1438,7 @@ export default function DashboardClient() {
                         <Line
                           type="monotone"
                           dataKey="io_write"
-                          stroke="#b42318"
+                          stroke="var(--color-danger)"
                           strokeWidth={1.5}
                           dot={false}
                           name="io_write"
@@ -1428,12 +1460,12 @@ export default function DashboardClient() {
 
       {/* Config Edit Modal */}
       {isConfigModalOpen && configTargetContainer && (
-        <div className="fixed inset-0 bg-strong/40 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all duration-300">
+        <div className="ops-modal-backdrop">
           <div
             aria-label="컨테이너 설정 변경"
             aria-modal="true"
             role="dialog"
-            className="bg-card border border-line rounded-card w-full max-w-lg p-6 shadow-modal relative overflow-hidden flex flex-col max-h-[90vh]"
+            className="ops-modal max-w-lg p-6 relative flex flex-col"
           >
 
             {/* Modal Header */}
@@ -1447,7 +1479,7 @@ export default function DashboardClient() {
                 aria-label="닫기"
                 autoFocus
                 onClick={() => setIsConfigModalOpen(false)}
-                className="text-secondary hover:text-strong p-1.5 rounded-full hover:bg-elevated transition-all"
+                className="ops-icon-button"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1653,7 +1685,7 @@ export default function DashboardClient() {
                             onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
                             aria-invalid={!!envError}
                             aria-describedby={envError ? `env-error-${key}` : undefined}
-                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 w-full transition-all font-mono ${
+                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 w-full transition-colors font-mono ${
                               envError
                                 ? 'border-danger focus:border-danger focus-visible:outline-danger'
                                 : 'border-line focus:border-brand focus-visible:outline-brand'
@@ -1727,7 +1759,7 @@ export default function DashboardClient() {
                     }
                   }}
                   disabled={resetMutation.isPending || configMutation.isPending}
-                  className="bg-card hover:bg-danger hover:text-white disabled:opacity-40 text-danger border border-danger rounded-card min-h-[44px] py-3 text-xs font-bold tracking-[0.05em] uppercase transition-all duration-150 ease-default flex-1"
+                  className="ops-button ops-button--danger flex-1 text-danger border-danger disabled:opacity-40"
                 >
                   {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
                 </button>
@@ -1744,7 +1776,7 @@ export default function DashboardClient() {
                       ? '위에 표시된 오류를 먼저 해결하세요'
                       : undefined
                   }
-                  className="bg-brand hover:bg-brand-ink text-white disabled:opacity-50 rounded-card shadow-card min-h-[44px] py-3 text-xs font-bold tracking-[0.05em] uppercase transition-all duration-150 ease-default flex-1 flex items-center justify-center gap-2"
+                  className="ops-button ops-button--primary flex-1"
                 >
                   {configMutation.isPending ? (
                     <>

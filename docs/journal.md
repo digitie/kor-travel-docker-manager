@@ -4,6 +4,79 @@
 
 ---
 
+## 2026-08-15 — T-VN-40 canonical snapshot principal 최소 권한 결선
+
+- Manager frozen environment가 PinVi canonical snapshot·cutover mapping 원시 token pair에서 Map API용
+  SHA-256 digest를 파생하도록 했다. raw token은 ordinary PinVi API만 받고, Map API는 두 digest만 받으며
+  Map UI·Dagster·bootstrap과 PinVi Web·Dagster에는 두 형태 모두 전달하지 않는다.
+- raw/resolved Compose 및 runtime secret isolation validator가 pair의 함께 설정·최소 길이·공백·상호 불일치,
+  기존 보호 credential과의 재사용 금지, digest 단독 주입·불일치, 정확한 service path 외 이름/값 누출을
+  container mutation 전에 fail-close하도록 확장했다.
+- C6c deployment config와 Compose frozen snapshot에 동일 derivation을 적용해 preflight와 실제 subprocess
+  environment가 갈라지지 않도록 했다. contract test는 API-only 전달, digest 정확성, bootstrap 제외와
+  부분·재사용·위조 digest 거부를 고정한다.
+
+---
+
+## 2026-08-13 — Hallmark 운영 콘솔 전면 재설계
+
+- Hallmark v1.1.0을 적용해 현재 frontend를 감사했다. 과거 BMW M 기록과 실제 운영 콘솔 사이의
+  디자인 정본 불일치, 동일 KPI 카드 반복, modal blur/중첩 카드, 모바일 가로 스크롤 표, 토큰을 우회한
+  Recharts 색상, `transition-all`을 critical 1·major 5·minor 1로 기록했다.
+- `DESIGN.md`를 Kor Travel 운영 콘솔 정본으로 교체하고 `frontend/tokens.css`에 Cobalt 색상·서체·간격·
+  radius·motion 토큰을 분리했다. display는 Space Grotesk, 본문은 IBM Plex Sans, 데이터는 IBM Plex Mono를
+  사용한다. Hallmark 실행 메타데이터는 `.hallmark/log.json`에 남겼다.
+- 대시보드는 Workbench 구조로 바꿨다. 네 개의 같은 KPI 카드는 하나의 상태 원장과 graphite 동기화 신호면으로
+  합쳤고, `⌘/Ctrl + K` 인라인 명령 팔레트는 인증 설정·백업 이력·상태 새로고침·로그아웃을 실제로 실행한다.
+  서비스 표는 768px 이하에서 셀 레이블이 있는 행 카드로 전환해 가로 스크롤에 의존하지 않는다.
+- 로그인, 오류 화면, inspect·로그·차트·구성 변경·백업·인증 설정 패널을 같은 Cobalt 표면과 `ops-*` 상호작용
+  상태로 수렴했다. 차트는 색상·tooltip·서체를 토큰으로만 참조하고, backdrop blur와 `transition-all`을 제거했다.
+- `npm run type-check`와 `npm run lint`를 통과했다. `npm run build`는 이 worktree에서 Next.js 최적화 단계가
+  120초 안에 끝나지 않아 시간 제한으로 중단했으며, PR CI에서 다시 확인한다. upstream exact Map/PinVi pair
+  부재로 #171의 n150 live E2E와 merge gate는 계속 보류한다.
+
+---
+
+## 2026-08-12 — #171 전용 Map PostgreSQL P0 재검토 보강
+
+- 2인의 적대적 재검토에서 발견된 P0를 반영했다. 장기 실행 Dagster의 metadata DSN을 전용 non-superuser
+  login으로 분리하고, bootstrap superuser/role password는 F1D one-shot 밖으로 전달하지 않는다.
+- C6c가 모든 Map DB DSN의 loopback `12703`, database, principal을 bootstrap 전에 검증하고 Map DB 관련
+  service의 host network 이탈도 거부한다. shared `5432` 오결선·bridge override는 mutation 전에 fail-close한다.
+- bootstrap catalog assertion은 PostgreSQL 16 membership option, group/login option, ownership, extension schema,
+  relation/default ACL과 Dagster metadata DB owner까지 검증한다. pre-probe resume은 기존 checkpoint를 신뢰하지
+  않고 reset과 두 bootstrap one-shot을 다시 수행한다.
+- assertion은 bootstrap 직후 빈 application DB에서만 실행한다. upstream migration이 부여한 허용 runtime ACL은
+  armed 이후 durable fixture resume에서 재검사하지 않으며, `PUBLIC` relation/default ACL은 bootstrap invariant
+  위반으로 거부한다.
+- 전용 PostgreSQL initial superuser password는 `POSTGRES_PASSWORD_FILE` Docker secret으로 이동했다. disposable
+  Compose rehearsal에서 PostgreSQL 기동·secret file 인증·`docker inspect Config.Env`의 password 부재를 확인했고,
+  raw/resolved Compose는 해당 secret을 PostgreSQL entrypoint 외 service가 mount하면 거부한다. F1D도 reset 전
+  frozen Compose/`compose ps`가 확인한 실제 PostgreSQL `Config.Env`의 password 부재와 정확한 secret file
+  경로를 fail-close한다.
+- targeted 회귀 149개와 disposable PostgreSQL 16 catalog rehearsal을 통과했다. upstream exact Map/PinVi pair가
+  아직 없으므로 n150 live E2E와 Manager merge는 계속 보류한다.
+
+---
+
+## 2026-08-12 — #171 전용 Map PostgreSQL 경계 승인
+
+- ADR-090의 Map principal bootstrap을 공유 `kor-travel-geo-postgres`에 적용하지 않기로 확정했다.
+  공유 DB recovery가 legacy `krtour_map` ownership·ACL을 복원하므로, shared bootstrap은 권한 경계를
+  무음으로 되돌리고 실패 시 partial mutation도 남긴다.
+- Map application과 Dagster metadata는 전용 `kor-travel-map-postgres`의 loopback `127.0.0.1:12703`으로
+  이동한다. 통합 PostgreSQL `5432`는 Geo·Concierge·PinVi lifecycle만 계속 관리한다.
+- bootstrap은 F1D reset 뒤 Manager가 실행하는 one-shot으로만 허용한다. bootstrap superuser DSN과 세 role
+  password는 normal Map/PinVi runtime, Docker 장기 metadata, journal, stdout에 남기지 않는 것을 구현·검증
+  조건으로 둔다.
+- 정확한 Map release pin은 upstream Map PR의 merge된 revision과 PinVi compatibility artifact가 확정된 뒤에만
+  갱신한다. draft source의 SHA를 production authority로 추정하지 않는다.
+- Manager 구현은 전용 DB service, strict principal DSN wiring, profile one-shot bootstrap, F1D catalog
+  assertion과 shared recovery의 Map lifecycle 제거까지 진행했다. exact upstream pair가 없으므로 n150 live
+  E2E는 아직 실행하지 않았다.
+
+---
+
 ## 2026-08-11 (백로그 상태 정리 — F1D-D 수용 검증 범위 명확화)
 
 원격 `main`의 최신 F1D v5 상태를 기준으로, 진행 표의 유일한 미완료 항목을

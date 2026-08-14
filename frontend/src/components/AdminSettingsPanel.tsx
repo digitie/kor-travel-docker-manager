@@ -150,12 +150,12 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     <div
       aria-labelledby="admin-settings-title"
       aria-modal="true"
-      className="bg-card border border-line rounded-card w-full max-w-5xl shadow-modal max-h-[88vh] overflow-hidden flex flex-col outline-hidden"
+      className="ops-modal max-w-5xl flex flex-col outline-hidden"
       ref={dialogRef}
       role="dialog"
       tabIndex={-1}
     >
-      <div className="flex items-center justify-between border-b border-line px-6 py-4">
+      <div className="ops-modal__header">
         <div>
           <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
             Admin Settings
@@ -165,7 +165,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
           </h2>
         </div>
         <button
-          className="text-secondary hover:text-strong p-2 rounded-card hover:bg-subtle"
+          className="ops-icon-button"
           onClick={onClose}
           type="button"
         >
@@ -174,7 +174,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
       </div>
 
       <div className="overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <section className="border border-line rounded-card p-4 bg-card">
+        <section className="border-t border-line pt-4 lg:border-t-0 lg:border-r lg:pr-5 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="text-sm font-semibold text-strong">공개 API 키</h3>
@@ -190,7 +190,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 키 이름
               </label>
               <input
-                className="w-full bg-subtle border border-line rounded-card min-h-[44px] px-3 text-sm text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand"
+                className="ops-input"
                 id="public-key-label"
                 maxLength={80}
                 placeholder="운영 콘솔, 테스트 클라이언트"
@@ -200,7 +200,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
             </div>
             <div className="flex flex-wrap gap-2">
               <button
-                className="inline-flex items-center gap-2 min-h-[44px] bg-brand text-white rounded-card px-4 text-sm font-semibold disabled:opacity-60"
+                className="ops-button ops-button--primary"
                 disabled={keyState.busy}
                 type="submit"
               >
@@ -208,7 +208,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 랜덤 키 생성
               </button>
               <button
-                className="inline-flex items-center gap-2 min-h-[44px] bg-card border border-line text-ink rounded-card px-4 text-sm font-semibold disabled:opacity-60"
+                className="ops-button"
                 disabled={keyState.busy}
                 onClick={() => void loadPublicKeys()}
                 type="button"
@@ -229,7 +229,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               </label>
               <div className="flex gap-2">
                 <input
-                  className="flex-1 bg-card border border-line rounded-card min-h-[44px] px-3 text-sm text-strong font-mono outline-hidden"
+                  className="ops-input flex-1 font-mono"
                   id="generated-public-key"
                   readOnly
                   value={keyState.generatedKey}
@@ -237,7 +237,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 />
                 <button
                   aria-label="생성된 키 복사"
-                  className="inline-flex items-center justify-center min-h-[44px] w-11 bg-card border border-line rounded-card text-ink"
+                  className="ops-icon-button"
                   onClick={() => void copyGeneratedKey()}
                   type="button"
                 >
@@ -245,7 +245,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 </button>
                 <button
                   aria-label="생성된 키 화면에서 지우기"
-                  className="inline-flex items-center justify-center min-h-[44px] w-11 bg-card border border-line rounded-card text-ink"
+                  className="ops-icon-button"
                   onClick={() => patchKeyState({ generatedKey: null })}
                   type="button"
                 >
@@ -279,7 +279,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                   </div>
                   {item.state === 'active' ? (
                     <button
-                      className="inline-flex items-center justify-center min-h-[40px] w-10 border border-danger/40 rounded-card text-danger disabled:opacity-60"
+                      className="ops-icon-button text-danger border-danger/40"
                       disabled={keyState.busy}
                       onClick={() => void revokeKey(item.public_api_key_id)}
                       type="button"
@@ -294,7 +294,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
           {keyState.message ? <p className="mt-3 text-sm text-secondary">{keyState.message}</p> : null}
         </section>
 
-        <section className="border border-line rounded-card p-4 bg-card">
+        <section className="border-t border-line pt-4 lg:border-t-0 lg:pl-1 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="text-sm font-semibold text-strong">로그인 기록</h3>
@@ -303,7 +303,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               </p>
             </div>
             <button
-              className="inline-flex items-center gap-2 min-h-[40px] bg-card border border-line text-ink rounded-card px-3 text-xs font-semibold"
+              className="ops-button"
               onClick={() => void loadAuditEvents()}
               type="button"
             >

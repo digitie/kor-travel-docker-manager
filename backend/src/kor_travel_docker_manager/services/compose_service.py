@@ -41,6 +41,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_global_mutation_lock_path,
     c6c_state_paths,
     compose_volume_graph_hash,
+    derive_curation_service_principal_environment,
     inspect_c6c_image_source_revision,
     load_c6c_deployment_config_from_environment,
     revalidate_candidate_system_bind_snapshots,
@@ -48,6 +49,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_c6c_build_source_wiring,
     validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
+    validate_map_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
@@ -56,6 +58,7 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     reconcile_generation_references,
 )
 from kor_travel_docker_manager.services.database_runtime import (
+    assert_map_database_principal_bootstrap,
     database_runtimes_from_frozen_contract,
     read_database_schema_revision,
     recreate_empty_databases,
@@ -112,6 +115,8 @@ from kor_travel_docker_manager.services.registry import (
 )
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
+    "kor-travel-map-dagster-db-init",
+    "kor-travel-map-db-role-bootstrap",
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
@@ -1479,10 +1484,12 @@ def _effective_snapshot_environment(
     environment_override: Mapping[str, str] | None,
 ) -> Mapping[str, str]:
     if environment_override is None:
-        return snapshot.effective
+        return MappingProxyType(
+            derive_curation_service_principal_environment(snapshot.effective)
+        )
     merged = dict(snapshot.effective)
     merged.update(environment_override)
-    return MappingProxyType(merged)
+    return MappingProxyType(derive_curation_service_principal_environment(merged))
 
 
 def _external_reference_graph(
@@ -1860,6 +1867,7 @@ def _capture_compose_environment_snapshot(
     values.update(dict(os.environ))
     if environment_override is not None:
         values.update(environment_override)
+    values = derive_curation_service_principal_environment(values)
     return ComposeEnvironmentSnapshot(
         effective=MappingProxyType(values),
         env_path=str(env_path),
@@ -4028,7 +4036,36 @@ class ComposeService:
                     transaction_id=journal.transaction_id,
                 )
 
-                if _pinned_runtime_reset_required(journal):
+                # Map two DB runtime은 shared PostgreSQL이 아니라 #171 전용 instance에
+                # 있다. reset 전에 frozen Compose로 health까지 보장해 `docker exec`가
+                # 존재하지 않는 container를 향하거나 shared DB로 fallback하지 않게 한다.
+                self._run_pinned_runtime_rebuild_compose(
+                    [
+                        "up",
+                        "-d",
+                        "--wait",
+                        "--wait-timeout",
+                        "300",
+                        "kor-travel-map-postgres",
+                    ],
+                    transaction=runtime_transaction,
+                )
+                # raw/resolved Compose는 secret alias mount를 고정하지만, 실제
+                # long-lived container가 legacy password Env를 보존하지 않았는지도
+                # destructive DB reset 전에 Docker inspect로 fail-close한다.
+                map_postgres_records = self._require_services_ready(
+                    ("kor-travel-map-postgres",),
+                    transaction=runtime_transaction,
+                    frozen_recovery=True,
+                )
+                validate_map_postgres_runtime_secret_isolation(
+                    self._inspect_container_runtime_config(
+                        str(map_postgres_records[0]["Name"])
+                    )
+                )
+
+                reset_required = _pinned_runtime_reset_required(journal)
+                if reset_required:
                     recreate_empty_databases(runtimes)
                     updated = self._advance_pinned_runtime_journal(
                         journal, "databases_recreated"
@@ -4036,6 +4073,40 @@ class ComposeService:
                     if updated != journal:
                         write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                         journal = updated
+                if reset_required:
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "kor-travel-map-dagster-db-init",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "kor-travel-map-db-role-bootstrap",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    # 이 assertion은 role bootstrap 직후의 빈 application DB를
+                    # 검증한다. 이후 Map migration은 ADR-090이 허용한 runtime ACL을
+                    # 의도적으로 부여하므로 armed resume에서 pre-migration ACL을
+                    # 다시 요구하면 durable fixture를 보존한 정상 재개가 막힌다.
+                    assert_map_database_principal_bootstrap(
+                        runtimes[0],
+                        runtimes[1],
+                        runtime_transaction.environment.effective.get(
+                            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+                        ),
+                    )
                 self._run_pinned_runtime_rebuild_compose(
                     ["up", "-d", "--wait", "--wait-timeout", "300", "kor-travel-map-api"],
                     transaction=runtime_transaction,

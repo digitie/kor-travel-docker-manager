@@ -1796,3 +1796,98 @@ endpoint/generation이 없거나 PinVi provenance·Map artifact·pin이 서로 �
   receipt만 보관한다. 재시작·response-loss·finalize 중단도 각 상태를 명시적으로 재개하거나 fail-close한다.
 - Map schema/API 변경은 F1J-A, pair provenance 재결박은 F1J-C, Manager orchestration은 F1J-B로 분리해
   독립 리뷰·검증 가능하게 한다.
+
+## ADR-35: Map ADR-090 principal은 전용 PostgreSQL instance에서만 bootstrap한다
+
+- 상태: accepted
+- 날짜: 2026-08-12
+- 결정자: 사용자, Codex
+- 관련: #171, ADR-5, ADR-9, ADR-16, ADR-34, Map ADR-090
+
+### 컨텍스트
+
+Map ADR-090은 `ktm_feature_migrator`, `ktm_feature_api_runtime`,
+`ktm_feature_dagster_runtime`과 NOLOGIN ownership group을 분리하고, DB owner·schema·extension·ACL을
+전용 superuser로 bootstrap한다. 기존 `kor-travel-geo-postgres`는 Geo·Concierge·PinVi와 legacy Map
+database를 함께 관리하며, recovery script가 `krtour_map` owner와 광범위한 grant를 다시 적용한다.
+따라서 shared instance에서 bootstrap하면 Map 권한 경계를 깨거나 정상 recovery가 그 경계를 무음으로
+되돌린다. host network에서는 두 PostgreSQL이 `5432`를 동시에 bind할 수도 없다.
+
+### 결정
+
+Map application database와 Map Dagster metadata database는 `kor-travel-map-postgres` 전용 PostGIS
+instance로 분리한다. 이 instance는 host network loopback `127.0.0.1:12703`만 listen하며 Map target
+대역을 사용한다. 통합 `kor-travel-geo-postgres:5432`는 Geo·Concierge·PinVi lifecycle만 계속 소유하고,
+`kor_travel_map` 또는 Map role·schema·extension을 생성·복구·reset하지 않는다.
+
+F1D v5는 frozen Compose에서 Map 두 database runtime을 전용 instance로, PinVi runtime을 통합 instance로
+각각 유도한다. reset은 세 DB만 drop/create하며 Map application의 schema/extension/role provisioning은
+Manager가 만들지 않는다. reset 직후 Map 정본 `postgres-role-bootstrap.sh`를 profile one-shot으로 실행하고,
+성공한 경우에만 Map API migration과 Dagster storage migration을 실행한다. one-shot은 `--rm`으로 종료해
+bootstrap superuser DSN과 세 role password가 normal runtime, journal 또는 잔존 container metadata에 남지
+않게 한다. bootstrap profile은 일반 `compose up`에서 비활성화하며, 일반 `ensure`는
+role/password/owner/ACL mutation을 절대 실행하지 않는다. 초기화·복구는 F1D reset transaction만 담당한다.
+
+Map API에는 migrator DSN과 API runtime DSN만 전달한다. Map Dagster·daemon·storage migration에는 Dagster
+application runtime DSN과 별도 non-superuser metadata login의 metadata DSN만 전달한다. bootstrap DSN과 raw
+role password는 one-shot service의 유일한 입력이다. Compose candidate validator는 실행 전 DSN의
+`127.0.0.1:12703` endpoint·database·principal과 host network를 frozen Compose identity에 결박하고,
+raw/resolved secret reference도 검증한다. F1D는 bootstrap 뒤 database owner, role attribute, PostgreSQL 16
+membership option, schema·relation·routine·type owner, extension schema, runtime/default ACL을 catalog에서
+assertion하며 통과하지 못하면 migration을 시작하지 않고 fail-close한다. 이 assertion은 빈 application DB의
+bootstrap invariant만 검사한다. Map migration이 허용된 runtime relation ACL을 만든 뒤에는 durable cancel
+fixture를 보존하는 resume에서 pre-migration assertion을 반복하지 않는다. cancel probe가 아직 시작되지 않은
+resume은 checkpoint와 무관하게 DB reset과 두 Map bootstrap one-shot을 다시 실행한다.
+
+전용 PostgreSQL의 초기 superuser password는 long-lived container의 `Config.Env`에 넣지 않는다.
+Compose secret file `POSTGRES_PASSWORD_FILE`로만 초기화 entrypoint에 전달하며, Docker inspect에는 secret
+reference만 남고 password/DSN 원문은 남지 않는다. 이 secret alias는 PostgreSQL entrypoint의 정확한
+mount 한 곳에서만 소비할 수 있으며 API·Dagster·PinVi 또는 one-shot의 추가 mount는 raw/resolved Compose
+검증에서 fail-close한다. F1D는 database reset 전에 실제 PostgreSQL container의 `Config.Env`를 다시 inspect해
+`POSTGRES_PASSWORD` 부재와 정확한 `POSTGRES_PASSWORD_FILE`만 허용한다. inspect 대상은 고정 이름이 아니라
+frozen resolved Compose와 `compose ps`가 함께 확인한 Map PostgreSQL의 실제 singleton `Name`이다. bootstrap
+one-shot만 같은 credential을 포함한 DSN을 받고 `--rm`으로 종료한다.
+
+새 Map image 및 PinVi compatibility artifact는 upstream에서 merge된 exact revision만
+`PINNED_RUNTIME_RELEASE`에 반영한다. draft source SHA나 `latest-main` tag는 production/rehearsal authority가
+아니다.
+
+### 결과
+
+- Map ADR-090 privilege boundary가 공용 DB recovery와 독립되어 재현 가능하다.
+- F1D destructive rebuild가 Geo·Concierge database, PinVi database, RustFS 또는 legacy shared Map DB를
+  변경하지 않는다.
+- Map release pin이 확정되기 전에는 구현·정적 검증까지만 허용되며, n150 live E2E와 Manager PR merge는
+  exact pair authority가 준비된 뒤에만 진행한다.
+
+## ADR-36: 운영 콘솔을 Cobalt Workbench 디자인 시스템으로 수렴한다
+
+- 상태: accepted
+- 날짜: 2026-08-13
+- 결정자: 사용자, Codex
+- 관련: ADR-17, #171
+
+### 컨텍스트
+
+ADR-17의 StyleSeed 라이트 토큰은 화면 공통 표면을 정리했지만, `DESIGN.md`에는 이전 BMW M 시각 기록이
+남아 있고 실제 console은 동일한 KPI 카드, modal blur, 가로 스크롤 표, 차트의 개별 색상처럼 서로 다른
+표현을 병행했다. 이 상태에서는 운영자가 조치·상태·보조 정보를 같은 우선순위로 읽게 되고, 작은 화면에서
+컨테이너와 백업 원장을 안전하게 확인할 수 없다.
+
+### 결정
+
+Hallmark audit을 기준으로 modern-minimal 장르와 Workbench 구조를 채택한다. Cobalt theme의 semantic token은
+`frontend/tokens.css` 한 곳에서 정의하고, display(Space Grotesk)·본문(IBM Plex Sans)·데이터(IBM Plex Mono)
+서체 역할을 분리한다. 모든 화면은 이 token과 공통 `ops-*` 표면·버튼·modal·focus 상태를 사용한다. 임의
+hex, 임의 shadow/radius, `transition-all`, 의미 없는 gradient/glass, 고객용 장식 자산은 새 UI에 넣지 않는다.
+
+대시보드는 상단 명령, 상태 원장, graphite 동기화 신호, 서비스 원장, 단일 상태 footer 순서로 구성한다.
+인라인 명령 팔레트는 장식이 아니라 인증 설정·백업 이력·새로고침·로그아웃에 연결한다. 서비스와 백업 표는
+768px 이하에서 각 셀의 label을 보이는 행 카드로 바뀌며 가로 스크롤을 기본 상호작용으로 사용하지 않는다.
+모든 modal은 같은 사각 작업 표면, Escape, 초기 focus, 명시적 닫기 버튼을 유지한다.
+
+### 결과
+
+- 상태 확인과 조치가 화면 전체에서 동일한 색상·타이포그래피·focus·disabled·loading 규칙을 따른다.
+- 320px, 375px, 414px, 768px에서 운영 원장이 가로 스크롤 없이 읽히도록 구현·검증 대상이 명확해진다.
+- #171의 PostgreSQL bootstrap, exact release pin, n150 live E2E/merge gate에는 영향을 주지 않는다.
