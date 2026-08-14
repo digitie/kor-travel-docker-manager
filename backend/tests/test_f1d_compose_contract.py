@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -13,9 +14,11 @@ from typing import Any
 
 import pytest
 import yaml
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     DeploymentContractError,
+    derive_curation_service_principal_environment,
     validate_compose_candidate_protected_values,
     validate_map_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
@@ -67,6 +70,8 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "t" * 32,
+        "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
+        "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "test-geo-key",
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
         "KOR_TRAVEL_MAP_POSTGRES_DB": "map_contract",
@@ -156,6 +161,7 @@ def _resolved_compose(
     environment = _compose_contract_environment()
     if environment_update is not None:
         environment.update(environment_update)
+    environment = derive_curation_service_principal_environment(environment)
     completed = subprocess.run(
         [
             "docker",
@@ -262,6 +268,111 @@ def test_resolved_pinvi_api_has_no_implicit_schema_mutation_or_bootstrap_secret(
         "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
     ):
         assert bootstrap["environment"][name] == api["environment"][name]
+    assert {
+        "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN",
+    }.isdisjoint(bootstrap["environment"])
+    assert api["environment"]["PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"] == "n" * 32
+    assert (
+        api["environment"]["PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"]
+        == "m" * 32
+    )
+
+
+def test_tvn40_curation_service_principals_are_api_only_and_digest_derived() -> None:
+    """Map에는 digest만, PinVi ordinary API에는 원시 pair만 전달한다."""
+
+    source = _source_compose()
+    services = source["services"]
+    assert isinstance(services, dict)
+    environment = derive_curation_service_principal_environment(
+        _compose_contract_environment()
+    )
+    map_api = services["kor-travel-map-api"]["environment"]
+    pinvi_api = services["pinvi-api"]["environment"]
+    assert isinstance(map_api, dict)
+    assert isinstance(pinvi_api, dict)
+    assert map_api["KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"] == (
+        "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
+    )
+    assert map_api[
+        "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
+    ] == "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+    assert pinvi_api["PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"] == (
+        "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
+    )
+    assert pinvi_api["PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"] == (
+        "${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}"
+    )
+    assert environment["KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"] == (
+        hashlib.sha256(("n" * 32).encode("utf-8")).hexdigest()
+    )
+    assert environment[
+        "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
+    ] == hashlib.sha256(("m" * 32).encode("utf-8")).hexdigest()
+
+    names = {
+        "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256",
+        "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256",
+        "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN",
+    }
+    for service_name, service in services.items():
+        assert isinstance(service, dict)
+        service_environment = service.get("environment")
+        if not isinstance(service_environment, dict):
+            continue
+        found = names.intersection(service_environment)
+        expected = (
+            {
+                "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256",
+                "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256",
+            }
+            if service_name == "kor-travel-map-api"
+            else {
+                "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
+                "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN",
+            }
+            if service_name == "pinvi-api"
+            else set()
+        )
+        assert found == expected
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    (
+        (
+            {"PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": ""},
+            "configured together",
+        ),
+        (
+            {"PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "short"},
+            "at least 32 characters",
+        ),
+        (
+            {
+                "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "n" * 32,
+            },
+            "must differ",
+        ),
+        (
+            {
+                "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256": "0" * 64,
+            },
+            "must be derived",
+        ),
+    ),
+)
+def test_tvn40_curation_service_principal_derivation_fails_closed(
+    updates: dict[str, str],
+    message: str,
+) -> None:
+    environment = _compose_contract_environment()
+    environment.update(updates)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        derive_curation_service_principal_environment(environment)
 
 
 def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation(

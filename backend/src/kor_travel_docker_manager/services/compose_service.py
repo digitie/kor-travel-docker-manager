@@ -19,6 +19,7 @@ from typing import Any, Literal, cast
 
 import yaml
 from dotenv import dotenv_values
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_RUNTIME_SERVICES,
@@ -40,6 +41,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_global_mutation_lock_path,
     c6c_state_paths,
     compose_volume_graph_hash,
+    derive_curation_service_principal_environment,
     inspect_c6c_image_source_revision,
     load_c6c_deployment_config_from_environment,
     revalidate_candidate_system_bind_snapshots,
@@ -1482,10 +1484,12 @@ def _effective_snapshot_environment(
     environment_override: Mapping[str, str] | None,
 ) -> Mapping[str, str]:
     if environment_override is None:
-        return snapshot.effective
+        return MappingProxyType(
+            derive_curation_service_principal_environment(snapshot.effective)
+        )
     merged = dict(snapshot.effective)
     merged.update(environment_override)
-    return MappingProxyType(merged)
+    return MappingProxyType(derive_curation_service_principal_environment(merged))
 
 
 def _external_reference_graph(
@@ -1863,6 +1867,7 @@ def _capture_compose_environment_snapshot(
     values.update(dict(os.environ))
     if environment_override is not None:
         values.update(environment_override)
+    values = derive_curation_service_principal_environment(values)
     return ComposeEnvironmentSnapshot(
         effective=MappingProxyType(values),
         env_path=str(env_path),

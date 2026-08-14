@@ -360,6 +360,23 @@ trusted CIDR는 `127.0.0.1/32`·`::1/128` exact JSON으로 명시한다. 실제 
   사용하며 schedule command, refresh policy, update request mutation은 같은 token으로도 403이어야
   한다.
 
+### 7.4 T-VN-40 PinVi canonical snapshot principal
+
+canonical collection snapshot은 기존 ops read/cancel principal과 별도의 두 ServiceToken을 쓴다.
+manager `.env`의 `PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN`과
+`PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN`은 함께 설정하거나 함께 비워야 한다. 각각
+32자 이상·공백 없음이어야 하며 서로와 기존 C6c 보호 credential을 재사용할 수 없다.
+
+- ordinary PinVi API에만 두 원시 token을 각각 같은 이름으로 전달한다. PinVi Web·Dagster·admin
+  bootstrap과 Map의 모든 원시 token surface에는 전달하지 않는다.
+- Manager가 frozen environment에서 각 SHA-256을 파생해 Map API에만
+  `KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256` 및
+  `KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256`로 전달한다. Map은 digest만
+  소비하며 원시 token을 받지 않는다.
+- 원시 pair 없이 digest만 주입하거나, 선언한 digest가 파생값과 다르거나, 한 token만 설정하면 raw·resolved
+  Compose preflight가 container mutation 전에 중단한다. T-VN-40 rollout receipt가 pending인 동안
+  빈 pair는 legacy compatible-pair를 위해 허용한다.
+
 Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH`, `KOR_TRAVEL_MAP_UI_SESSION_SECRET`은 기본값 없는 `:?`
 보간으로 Map UI의 정확한 Env path에만 전달한다. PBKDF2 반복 수는 100,000 이상, session secret은 32자

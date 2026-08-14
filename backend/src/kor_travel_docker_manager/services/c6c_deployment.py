@@ -26,6 +26,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import yaml
 from dotenv import dotenv_values
+
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
@@ -74,6 +75,14 @@ _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
 _MAP_ADMIN_PROXY_ENV = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
 _MAP_SERVICE_TOKEN_ENV = "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
 _MAP_CURSOR_SIGNING_SECRET_ENV = "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+_MAP_CURATION_SNAPSHOT_DIGEST_ENV = (
+    "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"
+)
+_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV = (
+    "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
+)
+_PINVI_CURATION_SNAPSHOT_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"
+_PINVI_CUTOVER_MAPPING_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
 _MAP_PROFILE_ENV = "KOR_TRAVEL_MAP_API_PROFILE"
 _MAP_PUBLIC_API_KEY_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
 _MAP_DEBUG_ROUTES_ENABLED_ENV = "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
@@ -128,6 +137,21 @@ _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
         _MAP_SERVICE_TOKEN_ENV,
         _MAP_CURSOR_SIGNING_SECRET_ENV,
     }
+)
+_CURATION_PRINCIPAL_RAW_ENV_NAMES = frozenset(
+    {
+        _PINVI_CURATION_SNAPSHOT_ENV,
+        _PINVI_CUTOVER_MAPPING_ENV,
+    }
+)
+_CURATION_PRINCIPAL_DIGEST_ENV_NAMES = frozenset(
+    {
+        _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
+        _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+    }
+)
+_CURATION_PRINCIPAL_ENV_NAMES = (
+    _CURATION_PRINCIPAL_RAW_ENV_NAMES | _CURATION_PRINCIPAL_DIGEST_ENV_NAMES
 )
 _MAP_PUBLISHED_EXAMPLE_SECRET_VALUES = {
     _MAP_ADMIN_PROXY_ENV: "local-map-admin-proxy-secret-change-me",
@@ -201,6 +225,18 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): _MAP_SERVICE_TOKEN_ENV,
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         _MAP_CURSOR_SIGNING_SECRET_ENV
+    ),
+    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
+        _MAP_CURATION_SNAPSHOT_DIGEST_ENV
+    ),
+    (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
+        _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
+        _PINVI_CURATION_SNAPSHOT_ENV
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
+        _PINVI_CUTOVER_MAPPING_ENV
     ),
     (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): "KOR_TRAVEL_MAP_POSTGRES_DB",
     (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): "KOR_TRAVEL_MAP_POSTGRES_USER",
@@ -433,6 +469,18 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
     ),
+    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
+        "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
+    ),
+    (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
+        "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
+        "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
+    ),
+    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
+        "${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}"
+    ),
     **{
         (_MAP_API_SERVICE, env_name): value
         for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
@@ -444,6 +492,7 @@ _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     | _MANAGER_ONLY_CREDENTIAL_NAMES
     | _MAP_PRODUCTION_SECRET_ENV_NAMES
     | _MAP_DATABASE_SECRET_ENV_NAMES
+    | _CURATION_PRINCIPAL_ENV_NAMES
     | {
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
@@ -853,6 +902,8 @@ class C6cDeploymentConfig:
     pinvi_container: str
     contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
+    curation_snapshot_token: str = field(default="", repr=False)
+    curation_cutover_mapping_token: str = field(default="", repr=False)
 
     @property
     def production(self) -> bool:
@@ -1102,7 +1153,7 @@ def effective_environment(env_path: str) -> dict[str, str]:
             }
         )
     values.update(os.environ)
-    return values
+    return derive_curation_service_principal_environment(values)
 
 
 def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
@@ -1261,7 +1312,7 @@ def load_c6c_deployment_config(env_path: str) -> C6cDeploymentConfig:
 def load_c6c_deployment_config_from_environment(
     environment: Mapping[str, str],
 ) -> C6cDeploymentConfig:
-    values = dict(environment)
+    values = derive_curation_service_principal_environment(environment)
     deployment_environment = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
     pinvi_environment = values.get("PINVI_ENVIRONMENT", "").strip().lower()
 
@@ -1348,6 +1399,11 @@ def load_c6c_deployment_config_from_environment(
             map_ui_password=values.get(_MAP_UI_PASSWORD_ENV, ""),
             pinvi_admin_email=values.get("KTDM_C6C_PINVI_ADMIN_EMAIL", ""),
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
+        ),
+        curation_snapshot_token=values.get(_PINVI_CURATION_SNAPSHOT_ENV, ""),
+        curation_cutover_mapping_token=values.get(
+            _PINVI_CUTOVER_MAPPING_ENV,
+            "",
         ),
     )
     validate_c6c_operation_tokens(
@@ -1452,6 +1508,78 @@ def _validate_raw_token_pair(
         raise DeploymentContractError("C6c read, cancel, and fixture tokens must differ")
 
 
+def derive_curation_service_principal_environment(
+    environment: Mapping[str, str],
+    *,
+    error_type: type[DeploymentContractError] = DeploymentContractError,
+) -> dict[str, str]:
+    """PinVi 원시 principal pair에서 Map 검증용 digest만 파생한다.
+
+    Map runtime에는 원시 ServiceToken을 전달하지 않는다. 기존 C6c deployment가
+    T-VN-40 service cutover 전에도 계속 동작하도록 pair가 모두 비어 있는 경우만
+    허용하며, digest만 외부에서 주입하는 우회는 fail-close한다.
+    """
+
+    values = dict(environment)
+    snapshot_token = values.get(_PINVI_CURATION_SNAPSHOT_ENV, "")
+    mapping_token = values.get(_PINVI_CUTOVER_MAPPING_ENV, "")
+    declared_snapshot_digest = values.get(_MAP_CURATION_SNAPSHOT_DIGEST_ENV, "")
+    declared_mapping_digest = values.get(
+        _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+        "",
+    )
+    raw_tokens = (
+        (_PINVI_CURATION_SNAPSHOT_ENV, snapshot_token),
+        (_PINVI_CUTOVER_MAPPING_ENV, mapping_token),
+    )
+    declared_digests = (
+        (_MAP_CURATION_SNAPSHOT_DIGEST_ENV, declared_snapshot_digest),
+        (_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV, declared_mapping_digest),
+    )
+
+    if any(not isinstance(value, str) for _, value in (*raw_tokens, *declared_digests)):
+        raise error_type("T-VN-40 curation service principal environment is invalid")
+    if not any(value for _, value in raw_tokens):
+        if any(value for _, value in declared_digests):
+            raise error_type(
+                "Map curation token digests require the corresponding PinVi raw pair"
+            )
+        values[_MAP_CURATION_SNAPSHOT_DIGEST_ENV] = ""
+        values[_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV] = ""
+        return values
+    if any(not value for _, value in raw_tokens):
+        raise error_type(
+            "PinVi curation snapshot and cutover-mapping tokens must be configured together"
+        )
+    for env_name, token in raw_tokens:
+        if len(token) < 32:
+            raise error_type(f"{env_name} must contain at least 32 characters")
+        if any(character.isspace() for character in token):
+            raise error_type(f"{env_name} must not contain whitespace")
+    if hmac.compare_digest(snapshot_token, mapping_token):
+        raise error_type("PinVi curation snapshot and cutover-mapping tokens must differ")
+
+    expected_snapshot_digest = hashlib.sha256(snapshot_token.encode("utf-8")).hexdigest()
+    expected_mapping_digest = hashlib.sha256(mapping_token.encode("utf-8")).hexdigest()
+    for env_name, actual, expected in (
+        (
+            _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
+            declared_snapshot_digest,
+            expected_snapshot_digest,
+        ),
+        (
+            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+            declared_mapping_digest,
+            expected_mapping_digest,
+        ),
+    ):
+        if actual and not hmac.compare_digest(actual, expected):
+            raise error_type(f"{env_name} must be derived from its PinVi raw token")
+    values[_MAP_CURATION_SNAPSHOT_DIGEST_ENV] = expected_snapshot_digest
+    values[_MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV] = expected_mapping_digest
+    return values
+
+
 def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
     _validate_map_production_secret_values(
         {
@@ -1461,6 +1589,8 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
             _MAP_FIXTURE_ENV: config.fixture_token,
+            _PINVI_CURATION_SNAPSHOT_ENV: config.curation_snapshot_token,
+            _PINVI_CUTOVER_MAPPING_ENV: config.curation_cutover_mapping_token,
             _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
             _MAP_UI_PASSWORD_ENV: config.smoke.map_ui_password,
@@ -1478,6 +1608,7 @@ def _validate_map_production_secret_values(
     error_type: type[DeploymentContractError] = DeploymentContractError,
     reject_published_examples: bool = False,
 ) -> None:
+    derive_curation_service_principal_environment(values, error_type=error_type)
     if values.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production":
         try:
             _validate_raw_token_pair(
@@ -1516,6 +1647,8 @@ def _validate_map_production_secret_values(
         _MAP_READ_ENV,
         _MAP_CANCEL_ENV,
         _MAP_FIXTURE_ENV,
+        _PINVI_CURATION_SNAPSHOT_ENV,
+        _PINVI_CUTOVER_MAPPING_ENV,
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
         _MAP_UI_PASSWORD_ENV,
@@ -1679,11 +1812,29 @@ def validate_resolved_compose_secret_isolation(
             _MAP_CURSOR_SIGNING_SECRET_ENV: _compose_resolved_escaped_value(
                 config.map_cursor_signing_secret
             ),
+            _MAP_CURATION_SNAPSHOT_DIGEST_ENV: _compose_resolved_escaped_value(
+                hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
+                if config.curation_snapshot_token
+                else ""
+            ),
+            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV: _compose_resolved_escaped_value(
+                hashlib.sha256(
+                    config.curation_cutover_mapping_token.encode("utf-8")
+                ).hexdigest()
+                if config.curation_cutover_mapping_token
+                else ""
+            ),
             **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         _PINVI_API_SERVICE: {
             _PINVI_READ_ENV: _compose_resolved_escaped_value(config.read_token),
             _PINVI_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
+            _PINVI_CURATION_SNAPSHOT_ENV: _compose_resolved_escaped_value(
+                config.curation_snapshot_token
+            ),
+            _PINVI_CUTOVER_MAPPING_ENV: _compose_resolved_escaped_value(
+                config.curation_cutover_mapping_token
+            ),
         },
         _MAP_UI_SERVICE: {
             _MAP_UI_USERNAME_ENV: _compose_resolved_escaped_value(
@@ -1784,6 +1935,40 @@ def validate_resolved_compose_secret_isolation(
             "environment",
             _MAP_CURSOR_SIGNING_SECRET_ENV,
         ): _compose_resolved_escaped_value(config.map_cursor_signing_secret),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
+        ): _compose_resolved_escaped_value(
+            hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
+            if config.curation_snapshot_token
+            else ""
+        ),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
+        ): _compose_resolved_escaped_value(
+            hashlib.sha256(
+                config.curation_cutover_mapping_token.encode("utf-8")
+            ).hexdigest()
+            if config.curation_cutover_mapping_token
+            else ""
+        ),
+        (
+            "services",
+            _PINVI_API_SERVICE,
+            "environment",
+            _PINVI_CURATION_SNAPSHOT_ENV,
+        ): _compose_resolved_escaped_value(config.curation_snapshot_token),
+        (
+            "services",
+            _PINVI_API_SERVICE,
+            "environment",
+            _PINVI_CUTOVER_MAPPING_ENV,
+        ): _compose_resolved_escaped_value(config.curation_cutover_mapping_token),
         **{
             ("services", _MAP_API_SERVICE, "environment", env_name): value
             for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
@@ -1808,6 +1993,7 @@ def validate_resolved_compose_secret_isolation(
                 | _MAP_UI_AUTH_ENV_NAMES
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+                | _CURATION_PRINCIPAL_ENV_NAMES
             )
         ):
             raise DeploymentContractError(
@@ -1828,6 +2014,8 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
                 _compose_resolved_escaped_value(config.contract_generation),
+                _compose_resolved_escaped_value(config.curation_snapshot_token),
+                _compose_resolved_escaped_value(config.curation_cutover_mapping_token),
             )
         ):
             raise DeploymentContractError(
@@ -1844,6 +2032,10 @@ def validate_resolved_compose_candidate_protected_values(
 ) -> tuple[CandidateSystemBindSnapshot, ...]:
     """resolved compose 전체 graph의 C6c 보호 이름·현재 값을 검사한다."""
 
+    environment = derive_curation_service_principal_environment(
+        environment,
+        error_type=ComposeCandidateContractError,
+    )
     _validate_map_production_secret_values(
         environment,
         error_type=ComposeCandidateContractError,
@@ -1872,6 +2064,7 @@ def validate_resolved_compose_candidate_protected_values(
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
         | _MAP_DATABASE_SECRET_ENV_NAMES
+        | _CURATION_PRINCIPAL_ENV_NAMES
     )
     protected_values = (
         *(
@@ -2280,6 +2473,10 @@ def validate_compose_candidate_protected_values(
 ) -> tuple[CandidateSystemBindSnapshot, ...]:
     """파일 반영 전 raw compose 전체의 C6c 보호 이름·값 격리를 검사한다."""
 
+    environment = derive_curation_service_principal_environment(
+        environment,
+        error_type=ComposeCandidateContractError,
+    )
     if require_api_wiring:
         _validate_map_production_secret_values(
             environment,
@@ -2309,6 +2506,7 @@ def validate_compose_candidate_protected_values(
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
         | _MAP_DATABASE_SECRET_ENV_NAMES
+        | _CURATION_PRINCIPAL_ENV_NAMES
     )
     protected_values = (
         *(

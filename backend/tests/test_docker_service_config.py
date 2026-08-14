@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
@@ -55,6 +56,16 @@ _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
 _OPS_CANCEL_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
 _OPS_FIXTURE_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}"
+_CURATION_SNAPSHOT_DIGEST_SOURCE = (
+    "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
+)
+_CURATION_CUTOVER_MAPPING_DIGEST_SOURCE = (
+    "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+)
+_PINVI_CURATION_SNAPSHOT_SOURCE = "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
+_PINVI_CUTOVER_MAPPING_SOURCE = (
+    "${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}"
+)
 _PINVI_MAP_BASE_URL_SOURCE = (
     "${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:"
     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
@@ -260,6 +271,12 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
                     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
                 ),
+                "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256": (
+                    _CURATION_SNAPSHOT_DIGEST_SOURCE
+                ),
+                "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256": (
+                    _CURATION_CUTOVER_MAPPING_DIGEST_SOURCE
+                ),
                 "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
                     "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
                     "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
@@ -329,6 +346,12 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+                "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": (
+                    _PINVI_CURATION_SNAPSHOT_SOURCE
+                ),
+                "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": (
+                    _PINVI_CUTOVER_MAPPING_SOURCE
+                ),
                 "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": (
                     "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:"
                     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
@@ -627,6 +650,24 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
     assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"] == _OPS_READ_SOURCE
     assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"] == _OPS_CANCEL_SOURCE
     assert (
+        map_environment["KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"]
+        == _CURATION_SNAPSHOT_DIGEST_SOURCE
+    )
+    assert (
+        map_environment[
+            "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
+        ]
+        == _CURATION_CUTOVER_MAPPING_DIGEST_SOURCE
+    )
+    assert (
+        pinvi_environment["PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"]
+        == _PINVI_CURATION_SNAPSHOT_SOURCE
+    )
+    assert (
+        pinvi_environment["PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"]
+        == _PINVI_CUTOVER_MAPPING_SOURCE
+    )
+    assert (
         pinvi_environment["PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL"]
         == _PINVI_MAP_BASE_URL_SOURCE
     )
@@ -648,6 +689,22 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
         if "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN" in service.get("environment", {})
         or "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN" in service.get("environment", {})
     } == {_PINVI_API_SERVICE, _PINVI_ADMIN_BOOTSTRAP_SERVICE}
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"
+        in service.get("environment", {})
+        or "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
+        in service.get("environment", {})
+    } == {_MAP_API_SERVICE}
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"
+        in service.get("environment", {})
+        or "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
+        in service.get("environment", {})
+    } == {_PINVI_API_SERVICE}
 
 
 def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> None:
@@ -660,6 +717,8 @@ def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> Non
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN",
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN",
         "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
+        "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN",
     ):
         assert [line for line in env_example_lines if line.startswith(f"{key}=")] == [
             f"{key}="
@@ -1195,6 +1254,8 @@ def _prepare_candidate_transaction(
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_READ_TOKEN", "")
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN", "")
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN", "")
+        monkeypatch.setenv("PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN", "")
+        monkeypatch.setenv("PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN", "")
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "false")
         monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", _MAP_UI_USERNAME)
         monkeypatch.setenv(

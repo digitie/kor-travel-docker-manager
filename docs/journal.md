@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-15 — T-VN-40 canonical snapshot principal 최소 권한 결선
+
+- Manager frozen environment가 PinVi canonical snapshot·cutover mapping 원시 token pair에서 Map API용
+  SHA-256 digest를 파생하도록 했다. raw token은 ordinary PinVi API만 받고, Map API는 두 digest만 받으며
+  Map UI·Dagster·bootstrap과 PinVi Web·Dagster에는 두 형태 모두 전달하지 않는다.
+- raw/resolved Compose 및 runtime secret isolation validator가 pair의 함께 설정·최소 길이·공백·상호 불일치,
+  기존 보호 credential과의 재사용 금지, digest 단독 주입·불일치, 정확한 service path 외 이름/값 누출을
+  container mutation 전에 fail-close하도록 확장했다.
+- C6c deployment config와 Compose frozen snapshot에 동일 derivation을 적용해 preflight와 실제 subprocess
+  environment가 갈라지지 않도록 했다. contract test는 API-only 전달, digest 정확성, bootstrap 제외와
+  부분·재사용·위조 digest 거부를 고정한다.
+
+---
+
 ## 2026-08-13 — Hallmark 운영 콘솔 전면 재설계
 
 - Hallmark v1.1.0을 적용해 현재 frontend를 감사했다. 과거 BMW M 기록과 실제 운영 콘솔 사이의

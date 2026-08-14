@@ -84,6 +84,8 @@ def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> Non
         "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "p" * 32,
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "s" * 32,
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": "g" * 32,
+        "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
+        "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KTDM_C6C_MAP_UI_ADMIN_PASSWORD": "map-ui-password-1",
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": "pinvi-password-1",
@@ -95,6 +97,8 @@ def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> Non
     assert config.deployment_environment == "rehearsal"
     assert config.pinvi_environment == "production"
     assert config.fixture_token == "f" * 32
+    assert config.curation_snapshot_token == "n" * 32
+    assert config.curation_cutover_mapping_token == "m" * 32
 
 
 def test_uncertain_cancel_post_is_never_reissued(
