@@ -12,6 +12,14 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+## 2026-08-14 — T-VN-40 credential 경계 분리
+
+- [x] **Map UI Geo consumer key와 VWorld provider key 분리**
+
+  Map UI의 server-side Geo BFF에 Geo-issued Map consumer key를 명시 결선하고 브라우저 공개
+  build arg에는 넣지 않았다. Manager 공개 API 인증도 DB active key만 허용하도록 VWorld fallback을
+  제거했으며, Compose와 key lifecycle 회귀가 이 경계를 고정한다.
+
 ## 2026-08-06 — T-VN-41-F1D-C3 n150 결선
 
 - [x] **F1D-C3 — dynamic fixture durable transaction과 n150 파기형 rebuild**

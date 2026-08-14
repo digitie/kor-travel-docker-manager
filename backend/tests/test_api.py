@@ -288,7 +288,7 @@ def test_ws_status_accepts_authenticated_session(mock_docker_service):
     assert len(status_manager.active_connections) == baseline
 
 
-def test_public_api_key_lifecycle():
+def test_public_api_key_lifecycle(monkeypatch):
     login_client()
     created = client.post("/api/v1/admin/public-api-keys", json={"label": "테스트 키"})
     assert created.status_code == 200
@@ -306,6 +306,10 @@ def test_public_api_key_lifecycle():
     )
     assert revoked.status_code == 200
     assert revoked.json()["state"] == "revoked"
+    assert public_api_key_is_valid(payload["key"]) is False
+
+    monkeypatch.setenv("KOR_TRAVEL_GEO_VWORLD_API_KEY", payload["key"])
+    monkeypatch.setenv("NEXT_PUBLIC_VWORLD_API_KEY", payload["key"])
     assert public_api_key_is_valid(payload["key"]) is False
 
     missing = client.delete("/api/v1/admin/public-api-keys/not-a-uuid")

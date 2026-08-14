@@ -251,6 +251,15 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
 
     services = resolved["services"]
     assert isinstance(services, dict)
+    map_ui = services["kor-travel-map-ui"]
+    assert map_ui["environment"]["KOR_TRAVEL_GEO_API_KEY"] == "test-geo-key"
+    assert "NEXT_PUBLIC_KOR_TRAVEL_GEO_API_KEY" not in map_ui["environment"]
+    assert "NEXT_PUBLIC_KOR_TRAVEL_GEO_API_KEY" not in map_ui["build"]["args"]
+    map_api = services["kor-travel-map-api"]
+    assert (
+        map_api["environment"]["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"]
+        == "test-geo-key"
+    )
     bootstrap_environment = services["pinvi-admin-bootstrap"]["environment"]
     assert isinstance(bootstrap_environment, dict)
     assert _PINVI_BOOTSTRAP_MAP_ENVIRONMENT.issubset(bootstrap_environment)
@@ -259,6 +268,32 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "PINVI_KOR_TRAVEL_MAP_OPS_FIXTURE_TOKEN",
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
     }.intersection(bootstrap_environment)
+
+
+def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(tmp_path: Path) -> None:
+    candidate = _compose_fragment(
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+    )
+    pinvi_api = candidate["services"]["pinvi-api"]
+    assert isinstance(pinvi_api, dict)
+    environment = pinvi_api.setdefault("environment", {})
+    assert isinstance(environment, dict)
+    environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"] = (
+        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+    )
+    root_env = tmp_path / ".env"
+    root_env.write_text("\n", encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError, match="protected C6c reference"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=_compose_contract_environment(),
+        )
 
 
 def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> None:

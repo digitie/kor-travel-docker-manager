@@ -587,6 +587,11 @@ Manager 대시보드는 Docker 컨테이너 시작·정지·설정 변경 API를
 
 단일 관리자 로그인은 프론트엔드 Origin 제한, PBKDF2 비밀번호 해시, HMAC 서명 `httpOnly` 세션 쿠키, DB 저장 세션 해시를 함께 사용한다. 로그인·로그아웃·실패 시도·API 키 생성/폐기는 DB 감사 로그로 남긴다. 공개 API 키는 VWorld 호환 32자리 영문/숫자 문자열로 생성하되, 원문은 생성 응답에서 1회만 보여 주고 DB에는 SHA-256 해시와 끝 6자리 힌트만 저장한다. 활성 키 해시는 짧은 TTL 메모리 캐시로 읽고 생성·폐기 시 무효화한다. 로그인된 신뢰 UI 요청은 외부 공개 API의 key 검증을 생략할 수 있는 공통 dependency를 제공한다. `X-Forwarded-*` 계열 헤더는 `KTDM_TRUSTED_PROXY_CIDRS`에 포함된 직접 peer에서 온 요청일 때만 감사 로그·rate-limit·secure cookie 판단에 사용한다.
 
+2026-08-14 보강: 여기서 “VWorld 호환”은 토큰 문자집합과 길이만 뜻한다. VWorld provider
+credential은 Manager 또는 Map/Geo consumer 인증으로 대체하지 않는다. Manager 공개 API는 DB에
+활성 상태로 등록한 Manager 전용 key만 받고, Map UI의 Geo BFF는 Geo가 Map consumer에 발급한
+서버용 key만 받는다.
+
 ### 근거
 
 - 관리자 API는 같은 PC의 대시보드에서만 호출해야 하므로 세션 검증과 Origin 허용 목록을 함께 적용한다.

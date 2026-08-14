@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-14 (T-VN-40 — provider/consumer credential 경계 분리)
+
+Map UI의 server-side Geo BFF에 `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`를
+`KOR_TRAVEL_GEO_API_KEY`로 명시 결선했다. 이 key는 Geo가 Map consumer에 발급한 전용
+자격증명이며 VWorld provider key와 대체 관계가 아니다. 브라우저 build arg에는 노출하지 않는다.
+
+Manager 자체 공개 API key 검증에서도 DB에 등록한 active key가 없을 때 VWorld key를 받던 fallback을
+제거했다. revoked/미등록 key는 VWorld 환경변수와 값이 같아도 거부하며, raw/resolved Compose 계약은
+Map UI가 별도 Geo key를 받는지 고정한다.
+
+---
+
 ## 2026-08-11 (백로그 상태 정리 — F1D-D 수용 검증 범위 명확화)
 
 원격 `main`의 최신 F1D v5 상태를 기준으로, 진행 표의 유일한 미완료 항목을

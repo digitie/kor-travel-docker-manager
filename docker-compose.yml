@@ -473,6 +473,9 @@ services:
       NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}
       NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL: ${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+      # Map UI의 /api/geo BFF도 backend/Dagster와 같은 Geo-issued consumer key만 쓴다.
+      # VWorld provider key로 대체하지 않으며 브라우저 공개 build arg로도 내보내지 않는다.
+      KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}
     ports:
     - ${KOR_TRAVEL_MAP_UI_PORT:-12705}:${KOR_TRAVEL_MAP_UI_CONTAINER_PORT:-12705}
     healthcheck:
