@@ -379,6 +379,25 @@ services:
     - listen_addresses=127.0.0.1
     - -p
     - ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}
+    # 아래 값은 2026-08-15 커토버에서 **실측한 원본 인스턴스 설정**이다. 빠뜨리면
+    # 조용히 달라진다 — 확장은 로드되지 않은 채 CREATE만 성공하고, 튜닝값은 기본값으로
+    # 떨어져 같은 쿼리가 다른 계획을 탄다.
+    #
+    # - pg_prewarm: 부팅 후 buffer warm-up (T-102). 저장소 standalone compose도 켠다.
+    # - pg_stat_statements: 원본 인스턴스가 쓰던 것. `public`에 확장이 설치돼 있어
+    #   라이브러리가 없으면 그 확장이 반쪽이 된다.
+    - -c
+    - shared_preload_libraries=pg_prewarm,pg_stat_statements
+    - -c
+    - pg_prewarm.autoprewarm=on
+    - -c
+    - shared_buffers=${KOR_TRAVEL_MAP_POSTGRES_SHARED_BUFFERS:-512MB}
+    - -c
+    - work_mem=${KOR_TRAVEL_MAP_POSTGRES_WORK_MEM:-64MB}
+    - -c
+    - maintenance_work_mem=${KOR_TRAVEL_MAP_POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
+    - -c
+    - effective_cache_size=${KOR_TRAVEL_MAP_POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
     volumes:
     - ${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}:/var/lib/postgresql/data
     secrets:
