@@ -803,12 +803,43 @@ role·ACL을 담지 않으므로 `--no-owner --no-privileges` 복원 뒤 ACL 재
 migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼저 있어야 하는 함정은
 이슈 #109에 있다.
 
+### `ktdctl db-backup` (issue #177 결선 — 위 수동 절차의 CLI화)
+
+위 "뜨는 법" 수작업을 대체하는 CLI다. 여섯 role(`geo`/`geo_dagster`/`concierge`/
+`map_application`/`map_dagster`/`pinvi`)을 지원하고, 포트·admin role 이름을
+하드코딩하지 않고 살아있는 컨테이너(`docker inspect`)에서 읽는다 — `.env`가
+기본 포트를 덮어썼거나 role 이름이 프로젝트마다 달라도 항상 실제 기동값과
+일치한다. 연결은 TCP가 아니라 `docker exec --user postgres` + unix socket이라
+어떤 postgres 비밀번호도 읽거나 다루지 않는다.
+
+```bash
+ktdctl db-backup create geo               # geo는 기본 timeout(4h)로 부족하면 --timeout 늘릴 것
+ktdctl db-backup list geo
+ktdctl db-backup gc geo --keep 2          # geo는 33GB급이라 낮게. map/pinvi/concierge는 7 정도
+```
+
+산출물은 위 "산출물 3종 세트" 관례를 그대로 따른다(`<role>-<ts>.dump` ·
+`<role>-<ts>.dump.sha256`(`sha256sum -c` 그대로 먹는 형태) · `<role>-<ts>.manifest`
+— `created_at_unix`·`duration_sec`·`instance`·`db_size_bytes`·`toc_entry_count`(pg_restore
+-l TOC 항목 수 — 위 수동 검증과 같은 sanity check)·`alembic_head`(best-effort,
+`public`/`app` schema 순서로 시도) 포함). 주기 실행은
+`scripts/run-standalone-backup.sh <role> <keep>`을 cron/systemd timer에 건다
+(스크립트 상단에 crontab 예시가 있다). 같은 role의 동시 실행은 `~/backups/<role>/
+.backup.lock`(`flock`)으로 막는다.
+
+읽기 전용 `GET /api/v1/backups?role=<role>`도 있다 — Dashboard "백업 이력" 패널이
+쓴다. 생성·GC는 CLI 전용이며 API에 노출하지 않는다(이 저장소의 표준 mutation
+경계). **복원 CLI는 아직 없다** — 아래 "아직 안 된 것" 참고.
+
 ### 아직 안 된 것
 
-- **주기화·retention·외부 사본**이 없다. 지금 있는 것은 2026-08-17 baseline 1세대뿐이다.
-  map 쪽 주기화는 #148이 소유하고, 이 절의 나머지 셋은 #177이 소유한다.
-- 위 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. 실제로 돌릴지는 n150의 운용
-  성격(실 production인가)에 달렸고, kor-travel-map `docs/tasks.md`는 2026-08-06
-  사용자 지시로 정기화를 `[보류]`로 두고 있다("손상 시 재적재가 정책"). 그 판단이
-  바뀌기 전에는 baseline 확보까지가 이 절의 범위다.
+- **복원 CLI가 없다.** map은 여전히 kor-travel-map `docs/backup-restore.md` §8.1
+  수동 절차가 정본이고, geo·concierge·pinvi는 각 프로젝트 alembic migration을
+  타야 한다(§ "복원" 참고). `ktdctl db-backup restore`는 별도 범위다.
+- **외부(오프박스) 사본 자동화가 없다.** 지금은 로컬 `~/backups/<role>/`뿐이다.
+  rsync/scp 대상·주기·sha256 대조 검증은 별도 결선이 필요하다.
+- 위 실측 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. 실제로 상시 cron을
+  걸지는 n150의 운용 성격(실 production인가)에 달렸고, kor-travel-map
+  `docs/tasks.md`는 2026-08-06 사용자 지시로 정기화를 `[보류]`로 두고 있다
+  ("손상 시 재적재가 정책"). map 쪽 최종 주기화 여부는 #148이 소유한다.
 

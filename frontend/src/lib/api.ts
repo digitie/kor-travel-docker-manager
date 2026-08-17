@@ -117,22 +117,25 @@ export type LoginAuditEvent = {
   detail?: Record<string, unknown>;
 };
 
-/** T-053/054가 생성하는 standalone DB backup manifest 항목. `GET /api/v1/backups` 응답 요소. */
+/** `ktdctl db-backup create`가 생성하는 standalone DB backup manifest 항목
+ * (issue #177). `GET /api/v1/backups` 응답 요소. */
 export type StandaloneBackupManifest = {
-  role: 'map_application' | 'map_dagster' | 'pinvi';
+  role: 'geo' | 'geo_dagster' | 'concierge' | 'map_application' | 'map_dagster' | 'pinvi';
   created_at_unix: number;
-  schema_revision: string;
+  duration_sec: number;
   sha256: string;
   byte_size: number;
   backup_filename: string;
+  instance: string;
+  db_size_bytes: number;
+  toc_entry_count: number;
+  alembic_head: string | null;
 };
 
-/** T-056 `GET /api/v1/backups` 응답. mutation은 노출하지 않는 읽기 전용 목록이다. */
+/** `GET /api/v1/backups` 응답. 생성/보존 정리는 `ktdctl db-backup` CLI 전용이라
+ * 이 API는 mutation을 노출하지 않는 읽기 전용 목록이다. */
 export type BackupListResponse = {
-  success: boolean;
-  returncode: number;
   backups: StandaloneBackupManifest[];
-  warnings: string[];
 };
 
 type ApiRequestInit = RequestInit & {

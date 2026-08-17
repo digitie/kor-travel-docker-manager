@@ -127,7 +127,9 @@ graph TD
    - 이미지: `postgis/postgis:16-3.5`
    - 목적: `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database를 하나의 공용 PostgreSQL/PostGIS 컨테이너에서 구동.
    - 포트: `12500`(loopback 전용). host network라 `-p`가 곧 호스트 포트다.
-   - 기본 DSN: `postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo`.
+   - DSN 형태: `postgresql+psycopg://<user>:<password>@127.0.0.1:12500/kor_travel_geo`. superuser
+     password는 `POSTGRES_PASSWORD_FILE` secret으로 주고, `KOR_TRAVEL_GEO_DOCKER_PG_DSN`/
+     `KOR_TRAVEL_GEO_DAGSTER_PG_URL`은 기본값 없이 fail-close로 요구한다(issue #178).
    - 나머지 셋은 `kor-travel-concierge-postgres`:12600 ·
      `kor-travel-map-postgres`:12700 · `pinvi-postgres`:12800이다.
    - 기본 pgdata: `KOR_TRAVEL_GEO_PGDATA=/home/digitie/kor-travel-geo-data/pgdata-final-20260529`.

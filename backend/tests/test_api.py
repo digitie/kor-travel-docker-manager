@@ -1151,3 +1151,114 @@ def test_is_https_via_configured_public_origin(monkeypatch):
     assert _is_https(make_request("http", "https://evil.example.org")) is False
     # 직접 https 연결 -> https
     assert _is_https(make_request("https", None)) is True
+
+
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
+def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
+    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
+
+    login_client()
+
+    def fake_list(role):
+        return [
+            BackupManifest(
+                role=role,
+                created_at_unix=1000,
+                duration_sec=1.0,
+                byte_size=1,
+                sha256="a" * 64,
+                backup_filename=f"{role}-1000.dump",
+                instance="container:127.0.0.1:12345/db",
+                db_size_bytes=100,
+                toc_entry_count=2,
+                alembic_head="0001_head",
+            )
+        ]
+
+    mock_list.side_effect = fake_list
+
+    response = client.get("/api/v1/backups")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["backups"]) == 6
+    assert {backup["role"] for backup in data["backups"]} == {
+        "geo",
+        "geo_dagster",
+        "concierge",
+        "map_application",
+        "map_dagster",
+        "pinvi",
+    }
+
+
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
+def test_get_backups_filters_by_role(mock_list):
+    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
+
+    login_client()
+    mock_list.return_value = [
+        BackupManifest(
+            role="pinvi",
+            created_at_unix=1000,
+            duration_sec=1.0,
+            byte_size=1,
+            sha256="a" * 64,
+            backup_filename="pinvi-1000.dump",
+            instance="container:127.0.0.1:12345/db",
+            db_size_bytes=100,
+            toc_entry_count=2,
+            alembic_head="0001_head",
+        )
+    ]
+
+    response = client.get("/api/v1/backups?role=pinvi")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "backups": [
+            {
+                "role": "pinvi",
+                "created_at_unix": 1000,
+                "duration_sec": 1.0,
+                "byte_size": 1,
+                "sha256": "a" * 64,
+                "backup_filename": "pinvi-1000.dump",
+                "instance": "container:127.0.0.1:12345/db",
+                "db_size_bytes": 100,
+                "toc_entry_count": 2,
+                "alembic_head": "0001_head",
+            }
+        ]
+    }
+    mock_list.assert_called_once_with("pinvi")
+
+
+def test_get_backups_rejects_unknown_role():
+    login_client()
+
+    response = client.get("/api/v1/backups?role=not-a-real-role")
+
+    assert response.status_code == 400
+    assert "not-a-real-role" in response.json()["detail"]
+
+
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
+def test_get_backups_surfaces_storage_error_as_conflict(mock_list):
+    from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+
+    login_client()
+    mock_list.side_effect = StandaloneBackupError("manifest is malformed: geo-1.dump.manifest.json")
+
+    response = client.get("/api/v1/backups?role=geo")
+
+    assert response.status_code == 409
+    assert "malformed" in response.json()["detail"]
+
+
+def test_get_backups_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/backups")
+
+    assert response.status_code == 401

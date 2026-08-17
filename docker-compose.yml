@@ -12,7 +12,13 @@ services:
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     environment:
       POSTGRES_USER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
-      POSTGRES_PASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
+      # 형제 셋(map/concierge/pinvi)과 같이 superuser password는 long-lived Config.Env가
+      # 아니라 secret file로 준다(issue #178 — geo만 평문 `POSTGRES_PASSWORD` + 추측 가능한
+      # 기본값 `addr`을 그대로 쓰고 있었다). `docker inspect`에 평문이 남지 않는다.
+      # ⚠️ 기존 PGDATA에는 이 값이 initdb 이후 안 먹는다 — 실제 회전은 `ALTER ROLE`을
+      #    따로 해야 하고, geo에 붙는 모든 DSN(api/dagster/db-init/ensure 스크립트)을
+      #    같은 트랜잭션 단위로 갱신해야 한다.
+      POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-geo-postgres-password
       POSTGRES_DB: ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
       # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
       # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
@@ -30,6 +36,8 @@ services:
       # 만든다고 오해하게 한다. 두 프로젝트는 각자 인스턴스(12600/12800)를 쓴다.
       KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK: ${KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK:-1}
       KOR_TRAVEL_GEO_SOURCE_DIR: ${KOR_TRAVEL_GEO_SOURCE_DIR:-/data/juso}
+    secrets:
+    - kor-travel-geo-postgres-password
     ports:
     - 127.0.0.1:${KOR_TRAVEL_GEO_DB_PORT:-12500}:${KOR_TRAVEL_GEO_DB_PORT:-12500}
     volumes:
@@ -349,7 +357,7 @@ services:
     environment:
       PORT: ${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
       KTG_API_HOST: 0.0.0.0
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
       KTG_GEOIP_GATE_MODE: ${KOR_TRAVEL_GEO_GEOIP_GATE_MODE:-off}
       KTG_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES: ${KOR_TRAVEL_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES:-0}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
@@ -1239,16 +1247,21 @@ services:
       # `.env`로 포트를 옮기면 postgres만 따라가고 이 one-shot은 옛 포트에 붙어 죽는다.
       PGPORT: ${KOR_TRAVEL_GEO_DB_PORT:-12500}
       PGUSER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
-      PGPASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       KOR_TRAVEL_GEO_DAGSTER_DB: ${KOR_TRAVEL_GEO_DAGSTER_DB:-kor_travel_geo_dagster}
+    secrets:
+    - kor-travel-geo-postgres-password
     # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
     # 부족을 전부 삼키고 exit 0으로 끝나서, 이 one-shot이 막으려던 바로 그 상황에서
     # `service_completed_successfully` 게이트가 통과한다. 존재 확인만 조용히 하고
     # 진짜 오류는 전파한다.
+    # 비밀번호는 `PGPASSWORD` 평문(=`docker inspect`에 그대로 남는다) 대신 secret
+    # file로 받는다 — `restart: "no"` 컨테이너는 exit 뒤에도 남아 계속 조회된다.
     command:
     - sh
     - -ec
     - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-geo-postgres-password)"
+      export PGPASSWORD
       if psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_GEO_DAGSTER_DB'" | grep -q 1; then
         echo "database $$KOR_TRAVEL_GEO_DAGSTER_DB already exists"
       else
@@ -1271,8 +1284,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_DAGSTER_PORT: ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:12500/kor_travel_geo_dagster}
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
@@ -1326,8 +1339,8 @@ services:
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:12500/kor_travel_geo_dagster}
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
@@ -1346,6 +1359,8 @@ services:
     - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
 
 secrets:
+  kor-travel-geo-postgres-password:
+    environment: KOR_TRAVEL_GEO_POSTGRES_PASSWORD
   kor-travel-map-postgres-password:
     environment: KOR_TRAVEL_MAP_POSTGRES_PASSWORD
   kor-travel-concierge-postgres-password:

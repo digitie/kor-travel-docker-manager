@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import time
 from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -11,6 +12,13 @@ from kor_travel_docker_manager.services.compose_service import (
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.standalone_backup import (
+    BACKUP_ROLES,
+    StandaloneBackupError,
+    create_standalone_backup,
+    gc_standalone_backups,
+    list_standalone_backups,
+)
 
 DIRECT_ENSURE_ALIASES = {
     alias for target in list_targets() for alias in [target["id"], *target.get("aliases", [])]
@@ -136,6 +144,61 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _cmd_db_backup_create(args: argparse.Namespace) -> int:
+    try:
+        manifest = create_standalone_backup(args.role, timeout=args.timeout)
+    except StandaloneBackupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(manifest.to_json(), ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"{manifest.role}: {manifest.backup_filename} "
+            f"({manifest.byte_size} bytes, {manifest.duration_sec:.1f}s, "
+            f"toc={manifest.toc_entry_count}, alembic={manifest.alembic_head or 'unknown'}, "
+            f"sha256={manifest.sha256[:12]}...)"
+        )
+    return 0
+
+
+def _cmd_db_backup_list(args: argparse.Namespace) -> int:
+    try:
+        manifests = list_standalone_backups(args.role)
+    except StandaloneBackupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps([m.to_json() for m in manifests], ensure_ascii=False, indent=2))
+        return 0
+    if not manifests:
+        print(f"no backups for role {args.role}")
+        return 0
+    for manifest in manifests:
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(manifest.created_at_unix))
+        print(
+            f"{created_at}  {manifest.role:16s}  {manifest.byte_size:>14d}B  "
+            f"alembic={manifest.alembic_head or 'unknown':16s}  "
+            f"{manifest.sha256[:12]}…  {manifest.backup_filename}"
+        )
+    return 0
+
+
+def _cmd_db_backup_gc(args: argparse.Namespace) -> int:
+    try:
+        deleted = gc_standalone_backups(args.role, keep=args.keep)
+    except StandaloneBackupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps({"role": args.role, "deleted": deleted}, ensure_ascii=False, indent=2))
+    elif deleted:
+        print(f"deleted {len(deleted)} backup(s): {', '.join(deleted)}")
+    else:
+        print("nothing to delete")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ktdctl",
@@ -212,6 +275,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
     pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
+
+    db_backup = subparsers.add_parser(
+        "db-backup",
+        help="전용 PostgreSQL 인스턴스(geo/concierge/map/pinvi) 백업을 생성/조회/정리합니다.",
+    )
+    db_backup_subparsers = db_backup.add_subparsers(dest="db_backup_action", required=True)
+
+    db_backup_create = db_backup_subparsers.add_parser(
+        "create", help="지정 role의 pg_dump 백업을 생성합니다."
+    )
+    db_backup_create.add_argument("role", choices=BACKUP_ROLES)
+    db_backup_create.add_argument(
+        "--timeout",
+        type=int,
+        default=14_400,
+        help="pg_dump/copy-out 제한 시간(초). geo처럼 큰 인스턴스는 늘려야 합니다.",
+    )
+    db_backup_create.add_argument("--json", action="store_true")
+    db_backup_create.set_defaults(func=_cmd_db_backup_create)
+
+    db_backup_list = db_backup_subparsers.add_parser(
+        "list", help="지정 role의 백업 이력을 출력합니다."
+    )
+    db_backup_list.add_argument("role", choices=BACKUP_ROLES)
+    db_backup_list.add_argument("--json", action="store_true")
+    db_backup_list.set_defaults(func=_cmd_db_backup_list)
+
+    db_backup_gc = db_backup_subparsers.add_parser(
+        "gc", help="오래된 백업을 지우고 최신 --keep개만 보존합니다."
+    )
+    db_backup_gc.add_argument("role", choices=BACKUP_ROLES)
+    db_backup_gc.add_argument(
+        "--keep", type=int, required=True, help="보존할 최신 백업 개수(1 이상)."
+    )
+    db_backup_gc.add_argument("--json", action="store_true")
+    db_backup_gc.set_defaults(func=_cmd_db_backup_gc)
 
     return parser
 

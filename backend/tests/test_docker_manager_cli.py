@@ -471,12 +471,112 @@ def test_cli_does_not_expose_legacy_pair_actions(legacy_action: str) -> None:
         ["cache-target", "cutover"],
         ["cache-target", "bootstrap"],
         ["cache-target", "retire-legacy-diagnostic"],
-        ["db-backup", "create", "--role", "pinvi"],
-        ["db-backup", "list"],
-        ["db-backup", "restore"],
         ["map-ui-auth", "rotate"],
     ],
 )
 def test_cli_does_not_expose_retired_f1d_commands(argv: list[str]) -> None:
     with pytest.raises(SystemExit, match="2"):
         main(argv)
+
+
+def test_cli_db_backup_restore_is_not_implemented() -> None:
+    # issue #177 reintroduced `db-backup create/list/gc` as a fresh, independent
+    # primitive — `restore` is deliberately out of scope for now (separate task).
+    with pytest.raises(SystemExit, match="2"):
+        main(["db-backup", "restore"])
+
+
+@patch("kor_travel_docker_manager.cli.create_standalone_backup")
+def test_cli_db_backup_create_invokes_service_and_prints_summary(
+    mock_create, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
+
+    mock_create.return_value = BackupManifest(
+        role="geo",
+        created_at_unix=1000,
+        duration_sec=12.5,
+        byte_size=4096,
+        sha256="a" * 64,
+        backup_filename="geo-1000.dump",
+        instance="kor-travel-geo-postgres:127.0.0.1:12500/kor_travel_geo",
+        db_size_bytes=8192,
+        toc_entry_count=3,
+        alembic_head="0099_abcdef",
+    )
+
+    assert main(["db-backup", "create", "geo"]) == 0
+
+    mock_create.assert_called_once_with("geo", timeout=14_400)
+    out = capsys.readouterr().out
+    assert "geo-1000.dump" in out
+    assert "4096 bytes" in out
+
+
+@patch("kor_travel_docker_manager.cli.create_standalone_backup")
+def test_cli_db_backup_create_passes_custom_timeout(mock_create) -> None:
+    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
+
+    mock_create.return_value = BackupManifest(
+        role="geo",
+        created_at_unix=1000,
+        duration_sec=1.0,
+        byte_size=1,
+        sha256="a" * 64,
+        backup_filename="geo-1000.dump",
+        instance="c:127.0.0.1:12500/db",
+        db_size_bytes=1,
+        toc_entry_count=1,
+        alembic_head=None,
+    )
+
+    assert main(["db-backup", "create", "geo", "--timeout", "60"]) == 0
+
+    mock_create.assert_called_once_with("geo", timeout=60)
+
+
+@patch("kor_travel_docker_manager.cli.create_standalone_backup")
+def test_cli_db_backup_create_rejects_unknown_role(mock_create) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["db-backup", "create", "not-a-real-role"])
+    mock_create.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.create_standalone_backup")
+def test_cli_db_backup_create_surfaces_service_error(mock_create) -> None:
+    from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+
+    mock_create.side_effect = StandaloneBackupError("geo pg_dump failed")
+
+    assert main(["db-backup", "create", "geo"]) == 2
+
+
+@patch("kor_travel_docker_manager.cli.list_standalone_backups")
+def test_cli_db_backup_list_invokes_service_with_role(
+    mock_list, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mock_list.return_value = []
+
+    assert main(["db-backup", "list", "pinvi"]) == 0
+
+    mock_list.assert_called_once_with("pinvi")
+    assert "no backups for role pinvi" in capsys.readouterr().out
+
+
+@patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+def test_cli_db_backup_gc_requires_keep_flag(mock_gc) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["db-backup", "gc", "geo"])
+    mock_gc.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+def test_cli_db_backup_gc_invokes_service_with_keep(
+    mock_gc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mock_gc.return_value = ["geo-1000.dump"]
+
+    assert main(["db-backup", "gc", "geo", "--keep", "2"]) == 0
+
+    mock_gc.assert_called_once_with("geo", keep=2)
+    assert "geo-1000.dump" in capsys.readouterr().out

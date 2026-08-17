@@ -7,6 +7,9 @@ import { BackupListResponse, StandaloneBackupManifest, apiJson } from '@/lib/api
 
 const ROLE_OPTIONS: Array<{ value: StandaloneBackupManifest['role'] | 'all'; label: string }> = [
   { value: 'all', label: '전체' },
+  { value: 'geo', label: 'geo' },
+  { value: 'geo_dagster', label: 'geo_dagster' },
+  { value: 'concierge', label: 'concierge' },
   { value: 'map_application', label: 'map_application' },
   { value: 'map_dagster', label: 'map_dagster' },
   { value: 'pinvi', label: 'pinvi' },
@@ -72,7 +75,8 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             DB 백업 이력 (읽기 전용)
           </h2>
           <p className="text-xs text-secondary mt-1">
-            생성·복구·GC는 `ktdctl db-backup` CLI 전용입니다. 이 화면은 조회만 지원합니다.
+            생성·GC는 `ktdctl db-backup` CLI 전용입니다(복원 CLI는 아직 없습니다). 이
+            화면은 조회만 지원합니다.
           </p>
         </div>
         <button
@@ -131,8 +135,8 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
                 <tr>
                   <th className="text-left py-2 px-3 font-semibold break-all">생성 시각</th>
                   <th className="text-left py-2 px-3 font-semibold break-all">역할</th>
-                  <th className="text-left py-2 px-3 font-semibold break-all">스키마 리비전</th>
                   <th className="text-left py-2 px-3 font-semibold break-all">크기</th>
+                  <th className="text-left py-2 px-3 font-semibold break-all">alembic</th>
                   <th className="text-left py-2 px-3 font-semibold break-all">SHA-256</th>
                   <th className="text-left py-2 px-3 font-semibold break-all">파일명</th>
                 </tr>
@@ -147,9 +151,11 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
                       {formatTimestamp(backup.created_at_unix)}
                     </td>
                     <td data-label="역할" className="py-2 px-3 text-ink font-mono">{backup.role}</td>
-                    <td data-label="스키마 리비전" className="py-2 px-3 text-ink font-mono">{backup.schema_revision}</td>
                     <td data-label="크기" className="py-2 px-3 text-ink break-all">
                       {formatBytes(backup.byte_size)}
+                    </td>
+                    <td data-label="alembic" className="py-2 px-3 text-ink font-mono break-all">
+                      {backup.alembic_head ?? '—'}
                     </td>
                     <td
                       className="py-2 px-3 text-secondary font-mono text-xs break-all"
@@ -171,16 +177,6 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             </table>
           </div>
         )}
-
-        {data?.warnings && data.warnings.length > 0 ? (
-          <div className="mt-4 space-y-1">
-            {data.warnings.map((warning, index) => (
-              <p className="text-xs text-danger" key={index}>
-                {warning}
-              </p>
-            ))}
-          </div>
-        ) : null}
       </div>
     </div>
   );

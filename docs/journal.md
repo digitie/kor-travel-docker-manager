@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-08-17 — issue #177/#178/#179: 4분할 뒤 남은 백업·자격증명·권한 공백 결선
+
+PR #176(프로젝트별 전용 PostgreSQL 4개 분리)이 오늘 착지한 뒤 사용자가 n150 실측으로
+찾아낸 세 결함을 코드 레벨에서 해결했다. 셋 다 `docs/docker-management.md`에 이미
+기록된 실측/수작업 절차를 코드화하는 성격이다.
+
+- **#177 백업 공백**: geo(33GB)·concierge·pinvi에는 백업 주체가 전혀 없었다(map만
+  수작업 baseline 1세대). T-053~T-057이 v5 rebuild에서 통째로 퇴역한 뒤 남은 공백을,
+  tasks.md 요약이 명시한 대로 "pair/cache workflow와 독립된 새 Compose primitive"로
+  다시 채웠다 — 신설 `standalone_backup.py` + `ktdctl db-backup {create,list,gc}` +
+  읽기 전용 `GET /api/v1/backups`. 포트·admin role은 하드코딩 대신 살아있는 컨테이너에서
+  읽고, 연결은 `docker exec --user postgres` unix socket이라 비밀번호를 전혀 다루지
+  않는다. Dashboard의 "백업 이력" 패널이 v5 rebuild로 지워진 backend route를 여전히
+  호출하고 있어 조용히 404였던 것도 같이 복구했다(role 6종으로 확장, 죽은
+  `schema_revision` 필드는 제거하고 `duration_sec`/`instance`/`db_size_bytes`/
+  `toc_entry_count`/`alembic_head`로 대체).
+- **#178 geo 평문 자격증명**: 4개 인스턴스 중 geo만 `POSTGRES_PASSWORD` 평문 env +
+  추측 가능한 기본값 `addr`을 그대로 쓰고 있었다. 형제 셋과 같은
+  `POSTGRES_PASSWORD_FILE` secret 패턴으로 전환하고, geo-api/geo-dagster/-daemon의
+  DSN 기본값(`addr:addr` 리터럴)을 fail-close(`:?`)로 바꿨다. n150 실제 비밀번호
+  회전(`ALTER ROLE` + 4개 소비자 DSN 동시 갱신)은 기존 PGDATA에 compose 변경만으로는
+  안 먹으므로 별도 조율이 필요해 보류했다.
+- **#179 `.env` 파생 파일 권한**: 백업본 7개가 600을 벗어나(3개는 world-writable) prod에
+  남아 있었다. 원본 이름을 하드코딩하지 않는 `scripts/check-env-permissions.sh`
+  (`--fix` 지원)를 추가하고, 운영 runbook에 "복사 직후 chmod 600" 관례를 못박았다.
+
+4-dimension(security/correctness/test-coverage/compose-and-docs) 적대적 리뷰를
+각 독립 검증까지 돌렸다. security는 confirmed 실공백 0건. correctness에서 confirmed
+4건을 반영했다: pg_dump 성공 뒤 TOC count·docker cp 단계에서 실패하면 컨테이너 임시
+dump가 안 지워지던 것을 try/finally로 감쌌고, 같은 role 동시 실행을 막는 `flock`
+기반 락(`~/backups/<role>/.backup.lock`)을 추가했으며, `_ROLE_CONFIG`가 concierge/
+map/pinvi의 컨테이너 이름 env override를 무시하던 것을 존중하도록 고쳤다(docker exec
+timeout이 컨테이너 안쪽 pg_dump까지 죽이지는 못한다는 점은 docstring에만 명시 —
+완전한 서버측 kill은 별도 과제로 남긴다). compose-and-docs에서 confirmed 3건(모두
+문서·주석 정확성)도 반영: "복원도 CLI 전용"이라는 오기를 routes.py 문서화 주석과
+docker-management.md에서 정정했고, 매니페스트 필드명 `created_at`→`created_at_unix`
+오타를 고쳤다. test-coverage에서 confirmed 5건 중 4건을 테스트 보강으로 반영
+(pg_dump/TOC/cp 호출의 정확한 인자 검증, gc `keep==count` 경계, `db-backup
+create/list/gc` CLI 실경로 smoke, 컨테이너/DB 이름 검증 가드) — 프론트엔드
+`formatBytes`/`formatTimestamp` 무테스트는 저장소 전체에 frontend 테스트 파일이
+하나도 없는 기존 공백이라 이번 범위에서는 반영하지 않았다.
+
+backend 전체 404 passed, ruff/mypy(기존 환경 오류 제외) clean, frontend
+type-check·lint·build clean. n150 실제 크리덴셜 회전·기존 파일 chmod/정리·cron
+설치·geo 첫 백업 실행은 모두 보류 — 라이브 프로덕션 credential rotation과 삭제를
+포함해 사용자 확인이 필요하다.
+
+또한 이슈 #107(map_release_revision `4a764a4f`→`6b537ed9` 재pin, Map PR #929의
+`quarantine_candidates_before` preflight 게이트 추가)을 additive/호환 확인 뒤 반영했고,
+#109/#111/#114는 T-050/T-051에서 이미 완료돼 있던 것을 확인해 종료했으며, #128은
+이후 T-VN-41 pin rotation(0084까지 전진)으로 이미 superseded된 것을 확인해 종료했다.
+
+---
+
 ## 2026-08-15 — T-VN-40 canonical snapshot principal 최소 권한 결선
 
 - Manager frozen environment가 PinVi canonical snapshot·cutover mapping 원시 token pair에서 Map API용
