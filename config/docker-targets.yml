@@ -8,8 +8,13 @@ port_policy:
   web_ui_offset: 5
   additional_web_ui_offset_start: 6
   kor_travel_docker_manager_band: 12900
+  # ADR-37 — PostgreSQL은 프로젝트마다 전용 instance를 쓰고 포트는 각 대역의 x00이다.
+  # 통합 instance(5432)는 2026-08-17에 폐지했다.
   postgresql_fixed_ports:
-    - 5432
+    - 12500
+    - 12600
+    - 12700
+    - 12800
 
 dependency_order:
   - db
@@ -27,18 +32,34 @@ containers:
     name: kor-travel-geo-postgres
     compose_service: kor-travel-geo-postgres
     role: postgresql
-    display_name: Kor Travel 통합 PostgreSQL / PostGIS
-    connection: "postgresql://localhost:5432 (DBs: kor_travel_geo, pinvi, kor_travel_concierge)"
+    display_name: Kor Travel Geo 전용 PostgreSQL / PostGIS
+    connection: "postgresql://127.0.0.1:12500 (DBs: kor_travel_geo, kor_travel_geo_dagster)"
     expected_ports:
-      - "5432:5432"
+      - "12500:12500"
   kor-travel-map-postgresql:
     name: kor-travel-map-postgres
     compose_service: kor-travel-map-postgres
     role: map-postgresql
     display_name: Kor Travel Map 전용 PostgreSQL / PostGIS
-    connection: "postgresql://127.0.0.1:12703 (DBs: kor_travel_map, kor_travel_map_dagster)"
+    connection: "postgresql://127.0.0.1:12700 (DBs: kor_travel_map, kor_travel_map_dagster)"
     expected_ports:
-      - "12703:12703"
+      - "12700:12700"
+  kor-travel-concierge-postgresql:
+    name: kor-travel-concierge-postgres
+    compose_service: kor-travel-concierge-postgres
+    role: concierge-postgresql
+    display_name: Kor Travel Concierge 전용 PostgreSQL / PostGIS
+    connection: "postgresql://127.0.0.1:12600 (DBs: kor_travel_concierge)"
+    expected_ports:
+      - "12600:12600"
+  pinvi-postgresql:
+    name: pinvi-postgres
+    compose_service: pinvi-postgres
+    role: pinvi-postgresql
+    display_name: PinVi 전용 PostgreSQL / PostGIS
+    connection: "postgresql://127.0.0.1:12800 (DBs: pinvi)"
+    expected_ports:
+      - "12800:12800"
   rustfs:
     name: kor-travel-rustfs
     compose_service: rustfs
@@ -192,15 +213,24 @@ containers:
 
 targets:
   db:
+    # 대역은 `12000-12099` 그대로 둔다. 이 target이 실제로 가리키는 것은 geo
+    # 인스턴스(:12500)지만, `geo` target이 이미 `12500-12599`를 갖고 있어 여기에
+    # 같은 값을 넣으면 두 target이 한 대역을 주장한다. ADR-37과 `docs/ports.md`가
+    # 이 자리를 "폐지된 통합 instance의 자리"로 적어 뒀으므로 그쪽을 정본으로 따른다.
     port_band: "12000-12099"
     depends_on: []
-    display_name: 통합 DB
-    description: Kor Travel/PinVi 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
+    display_name: Kor Travel Geo DB
+    # 2026-08-17(ADR-37) 이전에는 이 target이 네 프로젝트의 DB를 다 담은 "통합 DB"였다.
+    # 지금은 프로젝트마다 전용 instance를 쓰므로 이 target이 가리키는 것은 geo
+    # 인스턴스 하나뿐이다. 나머지 셋은 각자 target(conc/map/pinvi)이 자기 postgres를
+    # `services` 맨 앞에 갖는다. `db`라는 id와 `postgresql` alias는 손에 익은 이름이라
+    # 남겨두되, 통합을 뜻하던 `shared-postgresql`은 뺐다 — 가리키는 것이 없다.
+    description: Kor Travel Geo 전용 PostgreSQL/PostGIS 인스턴스(:12500)입니다. 예전 통합 DB의 자리입니다.
     aliases:
       - postgresql
       - postgres
       - database
-      - shared-postgresql
+      - geo-postgresql
     services:
       - kor-travel-geo-postgres
     runtime_services:
@@ -209,7 +239,7 @@ targets:
       - kor-travel-geo-postgresql
     init_steps:
       - name: db-schema-recovery
-        description: 통합 DB, role, extension, schema grant를 idempotent 방식으로 보정합니다.
+        description: kor-travel-geo database와 extension, schema grant를 idempotent 방식으로 보정합니다. 다른 프로젝트의 role·DB는 건드리지 않습니다(ADR-37).
         command:
           - exec
           - -T
@@ -333,6 +363,7 @@ targets:
       - agent
       - conc
     services:
+      - kor-travel-concierge-postgres
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
       - kor-travel-concierge-scheduler
@@ -344,6 +375,7 @@ targets:
       - kor-travel-concierge-ui
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-concierge-postgresql
       - rustfs
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
@@ -373,6 +405,7 @@ targets:
       - kor-travel-map-dagster-daemon
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-concierge-postgresql
       - kor-travel-map-postgresql
       - rustfs
       - kor-travel-geo-api
@@ -399,6 +432,7 @@ targets:
       - pinvi-api
       - pinvi-web
     services:
+      - pinvi-postgres
       - pinvi-api
       - pinvi-web
       - pinvi-dagster
@@ -408,7 +442,9 @@ targets:
       - pinvi-dagster
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-concierge-postgresql
       - kor-travel-map-postgresql
+      - pinvi-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
@@ -444,7 +480,9 @@ targets:
     runtime_services: []
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-concierge-postgresql
       - kor-travel-map-postgresql
+      - pinvi-postgresql
       - rustfs
       - grafana
       - cadvisor

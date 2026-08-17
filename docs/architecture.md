@@ -6,7 +6,7 @@
 
 ## 1. 개요
 
-`kor-travel-docker-manager`는 Kor Travel/PinVi 계열 서비스를 구동하기 위한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
+`kor-travel-docker-manager`는 Kor Travel/PinVi 계열 서비스를 구동하기 위한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
 
 ```mermaid
 graph TD
@@ -35,7 +35,7 @@ graph TD
 
     subgraph Infrastructure [Docker Daemon / Host]
         D_Sock[docker.sock / Named Pipe]
-        C_PG[kor-travel-geo-postgres/통합 PostgreSQL]
+        C_PG[kor-travel-geo-postgres:12500]
         C_RFS[RustFS Container]
         C_GEO_API[kor-travel-geo-api-latest/kor-travel-geo API]
         C_GEO_UI[kor-travel-geo-ui-latest/kor-travel-geo Web UI]
@@ -122,12 +122,14 @@ graph TD
 
 `kor-travel-docker-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다.
 
-1. **Kor Travel 통합 PostgreSQL / PostGIS**:
+1. **Kor Travel Geo 전용 PostgreSQL / PostGIS** (ADR-37 — 프로젝트마다 전용 instance):
    - 컨테이너: `kor-travel-geo-postgres`
    - 이미지: `postgis/postgis:16-3.5`
    - 목적: `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database를 하나의 공용 PostgreSQL/PostGIS 컨테이너에서 구동.
-   - 내부 포트: `5432` / 외부 노출 포트: `5432`.
-   - 기본 DSN: `postgresql+psycopg://addr:addr@localhost:5432/kor_travel_geo`.
+   - 포트: `12500`(loopback 전용). host network라 `-p`가 곧 호스트 포트다.
+   - 기본 DSN: `postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo`.
+   - 나머지 셋은 `kor-travel-concierge-postgres`:12600 ·
+     `kor-travel-map-postgres`:12700 · `pinvi-postgres`:12800이다.
    - 기본 pgdata: `KOR_TRAVEL_GEO_PGDATA=/home/digitie/kor-travel-geo-data/pgdata-final-20260529`.
 2. **RustFS**:
    - 컨테이너: `kor-travel-rustfs`
@@ -166,7 +168,7 @@ graph TD
    - 목적: 지오코딩/리버스 지오코딩 REST API 제공.
    - host 포트: `12501`.
    - 컨테이너 내부 포트: `12501`.
-   - 내부 의존성: `kor-travel-geo-postgres:5432`, `rustfs:9000`.
+   - 내부 의존성: `kor-travel-geo-postgres:12500`, `rustfs:9000`.
    - 기본 source data mount: `KOR_TRAVEL_GEO_APP_DATA_DIR=/mnt/f/dev/kor-travel-geo/data` -> `/data:ro`.
 7. **kor-travel-geo Web UI**:
    - 컨테이너: `kor-travel-geo-ui-latest`
@@ -180,7 +182,7 @@ graph TD
    - compose service: `kor-travel-concierge-api`, `kor-travel-concierge-mcp`, `kor-travel-concierge-scheduler`, `kor-travel-concierge-ui`
    - 목적: 여행 concierge provider, MCP HTTP, scheduler, Web UI 제공.
    - host 포트: API `12601`, MCP `12602`, Web UI `12605`.
-   - 내부 의존성: `kor-travel-geo-postgres:5432`, `rustfs:9000`, `kor-travel-geo-api:12501`.
+   - 내부 의존성: `kor-travel-geo-postgres:12500`, `rustfs:9000`, `kor-travel-geo-api:12501`.
 9. **kor-travel-map 전용 PostgreSQL / API / Dagster / Web UI**:
    - DB 컨테이너: `kor-travel-map-postgres` (`127.0.0.1:12703`, Map application·Dagster metadata 전용).
    - 런타임 컨테이너: `kor-travel-map-api-latest`, `kor-travel-map-dagster-latest`, `kor-travel-map-dagster-daemon-latest`, `kor-travel-map-ui-latest`
@@ -196,7 +198,7 @@ graph TD
    - host 포트: API `12801`, Dagster `12802`, Web UI `12805`.
    - Dagster image 계약: `DAGSTER_HOME=/opt/pinvi/.dagster`, code location
      `pinvi.etl.definitions`를 사용한다.
-   - 내부 의존성: host network의 `127.0.0.1:5432`, `127.0.0.1:12101`,
+   - 내부 의존성: host network의 `127.0.0.1:12600`(concierge 전용 DB), `127.0.0.1:12101`,
      `127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}`.
    - worker 수: PinVi 실시간 WebSocket broadcast broker는 shared broker 도입 전까지 process-local이므로 `PINVI_API_WORKERS=1`을 기본값으로 둔다. worker를 2 이상으로 올리려면 PinVi 쪽 broadcast broker가 프로세스 간 전달을 지원해야 한다.
    - public URL/CORS: dev 기본값은 `http://127.0.0.1:12801`/로컬 Web origin이며, prod에서는 gitignore된 `.env`의 `PINVI_PUBLIC_API_URL`과 `PINVI_CORS_ALLOWED_ORIGINS`로 공개 API 주소와 Web origin을 주입한다.
@@ -254,4 +256,4 @@ graph TD
 
 `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `geo`, `conc`, `map`, `pinvi` target은 각 앱 컨테이너를 manager에서 함께 빌드하고 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `ktdctl` CLI, 대시보드/API를 사용한다. 공식 CLI target은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이며, `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
 
-로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. 통합 PostgreSQL은 표준 `5432`를 사용하고, Map 전용 PostgreSQL은 Map 대역의 loopback `12703`을 사용한다. RustFS는 `storage` 대역(`12100-12199`), Grafana는 `gra` 대역(`12200-12299`), cAdvisor는 `cadv` 대역(`12300-12399`), Prometheus는 `prom` 대역(`12400-12499`), `kor-travel-geo`는 `geo` 대역(`12500-12599`), `kor-travel-concierge`는 `conc` 대역(`12600-12699`), `kor-travel-map`은 `map` 대역(`12700-12799`), PinVi는 `pinvi` 대역(`12800-12899`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.
+로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다 — geo `12500`, concierge `12600`, map `12700`, pinvi `12800`(ADR-37). 넷 다 loopback 전용이고 `5432`를 듣는 것은 없다. RustFS는 `storage` 대역(`12100-12199`), Grafana는 `gra` 대역(`12200-12299`), cAdvisor는 `cadv` 대역(`12300-12399`), Prometheus는 `prom` 대역(`12400-12499`), `kor-travel-geo`는 `geo` 대역(`12500-12599`), `kor-travel-concierge`는 `conc` 대역(`12600-12699`), `kor-travel-map`은 `map` 대역(`12700-12799`), PinVi는 `pinvi` 대역(`12800-12899`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.

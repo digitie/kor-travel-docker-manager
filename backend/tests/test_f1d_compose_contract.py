@@ -80,7 +80,7 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_POSTGRES_PASSWORD": "map-contract-postgres-password",
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": (
             "postgresql://map_contract_admin:map-contract-postgres-password@"
-            "127.0.0.1:12703/map_contract"
+            "127.0.0.1:12700/map_contract"
         ),
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": "map-contract-migrator-password",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD": "map-contract-api-password",
@@ -89,19 +89,19 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "map-contract-dagster-metadata-password",
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
-            "127.0.0.1:12703/map_contract"
+            "127.0.0.1:12700/map_contract"
         ),
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_api_runtime:map-contract-api-password@"
-            "127.0.0.1:12703/map_contract"
+            "127.0.0.1:12700/map_contract"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12703/map_contract"
+            "127.0.0.1:12700/map_contract"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
             "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
-            "127.0.0.1:12703/map_contract_dagster"
+            "127.0.0.1:12700/map_contract_dagster"
         ),
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
             "pbkdf2_sha256$100000$test-salt$test-digest"
@@ -210,15 +210,15 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         "DAGSTER_HOME": "/opt/dagster/dagster_home",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
             "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
-            "127.0.0.1:12703/map_contract_dagster"
+            "127.0.0.1:12700/map_contract_dagster"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12703/map_contract"
+            "127.0.0.1:12700/map_contract"
         ),
         "KOR_TRAVEL_MAP_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12703/map_contract"
+            "127.0.0.1:12700/map_contract"
         ),
     }
     assert migration["depends_on"]["kor-travel-map-postgres"]["condition"] == (
@@ -624,7 +624,13 @@ def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutatio
 def test_c6c_rejects_map_database_port_override(
     tmp_path: Path,
 ) -> None:
-    """Map 전용 DB 포트는 ADR-35의 loopback `12703` 계약값으로 고정한다."""
+    """Map 전용 DB 포트는 loopback `12700` 계약값으로 고정한다.
+
+    ADR-35가 정한 것은 "전용 instance의 loopback 고정"이고, 번호는 ADR-047 대역
+    규칙(각 프로젝트 100번대의 x00)에 따라 2026-08-17에 `12703` -> `12700`으로 옮겼다.
+    이 테스트의 픽스처가 옛 번호에 머물면 **테스트는 초록인데 prod 배포가 막힌다** —
+    실제로 그 상태였다.
+    """
 
     candidate = _compose_fragment(
         "kor-travel-map-postgres",

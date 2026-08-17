@@ -12,7 +12,7 @@
 - API 포트는 각 대역의 `+1`을 사용한다.
 - 같은 서비스 자체에서 추가로 필요한 API/관리 포트는 `+2`부터 사용한다.
 - Web UI 포트는 각 대역의 `+5`를 사용하고, 추가 Web UI는 `+6`부터 사용한다.
-- PostgreSQL 접속 포트는 예외적으로 표준 `5432`를 사용한다.
+- **PostgreSQL 접속 포트는 각 대역의 `+0`(즉 `x00`)을 사용한다**(ADR-37). 프로젝트마다 전용 instance를 쓰며 통합 instance는 없다.
 - `kor-travel-docker-manager` 자체 포트는 dependency 순서와 무관하게 `12900-12999` 대역을 사용한다.
 - 이 문서의 포트 정책은 호스트에서 노출되는 로컬 포트 기준이다.
 - dev 기본 네트워크는 Docker host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 포트 NAT가 없으므로 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다(컨테이너 내부 포트 = 호스트 포트). 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다.
@@ -23,15 +23,15 @@
 
 | Target | 대역 | 정책상 사용 포트 | 비고 |
 |---|---:|---|---|
-| `db` | `12000-12099` | 없음 | PostgreSQL은 표준 `5432` 고정이므로 이 대역은 비워 둔다. |
+| `db` | `12000-12099` | 없음 | 폐지된 통합 PostgreSQL의 자리(ADR-37). 각 프로젝트 DB는 자기 대역의 `x00`에 있다. |
 | `storage` | `12100-12199` | API `12101`, Web UI `12105` | RustFS S3 API와 console. |
 | `gra` | `12200-12299` | Web UI `12205` | 다른 앱과 공통 연계하는 Grafana. |
 | `cadv` | `12300-12399` | API `12301` | cAdvisor Exporter. |
 | `prom` | `12400-12499` | API/Web `12401` | Prometheus. |
-| `geo` | `12500-12599` | API `12501`, Web UI `12505` | `kor-travel-geo` REST API와 admin UI. |
-| `conc` | `12600-12699` | API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` API, MCP HTTP, scheduler, Web UI. |
-| `map` | `12700-12799` | API `12701`, Dagster `12702`, PostgreSQL `12703`, Web UI `12705` | `kor-travel-map` 전용 PostgreSQL, admin API, Dagster, admin Web UI. |
-| `pinvi` | `12800-12899` | API `12801`, Dagster `12802`, Web UI `12805` | PinVi API/Dagster/Web. `srv`와 `main`은 이 target의 별칭. |
+| `geo` | `12500-12599` | **PostgreSQL `12500`**, API `12501`, Web UI `12505` | `kor-travel-geo` REST API와 admin UI. |
+| `conc` | `12600-12699` | **PostgreSQL `12600`**, API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` API, MCP HTTP, scheduler, Web UI. |
+| `map` | `12700-12799` | **PostgreSQL `12700`**, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` 전용 PostgreSQL, admin API, Dagster, admin Web UI. |
+| `pinvi` | `12800-12899` | **PostgreSQL `12800`**, API `12801`, Dagster `12802`, Web UI `12805` | PinVi API/Dagster/Web. `srv`와 `main`은 이 target의 별칭. |
 | `kor-travel-docker-manager` | `12900-12999` | API `12901`, Web UI `12905` | dependency 추가와 무관하게 고정. |
 
 ---

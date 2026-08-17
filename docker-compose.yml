@@ -14,14 +14,24 @@ services:
       POSTGRES_USER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
       POSTGRES_PASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       POSTGRES_DB: ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
-      PINVI_POSTGRES_USER: ${PINVI_POSTGRES_USER:-pinvi}
-      PINVI_POSTGRES_PASSWORD: ${PINVI_POSTGRES_PASSWORD:-pinvi_dev_password}
-      PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
-      KOR_TRAVEL_CONCIERGE_POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_DB:-kor_travel_concierge}
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+      # PINVI_*/KOR_TRAVEL_CONCIERGE_* 변수는 2026-08-17에 뺐다. init script를 geo
+      # 전용으로 좁힌 뒤로 읽는 곳이 없고, 남겨두면 이 인스턴스가 아직 남의 DB를
+      # 만든다고 오해하게 한다. 두 프로젝트는 각자 인스턴스(12600/12800)를 쓴다.
       KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK: ${KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK:-1}
       KOR_TRAVEL_GEO_SOURCE_DIR: ${KOR_TRAVEL_GEO_SOURCE_DIR:-/data/juso}
     ports:
-    - ${KOR_TRAVEL_GEO_DB_PORT:-5432}:5432
+    - 127.0.0.1:${KOR_TRAVEL_GEO_DB_PORT:-12500}:${KOR_TRAVEL_GEO_DB_PORT:-12500}
     volumes:
     - ${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}:/var/lib/postgresql/data
     - ${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}:/data/juso:ro
@@ -31,6 +41,15 @@ services:
     shm_size: 512mb
     command:
     - postgres
+    # 통합 인스턴스에서 Geo 전용으로 좁힌 뒤 대역 규칙에 맞춘 포트다(ADR-047: 125xx=geo).
+    # `network_mode: host`에서는 `ports:`가 무시되므로 **이 `-p`가 곧 호스트 포트**다.
+    - -p
+    - ${KOR_TRAVEL_GEO_DB_PORT:-12500}
+    # 형제 3개와 같이 loopback만 듣는다. 이 줄이 없으면 기본값 `*`라 **LAN 전체에**
+    # 열린다 — 위의 `ports: 127.0.0.1:...`는 host network에서 무시되므로 loopback처럼
+    # 보이는 장식일 뿐이고, 실제 경계는 여기서만 정해진다.
+    - -c
+    - listen_addresses=127.0.0.1
     - -c
     - shared_preload_libraries=pg_stat_statements
     - -c
@@ -54,10 +73,217 @@ services:
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -U ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr} -d ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
+      # 포트를 명시하지 않으면 기본 5432를 보고 **영원히 unhealthy**가 된다.
+      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_GEO_DB_PORT:-12500} -U ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr} -d ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
       interval: 10s
       timeout: 5s
       retries: 5
+  # ADR-047 대역 규칙: 126xx = concierge. 통합 인스턴스에서 분리한 전용 PostGIS다.
+  # 분리 근거는 map(ADR-35)과 같다 — role/ACL은 DB가 아니라 **cluster 전역**이라
+  # DB만 나눠서는 principal이 격리되지 않는다.
+  kor-travel-concierge-postgres:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_CONCIERGE_POSTGRES_CONTAINER:-kor-travel-concierge-postgres}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    environment:
+      POSTGRES_USER: ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr}
+      # map과 같이 superuser password는 long-lived Config.Env가 아니라 secret file로
+      # 준다. `docker inspect`에 평문이 남지 않는다.
+      POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-concierge-postgres-password
+      # 앱 DB와 다른 중립 이름으로 init한다 — 같은 이름으로 init하면 initdb가 심은
+      # 확장과 dump의 확장 배치가 복원에서 충돌한다(map 커토버 실측).
+      POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command:
+    - postgres
+    - -c
+    - listen_addresses=127.0.0.1
+    - -p
+    - ${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}
+    - -c
+    - shared_preload_libraries=pg_stat_statements
+    - -c
+    - shared_buffers=${KOR_TRAVEL_CONCIERGE_POSTGRES_SHARED_BUFFERS:-128MB}
+    - -c
+    - work_mem=${KOR_TRAVEL_CONCIERGE_POSTGRES_WORK_MEM:-16MB}
+    - -c
+    - maintenance_work_mem=${KOR_TRAVEL_CONCIERGE_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+    - -c
+    - effective_cache_size=${KOR_TRAVEL_CONCIERGE_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+    # 통합 인스턴스가 쓰던 값을 그대로 물려받는다. 크기만 데이터에 맞춰 줄였고
+    # planner/WAL 성질은 바꾸지 않는다 — 같은 쿼리가 다른 계획을 타면 안 된다.
+    - -c
+    - random_page_cost=${KOR_TRAVEL_CONCIERGE_POSTGRES_RANDOM_PAGE_COST:-1.1}
+    - -c
+    - max_wal_size=${KOR_TRAVEL_CONCIERGE_POSTGRES_MAX_WAL_SIZE:-1GB}
+    - -c
+    - pg_stat_statements.track=all
+    - -c
+    - pg_stat_statements.max=10000
+    secrets:
+    - kor-travel-concierge-postgres-password
+    volumes:
+    - ${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}:/var/lib/postgresql/data
+    ports:
+    - 127.0.0.1:${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}:${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600} -U ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr} -d ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ADR-047 대역 규칙: 128xx = PinVi.
+  pinvi-postgres:
+    image: postgis/postgis:16-3.5
+    container_name: ${PINVI_POSTGRES_CONTAINER:-pinvi-postgres}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    environment:
+      POSTGRES_USER: ${PINVI_POSTGRES_USER:-pinvi}
+      POSTGRES_PASSWORD_FILE: /run/secrets/pinvi-postgres-password
+      POSTGRES_DB: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command:
+    - postgres
+    - -c
+    - listen_addresses=127.0.0.1
+    - -p
+    - ${PINVI_DB_PORT:-12800}
+    - -c
+    - shared_preload_libraries=pg_stat_statements
+    - -c
+    - shared_buffers=${PINVI_POSTGRES_SHARED_BUFFERS:-128MB}
+    - -c
+    - work_mem=${PINVI_POSTGRES_WORK_MEM:-16MB}
+    - -c
+    - maintenance_work_mem=${PINVI_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+    - -c
+    - effective_cache_size=${PINVI_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+    # 통합 인스턴스가 쓰던 값을 그대로 물려받는다. 크기만 데이터에 맞춰 줄였고
+    # planner/WAL 성질은 바꾸지 않는다 — 같은 쿼리가 다른 계획을 타면 안 된다.
+    - -c
+    - random_page_cost=${PINVI_POSTGRES_RANDOM_PAGE_COST:-1.1}
+    - -c
+    - max_wal_size=${PINVI_POSTGRES_MAX_WAL_SIZE:-1GB}
+    # ⚠️ 아래 설정만으로는 **관측이 안 된다.** 라이브러리는 preload돼 통계를 모으지만
+    #    `pinvi` DB에 `pg_stat_statements` **확장이 없어** 읽을 수단이 없다
+    #    (2026-08-17 실측: geo/concierge/map은 확장 있음, pinvi만 0).
+    #    여기서 `CREATE EXTENSION`을 하지 않는다 — pinvi 스키마는 그 저장소 alembic이
+    #    소유하고, 밖에서 심으면 그쪽 migration과 어긋난다. 필요해지면 PinVi 쪽
+    #    migration에 넣는다.
+    - -c
+    - pg_stat_statements.track=all
+    - -c
+    - pg_stat_statements.max=10000
+    secrets:
+    - pinvi-postgres-password
+    volumes:
+    - ${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}:/var/lib/postgresql/data
+    ports:
+    - 127.0.0.1:${PINVI_DB_PORT:-12800}:${PINVI_DB_PORT:-12800}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -h 127.0.0.1 -p ${PINVI_DB_PORT:-12800} -U ${PINVI_POSTGRES_USER:-pinvi} -d ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # 빈 PGDATA에서 앱 DB를 만드는 경로. init DB는 중립 이름(ktc_bootstrap)이라
+  # `kor_travel_concierge`를 아무도 만들지 않았다 — 지금 prod에 있는 것은
+  # 2026-08-17 이관으로 들어간 것뿐이고, 새 호스트에서는 앱이 곧장 죽는다.
+  # createdb는 멱등이므로 이미 있는 인스턴스에서는 무해하게 no-op한다.
+  kor-travel-concierge-db-init:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_CONCIERGE_DB_INIT_CONTAINER:-kor-travel-concierge-db-init}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-concierge-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}
+      PGUSER: ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr}
+      PGDATABASE: ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
+      KOR_TRAVEL_CONCIERGE_POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_DB:-kor_travel_concierge}
+    secrets:
+    - kor-travel-concierge-postgres-password
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
+    # 부족을 전부 삼키고 exit 0으로 끝나서, 이 one-shot이 막으려던 바로 그 상황에서
+    # `service_completed_successfully` 게이트가 통과한다. 존재 확인만 조용히 하고
+    # 진짜 오류는 전파한다.
+    # 비밀번호는 `PGPASSWORD` 평문(=`docker inspect`에 그대로 남는다) 대신 secret
+    # file로 받는다 — `restart: "no"` 컨테이너는 exit 뒤에도 남아 계속 조회된다.
+    command:
+    - sh
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-concierge-postgres-password)"
+      export PGPASSWORD
+      if psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_CONCIERGE_POSTGRES_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_CONCIERGE_POSTGRES_DB already exists"
+      else
+        createdb "$$KOR_TRAVEL_CONCIERGE_POSTGRES_DB"
+      fi
+
+  pinvi-db-init:
+    image: postgis/postgis:16-3.5
+    container_name: ${PINVI_DB_INIT_CONTAINER:-pinvi-db-init}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      pinvi-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${PINVI_DB_PORT:-12800}
+      PGUSER: ${PINVI_POSTGRES_USER:-pinvi}
+      PGDATABASE: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
+      PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
+    secrets:
+    - pinvi-postgres-password
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
+    # 부족을 전부 삼키고 exit 0으로 끝나서, 이 one-shot이 막으려던 바로 그 상황에서
+    # `service_completed_successfully` 게이트가 통과한다. 존재 확인만 조용히 하고
+    # 진짜 오류는 전파한다.
+    # 비밀번호는 `PGPASSWORD` 평문(=`docker inspect`에 그대로 남는다) 대신 secret
+    # file로 받는다 — `restart: "no"` 컨테이너는 exit 뒤에도 남아 계속 조회된다.
+    command:
+    - sh
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"
+      export PGPASSWORD
+      if psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'" | grep -q 1; then
+        echo "database $$PINVI_POSTGRES_DB already exists"
+      else
+        createdb "$$PINVI_POSTGRES_DB"
+      fi
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -123,7 +349,7 @@ services:
     environment:
       PORT: ${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
       KTG_API_HOST: 0.0.0.0
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
       KTG_GEOIP_GATE_MODE: ${KOR_TRAVEL_GEO_GEOIP_GATE_MODE:-off}
       KTG_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES: ${KOR_TRAVEL_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES:-0}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
@@ -222,12 +448,14 @@ services:
       required: false
       format: raw
     depends_on:
-      kor-travel-geo-postgres:
+      kor-travel-concierge-postgres:
         condition: service_healthy
+      kor-travel-concierge-db-init:
+        condition: service_completed_successfully
       rustfs:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:5432/kor_travel_concierge}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:12600/kor_travel_concierge}
       NEXT_PUBLIC_API_BASE_URL: http://localhost:${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}
       CORS_ALLOW_ORIGINS: '["http://localhost:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}","http://127.0.0.1:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}"]'
       RUSTFS_ENABLED: 'true'
@@ -283,7 +511,7 @@ services:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:5432/kor_travel_concierge}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:12600/kor_travel_concierge}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
@@ -320,7 +548,7 @@ services:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:5432/kor_travel_concierge}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:12600/kor_travel_concierge}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
@@ -361,7 +589,8 @@ services:
     ports:
     - ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}
   # #171 / ADR-35 — Map state principal의 ownership/ACL은 통합 PostgreSQL과
-  # 공유할 수 없다. host network에서 `12703` loopback만 listen하는 전용 instance다.
+  # 공유할 수 없다. host network에서 `12700` loopback만 listen하는 전용 instance다.
+  # (ADR-047 대역 규칙에 맞춰 2026-08-17에 12703 -> 12700으로 옮겼다: 127xx=map.)
   kor-travel-map-postgres:
     image: postgis/postgis:16-3.5
     container_name: ${KOR_TRAVEL_MAP_POSTGRES_CONTAINER:-kor-travel-map-postgres}
@@ -373,12 +602,23 @@ services:
       # bootstrap superuser password는 long-lived Config.Env가 아니라 Docker secret
       # file로만 전달한다. role bootstrap one-shot만 DSN에 credential을 보관한다.
       POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-map-postgres-password
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     command:
     - postgres
     - -c
     - listen_addresses=127.0.0.1
     - -p
-    - ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}
+    - ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700}
     # 아래 값은 2026-08-15 커토버에서 **실측한 원본 인스턴스 설정**이다. 빠뜨리면
     # 조용히 달라진다 — 확장은 로드되지 않은 채 CREATE만 성공하고, 튜닝값은 기본값으로
     # 떨어져 같은 쿼리가 다른 계획을 탄다.
@@ -398,17 +638,24 @@ services:
     - maintenance_work_mem=${KOR_TRAVEL_MAP_POSTGRES_MAINTENANCE_WORK_MEM:-256MB}
     - -c
     - effective_cache_size=${KOR_TRAVEL_MAP_POSTGRES_EFFECTIVE_CACHE_SIZE:-1536MB}
+    # 원본 인스턴스 실측값. 빠지면 기본값(4 / 1GB)으로 떨어져 PostGIS 인덱스 스캔
+    # 선택과 체크포인트 빈도가 달라진다 — 주석이 '실측 원본'이라 주장하면서 실제로
+    # 이 둘을 빠뜨리고 있었다(2026-08-17 적대 리뷰).
+    - -c
+    - random_page_cost=${KOR_TRAVEL_MAP_POSTGRES_RANDOM_PAGE_COST:-1.1}
+    - -c
+    - max_wal_size=${KOR_TRAVEL_MAP_POSTGRES_MAX_WAL_SIZE:-2GB}
     volumes:
     - ${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}:/var/lib/postgresql/data
     secrets:
     - source: kor-travel-map-postgres-password
       target: kor-travel-map-postgres-password
     ports:
-    - 127.0.0.1:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}
+    - 127.0.0.1:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700}:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700}
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703} -U ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set} -d ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
+      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700} -U ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set} -d ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
       interval: 10s
       timeout: 5s
       retries: 20
@@ -769,8 +1016,10 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
-      kor-travel-geo-postgres:
+      pinvi-postgres:
         condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
       rustfs:
         condition: service_healthy
       kor-travel-map-api:
@@ -791,7 +1040,7 @@ services:
     environment:
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
       PINVI_API_WORKERS: ${PINVI_API_WORKERS:-1}
-      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
       PINVI_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -830,14 +1079,16 @@ services:
     restart: "no"
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
-      kor-travel-geo-postgres:
+      pinvi-postgres:
         condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
     command:
     - pinvi-admin-bootstrap
     environment:
       # one-shot도 API와 같은 production Settings를 import하므로 필요한 Map 검증값만 둔다.
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
-      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/pinvi}
       PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
       PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}
       PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}
@@ -880,8 +1131,10 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
-      kor-travel-geo-postgres:
+      pinvi-postgres:
         condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
       pinvi-api:
         condition: service_healthy
     command:
@@ -896,7 +1149,7 @@ services:
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       PINVI_DAGSTER_PORT: ${PINVI_DAGSTER_PORT:-12802}
-      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/pinvi}
     ports:
     - ${PINVI_DAGSTER_PORT:-12802}:${PINVI_DAGSTER_PORT:-12802}
     healthcheck:
@@ -981,14 +1234,26 @@ services:
         condition: service_healthy
     environment:
       PGHOST: 127.0.0.1
-      PGPORT: "5432"
+      # 포트는 compose가 풀어서 준다. `createdb -p "$${...}"`로 컨테이너 셸에
+      # 맡기면 그 셸엔 KOR_TRAVEL_GEO_DB_PORT가 없어 항상 default로 떨어진다 —
+      # `.env`로 포트를 옮기면 postgres만 따라가고 이 one-shot은 옛 포트에 붙어 죽는다.
+      PGPORT: ${KOR_TRAVEL_GEO_DB_PORT:-12500}
       PGUSER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
       PGPASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       KOR_TRAVEL_GEO_DAGSTER_DB: ${KOR_TRAVEL_GEO_DAGSTER_DB:-kor_travel_geo_dagster}
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
+    # 부족을 전부 삼키고 exit 0으로 끝나서, 이 one-shot이 막으려던 바로 그 상황에서
+    # `service_completed_successfully` 게이트가 통과한다. 존재 확인만 조용히 하고
+    # 진짜 오류는 전파한다.
     command:
     - sh
-    - -c
-    - createdb "$${KOR_TRAVEL_GEO_DAGSTER_DB}" 2>/dev/null || true
+    - -ec
+    - |
+      if psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_GEO_DAGSTER_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_GEO_DAGSTER_DB already exists"
+      else
+        createdb "$$KOR_TRAVEL_GEO_DAGSTER_DB"
+      fi
   kor-travel-geo-dagster:
     image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
     build:
@@ -1006,8 +1271,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_DAGSTER_PORT: ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:5432/kor_travel_geo_dagster}
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:12500/kor_travel_geo_dagster}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
@@ -1061,8 +1326,8 @@ services:
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:5432/kor_travel_geo_dagster}
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:12500/kor_travel_geo_dagster}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
@@ -1083,3 +1348,7 @@ services:
 secrets:
   kor-travel-map-postgres-password:
     environment: KOR_TRAVEL_MAP_POSTGRES_PASSWORD
+  kor-travel-concierge-postgres-password:
+    environment: KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD
+  pinvi-postgres-password:
+    environment: PINVI_POSTGRES_PASSWORD

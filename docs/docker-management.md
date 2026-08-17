@@ -28,7 +28,7 @@
 | 메트릭 | CPU, 메모리, I/O 10초 수집 및 30일 보관 | 컨테이너 상세 화면에서 최근 추세와 현재값 동시 표시 |
 | 설정 변경 | compose의 ports, env, volumes, networks 저장 및 재생성 구현 | 입력 검증, secret redaction, 변경 전 diff 표시 |
 | CLI | `ktdctl` Python CLI 추가 | 다른 Kor Travel/PinVi 프로젝트에서 의존 Docker 실행용으로 사용 |
-| 문서 | 통합 DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
+| 문서 | DB 모델과 CLI/API target 기준 정리 | 대시보드 상세 패널 구현 시 화면 문서 추가 |
 
 ### WebSocket 종료 코드 계약 (C7)
 
@@ -96,7 +96,9 @@
 
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트(host=container) |
 |---|---|---|---|
-| `kor-travel-geo-postgresql` | `kor-travel-geo-postgres` | `kor_travel_geo`, `pinvi`, `kor_travel_concierge` database를 담는 통합 PostgreSQL / PostGIS | `5432` |
+| `kor-travel-geo-postgresql` | `kor-travel-geo-postgres` | Kor Travel Geo 전용 PostgreSQL / PostGIS (`kor_travel_geo`, `kor_travel_geo_dagster`) | `12500` |
+| `kor-travel-concierge-postgresql` | `kor-travel-concierge-postgres` | Kor Travel Concierge 전용 (`kor_travel_concierge`) | `12600` |
+| `pinvi-postgresql` | `pinvi-postgres` | PinVi 전용 (`pinvi`) | `12800` |
 | `rustfs` | `kor-travel-rustfs` | Kor Travel/PinVi 계열 미디어 및 원천 데이터용 S3 호환 오브젝트 스토리지 | `12101`, `12105` |
 | `grafana` | `kor-travel-grafana` | 다른 앱과도 공통 연계하는 Grafana 시각화 도구 | `12205` |
 | `cadvisor` | `kor-travel-cadvisor` | Docker 컨테이너 리소스 메트릭을 노출하는 cAdvisor Exporter | `12301` |
@@ -131,7 +133,7 @@ db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
 
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
-| `db` | 통합 DB | 통합 PostgreSQL/PostGIS 실행 및 DB/role/schema 복구 | `postgresql`, `postgres`, `database` |
+| `db` | Kor Travel Geo DB | geo 전용 PostgreSQL/PostGIS(:12500) 실행 및 DB/extension/schema grant 복구. 다른 프로젝트 DB는 각 target이 소유한다(ADR-37) | `postgresql`, `postgres`, `database` |
 | `storage` | 통합 RustFS | `db` + RustFS 실행 및 bucket 복구 | `rustfs`, `s3`, `object-storage` |
 | `gra` | 공용 Grafana | `storage` + Grafana Web UI 실행 | `grafana`, `dashboard`, `visualization` |
 | `cadv` | cAdvisor Exporter | `gra` + cAdvisor Exporter 실행 | `cadvisor`, `exporter`, `metrics-exporter` |
@@ -144,7 +146,7 @@ db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
 
 `geo` 이후 앱 target은 모두 실제 앱 컨테이너를 이 저장소 compose에서 빌드하고 실행한다. `main`은 독립 target이 아니라 `pinvi`의 호환 별칭이며, 새 자동화에서는 짧은 별칭 `srv`를 사용한다.
 
-로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역은 `12000-12099`지만 PostgreSQL은 표준 `5432` 접속 포트를 고정하므로 비워 둔다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12205`, `cadv`는 cAdvisor `12301`, `prom`은 Prometheus `12401`을 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
+로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역 `12000-12099`는 폐지된 통합 instance의 자리라 비어 있다 — PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`(`12500`/`12600`/`12700`/`12800`, ADR-37)이다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12205`, `cadv`는 cAdvisor `12301`, `prom`은 Prometheus `12401`을 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
 
 ---
 
@@ -158,7 +160,7 @@ db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
 | RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads` bucket 생성 |
 | Geo 원천 검증 | `geo` 이상 | `scripts/verify-kor-travel-geo-source.sh` | `/data/juso` 마운트와 `load_manifest`, `tl_juso_text`, `mv_geocode_target` 적재 상태 확인 |
 
-`geo` target은 compose에서 `kor-travel-geo-api`, `kor-travel-geo-ui`를 실행하고, dev 기본 host 네트워크에서 API 컨테이너는 `127.0.0.1:5432`(PostgreSQL)와 `127.0.0.1:12101`(RustFS)을 사용한다. 대시보드와 CLI는 registry에 등록된 컨테이너 이름(`kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`)을 같은 Docker 대상으로 사용한다.
+`geo` target은 compose에서 `kor-travel-geo-api`, `kor-travel-geo-ui`를 실행하고, dev 기본 host 네트워크에서 API 컨테이너는 `127.0.0.1:12500`(geo 전용 PostgreSQL)과 `127.0.0.1:12101`(RustFS)을 사용한다. 대시보드와 CLI는 registry에 등록된 컨테이너 이름(`kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`)을 같은 Docker 대상으로 사용한다.
 
 `geo` 검증은 원천 DB가 비어 있거나 핵심 테이블이 없으면 기본적으로 실패한다. 전체 적재는 무겁고 `kor-travel-geo`의 도메인 로더가 책임지는 작업이므로, manager는 자동 전체 적재 대신 명확한 실패 메시지와 복구 지침을 출력한다. 비어 있는 DB를 의도적으로 허용해야 하는 경우에만 `.env`에서 `KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
 
@@ -236,7 +238,7 @@ ktdctl srv --build
 - `docker compose` 실행은 반드시 문자열 shell이 아니라 인자 배열로 수행한다.
 - inspect와 로그 출력에서 secret 성격의 environment 값은 redaction한다.
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
-- 포트 `5432`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
+- 포트 `12500`, `12600`, `12700`, `12800`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
 
 ### 7.1 Concierge 소비자 read 키 배포
 

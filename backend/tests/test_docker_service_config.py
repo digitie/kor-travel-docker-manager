@@ -1280,7 +1280,7 @@ def _prepare_candidate_transaction(
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
-            "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12703/kor_travel_map",
+            "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12700/kor_travel_map",
         )
         monkeypatch.setenv("KOR_TRAVEL_MAP_MIGRATOR_PASSWORD", "test-map-migrator")
         monkeypatch.setenv(
@@ -1297,19 +1297,19 @@ def _prepare_candidate_transaction(
         )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
-            "postgresql+asyncpg://ktm_feature_migrator:test-map-migrator@127.0.0.1:12703/kor_travel_map",
+            "postgresql+asyncpg://ktm_feature_migrator:test-map-migrator@127.0.0.1:12700/kor_travel_map",
         )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
-            "postgresql+asyncpg://ktm_feature_api_runtime:test-map-api-runtime@127.0.0.1:12703/kor_travel_map",
+            "postgresql+asyncpg://ktm_feature_api_runtime:test-map-api-runtime@127.0.0.1:12700/kor_travel_map",
         )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
-            "postgresql+asyncpg://ktm_feature_dagster_runtime:test-map-dagster-runtime@127.0.0.1:12703/kor_travel_map",
+            "postgresql+asyncpg://ktm_feature_dagster_runtime:test-map-dagster-runtime@127.0.0.1:12700/kor_travel_map",
         )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
-            "postgresql://test_map_dagster_metadata:test-map-dagster-metadata@127.0.0.1:12703/kor_travel_map_dagster",
+            "postgresql://test_map_dagster_metadata:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
         )
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(

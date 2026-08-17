@@ -1891,3 +1891,122 @@ hex, 임의 shadow/radius, `transition-all`, 의미 없는 gradient/glass, 고�
 - 상태 확인과 조치가 화면 전체에서 동일한 색상·타이포그래피·focus·disabled·loading 규칙을 따른다.
 - 320px, 375px, 414px, 768px에서 운영 원장이 가로 스크롤 없이 읽히도록 구현·검증 대상이 명확해진다.
 - #171의 PostgreSQL bootstrap, exact release pin, n150 live E2E/merge gate에는 영향을 주지 않는다.
+
+## ADR-37: PostgreSQL은 프로젝트마다 전용 instance를 쓰고 DB 포트는 대역의 `x00`이다
+
+- 상태: accepted
+- 날짜: 2026-08-17
+- 결정자: 사용자, Claude
+- 관련: #176, ADR-35, ADR-5, ADR-16, Map ADR-090, `docs/ports.md`, `AGENTS.md` 룰 4·9
+
+### 컨텍스트
+
+ADR-35는 Map만 전용 instance로 뺐다. 그 근거는 "Map ADR-090의 principal 경계를 통합
+instance의 recovery가 무음으로 되돌린다"였다. 2026-08-17 실측에서 그 근거가 Map에만
+해당하지 않는다는 것이 드러났다.
+
+**role·ACL·확장은 database가 아니라 cluster 전역이다.** Map을 전용 instance로 옮긴 뒤에도
+통합 instance에는 `ktm_` role 7개가 남아 있었고, Map migrator credential로 33GB
+`kor_travel_geo`에 실제로 접속됐다(`CONNECTED as ktm_feature_migrator`). database만
+나누는 방식으로는 principal이 격리되지 않는다.
+
+`scripts/ensure-kor-travel-geo-db.sh`가 그 구조를 고착시킨다 — 한 cluster 안에서
+`pinvi` role과 `pinvi`·`kor_travel_concierge`·`krtour_map` database를 만들고 owner와
+광범위한 grant를 재적용한다. 즉 통합 instance는 "여러 프로젝트가 database만 나눠 쓰는"
+형태가 아니라 **모든 프로젝트가 서로의 principal namespace를 공유하는** 형태였다.
+
+포트도 함께 정리해야 했다. host network에서는 두 PostgreSQL이 `5432`를 동시에 bind할 수
+없고, `ports:`는 무시되므로 `-p`가 곧 호스트 포트다. 즉 instance를 늘리는 순간
+"PostgreSQL은 표준 5432" 규칙은 유지가 불가능하다.
+
+### 결정
+
+**PostgreSQL instance는 프로젝트마다 하나씩 둔다.** 통합 instance는 폐지한다.
+
+**DB 포트는 각 target 대역의 `x00`이다.** `docs/ports.md`의 `12000 + dependency index *
+100 + offset` 규칙에서 DB의 offset을 `0`으로 고정한다.
+
+| target | instance | 포트 |
+|---|---|---|
+| `geo` | `kor-travel-geo-postgres` | `12500` |
+| `conc` | `kor-travel-concierge-postgres` | `12600` |
+| `map` | `kor-travel-map-postgres` | `12700` |
+| `pinvi` | `pinvi-postgres` | `12800` |
+
+`AGENTS.md` 룰 9의 "PostgreSQL 접속 포트는 표준 `5432`를 사용한다"와 룰 4의 "통합
+PostgreSQL(`5432`)"은 이 ADR로 대체한다. `db` target의 `12000-12099` 대역은 더 이상
+"비워 두는" 대역이 아니라 **폐지된 통합 instance의 자리**다.
+
+모든 instance는 `-c listen_addresses=127.0.0.1`로 loopback만 듣고,
+`POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256`으로 loopback 인증을 잠근다.
+**둘 다 있어야 경계가 된다** — 아래 §되돌아본 것 참조. 크기 관련 설정(`shared_buffers` 등)은 각
+프로젝트 데이터에 맞추되 **planner 성질**(`random_page_cost`)과 관측
+설정(`pg_stat_statements.track/max`)은 통합 instance 값을 그대로 물려받는다 — 같은 쿼리가
+instance마다 다른 계획을 타면 안 된다.
+
+### 결과
+
+- 한 프로젝트의 DB credential이 다른 프로젝트의 데이터에 닿지 못한다. 이것이 ADR-35가
+  Map에 대해 얻으려던 것이고, 이제 네 프로젝트 모두에 적용된다. **단, instance를
+  나누는 것만으로는 이것이 성립하지 않는다** — loopback 인증까지 잠가야 한다
+  (§되돌아본 것).
+- `ensure-kor-travel-geo-db.sh`는 **geo 전용**이 된다. 다른 프로젝트의 role/database를
+  만드는 부분은 제거한다 — 그대로 두면 복구 실행이 이 ADR을 되돌린다.
+- `config/docker-targets.yml`의 `expected_ports`·`connection`·`containers`가 instance
+  4개를 반영해야 한다. 그 값은 운영자 대시보드에 그대로 표시된다.
+- 배포 가드(`c6c_deployment.py`)의 Map 포트 상수는 compose 기본값과 같아야 한다.
+  어긋나면 정상 배포가 `Map database DSN identity is invalid`로 막히고, 오류 문자열에
+  포트가 없어 원인이 드러나지 않는다.
+- 백업 주체가 instance 4개로 늘었다. 단일 instance 전제의 백업/복구 절차는 갱신이 필요하다.
+
+### 되돌아본 것 (2026-08-17, 같은 날 적대 리뷰)
+
+이 ADR의 초안은 "`listen_addresses=127.0.0.1`이 유일한 경계"이고 "한 프로젝트의
+credential이 다른 프로젝트 데이터에 닿지 못한다"고 적었다. **둘 다 틀렸다.** 실측:
+
+```
+$ grep -v '^#' $PGDATA/pg_hba.conf          # 네 인스턴스 전부 동일
+local   all  all                  trust
+host    all  all  127.0.0.1/32    trust     <- 여기서 매칭이 끝난다
+host    all  all  ::1/128         trust
+host all all all scram-sha-256              <- entrypoint가 붙이지만 도달 안 함
+```
+
+`pg_hba.conf`는 first-match-wins다. postgres 공식 이미지는 `initdb`를 `--auth-host`
+없이 부르고, 그때 initdb 기본값이 `trust`다. entrypoint가 파일 끝에 붙이는
+`host all all all scram-sha-256`은 loopback 요청에 **절대 도달하지 않는다.**
+
+네 인스턴스가 모두 host network를 공유하므로, 결과는 이렇다:
+
+```
+map 컨테이너 -> geo(12500) superuser addr, 33GB : CONNECTED   (비밀번호 없이)
+geo 컨테이너 -> map(12700), features=1,008,852  : CONNECTED   (비밀번호 없이)
+틀린 비밀번호로 접속                             : CONNECTED
+```
+
+즉 이 ADR이 얻으려던 principal 격리가 **0**이었다. 원래 사고(`ktm_` role이 통합
+instance에 남아 Map credential로 geo에 접속됐다)보다 넓다 — 이제 credential조차
+필요 없다. 이것은 분리로 **새로 생긴** 문제가 아니라(통합 instance도 같은 pg_hba였다)
+분리가 **해결했다고 주장한** 문제가 그대로 남아 있었던 것이다. 더 나쁘다: 문서가
+해결됐다고 말하면 아무도 다시 안 본다.
+
+**대응 두 갈래.**
+
+1. 새로 만드는 instance — 네 서비스에 `POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"`.
+   `--auth-local`은 건드리지 않는다. 유닉스 소켓은 컨테이너 파일시스템 안이라 밖에서
+   못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+2. **이미 초기화된 4개는 이 설정이 안 먹는다.** `POSTGRES_INITDB_ARGS`는 initdb 때만
+   쓰인다. 기존 인스턴스는 `pg_hba.conf`의 `127.0.0.1/32`·`::1/128` 줄을
+   `scram-sha-256`으로 바꾸고 reload해야 한다.
+
+전환 전에 "지금 trust 덕에 살아 있는 DSN"이 있는지 확인했다. `pg_hba`를 건드리지 않고
+`pg_authid.rolpassword`의 SCRAM verifier(`SCRAM-SHA-256$<iter>:<salt>$<StoredKey>:<ServerKey>`)를
+DSN 비밀번호로 재계산해 대조하는 방법이다. `.env`와 **해결된 compose**를 둘 다 훑어
+8건 전부 PASS(불일치 0)를 받고 전환했다.
+
+여기서도 같은 함정을 한 번 밟았다 — 1차 검사가 `.env`만 훑어 map 5건만 잡았다.
+geo/concierge/pinvi의 DSN은 `.env`에 없고 compose의 `${VAR:-기본값}`에서 온다.
+**실제 해석자(`docker compose config`)에게 물어야 한다.**
+
+reload는 기존 연결을 재인증하지 않는다. 그래서 전환 직후에는 아무 일도 일어나지 않고,
+재연결·재시작 때 드러난다 — "바꿨는데 멀쩡하다"를 성공으로 읽으면 안 된다.
