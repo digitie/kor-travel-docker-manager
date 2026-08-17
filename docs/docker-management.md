@@ -729,3 +729,117 @@ cAdvisor는 더 이상 `/:/rootfs`, `/var/run`, `/var/lib/docker`, `/dev/disk`�
 `--docker_only=true`와 read-only `/var/run/docker.sock`, `/sys`만 사용해 container CPU·memory·I/O 지표를
 노출한다. host root filesystem/disk inventory는 제공하지 않지만 manager 대시보드의 Docker SDK 기반 container
 상태·stats와 Prometheus의 container metric 수집은 유지한다.
+## PostgreSQL 백업 (ADR-37 이후 4개 인스턴스)
+
+2026-08-17 전용 instance 분리(ADR-37)로 백업 주체가 **넷**이 됐다. 그전까지 절차가 있던
+것은 map 하나뿐이었고 geo는 **33GB인데 백업이 0건**이었다(#177).
+
+### 실측 (2026-08-17, n150)
+
+| 인스턴스 | 포트 | 원본 | `pg_dump -Fc --compress=6` | 소요 | `pg_restore -l` |
+|---|---|---|---|---|---|
+| geo | `12500` | 33 GB | **4.4 GB** | **879초** | 300항목 ✅ |
+| concierge | `12600` | 65 MB | 4.6 MB | 2초 | 238항목 ✅ |
+| map | `12700` | 6.3 GB | 587 MB | — | 1182항목 ✅ |
+| pinvi | `12800` | 11 MB | 236 KB | 1초 | 426항목 ✅ |
+
+**재보기 전에는 "geo를 매일 뜨는 게 현실적인가"에 답할 수 없었다.** 15분/4.4GB면
+일 1회가 현실적이고, 7세대를 남겨도 31GB라 현재 여유(118GB) 안이다.
+
+### 뜨는 법
+
+host network라 **`-p`가 필수**다. 빠뜨리면 컨테이너 기본값 `5432`를 찾는데 그 포트를
+듣는 것이 없어 실패한다(유닉스 소켓도 그 포트에 없다).
+
+```bash
+# 예: geo. 다른 인스턴스는 컨테이너·포트·user·db만 바꾼다.
+docker exec -e PGPASSWORD="$PW" kor-travel-geo-postgres \
+  pg_dump -h 127.0.0.1 -p 12500 -U addr -d kor_travel_geo \
+  -Fc --compress=6 -f /tmp/bk.dump
+docker cp kor-travel-geo-postgres:/tmp/bk.dump ~/backups/geo/$(date +%F)-baseline.dump
+docker exec kor-travel-geo-postgres rm -f /tmp/bk.dump
+chmod 600 ~/backups/geo/*.dump      # ← 잊지 마라. docker cp는 umask 따라 644로 떨군다
+```
+
+| 인스턴스 | 컨테이너 | 포트 | user | database |
+|---|---|---|---|---|
+| geo | `kor-travel-geo-postgres` | 12500 | `addr` | `kor_travel_geo` |
+| concierge | `kor-travel-concierge-postgres` | 12600 | `addr` | `kor_travel_concierge` |
+| map | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map` |
+| pinvi | `pinvi-postgres` | 12800 | `pinvi` | `pinvi` |
+
+### 산출물 3종 세트
+
+dump 하나만 두지 않는다. **`.sha256`과 `.manifest`가 없으면 "복원 가능한 백업"이 아니라
+"복원해 봐야 아는 파일"이다.**
+
+```
+~/backups/<인스턴스>/<날짜>-<태그>.dump
+~/backups/<인스턴스>/<날짜>-<태그>.dump.sha256    # 파일명은 반드시 <dump 이름>.sha256
+~/backups/<인스턴스>/<날짜>-<태그>.manifest       # 복구 때 대조할 값
+```
+
+> ⚠️ sha256 파일명을 `<태그>.sha256`(dump 확장자 없이)으로 두지 마라. 2026-08-17에
+> 두 형식이 섞여 있어서, 한쪽을 가정한 검사가 다른 쪽을 **조용히 건너뛰었다** —
+> 파일은 멀쩡한데 "sha256 없음"으로 넘어갔다. `sha256sum -c`가 그대로 먹는 형태로 통일한다.
+
+manifest에 넣을 것: `created_at` · `instance`(컨테이너 + `127.0.0.1:포트`) · `database` ·
+`duration_sec` · `tables` · `db_size` · `alembic_head`. **포트를 적었으면 포트가 바뀔 때
+같이 고쳐야 한다** — 2026-08-17에 map manifest가 죽은 `12703`을 가리키고 있었고, 복구할
+사람이 그 값을 보고 죽은 포트로 간다. 고칠 때는 `port_corrected=` 같은 이력 줄을 남긴다.
+조용히 고치면 다음 사람이 그 값을 못 믿는다.
+
+권한은 **600**이다. 각 저장소의 비밀 보관 규정(kor-travel-map `docs/external-apis.md` §1.1)이
+dump를 포함한다 — dump는 DB 전체를 담는다.
+
+### 복원
+
+**map은** kor-travel-map `docs/backup-restore.md` **§8.1 prod 복구**가 정본이다
+(옆에 복원 → 대조 → rename 교체 → **ACL 재조정** → ETL 검증). `pg_dump -d <db>`가
+role·ACL을 담지 않으므로 `--no-owner --no-privileges` 복원 뒤 ACL 재조정이 필수다 —
+빼먹으면 기동은 되고 쿼리에서 permission denied가 난다.
+
+**geo·concierge·pinvi는** 각 프로젝트 alembic이 스키마를 소유하므로 복원 후 그쪽
+migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼저 있어야 하는 함정은
+이슈 #109에 있다.
+
+### `ktdctl db-backup` (issue #177 결선 — 위 수동 절차의 CLI화)
+
+위 "뜨는 법" 수작업을 대체하는 CLI다. 여섯 role(`geo`/`geo_dagster`/`concierge`/
+`map_application`/`map_dagster`/`pinvi`)을 지원하고, 포트·admin role 이름을
+하드코딩하지 않고 살아있는 컨테이너(`docker inspect`)에서 읽는다 — `.env`가
+기본 포트를 덮어썼거나 role 이름이 프로젝트마다 달라도 항상 실제 기동값과
+일치한다. 연결은 TCP가 아니라 `docker exec --user postgres` + unix socket이라
+어떤 postgres 비밀번호도 읽거나 다루지 않는다.
+
+```bash
+ktdctl db-backup create geo               # geo는 기본 timeout(4h)로 부족하면 --timeout 늘릴 것
+ktdctl db-backup list geo
+ktdctl db-backup gc geo --keep 2          # geo는 33GB급이라 낮게. map/pinvi/concierge는 7 정도
+```
+
+산출물은 위 "산출물 3종 세트" 관례를 그대로 따른다(`<role>-<ts>.dump` ·
+`<role>-<ts>.dump.sha256`(`sha256sum -c` 그대로 먹는 형태) · `<role>-<ts>.manifest`
+— `created_at_unix`·`duration_sec`·`instance`·`db_size_bytes`·`toc_entry_count`(pg_restore
+-l TOC 항목 수 — 위 수동 검증과 같은 sanity check)·`alembic_head`(best-effort,
+`public`/`app` schema 순서로 시도) 포함). 주기 실행은
+`scripts/run-standalone-backup.sh <role> <keep>`을 cron/systemd timer에 건다
+(스크립트 상단에 crontab 예시가 있다). 같은 role의 동시 실행은 `~/backups/<role>/
+.backup.lock`(`flock`)으로 막는다.
+
+읽기 전용 `GET /api/v1/backups?role=<role>`도 있다 — Dashboard "백업 이력" 패널이
+쓴다. 생성·GC는 CLI 전용이며 API에 노출하지 않는다(이 저장소의 표준 mutation
+경계). **복원 CLI는 아직 없다** — 아래 "아직 안 된 것" 참고.
+
+### 아직 안 된 것
+
+- **복원 CLI가 없다.** map은 여전히 kor-travel-map `docs/backup-restore.md` §8.1
+  수동 절차가 정본이고, geo·concierge·pinvi는 각 프로젝트 alembic migration을
+  타야 한다(§ "복원" 참고). `ktdctl db-backup restore`는 별도 범위다.
+- **외부(오프박스) 사본 자동화가 없다.** 지금은 로컬 `~/backups/<role>/`뿐이다.
+  rsync/scp 대상·주기·sha256 대조 검증은 별도 결선이 필요하다.
+- 위 실측 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. 실제로 상시 cron을
+  걸지는 n150의 운용 성격(실 production인가)에 달렸고, kor-travel-map
+  `docs/tasks.md`는 2026-08-06 사용자 지시로 정기화를 `[보류]`로 두고 있다
+  ("손상 시 재적재가 정책"). map 쪽 최종 주기화 여부는 #148이 소유한다.
+

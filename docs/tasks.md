@@ -24,6 +24,9 @@
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
 | **#171** | Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포 | `[/]` | - | 전용 Map DB/F1D bootstrap, T-VN-40 canonical snapshot principal 최소 권한 결선 및 Hallmark 운영 콘솔 재설계 반영. upstream exact pair의 final receipt/live 검증 대기 |
+| **#177** | 4분할 후 geo·concierge·map·pinvi 공통 백업 결선 | `[/]` | - | 신규 독립 `standalone_backup.py` + `ktdctl db-backup create/list/gc` + 읽기 전용 `GET /backups`. n150 주기 cron 설치·geo 첫 실백업은 미실행 |
+| **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[/]` | - | `docker-compose.yml` geo를 형제 셋과 같은 `POSTGRES_PASSWORD_FILE` secret + fail-close DSN으로 전환. n150 실제 비밀번호 회전(`ALTER ROLE` + 4개 DSN 동시 갱신)은 미실행 |
+| **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[/]` | - | `scripts/check-env-permissions.sh`(원본 이름 비하드코딩, `--fix` 지원) + 배포 runbook에 chmod 관례 추가. n150 기존 7개 파일 실제 chmod/정리는 미실행 |
 
 ---
 
@@ -980,3 +983,77 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
 - [x] Hallmark audit의 critical 1·major 5·minor 1 개선을 반영했다. Cobalt 토큰과 Workbench 원장 구조를
       `DESIGN.md`·`frontend/tokens.css`·모든 운영 UI에 적용했고, 768px 이하에서는 서비스·백업 표를
       레이블형 행으로 전환했다. 이 변경은 #171의 deployment authority나 live E2E gate를 변경하지 않는다.
+
+### #177: 4분할 후 geo·concierge·map·pinvi 공통 백업 결선
+
+T-053~T-057(v5 rebuild에서 퇴역)이 남긴 공백을 새 독립 primitive로 다시 채운다 — 이 절
+맨 위 안내("pair/cache workflow와 독립된 새 Compose primitive·계약으로 별도 태스크를
+만든다")를 그대로 따른다.
+
+- [x] `standalone_backup.py` 신설. cache-target/compatible-pair 기계와 완전히 무관하다.
+      role→(container, database) 매핑만 코드에 두고, 포트·admin role 이름은 하드코딩하지
+      않고 살아있는 컨테이너(`docker inspect`)에서 읽는다 — `.env`가 기본 포트를 덮어썼거나
+      role 이름이 프로젝트마다 달라도(map은 `KOR_TRAVEL_MAP_POSTGRES_USER`에 기본값이 없다)
+      항상 실제 기동값과 일치한다.
+- [x] 연결은 `docker exec --user postgres` + unix socket(로컬 소켓은 `trust`로 남아 있다)만
+      쓴다 — 어떤 postgres 비밀번호도 읽거나 다루지 않는다. `--port`는 host network + 프로젝트별
+      포트라 필수로 명시한다(`docs/docker-management.md` 실측과 issue #177 경고 그대로).
+- [x] 산출물은 `docs/docker-management.md` "산출물 3종 세트" 관례를 그대로 따른다 —
+      `<role>-<ts>.dump` · `<role>-<ts>.dump.sha256`(`sha256sum -c` 그대로 먹는 형태) ·
+      `<role>-<ts>.manifest`(`created_at_unix`·`duration_sec`·`instance`·`db_size_bytes`·
+      `toc_entry_count`(`pg_restore --list` TOC 항목 수 — 문서의 수동 검증과 같은 sanity
+      check)·`alembic_head`(best-effort, `public`→`app` schema 순서로 시도)).
+- [x] `ktdctl db-backup {create,list,gc}` 세 subcommand와 읽기 전용 `GET /api/v1/backups`
+      (create/gc mutation은 API에 노출하지 않음 — 이 저장소의 표준 CLI-전용 mutation
+      경계. **복원은 CLI에도 아직 없다** — 별도 범위). Dashboard "백업 이력" 패널이
+      이미 이 route를 호출하고 있었는데 v5 rebuild가 backend route를 지워 조용히
+      404였던 것을 이번에 다시 살렸다(role 목록도 6개로 확장, 죽은 `schema_revision`
+      필드 제거).
+- [x] `scripts/run-standalone-backup.sh <role> <keep>` cron wrapper(crontab 예시 상단에
+      기록). geo는 33GB급이라 `--keep`을 낮게(2) 둘 것을 명시.
+- [x] 적대적 리뷰(4 dimension: security/correctness/test-coverage/compose-and-docs, 각
+      독립 검증)에서 확인된 실공백 반영: pg_dump 성공 뒤 TOC count·docker cp 단계
+      실패 시 컨테이너 임시 dump가 안 지워지던 것을 try/finally로 감쌌고, 같은 role
+      동시 실행을 막는 `flock` 기반 락(`~/backups/<role>/.backup.lock`)을 추가했으며,
+      `_ROLE_CONFIG`가 concierge/map/pinvi의 컨테이너 이름 env override
+      (`KOR_TRAVEL_*_POSTGRES_CONTAINER`)를 무시하던 것을 존중하도록 고쳤다(geo는
+      compose 자체가 override 변수를 안 둬서 리터럴 그대로). "복원도 CLI 전용"이라는
+      오기(routes.py 문서화 주석·본 문서)도 정정했다. security dimension은 confirmed
+      실공백 0건.
+- [x] backend 전체 404 passed(standalone_backup 30 + API 5 + CLI 8 신규/조정 =
+      38 관련 테스트), ruff/frontend type-check/lint clean.
+- [ ] n150에 cron/systemd timer 실제 설치는 하지 않았다 — 운용 성격(#148과 같은 결정)에
+      달려 있어 사용자 확인 후 진행한다.
+- [ ] geo 첫 CLI 백업 실행(33GB, 시간·디스크 확인 필요)은 하지 않았다. 문서의 실측
+      (879초, 4.4GB)을 참고해 `--timeout`을 넉넉히 잡을 것.
+- [ ] 복원 CLI(`ktdctl db-backup restore`)와 외부 오프박스 사본 자동화는 범위 밖 —
+      각각 별도 태스크로 남긴다.
+
+### #178: geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거
+
+- [x] `docker-compose.yml`의 `kor-travel-geo-postgres`를 형제 셋(map/concierge/pinvi)과
+      같은 `POSTGRES_PASSWORD_FILE` + top-level `secrets:` 항목으로 전환했다(`docker
+      inspect`에 평문이 남지 않는다).
+- [x] `kor-travel-geo-dagster-db-init`의 `PGPASSWORD: ${...:-addr}` 평문 env도 같은 secret
+      file 패턴(`PGPASSWORD="$(cat /run/secrets/...)"`)으로 전환했다.
+- [x] geo-api/geo-dagster/geo-dagster-daemon의 `KTG_PG_DSN`/`KTG_DAGSTER_PG_URL` 기본값
+      `postgresql://addr:addr@...`을 모두 제거하고 `:?...must be explicitly set` fail-close로
+      바꿨다(5곳). `.env.example`에 `KOR_TRAVEL_GEO_DAGSTER_PG_URL` 예시를 추가했다(기존에
+      누락돼 있었다).
+- [x] backend 전체 388 passed, ruff clean, `docker-compose.yml` YAML 유효성 확인.
+- [ ] **n150 실제 비밀번호 회전은 하지 않았다.** 기존 PGDATA에는 `POSTGRES_PASSWORD*`가
+      initdb 뒤로는 안 먹으므로 compose 전환만으로는 실제 비밀번호가 안 바뀐다 — 별도
+      `ALTER ROLE addr PASSWORD ...` 뒤 geo에 붙는 모든 소비자(geo-api, geo-dagster,
+      geo-dagster-db-init, `ensure-kor-travel-geo-db.sh`)의 DSN을 같은 트랜잭션으로
+      갱신해야 한다. 사용자 확인 후 진행한다.
+
+### #179: prod `.env` 파생 파일 권한 600 이탈 재발 방지
+
+- [x] `scripts/check-env-permissions.sh` 신설. `.env`만 이름을 지목하지 않고 `.env*` 전체를
+      훑되 tracked 예시(`.env.example`)만 명시 제외한다. `--fix`로 위반분을 600으로 내릴 수
+      있다(dry-run 기본).
+- [x] `docs/deploy-runbook.local.md`(gitignored 운영 노트)에 "`.env` 수작업 백업 직후
+      `chmod 600`" 관례와 점검 스크립트 사용법을 추가했다.
+- [ ] n150의 기존 위반 7개(`.env.bak.*`, `.env.backup-*`, `.env.kor-travel-geo-ui.local*`)
+      실제 chmod/정리는 하지 않았다 — 삭제 대상(`.env.backup-pinvi-deploy-836a18f-` 등
+      식별 불가 파일) 포함이라 사용자 확인 후 진행한다.

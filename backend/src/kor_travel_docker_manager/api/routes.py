@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from kor_travel_docker_manager.services.auth_service import require_admin_session
@@ -16,6 +16,11 @@ from kor_travel_docker_manager.services.docker_service import (
 )
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.standalone_backup import (
+    BACKUP_ROLES,
+    StandaloneBackupError,
+    list_standalone_backups,
+)
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
 
@@ -87,6 +92,26 @@ def _post_mutation_contract_detail(
 def get_targets():
     """Retrieve application-oriented infrastructure targets for UI and CLI parity."""
     return list_targets()
+
+
+@router.get("/backups")
+def get_backups(role: str | None = Query(default=None)):
+    """Read-only standalone DB backup listing (issue #177). `create`/`gc` stay
+    CLI-only (`ktdctl db-backup ...`) and are not exposed here. Restore isn't
+    implemented anywhere yet (CLI or API) — this route only lists what exists."""
+    roles = BACKUP_ROLES if role is None else (role,)
+    if role is not None and role not in BACKUP_ROLES:
+        raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
+    backups: list[dict[str, Any]] = []
+    for backup_role in roles:
+        try:
+            backups.extend(
+                manifest.to_json() for manifest in list_standalone_backups(backup_role)
+            )
+        except StandaloneBackupError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    backups.sort(key=lambda item: item["created_at_unix"])
+    return {"backups": backups}
 
 
 @router.post("/targets/{target}/ensure")
