@@ -1891,3 +1891,67 @@ hex, 임의 shadow/radius, `transition-all`, 의미 없는 gradient/glass, 고�
 - 상태 확인과 조치가 화면 전체에서 동일한 색상·타이포그래피·focus·disabled·loading 규칙을 따른다.
 - 320px, 375px, 414px, 768px에서 운영 원장이 가로 스크롤 없이 읽히도록 구현·검증 대상이 명확해진다.
 - #171의 PostgreSQL bootstrap, exact release pin, n150 live E2E/merge gate에는 영향을 주지 않는다.
+
+## ADR-37: PostgreSQL은 프로젝트마다 전용 instance를 쓰고 DB 포트는 대역의 `x00`이다
+
+- 상태: accepted
+- 날짜: 2026-08-17
+- 결정자: 사용자, Claude
+- 관련: #176, ADR-35, ADR-5, ADR-16, Map ADR-090, `docs/ports.md`, `AGENTS.md` 룰 4·9
+
+### 컨텍스트
+
+ADR-35는 Map만 전용 instance로 뺐다. 그 근거는 "Map ADR-090의 principal 경계를 통합
+instance의 recovery가 무음으로 되돌린다"였다. 2026-08-17 실측에서 그 근거가 Map에만
+해당하지 않는다는 것이 드러났다.
+
+**role·ACL·확장은 database가 아니라 cluster 전역이다.** Map을 전용 instance로 옮긴 뒤에도
+통합 instance에는 `ktm_` role 7개가 남아 있었고, Map migrator credential로 33GB
+`kor_travel_geo`에 실제로 접속됐다(`CONNECTED as ktm_feature_migrator`). database만
+나누는 방식으로는 principal이 격리되지 않는다.
+
+`scripts/ensure-kor-travel-geo-db.sh`가 그 구조를 고착시킨다 — 한 cluster 안에서
+`pinvi` role과 `pinvi`·`kor_travel_concierge`·`krtour_map` database를 만들고 owner와
+광범위한 grant를 재적용한다. 즉 통합 instance는 "여러 프로젝트가 database만 나눠 쓰는"
+형태가 아니라 **모든 프로젝트가 서로의 principal namespace를 공유하는** 형태였다.
+
+포트도 함께 정리해야 했다. host network에서는 두 PostgreSQL이 `5432`를 동시에 bind할 수
+없고, `ports:`는 무시되므로 `-p`가 곧 호스트 포트다. 즉 instance를 늘리는 순간
+"PostgreSQL은 표준 5432" 규칙은 유지가 불가능하다.
+
+### 결정
+
+**PostgreSQL instance는 프로젝트마다 하나씩 둔다.** 통합 instance는 폐지한다.
+
+**DB 포트는 각 target 대역의 `x00`이다.** `docs/ports.md`의 `12000 + dependency index *
+100 + offset` 규칙에서 DB의 offset을 `0`으로 고정한다.
+
+| target | instance | 포트 |
+|---|---|---|
+| `geo` | `kor-travel-geo-postgres` | `12500` |
+| `conc` | `kor-travel-concierge-postgres` | `12600` |
+| `map` | `kor-travel-map-postgres` | `12700` |
+| `pinvi` | `pinvi-postgres` | `12800` |
+
+`AGENTS.md` 룰 9의 "PostgreSQL 접속 포트는 표준 `5432`를 사용한다"와 룰 4의 "통합
+PostgreSQL(`5432`)"은 이 ADR로 대체한다. `db` target의 `12000-12099` 대역은 더 이상
+"비워 두는" 대역이 아니라 **폐지된 통합 instance의 자리**다.
+
+모든 instance는 `-c listen_addresses=127.0.0.1`로 loopback만 듣는다. host network에서
+`ports:`는 무시되므로 그것이 유일한 경계다. 크기 관련 설정(`shared_buffers` 등)은 각
+프로젝트 데이터에 맞추되 **planner 성질**(`random_page_cost`)과 관측
+설정(`pg_stat_statements.track/max`)은 통합 instance 값을 그대로 물려받는다 — 같은 쿼리가
+instance마다 다른 계획을 타면 안 된다.
+
+### 결과
+
+- 한 프로젝트의 DB credential이 다른 프로젝트의 데이터에 닿지 못한다. 이것이 ADR-35가
+  Map에 대해 얻으려던 것이고, 이제 네 프로젝트 모두에 적용된다.
+- `ensure-kor-travel-geo-db.sh`는 **geo 전용**이 된다. 다른 프로젝트의 role/database를
+  만드는 부분은 제거한다 — 그대로 두면 복구 실행이 이 ADR을 되돌린다.
+- `config/docker-targets.yml`의 `expected_ports`·`connection`·`containers`가 instance
+  4개를 반영해야 한다. 그 값은 운영자 대시보드에 그대로 표시된다.
+- 배포 가드(`c6c_deployment.py`)의 Map 포트 상수는 compose 기본값과 같아야 한다.
+  어긋나면 정상 배포가 `Map database DSN identity is invalid`로 막히고, 오류 문자열에
+  포트가 없어 원인이 드러나지 않는다.
+- 백업 주체가 instance 4개로 늘었다. 단일 instance 전제의 백업/복구 절차는 갱신이 필요하다.

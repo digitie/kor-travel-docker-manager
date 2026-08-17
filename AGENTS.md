@@ -148,12 +148,12 @@
 1. **`main` 직접 푸시 금지**: 반드시 feature 브랜치 + PR 제출 방식을 사용한다.
 2. **비즈니스 로직과 인프라 관리의 혼선 금지**: 본 서비스는 PostgreSQL, RustFS의 컨테이너/상태 관리만을 목적으로 한다. PinVi의 여행 예약, 기상 통계 등 상위 도메인 비즈니스 코드를 이곳에 섞지 않는다.
 3. **'use client' 누락 금지**: 프론트엔드에서 React 훅 또는 DOM 조작을 수행하는 Next.js 컴포넌트에는 첫 줄에 반드시 `'use client'` 지시어를 추가한다.
-4. **포트 충돌 유발 금지**: 통합 PostgreSQL(`5432`), RustFS(`12101`, `12105`), Grafana(`12205`), cAdvisor(`12301`), Prometheus(`12401`), `kor-travel-geo`(`12501`, `12505`), `kor-travel-concierge`(`12601`, `12602`, `12605`), `kor-travel-map`(`12701`, `12702`, `12705`), PinVi(`12801`, `12805`), Manager(`12901`, `12905`) 포트는 Kor Travel/PinVi 구성 프로그램이 공용으로 접근할 수 있어야 하므로 임의로 변경하지 않는다.
+4. **포트 충돌 유발 금지**: PostgreSQL(`12500`/`12600`/`12700`/`12800` — 프로젝트별 전용 instance, ADR-37), RustFS(`12101`, `12105`), Grafana(`12205`), cAdvisor(`12301`), Prometheus(`12401`), `kor-travel-geo`(`12501`, `12505`), `kor-travel-concierge`(`12601`, `12602`, `12605`), `kor-travel-map`(`12701`, `12702`, `12705`), PinVi(`12801`, `12805`), Manager(`12901`, `12905`) 포트는 Kor Travel/PinVi 구성 프로그램이 공용으로 접근할 수 있어야 하므로 임의로 변경하지 않는다.
 5. **API 키 및 비밀번호 하드코딩 금지**: `.env` 및 `.env.local` 파일을 사용하고, git에 커밋하지 않는다.
 6. **`.codegraph/` 커밋 금지**: 로컬 인덱싱 파일은 개별 에이전트의 로컬 빌드 결과물이므로 git 추적에서 제외한다.
 7. **공용 인프라 설정 분산 금지**: PostgreSQL/RustFS의 Docker 생명주기, 포트, credential, bucket 기본값은 이 저장소에서 관리한다. 하위 프로젝트 저장소에 별도 정지/재시작 스크립트를 다시 만들지 않는다.
 8. **Docker target 임시 하드코딩 금지**: 새 target, alias, 초기화/복구 step은 `config/docker-targets.yml`에 추가하고 API/CLI/문서가 같은 기준을 읽도록 유지한다.
-9. **포트 정책 우회 금지**: 새 로컬 서비스 포트는 `docs/ports.md`의 `12000 + dependency index * 100 + offset` 규칙을 따른다. PostgreSQL 접속 포트는 표준 `5432`를 사용한다.
+9. **포트 정책 우회 금지**: 새 로컬 서비스 포트는 `docs/ports.md`의 `12000 + dependency index * 100 + offset` 규칙을 따른다. **PostgreSQL은 프로젝트마다 전용 instance를 쓰고 포트는 각 대역의 `x00`이다(ADR-37).** 표준 `5432`를 쓰던 통합 instance는 2026-08-17에 폐지했다.
 10. **Windows에서 개발 명령 실행 금지**: `git`, CodeGraph, 패키지 설치, Docker, 서버 실행, 테스트, 빌드, 파일 검색 등 모든 개발/검증 명령을 Windows PowerShell/CMD에서 실행하지 않는다.
 11. **Linux 밖에서 git 실행 금지**: 버전 관리 작업은 WSL을 포함한 Linux shell에서만 수행한다.
 12. **Playwright E2E 실행 위치 혼선 금지**: Playwright E2E는 우선 n150 Linux 운영 환경에서 실행한다. 불가능할 때만 Windows 호스트 실행을 예외로 허용하고, 예외 사유를 작업 기록에 남긴다.
