@@ -21,7 +21,7 @@ services:
       KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK: ${KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK:-1}
       KOR_TRAVEL_GEO_SOURCE_DIR: ${KOR_TRAVEL_GEO_SOURCE_DIR:-/data/juso}
     ports:
-    - ${KOR_TRAVEL_GEO_DB_PORT:-5432}:5432
+    - 127.0.0.1:${KOR_TRAVEL_GEO_DB_PORT:-12500}:${KOR_TRAVEL_GEO_DB_PORT:-12500}
     volumes:
     - ${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}:/var/lib/postgresql/data
     - ${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}:/data/juso:ro
@@ -31,6 +31,10 @@ services:
     shm_size: 512mb
     command:
     - postgres
+    # 통합 인스턴스에서 Geo 전용으로 좁힌 뒤 대역 규칙에 맞춘 포트다(ADR-047: 125xx=geo).
+    # `network_mode: host`에서는 `ports:`가 무시되므로 **이 `-p`가 곧 호스트 포트**다.
+    - -p
+    - ${KOR_TRAVEL_GEO_DB_PORT:-12500}
     - -c
     - shared_preload_libraries=pg_stat_statements
     - -c
@@ -54,10 +58,91 @@ services:
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -U ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr} -d ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
+      # 포트를 명시하지 않으면 기본 5432를 보고 **영원히 unhealthy**가 된다.
+      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_GEO_DB_PORT:-12500} -U ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr} -d ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
       interval: 10s
       timeout: 5s
       retries: 5
+  # ADR-047 대역 규칙: 126xx = concierge. 통합 인스턴스에서 분리한 전용 PostGIS다.
+  # 분리 근거는 map(ADR-35)과 같다 — role/ACL은 DB가 아니라 **cluster 전역**이라
+  # DB만 나눠서는 principal이 격리되지 않는다.
+  kor-travel-concierge-postgres:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_CONCIERGE_POSTGRES_CONTAINER:-kor-travel-concierge-postgres}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    environment:
+      POSTGRES_USER: ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr}
+      POSTGRES_PASSWORD: ${KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD:?KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD must be explicitly set}
+      # 앱 DB와 다른 중립 이름으로 init한다 — 같은 이름으로 init하면 initdb가 심은
+      # 확장과 dump의 확장 배치가 복원에서 충돌한다(map 커토버 실측).
+      POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
+    command:
+    - postgres
+    - -c
+    - listen_addresses=127.0.0.1
+    - -p
+    - ${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}
+    - -c
+    - shared_preload_libraries=pg_stat_statements
+    - -c
+    - shared_buffers=${KOR_TRAVEL_CONCIERGE_POSTGRES_SHARED_BUFFERS:-128MB}
+    - -c
+    - work_mem=${KOR_TRAVEL_CONCIERGE_POSTGRES_WORK_MEM:-16MB}
+    - -c
+    - maintenance_work_mem=${KOR_TRAVEL_CONCIERGE_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+    - -c
+    - effective_cache_size=${KOR_TRAVEL_CONCIERGE_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+    volumes:
+    - ${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}:/var/lib/postgresql/data
+    ports:
+    - 127.0.0.1:${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}:${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600} -U ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr} -d ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ADR-047 대역 규칙: 128xx = PinVi.
+  pinvi-postgres:
+    image: postgis/postgis:16-3.5
+    container_name: ${PINVI_POSTGRES_CONTAINER:-pinvi-postgres}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    environment:
+      POSTGRES_USER: ${PINVI_POSTGRES_USER:-pinvi}
+      POSTGRES_PASSWORD: ${PINVI_POSTGRES_PASSWORD:?PINVI_POSTGRES_PASSWORD must be explicitly set}
+      POSTGRES_DB: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
+    command:
+    - postgres
+    - -c
+    - listen_addresses=127.0.0.1
+    - -p
+    - ${PINVI_DB_PORT:-12800}
+    - -c
+    - shared_preload_libraries=pg_stat_statements
+    - -c
+    - shared_buffers=${PINVI_POSTGRES_SHARED_BUFFERS:-128MB}
+    - -c
+    - work_mem=${PINVI_POSTGRES_WORK_MEM:-16MB}
+    - -c
+    - maintenance_work_mem=${PINVI_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+    - -c
+    - effective_cache_size=${PINVI_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+    volumes:
+    - ${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}:/var/lib/postgresql/data
+    ports:
+    - 127.0.0.1:${PINVI_DB_PORT:-12800}:${PINVI_DB_PORT:-12800}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -h 127.0.0.1 -p ${PINVI_DB_PORT:-12800} -U ${PINVI_POSTGRES_USER:-pinvi} -d ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -123,7 +208,7 @@ services:
     environment:
       PORT: ${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
       KTG_API_HOST: 0.0.0.0
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
       KTG_GEOIP_GATE_MODE: ${KOR_TRAVEL_GEO_GEOIP_GATE_MODE:-off}
       KTG_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES: ${KOR_TRAVEL_GEO_OPS_TABLE_STATS_CAPTURE_INTERVAL_MINUTES:-0}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
@@ -222,12 +307,12 @@ services:
       required: false
       format: raw
     depends_on:
-      kor-travel-geo-postgres:
+      kor-travel-concierge-postgres:
         condition: service_healthy
       rustfs:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:5432/kor_travel_concierge}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:12600/kor_travel_concierge}
       NEXT_PUBLIC_API_BASE_URL: http://localhost:${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}
       CORS_ALLOW_ORIGINS: '["http://localhost:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}","http://127.0.0.1:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}"]'
       RUSTFS_ENABLED: 'true'
@@ -283,7 +368,7 @@ services:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:5432/kor_travel_concierge}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:12600/kor_travel_concierge}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
@@ -320,7 +405,7 @@ services:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:5432/kor_travel_concierge}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:12600/kor_travel_concierge}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
@@ -361,7 +446,8 @@ services:
     ports:
     - ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}
   # #171 / ADR-35 — Map state principal의 ownership/ACL은 통합 PostgreSQL과
-  # 공유할 수 없다. host network에서 `12703` loopback만 listen하는 전용 instance다.
+  # 공유할 수 없다. host network에서 `12700` loopback만 listen하는 전용 instance다.
+  # (ADR-047 대역 규칙에 맞춰 2026-08-17에 12703 -> 12700으로 옮겼다: 127xx=map.)
   kor-travel-map-postgres:
     image: postgis/postgis:16-3.5
     container_name: ${KOR_TRAVEL_MAP_POSTGRES_CONTAINER:-kor-travel-map-postgres}
@@ -378,7 +464,7 @@ services:
     - -c
     - listen_addresses=127.0.0.1
     - -p
-    - ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}
+    - ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700}
     # 아래 값은 2026-08-15 커토버에서 **실측한 원본 인스턴스 설정**이다. 빠뜨리면
     # 조용히 달라진다 — 확장은 로드되지 않은 채 CREATE만 성공하고, 튜닝값은 기본값으로
     # 떨어져 같은 쿼리가 다른 계획을 탄다.
@@ -404,11 +490,11 @@ services:
     - source: kor-travel-map-postgres-password
       target: kor-travel-map-postgres-password
     ports:
-    - 127.0.0.1:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703}
+    - 127.0.0.1:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700}:${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700}
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12703} -U ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set} -d ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
+      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700} -U ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set} -d ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
       interval: 10s
       timeout: 5s
       retries: 20
@@ -769,7 +855,7 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
-      kor-travel-geo-postgres:
+      pinvi-postgres:
         condition: service_healthy
       rustfs:
         condition: service_healthy
@@ -791,7 +877,7 @@ services:
     environment:
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
       PINVI_API_WORKERS: ${PINVI_API_WORKERS:-1}
-      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
       PINVI_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -830,14 +916,14 @@ services:
     restart: "no"
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
-      kor-travel-geo-postgres:
+      pinvi-postgres:
         condition: service_healthy
     command:
     - pinvi-admin-bootstrap
     environment:
       # one-shot도 API와 같은 production Settings를 import하므로 필요한 Map 검증값만 둔다.
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
-      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/pinvi}
       PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
       PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}
       PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}
@@ -880,7 +966,7 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
-      kor-travel-geo-postgres:
+      pinvi-postgres:
         condition: service_healthy
       pinvi-api:
         condition: service_healthy
@@ -896,7 +982,7 @@ services:
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       PINVI_DAGSTER_PORT: ${PINVI_DAGSTER_PORT:-12802}
-      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:5432/pinvi}
+      PINVI_DATABASE_URL: ${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/pinvi}
     ports:
     - ${PINVI_DAGSTER_PORT:-12802}:${PINVI_DAGSTER_PORT:-12802}
     healthcheck:
@@ -988,7 +1074,7 @@ services:
     command:
     - sh
     - -c
-    - createdb "$${KOR_TRAVEL_GEO_DAGSTER_DB}" 2>/dev/null || true
+    - createdb -h 127.0.0.1 -p "$${KOR_TRAVEL_GEO_DB_PORT:-12500}" "$${KOR_TRAVEL_GEO_DAGSTER_DB}" 2>/dev/null || true
   kor-travel-geo-dagster:
     image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
     build:
@@ -1006,8 +1092,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_DAGSTER_PORT: ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:5432/kor_travel_geo_dagster}
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:12500/kor_travel_geo_dagster}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
@@ -1061,8 +1147,8 @@ services:
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:5432/kor_travel_geo_dagster}
-      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:5432/kor_travel_geo}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:-postgresql://addr:addr@127.0.0.1:12500/kor_travel_geo_dagster}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:-postgresql+psycopg://addr:addr@127.0.0.1:12500/kor_travel_geo}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
