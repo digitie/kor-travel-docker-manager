@@ -57,7 +57,7 @@ poetry run ktdctl geo --build
 
 | 대상 | Host 포트 | 접속 정보 |
 |------|-----------|-----------|
-| 통합 PostgreSQL / PostGIS | `5432` | `postgresql://localhost:5432` 안의 `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database |
+| PostgreSQL / PostGIS (프로젝트별 전용 4개, ADR-37) | `12500` · `12600` · `12700` · `12800` | `kor-travel-geo-postgres`(`kor_travel_geo`) · `kor-travel-concierge-postgres`(`kor_travel_concierge`) · `kor-travel-map-postgres`(`kor_travel_map`) · `pinvi-postgres`(`pinvi`). 넷 다 loopback 전용이고 `5432`는 쓰지 않는다 |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
 | RustFS console | `12105` | `http://127.0.0.1:12105/rustfs/console/` |
 | Grafana Web UI | `12205` | `http://127.0.0.1:12205` |

@@ -58,15 +58,17 @@ DOCKER_HOST=npipe:////./pipe/docker_engine
 # Linux/WSL 사용 시:
 # DOCKER_HOST=unix:///var/run/docker.sock
 
-# 통합 PostgreSQL / PostGIS 접속 정보
-KOR_TRAVEL_GEO_DB_PORT=5432
+# Kor Travel Geo 전용 PostgreSQL / PostGIS 접속 정보 (ADR-37)
+# ⚠️ 5432로 두지 마라 — compose의 geo DSN 기본값이 `127.0.0.1:12500`이라
+#    포트만 바꾸면 geo API가 DB에 못 붙는다. 나머지 셋은 12600/12700/12800이다.
+KOR_TRAVEL_GEO_DB_PORT=12500
 KOR_TRAVEL_GEO_POSTGRES_USER=addr
 KOR_TRAVEL_GEO_POSTGRES_PASSWORD=addr
 KOR_TRAVEL_GEO_POSTGRES_DB=kor_travel_geo
 KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=1
 ```
 
-RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`을 사용하며, `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 표준 `5432`를 사용한다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
+RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`을 사용하며, `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다 — `12500`/`12600`/`12700`/`12800`(ADR-37). 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
 Poetry를 사용할 경우:
@@ -98,7 +100,7 @@ poetry run ktdctl srv --build
 > [!NOTE]
 > dev 기본 Docker 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)다. 포트 NAT가 없으므로 각 컨테이너가 호스트 정규 포트에 직접 바인딩하고(컨테이너 내부 포트 = 호스트 포트), 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다. host networking을 지원하지 않는 Docker 엔진에서는 `KTDM_DOCKER_NETWORK_MODE=bridge`로 바꾼 뒤 서비스 간 hostname을 컨테이너명으로 복원해야 한다.
 
-공식 target 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이다. `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이다. 예를 들어 `ktdctl map --build`는 통합 DB, RustFS, 관측 스택, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map` API/Dagster/Web UI 실행까지 수행한다.
+공식 target 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이다. `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이다. 예를 들어 `ktdctl map --build`는 geo·concierge·map DB, RustFS, 관측 스택, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map` API/Dagster/Web UI 실행까지 수행한다.
 
 추가 target 이름으로 `postgresql`, `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `kor-travel-map`, `python-krtour-map`, `kor-travel-concierge`, `srv`, `pinvi`, `main`도 사용할 수 있다.
 

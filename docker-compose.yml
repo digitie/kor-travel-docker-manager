@@ -14,6 +14,17 @@ services:
       POSTGRES_USER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
       POSTGRES_PASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       POSTGRES_DB: ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
       # PINVI_*/KOR_TRAVEL_CONCIERGE_* 변수는 2026-08-17에 뺐다. init script를 geo
       # 전용으로 좁힌 뒤로 읽는 곳이 없고, 남겨두면 이 인스턴스가 아직 남의 DB를
       # 만든다고 오해하게 한다. 두 프로젝트는 각자 인스턴스(12600/12800)를 쓴다.
@@ -83,6 +94,17 @@ services:
       # 앱 DB와 다른 중립 이름으로 init한다 — 같은 이름으로 init하면 initdb가 심은
       # 확장과 dump의 확장 배치가 복원에서 충돌한다(map 커토버 실측).
       POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     command:
     - postgres
     - -c
@@ -133,6 +155,17 @@ services:
       POSTGRES_USER: ${PINVI_POSTGRES_USER:-pinvi}
       POSTGRES_PASSWORD_FILE: /run/secrets/pinvi-postgres-password
       POSTGRES_DB: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     command:
     - postgres
     - -c
@@ -189,13 +222,27 @@ services:
       PGHOST: 127.0.0.1
       PGPORT: ${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}
       PGUSER: ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr}
-      PGPASSWORD: ${KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD:?KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD must be explicitly set}
       PGDATABASE: ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
       KOR_TRAVEL_CONCIERGE_POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_DB:-kor_travel_concierge}
+    secrets:
+    - kor-travel-concierge-postgres-password
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
+    # 부족을 전부 삼키고 exit 0으로 끝나서, 이 one-shot이 막으려던 바로 그 상황에서
+    # `service_completed_successfully` 게이트가 통과한다. 존재 확인만 조용히 하고
+    # 진짜 오류는 전파한다.
+    # 비밀번호는 `PGPASSWORD` 평문(=`docker inspect`에 그대로 남는다) 대신 secret
+    # file로 받는다 — `restart: "no"` 컨테이너는 exit 뒤에도 남아 계속 조회된다.
     command:
     - sh
-    - -c
-    - createdb "$${KOR_TRAVEL_CONCIERGE_POSTGRES_DB}" 2>/dev/null || true
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-concierge-postgres-password)"
+      export PGPASSWORD
+      if psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_CONCIERGE_POSTGRES_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_CONCIERGE_POSTGRES_DB already exists"
+      else
+        createdb "$$KOR_TRAVEL_CONCIERGE_POSTGRES_DB"
+      fi
 
   pinvi-db-init:
     image: postgis/postgis:16-3.5
@@ -209,13 +256,27 @@ services:
       PGHOST: 127.0.0.1
       PGPORT: ${PINVI_DB_PORT:-12800}
       PGUSER: ${PINVI_POSTGRES_USER:-pinvi}
-      PGPASSWORD: ${PINVI_POSTGRES_PASSWORD:?PINVI_POSTGRES_PASSWORD must be explicitly set}
       PGDATABASE: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
       PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
+    secrets:
+    - pinvi-postgres-password
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
+    # 부족을 전부 삼키고 exit 0으로 끝나서, 이 one-shot이 막으려던 바로 그 상황에서
+    # `service_completed_successfully` 게이트가 통과한다. 존재 확인만 조용히 하고
+    # 진짜 오류는 전파한다.
+    # 비밀번호는 `PGPASSWORD` 평문(=`docker inspect`에 그대로 남는다) 대신 secret
+    # file로 받는다 — `restart: "no"` 컨테이너는 exit 뒤에도 남아 계속 조회된다.
     command:
     - sh
-    - -c
-    - createdb "$${PINVI_POSTGRES_DB}" 2>/dev/null || true
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"
+      export PGPASSWORD
+      if psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'" | grep -q 1; then
+        echo "database $$PINVI_POSTGRES_DB already exists"
+      else
+        createdb "$$PINVI_POSTGRES_DB"
+      fi
 
   rustfs:
     image: rustfs/rustfs:latest
@@ -535,6 +596,17 @@ services:
       # bootstrap superuser password는 long-lived Config.Env가 아니라 Docker secret
       # file로만 전달한다. role bootstrap one-shot만 DSN에 credential을 보관한다.
       POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-map-postgres-password
+      # loopback을 scram으로 잠근다. initdb를 `--auth-host` 없이 부르면 기본이
+      # `trust`이고, 그때 생기는 `host all all 127.0.0.1/32 trust`가 entrypoint가
+      # 뒤에 붙이는 `host all all all scram-sha-256`보다 **먼저 매칭된다**
+      # (first-match-wins). host network를 공유하는 다른 컨테이너에서 비밀번호
+      # 없이 이 인스턴스의 superuser로 붙을 수 있다는 뜻이다 — 2026-08-17에 prod
+      # 네 인스턴스 전부에서 실증했다. instance를 나눈 의미가 사라진다.
+      # ⚠️ 이 값은 **initdb 때만** 쓰인다. 이미 만들어진 PGDATA는 pg_hba.conf를
+      #    직접 고쳐야 한다.
+      # `--auth-local`은 건드리지 않는다 — 유닉스 소켓은 컨테이너 파일시스템
+      # 안이라 밖에서 못 닿고, entrypoint의 initdb.d 스크립트가 그 경로로 붙는다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
     command:
     - postgres
     - -c
@@ -1163,10 +1235,19 @@ services:
       PGUSER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
       PGPASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       KOR_TRAVEL_GEO_DAGSTER_DB: ${KOR_TRAVEL_GEO_DAGSTER_DB:-kor_travel_geo_dagster}
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
+    # 부족을 전부 삼키고 exit 0으로 끝나서, 이 one-shot이 막으려던 바로 그 상황에서
+    # `service_completed_successfully` 게이트가 통과한다. 존재 확인만 조용히 하고
+    # 진짜 오류는 전파한다.
     command:
     - sh
-    - -c
-    - createdb "$${KOR_TRAVEL_GEO_DAGSTER_DB}" 2>/dev/null || true
+    - -ec
+    - |
+      if psql -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_GEO_DAGSTER_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_GEO_DAGSTER_DB already exists"
+      else
+        createdb "$$KOR_TRAVEL_GEO_DAGSTER_DB"
+      fi
   kor-travel-geo-dagster:
     image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
     build:

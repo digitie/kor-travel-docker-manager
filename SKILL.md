@@ -12,7 +12,7 @@
 - **FastAPI 백엔드**: 로컬 Docker 데몬과 소켓 또는 API로 연동해 컨테이너의 상태(`running`, `exited` 등)를 읽고 Start/Stop/Restart 제어 명령을 실행한다.
 - **Python CLI**: `ktdctl db|storage|gra|cadv|prom|geo|conc|map|pinvi|srv --build`로 개발환경 의존 Docker를 바로 실행한다.
 - **Next.js 프론트엔드**: 관리자 대시보드 화면을 렌더링하며, 미려한 UI(dark mode, HSL tailored color palette, glassmorphism)를 제공해 운영의 직관성을 돕는다.
-- **포트 정책**: 로컬 host 포트는 `docs/ports.md`의 `12000` 시작, target별 `+100`, API `+1`, Web UI `+5` 규칙을 따른다. PostgreSQL은 표준 `5432`, Grafana/cAdvisor/Prometheus는 `12205`/`12301`/`12401`, `kor-travel-geo`는 `12501`/`12505`, `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`, manager 자체는 `12900-12999`를 사용한다.
+- **포트 정책**: 로컬 host 포트는 `docs/ports.md`의 `12000` 시작, target별 `+100`, API `+1`, Web UI `+5` 규칙을 따른다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다(`12500`/`12600`/`12700`/`12800`, ADR-37 — 표준 `5432`는 폐지). Grafana/cAdvisor/Prometheus는 `12205`/`12301`/`12401`, `kor-travel-geo`는 `12501`/`12505`, `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`, manager 자체는 `12900-12999`를 사용한다.
 
 ---
 

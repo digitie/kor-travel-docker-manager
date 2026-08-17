@@ -71,7 +71,7 @@
 | GitHub 저장소 이름 | `kor-travel-docker-manager` |
 | Backend 기술 스택 | Python 3.11+, FastAPI, Docker SDK, Pytest, Ruff, Mypy |
 | Frontend 기술 스택 | Next.js 14+ (App Router), TypeScript, Tailwind CSS, Shadcn UI, TanStack Query |
-| DB 서비스 정보 | 통합 PostgreSQL / PostGIS (`kor-travel-geo-postgres`: 5432, DBs: `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map`) |
+| DB 서비스 정보 | 프로젝트별 전용 PostgreSQL / PostGIS 4개 — `kor-travel-geo-postgres`:**12500**(`kor_travel_geo`, `kor_travel_geo_dagster`) · `kor-travel-concierge-postgres`:**12600**(`kor_travel_concierge`) · `kor-travel-map-postgres`:**12700**(`kor_travel_map`, `kor_travel_map_dagster`) · `pinvi-postgres`:**12800**(`pinvi`). 넷 다 loopback 전용. 통합 instance(5432)는 2026-08-17 폐지(ADR-37) — **`5432`를 듣는 것은 없다**. |
 | 파일 스토리지 정보 | RustFS (기본 host 포트: 12101 / 콘솔 host 포트: 12105) |
 | 관측 서비스 정보 | Grafana `kor-travel-grafana`: 12205 / cAdvisor `kor-travel-cadvisor`: 12301 / Prometheus `kor-travel-prometheus`: 12401 |
 | 지오코더 서비스 정보 | `kor-travel-geo` API `kor-travel-geo-api-latest`: 12501 / Web UI `kor-travel-geo-ui-latest`: 12505 |
