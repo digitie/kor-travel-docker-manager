@@ -213,15 +213,20 @@ containers:
 
 targets:
   db:
-    port_band: "12000-12099"
+    port_band: "12500-12599"
     depends_on: []
-    display_name: 통합 DB
-    description: Kor Travel/PinVi 계열 database를 담는 단일 PostgreSQL/PostGIS 컨테이너입니다.
+    display_name: Kor Travel Geo DB
+    # 2026-08-17(ADR-37) 이전에는 이 target이 네 프로젝트의 DB를 다 담은 "통합 DB"였다.
+    # 지금은 프로젝트마다 전용 instance를 쓰므로 이 target이 가리키는 것은 geo
+    # 인스턴스 하나뿐이다. 나머지 셋은 각자 target(conc/map/pinvi)이 자기 postgres를
+    # `services` 맨 앞에 갖는다. `db`라는 id와 `postgresql` alias는 손에 익은 이름이라
+    # 남겨두되, 통합을 뜻하던 `shared-postgresql`은 뺐다 — 가리키는 것이 없다.
+    description: Kor Travel Geo 전용 PostgreSQL/PostGIS 인스턴스(:12500)입니다. 예전 통합 DB의 자리입니다.
     aliases:
       - postgresql
       - postgres
       - database
-      - shared-postgresql
+      - geo-postgresql
     services:
       - kor-travel-geo-postgres
     runtime_services:
@@ -354,8 +359,8 @@ targets:
       - agent
       - conc
     services:
-      - kor-travel-concierge-api
       - kor-travel-concierge-postgres
+      - kor-travel-concierge-api
       - kor-travel-concierge-mcp
       - kor-travel-concierge-scheduler
       - kor-travel-concierge-ui
@@ -423,8 +428,8 @@ targets:
       - pinvi-api
       - pinvi-web
     services:
-      - pinvi-api
       - pinvi-postgres
+      - pinvi-api
       - pinvi-web
       - pinvi-dagster
     runtime_services:
