@@ -68,6 +68,34 @@ KOR_TRAVEL_GEO_POSTGRES_DB=kor_travel_geo
 KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=1
 ```
 
+### 2.2.1 반드시 있어야 하는 값 (없으면 compose 전체가 죽는다)
+
+아래 셋은 compose의 **secret 정의**가 참조하므로 `.env`에 없으면 기본값으로 떨어지지
+않고 **모든 `docker compose` 명령이 즉시 실패한다.** manager backend의
+`docker compose ps` 상태 조회도 같이 죽어서, 증상이 "대시보드의 모든 target이 안 보임"
+으로 나타난다 — DB 문제처럼 보이지 않는다.
+
+| 변수 | 쓰는 곳 |
+|---|---|
+| `KOR_TRAVEL_MAP_POSTGRES_PASSWORD` | `kor-travel-map-postgres` superuser (secret file) |
+| `KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD` | `kor-travel-concierge-postgres` superuser + db-init |
+| `PINVI_POSTGRES_PASSWORD` | `pinvi-postgres` superuser + db-init |
+
+두 번째 차단도 있다. sanctioned 배포(`c6c_deployment.py`)는 secret의 `environment`
+이름이 해결되지 않으면 mutation **전에**
+`compose candidate secrets.<alias> environment is unresolved`로 거부한다. 오류 문자열에
+어느 변수인지가 없어서 원인이 드러나지 않는다.
+
+```bash
+# 배포 전 확인. 값은 찍지 않는다.
+for v in KOR_TRAVEL_MAP_POSTGRES_PASSWORD KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD PINVI_POSTGRES_PASSWORD; do
+  printf '%-46s ' "$v"; grep -q "^$v=" .env && echo SET || echo 'MISSING  <- compose가 죽는다'
+done
+```
+
+`.env`는 권한 **600**이다. 백업본을 만들면 그것도 600으로 맞춘다 — 규정이 원본 이름만
+지목하면 파생물이 통째로 빠져나간다(#179).
+
 RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`을 사용하며, `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다 — `12500`/`12600`/`12700`/`12800`(ADR-37). 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
