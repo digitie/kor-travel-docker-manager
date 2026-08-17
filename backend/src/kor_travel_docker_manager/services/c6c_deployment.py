@@ -39,7 +39,11 @@ _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
-_MAP_DEDICATED_POSTGRES_PORT = 12703
+# ADR-047 대역 규칙(각 프로젝트 100번대의 x00이 그 프로젝트 DB)에 맞춘 값이다.
+# `docker-compose.yml`의 `KOR_TRAVEL_MAP_POSTGRES_PORT:-12700` 기본값과 **같아야**
+# 하고, 어긋나면 이 가드가 정상 배포를 `Map database DSN identity is invalid`로
+# 막는다 — 오류 문자열에 포트가 없어(credential 비노출) 원인이 드러나지 않는다.
+_MAP_DEDICATED_POSTGRES_PORT = 12700
 _MAP_POSTGRES_PASSWORD_SECRET = "kor-travel-map-postgres-password"
 _MAP_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_MAP_POSTGRES_PASSWORD_SECRET}"
 _PINVI_API_SERVICE = "pinvi-api"
