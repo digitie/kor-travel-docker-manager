@@ -14,10 +14,9 @@ services:
       POSTGRES_USER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
       POSTGRES_PASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       POSTGRES_DB: ${KOR_TRAVEL_GEO_POSTGRES_DB:-kor_travel_geo}
-      PINVI_POSTGRES_USER: ${PINVI_POSTGRES_USER:-pinvi}
-      PINVI_POSTGRES_PASSWORD: ${PINVI_POSTGRES_PASSWORD:-pinvi_dev_password}
-      PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
-      KOR_TRAVEL_CONCIERGE_POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_DB:-kor_travel_concierge}
+      # PINVI_*/KOR_TRAVEL_CONCIERGE_* 변수는 2026-08-17에 뺐다. init script를 geo
+      # 전용으로 좁힌 뒤로 읽는 곳이 없고, 남겨두면 이 인스턴스가 아직 남의 DB를
+      # 만든다고 오해하게 한다. 두 프로젝트는 각자 인스턴스(12600/12800)를 쓴다.
       KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK: ${KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK:-1}
       KOR_TRAVEL_GEO_SOURCE_DIR: ${KOR_TRAVEL_GEO_SOURCE_DIR:-/data/juso}
     ports:
@@ -78,7 +77,9 @@ services:
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     environment:
       POSTGRES_USER: ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr}
-      POSTGRES_PASSWORD: ${KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD:?KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD must be explicitly set}
+      # map과 같이 superuser password는 long-lived Config.Env가 아니라 secret file로
+      # 준다. `docker inspect`에 평문이 남지 않는다.
+      POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-concierge-postgres-password
       # 앱 DB와 다른 중립 이름으로 init한다 — 같은 이름으로 init하면 initdb가 심은
       # 확장과 dump의 확장 배치가 복원에서 충돌한다(map 커토버 실측).
       POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
@@ -108,6 +109,8 @@ services:
     - pg_stat_statements.track=all
     - -c
     - pg_stat_statements.max=10000
+    secrets:
+    - kor-travel-concierge-postgres-password
     volumes:
     - ${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}:/var/lib/postgresql/data
     ports:
@@ -128,7 +131,7 @@ services:
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     environment:
       POSTGRES_USER: ${PINVI_POSTGRES_USER:-pinvi}
-      POSTGRES_PASSWORD: ${PINVI_POSTGRES_PASSWORD:?PINVI_POSTGRES_PASSWORD must be explicitly set}
+      POSTGRES_PASSWORD_FILE: /run/secrets/pinvi-postgres-password
       POSTGRES_DB: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
     command:
     - postgres
@@ -156,6 +159,8 @@ services:
     - pg_stat_statements.track=all
     - -c
     - pg_stat_statements.max=10000
+    secrets:
+    - pinvi-postgres-password
     volumes:
     - ${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}:/var/lib/postgresql/data
     ports:
@@ -167,6 +172,50 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+
+  # 빈 PGDATA에서 앱 DB를 만드는 경로. init DB는 중립 이름(ktc_bootstrap)이라
+  # `kor_travel_concierge`를 아무도 만들지 않았다 — 지금 prod에 있는 것은
+  # 2026-08-17 이관으로 들어간 것뿐이고, 새 호스트에서는 앱이 곧장 죽는다.
+  # createdb는 멱등이므로 이미 있는 인스턴스에서는 무해하게 no-op한다.
+  kor-travel-concierge-db-init:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_CONCIERGE_DB_INIT_CONTAINER:-kor-travel-concierge-db-init}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-concierge-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_CONCIERGE_DB_PORT:-12600}
+      PGUSER: ${KOR_TRAVEL_CONCIERGE_POSTGRES_USER:-addr}
+      PGPASSWORD: ${KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD:?KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD must be explicitly set}
+      PGDATABASE: ${KOR_TRAVEL_CONCIERGE_POSTGRES_BOOTSTRAP_DB:-ktc_bootstrap}
+      KOR_TRAVEL_CONCIERGE_POSTGRES_DB: ${KOR_TRAVEL_CONCIERGE_POSTGRES_DB:-kor_travel_concierge}
+    command:
+    - sh
+    - -c
+    - createdb "$${KOR_TRAVEL_CONCIERGE_POSTGRES_DB}" 2>/dev/null || true
+
+  pinvi-db-init:
+    image: postgis/postgis:16-3.5
+    container_name: ${PINVI_DB_INIT_CONTAINER:-pinvi-db-init}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      pinvi-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${PINVI_DB_PORT:-12800}
+      PGUSER: ${PINVI_POSTGRES_USER:-pinvi}
+      PGPASSWORD: ${PINVI_POSTGRES_PASSWORD:?PINVI_POSTGRES_PASSWORD must be explicitly set}
+      PGDATABASE: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
+      PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
+    command:
+    - sh
+    - -c
+    - createdb "$${PINVI_POSTGRES_DB}" 2>/dev/null || true
 
   rustfs:
     image: rustfs/rustfs:latest
@@ -334,6 +383,8 @@ services:
     depends_on:
       kor-travel-concierge-postgres:
         condition: service_healthy
+      kor-travel-concierge-db-init:
+        condition: service_completed_successfully
       rustfs:
         condition: service_healthy
     environment:
@@ -889,6 +940,8 @@ services:
     depends_on:
       pinvi-postgres:
         condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
       rustfs:
         condition: service_healthy
       kor-travel-map-api:
@@ -950,6 +1003,8 @@ services:
     depends_on:
       pinvi-postgres:
         condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
     command:
     - pinvi-admin-bootstrap
     environment:
@@ -1000,6 +1055,8 @@ services:
     depends_on:
       pinvi-postgres:
         condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
       pinvi-api:
         condition: service_healthy
     command:
@@ -1099,14 +1156,17 @@ services:
         condition: service_healthy
     environment:
       PGHOST: 127.0.0.1
-      PGPORT: "5432"
+      # 포트는 compose가 풀어서 준다. `createdb -p "$${...}"`로 컨테이너 셸에
+      # 맡기면 그 셸엔 KOR_TRAVEL_GEO_DB_PORT가 없어 항상 default로 떨어진다 —
+      # `.env`로 포트를 옮기면 postgres만 따라가고 이 one-shot은 옛 포트에 붙어 죽는다.
+      PGPORT: ${KOR_TRAVEL_GEO_DB_PORT:-12500}
       PGUSER: ${KOR_TRAVEL_GEO_POSTGRES_USER:-addr}
       PGPASSWORD: ${KOR_TRAVEL_GEO_POSTGRES_PASSWORD:-addr}
       KOR_TRAVEL_GEO_DAGSTER_DB: ${KOR_TRAVEL_GEO_DAGSTER_DB:-kor_travel_geo_dagster}
     command:
     - sh
     - -c
-    - createdb -h 127.0.0.1 -p "$${KOR_TRAVEL_GEO_DB_PORT:-12500}" "$${KOR_TRAVEL_GEO_DAGSTER_DB}" 2>/dev/null || true
+    - createdb "$${KOR_TRAVEL_GEO_DAGSTER_DB}" 2>/dev/null || true
   kor-travel-geo-dagster:
     image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
     build:
@@ -1201,3 +1261,7 @@ services:
 secrets:
   kor-travel-map-postgres-password:
     environment: KOR_TRAVEL_MAP_POSTGRES_PASSWORD
+  kor-travel-concierge-postgres-password:
+    environment: KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD
+  pinvi-postgres-password:
+    environment: PINVI_POSTGRES_PASSWORD
