@@ -188,6 +188,12 @@ services:
     - random_page_cost=${PINVI_POSTGRES_RANDOM_PAGE_COST:-1.1}
     - -c
     - max_wal_size=${PINVI_POSTGRES_MAX_WAL_SIZE:-1GB}
+    # ⚠️ 아래 설정만으로는 **관측이 안 된다.** 라이브러리는 preload돼 통계를 모으지만
+    #    `pinvi` DB에 `pg_stat_statements` **확장이 없어** 읽을 수단이 없다
+    #    (2026-08-17 실측: geo/concierge/map은 확장 있음, pinvi만 0).
+    #    여기서 `CREATE EXTENSION`을 하지 않는다 — pinvi 스키마는 그 저장소 alembic이
+    #    소유하고, 밖에서 심으면 그쪽 migration과 어긋난다. 필요해지면 PinVi 쪽
+    #    migration에 넣는다.
     - -c
     - pg_stat_statements.track=all
     - -c
