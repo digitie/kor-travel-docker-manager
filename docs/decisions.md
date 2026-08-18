@@ -2126,8 +2126,13 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
 
 ### 결과(긍정)
 
-- 런북 step 8이 **인자 없이 문자 그대로** 실행 가능해졌고, 산출물이 runner의 전수
-  검증(shape·정규식·소유권·mode)을 그대로 통과한다. 검증 술어의 사본과, 계약 상수
+- 런북 step 8이 **인자 없이 문자 그대로** 실행 가능한 **코드 경로**가 생겼고, 산출물이 runner의 전수
+  검증(shape·정규식·소유권·mode)을 그대로 통과한다. **단, 오늘 n150에서는 아직 exit 2다** —
+  세 fallback 키(`E2E_C7_COMPATIBLE_PAIR_MANIFEST` 또는 `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`,
+  `KTDM_C7_MAP_SOURCE_CHECKOUT`, `KTDM_C7_PINVI_SOURCE_CHECKOUT`)가 frozen `.env`에 아직 없다
+  (실측 확인). 코드 결함이 아니라 프로비저닝 항목이며, 거부 메시지가 flag 이름과 env 이름을 함께
+  지목하고 "nothing was written"으로 끝난다. `sudo`는 operator shell의 export를 버리므로 값은
+  반드시 frozen `.env`에 있어야 한다. 검증 술어의 사본과, 계약 상수
   (top-level 키 집합·`version == 4`·pair 9필드) digest 고정과, `KTDM_C7_RUNNER_MODULE`이
   가리키는 **실제 runner 모듈을 import한 테스트**가 `backend/tests/test_c6c_pair_capture.py`에
   있어 runner가 계약을 바꾸면 즉시 red가 된다. 그 env가 주어졌는데 import·검증이 실패하면

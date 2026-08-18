@@ -430,6 +430,13 @@ sudo -n ktdctl pinvi-pair capture --verified-compatible --build
 | Map checkout | `KTDM_C7_MAP_SOURCE_CHECKOUT` | `--map-source-checkout` |
 | PinVi checkout | `KTDM_C7_PINVI_SOURCE_CHECKOUT` | `--pinvi-source-checkout` |
 
+> **`sudo`는 operator shell의 export를 버린다.** 세 값은 반드시 frozen `.env`에 있어야 한다 —
+> `sudo -n ktdctl …` 앞에 `export`를 해도 하위 프로세스에 전달되지 않는다(n150 실측).
+> 2026-08-19 기준 n150 `.env`에는 세 키가 **아직 없다**. 그래서 런북 문자 그대로의 호출은 지금
+> exit 2로 거부되며(코드 결함 아님), 거부 메시지가 flag 이름과 env 이름을 함께 지목한다.
+> 프로비저닝할 때 manifest 경로는 **pinned-runtime state root 밖**이어야 한다 — 그 안이면
+> `rebuild-pinned`가 runner의 read target을 legacy artifact로 퇴역시킨다.
+
 override와 부가 flag를 모두 쓴 형태:
 
 ```bash
