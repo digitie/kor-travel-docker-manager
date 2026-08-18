@@ -79,6 +79,8 @@ _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
 _MAP_ADMIN_PROXY_ENV = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
 _MAP_SERVICE_TOKEN_ENV = "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
 _MAP_CURSOR_SIGNING_SECRET_ENV = "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+_MAP_GEO_API_KEY_SOURCE_ENV = "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
+_MAP_UI_GEO_API_KEY_ENV = "KOR_TRAVEL_GEO_API_KEY"
 _MAP_CURATION_SNAPSHOT_DIGEST_ENV = (
     "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"
 )
@@ -140,6 +142,8 @@ _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
         _MAP_ADMIN_PROXY_ENV,
         _MAP_SERVICE_TOKEN_ENV,
         _MAP_CURSOR_SIGNING_SECRET_ENV,
+        _MAP_GEO_API_KEY_SOURCE_ENV,
+        _MAP_UI_GEO_API_KEY_ENV,
     }
 )
 _CURATION_PRINCIPAL_RAW_ENV_NAMES = frozenset(
@@ -229,6 +233,14 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): _MAP_SERVICE_TOKEN_ENV,
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         _MAP_CURSOR_SIGNING_SECRET_ENV
+    ),
+    (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): _MAP_GEO_API_KEY_SOURCE_ENV,
+    (_MAP_UI_SERVICE, _MAP_UI_GEO_API_KEY_ENV): _MAP_GEO_API_KEY_SOURCE_ENV,
+    (_MAP_DAGSTER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
+        _MAP_GEO_API_KEY_SOURCE_ENV
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
+        _MAP_GEO_API_KEY_SOURCE_ENV
     ),
     (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
         _MAP_CURATION_SNAPSHOT_DIGEST_ENV
@@ -472,6 +484,19 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
         "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
+    ),
+    (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
+        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+    ),
+    (_MAP_UI_SERVICE, _MAP_UI_GEO_API_KEY_ENV): (
+        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?"
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
+    ),
+    (_MAP_DAGSTER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
+        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+    ),
+    (_MAP_DAGSTER_DAEMON_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
+        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
     ),
     (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
         "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
@@ -903,6 +928,7 @@ class C6cDeploymentConfig:
     map_admin_proxy_secret: str = field(repr=False)
     map_service_token: str = field(repr=False)
     map_cursor_signing_secret: str = field(repr=False)
+    map_geo_api_key: str = field(repr=False)
     pinvi_container: str
     contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
@@ -1393,6 +1419,7 @@ def load_c6c_deployment_config_from_environment(
         map_admin_proxy_secret=values.get(_MAP_ADMIN_PROXY_ENV, ""),
         map_service_token=values.get(_MAP_SERVICE_TOKEN_ENV, ""),
         map_cursor_signing_secret=values.get(_MAP_CURSOR_SIGNING_SECRET_ENV, ""),
+        map_geo_api_key=values.get(_MAP_GEO_API_KEY_SOURCE_ENV, ""),
         pinvi_container=values.get("PINVI_API_CONTAINER", "pinvi-api-latest"),
         contract_generation=contract_generation,
         smoke=C6cSmokeConfig(
@@ -1587,9 +1614,11 @@ def derive_curation_service_principal_environment(
 def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
     _validate_map_production_secret_values(
         {
+            "KTDM_DEPLOYMENT_ENVIRONMENT": config.deployment_environment,
             _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
             _MAP_SERVICE_TOKEN_ENV: config.map_service_token,
             _MAP_CURSOR_SIGNING_SECRET_ENV: config.map_cursor_signing_secret,
+            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
             _MAP_FIXTURE_ENV: config.fixture_token,
@@ -1613,6 +1642,25 @@ def _validate_map_production_secret_values(
     reject_published_examples: bool = False,
 ) -> None:
     derive_curation_service_principal_environment(values, error_type=error_type)
+    geo_api_key = values.get(_MAP_GEO_API_KEY_SOURCE_ENV, "")
+    geo_api_key_required = values.get("KTDM_DEPLOYMENT_ENVIRONMENT") in {
+        "production",
+        "rehearsal",
+    }
+    if geo_api_key_required and not geo_api_key:
+        raise error_type(f"{_MAP_GEO_API_KEY_SOURCE_ENV} must be explicitly set")
+    if geo_api_key_required and (
+        len(geo_api_key) != 32
+        or not geo_api_key.isascii()
+        or not geo_api_key.isalnum()
+    ):
+        raise error_type(f"{_MAP_GEO_API_KEY_SOURCE_ENV} is invalid")
+    if not geo_api_key_required and geo_api_key and (
+        geo_api_key != geo_api_key.strip()
+        or len(geo_api_key) > 128
+        or any(character.isspace() for character in geo_api_key)
+    ):
+        raise error_type(f"{_MAP_GEO_API_KEY_SOURCE_ENV} is invalid")
     if values.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production":
         try:
             _validate_raw_token_pair(
@@ -1659,6 +1707,7 @@ def _validate_map_production_secret_values(
         "KTDM_C6C_PINVI_ADMIN_EMAIL",
         _PINVI_ADMIN_PASSWORD_ENV,
         "KTDM_C6C_CONTRACT_GENERATION",
+        _MAP_GEO_API_KEY_SOURCE_ENV,
     )
     compared: list[tuple[str, str]] = []
     for env_name, secret in (
@@ -1816,6 +1865,9 @@ def validate_resolved_compose_secret_isolation(
             _MAP_CURSOR_SIGNING_SECRET_ENV: _compose_resolved_escaped_value(
                 config.map_cursor_signing_secret
             ),
+            _MAP_GEO_API_KEY_SOURCE_ENV: _compose_resolved_escaped_value(
+                config.map_geo_api_key
+            ),
             _MAP_CURATION_SNAPSHOT_DIGEST_ENV: _compose_resolved_escaped_value(
                 hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
                 if config.curation_snapshot_token
@@ -1852,6 +1904,19 @@ def validate_resolved_compose_secret_isolation(
             ),
             _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
                 config.map_admin_proxy_secret
+            ),
+            _MAP_UI_GEO_API_KEY_ENV: _compose_resolved_escaped_value(
+                config.map_geo_api_key
+            ),
+        },
+        _MAP_DAGSTER_SERVICE: {
+            _MAP_GEO_API_KEY_SOURCE_ENV: _compose_resolved_escaped_value(
+                config.map_geo_api_key
+            ),
+        },
+        _MAP_DAGSTER_DAEMON_SERVICE: {
+            _MAP_GEO_API_KEY_SOURCE_ENV: _compose_resolved_escaped_value(
+                config.map_geo_api_key
             ),
         },
     }
@@ -1943,6 +2008,30 @@ def validate_resolved_compose_secret_isolation(
             "services",
             _MAP_API_SERVICE,
             "environment",
+            _MAP_GEO_API_KEY_SOURCE_ENV,
+        ): _compose_resolved_escaped_value(config.map_geo_api_key),
+        (
+            "services",
+            _MAP_UI_SERVICE,
+            "environment",
+            _MAP_UI_GEO_API_KEY_ENV,
+        ): _compose_resolved_escaped_value(config.map_geo_api_key),
+        (
+            "services",
+            _MAP_DAGSTER_SERVICE,
+            "environment",
+            _MAP_GEO_API_KEY_SOURCE_ENV,
+        ): _compose_resolved_escaped_value(config.map_geo_api_key),
+        (
+            "services",
+            _MAP_DAGSTER_DAEMON_SERVICE,
+            "environment",
+            _MAP_GEO_API_KEY_SOURCE_ENV,
+        ): _compose_resolved_escaped_value(config.map_geo_api_key),
+        (
+            "services",
+            _MAP_API_SERVICE,
+            "environment",
             _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
         ): _compose_resolved_escaped_value(
             hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
@@ -2014,6 +2103,7 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.map_admin_proxy_secret),
                 _compose_resolved_escaped_value(config.map_service_token),
                 _compose_resolved_escaped_value(config.map_cursor_signing_secret),
+                _compose_resolved_escaped_value(config.map_geo_api_key),
                 _compose_resolved_escaped_value(config.smoke.map_ui_password),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
                 _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
@@ -4805,6 +4895,7 @@ def validate_current_map_ui_auth_runtime(
         _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
         _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
         _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
+        _MAP_UI_GEO_API_KEY_ENV: config.map_geo_api_key,
     }
     optional_expected = (
         {_MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret}
@@ -4858,6 +4949,7 @@ def validate_current_map_ui_auth_runtime(
         config.map_ui_password_hash,
         config.map_ui_session_secret,
         config.map_admin_proxy_secret,
+        config.map_geo_api_key,
         plaintext,
     )
     protected_names = (
@@ -4893,6 +4985,7 @@ def validate_runtime_secret_isolation(
             _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
             _MAP_SERVICE_TOKEN_ENV: config.map_service_token,
             _MAP_CURSOR_SIGNING_SECRET_ENV: config.map_cursor_signing_secret,
+            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
             **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         config.pinvi_container: {
@@ -4904,6 +4997,13 @@ def validate_runtime_secret_isolation(
             _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
             _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
+            _MAP_UI_GEO_API_KEY_ENV: config.map_geo_api_key,
+        },
+        _MAP_RUNTIME_CONTAINERS[_MAP_DAGSTER_SERVICE]: {
+            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
+        },
+        _MAP_RUNTIME_CONTAINERS[_MAP_DAGSTER_DAEMON_SERVICE]: {
+            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
         },
     }
     for required_container in expected:
@@ -4922,6 +5022,7 @@ def validate_runtime_secret_isolation(
             config.map_admin_proxy_secret,
             config.map_service_token,
             config.map_cursor_signing_secret,
+            config.map_geo_api_key,
             config.smoke.map_ui_password,
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,

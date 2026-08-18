@@ -72,7 +72,7 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "t" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
-        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "test-geo-key",
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
         "KOR_TRAVEL_MAP_POSTGRES_DB": "map_contract",
         "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_contract_dagster",
@@ -454,7 +454,15 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
     }.intersection(bootstrap_environment)
 
+    map_ui_environment = services["kor-travel-map-ui"]["environment"]
+    assert map_ui_environment["KOR_TRAVEL_GEO_API_KEY"] == "v" * 32
+    assert "NEXT_PUBLIC_KOR_TRAVEL_GEO_API_KEY" not in map_ui_environment
+
     map_api_environment = services["kor-travel-map-api"]["environment"]
+    assert (
+        map_api_environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"]
+        == "v" * 32
+    )
     map_dagster_environment = services["kor-travel-map-dagster"]["environment"]
     map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"][
         "environment"
@@ -485,6 +493,54 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
     }.issubset(map_bootstrap_environment)
+
+
+@pytest.mark.parametrize(
+    "leaked_name",
+    [
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
+        "KOR_TRAVEL_GEO_API_KEY",
+    ],
+)
+def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(
+    tmp_path: Path,
+    leaked_name: str,
+) -> None:
+    candidate = _compose_fragment(
+        "kor-travel-map-postgres",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+    )
+    pinvi_api = candidate["services"]["pinvi-api"]
+    assert isinstance(pinvi_api, dict)
+    environment = pinvi_api.setdefault("environment", {})
+    assert isinstance(environment, dict)
+    environment[leaked_name] = "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+
+    root_env = tmp_path / ".env"
+    root_env.write_text("\n", encoding="utf-8")
+    map_pgdata = tmp_path / "map-pgdata"
+    map_pgdata.mkdir()
+    map_source = tmp_path / "map-source"
+    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
+    bootstrap_script.parent.mkdir(parents=True)
+    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    contract_environment = _compose_contract_environment()
+    contract_environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
+    contract_environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+
+    with pytest.raises(DeploymentContractError, match="protected C6c reference"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=contract_environment,
+        )
 
 
 @pytest.mark.parametrize("resolved_candidate", (False, True))

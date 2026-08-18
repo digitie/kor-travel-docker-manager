@@ -1,6 +1,4 @@
 import hashlib
-import hmac
-import os
 import secrets
 import string
 from uuid import uuid4
@@ -27,11 +25,6 @@ def hash_public_api_key(api_key: str) -> str:
     # 키는 32자 CSPRNG 토큰(~190비트)이라 brute-force가 불가능하므로 의도적으로 빠른 무염 SHA-256을
     # 사용한다(저엔트로피 패스워드용 느린 KDF 불필요). 평문 키는 저장/로깅하지 않는다.
     return hashlib.sha256(api_key.strip().encode("utf-8")).hexdigest()
-
-
-def public_api_key_matches(api_key: str, key_hashes: frozenset[str]) -> bool:
-    key_hash = hash_public_api_key(api_key)
-    return any(hmac.compare_digest(key_hash, stored_hash) for stored_hash in key_hashes)
 
 
 def create_public_api_key(*, label: str | None, created_by: str | None) -> dict[str, object]:
@@ -85,14 +78,6 @@ def revoke_public_api_key(public_api_key_id: str, *, revoked_by: str | None) -> 
     return summary
 
 
-def configured_vworld_fallback_hashes() -> frozenset[str]:
-    values = (
-        os.environ.get("KOR_TRAVEL_GEO_VWORLD_API_KEY", ""),
-        os.environ.get("NEXT_PUBLIC_VWORLD_API_KEY", ""),
-    )
-    return frozenset(hash_public_api_key(value) for value in values if value.strip())
-
-
 def public_api_key_is_valid(api_key: str) -> bool:
     key = api_key.strip()
     if not key or len(key) > 128:
@@ -110,8 +95,7 @@ def public_api_key_is_valid(api_key: str) -> bool:
         ).first()
     if active_id is not None:
         return True
-    fallback_hashes = configured_vworld_fallback_hashes()
-    return bool(fallback_hashes and public_api_key_matches(key, fallback_hashes))
+    return False
 
 
 def _ensure_db() -> None:

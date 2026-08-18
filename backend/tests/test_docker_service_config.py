@@ -92,6 +92,11 @@ _MAP_UI_SESSION_SECRET = "map-ui-session-secret-placeholder-value"
 _MAP_ADMIN_PROXY_SECRET = "map-admin-proxy-secret-placeholder-value"
 _MAP_SERVICE_TOKEN = "map-service-token-placeholder-value"
 _MAP_CURSOR_SIGNING_SECRET = "map-cursor-signing-secret-placeholder-value"
+_MAP_GEO_API_KEY_SOURCE = "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+_MAP_UI_GEO_API_KEY_SOURCE = (
+    "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?"
+    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
+)
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -271,6 +276,7 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
                     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
                 ),
+                "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": _MAP_GEO_API_KEY_SOURCE,
                 "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256": (
                     _CURATION_SNAPSHOT_DIGEST_SOURCE
                 ),
@@ -308,6 +314,16 @@ def _compose_with_canonical_c6c_services(
                     "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
                     "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": dagster_runtime_dsn,
                     "KOR_TRAVEL_MAP_PG_DSN": dagster_runtime_dsn,
+                    **(
+                        {
+                            "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": (
+                                _MAP_GEO_API_KEY_SOURCE
+                            )
+                        }
+                        if service_name
+                        in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE)
+                        else {}
+                    ),
                 },
             }
             for service_name in (
@@ -337,6 +353,7 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
                     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
                 ),
+                "KOR_TRAVEL_GEO_API_KEY": _MAP_UI_GEO_API_KEY_SOURCE,
             }
         },
         _PINVI_API_SERVICE: {
@@ -1271,6 +1288,10 @@ def _prepare_candidate_transaction(
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
             _MAP_CURSOR_SIGNING_SECRET,
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
+            "test-map-geo-api-key",
         )
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map")
         monkeypatch.setenv(
