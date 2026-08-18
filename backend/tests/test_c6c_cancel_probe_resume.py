@@ -69,8 +69,8 @@ def _consumed_state(*, finalize_attempted: bool) -> PinviCancelProbeState:
     )
 
 
-def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> None:
-    values = {
+def _rehearsal_environment() -> dict[str, str]:
+    return {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
         "PINVI_ENVIRONMENT": "production",
@@ -84,6 +84,7 @@ def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> Non
         "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "p" * 32,
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "s" * 32,
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": "g" * 32,
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "h" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KTDM_C6C_MAP_UI_ADMIN_PASSWORD": "map-ui-password-1",
@@ -92,6 +93,10 @@ def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> Non
         "KTDM_C6C_CONTRACT_GENERATION": "c6c-v1",
     }
 
+
+def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> None:
+    values = _rehearsal_environment()
+
     config = c6c.load_c6c_deployment_config_from_environment(values)
 
     assert config.deployment_environment == "rehearsal"
@@ -99,6 +104,23 @@ def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> Non
     assert config.fixture_token == "f" * 32
     assert config.curation_snapshot_token == "n" * 32
     assert config.curation_cutover_mapping_token == "m" * 32
+
+
+@pytest.mark.parametrize(
+    "geo_api_key",
+    ["x", "x" * 31, "x" * 33, f"{'x' * 31}-", f"{'x' * 31}é"],
+)
+def test_rehearsal_loader_rejects_non_issued_geo_key_shape(
+    geo_api_key: str,
+) -> None:
+    values = _rehearsal_environment()
+    values["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"] = geo_api_key
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY is invalid",
+    ):
+        c6c.load_c6c_deployment_config_from_environment(values)
 
 
 def test_uncertain_cancel_post_is_never_reissued(

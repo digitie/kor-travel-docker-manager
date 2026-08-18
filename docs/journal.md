@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-18 — Map T-VN-H46F와 draft PR #173 흡수
+
+충돌 상태인 draft PR #173의 credential 경계 의도를 최신 `main` C6c 구조에 재배치했다.
+Map UI는 root `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`를 server-only
+`KOR_TRAVEL_GEO_API_KEY`로만 받으며, candidate Compose는 미설정을 fail-close한다. raw/resolved
+Compose와 runtime secret isolation은 Map API·Dagster·daemon의 source 이름, UI의 server-only
+alias만 허용하고 PinVi/bootstrap 등 다른 service의 이름·값 누출을 거부한다.
+
+Manager 자체 공개 API도 DB active key만 인정하도록 VWorld env fallback을 제거했다. #173은
+오래된 base의 충돌과 후속 C6c 구조 변화를 함께 안고 있으므로 rebase보다 이 패치가 supersede하는
+것이 안전하다. prod/n150 변경과 원격 PR 조작은 하지 않았다.
+
 ## 2026-08-18 — issue #178/#179 n150 geo 자격증명 회전·환경파일 권한 정리 완료
 
 PR #180에서 코드만 결선하고 보류했던 두 production 작업을 사용자 승인 아래 n150에서

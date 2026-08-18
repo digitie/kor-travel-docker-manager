@@ -27,6 +27,7 @@
 | **#177** | 4분할 후 geo·concierge·map·pinvi 공통 백업 결선 | `[/]` | - | 신규 독립 `standalone_backup.py` + `ktdctl db-backup create/list/gc` + 읽기 전용 `GET /backups`. n150 주기 cron 설치·geo 첫 실백업은 미실행 |
 | **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[x]` | 2026-08-18 | n150 실제 role 비밀번호·3개 canonical env key를 함께 회전하고 PostgreSQL·geo API·Dagster web/daemon·DB init을 재생성했다. 새 비밀번호 인증, 기존 기본값 거부, secret file·health·공개 Manager 브라우저 수명주기를 확인했다 |
 | **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[x]` | 2026-08-18 | n150 기존 위반 7개를 `0600`으로 정리하고 식별 불가 백업 `.env.backup-pinvi-deploy-836a18f-`를 삭제했다. 전체 `.env*` 재검사를 통과했다 |
+| **#173 / Map T-VN-H46F** | Map UI geo consumer credential 경계 | `[/]` | - | 충돌한 draft #173은 최신 `main`에 직접 rebase하지 않고 H46F cross-repo 패치로 흡수. UI server-only alias·C6c exact wiring·Manager VWorld fallback 제거 구현, 적대 리뷰/CI/merge 대기 |
 
 ---
 
