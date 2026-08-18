@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-08-18 — issue #178/#179 n150 geo 자격증명 회전·환경파일 권한 정리 완료
+
+PR #180에서 코드만 결선하고 보류했던 두 production 작업을 사용자 승인 아래 n150에서
+완료했다. prod에 먼저 배포돼 있던 geo 예약 백업 env passthrough는 보존하면서,
+`POSTGRES_PASSWORD_FILE`·fail-close DSN·권한 검사 스크립트가 포함된 Compose를 배포했다.
+
+- **#178**: 임의 64자리 hex 비밀번호를 생성해 geo PostgreSQL superuser role과 canonical
+  `.env`의 password/application DSN/Dagster DSN 세 key를 같은 transaction으로 회전했다.
+  PostgreSQL, `kor-travel-geo-dagster-db-init`, geo API, Dagster web/daemon을 재생성했다.
+  새 비밀번호 TCP 인증은 성공하고 공개 기본값 `addr`은 거부됐으며, PostgreSQL
+  `Config.Env`에는 `POSTGRES_PASSWORD`가 없고 `POSTGRES_PASSWORD_FILE`만 남았다.
+  DB init은 평문 `PGPASSWORD` 없이 exit 0, API·Dagster 소비자는 새 DSN exact 일치,
+  PostgreSQL/API/Dagster/UI는 running·healthy(daemon은 running) 상태를 확인했다.
+- **#179**: 기존 권한 위반 7개를 모두 `0600`으로 내리고, 이름이 잘려 배포 세대를
+  식별할 수 없던 `.env.backup-pinvi-deploy-836a18f-`는 exact target 검증 뒤 삭제했다.
+  `.env.example`을 제외한 root `.env*` 전체 재검사는 위반 0건으로 통과했다.
+- **운영 검증**: geo API·Dagster와 Manager `/health`, Manager Web 200을 확인했다. n150
+  Chromium 공개도메인 E2E에서 로그인→대시보드→로그아웃→로그인 화면 복귀를 통과했고,
+  로그아웃 뒤 WebSocket 생성 0건·403 응답 0건이었다. 잘못된 비밀번호 401, Origin 없음
+  403, 허용 Origin의 세션 없음 401도 확인했다.
+
+회전 rehearsal에서 두 사전 오류(커스텀 PostgreSQL 포트와 실제 DB role 미지정)는
+`ALTER ROLE` 전에 중단돼 mutation이 없었고, Docker Compose `environment` secret을
+`.Mounts`에서 찾는 과도한 검증은 자동 롤백으로 기존 role·runtime을 복구했다. sibling
+세 인스턴스와 같이 secret 파일은 컨테이너에서 읽히지만 Docker inspect `.Mounts`에는
+나타나지 않는 Compose v5 동작을 확인해, 최종 검증은 `Config.Env` 참조·파일 읽기·DB init
+성공으로 정렬했다. 각 rollback 뒤 health와 기존 TCP 인증을 재확인한 뒤 최종 회전을
+다시 실행했다.
+
 ## 2026-08-17 — issue #177/#178/#179: 4분할 뒤 남은 백업·자격증명·권한 공백 결선
 
 PR #176(프로젝트별 전용 PostgreSQL 4개 분리)이 오늘 착지한 뒤 사용자가 n150 실측으로

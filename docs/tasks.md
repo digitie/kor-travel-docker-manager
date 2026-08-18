@@ -25,8 +25,8 @@
 | **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
 | **#171** | Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포 | `[/]` | - | 전용 Map DB/F1D bootstrap, T-VN-40 canonical snapshot principal 최소 권한 결선 및 Hallmark 운영 콘솔 재설계 반영. upstream exact pair의 final receipt/live 검증 대기 |
 | **#177** | 4분할 후 geo·concierge·map·pinvi 공통 백업 결선 | `[/]` | - | 신규 독립 `standalone_backup.py` + `ktdctl db-backup create/list/gc` + 읽기 전용 `GET /backups`. n150 주기 cron 설치·geo 첫 실백업은 미실행 |
-| **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[/]` | - | `docker-compose.yml` geo를 형제 셋과 같은 `POSTGRES_PASSWORD_FILE` secret + fail-close DSN으로 전환. n150 실제 비밀번호 회전(`ALTER ROLE` + 4개 DSN 동시 갱신)은 미실행 |
-| **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[/]` | - | `scripts/check-env-permissions.sh`(원본 이름 비하드코딩, `--fix` 지원) + 배포 runbook에 chmod 관례 추가. n150 기존 7개 파일 실제 chmod/정리는 미실행 |
+| **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[x]` | 2026-08-18 | n150 실제 role 비밀번호·3개 canonical env key를 함께 회전하고 PostgreSQL·geo API·Dagster web/daemon·DB init을 재생성했다. 새 비밀번호 인증, 기존 기본값 거부, secret file·health·공개 Manager 브라우저 수명주기를 확인했다 |
+| **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[x]` | 2026-08-18 | n150 기존 위반 7개를 `0600`으로 정리하고 식별 불가 백업 `.env.backup-pinvi-deploy-836a18f-`를 삭제했다. 전체 `.env*` 재검사를 통과했다 |
 
 ---
 
@@ -1041,11 +1041,13 @@ T-053~T-057(v5 rebuild에서 퇴역)이 남긴 공백을 새 독립 primitive로
       바꿨다(5곳). `.env.example`에 `KOR_TRAVEL_GEO_DAGSTER_PG_URL` 예시를 추가했다(기존에
       누락돼 있었다).
 - [x] backend 전체 388 passed, ruff clean, `docker-compose.yml` YAML 유효성 확인.
-- [ ] **n150 실제 비밀번호 회전은 하지 않았다.** 기존 PGDATA에는 `POSTGRES_PASSWORD*`가
-      initdb 뒤로는 안 먹으므로 compose 전환만으로는 실제 비밀번호가 안 바뀐다 — 별도
-      `ALTER ROLE addr PASSWORD ...` 뒤 geo에 붙는 모든 소비자(geo-api, geo-dagster,
-      geo-dagster-db-init, `ensure-kor-travel-geo-db.sh`)의 DSN을 같은 트랜잭션으로
-      갱신해야 한다. 사용자 확인 후 진행한다.
+- [x] 2026-08-18 n150에서 임의 64자리 hex 비밀번호를 생성해 geo superuser role과
+      canonical `.env`의 `KOR_TRAVEL_GEO_POSTGRES_PASSWORD`,
+      `KOR_TRAVEL_GEO_DOCKER_PG_DSN`, `KOR_TRAVEL_GEO_DAGSTER_PG_URL`을 같은
+      회전 transaction으로 갱신했다. PostgreSQL·geo API·Dagster web/daemon·DB init을
+      재생성한 뒤 새 비밀번호 TCP 인증 성공, 기존 공개 기본값 `addr` 거부,
+      PostgreSQL `Config.Env` 평문 부재와 `POSTGRES_PASSWORD_FILE` secret 읽기,
+      모든 소비자의 새 DSN 일치, health endpoint를 확인했다.
 
 ### #179: prod `.env` 파생 파일 권한 600 이탈 재발 방지
 
@@ -1054,6 +1056,8 @@ T-053~T-057(v5 rebuild에서 퇴역)이 남긴 공백을 새 독립 primitive로
       있다(dry-run 기본).
 - [x] `docs/deploy-runbook.local.md`(gitignored 운영 노트)에 "`.env` 수작업 백업 직후
       `chmod 600`" 관례와 점검 스크립트 사용법을 추가했다.
-- [ ] n150의 기존 위반 7개(`.env.bak.*`, `.env.backup-*`, `.env.kor-travel-geo-ui.local*`)
-      실제 chmod/정리는 하지 않았다 — 삭제 대상(`.env.backup-pinvi-deploy-836a18f-` 등
-      식별 불가 파일) 포함이라 사용자 확인 후 진행한다.
+- [x] 2026-08-18 n150의 기존 위반 7개(`.env.bak.*`, `.env.backup-*`,
+      `.env.kor-travel-geo-ui.local*`)를 `scripts/check-env-permissions.sh --fix`로
+      `0600`에 수렴시켰다. 이름이 잘려 식별할 수 없던
+      `.env.backup-pinvi-deploy-836a18f-`는 exact regular-file·single-link·metadata를
+      확인한 뒤 삭제했고, `.env.example`을 제외한 전체 `.env*` 재검사를 통과했다.
