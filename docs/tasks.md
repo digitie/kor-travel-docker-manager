@@ -13,9 +13,11 @@
 
 > **F1D v5 현재 정본**: 비운영 generation mutation은 root execution의
 > `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`만 허용한다. 이전 `cache-target`,
-> `db-backup`, `map-ui-auth`와 compatible-pair의
-> `capture`·`deploy`·`rollback` 공개 경로는 모두 퇴역했으며, 아래의 v1–v4 상세 항목은 실행
-> 지침이 아닌 퇴역 기록이다. 최종 schema 상태의 backup/restore가 다시 필요해지면 pair/cache
+> `db-backup`, `map-ui-auth`와 compatible-pair의 `deploy`·`rollback` 공개 경로는 모두
+> 퇴역했으며, 아래의 v1–v4 상세 항목은 실행 지침이 아닌 퇴역 기록이다.
+> **예외 하나**: `pinvi-pair capture`는 2026-08-19에 **runtime mutation이 없는 읽기 전용
+> 관측기**로 되살아났다(ADR-38). 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지
+> 않았다. 최종 schema 상태의 backup/restore가 다시 필요해지면 pair/cache
 > workflow와 독립된 새 Compose primitive·계약으로 별도 태스크를 만든다.
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
@@ -27,7 +29,11 @@
 | **#177** | 4분할 후 geo·concierge·map·pinvi 공통 백업 결선 | `[/]` | - | 신규 독립 `standalone_backup.py` + `ktdctl db-backup create/list/gc` + 읽기 전용 `GET /backups`. geo 앱 스케줄 백업 env는 PR #181에서 결선, n150 standalone cron·off-box 사본은 미완료 |
 | **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[x]` | 2026-08-18 | n150 실제 role 비밀번호·3개 canonical env key를 함께 회전하고 PostgreSQL·geo API·Dagster web/daemon·DB init을 재생성했다. 새 비밀번호 인증, 기존 기본값 거부, secret file·health·공개 Manager 브라우저 수명주기를 확인했다 |
 | **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[x]` | 2026-08-18 | n150 기존 위반 7개를 `0600`으로 정리하고 식별 불가 백업 `.env.backup-pinvi-deploy-836a18f-`를 삭제했다. 전체 `.env*` 재검사를 통과했다 |
+<<<<<<< HEAD
 | **#173 / Map T-VN-H46F** | Map UI geo consumer credential 경계 | `[/]` | - | 충돌한 draft #173은 H46F PR #183으로 흡수. UI server-only alias·C6c exact wiring·Manager VWorld fallback 제거, 전문 적대 리뷰 2명 GO, backend 411 passed. PR 머지와 Map PR #1004 결합 CI 대기 |
+=======
+| **T-C7-CAPTURE** | Map C7 런북 §2.1 step 8용 `ktdctl pinvi-pair capture` 추가 | `[/]` | - | 읽기 전용 관측 + v4 manifest 원자적 교체(ADR-38). Docker 없는 단위/통합 검증은 통과. n150 실제 실행과 gitignore된 `docs/deploy-runbook.local.md`의 구체 invocation 기록은 사용자 확인 대기 |
+>>>>>>> da8f2e3 (feat(c7): `ktdctl pinvi-pair capture`를 읽기 전용 관측기로 추가한다 (ADR-38))
 
 ---
 

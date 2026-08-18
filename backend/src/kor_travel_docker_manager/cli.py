@@ -7,6 +7,11 @@ from typing import Any
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
+from kor_travel_docker_manager.services.c6c_pair_capture import (
+    BUILD_FLAG_NOTICE,
+    PairCaptureRefusal,
+    capture_compatible_pair,
+)
 from kor_travel_docker_manager.services.compose_service import (
     compose_service,
 )
@@ -144,6 +149,24 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _cmd_pinvi_pair_capture(args: argparse.Namespace) -> int:
+    if args.build:
+        print(BUILD_FLAG_NOTICE, file=sys.stderr)
+    try:
+        result = capture_compatible_pair(
+            verified_compatible=args.verified_compatible,
+            manifest_path=args.manifest_path,
+            map_source_checkout=args.map_source_checkout,
+            pinvi_source_checkout=args.pinvi_source_checkout,
+            expect_active_map_revision=args.expect_active_map_revision,
+            build_flag=args.build,
+        )
+    except PairCaptureRefusal as exc:
+        print(str(exc), file=sys.stderr)
+        return exc.returncode
+    return _emit_process_result(result, json_output=args.json)
+
+
 def _cmd_db_backup_create(args: argparse.Namespace) -> int:
     try:
         manifest = create_standalone_backup(args.role, timeout=args.timeout)
@@ -275,6 +298,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
     pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
+
+    pair_capture = pair_subparsers.add_parser(
+        "capture",
+        help=(
+            "실행 중인 다섯 Map·PinVi 컨테이너를 읽어 C7 runner용 "
+            "compatible-pair-v4 manifest를 갱신합니다(컨테이너 불변)."
+        ),
+    )
+    pair_capture.add_argument(
+        "--verified-compatible",
+        action="store_true",
+        help="Map과 PinVi가 같은 contract generation임을 operator가 단언합니다.",
+    )
+    pair_capture.add_argument(
+        "--manifest-path",
+        default=None,
+        help=(
+            "C7 runner가 E2E_C7_COMPATIBLE_PAIR_MANIFEST로 읽는 절대경로. "
+            "basename은 compatible-pair-v4.json이어야 하며 기본값은 없습니다."
+        ),
+    )
+    pair_capture.add_argument(
+        "--map-source-checkout",
+        default=None,
+        help="관측된 Map revision의 commit object 실재를 확인할 git checkout 절대경로.",
+    )
+    pair_capture.add_argument(
+        "--pinvi-source-checkout",
+        default=None,
+        help="관측된 PinVi revision의 commit object 실재를 확인할 git checkout 절대경로.",
+    )
+    pair_capture.add_argument(
+        "--expect-active-map-revision",
+        default=None,
+        help="주어지면 관측된 Map OCI revision과 exact 일치를 요구합니다(40-hex).",
+    )
+    pair_capture.add_argument(
+        "--build",
+        action="store_true",
+        help="런북 문구 호환용. 수락하지만 아무것도 빌드하지 않습니다.",
+    )
+    pair_capture.add_argument(
+        "--json",
+        action="store_true",
+        help="secret-free receipt 전체를 JSON으로 출력합니다.",
+    )
+    pair_capture.set_defaults(func=_cmd_pinvi_pair_capture)
 
     db_backup = subparsers.add_parser(
         "db-backup",

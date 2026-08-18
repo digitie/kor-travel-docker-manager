@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-08-19 — Map C7 런북 step 8용 `pinvi-pair capture` 복원 (읽기 전용, ADR-38)
+
+Map 저장소 런북 `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8이 부르는
+`ktdctl pinvi-pair capture --verified-compatible --build`가 Manager에 없었다. 사용자
+결정에 따라 런북을 고치지 않고 Manager에 명령을 추가했다.
+
+- **왜 manifest를 되살렸나**: `compatible-pair-v4.json`은 잔재가 아니라 살아 있는
+  cross-repo 계약이다. `64069f7`에서 지운 것은 Manager 내부 reader였고, 소비자인 Map의
+  C7 runner(`scripts/lib/c7_prod_attestation.py`)는 지금도 그 파일을 exact shape로
+  강제한다 — top-level `{active, rollback, version}`, `version == 4`, 두 pair 모두 정확히
+  9개 필드, root:root `0600`, 모든 ancestor가 uid 0·gid 0·`mode & 0o022 == 0`.
+- **되살린 것**: `c6c_deployment.py`에 `CompatibleImagePair`/`CompatiblePairManifest`/
+  `new_image_pair`/`parse_pair_manifest`/`manifest_with_active_pair`/
+  `initial_pair_manifest`/`write_pair_manifest`(temp→fsync→chmod/chown→`os.replace`→dir
+  fsync). 오케스트레이션은 새 모듈 `c6c_pair_capture.py`로 분리해 10k행
+  `compose_service.py`를 키우지 않았다.
+- **한 군데만 바꿨다**: 옛 writer의 `ensure_c6c_state_directory`(mkdir 부작용)를
+  `assert_runner_readable_parent`(검증 전용)로 교체했다. capture는 **절대 mkdir하지
+  않는다**. 부모가 없거나 정책을 어기면 거부한다.
+- **의도적으로 복원하지 않은 것**: `assert_pair_manifest_bootstrap_allowed`(v4가 있으면
+  거부 — 재배포 후 재capture를 막는다), `_halt_c6c_pair`/`_cleanup_bootstrap` 등
+  stop/up/recreate 스테이지 전량, `compatible_pair_manifest_logical_hash`(runner는 raw
+  bytes를 해시하므로 잘못된 해시가 attestation에 복사될 위험만 만든다),
+  `expected_build_contexts` 계열(false-drift 생성기).
+- **비파괴 보장**: 내보내는 docker argv는 `compose --project-directory ... ps -q`,
+  `inspect --`, `image inspect --format=... --` 셋뿐이다. 테스트가 fake runner에 기록된
+  전체 argv를 allowlist로 단언하고 `up|stop|start|rm|build|restart|kill|down` 토큰이
+  어디에도 없음을 별도로 단언한다. 실패해도 컨테이너를 건드리지 않으며, 모든 non-zero
+  메시지가 `maintenance fence stays closed; ...`로 끝난다.
+- **state root**: 세 번째 규칙을 만들지 않으려고 `--manifest-path` 절대경로를 필수로
+  했다(ADR-38 §근거). n150 `.env`는 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`이라
+  `c6c_state_paths`를 재사용하면 `sudo -n`의 HOME=`/root` 때문에 runner가 읽지 않는 네
+  번째 아티팩트 위치가 생긴다.
+- **정직한 자백 두 가지**: (1) 증거력이 v4보다 약하다 — 빌드도 rebuild 대조도 하지
+  않으므로 `map_source_revision`은 image label 주장이고, 결박은 "그 commit이 지목된
+  checkout에 실재하고 checkout이 clean"까지다. (2) "쓰기 없음"은 거짓이다 —
+  `rebuild-pinned`와 같은 global mutation lock을 잡으므로 lock 디렉터리/파일이 생길 수
+  있다. 둘 다 receipt의 `not_guaranteed`/`side_effects`에 노출한다.
+- **cross-repo 회귀 게이트**: `backend/tests/test_c6c_pair_capture.py`가 runner 술어의
+  사본(행 번호 주석 포함)으로 산출물을 검증하고, Map 체크아웃이 있으면 **실제
+  `c7_prod_attestation.py` 모듈을 import해** `_validate_pair`·`_exact_dict`에 통과시킨다.
+  runner가 계약을 바꾸면 이 파일이 먼저 red가 된다.
+- **검증**: Docker·n150 접근 없이 `pytest tests` 493 passed, `ruff check .` 신규 위반 0건
+  (baseline 68건 동일), `mypy --strict`가 새 모듈에서 clean, 패키지 해석 기준 mypy 오류
+  수는 baseline과 동일한 6건.
+
+n150은 읽기만 했다. prod mutation은 없었고, 실제 실행은 사용자 확인 대기다.
+
+---
 ## 2026-08-19 — Map T-VN-H46F와 draft PR #173 흡수
 
 충돌 상태인 draft PR #173의 credential 경계 의도를 최신 `main` C6c 구조에 재배치했다.

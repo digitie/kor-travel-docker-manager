@@ -406,10 +406,69 @@ rebuildable 환경에서는 cache-target integration이 완전히 inert여야 �
 PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer ID는 Compose 기본값이어야 한다.
 설정된 integration은 candidate build나 DB 변경 전에 거부한다.
 
-`capture`, `deploy`, `rollback`, `cache-target`, `db-backup`, `map-ui-auth` 공개 명령은 없다. 최종
-schema backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primitive로 설계한다.
+`deploy`, `rollback`, `cache-target`, `map-ui-auth` 공개 명령은 없다. 최종 schema
+backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primitive로 설계한다.
+(`db-backup`은 #177에서 pair/cache와 독립된 primitive로 다시 도입됐다. `pinvi-pair
+capture`는 §7.5에서 **runtime mutation이 없는 읽기 전용 관측기**로 되살아났다.)
 
-### 7.5 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
+### 7.5 Map C7 런북용 `pinvi-pair capture` (읽기 전용, ADR-38)
+
+Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이 부르는 명령이다. 실행 중인 다섯
+컨테이너를 **읽기만 하고**, Map의 C7 runner가 읽는 `compatible-pair-v4.json`을 원자적으로
+교체한다. 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지 않았다 — 이 명령은 어떤
+컨테이너도 시작·정지·재생성하지 않는다.
+
+```bash
+sudo -n ktdctl pinvi-pair capture \
+  --verified-compatible \
+  --manifest-path /var/lib/kor-travel-docker-manager/<project>/compatible-pair-v4.json \
+  --map-source-checkout /absolute/path/to/kor-travel-map \
+  --pinvi-source-checkout /absolute/path/to/pinvi \
+  [--expect-active-map-revision <40hex>] [--build] [--json]
+```
+
+- `--manifest-path`는 **기본값이 없다.** C7 runner가 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`로
+  읽는 바로 그 절대경로를 operator가 명시한다. basename은 `compatible-pair-v4.json`이어야
+  하고, 부모 체인은 runner와 같은 술어(디렉터리·비symlink·uid 0·gid 0·`mode & 0o022 == 0`)를
+  만족해야 한다. **capture는 디렉터리를 만들지 않는다.**
+- `--build`는 **아무것도 빌드하지 않는다.** 런북 문구 호환용으로 수락하고 stderr에 한 줄
+  고지한다. 빌드는 host compose 배포의 책임이다.
+- root 실행이 필요하다(산출물이 root:root `0600`).
+- `rebuild-pinned`와 **같은 global mutation lock**을 잡는다. 다른 mutation이 진행 중이면
+  exit 2로 거부한다.
+
+terminal state와 exit code:
+
+| state | exit | 의미 |
+|:---|:---:|:---|
+| `capture_committed` | 0 | manifest 교체 완료 |
+| `capture_refused_precondition` | 2 | 사용법·경로·권한·기존 파일 foreign |
+| `capture_refused_lock_contended` | 2 | 다른 Manager mutation 진행 중 |
+| `capture_refused_runtime` | 1 | 관측·label·git 결박 실패 |
+| `capture_write_indeterminate` | 1 | 커밋 상태를 판별할 수 없음 |
+
+모든 non-zero 메시지는 `maintenance fence stays closed; no container was stopped,
+started, or recreated.`로 끝난다. 되돌릴 mutation이 없으므로 rollback도 없고, 런북 §2.1
+step 1의 maintenance fence는 닫힌 채 유지한다.
+
+**보장하는 것**: 다섯 service가 정확히 하나의 running·healthy container로 해소됐고, 기록한
+image ID가 그 container가 실행 중인 image이며, Map 네 image가 동일한
+`org.opencontainers.image.revision`을 선언했고, PinVi image가
+`io.pinvi.build.environment=production`을 가지며, 각 revision이 operator가 지목한 checkout에
+실재하는 commit object이고, 그 checkout의 `git status --porcelain=v1`이 비어 있었다는 것.
+
+**보장하지 않는 것**(receipt의 `not_guaranteed` 배열과 같은 문구):
+
+- 기록한 image가 기록한 revision에서 빌드됐다는 것 — 빌드도 rebuild 대조도 하지 않는다.
+- `--build`가 무언가를 빌드했다는 것 — 아무것도 빌드하지 않는다.
+- rollback pair가 복원 가능하다는 것 — shape만 유효하다(`rollback_images_present`로 별도 보고).
+- 기록한 revision이 published branch에서 도달 가능하다는 것.
+- capture 반환 이후에도 runtime이 일치한다는 것 — mutation lock을 잡고 있는 시점의 관측이다.
+
+**부수 효과**: manifest 원자 교체 외에 global mutation lock 디렉터리(0700)와 파일(0600)이
+생길 수 있다. receipt의 `side_effects`가 실제 경로를 보고한다.
+
+### 7.6 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
 
 아래는 이전 v4 구현의 근거를 보존한 역사 기록이다. 여기 나오는 command와 state file은 현행
 Manager에 존재하지 않으며 실행하면 안 된다. 현재 운영 절차로 해석하지 않는다.

@@ -1,3 +1,4 @@
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -5,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from kor_travel_docker_manager.cli import build_parser, main
+from kor_travel_docker_manager.services import c6c_pair_capture as pair_capture
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ValidatedComposeCandidate,
@@ -458,11 +460,134 @@ def test_cli_rebuilds_pinned_runtime(mock_compose_service):
 
 @pytest.mark.parametrize(
     "legacy_action",
-    ["bootstrap-pinned-drift", "deploy", "capture", "rollback"],
+    ["bootstrap-pinned-drift", "deploy", "rollback"],
 )
 def test_cli_does_not_expose_legacy_pair_actions(legacy_action: str) -> None:
     with pytest.raises(SystemExit, match="2"):
         main(["pinvi-pair", legacy_action])
+
+
+def _capture_receipt() -> dict[str, object]:
+    return {
+        "state": pair_capture.CAPTURE_COMMITTED,
+        "success": True,
+        "returncode": 0,
+        "stdout": "manifest=/var/lib/x/compatible-pair-v4.json\n",
+        "stderr": "",
+        "manifest": "/var/lib/x/compatible-pair-v4.json",
+        "manifest_sha256": "0" * 64,
+        "contract_generation": "c6c-ops-v1",
+        "map_source_revision": "a1" * 20,
+        "pinvi_source_revision": "b2" * 20,
+        "compose_project": "kortravel",
+        "compose_project_directory": "/srv/kor-travel",
+        "images": {},
+        "map_source_checkout": "/srv/map",
+        "pinvi_source_checkout": "/srv/pinvi",
+        "checkout_uid": {"map": 0, "pinvi": 0},
+        "operator_asserted_verified_compatible": True,
+        "build_flag_accepted_no_op": False,
+        "rollback_images_present": True,
+        "not_guaranteed": list(pair_capture.NOT_GUARANTEED),
+        "side_effects": [],
+    }
+
+
+def test_cli_capture_parser_has_no_path_defaults() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["pinvi-pair", "capture", "--verified-compatible"])
+
+    assert args.verified_compatible is True
+    assert args.manifest_path is None
+    assert args.map_source_checkout is None
+    assert args.pinvi_source_checkout is None
+    assert args.expect_active_map_revision is None
+    assert args.build is False
+    assert args.json is False
+
+
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_forwards_every_option(mock_capture) -> None:
+    mock_capture.return_value = _capture_receipt()
+
+    assert (
+        main(
+            [
+                "pinvi-pair",
+                "capture",
+                "--verified-compatible",
+                "--build",
+                "--manifest-path",
+                "/var/lib/x/compatible-pair-v4.json",
+                "--map-source-checkout",
+                "/srv/map",
+                "--pinvi-source-checkout",
+                "/srv/pinvi",
+                "--expect-active-map-revision",
+                "a1" * 20,
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    mock_capture.assert_called_once_with(
+        verified_compatible=True,
+        manifest_path="/var/lib/x/compatible-pair-v4.json",
+        map_source_checkout="/srv/map",
+        pinvi_source_checkout="/srv/pinvi",
+        expect_active_map_revision="a1" * 20,
+        build_flag=True,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_json_receipt_key_set_is_frozen(mock_capture, capsys) -> None:
+    mock_capture.return_value = _capture_receipt()
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--json"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert set(printed) == set(pair_capture.CAPTURE_RECEIPT_KEYS)
+
+
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_announces_that_build_builds_nothing(mock_capture, capsys) -> None:
+    mock_capture.return_value = _capture_receipt()
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 0
+
+    assert capsys.readouterr().err.strip() == pair_capture.BUILD_FLAG_NOTICE
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_returncode"),
+    [
+        (pair_capture.CAPTURE_REFUSED_PRECONDITION, 2),
+        (pair_capture.CAPTURE_REFUSED_LOCK_CONTENDED, 2),
+        (pair_capture.CAPTURE_REFUSED_RUNTIME, 1),
+        (pair_capture.CAPTURE_WRITE_INDETERMINATE, 1),
+    ],
+)
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_refusals_map_to_exit_codes_and_keep_the_fence_closed(
+    mock_capture, capsys, state: str, expected_returncode: int
+) -> None:
+    mock_capture.side_effect = pair_capture.PairCaptureRefusal(state, "refused for a reason")
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible"]) == expected_returncode
+
+    message = capsys.readouterr().err.strip()
+    assert message.endswith(pair_capture.FENCE_NOTICE)
+    assert "resume" not in message and "reopen" not in message
+
+
+def test_cli_runbook_literal_invocation_fails_closed_with_exit_two(capsys) -> None:
+    """런북 §2.1 step 8의 문자 그대로의 호출은 필수 경로 3개가 없어 fail-closed된다."""
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 2
+
+    assert capsys.readouterr().err.strip().endswith(pair_capture.FENCE_NOTICE)
 
 
 @pytest.mark.parametrize(
