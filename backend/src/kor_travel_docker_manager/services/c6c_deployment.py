@@ -5546,11 +5546,37 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
+def restore_pair_manifest_snapshot(
+    path: str | Path,
+    *,
+    previous_bytes: bytes | None,
+    previous_mode: int | None = 0o600,
+    owner_uid: int | None = None,
+    owner_gid: int | None = None,
+) -> None:
+    """커밋 뒤 검증이 실패했을 때 pre-image bytes(또는 부재 상태)로 되돌린다.
+
+    ``previous_bytes``가 ``None``이면 갓 커밋한 파일을 지워 "capture 이전"으로
+    되돌린다. 실패는 ``OSError``로 그대로 전파해 호출자가 "복구됨"과 "판별 불가"를
+    구분할 수 있게 한다.
+    """
+
+    _restore_manifest_snapshot(
+        Path(path),
+        previous_bytes=previous_bytes,
+        previous_mode=previous_mode,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+    )
+
+
 def _restore_manifest_snapshot(
     manifest_path: Path,
     *,
     previous_bytes: bytes | None,
     previous_mode: int | None,
+    owner_uid: int | None = None,
+    owner_gid: int | None = None,
 ) -> None:
     if previous_bytes is None:
         manifest_path.unlink(missing_ok=True)
@@ -5571,6 +5597,8 @@ def _restore_manifest_snapshot(
             temp_path = Path(temp.name)
         if previous_mode is not None:
             os.chmod(temp_path, previous_mode)
+        if owner_uid is not None and owner_gid is not None:
+            os.chown(temp_path, owner_uid, owner_gid)
         os.replace(temp_path, manifest_path)
         _fsync_directory(manifest_path.parent)
     finally:

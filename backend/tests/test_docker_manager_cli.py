@@ -484,10 +484,22 @@ def _capture_receipt() -> dict[str, object]:
         "images": {},
         "map_source_checkout": "/srv/map",
         "pinvi_source_checkout": "/srv/pinvi",
+        "input_sources": {
+            "manifest_path": "E2E_C7_COMPATIBLE_PAIR_MANIFEST",
+            "map_source_checkout": "KTDM_C7_MAP_SOURCE_CHECKOUT",
+            "pinvi_source_checkout": "KTDM_C7_PINVI_SOURCE_CHECKOUT",
+        },
         "checkout_uid": {"map": 0, "pinvi": 0},
+        "previous_manifest_sha256": None,
+        "previous_active": None,
+        "previous_recorded_at": None,
+        "allow_generation_change": False,
         "operator_asserted_verified_compatible": True,
         "build_flag_accepted_no_op": False,
         "rollback_images_present": True,
+        "pinned_generation_manifest": None,
+        "pinned_generation_agrees": None,
+        "pinned_generation_divergent_roles": [],
         "not_guaranteed": list(pair_capture.NOT_GUARANTEED),
         "side_effects": [],
     }
@@ -502,6 +514,7 @@ def test_cli_capture_parser_has_no_path_defaults() -> None:
     assert args.map_source_checkout is None
     assert args.pinvi_source_checkout is None
     assert args.expect_active_map_revision is None
+    assert args.allow_generation_change is False
     assert args.build is False
     assert args.json is False
 
@@ -525,6 +538,7 @@ def test_cli_capture_forwards_every_option(mock_capture) -> None:
                 "/srv/pinvi",
                 "--expect-active-map-revision",
                 "a1" * 20,
+                "--allow-generation-change",
                 "--json",
             ]
         )
@@ -537,6 +551,7 @@ def test_cli_capture_forwards_every_option(mock_capture) -> None:
         map_source_checkout="/srv/map",
         pinvi_source_checkout="/srv/pinvi",
         expect_active_map_revision="a1" * 20,
+        allow_generation_change=True,
         build_flag=True,
     )
 
@@ -565,7 +580,9 @@ def test_cli_capture_announces_that_build_builds_nothing(mock_capture, capsys) -
     [
         (pair_capture.CAPTURE_REFUSED_PRECONDITION, 2),
         (pair_capture.CAPTURE_REFUSED_LOCK_CONTENDED, 2),
+        (pair_capture.CAPTURE_REFUSED_CHECKOUT_OWNERSHIP, 2),
         (pair_capture.CAPTURE_REFUSED_RUNTIME, 1),
+        (pair_capture.CAPTURE_WRITE_ROLLED_BACK, 1),
         (pair_capture.CAPTURE_WRITE_INDETERMINATE, 1),
     ],
 )
@@ -582,12 +599,38 @@ def test_cli_capture_refusals_map_to_exit_codes_and_keep_the_fence_closed(
     assert "resume" not in message and "reopen" not in message
 
 
-def test_cli_runbook_literal_invocation_fails_closed_with_exit_two(capsys) -> None:
-    """런북 §2.1 step 8의 문자 그대로의 호출은 필수 경로 3개가 없어 fail-closed된다."""
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_runbook_literal_invocation_reaches_the_capture_service(mock_capture) -> None:
+    """런북 §2.1 step 8의 문자 그대로의 호출이 argparse에서 죽지 않고 서비스에 닿는다."""
 
-    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 2
+    mock_capture.return_value = _capture_receipt()
 
-    assert capsys.readouterr().err.strip().endswith(pair_capture.FENCE_NOTICE)
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 0
+
+    mock_capture.assert_called_once_with(
+        verified_compatible=True,
+        manifest_path=None,
+        map_source_checkout=None,
+        pinvi_source_checkout=None,
+        expect_active_map_revision=None,
+        allow_generation_change=False,
+        build_flag=True,
+    )
+
+
+def test_cli_capture_help_names_the_frozen_environment_fallbacks(capsys) -> None:
+    """운영자가 --help만 보고도 어디에 무엇을 넣어야 하는지 알 수 있어야 한다."""
+
+    with pytest.raises(SystemExit, match="0"):
+        main(["pinvi-pair", "capture", "--help"])
+
+    text = capsys.readouterr().out
+    for name in (
+        *pair_capture.MANIFEST_PATH_ENV_NAMES,
+        *pair_capture.MAP_CHECKOUT_ENV_NAMES,
+        *pair_capture.PINVI_CHECKOUT_ENV_NAMES,
+    ):
+        assert name in text
 
 
 @pytest.mark.parametrize(

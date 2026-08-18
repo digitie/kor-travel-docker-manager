@@ -18,8 +18,9 @@ Map 저장소 런북 `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8이 부르�
 
 state root 정책은 새로 만들지 않는다. runner가 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`로
 operator 지정 절대경로를 받아 `_read_secure_file`로 여는 것과 똑같이, capture도
-`--manifest-path` 절대경로를 받아 **같은 술어**로 부모 체인을 검증한다. 정책의
-정본은 여전히 runner 한 곳이다.
+**같은 env 이름을 fallback으로 읽고** 같은 술어로 부모 체인을 검증한다. CLI flag는
+override일 뿐이며, 정책의 정본은 여전히 runner 한 곳이다. 런북이 인자 없이 부르는
+문자 그대로의 호출이 동작해야 하므로 세 입력은 frozen environment에서 온다.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _SOURCE_REVISION_PATTERN,
     PAIR_MANIFEST_FILENAME,
     C6cCommandRunner,
+    CompatibleImagePair,
     CompatiblePairManifest,
     DeploymentContractError,
     PairManifestCommitIndeterminateError,
@@ -59,14 +61,25 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     inspect_c6c_image_source_revision,
     manifest_with_active_pair,
     new_image_pair,
+    pair_manifest_bytes,
     parse_pair_manifest,
     require_local_c6c_image,
+    restore_pair_manifest_snapshot,
     write_pair_manifest,
 )
 from kor_travel_docker_manager.services.compose_service import (
     c6c_deployment_lock_from_environment,
     get_env_path,
     get_project_root,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    PinnedRuntimeGeneration,
+    f1d_legacy_artifact_paths,
+    pinned_runtime_manifest_path,
+    pinned_runtime_state_root,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    manifest_from_payload as pinned_manifest_from_payload,
 )
 
 # runner의 role → compose service → manifest field 삼중 결박.
@@ -83,17 +96,33 @@ _MAP_ROLES = tuple(role for role, _service, _field in CAPTURE_ROLES if role != _
 _PINVI_BUILD_ENVIRONMENT = "production"
 _CONTAINER_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
+# 같은 사실을 두 번 적는 v5 pinned generation과의 대조표. 값이 어긋나도 거부하지
+# 않는다 — prod Map 재배포의 sanctioned 경로가 host compose 직접 실행이라 v5가
+# 뒤처지는 것이 정상 상태일 수 있다. 다만 침묵하지도 않는다.
+PINNED_GENERATION_IMAGE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("map_api", "map_api_image_id"),
+    ("map_ui", "map_ui_image_id"),
+    ("map_dagster_web", "map_dagster_image_id"),
+    ("map_dagster_daemon", "map_dagster_daemon_image_id"),
+    ("pinvi_api", "pinvi_api_image_id"),
+)
+_PINNED_MANIFEST_MAX_BYTES = 64 * 1024
+
 CAPTURE_COMMITTED = "capture_committed"
 CAPTURE_REFUSED_PRECONDITION = "capture_refused_precondition"
 CAPTURE_REFUSED_LOCK_CONTENDED = "capture_refused_lock_contended"
+CAPTURE_REFUSED_CHECKOUT_OWNERSHIP = "capture_refused_checkout_ownership"
 CAPTURE_REFUSED_RUNTIME = "capture_refused_runtime"
+CAPTURE_WRITE_ROLLED_BACK = "capture_write_rolled_back"
 CAPTURE_WRITE_INDETERMINATE = "capture_write_indeterminate"
 
 CAPTURE_EXIT_CODES: dict[str, int] = {
     CAPTURE_COMMITTED: 0,
     CAPTURE_REFUSED_PRECONDITION: 2,
     CAPTURE_REFUSED_LOCK_CONTENDED: 2,
+    CAPTURE_REFUSED_CHECKOUT_OWNERSHIP: 2,
     CAPTURE_REFUSED_RUNTIME: 1,
+    CAPTURE_WRITE_ROLLED_BACK: 1,
     CAPTURE_WRITE_INDETERMINATE: 1,
 }
 
@@ -101,6 +130,29 @@ FENCE_NOTICE = "maintenance fence stays closed; no container was stopped, starte
 BUILD_FLAG_NOTICE = "capture builds nothing; building is the host compose deploy's responsibility"
 # `c6c_deployment.c6c_deployment_lock`이 flock 경합에서 내는 exact 메시지.
 LOCK_CONTENTION_MESSAGE = "another C6c compatible-pair operation is already active"
+
+# 세 입력의 frozen-environment fallback. 정본 소유자는 Map의 C7 runner이므로 그
+# env 이름을 그대로 쓴다. CLI flag는 override로만 존재한다.
+MANIFEST_PATH_OPTION = "--manifest-path"
+MAP_CHECKOUT_OPTION = "--map-source-checkout"
+PINVI_CHECKOUT_OPTION = "--pinvi-source-checkout"
+MANIFEST_PATH_ENV_NAMES: tuple[str, ...] = (
+    "E2E_C7_COMPATIBLE_PAIR_MANIFEST",
+    "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
+)
+MAP_CHECKOUT_ENV_NAMES: tuple[str, ...] = ("KTDM_C7_MAP_SOURCE_CHECKOUT",)
+PINVI_CHECKOUT_ENV_NAMES: tuple[str, ...] = ("KTDM_C7_PINVI_SOURCE_CHECKOUT",)
+
+# git 하위 프로세스에서 반드시 제거하는 상속 변수. 이 중 하나라도 남으면 `-C
+# <checkout>`이 다른 저장소를 가리켜 결박이 동어반복이 된다.
+GIT_ENVIRONMENT_OVERRIDES: tuple[str, ...] = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_WORK_TREE",
+)
+GIT_DUBIOUS_OWNERSHIP_MARKER = "dubious ownership"
 
 # capture가 **보장하지 않는** 것. receipt와 문서가 같은 문구를 쓴다.
 NOT_GUARANTEED: tuple[str, ...] = (
@@ -111,25 +163,35 @@ NOT_GUARANTEED: tuple[str, ...] = (
     "that the recorded revisions are reachable from any published branch",
     "that the runtime still matches after capture returns; this is an observation "
     "taken while the mutation lock was held",
+    "that the v5 pinned generation manifest describes this runtime; capture only "
+    "reports whether the two records agree and never edits the v5 file",
 )
 
 # receipt는 전부 비민감값이다. 이 집합이 회귀 게이트다.
 CAPTURE_RECEIPT_KEYS = frozenset(
     {
+        "allow_generation_change",
         "build_flag_accepted_no_op",
         "checkout_uid",
         "compose_project",
         "compose_project_directory",
         "contract_generation",
         "images",
+        "input_sources",
         "manifest",
         "manifest_sha256",
         "map_source_checkout",
         "map_source_revision",
         "not_guaranteed",
         "operator_asserted_verified_compatible",
+        "pinned_generation_agrees",
+        "pinned_generation_divergent_roles",
+        "pinned_generation_manifest",
         "pinvi_source_checkout",
         "pinvi_source_revision",
+        "previous_active",
+        "previous_manifest_sha256",
+        "previous_recorded_at",
         "returncode",
         "rollback_images_present",
         "side_effects",
@@ -177,9 +239,59 @@ class RuntimeObservation:
     compose_project: str
 
 
+@dataclass(frozen=True)
+class ResolvedInput:
+    """flag override 또는 frozen env fallback으로 결정된 입력 하나."""
+
+    value: str
+    source: str
+
+
+@dataclass(frozen=True)
+class ExistingManifest:
+    """교체 대상 manifest의 pre-image. 이 값이 receipt의 증거가 된다."""
+
+    manifest: CompatiblePairManifest
+    payload_bytes: bytes
+    mode: int
+
+    @property
+    def sha256(self) -> str:
+        return hashlib.sha256(self.payload_bytes).hexdigest()
+
+
+@dataclass(frozen=True)
+class PinnedGenerationComparison:
+    """v5 pinned generation과 관측값의 대조 결과. 거부 사유가 아니다."""
+
+    manifest_path: str | None
+    agrees: bool | None
+    divergent_roles: tuple[str, ...]
+
+
+def capture_command_environment(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """하위 프로세스 env에서 git redirection 변수를 제거한 사본을 만든다.
+
+    상속된 ``GIT_DIR``/``GIT_WORK_TREE``는 ``git -C <checkout>``을 조용히 무력화해
+    "그 commit이 그 checkout에 있다"는 유일한 비-동어반복 결박을 우회시킨다.
+    """
+
+    values = dict(os.environ if base is None else base)
+    for name in GIT_ENVIRONMENT_OVERRIDES:
+        values.pop(name, None)
+    return values
+
+
 def _default_runner(cwd: str) -> C6cCommandRunner:
     def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
+        return subprocess.run(
+            argv,
+            cwd=cwd,
+            env=capture_command_environment(),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
 
     return run
 
@@ -201,7 +313,7 @@ def _observe_runtime(
     project_directory: str,
     compose_project: str,
 ) -> RuntimeObservation:
-    """C-7~C-10. runner `_compose_container`(277-302행)의 argv를 그대로 미러링한다."""
+    """C-9~C-12. runner `_compose_container`(277-302행)의 argv를 그대로 미러링한다."""
 
     containers: dict[str, str] = {}
     images: dict[str, str] = {}
@@ -308,7 +420,7 @@ def _inspect_container(
 
 
 def _assert_container_is_healthy(record: Mapping[str, Any], *, service: str) -> None:
-    """C-8. runner 501-508행과 동일 술어."""
+    """C-10. runner 501-508행과 동일 술어."""
 
     state = record.get("State")
     if not isinstance(state, dict):
@@ -339,7 +451,7 @@ def _observed_source_revisions(
     *,
     runner: C6cCommandRunner,
 ) -> tuple[str, str]:
-    """C-11/C-12. image의 로컬 실재와 OCI revision label을 확인한다."""
+    """C-13/C-14. image의 로컬 실재와 OCI revision label을 확인한다."""
 
     revisions: dict[str, str] = {}
     for role, service, _field in CAPTURE_ROLES:
@@ -365,6 +477,28 @@ def _observed_source_revisions(
     return map_revisions.pop(), revisions[_PINVI_ROLE]
 
 
+def _assert_no_dubious_ownership(
+    completed: subprocess.CompletedProcess[str],
+    *,
+    checkout: Path,
+    label: str,
+) -> None:
+    """git ownership 거부를 "commit 없음"으로 뭉개지 않고 별도 상태로 구분한다."""
+
+    stderr = completed.stderr or ""
+    if completed.returncode == 0 or GIT_DUBIOUS_OWNERSHIP_MARKER not in stderr.lower():
+        return
+    raise _refuse(
+        CAPTURE_REFUSED_CHECKOUT_OWNERSHIP,
+        (
+            f"git refused the {label} checkout {checkout} as dubious ownership, so the "
+            "revision binding could not be evaluated at all; this is not a missing commit. "
+            "chown the checkout to the capture user, or record it in the system-wide "
+            "git config safe.directory (capture never passes -c safe.directory itself)"
+        ),
+    )
+
+
 def _assert_revision_exists_in_checkout(
     runner: C6cCommandRunner,
     *,
@@ -372,7 +506,7 @@ def _assert_revision_exists_in_checkout(
     revision: str,
     label: str,
 ) -> None:
-    """C-14/C-15. git ownership 정책을 우회하지 않는다 (`-c safe.directory` 미사용)."""
+    """C-16/C-17. git ownership 정책을 우회하지 않는다 (`-c safe.directory` 미사용)."""
 
     existence = _run(
         runner,
@@ -387,6 +521,7 @@ def _assert_revision_exists_in_checkout(
         ],
         f"{label} source checkout could not be queried",
     )
+    _assert_no_dubious_ownership(existence, checkout=checkout, label=label)
     if existence.returncode != 0:
         raise _refuse(
             CAPTURE_REFUSED_RUNTIME,
@@ -397,6 +532,7 @@ def _assert_revision_exists_in_checkout(
         ["git", "--no-optional-locks", "-C", str(checkout), "status", "--porcelain=v1"],
         f"{label} source checkout could not be queried",
     )
+    _assert_no_dubious_ownership(status, checkout=checkout, label=label)
     if status.returncode != 0 or status.stdout != "":
         raise _refuse(CAPTURE_REFUSED_RUNTIME, f"{label} source checkout is not clean")
 
@@ -434,8 +570,8 @@ def _read_runner_secure_bytes(
         os.close(descriptor)
 
 
-def _existing_manifest(manifest_path: Path) -> CompatiblePairManifest | None:
-    """C-6. 부재이거나 정규 v4여야 한다. 그 밖은 precondition 거부."""
+def _existing_manifest(manifest_path: Path) -> ExistingManifest | None:
+    """C-8. 부재이거나 정규 v4여야 한다. 그 밖은 precondition 거부."""
 
     try:
         observed = manifest_path.lstat()
@@ -463,7 +599,11 @@ def _existing_manifest(manifest_path: Path) -> CompatiblePairManifest | None:
             expected_uid=RUNNER_FILE_UID,
             expected_gid=RUNNER_FILE_GID,
         )
-        return parse_pair_manifest(payload)
+        return ExistingManifest(
+            manifest=parse_pair_manifest(payload),
+            payload_bytes=payload,
+            mode=stat.S_IMODE(observed.st_mode),
+        )
     except (OSError, DeploymentContractError) as exc:
         raise _refuse(
             CAPTURE_REFUSED_PRECONDITION,
@@ -472,13 +612,115 @@ def _existing_manifest(manifest_path: Path) -> CompatiblePairManifest | None:
 
 
 def _assert_runner_reparse(payload_bytes: bytes) -> None:
-    """C-18(ii)(iii). manager의 느슨한 `_is_iso8601` 대신 runner 술어를 쓴다."""
+    """C-20(ii)(iii). manager의 느슨한 `_is_iso8601` 대신 runner 술어를 쓴다."""
 
     manifest = parse_pair_manifest(payload_bytes)
     for pair in (manifest.active, manifest.rollback):
         observed_at = datetime.fromisoformat(pair.recorded_at)
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise DeploymentContractError("recorded_at has no UTC offset for the C7 runner")
+
+
+def _pair_identity(pair: CompatibleImagePair) -> dict[str, str]:
+    """runner가 강제하는 9필드를 그대로 담은 비민감 identity."""
+
+    return {
+        "contract_generation": pair.contract_generation,
+        "map_dagster_daemon_image_id": pair.map_dagster_daemon_image_id,
+        "map_dagster_image_id": pair.map_dagster_image_id,
+        "map_image_id": pair.map_image_id,
+        "map_source_revision": pair.map_source_revision,
+        "map_ui_image_id": pair.map_ui_image_id,
+        "pinvi_image_id": pair.pinvi_image_id,
+        "pinvi_source_revision": pair.pinvi_source_revision,
+        "recorded_at": pair.recorded_at,
+    }
+
+
+def _read_pinned_generation(path: Path) -> PinnedRuntimeGeneration | None:
+    """v5 manifest를 읽기 전용·no-mkdir로 연다. 실패는 전부 ``None``이다.
+
+    ``pinned_runtime_generation.read_manifest``는 부모 디렉터리를 만들 수 있으므로
+    (``_validate_state_parent``의 mkdir) capture 경로에서는 쓰지 않는다.
+    """
+
+    try:
+        observed = path.lstat()
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or observed.st_nlink != 1
+        or observed.st_uid != os.geteuid()
+        or stat.S_IMODE(observed.st_mode) != 0o600
+        or observed.st_size > _PINNED_MANIFEST_MAX_BYTES
+    ):
+        return None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        after = os.fstat(descriptor)
+        if (after.st_dev, after.st_ino) != (observed.st_dev, observed.st_ino):
+            return None
+        raw = os.read(descriptor, _PINNED_MANIFEST_MAX_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    if len(raw) > _PINNED_MANIFEST_MAX_BYTES:
+        return None
+    try:
+        return pinned_manifest_from_payload(json.loads(raw.decode("utf-8"))).active_generation
+    except (ValueError, UnicodeDecodeError, DeploymentContractError):
+        return None
+
+
+def _compare_pinned_generation(
+    values: Mapping[str, str],
+    *,
+    images: Mapping[str, str],
+    map_revision: str,
+    pinvi_revision: str,
+) -> PinnedGenerationComparison:
+    """C-15. 같은 사실을 두 번 적는 v5 기록과 관측값을 대조한다(거부하지 않는다)."""
+
+    try:
+        path = pinned_runtime_manifest_path(values)
+    except DeploymentContractError:
+        return PinnedGenerationComparison(manifest_path=None, agrees=None, divergent_roles=())
+    generation = _read_pinned_generation(path)
+    if generation is None:
+        return PinnedGenerationComparison(
+            manifest_path=str(path),
+            agrees=None,
+            divergent_roles=(),
+        )
+    divergent = [
+        role
+        for role, field_name in PINNED_GENERATION_IMAGE_FIELDS
+        if getattr(generation, field_name) != images[role]
+    ]
+    if generation.map_source_revision != map_revision:
+        divergent.append("map_source_revision")
+    if generation.pinvi_source_revision != pinvi_revision:
+        divergent.append("pinvi_source_revision")
+    return PinnedGenerationComparison(
+        manifest_path=str(path),
+        agrees=not divergent,
+        divergent_roles=tuple(sorted(divergent)),
+    )
+
+
+def _pinned_generation_line(receipt: Mapping[str, Any]) -> str:
+    agrees = receipt["pinned_generation_agrees"]
+    label = "unknown" if agrees is None else ("true" if agrees else "false")
+    line = f"pinned_generation_agrees={label}"
+    divergent = receipt["pinned_generation_divergent_roles"]
+    if divergent:
+        line += f" divergent={','.join(divergent)}"
+    return line
 
 
 def _stdout_block(receipt: Mapping[str, Any]) -> str:
@@ -493,6 +735,7 @@ def _stdout_block(receipt: Mapping[str, Any]) -> str:
     ]
     images = receipt["images"]
     lines.extend(f"{role}_image_id={images[role]}" for role, _service, _field in CAPTURE_ROLES)
+    lines.append(_pinned_generation_line(receipt))
     return "\n".join(lines) + "\n"
 
 
@@ -503,22 +746,90 @@ def _checkout_uid(path: Path) -> int:
         raise _refuse(CAPTURE_REFUSED_PRECONDITION, "source checkout cannot be inspected") from exc
 
 
-def _required_absolute_path(value: str | None, option: str) -> Path:
-    if not value:
-        raise _refuse(
-            CAPTURE_REFUSED_PRECONDITION,
-            f"pinvi-pair capture requires {option} as a canonical absolute path",
-        )
+def _missing_input_reason(option: str, env_names: tuple[str, ...], description: str) -> str:
+    """막다른 길 금지. 어디에 무엇을 넣어야 하는지를 문장으로 적는다."""
+
+    joined = " (or ".join(env_names) + ")" * (len(env_names) - 1)
+    return (
+        f"pinvi-pair capture has no {description}: either pass "
+        f"{option} <canonical absolute path>, or set {joined} to that path in the frozen "
+        "environment that capture reads (the Manager env-file or the process environment). "
+        "nothing was observed and nothing was written"
+    )
+
+
+def _resolve_input(
+    flag_value: str | None,
+    *,
+    option: str,
+    env_names: tuple[str, ...],
+    values: Mapping[str, str],
+    description: str,
+) -> ResolvedInput:
+    """CLI flag를 override로, frozen env를 정본 fallback으로 읽는다."""
+
+    if flag_value is not None and flag_value.strip():
+        return ResolvedInput(value=flag_value.strip(), source=option)
+    for name in env_names:
+        candidate = values.get(name, "").strip()
+        if candidate:
+            return ResolvedInput(value=candidate, source=name)
+    raise _refuse(
+        CAPTURE_REFUSED_PRECONDITION,
+        _missing_input_reason(option, env_names, description),
+    )
+
+
+def _canonical_input_path(resolved: ResolvedInput) -> Path:
     try:
-        return _canonical_absolute_path(value, option)
+        return _canonical_absolute_path(resolved.value, resolved.source)
     except DeploymentContractError as exc:
         raise _refuse(CAPTURE_REFUSED_PRECONDITION, str(exc)) from exc
 
 
-def _required_directory(path: Path, option: str) -> Path:
+def _required_directory(path: Path, source: str) -> Path:
     if not path.is_dir():
-        raise _refuse(CAPTURE_REFUSED_PRECONDITION, f"{option} is not an existing directory")
+        raise _refuse(CAPTURE_REFUSED_PRECONDITION, f"{source} is not an existing directory")
     return path
+
+
+def _assert_manifest_outlives_rebuild_pinned(
+    manifest: Path,
+    *,
+    values: Mapping[str, str],
+    source: str,
+) -> None:
+    """``rebuild-pinned``가 쓸어가는 state root 안을 manifest 자리로 쓰지 못하게 한다.
+
+    ``rebuild-pinned``는 pinned runtime state root 아래에서
+    ``f1d_legacy_artifact_paths()``(``compatible-pair-v4.json`` 포함)를 퇴역시킨다.
+    그 root 안을 runner의 read target으로 삼으면 rehearsal rebuild 한 번이
+    attestation 입력을 지운다. n150 rehearsal에서는 두 root가 실제로 같은 디렉터리다.
+    """
+
+    try:
+        state_root = pinned_runtime_state_root(values)
+    except DeploymentContractError as exc:
+        raise _refuse(
+            CAPTURE_REFUSED_PRECONDITION,
+            (
+                "the pinned runtime state root could not be resolved, so capture cannot "
+                f"prove {source} is outside the directory `ktdctl rebuild-pinned` sweeps "
+                f"({exc})"
+            ),
+        ) from exc
+    if manifest != state_root and state_root not in manifest.parents:
+        return
+    raise _refuse(
+        CAPTURE_REFUSED_PRECONDITION,
+        (
+            f"{source} points inside the pinned runtime state root {state_root}, where "
+            f"`ktdctl rebuild-pinned` retires {PAIR_MANIFEST_FILENAME} together with the "
+            f"other {len(f1d_legacy_artifact_paths())} F1D legacy artifacts; put the C7 "
+            f"runner's read target in a root-owned 0700 directory outside that root and "
+            f"point {MANIFEST_PATH_ENV_NAMES[0]} at it"
+        ),
+    )
 
 
 def _side_effects(manifest: Path, lock_path: object) -> list[str]:
@@ -545,6 +856,34 @@ def _rollback_images_present(
     return True
 
 
+def _restore_after_failed_reread(
+    manifest: Path,
+    *,
+    existing: ExistingManifest | None,
+) -> PairCaptureRefusal:
+    """커밋 후 재읽기 실패. 직전 bytes(또는 부재)로 되돌리고 결과를 상태로 구분한다."""
+
+    try:
+        restore_pair_manifest_snapshot(
+            manifest,
+            previous_bytes=None if existing is None else existing.payload_bytes,
+            previous_mode=None if existing is None else existing.mode,
+            owner_uid=RUNNER_FILE_UID,
+            owner_gid=RUNNER_FILE_GID,
+        )
+    except OSError:
+        return _refuse(
+            CAPTURE_WRITE_INDETERMINATE,
+            "committed compatible pair manifest failed the C7 runner re-read and the "
+            "previous manifest state could not be restored",
+        )
+    return _refuse(
+        CAPTURE_WRITE_ROLLED_BACK,
+        "committed compatible pair manifest failed the C7 runner re-read; the previous "
+        "manifest state was restored",
+    )
+
+
 def capture_compatible_pair(
     *,
     verified_compatible: bool,
@@ -552,6 +891,7 @@ def capture_compatible_pair(
     map_source_checkout: str | None,
     pinvi_source_checkout: str | None,
     expect_active_map_revision: str | None = None,
+    allow_generation_change: bool = False,
     build_flag: bool = False,
     project_directory: str | None = None,
     environment: Mapping[str, str] | None = None,
@@ -571,49 +911,9 @@ def capture_compatible_pair(
             "capturing a rollback pair requires --verified-compatible",
         )
 
-    # --- C-2: manifest path와 operator가 지목한 두 checkout.
-    manifest = _required_absolute_path(manifest_path, "--manifest-path")
-    if manifest.name != PAIR_MANIFEST_FILENAME:
-        raise _refuse(
-            CAPTURE_REFUSED_PRECONDITION,
-            f"--manifest-path basename must be {PAIR_MANIFEST_FILENAME}",
-        )
-    map_checkout = _required_directory(
-        _required_absolute_path(map_source_checkout, "--map-source-checkout"),
-        "--map-source-checkout",
-    )
-    pinvi_checkout = _required_directory(
-        _required_absolute_path(pinvi_source_checkout, "--pinvi-source-checkout"),
-        "--pinvi-source-checkout",
-    )
-    if expect_active_map_revision is not None and (
-        _SOURCE_REVISION_PATTERN.fullmatch(expect_active_map_revision) is None
-    ):
-        raise _refuse(
-            CAPTURE_REFUSED_PRECONDITION,
-            "--expect-active-map-revision must be an exact lowercase 40-hex commit",
-        )
-
-    # --- C-3: identity. root:root 0600 파일은 root만 만들 수 있다.
-    if os.geteuid() != REQUIRED_EUID:
-        raise _refuse(
-            CAPTURE_REFUSED_PRECONDITION,
-            "pinvi-pair capture must run as root to write a root-owned runner artifact",
-        )
-
-    # --- C-4: ancestor policy. capture는 절대 mkdir하지 않는다.
-    try:
-        assert_runner_readable_parent(
-            manifest,
-            expected_uid=RUNNER_FILE_UID,
-            expected_gid=RUNNER_FILE_GID,
-            ancestor_floor=RUNNER_ANCESTOR_FLOOR,
-        )
-    except DeploymentContractError as exc:
-        raise _refuse(CAPTURE_REFUSED_PRECONDITION, str(exc)) from exc
-
-    # --- C-5: env 최소 계약. runtime mutation이 없으므로
-    #          `_validate_mutation_environment`는 호출하지 않는다.
+    # --- C-2: env 최소 계약. runtime mutation이 없으므로
+    #          `_validate_mutation_environment`는 호출하지 않는다. 세 입력의 fallback을
+    #          여기서 읽으므로 경로 결정보다 먼저 온다.
     values = effective_environment(get_env_path()) if environment is None else environment
     generation = values.get("KTDM_C6C_CONTRACT_GENERATION", "").strip().lower()
     if _CONTRACT_GENERATION_PATTERN.fullmatch(generation) is None:
@@ -627,6 +927,68 @@ def capture_compatible_pair(
             CAPTURE_REFUSED_PRECONDITION,
             "COMPOSE_PROJECT_NAME must be explicit and canonical for capture",
         )
+
+    # --- C-3: manifest path와 operator가 지목한 두 checkout. flag override →
+    #          frozen env fallback 순이며, 어느 쪽도 없으면 넣을 곳을 알려주고 거부한다.
+    manifest_input = _resolve_input(
+        manifest_path,
+        option=MANIFEST_PATH_OPTION,
+        env_names=MANIFEST_PATH_ENV_NAMES,
+        values=values,
+        description="compatible pair manifest path for the C7 runner",
+    )
+    manifest = _canonical_input_path(manifest_input)
+    if manifest.name != PAIR_MANIFEST_FILENAME:
+        raise _refuse(
+            CAPTURE_REFUSED_PRECONDITION,
+            f"{manifest_input.source} basename must be {PAIR_MANIFEST_FILENAME}",
+        )
+    _assert_manifest_outlives_rebuild_pinned(
+        manifest,
+        values=values,
+        source=manifest_input.source,
+    )
+    map_input = _resolve_input(
+        map_source_checkout,
+        option=MAP_CHECKOUT_OPTION,
+        env_names=MAP_CHECKOUT_ENV_NAMES,
+        values=values,
+        description="Map source checkout to bind the observed Map revision to",
+    )
+    map_checkout = _required_directory(_canonical_input_path(map_input), map_input.source)
+    pinvi_input = _resolve_input(
+        pinvi_source_checkout,
+        option=PINVI_CHECKOUT_OPTION,
+        env_names=PINVI_CHECKOUT_ENV_NAMES,
+        values=values,
+        description="PinVi source checkout to bind the observed PinVi revision to",
+    )
+    pinvi_checkout = _required_directory(_canonical_input_path(pinvi_input), pinvi_input.source)
+    if expect_active_map_revision is not None and (
+        _SOURCE_REVISION_PATTERN.fullmatch(expect_active_map_revision) is None
+    ):
+        raise _refuse(
+            CAPTURE_REFUSED_PRECONDITION,
+            "--expect-active-map-revision must be an exact lowercase 40-hex commit",
+        )
+
+    # --- C-4: identity. root:root 0600 파일은 root만 만들 수 있다.
+    if os.geteuid() != REQUIRED_EUID:
+        raise _refuse(
+            CAPTURE_REFUSED_PRECONDITION,
+            "pinvi-pair capture must run as root to write a root-owned runner artifact",
+        )
+
+    # --- C-5: ancestor policy. capture는 절대 mkdir하지 않는다.
+    try:
+        assert_runner_readable_parent(
+            manifest,
+            expected_uid=RUNNER_FILE_UID,
+            expected_gid=RUNNER_FILE_GID,
+            ancestor_floor=RUNNER_ANCESTOR_FLOOR,
+        )
+    except DeploymentContractError as exc:
+        raise _refuse(CAPTURE_REFUSED_PRECONDITION, str(exc)) from exc
 
     resolved_project_directory = (
         get_project_root() if project_directory is None else project_directory
@@ -645,10 +1007,25 @@ def capture_compatible_pair(
             )
             raise _refuse(state, str(exc)) from exc
 
-        # --- C-6: 기존 파일 사전 검증.
+        # --- C-6~C-8: 기존 파일 사전 검증과 pre-image 증거.
         existing = _existing_manifest(manifest)
+        if (
+            existing is not None
+            and existing.manifest.active.contract_generation != generation
+            and not allow_generation_change
+        ):
+            raise _refuse(
+                CAPTURE_REFUSED_PRECONDITION,
+                (
+                    "the existing manifest was recorded under contract generation "
+                    f"{existing.manifest.active.contract_generation} but the frozen "
+                    f"KTDM_C6C_CONTRACT_GENERATION is {generation}; capture will not "
+                    "silently move the C7 runner across generations. re-run with "
+                    "--allow-generation-change only if this switch is intended"
+                ),
+            )
 
-        # --- C-7~C-12: 1차 관측.
+        # --- C-9~C-14: 1차 관측.
         first = _observe_runtime(
             runner=command_runner,
             project_directory=resolved_project_directory,
@@ -656,14 +1033,22 @@ def capture_compatible_pair(
         )
         map_revision, pinvi_revision = _observed_source_revisions(first, runner=command_runner)
 
-        # --- C-13: 의도한 배포 commit 결박.
+        # --- C-15: v5 pinned generation과의 대조(보고 전용).
+        pinned = _compare_pinned_generation(
+            values,
+            images=first.images,
+            map_revision=map_revision,
+            pinvi_revision=pinvi_revision,
+        )
+
+        # --- C-16: 의도한 배포 commit 결박.
         if expect_active_map_revision is not None and map_revision != expect_active_map_revision:
             raise _refuse(
                 CAPTURE_REFUSED_RUNTIME,
                 "observed Map source revision does not match --expect-active-map-revision",
             )
 
-        # --- C-14/C-15: commit 실재와 checkout cleanliness.
+        # --- C-17/C-18: commit 실재와 checkout cleanliness.
         _assert_revision_exists_in_checkout(
             command_runner,
             checkout=map_checkout,
@@ -690,11 +1075,22 @@ def capture_compatible_pair(
         next_manifest = (
             initial_pair_manifest(active)
             if existing is None
-            else manifest_with_active_pair(existing, active)
+            else manifest_with_active_pair(existing.manifest, active)
         )
         rollback_present = _rollback_images_present(next_manifest, runner=command_runner)
 
-        # --- C-16: 쓰기 직전 2차 관측.
+        # --- C-19: 쓰기 **전에** runner 술어로 검증한다. `os.replace`는 되돌릴 수 없다.
+        try:
+            next_bytes = pair_manifest_bytes(next_manifest)
+            _assert_runner_reparse(next_bytes)
+        except (ValueError, DeploymentContractError) as exc:
+            raise _refuse(
+                CAPTURE_REFUSED_PRECONDITION,
+                "the compatible pair manifest that capture would write fails the C7 runner "
+                "re-parse; nothing was written",
+            ) from exc
+
+        # --- C-20: 쓰기 직전 2차 관측.
         second = _observe_runtime(
             runner=command_runner,
             project_directory=resolved_project_directory,
@@ -703,9 +1099,9 @@ def capture_compatible_pair(
         if second.containers != first.containers or second.images != first.images:
             raise _refuse(CAPTURE_REFUSED_RUNTIME, "runtime changed between the two observations")
 
-        # --- C-17: 원자적 커밋.
+        # --- C-21: 원자적 커밋.
         try:
-            write_pair_manifest(
+            written_bytes = write_pair_manifest(
                 str(manifest),
                 next_manifest,
                 owner_uid=RUNNER_FILE_UID,
@@ -716,8 +1112,13 @@ def capture_compatible_pair(
             raise _refuse(CAPTURE_WRITE_INDETERMINATE, str(exc)) from exc
         except DeploymentContractError as exc:
             raise _refuse(CAPTURE_REFUSED_RUNTIME, str(exc)) from exc
+        if written_bytes != next_bytes:
+            raise _refuse(
+                CAPTURE_WRITE_INDETERMINATE,
+                "the committed bytes differ from the bytes validated before the write",
+            )
 
-        # --- C-18: 자기 출력 재검증. 해시는 디스크에서 되읽은 bytes의 것이다.
+        # --- C-22: 자기 출력 재검증. 해시는 디스크에서 되읽은 bytes의 것이다.
         try:
             committed_bytes = _read_runner_secure_bytes(
                 manifest,
@@ -726,10 +1127,7 @@ def capture_compatible_pair(
             )
             _assert_runner_reparse(committed_bytes)
         except (OSError, ValueError, DeploymentContractError) as exc:
-            raise _refuse(
-                CAPTURE_WRITE_INDETERMINATE,
-                "committed compatible pair manifest failed the C7 runner re-read",
-            ) from exc
+            raise _restore_after_failed_reread(manifest, existing=existing) from exc
 
         receipt: dict[str, Any] = {
             "state": CAPTURE_COMMITTED,
@@ -746,13 +1144,29 @@ def capture_compatible_pair(
             "images": dict(first.images),
             "map_source_checkout": str(map_checkout),
             "pinvi_source_checkout": str(pinvi_checkout),
+            "input_sources": {
+                "manifest_path": manifest_input.source,
+                "map_source_checkout": map_input.source,
+                "pinvi_source_checkout": pinvi_input.source,
+            },
             "checkout_uid": {
                 "map": _checkout_uid(map_checkout),
                 "pinvi": _checkout_uid(pinvi_checkout),
             },
+            "previous_manifest_sha256": None if existing is None else existing.sha256,
+            "previous_active": (
+                None if existing is None else _pair_identity(existing.manifest.active)
+            ),
+            "previous_recorded_at": (
+                None if existing is None else existing.manifest.active.recorded_at
+            ),
+            "allow_generation_change": bool(allow_generation_change),
             "operator_asserted_verified_compatible": True,
             "build_flag_accepted_no_op": bool(build_flag),
             "rollback_images_present": rollback_present,
+            "pinned_generation_manifest": pinned.manifest_path,
+            "pinned_generation_agrees": pinned.agrees,
+            "pinned_generation_divergent_roles": list(pinned.divergent_roles),
             "not_guaranteed": list(NOT_GUARANTEED),
             "side_effects": _side_effects(manifest, getattr(lock_snapshot, "lock_path", None)),
         }

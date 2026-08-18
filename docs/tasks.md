@@ -29,11 +29,8 @@
 | **#177** | 4분할 후 geo·concierge·map·pinvi 공통 백업 결선 | `[/]` | - | 신규 독립 `standalone_backup.py` + `ktdctl db-backup create/list/gc` + 읽기 전용 `GET /backups`. geo 앱 스케줄 백업 env는 PR #181에서 결선, n150 standalone cron·off-box 사본은 미완료 |
 | **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[x]` | 2026-08-18 | n150 실제 role 비밀번호·3개 canonical env key를 함께 회전하고 PostgreSQL·geo API·Dagster web/daemon·DB init을 재생성했다. 새 비밀번호 인증, 기존 기본값 거부, secret file·health·공개 Manager 브라우저 수명주기를 확인했다 |
 | **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[x]` | 2026-08-18 | n150 기존 위반 7개를 `0600`으로 정리하고 식별 불가 백업 `.env.backup-pinvi-deploy-836a18f-`를 삭제했다. 전체 `.env*` 재검사를 통과했다 |
-<<<<<<< HEAD
 | **#173 / Map T-VN-H46F** | Map UI geo consumer credential 경계 | `[/]` | - | 충돌한 draft #173은 H46F PR #183으로 흡수. UI server-only alias·C6c exact wiring·Manager VWorld fallback 제거, 전문 적대 리뷰 2명 GO, backend 411 passed. PR 머지와 Map PR #1004 결합 CI 대기 |
-=======
-| **T-C7-CAPTURE** | Map C7 런북 §2.1 step 8용 `ktdctl pinvi-pair capture` 추가 | `[/]` | - | 읽기 전용 관측 + v4 manifest 원자적 교체(ADR-38). Docker 없는 단위/통합 검증은 통과. n150 실제 실행과 gitignore된 `docs/deploy-runbook.local.md`의 구체 invocation 기록은 사용자 확인 대기 |
->>>>>>> da8f2e3 (feat(c7): `ktdctl pinvi-pair capture`를 읽기 전용 관측기로 추가한다 (ADR-38))
+| **T-C7-CAPTURE** | Map C7 런북 §2.1 step 8용 `ktdctl pinvi-pair capture` 추가 | `[/]` | - | 읽기 전용 관측 + v4 manifest 원자적 교체(ADR-38, 2026-08-19 개정). 적대 리뷰 P1 9건 수정 완료 — 세 입력 frozen env fallback으로 런북 문자 그대로의 호출이 동작하고, `rebuild-pinned` state root 배제·v5 대조 보고·pre-image 증거·쓰기 전 runner 재검증이 붙었다. Docker 없는 단위/통합 검증 통과. n150 실제 실행과 runner read target을 pinned state root 밖으로 옮기는 작업은 사용자 확인 대기 |
 
 ---
 

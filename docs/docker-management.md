@@ -418,24 +418,50 @@ Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이 부르는 명령이다.
 교체한다. 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지 않았다 — 이 명령은 어떤
 컨테이너도 시작·정지·재생성하지 않는다.
 
+런북은 인자 없이 문자 그대로 부른다. 세 입력은 frozen environment가 정본이다.
+
+```bash
+sudo -n ktdctl pinvi-pair capture --verified-compatible --build
+```
+
+| 입력 | frozen env (우선순위 순) | CLI override |
+|:---|:---|:---|
+| manifest 경로 | `E2E_C7_COMPATIBLE_PAIR_MANIFEST` → `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST` | `--manifest-path` |
+| Map checkout | `KTDM_C7_MAP_SOURCE_CHECKOUT` | `--map-source-checkout` |
+| PinVi checkout | `KTDM_C7_PINVI_SOURCE_CHECKOUT` | `--pinvi-source-checkout` |
+
+override와 부가 flag를 모두 쓴 형태:
+
 ```bash
 sudo -n ktdctl pinvi-pair capture \
   --verified-compatible \
   --manifest-path /var/lib/kor-travel-docker-manager/<project>/compatible-pair-v4.json \
   --map-source-checkout /absolute/path/to/kor-travel-map \
   --pinvi-source-checkout /absolute/path/to/pinvi \
-  [--expect-active-map-revision <40hex>] [--build] [--json]
+  [--expect-active-map-revision <40hex>] [--allow-generation-change] [--build] [--json]
 ```
 
-- `--manifest-path`는 **기본값이 없다.** C7 runner가 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`로
-  읽는 바로 그 절대경로를 operator가 명시한다. basename은 `compatible-pair-v4.json`이어야
-  하고, 부모 체인은 runner와 같은 술어(디렉터리·비symlink·uid 0·gid 0·`mode & 0o022 == 0`)를
-  만족해야 한다. **capture는 디렉터리를 만들지 않는다.**
+- manifest 경로는 **operator가 정한다.** flag가 없으면 위 env에서 읽고, 둘 다 없으면
+  거부하되 메시지가 flag 이름과 env 이름을 모두 알려 준다. basename은
+  `compatible-pair-v4.json`이어야 하고, 부모 체인은 runner와 같은 술어(디렉터리·비symlink·
+  uid 0·gid 0·`mode & 0o022 == 0`)를 만족해야 한다. **capture는 디렉터리를 만들지 않는다.**
+- **pinned runtime state root 아래는 쓸 수 없다.** `ktdctl rebuild-pinned`가 그 root에서
+  `compatible-pair-v4.json`을 포함한 F1D legacy artifact를 퇴역시키므로, runner의 read
+  target을 그 안에 두면 rehearsal rebuild 한 번이 attestation 입력을 지운다. 그런 경로는
+  `capture_refused_precondition`으로 거부한다. root는
+  `KTDM_PINNED_RUNTIME_STATE_ROOT`(없으면 `~/.local/state/kor-travel-docker-manager`) +
+  `COMPOSE_PROJECT_NAME`이다.
+- 기존 manifest의 `active.contract_generation`이 frozen `KTDM_C6C_CONTRACT_GENERATION`과
+  다르면 기본 거부한다. 의도적 전환일 때만 `--allow-generation-change`를 준다.
 - `--build`는 **아무것도 빌드하지 않는다.** 런북 문구 호환용으로 수락하고 stderr에 한 줄
   고지한다. 빌드는 host compose 배포의 책임이다.
 - root 실행이 필요하다(산출물이 root:root `0600`).
 - `rebuild-pinned`와 **같은 global mutation lock**을 잡는다. 다른 mutation이 진행 중이면
   exit 2로 거부한다.
+- git 조회에는 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CEILING_DIRECTORIES`/`GIT_OBJECT_DIRECTORY`/
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`를 제거한 env를 넘긴다. `-c safe.directory`는 절대
+  쓰지 않으므로, git이 checkout을 `dubious ownership`으로 거부하면 별도 terminal state로
+  알린다.
 
 terminal state와 exit code:
 
@@ -444,7 +470,9 @@ terminal state와 exit code:
 | `capture_committed` | 0 | manifest 교체 완료 |
 | `capture_refused_precondition` | 2 | 사용법·경로·권한·기존 파일 foreign |
 | `capture_refused_lock_contended` | 2 | 다른 Manager mutation 진행 중 |
+| `capture_refused_checkout_ownership` | 2 | git이 checkout을 `dubious ownership`으로 거부 |
 | `capture_refused_runtime` | 1 | 관측·label·git 결박 실패 |
+| `capture_write_rolled_back` | 1 | 커밋 후 재읽기 실패 — 직전 상태로 복구함 |
 | `capture_write_indeterminate` | 1 | 커밋 상태를 판별할 수 없음 |
 
 모든 non-zero 메시지는 `maintenance fence stays closed; no container was stopped,
@@ -464,6 +492,20 @@ image ID가 그 container가 실행 중인 image이며, Map 네 image가 동일�
 - rollback pair가 복원 가능하다는 것 — shape만 유효하다(`rollback_images_present`로 별도 보고).
 - 기록한 revision이 published branch에서 도달 가능하다는 것.
 - capture 반환 이후에도 runtime이 일치한다는 것 — mutation lock을 잡고 있는 시점의 관측이다.
+- v5 pinned generation manifest가 이 runtime을 서술한다는 것 — 두 기록이 일치하는지
+  **보고만** 하고 v5 파일은 건드리지 않는다.
+
+**v5 pinned generation 대조**: `pinned-runtime-generation-v5.json`이 있으면 읽어 다섯
+image ID와 두 revision을 관측값과 맞춘다. 결과는 receipt의 `pinned_generation_agrees`
+(`true`/`false`/`null`)와 `pinned_generation_divergent_roles`, 그리고 stdout의
+`pinned_generation_agrees=...` 한 줄로 나온다. **불일치는 거부 사유가 아니다** — prod Map
+재배포의 sanctioned 경로가 host compose 직접 실행이라 v5가 뒤처지는 것이 정상 상태일 수
+있다. 파일이 없거나 읽을 수 없으면 `null`(unknown)이며, 부모 디렉터리를 만들지 않는다.
+
+**교체 증거**: receipt의 `previous_manifest_sha256`·`previous_active`(9필드 identity)·
+`previous_recorded_at`이 무엇을 덮어썼는지 남긴다. 새 manifest는 되돌릴 수 없는
+`os.replace` **전에** runner 술어로 검증하고, 커밋 후 재읽기가 실패하면 직전 상태로 복구를
+시도한다(복구 성공 = `capture_write_rolled_back`, 실패 = `capture_write_indeterminate`).
 
 **부수 효과**: manifest 원자 교체 외에 global mutation lock 디렉터리(0700)와 파일(0600)이
 생길 수 있다. receipt의 `side_effects`가 실제 경로를 보고한다.

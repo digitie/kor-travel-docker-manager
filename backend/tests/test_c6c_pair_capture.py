@@ -15,6 +15,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import c6c_deployment, pinned_runtime_generation
 from kor_travel_docker_manager.services import c6c_pair_capture as capture
 
 # ---------------------------------------------------------------------------
@@ -199,7 +200,9 @@ class FakeDockerGit:
     ps_returncode: int = 0
     local_images: set[str] | None = None
     git_cat_file_returncode: int = 0
+    git_status_returncode: int = 0
     git_status_stdout: str = ""
+    git_stderr: str = ""
     argv: list[list[str]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -267,13 +270,21 @@ class FakeDockerGit:
             return self._completed(0, json.dumps(labels))
         if argv[:2] == ["git", "--no-optional-locks"]:
             if "cat-file" in argv:
-                return self._completed(self.git_cat_file_returncode, "")
-            return self._completed(0, self.git_status_stdout)
+                return self._completed(self.git_cat_file_returncode, "", self.git_stderr)
+            return self._completed(
+                self.git_status_returncode,
+                self.git_status_stdout,
+                self.git_stderr,
+            )
         raise AssertionError(f"unexpected argv: {list(argv)}")
 
     @staticmethod
-    def _completed(returncode: int, stdout: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+    def _completed(
+        returncode: int, stdout: str, stderr: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=stderr
+        )
 
 
 @dataclass(frozen=True)
@@ -301,6 +312,7 @@ class Bench:
     floor: Path
     map_checkout: Path
     pinvi_checkout: Path
+    pinned_root: Path
     environment: dict[str, str]
     project_directory: str
 
@@ -316,6 +328,12 @@ def bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Bench:
     map_checkout.mkdir(mode=0o700)
     pinvi_checkout = base / "pinvi-checkout"
     pinvi_checkout.mkdir(mode=0o700)
+    # `rebuild-pinned`가 쓸어가는 root. 기본값(`Path.home()`)에 의존하지 않도록 명시하고,
+    # n150 rehearsal처럼 runner ancestor floor 안에 둔다 — 그래야 R1-2 배제가 floor 규칙에
+    # 가려지지 않고 단독으로 검증된다.
+    pinned_root = floor / "pinned"
+    pinned_root.mkdir(mode=0o700)
+    (pinned_root / PROJECT).mkdir(mode=0o700)
     monkeypatch.setattr(capture, "REQUIRED_EUID", os.geteuid())
     monkeypatch.setattr(capture, "RUNNER_FILE_UID", os.geteuid())
     monkeypatch.setattr(capture, "RUNNER_FILE_GID", os.getgid())
@@ -325,9 +343,11 @@ def bench(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Bench:
         floor=floor,
         map_checkout=map_checkout,
         pinvi_checkout=pinvi_checkout,
+        pinned_root=pinned_root / PROJECT,
         environment={
             "KTDM_C6C_CONTRACT_GENERATION": GENERATION,
             "COMPOSE_PROJECT_NAME": PROJECT,
+            "KTDM_PINNED_RUNTIME_STATE_ROOT": str(pinned_root),
         },
         project_directory="/srv/kor-travel",
     )
@@ -353,20 +373,59 @@ def run_capture(
     return capture.capture_compatible_pair(**arguments)
 
 
-def seed_manifest(bench: Bench, *, active_map_image: str, mode: int = 0o600) -> bytes:
-    """기존 정규 v4 manifest를 심는다."""
-
-    pair = c6c_deployment.new_image_pair(
-        active_map_image,
-        _image(0x999),
-        GENERATION,
-        map_ui_image_id=_image(0x901),
-        map_dagster_image_id=_image(0x902),
-        map_dagster_daemon_image_id=_image(0x903),
+def _seed_pair(
+    map_image: str,
+    *,
+    generation: str = GENERATION,
+    recorded_at: str,
+) -> c6c_deployment.CompatibleImagePair:
+    seed = int(map_image[-4:], 16)
+    return c6c_deployment.new_image_pair(
+        map_image,
+        _image(0x990 + seed),
+        generation,
+        map_ui_image_id=_image(0x991 + seed),
+        map_dagster_image_id=_image(0x992 + seed),
+        map_dagster_daemon_image_id=_image(0x993 + seed),
         map_source_revision=OTHER_REVISION,
         pinvi_source_revision=OTHER_REVISION,
+        recorded_at=recorded_at,
     )
-    payload = c6c_deployment.pair_manifest_bytes(c6c_deployment.initial_pair_manifest(pair))
+
+
+ROLLBACK_SEED_IMAGE = _image(0x800)
+
+
+def seed_manifest(
+    bench: Bench,
+    *,
+    active_map_image: str,
+    rollback_map_image: str = ROLLBACK_SEED_IMAGE,
+    generation: str = GENERATION,
+    mode: int = 0o600,
+) -> bytes:
+    """기존 정규 v4 manifest를 심는다.
+
+    seed는 반드시 ``rollback != active``여야 한다. 두 slot이 같으면 승격 로직을
+    통째로 지워도 재capture 테스트가 green으로 남기 때문이다(R1-4 회귀).
+    """
+
+    older = _seed_pair(
+        rollback_map_image,
+        generation=generation,
+        recorded_at="2026-08-01T00:00:00+00:00",
+    )
+    newer = _seed_pair(
+        active_map_image,
+        generation=generation,
+        recorded_at="2026-08-02T00:00:00+00:00",
+    )
+    manifest = c6c_deployment.manifest_with_active_pair(
+        c6c_deployment.initial_pair_manifest(older),
+        newer,
+    )
+    assert manifest.rollback != manifest.active
+    payload = c6c_deployment.pair_manifest_bytes(manifest)
     bench.manifest.write_bytes(payload)
     bench.manifest.chmod(mode)
     return payload
@@ -426,26 +485,64 @@ def test_serialization_is_sorted_two_space_json_with_trailing_newline(bench: Ben
     )
 
 
+# cross-repo 회귀 게이트. 하드코딩 절대경로 대신 이 env로 runner 모듈을 지목한다.
+# 값이 없으면 사본 술어만으로 검증하고, **값이 주어졌는데 실패하면 skip이 아니라 fail**한다.
+RUNNER_MODULE_ENV = "KTDM_C7_RUNNER_MODULE"
+
+
+def _configured_runner_module_path() -> Path | None:
+    raw = os.environ.get(RUNNER_MODULE_ENV, "").strip()
+    return Path(raw) if raw else None
+
+
+# 계약 상수 drift 게이트. runner가 top-level 키·version·pair 9필드 중 하나라도 바꾸면
+# 이 digest가 어긋나 red가 된다.
+RUNNER_CONTRACT_SHA256 = hashlib.sha256(
+    json.dumps(
+        {
+            "manifest_version": 4,
+            "pair_keys": sorted(RUNNER_PAIR_KEYS),
+            "top_keys": sorted(RUNNER_MANIFEST_TOP_KEYS),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
+
+RUNNER_CONTRACT_PINNED_SHA256 = "0351848f17189f1d6966b5e3c3a406eb3d953ba69527393b3a6847b26d90b5b3"
+
+
+def test_runner_contract_constants_are_pinned_by_digest() -> None:
+    """top-level 키 집합 · ``version == 4`` · pair 9필드의 해시를 박아 drift를 잡는다."""
+
+    assert len(RUNNER_PAIR_KEYS) == 9
+    assert RUNNER_CONTRACT_SHA256 == RUNNER_CONTRACT_PINNED_SHA256
+    assert set(c6c_deployment.PAIR_MANIFEST_TOP_KEYS) == set(RUNNER_MANIFEST_TOP_KEYS)
+    assert set(c6c_deployment.PAIR_MANIFEST_PAIR_KEYS) == set(RUNNER_PAIR_KEYS)
+
+
 @pytest.mark.skipif(
-    not Path("F:/dev/ktm-tvn36r/scripts/lib/c7_prod_attestation.py").exists()
-    and not Path("/mnt/f/dev/ktm-tvn36r/scripts/lib/c7_prod_attestation.py").exists(),
-    reason="Map 저장소 C7 runner 체크아웃이 없으면 사본 술어만으로 검증한다",
+    _configured_runner_module_path() is None,
+    reason=f"{RUNNER_MODULE_ENV}가 없으면 사본 술어만으로 검증한다",
 )
 def test_real_runner_module_accepts_the_committed_pair(bench: Bench) -> None:
     import importlib.util
 
-    module_path = next(
-        candidate
-        for candidate in (
-            Path("/mnt/f/dev/ktm-tvn36r/scripts/lib/c7_prod_attestation.py"),
-            Path("F:/dev/ktm-tvn36r/scripts/lib/c7_prod_attestation.py"),
-        )
-        if candidate.exists()
+    module_path = _configured_runner_module_path()
+    assert module_path is not None
+    assert module_path.is_file(), (
+        f"{RUNNER_MODULE_ENV}={module_path} is not a readable file; "
+        "point it at the Map repository's scripts/lib/c7_prod_attestation.py or unset it"
     )
     spec = importlib.util.spec_from_file_location("c7_prod_attestation", module_path)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None and spec.loader is not None, f"{RUNNER_MODULE_ENV} is not importable"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    for attribute in ("_validate_pair", "_exact_dict", "PAIR_RUNTIME_IMAGE_FIELDS"):
+        assert hasattr(module, attribute), (
+            f"{RUNNER_MODULE_ENV} module has no {attribute}; the C7 runner contract moved"
+        )
+    assert tuple(module.PAIR_RUNTIME_IMAGE_FIELDS) == RUNNER_PAIR_RUNTIME_IMAGE_FIELDS
 
     run_capture(bench)
     manifest = json.loads(bench.manifest.read_bytes())
@@ -453,6 +550,21 @@ def test_real_runner_module_accepts_the_committed_pair(bench: Bench) -> None:
     module._validate_pair(manifest["rollback"])
     assert module._exact_dict(manifest, {"active", "rollback", "version"})
     assert manifest["version"] == 4
+
+
+def test_cross_repo_gate_has_no_hardcoded_absolute_checkout_path() -> None:
+    """하드코딩 절대경로는 n150·CI에서 조용히 skip되므로 게이트가 아니다.
+
+    금지 fragment는 조립해서 만든다 — 이 파일 자신이 검사 대상이라 리터럴로 적으면
+    검사가 스스로에게 걸린다.
+    """
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    forbidden = ("ktm-" + "tvn36r", "/mnt/" + "f/dev/", "F:" + "/dev/")
+
+    for fragment in forbidden:
+        assert fragment not in source, fragment
+    assert RUNNER_MODULE_ENV in source
 
 
 # ---------------------------------------------------------------------------
@@ -468,12 +580,16 @@ def test_first_capture_duplicates_active_into_rollback(bench: Bench) -> None:
 
 
 def test_recapture_promotes_the_previous_active_to_rollback(bench: Bench) -> None:
+    """승격 로직을 지우면 red가 되어야 한다 — seed의 두 slot이 서로 다르다."""
+
     previous = json.loads(seed_manifest(bench, active_map_image=_image(0x900)))
+    assert previous["rollback"] != previous["active"]
 
     run_capture(bench)
 
     manifest = json.loads(bench.manifest.read_bytes())
     assert manifest["rollback"] == previous["active"]
+    assert manifest["rollback"] != previous["rollback"]
     assert manifest["active"]["map_image_id"] == ROLE_IMAGES["map_api"]
 
 
@@ -1223,7 +1339,9 @@ def test_terminal_states_map_to_the_declared_exit_codes() -> None:
         capture.CAPTURE_COMMITTED: 0,
         capture.CAPTURE_REFUSED_PRECONDITION: 2,
         capture.CAPTURE_REFUSED_LOCK_CONTENDED: 2,
+        capture.CAPTURE_REFUSED_CHECKOUT_OWNERSHIP: 2,
         capture.CAPTURE_REFUSED_RUNTIME: 1,
+        capture.CAPTURE_WRITE_ROLLED_BACK: 1,
         capture.CAPTURE_WRITE_INDETERMINATE: 1,
     }
 
@@ -1244,7 +1362,9 @@ def test_default_lock_factory_is_the_same_global_mutation_lock_as_rebuild_pinned
     )
 
 
-def test_required_paths_have_no_default_and_no_state_root_fallback() -> None:
+def test_required_inputs_have_no_python_default_and_no_c6c_state_root_fallback() -> None:
+    """fallback은 frozen env **하나**뿐이다. `c6c_state_paths` 규칙은 여전히 쓰지 않는다."""
+
     parameters = inspect.signature(capture.capture_compatible_pair).parameters
 
     for required in (
@@ -1256,3 +1376,654 @@ def test_required_paths_have_no_default_and_no_state_root_fallback() -> None:
         assert parameters[required].default is inspect.Parameter.empty
     source = Path(capture.__file__).read_text(encoding="utf-8")
     assert "c6c_state_paths" not in source
+
+
+# ---------------------------------------------------------------------------
+# R1-1/R2-1 런북 문자 그대로의 호출 — 세 입력의 frozen environment fallback
+# ---------------------------------------------------------------------------
+
+
+def _frozen_environment_with_inputs(bench: Bench, **overrides: str) -> dict[str, str]:
+    values = {
+        **bench.environment,
+        "E2E_C7_COMPATIBLE_PAIR_MANIFEST": str(bench.manifest),
+        "KTDM_C7_MAP_SOURCE_CHECKOUT": str(bench.map_checkout),
+        "KTDM_C7_PINVI_SOURCE_CHECKOUT": str(bench.pinvi_checkout),
+    }
+    values.update(overrides)
+    return values
+
+
+def test_runbook_literal_invocation_commits_from_the_frozen_environment(bench: Bench) -> None:
+    """`capture --verified-compatible --build`가 인자 없이 docker까지 도달해 커밋한다."""
+
+    runner = FakeDockerGit()
+
+    receipt = run_capture(
+        bench,
+        runner=runner,
+        manifest_path=None,
+        map_source_checkout=None,
+        pinvi_source_checkout=None,
+        build_flag=True,
+        environment=_frozen_environment_with_inputs(bench),
+    )
+
+    assert receipt["state"] == capture.CAPTURE_COMMITTED
+    assert receipt["returncode"] == 0
+    assert [argv for argv in runner.argv if argv[0] == "docker"]
+    assert receipt["manifest"] == str(bench.manifest)
+    assert receipt["input_sources"] == {
+        "manifest_path": "E2E_C7_COMPATIBLE_PAIR_MANIFEST",
+        "map_source_checkout": "KTDM_C7_MAP_SOURCE_CHECKOUT",
+        "pinvi_source_checkout": "KTDM_C7_PINVI_SOURCE_CHECKOUT",
+    }
+    runner_validate_manifest_bytes(bench.manifest.read_bytes())
+
+
+def test_manifest_path_falls_back_to_the_ktdm_env_name(bench: Bench) -> None:
+    environment = _frozen_environment_with_inputs(bench)
+    environment.pop("E2E_C7_COMPATIBLE_PAIR_MANIFEST")
+    environment["KTDM_C6C_COMPATIBLE_PAIR_MANIFEST"] = str(bench.manifest)
+
+    receipt = run_capture(
+        bench,
+        manifest_path=None,
+        map_source_checkout=None,
+        pinvi_source_checkout=None,
+        environment=environment,
+    )
+
+    assert receipt["input_sources"]["manifest_path"] == "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST"
+
+
+def test_the_e2e_env_name_wins_over_the_ktdm_env_name(bench: Bench) -> None:
+    """정본 소유자는 runner다. runner가 읽는 이름이 먼저다."""
+
+    other = bench.manifest.parent / "elsewhere"
+    other.mkdir(mode=0o700)
+    environment = _frozen_environment_with_inputs(
+        bench,
+        KTDM_C6C_COMPATIBLE_PAIR_MANIFEST=str(other / c6c_deployment.PAIR_MANIFEST_FILENAME),
+    )
+
+    receipt = run_capture(
+        bench,
+        manifest_path=None,
+        map_source_checkout=None,
+        pinvi_source_checkout=None,
+        environment=environment,
+    )
+
+    assert receipt["manifest"] == str(bench.manifest)
+    assert not (other / c6c_deployment.PAIR_MANIFEST_FILENAME).exists()
+
+
+def test_cli_flags_override_the_frozen_environment(bench: Bench) -> None:
+    unused = bench.manifest.parent / "unused"
+    unused.mkdir(mode=0o700)
+    environment = _frozen_environment_with_inputs(
+        bench,
+        E2E_C7_COMPATIBLE_PAIR_MANIFEST=str(unused / c6c_deployment.PAIR_MANIFEST_FILENAME),
+    )
+
+    receipt = run_capture(bench, environment=environment)
+
+    assert receipt["manifest"] == str(bench.manifest)
+    assert receipt["input_sources"]["manifest_path"] == capture.MANIFEST_PATH_OPTION
+    assert not (unused / c6c_deployment.PAIR_MANIFEST_FILENAME).exists()
+
+
+@pytest.mark.parametrize(
+    ("option", "flag", "env_names"),
+    [
+        ("manifest_path", capture.MANIFEST_PATH_OPTION, capture.MANIFEST_PATH_ENV_NAMES),
+        ("map_source_checkout", capture.MAP_CHECKOUT_OPTION, capture.MAP_CHECKOUT_ENV_NAMES),
+        (
+            "pinvi_source_checkout",
+            capture.PINVI_CHECKOUT_OPTION,
+            capture.PINVI_CHECKOUT_ENV_NAMES,
+        ),
+    ],
+)
+def test_missing_input_says_where_to_put_what(
+    bench: Bench, option: str, flag: str, env_names: tuple[str, ...]
+) -> None:
+    """막다른 길 금지 — 거부 메시지가 flag와 env 이름을 둘 다 지목해야 한다."""
+
+    runner = FakeDockerGit()
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, runner=runner, **{option: None})
+
+    message = str(excinfo.value)
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert flag in message
+    for name in env_names:
+        assert name in message
+    assert "nothing was written" in message
+    assert runner.argv == []
+
+
+def test_blank_environment_value_is_treated_as_absent(bench: Bench) -> None:
+    environment = _frozen_environment_with_inputs(bench, E2E_C7_COMPATIBLE_PAIR_MANIFEST="   ")
+    environment.pop("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", None)
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, manifest_path=None, environment=environment)
+
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert capture.MANIFEST_PATH_ENV_NAMES[0] in str(excinfo.value)
+
+
+def test_environment_supplied_manifest_path_is_still_canonical_and_named(bench: Bench) -> None:
+    environment = _frozen_environment_with_inputs(
+        bench,
+        E2E_C7_COMPATIBLE_PAIR_MANIFEST="relative/compatible-pair-v4.json",
+    )
+    runner = FakeDockerGit()
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, runner=runner, manifest_path=None, environment=environment)
+
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert "E2E_C7_COMPATIBLE_PAIR_MANIFEST" in str(excinfo.value)
+    assert runner.argv == []
+
+
+# ---------------------------------------------------------------------------
+# R1-2 `rebuild-pinned`가 쓸어가는 state root 배제
+# ---------------------------------------------------------------------------
+
+
+def test_pair_manifest_is_one_of_the_artifacts_rebuild_pinned_retires() -> None:
+    """배제 규칙의 근거. 이 관계가 깨지면 규칙 자체를 다시 봐야 한다."""
+
+    assert c6c_deployment.PAIR_MANIFEST_FILENAME in pinned_runtime_generation.f1d_legacy_artifact_paths()
+
+
+@pytest.mark.parametrize("through_environment", [False, True])
+def test_manifest_inside_the_pinned_runtime_state_root_is_refused(
+    bench: Bench, through_environment: bool
+) -> None:
+    doomed = bench.pinned_root / c6c_deployment.PAIR_MANIFEST_FILENAME
+    runner = FakeDockerGit()
+    overrides: dict[str, Any] = (
+        {
+            "manifest_path": None,
+            "environment": _frozen_environment_with_inputs(
+                bench,
+                E2E_C7_COMPATIBLE_PAIR_MANIFEST=str(doomed),
+            ),
+        }
+        if through_environment
+        else {"manifest_path": str(doomed)}
+    )
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, runner=runner, **overrides)
+
+    message = str(excinfo.value)
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert excinfo.value.returncode == 2
+    assert "rebuild-pinned" in message
+    assert str(bench.pinned_root) in message
+    assert not doomed.exists()
+    assert runner.argv == []
+
+
+def test_manifest_nested_deeper_inside_the_pinned_state_root_is_refused(bench: Bench) -> None:
+    nested = bench.pinned_root / "nested"
+    nested.mkdir(mode=0o700)
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(
+            bench,
+            manifest_path=str(nested / c6c_deployment.PAIR_MANIFEST_FILENAME),
+        )
+
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert "rebuild-pinned" in str(excinfo.value)
+
+
+def test_manifest_beside_the_pinned_state_root_is_accepted(bench: Bench) -> None:
+    """배제는 root **아래**만이다. 이름이 비슷한 형제 디렉터리를 막지 않는다."""
+
+    sibling = bench.pinned_root.parent / f"{PROJECT}-runner"
+    sibling.mkdir(mode=0o700)
+    assert sibling.parent == bench.pinned_root.parent
+
+    receipt = run_capture(
+        bench,
+        manifest_path=str(sibling / c6c_deployment.PAIR_MANIFEST_FILENAME),
+    )
+
+    assert receipt["state"] == capture.CAPTURE_COMMITTED
+
+
+# ---------------------------------------------------------------------------
+# R1-3 v5 pinned generation과의 대조 (보고 전용)
+# ---------------------------------------------------------------------------
+
+
+def _pinned_generation_payload(**overrides: str) -> dict[str, str]:
+    payload = {
+        "map_api_image_id": ROLE_IMAGES["map_api"],
+        "map_ui_image_id": ROLE_IMAGES["map_ui"],
+        "map_dagster_image_id": ROLE_IMAGES["map_dagster_web"],
+        "map_dagster_daemon_image_id": ROLE_IMAGES["map_dagster_daemon"],
+        "pinvi_api_image_id": ROLE_IMAGES["pinvi_api"],
+        "pinvi_web_image_id": _image(0xAA1),
+        "pinvi_dagster_image_id": _image(0xAA2),
+        "map_source_revision": MAP_REVISION,
+        "pinvi_source_revision": PINVI_REVISION,
+        "map_application_head": "0f1e2d3c",
+        "map_dagster_head": "4b5a6978",
+        "pinvi_head": "8877meta",
+        "pinset_sha256": "d" * 64,
+        "recorded_at": "2026-08-10T00:00:00+00:00",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def seed_pinned_generation(bench: Bench, **overrides: str) -> Path:
+    path = bench.pinned_root / "pinned-runtime-generation-v5.json"
+    path.write_text(
+        json.dumps(
+            {"version": 5, "active_generation": _pinned_generation_payload(**overrides)},
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+    return path
+
+
+def test_pinned_generation_agreement_is_reported(bench: Bench) -> None:
+    path = seed_pinned_generation(bench)
+
+    receipt = run_capture(bench)
+
+    assert receipt["pinned_generation_manifest"] == str(path)
+    assert receipt["pinned_generation_agrees"] is True
+    assert receipt["pinned_generation_divergent_roles"] == []
+    assert "pinned_generation_agrees=true" in receipt["stdout"].splitlines()
+
+
+def test_pinned_generation_divergence_is_reported_but_never_refused(bench: Bench) -> None:
+    """n150 실측 상태 — v5가 다른 revision/image를 주장해도 capture는 커밋한다."""
+
+    seed_pinned_generation(
+        bench,
+        map_api_image_id=_image(0xBEEF),
+        map_source_revision=OTHER_REVISION,
+    )
+
+    receipt = run_capture(bench)
+
+    assert receipt["state"] == capture.CAPTURE_COMMITTED
+    assert receipt["returncode"] == 0
+    assert receipt["pinned_generation_agrees"] is False
+    assert receipt["pinned_generation_divergent_roles"] == ["map_api", "map_source_revision"]
+    assert (
+        "pinned_generation_agrees=false divergent=map_api,map_source_revision"
+        in receipt["stdout"].splitlines()
+    )
+
+
+def test_pinned_generation_divergence_covers_every_capture_role(bench: Bench) -> None:
+    seed_pinned_generation(
+        bench,
+        map_api_image_id=_image(0xB01),
+        map_ui_image_id=_image(0xB02),
+        map_dagster_image_id=_image(0xB03),
+        map_dagster_daemon_image_id=_image(0xB04),
+        pinvi_api_image_id=_image(0xB05),
+        pinvi_source_revision=OTHER_REVISION,
+    )
+
+    receipt = run_capture(bench)
+
+    assert receipt["pinned_generation_divergent_roles"] == sorted(
+        [role for role, _service, _f in capture.CAPTURE_ROLES] + ["pinvi_source_revision"]
+    )
+
+
+def test_absent_pinned_generation_manifest_reports_unknown(bench: Bench) -> None:
+    receipt = run_capture(bench)
+
+    assert receipt["pinned_generation_agrees"] is None
+    assert receipt["pinned_generation_divergent_roles"] == []
+    assert "pinned_generation_agrees=unknown" in receipt["stdout"].splitlines()
+
+
+def test_unreadable_pinned_generation_manifest_reports_unknown(bench: Bench) -> None:
+    path = seed_pinned_generation(bench)
+    path.write_text("{not json", encoding="utf-8")
+    path.chmod(0o600)
+
+    receipt = run_capture(bench)
+
+    assert receipt["state"] == capture.CAPTURE_COMMITTED
+    assert receipt["pinned_generation_agrees"] is None
+
+
+def test_group_readable_pinned_generation_manifest_is_ignored(bench: Bench) -> None:
+    path = seed_pinned_generation(bench)
+    path.chmod(0o644)
+    try:
+        receipt = run_capture(bench)
+    finally:
+        path.chmod(0o600)
+
+    assert receipt["pinned_generation_agrees"] is None
+
+
+def test_capture_never_creates_the_pinned_runtime_state_directory(bench: Bench) -> None:
+    """`read_manifest`를 그대로 쓰면 부모를 mkdir한다. capture는 절대 만들지 않는다."""
+
+    bench.pinned_root.rmdir()
+
+    receipt = run_capture(bench)
+
+    assert receipt["pinned_generation_agrees"] is None
+    assert not bench.pinned_root.exists()
+
+
+# ---------------------------------------------------------------------------
+# R2-2 쓰기 **전** runner 재검증 / 커밋 후 실패의 스냅샷 복구
+# ---------------------------------------------------------------------------
+
+
+def test_runner_reparse_runs_before_the_irreversible_replace(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """runner 술어의 **첫 번째** 적용이 `os.replace`보다 앞이어야 한다.
+
+    사전 검증을 지우면 첫 적용이 커밋 이후로 밀려 `os.replace`가 이미 실행된 뒤에
+    거부하게 되고, 이 단언 셋이 한꺼번에 red가 된다.
+    """
+
+    original = seed_manifest(bench, active_map_image=_image(0x900))
+    replaced: list[tuple[Any, Any]] = []
+    real_replace = c6c_deployment.os.replace
+    real_assert = capture._assert_runner_reparse
+    calls = {"count": 0}
+
+    def spy_replace(source: Any, destination: Any) -> None:
+        replaced.append((source, destination))
+        real_replace(source, destination)
+
+    def flaky_assert(payload_bytes: bytes) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise c6c_deployment.DeploymentContractError("runner would reject this document")
+        real_assert(payload_bytes)
+
+    monkeypatch.setattr(c6c_deployment.os, "replace", spy_replace)
+    monkeypatch.setattr(capture, "_assert_runner_reparse", flaky_assert)
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench)
+
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert calls["count"] == 1
+    assert replaced == []
+    assert bench.manifest.read_bytes() == original
+
+
+def test_a_document_the_runner_would_reject_is_never_written(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """naive `recorded_at`은 manager의 느슨한 검사는 통과하고 runner에서 터진다."""
+
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_validate_pair_manifest_contract",
+        lambda manifest: None,
+    )
+    monkeypatch.setattr(
+        capture,
+        "new_image_pair",
+        lambda *args, **kwargs: c6c_deployment.CompatibleImagePair(
+            map_image_id=ROLE_IMAGES["map_api"],
+            map_ui_image_id=ROLE_IMAGES["map_ui"],
+            map_dagster_image_id=ROLE_IMAGES["map_dagster_web"],
+            map_dagster_daemon_image_id=ROLE_IMAGES["map_dagster_daemon"],
+            map_source_revision=MAP_REVISION,
+            pinvi_image_id=ROLE_IMAGES["pinvi_api"],
+            pinvi_source_revision=PINVI_REVISION,
+            contract_generation=GENERATION,
+            recorded_at="2026-08-19T00:00:00",
+        ),
+    )
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench)
+
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert not bench.manifest.exists()
+
+
+def _fail_the_post_commit_reread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """커밋 **이후**의 재읽기만 실패시킨다. 사전 검증 읽기는 그대로 둔다."""
+
+    real_read = capture._read_runner_secure_bytes
+    real_write = capture.write_pair_manifest
+    committed = {"done": False}
+
+    def spy_write(*args: Any, **kwargs: Any) -> bytes:
+        payload: bytes = real_write(*args, **kwargs)
+        committed["done"] = True
+        return payload
+
+    def flaky(path: Path, **kwargs: Any) -> bytes:
+        if committed["done"]:
+            raise OSError("post-commit re-read failed")
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(capture, "write_pair_manifest", spy_write)
+    monkeypatch.setattr(capture, "_read_runner_secure_bytes", flaky)
+
+
+def test_failed_post_commit_reread_restores_the_previous_bytes(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = seed_manifest(bench, active_map_image=_image(0x900))
+    _fail_the_post_commit_reread(monkeypatch)
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench)
+
+    assert excinfo.value.state == capture.CAPTURE_WRITE_ROLLED_BACK
+    assert excinfo.value.returncode == 1
+    assert bench.manifest.read_bytes() == original
+    assert stat.S_IMODE(bench.manifest.stat().st_mode) == 0o600
+
+
+def test_failed_post_commit_reread_without_a_pre_image_removes_the_artifact(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fail_the_post_commit_reread(monkeypatch)
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench)
+
+    assert excinfo.value.state == capture.CAPTURE_WRITE_ROLLED_BACK
+    assert not bench.manifest.exists()
+
+
+def test_failed_restore_is_a_different_terminal_state_than_a_restored_one(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_manifest(bench, active_map_image=_image(0x900))
+    _fail_the_post_commit_reread(monkeypatch)
+
+    def broken_restore(*args: Any, **kwargs: Any) -> None:
+        raise OSError("restore failed")
+
+    monkeypatch.setattr(capture, "restore_pair_manifest_snapshot", broken_restore)
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench)
+
+    assert excinfo.value.state == capture.CAPTURE_WRITE_INDETERMINATE
+    assert "could not be restored" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# R2-3 교체되는 manifest의 pre-image 증거와 generation 전환 게이트
+# ---------------------------------------------------------------------------
+
+
+def test_receipt_carries_the_pre_image_of_the_replaced_manifest(bench: Bench) -> None:
+    original = seed_manifest(bench, active_map_image=_image(0x900))
+    previous = json.loads(original)
+
+    receipt = run_capture(bench)
+
+    assert receipt["previous_manifest_sha256"] == hashlib.sha256(original).hexdigest()
+    assert receipt["previous_active"] == previous["active"]
+    assert set(receipt["previous_active"]) == set(RUNNER_PAIR_KEYS)
+    assert receipt["previous_recorded_at"] == previous["active"]["recorded_at"]
+
+
+def test_first_capture_reports_an_absent_pre_image(bench: Bench) -> None:
+    receipt = run_capture(bench)
+
+    assert receipt["previous_manifest_sha256"] is None
+    assert receipt["previous_active"] is None
+    assert receipt["previous_recorded_at"] is None
+
+
+def test_contract_generation_change_is_refused_by_default(bench: Bench) -> None:
+    original = seed_manifest(bench, active_map_image=_image(0x900), generation="c6c-ops-v0")
+    runner = FakeDockerGit()
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, runner=runner)
+
+    message = str(excinfo.value)
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert "--allow-generation-change" in message
+    assert "c6c-ops-v0" in message and GENERATION in message
+    assert bench.manifest.read_bytes() == original
+    assert runner.argv == []
+
+
+def test_contract_generation_change_proceeds_with_the_explicit_flag(bench: Bench) -> None:
+    seed_manifest(bench, active_map_image=_image(0x900), generation="c6c-ops-v0")
+
+    receipt = run_capture(bench, allow_generation_change=True)
+
+    assert receipt["state"] == capture.CAPTURE_COMMITTED
+    assert receipt["allow_generation_change"] is True
+    assert receipt["previous_active"]["contract_generation"] == "c6c-ops-v0"
+    assert receipt["contract_generation"] == GENERATION
+
+
+def test_same_generation_does_not_need_the_flag(bench: Bench) -> None:
+    seed_manifest(bench, active_map_image=_image(0x900))
+
+    receipt = run_capture(bench)
+
+    assert receipt["state"] == capture.CAPTURE_COMMITTED
+    assert receipt["allow_generation_change"] is False
+
+
+# ---------------------------------------------------------------------------
+# R2-5 git 하위 프로세스 env 위생과 ownership 거부의 구분
+# ---------------------------------------------------------------------------
+
+
+def test_capture_command_environment_drops_inherited_git_redirection() -> None:
+    polluted = {name: "/somewhere/else/.git" for name in capture.GIT_ENVIRONMENT_OVERRIDES}
+    polluted["PATH"] = "/usr/bin"
+
+    sanitized = capture.capture_command_environment(polluted)
+
+    assert sanitized == {"PATH": "/usr/bin"}
+    assert set(capture.GIT_ENVIRONMENT_OVERRIDES) == {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_WORK_TREE",
+    }
+
+
+def test_default_runner_does_not_leak_git_redirection_into_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """주입 fake가 아닌 **실제** 하위 프로세스로 env 위생을 확인한다."""
+
+    for name in capture.GIT_ENVIRONMENT_OVERRIDES:
+        monkeypatch.setenv(name, "/attacker/repo/.git")
+    runner = capture._default_runner(str(tmp_path))
+
+    completed = runner(
+        [
+            sys.executable,
+            "-c",
+            "import json,os;print(json.dumps({k: os.environ.get(k) for k in "
+            f"{list(capture.GIT_ENVIRONMENT_OVERRIDES)!r}"
+            "}))",
+        ]
+    )
+
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout) == dict.fromkeys(capture.GIT_ENVIRONMENT_OVERRIDES)
+
+
+@pytest.mark.parametrize("failing_command", ["cat_file", "status"])
+def test_dubious_ownership_is_its_own_terminal_state(bench: Bench, failing_command: str) -> None:
+    stderr = (
+        "fatal: detected dubious ownership in repository at '/srv/kor-travel-map'\n"
+        "To add an exception for this directory, call:\n"
+    )
+    runner = (
+        FakeDockerGit(git_cat_file_returncode=128, git_stderr=stderr)
+        if failing_command == "cat_file"
+        else FakeDockerGit(git_status_returncode=128, git_stderr=stderr)
+    )
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, runner=runner)
+
+    message = str(excinfo.value)
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_CHECKOUT_OWNERSHIP
+    assert excinfo.value.returncode == 2
+    assert "dubious ownership" in message
+    assert "not a missing commit" in message
+    assert "safe.directory" in message
+    assert not bench.manifest.exists()
+
+
+def test_a_missing_commit_is_not_reported_as_an_ownership_problem(bench: Bench) -> None:
+    runner = FakeDockerGit(git_cat_file_returncode=1, git_stderr="")
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, runner=runner)
+
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_RUNTIME
+    assert "dubious ownership" not in str(excinfo.value)
+
+
+def test_unresolvable_pinned_state_root_fails_closed_with_a_readable_reason(bench: Bench) -> None:
+    """배제를 증명할 수 없으면 통과시키지 않는다. 다만 이유는 읽을 수 있어야 한다."""
+
+    # `_COMPOSE_PROJECT_PATTERN`은 숫자로 시작해도 통과하지만 pinned state의
+    # `_PROJECT_NAME`은 아니다. 그때 root를 계산할 수 없으므로 fail-closed다.
+    environment = {**bench.environment, "COMPOSE_PROJECT_NAME": "9map"}
+    runner = FakeDockerGit()
+
+    with pytest.raises(capture.PairCaptureRefusal) as excinfo:
+        run_capture(bench, runner=runner, environment=environment)
+
+    message = str(excinfo.value)
+    assert excinfo.value.state == capture.CAPTURE_REFUSED_PRECONDITION
+    assert "pinned runtime state root could not be resolved" in message
+    assert "rebuild-pinned" in message
+    assert runner.argv == []
+    assert not bench.manifest.exists()

@@ -4,6 +4,62 @@
 
 ---
 
+## 2026-08-19 — `pinvi-pair capture` 적대 리뷰 P1 9건 수정 (ADR-38 개정)
+
+적대 리뷰 2명이 낸 P1 9건을 전부 고쳤다. 가장 큰 것은 **런북의 문자 그대로의 호출이
+여전히 exit 2**였다는 것 — 이 명령의 유일한 존재 이유가 "런북을 고치지 않고 Manager에 그
+명령을 존재하게 하는 것"이었으므로 목표 미달이었고, 실패 시점이 §2.1 step 4(alembic
+upgrade) 뒤라 운영자가 막다른 길에 섰다.
+
+- **R1-1/R2-1 세 입력의 frozen environment fallback**: manifest는
+  `E2E_C7_COMPATIBLE_PAIR_MANIFEST`(없으면 `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`), checkout은
+  `KTDM_C7_MAP_SOURCE_CHECKOUT`/`KTDM_C7_PINVI_SOURCE_CHECKOUT`. 정본 소유자가 C7 runner라
+  runner가 쓰는 env 이름을 그대로 썼다. CLI flag는 override로 남겼고, receipt의
+  `input_sources`가 값이 flag에서 왔는지 어느 env에서 왔는지 기록한다. 값이 없으면
+  거부하되 메시지가 flag 이름과 env 이름을 모두 지목한다(막다른 길 금지).
+- **R1-2 `rebuild-pinned` 배제**: manifest 경로가 `pinned_runtime_state_root(...)` 아래면
+  precondition 거부다. 그 root에서 `rebuild-pinned`가 `f1d_legacy_artifact_paths()` —
+  `compatible-pair-v4.json` 포함 — 를 퇴역시키므로 runner의 read target을 그 안에 두면
+  rehearsal rebuild 한 번이 attestation 입력을 지운다. n150 rehearsal에서는 두 root가
+  실제로 같은 디렉터리다. mode 게이트 없는 `pinned_runtime_state_root`를
+  `pinned_runtime_generation.py`에서 추출해 규칙 정본을 하나로 유지했다.
+- **R1-3 v5 pinned generation 대조**: `pinned-runtime-generation-v5.json`이 있으면 읽어
+  다섯 image ID와 두 revision을 관측값과 맞추고 `pinned_generation_agrees`·
+  `pinned_generation_divergent_roles`를 receipt와 stdout 한 줄에 노출한다. **거부하지
+  않는다** — prod Map 재배포의 sanctioned 경로가 host compose 직접 실행이라 v5가 뒤처지는
+  것이 정상 상태일 수 있다. `read_manifest`는 부모를 mkdir하므로 쓰지 않고 읽기 전용
+  reader를 따로 뒀다.
+- **R1-4 rollback 승격 회귀**: seed가 `rollback == active`라 승격 로직을 통째로 지워도
+  81/81이 green이었다. seed를 `manifest_with_active_pair(initial_pair_manifest(older),
+  newer)`로 바꿔 `rollback != active`인 상태에서 `rollback == previous.active` **및**
+  `rollback != previous.rollback`을 단언한다.
+- **R2-2 쓰기 전 재검증 + 스냅샷 복구**: runner 술어 검증이 되돌릴 수 없는 `os.replace`
+  뒤에만 돌았다. `pair_manifest_bytes` 직후 쓰기 **전에** 돌리고, 커밋 후 재읽기가
+  실패하면 pre-image 복구를 시도해 성공은 `capture_write_rolled_back`, 실패는
+  `capture_write_indeterminate`로 구분한다.
+- **R2-3 pre-image 증거 + generation 게이트**: `previous_manifest_sha256`·`previous_active`
+  (9필드)·`previous_recorded_at`을 receipt에 넣고, 기존 manifest의 generation이 frozen
+  `KTDM_C6C_CONTRACT_GENERATION`과 다르면 기본 거부한다(`--allow-generation-change`로만 통과).
+- **R2-4 cross-repo 게이트**: 하드코딩된 `F:/dev/ktm-tvn36r` 경로 때문에 n150·CI에서 항상
+  skip됐다. `KTDM_C7_RUNNER_MODULE`로 옮기고 **값이 주어졌는데 실패하면 skip이 아니라
+  fail**시킨다. 계약 상수(top-level 키 집합·`version == 4`·pair 9필드) digest도 테스트에
+  박았다. 로컬 Map 체크아웃으로 실행해 통과를, 없는 경로로 실행해 fail(skip 아님)을 확인했다.
+- **R2-5 git env 위생과 ownership 구분**: 상속된 `GIT_DIR` 등 5개를 제거한 env를 하위
+  프로세스에 넘긴다(실제 subprocess로 확인). stderr에 `dubious ownership`이 있으면
+  `capture_refused_checkout_ownership`이라는 별도 terminal state로 알린다 — "commit 없음"과
+  뭉개지 않는다.
+
+**되돌리면 red가 되는지 실증**: 10개 수정 지점을 하나씩 되돌리는 mutation 스크립트를 돌려
+전부 red를 확인했다(초판에서는 R2-2a 하나가 green으로 남아 테스트를 다시 짰다 — 기존 seed가
+있으면 patched parser가 C-6에서 먼저 걸려 사전 검증 제거를 가리고 있었다).
+
+**검증**: `pytest -q` 532 passed / 1 skipped(baseline 493), `ruff check` 신규 위반 0건
+(변경 파일 기준 HEAD와 규칙별 건수 동일), `mypy --strict`가 변경 모듈에서 clean(남은 것은
+이 환경에 `types-PyYAML`이 없어 나는 기존 `c6c_deployment.py:28` 하나뿐). n150은 읽지도
+않았고 prod mutation은 없다.
+
+---
+
 ## 2026-08-19 — Map C7 런북 step 8용 `pinvi-pair capture` 복원 (읽기 전용, ADR-38)
 
 Map 저장소 런북 `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8이 부르는

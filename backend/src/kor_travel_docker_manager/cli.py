@@ -159,6 +159,7 @@ def _cmd_pinvi_pair_capture(args: argparse.Namespace) -> int:
             map_source_checkout=args.map_source_checkout,
             pinvi_source_checkout=args.pinvi_source_checkout,
             expect_active_map_revision=args.expect_active_map_revision,
+            allow_generation_change=args.allow_generation_change,
             build_flag=args.build,
         )
     except PairCaptureRefusal as exc:
@@ -315,24 +316,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifest-path",
         default=None,
         help=(
-            "C7 runner가 E2E_C7_COMPATIBLE_PAIR_MANIFEST로 읽는 절대경로. "
-            "basename은 compatible-pair-v4.json이어야 하며 기본값은 없습니다."
+            "C7 runner가 E2E_C7_COMPATIBLE_PAIR_MANIFEST로 읽는 절대경로 override. "
+            "생략하면 frozen 환경의 E2E_C7_COMPATIBLE_PAIR_MANIFEST "
+            "(없으면 KTDM_C6C_COMPATIBLE_PAIR_MANIFEST)에서 읽습니다. "
+            "basename은 compatible-pair-v4.json이어야 합니다."
         ),
     )
     pair_capture.add_argument(
         "--map-source-checkout",
         default=None,
-        help="관측된 Map revision의 commit object 실재를 확인할 git checkout 절대경로.",
+        help=(
+            "관측된 Map revision의 commit object 실재를 확인할 git checkout 절대경로 "
+            "override. 생략하면 frozen 환경의 KTDM_C7_MAP_SOURCE_CHECKOUT을 씁니다."
+        ),
     )
     pair_capture.add_argument(
         "--pinvi-source-checkout",
         default=None,
-        help="관측된 PinVi revision의 commit object 실재를 확인할 git checkout 절대경로.",
+        help=(
+            "관측된 PinVi revision의 commit object 실재를 확인할 git checkout 절대경로 "
+            "override. 생략하면 frozen 환경의 KTDM_C7_PINVI_SOURCE_CHECKOUT을 씁니다."
+        ),
     )
     pair_capture.add_argument(
         "--expect-active-map-revision",
         default=None,
         help="주어지면 관측된 Map OCI revision과 exact 일치를 요구합니다(40-hex).",
+    )
+    pair_capture.add_argument(
+        "--allow-generation-change",
+        action="store_true",
+        help=(
+            "기존 manifest의 contract generation이 frozen "
+            "KTDM_C6C_CONTRACT_GENERATION과 다를 때에도 진행합니다(기본은 거부)."
+        ),
     )
     pair_capture.add_argument(
         "--build",

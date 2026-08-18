@@ -2059,8 +2059,18 @@ state root를 어떻게 정할지가 남은 문제였다. Manager에는 이미 �
 manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 않고 소비자의
 전제조건을 그대로 미러링한다.**
 
-- 경로는 `--manifest-path <절대경로>`로 **operator가 명시한다**. 기본값 없음,
-  `c6c_state_paths` fallback 없음. basename은 `compatible-pair-v4.json`으로 고정한다.
+- 경로는 **frozen environment가 정본이고 CLI flag는 override**다. manifest는
+  `E2E_C7_COMPATIBLE_PAIR_MANIFEST`(없으면 `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`),
+  두 checkout은 `KTDM_C7_MAP_SOURCE_CHECKOUT`/`KTDM_C7_PINVI_SOURCE_CHECKOUT`에서
+  읽는다. 정본 소유자가 C7 runner이므로 runner가 쓰는 env 이름을 그대로 쓴다.
+  `c6c_state_paths` fallback은 여전히 없고 basename은 `compatible-pair-v4.json`으로
+  고정한다. 값이 아예 없으면 거부하되, 메시지가 **flag 이름과 env 이름을 모두 지목해**
+  막다른 길을 만들지 않는다.
+- **`rebuild-pinned`가 쓸어가는 자리는 거부한다.** manifest 경로가
+  `pinned_runtime_state_root(...)` 아래면 `capture_refused_precondition`이다.
+  `rebuild-pinned`는 그 root에서 `f1d_legacy_artifact_paths()` — `compatible-pair-v4.json`
+  포함 — 를 퇴역시키므로, 그 안을 runner의 read target으로 두면 rehearsal rebuild 한 번이
+  attestation 입력을 지운다. n150 rehearsal에서는 두 root가 실제로 같은 디렉터리다.
 - parent 체인은 runner의 `_read_secure_file`(112-146행)과 **같은 술어**로 검증한다 —
   각 ancestor가 디렉터리·비symlink·uid 0·gid 0·`mode & 0o022 == 0`. **capture는 절대
   mkdir하지 않는다.** 부모가 없으면 거부한다.
@@ -2074,6 +2084,26 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
   끝난다.
 - `--build`는 **아무것도 빌드하지 않는다.** 런북 문구 호환을 위해 수락하고 stderr에 1줄
   고지하며 receipt에 `build_flag_accepted_no_op`로 기록한다.
+- **v5 pinned generation과 대조하되 거부하지 않는다.** 같은 사실을 두 번 적는
+  `pinned-runtime-generation-v5.json`이 있으면 읽어 다섯 image ID와 두 revision을
+  관측값과 맞춰 보고 `pinned_generation_agrees`·`pinned_generation_divergent_roles`를
+  receipt와 stdout 한 줄에 노출한다. prod Map 재배포의 sanctioned 경로가 host compose
+  직접 실행이라 v5가 뒤처지는 것이 **정상 상태일 수 있으므로** 불일치는 거부 사유가
+  아니다. 그 파일은 읽기만 하며 부모 디렉터리도 만들지 않는다.
+- **contract generation 전환은 명시 동의를 요구한다.** 기존 manifest의
+  `active.contract_generation`이 frozen `KTDM_C6C_CONTRACT_GENERATION`과 다르면 기본
+  거부하고, 의도적 전환일 때만 `--allow-generation-change`로 통과한다.
+- **교체되는 manifest의 pre-image를 receipt에 남긴다**: `previous_manifest_sha256`,
+  직전 `active`의 9필드 identity(`previous_active`), `previous_recorded_at`. 무엇을
+  덮어썼는지 사후에 확인할 수 없는 상태를 만들지 않는다.
+- **되돌릴 수 없는 `os.replace` 전에** 쓰려는 bytes를 runner 술어로 재검증한다. 커밋 후
+  재읽기가 실패하면 pre-image 스냅샷 복구를 시도하고, 복구 성공은
+  `capture_write_rolled_back`, 실패는 `capture_write_indeterminate`로 구분한다.
+- **git 하위 프로세스 env를 위생 처리한다.** 상속된 `GIT_DIR`/`GIT_WORK_TREE`/
+  `GIT_CEILING_DIRECTORIES`/`GIT_OBJECT_DIRECTORY`/`GIT_ALTERNATE_OBJECT_DIRECTORIES`를
+  제거해 `git -C <checkout>` 결박이 조용히 다른 저장소로 새지 않게 한다. git이
+  `dubious ownership`으로 거부하면 "commit 없음"으로 뭉개지 않고
+  `capture_refused_checkout_ownership`이라는 별도 terminal state로 알린다.
 
 ### 근거
 
@@ -2096,9 +2126,12 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
 
 ### 결과(긍정)
 
-- 런북 step 8이 실행 가능해졌고, 산출물이 runner의 전수 검증(shape·정규식·소유권·mode)을
-  그대로 통과한다. 검증 술어의 사본과 **실제 runner 모듈을 import한 테스트**가
-  `backend/tests/test_c6c_pair_capture.py`에 있어 runner가 계약을 바꾸면 즉시 red가 된다.
+- 런북 step 8이 **인자 없이 문자 그대로** 실행 가능해졌고, 산출물이 runner의 전수
+  검증(shape·정규식·소유권·mode)을 그대로 통과한다. 검증 술어의 사본과, 계약 상수
+  (top-level 키 집합·`version == 4`·pair 9필드) digest 고정과, `KTDM_C7_RUNNER_MODULE`이
+  가리키는 **실제 runner 모듈을 import한 테스트**가 `backend/tests/test_c6c_pair_capture.py`에
+  있어 runner가 계약을 바꾸면 즉시 red가 된다. 그 env가 주어졌는데 import·검증이 실패하면
+  skip이 아니라 fail이다 — 하드코딩 절대경로로 조용히 skip되던 초판의 구멍을 막았다.
 - 재capture가 멱등이다. 직전 `active`가 `rollback`으로 승격되고, 동일 identity로 다시
   실행하면 기존 `rollback`이 보존된다. v4의 bootstrap-once 게이트
   (`assert_pair_manifest_bootstrap_allowed`)는 재배포 후 재capture를 막으므로 복원하지
@@ -2126,11 +2159,35 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
   (`merge-base --is-ancestor`)를 게이트로 넣으면 n150 실측 기준 오늘 fail-closed였을
   것이라 의도적으로 뺐다.
 
+### 개정 (2026-08-19, 적대 리뷰 9건 반영)
+
+초판은 세 입력을 CLI 필수 인자로 두어 **런북의 문자 그대로의 호출이 여전히 exit 2**였다.
+이 명령의 유일한 존재 이유가 "런북을 고치지 않고 Manager에 그 명령을 존재하게 하는 것"이므로
+목표 미달이었다. 게다가 실패 시점이 런북 §2.1 step 4(alembic upgrade) 뒤라 운영자가 막다른
+길에 섰다. 그래서 세 입력을 frozen environment fallback으로 바꾸고(위 §결정 1번 bullet),
+아래 여덟 가지를 함께 고쳤다.
+
+| 리뷰 | 고친 내용 | terminal state / receipt |
+|:---|:---|:---|
+| R1-1/R2-1 | 세 입력의 frozen env fallback, flag는 override | `input_sources` |
+| R1-2 | pinned runtime state root 아래 manifest 배제 | `capture_refused_precondition` |
+| R1-3 | v5 pinned generation 대조(보고 전용) | `pinned_generation_agrees` 외 2 |
+| R1-4 | rollback 승격 회귀 테스트 강화(`rollback != active` seed) | — |
+| R2-2 | `os.replace` **전** runner 재검증 + 커밋 후 스냅샷 복구 | `capture_write_rolled_back` |
+| R2-3 | pre-image 증거 + generation 전환 게이트 | `previous_*`, `allow_generation_change` |
+| R2-4 | cross-repo 게이트를 `KTDM_C7_RUNNER_MODULE`로 이동(값 있으면 skip 금지) | — |
+| R2-5 | git env 위생 + `dubious ownership` 구분 | `capture_refused_checkout_ownership` |
+
+state root 규칙은 여전히 새로 만들지 않는다. 초판이 "operator가 절대경로를 명시한다"로
+표현했던 것을 "**소비자가 이미 쓰는 env 이름을 그대로 읽는다**"로 바꾼 것이므로, 정본은
+오히려 runner 한 곳에 더 가까워졌다. 배제 규칙(R1-2)만이 Manager가 추가한 유일한 제약이며,
+그 근거는 `rebuild-pinned`가 같은 이름을 지운다는 이 저장소 안의 사실이다.
+
 ### 후속
 
-- (open) 런북의 문자 그대로의 `capture --verified-compatible --build`는 필수 경로 인자
-  3개가 없어 exit 2로 fail-closed된다. 런북을 고치지 않기로 했으므로 구체 invocation은
-  gitignore된 `docs/deploy-runbook.local.md`에 둬야 한다 — 사용자 확인 필요.
 - (open) n150의 stale `pinned-runtime-generation-v5*`는 capture가 건드리지 않으므로 그대로
-  남는다. 별개 작업으로 분리한다.
+  남는다. capture는 이제 불일치를 **보고**하지만 고치지는 않는다. 별개 작업으로 분리한다.
 - (open) revision reachability를 capture 게이트로 넣을지 여부.
+- (open) n150 rehearsal에서 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`가 pinned runtime state root
+  안을 가리키면 R1-2로 거부된다. runner의 read target을 그 root 밖 root-owned 0700
+  디렉터리로 옮기는 실작업은 사용자 확인 대기.
