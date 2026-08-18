@@ -47,6 +47,21 @@ PR #180에서 코드만 결선하고 보류했던 두 production 작업을 사�
 성공으로 정렬했다. 각 rollback 뒤 health와 기존 TCP 인증을 재확인한 뒤 최종 회전을
 다시 실행했다.
 
+## 2026-08-18 — geo 스케줄 DB 백업 env passthrough (issue #177 geo 쪽 durable 결선)
+
+kor-travel-geo의 앱 레벨 스케줄 백업(T-239)을 prod에서 켜는 데 필요한 `KTG_BACKUP_*` 4개가 compose에
+passthrough가 없어 host-local `docker-compose.override.yml`에 임시로 들어가 있었다. 이 PR은 그것을
+`.env`(`KOR_TRAVEL_GEO_BACKUP_SCHEDULE_ENABLED/SCHEDULE_INTERVAL_HOURS/ARTIFACT_TTL_DAYS/RETENTION_KEEP_MIN`)
+→ geo-api·geo-dagster·geo-dagster-daemon 세 서비스 env로 정식 연결한다. 기본값은 geo Settings와 같아
+(off/24/30/3) 설정이 없는 배포는 동작 변화가 없다. prod 권장값은 true/24/7/3이며, retention janitor가
+RUNNING이고 성공해야 약 8본(≈ 38 GB) 수준으로 수렴한다. `docs/docker-management.md`에는 geo application DB는
+앱 레벨 백업을 정본으로 두고 `ktdctl db-backup create geo`는 수동 비상 백업으로만 쓰라는 중복 주의를 적었다.
+Dagster metadata DB(`geo_dagster`)는 standalone 주기 백업 대상으로 남긴다. 첫 자동 백업 실측(kor-travel-geo
+journal 2026-08-18): 2026-08-18T00:15Z tick → `kor_travel_geo_backup_20260818T001517Z_zstd3.tar.zst` 4.71 GB,
+sha256 verify OK, `next_due 08-19T00:15Z`.
+
+---
+
 ## 2026-08-17 — issue #177/#178/#179: 4분할 뒤 남은 백업·자격증명·권한 공백 결선
 
 PR #176(프로젝트별 전용 PostgreSQL 4개 분리)이 오늘 착지한 뒤 사용자가 n150 실측으로

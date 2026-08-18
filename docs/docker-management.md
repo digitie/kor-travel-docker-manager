@@ -805,6 +805,16 @@ migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼�
 
 ### `ktdctl db-backup` (issue #177 결선 — 위 수동 절차의 CLI화)
 
+> **geo는 앱 레벨 백업이 정본이다(2026-08-18).** kor-travel-geo에는 T-228~244·T-290g의 완결된 백업 체계
+> (`db_backup` Dagster job → pg_dump 디렉터리 + zstd `.tar.zst`, manifest·sha256·verify·restore drill·hot-swap·
+> retention janitor, admin UI 카탈로그)가 있고, prod에서는 `.env`의 `KOR_TRAVEL_GEO_BACKUP_SCHEDULE_ENABLED=true`
+> (+`_INTERVAL_HOURS=24`, `_ARTIFACT_TTL_DAYS=7`, `_RETENTION_KEEP_MIN=3`)를 준다. 첫 자동 백업은
+> 2026-08-18T00:15Z에 4.71 GB로 성공했다(`KOR_TRAVEL_GEO_BACKUP_DIR`). 단, 매일 실행과 bounded
+> retention은 Dagster `scheduled_backup`(*/15 run-due)과 `backup_retention_janitor_daily`(06:00)가
+> 모두 RUNNING이고 최근 run이 성공해야 성립한다. `ktdctl db-backup`을 geo에도 주기 실행하면
+> **중복(2×4.7 GB/일)**이므로 application DB role인 `geo`에서는 수동 비상 백업으로만 사용한다.
+> `geo_dagster`는 별도 metadata DB라 standalone 주기 백업 대상으로 남긴다.
+
 위 "뜨는 법" 수작업을 대체하는 CLI다. 여섯 role(`geo`/`geo_dagster`/`concierge`/
 `map_application`/`map_dagster`/`pinvi`)을 지원하고, 포트·admin role 이름을
 하드코딩하지 않고 살아있는 컨테이너(`docker inspect`)에서 읽는다 — `.env`가
@@ -813,18 +823,22 @@ migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼�
 어떤 postgres 비밀번호도 읽거나 다루지 않는다.
 
 ```bash
-ktdctl db-backup create geo               # geo는 기본 timeout(4h)로 부족하면 --timeout 늘릴 것
-ktdctl db-backup list geo
-ktdctl db-backup gc geo --keep 2          # geo는 33GB급이라 낮게. map/pinvi/concierge는 7 정도
+ktdctl db-backup create concierge
+ktdctl db-backup list concierge
+ktdctl db-backup gc concierge --keep 7
 ```
+
+geo application DB는 위 앱 레벨 백업이 정본이다. 운영자가 장애 대응을 위해 한 번만 수동 dump가 필요할 때는
+`ktdctl db-backup create geo --timeout <초>`처럼 명시적으로 실행하고, cron/systemd timer에는 넣지 않는다.
+`geo_dagster`는 앱 백업이 대신하지 않으므로 아래 wrapper 예시에 남긴다.
 
 산출물은 위 "산출물 3종 세트" 관례를 그대로 따른다(`<role>-<ts>.dump` ·
 `<role>-<ts>.dump.sha256`(`sha256sum -c` 그대로 먹는 형태) · `<role>-<ts>.manifest`
 — `created_at_unix`·`duration_sec`·`instance`·`db_size_bytes`·`toc_entry_count`(pg_restore
 -l TOC 항목 수 — 위 수동 검증과 같은 sanity check)·`alembic_head`(best-effort,
 `public`/`app` schema 순서로 시도) 포함). 주기 실행은
-`scripts/run-standalone-backup.sh <role> <keep>`을 cron/systemd timer에 건다
-(스크립트 상단에 crontab 예시가 있다). 같은 role의 동시 실행은 `~/backups/<role>/
+`scripts/run-standalone-backup.sh <role> <keep>`을 cron/systemd timer에 건다.
+`geo` role은 앱 레벨 백업과 중복되므로 이 wrapper의 주기 실행 예시에서 제외한다. 같은 role의 동시 실행은 `~/backups/<role>/
 .backup.lock`(`flock`)으로 막는다.
 
 읽기 전용 `GET /api/v1/backups?role=<role>`도 있다 — Dashboard "백업 이력" 패널이
@@ -842,4 +856,3 @@ ktdctl db-backup gc geo --keep 2          # geo는 33GB급이라 낮게. map/pin
   걸지는 n150의 운용 성격(실 production인가)에 달렸고, kor-travel-map
   `docs/tasks.md`는 2026-08-06 사용자 지시로 정기화를 `[보류]`로 두고 있다
   ("손상 시 재적재가 정책"). map 쪽 최종 주기화 여부는 #148이 소유한다.
-
