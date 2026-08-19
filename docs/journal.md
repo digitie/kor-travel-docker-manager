@@ -4,6 +4,73 @@
 
 ---
 
+## 2026-08-19 — `pinvi-pair capture` 3차 확인 리뷰 blocking 2건 (ADR-38 개정 3)
+
+3차 확인 리뷰가 남긴 것은 코드 결함이 아니라 **문서가 위험한 명령을 지시한다**와
+**문서가 성립하지 않는 성질을 약속한다** 둘이었다.
+
+- **B-1(운영 위험) — n150 설치본의 `capture`는 아직 파괴형이다.** 읽기 전용 실측으로
+  확인했다: 설치본 revision은 `4191582779be47e9605a324ea27adbb99b438439`,
+  `pinvi-pair --help`는 `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}`,
+  `capture --help`는 `[--build] [--wait-timeout] [--verified-compatible] [--json]`이고
+  설치 트리에 `services/c6c_pair_capture.py`가 **없다**. 즉 이 브랜치 문서가 "정본 호출"로
+  공표한 문자열을 오늘 실행하면 **Map 넷 + PinVi API가 내려간다.**
+  - ADR-38 최상단과 `docs/docker-management.md` §7.5 최상단에 경고 블록을 넣었다.
+  - §7.5.1에 **읽기 전용 확인 절차**를 명령 형태로 넣었다. 핵심은 "capture를 실행해서
+    확인하지 마라"다 — 확인은 `--help` 두 번으로 끝난다.
+  - 코드에 자기 식별을 넣었다. `CAPTURE_CONTRACT = "pair-capture-v1"`이
+    `capture --help` 설명, 성공 stdout의 **첫 줄**, `--json` receipt의 `capture_contract`
+    **세 곳**에 같은 값으로 나온다. 옛 구현에는 이 문자열이 어디에도 없으므로 `--help`
+    한 번으로 "설치된 것이 관측기인가"를 실행 없이 판정할 수 있다.
+  - `scripts/install-ktdm-trusted-release`를 정독하고 §7.5.9에 설치 절차·전제조건·n150
+    현재 상태를 적었다. 확인한 것: 정본 명령은 하나
+    (`sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release <SOURCE_ROOT>`),
+    `/home/digitie/kor-travel-docker-manager`에는 `.git`이 **없고**(배포 트리) 후보 checkout은
+    `/home/digitie/f1d-v5-rehearsal/manager`, wheelhouse는 `*.whl` 25개로 이미 충분하며
+    (이 브랜치는 새 런타임 의존이 없다), installer가 capture와 **같은 global mutation
+    lock**을 잡고, Manager systemd unit이 없어 재기동이 필요 없으며, commit 뒤에는
+    `.rollback` 트리가 삭제되어 자동 되돌리기 경로가 **없다**. **실행하지 않았다.**
+- **B-2(멱등·attestation) — "재capture는 byte-멱등"이 §2.3 게이트를 오해시킨다.**
+  runner는 `manifest_sha256`·`active.map_source_revision`·`active.pinvi_source_revision`
+  (+`contract_generation`)을 **한 `if`에서 함께** attestation과 대조한다(443-448행).
+  기록된 active(map `c8ed6164…`/pinvi `6a035695…`)와 실행 중 다섯(Map `817cfeae…`/PinVi
+  `5cad141a…`)이 이미 다르므로 **첫 실전 capture는 정의상 멱등이 아니고 attestation
+  재생성이 필수**다. 멱등 주장을 "identity가 같을 때만"으로 좁히고 세 필드를 명시했으며,
+  receipt에 `recorded_at_preserved`·`attestation_action`을 더해 `false`일 때 비-JSON
+  stdout에도 "§2.3 attestation을 다시 만들라"는 한 줄이 나오게 했다.
+
+**함께 정리한 followup 셋.**
+
+- **runner 행 번호 포인터 정정.** 실질 주장은 전부 참이고 포인터만 낡아 있었다.
+  manifest shape 428-432 → **436**(+`_validate_pair` 439-440), sha256 대조 436 →
+  **443-448**(sha 444), health 술어 501-508 → **508-518**, `_read_secure_file`
+  112-146/112-164 → **111-162**, `_compose_container` 277-302 → **285-310**,
+  `_validate_pair` 305-316/305-341 → **313-325/313-347**, `_exact_dict` 65-66 → **68-69**,
+  manifest secure read `:623` → **635**. 재발 방지로 폐기된 인용 문자열을 코드·테스트·두
+  문서에서 스캔하는 테스트와, `KTDM_C7_RUNNER_MODULE`이 주어지면 각 행이 실제로 무엇인지
+  대조하는 테스트를 넣었다(실제 Map runner로 12개 anchor 전부 통과 확인).
+- **비-production 환경의 R1-2 자기 충돌**을 ADR-38 §미결 끝에 따름정리로 적었다.
+  rehearsal 모양 env에서는 `c6c_state_paths` 유도값과 `pinned_runtime_state_root`가 같은
+  디렉터리라 capture가 자기 기본값을 배제 규칙으로 거부한다. 설치본은 production 분기라
+  blocker가 아니어서 고치지 않고 선택지 셋만 남겼다.
+- **"다섯 service가 running·healthy"의 정확한 뜻.** `State.Health`가 없는 컨테이너
+  (healthcheck 미선언)는 health 항목을 **통과로 본다** — runner 508-518행과 의도적으로
+  같은 술어다. 오늘 `kor-travel-map-dagster-daemon-latest`가 그 경우이며, 그 사실을 §7.5의
+  같은 자리와 `_assert_container_is_healthy` docstring에 적었다.
+
+**되돌리면 red가 되는지 실증**: 16개 mutation을 하나씩 되돌려 전부 red를 확인했다 —
+stdout 첫 줄/receipt의 `capture_contract` 제거, `--help` 자기 식별 제거,
+`CAPTURE_CONTRACT` 값 drift(문서 두 곳이 red), `recorded_at_preserved` 상수화,
+`attestation_action` 제거, evidence 두 줄 제거, `ATTESTATION_BOUND_FIELDS`에서 필드 누락,
+낡은 행 번호 복원(코드·테스트·문서 각각), `pinvi-pair`에 legacy `deploy` 재노출,
+그리고 `KTDM_C7_RUNNER_MODULE`을 켠 상태에서 anchor 행 번호 drift 2건.
+
+**검증**: `pytest -q` 567 passed / 3 skipped(직전 555 passed / 1 skipped — 새 skip 2건은
+`KTDM_C7_RUNNER_MODULE` 게이트), `ruff check` 68=68, `mypy --strict -p
+kor_travel_docker_manager` 76=76. n150은 **읽기만** 했고 prod mutation은 없다.
+
+---
+
 ## 2026-08-19 — `pinvi-pair capture` 2차 적대 리뷰 7건 수정 (ADR-38 개정 2)
 
 리뷰가 n150 실측으로 **1차 개정의 전제 자체를 뒤집었다.** 가장 큰 것은 ADR-38 §근거 1(A)의

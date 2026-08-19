@@ -472,8 +472,12 @@ def _capture_receipt() -> dict[str, object]:
         "state": pair_capture.CAPTURE_COMMITTED,
         "success": True,
         "returncode": 0,
-        "stdout": "manifest=/var/lib/x/compatible-pair-v4.json\n",
+        "stdout": (
+            f"{pair_capture.CAPTURE_CONTRACT_LINE}\n"
+            "manifest=/var/lib/x/compatible-pair-v4.json\n"
+        ),
         "stderr": "",
+        "capture_contract": pair_capture.CAPTURE_CONTRACT,
         "manifest": "/var/lib/x/compatible-pair-v4.json",
         "manifest_sha256": "0" * 64,
         "contract_generation": "c6c-ops-v1",
@@ -493,6 +497,8 @@ def _capture_receipt() -> dict[str, object]:
         "previous_manifest_sha256": None,
         "previous_active": None,
         "previous_recorded_at": None,
+        "recorded_at_preserved": False,
+        "attestation_action": pair_capture.ATTESTATION_REGENERATION_NOTICE,
         "allow_generation_change": False,
         "operator_asserted_verified_compatible": True,
         "build_flag_accepted_no_op": False,
@@ -635,6 +641,41 @@ def test_cli_capture_help_names_the_frozen_environment_fallbacks(capsys) -> None
     assert pair_capture.MANIFEST_PATH_DERIVED_SOURCE in text
     # 그리고 production `.env`를 망가뜨리는 키를 절대 권하지 않아야 한다.
     assert pair_capture.MANIFEST_PATH_FORBIDDEN_ENV_NAME not in text
+
+
+def test_cli_capture_help_identifies_itself_before_anything_is_executed(capsys) -> None:
+    """B-1 실행 전 확인 절차의 유일한 안전한 근거.
+
+    n150에 설치된 Manager는 이 브랜치보다 앞선 revision이고, 그 `pinvi-pair capture`는
+    이름만 같은 **파괴형** 명령이다(Map 넷 + PinVi API stop → candidate image로
+    force-recreate). `capture_contract`를 확인하려고 capture를 **실행**하면 그 파괴형이
+    돌 수 있으므로, 확인은 반드시 `--help`만으로 끝나야 한다. 또 옛 구현에만 있던
+    `--wait-timeout`이 여기 보이면 안 된다.
+    """
+
+    with pytest.raises(SystemExit, match="0"):
+        main(["pinvi-pair", "capture", "--help"])
+
+    text = capsys.readouterr().out
+    assert pair_capture.CAPTURE_CONTRACT_LINE in text
+    assert pair_capture.MANIFEST_PATH_OPTION in text
+    assert "--wait-timeout" not in text
+
+
+def test_cli_pinvi_pair_help_lists_only_the_two_surviving_actions(capsys) -> None:
+    """`pinvi-pair --help`의 하위 목록이 설치본 판별의 두 번째 근거다.
+
+    옛 설치본은 `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}`을
+    낸다(2026-08-19 n150 실측). 이 목록이 늘어나면 확인 절차 문장이 거짓이 된다.
+    """
+
+    with pytest.raises(SystemExit, match="0"):
+        main(["pinvi-pair", "--help"])
+
+    text = capsys.readouterr().out
+    assert "{rebuild-pinned,capture}" in text
+    for retired in ("install-pinned-sources", "bootstrap-pinned-drift", "deploy", "rollback"):
+        assert retired not in text, retired
 
 
 @pytest.mark.parametrize(

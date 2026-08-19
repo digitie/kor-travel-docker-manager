@@ -9,6 +9,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 )
 from kor_travel_docker_manager.services.c6c_pair_capture import (
     BUILD_FLAG_NOTICE,
+    CAPTURE_CONTRACT_LINE,
     PairCaptureRefusal,
     capture_compatible_pair,
 )
@@ -306,6 +307,16 @@ def build_parser() -> argparse.ArgumentParser:
             "실행 중인 다섯 Map·PinVi 컨테이너를 읽어 C7 runner용 "
             "compatible-pair-v4 manifest를 갱신합니다(컨테이너 불변)."
         ),
+        # `--help`가 구현 identity를 말한다. 이 줄이 보이지 않으면 설치본은 이 브랜치
+        # **이전** revision이고, 그 `capture`는 컨테이너를 내렸다가 force-recreate하는
+        # 파괴형이다. 실행 전 확인 절차는 docs/docker-management.md §7.5.
+        description=(
+            f"{CAPTURE_CONTRACT_LINE} — 실행 중인 다섯 컨테이너를 읽기만 하고 C7 runner용 "
+            "compatible-pair-v4 manifest를 원자적으로 교체합니다. 컨테이너를 시작·정지·"
+            "재생성하지 않으며 아무것도 빌드하지 않습니다. 이 줄이 --help에 없는 설치본의 "
+            "`capture`는 파괴형(옛 v4)이므로 실행하지 마십시오."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     pair_capture.add_argument(
         "--verified-compatible",

@@ -42,11 +42,11 @@ RUNNER_PAIR_RUNTIME_IMAGE_FIELDS: tuple[tuple[str, str], ...] = (
     ("map_dagster_daemon", "map_dagster_daemon_image_id"),
     ("pinvi_api", "pinvi_image_id"),
 )
-RUNNER_MANIFEST_TOP_KEYS = frozenset({"active", "rollback", "version"})  # 428행
+RUNNER_MANIFEST_TOP_KEYS = frozenset({"active", "rollback", "version"})  # 436행
 RUNNER_PAIR_KEYS = frozenset(
     {field_name for _role, field_name in RUNNER_PAIR_RUNTIME_IMAGE_FIELDS}
 ) | frozenset(
-    {  # 305-316행 _validate_pair
+    {  # 313-325행 _validate_pair
         "contract_generation",
         "map_source_revision",
         "pinvi_source_revision",
@@ -60,13 +60,13 @@ class RunnerAttestationError(RuntimeError):
 
 
 def runner_exact_dict(value: object, keys: set[str]) -> bool:
-    """runner 65-66행 `_exact_dict`."""
+    """runner 68-69행 `_exact_dict`."""
 
     return isinstance(value, dict) and set(value) == keys
 
 
 def runner_validate_pair(value: object) -> None:
-    """runner 305-341행 `_validate_pair`를 그대로 옮긴 것."""
+    """runner 313-347행 `_validate_pair`를 그대로 옮긴 것."""
 
     if not runner_exact_dict(value, set(RUNNER_PAIR_KEYS)):
         raise RunnerAttestationError("pair shape")
@@ -91,7 +91,7 @@ def runner_validate_pair(value: object) -> None:
 
 
 def runner_validate_manifest_bytes(manifest_bytes: bytes) -> dict[str, Any]:
-    """runner 357-361행 + 427-432행."""
+    """runner 364-365행 + 436-440행."""
 
     manifest = json.loads(manifest_bytes)
     if not runner_exact_dict(manifest, set(RUNNER_MANIFEST_TOP_KEYS)) or manifest["version"] != 4:
@@ -110,7 +110,7 @@ def runner_read_secure_file(
     expected_gid: int,
     ancestor_floor: Path,
 ) -> bytes:
-    """runner 112-164행 `_read_secure_file`을 그대로 옮긴 것."""
+    """runner 111-162행 `_read_secure_file`을 그대로 옮긴 것."""
 
     if not path.is_absolute():
         raise RunnerAttestationError("root file path is not absolute")
@@ -1238,7 +1238,7 @@ def test_no_mutating_docker_token_appears_anywhere(bench: Bench) -> None:
 
 
 def test_compose_argv_mirrors_the_runner_helper(bench: Bench) -> None:
-    """runner `_compose_container`(c7_prod_attestation.py 277-302행)와 토큰 단위 동일."""
+    """runner `_compose_container`(c7_prod_attestation.py 285-310행)와 토큰 단위 동일."""
 
     runner = FakeDockerGit()
     run_capture(bench, runner=runner)
@@ -1282,7 +1282,9 @@ def test_stdout_block_only_carries_copyable_attestation_values(bench: Bench) -> 
     receipt = run_capture(bench)
     lines = receipt["stdout"].splitlines()
 
-    assert lines[0] == f"manifest={bench.manifest}"
+    # 0번은 자기 식별(B-1), 그 다음이 manifest 경로다.
+    assert lines[0] == capture.CAPTURE_CONTRACT_LINE
+    assert lines[1] == f"manifest={bench.manifest}"
     assert f"manifest_sha256={receipt['manifest_sha256']}" in lines
     assert f"contract_generation={GENERATION}" in lines
     assert f"compose_project={PROJECT}" in lines
@@ -2281,6 +2283,9 @@ def test_plain_stdout_stays_non_sensitive(bench: Bench) -> None:
 
     prefixes = {line.split("=", 1)[0] for line in receipt["stdout"].splitlines()}
     allowed = {
+        "capture_contract",
+        "recorded_at_preserved",
+        "attestation_action",
         "manifest",
         "manifest_sha256",
         "contract_generation",
@@ -2307,12 +2312,12 @@ def test_plain_stdout_stays_non_sensitive(bench: Bench) -> None:
 
 
 # ---------------------------------------------------------------------------
-# F-1 동일 runtime 재capture는 byte-멱등이다
+# F-1 동일 identity 재capture만 byte-멱등이다 (그 밖에는 attestation 재생성 필수)
 # ---------------------------------------------------------------------------
 
 
 def test_recapturing_an_unchanged_runtime_is_byte_identical(bench: Bench) -> None:
-    """runner는 `manifest_sha256 == attestation[...]`를 강제한다(436행).
+    """runner는 `manifest_sha256 == attestation[...]`를 강제한다(443-448행).
 
     `recorded_at`을 매번 새로 찍으면 아무것도 바뀌지 않은 재capture도 해시를 바꿔
     이미 발급된 attestation을 깨뜨린다.
@@ -2360,3 +2365,202 @@ def test_a_generation_change_alone_stamps_a_new_recorded_at(bench: Bench) -> Non
     assert after["contract_generation"] == "c6c-ops-v2"
     assert after["recorded_at"] != before["recorded_at"]
     assert receipt["manifest_sha256"] != receipt["previous_manifest_sha256"]
+
+
+# ---------------------------------------------------------------------------
+# B-1 자기 식별: n150 설치본의 동명 `capture`는 파괴형이다
+# ---------------------------------------------------------------------------
+
+
+def test_capture_contract_is_the_first_stdout_line_and_a_receipt_field(bench: Bench) -> None:
+    """실행 전 확인 절차와 사후 증거가 **같은 문자열**을 근거로 삼는다.
+
+    n150 설치본(revision `41915827…`)의 `pinvi-pair capture`는 컨테이너를 내렸다가
+    force-recreate하는 옛 v4 명령이고 이 문자열이 어디에도 없다. 이 줄이 사라지면
+    운영자가 "지금 도는 것이 관측기인가"를 판정할 근거를 잃는다.
+    """
+
+    receipt = run_capture(bench)
+
+    assert capture.CAPTURE_CONTRACT == "pair-capture-v1"
+    assert capture.CAPTURE_CONTRACT_LINE == f"capture_contract={capture.CAPTURE_CONTRACT}"
+    assert receipt["capture_contract"] == capture.CAPTURE_CONTRACT
+    assert receipt["stdout"].splitlines()[0] == capture.CAPTURE_CONTRACT_LINE
+
+
+def test_the_runbook_section_documents_the_same_contract_string() -> None:
+    """문서의 확인 절차와 코드의 자기 식별자가 갈라지면 절차가 거짓이 된다."""
+
+    for relative in ("docs/docker-management.md", "docs/decisions.md"):
+        text = (_REPOSITORY_ROOT / relative).read_text(encoding="utf-8")
+        assert capture.CAPTURE_CONTRACT_LINE in text, relative
+
+
+# ---------------------------------------------------------------------------
+# B-2 attestation 재생성 신호
+# ---------------------------------------------------------------------------
+
+
+def test_attestation_bound_fields_name_what_the_runner_compares() -> None:
+    """runner 443-448행이 한 `if`에서 함께 보는 값들이다.
+
+    `manifest_sha256`만 적으면 "capture는 멱등"이라는 문장이 두 revision을 빠뜨린 채
+    참처럼 보인다. 세 값 모두가 attestation 대조 대상이다.
+    """
+
+    assert capture.ATTESTATION_BOUND_FIELDS == (
+        "manifest_sha256",
+        "active.map_source_revision",
+        "active.pinvi_source_revision",
+        "active.contract_generation",
+    )
+    for field_name in capture.ATTESTATION_BOUND_FIELDS:
+        assert field_name in capture.ATTESTATION_REGENERATION_NOTICE, field_name
+
+
+def test_first_capture_demands_a_fresh_attestation(bench: Bench) -> None:
+    """첫 실전 capture는 정의상 멱등이 아니다 — 기존 파일이 없으면 새 시각을 찍는다."""
+
+    receipt = run_capture(bench)
+    lines = receipt["stdout"].splitlines()
+
+    assert receipt["recorded_at_preserved"] is False
+    assert receipt["attestation_action"] == capture.ATTESTATION_REGENERATION_NOTICE
+    assert "recorded_at_preserved=false" in lines
+    assert f"attestation_action={capture.ATTESTATION_REGENERATION_NOTICE}" in lines
+
+
+def test_a_moved_runtime_demands_a_fresh_attestation(bench: Bench) -> None:
+    """Map 재배포처럼 runtime이 실제로 움직이면 sha와 `map_source_revision`이 함께 바뀐다.
+
+    runner는 그 둘을 attestation과 **함께** 대조하므로(443-448행) 낡은 attestation은
+    `compatible pair mismatch`로 죽는다. capture가 그 사실을 말하지 않으면 운영자는
+    §2.3을 건너뛴 채 runner를 돌린다.
+    """
+
+    first = run_capture(bench)
+    map_roles = ("map_api", "map_ui", "map_dagster_web", "map_dagster_daemon")
+    moved = FakeDockerGit(
+        images={
+            **ROLE_IMAGES,
+            **{role: _image(0x7F0 + index) for index, role in enumerate(map_roles)},
+        },
+        revisions={role: OTHER_REVISION for role in map_roles},
+    )
+
+    receipt = run_capture(bench, runner=moved)
+    active = json.loads(bench.manifest.read_bytes())["active"]
+
+    assert receipt["recorded_at_preserved"] is False
+    assert receipt["attestation_action"] == capture.ATTESTATION_REGENERATION_NOTICE
+    assert receipt["manifest_sha256"] != first["manifest_sha256"]
+    assert active["map_source_revision"] == OTHER_REVISION
+    assert "recorded_at_preserved=false" in receipt["stdout"].splitlines()
+
+
+def test_an_idempotent_recapture_does_not_ask_for_a_new_attestation(bench: Bench) -> None:
+    """byte-멱등일 때만 조용하다. 아니면 반드시 한 줄로 말한다."""
+
+    run_capture(bench)
+    receipt = run_capture(bench)
+    lines = receipt["stdout"].splitlines()
+
+    assert receipt["recorded_at_preserved"] is True
+    assert receipt["attestation_action"] is None
+    assert "recorded_at_preserved=true" in lines
+    assert not any(line.startswith("attestation_action=") for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# followup: runner 행 번호 포인터가 낡지 않게 잡아 둔다
+# ---------------------------------------------------------------------------
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_POINTER_BEARING_FILES: tuple[str, ...] = (
+    "backend/src/kor_travel_docker_manager/services/c6c_pair_capture.py",
+    "backend/tests/test_c6c_pair_capture.py",
+    "docs/decisions.md",
+    "docs/docker-management.md",
+)
+
+# 2026-08-19 실측으로 폐기된 인용. 조립해서 만든다 — 이 파일 자신이 검사 대상이라
+# 리터럴로 적으면 검사가 스스로에게 걸린다(`test_cross_repo_gate_...`와 같은 이유).
+_RETIRED_RUNNER_POINTERS: tuple[str, ...] = (
+    "501-" + "508행",  # health 술어 (실제 508-518)
+    "428-" + "432행",  # manifest shape (실제 436 + _validate_pair 439-440)
+    "305-" + "316행",  # _validate_pair 키 집합 (실제 313-325)
+    "305-" + "341행",  # _validate_pair 전체 (실제 313-347)
+    "112-" + "164행",  # _read_secure_file (실제 111-162)
+    "112-" + "146행",  # _read_secure_file ancestor 술어 (실제 111-162)
+    "277-" + "302행",  # _compose_container (실제 285-310)
+    "65-" + "66행",  # _exact_dict (실제 68-69)
+    "c7_prod_attestation.py:" + "623",  # manifest secure read (실제 635)
+    "강제하므로(`c7_prod_attestation.py` " + "436행)",  # sha 비교 (실제 443-448)
+)
+
+
+@pytest.mark.parametrize("relative", _POINTER_BEARING_FILES)
+def test_no_retired_runner_line_pointer_survives(relative: str) -> None:
+    """포인터가 낡으면 "실측으로 확인했다"는 주장 전체의 신뢰가 깎인다."""
+
+    text = (_REPOSITORY_ROOT / relative).read_text(encoding="utf-8")
+
+    for pointer in _RETIRED_RUNNER_POINTERS:
+        assert pointer not in text, f"{relative}: stale runner pointer {pointer!r}"
+
+
+# runner 파일에서 그 행이 실제로 무엇인지. `KTDM_C7_RUNNER_MODULE`이 주어지면 대조한다.
+_RUNNER_ANCHORS: tuple[tuple[int, str], ...] = (
+    (30, "PAIR_RUNTIME_IMAGE_FIELDS = ("),
+    (68, "def _exact_dict("),
+    (111, "def _read_secure_file("),
+    (285, "def _compose_container("),
+    (313, "def _validate_pair("),
+    (436, '_exact_dict(manifest, {"active", "rollback", "version"})'),
+    (439, '_validate_pair(manifest["active"])'),
+    (444, 'manifest_sha256 != attestation["compatible_pair_manifest_sha256"]'),
+    (446, 'active["map_source_revision"] != source_commits["map"]'),
+    (447, 'active["pinvi_source_revision"] != source_commits["pinvi"]'),
+    (516, 'health.get("Status") != "healthy"'),
+    (635, "manifest_bytes = secure_reader(manifest_path, 0o600)"),
+)
+
+
+@pytest.mark.skipif(
+    _configured_runner_module_path() is None,
+    reason=f"{RUNNER_MODULE_ENV}가 없으면 행 번호를 대조할 runner 원본이 없다",
+)
+def test_cited_runner_line_numbers_still_point_at_what_they_claim() -> None:
+    module_path = _configured_runner_module_path()
+    assert module_path is not None
+    lines = module_path.read_text(encoding="utf-8").splitlines()
+
+    for number, fragment in _RUNNER_ANCHORS:
+        assert len(lines) >= number, f"runner has fewer than {number} lines"
+        assert fragment in lines[number - 1], (
+            f"{module_path}:{number} no longer contains {fragment!r}; "
+            "update the cited line numbers in c6c_pair_capture.py and docs/decisions.md"
+        )
+
+
+@pytest.mark.skipif(
+    _configured_runner_module_path() is None,
+    reason=f"{RUNNER_MODULE_ENV}가 없으면 사본 술어만으로 검증한다",
+)
+def test_the_runner_really_compares_all_three_attestation_bound_values() -> None:
+    """§2.3 attestation 재생성이 필수라는 주장의 근거를 runner 원본에서 확인한다."""
+
+    module_path = _configured_runner_module_path()
+    assert module_path is not None
+    lines = module_path.read_text(encoding="utf-8").splitlines()
+    raise_index = next(
+        index
+        for index, line in enumerate(lines)
+        if 'raise AttestationError("compatible pair mismatch")' in line
+    )
+    block = "\n".join(lines[max(0, raise_index - 8) : raise_index])
+
+    assert 'manifest_sha256 != attestation["compatible_pair_manifest_sha256"]' in block
+    assert 'active["map_source_revision"] != source_commits["map"]' in block
+    assert 'active["pinvi_source_revision"] != source_commits["pinvi"]' in block
+    assert 'active["contract_generation"] != attestation["c6c_contract_generation"]' in block

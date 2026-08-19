@@ -2028,6 +2028,22 @@ reload는 기존 연결을 재인증하지 않는다. 그래서 전환 직후에
 - 결정자: 사용자, Claude
 - 관련: ADR-31, ADR-34, Map `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8, Map `scripts/lib/c7_prod_attestation.py`
 
+> ## ⚠️ 이 ADR은 **설치된 뒤에만** 참이다 — 오늘 n150의 `capture`는 파괴형이다
+>
+> 2026-08-19 실측: n150 설치본은 revision
+> `4191582779be47e9605a324ea27adbb99b438439`이고 그 트리에
+> `services/c6c_pair_capture.py`가 **없다**. 거기의 `pinvi-pair capture`는 **이름만 같은 옛 v4
+> 파괴형 명령**으로, Map 넷과 PinVi API를 stop한 뒤 candidate image로 force-recreate한다
+> (`--help` = `[--build] [--wait-timeout] [--verified-compatible] [--json]`,
+> `pinvi-pair --help` = `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}`).
+>
+> **이 브랜치가 n150에 설치되기 전에는 이 ADR과 `docs/docker-management.md` §7.5가 적는 어떤
+> `capture` 명령도 실행하지 마라.** 실행 전 확인 절차(읽기 전용 `--help` 두 번)와 설치 절차는
+> `docs/docker-management.md` §7.5.1 / §7.5.9에 있다. 판정 근거는 코드 상수
+> `c6c_pair_capture.CAPTURE_CONTRACT`가 내는 `capture_contract=pair-capture-v1` 한 줄이며,
+> `--help`·성공 stdout 첫 줄·`--json` receipt 세 곳이 같은 값을 낸다. 옛 구현에는 이 문자열이
+> 어디에도 없다.
+
 ### 컨텍스트
 
 Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이
@@ -2038,9 +2054,10 @@ Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이
 지운 것은 Manager 내부의 **reader**뿐이어야 했다. `compatible-pair-v4.json`은 잔재가
 아니라 **살아 있는 cross-repo 계약**이다. Map의 C7 runner가
 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`로 그 파일을 읽고
-(`c7_prod_attestation.py:623`, `mode=0o600`), top-level 키가 정확히
-`{active, rollback, version}`이며 `version == 4`이고 두 pair가 정확히 9개 필드여야
-한다고 강제한다(428-432행). 즉 산출물의 소비자는 사람이 아니라 그 runner이며, 1차
+(`c7_prod_attestation.py` 635행, `secure_reader(manifest_path, 0o600)`), top-level 키가 정확히
+`{active, rollback, version}`이며 `version == 4`여야 하고(436행) 두 pair가 각각 정확히 9개
+필드여야 한다고 강제한다(`_validate_pair(manifest["active"])`/`["rollback"]` 439-440행,
+`_validate_pair` 본체 313-347행). 즉 산출물의 소비자는 사람이 아니라 그 runner이며, 1차
 산출물은 **manifest 파일 bytes 그 자체**여야 한다.
 
 n150 실측(2026-08-19)에서 확인한 상태는 이렇다.
@@ -2090,18 +2107,31 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
   `c7-compatible-pair-v4.json`을 쓴다. manager가 runner에 없는 제약을 만들 이유가 없다.
   대신 유지하는 것은 절대·정규 경로, symlink 아님, ancestor 전부 root:root 비-group/
   other-writable, 기존 파일이면 v4 loader 통과다.
-- **동일 runtime 재capture는 byte-멱등이다.** 관측한 active identity(runner 9필드 중
-  `recorded_at` 제외)가 기존 파일의 `active`와 완전히 같으면 기존 `recorded_at`을
-  보존한다. runner가 `manifest_sha256 == attestation["compatible_pair_manifest_sha256"]`를
-  강제하므로(`c7_prod_attestation.py` 436행), 매번 `now()`를 찍으면 아무것도 바뀌지 않은
-  재실행이 이미 발급된 attestation을 깨뜨린다. 한 필드라도 다르면 새 시각을 찍으며,
-  그때는 런북 §2.3 attestation을 **다시 만들어야 한다**.
+- **동일 identity 재capture만 byte-멱등이다. 그 밖에는 §2.3 attestation 재생성이 필수다.**
+  관측한 active identity(runner 9필드 중 `recorded_at` 제외)가 기존 파일의 `active`와
+  완전히 같으면 기존 `recorded_at`을 보존한다. 매번 `now()`를 찍으면 아무것도 바뀌지 않은
+  재실행이 이미 발급된 attestation을 깨뜨리기 때문이다. 그러나 멱등은 **좁은 특수
+  경우**다 — ① 기존 manifest가 없는 **첫 capture**와 ② runtime이 바뀐 뒤의 capture는
+  정의상 새 시각을 찍는다. runner는 `manifest_sha256`,
+  `active.map_source_revision`, `active.pinvi_source_revision`(그리고
+  `active.contract_generation`)을 **한 `if`에서 함께** attestation과 대조하므로
+  (`c7_prod_attestation.py` 443-448행 — sha 444, generation 445, map revision 446,
+  pinvi revision 447), 그 두 경우에는 런북 §2.3 attestation을 **반드시 다시 만들어야
+  한다**. capture는 이 사실을 침묵하지 않는다: receipt의 `recorded_at_preserved`가
+  `false`이고 `attestation_action`이 그 문장을 담으며, `--json` 없이 부르는 런북 호출의
+  stdout에도 `recorded_at_preserved=false`와 `attestation_action=…` 두 줄이 나온다.
+- **capture는 자기를 식별한다.** `CAPTURE_CONTRACT = "pair-capture-v1"`이
+  `pinvi-pair capture --help`, 성공 stdout의 **첫 줄**, `--json` receipt의
+  `capture_contract` 필드 세 곳에 같은 값으로 나온다. n150 설치본에 이름이 같은 파괴형
+  `capture`가 남아 있는 동안(위 경고 블록) 이 문자열이 "지금 이 호스트에 설치된 것이
+  관측기인가"를 **실행 없이** 판정하는 유일한 근거다.
 - **`rebuild-pinned`가 쓸어가는 자리는 거부한다.** manifest 경로가
   `pinned_runtime_state_root(...)` 아래면 `capture_refused_precondition`이다.
   `rebuild-pinned`는 그 root에서 `f1d_legacy_artifact_paths()` — `compatible-pair-v4.json`
   포함 — 를 퇴역시키므로, 그 안을 runner의 read target으로 두면 rehearsal rebuild 한 번이
   attestation 입력을 지운다. n150 rehearsal에서는 두 root가 실제로 같은 디렉터리다.
-- parent 체인은 runner의 `_read_secure_file`(112-146행)과 **같은 술어**로 검증한다 —
+- parent 체인은 runner의 `_read_secure_file`(111-162행, ancestor 술어 130-145행)과
+  **같은 술어**로 검증한다 —
   각 ancestor가 디렉터리·비symlink·uid 0·gid 0·`mode & 0o022 == 0`. **capture는 절대
   mkdir하지 않는다.** 부모가 없으면 거부한다.
 - 허용 docker argv는 세 종류의 읽기 전용 조회뿐이다:
@@ -2173,7 +2203,11 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
   `backend/tests/test_c6c_pair_capture.py`에 있어 runner가 계약을 바꾸면 즉시 red가 된다.
   그 env가 주어졌는데 import·검증이 실패하면 skip이 아니라 fail이다.
 - **오늘 n150에서 그대로 실행하면 여전히 성공하지 않는다.** 남은 것은 코드 결함이 아니라
-  프로비저닝·환경 항목 셋이며, 순서대로 이렇다(2026-08-19 실측).
+  설치·프로비저닝·환경 항목 넷이며, 순서대로 이렇다(2026-08-19 실측).
+  0. **이 브랜치가 아직 설치되지 않았다.** 설치본 revision은
+     `4191582779be47e9605a324ea27adbb99b438439`이고 그 `capture`는 **파괴형**이다(위 경고
+     블록). 그러므로 지금 그 명령을 실행하면 "실패"가 아니라 **컨테이너 다섯이 내려간다.**
+     설치 절차는 `docs/docker-management.md` §7.5.9.
   1. `sudo -n ktdctl …`은 **`command not found`로 코드에 닿기 전에 죽는다.** sudo
      `secure_path`가 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`
      이고 venv bin이 없으며 `/usr/local/bin/ktdctl` symlink도 없다. 정본 호출은 절대경로
@@ -2186,12 +2220,18 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
      `/home/digitie/pinvi`는 clean checkout(HEAD `5a453eb5…`)이지만 실행 중 PinVi image의
      revision `5cad141a…`를 갖고 있지 않다. 관측 자체(다섯 service·label·health·image
      revision)는 오늘 통과한다.
-- 재capture가 **byte 수준으로** 멱등이다. 직전 `active`가 `rollback`으로 승격되고,
-  동일 identity로 다시 실행하면 기존 `rollback`과 기존 `recorded_at`이 함께 보존되어
-  파일 bytes와 `manifest_sha256`이 변하지 않는다. 그래서 §2.3 attestation 이후에
-  재실행해도 게이트가 깨지지 않는다. v4의 bootstrap-once 게이트
+- **동일 identity 재capture만** byte 수준으로 멱등이다. 직전 `active`가 `rollback`으로
+  승격되고, 동일 identity로 다시 실행하면 기존 `rollback`과 기존 `recorded_at`이 함께
+  보존되어 파일 bytes와 `manifest_sha256`이 변하지 않는다. 그래서 §2.3 attestation
+  이후의 **무해한** 재실행은 게이트를 깨지 않는다. v4의 bootstrap-once 게이트
   (`assert_pair_manifest_bootstrap_allowed`)는 재배포 후 재capture를 막으므로 복원하지
   않았다.
+  **단, 첫 실전 capture는 정의상 멱등이 아니다.** 오늘 기록된 active는
+  map `c8ed6164…`/pinvi `6a035695…`인데 실행 중 다섯은 Map `817cfeae…`/PinVi
+  `5cad141a…`다(2026-08-19 실측). 그러므로 첫 capture는 `manifest_sha256`과 두 revision을
+  **모두** 바꾸고, runner가 그 셋을 attestation과 함께 대조하므로(443-448행) §2.3
+  attestation 재생성이 **필수**다. capture가 `recorded_at_preserved=false` +
+  `attestation_action=…`으로 그 사실을 stdout과 receipt 양쪽에 남긴다.
 - 커밋 후 디스크에서 bytes를 되읽어 runner 술어로 재검증하고, 출력하는
   `manifest_sha256`은 **되읽은 bytes**의 해시다. attestation에 잘못된 해시가 복사될 수 없다.
 
@@ -2256,13 +2296,41 @@ manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 
 | B-3 | 런북 정본 호출을 절대경로로 정정(`sudo -n` PATH에 venv bin 없음) | 문서 |
 | B1/F-2 | `get_env_path()`/`effective_environment()`를 typed refusal로 감쌈 + `environment=None` 경로를 실제로 타는 테스트 | `capture_refused_precondition` |
 | B-5 | pre-image·`rollback_images_present`·`side_effects`·`input_sources`를 비-JSON stdout에도 출력 | `_evidence_lines` |
-| F-1 | 동일 identity 재capture 시 `recorded_at` 보존 → byte-멱등 | `manifest_sha256` 불변 |
+| F-1 | 동일 identity 재capture 시 `recorded_at` 보존 → byte-멱등 (**그 밖에는 멱등이 아니며 §2.3 재생성 필수** — 개정 3에서 정정) | `manifest_sha256` 불변 |
 
 state root 규칙은 여전히 새로 만들지 않는다. 1차 개정이 "소비자가 쓰는 env 이름을 읽는다"로
 표현했던 것을 "**이 저장소가 이미 가진 규칙에서 유도한다**"로 바꾼 것이므로, 세 번째 규칙을
 만들지 않는다는 원래 목표가 이제 정직하게 달성된다. Manager가 추가한 유일한 제약은
 배제 규칙(R1-2)이며, 그 근거는 `rebuild-pinned`가 같은 이름을 지운다는 이 저장소 안의
 사실이다.
+
+### 개정 3 (2026-08-19, 3차 확인 리뷰 blocking 2건)
+
+3차 확인 리뷰가 **운영 위험 1건**과 **거짓 주장 1건**을 남겼다. 둘 다 코드 결함이 아니라
+"문서가 오늘 실행하면 위험한 명령을 지시한다" / "문서가 성립하지 않는 성질을 약속한다"였다.
+
+| 리뷰 | 문제 | 고친 것 |
+|:---|:---|:---|
+| B-1 | n150 설치본(`41915827…`)의 `pinvi-pair capture`는 **파괴형**인데, 이 브랜치 문서가 그 문자열을 "정본 호출"로 공표했다. 오늘 문자 그대로 실행하면 컨테이너 다섯이 내려간다 | ADR 최상단·§7.5 최상단 경고 블록, §7.5.1 **읽기 전용 확인 절차**(`--help` 두 번), 코드에 `CAPTURE_CONTRACT = "pair-capture-v1"` 자기 식별(=`--help`·stdout 첫 줄·receipt 3곳), §7.5.9 설치 절차 조사 |
+| B-2 | "재capture는 byte-멱등"이 §2.3 attestation 게이트에 대해 오해를 만든다. runner는 `manifest_sha256`·`active.map_source_revision`·`active.pinvi_source_revision`(+`contract_generation`)을 **함께** 대조하고(443-448행), 기록된 active와 실행 중 runtime이 이미 다르므로 **첫 실전 capture는 정의상 멱등이 아니다** | 멱등 주장을 "identity가 같을 때만"으로 좁히고 세 필드를 명시. receipt에 `recorded_at_preserved`·`attestation_action` 추가, 비-JSON stdout에도 두 줄 출력 |
+
+함께 정리한 followup 셋.
+
+- **runner 행 번호 포인터 정정.** 실질 주장은 모두 참이었고 포인터만 낡아 있었다.
+  `manifest shape` 428-432 → **436**(+`_validate_pair` **439-440**),
+  sha256 대조 436 → **443-448**(sha 444), health 술어 501-508 → **508-518**,
+  `_read_secure_file` 112-146/112-164 → **111-162**,
+  `_compose_container` 277-302 → **285-310**,
+  `_validate_pair` 305-316/305-341 → **313-325/313-347**,
+  `_exact_dict` 65-66 → **68-69**, manifest secure read `:623` → **635**.
+  `test_c6c_pair_capture.py`가 폐기된 인용 문자열을 코드·테스트·두 문서에서 스캔해
+  되살아나면 red가 되고, `KTDM_C7_RUNNER_MODULE`이 주어지면 각 행이 실제로 무엇인지까지
+  대조한다.
+- **비-production 환경의 R1-2 자기 충돌**은 위 §미결 끝에 따름정리로 적었다. 설치본이
+  production 분기라 blocker가 아니다.
+- **"다섯 service가 running·healthy"의 정확한 뜻**(healthcheck 미선언 컨테이너는 통과)을
+  `docs/docker-management.md` §7.5 같은 자리와 `_assert_container_is_healthy` docstring에
+  적었다. 오늘 `kor-travel-map-dagster-daemon-latest`가 그 경우다.
 
 ### 미결 (사용자 결정 대기)
 
@@ -2278,8 +2346,34 @@ state root 규칙은 여전히 새로 만들지 않는다. 1차 개정이 "소�
 기본값은 A로 두되(코드가 그렇게 동작한다) 결정은 사용자 몫이며, B를 고르면 실작업은
 `.env` 한 줄 프로비저닝뿐이다.
 
+**비-production(rehearsal 모양) 환경에서는 유도 기본값이 R1-2 배제에 스스로 걸린다.**
+`KTDM_DEPLOYMENT_ENVIRONMENT`가 production이 아니면 `c6c_state_paths`는
+`KTDM_C6C_STATE_ROOT`(없으면 `~/.local/state/kor-travel-docker-manager`) + `COMPOSE_PROJECT_NAME`을
+쓰고, `pinned_runtime_state_root`는 `KTDM_PINNED_RUNTIME_STATE_ROOT`(없으면 같은
+`~/.local/state/...`) + 같은 project를 쓴다. 두 env를 따로 주지 않으면 **두 root가 문자
+그대로 같은 디렉터리**가 되어, flag도 runner env도 없이 부른 capture가 자기 유도 기본값을
+"`rebuild-pinned`가 쓸어가는 자리"로 판정하고 `capture_refused_precondition`으로 거부한다.
+실제 소비자인 **설치본은 production 분기**라 유도값이 `/var/lib/...`이고 pinned root와
+겹치지 않으므로 이것은 blocker가 아니다(그래서 이번 라운드에서 고치지 않았다).
+정리 선택지는 셋이다: (a) 그대로 두고 비-production에서는 `--manifest-path`/
+`E2E_C7_COMPATIBLE_PAIR_MANIFEST`를 요구한다, (b) 두 root가 같을 때만 배제 규칙을 완화하되
+그 완화가 production에 새지 않음을 테스트로 박는다, (c) 비-production 유도값에 별도
+하위 디렉터리를 준다(= 사실상 세 번째 state root 규칙이라 §결정에 반한다). **결정은 뒤로
+미룬다** — 오늘 이 경로를 타는 운영 절차가 없다.
+
 ### 후속
 
+- (open, **선행 조건**) **이 브랜치를 n150에 설치한다.** 그 전에는 §7.5의 어떤 capture
+  명령도 실행 금지다(설치본의 동명 `capture`가 파괴형). 조사 결과는
+  `docs/docker-management.md` §7.5.9에 있고 요약은 이렇다 — 정본 명령은
+  `sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release <SOURCE_ROOT>`
+  하나이며, ① non-root 소유의 **clean** git checkout이 머지된 최종 commit에 있어야 하고
+  (오늘 `/home/digitie/kor-travel-docker-manager`에는 `.git`이 없다 — 후보는
+  `/home/digitie/f1d-v5-rehearsal/manager`), ② root-owned 오프라인 wheelhouse는 이미
+  충분하며(이 브랜치는 새 런타임 의존이 **없다**), ③ installer가 capture/rebuild-pinned와
+  **같은 global mutation lock**을 잡고, ④ `/opt/.../.env` bytes는 보존되며, ⑤ Manager용
+  systemd unit이 없어 재기동이 필요 없고, ⑥ commit 뒤에는 `.rollback` 트리가 삭제되어
+  자동 되돌리기 경로가 **없다**. **이번 라운드에서 실행하지 않았다.**
 - (open) n150의 stale `pinned-runtime-generation-v5*`는 capture가 건드리지 않으므로 그대로
   남는다. capture는 이제 불일치를 **보고**하지만 고치지는 않는다. 별개 작업으로 분리한다.
 - (open) revision reachability를 capture 게이트로 넣을지 여부.

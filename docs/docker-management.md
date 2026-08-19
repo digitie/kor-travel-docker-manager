@@ -413,6 +413,57 @@ capture`는 §7.5에서 **runtime mutation이 없는 읽기 전용 관측기**�
 
 ### 7.5 Map C7 런북용 `pinvi-pair capture` (읽기 전용, ADR-38)
 
+> ## ⚠️ 실행 전 확인 필수 — 오늘 n150에 설치된 `capture`는 **파괴형**이다
+>
+> **이 절 전체는 이 브랜치(`feat/pinvi-pair-capture`)의 코드가 n150에 설치된 뒤에만 참이다.**
+> 2026-08-19 실측 기준 설치본은 revision
+> `4191582779be47e9605a324ea27adbb99b438439`이고, 그 트리에는
+> `backend/src/kor_travel_docker_manager/services/c6c_pair_capture.py`가 **없다**.
+> 거기 있는 `pinvi-pair capture`는 **이름만 같은 옛 v4 파괴형 명령**이다 — Map 네 개와
+> PinVi API를 stop한 뒤 candidate image로 force-recreate하고 smoke를 돈다
+> (`--help`가 `[--build] [--wait-timeout] [--verified-compatible] [--json]`,
+> 설명이 "clean 환경에서 candidate runtime set을 검증하고 최초 v4를 기록합니다").
+>
+> **이 브랜치가 설치되기 전에는 이 절의 어떤 `capture` 명령도 실행하지 마라.**
+> 먼저 아래 §7.5.1 확인 절차를 돌리고, "옛 파괴형"으로 판정되면 §7.5.9 설치 절차로 간다.
+
+#### 7.5.1 실행 전 확인 절차 (읽기 전용 — 반드시 이것부터)
+
+capture를 **실행하지 않고** `--help` 두 번으로 판정한다. `capture_contract`를 보겠다고
+capture를 실행하면 옛 설치본에서는 그 순간 다섯 컨테이너가 내려간다. `--help`는 argparse가
+처리하고 즉시 종료하므로 어느 구현에서도 안전하다.
+
+```bash
+KTDCTL=/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl
+
+# 1) 하위 명령 목록
+sudo -n "$KTDCTL" pinvi-pair --help
+
+# 2) capture의 자기 식별과 옵션
+sudo -n "$KTDCTL" pinvi-pair capture --help
+
+# 3) (참고) 설치본 source revision — 0644라 sudo 없이 읽힌다
+cat /opt/kor-travel-docker-manager/.ktdm-source-revision
+```
+
+세 명령 모두 **읽기 전용**이다. `--help`는 argparse가 subcommand 함수로 dispatch하기 **전에**
+처리하고 즉시 종료하므로, 옛 파괴형 설치본에서도 컨테이너를 건드리지 않는다(2026-08-19
+n150에서 셋 다 직접 실행해 확인했다 — prod mutation 없음).
+
+| 관측 | 판정 |
+|:---|:---|
+| `pinvi-pair --help` 하위 목록이 `{rebuild-pinned,capture}` | 이 브랜치 계열 ✅ |
+| `pinvi-pair --help` 하위 목록이 `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}` | **옛 파괴형 ⛔ 중단** |
+| `capture --help`에 `capture_contract=pair-capture-v1` 줄이 있고 `--manifest-path`가 보인다 | 이 브랜치 계열 ✅ |
+| `capture --help`에 `--wait-timeout`이 있고 `--manifest-path`가 **없다** | **옛 파괴형 ⛔ 중단** |
+
+둘 중 하나라도 "옛 파괴형"이면 **capture를 실행하지 말고** §7.5.9로 간다. 판정 근거인
+`capture_contract=pair-capture-v1` 문자열은 코드 상수
+(`c6c_pair_capture.CAPTURE_CONTRACT`)이며 `--help`·성공 stdout 첫 줄·`--json` receipt의
+`capture_contract` 필드 **셋 다** 같은 값을 낸다. 옛 구현에는 이 문자열이 어디에도 없다.
+
+#### 7.5.2 명령
+
 Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이 부르는 명령이다. 실행 중인 다섯
 컨테이너를 **읽기만 하고**, Map의 C7 runner가 읽는 `compatible-pair-v4.json`을 원자적으로
 교체한다. 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지 않았다 — 이 명령은 어떤
@@ -508,6 +559,16 @@ image ID가 그 container가 실행 중인 image이며, Map 네 image가 동일�
 `io.pinvi.build.environment=production`을 가지며, 각 revision이 operator가 지목한 checkout에
 실재하는 commit object이고, 그 checkout의 `git status --porcelain=v1`이 비어 있었다는 것.
 
+> **"running·healthy"의 정확한 뜻 — healthcheck 없는 컨테이너는 통과로 본다.** 술어는
+> `Running is True and not Paused and not Restarting and (Health가 있으면 Status ==
+> "healthy")`다. `State.Health` 키가 **없는** 컨테이너, 즉 healthcheck를 선언하지 않은
+> 서비스는 health 항목을 **검사하지 않고 통과**한다. 오늘 n150에서
+> `kor-travel-map-dagster-daemon-latest`가 정확히 그 경우다(2026-08-19 실측). 이는
+> runner `c7_prod_attestation.py` 508-518행과 **의도적으로 동일한** 술어다 — 여기서 더
+> 엄격하게 굴면 capture가 거부한 runtime을 runner는 받아들이는(또는 그 반대) 어긋남이
+> 생긴다. 그러므로 위 문장은 엄밀히는 "다섯이 running이고, healthcheck를 **선언한** 것은
+> healthy"다.
+
 **보장하지 않는 것**(receipt의 `not_guaranteed` 배열과 같은 문구):
 
 - 기록한 image가 기록한 revision에서 빌드됐다는 것 — 빌드도 rebuild 대조도 하지 않는다.
@@ -533,12 +594,32 @@ image ID와 두 revision을 관측값과 맞춘다. 결과는 receipt의 `pinned
 `os.replace` **전에** runner 술어로 검증하고, 커밋 후 재읽기가 실패하면 직전 상태로 복구를
 시도한다(복구 성공 = `capture_write_rolled_back`, 실패 = `capture_write_indeterminate`).
 
-**재capture는 byte-멱등이다**: 관측한 active identity(runner 9필드 중 `recorded_at` 제외)가
-기존 파일의 `active`와 완전히 같으면 기존 `recorded_at`을 보존해 파일 bytes와
-`manifest_sha256`이 변하지 않는다. runner가
-`manifest_sha256 == attestation["compatible_pair_manifest_sha256"]`를 강제하므로, 그렇지
-않으면 아무것도 바뀌지 않은 재실행이 이미 발급된 attestation을 깨뜨린다. **한 필드라도
-달라져서 새 `recorded_at`이 찍히면 런북 §2.3 attestation을 다시 만들어야 한다.**
+**멱등은 "identity가 같을 때만"이다 — 첫 capture와 runtime 변경 후에는 §2.3 attestation
+재생성이 필수다**:
+
+- **byte-멱등인 경우(좁다)**: 관측한 active identity(runner 9필드 중 `recorded_at` 제외)가
+  기존 파일의 `active`와 **완전히 같을 때만** 기존 `recorded_at`을 보존해 파일 bytes와
+  `manifest_sha256`이 변하지 않는다. 그래야 §2.3 attestation 발급 뒤의 무해한 재실행이
+  게이트를 깨뜨리지 않는다.
+- **재생성이 필수인 경우**: ① 기존 manifest가 없는 **첫 capture**, ② runtime이 실제로
+  바뀐 뒤의 capture. 둘 다 새 `recorded_at`을 찍으므로 `manifest_sha256`이 반드시 바뀌고,
+  ②는 `active.map_source_revision`·`active.pinvi_source_revision`까지 함께 바뀐다.
+  runner(`c7_prod_attestation.py` 443-448행)는 이 값들을 **한 `if`에서 함께**
+  attestation과 대조한다 —
+  `manifest_sha256` ↔ `attestation["compatible_pair_manifest_sha256"]`(444행),
+  `active.map_source_revision` ↔ `attestation.source_commits["map"]`(446행),
+  `active.pinvi_source_revision` ↔ `attestation.source_commits["pinvi"]`(447행)
+  (`active.contract_generation` ↔ `attestation["c6c_contract_generation"]`도 같은 블록 445행).
+  하나라도 어긋나면 `AttestationError("compatible pair mismatch")`다.
+- **capture가 직접 말한다**: receipt와 stdout에 `recorded_at_preserved=true|false`가 나오고,
+  `false`일 때는 그 다음 줄에 `attestation_action=…`이 "§2.3 attestation을 다시 만들라"고
+  문장으로 지시한다. `--json` 없이 부르는 런북 호출에서도 두 줄 모두 보인다.
+
+> **오늘 상태에서 첫 실전 capture는 정의상 멱등이 아니다.** 기록된 active는
+> map `c8ed6164…` / pinvi `6a035695…`인데 실행 중인 다섯은 Map `817cfeae…` /
+> PinVi `5cad141a…`다(2026-08-19 실측). 즉 첫 capture는 `manifest_sha256`과 두 revision을
+> **모두** 바꾸므로, capture 직후 §2.3 attestation을 **반드시** 다시 만들고 나서 runner를
+> 돌려야 한다.
 
 **어느 파일이 C7 정본인가 (미결 — ADR-38 §미결)**: 2026-08-19 실측에서
 `/var/lib/kor-travel-docker-manager/kor-travel-docker-manager/compatible-pair-v4.json`과
@@ -550,6 +631,53 @@ image ID와 두 revision을 관측값과 맞춘다. 결과는 receipt의 `pinned
 
 **부수 효과**: manifest 원자 교체 외에 global mutation lock 디렉터리(0700)와 파일(0600)이
 생길 수 있다. receipt의 `side_effects`가 실제 경로를 보고한다.
+
+#### 7.5.9 이 브랜치를 n150에 반영하려면 (실행 전 조사 — 아직 실행하지 않았다)
+
+§7.5.1이 "옛 파괴형"으로 판정하면 여기가 다음 단계다. 아래는 `scripts/install-ktdm-trusted-release`
+정독과 n150 **읽기 전용** 조사(2026-08-19)로 확인한 사실이며, **이번 라운드에서 어떤 명령도
+실행하지 않았다.**
+
+정본 명령은 하나다.
+
+```bash
+# 반드시 root. SOURCE_ROOT는 non-root 사용자 소유의 **clean** git checkout이어야 한다.
+sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release <SOURCE_ROOT>
+# 선택: [--env-file PATH] (기본 /opt/kor-travel-docker-manager/.env)
+#       [--wheelhouse ROOT_OWNED_WHEELHOUSE] (기본 /var/lib/kor-travel-docker-manager/wheelhouse)
+```
+
+**installer가 하는 일** (요약): source owner 권한으로 `git rev-parse HEAD` →
+`git diff-index --quiet HEAD --`(더러우면 중단) → `git archive HEAD`를 root-owned
+`/opt/.kor-travel-docker-manager.stage`(0700)에 풀고 → `python3 -m venv` +
+`pip wheel/install --no-index --find-links <wheelhouse>`(**완전 오프라인**) →
+`ktdctl` shim의 shebang과 `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT=/opt/kor-travel-docker-manager`
+하드코딩을 다시 쓰고 wheel `RECORD` digest를 갱신 → 기존 `.env`를 fd 기준 byte-동일로 복사 →
+`mv -T`로 `/opt/kor-travel-docker-manager`를 `.rollback`으로 밀고 staging을 그 자리에 올린 뒤
+`.ktdm-source-revision`(0644)과 `.ktdm-release-manifest.json`(0644)을 남긴다.
+
+**전제조건과 n150 현재 상태** (읽기 전용 실측):
+
+| 전제 | 오늘 상태 | 필요한 조치 |
+|:---|:---|:---|
+| root 실행 | — | `sudo -n` |
+| **non-root 소유 clean git checkout** | `/home/digitie/kor-travel-docker-manager`에는 **`.git`이 없다**(배포 트리). 이 저장소의 checkout은 예컨대 `/home/digitie/f1d-v5-rehearsal/manager`(origin `digitie/kor-travel-docker-manager`, HEAD `ac119b67…`, digitie 소유) | 그 checkout을 **머지된 최종 commit**으로 `fetch` + `checkout`하고 `git status --porcelain=v1`을 비운다 |
+| root-owned 오프라인 wheelhouse | `/var/lib/kor-travel-docker-manager/wheelhouse`에 `*.whl` **25개** 존재 ✅ | **이 브랜치는 새 런타임 의존을 추가하지 않는다**(`c6c_pair_capture`는 표준 라이브러리와 저장소 내부 모듈만 import). 기존 wheelhouse로 충분하다 |
+| global mutation lock 여유 | `/run/lock/kor-travel-docker-manager/global-mutation.lock` root:root 0600 존재 ✅ | installer가 **`pinvi-pair capture`/`rebuild-pinned`와 같은 flock**을 잡는다. Manager mutation이 도는 중이면 `another manager mutation is already active`로 즉시 중단한다 |
+| `/opt/kor-travel-docker-manager/.env` (0600, nlink 1) | 존재 ✅ | installer는 **bytes를 보존**한다. `KTDM_C7_MAP_SOURCE_CHECKOUT`/`KTDM_C7_PINVI_SOURCE_CHECKOUT` 프로비저닝은 **별개 작업**이고 설치 전/후 어느 쪽이든 된다 |
+| 재기동 대상 | Manager용 systemd unit이 **없다**(`systemctl list-units`에 `ktdm`/`kor-travel-docker` 없음) | 설치 후 재기동 불필요. `ktdctl`은 그때그때 실행되는 CLI다 |
+
+**주의 두 가지.**
+
+1. **커밋 성공 뒤에는 자동 rollback 경로가 없다.** transaction이 `committed`로 reconcile되면
+   `/opt/.kor-travel-docker-manager.rollback` 트리를 **삭제**한다. 되돌리려면 이전 commit의
+   clean checkout에서 installer를 다시 돌려야 한다.
+2. **main 직접 push 금지 / CI green 후 머지**(ADR-021 + ADR-038)가 그대로 적용된다.
+   installer는 checkout의 HEAD가 무엇이든 archive하므로 정책이 유일한 게이트다. n150에는
+   **머지된 commit**만 설치한다.
+
+설치가 끝나면 **§7.5.1을 다시 돌려** `{rebuild-pinned,capture}`와
+`capture_contract=pair-capture-v1`을 눈으로 확인한 뒤에만 capture를 실행한다.
 
 ### 7.6 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
 

@@ -3,6 +3,12 @@
 Map 저장소 런북 `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8이 부르는
 `ktdctl pinvi-pair capture --verified-compatible --build`의 구현이다.
 
+**이름이 같은 옛 명령이 아직 n150에 설치돼 있다.** 설치본 revision
+`4191582779be47e9605a324ea27adbb99b438439`(2026-08-19 실측)의 `pinvi-pair capture`는 Map 넷과
+PinVi API를 내리고 candidate image로 force-recreate하는 **파괴형**이며 이 파일 자체가 없다.
+그래서 이 구현은 `CAPTURE_CONTRACT`로 자기를 식별하고, `--help`·비-JSON stdout·`--json`
+receipt 셋 다 같은 문자열을 낸다. 실행 전 확인 절차는 `docs/docker-management.md` §7.5에 있다.
+
 이 모듈은 **컨테이너를 절대 건드리지 않는다**. 내보내는 docker argv는 세 종류의
 읽기 전용 조회뿐이고(`compose --project-directory ... ps -q`, `inspect --`,
 `image inspect --format=... --`), `up`/`stop`/`start`/`rm`/`build`/`restart`는 코드
@@ -170,6 +176,40 @@ GIT_ENVIRONMENT_OVERRIDES: tuple[str, ...] = (
 )
 GIT_DUBIOUS_OWNERSHIP_MARKER = "dubious ownership"
 
+# 이 구현의 자기 식별자. `pinvi-pair capture --help`와 모든 성공 출력(비-JSON stdout,
+# `--json` receipt)이 **같은 문자열**을 낸다.
+#
+# 왜 필요한가: n150에 설치된 Manager는 이 브랜치보다 **앞선 revision**
+# (`4191582779be47e9605a324ea27adbb99b438439`, 2026-08-19 실측)이고, 그 설치본의
+# `pinvi-pair capture`는 여기 구현과 **이름만 같은 파괴형 명령**이다 — Map 넷 + PinVi API를
+# 내리고 candidate image로 force-recreate한 뒤 smoke를 돈다. 옛 구현에는 이 문자열이
+# 어디에도 없으므로, `--help` 한 번으로 "지금 이 호스트에 설치된 것이 관측기인가"를
+# 실행 없이 판정할 수 있다. 문서(`docs/docker-management.md` §7.5)의 실행 전 확인 절차가
+# 이 문자열을 근거로 삼는다.
+CAPTURE_CONTRACT = "pair-capture-v1"
+CAPTURE_CONTRACT_LINE = f"capture_contract={CAPTURE_CONTRACT}"
+
+# C7 runner가 attestation과 대조하는 manifest 유래 값. `c7_prod_attestation.py`
+# 443-448행이 이 네 값을 한 `if`에서 함께 보고, 하나라도 어긋나면
+# `AttestationError("compatible pair mismatch")`다. `recorded_at`이 새로 찍히면
+# `manifest_sha256`은 **반드시** 바뀌고, runtime이 실제로 움직여서 새로 찍힌 것이라면
+# 두 revision도 함께 바뀐다. 그래서 "capture는 멱등"이라는 문장은 identity가 같을 때만
+# 참이며, 그 밖의 모든 경우에는 런북 §2.3 attestation 재생성이 **필수**다.
+ATTESTATION_BOUND_FIELDS: tuple[str, ...] = (
+    "manifest_sha256",
+    "active.map_source_revision",
+    "active.pinvi_source_revision",
+    "active.contract_generation",
+)
+ATTESTATION_REGENERATION_NOTICE = (
+    "regenerate the runbook 2.3 attestation before the C7 runner runs: this capture "
+    "stamped a new recorded_at, so the manifest bytes and their sha256 changed. "
+    "c7_prod_attestation.py (lines 443-448) compares "
+    + ", ".join(ATTESTATION_BOUND_FIELDS)
+    + " against the attestation together, so a stale attestation fails with "
+    "`compatible pair mismatch`"
+)
+
 # capture가 **보장하지 않는** 것. receipt와 문서가 같은 문구를 쓴다.
 NOT_GUARANTEED: tuple[str, ...] = (
     "that the recorded images were built from the recorded revisions; "
@@ -187,7 +227,9 @@ NOT_GUARANTEED: tuple[str, ...] = (
 CAPTURE_RECEIPT_KEYS = frozenset(
     {
         "allow_generation_change",
+        "attestation_action",
         "build_flag_accepted_no_op",
+        "capture_contract",
         "checkout_uid",
         "compose_project",
         "compose_project_directory",
@@ -208,6 +250,7 @@ CAPTURE_RECEIPT_KEYS = frozenset(
         "previous_active",
         "previous_manifest_sha256",
         "previous_recorded_at",
+        "recorded_at_preserved",
         "returncode",
         "rollback_images_present",
         "side_effects",
@@ -329,7 +372,7 @@ def _observe_runtime(
     project_directory: str,
     compose_project: str,
 ) -> RuntimeObservation:
-    """C-9~C-12. runner `_compose_container`(277-302행)의 argv를 그대로 미러링한다."""
+    """C-9~C-12. runner `_compose_container`(285-310행)의 argv를 그대로 미러링한다."""
 
     containers: dict[str, str] = {}
     images: dict[str, str] = {}
@@ -436,7 +479,16 @@ def _inspect_container(
 
 
 def _assert_container_is_healthy(record: Mapping[str, Any], *, service: str) -> None:
-    """C-10. runner 501-508행과 동일 술어."""
+    """C-10. runner `c7_prod_attestation.py` 508-518행과 동일 술어.
+
+    술어를 **똑같이** 옮겼다는 뜻은 그 구멍까지 옮겼다는 뜻이다. `State.Health`가 없는
+    컨테이너 — 즉 healthcheck를 선언하지 않은 서비스 — 는 `isinstance(health, dict)`가
+    거짓이라 health 항목을 **통과로 본다**. 오늘 n150에서
+    `kor-travel-map-dagster-daemon-latest`가 그렇다(2026-08-19 실측). 그래서 "다섯이
+    running·healthy"라는 문장은 정확히는 "다섯이 running이고, healthcheck를 선언한 것은
+    healthy"다. runner와 다르게 만들면 capture가 통과시킨 runtime을 runner가 거부하거나
+    그 반대가 되므로 여기서 더 엄격하게 굴지 않는다.
+    """
 
     state = record.get("State")
     if not isinstance(state, dict):
@@ -560,7 +612,7 @@ def _read_runner_secure_bytes(
     expected_uid: int,
     expected_gid: int,
 ) -> bytes:
-    """C7 runner `_read_secure_file`(112-164행) 술어를 그대로 옮긴 읽기."""
+    """C7 runner `_read_secure_file`(111-162행) 술어를 그대로 옮긴 읽기."""
 
     assert_runner_readable_parent(
         path,
@@ -684,16 +736,22 @@ def _preserved_recorded_at(
     existing: ExistingManifest | None,
     observed: Mapping[str, str],
 ) -> str | None:
-    """동일 runtime 재capture를 **byte-멱등**으로 만든다.
+    """동일 runtime 재capture를 **byte-멱등**으로 만든다. 그 외에는 만들지 못한다.
 
     C7 runner는 `manifest_sha256 == attestation["compatible_pair_manifest_sha256"]`를
-    강제한다(`c7_prod_attestation.py` 436행). `recorded_at`을 매번 `now()`로 찍으면
-    아무것도 바뀌지 않은 재capture도 파일 해시를 바꿔 이미 발급된 attestation을
-    깨뜨린다. 그래서 관측 identity가 기존 active와 완전히 같을 때만 기존 시각을
-    보존하고, 한 필드라도 다르면 새 시각을 찍는다.
+    포함해 `ATTESTATION_BOUND_FIELDS` 네 값을 한 `if`에서 함께 강제한다
+    (`c7_prod_attestation.py` 443-448행, sha256 비교는 444행). `recorded_at`을 매번
+    `now()`로 찍으면 아무것도 바뀌지 않은 재capture도 파일 해시를 바꿔 이미 발급된
+    attestation을 깨뜨린다. 그래서 관측 identity가 기존 active와 완전히 같을 때만 기존
+    시각을 보존하고, 한 필드라도 다르면 새 시각을 찍는다.
 
-    바뀐 runtime을 capture하면 해시도 당연히 바뀌므로, 런북 §2.3 attestation 이후에
-    runtime이 실제로 달라진 채 재capture했다면 attestation을 다시 만들어야 한다.
+    **멱등은 좁은 특수 경우다.** 첫 capture(`existing is None`)와, runtime이 바뀐 뒤의
+    capture는 정의상 새 `recorded_at`을 찍으므로 `manifest_sha256`이 바뀐다. 그리고
+    runtime이 바뀌었다면 `active.map_source_revision`·`active.pinvi_source_revision`도
+    함께 바뀌는데, runner는 그 둘도 attestation의 `source_commits`와 대조한다(446-447행).
+    그러므로 그 두 경우에는 §2.3 attestation을 **반드시 다시 만들어야** 하며,
+    `None`을 돌려준 사실이 receipt의 `recorded_at_preserved=false`와 stdout의
+    `attestation_action=…` 한 줄로 호출자에게 그대로 전달된다.
     """
 
     if existing is None:
@@ -791,6 +849,8 @@ def _pinned_generation_line(receipt: Mapping[str, Any]) -> str:
 
 def _stdout_block(receipt: Mapping[str, Any]) -> str:
     lines = [
+        # 첫 줄은 자기 식별이다. 옛 파괴형 capture가 설치된 호스트에서는 이 줄이 없다.
+        CAPTURE_CONTRACT_LINE,
         f"manifest={receipt['manifest']}",
         f"manifest_sha256={receipt['manifest_sha256']}",
         f"contract_generation={receipt['contract_generation']}",
@@ -814,8 +874,10 @@ def _evidence_lines(receipt: Mapping[str, Any]) -> list[str]:
     """`--json` 없이 부르는 런북 호출에서 사라지면 안 되는 증거값.
 
     특히 `rollback_images_present=false`는 "기록한 rollback pair를 복원할 수 없다"는
-    뜻이라 사람이 읽는 기본 출력에 반드시 보여야 한다. 여기 나오는 값은 전부
-    비민감값이며 `--json` receipt와 같은 사실이다.
+    뜻이라 사람이 읽는 기본 출력에 반드시 보여야 한다. 마찬가지로
+    `recorded_at_preserved=false`는 "§2.3 attestation을 다시 만들어야 한다"는 뜻이므로
+    그 뒤에 `attestation_action=` 한 줄이 무엇을 해야 하는지 문장으로 말한다.
+    여기 나오는 값은 전부 비민감값이며 `--json` receipt와 같은 사실이다.
     """
 
     sources = receipt["input_sources"]
@@ -826,6 +888,11 @@ def _evidence_lines(receipt: Mapping[str, Any]) -> list[str]:
         f"previous_manifest_sha256={_optional(receipt['previous_manifest_sha256'])}",
         f"previous_recorded_at={_optional(receipt['previous_recorded_at'])}",
     ]
+    preserved = "true" if receipt["recorded_at_preserved"] else "false"
+    lines.append(f"recorded_at_preserved={preserved}")
+    action = receipt["attestation_action"]
+    if action is not None:
+        lines.append(f"attestation_action={action}")
     previous_active = receipt["previous_active"]
     if previous_active is None:
         lines.append("previous_active=none")
@@ -1217,6 +1284,9 @@ def capture_compatible_pair(
             map_revision=map_revision,
             pinvi_revision=pinvi_revision,
         )
+        # 보존 여부는 receipt·stdout이 그대로 보고한다. `None`이면 새 `recorded_at`이
+        # 찍히고, 그때는 §2.3 attestation 재생성이 필수다.
+        preserved_recorded_at = _preserved_recorded_at(existing, observed_identity)
         active = new_image_pair(
             first.images["map_api"],
             first.images["pinvi_api"],
@@ -1226,7 +1296,7 @@ def capture_compatible_pair(
             map_dagster_daemon_image_id=first.images["map_dagster_daemon"],
             map_source_revision=map_revision,
             pinvi_source_revision=pinvi_revision,
-            recorded_at=_preserved_recorded_at(existing, observed_identity),
+            recorded_at=preserved_recorded_at,
         )
         next_manifest = (
             initial_pair_manifest(active)
@@ -1290,6 +1360,7 @@ def capture_compatible_pair(
             "success": True,
             "returncode": CAPTURE_EXIT_CODES[CAPTURE_COMMITTED],
             "stderr": "",
+            "capture_contract": CAPTURE_CONTRACT,
             "manifest": str(manifest),
             "manifest_sha256": hashlib.sha256(committed_bytes).hexdigest(),
             "contract_generation": generation,
@@ -1315,6 +1386,10 @@ def capture_compatible_pair(
             ),
             "previous_recorded_at": (
                 None if existing is None else existing.manifest.active.recorded_at
+            ),
+            "recorded_at_preserved": preserved_recorded_at is not None,
+            "attestation_action": (
+                None if preserved_recorded_at is not None else ATTESTATION_REGENERATION_NOTICE
             ),
             "allow_generation_change": bool(allow_generation_change),
             "operator_asserted_verified_compatible": True,
