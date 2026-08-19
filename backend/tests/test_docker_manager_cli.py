@@ -1,3 +1,4 @@
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -5,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from kor_travel_docker_manager.cli import build_parser, main
+from kor_travel_docker_manager.services import c6c_pair_capture as pair_capture
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ValidatedComposeCandidate,
@@ -458,11 +460,222 @@ def test_cli_rebuilds_pinned_runtime(mock_compose_service):
 
 @pytest.mark.parametrize(
     "legacy_action",
-    ["bootstrap-pinned-drift", "deploy", "capture", "rollback"],
+    ["bootstrap-pinned-drift", "deploy", "rollback"],
 )
 def test_cli_does_not_expose_legacy_pair_actions(legacy_action: str) -> None:
     with pytest.raises(SystemExit, match="2"):
         main(["pinvi-pair", legacy_action])
+
+
+def _capture_receipt() -> dict[str, object]:
+    return {
+        "state": pair_capture.CAPTURE_COMMITTED,
+        "success": True,
+        "returncode": 0,
+        "stdout": (
+            f"{pair_capture.CAPTURE_CONTRACT_LINE}\n"
+            "manifest=/var/lib/x/compatible-pair-v4.json\n"
+        ),
+        "stderr": "",
+        "capture_contract": pair_capture.CAPTURE_CONTRACT,
+        "manifest": "/var/lib/x/compatible-pair-v4.json",
+        "manifest_sha256": "0" * 64,
+        "contract_generation": "c6c-ops-v1",
+        "map_source_revision": "a1" * 20,
+        "pinvi_source_revision": "b2" * 20,
+        "compose_project": "kortravel",
+        "compose_project_directory": "/srv/kor-travel",
+        "images": {},
+        "map_source_checkout": "/srv/map",
+        "pinvi_source_checkout": "/srv/pinvi",
+        "input_sources": {
+            "manifest_path": "E2E_C7_COMPATIBLE_PAIR_MANIFEST",
+            "map_source_checkout": "KTDM_C7_MAP_SOURCE_CHECKOUT",
+            "pinvi_source_checkout": "KTDM_C7_PINVI_SOURCE_CHECKOUT",
+        },
+        "checkout_uid": {"map": 0, "pinvi": 0},
+        "previous_manifest_sha256": None,
+        "previous_active": None,
+        "previous_recorded_at": None,
+        "recorded_at_preserved": False,
+        "attestation_action": pair_capture.ATTESTATION_REGENERATION_NOTICE,
+        "allow_generation_change": False,
+        "operator_asserted_verified_compatible": True,
+        "build_flag_accepted_no_op": False,
+        "rollback_images_present": True,
+        "pinned_generation_manifest": None,
+        "pinned_generation_agrees": None,
+        "pinned_generation_divergent_roles": [],
+        "not_guaranteed": list(pair_capture.NOT_GUARANTEED),
+        "side_effects": [],
+    }
+
+
+def test_cli_capture_parser_has_no_path_defaults() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["pinvi-pair", "capture", "--verified-compatible"])
+
+    assert args.verified_compatible is True
+    assert args.manifest_path is None
+    assert args.map_source_checkout is None
+    assert args.pinvi_source_checkout is None
+    assert args.expect_active_map_revision is None
+    assert args.allow_generation_change is False
+    assert args.build is False
+    assert args.json is False
+
+
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_forwards_every_option(mock_capture) -> None:
+    mock_capture.return_value = _capture_receipt()
+
+    assert (
+        main(
+            [
+                "pinvi-pair",
+                "capture",
+                "--verified-compatible",
+                "--build",
+                "--manifest-path",
+                "/var/lib/x/compatible-pair-v4.json",
+                "--map-source-checkout",
+                "/srv/map",
+                "--pinvi-source-checkout",
+                "/srv/pinvi",
+                "--expect-active-map-revision",
+                "a1" * 20,
+                "--allow-generation-change",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    mock_capture.assert_called_once_with(
+        verified_compatible=True,
+        manifest_path="/var/lib/x/compatible-pair-v4.json",
+        map_source_checkout="/srv/map",
+        pinvi_source_checkout="/srv/pinvi",
+        expect_active_map_revision="a1" * 20,
+        allow_generation_change=True,
+        build_flag=True,
+    )
+
+
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_json_receipt_key_set_is_frozen(mock_capture, capsys) -> None:
+    mock_capture.return_value = _capture_receipt()
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--json"]) == 0
+
+    printed = json.loads(capsys.readouterr().out)
+    assert set(printed) == set(pair_capture.CAPTURE_RECEIPT_KEYS)
+
+
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_announces_that_build_builds_nothing(mock_capture, capsys) -> None:
+    mock_capture.return_value = _capture_receipt()
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 0
+
+    assert capsys.readouterr().err.strip() == pair_capture.BUILD_FLAG_NOTICE
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_returncode"),
+    [
+        (pair_capture.CAPTURE_REFUSED_PRECONDITION, 2),
+        (pair_capture.CAPTURE_REFUSED_LOCK_CONTENDED, 2),
+        (pair_capture.CAPTURE_REFUSED_CHECKOUT_OWNERSHIP, 2),
+        (pair_capture.CAPTURE_REFUSED_RUNTIME, 1),
+        (pair_capture.CAPTURE_WRITE_ROLLED_BACK, 1),
+        (pair_capture.CAPTURE_WRITE_INDETERMINATE, 1),
+    ],
+)
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_capture_refusals_map_to_exit_codes_and_keep_the_fence_closed(
+    mock_capture, capsys, state: str, expected_returncode: int
+) -> None:
+    mock_capture.side_effect = pair_capture.PairCaptureRefusal(state, "refused for a reason")
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible"]) == expected_returncode
+
+    message = capsys.readouterr().err.strip()
+    assert message.endswith(pair_capture.FENCE_NOTICE)
+    assert "resume" not in message and "reopen" not in message
+
+
+@patch("kor_travel_docker_manager.cli.capture_compatible_pair")
+def test_cli_runbook_literal_invocation_reaches_the_capture_service(mock_capture) -> None:
+    """런북 §2.1 step 8의 문자 그대로의 호출이 argparse에서 죽지 않고 서비스에 닿는다."""
+
+    mock_capture.return_value = _capture_receipt()
+
+    assert main(["pinvi-pair", "capture", "--verified-compatible", "--build"]) == 0
+
+    mock_capture.assert_called_once_with(
+        verified_compatible=True,
+        manifest_path=None,
+        map_source_checkout=None,
+        pinvi_source_checkout=None,
+        expect_active_map_revision=None,
+        allow_generation_change=False,
+        build_flag=True,
+    )
+
+
+def test_cli_capture_help_names_the_frozen_environment_fallbacks(capsys) -> None:
+    """운영자가 --help만 보고도 어디에 무엇을 넣어야 하는지 알 수 있어야 한다."""
+
+    with pytest.raises(SystemExit, match="0"):
+        main(["pinvi-pair", "capture", "--help"])
+
+    text = capsys.readouterr().out
+    for name in (
+        *pair_capture.MANIFEST_PATH_ENV_NAMES,
+        *pair_capture.MAP_CHECKOUT_ENV_NAMES,
+        *pair_capture.PINVI_CHECKOUT_ENV_NAMES,
+    ):
+        assert name in text
+    # 기본 경로가 어디서 오는지도 --help가 말해야 한다.
+    assert pair_capture.MANIFEST_PATH_DERIVED_SOURCE in text
+    # 그리고 production `.env`를 망가뜨리는 키를 절대 권하지 않아야 한다.
+    assert pair_capture.MANIFEST_PATH_FORBIDDEN_ENV_NAME not in text
+
+
+def test_cli_capture_help_identifies_itself_before_anything_is_executed(capsys) -> None:
+    """B-1 실행 전 확인 절차의 유일한 안전한 근거.
+
+    n150에 설치된 Manager는 이 브랜치보다 앞선 revision이고, 그 `pinvi-pair capture`는
+    이름만 같은 **파괴형** 명령이다(Map 넷 + PinVi API stop → candidate image로
+    force-recreate). `capture_contract`를 확인하려고 capture를 **실행**하면 그 파괴형이
+    돌 수 있으므로, 확인은 반드시 `--help`만으로 끝나야 한다. 또 옛 구현에만 있던
+    `--wait-timeout`이 여기 보이면 안 된다.
+    """
+
+    with pytest.raises(SystemExit, match="0"):
+        main(["pinvi-pair", "capture", "--help"])
+
+    text = capsys.readouterr().out
+    assert pair_capture.CAPTURE_CONTRACT_LINE in text
+    assert pair_capture.MANIFEST_PATH_OPTION in text
+    assert "--wait-timeout" not in text
+
+
+def test_cli_pinvi_pair_help_lists_only_the_two_surviving_actions(capsys) -> None:
+    """`pinvi-pair --help`의 하위 목록이 설치본 판별의 두 번째 근거다.
+
+    옛 설치본은 `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}`을
+    낸다(2026-08-19 n150 실측). 이 목록이 늘어나면 확인 절차 문장이 거짓이 된다.
+    """
+
+    with pytest.raises(SystemExit, match="0"):
+        main(["pinvi-pair", "--help"])
+
+    text = capsys.readouterr().out
+    assert "{rebuild-pinned,capture}" in text
+    for retired in ("install-pinned-sources", "bootstrap-pinned-drift", "deploy", "rollback"):
+        assert retired not in text, retired
 
 
 @pytest.mark.parametrize(

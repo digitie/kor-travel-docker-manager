@@ -13,9 +13,11 @@
 
 > **F1D v5 현재 정본**: 비운영 generation mutation은 root execution의
 > `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`만 허용한다. 이전 `cache-target`,
-> `db-backup`, `map-ui-auth`와 compatible-pair의
-> `capture`·`deploy`·`rollback` 공개 경로는 모두 퇴역했으며, 아래의 v1–v4 상세 항목은 실행
-> 지침이 아닌 퇴역 기록이다. 최종 schema 상태의 backup/restore가 다시 필요해지면 pair/cache
+> `db-backup`, `map-ui-auth`와 compatible-pair의 `deploy`·`rollback` 공개 경로는 모두
+> 퇴역했으며, 아래의 v1–v4 상세 항목은 실행 지침이 아닌 퇴역 기록이다.
+> **예외 하나**: `pinvi-pair capture`는 2026-08-19에 **runtime mutation이 없는 읽기 전용
+> 관측기**로 되살아났다(ADR-38). 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지
+> 않았다. 최종 schema 상태의 backup/restore가 다시 필요해지면 pair/cache
 > workflow와 독립된 새 Compose primitive·계약으로 별도 태스크를 만든다.
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
@@ -28,6 +30,7 @@
 | **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[x]` | 2026-08-18 | n150 실제 role 비밀번호·3개 canonical env key를 함께 회전하고 PostgreSQL·geo API·Dagster web/daemon·DB init을 재생성했다. 새 비밀번호 인증, 기존 기본값 거부, secret file·health·공개 Manager 브라우저 수명주기를 확인했다 |
 | **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[x]` | 2026-08-18 | n150 기존 위반 7개를 `0600`으로 정리하고 식별 불가 백업 `.env.backup-pinvi-deploy-836a18f-`를 삭제했다. 전체 `.env*` 재검사를 통과했다 |
 | **#173 / Map T-VN-H46F** | Map UI geo consumer credential 경계 | `[/]` | - | 충돌한 draft #173은 H46F PR #183으로 흡수. UI server-only alias·C6c exact wiring·Manager VWorld fallback 제거, 전문 적대 리뷰 2명 GO, backend 411 passed. PR 머지와 Map PR #1004 결합 CI 대기 |
+| **T-C7-CAPTURE** | Map C7 런북 §2.1 step 8용 `ktdctl pinvi-pair capture` 추가 | `[/]` | - | 읽기 전용 관측 + v4 manifest 원자적 교체(ADR-38, 2026-08-19 개정 3). 적대 리뷰 2라운드 16건 수정 — manifest 기본 경로를 `c6c_state_paths`에서 유도(1차 개정의 §근거 1(A)는 사실오류였다), `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST` fallback 제거(production `.env`에 넣으면 모든 mutation이 죽는 지뢰), basename 하드락 제거(lane은 `c7-compatible-pair-v4.json`을 쓴다), frozen env 읽기도 typed refusal, 비-JSON stdout에도 pre-image·`rollback_images_present`·`side_effects` 출력, 동일 runtime 재capture byte-멱등. 3차 확인 리뷰(개정 3)에서 blocking 2건 처리 — **B-1** n150 설치본(`41915827…`)의 동명 `capture`가 아직 **파괴형**이라 ADR/§7.5 최상단 경고 + §7.5.1 읽기 전용 확인 절차(`--help` 두 번) + 코드 자기 식별 `capture_contract=pair-capture-v1`(`--help`·stdout 첫 줄·receipt 3곳) + §7.5.9 설치 절차 조사, **B-2** 멱등 주장을 "identity가 같을 때만"으로 좁히고 runner가 함께 대조하는 세 필드(`manifest_sha256`·`active.map_source_revision`·`active.pinvi_source_revision`, 443-448행)를 명시 + `recorded_at_preserved`/`attestation_action` 신호 추가. followup으로 runner 행 번호 8곳 정정(재발 방지 테스트 포함), 비-production R1-2 자기 충돌 따름정리, healthcheck 미선언 컨테이너=통과 사실 명시. 검증 `pytest -q` 567 passed/3 skipped(직전 555/1, main baseline 411), `ruff` 68=68, `mypy --strict` 76=76(새 모듈 0). 16개 mutation 전부 red 확인. **미결(사용자 결정)**: C7 정본을 `/var/lib/.../compatible-pair-v4.json`(유도 기본값)로 할지 `/etc/kor-travel-map/c7-compatible-pair-v4.json`(오늘 lane이 읽는 파일)로 할지 — ADR-38 §미결 표. **설치 대기(선행)**: 이 브랜치가 n150에 설치되기 전에는 §7.5의 어떤 capture 명령도 실행 금지 — `docs/docker-management.md` §7.5.9. **프로비저닝 대기**: `/usr/local/bin/ktdctl` symlink(없어서 `sudo -n ktdctl`은 `command not found`), 두 checkout env, 그리고 두 checkout이 실행 중 revision을 실제로 포함하도록 하는 일, 그리고 첫 capture 직후 런북 §2.3 attestation 재생성 |
 
 ---
 

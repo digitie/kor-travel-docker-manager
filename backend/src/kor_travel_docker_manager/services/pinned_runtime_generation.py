@@ -211,6 +211,39 @@ def require_rebuildable_mode(values: Mapping[str, str]) -> DeploymentMode:
     return mode
 
 
+def pinned_runtime_state_root(values: Mapping[str, str]) -> Path:
+    """frozen environment만으로 project별 pinned runtime state root를 계산한다.
+
+    ``pinned_runtime_state_paths``와 같은 규칙을 쓰되 mode 게이트
+    (``require_rebuildable_mode``)와 pinset 인자를 요구하지 않는다. 파기형이 아닌
+    읽기 전용 호출자 — 예를 들어 ``rebuild-pinned``가 쓸어가는 root를 피해야 하는
+    ``pinvi-pair capture`` — 가 같은 정본을 참조하기 위한 진입점이다. 디렉터리를
+    만들지 않고 존재도 요구하지 않는다.
+    """
+
+    project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()
+    if _PROJECT_NAME.fullmatch(project_name) is None:
+        raise DeploymentContractError(
+            "COMPOSE_PROJECT_NAME must be explicit and canonical for pinned runtime state"
+        )
+    configured_root = values.get(_STATE_ROOT_ENV, "").strip()
+    root = Path(configured_root) if configured_root else _DEFAULT_STATE_ROOT
+    if not root.is_absolute() or root != root.resolve(strict=False):
+        raise DeploymentContractError(
+            "KTDM_PINNED_RUNTIME_STATE_ROOT must be a canonical absolute path"
+        )
+    state_root = root / project_name
+    if state_root != state_root.resolve(strict=False):
+        raise DeploymentContractError("pinned runtime state directory is invalid")
+    return state_root
+
+
+def pinned_runtime_manifest_path(values: Mapping[str, str]) -> Path:
+    """v5 pinned generation manifest의 경로. 존재 여부는 확인하지 않는다."""
+
+    return pinned_runtime_state_root(values) / _MANIFEST_FILENAME
+
+
 def pinned_runtime_state_paths(
     values: Mapping[str, str],
     *,
@@ -226,20 +259,7 @@ def pinned_runtime_state_paths(
     require_rebuildable_mode(values)
     if _SHA256.fullmatch(pinset_sha256) is None:
         raise DeploymentContractError("pinned runtime state pinset digest is invalid")
-    project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()
-    if _PROJECT_NAME.fullmatch(project_name) is None:
-        raise DeploymentContractError(
-            "COMPOSE_PROJECT_NAME must be explicit and canonical for pinned runtime state"
-        )
-    configured_root = values.get(_STATE_ROOT_ENV, "").strip()
-    root = Path(configured_root) if configured_root else _DEFAULT_STATE_ROOT
-    if not root.is_absolute() or root != root.resolve(strict=False):
-        raise DeploymentContractError(
-            "KTDM_PINNED_RUNTIME_STATE_ROOT must be a canonical absolute path"
-        )
-    state_root = root / project_name
-    if state_root != state_root.resolve(strict=False):
-        raise DeploymentContractError("pinned runtime state directory is invalid")
+    state_root = pinned_runtime_state_root(values)
     return PinnedRuntimeStatePaths(
         state_root=state_root,
         pinset_sha256=pinset_sha256,

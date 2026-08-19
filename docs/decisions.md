@@ -2018,3 +2018,370 @@ geo/concierge/pinvi의 DSN은 `.env`에 없고 compose의 `${VAR:-기본값}`에
 
 reload는 기존 연결을 재인증하지 않는다. 그래서 전환 직후에는 아무 일도 일어나지 않고,
 재연결·재시작 때 드러난다 — "바꿨는데 멀쩡하다"를 성공으로 읽으면 안 된다.
+
+---
+
+## ADR-38: `pinvi-pair capture`는 컨테이너를 관측만 하고 C7 runner용 v4 manifest를 원자적으로 갱신한다
+
+- 상태: accepted
+- 날짜: 2026-08-19
+- 결정자: 사용자, Claude
+- 관련: ADR-31, ADR-34, Map `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8, Map `scripts/lib/c7_prod_attestation.py`
+
+> ## ⚠️ 이 ADR은 **설치된 뒤에만** 참이다 — 오늘 n150의 `capture`는 파괴형이다
+>
+> 2026-08-19 실측: n150 설치본은 revision
+> `4191582779be47e9605a324ea27adbb99b438439`이고 그 트리에
+> `services/c6c_pair_capture.py`가 **없다**. 거기의 `pinvi-pair capture`는 **이름만 같은 옛 v4
+> 파괴형 명령**으로, Map 넷과 PinVi API를 stop한 뒤 candidate image로 force-recreate한다
+> (`--help` = `[--build] [--wait-timeout] [--verified-compatible] [--json]`,
+> `pinvi-pair --help` = `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}`).
+>
+> **이 브랜치가 n150에 설치되기 전에는 이 ADR과 `docs/docker-management.md` §7.5가 적는 어떤
+> `capture` 명령도 실행하지 마라.** 실행 전 확인 절차(읽기 전용 `--help` 두 번)와 설치 절차는
+> `docs/docker-management.md` §7.5.1 / §7.5.9에 있다. 판정 근거는 코드 상수
+> `c6c_pair_capture.CAPTURE_CONTRACT`가 내는 `capture_contract=pair-capture-v1` 한 줄이며,
+> `--help`·성공 stdout 첫 줄·`--json` receipt 세 곳이 같은 값을 낸다. 옛 구현에는 이 문자열이
+> 어디에도 없다.
+
+### 컨텍스트
+
+Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이
+`ktdctl pinvi-pair capture --verified-compatible --build`를 부르는데, 그 명령이 Manager에
+없었다. ADR-34(F1D v5) 정리에서 compatible-pair의 `capture`·`deploy`·`rollback` 공개
+경로를 퇴역시키면서 v4 모델과 writer를 함께 지웠기 때문이다(`64069f7`).
+
+지운 것은 Manager 내부의 **reader**뿐이어야 했다. `compatible-pair-v4.json`은 잔재가
+아니라 **살아 있는 cross-repo 계약**이다. Map의 C7 runner가
+`E2E_C7_COMPATIBLE_PAIR_MANIFEST`로 그 파일을 읽고
+(`c7_prod_attestation.py` 635행, `secure_reader(manifest_path, 0o600)`), top-level 키가 정확히
+`{active, rollback, version}`이며 `version == 4`여야 하고(436행) 두 pair가 각각 정확히 9개
+필드여야 한다고 강제한다(`_validate_pair(manifest["active"])`/`["rollback"]` 439-440행,
+`_validate_pair` 본체 313-347행). 즉 산출물의 소비자는 사람이 아니라 그 runner이며, 1차
+산출물은 **manifest 파일 bytes 그 자체**여야 한다.
+
+n150 실측(2026-08-19)에서 확인한 상태는 이렇다.
+
+- `/var/lib/kor-travel-docker-manager/kor-travel-docker-manager/compatible-pair-v4.json`
+  — root:root `0600`, mtime 2026-07-31, sha256 `f2051e42…`. `active.recorded_at`은
+  `2026-07-27T00:10:48.824808+00:00`, `active.map_source_revision`은 `c8ed6164…`,
+  `pinvi_source_revision`은 `6a035695…`.
+- `/etc/kor-travel-map/c7-compatible-pair-v4.json` — root:root `0600`, **위 파일과
+  byte-identical**(같은 sha256 `f2051e42…`). 오늘 C7 lane 스크립트
+  (`/home/digitie/c7-lane-run-*.sh`, `c7-rerun-*.sh`)가
+  `E2E_C7_COMPATIBLE_PAIR_MANIFEST`로 가리키는 것은 **이쪽**이다.
+- 실제 실행 중 runtime — Map 네 image가 모두 revision
+  `817cfeaed88207987af21e5d0e6d641df21dd9b4`, PinVi가 `5cad141a…`
+  (`io.pinvi.build.environment=production`). 즉 기록된 두 파일의 `active`는 **실행 중
+  이미지와 불일치**한다. 다섯 compose service 모두 `com.docker.compose.project=
+  kor-travel-docker-manager`이고, `kor-travel-map-dagster-daemon`만 healthcheck가 없다
+  (capture는 healthcheck 없는 컨테이너를 거부하지 않는다).
+
+state root를 어떻게 정할지가 남은 문제였다. Manager에는 이미 규칙이 둘 있다 —
+`c6c_state_paths`(production일 때 `/var/lib/kor-travel-docker-manager/<project>`, 아니면
+`KTDM_C6C_STATE_ROOT` 또는 `Path.home()/.local/state/...`)와
+`pinned_runtime_state_paths`(`KTDM_PINNED_RUNTIME_STATE_ROOT`만). 세 번째를 만들면 안 된다.
+
+### 결정
+
+**capture는 실행 중인 다섯 컨테이너를 읽기만 하고, operator가 절대경로로 지목한
+manifest를 원자적으로 교체한다. state root 규칙은 새로 만들지 않고 소비자의
+전제조건을 그대로 미러링한다.**
+
+- **manifest 기본 경로는 `c6c_state_paths(frozen env)[0]`에서 유도한다.** 세 번째
+  state root 규칙을 만들지 않는다는 목표를 여기서 정직하게 달성한다. 해결 순서는
+  `--manifest-path` → `E2E_C7_COMPATIBLE_PAIR_MANIFEST`(runner가 읽는 이름) → 유도
+  기본값이며, 그래서 manifest 입력이 "없어서" 거부되는 경로는 존재하지 않는다.
+  두 checkout은 `--map-source-checkout`/`--pinvi-source-checkout` →
+  `KTDM_C7_MAP_SOURCE_CHECKOUT`/`KTDM_C7_PINVI_SOURCE_CHECKOUT`이며, 둘 다 없으면
+  거부하되 메시지가 **flag 이름과 env 이름을 모두 지목해** 막다른 길을 만들지 않는다.
+- **`KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`는 fallback으로 읽지 않는다.** 그 키를
+  production `.env`에 넣으면 `c6c_state_paths`가
+  `"production C6c manifest and global lock paths are fixed"`로 raise하고, 같은 함수가
+  host-global lock 경로도 정하므로 capture만이 아니라
+  `c6c_deployment_lock_from_environment()`를 잡는 **모든 Manager mutation**이 함께
+  죽는다. capture가 그 키를 읽으면 "런북을 통과시키려면 그 키를 넣어라"는 잘못된
+  조언을 유도하게 된다.
+- **basename은 강제하지 않는다.** runner는 절대경로만 요구하고
+  (`run-c7-prod-live-e2e.sh` 607행) 파일명 제약을 걸지 않으며, 오늘 C7 lane은
+  `c7-compatible-pair-v4.json`을 쓴다. manager가 runner에 없는 제약을 만들 이유가 없다.
+  대신 유지하는 것은 절대·정규 경로, symlink 아님, ancestor 전부 root:root 비-group/
+  other-writable, 기존 파일이면 v4 loader 통과다.
+- **동일 identity 재capture만 byte-멱등이다. 그 밖에는 §2.3 attestation 재생성이 필수다.**
+  관측한 active identity(runner 9필드 중 `recorded_at` 제외)가 기존 파일의 `active`와
+  완전히 같으면 기존 `recorded_at`을 보존한다. 매번 `now()`를 찍으면 아무것도 바뀌지 않은
+  재실행이 이미 발급된 attestation을 깨뜨리기 때문이다. 그러나 멱등은 **좁은 특수
+  경우**다 — ① 기존 manifest가 없는 **첫 capture**와 ② runtime이 바뀐 뒤의 capture는
+  정의상 새 시각을 찍는다. runner는 `manifest_sha256`,
+  `active.map_source_revision`, `active.pinvi_source_revision`(그리고
+  `active.contract_generation`)을 **한 `if`에서 함께** attestation과 대조하므로
+  (`c7_prod_attestation.py` 443-448행 — sha 444, generation 445, map revision 446,
+  pinvi revision 447), 그 두 경우에는 런북 §2.3 attestation을 **반드시 다시 만들어야
+  한다**. capture는 이 사실을 침묵하지 않는다: receipt의 `recorded_at_preserved`가
+  `false`이고 `attestation_action`이 그 문장을 담으며, `--json` 없이 부르는 런북 호출의
+  stdout에도 `recorded_at_preserved=false`와 `attestation_action=…` 두 줄이 나온다.
+- **capture는 자기를 식별한다.** `CAPTURE_CONTRACT = "pair-capture-v1"`이
+  `pinvi-pair capture --help`, 성공 stdout의 **첫 줄**, `--json` receipt의
+  `capture_contract` 필드 세 곳에 같은 값으로 나온다. n150 설치본에 이름이 같은 파괴형
+  `capture`가 남아 있는 동안(위 경고 블록) 이 문자열이 "지금 이 호스트에 설치된 것이
+  관측기인가"를 **실행 없이** 판정하는 유일한 근거다.
+- **`rebuild-pinned`가 쓸어가는 자리는 거부한다.** manifest 경로가
+  `pinned_runtime_state_root(...)` 아래면 `capture_refused_precondition`이다.
+  `rebuild-pinned`는 그 root에서 `f1d_legacy_artifact_paths()` — `compatible-pair-v4.json`
+  포함 — 를 퇴역시키므로, 그 안을 runner의 read target으로 두면 rehearsal rebuild 한 번이
+  attestation 입력을 지운다. n150 rehearsal에서는 두 root가 실제로 같은 디렉터리다.
+- parent 체인은 runner의 `_read_secure_file`(111-162행, ancestor 술어 130-145행)과
+  **같은 술어**로 검증한다 —
+  각 ancestor가 디렉터리·비symlink·uid 0·gid 0·`mode & 0o022 == 0`. **capture는 절대
+  mkdir하지 않는다.** 부모가 없으면 거부한다.
+- 허용 docker argv는 세 종류의 읽기 전용 조회뿐이다:
+  `docker compose --project-directory <dir> ps -q <service>`, `docker inspect -- <id>`,
+  `docker image inspect --format=... -- <ref>`. `up`/`stop`/`start`/`rm`/`build`/`restart`는
+  코드 경로에 존재하지 않는다.
+- 실패해도 **컨테이너를 중지하지 않는다.** 런북 §2.1 step 1의 maintenance fence는 닫힌
+  채 유지하고, typed terminal state + exit code로만 표현한다. 모든 non-zero 메시지는
+  `maintenance fence stays closed; no container was stopped, started, or recreated.`로
+  끝난다.
+- `--build`는 **아무것도 빌드하지 않는다.** 런북 문구 호환을 위해 수락하고 stderr에 1줄
+  고지하며 receipt에 `build_flag_accepted_no_op`로 기록한다.
+- **v5 pinned generation과 대조하되 거부하지 않는다.** 같은 사실을 두 번 적는
+  `pinned-runtime-generation-v5.json`이 있으면 읽어 다섯 image ID와 두 revision을
+  관측값과 맞춰 보고 `pinned_generation_agrees`·`pinned_generation_divergent_roles`를
+  receipt와 stdout 한 줄에 노출한다. prod Map 재배포의 sanctioned 경로가 host compose
+  직접 실행이라 v5가 뒤처지는 것이 **정상 상태일 수 있으므로** 불일치는 거부 사유가
+  아니다. 그 파일은 읽기만 하며 부모 디렉터리도 만들지 않는다.
+- **contract generation 전환은 명시 동의를 요구한다.** 기존 manifest의
+  `active.contract_generation`이 frozen `KTDM_C6C_CONTRACT_GENERATION`과 다르면 기본
+  거부하고, 의도적 전환일 때만 `--allow-generation-change`로 통과한다.
+- **교체되는 manifest의 pre-image를 receipt에 남긴다**: `previous_manifest_sha256`,
+  직전 `active`의 9필드 identity(`previous_active`), `previous_recorded_at`. 무엇을
+  덮어썼는지 사후에 확인할 수 없는 상태를 만들지 않는다. 런북은 `--json` **없이**
+  부르므로 이 값들과 `rollback_images_present`·`side_effects`·`input_sources`는
+  비-JSON stdout 블록에도 나온다. 특히 `rollback_images_present=false`("기록한 rollback
+  pair를 복원할 수 없다")가 기본 출력에서 사라지면 안 된다.
+- **되돌릴 수 없는 `os.replace` 전에** 쓰려는 bytes를 runner 술어로 재검증한다. 커밋 후
+  재읽기가 실패하면 pre-image 스냅샷 복구를 시도하고, 복구 성공은
+  `capture_write_rolled_back`, 실패는 `capture_write_indeterminate`로 구분한다.
+- **git 하위 프로세스 env를 위생 처리한다.** 상속된 `GIT_DIR`/`GIT_WORK_TREE`/
+  `GIT_CEILING_DIRECTORIES`/`GIT_OBJECT_DIRECTORY`/`GIT_ALTERNATE_OBJECT_DIRECTORIES`를
+  제거해 `git -C <checkout>` 결박이 조용히 다른 저장소로 새지 않게 한다. git이
+  `dubious ownership`으로 거부하면 "commit 없음"으로 뭉개지 않고
+  `capture_refused_checkout_ownership`이라는 별도 terminal state로 알린다.
+
+### 근거
+
+1. **`c6c_state_paths` 유도가 정답이다 — 설치본이 읽는 env가 production이기 때문.**
+   n150에는 manager `.env`가 둘이다. `/home/digitie/kor-travel-docker-manager/.env`는
+   `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal` + `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`이고,
+   `/opt/kor-travel-docker-manager/.env`는 `KTDM_DEPLOYMENT_ENVIRONMENT=production`,
+   `COMPOSE_PROJECT_NAME=kor-travel-docker-manager`,
+   `KTDM_C6C_CONTRACT_GENERATION=c6c-ops-v1`이며 `KTDM_DEPLOYMENT_LIFECYCLE`이 **없다**.
+   실제 설치본은 `/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl`이고 그 shim이
+   `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT=/opt/kor-travel-docker-manager`를
+   하드코딩하므로 `get_env_path()`는 **`/opt` 쪽 `.env`**를 읽는다. 따라서 production
+   분기에서 `c6c_state_paths`는 정확히
+   `/var/lib/kor-travel-docker-manager/kor-travel-docker-manager/compatible-pair-v4.json`을
+   돌려주고, **그 파일은 root:root `0600`으로 이미 존재한다**. 새 state root가 생긴다는
+   초판의 서술은 거짓이었다 — 거기서 인용한 `rehearsal`/`rebuildable`은 capture가 읽지
+   않는 `/home/digitie` 쪽 파일의 값이다.
+2. **runner env 이름은 override로 남긴다.** runner도
+   `E2E_C7_COMPATIBLE_PAIR_MANIFEST`라는 operator 지정 절대경로를 받아 같은 술어로 연다.
+   유도 기본값과 다른 파일을 정본으로 삼고 싶을 때 쓰는 손잡이가 그 이름이면, 정책의
+   정본은 여전히 runner 한 곳에 가깝다. ancestor 술어는 두 후보 모두 오늘 통과한다 —
+   `/var/lib/kor-travel-docker-manager{,/kor-travel-docker-manager}`는 root:root `0700`,
+   `/etc/kor-travel-map`은 root:root `0755`(group/other write 비트 0)다.
+3. **healthy prod를 죽이는 것은 미승인 mutation이다.** 옛 v4 capture는 실패 시
+   `_halt_c6c_pair`로 pair를 내렸다. 읽기 전용 검증기에는 되돌릴 mutation이 없으므로
+   rollback도 없다.
+
+### 결과(긍정)
+
+- 런북 step 8이 **인자 없이 문자 그대로** 실행 가능한 **코드 경로**가 생겼고, 산출물이
+  runner의 전수 검증(shape·정규식·소유권·mode)을 그대로 통과한다. 검증 술어의 사본과,
+  계약 상수(top-level 키 집합·`version == 4`·pair 9필드) digest 고정과,
+  `KTDM_C7_RUNNER_MODULE`이 가리키는 **실제 runner 모듈을 import한 테스트**가
+  `backend/tests/test_c6c_pair_capture.py`에 있어 runner가 계약을 바꾸면 즉시 red가 된다.
+  그 env가 주어졌는데 import·검증이 실패하면 skip이 아니라 fail이다.
+- **오늘 n150에서 그대로 실행하면 여전히 성공하지 않는다.** 남은 것은 코드 결함이 아니라
+  설치·프로비저닝·환경 항목 넷이며, 순서대로 이렇다(2026-08-19 실측).
+  0. **이 브랜치가 아직 설치되지 않았다.** 설치본 revision은
+     `4191582779be47e9605a324ea27adbb99b438439`이고 그 `capture`는 **파괴형**이다(위 경고
+     블록). 그러므로 지금 그 명령을 실행하면 "실패"가 아니라 **컨테이너 다섯이 내려간다.**
+     설치 절차는 `docs/docker-management.md` §7.5.9.
+  1. `sudo -n ktdctl …`은 **`command not found`로 코드에 닿기 전에 죽는다.** sudo
+     `secure_path`가 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`
+     이고 venv bin이 없으며 `/usr/local/bin/ktdctl` symlink도 없다. 정본 호출은 절대경로
+     `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl …`다.
+  2. `KTDM_C7_MAP_SOURCE_CHECKOUT`/`KTDM_C7_PINVI_SOURCE_CHECKOUT`이 frozen `.env`에
+     없다. `sudo`는 operator shell의 export를 버리므로 값은 반드시 frozen `.env`에 있어야
+     한다. manifest 경로는 이제 유도되므로 **더는 막히지 않는다.**
+  3. 그 값을 넣어도 revision 결박에서 `capture_refused_runtime`이 난다.
+     `/home/digitie/kor-travel-map`은 **git 저장소가 아니고**,
+     `/home/digitie/pinvi`는 clean checkout(HEAD `5a453eb5…`)이지만 실행 중 PinVi image의
+     revision `5cad141a…`를 갖고 있지 않다. 관측 자체(다섯 service·label·health·image
+     revision)는 오늘 통과한다.
+- **동일 identity 재capture만** byte 수준으로 멱등이다. 직전 `active`가 `rollback`으로
+  승격되고, 동일 identity로 다시 실행하면 기존 `rollback`과 기존 `recorded_at`이 함께
+  보존되어 파일 bytes와 `manifest_sha256`이 변하지 않는다. 그래서 §2.3 attestation
+  이후의 **무해한** 재실행은 게이트를 깨지 않는다. v4의 bootstrap-once 게이트
+  (`assert_pair_manifest_bootstrap_allowed`)는 재배포 후 재capture를 막으므로 복원하지
+  않았다.
+  **단, 첫 실전 capture는 정의상 멱등이 아니다.** 오늘 기록된 active는
+  map `c8ed6164…`/pinvi `6a035695…`인데 실행 중 다섯은 Map `817cfeae…`/PinVi
+  `5cad141a…`다(2026-08-19 실측). 그러므로 첫 capture는 `manifest_sha256`과 두 revision을
+  **모두** 바꾸고, runner가 그 셋을 attestation과 함께 대조하므로(443-448행) §2.3
+  attestation 재생성이 **필수**다. capture가 `recorded_at_preserved=false` +
+  `attestation_action=…`으로 그 사실을 stdout과 receipt 양쪽에 남긴다.
+- 커밋 후 디스크에서 bytes를 되읽어 runner 술어로 재검증하고, 출력하는
+  `manifest_sha256`은 **되읽은 bytes**의 해시다. attestation에 잘못된 해시가 복사될 수 없다.
+
+### 결과(부정)
+
+- **증거력이 v4보다 구조적으로 약하다.** v4는 clean checkout HEAD에서 실제 build해
+  candidate와 대조했다. capture는 빌드하지 않으므로 `map_source_revision`은 결국
+  **image builder가 붙인 label 주장**이고, 결박은 "그 commit이 operator가 지목한 checkout에
+  실재하는 commit object이며 그 checkout이 clean이다"까지다
+  (`git --no-optional-locks -C <checkout> cat-file -e <rev>^{commit}` /
+  `status --porcelain=v1`). 로컬에서 위조 label을 붙인 image는 통과한다. receipt의
+  `not_guaranteed` 배열이 이를 자백하고, `checkout_uid`로 신뢰 근거를 노출한다.
+- **"쓰기 없음"은 거짓이다.** `rebuild-pinned`와의 상호배제를 위해 같은
+  `c6c_deployment_lock_from_environment()`를 잡으므로 lock 디렉터리(0700)와 lock
+  파일(0600)이 생길 수 있다. idempotent하고 n150에는 이미 존재하지만, receipt의
+  `side_effects`에 경로를 명시한다.
+- **global mutation lock은 Manager 경유 mutation만 직렬화한다.** prod Map 재배포의
+  sanctioned 경로가 host `docker compose` 직접 실행이라 lock을 우회한다. 쓰기 직전 2차
+  관측(TOCTOU)이 창을 좁힐 뿐 닫지 못한다.
+- 런북 §3이 요구하는 "main에 병합된 최종 commit"과 capture는 결박되지 않는다. reachability
+  (`merge-base --is-ancestor`)를 게이트로 넣으면 n150 실측 기준 오늘 fail-closed였을
+  것이라 의도적으로 뺐다.
+
+### 개정 (2026-08-19, 적대 리뷰 9건 반영)
+
+초판은 세 입력을 CLI 필수 인자로 두어 **런북의 문자 그대로의 호출이 여전히 exit 2**였다.
+이 명령의 유일한 존재 이유가 "런북을 고치지 않고 Manager에 그 명령을 존재하게 하는 것"이므로
+목표 미달이었다. 게다가 실패 시점이 런북 §2.1 step 4(alembic upgrade) 뒤라 운영자가 막다른
+길에 섰다. 그래서 세 입력을 frozen environment fallback으로 바꾸고(위 §결정 1번 bullet),
+아래 여덟 가지를 함께 고쳤다.
+
+| 리뷰 | 고친 내용 | terminal state / receipt |
+|:---|:---|:---|
+| R1-1/R2-1 | 세 입력의 frozen env fallback, flag는 override | `input_sources` |
+| R1-2 | pinned runtime state root 아래 manifest 배제 | `capture_refused_precondition` |
+| R1-3 | v5 pinned generation 대조(보고 전용) | `pinned_generation_agrees` 외 2 |
+| R1-4 | rollback 승격 회귀 테스트 강화(`rollback != active` seed) | — |
+| R2-2 | `os.replace` **전** runner 재검증 + 커밋 후 스냅샷 복구 | `capture_write_rolled_back` |
+| R2-3 | pre-image 증거 + generation 전환 게이트 | `previous_*`, `allow_generation_change` |
+| R2-4 | cross-repo 게이트를 `KTDM_C7_RUNNER_MODULE`로 이동(값 있으면 skip 금지) | — |
+| R2-5 | git env 위생 + `dubious ownership` 구분 | `capture_refused_checkout_ownership` |
+
+> **이 표의 R1-1/R2-1 행은 2차 개정에서 다시 바뀌었다.** 1차 개정은 manifest 경로의
+> fallback을 `E2E_C7_COMPATIBLE_PAIR_MANIFEST` → `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`로
+> 뒀는데, 뒤쪽 키는 production `.env`에서 모든 Manager mutation을 죽이는 지뢰였다.
+> 아래 2차 개정이 정본이다.
+
+### 개정 2 (2026-08-19, 실측이 뒤집은 전제 7건)
+
+1차 개정의 §근거 1(A)는 **사실오류**였다. 근거로 인용한 `rehearsal`/`rebuildable`은
+`/home/digitie/kor-travel-docker-manager/.env`의 값인데, 설치본 shim이 project root를
+`/opt/kor-travel-docker-manager`로 하드코딩하므로 capture가 읽는 것은 production인
+`/opt` 쪽 `.env`다. 그래서 "`c6c_state_paths`를 재사용하면 네 번째 아티팩트 위치가
+생긴다"는 서술은 성립하지 않았고, 오히려 유도값이 runner가 읽어 온 바로 그 파일이었다.
+그 오류 위에 쌓인 규칙(env fallback 체인, basename 하드락)까지 함께 정정했다.
+
+| 리뷰 | 고친 내용 | 상태/증거 |
+|:---|:---|:---|
+| B-2 | manifest 기본 경로를 `c6c_state_paths`에서 유도. `--manifest-path`와 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`는 override | `input_sources.manifest_path=c6c_state_paths` |
+| B-4 | `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST` fallback 제거(production `.env`에 넣으면 모든 mutation이 죽는 지뢰) | `MANIFEST_PATH_FORBIDDEN_ENV_NAME` |
+| B-1 | basename 하드락 제거. runner가 걸지 않는 제약을 manager가 만들지 않는다 | lane의 `c7-compatible-pair-v4.json` 수용 |
+| B-3 | 런북 정본 호출을 절대경로로 정정(`sudo -n` PATH에 venv bin 없음) | 문서 |
+| B1/F-2 | `get_env_path()`/`effective_environment()`를 typed refusal로 감쌈 + `environment=None` 경로를 실제로 타는 테스트 | `capture_refused_precondition` |
+| B-5 | pre-image·`rollback_images_present`·`side_effects`·`input_sources`를 비-JSON stdout에도 출력 | `_evidence_lines` |
+| F-1 | 동일 identity 재capture 시 `recorded_at` 보존 → byte-멱등 (**그 밖에는 멱등이 아니며 §2.3 재생성 필수** — 개정 3에서 정정) | `manifest_sha256` 불변 |
+
+state root 규칙은 여전히 새로 만들지 않는다. 1차 개정이 "소비자가 쓰는 env 이름을 읽는다"로
+표현했던 것을 "**이 저장소가 이미 가진 규칙에서 유도한다**"로 바꾼 것이므로, 세 번째 규칙을
+만들지 않는다는 원래 목표가 이제 정직하게 달성된다. Manager가 추가한 유일한 제약은
+배제 규칙(R1-2)이며, 그 근거는 `rebuild-pinned`가 같은 이름을 지운다는 이 저장소 안의
+사실이다.
+
+### 개정 3 (2026-08-19, 3차 확인 리뷰 blocking 2건)
+
+3차 확인 리뷰가 **운영 위험 1건**과 **거짓 주장 1건**을 남겼다. 둘 다 코드 결함이 아니라
+"문서가 오늘 실행하면 위험한 명령을 지시한다" / "문서가 성립하지 않는 성질을 약속한다"였다.
+
+| 리뷰 | 문제 | 고친 것 |
+|:---|:---|:---|
+| B-1 | n150 설치본(`41915827…`)의 `pinvi-pair capture`는 **파괴형**인데, 이 브랜치 문서가 그 문자열을 "정본 호출"로 공표했다. 오늘 문자 그대로 실행하면 컨테이너 다섯이 내려간다 | ADR 최상단·§7.5 최상단 경고 블록, §7.5.1 **읽기 전용 확인 절차**(`--help` 두 번), 코드에 `CAPTURE_CONTRACT = "pair-capture-v1"` 자기 식별(=`--help`·stdout 첫 줄·receipt 3곳), §7.5.9 설치 절차 조사 |
+| B-2 | "재capture는 byte-멱등"이 §2.3 attestation 게이트에 대해 오해를 만든다. runner는 `manifest_sha256`·`active.map_source_revision`·`active.pinvi_source_revision`(+`contract_generation`)을 **함께** 대조하고(443-448행), 기록된 active와 실행 중 runtime이 이미 다르므로 **첫 실전 capture는 정의상 멱등이 아니다** | 멱등 주장을 "identity가 같을 때만"으로 좁히고 세 필드를 명시. receipt에 `recorded_at_preserved`·`attestation_action` 추가, 비-JSON stdout에도 두 줄 출력 |
+
+함께 정리한 followup 셋.
+
+- **runner 행 번호 포인터 정정.** 실질 주장은 모두 참이었고 포인터만 낡아 있었다.
+  `manifest shape` 428-432 → **436**(+`_validate_pair` **439-440**),
+  sha256 대조 436 → **443-448**(sha 444), health 술어 501-508 → **508-518**,
+  `_read_secure_file` 112-146/112-164 → **111-162**,
+  `_compose_container` 277-302 → **285-310**,
+  `_validate_pair` 305-316/305-341 → **313-325/313-347**,
+  `_exact_dict` 65-66 → **68-69**, manifest secure read `:623` → **635**.
+  `test_c6c_pair_capture.py`가 폐기된 인용 문자열을 코드·테스트·두 문서에서 스캔해
+  되살아나면 red가 되고, `KTDM_C7_RUNNER_MODULE`이 주어지면 각 행이 실제로 무엇인지까지
+  대조한다.
+- **비-production 환경의 R1-2 자기 충돌**은 위 §미결 끝에 따름정리로 적었다. 설치본이
+  production 분기라 blocker가 아니다.
+- **"다섯 service가 running·healthy"의 정확한 뜻**(healthcheck 미선언 컨테이너는 통과)을
+  `docs/docker-management.md` §7.5 같은 자리와 `_assert_container_is_healthy` docstring에
+  적었다. 오늘 `kor-travel-map-dagster-daemon-latest`가 그 경우다.
+
+### 미결 (사용자 결정 대기)
+
+**어느 파일을 C7 정본으로 둘 것인가.** 오늘 두 파일은 byte-identical 복제본이다
+(sha256 `f2051e42…`).
+
+| 선택지 | 장점 | 대가 |
+|:---|:---|:---|
+| **A. `/var/lib/kor-travel-docker-manager/kor-travel-docker-manager/compatible-pair-v4.json`** (= `c6c_state_paths` 유도 기본값, capture의 현재 기본) | capture를 인자·env 없이 부를 수 있다. 경로 규칙이 Manager 한 곳에 있다. ancestor가 `0700`이라 노출면이 더 좁다 | lane 스크립트(`c7-lane-run-*.sh`, `c7-rerun-*.sh`)의 `MANIFEST=`를 바꿔야 한다. Map 저장소 런북·스크립트가 Manager의 state root를 알게 된다 |
+| **B. `/etc/kor-travel-map/c7-compatible-pair-v4.json`** (= 오늘 lane이 실제로 읽는 파일) | lane 스크립트를 안 고쳐도 된다. 소비자(Map) 옆에 소비자의 파일이 있다 | frozen `.env`에 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`를 프로비저닝해야 한다(안 하면 capture는 A에 쓰고 lane은 B를 읽어 **서로 다른 파일을 보게 된다**). ancestor가 `0755` |
+| C. 둘 다 유지(현재 상태) | 아무것도 안 해도 된다 | capture가 A만 갱신하므로 B가 조용히 낡는다. **가장 위험하다** |
+
+기본값은 A로 두되(코드가 그렇게 동작한다) 결정은 사용자 몫이며, B를 고르면 실작업은
+`.env` 한 줄 프로비저닝뿐이다.
+
+**비-production(rehearsal 모양) 환경에서는 유도 기본값이 R1-2 배제에 스스로 걸린다.**
+`KTDM_DEPLOYMENT_ENVIRONMENT`가 production이 아니면 `c6c_state_paths`는
+`KTDM_C6C_STATE_ROOT`(없으면 `~/.local/state/kor-travel-docker-manager`) + `COMPOSE_PROJECT_NAME`을
+쓰고, `pinned_runtime_state_root`는 `KTDM_PINNED_RUNTIME_STATE_ROOT`(없으면 같은
+`~/.local/state/...`) + 같은 project를 쓴다. 두 env를 따로 주지 않으면 **두 root가 문자
+그대로 같은 디렉터리**가 되어, flag도 runner env도 없이 부른 capture가 자기 유도 기본값을
+"`rebuild-pinned`가 쓸어가는 자리"로 판정하고 `capture_refused_precondition`으로 거부한다.
+실제 소비자인 **설치본은 production 분기**라 유도값이 `/var/lib/...`이고 pinned root와
+겹치지 않으므로 이것은 blocker가 아니다(그래서 이번 라운드에서 고치지 않았다).
+정리 선택지는 셋이다: (a) 그대로 두고 비-production에서는 `--manifest-path`/
+`E2E_C7_COMPATIBLE_PAIR_MANIFEST`를 요구한다, (b) 두 root가 같을 때만 배제 규칙을 완화하되
+그 완화가 production에 새지 않음을 테스트로 박는다, (c) 비-production 유도값에 별도
+하위 디렉터리를 준다(= 사실상 세 번째 state root 규칙이라 §결정에 반한다). **결정은 뒤로
+미룬다** — 오늘 이 경로를 타는 운영 절차가 없다.
+
+### 후속
+
+- (open, **선행 조건**) **이 브랜치를 n150에 설치한다.** 그 전에는 §7.5의 어떤 capture
+  명령도 실행 금지다(설치본의 동명 `capture`가 파괴형). 조사 결과는
+  `docs/docker-management.md` §7.5.9에 있고 요약은 이렇다 — 정본 명령은
+  `sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release <SOURCE_ROOT>`
+  하나이며, ① non-root 소유의 **clean** git checkout이 머지된 최종 commit에 있어야 하고
+  (오늘 `/home/digitie/kor-travel-docker-manager`에는 `.git`이 없다 — 후보는
+  `/home/digitie/f1d-v5-rehearsal/manager`), ② root-owned 오프라인 wheelhouse는 이미
+  충분하며(이 브랜치는 새 런타임 의존이 **없다**), ③ installer가 capture/rebuild-pinned와
+  **같은 global mutation lock**을 잡고, ④ `/opt/.../.env` bytes는 보존되며, ⑤ Manager용
+  systemd unit이 없어 재기동이 필요 없고, ⑥ commit 뒤에는 `.rollback` 트리가 삭제되어
+  자동 되돌리기 경로가 **없다**. **이번 라운드에서 실행하지 않았다.**
+- (open) n150의 stale `pinned-runtime-generation-v5*`는 capture가 건드리지 않으므로 그대로
+  남는다. capture는 이제 불일치를 **보고**하지만 고치지는 않는다. 별개 작업으로 분리한다.
+- (open) revision reachability를 capture 게이트로 넣을지 여부.
+- (open, 프로비저닝) `/usr/local/bin/ktdctl` →
+  `/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl` symlink. 있으면 런북 문자
+  그대로의 `sudo -n ktdctl …`이 동작한다. **이번 라운드에서 실행하지 않았다.**
+- (open, 프로비저닝) `KTDM_C7_MAP_SOURCE_CHECKOUT`/`KTDM_C7_PINVI_SOURCE_CHECKOUT`.
+  오늘 `/home/digitie/kor-travel-map`은 git 저장소가 아니고 `/home/digitie/pinvi`는
+  실행 중 image의 revision을 갖고 있지 않다 — 값을 넣는 것만으로는 부족하고 두 checkout이
+  실행 중 revision을 실제로 포함해야 한다.
+- (open) 위 §미결의 정본 파일 선택.
