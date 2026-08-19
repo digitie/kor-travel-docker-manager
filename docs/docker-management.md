@@ -418,40 +418,56 @@ Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이 부르는 명령이다.
 교체한다. 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지 않았다 — 이 명령은 어떤
 컨테이너도 시작·정지·재생성하지 않는다.
 
-런북은 인자 없이 문자 그대로 부른다. 세 입력은 frozen environment가 정본이다.
+런북은 인자 없이 문자 그대로 부른다. manifest 경로는 유도되고, 두 checkout만 frozen
+environment가 정본이다.
+
+> **정본 호출은 절대경로다(2026-08-19 n150 실측).** `sudo -n ktdctl …`은 오늘
+> `command not found`로 **코드에 닿기 전에** 죽는다. sudo `secure_path`는
+> `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`이고 venv bin이
+> 없으며 `/usr/local/bin/ktdctl` symlink도 없다.
 
 ```bash
-sudo -n ktdctl pinvi-pair capture --verified-compatible --build
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  pinvi-pair capture --verified-compatible --build
 ```
 
-| 입력 | frozen env (우선순위 순) | CLI override |
+| 입력 | 기본값 | 우선순위 |
 |:---|:---|:---|
-| manifest 경로 | `E2E_C7_COMPATIBLE_PAIR_MANIFEST` → `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST` | `--manifest-path` |
-| Map checkout | `KTDM_C7_MAP_SOURCE_CHECKOUT` | `--map-source-checkout` |
-| PinVi checkout | `KTDM_C7_PINVI_SOURCE_CHECKOUT` | `--pinvi-source-checkout` |
+| manifest 경로 | `c6c_state_paths(frozen env)[0]` — production 설치본에서 `/var/lib/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/compatible-pair-v4.json` | `--manifest-path` → `E2E_C7_COMPATIBLE_PAIR_MANIFEST` → 유도값 |
+| Map checkout | 없음(필수) | `--map-source-checkout` → `KTDM_C7_MAP_SOURCE_CHECKOUT` |
+| PinVi checkout | 없음(필수) | `--pinvi-source-checkout` → `KTDM_C7_PINVI_SOURCE_CHECKOUT` |
 
-> **`sudo`는 operator shell의 export를 버린다.** 세 값은 반드시 frozen `.env`에 있어야 한다 —
-> `sudo -n ktdctl …` 앞에 `export`를 해도 하위 프로세스에 전달되지 않는다(n150 실측).
-> 2026-08-19 기준 n150 `.env`에는 세 키가 **아직 없다**. 그래서 런북 문자 그대로의 호출은 지금
-> exit 2로 거부되며(코드 결함 아님), 거부 메시지가 flag 이름과 env 이름을 함께 지목한다.
-> 프로비저닝할 때 manifest 경로는 **pinned-runtime state root 밖**이어야 한다 — 그 안이면
+> **`KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`를 production `.env`에 넣지 마라 — 모든 mutation이
+> 죽는다.** production에서 그 키가 있으면 `c6c_state_paths`가
+> `"production C6c manifest and global lock paths are fixed"`로 raise한다. 같은 함수가
+> host-global lock 경로도 정하므로 capture만이 아니라
+> `c6c_deployment_lock_from_environment()`를 잡는 **모든 Manager mutation**(예:
+> `pinvi-pair rebuild-pinned`)이 함께 죽는다. capture는 이 키를 fallback으로 읽지 않는다.
+> 다른 파일을 정본으로 쓰려면 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`를 쓴다.
+
+> **`sudo`는 operator shell의 export를 버린다.** 두 checkout 값은 반드시 frozen `.env`에
+> 있어야 한다 — `sudo -n … ktdctl` 앞에 `export`를 해도 하위 프로세스에 전달되지 않는다.
+> 2026-08-19 기준 n150 `.env`에는 두 키가 **아직 없다**. 프로비저닝할 때 manifest 경로를
+> 따로 지정한다면 **pinned-runtime state root 밖**이어야 한다 — 그 안이면
 > `rebuild-pinned`가 runner의 read target을 legacy artifact로 퇴역시킨다.
 
 override와 부가 flag를 모두 쓴 형태:
 
 ```bash
-sudo -n ktdctl pinvi-pair capture \
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair capture \
   --verified-compatible \
-  --manifest-path /var/lib/kor-travel-docker-manager/<project>/compatible-pair-v4.json \
+  --manifest-path /etc/kor-travel-map/c7-compatible-pair-v4.json \
   --map-source-checkout /absolute/path/to/kor-travel-map \
   --pinvi-source-checkout /absolute/path/to/pinvi \
   [--expect-active-map-revision <40hex>] [--allow-generation-change] [--build] [--json]
 ```
 
-- manifest 경로는 **operator가 정한다.** flag가 없으면 위 env에서 읽고, 둘 다 없으면
-  거부하되 메시지가 flag 이름과 env 이름을 모두 알려 준다. basename은
-  `compatible-pair-v4.json`이어야 하고, 부모 체인은 runner와 같은 술어(디렉터리·비symlink·
-  uid 0·gid 0·`mode & 0o022 == 0`)를 만족해야 한다. **capture는 디렉터리를 만들지 않는다.**
+- manifest 경로의 기본값은 **이 저장소가 이미 가진 `c6c_state_paths` 규칙에서 유도**한다.
+  세 번째 state root 규칙을 만들지 않는다. **basename 제약은 없다** — runner
+  (`run-c7-prod-live-e2e.sh` 607행)가 절대경로만 요구하고 파일명을 보지 않기 때문이다.
+  대신 절대·정규 경로여야 하고, symlink가 아니어야 하며, 부모 체인이 runner와 같은
+  술어(디렉터리·비symlink·uid 0·gid 0·`mode & 0o022 == 0`)를 만족해야 하고, 기존 파일이
+  있으면 v4 loader를 통과해야 한다. **capture는 디렉터리를 만들지 않는다.**
 - **pinned runtime state root 아래는 쓸 수 없다.** `ktdctl rebuild-pinned`가 그 root에서
   `compatible-pair-v4.json`을 포함한 F1D legacy artifact를 퇴역시키므로, runner의 read
   target을 그 안에 두면 rehearsal rebuild 한 번이 attestation 입력을 지운다. 그런 경로는
@@ -510,9 +526,27 @@ image ID와 두 revision을 관측값과 맞춘다. 결과는 receipt의 `pinned
 있다. 파일이 없거나 읽을 수 없으면 `null`(unknown)이며, 부모 디렉터리를 만들지 않는다.
 
 **교체 증거**: receipt의 `previous_manifest_sha256`·`previous_active`(9필드 identity)·
-`previous_recorded_at`이 무엇을 덮어썼는지 남긴다. 새 manifest는 되돌릴 수 없는
+`previous_recorded_at`이 무엇을 덮어썼는지 남긴다. 런북은 `--json` **없이** 부르므로 이
+값들과 `rollback_images_present`·`side_effects`·`input_sources`는 **비-JSON stdout
+블록에도** 나온다(`previous_active.<필드>=…`, `rollback_images_present=true|false`,
+`side_effect=…`, `input_source.manifest_path=…`). 새 manifest는 되돌릴 수 없는
 `os.replace` **전에** runner 술어로 검증하고, 커밋 후 재읽기가 실패하면 직전 상태로 복구를
 시도한다(복구 성공 = `capture_write_rolled_back`, 실패 = `capture_write_indeterminate`).
+
+**재capture는 byte-멱등이다**: 관측한 active identity(runner 9필드 중 `recorded_at` 제외)가
+기존 파일의 `active`와 완전히 같으면 기존 `recorded_at`을 보존해 파일 bytes와
+`manifest_sha256`이 변하지 않는다. runner가
+`manifest_sha256 == attestation["compatible_pair_manifest_sha256"]`를 강제하므로, 그렇지
+않으면 아무것도 바뀌지 않은 재실행이 이미 발급된 attestation을 깨뜨린다. **한 필드라도
+달라져서 새 `recorded_at`이 찍히면 런북 §2.3 attestation을 다시 만들어야 한다.**
+
+**어느 파일이 C7 정본인가 (미결 — ADR-38 §미결)**: 2026-08-19 실측에서
+`/var/lib/kor-travel-docker-manager/kor-travel-docker-manager/compatible-pair-v4.json`과
+`/etc/kor-travel-map/c7-compatible-pair-v4.json`은 **byte-identical 복제본**이다
+(sha256 `f2051e42…`). 오늘 C7 lane 스크립트(`c7-lane-run-*.sh`, `c7-rerun-*.sh`)가
+`E2E_C7_COMPATIBLE_PAIR_MANIFEST`로 읽는 것은 `/etc` 쪽이고, capture의 유도 기본값은
+`/var/lib` 쪽이다. 둘을 그대로 두면 capture가 `/var/lib`만 갱신하고 lane은 낡은 `/etc`를
+읽는다. 선택지와 대가는 ADR-38 §미결 표에 있으며, **결정은 사용자 몫이다.**
 
 **부수 효과**: manifest 원자 교체 외에 global mutation lock 디렉터리(0700)와 파일(0600)이
 생길 수 있다. receipt의 `side_effects`가 실제 경로를 보고한다.

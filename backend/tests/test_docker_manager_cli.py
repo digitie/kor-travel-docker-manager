@@ -631,6 +631,10 @@ def test_cli_capture_help_names_the_frozen_environment_fallbacks(capsys) -> None
         *pair_capture.PINVI_CHECKOUT_ENV_NAMES,
     ):
         assert name in text
+    # 기본 경로가 어디서 오는지도 --help가 말해야 한다.
+    assert pair_capture.MANIFEST_PATH_DERIVED_SOURCE in text
+    # 그리고 production `.env`를 망가뜨리는 키를 절대 권하지 않아야 한다.
+    assert pair_capture.MANIFEST_PATH_FORBIDDEN_ENV_NAME not in text
 
 
 @pytest.mark.parametrize(

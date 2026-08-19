@@ -12,15 +12,27 @@ Map 저장소 런북 `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8이 부르�
 
 산출물의 소비자는 사람이 아니라 Map 저장소의 C7 runner
 (`scripts/lib/c7_prod_attestation.py`)다. 1차 산출물은 그 runner가 raw bytes로
-해시하고 exact shape로 검증하는 manifest 파일 자체이며, 풍부한 receipt는
-`--json` stdout 전용이다(파일로 쓰지 않는다 — runner의 `_exact_dict`가 manifest에
-추가 키를 금지한다).
+해시하고 exact shape로 검증하는 manifest 파일 자체이며, receipt는 파일로 쓰지 않는다
+(runner의 `_exact_dict`가 manifest에 추가 키를 금지한다). receipt의 증거값은 `--json`
+전용이 아니다 — 런북이 `--json` 없이 부르므로 비-JSON stdout 블록도 pre-image·
+`rollback_images_present`·`side_effects`·`input_sources`를 그대로 낸다.
 
-state root 정책은 새로 만들지 않는다. runner가 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`로
-operator 지정 절대경로를 받아 `_read_secure_file`로 여는 것과 똑같이, capture도
-**같은 env 이름을 fallback으로 읽고** 같은 술어로 부모 체인을 검증한다. CLI flag는
-override일 뿐이며, 정책의 정본은 여전히 runner 한 곳이다. 런북이 인자 없이 부르는
-문자 그대로의 호출이 동작해야 하므로 세 입력은 frozen environment에서 온다.
+state root 규칙은 새로 만들지 않는다. 기본 manifest 경로는 이 저장소가 이미 가진
+`c6c_state_paths(frozen env)[0]`에서 유도한다. n150에 설치된 shim
+(`/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl`)이
+`KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT=/opt/kor-travel-docker-manager`를 하드코딩하므로
+`get_env_path()`가 읽는 frozen env는 `/opt/.../.env`(`KTDM_DEPLOYMENT_ENVIRONMENT=
+production`, `COMPOSE_PROJECT_NAME=kor-travel-docker-manager`)이고, 유도값은
+`/var/lib/kor-travel-docker-manager/kor-travel-docker-manager/compatible-pair-v4.json` —
+root:root 0600으로 **이미 존재하는** 그 파일이다(2026-08-19 실측).
+
+operator가 다른 파일을 정본으로 쓰려면 runner가 읽는 env 이름
+`E2E_C7_COMPATIBLE_PAIR_MANIFEST`(또는 `--manifest-path`)로 지목한다. basename은
+강제하지 않는다 — runner(`run-c7-prod-live-e2e.sh` 607행)는 절대경로만 요구하고 파일명
+제약이 없으며, 오늘 C7 lane 스크립트는 `/etc/kor-travel-map/c7-compatible-pair-v4.json`을
+쓴다. `KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`는 fallback으로 **읽지 않는다**: production
+frozen env에 그 키가 있으면 `c6c_state_paths`가 raise해 capture만이 아니라
+`c6c_deployment_lock_from_environment()`를 잡는 모든 Manager mutation이 함께 죽는다.
 """
 
 from __future__ import annotations
@@ -56,6 +68,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     PairManifestCommitIndeterminateError,
     _canonical_absolute_path,
     assert_runner_readable_parent,
+    c6c_state_paths,
     effective_environment,
     initial_pair_manifest,
     inspect_c6c_image_source_revision,
@@ -131,15 +144,18 @@ BUILD_FLAG_NOTICE = "capture builds nothing; building is the host compose deploy
 # `c6c_deployment.c6c_deployment_lock`이 flock 경합에서 내는 exact 메시지.
 LOCK_CONTENTION_MESSAGE = "another C6c compatible-pair operation is already active"
 
-# 세 입력의 frozen-environment fallback. 정본 소유자는 Map의 C7 runner이므로 그
-# env 이름을 그대로 쓴다. CLI flag는 override로만 존재한다.
+# 세 입력의 해결 순서. manifest는 flag → runner env → `c6c_state_paths` 유도값이고,
+# 두 checkout은 flag → frozen env다. CLI flag는 어디까지나 override다.
 MANIFEST_PATH_OPTION = "--manifest-path"
 MAP_CHECKOUT_OPTION = "--map-source-checkout"
 PINVI_CHECKOUT_OPTION = "--pinvi-source-checkout"
-MANIFEST_PATH_ENV_NAMES: tuple[str, ...] = (
-    "E2E_C7_COMPATIBLE_PAIR_MANIFEST",
-    "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
-)
+MANIFEST_PATH_ENV_NAMES: tuple[str, ...] = ("E2E_C7_COMPATIBLE_PAIR_MANIFEST",)
+# flag도 runner env도 없을 때 쓰는 유도 기본값의 출처 이름(receipt `input_sources`).
+MANIFEST_PATH_DERIVED_SOURCE = "c6c_state_paths"
+# 이 키는 **일부러 읽지 않는다**. production frozen env에 넣는 순간 `c6c_state_paths`가
+# "production C6c manifest and global lock paths are fixed"로 raise하고, capture만이
+# 아니라 `c6c_deployment_lock_from_environment()`를 잡는 모든 Manager mutation이 죽는다.
+MANIFEST_PATH_FORBIDDEN_ENV_NAME = "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST"
 MAP_CHECKOUT_ENV_NAMES: tuple[str, ...] = ("KTDM_C7_MAP_SOURCE_CHECKOUT",)
 PINVI_CHECKOUT_ENV_NAMES: tuple[str, ...] = ("KTDM_C7_PINVI_SOURCE_CHECKOUT",)
 
@@ -637,6 +653,56 @@ def _pair_identity(pair: CompatibleImagePair) -> dict[str, str]:
     }
 
 
+def _identity_without_recorded_at(pair: CompatibleImagePair) -> dict[str, str]:
+    identity = _pair_identity(pair)
+    del identity["recorded_at"]
+    return identity
+
+
+def _observed_identity(
+    *,
+    images: Mapping[str, str],
+    generation: str,
+    map_revision: str,
+    pinvi_revision: str,
+) -> dict[str, str]:
+    """관측값이 만들 active pair의 identity(runner 9필드 중 `recorded_at` 제외)."""
+
+    return {
+        "contract_generation": generation,
+        "map_dagster_daemon_image_id": images["map_dagster_daemon"],
+        "map_dagster_image_id": images["map_dagster_web"],
+        "map_image_id": images["map_api"],
+        "map_source_revision": map_revision,
+        "map_ui_image_id": images["map_ui"],
+        "pinvi_image_id": images["pinvi_api"],
+        "pinvi_source_revision": pinvi_revision,
+    }
+
+
+def _preserved_recorded_at(
+    existing: ExistingManifest | None,
+    observed: Mapping[str, str],
+) -> str | None:
+    """동일 runtime 재capture를 **byte-멱등**으로 만든다.
+
+    C7 runner는 `manifest_sha256 == attestation["compatible_pair_manifest_sha256"]`를
+    강제한다(`c7_prod_attestation.py` 436행). `recorded_at`을 매번 `now()`로 찍으면
+    아무것도 바뀌지 않은 재capture도 파일 해시를 바꿔 이미 발급된 attestation을
+    깨뜨린다. 그래서 관측 identity가 기존 active와 완전히 같을 때만 기존 시각을
+    보존하고, 한 필드라도 다르면 새 시각을 찍는다.
+
+    바뀐 runtime을 capture하면 해시도 당연히 바뀌므로, 런북 §2.3 attestation 이후에
+    runtime이 실제로 달라진 채 재capture했다면 attestation을 다시 만들어야 한다.
+    """
+
+    if existing is None:
+        return None
+    if _identity_without_recorded_at(existing.manifest.active) != dict(observed):
+        return None
+    return existing.manifest.active.recorded_at
+
+
 def _read_pinned_generation(path: Path) -> PinnedRuntimeGeneration | None:
     """v5 manifest를 읽기 전용·no-mkdir로 연다. 실패는 전부 ``None``이다.
 
@@ -736,7 +802,42 @@ def _stdout_block(receipt: Mapping[str, Any]) -> str:
     images = receipt["images"]
     lines.extend(f"{role}_image_id={images[role]}" for role, _service, _field in CAPTURE_ROLES)
     lines.append(_pinned_generation_line(receipt))
+    lines.extend(_evidence_lines(receipt))
     return "\n".join(lines) + "\n"
+
+
+def _optional(value: object) -> str:
+    return "none" if value is None else str(value)
+
+
+def _evidence_lines(receipt: Mapping[str, Any]) -> list[str]:
+    """`--json` 없이 부르는 런북 호출에서 사라지면 안 되는 증거값.
+
+    특히 `rollback_images_present=false`는 "기록한 rollback pair를 복원할 수 없다"는
+    뜻이라 사람이 읽는 기본 출력에 반드시 보여야 한다. 여기 나오는 값은 전부
+    비민감값이며 `--json` receipt와 같은 사실이다.
+    """
+
+    sources = receipt["input_sources"]
+    lines = [
+        f"input_source.manifest_path={sources['manifest_path']}",
+        f"input_source.map_source_checkout={sources['map_source_checkout']}",
+        f"input_source.pinvi_source_checkout={sources['pinvi_source_checkout']}",
+        f"previous_manifest_sha256={_optional(receipt['previous_manifest_sha256'])}",
+        f"previous_recorded_at={_optional(receipt['previous_recorded_at'])}",
+    ]
+    previous_active = receipt["previous_active"]
+    if previous_active is None:
+        lines.append("previous_active=none")
+    else:
+        lines.extend(
+            f"previous_active.{name}={value}"
+            for name, value in sorted(previous_active.items())
+        )
+    present = "true" if receipt["rollback_images_present"] else "false"
+    lines.append(f"rollback_images_present={present}")
+    lines.extend(f"side_effect={effect}" for effect in receipt["side_effects"])
+    return lines
 
 
 def _checkout_uid(path: Path) -> int:
@@ -756,6 +857,23 @@ def _missing_input_reason(option: str, env_names: tuple[str, ...], description: 
         "environment that capture reads (the Manager env-file or the process environment). "
         "nothing was observed and nothing was written"
     )
+
+
+def _frozen_environment() -> Mapping[str, str]:
+    """Manager frozen environment 읽기를 typed refusal로 감싼다.
+
+    `get_env_path()`/`effective_environment()`는 `DeploymentContractError`
+    (`ValueError` 하위 — 예: curation service principal 유도 실패)와 `OSError`를 낼 수
+    있다. 이 호출이 try 밖에 있으면 raw traceback이 나가고 fence 문구도 붙지 않는다.
+    """
+
+    try:
+        return effective_environment(get_env_path())
+    except (OSError, ValueError) as exc:
+        raise _refuse(
+            CAPTURE_REFUSED_PRECONDITION,
+            f"the frozen Manager environment could not be read: {exc}",
+        ) from exc
 
 
 def _resolve_input(
@@ -778,6 +896,44 @@ def _resolve_input(
         CAPTURE_REFUSED_PRECONDITION,
         _missing_input_reason(option, env_names, description),
     )
+
+
+def _resolve_manifest_input(
+    flag_value: str | None,
+    *,
+    values: Mapping[str, str],
+) -> ResolvedInput:
+    """manifest 경로: flag → runner env → `c6c_state_paths` 유도 기본값.
+
+    세 번째 state root 규칙을 만들지 않으려고 기본값을 이 저장소가 이미 가진
+    `c6c_state_paths`에서 유도한다. 설치본이 읽는 frozen env가 production이므로
+    유도값은 runner가 실제로 읽어 온 root:root 0600 파일과 같다. 값이 없어서 거부하는
+    경로는 존재하지 않는다 — 유도가 실패할 때만 거부하며 그때도 어디에 무엇을 넣어야
+    하는지, 그리고 무엇을 넣으면 **안 되는지**를 함께 말한다.
+    """
+
+    if flag_value is not None and flag_value.strip():
+        return ResolvedInput(value=flag_value.strip(), source=MANIFEST_PATH_OPTION)
+    for name in MANIFEST_PATH_ENV_NAMES:
+        candidate = values.get(name, "").strip()
+        if candidate:
+            return ResolvedInput(value=candidate, source=name)
+    try:
+        derived, _lock = c6c_state_paths(values)
+    except DeploymentContractError as exc:
+        raise _refuse(
+            CAPTURE_REFUSED_PRECONDITION,
+            (
+                "the default compatible pair manifest path could not be derived from the "
+                f"frozen environment ({exc}); pass {MANIFEST_PATH_OPTION} <canonical "
+                f"absolute path>, or set {MANIFEST_PATH_ENV_NAMES[0]} to that path in the "
+                f"frozen environment. do not add {MANIFEST_PATH_FORBIDDEN_ENV_NAME} to a "
+                "production env-file to work around this: that key makes c6c_state_paths "
+                "raise for every Manager mutation that takes the global deployment lock, "
+                "not only for capture. nothing was observed and nothing was written"
+            ),
+        ) from exc
+    return ResolvedInput(value=derived, source=MANIFEST_PATH_DERIVED_SOURCE)
 
 
 def _canonical_input_path(resolved: ResolvedInput) -> Path:
@@ -914,7 +1070,7 @@ def capture_compatible_pair(
     # --- C-2: env 최소 계약. runtime mutation이 없으므로
     #          `_validate_mutation_environment`는 호출하지 않는다. 세 입력의 fallback을
     #          여기서 읽으므로 경로 결정보다 먼저 온다.
-    values = effective_environment(get_env_path()) if environment is None else environment
+    values = _frozen_environment() if environment is None else environment
     generation = values.get("KTDM_C6C_CONTRACT_GENERATION", "").strip().lower()
     if _CONTRACT_GENERATION_PATTERN.fullmatch(generation) is None:
         raise _refuse(
@@ -928,21 +1084,14 @@ def capture_compatible_pair(
             "COMPOSE_PROJECT_NAME must be explicit and canonical for capture",
         )
 
-    # --- C-3: manifest path와 operator가 지목한 두 checkout. flag override →
-    #          frozen env fallback 순이며, 어느 쪽도 없으면 넣을 곳을 알려주고 거부한다.
-    manifest_input = _resolve_input(
-        manifest_path,
-        option=MANIFEST_PATH_OPTION,
-        env_names=MANIFEST_PATH_ENV_NAMES,
-        values=values,
-        description="compatible pair manifest path for the C7 runner",
-    )
+    # --- C-3: manifest path와 operator가 지목한 두 checkout. manifest는 flag →
+    #          runner env → `c6c_state_paths` 유도값이라 "없어서" 거부되지 않는다.
+    #          두 checkout은 flag → frozen env이며, 없으면 넣을 곳을 알려주고 거부한다.
+    # basename은 강제하지 않는다. runner(`run-c7-prod-live-e2e.sh` 607행)는 절대경로만
+    # 요구하고 파일명 제약이 없으며, 오늘 C7 lane은 `c7-compatible-pair-v4.json`을 쓴다.
+    # manager가 runner에 없는 제약을 만들 이유가 없다.
+    manifest_input = _resolve_manifest_input(manifest_path, values=values)
     manifest = _canonical_input_path(manifest_input)
-    if manifest.name != PAIR_MANIFEST_FILENAME:
-        raise _refuse(
-            CAPTURE_REFUSED_PRECONDITION,
-            f"{manifest_input.source} basename must be {PAIR_MANIFEST_FILENAME}",
-        )
     _assert_manifest_outlives_rebuild_pinned(
         manifest,
         values=values,
@@ -1062,6 +1211,12 @@ def capture_compatible_pair(
             label="PinVi",
         )
 
+        observed_identity = _observed_identity(
+            images=first.images,
+            generation=generation,
+            map_revision=map_revision,
+            pinvi_revision=pinvi_revision,
+        )
         active = new_image_pair(
             first.images["map_api"],
             first.images["pinvi_api"],
@@ -1071,6 +1226,7 @@ def capture_compatible_pair(
             map_dagster_daemon_image_id=first.images["map_dagster_daemon"],
             map_source_revision=map_revision,
             pinvi_source_revision=pinvi_revision,
+            recorded_at=_preserved_recorded_at(existing, observed_identity),
         )
         next_manifest = (
             initial_pair_manifest(active)

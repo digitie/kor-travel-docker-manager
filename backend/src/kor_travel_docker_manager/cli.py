@@ -317,9 +317,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "C7 runner가 E2E_C7_COMPATIBLE_PAIR_MANIFEST로 읽는 절대경로 override. "
-            "생략하면 frozen 환경의 E2E_C7_COMPATIBLE_PAIR_MANIFEST "
-            "(없으면 KTDM_C6C_COMPATIBLE_PAIR_MANIFEST)에서 읽습니다. "
-            "basename은 compatible-pair-v4.json이어야 합니다."
+            "생략하면 frozen 환경의 E2E_C7_COMPATIBLE_PAIR_MANIFEST를 쓰고, 그것도 "
+            "없으면 c6c_state_paths가 정하는 기본 경로(production 설치본 기준 "
+            "/var/lib/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/"
+            "compatible-pair-v4.json)를 씁니다. basename 제약은 없습니다."
         ),
     )
     pair_capture.add_argument(
