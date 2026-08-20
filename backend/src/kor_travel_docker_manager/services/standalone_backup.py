@@ -149,6 +149,7 @@ def create_standalone_backup(
         created_at_unix = int(time.time())
         filename = f"{role}-{created_at_unix}.dump"
         dest_path = root / filename
+        copy_path = root / f".{filename}.copying"
         container_tmp = f"/tmp/{filename}"
 
         try:
@@ -177,15 +178,21 @@ def create_standalone_backup(
             )
             duration_sec = round(time.monotonic() - started, 3)
             toc_entry_count = _count_toc_entries(container_name, container_tmp, timeout=timeout)
+            copy_path.unlink(missing_ok=True)
             _run_checked(
-                ["docker", "cp", f"{container_name}:{container_tmp}", str(dest_path)],
+                ["docker", "cp", f"{container_name}:{container_tmp}", str(copy_path)],
                 label=f"{role} backup copy-out",
                 timeout=timeout,
             )
+            if not copy_path.is_file():
+                raise StandaloneBackupError(f"{role} backup copy-out produced no file")
+            os.chmod(copy_path, 0o600)
+            os.replace(copy_path, dest_path)
         finally:
             # pg_dump 실패/timeout이어도 시도한 만큼은 지운다 — 시도가 계속 서버
             # 쪽에서 돌고 있더라도 rm은 디렉터리 항목을 즉시 없애 다음 목록/GC가
             # 반쪽 파일을 보지 않게 한다(inode는 그 프로세스가 끝나야 실제 회수된다).
+            copy_path.unlink(missing_ok=True)
             subprocess.run(
                 ["docker", "exec", container_name, "rm", "-f", container_tmp],
                 capture_output=True,

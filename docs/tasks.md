@@ -1033,7 +1033,9 @@ T-053~T-057(v5 rebuild에서 퇴역)이 남긴 공백을 새 독립 primitive로
 - [x] n150에서 세 standalone role 각각 create를 두 번 실행하고 `sha256sum -c`, list,
       `gc --keep 1`, wrapper 1회 실행까지 확인했다. 최신 dump·sha256·manifest와 bounded
       retention을 남겼고, Manager API root와 CLI가 같은 `KTDM_BACKUP_ROOT`를 보도록
-      설정했다. 기존 plain-text baseline triplet은 `~/backups/legacy/<role>/`에 보존했다.
+      설정했다. 기존 plain-text baseline triplet은 `${KTDM_BACKUP_ROOT}/legacy/<role>/`에
+      보존했다. 주기 wrapper는 geo_dagster·concierge·pinvi만 허용하고 Map role을 받지
+      않는다.
 - [ ] geo application DB role의 첫 standalone CLI 백업 실행(33GB, 시간·디스크 확인 필요)은 하지 않았다. geo는
       앱 레벨 스케줄 백업이 정본이므로 CLI는 수동 비상 백업으로만 사용한다.
 - [ ] 복원 CLI(`ktdctl db-backup restore`)와 외부 오프박스 사본 자동화는 미결이다.

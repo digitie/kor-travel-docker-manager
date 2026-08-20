@@ -1115,15 +1115,31 @@ Manager backend가 root service로 실행되고 operator가 별도 계정으로 
 환경에서는 두 프로세스가 `Path.home()`을 서로 다르게 해석한다. 따라서 백업 root는
 `KTDM_BACKUP_ROOT=<operator-owned-absolute-backup-root>`처럼 명시하고 API와 CLI가
 같은 절대 경로를 사용하게 한다. 이 값을 생략하면 backend가 `/root/backups`에 새
-목록을 만들 수 있어 UI가 CLI 백업을 보지 못한다.
+목록을 만들 수 있어 UI가 CLI 백업을 보지 못한다. `GET /api/v1/backups`는 읽기 전용
+route이고 생성·GC는 operator 계정의 CLI/cron만 수행한다. root service가 같은 경로에
+dump를 생성하도록 확장할 때는 동일 UID 또는 명시적 shared group/ACL을 먼저 정하고,
+root 소유 0700/0600 artifact를 operator가 읽을 수 있다고 가정하지 않는다.
 
 기존 plain-text manifest를 새 standalone JSON manifest와 같은 role directory에 두지
 않는다. 새 parser가 schema 오류로 fail-close하므로 dump·sha256·manifest triplet을
-`~/backups/legacy/<role>/`에 보존 이동하고, active directory에는 새 형식 3종 세트만
-둔다. 삭제 대신 격리하므로 수동 복구 자료는 남는다.
+`${KTDM_BACKUP_ROOT}/legacy/<role>/`에 보존 이동하고, active directory에는 새 형식
+3종 세트만 둔다. 삭제 대신 격리하므로 수동 복구 자료는 남는다.
 
-2026-08-20 n150 실증에서는 `geo_dagster`·`concierge`·`pinvi`에 wrapper cron을
-설치했다(호스트 UTC 03:15/03:30/03:55, keep 4/7/7). geo application은 앱 레벨
+legacy triplet 격리는 role lock을 잡은 뒤 다음 순서로 한다.
+
+1. `KTDM_BACKUP_ROOT`가 절대 경로인지 확인하고 `<root>/<role>`의 dump·`.sha256`·
+   `.manifest` 세 파일이 모두 있는지 확인한다. 이동 전 `sha256sum -c`가 실패하면
+   이동하지 않는다.
+2. `<root>/legacy/<role>`을 0700으로 만들고 세 파일을 같은 filesystem 안에서
+   각각 이동한다. 중단되면 파일이 있는 쪽을 기준으로 부족한 파일만 재개하며 삭제하지
+   않는다. 대상은 새 active directory가 아니라 항상 같은 `KTDM_BACKUP_ROOT` 아래다.
+3. 이동 후 legacy 파일 수·소유자·0600 권한·sha256을 다시 확인하고 active directory에
+   plain-text manifest가 남지 않았는지 확인한다. 되돌릴 때도 role lock 안에서 같은
+   세 파일을 active directory로 함께 이동한 뒤 `list`와 sha256 검증을 다시 실행한다.
+
+2026-08-20 n150 실증에서는 `CRON_TZ=UTC`를 포함해
+`geo_dagster`·`concierge`·`pinvi`에 wrapper cron을 설치했다(03:15/03:30/03:55,
+keep 4/7/7). geo application은 앱 레벨
 백업이 정본이고 Map application/Dagster 주기화는 kor-travel-map #148 정책이므로
 이 wrapper에 넣지 않았다.
 
@@ -1136,10 +1152,8 @@ Manager backend가 root service로 실행되고 operator가 별도 계정으로 
 - **복원 CLI가 없다.** map은 여전히 kor-travel-map `docs/backup-restore.md` §8.1
   수동 절차가 정본이고, geo·concierge·pinvi는 각 프로젝트 alembic migration을
   타야 한다(§ "복원" 참고). `ktdctl db-backup restore`는 별도 범위다.
-- **외부(오프박스) 사본 자동화가 없다.** 지금은 로컬 `~/backups/<role>/`뿐이다.
+- **외부(오프박스) 사본 자동화가 없다.** 지금은 `KTDM_BACKUP_ROOT/<role>/` 로컬 경로뿐이다.
   n150에서 외부 목적지·자격증명·전송 자동화가 확인되지 않았으므로 same-host 경로를
   off-box로 간주하지 않았다. rsync/scp 대상·주기·sha256 대조 검증은 별도 결선이 필요하다.
-- 위 실측 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. 실제로 상시 cron을
-  걸지는 n150의 운용 성격(실 production인가)에 달렸고, kor-travel-map
-  `docs/tasks.md`는 2026-08-06 사용자 지시로 정기화를 `[보류]`로 두고 있다
-  ("손상 시 재적재가 정책"). map 쪽 최종 주기화 여부는 #148이 소유한다.
+- 위 실측 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. Map 쪽 최종 주기화
+  여부는 kor-travel-map #148이 소유하며, 이 wrapper는 Map role을 주기 실행하지 않는다.
