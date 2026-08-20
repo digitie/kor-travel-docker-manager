@@ -6,9 +6,9 @@
 # geo application은 각각 #148 정책·geo 앱 백업과 중복되므로 이 wrapper의 주기 대상이 아니다.
 # 다음 줄을 crontab에 한 번 넣어 host timezone과 무관하게 UTC로 고정한다:
 #   CRON_TZ=UTC
-#   15 3 * * * cd ~/kor-travel-docker-manager && scripts/run-standalone-backup.sh geo_dagster     4 >>~/backups/geo_dagster.log 2>&1
-#   30 3 * * * cd ~/kor-travel-docker-manager && scripts/run-standalone-backup.sh concierge       7 >>~/backups/concierge.log 2>&1
-#   55 3 * * * cd ~/kor-travel-docker-manager && scripts/run-standalone-backup.sh pinvi            7 >>~/backups/pinvi.log 2>&1
+#   15 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh geo_dagster 4 >>/absolute/backup/root/geo_dagster.log 2>&1
+#   30 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh concierge 7 >>/absolute/backup/root/concierge.log 2>&1
+#   55 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh pinvi 7 >>/absolute/backup/root/pinvi.log 2>&1
 set -eu
 
 ROLE="${1:?usage: run-standalone-backup.sh <role> <keep>}"
