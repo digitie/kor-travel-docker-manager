@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-08-20 — H49 standalone 백업 운영 증거와 public live E2E
+
+H49의 n150 운영 AC 중 standalone 생성·검증·목록·GC·주기 실행을 실제로 확인했다.
+Map application은 geo 앱 레벨 백업이 정본이고 Map application/Dagster 주기화는
+kor-travel-map #148 정책에 맡기므로 별도 cron을 설치하지 않았다.
+
+- Manager API가 root로 실행될 때 `Path.home()`이 `/root`가 되는 경로 drift를 막기 위해
+  prod backend에 `KTDM_BACKUP_ROOT`를 operator CLI와 같은 절대 백업 root로 설정했다.
+  기존 plain-text legacy baseline triplet은 새 JSON manifest parser가 읽는 디렉터리와
+  섞지 않고 `${KTDM_BACKUP_ROOT}/legacy/<role>/`로 보존 이동했으며, active directory와 산출물은
+  각각 0700/0600 권한을 확인했다.
+- `geo_dagster`, `concierge`, `pinvi` 각각에 대해 두 번의 `ktdctl db-backup create`와
+  `list`, `gc --keep 1`을 실행했다. 오래된 dump가 삭제되고 최신 dump·`.sha256`·`.manifest`가
+  남았으며, role directory에서 `sha256sum -c`가 모두 성공했다. wrapper도 세 role에
+  대해 수동 1회 실행해 create→GC→완료 경로를 확인했다.
+- n150 host cron에 `CRON_TZ=UTC`와 함께 다음 UTC 시각의 wrapper를 설치했다:
+  `geo_dagster` 03:15(keep 4),
+  `concierge` 03:30(keep 7), `pinvi` 03:55(keep 7). cron daemon active와 중복 없는
+  crontab을 확인했으며 geo application·Map roles는 임의로 활성화하지 않았다.
+- public Manager UI에서 Playwright Chromium live E2E를 실행했다. sanitized transcript는
+  `login=200 → GET /api/v1/backups=200(roles 3) → logout=200 → 보호 API=401`이며,
+  인증값·세션값·공개 origin은 저장하지 않았다. backend root와 frontend static asset을
+  함께 배포해야 이 결과가 재현된다는 점도 확인했다.
+- off-box 자동화는 아직 완료 처리하지 않았다. 사용 가능한 환경에서 외부 목적지·자격증명·
+  전송 도구 결선이 확인되지 않아 same-host 경로를 off-box로 간주하지 않았다. 따라서
+  H49는 최신 산출물과 주기 실행 증거는 충족했지만 off-box AC와 restore CLI는 미결이다.
+
+---
+
 ## 2026-08-19 — `pinvi-pair capture` 3차 확인 리뷰 blocking 2건 (ADR-38 개정 3)
 
 3차 확인 리뷰가 남긴 것은 코드 결함이 아니라 **문서가 위험한 명령을 지시한다**와

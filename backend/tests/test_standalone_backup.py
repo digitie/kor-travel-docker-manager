@@ -31,7 +31,7 @@ def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _happy_run_checked(dest_path: Path):
+def _happy_run_checked():
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
         if arguments[:2] == ["docker", "inspect"] and "Cmd" in arguments[3]:
             return _CMD_JSON
@@ -42,7 +42,7 @@ def _happy_run_checked(dest_path: Path):
         if arguments[:2] == ["docker", "exec"] and "pg_restore" in arguments:
             return _TOC_OUTPUT
         if arguments[:2] == ["docker", "cp"]:
-            dest_path.write_bytes(b"fake dump contents")
+            Path(arguments[-1]).write_bytes(b"fake dump contents")
             return b""
         if "pg_database_size" in " ".join(arguments):
             return b"12345\n"
@@ -66,9 +66,8 @@ def test_create_standalone_backup_happy_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = tmp_path / "geo"
-    dest_path = root / "geo-1000.dump"
     _fake_time(monkeypatch)
-    run_checked = Mock(side_effect=_happy_run_checked(dest_path))
+    run_checked = Mock(side_effect=_happy_run_checked())
     monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
     subprocess_run = _happy_subprocess_run()
     monkeypatch.setattr(standalone_backup.subprocess, "run", subprocess_run)
@@ -112,7 +111,7 @@ def test_create_standalone_backup_happy_path(
         "docker",
         "cp",
         "kor-travel-geo-postgres:/tmp/geo-1000.dump",
-        str(dest_path),
+        str(root / ".geo-1000.dump.copying"),
     ]
 
     assert manifest.role == "geo"
@@ -165,7 +164,7 @@ def test_create_standalone_backup_rejects_empty_dump_file(
         if "pg_restore" in arguments:
             return _TOC_OUTPUT
         if arguments[:2] == ["docker", "cp"]:
-            (root / "pinvi-1000.dump").write_bytes(b"")
+            Path(arguments[-1]).write_bytes(b"")
             return b""
         raise AssertionError(f"unexpected command: {arguments}")
 
@@ -195,6 +194,7 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
         if "pg_restore" in arguments:
             return _TOC_OUTPUT
         if arguments[:2] == ["docker", "cp"]:
+            Path(arguments[-1]).write_bytes(b"partial dump")
             raise StandaloneBackupError("copy-out failed")
         raise AssertionError(f"unexpected command: {arguments}")
 
@@ -206,6 +206,8 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
     with pytest.raises(StandaloneBackupError, match="copy-out failed"):
         create_standalone_backup("map_application", backup_root=root)
     cleanup.assert_called_once()
+    assert not (root / ".map_application-1000.dump.copying").exists()
+    assert not (root / "map_application-1000.dump").exists()
 
 
 def test_discover_port_parses_dash_p_flag(monkeypatch: pytest.MonkeyPatch) -> None:

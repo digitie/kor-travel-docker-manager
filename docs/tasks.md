@@ -26,7 +26,7 @@
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
 | **#171** | Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포 | `[/]` | - | 전용 Map DB/F1D bootstrap, T-VN-40 canonical snapshot principal 최소 권한 결선 및 Hallmark 운영 콘솔 재설계 반영. upstream exact pair의 final receipt/live 검증 대기 |
-| **#177** | 4분할 후 geo·concierge·map·pinvi 공통 백업 결선 | `[/]` | - | 신규 독립 `standalone_backup.py` + `ktdctl db-backup create/list/gc` + 읽기 전용 `GET /backups`. geo 앱 스케줄 백업 env는 PR #181에서 결선, n150 standalone cron·off-box 사본은 미완료 |
+| **#177** | 4분할 후 geo·concierge·map·pinvi 공통 백업 결선 | `[/]` | - | 신규 독립 `standalone_backup.py` + `ktdctl db-backup create/list/gc` + 읽기 전용 `GET /backups`. geo 앱 스케줄 백업 env는 PR #181에서 결선, n150의 geo_dagster·concierge·pinvi cron 및 최신 산출물은 2026-08-20 실증, off-box 사본은 미완료 |
 | **#178** | geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거 | `[x]` | 2026-08-18 | n150 실제 role 비밀번호·3개 canonical env key를 함께 회전하고 PostgreSQL·geo API·Dagster web/daemon·DB init을 재생성했다. 새 비밀번호 인증, 기존 기본값 거부, secret file·health·공개 Manager 브라우저 수명주기를 확인했다 |
 | **#179** | prod `.env` 파생 파일 권한 600 이탈 재발 방지 | `[x]` | 2026-08-18 | n150 기존 위반 7개를 `0600`으로 정리하고 식별 불가 백업 `.env.backup-pinvi-deploy-836a18f-`를 삭제했다. 전체 `.env*` 재검사를 통과했다 |
 | **#173 / Map T-VN-H46F** | Map UI geo consumer credential 경계 | `[/]` | - | 충돌한 draft #173은 H46F PR #183으로 흡수. UI server-only alias·C6c exact wiring·Manager VWorld fallback 제거, 전문 적대 리뷰 2명 GO, backend 411 passed. PR 머지와 Map PR #1004 결합 CI 대기 |
@@ -1026,12 +1026,21 @@ T-053~T-057(v5 rebuild에서 퇴역)이 남긴 공백을 새 독립 primitive로
       실공백 0건.
 - [x] backend 전체 404 passed(standalone_backup 30 + API 5 + CLI 8 신규/조정 =
       38 관련 테스트), ruff/frontend type-check/lint clean.
-- [ ] n150에 cron/systemd timer 실제 설치는 하지 않았다 — 운용 성격(#148과 같은 결정)에
-      달려 있어 사용자 확인 후 진행한다.
+- [x] n150에서 `geo_dagster`, `concierge`, `pinvi` wrapper cron을 실제 설치하고 daemon
+      active·중복 없는 crontab을 확인했다(호스트 시각 UTC, 각각 03:15/03:30/03:55,
+      keep 4/7/7). geo application과 Map application/Dagster에는 앱 레벨·#148 정책과
+      중복되지 않도록 standalone cron을 설치하지 않았다.
+- [x] n150에서 세 standalone role 각각 create를 두 번 실행하고 `sha256sum -c`, list,
+      `gc --keep 1`, wrapper 1회 실행까지 확인했다. 최신 dump·sha256·manifest와 bounded
+      retention을 남겼고, Manager API root와 CLI가 같은 `KTDM_BACKUP_ROOT`를 보도록
+      설정했다. 기존 plain-text baseline triplet은 `${KTDM_BACKUP_ROOT}/legacy/<role>/`에
+      보존했다. 주기 wrapper는 geo_dagster·concierge·pinvi만 허용하고 Map role을 받지
+      않는다.
 - [ ] geo application DB role의 첫 standalone CLI 백업 실행(33GB, 시간·디스크 확인 필요)은 하지 않았다. geo는
       앱 레벨 스케줄 백업이 정본이므로 CLI는 수동 비상 백업으로만 사용한다.
-- [ ] 복원 CLI(`ktdctl db-backup restore`)와 외부 오프박스 사본 자동화는 범위 밖 —
-      각각 별도 태스크로 남긴다.
+- [ ] 복원 CLI(`ktdctl db-backup restore`)와 외부 오프박스 사본 자동화는 미결이다.
+      이번 실행에서는 외부 목적지·자격증명·전송 자동화가 확인되지 않아 off-box 증거를
+      만들지 않았다.
 
 ### #178: geo postgres 평문 자격증명 + 추측 가능 기본값(`addr`) 제거
 
