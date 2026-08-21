@@ -134,7 +134,7 @@ Kor Travel/PinVi 인프라 관리 도구를 설계할 때, 백엔드 Docker 데�
 
 ## ADR-5: Kor Travel/PinVi 계열 PostgreSQL 생명주기를 통합 DB 컨테이너로 관리한다
 
-- 상태: accepted
+- 상태: superseded (ADR-37, 2026-08-17; Docker 생명주기 일원화 원칙은 유지)
 - 날짜: 2026-06-10
 - 결정자: human, AI agent
 
@@ -143,6 +143,9 @@ Kor Travel/PinVi 인프라 관리 도구를 설계할 때, 백엔드 Docker 데�
 
 ### 결정
 Kor Travel/PinVi 계열 database는 `kor-travel-geo-postgres` 컨테이너의 `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database로 통합하고, Docker 생명주기와 로컬 포트·credential·bucket 기본값은 `kor-travel-docker-manager`가 관리한다.
+
+> 이 기록의 통합 database·`5432` 결정은 ADR-37로 폐기되었다. 현재도 공용 Docker 생명주기와
+> credential·bucket의 Manager 소유 원칙만 유효하다.
 
 ### 근거
 - 공용 인프라의 stop/restart 권한을 한 저장소에 모으면 포트 경합과 중복 컨테이너 제거 위험이 줄어든다.
@@ -160,7 +163,7 @@ Kor Travel/PinVi 계열 database는 `kor-travel-geo-postgres` 컨테이너의 `k
 
 ## ADR-6: BMW M 시각 양식의 인프라 대시보드 수렴 및 react-doctor 최적화
 
-- 상태: accepted
+- 상태: superseded (ADR-36, 2026-08-13; React 구조 개선 기록은 유지)
 - 날짜: 2026-06-11
 - 결정자: human, AI agent
 
@@ -513,7 +516,7 @@ dev 기본 네트워크 모드를 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-hos
 
 ## ADR-17: 프론트엔드를 Tailwind v4 + StyleSeed 라이트 토큰으로 전환하고 전역 오류 복구 boundary를 추가한다
 
-- 상태: accepted
+- 상태: superseded (ADR-36, 2026-08-13; Tailwind v4·오류 복구 boundary 기록은 유지)
 - 날짜: 2026-06-20
 - 결정자: human, AI agent
 
@@ -581,7 +584,7 @@ dev 기본 네트워크 모드를 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-hos
 
 ### 컨텍스트
 
-Manager 대시보드는 Docker 컨테이너 시작·정지·설정 변경 API를 직접 호출한다. 기존에는 로컬 개발 편의를 위해 별도 인증이 없었지만, 운영 공개 주소와 CORS 설정이 들어온 뒤에는 관리자 화면과 API를 보호해야 한다. 사용자는 단일 관리자 계정(`admin`/`ad.min`)을 요구했고, 비밀번호와 API 키 원문은 git에 노출하지 않아야 했다. 또한 `kor-travel-geo` PR #399의 로그인·API 키 UX와 보안 패턴을 따르고, `kor-travel-geo` v2 API도 같은 VWorld 키 계약을 사용할 수 있어야 했다.
+Manager 대시보드는 Docker 컨테이너 시작·정지·설정 변경 API를 직접 호출한다. 기존에는 로컬 개발 편의를 위해 별도 인증이 없었지만, 운영 공개 주소와 CORS 설정이 들어온 뒤에는 관리자 화면과 API를 보호해야 한다. 사용자는 단일 관리자 계정과 비밀번호 해시 기반 인증을 요구했고, 비밀번호와 API 키 원문은 git에 노출하지 않아야 했다. 또한 `kor-travel-geo` PR #399의 로그인·API 키 UX와 보안 패턴을 따르고, `kor-travel-geo` v2 API도 같은 VWorld 키 계약을 사용할 수 있어야 했다.
 
 ### 결정
 
@@ -1807,10 +1810,14 @@ endpoint/generation이 없거나 PinVi provenance·Map artifact·pin이 서로 �
 
 ## ADR-35: Map ADR-090 principal은 전용 PostgreSQL instance에서만 bootstrap한다
 
-- 상태: accepted
+- 상태: superseded (ADR-37, 2026-08-17; Map principal 경계 원칙은 유지)
 - 날짜: 2026-08-12
 - 결정자: 사용자, Codex
 - 관련: #171, ADR-5, ADR-9, ADR-16, ADR-34, Map ADR-090
+
+> 이 ADR은 Map principal을 전용 instance에서 bootstrap한다는 경계를 보존한다. Map만 분리하던
+> 포트·통합 instance 서술은 ADR-37이 네 프로젝트 전용 instance와 `12500`/`12600`/`12700`/`12800`
+> 정책으로 대체했다.
 
 ### 컨텍스트
 

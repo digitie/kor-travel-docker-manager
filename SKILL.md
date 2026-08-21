@@ -10,8 +10,8 @@
 본 저장소(`kor-travel-docker-manager`)는 `pinvi`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo`가 사용하는 공용 데이터베이스(PostgreSQL/PostGIS), 파일 저장소(RustFS), 앱 API/Web UI를 Docker 기반으로 안정적으로 통합 관리하고 상태를 대시보드로 모니터링하기 위한 관리 도구다.
 
 - **FastAPI 백엔드**: 로컬 Docker 데몬과 소켓 또는 API로 연동해 컨테이너의 상태(`running`, `exited` 등)를 읽고 Start/Stop/Restart 제어 명령을 실행한다.
-- **Python CLI**: `ktdctl db|storage|gra|cadv|prom|geo|conc|map|pinvi|srv --build`로 개발환경 의존 Docker를 바로 실행한다.
-- **Next.js 프론트엔드**: 관리자 대시보드 화면을 렌더링하며, 미려한 UI(dark mode, HSL tailored color palette, glassmorphism)를 제공해 운영의 직관성을 돕는다.
+- **Python CLI**: `ktdctl db|storage|gra|cadv|prom|geo|conc|map|pinvi|all|srv --build`로 개발환경 의존 Docker를 바로 실행한다.
+- **Next.js 프론트엔드**: 관리자 대시보드 화면을 렌더링하며, `DESIGN.md`와 `frontend/tokens.css`의 Hallmark Cobalt Workbench 토큰으로 운영 정보를 표시한다.
 - **포트 정책**: 로컬 host 포트는 `docs/ports.md`의 `12000` 시작, target별 `+100`, API `+1`, Web UI `+5` 규칙을 따른다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다(`12500`/`12600`/`12700`/`12800`, ADR-37 — 표준 `5432`는 폐지). Grafana/cAdvisor/Prometheus는 `12205`/`12301`/`12401`, `kor-travel-geo`는 `12501`/`12505`, `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`, manager 자체는 `12900-12999`를 사용한다.
 
 ---
@@ -38,7 +38,7 @@ poetry install
 poetry run ktdctl geo --build
 poetry run ruff check .
 poetry run pytest
-poetry run uvicorn kor_travel_docker_manager.main:app --reload
+poetry run uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 12901 --reload
 ```
 
 ### 프론트엔드 (Next.js) Setup
@@ -58,8 +58,7 @@ npm run dev
 backend/
   src/
     kor_travel_docker_manager/
-      main.py                 — 백엔드 FastAPI 진입점
-      config.py               — 환경 설정 (데이터베이스 URL, Docker Socket 경로 등)
+      main.py                 — FastAPI 진입점과 루트 환경변수 로드
       api/
         routes.py             — 컨테이너 상태 조회, 제어, 로그 API 엔드포인트
       services/
@@ -75,8 +74,7 @@ frontend/
       layout.tsx              — 루트 레이아웃 (Global CSS, Provider 구성)
       page.tsx                — 대시보드 메인 뷰 (상태 카드, 제어 버튼, 로그 콘솔)
     components/               — 버튼, 카드 등 프리미엄 디자인 컴포넌트
-    hooks/                    — TanStack Query API 구독 훅
-    lib/                      — zod 스키마 정의 및 axios/fetch 유틸리티
+    lib/                      — API fetch, 입력 검증, 설정 diff 유틸리티
 docs/
   architecture.md             — 아키텍처 가이드 (백엔드 ⇄ Docker 소켓, API ⇄ 프론트엔드)
   decisions.md                — 의사결정 기록 (ADRs)

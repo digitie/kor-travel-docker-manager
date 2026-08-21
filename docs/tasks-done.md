@@ -12,6 +12,10 @@
 > git 이력과 문서가 어긋난다. **두 집합은 완료 날짜로 구분하고**, 상세 절 제목에도 날짜를
 > 병기했다. 재사용된 행은 비고에 `⚠️ ID 재사용`으로 표시했다.
 
+> ⚠️ 이 문서는 완료 당시의 사실을 보존하는 역사 기록이다. 현재 포트·DB·CLI·디자인
+> 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
+> [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
+
 ## 2026-08-06 — T-VN-41-F1D-C3 n150 결선
 
 - [x] **F1D-C3 — dynamic fixture durable transaction과 n150 파기형 rebuild**

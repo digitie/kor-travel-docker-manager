@@ -12,7 +12,7 @@
 - 개발환경에서는 필요한 경우 `docker compose up -d --build`로 빌드 후 실행한다.
 - UI에서 상태, 포트, 리소스, 로그, compose 설정, Docker inspect 핵심 정보를 확인한다.
 - 컨테이너 파라미터는 `docker-compose.yml`을 source of truth로 저장하되, credential 값은 `.env` override로 둔다.
-- `DESIGN.md`의 Pure Black, 1px hairline, 직각 panel, M 삼색선의 희소한 accent만 관리 대시보드에 적용한다.
+- `DESIGN.md`와 `frontend/tokens.css`의 Hallmark Cobalt 토큰, 밝은 Workbench 표면, 얕은 그림자와 절제된 상태색을 관리 대시보드에 적용한다.
 - dev 기본 네트워크는 Docker host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다.
 - 운영(prod) 공개 주소는 저장소에 커밋하지 않고 gitignore된 `.env`(`KTDM_PROD_URL_*`)에만 두며, registry/대시보드가 이를 읽어 컨테이너별 공개 URL을 표시한다.
 
@@ -92,7 +92,7 @@
 - TestClient는 pre-accept close와 accept-then-close를 모두 같은 `WebSocketDisconnect(4401)`로
   보고하므로 계약 회귀는 `backend/tests/test_ws_contract.py`의 ASGI 메시지 시퀀스로 고정한다.
 
-현재 공식 관리 컨테이너는 다음 19개다. dev 기본 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 포트 NAT가 없으므로 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다(컨테이너 내부 포트 = 호스트 포트). 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다.
+현재 registry가 관리하는 런타임 컨테이너는 다음 21개다. dev 기본 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 포트 NAT가 없으므로 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다(컨테이너 내부 포트 = 호스트 포트). 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다.
 
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트(host=container) |
 |---|---|---|---|
@@ -109,7 +109,7 @@
 | `kor-travel-concierge-mcp` | `kor-travel-concierge-mcp-latest` | `kor-travel-concierge` MCP HTTP | `12602` |
 | `kor-travel-concierge-scheduler` | `kor-travel-concierge-scheduler-latest` | `kor-travel-concierge` scheduler | 내부 실행 |
 | `kor-travel-concierge-ui` | `kor-travel-concierge-ui-latest` | `kor-travel-concierge` Web UI | `12605` |
-| `kor-travel-map-postgresql` | `kor-travel-map-postgres` | Map application·Dagster metadata 전용 PostgreSQL / PostGIS | `12703` |
+| `kor-travel-map-postgresql` | `kor-travel-map-postgres` | Map application·Dagster metadata 전용 PostgreSQL / PostGIS | `12700` |
 | `kor-travel-map-api` | `kor-travel-map-api-latest` | `kor-travel-map` admin API | `12701` |
 | `kor-travel-map-dagster` | `kor-travel-map-dagster-latest` | `kor-travel-map` Dagster Webserver | `12702` |
 | `kor-travel-map-dagster-daemon` | `kor-travel-map-dagster-daemon-latest` | `kor-travel-map` Dagster daemon | 내부 실행 |
@@ -156,7 +156,7 @@ db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
 
 | 단계 | 실행 조건 | 스크립트 | 역할 |
 |---|---|---|---|
-| DB 복구 | `db` 이상 | `scripts/ensure-kor-travel-geo-db.sh` | PostgreSQL readiness 대기, `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map`, `krtour_map_dagster` database 생성/소유자 보정, role/password refresh, PostGIS/pg_stat_statements/schema grant 보정 |
+| DB 복구 | `db` 이상 | `scripts/ensure-kor-travel-geo-db.sh` | Geo 전용 PostgreSQL readiness 대기, `kor_travel_geo` database와 PostGIS/pg_stat_statements/schema grant만 보정. 다른 프로젝트의 role·database는 건드리지 않음 |
 | RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads` bucket 생성 |
 | Geo 원천 검증 | `geo` 이상 | `scripts/verify-kor-travel-geo-source.sh` | `/data/juso` 마운트와 `load_manifest`, `tl_juso_text`, `mv_geocode_target` 적재 상태 확인 |
 
@@ -211,8 +211,15 @@ ktdctl srv --build
 | `GET` | `/api/v1/containers/{container_id}/inspect` | Docker inspect 핵심 정보의 redacted 요약 |
 | `POST` | `/api/v1/containers/{container_id}/action` | `start`, `stop`, `restart` |
 | `POST` | `/api/v1/containers/{container_id}/config` | compose 파라미터 저장 및 재생성 |
+| `POST` | `/api/v1/containers/{container_id}/reset` | 허용된 개발 lifecycle에서 기본 설정으로 복구 및 재생성 |
 | `GET` | `/api/v1/containers/{container_id}/logs` | 최근 로그 |
 | `GET` | `/api/v1/containers/{container_id}/metrics` | 최근 메트릭 이력 |
+| `POST` | `/api/v1/auth/login`, `/api/v1/auth/logout` | 관리자 세션 로그인·로그아웃 |
+| `GET` | `/api/v1/auth/me` | 현재 관리자 세션 확인 |
+| `GET` | `/api/v1/backups` | 전용 PostgreSQL 백업 산출물 목록 |
+| `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |
+| `GET/POST/DELETE` | `/api/v1/admin/public-api-keys...` | public API key 관리 |
+| `WS` | `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}` | 상태·로그 실시간 스트림 |
 
 `ensure`는 Docker SDK가 아니라 `docker compose`를 인자 배열로 실행한다. 반면 stats, logs, inspect, 개별 action은 Docker SDK를 유지한다.
 
@@ -220,10 +227,10 @@ ktdctl srv --build
 
 ## 6. UI 방향
 
-대시보드는 관리 작업에 집중한다. 마케팅 hero나 자동차 사진을 넣지 않고, `DESIGN.md`의 룩앤필을 아래 방식으로만 반영한다.
+대시보드는 관리 작업에 집중한다. 마케팅 hero나 장식 이미지를 넣지 않고, `DESIGN.md`와 `frontend/tokens.css`의 룩앤필을 아래 방식으로만 반영한다.
 
-- Pure Black canvas, hairline border, 직각 panel을 기본 표면으로 사용한다.
-- M 삼색선은 상단 4px divider 또는 중요 section marker로만 사용한다.
+- 밝은 Cobalt page/card surface, `--color-line` 구분선, `--radius-card`/`--radius-panel`을 기본 표면으로 사용한다.
+- `--color-brand`는 선택·주요 조치·작은 상태 강조에만 사용하고, 의미 없는 gradient·glass 효과를 추가하지 않는다.
 - 상태 테이블은 dense dashboard 형태를 유지하고, 반복 카드 남용을 피한다.
 - 상세 패널은 컨테이너 선택 시 오른쪽 drawer 또는 modal로 열어 inspect, mounts, networks, env redaction, 최근 로그, 최근 메트릭을 함께 보여 준다.
 - 파라미터 편집은 변경 전 diff와 재생성 경고를 표시하고, credential literal 입력은 `.env` 사용을 안내한다.
@@ -393,7 +400,8 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `rehearsal/rebuildable` 환경의 다음 명령 하나다.
 
 ```bash
-sudo -n ktdctl pinvi-pair rebuild-pinned --confirm
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  pinvi-pair rebuild-pinned --confirm
 ```
 
 이 명령은 tracked Map·PinVi exact source pin으로 일곱 service의 candidate image와 세 schema head를
@@ -469,8 +477,9 @@ Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이 부르는 명령이다.
 교체한다. 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지 않았다 — 이 명령은 어떤
 컨테이너도 시작·정지·재생성하지 않는다.
 
-런북은 인자 없이 문자 그대로 부른다. manifest 경로는 유도되고, 두 checkout만 frozen
-environment가 정본이다.
+런북은 별도 경로 override 없이 기본값을 사용해 부른다. `--verified-compatible`는
+operator 확인 flag이고 `--build`는 호환용으로만 수락되며 아무것도 빌드하지 않는다.
+manifest 경로와 두 checkout은 frozen environment 또는 명시된 안전한 override가 정본이다.
 
 > **정본 호출은 절대경로다(2026-08-19 n150 실측).** `sudo -n ktdctl …`은 오늘
 > `command not found`로 **코드에 닿기 전에** 죽는다. sudo `secure_path`는
@@ -672,7 +681,7 @@ sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release <SOURCE
 1. **커밋 성공 뒤에는 자동 rollback 경로가 없다.** transaction이 `committed`로 reconcile되면
    `/opt/.kor-travel-docker-manager.rollback` 트리를 **삭제**한다. 되돌리려면 이전 commit의
    clean checkout에서 installer를 다시 돌려야 한다.
-2. **main 직접 push 금지 / CI green 후 머지**(ADR-021 + ADR-038)가 그대로 적용된다.
+2. **main 직접 push 금지**(ADR-021 + ADR-038)가 그대로 적용된다. 이 저장소에는 추적된 CI workflow가 없으므로 PR 전 필수 수동 검증(`ruff`, `pytest`, frontend type-check/build), 보안 감사와 리뷰를 통과한 뒤 외부 merge gate가 요구하는 검사를 확인한다.
    installer는 checkout의 HEAD가 무엇이든 archive하므로 정책이 유일한 게이트다. n150에는
    **머지된 commit**만 설치한다.
 
@@ -715,27 +724,10 @@ candidate runtime set 전체 계약을 검증해 최초 v4를 만든다. Map dep
 payload를 읽어 자동 변환하지 않으며 symlink·비정규 파일·다른 owner·group/world writable mode를
 포함한 어느 legacy artifact든 mutation 전에 operator migration/removal을 요구한다.
 
-```bash
-ktdctl pinvi-pair capture --verified-compatible --build
-# 기본 manifest: ~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/compatible-pair-v4.json
-# clean bootstrap도 kor-travel-map API의 alembic 마이그레이션을 처음부터 실행할 수 있어
-# deploy와 같은 이유(issue #88)로 --wait-timeout이 필요할 수 있다.
-ktdctl pinvi-pair capture --verified-compatible --build --wait-timeout 1200
-```
-
-capture는 host lock 안에서 base dependency → Map API signed smoke → Map UI/Dagster → PinVi →
-canonical smoke → PinVi Web/Dagster → 전체 smoke 순서로 candidate를 검증한다. 실패하면 v4를 기록하지
-않고 Map runtime 네 service와 PinVi API를 중지하며 capture가 새로 만든 container만 제거한다.
-기존 manifest는 덮어쓰지 않는다. manifest v4의 active/rollback은 Map runtime 네 image ID,
-`map_source_revision`, `pinvi_image_id`, `pinvi_source_revision`, `contract_generation`,
-`recorded_at`의 exact 9개 필드를 기록한다. image ID는 `sha256:<64 hex>`, source revision은
-lowercase 40자 Git commit이어야 한다. `latest-main` 같은 tag, `development` revision, 단일 image,
-과거 generation, 로컬에 없는 image ID는 배포와 rollback 전에 거부한다. 실행 중인 두
-image ID·revision이 manifest의 active pair와 달라도 배포를 거부한다. 일반
-`ensure`/container action·config·reset과 direct
-Compose API mutation은 production에서 409/CLI 오류로 거부한다. `scale`·`watch`와 알 수 없는 Compose
-명령도 read-only로 오인하지 않는다. production의 low-level Compose runner는 알려진 read-only 명령만
-capability 없이 허용하며, 일반 인프라 mutation도 `ensure`/config 같은 관리 workflow capability를 거친다.
+현재 v4 설명의 명령과 동작은 **역사 기록이며 실행하지 않는다**. 옛 parser에는
+`--verified-compatible`, `--build`, `--wait-timeout` 조합이 있었고 capture가 runtime을 중지·재생성했지만,
+현행 읽기 전용 capture parser에는 이 옵션과 동작이 없다. 현행 명령은 §7.5.2와 §7.5.1의
+`capture_contract=pair-capture-v1` 확인을 통과한 뒤에만 사용한다.
 
 ```bash
 ktdctl pinvi-pair deploy --build
@@ -986,7 +978,8 @@ non-empty `driver_opts`(`type`, `o=bind|rbind`, `device` 포함), 알 수 없는
 통과해야 한다.
 
 cAdvisor system bind는 raw literal과 resolved identity 모두 정확히 두 개의 set, 즉 RO `/sys -> /sys`와
-RO `/var/run/docker.sock -> /var/run/docker.sock`만 허용한다. named/anonymous/추가 bind, writable mode,
+RO `/var/run/docker.sock -> /var/run/docker.sock`만 허용한다. Compose는 이 두 bind 외에 cAdvisor 호환성을 위해
+`privileged: true`와 `/dev/kmsg` device를 선언한다. named/anonymous/추가 bind, writable mode,
 source/target interpolation alias는 모두 거부한다. `/sys`는 root-owned mountpoint/directory이고 source와 parent chain이 group/other-writable이 아니어야
 한다. Docker socket은 실제 socket, uid 0, `docker` group, mode `0660`, other-write 금지 계약을 강제한다.
 source와 parent chain의 canonical path·inode·device·mode·uid/gid snapshot은 같은 manager mutex 안에서 capture해
@@ -996,7 +989,7 @@ byte를 원자 복원한다. `docker` group 구성원은 Docker daemon을 통해
 이 경계의 보호 대상이 아니다. Docker socket을 `0600`으로 바꾸는 별도 운영 전제는 두지 않는다.
 
 cAdvisor는 더 이상 `/:/rootfs`, `/var/run`, `/var/lib/docker`, `/dev/disk`를 mount하지 않는다.
-`--docker_only=true`와 read-only `/var/run/docker.sock`, `/sys`만 사용해 container CPU·memory·I/O 지표를
+`--docker_only=true`와 read-only `/var/run/docker.sock`, `/sys`, `/dev/kmsg` device를 사용해 container CPU·memory·I/O 지표를
 노출한다. host root filesystem/disk inventory는 제공하지 않지만 manager 대시보드의 Docker SDK 기반 container
 상태·stats와 Prometheus의 container metric 수집은 유지한다.
 ## PostgreSQL 백업 (ADR-37 이후 4개 인스턴스)
@@ -1021,14 +1014,16 @@ cAdvisor는 더 이상 `/:/rootfs`, `/var/run`, `/var/lib/docker`, `/dev/disk`�
 host network라 **`-p`가 필수**다. 빠뜨리면 컨테이너 기본값 `5432`를 찾는데 그 포트를
 듣는 것이 없어 실패한다(유닉스 소켓도 그 포트에 없다).
 
+수동 `docker exec -e PGPASSWORD=...` 예시는 사용하지 않는다. 비밀번호를 명령행·환경변수로
+전달하면 shell history나 process/audit 기록에 남을 수 있다. 현재 정식 경로는 password를
+다루지 않는 Unix socket 기반 CLI다.
+
 ```bash
-# 예: geo. 다른 인스턴스는 컨테이너·포트·user·db만 바꾼다.
-docker exec -e PGPASSWORD="$PW" kor-travel-geo-postgres \
-  pg_dump -h 127.0.0.1 -p 12500 -U addr -d kor_travel_geo \
-  -Fc --compress=6 -f /tmp/bk.dump
-docker cp kor-travel-geo-postgres:/tmp/bk.dump ~/backups/geo/$(date +%F)-baseline.dump
-docker exec kor-travel-geo-postgres rm -f /tmp/bk.dump
-chmod 600 ~/backups/geo/*.dump      # ← 잊지 마라. docker cp는 umask 따라 644로 떨군다
+ktdctl db-backup create geo --timeout 14400
+ktdctl db-backup create concierge --timeout 14400
+ktdctl db-backup create map_application --timeout 14400
+ktdctl db-backup create map_dagster --timeout 14400
+ktdctl db-backup create pinvi --timeout 14400
 ```
 
 | 인스턴스 | 컨테이너 | 포트 | user | database |
@@ -1053,8 +1048,8 @@ dump 하나만 두지 않는다. **`.sha256`과 `.manifest`가 없으면 "복원
 > 두 형식이 섞여 있어서, 한쪽을 가정한 검사가 다른 쪽을 **조용히 건너뛰었다** —
 > 파일은 멀쩡한데 "sha256 없음"으로 넘어갔다. `sha256sum -c`가 그대로 먹는 형태로 통일한다.
 
-manifest에 넣을 것: `created_at` · `instance`(컨테이너 + `127.0.0.1:포트`) · `database` ·
-`duration_sec` · `tables` · `db_size` · `alembic_head`. **포트를 적었으면 포트가 바뀔 때
+manifest에 넣을 것: `created_at_unix` · `instance`(컨테이너 + `127.0.0.1:포트`) · `database` ·
+`duration_sec` · `toc_entry_count` · `db_size_bytes` · `alembic_head`. **포트를 적었으면 포트가 바뀔 때
 같이 고쳐야 한다** — 2026-08-17에 map manifest가 죽은 `12703`을 가리키고 있었고, 복구할
 사람이 그 값을 보고 죽은 포트로 간다. 고칠 때는 `port_corrected=` 같은 이력 줄을 남긴다.
 조용히 고치면 다음 사람이 그 값을 못 믿는다.

@@ -92,7 +92,7 @@ export default function ContainerDetailModal({
 
   const runEnsure = async () => {
     if (!targetId) return;
-    // ensure는 target 하나가 아니라 depends_on 폐포 전체를 재생성한다(`pinvi`면 18개 서비스).
+    // ensure는 target 하나가 아니라 depends_on 폐포 전체를 재생성한다(`pinvi`면 현재 21개 서비스).
     // db가 포함되면 스키마·권한 복구 스크립트까지 실행된다. 버튼 라벨만 보면 이 범위가
     // 드러나지 않으므로, 실제 대상을 세어 보여 주고 확인을 받는다.
     const services = targetServices ?? [];

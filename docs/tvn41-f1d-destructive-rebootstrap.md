@@ -39,7 +39,7 @@ DB preimage가 없는 상황을 rollback slot으로 가장하지 않는다.
 ## 단일 명령과 상태 전이
 
 기존 `ktdctl pinvi-pair bootstrap-pinned-drift --confirm`은 제거하고, 의미가 분명한
-`sudo -n ktdctl pinvi-pair rebuild-pinned --confirm` 하나로 대체한다. 이 명령은 frozen canonical
+`sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm` 하나로 대체한다. 이 명령은 frozen canonical
 environment의 typed pair `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal` 및
 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`가 정확할 때만 동작한다. 환경/lifecycle은
 `local/development`, `rehearsal/rebuildable`, `production/operational`만 유효한 enum pair다.
@@ -65,7 +65,7 @@ preflighted
 
 `rebuild-pinned`는 root execution만 허용한다. candidate source staging·v5 state·credential-file은
 root가 소유하고, Map·PinVi source checkout은 source owner 권한으로 origin만 읽는다. 따라서 원격
-operator는 `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
+operator는 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
 database를 건드리기 전에 거부된다.
 
 `candidate_attested`는 일곱 candidate image ID, 두 source revision, candidate artifact가 직접 보고한 세 expected schema head,

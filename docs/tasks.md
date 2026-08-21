@@ -13,8 +13,9 @@
 
 > **F1D v5 현재 정본**: 비운영 generation mutation은 root execution의
 > `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`만 허용한다. 이전 `cache-target`,
-> `db-backup`, `map-ui-auth`와 compatible-pair의 `deploy`·`rollback` 공개 경로는 모두
-> 퇴역했으며, 아래의 v1–v4 상세 항목은 실행 지침이 아닌 퇴역 기록이다.
+> `map-ui-auth`와 compatible-pair의 `deploy`·`rollback` 공개 경로는 퇴역했으며, 아래의
+> v1–v4 상세 항목은 실행 지침이 아닌 퇴역 기록이다. `db-backup`은 pair/cache와 독립한
+> 읽기·생성·정리 primitive로 다시 도입됐고, `restore` subcommand는 아직 구현되지 않았다.
 > **예외 하나**: `pinvi-pair capture`는 2026-08-19에 **runtime mutation이 없는 읽기 전용
 > 관측기**로 되살아났다(ADR-38). 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지
 > 않았다. 최종 schema 상태의 backup/restore가 다시 필요해지면 pair/cache
@@ -22,6 +23,7 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 완료 날짜 | 비고 |
 |:---|:---|:---:|:---:|:---|
+| **DOC-AUDIT-20260821** | 전체 문서와 현재 코드·Compose·registry 정합성 감사 | `[x]` | 2026-08-21 | 전용 DB 포트·API prefix·초기화 경계·배포/backup 보안·디자인 정본을 수정하고 적대적 전문 리뷰 2건을 반영 |
 | **T-050** | 배포 alembic head 재발 방지 게이트 (issue #109) | `[x]` | 2026-08-04 | candidate 이미지 alembic head 정적 검사·진단 writer 재기동 image drift 거부. Manager 측 완료, issue #109 종료 |
 | **T-051** | Map DB naming 정리(krtour_map→kor_travel_map) + issue #111/#114 결선 | `[x]` | 2026-08-04 | n150 실제 백업·DROP·RENAME·재배포·healthy 확인 완료 |
 | **T-VN-41-F1D-D** | 최종 스키마 데이터 수용 검증 및 인수 기록 (issue #136) | `[/]` | - | C3 재구성 완료. 별도 원천/ETL 재적재 뒤 데이터 의존 E2E 결과를 기록 |
@@ -692,17 +694,12 @@ window 안에 내장된 private 스텝일 뿐이라, 사고 당시 운영자가 
 
 ### T-055: 안전장치 있는 DB 복구 CLI (`ktdctl db-backup restore`) (퇴역 기록)
 
-- [x] `ktdctl db-backup restore --role ... --backup-id ... --expected-schema-revision ... --confirm`를
-      신설했다. T-050의 `--expected-alembic-head` fail-close opt-in 패턴을 그대로
-      따른다 — 복구 대상 DB의 **현재** schema revision을 `_read_schema_revision`으로
-      읽어 operator가 `--expected-schema-revision`으로 명시한 값과 대조하고 다르면
-      어떤 mutation도 하지 않고 즉시 거부한다. `--confirm`(store_true, 기본 False)
-      없이는 CLI가 `compose_service`를 아예 호출하지 않는다(1차 방어) — 새
-      `_STANDALONE_RESTORE_CAPABILITY` sentinel이 함수 자체 호출에도 한 번 더
-      요구된다(2차 방어). 복구 직전 백업 파일을 재-해시해 manifest의 `sha256`과
-      대조하고, dropdb/createdb/pg_restore는 기존 `restore_database_backup`과
-      동일한 stderr-NOTICE-안전 조건부 dropdb 패턴을 그대로 따른다. 복구 뒤
-      결과 DB의 schema revision이 manifest 기록값과 일치하는지 재확인한다.
+> 아래의 완료 표시는 당시 제안·검토된 복구 설계의 기록이다. 현재 구현 여부는 위의
+> 미완료 항목과 실제 `ktdctl db-backup --help`를 기준으로 하며, 현재 CLI에는 `restore`가 없다.
+
+- [ ] 현재 CLI에는 `db-backup create`, `list`, `gc`만 있으며 `restore` subcommand는
+      구현되어 있지 않다. 아래의 복구 설계는 퇴역 기록이므로 실행 명령이나 완료 근거로
+      사용하지 않는다. 복구가 다시 필요해지면 별도 보안 검토와 구현 태스크를 만든다.
 - [x] production 대상은 C6c 전역 lock 안에서 실행하고, frozen resolved Compose
       계약에서 파생한 `DatabaseRuntime`으로만 대상을 식별한다(T-053/054와 동일
       패턴) — role 문자열로 임의 DSN을 조립하지 않는다.
@@ -971,7 +968,7 @@ runtime generation과 DB writer 경계를 완결하지 못했다. 정본 설계�
 ### #171: Map ADR-090 DSN 분리와 전용 PostgreSQL 선행 배포
 
 - [x] 통합 PostgreSQL의 `kor_travel_map` lifecycle을 제거하고, Map application·Dagster metadata 전용
-      `kor-travel-map-postgres`를 `127.0.0.1:12703`으로 분리했다. 공용 DB recovery는 Map role·schema·
+      `kor-travel-map-postgres`를 `127.0.0.1:12700`으로 분리했다. 공용 DB recovery는 Map role·schema·
       extension·database를 더 이상 생성하거나 ownership/ACL을 변경하지 않는다.
 - [x] F1D v5가 전용 DB health 확인·reset 뒤 Map 정본 `postgres-role-bootstrap.sh`와 Dagster DB init을
       `--rm` one-shot으로 실행하고, bootstrap catalog assertion 뒤 Map/Dagster migration을 시작하도록

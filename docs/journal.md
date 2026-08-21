@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-08-21 — 전체 문서·코드 정합성 감사
+
+현재 Markdown 문서와 Compose·registry·FastAPI router·CLI·frontend 토큰을 대조하고, 서로 다른
+운영 사실을 안내하던 부분을 현재 코드 기준으로 정리했다. 적대적 전문 리뷰어 2명이 별도로
+전체 문서의 포트·DB·보안·배포·API 계약을 검토했으며, 두 리뷰의 지적을 모두 반영했다.
+
+- PostgreSQL 전용 instance 포트를 `12500`/`12600`/`12700`/`12800`으로 통일하고 폐지된
+  `5432`·`12703` 현재값, Geo 하나에 여러 프로젝트 DB가 있다는 설명, Geo 복구 스크립트의
+  다른 프로젝트 DB 생성 주장을 제거했다.
+- `/api/v1/auth/*`, `/api/v1/admin/*`, container reset, backup 목록, WebSocket 경로를
+  실제 router prefix에 맞춰 문서화했다. 미인증 운영 `curl`을 401 경계 확인으로 바꾸고,
+  공개 브라우저의 로그인→대시보드→로그아웃→LoginScreen 전환과 WebSocket 재연결 부재를
+  필수 검증으로 명시했다.
+- 전체 디렉터리를 복사하던 운영 `rsync` 예시를 소스 디렉터리만 동기화하도록 줄였고,
+  trusted offline installer와 root-owned wheelhouse 경계를 문서화했다. 비밀번호를
+  `docker exec -e`로 전달하던 수동 backup 예시는 passwordless Unix socket CLI로 대체했다.
+- BMW M/Pure Black 문서를 현재 Hallmark Cobalt Workbench와 `frontend/tokens.css` 정본으로
+  갱신하고 존재하지 않는 경로·깨진 `file:///` 링크를 제거했다. `.env.example`의 credential은
+  placeholder로 바꾸고 테스트 fixture가 운영 관리자 비밀번호를 재사용하지 않게 분리했다.
+
+- 검증: backend 전체 테스트 `567 passed, 3 skipped`, frontend `npm run type-check`와
+  production `npm run build`, registry/포트 YAML 계약 검사를 통과했다. Markdown 내부
+  로컬 링크 25개도 모두 확인했다.
+- 저장소 기존 품질 부채는 범위를 넓혀 섞지 않았다. 현재 작업트리에서 Ruff 기존 진단
+  68건과 `MYPYPATH=src mypy --strict --explicit-package-bases` 기존 진단 75건이 남아
+  있으며, 이번 변경으로 새로 발생한 진단은 확인하지 못했다.
+- 운영 호스트의 실제 관리자 비밀번호 회전·세션 무효화는 외부 운영 작업이므로 실행하지
+  않았다. 추적 문서와 테스트에서는 해당 값을 제거하고 비운영 fixture로 대체했으며,
+  운영 비밀 저장소에서 회전이 필요하다는 경계를 유지했다.
+
+PR/merge 정보는 PR 생성과 머지 뒤 이 항목에 확정 기록한다.
+
+---
+
 ## 2026-08-20 — H49 standalone 백업 운영 증거와 public live E2E
 
 H49의 n150 운영 AC 중 standalone 생성·검증·목록·GC·주기 실행을 실제로 확인했다.
