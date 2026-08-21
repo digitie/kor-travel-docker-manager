@@ -35,7 +35,8 @@
   운영 비밀 저장소에서 회전이 필요하다는 경계를 유지했다.
 
 PR #186([전체 문서와 현재 코드 계약 정합성 감사](https://github.com/digitie/kor-travel-docker-manager/pull/186))로
-제출했다. 머지 commit은 머지 완료 뒤 이 항목에 추가한다.
+제출했고 2026-08-21에 squash 머지했다. merge commit은
+`eefca43717e9fe9806bdefc794c45a3581945e31`이다.
 
 ---
 
