@@ -34,7 +34,8 @@
   않았다. 추적 문서와 테스트에서는 해당 값을 제거하고 비운영 fixture로 대체했으며,
   운영 비밀 저장소에서 회전이 필요하다는 경계를 유지했다.
 
-PR/merge 정보는 PR 생성과 머지 뒤 이 항목에 확정 기록한다.
+PR #186([전체 문서와 현재 코드 계약 정합성 감사](https://github.com/digitie/kor-travel-docker-manager/pull/186))로
+제출했다. 머지 commit은 머지 완료 뒤 이 항목에 추가한다.
 
 ---
 
