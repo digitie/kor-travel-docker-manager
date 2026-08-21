@@ -2,17 +2,20 @@
 
 이 파일은 에이전트(Claude Code, Antigravity, Codex 등)가 세션 시작 시 가장 먼저 읽는 컨텍스트 문서다.
 
-## 프로젝트 현황 (2026-07-31)
+## 프로젝트 현황 (2026-08-21)
 
-PinVi 구동에 필요한 통합 PostgreSQL/PostGIS, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
+PinVi 구동에 필요한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
 
-2026-07-27 기준 compatible-pair와 C7 production live 인수는 완료됐다. production compatible-pair는
-Map·PinVi exact clean `HEAD`의 Git archive build context와 OCI revision label을 검증하고,
-manifest v4에 Map API·UI·Dagster web·daemon 네 immutable image ID와 공통 revision,
-PinVi API image ID와 revision을 하나의 fail-closed runtime-set 계약으로 기록한다. 일반
-production mutation은 계속 차단하고 전역 lock을 소유하는 `pinvi-pair` workflow만 이 다섯
-runtime을 같은 generation으로 변경한다.
+현재 코드에는 FastAPI API, Next.js 대시보드, `ktdctl` CLI, 설정 파일 기반 target registry,
+전용 PostgreSQL 4개와 RustFS를 포함한 Compose 관리가 구현되어 있다. PostgreSQL은 Geo
+`12500`, Concierge `12600`, Map `12700`, PinVi `12800`의 loopback 전용 instance를 사용하며
+통합 `5432` instance는 없다.
+
+C6c production은 일반 runtime mutation을 차단하고, host-wide lock을 소유하는 pinned
+workflow만 Map·PinVi 일곱 runtime을 같은 generation으로 다룬다. 비운영 환경의 재구축은
+`pinvi-pair rebuild-pinned --confirm`으로 제한되며, `pinvi-pair capture`는 읽기 전용 관측기다.
+독립적인 `ktdctl db-backup`과 `GET /api/v1/backups`는 전용 PostgreSQL backup primitive다.
 
 Manager는 Map API의 destructive/features route를 production에서 literal `true`로 명시 승인하고,
 read/cancel principal은 Map API와 PinVi API에만 격리한다. Map UI는 `/ops/datasets` 기준의
@@ -44,7 +47,7 @@ canonical scale/replica/container name은 exact singleton이어야 한다.
 ## 디렉토리 구조
 
 ```
-f:\dev\kor-travel-docker-manager\
+/mnt/f/dev/kor-travel-docker-manager/
 ├── backend/            # FastAPI 백엔드 (Python 3.11+, Poetry)
 │   ├── src/            # 백엔드 소스코드
 │   └── tests/          # 백엔드 단위/통합 테스트
@@ -53,7 +56,7 @@ f:\dev\kor-travel-docker-manager\
 │   ├── src/app/        # App Router 및 페이지
 │   └── src/components/ # UI 컴포넌트
 ├── docs/               # 아키텍처 및 의사결정 문서
-├── docker-compose.yml  # PostgreSQL/RustFS/kor-travel-geo 로컬 구동 compose 파일
+├── docker-compose.yml  # 전용 PostgreSQL/RustFS 및 앱 서비스 로컬 구동 Compose 파일
 ├── AGENTS.md           # 에이전트 협업 정책 및 한글 언어 규정
 ├── SKILL.md            # 에이전트 매뉴얼 및 명령어 세트
 └── CLAUDE.md           # 본 파일 (세션 상태 관리)

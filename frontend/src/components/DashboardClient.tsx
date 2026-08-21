@@ -349,10 +349,10 @@ export default function DashboardClient() {
     refetchInterval: false,
   });
 
-  // `containers`는 target이 "직접 소유한" 목록이 아니다 — depends_on까지 펼쳐져 있어
-  // 통합 PostgreSQL 하나가 db·geo·conc·map·pinvi·all 여섯 target에 모두 들어 있다.
-  // 따라서 첫 매치를 쓰면 `dependency_order`가 좁은 것부터 나열돼 있다는 우연에 기대게 된다.
-  // (`all` target은 18개를 담는다 — 순서가 바뀌면 한 번의 클릭이 전체 스택 재생성이 된다.)
+  // `containers`는 target이 "직접 소유한" 목록이 아니다 — depends_on까지 펼쳐진
+  // 전이 폐포이므로 여러 target에서 공유 인프라가 반복된다. 따라서 첫 매치를 쓰면
+  // `dependency_order`가 좁은 것부터 나열된다는 우연에 기대게 된다.
+  // (`all` target은 현재 21개 서비스를 담는다 — 순서가 바뀌면 전체 스택 범위가 달라진다.)
   // 순서와 무관하게 **가장 좁은** target을 고른다.
   const detailTarget = useMemo(() => {
     if (!detailContainer) return null;

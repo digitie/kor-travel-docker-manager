@@ -6,13 +6,12 @@
 
 ## 1. 요구 사항
 
-- **OS**: Windows 10/11 (Docker Desktop 설치 필수)
+- **OS**: Linux 또는 WSL을 포함한 Linux shell (Windows에서는 WSL을 사용)
 - **Runtime**:
   - Python 3.11 이상
   - Node.js 20 LTS (npm)
   - Poetry (Python 의존성 및 패키지 관리용)
-- **Docker**:
-  - Docker Desktop 구동 중이어야 하며, 백엔드가 로컬 Docker Named Pipe에 접근할 수 있어야 함.
+- **Docker**: Linux Docker daemon과 현재 사용자가 Docker socket에 접근할 수 있어야 함. Windows 호스트에서 WSL을 사용할 때는 Docker Desktop의 WSL integration을 선택적으로 사용할 수 있음.
 
 ### 1.1 명령 실행 위치 강제
 
@@ -50,36 +49,37 @@ poetry run ktdctl status srv
 ```
 
 ### 2.2 환경 변수 설정
-`backend/.env` 파일을 만들고 필요한 값을 정의한다 (기본값이 설정되어 있으므로 개발 단계에서는 선택 사항).
+저장소 루트 `.env` 파일을 만들고 필요한 값을 정의한다. Compose와 백엔드는 루트 `.env`를 읽으며, 다른 경로를 사용하려면 `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE`을 지정한다.
 
 ```env
-# Docker Named Pipe 경로 (Windows 기본값)
-DOCKER_HOST=npipe:////./pipe/docker_engine
-# Linux/WSL 사용 시:
-# DOCKER_HOST=unix:///var/run/docker.sock
+# Linux/WSL에서 Docker socket을 명시할 때만 설정
+DOCKER_HOST=unix:///var/run/docker.sock
 
 # Kor Travel Geo 전용 PostgreSQL / PostGIS 접속 정보 (ADR-37)
-# ⚠️ 5432로 두지 마라 — compose의 geo DSN 기본값이 `127.0.0.1:12500`이라
-#    포트만 바꾸면 geo API가 DB에 못 붙는다. 나머지 셋은 12600/12700/12800이다.
+# ⚠️ 5432로 두지 마라 — compose의 Geo PostgreSQL 포트 기본값이 `12500`이고
+#    Geo API/Dagster DSN은 명시 설정이 필요하다. 나머지 셋은 12600/12700/12800이다.
 KOR_TRAVEL_GEO_DB_PORT=12500
 KOR_TRAVEL_GEO_POSTGRES_USER=addr
-KOR_TRAVEL_GEO_POSTGRES_PASSWORD=addr
+KOR_TRAVEL_GEO_POSTGRES_PASSWORD=change-me-geo-postgres-password
 KOR_TRAVEL_GEO_POSTGRES_DB=kor_travel_geo
 KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=1
 ```
 
 ### 2.2.1 반드시 있어야 하는 값 (없으면 compose 전체가 죽는다)
 
-아래 셋은 compose의 **secret 정의**가 참조하므로 `.env`에 없으면 기본값으로 떨어지지
+아래 네 값은 compose의 **secret 정의**가 참조하므로 `.env`에 없으면 기본값으로 떨어지지
 않고 **모든 `docker compose` 명령이 즉시 실패한다.** manager backend의
 `docker compose ps` 상태 조회도 같이 죽어서, 증상이 "대시보드의 모든 target이 안 보임"
 으로 나타난다 — DB 문제처럼 보이지 않는다.
 
 | 변수 | 쓰는 곳 |
 |---|---|
+| `KOR_TRAVEL_GEO_POSTGRES_PASSWORD` | `kor-travel-geo-postgres` superuser (secret file) |
 | `KOR_TRAVEL_MAP_POSTGRES_PASSWORD` | `kor-travel-map-postgres` superuser (secret file) |
 | `KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD` | `kor-travel-concierge-postgres` superuser + db-init |
 | `PINVI_POSTGRES_PASSWORD` | `pinvi-postgres` superuser + db-init |
+| `KOR_TRAVEL_GEO_DOCKER_PG_DSN` | Geo API와 Geo Dagster의 `kor_travel_geo` 접속 DSN (명시적 설정 필수) |
+| `KOR_TRAVEL_GEO_DAGSTER_PG_URL` | Geo Dagster metadata DB 접속 URL (명시적 설정 필수) |
 
 두 번째 차단도 있다. sanctioned 배포(`c6c_deployment.py`)는 secret의 `environment`
 이름이 해결되지 않으면 mutation **전에**
@@ -88,7 +88,7 @@ KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=1
 
 ```bash
 # 배포 전 확인. 값은 찍지 않는다.
-for v in KOR_TRAVEL_MAP_POSTGRES_PASSWORD KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD PINVI_POSTGRES_PASSWORD; do
+for v in KOR_TRAVEL_GEO_POSTGRES_PASSWORD KOR_TRAVEL_MAP_POSTGRES_PASSWORD KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD PINVI_POSTGRES_PASSWORD KOR_TRAVEL_GEO_DOCKER_PG_DSN KOR_TRAVEL_GEO_DAGSTER_PG_URL; do
   printf '%-46s ' "$v"; grep -q "^$v=" .env && echo SET || echo 'MISSING  <- compose가 죽는다'
 done
 ```
@@ -128,11 +128,13 @@ poetry run ktdctl srv --build
 > [!NOTE]
 > dev 기본 Docker 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)다. 포트 NAT가 없으므로 각 컨테이너가 호스트 정규 포트에 직접 바인딩하고(컨테이너 내부 포트 = 호스트 포트), 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다. host networking을 지원하지 않는 Docker 엔진에서는 `KTDM_DOCKER_NETWORK_MODE=bridge`로 바꾼 뒤 서비스 간 hostname을 컨테이너명으로 복원해야 한다.
 
-공식 target 별칭은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이다. `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 기본값은 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이다. 예를 들어 `ktdctl map --build`는 geo·concierge·map DB, RustFS, 관측 스택, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map` API/Dagster/Web UI 실행까지 수행한다.
+공식 target은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `all`이다. `srv`와 `main`은 `pinvi`, `default`는 `all`을 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 실제 실행 범위는 `depends_on` DAG의 전이 폐포다. 예를 들어 `ktdctl conc --build`는 `geo` 없이 Concierge 전용 PostgreSQL과 API/MCP/Scheduler/Web UI를 실행하고, `ktdctl map --build`는 Geo·Concierge·Map의 PostgreSQL과 앱 runtime을 실행한다.
 
 추가 target 이름으로 `postgresql`, `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `kor-travel-map`, `python-krtour-map`, `kor-travel-concierge`, `srv`, `pinvi`, `main`도 사용할 수 있다.
 
-`geo` 이상 target은 `/data/juso` 마운트와 `kor_travel_geo` 핵심 테이블 적재 상태를 확인한다. 의도적으로 빈 DB를 다루는 경우에만 `.env`에서 `KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
+`geo` target과 Geo를 의존성으로 포함하는 `map`, `pinvi`, `all` target은 `/data/juso` 마운트와
+`kor_travel_geo` 핵심 테이블 적재 상태를 확인한다. 의도적으로 빈 DB를 다루는 경우에만 `.env`에서
+`KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다. `conc` target은 Geo에 의존하지 않는다.
 
 ---
 
@@ -164,12 +166,12 @@ npm run dev
 | 대상 | 주입 위치(gitignore) | 변수 | 비고 |
 |---|---|---|---|
 | 대시보드 → 백엔드 API 주소 | `frontend/.env.production` | `NEXT_PUBLIC_BACKEND_URL` | `https://<api-domain>`. `wss://`는 `http→ws` 치환으로 자동 파생 |
-| 백엔드 CORS 허용 Origin | 루트 `.env` | `KTDM_CORS_ALLOW_ORIGINS` | 대시보드 공개 Origin. 콤마로 여러 개. 미설정/`*`이면 전체 허용 |
+| 백엔드 CORS 허용 Origin | 루트 `.env` | `KTDM_CORS_ALLOW_ORIGINS` | 대시보드 공개 Origin. 콤마로 여러 개. 미설정/`*`이면 localhost 두 Origin만 허용 |
 
 - 계약(placeholder)은 `frontend/.env.example`, 루트 `.env.example`에 문서화되어 있다. 실제 도메인은 채워 넣지 않는다.
 - `NEXT_PUBLIC_*`은 **빌드 타임에 번들로 인라인**되므로 운영 호스트에서 `npm run build`를 다시 수행해야 주소가 반영된다.
 - **Next.js 환경파일 우선순위 주의**: `.env.local`이 `.env.production`을 덮어쓴다. 개발 기본값은 `frontend/.env.development`(localhost), 운영 값은 `frontend/.env.production`에 두고, `.env.local`에는 `NEXT_PUBLIC_BACKEND_URL`을 두지 않는다.
-- 백엔드는 기동 시 루트 `.env`(또는 `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 경로)를 로드해 `KTDM_CORS_ALLOW_ORIGINS`를 적용한다. 개발에서는 미설정이면 전체 허용을 유지한다.
+- 백엔드는 기동 시 루트 `.env`(또는 `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 경로)를 로드해 `KTDM_CORS_ALLOW_ORIGINS`를 적용한다. 개발에서는 미설정이면 `http://localhost:12905`와 `http://127.0.0.1:12905`만 허용한다.
 
 ---
 

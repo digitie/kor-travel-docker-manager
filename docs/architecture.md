@@ -12,12 +12,12 @@
 graph TD
     subgraph Frontend [Next.js Dashboard Web]
         UI[Dashboard UI / Status & Controls]
-        TQ[TanStack Query / API Polling]
+        TQ[TanStack Query / WebSocket + HTTP fallback]
         UI --> TQ
     end
 
     subgraph Backend [FastAPI Service]
-        API[FastAPI Endpoints /api/containers, /api/targets]
+        API[FastAPI Endpoints /api/v1/* + WebSocket]
         REG[Target Registry / config/docker-targets.yml]
         DS[DockerService Wrapper]
         CS[ComposeService Runner]
@@ -27,7 +27,7 @@ graph TD
     end
 
     subgraph CLI [Python CLI]
-        CLI_CMD[ktdctl db/storage/gra/cadv/prom/geo/conc/map/pinvi/srv]
+        CLI_CMD[ktdctl db/storage/gra/cadv/prom/geo/conc/map/pinvi/all/srv]
         CLI_CMD --> REG
         CLI_CMD --> DS
         CLI_CMD --> CS
@@ -35,7 +35,7 @@ graph TD
 
     subgraph Infrastructure [Docker Daemon / Host]
         D_Sock[docker.sock / Named Pipe]
-        C_PG[kor-travel-geo-postgres:12500]
+        C_PG[전용 PostgreSQL 4개: 12500/12600/12700/12800]
         C_RFS[RustFS Container]
         C_GEO_API[kor-travel-geo-api-latest/kor-travel-geo API]
         C_GEO_UI[kor-travel-geo-ui-latest/kor-travel-geo Web UI]
@@ -83,8 +83,8 @@ graph TD
 - **지원 옵션**: `ensure`에서 `--build`, `--force-recreate`를 전달할 수 있다.
 - **공유 target**: API와 Python CLI가 같은 registry(`db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `all`)를 사용한다.
 - **설정 파일**: target 정의, alias, 의존 순서, 초기화 단계는 `config/docker-targets.yml`에서 읽는다.
-- **의존 순서**: 기본 순서는 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이며, 각 target은 자기 앞 단계까지 누적 실행한다.
-- **초기화 단계**: `db`는 database/role/schema 복구, `storage`는 RustFS bucket 복구, `geo`는 `kor-travel-geo` API/Web UI 실행과 원천 DB 적재 검증을 수행한다.
+- **의존 순서**: 기본 결정적 순서는 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이며, 실제 실행 범위는 `depends_on` DAG의 전이 폐포를 위상정렬한다. `geo`와 `conc`는 서로 독립이고 `map`이 두 target 모두에 의존한다.
+- **초기화 단계**: `db`는 Geo 전용 database/extension/schema grant를 복구하고, `storage`는 RustFS bucket을 복구하며, `geo`는 원천 DB 적재 상태를 검증한다. Concierge·PinVi database 생성은 각 Compose one-shot이, Map·PinVi schema bootstrap은 pinned rebuild workflow가 소유한다.
 - **배포 readiness**: compatible-pair transaction에 고정된 canonical resolved Compose를 정본으로
   service별 readiness를 파생한다. 활성 healthcheck가 있으면 `running + healthy`, 없거나 명시적으로
   비활성화됐으면 `running`을 요구한다. `ps --all`의 service별 record는 정확히 하나여야 하고
@@ -92,6 +92,7 @@ graph TD
   생존만 보는 가짜 probe는 두지 않는다.
 
 ### 2.3 API 엔드포인트 설계
+- `POST /api/v1/auth/login`, `POST /api/v1/auth/logout`, `GET /api/v1/auth/me`: 관리자 세션 로그인, 로그아웃, 현재 사용자 확인.
 - `GET /api/v1/targets`: 앱 관점 target 목록 반환.
 - `POST /api/v1/targets/{target}/ensure`: target에 필요한 Docker 서비스를 실행. 개발환경에서는 `build=true`로 `docker compose up -d --build`를 수행.
 - `GET /api/v1/containers`: 관리 대상 컨테이너의 상태, 포트, compose 설정, CPU/메모리/I/O 최신값 반환.
@@ -99,6 +100,15 @@ graph TD
 - `POST /api/v1/containers/{container_id}/action`: 컨테이너 제어 명령 (`start`, `stop`, `restart`) 실행.
 - `POST /api/v1/containers/{container_id}/config`: compose 파라미터 저장 후 컨테이너 재생성.
 - `GET /api/v1/containers/{container_id}/logs`: 최근 100라인의 stdout/stderr 컨테이너 로그 반환.
+- `POST /api/v1/containers/{container_id}/reset`: 허용된 개발 lifecycle에서 컨테이너 reset 실행.
+- `GET /api/v1/containers/{container_id}/metrics`: 최근 CPU, 메모리, I/O 메트릭 이력 반환.
+- `GET /api/v1/backups`: 전용 PostgreSQL backup 산출물의 읽기 전용 목록 반환.
+- `GET /api/v1/admin/login-audit-events`, `GET/POST/DELETE /api/v1/admin/public-api-keys...`: 관리자 감사 및 public API key 관리.
+- `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}`: 상태·로그 WebSocket 스트림.
+
+`/api/v1` 아래의 관리자·컨테이너·백업·WebSocket 경로는 관리자 세션과 허용된 프론트엔드
+Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Origin이지만 세션이 없으면
+`401`이 된다.
 
 ---
 
@@ -107,12 +117,12 @@ graph TD
 프론트엔드는 Next.js 14+ App Router를 기반으로 구성하며, 실시간 대시보드 성격의 단일 페이지 애플리케이션(SPA) 형태로 운영한다.
 
 ### 3.1 상태 관리 및 데이터 동기화
-- **TanStack Query (React Query)**: 백엔드 API와의 통신 및 캐싱을 전담한다. 대시보드 상태를 유지하기 위해 5초 단위의 폴링(`refetchInterval: 5000`)을 적용하여 인프라 상태 변화를 실시간으로 대시보드에 반영한다.
+- **TanStack Query (React Query)**: 백엔드 API와의 통신 및 캐싱을 담당한다. 상태·로그는 WebSocket을 우선 사용하고 HTTP 폴링을 fallback으로 사용하며, 컨테이너 fallback 주기는 일반적으로 5초이고 shedding 중에는 30초다.
 - **Zod & React Hook Form**: 컨테이너의 설정(예: 포트 번호, 환경변수, 데이터 볼륨 경로) 변경 양식을 안전하게 검증하고 전송한다.
 
 ### 3.2 UI/UX 디자인 시스템
 - **관리 대시보드 우선**: 마케팅 hero나 장식 이미지를 배제하고, 상태 표·액션 버튼·상세 패널을 첫 화면의 중심에 둔다.
-- **시각 양식**: Pure Black canvas, 1px hairline border, 직각 panel, 절제된 M 삼색선 divider를 적용한다.
+- **시각 양식**: `DESIGN.md`와 `frontend/tokens.css`의 Hallmark Cobalt 토큰, 밝은 Workbench 표면, 얕은 그림자, 6px/10px radius를 적용한다.
 - **상태 인디케이터**: 컨테이너 상태는 색상 점, 텍스트, 아이콘을 함께 사용해 빠르게 스캔할 수 있게 한다.
 - **상세 패널**: inspect, mounts, networks, redacted env, 최근 로그, 최근 메트릭을 한 화면에서 확인할 수 있게 확장한다.
 
@@ -122,10 +132,10 @@ graph TD
 
 `kor-travel-docker-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다.
 
-1. **Kor Travel Geo 전용 PostgreSQL / PostGIS** (ADR-37 — 프로젝트마다 전용 instance):
+1. **프로젝트별 전용 PostgreSQL / PostGIS 4개** (ADR-37):
    - 컨테이너: `kor-travel-geo-postgres`
    - 이미지: `postgis/postgis:16-3.5`
-   - 목적: `kor_travel_geo`, `pinvi`, `kor_travel_concierge`, `krtour_map` database를 하나의 공용 PostgreSQL/PostGIS 컨테이너에서 구동.
+   - 목적: Geo instance는 `kor_travel_geo`, `kor_travel_geo_dagster`만 보유한다. Concierge, Map, PinVi는 각각 별도 instance와 database를 사용한다.
    - 포트: `12500`(loopback 전용). host network라 `-p`가 곧 호스트 포트다.
    - DSN 형태: `postgresql+psycopg://<user>:<password>@127.0.0.1:12500/kor_travel_geo`. superuser
      password는 `POSTGRES_PASSWORD_FILE` secret으로 주고, `KOR_TRAVEL_GEO_DOCKER_PG_DSN`/
@@ -138,8 +148,9 @@ graph TD
    - 이미지: `rustfs/rustfs:latest`
    - 목적: 미디어 자원과 `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi 원천·업로드 데이터 보관을 위한 공용 S3 호환 오브젝트 스토리지.
    - host 포트: `12101` (S3 API), `12105` (어드민 콘솔).
-   - 컨테이너 내부 포트: `9000` (S3 API), `9001` (어드민 콘솔).
-   - 기본 credential: `RUSTFS_ACCESS_KEY=rustfsadmin`, `RUSTFS_SECRET_KEY=rustfsadmin`.
+   - host 및 host-network 프로세스 listen 포트: `12101` (S3 API), `12105` (어드민 콘솔).
+   - 개발용 Compose fallback credential: `RUSTFS_ACCESS_KEY=rustfsadmin`, `RUSTFS_SECRET_KEY=rustfsadmin`.
+     운영에서는 반드시 루트 `.env`의 별도 값으로 덮어쓴다.
    - 기본 bucket: `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads`.
 3. **Grafana**:
    - 컨테이너: `kor-travel-grafana`
@@ -151,9 +162,10 @@ graph TD
    - 컨테이너: `kor-travel-cadvisor`
    - compose service: `cadvisor`
    - 목적: Docker 컨테이너 CPU, memory, filesystem, network 메트릭을 Prometheus 형식으로 노출.
-   - `--docker_only=true`와 read-only Docker socket·`/sys`만 사용하며 host root·Docker data
-     directory는 mount하지 않음.
-   - socket은 root:docker `0660`, `/sys`는 root-owned mountpoint 계약과 inode/device/mode 재검증을 통과해야 함.
+   - `--docker_only=true`와 read-only Docker socket·`/sys`를 사용하며 host root·Docker data
+     directory는 mount하지 않는다. 현재 Compose는 cAdvisor 수집기 호환성을 위해 `privileged: true`와
+     `/dev/kmsg` device도 함께 선언한다.
+   - Docker socket은 root:docker `0660`, `/sys`는 root-owned mountpoint 계약과 inode/device/mode 재검증을 통과해야 한다.
    - host 포트: `12301`.
    - host network에서 cAdvisor 프로세스는 `CADVISOR_PORT`(기본 `12301`)에 직접
      listen하며, Compose의 명시적 healthcheck도 같은 포트의 `/healthz`를 조회함.
@@ -170,7 +182,7 @@ graph TD
    - 목적: 지오코딩/리버스 지오코딩 REST API 제공.
    - host 포트: `12501`.
    - 컨테이너 내부 포트: `12501`.
-   - 내부 의존성: `kor-travel-geo-postgres:12500`, `rustfs:9000`.
+   - 내부 의존성: `127.0.0.1:12500`(Geo 전용 PostgreSQL), `127.0.0.1:12101`(RustFS).
    - 기본 source data mount: `KOR_TRAVEL_GEO_APP_DATA_DIR=/mnt/f/dev/kor-travel-geo/data` -> `/data:ro`.
 7. **kor-travel-geo Web UI**:
    - 컨테이너: `kor-travel-geo-ui-latest`
@@ -178,20 +190,20 @@ graph TD
    - 목적: `kor-travel-geo` admin Web UI 제공.
    - host 포트: `12505`.
    - 컨테이너 내부 포트: `12505`.
-   - 내부 API URL: `http://kor-travel-geo-api:12501`.
+   - 내부 API URL: `http://127.0.0.1:12501`.
 8. **kor-travel-concierge API / MCP / Scheduler / Web UI**:
    - 컨테이너: `kor-travel-concierge-api-latest`, `kor-travel-concierge-mcp-latest`, `kor-travel-concierge-scheduler-latest`, `kor-travel-concierge-ui-latest`
    - compose service: `kor-travel-concierge-api`, `kor-travel-concierge-mcp`, `kor-travel-concierge-scheduler`, `kor-travel-concierge-ui`
    - 목적: 여행 concierge provider, MCP HTTP, scheduler, Web UI 제공.
    - host 포트: API `12601`, MCP `12602`, Web UI `12605`.
-   - 내부 의존성: `kor-travel-geo-postgres:12500`, `rustfs:9000`, `kor-travel-geo-api:12501`.
+   - 내부 의존성: `127.0.0.1:12600`(Concierge 전용 PostgreSQL), `127.0.0.1:12101`(RustFS). Geo에는 의존하지 않는다.
 9. **kor-travel-map 전용 PostgreSQL / API / Dagster / Web UI**:
-   - DB 컨테이너: `kor-travel-map-postgres` (`127.0.0.1:12703`, Map application·Dagster metadata 전용).
+   - DB 컨테이너: `kor-travel-map-postgres` (`127.0.0.1:12700`, Map application·Dagster metadata 전용).
    - 런타임 컨테이너: `kor-travel-map-api-latest`, `kor-travel-map-dagster-latest`, `kor-travel-map-dagster-daemon-latest`, `kor-travel-map-ui-latest`
    - compose service: `kor-travel-map-postgres`, `kor-travel-map-api`, `kor-travel-map-dagster`, `kor-travel-map-dagster-daemon`, `kor-travel-map-ui`
    - 목적: 지도 feature admin API, Dagster workflow, admin Web UI 제공.
    - host 포트: API `12701`, Dagster `12702`, Web UI `12705`.
-   - 내부 의존성: 전용 PostgreSQL `127.0.0.1:12703`, RustFS `127.0.0.1:12101`, `kor-travel-concierge-api:12601`.
+   - 내부 의존성: 전용 PostgreSQL `127.0.0.1:12700`, RustFS `127.0.0.1:12101`, `kor-travel-geo-api:12501`, `kor-travel-concierge-api:12601`.
    - ADR-090 principal bootstrap은 dedicated DB만 대상으로 하는 F1D one-shot 단계다. normal Map runtime에는 bootstrap superuser DSN·role password를 주입하지 않는다.
 10. **PinVi API / Dagster / Web UI**:
    - 컨테이너: `pinvi-api-latest`, `pinvi-dagster-latest`, `pinvi-web-latest`
@@ -200,7 +212,7 @@ graph TD
    - host 포트: API `12801`, Dagster `12802`, Web UI `12805`.
    - Dagster image 계약: `DAGSTER_HOME=/opt/pinvi/.dagster`, code location
      `pinvi.etl.definitions`를 사용한다.
-   - 내부 의존성: host network의 `127.0.0.1:12600`(concierge 전용 DB), `127.0.0.1:12101`,
+   - 내부 의존성: host network의 `127.0.0.1:12800`(PinVi 전용 PostgreSQL), `127.0.0.1:12101`,
      `127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}`.
    - worker 수: PinVi 실시간 WebSocket broadcast broker는 shared broker 도입 전까지 process-local이므로 `PINVI_API_WORKERS=1`을 기본값으로 둔다. worker를 2 이상으로 올리려면 PinVi 쪽 broadcast broker가 프로세스 간 전달을 지원해야 한다.
    - public URL/CORS: dev 기본값은 `http://127.0.0.1:12801`/로컬 Web origin이며, prod에서는 gitignore된 `.env`의 `PINVI_PUBLIC_API_URL`과 `PINVI_CORS_ALLOWED_ORIGINS`로 공개 API 주소와 Web origin을 주입한다.
@@ -223,7 +235,7 @@ graph TD
      rollback slot은 수용하지 않는다. 완전한 수렴이 불가능하면 일곱 runtime을 모두 중지해 혼합 generation
      노출을 막는다.
      비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 stale runtime/DB/state를 새 release pin으로
-     수렴할 유일한 경로는 root execution의 `sudo -n ktdctl pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
+     수렴할 유일한 경로는 root execution의 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
      candidate resolved Compose security를 검증하고, 일곱 candidate image ID·세 expected schema head를
      durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. Map Dagster head는
      source revision 추정값이 아니라 candidate Dagster image가 직접 출력한 storage migration head다. candidate

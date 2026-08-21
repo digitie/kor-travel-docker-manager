@@ -21,7 +21,8 @@ from kor_travel_docker_manager.services.auth_service import hash_password_for_en
 
 FRONTEND_ORIGIN = "http://localhost:12905"
 os.environ["KTDM_ADMIN_USERNAME"] = "admin"
-os.environ["KTDM_ADMIN_PASSWORD_HASH"] = hash_password_for_env("ad.min")
+TEST_ADMIN_PASSWORD = "manager-test-password-only"
+os.environ["KTDM_ADMIN_PASSWORD_HASH"] = hash_password_for_env(TEST_ADMIN_PASSWORD)
 os.environ["KTDM_SESSION_SECRET"] = "test-session-secret-minimum-32-bytes-value"
 os.environ["KTDM_FRONTEND_ORIGINS"] = FRONTEND_ORIGIN
 
@@ -40,7 +41,7 @@ def login_client():
     client.cookies.clear()
     login_response = client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "ad.min", "next": "/"},
+        json={"username": "admin", "password": TEST_ADMIN_PASSWORD, "next": "/"},
     )
     assert login_response.status_code == 200
 

@@ -12,42 +12,52 @@
 
 ## 2. 소스·설정 전달
 
-운영 호스트로 소스와 gitignore된 설정(`.env`, `frontend/.env.production`)을 전달한다. 둘 중 하나:
+운영 호스트에는 추적된 런타임 소스만 전달한다. `.env`, `frontend/.env.production`,
+`frontend/.env.local`, `docker-compose.override.yml`, `*.local.md`와 같은 운영·민감 파일은
+rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 별도로 안전하게 준비한다. 둘 중 하나:
 
-- **rsync**(설정까지 함께 복사, GitHub 인증 불필요):
+- **rsync**(소스 디렉터리만 복사, GitHub 인증 불필요):
   ```bash
-  rsync -a \
-    --exclude=".git/" --exclude="node_modules/" --exclude="*_venv/" --exclude=".next/" \
-    --exclude=".codegraph/" --exclude="backend/logs/" --exclude="*.db" \
-    ./ <user>@<prod-host>:~/kor-travel-docker-manager/
+  rsync -az backend/src/ \
+    <user>@<prod-host>:~/kor-travel-docker-manager/backend/src/
+  rsync -az frontend/src/ \
+    <user>@<prod-host>:~/kor-travel-docker-manager/frontend/src/
   ```
-- **git clone** 후 `.env` / `frontend/.env.production` 을 별도로 안전하게 전달(scp 등).
+- **git clone** 후 운영 호스트의 추적 파일을 갱신하고 `.env` / `frontend/.env.production`을
+  별도로 안전하게 준비한다. `--delete`와 저장소 루트 전체 동기화는 사용하지 않는다. 신규
+  설치는 아래 trusted installer를 우선하고, 이 rsync 절차는 기존 rsync 배포본을 갱신할 때만 쓴다.
 
-## 3. 백엔드 (FastAPI, uvicorn :12901)
+## 3. 신뢰된 운영 설치와 백엔드 (FastAPI, uvicorn :12901)
 
-운영 호스트에 `python3-venv`가 없고 sudo가 제한될 수 있으므로, `ensurepip` 없이 venv를 만든 뒤 pip을
-부트스트랩한다.
+운영 설치는 외부 `get-pip.py`와 비고정 `pip install -e .`를 사용하지 않는다. 먼저 운영 호스트
+밖에서 원하는 **머지된 commit의 clean git checkout**을 준비하고, 운영 호스트에는 root 소유·권한
+제한된 오프라인 wheelhouse를 준비한다. 그 뒤 저장소의 trusted installer가 archive·wheelhouse
+무결성·`.env` 권한을 확인하고 `/opt/kor-travel-docker-manager`에 설치한다.
 
 ```bash
-cd ~/kor-travel-docker-manager/backend
-python3 -m venv --without-pip ktd_venv          # ensurepip 없이 venv 생성(sudo 불필요)
-curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-ktd_venv/bin/python /tmp/get-pip.py               # venv에 pip 부트스트랩
-ktd_venv/bin/pip install -e .                     # 런타임 의존성 설치
-# 기동 (백그라운드 상주)
-nohup setsid env PYTHONPATH=src ktd_venv/bin/python \
+# SOURCE_ROOT는 non-root 소유의 clean checkout이며 정확한 머지 commit을 가리켜야 한다.
+git -C <SOURCE_ROOT> status --porcelain=v1       # 빈 출력이어야 함
+sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release \
+  --env-file /opt/kor-travel-docker-manager/.env \
+  --wheelhouse /var/lib/kor-travel-docker-manager/wheelhouse \
+  <SOURCE_ROOT>
+```
+
+installer는 `--no-index` wheelhouse에서 `backend/.venv`를 만들고 `ktdctl`을 설치한다. `.env`는
+installer가 새로 전달하지 않으며 운영 호스트에서 별도로 준비한 canonical 파일을 사용한다. 백엔드는
+그 루트 `.env`를 로드해 `KTDM_CORS_ALLOW_ORIGINS`와 `KTDM_PROD_URL_*`를 적용한다.
+
+```bash
+cd /opt/kor-travel-docker-manager/backend
+nohup setsid env PYTHONPATH=src .venv/bin/python \
   -m uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 12901 \
   > /tmp/ktdm_backend.log 2>&1 &
 ```
 
-`python3-venv`를 설치할 수 있는 환경이면 `sudo apt install python3.x-venv` 후 일반 venv를 써도 된다.
-백엔드는 루트 `.env`를 로드해 `KTDM_CORS_ALLOW_ORIGINS`(운영 대시보드 Origin)와
-`KTDM_PROD_URL_*`(서비스별 공개 URL)을 적용한다.
-
 ## 4. 프론트엔드 (Next.js, :12905)
 
 ```bash
-cd ~/kor-travel-docker-manager/frontend
+cd /opt/kor-travel-docker-manager/frontend
 npm ci
 npm run build      # .env.production 의 NEXT_PUBLIC_BACKEND_URL 이 번들에 인라인됨
 nohup setsid npm run start > /tmp/ktdm_frontend.log 2>&1 &   # next start -p 12905
@@ -72,12 +82,15 @@ nohup setsid npm run start > /tmp/ktdm_frontend.log 2>&1 &   # next start -p 129
 
 ```bash
 curl -s http://127.0.0.1:12901/health                  # {"status":"healthy",...}
-curl -s http://127.0.0.1:12901/api/v1/containers | head # 관리 컨테이너 상태 목록(JSON)
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H 'Origin: https://manager.<domain>' \
+  http://127.0.0.1:12901/api/v1/containers # 허용 Origin이지만 인증 없으면 401
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12905/   # 200
 ```
 
-공개 라우팅 완료 후에는 `https://manager.<domain>` 에서 대시보드가 로드되고 컨테이너 상태가 표시되는지
-확인한다.
+공개 라우팅 완료 후에는 브라우저에서 `https://manager.<domain>`에 접속해 관리자 로그인 → 대시보드와
+컨테이너 상태 표시 → 로그아웃 → 로그인 화면 전환을 확인한다. 로그아웃 뒤 WebSocket 재연결 루프가
+없는지도 확인한다. API curl은 인증 없는 경계 확인용이며, 인증된 컨테이너 목록 검증을 대신하지 않는다.
 
 ## 7. concierge UI는 prod에서 프로덕션 빌드로 구동 (중요)
 
@@ -121,7 +134,8 @@ environment에서 함께 명시한 비운영 환경만 다음 command를 실행�
 mutation 전에 거부한다.
 
 ```bash
-sudo -n ktdctl pinvi-pair rebuild-pinned --confirm
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  pinvi-pair rebuild-pinned --confirm
 ```
 
 이 command는 추적된 exact Map·PinVi commit만 Git archive build source로 쓰며 `.env` checkout HEAD,
