@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-22 — F1D v5 Map·PinVi release pinset 재고정
+
+Map #1056 병합 뒤 현재 Map main `e420c89eb0f10776f7fb96e59ef3b409974d0d54`와
+PinVi #465 병합 `27fe2043b7b8e747fbb42d91e461ea462f930bb7`을 v5 release authority에
+반영했다. canonical pinset digest는
+`de5206dcc198c76874dcf51ef7152cd6d8bff0cbf5766463709e9d69a2d9b7a5`이며, source
+revision·canonical JSON·digest를 단위 계약으로 고정했다. 이 변경은 release metadata만
+갱신하고 파괴적 rebuild나 production runtime mutation은 실행하지 않는다.
+
+검증은 backend 전체 `577 passed, 3 skipped`, 변경 파일 Ruff, 변경 source strict mypy,
+보안 패턴·whitespace 감사를 통과했다. 저장소 기존 Ruff import 4건과 전체 strict mypy
+baseline 진단은 이번 변경과 무관해 유지한다.
+
 ## 2026-08-22 — C6c Map membership triple·fixture 순서 검증 rebase
 
 열린 PR #170을 최신 `origin/main`에 재배치했다. C6c smoke의 Map dataset identity를
