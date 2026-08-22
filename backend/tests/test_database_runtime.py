@@ -20,6 +20,7 @@ def _runtime(role: database_runtime.DatabaseRole) -> DatabaseRuntime:
     return DatabaseRuntime(
         role=role,
         container_name="postgres-rehearsal",
+        port=12800 if role == "pinvi" else 12700,
         database_name={
             "map_application": "map_app",
             "map_dagster": "map_dagster",
@@ -62,15 +63,16 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         (
             runtime.role,
             runtime.container_name,
+            runtime.port,
             runtime.database_name,
             runtime.owner_name,
             runtime.admin_name,
         )
         for runtime in runtimes
     ] == [
-        ("map_application", "map-postgres-production", "map_app", "map_owner", "map_cluster_admin"),
-        ("map_dagster", "map-postgres-production", "map_dagster", "map_owner", "map_cluster_admin"),
-        ("pinvi", "pinvi-postgres-production", "pin_app", "pin_owner", "pin_cluster_admin"),
+        ("map_application", "map-postgres-production", 12700, "map_app", "map_owner", "map_cluster_admin"),
+        ("map_dagster", "map-postgres-production", 12700, "map_dagster", "map_owner", "map_cluster_admin"),
+        ("pinvi", "pinvi-postgres-production", 12800, "pin_app", "pin_owner", "pin_cluster_admin"),
     ]
     assert {runtime.container_name for runtime in runtimes} == {
         "map-postgres-production",
@@ -160,6 +162,37 @@ def test_database_runtime_rejects_invalid_frozen_admin_role(
         )
 
 
+@pytest.mark.parametrize(
+    "port_value",
+    ["", "not-a-port", "0", "65536"],
+)
+def test_database_runtime_rejects_invalid_frozen_port(port_value: str) -> None:
+    with pytest.raises(DeploymentContractError, match="PostgreSQL port is invalid"):
+        database_runtimes_from_frozen_contract(
+            resolved={
+                "services": {
+                    "kor-travel-map-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
+                    "pinvi-postgres": {
+                        "container_name": "pinvi-postgres-production",
+                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                    },
+                }
+            },
+            environment={
+                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+                "PINVI_POSTGRES_DB": "pin_app",
+                "PINVI_POSTGRES_USER": "pin_owner",
+                "PINVI_DB_PORT": port_value,
+            },
+        )
+
+
 def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -199,6 +232,11 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
         "createdb",
     ]
     assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
+    assert all("--port" in arguments for arguments, _ in calls)
+    assert [
+        arguments[arguments.index("--port") + 1]
+        for arguments, _ in calls
+    ] == ["12700", "12700", "12700", "12700", "12800", "12800"]
     assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
 
 

@@ -57,6 +57,13 @@ _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DAGSTER_SERVICE = "pinvi-dagster"
 _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
 _PINVI_DOCKER_DATABASE_URL_ENV = "PINVI_DOCKER_DATABASE_URL"
+_PINVI_DB_INIT_COMMAND_SCRIPT = """PGPASSWORD=\"$(cat /run/secrets/pinvi-postgres-password)\"
+export PGPASSWORD
+if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$PINVI_POSTGRES_DB'\" | grep -q 1; then
+  echo \"database $PINVI_POSTGRES_DB already exists\"
+else
+  createdb \"$PINVI_POSTGRES_DB\"
+fi"""
 _MAP_RUNTIME_SERVICES = (
     _MAP_API_SERVICE,
     _MAP_UI_SERVICE,
@@ -736,6 +743,62 @@ def _validate_pinvi_db_init_identity(
     )
     if any(not isinstance(value, str) or not value for value in expected_values):
         raise ComposeCandidateContractError("PinVi database init identity is invalid")
+
+    postgres = services.get(_PINVI_POSTGRES_SERVICE)
+    if not isinstance(postgres, Mapping):
+        raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
+    postgres_environment = postgres.get("environment")
+    if not isinstance(postgres_environment, Mapping):
+        raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
+    if resolved:
+        expected_postgres_environment = {
+            "POSTGRES_USER": expected_user,
+            "POSTGRES_DB": expected_bootstrap_database,
+        }
+        if any(
+            postgres_environment.get(name) != value
+            for name, value in expected_postgres_environment.items()
+        ):
+            raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
+        expected_port_value = expected_port
+    else:
+        expected_postgres_environment = {
+            "POSTGRES_USER": "${PINVI_POSTGRES_USER:-pinvi}",
+            "POSTGRES_DB": "${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}",
+        }
+        if any(
+            postgres_environment.get(name) != value
+            for name, value in expected_postgres_environment.items()
+        ):
+            raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
+        expected_port_value = "${PINVI_DB_PORT:-12800}"
+
+    postgres_command = postgres.get("command")
+    if (
+        not isinstance(postgres_command, list)
+        or len(postgres_command) < 5
+        or postgres_command[:4] != [
+            "postgres",
+            "-c",
+            "listen_addresses=127.0.0.1",
+            "-p",
+        ]
+        or postgres_command[4] != expected_port_value
+        or postgres.get("entrypoint") not in (None, [])
+    ):
+        raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
+
+    init_command = service.get("command")
+    if (
+        not isinstance(init_command, list)
+        or len(init_command) != 3
+        or init_command[:2] != ["sh", "-ec"]
+        or not isinstance(init_command[2], str)
+        or init_command[2].strip().replace("$$", "$")
+        != _PINVI_DB_INIT_COMMAND_SCRIPT
+        or service.get("entrypoint") not in (None, [])
+    ):
+        raise ComposeCandidateContractError("PinVi database init command is invalid")
 
     if resolved:
         expected_resolved = {

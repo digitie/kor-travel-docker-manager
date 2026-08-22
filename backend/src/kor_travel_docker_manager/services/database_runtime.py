@@ -44,6 +44,11 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
         "pinvi-postgres",
     ),
 }
+_ROLE_PORT_CONFIG: dict[DatabaseRole, tuple[str, int]] = {
+    "map_application": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
+    "map_dagster": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
+    "pinvi": ("PINVI_DB_PORT", 12800),
+}
 _SCHEMA_REVISION_LOCATION: dict[DatabaseRole, tuple[str, str]] = {
     "map_application": ("public", "alembic_version"),
     "map_dagster": ("public", "alembic_version"),
@@ -69,6 +74,7 @@ class DatabaseRuntime:
 
     role: DatabaseRole
     container_name: str
+    port: int
     database_name: str
     owner_name: str
     admin_name: str
@@ -108,6 +114,14 @@ def database_runtimes_from_frozen_contract(
         )
         if not isinstance(admin_name, str) or not _DATABASE_IDENTIFIER.fullmatch(admin_name):
             raise DeploymentContractError(f"{role} PostgreSQL admin role is invalid")
+        port_env, port_default = _ROLE_PORT_CONFIG[role]
+        port_text = environment.get(port_env, str(port_default))
+        try:
+            port = int(port_text)
+        except (TypeError, ValueError) as exc:
+            raise DeploymentContractError(f"{role} PostgreSQL port is invalid") from exc
+        if not 1 <= port <= 65535:
+            raise DeploymentContractError(f"{role} PostgreSQL port is invalid")
         database_name = environment.get(database_env, database_default)
         owner_name = environment.get(owner_env, owner_default)
         if not _DATABASE_IDENTIFIER.fullmatch(database_name):
@@ -124,6 +138,7 @@ def database_runtimes_from_frozen_contract(
             DatabaseRuntime(
                 role=role,
                 container_name=container_name,
+                port=port,
                 database_name=database_name,
                 owner_name=owner_name,
                 admin_name=admin_name,
@@ -436,6 +451,8 @@ def _validate_runtime(runtime: DatabaseRuntime) -> None:
         raise DeploymentContractError("pinned runtime database role is invalid")
     if not _CONTAINER_NAME.fullmatch(runtime.container_name):
         raise DeploymentContractError("pinned runtime database container is invalid")
+    if not 1 <= runtime.port <= 65535:
+        raise DeploymentContractError("pinned runtime database port is invalid")
     if not _DATABASE_IDENTIFIER.fullmatch(runtime.database_name):
         raise DeploymentContractError("pinned runtime database name is invalid")
     if not _DATABASE_IDENTIFIER.fullmatch(runtime.owner_name):
@@ -463,6 +480,8 @@ def _database_admin_command(
         executable,
         "--username",
         runtime.admin_name,
+        "--port",
+        str(runtime.port),
     ]
 
 

@@ -265,8 +265,17 @@ def _compose_with_canonical_c6c_services(
             "network_mode": "host",
             "environment": {
                 "PINVI_CONTRACT_FIXTURE": "fixture",
+                "POSTGRES_USER": "${PINVI_POSTGRES_USER:-pinvi}",
                 "POSTGRES_PASSWORD_FILE": "/run/secrets/pinvi-postgres-password",
+                "POSTGRES_DB": "${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}",
             },
+            "command": [
+                "postgres",
+                "-c",
+                "listen_addresses=127.0.0.1",
+                "-p",
+                "${PINVI_DB_PORT:-12800}",
+            ],
             "secrets": [
                 {
                     "source": "pinvi-postgres-password",
@@ -285,6 +294,17 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_POSTGRES_DB": "${PINVI_POSTGRES_DB:-pinvi}",
             },
             "secrets": ["pinvi-postgres-password"],
+            "command": [
+                "sh",
+                "-ec",
+                "PGPASSWORD=\"$$(cat /run/secrets/pinvi-postgres-password)\"\n"
+                "export PGPASSWORD\n"
+                "if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'\" | grep -q 1; then\n"
+                "  echo \"database $$PINVI_POSTGRES_DB already exists\"\n"
+                "else\n"
+                "  createdb \"$$PINVI_POSTGRES_DB\"\n"
+                "fi\n",
+            ],
         },
         _MAP_API_SERVICE: {
             "image": "fixture.invalid/kor-travel-map-api:test",
