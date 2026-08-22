@@ -1072,6 +1072,11 @@ _CANDIDATE_ALLOWED_SYSTEM_BINDS = {
 }
 _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     (
+        "kor-travel-concierge-postgres",
+        "/var/lib/postgresql/data",
+        False,
+    ): "${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}",
+    (
         "kor-travel-map-postgres",
         "/var/lib/postgresql/data",
         False,

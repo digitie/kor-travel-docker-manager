@@ -70,6 +70,14 @@ def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
     ] == "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
 
 
+def test_concierge_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
+    assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
+        ("kor-travel-concierge-postgres", "/var/lib/postgresql/data", False)
+    ] == (
+        "${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}"
+    )
+
+
 def _compose_contract_environment() -> dict[str, str]:
     return {
         **os.environ,
