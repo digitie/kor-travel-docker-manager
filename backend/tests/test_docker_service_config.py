@@ -125,6 +125,7 @@ def _config_transaction(
         effective={
             "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
             "PINVI_ENVIRONMENT": "development",
+            "PINVI_POSTGRES_PASSWORD": "pinvi-contract-password",
             "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
         },
         env_path=str(compose_path.parent / ".env"),
@@ -257,7 +258,16 @@ def _compose_with_canonical_c6c_services(
             "image": "fixture.invalid/postgis:test",
             "container_name": "pinvi-postgres",
             "network_mode": "host",
-            "environment": {"PINVI_CONTRACT_FIXTURE": "fixture"},
+            "environment": {
+                "PINVI_CONTRACT_FIXTURE": "fixture",
+                "POSTGRES_PASSWORD_FILE": "/run/secrets/pinvi-postgres-password",
+            },
+            "secrets": [
+                {
+                    "source": "pinvi-postgres-password",
+                    "target": "pinvi-postgres-password",
+                }
+            ],
         },
         _MAP_API_SERVICE: {
             "image": "fixture.invalid/kor-travel-map-api:test",
@@ -406,7 +416,8 @@ def _compose_with_canonical_c6c_services(
         "secrets": {
             "kor-travel-map-postgres-password": {
                 "environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
-            }
+            },
+            "pinvi-postgres-password": {"environment": "PINVI_POSTGRES_PASSWORD"},
         },
     }
 
@@ -1314,6 +1325,7 @@ def _prepare_candidate_transaction(
         )
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_USER", "test_map_admin")
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
+        monkeypatch.setenv("PINVI_POSTGRES_PASSWORD", "pinvi-contract-password")
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
             "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12700/kor_travel_map",

@@ -22,6 +22,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     derive_curation_service_principal_environment,
     validate_compose_candidate_protected_values,
     validate_map_postgres_runtime_secret_isolation,
+    validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
@@ -466,6 +467,22 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             root_env_path=str(root_env),
         )
 
+    pinvi_literal = deepcopy(candidate)
+    pinvi_literal_services = pinvi_literal["services"]
+    assert isinstance(pinvi_literal_services, dict)
+    pinvi_postgres = pinvi_literal_services["pinvi-postgres"]
+    assert isinstance(pinvi_postgres, dict)
+    pinvi_postgres_environment = pinvi_postgres["environment"]
+    assert isinstance(pinvi_postgres_environment, dict)
+    pinvi_postgres_environment["POSTGRES_PASSWORD"] = "attacker-literal"
+    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL password"):
+        validate_compose_candidate_protected_values(
+            pinvi_literal,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
     services = resolved["services"]
     assert isinstance(services, dict)
     map_postgres_environment = services["kor-travel-map-postgres"]["environment"]
@@ -670,6 +687,31 @@ def test_map_postgres_runtime_password_secret_isolation_requires_file_only() -> 
         match="password file wiring is invalid",
     ):
         validate_map_postgres_runtime_secret_isolation({"Env": []})
+
+
+def test_pinvi_postgres_runtime_password_secret_isolation_requires_file_only() -> None:
+    validate_pinvi_postgres_runtime_secret_isolation(
+        {"Env": ["POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password"]}
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="exposes the initial superuser password",
+    ):
+        validate_pinvi_postgres_runtime_secret_isolation(
+            {
+                "Env": [
+                    "POSTGRES_PASSWORD=literal-password",
+                    "POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password",
+                ]
+            }
+        )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="password file wiring is invalid",
+    ):
+        validate_pinvi_postgres_runtime_secret_isolation({"Env": []})
 
 
 def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutation(

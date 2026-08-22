@@ -50,6 +50,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
     validate_map_postgres_runtime_secret_isolation,
+    validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
@@ -4063,6 +4064,11 @@ class ComposeService:
                 validate_map_postgres_runtime_secret_isolation(
                     self._inspect_container_runtime_config(
                         str(map_postgres_records[0]["Name"])
+                    )
+                )
+                validate_pinvi_postgres_runtime_secret_isolation(
+                    self._inspect_container_runtime_config(
+                        str(map_postgres_records[1]["Name"])
                     )
                 )
 

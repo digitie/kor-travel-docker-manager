@@ -50,6 +50,9 @@ _MAP_POSTGRES_PASSWORD_SECRET = "kor-travel-map-postgres-password"
 _MAP_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_MAP_POSTGRES_PASSWORD_SECRET}"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
+_PINVI_DB_INIT_SERVICE = "pinvi-db-init"
+_PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
+_PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
 _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DAGSTER_SERVICE = "pinvi-dagster"
 _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
@@ -196,6 +199,7 @@ _MAP_DATABASE_SECRET_ENV_NAMES = frozenset(
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+        "PINVI_POSTGRES_PASSWORD",
     }
 )
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
@@ -442,6 +446,11 @@ _MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
         (
             "secrets",
             _MAP_POSTGRES_PASSWORD_SECRET,
+            "environment",
+        ),
+        (
+            "secrets",
+            _PINVI_POSTGRES_PASSWORD_SECRET,
             "environment",
         ),
     }
@@ -753,6 +762,87 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
             ):
                 raise ComposeCandidateContractError(
                     "Map PostgreSQL password secret has an unauthorized consumer"
+                )
+
+
+def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> None:
+    """PinVi PostgreSQL의 초기 password가 secret file로만 전달되는지 고정한다."""
+
+    secrets = document.get("secrets")
+    if not isinstance(secrets, Mapping):
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+    source = secrets.get(_PINVI_POSTGRES_PASSWORD_SECRET)
+    if not isinstance(source, Mapping) or source.get("environment") != (
+        "PINVI_POSTGRES_PASSWORD"
+    ):
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+    postgres = services.get(_PINVI_POSTGRES_SERVICE)
+    if not isinstance(postgres, Mapping):
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+    environment = postgres.get("environment")
+    if not isinstance(environment, Mapping) or environment.get("POSTGRES_PASSWORD_FILE") != (
+        _PINVI_POSTGRES_PASSWORD_FILE
+    ):
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+    if "POSTGRES_PASSWORD" in environment:
+        raise ComposeCandidateContractError(
+            "PinVi PostgreSQL password leaks to container environment"
+        )
+    references = postgres.get("secrets")
+    if not isinstance(references, list) or len(references) != 1:
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+    reference = references[0]
+    reference_is_valid = reference == _PINVI_POSTGRES_PASSWORD_SECRET or (
+        isinstance(reference, Mapping)
+        and reference.get("source") == _PINVI_POSTGRES_PASSWORD_SECRET
+        and reference.get("target")
+        in {_PINVI_POSTGRES_PASSWORD_SECRET, _PINVI_POSTGRES_PASSWORD_FILE}
+    )
+    if not reference_is_valid:
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
+            raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+        candidate_references = service.get("secrets")
+        if candidate_references is None:
+            continue
+        if not isinstance(candidate_references, list):
+            raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+        for candidate_reference in candidate_references:
+            source_name: object
+            if isinstance(candidate_reference, str):
+                source_name = candidate_reference
+            elif isinstance(candidate_reference, Mapping):
+                source_name = candidate_reference.get("source")
+            else:
+                raise ComposeCandidateContractError(
+                    "PinVi PostgreSQL password secret is invalid"
+                )
+            if source_name != _PINVI_POSTGRES_PASSWORD_SECRET:
+                continue
+            if service_name == _PINVI_POSTGRES_SERVICE:
+                if candidate_reference != reference:
+                    raise ComposeCandidateContractError(
+                        "PinVi PostgreSQL password secret has an unauthorized consumer"
+                    )
+            elif service_name != _PINVI_DB_INIT_SERVICE or candidate_reference not in (
+                _PINVI_POSTGRES_PASSWORD_SECRET,
+                {
+                    "source": _PINVI_POSTGRES_PASSWORD_SECRET,
+                    "target": _PINVI_POSTGRES_PASSWORD_SECRET,
+                },
+                {
+                    "source": _PINVI_POSTGRES_PASSWORD_SECRET,
+                    "target": _PINVI_POSTGRES_PASSWORD_FILE,
+                },
+            ):
+                raise ComposeCandidateContractError(
+                    "PinVi PostgreSQL password secret has an unauthorized consumer"
                 )
 
 
@@ -2207,6 +2297,7 @@ def validate_resolved_compose_candidate_protected_values(
             "resolved compose candidate has no valid services mapping"
         )
     _validate_map_postgres_password_secret(resolved)
+    _validate_pinvi_postgres_password_secret(resolved)
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
@@ -2770,6 +2861,7 @@ def validate_compose_candidate_protected_values(
         protected_names=protected_names,
         protected_values=protected_values,
     )
+    _validate_pinvi_postgres_password_secret(candidate)
     system_bind_snapshots = _validate_candidate_volume_graph(
         candidate,
         services,
@@ -5274,6 +5366,28 @@ def validate_map_postgres_runtime_secret_isolation(
         )
 
 
+def validate_pinvi_postgres_runtime_secret_isolation(
+    runtime_config: Mapping[str, Any],
+) -> None:
+    """실제 PinVi PostgreSQL container가 password Env를 보관하지 않는지 검증한다."""
+
+    environment: dict[str, str] = {}
+    for name, value, _paths in _runtime_environment_entries(runtime_config.get("Env")):
+        if name in environment:
+            raise DeploymentContractError(
+                "PinVi PostgreSQL runtime has duplicate environment variables"
+            )
+        environment[name] = value
+    if environment.get("POSTGRES_PASSWORD_FILE") != _PINVI_POSTGRES_PASSWORD_FILE:
+        raise DeploymentContractError(
+            "PinVi PostgreSQL runtime password file wiring is invalid"
+        )
+    if {"POSTGRES_PASSWORD", "PINVI_POSTGRES_PASSWORD"}.intersection(environment):
+        raise DeploymentContractError(
+            "PinVi PostgreSQL runtime exposes the initial superuser password"
+        )
+
+
 def _validate_image_id(image_id: str, label: str) -> None:
     if not isinstance(image_id, str) or not _IMAGE_ID_PATTERN.fullmatch(image_id):
         raise DeploymentContractError(
@@ -6548,7 +6662,12 @@ def _validate_candidate_external_resource_references(
                     and alias == _MAP_POSTGRES_PASSWORD_SECRET
                     and environment_name == "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
                 )
-                if not is_map_postgres_password_secret and (
+                is_pinvi_postgres_password_secret = (
+                    collection_name == "secrets"
+                    and alias == _PINVI_POSTGRES_PASSWORD_SECRET
+                    and environment_name == "PINVI_POSTGRES_PASSWORD"
+                )
+                if not (is_map_postgres_password_secret or is_pinvi_postgres_password_secret) and (
                     any(name in environment_name for name in protected_names)
                     or any(value in environment_value for value in protected_values)
                 ):
