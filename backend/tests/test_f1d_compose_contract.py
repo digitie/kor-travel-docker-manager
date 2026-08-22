@@ -59,6 +59,9 @@ _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
         "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
     }
 )
+_PINVI_POSTGRES_IMAGE = (
+    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
+)
 
 
 def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
@@ -575,6 +578,43 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             root_env_path=str(root_env),
             environment=environment,
         )
+
+    for appended_tokens in (
+        ["-p", "${PINVI_DB_PORT:-12900}"],
+        ["-c", "listen_addresses=0.0.0.0"],
+        ["-c", "shared_buffers=attacker"],
+    ):
+        pinvi_postgres_override = deepcopy(candidate)
+        pinvi_postgres_override_services = pinvi_postgres_override["services"]
+        assert isinstance(pinvi_postgres_override_services, dict)
+        pinvi_postgres_override_service = pinvi_postgres_override_services["pinvi-postgres"]
+        assert isinstance(pinvi_postgres_override_service, dict)
+        pinvi_postgres_override_command = pinvi_postgres_override_service["command"]
+        assert isinstance(pinvi_postgres_override_command, list)
+        pinvi_postgres_override_command.extend(appended_tokens)
+        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+            validate_compose_candidate_protected_values(
+                pinvi_postgres_override,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+
+    for service_name, error_message in (
+        ("pinvi-postgres", "PinVi PostgreSQL image provenance"),
+        ("pinvi-db-init", "PinVi database init image provenance"),
+    ):
+        pinvi_image_drift = deepcopy(candidate)
+        pinvi_image_services = pinvi_image_drift["services"]
+        assert isinstance(pinvi_image_services, dict)
+        pinvi_image_services[service_name]["image"] = "attacker.invalid/postgis:latest"
+        with pytest.raises(DeploymentContractError, match=error_message):
+            validate_compose_candidate_protected_values(
+                pinvi_image_drift,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
 
     pinvi_db_init_command_drift = deepcopy(candidate)
     pinvi_db_init_command_services = pinvi_db_init_command_drift["services"]

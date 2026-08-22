@@ -99,6 +99,9 @@ _MAP_UI_GEO_API_KEY_SOURCE = (
     "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?"
     "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
 )
+_PINVI_POSTGRES_IMAGE = (
+    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
+)
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -260,7 +263,7 @@ def _compose_with_canonical_c6c_services(
             },
         },
         _PINVI_POSTGRES_SERVICE: {
-            "image": "fixture.invalid/postgis:test",
+            "image": _PINVI_POSTGRES_IMAGE,
             "container_name": "pinvi-postgres",
             "network_mode": "host",
             "environment": {
@@ -275,6 +278,24 @@ def _compose_with_canonical_c6c_services(
                 "listen_addresses=127.0.0.1",
                 "-p",
                 "${PINVI_DB_PORT:-12800}",
+                "-c",
+                "shared_preload_libraries=pg_stat_statements",
+                "-c",
+                "shared_buffers=${PINVI_POSTGRES_SHARED_BUFFERS:-128MB}",
+                "-c",
+                "work_mem=${PINVI_POSTGRES_WORK_MEM:-16MB}",
+                "-c",
+                "maintenance_work_mem=${PINVI_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}",
+                "-c",
+                "effective_cache_size=${PINVI_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}",
+                "-c",
+                "random_page_cost=${PINVI_POSTGRES_RANDOM_PAGE_COST:-1.1}",
+                "-c",
+                "max_wal_size=${PINVI_POSTGRES_MAX_WAL_SIZE:-1GB}",
+                "-c",
+                "pg_stat_statements.track=all",
+                "-c",
+                "pg_stat_statements.max=10000",
             ],
             "secrets": [
                 {
@@ -284,7 +305,7 @@ def _compose_with_canonical_c6c_services(
             ],
         },
         _PINVI_DB_INIT_SERVICE: {
-            "image": "fixture.invalid/postgres:test",
+            "image": _PINVI_POSTGRES_IMAGE,
             "network_mode": "host",
             "environment": {
                 "PGHOST": "127.0.0.1",

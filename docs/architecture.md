@@ -142,6 +142,8 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      `KOR_TRAVEL_GEO_DAGSTER_PG_URL`은 기본값 없이 fail-close로 요구한다(issue #178).
    - 나머지 셋은 `kor-travel-concierge-postgres`:12600 ·
      `kor-travel-map-postgres`:12700 · `pinvi-postgres`:12800이다.
+   - PinVi의 `pinvi-postgres`와 `pinvi-db-init`은 다음 immutable PostGIS digest를 공유한다:
+     `postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40`.
    - 기본 pgdata: `KOR_TRAVEL_GEO_PGDATA=/home/digitie/kor-travel-geo-data/pgdata-final-20260529`.
 2. **RustFS**:
    - 컨테이너: `kor-travel-rustfs`

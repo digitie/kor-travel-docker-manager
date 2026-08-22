@@ -53,6 +53,9 @@ _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
+_PINVI_POSTGRES_IMAGE = (
+    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
+)
 _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DAGSTER_SERVICE = "pinvi-dagster"
 _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
@@ -747,6 +750,10 @@ def _validate_pinvi_db_init_identity(
     postgres = services.get(_PINVI_POSTGRES_SERVICE)
     if not isinstance(postgres, Mapping):
         raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
+    if postgres.get("image") != _PINVI_POSTGRES_IMAGE:
+        raise ComposeCandidateContractError("PinVi PostgreSQL image provenance is invalid")
+    if service.get("image") != _PINVI_POSTGRES_IMAGE:
+        raise ComposeCandidateContractError("PinVi database init image provenance is invalid")
     postgres_environment = postgres.get("environment")
     if not isinstance(postgres_environment, Mapping):
         raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
@@ -773,17 +780,38 @@ def _validate_pinvi_db_init_identity(
             raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
         expected_port_value = "${PINVI_DB_PORT:-12800}"
 
-    postgres_command = postgres.get("command")
+    def command_value(name: str, default: str) -> str:
+        if resolved:
+            return environment.get(name, default)
+        return f"${{{name}:-{default}}}"
+
+    expected_postgres_command = [
+        "postgres",
+        "-c",
+        "listen_addresses=127.0.0.1",
+        "-p",
+        expected_port_value,
+        "-c",
+        "shared_preload_libraries=pg_stat_statements",
+        "-c",
+        f"shared_buffers={command_value('PINVI_POSTGRES_SHARED_BUFFERS', '128MB')}",
+        "-c",
+        f"work_mem={command_value('PINVI_POSTGRES_WORK_MEM', '16MB')}",
+        "-c",
+        f"maintenance_work_mem={command_value('PINVI_POSTGRES_MAINTENANCE_WORK_MEM', '128MB')}",
+        "-c",
+        f"effective_cache_size={command_value('PINVI_POSTGRES_EFFECTIVE_CACHE_SIZE', '512MB')}",
+        "-c",
+        f"random_page_cost={command_value('PINVI_POSTGRES_RANDOM_PAGE_COST', '1.1')}",
+        "-c",
+        f"max_wal_size={command_value('PINVI_POSTGRES_MAX_WAL_SIZE', '1GB')}",
+        "-c",
+        "pg_stat_statements.track=all",
+        "-c",
+        "pg_stat_statements.max=10000",
+    ]
     if (
-        not isinstance(postgres_command, list)
-        or len(postgres_command) < 5
-        or postgres_command[:4] != [
-            "postgres",
-            "-c",
-            "listen_addresses=127.0.0.1",
-            "-p",
-        ]
-        or postgres_command[4] != expected_port_value
+        postgres.get("command") != expected_postgres_command
         or postgres.get("entrypoint") not in (None, [])
     ):
         raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
