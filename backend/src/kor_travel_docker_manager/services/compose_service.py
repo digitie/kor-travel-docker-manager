@@ -4036,9 +4036,10 @@ class ComposeService:
                     transaction_id=journal.transaction_id,
                 )
 
-                # Map two DB runtime은 shared PostgreSQL이 아니라 #171 전용 instance에
-                # 있다. reset 전에 frozen Compose로 health까지 보장해 `docker exec`가
-                # 존재하지 않는 container를 향하거나 shared DB로 fallback하지 않게 한다.
+                # Map 두 DB runtime은 shared PostgreSQL이 아니라 #171 전용 instance에,
+                # PinVi DB는 별도 instance에 있다. reset 전에 두 PostgreSQL을 frozen
+                # Compose로 health까지 보장해 `docker exec`가 존재하지 않는 container를
+                # 향하거나 shared DB로 fallback하지 않게 한다.
                 self._run_pinned_runtime_rebuild_compose(
                     [
                         "up",
@@ -4047,6 +4048,7 @@ class ComposeService:
                         "--wait-timeout",
                         "300",
                         "kor-travel-map-postgres",
+                        "pinvi-postgres",
                     ],
                     transaction=runtime_transaction,
                 )
@@ -4054,7 +4056,7 @@ class ComposeService:
                 # long-lived container가 legacy password Env를 보존하지 않았는지도
                 # destructive DB reset 전에 Docker inspect로 fail-close한다.
                 map_postgres_records = self._require_services_ready(
-                    ("kor-travel-map-postgres",),
+                    ("kor-travel-map-postgres", "pinvi-postgres"),
                     transaction=runtime_transaction,
                     frozen_recovery=True,
                 )

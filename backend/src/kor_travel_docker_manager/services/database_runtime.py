@@ -130,6 +130,19 @@ def database_runtimes_from_frozen_contract(
                 additional_owner_names=additional_owner_names,
             )
         )
+    map_application, map_dagster, pinvi = runtimes
+    if map_application.container_name != map_dagster.container_name:
+        raise DeploymentContractError(
+            "Map application and Dagster databases must share the frozen PostgreSQL container"
+        )
+    if pinvi.container_name == map_application.container_name:
+        raise DeploymentContractError(
+            "PinVi database must use a distinct frozen PostgreSQL container"
+        )
+    if len({runtime.database_name for runtime in runtimes}) != len(runtimes):
+        raise DeploymentContractError(
+            "pinned runtime databases must have distinct frozen database names"
+        )
     return runtimes[0], runtimes[1], runtimes[2]
 
 

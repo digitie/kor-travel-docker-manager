@@ -79,6 +79,58 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
     assert runtimes[1].additional_owner_names == frozenset({"map_dagster_metadata"})
 
 
+def test_database_runtime_rejects_pinvi_container_alias() -> None:
+    with pytest.raises(DeploymentContractError, match="distinct frozen PostgreSQL container"):
+        database_runtimes_from_frozen_contract(
+            resolved={
+                "services": {
+                    "kor-travel-map-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
+                    "pinvi-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                    },
+                }
+            },
+            environment={
+                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+                "PINVI_POSTGRES_DB": "pin_app",
+                "PINVI_POSTGRES_USER": "pin_owner",
+            },
+        )
+
+
+def test_database_runtime_rejects_database_name_alias() -> None:
+    with pytest.raises(DeploymentContractError, match="distinct frozen database names"):
+        database_runtimes_from_frozen_contract(
+            resolved={
+                "services": {
+                    "kor-travel-map-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
+                    "pinvi-postgres": {
+                        "container_name": "pinvi-postgres-production",
+                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                    },
+                }
+            },
+            environment={
+                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+                "PINVI_POSTGRES_DB": "map_app",
+                "PINVI_POSTGRES_USER": "pin_owner",
+            },
+        )
+
+
 @pytest.mark.parametrize(
     "postgres_environment",
     [{}, {"POSTGRES_USER": ""}, {"POSTGRES_USER": "cluster-admin"}],
