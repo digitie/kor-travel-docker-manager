@@ -69,6 +69,268 @@ def _consumed_state(*, finalize_attempted: bool) -> PinviCancelProbeState:
     )
 
 
+def test_map_dataset_identity_uses_exact_membership_triple() -> None:
+    identity = {
+        "provider_dataset_id": 41,
+        "sync_scope": "external_system:pinvi",
+        "operation_key": "kma_nowcast_refresh",
+        "detail_url": (
+            "/v1/ops/datasets/41?sync_scope=external_system%3Apinvi&"
+            "operation_key=kma_nowcast_refresh"
+        ),
+    }
+
+    assert c6c._validate_map_dataset_identity(identity)  # noqa: SLF001
+    assert not c6c._validate_map_dataset_identity(  # noqa: SLF001
+        {
+            **identity,
+            "detail_url": (
+                "/v1/ops/datasets/detail?provider=kma&dataset_key=weather&"
+                "sync_scope=external_system%3Apinvi"
+            ),
+        }
+    )
+    assert c6c._validate_map_dataset_identity(  # noqa: SLF001
+        {
+            "provider_dataset_id": 41,
+            "sync_scope": "dataset_wide",
+            "operation_key": None,
+            "detail_url": "/v1/ops/datasets/41?sync_scope=dataset_wide",
+        }
+    )
+    assert not c6c._validate_map_dataset_identity(  # noqa: SLF001
+        {**identity, "operation_key": ""}
+    )
+
+
+def test_dataset_wide_execution_rejects_missing_membership_scope() -> None:
+    execution_id = "11111111-1111-1111-1111-111111111111"
+    member_id = "22222222-2222-2222-2222-222222222222"
+    operation_key = "kma_nowcast_refresh"
+    member = {
+        "provider_dataset_id": 41,
+        "provider": "kma",
+        "dataset_key": "weather",
+        "sync_scope": "dataset_wide",
+        "operation_key": operation_key,
+        "operation_member_id": member_id,
+        "status": "queued",
+    }
+    execution = {
+        "kind": "import_job",
+        "id": execution_id,
+        "status": "queued",
+        "pair_status": "queued",
+        "operation_member_id": member_id,
+        "sync_scope": None,
+        "operation_key": operation_key,
+        "provider_datasets": [member],
+        "providers": ["kma"],
+        "dataset_keys": ["weather"],
+        "created_at": "2026-08-11T00:00:00+00:00",
+        "started_at": None,
+        "finished_at": None,
+        "dagster_run_id": None,
+        "dagster_run_status": None,
+        "trigger_kind": None,
+        "operation_registry_version": None,
+        "error_message": None,
+        "detail_url": f"/v1/ops/pipeline/executions/import_job/{execution_id}",
+        "projected_job": {
+            "id": execution_id,
+            "job_kind": "provider_sync",
+            "status": "queued",
+            "progress": 0,
+            "current_stage": None,
+            "error_message": None,
+            "created_at": "2026-08-11T00:00:00+00:00",
+            "started_at": None,
+            "finished_at": None,
+            "dagster_run_id": None,
+            "dagster_run_status": None,
+            "trigger_kind": None,
+            "operation_registry_version": None,
+            "depth": 0,
+            "detail_url": f"/v1/ops/pipeline/executions/import_job/{execution_id}",
+        },
+        "cancellation": None,
+    }
+
+    assert not c6c._validate_dataset_execution(  # noqa: SLF001
+        execution,
+        provider="kma",
+        dataset_key="weather",
+        provider_dataset_id=41,
+        sync_scope="dataset_wide",
+        operation_key=operation_key,
+        active=True,
+    )
+    # Catalog-only rows have no row operation key, but Map may still attach a
+    # scope rollup for an execution that belongs to another operation in the
+    # same dataset/scope.  Validate that rollup without collapsing the
+    # execution's own operation identity.
+    assert c6c._validate_dataset_execution(  # noqa: SLF001
+        {**execution, "sync_scope": "dataset_wide"},
+        provider="kma",
+        dataset_key="weather",
+        provider_dataset_id=41,
+        sync_scope="dataset_wide",
+        operation_key=None,
+        active=True,
+    )
+
+
+def test_catalog_validator_accepts_unrefreshable_none_effect() -> None:
+    catalog = {
+        "feature_kind": "place",
+        "provider_state_default_scope": "dataset_wide",
+        "label": "Catalog only",
+        "is_feature_load": True,
+        "is_active": True,
+        "is_refreshable": False,
+        "scope_refresh": {
+            "supported": False,
+            "selector": "none",
+            "effect": "none",
+            "default_sync_scope": "dataset_wide",
+            "allowed_sync_scopes": ["dataset_wide"],
+            "reason": "이 dataset에는 실행 가능한 refresh runner가 없습니다.",
+        },
+        "preview": {
+            "supported": False,
+            "sources": [],
+            "input_kind": "none",
+            "default_max_items": 20,
+            "max_items_limit": 100,
+            "timeout_seconds": 5.0,
+            "external_call_budget": 0,
+        },
+    }
+
+    assert c6c._validate_dataset_catalog(catalog)  # noqa: SLF001
+
+
+def test_catalog_validator_rejects_refreshable_none_effect() -> None:
+    catalog = {
+        "feature_kind": "place",
+        "provider_state_default_scope": "dataset_wide",
+        "label": "Catalog only",
+        "is_feature_load": True,
+        "is_active": True,
+        "is_refreshable": True,
+        "scope_refresh": {
+            "supported": False,
+            "selector": "none",
+            "effect": "none",
+            "default_sync_scope": "dataset_wide",
+            "allowed_sync_scopes": ["dataset_wide"],
+            "reason": "이 dataset에는 실행 가능한 refresh runner가 없습니다.",
+        },
+        "preview": {
+            "supported": False,
+            "sources": [],
+            "input_kind": "none",
+            "default_max_items": 20,
+            "max_items_limit": 100,
+            "timeout_seconds": 5.0,
+            "external_call_budget": 0,
+        },
+    }
+
+    assert not c6c._validate_dataset_catalog(catalog)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("is_active", "is_refreshable"),
+    [(False, True), (True, False)],
+)
+def test_catalog_validator_rejects_refreshability_cross_field_mismatch(
+    is_active: bool,
+    is_refreshable: bool,
+) -> None:
+    catalog = {
+        "feature_kind": "place",
+        "provider_state_default_scope": "dataset_wide",
+        "label": "Catalog only",
+        "is_feature_load": True,
+        "is_active": is_active,
+        "is_refreshable": is_refreshable,
+        "scope_refresh": {
+            "supported": False,
+            "selector": "none",
+            "effect": "dataset_wide",
+            "default_sync_scope": "dataset_wide",
+            "allowed_sync_scopes": [],
+            "reason": "이 dataset에는 실행 가능한 refresh runner가 없습니다.",
+        },
+        "preview": {
+            "supported": False,
+            "sources": [],
+            "input_kind": "none",
+            "default_max_items": 20,
+            "max_items_limit": 100,
+            "timeout_seconds": 5.0,
+            "external_call_budget": 0,
+        },
+    }
+
+    assert not c6c._validate_dataset_catalog(catalog)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("state", "created_at", "consumed_at", "finalized_at"),
+    [
+        (
+            "consumed",
+            "2026-08-06T00:01:00+00:00",
+            "2026-08-06T00:00:00+00:00",
+            None,
+        ),
+        (
+            "finalized",
+            "2026-08-06T00:00:00+00:00",
+            "2026-08-06T00:02:00+00:00",
+            "2026-08-06T00:01:00+00:00",
+        ),
+    ],
+)
+def test_cancel_fixture_parser_rejects_reversed_lifecycle_timestamps(
+    state: Literal["consumed", "finalized"],
+    created_at: str,
+    consumed_at: str,
+    finalized_at: str | None,
+) -> None:
+    transaction_id = "11111111-1111-1111-1111-111111111111"
+    cancellation_id = "33333333-3333-3333-3333-333333333333"
+    payload = {
+        "data": {
+            "fixture": {
+                "transaction_id": transaction_id,
+                "job_id": "22222222-2222-2222-2222-222222222222",
+                "state": state,
+                "cancellation_id": cancellation_id,
+                "created_at": created_at,
+                "consumed_at": consumed_at,
+                "finalized_at": finalized_at,
+                "canonical_unsafe_outcome": {
+                    "http_status": 409,
+                    "code": "PIPELINE_CANCELLATION_UNSAFE",
+                    "root_job_id": "22222222-2222-2222-2222-222222222222",
+                    "cancellation_id": cancellation_id,
+                },
+                "capability_generation": c6c.C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+            }
+        },
+        "meta": {},
+    }
+
+    with pytest.raises(DeploymentContractError, match="timestamp order"):
+        c6c._parse_c6c_cancel_probe_fixture(  # noqa: SLF001
+            payload,
+            expected_transaction_id=transaction_id,
+        )
+
+
 def _rehearsal_environment() -> dict[str, str]:
     return {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",

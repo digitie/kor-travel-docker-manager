@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     DeploymentContractError,
@@ -292,6 +293,33 @@ def test_rebuild_journal_requires_durable_cancel_post_and_finalize_receipts() ->
     assert finalized.stage == "finalized"
     with pytest.raises(DeploymentContractError, match="transition"):
         armed.transition("consumed")
+
+
+@pytest.mark.parametrize(
+    ("consumed_at", "finalized_at"),
+    [
+        ("2026-08-06T00:00:00+00:00", "2026-08-06T00:02:00+00:00"),
+        ("2026-08-06T00:02:00+00:00", "2026-08-06T00:01:00+00:00"),
+    ],
+)
+def test_pinned_runtime_receipt_rejects_reversed_fixture_timestamps(
+    consumed_at: str,
+    finalized_at: str,
+) -> None:
+    with pytest.raises(DeploymentContractError, match="timestamp order"):
+        PinnedRuntimeCancelProbeReceipt(
+            stage="finalized",
+            job_id=str(uuid.uuid4()),
+            cancellation_id=str(uuid.uuid4()),
+            outcome=PinnedRuntimeCancelProbeOutcome(
+                name="pinvi_cancel_error",
+                status=409,
+                code="PIPELINE_CANCELLATION_UNSAFE",
+            ),
+            fixture_created_at="2026-08-06T00:01:00+00:00",
+            fixture_consumed_at=consumed_at,
+            fixture_finalized_at=finalized_at,
+        )
 
 
 def test_rebuild_journal_rejects_fixture_timestamp_drift() -> None:
