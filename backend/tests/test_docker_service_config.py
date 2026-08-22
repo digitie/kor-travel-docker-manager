@@ -1344,6 +1344,10 @@ def _prepare_candidate_transaction(
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
         monkeypatch.setenv("PINVI_POSTGRES_PASSWORD", "pinvi-contract-password")
         monkeypatch.setenv(
+            "PINVI_DOCKER_DATABASE_URL",
+            "postgresql+asyncpg://pinvi:pinvi-contract-password@127.0.0.1:12800/pinvi",
+        )
+        monkeypatch.setenv(
             "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
             "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12700/kor_travel_map",
         )

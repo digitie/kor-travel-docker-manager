@@ -665,7 +665,14 @@ def _validate_pinvi_database_url_identities(
         raise ComposeCandidateContractError("PinVi database URL identity is invalid") from exc
     expected_database = environment.get("PINVI_POSTGRES_DB", "pinvi")
     expected_user = environment.get("PINVI_POSTGRES_USER", "pinvi")
-    if not 1 <= expected_port <= 65535 or not expected_database or not expected_user:
+    expected_password = environment.get("PINVI_POSTGRES_PASSWORD")
+    if (
+        not 1 <= expected_port <= 65535
+        or not expected_database
+        or not expected_user
+        or not isinstance(expected_password, str)
+        or not expected_password
+    ):
         raise ComposeCandidateContractError("PinVi database URL identity is invalid")
 
     for service_name in (_PINVI_API_SERVICE, _PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_DAGSTER_SERVICE):
@@ -692,6 +699,7 @@ def _validate_pinvi_database_url_identities(
             or parsed.hostname != "127.0.0.1"
             or parsed_port != expected_port
             or unquote(parsed.username or "") != expected_user
+            or unquote(parsed.password or "") != expected_password
             or parsed.path != f"/{expected_database}"
             or parsed.query
             or parsed.fragment

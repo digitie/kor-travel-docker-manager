@@ -471,6 +471,43 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             root_env_path=str(root_env),
         )
 
+    encoded_password = deepcopy(resolved)
+    encoded_services = encoded_password["services"]
+    assert isinstance(encoded_services, dict)
+    encoded_pinvi_api = encoded_services["pinvi-api"]
+    assert isinstance(encoded_pinvi_api, dict)
+    encoded_pinvi_environment = encoded_pinvi_api["environment"]
+    assert isinstance(encoded_pinvi_environment, dict)
+    encoded_pinvi_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi:pinvi-contract-postgres%2Dpassword@"
+        "127.0.0.1:12800/pinvi"
+    )
+    assert validate_resolved_compose_candidate_protected_values(
+        encoded_password,
+        environment=environment,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+    ) == raw_snapshots
+
+    for leaked_password in ("wrong-password", environment["KOR_TRAVEL_MAP_POSTGRES_PASSWORD"]):
+        leaked = deepcopy(resolved)
+        leaked_services = leaked["services"]
+        assert isinstance(leaked_services, dict)
+        leaked_pinvi_api = leaked_services["pinvi-api"]
+        assert isinstance(leaked_pinvi_api, dict)
+        leaked_pinvi_environment = leaked_pinvi_api["environment"]
+        assert isinstance(leaked_pinvi_environment, dict)
+        leaked_pinvi_environment["PINVI_DATABASE_URL"] = (
+            f"postgresql+asyncpg://pinvi:{leaked_password}@127.0.0.1:12800/pinvi"
+        )
+        with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+            validate_resolved_compose_candidate_protected_values(
+                leaked,
+                environment=environment,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+            )
+
     pinvi_literal = deepcopy(candidate)
     pinvi_literal_services = pinvi_literal["services"]
     assert isinstance(pinvi_literal_services, dict)
