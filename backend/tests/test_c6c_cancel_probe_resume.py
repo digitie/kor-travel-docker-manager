@@ -165,6 +165,48 @@ def test_dataset_wide_execution_rejects_missing_membership_scope() -> None:
         operation_key=operation_key,
         active=True,
     )
+    # Catalog-only rows have no row operation key, but Map may still attach a
+    # scope rollup for an execution that belongs to another operation in the
+    # same dataset/scope.  Validate that rollup without collapsing the
+    # execution's own operation identity.
+    assert c6c._validate_dataset_execution(  # noqa: SLF001
+        {**execution, "sync_scope": "dataset_wide"},
+        provider="kma",
+        dataset_key="weather",
+        provider_dataset_id=41,
+        sync_scope="dataset_wide",
+        operation_key=None,
+        active=True,
+    )
+
+
+def test_catalog_validator_accepts_unrefreshable_none_effect() -> None:
+    catalog = {
+        "feature_kind": "place",
+        "provider_state_default_scope": "dataset_wide",
+        "label": "Catalog only",
+        "is_feature_load": True,
+        "is_refreshable": False,
+        "scope_refresh": {
+            "supported": False,
+            "selector": "none",
+            "effect": "none",
+            "default_sync_scope": "dataset_wide",
+            "allowed_sync_scopes": ["dataset_wide"],
+            "reason": "이 dataset에는 실행 가능한 refresh runner가 없습니다.",
+        },
+        "preview": {
+            "supported": False,
+            "sources": [],
+            "input_kind": "none",
+            "default_max_items": 20,
+            "max_items_limit": 100,
+            "timeout_seconds": 5.0,
+            "external_call_budget": 0,
+        },
+    }
+
+    assert c6c._validate_dataset_catalog(catalog)  # noqa: SLF001
 
 
 @pytest.mark.parametrize(

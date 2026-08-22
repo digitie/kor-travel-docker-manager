@@ -4213,8 +4213,7 @@ def _validate_dataset_execution(
     operation_key: Any,
     active: bool,
 ) -> bool:
-    if operation_key is None:
-        return value is None
+    catalog_rollup = operation_key is None
     if value is None:
         return True
     if not isinstance(value, Mapping):
@@ -4236,7 +4235,9 @@ def _validate_dataset_execution(
         or value.get("pair_status") not in _OPERATION_STATES
         or not _is_uuid(operation_member_id)
         or not _is_canonical_sync_scope(execution_scope)
-        or execution_operation_key != operation_key
+        or not isinstance(execution_operation_key, str)
+        or not execution_operation_key
+        or (not catalog_rollup and execution_operation_key != operation_key)
         or not isinstance(providers, list)
         or not all(isinstance(item, str) and bool(item) for item in providers)
         or not isinstance(dataset_keys, list)
@@ -4281,7 +4282,11 @@ def _validate_dataset_execution(
         and item.get("dataset_key") == dataset_key
         and item.get("provider_dataset_id") == provider_dataset_id
         and item.get("sync_scope") == sync_scope
-        and item.get("operation_key") == operation_key
+        and (
+            item.get("operation_key") == execution_operation_key
+            if catalog_rollup
+            else item.get("operation_key") == operation_key
+        )
         and item.get("operation_member_id") == operation_member_id
     ]
     allowed_pair_states = {"queued", "running"} if active else {
@@ -4365,7 +4370,7 @@ def _validate_dataset_catalog(value: Any) -> bool:
         and isinstance(scope_refresh, Mapping)
         and isinstance(scope_refresh.get("supported"), bool)
         and scope_refresh.get("selector") in {"none", "poi_cache_targets"}
-        and scope_refresh.get("effect") in {"dataset_wide", "sync_scope"}
+        and scope_refresh.get("effect") in {"none", "dataset_wide", "sync_scope"}
         and isinstance(scope_refresh.get("default_sync_scope"), str)
         and bool(scope_refresh["default_sync_scope"])
         and isinstance(scope_refresh.get("allowed_sync_scopes"), list)
@@ -4378,6 +4383,14 @@ def _validate_dataset_catalog(value: Any) -> bool:
         and isinstance(scope_refresh.get("reason"), (str, type(None)))
         and (
             (
+                scope_refresh.get("selector") == "none"
+                and scope_refresh.get("supported") is False
+                and scope_refresh.get("effect") == "none"
+                and scope_refresh.get("default_sync_scope") == "dataset_wide"
+                and isinstance(scope_refresh.get("reason"), str)
+                and bool(scope_refresh["reason"])
+            )
+            or (
                 scope_refresh.get("selector") == "none"
                 and scope_refresh.get("supported") is False
                 and scope_refresh.get("effect") == "dataset_wide"
