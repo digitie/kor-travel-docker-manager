@@ -765,6 +765,11 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
         False,
     ): "${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}",
     (
+        "pinvi-postgres",
+        "/var/lib/postgresql/data",
+        False,
+    ): "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}",
+    (
         "kor-travel-map-db-role-bootstrap",
         "/usr/local/bin/postgres-role-bootstrap",
         True,

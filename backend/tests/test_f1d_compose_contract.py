@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from kor_travel_docker_manager.services.c6c_deployment import (
+    _CANDIDATE_ALLOWED_OPERATOR_BINDS,
     C6cBuildProvenance,
     DeploymentContractError,
     derive_curation_service_principal_environment,
@@ -57,6 +58,12 @@ _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
         "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
     }
 )
+
+
+def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
+    assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
+        ("pinvi-postgres", "/var/lib/postgresql/data", False)
+    ] == "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
 
 
 def _compose_contract_environment() -> dict[str, str]:
