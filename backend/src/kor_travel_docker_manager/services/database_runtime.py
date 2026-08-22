@@ -150,7 +150,20 @@ def recreate_empty_database(runtime: DatabaseRuntime) -> None:
     """계약상 owner가 맞는 하나의 DB만 파기 후 같은 owner로 다시 만든다."""
 
     _validate_runtime(runtime)
-    existing_owner = _read_database_owner(runtime)
+    _recreate_empty_database_after_owner_preflight(
+        runtime,
+        existing_owner=_read_database_owner(runtime),
+    )
+
+
+def _recreate_empty_database_after_owner_preflight(
+    runtime: DatabaseRuntime,
+    *,
+    existing_owner: str | None,
+) -> None:
+    """사전 owner 검증이 끝난 하나의 DB를 파기·재생성한다."""
+
+    _validate_runtime(runtime)
     if existing_owner is not None:
         if existing_owner not in _permitted_existing_owners(runtime):
             raise DeploymentContractError(
@@ -185,7 +198,20 @@ def recreate_empty_databases(
     ):
         raise DeploymentContractError("pinned runtime database roles are invalid")
     for runtime in runtimes:
-        recreate_empty_database(runtime)
+        _validate_runtime(runtime)
+    existing_owners = tuple(_read_database_owner(runtime) for runtime in runtimes)
+    for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
+        if existing_owner is not None and existing_owner not in _permitted_existing_owners(
+            runtime
+        ):
+            raise DeploymentContractError(
+                f"{runtime.role} database owner differs from the frozen contract"
+            )
+    for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
+        _recreate_empty_database_after_owner_preflight(
+            runtime,
+            existing_owner=existing_owner,
+        )
 
 
 def read_database_schema_revision(runtime: DatabaseRuntime) -> str:

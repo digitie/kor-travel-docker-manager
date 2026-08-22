@@ -202,6 +202,29 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
     assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
 
 
+def test_recreate_empty_databases_preflights_all_owners_before_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtimes = (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
+    owner_probes: list[str] = []
+    runner = Mock()
+
+    def read_owner(runtime: DatabaseRuntime) -> str:
+        owner_probes.append(runtime.role)
+        if runtime.role == "map_dagster":
+            raise DeploymentContractError("owner probe failed")
+        return runtime.owner_name
+
+    monkeypatch.setattr(database_runtime, "_read_database_owner", read_owner)
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    with pytest.raises(DeploymentContractError, match="owner probe failed"):
+        recreate_empty_databases(runtimes)
+
+    assert owner_probes == ["map_application", "map_dagster"]
+    runner.assert_not_called()
+
+
 def test_recreate_empty_database_refuses_foreign_owned_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

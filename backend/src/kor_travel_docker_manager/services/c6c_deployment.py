@@ -40,6 +40,7 @@ _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
+_PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 # ADR-047 대역 규칙(각 프로젝트 100번대의 x00이 그 프로젝트 DB)에 맞춘 값이다.
 # `docker-compose.yml`의 `KOR_TRAVEL_MAP_POSTGRES_PORT:-12700` 기본값과 **같아야**
 # 하고, 어긋나면 이 가드가 정상 배포를 `Map database DSN identity is invalid`로
@@ -202,6 +203,7 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _MAP_DAGSTER_DAEMON_SERVICE,
         _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         _MAP_POSTGRES_SERVICE,
+        _PINVI_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_API_SERVICE,
@@ -2190,6 +2192,7 @@ def validate_resolved_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+        _PINVI_POSTGRES_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -2201,6 +2204,7 @@ def validate_resolved_compose_candidate_protected_values(
             )
         if service_name in {
             _MAP_POSTGRES_SERVICE,
+            _PINVI_POSTGRES_SERVICE,
             _MAP_API_SERVICE,
             _MAP_DAGSTER_SERVICE,
             _MAP_DAGSTER_DAEMON_SERVICE,
@@ -2632,6 +2636,7 @@ def validate_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+        _PINVI_POSTGRES_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,

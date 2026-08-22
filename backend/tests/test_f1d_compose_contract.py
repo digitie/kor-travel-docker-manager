@@ -115,6 +115,8 @@ def _compose_contract_environment() -> dict[str, str]:
         ),
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "admin",
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "u" * 32,
+        "PINVI_PGDATA": "/mnt/f/dev/kor-travel-map-codex",
+        "PINVI_POSTGRES_PASSWORD": "pinvi-contract-postgres-password",
         "PINVI_ENVIRONMENT": "production",
     }
 
@@ -142,19 +144,27 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
         assert isinstance(depends_on, dict)
         for dependency in depends_on:
             if dependency not in services:
-                # dependency의 실행 내용은 이 계약의 대상이 아니다. 실제 resolver가
-                # dependency graph를 검증하게 이름만 최소 stub으로 둔다.
-                services[dependency] = {"image": "alpine:3.20"}
+                # DB service는 F1D target identity의 일부이므로 실제 Compose 정의를
+                # 유지한다. 나머지 dependency의 실행 내용은 이 계약의 대상이 아니다.
+                if dependency == "pinvi-postgres":
+                    services[dependency] = deepcopy(source_services[dependency])
+                else:
+                    # 실제 resolver가 dependency graph를 검증하게 이름만 최소 stub으로 둔다.
+                    services[dependency] = {"image": "alpine:3.20"}
 
     fragment: dict[str, object] = {"services": services}
-    if "kor-travel-map-postgres" in services:
+    if "kor-travel-map-postgres" in services or "pinvi-postgres" in services:
         source_secrets = _source_compose().get("secrets")
         assert isinstance(source_secrets, dict)
-        fragment["secrets"] = {
-            "kor-travel-map-postgres-password": deepcopy(
+        fragment["secrets"] = {}
+        if "kor-travel-map-postgres" in services:
+            fragment["secrets"]["kor-travel-map-postgres-password"] = deepcopy(
                 source_secrets["kor-travel-map-postgres-password"]
             )
-        }
+        if "pinvi-postgres" in services:
+            fragment["secrets"]["pinvi-postgres-password"] = deepcopy(
+                source_secrets["pinvi-postgres-password"]
+            )
     return fragment
 
 
