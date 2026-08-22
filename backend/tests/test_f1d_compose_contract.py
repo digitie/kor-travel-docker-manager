@@ -448,6 +448,24 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         root_env_path=str(root_env),
     ) == raw_snapshots
 
+    drifted = deepcopy(resolved)
+    drifted_services = drifted["services"]
+    assert isinstance(drifted_services, dict)
+    drifted_pinvi_api = drifted_services["pinvi-api"]
+    assert isinstance(drifted_pinvi_api, dict)
+    drifted_pinvi_environment = drifted_pinvi_api["environment"]
+    assert isinstance(drifted_pinvi_environment, dict)
+    drifted_pinvi_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/wrong_database"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            drifted,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
     services = resolved["services"]
     assert isinstance(services, dict)
     map_postgres_environment = services["kor-travel-map-postgres"]["environment"]

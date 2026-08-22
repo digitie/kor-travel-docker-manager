@@ -376,6 +376,10 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": (
                     _PINVI_CUTOVER_MAPPING_SOURCE
                 ),
+                "PINVI_DATABASE_URL": (
+                    "${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:"
+                    "pinvi_dev_password@127.0.0.1:12800/pinvi}"
+                ),
                 "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": (
                     "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:"
                     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
@@ -388,6 +392,10 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+                "PINVI_DATABASE_URL": (
+                    "${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:"
+                    "pinvi_dev_password@127.0.0.1:12800/pinvi}"
+                ),
             },
         },
     }

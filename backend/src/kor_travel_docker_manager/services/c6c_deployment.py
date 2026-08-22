@@ -52,6 +52,8 @@ _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DAGSTER_SERVICE = "pinvi-dagster"
+_PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
+_PINVI_DOCKER_DATABASE_URL_ENV = "PINVI_DOCKER_DATABASE_URL"
 _MAP_RUNTIME_SERVICES = (
     _MAP_API_SERVICE,
     _MAP_UI_SERVICE,
@@ -630,6 +632,54 @@ def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> Non
             or parsed.path != f"/{expected_database}"
         ):
             raise ComposeCandidateContractError("Map database DSN identity is invalid")
+
+
+def _validate_pinvi_database_url_identities(
+    services: Mapping[str, Any],
+    environment: Mapping[str, str],
+    *,
+    resolved: bool,
+) -> None:
+    """PinVi application DSN이 reset 대상 DB identity를 가리키는지 확인한다."""
+
+    try:
+        expected_port = int(environment.get("PINVI_DB_PORT", "12800"))
+    except (TypeError, ValueError) as exc:
+        raise ComposeCandidateContractError("PinVi database URL identity is invalid") from exc
+    expected_database = environment.get("PINVI_POSTGRES_DB", "pinvi")
+    expected_user = environment.get("PINVI_POSTGRES_USER", "pinvi")
+    if not 1 <= expected_port <= 65535 or not expected_database or not expected_user:
+        raise ComposeCandidateContractError("PinVi database URL identity is invalid")
+
+    for service_name in (_PINVI_API_SERVICE, _PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_DAGSTER_SERVICE):
+        service = services.get(service_name)
+        if not isinstance(service, Mapping):
+            continue
+        service_environment = service.get("environment")
+        if not isinstance(service_environment, Mapping):
+            raise ComposeCandidateContractError("PinVi database URL identity is invalid")
+        value = service_environment.get(_PINVI_DATABASE_URL_ENV)
+        if not isinstance(value, str) or not value:
+            raise ComposeCandidateContractError("PinVi database URL identity is invalid")
+        if not resolved:
+            if not value.startswith(f"${{{_PINVI_DOCKER_DATABASE_URL_ENV}:-") or not value.endswith("}"):
+                raise ComposeCandidateContractError("PinVi database URL identity is invalid")
+            continue
+        try:
+            parsed = urlsplit(value)
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise ComposeCandidateContractError("PinVi database URL identity is invalid") from exc
+        if (
+            parsed.scheme not in {"postgresql", "postgresql+asyncpg"}
+            or parsed.hostname != "127.0.0.1"
+            or parsed_port != expected_port
+            or unquote(parsed.username or "") != expected_user
+            or parsed.path != f"/{expected_database}"
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ComposeCandidateContractError("PinVi database URL identity is invalid")
 
 
 def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
@@ -2157,6 +2207,7 @@ def validate_resolved_compose_candidate_protected_values(
             "resolved compose candidate has no valid services mapping"
         )
     _validate_map_postgres_password_secret(resolved)
+    _validate_pinvi_database_url_identities(services, environment, resolved=True)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -2601,6 +2652,7 @@ def validate_compose_candidate_protected_values(
             "compose candidate has no valid services mapping"
         )
     _validate_map_postgres_password_secret(candidate)
+    _validate_pinvi_database_url_identities(services, environment, resolved=False)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
