@@ -41,7 +41,7 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
         "pinvi",
         "PINVI_POSTGRES_USER",
         "pinvi",
-        "kor-travel-geo-postgres",
+        "pinvi-postgres",
     ),
 }
 _SCHEMA_REVISION_LOCATION: dict[DatabaseRole, tuple[str, str]] = {

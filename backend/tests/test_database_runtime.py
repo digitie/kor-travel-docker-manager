@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-import kor_travel_docker_manager.services.database_runtime as database_runtime
 import pytest
+
+import kor_travel_docker_manager.services.database_runtime as database_runtime
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
@@ -34,13 +35,17 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         resolved={
             "services": {
                 "kor-travel-geo-postgres": {
-                    "container_name": "postgres-production",
+                    "container_name": "geo-postgres-production",
                     "environment": {"POSTGRES_USER": "cluster_admin"},
                 },
                 "kor-travel-map-postgres": {
                     "container_name": "map-postgres-production",
                     "environment": {"POSTGRES_USER": "map_cluster_admin"},
-                }
+                },
+                "pinvi-postgres": {
+                    "container_name": "pinvi-postgres-production",
+                    "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                },
             }
         },
         environment={
@@ -65,11 +70,11 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
     ] == [
         ("map_application", "map-postgres-production", "map_app", "map_owner", "map_cluster_admin"),
         ("map_dagster", "map-postgres-production", "map_dagster", "map_owner", "map_cluster_admin"),
-        ("pinvi", "postgres-production", "pin_app", "pin_owner", "cluster_admin"),
+        ("pinvi", "pinvi-postgres-production", "pin_app", "pin_owner", "pin_cluster_admin"),
     ]
     assert {runtime.container_name for runtime in runtimes} == {
         "map-postgres-production",
-        "postgres-production",
+        "pinvi-postgres-production",
     }
     assert runtimes[1].additional_owner_names == frozenset({"map_dagster_metadata"})
 
@@ -87,11 +92,15 @@ def test_database_runtime_rejects_invalid_frozen_admin_role(
                 "services": {
                     "kor-travel-geo-postgres": {
                         "container_name": "postgres-production",
-                        "environment": postgres_environment,
+                        "environment": {"POSTGRES_USER": "geo_admin"},
                     },
                     "kor-travel-map-postgres": {
                         "container_name": "map-postgres-production",
                         "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
+                    "pinvi-postgres": {
+                        "container_name": "pinvi-postgres-production",
+                        "environment": postgres_environment,
                     },
                 }
             },
