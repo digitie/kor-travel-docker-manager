@@ -26,8 +26,8 @@ def test_current_release_is_exact_map_and_pinvi_v5_authority() -> None:
     assert release.version == PINNED_RUNTIME_RELEASE_VERSION == 5
     assert release.source_for("map") == MAP_PINNED_RUNTIME_SOURCE
     assert release.source_for("pinvi") == PINVI_PINNED_RUNTIME_SOURCE
-    assert release.source_for("map").revision == "9efd1f8974c5d8754a7be928987822251b27759f"
-    assert release.source_for("pinvi").revision == "9392bdbe74fa3634601751b38c95f5221c3648b2"
+    assert release.source_for("map").revision == "e420c89eb0f10776f7fb96e59ef3b409974d0d54"
+    assert release.source_for("pinvi").revision == "27fe2043b7b8e747fbb42d91e461ea462f930bb7"
     assert release.sources_by_role == {
         "map": MAP_PINNED_RUNTIME_SOURCE,
         "pinvi": PINVI_PINNED_RUNTIME_SOURCE,
@@ -38,15 +38,15 @@ def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
     release = PINNED_RUNTIME_RELEASE
 
     assert canonical_pinset_bytes(version=release.version, sources=release.sources) == (
-        b'{"sources":[{"revision":"9efd1f8974c5d8754a7be928987822251b27759f",'
+        b'{"sources":[{"revision":"e420c89eb0f10776f7fb96e59ef3b409974d0d54",'
         b'"role":"map","url":"https://github.com/digitie/kor-travel-map.git"},'
-        b'{"revision":"9392bdbe74fa3634601751b38c95f5221c3648b2",'
+        b'{"revision":"27fe2043b7b8e747fbb42d91e461ea462f930bb7",'
         b'"role":"pinvi","url":"https://github.com/digitie/pinvi.git"}],"version":5}'
     )
     assert canonical_pinset_sha256(version=release.version, sources=release.sources) == (
-        "93dd4ac0e246a4530ff45868ae291274b7240007398fc863690f7c31b4e3ce9f"
+        "de5206dcc198c76874dcf51ef7152cd6d8bff0cbf5766463709e9d69a2d9b7a5"
     )
-    assert release.pinset_sha256 == "93dd4ac0e246a4530ff45868ae291274b7240007398fc863690f7c31b4e3ce9f"
+    assert release.pinset_sha256 == "de5206dcc198c76874dcf51ef7152cd6d8bff0cbf5766463709e9d69a2d9b7a5"
 
 
 @pytest.mark.parametrize(
@@ -55,7 +55,7 @@ def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
         (
             "map",
             "https://github.com/digitie/kor-travel-map.git/",
-            "9efd1f8974c5d8754a7be928987822251b27759f",
+            "e420c89eb0f10776f7fb96e59ef3b409974d0d54",
             "URL",
         ),
         (
