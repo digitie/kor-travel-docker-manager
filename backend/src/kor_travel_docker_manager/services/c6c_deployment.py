@@ -53,6 +53,7 @@ _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
+_PINVI_POSTGRES_INITDB_ARGS = "--auth-host=scram-sha-256"
 _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
@@ -761,6 +762,7 @@ def _validate_pinvi_db_init_identity(
         expected_postgres_environment = {
             "POSTGRES_USER": expected_user,
             "POSTGRES_DB": expected_bootstrap_database,
+            "POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS,
         }
         if any(
             postgres_environment.get(name) != value
@@ -772,6 +774,7 @@ def _validate_pinvi_db_init_identity(
         expected_postgres_environment = {
             "POSTGRES_USER": "${PINVI_POSTGRES_USER:-pinvi}",
             "POSTGRES_DB": "${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}",
+            "POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS,
         }
         if any(
             postgres_environment.get(name) != value
@@ -782,7 +785,7 @@ def _validate_pinvi_db_init_identity(
 
     def command_value(name: str, default: str) -> str:
         if resolved:
-            return environment.get(name, default)
+            return environment.get(name) or default
         return f"${{{name}:-{default}}}"
 
     expected_postgres_command = [

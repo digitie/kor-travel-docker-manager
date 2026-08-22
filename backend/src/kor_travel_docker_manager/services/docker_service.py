@@ -12,6 +12,7 @@ from docker.errors import DockerException, NotFound
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    _PINVI_POSTGRES_INITDB_ARGS,
     ComposeCandidateContractError,
     ComposePostMutationContractError,
     assert_manager_mutation_allowed,
@@ -449,6 +450,7 @@ def validate_container_config_update(
     env: dict[str, Any],
     networks: list[Any],
     baseline_env: dict[str, Any] | None = None,
+    service_name: str | None = None,
 ) -> None:
     """`update_container_config` 저장 전 사용자 입력을 검증한다.
 
@@ -469,6 +471,11 @@ def validate_container_config_update(
                 None if baseline_value is None else str(baseline_value)
             ),
         )
+    if service_name == "pinvi-postgres" and "POSTGRES_INITDB_ARGS" in env:
+        if env["POSTGRES_INITDB_ARGS"] != _PINVI_POSTGRES_INITDB_ARGS:
+            raise ContainerConfigValidationError(
+                "PinVi PostgreSQL initdb authentication policy is immutable."
+            )
 
 
 class DockerService:
@@ -883,6 +890,7 @@ class DockerService:
             env=new_env,
             networks=new_networks,
             baseline_env=baseline_env if isinstance(baseline_env, dict) else {},
+            service_name=svc_name,
         )
         with c6c_deployment_lock_from_environment() as lock_snapshot:
             environment_snapshot = _capture_compose_environment_snapshot(
@@ -960,6 +968,7 @@ class DockerService:
                     if isinstance(locked_baseline_env, dict)
                     else {}
                 ),
+                service_name=svc_name,
             )
             compose_cfg = deepcopy(loaded)
             baseline_volume_hash = compose_volume_graph_hash(compose_cfg)

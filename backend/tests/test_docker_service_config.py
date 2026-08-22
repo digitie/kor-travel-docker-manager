@@ -102,6 +102,7 @@ _MAP_UI_GEO_API_KEY_SOURCE = (
 _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
+_PINVI_POSTGRES_INITDB_ARGS = "--auth-host=scram-sha-256"
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -271,6 +272,7 @@ def _compose_with_canonical_c6c_services(
                 "POSTGRES_USER": "${PINVI_POSTGRES_USER:-pinvi}",
                 "POSTGRES_PASSWORD_FILE": "/run/secrets/pinvi-postgres-password",
                 "POSTGRES_DB": "${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}",
+                "POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS,
             },
             "command": [
                 "postgres",
@@ -1299,6 +1301,26 @@ def test_validate_container_config_update_checks_ports_env_and_networks() -> Non
         env={"POSTGRES_DB": "kor_travel_geo"},
         networks=["default"],
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["--auth-host=trust", "--auth-host=scram-sha-256 --auth-local=trust"],
+)
+def test_validate_container_config_update_rejects_pinvi_initdb_auth_drift(
+    value: str,
+) -> None:
+    with pytest.raises(
+        ContainerConfigValidationError,
+        match="initdb authentication policy",
+    ):
+        validate_container_config_update(
+            ports=[],
+            env={"POSTGRES_INITDB_ARGS": value},
+            networks=[],
+            baseline_env={"POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS},
+            service_name="pinvi-postgres",
+        )
 
 
 def test_update_container_config_validates_before_lock_or_environment_snapshot(
