@@ -4369,6 +4369,7 @@ def _validate_dataset_catalog(value: Any) -> bool:
         and isinstance(value.get("is_feature_load"), bool)
         and isinstance(value.get("is_active"), bool)
         and isinstance(value.get("is_refreshable"), bool)
+        and (value.get("is_refreshable") is False or value.get("is_active") is True)
         and isinstance(scope_refresh, Mapping)
         and isinstance(scope_refresh.get("supported"), bool)
         and scope_refresh.get("selector") in {"none", "poi_cache_targets"}
@@ -4401,6 +4402,7 @@ def _validate_dataset_catalog(value: Any) -> bool:
                 and not scope_refresh["allowed_sync_scopes"]
                 and isinstance(scope_refresh.get("reason"), str)
                 and bool(scope_refresh["reason"])
+                and value.get("is_refreshable") is True
             )
             or (
                 scope_refresh.get("selector") == "poi_cache_targets"

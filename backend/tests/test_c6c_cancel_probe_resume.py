@@ -241,6 +241,43 @@ def test_catalog_validator_rejects_refreshable_none_effect() -> None:
 
 
 @pytest.mark.parametrize(
+    ("is_active", "is_refreshable"),
+    [(False, True), (True, False)],
+)
+def test_catalog_validator_rejects_refreshability_cross_field_mismatch(
+    is_active: bool,
+    is_refreshable: bool,
+) -> None:
+    catalog = {
+        "feature_kind": "place",
+        "provider_state_default_scope": "dataset_wide",
+        "label": "Catalog only",
+        "is_feature_load": True,
+        "is_active": is_active,
+        "is_refreshable": is_refreshable,
+        "scope_refresh": {
+            "supported": False,
+            "selector": "none",
+            "effect": "dataset_wide",
+            "default_sync_scope": "dataset_wide",
+            "allowed_sync_scopes": [],
+            "reason": "이 dataset에는 실행 가능한 refresh runner가 없습니다.",
+        },
+        "preview": {
+            "supported": False,
+            "sources": [],
+            "input_kind": "none",
+            "default_max_items": 20,
+            "max_items_limit": 100,
+            "timeout_seconds": 5.0,
+            "external_call_budget": 0,
+        },
+    }
+
+    assert not c6c._validate_dataset_catalog(catalog)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
     ("state", "created_at", "consumed_at", "finalized_at"),
     [
         (
