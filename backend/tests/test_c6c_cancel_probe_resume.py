@@ -186,6 +186,7 @@ def test_catalog_validator_accepts_unrefreshable_none_effect() -> None:
         "provider_state_default_scope": "dataset_wide",
         "label": "Catalog only",
         "is_feature_load": True,
+        "is_active": True,
         "is_refreshable": False,
         "scope_refresh": {
             "supported": False,
@@ -207,6 +208,36 @@ def test_catalog_validator_accepts_unrefreshable_none_effect() -> None:
     }
 
     assert c6c._validate_dataset_catalog(catalog)  # noqa: SLF001
+
+
+def test_catalog_validator_rejects_refreshable_none_effect() -> None:
+    catalog = {
+        "feature_kind": "place",
+        "provider_state_default_scope": "dataset_wide",
+        "label": "Catalog only",
+        "is_feature_load": True,
+        "is_active": True,
+        "is_refreshable": True,
+        "scope_refresh": {
+            "supported": False,
+            "selector": "none",
+            "effect": "none",
+            "default_sync_scope": "dataset_wide",
+            "allowed_sync_scopes": ["dataset_wide"],
+            "reason": "이 dataset에는 실행 가능한 refresh runner가 없습니다.",
+        },
+        "preview": {
+            "supported": False,
+            "sources": [],
+            "input_kind": "none",
+            "default_max_items": 20,
+            "max_items_limit": 100,
+            "timeout_seconds": 5.0,
+            "external_call_budget": 0,
+        },
+    }
+
+    assert not c6c._validate_dataset_catalog(catalog)  # noqa: SLF001
 
 
 @pytest.mark.parametrize(

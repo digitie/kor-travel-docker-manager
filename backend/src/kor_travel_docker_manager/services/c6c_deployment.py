@@ -4188,9 +4188,10 @@ def _validate_map_dataset_row(value: Any) -> bool:
         and (
             (
                 catalog_state == "canonical"
-                and _validate_dataset_catalog(value.get("catalog"))
+                and isinstance(value.get("catalog"), Mapping)
+                and _validate_dataset_catalog(value["catalog"])
                 and value.get("orphan_reason") is None
-                and value.get("mutable") is True
+                and value.get("mutable") == value["catalog"].get("is_active")
             )
             or (
                 catalog_state == "orphan"
@@ -4366,6 +4367,7 @@ def _validate_dataset_catalog(value: Any) -> bool:
             for field in ("feature_kind", "provider_state_default_scope", "label")
         )
         and isinstance(value.get("is_feature_load"), bool)
+        and isinstance(value.get("is_active"), bool)
         and isinstance(value.get("is_refreshable"), bool)
         and isinstance(scope_refresh, Mapping)
         and isinstance(scope_refresh.get("supported"), bool)
@@ -4389,6 +4391,7 @@ def _validate_dataset_catalog(value: Any) -> bool:
                 and scope_refresh.get("default_sync_scope") == "dataset_wide"
                 and isinstance(scope_refresh.get("reason"), str)
                 and bool(scope_refresh["reason"])
+                and value.get("is_refreshable") is False
             )
             or (
                 scope_refresh.get("selector") == "none"
