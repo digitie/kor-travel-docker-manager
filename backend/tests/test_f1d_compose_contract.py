@@ -16,11 +16,13 @@ import pytest
 import yaml
 
 from kor_travel_docker_manager.services.c6c_deployment import (
+    _CANDIDATE_ALLOWED_OPERATOR_BINDS,
     C6cBuildProvenance,
     DeploymentContractError,
     derive_curation_service_principal_environment,
     validate_compose_candidate_protected_values,
     validate_map_postgres_runtime_secret_isolation,
+    validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
@@ -57,6 +59,15 @@ _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
         "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
     }
 )
+_PINVI_POSTGRES_IMAGE = (
+    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
+)
+
+
+def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
+    assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
+        ("pinvi-postgres", "/var/lib/postgresql/data", False)
+    ] == "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
 
 
 def _compose_contract_environment() -> dict[str, str]:
@@ -108,6 +119,12 @@ def _compose_contract_environment() -> dict[str, str]:
         ),
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "admin",
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "u" * 32,
+        "PINVI_PGDATA": "/mnt/f/dev/kor-travel-map-codex",
+        "PINVI_POSTGRES_PASSWORD": "pinvi-contract-postgres-password",
+        "PINVI_DOCKER_DATABASE_URL": (
+            "postgresql+asyncpg://pinvi:pinvi-contract-postgres-password@"
+            "127.0.0.1:12800/pinvi"
+        ),
         "PINVI_ENVIRONMENT": "production",
     }
 
@@ -135,19 +152,27 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
         assert isinstance(depends_on, dict)
         for dependency in depends_on:
             if dependency not in services:
-                # dependency의 실행 내용은 이 계약의 대상이 아니다. 실제 resolver가
-                # dependency graph를 검증하게 이름만 최소 stub으로 둔다.
-                services[dependency] = {"image": "alpine:3.20"}
+                # DB service는 F1D target identity의 일부이므로 실제 Compose 정의를
+                # 유지한다. 나머지 dependency의 실행 내용은 이 계약의 대상이 아니다.
+                if dependency in {"pinvi-postgres", "pinvi-db-init"}:
+                    services[dependency] = deepcopy(source_services[dependency])
+                else:
+                    # 실제 resolver가 dependency graph를 검증하게 이름만 최소 stub으로 둔다.
+                    services[dependency] = {"image": "alpine:3.20"}
 
     fragment: dict[str, object] = {"services": services}
-    if "kor-travel-map-postgres" in services:
+    if "kor-travel-map-postgres" in services or "pinvi-postgres" in services:
         source_secrets = _source_compose().get("secrets")
         assert isinstance(source_secrets, dict)
-        fragment["secrets"] = {
-            "kor-travel-map-postgres-password": deepcopy(
+        fragment["secrets"] = {}
+        if "kor-travel-map-postgres" in services:
+            fragment["secrets"]["kor-travel-map-postgres-password"] = deepcopy(
                 source_secrets["kor-travel-map-postgres-password"]
             )
-        }
+        if "pinvi-postgres" in services:
+            fragment["secrets"]["pinvi-postgres-password"] = deepcopy(
+                source_secrets["pinvi-postgres-password"]
+            )
     return fragment
 
 
@@ -431,6 +456,277 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         root_env_path=str(root_env),
     ) == raw_snapshots
 
+    empty_tuning_environment = dict(environment)
+    empty_tuning_environment["PINVI_POSTGRES_SHARED_BUFFERS"] = ""
+    assert validate_resolved_compose_candidate_protected_values(
+        resolved,
+        environment=empty_tuning_environment,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+    ) == raw_snapshots
+
+    drifted = deepcopy(resolved)
+    drifted_services = drifted["services"]
+    assert isinstance(drifted_services, dict)
+    drifted_pinvi_api = drifted_services["pinvi-api"]
+    assert isinstance(drifted_pinvi_api, dict)
+    drifted_pinvi_environment = drifted_pinvi_api["environment"]
+    assert isinstance(drifted_pinvi_environment, dict)
+    drifted_pinvi_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/wrong_database"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            drifted,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    encoded_password = deepcopy(resolved)
+    encoded_services = encoded_password["services"]
+    assert isinstance(encoded_services, dict)
+    encoded_pinvi_api = encoded_services["pinvi-api"]
+    assert isinstance(encoded_pinvi_api, dict)
+    encoded_pinvi_environment = encoded_pinvi_api["environment"]
+    assert isinstance(encoded_pinvi_environment, dict)
+    encoded_pinvi_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi:pinvi-contract-postgres%2Dpassword@"
+        "127.0.0.1:12800/pinvi"
+    )
+    assert validate_resolved_compose_candidate_protected_values(
+        encoded_password,
+        environment=environment,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+    ) == raw_snapshots
+
+    for leaked_password in ("wrong-password", environment["KOR_TRAVEL_MAP_POSTGRES_PASSWORD"]):
+        leaked = deepcopy(resolved)
+        leaked_services = leaked["services"]
+        assert isinstance(leaked_services, dict)
+        leaked_pinvi_api = leaked_services["pinvi-api"]
+        assert isinstance(leaked_pinvi_api, dict)
+        leaked_pinvi_environment = leaked_pinvi_api["environment"]
+        assert isinstance(leaked_pinvi_environment, dict)
+        leaked_pinvi_environment["PINVI_DATABASE_URL"] = (
+            f"postgresql+asyncpg://pinvi:{leaked_password}@127.0.0.1:12800/pinvi"
+        )
+        with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+            validate_resolved_compose_candidate_protected_values(
+                leaked,
+                environment=environment,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+            )
+
+    pinvi_literal = deepcopy(candidate)
+    pinvi_literal_services = pinvi_literal["services"]
+    assert isinstance(pinvi_literal_services, dict)
+    pinvi_postgres = pinvi_literal_services["pinvi-postgres"]
+    assert isinstance(pinvi_postgres, dict)
+    pinvi_postgres_environment = pinvi_postgres["environment"]
+    assert isinstance(pinvi_postgres_environment, dict)
+    pinvi_postgres_environment["POSTGRES_PASSWORD"] = "attacker-literal"
+    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL password"):
+        validate_compose_candidate_protected_values(
+            pinvi_literal,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    pinvi_db_init_drift = deepcopy(candidate)
+    pinvi_db_init_services = pinvi_db_init_drift["services"]
+    assert isinstance(pinvi_db_init_services, dict)
+    pinvi_db_init = pinvi_db_init_services["pinvi-db-init"]
+    assert isinstance(pinvi_db_init, dict)
+    pinvi_db_init_environment = pinvi_db_init["environment"]
+    assert isinstance(pinvi_db_init_environment, dict)
+    pinvi_db_init_environment["PGPORT"] = "12900"
+    with pytest.raises(DeploymentContractError, match="database init identity"):
+        validate_compose_candidate_protected_values(
+            pinvi_db_init_drift,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    for environment_name, drifted_value in (
+        ("POSTGRES_USER", "${PINVI_POSTGRES_USER:-wrong_admin}"),
+        ("POSTGRES_DB", "${PINVI_POSTGRES_BOOTSTRAP_DB:-wrong_bootstrap}"),
+    ):
+        pinvi_postgres_drift = deepcopy(candidate)
+        pinvi_postgres_services = pinvi_postgres_drift["services"]
+        assert isinstance(pinvi_postgres_services, dict)
+        pinvi_postgres = pinvi_postgres_services["pinvi-postgres"]
+        assert isinstance(pinvi_postgres, dict)
+        pinvi_postgres_environment = pinvi_postgres["environment"]
+        assert isinstance(pinvi_postgres_environment, dict)
+        pinvi_postgres_environment[environment_name] = drifted_value
+        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+            validate_compose_candidate_protected_values(
+                pinvi_postgres_drift,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+
+    pinvi_postgres_command_drift = deepcopy(candidate)
+    pinvi_postgres_command_services = pinvi_postgres_command_drift["services"]
+    assert isinstance(pinvi_postgres_command_services, dict)
+    pinvi_postgres_command = pinvi_postgres_command_services["pinvi-postgres"]
+    assert isinstance(pinvi_postgres_command, dict)
+    pinvi_postgres_command_values = pinvi_postgres_command["command"]
+    assert isinstance(pinvi_postgres_command_values, list)
+    pinvi_postgres_command_values[4] = "${PINVI_DB_PORT:-12900}"
+    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+        validate_compose_candidate_protected_values(
+            pinvi_postgres_command_drift,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    for appended_tokens in (
+        ["-p", "${PINVI_DB_PORT:-12900}"],
+        ["-c", "listen_addresses=0.0.0.0"],
+        ["-c", "shared_buffers=attacker"],
+    ):
+        pinvi_postgres_override = deepcopy(candidate)
+        pinvi_postgres_override_services = pinvi_postgres_override["services"]
+        assert isinstance(pinvi_postgres_override_services, dict)
+        pinvi_postgres_override_service = pinvi_postgres_override_services["pinvi-postgres"]
+        assert isinstance(pinvi_postgres_override_service, dict)
+        pinvi_postgres_override_command = pinvi_postgres_override_service["command"]
+        assert isinstance(pinvi_postgres_override_command, list)
+        pinvi_postgres_override_command.extend(appended_tokens)
+        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+            validate_compose_candidate_protected_values(
+                pinvi_postgres_override,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+
+    for service_name, error_message in (
+        ("pinvi-postgres", "PinVi PostgreSQL image provenance"),
+        ("pinvi-db-init", "PinVi database init image provenance"),
+    ):
+        pinvi_image_drift = deepcopy(candidate)
+        pinvi_image_services = pinvi_image_drift["services"]
+        assert isinstance(pinvi_image_services, dict)
+        pinvi_image_services[service_name]["image"] = "attacker.invalid/postgis:latest"
+        with pytest.raises(DeploymentContractError, match=error_message):
+            validate_compose_candidate_protected_values(
+                pinvi_image_drift,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+
+    for initdb_args in (
+        "--auth-host=trust",
+        "--auth-host=scram-sha-256 --auth-local=trust",
+        "",
+    ):
+        pinvi_initdb_drift = deepcopy(candidate)
+        pinvi_initdb_services = pinvi_initdb_drift["services"]
+        assert isinstance(pinvi_initdb_services, dict)
+        pinvi_initdb_postgres = pinvi_initdb_services["pinvi-postgres"]
+        assert isinstance(pinvi_initdb_postgres, dict)
+        pinvi_initdb_environment = pinvi_initdb_postgres["environment"]
+        assert isinstance(pinvi_initdb_environment, dict)
+        pinvi_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
+        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+            validate_compose_candidate_protected_values(
+                pinvi_initdb_drift,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+
+    for service_name, error_message in (
+        ("pinvi-postgres", "PinVi PostgreSQL image provenance"),
+        ("pinvi-db-init", "PinVi database init image provenance"),
+    ):
+        pinvi_resolved_image_drift = deepcopy(resolved)
+        pinvi_resolved_image_services = pinvi_resolved_image_drift["services"]
+        assert isinstance(pinvi_resolved_image_services, dict)
+        pinvi_resolved_image_service = pinvi_resolved_image_services[service_name]
+        assert isinstance(pinvi_resolved_image_service, dict)
+        pinvi_resolved_image_service["image"] = "attacker.invalid/postgis:latest"
+        with pytest.raises(DeploymentContractError, match=error_message):
+            validate_resolved_compose_candidate_protected_values(
+                pinvi_resolved_image_drift,
+                environment=environment,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+            )
+
+    pinvi_resolved_command_drift = deepcopy(resolved)
+    pinvi_resolved_command_services = pinvi_resolved_command_drift["services"]
+    assert isinstance(pinvi_resolved_command_services, dict)
+    pinvi_resolved_command_service = pinvi_resolved_command_services["pinvi-postgres"]
+    assert isinstance(pinvi_resolved_command_service, dict)
+    pinvi_resolved_command = pinvi_resolved_command_service["command"]
+    assert isinstance(pinvi_resolved_command, list)
+    pinvi_resolved_command.extend(["-p", "12900"])
+    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            pinvi_resolved_command_drift,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    pinvi_resolved_initdb_drift = deepcopy(resolved)
+    pinvi_resolved_initdb_services = pinvi_resolved_initdb_drift["services"]
+    assert isinstance(pinvi_resolved_initdb_services, dict)
+    pinvi_resolved_initdb_postgres = pinvi_resolved_initdb_services["pinvi-postgres"]
+    assert isinstance(pinvi_resolved_initdb_postgres, dict)
+    pinvi_resolved_initdb_environment = pinvi_resolved_initdb_postgres["environment"]
+    assert isinstance(pinvi_resolved_initdb_environment, dict)
+    for initdb_args in ("--auth-host=trust", ""):
+        pinvi_resolved_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
+        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+            validate_resolved_compose_candidate_protected_values(
+                pinvi_resolved_initdb_drift,
+                environment=environment,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+            )
+
+    pinvi_db_init_command_drift = deepcopy(candidate)
+    pinvi_db_init_command_services = pinvi_db_init_command_drift["services"]
+    assert isinstance(pinvi_db_init_command_services, dict)
+    pinvi_db_init_command_service = pinvi_db_init_command_services["pinvi-db-init"]
+    assert isinstance(pinvi_db_init_command_service, dict)
+    pinvi_db_init_command_service["command"] = ["sh", "-ec", "createdb pinvi"]
+    with pytest.raises(DeploymentContractError, match="database init command"):
+        validate_compose_candidate_protected_values(
+            pinvi_db_init_command_drift,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    pinvi_resolved_identity_drift = deepcopy(resolved)
+    pinvi_resolved_services = pinvi_resolved_identity_drift["services"]
+    assert isinstance(pinvi_resolved_services, dict)
+    pinvi_resolved_postgres = pinvi_resolved_services["pinvi-postgres"]
+    assert isinstance(pinvi_resolved_postgres, dict)
+    pinvi_resolved_environment = pinvi_resolved_postgres["environment"]
+    assert isinstance(pinvi_resolved_environment, dict)
+    pinvi_resolved_environment["POSTGRES_USER"] = "wrong_admin"
+    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            pinvi_resolved_identity_drift,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
     services = resolved["services"]
     assert isinstance(services, dict)
     map_postgres_environment = services["kor-travel-map-postgres"]["environment"]
@@ -635,6 +931,31 @@ def test_map_postgres_runtime_password_secret_isolation_requires_file_only() -> 
         match="password file wiring is invalid",
     ):
         validate_map_postgres_runtime_secret_isolation({"Env": []})
+
+
+def test_pinvi_postgres_runtime_password_secret_isolation_requires_file_only() -> None:
+    validate_pinvi_postgres_runtime_secret_isolation(
+        {"Env": ["POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password"]}
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="exposes the initial superuser password",
+    ):
+        validate_pinvi_postgres_runtime_secret_isolation(
+            {
+                "Env": [
+                    "POSTGRES_PASSWORD=literal-password",
+                    "POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password",
+                ]
+            }
+        )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="password file wiring is invalid",
+    ):
+        validate_pinvi_postgres_runtime_secret_isolation({"Env": []})
 
 
 def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutation(

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-import kor_travel_docker_manager.services.database_runtime as database_runtime
 import pytest
+
+import kor_travel_docker_manager.services.database_runtime as database_runtime
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
@@ -19,6 +20,7 @@ def _runtime(role: database_runtime.DatabaseRole) -> DatabaseRuntime:
     return DatabaseRuntime(
         role=role,
         container_name="postgres-rehearsal",
+        port=12800 if role == "pinvi" else 12700,
         database_name={
             "map_application": "map_app",
             "map_dagster": "map_dagster",
@@ -34,13 +36,17 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         resolved={
             "services": {
                 "kor-travel-geo-postgres": {
-                    "container_name": "postgres-production",
+                    "container_name": "geo-postgres-production",
                     "environment": {"POSTGRES_USER": "cluster_admin"},
                 },
                 "kor-travel-map-postgres": {
                     "container_name": "map-postgres-production",
                     "environment": {"POSTGRES_USER": "map_cluster_admin"},
-                }
+                },
+                "pinvi-postgres": {
+                    "container_name": "pinvi-postgres-production",
+                    "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                },
             }
         },
         environment={
@@ -57,21 +63,74 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         (
             runtime.role,
             runtime.container_name,
+            runtime.port,
             runtime.database_name,
             runtime.owner_name,
             runtime.admin_name,
         )
         for runtime in runtimes
     ] == [
-        ("map_application", "map-postgres-production", "map_app", "map_owner", "map_cluster_admin"),
-        ("map_dagster", "map-postgres-production", "map_dagster", "map_owner", "map_cluster_admin"),
-        ("pinvi", "postgres-production", "pin_app", "pin_owner", "cluster_admin"),
+        ("map_application", "map-postgres-production", 12700, "map_app", "map_owner", "map_cluster_admin"),
+        ("map_dagster", "map-postgres-production", 12700, "map_dagster", "map_owner", "map_cluster_admin"),
+        ("pinvi", "pinvi-postgres-production", 12800, "pin_app", "pin_owner", "pin_cluster_admin"),
     ]
     assert {runtime.container_name for runtime in runtimes} == {
         "map-postgres-production",
-        "postgres-production",
+        "pinvi-postgres-production",
     }
     assert runtimes[1].additional_owner_names == frozenset({"map_dagster_metadata"})
+
+
+def test_database_runtime_rejects_pinvi_container_alias() -> None:
+    with pytest.raises(DeploymentContractError, match="distinct frozen PostgreSQL container"):
+        database_runtimes_from_frozen_contract(
+            resolved={
+                "services": {
+                    "kor-travel-map-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
+                    "pinvi-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                    },
+                }
+            },
+            environment={
+                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+                "PINVI_POSTGRES_DB": "pin_app",
+                "PINVI_POSTGRES_USER": "pin_owner",
+            },
+        )
+
+
+def test_database_runtime_rejects_database_name_alias() -> None:
+    with pytest.raises(DeploymentContractError, match="distinct frozen database names"):
+        database_runtimes_from_frozen_contract(
+            resolved={
+                "services": {
+                    "kor-travel-map-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
+                    "pinvi-postgres": {
+                        "container_name": "pinvi-postgres-production",
+                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                    },
+                }
+            },
+            environment={
+                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+                "PINVI_POSTGRES_DB": "map_app",
+                "PINVI_POSTGRES_USER": "pin_owner",
+            },
+        )
 
 
 @pytest.mark.parametrize(
@@ -87,15 +146,50 @@ def test_database_runtime_rejects_invalid_frozen_admin_role(
                 "services": {
                     "kor-travel-geo-postgres": {
                         "container_name": "postgres-production",
-                        "environment": postgres_environment,
+                        "environment": {"POSTGRES_USER": "geo_admin"},
                     },
                     "kor-travel-map-postgres": {
                         "container_name": "map-postgres-production",
                         "environment": {"POSTGRES_USER": "map_cluster_admin"},
                     },
+                    "pinvi-postgres": {
+                        "container_name": "pinvi-postgres-production",
+                        "environment": postgres_environment,
+                    },
                 }
             },
             environment={"KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata"},
+        )
+
+
+@pytest.mark.parametrize(
+    "port_value",
+    ["", "not-a-port", "0", "65536"],
+)
+def test_database_runtime_rejects_invalid_frozen_port(port_value: str) -> None:
+    with pytest.raises(DeploymentContractError, match="PostgreSQL port is invalid"):
+        database_runtimes_from_frozen_contract(
+            resolved={
+                "services": {
+                    "kor-travel-map-postgres": {
+                        "container_name": "map-postgres-production",
+                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
+                    },
+                    "pinvi-postgres": {
+                        "container_name": "pinvi-postgres-production",
+                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
+                    },
+                }
+            },
+            environment={
+                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+                "PINVI_POSTGRES_DB": "pin_app",
+                "PINVI_POSTGRES_USER": "pin_owner",
+                "PINVI_DB_PORT": port_value,
+            },
         )
 
 
@@ -138,7 +232,35 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
         "createdb",
     ]
     assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
+    assert all("--port" in arguments for arguments, _ in calls)
+    assert [
+        arguments[arguments.index("--port") + 1]
+        for arguments, _ in calls
+    ] == ["12700", "12700", "12700", "12700", "12800", "12800"]
     assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
+
+
+def test_recreate_empty_databases_preflights_all_owners_before_drop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtimes = (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
+    owner_probes: list[str] = []
+    runner = Mock()
+
+    def read_owner(runtime: DatabaseRuntime) -> str:
+        owner_probes.append(runtime.role)
+        if runtime.role == "map_dagster":
+            raise DeploymentContractError("owner probe failed")
+        return runtime.owner_name
+
+    monkeypatch.setattr(database_runtime, "_read_database_owner", read_owner)
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    with pytest.raises(DeploymentContractError, match="owner probe failed"):
+        recreate_empty_databases(runtimes)
+
+    assert owner_probes == ["map_application", "map_dagster"]
+    runner.assert_not_called()
 
 
 def test_recreate_empty_database_refuses_foreign_owned_database(

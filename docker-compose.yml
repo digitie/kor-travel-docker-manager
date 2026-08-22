@@ -155,7 +155,7 @@ services:
 
   # ADR-047 대역 규칙: 128xx = PinVi.
   pinvi-postgres:
-    image: postgis/postgis:16-3.5
+    image: postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40
     container_name: ${PINVI_POSTGRES_CONTAINER:-pinvi-postgres}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -259,7 +259,7 @@ services:
       fi
 
   pinvi-db-init:
-    image: postgis/postgis:16-3.5
+    image: postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40
     container_name: ${PINVI_DB_INIT_CONTAINER:-pinvi-db-init}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"

@@ -7,9 +7,10 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
+
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cCancelProbeFixture,
@@ -789,7 +790,13 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     monkeypatch.setattr(
         service,
         "_inspect_container_runtime_config",
-        Mock(return_value={"Env": []}),
+        Mock(
+            return_value={
+                "Env": [
+                    "POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password"
+                ]
+            }
+        ),
     )
     monkeypatch.setattr(
         compose_service_module,
@@ -805,8 +812,11 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         services: object,
         **_kwargs: object,
     ) -> list[dict[str, str]]:
-        if tuple(services) == ("kor-travel-map-postgres",):
-            return [{"Name": "frozen-map-postgres"}]
+        if tuple(services) == ("kor-travel-map-postgres", "pinvi-postgres"):
+            return [
+                {"Name": "frozen-map-postgres"},
+                {"Name": "frozen-pinvi-postgres"},
+            ]
         return []
 
     monkeypatch.setattr(service, "_require_services_ready", require_services_ready)
@@ -936,6 +946,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "--wait-timeout",
         "300",
         "kor-travel-map-postgres",
+        "pinvi-postgres",
     )
     assert reset_operation_counts == [6]
     assert operations[6] == (
@@ -1055,9 +1066,12 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     assert map_bootstrap_assertion.call_count == bootstrap_assertions_before_armed_resume
     assert map_postgres_runtime_secret_assertion.call_count == 3
     assert service._inspect_container_runtime_config.call_args_list == [
-        (("frozen-map-postgres",),),
-        (("frozen-map-postgres",),),
-        (("frozen-map-postgres",),),
+        call("frozen-map-postgres"),
+        call("frozen-pinvi-postgres"),
+        call("frozen-map-postgres"),
+        call("frozen-pinvi-postgres"),
+        call("frozen-map-postgres"),
+        call("frozen-pinvi-postgres"),
     ]
     assert operations.count(
         (
@@ -1548,7 +1562,13 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
     monkeypatch.setattr(
         service,
         "_inspect_container_runtime_config",
-        Mock(return_value={"Env": []}),
+        Mock(
+            return_value={
+                "Env": [
+                    "POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password"
+                ]
+            }
+        ),
     )
     monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
     monkeypatch.setattr(
@@ -1560,8 +1580,11 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
         services: object,
         **_kwargs: object,
     ) -> list[dict[str, str]]:
-        if tuple(services) == ("kor-travel-map-postgres",):
-            return [{"Name": "frozen-map-postgres"}]
+        if tuple(services) == ("kor-travel-map-postgres", "pinvi-postgres"):
+            return [
+                {"Name": "frozen-map-postgres"},
+                {"Name": "frozen-pinvi-postgres"},
+            ]
         return []
 
     monkeypatch.setattr(service, "_require_services_ready", require_services_ready)
