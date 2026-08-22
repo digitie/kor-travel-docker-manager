@@ -51,6 +51,7 @@ _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
+_PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
@@ -251,6 +252,12 @@ def _compose_with_canonical_c6c_services(
                     "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
                 ),
             },
+        },
+        _PINVI_POSTGRES_SERVICE: {
+            "image": "fixture.invalid/postgis:test",
+            "container_name": "pinvi-postgres",
+            "network_mode": "host",
+            "environment": {"PINVI_CONTRACT_FIXTURE": "fixture"},
         },
         _MAP_API_SERVICE: {
             "image": "fixture.invalid/kor-travel-map-api:test",
