@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-22 — C6c Map membership triple·fixture 순서 검증 rebase
+
+열린 PR #170을 최신 `origin/main`에 재배치했다. C6c smoke의 Map dataset identity를
+`provider_dataset_id × sync_scope × operation_key`와 canonical detail URL로 검증하고,
+catalog-only 행의 null operation만 허용한다. 실행 membership와 표시 scope·operation이
+어긋나거나 fixture lifecycle timestamp가 역전되면 mutation 전에 fail-close한다.
+
+이 PR은 Map #170의 후속이며 PinVi projection과 같은 upstream triple 계약을 사용한다.
+기존 main의 rehearsal 환경 테스트와 문서 원장은 보존했으며, PR 전 focused pytest·Ruff·strict
+mypy와 적대적 전문 리뷰를 다시 수행한다.
+
+---
+
 ## 2026-08-21 — 전체 문서·코드 정합성 감사
 
 현재 Markdown 문서와 Compose·registry·FastAPI router·CLI·frontend 토큰을 대조하고, 서로 다른

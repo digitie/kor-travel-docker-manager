@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     DeploymentContractError,
