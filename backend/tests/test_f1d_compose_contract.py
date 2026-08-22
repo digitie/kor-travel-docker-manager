@@ -118,6 +118,10 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "u" * 32,
         "PINVI_PGDATA": "/mnt/f/dev/kor-travel-map-codex",
         "PINVI_POSTGRES_PASSWORD": "pinvi-contract-postgres-password",
+        "PINVI_DOCKER_DATABASE_URL": (
+            "postgresql+asyncpg://pinvi:pinvi-contract-postgres-password@"
+            "127.0.0.1:12800/pinvi"
+        ),
         "PINVI_ENVIRONMENT": "production",
     }
 
@@ -147,7 +151,7 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
             if dependency not in services:
                 # DB service는 F1D target identity의 일부이므로 실제 Compose 정의를
                 # 유지한다. 나머지 dependency의 실행 내용은 이 계약의 대상이 아니다.
-                if dependency == "pinvi-postgres":
+                if dependency in {"pinvi-postgres", "pinvi-db-init"}:
                     services[dependency] = deepcopy(source_services[dependency])
                 else:
                     # 실제 resolver가 dependency graph를 검증하게 이름만 최소 stub으로 둔다.
@@ -478,6 +482,22 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL password"):
         validate_compose_candidate_protected_values(
             pinvi_literal,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    pinvi_db_init_drift = deepcopy(candidate)
+    pinvi_db_init_services = pinvi_db_init_drift["services"]
+    assert isinstance(pinvi_db_init_services, dict)
+    pinvi_db_init = pinvi_db_init_services["pinvi-db-init"]
+    assert isinstance(pinvi_db_init, dict)
+    pinvi_db_init_environment = pinvi_db_init["environment"]
+    assert isinstance(pinvi_db_init_environment, dict)
+    pinvi_db_init_environment["PGPORT"] = "12900"
+    with pytest.raises(DeploymentContractError, match="database init identity"):
+        validate_compose_candidate_protected_values(
+            pinvi_db_init_drift,
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
             environment=environment,

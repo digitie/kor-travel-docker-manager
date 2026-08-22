@@ -335,6 +335,14 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
     ),
 }
+_PINVI_DATABASE_URL_ALLOWED_PATHS = frozenset(
+    ("services", service_name, "environment", _PINVI_DATABASE_URL_ENV)
+    for service_name in (
+        _PINVI_API_SERVICE,
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _PINVI_DAGSTER_SERVICE,
+    )
+)
 _MAP_DATABASE_CANONICAL_ENV_VALUES = {
     (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): (
         "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
@@ -689,6 +697,66 @@ def _validate_pinvi_database_url_identities(
             or parsed.fragment
         ):
             raise ComposeCandidateContractError("PinVi database URL identity is invalid")
+
+
+def _validate_pinvi_db_init_identity(
+    services: Mapping[str, Any],
+    environment: Mapping[str, str],
+    *,
+    resolved: bool,
+) -> None:
+    """PinVi DB init one-shot이 reset 대상과 같은 loopback DB를 가리키는지 고정한다."""
+
+    service = services.get(_PINVI_DB_INIT_SERVICE)
+    if not isinstance(service, Mapping):
+        raise ComposeCandidateContractError("PinVi database init identity is invalid")
+    service_environment = service.get("environment")
+    if not isinstance(service_environment, Mapping):
+        raise ComposeCandidateContractError("PinVi database init identity is invalid")
+
+    expected_port = environment.get("PINVI_DB_PORT", "12800")
+    expected_user = environment.get("PINVI_POSTGRES_USER", "pinvi")
+    expected_database = environment.get("PINVI_POSTGRES_DB", "pinvi")
+    expected_bootstrap_database = environment.get(
+        "PINVI_POSTGRES_BOOTSTRAP_DB", "pinvi_bootstrap"
+    )
+    expected_values = (
+        expected_port,
+        expected_user,
+        expected_database,
+        expected_bootstrap_database,
+    )
+    if any(not isinstance(value, str) or not value for value in expected_values):
+        raise ComposeCandidateContractError("PinVi database init identity is invalid")
+
+    if resolved:
+        expected_resolved = {
+            "PGHOST": "127.0.0.1",
+            "PGPORT": expected_port,
+            "PGUSER": expected_user,
+            "PGDATABASE": expected_bootstrap_database,
+            "PINVI_POSTGRES_DB": expected_database,
+        }
+        if any(
+            service_environment.get(name) != value
+            for name, value in expected_resolved.items()
+        ):
+            raise ComposeCandidateContractError("PinVi database init identity is invalid")
+        return
+
+    expected_raw = {
+        "PGHOST": "127.0.0.1",
+        "PGPORT": "${PINVI_DB_PORT:",
+        "PGUSER": "${PINVI_POSTGRES_USER:",
+        "PGDATABASE": "${PINVI_POSTGRES_BOOTSTRAP_DB:",
+        "PINVI_POSTGRES_DB": "${PINVI_POSTGRES_DB:",
+    }
+    for name, expected in expected_raw.items():
+        value = service_environment.get(name)
+        if not isinstance(value, str) or (
+            value != expected and not (value.startswith(expected) and value.endswith("}"))
+        ):
+            raise ComposeCandidateContractError("PinVi database init identity is invalid")
 
 
 def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
@@ -2299,6 +2367,7 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_map_postgres_password_secret(resolved)
     _validate_pinvi_postgres_password_secret(resolved)
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
+    _validate_pinvi_db_init_identity(services, environment, resolved=True)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -2324,7 +2393,7 @@ def validate_resolved_compose_candidate_protected_values(
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS
+    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS | _PINVI_DATABASE_URL_ALLOWED_PATHS
 
     for service_name in (
         _MAP_API_SERVICE,
@@ -2335,6 +2404,7 @@ def validate_resolved_compose_candidate_protected_values(
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_POSTGRES_SERVICE,
+        _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -2353,6 +2423,7 @@ def validate_resolved_compose_candidate_protected_values(
             _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
             _MAP_DAGSTER_DB_INIT_SERVICE,
             _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+            _PINVI_DB_INIT_SERVICE,
         }:
             _require_map_database_host_network(service)
         service_environment = service.get("environment")
@@ -2744,6 +2815,7 @@ def validate_compose_candidate_protected_values(
         )
     _validate_map_postgres_password_secret(candidate)
     _validate_pinvi_database_url_identities(services, environment, resolved=False)
+    _validate_pinvi_db_init_identity(services, environment, resolved=False)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -2769,7 +2841,7 @@ def validate_compose_candidate_protected_values(
     allowed_paths = {
         ("services", service_name, "environment", target_name)
         for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS
+    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS | _PINVI_DATABASE_URL_ALLOWED_PATHS
 
     for service_name in (
         _MAP_API_SERVICE,
@@ -2780,6 +2852,7 @@ def validate_compose_candidate_protected_values(
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _PINVI_POSTGRES_SERVICE,
+        _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
