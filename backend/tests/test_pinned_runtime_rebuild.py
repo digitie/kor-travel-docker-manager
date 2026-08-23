@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -281,11 +281,33 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
     }
     environment = SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n")
     materialize = Mock()
+    lock_events: list[str] = []
+
+    @contextmanager
+    def host_lease() -> Any:
+        lock_events.append("host-enter")
+        try:
+            yield
+        finally:
+            lock_events.append("host-exit")
+
+    @contextmanager
+    def environment_lease() -> Any:
+        lock_events.append("environment-enter")
+        try:
+            yield object()
+        finally:
+            lock_events.append("environment-exit")
 
     monkeypatch.setattr(
         compose_service_module,
         "c6c_deployment_lock_from_environment",
-        lambda: __import__("contextlib").nullcontext(object()),
+        environment_lease,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "pinned_runtime_rebuild_lock",
+        host_lease,
     )
     monkeypatch.setattr(
         compose_service_module,
@@ -306,6 +328,12 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
     with pytest.raises(DeploymentContractError, match="tokens must be configured together"):
         ComposeService().rebuild_pinned_runtime()
 
+    assert lock_events == [
+        "host-enter",
+        "environment-enter",
+        "environment-exit",
+        "host-exit",
+    ]
     materialize.assert_not_called()
 
 

@@ -12,7 +12,7 @@ Compose, SQL, `.env`, state-file 삭제를 사람이 조합해 실행하는 경�
 
 > **2026-08-24 사용자 승인 release gate**: `rebuild-pinned` transaction 자체는 backup이나
 > rollback을 소유하지 않는다. 다만 파기 실행 전 이미 생성된 Map application·Map Dagster·PinVi
-> standalone dump를 각각 disposable scratch DB에 실제 복원해 manifest SHA·TOC·schema head를
+> standalone dump를 각각 disposable scratch DB에 실제 복원해 manifest에 기록된 dump SHA-256·TOC·schema head를
 > 대조한다. 이 외부 증적은 old runtime/DB를 되살리는 경로가 아니며, dump 이름·SHA·head·scratch
 > target·성공 여부만 secret-free release 기록에 남긴다.
 
@@ -73,6 +73,12 @@ preflighted
 root가 소유하고, Map·PinVi source checkout은 source owner 권한으로 origin만 읽는다. 따라서 원격
 operator는 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
 database를 건드리기 전에 거부된다.
+
+`rebuild-pinned`가 `another C6c compatible-pair operation is already active`로 거부되면 고정
+host lease 또는 frozen environment C6c lock의 경합이다. 이때 raw Compose나 외부 watcher와
+동시 재시도하지 않는다. release operator는 먼저 외부 watcher의 durable enablement를 끄고 관련
+process·Compose project·container가 모두 멈췄음을 확인하거나, root-owned wrapper가 같은 고정
+lease를 잡은 상태에서 watcher를 실행한다.
 
 `candidate_attested`는 일곱 candidate image ID, 두 source revision, candidate artifact가 직접 보고한 세 expected schema head,
 frozen environment/Compose digest와 pinset digest를 owner-only journal에 fsync하고 retention reference로

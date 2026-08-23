@@ -1563,6 +1563,13 @@ def pinned_runtime_rebuild_lock_path() -> str:
     return str(_PINNED_RUNTIME_REBUILD_LOCK)
 
 
+def _require_pinned_runtime_rebuild_root() -> None:
+    """고정 host lease를 여는 주체도 root로 제한한다."""
+
+    if os.geteuid() != 0:
+        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+
+
 @contextmanager
 def pinned_runtime_rebuild_lock() -> Iterator[None]:
     """rehearsal user home과 무관하게 F1D rebuild를 host 단위로 직렬화한다.
@@ -1571,8 +1578,7 @@ def pinned_runtime_rebuild_lock() -> Iterator[None]:
     독립적으로 그 전제를 강제한다.
     """
 
-    if os.geteuid() != 0:
-        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+    _require_pinned_runtime_rebuild_root()
     with c6c_deployment_lock(pinned_runtime_rebuild_lock_path()):
         yield
 

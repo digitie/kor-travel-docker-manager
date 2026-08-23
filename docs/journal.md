@@ -13,15 +13,16 @@ membership 상대방과 PostgreSQL 16 option까지 다시 exact 검증하도록 
 `ktm_feature_*`/`ktm_curation_*` edge는 계속 fail-close한다.
 
 Manager는 Map RC `b9818097`을 pinset `f946bdfa…`로 재고정했다. 기존 `f27c2763…`의
-non-terminal journal은 immutable failure evidence로 보존하며, 서로 다른 pinset은 새 state
-root와 transaction으로만 시작한다. F1D rehearsal의 일반 C6c lock이 실행 사용자 home을 쓸 수
+non-terminal journal은 immutable failure evidence로 보존하며, 서로 다른 pinset은 새 pinset별
+journal과 transaction으로만 시작한다. F1D rehearsal의 일반 C6c lock이 실행 사용자 home을 쓸 수
 있는 문제도 보완해, root-only rebuild는 `/run/lock/kor-travel-docker-manager/` 아래의 고정
 host lease를 candidate source materialize 전부터 final commit까지 잡는다.
 
 이 lease는 Manager launcher 사이의 직렬화 경계다. n150의 외부 Compose watcher는 같은 lease를
 획득하도록 wrapper를 정렬하고, 실제 재구축 전에는 해당 project/container/process가 모두
 정지·비활성인지 별도 확인한다. 세 standalone dump의 scratch restore는 F1D rollback이 아니라
-사용자 승인 release evidence이므로, 각각의 manifest SHA·TOC·schema head 대조가 성공한 뒤에만
+사용자 승인 release evidence이므로, 각각의 manifest에 기록된 dump SHA-256·TOC·schema head
+대조가 성공한 뒤에만
 새 pinset rebuild를 시작한다.
 
 ---

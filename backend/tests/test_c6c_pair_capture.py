@@ -928,10 +928,37 @@ def test_deployment_lock_emits_exactly_the_message_capture_matches(tmp_path: Pat
     assert str(excinfo.value) == capture.LOCK_CONTENTION_MESSAGE
 
 
-def test_pinned_runtime_rebuild_lease_path_is_root_owned_and_fixed() -> None:
+def test_pinned_runtime_rebuild_lease_path_is_fixed() -> None:
     assert c6c_deployment.pinned_runtime_rebuild_lock_path() == (
         "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
     )
+
+
+def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1D fixed lease도 generic helper와 같은 실제 fd 경합을 유지한다."""
+
+    lock_path = tmp_path / "pinned-runtime-rebuild.lock"
+    monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", lock_path)
+    # root requirement은 바로 아래 별도 test가 고정한다. 여기서는 현 test user가
+    # 소유한 임시 file로 실제 flock 경합만 검증한다.
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    holder = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(c6c_deployment.DeploymentContractError) as excinfo:
+            with c6c_deployment.pinned_runtime_rebuild_lock():
+                pass  # pragma: no cover - holder가 있으면 enter하면 안 된다.
+    finally:
+        os.close(holder)
+
+    assert str(excinfo.value) == capture.LOCK_CONTENTION_MESSAGE
 
 
 def test_pinned_runtime_rebuild_lease_rejects_nonroot(
