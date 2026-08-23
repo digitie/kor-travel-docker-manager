@@ -366,6 +366,7 @@ def assert_map_database_principal_bootstrap(
         f"AND pg_get_userbyid(membership.roleid) NOT IN ({future_phase_names}) "
         "AND expected.member_name IS NULL) "
         "AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership "
+        "JOIN pg_roles member_role ON member_role.oid = membership.member "
         "JOIN pg_roles granted_role ON granted_role.oid = membership.roleid "
         "LEFT JOIN expected_membership expected ON expected.member_name "
         "= pg_get_userbyid(membership.member) "

@@ -322,6 +322,7 @@ def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
     # and are checked by their own phase bootstrap assertions.
     assert "pg_get_userbyid(membership.roleid) NOT IN" in command[-1]
     assert "member_role.rolname NOT IN" in command[-1]
+    assert "JOIN pg_roles member_role ON member_role.oid = membership.member" in command[-1]
     for future_role in (
         "ktm_manual_feature_procedure_owner",
         "ktm_manual_feature_admin_executor",
