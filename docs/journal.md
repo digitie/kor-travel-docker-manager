@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-24 — T-VN-41C Geo/VWorld fallback key 경계 정정
+
+승인된 F1D 재구축은 DB·Compose mutation 전에 Map→Geo key preflight에서 멈췄다. Manager는
+Geo가 발급하는 32자리 영숫자 public key만 허용했지만, Geo는 활성 DB key가 없을 때
+`KTG_VWORLD_API_KEY`를 같은 public endpoint의 fallback으로 인정한다. 현재 release의
+Map 결선은 이 fallback의 canonical UUID wire shape을 사용하므로, 값은 읽거나 기록하지
+않고 shape만 대조했다.
+
+C6c preflight는 이제 Geo 발급 32자리 영숫자와 VWorld canonical UUID의 두 정본 wire
+shape만 허용한다. 임의의 36자리·공백·비 ASCII 값은 계속 fail-close한다. Geo 인증의 실제
+유효성은 key 원문을 다루지 않는 배포 계약 검증에서 추측하지 않고 실행 후 Geo endpoint가
+판정한다. 회귀는 두 허용 형식과 여섯 거부 형식을 고정했으며, 관련 Manager 테스트는
+`204 passed, 3 skipped`, Ruff 및 diff 검사를 통과했다.
+
+---
+
 ## 2026-08-24 — T-VN-41C M01~M05 role-residue RC 재고정과 host rebuild lease
 
 PostgreSQL role은 cluster 범위라 database를 새로 만들어도 M01~M05의 이미 알려진 role
