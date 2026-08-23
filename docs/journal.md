@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-08-23 — T-VN-M01 적대적 리뷰 P1 보완
+
+두 전문 리뷰어가 공통으로 지적한 reset 경계의 자격증명 충돌을 보완했다. manual Feature
+생성 원문·digest가 Map API service/ops/cursor/metrics/Geo·UI 인증·curation raw 또는
+curation/cache-target digest와 재사용되면 `recreate_empty_databases()` 전에 fail-close한다.
+비 ASCII 입력도 예외 없이 안전하게 비교하도록 바이트 기반 constant-time 비교를 사용하고,
+오류에는 자격증명 값이나 digest를 기록하지 않는다.
+
+API canonical Compose에 `KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED`를
+명시적으로 연결하고 기본값은 `false`로 고정했다. 마지막 7개 runtime service readiness 뒤에는
+실제 Docker inspect 결과를 다시 수집해 runtime secret isolation과 Map UI 인증 배선을
+검증한 뒤에만 `contract_verified`로 진행한다. redaction 대상에도 manual Feature 원문·digest를
+추가했다. 회귀 검증은 충돌 사전 차단 합성을 포함해 전체 backend `597 passed, 3 skipped`,
+변경 파일 Ruff, diff 검사를 통과했다. 저장소 전체 strict mypy에는 기존 baseline 진단이
+남아 있어 별도 변경으로 섞지 않았다.
+
+---
+
 ## 2026-08-23 — T-VN-M01 manual Feature credential 배선 정합성 보완
 
 고정 RC의 승인된 F1D 재빌드에서 Map API가 `KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256`

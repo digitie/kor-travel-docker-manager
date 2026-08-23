@@ -714,6 +714,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
     values = {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "KTDM_C6C_CONTRACT_GENERATION": "c6c-ops-v1",
         "PINVI_ENVIRONMENT": "production",
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
@@ -1451,6 +1452,7 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
     values = {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "KTDM_C6C_CONTRACT_GENERATION": "c6c-ops-v1",
         "PINVI_ENVIRONMENT": "production",
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
@@ -1632,6 +1634,11 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
     monkeypatch.setattr(service, "_require_services_ready", require_services_ready)
     monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
     monkeypatch.setattr(compose_service_module, "reconcile_generation_references", reconcile)
+    monkeypatch.setattr(
+        compose_service_module,
+        "load_c6c_deployment_config_from_environment",
+        lambda _environment: object(),
+    )
 
     with pytest.raises(DeploymentContractError, match="retention failed"):
         service.rebuild_pinned_runtime()

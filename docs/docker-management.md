@@ -407,8 +407,12 @@ manual Feature 생성은 특정 provider나 PinVi 전용 기능이 아니다. Ma
   전달한다. `NEXT_PUBLIC_*`, build argument, PinVi·Dagster·Geo 컨테이너에는 전달하지 않는다.
 - 두 값은 기존 C6c ops/service/cursor credential과 분리한다. 실제 값은 gitignore된 `.env` 또는
   승인된 secret env에만 저장하고, 로그·receipt·문서에는 값이나 digest를 남기지 않는다.
-- API가 kill-switch를 `false`로 둔 사전 provision 단계라도 production profile에서는 digest를
-  요구한다. 따라서 새 Map image가 M01 route를 아직 열지 않은 동안에도 배선 drift를 먼저 발견한다.
+- Manager는 API service·ops·cursor·metrics·Geo·UI 인증·curation·cache-target digest와의
+  재사용도 DB reset 전에 거부한다. API가 kill-switch를 `false`로 둔 사전 provision 단계라도
+  production profile에서는 digest를 요구한다. 기본 flag는
+  `KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED=false`이며, paired live gate와
+  승인된 cutover에서만 `true`로 바꾼다. 따라서 새 Map image가 M01 route를 아직 열지 않은
+  동안에도 배선·credential 재사용 drift를 먼저 발견한다.
 
 Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH`, `KOR_TRAVEL_MAP_UI_SESSION_SECRET`은 기본값 없는 `:?`

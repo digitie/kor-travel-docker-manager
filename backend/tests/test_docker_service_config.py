@@ -372,6 +372,9 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": (
                     _FEATURE_CREATE_TOKEN_DIGEST_SOURCE
                 ),
+                "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
+                    "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
+                ),
                 "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
                     "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
                     "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"

@@ -20,6 +20,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     C6cBuildProvenance,
     DeploymentContractError,
     _validate_feature_create_credentials,
+    _validate_map_production_secret_values,
     derive_curation_service_principal_environment,
     validate_compose_candidate_protected_values,
     validate_map_postgres_runtime_secret_isolation,
@@ -439,6 +440,26 @@ def test_manual_feature_create_credentials_are_derived_from_one_raw_source() -> 
     environment["KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"] = "0" * 64
     with pytest.raises(DeploymentContractError, match="must be derived"):
         _validate_feature_create_credentials(environment, require_nonempty=True)
+
+
+def test_manual_feature_create_credential_collision_is_rejected_before_reset() -> None:
+    environment = _compose_contract_environment()
+    environment["KTDM_DEPLOYMENT_ENVIRONMENT"] = "rehearsal"
+    environment["KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN"] = environment[
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+    ]
+    environment["KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"] = hashlib.sha256(
+        environment["KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN"].encode("utf-8")
+    ).hexdigest()
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=(
+            "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN must differ from "
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+        ),
+    ):
+        _validate_map_production_secret_values(environment)
 
 
 @pytest.mark.parametrize(

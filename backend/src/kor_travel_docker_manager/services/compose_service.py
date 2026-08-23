@@ -49,10 +49,12 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_c6c_build_source_wiring,
     validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
+    validate_current_map_ui_auth_runtime,
     validate_map_postgres_runtime_secret_isolation,
     validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
+    validate_runtime_secret_isolation,
 )
 from kor_travel_docker_manager.services.c6c_image_retention import (
     ensure_generation_references,
@@ -3779,6 +3781,8 @@ class ComposeService:
             config.map_admin_proxy_secret,
             config.map_service_token,
             config.map_cursor_signing_secret,
+            config.feature_create_token,
+            config.feature_create_token_digest,
             config.smoke.map_ui_password,
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,
@@ -4338,6 +4342,21 @@ class ComposeService:
                     transaction=runtime_transaction,
                     frozen_recovery=True,
                 )
+                config = load_c6c_deployment_config_from_environment(
+                    runtime_transaction.environment.effective
+                )
+                if isinstance(config, C6cDeploymentConfig):
+                    runtime_configs = self._inspect_c6c_runtime_configs(
+                        config,
+                        list(RUNTIME_SERVICES),
+                        transaction=runtime_transaction,
+                        frozen_recovery=True,
+                    )
+                    validate_runtime_secret_isolation(runtime_configs, config)
+                    validate_current_map_ui_auth_runtime(
+                        runtime_configs[config.map_ui_container],
+                        config,
+                    )
                 updated = self._advance_pinned_runtime_journal(
                     journal, "pinvi_runtime_ready"
                 )
