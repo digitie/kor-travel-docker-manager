@@ -1471,6 +1471,40 @@ def _serialize_resolved_compose_document(resolved: Mapping[str, Any]) -> str:
     )
 
 
+def _escape_materialized_compose_environment_values(
+    resolved: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Compose 재입력에서 이미 해석된 환경값의 ``$``를 보존한다.
+
+    ``docker compose config``가 만든 정본 문서를 다시 ``-f -``로
+    전달하는 경로에서는 Compose가 환경값도 한 번 더 보간한다. 비밀번호가
+    포함된 DSN처럼 값 자체에 ``$``가 있으면 그 문자가 변수 시작으로
+    오인되어 값이 잘리고, 특히 bootstrap one-shot의 연결 문자열이
+    손상된다. 환경값만 재보간 방지용으로 이스케이프하고 command/entrypoint는
+    건드리지 않는다. command의 ``$$VAR``는 컨테이너 셸에서 의도한
+    ``$VAR`` 동작을 유지해야 하기 때문이다.
+    """
+
+    materialized = deepcopy(resolved)
+    services = materialized.get("services")
+    if not isinstance(services, dict):
+        return materialized
+    for service in services.values():
+        if not isinstance(service, dict):
+            continue
+        environment = service.get("environment")
+        if isinstance(environment, dict):
+            for name, value in environment.items():
+                if isinstance(value, str):
+                    environment[name] = value.replace("$", "$$")
+        elif isinstance(environment, list):
+            service["environment"] = [
+                entry.replace("$", "$$") if isinstance(entry, str) else entry
+                for entry in environment
+            ]
+    return materialized
+
+
 def _resolved_compose_document_hash(resolved: Mapping[str, Any]) -> str:
     return hashlib.sha256(
         _serialize_resolved_compose_document(resolved).encode("utf-8")
@@ -2790,8 +2824,11 @@ class ComposeService:
             )
         process_input = None
         if materialized_compose is not None:
+            transport_compose = _escape_materialized_compose_environment_values(
+                materialized_compose
+            )
             process_input = json.dumps(
-                materialized_compose,
+                transport_compose,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )

@@ -119,6 +119,44 @@ def test_candidate_build_uses_private_deterministic_tags_and_staged_sources() ->
     )
 
 
+def test_materialized_compose_escapes_environment_dollars_without_changing_commands() -> None:
+    resolved = {
+        "services": {
+            "bootstrap": {
+                "environment": {
+                    "DSN": "postgresql://user:literal$aB@host/db",
+                    "PLAIN": "value",
+                },
+                "command": ["sh", "-ec", 'psql "$$DSN"'],
+            },
+            "list-env": {
+                "environment": ["VALUE=literal$aB", "PLAIN=value"],
+            },
+        }
+    }
+
+    actual = compose_service_module._escape_materialized_compose_environment_values(
+        resolved
+    )
+
+    assert actual["services"]["bootstrap"]["environment"]["DSN"] == (
+        "postgresql://user:literal$$aB@host/db"
+    )
+    assert actual["services"]["bootstrap"]["environment"]["PLAIN"] == "value"
+    assert actual["services"]["bootstrap"]["command"] == [
+        "sh",
+        "-ec",
+        'psql "$$DSN"',
+    ]
+    assert actual["services"]["list-env"]["environment"] == [
+        "VALUE=literal$$aB",
+        "PLAIN=value",
+    ]
+    assert resolved["services"]["bootstrap"]["environment"]["DSN"] == (
+        "postgresql://user:literal$aB@host/db"
+    )
+
+
 def test_static_head_parser_accepts_exact_one_line_schema_contract() -> None:
     assert parse_candidate_static_head(
         '{"pinvi_head":"20260806_0001","schema":"pinvi.candidate-head.v1"}',

@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-23 — frozen Compose 재입력의 `$` 환경값 보존
+
+F1D pinned runtime rebuild가 `docker compose config`로 해석한 문서를 다시 `-f -`로
+전달할 때, 이미 해석된 환경값을 Compose가 한 번 더 보간하던 결함을 수정했다. 비밀번호에
+`$`가 포함된 DSN이 잘려 bootstrap one-shot이 기본 Unix socket으로 접속하던 경로가
+발견됐으며, materialized Compose의 `environment` 값에만 재보간 방지 이스케이프를 적용했다.
+`command`/`entrypoint`의 `$$VAR`는 컨테이너 셸 계약을 보존하기 위해 변경하지 않는다.
+
+환경값의 `$` 보존·원본 불변·command 비변경 회귀 테스트를 추가했다. 이 수정은 현재
+실패한 v7 journal을 같은 transaction으로 재개하기 위한 선행 PR이며, n150 DB 재생성이나
+runtime 재실행은 PR 검증·trusted release 설치 뒤에만 수행한다.
+
 ## 2026-08-22 — F1D v5 Map·PinVi release pinset 재고정
 
 Map #1056 병합 뒤 현재 Map main `e420c89eb0f10776f7fb96e59ef3b409974d0d54`와
