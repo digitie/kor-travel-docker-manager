@@ -26,7 +26,7 @@ def test_current_release_is_exact_map_and_pinvi_v5_authority() -> None:
     assert release.version == PINNED_RUNTIME_RELEASE_VERSION == 5
     assert release.source_for("map") == MAP_PINNED_RUNTIME_SOURCE
     assert release.source_for("pinvi") == PINVI_PINNED_RUNTIME_SOURCE
-    assert release.source_for("map").revision == "e76ad34d19d4e59e97452ae0412e24cfa8f3950a"
+    assert release.source_for("map").revision == "b981809750b56dd01574d035dcc6596fb999f477"
     assert release.source_for("pinvi").revision == "27fe2043b7b8e747fbb42d91e461ea462f930bb7"
     assert release.sources_by_role == {
         "map": MAP_PINNED_RUNTIME_SOURCE,
@@ -38,15 +38,15 @@ def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
     release = PINNED_RUNTIME_RELEASE
 
     assert canonical_pinset_bytes(version=release.version, sources=release.sources) == (
-        b'{"sources":[{"revision":"e76ad34d19d4e59e97452ae0412e24cfa8f3950a",'
+        b'{"sources":[{"revision":"b981809750b56dd01574d035dcc6596fb999f477",'
         b'"role":"map","url":"https://github.com/digitie/kor-travel-map.git"},'
         b'{"revision":"27fe2043b7b8e747fbb42d91e461ea462f930bb7",'
         b'"role":"pinvi","url":"https://github.com/digitie/pinvi.git"}],"version":5}'
     )
     assert canonical_pinset_sha256(version=release.version, sources=release.sources) == (
-        "f27c2763f52278383f5da811090cd38d6da63688bf2bb40c3d55344f2d66e735"
+        "f946bdfa0d906456aa8883b2c5cb524b31f09c22eb1eead8bcc11c47e07de2fb"
     )
-    assert release.pinset_sha256 == "f27c2763f52278383f5da811090cd38d6da63688bf2bb40c3d55344f2d66e735"
+    assert release.pinset_sha256 == "f946bdfa0d906456aa8883b2c5cb524b31f09c22eb1eead8bcc11c47e07de2fb"
 
 
 @pytest.mark.parametrize(
