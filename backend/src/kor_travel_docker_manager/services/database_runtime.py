@@ -65,6 +65,13 @@ _MAP_REQUIRED_GROUP_ROLES = (
     "ktm_feature_state_procedure_owner",
     "ktm_feature_audit_writer",
     "ktm_feature_runtime",
+    # F1D candidate heads 0226~0236 add the curation command/audit/executor
+    # boundary.  These are NOLOGIN groups and are part of the exact role graph
+    # produced by Map's canonical bootstrap script.
+    "ktm_curation_command_owner",
+    "ktm_curation_audit_writer",
+    "ktm_curation_admin_executor",
+    "ktm_curation_provider_executor",
 )
 
 
@@ -302,7 +309,11 @@ def assert_map_database_principal_bootstrap(
         "('ktm_feature_api_runtime', 'ktm_feature_runtime', TRUE, FALSE), "
         "('ktm_feature_dagster_runtime', 'ktm_feature_runtime', TRUE, FALSE), "
         "('ktm_feature_schema_owner', 'ktm_feature_state_procedure_owner', FALSE, TRUE), "
-        "('ktm_feature_schema_owner', 'ktm_feature_audit_writer', FALSE, TRUE)) "
+        "('ktm_feature_schema_owner', 'ktm_feature_audit_writer', FALSE, TRUE), "
+        "('ktm_feature_schema_owner', 'ktm_curation_command_owner', FALSE, TRUE), "
+        "('ktm_feature_schema_owner', 'ktm_curation_audit_writer', FALSE, TRUE), "
+        "('ktm_feature_api_runtime', 'ktm_curation_admin_executor', TRUE, FALSE), "
+        "('ktm_feature_dagster_runtime', 'ktm_curation_provider_executor', TRUE, FALSE)) "
         "SELECT CASE WHEN "
         "(SELECT pg_get_userbyid(datdba) FROM pg_database "
         f"WHERE datname = '{runtime.database_name}') = '{_MAP_SCHEMA_OWNER}' "

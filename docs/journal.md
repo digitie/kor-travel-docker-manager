@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-23 — Map M01~M05 curation role graph 검증 결선
+
+PR #193을 trusted release에 설치한 뒤 승인된 F1D retry에서 Map Dagster DB init과
+기본 role bootstrap은 통과했지만, principal assertion이 `ktm_curation_*` membership을
+예상하지 않아 fail-close했다. 현재 Map candidate head(0226~0236)는 curation command/
+audit/executor 그룹과 API/Dagster executor membership을 정본 bootstrap script로
+만드므로, Manager의 exact catalog assertion에도 이 네 그룹과 네 membership을 추가한다.
+
+이 변경은 M01~M05 활성화 acceptance를 막던 Manager 검증 drift만 수정하며, 기존
+NOLOGIN/NOINHERIT 및 runtime ACL fail-close 경계는 유지한다. 해당 수정 PR의 focused
+database runtime 테스트와 두 전문 리뷰 후 trusted install을 갱신하고 같은 v7 retry
+journal에서 Map principal assertion부터 재개한다.
+
 ## 2026-08-23 — Map Dagster bootstrap DSN 전달 수정
 
 F1D v7 재개에서 Map Dagster DB init one-shot이 health가 정상인 전용 Map PostgreSQL에

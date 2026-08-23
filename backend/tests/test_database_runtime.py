@@ -311,6 +311,8 @@ def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
     assert command[command.index("--dbname") + 1] == "map_app"
     assert "ktm_feature_schema_owner" in command[-1]
     assert "ktm_feature_api_runtime" in command[-1]
+    assert "ktm_curation_command_owner" in command[-1]
+    assert "ktm_curation_admin_executor" in command[-1]
     assert "pg_auth_members" in command[-1]
     assert "pg_default_acl" in command[-1]
     assert "map_dagster_metadata" in command[-1]
