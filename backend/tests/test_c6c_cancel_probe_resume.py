@@ -391,7 +391,14 @@ def test_rehearsal_loader_rejects_invalid_manual_feature_create_flag() -> None:
 
 @pytest.mark.parametrize(
     "geo_api_key",
-    ["x", "x" * 31, "x" * 33, f"{'x' * 31}-", f"{'x' * 31}é"],
+    [
+        "x",
+        "x" * 31,
+        "x" * 33,
+        f"{'x' * 31}-",
+        f"{'x' * 31}é",
+        "00000000-0000-0000-0000-000000000000",
+    ],
 )
 def test_rehearsal_loader_rejects_non_issued_geo_key_shape(
     geo_api_key: str,
