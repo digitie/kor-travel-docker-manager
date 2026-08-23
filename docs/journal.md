@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-08-23 — T-VN-41C pinned candidate 빌드 직렬화 및 n150 지연 원인 확인
+
+두 전문 리뷰어(API·DB/운영)가 n150 승인 재빌드의 지연·실패를 교차 점검했다. 첫 번째
+실패는 BuildKit이 일괄 `compose build`에서 여러 frontend session을 동시에 열어
+`only one connection allowed`와 context deadline을 반복한 것이었고, 별도 tvnm05 자동
+빌드가 같은 Docker daemon을 계속 점유해 재현성을 악화시켰다. n150은 14 GiB 메모리 중
+4 GiB swap이 모두 사용되고 load가 20대까지 올라가 apt/npm 단계와 Docker API 조회도
+대기했다.
+
+Manager PR #197에는 candidate 7개 runtime service를 한 번의 multi-target bake로 보내지
+않고 각 service별 frozen Compose build를 순서대로 실행하는 최소 수정(e33b19c)을 반영했다.
+회귀 테스트 35건과 변경 파일 Ruff를 통과시키고 원격에 push했으며, trusted 설치본도 같은
+commit으로 교체했다. 순차화 뒤 Map·PinVi 후보 image build와 static head 직전까지 진행되는
+것을 확인했다.
+
+다만 tvnm05 감시 작업이 `DOCKER_BUILDKIT=0`/BuildKit 빌드를 종료 직후 재기동해 Docker
+daemon의 BuildKit session healthcheck가 계속 `only one connection allowed` 상태로 남았다.
+승인된 최신 시도들은 이 one-shot 단계에서 fail-close했고, 새 state journal과 DB reset은
+생성되지 않았다. Docker daemon 재시작은 다른 서비스 중단을 수반하므로 별도 승인 전에는
+실행하지 않는다. 이전 승인 시도의 `databases_recreated` journal과 fresh Map DB는 실패
+증적으로 보존한다.
+
+---
+
 ## 2026-08-23 — T-VN-41C/M01~M05 pinned rebuild migration boundary 보완
 
 고정 RC 재빌드에서 DB를 재생성하고 candidate image를 attestation한 뒤 Map API
