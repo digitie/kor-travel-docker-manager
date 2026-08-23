@@ -366,6 +366,31 @@ def test_rebuild_compose_error_names_the_failed_action(
     assert secret not in str(captured.value)
 
 
+def test_rebuild_candidate_builds_each_runtime_service_sequentially(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    run = Mock(
+        return_value={
+            "success": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        }
+    )
+    monkeypatch.setattr(service, "_run_frozen_recovery", run)
+
+    service._run_pinned_runtime_rebuild_compose(
+        ["build", *compose_service_module.RUNTIME_SERVICES],
+        transaction=object(),
+    )
+
+    assert [call.args[0] for call in run.call_args_list] == [
+        ["build", runtime_service]
+        for runtime_service in compose_service_module.RUNTIME_SERVICES
+    ]
+
+
 def test_rebuild_retries_only_the_idempotent_dagster_storage_migration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

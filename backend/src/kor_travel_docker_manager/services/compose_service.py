@@ -3605,6 +3605,21 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         retryable: bool = False,
     ) -> dict[str, Any]:
+        # Compose turns a multi-target build into one BuildKit bake request.  On
+        # the small n150 host that request opens several frontend sessions at
+        # once; a second build (for example an unrelated tvnm05 build) can then
+        # exhaust the daemon's single-session limit and leave every target
+        # waiting until its context deadline.  Keep the frozen transaction and
+        # provenance checks identical, but give each candidate service its own
+        # BuildKit request so a target completes before the next one starts.
+        if not retryable and tuple(args) == ("build", *RUNTIME_SERVICES):
+            result: dict[str, Any] = {}
+            for service in RUNTIME_SERVICES:
+                result = self._run_pinned_runtime_rebuild_compose(
+                    ["build", service],
+                    transaction=transaction,
+                )
+            return result
         if retryable and tuple(args) != (
             "run",
             "--rm",
