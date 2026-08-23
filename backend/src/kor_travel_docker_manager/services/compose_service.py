@@ -2841,6 +2841,8 @@ class ComposeService:
                 )
             _assert_resolved_external_inputs_materialized(resolved)
             return resolved
+        except ComposeCandidateContractError:
+            raise
         except (OSError, RuntimeError, ValueError, yaml.YAMLError) as exc:
             raise ComposeCandidateContractError(
                 "compose candidate cannot be materialized"

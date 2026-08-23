@@ -15,6 +15,7 @@ import pytest
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     C6cCancelProbeFixture,
+    ComposeCandidateContractError,
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.compose_service import ComposeService
@@ -401,6 +402,52 @@ def test_frozen_compose_resolution_includes_bootstrap_profile(
             "json",
         ]
     ]
+
+
+def test_frozen_compose_resolution_preserves_contract_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    candidate = {"services": {}}
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "_revalidate_compose_external_input_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_materialize_external_inputs_with_memfd",
+        lambda candidate, _inputs: (candidate, ()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "revalidate_candidate_system_bind_snapshots",
+        lambda _snapshots: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="candidate failed",
+        ),
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="compose candidate resolution failed",
+    ):
+        service._resolve_compose_candidate_unlocked(
+            candidate,
+            environment={},
+            expected_system_bind_snapshots=(),
+            environment_snapshot=SimpleNamespace(compose_path="/tmp/compose.yml"),
+            environment_override=None,
+            external_input_snapshot=object(),
+        )
 
 
 def test_rebuild_compose_error_names_the_failed_action(
