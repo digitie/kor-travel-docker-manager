@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-23 — Map Dagster bootstrap DSN 전달 수정
+
+F1D v7 재개에서 Map Dagster DB init one-shot이 health가 정상인 전용 Map PostgreSQL에
+접속하지 못하고 Unix socket 기본값으로 떨어지는 원인을 확인했다. Compose command가
+`psql "$DSN" --dbname postgres` 형태여서 URI를 positional DBNAME으로 전달한 뒤
+`--dbname postgres`가 이를 덮어쓰고 있었으며, `psql --dbname "$DSN"`으로 바꿔
+conninfo를 명시했다. source Compose contract에 이 순서와 잘못된 형태의 부재를 고정했다.
+
+이 수정은 dollar transport PR 머지 후 trusted release에 반영하기 위한 별도 PR이다.
+현재 v7 journal의 DB는 재생성된 비종료 상태이며, 새 release 설치와 focused one-shot
+검증이 끝난 뒤에만 승인된 rebuild를 다시 실행한다.
+
 ## 2026-08-23 — frozen Compose 재입력의 `$` 환경값 보존
 
 F1D pinned runtime rebuild가 `docker compose config`로 해석한 문서를 다시 `-f -`로
