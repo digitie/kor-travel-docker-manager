@@ -533,6 +533,19 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         root_env_path=str(root_env),
         environment=environment,
     )
+    raw_image_drift = deepcopy(candidate)
+    raw_image_services = raw_image_drift["services"]
+    assert isinstance(raw_image_services, dict)
+    raw_image_boundary = raw_image_services["kor-travel-map-migration-boundary"]
+    assert isinstance(raw_image_boundary, dict)
+    raw_image_boundary["image"] = "attacker.invalid/map-migration:stale"
+    with pytest.raises(DeploymentContractError, match="image provenance"):
+        validate_compose_candidate_protected_values(
+            raw_image_drift,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
     boundary_drift = deepcopy(candidate)
     boundary_services = boundary_drift["services"]
     assert isinstance(boundary_services, dict)
@@ -570,6 +583,40 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         compose_path=str(_COMPOSE_PATH),
         root_env_path=str(root_env),
     ) == raw_snapshots
+
+    resolved_image_drift = deepcopy(resolved)
+    resolved_image_services = resolved_image_drift["services"]
+    assert isinstance(resolved_image_services, dict)
+    resolved_image_boundary = resolved_image_services[
+        "kor-travel-map-migration-boundary"
+    ]
+    assert isinstance(resolved_image_boundary, dict)
+    resolved_image_boundary["image"] = "attacker.invalid/map-migration:stale"
+    with pytest.raises(DeploymentContractError, match="image provenance"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_image_drift,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    resolved_environment_drift = deepcopy(resolved)
+    resolved_environment_services = resolved_environment_drift["services"]
+    assert isinstance(resolved_environment_services, dict)
+    resolved_environment_boundary = resolved_environment_services[
+        "kor-travel-map-migration-boundary"
+    ]
+    assert isinstance(resolved_environment_boundary, dict)
+    resolved_boundary_environment = resolved_environment_boundary["environment"]
+    assert isinstance(resolved_boundary_environment, dict)
+    resolved_boundary_environment["UNRELATED_BOUNDARY_SETTING"] = "x"
+    with pytest.raises(DeploymentContractError, match="environment is invalid"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_environment_drift,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
 
     empty_tuning_environment = dict(environment)
     empty_tuning_environment["PINVI_POSTGRES_SHARED_BUFFERS"] = ""

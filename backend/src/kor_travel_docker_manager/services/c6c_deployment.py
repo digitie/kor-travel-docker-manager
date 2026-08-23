@@ -924,6 +924,29 @@ def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
         )
 
 
+def _validate_map_migration_boundary_image(
+    services: Mapping[str, Any],
+) -> None:
+    """M01/M05 one-shot이 Map API와 같은 attested candidate image를 쓰는지 고정한다."""
+
+    map_api = services.get(_MAP_API_SERVICE)
+    boundary = services.get(_MAP_MIGRATION_BOUNDARY_SERVICE)
+    if not isinstance(map_api, Mapping) or not isinstance(boundary, Mapping):
+        raise ComposeCandidateContractError(
+            "Map migration boundary image provenance is invalid"
+        )
+    map_image = map_api.get("image")
+    boundary_image = boundary.get("image")
+    if (
+        not isinstance(map_image, str)
+        or not map_image
+        or boundary_image != map_image
+    ):
+        raise ComposeCandidateContractError(
+            "Map migration boundary image provenance is invalid"
+        )
+
+
 def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
     """전용 PostgreSQL admin password의 유일한 소비자를 고정한다."""
 
@@ -2717,6 +2740,7 @@ def validate_resolved_compose_candidate_protected_values(
             "resolved compose candidate is missing required protected services: "
             + ", ".join(sorted(missing_services))
         )
+    _validate_map_migration_boundary_image(services)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
@@ -2776,6 +2800,12 @@ def validate_resolved_compose_candidate_protected_values(
         if not isinstance(service_environment, Mapping):
             raise ComposeCandidateContractError(
                 f"resolved compose candidate {service_name} has no environment mapping"
+            )
+        if service_name == _MAP_MIGRATION_BOUNDARY_SERVICE and set(
+            service_environment
+        ) != {"KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"}:
+            raise ComposeCandidateContractError(
+                "resolved compose candidate Map migration boundary environment is invalid"
             )
         if service_name == _MAP_API_SERVICE and (
             _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(service_environment)
@@ -3172,6 +3202,7 @@ def validate_compose_candidate_protected_values(
             "compose candidate is missing required protected services: "
             + ", ".join(sorted(missing_services))
         )
+    _validate_map_migration_boundary_image(services)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
