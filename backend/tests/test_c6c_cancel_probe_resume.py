@@ -391,34 +391,9 @@ def test_rehearsal_loader_rejects_invalid_manual_feature_create_flag() -> None:
 
 @pytest.mark.parametrize(
     "geo_api_key",
-    [
-        "x" * 32,
-        "00000000-0000-0000-0000-000000000000",
-    ],
+    ["x", "x" * 31, "x" * 33, f"{'x' * 31}-", f"{'x' * 31}é"],
 )
-def test_rehearsal_loader_accepts_supported_geo_key_shapes(
-    geo_api_key: str,
-) -> None:
-    values = _rehearsal_environment()
-    values["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"] = geo_api_key
-
-    config = c6c.load_c6c_deployment_config_from_environment(values)
-
-    assert config.map_geo_api_key == geo_api_key
-
-
-@pytest.mark.parametrize(
-    "geo_api_key",
-    [
-        "x",
-        "x" * 31,
-        "x" * 33,
-        "00000000-0000-0000-0000-000000000000 ",
-        "00000000-0000-0000-0000-000000000000-",
-        "00000000-0000-0000-0000-0000000000é0",
-    ],
-)
-def test_rehearsal_loader_rejects_unsupported_geo_key_shape(
+def test_rehearsal_loader_rejects_non_issued_geo_key_shape(
     geo_api_key: str,
 ) -> None:
     values = _rehearsal_environment()

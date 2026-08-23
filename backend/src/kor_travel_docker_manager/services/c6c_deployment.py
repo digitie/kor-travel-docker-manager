@@ -107,13 +107,6 @@ _MAP_CURSOR_SIGNING_SECRET_ENV = "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
 _MAP_METRICS_TOKEN_ENV = "KOR_TRAVEL_MAP_API_METRICS_TOKEN"
 _MAP_GEO_API_KEY_SOURCE_ENV = "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
 _MAP_UI_GEO_API_KEY_ENV = "KOR_TRAVEL_GEO_API_KEY"
-# Geo 자체 발급 key는 32자리 영숫자이며, active key가 없을 때는 Geo가 VWorld
-# fallback key를 같은 public endpoint 인증에 사용한다. VWorld가 발급하는 key는
-# canonical UUID wire shape이므로, C6c preflight는 두 정본 shape만 허용한다.
-_MAP_GEO_VWORLD_API_KEY_RE = re.compile(
-    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
-    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
-)
 _MAP_CURATION_SNAPSHOT_DIGEST_ENV = (
     "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"
 )
@@ -2219,18 +2212,6 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
     )
 
 
-def _has_supported_map_geo_api_key_shape(value: str) -> bool:
-    """Return whether a Map-to-Geo key has an issuer-supported wire shape."""
-
-    return (
-        value.isascii()
-        and (
-            (len(value) == 32 and value.isalnum())
-            or _MAP_GEO_VWORLD_API_KEY_RE.fullmatch(value) is not None
-        )
-    )
-
-
 def _validate_map_production_secret_values(
     values: Mapping[str, str],
     *,
@@ -2260,8 +2241,10 @@ def _validate_map_production_secret_values(
     }
     if geo_api_key_required and not geo_api_key:
         raise error_type(f"{_MAP_GEO_API_KEY_SOURCE_ENV} must be explicitly set")
-    if geo_api_key_required and not _has_supported_map_geo_api_key_shape(
-        geo_api_key
+    if geo_api_key_required and (
+        len(geo_api_key) != 32
+        or not geo_api_key.isascii()
+        or not geo_api_key.isalnum()
     ):
         raise error_type(f"{_MAP_GEO_API_KEY_SOURCE_ENV} is invalid")
     if not geo_api_key_required and geo_api_key and (
