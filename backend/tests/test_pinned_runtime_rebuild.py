@@ -125,6 +125,7 @@ def test_materialized_compose_escapes_environment_dollars_without_changing_comma
             "bootstrap": {
                 "environment": {
                     "DSN": "postgresql://user:literal$aB@host/db",
+                    "ALREADY_ESCAPED": "literal$$aB",
                     "PLAIN": "value",
                 },
                 "command": ["sh", "-ec", 'psql "$$DSN"'],
@@ -141,6 +142,9 @@ def test_materialized_compose_escapes_environment_dollars_without_changing_comma
 
     assert actual["services"]["bootstrap"]["environment"]["DSN"] == (
         "postgresql://user:literal$$aB@host/db"
+    )
+    assert actual["services"]["bootstrap"]["environment"]["ALREADY_ESCAPED"] == (
+        "literal$$aB"
     )
     assert actual["services"]["bootstrap"]["environment"]["PLAIN"] == "value"
     assert actual["services"]["bootstrap"]["command"] == [

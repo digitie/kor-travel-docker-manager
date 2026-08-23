@@ -1478,11 +1478,13 @@ def _escape_materialized_compose_environment_values(
 
     ``docker compose config``가 만든 정본 문서를 다시 ``-f -``로
     전달하는 경로에서는 Compose가 환경값도 한 번 더 보간한다. 비밀번호가
-    포함된 DSN처럼 값 자체에 ``$``가 있으면 그 문자가 변수 시작으로
-    오인되어 값이 잘리고, 특히 bootstrap one-shot의 연결 문자열이
-    손상된다. 환경값만 재보간 방지용으로 이스케이프하고 command/entrypoint는
-    건드리지 않는다. command의 ``$$VAR``는 컨테이너 셸에서 의도한
-    ``$VAR`` 동작을 유지해야 하기 때문이다.
+    포함된 DSN처럼 값 자체에 홀수 개의 연속 ``$``가 있으면 그 문자가 변수
+    시작으로 오인되어 값이 잘리고, 특히 bootstrap one-shot의 연결 문자열이
+    손상된다. Compose config가 이미 보존용으로 짝지은 ``$$``는 그대로 두고,
+    홀수 길이의 달러 run만 하나 늘린다. 환경값만 재보간 방지용으로
+    이스케이프하고 command/entrypoint는 건드리지 않는다. command의
+    ``$$VAR``는 컨테이너 셸에서 의도한 ``$VAR`` 동작을 유지해야 하기
+    때문이다.
     """
 
     materialized = deepcopy(resolved)
@@ -1496,13 +1498,32 @@ def _escape_materialized_compose_environment_values(
         if isinstance(environment, dict):
             for name, value in environment.items():
                 if isinstance(value, str):
-                    environment[name] = value.replace("$", "$$")
+                    environment[name] = _escape_unpaired_compose_dollars(value)
         elif isinstance(environment, list):
             service["environment"] = [
-                entry.replace("$", "$$") if isinstance(entry, str) else entry
+                _escape_unpaired_compose_dollars(entry)
+                if isinstance(entry, str)
+                else entry
                 for entry in environment
             ]
     return materialized
+
+
+def _escape_unpaired_compose_dollars(value: str) -> str:
+    escaped: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "$":
+            escaped.append(value[index])
+            index += 1
+            continue
+        end = index
+        while end < len(value) and value[end] == "$":
+            end += 1
+        run_length = end - index
+        escaped.append("$" * (run_length if run_length % 2 == 0 else run_length + 1))
+        index = end
+    return "".join(escaped)
 
 
 def _resolved_compose_document_hash(resolved: Mapping[str, Any]) -> str:
