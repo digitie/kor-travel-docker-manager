@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-08-23 — T-VN-M01 manual Feature credential 배선 정합성 보완
+
+고정 RC의 승인된 F1D 재빌드에서 Map API가 `KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256`
+미설정으로 fail-close한 원인을 확인했다. Manager canonical Compose와 C6C candidate allowlist가
+Map image의 M01 계약을 주입하지 않고 있었으므로, 원문 credential은 Map UI server runtime에만,
+동일 원문에서 검증한 SHA-256 digest는 Map API에만 전달하도록 배선을 추가했다. production/rehearsal
+환경에서는 부분 설정·공백·짧은 원문·형식 불일치·원문과 digest 불일치를 모두 mutation 전에 거부한다.
+
+API/UI/source Compose 계약, resolved/runtime secret isolation, `.env.example`, 운영 문서를 함께
+갱신하고 원문·digest가 다른 서비스로 새지 않는 회귀 테스트를 추가했다. 실제 승인된 값은
+gitignore된 n150 secret env에만 남기며 receipt·로그·커밋에는 기록하지 않는다. backend 전체는
+tmpfs에서 `596 passed, 3 skipped`이고 변경 파일 Ruff와 diff 검사를 통과했다. 전체 strict mypy는
+저장소 기존 baseline 진단(설치된 패키지의 untyped import 등)으로 실패했으며 이번 변경의 새
+진단은 별도 확인한다.
+
+이 변경을 draft PR로 원격에 올리고 두 전문 리뷰어의 적대적 검토를 거친 뒤 trusted Manager
+release를 갱신한다. 이후 새 state root로 승인된 `ktdctl pinvi-pair rebuild-pinned --confirm`을
+재실행하고 T-VN-41C 및 M01~M05 live acceptance를 이어간다.
+
+---
+
 ## 2026-08-23 — Map M01~M05 curation role graph 검증 결선
 
 PR #193을 trusted release에 설치한 뒤 승인된 F1D retry에서 Map Dagster DB init과

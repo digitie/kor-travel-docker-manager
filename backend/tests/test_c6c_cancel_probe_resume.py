@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from typing import Literal, cast
 from unittest.mock import Mock
@@ -346,6 +347,12 @@ def _rehearsal_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "p" * 32,
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "s" * 32,
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": "g" * 32,
+        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (
+            "manual-feature-create-rehearsal-token-0000"
+        ),
+        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": hashlib.sha256(
+            b"manual-feature-create-rehearsal-token-0000"
+        ).hexdigest(),
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "h" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,

@@ -19,6 +19,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _CANDIDATE_ALLOWED_OPERATOR_BINDS,
     C6cBuildProvenance,
     DeploymentContractError,
+    _validate_feature_create_credentials,
     derive_curation_service_principal_environment,
     validate_compose_candidate_protected_values,
     validate_map_postgres_runtime_secret_isolation,
@@ -62,6 +63,7 @@ _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
 _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
+_FEATURE_CREATE_TOKEN = "manual-feature-create-contract-token-0000"
 
 
 def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
@@ -89,6 +91,10 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "t" * 32,
+        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": _FEATURE_CREATE_TOKEN,
+        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": hashlib.sha256(
+            _FEATURE_CREATE_TOKEN.encode("utf-8")
+        ).hexdigest(),
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
@@ -423,6 +429,44 @@ def test_tvn40_curation_service_principal_derivation_fails_closed(
 
     with pytest.raises(DeploymentContractError, match=message):
         derive_curation_service_principal_environment(environment)
+
+
+def test_manual_feature_create_credentials_are_derived_from_one_raw_source() -> None:
+    environment = _compose_contract_environment()
+
+    _validate_feature_create_credentials(environment, require_nonempty=True)
+
+    environment["KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"] = "0" * 64
+    with pytest.raises(DeploymentContractError, match="must be derived"):
+        _validate_feature_create_credentials(environment, require_nonempty=True)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    (
+        (
+            {"KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": ""},
+            "configured together",
+        ),
+        (
+            {"KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": "bad"},
+            "lowercase SHA-256 hex",
+        ),
+        (
+            {"KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": "short"},
+            "at least 32 characters",
+        ),
+    ),
+)
+def test_manual_feature_create_credentials_fail_closed(
+    updates: dict[str, str],
+    message: str,
+) -> None:
+    environment = _compose_contract_environment()
+    environment.update(updates)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        _validate_feature_create_credentials(environment, require_nonempty=True)
 
 
 def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation(

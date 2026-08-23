@@ -105,6 +105,13 @@ _MAP_CURATION_SNAPSHOT_DIGEST_ENV = (
 _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV = (
     "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
 )
+# T-VN-M01 manual Feature 생성 credential은 PinVi curation pair와 별개다. 원문은
+# Map UI server runtime에만, digest는 Map API에만 전달하며 두 값의 파생 관계를
+# Manager가 frozen Compose 전에 확인한다.
+_MAP_FEATURE_CREATE_TOKEN_ENV = "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN"
+_MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV = (
+    "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"
+)
 _PINVI_CURATION_SNAPSHOT_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"
 _PINVI_CUTOVER_MAPPING_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
 _MAP_PROFILE_ENV = "KOR_TRAVEL_MAP_API_PROFILE"
@@ -164,6 +171,12 @@ _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
         _MAP_CURSOR_SIGNING_SECRET_ENV,
         _MAP_GEO_API_KEY_SOURCE_ENV,
         _MAP_UI_GEO_API_KEY_ENV,
+    }
+)
+_MAP_FEATURE_CREATE_ENV_NAMES = frozenset(
+    {
+        _MAP_FEATURE_CREATE_TOKEN_ENV,
+        _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV,
     }
 )
 _CURATION_PRINCIPAL_RAW_ENV_NAMES = frozenset(
@@ -269,6 +282,12 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     ),
     (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
         _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV
+    ),
+    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV): (
+        _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV
+    ),
+    (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (
+        _MAP_FEATURE_CREATE_TOKEN_ENV
     ),
     (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
         _PINVI_CURATION_SNAPSHOT_ENV
@@ -538,6 +557,14 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     ),
     (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
         "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+    ),
+    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV): (
+        "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
+        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}"
+    ),
+    (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (
+        "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?"
+        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN must be explicitly set}"
     ),
     (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
         "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
@@ -1261,6 +1288,8 @@ class C6cDeploymentConfig:
     smoke: C6cSmokeConfig
     curation_snapshot_token: str = field(default="", repr=False)
     curation_cutover_mapping_token: str = field(default="", repr=False)
+    feature_create_token: str = field(default="", repr=False)
+    feature_create_token_digest: str = field(default="", repr=False)
 
     @property
     def production(self) -> bool:
@@ -1763,6 +1792,10 @@ def load_c6c_deployment_config_from_environment(
             _PINVI_CUTOVER_MAPPING_ENV,
             "",
         ),
+        feature_create_token=values.get(_MAP_FEATURE_CREATE_TOKEN_ENV, ""),
+        feature_create_token_digest=values.get(
+            _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV, ""
+        ),
     )
     validate_c6c_operation_tokens(
         values,
@@ -1938,6 +1971,52 @@ def derive_curation_service_principal_environment(
     return values
 
 
+def _validate_feature_create_credentials(
+    environment: Mapping[str, str],
+    *,
+    error_type: type[DeploymentContractError] = DeploymentContractError,
+    require_nonempty: bool,
+) -> None:
+    """Map manual Feature 생성 원문/digest의 단일 정본을 검증한다.
+
+    원문은 UI server runtime에서만 소비되고 API에는 SHA-256 digest만 들어간다.
+    두 입력을 따로 provision하면 서로 다른 credential이 배선될 수 있으므로,
+    Manager가 Compose interpolation 전에 원문에서 digest를 재계산해 비교한다.
+    """
+
+    raw = environment.get(_MAP_FEATURE_CREATE_TOKEN_ENV, "")
+    digest = environment.get(_MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV, "")
+    if not isinstance(raw, str) or not isinstance(digest, str):
+        raise error_type("Map manual Feature create credential environment is invalid")
+    if not raw and not digest:
+        if require_nonempty:
+            raise error_type(
+                f"{_MAP_FEATURE_CREATE_TOKEN_ENV} and "
+                f"{_MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV} must be configured"
+            )
+        return
+    if not raw or not digest:
+        raise error_type(
+            f"{_MAP_FEATURE_CREATE_TOKEN_ENV} and "
+            f"{_MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV} must be configured together"
+        )
+    if len(raw) < 32 or any(character.isspace() for character in raw):
+        raise error_type(
+            f"{_MAP_FEATURE_CREATE_TOKEN_ENV} must contain at least 32 characters "
+            "without whitespace"
+        )
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise error_type(
+            f"{_MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV} must be lowercase SHA-256 hex"
+        )
+    expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(digest, expected):
+        raise error_type(
+            f"{_MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV} must be derived from "
+            f"{_MAP_FEATURE_CREATE_TOKEN_ENV}"
+        )
+
+
 def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
     _validate_map_production_secret_values(
         {
@@ -1951,6 +2030,8 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
             _MAP_FIXTURE_ENV: config.fixture_token,
             _PINVI_CURATION_SNAPSHOT_ENV: config.curation_snapshot_token,
             _PINVI_CUTOVER_MAPPING_ENV: config.curation_cutover_mapping_token,
+            _MAP_FEATURE_CREATE_TOKEN_ENV: config.feature_create_token,
+            _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV: config.feature_create_token_digest,
             _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
             _MAP_UI_PASSWORD_ENV: config.smoke.map_ui_password,
@@ -1969,6 +2050,12 @@ def _validate_map_production_secret_values(
     reject_published_examples: bool = False,
 ) -> None:
     derive_curation_service_principal_environment(values, error_type=error_type)
+    _validate_feature_create_credentials(
+        values,
+        error_type=error_type,
+        require_nonempty=values.get("KTDM_DEPLOYMENT_ENVIRONMENT")
+        in {"rehearsal", "production"},
+    )
     geo_api_key = values.get(_MAP_GEO_API_KEY_SOURCE_ENV, "")
     geo_api_key_required = values.get("KTDM_DEPLOYMENT_ENVIRONMENT") in {
         "production",
@@ -2207,6 +2294,11 @@ def validate_resolved_compose_secret_isolation(
                 if config.curation_cutover_mapping_token
                 else ""
             ),
+            _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV: _compose_resolved_escaped_value(
+                hashlib.sha256(config.feature_create_token.encode("utf-8")).hexdigest()
+                if config.feature_create_token
+                else ""
+            ),
             **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         _PINVI_API_SERVICE: {
@@ -2234,6 +2326,9 @@ def validate_resolved_compose_secret_isolation(
             ),
             _MAP_UI_GEO_API_KEY_ENV: _compose_resolved_escaped_value(
                 config.map_geo_api_key
+            ),
+            _MAP_FEATURE_CREATE_TOKEN_ENV: _compose_resolved_escaped_value(
+                config.feature_create_token
             ),
         },
         _MAP_DAGSTER_SERVICE: {
@@ -2379,6 +2474,22 @@ def validate_resolved_compose_secret_isolation(
         ),
         (
             "services",
+            _MAP_API_SERVICE,
+            "environment",
+            _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV,
+        ): _compose_resolved_escaped_value(
+            hashlib.sha256(config.feature_create_token.encode("utf-8")).hexdigest()
+            if config.feature_create_token
+            else ""
+        ),
+        (
+            "services",
+            _MAP_UI_SERVICE,
+            "environment",
+            _MAP_FEATURE_CREATE_TOKEN_ENV,
+        ): _compose_resolved_escaped_value(config.feature_create_token),
+        (
+            "services",
             _PINVI_API_SERVICE,
             "environment",
             _PINVI_CURATION_SNAPSHOT_ENV,
@@ -2414,6 +2525,7 @@ def validate_resolved_compose_secret_isolation(
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
                 | _CURATION_PRINCIPAL_ENV_NAMES
+                | _MAP_FEATURE_CREATE_ENV_NAMES
             )
         ):
             raise DeploymentContractError(
@@ -2437,6 +2549,7 @@ def validate_resolved_compose_secret_isolation(
                 _compose_resolved_escaped_value(config.contract_generation),
                 _compose_resolved_escaped_value(config.curation_snapshot_token),
                 _compose_resolved_escaped_value(config.curation_cutover_mapping_token),
+                _compose_resolved_escaped_value(config.feature_create_token),
             )
         ):
             raise DeploymentContractError(
@@ -2489,6 +2602,7 @@ def validate_resolved_compose_candidate_protected_values(
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
         | _MAP_DATABASE_SECRET_ENV_NAMES
         | _CURATION_PRINCIPAL_ENV_NAMES
+        | _MAP_FEATURE_CREATE_ENV_NAMES
     )
     protected_values = (
         *(
@@ -2882,6 +2996,7 @@ def validate_compose_env_file_isolation(
                         | _MAP_UI_AUTH_ENV_NAMES
                         | _MAP_PRODUCTION_SECRET_ENV_NAMES
                         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+                        | _MAP_FEATURE_CREATE_ENV_NAMES
                     )
                     for key in env_keys
                 ):
@@ -2937,6 +3052,7 @@ def validate_compose_candidate_protected_values(
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
         | _MAP_DATABASE_SECRET_ENV_NAMES
         | _CURATION_PRINCIPAL_ENV_NAMES
+        | _MAP_FEATURE_CREATE_ENV_NAMES
     )
     protected_values = (
         *(
@@ -5316,6 +5432,7 @@ def validate_current_map_ui_auth_runtime(
         _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
         _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
         _MAP_UI_GEO_API_KEY_ENV: config.map_geo_api_key,
+        _MAP_FEATURE_CREATE_TOKEN_ENV: config.feature_create_token,
     }
     optional_expected = (
         {_MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret}
@@ -5370,6 +5487,7 @@ def validate_current_map_ui_auth_runtime(
         config.map_ui_session_secret,
         config.map_admin_proxy_secret,
         config.map_geo_api_key,
+        config.feature_create_token,
         plaintext,
     )
     protected_names = (
@@ -5377,6 +5495,7 @@ def validate_current_map_ui_auth_runtime(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | _MAP_FEATURE_CREATE_ENV_NAMES
     )
     for path, scalar in _walk_scalars(runtime_config):
         if path in allowed_paths:
@@ -5406,6 +5525,9 @@ def validate_runtime_secret_isolation(
             _MAP_SERVICE_TOKEN_ENV: config.map_service_token,
             _MAP_CURSOR_SIGNING_SECRET_ENV: config.map_cursor_signing_secret,
             _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
+            _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV: hashlib.sha256(
+                config.feature_create_token.encode("utf-8")
+            ).hexdigest(),
             **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         config.pinvi_container: {
@@ -5418,6 +5540,7 @@ def validate_runtime_secret_isolation(
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
             _MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
             _MAP_UI_GEO_API_KEY_ENV: config.map_geo_api_key,
+            _MAP_FEATURE_CREATE_TOKEN_ENV: config.feature_create_token,
         },
         _MAP_RUNTIME_CONTAINERS[_MAP_DAGSTER_SERVICE]: {
             _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
@@ -5443,6 +5566,8 @@ def validate_runtime_secret_isolation(
             config.map_service_token,
             config.map_cursor_signing_secret,
             config.map_geo_api_key,
+            config.feature_create_token,
+            hashlib.sha256(config.feature_create_token.encode("utf-8")).hexdigest(),
             config.smoke.map_ui_password,
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,
@@ -5456,6 +5581,7 @@ def validate_runtime_secret_isolation(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+        | _MAP_FEATURE_CREATE_ENV_NAMES
     )
     for container_name, runtime_config in container_configs.items():
         if not isinstance(runtime_config, Mapping):
@@ -5479,6 +5605,7 @@ def validate_runtime_secret_isolation(
                 | _MAP_UI_AUTH_ENV_NAMES
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
+                | _MAP_FEATURE_CREATE_ENV_NAMES
             ):
                 if env_name not in allowed:
                     raise DeploymentContractError(
