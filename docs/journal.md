@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-23 — T-VN-M01 candidate source 경로 override 전달 보완
+
+고정 RC pinned rebuild의 DB·컨테이너 변경 전 candidate preflight가 staged Map
+worktree 대신 canonical source-consent 경로를 검사하던 경로를 수정했다. Compose
+resolved 값에는 candidate override가 반영되어도 transaction의 원본 환경 snapshot은
+그대로 보존되므로, source environment contract gate에 frozen 환경과 candidate
+override를 병합해 전달하도록 고정했다. 그 결과 exact Map revision의
+`docker-compose.yml`·env-file 계약을 실제 staged worktree에서 검사한다.
+
+회귀 테스트로 source contract 호출의 staged 경로와 rebuild candidate override를
+고정했으며, backend 전체는 `598 passed, 3 skipped`, 변경 Ruff와 diff 검사를 통과했다.
+저장소 전체 strict mypy는 기존 설치 패키지 untyped import 등 baseline 진단으로
+실패했으며 이번 변경의 새 진단은 확인되지 않았다.
+
+---
+
 ## 2026-08-23 — T-VN-M01 적대적 리뷰 P1 보완
 
 두 전문 리뷰어가 공통으로 지적한 reset 경계의 자격증명 충돌을 보완했다. manual Feature
