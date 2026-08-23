@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Callable
 from contextlib import nullcontext
 from copy import deepcopy
@@ -63,6 +64,14 @@ _CURATION_SNAPSHOT_DIGEST_SOURCE = (
 )
 _CURATION_CUTOVER_MAPPING_DIGEST_SOURCE = (
     "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+)
+_FEATURE_CREATE_TOKEN_SOURCE = (
+    "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?"
+    "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN must be explicitly set}"
+)
+_FEATURE_CREATE_TOKEN_DIGEST_SOURCE = (
+    "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
+    "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}"
 )
 _PINVI_CURATION_SNAPSHOT_SOURCE = "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
 _PINVI_CUTOVER_MAPPING_SOURCE = (
@@ -360,6 +369,12 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256": (
                     _CURATION_CUTOVER_MAPPING_DIGEST_SOURCE
                 ),
+                "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": (
+                    _FEATURE_CREATE_TOKEN_DIGEST_SOURCE
+                ),
+                "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
+                    "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
+                ),
                 "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
                     "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
                     "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
@@ -429,6 +444,9 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
                     "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
                     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (
+                    _FEATURE_CREATE_TOKEN_SOURCE
                 ),
                 "KOR_TRAVEL_GEO_API_KEY": _MAP_UI_GEO_API_KEY_SOURCE,
             }
@@ -777,6 +795,34 @@ def test_map_pinvi_ops_principal_is_api_only_and_uses_single_secret_source() -> 
     assert pinvi_environment["PINVI_ENVIRONMENT"] == (
         "${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}"
     )
+
+
+def test_manual_feature_create_credential_is_split_between_map_api_and_ui() -> None:
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    map_api = services[_MAP_API_SERVICE]["environment"]
+    map_ui = services[_MAP_UI_SERVICE]["environment"]
+
+    assert map_api["KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"] == (
+        _FEATURE_CREATE_TOKEN_DIGEST_SOURCE
+    )
+    assert map_ui["KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN"] == (
+        _FEATURE_CREATE_TOKEN_SOURCE
+    )
+    assert "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN" not in map_api
+    assert "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256" not in map_ui
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"
+        in service.get("environment", {})
+    } == {_MAP_API_SERVICE}
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN"
+        in service.get("environment", {})
+    } == {_MAP_UI_SERVICE}
 
     assert {
         service_name
@@ -1391,6 +1437,16 @@ def _prepare_candidate_transaction(
             "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET", _MAP_ADMIN_PROXY_SECRET
         )
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_SERVICE_TOKEN", _MAP_SERVICE_TOKEN)
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN",
+            "manual-feature-create-test-token-0000",
+        )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256",
+            hashlib.sha256(
+                b"manual-feature-create-test-token-0000"
+            ).hexdigest(),
+        )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
             _MAP_CURSOR_SIGNING_SECRET,

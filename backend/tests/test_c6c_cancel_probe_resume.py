@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from typing import Literal, cast
 from unittest.mock import Mock
@@ -346,6 +347,12 @@ def _rehearsal_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "p" * 32,
         "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": "s" * 32,
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": "g" * 32,
+        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (
+            "manual-feature-create-rehearsal-token-0000"
+        ),
+        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": hashlib.sha256(
+            b"manual-feature-create-rehearsal-token-0000"
+        ).hexdigest(),
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "h" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
@@ -366,6 +373,20 @@ def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> Non
     assert config.fixture_token == "f" * 32
     assert config.curation_snapshot_token == "n" * 32
     assert config.curation_cutover_mapping_token == "m" * 32
+
+
+def test_rehearsal_loader_rejects_invalid_manual_feature_create_flag() -> None:
+    values = _rehearsal_environment()
+    values["KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED"] = "maybe"
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=(
+            "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED must be exactly "
+            "true or false"
+        ),
+    ):
+        c6c.load_c6c_deployment_config_from_environment(values)
 
 
 @pytest.mark.parametrize(

@@ -393,6 +393,27 @@ manager `.env`의 `PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN`과
   Compose preflight가 container mutation 전에 중단한다. T-VN-40 rollout receipt가 pending인 동안
   빈 pair는 legacy compatible-pair를 위해 허용한다.
 
+### 7.5 T-VN-M01 manual Feature 생성 credential
+
+manual Feature 생성은 특정 provider나 PinVi 전용 기능이 아니다. Manager `.env`의
+`KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN` 원문과 그 SHA-256인
+`KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256`을 함께 provision한다. 두 값은
+32자 이상 원문·소문자 64자리 digest여야 하고, Manager가 원문에서 digest를 다시 계산해
+불일치·부분 설정을 모두 fail-close한다.
+
+- Map API에는 digest만 `KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256`로 전달한다.
+  API image나 API environment에는 원문을 넣지 않는다.
+- Map UI에는 server-only BFF가 사용하는 원문만 `KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN`으로
+  전달한다. `NEXT_PUBLIC_*`, build argument, PinVi·Dagster·Geo 컨테이너에는 전달하지 않는다.
+- 두 값은 기존 C6c ops/service/cursor credential과 분리한다. 실제 값은 gitignore된 `.env` 또는
+  승인된 secret env에만 저장하고, 로그·receipt·문서에는 값이나 digest를 남기지 않는다.
+- Manager는 API service·ops·cursor·metrics·Geo·UI 인증·curation·cache-target digest와의
+  재사용도 DB reset 전에 거부한다. API가 kill-switch를 `false`로 둔 사전 provision 단계라도
+  production profile에서는 digest를 요구한다. 기본 flag는
+  `KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED=false`이며, paired live gate와
+  승인된 cutover에서만 `true`로 바꾼다. 따라서 새 Map image가 M01 route를 아직 열지 않은
+  동안에도 배선·credential 재사용 drift를 먼저 발견한다.
+
 Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 `KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH`, `KOR_TRAVEL_MAP_UI_SESSION_SECRET`은 기본값 없는 `:?`
 보간으로 Map UI의 정확한 Env path에만 전달한다. PBKDF2 반복 수는 100,000 이상, session secret은 32자

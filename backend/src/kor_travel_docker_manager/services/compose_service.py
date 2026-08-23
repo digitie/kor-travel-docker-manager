@@ -49,10 +49,12 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_c6c_build_source_wiring,
     validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
+    validate_current_map_ui_auth_runtime,
     validate_map_postgres_runtime_secret_isolation,
     validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
+    validate_runtime_secret_isolation,
 )
 from kor_travel_docker_manager.services.c6c_image_retention import (
     ensure_generation_references,
@@ -619,6 +621,13 @@ _MAP_SOURCE_V3_API_ENVIRONMENT = {
     "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": (
         "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
     ),
+    "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": (
+        "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
+        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 is required}"
+    ),
+    "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
+        "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
+    ),
 }
 _MAP_SOURCE_V3_UI_ENVIRONMENT = {
     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
@@ -631,6 +640,10 @@ _MAP_SOURCE_V3_UI_ENVIRONMENT = {
     ),
     "KOR_TRAVEL_MAP_UI_SESSION_SECRET": (
         "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?KOR_TRAVEL_MAP_UI_SESSION_SECRET is required}"
+    ),
+    "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (
+        "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?"
+        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN is required}"
     ),
 }
 _MAP_SOURCE_V4_CURSOR_ENV_VALUE = (
@@ -650,6 +663,17 @@ _MAP_SOURCE_PROTECTED_ENV_VALUES = {
     ),
     "KOR_TRAVEL_MAP_API_SERVICE_TOKEN": (
         "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN is required}"
+    ),
+    "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": (
+        "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
+        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 is required}"
+    ),
+    "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
+        "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
+    ),
+    "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (
+        "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?"
+        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN is required}"
     ),
     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": (_MAP_SOURCE_V4_CURSOR_ENV_VALUE),
 }
@@ -786,6 +810,30 @@ def _validate_map_source_protected_scalar_tree(
             "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
         ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
             "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+        ],
+        (
+            "services",
+            "api",
+            "environment",
+            "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"
+        ],
+        (
+            "services",
+            "api",
+            "environment",
+            "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED"
+        ],
+        (
+            "services",
+            "frontend",
+            "environment",
+            "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN"
         ],
     }
     if contract_version == 4:
@@ -3747,6 +3795,8 @@ class ComposeService:
             config.map_admin_proxy_secret,
             config.map_service_token,
             config.map_cursor_signing_secret,
+            config.feature_create_token,
+            config.feature_create_token_digest,
             config.smoke.map_ui_password,
             config.smoke.pinvi_admin_email,
             config.smoke.pinvi_admin_password,
@@ -3822,6 +3872,12 @@ class ComposeService:
         if not isinstance(source, Mapping):
             raise DeploymentContractError(
                 "pinned runtime candidate compose source is invalid"
+            )
+        if isinstance(transaction, ComposeTransactionSnapshot):
+            _map_source_environment_contract_version(
+                transaction.environment.effective,
+                compose_path=transaction.environment.compose_path,
+                source_revision=build.sources.release.source_for("map").revision,
             )
         validate_c6c_build_source_wiring(source)
         map_context = str(build.sources.source_for("map").root)
@@ -4064,6 +4120,21 @@ class ComposeService:
                     frozen_recovery=True,
                 )
                 self._assert_pinned_runtime_database_heads(runtimes, journal=journal)
+                config = load_c6c_deployment_config_from_environment(
+                    runtime_transaction.environment.effective
+                )
+                if isinstance(config, C6cDeploymentConfig):
+                    runtime_configs = self._inspect_c6c_runtime_configs(
+                        config,
+                        list(RUNTIME_SERVICES),
+                        transaction=runtime_transaction,
+                        frozen_recovery=True,
+                    )
+                    validate_runtime_secret_isolation(runtime_configs, config)
+                    validate_current_map_ui_auth_runtime(
+                        runtime_configs[config.map_ui_container],
+                        config,
+                    )
                 reconcile_generation_references(
                     (journal.candidate,),
                     cwd=get_project_root(),
@@ -4306,6 +4377,21 @@ class ComposeService:
                     transaction=runtime_transaction,
                     frozen_recovery=True,
                 )
+                config = load_c6c_deployment_config_from_environment(
+                    runtime_transaction.environment.effective
+                )
+                if isinstance(config, C6cDeploymentConfig):
+                    runtime_configs = self._inspect_c6c_runtime_configs(
+                        config,
+                        list(RUNTIME_SERVICES),
+                        transaction=runtime_transaction,
+                        frozen_recovery=True,
+                    )
+                    validate_runtime_secret_isolation(runtime_configs, config)
+                    validate_current_map_ui_auth_runtime(
+                        runtime_configs[config.map_ui_container],
+                        config,
+                    )
                 updated = self._advance_pinned_runtime_journal(
                     journal, "pinvi_runtime_ready"
                 )

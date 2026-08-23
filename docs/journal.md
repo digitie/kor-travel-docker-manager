@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-08-23 — T-VN-M01 적대적 리뷰 P1 보완
+
+두 전문 리뷰어가 공통으로 지적한 reset 경계의 자격증명 충돌을 보완했다. manual Feature
+생성 원문·digest가 Map API service/ops/cursor/metrics/Geo·UI 인증·curation raw 또는
+curation/cache-target digest와 재사용되면 `recreate_empty_databases()` 전에 fail-close한다.
+비 ASCII 입력도 예외 없이 안전하게 비교하도록 바이트 기반 constant-time 비교를 사용하고,
+오류에는 자격증명 값이나 digest를 기록하지 않는다.
+
+API canonical Compose에 `KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED`를
+명시적으로 연결하고 기본값은 `false`로 고정했다. 마지막 7개 runtime service readiness 뒤에는
+실제 Docker inspect 결과를 다시 수집해 runtime secret isolation과 Map UI 인증 배선을
+검증한 뒤에만 `contract_verified`로 진행한다. redaction 대상에도 manual Feature 원문·digest를
+추가했다. candidate build gate가 Map source environment contract를 실제 호출하도록 연결하고,
+manual flag의 exact `:-false` wiring을 결박했으며,
+config loader 단독 호출에서도 `true|false` 외 값을 거부한다. committed journal fast path도
+readiness·DB head 확인 뒤 Docker inspect 기반 runtime secret/UI auth 검증을 수행한다. 회귀 검증은
+충돌 사전 차단 합성과 invalid flag를 포함해 전체 backend `598 passed, 3 skipped`, 변경 파일
+Ruff, diff 검사를 통과했다. 저장소 전체 strict mypy에는 기존 baseline 진단이 남아 있어 별도
+변경으로 섞지 않았다.
+
+---
+
+## 2026-08-23 — T-VN-M01 manual Feature credential 배선 정합성 보완
+
+고정 RC의 승인된 F1D 재빌드에서 Map API가 `KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256`
+미설정으로 fail-close한 원인을 확인했다. Manager canonical Compose와 C6C candidate allowlist가
+Map image의 M01 계약을 주입하지 않고 있었으므로, 원문 credential은 Map UI server runtime에만,
+동일 원문에서 검증한 SHA-256 digest는 Map API에만 전달하도록 배선을 추가했다. production/rehearsal
+환경에서는 부분 설정·공백·짧은 원문·형식 불일치·원문과 digest 불일치를 모두 mutation 전에 거부한다.
+
+API/UI/source Compose 계약, resolved/runtime secret isolation, `.env.example`, 운영 문서를 함께
+갱신하고 원문·digest가 다른 서비스로 새지 않는 회귀 테스트를 추가했다. 실제 승인된 값은
+gitignore된 n150 secret env에만 남기며 receipt·로그·커밋에는 기록하지 않는다. backend 전체는
+tmpfs에서 `596 passed, 3 skipped`이고 변경 파일 Ruff와 diff 검사를 통과했다. 전체 strict mypy는
+저장소 기존 baseline 진단(설치된 패키지의 untyped import 등)으로 실패했으며 이번 변경의 새
+진단은 별도 확인한다.
+
+이 변경을 draft PR로 원격에 올리고 두 전문 리뷰어의 적대적 검토를 거친 뒤 trusted Manager
+release를 갱신한다. 이후 새 state root로 승인된 `ktdctl pinvi-pair rebuild-pinned --confirm`을
+재실행하고 T-VN-41C 및 M01~M05 live acceptance를 이어간다.
+
+---
+
 ## 2026-08-23 — Map M01~M05 curation role graph 검증 결선
 
 PR #193을 trusted release에 설치한 뒤 승인된 F1D retry에서 Map Dagster DB init과
