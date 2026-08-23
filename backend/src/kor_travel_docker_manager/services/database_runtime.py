@@ -74,6 +74,25 @@ _MAP_REQUIRED_GROUP_ROLES = (
     "ktm_curation_provider_executor",
 )
 
+# Map role bootstrap runs in a PostgreSQL cluster whose roles survive the
+# application/Dagster database recreation.  A fresh legacy bootstrap therefore
+# legitimately sees memberships created by the later M01~M05 phases from an
+# earlier generation.  Those roles are verified by their own phase-specific
+# bootstrap assertions; the legacy assertion must not mistake their preserved
+# memberships for drift in the base graph.
+_MAP_FUTURE_PHASE_ROLES = (
+    "ktm_manual_feature_procedure_owner",
+    "ktm_manual_feature_admin_executor",
+    "ktm_feature_create_provider_executor",
+    "ktm_feature_request_procedure_owner",
+    "ktm_feature_request_service_executor",
+    "ktm_feature_request_admin_executor",
+    "ktm_manual_provider_dedup_procedure_owner",
+    "ktm_manual_provider_dedup_detector_executor",
+    "ktm_manual_provider_dedup_admin_executor",
+    "ktm_feature_reference_reconciliation_service_executor",
+)
+
 
 @dataclass(frozen=True)
 class DatabaseRuntime:
@@ -291,6 +310,7 @@ def assert_map_database_principal_bootstrap(
     expected_roles = (*_MAP_REQUIRED_GROUP_ROLES, *_MAP_REQUIRED_LOGIN_ROLES)
     expected_values = ", ".join(f"('{role}')" for role in expected_roles)
     expected_names = ", ".join(f"'{role}'" for role in expected_roles)
+    future_phase_names = ", ".join(f"'{role}'" for role in _MAP_FUTURE_PHASE_ROLES)
     group_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_GROUP_ROLES)
     login_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_LOGIN_ROLES)
     runtime_principal_names = ", ".join(
@@ -343,6 +363,7 @@ def assert_map_database_principal_bootstrap(
         "LEFT JOIN expected_membership expected ON expected.member_name = member_role.rolname "
         "AND expected.role_name = pg_get_userbyid(membership.roleid) "
         f"WHERE member_role.rolname IN ({expected_names}, '{dagster_metadata_user}') "
+        f"AND pg_get_userbyid(membership.roleid) NOT IN ({future_phase_names}) "
         "AND expected.member_name IS NULL) "
         "AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership "
         "JOIN pg_roles granted_role ON granted_role.oid = membership.roleid "
@@ -350,6 +371,7 @@ def assert_map_database_principal_bootstrap(
         "= pg_get_userbyid(membership.member) "
         "AND expected.role_name = granted_role.rolname "
         f"WHERE granted_role.rolname IN ({expected_names}) "
+        f"AND member_role.rolname NOT IN ({future_phase_names}) "
         "AND expected.member_name IS NULL) "
         "AND (SELECT count(*) FROM pg_namespace namespace "
         "JOIN pg_roles owner_role ON owner_role.oid = namespace.nspowner "

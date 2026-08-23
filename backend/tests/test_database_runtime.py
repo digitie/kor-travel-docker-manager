@@ -317,6 +317,24 @@ def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
     assert "pg_default_acl" in command[-1]
     assert "map_dagster_metadata" in command[-1]
     assert "granted_role.rolname" in command[-1]
+    # PostgreSQL roles survive the three-DB recreation.  Memberships owned by
+    # later M01~M05 phases are valid cluster residue at this legacy checkpoint
+    # and are checked by their own phase bootstrap assertions.
+    assert "pg_get_userbyid(membership.roleid) NOT IN" in command[-1]
+    assert "member_role.rolname NOT IN" in command[-1]
+    for future_role in (
+        "ktm_manual_feature_procedure_owner",
+        "ktm_manual_feature_admin_executor",
+        "ktm_feature_create_provider_executor",
+        "ktm_feature_request_procedure_owner",
+        "ktm_feature_request_service_executor",
+        "ktm_feature_request_admin_executor",
+        "ktm_manual_provider_dedup_procedure_owner",
+        "ktm_manual_provider_dedup_detector_executor",
+        "ktm_manual_provider_dedup_admin_executor",
+        "ktm_feature_reference_reconciliation_service_executor",
+    ):
+        assert future_role in command[-1]
     assert "privilege.grantee = 0" in command[-1]
     # 실데이터 덤프/복원 경로(#171)에서 이 테이블 소유권이 넘어가지 않으면
     # migrator가 첫 `SELECT version_num`에서 42501로 죽는다. fresh DB에서는
