@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-08-24 — T-VN-41C M01~M05 role-residue RC 재고정과 host rebuild lease
+
+PostgreSQL role은 cluster 범위라 database를 새로 만들어도 M01~M05의 이미 알려진 role
+membership이 남을 수 있다. Map base migration과 Manager의 pre-migration principal assertion은
+그 정확한 10개 future role만 양방향으로 보류하고, source-owned M01/M05 phase가 이후
+membership 상대방과 PostgreSQL 16 option까지 다시 exact 검증하도록 정렬했다. 미등록
+`ktm_feature_*`/`ktm_curation_*` edge는 계속 fail-close한다.
+
+Manager는 Map RC `b9818097`을 pinset `f946bdfa…`로 재고정했다. 기존 `f27c2763…`의
+non-terminal journal은 immutable failure evidence로 보존하며, 서로 다른 pinset은 새 state
+root와 transaction으로만 시작한다. F1D rehearsal의 일반 C6c lock이 실행 사용자 home을 쓸 수
+있는 문제도 보완해, root-only rebuild는 `/run/lock/kor-travel-docker-manager/` 아래의 고정
+host lease를 candidate source materialize 전부터 final commit까지 잡는다.
+
+이 lease는 Manager launcher 사이의 직렬화 경계다. n150의 외부 Compose watcher는 같은 lease를
+획득하도록 wrapper를 정렬하고, 실제 재구축 전에는 해당 project/container/process가 모두
+정지·비활성인지 별도 확인한다. 세 standalone dump의 scratch restore는 F1D rollback이 아니라
+사용자 승인 release evidence이므로, 각각의 manifest SHA·TOC·schema head 대조가 성공한 뒤에만
+새 pinset rebuild를 시작한다.
+
+---
+
 ## 2026-08-23 — T-VN-41C pinned candidate 빌드 직렬화 및 n150 지연 원인 확인
 
 두 전문 리뷰어(API·DB/운영)가 n150 승인 재빌드의 지연·실패를 교차 점검했다. 첫 번째

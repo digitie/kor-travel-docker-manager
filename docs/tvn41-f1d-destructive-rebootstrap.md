@@ -10,6 +10,12 @@ compatible-pair manifest, 이전 F1D journal과 backup은 보전·복원 대상�
 release pin 하나로 **새 runtime generation과 새 DB schema를 다시 만드는 것**이다. raw Docker,
 Compose, SQL, `.env`, state-file 삭제를 사람이 조합해 실행하는 경로는 만들지 않는다.
 
+> **2026-08-24 사용자 승인 release gate**: `rebuild-pinned` transaction 자체는 backup이나
+> rollback을 소유하지 않는다. 다만 파기 실행 전 이미 생성된 Map application·Map Dagster·PinVi
+> standalone dump를 각각 disposable scratch DB에 실제 복원해 manifest SHA·TOC·schema head를
+> 대조한다. 이 외부 증적은 old runtime/DB를 되살리는 경로가 아니며, dump 이름·SHA·head·scratch
+> target·성공 여부만 secret-free release 기록에 남긴다.
+
 ## 현재 구조의 결함
 
 기존 `bootstrap-pinned-drift`는 Map 네 service와 PinVi API만 compatible pair로 기록한다.
@@ -107,7 +113,8 @@ transaction/candidate로 idempotently 다시 검증한다. tombstone write/unlin
 3. `reset_intent_durable` 뒤 일곱 runtime을 모두 중지하고 writer가 없음을 확인한다. PinVi Dagster는
    writer이므로 API만 멈춘 채 DB를 재생성하지 않는다.
 4. PostgreSQL owner 권한으로 세 database를 `DROP DATABASE ... WITH (FORCE)` 후 같은 owner로
-   `CREATE DATABASE` 한다. dump, backup, restore, old database head 비교는 사용하지 않는다.
+   `CREATE DATABASE` 한다. 이 transaction 안에서는 dump, backup, restore, old database head 비교를
+   사용하지 않는다. 단, 위 사용자 승인 release gate의 independent scratch restore가 먼저 성공해야 한다.
 5. Map API candidate entrypoint만 Map application migration owner로 기동해 candidate-attested
    `map_application_head`까지 적용하고 health/ops principal을 확인한다. 다음에는 Map Dagster candidate의
    migration-only command만 실행한다. 이 command는 같은 candidate image의 `dagster instance migrate`로
@@ -146,7 +153,8 @@ transaction/candidate로 idempotently 다시 검증한다. tombstone write/unlin
 - Map `ops:read`, `ops:cancel`, `ops:fixture` capability는 기존 최소 권한을 유지한다. PinVi에
   fixture credential이나 Map admin proxy credential을 주입하지 않는다.
 - 새 runtime generation과 DB schema를 검증한 뒤 source/ETL 재적재는 별도 작업이다. rebuild는
-  sample data, backup, restore, data migration을 수행하지 않는다.
+  sample data, backup, restore, data migration을 수행하지 않는다. 사용자 승인 scratch restore는
+  transaction 밖의 release evidence일 뿐, runtime rollback이나 data migration이 아니다.
 
 ## PR 단위 작업
 

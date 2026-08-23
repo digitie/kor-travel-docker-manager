@@ -45,6 +45,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     derive_curation_service_principal_environment,
     inspect_c6c_image_source_revision,
     load_c6c_deployment_config_from_environment,
+    pinned_runtime_rebuild_lock,
     revalidate_candidate_system_bind_snapshots,
     run_pinvi_canonical_smoke,
     validate_c6c_build_source_wiring,
@@ -3987,7 +3988,10 @@ class ComposeService:
         """F1D v5의 candidate-first seven-service destructive rebootstrap을 실행한다."""
 
         _require_pinned_runtime_rebuild_root()
-        with c6c_deployment_lock_from_environment() as lock_snapshot:
+        with (
+            pinned_runtime_rebuild_lock(),
+            c6c_deployment_lock_from_environment() as lock_snapshot,
+        ):
             # 새 Map application head는 candidate image가 static command로 직접
             # attest한 뒤에야 알 수 있다. 따라서 아직 실행하지 않는 candidate
             # build/inspection Compose에는 schema-shaped placeholder만 주고, 실제

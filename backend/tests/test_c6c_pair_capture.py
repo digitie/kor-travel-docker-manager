@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from kor_travel_docker_manager.services import c6c_deployment, pinned_runtime_generation
 from kor_travel_docker_manager.services import c6c_pair_capture as capture
 
@@ -925,6 +926,22 @@ def test_deployment_lock_emits_exactly_the_message_capture_matches(tmp_path: Pat
         os.close(holder)
 
     assert str(excinfo.value) == capture.LOCK_CONTENTION_MESSAGE
+
+
+def test_pinned_runtime_rebuild_lease_path_is_root_owned_and_fixed() -> None:
+    assert c6c_deployment.pinned_runtime_rebuild_lock_path() == (
+        "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
+    )
+
+
+def test_pinned_runtime_rebuild_lease_rejects_nonroot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c6c_deployment.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(c6c_deployment.DeploymentContractError, match="requires root"):
+        with c6c_deployment.pinned_runtime_rebuild_lock():
+            pass  # pragma: no cover - root gate must reject before entering.
 
 
 # ---------------------------------------------------------------------------

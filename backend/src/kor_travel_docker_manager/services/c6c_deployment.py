@@ -84,6 +84,12 @@ _MAP_RUNTIME_CONTAINERS = {
 _C6C_GLOBAL_MUTATION_LOCK = Path(
     "/run/lock/kor-travel-docker-manager/global-mutation.lock"
 )
+# F1D rebuild는 rehearsal에서도 root로만 실행하는 host-wide destructive operation이다.
+# 일반 C6c rehearsal lock은 실행 사용자 home 아래여서 서로 다른 launcher를 직렬화할 수
+# 없으므로, build부터 final commit까지 이 고정 lease를 별도로 잡는다.
+_PINNED_RUNTIME_REBUILD_LOCK = Path(
+    "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
+)
 _DEFAULT_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
 _C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
@@ -1549,6 +1555,26 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 os.close(fd)
+
+
+def pinned_runtime_rebuild_lock_path() -> str:
+    """root-only F1D rebuild가 공유하는 고정 host lease 경로를 반환한다."""
+
+    return str(_PINNED_RUNTIME_REBUILD_LOCK)
+
+
+@contextmanager
+def pinned_runtime_rebuild_lock() -> Iterator[None]:
+    """rehearsal user home과 무관하게 F1D rebuild를 host 단위로 직렬화한다.
+
+    호출자는 `rebuild_pinned_runtime()`의 root gate를 이미 통과해야 하며, 이 함수도
+    독립적으로 그 전제를 강제한다.
+    """
+
+    if os.geteuid() != 0:
+        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+    with c6c_deployment_lock(pinned_runtime_rebuild_lock_path()):
+        yield
 
 
 def _prepare_c6c_lock_directory(path: Path) -> None:

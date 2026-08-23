@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +46,19 @@ from kor_travel_docker_manager.services.pinned_runtime_sources import (
     MaterializedRuntimeSource,
     PinnedRuntimeSourceMaterialization,
 )
+
+
+@pytest.fixture(autouse=True)
+def _bypass_root_host_lease_in_nonroot_unit_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """전용 root/host lock은 실환경에서만 열고, 나머지 rebuild contract를 격리한다."""
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "pinned_runtime_rebuild_lock",
+        lambda: nullcontext(),
+    )
 
 
 def _sources() -> PinnedRuntimeSourceMaterialization:
@@ -226,6 +240,36 @@ def test_rebuild_requires_root_execution(monkeypatch: pytest.MonkeyPatch) -> Non
 
     with pytest.raises(DeploymentContractError, match="requires root execution"):
         ComposeService().rebuild_pinned_runtime()
+
+
+def test_rebuild_host_lease_blocks_before_source_or_database_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materialize = Mock()
+
+    def contended_rebuild_lease() -> object:
+        raise DeploymentContractError("pinned runtime rebuild lease is already held")
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "pinned_runtime_rebuild_lock",
+        contended_rebuild_lease,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        materialize,
+    )
+
+    with pytest.raises(DeploymentContractError, match="rebuild lease is already held"):
+        ComposeService().rebuild_pinned_runtime()
+
+    materialize.assert_not_called()
 
 
 def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutation(
