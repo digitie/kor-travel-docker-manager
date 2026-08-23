@@ -222,6 +222,23 @@ def _resolved_compose(
     return document
 
 
+def test_map_dagster_db_init_passes_conninfo_as_psql_dbname() -> None:
+    service = _source_compose()["services"]["kor-travel-map-dagster-db-init"]
+    assert isinstance(service, dict)
+    command = service["command"]
+    assert isinstance(command, list)
+    assert len(command) == 1
+    script = command[0]
+    assert isinstance(script, str)
+    assert (
+        'psql --dbname "$$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" '
+        "--set ON_ERROR_STOP=1"
+    ) in script
+    assert (
+        'psql "$$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" --dbname postgres'
+    ) not in script
+
+
 def test_resolved_map_dagster_services_require_candidate_storage_migration() -> None:
     resolved = _resolved_compose(
         "kor-travel-map-api",

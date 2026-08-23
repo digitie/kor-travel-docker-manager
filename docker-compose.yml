@@ -706,7 +706,7 @@ services:
             echo "invalid PostgreSQL identifier" >&2; exit 1 ;;
         esac
       done
-      psql "$$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" --dbname postgres --set ON_ERROR_STOP=1 \
+      psql --dbname "$$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" --set ON_ERROR_STOP=1 \
         --set dagster_db="$$KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB" \
         --set metadata_user="$$KOR_TRAVEL_MAP_DAGSTER_METADATA_USER" \
         --set metadata_password="$$KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD" <<'SQL'
