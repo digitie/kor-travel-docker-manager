@@ -119,6 +119,22 @@ def test_candidate_build_uses_private_deterministic_tags_and_staged_sources() ->
     )
 
 
+def test_compose_run_mutation_scope_stops_at_the_service_name() -> None:
+    assert ComposeService._compose_mutation_identifiers(
+        [
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "--entrypoint",
+            "/bin/sh",
+            "kor-travel-map-migration-boundary",
+            "./docker/migrate-to-m01-bootstrap-boundary.sh",
+        ]
+    ) == ["kor-travel-map-migration-boundary"]
+
+
 def test_materialized_compose_escapes_environment_dollars_without_changing_commands() -> None:
     resolved = {
         "services": {
@@ -976,6 +992,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "-s",
         "kor-travel-map-dagster-db-init",
         "kor-travel-map-db-role-bootstrap",
+        "kor-travel-map-migration-boundary",
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
@@ -988,6 +1005,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "json",
         "kor-travel-map-dagster-db-init",
         "kor-travel-map-db-role-bootstrap",
+        "kor-travel-map-migration-boundary",
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
@@ -1025,7 +1043,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "--no-deps",
         "--entrypoint",
         "/bin/sh",
-        "kor-travel-map-api",
+        "kor-travel-map-migration-boundary",
         "./docker/migrate-to-m01-bootstrap-boundary.sh",
     )
     assert operations[9] == (
@@ -1046,7 +1064,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "--no-deps",
         "--entrypoint",
         "/bin/sh",
-        "kor-travel-map-api",
+        "kor-travel-map-migration-boundary",
         "./docker/migrate-to-m05-bootstrap-boundary.sh",
     )
     assert operations[11] == (
@@ -1067,7 +1085,7 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "--no-deps",
         "--entrypoint",
         "/bin/sh",
-        "kor-travel-map-api",
+        "kor-travel-map-migration-boundary",
         "./docker/migrate-m05.sh",
     )
     assert operations[13] == (
@@ -1739,6 +1757,7 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
             "-s",
             "kor-travel-map-dagster-db-init",
             "kor-travel-map-db-role-bootstrap",
+            "kor-travel-map-migration-boundary",
             "kor-travel-map-dagster-storage-migrate",
             "pinvi-admin-bootstrap",
         ),
@@ -1751,6 +1770,7 @@ def test_fixture_receipt_resume_quiesces_writers_without_reset_before_retry(
             "json",
             "kor-travel-map-dagster-db-init",
             "kor-travel-map-db-role-bootstrap",
+            "kor-travel-map-migration-boundary",
             "kor-travel-map-dagster-storage-migrate",
             "pinvi-admin-bootstrap",
         ),

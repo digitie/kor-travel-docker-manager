@@ -756,6 +756,19 @@ services:
     - /bin/sh
     - /usr/local/bin/postgres-role-bootstrap
 
+  # Map M01/M05 migration boundary는 API service의 secret 환경을 상속하면 안 된다.
+  # 같은 pinned API image를 쓰되 restricted migrator DSN 하나만 전달하는 전용
+  # bootstrap service로 실행하고, Manager가 각 source-owned script를 command로
+  # 선택한다.
+  kor-travel-map-migration-boundary:
+    profiles:
+    - bootstrap
+    image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
+    restart: "no"
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    environment:
+      KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
+
   kor-travel-map-api:
     image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
     build:

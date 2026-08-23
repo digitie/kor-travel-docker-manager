@@ -40,6 +40,7 @@ _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
+_MAP_MIGRATION_BOUNDARY_SERVICE = "kor-travel-map-migration-boundary"
 _PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 # ADR-047 대역 규칙(각 프로젝트 100번대의 x00이 그 프로젝트 DB)에 맞춘 값이다.
 # `docker-compose.yml`의 `KOR_TRAVEL_MAP_POSTGRES_PORT:-12700` 기본값과 **같아야**
@@ -246,6 +247,7 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _PINVI_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+        _MAP_MIGRATION_BOUNDARY_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -298,6 +300,9 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     ),
     (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (
         _MAP_FEATURE_CREATE_ENABLED_ENV
+    ),
+    (_MAP_MIGRATION_BOUNDARY_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
     ),
     (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (
         _MAP_FEATURE_CREATE_TOKEN_ENV
@@ -488,6 +493,10 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
             _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         )
     },
+    (_MAP_MIGRATION_BOUNDARY_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+    ),
 }
 _MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
     {
@@ -2738,6 +2747,7 @@ def validate_resolved_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+        _MAP_MIGRATION_BOUNDARY_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
@@ -2758,6 +2768,7 @@ def validate_resolved_compose_candidate_protected_values(
             _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
             _MAP_DAGSTER_DB_INIT_SERVICE,
             _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+            _MAP_MIGRATION_BOUNDARY_SERVICE,
             _PINVI_DB_INIT_SERVICE,
         }:
             _require_map_database_host_network(service)
@@ -3191,6 +3202,7 @@ def validate_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+        _MAP_MIGRATION_BOUNDARY_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
@@ -3221,6 +3233,18 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 "compose candidate Map API must use the immutable image entrypoint and command"
             )
+        if service_name == _MAP_MIGRATION_BOUNDARY_SERVICE:
+            expected_environment = {
+                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+                    _MAP_DATABASE_CANONICAL_ENV_VALUES[
+                        (_MAP_MIGRATION_BOUNDARY_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN")
+                    ]
+                )
+            }
+            if raw_environment != expected_environment:
+                raise ComposeCandidateContractError(
+                    "compose candidate Map migration boundary must expose only the migrator DSN"
+                )
         for allowed_service, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES:
             if allowed_service != service_name:
                 continue

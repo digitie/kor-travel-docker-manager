@@ -14,6 +14,9 @@ role의 순서를 요구한다.
 
 Manager pinned rebuild가 승인된 transaction 안에서 Map candidate image의 exact
 boundary script와 source-owned role bootstrap을 순서대로 실행하도록 고정했다.
+boundary script는 장기 Map API service를 재사용하지 않고 migrator DSN만 가진
+전용 bootstrap service에서 실행해 API/ops/curation/Geo/object-store credential이
+one-shot으로 상속되지 않게 했다.
 기존 pre-migration principal assertion은 legacy role bootstrap 직후로 유지해
 runtime ACL 변화 뒤의 false failure를 막았고, armed/uninitialized resume에서도
 같은 순서를 재현한다. 회귀 테스트는 모든 boundary/phase command와 순서를 고정한다.

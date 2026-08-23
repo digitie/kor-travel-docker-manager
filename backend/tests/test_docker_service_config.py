@@ -52,6 +52,7 @@ _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
+_MAP_MIGRATION_BOUNDARY_SERVICE = "kor-travel-map-migration-boundary"
 _PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_API_SERVICE = "pinvi-api"
@@ -269,6 +270,16 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD": (
                     "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?"
                     "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
+                ),
+            },
+        },
+        _MAP_MIGRATION_BOUNDARY_SERVICE: {
+            "image": "fixture.invalid/kor-travel-map-api:test",
+            "network_mode": "host",
+            "environment": {
+                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+                    "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
                 ),
             },
         },

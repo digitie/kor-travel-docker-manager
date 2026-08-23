@@ -22,6 +22,7 @@ from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    _MAP_MIGRATION_BOUNDARY_SERVICE,
     _MAP_RUNTIME_SERVICES,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     _PINVI_API_SERVICE,
@@ -120,6 +121,7 @@ from kor_travel_docker_manager.services.registry import (
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
+    _MAP_MIGRATION_BOUNDARY_SERVICE,
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
@@ -3212,6 +3214,12 @@ class ComposeService:
         skip_next = False
         items = list(args[command_index + 1 :])
         for index, item in enumerate(items):
+            # `docker compose run SERVICE COMMAND ...`의 SERVICE 뒤는
+            # mutation 대상이 아닌 고정된 컨테이너 argv다. command token을
+            # service identifier로 해석하면 frozen mutation scope가 불필요하게
+            # 넓어지고, 경계 script 인자에 따라 allowlist가 흔들린다.
+            if command == "run" and explicit_services:
+                break
             if skip_next:
                 skip_next = False
                 continue
@@ -4253,8 +4261,9 @@ class ComposeService:
                     # 진행할 수 없다. exact source가 제공하는 두 restricted
                     # migration boundary와 세 superuser role phase를 순서대로
                     # 실행해 0225 -> M01 graph -> 0233 -> M05 graph -> head
-                    # 경계를 보존한다. API image의 entrypoint는 장기 API
-                    # 기동용이므로 boundary one-shot에서만 /bin/sh로 바꾼다.
+                    # 경계를 보존한다. 전용 boundary service는 API candidate
+                    # image와 restricted migrator DSN만 받아 /bin/sh로 script를
+                    # 실행하며, 장기 API service의 secret 환경은 상속하지 않는다.
                     self._run_pinned_runtime_rebuild_compose(
                         [
                             "--profile",
@@ -4264,7 +4273,7 @@ class ComposeService:
                             "--no-deps",
                             "--entrypoint",
                             "/bin/sh",
-                            "kor-travel-map-api",
+                            _MAP_MIGRATION_BOUNDARY_SERVICE,
                             "./docker/migrate-to-m01-bootstrap-boundary.sh",
                         ],
                         transaction=runtime_transaction,
@@ -4291,7 +4300,7 @@ class ComposeService:
                             "--no-deps",
                             "--entrypoint",
                             "/bin/sh",
-                            "kor-travel-map-api",
+                            _MAP_MIGRATION_BOUNDARY_SERVICE,
                             "./docker/migrate-to-m05-bootstrap-boundary.sh",
                         ],
                         transaction=runtime_transaction,
@@ -4318,7 +4327,7 @@ class ComposeService:
                             "--no-deps",
                             "--entrypoint",
                             "/bin/sh",
-                            "kor-travel-map-api",
+                            _MAP_MIGRATION_BOUNDARY_SERVICE,
                             "./docker/migrate-m05.sh",
                         ],
                         transaction=runtime_transaction,

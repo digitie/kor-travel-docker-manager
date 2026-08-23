@@ -58,6 +58,7 @@ _MAP_RUNTIME_SERVICES = (
 _MAP_DATABASE_ONESHOT_SERVICES = (
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
+    "kor-travel-map-migration-boundary",
     "kor-travel-map-dagster-storage-migrate",
 )
 _PINVI_RUNTIME_SERVICES = ("pinvi-api", "pinvi-web", "pinvi-dagster")
@@ -532,6 +533,23 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         root_env_path=str(root_env),
         environment=environment,
     )
+    boundary_drift = deepcopy(candidate)
+    boundary_services = boundary_drift["services"]
+    assert isinstance(boundary_services, dict)
+    boundary_service = boundary_services["kor-travel-map-migration-boundary"]
+    assert isinstance(boundary_service, dict)
+    boundary_environment = boundary_service["environment"]
+    assert isinstance(boundary_environment, dict)
+    boundary_environment["KOR_TRAVEL_MAP_API_SERVICE_TOKEN"] = (
+        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+    )
+    with pytest.raises(DeploymentContractError, match="migration boundary"):
+        validate_compose_candidate_protected_values(
+            boundary_drift,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
     resolved = _resolved_compose(
         "kor-travel-map-postgres",
         "kor-travel-map-api",
@@ -860,9 +878,13 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"][
         "environment"
     ]
+    map_boundary_environment = services["kor-travel-map-migration-boundary"][
+        "environment"
+    ]
     assert isinstance(map_api_environment, dict)
     assert isinstance(map_dagster_environment, dict)
     assert isinstance(map_bootstrap_environment, dict)
+    assert isinstance(map_boundary_environment, dict)
     assert {
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
@@ -886,6 +908,12 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
     }.issubset(map_bootstrap_environment)
+    assert map_boundary_environment == {
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        )
+    }
 
 
 @pytest.mark.parametrize(
