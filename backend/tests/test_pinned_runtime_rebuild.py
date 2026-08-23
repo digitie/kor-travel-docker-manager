@@ -436,10 +436,7 @@ def test_frozen_compose_resolution_preserves_contract_error(
         ),
     )
 
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="compose candidate resolution failed",
-    ):
+    with pytest.raises(ComposeCandidateContractError) as captured:
         service._resolve_compose_candidate_unlocked(
             candidate,
             environment={},
@@ -448,6 +445,94 @@ def test_frozen_compose_resolution_preserves_contract_error(
             environment_override=None,
             external_input_snapshot=object(),
         )
+
+    assert str(captured.value) == "compose candidate resolution failed"
+    assert "candidate failed" not in str(captured.value)
+
+
+def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Candidate typed refusal은 journal/Compose/DB mutation 전에 그대로 멈춘다."""
+
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-candidate-refusal",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    service = ComposeService()
+    candidate_refusal = ComposeCandidateContractError("candidate diagnostic preserved")
+    run_compose = Mock()
+    database_reset = Mock()
+    journal_write = Mock()
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
+    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        lambda **_kwargs: _sources(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        lambda **_kwargs: (transaction, None),
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate_pinned_runtime_candidate_build_contract",
+        Mock(side_effect=candidate_refusal),
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(compose_service_module, "recreate_empty_databases", database_reset)
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        journal_write,
+    )
+
+    with pytest.raises(ComposeCandidateContractError) as captured:
+        service.rebuild_pinned_runtime()
+
+    state_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    )
+    assert captured.value is candidate_refusal
+    assert str(captured.value) == "candidate diagnostic preserved"
+    journal_write.assert_not_called()
+    run_compose.assert_not_called()
+    database_reset.assert_not_called()
+    assert not state_paths.journal.exists()
 
 
 def test_rebuild_compose_error_names_the_failed_action(
