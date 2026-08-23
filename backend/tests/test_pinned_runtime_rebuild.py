@@ -957,7 +957,16 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "pinvi-admin-bootstrap",
         "head",
     )
-    candidate_contract.assert_called_once_with(transaction, build=CandidateRuntimeBuild(_sources()))
+    candidate_contract.assert_called_once()
+    candidate_contract_kwargs = candidate_contract.call_args.kwargs
+    assert candidate_contract.call_args.args == (transaction,)
+    assert candidate_contract_kwargs["build"] == CandidateRuntimeBuild(_sources())
+    assert candidate_contract_kwargs["environment_override"][
+        "KOR_TRAVEL_MAP_REPO_DIR"
+    ] == "/state/map"
+    assert candidate_contract_kwargs["environment_override"][
+        "PINVI_REPO_DIR"
+    ] == "/state/pinvi"
     assert operations[2] == ("stop", *RUNTIME_SERVICES)
     assert operations[3] == (
         "--profile",

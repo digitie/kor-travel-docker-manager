@@ -1318,9 +1318,10 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
     ComposeService._validate_pinned_runtime_candidate_build_contract(
         transaction,
         build=build,
+        environment_override={"KOR_TRAVEL_MAP_REPO_DIR": str(map_root)},
     )
     source_contract.assert_called_once_with(
-        {},
+        {"KOR_TRAVEL_MAP_REPO_DIR": str(map_root)},
         compose_path=str(_COMPOSE_PATH),
         source_revision=map_revision,
     )

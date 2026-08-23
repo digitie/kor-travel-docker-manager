@@ -3860,6 +3860,7 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         *,
         build: CandidateRuntimeBuild,
+        environment_override: Mapping[str, str] | None = None,
     ) -> None:
         """candidate build 전 frozen Compose와 staged source 경계를 함께 고정한다."""
 
@@ -3874,8 +3875,11 @@ class ComposeService:
                 "pinned runtime candidate compose source is invalid"
             )
         if isinstance(transaction, ComposeTransactionSnapshot):
+            source_environment = dict(transaction.environment.effective)
+            if environment_override is not None:
+                source_environment.update(environment_override)
             _map_source_environment_contract_version(
-                transaction.environment.effective,
+                source_environment,
                 compose_path=transaction.environment.compose_path,
                 source_revision=build.sources.release.source_for("map").revision,
             )
@@ -4005,6 +4009,7 @@ class ComposeService:
             self._validate_pinned_runtime_candidate_build_contract(
                 candidate_transaction,
                 build=build,
+                environment_override=candidate_environment,
             )
             try:
                 state_paths.journal.lstat()
