@@ -625,6 +625,9 @@ _MAP_SOURCE_V3_API_ENVIRONMENT = {
         "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
         "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 is required}"
     ),
+    "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
+        "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
+    ),
 }
 _MAP_SOURCE_V3_UI_ENVIRONMENT = {
     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": (
@@ -664,6 +667,9 @@ _MAP_SOURCE_PROTECTED_ENV_VALUES = {
     "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256": (
         "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
         "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 is required}"
+    ),
+    "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
+        "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
     ),
     "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (
         "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?"
@@ -812,6 +818,14 @@ def _validate_map_source_protected_scalar_tree(
             "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256",
         ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
             "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"
+        ],
+        (
+            "services",
+            "api",
+            "environment",
+            "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED",
+        ): _MAP_SOURCE_PROTECTED_ENV_VALUES[
+            "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED"
         ],
         (
             "services",
@@ -4100,6 +4114,21 @@ class ComposeService:
                     frozen_recovery=True,
                 )
                 self._assert_pinned_runtime_database_heads(runtimes, journal=journal)
+                config = load_c6c_deployment_config_from_environment(
+                    runtime_transaction.environment.effective
+                )
+                if isinstance(config, C6cDeploymentConfig):
+                    runtime_configs = self._inspect_c6c_runtime_configs(
+                        config,
+                        list(RUNTIME_SERVICES),
+                        transaction=runtime_transaction,
+                        frozen_recovery=True,
+                    )
+                    validate_runtime_secret_isolation(runtime_configs, config)
+                    validate_current_map_ui_auth_runtime(
+                        runtime_configs[config.map_ui_container],
+                        config,
+                    )
                 reconcile_generation_references(
                     (journal.candidate,),
                     cwd=get_project_root(),

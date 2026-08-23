@@ -2136,6 +2136,7 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
             _PINVI_CUTOVER_MAPPING_ENV: config.curation_cutover_mapping_token,
             _MAP_FEATURE_CREATE_TOKEN_ENV: config.feature_create_token,
             _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV: config.feature_create_token_digest,
+            _MAP_FEATURE_CREATE_ENABLED_ENV: config.feature_create_enabled,
             _MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
             _MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
             _MAP_UI_PASSWORD_ENV: config.smoke.map_ui_password,

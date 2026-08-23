@@ -375,6 +375,20 @@ def test_rehearsal_loader_requires_production_like_fixture_capabilities() -> Non
     assert config.curation_cutover_mapping_token == "m" * 32
 
 
+def test_rehearsal_loader_rejects_invalid_manual_feature_create_flag() -> None:
+    values = _rehearsal_environment()
+    values["KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED"] = "maybe"
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=(
+            "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED must be exactly "
+            "true or false"
+        ),
+    ):
+        c6c.load_c6c_deployment_config_from_environment(values)
+
+
 @pytest.mark.parametrize(
     "geo_api_key",
     ["x", "x" * 31, "x" * 33, f"{'x' * 31}-", f"{'x' * 31}é"],
