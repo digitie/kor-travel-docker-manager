@@ -1017,6 +1017,77 @@ def test_rebuild_runs_candidate_then_three_database_reset_and_seven_runtime_star
         "--no-deps",
         "kor-travel-map-db-role-bootstrap",
     )
+    assert operations[8] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "/bin/sh",
+        "kor-travel-map-api",
+        "./docker/migrate-to-m01-bootstrap-boundary.sh",
+    )
+    assert operations[9] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-e",
+        "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE=m01",
+        "kor-travel-map-db-role-bootstrap",
+    )
+    assert operations[10] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "/bin/sh",
+        "kor-travel-map-api",
+        "./docker/migrate-to-m05-bootstrap-boundary.sh",
+    )
+    assert operations[11] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-e",
+        "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE=m05-pre",
+        "kor-travel-map-db-role-bootstrap",
+    )
+    assert operations[12] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "/bin/sh",
+        "kor-travel-map-api",
+        "./docker/migrate-m05.sh",
+    )
+    assert operations[13] == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-e",
+        "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE=m05-repair",
+        "kor-travel-map-db-role-bootstrap",
+    )
+    assert operations[14] == (
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        "300",
+        "kor-travel-map-api",
+    )
     map_bootstrap_assertion.assert_called_once()
     assert static_commands == [
         ("ktm-application-schema", "head"),

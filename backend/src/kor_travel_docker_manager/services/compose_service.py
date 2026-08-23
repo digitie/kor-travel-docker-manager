@@ -4249,6 +4249,93 @@ class ComposeService:
                             "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
                         ),
                     )
+                    # Map M01~M05 migration은 단일 `alembic upgrade head`로
+                    # 진행할 수 없다. exact source가 제공하는 두 restricted
+                    # migration boundary와 세 superuser role phase를 순서대로
+                    # 실행해 0225 -> M01 graph -> 0233 -> M05 graph -> head
+                    # 경계를 보존한다. API image의 entrypoint는 장기 API
+                    # 기동용이므로 boundary one-shot에서만 /bin/sh로 바꾼다.
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "--entrypoint",
+                            "/bin/sh",
+                            "kor-travel-map-api",
+                            "./docker/migrate-to-m01-bootstrap-boundary.sh",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "-e",
+                            "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE=m01",
+                            "kor-travel-map-db-role-bootstrap",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "--entrypoint",
+                            "/bin/sh",
+                            "kor-travel-map-api",
+                            "./docker/migrate-to-m05-bootstrap-boundary.sh",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "-e",
+                            "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE=m05-pre",
+                            "kor-travel-map-db-role-bootstrap",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "--entrypoint",
+                            "/bin/sh",
+                            "kor-travel-map-api",
+                            "./docker/migrate-m05.sh",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "-e",
+                            "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE=m05-repair",
+                            "kor-travel-map-db-role-bootstrap",
+                        ],
+                        transaction=runtime_transaction,
+                    )
                 self._run_pinned_runtime_rebuild_compose(
                     ["up", "-d", "--wait", "--wait-timeout", "300", "kor-travel-map-api"],
                     transaction=runtime_transaction,

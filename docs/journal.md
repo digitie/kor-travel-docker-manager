@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-23 — T-VN-41C/M01~M05 pinned rebuild migration boundary 보완
+
+고정 RC 재빌드에서 DB를 재생성하고 candidate image를 attestation한 뒤 Map API
+기동이 `ktm_manual_feature_procedure_owner` 부재로 반복 대기하는 원인을 확인했다.
+Map source의 0226~0236 migration은 단일 `alembic upgrade head`로 적용할 수 없고,
+0225 boundary·M01 role phase·0233 boundary·M05 pre role·0235 migration·M05 repair
+role의 순서를 요구한다.
+
+Manager pinned rebuild가 승인된 transaction 안에서 Map candidate image의 exact
+boundary script와 source-owned role bootstrap을 순서대로 실행하도록 고정했다.
+기존 pre-migration principal assertion은 legacy role bootstrap 직후로 유지해
+runtime ACL 변화 뒤의 false failure를 막았고, armed/uninitialized resume에서도
+같은 순서를 재현한다. 회귀 테스트는 모든 boundary/phase command와 순서를 고정한다.
+
+---
+
 ## 2026-08-23 — T-VN-M01 candidate source 경로 override 전달 보완
 
 고정 RC pinned rebuild의 DB·컨테이너 변경 전 candidate preflight가 staged Map
