@@ -16,7 +16,8 @@ API canonical Compose에 `KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED
 명시적으로 연결하고 기본값은 `false`로 고정했다. 마지막 7개 runtime service readiness 뒤에는
 실제 Docker inspect 결과를 다시 수집해 runtime secret isolation과 Map UI 인증 배선을
 검증한 뒤에만 `contract_verified`로 진행한다. redaction 대상에도 manual Feature 원문·digest를
-추가했다. Map source environment contract에도 manual flag의 exact `:-false` wiring을 결박하고,
+추가했다. candidate build gate가 Map source environment contract를 실제 호출하도록 연결하고,
+manual flag의 exact `:-false` wiring을 결박했으며,
 config loader 단독 호출에서도 `true|false` 외 값을 거부한다. committed journal fast path도
 readiness·DB head 확인 뒤 Docker inspect 기반 runtime secret/UI auth 검증을 수행한다. 회귀 검증은
 충돌 사전 차단 합성과 invalid flag를 포함해 전체 backend `598 passed, 3 skipped`, 변경 파일

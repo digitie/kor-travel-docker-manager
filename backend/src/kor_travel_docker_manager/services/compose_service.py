@@ -3873,6 +3873,12 @@ class ComposeService:
             raise DeploymentContractError(
                 "pinned runtime candidate compose source is invalid"
             )
+        if isinstance(transaction, ComposeTransactionSnapshot):
+            _map_source_environment_contract_version(
+                transaction.environment.effective,
+                compose_path=transaction.environment.compose_path,
+                source_revision=build.sources.release.source_for("map").revision,
+            )
         validate_c6c_build_source_wiring(source)
         map_context = str(build.sources.source_for("map").root)
         pinvi_context = str(build.sources.source_for("pinvi").root)

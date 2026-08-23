@@ -9,12 +9,13 @@ import shutil
 import subprocess
 from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import yaml
 
+from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _CANDIDATE_ALLOWED_OPERATOR_BINDS,
     C6cBuildProvenance,
@@ -28,7 +29,13 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
 )
-from kor_travel_docker_manager.services.compose_service import ComposeService
+from kor_travel_docker_manager.services.compose_service import (
+    ComposeEnvFileIdentity,
+    ComposeEnvironmentSnapshot,
+    ComposeExternalInputSnapshot,
+    ComposeService,
+    ComposeTransactionSnapshot,
+)
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
 )
@@ -1231,6 +1238,7 @@ def test_c6c_preflight_rejects_any_pinvi_runtime_provenance_gap() -> None:
 
 def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     map_root = tmp_path / "map"
     pinvi_root = tmp_path / "pinvi"
@@ -1282,14 +1290,39 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
             ),
         )
     )
-    transaction = SimpleNamespace(
+    environment_snapshot = ComposeEnvironmentSnapshot(
+        effective={},
+        env_path="",
+        compose_path=str(_COMPOSE_PATH),
+        override_path="",
+        env_file_identity=ComposeEnvFileIdentity(exists=False),
+        env_file_bytes=b"",
+    )
+    transaction = ComposeTransactionSnapshot(
+        environment=environment_snapshot,
+        external_inputs=ComposeExternalInputSnapshot(references=(), files=()),
         compose_source_bytes=_COMPOSE_PATH.read_bytes(),
+        compose_source_mode=0o644,
+        system_bind_snapshots=(),
+        raw_volume_graph_hash="",
+        resolved_volume_graph_hash="",
         resolved=resolved,
+    )
+    source_contract = Mock(return_value=4)
+    monkeypatch.setattr(
+        compose_service_module,
+        "_map_source_environment_contract_version",
+        source_contract,
     )
 
     ComposeService._validate_pinned_runtime_candidate_build_contract(
         transaction,
         build=build,
+    )
+    source_contract.assert_called_once_with(
+        {},
+        compose_path=str(_COMPOSE_PATH),
+        source_revision=map_revision,
     )
 
     untrusted_root = tmp_path / "untrusted"
