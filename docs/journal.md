@@ -29,7 +29,7 @@ DB create/bootstrap response-loss 수렴, 외부 Geo·Concierge·RustFS read-onl
 `pinvi-db-init` writer 배제, Dagster LOGIN/NOINHERIT exact identity도 함께 고정했다. Manager backend
 전체 결과는 `694 passed, 3 skipped`, 변경 파일 Ruff와 7개 변경 source strict mypy가 통과했다. Map의
 OpenAPI/lint/frontend gate도 통과했고 Python 3개 CI matrix는 이 기록 시점에 진행 중이다. 코드 checkpoint
-`2babcd48dd4cf35098ea0ba2ea033a19ed434921`을 PR #197 원격 branch에 push했다.
+`da49ec7e858e4aa6e95457e664184e42688885e4`을 PR #197 원격 branch에 push했다.
 
 사용자 결정에 따라 이전 Alembic revision·DB로 돌아가는 복구 계획은 없으며 backup/scratch restore를
 release gate로 사용하지 않는다. 다음 단계는 DB crash/resume/identity와 Compose/provenance/security의

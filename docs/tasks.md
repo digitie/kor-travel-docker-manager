@@ -35,7 +35,7 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 현재 원격 후보:
 
 - Map PR #1064: `d0ced47128c2b175bcd22d7e44fa979512ccf203`
-- Manager PR #197: `2babcd48dd4cf35098ea0ba2ea033a19ed434921`
+- Manager PR #197: `da49ec7e858e4aa6e95457e664184e42688885e4`
 - release pinset: `f95428ea5ee1f5583bada5a53ecb72cc75e7ed55560850e1032f5d3eeb9b6331`
 - 로컬 sealed paired build: 새 Map pin `d0ced471…` 기준 재생성 대기. 이전 pin의 image·receipt는
   release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
