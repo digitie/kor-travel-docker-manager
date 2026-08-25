@@ -33,6 +33,10 @@ from kor_travel_docker_manager.services.map_service_contract import (
 )
 
 _MAP_API_SERVICE = "kor-travel-map-api"
+# Map API의 기본 실행 경계는 Compose override가 아니라 이미지 Dockerfile에
+# 봉인된다. Map release는 ENTRYPOINT를 절대 경로로 고정하고 CMD를 비워 둔다.
+_MAP_API_IMMUTABLE_ENTRYPOINT = ["/app/docker/api-entrypoint.sh"]
+_MAP_API_IMMUTABLE_COMMAND = None
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
@@ -6012,9 +6016,11 @@ def validate_runtime_secret_isolation(
                 raise DeploymentContractError(
                     "Map API runtime includes forbidden provider environment"
                 )
-            if runtime_config.get("Entrypoint") is not None or runtime_config.get(
-                "Cmd"
-            ) != ["./docker/api-entrypoint.sh"]:
+            if (
+                runtime_config.get("Entrypoint")
+                != _MAP_API_IMMUTABLE_ENTRYPOINT
+                or runtime_config.get("Cmd") != _MAP_API_IMMUTABLE_COMMAND
+            ):
                 raise DeploymentContractError(
                     "Map API runtime must use the immutable image entrypoint and command"
                 )

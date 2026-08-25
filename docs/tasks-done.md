@@ -16,6 +16,25 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-08-26 — application `300` recovery/runtime contract 정렬
+
+- [x] **T-VN-41-F1D-H300 — Manager PR #203~#206 merge 및 n150 rebuild 중간 결선**
+
+  Manager PR #203(역할 bootstrap password 전달), #204(ACL grantability와 extension owner
+  CREATE attestation), #205(Map schema owner ACL 기대값), #206(frozen entrypoint recovery/probe
+  argv)을 각각 merge하고 trusted install에 반영했다. 승인된 n150 rebuild는 fresh root/finalize,
+  metadata, Dagster, PinVi schema 단계까지 진행했으며, 최종 runtime attestation에서 Map image의
+  `Entrypoint=["/app/docker/api-entrypoint.sh"]`, `Cmd=null`과 Manager의 이전 기대값이 어긋난
+  source-contract 문제를 확인했다. 행/콘텐츠/건수 검증이나 이전 DB 복구는 수행하지 않았다.
+
+- [x] **T-VN-41-F1D-H300 — Map API immutable image 실행 경계 확인 및 PR #207 준비**
+
+  현재 Map Dockerfile의 immutable `ENTRYPOINT`/빈 `CMD`를 정본으로 확인하고, Manager runtime
+  secret isolation과 운영 문서를 그 계약에 맞추는 PR #207을 준비했다. Compose-level override 금지,
+  provider credential 격리, frozen transaction 검증은 유지하며 회귀 테스트로 올바른 entrypoint 수락과
+  우회값 거부를 고정했다. PR #207 merge 후 동일 사용자 승인 rebuild를 재개하고 live UI acceptance를
+  수행하는 조건은 active H300에 남긴다.
+
 ## 2026-08-25 — Map/Manager `300` release 후보 merge·전문 리뷰 완료
 
 ## 2026-08-26 — Map Dagster static inspection launch contract 보완
