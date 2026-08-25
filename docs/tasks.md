@@ -34,7 +34,7 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 
 현재 원격 후보:
 
-- Map PR #1064: `6b9bd98fa2d4de573718c4bed0d978deadc7daf8`
+- Map PR #1064: `7d44b98b3d0671329e9a6711187091d95cf960cf`
 - Manager PR #197: root typed probe 소비·committed fast-path hardening checkpoint 진행 중
 - release pinset: `e26a5713a5e71fb1c0f22c13dea02ca10ab6c7657a17ec407c99d9a73b4a9e54`
 - 로컬 sealed paired build: 새 Map pin `6b9bd98f…` 기준 재생성 대기. 이전 pin의 image·receipt는

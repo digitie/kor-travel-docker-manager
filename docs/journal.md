@@ -6,14 +6,14 @@
 
 ## 2026-08-25 — Map LO residue gate와 v5 release pin 회전
 
-Map PR #1064의 최신 exact commit `6b9bd98fa2d4de573718c4bed0d978deadc7daf8`가 fresh-root
+Map PR #1064의 최신 exact commit `7d44b98b3d0671329e9a6711187091d95cf960cf`가 fresh-root
 pre-state에서 `pg_largeobject_metadata`의 database-wide owner/ACL 잔류를 거부하고, canonical
 application catalog·privileged residue digest에도 해당 행을 포함한다. 실제 disposable PostgreSQL에서
 large object를 만들고 PUBLIC SELECT ACL을 부여한 뒤 probe가 거부되는 negative regression을 통과했다.
 
 Manager v5 source와 canonical pinset을 이 Map commit으로 회전했다.
 
-- pinset: `e26a5713a5e71fb1c0f22c13dea02ca10ab6c7657a17ec407c99d9a73b4a9e54`
+- pinset: `a75c2f1a4ef569c65177061573ad4cf418798a2556dca02052dd87cae54b6936`
 - 이전 Map/pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않음
 - Map fresh integration: `2 passed`; Map root/catalog unit: `34 passed`; contract artifact: `18 passed`
 - Manager renewal crash focus: `70 passed`
