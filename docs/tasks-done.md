@@ -16,6 +16,34 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-08-26 — application `300` 최종 n150 수락
+
+- [x] **T-VN-41-F1D-H300 — destructive rebuild·runtime provenance·data-independent live UI 완료**
+
+  Map `cc81081ff2e540a6ad9c428a296515e1d79bc316`과 Manager PR #207 merge
+  `ecfbddb7b3d1afbd74646abbaa4082dd70b53a42`를 고정한 trusted install에서 승인된
+  `ktdctl pinvi-pair rebuild-pinned --confirm`을 재개했다. durable journal은
+  `version=8`, generation `32`, transaction `5121a6d2-692d-4bd9-a5b0-d572d58c0f8f`,
+  `phase=committed`로 끝났고, 고정 pinset digest는
+  `14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`다.
+
+  재생성된 Map·PinVi runtime과 독립 DB의 identity/provenance/readiness를 확인하고, committed
+  journal의 image/head/pinset/application candidate evidence 결박을 확인했다. n150 실제 브라우저에서
+  scenario catalog, backup-only 정책, 운영 홈, 운영 로그의 data-independent live UI **11개 테스트를
+  모두 통과**했다. 일반 row의 내용·건수·업무상 데이터 무결성은 release gate로
+  검사하지 않았고, 이전 revision/기존 DB restore도 하지 않았다. 필요하면 fresh `300` schema에
+  source/ETL을 처음부터 재적재한다.
+
+  현재 Manager `.env` smoke credential의 login은 `200 + Set-Cookie`였고, 배포 런북의 이전
+  credential 후보는 runtime hash와 달라 `401`이었다. 실제 비밀번호는 기록·변경하지 않았다. Features의
+  초기 목록·검색·필터·정렬·반응형·딥링크는 통과했으며, 두 번째 페이지·고정 ID/컬렉션을 전제하는
+  데이터 의존 시나리오는 새 스키마 정책에 따라 수락 대상에서 제외했다.
+
+  이 H300 기록은 login setup/protected view와 schema/runtime provenance 범위다. logout→재차단,
+  PinVi WebSocket/mutating loop와 별도 consumer reconciliation은 Manager의
+  `MAP-LIVE-FOLLOWUP` 및 [Map 저장소 `docs/tasks.md`](https://github.com/digitie/kor-travel-map/blob/main/docs/tasks.md)의
+  `T-VN-41C`·`T-VN-41F1D-D2` 후속 운영 acceptance로 남긴다.
+
 ## 2026-08-26 — application `300` recovery/runtime contract 정렬
 
 - [x] **T-VN-41-F1D-H300 — Manager PR #203~#206 merge 및 n150 rebuild 중간 결선**

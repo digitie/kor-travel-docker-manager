@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-08-26 — application `300` 최종 n150 수락
+
+Map PR #1066의 exact source `cc81081ff2e540a6ad9c428a296515e1d79bc316`과 Manager PR #207의
+merge commit `ecfbddb7b3d1afbd74646abbaa4082dd70b53a42`를 사용한 trusted Manager 설치본에서
+승인된 `ktdctl pinvi-pair rebuild-pinned --confirm`을 재개했다. 고정 pinset digest는
+`14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`이다.
+
+- durable journal: `version=8`, `journal_generation=32`, transaction
+  `5121a6d2-692d-4bd9-a5b0-d572d58c0f8f`, 최종 `phase=committed`
+- Map API/UI/Dagster와 PinVi runtime은 재생성된 image 기준으로 healthy/readiness 상태를 확인했다.
+  committed journal candidate에는 Map·PinVi image ID, Map/Dagster/PinVi head, 세 DB identity,
+  pinset digest와 application candidate evidence가 함께 결박돼 있다. application row의 내용·건수·
+  업무상 데이터 무결성은 조회하거나 대조하지 않았다.
+- 이전 revision 또는 기존 DB 복구·restore는 수행하지 않았다. 필요하면 `300` fresh schema에
+  source/ETL을 처음부터 재적재한다.
+- 실제 브라우저 login setup과 data-independent live UI 시나리오를 n150에서 실행해
+  scenario catalog, backup-only 정책(`execute=false`), 운영 홈, 운영 로그의 **11개 테스트가 모두 통과**했다.
+  Features의 초기 목록·검색·필터·정렬·반응형·딥링크도 통과했으며, 실제 두 번째 페이지나 고정 ID/컬렉션을
+  전제하는 테스트의 실패는 fresh schema 정책에 따른 데이터 의존 항목으로 수락 게이트에서 제외했다.
+- 이 수락 묶음은 login setup과 protected view의 브라우저 계약만 다룬다. logout→재차단과 PinVi
+  WebSocket/mutating loop는 실행하지 않았다. 해당 독립 운영 acceptance는 이 저장소의
+  `MAP-LIVE-FOLLOWUP`과 [Map 저장소 `docs/tasks.md`](https://github.com/digitie/kor-travel-map/blob/main/docs/tasks.md)의
+  `T-VN-41C`·`T-VN-41F1D-D2`가 소유한다.
+- 현재 Manager `.env`의 smoke credential로 `POST /api/auth/login`은 `200`과 `Set-Cookie`를 반환했다.
+  배포 런북의 이전 credential 후보는 현재 runtime에서 `401`로 거부됐으며, 비밀번호를 문서나 코드에
+  기록하거나 재설정하지 않았다.
+
+따라서 T-VN-41-F1D-H300의 destructive rebuild·runtime provenance·이번 live UI 수락 조건을 완료 처리하고,
+진행 중 백로그에는 C7 read-only capture, `MAP-LIVE-FOLLOWUP`, standalone backup 후속을 남긴다.
+
+---
+
 ## 2026-08-26 — n150 application `300` rebuild의 Map 이미지 entrypoint 계약 정렬(PR #207)
 
 PR #206의 고정 recovery/probe argv 수정 후 trusted Manager를 n150에 설치하고 승인된
