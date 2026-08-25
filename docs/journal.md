@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-26 — n150 application `300` rebuild의 Map 이미지 entrypoint 계약 정렬(PR #207)
+
+PR #206의 고정 recovery/probe argv 수정 후 trusted Manager를 n150에 설치하고 승인된
+`ktdctl pinvi-pair rebuild-pinned --confirm`을 재개했다. Map fresh root/finalize, metadata,
+Dagster, PinVi schema 단계는 통과했지만 최종 runtime secret isolation에서 Map API image가
+실제로 봉인한 `Entrypoint=["/app/docker/api-entrypoint.sh"]`, `Cmd=null`을 Manager가 이전 Map
+계약인 `Entrypoint=null`, `Cmd=["./docker/api-entrypoint.sh"]`로 기대해 fail-closed 중단됐다.
+
+이는 DB·schema·행 데이터의 무결성 실패가 아니라 Map `8b433827` 이후의 image Dockerfile 실행
+경계와 Manager runtime attestation의 stale contract 불일치다. PR #207은 Manager의 기대값과
+운영 문서를 현재 Map image 정의에 맞추고, 실제 이미지 entrypoint와 빈 command를 통과시키면서
+Compose-level `command`·`entrypoint` override 및 provider credential 차단은 그대로 유지한다.
+회귀 테스트는 image entrypoint/empty command 수락과 우회값 거부를 고정한다. 사용자 정책에 따라
+행/콘텐츠/건수 검증, 이전 revision 복구, 기존 DB restore는 수행하지 않으며, 필요 시 fresh
+`300` schema에 source/ETL을 처음부터 재적재한다.
+
 ## 2026-08-26 — n150 `300` 재개에서 Map role-bootstrap 환경 계약 보완(PR #203)
 
 PR #202 merge 후 trusted Manager를 설치하고 approved `ktdctl pinvi-pair rebuild-pinned --confirm`을

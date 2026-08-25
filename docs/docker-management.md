@@ -322,8 +322,9 @@ Map API에는 provider credential을 하나도 주입하지 않는다. provider 
 `KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY`가 빈 값으로라도 API container environment에 존재하면 Map
 entrypoint 또는 Manager C6c preflight가 기동 전에 거부한다. Map API compose의 `command`와
 `entrypoint` override도 금지해 immutable image의 migration·fail-close entrypoint를 우회하지 못하게 한다.
-기동 뒤 runtime inspect에서도 `Cmd=["./docker/api-entrypoint.sh"]`, `Entrypoint=null`과 provider
-environment 부재를 다시 확인한다.
+기동 뒤 runtime inspect에서도 Map image가 봉인한 `Entrypoint=["/app/docker/api-entrypoint.sh"]`,
+`Cmd=null`과 provider environment 부재를 다시 확인한다. Compose의 `command`·`entrypoint`
+override는 계속 금지한다.
 
 과거 `KRTOUR_MAP_*` 이름을 source로 쓰면 `.env`에 현재 이름의 key가 있어도 빈 문자열이
 컨테이너로 전달된다. 따라서 override에 bare key나 secret literal을 반복하지 않는다. 변경 뒤에는

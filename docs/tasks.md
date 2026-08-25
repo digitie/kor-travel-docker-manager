@@ -39,10 +39,15 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 - Manager PR #200: Map `cc81081f…` release pin 회전 (merge commit `01b51b32…`)
 - Manager PR #201: Map source environment contract 보완 (merge commit `86018450…`)
 - Manager PR #202: Map Dagster static inspection launch contract 보완 (merge commit `e582e924…`)
-- Manager PR #203: Map role-bootstrap password `--env` 전달 보완 (draft; pending exact head)
+- Manager PR #203: Map role-bootstrap password `--env` 전달 보완 (merge commit `f4051e17…`)
+- Manager PR #204: application `300` ACL grantability·extension owner attestation 보완 (merge commit `f5c34777…`)
+- Manager PR #205: Map application schema owner ACL 기대값 보완 (merge commit `ec7405b5…`)
+- Manager PR #206: frozen application `300` recovery/probe entrypoint 보완 (merge commit `dd0f017a…`)
+- Manager PR #207: Map API image immutable `ENTRYPOINT`/empty `CMD` runtime attestation 정렬 (진행 중)
 - release pinset: `14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`
-- n150 재개에서 Map role-bootstrap의 required password 전달 누락이 확인됐다. PR #203 merge 후
-  trusted install을 갱신하고 frozen Compose source hash를 유지한 같은 durable journal을 재개한다.
+- n150 재개에서 Map role-bootstrap의 required password 전달 누락과 Map API image entrypoint attestation
+  drift가 순차 확인됐다. PR #207 merge 후 trusted install을 갱신하고 frozen Compose source hash를
+  유지한 같은 durable journal을 재개한다.
 - durable rebuild journal이 없는 pre-journal receipt는 다음 실행에서 `--verify` 입력으로 사용하지 않는다.
   Manager는 정확한 두 receipt를 안전하게 폐기한 뒤 sealed builder를 fresh build mode로 호출한다. journal이
   있는 crash resume에서만 두 receipt를 `--verify`로 재검증하며, 현재 receipt·Map image/config 증거가
@@ -60,7 +65,9 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
   통과·merge하고 trusted Manager 설치본을 갱신했다.
 - [x] PR #202 merge 뒤 새 Manager release로 새 Map `cc81081f…` 기준 paired image·receipt를 생성했다.
   이전 pin의 image·receipt·journal은 재사용하지 않았다.
-- [ ] Manager PR #203을 전문 적대 리뷰 2건과 함께 통과·merge하고 trusted Manager 설치본을 갱신한다.
+- [x] Manager PR #203을 전문 적대 리뷰 2건과 함께 통과·merge하고 trusted Manager 설치본을 갱신했다.
+- [x] Manager PR #204~#206을 전문 적대 리뷰 2건과 함께 통과·merge하고 trusted Manager 설치본을 갱신했다.
+- [ ] Manager PR #207을 전문 적대 리뷰 2건과 함께 통과·merge하고 trusted Manager 설치본을 갱신한다.
 - [ ] n150에서 trusted Manager release를 설치하고 approved root command
   `ktdctl pinvi-pair rebuild-pinned --confirm`을 실행한다. backup·scratch restore·이전 DB 복원은 실행하지
   않는다.

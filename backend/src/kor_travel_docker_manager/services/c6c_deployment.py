@@ -33,6 +33,10 @@ from kor_travel_docker_manager.services.map_service_contract import (
 )
 
 _MAP_API_SERVICE = "kor-travel-map-api"
+# Map API의 기본 실행 경계는 Compose override가 아니라 이미지 Dockerfile에
+# 봉인된다. Map release는 ENTRYPOINT를 절대 경로로 고정하고 CMD를 비워 둔다.
+_MAP_API_IMMUTABLE_ENTRYPOINT = ["/app/docker/api-entrypoint.sh"]
+_MAP_API_IMMUTABLE_COMMAND = None
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
@@ -158,6 +162,10 @@ _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = frozenset(
         "KOR_TRAVEL_MAP_API_AIRKOREA_SERVICE_KEY",
         "KOR_TRAVEL_MAP_API_KRFOREST_SERVICE_KEY",
         "KOR_TRAVEL_MAP_API_ETL_LIVE_PREVIEW_ENABLED",
+        "KOR_TRAVEL_MAP_KAKAO_LOCAL_REST_API_KEY",
+        "KOR_TRAVEL_MAP_NAVER_SEARCH_CLIENT_ID",
+        "KOR_TRAVEL_MAP_NAVER_SEARCH_CLIENT_SECRET",
+        "KOR_TRAVEL_MAP_GOOGLE_PLACES_API_KEY",
     }
 )
 _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
@@ -6012,9 +6020,13 @@ def validate_runtime_secret_isolation(
                 raise DeploymentContractError(
                     "Map API runtime includes forbidden provider environment"
                 )
-            if runtime_config.get("Entrypoint") is not None or runtime_config.get(
-                "Cmd"
-            ) != ["./docker/api-entrypoint.sh"]:
+            if (
+                "Entrypoint" not in runtime_config
+                or "Cmd" not in runtime_config
+                or runtime_config["Entrypoint"]
+                != _MAP_API_IMMUTABLE_ENTRYPOINT
+                or runtime_config["Cmd"] != _MAP_API_IMMUTABLE_COMMAND
+            ):
                 raise DeploymentContractError(
                     "Map API runtime must use the immutable image entrypoint and command"
                 )

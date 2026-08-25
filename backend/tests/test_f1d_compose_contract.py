@@ -9,12 +9,14 @@ import shutil
 import subprocess
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 import yaml
 
+from kor_travel_docker_manager.services import c6c_deployment as c6c_deployment_module
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _CANDIDATE_ALLOWED_OPERATOR_BINDS,
@@ -28,6 +30,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
+    validate_runtime_secret_isolation,
 )
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
@@ -83,6 +86,140 @@ _FEATURE_CREATE_TOKEN = "manual-feature-create-contract-token-0000"
 _MAP_API_IMAGE_ID = f"sha256:{'1' * 64}"
 _MAP_DAGSTER_IMAGE_ID = f"sha256:{'2' * 64}"
 _MAP_POSTGRES_IMAGE_ID = f"sha256:{'3' * 64}"
+
+
+def _runtime_secret_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        map_container="map-api",
+        pinvi_container="pinvi-api",
+        map_ui_container="map-ui",
+        read_token="r" * 32,
+        cancel_token="c" * 32,
+        fixture_token="f" * 32,
+        map_admin_proxy_secret="a" * 32,
+        map_service_token="s" * 32,
+        map_cursor_signing_secret="u" * 32,
+        map_geo_api_key="g" * 32,
+        feature_create_token="feature-token",
+        feature_create_enabled="true",
+        map_ui_password_hash="pbkdf2_sha256$100000$salt$digest",
+        map_ui_session_secret="q" * 32,
+        contract_generation="c6c-ops-v1",
+        smoke=SimpleNamespace(
+            map_ui_username="admin",
+            map_ui_password="map-password",
+            pinvi_admin_email="admin@example.test",
+            pinvi_admin_password="pinvi-password",
+        ),
+    )
+
+
+def _runtime_environment(values: dict[str, str]) -> list[str]:
+    return [f"{name}={value}" for name, value in values.items()]
+
+
+def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_map_production_secrets",
+        lambda _config: None,
+    )
+    config = _runtime_secret_config()
+    map_environment = {
+        c6c_deployment_module._MAP_READ_ENV: config.read_token,
+        c6c_deployment_module._MAP_CANCEL_ENV: config.cancel_token,
+        c6c_deployment_module._MAP_FIXTURE_ENV: config.fixture_token,
+        c6c_deployment_module._MAP_REQUIRED_ENV: "true",
+        c6c_deployment_module._MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
+        c6c_deployment_module._MAP_SERVICE_TOKEN_ENV: config.map_service_token,
+        c6c_deployment_module._MAP_CURSOR_SIGNING_SECRET_ENV: (
+            config.map_cursor_signing_secret
+        ),
+        c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
+        c6c_deployment_module._MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV: hashlib.sha256(
+            config.feature_create_token.encode("utf-8")
+        ).hexdigest(),
+        c6c_deployment_module._MAP_FEATURE_CREATE_ENABLED_ENV: (
+            config.feature_create_enabled
+        ),
+        **c6c_deployment_module._MAP_PRODUCTION_API_LITERAL_VALUES,
+    }
+    runtime_configs = {
+        config.map_container: {
+            "Env": _runtime_environment(map_environment),
+            "Entrypoint": ["/app/docker/api-entrypoint.sh"],
+            "Cmd": None,
+        },
+        config.pinvi_container: {
+            "Env": _runtime_environment(
+                {
+                    c6c_deployment_module._PINVI_READ_ENV: config.read_token,
+                    c6c_deployment_module._PINVI_CANCEL_ENV: config.cancel_token,
+                }
+            )
+        },
+        config.map_ui_container: {
+            "Env": _runtime_environment(
+                {
+                    c6c_deployment_module._MAP_UI_USERNAME_ENV: (
+                        config.smoke.map_ui_username
+                    ),
+                    c6c_deployment_module._MAP_UI_PASSWORD_HASH_ENV: (
+                        config.map_ui_password_hash
+                    ),
+                    c6c_deployment_module._MAP_UI_SESSION_SECRET_ENV: (
+                        config.map_ui_session_secret
+                    ),
+                    c6c_deployment_module._MAP_ADMIN_PROXY_ENV: (
+                        config.map_admin_proxy_secret
+                    ),
+                    c6c_deployment_module._MAP_UI_GEO_API_KEY_ENV: (
+                        config.map_geo_api_key
+                    ),
+                    c6c_deployment_module._MAP_FEATURE_CREATE_TOKEN_ENV: (
+                        config.feature_create_token
+                    ),
+                }
+            )
+        },
+        "kor-travel-map-dagster-latest": {
+            "Env": _runtime_environment(
+                {
+                    c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: (
+                        config.map_geo_api_key
+                    )
+                }
+            )
+        },
+        "kor-travel-map-dagster-daemon-latest": {
+            "Env": _runtime_environment(
+                {
+                    c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: (
+                        config.map_geo_api_key
+                    )
+                }
+            )
+        },
+    }
+
+    validate_runtime_secret_isolation(runtime_configs, config)
+
+    broken = deepcopy(runtime_configs)
+    broken[config.map_container]["Entrypoint"] = None
+    with pytest.raises(DeploymentContractError, match="immutable image entrypoint"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = deepcopy(runtime_configs)
+    broken[config.map_container]["Cmd"] = ["./docker/api-entrypoint.sh"]
+    with pytest.raises(DeploymentContractError, match="immutable image entrypoint"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = deepcopy(runtime_configs)
+    del broken[config.map_container]["Cmd"]
+    with pytest.raises(DeploymentContractError, match="immutable image entrypoint"):
+        validate_runtime_secret_isolation(broken, config)
 
 
 def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
