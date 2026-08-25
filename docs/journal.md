@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-08-25 — Map `300` role bootstrap helper의 C6c 오탐 결선 보완 (Draft)
+## 2026-08-25 — Map `300` role bootstrap helper의 C6c 오탐 결선 보완 (PR #198 merge)
 
 n150의 trusted `rebuild-pinned --confirm`에서 Map 정본 `dd2ee61f…`의 두 read-only bind source는
 존재·경로 검사를 통과했지만, `scripts/database-credential-preflight.sh`가 선언하는
@@ -21,8 +21,9 @@ fail-closed한다. 실제 credential 값이나 Manager `.env`를 코드·문서�
 - Manager 전체 backend 테스트: `726 passed, 3 skipped`
 - 변경 파일 Ruff·`git diff --check`: 통과
 
-이 수정은 n150 rebuild를 재개하기 위한 Draft PR이며, 두 전문 적대 리뷰와 원격 CI green 뒤에만
-머지한다.
+두 전문 적대 리뷰는 P0/P1/P2 모두 0인 GO였고, PR #198은 merge commit
+`19409e3fad4bbe37a89edec99fee6f67de51fcff`로 `main`에 반영됐다. 이제 n150 trusted install을
+이 Manager 정본으로 갱신한 뒤 승인된 rebuild를 재개한다.
 
 ## 2026-08-25 — Map `dd2ee61f` 통합 CI green과 `300` release pin 회전
 

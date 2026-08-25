@@ -27,6 +27,14 @@
   Map/Manager source·pinset 연속성 및 review P0/P1=0 결과는 후속 n150 rebuild의 입력으로만
   사용하며, 아직 live acceptance와 최종 rebuild는 active H300에 남아 있다.
 
+- [x] **T-VN-41-F1D — Map role-bootstrap helper bind C6c 오탐 보완(PR #198)**
+
+  canonical Map bootstrap과 credential preflight helper의 환경변수 식별자만 허용하고 실제
+  protected value는 계속 거부하도록 Manager 후보 검증을 보완했다. 두 전문 적대 리뷰에서
+  P0/P1/P2=0 GO를 확인했고 Manager PR #198을 `19409e3fad4bbe37a89edec99fee6f67de51fcff`로
+  merge했다. 전체 backend `726 passed, 3 skipped`와 Compose contract `29 passed`를 통과했다.
+  n150 trusted rebuild와 live acceptance는 active H300의 남은 조건이다.
+
 ## 2026-08-25 — application `300` 데이터 무결성 gate 퇴역
 
 - [x] **T-VN-41-F1D-D — fresh `300` 데이터 재적재 후 수용 검증을 release 조건에서 제외**
