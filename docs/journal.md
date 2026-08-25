@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-26 — MAP-LIVE-FOLLOWUP Map protected-route 재차단 확인
+
+n150 Map UI에서 현재 Manager smoke credential로 login한 뒤 `/ops/datasets`를 열고 logout을
+실행했다. logout 응답은 `200`, 이동 경로는 `/login`이었고, 같은 session으로 protected
+`/ops/datasets`를 다시 열었을 때도 최종 경로가 `/login`으로 유지됐다. 이 수동 browser check는
+session/auth 상태만 확인하고 application row나 PinVi 데이터를 쓰지 않았다.
+
+PinVi equivalent reblock, PinVi WebSocket/mutating loop와 consumer reconciliation은
+`MAP-LIVE-FOLLOWUP`의 남은 active 조건이다.
+
+---
+
 ## 2026-08-26 — C7 capture read-only 계약 사전 확인
 
 n150 trusted Manager 설치본에서 `ktdctl pinvi-pair capture --help`를 mutation 없이 실행했다.
