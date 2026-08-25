@@ -801,6 +801,33 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
         )
 
 
+def test_journal_resume_requires_exact_current_map_candidate_evidence() -> None:
+    paired = _map_application_300_candidate()
+    journal = new_candidate_journal(
+        candidate=_candidate_generation(),
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+
+    ComposeService._assert_pinned_runtime_journal_matches_map_candidate(
+        journal,
+        map_candidate=paired,
+    )
+    for changed in (
+        replace(paired, receipt_sha256="f" * 64),
+        replace(paired, api_image_id=f"sha256:{999:064x}"),
+    ):
+        with pytest.raises(
+            DeploymentContractError,
+            match="journal differs from current Map paired candidate",
+        ):
+            ComposeService._assert_pinned_runtime_journal_matches_map_candidate(
+                journal,
+                map_candidate=changed,
+            )
+
+
 def test_rebuild_requires_root_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
 
@@ -915,7 +942,35 @@ def test_application_300_paired_builder_rejects_paired_only_receipt(
     runner = Mock()
     monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
 
-    with pytest.raises(DeploymentContractError, match="receipt set is incomplete"):
+    with pytest.raises(
+        DeploymentContractError,
+        match="journal resume requires a complete receipt set",
+    ):
+        compose_service_module._run_map_application_300_paired_builder(
+            sources=sources,
+            api_image="map-api:test",
+            dagster_image="map-dagster:test",
+            paths=paths,
+            resume_journal=True,
+        )
+
+    runner.assert_not_called()
+
+
+def test_application_300_journal_resume_requires_both_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    paths.api_receipt.write_text("{}\n", encoding="utf-8")
+    paths.api_receipt.chmod(0o600)
+    runner = Mock()
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="journal resume requires a complete receipt set",
+    ):
         compose_service_module._run_map_application_300_paired_builder(
             sources=sources,
             api_image="map-api:test",
@@ -928,7 +983,7 @@ def test_application_300_paired_builder_rejects_paired_only_receipt(
 
 
 @pytest.mark.parametrize("unsafe_api_receipt", ("symlink", "foreign-owner"))
-def test_application_300_api_only_unsafe_receipt_is_delegated_to_strict_builder(
+def test_application_300_unsafe_stale_receipt_is_not_discarded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     unsafe_api_receipt: str,
@@ -952,20 +1007,19 @@ def test_application_300_api_only_unsafe_receipt_is_delegated_to_strict_builder(
             return os.stat_result(fields)
 
         monkeypatch.setattr(Path, "lstat", foreign_api_lstat)
-    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=1))
+    runner = Mock()
     monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
 
-    with pytest.raises(DeploymentContractError, match="paired builder failed"):
+    with pytest.raises(DeploymentContractError, match="stale candidate receipt is unsafe"):
         compose_service_module._run_map_application_300_paired_builder(
             sources=sources,
             api_image="map-api:test",
             dagster_image="map-dagster:test",
             paths=paths,
-            resume_journal=True,
+            resume_journal=False,
         )
 
-    runner.assert_called_once()
-    assert "--verify" not in runner.call_args.args[0]
+    runner.assert_not_called()
 
 
 def test_application_300_prejournal_receipts_are_discarded_before_fresh_build(
@@ -2126,6 +2180,7 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         None,
     ]
     paired_builder.assert_called_once()
+    assert paired_builder.call_args.kwargs["resume_journal"] is False
     candidate_contract.assert_called_once()
     assert external_readiness.call_args_list == [
         call(

@@ -2925,6 +2925,10 @@ def _run_map_application_300_paired_builder(
             # an absent receipt that may be overwritten.
             receipt_presence_values.append(True)
     receipt_presence = tuple(receipt_presence_values)
+    if resume_journal and receipt_presence != (True, True):
+        raise DeploymentContractError(
+            "application 300 journal resume requires a complete receipt set"
+        )
     if not resume_journal and any(receipt_presence):
         # A receipt pair without a durable rebuild journal is only a pre-journal
         # candidate.  It may be left behind by a failed static inspection (or
@@ -5010,6 +5014,32 @@ class ComposeService:
             )
 
     @staticmethod
+    def _assert_pinned_runtime_journal_matches_map_candidate(
+        journal: PinnedRuntimeRebuildJournal,
+        *,
+        map_candidate: MapApplication300Candidate,
+    ) -> None:
+        """resume receipt/image evidence must be the journal's exact Map pair."""
+
+        evidence = journal.map_application_300_candidate_evidence
+        if (
+            evidence.paired_receipt_sha256 != map_candidate.receipt_sha256
+            or evidence.api_receipt_sha256 != map_candidate.api_receipt_sha256
+            or evidence.candidate_git_tree != map_candidate.candidate_git_tree
+            or evidence.postgres_image_id != map_candidate.postgres_image_id
+            or evidence.dagster_config_sha256 != map_candidate.dagster_config_sha256
+            or evidence.dagster_yaml_sha256 != map_candidate.dagster_yaml_sha256
+            or evidence.application_contract_sha256
+            != map_candidate.application_contract_sha256
+            or evidence.launch_contract_sha256 != map_candidate.launch_contract_sha256
+            or journal.candidate.map_api_image_id != map_candidate.api_image_id
+            or journal.candidate.map_dagster_image_id != map_candidate.dagster_image_id
+        ):
+            raise DeploymentContractError(
+                "pinned runtime journal differs from current Map paired candidate"
+            )
+
+    @staticmethod
     def _pinned_runtime_result(
         journal: PinnedRuntimeRebuildJournal,
         *,
@@ -5507,6 +5537,10 @@ class ComposeService:
                         raise DeploymentContractError(
                             "pinned runtime manifest differs from committed journal"
                         )
+                self._assert_pinned_runtime_journal_matches_map_candidate(
+                    journal,
+                    map_candidate=map_candidate,
+                )
                 self._attest_pinned_runtime_candidate_images(
                     build=build,
                     map_candidate=map_candidate,
