@@ -40,7 +40,10 @@ _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
-_MAP_MIGRATION_BOUNDARY_SERVICE = "kor-travel-map-migration-boundary"
+_MAP_APPLICATION_FRESH_300_SERVICE = "kor-travel-map-application-fresh-300"
+_MAP_APPLICATION_FRESH_FINALIZE_SERVICE = (
+    "kor-travel-map-application-fresh-finalize"
+)
 _PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 # ADR-047 대역 규칙(각 프로젝트 100번대의 x00이 그 프로젝트 DB)에 맞춘 값이다.
 # `docker-compose.yml`의 `KOR_TRAVEL_MAP_POSTGRES_PORT:-12700` 기본값과 **같아야**
@@ -253,7 +256,8 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _PINVI_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_MIGRATION_BOUNDARY_SERVICE,
+        _MAP_APPLICATION_FRESH_300_SERVICE,
+        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -307,7 +311,16 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (
         _MAP_FEATURE_CREATE_ENABLED_ENV
     ),
-    (_MAP_MIGRATION_BOUNDARY_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+    (_MAP_APPLICATION_FRESH_300_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
+    ),
+    (_MAP_APPLICATION_FRESH_300_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
+    ),
+    (_MAP_APPLICATION_FRESH_FINALIZE_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
+    ),
+    (_MAP_APPLICATION_FRESH_FINALIZE_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
     ),
     (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (
@@ -319,7 +332,6 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
         _PINVI_CUTOVER_MAPPING_ENV
     ),
-    (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): "KOR_TRAVEL_MAP_POSTGRES_DB",
     (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): "KOR_TRAVEL_MAP_POSTGRES_USER",
     (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
@@ -345,17 +357,35 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"
     ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
+    ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"): (
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"
     ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"
     ),
-    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
     ),
-    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+    ),
+    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
     ),
     (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"
@@ -376,16 +406,10 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
     ),
-    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
-    ),
     (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
     ),
     (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
-    ),
-    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
     ),
 }
@@ -401,10 +425,7 @@ _PINVI_DATABASE_URL_ALLOWED_PATHS = frozenset(
     )
 )
 _MAP_DATABASE_CANONICAL_ENV_VALUES = {
-    (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): (
-        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
-        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
-    ),
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): "postgres",
     (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): (
         "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
         "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
@@ -446,17 +467,41 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}"
     ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+    ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"): (
         "${KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD:?"
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
     ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
         "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?"
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
     ),
-    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
-        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?"
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+        "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
     ),
     (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
         "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
@@ -485,7 +530,6 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         for service in (
             _MAP_DAGSTER_SERVICE,
             _MAP_DAGSTER_DAEMON_SERVICE,
-            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         )
     },
     **{
@@ -496,13 +540,28 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         for service in (
             _MAP_DAGSTER_SERVICE,
             _MAP_DAGSTER_DAEMON_SERVICE,
-            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         )
     },
-    (_MAP_MIGRATION_BOUNDARY_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
-        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
-    ),
+    **{
+        (service, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+        )
+        for service in (
+            _MAP_APPLICATION_FRESH_300_SERVICE,
+            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        )
+    },
+    **{
+        (service, "KOR_TRAVEL_MAP_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+        )
+        for service in (
+            _MAP_APPLICATION_FRESH_300_SERVICE,
+            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        )
+    },
 }
 _MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
     {
@@ -930,26 +989,107 @@ def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
         )
 
 
-def _validate_map_migration_boundary_image(
+def _validate_map_application_300_images(
     services: Mapping[str, Any],
 ) -> None:
-    """M01/M05 one-shot이 Map API와 같은 attested candidate image를 쓰는지 고정한다."""
+    """fresh root/finalize가 Map API와 같은 paired candidate를 쓰는지 고정한다."""
 
     map_api = services.get(_MAP_API_SERVICE)
-    boundary = services.get(_MAP_MIGRATION_BOUNDARY_SERVICE)
-    if not isinstance(map_api, Mapping) or not isinstance(boundary, Mapping):
+    fresh = services.get(_MAP_APPLICATION_FRESH_300_SERVICE)
+    finalize = services.get(_MAP_APPLICATION_FRESH_FINALIZE_SERVICE)
+    if (
+        not isinstance(map_api, Mapping)
+        or not isinstance(fresh, Mapping)
+        or not isinstance(finalize, Mapping)
+    ):
         raise ComposeCandidateContractError(
-            "Map migration boundary image provenance is invalid"
+            "Map application 300 image provenance is invalid"
         )
     map_image = map_api.get("image")
-    boundary_image = boundary.get("image")
     if (
         not isinstance(map_image, str)
         or not map_image
-        or boundary_image != map_image
+        or fresh.get("image") != map_image
+        or finalize.get("image") != map_image
     ):
         raise ComposeCandidateContractError(
-            "Map migration boundary image provenance is invalid"
+            "Map application 300 image provenance is invalid"
+        )
+
+
+def _validate_map_application_300_service(
+    service_name: str,
+    service: Mapping[str, Any],
+    *,
+    environment: Mapping[str, str],
+    resolved: bool,
+) -> None:
+    """fresh root/finalize one-shot의 최소 권한 실행 표면을 고정한다."""
+
+    specifications = {
+        _MAP_APPLICATION_FRESH_300_SERVICE: (
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID",
+            "/usr/local/bin/ktm-application-schema-fresh-300",
+            "migrate",
+            "/run/kor-travel-map-application-fresh-migrate/fence.json",
+        ),
+        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE: (
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID",
+            "/usr/local/bin/ktm-application-schema-fresh-finalize",
+            "finalize",
+            "/run/kor-travel-map-application-fresh-finalize/fence.json",
+        ),
+    }
+    try:
+        image_id_env, executable, operation, fence_path = specifications[service_name]
+    except KeyError as exc:
+        raise ComposeCandidateContractError(
+            "Map application 300 service identity is invalid"
+        ) from exc
+
+    if resolved:
+        image_id = environment.get("KOR_TRAVEL_MAP_API_IMAGE", "")
+        migrator_dsn = environment.get("KOR_TRAVEL_MAP_MIGRATOR_PG_DSN", "")
+    else:
+        image_id = (
+            "${KOR_TRAVEL_MAP_API_IMAGE:?"
+            "KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
+        )
+        migrator_dsn = _MAP_DATABASE_CANONICAL_ENV_VALUES[
+            (service_name, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN")
+        ]
+    expected_environment = {
+        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
+        image_id_env: image_id,
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
+        "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
+    }
+    if service.get("environment") != expected_environment:
+        raise ComposeCandidateContractError(
+            "Map application 300 service environment is invalid"
+        )
+    if service.get("entrypoint") != [
+        "/usr/local/bin/python",
+        "-I",
+        executable,
+        operation,
+        "--writer-fence-receipt",
+        fence_path,
+    ]:
+        raise ComposeCandidateContractError(
+            "Map application 300 service entrypoint is invalid"
+        )
+    if service.get("command") not in (None, []):
+        raise ComposeCandidateContractError(
+            "Map application 300 service command is invalid"
+        )
+    if service.get("restart") != "no" or service.get("profiles") != ["bootstrap"]:
+        raise ComposeCandidateContractError(
+            "Map application 300 service lifecycle is invalid"
+        )
+    if resolved and _IMAGE_ID_PATTERN.fullmatch(image_id) is None:
+        raise ComposeCandidateContractError(
+            "Map application 300 resolved image identity is invalid"
         )
 
 
@@ -1176,6 +1316,54 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
         "/usr/local/bin/postgres-role-bootstrap",
         True,
     ): "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh",
+    (
+        "kor-travel-map-db-role-bootstrap",
+        "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
+        True,
+    ): (
+        "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}"
+        "/scripts/database-credential-preflight.sh"
+    ),
+    (
+        _MAP_APPLICATION_FRESH_300_SERVICE,
+        "/run/kor-travel-map-application-fresh-migrate",
+        True,
+    ): "${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?}",
+    (
+        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        "/run/kor-travel-map-application-fresh-finalize",
+        True,
+    ): "${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?}",
+    (
+        _MAP_API_SERVICE,
+        "/run/kor-travel-map-application-final-permit",
+        True,
+    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
+    (
+        _MAP_DAGSTER_SERVICE,
+        "/run/kor-travel-map-application-final-permit",
+        True,
+    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
+    (
+        _MAP_DAGSTER_SERVICE,
+        "/run/kor-travel-map-dagster-storage-permit",
+        True,
+    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
+    (
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        "/run/kor-travel-map-application-final-permit",
+        True,
+    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
+    (
+        _MAP_DAGSTER_DAEMON_SERVICE,
+        "/run/kor-travel-map-dagster-storage-permit",
+        True,
+    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
+    (
+        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+        "/run/kor-travel-map-dagster-storage-permit",
+        True,
+    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
     (
         "kor-travel-geo-postgres",
         "/var/lib/postgresql/data",
@@ -2772,7 +2960,7 @@ def validate_resolved_compose_candidate_protected_values(
             "resolved compose candidate is missing required protected services: "
             + ", ".join(sorted(missing_services))
         )
-    _validate_map_migration_boundary_image(services)
+    _validate_map_application_300_images(services)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
@@ -2803,7 +2991,8 @@ def validate_resolved_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_MIGRATION_BOUNDARY_SERVICE,
+        _MAP_APPLICATION_FRESH_300_SERVICE,
+        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
@@ -2824,7 +3013,8 @@ def validate_resolved_compose_candidate_protected_values(
             _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
             _MAP_DAGSTER_DB_INIT_SERVICE,
             _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-            _MAP_MIGRATION_BOUNDARY_SERVICE,
+            _MAP_APPLICATION_FRESH_300_SERVICE,
+            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
             _PINVI_DB_INIT_SERVICE,
         }:
             _require_map_database_host_network(service)
@@ -2833,11 +3023,15 @@ def validate_resolved_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"resolved compose candidate {service_name} has no environment mapping"
             )
-        if service_name == _MAP_MIGRATION_BOUNDARY_SERVICE and set(
-            service_environment
-        ) != {"KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"}:
-            raise ComposeCandidateContractError(
-                "resolved compose candidate Map migration boundary environment is invalid"
+        if service_name in {
+            _MAP_APPLICATION_FRESH_300_SERVICE,
+            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        }:
+            _validate_map_application_300_service(
+                service_name,
+                service,
+                environment=environment,
+                resolved=True,
             )
         if service_name == _MAP_API_SERVICE and (
             _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(service_environment)
@@ -2937,16 +3131,7 @@ def validate_resolved_c6c_build_provenance(
     if not isinstance(services, Mapping):
         raise DeploymentContractError("resolved compose config has no services mapping")
     expected_provenance_args = {
-        _MAP_API_SERVICE: {
-            "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
-        },
         _MAP_UI_SERVICE: {
-            "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
-        },
-        _MAP_DAGSTER_SERVICE: {
-            "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
-        },
-        _MAP_DAGSTER_DAEMON_SERVICE: {
             "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
         },
         _PINVI_API_SERVICE: {
@@ -2976,10 +3161,7 @@ def validate_resolved_c6c_build_provenance(
     )
     expected_arg_names[_PINVI_WEB_SERVICE].add("NEXT_PUBLIC_PINVI_API_URL")
     expected_dockerfiles = {
-        _MAP_API_SERVICE: "docker/api.Dockerfile",
         _MAP_UI_SERVICE: "docker/frontend.Dockerfile",
-        _MAP_DAGSTER_SERVICE: "docker/dagster.Dockerfile",
-        _MAP_DAGSTER_DAEMON_SERVICE: "docker/dagster.Dockerfile",
         _PINVI_API_SERVICE: "apps/api/Dockerfile",
         _PINVI_WEB_SERVICE: "apps/web/Dockerfile",
         _PINVI_DAGSTER_SERVICE: "apps/etl/Dockerfile",
@@ -3049,13 +3231,6 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
     if not isinstance(services, Mapping):
         raise DeploymentContractError("compose source has no services mapping")
     expected = {
-        _MAP_API_SERVICE: {
-            "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
-            "dockerfile": "docker/api.Dockerfile",
-            "args": {
-                "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
-            },
-        },
         _MAP_UI_SERVICE: {
             "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
             "dockerfile": "docker/frontend.Dockerfile",
@@ -3073,20 +3248,6 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
                     "${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}"
                 ),
                 "NEXT_PUBLIC_VWORLD_API_KEY": "${NEXT_PUBLIC_VWORLD_API_KEY:-}",
-            },
-        },
-        "kor-travel-map-dagster": {
-            "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
-            "dockerfile": "docker/dagster.Dockerfile",
-            "args": {
-                "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
-            },
-        },
-        "kor-travel-map-dagster-daemon": {
-            "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
-            "dockerfile": "docker/dagster.Dockerfile",
-            "args": {
-                "KOR_TRAVEL_MAP_GIT_COMMIT": "${KOR_TRAVEL_MAP_GIT_COMMIT:-development}",
             },
         },
         _PINVI_API_SERVICE: {
@@ -3234,7 +3395,7 @@ def validate_compose_candidate_protected_values(
             "compose candidate is missing required protected services: "
             + ", ".join(sorted(missing_services))
         )
-    _validate_map_migration_boundary_image(services)
+    _validate_map_application_300_images(services)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
@@ -3265,7 +3426,8 @@ def validate_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_MIGRATION_BOUNDARY_SERVICE,
+        _MAP_APPLICATION_FRESH_300_SERVICE,
+        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
@@ -3296,18 +3458,16 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 "compose candidate Map API must use the immutable image entrypoint and command"
             )
-        if service_name == _MAP_MIGRATION_BOUNDARY_SERVICE:
-            expected_environment = {
-                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
-                    _MAP_DATABASE_CANONICAL_ENV_VALUES[
-                        (_MAP_MIGRATION_BOUNDARY_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN")
-                    ]
-                )
-            }
-            if raw_environment != expected_environment:
-                raise ComposeCandidateContractError(
-                    "compose candidate Map migration boundary must expose only the migrator DSN"
-                )
+        if service_name in {
+            _MAP_APPLICATION_FRESH_300_SERVICE,
+            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        }:
+            _validate_map_application_300_service(
+                service_name,
+                service,
+                environment=environment,
+                resolved=False,
+            )
         for allowed_service, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES:
             if allowed_service != service_name:
                 continue

@@ -611,12 +611,16 @@ services:
   # 공유할 수 없다. host network에서 `12700` loopback만 listen하는 전용 instance다.
   # (ADR-047 대역 규칙에 맞춰 2026-08-17에 12703 -> 12700으로 옮겼다: 127xx=map.)
   kor-travel-map-postgres:
-    image: postgis/postgis:16-3.5
+    # application-300 reference manifest가 증명한 immutable PostGIS image만
+    # 허용한다. floating tag는 catalog/seed receipt의 전제가 될 수 없다.
+    image: ${KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID:?KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID must be explicitly set}
     container_name: ${KOR_TRAVEL_MAP_POSTGRES_CONTAINER:-kor-travel-map-postgres}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     environment:
-      POSTGRES_DB: ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
+      # application DB는 별도 fresh transaction이 template0에서 만든다. PID 1과
+      # healthcheck는 drop/create 중에도 남는 maintenance DB만 사용한다.
+      POSTGRES_DB: postgres
       POSTGRES_USER: ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}
       # bootstrap superuser password는 long-lived Config.Env가 아니라 Docker secret
       # file로만 전달한다. role bootstrap one-shot만 DSN에 credential을 보관한다.
@@ -674,7 +678,7 @@ services:
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700} -U ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set} -d ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
+      - test "$$(cat /proc/1/comm)" = postgres && pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_MAP_POSTGRES_PORT:-12700} -U ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set} -d postgres
       interval: 10s
       timeout: 5s
       retries: 20
@@ -743,39 +747,75 @@ services:
         condition: service_healthy
     environment:
       KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_ENABLED: "true"
+      KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE: baseline-300
       KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE: ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
       KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN: ${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_POSTGRES_DB: ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
       KOR_TRAVEL_MAP_POSTGRES_USER: ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}
       KOR_TRAVEL_MAP_MIGRATOR_PASSWORD: ${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}
+      KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD: ${KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD:?KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD must be explicitly set}
+      KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN: ${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB: ${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_METADATA_USER: ${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD: ${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
     volumes:
     - ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh:/usr/local/bin/postgres-role-bootstrap:ro
+    - ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/database-credential-preflight.sh:/usr/local/lib/kor-travel-map/database-credential-preflight.sh:ro
     entrypoint:
     - /bin/sh
     - /usr/local/bin/postgres-role-bootstrap
 
-  # Map M01/M05 migration boundary는 API service의 secret 환경을 상속하면 안 된다.
-  # 같은 pinned API image를 쓰되 restricted migrator DSN 하나만 전달하는 전용
-  # bootstrap service로 실행하고, Manager가 각 source-owned script를 command로
-  # 선택한다.
-  kor-travel-map-migration-boundary:
+  # virgin application DB에는 paired API image의 fresh root와 finalize executable만
+  # 실행한다. 두 service 모두 restricted migrator DSN과 root-owned fixed fence 외의
+  # 권한을 받지 않는다.
+  kor-travel-map-application-fresh-300:
     profiles:
     - bootstrap
     image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
     restart: "no"
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     environment:
+      KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE: production
+      KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID: ${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}
       KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
+    volumes:
+    - ${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR must be explicitly set}:/run/kor-travel-map-application-fresh-migrate:ro
+    entrypoint:
+    - /usr/local/bin/python
+    - -I
+    - /usr/local/bin/ktm-application-schema-fresh-300
+    - migrate
+    - --writer-fence-receipt
+    - /run/kor-travel-map-application-fresh-migrate/fence.json
+
+  kor-travel-map-application-fresh-finalize:
+    profiles:
+    - bootstrap
+    image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
+    restart: "no"
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    environment:
+      KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE: production
+      KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID: ${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}
+      KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
+    volumes:
+    - ${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR must be explicitly set}:/run/kor-travel-map-application-fresh-finalize:ro
+    entrypoint:
+    - /usr/local/bin/python
+    - -I
+    - /usr/local/bin/ktm-application-schema-fresh-finalize
+    - finalize
+    - --writer-fence-receipt
+    - /run/kor-travel-map-application-fresh-finalize/fence.json
 
   kor-travel-map-api:
     image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
-    build:
-      context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
-      dockerfile: docker/api.Dockerfile
-      args:
-        KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
     container_name: ${KOR_TRAVEL_MAP_API_CONTAINER:-kor-travel-map-api-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -830,9 +870,9 @@ services:
       # API에는 같은 원문에서 파생한 digest만 전달한다.
       KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256: ${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}
       KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED: ${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}
-      KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN: ${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_API_IMAGE_ID: ${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}
       KOR_TRAVEL_MAP_RUNTIME_DB_PREFLIGHT_REQUIRED: 'true'
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -851,6 +891,8 @@ services:
       # DB 연결 전에 기동을 거부한다. 이 값은 installer가 canonical env에 명시하며,
       # 빈 값이나 Compose 기본값은 허용하지 않는다.
       KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD: ${KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD:?KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD must be explicitly set}
+    volumes:
+    - ${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-application-final-permit:ro
     ports:
     - ${KOR_TRAVEL_MAP_API_PORT:-12701}:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}
     healthcheck:
@@ -907,11 +949,14 @@ services:
       start_period: 30s
   kor-travel-map-dagster:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
-    build:
-      context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
-      dockerfile: docker/dagster.Dockerfile
-      args:
-        KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
+    command:
+    - /usr/local/bin/dagster-webserver
+    - -m
+    - kortravelmap.dagster.definitions
+    - -h
+    - 0.0.0.0
+    - -p
+    - ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER:-kor-travel-map-dagster-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -935,12 +980,16 @@ services:
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_PORT: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
       KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:?KOR_TRAVEL_MAP_DAGSTER_IMAGE must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256: ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256 must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256: ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256 must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
       KOR_TRAVEL_MAP_KMA_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_MAP_DOCKER_KMA_MAX_GRIDS:-80}
       KOR_TRAVEL_MAP_KMA_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_MAP_DOCKER_KMA_WEATHER_EXTRA_POINTS:-126.978,37.566;127.047,37.517;126.979,37.573;126.924,37.521;127.011,37.64;129.075,35.18;129.16,35.163;129.024,35.098;126.705,37.456;126.66,37.383;128.601,35.871;128.637,35.857;127.385,36.35;127.34,36.362;126.852,35.16;129.311,35.539;127.289,36.48;127.029,37.263;127.138,37.42;126.832,37.658;127.178,37.241;126.766,37.503;127.734,37.881;128.896,37.752;127.92,37.342;128.591,38.207;127.489,36.642;127.926,36.991;127.114,36.815;127.004,36.79;127.148,35.821;126.737,35.978;127.662,34.76;127.487,34.951;126.392,34.812;129.365,36.019;129.225,35.856;128.729,36.568;128.682,35.228;128.108,35.18;128.434,34.854;126.531,33.499;126.566,33.254;128.889,35.234;126.864,37.478;126.821,37.322;127.113,36.992;126.958,35.948;128.114,36.14;128.621,34.88;126.2838,36.673;127.4416,35.4118;128.7527,37.3221;129.4045,36.9182;127.9057,35.7043;126.0097,37.4346;126.7659,34.2899;127.7243,35.5217;128.9902,37.1551;130.9057,37.4845}
       KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DAGSTER_IMAGE_ID: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:?KOR_TRAVEL_MAP_DAGSTER_IMAGE must be explicitly set}
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
@@ -958,6 +1007,9 @@ services:
       # issue #114 — reverse_geocoder가 전역 필수 리소스라 이 key 없이는 geocode 관련
       # provider ETL job 전체가 GeoAuthNotConfiguredError로 fail-close된다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
+    volumes:
+    - ${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-application-final-permit:ro
+    - ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-dagster-storage-permit:ro
     ports:
     - ${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
     healthcheck:
@@ -980,25 +1032,23 @@ services:
       kor-travel-map-postgres:
         condition: service_healthy
     command:
-    - ktm-dagster-storage
+    - /usr/local/bin/ktm-dagster-storage
     - migrate
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
-      KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
-      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:?KOR_TRAVEL_MAP_DAGSTER_IMAGE must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256: ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256 must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256: ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256 must be explicitly set}
+    volumes:
+    - ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-dagster-storage-permit:ro
     # C0의 external-DB overlay와 같은 candidate image가 host gateway DSN도
     # 해석할 수 있게 한다. host network를 쓰는 기본 경로에는 영향이 없다.
     extra_hosts:
     - host.docker.internal:host-gateway
   kor-travel-map-dagster-daemon:
-    image: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE:-kor-travel-map-dagster-daemon:latest-main}
-    build:
-      context: ${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}
-      dockerfile: docker/dagster.Dockerfile
-      args:
-        KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
+    image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -1010,7 +1060,7 @@ services:
       kor-travel-map-dagster:
         condition: service_healthy
     command:
-    - dagster-daemon
+    - /usr/local/bin/dagster-daemon
     - run
     - -m
     - kortravelmap.dagster.definitions
@@ -1021,12 +1071,16 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:?KOR_TRAVEL_MAP_DAGSTER_IMAGE must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256: ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256 must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256: ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256 must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
       KOR_TRAVEL_MAP_KMA_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_MAP_DOCKER_KMA_MAX_GRIDS:-80}
       KOR_TRAVEL_MAP_KMA_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_MAP_DOCKER_KMA_WEATHER_EXTRA_POINTS:-126.978,37.566;127.047,37.517;126.979,37.573;126.924,37.521;127.011,37.64;129.075,35.18;129.16,35.163;129.024,35.098;126.705,37.456;126.66,37.383;128.601,35.871;128.637,35.857;127.385,36.35;127.34,36.362;126.852,35.16;129.311,35.539;127.289,36.48;127.029,37.263;127.138,37.42;126.832,37.658;127.178,37.241;126.766,37.503;127.734,37.881;128.896,37.752;127.92,37.342;128.591,38.207;127.489,36.642;127.926,36.991;127.114,36.815;127.004,36.79;127.148,35.821;126.737,35.978;127.662,34.76;127.487,34.951;126.392,34.812;129.365,36.019;129.225,35.856;128.729,36.568;128.682,35.228;128.108,35.18;128.434,34.854;126.531,33.499;126.566,33.254;128.889,35.234;126.864,37.478;126.821,37.322;127.113,36.992;126.958,35.948;128.114,36.14;128.621,34.88;126.2838,36.673;127.4416,35.4118;128.7527,37.3221;129.4045,36.9182;127.9057,35.7043;126.0097,37.4346;126.7659,34.2899;127.7243,35.5217;128.9902,37.1551;130.9057,37.4845}
       KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DAGSTER_IMAGE_ID: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:?KOR_TRAVEL_MAP_DAGSTER_IMAGE must be explicitly set}
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
@@ -1044,6 +1098,9 @@ services:
       # issue #114 — reverse_geocoder가 전역 필수 리소스라 이 key 없이는 geocode 관련
       # provider ETL job 전체가 GeoAuthNotConfiguredError로 fail-close된다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
+    volumes:
+    - ${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-application-final-permit:ro
+    - ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-dagster-storage-permit:ro
   pinvi-api:
     image: ${PINVI_API_IMAGE:-pinvi-api:latest-main}
     build:

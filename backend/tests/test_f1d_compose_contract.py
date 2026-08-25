@@ -58,7 +58,8 @@ _MAP_RUNTIME_SERVICES = (
 _MAP_DATABASE_ONESHOT_SERVICES = (
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
-    "kor-travel-map-migration-boundary",
+    "kor-travel-map-application-fresh-300",
+    "kor-travel-map-application-fresh-finalize",
     "kor-travel-map-dagster-storage-migrate",
 )
 _PINVI_RUNTIME_SERVICES = ("pinvi-api", "pinvi-web", "pinvi-dagster")
@@ -108,6 +109,23 @@ def _compose_contract_environment() -> dict[str, str]:
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
+        "KOR_TRAVEL_MAP_API_IMAGE": f"sha256:{'1' * 64}",
+        "KOR_TRAVEL_MAP_DAGSTER_IMAGE": f"sha256:{'2' * 64}",
+        "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": f"sha256:{'3' * 64}",
+        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
+            "/tmp/ktdm-map-application-final-permit"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (
+            "/tmp/ktdm-map-dagster-storage-permit"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": (
+            "/tmp/ktdm-map-fresh-migrate-fence"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
+            "/tmp/ktdm-map-fresh-finalize-fence"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": "4" * 64,
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": "5" * 64,
         "KOR_TRAVEL_MAP_POSTGRES_DB": "map_contract",
         "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_contract_dagster",
         "KOR_TRAVEL_MAP_POSTGRES_USER": "map_contract_admin",
@@ -265,9 +283,9 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
     assert isinstance(services, dict)
 
     migration = services["kor-travel-map-dagster-storage-migrate"]
-    assert migration["image"] == "kor-travel-map-dagster:latest-main"
+    assert migration["image"] == f"sha256:{'2' * 64}"
     assert "build" not in migration
-    assert migration["command"] == ["ktm-dagster-storage", "migrate"]
+    assert migration["command"] == ["/usr/local/bin/ktm-dagster-storage", "migrate"]
     assert migration["restart"] == "no"
     assert migration["network_mode"] == "host"
     assert migration["environment"] == {
@@ -277,19 +295,23 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
             "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
             "127.0.0.1:12700/map_contract_dagster"
         ),
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
-        "KOR_TRAVEL_MAP_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": "5" * 64,
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": "4" * 64,
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID": f"sha256:{'2' * 64}",
     }
     assert migration["depends_on"]["kor-travel-map-postgres"]["condition"] == (
         "service_healthy"
     )
     assert migration["extra_hosts"] == ["host.docker.internal=host-gateway"]
+    assert migration["volumes"] == [
+        {
+            "type": "bind",
+            "source": "/tmp/ktdm-map-dagster-storage-permit",
+            "target": "/run/kor-travel-map-dagster-storage-permit",
+            "read_only": True,
+            "bind": {},
+        }
+    ]
 
     for service_name in (
         "kor-travel-map-dagster",
@@ -299,6 +321,7 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         assert dependency["kor-travel-map-dagster-storage-migrate"]["condition"] == (
             "service_completed_successfully"
         )
+        assert services[service_name]["image"] == migration["image"]
 
 
 def test_resolved_pinvi_api_has_no_implicit_schema_mutation_or_bootstrap_secret() -> None:
@@ -525,7 +548,21 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
     bootstrap_script.parent.mkdir(parents=True)
     bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    credential_preflight = (
+        map_source / "scripts" / "database-credential-preflight.sh"
+    )
+    credential_preflight.parent.mkdir(parents=True)
+    credential_preflight.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+    for environment_name, directory_name in (
+        ("KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR", "application-permit"),
+        ("KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR", "metadata-permit"),
+        ("KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR", "root-fence"),
+        ("KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR", "finalize-fence"),
+    ):
+        directory = tmp_path / directory_name
+        directory.mkdir()
+        environment[environment_name] = str(directory)
 
     raw_snapshots = validate_compose_candidate_protected_values(
         candidate,
@@ -536,9 +573,9 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     raw_image_drift = deepcopy(candidate)
     raw_image_services = raw_image_drift["services"]
     assert isinstance(raw_image_services, dict)
-    raw_image_boundary = raw_image_services["kor-travel-map-migration-boundary"]
-    assert isinstance(raw_image_boundary, dict)
-    raw_image_boundary["image"] = "attacker.invalid/map-migration:stale"
+    raw_image_fresh = raw_image_services["kor-travel-map-application-fresh-300"]
+    assert isinstance(raw_image_fresh, dict)
+    raw_image_fresh["image"] = "attacker.invalid/map-application:stale"
     with pytest.raises(DeploymentContractError, match="image provenance"):
         validate_compose_candidate_protected_values(
             raw_image_drift,
@@ -546,19 +583,19 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             root_env_path=str(root_env),
             environment=environment,
         )
-    boundary_drift = deepcopy(candidate)
-    boundary_services = boundary_drift["services"]
-    assert isinstance(boundary_services, dict)
-    boundary_service = boundary_services["kor-travel-map-migration-boundary"]
-    assert isinstance(boundary_service, dict)
-    boundary_environment = boundary_service["environment"]
-    assert isinstance(boundary_environment, dict)
-    boundary_environment["KOR_TRAVEL_MAP_API_SERVICE_TOKEN"] = (
+    fresh_drift = deepcopy(candidate)
+    fresh_services = fresh_drift["services"]
+    assert isinstance(fresh_services, dict)
+    fresh_service = fresh_services["kor-travel-map-application-fresh-300"]
+    assert isinstance(fresh_service, dict)
+    fresh_environment = fresh_service["environment"]
+    assert isinstance(fresh_environment, dict)
+    fresh_environment["KOR_TRAVEL_MAP_API_SERVICE_TOKEN"] = (
         "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
     )
-    with pytest.raises(DeploymentContractError, match="migration boundary"):
+    with pytest.raises(DeploymentContractError, match="application 300 service environment"):
         validate_compose_candidate_protected_values(
-            boundary_drift,
+            fresh_drift,
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
             environment=environment,
@@ -575,6 +612,18 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         environment_update={
             "KOR_TRAVEL_MAP_PGDATA": str(map_pgdata),
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
+            "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": environment[
+                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR"
+            ],
+            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": environment[
+                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR"
+            ],
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": environment[
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR"
+            ],
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": environment[
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR"
+            ],
         },
     )
     assert validate_resolved_compose_candidate_protected_values(
@@ -587,11 +636,11 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     resolved_image_drift = deepcopy(resolved)
     resolved_image_services = resolved_image_drift["services"]
     assert isinstance(resolved_image_services, dict)
-    resolved_image_boundary = resolved_image_services[
-        "kor-travel-map-migration-boundary"
+    resolved_image_fresh = resolved_image_services[
+        "kor-travel-map-application-fresh-finalize"
     ]
-    assert isinstance(resolved_image_boundary, dict)
-    resolved_image_boundary["image"] = "attacker.invalid/map-migration:stale"
+    assert isinstance(resolved_image_fresh, dict)
+    resolved_image_fresh["image"] = "attacker.invalid/map-application:stale"
     with pytest.raises(DeploymentContractError, match="image provenance"):
         validate_resolved_compose_candidate_protected_values(
             resolved_image_drift,
@@ -603,13 +652,13 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     resolved_environment_drift = deepcopy(resolved)
     resolved_environment_services = resolved_environment_drift["services"]
     assert isinstance(resolved_environment_services, dict)
-    resolved_environment_boundary = resolved_environment_services[
-        "kor-travel-map-migration-boundary"
+    resolved_environment_fresh = resolved_environment_services[
+        "kor-travel-map-application-fresh-finalize"
     ]
-    assert isinstance(resolved_environment_boundary, dict)
-    resolved_boundary_environment = resolved_environment_boundary["environment"]
-    assert isinstance(resolved_boundary_environment, dict)
-    resolved_boundary_environment["UNRELATED_BOUNDARY_SETTING"] = "x"
+    assert isinstance(resolved_environment_fresh, dict)
+    resolved_fresh_environment = resolved_environment_fresh["environment"]
+    assert isinstance(resolved_fresh_environment, dict)
+    resolved_fresh_environment["UNRELATED_FRESH_SETTING"] = "x"
     with pytest.raises(DeploymentContractError, match="environment is invalid"):
         validate_resolved_compose_candidate_protected_values(
             resolved_environment_drift,
@@ -925,17 +974,19 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"][
         "environment"
     ]
-    map_boundary_environment = services["kor-travel-map-migration-boundary"][
+    map_fresh_environment = services["kor-travel-map-application-fresh-300"][
         "environment"
     ]
+    map_finalize_environment = services[
+        "kor-travel-map-application-fresh-finalize"
+    ]["environment"]
     assert isinstance(map_api_environment, dict)
     assert isinstance(map_dagster_environment, dict)
     assert isinstance(map_bootstrap_environment, dict)
-    assert isinstance(map_boundary_environment, dict)
-    assert {
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
-        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
-    }.issubset(map_api_environment)
+    assert isinstance(map_fresh_environment, dict)
+    assert isinstance(map_finalize_environment, dict)
+    assert "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN" not in map_api_environment
+    assert "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN" in map_api_environment
     assert "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN" not in map_api_environment
     assert {
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
@@ -952,14 +1003,35 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert {
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
     }.issubset(map_bootstrap_environment)
-    assert map_boundary_environment == {
+    assert map_fresh_environment == {
+        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID": f"sha256:{'1' * 64}",
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
             "127.0.0.1:12700/map_contract"
-        )
+        ),
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
+    }
+    assert map_finalize_environment == {
+        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID": f"sha256:{'1' * 64}",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
     }
 
 
