@@ -16,8 +16,6 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
-## 2026-08-25 — active backlog 정합성 정리와 T-VN-40 Manager 잔여 이관
-
 ## 2026-08-25 — application `300` 데이터 무결성 gate 퇴역
 
 - [x] **T-VN-41-F1D-D — fresh `300` 데이터 재적재 후 수용 검증을 release 조건에서 제외**
@@ -26,6 +24,8 @@
   내용·건수·업무상 무결성은 release gate로 검증하지 않으며, 필요한 경우 fresh schema에 source/ETL을
   처음부터 재적재할 수 있다. 이전 revision이나 기존 DB로의 복구 계획은 없으므로, 데이터 의존 UI E2E는
   별도 데이터 적재 작업의 운영 검증으로만 남기고 H300 완료 조건에서는 제거했다.
+
+## 2026-08-25 — active backlog 정합성 정리와 T-VN-40 Manager 잔여 이관
 
 - [x] **완료·퇴역 항목을 `tasks.md`에서 제거하고 이력으로 이관**
 
