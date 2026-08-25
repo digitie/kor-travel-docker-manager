@@ -107,6 +107,50 @@ class DatabaseRuntime:
     additional_owner_names: frozenset[str] = frozenset()
 
 
+@dataclass(frozen=True)
+class Application300DatabaseIdentity:
+    """application 300 permit/fence에 쓰는 non-secret database identity."""
+
+    database_name: str
+    database_oid: int
+    database_owner: str
+    postgres_system_identifier: str
+
+
+@dataclass(frozen=True)
+class DagsterMetadataRoleAttributes:
+    """Dagster metadata login role의 privilege/membership snapshot."""
+
+    superuser: bool
+    create_database: bool
+    create_role: bool
+    replication: bool
+    bypass_rls: bool
+    granted_role_count: int
+    member_role_count: int
+
+
+@dataclass(frozen=True)
+class DagsterMetadataDatabaseIdentity:
+    """Dagster storage permit에 쓰는 non-secret metadata database identity."""
+
+    system_identifier: str
+    name: str
+    oid: int
+    owner: str
+    login_role: str
+    login_role_attributes: DagsterMetadataRoleAttributes
+
+
+@dataclass(frozen=True)
+class _DagsterMetadataRolePreflight:
+    """mutation 전 기존 metadata role이 password-only rotate 대상인지 판정한다."""
+
+    can_login: bool
+    inherit: bool
+    attributes: DagsterMetadataRoleAttributes
+
+
 def database_runtimes_from_frozen_contract(
     *,
     resolved: Mapping[str, object],
@@ -317,6 +361,132 @@ def create_fresh_application_300_database(runtime: DatabaseRuntime) -> None:
             runtime.database_name,
         ],
         label="map_application fresh 300 database create",
+    )
+
+
+def read_application_300_database_identity(
+    runtime: DatabaseRuntime,
+) -> Application300DatabaseIdentity:
+    """maintenance DB에서 Map application DB identity를 읽기 전용으로 조회한다."""
+
+    _validate_runtime(runtime)
+    if runtime.role != "map_application":
+        raise DeploymentContractError("application 300 identity requires Map application DB")
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT datname, oid::bigint, pg_get_userbyid(datdba), "
+                "(SELECT system_identifier::text FROM pg_catalog.pg_control_system()) "
+                "FROM pg_catalog.pg_database "
+                f"WHERE datname = '{runtime.database_name}'"
+            ),
+        ],
+        label="Map application 300 database identity",
+    )
+    return _parse_application_database_identity(output, runtime=runtime)
+
+
+def initialize_application_300_dagster_metadata_database(
+    runtime: DatabaseRuntime,
+    *,
+    metadata_user: str,
+    metadata_password: str,
+) -> DagsterMetadataDatabaseIdentity:
+    """Map Dagster metadata role/DB를 fresh application 300용으로 생성한다.
+
+    모든 read-only preflight를 먼저 끝낸 뒤, 기존 안전 role은 password만 바꾸고
+    metadata DB는 ``template0``에서 새로 만든다. 이 함수는 기존 DB를 drop하지 않는다.
+    """
+
+    _validate_dagster_metadata_runtime(runtime, metadata_user)
+    _validate_password(metadata_password)
+
+    existing_owner = _read_database_owner(runtime)
+    role_preflight = _read_dagster_metadata_role_preflight(runtime, metadata_user)
+    if existing_owner is not None:
+        raise DeploymentContractError("Map Dagster metadata database already exists")
+    if role_preflight is not None:
+        _assert_dagster_metadata_role_can_rotate_password_only(role_preflight)
+
+    if role_preflight is None:
+        _mutate_dagster_metadata_role(
+            runtime,
+            metadata_user=metadata_user,
+            metadata_password=metadata_password,
+            existing_role=False,
+        )
+    else:
+        _mutate_dagster_metadata_role(
+            runtime,
+            metadata_user=metadata_user,
+            metadata_password=metadata_password,
+            existing_role=True,
+        )
+    _run_checked(
+        [
+            *_database_admin_command(runtime, "createdb"),
+            "--maintenance-db",
+            "postgres",
+            "--template",
+            "template0",
+            "--owner",
+            metadata_user,
+            runtime.database_name,
+        ],
+        label="Map Dagster metadata database create",
+    )
+    return read_application_300_dagster_metadata_identity(
+        runtime,
+        metadata_user=metadata_user,
+    )
+
+
+def read_application_300_dagster_metadata_identity(
+    runtime: DatabaseRuntime,
+    *,
+    metadata_user: str,
+) -> DagsterMetadataDatabaseIdentity:
+    """maintenance DB에서 Dagster metadata DB와 login role identity를 strict 조회한다."""
+
+    _validate_dagster_metadata_runtime(runtime, metadata_user)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT control.system_identifier::text, database_row.datname, "
+                "database_row.oid::bigint, pg_get_userbyid(database_row.datdba), "
+                "role.rolname, role.rolsuper, role.rolcreatedb, role.rolcreaterole, "
+                "role.rolreplication, role.rolbypassrls, "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
+                "WHERE membership.member = role.oid), "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
+                "WHERE membership.roleid = role.oid) "
+                "FROM pg_catalog.pg_database AS database_row "
+                "JOIN pg_catalog.pg_roles AS role ON role.oid = database_row.datdba "
+                "CROSS JOIN pg_catalog.pg_control_system() AS control "
+                f"WHERE database_row.datname = '{runtime.database_name}' "
+                f"AND role.rolname = '{metadata_user}'"
+            ),
+        ],
+        label="Map Dagster metadata database identity",
+    )
+    return _parse_dagster_metadata_database_identity(
+        output,
+        runtime=runtime,
+        metadata_user=metadata_user,
     )
 
 
@@ -537,6 +707,212 @@ def _read_database_owner(runtime: DatabaseRuntime) -> str | None:
     return output
 
 
+def _read_dagster_metadata_role_preflight(
+    runtime: DatabaseRuntime,
+    metadata_user: str,
+) -> _DagsterMetadataRolePreflight | None:
+    _validate_dagster_metadata_runtime(runtime, metadata_user)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT rolcanlogin, rolinherit, rolsuper, rolcreatedb, "
+                "rolcreaterole, rolreplication, rolbypassrls, "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
+                "WHERE membership.member = role.oid), "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
+                "WHERE membership.roleid = role.oid) "
+                "FROM pg_catalog.pg_roles AS role "
+                f"WHERE role.rolname = '{metadata_user}'"
+            ),
+        ],
+        label="Map Dagster metadata role preflight",
+    ).decode("ascii").strip()
+    if not output:
+        return None
+    lines = output.splitlines()
+    if len(lines) != 1:
+        raise DeploymentContractError("Map Dagster metadata role output is invalid")
+    fields = lines[0].split("|")
+    if len(fields) != 9:
+        raise DeploymentContractError("Map Dagster metadata role output is invalid")
+    return _DagsterMetadataRolePreflight(
+        can_login=_parse_psql_bool(fields[0], "Map Dagster metadata role login"),
+        inherit=_parse_psql_bool(fields[1], "Map Dagster metadata role inherit"),
+        attributes=DagsterMetadataRoleAttributes(
+            superuser=_parse_psql_bool(fields[2], "Map Dagster metadata role superuser"),
+            create_database=_parse_psql_bool(
+                fields[3], "Map Dagster metadata role createdb"
+            ),
+            create_role=_parse_psql_bool(
+                fields[4], "Map Dagster metadata role createrole"
+            ),
+            replication=_parse_psql_bool(
+                fields[5], "Map Dagster metadata role replication"
+            ),
+            bypass_rls=_parse_psql_bool(
+                fields[6], "Map Dagster metadata role bypassrls"
+            ),
+            granted_role_count=_parse_non_negative_int(
+                fields[7], "Map Dagster metadata role granted role count"
+            ),
+            member_role_count=_parse_non_negative_int(
+                fields[8], "Map Dagster metadata role member role count"
+            ),
+        ),
+    )
+
+
+def _assert_dagster_metadata_role_can_rotate_password_only(
+    role: _DagsterMetadataRolePreflight,
+) -> None:
+    attributes = role.attributes
+    if (
+        not role.can_login
+        or role.inherit
+        or attributes.superuser
+        or attributes.create_database
+        or attributes.create_role
+        or attributes.replication
+        or attributes.bypass_rls
+        or attributes.granted_role_count != 0
+        or attributes.member_role_count != 0
+    ):
+        raise DeploymentContractError("Map Dagster metadata role is unsafe")
+
+
+def _mutate_dagster_metadata_role(
+    runtime: DatabaseRuntime,
+    *,
+    metadata_user: str,
+    metadata_password: str,
+    existing_role: bool,
+) -> None:
+    _validate_dagster_metadata_runtime(runtime, metadata_user)
+    _validate_password(metadata_password)
+    role = _sql_identifier(metadata_user)
+    password = _sql_literal(metadata_password)
+    if existing_role:
+        sql = f"ALTER ROLE {role} PASSWORD {password};\n"
+        label = "Map Dagster metadata role password rotate"
+    else:
+        sql = f"CREATE ROLE {role} LOGIN NOINHERIT PASSWORD {password};\n"
+        label = "Map Dagster metadata role create"
+    _run_checked_with_input(
+        [
+            *_database_admin_interactive_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--dbname",
+            "postgres",
+        ],
+        input_bytes=sql.encode("utf-8"),
+        label=label,
+    )
+
+
+def _parse_application_database_identity(
+    output: bytes,
+    *,
+    runtime: DatabaseRuntime,
+) -> Application300DatabaseIdentity:
+    text = output.decode("ascii").strip()
+    lines = text.splitlines()
+    if len(lines) != 1:
+        raise DeploymentContractError("Map application 300 database identity is invalid")
+    fields = lines[0].split("|")
+    if len(fields) != 4:
+        raise DeploymentContractError("Map application 300 database identity is invalid")
+    name, oid_raw, owner, system_identifier = fields
+    if name != runtime.database_name:
+        raise DeploymentContractError("Map application 300 database name is invalid")
+    if not _DATABASE_IDENTIFIER.fullmatch(owner):
+        raise DeploymentContractError("Map application 300 database owner is invalid")
+    return Application300DatabaseIdentity(
+        database_name=name,
+        database_oid=_parse_positive_int(
+            oid_raw, "Map application 300 database oid"
+        ),
+        database_owner=owner,
+        postgres_system_identifier=_parse_system_identifier(
+            system_identifier,
+            "Map application 300 PostgreSQL system identifier",
+        ),
+    )
+
+
+def _parse_dagster_metadata_database_identity(
+    output: bytes,
+    *,
+    runtime: DatabaseRuntime,
+    metadata_user: str,
+) -> DagsterMetadataDatabaseIdentity:
+    text = output.decode("ascii").strip()
+    lines = text.splitlines()
+    if len(lines) != 1:
+        raise DeploymentContractError("Map Dagster metadata identity is invalid")
+    fields = lines[0].split("|")
+    if len(fields) != 12:
+        raise DeploymentContractError("Map Dagster metadata identity is invalid")
+    (
+        system_identifier,
+        name,
+        oid_raw,
+        owner,
+        login_role,
+        superuser,
+        createdb,
+        createrole,
+        replication,
+        bypass_rls,
+        granted_count,
+        member_count,
+    ) = fields
+    if name != runtime.database_name or owner != metadata_user or login_role != metadata_user:
+        raise DeploymentContractError("Map Dagster metadata identity binding is invalid")
+    attributes = DagsterMetadataRoleAttributes(
+        superuser=_parse_psql_bool(superuser, "Map Dagster metadata role superuser"),
+        create_database=_parse_psql_bool(createdb, "Map Dagster metadata role createdb"),
+        create_role=_parse_psql_bool(createrole, "Map Dagster metadata role createrole"),
+        replication=_parse_psql_bool(replication, "Map Dagster metadata role replication"),
+        bypass_rls=_parse_psql_bool(bypass_rls, "Map Dagster metadata role bypassrls"),
+        granted_role_count=_parse_non_negative_int(
+            granted_count, "Map Dagster metadata role granted role count"
+        ),
+        member_role_count=_parse_non_negative_int(
+            member_count, "Map Dagster metadata role member role count"
+        ),
+    )
+    if (
+        attributes.superuser
+        or attributes.create_database
+        or attributes.create_role
+        or attributes.replication
+        or attributes.bypass_rls
+        or attributes.granted_role_count != 0
+        or attributes.member_role_count != 0
+    ):
+        raise DeploymentContractError("Map Dagster metadata identity is unsafe")
+    return DagsterMetadataDatabaseIdentity(
+        system_identifier=_parse_system_identifier(
+            system_identifier,
+            "Map Dagster metadata PostgreSQL system identifier",
+        ),
+        name=name,
+        oid=_parse_positive_int(oid_raw, "Map Dagster metadata database oid"),
+        owner=owner,
+        login_role=login_role,
+        login_role_attributes=attributes,
+    )
+
+
 def _permitted_existing_owners(runtime: DatabaseRuntime) -> frozenset[str]:
     """Map bootstrap 뒤 ownership만 다음 destructive reset에서 추가로 수용한다."""
 
@@ -565,6 +941,21 @@ def _validate_runtime(runtime: DatabaseRuntime) -> None:
         raise DeploymentContractError("pinned runtime database owner is invalid")
 
 
+def _validate_dagster_metadata_runtime(runtime: DatabaseRuntime, metadata_user: str) -> None:
+    _validate_runtime(runtime)
+    if runtime.role != "map_dagster":
+        raise DeploymentContractError("Map Dagster metadata database role is invalid")
+    if not _DATABASE_IDENTIFIER.fullmatch(metadata_user):
+        raise DeploymentContractError("Map Dagster metadata role is invalid")
+    if metadata_user == runtime.owner_name or metadata_user not in runtime.additional_owner_names:
+        raise DeploymentContractError("Map Dagster metadata role is not frozen")
+
+
+def _validate_password(value: str) -> None:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise DeploymentContractError("Map Dagster metadata password is invalid")
+
+
 def _database_admin_command(
     runtime: DatabaseRuntime,
     executable: Literal["psql", "dropdb", "createdb"],
@@ -584,10 +975,86 @@ def _database_admin_command(
     ]
 
 
+def _database_admin_interactive_command(
+    runtime: DatabaseRuntime,
+    executable: Literal["psql", "dropdb", "createdb"],
+) -> list[str]:
+    command = _database_admin_command(runtime, executable)
+    return [*command[:2], "--interactive", *command[2:]]
+
+
+def _sql_identifier(value: str) -> str:
+    if not _DATABASE_IDENTIFIER.fullmatch(value):
+        raise DeploymentContractError("PostgreSQL identifier is invalid")
+    return f'"{value}"'
+
+
+def _sql_literal(value: str) -> str:
+    _validate_password(value)
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _parse_psql_bool(value: str, label: str) -> bool:
+    if value == "t":
+        return True
+    if value == "f":
+        return False
+    raise DeploymentContractError(f"{label} output is invalid")
+
+
+def _parse_positive_int(value: str, label: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise DeploymentContractError(f"{label} output is invalid") from exc
+    if parsed <= 0:
+        raise DeploymentContractError(f"{label} output is invalid")
+    return parsed
+
+
+def _parse_non_negative_int(value: str, label: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise DeploymentContractError(f"{label} output is invalid") from exc
+    if parsed < 0:
+        raise DeploymentContractError(f"{label} output is invalid")
+    return parsed
+
+
+def _parse_system_identifier(value: str, label: str) -> str:
+    if not value.isdigit():
+        raise DeploymentContractError(f"{label} output is invalid")
+    return value
+
+
 def _run_checked(arguments: list[str], *, label: str) -> bytes:
     try:
         completed = subprocess.run(
             arguments,
+            capture_output=True,
+            check=False,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(f"{label} could not run") from exc
+    if completed.returncode != 0 or completed.stderr:
+        raise DeploymentContractError(f"{label} failed")
+    if not isinstance(completed.stdout, bytes):
+        raise DeploymentContractError(f"{label} produced invalid output")
+    return completed.stdout
+
+
+def _run_checked_with_input(
+    arguments: list[str],
+    *,
+    input_bytes: bytes,
+    label: str,
+) -> bytes:
+    try:
+        completed = subprocess.run(
+            arguments,
+            input=input_bytes,
             capture_output=True,
             check=False,
             timeout=300,
