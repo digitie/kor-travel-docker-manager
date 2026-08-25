@@ -36,6 +36,12 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ComposeTransactionSnapshot,
 )
+from kor_travel_docker_manager.services.map_application_300 import (
+    Application300Contract,
+)
+from kor_travel_docker_manager.services.map_application_300_candidate import (
+    MapApplication300Candidate,
+)
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
 )
@@ -74,6 +80,9 @@ _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
 _FEATURE_CREATE_TOKEN = "manual-feature-create-contract-token-0000"
+_MAP_API_IMAGE_ID = f"sha256:{'1' * 64}"
+_MAP_DAGSTER_IMAGE_ID = f"sha256:{'2' * 64}"
+_MAP_POSTGRES_IMAGE_ID = f"sha256:{'3' * 64}"
 
 
 def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
@@ -108,10 +117,10 @@ def _compose_contract_environment() -> dict[str, str]:
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
-        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
-        "KOR_TRAVEL_MAP_API_IMAGE": f"sha256:{'1' * 64}",
-        "KOR_TRAVEL_MAP_DAGSTER_IMAGE": f"sha256:{'2' * 64}",
-        "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": f"sha256:{'3' * 64}",
+        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
+        "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
+        "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
+        "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": _MAP_POSTGRES_IMAGE_ID,
         "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
             "/tmp/ktdm-map-application-final-permit"
         ),
@@ -174,6 +183,42 @@ def _source_compose() -> dict[str, Any]:
     document = yaml.safe_load(_COMPOSE_PATH.read_text(encoding="utf-8"))
     assert isinstance(document, dict)
     return document
+
+
+def _map_application_300_candidate(
+    sources: PinnedRuntimeSourceMaterialization,
+) -> MapApplication300Candidate:
+    contract = Application300Contract(
+        reference_manifest_sha256="1" * 64,
+        postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
+        source_catalog_sha256="2" * 64,
+        destination_catalog_sha256="3" * 64,
+        seed_sha256="4" * 64,
+        privileged_residue_sha256="5" * 64,
+        source_alembic_version_sha256="6" * 64,
+        destination_alembic_version_sha256="7" * 64,
+        runtime_invariants_sql_sha256="8" * 64,
+    )
+    map_source = sources.source_for("map")
+    return MapApplication300Candidate(
+        receipt_sha256="9" * 64,
+        api_receipt_sha256="a" * 64,
+        candidate_commit=map_source.revision,
+        candidate_git_tree=map_source.tree,
+        api_image_id=_MAP_API_IMAGE_ID,
+        dagster_image_id=_MAP_DAGSTER_IMAGE_ID,
+        postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
+        dagster_config_sha256="b" * 64,
+        dagster_yaml_sha256="c" * 64,
+        application_contract=contract,
+        application_contract_sha256="d" * 64,
+        launch_contract_sha256="e" * 64,
+        webserver_argv_prefix=("/usr/local/bin/dagster-webserver",),
+        webserver_port_minimum=1,
+        webserver_port_maximum=65535,
+        daemon_argv=("/usr/local/bin/dagster-daemon", "run"),
+        storage_migration_argv=("/usr/local/bin/ktm-dagster-storage", "migrate"),
+    )
 
 
 def _compose_fragment(*service_names: str) -> dict[str, object]:
@@ -1418,24 +1463,26 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
             "PINVI_BUILD_ENVIRONMENT": "production",
         },
     )
-    build = CandidateRuntimeBuild(
-        PinnedRuntimeSourceMaterialization(
-            release=PINNED_RUNTIME_RELEASE,
-            sources=(
-                MaterializedRuntimeSource(
-                    role="map",
-                    root=map_root,
-                    revision=map_revision,
-                    tree="a" * 40,
-                ),
-                MaterializedRuntimeSource(
-                    role="pinvi",
-                    root=pinvi_root,
-                    revision=pinvi_revision,
-                    tree="b" * 40,
-                ),
+    sources = PinnedRuntimeSourceMaterialization(
+        release=PINNED_RUNTIME_RELEASE,
+        sources=(
+            MaterializedRuntimeSource(
+                role="map",
+                root=map_root,
+                revision=map_revision,
+                tree="a" * 40,
             ),
-        )
+            MaterializedRuntimeSource(
+                role="pinvi",
+                root=pinvi_root,
+                revision=pinvi_revision,
+                tree="b" * 40,
+            ),
+        ),
+    )
+    build = CandidateRuntimeBuild(
+        sources=sources,
+        map_application_300_candidate=_map_application_300_candidate(sources),
     )
     environment_snapshot = ComposeEnvironmentSnapshot(
         effective={},

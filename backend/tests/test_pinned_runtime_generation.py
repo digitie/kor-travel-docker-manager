@@ -533,6 +533,8 @@ def test_rebuild_journal_application_300_phases_require_evidence_methods() -> No
 
     assert journal.phase == "map_application_ready"
     assert journal.journal_generation == REBUILD_PHASES.index("map_application_ready")
+    journal = journal.transition("map_dagster_storage_intent_durable")
+    assert journal.phase == "map_dagster_storage_intent_durable"
     assert journal.transition("map_dagster_ready").phase == "map_dagster_ready"
 
 
@@ -823,6 +825,7 @@ def test_pinned_runtime_receipt_rejects_reversed_fixture_timestamps(
 
 def test_rebuild_journal_rejects_fixture_timestamp_drift() -> None:
     journal = _journal_with_map_application_ready()
+    journal = journal.transition("map_dagster_storage_intent_durable")
     journal = journal.transition("map_dagster_ready")
     journal = journal.transition("map_runtime_ready")
     journal = journal.transition("pinvi_schema_ready")

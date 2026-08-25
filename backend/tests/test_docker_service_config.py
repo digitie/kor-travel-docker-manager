@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+from docker.errors import NotFound
 
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -23,6 +24,9 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeTransactionSnapshot,
     ValidatedComposeCandidate,
     _resolved_compose_document_hash,
+)
+from kor_travel_docker_manager.services.compose_service import (
+    compose_service as compose_service_runtime,
 )
 from kor_travel_docker_manager.services.docker_service import (
     ContainerConfigValidationError,
@@ -52,7 +56,10 @@ _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
-_MAP_MIGRATION_BOUNDARY_SERVICE = "kor-travel-map-migration-boundary"
+_MAP_APPLICATION_FRESH_300_SERVICE = "kor-travel-map-application-fresh-300"
+_MAP_APPLICATION_FRESH_FINALIZE_SERVICE = (
+    "kor-travel-map-application-fresh-finalize"
+)
 _PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_API_SERVICE = "pinvi-api"
@@ -202,16 +209,17 @@ def _compose_with_canonical_c6c_services(
         "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
     )
+    migrator_dsn = (
+        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+    )
     protected_services: dict[str, object] = {
         _MAP_POSTGRES_SERVICE: {
             "image": "fixture.invalid/postgis:test",
             "container_name": "kor-travel-map-postgres",
             "network_mode": "host",
             "environment": {
-                "POSTGRES_DB": (
-                    "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
-                    "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
-                ),
+                "POSTGRES_DB": "postgres",
                 "POSTGRES_USER": (
                     "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
                     "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
@@ -271,17 +279,79 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?"
                     "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
                 ),
+                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
+                "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
+                    "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": dagster_runtime_dsn,
+                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": (
+                    "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
+                    "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": (
+                    "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?"
+                    "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": metadata_password,
+                "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
             },
         },
-        _MAP_MIGRATION_BOUNDARY_SERVICE: {
+        _MAP_APPLICATION_FRESH_300_SERVICE: {
+            "profiles": ["bootstrap"],
             "image": "fixture.invalid/kor-travel-map-api:test",
+            "restart": "no",
             "network_mode": "host",
             "environment": {
-                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
-                    "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
-                    "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+                "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID": (
+                    "${KOR_TRAVEL_MAP_API_IMAGE:?"
+                    "KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
                 ),
+                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
+                "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
             },
+            "volumes": [
+                "${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?"
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR must be "
+                "explicitly set}:/run/kor-travel-map-application-fresh-migrate:ro"
+            ],
+            "entrypoint": [
+                "/usr/local/bin/python",
+                "-I",
+                "/usr/local/bin/ktm-application-schema-fresh-300",
+                "migrate",
+                "--writer-fence-receipt",
+                "/run/kor-travel-map-application-fresh-migrate/fence.json",
+            ],
+        },
+        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE: {
+            "profiles": ["bootstrap"],
+            "image": "fixture.invalid/kor-travel-map-api:test",
+            "restart": "no",
+            "network_mode": "host",
+            "environment": {
+                "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID": (
+                    "${KOR_TRAVEL_MAP_API_IMAGE:?"
+                    "KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
+                "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
+            },
+            "volumes": [
+                "${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?"
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR must be "
+                "explicitly set}:/run/kor-travel-map-application-fresh-finalize:ro"
+            ],
+            "entrypoint": [
+                "/usr/local/bin/python",
+                "-I",
+                "/usr/local/bin/ktm-application-schema-fresh-finalize",
+                "finalize",
+                "--writer-fence-receipt",
+                "/run/kor-travel-map-application-fresh-finalize/fence.json",
+            ],
         },
         _PINVI_POSTGRES_SERVICE: {
             "image": _PINVI_POSTGRES_IMAGE,
@@ -386,10 +456,6 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
                     "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
                 ),
-                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
-                    "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
-                    "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
-                ),
                 "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
                     "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
                     "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
@@ -415,10 +481,12 @@ def _compose_with_canonical_c6c_services(
                 "network_mode": "host",
                 "environment": {
                     "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
-                    "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": dagster_runtime_dsn,
-                    "KOR_TRAVEL_MAP_PG_DSN": dagster_runtime_dsn,
                     **(
                         {
+                            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
+                                dagster_runtime_dsn
+                            ),
+                            "KOR_TRAVEL_MAP_PG_DSN": dagster_runtime_dsn,
                             "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": (
                                 _MAP_GEO_API_KEY_SOURCE
                             )
@@ -533,7 +601,7 @@ def test_nontrivial_config_change_runs_candidate_transaction(
     candidate_transactions: list[ComposeTransactionSnapshot] = []
 
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
@@ -544,12 +612,12 @@ def test_nontrivial_config_change_runs_candidate_transaction(
         return validation
 
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         capture_candidate,
     )
     forward = Mock(return_value=_compose_success())
-    monkeypatch.setattr(docker_service_module.compose_service, "run", forward)
+    monkeypatch.setattr(compose_service_runtime, "run", forward)
 
     result = DockerService()._update_container_config_unlocked(
         "kor-travel-geo-postgresql",
@@ -590,7 +658,7 @@ def test_locked_config_transaction_revalidates_secret_semantics(
     compose_path.write_bytes(baseline.compose_source_bytes)
     compose_path.chmod(baseline.compose_source_mode)
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
@@ -598,7 +666,7 @@ def test_locked_config_transaction_revalidates_secret_semantics(
         side_effect=AssertionError("invalid locked candidate must not be captured")
     )
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         capture_candidate,
     )
@@ -638,7 +706,7 @@ def test_candidate_failure_restores_exact_baseline_transaction(
     compose_path.write_bytes(baseline.compose_source_bytes)
     compose_path.chmod(baseline.compose_source_mode)
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
@@ -647,7 +715,7 @@ def test_candidate_failure_restores_exact_baseline_transaction(
         return _config_transaction(compose_path, candidate)[1]
 
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         capture_candidate,
     )
@@ -660,9 +728,9 @@ def test_candidate_failure_restores_exact_baseline_transaction(
         }
     )
     recovery = Mock(return_value=_compose_success())
-    monkeypatch.setattr(docker_service_module.compose_service, "run", forward)
+    monkeypatch.setattr(compose_service_runtime, "run", forward)
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_run_frozen_recovery",
         recovery,
     )
@@ -942,7 +1010,7 @@ def test_update_container_config_recreates_with_compose_and_preserves_host_netwo
     )
     baseline, baseline_validation = _config_transaction(compose_path, compose_config)
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
@@ -951,7 +1019,7 @@ def test_update_container_config_recreates_with_compose_and_preserves_host_netwo
         return _config_transaction(compose_path, candidate)[1]
 
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         capture_candidate,
     )
@@ -998,7 +1066,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
     )
     baseline, baseline_validation = _config_transaction(compose_path, compose_config)
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
@@ -1007,7 +1075,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
         return _config_transaction(compose_path, candidate)[1]
 
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         capture_candidate,
     )
@@ -1046,7 +1114,10 @@ def _real_ports_and_env() -> tuple[list[str], list[tuple[str, str]]]:
     config = _real_compose_config()
     ports: list[str] = []
     envs: list[tuple[str, str]] = []
-    for svc in (config.get("services") or {}).values():
+    services = config.get("services")
+    assert isinstance(services, dict)
+    for svc in services.values():
+        assert isinstance(svc, dict)
         for port in svc.get("ports") or []:
             ports.append(str(port))
         env = svc.get("environment")
@@ -1466,6 +1537,27 @@ def _prepare_candidate_transaction(
             "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
             "test-map-geo-api-key",
         )
+        monkeypatch.setenv(
+            "KOR_TRAVEL_MAP_API_IMAGE",
+            f"sha256:{'1' * 64}",
+        )
+        fixed_directories = {
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": (
+                tmp_path / "map-application-fresh-migrate-fence"
+            ),
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
+                tmp_path / "map-application-fresh-finalize-fence"
+            ),
+            "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
+                tmp_path / "map-application-final-permit"
+            ),
+            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (
+                tmp_path / "map-dagster-storage-permit"
+            ),
+        }
+        for name, directory in fixed_directories.items():
+            directory.mkdir(mode=0o755)
+            monkeypatch.setenv(name, str(directory))
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map")
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster"
@@ -1542,7 +1634,7 @@ def _prepare_candidate_transaction(
         docker_service_module, "assert_manager_mutation_allowed", Mock()
     )
     compose_run = Mock()
-    monkeypatch.setattr(docker_service_module.compose_service, "run", compose_run)
+    monkeypatch.setattr(compose_service_runtime, "run", compose_run)
     return DockerService(), compose_path, compose_run
 
 
@@ -1697,7 +1789,7 @@ def test_system_bind_snapshot_change_before_write_keeps_compose_unchanged(
     )
     original = compose_path.read_bytes()
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
@@ -1744,7 +1836,7 @@ def test_preflight_rejection_restore_failure_is_typed_post_mutation_error(
         raise original_error
 
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         reject_candidate,
     )
@@ -1783,7 +1875,7 @@ def test_system_bind_snapshot_change_before_subprocess_restores_compose(
     original = compose_path.read_bytes()
     original_mode = compose_path.stat().st_mode & 0o777
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
@@ -1839,7 +1931,7 @@ def test_rustfs_second_preflight_drift_restores_bytes_mode_and_runtime(
         "compose resolved volume graph changed during the request"
     )
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
@@ -1884,7 +1976,7 @@ def test_non_api_config_update_rejects_resolved_candidate_before_write(
         "resolved compose candidate leaks a protected C6c reference"
     )
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         Mock(side_effect=candidate_error),
     )
@@ -1952,7 +2044,7 @@ def test_reset_rejects_persisted_volume_graph_drift_without_mutation(
     original = compose_path.read_bytes()
     candidate_error = ComposeCandidateContractError(message)
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         Mock(side_effect=candidate_error),
     )
@@ -1981,7 +2073,7 @@ def test_missing_non_api_container_create_rejects_candidate_before_recreate(
         tmp_path, monkeypatch, compose_config
     )
     client = Mock()
-    client.containers.get.side_effect = docker_service_module.NotFound("missing")
+    client.containers.get.side_effect = NotFound("missing")
     monkeypatch.setattr(service, "_get_client", Mock(return_value=client))
     original = compose_path.read_bytes()
 
@@ -2022,12 +2114,12 @@ def test_config_recreate_failure_restores_exact_file_and_runtime(
         transaction_snapshot=baseline,
     )
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
@@ -2039,7 +2131,7 @@ def test_config_recreate_failure_restores_exact_file_and_runtime(
     }
     frozen_recovery = Mock(return_value=_compose_success())
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_run_frozen_recovery",
         frozen_recovery,
     )
@@ -2084,7 +2176,7 @@ def test_config_runtime_restore_failure_preserves_compose_diagnostics(
     }
     frozen_run = Mock(return_value=restore_run)
     monkeypatch.setattr(
-        docker_service_module.compose_service,
+        compose_service_runtime,
         "_run_frozen_recovery",
         frozen_run,
     )
@@ -2116,7 +2208,7 @@ def test_missing_container_start_preserves_nested_restoration(
 ) -> None:
     service = DockerService()
     client = Mock()
-    client.containers.get.side_effect = docker_service_module.NotFound("missing")
+    client.containers.get.side_effect = NotFound("missing")
     monkeypatch.setattr(service, "_get_client", lambda: client)
     restoration = {
         "config_restored": True,

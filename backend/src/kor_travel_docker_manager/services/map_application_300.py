@@ -24,7 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 MAP_APPLICATION_300_SOURCE_COMMIT: Final = (
-    "3911677b76ff8d77a5186c2deabd0c5be7c9b8f7"
+    "5c0cd76e40580e433b3a6504c0b0dea09ff7d0fa"
 )
 APPLICATION_HEAD: Final = "300"
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
@@ -1167,10 +1167,20 @@ def write_owner_only_artifact(path: Path, raw: bytes) -> HostArtifactReceipt:
         raise
 
 
-def read_owner_only_artifact(path: Path, *, expected_sha256: str) -> bytes:
-    """Read one owner-only artifact and bind it to a durable expected digest."""
+def read_owner_only_artifact(
+    path: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> bytes:
+    """Read one owner-only artifact, optionally binding a durable expected digest.
 
-    _require_sha256(expected_sha256, "expected artifact digest")
+    Execution-intent recovery has no result digest yet.  In that narrow window the
+    caller must strict-parse the returned result against the durable fence plan and
+    then persist the computed digest before advancing the journal.
+    """
+
+    if expected_sha256 is not None:
+        _require_sha256(expected_sha256, "expected artifact digest")
     _require_artifact_path(path)
     _require_artifact_directory(path.parent)
     try:
@@ -1223,7 +1233,9 @@ def read_owner_only_artifact(path: Path, *, expected_sha256: str) -> bytes:
         raise MapApplication300ContractError(
             "artifact cannot be read safely"
         ) from exc
-    if not hmac.compare_digest(sha256_bytes(raw), expected_sha256):
+    if expected_sha256 is not None and not hmac.compare_digest(
+        sha256_bytes(raw), expected_sha256
+    ):
         raise MapApplication300ContractError("artifact digest is invalid")
     return raw
 
@@ -1237,7 +1249,7 @@ def publish_root_read_only_artifact(path: Path, raw: bytes) -> HostArtifactRecei
         )
     _require_artifact_path(path)
     parent = path.parent
-    _require_artifact_directory(parent)
+    _require_fixed_artifact_directory(parent)
     if path.exists() or path.is_symlink():
         return _verify_existing_fixed_artifact(path, raw)
 
@@ -1703,6 +1715,27 @@ def _require_artifact_directory(path: Path) -> None:
         or mode & 0o700 != 0o700
     ):
         raise MapApplication300ContractError("artifact directory is unsafe")
+
+
+def _require_fixed_artifact_directory(path: Path) -> None:
+    """root만 쓰고 비-root container가 읽을 수 있는 fixed mount를 검증한다."""
+
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise MapApplication300ContractError(
+            "fixed artifact directory is unavailable"
+        ) from exc
+    if (
+        os.geteuid() != 0
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o755
+    ):
+        raise MapApplication300ContractError(
+            "fixed artifact directory is unsafe"
+        )
 
 
 def _verify_existing_artifact(path: Path, expected: bytes) -> HostArtifactReceipt:

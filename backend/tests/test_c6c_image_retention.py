@@ -16,7 +16,11 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     validate_retention_namespace_is_reserved,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    MapApplication300CandidateEvidence,
     PinnedRuntimeGeneration,
+)
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    PINNED_RUNTIME_RELEASE,
 )
 
 
@@ -24,21 +28,35 @@ def _image(character: str) -> str:
     return f"sha256:{character * 64}"
 
 
+def _candidate_evidence(seed: str) -> MapApplication300CandidateEvidence:
+    return MapApplication300CandidateEvidence(
+        paired_receipt_sha256=seed * 64,
+        api_receipt_sha256=seed * 64,
+        candidate_git_tree=seed * 40,
+        postgres_image_id=_image(seed),
+        dagster_config_sha256=seed * 64,
+        dagster_yaml_sha256=seed * 64,
+        application_contract_sha256=seed * 64,
+        launch_contract_sha256=seed * 64,
+    )
+
+
 def _generation(characters: str, revision: str) -> PinnedRuntimeGeneration:
     return PinnedRuntimeGeneration(
         map_api_image_id=_image(characters[0]),
         map_ui_image_id=_image(characters[1]),
         map_dagster_image_id=_image(characters[2]),
-        map_dagster_daemon_image_id=_image(characters[3]),
+        map_dagster_daemon_image_id=_image(characters[2]),
         pinvi_api_image_id=_image(characters[4]),
         pinvi_web_image_id=_image(characters[5]),
         pinvi_dagster_image_id=_image(characters[6]),
-        map_source_revision=revision * 40,
-        pinvi_source_revision=revision * 40,
-        map_application_head="0084_c6c_cancel_probe_fixtures",
+        map_source_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
+        pinvi_source_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+        map_application_head="300",
         map_dagster_head="29b539ebc72a",
         pinvi_head="20260801_0050",
-        pinset_sha256=revision * 64,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        map_application_300_candidate_evidence=_candidate_evidence(revision),
         recorded_at="2026-08-06T00:00:00+00:00",
     )
 
