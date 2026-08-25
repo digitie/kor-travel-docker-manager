@@ -36,13 +36,18 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 - Map PR #1066 exact head: `cc81081ff2e540a6ad9c428a296515e1d79bc316` (merge 완료; merge commit `14d18230…`)
 - Manager PR #197: `7017a5d2d7192018ddf0667623c4cc18b290c46b` (merge 완료)
 - Manager PR #198: Map role-bootstrap helper bind의 C6c 오탐 보완 (merge commit `19409e3f…`)
+- Manager PR #200: Map `cc81081f…` release pin 회전 (merge commit `01b51b32…`)
 - release pinset: `14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`
+- n150 사전 검증에서 DB mutation 전에 Map source environment contract 오류가 발견됐다. 정확한
+  Dagster profile fallback 네 경로와 현재 source의 API `env_file`만 허용하도록 Manager 수정 PR을 먼저 통과시킨다.
 - 로컬 sealed paired build: 새 Map pin `cc81081f…` 기준 Manager PR #200 merge 후 재생성한다. 이전 pin의 image·receipt는
   release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
 
 남은 작업:
 
-- [ ] Manager PR #200을 ready 상태로 전환하고 required CI·전문 리뷰 green 후 merge한다.
+- [x] Manager PR #200을 ready 상태로 전환하고 required CI·전문 리뷰 green 후 merge했다.
+- [ ] n150 rebuild를 막은 Map source environment contract 보완 PR을 전문 적대 리뷰 2건과 함께
+  통과·merge하고 trusted Manager 설치본을 갱신한다.
 - [ ] merge된 Manager release로 새 Map `cc81081f…` 기준 paired image·receipt를 생성한다. 이전 pin의
   image·receipt·journal은 재사용하지 않는다.
 - [ ] n150에서 trusted Manager release를 설치하고 approved root command

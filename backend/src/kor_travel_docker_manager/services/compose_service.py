@@ -781,6 +781,9 @@ _MAP_SOURCE_V4_CURSOR_ENV_VALUE = (
     "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET is required}"
 )
+_MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE = (
+    "${KOR_TRAVEL_MAP_DAGSTER_PROFILE:-${KOR_TRAVEL_MAP_API_PROFILE:-production}}"
+)
 _MAP_SOURCE_PROTECTED_ENV_VALUES = {
     "KOR_TRAVEL_MAP_API_PROFILE": (_MAP_SOURCE_V3_API_ENVIRONMENT["KOR_TRAVEL_MAP_API_PROFILE"]),
     "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": (
@@ -815,10 +818,6 @@ _MAP_SOURCE_ENV_FILE_CONTRACT = {
             "required": True,
             "format": "raw",
         }
-    ],
-    "dagster": [{"path": ".env", "required": False, "format": "raw"}],
-    "dagster-daemon": [
-        {"path": ".env", "required": False, "format": "raw"}
     ],
 }
 _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES = 64 * 1024
@@ -960,6 +959,30 @@ def _validate_map_source_protected_scalar_tree(
         ],
         (
             "services",
+            "dagster-db-init",
+            "environment",
+            "KOR_TRAVEL_MAP_DAGSTER_PROFILE",
+        ): _MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE,
+        (
+            "services",
+            "dagster",
+            "environment",
+            "KOR_TRAVEL_MAP_DAGSTER_PROFILE",
+        ): _MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE,
+        (
+            "services",
+            "dagster-daemon",
+            "environment",
+            "KOR_TRAVEL_MAP_DAGSTER_PROFILE",
+        ): _MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE,
+        (
+            "services",
+            "dagster-storage-migrate",
+            "environment",
+            "KOR_TRAVEL_MAP_DAGSTER_PROFILE",
+        ): _MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE,
+        (
+            "services",
             "frontend",
             "environment",
             "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN",
@@ -985,10 +1008,17 @@ def _validate_map_source_protected_scalar_tree(
     for path, scalar in _walk_map_source_scalars(payload):
         text = "" if scalar is None else str(scalar)
         matching_names = tuple(name for name in protected_names if name in text)
-        if not matching_names:
-            continue
         if path[-1:] == ("<key>",):
             value_path = path[:-1]
+            if value_path in allowed_values:
+                if text != value_path[-1]:
+                    raise DeploymentContractError(
+                        "Map source environment contract has a protected name outside its exact path"
+                    )
+                seen_key_paths.add(value_path)
+                continue
+            if not matching_names:
+                continue
             if (
                 value_path not in allowed_values
                 or text != value_path[-1]
@@ -998,6 +1028,8 @@ def _validate_map_source_protected_scalar_tree(
                     "Map source environment contract has a protected name outside its exact path"
                 )
             seen_key_paths.add(value_path)
+            continue
+        if not matching_names:
             continue
         expected_value = allowed_values.get(path)
         if expected_value is None or text != expected_value:
