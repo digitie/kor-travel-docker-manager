@@ -458,277 +458,26 @@ PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer I
 
 `deploy`, `rollback`, `cache-target`, `map-ui-auth` 공개 명령은 없다. 최종 schema
 backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primitive로 설계한다.
-(`db-backup`은 #177에서 pair/cache와 독립된 primitive로 다시 도입됐다. `pinvi-pair
-capture`는 §7.5에서 **runtime mutation이 없는 읽기 전용 관측기**로 되살아났다.)
+(`db-backup`은 #177에서 pair/cache와 독립된 primitive로 다시 도입됐다.)
 
-### 7.5 Map C7 런북용 `pinvi-pair capture` (읽기 전용, ADR-38)
+### 7.5 퇴역한 C7 v4 `pinvi-pair capture`
 
-> ## ⚠️ 실행 전 확인 필수 — 오늘 n150에 설치된 `capture`는 **파괴형**이다
->
-> **이 절 전체는 이 브랜치(`feat/pinvi-pair-capture`)의 코드가 n150에 설치된 뒤에만 참이다.**
-> 2026-08-19 실측 기준 설치본은 revision
-> `4191582779be47e9605a324ea27adbb99b438439`이고, 그 트리에는
-> `backend/src/kor_travel_docker_manager/services/c6c_pair_capture.py`가 **없다**.
-> 거기 있는 `pinvi-pair capture`는 **이름만 같은 옛 v4 파괴형 명령**이다 — Map 네 개와
-> PinVi API를 stop한 뒤 candidate image로 force-recreate하고 smoke를 돈다
-> (`--help`가 `[--build] [--wait-timeout] [--verified-compatible] [--json]`,
-> 설명이 "clean 환경에서 candidate runtime set을 검증하고 최초 v4를 기록합니다").
->
-> **이 브랜치가 설치되기 전에는 이 절의 어떤 `capture` 명령도 실행하지 마라.**
-> 먼저 아래 §7.5.1 확인 절차를 돌리고, "옛 파괴형"으로 판정되면 §7.5.9 설치 절차로 간다.
+> **실행 금지 · 역사 기록** — application `300`의 current authority는 seven-service v6
+> `pinned-runtime-generation`과 v8 rebuild journal뿐이다. `compatible-pair-v4.json`은
+> F1D legacy tombstone 대상이며, 이를 생성·갱신·attestation 입력으로 쓰는 절차는 현재
+> candidate를 증명하지 못한다.
 
-#### 7.5.1 실행 전 확인 절차 (읽기 전용 — 반드시 이것부터)
+현재 Manager CLI에는 `pinvi-pair capture`가 없다. 설치본에 같은 이름의 하위 명령이
+보이면 과거 v4 설치본으로 간주한다. 그 명령은 `--help`를 포함해 실행하거나 검사 대상으로
+삼지 말고, 정확한 merged trusted Manager release를 먼저 설치한다.
 
-capture를 **실행하지 않고** `--help` 두 번으로 판정한다. `capture_contract`를 보겠다고
-capture를 실행하면 옛 설치본에서는 그 순간 다섯 컨테이너가 내려간다. `--help`는 argparse가
-처리하고 즉시 종료하므로 어느 구현에서도 안전하다.
+설치 전에는 source revision과 배포 증적만 읽기 전용으로 대조한다. 설치 후에는 top-level
+`pinvi-pair` 도움말에서 `rebuild-pinned`만 노출되는지와 `capture`가 parser 단계에서
+거부되는지만 확인한다. 이 확인 전에는 rebuild, C7 attestation, consumer acceptance를
+재개하지 않는다.
 
-```bash
-KTDCTL=/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl
-
-# 1) 하위 명령 목록
-sudo -n "$KTDCTL" pinvi-pair --help
-
-# 2) capture의 자기 식별과 옵션
-sudo -n "$KTDCTL" pinvi-pair capture --help
-
-# 3) (참고) 설치본 source revision — 0644라 sudo 없이 읽힌다
-cat /opt/kor-travel-docker-manager/.ktdm-source-revision
-```
-
-세 명령 모두 **읽기 전용**이다. `--help`는 argparse가 subcommand 함수로 dispatch하기 **전에**
-처리하고 즉시 종료하므로, 옛 파괴형 설치본에서도 컨테이너를 건드리지 않는다(2026-08-19
-n150에서 셋 다 직접 실행해 확인했다 — prod mutation 없음).
-
-| 관측 | 판정 |
-|:---|:---|
-| `pinvi-pair --help` 하위 목록이 `{rebuild-pinned,capture}` | 이 브랜치 계열 ✅ |
-| `pinvi-pair --help` 하위 목록이 `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}` | **옛 파괴형 ⛔ 중단** |
-| `capture --help`에 `capture_contract=pair-capture-v1` 줄이 있고 `--manifest-path`가 보인다 | 이 브랜치 계열 ✅ |
-| `capture --help`에 `--wait-timeout`이 있고 `--manifest-path`가 **없다** | **옛 파괴형 ⛔ 중단** |
-
-둘 중 하나라도 "옛 파괴형"이면 **capture를 실행하지 말고** §7.5.9로 간다. 판정 근거인
-`capture_contract=pair-capture-v1` 문자열은 코드 상수
-(`c6c_pair_capture.CAPTURE_CONTRACT`)이며 `--help`·성공 stdout 첫 줄·`--json` receipt의
-`capture_contract` 필드 **셋 다** 같은 값을 낸다. 옛 구현에는 이 문자열이 어디에도 없다.
-
-#### 7.5.2 명령
-
-Map 저장소의 C7 prod live E2E 런북 §2.1 step 8이 부르는 명령이다. 실행 중인 다섯
-컨테이너를 **읽기만 하고**, Map의 C7 runner가 읽는 `compatible-pair-v4.json`을 원자적으로
-교체한다. 옛 v4 capture의 stop/up/recreate 스테이지는 복원하지 않았다 — 이 명령은 어떤
-컨테이너도 시작·정지·재생성하지 않는다.
-
-런북은 별도 경로 override 없이 기본값을 사용해 부른다. `--verified-compatible`는
-operator 확인 flag이고 `--build`는 호환용으로만 수락되며 아무것도 빌드하지 않는다.
-manifest 경로와 두 checkout은 frozen environment 또는 명시된 안전한 override가 정본이다.
-
-> **정본 호출은 절대경로다(2026-08-19 n150 실측).** `sudo -n ktdctl …`은 오늘
-> `command not found`로 **코드에 닿기 전에** 죽는다. sudo `secure_path`는
-> `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`이고 venv bin이
-> 없으며 `/usr/local/bin/ktdctl` symlink도 없다.
-
-```bash
-sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
-  pinvi-pair capture --verified-compatible --build
-```
-
-| 입력 | 기본값 | 우선순위 |
-|:---|:---|:---|
-| manifest 경로 | `c6c_state_paths(frozen env)[0]` — production 설치본에서 `/var/lib/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/compatible-pair-v4.json` | `--manifest-path` → `E2E_C7_COMPATIBLE_PAIR_MANIFEST` → 유도값 |
-| Map checkout | 없음(필수) | `--map-source-checkout` → `KTDM_C7_MAP_SOURCE_CHECKOUT` |
-| PinVi checkout | 없음(필수) | `--pinvi-source-checkout` → `KTDM_C7_PINVI_SOURCE_CHECKOUT` |
-
-> **`KTDM_C6C_COMPATIBLE_PAIR_MANIFEST`를 production `.env`에 넣지 마라 — 모든 mutation이
-> 죽는다.** production에서 그 키가 있으면 `c6c_state_paths`가
-> `"production C6c manifest and global lock paths are fixed"`로 raise한다. 같은 함수가
-> host-global lock 경로도 정하므로 capture만이 아니라
-> `c6c_deployment_lock_from_environment()`를 잡는 **모든 Manager mutation**(예:
-> `pinvi-pair rebuild-pinned`)이 함께 죽는다. capture는 이 키를 fallback으로 읽지 않는다.
-> 다른 파일을 정본으로 쓰려면 `E2E_C7_COMPATIBLE_PAIR_MANIFEST`를 쓴다.
-
-> **`sudo`는 operator shell의 export를 버린다.** 두 checkout 값은 반드시 frozen `.env`에
-> 있어야 한다 — `sudo -n … ktdctl` 앞에 `export`를 해도 하위 프로세스에 전달되지 않는다.
-> 2026-08-19 기준 n150 `.env`에는 두 키가 **아직 없다**. 프로비저닝할 때 manifest 경로를
-> 따로 지정한다면 **pinned-runtime state root 밖**이어야 한다 — 그 안이면
-> `rebuild-pinned`가 runner의 read target을 legacy artifact로 퇴역시킨다.
-
-override와 부가 flag를 모두 쓴 형태:
-
-```bash
-sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair capture \
-  --verified-compatible \
-  --manifest-path /etc/kor-travel-map/c7-compatible-pair-v4.json \
-  --map-source-checkout /absolute/path/to/kor-travel-map \
-  --pinvi-source-checkout /absolute/path/to/pinvi \
-  [--expect-active-map-revision <40hex>] [--allow-generation-change] [--build] [--json]
-```
-
-- manifest 경로의 기본값은 **이 저장소가 이미 가진 `c6c_state_paths` 규칙에서 유도**한다.
-  세 번째 state root 규칙을 만들지 않는다. **basename 제약은 없다** — runner
-  (`run-c7-prod-live-e2e.sh` 607행)가 절대경로만 요구하고 파일명을 보지 않기 때문이다.
-  대신 절대·정규 경로여야 하고, symlink가 아니어야 하며, 부모 체인이 runner와 같은
-  술어(디렉터리·비symlink·uid 0·gid 0·`mode & 0o022 == 0`)를 만족해야 하고, 기존 파일이
-  있으면 v4 loader를 통과해야 한다. **capture는 디렉터리를 만들지 않는다.**
-- **pinned runtime state root 아래는 쓸 수 없다.** `ktdctl rebuild-pinned`가 그 root에서
-  `compatible-pair-v4.json`을 포함한 F1D legacy artifact를 퇴역시키므로, runner의 read
-  target을 그 안에 두면 rehearsal rebuild 한 번이 attestation 입력을 지운다. 그런 경로는
-  `capture_refused_precondition`으로 거부한다. root는
-  `KTDM_PINNED_RUNTIME_STATE_ROOT`(없으면 `~/.local/state/kor-travel-docker-manager`) +
-  `COMPOSE_PROJECT_NAME`이다.
-- 기존 manifest의 `active.contract_generation`이 frozen `KTDM_C6C_CONTRACT_GENERATION`과
-  다르면 기본 거부한다. 의도적 전환일 때만 `--allow-generation-change`를 준다.
-- `--build`는 **아무것도 빌드하지 않는다.** 런북 문구 호환용으로 수락하고 stderr에 한 줄
-  고지한다. 빌드는 host compose 배포의 책임이다.
-- root 실행이 필요하다(산출물이 root:root `0600`).
-- `rebuild-pinned`와 **같은 global mutation lock**을 잡는다. 다른 mutation이 진행 중이면
-  exit 2로 거부한다.
-- git 조회에는 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CEILING_DIRECTORIES`/`GIT_OBJECT_DIRECTORY`/
-  `GIT_ALTERNATE_OBJECT_DIRECTORIES`를 제거한 env를 넘긴다. `-c safe.directory`는 절대
-  쓰지 않으므로, git이 checkout을 `dubious ownership`으로 거부하면 별도 terminal state로
-  알린다.
-
-terminal state와 exit code:
-
-| state | exit | 의미 |
-|:---|:---:|:---|
-| `capture_committed` | 0 | manifest 교체 완료 |
-| `capture_refused_precondition` | 2 | 사용법·경로·권한·기존 파일 foreign |
-| `capture_refused_lock_contended` | 2 | 다른 Manager mutation 진행 중 |
-| `capture_refused_checkout_ownership` | 2 | git이 checkout을 `dubious ownership`으로 거부 |
-| `capture_refused_runtime` | 1 | 관측·label·git 결박 실패 |
-| `capture_write_rolled_back` | 1 | 커밋 후 재읽기 실패 — 직전 상태로 복구함 |
-| `capture_write_indeterminate` | 1 | 커밋 상태를 판별할 수 없음 |
-
-모든 non-zero 메시지는 `maintenance fence stays closed; no container was stopped,
-started, or recreated.`로 끝난다. 되돌릴 mutation이 없으므로 rollback도 없고, 런북 §2.1
-step 1의 maintenance fence는 닫힌 채 유지한다.
-
-**보장하는 것**: 다섯 service가 정확히 하나의 running·healthy container로 해소됐고, 기록한
-image ID가 그 container가 실행 중인 image이며, Map 네 image가 동일한
-`org.opencontainers.image.revision`을 선언했고, PinVi image가
-`io.pinvi.build.environment=production`을 가지며, 각 revision이 operator가 지목한 checkout에
-실재하는 commit object이고, 그 checkout의 `git status --porcelain=v1`이 비어 있었다는 것.
-
-> **"running·healthy"의 정확한 뜻 — healthcheck 없는 컨테이너는 통과로 본다.** 술어는
-> `Running is True and not Paused and not Restarting and (Health가 있으면 Status ==
-> "healthy")`다. `State.Health` 키가 **없는** 컨테이너, 즉 healthcheck를 선언하지 않은
-> 서비스는 health 항목을 **검사하지 않고 통과**한다. 오늘 n150에서
-> `kor-travel-map-dagster-daemon-latest`가 정확히 그 경우다(2026-08-19 실측). 이는
-> runner `c7_prod_attestation.py` 508-518행과 **의도적으로 동일한** 술어다 — 여기서 더
-> 엄격하게 굴면 capture가 거부한 runtime을 runner는 받아들이는(또는 그 반대) 어긋남이
-> 생긴다. 그러므로 위 문장은 엄밀히는 "다섯이 running이고, healthcheck를 **선언한** 것은
-> healthy"다.
-
-**보장하지 않는 것**(receipt의 `not_guaranteed` 배열과 같은 문구):
-
-- 기록한 image가 기록한 revision에서 빌드됐다는 것 — 빌드도 rebuild 대조도 하지 않는다.
-- `--build`가 무언가를 빌드했다는 것 — 아무것도 빌드하지 않는다.
-- rollback pair가 복원 가능하다는 것 — shape만 유효하다(`rollback_images_present`로 별도 보고).
-- 기록한 revision이 published branch에서 도달 가능하다는 것.
-- capture 반환 이후에도 runtime이 일치한다는 것 — mutation lock을 잡고 있는 시점의 관측이다.
-- v6 pinned generation manifest가 이 runtime을 서술한다는 것 — 두 기록이 일치하는지
-  **보고만** 하고 v6 파일은 건드리지 않는다.
-
-**v6 pinned generation 대조**: `pinned-runtime-generation-v6.json`이 있으면 읽어 다섯
-image ID와 두 revision을 관측값과 맞춘다. 결과는 receipt의 `pinned_generation_agrees`
-(`true`/`false`/`null`)와 `pinned_generation_divergent_roles`, 그리고 stdout의
-`pinned_generation_agrees=...` 한 줄로 나온다. **불일치는 거부 사유가 아니다** — capture는
-별도 production runtime을 관측할 뿐 rebuild authority를 변경하지 않기 때문이다. 파일이 없거나
-읽을 수 없으면 `null`(unknown)이며, 부모 디렉터리를 만들지 않는다.
-
-**교체 증거**: receipt의 `previous_manifest_sha256`·`previous_active`(9필드 identity)·
-`previous_recorded_at`이 무엇을 덮어썼는지 남긴다. 런북은 `--json` **없이** 부르므로 이
-값들과 `rollback_images_present`·`side_effects`·`input_sources`는 **비-JSON stdout
-블록에도** 나온다(`previous_active.<필드>=…`, `rollback_images_present=true|false`,
-`side_effect=…`, `input_source.manifest_path=…`). 새 manifest는 되돌릴 수 없는
-`os.replace` **전에** runner 술어로 검증하고, 커밋 후 재읽기가 실패하면 직전 상태로 복구를
-시도한다(복구 성공 = `capture_write_rolled_back`, 실패 = `capture_write_indeterminate`).
-
-**멱등은 "identity가 같을 때만"이다 — 첫 capture와 runtime 변경 후에는 §2.3 attestation
-재생성이 필수다**:
-
-- **byte-멱등인 경우(좁다)**: 관측한 active identity(runner 9필드 중 `recorded_at` 제외)가
-  기존 파일의 `active`와 **완전히 같을 때만** 기존 `recorded_at`을 보존해 파일 bytes와
-  `manifest_sha256`이 변하지 않는다. 그래야 §2.3 attestation 발급 뒤의 무해한 재실행이
-  게이트를 깨뜨리지 않는다.
-- **재생성이 필수인 경우**: ① 기존 manifest가 없는 **첫 capture**, ② runtime이 실제로
-  바뀐 뒤의 capture. 둘 다 새 `recorded_at`을 찍으므로 `manifest_sha256`이 반드시 바뀌고,
-  ②는 `active.map_source_revision`·`active.pinvi_source_revision`까지 함께 바뀐다.
-  runner(`c7_prod_attestation.py` 443-448행)는 이 값들을 **한 `if`에서 함께**
-  attestation과 대조한다 —
-  `manifest_sha256` ↔ `attestation["compatible_pair_manifest_sha256"]`(444행),
-  `active.map_source_revision` ↔ `attestation.source_commits["map"]`(446행),
-  `active.pinvi_source_revision` ↔ `attestation.source_commits["pinvi"]`(447행)
-  (`active.contract_generation` ↔ `attestation["c6c_contract_generation"]`도 같은 블록 445행).
-  하나라도 어긋나면 `AttestationError("compatible pair mismatch")`다.
-- **capture가 직접 말한다**: receipt와 stdout에 `recorded_at_preserved=true|false`가 나오고,
-  `false`일 때는 그 다음 줄에 `attestation_action=…`이 "§2.3 attestation을 다시 만들라"고
-  문장으로 지시한다. `--json` 없이 부르는 런북 호출에서도 두 줄 모두 보인다.
-
-> **오늘 상태에서 첫 실전 capture는 정의상 멱등이 아니다.** 기록된 active는
-> map `c8ed6164…` / pinvi `6a035695…`인데 실행 중인 다섯은 Map `817cfeae…` /
-> PinVi `5cad141a…`다(2026-08-19 실측). 즉 첫 capture는 `manifest_sha256`과 두 revision을
-> **모두** 바꾸므로, capture 직후 §2.3 attestation을 **반드시** 다시 만들고 나서 runner를
-> 돌려야 한다.
-
-**어느 파일이 C7 정본인가 (미결 — ADR-38 §미결)**: 2026-08-19 실측에서
-`/var/lib/kor-travel-docker-manager/kor-travel-docker-manager/compatible-pair-v4.json`과
-`/etc/kor-travel-map/c7-compatible-pair-v4.json`은 **byte-identical 복제본**이다
-(sha256 `f2051e42…`). 오늘 C7 lane 스크립트(`c7-lane-run-*.sh`, `c7-rerun-*.sh`)가
-`E2E_C7_COMPATIBLE_PAIR_MANIFEST`로 읽는 것은 `/etc` 쪽이고, capture의 유도 기본값은
-`/var/lib` 쪽이다. 둘을 그대로 두면 capture가 `/var/lib`만 갱신하고 lane은 낡은 `/etc`를
-읽는다. 선택지와 대가는 ADR-38 §미결 표에 있으며, **결정은 사용자 몫이다.**
-
-**부수 효과**: manifest 원자 교체 외에 global mutation lock 디렉터리(0700)와 파일(0600)이
-생길 수 있다. receipt의 `side_effects`가 실제 경로를 보고한다.
-
-#### 7.5.9 이 브랜치를 n150에 반영하려면 (실행 전 조사 — 아직 실행하지 않았다)
-
-§7.5.1이 "옛 파괴형"으로 판정하면 여기가 다음 단계다. 아래는 `scripts/install-ktdm-trusted-release`
-정독과 n150 **읽기 전용** 조사(2026-08-19)로 확인한 사실이며, **이번 라운드에서 어떤 명령도
-실행하지 않았다.**
-
-정본 명령은 하나다.
-
-```bash
-# 반드시 root. SOURCE_ROOT는 non-root 사용자 소유의 **clean** git checkout이어야 한다.
-sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release <SOURCE_ROOT>
-# 선택: [--env-file PATH] (기본 /opt/kor-travel-docker-manager/.env)
-#       [--wheelhouse ROOT_OWNED_WHEELHOUSE] (기본 /var/lib/kor-travel-docker-manager/wheelhouse)
-```
-
-**installer가 하는 일** (요약): source owner 권한으로 `git rev-parse HEAD` →
-`git diff-index --quiet HEAD --`(더러우면 중단) → `git archive HEAD`를 root-owned
-`/opt/.kor-travel-docker-manager.stage`(0700)에 풀고 → `python3 -m venv` +
-`pip wheel/install --no-index --find-links <wheelhouse>`(**완전 오프라인**) →
-`ktdctl` shim의 shebang과 `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT=/opt/kor-travel-docker-manager`
-하드코딩을 다시 쓰고 wheel `RECORD` digest를 갱신 → 기존 `.env`를 fd 기준 byte-동일로 복사 →
-`mv -T`로 `/opt/kor-travel-docker-manager`를 `.rollback`으로 밀고 staging을 그 자리에 올린 뒤
-`.ktdm-source-revision`(0644)과 `.ktdm-release-manifest.json`(0644)을 남긴다.
-
-**전제조건과 n150 현재 상태** (읽기 전용 실측):
-
-| 전제 | 오늘 상태 | 필요한 조치 |
-|:---|:---|:---|
-| root 실행 | — | `sudo -n` |
-| **non-root 소유 clean git checkout** | `/home/digitie/kor-travel-docker-manager`에는 **`.git`이 없다**(배포 트리). 이 저장소의 checkout은 예컨대 `/home/digitie/f1d-v5-rehearsal/manager`(origin `digitie/kor-travel-docker-manager`, HEAD `ac119b67…`, digitie 소유) | 그 checkout을 **머지된 최종 commit**으로 `fetch` + `checkout`하고 `git status --porcelain=v1`을 비운다 |
-| root-owned 오프라인 wheelhouse | `/var/lib/kor-travel-docker-manager/wheelhouse`에 `*.whl` **25개** 존재 ✅ | **이 브랜치는 새 런타임 의존을 추가하지 않는다**(`c6c_pair_capture`는 표준 라이브러리와 저장소 내부 모듈만 import). 기존 wheelhouse로 충분하다 |
-| global mutation lock 여유 | `/run/lock/kor-travel-docker-manager/global-mutation.lock` root:root 0600 존재 ✅ | installer가 **`pinvi-pair capture`/`rebuild-pinned`와 같은 flock**을 잡는다. Manager mutation이 도는 중이면 `another manager mutation is already active`로 즉시 중단한다 |
-| `/opt/kor-travel-docker-manager/.env` (0600, nlink 1) | 존재 ✅ | installer는 **bytes를 보존**한다. `KTDM_C7_MAP_SOURCE_CHECKOUT`/`KTDM_C7_PINVI_SOURCE_CHECKOUT` 프로비저닝은 **별개 작업**이고 설치 전/후 어느 쪽이든 된다 |
-| 재기동 대상 | Manager용 systemd unit이 **없다**(`systemctl list-units`에 `ktdm`/`kor-travel-docker` 없음) | 설치 후 재기동 불필요. `ktdctl`은 그때그때 실행되는 CLI다 |
-
-**주의 두 가지.**
-
-1. **커밋 성공 뒤에는 자동 rollback 경로가 없다.** transaction이 `committed`로 reconcile되면
-   `/opt/.kor-travel-docker-manager.rollback` 트리를 **삭제**한다. 되돌리려면 이전 commit의
-   clean checkout에서 installer를 다시 돌려야 한다.
-2. **main 직접 push 금지**(ADR-021 + ADR-038)가 그대로 적용된다. 이 저장소에는 추적된 CI workflow가 없으므로 PR 전 필수 수동 검증(`ruff`, `pytest`, frontend type-check/build), 보안 감사와 리뷰를 통과한 뒤 외부 merge gate가 요구하는 검사를 확인한다.
-   installer는 checkout의 HEAD가 무엇이든 archive하므로 정책이 유일한 게이트다. n150에는
-   **머지된 commit**만 설치한다.
-
-설치가 끝나면 **§7.5.1을 다시 돌려** `{rebuild-pinned,capture}`와
-`capture_contract=pair-capture-v1`을 눈으로 확인한 뒤에만 capture를 실행한다.
+v4 artifact는 current input으로 재사용하지 않는다. rebuild가 남기는 v6 manifest, v8
+journal 및 legacy tombstone receipt만 현재 generation의 provenance로 사용한다.
 
 ### 7.6 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
 
@@ -766,17 +515,14 @@ candidate runtime set 전체 계약을 검증해 최초 v4를 만든다. Map dep
 payload를 읽어 자동 변환하지 않으며 symlink·비정규 파일·다른 owner·group/world writable mode를
 포함한 어느 legacy artifact든 mutation 전에 operator migration/removal을 요구한다.
 
-현재 v4 설명의 명령과 동작은 **역사 기록이며 실행하지 않는다**. 옛 parser에는
-`--verified-compatible`, `--build`, `--wait-timeout` 조합이 있었고 capture가 runtime을 중지·재생성했지만,
-현행 읽기 전용 capture parser에는 이 옵션과 동작이 없다. 현행 명령은 §7.5.2와 §7.5.1의
-`capture_contract=pair-capture-v1` 확인을 통과한 뒤에만 사용한다.
+이하 v4 설명의 명령과 동작은 **역사 기록이며 실행하지 않는다**. 옛 parser에는
+`--verified-compatible`, `--build`, `--wait-timeout` 조합이 있었고 capture가 runtime을 중지·재생성했다.
+current CLI에는 capture parser나 v4 attestation 절차가 없으며, current authority는 §7.5가 가리키는
+v6 generation·v8 journal뿐이다.
 
-```bash
-ktdctl pinvi-pair deploy --build
-# 마이그레이션을 수반하는 배포는 각 활성화 단계의 healthy 대기 상한(기본 120초)을
-# 늘려야 timeout으로 인한 오발동 rollback을 피할 수 있다(issue #88).
-ktdctl pinvi-pair deploy --build --wait-timeout 1200
-```
+> **실행 금지** — 역사적 `deploy`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
+> 기록하지 않는다. current authority는 §7.5의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
+> 절차가 아니다.
 
 kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한다. 대상 마이그레이션이
 `CREATE INDEX CONCURRENTLY` 등 `autocommit_block()`을 쓰면 수십 분이 걸릴 수 있는데, `--wait-timeout`
@@ -849,9 +595,9 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
 contract·Map/PinVi canonical smoke·UI auth·runtime 검사를 다시 수행한다. 복구 검증도 실패하면 다섯
 runtime을 중지하고 명시적인 operator-required 상태로 끝낸다. legacy/과거 generation으로의 부분 fallback은 없다.
 
-```bash
-ktdctl pinvi-pair rollback
-```
+> **실행 금지** — 역사적 `rollback`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
+> 기록하지 않는다. current authority는 §7.5의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
+> 절차가 아니다.
 
 rollback 명령은 manifest의 다섯 image ID가 모두 로컬에 있는지 먼저 확인하고 단일 canonical
 compose가 전체 계약을 만족하는지 **stop 전에** 확인한다. 다섯 service를 함께 중지한 뒤 Map API

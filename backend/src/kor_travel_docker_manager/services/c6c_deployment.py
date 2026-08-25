@@ -10,7 +10,6 @@ import os
 import re
 import stat
 import subprocess
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -18,8 +17,8 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -27,7 +26,6 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import yaml
 from dotenv import dotenv_values
-
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
@@ -1279,8 +1277,7 @@ _FAILED_CANCELLATION_ERROR_CODES = frozenset(
         "PIPELINE_CANCELLATION_UNSAFE",
     }
 )
-_PAIR_MANIFEST_VERSION = 4
-PAIR_MANIFEST_FILENAME = "compatible-pair-v4.json"
+_LEGACY_PAIR_MANIFEST_FILENAME = "compatible-pair-v4.json"
 _IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SOURCE_REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _CONTRACT_GENERATION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
@@ -1830,7 +1827,12 @@ def effective_environment(env_path: str) -> dict[str, str]:
 
 
 def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
-    """Frozen environment로 manifest와 host-global lock을 함께 정한다."""
+    """legacy v4 tombstone 경로와 host-global lock을 함께 정한다.
+
+    첫 경로는 F1D legacy artifact 탐지·퇴역에만 남아 있으며 current v6/v8 rebuild
+    authority는 이를 읽거나 쓰지 않는다. 두 번째 lock 경로만 현재 Manager mutation
+    serialization에 사용한다.
+    """
 
     production = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() == "production"
     project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()
@@ -1861,14 +1863,14 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
         raise DeploymentContractError(
             "production C6c manifest and global lock paths are fixed"
         )
-    manifest = _canonical_absolute_path(
-        manifest_override or str(state_dir / "compatible-pair-v4.json"),
+    legacy_artifact = _canonical_absolute_path(
+        manifest_override or str(state_dir / _LEGACY_PAIR_MANIFEST_FILENAME),
         "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
     )
     lock = Path(c6c_global_mutation_lock_path(values))
-    if manifest == lock:
+    if legacy_artifact == lock:
         raise DeploymentContractError("C6c manifest and lock paths must differ")
-    return str(manifest), str(lock)
+    return str(legacy_artifact), str(lock)
 
 
 def ensure_c6c_state_directory(path: str | Path) -> None:
@@ -6183,377 +6185,6 @@ def inspect_c6c_image_source_revision(
         raise DeploymentContractError(f"{label} image build environment label is invalid")
     return revision
 
-
-@dataclass(frozen=True)
-class CompatibleImagePair:
-    """C7 runner가 ``_validate_pair``로 강제하는 exact 9 field wire shape.
-
-    field 이름이 곧 on-disk 계약이다 (``c7_prod_attestation.py`` 30-36행의
-    ``PAIR_RUNTIME_IMAGE_FIELDS``와 305-341행 ``_validate_pair``).
-    """
-
-    map_image_id: str
-    map_ui_image_id: str
-    map_dagster_image_id: str
-    map_dagster_daemon_image_id: str
-    map_source_revision: str
-    pinvi_image_id: str
-    pinvi_source_revision: str
-    contract_generation: str
-    recorded_at: str
-
-
-@dataclass(frozen=True)
-class CompatiblePairManifest:
-    """``{"active", "rollback", "version"}`` exact top-level shape (runner 428행)."""
-
-    version: int
-    rollback: CompatibleImagePair
-    active: CompatibleImagePair
-
-
-PAIR_MANIFEST_TOP_KEYS = frozenset({"active", "rollback", "version"})
-PAIR_MANIFEST_PAIR_KEYS = frozenset(
-    {
-        "contract_generation",
-        "map_dagster_daemon_image_id",
-        "map_dagster_image_id",
-        "map_image_id",
-        "map_source_revision",
-        "map_ui_image_id",
-        "pinvi_image_id",
-        "pinvi_source_revision",
-        "recorded_at",
-    }
-)
-
-
-class PairManifestCommitIndeterminateError(DeploymentContractError):
-    """``os.replace`` 이후 실패해 on-disk 상태를 판별할 수 없는 경우."""
-
-
-def _is_exact_int(value: object) -> bool:
-    """`True`/`False`를 정수 4로 오인하지 않는 exact int 판정."""
-
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def new_image_pair(
-    map_image_id: str,
-    pinvi_image_id: str,
-    contract_generation: str,
-    *,
-    map_ui_image_id: str,
-    map_dagster_image_id: str,
-    map_dagster_daemon_image_id: str,
-    map_source_revision: str,
-    pinvi_source_revision: str,
-    recorded_at: str | None = None,
-) -> CompatibleImagePair:
-    _validate_image_id(map_image_id, "Map")
-    _validate_image_id(map_ui_image_id, "Map UI")
-    _validate_image_id(map_dagster_image_id, "Map Dagster")
-    _validate_image_id(map_dagster_daemon_image_id, "Map Dagster daemon")
-    _validate_image_id(pinvi_image_id, "PinVi")
-    _validate_source_revision(map_source_revision, "Map")
-    _validate_source_revision(pinvi_source_revision, "PinVi")
-    if not isinstance(contract_generation, str) or not _CONTRACT_GENERATION_PATTERN.fullmatch(
-        contract_generation
-    ):
-        raise DeploymentContractError("compatible pair contract generation is invalid")
-    return CompatibleImagePair(
-        map_image_id=map_image_id,
-        map_ui_image_id=map_ui_image_id,
-        map_dagster_image_id=map_dagster_image_id,
-        map_dagster_daemon_image_id=map_dagster_daemon_image_id,
-        map_source_revision=map_source_revision,
-        pinvi_image_id=pinvi_image_id,
-        pinvi_source_revision=pinvi_source_revision,
-        contract_generation=contract_generation,
-        recorded_at=datetime.now(UTC).isoformat() if recorded_at is None else recorded_at,
-    )
-
-
-def parse_pair_manifest(payload_bytes: bytes) -> CompatiblePairManifest:
-    """이미 안전하게 읽은 bytes를 v4 shape로 엄격 해석한다."""
-
-    try:
-        payload = json.loads(payload_bytes.decode("utf-8"))
-        if (
-            not isinstance(payload, Mapping)
-            or set(payload) != set(PAIR_MANIFEST_TOP_KEYS)
-            or not _is_exact_int(payload.get("version"))
-        ):
-            raise TypeError("manifest top-level shape is invalid")
-        for pair_name in ("rollback", "active"):
-            pair_payload = payload.get(pair_name)
-            if not isinstance(pair_payload, Mapping) or set(pair_payload) != set(
-                PAIR_MANIFEST_PAIR_KEYS
-            ):
-                raise TypeError("manifest pair shape is invalid")
-        manifest = CompatiblePairManifest(
-            version=payload["version"],
-            rollback=CompatibleImagePair(**payload["rollback"]),
-            active=CompatibleImagePair(**payload["active"]),
-        )
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise DeploymentContractError("compatible pair manifest is invalid") from exc
-    _validate_pair_manifest_contract(manifest)
-    return manifest
-
-
-def _validate_pair_manifest_contract(manifest: CompatiblePairManifest) -> None:
-    if not _is_exact_int(manifest.version) or manifest.version != _PAIR_MANIFEST_VERSION:
-        raise DeploymentContractError("compatible pair manifest version is unsupported")
-    for pair in (manifest.rollback, manifest.active):
-        _validate_image_id(pair.map_image_id, "Map")
-        _validate_image_id(pair.map_ui_image_id, "Map UI")
-        _validate_image_id(pair.map_dagster_image_id, "Map Dagster")
-        _validate_image_id(pair.map_dagster_daemon_image_id, "Map Dagster daemon")
-        _validate_image_id(pair.pinvi_image_id, "PinVi")
-        _validate_source_revision(pair.map_source_revision, "Map")
-        _validate_source_revision(pair.pinvi_source_revision, "PinVi")
-        if not isinstance(
-            pair.contract_generation, str
-        ) or not _CONTRACT_GENERATION_PATTERN.fullmatch(pair.contract_generation):
-            raise DeploymentContractError("compatible pair contract generation is invalid")
-        if not _is_iso8601(pair.recorded_at):
-            raise DeploymentContractError(
-                "compatible pair recorded_at must be an offset ISO 8601 datetime"
-            )
-
-
-def manifest_with_active_pair(
-    manifest: CompatiblePairManifest,
-    active: CompatibleImagePair,
-) -> CompatiblePairManifest:
-    """직전 active를 rollback으로 승격한다. 동일 identity 재기록은 멱등이다."""
-
-    same_active_identity = (
-        active.map_image_id == manifest.active.map_image_id
-        and active.map_ui_image_id == manifest.active.map_ui_image_id
-        and active.map_dagster_image_id == manifest.active.map_dagster_image_id
-        and active.map_dagster_daemon_image_id == manifest.active.map_dagster_daemon_image_id
-        and active.map_source_revision == manifest.active.map_source_revision
-        and active.pinvi_image_id == manifest.active.pinvi_image_id
-        and active.pinvi_source_revision == manifest.active.pinvi_source_revision
-        and active.contract_generation == manifest.active.contract_generation
-    )
-    rollback = manifest.rollback if same_active_identity else manifest.active
-    return CompatiblePairManifest(
-        version=_PAIR_MANIFEST_VERSION,
-        rollback=rollback,
-        active=active,
-    )
-
-
-def initial_pair_manifest(pair: CompatibleImagePair) -> CompatiblePairManifest:
-    return CompatiblePairManifest(
-        version=_PAIR_MANIFEST_VERSION,
-        rollback=pair,
-        active=pair,
-    )
-
-
-def pair_manifest_bytes(manifest: CompatiblePairManifest) -> bytes:
-    """v4 writer의 직렬화 형태를 그대로 유지한다 (2-space indent, 정렬, 후행 개행)."""
-
-    _validate_pair_manifest_contract(manifest)
-    payload = json.dumps(asdict(manifest), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    return payload.encode("utf-8")
-
-
-def assert_runner_readable_parent(
-    path: str | Path,
-    *,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-    ancestor_floor: Path | None = None,
-) -> None:
-    """manifest parent 체인을 C7 runner의 ``_read_secure_file``과 같은 술어로 검증한다.
-
-    ``ensure_c6c_state_directory``와 달리 **어떤 디렉터리도 만들지 않는다**. state root
-    정책의 정본은 소비자(runner) 한 곳이며 여기서는 그 전제조건만 미러링한다
-    (``c7_prod_attestation.py`` 112-146행). ``ancestor_floor``도 runner와 같은 의미이며
-    production 경로는 floor 없이 ``/``까지 걷는다.
-    """
-
-    manifest_path = Path(path)
-    if not manifest_path.is_absolute():
-        raise DeploymentContractError("compatible pair manifest path is not absolute")
-    floor = ancestor_floor
-    if floor is not None:
-        try:
-            floor = floor.resolve(strict=True)
-            manifest_path.relative_to(floor)
-        except (OSError, ValueError) as exc:
-            raise DeploymentContractError(
-                "compatible pair manifest is outside the trusted ancestor floor"
-            ) from exc
-    reached_floor = floor is None
-    for parent in manifest_path.parents:
-        try:
-            observed = parent.lstat()
-        except OSError as exc:
-            raise DeploymentContractError(
-                "compatible pair manifest parent directory is unavailable"
-            ) from exc
-        if (
-            not stat.S_ISDIR(observed.st_mode)
-            or parent.is_symlink()
-            or observed.st_uid != expected_uid
-            or observed.st_gid != expected_gid
-            or stat.S_IMODE(observed.st_mode) & 0o022
-        ):
-            raise DeploymentContractError(
-                "compatible pair manifest parent directory is unsafe for the C7 runner"
-            )
-        if floor is not None and parent == floor:
-            reached_floor = True
-            break
-    if not reached_floor:
-        raise DeploymentContractError(
-            "compatible pair manifest did not reach the trusted ancestor floor"
-        )
-
-
-def write_pair_manifest(
-    path: str,
-    manifest: CompatiblePairManifest,
-    *,
-    owner_uid: int = 0,
-    owner_gid: int = 0,
-    ancestor_floor: Path | None = None,
-) -> bytes:
-    """같은 디렉터리 temp → fsync → chmod/chown → ``os.replace`` → dir fsync로 커밋한다."""
-
-    manifest_path = Path(path)
-    assert_runner_readable_parent(
-        manifest_path,
-        expected_uid=owner_uid,
-        expected_gid=owner_gid,
-        ancestor_floor=ancestor_floor,
-    )
-    payload_bytes = pair_manifest_bytes(manifest)
-    previous_bytes = manifest_path.read_bytes() if manifest_path.exists() else None
-    previous_mode = manifest_path.stat().st_mode & 0o777 if previous_bytes is not None else None
-    temp_path: Path | None = None
-    replaced = False
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=manifest_path.parent,
-            prefix=f".{manifest_path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp:
-            temp.write(payload_bytes)
-            temp.flush()
-            os.fsync(temp.fileno())
-            temp_path = Path(temp.name)
-        os.chmod(temp_path, 0o600)
-        os.chown(temp_path, owner_uid, owner_gid)
-        os.replace(temp_path, manifest_path)
-        replaced = True
-        _fsync_directory(manifest_path.parent)
-    except OSError as exc:
-        if replaced:
-            try:
-                _restore_manifest_snapshot(
-                    manifest_path,
-                    previous_bytes=previous_bytes,
-                    previous_mode=previous_mode,
-                )
-            except OSError:
-                try:
-                    current_bytes: bytes | None = manifest_path.read_bytes()
-                except OSError:
-                    current_bytes = None
-                if current_bytes == payload_bytes:
-                    # 새 bytes가 온전히 디스크에 있다. 커밋으로 취급한다.
-                    return payload_bytes
-                raise PairManifestCommitIndeterminateError(
-                    "compatible pair manifest commit state is indeterminate"
-                ) from exc
-        raise DeploymentContractError("compatible pair manifest write failed") from exc
-    finally:
-        if temp_path is not None and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-    return payload_bytes
-
-
-def _fsync_directory(path: Path) -> None:
-    directory_fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory_fd)
-    finally:
-        os.close(directory_fd)
-
-
-def restore_pair_manifest_snapshot(
-    path: str | Path,
-    *,
-    previous_bytes: bytes | None,
-    previous_mode: int | None = 0o600,
-    owner_uid: int | None = None,
-    owner_gid: int | None = None,
-) -> None:
-    """커밋 뒤 검증이 실패했을 때 pre-image bytes(또는 부재 상태)로 되돌린다.
-
-    ``previous_bytes``가 ``None``이면 갓 커밋한 파일을 지워 "capture 이전"으로
-    되돌린다. 실패는 ``OSError``로 그대로 전파해 호출자가 "복구됨"과 "판별 불가"를
-    구분할 수 있게 한다.
-    """
-
-    _restore_manifest_snapshot(
-        Path(path),
-        previous_bytes=previous_bytes,
-        previous_mode=previous_mode,
-        owner_uid=owner_uid,
-        owner_gid=owner_gid,
-    )
-
-
-def _restore_manifest_snapshot(
-    manifest_path: Path,
-    *,
-    previous_bytes: bytes | None,
-    previous_mode: int | None,
-    owner_uid: int | None = None,
-    owner_gid: int | None = None,
-) -> None:
-    if previous_bytes is None:
-        manifest_path.unlink(missing_ok=True)
-        _fsync_directory(manifest_path.parent)
-        return
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=manifest_path.parent,
-            prefix=f".{manifest_path.name}.restore.",
-            suffix=".tmp",
-            delete=False,
-        ) as temp:
-            temp.write(previous_bytes)
-            temp.flush()
-            os.fsync(temp.fileno())
-            temp_path = Path(temp.name)
-        if previous_mode is not None:
-            os.chmod(temp_path, previous_mode)
-        if owner_uid is not None and owner_gid is not None:
-            os.chown(temp_path, owner_uid, owner_gid)
-        os.replace(temp_path, manifest_path)
-        _fsync_directory(manifest_path.parent)
-    finally:
-        if temp_path is not None and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
 
 
 def _environment_mapping(value: Any) -> dict[str, str]:
