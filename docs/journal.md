@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-08-26 — Map application `300` 실행 모드 회귀 보강과 v5 pin 회전 준비
+
+Map PR #1066의 exact head `cc81081ff2e540a6ad9c428a296515e1d79bc316`는 n150에서 paired
+builder가 내부 candidate builder를 직접 실행할 때 필요한 Git mode `100755`를 보존한다.
+후속 단위 테스트는 NTFS/WSL의 filesystem 실행 비트뿐 아니라 `git ls-tree HEAD`의 canonical
+mode도 `100755`인지 확인한다. 두 전문 적대 리뷰는 P0/P1/P2=0 GO이며, schema/bootstrap,
+fresh-root/finalize, receipt/recovery 코드는 변경되지 않았다.
+
+이 exact Map revision과 PinVi `27fe2043b7b8e747fbb42d91e461ea462f930bb7`를 조합한 v5
+canonical pinset digest는 `14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`다.
+Manager release authority와 application `300` source를 이 후보로 회전했고 관련 회귀 테스트
+28개가 통과했다. Map PR CI green과 Manager PR merge 뒤에만 새 paired image·receipt를 만들고
+n150 approved rebuild를 재개한다.
+
+사용자 승인 정책에 따라 일반 application row의 내용·건수·업무상 무결성은 계속 release gate에서
+제외한다. 필요한 데이터는 fresh `300` schema에 source/ETL로 처음부터 재적재하며, 이전 revision
+또는 기존 DB 복구는 수행하지 않는다.
+
 ## 2026-08-25 — Map `300` role bootstrap helper의 C6c 오탐 결선 보완 (PR #198 merge)
 
 n150의 trusted `rebuild-pinned --confirm`에서 Map 정본 `dd2ee61f…`의 두 read-only bind source는

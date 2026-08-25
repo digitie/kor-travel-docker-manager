@@ -24,7 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 MAP_APPLICATION_300_SOURCE_COMMIT: Final = (
-    "dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e"
+    "cc81081ff2e540a6ad9c428a296515e1d79bc316"
 )
 APPLICATION_HEAD: Final = "300"
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
