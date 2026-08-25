@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-26 — BACKUP-FOLLOWUP Geo standalone 대용량 backup 1회 실측
+
+n150에서 `ktdctl db-backup create geo --timeout 14400`을 한 번 실행했다. Geo application
+DB의 standalone `pg_dump -Fc --compress=6`는 `24m 21.903s`에 완료됐고 dump 크기는
+`4,717,161,289` bytes였다. dump·`.sha256`·`.manifest` 세 파일이 생성됐으며 모두 mode
+`600`, `sha256sum -c`는 `OK`, `.copying` 임시 파일은 남지 않았다. 생성된 manifest의 TOC와
+Alembic head는 CLI가 기록한 메타데이터로만 확인했다.
+
+이 실행은 Geo runtime/DB를 재기동하거나 restore하지 않았고, application row·건수·업무상
+무결성을 조회·대조하지 않았다. Geo backup의 off-box 사본 자동화와 보존 정책은 외부 목적지·
+자격증명 결선이 없어 `BACKUP-FOLLOWUP`의 남은 조건이다.
+
+---
+
 ## 2026-08-26 — MAP-LIVE-FOLLOWUP PinVi protected-route 재차단 확인
 
 n150 PinVi exact runtime에서 현재 admin live credential로 `/admin/login`에 로그인한 뒤
