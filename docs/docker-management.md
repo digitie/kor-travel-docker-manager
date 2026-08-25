@@ -520,12 +520,9 @@ payload를 읽어 자동 변환하지 않으며 symlink·비정규 파일·다�
 current CLI에는 capture parser나 v4 attestation 절차가 없으며, current authority는 §7.5가 가리키는
 v6 generation·v8 journal뿐이다.
 
-```bash
-ktdctl pinvi-pair deploy --build
-# 마이그레이션을 수반하는 배포는 각 활성화 단계의 healthy 대기 상한(기본 120초)을
-# 늘려야 timeout으로 인한 오발동 rollback을 피할 수 있다(issue #88).
-ktdctl pinvi-pair deploy --build --wait-timeout 1200
-```
+> **실행 금지** — 역사적 `deploy`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
+> 기록하지 않는다. current authority는 §7.5의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
+> 절차가 아니다.
 
 kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한다. 대상 마이그레이션이
 `CREATE INDEX CONCURRENTLY` 등 `autocommit_block()`을 쓰면 수십 분이 걸릴 수 있는데, `--wait-timeout`
@@ -598,9 +595,9 @@ kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한�
 contract·Map/PinVi canonical smoke·UI auth·runtime 검사를 다시 수행한다. 복구 검증도 실패하면 다섯
 runtime을 중지하고 명시적인 operator-required 상태로 끝낸다. legacy/과거 generation으로의 부분 fallback은 없다.
 
-```bash
-ktdctl pinvi-pair rollback
-```
+> **실행 금지** — 역사적 `rollback`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
+> 기록하지 않는다. current authority는 §7.5의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
+> 절차가 아니다.
 
 rollback 명령은 manifest의 다섯 image ID가 모두 로컬에 있는지 먼저 확인하고 단일 canonical
 compose가 전체 계약을 만족하는지 **stop 전에** 확인한다. 다섯 service를 함께 중지한 뒤 Map API
