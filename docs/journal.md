@@ -43,6 +43,22 @@ hue 회전·`info`/`warn`/`danger`/`ok` 불변·journal의 구체적 수치 인�
 
 ---
 
+## 2026-08-26 — C7 v4 capture 퇴역과 H300 v6/v8 단일 정본화
+
+H300 committed generation의 실행 authority는 seven-service v6
+`pinned-runtime-generation`과 v8 rebuild journal이다. 과거 `pinvi-pair capture`는
+five-service `compatible-pair-v4.json`을 교체해 Map C7 runner가 읽게 하던 별도 관측
+경로였으며, F1D가 퇴역 대상으로 삼는 v4 artifact를 다시 생성할 수 있었다.
+
+현재 generation에서는 두 증명 경로를 병존시키지 않는다. `pinvi-pair capture` CLI,
+전용 service와 v4 runner-shape test를 제거하고, 남아 있던 운영 프로비저닝 task는
+`tasks-done.md`로 이관했다. current candidate의 runtime provenance와 D1/F1D-E/D2/41C
+후속 검증은 v6/v8 manifest·journal의 seven image와 three-DB identity만 사용한다.
+이 정리는 n150에 명령을 실행하지 않았으며 container·DB·manifest와 application data를
+변경하지 않았다.
+
+---
+
 ## 2026-08-26 — BACKUP-FOLLOWUP Geo standalone 대용량 backup 1회 실측
 
 n150에서 `ktdctl db-backup create geo --timeout 14400`을 한 번 실행했다. Geo application
@@ -83,13 +99,15 @@ PinVi equivalent reblock, PinVi WebSocket/mutating loop와 consumer reconciliati
 
 ---
 
-## 2026-08-26 — C7 capture read-only 계약 사전 확인
+## 2026-08-26 — 퇴역 전 C7 capture 관측 기록 (현재 실행 근거 아님)
 
-n150 trusted Manager 설치본에서 `ktdctl pinvi-pair capture --help`를 mutation 없이 실행했다.
+이 항목은 v4 퇴역 전에 수집한 historical evidence이며, 현재 `capture` 실행·검사 또는 C7
+재개의 근거가 아니다. 당시 n150 trusted Manager 설치본에서 `ktdctl pinvi-pair capture --help`를
+mutation 없이 실행했다.
 출력의 `capture_contract=pair-capture-v1`과 “실행 중 컨테이너를 시작·정지·재생성하지 않고
-빌드하지 않는다”는 read-only 경계를 확인했다. 실제 capture와 compatible-pair manifest 교체는
-현재 v6/v8 committed generation과 C7 checkout/manifest 정본을 먼저 확정한 뒤 실행하며, 이번
-확인에서는 manifest·컨테이너·DB를 변경하지 않았다.
+빌드하지 않는다”는 당시 read-only 경계를 확인했다. 그 구현·manifest는 퇴역됐으며, 현재
+generation에는 v6/v8 committed evidence만 사용한다. 이번 historical observation에서는
+manifest·컨테이너·DB를 변경하지 않았다.
 
 ---
 

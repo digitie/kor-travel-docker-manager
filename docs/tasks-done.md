@@ -16,6 +16,22 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-08-26 — C7 v4 capture 운영 항목 퇴역
+
+- [x] **T-C7-CAPTURE-OPS — H300 v6/v8 정본과 충돌하는 v4 capture 퇴역**
+
+  `pinvi-pair capture`는 과거 five-service `compatible-pair-v4.json`을 원자 교체하는
+  읽기 전용 관측기였지만, application `300`의 current authority는 seven-service v6
+  `pinned-runtime-generation`과 v8 rebuild journal이다. v4 artifact는 F1D legacy
+  tombstone 대상이므로, 이를 다시 생성·attestation하는 운영 절차는 current generation을
+  증명하지 못하고 서로 다른 정본을 되살린다.
+
+  따라서 CLI·전용 service·v4 runner contract test를 함께 제거했고, active task에는
+  v4 checkout env·manifest 프로비저닝이나 capture 실행을 남기지 않는다. H300 generation
+  검증은 `pinvi-pair rebuild-pinned --confirm`이 남긴 v6/v8 manifest·journal과 그
+  seven-service/three-DB attestation만 사용한다. 이 변경은 n150 container·DB·manifest를
+  변경하지 않았고, 이전 revision restore나 application data integrity 검증도 수행하지 않았다.
+
 ## 2026-08-26 — Geo standalone 대용량 backup 1회 실측
 
 - [x] **BACKUP-FOLLOWUP-GEO-INITIAL — Geo application standalone backup 1회 실측**

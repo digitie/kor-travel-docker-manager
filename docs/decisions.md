@@ -629,16 +629,17 @@ API는 DB에 active로 등록한 Manager 전용 key만 받는다. Map UI는 Geo�
 
 ## ADR-20: Map↔PinVi ops principal을 API 전용 read/cancel capability로 배포한다
 
-- 상태: accepted
+- 상태: accepted (ops principal) / compatible-pair 실행 부분 superseded (application `300`)
 - 날짜: 2026-07-18
 - 결정자: human, Codex
 
 ### 현행성 경계(ADR-21 대체)
 
 ADR-20의 service principal·권한 분리 결정은 유지한다. 다만 compatible-pair의 manifest
-version·image 범위·전환·복구·halt 절차는 2026-07-19 accepted ADR-21이 대체한다. 따라서 이 절의
-현행 결과는 v4 exact 9-field pair와 Map API·UI·Dagster web·daemon, PinVi API를 합친 다섯 runtime
-transaction 기준이며, 과거 최초 v3·두 API 전환 절차는 운영 지침이 아니다.
+version·image 범위·전환·복구·halt 절차는 application `300`의 seven-service v6 generation과 v8
+rebuild journal이 대체한다. 따라서 이 ADR에 남은 v4 exact 9-field pair와 다섯 runtime transaction
+서술은 역사 기록이며 실행·복사·프로비저닝 지침이 아니다. 현재 운영 판단에는 v6/v8 authority와
+`docs/docker-management.md` §7.5만 사용한다.
 
 ### 컨텍스트
 
@@ -759,7 +760,7 @@ socket 두 mount의 exact set이어야 한다. 첫 mutation subprocess 성공 �
 
 ## ADR-21: C6c compatible pair에 clean source revision을 결박한다
 
-- 상태: accepted
+- 상태: partially superseded (application `300` v6/v8 authority)
 - 날짜: 2026-07-19
 - 결정자: human, AI agent
 
@@ -1003,7 +1004,7 @@ activation 뒤 runtime은 이 exact path와 값을 보호 환경 계약으로 �
 
 ## ADR-26: compatible-pair image를 content-addressed local reference로 보존한다
 
-- 상태: accepted
+- 상태: partially superseded (application `300` v6/v8 authority)
 - 날짜: 2026-07-20
 - 결정자: human, Codex
 
@@ -1063,7 +1064,7 @@ post-commit cleanup 실패는 이미 검증·commit된 runtime을 과거 pair로
 
 ## ADR-27: compatible-pair readiness는 canonical resolved Compose의 healthcheck 선언을 따른다
 
-- 상태: accepted
+- 상태: partially superseded (application `300` v6/v8 authority)
 - 날짜: 2026-07-31
 - 결정자: human, Codex
 
@@ -2030,12 +2031,20 @@ reload는 기존 연결을 재인증하지 않는다. 그래서 전환 직후에
 
 ## ADR-38: `pinvi-pair capture`는 컨테이너를 관측만 하고 C7 runner용 v4 manifest를 원자적으로 갱신한다
 
-- 상태: accepted
+- 상태: superseded (2026-08-26, application `300` v6/v8 단일 정본)
 - 날짜: 2026-08-19
 - 결정자: 사용자, Claude
 - 관련: ADR-31, ADR-34, Map `docs/runbooks/c7-prod-live-e2e.md` §2.1 step 8, Map `scripts/lib/c7_prod_attestation.py`
 
-> ## ⚠️ 이 ADR은 **설치된 뒤에만** 참이다 — 오늘 n150의 `capture`는 파괴형이다
+> 2026-08-26 H300의 current authority는 seven-service v6
+> `pinned-runtime-generation`과 v8 rebuild journal로 바뀌었다. F1D legacy tombstone 대상인
+> `compatible-pair-v4.json`을 다시 만들거나 attestation하는 경로는 current candidate를
+> 증명하지 못하므로 `pinvi-pair capture` CLI와 구현을 퇴역했다. 아래 내용은 당시의
+> 안전·복구 판단을 보존하는 역사 기록이며 현 운영 절차가 아니다. **아래 모든 명령·옵션·경로·표는
+> 실행·복사·프로비저닝해서는 안 된다.** 정확한 merged trusted Manager release에서 `capture`가
+> parser 단계에서 거부되는지 확인한 뒤에만 v6/v8 current authority를 사용한다.
+
+> ## ⚠️ 퇴역 전 설치본 관측 기록 — 실행 금지
 >
 > 2026-08-19 실측: n150 설치본은 revision
 > `4191582779be47e9605a324ea27adbb99b438439`이고 그 트리에
@@ -2044,12 +2053,10 @@ reload는 기존 연결을 재인증하지 않는다. 그래서 전환 직후에
 > (`--help` = `[--build] [--wait-timeout] [--verified-compatible] [--json]`,
 > `pinvi-pair --help` = `{install-pinned-sources,bootstrap-pinned-drift,deploy,capture,rollback}`).
 >
-> **이 브랜치가 n150에 설치되기 전에는 이 ADR과 `docs/docker-management.md` §7.5가 적는 어떤
-> `capture` 명령도 실행하지 마라.** 실행 전 확인 절차(읽기 전용 `--help` 두 번)와 설치 절차는
-> `docs/docker-management.md` §7.5.1 / §7.5.9에 있다. 판정 근거는 코드 상수
-> `c6c_pair_capture.CAPTURE_CONTRACT`가 내는 `capture_contract=pair-capture-v1` 한 줄이며,
-> `--help`·성공 stdout 첫 줄·`--json` receipt 세 곳이 같은 값을 낸다. 옛 구현에는 이 문자열이
-> 어디에도 없다.
+> 이 관측은 퇴역 이전의 사고 예방 근거일 뿐, 이 ADR의 후속 명령을 실행할 근거가 아니다. stale
+> 설치본에 `capture`가 보이면 그 하위 명령을 호출하지 않고 정확한 merged trusted Manager release를
+> 먼저 설치한다. 설치 뒤에는 top-level 도움말에 `rebuild-pinned`만 남고 `capture`는 parser 단계에서
+> 거부되어야 한다.
 
 ### 컨텍스트
 

@@ -7,12 +7,6 @@ from typing import Any
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
-from kor_travel_docker_manager.services.c6c_pair_capture import (
-    BUILD_FLAG_NOTICE,
-    CAPTURE_CONTRACT_LINE,
-    PairCaptureRefusal,
-    capture_compatible_pair,
-)
 from kor_travel_docker_manager.services.compose_service import (
     compose_service,
 )
@@ -150,25 +144,6 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
-def _cmd_pinvi_pair_capture(args: argparse.Namespace) -> int:
-    if args.build:
-        print(BUILD_FLAG_NOTICE, file=sys.stderr)
-    try:
-        result = capture_compatible_pair(
-            verified_compatible=args.verified_compatible,
-            manifest_path=args.manifest_path,
-            map_source_checkout=args.map_source_checkout,
-            pinvi_source_checkout=args.pinvi_source_checkout,
-            expect_active_map_revision=args.expect_active_map_revision,
-            allow_generation_change=args.allow_generation_change,
-            build_flag=args.build,
-        )
-    except PairCaptureRefusal as exc:
-        print(str(exc), file=sys.stderr)
-        return exc.returncode
-    return _emit_process_result(result, json_output=args.json)
-
-
 def _cmd_db_backup_create(args: argparse.Namespace) -> int:
     try:
         manifest = create_standalone_backup(args.role, timeout=args.timeout)
@@ -300,80 +275,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
     pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
-
-    pair_capture = pair_subparsers.add_parser(
-        "capture",
-        help=(
-            "실행 중인 다섯 Map·PinVi 컨테이너를 읽어 C7 runner용 "
-            "compatible-pair-v4 manifest를 갱신합니다(컨테이너 불변)."
-        ),
-        # `--help`가 구현 identity를 말한다. 이 줄이 보이지 않으면 설치본은 이 브랜치
-        # **이전** revision이고, 그 `capture`는 컨테이너를 내렸다가 force-recreate하는
-        # 파괴형이다. 실행 전 확인 절차는 docs/docker-management.md §7.5.
-        description=(
-            f"{CAPTURE_CONTRACT_LINE} — 실행 중인 다섯 컨테이너를 읽기만 하고 C7 runner용 "
-            "compatible-pair-v4 manifest를 원자적으로 교체합니다. 컨테이너를 시작·정지·"
-            "재생성하지 않으며 아무것도 빌드하지 않습니다. 이 줄이 --help에 없는 설치본의 "
-            "`capture`는 파괴형(옛 v4)이므로 실행하지 마십시오."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    pair_capture.add_argument(
-        "--verified-compatible",
-        action="store_true",
-        help="Map과 PinVi가 같은 contract generation임을 operator가 단언합니다.",
-    )
-    pair_capture.add_argument(
-        "--manifest-path",
-        default=None,
-        help=(
-            "C7 runner가 E2E_C7_COMPATIBLE_PAIR_MANIFEST로 읽는 절대경로 override. "
-            "생략하면 frozen 환경의 E2E_C7_COMPATIBLE_PAIR_MANIFEST를 쓰고, 그것도 "
-            "없으면 c6c_state_paths가 정하는 기본 경로(production 설치본 기준 "
-            "/var/lib/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/"
-            "compatible-pair-v4.json)를 씁니다. basename 제약은 없습니다."
-        ),
-    )
-    pair_capture.add_argument(
-        "--map-source-checkout",
-        default=None,
-        help=(
-            "관측된 Map revision의 commit object 실재를 확인할 git checkout 절대경로 "
-            "override. 생략하면 frozen 환경의 KTDM_C7_MAP_SOURCE_CHECKOUT을 씁니다."
-        ),
-    )
-    pair_capture.add_argument(
-        "--pinvi-source-checkout",
-        default=None,
-        help=(
-            "관측된 PinVi revision의 commit object 실재를 확인할 git checkout 절대경로 "
-            "override. 생략하면 frozen 환경의 KTDM_C7_PINVI_SOURCE_CHECKOUT을 씁니다."
-        ),
-    )
-    pair_capture.add_argument(
-        "--expect-active-map-revision",
-        default=None,
-        help="주어지면 관측된 Map OCI revision과 exact 일치를 요구합니다(40-hex).",
-    )
-    pair_capture.add_argument(
-        "--allow-generation-change",
-        action="store_true",
-        help=(
-            "기존 manifest의 contract generation이 frozen "
-            "KTDM_C6C_CONTRACT_GENERATION과 다를 때에도 진행합니다(기본은 거부)."
-        ),
-    )
-    pair_capture.add_argument(
-        "--build",
-        action="store_true",
-        help="런북 문구 호환용. 수락하지만 아무것도 빌드하지 않습니다.",
-    )
-    pair_capture.add_argument(
-        "--json",
-        action="store_true",
-        help="secret-free receipt 전체를 JSON으로 출력합니다.",
-    )
-    pair_capture.set_defaults(func=_cmd_pinvi_pair_capture)
 
     db_backup = subparsers.add_parser(
         "db-backup",

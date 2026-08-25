@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import inspect
 import json
@@ -14,7 +15,7 @@ from typing import Any, cast
 from unittest.mock import ANY, Mock, call
 
 import pytest
-
+from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
@@ -3604,3 +3605,38 @@ def test_finalized_fixture_receipt_at_manifest_commit_never_allows_reset() -> No
     assert journal.phase == "manifest_committing"
     assert journal.cancel_probe.stage == "finalized"
     assert compose_service_module._pinned_runtime_reset_required(journal) is False
+
+
+def test_pinned_runtime_rebuild_lease_path_is_fixed() -> None:
+    assert c6c_deployment.pinned_runtime_rebuild_lock_path() == (
+        "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
+    )
+
+
+def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lock_path = tmp_path / "pinned-runtime-rebuild.lock"
+    monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", lock_path)
+    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
+    holder = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(c6c_deployment.DeploymentContractError) as excinfo:
+            with c6c_deployment.pinned_runtime_rebuild_lock():
+                pass  # pragma: no cover - contended lock must not enter.
+    finally:
+        os.close(holder)
+
+    assert str(excinfo.value) == "another C6c compatible-pair operation is already active"
+
+
+def test_pinned_runtime_rebuild_lease_rejects_nonroot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c6c_deployment.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(c6c_deployment.DeploymentContractError, match="requires root"):
+        with c6c_deployment.pinned_runtime_rebuild_lock():
+            pass  # pragma: no cover - root gate must reject before entering.
