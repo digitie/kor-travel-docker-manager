@@ -369,6 +369,114 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         assert services[service_name]["image"] == migration["image"]
 
 
+def test_map_source_dagster_profile_fallback_is_allowed_at_exact_paths() -> None:
+    api_environment = dict(compose_service_module._MAP_SOURCE_V3_API_ENVIRONMENT)
+    api_environment[
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+    ] = compose_service_module._MAP_SOURCE_V4_CURSOR_ENV_VALUE
+    services: dict[str, object] = {
+        "api": {"environment": api_environment},
+        "frontend": {
+            "environment": dict(compose_service_module._MAP_SOURCE_V3_UI_ENVIRONMENT)
+        },
+    }
+    for service_name in (
+        "dagster-db-init",
+        "dagster-db-init-fresh-300",
+        "dagster",
+        "dagster-daemon",
+        "dagster-storage-migrate",
+    ):
+        services[service_name] = {
+            "environment": {
+                "KOR_TRAVEL_MAP_DAGSTER_PROFILE": (
+                    "local-dev"
+                    if service_name == "dagster-db-init-fresh-300"
+                    else compose_service_module._MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE
+                )
+            }
+        }
+
+    compose_service_module._validate_map_source_protected_scalar_tree(
+        {"services": services},
+        contract_version=4,
+    )
+
+
+def test_map_source_dagster_profile_fallback_cannot_move_to_another_path() -> None:
+    api_environment = dict(compose_service_module._MAP_SOURCE_V3_API_ENVIRONMENT)
+    api_environment[
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+    ] = compose_service_module._MAP_SOURCE_V4_CURSOR_ENV_VALUE
+    services: dict[str, object] = {
+        "api": {
+            "environment": {
+                **api_environment,
+                "KOR_TRAVEL_MAP_DAGSTER_PROFILE": (
+                    compose_service_module._MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE
+                ),
+            }
+        },
+        "frontend": {
+            "environment": dict(compose_service_module._MAP_SOURCE_V3_UI_ENVIRONMENT)
+        },
+    }
+    for service_name in (
+        "dagster-db-init",
+        "dagster-db-init-fresh-300",
+        "dagster",
+        "dagster-daemon",
+        "dagster-storage-migrate",
+    ):
+        services[service_name] = {"environment": {}}
+
+    with pytest.raises(DeploymentContractError, match="outside its exact path"):
+        compose_service_module._validate_map_source_protected_scalar_tree(
+            {"services": services},
+            contract_version=4,
+        )
+
+
+def test_map_source_dagster_profile_bare_placeholder_cannot_be_added() -> None:
+    api_environment = dict(compose_service_module._MAP_SOURCE_V3_API_ENVIRONMENT)
+    api_environment[
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+    ] = compose_service_module._MAP_SOURCE_V4_CURSOR_ENV_VALUE
+    services: dict[str, object] = {
+        "api": {"environment": api_environment},
+        "frontend": {
+            "environment": {
+                **compose_service_module._MAP_SOURCE_V3_UI_ENVIRONMENT,
+                "UNEXPECTED_PROFILE": (
+                    "${KOR_TRAVEL_MAP_DAGSTER_PROFILE:-attacker}"
+                ),
+            }
+        },
+    }
+    for service_name in (
+        "dagster-db-init",
+        "dagster-db-init-fresh-300",
+        "dagster",
+        "dagster-daemon",
+        "dagster-storage-migrate",
+    ):
+        services[service_name] = {
+            "environment": {
+                "KOR_TRAVEL_MAP_DAGSTER_PROFILE": (
+                    "local-dev"
+                    if service_name == "dagster-db-init-fresh-300"
+                    else compose_service_module._MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE
+                )
+            }
+        }
+
+    with pytest.raises(DeploymentContractError, match="outside its exact path"):
+        compose_service_module._validate_map_source_protected_scalar_tree(
+            {"services": services},
+            contract_version=4,
+        )
+
+
 def test_resolved_pinvi_api_has_no_implicit_schema_mutation_or_bootstrap_secret() -> None:
     resolved = _resolved_compose("pinvi-api", "pinvi-admin-bootstrap")
     services = resolved["services"]

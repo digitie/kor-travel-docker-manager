@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-26 — n150 rebuild 전 source contract 차단을 사전 수정
+
+Manager PR #200 merge 뒤 trusted Manager release와 Map `cc81081ff2e540a6ad9c428a296515e1d79bc316`
+source를 n150에 준비하고 approved `rebuild-pinned --confirm`을 실행했다. Candidate image와
+receipt 생성 및 정확한 PostGIS image 준비까지는 완료됐지만, DB mutation 전에 Map source environment
+contract가 `KOR_TRAVEL_MAP_DAGSTER_PROFILE`의 중첩 fallback을 허용된 exact path로 인식하지 못해
+fail-closed 중단됐다. 기존 source의 `api` env_file만 실제 계약인데 Manager가 제거된 Dagster
+`.env` env_file까지 요구하는 두 번째 stale expectation도 같은 사전 검증에서 확인됐다.
+
+새 수정은 네 Dagster 서비스의 fallback 경로만 허용하고, 다른 경로의 protected placeholder는 계속
+거부한다. env_file 계약은 현재 Map source의 API 파일 하나만 고정한다. 회귀 테스트 31개와 실제 Map
+exact source의 contract v4 판정이 통과했으며, 이 과정에서 DB·행 데이터·기존 revision은 변경하지 않았다.
+수정 PR merge 후에만 n150 trusted install과 새 paired rebuild를 재개한다.
+
 ## 2026-08-26 — Map #1066 merge와 application `300` v5 pin 확정
 
 Map PR #1066의 exact head `cc81081ff2e540a6ad9c428a296515e1d79bc316`가 전체 CI green 후
