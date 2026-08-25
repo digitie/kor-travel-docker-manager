@@ -23,10 +23,13 @@ pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않
   먼저 확인
 - committed resume에서도 external prerequisite를 candidate build 전에 확인하고 일곱 runtime과 두
   PostgreSQL image를 재검증
+- Map Dagster migration receipt를 구 v2 부분 비교에서 v3 exact field set으로 올리고, journal의
+  operation/head/permit, sealed candidate digest, metadata DB identity와 catalog digest 형식을 대조
 
-관련 generation/rebuild 회귀 `100 passed`, Map C7/Dagster 회귀 `305 passed`, 변경 파일 Ruff를
-통과했다. 다음 단계는 Manager 전체 gate와 문서 정합성, remote checkpoint, 두 리뷰어의 exact-commit
-재검토다. 완료된 `T-VN-40` 잔여 항목은 active `tasks.md`에 없다.
+Manager 전체 backend `721 passed, 3 skipped`, v3 receipt 직접 회귀를 포함한 rebuild `68 passed`,
+Map C7/Dagster `305 passed`, 변경 파일 Ruff·strict mypy와 frontend type-check/build를 통과했다.
+다음 단계는 두 리뷰어의 exact-commit 재검토 finding을 닫고 final gate를 다시 실행하는 것이다.
+완료된 `T-VN-40` 잔여 항목은 active `tasks.md`에 없다.
 
 ## 2026-08-25 — application `300` paired candidate와 v6/v8 rebuild 결선
 

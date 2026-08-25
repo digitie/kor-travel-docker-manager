@@ -385,6 +385,39 @@ def _dagster_database_identity() -> MapApplication300DagsterMetadataDatabaseIden
     )
 
 
+def _dagster_storage_receipt(
+    journal: PinnedRuntimeRebuildJournal,
+    candidate: MapApplication300Candidate,
+) -> dict[str, object]:
+    identity = (
+        journal.map_application_300_execution_evidence
+        .dagster_metadata_database_identity
+    )
+    permit_sha256 = (
+        journal.map_application_300_execution_evidence.metadata_permit_sha256
+    )
+    assert identity is not None
+    assert permit_sha256 is not None
+    candidate_binding = (
+        f"{candidate.dagster_image_id}:{candidate.receipt_sha256}:"
+        f"{candidate.dagster_yaml_sha256}"
+    )
+    return {
+        "schema": "kor-travel-map.dagster-storage-migration.v3",
+        "status": "migrated",
+        "operation_id": journal.transaction_id,
+        "permit_sha256": permit_sha256,
+        "candidate_sha256": hashlib.sha256(candidate_binding.encode()).hexdigest(),
+        "head": journal.candidate.map_dagster_head,
+        "version_num": journal.candidate.map_dagster_head,
+        "database_name": identity.name,
+        "database_oid": str(identity.oid),
+        "database_owner": identity.owner,
+        "postgres_system_identifier": identity.system_identifier,
+        "catalog_sha256": "a" * 64,
+    }
+
+
 def _operation_plan(
     journal: PinnedRuntimeRebuildJournal,
     *,
@@ -2093,6 +2126,48 @@ def test_dagster_live_identity_preserves_login_and_inherit_attestation() -> None
     assert journal_identity.login_role_attributes.inherit is False
 
 
+def test_dagster_storage_v3_receipt_is_exactly_bound_to_journal() -> None:
+    journal = _journal_at_runtime_phase("map_dagster_storage_intent_durable")
+    candidate = _map_application_300_candidate()
+    receipt = _dagster_storage_receipt(journal, candidate)
+
+    compose_service_module._validate_map_dagster_storage_receipt(
+        receipt,
+        journal=journal,
+        candidate=candidate,
+    )
+
+    mutations = (
+        ("schema", "kor-travel-map.dagster-storage-migration.v2"),
+        ("permit_sha256", "0" * 64),
+        ("candidate_sha256", "0" * 64),
+        ("database_oid", 127002),
+        ("catalog_sha256", "short"),
+    )
+    for field, value in mutations:
+        changed = {**receipt, field: value}
+        with pytest.raises(DeploymentContractError, match="receipt differs"):
+            compose_service_module._validate_map_dagster_storage_receipt(
+                changed,
+                journal=journal,
+                candidate=candidate,
+            )
+    missing = dict(receipt)
+    missing.pop("catalog_sha256")
+    with pytest.raises(DeploymentContractError, match="receipt differs"):
+        compose_service_module._validate_map_dagster_storage_receipt(
+            missing,
+            journal=journal,
+            candidate=candidate,
+        )
+    with pytest.raises(DeploymentContractError, match="receipt differs"):
+        compose_service_module._validate_map_dagster_storage_receipt(
+            {**receipt, "unexpected": True},
+            journal=journal,
+            candidate=candidate,
+        )
+
+
 @pytest.mark.parametrize(
     ("can_login", "inherit"),
     ((False, False), (True, True)),
@@ -2576,12 +2651,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             return {
                 "success": True,
                 "stdout": json.dumps(
-                    {
-                        "schema": "kor-travel-map.dagster-storage-migration.v2",
-                        "operation_id": journal.transaction_id,
-                        "head": journal.candidate.map_dagster_head,
-                        "version_num": journal.candidate.map_dagster_head,
-                    },
+                    _dagster_storage_receipt(journal, map_candidate),
                     sort_keys=True,
                 ),
             }

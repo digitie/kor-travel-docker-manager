@@ -195,6 +195,69 @@ _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
 _MAP_APPLICATION_300_RECEIPT_DIRECTORY = "map-application-300-candidate"
 _MAP_APPLICATION_300_ARTIFACT_DIRECTORY = "map-application-300-artifacts"
 _MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
+_MAP_DAGSTER_STORAGE_RECEIPT_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "operation_id",
+        "permit_sha256",
+        "candidate_sha256",
+        "head",
+        "version_num",
+        "database_name",
+        "database_oid",
+        "database_owner",
+        "postgres_system_identifier",
+        "catalog_sha256",
+    }
+)
+
+
+def _validate_map_dagster_storage_receipt(
+    receipt: object,
+    *,
+    journal: PinnedRuntimeRebuildJournal,
+    candidate: MapApplication300Candidate,
+) -> None:
+    """Map v3 receipt를 journal·permit·candidate·DB identity에 exact 결박한다."""
+
+    database = (
+        journal.map_application_300_execution_evidence
+        .dagster_metadata_database_identity
+    )
+    permit_sha256 = (
+        journal.map_application_300_execution_evidence.metadata_permit_sha256
+    )
+    candidate_binding = (
+        f"{candidate.dagster_image_id}:{candidate.receipt_sha256}:"
+        f"{candidate.dagster_yaml_sha256}"
+    )
+    if (
+        not isinstance(receipt, Mapping)
+        or set(receipt) != _MAP_DAGSTER_STORAGE_RECEIPT_FIELDS
+        or database is None
+        or permit_sha256 is None
+        or receipt.get("schema")
+        != "kor-travel-map.dagster-storage-migration.v3"
+        or receipt.get("status") != "migrated"
+        or receipt.get("operation_id") != journal.transaction_id
+        or receipt.get("permit_sha256") != permit_sha256
+        or receipt.get("candidate_sha256")
+        != hashlib.sha256(candidate_binding.encode()).hexdigest()
+        or receipt.get("head") != journal.candidate.map_dagster_head
+        or receipt.get("version_num") != journal.candidate.map_dagster_head
+        or receipt.get("database_name") != database.name
+        or receipt.get("database_oid") != str(database.oid)
+        or receipt.get("database_owner") != database.owner
+        or receipt.get("postgres_system_identifier")
+        != database.system_identifier
+        or not isinstance(receipt.get("catalog_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", cast(str, receipt["catalog_sha256"]))
+        is None
+    ):
+        raise DeploymentContractError(
+            "Map Dagster storage receipt differs from journal"
+        )
 
 
 def _pinvi_cancel_probe_state_from_journal(
@@ -6042,20 +6105,11 @@ class ComposeService:
                         raise DeploymentContractError(
                             "Map Dagster storage receipt output is invalid"
                         ) from exc
-                    if (
-                        not isinstance(storage_receipt, Mapping)
-                        or storage_receipt.get("schema")
-                        != "kor-travel-map.dagster-storage-migration.v2"
-                        or storage_receipt.get("operation_id")
-                        != journal.transaction_id
-                        or storage_receipt.get("head")
-                        != journal.candidate.map_dagster_head
-                        or storage_receipt.get("version_num")
-                        != journal.candidate.map_dagster_head
-                    ):
-                        raise DeploymentContractError(
-                            "Map Dagster storage receipt differs from journal"
-                        )
+                    _validate_map_dagster_storage_receipt(
+                        storage_receipt,
+                        journal=journal,
+                        candidate=map_candidate,
+                    )
                     try:
                         observed_dagster_head = read_database_schema_revision(
                             runtimes[1]
