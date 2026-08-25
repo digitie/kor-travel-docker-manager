@@ -11,7 +11,7 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 다음 완료 조건 |
 |:---|:---|:---:|:---|
-| **T-VN-41-F1D-H300** | Map application fresh `300` paired candidate와 Manager destructive rebuild 완결 | `[/]` | Map/Manager 후속 Draft PR의 두 전문 적대 리뷰·CI green, n150 trusted install·`rebuild-pinned --confirm`, live UI/PinVi acceptance, 문서·PR merge |
+| **T-VN-41-F1D-H300** | Map application fresh `300` paired candidate와 Manager destructive rebuild 완결 | `[/]` | n150 trusted install·`rebuild-pinned --confirm`, live UI/PinVi acceptance, 문서 정리 |
 | **T-C7-CAPTURE-OPS** | 읽기 전용 `pinvi-pair capture` 운영 프로비저닝 정리 | `[/]` | n150 trusted Manager 설치본의 read-only contract 확인, checkout env와 manifest 정본 하나를 확정하고 최초 capture/attestation 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[ ]` | Geo application 첫 대용량 backup 실측과 off-box 사본 자동화. Alembic downgrade/이전 revision restore는 범위 밖 |
 
@@ -35,14 +35,13 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 
 - Map PR #1064: `dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e` (merge 완료)
 - Manager PR #197: `7017a5d2d7192018ddf0667623c4cc18b290c46b` (merge 완료)
-- 후속 Manager PR: Map role-bootstrap helper bind의 C6c 오탐 보완 (현재 Draft)
+- Manager PR #198: Map role-bootstrap helper bind의 C6c 오탐 보완 (merge commit `19409e3f…`)
 - release pinset: `49548a610cbfa3a0d2242ef6e9a8cbd5664e61dec92391b8a476b02951b65c62`
 - 로컬 sealed paired build: 새 Map pin `dd2ee61f…` 기준 재생성 대기. 이전 pin의 image·receipt는
   release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
 
 남은 작업:
 
-- [ ] 후속 Manager Draft PR에서 두 전문 적대 리뷰와 원격 CI green을 확보하고 merge한다.
 - [ ] n150에서 trusted Manager release를 설치하고 approved root command
   `ktdctl pinvi-pair rebuild-pinned --confirm`을 실행한다. backup·scratch restore·이전 DB 복원은 실행하지
   않는다.
