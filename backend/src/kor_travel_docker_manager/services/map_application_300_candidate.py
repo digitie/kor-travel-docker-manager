@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from kor_travel_docker_manager.services.map_application_300 import (
+    Application300Contract,
+)
+
 _PAIRED_SCHEMA: Final = "kor-travel-map.application-300-paired-candidate-build.v1"
 _API_RECEIPT_SCHEMA: Final = "kor-travel-map.application-300-candidate-build.v2"
 _APPLICATION_CONTRACT_SCHEMA: Final = "kor-travel-map.application-baseline-contract.v1"
@@ -197,6 +201,7 @@ class MapApplication300Candidate:
     postgres_image_id: str
     dagster_config_sha256: str
     dagster_yaml_sha256: str
+    application_contract: Application300Contract
     application_contract_sha256: str
     launch_contract_sha256: str
     webserver_argv_prefix: tuple[str, ...]
@@ -259,7 +264,7 @@ def load_map_application_300_candidate(
         expected_commit=expected_candidate_commit,
         expected_tree=expected_candidate_tree,
     )
-    postgres_image_id, application_contract_sha256 = _validate_application_contract(
+    application_contract, application_contract_sha256 = _validate_application_contract(
         contract,
         recorded_digest=_require_sha256(dagster_candidate, "application_contract_sha256"),
         api_manifest_sha256=_require_sha256(api_candidate, "candidate_manifest_sha256"),
@@ -274,7 +279,7 @@ def load_map_application_300_candidate(
         expected_commit=expected_candidate_commit,
         api_image_id=api_image_id,
         dagster_image_id=dagster_image_id,
-        postgres_image_id=postgres_image_id,
+        postgres_image_id=application_contract.postgres_image_id,
     )
 
     launch_sha256 = _canonical_digest(launch)
@@ -285,11 +290,12 @@ def load_map_application_300_candidate(
         candidate_git_tree=expected_candidate_tree,
         api_image_id=api_image_id,
         dagster_image_id=dagster_image_id,
-        postgres_image_id=postgres_image_id,
+        postgres_image_id=application_contract.postgres_image_id,
         dagster_config_sha256=_require_sha256(dagster_candidate, "candidate_config_sha256"),
         dagster_yaml_sha256=_require_sha256(
             dagster_candidate, "candidate_dagster_yaml_sha256"
         ),
+        application_contract=application_contract,
         application_contract_sha256=application_contract_sha256,
         launch_contract_sha256=launch_sha256,
         webserver_argv_prefix=_WEBSERVER_PREFIX,
@@ -573,7 +579,7 @@ def _validate_application_contract(
     *,
     recorded_digest: str,
     api_manifest_sha256: str,
-) -> tuple[str, str]:
+) -> tuple[Application300Contract, str]:
     _require_exact_string(contract, "schema", _APPLICATION_CONTRACT_SCHEMA)
     _require_exact_string(contract, "application_head", _APPLICATION_HEAD)
     reference_sha256 = _require_sha256(contract, "reference_manifest_sha256")
@@ -588,7 +594,7 @@ def _validate_application_contract(
     observed_digest = _canonical_digest(contract)
     if observed_digest != recorded_digest:
         raise MapApplication300CandidateError("receipt_contract_invalid")
-    return _require_image_id(contract, "postgres_image_id"), observed_digest
+    return Application300Contract.from_payload(contract), observed_digest
 
 
 def _validate_base_images(
