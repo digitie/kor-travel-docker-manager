@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-25 — Map `dd2ee61f` 통합 CI green과 `300` release pin 회전
+
+Map PR #1064의 exact head `dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e`가 Python
+3.11/3.12/3.13, lint, type/build, OpenAPI drift, fixture replay와 PostGIS 통합 CI를 모두
+통과했다. Manager의 application-300 source와 v5 canonical release pinset을 이 exact
+커밋으로 회전했다. PinVi source `27fe2043b7b8e747fbb42d91e461ea462f930bb7`는 유지하고,
+새 canonical compact pinset digest는
+`49548a610cbfa3a0d2242ef6e9a8cbd5664e61dec92391b8a476b02951b65c62`다.
+
+이전 c95 pin의 image·receipt·journal은 새 release evidence로 재사용하지 않는다. `300` 승격
+후 일반 application row 데이터의 내용·건수·업무상 무결성 검증은 release gate가 아니며, 필요할
+경우 fresh schema에 source/ETL로 처음부터 재적재한다. 이전 revision 또는 기존 DB 복구는 수행하지
+않는다.
+
+---
+
 ## 2026-08-25 — Map c95fbb01 exact pair 재고정과 application `300` 데이터 gate 퇴역
 
 Map PR #1064의 통합 fixture·teardown 보정이 반영된 exact commit
