@@ -12,6 +12,9 @@ from docker.errors import NotFound
 
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
+    _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES as _CODE_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES,
+)
+from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
     DeploymentContractError,
@@ -805,6 +808,15 @@ def test_map_api_excludes_removed_provider_runtime_credentials() -> None:
 
     api_environment = compose["services"][_MAP_API_SERVICE]["environment"]
     assert _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.isdisjoint(api_environment)
+
+
+def test_map_api_provider_denylist_covers_current_provider_names() -> None:
+    assert {
+        "KOR_TRAVEL_MAP_KAKAO_LOCAL_REST_API_KEY",
+        "KOR_TRAVEL_MAP_NAVER_SEARCH_CLIENT_ID",
+        "KOR_TRAVEL_MAP_NAVER_SEARCH_CLIENT_SECRET",
+        "KOR_TRAVEL_MAP_GOOGLE_PLACES_API_KEY",
+    } <= _CODE_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES
 
 
 def test_map_features_routes_are_explicitly_enabled_only_for_map_api() -> None:
