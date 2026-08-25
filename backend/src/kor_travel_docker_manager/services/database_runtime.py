@@ -200,6 +200,17 @@ class Application300DatabaseIdentity:
 
 
 @dataclass(frozen=True)
+class PinnedDatabaseIdentity:
+    """committed generation에 보존하는 일반 DB/owner-login identity."""
+
+    system_identifier: str
+    name: str
+    oid: int
+    owner: str
+    login_role: str
+
+
+@dataclass(frozen=True)
 class DagsterMetadataRoleAttributes:
     """Dagster metadata login role의 privilege/membership snapshot."""
 
@@ -212,6 +223,10 @@ class DagsterMetadataRoleAttributes:
     member_role_count: int
     can_login: bool = True
     inherit: bool = False
+    connection_limit: int = -1
+    valid_until_is_null: bool = True
+    role_config_count: int = 0
+    database_role_setting_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -736,6 +751,59 @@ def read_application_300_database_identity(
     return _parse_application_database_identity(output, runtime=runtime)
 
 
+def read_pinned_database_identity(runtime: DatabaseRuntime) -> PinnedDatabaseIdentity:
+    """maintenance DB에서 일반 pinned DB와 owner-login identity를 strict 조회한다."""
+
+    _validate_runtime(runtime)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT control.system_identifier::text, database_row.datname, "
+                "database_row.oid::bigint, pg_get_userbyid(database_row.datdba), "
+                "owner_role.rolname "
+                "FROM pg_catalog.pg_database AS database_row "
+                "JOIN pg_catalog.pg_roles AS owner_role "
+                "ON owner_role.oid = database_row.datdba "
+                "CROSS JOIN pg_catalog.pg_control_system() AS control "
+                f"WHERE database_row.datname = '{runtime.database_name}' "
+                f"AND owner_role.rolname = '{runtime.owner_name}'"
+            ),
+        ],
+        label=f"{runtime.role} database identity",
+    )
+    text = output.decode("ascii").strip()
+    lines = text.splitlines()
+    if len(lines) != 1:
+        raise DeploymentContractError(f"{runtime.role} database identity is invalid")
+    fields = lines[0].split("|")
+    if len(fields) != 5:
+        raise DeploymentContractError(f"{runtime.role} database identity is invalid")
+    system_identifier, name, oid_raw, owner, login_role = fields
+    if (
+        name != runtime.database_name
+        or owner != runtime.owner_name
+        or login_role != runtime.owner_name
+    ):
+        raise DeploymentContractError(f"{runtime.role} database identity binding is invalid")
+    return PinnedDatabaseIdentity(
+        system_identifier=_parse_system_identifier(
+            system_identifier,
+            f"{runtime.role} PostgreSQL system identifier",
+        ),
+        name=name,
+        oid=_parse_positive_int(oid_raw, f"{runtime.role} database oid"),
+        owner=owner,
+        login_role=login_role,
+    )
+
+
 def initialize_application_300_dagster_metadata_database(
     runtime: DatabaseRuntime,
     *,
@@ -813,7 +881,11 @@ def read_application_300_dagster_metadata_identity(
                 "database_row.oid::bigint, pg_get_userbyid(database_row.datdba), "
                 "role.rolname, role.rolcanlogin, role.rolinherit, "
                 "role.rolsuper, role.rolcreatedb, role.rolcreaterole, "
-                "role.rolreplication, role.rolbypassrls, "
+                "role.rolreplication, role.rolbypassrls, role.rolconnlimit, "
+                "(role.rolvaliduntil IS NULL), "
+                "COALESCE(pg_catalog.cardinality(role.rolconfig), 0), "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_db_role_setting setting "
+                "WHERE setting.setrole = role.oid), "
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
                 "WHERE membership.member = role.oid), "
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
@@ -1067,7 +1139,11 @@ def _read_dagster_metadata_role_preflight(
             "--command",
             (
                 "SELECT rolcanlogin, rolinherit, rolsuper, rolcreatedb, "
-                "rolcreaterole, rolreplication, rolbypassrls, "
+                "rolcreaterole, rolreplication, rolbypassrls, rolconnlimit, "
+                "(rolvaliduntil IS NULL), "
+                "COALESCE(pg_catalog.cardinality(rolconfig), 0), "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_db_role_setting setting "
+                "WHERE setting.setrole = role.oid), "
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
                 "WHERE membership.member = role.oid), "
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
@@ -1084,7 +1160,7 @@ def _read_dagster_metadata_role_preflight(
     if len(lines) != 1:
         raise DeploymentContractError("Map Dagster metadata role output is invalid")
     fields = lines[0].split("|")
-    if len(fields) != 9:
+    if len(fields) != 13:
         raise DeploymentContractError("Map Dagster metadata role output is invalid")
     return _DagsterMetadataRolePreflight(
         can_login=_parse_psql_bool(fields[0], "Map Dagster metadata role login"),
@@ -1103,11 +1179,23 @@ def _read_dagster_metadata_role_preflight(
             bypass_rls=_parse_psql_bool(
                 fields[6], "Map Dagster metadata role bypassrls"
             ),
+            connection_limit=_parse_connection_limit(
+                fields[7], "Map Dagster metadata role connection limit"
+            ),
+            valid_until_is_null=_parse_psql_bool(
+                fields[8], "Map Dagster metadata role validity"
+            ),
+            role_config_count=_parse_non_negative_int(
+                fields[9], "Map Dagster metadata role config count"
+            ),
+            database_role_setting_count=_parse_non_negative_int(
+                fields[10], "Map Dagster metadata database role setting count"
+            ),
             granted_role_count=_parse_non_negative_int(
-                fields[7], "Map Dagster metadata role granted role count"
+                fields[11], "Map Dagster metadata role granted role count"
             ),
             member_role_count=_parse_non_negative_int(
-                fields[8], "Map Dagster metadata role member role count"
+                fields[12], "Map Dagster metadata role member role count"
             ),
             can_login=_parse_psql_bool(
                 fields[0], "Map Dagster metadata role login"
@@ -1131,6 +1219,10 @@ def _assert_dagster_metadata_role_can_rotate_password_only(
         or attributes.create_role
         or attributes.replication
         or attributes.bypass_rls
+        or attributes.connection_limit != -1
+        or not attributes.valid_until_is_null
+        or attributes.role_config_count != 0
+        or attributes.database_role_setting_count != 0
         or attributes.granted_role_count != 0
         or attributes.member_role_count != 0
     ):
@@ -1209,7 +1301,7 @@ def _parse_dagster_metadata_database_identity(
     if len(lines) != 1:
         raise DeploymentContractError("Map Dagster metadata identity is invalid")
     fields = lines[0].split("|")
-    if len(fields) != 14:
+    if len(fields) != 18:
         raise DeploymentContractError("Map Dagster metadata identity is invalid")
     (
         system_identifier,
@@ -1224,6 +1316,10 @@ def _parse_dagster_metadata_database_identity(
         createrole,
         replication,
         bypass_rls,
+        connection_limit,
+        valid_until_is_null,
+        role_config_count,
+        database_role_setting_count,
         granted_count,
         member_count,
     ) = fields
@@ -1235,6 +1331,19 @@ def _parse_dagster_metadata_database_identity(
         create_role=_parse_psql_bool(createrole, "Map Dagster metadata role createrole"),
         replication=_parse_psql_bool(replication, "Map Dagster metadata role replication"),
         bypass_rls=_parse_psql_bool(bypass_rls, "Map Dagster metadata role bypassrls"),
+        connection_limit=_parse_connection_limit(
+            connection_limit, "Map Dagster metadata role connection limit"
+        ),
+        valid_until_is_null=_parse_psql_bool(
+            valid_until_is_null, "Map Dagster metadata role validity"
+        ),
+        role_config_count=_parse_non_negative_int(
+            role_config_count, "Map Dagster metadata role config count"
+        ),
+        database_role_setting_count=_parse_non_negative_int(
+            database_role_setting_count,
+            "Map Dagster metadata database role setting count",
+        ),
         granted_role_count=_parse_non_negative_int(
             granted_count, "Map Dagster metadata role granted role count"
         ),
@@ -1252,6 +1361,10 @@ def _parse_dagster_metadata_database_identity(
         or attributes.create_role
         or attributes.replication
         or attributes.bypass_rls
+        or attributes.connection_limit != -1
+        or not attributes.valid_until_is_null
+        or attributes.role_config_count != 0
+        or attributes.database_role_setting_count != 0
         or attributes.granted_role_count != 0
         or attributes.member_role_count != 0
     ):
@@ -1374,6 +1487,16 @@ def _parse_non_negative_int(value: str, label: str) -> int:
     except ValueError as exc:
         raise DeploymentContractError(f"{label} output is invalid") from exc
     if parsed < 0:
+        raise DeploymentContractError(f"{label} output is invalid")
+    return parsed
+
+
+def _parse_connection_limit(value: str, label: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise DeploymentContractError(f"{label} output is invalid") from exc
+    if parsed < -1:
         raise DeploymentContractError(f"{label} output is invalid")
     return parsed
 

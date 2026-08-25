@@ -18,6 +18,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     DagsterDatabaseIdentity,
     DagsterLoginRoleAttributes,
     DagsterStorageCandidate,
+    FreshRootResult,
     JournalStamp,
     MapApplication300ContractError,
     application_database_identity_sha256,
@@ -27,6 +28,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     build_fresh_migration_fence,
     canonical_json_bytes,
     json_artifact,
+    parse_fresh_finalize_missing_receipt,
     parse_fresh_finalize_result,
     parse_fresh_root_result,
     publish_root_read_only_artifact,
@@ -206,6 +208,41 @@ def _finalize_result_raw(
             "post_seed_sha256": contract.seed_sha256,
             "expected_privileged_residue_sha256": contract.privileged_residue_sha256,
             "post_destination_alembic_version_sha256": (
+                contract.destination_alembic_version_sha256
+            ),
+        }
+    ) + b"\n"
+
+
+def _finalize_missing_receipt_raw(
+    *, operation_id: str, prior: FreshRootResult
+) -> bytes:
+    contract = _contract()
+    candidate = _candidate()
+    database = _application_database()
+    return canonical_json_bytes(
+        {
+            "schema": (
+                "kor-travel-map.application-fresh-300-finalize-missing-receipt.v1"
+            ),
+            "outcome": "receipt-missing-exact-prestate",
+            "operation_id": operation_id,
+            "prior_fresh_migration_operation_id": prior.operation_id,
+            "prior_fresh_migration_result_sha256": prior.payload_sha256,
+            "destination_head": "300",
+            "map_candidate_commit": candidate.map_source_commit,
+            "map_candidate_image_id": candidate.api_image_id,
+            "postgres_image_id": contract.postgres_image_id,
+            "reference_manifest_sha256": contract.reference_manifest_sha256,
+            "database_identity": {
+                "database_name": database.name,
+                "database_oid": database.oid,
+                "database_owner": database.owner,
+                "postgres_system_identifier": database.system_identifier,
+            },
+            "pre_source_catalog_sha256": contract.source_catalog_sha256,
+            "pre_seed_sha256": contract.seed_sha256,
+            "pre_destination_alembic_version_sha256": (
                 contract.destination_alembic_version_sha256
             ),
         }
@@ -407,6 +444,34 @@ def test_finalize_result_and_final_permit_are_exact_and_resumable() -> None:
     assert b"password" not in permit.raw.lower()
 
 
+def test_finalize_missing_receipt_proof_is_exactly_bound_to_root_prestate() -> None:
+    _root_raw, root = _fresh_root()
+    operation_id = str(uuid4())
+
+    proof = parse_fresh_finalize_missing_receipt(
+        _finalize_missing_receipt_raw(operation_id=operation_id, prior=root),
+        contract=_contract(),
+        candidate=_candidate(),
+        prior=root,
+    )
+
+    assert proof.operation_id == operation_id
+    assert proof.prior_fresh_migration_operation_id == root.operation_id
+    assert proof.prior_fresh_migration_result_sha256 == root.payload_sha256
+
+    payload = json.loads(
+        _finalize_missing_receipt_raw(operation_id=operation_id, prior=root)
+    )
+    payload["pre_source_catalog_sha256"] = _digest("f")
+    with pytest.raises(MapApplication300ContractError, match="candidate prestate"):
+        parse_fresh_finalize_missing_receipt(
+            canonical_json_bytes(payload) + b"\n",
+            contract=_contract(),
+            candidate=_candidate(),
+            prior=root,
+        )
+
+
 def test_final_permit_rejects_receipt_drift() -> None:
     _root_raw, root = _fresh_root()
     finalize_journal = _journal("d", 2)
@@ -528,6 +593,14 @@ def test_dagster_metadata_role_must_have_no_privilege_or_membership() -> None:
         DagsterLoginRoleAttributes(can_login=False)
     with pytest.raises(MapApplication300ContractError, match="login attributes"):
         DagsterLoginRoleAttributes(inherit=True)
+    with pytest.raises(MapApplication300ContractError, match="connection limits"):
+        DagsterLoginRoleAttributes(connection_limit=0)
+    with pytest.raises(MapApplication300ContractError, match="connection limits"):
+        DagsterLoginRoleAttributes(valid_until_is_null=False)
+    with pytest.raises(MapApplication300ContractError, match="persistent settings"):
+        DagsterLoginRoleAttributes(role_config_count=1)
+    with pytest.raises(MapApplication300ContractError, match="persistent settings"):
+        DagsterLoginRoleAttributes(database_role_setting_count=1)
 
 
 @pytest.mark.parametrize(("field", "value"), (("can_login", False), ("inherit", True)))

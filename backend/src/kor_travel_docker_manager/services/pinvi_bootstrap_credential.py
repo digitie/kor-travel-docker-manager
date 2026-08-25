@@ -48,6 +48,18 @@ class PinviBootstrapCredentialFile:
     _inode: int = field(repr=False, compare=False)
 
 
+@dataclass(frozen=True)
+class _ValidatedOrphanedBootstrapCredential:
+    """mutation 전 전체 tree 검증에서 고정한 private inode 집합이다."""
+
+    transaction_id: str
+    transaction_fd: int = field(repr=False, compare=False)
+    transaction_device: int = field(repr=False, compare=False)
+    transaction_inode: int = field(repr=False, compare=False)
+    credential_device: int = field(repr=False, compare=False)
+    credential_inode: int = field(repr=False, compare=False)
+
+
 def create_pinvi_bootstrap_credential(
     *,
     state_paths: PinnedRuntimeStatePaths,
@@ -270,6 +282,91 @@ def retire_stale_pinvi_bootstrap_credential(
         os.close(bootstrap_fd)
 
 
+def reconcile_orphaned_pinvi_bootstrap_credentials(
+    *,
+    state_paths: PinnedRuntimeStatePaths,
+    values: Mapping[str, str],
+    global_mutation_lock_held: bool,
+    all_one_shot_containers_absent: bool,
+) -> tuple[str, ...]:
+    """SIGKILL 뒤 남은 manager-owned bootstrap credential을 모두 폐기한다.
+
+    호출자는 frozen Compose project의 global mutation lock을 이 함수가 끝날 때까지
+    보유하고, 모든 one-shot container가 부재함을 확인해야 한다. 두 증명을 명시적으로
+    전달하지 않으면 bootstrap tree의 존재 여부조차 조사하지 않고 실패한다.
+
+    전체 ``bootstrap/<canonical UUID>/credential.json`` tree를 먼저 검증하여
+    directory/file inode를 고정한다. malformed UUID, symlink, 잘못된 owner/mode,
+    hardlink 또는 예상 밖 entry가 하나라도 있으면 어떤 credential도 변경하지 않는다.
+    검증된 artifact만 zeroize, unlink, parent fsync, empty-directory 제거 순서로 폐기한다.
+    """
+
+    if global_mutation_lock_held is not True:
+        raise DeploymentContractError(
+            "PinVi bootstrap orphan reconcile requires the global mutation lock"
+        )
+    if all_one_shot_containers_absent is not True:
+        raise DeploymentContractError(
+            "PinVi bootstrap orphan reconcile requires all one-shot containers absent"
+        )
+
+    _require_canonical_rebuildable_state_paths(state_paths=state_paths, values=values)
+    bootstrap_fd = _open_existing_bootstrap_directory(state_paths.state_root)
+    if bootstrap_fd is None:
+        return ()
+
+    validated: list[_ValidatedOrphanedBootstrapCredential] = []
+    try:
+        for transaction_id in _list_bootstrap_entries(bootstrap_fd):
+            canonical_transaction_id = _canonical_transaction_id(transaction_id)
+            transaction_fd, transaction_stat = _open_transaction_directory(
+                bootstrap_fd,
+                canonical_transaction_id,
+            )
+            try:
+                credential_stat = _validate_exact_transaction_contents(transaction_fd)
+            except BaseException:
+                os.close(transaction_fd)
+                raise
+            validated.append(
+                _ValidatedOrphanedBootstrapCredential(
+                    transaction_id=canonical_transaction_id,
+                    transaction_fd=transaction_fd,
+                    transaction_device=transaction_stat.st_dev,
+                    transaction_inode=transaction_stat.st_ino,
+                    credential_device=credential_stat.st_dev,
+                    credential_inode=credential_stat.st_ino,
+                )
+            )
+
+        # 검증과 mutation 사이의 교체도 모든 transaction에 대해 먼저 확인한다.
+        # 따라서 fail-close validation error가 뒤에서 발견되어 일부 credential만
+        # 먼저 삭제되는 일이 없다.
+        for orphan in validated:
+            _validate_orphaned_credential_unchanged(bootstrap_fd, orphan)
+
+        retired: list[str] = []
+        for orphan in validated:
+            _zeroize_and_unlink(
+                orphan.transaction_fd,
+                _CREDENTIAL_FILENAME,
+                expected_device=orphan.credential_device,
+                expected_inode=orphan.credential_inode,
+            )
+            _remove_empty_transaction_directory(
+                bootstrap_fd,
+                orphan.transaction_id,
+                expected_device=orphan.transaction_device,
+                expected_inode=orphan.transaction_inode,
+            )
+            retired.append(orphan.transaction_id)
+        return tuple(retired)
+    finally:
+        for orphan in validated:
+            os.close(orphan.transaction_fd)
+        os.close(bootstrap_fd)
+
+
 @contextmanager
 def pinvi_bootstrap_credential_file(
     *,
@@ -396,6 +493,129 @@ def _open_bootstrap_directory(state_root: Path, *, create: bool) -> int:
         return bootstrap_fd
     finally:
         os.close(root_fd)
+
+
+def _open_existing_bootstrap_directory(state_root: Path) -> int | None:
+    """canonical state root 아래 기존 bootstrap directory만 race-safe하게 연다."""
+
+    no_follow = _required_no_follow_flag()
+    try:
+        root_before = state_root.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise DeploymentContractError(
+            "PinVi bootstrap state root is unavailable"
+        ) from exc
+    _validate_private_directory(root_before, "PinVi bootstrap state root")
+    try:
+        root_fd = os.open(state_root, os.O_RDONLY | os.O_DIRECTORY | no_follow)
+    except OSError as exc:
+        raise DeploymentContractError("PinVi bootstrap state root is unsafe") from exc
+    try:
+        root_after = os.fstat(root_fd)
+        _validate_private_directory(root_after, "PinVi bootstrap state root")
+        if (root_before.st_dev, root_before.st_ino) != (
+            root_after.st_dev,
+            root_after.st_ino,
+        ):
+            raise DeploymentContractError(
+                "PinVi bootstrap state root changed during open"
+            )
+        if (
+            _optional_lstat_at(
+                root_fd,
+                _BOOTSTRAP_DIRECTORY,
+                "PinVi bootstrap credential directory",
+            )
+            is None
+        ):
+            return None
+        bootstrap_fd, _metadata = _open_private_subdirectory(
+            root_fd,
+            _BOOTSTRAP_DIRECTORY,
+            label="PinVi bootstrap credential directory",
+            create=False,
+        )
+        return bootstrap_fd
+    finally:
+        os.close(root_fd)
+
+
+def _list_bootstrap_entries(bootstrap_fd: int) -> tuple[str, ...]:
+    try:
+        entries = os.listdir(bootstrap_fd)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "PinVi bootstrap credential directory cannot be enumerated"
+        ) from exc
+    if any(not isinstance(entry, str) for entry in entries):
+        raise DeploymentContractError(
+            "PinVi bootstrap credential directory contains an invalid entry"
+        )
+    return tuple(sorted(entries))
+
+
+def _validate_exact_transaction_contents(transaction_fd: int) -> os.stat_result:
+    try:
+        entries = os.listdir(transaction_fd)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "PinVi bootstrap transaction cannot be enumerated"
+        ) from exc
+    if entries != [_CREDENTIAL_FILENAME]:
+        raise DeploymentContractError(
+            "PinVi bootstrap transaction contains unexpected artifacts"
+        )
+    credential_stat = _lstat_at(
+        transaction_fd,
+        _CREDENTIAL_FILENAME,
+        "PinVi bootstrap credential artifact",
+    )
+    _validate_private_file_stat(credential_stat)
+    return credential_stat
+
+
+def _validate_orphaned_credential_unchanged(
+    bootstrap_fd: int,
+    orphan: _ValidatedOrphanedBootstrapCredential,
+) -> None:
+    transaction_stat = _lstat_at(
+        bootstrap_fd,
+        orphan.transaction_id,
+        "PinVi bootstrap transaction directory",
+    )
+    _validate_private_directory(
+        transaction_stat,
+        "PinVi bootstrap transaction directory",
+    )
+    if (transaction_stat.st_dev, transaction_stat.st_ino) != (
+        orphan.transaction_device,
+        orphan.transaction_inode,
+    ):
+        raise DeploymentContractError(
+            "PinVi bootstrap transaction changed before orphan cleanup"
+        )
+    opened_transaction = os.fstat(orphan.transaction_fd)
+    _validate_private_directory(
+        opened_transaction,
+        "PinVi bootstrap transaction directory",
+    )
+    if (opened_transaction.st_dev, opened_transaction.st_ino) != (
+        orphan.transaction_device,
+        orphan.transaction_inode,
+    ):
+        raise DeploymentContractError(
+            "PinVi bootstrap transaction changed during orphan cleanup"
+        )
+    credential_stat = _validate_exact_transaction_contents(orphan.transaction_fd)
+    if (credential_stat.st_dev, credential_stat.st_ino) != (
+        orphan.credential_device,
+        orphan.credential_inode,
+    ):
+        raise DeploymentContractError(
+            "PinVi bootstrap credential artifact changed before orphan cleanup"
+        )
 
 
 def _open_private_subdirectory(

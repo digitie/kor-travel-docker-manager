@@ -451,9 +451,13 @@ def test_dagster_metadata_identity_query_is_strict_and_uses_maintenance_database
         assert "role.rolname = 'map_dagster_metadata'" in arguments[-1]
         assert "role.rolcanlogin" in arguments[-1]
         assert "role.rolinherit" in arguments[-1]
+        assert "role.rolconnlimit" in arguments[-1]
+        assert "role.rolvaliduntil IS NULL" in arguments[-1]
+        assert "role.rolconfig" in arguments[-1]
+        assert "pg_catalog.pg_db_role_setting" in arguments[-1]
         return (
             b"7474747474747474747|map_dagster|127002|map_dagster_metadata|"
-            b"map_dagster_metadata|t|f|f|f|f|f|f|0|0\n"
+            b"map_dagster_metadata|t|f|f|f|f|f|f|-1|t|0|0|0|0\n"
         )
 
     monkeypatch.setattr(database_runtime, "_run_checked", Mock(side_effect=run_checked))
@@ -478,6 +482,10 @@ def test_dagster_metadata_identity_query_is_strict_and_uses_maintenance_database
         member_role_count=0,
         can_login=True,
         inherit=False,
+        connection_limit=-1,
+        valid_until_is_null=True,
+        role_config_count=0,
+        database_role_setting_count=0,
     )
 
 
@@ -490,7 +498,7 @@ def test_dagster_metadata_identity_rejects_privileged_or_membered_role(
         Mock(
             return_value=(
                 b"7474747474747474747|map_dagster|127002|map_dagster_metadata|"
-                b"map_dagster_metadata|t|f|t|f|f|f|f|0|0\n"
+                b"map_dagster_metadata|t|f|t|f|f|f|f|-1|t|0|0|0|0\n"
             )
         ),
     )
@@ -505,8 +513,12 @@ def test_dagster_metadata_identity_rejects_privileged_or_membered_role(
 @pytest.mark.parametrize(
     "role_flags",
     (
-        "f|f|f|f|f|f|f|0|0",
-        "t|t|f|f|f|f|f|0|0",
+        "f|f|f|f|f|f|f|-1|t|0|0|0|0",
+        "t|t|f|f|f|f|f|-1|t|0|0|0|0",
+        "t|f|f|f|f|f|f|0|t|0|0|0|0",
+        "t|f|f|f|f|f|f|-1|f|0|0|0|0",
+        "t|f|f|f|f|f|f|-1|t|1|0|0|0",
+        "t|f|f|f|f|f|f|-1|t|0|1|0|0",
     ),
 )
 def test_dagster_metadata_identity_rejects_login_attribute_drift(
@@ -550,8 +562,20 @@ def test_dagster_metadata_database_init_preflights_before_mutation(
     mutation.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    (
+        ("granted_role_count", 1),
+        ("connection_limit", 0),
+        ("valid_until_is_null", False),
+        ("role_config_count", 1),
+        ("database_role_setting_count", 1),
+    ),
+)
 def test_dagster_metadata_database_init_refuses_unsafe_existing_role_before_mutation(
     monkeypatch: pytest.MonkeyPatch,
+    attribute: str,
+    value: object,
 ) -> None:
     mutation = Mock()
     monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=None))
@@ -568,8 +592,24 @@ def test_dagster_metadata_database_init_refuses_unsafe_existing_role_before_muta
                     create_role=False,
                     replication=False,
                     bypass_rls=False,
-                    granted_role_count=1,
+                    granted_role_count=(
+                        value if attribute == "granted_role_count" else 0
+                    ),
                     member_role_count=0,
+                    connection_limit=(
+                        value if attribute == "connection_limit" else -1
+                    ),
+                    valid_until_is_null=(
+                        value if attribute == "valid_until_is_null" else True
+                    ),
+                    role_config_count=(
+                        value if attribute == "role_config_count" else 0
+                    ),
+                    database_role_setting_count=(
+                        value
+                        if attribute == "database_role_setting_count"
+                        else 0
+                    ),
                 ),
             )
         ),

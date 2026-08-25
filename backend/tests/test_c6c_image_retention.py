@@ -9,8 +9,10 @@ import pytest
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.c6c_image_retention import (
+    CANDIDATE_REPOSITORY_PREFIX,
     RETENTION_REPOSITORY_PREFIX,
     ensure_generation_references,
+    reconcile_candidate_build_references,
     reconcile_generation_references,
     require_empty_generation_retention_namespace,
     validate_retention_namespace_is_reserved,
@@ -71,6 +73,9 @@ class FakeDocker:
         self.references: dict[str, str] = {}
         self.commands: list[tuple[str, ...]] = []
         self.fail_tag_number: int | None = None
+        self.lose_remove_response_for: set[str] = set()
+        self.remove_stdout_for: dict[str, str] = {}
+        self.duplicate_candidate_listing_for: str | None = None
         self._tag_count = 0
 
     def run(self, arguments: Sequence[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -105,18 +110,72 @@ class FakeDocker:
             self.references[reference] = source
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         if docker_args[:2] == ("image", "ls"):
-            output = "".join(f"{reference}\n" for reference in sorted(self.references))
+            if docker_args[-1] == "--format={{.Repository}}:{{.Tag}}\t{{.ID}}":
+                output = "".join(
+                    f"{reference}\t{image_id}\n"
+                    for reference, image_id in sorted(self.references.items())
+                )
+                duplicate = self.duplicate_candidate_listing_for
+                if duplicate is not None:
+                    output += f"{duplicate}\t{self.references[duplicate]}\n"
+            else:
+                output = "".join(
+                    f"{reference}\n" for reference in sorted(self.references)
+                )
             return subprocess.CompletedProcess(command, 0, stdout=output, stderr="")
         if docker_args[:2] == ("image", "rm"):
             reference = docker_args[2]
             self.references.pop(reference, None)
+            if reference in self.lose_remove_response_for:
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
             return subprocess.CompletedProcess(
                 command,
                 0,
-                stdout=f"Untagged: {reference}\n",
+                stdout=self.remove_stdout_for.get(
+                    reference,
+                    f"Untagged: {reference}\n",
+                ),
                 stderr="",
             )
         raise AssertionError(command)
+
+
+_CANDIDATE_SERVICES = (
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "pinvi-api",
+    "pinvi-web",
+    "pinvi-dagster",
+)
+
+
+def _candidate_references(
+    generation: PinnedRuntimeGeneration,
+    *,
+    pinset_sha256: str | None = None,
+) -> dict[str, str]:
+    pinset = pinset_sha256 or generation.pinset_sha256
+    return {
+        service: f"{CANDIDATE_REPOSITORY_PREFIX}{service}:{pinset}"
+        for service in _CANDIDATE_SERVICES
+    }
+
+
+def _install_candidate_references(
+    docker: FakeDocker,
+    generation: PinnedRuntimeGeneration,
+    *,
+    pinset_sha256: str | None = None,
+) -> dict[str, str]:
+    references = _candidate_references(generation, pinset_sha256=pinset_sha256)
+    docker.references.update(
+        {
+            reference: generation.image_ids[service]
+            for service, reference in references.items()
+        }
+    )
+    return references
 
 
 def test_reconcile_keeps_single_active_generation_with_all_seven_images(
@@ -230,7 +289,11 @@ def test_bootstrap_rejects_unresolved_retention_residue(
         require_empty_generation_retention_namespace(cwd="/tmp")
 
 
-def test_compose_image_cannot_use_retention_namespace() -> None:
+@pytest.mark.parametrize(
+    "prefix",
+    (RETENTION_REPOSITORY_PREFIX, CANDIDATE_REPOSITORY_PREFIX),
+)
+def test_compose_image_cannot_use_retention_namespace(prefix: str) -> None:
     validate_retention_namespace_is_reserved(
         {"services": {"api": {"image": "example/api:latest"}}}
     )
@@ -240,7 +303,7 @@ def test_compose_image_cannot_use_retention_namespace() -> None:
             {
                 "services": {
                     "api": {
-                        "image": f"{RETENTION_REPOSITORY_PREFIX}api:latest",
+                        "image": f"{prefix}api:latest",
                     }
                 }
             }
@@ -303,3 +366,152 @@ def test_invalid_reference_in_owned_namespace_blocks_reconciliation(
 
     with pytest.raises(DeploymentContractError, match="invalid reference"):
         reconcile_generation_references((generation,), cwd="/tmp")
+
+
+def test_candidate_reconcile_removes_stale_pinset_and_preserves_active_six(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = _generation("abcdef1", "6")
+    stale = _generation("2345678", "7")
+    docker = FakeDocker(active, stale)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    ensure_generation_references((active,), cwd="/tmp")
+    active_references = _install_candidate_references(docker, active)
+    stale_references = _install_candidate_references(
+        docker,
+        stale,
+        pinset_sha256="8" * 64,
+    )
+
+    report = reconcile_candidate_build_references(
+        active_references,
+        active,
+        cwd="/tmp",
+    )
+
+    assert report.ensured == 0
+    assert report.removed == 6
+    assert {
+        reference
+        for reference in docker.references
+        if reference.startswith(CANDIDATE_REPOSITORY_PREFIX)
+    } == set(active_references.values())
+    assert set(stale_references.values()).isdisjoint(docker.references)
+    assert all(
+        docker.references[reference] == active.image_ids[service]
+        for service, reference in active_references.items()
+    )
+
+
+def test_candidate_reconcile_requires_content_retention_before_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = _generation("abcdef1", "6")
+    stale = _generation("2345678", "7")
+    docker = FakeDocker(active, stale)
+    active_references = _install_candidate_references(docker, active)
+    _install_candidate_references(docker, stale, pinset_sha256="8" * 64)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+
+    with pytest.raises(DeploymentContractError, match="retained content"):
+        reconcile_candidate_build_references(active_references, active, cwd="/tmp")
+
+    assert not any(command[1:3] == ("image", "rm") for command in docker.commands)
+
+
+def test_candidate_reconcile_recovers_from_remove_response_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = _generation("abcdef1", "6")
+    stale = _generation("2345678", "7")
+    docker = FakeDocker(active, stale)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    ensure_generation_references((active,), cwd="/tmp")
+    active_references = _install_candidate_references(docker, active)
+    stale_references = _install_candidate_references(
+        docker,
+        stale,
+        pinset_sha256="8" * 64,
+    )
+    lost_response_reference = next(iter(stale_references.values()))
+    docker.lose_remove_response_for.add(lost_response_reference)
+
+    report = reconcile_candidate_build_references(
+        active_references,
+        active,
+        cwd="/tmp",
+    )
+
+    assert report.removed == 6
+    assert lost_response_reference not in docker.references
+    assert set(active_references.values()) <= docker.references.keys()
+
+
+def test_candidate_reconcile_accepts_strict_docker_deleted_image_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = _generation("abcdef1", "6")
+    stale = _generation("2345678", "7")
+    docker = FakeDocker(active, stale)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    ensure_generation_references((active,), cwd="/tmp")
+    active_references = _install_candidate_references(docker, active)
+    stale_references = _install_candidate_references(
+        docker,
+        stale,
+        pinset_sha256="8" * 64,
+    )
+    removed_reference = next(iter(stale_references.values()))
+    docker.remove_stdout_for[removed_reference] = (
+        f"Untagged: {removed_reference}\nDeleted: {_image('9')}\n"
+    )
+
+    report = reconcile_candidate_build_references(
+        active_references,
+        active,
+        cwd="/tmp",
+    )
+
+    assert report.removed == 6
+    assert set(active_references.values()) <= docker.references.keys()
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_candidate_reconcile_rejects_foreign_or_ambiguous_owned_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    ambiguous: bool,
+) -> None:
+    active = _generation("abcdef1", "6")
+    docker = FakeDocker(active)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    ensure_generation_references((active,), cwd="/tmp")
+    active_references = _install_candidate_references(docker, active)
+    if ambiguous:
+        docker.duplicate_candidate_listing_for = next(iter(active_references.values()))
+        expected = "ambiguous reference"
+    else:
+        foreign = f"{CANDIDATE_REPOSITORY_PREFIX}foreign-service:{'8' * 64}"
+        docker.references[foreign] = active.map_api_image_id
+        expected = "invalid reference"
+
+    with pytest.raises(DeploymentContractError, match=expected):
+        reconcile_candidate_build_references(active_references, active, cwd="/tmp")
+
+    assert not any(command[1:3] == ("image", "rm") for command in docker.commands)
+
+
+def test_candidate_reconcile_rejects_active_reference_content_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = _generation("abcdef1", "6")
+    other = _generation("2345678", "7")
+    docker = FakeDocker(active, other)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    ensure_generation_references((active,), cwd="/tmp")
+    active_references = _install_candidate_references(docker, active)
+    docker.references[active_references["kor-travel-map-api"]] = other.map_api_image_id
+
+    with pytest.raises(DeploymentContractError, match="active candidate reference changed"):
+        reconcile_candidate_build_references(active_references, active, cwd="/tmp")
+
+    assert not any(command[1:3] == ("image", "rm") for command in docker.commands)

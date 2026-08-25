@@ -34,16 +34,16 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 
 현재 원격 후보:
 
-- Map PR #1064: `d0ced47128c2b175bcd22d7e44fa979512ccf203`
-- Manager PR #197: `da49ec7e858e4aa6e95457e664184e42688885e4`
-- release pinset: `f95428ea5ee1f5583bada5a53ecb72cc75e7ed55560850e1032f5d3eeb9b6331`
-- 로컬 sealed paired build: 새 Map pin `d0ced471…` 기준 재생성 대기. 이전 pin의 image·receipt는
+- Map PR #1064: `e6234b149fe663e9b19ef3290d9566db4d4c447d`
+- Manager PR #197: 로컬 hardening checkpoint 커밋·push 대기
+- release pinset: `4053ec3d3269eda4b1faafa13b5b6839aebbd18dd81b7a337edcd63e22873008`
+- 로컬 sealed paired build: 새 Map pin `e6234b14…` 기준 재생성 대기. 이전 pin의 image·receipt는
   release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
 
 남은 작업:
 
 - [/] DB crash/resume/identity/fence/permit 관점과 Compose/provenance/security 관점의 독립 전문 리뷰
-  2건을 받고 P0/P1을 해결한다.
+  2건의 1차 finding을 반영했다. exact 최종 commit 재검토에서 P0/P1=0을 확인한다.
 - [ ] Map PR #1064의 Python 3.11/3.12/3.13, lint, type/frontend, OpenAPI/fixture CI를 모두 green으로
   만든 뒤 merge한다.
 - [ ] Map merge 뒤 Manager PR #197을 최신 `main`에 rebase하고 Map exact commit·pinset·paired candidate

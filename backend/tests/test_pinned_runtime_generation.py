@@ -24,6 +24,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     MapApplication300OperationPlan,
     PinnedRuntimeCancelProbeOutcome,
     PinnedRuntimeCancelProbeReceipt,
+    PinnedRuntimeDatabaseIdentity,
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
@@ -90,6 +91,16 @@ def _application_create_database_identity() -> (
         database_oid=127001,
         database_owner="kor_travel_map",
         postgres_system_identifier="7474747474747474747",
+    )
+
+
+def _pinvi_database_identity() -> PinnedRuntimeDatabaseIdentity:
+    return PinnedRuntimeDatabaseIdentity(
+        system_identifier="8585858585858585858",
+        name="pinvi",
+        oid=127003,
+        owner="pinvi",
+        login_role="pinvi",
     )
 
 
@@ -192,6 +203,7 @@ def _copy_journal(
         compose_sha256=journal.compose_sha256,
         resolved_compose_sha256=journal.resolved_compose_sha256,
         created_at=journal.created_at,
+        pinvi_database_identity=journal.pinvi_database_identity,
         journal_generation=(
             journal.journal_generation
             if journal_generation is None
@@ -210,7 +222,9 @@ def _journal_with_application_roles_ready() -> PinnedRuntimeRebuildJournal:
     return (
         _journal()
         .transition("reset_intent_durable")
-        .transition("databases_recreated")
+        .with_databases_recreated(
+            pinvi_database_identity=_pinvi_database_identity()
+        )
         .with_application_create_intent()
         .with_application_created(
             application_create_database_identity=(
@@ -459,7 +473,12 @@ def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path
 
 
 def test_rebuild_journal_application_300_phases_require_evidence_methods() -> None:
-    journal = _journal().transition("reset_intent_durable").transition("databases_recreated")
+    reset_intent = _journal().transition("reset_intent_durable")
+    with pytest.raises(DeploymentContractError, match="evidence-specific"):
+        reset_intent.transition("databases_recreated")
+    journal = reset_intent.with_databases_recreated(
+        pinvi_database_identity=_pinvi_database_identity()
+    )
 
     assert journal.journal_generation == REBUILD_PHASES.index("databases_recreated")
     with pytest.raises(DeploymentContractError, match="evidence-specific"):
@@ -570,7 +589,9 @@ def test_application_create_and_bootstrap_receipts_bind_one_database_identity() 
     journal = (
         _journal()
         .transition("reset_intent_durable")
-        .transition("databases_recreated")
+        .with_databases_recreated(
+            pinvi_database_identity=_pinvi_database_identity()
+        )
         .with_application_create_intent()
     )
     created = journal.with_application_created(
@@ -650,7 +671,9 @@ def test_rebuild_journal_application_300_journal_generation_is_monotonic() -> No
 
     journal = journal.transition("reset_intent_durable")
     observed.append(journal.journal_generation)
-    journal = journal.transition("databases_recreated")
+    journal = journal.with_databases_recreated(
+        pinvi_database_identity=_pinvi_database_identity()
+    )
     observed.append(journal.journal_generation)
     journal = journal.with_application_create_intent()
     observed.append(journal.journal_generation)
@@ -708,7 +731,9 @@ def test_rebuild_journal_application_300_journal_generation_is_monotonic() -> No
 
 
 def test_rebuild_journal_application_300_rejects_missing_or_future_evidence() -> None:
-    base = _journal().transition("reset_intent_durable").transition("databases_recreated")
+    base = _journal().transition("reset_intent_durable").with_databases_recreated(
+        pinvi_database_identity=_pinvi_database_identity()
+    )
 
     with pytest.raises(DeploymentContractError, match="lacks required evidence"):
         _copy_journal(

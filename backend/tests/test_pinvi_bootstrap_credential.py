@@ -20,6 +20,7 @@ from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     cleanup_pinvi_bootstrap_credential,
     create_pinvi_bootstrap_credential,
     pinvi_bootstrap_credential_file,
+    reconcile_orphaned_pinvi_bootstrap_credentials,
     retire_stale_pinvi_bootstrap_credential,
 )
 
@@ -203,6 +204,148 @@ def test_retire_stale_credential_removes_only_exact_transaction_after_runner_exi
         state_paths=state_paths,
         values=values,
     )
+
+
+def test_global_reconcile_retires_old_transactions_before_new_pin_resumes(
+    tmp_path: Path,
+) -> None:
+    first, state_paths, values = _credential(tmp_path)
+    second = create_pinvi_bootstrap_credential(
+        state_paths=state_paths,
+        values=values,
+        transaction_id=str(uuid.uuid4()),
+        email=_EMAIL,
+        password=_PASSWORD,
+    )
+
+    retired = reconcile_orphaned_pinvi_bootstrap_credentials(
+        state_paths=state_paths,
+        values=values,
+        global_mutation_lock_held=True,
+        all_one_shot_containers_absent=True,
+    )
+
+    assert retired == tuple(sorted((first.transaction_id, second.transaction_id)))
+    assert not first.path.exists()
+    assert not second.path.exists()
+
+    resumed = create_pinvi_bootstrap_credential(
+        state_paths=state_paths,
+        values=values,
+        transaction_id=str(uuid.uuid4()),
+        email=_EMAIL,
+        password=_PASSWORD,
+    )
+    assert resumed.path.is_file()
+    cleanup_pinvi_bootstrap_credential(
+        resumed,
+        state_paths=state_paths,
+        values=values,
+    )
+
+
+def test_global_reconcile_accepts_absent_state_root_after_required_proofs(
+    tmp_path: Path,
+) -> None:
+    state_paths, values = _state_paths(tmp_path)
+
+    assert reconcile_orphaned_pinvi_bootstrap_credentials(
+        state_paths=state_paths,
+        values=values,
+        global_mutation_lock_held=True,
+        all_one_shot_containers_absent=True,
+    ) == ()
+    assert not state_paths.state_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("global_mutation_lock_held", "all_one_shot_containers_absent", "message"),
+    [
+        (False, True, "global mutation lock"),
+        (True, False, "all one-shot containers absent"),
+    ],
+)
+def test_global_reconcile_requires_lock_and_inactive_one_shot_proofs_without_mutation(
+    tmp_path: Path,
+    global_mutation_lock_held: bool,
+    all_one_shot_containers_absent: bool,
+    message: str,
+) -> None:
+    credential, state_paths, values = _credential(tmp_path)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        reconcile_orphaned_pinvi_bootstrap_credentials(
+            state_paths=state_paths,
+            values=values,
+            global_mutation_lock_held=global_mutation_lock_held,
+            all_one_shot_containers_absent=all_one_shot_containers_absent,
+        )
+
+    assert credential.path.is_file()
+    cleanup_pinvi_bootstrap_credential(
+        credential,
+        state_paths=state_paths,
+        values=values,
+    )
+
+
+def test_global_reconcile_fails_closed_on_malformed_transaction_without_partial_cleanup(
+    tmp_path: Path,
+) -> None:
+    credential, state_paths, values = _credential(tmp_path)
+    malformed = credential.path.parent.parent / "not-a-canonical-uuid"
+    malformed.mkdir(mode=0o700)
+
+    with pytest.raises(DeploymentContractError, match="transaction ID is invalid"):
+        reconcile_orphaned_pinvi_bootstrap_credentials(
+            state_paths=state_paths,
+            values=values,
+            global_mutation_lock_held=True,
+            all_one_shot_containers_absent=True,
+        )
+
+    assert credential.path.is_file()
+    assert malformed.is_dir()
+
+
+def test_global_reconcile_fails_closed_on_symlink_transaction_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    credential, state_paths, values = _credential(tmp_path)
+    foreign = tmp_path / "foreign-transaction"
+    foreign.mkdir(mode=0o700)
+    symlink = credential.path.parent.parent / str(uuid.uuid4())
+    symlink.symlink_to(foreign, target_is_directory=True)
+
+    with pytest.raises(DeploymentContractError, match="transaction directory is unsafe"):
+        reconcile_orphaned_pinvi_bootstrap_credentials(
+            state_paths=state_paths,
+            values=values,
+            global_mutation_lock_held=True,
+            all_one_shot_containers_absent=True,
+        )
+
+    assert credential.path.is_file()
+    assert symlink.is_symlink()
+
+
+def test_global_reconcile_fails_closed_on_unexpected_transaction_file(
+    tmp_path: Path,
+) -> None:
+    credential, state_paths, values = _credential(tmp_path)
+    unexpected = credential.path.parent / "unexpected"
+    unexpected.write_text("not manager credential data", encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError, match="unexpected artifacts"):
+        reconcile_orphaned_pinvi_bootstrap_credentials(
+            state_paths=state_paths,
+            values=values,
+            global_mutation_lock_held=True,
+            all_one_shot_containers_absent=True,
+        )
+
+    assert credential.path.is_file()
+    assert unexpected.is_file()
 
 
 def test_create_rejects_forged_owner_private_state_root(tmp_path: Path) -> None:

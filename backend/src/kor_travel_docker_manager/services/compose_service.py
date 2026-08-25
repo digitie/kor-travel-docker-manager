@@ -62,6 +62,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 )
 from kor_travel_docker_manager.services.c6c_image_retention import (
     ensure_generation_references,
+    reconcile_candidate_build_references,
     reconcile_generation_references,
 )
 from kor_travel_docker_manager.services.database_runtime import (
@@ -72,6 +73,7 @@ from kor_travel_docker_manager.services.database_runtime import (
 )
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
+    PinnedDatabaseIdentity,
     create_fresh_application_300_database,
     database_runtimes_from_frozen_contract,
     initialize_application_300_dagster_metadata_database,
@@ -79,6 +81,7 @@ from kor_travel_docker_manager.services.database_runtime import (
     read_application_300_dagster_metadata_identity,
     read_application_300_database_identity,
     read_database_schema_revision,
+    read_pinned_database_identity,
     reset_databases_for_application_300,
 )
 from kor_travel_docker_manager.services.map_application_300 import (
@@ -97,6 +100,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     build_dagster_metadata_permit,
     build_fresh_finalize_fence,
     build_fresh_migration_fence,
+    parse_fresh_finalize_missing_receipt,
     parse_fresh_finalize_result,
     parse_fresh_root_result,
     publish_root_read_only_artifact,
@@ -119,6 +123,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     MapApplication300OperationPlan,
     PinnedRuntimeCancelProbeOutcome,
     PinnedRuntimeCancelProbeReceipt,
+    PinnedRuntimeDatabaseIdentity,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
     RebuildPhase,
@@ -160,7 +165,7 @@ from kor_travel_docker_manager.services.pinned_runtime_sources import (
 )
 from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     pinvi_bootstrap_credential_file,
-    retire_stale_pinvi_bootstrap_credential,
+    reconcile_orphaned_pinvi_bootstrap_credentials,
 )
 from kor_travel_docker_manager.services.registry import (
     init_steps_for_target,
@@ -2417,6 +2422,23 @@ def _application_300_journal_database_identity(
         ) from exc
 
 
+def _pinned_runtime_journal_database_identity(
+    identity: PinnedDatabaseIdentity,
+) -> PinnedRuntimeDatabaseIdentity:
+    try:
+        return PinnedRuntimeDatabaseIdentity(
+            system_identifier=identity.system_identifier,
+            name=identity.name,
+            oid=identity.oid,
+            owner=identity.owner,
+            login_role=identity.login_role,
+        )
+    except DeploymentContractError as exc:
+        raise DeploymentContractError(
+            "pinned runtime database identity is invalid"
+        ) from exc
+
+
 def _application_300_dagster_identities(
     identity: RuntimeDagsterMetadataDatabaseIdentity,
 ) -> tuple[DagsterDatabaseIdentity, MapApplication300DagsterMetadataDatabaseIdentity]:
@@ -2431,6 +2453,12 @@ def _application_300_dagster_identities(
             bypass_rls=identity.login_role_attributes.bypass_rls,
             granted_role_count=identity.login_role_attributes.granted_role_count,
             member_role_count=identity.login_role_attributes.member_role_count,
+            connection_limit=identity.login_role_attributes.connection_limit,
+            valid_until_is_null=identity.login_role_attributes.valid_until_is_null,
+            role_config_count=identity.login_role_attributes.role_config_count,
+            database_role_setting_count=(
+                identity.login_role_attributes.database_role_setting_count
+            ),
         )
         journal_attributes = MapApplication300DagsterMetadataRoleAttributes(
             can_login=identity.login_role_attributes.can_login,
@@ -2442,6 +2470,12 @@ def _application_300_dagster_identities(
             bypass_rls=identity.login_role_attributes.bypass_rls,
             granted_role_count=identity.login_role_attributes.granted_role_count,
             member_role_count=identity.login_role_attributes.member_role_count,
+            connection_limit=identity.login_role_attributes.connection_limit,
+            valid_until_is_null=identity.login_role_attributes.valid_until_is_null,
+            role_config_count=identity.login_role_attributes.role_config_count,
+            database_role_setting_count=(
+                identity.login_role_attributes.database_role_setting_count
+            ),
         )
         contract_identity = DagsterDatabaseIdentity(
             system_identifier=identity.system_identifier,
@@ -2595,6 +2629,30 @@ def _application_300_finalize_result(
             "application 300 finalize result differs from plan"
         )
     return result
+
+
+def _application_300_finalize_missing_receipt(
+    *,
+    raw: bytes,
+    candidate: MapApplication300Candidate,
+    prior: FreshRootResult,
+    plan: MapApplication300OperationPlan,
+) -> None:
+    try:
+        result = parse_fresh_finalize_missing_receipt(
+            raw,
+            contract=candidate.application_contract,
+            candidate=_application_300_execution_candidate(candidate),
+            prior=prior,
+        )
+    except MapApplication300ContractError as exc:
+        raise DeploymentContractError(
+            "application 300 finalize missing-receipt proof is invalid"
+        ) from exc
+    if result.operation_id != plan.operation_id:
+        raise DeploymentContractError(
+            "application 300 finalize missing-receipt proof differs from plan"
+        )
 
 
 def _application_300_plan_expired(plan: MapApplication300OperationPlan) -> bool:
@@ -4276,7 +4334,7 @@ class ComposeService:
 
         `docker compose run --rm`의 Manager process가 강제 종료되면 Docker
         container가 계속 DB에 연결할 수 있다. 동일 frozen project/service label로만
-        stop+remove한 뒤 `ps --all`에서 exact two service가 사라진 것을 확인한다.
+        stop+remove한 뒤 `ps --all`에서 exact seven service가 사라진 것을 확인한다.
         어느 단계라도 불명확하면 DB reset 전에 fail-close한다.
         """
 
@@ -4424,6 +4482,116 @@ class ComposeService:
             raise DeploymentContractError(
                 "pinned runtime database schema differs from committed generation"
             )
+
+    @staticmethod
+    def _assert_committed_application_database_identities(
+        runtimes: Sequence[Any],
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        metadata_user: str,
+    ) -> None:
+        """committed fast path에서도 application/Dagster DB identity를 재대조한다."""
+
+        if len(runtimes) != 3 or not metadata_user:
+            raise DeploymentContractError(
+                "pinned runtime committed database identity input is incomplete"
+            )
+        evidence = journal.map_application_300_execution_evidence
+        expected_application = evidence.application_database_identity
+        expected_dagster = evidence.dagster_metadata_database_identity
+        if expected_application is None or expected_dagster is None:
+            raise DeploymentContractError(
+                "pinned runtime committed database identity evidence is incomplete"
+            )
+        live_application = _application_300_journal_database_identity(
+            read_application_300_database_identity(runtimes[0])
+        )
+        if live_application != expected_application:
+            raise DeploymentContractError(
+                "Map application database identity differs from committed journal"
+            )
+        _contract_dagster, live_dagster = _application_300_dagster_identities(
+            read_application_300_dagster_metadata_identity(
+                runtimes[1],
+                metadata_user=metadata_user,
+            )
+        )
+        if live_dagster != expected_dagster:
+            raise DeploymentContractError(
+                "Map Dagster metadata identity differs from committed journal"
+            )
+        expected_pinvi = journal.pinvi_database_identity
+        if expected_pinvi is None:
+            raise DeploymentContractError(
+                "PinVi database identity evidence is incomplete"
+            )
+        live_pinvi = _pinned_runtime_journal_database_identity(
+            read_pinned_database_identity(runtimes[2])
+        )
+        if live_pinvi != expected_pinvi:
+            raise DeploymentContractError(
+                "PinVi database identity differs from committed journal"
+            )
+
+    def _assert_committed_postgres_images(
+        self,
+        records: Sequence[Mapping[str, Any]],
+        *,
+        transaction: ComposeTransactionSnapshot,
+        map_candidate: MapApplication300Candidate,
+    ) -> None:
+        """두 PostgreSQL container를 frozen Compose와 paired Map image에 결박한다."""
+
+        services = transaction.resolved.get("services")
+        if not isinstance(services, Mapping):
+            raise DeploymentContractError(
+                "pinned runtime resolved PostgreSQL services are invalid"
+            )
+        expected_records = {
+            "kor-travel-map-postgres": map_candidate.postgres_image_id,
+        }
+        pinvi_service = services.get("pinvi-postgres")
+        pinvi_reference = (
+            pinvi_service.get("image") if isinstance(pinvi_service, Mapping) else None
+        )
+        if (
+            not isinstance(pinvi_reference, str)
+            or re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", pinvi_reference) is None
+        ):
+            raise DeploymentContractError(
+                "PinVi PostgreSQL resolved image is not digest-pinned"
+            )
+        expected_records["pinvi-postgres"] = self._inspect_image_reference_id(
+            pinvi_reference,
+            label="PinVi PostgreSQL",
+        )
+        observed: dict[str, str] = {}
+        for record in records:
+            service = record.get("Service")
+            name = record.get("Name")
+            if (
+                not isinstance(service, str)
+                or service not in expected_records
+                or service in observed
+                or not isinstance(name, str)
+                or not name
+            ):
+                raise DeploymentContractError(
+                    "pinned runtime PostgreSQL container evidence is invalid"
+                )
+            observed[service] = self._inspect_container_image_id(
+                name,
+                label=service,
+            )
+        if set(observed) != set(expected_records):
+            raise DeploymentContractError(
+                "pinned runtime PostgreSQL container evidence is incomplete"
+            )
+        for service, expected_image in expected_records.items():
+            if observed[service] != expected_image:
+                raise DeploymentContractError(
+                    f"{service} runtime image differs from committed generation"
+                )
 
     def _assert_pinned_runtime_container_images(
         self,
@@ -4911,6 +5079,18 @@ class ComposeService:
                 environment_snapshot.effective,
                 require_nonempty=True,
             )
+            prebuild_transaction, _ = self._capture_transaction_unlocked(
+                environment_override=None,
+                environment_snapshot=environment_snapshot,
+            )
+            _assert_transaction_matches_c6c_lock(prebuild_transaction, lock_snapshot)
+            # 외부 prerequisite는 source materialize, paired builder, image tag,
+            # receipt/journal write보다 먼저 base frozen Compose에서 확인한다.
+            self._require_services_ready(
+                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
+                transaction=prebuild_transaction,
+                frozen_recovery=True,
+            )
             release = current_pinned_runtime_release()
             state_paths = pinned_runtime_state_paths(
                 environment_snapshot.effective,
@@ -4949,6 +5129,10 @@ class ComposeService:
                 sources=sources,
                 map_application_300_candidate=map_candidate,
             )
+            candidate_build_references = {
+                **paired_build_images,
+                **build.image_names,
+            }
             candidate_environment = {
                 **build.compose_environment(),
                 **artifact_directories.compose_environment(),
@@ -5090,7 +5274,29 @@ class ComposeService:
                     runtime_records,
                     journal=journal,
                 )
+                postgres_records = self._require_services_ready(
+                    ("kor-travel-map-postgres", "pinvi-postgres"),
+                    transaction=runtime_transaction,
+                    frozen_recovery=True,
+                )
+                self._assert_committed_postgres_images(
+                    postgres_records,
+                    transaction=runtime_transaction,
+                    map_candidate=map_candidate,
+                )
                 self._assert_pinned_runtime_database_heads(runtimes, journal=journal)
+                metadata_user = runtime_transaction.environment.effective.get(
+                    "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+                )
+                if not isinstance(metadata_user, str):
+                    raise DeploymentContractError(
+                        "Map Dagster metadata user is unavailable"
+                    )
+                self._assert_committed_application_database_identities(
+                    runtimes,
+                    journal=journal,
+                    metadata_user=metadata_user,
+                )
                 config = load_c6c_deployment_config_from_environment(
                     runtime_transaction.environment.effective
                 )
@@ -5108,6 +5314,11 @@ class ComposeService:
                     )
                 reconcile_generation_references(
                     (journal.candidate,),
+                    cwd=get_project_root(),
+                )
+                reconcile_candidate_build_references(
+                    candidate_build_references,
+                    journal.candidate,
                     cwd=get_project_root(),
                 )
                 return self._pinned_runtime_result(journal, resumed=True)
@@ -5131,10 +5342,11 @@ class ComposeService:
                 self._retire_pinned_runtime_oneshot_writers(
                     transaction=runtime_transaction,
                 )
-                retire_stale_pinvi_bootstrap_credential(
+                reconcile_orphaned_pinvi_bootstrap_credentials(
                     state_paths=state_paths,
                     values=environment_snapshot.effective,
-                    transaction_id=journal.transaction_id,
+                    global_mutation_lock_held=True,
+                    all_one_shot_containers_absent=True,
                 )
 
                 # Map 두 DB runtime은 shared PostgreSQL이 아니라 #171 전용 instance에,
@@ -5184,12 +5396,33 @@ class ComposeService:
                 reset_required = _pinned_runtime_reset_required(journal)
                 if reset_required:
                     reset_databases_for_application_300(runtimes)
-                    updated = self._advance_pinned_runtime_journal(
-                        journal, "databases_recreated"
+                    pinvi_database_identity = _pinned_runtime_journal_database_identity(
+                        read_pinned_database_identity(runtimes[2])
+                    )
+                    updated = journal.with_databases_recreated(
+                        pinvi_database_identity=pinvi_database_identity
                     )
                     if updated != journal:
                         write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                         journal = updated
+                else:
+                    expected_pinvi_database_identity = journal.pinvi_database_identity
+                    if expected_pinvi_database_identity is None:
+                        raise DeploymentContractError(
+                            "pinned runtime journal has no PinVi database identity"
+                        )
+                    live_pinvi_database_identity = (
+                        _pinned_runtime_journal_database_identity(
+                            read_pinned_database_identity(runtimes[2])
+                        )
+                    )
+                    if (
+                        live_pinvi_database_identity
+                        != expected_pinvi_database_identity
+                    ):
+                        raise DeploymentContractError(
+                            "PinVi database identity differs from rebuild journal"
+                        )
 
                 journal, application_database = (
                     self._converge_application_300_database_bootstrap(
@@ -5495,13 +5728,42 @@ class ComposeService:
                             finalize_result_raw = finalize_recover_stdout.encode(
                                 "utf-8"
                             )
-                        except DeploymentContractError as recover_error:
-                            if read_database_schema_revision(runtimes[0]) != (
-                                journal.candidate.map_application_head
-                            ):
+                        except DeploymentContractError:
+                            try:
+                                missing_probe_command = (
+                                    self._run_pinned_runtime_rebuild_compose(
+                                        [
+                                            "--profile",
+                                            "bootstrap",
+                                            "run",
+                                            "--rm",
+                                            "--no-deps",
+                                            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+                                            "probe-missing",
+                                            "--operation-id",
+                                            finalize_plan.operation_id,
+                                        ],
+                                        transaction=runtime_transaction,
+                                    )
+                                )
+                                missing_probe_stdout = missing_probe_command.get(
+                                    "stdout"
+                                )
+                                if not isinstance(missing_probe_stdout, str):
+                                    raise DeploymentContractError(
+                                        "application 300 finalize missing-receipt "
+                                        "proof output is invalid"
+                                    )
+                                _application_300_finalize_missing_receipt(
+                                    raw=missing_probe_stdout.encode("utf-8"),
+                                    candidate=map_candidate,
+                                    prior=root_result,
+                                    plan=finalize_plan,
+                                )
+                            except DeploymentContractError as probe_error:
                                 raise DeploymentContractError(
                                     "application 300 finalize execution result is uncertain"
-                                ) from recover_error
+                                ) from probe_error
                             if _application_300_plan_expired(finalize_plan):
                                 journal, finalize_plan = (
                                     self._renew_fresh_finalize_operation_plan(
@@ -5992,6 +6254,11 @@ class ComposeService:
                     (journal.candidate,),
                     cwd=get_project_root(),
                 )
+                reconcile_candidate_build_references(
+                    candidate_build_references,
+                    journal.candidate,
+                    cwd=get_project_root(),
+                )
                 updated = self._advance_pinned_runtime_journal(journal, "committed")
                 if updated != journal:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
@@ -6006,10 +6273,11 @@ class ComposeService:
                     self._retire_pinned_runtime_oneshot_writers(
                         transaction=runtime_transaction,
                     )
-                    retire_stale_pinvi_bootstrap_credential(
+                    reconcile_orphaned_pinvi_bootstrap_credentials(
                         state_paths=state_paths,
                         values=environment_snapshot.effective,
-                        transaction_id=journal.transaction_id,
+                        global_mutation_lock_held=True,
+                        all_one_shot_containers_absent=True,
                     )
                 except Exception as cleanup_error:
                     raise DeploymentContractError(

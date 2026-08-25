@@ -178,6 +178,7 @@ _CANCEL_PROBE_STAGES: tuple[CancelProbeStage, ...] = (
 )
 _APPLICATION_300_CONTROLLED_PHASES: frozenset[RebuildPhase] = frozenset(
     {
+        "databases_recreated",
         "application_create_intent_durable",
         "application_created",
         "application_bootstrap_intent_durable",
@@ -717,6 +718,35 @@ class MapApplication300ApplicationDatabaseIdentity:
 
 
 @dataclass(frozen=True)
+class PinnedRuntimeDatabaseIdentity:
+    """PinVi DB를 committed generation에 재검증 가능한 identity로 고정한다."""
+
+    system_identifier: str
+    name: str
+    oid: int
+    owner: str
+    login_role: str
+
+    def __post_init__(self) -> None:
+        if _POSTGRES_SYSTEM_IDENTIFIER.fullmatch(self.system_identifier) is None:
+            raise DeploymentContractError("pinned runtime database system identifier is invalid")
+        for identifier in (self.name, self.owner, self.login_role):
+            if _DATABASE_IDENTIFIER.fullmatch(identifier) is None:
+                raise DeploymentContractError("pinned runtime database identity is invalid")
+        if type(self.oid) is not int or self.oid <= 0 or self.owner != self.login_role:
+            raise DeploymentContractError("pinned runtime database identity is invalid")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "system_identifier": self.system_identifier,
+            "name": self.name,
+            "oid": self.oid,
+            "owner": self.owner,
+            "login_role": self.login_role,
+        }
+
+
+@dataclass(frozen=True)
 class MapApplication300DagsterMetadataRoleAttributes:
     """Dagster metadata login role의 fail-closed privilege snapshot."""
 
@@ -729,6 +759,10 @@ class MapApplication300DagsterMetadataRoleAttributes:
     member_role_count: int
     can_login: bool = True
     inherit: bool = False
+    connection_limit: int = -1
+    valid_until_is_null: bool = True
+    role_config_count: int = 0
+    database_role_setting_count: int = 0
 
     def __post_init__(self) -> None:
         for flag in (
@@ -750,6 +784,19 @@ class MapApplication300DagsterMetadataRoleAttributes:
                     "Map application 300 Dagster metadata role membership is invalid"
                 )
         if (
+            type(self.connection_limit) is not int
+            or self.connection_limit < -1
+            or type(self.valid_until_is_null) is not bool
+        ):
+            raise DeploymentContractError(
+                "Map application 300 Dagster metadata role persistence is invalid"
+            )
+        for count in (self.role_config_count, self.database_role_setting_count):
+            if type(count) is not int or count < 0:
+                raise DeploymentContractError(
+                    "Map application 300 Dagster metadata role setting is invalid"
+                )
+        if (
             not self.can_login
             or self.inherit
             or self.superuser
@@ -757,6 +804,10 @@ class MapApplication300DagsterMetadataRoleAttributes:
             or self.create_role
             or self.replication
             or self.bypass_rls
+            or self.connection_limit != -1
+            or not self.valid_until_is_null
+            or self.role_config_count != 0
+            or self.database_role_setting_count != 0
             or self.granted_role_count != 0
             or self.member_role_count != 0
         ):
@@ -773,6 +824,10 @@ class MapApplication300DagsterMetadataRoleAttributes:
             "create_role": self.create_role,
             "replication": self.replication,
             "bypass_rls": self.bypass_rls,
+            "connection_limit": self.connection_limit,
+            "valid_until_is_null": self.valid_until_is_null,
+            "role_config_count": self.role_config_count,
+            "database_role_setting_count": self.database_role_setting_count,
             "granted_role_count": self.granted_role_count,
             "member_role_count": self.member_role_count,
         }
@@ -1342,6 +1397,7 @@ class PinnedRuntimeRebuildJournal:
     compose_sha256: str
     resolved_compose_sha256: str
     created_at: str
+    pinvi_database_identity: PinnedRuntimeDatabaseIdentity | None = None
     journal_generation: int = 0
     map_application_300_execution_evidence: MapApplication300ExecutionEvidence = field(
         default_factory=MapApplication300ExecutionEvidence
@@ -1393,6 +1449,16 @@ class PinnedRuntimeRebuildJournal:
             self.phase,
             self.map_application_300_execution_evidence,
         )
+        pinvi_identity_required = REBUILD_PHASES.index(self.phase) >= REBUILD_PHASES.index(
+            "databases_recreated"
+        )
+        if pinvi_identity_required != isinstance(
+            self.pinvi_database_identity,
+            PinnedRuntimeDatabaseIdentity,
+        ):
+            raise DeploymentContractError(
+                "pinned runtime phase has invalid PinVi database identity evidence"
+            )
         if not isinstance(self.cancel_probe, PinnedRuntimeCancelProbeReceipt):
             raise DeploymentContractError("pinned runtime cancel probe receipt is invalid")
         if (
@@ -1444,6 +1510,22 @@ class PinnedRuntimeRebuildJournal:
             phase="application_roles_ready",
             journal_generation=self.journal_generation + 1,
             map_application_300_execution_evidence=evidence,
+        )
+
+    def with_databases_recreated(
+        self,
+        *,
+        pinvi_database_identity: PinnedRuntimeDatabaseIdentity,
+    ) -> PinnedRuntimeRebuildJournal:
+        if self.phase != "reset_intent_durable":
+            raise DeploymentContractError(
+                "pinned runtime PinVi database identity is out of order"
+            )
+        return replace(
+            self,
+            phase="databases_recreated",
+            journal_generation=self.journal_generation + 1,
+            pinvi_database_identity=pinvi_database_identity,
         )
 
     def with_application_create_intent(self) -> PinnedRuntimeRebuildJournal:
@@ -1823,6 +1905,11 @@ class PinnedRuntimeRebuildJournal:
             "compose_sha256": self.compose_sha256,
             "resolved_compose_sha256": self.resolved_compose_sha256,
             "created_at": self.created_at,
+            "pinvi_database_identity": (
+                None
+                if self.pinvi_database_identity is None
+                else self.pinvi_database_identity.to_payload()
+            ),
             "journal_generation": self.journal_generation,
             "map_application_300_execution_evidence": (
                 self.map_application_300_execution_evidence.to_payload()
@@ -1969,6 +2056,7 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
         "compose_sha256",
         "resolved_compose_sha256",
         "created_at",
+        "pinvi_database_identity",
         "journal_generation",
         "map_application_300_execution_evidence",
         "cancel_probe",
@@ -2016,6 +2104,13 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
         compose_sha256=cast(str, compose_sha256),
         resolved_compose_sha256=cast(str, resolved_compose_sha256),
         created_at=cast(str, created_at),
+        pinvi_database_identity=(
+            None
+            if payload.get("pinvi_database_identity") is None
+            else pinned_runtime_database_identity_from_payload(
+                payload.get("pinvi_database_identity")
+            )
+        ),
         journal_generation=journal_generation,
         map_application_300_execution_evidence=(
             map_application_300_execution_evidence_from_payload(
@@ -2223,6 +2318,38 @@ def map_application_300_application_database_identity_from_payload(
     )
 
 
+def pinned_runtime_database_identity_from_payload(
+    payload: object,
+) -> PinnedRuntimeDatabaseIdentity:
+    expected = {"system_identifier", "name", "oid", "owner", "login_role"}
+    if not isinstance(payload, Mapping) or set(payload) != expected:
+        raise DeploymentContractError(
+            "pinned runtime database identity payload is invalid"
+        )
+    system_identifier = payload.get("system_identifier")
+    name = payload.get("name")
+    oid = payload.get("oid")
+    owner = payload.get("owner")
+    login_role = payload.get("login_role")
+    if (
+        not isinstance(system_identifier, str)
+        or not isinstance(name, str)
+        or type(oid) is not int
+        or not isinstance(owner, str)
+        or not isinstance(login_role, str)
+    ):
+        raise DeploymentContractError(
+            "pinned runtime database identity payload is invalid"
+        )
+    return PinnedRuntimeDatabaseIdentity(
+        system_identifier=system_identifier,
+        name=name,
+        oid=oid,
+        owner=owner,
+        login_role=login_role,
+    )
+
+
 def map_application_300_dagster_metadata_database_identity_from_payload(
     payload: object,
 ) -> MapApplication300DagsterMetadataDatabaseIdentity:
@@ -2278,6 +2405,10 @@ def map_application_300_dagster_metadata_role_attributes_from_payload(
         "create_role",
         "replication",
         "bypass_rls",
+        "connection_limit",
+        "valid_until_is_null",
+        "role_config_count",
+        "database_role_setting_count",
         "granted_role_count",
         "member_role_count",
     }
@@ -2293,8 +2424,12 @@ def map_application_300_dagster_metadata_role_attributes_from_payload(
         payload.get("create_role"),
         payload.get("replication"),
         payload.get("bypass_rls"),
+        payload.get("valid_until_is_null"),
     )
     counts = (
+        payload.get("connection_limit"),
+        payload.get("role_config_count"),
+        payload.get("database_role_setting_count"),
         payload.get("granted_role_count"),
         payload.get("member_role_count"),
     )
@@ -2312,6 +2447,12 @@ def map_application_300_dagster_metadata_role_attributes_from_payload(
         create_role=cast(bool, payload["create_role"]),
         replication=cast(bool, payload["replication"]),
         bypass_rls=cast(bool, payload["bypass_rls"]),
+        connection_limit=cast(int, payload["connection_limit"]),
+        valid_until_is_null=cast(bool, payload["valid_until_is_null"]),
+        role_config_count=cast(int, payload["role_config_count"]),
+        database_role_setting_count=cast(
+            int, payload["database_role_setting_count"]
+        ),
         granted_role_count=cast(int, payload["granted_role_count"]),
         member_role_count=cast(int, payload["member_role_count"]),
     )

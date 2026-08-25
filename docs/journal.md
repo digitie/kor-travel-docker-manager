@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-08-25 — v8 세 DB identity·crash residue 최종 hardening checkpoint
+
+Map exact commit을 `e6234b149fe663e9b19ef3290d9566db4d4c447d`, release pinset을
+`4053ec3d3269eda4b1faafa13b5b6839aebbd18dd81b7a337edcd63e22873008`로 회전했다. 이전
+pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않는다.
+
+두 전문 적대 리뷰의 finding에 따라 다음 경계를 보강했다.
+
+- finalize 응답 유실은 Map의 typed exact-prestate proof 뒤에만 fence를 갱신해 재실행
+- committed resume에서 두 PostgreSQL container image와 Map application·Dagster metadata·PinVi
+  세 DB identity를 journal과 실시간 재대조
+- Dagster metadata LOGIN role의 privilege/membership 외 connection limit, password expiry,
+  role/database-local setting 잔여까지 permit과 journal에 결박
+- rebuild 중단 뒤 남은 PinVi bootstrap plaintext credential을 global lock·모든 one-shot 부재 조건에서
+  owner-only strict scan 후 zeroize/unlink/fsync
+- v6 candidate tag는 현 세대 exact image ID만 보존하고 stale tag를 제거하되 v5 content reference를
+  먼저 확인
+- committed resume에서도 external prerequisite를 candidate build 전에 확인하고 일곱 runtime과 두
+  PostgreSQL image를 재검증
+
+관련 generation/rebuild 회귀 `100 passed`, Map C7/Dagster 회귀 `305 passed`, 변경 파일 Ruff를
+통과했다. 다음 단계는 Manager 전체 gate와 문서 정합성, remote checkpoint, 두 리뷰어의 exact-commit
+재검토다. 완료된 `T-VN-40` 잔여 항목은 active `tasks.md`에 없다.
+
 ## 2026-08-25 — application `300` paired candidate와 v6/v8 rebuild 결선
 
 Map PR #1064의 exact commit `d0ced47128c2b175bcd22d7e44fa979512ccf203`을 Manager release

@@ -24,7 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 MAP_APPLICATION_300_SOURCE_COMMIT: Final = (
-    "d0ced47128c2b175bcd22d7e44fa979512ccf203"
+    "e6234b149fe663e9b19ef3290d9566db4d4c447d"
 )
 APPLICATION_HEAD: Final = "300"
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
@@ -41,6 +41,9 @@ FRESH_FINALIZE_FENCE_SCHEMA: Final = (
 FRESH_FINALIZE_OPERATION: Final = "map-fresh-300-finalize"
 FRESH_FINALIZE_RESULT_SCHEMA: Final = (
     "kor-travel-map.application-fresh-300-finalize.v4"
+)
+FRESH_FINALIZE_MISSING_RECEIPT_SCHEMA: Final = (
+    "kor-travel-map.application-fresh-300-finalize-missing-receipt.v1"
 )
 APPLICATION_FINAL_PERMIT_SCHEMA: Final = (
     "kor-travel-docker-manager.map-application-final-permit.v4"
@@ -199,6 +202,24 @@ _FRESH_FINALIZE_RESULT_FIELDS: Final = frozenset(
         "post_destination_alembic_version_sha256",
     }
 )
+_FRESH_FINALIZE_MISSING_RECEIPT_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "outcome",
+        "operation_id",
+        "prior_fresh_migration_operation_id",
+        "prior_fresh_migration_result_sha256",
+        "destination_head",
+        "map_candidate_commit",
+        "map_candidate_image_id",
+        "postgres_image_id",
+        "reference_manifest_sha256",
+        "database_identity",
+        "pre_source_catalog_sha256",
+        "pre_seed_sha256",
+        "pre_destination_alembic_version_sha256",
+    }
+)
 _FINAL_PERMIT_TOP_LEVEL_FIELDS: Final = frozenset(
     {
         "schema",
@@ -291,6 +312,10 @@ _DAGSTER_LOGIN_ROLE_ATTRIBUTE_FIELDS: Final = frozenset(
         "create_role",
         "replication",
         "bypass_rls",
+        "connection_limit",
+        "valid_until_is_null",
+        "role_config_count",
+        "database_role_setting_count",
         "granted_role_count",
         "member_role_count",
     }
@@ -517,6 +542,10 @@ class DagsterLoginRoleAttributes:
     member_role_count: int = 0
     can_login: bool = True
     inherit: bool = False
+    connection_limit: int = -1
+    valid_until_is_null: bool = True
+    role_config_count: int = 0
+    database_role_setting_count: int = 0
 
     def __post_init__(self) -> None:
         for name in (
@@ -534,6 +563,16 @@ class DagsterLoginRoleAttributes:
             raise MapApplication300ContractError(
                 "Dagster metadata login role has unsafe login attributes"
             )
+        if self.connection_limit != -1 or self.valid_until_is_null is not True:
+            raise MapApplication300ContractError(
+                "Dagster metadata login role has persistent connection limits"
+            )
+        for name in ("role_config_count", "database_role_setting_count"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value != 0:
+                raise MapApplication300ContractError(
+                    "Dagster metadata login role has persistent settings"
+                )
         for name in ("granted_role_count", "member_role_count"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value != 0:
@@ -558,6 +597,19 @@ class DagsterLoginRoleAttributes:
             create_role=_require_bool(payload["create_role"], "create_role"),
             replication=_require_bool(payload["replication"], "replication"),
             bypass_rls=_require_bool(payload["bypass_rls"], "bypass_rls"),
+            connection_limit=_require_connection_limit(
+                payload["connection_limit"], "connection_limit"
+            ),
+            valid_until_is_null=_require_bool(
+                payload["valid_until_is_null"], "valid_until_is_null"
+            ),
+            role_config_count=_require_non_negative_int(
+                payload["role_config_count"], "role_config_count"
+            ),
+            database_role_setting_count=_require_non_negative_int(
+                payload["database_role_setting_count"],
+                "database_role_setting_count",
+            ),
             granted_role_count=_require_non_negative_int(
                 payload["granted_role_count"], "granted_role_count"
             ),
@@ -575,6 +627,10 @@ class DagsterLoginRoleAttributes:
             "create_role": self.create_role,
             "replication": self.replication,
             "bypass_rls": self.bypass_rls,
+            "connection_limit": self.connection_limit,
+            "valid_until_is_null": self.valid_until_is_null,
+            "role_config_count": self.role_config_count,
+            "database_role_setting_count": self.database_role_setting_count,
             "granted_role_count": self.granted_role_count,
             "member_role_count": self.member_role_count,
         }
@@ -726,6 +782,23 @@ class FreshFinalizeResult:
     post_seed_sha256: str
     expected_privileged_residue_sha256: str
     post_destination_alembic_version_sha256: str
+
+
+@dataclass(frozen=True)
+class FreshFinalizeMissingReceipt:
+    """Validated read-only proof that finalize is safe to re-execute."""
+
+    operation_id: str
+    prior_fresh_migration_operation_id: str
+    prior_fresh_migration_result_sha256: str
+    map_candidate_commit: str
+    map_candidate_image_id: str
+    postgres_image_id: str
+    reference_manifest_sha256: str
+    database_identity: ApplicationDatabaseIdentity
+    pre_source_catalog_sha256: str
+    pre_seed_sha256: str
+    pre_destination_alembic_version_sha256: str
 
 
 def canonical_json_bytes(payload: Mapping[str, Any]) -> bytes:
@@ -1012,6 +1085,84 @@ def parse_fresh_finalize_result(
         prior=prior,
         database=prior.database_identity,
     )
+    return result
+
+
+def parse_fresh_finalize_missing_receipt(
+    raw: bytes,
+    *,
+    contract: Application300Contract,
+    candidate: Application300Candidate,
+    prior: FreshRootResult,
+) -> FreshFinalizeMissingReceipt:
+    """Parse the Map-side locked proof used before any finalize retry."""
+
+    payload = _load_exact_json(
+        raw,
+        _FRESH_FINALIZE_MISSING_RECEIPT_FIELDS,
+        "fresh finalize missing receipt",
+        canonical_line=True,
+    )
+    if (
+        payload["schema"] != FRESH_FINALIZE_MISSING_RECEIPT_SCHEMA
+        or payload["outcome"] != "receipt-missing-exact-prestate"
+        or payload["destination_head"] != APPLICATION_HEAD
+    ):
+        raise MapApplication300ContractError(
+            "fresh finalize missing receipt identity is invalid"
+        )
+    result = FreshFinalizeMissingReceipt(
+        operation_id=_require_uuid(payload["operation_id"], "operation_id"),
+        prior_fresh_migration_operation_id=_require_uuid(
+            payload["prior_fresh_migration_operation_id"],
+            "prior_fresh_migration_operation_id",
+        ),
+        prior_fresh_migration_result_sha256=_require_sha256(
+            payload["prior_fresh_migration_result_sha256"],
+            "prior_fresh_migration_result_sha256",
+        ),
+        map_candidate_commit=_require_commit(
+            payload["map_candidate_commit"], "map_candidate_commit"
+        ),
+        map_candidate_image_id=_require_image_id(
+            payload["map_candidate_image_id"], "map_candidate_image_id"
+        ),
+        postgres_image_id=_require_image_id(
+            payload["postgres_image_id"], "postgres_image_id"
+        ),
+        reference_manifest_sha256=_require_sha256(
+            payload["reference_manifest_sha256"], "reference_manifest_sha256"
+        ),
+        database_identity=ApplicationDatabaseIdentity.from_fresh_result_payload(
+            _require_mapping(payload["database_identity"], "database_identity")
+        ),
+        pre_source_catalog_sha256=_require_sha256(
+            payload["pre_source_catalog_sha256"], "pre_source_catalog_sha256"
+        ),
+        pre_seed_sha256=_require_sha256(
+            payload["pre_seed_sha256"], "pre_seed_sha256"
+        ),
+        pre_destination_alembic_version_sha256=_require_sha256(
+            payload["pre_destination_alembic_version_sha256"],
+            "pre_destination_alembic_version_sha256",
+        ),
+    )
+    if (
+        result.prior_fresh_migration_operation_id != prior.operation_id
+        or result.prior_fresh_migration_result_sha256 != prior.payload_sha256
+        or result.map_candidate_commit != candidate.map_source_commit
+        or result.map_candidate_image_id != candidate.api_image_id
+        or result.postgres_image_id != contract.postgres_image_id
+        or result.reference_manifest_sha256 != contract.reference_manifest_sha256
+        or result.database_identity != prior.database_identity
+        or result.pre_source_catalog_sha256 != contract.source_catalog_sha256
+        or result.pre_seed_sha256 != contract.seed_sha256
+        or result.pre_destination_alembic_version_sha256
+        != contract.destination_alembic_version_sha256
+    ):
+        raise MapApplication300ContractError(
+            "fresh finalize missing receipt differs from candidate prestate"
+        )
     return result
 
 
@@ -1815,6 +1966,12 @@ def _require_positive_int(value: object, label: str) -> int:
 def _require_non_negative_int(value: object, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise MapApplication300ContractError(f"{label} must be a non-negative integer")
+    return value
+
+
+def _require_connection_limit(value: object, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < -1:
+        raise MapApplication300ContractError(f"{label} must be a connection limit")
     return value
 
 

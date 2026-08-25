@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import ANY, Mock
+from unittest.mock import ANY, Mock, call
 
 import pytest
 
@@ -30,6 +30,7 @@ from kor_travel_docker_manager.services.database_runtime import (
 from kor_travel_docker_manager.services.database_runtime import (
     DagsterMetadataRoleAttributes,
     DatabaseRuntime,
+    PinnedDatabaseIdentity,
 )
 from kor_travel_docker_manager.services.map_application_300 import (
     Application300Contract,
@@ -47,6 +48,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     MapApplication300OperationPlan,
     PinnedRuntimeCancelProbeOutcome,
     PinnedRuntimeCancelProbeReceipt,
+    PinnedRuntimeDatabaseIdentity,
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
@@ -307,6 +309,27 @@ def _runtime_application_create_database_identity() -> (
     )
 
 
+def _pinvi_database_identity() -> PinnedRuntimeDatabaseIdentity:
+    return PinnedRuntimeDatabaseIdentity(
+        system_identifier="8585858585858585858",
+        name="pinvi",
+        oid=127003,
+        owner="pinvi",
+        login_role="pinvi",
+    )
+
+
+def _runtime_pinvi_database_identity() -> PinnedDatabaseIdentity:
+    identity = _pinvi_database_identity()
+    return PinnedDatabaseIdentity(
+        system_identifier=identity.system_identifier,
+        name=identity.name,
+        oid=identity.oid,
+        owner=identity.owner,
+        login_role=identity.login_role,
+    )
+
+
 def _runtime_application_database() -> DatabaseRuntime:
     return DatabaseRuntime(
         role="map_application",
@@ -392,7 +415,9 @@ def _journal_at_application_300_phase(
     journal = journal.transition("reset_intent_durable")
     if phase == "reset_intent_durable":
         return journal
-    journal = journal.transition("databases_recreated")
+    journal = journal.with_databases_recreated(
+        pinvi_database_identity=_pinvi_database_identity()
+    )
     if phase == "databases_recreated":
         return journal
     journal = journal.with_application_create_intent()
@@ -941,6 +966,99 @@ def test_runtime_container_image_mismatch_is_fail_closed(
         service._assert_pinned_runtime_container_images(records, journal=journal)
 
 
+def test_committed_resume_revalidates_all_database_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_runtime_phase("committed")
+    runtimes = (object(), object(), object())
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_application_300_database_identity",
+        lambda _runtime: _runtime_application_database_identity(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_application_300_dagster_metadata_identity",
+        lambda _runtime, *, metadata_user: _runtime_dagster_metadata_identity(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_pinned_database_identity",
+        lambda _runtime: _runtime_pinvi_database_identity(),
+    )
+
+    service._assert_committed_application_database_identities(
+        runtimes,
+        journal=journal,
+        metadata_user="map_dagster_metadata",
+    )
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_application_300_database_identity",
+        lambda _runtime: replace(
+            _runtime_application_database_identity(),
+            database_oid=127999,
+        ),
+    )
+    with pytest.raises(DeploymentContractError, match="application database identity"):
+        service._assert_committed_application_database_identities(
+            runtimes,
+            journal=journal,
+            metadata_user="map_dagster_metadata",
+        )
+
+
+def test_committed_resume_revalidates_both_postgres_container_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    map_candidate = _map_application_300_candidate()
+    pinvi_image = "sha256:" + "f" * 64
+    transaction = SimpleNamespace(
+        resolved={
+            "services": {
+                "pinvi-postgres": {
+                    "image": "postgres:16@sha256:" + "1" * 64,
+                }
+            }
+        }
+    )
+    records = (
+        {"Service": "kor-travel-map-postgres", "Name": "map-postgres"},
+        {"Service": "pinvi-postgres", "Name": "pinvi-postgres"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_inspect_image_reference_id",
+        lambda image_reference, *, label: pinvi_image,
+    )
+    observed = {
+        "map-postgres": map_candidate.postgres_image_id,
+        "pinvi-postgres": pinvi_image,
+    }
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_image_id",
+        lambda container_name, *, label: observed[container_name],
+    )
+
+    service._assert_committed_postgres_images(
+        records,
+        transaction=transaction,
+        map_candidate=map_candidate,
+    )
+
+    observed["pinvi-postgres"] = "sha256:" + "e" * 64
+    with pytest.raises(DeploymentContractError, match="pinvi-postgres runtime image"):
+        service._assert_committed_postgres_images(
+            records,
+            transaction=transaction,
+            map_candidate=map_candidate,
+        )
+
+
 def test_rebuild_host_lease_blocks_before_source_or_database_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1221,6 +1339,7 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
         "_capture_transaction_unlocked",
         lambda **_kwargs: (transaction, None),
     )
+    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
     monkeypatch.setattr(
         service,
         "_validate_pinned_runtime_candidate_build_contract",
@@ -1252,6 +1371,84 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
     database_reset.assert_not_called()
     paired_builder.assert_called_once()
     assert not state_paths.journal.exists()
+
+
+def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-prerequisite-refusal",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    service = ComposeService()
+    materialize = Mock()
+    paired_builder = Mock()
+    journal_write = Mock()
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        lambda **_kwargs: (transaction, None),
+    )
+    monkeypatch.setattr(
+        compose_service_module, "_assert_transaction_matches_c6c_lock", Mock()
+    )
+    monkeypatch.setattr(
+        service,
+        "_require_services_ready",
+        Mock(side_effect=DeploymentContractError("external prerequisite unavailable")),
+    )
+    monkeypatch.setattr(
+        compose_service_module, "materialize_pinned_runtime_sources", materialize
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_run_map_application_300_paired_builder",
+        paired_builder,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        journal_write,
+    )
+
+    with pytest.raises(
+        DeploymentContractError, match="external prerequisite unavailable"
+    ):
+        service.rebuild_pinned_runtime()
+
+    materialize.assert_not_called()
+    paired_builder.assert_not_called()
+    journal_write.assert_not_called()
 
 
 def test_rebuild_compose_error_names_the_failed_action(
@@ -1802,8 +1999,9 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     )
     assert candidate_journal.phase == "candidate_attested"
     assert candidate_journal.candidate.map_application_head == "300"
-    assert captured[0] is not None
-    assert captured[0]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "300"
+    assert captured[0] is None
+    assert captured[1] is not None
+    assert captured[1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "300"
     assert captured[-1] is not None
     assert captured[-1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "300"
     assert operations == [
@@ -1825,11 +2023,18 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     ]
     paired_builder.assert_called_once()
     candidate_contract.assert_called_once()
-    external_readiness.assert_called_once_with(
-        ("rustfs", "kor-travel-geo-api", "kor-travel-concierge-api"),
-        transaction=transaction,
-        frozen_recovery=True,
-    )
+    assert external_readiness.call_args_list == [
+        call(
+            ("rustfs", "kor-travel-geo-api", "kor-travel-concierge-api"),
+            transaction=transaction,
+            frozen_recovery=True,
+        ),
+        call(
+            ("rustfs", "kor-travel-geo-api", "kor-travel-concierge-api"),
+            transaction=transaction,
+            frozen_recovery=True,
+        ),
+    ]
     database_reset.assert_not_called()
 
 
@@ -1864,7 +2069,9 @@ def test_database_reset_is_forbidden_after_databases_recreated() -> None:
     assert compose_service_module._pinned_runtime_reset_required(journal) is True
     reset_intent = journal.transition("reset_intent_durable")
     assert compose_service_module._pinned_runtime_reset_required(reset_intent) is True
-    databases_recreated = reset_intent.transition("databases_recreated")
+    databases_recreated = reset_intent.with_databases_recreated(
+        pinvi_database_identity=_pinvi_database_identity()
+    )
     assert (
         compose_service_module._pinned_runtime_reset_required(databases_recreated)
         is False
@@ -2420,6 +2627,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         "_capture_transaction_unlocked",
         lambda **_kwargs: (transaction, None),
     )
+    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
     monkeypatch.setattr(
         service,
         "_validate_pinned_runtime_candidate_build_contract",
@@ -2473,6 +2681,11 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         compose_service_module,
         "read_application_300_database_identity",
         Mock(return_value=_runtime_application_database_identity()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_pinned_database_identity",
+        Mock(return_value=_runtime_pinvi_database_identity()),
     )
     monkeypatch.setattr(
         compose_service_module,
@@ -2634,6 +2847,12 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         assert (
             *finalize_execution_command,
             "recover",
+            "--operation-id",
+            finalize_plan.operation_id,
+        ) in operations
+        assert (
+            *finalize_execution_command,
+            "probe-missing",
             "--operation-id",
             finalize_plan.operation_id,
         ) in operations

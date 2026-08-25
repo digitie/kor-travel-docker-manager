@@ -119,9 +119,9 @@ services:
 - dev HMR이 필요한 revision은 canonical compose의 command를 `npm run dev`로 명시한다. 한 manager mutation
   안에서 prod/dev 파일을 합성하지 않는다.
 
-## 8. F1D v5 pinned runtime generation 재구축
+## 8. F1D pinned runtime generation v6/journal v8 재구축
 
-> F1D v5는 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
+> 현재 rebuild protocol은 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
 > **공개 CLI 운영 경로**를 모두 퇴역시켰다. 과거 v1–v4 manifest·journal·backup은 실행 근거가 아니며,
 > 아래 비운영 `rebuild-pinned --confirm`만 새 generation을 만드는 정본이다.
 
@@ -146,11 +146,15 @@ candidate Dagster image의 head-inspection command 출력으로 attest한다. ca
 건드리지 않는다.
 
 후속 phase에서만 Manager가 frozen resolved Compose의 Map application·Map Dagster·PinVi database identity를
-검증해 세 database를 새로 만든다. Map API entrypoint와 Map Dagster migration-only command가 candidate-attested
+검증해 세 database를 새로 만든다. reset 직후 PinVi DB identity를 v8 journal에 기록하고, committed resume은
+Map application·Dagster metadata·PinVi 세 DB identity와 두 PostgreSQL container image를 다시 실측한다.
+Dagster metadata LOGIN role은 privilege/membership, connection limit, password expiry와 role/database-local
+setting 잔여가 canonical해야 permit을 발행한다. Map API entrypoint와 Map Dagster migration-only command가 candidate-attested
 각 head까지 migration을 적용·검증한다. Map Dagster command는 `dagster instance migrate` 후 strict single-row
 `public.alembic_version`을 같은 candidate image의 reported head와 대조한다. PinVi migration+admin credential-file one-shot CLI가 `pinvi_head`까지
 적용한 뒤 일곱 runtime을 같은 generation으로 기동한다. Map·PinVi Web·PinVi Dagster와 durable journal/log에는
 credential을 전달하거나 기록하지 않는다. F1J fixture smoke, authenticated UI contract, schema/image attestation이
-모두 성공하면 single active v5 generation manifest를 commit한다. 실패하거나 reset 뒤 재실행하면 일부 DB를
-복원·재사용하지 않고 세 DB를 다시 새로 만든다. candidate runtime을 모두 중지한다. source/ETL 재적재는 committed
+모두 성공하면 single active v6 generation manifest와 pinset별 v8 journal을 commit한다. 실패 뒤 재개할 때는
+durable phase와 exact DB/operation receipt만 사용하며 `databases_recreated` 이후 세 DB를 자동 reset하지 않는다.
+candidate runtime을 모두 중지한다. source/ETL 재적재는 committed
 뒤 별도 workflow다.

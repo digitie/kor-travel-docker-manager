@@ -16,10 +16,28 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 )
 
 RETENTION_REPOSITORY_PREFIX = "kor-travel-docker-manager/pinned-runtime-v5/"
+CANDIDATE_REPOSITORY_PREFIX = (
+    "kor-travel-docker-manager/pinned-runtime-candidate-v6/"
+)
+_CANDIDATE_TAG_SERVICES: tuple[RuntimeService, ...] = (
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "pinvi-api",
+    "pinvi-web",
+    "pinvi-dagster",
+)
 _IMAGE_ID = re.compile(r"^sha256:([0-9a-f]{64})$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_DELETED_IMAGE = re.compile(r"^Deleted: sha256:[0-9a-f]{64}$")
 _REFERENCE = re.compile(
     rf"^{re.escape(RETENTION_REPOSITORY_PREFIX)}"
     rf"({'|'.join(re.escape(service) for service in RUNTIME_SERVICES)}):([0-9a-f]{{64}})$"
+)
+_CANDIDATE_REFERENCE = re.compile(
+    rf"^{re.escape(CANDIDATE_REPOSITORY_PREFIX)}"
+    rf"({'|'.join(re.escape(service) for service in _CANDIDATE_TAG_SERVICES)})"
+    rf":([0-9a-f]{{64}})$"
 )
 
 
@@ -152,6 +170,171 @@ def _owned_references(*, cwd: str) -> set[str]:
     return owned
 
 
+def _owned_candidate_references(*, cwd: str) -> dict[str, str]:
+    completed = _run_docker(
+        [
+            "image",
+            "ls",
+            "--no-trunc",
+            "--format={{.Repository}}:{{.Tag}}\t{{.ID}}",
+        ],
+        cwd=cwd,
+    )
+    if (
+        completed.returncode != 0
+        or not isinstance(completed.stdout, str)
+        or not isinstance(completed.stderr, str)
+        or completed.stderr
+    ):
+        raise DeploymentContractError(
+            "pinned runtime candidate references cannot be listed"
+        )
+    owned: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        if not line or line.strip() != line:
+            raise DeploymentContractError(
+                "pinned runtime candidate reference listing is invalid"
+            )
+        fields = line.split("\t")
+        if len(fields) != 2:
+            raise DeploymentContractError(
+                "pinned runtime candidate reference listing is invalid"
+            )
+        reference, image_id = fields
+        if not reference.startswith(CANDIDATE_REPOSITORY_PREFIX):
+            continue
+        if (
+            _CANDIDATE_REFERENCE.fullmatch(reference) is None
+            or _IMAGE_ID.fullmatch(image_id) is None
+        ):
+            raise DeploymentContractError(
+                "pinned runtime candidate namespace contains an invalid reference"
+            )
+        if reference in owned:
+            raise DeploymentContractError(
+                "pinned runtime candidate namespace contains an ambiguous reference"
+            )
+        owned[reference] = image_id
+    return owned
+
+
+def _desired_candidate_references(
+    references: Mapping[RuntimeService, str],
+    generation: PinnedRuntimeGeneration,
+) -> dict[str, str]:
+    if set(references) != set(_CANDIDATE_TAG_SERVICES):
+        raise DeploymentContractError(
+            "pinned runtime active candidate references are incomplete"
+        )
+    if _SHA256.fullmatch(generation.pinset_sha256) is None:
+        raise DeploymentContractError("pinned runtime candidate pinset is invalid")
+    desired: dict[str, str] = {}
+    for service in _CANDIDATE_TAG_SERVICES:
+        reference = references.get(service)
+        if not isinstance(reference, str):
+            raise DeploymentContractError(
+                "pinned runtime active candidate reference is invalid"
+            )
+        match = _CANDIDATE_REFERENCE.fullmatch(reference)
+        if (
+            match is None
+            or match.group(1) != service
+            or match.group(2) != generation.pinset_sha256
+        ):
+            raise DeploymentContractError(
+                "pinned runtime active candidate reference is invalid"
+            )
+        image_id = generation.image_ids[service]
+        if _IMAGE_ID.fullmatch(image_id) is None or reference in desired:
+            raise DeploymentContractError(
+                "pinned runtime active candidate identity is invalid"
+            )
+        desired[reference] = image_id
+    if len(desired) != len(_CANDIDATE_TAG_SERVICES):
+        raise DeploymentContractError(
+            "pinned runtime active candidate references are not unique"
+        )
+    return desired
+
+
+def _remove_candidate_reference(reference: str, *, cwd: str) -> None:
+    completed = _run_docker(["image", "rm", reference], cwd=cwd)
+    if (
+        completed.returncode != 0
+        or not isinstance(completed.stdout, str)
+        or not isinstance(completed.stderr, str)
+        or completed.stderr
+    ):
+        raise DeploymentContractError(
+            "pinned runtime stale candidate reference cannot be removed"
+        )
+    lines = completed.stdout.splitlines()
+    if lines and (
+        lines[0] != f"Untagged: {reference}"
+        or any(_DELETED_IMAGE.fullmatch(line) is None for line in lines[1:])
+        or len(lines[1:]) != len(set(lines[1:]))
+    ):
+        raise DeploymentContractError(
+            "pinned runtime stale candidate removal response is invalid"
+        )
+    if _inspect_reference(reference, cwd=cwd) is not None:
+        raise DeploymentContractError(
+            "pinned runtime stale candidate reference remains after removal"
+        )
+
+
+def reconcile_candidate_build_references(
+    references: Mapping[RuntimeService, str],
+    generation: PinnedRuntimeGeneration,
+    *,
+    cwd: str,
+) -> RetentionReport:
+    """content-address 보존 뒤 active pinset의 candidate tag 여섯 개만 남긴다.
+
+    호출자는 pinned rebuild 전역 lock을 보유해야 한다. 이 함수는 active image의 v5
+    content-address reference가 이미 확보됐음을 먼저 검증하므로 candidate tag 정리가
+    현재 runtime image의 유일한 도달 경로를 없애지 않는다.
+    """
+
+    desired = _desired_candidate_references(references, generation)
+    for service in _CANDIDATE_TAG_SERVICES:
+        image_id = generation.image_ids[service]
+        if _inspect_reference(_reference(service, image_id), cwd=cwd) != image_id:
+            raise DeploymentContractError(
+                "pinned runtime candidate cleanup requires retained content references"
+            )
+
+    owned = _owned_candidate_references(cwd=cwd)
+    for reference, image_id in desired.items():
+        if owned.get(reference) != image_id:
+            raise DeploymentContractError(
+                "pinned runtime active candidate reference changed"
+            )
+        if _inspect_reference(reference, cwd=cwd) != image_id:
+            raise DeploymentContractError(
+                "pinned runtime active candidate reference cannot be verified"
+            )
+
+    stale = sorted(set(owned) - set(desired))
+    for reference in stale:
+        if _inspect_reference(reference, cwd=cwd) != owned[reference]:
+            raise DeploymentContractError(
+                "pinned runtime stale candidate reference changed"
+            )
+        _remove_candidate_reference(reference, cwd=cwd)
+
+    if _owned_candidate_references(cwd=cwd) != desired:
+        raise DeploymentContractError(
+            "pinned runtime candidate reference reconciliation failed"
+        )
+    for reference, image_id in desired.items():
+        if _inspect_reference(reference, cwd=cwd) != image_id:
+            raise DeploymentContractError(
+                "pinned runtime active candidate reference changed during cleanup"
+            )
+    return RetentionReport(ensured=0, removed=len(stale))
+
+
 def reconcile_generation_references(
     generations: Sequence[PinnedRuntimeGeneration],
     *,
@@ -201,7 +384,9 @@ def validate_retention_namespace_is_reserved(
         if not isinstance(service, Mapping):
             raise DeploymentContractError("resolved Compose service is invalid")
         image = service.get("image")
-        if isinstance(image, str) and image.startswith(RETENTION_REPOSITORY_PREFIX):
+        if isinstance(image, str) and image.startswith(
+            (RETENTION_REPOSITORY_PREFIX, CANDIDATE_REPOSITORY_PREFIX)
+        ):
             raise DeploymentContractError(
                 "Compose image cannot use the pinned runtime retention namespace"
             )
