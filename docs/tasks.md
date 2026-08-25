@@ -49,7 +49,7 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
   exact running image와 committed manifest를 확인한다.
 - [ ] 공개 Manager UI와 Map UI에서 실제 브라우저 login→protected view→logout→재차단을 확인하고,
   PinVi data-independent acceptance 및 WebSocket 재연결 loop 부재를 확인한다.
-- [ ] live evidence를 `journal.md`와 `tasks-done.md`에 기록하고 Map/Manager PR을 CI green 상태로 merge한다.
+- [ ] live evidence를 `journal.md`와 `tasks-done.md`에 기록하고 Manager PR #200을 CI green 상태로 merge한다.
 
 ## T-C7-CAPTURE-OPS — 읽기 전용 capture 운영 정리
 
