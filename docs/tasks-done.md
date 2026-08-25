@@ -30,7 +30,10 @@
   재생성된 Map·PinVi runtime과 독립 DB의 identity/provenance/readiness를 확인하고, committed
   journal의 image/head/pinset/application candidate evidence 결박을 확인했다. n150 실제 브라우저에서
   scenario catalog, backup-only 정책, 운영 홈, 운영 로그의 data-independent live UI **11개 테스트를
-  모두 통과**했다. 일반 row의 내용·건수·업무상 데이터 무결성은 release gate로
+  모두 통과**했다(`auth.setup.ts` 1, `admin-scenario-catalog.live.spec.ts` 4,
+  `backups-restore.live.spec.ts` 2, `home-dashboard-roundtrip.live.spec.ts` 2,
+  `logs.live.spec.ts` 2; n150 report: `/tmp/kor-travel-map-playwright/admin-frontend-live/report`).
+  일반 row의 내용·건수·업무상 데이터 무결성은 release gate로
   검사하지 않았고, 이전 revision/기존 DB restore도 하지 않았다. 필요하면 fresh `300` schema에
   source/ETL을 처음부터 재적재한다.
 

@@ -21,6 +21,10 @@ merge commit `ecfbddb7b3d1afbd74646abbaa4082dd70b53a42`를 사용한 trusted Man
   source/ETL을 처음부터 재적재한다.
 - 실제 브라우저 login setup과 data-independent live UI 시나리오를 n150에서 실행해
   scenario catalog, backup-only 정책(`execute=false`), 운영 홈, 운영 로그의 **11개 테스트가 모두 통과**했다.
+  구성은 `auth.setup.ts` 1개, `admin-scenario-catalog.live.spec.ts` 4개,
+  `backups-restore.live.spec.ts` 2개, `home-dashboard-roundtrip.live.spec.ts` 2개,
+  `logs.live.spec.ts` 2개이며, 실행 보고서는 n150의
+  `/tmp/kor-travel-map-playwright/admin-frontend-live/report`에 생성됐다.
   Features의 초기 목록·검색·필터·정렬·반응형·딥링크도 통과했으며, 실제 두 번째 페이지나 고정 ID/컬렉션을
   전제하는 테스트의 실패는 fresh schema 정책에 따른 데이터 의존 항목으로 수락 게이트에서 제외했다.
 - 이 수락 묶음은 login setup과 protected view의 브라우저 계약만 다룬다. logout→재차단과 PinVi
