@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-26 — MAP-LIVE-FOLLOWUP PinVi protected-route 재차단 확인
+
+n150 PinVi exact runtime에서 현재 admin live credential로 `/admin/login`에 로그인한 뒤
+`/admin` 보호 화면을 열었다. 브라우저 context의 `/auth/logout` 응답은 `204`였고, 같은 context로
+`/admin/features`에 재진입했을 때 최종 경로가 `/admin/login`으로 유지됐다. 이 검증은 인증·세션
+상태만 확인하고 application row나 PinVi 업무 데이터를 쓰지 않았다.
+
+PinVi WebSocket/mutating loop와 consumer reconciliation은 `MAP-LIVE-FOLLOWUP`의 남은 active
+조건이다. Map 쪽 protected-route 재차단은 직전 기록대로 완료됐으며, 300 이후 일반 application
+row의 내용·건수·업무상 무결성 검증은 수행하지 않는다.
+
+---
+
 ## 2026-08-26 — MAP-LIVE-FOLLOWUP Map protected-route 재차단 확인
 
 n150 Map UI에서 현재 Manager smoke credential로 login한 뒤 `/ops/datasets`를 열고 logout을

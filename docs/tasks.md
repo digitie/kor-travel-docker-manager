@@ -45,7 +45,8 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   확인했다.
 - [x] Map UI에서 logout 뒤 `/ops/datasets` protected route 재진입이 `/login`으로 재차단되는지
   확인했다. PinVi 쪽 equivalent reblock은 아직 남는다.
-- [ ] PinVi exact pair에서 logout 뒤 protected route 재진입이 `/login`으로 재차단되는지 확인한다.
+- [x] PinVi exact pair에서 logout 뒤 `/admin/features` protected route 재진입이 `/admin/login`으로
+  재차단되는지 확인했다. 이 검증은 `/auth/logout` 204를 확인하고 application row를 쓰지 않았다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 
