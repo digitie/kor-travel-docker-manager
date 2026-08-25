@@ -12,9 +12,11 @@ from typing import Literal
 
 import pytest
 
-from kor_travel_docker_manager.services import pinned_runtime_sources
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.pinned_runtime_generation import PinnedRuntimeStatePaths
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    pinned_runtime_state_paths as canonical_pinned_runtime_state_paths,
+)
 from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
@@ -27,20 +29,21 @@ GitInvocation = tuple[list[str], dict[str, object]]
 _TEST_PROJECT_NAME = "f1d-source-test"
 
 
+def _state_values(tmp_path: Path) -> dict[str, str]:
+    return {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "COMPOSE_PROJECT_NAME": _TEST_PROJECT_NAME,
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state-root"),
+    }
+
+
 def _state_paths(tmp_path: Path) -> PinnedRuntimeStatePaths:
-    state_root = tmp_path / "state-root" / _TEST_PROJECT_NAME
-    return PinnedRuntimeStatePaths(
-        state_root=state_root,
+    return canonical_pinned_runtime_state_paths(
+        _state_values(tmp_path),
         pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-        manifest=state_root / "pinned-runtime-generation-v5.json",
-        journal=(
-            state_root
-            / f"pinned-runtime-rebuild-v7-{PINNED_RUNTIME_RELEASE.pinset_sha256}.json"
-        ),
-        tombstone_receipt=(
-            state_root
-            / f"legacy-tombstone-v7-{PINNED_RUNTIME_RELEASE.pinset_sha256}.json"
-        ),
     )
 
 
@@ -50,15 +53,10 @@ def _values(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
     map_source.mkdir(mode=0o700)
     pinvi_source.mkdir(mode=0o700)
     return (
-        {
+        _state_values(tmp_path)
+        | {
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
             "PINVI_REPO_DIR": str(pinvi_source),
-            "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-            "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-            "PINVI_ENVIRONMENT": "production",
-            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-            "COMPOSE_PROJECT_NAME": _TEST_PROJECT_NAME,
-            "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state-root"),
         },
         map_source,
         pinvi_source,
@@ -410,7 +408,7 @@ def test_staging_seal_failure_cleans_default_git_mode_and_retry_succeeds(
 
     def fail_first_stage_seal(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], mode: int) -> None:
         nonlocal seal_failed
-        candidate = Path(path)
+        candidate = Path(os.fsdecode(path))
         if (
             not seal_failed
             and mode == 0o700
@@ -422,7 +420,10 @@ def test_staging_seal_failure_cleans_default_git_mode_and_retry_succeeds(
             raise OSError("simulated staging seal failure")
         original_chmod(path, mode)
 
-    monkeypatch.setattr(pinned_runtime_sources.os, "chmod", fail_first_stage_seal)
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.services.pinned_runtime_sources.os.chmod",
+        fail_first_stage_seal,
+    )
 
     with pytest.raises(DeploymentContractError, match="staging worktree cannot be secured"):
         materialize_pinned_runtime_sources(

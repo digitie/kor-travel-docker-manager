@@ -10,6 +10,10 @@ compatible-pair manifest, 이전 F1D journal과 backup은 보전·복원 대상�
 release pin 하나로 **새 runtime generation과 새 DB schema를 다시 만드는 것**이다. raw Docker,
 Compose, SQL, `.env`, state-file 삭제를 사람이 조합해 실행하는 경로는 만들지 않는다.
 
+> **2026-08-25 사용자 결정**: 이 전환에는 이전 revision·DB로 돌아가는 복구 계획이 없다.
+> `rebuild-pinned`는 backup, scratch restore, rollback 증적을 선행 조건이나 실행 단계로 사용하지
+> 않는다. 새 DB와 application head `300`을 만들고 source/ETL로 다시 채우는 것만 정본이다.
+
 ## 현재 구조의 결함
 
 기존 `bootstrap-pinned-drift`는 Map 네 service와 PinVi API만 compatible pair로 기록한다.
@@ -28,12 +32,12 @@ F1D는 `CompatibleImagePair`가 아니라 다음 일곱 service의 단일 `Pinne
 
 | 소유 서비스 | image와 source 불변식 |
 | --- | --- |
-| Map API, UI, Dagster web, Dagster daemon | 네 image ID와 Map source revision이 모두 같다. |
+| Map API, UI, Dagster web, Dagster daemon | Map API와 Dagster는 Map paired candidate의 exact image ID를 사용하고, UI만 Manager Compose에서 같은 Map source revision으로 build한다. Dagster web·daemon은 같은 paired image ID여야 한다. |
 | PinVi API, Web, Dagster | 세 image ID와 PinVi source revision이 모두 같다. |
 
 manifest는 이 일곱 immutable image ID, 두 source revision, Map application/Dagster와 PinVi의
 새 schema head, pinset digest를 하나의 generation으로 기록한다. 구 v4 pair·old rollback은
-새 generation의 authority가 아니다. 새 v5 manifest에는 `active_generation` 하나만 두며,
+새 generation의 authority가 아니다. 새 v6 manifest에는 `active_generation` 하나만 두며,
 DB preimage가 없는 상황을 rollback slot으로 가장하지 않는다.
 
 ## 단일 명령과 상태 전이
@@ -51,7 +55,22 @@ preflighted
   → candidate_attested
   → reset_intent_durable
   → databases_recreated
+  → application_create_intent_durable
+  → application_created
+  → application_bootstrap_intent_durable
+  → application_roles_ready
+  → fresh_root_plan_ready
+  → fresh_root_fence_ready
+  → fresh_root_execution_intent
+  → fresh_root_ready
+  → fresh_finalize_plan_ready
+  → fresh_finalize_fence_ready
+  → fresh_finalize_execution_intent
+  → fresh_finalize_ready
+  → application_permit_ready
+  → metadata_permit_ready
   → map_application_ready
+  → map_dagster_storage_intent_durable
   → map_dagster_ready
   → map_runtime_ready
   → pinvi_schema_ready
@@ -63,16 +82,26 @@ preflighted
   → committed
 ```
 
-`rebuild-pinned`는 root execution만 허용한다. candidate source staging·v5 state·credential-file은
+`rebuild-pinned`는 root execution만 허용한다. candidate source staging·v6 state·credential-file은
 root가 소유하고, Map·PinVi source checkout은 source owner 권한으로 origin만 읽는다. 따라서 원격
 operator는 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
 database를 건드리기 전에 거부된다.
 
-`candidate_attested`는 일곱 candidate image ID, 두 source revision, candidate artifact가 직접 보고한 세 expected schema head,
-frozen environment/Compose digest와 pinset digest를 owner-only journal에 fsync하고 retention reference로
-보존한 상태다. candidate artifact 하나라도 없거나 provenance/schema-head contract가 다르면 DB를
-건드리지 않는다. `reset_intent_durable` 이후 process crash 재실행은 journal에 기록된 exact candidate만
-사용한다. candidate image가 사라진 경우에는 새 build로 덮어쓰지 않고 fail-close한다.
+`rebuild-pinned`가 `another C6c compatible-pair operation is already active`로 거부되면 고정
+host lease 또는 frozen environment C6c lock의 경합이다. 이때 raw Compose나 외부 watcher와
+동시 재시도하지 않는다. release operator는 먼저 외부 watcher의 durable enablement를 끄고 관련
+process·Compose project·container가 모두 멈췄음을 확인하거나, root-owned wrapper가 같은 고정
+lease를 잡은 상태에서 watcher를 실행한다.
+
+`candidate_attested`는 일곱 runtime image ID, 두 source revision, Map paired candidate receipt와
+application-300 contract, candidate artifact가 직접 보고한 세 expected schema head, frozen
+environment/Compose digest와 pinset digest를 owner-only v8 journal에 fsync하고 retention reference로
+보존한 상태다. Manager가 build하는 대상은 Map UI와 PinVi API·Web·Dagster 네 개뿐이다. Map API와
+Dagster는 같은 Map commit/tree에서 만들어진 paired receipt의 exact image ID를 사용하고 Dagster
+web·daemon은 같은 image ID를 공유한다. candidate artifact 하나라도 없거나 provenance/schema-head
+contract가 다르면 DB를 건드리지 않는다. `reset_intent_durable` 이후 process crash 재실행은 journal에
+기록된 exact candidate만 사용한다. candidate image가 사라진 경우에는 새 build로 덮어쓰지 않고
+fail-close한다.
 
 같은 pinset의 non-terminal journal은 같은 phase를 idempotently 재개한다. Map fixture `armed` receipt를
 fsync하기 전(`cancel_probe=uninitialized`)의 재실행은 세 DB를 partial state에서 재사용하지 않고 다시 모두
@@ -81,7 +110,7 @@ GET으로 수렴해 cancel/finalize POST를 재발행하지 않아야 하므로 
 정책이 아니라 immutable fixture transaction의 exactly-once evidence를 보존하는 유일한 예외다. 다만 이 예외도
 runtime 재사용을 뜻하지는 않는다. 모든 resume은 DB reset 여부와 무관하게 일곱 service를 정지하고 one-shot writer의
 부재를 확인한 뒤 controlled startup/migration으로만 진행한다. 다른 pinset의 새
-rebuild는 pinset SHA를 포함한 별도 v7 journal/tombstone filename을 사용한다. 따라서 old pinset journal은
+rebuild는 pinset SHA를 포함한 별도 v8 journal/tombstone filename을 사용한다. 따라서 old pinset journal은
 immutable history로 남고 새 Map/PinVi release의 destructive generation을 차단하지 않는다. 이전 static v5~v7
 journal/tombstone만 typed legacy receipt로 퇴역한다. legacy tombstone은
 코드에 고정한 path allowlist만 대상으로 하며, 각 parent가 canonical state root 아래 owner-owned `0700` directory인지,
@@ -90,7 +119,7 @@ journal/tombstone만 typed legacy receipt로 퇴역한다. legacy tombstone은
 foreign/symlink/hardlink/owner·mode·size·JSON shape 손상은 모두 fail-close하며 어떠한 DB/runtime mutation도 하지
 않는다. 검증한 tombstone receipt를 먼저 fsync한 뒤에만 같은 `dir_fd`로 legacy file을 unlink하고 old reader와
 `assert_*_allows_pair_mutation` gate를 제거한다. 사람이 state file을 삭제하거나 legacy receipt를 변환하지 않는다.
-v7 journal은 tombstone보다 먼저 생길 수 있으므로, 새 journal과 resume journal 모두 tombstone receipt를 같은
+v8 journal은 tombstone보다 먼저 생길 수 있으므로, 새 journal과 resume journal 모두 tombstone receipt를 같은
 transaction/candidate로 idempotently 다시 검증한다. tombstone write/unlink가 실패하거나 그 사이에 crash가 나면
 다음 실행도 tombstone부터 재시도하며 DB reset 또는 runtime mutation으로 진행하지 않는다.
 
@@ -99,21 +128,34 @@ transaction/candidate로 idempotently 다시 검증한다. tombstone write/unlin
 1. Manager가 frozen resolved Compose에서 Map application, Map Dagster, PinVi database의 정확한
    database/container/owner identity를 읽는다. 이 세 database 외의 Geo·Concierge·공용 service
    database는 변경하지 않는다.
-2. trusted source staging에서 일곱 image를 먼저 build하고 immutable ID, OCI source revision, Map application·
-   Map Dagster·PinVi schema head를 candidate journal에 고정한다. Map Dagster head는 source revision으로
-   추정하지 않고 candidate Dagster image의 head-inspection command가 출력한 dependency storage head만
-   수용한다. source checkout의 local HEAD,
-   floating tag, 기존 image는 authority가 아니다.
+2. trusted source staging에서 Map의 sealed paired builder를 먼저 실행해 같은 exact commit/tree의 API·Dagster
+   image와 receipt를 만든다. Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 Compose로 build한다.
+   일곱 immutable ID, OCI source revision, paired receipt SHA-256, application-300 contract, Map application·
+   Map Dagster·PinVi schema head를 candidate journal에 고정한다. Map application head는 paired contract의
+   literal `300`, Map Dagster head는 candidate Dagster image의 head-inspection command가 출력한 dependency
+   storage head만 수용한다. source checkout의 local HEAD, floating tag, 기존 image는 authority가 아니다.
 3. `reset_intent_durable` 뒤 일곱 runtime을 모두 중지하고 writer가 없음을 확인한다. PinVi Dagster는
    writer이므로 API만 멈춘 채 DB를 재생성하지 않는다.
-4. PostgreSQL owner 권한으로 세 database를 `DROP DATABASE ... WITH (FORCE)` 후 같은 owner로
-   `CREATE DATABASE` 한다. dump, backup, restore, old database head 비교는 사용하지 않는다.
-5. Map API candidate entrypoint만 Map application migration owner로 기동해 candidate-attested
-   `map_application_head`까지 적용하고 health/ops principal을 확인한다. 다음에는 Map Dagster candidate의
-   migration-only command만 실행한다. 이 command는 같은 candidate image의 `dagster instance migrate`로
-   storage migration을 적용하고, `public.alembic_version`의 정확히 한 `version_num`이 candidate가 직전
-   출력한 `map_dagster_head`와 일치할 때만 성공한다. 둘의 head는 candidate artifact에서 attested한 별도
-   field이며, 그 뒤에만 Map UI, Dagster web·daemon을 같은 candidate image로 기동한다.
+4. PostgreSQL owner 권한으로 세 database를 `DROP DATABASE ... WITH (FORCE)` 후 새 identity로 만든다.
+   이 transaction 안에서는 dump, backup, restore, old database head 비교를 사용하지 않는다. Map application
+   DB 생성과 role bootstrap은 각각 durable intent를 먼저 기록한다. 응답 유실 재개는 DB를
+   `absent`/`virgin`/`partial`/`exact_complete`/`foreign`으로 분류하고, 동일 PostgreSQL system
+   identifier·name·OID·owner와 exact role/membership/ACL을 증명할 때만 다음 phase로 수렴한다.
+   `partial`·`foreign`·identity drift에서는 재실행하지 않는다.
+5. Map application은 일반 Alembic chain replay 대신 application-300 전용 root/finalize 두 단계로 만든다.
+   각 단계는 journal basis·transaction/operation ID·DB identity·만료시각에 결박된 root-owned read-only
+   fence를 먼저 발행하고 실행 intent를 fsync한다. 결과가 없는 `*_execution_intent` 재개는 같은
+   `operation_id`로 DB의 append-only receipt를 먼저 복구한다. receipt가 없고 exact pre-state일 때만 같은
+   operation을 다시 호출하며, 만료 fence도 이 조건에서 operation ID는 보존하고 새 fence transaction으로
+   갱신한다. `partial`·`foreign`·불확정 상태에서는 fail-close한다. 두 결과를 검증한 뒤
+   application final permit을 발행하고, 별도 Dagster metadata DB identity를 application identity와 분리해
+   metadata permit을 발행한다. permit은 non-root Map API/Dagster가 읽을 수 있는 root-owned `0755`
+   directory의 `0444` 파일이고, receipt/result는 root-only `0700`/`0600`으로 유지한다. 그 뒤 Map API를
+   기동해 head `300`을 확인한다. Map Dagster storage migration은 journal transaction ID를
+   `operation_id`로 쓰는 DB intent+append-only receipt v2다. durable intent 재개에서도 같은 command를
+   호출해 receipt를 복구하거나 미완료 intent를 완결하며, exact head와 operation ID가 다르면 거부한다.
+   성공 후 Dagster web·daemon은 storage migration을 암묵적으로 다시 실행하지 않도록 `--no-deps`로
+   기동한다.
 6. PinVi 쪽의 별도 `pinvi-admin-bootstrap` one-shot CLI는 먼저 candidate-static `pinvi_head`까지
    `alembic upgrade head`를 실행하고, 같은 transaction에서 그 head를 확인한 후에만
    `PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE`만 받는다. Manager는 frozen smoke credential에서 owner-only
@@ -173,5 +215,7 @@ transaction/candidate로 idempotently 다시 검증한다. tombstone write/unlin
    receipt를 전부 fsync하고, `run_pinvi_canonical_smoke`를 Map runtime·PinVi API ready 뒤 transaction
    ID와 journal writer로 실제 호출한다. response loss는 Map fixture GET의 immutable outcome으로만
    수렴하며 canonical cancel 또는 finalize POST를 추측 재시도하지 않는다.
-7. **F1D-D (docs-only PR)**: n150에서 파기형 rebuild, final schema head, admin live UI E2E와 PinVi
-   mutating E2E를 실행한 결과를 기록하고 source/ETL 재적재 작업으로 handoff한다.
+7. **F1D-H300 (Map + Manager PR)**: Map application head `300`을 새 baseline으로 봉인하고 paired
+   API·Dagster candidate, application/metadata permit, root/finalize operation evidence, manifest v6와
+   journal v8을 결선한다. n150에서 파기형 rebuild, exact image/DB identity/head, admin live UI E2E와
+   PinVi acceptance를 확인한 뒤 완료 기록으로 이관한다.

@@ -16,6 +16,41 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-08-25 — application `300` 데이터 무결성 gate 퇴역
+
+- [x] **T-VN-41-F1D-D — fresh `300` 데이터 재적재 후 수용 검증을 release 조건에서 제외**
+
+  application `300` 전환은 schema/bootstrap과 runtime provenance만 증명한다. 일반 application row의
+  내용·건수·업무상 무결성은 release gate로 검증하지 않으며, 필요한 경우 fresh schema에 source/ETL을
+  처음부터 재적재할 수 있다. 이전 revision이나 기존 DB로의 복구 계획은 없으므로, 데이터 의존 UI E2E는
+  별도 데이터 적재 작업의 운영 검증으로만 남기고 H300 완료 조건에서는 제거했다.
+
+## 2026-08-25 — active backlog 정합성 정리와 T-VN-40 Manager 잔여 이관
+
+- [x] **완료·퇴역 항목을 `tasks.md`에서 제거하고 이력으로 이관**
+
+  active backlog에 완료 상태로 남아 있던 `DOC-AUDIT-20260821`, T-050, T-051, #173/H46F,
+  #178, #179를 완료 이력으로 옮겼다. T-031, T-045~T-049, T-052~T-057,
+  T-VN-41-F1/F1A/F1B/F1C/F1E/F1F는 ADR-34의 fresh rebuild와 ADR-39의 application `300`
+  모델로 대체된 퇴역 control plane이므로, 과거 미체크 문장을 현재 작업으로 해석하지 않게 active
+  backlog에서 제거했다. 상세 당시 기록은 이 문서의 기존 항목과 Git 이력에 보존된다.
+
+- [x] **T-VN-40 Manager 잔여 항목 종결**
+
+  PR #174에서 raw snapshot/mapping token은 PinVi exact service path와 Map API 전용 digest path로
+  분리됐고, raw/resolved Compose 및 runtime secret isolation 회귀가 merge됐다. PR #172/#175/#176의
+  Map 전용 PostgreSQL·principal bootstrap과 PR #183의 Map UI Geo credential 경계도 merge됐다.
+  따라서 T-VN-40의 Manager 코드 잔여를 #171 또는 H46F의 미완료 항목처럼 `tasks.md`에 남기지 않는다.
+  application `300`의 n150 live acceptance는 새 T-VN-41-F1D-H300이 소유한다.
+
+- [x] **#171·#177 구현 issue와 C7 capture 구현 완료 사실 정리**
+
+  GitHub #171과 #177은 closed 상태다. #171의 전용 DB/DSN/principal 및 Hallmark 운영 UI 구현은 완료됐고
+  새 application `300` live acceptance만 H300으로 이관했다. #177의 standalone backup create/list/gc,
+  cron, API/UI와 n150 Geo Dagster·Concierge·PinVi 실증은 완료됐으며, Geo application 대용량 실측과
+  off-box 자동화만 `BACKUP-FOLLOWUP`으로 재식별했다. 읽기 전용 `pinvi-pair capture` 구현도 PR #184에서
+  merge됐고, 설치본·checkout·manifest 프로비저닝만 `T-C7-CAPTURE-OPS`로 분리했다.
+
 ## 2026-08-06 — T-VN-41-F1D-C3 n150 결선
 
 - [x] **F1D-C3 — dynamic fixture durable transaction과 n150 파기형 rebuild**

@@ -4,6 +4,215 @@
 
 ---
 
+## 2026-08-25 — Map `dd2ee61f` 통합 CI green과 `300` release pin 회전
+
+Map PR #1064의 exact head `dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e`가 Python
+3.11/3.12/3.13, lint, type/build, OpenAPI drift, fixture replay와 PostGIS 통합 CI를 모두
+통과했다. Manager의 application-300 source와 v5 canonical release pinset을 이 exact
+커밋으로 회전했다. PinVi source `27fe2043b7b8e747fbb42d91e461ea462f930bb7`는 유지하고,
+새 canonical compact pinset digest는
+`49548a610cbfa3a0d2242ef6e9a8cbd5664e61dec92391b8a476b02951b65c62`다.
+
+이전 c95 pin의 image·receipt·journal은 새 release evidence로 재사용하지 않는다. `300` 승격
+후 일반 application row 데이터의 내용·건수·업무상 무결성 검증은 release gate가 아니며, 필요할
+경우 fresh schema에 source/ETL로 처음부터 재적재한다. 이전 revision 또는 기존 DB 복구는 수행하지
+않는다.
+
+---
+
+## 2026-08-25 — Map c95fbb01 exact pair 재고정과 application `300` 데이터 gate 퇴역
+
+Map PR #1064의 통합 fixture·teardown 보정이 반영된 exact commit
+`c95fbb019ebaa618ead2be86d4023d5d918fce66`으로 Manager의 application-300 source authority를
+회전했다. PinVi source는 유지하고 v5 canonical pinset은
+`e7eccb61e7d0c0faa5920bd497d812f2847ea778e972da1773cfb55948c20b2c`로 다시 계산했다. 이전
+Map/pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않는다.
+
+사용자 승인 정책에 따라 일반 application row의 내용·건수·업무상 데이터 무결성은 application `300`
+release gate에서 제외했다. 필요한 데이터는 fresh schema에 source/ETL로 처음부터 재적재할 수 있으며,
+이전 revision이나 기존 DB 복구는 수행하지 않는다. receipt는 schema/bootstrap·provenance 범위만
+증명한다.
+
+---
+
+## 2026-08-25 — Map LO residue gate와 v5 release pin 회전
+
+Map PR #1064의 최신 exact commit `7d44b98b3d0671329e9a6711187091d95cf960cf`가 fresh-root
+pre-state에서 `pg_largeobject_metadata`의 database-wide owner/ACL 잔류를 거부하고, canonical
+application catalog·privileged residue digest에도 해당 행을 포함한다. 실제 disposable PostgreSQL에서
+large object를 만들고 PUBLIC SELECT ACL을 부여한 뒤 probe가 거부되는 negative regression을 통과했다.
+
+Manager v5 source와 canonical pinset을 이 Map commit으로 회전했다.
+
+- pinset: `a75c2f1a4ef569c65177061573ad4cf418798a2556dca02052dd87cae54b6936`
+- 이전 Map/pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않음
+- Map fresh integration: `2 passed`; Map root/catalog unit: `34 passed`; contract artifact: `18 passed`
+- Manager renewal crash focus: `70 passed`
+
+---
+
+## 2026-08-25 — expired fence renewal의 file↔journal crash 수렴
+
+두 전문 적대 리뷰에서 fresh root/finalize fence를 새 bytes로 교체한 직후 journal 기록 전에
+프로세스가 중단되면 다음 재개가 영구 정지할 수 있는 P1을 확인했다. renewal expiry를 현재 시각에
+의존하지 않는 결정론적 값으로 만들고, 재개 시 현재 fence가 old 또는 결정론적 renewed bytes인지
+판정해 renewed bytes가 이미 durable하면 journal을 먼저 수렴시키도록 보강했다. 그 외 missing·unsafe·
+unknown fence는 기존 journal plan으로 typed missing probe를 다시 수행하며, probe가 fence·operation·
+journal을 strict하게 결박하지 못하면 root/finalize 재실행을 허용하지 않는다. finalize도 동일한
+수렴 경계를 적용했다.
+
+- crash-first renewal unit: `70 passed` (rebuild focus 포함)
+- 변경 source Ruff 통과
+- root/finalize one-shot recovery test에서 probe 후 재실행 금지 확인
+- 두 `uv.lock`은 열람·수정·stage하지 않음
+
+---
+
+## 2026-08-25 — fresh-root receipt-missing proof 소비 및 committed fast-path 재검증
+
+Map `a7c950c215c981333eb6a46f607235aa422e88f4`의 root `probe-missing` wire를 Manager strict
+parser에 연결했다. root `recover`가 실패한 경우에도 typed `receipt-missing-exact-prestate`가
+operation·fence·journal·DB identity·candidate/contract digest·exact pre-root schema를 모두
+결박하지 않으면 fence 갱신과 root 재실행을 허용하지 않는다. 기존 bootstrap 상태 문자열 fallback은
+제거했다.
+
+committed resume에서도 두 PostgreSQL container의 실제 secret-file-only runtime config를 재검증하고,
+정확한 seven one-shot writer 부재 및 project-global orphan bootstrap credential sweep을 다시 수행한
+뒤에만 성공을 반환하도록 보강했다. release pinset은 Map source와 함께
+`6a035e257aefc0cc20d1e37f9e08882c9335e196a1af9a223d85fb286a00ed50`으로 회전했다.
+
+- Map/Manager root·finalize·release 회귀: `95 passed` (Manager focus set)
+- 변경 source Ruff 통과
+- 완료된 `T-VN-40` 잔여 항목은 active tasks에 없음
+- 두 `uv.lock`은 열람·수정·stage하지 않음
+
+---
+
+## 2026-08-25 — v8 세 DB identity·crash residue 최종 hardening checkpoint
+
+Map exact commit을 `a7c950c215c981333eb6a46f607235aa422e88f4`, release pinset을
+`6a035e257aefc0cc20d1e37f9e08882c9335e196a1af9a223d85fb286a00ed50`로 회전했다. 이전
+pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않는다.
+
+두 전문 적대 리뷰의 finding에 따라 다음 경계를 보강했다.
+
+- finalize 응답 유실은 Map의 typed exact-prestate proof 뒤에만 fence를 갱신해 재실행
+- committed resume에서 두 PostgreSQL container image와 Map application·Dagster metadata·PinVi
+  세 DB identity를 journal과 실시간 재대조
+- Dagster metadata LOGIN role의 privilege/membership 외 connection limit, password expiry,
+  role/database-local setting 잔여까지 permit과 journal에 결박
+- rebuild 중단 뒤 남은 PinVi bootstrap plaintext credential을 global lock·모든 one-shot 부재 조건에서
+  owner-only strict scan 후 zeroize/unlink/fsync
+- v6 candidate tag는 현 세대 exact image ID만 보존하고 stale tag를 제거하되 v5 content reference를
+  먼저 확인
+- committed resume에서도 external prerequisite를 candidate build 전에 확인하고 일곱 runtime과 두
+  PostgreSQL image를 재검증
+- Map Dagster migration receipt를 구 v2 부분 비교에서 v3 exact field set으로 올리고, journal의
+  operation/head/permit, sealed candidate digest, metadata DB identity와 catalog digest 형식을 대조
+
+Manager 전체 backend `721 passed, 3 skipped`, v3 receipt 직접 회귀를 포함한 rebuild `68 passed`,
+Map C7/Dagster `305 passed`, 변경 파일 Ruff·strict mypy와 frontend type-check/build를 통과했다.
+다음 단계는 두 리뷰어의 exact-commit 재검토 finding을 닫고 final gate를 다시 실행하는 것이다.
+완료된 `T-VN-40` 잔여 항목은 active `tasks.md`에 없다.
+
+## 2026-08-25 — application `300` paired candidate와 v6/v8 rebuild 결선
+
+Map PR #1064의 exact commit `d0ced47128c2b175bcd22d7e44fa979512ccf203`을 Manager release
+pin에 고정하고 canonical pinset을
+`f95428ea5ee1f5583bada5a53ecb72cc75e7ed55560850e1032f5d3eeb9b6331`로 회전했다.
+이전 Map commit으로 만든 로컬 API·Dagster image와 paired receipt는 새 pin의 release evidence로
+재사용하지 않는다. exact `d0ced471…` sealed paired candidate는 이 Manager checkpoint 뒤 다시 build해
+동일 candidate tree, PostgreSQL image와 application head `300`을 검증한다. 그 로컬 결과도 n150
+production 증거가 아니므로 live 실행에서 다시 검증한다.
+
+Manager PR #197은 Map API·Dagster를 독립 Compose build 대상에서 제거하고 paired receipt의 exact
+image ID를 사용한다. Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 build한다. generation manifest는
+v6, pinset별 resume journal/tombstone은 v8로 올렸다. Map application fresh DB는 exact DB identity를
+고정한 뒤 root/finalize 각각 operation plan→read-only fence→durable execution intent→result 순서로
+진행하고, application final permit과 별도 Dagster metadata identity permit을 발행한다. 결과 없는
+execution intent는 같은 operation ID의 append-only DB receipt를 먼저 recover하고, receipt 부재와 exact
+pre-state가 함께 증명될 때만 안전하게 같은 operation을 재실행한다. 만료 fence도 operation ID를 보존한
+채 이 조건에서만 갱신한다. Dagster storage는 journal transaction ID를 쓰는 intent+receipt v2로 수렴하며,
+web·daemon은 `--no-deps`로 기동해 implicit 재실행을 막는다. final/committed resume은 일곱
+running container의 실제 image ID를 journal generation과 다시 대조한다.
+
+DB create/bootstrap response-loss 수렴, 외부 Geo·Concierge·RustFS read-only prerequisite,
+`pinvi-db-init` writer 배제, Dagster LOGIN/NOINHERIT exact identity도 함께 고정했다. Manager backend
+전체 결과는 `694 passed, 3 skipped`, 변경 파일 Ruff와 7개 변경 source strict mypy가 통과했다. Map의
+OpenAPI/lint/frontend gate도 통과했고 Python 3개 CI matrix는 이 기록 시점에 진행 중이다. 코드 checkpoint
+`da49ec7e858e4aa6e95457e664184e42688885e4`을 PR #197 원격 branch에 push했다.
+
+사용자 결정에 따라 이전 Alembic revision·DB로 돌아가는 복구 계획은 없으며 backup/scratch restore를
+release gate로 사용하지 않는다. 다음 단계는 DB crash/resume/identity와 Compose/provenance/security의
+독립 전문 적대 리뷰 2건, Map merge 후 Manager rebase, n150 trusted install과 approved
+`rebuild-pinned --confirm`, 공개 UI login/protected/logout 및 PinVi acceptance다.
+
+## 2026-08-24 — T-VN-41C M01~M05 role-residue RC 재고정과 host rebuild lease
+
+PostgreSQL role은 cluster 범위라 database를 새로 만들어도 M01~M05의 이미 알려진 role
+membership이 남을 수 있다. Map base migration과 Manager의 pre-migration principal assertion은
+그 정확한 10개 future role만 양방향으로 보류하고, source-owned M01/M05 phase가 이후
+membership 상대방과 PostgreSQL 16 option까지 다시 exact 검증하도록 정렬했다. 미등록
+`ktm_feature_*`/`ktm_curation_*` edge는 계속 fail-close한다.
+
+Manager는 Map RC `b9818097`을 pinset `f946bdfa…`로 재고정했다. 기존 `f27c2763…`의
+non-terminal journal은 immutable failure evidence로 보존하며, 서로 다른 pinset은 새 pinset별
+journal과 transaction으로만 시작한다. F1D rehearsal의 일반 C6c lock이 실행 사용자 home을 쓸 수
+있는 문제도 보완해, root-only rebuild는 `/run/lock/kor-travel-docker-manager/` 아래의 고정
+host lease를 candidate source materialize 전부터 final commit까지 잡는다.
+
+이 lease는 Manager launcher 사이의 직렬화 경계다. n150의 외부 Compose watcher는 같은 lease를
+획득하도록 wrapper를 정렬하고, 실제 재구축 전에는 해당 project/container/process가 모두
+정지·비활성인지 별도 확인한다. 세 standalone dump의 scratch restore는 F1D rollback이 아니라
+사용자 승인 release evidence이므로, 각각의 manifest에 기록된 dump SHA-256·TOC·schema head
+대조가 성공한 뒤에만
+새 pinset rebuild를 시작한다.
+
+---
+
+## 2026-08-23 — T-VN-41C pinned candidate 빌드 직렬화 및 n150 지연 원인 확인
+
+두 전문 리뷰어(API·DB/운영)가 n150 승인 재빌드의 지연·실패를 교차 점검했다. 첫 번째
+실패는 BuildKit이 일괄 `compose build`에서 여러 frontend session을 동시에 열어
+`only one connection allowed`와 context deadline을 반복한 것이었고, 별도 tvnm05 자동
+빌드가 같은 Docker daemon을 계속 점유해 재현성을 악화시켰다. n150은 14 GiB 메모리 중
+4 GiB swap이 모두 사용되고 load가 20대까지 올라가 apt/npm 단계와 Docker API 조회도
+대기했다.
+
+Manager PR #197에는 candidate 7개 runtime service를 한 번의 multi-target bake로 보내지
+않고 각 service별 frozen Compose build를 순서대로 실행하는 최소 수정(e33b19c)을 반영했다.
+회귀 테스트 35건과 변경 파일 Ruff를 통과시키고 원격에 push했으며, trusted 설치본도 같은
+commit으로 교체했다. 순차화 뒤 Map·PinVi 후보 image build와 static head 직전까지 진행되는
+것을 확인했다.
+
+다만 tvnm05 감시 작업이 `DOCKER_BUILDKIT=0`/BuildKit 빌드를 종료 직후 재기동해 Docker
+daemon의 BuildKit session healthcheck가 계속 `only one connection allowed` 상태로 남았다.
+승인된 최신 시도들은 이 one-shot 단계에서 fail-close했고, 새 state journal과 DB reset은
+생성되지 않았다. Docker daemon 재시작은 다른 서비스 중단을 수반하므로 별도 승인 전에는
+실행하지 않는다. 이전 승인 시도의 `databases_recreated` journal과 fresh Map DB는 실패
+증적으로 보존한다.
+
+---
+
+## 2026-08-23 — T-VN-41C/M01~M05 pinned rebuild migration boundary 보완
+
+고정 RC 재빌드에서 DB를 재생성하고 candidate image를 attestation한 뒤 Map API
+기동이 `ktm_manual_feature_procedure_owner` 부재로 반복 대기하는 원인을 확인했다.
+Map source의 0226~0236 migration은 단일 `alembic upgrade head`로 적용할 수 없고,
+0225 boundary·M01 role phase·0233 boundary·M05 pre role·0235 migration·M05 repair
+role의 순서를 요구한다.
+
+Manager pinned rebuild가 승인된 transaction 안에서 Map candidate image의 exact
+boundary script와 source-owned role bootstrap을 순서대로 실행하도록 고정했다.
+boundary script는 장기 Map API service를 재사용하지 않고 migrator DSN만 가진
+전용 bootstrap service에서 실행해 API/ops/curation/Geo/object-store credential이
+one-shot으로 상속되지 않게 했다.
+기존 pre-migration principal assertion은 legacy role bootstrap 직후로 유지해
+runtime ACL 변화 뒤의 false failure를 막았고, armed/uninitialized resume에서도
+같은 순서를 재현한다. 회귀 테스트는 모든 boundary/phase command와 순서를 고정한다.
+
+---
+
 ## 2026-08-23 — T-VN-M01 candidate source 경로 override 전달 보완
 
 고정 RC pinned rebuild의 DB·컨테이너 변경 전 candidate preflight가 staged Map

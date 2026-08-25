@@ -2,7 +2,7 @@
 
 이 파일은 에이전트(Claude Code, Antigravity, Codex 등)가 세션 시작 시 가장 먼저 읽는 컨텍스트 문서다.
 
-## 프로젝트 현황 (2026-08-21)
+## 프로젝트 현황 (2026-08-25)
 
 PinVi 구동에 필요한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
@@ -29,11 +29,13 @@ schedule-write `2/2`, POI-cache-causal `2/2`, `BLOCKED` 0건과 상태 복구를
 reference 가용성과 cleanup을 확인했다. T-037/038/039/040/041은
 `docs/tasks-done.md`로 이관됐다.
 
-T-031은 새 official deploy가 아직 끝나지 않아 활성 상태다. canonical Manager `.env`의
-Map UI hash/session은 running UI와 일치하지만 manager smoke 평문은 hash를 검증하지 못해
-preflight가 mutation 전에 중단된다. T-045에서 Map UI credential rotation을 `ktdctl`의
-audited production workflow로 제품화하고, hash/session 동시 회전·복구·감사와 n150
-official deploy/live 인수 뒤 T-031과 함께 완료한다.
+현재 active release task는 T-VN-41-F1D-H300이다. Map은 이전 revision 복구와 in-place upgrade를
+사용하지 않고 application head `300`을 새 baseline으로 삼는다. exact Map commit의 sealed paired
+candidate가 API·Dagster image와 application contract를 제공하고, Manager는 Map UI와 PinVi
+API·Web·Dagster 네 image만 build한다. generation manifest는 v6, pinset별 resume journal은 v8이다.
+세 DB를 fresh recreate한 뒤 root/finalize fence·intent·result, application/metadata permit과 exact
+running image를 검증한다. 다음 gate는 전문 적대 리뷰 2건, Map PR #1064 merge, Manager PR #197
+rebase, n150 `rebuild-pinned --confirm`과 live UI/PinVi acceptance다.
 
 T-047은 production compatible-pair readiness를 frozen canonical resolved Compose와 정렬한다.
 활성 healthcheck service는 `running + healthy`, healthcheck가 없거나 명시 비활성화된 service는

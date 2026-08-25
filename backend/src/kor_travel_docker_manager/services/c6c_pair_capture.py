@@ -115,9 +115,9 @@ _MAP_ROLES = tuple(role for role, _service, _field in CAPTURE_ROLES if role != _
 _PINVI_BUILD_ENVIRONMENT = "production"
 _CONTAINER_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
-# 같은 사실을 두 번 적는 v5 pinned generation과의 대조표. 값이 어긋나도 거부하지
-# 않는다 — prod Map 재배포의 sanctioned 경로가 host compose 직접 실행이라 v5가
-# 뒤처지는 것이 정상 상태일 수 있다. 다만 침묵하지도 않는다.
+# 같은 사실을 두 번 적는 v6 pinned generation과의 대조표. 값이 어긋나도 거부하지
+# 않는다 — capture는 별도 production runtime의 읽기 전용 관측기이며 rebuild authority가
+# 아니다. 다만 불일치를 침묵시키지도 않는다.
 PINNED_GENERATION_IMAGE_FIELDS: tuple[tuple[str, str], ...] = (
     ("map_api", "map_api_image_id"),
     ("map_ui", "map_ui_image_id"),
@@ -219,8 +219,8 @@ NOT_GUARANTEED: tuple[str, ...] = (
     "that the recorded revisions are reachable from any published branch",
     "that the runtime still matches after capture returns; this is an observation "
     "taken while the mutation lock was held",
-    "that the v5 pinned generation manifest describes this runtime; capture only "
-    "reports whether the two records agree and never edits the v5 file",
+    "that the v6 pinned generation manifest describes this runtime; capture only "
+    "reports whether the two records agree and never edits the v6 file",
 )
 
 # receipt는 전부 비민감값이다. 이 집합이 회귀 게이트다.
@@ -762,7 +762,7 @@ def _preserved_recorded_at(
 
 
 def _read_pinned_generation(path: Path) -> PinnedRuntimeGeneration | None:
-    """v5 manifest를 읽기 전용·no-mkdir로 연다. 실패는 전부 ``None``이다.
+    """v6 manifest를 읽기 전용·no-mkdir로 연다. 실패는 전부 ``None``이다.
 
     ``pinned_runtime_generation.read_manifest``는 부모 디렉터리를 만들 수 있으므로
     (``_validate_state_parent``의 mkdir) capture 경로에서는 쓰지 않는다.
@@ -808,7 +808,7 @@ def _compare_pinned_generation(
     map_revision: str,
     pinvi_revision: str,
 ) -> PinnedGenerationComparison:
-    """C-15. 같은 사실을 두 번 적는 v5 기록과 관측값을 대조한다(거부하지 않는다)."""
+    """C-15. 같은 사실을 두 번 적는 v6 기록과 관측값을 대조한다(거부하지 않는다)."""
 
     try:
         path = pinned_runtime_manifest_path(values)
@@ -1249,7 +1249,7 @@ def capture_compatible_pair(
         )
         map_revision, pinvi_revision = _observed_source_revisions(first, runner=command_runner)
 
-        # --- C-15: v5 pinned generation과의 대조(보고 전용).
+        # --- C-15: v6 pinned generation과의 대조(보고 전용).
         pinned = _compare_pinned_generation(
             values,
             images=first.images,

@@ -229,21 +229,29 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      `ensure`/container action·config·reset/direct Compose 경로는 일곱 runtime을 변경할 수 없고,
      host-wide lock을 잡는 `pinvi-pair` workflow만 generation이 같은 Map+PinVi runtime set을 단계 기동한다.
      transaction은 Map API·UI·Dagster web·Dagster daemon과 PinVi API·Web·Dagster를 하나의 immutable
-     runtime generation으로 다룬다. 일곱 service를 같은 Git snapshot build에서 먼저 완성하고,
-     Map API smoke 뒤 나머지 Map runtime과 PinVi API·Web·Dagster를 exact image ID로 재생성한 다음
-     Map 네 runtime과 PinVi 세 runtime의 OCI revision이 각각 같은 source revision인지 확인한다.
-     manifest는 `PinnedRuntimeGeneration` v5이며, 일곱 immutable image ID, 두 clean source revision,
-     Map application/Dagster와 PinVi schema head를 active generation 하나에 결박한다. 이전 pair version과
-     rollback slot은 수용하지 않는다. 완전한 수렴이 불가능하면 일곱 runtime을 모두 중지해 혼합 generation
-     노출을 막는다.
+     runtime generation으로 다룬다. Map API와 Dagster는 Map 저장소가 같은 exact commit/tree에서 봉인한
+     application-300 paired candidate의 image ID를 사용하며 Dagster web·daemon은 같은 image ID를 공유한다.
+     Manager가 Compose로 build하는 대상은 Map UI와 PinVi API·Web·Dagster 네 개다. Map API smoke 뒤 나머지
+     Map runtime과 PinVi runtime을 exact image ID로 재생성하고, Map 네 runtime과 PinVi 세 runtime의 OCI
+     revision 및 실제 container image를 generation과 다시 대조한다. manifest는 `PinnedRuntimeGeneration`
+     v6, resume journal은 pinset별 v8이며, 일곱 immutable image ID, 두 clean source revision, paired receipt,
+     application-300 contract, Map application/Dagster와 PinVi schema head를 active generation 하나에
+     결박한다. 이전 pair version과 rollback slot은 수용하지 않는다. 완전한 수렴이 불가능하면 일곱
+     runtime을 모두 중지해 혼합 generation 노출을 막는다.
      비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 stale runtime/DB/state를 새 release pin으로
      수렴할 유일한 경로는 root execution의 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
      candidate resolved Compose security를 검증하고, 일곱 candidate image ID·세 expected schema head를
-     durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. Map Dagster head는
-     source revision 추정값이 아니라 candidate Dagster image가 직접 출력한 storage migration head다. candidate
-     runtime의 Map API와 Map Dagster migration-only command, PinVi migration+credential-file one-shot CLI는
-     각각 별도 DB head를 exact 대조한다. Map Dagster command는 `dagster instance migrate` 뒤 strict single-row
-     `public.alembic_version` 검증을 수행한다. F1J fixture smoke는 Map runtime·PinVi API ready 뒤 같은
+     durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. Map application은
+     과거 revision chain이나 restore를 사용하지 않고 paired contract의 head `300`을 root/finalize fence·intent·
+     result와 application final permit으로 만든다. application DB와 Dagster metadata DB의 system identifier·
+     name·OID·owner·login-role identity는 별도로 journal에 고정하며, metadata permit은 application identity와
+     candidate Dagster image/config/paired receipt를 함께 결박한다. Map Dagster head는 source revision 추정값이
+     아니라 candidate Dagster image가 직접 출력한 storage migration head다. storage migration은 journal
+     transaction ID를 operation ID로 쓰는 DB intent+append-only receipt v2이며, durable intent 재개에서도
+     같은 command가 receipt를 복구하거나 미완료 intent를 완결한다. operation ID·head·DB identity가
+     다르면 fail-close한다. 이후 Dagster web·daemon은 `--no-deps`로 기동해 migration의 암묵적 재실행을
+     막는다. PinVi
+     migration+credential-file one-shot CLI도 별도 DB head를 exact 대조한다. F1J fixture smoke는 Map runtime·PinVi API ready 뒤 같은
      rebuild journal transaction ID로 실행하며, cancel/finalize POST 직전 attempted receipt를 fsync한다.
      응답 유실 재개는 Map immutable fixture receipt만 읽고 POST를 재발행하지 않는다. security·UI auth는
      그 contract verification 뒤 exact image에서 검증한다. old image, old manifest,

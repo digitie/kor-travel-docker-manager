@@ -36,6 +36,12 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ComposeTransactionSnapshot,
 )
+from kor_travel_docker_manager.services.map_application_300 import (
+    Application300Contract,
+)
+from kor_travel_docker_manager.services.map_application_300_candidate import (
+    MapApplication300Candidate,
+)
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
 )
@@ -58,6 +64,8 @@ _MAP_RUNTIME_SERVICES = (
 _MAP_DATABASE_ONESHOT_SERVICES = (
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
+    "kor-travel-map-application-fresh-300",
+    "kor-travel-map-application-fresh-finalize",
     "kor-travel-map-dagster-storage-migrate",
 )
 _PINVI_RUNTIME_SERVICES = ("pinvi-api", "pinvi-web", "pinvi-dagster")
@@ -72,6 +80,9 @@ _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
 _FEATURE_CREATE_TOKEN = "manual-feature-create-contract-token-0000"
+_MAP_API_IMAGE_ID = f"sha256:{'1' * 64}"
+_MAP_DAGSTER_IMAGE_ID = f"sha256:{'2' * 64}"
+_MAP_POSTGRES_IMAGE_ID = f"sha256:{'3' * 64}"
 
 
 def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
@@ -106,7 +117,24 @@ def _compose_contract_environment() -> dict[str, str]:
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
-        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "test-map-head",
+        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
+        "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
+        "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
+        "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": _MAP_POSTGRES_IMAGE_ID,
+        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
+            "/tmp/ktdm-map-application-final-permit"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (
+            "/tmp/ktdm-map-dagster-storage-permit"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": (
+            "/tmp/ktdm-map-fresh-migrate-fence"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
+            "/tmp/ktdm-map-fresh-finalize-fence"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": "4" * 64,
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": "5" * 64,
         "KOR_TRAVEL_MAP_POSTGRES_DB": "map_contract",
         "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_contract_dagster",
         "KOR_TRAVEL_MAP_POSTGRES_USER": "map_contract_admin",
@@ -155,6 +183,42 @@ def _source_compose() -> dict[str, Any]:
     document = yaml.safe_load(_COMPOSE_PATH.read_text(encoding="utf-8"))
     assert isinstance(document, dict)
     return document
+
+
+def _map_application_300_candidate(
+    sources: PinnedRuntimeSourceMaterialization,
+) -> MapApplication300Candidate:
+    contract = Application300Contract(
+        reference_manifest_sha256="1" * 64,
+        postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
+        source_catalog_sha256="2" * 64,
+        destination_catalog_sha256="3" * 64,
+        seed_sha256="4" * 64,
+        privileged_residue_sha256="5" * 64,
+        source_alembic_version_sha256="6" * 64,
+        destination_alembic_version_sha256="7" * 64,
+        runtime_invariants_sql_sha256="8" * 64,
+    )
+    map_source = sources.source_for("map")
+    return MapApplication300Candidate(
+        receipt_sha256="9" * 64,
+        api_receipt_sha256="a" * 64,
+        candidate_commit=map_source.revision,
+        candidate_git_tree=map_source.tree,
+        api_image_id=_MAP_API_IMAGE_ID,
+        dagster_image_id=_MAP_DAGSTER_IMAGE_ID,
+        postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
+        dagster_config_sha256="b" * 64,
+        dagster_yaml_sha256="c" * 64,
+        application_contract=contract,
+        application_contract_sha256="d" * 64,
+        launch_contract_sha256="e" * 64,
+        webserver_argv_prefix=("/usr/local/bin/dagster-webserver",),
+        webserver_port_minimum=1,
+        webserver_port_maximum=65535,
+        daemon_argv=("/usr/local/bin/dagster-daemon", "run"),
+        storage_migration_argv=("/usr/local/bin/ktm-dagster-storage", "migrate"),
+    )
 
 
 def _compose_fragment(*service_names: str) -> dict[str, object]:
@@ -264,9 +328,9 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
     assert isinstance(services, dict)
 
     migration = services["kor-travel-map-dagster-storage-migrate"]
-    assert migration["image"] == "kor-travel-map-dagster:latest-main"
+    assert migration["image"] == f"sha256:{'2' * 64}"
     assert "build" not in migration
-    assert migration["command"] == ["ktm-dagster-storage", "migrate"]
+    assert migration["command"] == ["/usr/local/bin/ktm-dagster-storage", "migrate"]
     assert migration["restart"] == "no"
     assert migration["network_mode"] == "host"
     assert migration["environment"] == {
@@ -276,19 +340,23 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
             "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
             "127.0.0.1:12700/map_contract_dagster"
         ),
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
-        "KOR_TRAVEL_MAP_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": "5" * 64,
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": "4" * 64,
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID": f"sha256:{'2' * 64}",
     }
     assert migration["depends_on"]["kor-travel-map-postgres"]["condition"] == (
         "service_healthy"
     )
     assert migration["extra_hosts"] == ["host.docker.internal=host-gateway"]
+    assert migration["volumes"] == [
+        {
+            "type": "bind",
+            "source": "/tmp/ktdm-map-dagster-storage-permit",
+            "target": "/run/kor-travel-map-dagster-storage-permit",
+            "read_only": True,
+            "bind": {},
+        }
+    ]
 
     for service_name in (
         "kor-travel-map-dagster",
@@ -298,6 +366,7 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         assert dependency["kor-travel-map-dagster-storage-migrate"]["condition"] == (
             "service_completed_successfully"
         )
+        assert services[service_name]["image"] == migration["image"]
 
 
 def test_resolved_pinvi_api_has_no_implicit_schema_mutation_or_bootstrap_secret() -> None:
@@ -524,7 +593,21 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
     bootstrap_script.parent.mkdir(parents=True)
     bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    credential_preflight = (
+        map_source / "scripts" / "database-credential-preflight.sh"
+    )
+    credential_preflight.parent.mkdir(parents=True)
+    credential_preflight.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+    for environment_name, directory_name in (
+        ("KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR", "application-permit"),
+        ("KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR", "metadata-permit"),
+        ("KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR", "root-fence"),
+        ("KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR", "finalize-fence"),
+    ):
+        directory = tmp_path / directory_name
+        directory.mkdir()
+        environment[environment_name] = str(directory)
 
     raw_snapshots = validate_compose_candidate_protected_values(
         candidate,
@@ -532,6 +615,36 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         root_env_path=str(root_env),
         environment=environment,
     )
+    raw_image_drift = deepcopy(candidate)
+    raw_image_services = raw_image_drift["services"]
+    assert isinstance(raw_image_services, dict)
+    raw_image_fresh = raw_image_services["kor-travel-map-application-fresh-300"]
+    assert isinstance(raw_image_fresh, dict)
+    raw_image_fresh["image"] = "attacker.invalid/map-application:stale"
+    with pytest.raises(DeploymentContractError, match="image provenance"):
+        validate_compose_candidate_protected_values(
+            raw_image_drift,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    fresh_drift = deepcopy(candidate)
+    fresh_services = fresh_drift["services"]
+    assert isinstance(fresh_services, dict)
+    fresh_service = fresh_services["kor-travel-map-application-fresh-300"]
+    assert isinstance(fresh_service, dict)
+    fresh_environment = fresh_service["environment"]
+    assert isinstance(fresh_environment, dict)
+    fresh_environment["KOR_TRAVEL_MAP_API_SERVICE_TOKEN"] = (
+        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+    )
+    with pytest.raises(DeploymentContractError, match="application 300 service environment"):
+        validate_compose_candidate_protected_values(
+            fresh_drift,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
     resolved = _resolved_compose(
         "kor-travel-map-postgres",
         "kor-travel-map-api",
@@ -544,6 +657,18 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         environment_update={
             "KOR_TRAVEL_MAP_PGDATA": str(map_pgdata),
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
+            "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": environment[
+                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR"
+            ],
+            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": environment[
+                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR"
+            ],
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": environment[
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR"
+            ],
+            "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": environment[
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR"
+            ],
         },
     )
     assert validate_resolved_compose_candidate_protected_values(
@@ -552,6 +677,40 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         compose_path=str(_COMPOSE_PATH),
         root_env_path=str(root_env),
     ) == raw_snapshots
+
+    resolved_image_drift = deepcopy(resolved)
+    resolved_image_services = resolved_image_drift["services"]
+    assert isinstance(resolved_image_services, dict)
+    resolved_image_fresh = resolved_image_services[
+        "kor-travel-map-application-fresh-finalize"
+    ]
+    assert isinstance(resolved_image_fresh, dict)
+    resolved_image_fresh["image"] = "attacker.invalid/map-application:stale"
+    with pytest.raises(DeploymentContractError, match="image provenance"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_image_drift,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    resolved_environment_drift = deepcopy(resolved)
+    resolved_environment_services = resolved_environment_drift["services"]
+    assert isinstance(resolved_environment_services, dict)
+    resolved_environment_fresh = resolved_environment_services[
+        "kor-travel-map-application-fresh-finalize"
+    ]
+    assert isinstance(resolved_environment_fresh, dict)
+    resolved_fresh_environment = resolved_environment_fresh["environment"]
+    assert isinstance(resolved_fresh_environment, dict)
+    resolved_fresh_environment["UNRELATED_FRESH_SETTING"] = "x"
+    with pytest.raises(DeploymentContractError, match="environment is invalid"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_environment_drift,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
 
     empty_tuning_environment = dict(environment)
     empty_tuning_environment["PINVI_POSTGRES_SHARED_BUFFERS"] = ""
@@ -860,13 +1019,19 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"][
         "environment"
     ]
+    map_fresh_environment = services["kor-travel-map-application-fresh-300"][
+        "environment"
+    ]
+    map_finalize_environment = services[
+        "kor-travel-map-application-fresh-finalize"
+    ]["environment"]
     assert isinstance(map_api_environment, dict)
     assert isinstance(map_dagster_environment, dict)
     assert isinstance(map_bootstrap_environment, dict)
-    assert {
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
-        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
-    }.issubset(map_api_environment)
+    assert isinstance(map_fresh_environment, dict)
+    assert isinstance(map_finalize_environment, dict)
+    assert "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN" not in map_api_environment
+    assert "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN" in map_api_environment
     assert "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN" not in map_api_environment
     assert {
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
@@ -883,9 +1048,36 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert {
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
     }.issubset(map_bootstrap_environment)
+    assert map_fresh_environment == {
+        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID": f"sha256:{'1' * 64}",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
+    }
+    assert map_finalize_environment == {
+        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID": f"sha256:{'1' * 64}",
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
+    }
 
 
 @pytest.mark.parametrize(
@@ -1271,24 +1463,26 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
             "PINVI_BUILD_ENVIRONMENT": "production",
         },
     )
-    build = CandidateRuntimeBuild(
-        PinnedRuntimeSourceMaterialization(
-            release=PINNED_RUNTIME_RELEASE,
-            sources=(
-                MaterializedRuntimeSource(
-                    role="map",
-                    root=map_root,
-                    revision=map_revision,
-                    tree="a" * 40,
-                ),
-                MaterializedRuntimeSource(
-                    role="pinvi",
-                    root=pinvi_root,
-                    revision=pinvi_revision,
-                    tree="b" * 40,
-                ),
+    sources = PinnedRuntimeSourceMaterialization(
+        release=PINNED_RUNTIME_RELEASE,
+        sources=(
+            MaterializedRuntimeSource(
+                role="map",
+                root=map_root,
+                revision=map_revision,
+                tree="a" * 40,
             ),
-        )
+            MaterializedRuntimeSource(
+                role="pinvi",
+                root=pinvi_root,
+                revision=pinvi_revision,
+                tree="b" * 40,
+            ),
+        ),
+    )
+    build = CandidateRuntimeBuild(
+        sources=sources,
+        map_application_300_candidate=_map_application_300_candidate(sources),
     )
     environment_snapshot = ComposeEnvironmentSnapshot(
         effective={},

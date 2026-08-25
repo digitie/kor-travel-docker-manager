@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from kor_travel_docker_manager.services import c6c_deployment, pinned_runtime_generation
 from kor_travel_docker_manager.services import c6c_pair_capture as capture
 
@@ -176,6 +177,7 @@ ROLE_IMAGES = {
     role: _image(0x100 + index)
     for index, (role, _service, _field) in enumerate(capture.CAPTURE_ROLES)
 }
+ROLE_IMAGES["map_dagster_daemon"] = ROLE_IMAGES["map_dagster_web"]
 ROLE_CONTAINERS = {
     role: _container(0x200 + index)
     for index, (role, _service, _field) in enumerate(capture.CAPTURE_ROLES)
@@ -927,6 +929,49 @@ def test_deployment_lock_emits_exactly_the_message_capture_matches(tmp_path: Pat
     assert str(excinfo.value) == capture.LOCK_CONTENTION_MESSAGE
 
 
+def test_pinned_runtime_rebuild_lease_path_is_fixed() -> None:
+    assert c6c_deployment.pinned_runtime_rebuild_lock_path() == (
+        "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
+    )
+
+
+def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F1D fixed lease도 generic helper와 같은 실제 fd 경합을 유지한다."""
+
+    lock_path = tmp_path / "pinned-runtime-rebuild.lock"
+    monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", lock_path)
+    # root requirement은 바로 아래 별도 test가 고정한다. 여기서는 현 test user가
+    # 소유한 임시 file로 실제 flock 경합만 검증한다.
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    holder = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(c6c_deployment.DeploymentContractError) as excinfo:
+            with c6c_deployment.pinned_runtime_rebuild_lock():
+                pass  # pragma: no cover - holder가 있으면 enter하면 안 된다.
+    finally:
+        os.close(holder)
+
+    assert str(excinfo.value) == capture.LOCK_CONTENTION_MESSAGE
+
+
+def test_pinned_runtime_rebuild_lease_rejects_nonroot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(c6c_deployment.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(c6c_deployment.DeploymentContractError, match="requires root"):
+        with c6c_deployment.pinned_runtime_rebuild_lock():
+            pass  # pragma: no cover - root gate must reject before entering.
+
+
 # ---------------------------------------------------------------------------
 # C-7~C-16 runtime 관측
 # ---------------------------------------------------------------------------
@@ -992,6 +1037,7 @@ def test_compose_service_label_mismatch_is_refused(bench: Bench) -> None:
 
 def test_map_images_with_divergent_revisions_are_refused(bench: Bench) -> None:
     runner = FakeDockerGit()
+    runner.images["map_dagster_daemon"] = _image(0xBAD)
     runner.revisions["map_dagster_daemon"] = OTHER_REVISION
     _expect_runtime_refusal(bench, runner)
 
@@ -1714,25 +1760,36 @@ def test_manifest_beside_the_pinned_state_root_is_accepted(bench: Bench) -> None
 
 
 # ---------------------------------------------------------------------------
-# R1-3 v5 pinned generation과의 대조 (보고 전용)
+# R1-3 v6 pinned generation과의 대조 (보고 전용)
 # ---------------------------------------------------------------------------
 
 
-def _pinned_generation_payload(**overrides: str) -> dict[str, str]:
-    payload = {
+def _pinned_generation_payload(**overrides: str) -> dict[str, object]:
+    evidence = pinned_runtime_generation.MapApplication300CandidateEvidence(
+        paired_receipt_sha256="1" * 64,
+        api_receipt_sha256="2" * 64,
+        candidate_git_tree="3" * 40,
+        postgres_image_id=_image(0xAA3),
+        dagster_config_sha256="4" * 64,
+        dagster_yaml_sha256="5" * 64,
+        application_contract_sha256="6" * 64,
+        launch_contract_sha256="7" * 64,
+    )
+    payload: dict[str, object] = {
         "map_api_image_id": ROLE_IMAGES["map_api"],
         "map_ui_image_id": ROLE_IMAGES["map_ui"],
         "map_dagster_image_id": ROLE_IMAGES["map_dagster_web"],
-        "map_dagster_daemon_image_id": ROLE_IMAGES["map_dagster_daemon"],
+        "map_dagster_daemon_image_id": ROLE_IMAGES["map_dagster_web"],
         "pinvi_api_image_id": ROLE_IMAGES["pinvi_api"],
         "pinvi_web_image_id": _image(0xAA1),
         "pinvi_dagster_image_id": _image(0xAA2),
         "map_source_revision": MAP_REVISION,
         "pinvi_source_revision": PINVI_REVISION,
-        "map_application_head": "0f1e2d3c",
+        "map_application_head": "300",
         "map_dagster_head": "4b5a6978",
         "pinvi_head": "8877meta",
         "pinset_sha256": "d" * 64,
+        "map_application_300_candidate_evidence": evidence.to_payload(),
         "recorded_at": "2026-08-10T00:00:00+00:00",
     }
     payload.update(overrides)
@@ -1740,10 +1797,10 @@ def _pinned_generation_payload(**overrides: str) -> dict[str, str]:
 
 
 def seed_pinned_generation(bench: Bench, **overrides: str) -> Path:
-    path = bench.pinned_root / "pinned-runtime-generation-v5.json"
+    path = pinned_runtime_generation.pinned_runtime_manifest_path(bench.environment)
     path.write_text(
         json.dumps(
-            {"version": 5, "active_generation": _pinned_generation_payload(**overrides)},
+            {"version": 6, "active_generation": _pinned_generation_payload(**overrides)},
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -1764,7 +1821,7 @@ def test_pinned_generation_agreement_is_reported(bench: Bench) -> None:
 
 
 def test_pinned_generation_divergence_is_reported_but_never_refused(bench: Bench) -> None:
-    """n150 실측 상태 — v5가 다른 revision/image를 주장해도 capture는 커밋한다."""
+    """n150 실측 상태 — v6가 다른 revision/image를 주장해도 capture는 커밋한다."""
 
     seed_pinned_generation(
         bench,
