@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -1164,6 +1165,67 @@ def write_owner_only_artifact(path: Path, raw: bytes) -> HostArtifactReceipt:
     except Exception:
         _safe_unlink(tmp_path)
         raise
+
+
+def read_owner_only_artifact(path: Path, *, expected_sha256: str) -> bytes:
+    """Read one owner-only artifact and bind it to a durable expected digest."""
+
+    _require_sha256(expected_sha256, "expected artifact digest")
+    _require_artifact_path(path)
+    _require_artifact_directory(path.parent)
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise MapApplication300ContractError("artifact is unavailable") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+        or metadata.st_size < 1
+        or metadata.st_size > 64 * 1024
+    ):
+        raise MapApplication300ContractError("artifact metadata is unsafe")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid != os.geteuid()
+                or stat.S_IMODE(opened.st_mode) != 0o600
+                or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino, opened.st_size)
+                != (metadata.st_dev, metadata.st_ino, metadata.st_size)
+            ):
+                raise MapApplication300ContractError(
+                    "artifact changed while opening"
+                )
+            raw = os.read(descriptor, 64 * 1024 + 1)
+            after = os.fstat(descriptor)
+            if (
+                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                != (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                )
+                or len(raw) != metadata.st_size
+            ):
+                raise MapApplication300ContractError(
+                    "artifact changed while reading"
+                )
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise MapApplication300ContractError(
+            "artifact cannot be read safely"
+        ) from exc
+    if not hmac.compare_digest(sha256_bytes(raw), expected_sha256):
+        raise MapApplication300ContractError("artifact digest is invalid")
+    return raw
 
 
 def publish_root_read_only_artifact(path: Path, raw: bytes) -> HostArtifactReceipt:

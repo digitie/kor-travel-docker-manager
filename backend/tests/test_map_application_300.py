@@ -30,6 +30,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     parse_fresh_finalize_result,
     parse_fresh_root_result,
     publish_root_read_only_artifact,
+    read_owner_only_artifact,
     sha256_bytes,
     validate_application_final_permit,
     validate_dagster_metadata_permit,
@@ -501,6 +502,13 @@ def test_owner_only_artifact_writer_is_idempotent_and_rejects_symlink(
         assert receipt == same
         assert target.read_bytes() == raw
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert read_owner_only_artifact(
+            target,
+            expected_sha256=sha256_bytes(raw),
+        ) == raw
+
+        with pytest.raises(MapApplication300ContractError, match="digest"):
+            read_owner_only_artifact(target, expected_sha256=_digest("f"))
 
         with pytest.raises(MapApplication300ContractError, match="different bytes"):
             write_owner_only_artifact(target, b'{"schema":"other"}')
