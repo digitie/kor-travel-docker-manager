@@ -642,6 +642,10 @@ def _application_300_bootstrap_attestation_query(runtime: DatabaseRuntime) -> st
             f"('x_extension', '{role}', 'USAGE')"
             for role in extension_acl_roles
         ]
+        # PostgreSQL retains CREATE for the owner of a schema.  The Map
+        # bootstrap script intentionally leaves that owner privilege in place
+        # while revoking PUBLIC and the other application roles.
+        + [f"('x_extension', '{_MAP_SCHEMA_OWNER}', 'CREATE')"]
     )
     role_names = ", ".join(f"'{role}'" for role in all_roles)
     return (

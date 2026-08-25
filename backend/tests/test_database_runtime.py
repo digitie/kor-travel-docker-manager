@@ -401,6 +401,7 @@ def test_application_300_exact_bootstrap_attestation_binds_full_role_graph(
     assert "ktm_feature_reference_reconciliation_service_executor" in query
     assert "pg_prewarm:x_extension" in query
     assert "fuzzystrmatch:public" in query
+    assert "('x_extension', 'ktm_feature_schema_owner', 'CREATE')" in query
     assert "search_path=public, x_extension" in query
 
 
