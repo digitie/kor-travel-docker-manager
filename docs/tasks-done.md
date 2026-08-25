@@ -16,6 +16,17 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-08-26 — Geo standalone 대용량 backup 1회 실측
+
+- [x] **BACKUP-FOLLOWUP-GEO-INITIAL — Geo application standalone backup 1회 실측**
+
+  n150에서 `ktdctl db-backup create geo --timeout 14400`을 한 번 실행했다. Geo application
+  DB의 `pg_dump -Fc --compress=6` 단계는 manifest `duration_sec=1,311.8`, 명령 전체
+  wall-clock은 `24m 21.903s`였고 dump 크기는 `4,717,161,289` bytes였다. dump·`.sha256`·
+  `.manifest` 세 파일의 권한은 `600`, `sha256sum -c`는 `OK`, 임시 `.copying` 파일은 남지
+  않았다. 이력은 Geo backup의 off-box 자동화·보존 정책과 독립하며, restore나 application
+  row·건수·업무상 무결성 대조는 수행하지 않았다.
+
 ## 2026-08-26 — application `300` 최종 n150 수락
 
 - [x] **T-VN-41-F1D-H300 — destructive rebuild·runtime provenance·data-independent live UI 완료**

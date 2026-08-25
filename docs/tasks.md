@@ -13,7 +13,7 @@
 |:---|:---|:---:|:---|
 | **T-C7-CAPTURE-OPS** | 읽기 전용 `pinvi-pair capture` 운영 프로비저닝 정리 | `[/]` | n150 trusted Manager 설치본의 read-only contract 확인, checkout env와 manifest 정본 하나를 확정하고 최초 capture/attestation 기록 |
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | logout→재차단, PinVi WebSocket/mutating loop, consumer reconciliation을 실제 pair에서 실행하고 Map 저장소 정본 task와 결과를 교차 기록 |
-| **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[ ]` | Geo application 첫 대용량 backup 실측과 off-box 사본 자동화. Alembic downgrade/이전 revision restore는 범위 밖 |
+| **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 
 ## 공통 진행 규율
 
@@ -55,7 +55,7 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
 Issue #177의 create/list/gc, cron, API/UI 구현과 n150 Geo Dagster·Concierge·PinVi 실증은 완료됐다.
 남은 항목은 pair rebuild와 독립한다.
 
-- [x] Geo application DB의 첫 standalone 대용량 backup을 디스크 여유·소요시간과 함께 실측했다.
-  n150에서 4,717,161,289 bytes, 1,311.8초, sha256 검증 통과, dump·sha256·manifest 권한
-  `600`, 임시 파일 없음까지 확인했다. restore나 업무 데이터 대조는 수행하지 않았다.
 - [ ] off-box 사본 자동화와 보존 정책을 별도 설계한다.
+
+Geo application DB의 첫 standalone 대용량 backup 실측 완료 이력은
+[`docs/tasks-done.md`](tasks-done.md)의 `BACKUP-FOLLOWUP-GEO-INITIAL`에 보관한다.
