@@ -1897,6 +1897,36 @@ def test_rebuild_compose_error_ignores_pinvi_code_with_wrong_phase(
     assert secret not in str(captured.value)
 
 
+def test_static_command_can_bypass_a_sealed_image_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(
+        return_value=SimpleNamespace(returncode=0, stdout="static-output", stderr="")
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    output = compose_service_module._run_pinned_runtime_static_command(
+        f"sha256:{'a' * 64}",
+        ("head",),
+        label="Map Dagster",
+        entrypoint="/usr/local/bin/ktm-dagster-storage",
+    )
+
+    assert output == "static-output"
+    command = runner.call_args.args[0]
+    assert command == [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--entrypoint",
+        "/usr/local/bin/ktm-dagster-storage",
+        f"sha256:{'a' * 64}",
+        "head",
+    ]
+
+
 def test_rebuild_candidate_journal_binds_application_300_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1936,6 +1966,7 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     service = ComposeService()
     operations: list[tuple[str, ...]] = []
     static_commands: list[tuple[str, ...]] = []
+    static_entrypoints: list[str | None] = []
     paired_candidate = _map_application_300_candidate()
     image_ids = _candidate_image_ids(paired_candidate)
     paired_builder = Mock()
@@ -1996,11 +2027,18 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         "_attest_pinned_runtime_candidate_images",
         lambda *, build, map_candidate: image_ids,
     )
-    def static_command(_image: str, command: tuple[str, ...], *, label: str) -> str:
+    def static_command(
+        _image: str,
+        command: tuple[str, ...],
+        *,
+        label: str,
+        entrypoint: str | None = None,
+    ) -> str:
         del label
         static_commands.append(command)
+        static_entrypoints.append(entrypoint)
         return {
-            "ktm-dagster-storage": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
+            "head": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
             "pinvi-admin-bootstrap": '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
         }[command[0]]
 
@@ -2051,8 +2089,12 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         ),
     ]
     assert static_commands == [
-        ("ktm-dagster-storage", "head"),
+        ("head",),
         ("pinvi-admin-bootstrap", "head"),
+    ]
+    assert static_entrypoints == [
+        "/usr/local/bin/ktm-dagster-storage",
+        None,
     ]
     paired_builder.assert_called_once()
     candidate_contract.assert_called_once()
@@ -3347,10 +3389,16 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
         compose_calls.append(tuple(args))
         return {"success": True, "stdout": ""}
 
-    def static_command(_image: str, command: tuple[str, ...], *, label: str) -> str:
+    def static_command(
+        _image: str,
+        command: tuple[str, ...],
+        *,
+        label: str,
+        entrypoint: str | None = None,
+    ) -> str:
         del label
         return {
-            "ktm-dagster-storage": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
+            "head": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
             "pinvi-admin-bootstrap": '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
         }[command[0]]
 

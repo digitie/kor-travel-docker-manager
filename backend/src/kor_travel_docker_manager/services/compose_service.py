@@ -2328,6 +2328,7 @@ def _run_pinned_runtime_static_command(
     command: Sequence[str],
     *,
     label: str,
+    entrypoint: str | None = None,
 ) -> str:
     """candidate artifact를 network 없이 검사하고 raw output은 호출자만 파싱한다."""
 
@@ -2335,9 +2336,15 @@ def _run_pinned_runtime_static_command(
         raise DeploymentContractError(f"{label} candidate image ID is invalid")
     if not command or any(not argument or "\x00" in argument for argument in command):
         raise DeploymentContractError(f"{label} candidate static command is invalid")
+    if entrypoint is not None and re.fullmatch(r"/[A-Za-z0-9._/-]+", entrypoint) is None:
+        raise DeploymentContractError(f"{label} candidate static entrypoint is invalid")
+    docker_command = ["docker", "run", "--rm", "--network", "none"]
+    if entrypoint is not None:
+        docker_command.extend(("--entrypoint", entrypoint))
+    docker_command.extend((image_id, *command))
     try:
         completed = subprocess.run(
-            ["docker", "run", "--rm", "--network", "none", image_id, *command],
+            docker_command,
             cwd=get_project_root(),
             text=True,
             capture_output=True,
@@ -5475,8 +5482,9 @@ class ComposeService:
                 )
                 map_dagster_output = _run_pinned_runtime_static_command(
                     image_ids["kor-travel-map-dagster"],
-                    ("ktm-dagster-storage", "head"),
+                    ("head",),
                     label="Map Dagster",
+                    entrypoint="/usr/local/bin/ktm-dagster-storage",
                 )
                 map_dagster_head = parse_candidate_static_head(
                     map_dagster_output,

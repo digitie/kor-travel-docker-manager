@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-26 — Map Dagster static inspection entrypoint 차단
+
+Manager PR #201 merge 후 trusted install을 갱신하고 approved `rebuild-pinned --confirm`을 다시 실행했다.
+Map·PinVi candidate image build와 paired receipt 생성은 완료됐지만, DB mutation 전에 Map Dagster static
+inspection이 `ktm-dagster-storage head`를 기본 production entrypoint로 실행하면서 sealed absolute
+runtime command 오류로 중단됐다. 같은 image를 `--network none --entrypoint /usr/local/bin/ktm-dagster-storage`
+와 `head`로 직접 실행하면 정적 head JSON을 반환하므로 image나 Dagster graph 자체의 실패가 아니라
+Manager static launch invocation의 계약 불일치다.
+
+PR #202는 Map Dagster에만 고정 absolute entrypoint를 전달하고 네트워크를 계속 차단한다. 실패한
+candidate image·receipt는 production evidence로 재사용하지 않으며, PR merge 후 새 paired artifact를
+만든 뒤에만 rebuild를 재개한다. 이번 실패에서도 fresh schema reset, 기존 DB/revision 복구, 행 데이터
+검증은 수행하지 않았다.
+
 ## 2026-08-26 — n150 rebuild 전 source contract 차단을 사전 수정
 
 Manager PR #200 merge 뒤 trusted Manager release와 Map `cc81081ff2e540a6ad9c428a296515e1d79bc316`
