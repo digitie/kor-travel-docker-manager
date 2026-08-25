@@ -12,9 +12,10 @@ PR #202 merge 후 trusted Manager를 설치하고 approved `ktdctl pinvi-pair re
 role-bootstrap one-shot 환경에 전달되지 않아 bootstrap 단계에서 종료됐다. 이는 데이터나 `300`
 스키마 무결성 문제가 아니라 Manager–Map source contract 누락이다.
 
-PR #203은 기존 배포 환경의 password binding만 role-bootstrap에 추가하고 C6c raw/resolved Compose
-allowlist와 회귀 테스트를 함께 갱신했다. credential 값 자체나 행 데이터는 코드·문서에 기록하지 않았다.
-집중 Compose contract 32개가 통과했으며, PR merge 후 trusted install을 갱신해 같은 durable journal과
+PR #203은 Compose 원문과 frozen journal source hash를 바꾸지 않고, Manager의 role-bootstrap one-shot에
+기존 배포 환경의 `KOR_TRAVEL_MAP_POSTGRES_PASSWORD`를 `--env`로 명시 전달하도록 보완한다. credential
+값 자체나 행 데이터는 코드·문서에 기록하지 않았다. 집중 Compose contract 32개와 bootstrap command
+회귀 테스트가 통과했으며, PR merge 후 trusted install을 갱신해 같은 durable journal과
 고정 paired receipt로 재개한다. 사용자 승인 정책에 따라 일반 row 내용·건수·업무상 무결성 검증, 이전
 revision 복구, 기존 DB restore는 수행하지 않는다. 필요 시 fresh `300` schema에 source/ETL을 처음부터
 재적재한다.

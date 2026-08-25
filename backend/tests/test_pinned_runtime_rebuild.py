@@ -2372,6 +2372,8 @@ def test_createdb_response_loss_converges_from_exact_virgin_state(
             "run",
             "--rm",
             "--no-deps",
+            "--env",
+            "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
             "kor-travel-map-db-role-bootstrap",
         ],
         transaction=ANY,

@@ -39,10 +39,10 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 - Manager PR #200: Map `cc81081f…` release pin 회전 (merge commit `01b51b32…`)
 - Manager PR #201: Map source environment contract 보완 (merge commit `86018450…`)
 - Manager PR #202: Map Dagster static inspection launch contract 보완 (merge commit `e582e924…`)
-- Manager PR #203: Map role-bootstrap password binding 보완 (draft; exact head `1c3ee93…`)
+- Manager PR #203: Map role-bootstrap password `--env` 전달 보완 (draft; pending exact head)
 - release pinset: `14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`
-- n150 재개에서 Map role-bootstrap의 required password binding 누락이 확인됐다. PR #203 merge 후
-  trusted install을 갱신하고 같은 durable journal을 재개한다.
+- n150 재개에서 Map role-bootstrap의 required password 전달 누락이 확인됐다. PR #203 merge 후
+  trusted install을 갱신하고 frozen Compose source hash를 유지한 같은 durable journal을 재개한다.
 - durable rebuild journal이 없는 pre-journal receipt는 다음 실행에서 `--verify` 입력으로 사용하지 않는다.
   Manager는 정확한 두 receipt를 안전하게 폐기한 뒤 sealed builder를 fresh build mode로 호출한다. journal이
   있는 crash resume에서만 두 receipt를 `--verify`로 재검증하며, 현재 receipt·Map image/config 증거가
