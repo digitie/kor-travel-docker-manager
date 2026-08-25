@@ -18,6 +18,17 @@
 
 ## 2026-08-25 — Map/Manager `300` release 후보 merge·전문 리뷰 완료
 
+## 2026-08-26 — Map Dagster static inspection launch contract 보완
+
+- [x] **T-VN-41-F1D — Manager PR #202 merge 및 trusted install 갱신**
+
+  Map Dagster static head를 production entrypoint가 아닌 고정 absolute entrypoint와 `--network none`으로
+  검사하도록 Manager를 보완했다. pre-journal stale receipt 재사용과 journal resume의 Map candidate exact
+  binding도 함께 닫았고, 두 전문 적대 리뷰에서 P0/P1=0 GO를 확인했다. PR #202 merge commit은
+  `e582e9244e1af8abd23053866c2f8388cbda79fc`이며 n150 trusted install에 반영됐다. 새 paired candidate와
+  durable journal을 만든 뒤 role-bootstrap 단계에서 PR #203 후속 계약 누락이 발견되어, 최종 live acceptance는
+  active H300에 남긴다.
+
 - [x] **T-VN-41-F1D-H300 — Map PR #1064·Manager PR #197의 release pin 단계 완료**
 
   Map `dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e`의 통합 CI와 두 전문 적대 리뷰를 통과한 뒤

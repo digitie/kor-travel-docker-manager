@@ -38,27 +38,29 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 - Manager PR #198: Map role-bootstrap helper bind의 C6c 오탐 보완 (merge commit `19409e3f…`)
 - Manager PR #200: Map `cc81081f…` release pin 회전 (merge commit `01b51b32…`)
 - Manager PR #201: Map source environment contract 보완 (merge commit `86018450…`)
+- Manager PR #202: Map Dagster static inspection launch contract 보완 (merge commit `e582e924…`)
+- Manager PR #203: Map role-bootstrap password binding 보완 (draft; exact head `1c3ee93…`)
 - release pinset: `14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`
-- n150 candidate static inspection에서 Map Dagster image entrypoint가 `head` 정적 명령을 거부하는
-  source/Manager launch contract 불일치가 추가로 발견됐다. 고정 absolute entrypoint와 `--network none`을
-  사용하는 Manager 수정 PR을 먼저 통과시킨다.
+- n150 재개에서 Map role-bootstrap의 required password binding 누락이 확인됐다. PR #203 merge 후
+  trusted install을 갱신하고 같은 durable journal을 재개한다.
 - durable rebuild journal이 없는 pre-journal receipt는 다음 실행에서 `--verify` 입력으로 사용하지 않는다.
   Manager는 정확한 두 receipt를 안전하게 폐기한 뒤 sealed builder를 fresh build mode로 호출한다. journal이
   있는 crash resume에서만 두 receipt를 `--verify`로 재검증하며, 현재 receipt·Map image/config 증거가
   journal candidate와 정확히 일치할 때만 resume을 계속한다.
-- 로컬 sealed paired build: 새 Map pin `cc81081f…` 기준 Manager PR #201 merge 후 생성한 후보는
-  static inspection에서 폐기하고, PR #202 merge 뒤 새 paired image·receipt를 다시 만든다. 이전 후보의 image·receipt는
-  release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
+- 로컬 sealed paired build: 새 Map pin `cc81081f…` 기준 PR #202 merge 뒤 paired image·receipt를 새로
+  만들었고, 현재 durable journal resume의 고정 evidence로 사용한다. 이전 후보의 image·receipt는 release
+  evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
 
 남은 작업:
 
 - [x] Manager PR #200을 ready 상태로 전환하고 required CI·전문 리뷰 green 후 merge했다.
 - [x] n150 rebuild를 막은 Map source environment contract 보완 PR #201을 전문 적대 리뷰 2건과 함께
   통과·merge하고 trusted Manager 설치본을 갱신했다.
-- [ ] Map Dagster static inspection launch contract 보완 PR #202를 전문 적대 리뷰 2건과 함께
-  통과·merge하고 trusted Manager 설치본을 다시 갱신한다.
-- [ ] PR #202 merge 뒤 새 Manager release로 새 Map `cc81081f…` 기준 paired image·receipt를 생성한다. 이전 pin의
-  image·receipt·journal은 재사용하지 않는다.
+- [x] Map Dagster static inspection launch contract 보완 PR #202를 전문 적대 리뷰 2건과 함께
+  통과·merge하고 trusted Manager 설치본을 갱신했다.
+- [x] PR #202 merge 뒤 새 Manager release로 새 Map `cc81081f…` 기준 paired image·receipt를 생성했다.
+  이전 pin의 image·receipt·journal은 재사용하지 않았다.
+- [ ] Manager PR #203을 전문 적대 리뷰 2건과 함께 통과·merge하고 trusted Manager 설치본을 갱신한다.
 - [ ] n150에서 trusted Manager release를 설치하고 approved root command
   `ktdctl pinvi-pair rebuild-pinned --confirm`을 실행한다. backup·scratch restore·이전 DB 복원은 실행하지
   않는다.
