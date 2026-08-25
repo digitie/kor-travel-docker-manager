@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-26 — MAP-LIVE-FOLLOWUP Map ops read/auth 계약 결선
+
+Map exact pair의 n150 frontend에서 `ops-c7-read-auth.live.spec.ts`를 1 worker로 실행했다.
+실제 logout UI socket close/`/login` redirect 1개와 ticket 없음·서명 변조 `4401`, expired ticket
+`4408` 뒤 fresh lease, healthy socket의 자연 `4408` rotation 3개가 통과했다(총 4개).
+이 시나리오들은 application row를 쓰지 않고 auth/WebSocket wire만 확인했다.
+
+Map 저장소 PR #1070 merge `2eeae9b5b588cb3fadca521c496f159b09967e05`에 이 결과를 기록했다.
+현재 남은 `MAP-LIVE-FOLLOWUP`은 logout 뒤 protected route 재진입 재차단, PinVi WebSocket/mutating
+loop, consumer reconciliation이며, data-dependent D2와 함께 정해진 후속 순서에서 실행한다.
+
+---
+
 ## 2026-08-26 — application `300` 최종 n150 수락
 
 Map PR #1066의 exact source `cc81081ff2e540a6ad9c428a296515e1d79bc316`과 Manager PR #207의

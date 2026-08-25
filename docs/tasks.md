@@ -41,7 +41,9 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
 [Map 저장소 `docs/tasks.md`](https://github.com/digitie/kor-travel-map/blob/main/docs/tasks.md)의
 `T-VN-41C`·`T-VN-41F1D-D2`이며, 이 Manager task는 cross-repo 결과와 exact pair를 함께 기록한다.
 
-- [ ] Map/PinVi exact pair에서 logout→재차단을 실제 브라우저로 확인한다.
+- [x] Map UI의 현재 socket close와 `/login` redirect, ticket/lease WebSocket wire를 실제 브라우저로
+  확인했다. 별도 protected route 재진입으로 logout 후 재차단까지 확인하는 후속은 아직 남는다.
+- [ ] Map/PinVi exact pair에서 logout 뒤 protected route 재진입이 `/login`으로 재차단되는지 확인한다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 
