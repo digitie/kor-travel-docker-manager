@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-25 — Map `300` role bootstrap helper의 C6c 오탐 결선 보완 (Draft)
+
+n150의 trusted `rebuild-pinned --confirm`에서 Map 정본 `dd2ee61f…`의 두 read-only bind source는
+존재·경로 검사를 통과했지만, `scripts/database-credential-preflight.sh`가 선언하는
+`KOR_TRAVEL_MAP_*` 식별자를 C6c secret text 누출로 잘못 분류했다. 이 파일은 bootstrap과 함께
+Map release가 소유하는 canonical helper이며, 실제 credential 값이 아니라 검증할 환경변수 이름을
+참조한다.
+
+Manager는 이제 정확한 Map role-bootstrap 서비스의 두 canonical target에만 같은 source-owned
+예외를 적용한다. 경로·read-only·정본 source provenance 검증은 유지하고, helper 안의 protected
+식별자 이름만 허용하며 실제 credential 값과 다른 operator bind의 protected text 검사는 그대로
+fail-closed한다. 실제 credential 값이나 Manager `.env`를 코드·문서에 기록하지 않는다.
+
+- Map/Manager Compose contract 회귀: `29 passed`
+- Manager 전체 backend 테스트: `726 passed, 3 skipped`
+- 변경 파일 Ruff·`git diff --check`: 통과
+
+이 수정은 n150 rebuild를 재개하기 위한 Draft PR이며, 두 전문 적대 리뷰와 원격 CI green 뒤에만
+머지한다.
+
 ## 2026-08-25 — Map `dd2ee61f` 통합 CI green과 `300` release pin 회전
 
 Map PR #1064의 exact head `dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e`가 Python

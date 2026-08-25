@@ -597,7 +597,13 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         map_source / "scripts" / "database-credential-preflight.sh"
     )
     credential_preflight.parent.mkdir(parents=True)
-    credential_preflight.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    credential_preflight.write_text(
+        "#!/bin/sh\n"
+        "# Map-owned helper names the runtime credentials it validates.\n"
+        "required_name=KOR_TRAVEL_MAP_MIGRATOR_PASSWORD\n"
+        "metadata_name=KOR_TRAVEL_MAP_DAGSTER_PG_URL\n",
+        encoding="utf-8",
+    )
     environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
     for environment_name, directory_name in (
         ("KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR", "application-permit"),
@@ -614,6 +620,25 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         compose_path=str(_COMPOSE_PATH),
         root_env_path=str(root_env),
         environment=environment,
+    )
+    credential_preflight.write_text(
+        "#!/bin/sh\n"
+        f"leaked_value={environment['KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET']}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DeploymentContractError, match="bind source leaks C6c data"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    credential_preflight.write_text(
+        "#!/bin/sh\n"
+        "# Map-owned helper names the runtime credentials it validates.\n"
+        "required_name=KOR_TRAVEL_MAP_MIGRATOR_PASSWORD\n"
+        "metadata_name=KOR_TRAVEL_MAP_DAGSTER_PG_URL\n",
+        encoding="utf-8",
     )
     raw_image_drift = deepcopy(candidate)
     raw_image_services = raw_image_drift["services"]

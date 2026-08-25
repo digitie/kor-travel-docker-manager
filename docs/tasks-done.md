@@ -16,6 +16,17 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-08-25 — Map/Manager `300` release 후보 merge·전문 리뷰 완료
+
+- [x] **T-VN-41-F1D-H300 — Map PR #1064·Manager PR #197의 release pin 단계 완료**
+
+  Map `dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e`의 통합 CI와 두 전문 적대 리뷰를 통과한 뒤
+  merge했고, Manager PR #197도 `7017a5d2d7192018ddf0667623c4cc18b290c46b`로 merge했다.
+  Manager v5 canonical pinset은
+  `49548a610cbfa3a0d2242ef6e9a8cbd5664e61dec92391b8a476b02951b65c62`로 고정했다. 이 단계의
+  Map/Manager source·pinset 연속성 및 review P0/P1=0 결과는 후속 n150 rebuild의 입력으로만
+  사용하며, 아직 live acceptance와 최종 rebuild는 active H300에 남아 있다.
+
 ## 2026-08-25 — application `300` 데이터 무결성 gate 퇴역
 
 - [x] **T-VN-41-F1D-D — fresh `300` 데이터 재적재 후 수용 검증을 release 조건에서 제외**
