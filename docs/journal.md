@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-26 — PinVi #477 source pinset 회전 준비
+
+PinVi #477은 squash merge된 `main` commit
+`10efb21ad84b23db2eeb6d09856cda16d3337822`을 source authority로 사용해야 한다. 따라서 Map
+source `cc81081ff2e540a6ad9c428a296515e1d79bc316`는 유지하고, PinVi source만 merge commit으로
+회전한 새 canonical pinset
+`cb8d15591480111d7f4cd70398ad46b129e814ad3b9375dfa0fc83562b366752`을 후보
+build·attestation의 다음 입력으로 등록했다. PR branch head를 pin하지 않아 squash 이전 commit
+history를 authority로 재사용하지 않는다.
+
+이 변경은 n150 runtime, H300 committed generation, 기존 journal을 변경하지 않는다. 기존
+generation은 이전 pinset의 immutable 이력으로 보존한다. 새 pinset의 candidate image·세 schema
+head·v6/v8 evidence가 모두 exact 검증되고 별도 승인된 rebuild가 committed되기 전에는 #477을
+배포됐거나 live acceptance 완료로 주장하지 않는다.
+
+---
+
 ## 2026-08-26 — Manager 대시보드를 kor-travel-geo-ui 디자인 시스템(보라 톤)으로 재정렬
 
 Manager 프론트엔드의 매크로구조를 상단 topbar 단일 페이지에서 `kor-travel-geo-ui`와 동일한
