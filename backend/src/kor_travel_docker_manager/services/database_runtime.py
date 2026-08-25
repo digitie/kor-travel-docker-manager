@@ -17,6 +17,13 @@ from typing import Literal
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 
 DatabaseRole = Literal["map_application", "map_dagster", "pinvi"]
+Application300BootstrapState = Literal[
+    "absent",
+    "virgin",
+    "partial",
+    "exact_complete",
+    "foreign",
+]
 
 _DATABASE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
@@ -92,6 +99,81 @@ _MAP_FUTURE_PHASE_ROLES = (
     "ktm_manual_provider_dedup_admin_executor",
     "ktm_feature_reference_reconciliation_service_executor",
 )
+_MAP_BASELINE_300_MEMBERSHIPS = (
+    ("ktm_curation_admin_executor", "ktm_feature_api_runtime", False, True, False),
+    ("ktm_curation_audit_writer", _MAP_SCHEMA_OWNER, False, False, True),
+    ("ktm_curation_command_owner", _MAP_SCHEMA_OWNER, False, False, True),
+    (
+        "ktm_curation_provider_executor",
+        "ktm_feature_dagster_runtime",
+        False,
+        True,
+        False,
+    ),
+    ("ktm_feature_audit_writer", _MAP_SCHEMA_OWNER, False, False, True),
+    (
+        "ktm_feature_create_provider_executor",
+        "ktm_feature_dagster_runtime",
+        False,
+        True,
+        False,
+    ),
+    (
+        "ktm_feature_reference_reconciliation_service_executor",
+        "ktm_feature_api_runtime",
+        False,
+        True,
+        False,
+    ),
+    (
+        "ktm_feature_request_admin_executor",
+        "ktm_feature_api_runtime",
+        False,
+        True,
+        False,
+    ),
+    ("ktm_feature_request_procedure_owner", _MAP_SCHEMA_OWNER, False, False, True),
+    (
+        "ktm_feature_request_service_executor",
+        "ktm_feature_api_runtime",
+        False,
+        True,
+        False,
+    ),
+    ("ktm_feature_runtime", "ktm_feature_api_runtime", False, True, False),
+    ("ktm_feature_runtime", "ktm_feature_dagster_runtime", False, True, False),
+    (_MAP_SCHEMA_OWNER, "ktm_feature_migrator", False, False, True),
+    ("ktm_feature_state_procedure_owner", _MAP_SCHEMA_OWNER, False, False, True),
+    (
+        "ktm_manual_feature_admin_executor",
+        "ktm_feature_api_runtime",
+        False,
+        True,
+        False,
+    ),
+    ("ktm_manual_feature_procedure_owner", _MAP_SCHEMA_OWNER, False, False, True),
+    (
+        "ktm_manual_provider_dedup_admin_executor",
+        "ktm_feature_api_runtime",
+        False,
+        True,
+        False,
+    ),
+    (
+        "ktm_manual_provider_dedup_detector_executor",
+        "ktm_feature_dagster_runtime",
+        False,
+        True,
+        False,
+    ),
+    (
+        "ktm_manual_provider_dedup_procedure_owner",
+        _MAP_SCHEMA_OWNER,
+        False,
+        False,
+        True,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -128,6 +210,8 @@ class DagsterMetadataRoleAttributes:
     bypass_rls: bool
     granted_role_count: int
     member_role_count: int
+    can_login: bool = True
+    inherit: bool = False
 
 
 @dataclass(frozen=True)
@@ -364,6 +448,265 @@ def create_fresh_application_300_database(runtime: DatabaseRuntime) -> None:
     )
 
 
+def inspect_application_300_bootstrap_state(
+    runtime: DatabaseRuntime,
+) -> Application300BootstrapState:
+    """fresh application DB를 부재·virgin·exact bootstrap·그 외로 분류한다.
+
+    ``createdb``와 role bootstrap은 서로 다른 process 경계다. 전자는 응답 유실 뒤
+    stock ``template0`` DB를 남길 수 있고, 후자는 upstream의
+    ``--single-transaction`` 때문에 정상 crash 결과가 virgin 또는 exact-complete
+    둘 중 하나여야 한다. 허용 owner이면서 어느 정본에도 맞지 않는 상태는 partial,
+    owner부터 다른 상태는 foreign으로 분리해 호출자가 fail-close할 수 있게 한다.
+    """
+
+    _validate_runtime(runtime)
+    if runtime.role != "map_application":
+        raise DeploymentContractError(
+            "application 300 bootstrap state requires Map application DB"
+        )
+    if runtime.owner_name == _MAP_SCHEMA_OWNER:
+        raise DeploymentContractError("application 300 bootstrap owners must be distinct")
+    owner = _read_database_owner(runtime)
+    if owner is None:
+        return "absent"
+    if owner == runtime.owner_name:
+        return (
+            "virgin"
+            if _read_application_300_state_attestation(
+                runtime,
+                query=_application_300_virgin_attestation_query(runtime),
+                expected="virgin",
+                label="Map application 300 virgin database attestation",
+            )
+            else "partial"
+        )
+    if owner == _MAP_SCHEMA_OWNER:
+        return (
+            "exact_complete"
+            if _read_application_300_state_attestation(
+                runtime,
+                query=_application_300_bootstrap_attestation_query(runtime),
+                expected="exact_complete",
+                label="Map application 300 role bootstrap attestation",
+            )
+            else "partial"
+        )
+    return "foreign"
+
+
+def _read_application_300_state_attestation(
+    runtime: DatabaseRuntime,
+    *,
+    query: str,
+    expected: str,
+    label: str,
+) -> bool:
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            runtime.database_name,
+            "--command",
+            query,
+        ],
+        label=label,
+    ).decode("ascii").strip()
+    if output == expected:
+        return True
+    if output == "partial":
+        return False
+    raise DeploymentContractError("Map application 300 state attestation is ambiguous")
+
+
+def _application_300_virgin_attestation_query(runtime: DatabaseRuntime) -> str:
+    return (
+        "SELECT CASE WHEN "
+        "current_database() = "
+        f"'{runtime.database_name}' "
+        "AND (SELECT pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+        f"WHERE datname = '{runtime.database_name}') = '{runtime.owner_name}' "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS namespace "
+        "WHERE namespace.nspname !~ '^pg_' "
+        "AND namespace.nspname NOT IN ('information_schema', 'public')) "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS namespace "
+        "WHERE namespace.nspname = 'public' "
+        "AND namespace.nspowner = 'pg_database_owner'::regrole "
+        "AND (SELECT COALESCE(array_agg(entry::text ORDER BY entry::text), "
+        "ARRAY[]::text[]) FROM unnest(namespace.nspacl) AS entry) "
+        "IS NOT DISTINCT FROM ARRAY['=U/pg_database_owner', "
+        "'pg_database_owner=UC/pg_database_owner']::text[]) "
+        "AND (SELECT count(*) FROM pg_catalog.pg_extension) = 1 "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_extension AS extension "
+        "JOIN pg_catalog.pg_namespace AS namespace "
+        "ON namespace.oid = extension.extnamespace "
+        "WHERE extension.extname = 'plpgsql' "
+        "AND namespace.nspname = 'pg_catalog') "
+        "AND (SELECT COALESCE(array_agg(language.lanname::text "
+        "ORDER BY language.lanname), ARRAY[]::text[]) "
+        "FROM pg_catalog.pg_language AS language) "
+        "IS NOT DISTINCT FROM ARRAY['c', 'internal', 'plpgsql', 'sql']::text[] "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting AS setting_row "
+        "WHERE setting_row.setdatabase = (SELECT oid FROM pg_catalog.pg_database "
+        f"WHERE datname = '{runtime.database_name}')) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS object "
+        "JOIN pg_catalog.pg_namespace AS namespace "
+        "ON namespace.oid = object.relnamespace "
+        "WHERE namespace.nspname = 'public' "
+        "UNION ALL SELECT 1 FROM pg_catalog.pg_proc AS object "
+        "JOIN pg_catalog.pg_namespace AS namespace "
+        "ON namespace.oid = object.pronamespace "
+        "WHERE namespace.nspname = 'public' "
+        "UNION ALL SELECT 1 FROM pg_catalog.pg_type AS object "
+        "JOIN pg_catalog.pg_namespace AS namespace "
+        "ON namespace.oid = object.typnamespace "
+        "WHERE namespace.nspname = 'public') "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_foreign_data_wrapper) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_foreign_server) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_user_mapping) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_publication) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_subscription AS subscription "
+        "WHERE subscription.subdbid = (SELECT oid FROM pg_catalog.pg_database "
+        f"WHERE datname = '{runtime.database_name}')) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger) "
+        "THEN 'virgin' ELSE 'partial' END"
+    )
+
+
+def _application_300_bootstrap_attestation_query(runtime: DatabaseRuntime) -> str:
+    group_roles = (*_MAP_REQUIRED_GROUP_ROLES, *_MAP_FUTURE_PHASE_ROLES)
+    login_roles = _MAP_REQUIRED_LOGIN_ROLES
+    all_roles = (*group_roles, *login_roles)
+    expected_role_values = ", ".join(
+        f"('{role}', {'TRUE' if role in login_roles else 'FALSE'})" for role in all_roles
+    )
+    expected_membership_values = ", ".join(
+        "(" + ", ".join(
+            (
+                f"'{granted}'",
+                f"'{member}'",
+                "TRUE" if admin_option else "FALSE",
+                "TRUE" if inherit_option else "FALSE",
+                "TRUE" if set_option else "FALSE",
+            )
+        ) + ")"
+        for granted, member, admin_option, inherit_option, set_option in (
+            _MAP_BASELINE_300_MEMBERSHIPS
+        )
+    )
+    application_acl_roles = (
+        "ktm_feature_state_procedure_owner",
+        "ktm_feature_audit_writer",
+        "ktm_curation_command_owner",
+        "ktm_curation_audit_writer",
+        "ktm_manual_feature_procedure_owner",
+        "ktm_feature_request_procedure_owner",
+        "ktm_manual_provider_dedup_procedure_owner",
+    )
+    extension_acl_roles = (
+        _MAP_SCHEMA_OWNER,
+        "ktm_feature_state_procedure_owner",
+        "ktm_feature_runtime",
+        "ktm_feature_api_runtime",
+        "ktm_feature_dagster_runtime",
+        "ktm_curation_command_owner",
+        "ktm_manual_provider_dedup_procedure_owner",
+    )
+    expected_acl_values = ", ".join(
+        [
+            f"('{schema}', '{role}', '{privilege}')"
+            for schema in ("feature", "provider_sync", "ops")
+            for role in application_acl_roles
+            for privilege in ("USAGE", "CREATE")
+        ]
+        + [
+            f"('x_extension', '{role}', 'USAGE')"
+            for role in extension_acl_roles
+        ]
+    )
+    role_names = ", ".join(f"'{role}'" for role in all_roles)
+    return (
+        "WITH expected_role(rolname, can_login) AS (VALUES "
+        f"{expected_role_values}), "
+        "expected_membership(granted_role, member_role, admin_option, inherit_option, "
+        "set_option) "
+        f"AS (VALUES {expected_membership_values}), "
+        "actual_membership AS (SELECT granted.rolname AS granted_role, "
+        "member.rolname AS member_role, membership.admin_option, membership.inherit_option, "
+        "membership.set_option FROM pg_catalog.pg_auth_members AS membership "
+        "JOIN pg_catalog.pg_roles AS granted ON granted.oid = membership.roleid "
+        "JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member "
+        f"WHERE granted.rolname IN ({role_names}) OR member.rolname IN ({role_names})), "
+        "expected_acl(schema_name, role_name, privilege_type) AS (VALUES "
+        f"{expected_acl_values}), actual_acl AS (SELECT namespace.nspname AS schema_name, "
+        "role.rolname AS role_name, privilege.privilege_type "
+        "FROM pg_catalog.pg_namespace AS namespace "
+        "CROSS JOIN LATERAL aclexplode(namespace.nspacl) AS privilege "
+        "JOIN pg_catalog.pg_roles AS role ON role.oid = privilege.grantee "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops', 'x_extension')) "
+        "SELECT CASE WHEN current_database() = "
+        f"'{runtime.database_name}' "
+        "AND (SELECT pg_get_userbyid(datdba) FROM pg_catalog.pg_database "
+        f"WHERE datname = '{runtime.database_name}') = '{_MAP_SCHEMA_OWNER}' "
+        "AND NOT EXISTS (SELECT 1 FROM expected_role LEFT JOIN pg_catalog.pg_roles "
+        "USING (rolname) WHERE pg_roles.rolname IS NULL "
+        "OR pg_roles.rolcanlogin IS DISTINCT FROM expected_role.can_login "
+        "OR pg_roles.rolinherit OR pg_roles.rolsuper OR pg_roles.rolcreatedb "
+        "OR pg_roles.rolcreaterole OR pg_roles.rolbypassrls OR pg_roles.rolreplication) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles AS role "
+        "WHERE role.rolname LIKE 'ktm\\_%' ESCAPE '\\' "
+        f"AND role.rolname NOT IN ({role_names})) "
+        "AND NOT EXISTS (SELECT * FROM expected_membership EXCEPT "
+        "SELECT * FROM actual_membership) "
+        "AND NOT EXISTS (SELECT * FROM actual_membership EXCEPT "
+        "SELECT * FROM expected_membership) "
+        "AND (SELECT count(*) FROM pg_catalog.pg_namespace AS namespace "
+        "WHERE namespace.nspname !~ '^pg_' "
+        "AND namespace.nspname <> 'information_schema') = 5 "
+        "AND (SELECT count(*) FROM pg_catalog.pg_namespace AS namespace "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops', 'x_extension') "
+        f"AND pg_get_userbyid(namespace.nspowner) = '{_MAP_SCHEMA_OWNER}') = 4 "
+        "AND NOT EXISTS (SELECT * FROM expected_acl EXCEPT SELECT * FROM actual_acl) "
+        "AND NOT EXISTS (SELECT * FROM actual_acl EXCEPT SELECT * FROM expected_acl) "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS namespace "
+        "CROSS JOIN LATERAL aclexplode(namespace.nspacl) AS privilege "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops', 'x_extension') "
+        "AND privilege.grantee = 0) "
+        "AND (SELECT COALESCE(array_agg(extension.extname || ':' || namespace.nspname "
+        "ORDER BY extension.extname), ARRAY[]::text[]) "
+        "FROM pg_catalog.pg_extension AS extension "
+        "JOIN pg_catalog.pg_namespace AS namespace "
+        "ON namespace.oid = extension.extnamespace) IS NOT DISTINCT FROM "
+        "ARRAY['fuzzystrmatch:public', 'pg_prewarm:x_extension', "
+        "'pg_trgm:x_extension', 'pgcrypto:x_extension', 'plpgsql:pg_catalog', "
+        "'postgis:x_extension']::text[] "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS object "
+        "JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = object.relnamespace "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        "UNION ALL SELECT 1 FROM pg_catalog.pg_proc AS object "
+        "JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = object.pronamespace "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        "UNION ALL SELECT 1 FROM pg_catalog.pg_type AS object "
+        "JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid = object.typnamespace "
+        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
+        "AND object.typtype IN ('b', 'c', 'd', 'e', 'r')) "
+        "AND to_regclass('public.alembic_version') IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl) "
+        "AND (SELECT count(*) FROM pg_catalog.pg_db_role_setting AS setting_row "
+        "WHERE setting_row.setdatabase = (SELECT oid FROM pg_catalog.pg_database "
+        f"WHERE datname = '{runtime.database_name}')) = 1 "
+        "AND EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting AS setting_row "
+        "WHERE setting_row.setdatabase = (SELECT oid FROM pg_catalog.pg_database "
+        f"WHERE datname = '{runtime.database_name}') AND setting_row.setrole = 0 "
+        "AND setting_row.setconfig = ARRAY['search_path=public, x_extension']::text[]) "
+        "THEN 'exact_complete' ELSE 'partial' END"
+    )
+
+
 def read_application_300_database_identity(
     runtime: DatabaseRuntime,
 ) -> Application300DatabaseIdentity:
@@ -468,7 +811,8 @@ def read_application_300_dagster_metadata_identity(
             (
                 "SELECT control.system_identifier::text, database_row.datname, "
                 "database_row.oid::bigint, pg_get_userbyid(database_row.datdba), "
-                "role.rolname, role.rolsuper, role.rolcreatedb, role.rolcreaterole, "
+                "role.rolname, role.rolcanlogin, role.rolinherit, "
+                "role.rolsuper, role.rolcreatedb, role.rolcreaterole, "
                 "role.rolreplication, role.rolbypassrls, "
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
                 "WHERE membership.member = role.oid), "
@@ -765,6 +1109,12 @@ def _read_dagster_metadata_role_preflight(
             member_role_count=_parse_non_negative_int(
                 fields[8], "Map Dagster metadata role member role count"
             ),
+            can_login=_parse_psql_bool(
+                fields[0], "Map Dagster metadata role login"
+            ),
+            inherit=_parse_psql_bool(
+                fields[1], "Map Dagster metadata role inherit"
+            ),
         ),
     )
 
@@ -859,7 +1209,7 @@ def _parse_dagster_metadata_database_identity(
     if len(lines) != 1:
         raise DeploymentContractError("Map Dagster metadata identity is invalid")
     fields = lines[0].split("|")
-    if len(fields) != 12:
+    if len(fields) != 14:
         raise DeploymentContractError("Map Dagster metadata identity is invalid")
     (
         system_identifier,
@@ -867,6 +1217,8 @@ def _parse_dagster_metadata_database_identity(
         oid_raw,
         owner,
         login_role,
+        can_login,
+        inherit,
         superuser,
         createdb,
         createrole,
@@ -889,9 +1241,13 @@ def _parse_dagster_metadata_database_identity(
         member_role_count=_parse_non_negative_int(
             member_count, "Map Dagster metadata role member role count"
         ),
+        can_login=_parse_psql_bool(can_login, "Map Dagster metadata role login"),
+        inherit=_parse_psql_bool(inherit, "Map Dagster metadata role inherit"),
     )
     if (
-        attributes.superuser
+        not attributes.can_login
+        or attributes.inherit
+        or attributes.superuser
         or attributes.create_database
         or attributes.create_role
         or attributes.replication

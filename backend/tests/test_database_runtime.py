@@ -13,6 +13,7 @@ from kor_travel_docker_manager.services.database_runtime import (
     create_fresh_application_300_database,
     database_runtimes_from_frozen_contract,
     initialize_application_300_dagster_metadata_database,
+    inspect_application_300_bootstrap_state,
     read_application_300_dagster_metadata_identity,
     read_application_300_database_identity,
     read_database_schema_revision,
@@ -347,6 +348,76 @@ def test_fresh_application_300_database_refuses_existing_database(
     runner.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("owner", "attestation", "expected"),
+    (
+        (None, None, "absent"),
+        ("map_owner", b"virgin\n", "virgin"),
+        ("map_owner", b"partial\n", "partial"),
+        ("ktm_feature_schema_owner", b"exact_complete\n", "exact_complete"),
+        ("ktm_feature_schema_owner", b"partial\n", "partial"),
+        ("foreign_owner", None, "foreign"),
+    ),
+)
+def test_application_300_bootstrap_state_is_exactly_classified(
+    owner: str | None,
+    attestation: bytes | None,
+    expected: database_runtime.Application300BootstrapState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(return_value=attestation)
+    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=owner))
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    assert inspect_application_300_bootstrap_state(_runtime("map_application")) == expected
+
+    if attestation is None:
+        runner.assert_not_called()
+    else:
+        command = runner.call_args.args[0]
+        assert command[command.index("--dbname") + 1] == "map_app"
+        assert "THEN" in command[-1]
+
+
+def test_application_300_exact_bootstrap_attestation_binds_full_role_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        database_runtime,
+        "_read_database_owner",
+        Mock(return_value="ktm_feature_schema_owner"),
+    )
+    runner = Mock(return_value=b"exact_complete\n")
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    assert (
+        inspect_application_300_bootstrap_state(_runtime("map_application"))
+        == "exact_complete"
+    )
+
+    query = runner.call_args.args[0][-1]
+    assert "expected_membership" in query
+    assert "actual_membership" in query
+    assert "ktm_feature_reference_reconciliation_service_executor" in query
+    assert "pg_prewarm:x_extension" in query
+    assert "fuzzystrmatch:public" in query
+    assert "search_path=public, x_extension" in query
+
+
+def test_application_300_bootstrap_attestation_rejects_ambiguous_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        database_runtime,
+        "_read_database_owner",
+        Mock(return_value="map_owner"),
+    )
+    monkeypatch.setattr(database_runtime, "_run_checked", Mock(return_value=b"virgin\nextra\n"))
+
+    with pytest.raises(DeploymentContractError, match="attestation is ambiguous"):
+        inspect_application_300_bootstrap_state(_runtime("map_application"))
+
+
 def test_application_300_database_identity_uses_maintenance_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -378,9 +449,11 @@ def test_dagster_metadata_identity_query_is_strict_and_uses_maintenance_database
         assert "pg_catalog.pg_control_system()" in arguments[-1]
         assert "database_row.datname = 'map_dagster'" in arguments[-1]
         assert "role.rolname = 'map_dagster_metadata'" in arguments[-1]
+        assert "role.rolcanlogin" in arguments[-1]
+        assert "role.rolinherit" in arguments[-1]
         return (
             b"7474747474747474747|map_dagster|127002|map_dagster_metadata|"
-            b"map_dagster_metadata|f|f|f|f|f|0|0\n"
+            b"map_dagster_metadata|t|f|f|f|f|f|f|0|0\n"
         )
 
     monkeypatch.setattr(database_runtime, "_run_checked", Mock(side_effect=run_checked))
@@ -403,6 +476,8 @@ def test_dagster_metadata_identity_query_is_strict_and_uses_maintenance_database
         bypass_rls=False,
         granted_role_count=0,
         member_role_count=0,
+        can_login=True,
+        inherit=False,
     )
 
 
@@ -415,8 +490,37 @@ def test_dagster_metadata_identity_rejects_privileged_or_membered_role(
         Mock(
             return_value=(
                 b"7474747474747474747|map_dagster|127002|map_dagster_metadata|"
-                b"map_dagster_metadata|t|f|f|f|f|0|0\n"
+                b"map_dagster_metadata|t|f|t|f|f|f|f|0|0\n"
             )
+        ),
+    )
+
+    with pytest.raises(DeploymentContractError, match="unsafe"):
+        read_application_300_dagster_metadata_identity(
+            _metadata_runtime(),
+            metadata_user="map_dagster_metadata",
+        )
+
+
+@pytest.mark.parametrize(
+    "role_flags",
+    (
+        "f|f|f|f|f|f|f|0|0",
+        "t|t|f|f|f|f|f|0|0",
+    ),
+)
+def test_dagster_metadata_identity_rejects_login_attribute_drift(
+    role_flags: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        database_runtime,
+        "_run_checked",
+        Mock(
+            return_value=(
+                "7474747474747474747|map_dagster|127002|map_dagster_metadata|"
+                f"map_dagster_metadata|{role_flags}\n"
+            ).encode("ascii")
         ),
     )
 

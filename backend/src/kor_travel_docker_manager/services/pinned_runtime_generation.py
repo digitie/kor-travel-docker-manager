@@ -37,6 +37,9 @@ RebuildPhase = Literal[
     "candidate_attested",
     "reset_intent_durable",
     "databases_recreated",
+    "application_create_intent_durable",
+    "application_created",
+    "application_bootstrap_intent_durable",
     "application_roles_ready",
     "fresh_root_plan_ready",
     "fresh_root_fence_ready",
@@ -87,6 +90,9 @@ REBUILD_PHASES: tuple[RebuildPhase, ...] = (
     "candidate_attested",
     "reset_intent_durable",
     "databases_recreated",
+    "application_create_intent_durable",
+    "application_created",
+    "application_bootstrap_intent_durable",
     "application_roles_ready",
     "fresh_root_plan_ready",
     "fresh_root_fence_ready",
@@ -172,6 +178,9 @@ _CANCEL_PROBE_STAGES: tuple[CancelProbeStage, ...] = (
 )
 _APPLICATION_300_CONTROLLED_PHASES: frozenset[RebuildPhase] = frozenset(
     {
+        "application_create_intent_durable",
+        "application_created",
+        "application_bootstrap_intent_durable",
         "application_roles_ready",
         "metadata_permit_ready",
         "fresh_root_plan_ready",
@@ -187,6 +196,8 @@ _APPLICATION_300_CONTROLLED_PHASES: frozenset[RebuildPhase] = frozenset(
     }
 )
 _APPLICATION_300_EVIDENCE_FIELDS: tuple[str, ...] = (
+    "application_create_database_identity",
+    "application_create_database_identity_sha256",
     "application_database_identity",
     "application_database_identity_sha256",
     "fresh_root_operation_plan",
@@ -716,9 +727,13 @@ class MapApplication300DagsterMetadataRoleAttributes:
     bypass_rls: bool
     granted_role_count: int
     member_role_count: int
+    can_login: bool = True
+    inherit: bool = False
 
     def __post_init__(self) -> None:
         for flag in (
+            self.can_login,
+            self.inherit,
             self.superuser,
             self.create_database,
             self.create_role,
@@ -735,7 +750,9 @@ class MapApplication300DagsterMetadataRoleAttributes:
                     "Map application 300 Dagster metadata role membership is invalid"
                 )
         if (
-            self.superuser
+            not self.can_login
+            or self.inherit
+            or self.superuser
             or self.create_database
             or self.create_role
             or self.replication
@@ -749,6 +766,8 @@ class MapApplication300DagsterMetadataRoleAttributes:
 
     def to_payload(self) -> dict[str, object]:
         return {
+            "can_login": self.can_login,
+            "inherit": self.inherit,
             "superuser": self.superuser,
             "create_database": self.create_database,
             "create_role": self.create_role,
@@ -877,6 +896,10 @@ class MapApplication300OperationPlan:
 class MapApplication300ExecutionEvidence:
     """fresh application 300 execution receipts accumulated by phase."""
 
+    application_create_database_identity: (
+        MapApplication300ApplicationDatabaseIdentity | None
+    ) = None
+    application_create_database_identity_sha256: str | None = None
     application_database_identity: MapApplication300ApplicationDatabaseIdentity | None = None
     application_database_identity_sha256: str | None = None
     fresh_root_operation_plan: MapApplication300OperationPlan | None = None
@@ -890,6 +913,7 @@ class MapApplication300ExecutionEvidence:
 
     def __post_init__(self) -> None:
         for digest in (
+            self.application_create_database_identity_sha256,
             self.application_database_identity_sha256,
             self.app_final_permit_sha256,
             self.dagster_metadata_database_identity_sha256,
@@ -899,6 +923,25 @@ class MapApplication300ExecutionEvidence:
                 raise DeploymentContractError(
                     "Map application 300 execution evidence digest is invalid"
                 )
+        if self.application_create_database_identity is not None:
+            if not isinstance(
+                self.application_create_database_identity,
+                MapApplication300ApplicationDatabaseIdentity,
+            ):
+                raise DeploymentContractError(
+                    "Map application 300 create database identity is invalid"
+                )
+            if (
+                self.application_create_database_identity_sha256
+                != self.application_create_database_identity.sha256()
+            ):
+                raise DeploymentContractError(
+                    "Map application 300 create database identity SHA differs"
+                )
+        elif self.application_create_database_identity_sha256 is not None:
+            raise DeploymentContractError(
+                "Map application 300 create database identity is missing"
+            )
         if self.application_database_identity is not None:
             if not isinstance(
                 self.application_database_identity,
@@ -965,6 +1008,26 @@ class MapApplication300ExecutionEvidence:
             raise DeploymentContractError(
                 "Map application 300 Dagster metadata identity is missing"
             )
+
+    def with_application_create_database_identity(
+        self,
+        identity: MapApplication300ApplicationDatabaseIdentity,
+    ) -> MapApplication300ExecutionEvidence:
+        if not isinstance(identity, MapApplication300ApplicationDatabaseIdentity):
+            raise DeploymentContractError(
+                "Map application 300 create database identity is invalid"
+            )
+        if (
+            self.application_create_database_identity is not None
+            and self.application_create_database_identity != identity
+        ):
+            raise DeploymentContractError(
+                "Map application 300 execution evidence cannot be rebound"
+            )
+        return self.with_digest(
+            application_create_database_identity=identity,
+            application_create_database_identity_sha256=identity.sha256(),
+        )
 
     def with_application_database_identity(
         self,
@@ -1042,6 +1105,22 @@ class MapApplication300ExecutionEvidence:
             )
         return replace(self, fresh_root_operation_plan=plan)
 
+    def with_renewed_fresh_root_operation_plan(
+        self,
+        plan: MapApplication300OperationPlan,
+    ) -> MapApplication300ExecutionEvidence:
+        _validate_operation_plan_object(plan, "root")
+        _validate_operation_plan_result_state(plan, result_required=False)
+        if (
+            self.fresh_root_operation_plan is None
+            or self.fresh_root_operation_plan.result_sha256 is not None
+            or self.fresh_root_operation_plan.operation_id != plan.operation_id
+        ):
+            raise DeploymentContractError(
+                "Map application 300 root operation plan cannot be renewed"
+            )
+        return replace(self, fresh_root_operation_plan=plan)
+
     def with_fresh_finalize_operation_plan(
         self,
         plan: MapApplication300OperationPlan,
@@ -1080,6 +1159,22 @@ class MapApplication300ExecutionEvidence:
             )
         return replace(self, fresh_finalize_operation_plan=plan)
 
+    def with_renewed_fresh_finalize_operation_plan(
+        self,
+        plan: MapApplication300OperationPlan,
+    ) -> MapApplication300ExecutionEvidence:
+        _validate_operation_plan_object(plan, "finalize")
+        _validate_operation_plan_result_state(plan, result_required=False)
+        if (
+            self.fresh_finalize_operation_plan is None
+            or self.fresh_finalize_operation_plan.result_sha256 is not None
+            or self.fresh_finalize_operation_plan.operation_id != plan.operation_id
+        ):
+            raise DeploymentContractError(
+                "Map application 300 finalize operation plan cannot be renewed"
+            )
+        return replace(self, fresh_finalize_operation_plan=plan)
+
     def with_digest(
         self,
         **changes: str
@@ -1093,12 +1188,16 @@ class MapApplication300ExecutionEvidence:
                     "Map application 300 execution evidence field is invalid"
                 )
             if key in {
+                "application_create_database_identity",
                 "application_database_identity",
                 "dagster_metadata_database_identity",
                 "fresh_root_operation_plan",
                 "fresh_finalize_operation_plan",
             }:
-                if key == "application_database_identity" and not isinstance(
+                if key in {
+                    "application_create_database_identity",
+                    "application_database_identity",
+                } and not isinstance(
                     value,
                     MapApplication300ApplicationDatabaseIdentity,
                 ):
@@ -1138,6 +1237,14 @@ class MapApplication300ExecutionEvidence:
 
     def to_payload(self) -> dict[str, object]:
         return {
+            "application_create_database_identity": (
+                None
+                if self.application_create_database_identity is None
+                else self.application_create_database_identity.to_payload()
+            ),
+            "application_create_database_identity_sha256": (
+                self.application_create_database_identity_sha256
+            ),
             "application_database_identity": (
                 None
                 if self.application_database_identity is None
@@ -1310,9 +1417,22 @@ class PinnedRuntimeRebuildJournal:
         *,
         application_database_identity: MapApplication300ApplicationDatabaseIdentity,
     ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "databases_recreated":
+        if self.phase != "application_bootstrap_intent_durable":
             raise DeploymentContractError(
                 "Map application 300 application role evidence is out of order"
+            )
+        create_identity = (
+            self.map_application_300_execution_evidence
+            .application_create_database_identity
+        )
+        if create_identity is None or (
+            create_identity.database_name != application_database_identity.database_name
+            or create_identity.database_oid != application_database_identity.database_oid
+            or create_identity.postgres_system_identifier
+            != application_database_identity.postgres_system_identifier
+        ):
+            raise DeploymentContractError(
+                "Map application 300 database identity changed during role bootstrap"
             )
         evidence = (
             self.map_application_300_execution_evidence.with_application_database_identity(
@@ -1324,6 +1444,52 @@ class PinnedRuntimeRebuildJournal:
             phase="application_roles_ready",
             journal_generation=self.journal_generation + 1,
             map_application_300_execution_evidence=evidence,
+        )
+
+    def with_application_create_intent(self) -> PinnedRuntimeRebuildJournal:
+        if self.phase != "databases_recreated":
+            raise DeploymentContractError(
+                "Map application 300 create intent is out of order"
+            )
+        return replace(
+            self,
+            phase="application_create_intent_durable",
+            journal_generation=self.journal_generation + 1,
+        )
+
+    def with_application_created(
+        self,
+        *,
+        application_create_database_identity: (
+            MapApplication300ApplicationDatabaseIdentity
+        ),
+    ) -> PinnedRuntimeRebuildJournal:
+        if self.phase != "application_create_intent_durable":
+            raise DeploymentContractError(
+                "Map application 300 create result is out of order"
+            )
+        evidence = (
+            self.map_application_300_execution_evidence
+            .with_application_create_database_identity(
+                application_create_database_identity
+            )
+        )
+        return replace(
+            self,
+            phase="application_created",
+            journal_generation=self.journal_generation + 1,
+            map_application_300_execution_evidence=evidence,
+        )
+
+    def with_application_bootstrap_intent(self) -> PinnedRuntimeRebuildJournal:
+        if self.phase != "application_created":
+            raise DeploymentContractError(
+                "Map application 300 role bootstrap intent is out of order"
+            )
+        return replace(
+            self,
+            phase="application_bootstrap_intent_durable",
+            journal_generation=self.journal_generation + 1,
         )
 
     def with_metadata_permit_ready(
@@ -1412,6 +1578,30 @@ class PinnedRuntimeRebuildJournal:
             self,
             phase="fresh_root_execution_intent",
             journal_generation=self.journal_generation + 1,
+        )
+
+    def with_renewed_fresh_root_execution_intent(
+        self,
+        *,
+        fresh_root_operation_plan: MapApplication300OperationPlan,
+    ) -> PinnedRuntimeRebuildJournal:
+        if self.phase != "fresh_root_execution_intent":
+            raise DeploymentContractError(
+                "Map application 300 root renewal is out of order"
+            )
+        _validate_operation_plan_basis(
+            fresh_root_operation_plan,
+            self,
+            label="root renewal",
+        )
+        evidence = (
+            self.map_application_300_execution_evidence
+            .with_renewed_fresh_root_operation_plan(fresh_root_operation_plan)
+        )
+        return replace(
+            self,
+            journal_generation=self.journal_generation + 1,
+            map_application_300_execution_evidence=evidence,
         )
 
     def with_fresh_root_ready(
@@ -1506,6 +1696,32 @@ class PinnedRuntimeRebuildJournal:
             self,
             phase="fresh_finalize_execution_intent",
             journal_generation=self.journal_generation + 1,
+        )
+
+    def with_renewed_fresh_finalize_execution_intent(
+        self,
+        *,
+        fresh_finalize_operation_plan: MapApplication300OperationPlan,
+    ) -> PinnedRuntimeRebuildJournal:
+        if self.phase != "fresh_finalize_execution_intent":
+            raise DeploymentContractError(
+                "Map application 300 finalize renewal is out of order"
+            )
+        _validate_operation_plan_basis(
+            fresh_finalize_operation_plan,
+            self,
+            label="finalize renewal",
+        )
+        evidence = (
+            self.map_application_300_execution_evidence
+            .with_renewed_fresh_finalize_operation_plan(
+                fresh_finalize_operation_plan
+            )
+        )
+        return replace(
+            self,
+            journal_generation=self.journal_generation + 1,
+            map_application_300_execution_evidence=evidence,
         )
 
     def with_fresh_finalize_ready(
@@ -1839,6 +2055,8 @@ def map_application_300_execution_evidence_from_payload(
     payload: object,
 ) -> MapApplication300ExecutionEvidence:
     expected = {
+        "application_create_database_identity",
+        "application_create_database_identity_sha256",
         "application_database_identity",
         "application_database_identity_sha256",
         "fresh_root_operation_plan",
@@ -1852,11 +2070,15 @@ def map_application_300_execution_evidence_from_payload(
         raise DeploymentContractError(
             "Map application 300 execution evidence payload is invalid"
         )
+    application_create_identity = payload.get(
+        "application_create_database_identity"
+    )
     application_identity = payload.get("application_database_identity")
     fresh_root_operation_plan = payload.get("fresh_root_operation_plan")
     fresh_finalize_operation_plan = payload.get("fresh_finalize_operation_plan")
     dagster_metadata_identity = payload.get("dagster_metadata_database_identity")
     digest_fields = expected - {
+        "application_create_database_identity",
         "application_database_identity",
         "fresh_root_operation_plan",
         "fresh_finalize_operation_plan",
@@ -1872,6 +2094,16 @@ def map_application_300_execution_evidence_from_payload(
         )
     values = cast(Mapping[str, str | None], payload)
     return MapApplication300ExecutionEvidence(
+        application_create_database_identity=(
+            None
+            if application_create_identity is None
+            else map_application_300_application_database_identity_from_payload(
+                application_create_identity
+            )
+        ),
+        application_create_database_identity_sha256=values[
+            "application_create_database_identity_sha256"
+        ],
         application_database_identity=(
             None
             if application_identity is None
@@ -2039,6 +2271,8 @@ def map_application_300_dagster_metadata_role_attributes_from_payload(
     payload: object,
 ) -> MapApplication300DagsterMetadataRoleAttributes:
     expected = {
+        "can_login",
+        "inherit",
         "superuser",
         "create_database",
         "create_role",
@@ -2052,6 +2286,8 @@ def map_application_300_dagster_metadata_role_attributes_from_payload(
             "Map application 300 Dagster metadata role attributes payload is invalid"
         )
     booleans = (
+        payload.get("can_login"),
+        payload.get("inherit"),
         payload.get("superuser"),
         payload.get("create_database"),
         payload.get("create_role"),
@@ -2069,6 +2305,8 @@ def map_application_300_dagster_metadata_role_attributes_from_payload(
             "Map application 300 Dagster metadata role attributes payload is invalid"
         )
     return MapApplication300DagsterMetadataRoleAttributes(
+        can_login=cast(bool, payload["can_login"]),
+        inherit=cast(bool, payload["inherit"]),
         superuser=cast(bool, payload["superuser"]),
         create_database=cast(bool, payload["create_database"]),
         create_role=cast(bool, payload["create_role"]),
@@ -2130,12 +2368,20 @@ def _validate_application_300_phase_evidence(
 
 def _application_300_required_evidence_fields(phase: RebuildPhase) -> tuple[str, ...]:
     phase_index = REBUILD_PHASES.index(phase)
-    if phase_index < REBUILD_PHASES.index("application_roles_ready"):
+    if phase_index < REBUILD_PHASES.index("application_created"):
         return ()
     fields: list[str] = [
+        "application_create_database_identity",
+        "application_create_database_identity_sha256",
+    ]
+    if phase_index < REBUILD_PHASES.index("application_roles_ready"):
+        return tuple(fields)
+    fields.extend(
+        [
         "application_database_identity",
         "application_database_identity_sha256",
-    ]
+        ]
+    )
     if phase_index >= REBUILD_PHASES.index("fresh_root_plan_ready"):
         fields.append("fresh_root_operation_plan")
     if phase_index >= REBUILD_PHASES.index("fresh_finalize_plan_ready"):

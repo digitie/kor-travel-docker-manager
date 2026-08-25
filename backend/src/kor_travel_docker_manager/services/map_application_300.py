@@ -24,7 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 MAP_APPLICATION_300_SOURCE_COMMIT: Final = (
-    "5c0cd76e40580e433b3a6504c0b0dea09ff7d0fa"
+    "d0ced47128c2b175bcd22d7e44fa979512ccf203"
 )
 APPLICATION_HEAD: Final = "300"
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
@@ -34,13 +34,13 @@ FRESH_MIGRATION_FENCE_SCHEMA: Final = (
     "kor-travel-docker-manager.map-fresh-300-migrate-fence.v2"
 )
 FRESH_MIGRATION_OPERATION: Final = "map-fresh-300"
-FRESH_ROOT_RESULT_SCHEMA: Final = "kor-travel-map.application-fresh-300-root.v1"
+FRESH_ROOT_RESULT_SCHEMA: Final = "kor-travel-map.application-fresh-300-root.v2"
 FRESH_FINALIZE_FENCE_SCHEMA: Final = (
     "kor-travel-docker-manager.map-fresh-300-finalize-fence.v3"
 )
 FRESH_FINALIZE_OPERATION: Final = "map-fresh-300-finalize"
 FRESH_FINALIZE_RESULT_SCHEMA: Final = (
-    "kor-travel-map.application-fresh-300-finalize.v3"
+    "kor-travel-map.application-fresh-300-finalize.v4"
 )
 APPLICATION_FINAL_PERMIT_SCHEMA: Final = (
     "kor-travel-docker-manager.map-application-final-permit.v4"
@@ -54,7 +54,7 @@ APPLICATION_FINAL_PERMIT_FRESH_EVIDENCE_SCHEMA: Final = (
     "kor-travel-docker-manager.map-final-permit-fresh-finalize-evidence.v2"
 )
 DAGSTER_STORAGE_PERMIT_SCHEMA: Final = (
-    "kor-travel-map.dagster-storage-database-permit.v1"
+    "kor-travel-map.dagster-storage-database-permit.v2"
 )
 DAGSTER_STORAGE_PERMIT_AUTHORITY: Final = "docker-manager"
 
@@ -83,6 +83,7 @@ _FRESH_MIGRATION_FENCE_FIELDS: Final = frozenset(
     {
         "schema",
         "transaction_id",
+        "operation_id",
         "journal_sha256",
         "journal_generation",
         "operation",
@@ -110,15 +111,20 @@ _FRESH_ROOT_RESULT_FIELDS: Final = frozenset(
         "schema",
         "outcome",
         "authorization",
+        "operation_id",
         "destination_head",
         "map_candidate_commit",
         "map_candidate_image_id",
+        "postgres_image_id",
         "reference_manifest_sha256",
         "writer_fence_receipt_sha256",
         "writer_fence_transaction_id",
         "journal_sha256",
         "journal_generation",
         "database_identity",
+        "post_source_catalog_sha256",
+        "post_seed_sha256",
+        "expected_privileged_residue_sha256",
         "expected_destination_alembic_version_sha256",
         "post_destination_alembic_version_sha256",
     }
@@ -135,12 +141,14 @@ _FRESH_FINALIZE_FENCE_FIELDS: Final = frozenset(
     {
         "schema",
         "transaction_id",
+        "operation_id",
         "journal_sha256",
         "journal_generation",
         "operation",
         "prior_fresh_migration_result_sha256",
         "prior_fresh_migration_fence_sha256",
         "prior_fresh_migration_transaction_id",
+        "prior_fresh_migration_operation_id",
         "prior_fresh_migration_journal_sha256",
         "prior_fresh_migration_generation",
         "map_candidate_commit",
@@ -166,21 +174,28 @@ _FRESH_FINALIZE_RESULT_FIELDS: Final = frozenset(
     {
         "schema",
         "outcome",
+        "operation_id",
         "destination_head",
         "map_candidate_commit",
         "map_candidate_image_id",
+        "postgres_image_id",
         "reference_manifest_sha256",
         "writer_fence_receipt_sha256",
         "writer_fence_transaction_id",
         "journal_sha256",
         "journal_generation",
+        "database_identity",
         "prior_fresh_migration_result_sha256",
         "prior_fresh_migration_fence_sha256",
         "prior_fresh_migration_transaction_id",
+        "prior_fresh_migration_operation_id",
         "prior_fresh_migration_journal_sha256",
         "prior_fresh_migration_generation",
         "pre_source_catalog_sha256",
+        "pre_seed_sha256",
         "post_destination_catalog_sha256",
+        "post_seed_sha256",
+        "expected_privileged_residue_sha256",
         "post_destination_alembic_version_sha256",
     }
 )
@@ -245,7 +260,14 @@ _FINAL_PERMIT_FRESH_EVIDENCE_FIELDS: Final = frozenset(
     }
 )
 _DAGSTER_STORAGE_PERMIT_FIELDS: Final = frozenset(
-    {"schema", "authority", "candidate", "dagster_database", "application_database"}
+    {
+        "schema",
+        "authority",
+        "operation_id",
+        "candidate",
+        "dagster_database",
+        "application_database",
+    }
 )
 _DAGSTER_STORAGE_CANDIDATE_FIELDS: Final = frozenset(
     {"dagster_image_id", "paired_candidate_build_receipt_sha256", "dagster_config_sha256"}
@@ -262,6 +284,8 @@ _DAGSTER_DATABASE_FIELDS: Final = frozenset(
 )
 _DAGSTER_LOGIN_ROLE_ATTRIBUTE_FIELDS: Final = frozenset(
     {
+        "can_login",
+        "inherit",
         "superuser",
         "create_database",
         "create_role",
@@ -410,11 +434,13 @@ class JournalStamp:
     """Manager journal generation bound into one fence."""
 
     transaction_id: str
+    operation_id: str
     journal_sha256: str
     journal_generation: int
 
     def __post_init__(self) -> None:
         _require_uuid(self.transaction_id, "transaction_id")
+        _require_uuid(self.operation_id, "operation_id")
         _require_sha256(self.journal_sha256, "journal_sha256")
         _require_positive_int(self.journal_generation, "journal_generation")
 
@@ -489,6 +515,8 @@ class DagsterLoginRoleAttributes:
     bypass_rls: bool = False
     granted_role_count: int = 0
     member_role_count: int = 0
+    can_login: bool = True
+    inherit: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -502,6 +530,10 @@ class DagsterLoginRoleAttributes:
                 raise MapApplication300ContractError(
                     "Dagster metadata login role has unsafe privileges"
                 )
+        if self.can_login is not True or self.inherit is not False:
+            raise MapApplication300ContractError(
+                "Dagster metadata login role has unsafe login attributes"
+            )
         for name in ("granted_role_count", "member_role_count"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value != 0:
@@ -517,6 +549,8 @@ class DagsterLoginRoleAttributes:
             "Dagster login role attributes",
         )
         return cls(
+            can_login=_require_bool(payload["can_login"], "can_login"),
+            inherit=_require_bool(payload["inherit"], "inherit"),
             superuser=_require_bool(payload["superuser"], "superuser"),
             create_database=_require_bool(
                 payload["create_database"], "create_database"
@@ -534,6 +568,8 @@ class DagsterLoginRoleAttributes:
 
     def to_payload(self) -> dict[str, Any]:
         return {
+            "can_login": self.can_login,
+            "inherit": self.inherit,
             "superuser": self.superuser,
             "create_database": self.create_database,
             "create_role": self.create_role,
@@ -646,14 +682,19 @@ class FreshRootResult:
     """Validated fresh root migration result."""
 
     payload_sha256: str
+    operation_id: str
     writer_fence_receipt_sha256: str
     writer_fence_transaction_id: str
     journal_sha256: str
     journal_generation: int
     map_candidate_commit: str
     map_candidate_image_id: str
+    postgres_image_id: str
     reference_manifest_sha256: str
     database_identity: ApplicationDatabaseIdentity
+    post_source_catalog_sha256: str
+    post_seed_sha256: str
+    expected_privileged_residue_sha256: str
     expected_destination_alembic_version_sha256: str
     post_destination_alembic_version_sha256: str
 
@@ -663,6 +704,7 @@ class FreshFinalizeResult:
     """Validated fresh ACL finalize result."""
 
     payload_sha256: str
+    operation_id: str
     writer_fence_receipt_sha256: str
     writer_fence_transaction_id: str
     journal_sha256: str
@@ -670,13 +712,19 @@ class FreshFinalizeResult:
     prior_fresh_migration_result_sha256: str
     prior_fresh_migration_fence_sha256: str
     prior_fresh_migration_transaction_id: str
+    prior_fresh_migration_operation_id: str
     prior_fresh_migration_journal_sha256: str
     prior_fresh_migration_generation: int
     map_candidate_commit: str
     map_candidate_image_id: str
+    postgres_image_id: str
     reference_manifest_sha256: str
+    database_identity: ApplicationDatabaseIdentity
     pre_source_catalog_sha256: str
+    pre_seed_sha256: str
     post_destination_catalog_sha256: str
+    post_seed_sha256: str
+    expected_privileged_residue_sha256: str
     post_destination_alembic_version_sha256: str
 
 
@@ -714,6 +762,7 @@ def build_fresh_migration_fence(
     payload = {
         "schema": FRESH_MIGRATION_FENCE_SCHEMA,
         "transaction_id": journal.transaction_id,
+        "operation_id": journal.operation_id,
         "journal_sha256": journal.journal_sha256,
         "journal_generation": journal.journal_generation,
         "operation": FRESH_MIGRATION_OPERATION,
@@ -759,12 +808,14 @@ def build_fresh_finalize_fence(
     payload = {
         "schema": FRESH_FINALIZE_FENCE_SCHEMA,
         "transaction_id": journal.transaction_id,
+        "operation_id": journal.operation_id,
         "journal_sha256": journal.journal_sha256,
         "journal_generation": journal.journal_generation,
         "operation": FRESH_FINALIZE_OPERATION,
         "prior_fresh_migration_result_sha256": prior.payload_sha256,
         "prior_fresh_migration_fence_sha256": prior.writer_fence_receipt_sha256,
         "prior_fresh_migration_transaction_id": prior.writer_fence_transaction_id,
+        "prior_fresh_migration_operation_id": prior.operation_id,
         "prior_fresh_migration_journal_sha256": prior.journal_sha256,
         "prior_fresh_migration_generation": prior.journal_generation,
         "map_candidate_commit": candidate.map_source_commit,
@@ -812,6 +863,7 @@ def parse_fresh_root_result(
     )
     result = FreshRootResult(
         payload_sha256=sha256_bytes(raw),
+        operation_id=_require_uuid(payload["operation_id"], "operation_id"),
         writer_fence_receipt_sha256=_require_sha256(
             payload["writer_fence_receipt_sha256"], "writer_fence_receipt_sha256"
         ),
@@ -828,10 +880,23 @@ def parse_fresh_root_result(
         map_candidate_image_id=_require_image_id(
             payload["map_candidate_image_id"], "map_candidate_image_id"
         ),
+        postgres_image_id=_require_image_id(
+            payload["postgres_image_id"], "postgres_image_id"
+        ),
         reference_manifest_sha256=_require_sha256(
             payload["reference_manifest_sha256"], "reference_manifest_sha256"
         ),
         database_identity=identity,
+        post_source_catalog_sha256=_require_sha256(
+            payload["post_source_catalog_sha256"], "post_source_catalog_sha256"
+        ),
+        post_seed_sha256=_require_sha256(
+            payload["post_seed_sha256"], "post_seed_sha256"
+        ),
+        expected_privileged_residue_sha256=_require_sha256(
+            payload["expected_privileged_residue_sha256"],
+            "expected_privileged_residue_sha256",
+        ),
         expected_destination_alembic_version_sha256=_require_sha256(
             payload["expected_destination_alembic_version_sha256"],
             "expected_destination_alembic_version_sha256",
@@ -868,6 +933,7 @@ def parse_fresh_finalize_result(
         raise MapApplication300ContractError("fresh finalize result identity is invalid")
     result = FreshFinalizeResult(
         payload_sha256=sha256_bytes(raw),
+        operation_id=_require_uuid(payload["operation_id"], "operation_id"),
         writer_fence_receipt_sha256=_require_sha256(
             payload["writer_fence_receipt_sha256"], "writer_fence_receipt_sha256"
         ),
@@ -890,6 +956,10 @@ def parse_fresh_finalize_result(
             payload["prior_fresh_migration_transaction_id"],
             "prior_fresh_migration_transaction_id",
         ),
+        prior_fresh_migration_operation_id=_require_uuid(
+            payload["prior_fresh_migration_operation_id"],
+            "prior_fresh_migration_operation_id",
+        ),
         prior_fresh_migration_journal_sha256=_require_sha256(
             payload["prior_fresh_migration_journal_sha256"],
             "prior_fresh_migration_journal_sha256",
@@ -904,15 +974,31 @@ def parse_fresh_finalize_result(
         map_candidate_image_id=_require_image_id(
             payload["map_candidate_image_id"], "map_candidate_image_id"
         ),
+        postgres_image_id=_require_image_id(
+            payload["postgres_image_id"], "postgres_image_id"
+        ),
         reference_manifest_sha256=_require_sha256(
             payload["reference_manifest_sha256"], "reference_manifest_sha256"
+        ),
+        database_identity=ApplicationDatabaseIdentity.from_fresh_result_payload(
+            _require_mapping(payload["database_identity"], "database_identity")
         ),
         pre_source_catalog_sha256=_require_sha256(
             payload["pre_source_catalog_sha256"], "pre_source_catalog_sha256"
         ),
+        pre_seed_sha256=_require_sha256(
+            payload["pre_seed_sha256"], "pre_seed_sha256"
+        ),
         post_destination_catalog_sha256=_require_sha256(
             payload["post_destination_catalog_sha256"],
             "post_destination_catalog_sha256",
+        ),
+        post_seed_sha256=_require_sha256(
+            payload["post_seed_sha256"], "post_seed_sha256"
+        ),
+        expected_privileged_residue_sha256=_require_sha256(
+            payload["expected_privileged_residue_sha256"],
+            "expected_privileged_residue_sha256",
         ),
         post_destination_alembic_version_sha256=_require_sha256(
             payload["post_destination_alembic_version_sha256"],
@@ -920,7 +1006,11 @@ def parse_fresh_finalize_result(
         ),
     )
     _require_finalize_binding(
-        result, contract=contract, candidate=candidate, prior=prior
+        result,
+        contract=contract,
+        candidate=candidate,
+        prior=prior,
+        database=prior.database_identity,
     )
     return result
 
@@ -937,6 +1027,7 @@ def build_application_final_permit(
         contract=contract,
         candidate=candidate,
         prior=None,
+        database=database,
     )
     payload = {
         "schema": APPLICATION_FINAL_PERMIT_SCHEMA,
@@ -961,17 +1052,23 @@ def build_application_final_permit(
         "database": database.to_final_permit_payload(),
         "receipts": {
             "expected_catalog_sha256": contract.destination_catalog_sha256,
-            "observed_catalog_sha256": contract.destination_catalog_sha256,
+            "observed_catalog_sha256": finalize_result.post_destination_catalog_sha256,
             "expected_seed_sha256": contract.seed_sha256,
-            "observed_seed_sha256": contract.seed_sha256,
-            "expected_privileged_residue_sha256": contract.privileged_residue_sha256,
-            "pre_privileged_residue_sha256": contract.privileged_residue_sha256,
-            "post_privileged_residue_sha256": contract.privileged_residue_sha256,
+            "observed_seed_sha256": finalize_result.post_seed_sha256,
+            "expected_privileged_residue_sha256": (
+                finalize_result.expected_privileged_residue_sha256
+            ),
+            "pre_privileged_residue_sha256": (
+                finalize_result.expected_privileged_residue_sha256
+            ),
+            "post_privileged_residue_sha256": (
+                finalize_result.expected_privileged_residue_sha256
+            ),
             "expected_destination_alembic_version_sha256": (
                 contract.destination_alembic_version_sha256
             ),
             "observed_destination_alembic_version_sha256": (
-                contract.destination_alembic_version_sha256
+                finalize_result.post_destination_alembic_version_sha256
             ),
             "runtime_invariant_violation_count": 0,
         },
@@ -1060,13 +1157,16 @@ def build_dagster_metadata_permit(
     candidate: DagsterStorageCandidate,
     dagster_database: DagsterDatabaseIdentity,
     application_database: ApplicationDatabaseIdentity,
+    operation_id: str,
 ) -> JsonArtifact:
+    canonical_operation_id = _require_uuid(operation_id, "operation_id")
     _require_metadata_database_isolation(
         dagster_database=dagster_database, application_database=application_database
     )
     payload = {
         "schema": DAGSTER_STORAGE_PERMIT_SCHEMA,
         "authority": DAGSTER_STORAGE_PERMIT_AUTHORITY,
+        "operation_id": canonical_operation_id,
         "candidate": candidate.to_payload(),
         "dagster_database": dagster_database.to_payload(),
         "application_database": application_database.to_dagster_permit_application_payload(),
@@ -1075,6 +1175,7 @@ def build_dagster_metadata_permit(
         json_artifact(payload).raw,
         expected_candidate=candidate,
         application_database=application_database,
+        expected_operation_id=canonical_operation_id,
     )
     return json_artifact(payload)
 
@@ -1084,6 +1185,7 @@ def validate_dagster_metadata_permit(
     *,
     expected_candidate: DagsterStorageCandidate,
     application_database: ApplicationDatabaseIdentity,
+    expected_operation_id: str | None = None,
 ) -> Mapping[str, Any]:
     payload = _load_exact_json(
         raw, _DAGSTER_STORAGE_PERMIT_FIELDS, "Dagster metadata permit"
@@ -1093,6 +1195,13 @@ def validate_dagster_metadata_permit(
         or payload["authority"] != DAGSTER_STORAGE_PERMIT_AUTHORITY
     ):
         raise MapApplication300ContractError("Dagster metadata permit identity is invalid")
+    operation_id = _require_uuid(payload["operation_id"], "operation_id")
+    if expected_operation_id is not None and operation_id != _require_uuid(
+        expected_operation_id, "expected_operation_id"
+    ):
+        raise MapApplication300ContractError(
+            "Dagster metadata permit operation binding is invalid"
+        )
     candidate = DagsterStorageCandidate.from_payload(
         _require_mapping(payload["candidate"], "candidate")
     )
@@ -1282,6 +1391,48 @@ def publish_root_read_only_artifact(path: Path, raw: bytes) -> HostArtifactRecei
         raise
 
 
+def replace_root_read_only_artifact(
+    path: Path,
+    *,
+    expected_old_sha256: str,
+    raw: bytes,
+) -> HostArtifactReceipt:
+    """Replace a fixed-mount artifact only from one durable digest to another."""
+
+    if os.geteuid() != 0:
+        raise MapApplication300ContractError(
+            "fixed artifact replacement requires root"
+        )
+    _require_sha256(expected_old_sha256, "expected fixed artifact digest")
+    _require_artifact_path(path)
+    parent = path.parent
+    _require_fixed_artifact_directory(parent)
+    old = _read_existing_fixed_artifact(path)
+    if old == raw:
+        return HostArtifactReceipt(path=path, sha256=sha256_bytes(raw), size=len(raw))
+    if not hmac.compare_digest(sha256_bytes(old), expected_old_sha256):
+        raise MapApplication300ContractError("fixed artifact digest is invalid")
+
+    digest = sha256_bytes(raw)
+    descriptor, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=parent
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(descriptor, 0o444)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, path)
+        _fsync_directory(parent)
+        _verify_existing_fixed_artifact(path, raw)
+        return HostArtifactReceipt(path=path, sha256=digest, size=len(raw))
+    except Exception:
+        _safe_unlink(tmp_path)
+        raise
+
+
 def _validate_fresh_migration_fence(
     payload: Mapping[str, Any],
     *,
@@ -1337,6 +1488,10 @@ def _validate_fresh_finalize_fence(
         fence["prior_fresh_migration_transaction_id"],
         "prior_fresh_migration_transaction_id",
     )
+    _require_uuid(
+        fence["prior_fresh_migration_operation_id"],
+        "prior_fresh_migration_operation_id",
+    )
     prior_generation = _require_positive_int(
         fence["prior_fresh_migration_generation"],
         "prior_fresh_migration_generation",
@@ -1357,6 +1512,7 @@ def _validate_common_fence_identity(
     candidate: Application300Candidate,
 ) -> None:
     _require_uuid(fence["transaction_id"], "transaction_id")
+    _require_uuid(fence["operation_id"], "operation_id")
     _require_sha256(fence["journal_sha256"], "journal_sha256")
     _require_positive_int(fence["journal_generation"], "journal_generation")
     if (
@@ -1396,8 +1552,13 @@ def _require_prior_root_binding(
     if (
         prior.map_candidate_commit != candidate.map_source_commit
         or prior.map_candidate_image_id != candidate.api_image_id
+        or prior.postgres_image_id != contract.postgres_image_id
         or prior.reference_manifest_sha256 != contract.reference_manifest_sha256
         or prior.database_identity != database
+        or prior.post_source_catalog_sha256 != contract.source_catalog_sha256
+        or prior.post_seed_sha256 != contract.seed_sha256
+        or prior.expected_privileged_residue_sha256
+        != contract.privileged_residue_sha256
         or prior.expected_destination_alembic_version_sha256
         != contract.destination_alembic_version_sha256
         or prior.post_destination_alembic_version_sha256
@@ -1414,14 +1575,24 @@ def _require_finalize_binding(
     contract: Application300Contract,
     candidate: Application300Candidate,
     prior: FreshRootResult | None,
+    database: ApplicationDatabaseIdentity | None,
 ) -> None:
     if (
         finalize.map_candidate_commit != candidate.map_source_commit
         or finalize.map_candidate_image_id != candidate.api_image_id
+        or finalize.postgres_image_id != contract.postgres_image_id
         or finalize.reference_manifest_sha256 != contract.reference_manifest_sha256
+        or (
+            database is not None
+            and finalize.database_identity != database
+        )
         or finalize.pre_source_catalog_sha256 != contract.source_catalog_sha256
+        or finalize.pre_seed_sha256 != contract.seed_sha256
         or finalize.post_destination_catalog_sha256
         != contract.destination_catalog_sha256
+        or finalize.post_seed_sha256 != contract.seed_sha256
+        or finalize.expected_privileged_residue_sha256
+        != contract.privileged_residue_sha256
         or finalize.post_destination_alembic_version_sha256
         != contract.destination_alembic_version_sha256
     ):
@@ -1438,6 +1609,7 @@ def _require_finalize_binding(
         != prior.writer_fence_receipt_sha256
         or finalize.prior_fresh_migration_transaction_id
         != prior.writer_fence_transaction_id
+        or finalize.prior_fresh_migration_operation_id != prior.operation_id
         or finalize.prior_fresh_migration_journal_sha256 != prior.journal_sha256
         or finalize.prior_fresh_migration_generation != prior.journal_generation
     ):
@@ -1778,6 +1950,17 @@ def _verify_existing_artifact(path: Path, expected: bytes) -> HostArtifactReceip
 def _verify_existing_fixed_artifact(
     path: Path, expected: bytes
 ) -> HostArtifactReceipt:
+    observed = _read_existing_fixed_artifact(path, max_size=len(expected) + 1)
+    if observed != expected:
+        raise MapApplication300ContractError(
+            "fixed artifact already exists with different bytes"
+        )
+    return HostArtifactReceipt(
+        path=path, sha256=sha256_bytes(expected), size=len(expected)
+    )
+
+
+def _read_existing_fixed_artifact(path: Path, *, max_size: int = 64 * 1024) -> bytes:
     try:
         metadata = path.lstat()
     except OSError as exc:
@@ -1805,20 +1988,16 @@ def _verify_existing_fixed_artifact(
                 raise MapApplication300ContractError(
                     "fixed artifact changed while opening"
                 )
-            observed = os.read(descriptor, len(expected) + 1)
+            observed = os.read(descriptor, max_size + 1)
         finally:
             os.close(descriptor)
     except OSError as exc:
         raise MapApplication300ContractError(
             "fixed artifact cannot be read safely"
         ) from exc
-    if observed != expected:
-        raise MapApplication300ContractError(
-            "fixed artifact already exists with different bytes"
-        )
-    return HostArtifactReceipt(
-        path=path, sha256=sha256_bytes(expected), size=len(expected)
-    )
+    if len(observed) > max_size:
+        raise MapApplication300ContractError("fixed artifact is too large")
+    return observed
 
 
 def _safe_unlink(path: Path) -> None:

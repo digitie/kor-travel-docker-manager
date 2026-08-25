@@ -16,7 +16,7 @@ from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
 from dotenv import dotenv_values
@@ -71,9 +71,11 @@ from kor_travel_docker_manager.services.database_runtime import (
     DagsterMetadataDatabaseIdentity as RuntimeDagsterMetadataDatabaseIdentity,
 )
 from kor_travel_docker_manager.services.database_runtime import (
+    DatabaseRuntime,
     create_fresh_application_300_database,
     database_runtimes_from_frozen_contract,
     initialize_application_300_dagster_metadata_database,
+    inspect_application_300_bootstrap_state,
     read_application_300_dagster_metadata_identity,
     read_application_300_database_identity,
     read_database_schema_revision,
@@ -99,6 +101,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     parse_fresh_root_result,
     publish_root_read_only_artifact,
     read_owner_only_artifact,
+    replace_root_read_only_artifact,
     write_owner_only_artifact,
 )
 from kor_travel_docker_manager.services.map_application_300_candidate import (
@@ -168,12 +171,18 @@ from kor_travel_docker_manager.services.registry import (
 )
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
+    "pinvi-db-init",
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
     _MAP_APPLICATION_FRESH_300_SERVICE,
     _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
+)
+_PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
+    "rustfs",
+    "kor-travel-geo-api",
+    "kor-travel-concierge-api",
 )
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
@@ -2382,12 +2391,7 @@ def _application_300_database_identities(
             owner=identity.database_owner,
             system_identifier=identity.postgres_system_identifier,
         )
-        journal_identity = MapApplication300ApplicationDatabaseIdentity(
-            database_name=identity.database_name,
-            database_oid=identity.database_oid,
-            database_owner=identity.database_owner,
-            postgres_system_identifier=identity.postgres_system_identifier,
-        )
+        journal_identity = _application_300_journal_database_identity(identity)
     except (DeploymentContractError, MapApplication300ContractError) as exc:
         raise DeploymentContractError(
             "application 300 database identity is invalid"
@@ -2395,11 +2399,31 @@ def _application_300_database_identities(
     return contract_identity, journal_identity
 
 
+def _application_300_journal_database_identity(
+    identity: RuntimeApplication300DatabaseIdentity,
+) -> MapApplication300ApplicationDatabaseIdentity:
+    """bootstrap 전·후 owner를 모두 보존할 수 있는 journal identity로 바꾼다."""
+
+    try:
+        return MapApplication300ApplicationDatabaseIdentity(
+            database_name=identity.database_name,
+            database_oid=identity.database_oid,
+            database_owner=identity.database_owner,
+            postgres_system_identifier=identity.postgres_system_identifier,
+        )
+    except DeploymentContractError as exc:
+        raise DeploymentContractError(
+            "application 300 journal database identity is invalid"
+        ) from exc
+
+
 def _application_300_dagster_identities(
     identity: RuntimeDagsterMetadataDatabaseIdentity,
 ) -> tuple[DagsterDatabaseIdentity, MapApplication300DagsterMetadataDatabaseIdentity]:
     try:
         contract_attributes = DagsterLoginRoleAttributes(
+            can_login=identity.login_role_attributes.can_login,
+            inherit=identity.login_role_attributes.inherit,
             superuser=identity.login_role_attributes.superuser,
             create_database=identity.login_role_attributes.create_database,
             create_role=identity.login_role_attributes.create_role,
@@ -2409,6 +2433,8 @@ def _application_300_dagster_identities(
             member_role_count=identity.login_role_attributes.member_role_count,
         )
         journal_attributes = MapApplication300DagsterMetadataRoleAttributes(
+            can_login=identity.login_role_attributes.can_login,
+            inherit=identity.login_role_attributes.inherit,
             superuser=identity.login_role_attributes.superuser,
             create_database=identity.login_role_attributes.create_database,
             create_role=identity.login_role_attributes.create_role,
@@ -2458,6 +2484,7 @@ def _application_300_journal_stamp(
     try:
         return JournalStamp(
             transaction_id=plan.transaction_id,
+            operation_id=plan.operation_id,
             journal_sha256=plan.basis_journal_sha256,
             journal_generation=plan.basis_journal_generation,
         )
@@ -2529,6 +2556,7 @@ def _application_300_root_result(
     if (
         result.writer_fence_receipt_sha256 != plan.fence_sha256
         or result.writer_fence_transaction_id != plan.transaction_id
+        or result.operation_id != plan.operation_id
         or result.journal_sha256 != plan.basis_journal_sha256
         or result.journal_generation != plan.basis_journal_generation
         or result.database_identity != database
@@ -2558,13 +2586,56 @@ def _application_300_finalize_result(
     if (
         result.writer_fence_receipt_sha256 != plan.fence_sha256
         or result.writer_fence_transaction_id != plan.transaction_id
+        or result.operation_id != plan.operation_id
         or result.journal_sha256 != plan.basis_journal_sha256
         or result.journal_generation != plan.basis_journal_generation
+        or result.database_identity != prior.database_identity
     ):
         raise DeploymentContractError(
             "application 300 finalize result differs from plan"
         )
     return result
+
+
+def _application_300_plan_expired(plan: MapApplication300OperationPlan) -> bool:
+    return _application_300_plan_expiry(plan) <= datetime.now(UTC)
+
+
+def _application_300_renewal_expiry(
+    plan: MapApplication300OperationPlan,
+) -> datetime:
+    """Deterministically move an expired fence far enough for crash resume."""
+
+    expiry = _application_300_plan_expiry(plan)
+    minimum_expiry = datetime.now(UTC) + timedelta(hours=2)
+    while expiry <= minimum_expiry:
+        expiry += timedelta(days=3650)
+    return expiry
+
+
+def _application_300_renewal_transaction_id(
+    *,
+    journal: PinnedRuntimeRebuildJournal,
+    plan: MapApplication300OperationPlan,
+    label: Literal["root", "finalize"],
+) -> str:
+    return str(
+        uuid5(
+            NAMESPACE_URL,
+            ":".join(
+                (
+                    "kor-travel-docker-manager",
+                    "map-application-300-renewal",
+                    label,
+                    journal.transaction_id,
+                    str(journal.journal_generation),
+                    plan.operation_id,
+                    plan.transaction_id,
+                    plan.fence_sha256,
+                )
+            ),
+        )
+    )
 
 
 def _run_map_application_300_paired_builder(
@@ -2588,11 +2659,24 @@ def _run_map_application_300_paired_builder(
         or script_metadata.st_uid != os.geteuid()
     ):
         raise DeploymentContractError("application 300 paired builder is unsafe")
-    receipt_presence = tuple(
-        path.exists() and not path.is_symlink()
-        for path in (paths.api_receipt, paths.paired_receipt)
-    )
-    if receipt_presence not in {(False, False), (True, True)}:
+    receipt_presence_values: list[bool] = []
+    for receipt_path in (paths.api_receipt, paths.paired_receipt):
+        try:
+            receipt_path.lstat()
+        except FileNotFoundError:
+            receipt_presence_values.append(False)
+        except OSError as exc:
+            raise DeploymentContractError(
+                "application 300 paired receipt set cannot be inspected"
+            ) from exc
+        else:
+            # A symlink or foreign-owned entry is still an existing partial
+            # result.  Pass it to the sealed builder, whose O_NOFOLLOW and
+            # exact-ownership checks must reject it rather than treating it as
+            # an absent receipt that may be overwritten.
+            receipt_presence_values.append(True)
+    receipt_presence = tuple(receipt_presence_values)
+    if receipt_presence not in {(False, False), (True, False), (True, True)}:
         raise DeploymentContractError(
             "application 300 paired receipt set is incomplete"
         )
@@ -4079,6 +4163,11 @@ class ComposeService:
         *,
         transaction: ComposeTransactionSnapshot,
     ) -> dict[str, Any]:
+        compose_action = self._pinned_runtime_compose_action(args)
+        if compose_action in {"run", "up"} and "--no-deps" not in args:
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose startup requires --no-deps"
+            )
         # Compose turns a multi-target build into one BuildKit bake request.  On
         # the small n150 host that request opens several frontend sessions at
         # once; a second build (for example an unrelated tvnm05 build) can then
@@ -4104,7 +4193,6 @@ class ComposeService:
         )
         if result["success"]:
             return result
-        compose_action = self._pinned_runtime_compose_action(args)
         diagnostic = self._pinned_runtime_compose_failure_diagnostic(
             args,
             result,
@@ -4587,6 +4675,225 @@ class ComposeService:
             raise DeploymentContractError("pinned runtime rebuild phase is inconsistent")
         return journal.transition(phase)
 
+    def _converge_application_300_database_bootstrap(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        runtime: DatabaseRuntime,
+        transaction: ComposeTransactionSnapshot,
+        journal_path: Path,
+    ) -> tuple[PinnedRuntimeRebuildJournal, ApplicationDatabaseIdentity]:
+        """createdb/bootstrap crash를 durable phase와 exact catalog로 수렴한다."""
+
+        if journal.phase == "databases_recreated":
+            updated = journal.with_application_create_intent()
+            write_pinned_runtime_rebuild_journal(journal_path, updated)
+            journal = updated
+
+        if journal.phase == "application_create_intent_durable":
+            create_state = inspect_application_300_bootstrap_state(runtime)
+            if create_state == "absent":
+                create_fresh_application_300_database(runtime)
+                create_state = inspect_application_300_bootstrap_state(runtime)
+            if create_state != "virgin":
+                raise DeploymentContractError(
+                    "application 300 create result is not an exact virgin database"
+                )
+            runtime_create_identity = read_application_300_database_identity(runtime)
+            if runtime_create_identity.database_owner != runtime.owner_name:
+                raise DeploymentContractError(
+                    "application 300 create result owner differs from contract"
+                )
+            journal_create_identity = _application_300_journal_database_identity(
+                runtime_create_identity
+            )
+            updated = journal.with_application_created(
+                application_create_database_identity=journal_create_identity
+            )
+            write_pinned_runtime_rebuild_journal(journal_path, updated)
+            journal = updated
+
+        if journal.phase == "application_created":
+            if inspect_application_300_bootstrap_state(runtime) != "virgin":
+                raise DeploymentContractError(
+                    "application 300 database changed before role bootstrap intent"
+                )
+            runtime_create_identity = read_application_300_database_identity(runtime)
+            journal_create_identity = _application_300_journal_database_identity(
+                runtime_create_identity
+            )
+            if (
+                journal.map_application_300_execution_evidence
+                .application_create_database_identity
+                != journal_create_identity
+            ):
+                raise DeploymentContractError(
+                    "application 300 create result differs from journal"
+                )
+            updated = journal.with_application_bootstrap_intent()
+            write_pinned_runtime_rebuild_journal(journal_path, updated)
+            journal = updated
+
+        if journal.phase == "application_bootstrap_intent_durable":
+            bootstrap_state = inspect_application_300_bootstrap_state(runtime)
+            if bootstrap_state == "virgin":
+                self._run_pinned_runtime_rebuild_compose(
+                    [
+                        "--profile",
+                        "bootstrap",
+                        "run",
+                        "--rm",
+                        "--no-deps",
+                        "kor-travel-map-db-role-bootstrap",
+                    ],
+                    transaction=transaction,
+                )
+                bootstrap_state = inspect_application_300_bootstrap_state(runtime)
+            if bootstrap_state != "exact_complete":
+                raise DeploymentContractError(
+                    "application 300 role bootstrap result is not exact"
+                )
+            runtime_application_identity = read_application_300_database_identity(
+                runtime
+            )
+            application_database, journal_application_database = (
+                _application_300_database_identities(runtime_application_identity)
+            )
+            updated = journal.with_application_roles_ready(
+                application_database_identity=journal_application_database
+            )
+            write_pinned_runtime_rebuild_journal(journal_path, updated)
+            return updated, application_database
+
+        runtime_application_identity = read_application_300_database_identity(runtime)
+        application_database, journal_application_database = (
+            _application_300_database_identities(runtime_application_identity)
+        )
+        expected_application_identity = (
+            journal.map_application_300_execution_evidence
+            .application_database_identity
+        )
+        if (
+            expected_application_identity is None
+            or expected_application_identity != journal_application_database
+        ):
+            raise DeploymentContractError(
+                "application 300 database identity differs from journal"
+            )
+        return journal, application_database
+
+    def _renew_fresh_root_operation_plan(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        plan: MapApplication300OperationPlan,
+        map_candidate: MapApplication300Candidate,
+        execution_candidate: Application300ExecutionCandidate,
+        application_database: ApplicationDatabaseIdentity,
+        application_paths: _MapApplication300Paths,
+        journal_path: Path,
+    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
+        renewal_basis_sha256 = rebuild_journal_sha256(journal)
+        renewal_generation = journal.journal_generation
+        renewal_expiry = _application_300_renewal_expiry(plan)
+        renewal_transaction_id = _application_300_renewal_transaction_id(
+            journal=journal,
+            plan=plan,
+            label="root",
+        )
+        try:
+            root_fence = build_fresh_migration_fence(
+                contract=map_candidate.application_contract,
+                candidate=execution_candidate,
+                database=application_database,
+                journal=JournalStamp(
+                    transaction_id=renewal_transaction_id,
+                    operation_id=plan.operation_id,
+                    journal_sha256=renewal_basis_sha256,
+                    journal_generation=renewal_generation,
+                ),
+                writer_fence_expires_at=renewal_expiry,
+            )
+            renewed_plan = MapApplication300OperationPlan(
+                transaction_id=renewal_transaction_id,
+                operation_id=plan.operation_id,
+                basis_journal_sha256=renewal_basis_sha256,
+                basis_journal_generation=renewal_generation,
+                writer_fence_expires_at=renewal_expiry.isoformat(),
+                fence_sha256=root_fence.sha256,
+            )
+            replace_root_read_only_artifact(
+                application_paths.root_fence,
+                expected_old_sha256=plan.fence_sha256,
+                raw=root_fence.raw,
+            )
+        except MapApplication300ContractError as exc:
+            raise DeploymentContractError(
+                "application 300 root fence renewal failed"
+            ) from exc
+        updated = journal.with_renewed_fresh_root_execution_intent(
+            fresh_root_operation_plan=renewed_plan
+        )
+        write_pinned_runtime_rebuild_journal(journal_path, updated)
+        return updated, renewed_plan
+
+    def _renew_fresh_finalize_operation_plan(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        plan: MapApplication300OperationPlan,
+        map_candidate: MapApplication300Candidate,
+        execution_candidate: Application300ExecutionCandidate,
+        application_database: ApplicationDatabaseIdentity,
+        application_paths: _MapApplication300Paths,
+        journal_path: Path,
+        root_result: FreshRootResult,
+    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
+        renewal_basis_sha256 = rebuild_journal_sha256(journal)
+        renewal_generation = journal.journal_generation
+        renewal_expiry = _application_300_renewal_expiry(plan)
+        renewal_transaction_id = _application_300_renewal_transaction_id(
+            journal=journal,
+            plan=plan,
+            label="finalize",
+        )
+        try:
+            finalize_fence = build_fresh_finalize_fence(
+                contract=map_candidate.application_contract,
+                candidate=execution_candidate,
+                database=application_database,
+                journal=JournalStamp(
+                    transaction_id=renewal_transaction_id,
+                    operation_id=plan.operation_id,
+                    journal_sha256=renewal_basis_sha256,
+                    journal_generation=renewal_generation,
+                ),
+                prior=root_result,
+                writer_fence_expires_at=renewal_expiry,
+            )
+            renewed_plan = MapApplication300OperationPlan(
+                transaction_id=renewal_transaction_id,
+                operation_id=plan.operation_id,
+                basis_journal_sha256=renewal_basis_sha256,
+                basis_journal_generation=renewal_generation,
+                writer_fence_expires_at=renewal_expiry.isoformat(),
+                fence_sha256=finalize_fence.sha256,
+            )
+            replace_root_read_only_artifact(
+                application_paths.finalize_fence,
+                expected_old_sha256=plan.fence_sha256,
+                raw=finalize_fence.raw,
+            )
+        except MapApplication300ContractError as exc:
+            raise DeploymentContractError(
+                "application 300 finalize fence renewal failed"
+            ) from exc
+        updated = journal.with_renewed_fresh_finalize_execution_intent(
+            fresh_finalize_operation_plan=renewed_plan
+        )
+        write_pinned_runtime_rebuild_journal(journal_path, updated)
+        return updated, renewed_plan
+
     def rebuild_pinned_runtime(self) -> dict[str, Any]:
         """application-300 paired candidate에 결박된 destructive rebuild를 실행한다."""
 
@@ -4656,6 +4963,14 @@ class ComposeService:
                 candidate_transaction,
                 build=build,
                 environment_override=candidate_environment,
+            )
+            # Geo·Concierge·RustFS는 F1D가 소유하지 않는 선행 runtime이다. 후보를
+            # build하거나 journal을 쓰기 전에 frozen Compose의 read-only ``ps``로
+            # exact readiness를 증명하고, 부재/불건강이면 시작·변경 없이 닫는다.
+            self._require_services_ready(
+                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
+                transaction=candidate_transaction,
+                frozen_recovery=True,
             )
             try:
                 state_paths.journal.lstat()
@@ -4876,57 +5191,18 @@ class ComposeService:
                         write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                         journal = updated
 
-                if journal.phase == "databases_recreated":
-                    create_fresh_application_300_database(runtimes[0])
-                    self._run_pinned_runtime_rebuild_compose(
-                        [
-                            "--profile",
-                            "bootstrap",
-                            "run",
-                            "--rm",
-                            "--no-deps",
-                            "kor-travel-map-db-role-bootstrap",
-                        ],
+                journal, application_database = (
+                    self._converge_application_300_database_bootstrap(
+                        journal=journal,
+                        runtime=runtimes[0],
                         transaction=runtime_transaction,
+                        journal_path=state_paths.journal,
                     )
-                    runtime_application_identity = (
-                        read_application_300_database_identity(runtimes[0])
-                    )
-                    application_database, journal_application_database = (
-                        _application_300_database_identities(
-                            runtime_application_identity
-                        )
-                    )
-                    updated = journal.with_application_roles_ready(
-                        application_database_identity=journal_application_database
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                else:
-                    runtime_application_identity = (
-                        read_application_300_database_identity(runtimes[0])
-                    )
-                    application_database, journal_application_database = (
-                        _application_300_database_identities(
-                            runtime_application_identity
-                        )
-                    )
-                    expected_application_identity = (
-                        journal.map_application_300_execution_evidence
-                        .application_database_identity
-                    )
-                    if (
-                        expected_application_identity is None
-                        or expected_application_identity != journal_application_database
-                    ):
-                        raise DeploymentContractError(
-                            "application 300 database identity differs from journal"
-                        )
+                )
 
                 execution_candidate = _application_300_execution_candidate(
                     map_candidate
                 )
-                root_execute_allowed = journal.phase == "fresh_root_fence_ready"
                 root_plan: MapApplication300OperationPlan | None = None
                 if journal.phase == "application_roles_ready":
                     root_transaction_id = str(uuid4())
@@ -4940,6 +5216,7 @@ class ComposeService:
                             database=application_database,
                             journal=JournalStamp(
                                 transaction_id=root_transaction_id,
+                                operation_id=root_operation_id,
                                 journal_sha256=root_basis_sha256,
                                 journal_generation=journal.journal_generation,
                             ),
@@ -4991,7 +5268,6 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 if journal.phase == "fresh_root_fence_ready":
-                    root_execute_allowed = True
                     updated = journal.with_fresh_root_execution_intent(
                         fresh_root_operation_plan=root_plan
                     )
@@ -5004,27 +5280,66 @@ class ComposeService:
                             application_paths.root_result
                         )
                     except FileNotFoundError:
-                        if not root_execute_allowed:
-                            raise DeploymentContractError(
-                                "application 300 root execution result is uncertain"
-                            ) from None
-                        root_command = self._run_pinned_runtime_rebuild_compose(
-                            [
-                                "--profile",
-                                "bootstrap",
-                                "run",
-                                "--rm",
-                                "--no-deps",
-                                _MAP_APPLICATION_FRESH_300_SERVICE,
-                            ],
-                            transaction=runtime_transaction,
-                        )
-                        root_stdout = root_command.get("stdout")
-                        if not isinstance(root_stdout, str):
-                            raise DeploymentContractError(
-                                "application 300 root result output is invalid"
-                            ) from None
-                        root_result_raw = root_stdout.encode("utf-8")
+                        try:
+                            root_recover_command = (
+                                self._run_pinned_runtime_rebuild_compose(
+                                    [
+                                        "--profile",
+                                        "bootstrap",
+                                        "run",
+                                        "--rm",
+                                        "--no-deps",
+                                        _MAP_APPLICATION_FRESH_300_SERVICE,
+                                        "recover",
+                                        "--operation-id",
+                                        root_plan.operation_id,
+                                    ],
+                                    transaction=runtime_transaction,
+                                )
+                            )
+                            root_recover_stdout = root_recover_command.get("stdout")
+                            if not isinstance(root_recover_stdout, str):
+                                raise DeploymentContractError(
+                                    "application 300 root recovery output is invalid"
+                                )
+                            root_result_raw = root_recover_stdout.encode("utf-8")
+                        except DeploymentContractError as recover_error:
+                            if (
+                                inspect_application_300_bootstrap_state(runtimes[0])
+                                != "exact_complete"
+                            ):
+                                raise DeploymentContractError(
+                                    "application 300 root execution result is uncertain"
+                                ) from recover_error
+                            if _application_300_plan_expired(root_plan):
+                                journal, root_plan = (
+                                    self._renew_fresh_root_operation_plan(
+                                        journal=journal,
+                                        plan=root_plan,
+                                        map_candidate=map_candidate,
+                                        execution_candidate=execution_candidate,
+                                        application_database=application_database,
+                                        application_paths=application_paths,
+                                        journal_path=state_paths.journal,
+                                    )
+                                )
+                            root_command = self._run_pinned_runtime_rebuild_compose(
+                                [
+                                    "--profile",
+                                    "bootstrap",
+                                    "run",
+                                    "--rm",
+                                    "--no-deps",
+                                    _MAP_APPLICATION_FRESH_300_SERVICE,
+                                ],
+                                transaction=runtime_transaction,
+                            )
+                            root_stdout = root_command.get("stdout")
+                            if not isinstance(root_stdout, str):
+                                raise DeploymentContractError(
+                                    "application 300 root result output is invalid"
+                                ) from None
+                            root_result_raw = root_stdout.encode("utf-8")
                     except MapApplication300ContractError as exc:
                         raise DeploymentContractError(
                             "application 300 root result artifact is invalid"
@@ -5074,9 +5389,6 @@ class ComposeService:
                     plan=root_plan,
                 )
 
-                finalize_execute_allowed = (
-                    journal.phase == "fresh_finalize_fence_ready"
-                )
                 finalize_plan: MapApplication300OperationPlan | None = None
                 if journal.phase == "fresh_root_ready":
                     finalize_transaction_id = str(uuid4())
@@ -5090,6 +5402,7 @@ class ComposeService:
                             database=application_database,
                             journal=JournalStamp(
                                 transaction_id=finalize_transaction_id,
+                                operation_id=finalize_operation_id,
                                 journal_sha256=finalize_basis_sha256,
                                 journal_generation=journal.journal_generation,
                             ),
@@ -5143,7 +5456,6 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 if journal.phase == "fresh_finalize_fence_ready":
-                    finalize_execute_allowed = True
                     updated = journal.with_fresh_finalize_execution_intent(
                         fresh_finalize_operation_plan=finalize_plan
                     )
@@ -5156,27 +5468,70 @@ class ComposeService:
                             application_paths.finalize_result
                         )
                     except FileNotFoundError:
-                        if not finalize_execute_allowed:
-                            raise DeploymentContractError(
-                                "application 300 finalize execution result is uncertain"
-                            ) from None
-                        finalize_command = self._run_pinned_runtime_rebuild_compose(
-                            [
-                                "--profile",
-                                "bootstrap",
-                                "run",
-                                "--rm",
-                                "--no-deps",
-                                _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                            ],
-                            transaction=runtime_transaction,
-                        )
-                        finalize_stdout = finalize_command.get("stdout")
-                        if not isinstance(finalize_stdout, str):
-                            raise DeploymentContractError(
-                                "application 300 finalize result output is invalid"
-                            ) from None
-                        finalize_result_raw = finalize_stdout.encode("utf-8")
+                        try:
+                            finalize_recover_command = (
+                                self._run_pinned_runtime_rebuild_compose(
+                                    [
+                                        "--profile",
+                                        "bootstrap",
+                                        "run",
+                                        "--rm",
+                                        "--no-deps",
+                                        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+                                        "recover",
+                                        "--operation-id",
+                                        finalize_plan.operation_id,
+                                    ],
+                                    transaction=runtime_transaction,
+                                )
+                            )
+                            finalize_recover_stdout = finalize_recover_command.get(
+                                "stdout"
+                            )
+                            if not isinstance(finalize_recover_stdout, str):
+                                raise DeploymentContractError(
+                                    "application 300 finalize recovery output is invalid"
+                                )
+                            finalize_result_raw = finalize_recover_stdout.encode(
+                                "utf-8"
+                            )
+                        except DeploymentContractError as recover_error:
+                            if read_database_schema_revision(runtimes[0]) != (
+                                journal.candidate.map_application_head
+                            ):
+                                raise DeploymentContractError(
+                                    "application 300 finalize execution result is uncertain"
+                                ) from recover_error
+                            if _application_300_plan_expired(finalize_plan):
+                                journal, finalize_plan = (
+                                    self._renew_fresh_finalize_operation_plan(
+                                        journal=journal,
+                                        plan=finalize_plan,
+                                        map_candidate=map_candidate,
+                                        execution_candidate=execution_candidate,
+                                        application_database=application_database,
+                                        application_paths=application_paths,
+                                        journal_path=state_paths.journal,
+                                        root_result=root_result,
+                                    )
+                                )
+                            finalize_command = self._run_pinned_runtime_rebuild_compose(
+                                [
+                                    "--profile",
+                                    "bootstrap",
+                                    "run",
+                                    "--rm",
+                                    "--no-deps",
+                                    _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+                                ],
+                                transaction=runtime_transaction,
+                            )
+                            finalize_stdout = finalize_command.get("stdout")
+                            if not isinstance(finalize_stdout, str):
+                                raise DeploymentContractError(
+                                    "application 300 finalize result output is invalid"
+                                ) from None
+                            finalize_result_raw = finalize_stdout.encode("utf-8")
                     except MapApplication300ContractError as exc:
                         raise DeploymentContractError(
                             "application 300 finalize result artifact is invalid"
@@ -5227,6 +5582,36 @@ class ComposeService:
                     prior=root_result,
                     plan=finalize_plan,
                 )
+                finalize_recover_command = self._run_pinned_runtime_rebuild_compose(
+                    [
+                        "--profile",
+                        "bootstrap",
+                        "run",
+                        "--rm",
+                        "--no-deps",
+                        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+                        "recover",
+                        "--operation-id",
+                        finalize_plan.operation_id,
+                    ],
+                    transaction=runtime_transaction,
+                )
+                finalize_recover_stdout = finalize_recover_command.get("stdout")
+                if not isinstance(finalize_recover_stdout, str):
+                    raise DeploymentContractError(
+                        "application 300 finalize recovery output is invalid"
+                    )
+                finalize_recover_raw = finalize_recover_stdout.encode("utf-8")
+                _application_300_finalize_result(
+                    raw=finalize_recover_raw,
+                    candidate=map_candidate,
+                    prior=root_result,
+                    plan=finalize_plan,
+                )
+                if finalize_recover_raw != finalize_result_raw:
+                    raise DeploymentContractError(
+                        "application 300 finalize recovery differs from stored result"
+                    )
 
                 try:
                     application_permit = build_application_final_permit(
@@ -5308,6 +5693,7 @@ class ComposeService:
                         candidate=dagster_storage_candidate,
                         dagster_database=dagster_database,
                         application_database=application_database,
+                        operation_id=journal.transaction_id,
                     )
                     publish_root_read_only_artifact(
                         application_paths.metadata_permit,
@@ -5343,6 +5729,7 @@ class ComposeService:
                     [
                         "up",
                         "-d",
+                        "--no-deps",
                         "--wait",
                         "--wait-timeout",
                         "300",
@@ -5362,7 +5749,6 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
 
-                storage_execute_allowed = journal.phase == "map_application_ready"
                 if journal.phase == "map_application_ready":
                     updated = self._advance_pinned_runtime_journal(
                         journal,
@@ -5371,15 +5757,42 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 if journal.phase == "map_dagster_storage_intent_durable":
-                    if storage_execute_allowed:
-                        self._run_pinned_runtime_rebuild_compose(
-                            [
-                                "run",
-                                "--rm",
-                                "--no-deps",
-                                "kor-travel-map-dagster-storage-migrate",
-                            ],
-                            transaction=runtime_transaction,
+                    storage_command = self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "kor-travel-map-dagster-storage-migrate",
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    storage_stdout = storage_command.get("stdout")
+                    if not isinstance(storage_stdout, str):
+                        raise DeploymentContractError(
+                            "Map Dagster storage receipt output is invalid"
+                        )
+                    try:
+                        storage_receipt = json.loads(
+                            storage_stdout,
+                            object_pairs_hook=_json_object_without_duplicate_keys,
+                        )
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        raise DeploymentContractError(
+                            "Map Dagster storage receipt output is invalid"
+                        ) from exc
+                    if (
+                        not isinstance(storage_receipt, Mapping)
+                        or storage_receipt.get("schema")
+                        != "kor-travel-map.dagster-storage-migration.v2"
+                        or storage_receipt.get("operation_id")
+                        != journal.transaction_id
+                        or storage_receipt.get("head")
+                        != journal.candidate.map_dagster_head
+                        or storage_receipt.get("version_num")
+                        != journal.candidate.map_dagster_head
+                    ):
+                        raise DeploymentContractError(
+                            "Map Dagster storage receipt differs from journal"
                         )
                     try:
                         observed_dagster_head = read_database_schema_revision(
@@ -5427,29 +5840,34 @@ class ComposeService:
                 if updated != journal:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
-                with pinvi_bootstrap_credential_file(
-                    state_paths=state_paths,
-                    values=environment_snapshot.effective,
-                    transaction_id=journal.transaction_id,
-                    email=environment_snapshot.effective["KTDM_C6C_PINVI_ADMIN_EMAIL"],
-                    password=environment_snapshot.effective["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
-                ) as credential:
-                    self._run_pinned_runtime_rebuild_compose(
-                        [
-                            "--profile",
-                            "bootstrap",
-                            "run",
-                            "--rm",
-                            "--no-deps",
-                            "-v",
-                            f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
-                            "-e",
-                            "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE="
-                            "/run/pinvi/bootstrap-admin.json",
-                            "pinvi-admin-bootstrap",
+                if journal.phase == "map_runtime_ready":
+                    with pinvi_bootstrap_credential_file(
+                        state_paths=state_paths,
+                        values=environment_snapshot.effective,
+                        transaction_id=journal.transaction_id,
+                        email=environment_snapshot.effective[
+                            "KTDM_C6C_PINVI_ADMIN_EMAIL"
                         ],
-                        transaction=runtime_transaction,
-                    )
+                        password=environment_snapshot.effective[
+                            "KTDM_C6C_PINVI_ADMIN_PASSWORD"
+                        ],
+                    ) as credential:
+                        self._run_pinned_runtime_rebuild_compose(
+                            [
+                                "--profile",
+                                "bootstrap",
+                                "run",
+                                "--rm",
+                                "--no-deps",
+                                "-v",
+                                f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
+                                "-e",
+                                "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE="
+                                "/run/pinvi/bootstrap-admin.json",
+                                "pinvi-admin-bootstrap",
+                            ],
+                            transaction=runtime_transaction,
+                        )
                 if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
                     raise DeploymentContractError("PinVi schema differs from candidate head")
                 updated = self._advance_pinned_runtime_journal(
@@ -5459,7 +5877,15 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 self._run_pinned_runtime_rebuild_compose(
-                    ["up", "-d", "--wait", "--wait-timeout", "300", "pinvi-api"],
+                    [
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        "--wait",
+                        "--wait-timeout",
+                        "300",
+                        "pinvi-api",
+                    ],
                     transaction=runtime_transaction,
                 )
                 self._require_services_ready(
@@ -5507,6 +5933,7 @@ class ComposeService:
                     [
                         "up",
                         "-d",
+                        "--no-deps",
                         "--wait",
                         "--wait-timeout",
                         "300",

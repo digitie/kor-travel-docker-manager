@@ -80,6 +80,7 @@ def _application_database() -> ApplicationDatabaseIdentity:
 def _journal(seed: str, generation: int) -> JournalStamp:
     return JournalStamp(
         transaction_id=str(uuid4()),
+        operation_id=str(uuid4()),
         journal_sha256=_digest(seed),
         journal_generation=generation,
     )
@@ -93,6 +94,7 @@ def _root_result_raw(
     *,
     root_fence_sha256: str,
     root_transaction_id: str,
+    root_operation_id: str,
     root_journal_sha256: str,
     root_generation: int,
 ) -> bytes:
@@ -101,12 +103,14 @@ def _root_result_raw(
     database = _application_database()
     return canonical_json_bytes(
         {
-            "schema": "kor-travel-map.application-fresh-300-root.v1",
+            "schema": "kor-travel-map.application-fresh-300-root.v2",
             "outcome": "root-committed",
             "authorization": "manager-fence",
+            "operation_id": root_operation_id,
             "destination_head": "300",
             "map_candidate_commit": candidate.map_source_commit,
             "map_candidate_image_id": candidate.api_image_id,
+            "postgres_image_id": contract.postgres_image_id,
             "reference_manifest_sha256": contract.reference_manifest_sha256,
             "writer_fence_receipt_sha256": root_fence_sha256,
             "writer_fence_transaction_id": root_transaction_id,
@@ -118,6 +122,9 @@ def _root_result_raw(
                 "database_owner": database.owner,
                 "postgres_system_identifier": database.system_identifier,
             },
+            "post_source_catalog_sha256": contract.source_catalog_sha256,
+            "post_seed_sha256": contract.seed_sha256,
+            "expected_privileged_residue_sha256": contract.privileged_residue_sha256,
             "expected_destination_alembic_version_sha256": (
                 contract.destination_alembic_version_sha256
             ),
@@ -140,6 +147,7 @@ def _fresh_root() -> tuple[bytes, object]:
     raw = _root_result_raw(
         root_fence_sha256=root_fence.sha256,
         root_transaction_id=root_journal.transaction_id,
+        root_operation_id=root_journal.operation_id,
         root_journal_sha256=root_journal.journal_sha256,
         root_generation=root_journal.journal_generation,
     )
@@ -152,11 +160,13 @@ def _finalize_result_raw(
     *,
     finalize_fence_sha256: str,
     finalize_transaction_id: str,
+    finalize_operation_id: str,
     finalize_journal_sha256: str,
     finalize_generation: int,
     prior_result_sha256: str,
     prior_fence_sha256: str,
     prior_transaction_id: str,
+    prior_operation_id: str,
     prior_journal_sha256: str,
     prior_generation: int,
 ) -> bytes:
@@ -164,23 +174,37 @@ def _finalize_result_raw(
     candidate = _candidate()
     return canonical_json_bytes(
         {
-            "schema": "kor-travel-map.application-fresh-300-finalize.v3",
+            "schema": "kor-travel-map.application-fresh-300-finalize.v4",
             "outcome": "finalized",
+            "operation_id": finalize_operation_id,
             "destination_head": "300",
             "map_candidate_commit": candidate.map_source_commit,
             "map_candidate_image_id": candidate.api_image_id,
+            "postgres_image_id": contract.postgres_image_id,
             "reference_manifest_sha256": contract.reference_manifest_sha256,
             "writer_fence_receipt_sha256": finalize_fence_sha256,
             "writer_fence_transaction_id": finalize_transaction_id,
             "journal_sha256": finalize_journal_sha256,
             "journal_generation": finalize_generation,
+            "database_identity": {
+                "database_name": _application_database().name,
+                "database_oid": _application_database().oid,
+                "database_owner": _application_database().owner,
+                "postgres_system_identifier": (
+                    _application_database().system_identifier
+                ),
+            },
             "prior_fresh_migration_result_sha256": prior_result_sha256,
             "prior_fresh_migration_fence_sha256": prior_fence_sha256,
             "prior_fresh_migration_transaction_id": prior_transaction_id,
+            "prior_fresh_migration_operation_id": prior_operation_id,
             "prior_fresh_migration_journal_sha256": prior_journal_sha256,
             "prior_fresh_migration_generation": prior_generation,
             "pre_source_catalog_sha256": contract.source_catalog_sha256,
+            "pre_seed_sha256": contract.seed_sha256,
             "post_destination_catalog_sha256": contract.destination_catalog_sha256,
+            "post_seed_sha256": contract.seed_sha256,
+            "expected_privileged_residue_sha256": contract.privileged_residue_sha256,
             "post_destination_alembic_version_sha256": (
                 contract.destination_alembic_version_sha256
             ),
@@ -217,6 +241,7 @@ def test_fresh_migration_fence_matches_map_executable_field_set() -> None:
     assert set(payload) == {
         "schema",
         "transaction_id",
+        "operation_id",
         "journal_sha256",
         "journal_generation",
         "operation",
@@ -276,12 +301,14 @@ def test_fresh_finalize_fence_binds_prior_root_lineage() -> None:
     assert set(payload) == {
         "schema",
         "transaction_id",
+        "operation_id",
         "journal_sha256",
         "journal_generation",
         "operation",
         "prior_fresh_migration_result_sha256",
         "prior_fresh_migration_fence_sha256",
         "prior_fresh_migration_transaction_id",
+        "prior_fresh_migration_operation_id",
         "prior_fresh_migration_journal_sha256",
         "prior_fresh_migration_generation",
         "map_candidate_commit",
@@ -303,6 +330,7 @@ def test_fresh_finalize_fence_binds_prior_root_lineage() -> None:
         "writer_fence_expires_at",
     }
     assert payload["prior_fresh_migration_result_sha256"] == root.payload_sha256
+    assert payload["prior_fresh_migration_operation_id"] == root.operation_id
     assert payload["prior_fresh_migration_generation"] == 1
 
     with pytest.raises(MapApplication300ContractError, match="advance"):
@@ -330,11 +358,13 @@ def test_finalize_result_and_final_permit_are_exact_and_resumable() -> None:
     finalize_raw = _finalize_result_raw(
         finalize_fence_sha256=finalize_fence.sha256,
         finalize_transaction_id=finalize_journal.transaction_id,
+        finalize_operation_id=finalize_journal.operation_id,
         finalize_journal_sha256=finalize_journal.journal_sha256,
         finalize_generation=finalize_journal.journal_generation,
         prior_result_sha256=root.payload_sha256,
         prior_fence_sha256=root.writer_fence_receipt_sha256,
         prior_transaction_id=root.writer_fence_transaction_id,
+        prior_operation_id=root.operation_id,
         prior_journal_sha256=root.journal_sha256,
         prior_generation=root.journal_generation,
     )
@@ -392,11 +422,13 @@ def test_final_permit_rejects_receipt_drift() -> None:
         _finalize_result_raw(
             finalize_fence_sha256=finalize_fence.sha256,
             finalize_transaction_id=finalize_journal.transaction_id,
+            finalize_operation_id=finalize_journal.operation_id,
             finalize_journal_sha256=finalize_journal.journal_sha256,
             finalize_generation=finalize_journal.journal_generation,
             prior_result_sha256=root.payload_sha256,
             prior_fence_sha256=root.writer_fence_receipt_sha256,
             prior_transaction_id=root.writer_fence_transaction_id,
+            prior_operation_id=root.operation_id,
             prior_journal_sha256=root.journal_sha256,
             prior_generation=root.journal_generation,
         ),
@@ -435,27 +467,34 @@ def test_dagster_metadata_permit_binds_candidate_and_isolates_databases() -> Non
         login_role="ktm_dagster_metadata",
         login_role_attributes=DagsterLoginRoleAttributes(),
     )
+    operation_id = str(uuid4())
 
     permit = build_dagster_metadata_permit(
         candidate=storage_candidate,
         dagster_database=dagster_database,
         application_database=_application_database(),
+        operation_id=operation_id,
     )
     payload = validate_dagster_metadata_permit(
         permit.raw,
         expected_candidate=storage_candidate,
         application_database=_application_database(),
+        expected_operation_id=operation_id,
     )
 
     assert set(payload) == {
         "schema",
         "authority",
+        "operation_id",
         "candidate",
         "dagster_database",
         "application_database",
     }
     assert payload["authority"] == "docker-manager"
+    assert payload["operation_id"] == operation_id
     assert payload["candidate"]["paired_candidate_build_receipt_sha256"] == _digest("d")
+    assert payload["dagster_database"]["login_role_attributes"]["can_login"] is True
+    assert payload["dagster_database"]["login_role_attributes"]["inherit"] is False
     assert b"application-final-permit" not in permit.raw
 
 
@@ -476,6 +515,7 @@ def test_dagster_metadata_permit_rejects_application_database_target() -> None:
                 login_role_attributes=DagsterLoginRoleAttributes(),
             ),
             application_database=_application_database(),
+            operation_id=str(uuid4()),
         )
 
 
@@ -484,6 +524,47 @@ def test_dagster_metadata_role_must_have_no_privilege_or_membership() -> None:
         DagsterLoginRoleAttributes(superuser=True)
     with pytest.raises(MapApplication300ContractError, match="role memberships"):
         DagsterLoginRoleAttributes(granted_role_count=1)
+    with pytest.raises(MapApplication300ContractError, match="login attributes"):
+        DagsterLoginRoleAttributes(can_login=False)
+    with pytest.raises(MapApplication300ContractError, match="login attributes"):
+        DagsterLoginRoleAttributes(inherit=True)
+
+
+@pytest.mark.parametrize(("field", "value"), (("can_login", False), ("inherit", True)))
+def test_dagster_metadata_permit_rejects_login_attribute_drift(
+    field: str,
+    value: bool,
+) -> None:
+    storage_candidate = DagsterStorageCandidate(
+        dagster_image_id=_candidate().dagster_image_id,
+        paired_candidate_build_receipt_sha256=_digest("d"),
+        dagster_config_sha256=_digest("e"),
+    )
+    dagster_database = DagsterDatabaseIdentity(
+        system_identifier=_application_database().system_identifier,
+        name="kor_travel_map_dagster",
+        oid=127002,
+        owner="ktm_dagster_metadata",
+        login_role="ktm_dagster_metadata",
+        login_role_attributes=DagsterLoginRoleAttributes(),
+    )
+    operation_id = str(uuid4())
+    permit = build_dagster_metadata_permit(
+        candidate=storage_candidate,
+        dagster_database=dagster_database,
+        application_database=_application_database(),
+        operation_id=operation_id,
+    )
+    payload = json.loads(permit.raw)
+    payload["dagster_database"]["login_role_attributes"][field] = value
+
+    with pytest.raises(MapApplication300ContractError, match="login attributes"):
+        validate_dagster_metadata_permit(
+            canonical_json_bytes(payload),
+            expected_candidate=storage_candidate,
+            application_database=_application_database(),
+            expected_operation_id=operation_id,
+        )
 
 
 def test_owner_only_artifact_writer_is_idempotent_and_rejects_symlink(

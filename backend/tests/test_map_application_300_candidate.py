@@ -128,9 +128,14 @@ def _launch_contract() -> dict[str, object]:
             "forbids_application_final_permit_mount": True,
         },
         "metadata_database_identity_permit": {
-            "schema": "kor-travel-map.dagster-storage-database-permit.v1",
+            "schema": "kor-travel-map.dagster-storage-database-permit.v2",
             "path": "/run/kor-travel-map-dagster-storage-permit/permit.json",
             "production_authority": "docker-manager",
+            "operation_id_binding": {
+                "field": "operation_id",
+                "format": "canonical-lowercase-uuid",
+                "authority": "docker-manager-durable-journal",
+            },
             "canonical_dagster_home": "/opt/dagster/dagster_home",
             "canonical_storage_env": "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
             "candidate_binding_fields": [
@@ -148,6 +153,8 @@ def _launch_contract() -> dict[str, object]:
                 "login_role_attributes",
             ],
             "required_login_role_attributes": {
+                "can_login": True,
+                "inherit": False,
                 "superuser": False,
                 "create_database": False,
                 "create_role": False,

@@ -26,7 +26,7 @@ _PAIRED_SCHEMA: Final = "kor-travel-map.application-300-paired-candidate-build.v
 _API_RECEIPT_SCHEMA: Final = "kor-travel-map.application-300-candidate-build.v2"
 _APPLICATION_CONTRACT_SCHEMA: Final = "kor-travel-map.application-baseline-contract.v1"
 _LAUNCH_SCHEMA: Final = "kor-travel-map.application-300-dagster-launch.v1"
-_METADATA_PERMIT_SCHEMA: Final = "kor-travel-map.dagster-storage-database-permit.v1"
+_METADATA_PERMIT_SCHEMA: Final = "kor-travel-map.dagster-storage-database-permit.v2"
 _APPLICATION_HEAD: Final = "300"
 _MAX_RECEIPT_BYTES: Final = 64 * 1024
 
@@ -661,6 +661,7 @@ def _validate_metadata_permit(launch: Mapping[str, object]) -> None:
                 "schema",
                 "path",
                 "production_authority",
+                "operation_id_binding",
                 "canonical_dagster_home",
                 "canonical_storage_env",
                 "candidate_binding_fields",
@@ -676,6 +677,20 @@ def _validate_metadata_permit(launch: Mapping[str, object]) -> None:
     _require_exact_string(permit, "schema", _METADATA_PERMIT_SCHEMA)
     _require_exact_string(permit, "path", _METADATA_PERMIT_PATH)
     _require_exact_string(permit, "production_authority", "docker-manager")
+    operation_id_binding = _require_object(
+        permit,
+        "operation_id_binding",
+        frozenset({"field", "format", "authority"}),
+    )
+    _require_exact_string(operation_id_binding, "field", "operation_id")
+    _require_exact_string(
+        operation_id_binding, "format", "canonical-lowercase-uuid"
+    )
+    _require_exact_string(
+        operation_id_binding,
+        "authority",
+        "docker-manager-durable-journal",
+    )
     _require_exact_string(permit, "canonical_dagster_home", "/opt/dagster/dagster_home")
     _require_exact_string(permit, "canonical_storage_env", "KOR_TRAVEL_MAP_DAGSTER_PG_URL")
     _require_exact_tuple(permit, "candidate_binding_fields", _METADATA_CANDIDATE_BINDINGS)
@@ -688,6 +703,8 @@ def _validate_metadata_permit(launch: Mapping[str, object]) -> None:
         "required_login_role_attributes",
         frozenset(
             {
+                "can_login",
+                "inherit",
                 "superuser",
                 "create_database",
                 "create_role",
@@ -698,6 +715,8 @@ def _validate_metadata_permit(launch: Mapping[str, object]) -> None:
             }
         ),
     )
+    _require_bool(attributes, "can_login", True)
+    _require_bool(attributes, "inherit", False)
     for key in ("superuser", "create_database", "create_role", "replication", "bypass_rls"):
         _require_bool(attributes, key, False)
     _require_int(attributes, "granted_role_count", 0)

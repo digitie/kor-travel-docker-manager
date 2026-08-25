@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-08-25 — application `300` paired candidate와 v6/v8 rebuild 결선
+
+Map PR #1064의 exact commit `d0ced47128c2b175bcd22d7e44fa979512ccf203`을 Manager release
+pin에 고정하고 canonical pinset을
+`f95428ea5ee1f5583bada5a53ecb72cc75e7ed55560850e1032f5d3eeb9b6331`로 회전했다.
+이전 Map commit으로 만든 로컬 API·Dagster image와 paired receipt는 새 pin의 release evidence로
+재사용하지 않는다. exact `d0ced471…` sealed paired candidate는 이 Manager checkpoint 뒤 다시 build해
+동일 candidate tree, PostgreSQL image와 application head `300`을 검증한다. 그 로컬 결과도 n150
+production 증거가 아니므로 live 실행에서 다시 검증한다.
+
+Manager PR #197은 Map API·Dagster를 독립 Compose build 대상에서 제거하고 paired receipt의 exact
+image ID를 사용한다. Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 build한다. generation manifest는
+v6, pinset별 resume journal/tombstone은 v8로 올렸다. Map application fresh DB는 exact DB identity를
+고정한 뒤 root/finalize 각각 operation plan→read-only fence→durable execution intent→result 순서로
+진행하고, application final permit과 별도 Dagster metadata identity permit을 발행한다. 결과 없는
+execution intent는 같은 operation ID의 append-only DB receipt를 먼저 recover하고, receipt 부재와 exact
+pre-state가 함께 증명될 때만 안전하게 같은 operation을 재실행한다. 만료 fence도 operation ID를 보존한
+채 이 조건에서만 갱신한다. Dagster storage는 journal transaction ID를 쓰는 intent+receipt v2로 수렴하며,
+web·daemon은 `--no-deps`로 기동해 implicit 재실행을 막는다. final/committed resume은 일곱
+running container의 실제 image ID를 journal generation과 다시 대조한다.
+
+DB create/bootstrap response-loss 수렴, 외부 Geo·Concierge·RustFS read-only prerequisite,
+`pinvi-db-init` writer 배제, Dagster LOGIN/NOINHERIT exact identity도 함께 고정했다. Manager backend
+전체 결과는 `694 passed, 3 skipped`, 변경 파일 Ruff와 7개 변경 source strict mypy가 통과했다. Map의
+OpenAPI/lint/frontend gate도 통과했고 Python 3개 CI matrix는 이 기록 시점에 진행 중이다. 코드 checkpoint
+`2babcd48dd4cf35098ea0ba2ea033a19ed434921`을 PR #197 원격 branch에 push했다.
+
+사용자 결정에 따라 이전 Alembic revision·DB로 돌아가는 복구 계획은 없으며 backup/scratch restore를
+release gate로 사용하지 않는다. 다음 단계는 DB crash/resume/identity와 Compose/provenance/security의
+독립 전문 적대 리뷰 2건, Map merge 후 Manager rebase, n150 trusted install과 approved
+`rebuild-pinned --confirm`, 공개 UI login/protected/logout 및 PinVi acceptance다.
+
 ## 2026-08-24 — T-VN-41C M01~M05 role-residue RC 재고정과 host rebuild lease
 
 PostgreSQL role은 cluster 범위라 database를 새로 만들어도 M01~M05의 이미 알려진 role

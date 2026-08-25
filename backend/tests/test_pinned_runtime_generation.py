@@ -82,6 +82,17 @@ def _application_database_identity() -> MapApplication300ApplicationDatabaseIden
     )
 
 
+def _application_create_database_identity() -> (
+    MapApplication300ApplicationDatabaseIdentity
+):
+    return MapApplication300ApplicationDatabaseIdentity(
+        database_name="kor_travel_map",
+        database_oid=127001,
+        database_owner="kor_travel_map",
+        postgres_system_identifier="7474747474747474747",
+    )
+
+
 def _dagster_metadata_database_identity() -> MapApplication300DagsterMetadataDatabaseIdentity:
     return MapApplication300DagsterMetadataDatabaseIdentity(
         system_identifier="7474747474747474747",
@@ -195,15 +206,26 @@ def _copy_journal(
     )
 
 
-def _journal_with_map_application_ready() -> PinnedRuntimeRebuildJournal:
-    journal = (
+def _journal_with_application_roles_ready() -> PinnedRuntimeRebuildJournal:
+    return (
         _journal()
         .transition("reset_intent_durable")
         .transition("databases_recreated")
+        .with_application_create_intent()
+        .with_application_created(
+            application_create_database_identity=(
+                _application_create_database_identity()
+            )
+        )
+        .with_application_bootstrap_intent()
         .with_application_roles_ready(
             application_database_identity=_application_database_identity()
         )
     )
+
+
+def _journal_with_map_application_ready() -> PinnedRuntimeRebuildJournal:
+    journal = _journal_with_application_roles_ready()
     root_plan = _operation_plan(journal, seed="2")
     journal = journal.with_fresh_root_plan_ready(fresh_root_operation_plan=root_plan)
     journal = journal.with_fresh_root_fence_ready(fresh_root_operation_plan=root_plan)
@@ -441,8 +463,14 @@ def test_rebuild_journal_application_300_phases_require_evidence_methods() -> No
 
     assert journal.journal_generation == REBUILD_PHASES.index("databases_recreated")
     with pytest.raises(DeploymentContractError, match="evidence-specific"):
-        journal.transition("application_roles_ready")
+        journal.transition("application_create_intent_durable")
 
+    journal = journal.with_application_create_intent()
+    create_identity = _application_create_database_identity()
+    journal = journal.with_application_created(
+        application_create_database_identity=create_identity
+    )
+    journal = journal.with_application_bootstrap_intent()
     application_identity = _application_database_identity()
     journal = journal.with_application_roles_ready(
         application_database_identity=application_identity
@@ -538,15 +566,41 @@ def test_rebuild_journal_application_300_phases_require_evidence_methods() -> No
     assert journal.transition("map_dagster_ready").phase == "map_dagster_ready"
 
 
-def test_rebuild_journal_rejects_skipped_phase_and_operation_plan_basis_drift() -> None:
+def test_application_create_and_bootstrap_receipts_bind_one_database_identity() -> None:
     journal = (
         _journal()
         .transition("reset_intent_durable")
         .transition("databases_recreated")
-        .with_application_roles_ready(
-            application_database_identity=_application_database_identity()
-        )
+        .with_application_create_intent()
     )
+    created = journal.with_application_created(
+        application_create_database_identity=_application_create_database_identity()
+    )
+
+    restored = journal_from_payload(created.to_payload())
+    assert restored == created
+    assert restored.phase == "application_created"
+    assert (
+        restored.map_application_300_execution_evidence
+        .application_create_database_identity_sha256
+        == _application_create_database_identity().sha256()
+    )
+
+    bootstrap_intent = restored.with_application_bootstrap_intent()
+    changed_identity = MapApplication300ApplicationDatabaseIdentity(
+        database_name="kor_travel_map",
+        database_oid=127099,
+        database_owner="ktm_feature_schema_owner",
+        postgres_system_identifier="7474747474747474747",
+    )
+    with pytest.raises(DeploymentContractError, match="changed during role bootstrap"):
+        bootstrap_intent.with_application_roles_ready(
+            application_database_identity=changed_identity
+        )
+
+
+def test_rebuild_journal_rejects_skipped_phase_and_operation_plan_basis_drift() -> None:
+    journal = _journal_with_application_roles_ready()
     root_plan = _operation_plan(journal, seed="2")
 
     with pytest.raises(DeploymentContractError, match="root fence is out of order"):
@@ -597,6 +651,14 @@ def test_rebuild_journal_application_300_journal_generation_is_monotonic() -> No
     journal = journal.transition("reset_intent_durable")
     observed.append(journal.journal_generation)
     journal = journal.transition("databases_recreated")
+    observed.append(journal.journal_generation)
+    journal = journal.with_application_create_intent()
+    observed.append(journal.journal_generation)
+    journal = journal.with_application_created(
+        application_create_database_identity=_application_create_database_identity()
+    )
+    observed.append(journal.journal_generation)
+    journal = journal.with_application_bootstrap_intent()
     observed.append(journal.journal_generation)
     journal = journal.with_application_roles_ready(
         application_database_identity=_application_database_identity()
@@ -656,11 +718,7 @@ def test_rebuild_journal_application_300_rejects_missing_or_future_evidence() ->
             map_application_300_execution_evidence=MapApplication300ExecutionEvidence(),
         )
 
-    root_intent = (
-        base.with_application_roles_ready(
-            application_database_identity=_application_database_identity()
-        )
-    )
+    root_intent = _journal_with_application_roles_ready()
     root_plan = _operation_plan(root_intent, seed="2")
     root_intent = root_intent.with_fresh_root_plan_ready(
         fresh_root_operation_plan=root_plan

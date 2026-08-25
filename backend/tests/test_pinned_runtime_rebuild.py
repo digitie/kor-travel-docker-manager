@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 import pytest
 
@@ -24,8 +24,16 @@ from kor_travel_docker_manager.services.compose_service import ComposeService
 from kor_travel_docker_manager.services.database_runtime import (
     Application300DatabaseIdentity as RuntimeApplication300DatabaseIdentity,
 )
+from kor_travel_docker_manager.services.database_runtime import (
+    DagsterMetadataDatabaseIdentity as RuntimeDagsterMetadataDatabaseIdentity,
+)
+from kor_travel_docker_manager.services.database_runtime import (
+    DagsterMetadataRoleAttributes,
+    DatabaseRuntime,
+)
 from kor_travel_docker_manager.services.map_application_300 import (
     Application300Contract,
+    FreshRootResult,
 )
 from kor_travel_docker_manager.services.map_application_300_candidate import (
     MapApplication300Candidate,
@@ -148,6 +156,50 @@ def _sources_for(release: PinnedRuntimeRelease) -> PinnedRuntimeSourceMaterializ
     )
 
 
+def _paired_builder_inputs(
+    tmp_path: Path,
+) -> tuple[
+    PinnedRuntimeSourceMaterialization,
+    compose_service_module._MapApplication300Paths,
+]:
+    map_root = tmp_path / "map"
+    script = map_root / "scripts" / "build-application-300-paired-candidate.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    receipt_directory = tmp_path / "receipts"
+    receipt_directory.mkdir(mode=0o700)
+    paths = compose_service_module._MapApplication300Paths(
+        api_receipt=receipt_directory / "api.json",
+        paired_receipt=receipt_directory / "paired.json",
+        root_fence_directory=tmp_path / "fresh-root-fence",
+        finalize_fence_directory=tmp_path / "fresh-finalize-fence",
+        application_permit_directory=tmp_path / "application-final-permit",
+        metadata_permit_directory=tmp_path / "dagster-storage-permit",
+        result_directory=tmp_path / "results",
+    )
+    release = PINNED_RUNTIME_RELEASE
+    return (
+        PinnedRuntimeSourceMaterialization(
+            release=release,
+            sources=(
+                MaterializedRuntimeSource(
+                    role="map",
+                    root=map_root,
+                    revision=release.source_for("map").revision,
+                    tree="a" * 40,
+                ),
+                MaterializedRuntimeSource(
+                    role="pinvi",
+                    root=tmp_path / "pinvi",
+                    revision=release.source_for("pinvi").revision,
+                    tree="b" * 40,
+                ),
+            ),
+        ),
+        paths,
+    )
+
+
 def _map_application_300_candidate(
     sources: PinnedRuntimeSourceMaterialization | None = None,
     *,
@@ -224,12 +276,70 @@ def _application_database_identity() -> MapApplication300ApplicationDatabaseIden
     )
 
 
+def _application_create_database_identity() -> (
+    MapApplication300ApplicationDatabaseIdentity
+):
+    return MapApplication300ApplicationDatabaseIdentity(
+        database_name="kor_travel_map",
+        database_oid=127001,
+        database_owner="kor_travel_map",
+        postgres_system_identifier="7474747474747474747",
+    )
+
+
 def _runtime_application_database_identity() -> RuntimeApplication300DatabaseIdentity:
     return RuntimeApplication300DatabaseIdentity(
         database_name="kor_travel_map",
         database_oid=127001,
         database_owner="ktm_feature_schema_owner",
         postgres_system_identifier="7474747474747474747",
+    )
+
+
+def _runtime_application_create_database_identity() -> (
+    RuntimeApplication300DatabaseIdentity
+):
+    return RuntimeApplication300DatabaseIdentity(
+        database_name="kor_travel_map",
+        database_oid=127001,
+        database_owner="kor_travel_map",
+        postgres_system_identifier="7474747474747474747",
+    )
+
+
+def _runtime_application_database() -> DatabaseRuntime:
+    return DatabaseRuntime(
+        role="map_application",
+        container_name="kor-travel-map-postgres",
+        port=12700,
+        database_name="kor_travel_map",
+        owner_name="kor_travel_map",
+        admin_name="kor_travel_map",
+    )
+
+
+def _runtime_dagster_metadata_identity(
+    *,
+    can_login: bool = True,
+    inherit: bool = False,
+) -> RuntimeDagsterMetadataDatabaseIdentity:
+    return RuntimeDagsterMetadataDatabaseIdentity(
+        system_identifier="7474747474747474747",
+        name="kor_travel_map_dagster",
+        oid=127002,
+        owner="map_dagster_metadata",
+        login_role="map_dagster_metadata",
+        login_role_attributes=DagsterMetadataRoleAttributes(
+            superuser=False,
+            create_database=False,
+            create_role=False,
+            replication=False,
+            bypass_rls=False,
+            granted_role_count=0,
+            member_role_count=0,
+            can_login=can_login,
+            inherit=inherit,
+        ),
     )
 
 
@@ -284,6 +394,17 @@ def _journal_at_application_300_phase(
         return journal
     journal = journal.transition("databases_recreated")
     if phase == "databases_recreated":
+        return journal
+    journal = journal.with_application_create_intent()
+    if phase == "application_create_intent_durable":
+        return journal
+    journal = journal.with_application_created(
+        application_create_database_identity=_application_create_database_identity()
+    )
+    if phase == "application_created":
+        return journal
+    journal = journal.with_application_bootstrap_intent()
+    if phase == "application_bootstrap_intent_durable":
         return journal
     journal = journal.with_application_roles_ready(
         application_database_identity=_application_database_identity()
@@ -687,6 +808,103 @@ def test_application_300_paths_reject_a_symlinked_private_directory(
         )
 
 
+@pytest.mark.parametrize(
+    ("api_receipt_exists", "paired_receipt_exists", "verify"),
+    (
+        (False, False, False),
+        (True, False, False),
+        (True, True, True),
+    ),
+)
+def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    api_receipt_exists: bool,
+    paired_receipt_exists: bool,
+    verify: bool,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    if api_receipt_exists:
+        paths.api_receipt.write_text("{}\n", encoding="utf-8")
+    if paired_receipt_exists:
+        paths.paired_receipt.write_text("{}\n", encoding="utf-8")
+    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=0))
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    compose_service_module._run_map_application_300_paired_builder(
+        sources=sources,
+        api_image="map-api:test",
+        dagster_image="map-dagster:test",
+        paths=paths,
+    )
+
+    command = runner.call_args.args[0]
+    assert ("--verify" in command) is verify
+    assert command[command.index("--api-receipt") + 1] == str(paths.api_receipt)
+    assert command[command.index("--receipt") + 1] == str(paths.paired_receipt)
+
+
+def test_application_300_paired_builder_rejects_paired_only_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    paths.paired_receipt.write_text("{}\n", encoding="utf-8")
+    runner = Mock()
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    with pytest.raises(DeploymentContractError, match="receipt set is incomplete"):
+        compose_service_module._run_map_application_300_paired_builder(
+            sources=sources,
+            api_image="map-api:test",
+            dagster_image="map-dagster:test",
+            paths=paths,
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize("unsafe_api_receipt", ("symlink", "foreign-owner"))
+def test_application_300_api_only_unsafe_receipt_is_delegated_to_strict_builder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_api_receipt: str,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    if unsafe_api_receipt == "symlink":
+        target = tmp_path / "foreign-api.json"
+        target.write_text("{}\n", encoding="utf-8")
+        paths.api_receipt.symlink_to(target)
+    else:
+        paths.api_receipt.write_text("{}\n", encoding="utf-8")
+        paths.api_receipt.chmod(0o600)
+        original_lstat = Path.lstat
+
+        def foreign_api_lstat(path: Path) -> os.stat_result:
+            metadata = original_lstat(path)
+            if path != paths.api_receipt:
+                return metadata
+            fields = list(metadata)
+            fields[4] = os.geteuid() + 1
+            return os.stat_result(fields)
+
+        monkeypatch.setattr(Path, "lstat", foreign_api_lstat)
+    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=1))
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    with pytest.raises(DeploymentContractError, match="paired builder failed"):
+        compose_service_module._run_map_application_300_paired_builder(
+            sources=sources,
+            api_image="map-api:test",
+            dagster_image="map-dagster:test",
+            paths=paths,
+        )
+
+    runner.assert_called_once()
+    assert "--verify" not in runner.call_args.args[0]
+
+
 def test_application_300_mount_directory_rejects_nonroot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1064,7 +1282,7 @@ def test_rebuild_compose_error_names_the_failed_action(
         match=r"Compose run command failed \(exit 23; dagster_instance_migrate_failed\)",
     ) as captured:
         service._run_pinned_runtime_rebuild_compose(
-            ["run", "kor-travel-map-dagster-storage-migrate"],
+            ["run", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
             transaction=_opaque_transaction(),
         )
 
@@ -1094,6 +1312,30 @@ def test_rebuild_candidate_builds_only_manager_services_sequentially(
         ["build", runtime_service]
         for runtime_service in COMPOSE_BUILT_RUNTIME_SERVICES
     ]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ["up", "-d", "pinvi-api"],
+        ["run", "--rm", "pinvi-admin-bootstrap"],
+    ),
+)
+def test_rebuild_startup_rejects_implicit_compose_dependencies(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    runner = Mock()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match="requires --no-deps"):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments,
+            transaction=_opaque_transaction(),
+        )
+
+    runner.assert_not_called()
 
 
 def test_rebuild_never_retries_a_failed_dagster_storage_migration(
@@ -1183,7 +1425,7 @@ def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
         match=r"Compose run command failed \(exit 23\)",
     ) as captured:
         service._run_pinned_runtime_rebuild_compose(
-            ["run", "kor-travel-map-dagster-storage-migrate"],
+            ["run", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
             transaction=_opaque_transaction(),
         )
 
@@ -1418,7 +1660,7 @@ def test_rebuild_compose_error_ignores_pinvi_code_with_wrong_phase(
         match=r"Compose run command failed \(exit 1\)",
     ) as captured:
         service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "pinvi-admin-bootstrap"],
+            ["run", "--rm", "--no-deps", "pinvi-admin-bootstrap"],
             transaction=_opaque_transaction(),
         )
 
@@ -1492,6 +1734,8 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         "_validate_pinned_runtime_candidate_build_contract",
         candidate_contract,
     )
+    external_readiness = Mock(return_value=[])
+    monkeypatch.setattr(service, "_require_services_ready", external_readiness)
     monkeypatch.setattr(
         compose_service_module,
         "materialize_pinned_runtime_sources",
@@ -1581,6 +1825,11 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     ]
     paired_builder.assert_called_once()
     candidate_contract.assert_called_once()
+    external_readiness.assert_called_once_with(
+        ("rustfs", "kor-travel-geo-api", "kor-travel-concierge-api"),
+        transaction=transaction,
+        frozen_recovery=True,
+    )
     database_reset.assert_not_called()
 
 
@@ -1624,8 +1873,352 @@ def test_database_reset_is_forbidden_after_databases_recreated() -> None:
     assert compose_service_module._pinned_runtime_reset_required(journal) is False
 
 
+def test_dagster_live_identity_preserves_login_and_inherit_attestation() -> None:
+    contract_identity, journal_identity = (
+        compose_service_module._application_300_dagster_identities(
+            _runtime_dagster_metadata_identity()
+        )
+    )
+
+    assert contract_identity.login_role_attributes.can_login is True
+    assert contract_identity.login_role_attributes.inherit is False
+    assert journal_identity.login_role_attributes.can_login is True
+    assert journal_identity.login_role_attributes.inherit is False
+
+
 @pytest.mark.parametrize(
-    ("phase", "one_shot_service", "expected_error"),
+    ("can_login", "inherit"),
+    ((False, False), (True, True)),
+)
+def test_dagster_live_identity_rejects_login_attribute_drift(
+    can_login: bool,
+    inherit: bool,
+) -> None:
+    with pytest.raises(DeploymentContractError, match="identity is invalid"):
+        compose_service_module._application_300_dagster_identities(
+            _runtime_dagster_metadata_identity(
+                can_login=can_login,
+                inherit=inherit,
+            )
+        )
+
+
+def test_createdb_response_loss_converges_from_exact_virgin_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_application_300_phase(
+        "application_create_intent_durable"
+    )
+    state_reader = Mock(
+        side_effect=("virgin", "virgin", "virgin", "exact_complete")
+    )
+    identity_reader = Mock(
+        side_effect=(
+            _runtime_application_create_database_identity(),
+            _runtime_application_create_database_identity(),
+            _runtime_application_database_identity(),
+        )
+    )
+    create = Mock()
+    compose = Mock(return_value={"success": True})
+    journal_writer = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "inspect_application_300_bootstrap_state",
+        state_reader,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_application_300_database_identity",
+        identity_reader,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "create_fresh_application_300_database",
+        create,
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        journal_writer,
+    )
+
+    result, application_database = (
+        service._converge_application_300_database_bootstrap(
+            journal=journal,
+            runtime=_runtime_application_database(),
+            transaction=_opaque_transaction(),
+            journal_path=Path("/state/journal.json"),
+        )
+    )
+
+    assert result.phase == "application_roles_ready"
+    assert application_database.oid == 127001
+    create.assert_not_called()
+    compose.assert_called_once_with(
+        [
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-db-role-bootstrap",
+        ],
+        transaction=ANY,
+    )
+    assert journal_writer.call_count == 3
+
+
+def test_bootstrap_response_loss_uses_exact_result_without_reexecution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_application_300_phase(
+        "application_bootstrap_intent_durable"
+    )
+    compose = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "inspect_application_300_bootstrap_state",
+        Mock(return_value="exact_complete"),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_application_300_database_identity",
+        Mock(return_value=_runtime_application_database_identity()),
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        Mock(),
+    )
+
+    result, _ = service._converge_application_300_database_bootstrap(
+        journal=journal,
+        runtime=_runtime_application_database(),
+        transaction=_opaque_transaction(),
+        journal_path=Path("/state/journal.json"),
+    )
+
+    assert result.phase == "application_roles_ready"
+    compose.assert_not_called()
+
+
+@pytest.mark.parametrize("state", ("partial", "foreign", "absent"))
+def test_bootstrap_intent_fails_closed_on_nonconvergent_state(
+    state: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_application_300_phase(
+        "application_bootstrap_intent_durable"
+    )
+    compose = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "inspect_application_300_bootstrap_state",
+        Mock(return_value=state),
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
+
+    with pytest.raises(DeploymentContractError, match="bootstrap result is not exact"):
+        service._converge_application_300_database_bootstrap(
+            journal=journal,
+            runtime=_runtime_application_database(),
+            transaction=_opaque_transaction(),
+            journal_path=Path("/state/journal.json"),
+        )
+
+    compose.assert_not_called()
+
+
+def _application_paths(tmp_path: Path) -> Any:
+    return compose_service_module._MapApplication300Paths(
+        api_receipt=tmp_path / "api-candidate-build.json",
+        paired_receipt=tmp_path / "paired-candidate-build.json",
+        root_fence_directory=tmp_path / "fresh-root-fence",
+        finalize_fence_directory=tmp_path / "fresh-finalize-fence",
+        application_permit_directory=tmp_path / "application-final-permit",
+        metadata_permit_directory=tmp_path / "dagster-storage-permit",
+        result_directory=tmp_path / "results",
+    )
+
+
+def _fresh_root_result_for_finalize_renewal(
+    *,
+    journal: PinnedRuntimeRebuildJournal,
+    map_candidate: MapApplication300Candidate,
+    database: Any,
+) -> FreshRootResult:
+    root_plan = (
+        journal.map_application_300_execution_evidence.fresh_root_operation_plan
+    )
+    if root_plan is None:
+        raise AssertionError("root plan is missing")
+    return FreshRootResult(
+        payload_sha256=root_plan.result_sha256 or "4" * 64,
+        operation_id=root_plan.operation_id,
+        writer_fence_receipt_sha256=root_plan.fence_sha256,
+        writer_fence_transaction_id=root_plan.transaction_id,
+        journal_sha256=root_plan.basis_journal_sha256,
+        journal_generation=root_plan.basis_journal_generation,
+        map_candidate_commit=map_candidate.candidate_commit,
+        map_candidate_image_id=map_candidate.api_image_id,
+        postgres_image_id=map_candidate.postgres_image_id,
+        reference_manifest_sha256=(
+            map_candidate.application_contract.reference_manifest_sha256
+        ),
+        database_identity=database,
+        post_source_catalog_sha256=(
+            map_candidate.application_contract.source_catalog_sha256
+        ),
+        post_seed_sha256=map_candidate.application_contract.seed_sha256,
+        expected_privileged_residue_sha256=(
+            map_candidate.application_contract.privileged_residue_sha256
+        ),
+        expected_destination_alembic_version_sha256=(
+            map_candidate.application_contract.destination_alembic_version_sha256
+        ),
+        post_destination_alembic_version_sha256=(
+            map_candidate.application_contract.destination_alembic_version_sha256
+        ),
+    )
+
+
+def test_expired_root_fence_renewal_preserves_operation_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_application_300_phase("fresh_root_execution_intent")
+    plan = (
+        journal.map_application_300_execution_evidence.fresh_root_operation_plan
+    )
+    if plan is None:
+        raise AssertionError("root plan is missing")
+    map_candidate = _map_application_300_candidate()
+    application_database, _ = compose_service_module._application_300_database_identities(
+        _runtime_application_database_identity()
+    )
+    replace_artifact = Mock()
+    write_journal = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "replace_root_read_only_artifact",
+        replace_artifact,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        write_journal,
+    )
+
+    updated, renewed_plan = service._renew_fresh_root_operation_plan(
+        journal=journal,
+        plan=plan,
+        map_candidate=map_candidate,
+        execution_candidate=compose_service_module._application_300_execution_candidate(
+            map_candidate
+        ),
+        application_database=application_database,
+        application_paths=_application_paths(tmp_path),
+        journal_path=tmp_path / "journal.json",
+    )
+
+    raw = replace_artifact.call_args.kwargs["raw"]
+    fence = json.loads(raw)
+    assert renewed_plan.operation_id == plan.operation_id
+    assert renewed_plan.transaction_id != plan.transaction_id
+    assert renewed_plan.fence_sha256 != plan.fence_sha256
+    assert fence["operation_id"] == plan.operation_id
+    assert fence["transaction_id"] == renewed_plan.transaction_id
+    assert fence["writer_fence_expires_at"] == renewed_plan.writer_fence_expires_at
+    assert replace_artifact.call_args.kwargs["expected_old_sha256"] == plan.fence_sha256
+    assert updated.phase == "fresh_root_execution_intent"
+    assert updated.journal_generation == journal.journal_generation + 1
+    assert (
+        updated.map_application_300_execution_evidence.fresh_root_operation_plan
+        == renewed_plan
+    )
+    write_journal.assert_called_once_with(tmp_path / "journal.json", updated)
+
+
+def test_expired_finalize_fence_renewal_preserves_operation_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_application_300_phase("fresh_finalize_execution_intent")
+    plan = (
+        journal.map_application_300_execution_evidence
+        .fresh_finalize_operation_plan
+    )
+    if plan is None:
+        raise AssertionError("finalize plan is missing")
+    map_candidate = _map_application_300_candidate()
+    application_database, _ = compose_service_module._application_300_database_identities(
+        _runtime_application_database_identity()
+    )
+    replace_artifact = Mock()
+    write_journal = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "replace_root_read_only_artifact",
+        replace_artifact,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        write_journal,
+    )
+
+    updated, renewed_plan = service._renew_fresh_finalize_operation_plan(
+        journal=journal,
+        plan=plan,
+        map_candidate=map_candidate,
+        execution_candidate=compose_service_module._application_300_execution_candidate(
+            map_candidate
+        ),
+        application_database=application_database,
+        application_paths=_application_paths(tmp_path),
+        journal_path=tmp_path / "journal.json",
+        root_result=_fresh_root_result_for_finalize_renewal(
+            journal=journal,
+            map_candidate=map_candidate,
+            database=application_database,
+        ),
+    )
+
+    raw = replace_artifact.call_args.kwargs["raw"]
+    fence = json.loads(raw)
+    assert renewed_plan.operation_id == plan.operation_id
+    assert renewed_plan.transaction_id != plan.transaction_id
+    assert renewed_plan.fence_sha256 != plan.fence_sha256
+    assert fence["operation_id"] == plan.operation_id
+    assert fence["transaction_id"] == renewed_plan.transaction_id
+    assert fence["writer_fence_expires_at"] == renewed_plan.writer_fence_expires_at
+    assert (
+        fence["prior_fresh_migration_operation_id"]
+        == journal.map_application_300_execution_evidence
+        .fresh_root_operation_plan
+        .operation_id
+    )
+    assert replace_artifact.call_args.kwargs["expected_old_sha256"] == plan.fence_sha256
+    assert updated.phase == "fresh_finalize_execution_intent"
+    assert updated.journal_generation == journal.journal_generation + 1
+    assert (
+        updated.map_application_300_execution_evidence
+        .fresh_finalize_operation_plan
+        == renewed_plan
+    )
+    write_journal.assert_called_once_with(tmp_path / "journal.json", updated)
+
+
+@pytest.mark.parametrize(
+    ("phase", "_one_shot_service", "expected_error"),
     (
         (
             "fresh_root_execution_intent",
@@ -1647,11 +2240,16 @@ def test_database_reset_is_forbidden_after_databases_recreated() -> None:
             "pinvi-admin-bootstrap",
             "stop after map runtime startup",
         ),
+        (
+            "pinvi_schema_ready",
+            "pinvi-admin-bootstrap",
+            "stop after PinVi API startup",
+        ),
     ),
 )
 def test_application_300_one_shots_never_reexecute_after_durable_intent(
     phase: RebuildPhase,
-    one_shot_service: str,
+    _one_shot_service: str,
     expected_error: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1682,6 +2280,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         if phase in {
             "map_dagster_storage_intent_durable",
             "map_application_ready",
+            "pinvi_schema_ready",
         }
         else _journal_at_application_300_phase(phase)
     )
@@ -1696,6 +2295,12 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     database_reset = Mock()
     create_database = Mock()
     map_candidate = _map_application_300_candidate()
+    root_plan = (
+        journal.map_application_300_execution_evidence.fresh_root_operation_plan
+    )
+    finalize_plan = (
+        journal.map_application_300_execution_evidence.fresh_finalize_operation_plan
+    )
 
     def run_compose(
         arguments: list[str],
@@ -1703,7 +2308,76 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         transaction: object,
     ) -> dict[str, object]:
         del transaction
-        operations.append(tuple(arguments))
+        operation = tuple(arguments)
+        operations.append(operation)
+        if (
+            phase == "fresh_root_execution_intent"
+            and root_plan is not None
+            and operation
+            == (
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "kor-travel-map-application-fresh-300",
+                "recover",
+                "--operation-id",
+                root_plan.operation_id,
+            )
+        ):
+            raise DeploymentContractError("root receipt missing")
+        if (
+            phase == "fresh_finalize_execution_intent"
+            and finalize_plan is not None
+            and operation
+            == (
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "kor-travel-map-application-fresh-finalize",
+                "recover",
+                "--operation-id",
+                finalize_plan.operation_id,
+            )
+        ):
+            raise DeploymentContractError("finalize receipt missing")
+        if (
+            finalize_plan is not None
+            and operation
+            == (
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "kor-travel-map-application-fresh-finalize",
+                "recover",
+                "--operation-id",
+                finalize_plan.operation_id,
+            )
+        ):
+            return {"success": True, "stdout": "root-result\n"}
+        if operation == (
+            "run",
+            "--rm",
+            "--no-deps",
+            "kor-travel-map-dagster-storage-migrate",
+        ):
+            return {
+                "success": True,
+                "stdout": json.dumps(
+                    {
+                        "schema": "kor-travel-map.dagster-storage-migration.v2",
+                        "operation_id": journal.transaction_id,
+                        "head": journal.candidate.map_dagster_head,
+                        "version_num": journal.candidate.map_dagster_head,
+                    },
+                    sort_keys=True,
+                ),
+            }
         return {"success": True, "stdout": ""}
 
     monkeypatch.setattr(
@@ -1810,10 +2484,17 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         "create_fresh_application_300_database",
         create_database,
     )
+    if phase == "fresh_root_execution_intent":
+        monkeypatch.setattr(
+            compose_service_module,
+            "inspect_application_300_bootstrap_state",
+            Mock(return_value="partial"),
+        )
     if phase in {
         "fresh_finalize_execution_intent",
         "map_dagster_storage_intent_durable",
         "map_application_ready",
+        "pinvi_schema_ready",
     }:
         monkeypatch.setattr(
             compose_service_module,
@@ -1825,9 +2506,16 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             "_application_300_root_result",
             Mock(return_value=object()),
         )
+    if phase == "fresh_finalize_execution_intent":
+        monkeypatch.setattr(
+            compose_service_module,
+            "read_database_schema_revision",
+            Mock(return_value="unexpected-map-head"),
+        )
     if phase in {
         "map_dagster_storage_intent_durable",
         "map_application_ready",
+        "pinvi_schema_ready",
     }:
         monkeypatch.setattr(
             compose_service_module,
@@ -1864,16 +2552,17 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 )
             ),
         )
-        revision_heads = iter(
+        revision_values = [
+            "300",
             (
-                "300",
-                (
-                    "unexpected-dagster-head"
-                    if phase == "map_dagster_storage_intent_durable"
-                    else journal.candidate.map_dagster_head
-                ),
-            )
-        )
+                "unexpected-dagster-head"
+                if phase == "map_dagster_storage_intent_durable"
+                else journal.candidate.map_dagster_head
+            ),
+        ]
+        if phase == "pinvi_schema_ready":
+            revision_values.append(journal.candidate.pinvi_head)
+        revision_heads = iter(revision_values)
         monkeypatch.setattr(
             compose_service_module,
             "read_database_schema_revision",
@@ -1889,17 +2578,66 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 )
             ),
         )
+    elif phase == "pinvi_schema_ready":
+        credential_file = Mock()
+        monkeypatch.setattr(
+            compose_service_module,
+            "pinvi_bootstrap_credential_file",
+            credential_file,
+        )
+        monkeypatch.setattr(
+            compose_service_module,
+            "load_c6c_deployment_config_from_environment",
+            Mock(
+                side_effect=DeploymentContractError(
+                    "stop after PinVi API startup"
+                )
+            ),
+        )
 
     with pytest.raises(DeploymentContractError, match=expected_error):
         service.rebuild_pinned_runtime()
 
-    assert all(one_shot_service not in operation for operation in operations)
+    root_execution_command = (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-application-fresh-300",
+    )
+    finalize_execution_command = (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-application-fresh-finalize",
+    )
     storage_command = (
         "run",
         "--rm",
         "--no-deps",
         "kor-travel-map-dagster-storage-migrate",
     )
+    if phase == "fresh_root_execution_intent":
+        assert root_plan is not None
+        assert (
+            *root_execution_command,
+            "recover",
+            "--operation-id",
+            root_plan.operation_id,
+        ) in operations
+        assert root_execution_command not in operations
+    elif phase == "fresh_finalize_execution_intent":
+        assert finalize_plan is not None
+        assert (
+            *finalize_execution_command,
+            "recover",
+            "--operation-id",
+            finalize_plan.operation_id,
+        ) in operations
+        assert finalize_execution_command not in operations
     if phase == "map_application_ready":
         assert operations.count(storage_command) == 1
         assert (
@@ -1914,7 +2652,24 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             "kor-travel-map-dagster-daemon",
         ) in operations
     elif phase == "map_dagster_storage_intent_durable":
+        assert operations.count(storage_command) == 1
+    elif phase == "pinvi_schema_ready":
         assert operations.count(storage_command) == 0
+        credential_file.assert_not_called()
+        assert (
+            "up",
+            "-d",
+            "--no-deps",
+            "--wait",
+            "--wait-timeout",
+            "300",
+            "pinvi-api",
+        ) in operations
+    assert all(
+        "--no-deps" in operation
+        for operation in operations
+        if "up" in operation or "run" in operation
+    )
     database_reset.assert_not_called()
     create_database.assert_not_called()
 
@@ -1945,6 +2700,32 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
         service._retire_pinned_runtime_oneshot_writers(transaction=transaction)
 
     assert [command[2] for command in operations] == ["rm", "ps"]
+    expected_writers = (
+        "pinvi-db-init",
+        "kor-travel-map-dagster-db-init",
+        "kor-travel-map-db-role-bootstrap",
+        "kor-travel-map-application-fresh-300",
+        "kor-travel-map-application-fresh-finalize",
+        "kor-travel-map-dagster-storage-migrate",
+        "pinvi-admin-bootstrap",
+    )
+    assert operations[0] == (
+        "--profile",
+        "bootstrap",
+        "rm",
+        "-f",
+        "-s",
+        *expected_writers,
+    )
+    assert operations[1] == (
+        "--profile",
+        "bootstrap",
+        "ps",
+        "--all",
+        "--format",
+        "json",
+        *expected_writers,
+    )
 
 
 def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
@@ -2008,6 +2789,7 @@ def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
     monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
     monkeypatch.setattr(service, "_capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
     monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
+    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
     monkeypatch.setattr(
         compose_service_module,
         "materialize_pinned_runtime_sources",
@@ -2126,6 +2908,7 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
     )
     monkeypatch.setattr(service, "_capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
     monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
+    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
     monkeypatch.setattr(
         compose_service_module,
         "materialize_pinned_runtime_sources",

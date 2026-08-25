@@ -422,7 +422,7 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 같거나 그 일부여도 허용하지만, Map UI의 exact wiring/runtime equality와 Map UI 밖 username 환경변수 이름
 금지는 유지한다.
 
-### 7.4 F1D v5 비운영 runtime 재구축
+### 7.4 F1D application `300` 비운영 runtime 재구축
 
 새 Map·PinVi generation과 새 schema를 만드는 mutation은 격리된
 `rehearsal/rebuildable` 환경의 다음 명령 하나다.
@@ -432,11 +432,24 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   pinvi-pair rebuild-pinned --confirm
 ```
 
-이 명령은 tracked Map·PinVi exact source pin으로 일곱 service의 candidate image와 세 schema head를
-먼저 attest한 뒤, Map application·Map Dagster·PinVi database를 drop/create하고 migration·one-shot
-bootstrap·서비스 readiness·F1J smoke를 순서대로 검증한다. 실패와 재실행 모두 기존 DB, image,
-manifest를 복원하지 않으며 새 database를 다시 만든다. source/ETL 재적재는 committed 뒤의 별도
-workflow다.
+이 명령은 tracked Map·PinVi exact source pin과 Map application-300 paired candidate로 일곱 runtime
+image와 세 schema head를 먼저 attest한다. Map API·Dagster는 Map sealed builder가 같은 commit/tree에서
+만든 exact image ID를 쓰고, Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 build한다. 그 뒤 Map
+application·Map Dagster·PinVi database를 drop/create한다.
+
+Map application은 과거 Alembic chain이나 restore를 replay하지 않는다. fresh DB identity를 고정하고
+root/finalize operation plan·fence·durable intent·result를 순서대로 검증한 뒤 application final permit을
+발행해 head `300`을 만든다. Dagster metadata는 별도 DB identity와 metadata permit을 사용하고 storage
+migration은 journal transaction ID를 operation ID로 쓰는 DB intent+receipt로 수렴한다. root/finalize의
+결과 없는 intent 재개는 append-only DB receipt를 먼저 복구하고, receipt 부재와 exact pre-state를 함께
+증명할 때만 같은 operation을 안전하게 재실행한다. Dagster 재개도 같은 operation ID로 receipt를
+복구·완결하며, web·daemon은 `--no-deps`로 기동해 migration을 암묵적으로 다시 실행하지 않는다. 이후
+PinVi bootstrap·서비스 readiness·F1J smoke를 순서대로 검증한다.
+
+manifest는 v6, pinset별 resume journal/tombstone은 v8이다. final/committed resume은 일곱 실행 중
+container의 실제 image ID와 세 DB head를 generation에 다시 exact 대조한다. 실패와 재실행 모두 기존 DB,
+image, manifest를 복원하지 않는다. backup·scratch restore·이전 revision rollback은 release gate가 아니다.
+source/ETL 재적재는 committed 뒤의 별도 workflow다.
 
 rebuildable 환경에서는 cache-target integration이 완전히 inert여야 한다. Map principal registry는 `[]`,
 PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer ID는 Compose 기본값이어야 한다.
@@ -613,15 +626,15 @@ image ID가 그 container가 실행 중인 image이며, Map 네 image가 동일�
 - rollback pair가 복원 가능하다는 것 — shape만 유효하다(`rollback_images_present`로 별도 보고).
 - 기록한 revision이 published branch에서 도달 가능하다는 것.
 - capture 반환 이후에도 runtime이 일치한다는 것 — mutation lock을 잡고 있는 시점의 관측이다.
-- v5 pinned generation manifest가 이 runtime을 서술한다는 것 — 두 기록이 일치하는지
-  **보고만** 하고 v5 파일은 건드리지 않는다.
+- v6 pinned generation manifest가 이 runtime을 서술한다는 것 — 두 기록이 일치하는지
+  **보고만** 하고 v6 파일은 건드리지 않는다.
 
-**v5 pinned generation 대조**: `pinned-runtime-generation-v5.json`이 있으면 읽어 다섯
+**v6 pinned generation 대조**: `pinned-runtime-generation-v6.json`이 있으면 읽어 다섯
 image ID와 두 revision을 관측값과 맞춘다. 결과는 receipt의 `pinned_generation_agrees`
 (`true`/`false`/`null`)와 `pinned_generation_divergent_roles`, 그리고 stdout의
-`pinned_generation_agrees=...` 한 줄로 나온다. **불일치는 거부 사유가 아니다** — prod Map
-재배포의 sanctioned 경로가 host compose 직접 실행이라 v5가 뒤처지는 것이 정상 상태일 수
-있다. 파일이 없거나 읽을 수 없으면 `null`(unknown)이며, 부모 디렉터리를 만들지 않는다.
+`pinned_generation_agrees=...` 한 줄로 나온다. **불일치는 거부 사유가 아니다** — capture는
+별도 production runtime을 관측할 뿐 rebuild authority를 변경하지 않기 때문이다. 파일이 없거나
+읽을 수 없으면 `null`(unknown)이며, 부모 디렉터리를 만들지 않는다.
 
 **교체 증거**: receipt의 `previous_manifest_sha256`·`previous_active`(9필드 identity)·
 `previous_recorded_at`이 무엇을 덮어썼는지 남긴다. 런북은 `--json` **없이** 부르므로 이

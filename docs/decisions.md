@@ -1586,7 +1586,7 @@ Docker, Compose, DB, runtime, image build를 실행하지 않는다.
 
 ## ADR-34: 비운영 deployment는 완전한 runtime generation과 새 schema로 재구축한다
 
-- 상태: accepted
+- 상태: partially superseded (application-300 candidate·manifest/journal은 ADR-39, 2026-08-25)
 - 날짜: 2026-08-06
 - 결정자: human, Codex
 
@@ -2392,3 +2392,79 @@ state root 규칙은 여전히 새로 만들지 않는다. 1차 개정이 "소�
   실행 중 image의 revision을 갖고 있지 않다 — 값을 넣는 것만으로는 부족하고 두 checkout이
   실행 중 revision을 실제로 포함해야 한다.
 - (open) 위 §미결의 정본 파일 선택.
+
+## ADR-39: Map application은 paired candidate와 fresh `300` 증거로만 재구축한다
+
+- 상태: accepted
+- 날짜: 2026-08-25
+- 결정자: 사용자, Codex
+- 관련: ADR-34, ADR-37, Map ADR-090, Map application baseline `300`
+
+### 컨텍스트
+
+ADR-34의 F1D는 Manager가 일곱 runtime image를 모두 build하고 Map Alembic chain을 replay하는
+모델이었다. Map은 서비스 전 단계에서 이전 revision 복구와 in-place upgrade 정책을 폐기하고,
+기존 application revision `0236`을 새 baseline `300`으로 치환했다. Map API와 Dagster는 같은
+commit/tree·PostgreSQL image·application contract를 증명하는 paired candidate를 이미 만든다.
+Manager가 같은 두 image를 다시 독립 build하거나 source head만으로 application schema를 추정하면
+candidate receipt와 실제 실행 image 사이에 두 번째 authority가 생긴다.
+
+fresh DB에서 root/finalize one-shot을 호출하는 경계도 일반 migration보다 강한 crash 의미론이
+필요하다. 실행 intent를 durable하게 남긴 뒤 응답을 잃으면 작업이 성공했는지 알 수 없으므로,
+결과 없이 같은 command를 재발행하면 비멱등 DB 효과를 중복 실행할 수 있다. 반대로 결과·DB identity·
+permit을 journal 밖에만 두면 재개가 다른 DB 또는 다른 candidate를 정상 결과로 오인할 수 있다.
+
+### 결정
+
+Map release authority는 exact Map commit과 그 commit의 sealed builder가 만든 API·Dagster paired
+candidate receipt다. Manager는 Map API/Dagster를 다시 Compose build하지 않는다. Manager build 대상은
+Map UI와 PinVi API·Web·Dagster 네 개이며, 일곱 runtime generation은 다음을 exact하게 결박한다.
+
+- Map API image ID, Map Dagster image ID와 paired receipt SHA-256
+- Map API·Dagster의 동일 commit/tree와 Dagster web·daemon의 동일 image ID
+- paired application contract의 head `300`과 exact PostgreSQL image ID
+- Map UI와 PinVi 세 image의 source revision
+- Map application·Dagster metadata·PinVi schema head와 pinset digest
+
+generation manifest는 v6, pinset별 rebuild journal과 tombstone은 v8을 사용한다. 구 v5 manifest와
+v7 journal은 실행 authority가 아니며 typed allowlist로만 퇴역한다.
+
+세 DB를 새로 만든 뒤 Map application DB의 system identifier·name·OID·owner·login role을 읽어 journal에
+고정한다. DB 생성과 role bootstrap은 각각 durable intent와 exact state attestation으로 response loss를
+수렴한다. root와 finalize 각각은 operation plan을 fsync하고 root-owned read-only fence를 발행한 뒤
+execution intent를 fsync한다. Map은 같은 operation ID의 intent와 append-only receipt를 DB transaction에
+함께 기록한다. host result가 없으면 DB receipt를 먼저 복구하고, receipt가 없으면서 exact pre-state인
+경우에만 같은 operation을 다시 호출한다. 만료 fence도 이 조건에서 operation ID를 보존한 채 새 fence
+transaction으로 갱신한다. `partial`·`foreign`·identity drift는 fail-close한다.
+
+finalize 결과 뒤 application final permit을 발행한다. Dagster metadata DB는 application DB와 별도의
+system identifier·name·OID·owner·login role을 검증하고, paired Dagster image/config/receipt와 함께
+metadata permit에 결박한다. permit mount directory는 root-owned `0755`, 파일은 `0444`로 하여 non-root
+runtime이 읽을 수 있게 하고, receipt/result directory는 root-owned `0700`으로 유지한다. Map Dagster
+storage migration은 journal transaction ID를 operation ID로 쓰는 DB intent+receipt v2다. durable intent
+재개에서도 같은 command를 실행해 기존 receipt를 복구하거나 미완료 intent를 완결하며, exact head와
+operation ID가 다르면 거부한다. 성공 뒤 Dagster web·daemon은 `--no-deps`로 기동해 Compose
+`depends_on`이 migration을 다시 실행하지 못하게 한다.
+
+committed 또는 final resume은 일곱 running container의 실제 Docker image ID와 journal generation을
+다시 exact 대조한다. 이 작업에는 backup, scratch restore, 이전 revision rollback이 없다. 데이터가
+필요하면 head `300`에 맞는 source/ETL을 별도 실행한다.
+
+### 근거
+
+- paired receipt를 유일 Map API/Dagster image authority로 쓰면 같은 source를 두 번 build해 생기는
+  provenance 분기를 제거한다.
+- DB identity와 operation/result SHA를 journal에 묶으면 다른 fresh DB나 stale artifact 재사용을 막는다.
+- DB intent와 append-only receipt를 같은 transaction에 두고 recover-first로 재개하면 response-loss에서
+  이미 완료된 효과를 반복하지 않으면서, receipt 부재가 증명된 exact pre-state는 안전하게 수렴한다.
+- application permit과 metadata permit을 분리하면 Dagster storage가 application DB 권한을 갖거나 두 DB
+  identity가 섞이는 것을 구조적으로 거부할 수 있다.
+- `--no-deps` 기동과 exact running image 검증은 one-shot 재실행과 tag drift를 각각 차단한다.
+
+### 결과
+
+- n150 rebuild는 이전 `0236` 또는 중간 migration을 복원하지 않고 fresh application head `300`만 만든다.
+- manifest v6/journal v8은 candidate, DB identity, fence, result, permit과 실제 runtime image를 하나의
+  재개 가능한 generation으로 기록한다.
+- receipt가 없고 pre-state도 exact하지 않은 execution intent, image/receipt/DB identity drift,
+  non-root가 읽을 수 없는 permit, implicit storage 재실행은 모두 runtime 기동 전에 fail-close한다.
