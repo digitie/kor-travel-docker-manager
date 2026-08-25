@@ -885,8 +885,10 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
     sources, paths = _paired_builder_inputs(tmp_path)
     if api_receipt_exists:
         paths.api_receipt.write_text("{}\n", encoding="utf-8")
+        paths.api_receipt.chmod(0o600)
     if paired_receipt_exists:
         paths.paired_receipt.write_text("{}\n", encoding="utf-8")
+        paths.paired_receipt.chmod(0o600)
     runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=0))
     monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
 
@@ -895,6 +897,7 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
         api_image="map-api:test",
         dagster_image="map-dagster:test",
         paths=paths,
+        resume_journal=verify,
     )
 
     command = runner.call_args.args[0]
@@ -918,6 +921,7 @@ def test_application_300_paired_builder_rejects_paired_only_receipt(
             api_image="map-api:test",
             dagster_image="map-dagster:test",
             paths=paths,
+            resume_journal=True,
         )
 
     runner.assert_not_called()
@@ -957,9 +961,34 @@ def test_application_300_api_only_unsafe_receipt_is_delegated_to_strict_builder(
             api_image="map-api:test",
             dagster_image="map-dagster:test",
             paths=paths,
+            resume_journal=True,
         )
 
     runner.assert_called_once()
+    assert "--verify" not in runner.call_args.args[0]
+
+
+def test_application_300_prejournal_receipts_are_discarded_before_fresh_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    for receipt_path in (paths.api_receipt, paths.paired_receipt):
+        receipt_path.write_text("{}\n", encoding="utf-8")
+        receipt_path.chmod(0o600)
+    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=0))
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    compose_service_module._run_map_application_300_paired_builder(
+        sources=sources,
+        api_image="map-api:test",
+        dagster_image="map-dagster:test",
+        paths=paths,
+        resume_journal=False,
+    )
+
+    assert not paths.api_receipt.exists()
+    assert not paths.paired_receipt.exists()
     assert "--verify" not in runner.call_args.args[0]
 
 

@@ -42,6 +42,9 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 - n150 candidate static inspection에서 Map Dagster image entrypoint가 `head` 정적 명령을 거부하는
   source/Manager launch contract 불일치가 추가로 발견됐다. 고정 absolute entrypoint와 `--network none`을
   사용하는 Manager 수정 PR을 먼저 통과시킨다.
+- durable rebuild journal이 없는 pre-journal receipt는 다음 실행에서 `--verify` 입력으로 사용하지 않는다.
+  Manager는 정확한 두 receipt를 안전하게 폐기한 뒤 sealed builder를 fresh build mode로 호출한다. journal이
+  있는 crash resume에서만 두 receipt를 `--verify`로 재검증한다.
 - 로컬 sealed paired build: 새 Map pin `cc81081f…` 기준 Manager PR #201 merge 후 생성한 후보는
   static inspection에서 폐기하고, PR #202 merge 뒤 새 paired image·receipt를 다시 만든다. 이전 후보의 image·receipt는
   release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.

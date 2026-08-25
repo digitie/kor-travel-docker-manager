@@ -16,7 +16,10 @@ Manager static launch invocation의 계약 불일치다.
 PR #202는 Map Dagster에만 고정 absolute entrypoint를 전달하고 네트워크를 계속 차단한다. 실패한
 candidate image·receipt는 production evidence로 재사용하지 않으며, PR merge 후 새 paired artifact를
 만든 뒤에만 rebuild를 재개한다. 이번 실패에서도 fresh schema reset, 기존 DB/revision 복구, 행 데이터
-검증은 수행하지 않았다.
+검증은 수행하지 않았다. 추가 적대 리뷰에서 pre-journal receipt가 다음 실행에 `--verify`로 재사용될 수
+있음을 찾아 PR #202 후속 수정으로 보완했다. durable journal이 없는 실행은 기존 API·paired receipt를
+정확한 owner-only 경로에서 폐기한 뒤 sealed builder를 fresh build mode로 호출하고, journal이 있는
+crash resume에서만 receipt `--verify`를 허용한다.
 
 ## 2026-08-26 — n150 rebuild 전 source contract 차단을 사전 수정
 
