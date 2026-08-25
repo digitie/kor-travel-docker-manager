@@ -5142,6 +5142,8 @@ class ComposeService:
                         "run",
                         "--rm",
                         "--no-deps",
+                        "--env",
+                        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
                         "kor-travel-map-db-role-bootstrap",
                     ],
                     transaction=transaction,

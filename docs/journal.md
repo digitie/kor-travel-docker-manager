@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-26 — n150 `300` 재개에서 Map role-bootstrap 환경 계약 보완(PR #203)
+
+PR #202 merge 후 trusted Manager를 설치하고 approved `ktdctl pinvi-pair rebuild-pinned --confirm`을
+재개했다. Map paired candidate·receipt 검증과 새 application database 생성은 통과했지만, Map 정본
+`database-credential-preflight.sh`가 요구하는 `KOR_TRAVEL_MAP_POSTGRES_PASSWORD`가 Manager의
+role-bootstrap one-shot 환경에 전달되지 않아 bootstrap 단계에서 종료됐다. 이는 데이터나 `300`
+스키마 무결성 문제가 아니라 Manager–Map source contract 누락이다.
+
+PR #203은 Compose 원문과 frozen journal source hash를 바꾸지 않고, Manager의 role-bootstrap one-shot에
+기존 배포 환경의 `KOR_TRAVEL_MAP_POSTGRES_PASSWORD`를 `--env`로 명시 전달하도록 보완한다. credential
+값 자체나 행 데이터는 코드·문서에 기록하지 않았다. 집중 Compose contract 32개와 bootstrap command
+회귀 테스트가 통과했으며, PR merge 후 trusted install을 갱신해 같은 durable journal과
+고정 paired receipt로 재개한다. 사용자 승인 정책에 따라 일반 row 내용·건수·업무상 무결성 검증, 이전
+revision 복구, 기존 DB restore는 수행하지 않는다. 필요 시 fresh `300` schema에 source/ETL을 처음부터
+재적재한다.
+
 ## 2026-08-26 — Map Dagster static inspection entrypoint 차단
 
 Manager PR #201 merge 후 trusted install을 갱신하고 approved `rebuild-pinned --confirm`을 다시 실행했다.
