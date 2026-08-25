@@ -614,6 +614,7 @@ def _application_300_bootstrap_attestation_query(runtime: DatabaseRuntime) -> st
         )
     )
     application_acl_roles = (
+        _MAP_SCHEMA_OWNER,
         "ktm_feature_state_procedure_owner",
         "ktm_feature_audit_writer",
         "ktm_curation_command_owner",
