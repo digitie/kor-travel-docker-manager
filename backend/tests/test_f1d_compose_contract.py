@@ -211,6 +211,16 @@ def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
     with pytest.raises(DeploymentContractError, match="immutable image entrypoint"):
         validate_runtime_secret_isolation(broken, config)
 
+    broken = deepcopy(runtime_configs)
+    broken[config.map_container]["Cmd"] = ["./docker/api-entrypoint.sh"]
+    with pytest.raises(DeploymentContractError, match="immutable image entrypoint"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = deepcopy(runtime_configs)
+    del broken[config.map_container]["Cmd"]
+    with pytest.raises(DeploymentContractError, match="immutable image entrypoint"):
+        validate_runtime_secret_isolation(broken, config)
+
 
 def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
     assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[

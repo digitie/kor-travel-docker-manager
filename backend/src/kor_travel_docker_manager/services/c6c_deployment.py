@@ -6017,9 +6017,11 @@ def validate_runtime_secret_isolation(
                     "Map API runtime includes forbidden provider environment"
                 )
             if (
-                runtime_config.get("Entrypoint")
+                "Entrypoint" not in runtime_config
+                or "Cmd" not in runtime_config
+                or runtime_config["Entrypoint"]
                 != _MAP_API_IMMUTABLE_ENTRYPOINT
-                or runtime_config.get("Cmd") != _MAP_API_IMMUTABLE_COMMAND
+                or runtime_config["Cmd"] != _MAP_API_IMMUTABLE_COMMAND
             ):
                 raise DeploymentContractError(
                     "Map API runtime must use the immutable image entrypoint and command"
