@@ -14,7 +14,9 @@ PinVi 구동에 필요한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS
 
 C6c production은 일반 runtime mutation을 차단하고, host-wide lock을 소유하는 pinned
 workflow만 Map·PinVi 일곱 runtime을 같은 generation으로 다룬다. 비운영 환경의 재구축은
-`pinvi-pair rebuild-pinned --confirm`으로 제한되며, `pinvi-pair capture`는 읽기 전용 관측기다.
+`pinvi-pair rebuild-pinned --confirm`으로 제한된다. application `300`의 current authority는
+v6 pinned generation과 v8 rebuild journal뿐이다. 설치본에 `pinvi-pair capture`가 보이면
+과거 v4 명령이므로 실행하지 말고, 정확한 merged trusted Manager release를 먼저 설치한다.
 독립적인 `ktdctl db-backup`과 `GET /api/v1/backups`는 전용 PostgreSQL backup primitive다.
 
 Manager는 Map API의 destructive/features route를 production에서 literal `true`로 명시 승인하고,

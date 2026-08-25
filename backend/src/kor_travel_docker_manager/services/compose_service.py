@@ -20,7 +20,6 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
 from dotenv import dotenv_values
-
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_APPLICATION_FRESH_300_SERVICE,
@@ -1278,18 +1277,6 @@ def _map_source_environment_contract_version(
     return contract_version
 
 
-def get_compatible_pair_manifest_path(
-    environment: Mapping[str, str] | None = None,
-) -> str:
-    """Manifest 경로는 lock 안에서 전달된 frozen environment로만 해석한다."""
-
-    if environment is None:
-        raise DeploymentContractError(
-            "compatible-pair manifest path requires a frozen environment snapshot"
-        )
-    return c6c_state_paths(environment)[0]
-
-
 def get_c6c_deployment_lock_path() -> str:
     return _capture_c6c_deployment_lock_snapshot().lock_path
 
@@ -2273,7 +2260,11 @@ _MAX_C6C_WAIT_TIMEOUT_SECONDS = 3600
 
 
 def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
-    """`deploy`/`capture`가 공유하는 `wait_timeout` 검증. lock 진입 전에 호출해야 한다."""
+    """legacy C6c wait-timeout 입력의 범위를 검증한다.
+
+    current `rebuild-pinned` CLI는 이 helper를 호출하지 않는다. 남은 내부 caller도
+    lock 진입 전에 유효 범위를 확인해야 한다.
+    """
     if not isinstance(wait_timeout, int) or isinstance(wait_timeout, bool):
         raise DeploymentContractError("wait_timeout must be an int")
     if not (

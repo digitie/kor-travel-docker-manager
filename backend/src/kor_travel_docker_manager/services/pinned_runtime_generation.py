@@ -283,10 +283,9 @@ def pinned_runtime_state_root(values: Mapping[str, str]) -> Path:
     """frozen environment만으로 project별 pinned runtime state root를 계산한다.
 
     ``pinned_runtime_state_paths``와 같은 규칙을 쓰되 mode 게이트
-    (``require_rebuildable_mode``)와 pinset 인자를 요구하지 않는다. 파기형이 아닌
-    읽기 전용 호출자 — 예를 들어 ``rebuild-pinned``가 쓸어가는 root를 피해야 하는
-    ``pinvi-pair capture`` — 가 같은 정본을 참조하기 위한 진입점이다. 디렉터리를
-    만들지 않고 존재도 요구하지 않는다.
+    (``require_rebuildable_mode``)와 pinset 인자를 요구하지 않는다. v4 legacy artifact의
+    tombstone 경로나 현재 v6/v8 receipt를 읽기 전용으로 검사하는 호출자가 같은 정본을
+    참조하기 위한 진입점이다. 디렉터리를 만들지 않고 존재도 요구하지 않는다.
     """
 
     project_name = values.get("COMPOSE_PROJECT_NAME", "").strip().lower()

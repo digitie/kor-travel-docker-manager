@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-
+from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     DeploymentContractError,
@@ -978,6 +978,18 @@ def test_legacy_tombstone_receipt_is_fsynced_before_allowlisted_unlink(
         candidate=_generation(),
         recorded_at="2026-08-06T00:00:00+00:00",
     ) == receipt
+
+
+def test_v4_manifest_api_is_absent_and_only_tombstoned() -> None:
+    for name in (
+        "CompatibleImagePair",
+        "CompatiblePairManifest",
+        "parse_pair_manifest",
+        "initial_pair_manifest",
+        "write_pair_manifest",
+        "restore_pair_manifest_snapshot",
+    ):
+        assert not hasattr(c6c_deployment, name)
 
 
 def test_legacy_tombstone_rejects_artifact_that_appears_after_receipt(

@@ -11,7 +11,6 @@
 
 | 태스크 ID | 작업 항목 | 상태 | 다음 완료 조건 |
 |:---|:---|:---:|:---|
-| **T-C7-CAPTURE-OPS** | 읽기 전용 `pinvi-pair capture` 운영 프로비저닝 정리 | `[/]` | n150 trusted Manager 설치본의 read-only contract 확인, checkout env와 manifest 정본 하나를 확정하고 최초 capture/attestation 기록 |
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 
@@ -23,15 +22,6 @@
 4. push 전에 staged file·일반 비밀·프로젝트별 민감 문자열 감사를 실행한다.
 5. 완료된 항목은 이 파일에 `[x]`로 쌓지 않고 즉시 `tasks-done.md`로 옮긴다.
 6. n150 배포와 Playwright live E2E는 `docs/deploy-runbook.local.md`를 정본으로 수행한다.
-
-## T-C7-CAPTURE-OPS — 읽기 전용 capture 운영 정리
-
-코드 구현은 PR #184에서 merge됐다. 남은 것은 n150 운영 프로비저닝뿐이며 destructive rebuild와 섞지 않는다.
-
-- [ ] Map·PinVi clean checkout env와 C7 manifest 정본 경로를 하나로 확정한 뒤, trusted 설치본에서
-  `capture_contract=pair-capture-v1` read-only capture를 실행한다. n150 `--help` 계약 사전 확인은
-  `journal.md`에 기록했다.
-- [ ] 최초 read-only capture 뒤 C7 runner attestation을 다시 만들고 결과를 기록한다.
 
 ## MAP-LIVE-FOLLOWUP — Map/PinVi cross-repo live consumer acceptance
 
