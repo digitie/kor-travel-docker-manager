@@ -37,6 +37,9 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   확인했다.
 - [x] PinVi exact pair에서 logout 뒤 `/admin/features` protected route 재진입이 `/admin/login`으로
   재차단되는지 확인했다. 이 검증은 `/auth/logout` 204를 확인하고 application row를 쓰지 않았다.
+- [ ] PinVi #477 squash merge의 exact source와 새 pinset을 candidate build·attestation으로
+  반영한다. 기존 H300 generation은 이전 pinset의 immutable 이력으로 보존하며, 새 candidate가
+  committed되기 전에는 #477 runtime 반영 증거로 사용하지 않는다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 

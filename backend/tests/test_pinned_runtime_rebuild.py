@@ -15,6 +15,7 @@ from typing import Any, cast
 from unittest.mock import ANY, Mock, call
 
 import pytest
+
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -74,7 +75,6 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     CANONICAL_RUNTIME_SOURCE_URLS,
     PINNED_RUNTIME_RELEASE,
-    PINVI_PINNED_RUNTIME_SOURCE,
     PinnedRuntimeRelease,
     PinnedRuntimeSourceSpec,
     canonical_pinset_sha256,
@@ -567,14 +567,14 @@ def _journal_at_runtime_phase(phase: RebuildPhase) -> PinnedRuntimeRebuildJourna
     return journal
 
 
-def _release_with_map_revision(map_revision: str) -> PinnedRuntimeRelease:
+def _release_with_pinvi_revision(pinvi_revision: str) -> PinnedRuntimeRelease:
     sources = (
+        PINNED_RUNTIME_RELEASE.source_for("map"),
         PinnedRuntimeSourceSpec(
-            role="map",
-            canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["map"],
-            revision=map_revision,
+            role="pinvi",
+            canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["pinvi"],
+            revision=pinvi_revision,
         ),
-        PINVI_PINNED_RUNTIME_SOURCE,
     )
     return PinnedRuntimeRelease(
         version=5,
@@ -3480,8 +3480,8 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
     }
-    previous_release = _release_with_map_revision("d" * 40)
-    next_release = _release_with_map_revision("e" * 40)
+    previous_release = _release_with_pinvi_revision("d" * 40)
+    next_release = _release_with_pinvi_revision("e" * 40)
     previous_sources = _sources_for(previous_release)
     previous_candidate = _candidate_generation(previous_sources)
     previous_journal = new_candidate_journal(
@@ -3594,7 +3594,7 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
         pinset_sha256=next_release.pinset_sha256,
     )
     assert read_rebuild_journal(previous_paths.journal) == previous_journal
-    assert read_rebuild_journal(next_paths.journal).candidate.map_source_revision == "e" * 40
+    assert read_rebuild_journal(next_paths.journal).candidate.pinvi_source_revision == "e" * 40
     assert compose_calls[0] == ("build", *COMPOSE_BUILT_RUNTIME_SERVICES)
     assert compose_calls[1][-2:] == ("pinvi-admin-bootstrap", "head")
 
