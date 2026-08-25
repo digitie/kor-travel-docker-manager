@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-25 — Map c95fbb01 exact pair 재고정과 application `300` 데이터 gate 퇴역
+
+Map PR #1064의 통합 fixture·teardown 보정이 반영된 exact commit
+`c95fbb019ebaa618ead2be86d4023d5d918fce66`으로 Manager의 application-300 source authority를
+회전했다. PinVi source는 유지하고 v5 canonical pinset은
+`e7eccb61e7d0c0faa5920bd497d812f2847ea778e972da1773cfb55948c20b2c`로 다시 계산했다. 이전
+Map/pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않는다.
+
+사용자 승인 정책에 따라 일반 application row의 내용·건수·업무상 데이터 무결성은 application `300`
+release gate에서 제외했다. 필요한 데이터는 fresh schema에 source/ETL로 처음부터 재적재할 수 있으며,
+이전 revision이나 기존 DB 복구는 수행하지 않는다. receipt는 schema/bootstrap·provenance 범위만
+증명한다.
+
+---
+
 ## 2026-08-25 — Map LO residue gate와 v5 release pin 회전
 
 Map PR #1064의 최신 exact commit `7d44b98b3d0671329e9a6711187091d95cf960cf`가 fresh-root

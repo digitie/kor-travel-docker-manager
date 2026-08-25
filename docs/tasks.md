@@ -12,7 +12,6 @@
 | 태스크 ID | 작업 항목 | 상태 | 다음 완료 조건 |
 |:---|:---|:---:|:---|
 | **T-VN-41-F1D-H300** | Map application fresh `300` paired candidate와 Manager destructive rebuild 완결 | `[/]` | 두 전문 적대 리뷰 GO, Map PR #1064 CI green·merge, Manager PR #197 rebase, n150 trusted install·`rebuild-pinned --confirm`, live UI/PinVi acceptance, 문서·PR merge |
-| **T-VN-41-F1D-D** | fresh `300` 데이터 재적재 뒤 데이터 의존 수용 검증 | `[ ]` | source/ETL 재적재 후 고정 feature/curation을 쓰는 Map 상세·지도와 PinVi 변경 E2E 기록. 이전 revision restore는 범위 밖 |
 | **T-C7-CAPTURE-OPS** | 읽기 전용 `pinvi-pair capture` 운영 프로비저닝 정리 | `[/]` | n150 trusted Manager 설치본의 read-only contract 확인, checkout env와 manifest 정본 하나를 확정하고 최초 capture/attestation 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[ ]` | Geo application 첫 대용량 backup 실측과 off-box 사본 자동화. Alembic downgrade/이전 revision restore는 범위 밖 |
 
@@ -34,10 +33,10 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 
 현재 원격 후보:
 
-- Map PR #1064: `7d44b98b3d0671329e9a6711187091d95cf960cf`
+- Map PR #1064: `c95fbb019ebaa618ead2be86d4023d5d918fce66`
 - Manager PR #197: root typed probe 소비·committed fast-path hardening checkpoint 진행 중
-- release pinset: `a75c2f1a4ef569c65177061573ad4cf418798a2556dca02052dd87cae54b6936`
-- 로컬 sealed paired build: 새 Map pin `7d44b98b…` 기준 재생성 대기. 이전 pin의 image·receipt는
+- release pinset: `e7eccb61e7d0c0faa5920bd497d812f2847ea778e972da1773cfb55948c20b2c`
+- 로컬 sealed paired build: 새 Map pin `c95fbb01…` 기준 재생성 대기. 이전 pin의 image·receipt는
   release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
 
 남은 작업:
@@ -58,15 +57,6 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 - [ ] 공개 Manager UI와 Map UI에서 실제 브라우저 login→protected view→logout→재차단을 확인하고,
   PinVi data-independent acceptance 및 WebSocket 재연결 loop 부재를 확인한다.
 - [ ] live evidence를 `journal.md`와 `tasks-done.md`에 기록하고 Map/Manager PR을 CI green 상태로 merge한다.
-
-## T-VN-41-F1D-D — 데이터 재적재 후 수용 검증
-
-application `300` rebuild는 schema와 runtime generation만 소유하며 sample data, backup restore, data migration을
-수행하지 않는다. 이전 Alembic revision이나 과거 DB로 되돌리는 계획은 없다.
-
-- [ ] 별도 source/ETL 작업이 fresh `300` DB를 채운 뒤 고정 curated/feature ID를 정한다.
-- [ ] Map 관리자 상세·지도 landmark와 PinVi 변경 흐름의 데이터 의존 E2E를 실행한다.
-- [ ] 결과와 재적재 source revision을 기록하고 완료 이력으로 옮긴다.
 
 ## T-C7-CAPTURE-OPS — 읽기 전용 capture 운영 정리
 
