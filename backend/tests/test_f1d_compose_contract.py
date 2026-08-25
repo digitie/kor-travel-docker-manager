@@ -1180,6 +1180,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert map_bootstrap_environment["KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_ENABLED"] == "true"
     assert {
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
