@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-08-26 — Manager 대시보드를 kor-travel-geo-ui 디자인 시스템(보라 톤)으로 재정렬
+
+Manager 프론트엔드의 매크로구조를 상단 topbar 단일 페이지에서 `kor-travel-geo-ui`와 동일한
+좌측 고정 사이드바 Workbench 구조(작은 화면에서는 접근 가능한 drawer)로 전환했다. 신규
+`AppShell` 컴포넌트가 브랜드 마크·단일 "대시보드" nav·사이드바 footer(빠른 명령/인증
+설정/백업 이력/로그아웃)를 담당하며, `DashboardClient`는 기존 `.ops-overview`/`.ops-ledger`
+등 콘텐츠 마크업을 그대로 `AppShell`의 children으로 옮겼다. geo design.md의 "별도 풋터 없이
+사이드바 로그아웃만 둔다" 규칙에 따라 콘텐츠 하단 풋터 바는 제거했다.
+
+`tokens.css`의 OKLCH 팔레트는 hue만 회전시켜(neutral 255→295, ink 258→298, brand 260→300)
+보라 계열로 재조정했고 `info`는 원래 hue(260, 파랑)를 유지해 brand와 분리했다. radius(0.375/
+0.625rem→0.5/0.75rem)·duration(120/220/420ms)·easing·z-index 토큰은 geo와 동일한 값으로
+맞췄다. 폰트는 next/font로 로드하던 IBM Plex Sans/Space Grotesk를 걷어내고 geo와 동일한
+시스템 폴백 스택("Pretendard Variable"/"Noto Sans KR"/"Apple SD Gothic Neo")으로 교체했으며,
+사이드바·이력/상태 라벨·테이블 헤더·KPI 숫자의 font-family를 mono→display로 바꾸고
+font-weight/letter-spacing을 geo의 실제 수치(예: page-title h1 weight 760, nav-title 750,
+panel-header 740)에 맞춰 정렬했다. `ktdctl db-backup` 히스토리 API 라우트는 이번 변경으로
+사이드바에 다시 노출되며 실제로 정상 응답하는 것을 확인했다(v5 rebuild 때의 404 회귀는 이미
+해소돼 있었음).
+
+WSL에서 `next build`/`eslint`/`tsc --noEmit`을 모두 통과시켰고, 로컬 QA 전용 admin
+credential로 백엔드를 띄워 데스크톱·390px 모바일 drawer·명령 팔레트·백업 이력 모달을
+Playwright로 직접 확인했다. n150 배포와 PR 병합 전 적대적 리뷰 1건을 별도로 수행한다.
+
+---
+
 ## 2026-08-26 — BACKUP-FOLLOWUP Geo standalone 대용량 backup 1회 실측
 
 n150에서 `ktdctl db-backup create geo --timeout 14400`을 한 번 실행했다. Geo application

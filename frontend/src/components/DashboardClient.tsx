@@ -2,15 +2,15 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { 
-  Database, 
-  FolderGit2, 
-  Play, 
-  Square, 
-  RotateCw, 
-  Terminal, 
-  Activity, 
-  RefreshCw, 
+import {
+  Database,
+  FolderGit2,
+  Play,
+  Square,
+  RotateCw,
+  Terminal,
+  Activity,
+  RefreshCw,
   ShieldAlert,
   Settings,
   X,
@@ -20,10 +20,7 @@ import {
   BarChart3,
   Gauge,
   ServerCog,
-  Boxes,
-  KeyRound,
-  LogOut,
-  Command
+  Boxes
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { useForm } from 'react-hook-form';
@@ -32,6 +29,7 @@ import AdminSettingsPanel from './AdminSettingsPanel';
 import BackupHistoryPanel from './BackupHistoryPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
+import AppShell from './layout/AppShell';
 import {
   ApiError,
   AuthMe,
@@ -846,51 +844,21 @@ export default function DashboardClient() {
   }
 
   return (
-    <div className="ops-shell flex flex-col select-none">
-      <header className="ops-topbar">
-        <div className="ops-topbar__inner">
-          <div className="ops-brand select-text">
-            <div aria-hidden="true" className="ops-brand__mark">KT</div>
-            <div className="min-w-0">
-              <p className="ops-eyebrow">Kor Travel / infrastructure control</p>
-              <h1 className="ops-title">인프라 서비스 컨트롤</h1>
-            </div>
-          </div>
-
-          <div className="ops-topbar__actions flex items-center gap-2 select-none shrink-0">
-            <button
-              aria-label="빠른 명령 열기"
-              className="ops-command"
-              onClick={() => setIsCommandPaletteOpen(true)}
-              type="button"
-            >
-              <Command className="w-4 h-4 text-brand" />
-              빠른 명령
-              <kbd className="hidden sm:inline font-mono text-[10px] text-secondary">⌘K</kbd>
-            </button>
-            <button type="button" onClick={() => setIsAdminSettingsOpen(true)} className="ops-button">
-              <KeyRound className="w-4 h-4 text-brand" />
-              인증 설정
-            </button>
-            <button type="button" onClick={() => setIsBackupHistoryOpen(true)} className="ops-button">
-              <Database className="w-4 h-4 text-brand" />
-              백업 이력
-            </button>
-            <button
-              type="button"
-              onClick={() => logoutMutation.mutate()}
-              disabled={logoutMutation.isPending}
-              className="ops-button"
-            >
-              <LogOut className="w-4 h-4" />
-              로그아웃
-            </button>
-          </div>
+    <AppShell
+      isLoggingOut={logoutMutation.isPending}
+      onLogout={() => logoutMutation.mutate()}
+      onOpenAdminSettings={() => setIsAdminSettingsOpen(true)}
+      onOpenBackupHistory={() => setIsBackupHistoryOpen(true)}
+      onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+    >
+      <div className="page-head">
+        <div className="page-title">
+          <p className="ops-eyebrow">Kor Travel / infrastructure control</p>
+          <h1 className="ops-title">인프라 서비스 컨트롤</h1>
         </div>
-      </header>
+      </div>
 
-      <main className="ops-workbench select-text">
-        <section className="ops-overview" aria-labelledby="service-summary-title">
+      <section className="ops-overview" aria-labelledby="service-summary-title">
           <div className="ops-summary">
             <div className="ops-summary__header">
               <div>
@@ -1168,11 +1136,6 @@ export default function DashboardClient() {
               </table>
           )}
         </section>
-        <footer className="ops-footer">
-          <span>Kor Travel Docker Manager · 컨테이너 상태 원장</span>
-          <span>{isWsConnected ? 'WebSocket 수신' : 'HTTP 폴백 조회'}</span>
-        </footer>
-      </main>
 
       {isCommandPaletteOpen && (
         <div
@@ -1802,6 +1765,6 @@ export default function DashboardClient() {
           onClose={closeDetailModal}
         />
       )}
-    </div>
+    </AppShell>
   );
 }
