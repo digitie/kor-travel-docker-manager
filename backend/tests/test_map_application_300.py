@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 from datetime import UTC, datetime, timedelta
@@ -34,6 +35,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     parse_fresh_root_result,
     publish_root_read_only_artifact,
     read_owner_only_artifact,
+    read_root_read_only_artifact,
     sha256_bytes,
     validate_application_final_permit,
     validate_dagster_metadata_permit,
@@ -779,3 +781,53 @@ def test_fixed_artifact_publisher_requires_root(
 
     with pytest.raises(MapApplication300ContractError, match="requires root"):
         publish_root_read_only_artifact(tmp_path / "permit.json", b"{}")
+
+
+def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """reconciliation은 owner-only 0600 결과가 아닌 root-owned 0444 fence를 읽는다."""
+
+    target_directory = tmp_path / "fixed"
+    target_directory.mkdir(mode=0o755)
+    target_directory.chmod(0o755)
+    target = target_directory / "fence.json"
+    raw = b'{"schema":"fixed"}\n'
+    target.write_bytes(raw)
+    target.chmod(0o444)
+
+    module = __import__(
+        "kor_travel_docker_manager.services.map_application_300",
+        fromlist=["map_application_300"],
+    )
+    original_lstat = Path.lstat
+    original_fstat = module.os.fstat
+
+    def root_owned(metadata: os.stat_result) -> os.stat_result:
+        mode = stat.S_IFMT(metadata.st_mode) | (
+            0o755 if stat.S_ISDIR(metadata.st_mode) else 0o444
+        )
+        return os.stat_result(
+            (
+                mode,
+                metadata.st_ino,
+                metadata.st_dev,
+                metadata.st_nlink,
+                0,
+                metadata.st_gid,
+                metadata.st_size,
+                metadata.st_atime,
+                metadata.st_mtime,
+                metadata.st_ctime,
+            )
+        )
+
+    monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        Path, "lstat", lambda path: root_owned(original_lstat(path))
+    )
+    monkeypatch.setattr(
+        module.os, "fstat", lambda descriptor: root_owned(original_fstat(descriptor))
+    )
+
+    assert read_root_read_only_artifact(target) == raw

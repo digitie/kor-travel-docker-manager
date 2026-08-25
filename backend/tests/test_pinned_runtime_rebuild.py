@@ -2452,7 +2452,7 @@ def test_expired_root_fence_reconciliation_converges_file_first_crash(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "read_owner_only_artifact",
+        "read_root_read_only_artifact",
         Mock(return_value=renewed_raw),
     )
     write_journal = Mock()
@@ -2583,7 +2583,7 @@ def test_expired_finalize_fence_reconciliation_converges_file_first_crash(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "read_owner_only_artifact",
+        "read_root_read_only_artifact",
         Mock(return_value=renewed_raw),
     )
     write_journal = Mock()

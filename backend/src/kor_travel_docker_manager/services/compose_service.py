@@ -107,6 +107,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     parse_fresh_root_result,
     publish_root_read_only_artifact,
     read_owner_only_artifact,
+    read_root_read_only_artifact,
     replace_root_read_only_artifact,
     write_owner_only_artifact,
 )
@@ -5150,7 +5151,7 @@ class ComposeService:
         except DeploymentContractError:
             return journal, plan
         try:
-            current_fence_raw = read_owner_only_artifact(application_paths.root_fence)
+            current_fence_raw = read_root_read_only_artifact(application_paths.root_fence)
         except (FileNotFoundError, MapApplication300ContractError):
             # Let the typed probe inspect the same mounted artifact.  A missing or
             # unsafe file can never satisfy the old-plan binding, so this remains
@@ -5278,7 +5279,7 @@ class ComposeService:
         except DeploymentContractError:
             return journal, plan
         try:
-            current_fence_raw = read_owner_only_artifact(
+            current_fence_raw = read_root_read_only_artifact(
                 application_paths.finalize_fence
             )
         except (FileNotFoundError, MapApplication300ContractError):

@@ -24,7 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 MAP_APPLICATION_300_SOURCE_COMMIT: Final = (
-    "a7c950c215c981333eb6a46f607235aa422e88f4"
+    "6b9bd98fa2d4de573718c4bed0d978deadc7daf8"
 )
 APPLICATION_HEAD: Final = "300"
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
@@ -2288,6 +2288,14 @@ def _read_existing_fixed_artifact(path: Path, *, max_size: int = 64 * 1024) -> b
     if len(observed) > max_size:
         raise MapApplication300ContractError("fixed artifact is too large")
     return observed
+
+
+def read_root_read_only_artifact(path: Path) -> bytes:
+    """Read a root-owned mode ``0444`` fence/permit artifact safely."""
+
+    _require_artifact_path(path)
+    _require_fixed_artifact_directory(path.parent)
+    return _read_existing_fixed_artifact(path)
 
 
 def _safe_unlink(path: Path) -> None:
