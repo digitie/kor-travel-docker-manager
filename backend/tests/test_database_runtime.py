@@ -402,6 +402,7 @@ def test_application_300_exact_bootstrap_attestation_binds_full_role_graph(
     assert "pg_prewarm:x_extension" in query
     assert "fuzzystrmatch:public" in query
     assert "expected_acl(schema_name, role_name, privilege_type, is_grantable)" in query
+    assert "('feature', 'ktm_feature_schema_owner', 'CREATE', FALSE)" in query
     assert "('x_extension', 'ktm_feature_schema_owner', 'CREATE', FALSE)" in query
     assert "privilege.privilege_type, privilege.is_grantable" in query
     assert "search_path=public, x_extension" in query
