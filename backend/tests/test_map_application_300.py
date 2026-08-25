@@ -30,6 +30,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     json_artifact,
     parse_fresh_finalize_missing_receipt,
     parse_fresh_finalize_result,
+    parse_fresh_root_missing_receipt,
     parse_fresh_root_result,
     publish_root_read_only_artifact,
     read_owner_only_artifact,
@@ -156,6 +157,52 @@ def _fresh_root() -> tuple[bytes, object]:
     return raw, parse_fresh_root_result(
         raw, contract=_contract(), candidate=_candidate()
     )
+
+
+def _root_missing_receipt_raw(
+    *,
+    root_fence_sha256: str,
+    root_transaction_id: str,
+    root_operation_id: str,
+    root_journal_sha256: str,
+    root_generation: int,
+) -> bytes:
+    contract = _contract()
+    candidate = _candidate()
+    database = _application_database()
+    return canonical_json_bytes(
+        {
+            "schema": (
+                "kor-travel-map.application-fresh-300-"
+                "root-missing-receipt.v1"
+            ),
+            "outcome": "receipt-missing-exact-prestate",
+            "operation_id": root_operation_id,
+            "destination_head": "300",
+            "map_candidate_commit": candidate.map_source_commit,
+            "map_candidate_image_id": candidate.api_image_id,
+            "postgres_image_id": contract.postgres_image_id,
+            "reference_manifest_sha256": contract.reference_manifest_sha256,
+            "writer_fence_receipt_sha256": root_fence_sha256,
+            "writer_fence_transaction_id": root_transaction_id,
+            "journal_sha256": root_journal_sha256,
+            "journal_generation": root_generation,
+            "database_identity": {
+                "database_name": database.name,
+                "database_oid": database.oid,
+                "database_owner": database.owner,
+                "postgres_system_identifier": database.system_identifier,
+            },
+            "pre_root_state_schema": (
+                "kor-travel-map.application-fresh-300-pre-root.v1"
+            ),
+            "expected_post_source_catalog_sha256": contract.source_catalog_sha256,
+            "expected_post_seed_sha256": contract.seed_sha256,
+            "expected_post_destination_alembic_version_sha256": (
+                contract.destination_alembic_version_sha256
+            ),
+        }
+    ) + b"\n"
 
 
 def _finalize_result_raw(
@@ -315,6 +362,47 @@ def test_root_result_parser_rejects_extra_fields_and_binds_database() -> None:
     assert root.payload_sha256 == sha256_bytes(root_raw)
     with pytest.raises(MapApplication300ContractError, match="field set"):
         parse_fresh_root_result(
+            canonical_json_bytes(payload) + b"\n",
+            contract=_contract(),
+            candidate=_candidate(),
+        )
+
+
+def test_root_missing_receipt_parser_is_exactly_bound_to_prestate() -> None:
+    journal = _journal("c", 1)
+    fence = build_fresh_migration_fence(
+        contract=_contract(),
+        candidate=_candidate(),
+        database=_application_database(),
+        journal=journal,
+        writer_fence_expires_at=_expiry(),
+    )
+    proof = parse_fresh_root_missing_receipt(
+        _root_missing_receipt_raw(
+            root_fence_sha256=fence.sha256,
+            root_transaction_id=journal.transaction_id,
+            root_operation_id=journal.operation_id,
+            root_journal_sha256=journal.journal_sha256,
+            root_generation=journal.journal_generation,
+        ),
+        contract=_contract(),
+        candidate=_candidate(),
+    )
+    assert proof.operation_id == journal.operation_id
+    assert proof.database_identity == _application_database()
+
+    payload = json.loads(
+        _root_missing_receipt_raw(
+            root_fence_sha256=fence.sha256,
+            root_transaction_id=journal.transaction_id,
+            root_operation_id=journal.operation_id,
+            root_journal_sha256=journal.journal_sha256,
+            root_generation=journal.journal_generation,
+        )
+    )
+    payload["expected_post_seed_sha256"] = _digest("f")
+    with pytest.raises(MapApplication300ContractError, match="candidate prestate"):
+        parse_fresh_root_missing_receipt(
             canonical_json_bytes(payload) + b"\n",
             contract=_contract(),
             candidate=_candidate(),

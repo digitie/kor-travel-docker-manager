@@ -93,6 +93,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     DagsterLoginRoleAttributes,
     DagsterStorageCandidate,
     FreshFinalizeResult,
+    FreshRootMissingReceipt,
     FreshRootResult,
     JournalStamp,
     MapApplication300ContractError,
@@ -102,6 +103,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     build_fresh_migration_fence,
     parse_fresh_finalize_missing_receipt,
     parse_fresh_finalize_result,
+    parse_fresh_root_missing_receipt,
     parse_fresh_root_result,
     publish_root_read_only_artifact,
     read_owner_only_artifact,
@@ -2659,6 +2661,37 @@ def _application_300_root_result(
         or result.database_identity != database
     ):
         raise DeploymentContractError("application 300 root result differs from plan")
+    return result
+
+
+def _application_300_root_missing_receipt(
+    *,
+    raw: bytes,
+    candidate: MapApplication300Candidate,
+    database: ApplicationDatabaseIdentity,
+    plan: MapApplication300OperationPlan,
+) -> FreshRootMissingReceipt:
+    try:
+        result = parse_fresh_root_missing_receipt(
+            raw,
+            contract=candidate.application_contract,
+            candidate=_application_300_execution_candidate(candidate),
+        )
+    except MapApplication300ContractError as exc:
+        raise DeploymentContractError(
+            "application 300 root missing-receipt proof is invalid"
+        ) from exc
+    if (
+        result.operation_id != plan.operation_id
+        or result.writer_fence_receipt_sha256 != plan.fence_sha256
+        or result.writer_fence_transaction_id != plan.transaction_id
+        or result.journal_sha256 != plan.basis_journal_sha256
+        or result.journal_generation != plan.basis_journal_generation
+        or result.database_identity != database
+    ):
+        raise DeploymentContractError(
+            "application 300 root missing-receipt proof differs from plan"
+        )
     return result
 
 
@@ -5347,6 +5380,25 @@ class ComposeService:
                     transaction=runtime_transaction,
                     map_candidate=map_candidate,
                 )
+                validate_map_postgres_runtime_secret_isolation(
+                    self._inspect_container_runtime_config(
+                        str(postgres_records[0]["Name"])
+                    )
+                )
+                validate_pinvi_postgres_runtime_secret_isolation(
+                    self._inspect_container_runtime_config(
+                        str(postgres_records[1]["Name"])
+                    )
+                )
+                self._retire_pinned_runtime_oneshot_writers(
+                    transaction=runtime_transaction,
+                )
+                reconcile_orphaned_pinvi_bootstrap_credentials(
+                    state_paths=state_paths,
+                    values=environment_snapshot.effective,
+                    global_mutation_lock_held=True,
+                    all_one_shot_containers_absent=True,
+                )
                 self._assert_pinned_runtime_database_heads(runtimes, journal=journal)
                 metadata_user = runtime_transaction.environment.effective.get(
                     "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
@@ -5599,14 +5651,42 @@ class ComposeService:
                                     "application 300 root recovery output is invalid"
                                 )
                             root_result_raw = root_recover_stdout.encode("utf-8")
-                        except DeploymentContractError as recover_error:
-                            if (
-                                inspect_application_300_bootstrap_state(runtimes[0])
-                                != "exact_complete"
-                            ):
+                        except DeploymentContractError:
+                            try:
+                                missing_probe_command = (
+                                    self._run_pinned_runtime_rebuild_compose(
+                                        [
+                                            "--profile",
+                                            "bootstrap",
+                                            "run",
+                                            "--rm",
+                                            "--no-deps",
+                                            _MAP_APPLICATION_FRESH_300_SERVICE,
+                                            "probe-missing",
+                                            "--operation-id",
+                                            root_plan.operation_id,
+                                        ],
+                                        transaction=runtime_transaction,
+                                    )
+                                )
+                                missing_probe_stdout = missing_probe_command.get(
+                                    "stdout"
+                                )
+                                if not isinstance(missing_probe_stdout, str):
+                                    raise DeploymentContractError(
+                                        "application 300 root missing-receipt "
+                                        "proof output is invalid"
+                                    )
+                                _application_300_root_missing_receipt(
+                                    raw=missing_probe_stdout.encode("utf-8"),
+                                    candidate=map_candidate,
+                                    database=application_database,
+                                    plan=root_plan,
+                                )
+                            except DeploymentContractError as probe_error:
                                 raise DeploymentContractError(
                                     "application 300 root execution result is uncertain"
-                                ) from recover_error
+                                ) from probe_error
                             if _application_300_plan_expired(root_plan):
                                 journal, root_plan = (
                                     self._renew_fresh_root_operation_plan(

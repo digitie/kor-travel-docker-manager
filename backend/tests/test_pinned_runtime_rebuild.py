@@ -2610,6 +2610,65 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         ):
             raise DeploymentContractError("root receipt missing")
         if (
+            phase == "fresh_root_execution_intent"
+            and root_plan is not None
+            and operation
+            == (
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "kor-travel-map-application-fresh-300",
+                "probe-missing",
+                "--operation-id",
+                root_plan.operation_id,
+            )
+        ):
+            runtime_identity = _runtime_application_database_identity()
+            contract = map_candidate.application_contract
+            return {
+                "success": True,
+                "stdout": json.dumps(
+                    {
+                        "schema": (
+                            "kor-travel-map.application-fresh-300-"
+                            "root-missing-receipt.v1"
+                        ),
+                        "outcome": "receipt-missing-exact-prestate",
+                        "operation_id": root_plan.operation_id,
+                        "destination_head": "300",
+                        "map_candidate_commit": map_candidate.candidate_commit,
+                        "map_candidate_image_id": map_candidate.api_image_id,
+                        "postgres_image_id": map_candidate.postgres_image_id,
+                        "reference_manifest_sha256": contract.reference_manifest_sha256,
+                        "writer_fence_receipt_sha256": root_plan.fence_sha256,
+                        "writer_fence_transaction_id": root_plan.transaction_id,
+                        "journal_sha256": root_plan.basis_journal_sha256,
+                        "journal_generation": root_plan.basis_journal_generation,
+                        "database_identity": {
+                            "database_name": runtime_identity.database_name,
+                            "database_oid": runtime_identity.database_oid,
+                            "database_owner": runtime_identity.database_owner,
+                            "postgres_system_identifier": (
+                                runtime_identity.postgres_system_identifier
+                            ),
+                        },
+                        "pre_root_state_schema": (
+                            "kor-travel-map.application-fresh-300-pre-root.v1"
+                        ),
+                        "expected_post_source_catalog_sha256": (
+                            contract.source_catalog_sha256
+                        ),
+                        "expected_post_seed_sha256": contract.seed_sha256,
+                        "expected_post_destination_alembic_version_sha256": (
+                            contract.destination_alembic_version_sha256
+                        ),
+                    },
+                    sort_keys=True,
+                ),
+            }
+        if (
             phase == "fresh_finalize_execution_intent"
             and finalize_plan is not None
             and operation
@@ -2908,6 +2967,12 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         assert (
             *root_execution_command,
             "recover",
+            "--operation-id",
+            root_plan.operation_id,
+        ) in operations
+        assert (
+            *root_execution_command,
+            "probe-missing",
             "--operation-id",
             root_plan.operation_id,
         ) in operations

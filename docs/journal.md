@@ -4,10 +4,30 @@
 
 ---
 
+## 2026-08-25 — fresh-root receipt-missing proof 소비 및 committed fast-path 재검증
+
+Map `a7c950c215c981333eb6a46f607235aa422e88f4`의 root `probe-missing` wire를 Manager strict
+parser에 연결했다. root `recover`가 실패한 경우에도 typed `receipt-missing-exact-prestate`가
+operation·fence·journal·DB identity·candidate/contract digest·exact pre-root schema를 모두
+결박하지 않으면 fence 갱신과 root 재실행을 허용하지 않는다. 기존 bootstrap 상태 문자열 fallback은
+제거했다.
+
+committed resume에서도 두 PostgreSQL container의 실제 secret-file-only runtime config를 재검증하고,
+정확한 seven one-shot writer 부재 및 project-global orphan bootstrap credential sweep을 다시 수행한
+뒤에만 성공을 반환하도록 보강했다. release pinset은 Map source와 함께
+`6a035e257aefc0cc20d1e37f9e08882c9335e196a1af9a223d85fb286a00ed50`으로 회전했다.
+
+- Map/Manager root·finalize·release 회귀: `95 passed` (Manager focus set)
+- 변경 source Ruff 통과
+- 완료된 `T-VN-40` 잔여 항목은 active tasks에 없음
+- 두 `uv.lock`은 열람·수정·stage하지 않음
+
+---
+
 ## 2026-08-25 — v8 세 DB identity·crash residue 최종 hardening checkpoint
 
-Map exact commit을 `e6234b149fe663e9b19ef3290d9566db4d4c447d`, release pinset을
-`4053ec3d3269eda4b1faafa13b5b6839aebbd18dd81b7a337edcd63e22873008`로 회전했다. 이전
+Map exact commit을 `a7c950c215c981333eb6a46f607235aa422e88f4`, release pinset을
+`6a035e257aefc0cc20d1e37f9e08882c9335e196a1af9a223d85fb286a00ed50`로 회전했다. 이전
 pinset의 image·receipt·journal은 새 release evidence로 재사용하지 않는다.
 
 두 전문 적대 리뷰의 finding에 따라 다음 경계를 보강했다.

@@ -24,7 +24,7 @@ from typing import Any, Final
 from uuid import UUID
 
 MAP_APPLICATION_300_SOURCE_COMMIT: Final = (
-    "e6234b149fe663e9b19ef3290d9566db4d4c447d"
+    "a7c950c215c981333eb6a46f607235aa422e88f4"
 )
 APPLICATION_HEAD: Final = "300"
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
@@ -35,6 +35,9 @@ FRESH_MIGRATION_FENCE_SCHEMA: Final = (
 )
 FRESH_MIGRATION_OPERATION: Final = "map-fresh-300"
 FRESH_ROOT_RESULT_SCHEMA: Final = "kor-travel-map.application-fresh-300-root.v2"
+FRESH_ROOT_MISSING_RECEIPT_SCHEMA: Final = (
+    "kor-travel-map.application-fresh-300-root-missing-receipt.v1"
+)
 FRESH_FINALIZE_FENCE_SCHEMA: Final = (
     "kor-travel-docker-manager.map-fresh-300-finalize-fence.v3"
 )
@@ -130,6 +133,27 @@ _FRESH_ROOT_RESULT_FIELDS: Final = frozenset(
         "expected_privileged_residue_sha256",
         "expected_destination_alembic_version_sha256",
         "post_destination_alembic_version_sha256",
+    }
+)
+_FRESH_ROOT_MISSING_RECEIPT_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "outcome",
+        "operation_id",
+        "destination_head",
+        "map_candidate_commit",
+        "map_candidate_image_id",
+        "postgres_image_id",
+        "reference_manifest_sha256",
+        "writer_fence_receipt_sha256",
+        "writer_fence_transaction_id",
+        "journal_sha256",
+        "journal_generation",
+        "database_identity",
+        "pre_root_state_schema",
+        "expected_post_source_catalog_sha256",
+        "expected_post_seed_sha256",
+        "expected_post_destination_alembic_version_sha256",
     }
 )
 _FRESH_ROOT_DATABASE_IDENTITY_FIELDS: Final = frozenset(
@@ -756,6 +780,26 @@ class FreshRootResult:
 
 
 @dataclass(frozen=True)
+class FreshRootMissingReceipt:
+    """Validated proof that a missing root receipt is safe to re-execute."""
+
+    operation_id: str
+    writer_fence_receipt_sha256: str
+    writer_fence_transaction_id: str
+    journal_sha256: str
+    journal_generation: int
+    map_candidate_commit: str
+    map_candidate_image_id: str
+    postgres_image_id: str
+    reference_manifest_sha256: str
+    database_identity: ApplicationDatabaseIdentity
+    pre_root_state_schema: str
+    expected_post_source_catalog_sha256: str
+    expected_post_seed_sha256: str
+    expected_post_destination_alembic_version_sha256: str
+
+
+@dataclass(frozen=True)
 class FreshFinalizeResult:
     """Validated fresh ACL finalize result."""
 
@@ -982,6 +1026,95 @@ def parse_fresh_root_result(
     _require_prior_root_binding(
         result, contract=contract, candidate=candidate, database=identity
     )
+    return result
+
+
+def parse_fresh_root_missing_receipt(
+    raw: bytes,
+    *,
+    contract: Application300Contract,
+    candidate: Application300Candidate,
+) -> FreshRootMissingReceipt:
+    """Parse the Map-side read-only proof required before a root retry."""
+
+    payload = _load_exact_json(
+        raw,
+        _FRESH_ROOT_MISSING_RECEIPT_FIELDS,
+        "fresh root missing receipt",
+        canonical_line=True,
+    )
+    if (
+        payload["schema"] != FRESH_ROOT_MISSING_RECEIPT_SCHEMA
+        or payload["outcome"] != "receipt-missing-exact-prestate"
+        or payload["destination_head"] != APPLICATION_HEAD
+    ):
+        raise MapApplication300ContractError(
+            "fresh root missing receipt identity is invalid"
+        )
+    pre_root_state_schema = payload["pre_root_state_schema"]
+    if not isinstance(pre_root_state_schema, str) or not pre_root_state_schema:
+        raise MapApplication300ContractError(
+            "fresh root missing receipt pre-root state schema is invalid"
+        )
+    result = FreshRootMissingReceipt(
+        operation_id=_require_uuid(payload["operation_id"], "operation_id"),
+        writer_fence_receipt_sha256=_require_sha256(
+            payload["writer_fence_receipt_sha256"],
+            "writer_fence_receipt_sha256",
+        ),
+        writer_fence_transaction_id=_require_uuid(
+            payload["writer_fence_transaction_id"],
+            "writer_fence_transaction_id",
+        ),
+        journal_sha256=_require_sha256(payload["journal_sha256"], "journal_sha256"),
+        journal_generation=_require_positive_int(
+            payload["journal_generation"], "journal_generation"
+        ),
+        map_candidate_commit=_require_commit(
+            payload["map_candidate_commit"], "map_candidate_commit"
+        ),
+        map_candidate_image_id=_require_image_id(
+            payload["map_candidate_image_id"], "map_candidate_image_id"
+        ),
+        postgres_image_id=_require_image_id(
+            payload["postgres_image_id"], "postgres_image_id"
+        ),
+        reference_manifest_sha256=_require_sha256(
+            payload["reference_manifest_sha256"], "reference_manifest_sha256"
+        ),
+        database_identity=ApplicationDatabaseIdentity.from_fresh_result_payload(
+            _require_mapping(payload["database_identity"], "database_identity")
+        ),
+        pre_root_state_schema=pre_root_state_schema,
+        expected_post_source_catalog_sha256=_require_sha256(
+            payload["expected_post_source_catalog_sha256"],
+            "expected_post_source_catalog_sha256",
+        ),
+        expected_post_seed_sha256=_require_sha256(
+            payload["expected_post_seed_sha256"],
+            "expected_post_seed_sha256",
+        ),
+        expected_post_destination_alembic_version_sha256=_require_sha256(
+            payload["expected_post_destination_alembic_version_sha256"],
+            "expected_post_destination_alembic_version_sha256",
+        ),
+    )
+    if (
+        result.map_candidate_commit != candidate.map_source_commit
+        or result.map_candidate_image_id != candidate.api_image_id
+        or result.postgres_image_id != contract.postgres_image_id
+        or result.reference_manifest_sha256 != contract.reference_manifest_sha256
+        or result.pre_root_state_schema
+        != "kor-travel-map.application-fresh-300-pre-root.v1"
+        or result.expected_post_source_catalog_sha256
+        != contract.source_catalog_sha256
+        or result.expected_post_seed_sha256 != contract.seed_sha256
+        or result.expected_post_destination_alembic_version_sha256
+        != contract.destination_alembic_version_sha256
+    ):
+        raise MapApplication300ContractError(
+            "fresh root missing receipt differs from candidate prestate"
+        )
     return result
 
 
