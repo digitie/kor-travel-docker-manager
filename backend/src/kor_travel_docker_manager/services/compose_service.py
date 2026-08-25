@@ -2328,6 +2328,7 @@ def _run_pinned_runtime_static_command(
     command: Sequence[str],
     *,
     label: str,
+    entrypoint: str | None = None,
 ) -> str:
     """candidate artifact를 network 없이 검사하고 raw output은 호출자만 파싱한다."""
 
@@ -2335,9 +2336,15 @@ def _run_pinned_runtime_static_command(
         raise DeploymentContractError(f"{label} candidate image ID is invalid")
     if not command or any(not argument or "\x00" in argument for argument in command):
         raise DeploymentContractError(f"{label} candidate static command is invalid")
+    if entrypoint is not None and re.fullmatch(r"/[A-Za-z0-9._/-]+", entrypoint) is None:
+        raise DeploymentContractError(f"{label} candidate static entrypoint is invalid")
+    docker_command = ["docker", "run", "--rm", "--network", "none"]
+    if entrypoint is not None:
+        docker_command.extend(("--entrypoint", entrypoint))
+    docker_command.extend((image_id, *command))
     try:
         completed = subprocess.run(
-            ["docker", "run", "--rm", "--network", "none", image_id, *command],
+            docker_command,
             cwd=get_project_root(),
             text=True,
             capture_output=True,
@@ -2845,12 +2852,47 @@ def _application_300_renewal_transaction_id(
     )
 
 
+def _discard_application_300_receipt(path: Path) -> None:
+    """Discard one exact pre-journal candidate receipt before a fresh build."""
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError(
+            "application 300 stale candidate receipt cannot be inspected"
+        ) from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+    ):
+        raise DeploymentContractError(
+            "application 300 stale candidate receipt is unsafe"
+        )
+    try:
+        path.unlink()
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "application 300 stale candidate receipt cannot be discarded"
+        ) from exc
+
+
 def _run_map_application_300_paired_builder(
     *,
     sources: PinnedRuntimeSourceMaterialization,
     api_image: str,
     dagster_image: str,
     paths: _MapApplication300Paths,
+    resume_journal: bool,
 ) -> None:
     map_source = sources.source_for("map")
     script = map_source.root / "scripts" / "build-application-300-paired-candidate.sh"
@@ -2883,6 +2925,19 @@ def _run_map_application_300_paired_builder(
             # an absent receipt that may be overwritten.
             receipt_presence_values.append(True)
     receipt_presence = tuple(receipt_presence_values)
+    if resume_journal and receipt_presence != (True, True):
+        raise DeploymentContractError(
+            "application 300 journal resume requires a complete receipt set"
+        )
+    if not resume_journal and any(receipt_presence):
+        # A receipt pair without a durable rebuild journal is only a pre-journal
+        # candidate.  It may be left behind by a failed static inspection (or
+        # by a response-loss crash) and must never silently become ``--verify``
+        # evidence on the next run.  Remove only the two exact, owner-only
+        # receipt paths; the sealed builder will create a fresh pair below.
+        for receipt_path in (paths.api_receipt, paths.paired_receipt):
+            _discard_application_300_receipt(receipt_path)
+        receipt_presence = (False, False)
     if receipt_presence not in {(False, False), (True, False), (True, True)}:
         raise DeploymentContractError(
             "application 300 paired receipt set is incomplete"
@@ -2902,7 +2957,7 @@ def _run_map_application_300_paired_builder(
         "--git-root",
         str(map_source.root),
     ]
-    if receipt_presence == (True, True):
+    if resume_journal and receipt_presence == (True, True):
         command.append("--verify")
     builder_environment = {
         name: value
@@ -4959,6 +5014,32 @@ class ComposeService:
             )
 
     @staticmethod
+    def _assert_pinned_runtime_journal_matches_map_candidate(
+        journal: PinnedRuntimeRebuildJournal,
+        *,
+        map_candidate: MapApplication300Candidate,
+    ) -> None:
+        """resume receipt/image evidence must be the journal's exact Map pair."""
+
+        evidence = journal.map_application_300_candidate_evidence
+        if (
+            evidence.paired_receipt_sha256 != map_candidate.receipt_sha256
+            or evidence.api_receipt_sha256 != map_candidate.api_receipt_sha256
+            or evidence.candidate_git_tree != map_candidate.candidate_git_tree
+            or evidence.postgres_image_id != map_candidate.postgres_image_id
+            or evidence.dagster_config_sha256 != map_candidate.dagster_config_sha256
+            or evidence.dagster_yaml_sha256 != map_candidate.dagster_yaml_sha256
+            or evidence.application_contract_sha256
+            != map_candidate.application_contract_sha256
+            or evidence.launch_contract_sha256 != map_candidate.launch_contract_sha256
+            or journal.candidate.map_api_image_id != map_candidate.api_image_id
+            or journal.candidate.map_dagster_image_id != map_candidate.dagster_image_id
+        ):
+            raise DeploymentContractError(
+                "pinned runtime journal differs from current Map paired candidate"
+            )
+
+    @staticmethod
     def _pinned_runtime_result(
         journal: PinnedRuntimeRebuildJournal,
         *,
@@ -5392,6 +5473,11 @@ class ComposeService:
                 state_root=state_paths.state_root,
                 pinset_sha256=release.pinset_sha256,
             )
+            try:
+                state_paths.journal.lstat()
+                journal_exists = True
+            except FileNotFoundError:
+                journal_exists = False
             artifact_directories = MapApplication300ArtifactDirectories(
                 fresh_migrate_fence=application_paths.root_fence_directory,
                 fresh_finalize_fence=application_paths.finalize_fence_directory,
@@ -5406,6 +5492,7 @@ class ComposeService:
                 api_image=paired_build_images["kor-travel-map-api"],
                 dagster_image=paired_build_images["kor-travel-map-dagster"],
                 paths=application_paths,
+                resume_journal=journal_exists,
             )
             map_candidate = self._load_application_300_paired_candidate(
                 sources=sources,
@@ -5442,12 +5529,6 @@ class ComposeService:
                 transaction=candidate_transaction,
                 frozen_recovery=True,
             )
-            try:
-                state_paths.journal.lstat()
-                journal_exists = True
-            except FileNotFoundError:
-                journal_exists = False
-
             if journal_exists:
                 journal = read_pinned_runtime_rebuild_journal(state_paths.journal)
                 if journal.phase == "committed":
@@ -5456,6 +5537,10 @@ class ComposeService:
                         raise DeploymentContractError(
                             "pinned runtime manifest differs from committed journal"
                         )
+                self._assert_pinned_runtime_journal_matches_map_candidate(
+                    journal,
+                    map_candidate=map_candidate,
+                )
                 self._attest_pinned_runtime_candidate_images(
                     build=build,
                     map_candidate=map_candidate,
@@ -5475,8 +5560,9 @@ class ComposeService:
                 )
                 map_dagster_output = _run_pinned_runtime_static_command(
                     image_ids["kor-travel-map-dagster"],
-                    ("ktm-dagster-storage", "head"),
+                    ("head",),
                     label="Map Dagster",
+                    entrypoint="/usr/local/bin/ktm-dagster-storage",
                 )
                 map_dagster_head = parse_candidate_static_head(
                     map_dagster_output,

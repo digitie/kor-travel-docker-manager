@@ -801,6 +801,33 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
         )
 
 
+def test_journal_resume_requires_exact_current_map_candidate_evidence() -> None:
+    paired = _map_application_300_candidate()
+    journal = new_candidate_journal(
+        candidate=_candidate_generation(),
+        environment_bytes=b"frozen-env\n",
+        compose_source_bytes=b"services: {}\n",
+        resolved_compose_sha256="c" * 64,
+    )
+
+    ComposeService._assert_pinned_runtime_journal_matches_map_candidate(
+        journal,
+        map_candidate=paired,
+    )
+    for changed in (
+        replace(paired, receipt_sha256="f" * 64),
+        replace(paired, api_image_id=f"sha256:{999:064x}"),
+    ):
+        with pytest.raises(
+            DeploymentContractError,
+            match="journal differs from current Map paired candidate",
+        ):
+            ComposeService._assert_pinned_runtime_journal_matches_map_candidate(
+                journal,
+                map_candidate=changed,
+            )
+
+
 def test_rebuild_requires_root_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
 
@@ -885,8 +912,10 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
     sources, paths = _paired_builder_inputs(tmp_path)
     if api_receipt_exists:
         paths.api_receipt.write_text("{}\n", encoding="utf-8")
+        paths.api_receipt.chmod(0o600)
     if paired_receipt_exists:
         paths.paired_receipt.write_text("{}\n", encoding="utf-8")
+        paths.paired_receipt.chmod(0o600)
     runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=0))
     monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
 
@@ -895,6 +924,7 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
         api_image="map-api:test",
         dagster_image="map-dagster:test",
         paths=paths,
+        resume_journal=verify,
     )
 
     command = runner.call_args.args[0]
@@ -912,19 +942,48 @@ def test_application_300_paired_builder_rejects_paired_only_receipt(
     runner = Mock()
     monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
 
-    with pytest.raises(DeploymentContractError, match="receipt set is incomplete"):
+    with pytest.raises(
+        DeploymentContractError,
+        match="journal resume requires a complete receipt set",
+    ):
         compose_service_module._run_map_application_300_paired_builder(
             sources=sources,
             api_image="map-api:test",
             dagster_image="map-dagster:test",
             paths=paths,
+            resume_journal=True,
+        )
+
+    runner.assert_not_called()
+
+
+def test_application_300_journal_resume_requires_both_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    paths.api_receipt.write_text("{}\n", encoding="utf-8")
+    paths.api_receipt.chmod(0o600)
+    runner = Mock()
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="journal resume requires a complete receipt set",
+    ):
+        compose_service_module._run_map_application_300_paired_builder(
+            sources=sources,
+            api_image="map-api:test",
+            dagster_image="map-dagster:test",
+            paths=paths,
+            resume_journal=True,
         )
 
     runner.assert_not_called()
 
 
 @pytest.mark.parametrize("unsafe_api_receipt", ("symlink", "foreign-owner"))
-def test_application_300_api_only_unsafe_receipt_is_delegated_to_strict_builder(
+def test_application_300_unsafe_stale_receipt_is_not_discarded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     unsafe_api_receipt: str,
@@ -948,18 +1007,42 @@ def test_application_300_api_only_unsafe_receipt_is_delegated_to_strict_builder(
             return os.stat_result(fields)
 
         monkeypatch.setattr(Path, "lstat", foreign_api_lstat)
-    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=1))
+    runner = Mock()
     monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
 
-    with pytest.raises(DeploymentContractError, match="paired builder failed"):
+    with pytest.raises(DeploymentContractError, match="stale candidate receipt is unsafe"):
         compose_service_module._run_map_application_300_paired_builder(
             sources=sources,
             api_image="map-api:test",
             dagster_image="map-dagster:test",
             paths=paths,
+            resume_journal=False,
         )
 
-    runner.assert_called_once()
+    runner.assert_not_called()
+
+
+def test_application_300_prejournal_receipts_are_discarded_before_fresh_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    for receipt_path in (paths.api_receipt, paths.paired_receipt):
+        receipt_path.write_text("{}\n", encoding="utf-8")
+        receipt_path.chmod(0o600)
+    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=0))
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    compose_service_module._run_map_application_300_paired_builder(
+        sources=sources,
+        api_image="map-api:test",
+        dagster_image="map-dagster:test",
+        paths=paths,
+        resume_journal=False,
+    )
+
+    assert not paths.api_receipt.exists()
+    assert not paths.paired_receipt.exists()
     assert "--verify" not in runner.call_args.args[0]
 
 
@@ -1897,6 +1980,36 @@ def test_rebuild_compose_error_ignores_pinvi_code_with_wrong_phase(
     assert secret not in str(captured.value)
 
 
+def test_static_command_can_bypass_a_sealed_image_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(
+        return_value=SimpleNamespace(returncode=0, stdout="static-output", stderr="")
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    output = compose_service_module._run_pinned_runtime_static_command(
+        f"sha256:{'a' * 64}",
+        ("head",),
+        label="Map Dagster",
+        entrypoint="/usr/local/bin/ktm-dagster-storage",
+    )
+
+    assert output == "static-output"
+    command = runner.call_args.args[0]
+    assert command == [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--entrypoint",
+        "/usr/local/bin/ktm-dagster-storage",
+        f"sha256:{'a' * 64}",
+        "head",
+    ]
+
+
 def test_rebuild_candidate_journal_binds_application_300_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1936,6 +2049,7 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     service = ComposeService()
     operations: list[tuple[str, ...]] = []
     static_commands: list[tuple[str, ...]] = []
+    static_entrypoints: list[str | None] = []
     paired_candidate = _map_application_300_candidate()
     image_ids = _candidate_image_ids(paired_candidate)
     paired_builder = Mock()
@@ -1996,11 +2110,18 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         "_attest_pinned_runtime_candidate_images",
         lambda *, build, map_candidate: image_ids,
     )
-    def static_command(_image: str, command: tuple[str, ...], *, label: str) -> str:
+    def static_command(
+        _image: str,
+        command: tuple[str, ...],
+        *,
+        label: str,
+        entrypoint: str | None = None,
+    ) -> str:
         del label
         static_commands.append(command)
+        static_entrypoints.append(entrypoint)
         return {
-            "ktm-dagster-storage": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
+            "head": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
             "pinvi-admin-bootstrap": '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
         }[command[0]]
 
@@ -2051,10 +2172,15 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         ),
     ]
     assert static_commands == [
-        ("ktm-dagster-storage", "head"),
+        ("head",),
         ("pinvi-admin-bootstrap", "head"),
     ]
+    assert static_entrypoints == [
+        "/usr/local/bin/ktm-dagster-storage",
+        None,
+    ]
     paired_builder.assert_called_once()
+    assert paired_builder.call_args.kwargs["resume_journal"] is False
     candidate_contract.assert_called_once()
     assert external_readiness.call_args_list == [
         call(
@@ -3347,10 +3473,16 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
         compose_calls.append(tuple(args))
         return {"success": True, "stdout": ""}
 
-    def static_command(_image: str, command: tuple[str, ...], *, label: str) -> str:
+    def static_command(
+        _image: str,
+        command: tuple[str, ...],
+        *,
+        label: str,
+        entrypoint: str | None = None,
+    ) -> str:
         del label
         return {
-            "ktm-dagster-storage": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
+            "head": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
             "pinvi-admin-bootstrap": '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
         }[command[0]]
 
