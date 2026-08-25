@@ -1295,6 +1295,12 @@ _CANDIDATE_ALLOWED_SYSTEM_BINDS = {
     ("cadvisor", "/sys", True): "/sys",
     ("cadvisor", "/var/run/docker.sock", True): "/var/run/docker.sock",
 }
+_MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset(
+    {
+        "/usr/local/bin/postgres-role-bootstrap",
+        "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
+    }
+)
 _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     (
         "kor-travel-concierge-postgres",
@@ -6892,20 +6898,25 @@ def _validate_candidate_volume_graph(
                 ) from exc
             if stat.S_ISREG(source_stat.st_mode):
                 _assert_candidate_regular_file(resolved_source)
-                if (
-                    str(service_name) == _MAP_DB_ROLE_BOOTSTRAP_SERVICE
-                    and mount.target == "/usr/local/bin/postgres-role-bootstrap"
-                ):
-                    # Map release source가 소유한 정본 bootstrap은 role password env
-                    # identifier를 선언한다. candidate source staging/provenance가 이
-                    # exact bind를 동결하므로 일반 C6c secret text 검사 대상이 아니다.
-                    continue
                 try:
                     source_text = resolved_source.read_text(encoding="utf-8")
                 except (OSError, UnicodeError, ValueError) as exc:
                     raise ComposeCandidateContractError(
                         f"compose candidate cannot validate {service_name} bind source"
                     ) from exc
+                if (
+                    str(service_name) == _MAP_DB_ROLE_BOOTSTRAP_SERVICE
+                    and mount.target in _MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS
+                ):
+                    # Map release source가 소유한 정본 bootstrap과 credential preflight
+                    # helper는 role/password env identifier를 선언한다. candidate
+                    # source staging/provenance가 이 exact bind를 동결하므로 protected
+                    # identifier 이름은 허용하되 실제 protected 값은 계속 거절한다.
+                    if any(value in source_text for value in protected_values):
+                        raise ComposeCandidateContractError(
+                            f"compose candidate {service_name} bind source leaks C6c data"
+                        )
+                    continue
                 if any(name in source_text for name in protected_names) or any(
                     value in source_text for value in protected_values
                 ):
