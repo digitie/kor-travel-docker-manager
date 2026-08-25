@@ -633,19 +633,19 @@ def _application_300_bootstrap_attestation_query(runtime: DatabaseRuntime) -> st
     )
     expected_acl_values = ", ".join(
         [
-            f"('{schema}', '{role}', '{privilege}')"
+            f"('{schema}', '{role}', '{privilege}', FALSE)"
             for schema in ("feature", "provider_sync", "ops")
             for role in application_acl_roles
             for privilege in ("USAGE", "CREATE")
         ]
         + [
-            f"('x_extension', '{role}', 'USAGE')"
+            f"('x_extension', '{role}', 'USAGE', FALSE)"
             for role in extension_acl_roles
         ]
         # PostgreSQL retains CREATE for the owner of a schema.  The Map
         # bootstrap script intentionally leaves that owner privilege in place
         # while revoking PUBLIC and the other application roles.
-        + [f"('x_extension', '{_MAP_SCHEMA_OWNER}', 'CREATE')"]
+        + [f"('x_extension', '{_MAP_SCHEMA_OWNER}', 'CREATE', FALSE)"]
     )
     role_names = ", ".join(f"'{role}'" for role in all_roles)
     return (
@@ -660,9 +660,9 @@ def _application_300_bootstrap_attestation_query(runtime: DatabaseRuntime) -> st
         "JOIN pg_catalog.pg_roles AS granted ON granted.oid = membership.roleid "
         "JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member "
         f"WHERE granted.rolname IN ({role_names}) OR member.rolname IN ({role_names})), "
-        "expected_acl(schema_name, role_name, privilege_type) AS (VALUES "
+        "expected_acl(schema_name, role_name, privilege_type, is_grantable) AS (VALUES "
         f"{expected_acl_values}), actual_acl AS (SELECT namespace.nspname AS schema_name, "
-        "role.rolname AS role_name, privilege.privilege_type "
+        "role.rolname AS role_name, privilege.privilege_type, privilege.is_grantable "
         "FROM pg_catalog.pg_namespace AS namespace "
         "CROSS JOIN LATERAL aclexplode(namespace.nspacl) AS privilege "
         "JOIN pg_catalog.pg_roles AS role ON role.oid = privilege.grantee "
