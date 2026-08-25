@@ -28,9 +28,9 @@
 
 코드 구현은 PR #184에서 merge됐다. 남은 것은 n150 운영 프로비저닝뿐이며 destructive rebuild와 섞지 않는다.
 
-- [ ] trusted 설치본의 `pinvi-pair capture --help`가 `capture_contract=pair-capture-v1`을 보고하는지 mutation
-  없이 확인한다.
-- [ ] Map·PinVi clean checkout env와 C7 manifest 정본 경로를 하나로 확정한다.
+- [ ] Map·PinVi clean checkout env와 C7 manifest 정본 경로를 하나로 확정한 뒤, trusted 설치본에서
+  `capture_contract=pair-capture-v1` read-only capture를 실행한다. n150 `--help` 계약 사전 확인은
+  `journal.md`에 기록했다.
 - [ ] 최초 read-only capture 뒤 C7 runner attestation을 다시 만들고 결과를 기록한다.
 
 ## MAP-LIVE-FOLLOWUP — Map/PinVi cross-repo live consumer acceptance

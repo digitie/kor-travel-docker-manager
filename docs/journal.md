@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-26 — C7 capture read-only 계약 사전 확인
+
+n150 trusted Manager 설치본에서 `ktdctl pinvi-pair capture --help`를 mutation 없이 실행했다.
+출력의 `capture_contract=pair-capture-v1`과 “실행 중 컨테이너를 시작·정지·재생성하지 않고
+빌드하지 않는다”는 read-only 경계를 확인했다. 실제 capture와 compatible-pair manifest 교체는
+현재 v6/v8 committed generation과 C7 checkout/manifest 정본을 먼저 확정한 뒤 실행하며, 이번
+확인에서는 manifest·컨테이너·DB를 변경하지 않았다.
+
+---
+
 ## 2026-08-26 — MAP-LIVE-FOLLOWUP Map ops read/auth 계약 결선
 
 Map exact pair의 n150 frontend에서 `ops-c7-read-auth.live.spec.ts`를 1 worker로 실행했다.
