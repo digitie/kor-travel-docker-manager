@@ -2428,6 +2428,60 @@ def test_expired_root_fence_renewal_preserves_operation_id(
     write_journal.assert_called_once_with(tmp_path / "journal.json", updated)
 
 
+def test_expired_root_fence_reconciliation_converges_file_first_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_application_300_phase("fresh_root_execution_intent")
+    plan = journal.map_application_300_execution_evidence.fresh_root_operation_plan
+    if plan is None:
+        raise AssertionError("root plan is missing")
+    map_candidate = _map_application_300_candidate()
+    application_database, _ = compose_service_module._application_300_database_identities(
+        _runtime_application_database_identity()
+    )
+    expected_plan, renewed_raw = service._build_fresh_root_renewal(
+        journal=journal,
+        plan=plan,
+        map_candidate=map_candidate,
+        execution_candidate=compose_service_module._application_300_execution_candidate(
+            map_candidate
+        ),
+        application_database=application_database,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_owner_only_artifact",
+        Mock(return_value=renewed_raw),
+    )
+    write_journal = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        write_journal,
+    )
+
+    updated, reconciled_plan = service._reconcile_expired_fresh_root_fence(
+        journal=journal,
+        plan=plan,
+        map_candidate=map_candidate,
+        execution_candidate=compose_service_module._application_300_execution_candidate(
+            map_candidate
+        ),
+        application_database=application_database,
+        application_paths=_application_paths(tmp_path),
+        journal_path=tmp_path / "journal.json",
+    )
+
+    assert reconciled_plan == expected_plan
+    assert reconciled_plan.operation_id == plan.operation_id
+    assert reconciled_plan.transaction_id != plan.transaction_id
+    assert updated.phase == "fresh_root_execution_intent"
+    assert write_journal.call_args.args[0] == tmp_path / "journal.json"
+    assert write_journal.call_args.args[1] == updated
+
+
 def test_expired_finalize_fence_renewal_preserves_operation_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2497,6 +2551,67 @@ def test_expired_finalize_fence_renewal_preserves_operation_id(
         == renewed_plan
     )
     write_journal.assert_called_once_with(tmp_path / "journal.json", updated)
+
+
+def test_expired_finalize_fence_reconciliation_converges_file_first_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_application_300_phase("fresh_finalize_execution_intent")
+    plan = journal.map_application_300_execution_evidence.fresh_finalize_operation_plan
+    if plan is None:
+        raise AssertionError("finalize plan is missing")
+    map_candidate = _map_application_300_candidate()
+    application_database, _ = compose_service_module._application_300_database_identities(
+        _runtime_application_database_identity()
+    )
+    root_result = _fresh_root_result_for_finalize_renewal(
+        journal=journal,
+        map_candidate=map_candidate,
+        database=application_database,
+    )
+    expected_plan, renewed_raw = service._build_fresh_finalize_renewal(
+        journal=journal,
+        plan=plan,
+        map_candidate=map_candidate,
+        execution_candidate=compose_service_module._application_300_execution_candidate(
+            map_candidate
+        ),
+        application_database=application_database,
+        root_result=root_result,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_owner_only_artifact",
+        Mock(return_value=renewed_raw),
+    )
+    write_journal = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        write_journal,
+    )
+
+    updated, reconciled_plan = service._reconcile_expired_fresh_finalize_fence(
+        journal=journal,
+        plan=plan,
+        map_candidate=map_candidate,
+        execution_candidate=compose_service_module._application_300_execution_candidate(
+            map_candidate
+        ),
+        application_database=application_database,
+        application_paths=_application_paths(tmp_path),
+        journal_path=tmp_path / "journal.json",
+        root_result=root_result,
+    )
+
+    assert reconciled_plan == expected_plan
+    assert reconciled_plan.operation_id == plan.operation_id
+    assert reconciled_plan.transaction_id != plan.transaction_id
+    assert updated.phase == "fresh_finalize_execution_intent"
+    assert write_journal.call_args.args[0] == tmp_path / "journal.json"
+    assert write_journal.call_args.args[1] == updated
 
 
 @pytest.mark.parametrize(

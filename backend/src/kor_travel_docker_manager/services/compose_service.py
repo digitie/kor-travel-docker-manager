@@ -2758,11 +2758,11 @@ def _application_300_plan_expired(plan: MapApplication300OperationPlan) -> bool:
 def _application_300_renewal_expiry(
     plan: MapApplication300OperationPlan,
 ) -> datetime:
-    """Deterministically move an expired fence far enough for crash resume."""
+    """Return a time-independent renewal expiry for crash reconciliation."""
 
-    expiry = _application_300_plan_expiry(plan)
-    minimum_expiry = datetime.now(UTC) + timedelta(hours=2)
-    while expiry <= minimum_expiry:
+    expiry = _application_300_plan_expiry(plan) + timedelta(days=3650)
+    deterministic_floor = datetime(2100, 1, 1, tzinfo=UTC)
+    while expiry <= deterministic_floor:
         expiry += timedelta(days=3650)
     return expiry
 
@@ -5057,6 +5057,38 @@ class ComposeService:
         application_paths: _MapApplication300Paths,
         journal_path: Path,
     ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
+        renewed_plan, root_fence_raw = self._build_fresh_root_renewal(
+            journal=journal,
+            plan=plan,
+            map_candidate=map_candidate,
+            execution_candidate=execution_candidate,
+            application_database=application_database,
+        )
+        try:
+            replace_root_read_only_artifact(
+                application_paths.root_fence,
+                expected_old_sha256=plan.fence_sha256,
+                raw=root_fence_raw,
+            )
+        except MapApplication300ContractError as exc:
+            raise DeploymentContractError(
+                "application 300 root fence renewal failed"
+            ) from exc
+        updated = journal.with_renewed_fresh_root_execution_intent(
+            fresh_root_operation_plan=renewed_plan
+        )
+        write_pinned_runtime_rebuild_journal(journal_path, updated)
+        return updated, renewed_plan
+
+    def _build_fresh_root_renewal(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        plan: MapApplication300OperationPlan,
+        map_candidate: MapApplication300Candidate,
+        execution_candidate: Application300ExecutionCandidate,
+        application_database: ApplicationDatabaseIdentity,
+    ) -> tuple[MapApplication300OperationPlan, bytes]:
         renewal_basis_sha256 = rebuild_journal_sha256(journal)
         renewal_generation = journal.journal_generation
         renewal_expiry = _application_300_renewal_expiry(plan)
@@ -5086,20 +5118,55 @@ class ComposeService:
                 writer_fence_expires_at=renewal_expiry.isoformat(),
                 fence_sha256=root_fence.sha256,
             )
-            replace_root_read_only_artifact(
-                application_paths.root_fence,
-                expected_old_sha256=plan.fence_sha256,
-                raw=root_fence.raw,
-            )
         except MapApplication300ContractError as exc:
             raise DeploymentContractError(
                 "application 300 root fence renewal failed"
             ) from exc
-        updated = journal.with_renewed_fresh_root_execution_intent(
-            fresh_root_operation_plan=renewed_plan
-        )
-        write_pinned_runtime_rebuild_journal(journal_path, updated)
-        return updated, renewed_plan
+        return renewed_plan, root_fence.raw
+
+    def _reconcile_expired_fresh_root_fence(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        plan: MapApplication300OperationPlan,
+        map_candidate: MapApplication300Candidate,
+        execution_candidate: Application300ExecutionCandidate,
+        application_database: ApplicationDatabaseIdentity,
+        application_paths: _MapApplication300Paths,
+        journal_path: Path,
+    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
+        """Converge a fence-first renewal crash before consuming a probe."""
+
+        if not _application_300_plan_expired(plan):
+            return journal, plan
+        try:
+            renewed_plan, renewed_fence_raw = self._build_fresh_root_renewal(
+                journal=journal,
+                plan=plan,
+                map_candidate=map_candidate,
+                execution_candidate=execution_candidate,
+                application_database=application_database,
+            )
+        except DeploymentContractError:
+            return journal, plan
+        try:
+            current_fence_raw = read_owner_only_artifact(application_paths.root_fence)
+        except (FileNotFoundError, MapApplication300ContractError):
+            # Let the typed probe inspect the same mounted artifact.  A missing or
+            # unsafe file can never satisfy the old-plan binding, so this remains
+            # fail-closed while preserving the recovery proof path.
+            return journal, plan
+        if current_fence_raw == renewed_fence_raw:
+            updated = journal.with_renewed_fresh_root_execution_intent(
+                fresh_root_operation_plan=renewed_plan
+            )
+            write_pinned_runtime_rebuild_journal(journal_path, updated)
+            return updated, renewed_plan
+        if hashlib.sha256(current_fence_raw).hexdigest() == plan.fence_sha256:
+            return journal, plan
+        # Unknown bytes are deliberately not adopted.  The probe below must bind to
+        # the old durable plan and will reject them before any root re-execution.
+        return journal, plan
 
     def _renew_fresh_finalize_operation_plan(
         self,
@@ -5113,6 +5180,40 @@ class ComposeService:
         journal_path: Path,
         root_result: FreshRootResult,
     ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
+        renewed_plan, finalize_fence_raw = self._build_fresh_finalize_renewal(
+            journal=journal,
+            plan=plan,
+            map_candidate=map_candidate,
+            execution_candidate=execution_candidate,
+            application_database=application_database,
+            root_result=root_result,
+        )
+        try:
+            replace_root_read_only_artifact(
+                application_paths.finalize_fence,
+                expected_old_sha256=plan.fence_sha256,
+                raw=finalize_fence_raw,
+            )
+        except (MapApplication300ContractError, AttributeError) as exc:
+            raise DeploymentContractError(
+                "application 300 finalize fence renewal failed"
+            ) from exc
+        updated = journal.with_renewed_fresh_finalize_execution_intent(
+            fresh_finalize_operation_plan=renewed_plan
+        )
+        write_pinned_runtime_rebuild_journal(journal_path, updated)
+        return updated, renewed_plan
+
+    def _build_fresh_finalize_renewal(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        plan: MapApplication300OperationPlan,
+        map_candidate: MapApplication300Candidate,
+        execution_candidate: Application300ExecutionCandidate,
+        application_database: ApplicationDatabaseIdentity,
+        root_result: FreshRootResult,
+    ) -> tuple[MapApplication300OperationPlan, bytes]:
         renewal_basis_sha256 = rebuild_journal_sha256(journal)
         renewal_generation = journal.journal_generation
         renewal_expiry = _application_300_renewal_expiry(plan)
@@ -5143,20 +5244,56 @@ class ComposeService:
                 writer_fence_expires_at=renewal_expiry.isoformat(),
                 fence_sha256=finalize_fence.sha256,
             )
-            replace_root_read_only_artifact(
-                application_paths.finalize_fence,
-                expected_old_sha256=plan.fence_sha256,
-                raw=finalize_fence.raw,
-            )
-        except MapApplication300ContractError as exc:
+        except (MapApplication300ContractError, AttributeError) as exc:
             raise DeploymentContractError(
                 "application 300 finalize fence renewal failed"
             ) from exc
-        updated = journal.with_renewed_fresh_finalize_execution_intent(
-            fresh_finalize_operation_plan=renewed_plan
-        )
-        write_pinned_runtime_rebuild_journal(journal_path, updated)
-        return updated, renewed_plan
+        return renewed_plan, finalize_fence.raw
+
+    def _reconcile_expired_fresh_finalize_fence(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        plan: MapApplication300OperationPlan,
+        map_candidate: MapApplication300Candidate,
+        execution_candidate: Application300ExecutionCandidate,
+        application_database: ApplicationDatabaseIdentity,
+        application_paths: _MapApplication300Paths,
+        journal_path: Path,
+        root_result: FreshRootResult,
+    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
+        """Converge a fence-first finalize renewal crash before consuming a probe."""
+
+        if not _application_300_plan_expired(plan):
+            return journal, plan
+        try:
+            renewed_plan, renewed_fence_raw = self._build_fresh_finalize_renewal(
+                journal=journal,
+                plan=plan,
+                map_candidate=map_candidate,
+                execution_candidate=execution_candidate,
+                application_database=application_database,
+                root_result=root_result,
+            )
+        except DeploymentContractError:
+            return journal, plan
+        try:
+            current_fence_raw = read_owner_only_artifact(
+                application_paths.finalize_fence
+            )
+        except (FileNotFoundError, MapApplication300ContractError):
+            # See the root reconciliation path: the strict probe remains the
+            # authority for missing/unsafe mounted bytes.
+            return journal, plan
+        if current_fence_raw == renewed_fence_raw:
+            updated = journal.with_renewed_fresh_finalize_execution_intent(
+                fresh_finalize_operation_plan=renewed_plan
+            )
+            write_pinned_runtime_rebuild_journal(journal_path, updated)
+            return updated, renewed_plan
+        if hashlib.sha256(current_fence_raw).hexdigest() == plan.fence_sha256:
+            return journal, plan
+        return journal, plan
 
     def rebuild_pinned_runtime(self) -> dict[str, Any]:
         """application-300 paired candidate에 결박된 destructive rebuild를 실행한다."""
@@ -5653,6 +5790,17 @@ class ComposeService:
                             root_result_raw = root_recover_stdout.encode("utf-8")
                         except DeploymentContractError:
                             try:
+                                journal, root_plan = (
+                                    self._reconcile_expired_fresh_root_fence(
+                                        journal=journal,
+                                        plan=root_plan,
+                                        map_candidate=map_candidate,
+                                        execution_candidate=execution_candidate,
+                                        application_database=application_database,
+                                        application_paths=application_paths,
+                                        journal_path=state_paths.journal,
+                                    )
+                                )
                                 missing_probe_command = (
                                     self._run_pinned_runtime_rebuild_compose(
                                         [
@@ -5873,6 +6021,18 @@ class ComposeService:
                             )
                         except DeploymentContractError:
                             try:
+                                journal, finalize_plan = (
+                                    self._reconcile_expired_fresh_finalize_fence(
+                                        journal=journal,
+                                        plan=finalize_plan,
+                                        map_candidate=map_candidate,
+                                        execution_candidate=execution_candidate,
+                                        application_database=application_database,
+                                        application_paths=application_paths,
+                                        journal_path=state_paths.journal,
+                                        root_result=root_result,
+                                    )
+                                )
                                 missing_probe_command = (
                                     self._run_pinned_runtime_rebuild_compose(
                                         [

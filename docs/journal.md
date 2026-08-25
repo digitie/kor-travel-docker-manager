@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-25 — expired fence renewal의 file↔journal crash 수렴
+
+두 전문 적대 리뷰에서 fresh root/finalize fence를 새 bytes로 교체한 직후 journal 기록 전에
+프로세스가 중단되면 다음 재개가 영구 정지할 수 있는 P1을 확인했다. renewal expiry를 현재 시각에
+의존하지 않는 결정론적 값으로 만들고, 재개 시 현재 fence가 old 또는 결정론적 renewed bytes인지
+판정해 renewed bytes가 이미 durable하면 journal을 먼저 수렴시키도록 보강했다. 그 외 missing·unsafe·
+unknown fence는 기존 journal plan으로 typed missing probe를 다시 수행하며, probe가 fence·operation·
+journal을 strict하게 결박하지 못하면 root/finalize 재실행을 허용하지 않는다. finalize도 동일한
+수렴 경계를 적용했다.
+
+- crash-first renewal unit: `70 passed` (rebuild focus 포함)
+- 변경 source Ruff 통과
+- root/finalize one-shot recovery test에서 probe 후 재실행 금지 확인
+- 두 `uv.lock`은 열람·수정·stage하지 않음
+
+---
+
 ## 2026-08-25 — fresh-root receipt-missing proof 소비 및 committed fast-path 재검증
 
 Map `a7c950c215c981333eb6a46f607235aa422e88f4`의 root `probe-missing` wire를 Manager strict
