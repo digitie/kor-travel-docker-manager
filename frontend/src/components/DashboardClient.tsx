@@ -859,283 +859,283 @@ export default function DashboardClient() {
       </div>
 
       <section className="ops-overview" aria-labelledby="service-summary-title">
-          <div className="ops-summary">
-            <div className="ops-summary__header">
-              <div>
-                <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
-                <p className="ops-section-copy">현재 수집된 컨테이너 원장을 기준으로 집계합니다.</p>
-              </div>
-              <span className="ops-status-badge">
-                <span className={`w-1.5 h-1.5 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
-                {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
-              </span>
-            </div>
-            <div className="ops-counts">
-              <div className="ops-count"><span className="ops-count__label">전체</span><strong className="ops-count__value">{kpiCounts.total}</strong></div>
-              <div className="ops-count ops-count--ok"><span className="ops-count__label">실행 중</span><strong className="ops-count__value">{kpiCounts.running}</strong></div>
-              <div className="ops-count"><span className="ops-count__label">중지·미생성</span><strong className="ops-count__value">{kpiCounts.stopped}</strong></div>
-              <div className="ops-count ops-count--danger"><span className="ops-count__label">오류</span><strong className="ops-count__value">{kpiCounts.error}</strong></div>
-            </div>
-          </div>
-          <aside className="ops-signal" aria-label="동기화 상태">
+        <div className="ops-summary">
+          <div className="ops-summary__header">
             <div>
-              <p className="ops-signal__label">observability signal</p>
-              <p className="ops-signal__value">
-                <span className={`w-2 h-2 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
-                {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
-              </p>
+              <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
+              <p className="ops-section-copy">현재 수집된 컨테이너 원장을 기준으로 집계합니다.</p>
             </div>
-            <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
-          </aside>
+            <span className="ops-status-badge">
+              <span className={`w-1.5 h-1.5 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
+            </span>
+          </div>
+          <div className="ops-counts">
+            <div className="ops-count"><span className="ops-count__label">전체</span><strong className="ops-count__value">{kpiCounts.total}</strong></div>
+            <div className="ops-count ops-count--ok"><span className="ops-count__label">실행 중</span><strong className="ops-count__value">{kpiCounts.running}</strong></div>
+            <div className="ops-count"><span className="ops-count__label">중지·미생성</span><strong className="ops-count__value">{kpiCounts.stopped}</strong></div>
+            <div className="ops-count ops-count--danger"><span className="ops-count__label">오류</span><strong className="ops-count__value">{kpiCounts.error}</strong></div>
+          </div>
+        </div>
+        <aside className="ops-signal" aria-label="동기화 상태">
+          <div>
+            <p className="ops-signal__label">observability signal</p>
+            <p className="ops-signal__value">
+              <span className={`w-2 h-2 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
+            </p>
+          </div>
+          <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
+        </aside>
+      </section>
+
+      {error && !isWsConnected && (
+        <section className="mb-4 flex items-start gap-3 border border-danger/30 bg-danger/5 p-4 text-sm rounded-panel" role="alert">
+          <ShieldAlert className="w-5 h-5 shrink-0 text-danger" />
+          <div>
+            <p className="font-semibold text-danger">통신 연결 오류</p>
+            <p className="mt-1 text-ink">백엔드 서버가 {BACKEND_URL}에서 실행 중인지와 Docker 엔진 상태를 확인해 주세요.</p>
+          </div>
         </section>
+      )}
 
-        {error && !isWsConnected && (
-          <section className="mb-4 flex items-start gap-3 border border-danger/30 bg-danger/5 p-4 text-sm rounded-panel" role="alert">
-            <ShieldAlert className="w-5 h-5 shrink-0 text-danger" />
-            <div>
-              <p className="font-semibold text-danger">통신 연결 오류</p>
-              <p className="mt-1 text-ink">백엔드 서버가 {BACKEND_URL}에서 실행 중인지와 Docker 엔진 상태를 확인해 주세요.</p>
-            </div>
-          </section>
-        )}
-
-        <section className="ops-ledger" aria-labelledby="service-ledger-title">
-          <div className="ops-ledger__header">
-            <div>
-              <h2 className="ops-section-title" id="service-ledger-title">서비스 원장</h2>
-              <p className="ops-section-copy">수치 버튼은 최근 1시간의 해당 메트릭 차트를 엽니다.</p>
-            </div>
-            <span className="ops-status-badge"><Activity className="w-3 h-3 text-brand" /> 현재 상태</span>
+      <section className="ops-ledger" aria-labelledby="service-ledger-title">
+        <div className="ops-ledger__header">
+          <div>
+            <h2 className="ops-section-title" id="service-ledger-title">서비스 원장</h2>
+            <p className="ops-section-copy">수치 버튼은 최근 1시간의 해당 메트릭 차트를 엽니다.</p>
           </div>
+          <span className="ops-status-badge"><Activity className="w-3 h-3 text-brand" /> 현재 상태</span>
+        </div>
 
-          {isLoading && displayContainers.length === 0 ? (
-            <div className="flex flex-col items-center justify-center p-16">
-              <RefreshCw className="mb-3 h-7 w-7 animate-spin text-brand" />
-              <p className="text-sm text-secondary">컨테이너 상태를 분석하는 중입니다.</p>
-            </div>
-          ) : (
-            <table className="ops-fleet-table text-left">
-                <thead className="sticky top-0 z-10">
-                  <tr>
-                    <th>상태</th><th>컨테이너</th><th>역할</th><th>포트</th><th className="text-center">CPU</th><th className="text-center">메모리</th><th className="text-center">I/O</th><th className="text-center">도구</th><th className="text-right">제어</th>
-                  </tr>
-                </thead>
-                <tbody className="text-xs md:text-sm">
-                  {displayContainers.map((container) => {
-                    const statusCfg = getStatusConfig(container.status);
-                    const { Icon, displayName } = getContainerPresentation(container);
-                    
-                    const isActionPending = actionMutation.isPending && actionMutation.variables?.id === container.id;
-                    const isConfigPending = configMutation.isPending && configMutation.variables?.id === container.id;
-                    const isResetPending = resetMutation.isPending && resetMutation.variables === container.id;
-                    const isContainerLoading = isActionPending || isConfigPending || isResetPending;
+        {isLoading && displayContainers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center p-16">
+            <RefreshCw className="mb-3 h-7 w-7 animate-spin text-brand" />
+            <p className="text-sm text-secondary">컨테이너 상태를 분석하는 중입니다.</p>
+          </div>
+        ) : (
+          <table className="ops-fleet-table text-left">
+              <thead className="sticky top-0 z-10">
+                <tr>
+                  <th>상태</th><th>컨테이너</th><th>역할</th><th>포트</th><th className="text-center">CPU</th><th className="text-center">메모리</th><th className="text-center">I/O</th><th className="text-center">도구</th><th className="text-right">제어</th>
+                </tr>
+              </thead>
+              <tbody className="text-xs md:text-sm">
+                {displayContainers.map((container) => {
+                  const statusCfg = getStatusConfig(container.status);
+                  const { Icon, displayName } = getContainerPresentation(container);
+                  
+                  const isActionPending = actionMutation.isPending && actionMutation.variables?.id === container.id;
+                  const isConfigPending = configMutation.isPending && configMutation.variables?.id === container.id;
+                  const isResetPending = resetMutation.isPending && resetMutation.variables === container.id;
+                  const isContainerLoading = isActionPending || isConfigPending || isResetPending;
 
-                    const metrics = container.metrics || {
-                      cpu_pct: 0.0,
-                      mem_pct: 0.0,
-                      mem_usage: 0,
-                      mem_limit: 0,
-                      io_read: 0,
-                      io_write: 0
-                    };
+                  const metrics = container.metrics || {
+                    cpu_pct: 0.0,
+                    mem_pct: 0.0,
+                    mem_usage: 0,
+                    mem_limit: 0,
+                    io_read: 0,
+                    io_write: 0
+                  };
 
-                    return (
-                      <tr key={container.id}>
-                        {/* Status Indicator */}
-                        <td data-label="상태">
-                          <div className="flex items-center gap-2.5">
-                            <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
-                            <span className={`${statusCfg.textClass} text-xs md:text-sm uppercase tracking-[0.05em] font-bold`}>
-                              {container.status}
-                            </span>
+                  return (
+                    <tr key={container.id}>
+                      {/* Status Indicator */}
+                      <td data-label="상태">
+                        <div className="flex items-center gap-2.5">
+                          <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
+                          <span className={`${statusCfg.textClass} text-xs md:text-sm uppercase tracking-[0.05em] font-bold`}>
+                            {container.status}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* Display & Container Name */}
+                      <td data-label="컨테이너">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2 bg-subtle border border-line rounded-card shrink-0">
+                            <Icon className="w-5 h-5 text-brand" />
                           </div>
-                        </td>
-
-                        {/* Display & Container Name */}
-                        <td data-label="컨테이너">
-                          <div className="flex items-center gap-3">
-                            <div className="p-2 bg-subtle border border-line rounded-card shrink-0">
-                              <Icon className="w-5 h-5 text-brand" />
-                            </div>
-                            <div>
-                              <div className="font-display font-semibold text-strong text-base">{displayName}</div>
-                              <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums">{container.name}</div>
-                              {container.public_url && (
-                                <a
-                                  href={container.public_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  title="운영(prod) 공개 주소"
-                                  className="block text-brand text-xs md:text-sm mt-0.5 font-mono underline hover:opacity-80 break-all"
-                                >
-                                  {container.public_url.replace(/^https?:\/\//, '')}
-                                </a>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-
-                        {/* Role */}
-                        <td data-label="역할" className="text-ink text-xs md:text-sm">
-                          {container.role}
-                        </td>
-
-                        {/* Port Bindings */}
-                        <td data-label="포트" className="font-mono tabular-nums text-strong text-xs md:text-sm break-all">
-                          {container.ports.length > 0
-                            ? container.ports.join(', ')
-                            : (container.expected_ports || []).join(', ') || '내부 노출'
-                          }
-                        </td>
-
-                        {/* CPU Metric (Interactive) */}
-                        <td data-label="CPU" className="text-center">
-                          <button 
-                            type="button"
-                            disabled={container.status !== 'running'}
-                            onClick={() => container.status === 'running' && openChartModal(container.id, 'cpu')}
-                            className="ops-metric"
-                            title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
-                          >
-                            <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
-                              <Cpu className="w-3.5 h-3.5 opacity-80" />
-                              {container.status === 'running' ? `${metrics.cpu_pct.toFixed(1)}%` : '0.0%'}
-                            </span>
-                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
-                          </button>
-                        </td>
-
-                        {/* Memory Metric (Interactive) */}
-                        <td data-label="메모리" className="text-center">
-                          <button 
-                            type="button"
-                            disabled={container.status !== 'running'}
-                            onClick={() => container.status === 'running' && openChartModal(container.id, 'memory')}
-                            className="ops-metric"
-                            title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
-                          >
-                            <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
-                              <HardDrive className="w-3.5 h-3.5 opacity-80" />
-                              {container.status === 'running' ? `${metrics.mem_pct.toFixed(1)}%` : '0.0%'}
-                            </span>
-                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 uppercase tracking-[0.05em] font-bold font-mono tabular-nums">
-                              {container.status === 'running' ? formatBytes(metrics.mem_usage) : '0 B'}
-                            </span>
-                          </button>
-                        </td>
-
-                        {/* I/O Metrics (Interactive) */}
-                        <td data-label="I/O" className="text-center">
-                          <button 
-                            type="button"
-                            disabled={container.status !== 'running'}
-                            onClick={() => container.status === 'running' && openChartModal(container.id, 'io')}
-                            className="ops-metric"
-                            title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
-                          >
-                            <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
-                              <span className="block text-warn">R: {container.status === 'running' ? formatBytes(metrics.io_read) : '0 B'}</span>
-                              <span className="block text-danger">W: {container.status === 'running' ? formatBytes(metrics.io_write) : '0 B'}</span>
-                            </span>
-                            <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
-                          </button>
-                        </td>
-
-                        {/* Terminal Log & Configuration */}
-                        <td data-label="도구" className="text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => openLogModal(container.id)}
-                              className="ops-icon-button"
-                              title="실시간 터미널 로그 스트리밍 모달 열기"
-                            >
-                              <Terminal className="w-4 h-4" />
-                            </button>
-
-                            {/* 컨테이너가 없거나 docker가 죽어 있으면 inspect가 500이다.
-                                다른 지표 버튼과 같은 방식으로 미리 막는다. */}
-                            <button
-                              type="button"
-                              disabled={
-                                container.status === 'not_created' ||
-                                container.status === 'offline'
-                              }
-                              onClick={() => setDetailContainer(container)}
-                              className="ops-icon-button"
-                              title={
-                                container.status === 'not_created' ||
-                                container.status === 'offline'
-                                  ? '컨테이너가 생성되지 않아 상세 정보를 볼 수 없습니다'
-                                  : 'inspect 상세(mounts·networks·healthcheck·env) 보기'
-                              }
-                            >
-                              <Boxes className="w-4 h-4" />
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => openConfigModal(container)}
-                              className="ops-icon-button"
-                              title="컨테이너 세부 설정 변경"
-                            >
-                              <Settings className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </td>
-
-                        {/* Controller Actions */}
-                        <td data-label="제어" className="text-right">
-                          <div className="inline-flex gap-1.5 items-center">
-                            {isContainerLoading ? (
-                              <div className="flex items-center gap-1.5 text-xs text-secondary font-semibold py-2 px-3">
-                                <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand" />
-                                <span>처리 중</span>
-                              </div>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => handleAction(container.id, 'start')}
-                                  disabled={actionMutation.isPending || container.status === 'running'}
-                                  className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
-                                  title="컨테이너 가동"
-                                >
-                                  <Play className="w-3 h-3" />
-                                  Start
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => handleAction(container.id, 'stop')}
-                                  disabled={actionMutation.isPending || container.status !== 'running'}
-                                  className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
-                                  title="컨테이너 정지"
-                                >
-                                  <Square className="w-3 h-3" />
-                                  Stop
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => handleAction(container.id, 'restart')}
-                                  disabled={actionMutation.isPending || container.status !== 'running'}
-                                  className="ops-icon-button"
-                                  title="컨테이너 재부팅"
-                                >
-                                  <RotateCw className="w-3.5 h-3.5" />
-                                </button>
-                              </>
+                          <div>
+                            <div className="font-display font-semibold text-strong text-base">{displayName}</div>
+                            <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums">{container.name}</div>
+                            {container.public_url && (
+                              <a
+                                href={container.public_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="운영(prod) 공개 주소"
+                                className="block text-brand text-xs md:text-sm mt-0.5 font-mono underline hover:opacity-80 break-all"
+                              >
+                                {container.public_url.replace(/^https?:\/\//, '')}
+                              </a>
                             )}
                           </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-          )}
-        </section>
+                        </div>
+                      </td>
+
+                      {/* Role */}
+                      <td data-label="역할" className="text-ink text-xs md:text-sm">
+                        {container.role}
+                      </td>
+
+                      {/* Port Bindings */}
+                      <td data-label="포트" className="font-mono tabular-nums text-strong text-xs md:text-sm break-all">
+                        {container.ports.length > 0
+                          ? container.ports.join(', ')
+                          : (container.expected_ports || []).join(', ') || '내부 노출'
+                        }
+                      </td>
+
+                      {/* CPU Metric (Interactive) */}
+                      <td data-label="CPU" className="text-center">
+                        <button 
+                          type="button"
+                          disabled={container.status !== 'running'}
+                          onClick={() => container.status === 'running' && openChartModal(container.id, 'cpu')}
+                          className="ops-metric"
+                          title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
+                        >
+                          <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
+                            <Cpu className="w-3.5 h-3.5 opacity-80" />
+                            {container.status === 'running' ? `${metrics.cpu_pct.toFixed(1)}%` : '0.0%'}
+                          </span>
+                          <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
+                        </button>
+                      </td>
+
+                      {/* Memory Metric (Interactive) */}
+                      <td data-label="메모리" className="text-center">
+                        <button 
+                          type="button"
+                          disabled={container.status !== 'running'}
+                          onClick={() => container.status === 'running' && openChartModal(container.id, 'memory')}
+                          className="ops-metric"
+                          title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
+                        >
+                          <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
+                            <HardDrive className="w-3.5 h-3.5 opacity-80" />
+                            {container.status === 'running' ? `${metrics.mem_pct.toFixed(1)}%` : '0.0%'}
+                          </span>
+                          <span className="text-[10px] md:text-xs text-secondary mt-0.5 uppercase tracking-[0.05em] font-bold font-mono tabular-nums">
+                            {container.status === 'running' ? formatBytes(metrics.mem_usage) : '0 B'}
+                          </span>
+                        </button>
+                      </td>
+
+                      {/* I/O Metrics (Interactive) */}
+                      <td data-label="I/O" className="text-center">
+                        <button 
+                          type="button"
+                          disabled={container.status !== 'running'}
+                          onClick={() => container.status === 'running' && openChartModal(container.id, 'io')}
+                          className="ops-metric"
+                          title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
+                        >
+                          <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
+                            <span className="block text-warn">R: {container.status === 'running' ? formatBytes(metrics.io_read) : '0 B'}</span>
+                            <span className="block text-danger">W: {container.status === 'running' ? formatBytes(metrics.io_write) : '0 B'}</span>
+                          </span>
+                          <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
+                        </button>
+                      </td>
+
+                      {/* Terminal Log & Configuration */}
+                      <td data-label="도구" className="text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => openLogModal(container.id)}
+                            className="ops-icon-button"
+                            title="실시간 터미널 로그 스트리밍 모달 열기"
+                          >
+                            <Terminal className="w-4 h-4" />
+                          </button>
+
+                          {/* 컨테이너가 없거나 docker가 죽어 있으면 inspect가 500이다.
+                              다른 지표 버튼과 같은 방식으로 미리 막는다. */}
+                          <button
+                            type="button"
+                            disabled={
+                              container.status === 'not_created' ||
+                              container.status === 'offline'
+                            }
+                            onClick={() => setDetailContainer(container)}
+                            className="ops-icon-button"
+                            title={
+                              container.status === 'not_created' ||
+                              container.status === 'offline'
+                                ? '컨테이너가 생성되지 않아 상세 정보를 볼 수 없습니다'
+                                : 'inspect 상세(mounts·networks·healthcheck·env) 보기'
+                            }
+                          >
+                            <Boxes className="w-4 h-4" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => openConfigModal(container)}
+                            className="ops-icon-button"
+                            title="컨테이너 세부 설정 변경"
+                          >
+                            <Settings className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
+
+                      {/* Controller Actions */}
+                      <td data-label="제어" className="text-right">
+                        <div className="inline-flex gap-1.5 items-center">
+                          {isContainerLoading ? (
+                            <div className="flex items-center gap-1.5 text-xs text-secondary font-semibold py-2 px-3">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand" />
+                              <span>처리 중</span>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleAction(container.id, 'start')}
+                                disabled={actionMutation.isPending || container.status === 'running'}
+                                className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
+                                title="컨테이너 가동"
+                              >
+                                <Play className="w-3 h-3" />
+                                Start
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleAction(container.id, 'stop')}
+                                disabled={actionMutation.isPending || container.status !== 'running'}
+                                className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
+                                title="컨테이너 정지"
+                              >
+                                <Square className="w-3 h-3" />
+                                Stop
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleAction(container.id, 'restart')}
+                                disabled={actionMutation.isPending || container.status !== 'running'}
+                                className="ops-icon-button"
+                                title="컨테이너 재부팅"
+                              >
+                                <RotateCw className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+        )}
+      </section>
 
       {isCommandPaletteOpen && (
         <div

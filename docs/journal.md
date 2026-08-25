@@ -26,7 +26,20 @@ panel-header 740)에 맞춰 정렬했다. `ktdctl db-backup` 히스토리 API �
 
 WSL에서 `next build`/`eslint`/`tsc --noEmit`을 모두 통과시켰고, 로컬 QA 전용 admin
 credential로 백엔드를 띄워 데스크톱·390px 모바일 drawer·명령 팔레트·백업 이력 모달을
-Playwright로 직접 확인했다. n150 배포와 PR 병합 전 적대적 리뷰 1건을 별도로 수행한다.
+Playwright로 직접 확인했다.
+
+적대적 리뷰어 서브에이전트 1건을 별도로 수행해 geo의 실제 `AppShell`/`use-modal-a11y` 구현과
+직접 대조시켰다. 확인된 findings와 조치: (1, high) 모바일 drawer가 `role="dialog"
+aria-modal="true"`를 달고도 Tab 트랩이 없어 `<main>`으로 포커스가 새는 문제 — drawer가 열려
+있는 동안 `mainRef`에 `inert`를 토글하도록 고쳤다. (2, medium) drawer가 열린 채로 데스크톱
+폭까지 커지면 닫기 버튼이 `display:none`이 되며 포커스가 `<body>`로 유실되는 문제 — geo와
+동일하게 `<main>`으로 포커스를 되돌리도록 고쳤다. (3, low) 모바일 사이드바 drawer와
+`.ops-modal-backdrop`(명령 팔레트 등)가 같은 `--z-modal` 값을 공유해 향후 동시 등장 시 쌓임
+순서가 미정의될 수 있는 문제 — `--z-drawer`(300) 토큰을 새로 추가해 사이드바 전용으로
+분리했다. (4, nit) `globals.css` 헤더 주석이 옛 테마명("Hallmark: Cobalt")으로 남아 있던
+것과 (5, nit) `<main>` 제거 후 재정렬하지 않았던 JSX 들여쓰기 260줄을 정리했다. 리뷰는 OKLCH
+hue 회전·`info`/`warn`/`danger`/`ok` 불변·journal의 구체적 수치 인용을 geo 실제 코드와
+대조해 모두 정확함을 확인했다.
 
 ---
 

@@ -45,15 +45,25 @@ export default function AppShell({
 
   // 닫힌 drawer는 transform으로만 화면 밖에 있으므로 inert 없이는 탭 순서와 접근성 트리에
   // 그대로 남는다. 데스크톱 사이드바(같은 엘리먼트, menuOpen=false)에는 절대 적용하지 않는다.
+  // drawer가 열려 있는 동안에는 반대로 <main>을 inert 처리한다 — 이 컴포넌트는 별도의
+  // Tab 트랩을 구현하지 않으므로, inert가 없으면 aria-hidden만으로는 포커스가 뒤에 가려진
+  // 콘텐츠로 계속 넘어간다(aria-hidden은 tab order를 바꾸지 않는다).
   useEffect(() => {
     sidebarRef.current?.toggleAttribute('inert', isDrawerLayout && !menuOpen);
+    mainRef.current?.toggleAttribute('inert', isDrawerLayout && menuOpen);
   }, [isDrawerLayout, menuOpen]);
 
   // drawer breakpoint를 넘어 데스크톱 폭으로 커지면 열린 상태로 남은 drawer가 레이아웃을
-  // 깨뜨리므로 강제로 닫는다.
+  // 깨뜨리므로 강제로 닫는다. 이때 포커스가 사이드바 안에 있었다면(예: 닫기 버튼) 그 엘리먼트가
+  // 데스크톱 규칙에서 display:none으로 사라져 포커스가 <body>로 유실되므로 <main>으로 되돌린다.
   useEffect(() => {
     if (isDrawerLayout) return;
-    setMenuOpen(false);
+    setMenuOpen((wasOpen) => {
+      if (wasOpen && sidebarRef.current?.contains(document.activeElement)) {
+        queueMicrotask(() => mainRef.current?.focus());
+      }
+      return false;
+    });
   }, [isDrawerLayout]);
 
   useEffect(() => {
