@@ -12,7 +12,7 @@
 | 태스크 ID | 작업 항목 | 상태 | 다음 완료 조건 |
 |:---|:---|:---:|:---|
 | **T-C7-CAPTURE-OPS** | 읽기 전용 `pinvi-pair capture` 운영 프로비저닝 정리 | `[/]` | n150 trusted Manager 설치본의 read-only contract 확인, checkout env와 manifest 정본 하나를 확정하고 최초 capture/attestation 기록 |
-| **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | logout→재차단, PinVi WebSocket/mutating loop, consumer reconciliation을 실제 pair에서 실행하고 Map 저장소 정본 task와 결과를 교차 기록 |
+| **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 
 ## 공통 진행 규율
@@ -44,7 +44,7 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
 - [x] Map UI의 현재 socket close와 `/login` redirect, ticket/lease WebSocket wire를 실제 브라우저로
   확인했다.
 - [x] Map UI에서 logout 뒤 `/ops/datasets` protected route 재진입이 `/login`으로 재차단되는지
-  확인했다. PinVi 쪽 equivalent reblock은 아직 남는다.
+  확인했다.
 - [x] PinVi exact pair에서 logout 뒤 `/admin/features` protected route 재진입이 `/admin/login`으로
   재차단되는지 확인했다. 이 검증은 `/auth/logout` 204를 확인하고 application row를 쓰지 않았다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
