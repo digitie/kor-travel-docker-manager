@@ -33,15 +33,18 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
 
 현재 원격 후보:
 
-- Map PR #1064: `dd2ee61fdb1d0cedb0d7cb3526c804a3dfc5404e` (merge 완료)
+- Map PR #1066 exact head: `cc81081ff2e540a6ad9c428a296515e1d79bc316` (merge 완료; merge commit `14d18230…`)
 - Manager PR #197: `7017a5d2d7192018ddf0667623c4cc18b290c46b` (merge 완료)
 - Manager PR #198: Map role-bootstrap helper bind의 C6c 오탐 보완 (merge commit `19409e3f…`)
-- release pinset: `49548a610cbfa3a0d2242ef6e9a8cbd5664e61dec92391b8a476b02951b65c62`
-- 로컬 sealed paired build: 새 Map pin `dd2ee61f…` 기준 재생성 대기. 이전 pin의 image·receipt는
+- release pinset: `14a9a512836a48489146dc2bb0a04de309cf451b274b934d79805d171f83a193`
+- 로컬 sealed paired build: 새 Map pin `cc81081f…` 기준 Manager PR #200 merge 후 재생성한다. 이전 pin의 image·receipt는
   release evidence로 재사용하지 않으며, 새 로컬 artifact도 n150 production 증거가 아니다.
 
 남은 작업:
 
+- [ ] Manager PR #200을 ready 상태로 전환하고 required CI·전문 리뷰 green 후 merge한다.
+- [ ] merge된 Manager release로 새 Map `cc81081f…` 기준 paired image·receipt를 생성한다. 이전 pin의
+  image·receipt·journal은 재사용하지 않는다.
 - [ ] n150에서 trusted Manager release를 설치하고 approved root command
   `ktdctl pinvi-pair rebuild-pinned --confirm`을 실행한다. backup·scratch restore·이전 DB 복원은 실행하지
   않는다.
@@ -49,7 +52,7 @@ builder가 API·Dagster image와 application contract를 만들고, Manager는 �
   exact running image와 committed manifest를 확인한다.
 - [ ] 공개 Manager UI와 Map UI에서 실제 브라우저 login→protected view→logout→재차단을 확인하고,
   PinVi data-independent acceptance 및 WebSocket 재연결 loop 부재를 확인한다.
-- [ ] live evidence를 `journal.md`와 `tasks-done.md`에 기록하고 Map/Manager PR을 CI green 상태로 merge한다.
+- [ ] live evidence를 `journal.md`와 `tasks-done.md`에 기록한다.
 
 ## T-C7-CAPTURE-OPS — 읽기 전용 capture 운영 정리
 
