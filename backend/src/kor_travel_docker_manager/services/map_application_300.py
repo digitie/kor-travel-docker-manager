@@ -1166,6 +1166,48 @@ def write_owner_only_artifact(path: Path, raw: bytes) -> HostArtifactReceipt:
         raise
 
 
+def publish_root_read_only_artifact(path: Path, raw: bytes) -> HostArtifactReceipt:
+    """Publish a root-owned mode ``0444`` fixed-mount artifact atomically."""
+
+    if os.geteuid() != 0:
+        raise MapApplication300ContractError(
+            "fixed artifact publishing requires root"
+        )
+    _require_artifact_path(path)
+    parent = path.parent
+    _require_artifact_directory(parent)
+    if path.exists() or path.is_symlink():
+        return _verify_existing_fixed_artifact(path, raw)
+
+    digest = sha256_bytes(raw)
+    descriptor, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=parent
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(descriptor, 0o444)
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(tmp_path, path, follow_symlinks=False)
+        except FileExistsError:
+            return _verify_existing_fixed_artifact(path, raw)
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                return _verify_existing_fixed_artifact(path, raw)
+            raise
+        finally:
+            _safe_unlink(tmp_path)
+        _fsync_directory(parent)
+        _verify_existing_fixed_artifact(path, raw)
+        return HostArtifactReceipt(path=path, sha256=digest, size=len(raw))
+    except Exception:
+        _safe_unlink(tmp_path)
+        raise
+
+
 def _validate_fresh_migration_fence(
     payload: Mapping[str, Any],
     *,
@@ -1633,6 +1675,52 @@ def _verify_existing_artifact(path: Path, expected: bytes) -> HostArtifactReceip
         raise MapApplication300ContractError("artifact cannot be read safely") from exc
     if observed != expected:
         raise MapApplication300ContractError("artifact already exists with different bytes")
+    return HostArtifactReceipt(
+        path=path, sha256=sha256_bytes(expected), size=len(expected)
+    )
+
+
+def _verify_existing_fixed_artifact(
+    path: Path, expected: bytes
+) -> HostArtifactReceipt:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise MapApplication300ContractError("fixed artifact is unavailable") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o444
+        or metadata.st_nlink != 1
+    ):
+        raise MapApplication300ContractError("fixed artifact metadata is unsafe")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid != 0
+                or stat.S_IMODE(opened.st_mode) != 0o444
+                or opened.st_nlink != 1
+                or (opened.st_dev, opened.st_ino)
+                != (metadata.st_dev, metadata.st_ino)
+            ):
+                raise MapApplication300ContractError(
+                    "fixed artifact changed while opening"
+                )
+            observed = os.read(descriptor, len(expected) + 1)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise MapApplication300ContractError(
+            "fixed artifact cannot be read safely"
+        ) from exc
+    if observed != expected:
+        raise MapApplication300ContractError(
+            "fixed artifact already exists with different bytes"
+        )
     return HostArtifactReceipt(
         path=path, sha256=sha256_bytes(expected), size=len(expected)
     )

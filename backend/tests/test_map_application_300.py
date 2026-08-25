@@ -29,6 +29,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     json_artifact,
     parse_fresh_finalize_result,
     parse_fresh_root_result,
+    publish_root_read_only_artifact,
     sha256_bytes,
     validate_application_final_permit,
     validate_dagster_metadata_permit,
@@ -519,3 +520,12 @@ def test_owner_only_artifact_writer_rejects_noncanonical_or_shared_parent(
 
     with pytest.raises(MapApplication300ContractError, match="absolute"):
         write_owner_only_artifact(Path("relative.json"), b"{}")
+
+
+def test_fixed_artifact_publisher_requires_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("os.geteuid", lambda: 1000)
+
+    with pytest.raises(MapApplication300ContractError, match="requires root"):
+        publish_root_read_only_artifact(tmp_path / "permit.json", b"{}")
