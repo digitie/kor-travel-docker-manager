@@ -9,10 +9,12 @@ from kor_travel_docker_manager.services.c6c_deployment import DeploymentContract
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
     assert_map_database_principal_bootstrap,
+    create_fresh_application_300_database,
     database_runtimes_from_frozen_contract,
     read_database_schema_revision,
     recreate_empty_database,
     recreate_empty_databases,
+    reset_databases_for_application_300,
 )
 
 
@@ -260,6 +262,67 @@ def test_recreate_empty_databases_preflights_all_owners_before_drop(
         recreate_empty_databases(runtimes)
 
     assert owner_probes == ["map_application", "map_dagster"]
+    runner.assert_not_called()
+
+
+def test_application_300_reset_leaves_map_databases_absent_and_recreates_pinvi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], str]] = []
+    runtimes = (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
+    monkeypatch.setattr(
+        database_runtime,
+        "_read_database_owner",
+        Mock(side_effect=lambda runtime: runtime.owner_name),
+    )
+    monkeypatch.setattr(
+        database_runtime,
+        "_run_checked",
+        Mock(side_effect=lambda arguments, *, label: calls.append((arguments, label)) or b""),
+    )
+
+    reset_databases_for_application_300(runtimes)
+
+    assert [label for _, label in calls] == [
+        "map_application database destructive drop",
+        "map_dagster database destructive drop",
+        "pinvi database destructive drop",
+        "pinvi database destructive create",
+    ]
+    assert sum("createdb" in arguments for arguments, _ in calls) == 1
+    assert "createdb" in calls[-1][0]
+
+
+def test_fresh_application_300_database_requires_absence_and_template0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(return_value=b"")
+    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    create_fresh_application_300_database(_runtime("map_application"))
+
+    arguments = runner.call_args.args[0]
+    assert "createdb" in arguments
+    assert arguments[arguments.index("--template") + 1] == "template0"
+    assert arguments[arguments.index("--owner") + 1] == "map_owner"
+    assert runner.call_args.kwargs["label"] == "map_application fresh 300 database create"
+
+
+def test_fresh_application_300_database_refuses_existing_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock()
+    monkeypatch.setattr(
+        database_runtime,
+        "_read_database_owner",
+        Mock(return_value="map_owner"),
+    )
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    with pytest.raises(DeploymentContractError, match="already exists"):
+        create_fresh_application_300_database(_runtime("map_application"))
+
     runner.assert_not_called()
 
 

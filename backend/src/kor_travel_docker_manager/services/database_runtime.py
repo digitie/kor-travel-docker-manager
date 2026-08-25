@@ -227,6 +227,8 @@ def _recreate_empty_database_after_owner_preflight(
         ],
         label=f"{runtime.role} database destructive create",
     )
+
+
 def recreate_empty_databases(
     runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
 ) -> None:
@@ -253,6 +255,69 @@ def recreate_empty_databases(
             runtime,
             existing_owner=existing_owner,
         )
+
+
+def reset_databases_for_application_300(
+    runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+) -> None:
+    """Map 두 DB는 제거하고 PinVi DB만 즉시 다시 만든다.
+
+    application-300은 application DB를 ``template0``에서 별도 생성하고 metadata
+    DB도 격리된 identity producer가 만든다. 따라서 generic drop/create가 두 Map
+    DB를 미리 만들면 virgin-root 및 sealed metadata permit 계약을 우회한다.
+    """
+
+    if tuple(runtime.role for runtime in runtimes) != (
+        "map_application",
+        "map_dagster",
+        "pinvi",
+    ):
+        raise DeploymentContractError("pinned runtime database roles are invalid")
+    for runtime in runtimes:
+        _validate_runtime(runtime)
+    existing_owners = tuple(_read_database_owner(runtime) for runtime in runtimes)
+    for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
+        if existing_owner is not None and existing_owner not in _permitted_existing_owners(
+            runtime
+        ):
+            raise DeploymentContractError(
+                f"{runtime.role} database owner differs from the frozen contract"
+            )
+    for runtime, existing_owner in zip(runtimes[:2], existing_owners[:2], strict=True):
+        if existing_owner is not None:
+            _run_checked(
+                [
+                    *_database_admin_command(runtime, "dropdb"),
+                    "--force",
+                    runtime.database_name,
+                ],
+                label=f"{runtime.role} database destructive drop",
+            )
+    _recreate_empty_database_after_owner_preflight(
+        runtimes[2],
+        existing_owner=existing_owners[2],
+    )
+
+
+def create_fresh_application_300_database(runtime: DatabaseRuntime) -> None:
+    """부재가 확인된 Map application DB를 ``template0``에서 한 번만 만든다."""
+
+    _validate_runtime(runtime)
+    if runtime.role != "map_application":
+        raise DeploymentContractError("fresh application 300 database role is invalid")
+    if _read_database_owner(runtime) is not None:
+        raise DeploymentContractError("fresh application 300 database already exists")
+    _run_checked(
+        [
+            *_database_admin_command(runtime, "createdb"),
+            "--template",
+            "template0",
+            "--owner",
+            runtime.owner_name,
+            runtime.database_name,
+        ],
+        label="map_application fresh 300 database create",
+    )
 
 
 def read_database_schema_revision(runtime: DatabaseRuntime) -> str:
