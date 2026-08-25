@@ -192,9 +192,42 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
+_MAP_APPLICATION_FRESH_PYTHON = "/usr/local/bin/python"
+_MAP_APPLICATION_FRESH_300_EXECUTABLE = (
+    "/usr/local/bin/ktm-application-schema-fresh-300"
+)
+_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE = (
+    "/usr/local/bin/ktm-application-schema-fresh-finalize"
+)
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
+
+
+def _application_300_profile_operation_args(
+    *,
+    service: str,
+    executable: str,
+    operation: str,
+    operation_id: str,
+) -> list[str]:
+    """고정 entrypoint를 보존하면서 recovery/probe argv를 명시한다."""
+
+    return [
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        _MAP_APPLICATION_FRESH_PYTHON,
+        service,
+        "-I",
+        executable,
+        operation,
+        "--operation-id",
+        operation_id,
+    ]
 _MAP_APPLICATION_300_RECEIPT_DIRECTORY = "map-application-300-candidate"
 _MAP_APPLICATION_300_ARTIFACT_DIRECTORY = "map-application-300-artifacts"
 _MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
@@ -5909,17 +5942,12 @@ class ComposeService:
                         try:
                             root_recover_command = (
                                 self._run_pinned_runtime_rebuild_compose(
-                                    [
-                                        "--profile",
-                                        "bootstrap",
-                                        "run",
-                                        "--rm",
-                                        "--no-deps",
-                                        _MAP_APPLICATION_FRESH_300_SERVICE,
-                                        "recover",
-                                        "--operation-id",
-                                        root_plan.operation_id,
-                                    ],
+                                    _application_300_profile_operation_args(
+                                        service=_MAP_APPLICATION_FRESH_300_SERVICE,
+                                        executable=_MAP_APPLICATION_FRESH_300_EXECUTABLE,
+                                        operation="recover",
+                                        operation_id=root_plan.operation_id,
+                                    ),
                                     transaction=runtime_transaction,
                                 )
                             )
@@ -5944,17 +5972,12 @@ class ComposeService:
                                 )
                                 missing_probe_command = (
                                     self._run_pinned_runtime_rebuild_compose(
-                                        [
-                                            "--profile",
-                                            "bootstrap",
-                                            "run",
-                                            "--rm",
-                                            "--no-deps",
-                                            _MAP_APPLICATION_FRESH_300_SERVICE,
-                                            "probe-missing",
-                                            "--operation-id",
-                                            root_plan.operation_id,
-                                        ],
+                                        _application_300_profile_operation_args(
+                                            service=_MAP_APPLICATION_FRESH_300_SERVICE,
+                                            executable=_MAP_APPLICATION_FRESH_300_EXECUTABLE,
+                                            operation="probe-missing",
+                                            operation_id=root_plan.operation_id,
+                                        ),
                                         transaction=runtime_transaction,
                                     )
                                 )
@@ -6136,17 +6159,12 @@ class ComposeService:
                         try:
                             finalize_recover_command = (
                                 self._run_pinned_runtime_rebuild_compose(
-                                    [
-                                        "--profile",
-                                        "bootstrap",
-                                        "run",
-                                        "--rm",
-                                        "--no-deps",
-                                        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                                        "recover",
-                                        "--operation-id",
-                                        finalize_plan.operation_id,
-                                    ],
+                                    _application_300_profile_operation_args(
+                                        service=_MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+                                        executable=_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE,
+                                        operation="recover",
+                                        operation_id=finalize_plan.operation_id,
+                                    ),
                                     transaction=runtime_transaction,
                                 )
                             )
@@ -6176,17 +6194,12 @@ class ComposeService:
                                 )
                                 missing_probe_command = (
                                     self._run_pinned_runtime_rebuild_compose(
-                                        [
-                                            "--profile",
-                                            "bootstrap",
-                                            "run",
-                                            "--rm",
-                                            "--no-deps",
-                                            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                                            "probe-missing",
-                                            "--operation-id",
-                                            finalize_plan.operation_id,
-                                        ],
+                                        _application_300_profile_operation_args(
+                                            service=_MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+                                            executable=_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE,
+                                            operation="probe-missing",
+                                            operation_id=finalize_plan.operation_id,
+                                        ),
                                         transaction=runtime_transaction,
                                     )
                                 )
@@ -6289,17 +6302,12 @@ class ComposeService:
                     plan=finalize_plan,
                 )
                 finalize_recover_command = self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "--profile",
-                        "bootstrap",
-                        "run",
-                        "--rm",
-                        "--no-deps",
-                        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                        "recover",
-                        "--operation-id",
-                        finalize_plan.operation_id,
-                    ],
+                    _application_300_profile_operation_args(
+                        service=_MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+                        executable=_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE,
+                        operation="recover",
+                        operation_id=finalize_plan.operation_id,
+                    ),
                     transaction=runtime_transaction,
                 )
                 finalize_recover_stdout = finalize_recover_command.get("stdout")

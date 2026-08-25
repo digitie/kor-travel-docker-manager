@@ -2845,7 +2845,11 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 "run",
                 "--rm",
                 "--no-deps",
+                "--entrypoint",
+                "/usr/local/bin/python",
                 "kor-travel-map-application-fresh-300",
+                "-I",
+                "/usr/local/bin/ktm-application-schema-fresh-300",
                 "recover",
                 "--operation-id",
                 root_plan.operation_id,
@@ -2862,7 +2866,11 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 "run",
                 "--rm",
                 "--no-deps",
+                "--entrypoint",
+                "/usr/local/bin/python",
                 "kor-travel-map-application-fresh-300",
+                "-I",
+                "/usr/local/bin/ktm-application-schema-fresh-300",
                 "probe-missing",
                 "--operation-id",
                 root_plan.operation_id,
@@ -2921,7 +2929,11 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 "run",
                 "--rm",
                 "--no-deps",
+                "--entrypoint",
+                "/usr/local/bin/python",
                 "kor-travel-map-application-fresh-finalize",
+                "-I",
+                "/usr/local/bin/ktm-application-schema-fresh-finalize",
                 "recover",
                 "--operation-id",
                 finalize_plan.operation_id,
@@ -2937,7 +2949,11 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 "run",
                 "--rm",
                 "--no-deps",
+                "--entrypoint",
+                "/usr/local/bin/python",
                 "kor-travel-map-application-fresh-finalize",
+                "-I",
+                "/usr/local/bin/ktm-application-schema-fresh-finalize",
                 "recover",
                 "--operation-id",
                 finalize_plan.operation_id,
@@ -3199,6 +3215,30 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         "--no-deps",
         "kor-travel-map-application-fresh-finalize",
     )
+    root_recovery_prefix = (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "/usr/local/bin/python",
+        "kor-travel-map-application-fresh-300",
+        "-I",
+        "/usr/local/bin/ktm-application-schema-fresh-300",
+    )
+    finalize_recovery_prefix = (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "/usr/local/bin/python",
+        "kor-travel-map-application-fresh-finalize",
+        "-I",
+        "/usr/local/bin/ktm-application-schema-fresh-finalize",
+    )
     storage_command = (
         "run",
         "--rm",
@@ -3208,13 +3248,13 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     if phase == "fresh_root_execution_intent":
         assert root_plan is not None
         assert (
-            *root_execution_command,
+            *root_recovery_prefix,
             "recover",
             "--operation-id",
             root_plan.operation_id,
         ) in operations
         assert (
-            *root_execution_command,
+            *root_recovery_prefix,
             "probe-missing",
             "--operation-id",
             root_plan.operation_id,
@@ -3223,13 +3263,13 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     elif phase == "fresh_finalize_execution_intent":
         assert finalize_plan is not None
         assert (
-            *finalize_execution_command,
+            *finalize_recovery_prefix,
             "recover",
             "--operation-id",
             finalize_plan.operation_id,
         ) in operations
         assert (
-            *finalize_execution_command,
+            *finalize_recovery_prefix,
             "probe-missing",
             "--operation-id",
             finalize_plan.operation_id,
