@@ -61,6 +61,9 @@ _CONCIERGE_SOURCE_ENV_MIGRATIONS = {
     "KTC_UI_TRUST_FORWARDED_IPS": "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS",
     "KTC_UI_PUBLIC_ORIGINS": "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS",
 }
+_CONCIERGE_ROOT_AUTH_FALLBACK_SOURCES = frozenset(
+    {"API_KEYS", "APP_ENV", "API_AUTH_ENABLED"}
+)
 _CONCIERGE_LEGACY_ROOT_VWORLD_ENV = "NEXT_PUBLIC_VWORLD_API_KEY"
 _CONCIERGE_ROOT_VWORLD_ENV = "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY"
 _CONCIERGE_ROOT_BACKEND_KEY_ENV = "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY"
@@ -682,11 +685,18 @@ def _collect_updates(
         source_payload, set(_CONCIERGE_SOURCE_ENV_MIGRATIONS), "Concierge source environment"
     )
     source_values = _read_dotenv_values(source_payload, "Concierge source environment")
-    source_updates = {
-        target: _required_value(source_values, source, "Concierge source environment")
-        for source, target in _CONCIERGE_SOURCE_ENV_MIGRATIONS.items()
-    }
-    _validate_concierge_source_values(source_updates, root_values)
+    source_updates: dict[str, str] = {}
+    effective_values: dict[str, str] = {}
+    for source, target in _CONCIERGE_SOURCE_ENV_MIGRATIONS.items():
+        if source in source_values:
+            value = _required_value(source_values, source, "Concierge source environment")
+            source_updates[target] = value
+        elif source in _CONCIERGE_ROOT_AUTH_FALLBACK_SOURCES:
+            value = _required_value(root_values, target, "Manager root environment")
+        else:
+            value = _required_value(source_values, source, "Concierge source environment")
+        effective_values[target] = value
+    _validate_concierge_source_values(effective_values, root_values)
     return {
         **geo_values,
         **source_updates,

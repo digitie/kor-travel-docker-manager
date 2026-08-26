@@ -561,6 +561,119 @@ def test_retire_legacy_override_migrates_exact_values_and_archives_after_config(
     assert values["KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL"] == ""
 
 
+def test_retire_legacy_override_uses_existing_root_api_auth_when_absent_from_ui_source(
+    tmp_path: Path,
+) -> None:
+    root, root_env, source = _migration_tree(tmp_path)
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document["services"]["kor-travel-concierge-ui"]["env_file"] = [
+        {
+            "path": str(tmp_path / "kor-travel-concierge" / ".env"),
+            "required": True,
+            "format": "raw",
+        }
+    ]
+    source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    source.chmod(0o600)
+    source_env = tmp_path / "kor-travel-concierge" / ".env"
+    source_env.write_text(
+        "\n".join(
+            line
+            for line in source_env.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(("API_KEYS=", "APP_ENV=", "API_AUTH_ENABLED="))
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_env.chmod(0o600)
+    root_env.write_text(
+        root_env.read_text(encoding="utf-8")
+        + "KOR_TRAVEL_CONCIERGE_API_KEYS='concierge-old-key,concierge-bff-key'\n"
+        + "KOR_TRAVEL_CONCIERGE_APP_ENV=production\n"
+        + "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true\n",
+        encoding="utf-8",
+    )
+    root_env.chmod(0o600)
+
+    stage_legacy_compose_override(source_path=source, project_root=root, require_root=False)
+    _retire_legacy_compose_override(
+        project_root=root,
+        compose_config_runner=_valid_config_runner,
+        compose_up_runner=_no_op_up_runner,
+        require_root=False,
+    )
+
+    values = dotenv_values(root_env, interpolate=False)
+    assert values["KOR_TRAVEL_CONCIERGE_API_KEYS"] == "concierge-old-key,concierge-bff-key"
+    assert values["KOR_TRAVEL_CONCIERGE_APP_ENV"] == "production"
+    assert values["KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED"] == "true"
+
+
+def test_retire_legacy_override_rejects_declared_blank_api_auth_even_with_root_value(
+    tmp_path: Path,
+) -> None:
+    root, root_env, source = _migration_tree(tmp_path)
+    source_env = tmp_path / "kor-travel-concierge" / ".env"
+    source_env.write_text(
+        source_env.read_text(encoding="utf-8").replace(
+            "API_KEYS='concierge-old-key,concierge-bff-key'", "API_KEYS="
+        ),
+        encoding="utf-8",
+    )
+    source_env.chmod(0o600)
+    root_env.write_text(
+        root_env.read_text(encoding="utf-8")
+        + "KOR_TRAVEL_CONCIERGE_API_KEYS='concierge-old-key,concierge-bff-key'\n"
+        + "KOR_TRAVEL_CONCIERGE_APP_ENV=production\n"
+        + "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true\n",
+        encoding="utf-8",
+    )
+    root_env.chmod(0o600)
+
+    stage_legacy_compose_override(source_path=source, project_root=root, require_root=False)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="missing a required migration value"):
+        _retire_legacy_compose_override(
+            project_root=root,
+            compose_config_runner=lambda *_args: pytest.fail("config must not run"),
+            require_root=False,
+        )
+
+
+def test_retire_legacy_override_rejects_missing_ui_value_even_with_root_api_auth(
+    tmp_path: Path,
+) -> None:
+    root, root_env, source = _migration_tree(tmp_path)
+    source_env = tmp_path / "kor-travel-concierge" / ".env"
+    source_env.write_text(
+        "\n".join(
+            line
+            for line in source_env.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("KTC_UI_SESSION_SECRET=")
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    source_env.chmod(0o600)
+    root_env.write_text(
+        root_env.read_text(encoding="utf-8")
+        + "KOR_TRAVEL_CONCIERGE_API_KEYS='concierge-old-key,concierge-bff-key'\n"
+        + "KOR_TRAVEL_CONCIERGE_APP_ENV=production\n"
+        + "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true\n",
+        encoding="utf-8",
+    )
+    root_env.chmod(0o600)
+
+    stage_legacy_compose_override(source_path=source, project_root=root, require_root=False)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="missing a required migration value"):
+        _retire_legacy_compose_override(
+            project_root=root,
+            compose_config_runner=lambda *_args: pytest.fail("config must not run"),
+            require_root=False,
+        )
+
+
 @pytest.mark.skipif(shutil.which("docker") is None, reason="Docker Compose가 필요함")
 def test_retired_root_env_round_trips_special_values_through_compose_config(
     tmp_path: Path,
