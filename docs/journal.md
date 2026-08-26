@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-08-26 — Debian provenance 기반 offline wheelhouse 발행 후보
+
+Manager #229의 clean merged source를 공식 trusted installer로 설치할 때, 기존 root-owned source
+wheelhouse에는 runtime dependency만 있고 backend build backend인 `poetry-core` wheel이 없어서
+`pip wheel --no-index`가 activation 전에 fail-close했다. transaction staging/rollback은 installer가
+정리했고 canonical `.env`, Docker/Compose, candidate, journal, runtime, DB에는 write가 없었다.
+
+후속 후보는 network·PyPI·home/user-writable 입력을 쓰지 않는다. dedicated provisioning 도구는 기존
+root-owned source wheelhouse의 file identity를 snapshot하고, Debian `python3-poetry-core`의 installed
+status와 `dpkg --verify`를 확인한 뒤 installed pure-Python package로부터 standards-compliant
+`poetry_core-<version>-py3-none-any.whl`를 만든다. source wheel과 생성 wheel SHA만 담은 비밀 비포함
+provenance manifest를 같은 temporary directory에 쓰고 fsync한 뒤, root-owned default destination을
+atomic publish한다. Debian evidence command는 fixed `/usr/bin/dpkg`·`/usr/bin/dpkg-query`와 minimal
+environment만 사용한다. 기존 destination은 no-replace publish로 덮어쓰지 않으며 concurrent 발행은
+root-only lock으로 거부한다. crash 뒤 `.wheelhouse.stage.*` residue와 source의 동일 `poetry-core`
+wheel filename 또는 다른 version·대소문자의 모든 `poetry-core` candidate는 자동 정리·교체하지 않고
+fail-close한다.
+
+focused regression은 generated wheel의 member/`RECORD`, destination no-overwrite, Debian package drift
+reject를 다룬다. bootstrap에서 user-writable checkout의 Python/Bash를 root가 직접 실행하지 않는다.
+root operator는 out-of-band release attestation의 exact commit과 SHA-256으로 Git blob을 root-owned
+temporary file에 복사·검증하고, 그 staged file만 clean environment로 실행한다. installer도 같은
+staging과 expected source revision을 사용한다. 새 PR의 두 전문 적대 리뷰와 전체 backend gate,
+trusted deployment가 끝나기 전에는 `rebuild-pinned`를 다시 실행하지 않는다.
+
+---
+
 ## 2026-08-26 — fresh PinVi role credential의 trusted rebuild/rebind 보정 후보
 
 Concierge boundary #228을 trusted release로 설치하고 sanctioned stage·retire와 공개 HTTP/실제 browser
