@@ -273,6 +273,9 @@ prod 전환 순서는 다음과 같다.
    state에 snapshot한 뒤, `ktdctl compose-boundary retire-legacy-override --confirm`으로 그 staged 입력의
    알려진 Geo backup과 Concierge UI source만 이관한다. stage는 Docker/Compose를 호출하거나 home source를
    삭제하지 않으며 이후 retire/retry도 home 경로를 다시 읽지 않는다. retire는 candidate `.env`를 원자
+   갱신하기 전에 stage 명령은 legacy `env_file`이 exact sibling source의 구형 상대 문자열 또는 exact sibling `path`와 boolean
+   `required: true`만 든 Compose 장형 mapping 한 항목인지 확인한다. 다른 path·key·optional source는 fail-close한다.
+   retire는 candidate `.env`를 원자
    갱신하고 canonical `/opt` Compose를 출력 없이 검증한 뒤에만 같은 protected state 안의 pending snapshot을
    owner-only archive로 옮긴다. n150의 rebuild 정본은 `rehearsal/rebuildable` mode이므로 stage/retire는 이를
    PinVi production·Map principal-required contract와 함께 재검증하고 `rebuild-pinned`와 같은 root-owned host

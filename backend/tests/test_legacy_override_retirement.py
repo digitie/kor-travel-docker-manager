@@ -207,6 +207,51 @@ def test_stage_legacy_override_snapshots_inputs_without_compose_or_source_remova
     assert (pending / "concierge-source.env").read_bytes() == source_env.read_bytes()
 
 
+def test_stage_legacy_override_accepts_exact_long_form_source_reference(tmp_path: Path) -> None:
+    root, _root_env, source = _migration_tree(tmp_path)
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document["services"]["kor-travel-concierge-ui"]["env_file"] = [
+        {
+            "path": str(tmp_path / "kor-travel-concierge" / ".env"),
+            "required": True,
+        }
+    ]
+    source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    source.chmod(0o600)
+
+    pending = stage_legacy_compose_override(
+        source_path=source,
+        project_root=root,
+        require_root=False,
+    )
+
+    assert (pending / "docker-compose.override.yml").read_bytes() == source.read_bytes()
+
+
+def test_stage_legacy_override_rejects_long_form_source_reference_outside_sibling(
+    tmp_path: Path,
+) -> None:
+    root, _root_env, source = _migration_tree(tmp_path)
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document["services"]["kor-travel-concierge-ui"]["env_file"] = [
+        {
+            "path": str(tmp_path / "unexpected" / ".env"),
+            "required": True,
+        }
+    ]
+    source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    source.chmod(0o600)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="source reference"):
+        stage_legacy_compose_override(
+            source_path=source,
+            project_root=root,
+            require_root=False,
+        )
+
+    assert not (root / ".legacy-compose-override-state" / "pending").exists()
+
+
 def test_root_execution_rejects_callers_project_root_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

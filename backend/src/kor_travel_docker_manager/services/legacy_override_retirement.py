@@ -726,10 +726,6 @@ def _collect_geo_backup_values(override: Mapping[str, Any]) -> dict[str, str]:
     ui_service = services.get("kor-travel-concierge-ui")
     if not isinstance(ui_service, Mapping) or set(ui_service) != {"command", "env_file"}:
         raise LegacyOverrideRetirementError("legacy Concierge UI override shape is not recognized")
-    # legacy UI command는 절대 실행하지 않는다. `env_file`은 staging에서 exact known
-    # source `.env`를 snapshot하기 위한 reference로만 제한적으로 해석한다.
-    if ui_service.get("env_file") != ["../kor-travel-concierge/.env"]:
-        raise LegacyOverrideRetirementError("legacy Concierge UI source reference is not recognized")
     return values_by_target
 
 
@@ -743,12 +739,41 @@ def _legacy_concierge_source_env_path(
     stage를 막을 수 있을 뿐 root-owned source 내용을 바꾸는 입력 경계가 될 수 없다.
     """
 
-    _collect_geo_backup_values(override)
     if not override_path.is_absolute() or override_path.name != _OVERRIDE_NAME:
         raise LegacyOverrideRetirementError("legacy override source path is invalid")
     if override_path.parent.name != "kor-travel-docker-manager":
         raise LegacyOverrideRetirementError("legacy override source path is not recognized")
-    return override_path.parent.parent / "kor-travel-concierge" / ".env"
+    source_env_path = override_path.parent.parent / "kor-travel-concierge" / ".env"
+    _collect_geo_backup_values(override)
+    _assert_legacy_concierge_source_reference(override, source_env_path)
+    return source_env_path
+
+
+def _assert_legacy_concierge_source_reference(
+    override: Mapping[str, Any], source_env_path: Path
+) -> None:
+    """stage가 허용하는 legacy UI source reference를 exact file 하나로 고정한다."""
+
+    services = override.get("services")
+    if not isinstance(services, Mapping):
+        raise LegacyOverrideRetirementError("legacy override service set is not recognized")
+    ui_service = services.get("kor-travel-concierge-ui")
+    if not isinstance(ui_service, Mapping):
+        raise LegacyOverrideRetirementError("legacy Concierge UI override shape is not recognized")
+
+    source_reference = ui_service.get("env_file")
+    if source_reference == ["../kor-travel-concierge/.env"]:
+        return
+    if (
+        isinstance(source_reference, list)
+        and len(source_reference) == 1
+        and isinstance(source_reference[0], Mapping)
+        and set(source_reference[0]) == {"path", "required"}
+        and source_reference[0].get("path") == str(source_env_path)
+        and source_reference[0].get("required") is True
+    ):
+        return
+    raise LegacyOverrideRetirementError("legacy Concierge UI source reference is not recognized")
 
 
 def _validate_concierge_source_values(

@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-26 — 실제 legacy Compose 장형 `env_file`를 exact sibling source로 수용하는 보정 후보
+
+#224 merge trusted release를 n150에 공식 installer로 반영한 뒤 root-only `stage-legacy-override`를 한 번
+실행했다. 이 명령은 Docker/Compose·DB·runtime·canonical root `.env`를 바꾸기 전에, 실제 legacy UI가 쓰는
+Compose 장형 `env_file` mapping을 구형 상대 문자열 allowlist가 인식하지 못해 fail-close했다. stage 입력의
+final source `.env`는 이 명령의 owner-only precondition에 맞췄지만 pending snapshot이나 Compose mutation은 만들지
+않았다.
+
+후속 후보는 자유로운 path 형식을 열지 않는다. 구형 `../kor-travel-concierge/.env` 한 문자열은 그대로
+수용하고, 장형 표현은 override 위치에서 계산한 동일 sibling `.env`의 `path`와 boolean `required: true`만 든
+한 mapping으로 한정한다. 다른 absolute path·추가 key·`required: false`·여러 source는 계속 stage 전 fail-close한다.
+descriptor-safe final-file snapshot, trusted `/opt` canonical execution root, protected pending→archive, home source의
+Compose argv/cwd/env-file 비유입은 변경하지 않는다.
+
+---
+
 ## 2026-08-26 — trusted release/runtime split을 legacy Compose handoff로 고정하는 후속 후보
 
 Manager #223은 merge 뒤 trusted release로 배포됐지만, installed shim이 고정한 canonical `/opt` project root를
