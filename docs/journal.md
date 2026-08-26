@@ -14,7 +14,8 @@ final source `.env`는 이 명령의 owner-only precondition에 맞췄지만 pen
 
 후속 후보는 자유로운 path 형식을 열지 않는다. 구형 `../kor-travel-concierge/.env` 한 문자열은 그대로
 수용하고, 장형 표현은 override 위치에서 계산한 동일 sibling `.env`의 `path`와 boolean `required: true`만 든
-한 mapping으로 한정한다. 다른 absolute path·추가 key·`required: false`·여러 source는 계속 stage 전 fail-close한다.
+한 mapping으로 한정한다. 실제 source가 명시한 Compose raw mode `format: raw`는 같은 exact mapping에서만 추가로
+수용한다. 다른 absolute path·추가 key/format·`required: false`·여러 source는 계속 stage 전 fail-close한다.
 descriptor-safe final-file snapshot, trusted `/opt` canonical execution root, protected pending→archive, home source의
 Compose argv/cwd/env-file 비유입은 변경하지 않는다.
 

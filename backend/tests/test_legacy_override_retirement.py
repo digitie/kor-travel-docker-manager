@@ -214,6 +214,7 @@ def test_stage_legacy_override_accepts_exact_long_form_source_reference(tmp_path
         {
             "path": str(tmp_path / "kor-travel-concierge" / ".env"),
             "required": True,
+            "format": "raw",
         }
     ]
     source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
@@ -273,7 +274,7 @@ def test_long_form_source_reference_completes_stage_retire_and_activate_without_
 
 
 @pytest.mark.parametrize(
-    "variant", ["optional", "string", "integer", "extra", "multiple", "relative", "nonlist"]
+    "variant", ["optional", "string", "integer", "format", "extra", "multiple", "relative", "nonlist"]
 )
 def test_stage_legacy_override_rejects_noncanonical_long_form_source_reference(
     tmp_path: Path, variant: str
@@ -287,6 +288,8 @@ def test_stage_legacy_override_rejects_noncanonical_long_form_source_reference(
         mapping["required"] = "true"
     elif variant == "integer":
         mapping["required"] = 1
+    elif variant == "format":
+        mapping["format"] = "default"
     elif variant == "extra":
         mapping["extra"] = "rejected"
     elif variant == "relative":

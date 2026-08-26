@@ -768,9 +768,15 @@ def _assert_legacy_concierge_source_reference(
         isinstance(source_reference, list)
         and len(source_reference) == 1
         and isinstance(source_reference[0], Mapping)
-        and set(source_reference[0]) == {"path", "required"}
         and source_reference[0].get("path") == str(source_env_path)
         and source_reference[0].get("required") is True
+        and (
+            set(source_reference[0]) == {"path", "required"}
+            or (
+                set(source_reference[0]) == {"path", "required", "format"}
+                and source_reference[0].get("format") == "raw"
+            )
+        )
     ):
         return
     raise LegacyOverrideRetirementError("legacy Concierge UI source reference is not recognized")
