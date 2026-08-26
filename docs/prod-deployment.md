@@ -154,8 +154,9 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 retire는 protected pending snapshot의 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고,
 값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. candidate root `.env`를 원자적으로
 갱신한 뒤 canonical `/opt` Compose를 출력 없이 raw/resolved C6c 경계까지 검증하고, 성공한 경우에만 **같은
-protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. 같은 C6c global mutation
-lock을 계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
+protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
+rehearsal/rebuildable에서는 pinned-runtime rebuild host lease(production에서는 fixed C6c global mutation lock)를
+계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
 production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이 실패하면 root
 `.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
 

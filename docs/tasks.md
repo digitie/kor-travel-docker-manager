@@ -61,10 +61,11 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   `compose-boundary stage-legacy-override --source <absolute-path> --confirm`으로 protected C6c state에
   descriptor-safe snapshot한다. retire는 이 staged pair만 raw allowlist·backend key/API key-set membership·
   production/authentication API guard·host network·API/UI production command/port·atomic root `.env`·실제
-  raw/resolved C6c config를 통과할 때 같은 state filesystem 안에서 archive하고, 같은 global mutation lock 안에서
+  raw/resolved C6c config를 통과할 때 같은 state filesystem 안에서 archive하고, 해당 deployment lock 안에서
   Concierge API/MCP/scheduler/UI를 재생성한다. 실제 n150은 `rehearsal/rebuildable` pinned rebuild mode이므로
-  stage/retire도 그 exact mode·PinVi production·Map principal-required contract와 rebuild host lease를 공유하며,
-  production으로 수동 전환하지 않는다. archive durability 불확실성은 candidate `.env`를 되돌리지 않는 typed
+  stage/retire는 그 exact mode·PinVi production·Map principal-required contract와 pinned-runtime rebuild host
+  lease를 공유하며, production으로 수동 전환하지 않는다. production mode에서는 fixed C6c global mutation
+  lock을 사용한다. archive durability 불확실성은 candidate `.env`를 되돌리지 않는 typed
   failure로 남긴다. archive 뒤 재생성만 실패하면 `compose-boundary activate-concierge --confirm`으로 같은 계약을
   재검증한 뒤 재시도한다. home source는 rename/delete/Compose 실행 대상이 아니며, 그 전에는 override를 수동
   삭제하거나 rebuild를 재시도하지 않는다.

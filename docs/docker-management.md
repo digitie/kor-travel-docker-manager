@@ -298,9 +298,10 @@ prod 전환 순서는 다음과 같다.
    Concierge API는 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
    `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`를 root authority로 명시해야 하며, 이 둘이 local/false이면
    이관 명령이 실패한다.
-   이관 명령이 같은 C6c lock 안에서 API/MCP/scheduler/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
-   POST와 BFF 호출을 다시 확인한다. 재생성만 재시도해야 하면 `ktdctl compose-boundary activate-concierge --confirm`을
-   사용한다. production의 일반 `ensure`는 이 경로에 사용할 수 없다.
+   이관 명령이 deployment lock 안에서 API/MCP/scheduler/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
+   POST와 BFF 호출을 다시 확인한다. canonical rehearsal/rebuildable에서는 `rebuild-pinned`와 같은
+   pinned-runtime host lease를, production에서는 fixed C6c global mutation lock을 사용한다. 재생성만 재시도해야 하면
+   `ktdctl compose-boundary activate-concierge --confirm`을 사용한다. production의 일반 `ensure`는 이 경로에 사용할 수 없다.
 7. 모든 smoke가 통과한 뒤에만 `KOR_TRAVEL_CONCIERGE_API_KEYS=new`으로 구 static 키를 제거하고
    API/MCP/scheduler를 재생성한다. 구 키 401, 새 admin 키의 내부 API 200, read 키의 공급 GET 200·
    내부/write 403, UI 로그인 200+`Set-Cookie`를 다시 확인한다.

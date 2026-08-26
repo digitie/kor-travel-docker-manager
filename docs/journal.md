@@ -52,9 +52,11 @@ canonical sibling Concierge source의 정확한 이름만 raw 파싱한다. back
 입력이 regular file·안전 mode인지, 기존 root 값이 source와 충돌하지 않는지를 검사한다. 또한 API의 `APP_ENV=production`과
 `API_AUTH_ENABLED=true`를 함께 이관·검증해 override 퇴역 뒤 local/unauthenticated 기본값으로 내려가는 downgrade를 막는다.
 candidate `.env`를 atomic 갱신하고 canonical Compose의 실제 raw/resolved 출력을 메모리에서 C6c 검증한 뒤에만 override를
-owner-only archive로 rename한다. 이 전 과정은 production C6c global mutation lock으로 직렬화한다. archive rename 전 실패면
+owner-only archive로 rename한다. 이 전 과정은 deployment contract에 따라 직렬화한다. canonical
+rehearsal/rebuildable은 pinned-runtime rebuild host lease를, production은 fixed C6c global mutation lock을 사용한다.
+archive rename 전 실패면
 원래 `.env`를 복구하지만, rename 뒤 directory durability가 불확실하면 candidate `.env`와 archive를 유지한 typed failure로
-중단해 split-brain rollback을 만들지 않는다. archive 성공 뒤에는 같은 lock 안에서 Concierge API/MCP/scheduler/UI 정확한
+중단해 split-brain rollback을 만들지 않는다. archive 성공 뒤에는 같은 deployment lock 안에서 Concierge API/MCP/scheduler/UI 정확한
 service만 canonical source로 재생성한다. 이 재생성만 실패하면 archive와 candidate를 보존하고
 `compose-boundary activate-concierge --confirm`으로 재시도한다. source credential file은 group/other-readable mode와 dotenv
 공백·tab duplicate 선언을 거부한다. raw/resolved C6c는 API/UI host network, API loopback port, UI auth guard·production command도
