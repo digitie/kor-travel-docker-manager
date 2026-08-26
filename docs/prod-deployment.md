@@ -137,6 +137,13 @@ stage는 Docker/Compose를 실행하지 않고 final file을 `O_NOFOLLOW` descri
 owner-only pending snapshot에 원자적으로 복사한다. 이미 같은 snapshot이면 idempotent이고 내용이 다르면
 fail-close한다. home source는 rename·delete하지 않으며 stage 뒤 Manager가 다시 읽지 않는다.
 
+n150의 pinned rebuild 정본은 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`와
+`KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`을 함께 쓰므로, 이 상태에서는 deployment mode를 수동으로
+`production`으로 바꾸지 않는다. stage·retire는 이 exact rehearsal/rebuildable·PinVi production·Map principal
+필수 contract를 다시 확인하고, 다음 `rebuild-pinned`와 동일한 root-owned host lease로 직렬화한다. production
+mode라면 기존 fixed C6c global lock을 사용한다. 둘 이외의 mode/lifecycle과 caller-supplied project root는
+mutation 전에 거부한다.
+
 stage 성공 뒤 root에서 아래 retire 공식 경로를 한 번 실행한다.
 
 ```bash

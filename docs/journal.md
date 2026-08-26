@@ -26,6 +26,12 @@ stage 뒤 삭제·rename·재사용하지 않는다.
 archive 뒤 durability와 재생성 실패의 기존 typed fail-close 의미론은 유지한다. 값·source path·credential·digest는
 출력하거나 이 일지에 기록하지 않는다.
 
+추가 읽기 전용 config 확인에서 n150의 canonical pinned rebuild가 `rehearsal/rebuildable` mode와 non-default C6c
+state를 사용한다는 사실을 확인했다. 따라서 production-only gate나 production fixed-state 강제는 두 번째 P1이 된다.
+후속 보정은 trusted `/opt` root를 여전히 고정하면서, exact rehearsal/rebuildable·PinVi production·Map principal-required
+contract에서는 `rebuild-pinned`와 같은 root-owned host lease 및 해당 C6c state를 사용한다. caller가 mode·project
+root·stage root·lock path를 주입하거나 home Compose를 실행 root로 바꾸는 경로는 추가하지 않는다.
+
 ---
 
 ## 2026-08-26 — legacy Compose override를 canonical UI 경계로 이관하는 후보

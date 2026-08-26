@@ -274,8 +274,11 @@ prod 전환 순서는 다음과 같다.
    알려진 Geo backup과 Concierge UI source만 이관한다. stage는 Docker/Compose를 호출하거나 home source를
    삭제하지 않으며 이후 retire/retry도 home 경로를 다시 읽지 않는다. retire는 candidate `.env`를 원자
    갱신하고 canonical `/opt` Compose를 출력 없이 검증한 뒤에만 같은 protected state 안의 pending snapshot을
-   owner-only archive로 옮긴다. read 키는 `.env`의 단일 변수에만 저장하며 override에 Map API·Dagster·daemon
-   key/base URL literal을 새로 만들지 않는다.
+   owner-only archive로 옮긴다. n150의 rebuild 정본은 `rehearsal/rebuildable` mode이므로 stage/retire는 이를
+   PinVi production·Map principal-required contract와 함께 재검증하고 `rebuild-pinned`와 같은 root-owned host
+   lease로 직렬화한다. mode를 수동으로 production으로 바꾸거나 caller가 project root/state root/lock path를
+   지정할 수 없다. read 키는 `.env`의 단일 변수에만 저장하며 override에 Map API·Dagster·daemon key/base URL
+   literal을 새로 만들지 않는다.
 4. Dagster·Dagster daemon을 재생성한다. 과거 배포에서 map API에 같은 환경변수가 들어갔다면
    map API도 한 번 재생성해 과거 secret을 제거한다. map API에는 해당 key env가 없음을 확인한다.
    `.env`와 두 수집기 컨테이너의 값을 한 프로세스 안에서 constant-time 비교해

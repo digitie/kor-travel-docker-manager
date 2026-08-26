@@ -207,6 +207,56 @@ def test_stage_legacy_override_snapshots_inputs_without_compose_or_source_remova
     assert (pending / "concierge-source.env").read_bytes() == source_env.read_bytes()
 
 
+def test_root_execution_rejects_callers_project_root_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(retirement_module.os, "geteuid", lambda: 0)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="project root is fixed"):
+        retirement_module._prepare_project_context(project_root=tmp_path, require_root=True)
+
+
+def test_root_rehearsal_boundary_uses_the_pinned_runtime_host_lease() -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+    }
+
+    assert retirement_module._select_lock_path(
+        values,
+        project_root=Path("/irrelevant"),
+        lock_path=None,
+        require_root=True,
+    ) == c6c_module.pinned_runtime_rebuild_lock_path()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"KTDM_DEPLOYMENT_ENVIRONMENT": "local"},
+        {"KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal"},
+        {
+            "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+            "KTDM_DEPLOYMENT_LIFECYCLE": "operational",
+            "PINVI_ENVIRONMENT": "production",
+            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        },
+    ],
+)
+def test_root_boundary_rejects_noncanonical_execution_environment(
+    values: dict[str, str],
+) -> None:
+    with pytest.raises(LegacyOverrideRetirementError, match="requires"):
+        retirement_module._select_lock_path(
+            values,
+            project_root=Path("/irrelevant"),
+            lock_path=None,
+            require_root=True,
+        )
+
+
 def test_stage_legacy_override_is_idempotent_only_for_identical_snapshot(tmp_path: Path) -> None:
     root, _root_env, source = _migration_tree(tmp_path)
     pending = stage_legacy_compose_override(

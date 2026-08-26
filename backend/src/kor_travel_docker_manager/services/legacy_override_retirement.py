@@ -27,6 +27,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_state_paths,
     ensure_c6c_state_directory,
     is_pbkdf2_sha256_password_hash,
+    pinned_runtime_rebuild_lock_path,
     validate_concierge_ui_canonical_compose_boundary,
 )
 from kor_travel_docker_manager.services.compose_service import get_project_root
@@ -37,6 +38,7 @@ _LEGACY_STAGE_DIRECTORY_NAME = "legacy-compose-override"
 _LEGACY_PENDING_DIRECTORY_NAME = "pending"
 _STAGED_SOURCE_ENV_NAME = "concierge-source.env"
 _MAX_IMPORT_BYTES = 128 * 1024
+_TRUSTED_PRODUCTION_PROJECT_ROOT = Path("/opt/kor-travel-docker-manager")
 _GEO_SERVICES = (
     "kor-travel-geo-api",
     "kor-travel-geo-dagster",
@@ -332,7 +334,14 @@ def _prepare_project_context(
 ) -> ProjectContext:
     if require_root and os.geteuid() != 0:
         raise LegacyOverrideRetirementError("legacy override retirement requires root execution")
-    raw_root = project_root or Path(get_project_root())
+    if require_root:
+        if project_root is not None:
+            raise LegacyOverrideRetirementError("production canonical project root is fixed")
+        # installed shim의 ambient project-root 값은 authority가 아니다. production mutation은
+        # root-owned trusted release location 하나에서만 canonical Compose를 읽고 실행한다.
+        raw_root = _TRUSTED_PRODUCTION_PROJECT_ROOT
+    else:
+        raw_root = project_root or Path(get_project_root())
     try:
         raw_root_metadata = raw_root.lstat()
     except OSError as exc:
@@ -357,14 +366,28 @@ def _select_lock_path(
 ) -> str:
     if require_root and lock_path is not None:
         raise LegacyOverrideRetirementError("production retirement lock path is fixed")
-    if require_root and values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() != "production":
-        raise LegacyOverrideRetirementError(
-            "legacy override retirement requires explicit production deployment environment"
-        )
     if lock_path is not None:
         return lock_path
     if require_root:
-        return c6c_global_mutation_lock_path(values)
+        deployment_environment = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
+        if deployment_environment == "production":
+            return c6c_global_mutation_lock_path(values)
+        if deployment_environment == "rehearsal":
+            required = {
+                "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+                "PINVI_ENVIRONMENT": "production",
+                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+            }
+            if any(values.get(name, "").strip().lower() != expected for name, expected in required.items()):
+                raise LegacyOverrideRetirementError(
+                    "legacy override retirement requires the canonical rehearsal/rebuildable environment"
+                )
+            # stage/retire는 바로 다음 pinned rebuild와 같은 host lease를 쓴다. user-home
+            # rehearsal lock을 쓰면 다른 root launcher와 직렬화되지 않아 C6c 경계를 우회한다.
+            return pinned_runtime_rebuild_lock_path()
+        raise LegacyOverrideRetirementError(
+            "legacy override retirement requires production or canonical rehearsal/rebuildable environment"
+        )
     return str((project_root / ".legacy-override-retirement.lock").resolve())
 
 
