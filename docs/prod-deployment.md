@@ -141,6 +141,13 @@ legacy Concierge UI의 `env_file`은 구형 상대 문자열 한 항목 또는 C
 가져야 한다. `format`은 Compose raw mode를 뜻하는 정확한 `raw` 값일 때만 추가로 허용한다. 임의 absolute path,
 다른 추가 key·format·optional source는 허용하지 않는다.
 
+staged Concierge source에 `API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`가 **아예 선언되지 않은** 경우에만 각각의
+canonical root `KOR_TRAVEL_CONCIERGE_*` 값을 사용한다. 이는 legacy UI source가 API runtime 값을 소유하지 않았던
+기존 토폴로지의 호환 범위이며, 세 값을 source에서 선언했다면 빈 값도 포함해 source 값 자체가 필수다. 나머지
+`KTC_*` UI 인증·session·proxy·origin 값은 staged source에 모두 있어야 하며 root fallback을 허용하지 않는다.
+최종 유효 API key-set, backend key membership, `production`, authentication-enabled 검증은 source/root의 출처와
+관계없이 동일하게 통과해야 한다.
+
 n150의 pinned rebuild 정본은 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`와
 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`을 함께 쓰므로, 이 상태에서는 deployment mode를 수동으로
 `production`으로 바꾸지 않는다. stage·retire는 이 exact rehearsal/rebuildable·PinVi production·Map principal
@@ -156,7 +163,8 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 ```
 
 retire는 protected pending snapshot의 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고,
-값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. candidate root `.env`를 원자적으로
+값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. 위 API auth 세 값의 허용된 root fallback도
+candidate에 새 값을 쓰지 않고 existing root authority를 재검증할 뿐이다. candidate root `.env`를 원자적으로
 갱신한 뒤 canonical `/opt` Compose를 출력 없이 raw/resolved C6c 경계까지 검증하고, 성공한 경우에만 **같은
 protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
 rehearsal/rebuildable에서는 pinned-runtime rebuild host lease(production에서는 fixed C6c global mutation lock)를

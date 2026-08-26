@@ -276,6 +276,10 @@ prod 전환 순서는 다음과 같다.
    갱신하기 전에 stage 명령은 legacy `env_file`이 exact sibling source의 구형 상대 문자열 또는 exact sibling `path`와 boolean
    `required: true`만 든 Compose 장형 mapping 한 항목인지 확인한다. 장형의 `format`은 `raw`일 때만 허용하며 다른
    path·key·format·optional source는 fail-close한다.
+   staged Concierge source가 `API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`를 전혀 선언하지 않을 때만 각각 이미 있는
+   canonical root `KOR_TRAVEL_CONCIERGE_*` 값을 사용한다. source에서 이 값을 선언했다면 빈 값도 포함해 source 값이
+   필수이며, `KTC_*` UI 인증·session·proxy·origin 값에는 root fallback이 없다. 최종 API key-set/backend key
+   membership·`production`·authentication-enabled 검증은 동일하게 수행한다.
    retire는 candidate `.env`를 원자
    갱신하고 canonical `/opt` Compose를 출력 없이 검증한 뒤에만 같은 protected state 안의 pending snapshot을
    owner-only archive로 옮긴다. n150의 rebuild 정본은 `rehearsal/rebuildable` mode이므로 stage/retire는 이를

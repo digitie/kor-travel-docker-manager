@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-26 — legacy UI source의 미선언 API auth 값을 canonical root authority로 재검증하는 보정 후보
+
+#226 merge trusted release를 n150에 공식 installer로 반영한 뒤, 이전에 준비된 final source를 `stage-legacy-override`
+공식 경로로 다시 처리했다. stage는 protected pending snapshot을 만들었고 Docker/Compose·DB·runtime·canonical root
+`.env`를 바꾸지 않았다. 이어 `retire-legacy-override`는 archive·candidate root `.env` write·canonical Compose 검증
+전에 legacy UI source가 API runtime 값을 선언하지 않았다는 이유로 fail-close했다.
+
+읽기 전용 환경 이름 대조 결과 canonical root에는 대응 `KOR_TRAVEL_CONCIERGE_*` API auth authority가 이미 있으며,
+legacy UI source에는 UI 전용 값만 있었다. 보정 후보는 `API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`가 source에 **아예
+없을 때만** root의 대응 값을 읽어 기존 API key-set/backend key membership·`production`·authentication-enabled
+검증에 함께 넣는다. 이 fallback은 candidate update를 만들지 않으므로 root authority를 덮어쓰지 않는다. source가
+세 값을 선언했다면 빈 값도 포함해 source 값이 여전히 필수이며, UI의 `KTC_*` credential·session·proxy·origin에는
+fallback을 추가하지 않는다.
+
+따라서 이 후보는 trusted `/opt` Compose execution root, protected pending→archive, raw/resolved C6c 계약, source
+descriptor 검증, home source의 Compose argv/cwd/env-file 비유입을 유지한다. 실제 API auth 값·source path·digest는
+출력하거나 기록하지 않는다.
+
+---
+
 ## 2026-08-26 — 실제 legacy Compose 장형 `env_file`를 exact sibling source로 수용하는 보정 후보
 
 #224 merge trusted release를 n150에 공식 installer로 반영한 뒤 root-only `stage-legacy-override`를 한 번

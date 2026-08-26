@@ -74,6 +74,12 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   mapping을 구형 문자열 allowlist가 거부하는 P1을 확인했다. 장형은 override 위치에서 계산한 exact sibling
   `.env`와 boolean `required: true`, 필요 시 exact `format: raw`만 수용하며, home Compose 실행·source 변환·수동
   삭제를 추가하지 않는다.
+- [/] #226의 exact raw 장형 수용 후보를 배포한 공식 stage는 protected pending snapshot을 성공적으로 만들었다.
+  이어 retire는 archive·candidate root `.env` write·Docker/Compose/DB/runtime mutation 전에 legacy UI source에
+  없던 API auth 세 값(`API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`)을 요구해 fail-close했다. 후속 후보는 이 세 값이
+  **미선언**일 때에만 이미 있는 canonical root authority를 다시 검증해 사용하고, source에 선언된 빈 값과 모든
+  `KTC_*` UI 값 누락은 계속 fail-close한다. raw/resolved C6c, API key-set membership, production/authentication
+  guard, trusted `/opt` execution root, home source 비재사용은 바꾸지 않는다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 
