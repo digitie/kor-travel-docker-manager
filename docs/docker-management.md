@@ -265,10 +265,12 @@ prod 전환 순서는 다음과 같다.
    200+`Set-Cookie`, 잘못된 비밀번호가 401인지 확인한다.
 2. Concierge 관리 UI/API에서 소비자·owner·발급일을 식별할 수 있는 label로 DB `read` scope 키를
    발급하고, DB에는 hash만 남았으며 발급 audit가 기록됐는지 확인한다.
-3. manager의 gitignore된 prod `.env`와 override를 mode `0600` 임시 파일로 원자 백업한다. read 키는
-   `.env`의 단일 변수에만 저장하고, override에 남은 map API·Dagster·daemon의 기존 key literal
-   세 줄과 base URL literal 세 줄을 모두 제거한다. `docker compose config --quiet`만 실행하고
-   resolved config 전체는 출력하지 않는다.
+3. manager의 gitignore된 prod `.env`는 mode `0600`으로 유지한다. legacy
+   `docker-compose.override.yml`가 남아 있으면 수동 편집·삭제·`docker compose` 실행을 하지 않고,
+   Manager의 `ktdctl compose-boundary retire-legacy-override --confirm`으로 알려진 Geo backup과
+   Concierge UI source만 이관한다. 이 명령은 candidate `.env`를 원자 갱신하고 canonical Compose를
+   출력 없이 검증한 뒤에만 override를 owner-only archive로 옮긴다. read 키는 `.env`의 단일 변수에만
+   저장하며 override에 Map API·Dagster·daemon key/base URL literal을 새로 만들지 않는다.
 4. Dagster·Dagster daemon을 재생성한다. 과거 배포에서 map API에 같은 환경변수가 들어갔다면
    map API도 한 번 재생성해 과거 secret을 제거한다. map API에는 해당 key env가 없음을 확인한다.
    `.env`와 두 수집기 컨테이너의 값을 한 프로세스 안에서 constant-time 비교해
@@ -283,16 +285,21 @@ prod 전환 순서는 다음과 같다.
    `DELETE /api/v1/destinations/0`과 `GET /api/v1/settings`가 403이고 응답이 admin scope 부족을
    가리키는지 확인한다. 데이터가 2페이지보다 적다면 cursor 검증을 합격으로 처리하지 않는다.
 6. 기존 static 키가 BFF와 공유돼 있으면 먼저 BFF/operator key를 회전한다. 새 static admin 키를
-   생성해 `KOR_TRAVEL_CONCIERGE_API_KEYS=old,new`로 API/MCP/scheduler를 재생성하고,
-   `KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY=new`로 UI를 강제 재생성한다. UI key가 allowlist와
-   일치하는지 값 비노출 비교 후 실제 로그인 POST와 BFF 호출을 다시 확인한다.
+   `KOR_TRAVEL_CONCIERGE_API_KEYS=old,new`와 `KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY=new`에 함께
+   반영한다. C6c와 이관 명령은 backend key가 allowlist의 exact member인지 값 비노출으로 검증한다.
+   Concierge API는 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
+   `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`를 root authority로 명시해야 하며, 이 둘이 local/false이면
+   이관 명령이 실패한다.
+   이관 명령이 같은 C6c lock 안에서 API/MCP/scheduler/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
+   POST와 BFF 호출을 다시 확인한다. 재생성만 재시도해야 하면 `ktdctl compose-boundary activate-concierge --confirm`을
+   사용한다. production의 일반 `ensure`는 이 경로에 사용할 수 없다.
 7. 모든 smoke가 통과한 뒤에만 `KOR_TRAVEL_CONCIERGE_API_KEYS=new`으로 구 static 키를 제거하고
    API/MCP/scheduler를 재생성한다. 구 키 401, 새 admin 키의 내부 API 200, read 키의 공급 GET 200·
    내부/write 403, UI 로그인 200+`Set-Cookie`를 다시 확인한다.
-8. 성공 시 key/cookie 임시 파일과 secret 포함 백업을 즉시 삭제한다. 실패 시 `.env`와 override를
-   함께 복원해 관련 서비스를 재생성하고 신규 DB read 키를 폐기한 뒤 임시 파일을 삭제한다. static
-   제거 뒤 실패했다면 구 static 키를 allowlist에 임시 재등록하고 API/UI를 재생성하며 incident와
-   rollback 시점만 기록한다.
+8. 성공 시 key/cookie 임시 파일을 즉시 삭제한다. 이관 뒤 override는 owner-only archive로 남아 있으므로
+   수동 restore 대상으로 쓰지 않는다. 실패 시 root `.env`에서 구 static 키를 allowlist에 임시 재등록하고
+   `ktdctl compose-boundary activate-concierge --confirm`으로 API/MCP/scheduler/UI를 재생성하며 incident와 조치
+   시점만 기록한다.
 
 2026-07-13 n150 전환에서는 위 절차를 다음 결과로 완료했다.
 

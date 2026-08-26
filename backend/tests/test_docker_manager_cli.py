@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
@@ -454,6 +455,36 @@ def test_cli_rebuilds_pinned_runtime(mock_compose_service):
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 0
 
     mock_compose_service.rebuild_pinned_runtime.assert_called_once_with()
+
+
+@patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, capsys):
+    assert main(["compose-boundary", "retire-legacy-override"]) == 2
+
+    assert "requires --confirm" in capsys.readouterr().err
+    mock_retirement.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
+    assert main(["compose-boundary", "retire-legacy-override", "--confirm"]) == 0
+
+    mock_retirement.assert_called_once_with()
+
+
+@patch("kor_travel_docker_manager.cli.activate_canonical_concierge")
+def test_cli_canonical_concierge_activation_requires_confirmation(mock_activation, capsys):
+    assert main(["compose-boundary", "activate-concierge"]) == 2
+
+    assert "requires --confirm" in capsys.readouterr().err
+    mock_activation.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.activate_canonical_concierge")
+def test_cli_activates_canonical_concierge_through_official_boundary(mock_activation):
+    assert main(["compose-boundary", "activate-concierge", "--confirm"]) == 0
+
+    mock_activation.assert_called_once_with()
 
 
 @pytest.mark.parametrize(

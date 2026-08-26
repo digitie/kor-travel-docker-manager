@@ -11,6 +11,11 @@ from kor_travel_docker_manager.services.compose_service import (
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
+from kor_travel_docker_manager.services.legacy_override_retirement import (
+    LegacyOverrideRetirementError,
+    activate_canonical_concierge,
+    retire_legacy_compose_override,
+)
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
@@ -144,6 +149,40 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _cmd_retire_legacy_override(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print(
+            "compose-boundary retire-legacy-override requires --confirm "
+            "(no mutation was attempted)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        retire_legacy_compose_override()
+    except LegacyOverrideRetirementError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print("legacy Compose override retired and canonical Concierge recreated")
+    return 0
+
+
+def _cmd_activate_canonical_concierge(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print(
+            "compose-boundary activate-concierge requires --confirm "
+            "(no mutation was attempted)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        activate_canonical_concierge()
+    except LegacyOverrideRetirementError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print("canonical Concierge recreated from the single-file boundary")
+    return 0
+
+
 def _cmd_db_backup_create(args: argparse.Namespace) -> int:
     try:
         manifest = create_standalone_backup(args.role, timeout=args.timeout)
@@ -275,6 +314,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
     pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
+
+    compose_boundary = subparsers.add_parser(
+        "compose-boundary",
+        help="single-file Compose 경계의 제한된 운영 이관을 실행합니다.",
+    )
+    compose_boundary_subparsers = compose_boundary.add_subparsers(
+        dest="compose_boundary_action", required=True
+    )
+    retire_legacy_override = compose_boundary_subparsers.add_parser(
+        "retire-legacy-override",
+        help="검증된 legacy override를 canonical root .env로 이관하고 보관합니다.",
+    )
+    retire_legacy_override.add_argument(
+        "--confirm",
+        action="store_true",
+        help="root .env 갱신과 legacy override의 owner-only archive 이동을 확인합니다.",
+    )
+    retire_legacy_override.set_defaults(func=_cmd_retire_legacy_override)
+
+    activate_concierge = compose_boundary_subparsers.add_parser(
+        "activate-concierge",
+        help="archive 완료 뒤 canonical Concierge만 검증·재생성합니다.",
+    )
+    activate_concierge.add_argument(
+        "--confirm",
+        action="store_true",
+        help="API/MCP/scheduler/UI를 canonical single-file source로 재생성함을 확인합니다.",
+    )
+    activate_concierge.set_defaults(func=_cmd_activate_canonical_concierge)
 
     db_backup = subparsers.add_parser(
         "db-backup",

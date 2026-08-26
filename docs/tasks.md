@@ -50,9 +50,21 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. Manager release pin은 #488
   commit과 pinset `9073c294d6138fff895983adbc9ca483ab2eede6da15bb1ef4888572fe7fe491`으로 회전했다. Manager
   PR의 적대 리뷰·CI와 n150의 새 role credential 구성이 모두 완료되기 전에는 rebuild를 재개하지 않는다.
-- [/] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
-  preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용해야 하며, 이
-  보정의 리뷰·병합·배포 전에는 artifact environment를 수동으로 주입하거나 rebuild를 재시도하지 않는다.
+- [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
+  preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용하도록 Manager #222로
+  보정·병합·배포했다. 실제 빈 `.env`와 Compose resolution 회귀를 포함한 587개 backend 테스트, 전문 적대 리뷰
+  2건을 통과했다.
+- [/] 다음 공식 rebuild는 남아 있던 legacy `docker-compose.override.yml`의 single-file boundary 거부에서
+  DB reset 전에 중단됐다. override의 Geo backup 값은 이미 canonical Compose가 지원하는 root `.env` source로
+  이관하고, Concierge UI는 전체 provider `.env`가 아니라 exact allowlisted auth/proxy/origin·same-origin BFF 값과
+  production command만 canonical Compose에 둘 후속 Manager PR을 merge·배포한다. root-only
+  `ktdctl compose-boundary retire-legacy-override --confirm`은 raw source allowlist, backend key/API key-set membership,
+  production+authentication API guard, host network·API/UI production command/port, atomic root `.env`, 실제 raw/resolved C6c config,
+  owner-only archive를 모두 통과한 경우에만
+  override를 retire하고 같은 global mutation lock 안에서 Concierge API/MCP/scheduler/UI를 재생성한다. archive rename 뒤 durability
+  불확실성은 candidate `.env`를 되돌리지 않는 typed failure로 남긴다. archive 뒤 재생성만 실패하면
+  `compose-boundary activate-concierge --confirm`으로 같은 계약을 재검증한 뒤 재시도한다.
+  그 전에는 override를 수동 삭제하거나 rebuild를 재시도하지 않는다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 

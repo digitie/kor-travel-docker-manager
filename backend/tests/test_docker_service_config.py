@@ -43,6 +43,15 @@ from kor_travel_docker_manager.services.docker_service import (
 _ROOT = Path(__file__).resolve().parents[2]
 _CONCIERGE_BASE_URL_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}"
 _CONCIERGE_API_KEY_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}"
+_CONCIERGE_UI_BACKEND_ORIGIN = "http://127.0.0.1:12601"
+_CONCIERGE_UI_BACKEND_API_KEY = (
+    "${KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY:?"
+    "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY must be explicitly set}"
+)
+_CONCIERGE_UI_VWORLD_KEY = (
+    "${KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY:?"
+    "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY must be explicitly set}"
+)
 _MAP_FETCH_SERVICES = (
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
@@ -53,6 +62,7 @@ _MAP_INGESTION_SERVICES = (
 )
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
+_CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
 _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
@@ -823,6 +833,104 @@ def test_map_services_share_single_concierge_read_key_source() -> None:
         if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY=")
     ]
     assert key_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY="]
+
+
+def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> None:
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    service = compose["services"][_CONCIERGE_UI_SERVICE]
+    environment = service["environment"]
+    api_environment = compose["services"]["kor-travel-concierge-api"]["environment"]
+
+    assert "env_file" not in service
+    assert service["command"] == [
+        "sh",
+        "-ec",
+        (
+            '[ -n "$$KTC_ADMIN_PASSWORD_HASH" ] && [ -n "$$KTC_UI_SESSION_SECRET" ] && '
+            '[ "$${#KTC_UI_SESSION_SECRET}" -ge 32 ] && [ -n "$$KTC_ADMIN_PROXY_SECRET" ] && '
+            '[ "$${#KTC_ADMIN_PROXY_SECRET}" -ge 32 ] || { echo "FATAL concierge-ui auth env invalid" >&2; exit 1; }; '
+            "npm run build && exec npm run start -- -H 0.0.0.0 -p "
+            "${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}"
+        ),
+    ]
+    assert environment == {
+        "BACKEND_ORIGIN": _CONCIERGE_UI_BACKEND_ORIGIN,
+        "BACKEND_API_KEY": _CONCIERGE_UI_BACKEND_API_KEY,
+        "NEXT_PUBLIC_VWORLD_SERVICE_KEY": _CONCIERGE_UI_VWORLD_KEY,
+        "KTC_ADMIN_USERNAME": (
+            "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME:?"
+            "KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME must be explicitly set}"
+        ),
+        "KTC_ADMIN_PASSWORD_HASH": (
+            "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH:?"
+            "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+        ),
+        "KTC_UI_SESSION_SECRET": (
+            "${KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET:?"
+            "KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET must be explicitly set}"
+        ),
+        "KTC_ADMIN_PROXY_SECRET": (
+            "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET:?"
+            "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET must be explicitly set}"
+        ),
+        "KTC_UI_TRUST_FORWARDED_IPS": (
+            "${KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS:-false}"
+        ),
+        "KTC_UI_PUBLIC_ORIGINS": "${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS:-}",
+        "NEXT_PUBLIC_API_BASE_URL": "${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL:-}",
+    }
+    assert api_environment["KTC_ADMIN_PROXY_SECRET"] == environment[
+        "KTC_ADMIN_PROXY_SECRET"
+    ]
+    assert api_environment["APP_ENV"] == "${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}"
+    assert api_environment["API_AUTH_ENABLED"] == (
+        "${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}"
+    )
+    assert api_environment["API_KEYS"] == "${KOR_TRAVEL_CONCIERGE_API_KEYS:-}"
+    for name in (
+        "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_PLACES_API_KEY",
+        "KAKAO_REST_API_KEY",
+        "NAVER_CLIENT_SECRET",
+        "YOUTUBE_API_KEY",
+    ):
+        assert name not in environment
+
+    env_example = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert {
+        line
+        for line in env_example
+        if line.startswith(
+            (
+                "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY=",
+                "KOR_TRAVEL_CONCIERGE_API_KEYS=",
+                "KOR_TRAVEL_CONCIERGE_APP_ENV=",
+                "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=",
+                "KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME=",
+                "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH=",
+                "KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET=",
+                "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET=",
+                "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS=",
+                "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS=",
+                "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL=",
+                "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY=",
+            )
+        )
+    } == {
+        "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY=",
+        "KOR_TRAVEL_CONCIERGE_API_KEYS=",
+        "KOR_TRAVEL_CONCIERGE_APP_ENV=production",
+        "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true",
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME=admin",
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH=",
+        "KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET=",
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET=",
+        "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS=false",
+        "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS=",
+        "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL=",
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY=",
+    }
 
 
 def test_map_ingestion_services_interpolate_provider_credentials_from_current_env_names() -> None:
