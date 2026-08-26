@@ -266,11 +266,16 @@ prod 전환 순서는 다음과 같다.
 2. Concierge 관리 UI/API에서 소비자·owner·발급일을 식별할 수 있는 label로 DB `read` scope 키를
    발급하고, DB에는 hash만 남았으며 발급 audit가 기록됐는지 확인한다.
 3. manager의 gitignore된 prod `.env`는 mode `0600`으로 유지한다. legacy
-   `docker-compose.override.yml`가 남아 있으면 수동 편집·삭제·`docker compose` 실행을 하지 않고,
-   Manager의 `ktdctl compose-boundary retire-legacy-override --confirm`으로 알려진 Geo backup과
-   Concierge UI source만 이관한다. 이 명령은 candidate `.env`를 원자 갱신하고 canonical Compose를
-   출력 없이 검증한 뒤에만 override를 owner-only archive로 옮긴다. read 키는 `.env`의 단일 변수에만
-   저장하며 override에 Map API·Dagster·daemon key/base URL literal을 새로 만들지 않는다.
+   `docker-compose.override.yml`가 남아 있으면 수동 편집·삭제·`docker compose` 실행을 하지 않는다.
+   trusted `/opt` release는 canonical Compose execution root이고 home checkout은 runtime source가 아니다.
+   먼저 root-owned `0600` final legacy override와 고정 sibling Concierge `.env`를
+   `ktdctl compose-boundary stage-legacy-override --source <absolute-path> --confirm`으로 protected C6c
+   state에 snapshot한 뒤, `ktdctl compose-boundary retire-legacy-override --confirm`으로 그 staged 입력의
+   알려진 Geo backup과 Concierge UI source만 이관한다. stage는 Docker/Compose를 호출하거나 home source를
+   삭제하지 않으며 이후 retire/retry도 home 경로를 다시 읽지 않는다. retire는 candidate `.env`를 원자
+   갱신하고 canonical `/opt` Compose를 출력 없이 검증한 뒤에만 같은 protected state 안의 pending snapshot을
+   owner-only archive로 옮긴다. read 키는 `.env`의 단일 변수에만 저장하며 override에 Map API·Dagster·daemon
+   key/base URL literal을 새로 만들지 않는다.
 4. Dagster·Dagster daemon을 재생성한다. 과거 배포에서 map API에 같은 환경변수가 들어갔다면
    map API도 한 번 재생성해 과거 secret을 제거한다. map API에는 해당 key env가 없음을 확인한다.
    `.env`와 두 수집기 컨테이너의 값을 한 프로세스 안에서 constant-time 비교해

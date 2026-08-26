@@ -118,27 +118,47 @@ Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제�
   local/false로 주면 이관 명령은 API가 unauthenticated default로 내려가는 것을 막기 위해 중단한다.
 
 남아 있는 legacy `docker-compose.override.yml`가 있다면 수동 `docker compose` 명령이나 삭제를 하지 않는다.
-Manager의 canonical release 배포 뒤 root에서 아래 공식 경로를 한 번 실행한다.
+trusted installer가 고정하는 `/opt/kor-travel-docker-manager`는 canonical execution root이며, legacy home
+checkout은 Compose file·cwd·env-file source가 될 수 없다. Manager의 canonical release 배포 뒤에는 legacy
+입력을 먼저 protected C6c state로 한 번 snapshot한다.
+
+snapshot source의 final `docker-compose.override.yml`와 그 고정된 sibling Concierge `.env`는 모두 root 소유
+`0600`, regular file, hard-link 없음이어야 한다. user-writable parent는 source artifact를 남길 수는 있어도
+Manager runtime의 입력이 될 수 없으며, stage 전 local 운영 runbook의 owner-only 준비 절차로 이 precondition을
+만족시킨다. source path와 secret 값·hash는 이 문서나 명령 출력에 남기지 않는다.
+
+```bash
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  compose-boundary stage-legacy-override \
+  --source <legacy-override-absolute-path> --confirm
+```
+
+stage는 Docker/Compose를 실행하지 않고 final file을 `O_NOFOLLOW` descriptor와 `fstat`으로 검증해
+owner-only pending snapshot에 원자적으로 복사한다. 이미 같은 snapshot이면 idempotent이고 내용이 다르면
+fail-close한다. home source는 rename·delete하지 않으며 stage 뒤 Manager가 다시 읽지 않는다.
+
+stage 성공 뒤 root에서 아래 retire 공식 경로를 한 번 실행한다.
 
 ```bash
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   compose-boundary retire-legacy-override --confirm
 ```
 
-첫 명령은 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고, 값 충돌·symlink·비정규 파일·
-잘못된 API key membership을 fail-close한다. candidate root `.env`를 원자적으로 갱신한 뒤 canonical Compose를
-출력 없이 raw/resolved C6c 경계까지 검증하고, 성공한 경우에만 override를 owner-only archive로 rename한다. 같은
-C6c global mutation lock을 계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로
-force-recreate한다. production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이
-실패하면 root `.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
+retire는 protected pending snapshot의 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고,
+값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. candidate root `.env`를 원자적으로
+갱신한 뒤 canonical `/opt` Compose를 출력 없이 raw/resolved C6c 경계까지 검증하고, 성공한 경우에만 **같은
+protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. 같은 C6c global mutation
+lock을 계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
+production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이 실패하면 root
+`.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
 
 ```bash
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   compose-boundary activate-concierge --confirm
 ```
 
-retry 역시 legacy override가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·override
-restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다.
+retry 역시 pending stage가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·legacy
+source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다.
 
 ## 8. F1D pinned runtime generation v6/journal v8 재구축
 

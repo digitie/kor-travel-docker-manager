@@ -24,6 +24,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     c6c_deployment_lock,
     c6c_global_mutation_lock_path,
+    c6c_state_paths,
+    ensure_c6c_state_directory,
     is_pbkdf2_sha256_password_hash,
     validate_concierge_ui_canonical_compose_boundary,
 )
@@ -31,6 +33,10 @@ from kor_travel_docker_manager.services.compose_service import get_project_root
 
 _OVERRIDE_NAME = "docker-compose.override.yml"
 _ARCHIVE_DIRECTORY_NAME = ".retired-compose-overrides"
+_LEGACY_STAGE_DIRECTORY_NAME = "legacy-compose-override"
+_LEGACY_PENDING_DIRECTORY_NAME = "pending"
+_STAGED_SOURCE_ENV_NAME = "concierge-source.env"
+_MAX_IMPORT_BYTES = 128 * 1024
 _GEO_SERVICES = (
     "kor-travel-geo-api",
     "kor-travel-geo-dagster",
@@ -57,7 +63,6 @@ _CONCIERGE_LEGACY_ROOT_VWORLD_ENV = "NEXT_PUBLIC_VWORLD_API_KEY"
 _CONCIERGE_ROOT_VWORLD_ENV = "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY"
 _CONCIERGE_ROOT_BACKEND_KEY_ENV = "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY"
 _CONCIERGE_ROOT_PUBLIC_API_BASE_ENV = "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL"
-_CONCIERGE_REPO_DIR_ENV = "KOR_TRAVEL_CONCIERGE_REPO_DIR"
 _FORBIDDEN_COMPOSE_AMBIENT_ENV_NAMES = frozenset(
     {
         "COMPOSE_FILE",
@@ -87,6 +92,24 @@ class LegacyOverrideActivationError(LegacyOverrideRetirementError):
 
 
 @dataclass(frozen=True)
+class ProjectContext:
+    """trusted canonical Compose 실행 경계."""
+
+    root: Path
+    env_path: Path
+    compose_path: Path
+
+
+@dataclass(frozen=True)
+class LegacyStageContext:
+    """legacy 입력을 보관하는 owner-only handoff 경계."""
+
+    root: Path
+    pending_path: Path
+    archive_directory: Path
+
+
+@dataclass(frozen=True)
 class ComposeConfigResult:
     """비밀을 출력하지 않고 Compose resolution만 전달하는 결과."""
 
@@ -105,6 +128,67 @@ _CONCIERGE_RECREATE_SERVICES = (
 )
 
 
+def stage_legacy_compose_override(
+    *,
+    source_path: Path,
+    project_root: Path | None = None,
+    stage_root: Path | None = None,
+    lock_path: str | None = None,
+    require_root: bool = True,
+) -> Path:
+    """legacy home 입력을 protected C6c state로 단방향 snapshot한다.
+
+    이 단계는 Docker/Compose를 전혀 호출하지 않는다. source 경로는 legacy checkout의
+    single-file override만 허용하며, 그 안의 고정된 Concierge `.env` reference도
+    descriptor 기준으로 읽어 같은 owner-only pending snapshot에 넣는다. 이후 retire는
+    home checkout을 다시 읽거나 Compose 입력으로 사용하지 않는다.
+    """
+
+    context = _prepare_project_context(project_root=project_root, require_root=require_root)
+    initial_values = _read_dotenv_values(_read_regular_bytes(context.env_path), "Manager root environment")
+    selected_lock_path = _select_lock_path(
+        initial_values,
+        project_root=context.root,
+        lock_path=lock_path,
+        require_root=require_root,
+    )
+    try:
+        with c6c_deployment_lock(selected_lock_path):
+            _assert_safe_regular_file(context.env_path, require_root=require_root, exact_mode=0o600)
+            root_values = _read_dotenv_values(
+                _read_regular_bytes(context.env_path), "Manager root environment"
+            )
+            stage = _prepare_legacy_stage_context(
+                root_values,
+                project_root=context.root,
+                stage_root=stage_root,
+                require_root=require_root,
+            )
+            override_payload = _read_legacy_import_bytes(
+                source_path,
+                label="legacy override source",
+                require_root=require_root,
+                expected_name=_OVERRIDE_NAME,
+            )
+            override = _read_override_payload(override_payload)
+            source_env_path = _legacy_concierge_source_env_path(source_path, override)
+            source_env_payload = _read_legacy_import_bytes(
+                source_env_path,
+                label="legacy Concierge source environment",
+                require_root=require_root,
+                expected_name=".env",
+            )
+            _stage_legacy_snapshot(
+                stage,
+                override_payload=override_payload,
+                source_env_payload=source_env_payload,
+                require_root=require_root,
+            )
+            return stage.pending_path
+    except DeploymentContractError as exc:
+        raise LegacyOverrideRetirementError("cannot acquire canonical Compose mutation lock") from exc
+
+
 def retire_legacy_compose_override(
     *,
     project_root: Path | None = None,
@@ -121,61 +205,67 @@ def retire_legacy_compose_override(
     인수는 단위 테스트 격리용이다.
     """
 
-    root, env_path, compose_path, override_path = _prepare_project_context(
-        project_root=project_root,
-        require_root=require_root,
-        require_override=True,
+    context = _prepare_project_context(project_root=project_root, require_root=require_root)
+    initial_values = _read_dotenv_values(
+        _read_regular_bytes(context.env_path), "Manager root environment"
     )
-    initial_values = _read_dotenv_values(_read_regular_bytes(env_path), "Manager root environment")
     selected_lock_path = _select_lock_path(
         initial_values,
-        project_root=root,
+        project_root=context.root,
         lock_path=lock_path,
         require_root=require_root,
     )
     try:
         with c6c_deployment_lock(selected_lock_path):
-            # lock 확보 뒤 다시 읽어 snapshot과 candidate/archive를 하나의 lease로 묶는다.
-            _assert_safe_regular_file(env_path, require_root=require_root, exact_mode=0o600)
-            _assert_safe_regular_file(override_path, require_root=require_root, exact_mode=0o600)
-            root_bytes = _read_regular_bytes(env_path)
+            # lock 확보 뒤 다시 읽어 stage snapshot과 candidate/archive를 하나의 lease로 묶는다.
+            _assert_safe_regular_file(context.env_path, require_root=require_root, exact_mode=0o600)
+            root_bytes = _read_regular_bytes(context.env_path)
             root_values = _read_dotenv_values(root_bytes, "Manager root environment")
-            override = _read_override(override_path)
-            updates = _collect_updates(root, root_values, override)
+            stage = _prepare_legacy_stage_context(
+                root_values,
+                project_root=context.root,
+                stage_root=None,
+                require_root=require_root,
+            )
+            override_payload, source_env_payload = _read_pending_legacy_snapshot(
+                stage, require_root=require_root
+            )
+            override = _read_override_payload(override_payload)
+            updates = _collect_updates(root_values, override, source_env_payload)
             _assert_existing_values_are_compatible(root_values, updates)
             candidate_bytes = _apply_dotenv_updates(root_bytes, updates)
             validation_environment = _read_dotenv_values(
                 candidate_bytes, "candidate environment"
             )
 
-            _write_atomic(env_path, candidate_bytes, mode=0o600)
+            _write_atomic(context.env_path, candidate_bytes, mode=0o600)
             try:
                 _validate_canonical_compose_boundary(
-                    root,
-                    compose_path,
-                    env_path,
+                    context.root,
+                    context.compose_path,
+                    context.env_path,
                     validation_environment,
                     compose_config_runner or _run_canonical_compose_config,
                 )
             except Exception:
-                _write_atomic(env_path, root_bytes, mode=0o600)
+                _write_atomic(context.env_path, root_bytes, mode=0o600)
                 raise
 
             try:
-                archive = _archive_override(override_path, root, require_root=require_root)
+                archive = _archive_legacy_snapshot(stage, require_root=require_root)
             except LegacyOverrideArchiveDurabilityError:
-                # rename 자체가 성공한 뒤 directory fsync만 실패한 경우다. 이때 root `.env`를
-                # 과거 값으로 되돌리면 archived override와 canonical 설정이 split-brain이 된다.
+                # pending directory rename 자체가 성공한 뒤 fsync만 실패한 경우다. 이때 root
+                # `.env`를 되돌리면 archive와 canonical 설정이 split-brain이 된다.
                 raise
             except Exception:
-                _write_atomic(env_path, root_bytes, mode=0o600)
+                _write_atomic(context.env_path, root_bytes, mode=0o600)
                 raise
 
             try:
                 _activate_canonical_concierge_locked(
-                    root,
-                    compose_path,
-                    env_path,
+                    context.root,
+                    context.compose_path,
+                    context.env_path,
                     validation_environment,
                     compose_config_runner or _run_canonical_compose_config,
                     compose_up_runner or _run_canonical_concierge_recreate,
@@ -200,28 +290,35 @@ def activate_canonical_concierge(
 ) -> None:
     """archive 완료 뒤 fail-closed retry에 쓰는 공식 Concierge 단일-file 재생성 경로."""
 
-    root, env_path, compose_path, override_path = _prepare_project_context(
-        project_root=project_root,
-        require_root=require_root,
-        require_override=False,
+    context = _prepare_project_context(project_root=project_root, require_root=require_root)
+    initial_values = _read_dotenv_values(
+        _read_regular_bytes(context.env_path), "Manager root environment"
     )
-    initial_values = _read_dotenv_values(_read_regular_bytes(env_path), "Manager root environment")
     selected_lock_path = _select_lock_path(
         initial_values,
-        project_root=root,
+        project_root=context.root,
         lock_path=lock_path,
         require_root=require_root,
     )
     try:
         with c6c_deployment_lock(selected_lock_path):
-            _assert_override_is_absent(override_path)
+            root_values = _read_dotenv_values(
+                _read_regular_bytes(context.env_path), "Manager root environment"
+            )
+            stage = _prepare_legacy_stage_context(
+                root_values,
+                project_root=context.root,
+                stage_root=None,
+                require_root=require_root,
+            )
+            _assert_pending_legacy_snapshot_is_absent(stage, require_root=require_root)
             validation_environment = _read_dotenv_values(
-                _read_regular_bytes(env_path), "Manager root environment"
+                _read_regular_bytes(context.env_path), "Manager root environment"
             )
             _activate_canonical_concierge_locked(
-                root,
-                compose_path,
-                env_path,
+                context.root,
+                context.compose_path,
+                context.env_path,
                 validation_environment,
                 compose_config_runner or _run_canonical_compose_config,
                 compose_up_runner or _run_canonical_concierge_recreate,
@@ -231,12 +328,10 @@ def activate_canonical_concierge(
 
 
 def _prepare_project_context(
-    *, project_root: Path | None, require_root: bool, require_override: bool
-) -> tuple[Path, Path, Path, Path]:
+    *, project_root: Path | None, require_root: bool
+) -> ProjectContext:
     if require_root and os.geteuid() != 0:
         raise LegacyOverrideRetirementError("legacy override retirement requires root execution")
-    if require_root and os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"):
-        raise LegacyOverrideRetirementError("legacy override retirement rejects project root override")
     raw_root = project_root or Path(get_project_root())
     try:
         raw_root_metadata = raw_root.lstat()
@@ -248,12 +343,9 @@ def _prepare_project_context(
     _assert_safe_directory(root, require_root=require_root)
     env_path = root / ".env"
     compose_path = root / "docker-compose.yml"
-    override_path = root / _OVERRIDE_NAME
     _assert_safe_regular_file(env_path, require_root=require_root, exact_mode=0o600)
     _assert_safe_regular_file(compose_path, require_root=require_root, exact_mode=None)
-    if require_override:
-        _assert_safe_regular_file(override_path, require_root=require_root, exact_mode=0o600)
-    return root, env_path, compose_path, override_path
+    return ProjectContext(root=root, env_path=env_path, compose_path=compose_path)
 
 
 def _select_lock_path(
@@ -274,6 +366,213 @@ def _select_lock_path(
     if require_root:
         return c6c_global_mutation_lock_path(values)
     return str((project_root / ".legacy-override-retirement.lock").resolve())
+
+
+def _prepare_legacy_stage_context(
+    values: Mapping[str, str],
+    *,
+    project_root: Path,
+    stage_root: Path | None,
+    require_root: bool,
+) -> LegacyStageContext:
+    """C6c state 아래의 fixed owner-only staging root를 준비한다."""
+
+    if require_root:
+        if stage_root is not None:
+            raise LegacyOverrideRetirementError("production legacy stage root is fixed")
+        try:
+            legacy_state_path, _ = c6c_state_paths(values)
+            root = Path(legacy_state_path).parent / _LEGACY_STAGE_DIRECTORY_NAME
+            ensure_c6c_state_directory(root)
+        except DeploymentContractError as exc:
+            raise LegacyOverrideRetirementError("legacy stage root cannot be prepared") from exc
+    else:
+        root = stage_root or project_root / ".legacy-compose-override-state"
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            root.chmod(0o700)
+        except OSError as exc:
+            raise LegacyOverrideRetirementError("legacy stage root cannot be prepared") from exc
+    _assert_safe_directory(root, require_root=require_root, exact_mode=0o700)
+    archive_directory = root / _ARCHIVE_DIRECTORY_NAME
+    return LegacyStageContext(
+        root=root,
+        pending_path=root / _LEGACY_PENDING_DIRECTORY_NAME,
+        archive_directory=archive_directory,
+    )
+
+
+def _read_legacy_import_bytes(
+    path: Path,
+    *,
+    label: str,
+    require_root: bool,
+    expected_name: str,
+) -> bytes:
+    """unsafe parent 아래의 final regular file을 descriptor 기준으로 snapshot한다."""
+
+    if not path.is_absolute() or path.name != expected_name:
+        raise LegacyOverrideRetirementError(f"{label} path is invalid")
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise LegacyOverrideRetirementError(f"{label} cannot be opened safely") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (require_root and metadata.st_uid != 0)
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size > _MAX_IMPORT_BYTES
+        ):
+            raise LegacyOverrideRetirementError(f"{label} has unsafe ownership or mode")
+        payload = bytearray()
+        while len(payload) <= _MAX_IMPORT_BYTES:
+            chunk = os.read(descriptor, min(65_536, _MAX_IMPORT_BYTES + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > _MAX_IMPORT_BYTES:
+            raise LegacyOverrideRetirementError(f"{label} exceeds the supported size")
+        return bytes(payload)
+    except OSError as exc:
+        raise LegacyOverrideRetirementError(f"{label} cannot be read safely") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _stage_legacy_snapshot(
+    stage: LegacyStageContext,
+    *,
+    override_payload: bytes,
+    source_env_payload: bytes,
+    require_root: bool,
+) -> None:
+    """두 legacy 입력을 같은 protected pending directory에 원자적으로 고정한다."""
+
+    _assert_safe_directory(stage.root, require_root=require_root, exact_mode=0o700)
+    if stage.pending_path.exists():
+        existing_override, existing_source_env = _read_pending_legacy_snapshot(
+            stage, require_root=require_root
+        )
+        if existing_override == override_payload and existing_source_env == source_env_payload:
+            return
+        raise LegacyOverrideRetirementError("legacy stage already contains a different snapshot")
+    try:
+        temporary = Path(tempfile.mkdtemp(prefix=".pending-", dir=stage.root))
+        temporary.chmod(0o700)
+    except OSError as exc:
+        raise LegacyOverrideRetirementError("legacy stage cannot create a pending snapshot") from exc
+    try:
+        _write_atomic(temporary / _OVERRIDE_NAME, override_payload, mode=0o600)
+        _write_atomic(temporary / _STAGED_SOURCE_ENV_NAME, source_env_payload, mode=0o600)
+        _fsync_directory(temporary)
+        os.replace(temporary, stage.pending_path)
+        _fsync_directory(stage.root)
+    except (LegacyOverrideRetirementError, OSError) as exc:
+        _remove_temporary_stage_directory(temporary)
+        raise LegacyOverrideRetirementError("legacy stage cannot persist a pending snapshot") from exc
+
+
+def _remove_temporary_stage_directory(path: Path) -> None:
+    """이 함수가 만든 exact temporary stage directory만 best-effort로 제거한다."""
+
+    for name in (_OVERRIDE_NAME, _STAGED_SOURCE_ENV_NAME):
+        try:
+            (path / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
+def _read_pending_legacy_snapshot(
+    stage: LegacyStageContext, *, require_root: bool
+) -> tuple[bytes, bytes]:
+    try:
+        stage.pending_path.lstat()
+    except FileNotFoundError as exc:
+        raise LegacyOverrideRetirementError(
+            "legacy staged override is required; stage it before retirement"
+        ) from exc
+    except OSError as exc:
+        raise LegacyOverrideRetirementError("legacy staged override cannot be inspected") from exc
+    _assert_safe_pending_legacy_snapshot(stage, require_root=require_root)
+    return (
+        _read_regular_bytes(stage.pending_path / _OVERRIDE_NAME),
+        _read_regular_bytes(stage.pending_path / _STAGED_SOURCE_ENV_NAME),
+    )
+
+
+def _assert_pending_legacy_snapshot_is_absent(
+    stage: LegacyStageContext, *, require_root: bool
+) -> None:
+    try:
+        stage.pending_path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise LegacyOverrideRetirementError("legacy staged override cannot be inspected") from exc
+    _assert_safe_pending_legacy_snapshot(stage, require_root=require_root)
+    raise LegacyOverrideRetirementError("legacy staged override is still pending; retire it first")
+
+
+def _assert_safe_pending_legacy_snapshot(
+    stage: LegacyStageContext, *, require_root: bool
+) -> None:
+    _assert_safe_directory(stage.root, require_root=require_root, exact_mode=0o700)
+    _assert_safe_directory(stage.pending_path, require_root=require_root, exact_mode=0o700)
+    try:
+        names = {entry.name for entry in stage.pending_path.iterdir()}
+    except OSError as exc:
+        raise LegacyOverrideRetirementError("legacy staged override cannot be inspected") from exc
+    if names != {_OVERRIDE_NAME, _STAGED_SOURCE_ENV_NAME}:
+        raise LegacyOverrideRetirementError("legacy staged override has unexpected content")
+    _assert_safe_regular_file(
+        stage.pending_path / _OVERRIDE_NAME, require_root=require_root, exact_mode=0o600
+    )
+    _assert_safe_regular_file(
+        stage.pending_path / _STAGED_SOURCE_ENV_NAME, require_root=require_root, exact_mode=0o600
+    )
+
+
+def _archive_legacy_snapshot(stage: LegacyStageContext, *, require_root: bool) -> Path:
+    """검증된 pending snapshot directory를 동일 protected filesystem 안에서 archive한다."""
+
+    _assert_safe_pending_legacy_snapshot(stage, require_root=require_root)
+    try:
+        stage.archive_directory.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise LegacyOverrideRetirementError("legacy archive directory cannot be prepared") from exc
+    _assert_safe_directory(stage.archive_directory, require_root=require_root, exact_mode=0o700)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    archive_path = stage.archive_directory / f"{_OVERRIDE_NAME}.{timestamp}.retired"
+    try:
+        archive_path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise LegacyOverrideRetirementError("legacy archive destination cannot be inspected") from exc
+    else:
+        raise LegacyOverrideRetirementError("legacy override archive destination already exists")
+    try:
+        os.replace(stage.pending_path, archive_path)
+    except OSError as exc:
+        raise LegacyOverrideRetirementError("legacy staged override could not be archived") from exc
+    try:
+        _fsync_directory(stage.archive_directory)
+        _fsync_directory(stage.root)
+    except LegacyOverrideRetirementError as exc:
+        raise LegacyOverrideArchiveDurabilityError(
+            "legacy override archive durability is uncertain; root environment was retained"
+        ) from exc
+    return archive_path
 
 
 def _validate_canonical_compose_boundary(
@@ -350,30 +649,12 @@ def _activate_canonical_concierge_locked(
         raise LegacyOverrideActivationError("canonical Concierge recreation failed")
 
 
-def _assert_override_is_absent(path: Path) -> None:
-    try:
-        path.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise LegacyOverrideRetirementError("legacy override state cannot be inspected") from exc
-    raise LegacyOverrideRetirementError("legacy override is still present; retire it first")
-
-
 def _collect_updates(
-    project_root: Path,
     root_values: Mapping[str, str],
     override: Mapping[str, Any],
+    source_payload: bytes,
 ) -> dict[str, str]:
     geo_values = _collect_geo_backup_values(override)
-    source_env_path = _concierge_source_env_path(project_root, root_values)
-    _assert_safe_regular_file(
-        source_env_path,
-        require_root=False,
-        exact_mode=None,
-        require_private=True,
-    )
-    source_payload = _read_regular_bytes(source_env_path)
     _assert_no_duplicate_dotenv_assignments(
         source_payload, set(_CONCIERGE_SOURCE_ENV_MIGRATIONS), "Concierge source environment"
     )
@@ -422,30 +703,29 @@ def _collect_geo_backup_values(override: Mapping[str, Any]) -> dict[str, str]:
     ui_service = services.get("kor-travel-concierge-ui")
     if not isinstance(ui_service, Mapping) or set(ui_service) != {"command", "env_file"}:
         raise LegacyOverrideRetirementError("legacy Concierge UI override shape is not recognized")
-    # legacy UI env_file의 path나 내용은 trusted input으로 쓰지 않는다. source .env는
-    # Manager root의 canonical sibling source에서만 다시 찾는다.
+    # legacy UI command는 절대 실행하지 않는다. `env_file`은 staging에서 exact known
+    # source `.env`를 snapshot하기 위한 reference로만 제한적으로 해석한다.
+    if ui_service.get("env_file") != ["../kor-travel-concierge/.env"]:
+        raise LegacyOverrideRetirementError("legacy Concierge UI source reference is not recognized")
     return values_by_target
 
 
-def _concierge_source_env_path(
-    project_root: Path, root_values: Mapping[str, str]
+def _legacy_concierge_source_env_path(
+    override_path: Path, override: Mapping[str, Any]
 ) -> Path:
-    source_root_value = root_values.get(_CONCIERGE_REPO_DIR_ENV, "../kor-travel-concierge")
-    if not isinstance(source_root_value, str) or not source_root_value:
-        raise LegacyOverrideRetirementError("Concierge source root is invalid")
-    source_root = Path(source_root_value)
-    if not source_root.is_absolute():
-        source_root = project_root / source_root
-    try:
-        source_metadata = source_root.lstat()
-        if not stat.S_ISDIR(source_metadata.st_mode) or stat.S_IMODE(source_metadata.st_mode) & 0o022:
-            raise LegacyOverrideRetirementError("Concierge source root has unsafe ownership or mode")
-        source_root = source_root.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise LegacyOverrideRetirementError("Concierge source root cannot be resolved") from exc
-    if source_root.parent != project_root.parent:
-        raise LegacyOverrideRetirementError("Concierge source root must be a project sibling")
-    return source_root / ".env"
+    """legacy UI의 고정된 sibling `.env`만 staging source로 계산한다.
+
+    여기서는 source directory를 resolve하거나 Compose cwd로 사용하지 않는다. final file은
+    이후 `O_NOFOLLOW` descriptor와 fstat으로 검증하므로, user-writable parent는 단지
+    stage를 막을 수 있을 뿐 root-owned source 내용을 바꾸는 입력 경계가 될 수 없다.
+    """
+
+    _collect_geo_backup_values(override)
+    if not override_path.is_absolute() or override_path.name != _OVERRIDE_NAME:
+        raise LegacyOverrideRetirementError("legacy override source path is invalid")
+    if override_path.parent.name != "kor-travel-docker-manager":
+        raise LegacyOverrideRetirementError("legacy override source path is not recognized")
+    return override_path.parent.parent / "kor-travel-concierge" / ".env"
 
 
 def _validate_concierge_source_values(
@@ -527,9 +807,9 @@ def _scalar_value(value: Any, label: str) -> str:
     raise LegacyOverrideRetirementError(f"{label} is invalid")
 
 
-def _read_override(path: Path) -> Mapping[str, Any]:
+def _read_override_payload(payload: bytes) -> Mapping[str, Any]:
     try:
-        document = yaml.safe_load(_read_regular_bytes(path).decode("utf-8"))
+        document = yaml.safe_load(payload.decode("utf-8"))
     except (UnicodeError, yaml.YAMLError) as exc:
         raise LegacyOverrideRetirementError("legacy override cannot be parsed") from exc
     if not isinstance(document, Mapping):
@@ -662,32 +942,6 @@ def _canonical_compose_environment(values: Mapping[str, str]) -> dict[str, str]:
     for name in _FORBIDDEN_COMPOSE_AMBIENT_ENV_NAMES:
         environment.pop(name, None)
     return environment
-
-
-def _archive_override(override_path: Path, project_root: Path, *, require_root: bool) -> Path:
-    archive_directory = project_root / _ARCHIVE_DIRECTORY_NAME
-    try:
-        archive_directory.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
-    _assert_safe_directory(archive_directory, require_root=require_root, exact_mode=0o700)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    archive_path = archive_directory / f"{_OVERRIDE_NAME}.{timestamp}.retired"
-    if archive_path.exists():
-        raise LegacyOverrideRetirementError("legacy override archive destination already exists")
-    _assert_safe_regular_file(override_path, require_root=require_root, exact_mode=0o600)
-    try:
-        os.replace(override_path, archive_path)
-    except OSError as exc:
-        raise LegacyOverrideRetirementError("legacy override could not be archived") from exc
-    try:
-        _fsync_directory(archive_directory)
-        _fsync_directory(project_root)
-    except LegacyOverrideRetirementError as exc:
-        raise LegacyOverrideArchiveDurabilityError(
-            "legacy override archive durability is uncertain; root environment was retained"
-        ) from exc
-    return archive_path
 
 
 def _assert_safe_directory(

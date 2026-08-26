@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-08-26 — trusted release/runtime split을 legacy Compose handoff로 고정하는 후속 후보
+
+Manager #223은 merge 뒤 trusted release로 배포됐지만, installed shim이 고정한 canonical `/opt` project root를
+retirement code가 blanket 거부해 공식 `retire-legacy-override`가 mutation 전에 fail-close했다. 이 실패는 root
+`.env`, Docker/Compose, DB, runtime을 바꾸지 않았으므로 P0 incident는 아니지만, rebuild 선행 조건의 sanctioned
+경로가 막혀 P1 release blocker다. home checkout의 Compose YAML과 parent directory는 user-writable이므로 단순
+거부 해제·home cwd/Compose 사용·legacy override 자동 병합은 root Docker mutation에 신뢰할 수 없는 입력을 주입하는
+P0가 되어 허용하지 않는다.
+
+후속 후보는 trusted `/opt` root·`.env`·canonical Compose·C6c 검증·Compose cwd를 execution authority로 유지한다.
+별도 `stage-legacy-override --source <absolute-path> --confirm`은 Docker/Compose를 호출하지 않고, root-owned
+`0600` final legacy override와 고정 sibling Concierge `.env`를 `O_NOFOLLOW` descriptor/fstat로 snapshot해 fixed
+C6c state 아래 owner-only pending directory에 원자적으로 넣는다. user-writable home parent는 snapshot 전
+availability를 방해할 수는 있어도 root-owned final input을 바꾸거나 Manager Compose source가 될 수 없다. source는
+stage 뒤 삭제·rename·재사용하지 않는다.
+
+`retire-legacy-override`는 pending snapshot만 읽어 root `.env` candidate와 raw/resolved canonical Compose를
+검증하고, 성공 시 같은 protected filesystem에서 pending directory 전체를 archive로 rename한다. pending이 있으면
+`activate-concierge`도 fail-close한다. snapshot이 없거나 내용이 달라지면 root 설정·Docker runtime 변경 없이 중단한다.
+archive 뒤 durability와 재생성 실패의 기존 typed fail-close 의미론은 유지한다. 값·source path·credential·digest는
+출력하거나 이 일지에 기록하지 않는다.
+
+---
+
 ## 2026-08-26 — legacy Compose override를 canonical UI 경계로 이관하는 후보
 
 Manager #222를 n150에 반영한 뒤 승인된 `rebuild-pinned --confirm`은 DB reset·image build·journal write 전에
