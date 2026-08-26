@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-26 — fetch 가능한 Map merge commit으로 pinned source 회전
+
+PinVi role bootstrap source checkout을 exact approved release로 수렴한 뒤 official rebuild를 한 번
+재개했다. raw C6c와 external readiness를 통과한 뒤 isolated root-owned bare source namespace가 Map
+PR #1066의 deleted head `cc81081…`를 canonical GitHub URL에서 exact fetch하려 했으나 object를 받지 못해
+fail-close했다. source worktree, paired builder/image, candidate journal/manifest, Docker/Compose runtime,
+role one-shot과 세 DB reset은 시작하지 않았다.
+
+`cc81081…`의 local tree와 canonical remote에서 exact-SHA fetch가 검증된 #1066 merge
+`14d18230…`의 tree는 정확히 같다. 따라서 Manager source authority는 PR head를 되살리거나 local object를
+root Git input으로 쓰지 않고, 동일 Git 트리의 exact fetch가 검증된 머지 커밋으로만 회전한다. PinVi #488
+`93296aee…`는 #477 merge를 ancestor로 포함하므로
+그대로 유지한다. 새 canonical pinset은 `d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898`이다.
+trusted deployment와 새 pinset candidate의 full attestation 전에는 공식 rebuild를 재호출하지 않는다.
+
+---
+
 ## 2026-08-26 — PinVi role source prebuild fail-close 기록
 
 Manager #230의 Debian provenance offline wheelhouse와 #231의 versioned issuance 경로를 trusted
