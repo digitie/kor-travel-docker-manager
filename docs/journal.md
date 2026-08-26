@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-08-26 — fresh PinVi role credential의 trusted rebuild/rebind 보정 후보
+
+Concierge boundary #228을 trusted release로 설치하고 sanctioned stage·retire와 공개 HTTP/실제 browser
+login → authenticated BFF → logout → re-block acceptance를 끝낸 뒤, 승인된
+`pinvi-pair rebuild-pinned --confirm`을 다시 실행했다. 이 실행은 PinVi database URL identity 계약에서
+멈췄다. 허용된 이름·선언 여부만 읽기 전용으로 대조한 결과 canonical root `.env`에 새 M05 dedicated
+role topology의 여섯 값이 모두 없었다. 따라서 candidate source materialize, image build, journal write,
+runtime stop, DB reset은 어느 것도 시작하지 않았다.
+
+초기 후보의 적대 리뷰는 두 P1을 지적했다. 첫째 root command가 ambient Manager 경로를 따라가거나 root
+`.env`를 바꾸기 전에 rebuild lifecycle/C6c token을 확인하지 않았다. 둘째, 새 pinset의 v8 journal이 이미
+`map_runtime_ready`인데 여섯 값이 없으면 environment SHA·resolved Compose SHA가 달라져 재개가 fail-close한다.
+
+보정 후보는 trusted `/opt/kor-travel-docker-manager` root-owned Compose·`.env` pair만 사용하며, role을 쓰는
+`.env`는 O_NOFOLLOW descriptor와 file identity로, Compose source는 frozen file identity로 확인한다. pinned root
+`.env` 값은 caller process 또는 dotenv 보간을 섞지 않는 literal snapshot으로 다룬다. exact `rehearsal/rebuildable`, PinVi
+production, Map principal-required, C6c token과 journal admission을 모두 통과한 뒤에만 fresh role을 기록한다.
+그 journal은 정확히 `map_runtime_ready`인 경우에 한해, root write에 남긴 이전 environment SHA marker와 새
+candidate raw/resolved Compose digest를 대조하여 단 한 번의 비밀 비포함 rebind receipt로만 이어진다. partial·
+blank·duplicate·다른 phase/digest·path/identity drift는 기존 값을 추측하거나 덮어쓰거나 회전하지 않고
+fail-close한다. 완전한 기존 credential은 재사용만 하며 원문 credential은 Compose output, CLI result, durable
+journal, log에 넣지 않는다.
+
+이 변경은 진행 중인 PinVi source 작업을 건드리지 않으며, PinVi API/Compose 계약의 strict explicit guard도
+약화하지 않는다. 두 전문 적대 리뷰와 전체 backend gate, trusted deployment가 끝나기 전에는 n150 rebuild를
+재시도하지 않는다.
+
+---
+
 ## 2026-08-26 — Concierge retirement를 무관한 PinVi candidate interpolation에서 분리하는 보정 후보
 
 #227 merge trusted release를 n150에 공식 installer로 반영한 뒤 protected snapshot을 확인하고 sanctioned

@@ -489,6 +489,21 @@ migrator role DSN만 전달한다. initial superuser·runtime application·migra
 `127.0.0.1:12800`으로 고정한다. source bootstrap script는 읽기 전용 bind에 실행 비트를 요구하지 않도록
 `sh`로 호출한다. 이 lifecycle 밖의 수동 Compose·SQL 실행은 허용하지 않는다.
 
+`rebuild-pinned --confirm`은 fresh root `.env`에 위 topology의 여섯 role 값이 모두 **미선언**인 경우에만,
+trusted `/opt/kor-travel-docker-manager`의 Compose·`.env` pair를 caller path override 없이 고정하고, root-owned
+pinned-runtime host lease 안에서 exact rebuildable admission과 C6c token을 먼저 확인한 뒤 정해진 서로 다른 role명과
+무작위 runtime/migrator password를 `0600` root `.env`에 원자적으로 초기화한다. 한 값이라도 선언·공백·중복·
+불일치하거나 file identity가 바뀌면 기존 값을 채우거나 회전하지 않고 candidate/journal/runtime/DB mutation 전에
+fail-close한다. pinned root `.env`의 값은 dotenv/caller 환경 보간을 적용하지 않는 literal authority이며, 완전한
+기존 role 값은 같은 원문 여섯 값을 frozen Compose snapshot에 명시적으로 결박해 재사용만 한다. 원문 credential은
+Compose output, journal, CLI result, log에 넣지 않는다.
+
+current pinset의 `map_runtime_ready` v8 journal만 예외적으로 fresh role source를 재결박할 수 있다. 같은 root
+write에는 이전 environment SHA만 남긴 marker를 넣고, candidate raw/resolved Compose 검증 뒤 journal에 이전/현재
+environment SHA와 resolved Compose SHA를 포함한 단 한 번의 receipt를 추가한다. 다른 phase/digest 또는 이미
+재결박된 journal은 새 role credential을 쓰기 전에 거부하므로 기존 resume의 immutable candidate authority를
+약화하지 않는다.
+
 manifest는 v6, pinset별 resume journal/tombstone은 v8이다. final/committed resume은 일곱 실행 중
 container의 실제 image ID와 세 DB head를 generation에 다시 exact 대조한다. 실패와 재실행 모두 기존 DB,
 image, manifest를 복원하지 않는다. backup·scratch restore·이전 revision rollback은 release gate가 아니다.
