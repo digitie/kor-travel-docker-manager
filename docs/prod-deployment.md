@@ -297,6 +297,17 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 
 이 command는 추적된 exact Map·PinVi commit만 Git archive build source로 쓰며 `.env` checkout HEAD,
 old image, old manifest를 candidate authority로 쓰지 않는다.
+
+다만 raw C6c prebuild transaction은 source materialize보다 먼저 canonical Compose의 read-only
+bind graph를 검사한다. 따라서 `PINVI_REPO_DIR`가 가리키는 **source-owner checkout**에는 현재
+pinset이 요구하는 `infra/postgres/bootstrap-pinvi-runtime-role.sh`가 regular file로 존재해야 한다.
+이 조건은 checkout HEAD를 candidate authority로 승격하지 않는다. 그것은 이후 root-owned exact
+source materialization이 계속 소유한다. command 전에 source owner는 canonical `origin`, clean worktree,
+그리고 Manager가 고정한 PinVi revision에서 이 tracked file이 worktree에 존재하는지만 확인한다.
+조건이 맞지 않으면 script를 복사하거나 Compose bind/Manager guard를 완화하지 말고, WIP를 파괴하지 않는
+clean approved release checkout으로 source deployment를 먼저 수렴한다. 그 뒤에만 아래 공식 command를
+한 번 실행한다.
+
 fresh root `.env`에 PinVi runtime·schema owner·migration owner·migrator role의 여섯 값이 **모두
 미선언**이면, 이 명령은 caller의 `KOR_TRAVEL_DOCKER_MANAGER_*` 경로 override가 아니라 trusted
 `/opt/kor-travel-docker-manager`의 root-owned Compose·`.env` pair만 고정해 읽는다. root-owned

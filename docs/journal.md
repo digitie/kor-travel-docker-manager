@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-08-26 — PinVi role source prebuild fail-close 기록
+
+Manager #230의 Debian provenance offline wheelhouse와 #231의 versioned issuance 경로를 trusted
+`/opt` release로 설치한 뒤, 사용자 승인된 `pinvi-pair rebuild-pinned --confirm`을 한 번 실행했다.
+공식 installer는 exact source revision과 explicit versioned wheelhouse를 대조해 성공했고, 기존
+provenance-unknown default wheelhouse는 읽거나 수정하지 않았다.
+
+rebuild는 raw C6c prebuild transaction에서 `pinvi-db-runtime-role`의 canonical read-only source bind가
+없음을 발견해 종료했다. n150 source-owner checkout의 `HEAD`는 `25505e056…`이고 Manager current pin은
+`93296aee…`이다. 필요한 `infra/postgres/bootstrap-pinvi-runtime-role.sh`는 전자에는 없고 후자에는
+tracked regular file로 있다. checkout HEAD 자체가 candidate authority는 아니지만, source materialize보다
+앞서 raw bind graph가 존재성을 확인하므로 이 file은 release deployment의 명시적 precondition이다.
+
+이 failure는 source materialize, paired builder/image build, journal/manifest write, Docker/Compose runtime
+mutation, role one-shot, 세 DB reset 이전에 발생했다. fresh root environment였다면 여섯 PinVi role
+credential의 atomic initialization과 lock/state directory 준비만 선행할 수 있으며, complete tuple은 다음
+official retry가 validate·reuse하고 수동 삭제·회전하지 않는다. source는 clean canonical origin이고 exact
+pin object도 이미 보유하므로, WIP를 reset하거나 script를 복사하지 않고 source owner가 same checkout을
+approved exact release로 수렴한 뒤에만 동일 command를 한 번 재개한다. bind/guard 완화나 manual
+Docker/Compose/SQL·journal/DB 조작은 금지한다.
+
+---
+
 ## 2026-08-26 — Debian provenance 기반 offline wheelhouse 발행 후보
 
 Manager #229의 clean merged source를 공식 trusted installer로 설치할 때, 기존 root-owned source
