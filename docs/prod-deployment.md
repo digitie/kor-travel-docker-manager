@@ -38,7 +38,7 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
 
 trusted installer는 source의 backend wheel을 먼저 오프라인 build하므로, wheelhouse에는 runtime
 wheel뿐 아니라 build backend인 `poetry-core`도 있어야 한다. 운영 호스트에 이미 root-owned
-`/opt/kor-travel-docker-manager/.wheelhouse`가 있고 기본 destination이 아직 없을 때만 destination을
+`/opt/kor-travel-docker-manager/.wheelhouse`가 있고 target destination이 아직 없을 때만 destination을
 **한 번** 발행한다. 이 최초 bootstrap에서는 user-owned source checkout의 파일을 `sudo`가 직접
 실행해서는 안 된다. 먼저 root operator가 out-of-band release attestation으로 exact merged commit과
 각 tool의 SHA-256을 승인하고, 아래처럼 exact Git blob을 root-owned temporary file로 복사·hash 검증한
@@ -51,12 +51,14 @@ SOURCE_COMMIT=<exact-40-hex-merged-commit>
 PROVISION_SCRIPT_SHA256=<attested-sha256-of-provision-script>
 INSTALLER_SCRIPT_SHA256=<attested-sha256-of-installer-script>
 ROOT_STAGE_PARENT=/var/lib/kor-travel-docker-manager/trusted-tool-bootstrap
+WHEELHOUSE_DESTINATION="/var/lib/kor-travel-docker-manager/wheelhouse-${SOURCE_COMMIT:0:12}"
 
 set -euo pipefail
 test "$(/usr/bin/git -C "${SOURCE_ROOT}" rev-parse HEAD)" = "${SOURCE_COMMIT}"
 test -z "$(/usr/bin/git -C "${SOURCE_ROOT}" status --porcelain=v1)"
 sudo -n /usr/bin/install -d -o root -g root -m 0700 "${ROOT_STAGE_PARENT}"
 test "$(sudo -n /usr/bin/stat -c '%u:%a:%F' "${ROOT_STAGE_PARENT}")" = '0:700:directory'
+test ! -e "${WHEELHOUSE_DESTINATION}"
 
 stage_merged_tool() {
   local relative_path="$1"
@@ -100,7 +102,7 @@ STAGED_INSTALLER="$(stage_merged_tool \
 sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
   /usr/bin/python3 -I -S "${STAGED_PROVISION}" \
   --source-wheelhouse /opt/kor-travel-docker-manager/.wheelhouse \
-  --destination-wheelhouse /var/lib/kor-travel-docker-manager/wheelhouse
+  --destination-wheelhouse "${WHEELHOUSE_DESTINATION}"
 ```
 
 이 도구는 network·PyPI·user-writable 입력을 사용하지 않는다. source wheel과 모든 ancestor가
@@ -113,6 +115,11 @@ installer의 wheel snapshot 자체를 대체하지 않는다. 기존 destination
 source wheelhouse에 filename·version·대소문자가 무엇이든 `poetry-core` candidate가 이미 있으면 Debian
 provenance wheel과 pip 선택이 섞이지 않도록 역시 중단한다.
 
+기본 `/var/lib/kor-travel-docker-manager/wheelhouse`가 다른 release·operator의 artifact로 이미 존재하고
+같은 issuance provenance를 증명할 수 없다면, 이를 삭제·수정·채택하지 않는다. 위 예시처럼 exact merged
+commit을 포함한 새 root-owned destination을 선택하고, provisioner와 installer에 같은 explicit path를
+전달한다. 이 경로도 pre-existing이면 새 이름을 정해 다시 root operator attestation을 받아야 한다.
+
 wheel을 인터넷에서 내려받거나, home/user-writable 경로에서 복사하거나, `pip install`로 wheelhouse를
 수정해서는 안 된다. `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
 모두 installer 재시도보다 먼저 해결해야 할 fail-close 조건이다.
@@ -122,7 +129,7 @@ wheel을 인터넷에서 내려받거나, home/user-writable 경로에서 복사
 sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
   /usr/bin/bash "${STAGED_INSTALLER}" \
   --env-file /opt/kor-travel-docker-manager/.env \
-  --wheelhouse /var/lib/kor-travel-docker-manager/wheelhouse \
+  --wheelhouse "${WHEELHOUSE_DESTINATION}" \
   --expected-source-revision "${SOURCE_COMMIT}" \
   "${SOURCE_ROOT}"
 ```
