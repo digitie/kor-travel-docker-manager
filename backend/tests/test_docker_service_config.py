@@ -65,6 +65,7 @@ _MAP_APPLICATION_FRESH_FINALIZE_SERVICE = (
 )
 _PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
+_PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
@@ -155,6 +156,12 @@ def _config_transaction(
             "PINVI_POSTGRES_USER": "pinvi",
             "PINVI_POSTGRES_DB": "pinvi",
             "PINVI_POSTGRES_BOOTSTRAP_DB": "pinvi_bootstrap",
+            "PINVI_APP_DB_USER": "pinvi_runtime",
+            "PINVI_APP_DB_PASSWORD": "pinvi-runtime-password",
+            "PINVI_APP_SCHEMA_OWNER": "pinvi_application_owner",
+            "PINVI_MIGRATION_OWNER": "pinvi_migration_owner",
+            "PINVI_MIGRATOR_DB_USER": "pinvi_migrator",
+            "PINVI_MIGRATOR_DB_PASSWORD": "pinvi-migrator-password",
             "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
         },
         env_path=str(compose_path.parent / ".env"),
@@ -197,24 +204,21 @@ def _compose_with_canonical_c6c_services(
     services: dict[str, object],
 ) -> dict[str, object]:
     bootstrap_dsn = (
-        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
-        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
+        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
     )
     dagster_runtime_dsn = (
         "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
     )
     dagster_pg_url = (
-        "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+        "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
     )
     metadata_password = (
         "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
     )
     migrator_dsn = (
-        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
+        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
     )
     protected_services: dict[str, object] = {
         _MAP_POSTGRES_SERVICE: {
@@ -251,7 +255,7 @@ def _compose_with_canonical_c6c_services(
                 ),
                 "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": metadata_password,
             },
-            "command": ["psql \"$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN\""],
+            "command": ['psql "$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"'],
         },
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE: {
             "image": "fixture.invalid/postgres:test",
@@ -308,8 +312,7 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
                 "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID": (
-                    "${KOR_TRAVEL_MAP_API_IMAGE:?"
-                    "KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
+                    "${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
                 ),
                 "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
                 "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
@@ -336,8 +339,7 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
                 "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID": (
-                    "${KOR_TRAVEL_MAP_API_IMAGE:?"
-                    "KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
+                    "${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
                 ),
                 "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
                 "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
@@ -395,7 +397,7 @@ def _compose_with_canonical_c6c_services(
             "secrets": [
                 {
                     "source": "pinvi-postgres-password",
-                    "target": "pinvi-postgres-password",
+                    "target": "/run/secrets/pinvi-postgres-password",
                 }
             ],
         },
@@ -413,13 +415,66 @@ def _compose_with_canonical_c6c_services(
             "command": [
                 "sh",
                 "-ec",
-                "PGPASSWORD=\"$$(cat /run/secrets/pinvi-postgres-password)\"\n"
+                'PGPASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
                 "export PGPASSWORD\n"
                 "if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'\" | grep -q 1; then\n"
-                "  echo \"database $$PINVI_POSTGRES_DB already exists\"\n"
+                '  echo "database $$PINVI_POSTGRES_DB already exists"\n'
                 "else\n"
-                "  createdb \"$$PINVI_POSTGRES_DB\"\n"
+                '  createdb "$$PINVI_POSTGRES_DB"\n'
                 "fi\n",
+            ],
+        },
+        _PINVI_DB_RUNTIME_ROLE_SERVICE: {
+            "profiles": ["bootstrap"],
+            "image": _PINVI_POSTGRES_IMAGE,
+            "restart": "no",
+            "network_mode": "${KTDM_DOCKER_NETWORK_MODE:-host}",
+            "depends_on": {
+                _PINVI_POSTGRES_SERVICE: {"condition": "service_healthy"},
+                _PINVI_DB_INIT_SERVICE: {"condition": "service_completed_successfully"},
+            },
+            "environment": {
+                "POSTGRES_USER": "${PINVI_POSTGRES_USER:-pinvi}",
+                "POSTGRES_DB": "${PINVI_POSTGRES_DB:-pinvi}",
+                "PINVI_DB_HOST": "127.0.0.1",
+                "PINVI_DB_PORT": "${PINVI_DB_PORT:-12800}",
+                "PINVI_APP_DB_USER": (
+                    "${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}"
+                ),
+                "PINVI_APP_DB_PASSWORD": (
+                    "${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}"
+                ),
+                "PINVI_APP_SCHEMA_OWNER": (
+                    "${PINVI_APP_SCHEMA_OWNER:?PINVI_APP_SCHEMA_OWNER must be explicitly set}"
+                ),
+                "PINVI_MIGRATION_OWNER": (
+                    "${PINVI_MIGRATION_OWNER:?PINVI_MIGRATION_OWNER must be explicitly set}"
+                ),
+                "PINVI_MIGRATOR_DB_USER": (
+                    "${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}"
+                ),
+                "PINVI_MIGRATOR_DB_PASSWORD": (
+                    "${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}"
+                ),
+                "PINVI_M05_LEGACY_REBASELINE": "0",
+                "PINVI_MIGRATOR_DISABLE_LOGIN": "1",
+            },
+            "secrets": [
+                {
+                    "source": "pinvi-postgres-password",
+                    "target": "/run/secrets/pinvi-postgres-password",
+                }
+            ],
+            "volumes": [
+                "${PINVI_REPO_DIR:-../pinvi}/infra/postgres/"
+                "bootstrap-pinvi-runtime-role.sh:"
+                "/opt/pinvi/bootstrap-pinvi-runtime-role.sh:ro"
+            ],
+            "entrypoint": [
+                "sh",
+                "-ec",
+                'export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
+                "exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh",
             ],
         },
         _MAP_API_SERVICE: {
@@ -473,10 +528,8 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true",
                 "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED": "false",
                 "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED": "false",
-                "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": (
-                    '["127.0.0.1/32","::1/128"]'
-                ),
-            }
+                "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS": ('["127.0.0.1/32","::1/128"]'),
+            },
         },
         **{
             service_name: {
@@ -486,16 +539,11 @@ def _compose_with_canonical_c6c_services(
                     "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
                     **(
                         {
-                            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
-                                dagster_runtime_dsn
-                            ),
+                            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (dagster_runtime_dsn),
                             "KOR_TRAVEL_MAP_PG_DSN": dagster_runtime_dsn,
-                            "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": (
-                                _MAP_GEO_API_KEY_SOURCE
-                            )
+                            "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": (_MAP_GEO_API_KEY_SOURCE),
                         }
-                        if service_name
-                        in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE)
+                        if service_name in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE)
                         else {}
                     ),
                 },
@@ -527,11 +575,9 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
                     "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
                 ),
-                "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (
-                    _FEATURE_CREATE_TOKEN_SOURCE
-                ),
+                "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN": (_FEATURE_CREATE_TOKEN_SOURCE),
                 "KOR_TRAVEL_GEO_API_KEY": _MAP_UI_GEO_API_KEY_SOURCE,
-            }
+            },
         },
         _PINVI_API_SERVICE: {
             "image": "fixture.invalid/pinvi-api:test",
@@ -540,21 +586,20 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
-                "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": (
-                    _PINVI_CURATION_SNAPSHOT_SOURCE
-                ),
+                "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": (_PINVI_CURATION_SNAPSHOT_SOURCE),
                 "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": (
                     _PINVI_CUTOVER_MAPPING_SOURCE
                 ),
                 "PINVI_DATABASE_URL": (
-                    "${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:"
-                    "pinvi_dev_password@127.0.0.1:12800/pinvi}"
+                    "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:"
+                    "${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}"
+                    "@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}"
                 ),
                 "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": (
                     "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:"
                     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
                 ),
-            }
+            },
         },
         _PINVI_ADMIN_BOOTSTRAP_SERVICE: {
             "image": "fixture.invalid/pinvi-api:test",
@@ -563,8 +608,9 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
                 "PINVI_DATABASE_URL": (
-                    "${PINVI_DOCKER_DATABASE_URL:-postgresql+asyncpg://pinvi:"
-                    "pinvi_dev_password@127.0.0.1:12800/pinvi}"
+                    "postgresql+asyncpg://${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}:"
+                    "${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}"
+                    "@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}"
                 ),
             },
         },
@@ -574,9 +620,7 @@ def _compose_with_canonical_c6c_services(
     return {
         "services": protected_services,
         "secrets": {
-            "kor-travel-map-postgres-password": {
-                "environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
-            },
+            "kor-travel-map-postgres-password": {"environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"},
             "pinvi-postgres-password": {"environment": "PINVI_POSTGRES_PASSWORD"},
         },
     }
@@ -1521,15 +1565,9 @@ def _prepare_candidate_transaction(
         monkeypatch.setenv("PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN", "")
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "false")
         monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", _MAP_UI_USERNAME)
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", _MAP_UI_PASSWORD_HASH
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_UI_SESSION_SECRET", _MAP_UI_SESSION_SECRET
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET", _MAP_ADMIN_PROXY_SECRET
-        )
+        monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", _MAP_UI_PASSWORD_HASH)
+        monkeypatch.setenv("KOR_TRAVEL_MAP_UI_SESSION_SECRET", _MAP_UI_SESSION_SECRET)
+        monkeypatch.setenv("KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET", _MAP_ADMIN_PROXY_SECRET)
         monkeypatch.setenv("KOR_TRAVEL_MAP_API_SERVICE_TOKEN", _MAP_SERVICE_TOKEN)
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN",
@@ -1537,9 +1575,7 @@ def _prepare_candidate_transaction(
         )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256",
-            hashlib.sha256(
-                b"manual-feature-create-test-token-0000"
-            ).hexdigest(),
+            hashlib.sha256(b"manual-feature-create-test-token-0000").hexdigest(),
         )
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
@@ -1563,41 +1599,42 @@ def _prepare_candidate_transaction(
             "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
                 tmp_path / "map-application-final-permit"
             ),
-            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (
-                tmp_path / "map-dagster-storage-permit"
-            ),
+            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (tmp_path / "map-dagster-storage-permit"),
         }
         for name, directory in fixed_directories.items():
             directory.mkdir(mode=0o755)
             monkeypatch.setenv(name, str(directory))
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map")
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster"
-        )
+        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster")
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_USER", "test_map_admin")
         monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
         monkeypatch.setenv("PINVI_POSTGRES_PASSWORD", "pinvi-contract-password")
-        monkeypatch.setenv(
-            "PINVI_DOCKER_DATABASE_URL",
-            "postgresql+asyncpg://pinvi:pinvi-contract-password@127.0.0.1:12800/pinvi",
+        monkeypatch.setenv("PINVI_APP_DB_USER", "pinvi_runtime")
+        monkeypatch.setenv("PINVI_APP_DB_PASSWORD", "pinvi-runtime-password")
+        monkeypatch.setenv("PINVI_APP_SCHEMA_OWNER", "pinvi_application_owner")
+        monkeypatch.setenv("PINVI_MIGRATION_OWNER", "pinvi_migration_owner")
+        monkeypatch.setenv("PINVI_MIGRATOR_DB_USER", "pinvi_migrator")
+        monkeypatch.setenv("PINVI_MIGRATOR_DB_PASSWORD", "pinvi-migrator-password")
+        pinvi_role_script = (
+            tmp_path / "pinvi-source" / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
         )
+        pinvi_role_script.parent.mkdir(parents=True)
+        pinvi_role_script.write_text(
+            "#!/bin/sh\n"
+            "runtime_name=PINVI_APP_DB_PASSWORD\n"
+            "migrator_name=PINVI_MIGRATOR_DB_PASSWORD\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PINVI_REPO_DIR", str(pinvi_role_script.parents[2]))
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
             "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12700/kor_travel_map",
         )
         monkeypatch.setenv("KOR_TRAVEL_MAP_MIGRATOR_PASSWORD", "test-map-migrator")
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD", "test-map-api-runtime"
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD", "test-map-dagster-runtime"
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "test_map_dagster_metadata"
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD", "test-map-dagster-metadata"
-        )
+        monkeypatch.setenv("KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD", "test-map-api-runtime")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD", "test-map-dagster-runtime")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "test_map_dagster_metadata")
+        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD", "test-map-dagster-metadata")
         monkeypatch.setenv(
             "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
             "postgresql+asyncpg://ktm_feature_migrator:test-map-migrator@127.0.0.1:12700/kor_travel_map",
@@ -1615,12 +1652,8 @@ def _prepare_candidate_transaction(
             "postgresql://test_map_dagster_metadata:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
         )
     compose_path = tmp_path / "docker-compose.yml"
-    compose_path.write_text(
-        yaml.safe_dump(compose_config, sort_keys=False), encoding="utf-8"
-    )
-    monkeypatch.setattr(
-        docker_service_module, "_get_compose_path", lambda: str(compose_path)
-    )
+    compose_path.write_text(yaml.safe_dump(compose_config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(docker_service_module, "_get_compose_path", lambda: str(compose_path))
     monkeypatch.setattr(
         "kor_travel_docker_manager.services.compose_service.get_compose_path",
         lambda: str(compose_path),
@@ -1642,9 +1675,7 @@ def _prepare_candidate_transaction(
         "get_compose_config",
         lambda _path=None: compose_config,
     )
-    monkeypatch.setattr(
-        docker_service_module, "assert_manager_mutation_allowed", Mock()
-    )
+    monkeypatch.setattr(docker_service_module, "assert_manager_mutation_allowed", Mock())
     compose_run = Mock()
     monkeypatch.setattr(compose_service_runtime, "run", compose_run)
     return DockerService(), compose_path, compose_run

@@ -20,13 +20,16 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
 from dotenv import dotenv_values
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_APPLICATION_FRESH_300_SERVICE,
     _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
     _MAP_RUNTIME_SERVICES,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+    _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
+    _PINVI_DB_RUNTIME_ROLE_SERVICE,
     C6cBuildProvenance,
     C6cCancelProbeFixture,
     C6cDeploymentConfig,
@@ -128,6 +131,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeDatabaseIdentity,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
+    PinnedRuntimeStatePaths,
     RebuildPhase,
     RuntimeService,
     ensure_pinned_runtime_state_directory,
@@ -179,6 +183,7 @@ from kor_travel_docker_manager.services.registry import (
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "pinvi-db-init",
+    _PINVI_DB_RUNTIME_ROLE_SERVICE,
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
     _MAP_APPLICATION_FRESH_300_SERVICE,
@@ -4625,6 +4630,73 @@ class ComposeService:
             transaction=transaction,
         )
 
+    def _run_pinvi_schema_bootstrap_with_role_lifecycle(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        state_paths: PinnedRuntimeStatePaths,
+        values: Mapping[str, str],
+        transaction_id: str,
+    ) -> None:
+        """짧은 migrator login을 열어 PinVi bootstrap 뒤 반드시 다시 봉인한다."""
+
+        role_command_prefix = [
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+        ]
+        open_role = [
+            *role_command_prefix,
+            "PINVI_MIGRATOR_DISABLE_LOGIN=0",
+            _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        ]
+        seal_role = [
+            *role_command_prefix,
+            "PINVI_MIGRATOR_DISABLE_LOGIN=1",
+            _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        ]
+        try:
+            self._run_pinned_runtime_rebuild_compose(open_role, transaction=transaction)
+            with pinvi_bootstrap_credential_file(
+                state_paths=state_paths,
+                values=values,
+                transaction_id=transaction_id,
+                email=values["KTDM_C6C_PINVI_ADMIN_EMAIL"],
+                password=values["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
+            ) as credential:
+                self._run_pinned_runtime_rebuild_compose(
+                    [
+                        "--profile",
+                        "bootstrap",
+                        "run",
+                        "--rm",
+                        "--no-deps",
+                        "-v",
+                        f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
+                        "-e",
+                        "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
+                        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+                    ],
+                    transaction=transaction,
+                )
+        except BaseException:
+            try:
+                self._run_pinned_runtime_rebuild_compose(seal_role, transaction=transaction)
+            except BaseException as seal_error:
+                raise DeploymentContractError(
+                    "PinVi migrator login could not be sealed after bootstrap failure"
+                ) from seal_error
+            raise
+        try:
+            self._run_pinned_runtime_rebuild_compose(seal_role, transaction=transaction)
+        except BaseException as seal_error:
+            raise DeploymentContractError(
+                "PinVi migrator login could not be sealed after bootstrap"
+            ) from seal_error
+
     @staticmethod
     def _inspect_image_reference_id(image_reference: str, *, label: str) -> str:
         try:
@@ -6539,33 +6611,12 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 if journal.phase == "map_runtime_ready":
-                    with pinvi_bootstrap_credential_file(
+                    self._run_pinvi_schema_bootstrap_with_role_lifecycle(
+                        transaction=runtime_transaction,
                         state_paths=state_paths,
                         values=environment_snapshot.effective,
                         transaction_id=journal.transaction_id,
-                        email=environment_snapshot.effective[
-                            "KTDM_C6C_PINVI_ADMIN_EMAIL"
-                        ],
-                        password=environment_snapshot.effective[
-                            "KTDM_C6C_PINVI_ADMIN_PASSWORD"
-                        ],
-                    ) as credential:
-                        self._run_pinned_runtime_rebuild_compose(
-                            [
-                                "--profile",
-                                "bootstrap",
-                                "run",
-                                "--rm",
-                                "--no-deps",
-                                "-v",
-                                f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
-                                "-e",
-                                "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE="
-                                "/run/pinvi/bootstrap-admin.json",
-                                "pinvi-admin-bootstrap",
-                            ],
-                            transaction=runtime_transaction,
-                        )
+                    )
                 if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
                     raise DeploymentContractError("PinVi schema differs from candidate head")
                 updated = self._advance_pinned_runtime_journal(

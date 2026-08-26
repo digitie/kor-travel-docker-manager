@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-08-26 — PinVi M05 role lifecycle 후보 보정
+
+PinVi #488은 source authority `main` commit
+`93296aee5d47676e6b9b79303bf417c598a273ac`으로 merge됐다. 이 source 보정은 Manager가 허용하는
+PinVi PostgreSQL endpoint pair만 받아 root role bootstrap 환경을 정규화한다. 이전 #477 candidate가
+`map_runtime_ready`에서 멈춘 원인은 M05 migration이 요구하는 root·runtime application·schema owner·
+migration owner·migrator 분리와 root 단일 DSN 배선의 불일치로 한정했다. raw 실행 로그나 DB 데이터를
+근거로 추가 추정하지 않았고, n150에서는 다시 실행하지 않았다.
+
+Manager candidate는 bootstrap profile의 `pinvi-db-runtime-role` one-shot을 추가했다. initial-superuser
+secret file은 PostgreSQL, 기존 DB 생성 one-shot, 이 role one-shot만 읽으며 normal API/Dagster에는 runtime
+application DSN만, admin bootstrap에는 migrator DSN만 전달한다. rebuild는 migrator login을 open한 뒤
+admin/schema bootstrap을 수행하고 성공·실패 모두 explicit seal을 실행한다. C6c는 endpoint
+`127.0.0.1:12800`, source bind, exact env/secret/depends-on, role name·password의 상호 분리, normal
+runtime으로의 root-secret 누출 금지를 raw/resolved Compose 모두에서 검증한다. materialized source는 read-only
+non-executable mode일 수 있으므로 role bootstrap은 직접 exec가 아닌 `sh`로 호출한다. 관련 계약·rebuild 단위 테스트 114건,
+Compose mutation fixture 회귀 97건, 전체 backend 테스트 584건과 변경 Python 모듈의 strict type 검사를
+통과했다. Manager release pin은 #488 commit과 pinset
+`9073c294d6138fff895983adbc9ca483ab2eede6da15bb1ef4888572fe7fe491`으로 회전했다. Manager 적대 리뷰·CI, n150의 role
+credential 구성이 끝나기 전에는 rebuild나 live acceptance를 재개하지 않는다.
+
+---
+
 ## 2026-08-26 — PinVi #477 새 pinset rebuild 미종결 인시던트 기록
 
 PR #219가 회전한 PinVi #477 source와 정규 pinset

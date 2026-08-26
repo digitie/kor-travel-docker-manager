@@ -228,6 +228,41 @@ def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
     ] == "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
 
 
+def test_pinvi_role_bootstrap_source_bind_is_in_canonical_candidate_allowlist() -> None:
+    assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
+        ("pinvi-db-runtime-role", "/opt/pinvi/bootstrap-pinvi-runtime-role.sh", True)
+    ] == ("${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh")
+
+
+def test_pinvi_role_bootstrap_entrypoint_interprets_a_non_executable_source(
+    tmp_path: Path,
+) -> None:
+    source = _source_compose()
+    services = source["services"]
+    assert isinstance(services, dict)
+    role_service = services["pinvi-db-runtime-role"]
+    assert isinstance(role_service, dict)
+    assert role_service["entrypoint"] == [
+        "sh",
+        "-ec",
+        'export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
+        "exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh\n",
+    ]
+
+    script = tmp_path / "bootstrap-pinvi-runtime-role.sh"
+    script.write_text('test "$POSTGRES_PASSWORD" = "root-password"\n', encoding="utf-8")
+    script.chmod(0o444)
+    assert script.stat().st_mode & 0o111 == 0
+    completed = subprocess.run(
+        ["sh", str(script)],
+        env={"POSTGRES_PASSWORD": "root-password"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_concierge_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
     assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
         ("kor-travel-concierge-postgres", "/var/lib/postgresql/data", False)
@@ -258,15 +293,9 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
         "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": _MAP_POSTGRES_IMAGE_ID,
-        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
-            "/tmp/ktdm-map-application-final-permit"
-        ),
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (
-            "/tmp/ktdm-map-dagster-storage-permit"
-        ),
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": (
-            "/tmp/ktdm-map-fresh-migrate-fence"
-        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": ("/tmp/ktdm-map-application-final-permit"),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": ("/tmp/ktdm-map-dagster-storage-permit"),
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": ("/tmp/ktdm-map-fresh-migrate-fence"),
         "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
             "/tmp/ktdm-map-fresh-finalize-fence"
         ),
@@ -301,17 +330,19 @@ def _compose_contract_environment() -> dict[str, str]:
             "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
             "127.0.0.1:12700/map_contract_dagster"
         ),
-        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": (
-            "pbkdf2_sha256$100000$test-salt$test-digest"
-        ),
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": ("pbkdf2_sha256$100000$test-salt$test-digest"),
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "admin",
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "u" * 32,
         "PINVI_PGDATA": "/mnt/f/dev/kor-travel-map-codex",
+        "PINVI_POSTGRES_DB": "pinvi",
+        "PINVI_POSTGRES_USER": "pinvi_contract_root",
         "PINVI_POSTGRES_PASSWORD": "pinvi-contract-postgres-password",
-        "PINVI_DOCKER_DATABASE_URL": (
-            "postgresql+asyncpg://pinvi:pinvi-contract-postgres-password@"
-            "127.0.0.1:12800/pinvi"
-        ),
+        "PINVI_APP_DB_USER": "pinvi_contract_app",
+        "PINVI_APP_DB_PASSWORD": "pinvi-contract-app-password",
+        "PINVI_APP_SCHEMA_OWNER": "pinvi_contract_app_owner",
+        "PINVI_MIGRATION_OWNER": "pinvi_contract_migration_owner",
+        "PINVI_MIGRATOR_DB_USER": "pinvi_contract_migrator",
+        "PINVI_MIGRATOR_DB_PASSWORD": "pinvi-contract-migrator-password",
         "PINVI_ENVIRONMENT": "production",
     }
 
@@ -827,6 +858,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
     )
     environment = _compose_contract_environment()
     root_env = tmp_path / ".env"
@@ -838,9 +870,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
     bootstrap_script.parent.mkdir(parents=True)
     bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    credential_preflight = (
-        map_source / "scripts" / "database-credential-preflight.sh"
-    )
+    credential_preflight = map_source / "scripts" / "database-credential-preflight.sh"
     credential_preflight.parent.mkdir(parents=True)
     credential_preflight.write_text(
         "#!/bin/sh\n"
@@ -850,6 +880,14 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         encoding="utf-8",
     )
     environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+    pinvi_source = tmp_path / "pinvi-source"
+    role_bootstrap_script = pinvi_source / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
+    role_bootstrap_script.parent.mkdir(parents=True)
+    role_bootstrap_script.write_text(
+        "#!/bin/sh\nruntime=PINVI_APP_DB_PASSWORD\nmigrator=PINVI_MIGRATOR_DB_PASSWORD\n",
+        encoding="utf-8",
+    )
+    environment["PINVI_REPO_DIR"] = str(pinvi_source)
     for environment_name, directory_name in (
         ("KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR", "application-permit"),
         ("KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR", "metadata-permit"),
@@ -866,9 +904,23 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         root_env_path=str(root_env),
         environment=environment,
     )
+    role_bootstrap_script.write_text(
+        f"#!/bin/sh\nleaked_value={environment['PINVI_APP_DB_PASSWORD']}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DeploymentContractError, match="bind source leaks C6c data"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    role_bootstrap_script.write_text(
+        "#!/bin/sh\nruntime=PINVI_APP_DB_PASSWORD\nmigrator=PINVI_MIGRATOR_DB_PASSWORD\n",
+        encoding="utf-8",
+    )
     credential_preflight.write_text(
-        "#!/bin/sh\n"
-        f"leaked_value={environment['KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET']}\n",
+        f"#!/bin/sh\nleaked_value={environment['KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET']}\n",
         encoding="utf-8",
     )
     with pytest.raises(DeploymentContractError, match="bind source leaks C6c data"):
@@ -924,6 +976,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
         environment_update={
             "KOR_TRAVEL_MAP_PGDATA": str(map_pgdata),
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
@@ -939,21 +992,23 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": environment[
                 "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR"
             ],
+            "PINVI_REPO_DIR": str(pinvi_source),
         },
     )
-    assert validate_resolved_compose_candidate_protected_values(
-        resolved,
-        environment=environment,
-        compose_path=str(_COMPOSE_PATH),
-        root_env_path=str(root_env),
-    ) == raw_snapshots
+    assert (
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+        == raw_snapshots
+    )
 
     resolved_image_drift = deepcopy(resolved)
     resolved_image_services = resolved_image_drift["services"]
     assert isinstance(resolved_image_services, dict)
-    resolved_image_fresh = resolved_image_services[
-        "kor-travel-map-application-fresh-finalize"
-    ]
+    resolved_image_fresh = resolved_image_services["kor-travel-map-application-fresh-finalize"]
     assert isinstance(resolved_image_fresh, dict)
     resolved_image_fresh["image"] = "attacker.invalid/map-application:stale"
     with pytest.raises(DeploymentContractError, match="image provenance"):
@@ -984,12 +1039,15 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
 
     empty_tuning_environment = dict(environment)
     empty_tuning_environment["PINVI_POSTGRES_SHARED_BUFFERS"] = ""
-    assert validate_resolved_compose_candidate_protected_values(
-        resolved,
-        environment=empty_tuning_environment,
-        compose_path=str(_COMPOSE_PATH),
-        root_env_path=str(root_env),
-    ) == raw_snapshots
+    assert (
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=empty_tuning_environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+        == raw_snapshots
+    )
 
     drifted = deepcopy(resolved)
     drifted_services = drifted["services"]
@@ -999,7 +1057,8 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     drifted_pinvi_environment = drifted_pinvi_api["environment"]
     assert isinstance(drifted_pinvi_environment, dict)
     drifted_pinvi_environment["PINVI_DATABASE_URL"] = (
-        "postgresql+asyncpg://pinvi:pinvi_dev_password@127.0.0.1:12800/wrong_database"
+        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app-password@"
+        "127.0.0.1:12800/wrong_database"
     )
     with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
         validate_resolved_compose_candidate_protected_values(
@@ -1017,15 +1076,18 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     encoded_pinvi_environment = encoded_pinvi_api["environment"]
     assert isinstance(encoded_pinvi_environment, dict)
     encoded_pinvi_environment["PINVI_DATABASE_URL"] = (
-        "postgresql+asyncpg://pinvi:pinvi-contract-postgres%2Dpassword@"
+        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app%2Dpassword@"
         "127.0.0.1:12800/pinvi"
     )
-    assert validate_resolved_compose_candidate_protected_values(
-        encoded_password,
-        environment=environment,
-        compose_path=str(_COMPOSE_PATH),
-        root_env_path=str(root_env),
-    ) == raw_snapshots
+    assert (
+        validate_resolved_compose_candidate_protected_values(
+            encoded_password,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+        == raw_snapshots
+    )
 
     for leaked_password in ("wrong-password", environment["KOR_TRAVEL_MAP_POSTGRES_PASSWORD"]):
         leaked = deepcopy(resolved)
@@ -1036,7 +1098,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         leaked_pinvi_environment = leaked_pinvi_api["environment"]
         assert isinstance(leaked_pinvi_environment, dict)
         leaked_pinvi_environment["PINVI_DATABASE_URL"] = (
-            f"postgresql+asyncpg://pinvi:{leaked_password}@127.0.0.1:12800/pinvi"
+            f"postgresql+asyncpg://pinvi_contract_app:{leaked_password}@127.0.0.1:12800/pinvi"
         )
         with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
             validate_resolved_compose_candidate_protected_values(
@@ -1045,6 +1107,153 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
                 compose_path=str(_COMPOSE_PATH),
                 root_env_path=str(root_env),
             )
+
+    admin_uses_runtime_role = deepcopy(resolved)
+    admin_uses_runtime_services = admin_uses_runtime_role["services"]
+    assert isinstance(admin_uses_runtime_services, dict)
+    admin_bootstrap = admin_uses_runtime_services["pinvi-admin-bootstrap"]
+    assert isinstance(admin_bootstrap, dict)
+    admin_environment = admin_bootstrap["environment"]
+    assert isinstance(admin_environment, dict)
+    admin_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app-password@127.0.0.1:12800/pinvi"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            admin_uses_runtime_role,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    wrong_pinvi_port = dict(environment)
+    wrong_pinvi_port["PINVI_DB_PORT"] = "12900"
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=wrong_pinvi_port,
+        )
+
+    repeated_pinvi_role = dict(environment)
+    repeated_pinvi_role["PINVI_MIGRATOR_DB_USER"] = repeated_pinvi_role["PINVI_APP_DB_USER"]
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=repeated_pinvi_role,
+        )
+
+    repeated_pinvi_password = dict(environment)
+    repeated_pinvi_password["PINVI_MIGRATOR_DB_PASSWORD"] = repeated_pinvi_password[
+        "PINVI_APP_DB_PASSWORD"
+    ]
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=repeated_pinvi_password,
+        )
+    resolved_repeated_pinvi_password = deepcopy(resolved)
+    resolved_repeated_password_services = resolved_repeated_pinvi_password["services"]
+    assert isinstance(resolved_repeated_password_services, dict)
+    resolved_repeated_admin = resolved_repeated_password_services["pinvi-admin-bootstrap"]
+    assert isinstance(resolved_repeated_admin, dict)
+    resolved_repeated_admin_environment = resolved_repeated_admin["environment"]
+    assert isinstance(resolved_repeated_admin_environment, dict)
+    resolved_repeated_admin_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-app-password@"
+        "127.0.0.1:12800/pinvi"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_repeated_pinvi_password,
+            environment=repeated_pinvi_password,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    runtime_uses_root_password = dict(environment)
+    runtime_uses_root_password["PINVI_APP_DB_PASSWORD"] = runtime_uses_root_password[
+        "PINVI_POSTGRES_PASSWORD"
+    ]
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=runtime_uses_root_password,
+        )
+    resolved_runtime_uses_root_password = deepcopy(resolved)
+    resolved_runtime_uses_root_services = resolved_runtime_uses_root_password["services"]
+    assert isinstance(resolved_runtime_uses_root_services, dict)
+    resolved_runtime_api = resolved_runtime_uses_root_services["pinvi-api"]
+    assert isinstance(resolved_runtime_api, dict)
+    resolved_runtime_api_environment = resolved_runtime_api["environment"]
+    assert isinstance(resolved_runtime_api_environment, dict)
+    resolved_runtime_api_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-postgres-password@"
+        "127.0.0.1:12800/pinvi"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_runtime_uses_root_password,
+            environment=runtime_uses_root_password,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    migrator_uses_root_password = dict(environment)
+    migrator_uses_root_password["PINVI_MIGRATOR_DB_PASSWORD"] = migrator_uses_root_password[
+        "PINVI_POSTGRES_PASSWORD"
+    ]
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=migrator_uses_root_password,
+        )
+    resolved_migrator_uses_root_password = deepcopy(resolved)
+    resolved_migrator_uses_root_services = resolved_migrator_uses_root_password["services"]
+    assert isinstance(resolved_migrator_uses_root_services, dict)
+    resolved_migrator_admin = resolved_migrator_uses_root_services["pinvi-admin-bootstrap"]
+    assert isinstance(resolved_migrator_admin, dict)
+    resolved_migrator_admin_environment = resolved_migrator_admin["environment"]
+    assert isinstance(resolved_migrator_admin_environment, dict)
+    resolved_migrator_admin_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-postgres-password@"
+        "127.0.0.1:12800/pinvi"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_migrator_uses_root_password,
+            environment=migrator_uses_root_password,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    root_secret_leak = deepcopy(candidate)
+    root_secret_services = root_secret_leak["services"]
+    assert isinstance(root_secret_services, dict)
+    root_secret_api = root_secret_services["pinvi-api"]
+    assert isinstance(root_secret_api, dict)
+    root_secret_api["secrets"] = [
+        {
+            "source": "pinvi-postgres-password",
+            "target": "unexpected-root-password-copy",
+        }
+    ]
+    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL password secret"):
+        validate_compose_candidate_protected_values(
+            root_secret_leak,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
 
     pinvi_literal = deepcopy(candidate)
     pinvi_literal_services = pinvi_literal["services"]
@@ -1281,20 +1490,11 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert "NEXT_PUBLIC_KOR_TRAVEL_GEO_API_KEY" not in map_ui_environment
 
     map_api_environment = services["kor-travel-map-api"]["environment"]
-    assert (
-        map_api_environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"]
-        == "v" * 32
-    )
+    assert map_api_environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"] == "v" * 32
     map_dagster_environment = services["kor-travel-map-dagster"]["environment"]
-    map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"][
-        "environment"
-    ]
-    map_fresh_environment = services["kor-travel-map-application-fresh-300"][
-        "environment"
-    ]
-    map_finalize_environment = services[
-        "kor-travel-map-application-fresh-finalize"
-    ]["environment"]
+    map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"]["environment"]
+    map_fresh_environment = services["kor-travel-map-application-fresh-300"]["environment"]
+    map_finalize_environment = services["kor-travel-map-application-fresh-finalize"]["environment"]
     assert isinstance(map_api_environment, dict)
     assert isinstance(map_dagster_environment, dict)
     assert isinstance(map_bootstrap_environment, dict)
@@ -1370,6 +1570,7 @@ def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
     )
     pinvi_api = candidate["services"]["pinvi-api"]
     assert isinstance(pinvi_api, dict)
@@ -1614,6 +1815,7 @@ def test_c6c_rejects_resolved_map_database_bridge_network(
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
     )
     services = resolved["services"]
     assert isinstance(services, dict)
