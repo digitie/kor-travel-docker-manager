@@ -465,6 +465,44 @@ def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, c
     mock_retirement.assert_not_called()
 
 
+@patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
+def test_cli_legacy_override_stage_requires_confirmation(mock_stage, capsys):
+    assert (
+        main(
+            [
+                "compose-boundary",
+                "stage-legacy-override",
+                "--source",
+                "/legacy/kor-travel-docker-manager/docker-compose.override.yml",
+            ]
+        )
+        == 2
+    )
+
+    assert "requires --confirm" in capsys.readouterr().err
+    mock_stage.assert_not_called()
+
+
+@patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
+def test_cli_stages_legacy_override_through_official_boundary(mock_stage):
+    source = "/legacy/kor-travel-docker-manager/docker-compose.override.yml"
+
+    assert (
+        main(
+            [
+                "compose-boundary",
+                "stage-legacy-override",
+                "--source",
+                source,
+                "--confirm",
+            ]
+        )
+        == 0
+    )
+
+    mock_stage.assert_called_once_with(source_path=Path(source))
+
+
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
 def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
     assert main(["compose-boundary", "retire-legacy-override", "--confirm"]) == 0

@@ -21,7 +21,10 @@ from kor_travel_docker_manager.services.legacy_override_retirement import (
     LegacyOverrideRetirementError,
     LegacyRootEnvironmentDurabilityError,
     activate_canonical_concierge,
-    retire_legacy_compose_override,
+    stage_legacy_compose_override,
+)
+from kor_travel_docker_manager.services.legacy_override_retirement import (
+    retire_legacy_compose_override as _retire_legacy_compose_override,
 )
 
 
@@ -92,6 +95,21 @@ def _valid_config_runner(
 
 def _no_op_up_runner(_command: list[str], _project_root: Path, _values: dict[str, str]) -> int:
     return 0
+
+
+def retire_legacy_compose_override(**kwargs: object) -> Path:
+    """기존 retire 회귀가 실제 protected stage를 거치도록 하는 test helper."""
+
+    project_root = kwargs.get("project_root")
+    assert isinstance(project_root, Path)
+    source = project_root / "docker-compose.override.yml"
+    if source.exists():
+        stage_legacy_compose_override(
+            source_path=source,
+            project_root=project_root,
+            require_root=False,
+        )
+    return _retire_legacy_compose_override(**kwargs)  # type: ignore[arg-type]
 
 
 def _migration_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -167,6 +185,181 @@ def _migration_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     return root, root_env, override
 
 
+def test_stage_legacy_override_snapshots_inputs_without_compose_or_source_removal(
+    tmp_path: Path,
+) -> None:
+    root, root_env, source = _migration_tree(tmp_path)
+    root_before = root_env.read_bytes()
+    source_env = tmp_path / "kor-travel-concierge" / ".env"
+
+    pending = stage_legacy_compose_override(
+        source_path=source,
+        project_root=root,
+        require_root=False,
+    )
+
+    assert source.exists()
+    assert source_env.exists()
+    assert root_env.read_bytes() == root_before
+    assert pending == root / ".legacy-compose-override-state" / "pending"
+    assert pending.stat().st_mode & 0o777 == 0o700
+    assert (pending / "docker-compose.override.yml").read_bytes() == source.read_bytes()
+    assert (pending / "concierge-source.env").read_bytes() == source_env.read_bytes()
+
+
+def test_root_execution_rejects_callers_project_root_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(retirement_module.os, "geteuid", lambda: 0)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="project root is fixed"):
+        retirement_module._prepare_project_context(project_root=tmp_path, require_root=True)
+
+
+def test_root_rehearsal_boundary_uses_the_pinned_runtime_host_lease() -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+    }
+
+    assert retirement_module._select_lock_path(
+        values,
+        project_root=Path("/irrelevant"),
+        lock_path=None,
+        require_root=True,
+    ) == c6c_module.pinned_runtime_rebuild_lock_path()
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"KTDM_DEPLOYMENT_ENVIRONMENT": "local"},
+        {"KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal"},
+        {
+            "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+            "KTDM_DEPLOYMENT_LIFECYCLE": "operational",
+            "PINVI_ENVIRONMENT": "production",
+            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        },
+    ],
+)
+def test_root_boundary_rejects_noncanonical_execution_environment(
+    values: dict[str, str],
+) -> None:
+    with pytest.raises(LegacyOverrideRetirementError, match="requires"):
+        retirement_module._select_lock_path(
+            values,
+            project_root=Path("/irrelevant"),
+            lock_path=None,
+            require_root=True,
+        )
+
+
+def test_stage_legacy_override_is_idempotent_only_for_identical_snapshot(tmp_path: Path) -> None:
+    root, _root_env, source = _migration_tree(tmp_path)
+    pending = stage_legacy_compose_override(
+        source_path=source,
+        project_root=root,
+        require_root=False,
+    )
+    original = (pending / "docker-compose.override.yml").read_bytes()
+
+    assert (
+        stage_legacy_compose_override(
+            source_path=source,
+            project_root=root,
+            require_root=False,
+        )
+        == pending
+    )
+    source.write_text(source.read_text(encoding="utf-8") + "# changed\n", encoding="utf-8")
+    source.chmod(0o600)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="different snapshot"):
+        stage_legacy_compose_override(
+            source_path=source,
+            project_root=root,
+            require_root=False,
+        )
+
+    assert (pending / "docker-compose.override.yml").read_bytes() == original
+
+
+def test_stage_legacy_override_rejects_symlink_without_state_write(tmp_path: Path) -> None:
+    root, _root_env, source = _migration_tree(tmp_path)
+    copied_source = tmp_path / "copied-override.yml"
+    copied_source.write_bytes(source.read_bytes())
+    copied_source.chmod(0o600)
+    source.unlink()
+    source.symlink_to(copied_source)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="cannot be opened safely"):
+        stage_legacy_compose_override(
+            source_path=source,
+            project_root=root,
+            require_root=False,
+        )
+
+    assert not (root / ".legacy-compose-override-state" / "pending").exists()
+
+
+def test_stage_legacy_override_rejects_unrecognized_source_environment_reference(
+    tmp_path: Path,
+) -> None:
+    root, _root_env, source = _migration_tree(tmp_path)
+    source.write_text(
+        source.read_text(encoding="utf-8").replace(
+            "../kor-travel-concierge/.env", "../unexpected/.env"
+        ),
+        encoding="utf-8",
+    )
+    source.chmod(0o600)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="source reference"):
+        stage_legacy_compose_override(
+            source_path=source,
+            project_root=root,
+            require_root=False,
+        )
+
+    assert not (root / ".legacy-compose-override-state" / "pending").exists()
+
+
+def test_retire_legacy_override_requires_protected_stage_before_root_mutation(
+    tmp_path: Path,
+) -> None:
+    root, root_env, source = _migration_tree(tmp_path)
+    root_before = root_env.read_bytes()
+
+    with pytest.raises(LegacyOverrideRetirementError, match="staged override is required"):
+        _retire_legacy_compose_override(
+            project_root=root,
+            compose_config_runner=lambda *_args: pytest.fail("config must not run"),
+            require_root=False,
+        )
+
+    assert root_env.read_bytes() == root_before
+    assert source.exists()
+
+
+def test_activation_rejects_pending_stage_without_compose_mutation(tmp_path: Path) -> None:
+    root, _root_env, source = _migration_tree(tmp_path)
+    stage_legacy_compose_override(
+        source_path=source,
+        project_root=root,
+        require_root=False,
+    )
+
+    with pytest.raises(LegacyOverrideRetirementError, match="still pending"):
+        activate_canonical_concierge(
+            project_root=root,
+            compose_config_runner=lambda *_args: pytest.fail("config must not run"),
+            require_root=False,
+        )
+
+
 def test_retire_legacy_override_migrates_exact_values_and_archives_after_config(
     tmp_path: Path,
 ) -> None:
@@ -188,10 +381,12 @@ def test_retire_legacy_override_migrates_exact_values_and_archives_after_config(
         require_root=False,
     )
 
-    assert not override.exists()
-    assert archive.parent == root / ".retired-compose-overrides"
+    assert override.exists()  # legacy home source는 stage 뒤에도 실행/삭제 대상이 아니다.
+    assert archive.parent == root / ".legacy-compose-override-state" / ".retired-compose-overrides"
     assert archive.exists()
-    assert archive.stat().st_mode & 0o777 == 0o600
+    assert archive.stat().st_mode & 0o777 == 0o700
+    assert (archive / "docker-compose.override.yml").stat().st_mode & 0o777 == 0o600
+    assert (archive / "concierge-source.env").stat().st_mode & 0o777 == 0o600
     assert archive.parent.stat().st_mode & 0o777 == 0o700
     assert observed["commands"] == [[
         "docker",
@@ -438,8 +633,8 @@ def test_retire_legacy_override_keeps_candidate_environment_after_archive_durabi
             require_root=False,
         )
 
-    assert not override.exists()
-    assert list((root / ".retired-compose-overrides").iterdir())
+    assert override.exists()
+    assert list((root / ".legacy-compose-override-state" / ".retired-compose-overrides").iterdir())
     values = dotenv_values(root_env, interpolate=False)
     assert values["KOR_TRAVEL_CONCIERGE_API_KEYS"] == "concierge-old-key,concierge-bff-key"
     assert values["KOR_TRAVEL_GEO_BACKUP_SCHEDULE_ENABLED"] == "true"
@@ -612,8 +807,8 @@ def test_retire_legacy_override_leaves_canonical_archive_when_recreate_fails(
             require_root=False,
         )
 
-    assert not override.exists()
-    assert list((root / ".retired-compose-overrides").iterdir())
+    assert override.exists()
+    assert list((root / ".legacy-compose-override-state" / ".retired-compose-overrides").iterdir())
     assert dotenv_values(root_env, interpolate=False)["KOR_TRAVEL_CONCIERGE_API_KEYS"]
 
 

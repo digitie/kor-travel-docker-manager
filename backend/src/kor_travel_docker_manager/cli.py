@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -15,6 +16,7 @@ from kor_travel_docker_manager.services.legacy_override_retirement import (
     LegacyOverrideRetirementError,
     activate_canonical_concierge,
     retire_legacy_compose_override,
+    stage_legacy_compose_override,
 )
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.standalone_backup import (
@@ -163,6 +165,23 @@ def _cmd_retire_legacy_override(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     print("legacy Compose override retired and canonical Concierge recreated")
+    return 0
+
+
+def _cmd_stage_legacy_override(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print(
+            "compose-boundary stage-legacy-override requires --confirm "
+            "(no mutation was attempted)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        stage_legacy_compose_override(source_path=Path(args.source))
+    except LegacyOverrideRetirementError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print("legacy Compose override snapshot staged in the protected runtime boundary")
     return 0
 
 
@@ -322,14 +341,30 @@ def build_parser() -> argparse.ArgumentParser:
     compose_boundary_subparsers = compose_boundary.add_subparsers(
         dest="compose_boundary_action", required=True
     )
+    stage_legacy_override = compose_boundary_subparsers.add_parser(
+        "stage-legacy-override",
+        help="legacy override와 고정된 Concierge source를 보호된 state로 snapshot합니다.",
+    )
+    stage_legacy_override.add_argument(
+        "--source",
+        required=True,
+        help="legacy docker-compose.override.yml의 절대 경로입니다.",
+    )
+    stage_legacy_override.add_argument(
+        "--confirm",
+        action="store_true",
+        help="owner-only protected stage로의 단방향 snapshot을 확인합니다.",
+    )
+    stage_legacy_override.set_defaults(func=_cmd_stage_legacy_override)
+
     retire_legacy_override = compose_boundary_subparsers.add_parser(
         "retire-legacy-override",
-        help="검증된 legacy override를 canonical root .env로 이관하고 보관합니다.",
+        help="보호된 staged override를 canonical root .env로 이관하고 보관합니다.",
     )
     retire_legacy_override.add_argument(
         "--confirm",
         action="store_true",
-        help="root .env 갱신과 legacy override의 owner-only archive 이동을 확인합니다.",
+        help="root .env 갱신과 staged override의 owner-only archive 이동을 확인합니다.",
     )
     retire_legacy_override.set_defaults(func=_cmd_retire_legacy_override)
 

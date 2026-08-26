@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-08-26 — trusted release/runtime split을 legacy Compose handoff로 고정하는 후속 후보
+
+Manager #223은 merge 뒤 trusted release로 배포됐지만, installed shim이 고정한 canonical `/opt` project root를
+retirement code가 blanket 거부해 공식 `retire-legacy-override`가 mutation 전에 fail-close했다. 이 실패는 root
+`.env`, Docker/Compose, DB, runtime을 바꾸지 않았으므로 P0 incident는 아니지만, rebuild 선행 조건의 sanctioned
+경로가 막혀 P1 release blocker다. home checkout의 Compose YAML과 parent directory는 user-writable이므로 단순
+거부 해제·home cwd/Compose 사용·legacy override 자동 병합은 root Docker mutation에 신뢰할 수 없는 입력을 주입하는
+P0가 되어 허용하지 않는다.
+
+후속 후보는 trusted `/opt` root·`.env`·canonical Compose·C6c 검증·Compose cwd를 execution authority로 유지한다.
+별도 `stage-legacy-override --source <absolute-path> --confirm`은 Docker/Compose를 호출하지 않고, root-owned
+`0600` final legacy override와 고정 sibling Concierge `.env`를 `O_NOFOLLOW` descriptor/fstat로 snapshot해 fixed
+C6c state 아래 owner-only pending directory에 원자적으로 넣는다. user-writable home parent는 snapshot 전
+availability를 방해할 수는 있어도 root-owned final input을 바꾸거나 Manager Compose source가 될 수 없다. source는
+stage 뒤 삭제·rename·재사용하지 않는다.
+
+`retire-legacy-override`는 pending snapshot만 읽어 root `.env` candidate와 raw/resolved canonical Compose를
+검증하고, 성공 시 같은 protected filesystem에서 pending directory 전체를 archive로 rename한다. pending이 있으면
+`activate-concierge`도 fail-close한다. snapshot이 없거나 내용이 달라지면 root 설정·Docker runtime 변경 없이 중단한다.
+archive 뒤 durability와 재생성 실패의 기존 typed fail-close 의미론은 유지한다. 값·source path·credential·digest는
+출력하거나 이 일지에 기록하지 않는다.
+
+추가 읽기 전용 config 확인에서 n150의 canonical pinned rebuild가 `rehearsal/rebuildable` mode와 non-default C6c
+state를 사용한다는 사실을 확인했다. 따라서 production-only gate나 production fixed-state 강제는 두 번째 P1이 된다.
+후속 보정은 trusted `/opt` root를 여전히 고정하면서, exact rehearsal/rebuildable·PinVi production·Map principal-required
+contract에서는 `rebuild-pinned`와 같은 root-owned host lease 및 해당 C6c state를 사용한다. caller가 mode·project
+root·stage root·lock path를 주입하거나 home Compose를 실행 root로 바꾸는 경로는 추가하지 않는다.
+
+---
+
 ## 2026-08-26 — legacy Compose override를 canonical UI 경계로 이관하는 후보
 
 Manager #222를 n150에 반영한 뒤 승인된 `rebuild-pinned --confirm`은 DB reset·image build·journal write 전에
@@ -22,9 +52,11 @@ canonical sibling Concierge source의 정확한 이름만 raw 파싱한다. back
 입력이 regular file·안전 mode인지, 기존 root 값이 source와 충돌하지 않는지를 검사한다. 또한 API의 `APP_ENV=production`과
 `API_AUTH_ENABLED=true`를 함께 이관·검증해 override 퇴역 뒤 local/unauthenticated 기본값으로 내려가는 downgrade를 막는다.
 candidate `.env`를 atomic 갱신하고 canonical Compose의 실제 raw/resolved 출력을 메모리에서 C6c 검증한 뒤에만 override를
-owner-only archive로 rename한다. 이 전 과정은 production C6c global mutation lock으로 직렬화한다. archive rename 전 실패면
+owner-only archive로 rename한다. 이 전 과정은 deployment contract에 따라 직렬화한다. canonical
+rehearsal/rebuildable은 pinned-runtime rebuild host lease를, production은 fixed C6c global mutation lock을 사용한다.
+archive rename 전 실패면
 원래 `.env`를 복구하지만, rename 뒤 directory durability가 불확실하면 candidate `.env`와 archive를 유지한 typed failure로
-중단해 split-brain rollback을 만들지 않는다. archive 성공 뒤에는 같은 lock 안에서 Concierge API/MCP/scheduler/UI 정확한
+중단해 split-brain rollback을 만들지 않는다. archive 성공 뒤에는 같은 deployment lock 안에서 Concierge API/MCP/scheduler/UI 정확한
 service만 canonical source로 재생성한다. 이 재생성만 실패하면 archive와 candidate를 보존하고
 `compose-boundary activate-concierge --confirm`으로 재시도한다. source credential file은 group/other-readable mode와 dotenv
 공백·tab duplicate 선언을 거부한다. raw/resolved C6c는 API/UI host network, API loopback port, UI auth guard·production command도
