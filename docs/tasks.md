@@ -47,10 +47,12 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
 - [/] 원인은 M05가 요구하는 role topology와 #477의 root 단일 DSN 배선 불일치로 분리됐다. PinVi
   #488 merge commit `93296aee5d47676e6b9b79303bf417c598a273ac`은 Manager가 허용하는 exact loopback
   endpoint에서만 role bootstrap을 실행하도록 보정했다. Manager 후보는 root·runtime·schema owner·migration
-  owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. Manager release pin은 #488
-  commit과 pinset `9073c294d6138fff895983adbc9ca483ab2eede6da15bb1ef4888572fe7fe491`으로 회전했다. n150의
-  canonical root `.env`에는 이 여섯 role 값이 모두 미선언인 fresh 상태여서 trusted `rebuild-pinned`가
-  candidate/journal/DB/runtime mutation 전에 fail-close한다. 후속 Manager PR은 caller 경로 override가 아닌 trusted
+  owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. 현재 Manager release pin은
+  Map #1066 merge `14d18230e5a9ff21caf26d6abe37aed1e4944685`와 PinVi #488 commit을 함께 고정한
+  pinset `d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898`이다. n150의
+  canonical root `.env` role credential tuple은 fresh 최초 admission에서만 원자 초기화할 수 있고, 현재는
+  official rebuild가 raw C6c·external readiness를 통과해 Map source fetch까지 도달한 완결된 정본이다.
+  후속 Manager PR은 caller 경로 override가 아닌 trusted
   `/opt` root pair와 root-owned host lease를 사용하며, exact rebuildable admission·C6c token을 **쓰기 전** 통과한
   경우에만 여섯 값을 원자 초기화한다. 현재 pinset의 `map_runtime_ready` v8 resume에는 기존 environment SHA와
   candidate raw/resolved Compose SHA를 모두 receipt로 남기는 한 번의 role-source rebind만 허용한다. 다른 phase·
@@ -71,6 +73,12 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   아니어도 raw bind precondition이므로, WIP를 reset·복사하지 않고 source owner가 같은 path를 exact approved
   release로 수렴한 뒤에만 동일 official rebuild를 한 번 재개한다. manual Docker/Compose/SQL, bind/guard
   완화, role credential 삭제·회전은 금지한다.
+- [/] role source precondition을 수렴한 다음 official rebuild는 Map PR #1066의 deleted head
+  `cc81081…`를 canonical GitHub에서 exact fetch하는 단계에서 fail-close했다. local tree와 canonical remote의
+  exact-SHA fetch가 검증된 merge `14d18230…`의 tree가 identical임을 확인했으므로, Manager는 deleted PR head가
+  아니라 이 머지 커밋만 새 source authority로 회전한다. 이 pin rotation이 trusted deployment·candidate
+  build·attestation을 통과하기 전에는 rebuild를 다시 호출하거나 기존 `map_runtime_ready` journal을 새 pinset의
+  근거로 재사용하지 않는다.
 - [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
   preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용하도록 Manager #222로
   보정·병합·배포했다. 실제 빈 `.env`와 Compose resolution 회귀를 포함한 587개 backend 테스트, 전문 적대 리뷰
