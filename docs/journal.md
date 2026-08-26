@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-08-26 — d9 PinVi role lifecycle의 비밀 비포함 단계 진단 후보
+
+Manager #233의 fetch 가능한 Map merge pin 회전을 trusted release로 배포한 뒤, 사용자 승인된
+official rebuild를 새 pinset `d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898`에서
+한 번 실행했다. Map paired build, application/Dagster schema와 Map API/UI/Dagster/daemon 준비까지 통과해
+v8 journal은 `map_runtime_ready`에 도달했다. 이어 PinVi role lifecycle은 `pinvi-db-runtime-role` open과
+fail-closed cleanup seal 사이에서 0이 아닌 종료로 끝났으며, `pinvi-admin-bootstrap` one-shot은 생성되지
+않았다. candidate는 `committed`가 아니므로 Map/PinVi live acceptance의 근거로 승격하지 않는다.
+
+n150 candidate·journal·DB·role·Compose에는 수동 변경을 하지 않았다. exact pinned role script의
+open → seal은 같은 PostGIS 16 이미지의 분리된 일회용 local database에서 성공했으므로, 현 증거만으로
+script의 결정적 결함이나 role의 실제 봉인·미봉인 상태를 단정하지 않는다. raw stderr·DSN·role·password·path는
+receipt나 public error에 저장·출력하지 않는다.
+
+후속 Manager 후보는 Compose argv, open → admin bootstrap → seal 순서, root secret mount, cleanup,
+journal phase와 candidate 입력을 바꾸지 않는다. `pinvi-db-runtime-role`의 exact 고정 비밀 비포함 문구만
+`role_input_invalid`, `role_endpoint_not_ready`, `role_existing_owner_noncanonical`,
+`role_topology_noncanonical`으로 allowlist하고, 나머지는 `unclassified`로 처리한다. lifecycle 오류에는
+`pinvi_role_open`·`pinvi_bootstrap_credential`·`pinvi_admin_bootstrap`·
+`pinvi_bootstrap_credential_cleanup`·`pinvi_role_seal` 중 해당 stage와 allowlisted code만 보존한다.
+원문 출력, 자동 retry, topology/권한 완화, journal 소급 기록은 추가하지 않는다. focused 14개와 native Linux
+temporary directory에서 backend `test_pinned_runtime_rebuild.py` 87개, 변경 service Ruff 및 strict mypy를
+통과했다. 두 전문 적대 리뷰와 PR gate가 끝나기 전에는 rebuild를 재실행하지 않는다.
+
+---
+
 ## 2026-08-26 — fetch 가능한 Map merge commit으로 pinned source 회전
 
 PinVi role bootstrap source checkout을 exact approved release로 수렴한 뒤 official rebuild를 한 번

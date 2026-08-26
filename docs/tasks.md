@@ -79,6 +79,18 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   아니라 이 머지 커밋만 새 source authority로 회전한다. 이 pin rotation이 trusted deployment·candidate
   build·attestation을 통과하기 전에는 rebuild를 다시 호출하거나 기존 `map_runtime_ready` journal을 새 pinset의
   근거로 재사용하지 않는다.
+- [/] Manager #233의 trusted deployment 뒤 `d9aded…` pinset으로 실행한 다음 official rebuild는 Map paired
+  build, Map application/Dagster schema와 Map runtime 준비을 끝내 v8 journal `map_runtime_ready`까지 도달했다.
+  PinVi role lifecycle은 `pinvi-db-runtime-role` open과 fail-closed cleanup seal에서 종료했으며
+  `pinvi-admin-bootstrap` one-shot은 생성되지 않았다. 이 candidate는 `committed`가 아니므로 Map/PinVi live
+  acceptance나 M01~M05 activation의 근거가 아니다. n150 candidate·journal·DB·role·Compose에는 수동 변경을
+  하지 않는다. exact pinned role script의 open → seal이 분리된 PostGIS 16 local reproduction에서 성공했으므로
+  현 증거만으로 script 결함 또는 actual seal 상태를 단정하지 않는다. 다음 Manager PR은 Compose argv, lifecycle,
+  root secret mount, cleanup, journal/candidate 입력을 불변으로 유지하면서 `pinvi_role_open`,
+  `pinvi_bootstrap_credential`, `pinvi_admin_bootstrap`, `pinvi_bootstrap_credential_cleanup`,
+  `pinvi_role_seal` stage와 fixed allowlisted 비밀 비포함 code만 남긴다. raw stderr, DSN, role, password,
+  path, 자동 retry, topology/권한 완화, journal 소급 기록은 금지한다. 해당 PR의 두 전문
+  적대 리뷰·CI·trusted deployment 전에는 rebuild를 재실행하지 않는다.
 - [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
   preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용하도록 Manager #222로
   보정·병합·배포했다. 실제 빈 `.env`와 Compose resolution 회귀를 포함한 587개 backend 테스트, 전문 적대 리뷰
