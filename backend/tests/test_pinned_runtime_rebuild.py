@@ -1387,6 +1387,94 @@ def test_frozen_compose_resolution_preserves_contract_error(
     assert "candidate failed" not in str(captured.value)
 
 
+def test_prebuild_compose_resolution_overrides_blank_artifact_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """빈 ambient artifact 값도 frozen prebuild override로 실제 해석한다."""
+
+    names = (
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR",
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR",
+        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR",
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR",
+    )
+    artifact_root = tmp_path / "prebuild-artifacts"
+    overrides = {
+        name: str(artifact_root / directory)
+        for name, directory in zip(
+            names,
+            (
+                "fresh-root-fence",
+                "fresh-finalize-fence",
+                "application-final-permit",
+                "dagster-storage-permit",
+            ),
+            strict=True,
+        )
+    }
+    for directory in overrides.values():
+        Path(directory).mkdir(parents=True)
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "".join(f"{name}=\n" for name in names),
+        encoding="utf-8",
+    )
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(compose_service_module, "get_env_path", lambda: str(env_path))
+    monkeypatch.setattr(
+        compose_service_module, "get_compose_path", lambda: str(compose_path)
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "get_override_path",
+        lambda: str(tmp_path / "missing.override.yml"),
+    )
+    snapshot = compose_service_module._capture_compose_environment_snapshot(
+        environment_override=None
+    )
+    assert {name: snapshot.effective[name] for name in names} == {
+        name: "" for name in names
+    }
+    environment = compose_service_module._effective_snapshot_environment(
+        snapshot,
+        overrides,
+    )
+    candidate = {
+        "services": {
+            "prebuild-probe": {
+                "image": "busybox:1.36",
+                "volumes": [
+                    f"${{{name}:?{name} must be explicitly set}}:/artifact-{index}:ro"
+                    for index, name in enumerate(names)
+                ],
+            }
+        }
+    }
+
+    resolved = ComposeService()._resolve_compose_candidate_unlocked(
+        candidate,
+        environment=environment,
+        expected_system_bind_snapshots=(),
+        environment_snapshot=snapshot,
+        environment_override=overrides,
+        external_input_snapshot=compose_service_module.ComposeExternalInputSnapshot(
+            references=(),
+            files=(),
+        ),
+    )
+
+    volumes = resolved["services"]["prebuild-probe"]["volumes"]
+    assert [volume["source"] for volume in volumes] == list(overrides.values())
+    assert [volume["target"] for volume in volumes] == [
+        f"/artifact-{index}" for index in range(len(names))
+    ]
+    assert all(volume["read_only"] is True for volume in volumes)
+
+
 def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_reset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
