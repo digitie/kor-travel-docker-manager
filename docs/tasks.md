@@ -62,6 +62,15 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   atomic 발행하는 후속 Manager PR을 merge·배포해야 하며, 그 전에는 rebuild를 재시도하지 않는다. 기본
   wheelhouse 경로가 다른 provenance의 pre-existing root artifact라면 이를 삭제·수정·채택하지 않고, exact
   merged commit을 포함한 새 destination을 provisioner와 installer에 같은 explicit path로 넘긴다.
+- [/] Manager #230/#231의 trusted offline wheelhouse issuance와 installer release deployment 뒤 공식
+  rebuild는 raw C6c prebuild에서 `pinvi-db-runtime-role` source bind 부재를 발견해 fail-close했다.
+  candidate source materialize, paired image build, journal, Docker/Compose runtime, one-shot, 세 DB reset은
+  시작하지 않았다. n150의 `PINVI_REPO_DIR` checkout은 clean canonical origin이지만 PinVi
+  `25505e056…`에 머물러, Manager pin `93296aee…`가 요구하는
+  `infra/postgres/bootstrap-pinvi-runtime-role.sh`가 없다. source checkout HEAD는 candidate authority가
+  아니어도 raw bind precondition이므로, WIP를 reset·복사하지 않고 source owner가 같은 path를 exact approved
+  release로 수렴한 뒤에만 동일 official rebuild를 한 번 재개한다. manual Docker/Compose/SQL, bind/guard
+  완화, role credential 삭제·회전은 금지한다.
 - [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
   preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용하도록 Manager #222로
   보정·병합·배포했다. 실제 빈 `.env`와 Compose resolution 회귀를 포함한 587개 backend 테스트, 전문 적대 리뷰
