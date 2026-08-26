@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-08-26 — legacy Compose override를 canonical UI 경계로 이관하는 후보
+
+Manager #222를 n150에 반영한 뒤 승인된 `rebuild-pinned --confirm`은 DB reset·image build·journal write 전에
+실제 `docker-compose.override.yml` 존재를 발견해 single-file boundary에서 fail-close했다. 읽기 전용 topology
+점검 결과 이 legacy override는 Geo backup의 네 runtime 값을 덮고 Concierge UI에 production command와 전체
+Concierge `.env`를 전달했다. 후자는 provider/LLM/search key까지 UI process에 섞일 수 있어 canonical runtime
+경계가 될 수 없다.
+
+후속 후보는 Geo backup 값의 정식 root `.env` source를 유지하고, Concierge UI에는 auth username·password hash·
+session secret·admin proxy secret·trusted-proxy flag·public origin·same-origin BFF 설정만 exact allowlist로 전달한다.
+UI backend origin은 canonical loopback API 주소에 고정하고, API와 UI의 admin proxy secret은 같은 Manager root source를
+쓴다. UI command는 auth 값이 비었거나 session/proxy secret이 짧으면 fail-fast하고 production build/start를 수행한다.
+
+`ktdctl compose-boundary retire-legacy-override --confirm`은 root-only로 legacy override의 알려진 Geo 값과
+canonical sibling Concierge source의 정확한 이름만 raw 파싱한다. backend key가 `API_KEYS`의 exact member인지, 모든
+입력이 regular file·안전 mode인지, 기존 root 값이 source와 충돌하지 않는지를 검사한다. 또한 API의 `APP_ENV=production`과
+`API_AUTH_ENABLED=true`를 함께 이관·검증해 override 퇴역 뒤 local/unauthenticated 기본값으로 내려가는 downgrade를 막는다.
+candidate `.env`를 atomic 갱신하고 canonical Compose의 실제 raw/resolved 출력을 메모리에서 C6c 검증한 뒤에만 override를
+owner-only archive로 rename한다. 이 전 과정은 production C6c global mutation lock으로 직렬화한다. archive rename 전 실패면
+원래 `.env`를 복구하지만, rename 뒤 directory durability가 불확실하면 candidate `.env`와 archive를 유지한 typed failure로
+중단해 split-brain rollback을 만들지 않는다. archive 성공 뒤에는 같은 lock 안에서 Concierge API/MCP/scheduler/UI 정확한
+service만 canonical source로 재생성한다. 이 재생성만 실패하면 archive와 candidate를 보존하고
+`compose-boundary activate-concierge --confirm`으로 재시도한다. source credential file은 group/other-readable mode와 dotenv
+공백·tab duplicate 선언을 거부한다. raw/resolved C6c contract와 special character가 든 fake secret의 dotenv round-trip 회귀를
+고정했다. 값·경로·digest는 출력하거나 작업 일지에 기록하지 않는다. 이 후보의 merge·배포와 two-review 승인 전에는 rebuild를
+재시도하지 않는다.
+
+---
+
 ## 2026-08-26 — pinset artifact preflight 순서 보정 후보
 
 n150의 별도 사전 점검은 source provenance 및 PinVi role credential을 통과했다. 그 뒤 승인된 rebuild의

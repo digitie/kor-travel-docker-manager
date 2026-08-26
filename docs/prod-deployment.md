@@ -94,30 +94,48 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12905/   # 200
 
 ## 7. concierge UI는 prod에서 프로덕션 빌드로 구동 (중요)
 
-`kor-travel-concierge-ui`는 베이스 compose에서 `npm run dev`(Next dev 모드)로 정의돼 있다. dev 모드는
-**원격/리버스 프록시 접속 시 HMR WebSocket 실패와 함께 hydration이 되지 않아 모든 인터랙티브 컴포넌트가
-멈춘다**(드롭다운/폼이 동작하지 않음). 따라서 prod에서는 **프로덕션 빌드(`next build` + `next start`)**로
-구동해야 한다.
+`kor-travel-concierge-ui`는 canonical Compose에서 프로덕션 빌드(`next build` + `next start`)로만 구동한다.
+dev 모드는 원격/리버스 프록시 접속에서 HMR WebSocket 실패와 hydration 정지를 만들 수 있어 운영 경계에서
+허용하지 않는다. 컨테이너 시작은 password hash·session secret·proxy secret이 비었거나 secret 길이가 짧으면
+fail-close하고, 통과할 때만 build 뒤 `next start`로 전환한다.
 
-Manager mutation은 single-file compose boundary를 강제하므로 prod 호스트의
-**`docker-compose.override.yml`**, `COMPOSE_FILE`, service `extends`로 command를 바꾸지 않는다. 운영 전에는
-아래 command를 canonical `docker-compose.yml`에 반영한 배포 revision을 사용한다:
+Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제한다.
 
-```yaml
-services:
-  kor-travel-concierge-ui:
-    command:
-      - sh
-      - -c
-      - npm run build && npm run start -- -H 0.0.0.0 -p 12605
+- `kor-travel-concierge-ui`에 `env_file`이 없고, UI environment가 정확한 allowlist다. provider/LLM/search 키가
+  섞인 Concierge 전체 `.env`는 browser-facing UI process에 전달하지 않는다.
+- BFF `BACKEND_ORIGIN`은 canonical loopback API 주소에 고정하며 public API base는 빈 same-origin BFF다.
+- API와 UI의 `KTC_ADMIN_PROXY_SECRET`은 단 하나의 Manager root source
+  `KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET`를 같이 사용한다.
+- UI credential source는 Manager root `.env`의 `KOR_TRAVEL_CONCIERGE_UI_*`와
+  `KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY`뿐이다. backend key는
+  `KOR_TRAVEL_CONCIERGE_API_KEYS` comma-list의 exact member여야 한다. browser에 필요한 지도 키는 전용
+  `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`로 분리한다.
+- API의 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
+  `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`도 root authority로 이관한다. source `.env`가 이 둘 중 하나를
+  local/false로 주면 이관 명령은 API가 unauthenticated default로 내려가는 것을 막기 위해 중단한다.
+
+남아 있는 legacy `docker-compose.override.yml`가 있다면 수동 `docker compose` 명령이나 삭제를 하지 않는다.
+Manager의 canonical release 배포 뒤 root에서 아래 공식 경로를 한 번 실행한다.
+
+```bash
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  compose-boundary retire-legacy-override --confirm
 ```
 
-- 적용: Manager의 canonical compose revision으로
-  `docker compose up -d --no-deps --force-recreate kor-travel-concierge-ui`를 실행한다. 컨테이너 시작 시
-  `next build`(~1–2분) 후 `next start`로 서빙한다.
-- `NEXT_PUBLIC_*`(예: `NEXT_PUBLIC_VWORLD_API_KEY`)는 prod `.env`에 있어야 빌드 시 번들에 인라인된다.
-- dev HMR이 필요한 revision은 canonical compose의 command를 `npm run dev`로 명시한다. 한 manager mutation
-  안에서 prod/dev 파일을 합성하지 않는다.
+첫 명령은 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고, 값 충돌·symlink·비정규 파일·
+잘못된 API key membership을 fail-close한다. candidate root `.env`를 원자적으로 갱신한 뒤 canonical Compose를
+출력 없이 raw/resolved C6c 경계까지 검증하고, 성공한 경우에만 override를 owner-only archive로 rename한다. 같은
+C6c global mutation lock을 계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로
+force-recreate한다. production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이
+실패하면 root `.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
+
+```bash
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  compose-boundary activate-concierge --confirm
+```
+
+retry 역시 legacy override가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·override
+restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다.
 
 ## 8. F1D pinned runtime generation v6/journal v8 재구축
 

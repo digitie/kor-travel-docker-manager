@@ -513,6 +513,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://addr:addr@127.0.0.1:12600/kor_travel_concierge}
+      # UI BFF와 backend admin proxy는 같은 Manager root authority만 사용한다.
+      KTC_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET:?KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET must be explicitly set}
       NEXT_PUBLIC_API_BASE_URL: http://localhost:${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}
       CORS_ALLOW_ORIGINS: '["http://localhost:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}","http://127.0.0.1:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}"]'
       RUSTFS_ENABLED: 'true'
@@ -627,22 +629,30 @@ services:
     container_name: ${KOR_TRAVEL_CONCIERGE_UI_CONTAINER:-kor-travel-concierge-ui-latest}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    # single-file boundary에서는 legacy override의 전체 Concierge .env를 UI에
+    # 주입하지 않는다. UI가 필요한 server-only auth 값만 명시적으로 전달한다.
     command:
-    - npm
-    - run
-    - dev
-    - --
-    - --hostname
-    - 0.0.0.0
-    - --port
-    - '${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}'
+    - sh
+    - -ec
+    - >-
+      [ -n "$$KTC_ADMIN_PASSWORD_HASH" ] && [ -n "$$KTC_UI_SESSION_SECRET" ] &&
+      [ "$${#KTC_UI_SESSION_SECRET}" -ge 32 ] && [ -n "$$KTC_ADMIN_PROXY_SECRET" ] &&
+      [ "$${#KTC_ADMIN_PROXY_SECRET}" -ge 32 ] || { echo "FATAL concierge-ui auth env invalid" >&2; exit 1; };
+      npm run build && exec npm run start -- -H 0.0.0.0 -p ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}
     depends_on:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      BACKEND_ORIGIN: http://127.0.0.1:${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}
-      BACKEND_API_KEY: ${KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY:-}
-      NEXT_PUBLIC_VWORLD_SERVICE_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+      BACKEND_ORIGIN: http://127.0.0.1:12601
+      BACKEND_API_KEY: ${KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY:?KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY must be explicitly set}
+      NEXT_PUBLIC_VWORLD_SERVICE_KEY: ${KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY:?KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY must be explicitly set}
+      KTC_ADMIN_USERNAME: ${KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME:?KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME must be explicitly set}
+      KTC_ADMIN_PASSWORD_HASH: ${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH:?KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH must be explicitly set}
+      KTC_UI_SESSION_SECRET: ${KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET:?KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET must be explicitly set}
+      KTC_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET:?KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET must be explicitly set}
+      KTC_UI_TRUST_FORWARDED_IPS: ${KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS:-false}
+      KTC_UI_PUBLIC_ORIGINS: ${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS:-}
+      NEXT_PUBLIC_API_BASE_URL: ${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL:-}
     ports:
     - ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}
   # #171 / ADR-35 — Map state principal의 ownership/ACL은 통합 PostgreSQL과

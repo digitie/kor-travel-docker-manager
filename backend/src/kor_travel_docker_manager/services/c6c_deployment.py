@@ -37,6 +37,8 @@ _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_API_IMMUTABLE_ENTRYPOINT = ["/app/docker/api-entrypoint.sh"]
 _MAP_API_IMMUTABLE_COMMAND = None
 _MAP_UI_SERVICE = "kor-travel-map-ui"
+_CONCIERGE_API_SERVICE = "kor-travel-concierge-api"
+_CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
@@ -158,6 +160,29 @@ _MAP_ADMIN_TRUSTED_PROXY_CIDRS_ENV = (
 _MAP_UI_PASSWORD_ENV = "KTDM_C6C_MAP_UI_ADMIN_PASSWORD"
 _MAP_UI_PROTECTED_PATH = "/ops/datasets"
 _PINVI_ADMIN_PASSWORD_ENV = "KTDM_C6C_PINVI_ADMIN_PASSWORD"
+_CONCIERGE_UI_BACKEND_ORIGIN_ENV = "BACKEND_ORIGIN"
+_CONCIERGE_UI_BACKEND_API_KEY_ENV = "BACKEND_API_KEY"
+_CONCIERGE_UI_VWORLD_KEY_ENV = "NEXT_PUBLIC_VWORLD_SERVICE_KEY"
+_CONCIERGE_UI_PUBLIC_API_BASE_ENV = "NEXT_PUBLIC_API_BASE_URL"
+_CONCIERGE_UI_ADMIN_USERNAME_ENV = "KTC_ADMIN_USERNAME"
+_CONCIERGE_UI_ADMIN_PASSWORD_HASH_ENV = "KTC_ADMIN_PASSWORD_HASH"
+_CONCIERGE_UI_SESSION_SECRET_ENV = "KTC_UI_SESSION_SECRET"
+_CONCIERGE_UI_ADMIN_PROXY_SECRET_ENV = "KTC_ADMIN_PROXY_SECRET"
+_CONCIERGE_UI_TRUST_FORWARDED_IPS_ENV = "KTC_UI_TRUST_FORWARDED_IPS"
+_CONCIERGE_UI_PUBLIC_ORIGINS_ENV = "KTC_UI_PUBLIC_ORIGINS"
+_CONCIERGE_ROOT_BACKEND_API_KEY_ENV = "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY"
+_CONCIERGE_ROOT_API_KEYS_ENV = "KOR_TRAVEL_CONCIERGE_API_KEYS"
+_CONCIERGE_ROOT_APP_ENV = "KOR_TRAVEL_CONCIERGE_APP_ENV"
+_CONCIERGE_ROOT_API_AUTH_ENABLED_ENV = "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED"
+_CONCIERGE_ROOT_VWORLD_KEY_ENV = "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY"
+_CONCIERGE_ROOT_ADMIN_USERNAME_ENV = "KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME"
+_CONCIERGE_ROOT_ADMIN_PASSWORD_HASH_ENV = "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH"
+_CONCIERGE_ROOT_SESSION_SECRET_ENV = "KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET"
+_CONCIERGE_ROOT_PROXY_SECRET_ENV = "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET"
+_CONCIERGE_ROOT_TRUST_FORWARDED_IPS_ENV = "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS"
+_CONCIERGE_ROOT_PUBLIC_ORIGINS_ENV = "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS"
+_CONCIERGE_ROOT_PUBLIC_API_BASE_ENV = "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL"
+_CONCIERGE_FIXED_BACKEND_ORIGIN = "http://127.0.0.1:12601"
 _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = frozenset(
     {
         "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
@@ -196,6 +221,68 @@ _MAP_UI_AUTH_ENV_NAMES = frozenset(
         _MAP_UI_USERNAME_ENV,
         _MAP_UI_PASSWORD_HASH_ENV,
         _MAP_UI_SESSION_SECRET_ENV,
+    }
+)
+_CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES = {
+    _CONCIERGE_UI_BACKEND_ORIGIN_ENV: _CONCIERGE_FIXED_BACKEND_ORIGIN,
+    _CONCIERGE_UI_BACKEND_API_KEY_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY:?"
+        "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY must be explicitly set}"
+    ),
+    _CONCIERGE_UI_VWORLD_KEY_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY:?"
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY must be explicitly set}"
+    ),
+    _CONCIERGE_UI_ADMIN_USERNAME_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME:?"
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME must be explicitly set}"
+    ),
+    _CONCIERGE_UI_ADMIN_PASSWORD_HASH_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH:?"
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+    ),
+    _CONCIERGE_UI_SESSION_SECRET_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET:?"
+        "KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET must be explicitly set}"
+    ),
+    _CONCIERGE_UI_ADMIN_PROXY_SECRET_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET:?"
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET must be explicitly set}"
+    ),
+    _CONCIERGE_UI_TRUST_FORWARDED_IPS_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS:-false}"
+    ),
+    _CONCIERGE_UI_PUBLIC_ORIGINS_ENV: "${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS:-}",
+    _CONCIERGE_UI_PUBLIC_API_BASE_ENV: "${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL:-}",
+}
+_CONCIERGE_API_CANONICAL_RAW_ENV_VALUES = {
+    _CONCIERGE_UI_ADMIN_PROXY_SECRET_ENV: (
+        "${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET:?"
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET must be explicitly set}"
+    ),
+    "APP_ENV": "${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}",
+    "API_AUTH_ENABLED": "${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}",
+    "API_KEYS": "${KOR_TRAVEL_CONCIERGE_API_KEYS:-}",
+}
+_CONCIERGE_UI_ENV_SOURCES = {
+    _CONCIERGE_UI_BACKEND_API_KEY_ENV: _CONCIERGE_ROOT_BACKEND_API_KEY_ENV,
+    _CONCIERGE_UI_VWORLD_KEY_ENV: _CONCIERGE_ROOT_VWORLD_KEY_ENV,
+    _CONCIERGE_UI_ADMIN_USERNAME_ENV: _CONCIERGE_ROOT_ADMIN_USERNAME_ENV,
+    _CONCIERGE_UI_ADMIN_PASSWORD_HASH_ENV: _CONCIERGE_ROOT_ADMIN_PASSWORD_HASH_ENV,
+    _CONCIERGE_UI_SESSION_SECRET_ENV: _CONCIERGE_ROOT_SESSION_SECRET_ENV,
+    _CONCIERGE_UI_ADMIN_PROXY_SECRET_ENV: _CONCIERGE_ROOT_PROXY_SECRET_ENV,
+    _CONCIERGE_UI_TRUST_FORWARDED_IPS_ENV: _CONCIERGE_ROOT_TRUST_FORWARDED_IPS_ENV,
+    _CONCIERGE_UI_PUBLIC_ORIGINS_ENV: _CONCIERGE_ROOT_PUBLIC_ORIGINS_ENV,
+    _CONCIERGE_UI_PUBLIC_API_BASE_ENV: _CONCIERGE_ROOT_PUBLIC_API_BASE_ENV,
+}
+_CONCIERGE_UI_REQUIRED_ROOT_ENV_NAMES = frozenset(
+    {
+        _CONCIERGE_ROOT_BACKEND_API_KEY_ENV,
+        _CONCIERGE_ROOT_VWORLD_KEY_ENV,
+        _CONCIERGE_ROOT_ADMIN_USERNAME_ENV,
+        _CONCIERGE_ROOT_ADMIN_PASSWORD_HASH_ENV,
+        _CONCIERGE_ROOT_SESSION_SECRET_ENV,
+        _CONCIERGE_ROOT_PROXY_SECRET_ENV,
     }
 )
 _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
@@ -2308,18 +2395,225 @@ def _map_ui_auth_values_are_valid(values: Mapping[str, str]) -> bool:
         or "\n" in username
     ):
         return False
-    match = _MAP_UI_PASSWORD_HASH_PATTERN.fullmatch(password_hash)
-    if match is None:
-        return False
-    try:
-        iterations = int(match.group(1))
-    except ValueError:
-        return False
-    if iterations < 100_000:
+    if not is_pbkdf2_sha256_password_hash(password_hash):
         return False
     return len(session_secret) >= 32 and not any(
         character.isspace() for character in session_secret
     )
+
+
+def is_pbkdf2_sha256_password_hash(value: str) -> bool:
+    """운영 UI가 수용하는 PBKDF2-SHA256 hash 형식을 값 비노출으로 판별한다."""
+
+    match = _MAP_UI_PASSWORD_HASH_PATTERN.fullmatch(value)
+    if match is None:
+        return False
+    try:
+        return int(match.group(1)) >= 100_000
+    except ValueError:
+        return False
+
+
+def _concierge_ui_root_values_are_valid(values: Mapping[str, str]) -> bool:
+    """Concierge UI에 명시적으로 허용한 Manager root 값의 형식을 고정한다."""
+
+    required = {
+        name: values.get(name, "") for name in _CONCIERGE_UI_REQUIRED_ROOT_ENV_NAMES
+    }
+    if not all(isinstance(value, str) and value for value in required.values()):
+        return False
+
+    username = required[_CONCIERGE_ROOT_ADMIN_USERNAME_ENV]
+    password_hash = required[_CONCIERGE_ROOT_ADMIN_PASSWORD_HASH_ENV]
+    session_secret = required[_CONCIERGE_ROOT_SESSION_SECRET_ENV]
+    proxy_secret = required[_CONCIERGE_ROOT_PROXY_SECRET_ENV]
+    backend_api_key = required[_CONCIERGE_ROOT_BACKEND_API_KEY_ENV]
+    vworld_key = required[_CONCIERGE_ROOT_VWORLD_KEY_ENV]
+    if (
+        username != username.strip()
+        or any(character.isspace() for character in username)
+        or any("\r" in value or "\n" in value for value in required.values())
+        or not is_pbkdf2_sha256_password_hash(password_hash)
+        or not backend_api_key.strip()
+        or not vworld_key.strip()
+    ):
+        return False
+    api_keys = values.get(_CONCIERGE_ROOT_API_KEYS_ENV, "")
+    if not isinstance(api_keys, str):
+        return False
+    configured_api_keys = api_keys.split(",")
+    if (
+        not api_keys
+        or any(not key or key != key.strip() for key in configured_api_keys)
+        or backend_api_key not in configured_api_keys
+    ):
+        return False
+    if (
+        values.get(_CONCIERGE_ROOT_APP_ENV) != "production"
+        or values.get(_CONCIERGE_ROOT_API_AUTH_ENABLED_ENV) != "true"
+    ):
+        return False
+    if len(session_secret) < 32 or any(
+        character.isspace() for character in session_secret
+    ):
+        return False
+    if len(proxy_secret) < 32 or any(
+        character.isspace() for character in proxy_secret
+    ):
+        return False
+
+    trust_forwarded_ips = values.get(_CONCIERGE_ROOT_TRUST_FORWARDED_IPS_ENV, "false")
+    if trust_forwarded_ips not in {"true", "false"}:
+        return False
+    if values.get(_CONCIERGE_ROOT_PUBLIC_API_BASE_ENV, ""):
+        return False
+
+    raw_origins = values.get(_CONCIERGE_ROOT_PUBLIC_ORIGINS_ENV, "")
+    if not isinstance(raw_origins, str):
+        return False
+    origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+    if raw_origins and (not origins or ",".join(origins) != raw_origins):
+        return False
+    for origin in origins:
+        parsed = urlsplit(origin)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+    return len(origins) == len(set(origins))
+
+
+def _validate_concierge_ui_canonical_contract(
+    services: Mapping[str, Any],
+    environment: Mapping[str, str],
+    *,
+    resolved: bool,
+) -> None:
+    """Concierge UI의 raw/resolved single-file boundary를 같은 계약으로 검사한다.
+
+    Concierge 전체 `.env`는 provider와 server-only 키를 함께 담으므로 UI에 주입할
+    수 없다. UI가 있을 때만 API도 함께 검사해, BFF proxy authority가 source `.env`
+    값으로 갈라지는 drift를 차단한다.
+    """
+
+    if _CONCIERGE_UI_SERVICE not in services:
+        return
+    ui_service = services[_CONCIERGE_UI_SERVICE]
+    api_service = services.get(_CONCIERGE_API_SERVICE)
+    if not isinstance(ui_service, Mapping) or not isinstance(api_service, Mapping):
+        raise ComposeCandidateContractError(
+            "Concierge UI canonical contract requires valid API and UI services"
+        )
+    if "env_file" in ui_service:
+        raise ComposeCandidateContractError(
+            "Concierge UI must not load an env_file at the single-file boundary"
+        )
+    ui_environment = ui_service.get("environment")
+    api_environment = api_service.get("environment")
+    if not isinstance(ui_environment, Mapping) or not isinstance(api_environment, Mapping):
+        raise ComposeCandidateContractError(
+            "Concierge API and UI must use mapping environment"
+        )
+    if set(ui_environment) != set(_CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES):
+        raise ComposeCandidateContractError(
+            "Concierge UI environment must be the exact canonical allowlist"
+        )
+    if not _concierge_ui_root_values_are_valid(environment):
+        raise ComposeCandidateContractError(
+            "Concierge UI Manager root environment is invalid"
+        )
+    if environment.get("KOR_TRAVEL_CONCIERGE_API_PORT", "12601") != "12601":
+        raise ComposeCandidateContractError(
+            "Concierge UI backend origin must keep the canonical loopback API port"
+        )
+
+    if resolved:
+        expected_ui_environment = {
+            target: (
+                _CONCIERGE_FIXED_BACKEND_ORIGIN
+                if target == _CONCIERGE_UI_BACKEND_ORIGIN_ENV
+                else _compose_resolved_escaped_value(
+                    environment.get(source_name, "false" if target == _CONCIERGE_UI_TRUST_FORWARDED_IPS_ENV else "")
+                )
+            )
+            for target, source_name in _CONCIERGE_UI_ENV_SOURCES.items()
+        }
+        expected_ui_environment[_CONCIERGE_UI_BACKEND_ORIGIN_ENV] = (
+            _CONCIERGE_FIXED_BACKEND_ORIGIN
+        )
+    else:
+        expected_ui_environment = _CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES
+    for target_name, expected in expected_ui_environment.items():
+        actual = ui_environment.get(target_name)
+        if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
+            raise ComposeCandidateContractError(
+                f"Concierge UI {target_name} canonical wiring is invalid"
+            )
+
+    for target_name, canonical in _CONCIERGE_API_CANONICAL_RAW_ENV_VALUES.items():
+        expected = (
+            _compose_resolved_escaped_value(
+                environment[
+                    {
+                        _CONCIERGE_UI_ADMIN_PROXY_SECRET_ENV: _CONCIERGE_ROOT_PROXY_SECRET_ENV,
+                        "APP_ENV": _CONCIERGE_ROOT_APP_ENV,
+                        "API_AUTH_ENABLED": _CONCIERGE_ROOT_API_AUTH_ENABLED_ENV,
+                        "API_KEYS": _CONCIERGE_ROOT_API_KEYS_ENV,
+                    }[target_name]
+                ]
+            )
+            if resolved
+            else canonical
+        )
+        actual = api_environment.get(target_name)
+        if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
+            if target_name == _CONCIERGE_UI_ADMIN_PROXY_SECRET_ENV:
+                raise ComposeCandidateContractError(
+                    "Concierge API and UI must share the canonical Manager proxy authority"
+                )
+            raise ComposeCandidateContractError(
+                f"Concierge API {target_name} canonical wiring is invalid"
+            )
+
+
+def validate_concierge_ui_canonical_compose_boundary(
+    candidate: Mapping[str, Any],
+    resolved: Mapping[str, Any],
+    *,
+    environment: Mapping[str, str],
+) -> None:
+    """legacy override 퇴역 전 Concierge UI/API C6c raw·resolved 경계를 함께 검증한다."""
+
+    candidate_services = candidate.get("services")
+    resolved_services = resolved.get("services")
+    if not isinstance(candidate_services, Mapping) or not isinstance(
+        resolved_services, Mapping
+    ):
+        raise ComposeCandidateContractError(
+            "Concierge canonical Compose boundary has no valid services mapping"
+        )
+    for services, resolved_document in (
+        (candidate_services, False),
+        (resolved_services, True),
+    ):
+        if {
+            _CONCIERGE_API_SERVICE,
+            _CONCIERGE_UI_SERVICE,
+        }.difference(services):
+            raise ComposeCandidateContractError(
+                "Concierge canonical Compose boundary is missing API or UI service"
+            )
+        _validate_concierge_ui_canonical_contract(
+            services,
+            environment,
+            resolved=resolved_document,
+        )
 
 
 def _compose_resolved_escaped_value(value: str) -> str:
@@ -3163,6 +3457,7 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
     _validate_pinvi_db_init_identity(services, environment, resolved=True)
     _validate_pinvi_db_runtime_role(services, environment, resolved=True)
+    _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -3596,6 +3891,7 @@ def validate_compose_candidate_protected_values(
     _validate_pinvi_database_url_identities(services, environment, resolved=False)
     _validate_pinvi_db_init_identity(services, environment, resolved=False)
     _validate_pinvi_db_runtime_role(services, environment, resolved=False)
+    _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(

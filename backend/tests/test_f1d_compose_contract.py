@@ -26,6 +26,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _validate_map_production_secret_values,
     derive_curation_service_principal_environment,
     validate_compose_candidate_protected_values,
+    validate_concierge_ui_canonical_compose_boundary,
     validate_map_postgres_runtime_secret_isolation,
     validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
@@ -333,6 +334,20 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": ("pbkdf2_sha256$100000$test-salt$test-digest"),
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "admin",
         "KOR_TRAVEL_MAP_UI_SESSION_SECRET": "u" * 32,
+        "KOR_TRAVEL_CONCIERGE_API_KEYS": "concierge-old-key,concierge-bff-key",
+        "KOR_TRAVEL_CONCIERGE_APP_ENV": "production",
+        "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED": "true",
+        "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY": "concierge-bff-key",
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY": "concierge-browser-key",
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_USERNAME": "admin",
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH": (
+            "pbkdf2_sha256$100000$test-salt$test-digest"
+        ),
+        "KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET": "c" * 32,
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET": "p" * 32,
+        "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS": "false",
+        "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS": "https://concierge.example.test",
+        "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL": "",
         "PINVI_PGDATA": "/mnt/f/dev/kor-travel-map-codex",
         "PINVI_POSTGRES_DB": "pinvi",
         "PINVI_POSTGRES_USER": "pinvi_contract_root",
@@ -433,6 +448,7 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
 def _resolved_compose(
     *service_names: str,
     environment_update: dict[str, str] | None = None,
+    strip_env_file_for: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     if shutil.which("docker") is None:
         pytest.skip("Docker Compose가 없어 resolved Compose 계약을 실행할 수 없음")
@@ -441,6 +457,13 @@ def _resolved_compose(
     if environment_update is not None:
         environment.update(environment_update)
     environment = derive_curation_service_principal_environment(environment)
+    compose_fragment = _compose_fragment(*service_names)
+    fragment_services = compose_fragment["services"]
+    assert isinstance(fragment_services, dict)
+    for service_name in strip_env_file_for:
+        service = fragment_services.get(service_name)
+        assert isinstance(service, dict)
+        service.pop("env_file", None)
     completed = subprocess.run(
         [
             "docker",
@@ -457,7 +480,7 @@ def _resolved_compose(
         ],
         cwd=_ROOT,
         env=environment,
-        input=yaml.safe_dump(_compose_fragment(*service_names), sort_keys=False),
+        input=yaml.safe_dump(compose_fragment, sort_keys=False),
         text=True,
         capture_output=True,
         check=False,
@@ -466,6 +489,90 @@ def _resolved_compose(
     document = json.loads(completed.stdout)
     assert isinstance(document, dict)
     return document
+
+
+def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> None:
+    environment = _compose_contract_environment()
+    source = _source_compose()
+    source_services = source["services"]
+    assert isinstance(source_services, dict)
+
+    c6c_deployment_module._validate_concierge_ui_canonical_contract(
+        source_services,
+        environment,
+        resolved=False,
+    )
+
+    resolved = _resolved_compose(
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-ui",
+        # 이 검증의 대상은 canonical explicit 환경이다. API의 provider source file은
+        # 별도 계약이므로 test host의 실제 source `.env`를 읽지 않는다.
+        strip_env_file_for=frozenset({"kor-travel-concierge-api"}),
+    )
+    resolved_services = resolved["services"]
+    assert isinstance(resolved_services, dict)
+    c6c_deployment_module._validate_concierge_ui_canonical_contract(
+        resolved_services,
+        environment,
+        resolved=True,
+    )
+    validate_concierge_ui_canonical_compose_boundary(
+        source,
+        resolved,
+        environment=environment,
+    )
+
+    raw_env_file_drift = deepcopy(source_services)
+    raw_ui = raw_env_file_drift["kor-travel-concierge-ui"]
+    assert isinstance(raw_ui, dict)
+    raw_ui["env_file"] = ["attacker.env"]
+    with pytest.raises(DeploymentContractError, match="must not load an env_file"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            raw_env_file_drift,
+            environment,
+            resolved=False,
+        )
+
+    root_authority_drift = dict(environment)
+    root_authority_drift["KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY"] = "not-in-api-key-set"
+    with pytest.raises(DeploymentContractError, match="Manager root environment is invalid"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            source_services,
+            root_authority_drift,
+            resolved=False,
+        )
+
+    api_auth_drift = dict(environment)
+    api_auth_drift["KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED"] = "false"
+    with pytest.raises(DeploymentContractError, match="Manager root environment is invalid"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            source_services,
+            api_auth_drift,
+            resolved=False,
+        )
+
+    malformed_hash_drift = dict(environment)
+    malformed_hash_drift["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH"] = "not-a-password-hash"
+    with pytest.raises(DeploymentContractError, match="Manager root environment is invalid"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            source_services,
+            malformed_hash_drift,
+            resolved=False,
+        )
+
+    resolved_proxy_drift = deepcopy(resolved_services)
+    resolved_api = resolved_proxy_drift["kor-travel-concierge-api"]
+    assert isinstance(resolved_api, dict)
+    resolved_api_environment = resolved_api["environment"]
+    assert isinstance(resolved_api_environment, dict)
+    resolved_api_environment["KTC_ADMIN_PROXY_SECRET"] = "different-proxy-authority"
+    with pytest.raises(DeploymentContractError, match="share the canonical Manager proxy"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            resolved_proxy_drift,
+            environment,
+            resolved=True,
+        )
 
 
 def test_map_dagster_db_init_passes_conninfo_as_psql_dbname() -> None:

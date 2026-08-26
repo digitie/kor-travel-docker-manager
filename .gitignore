@@ -67,3 +67,6 @@ win_venv/
 
 # Playwright MCP 산출물(스냅샷/콘솔 로그)
 .playwright-mcp/
+
+# root-only Compose boundary retirement evidence (운영 source가 아님)
+.retired-compose-overrides/
