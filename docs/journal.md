@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-08-27 — d9 PinVi role topology의 동일 후보 재실행 차단 후보
+
+Manager #234 trusted release에 lifecycle stage와 allowlisted 비밀 비포함 failure code가 반영된 뒤,
+모든 읽기 전용 preflight를 마친 d9 candidate에 승인된 official rebuild를 정확히 한 번 실행했다. 결과는
+`role_topology_noncanonical`이었고, v8 journal은 기존 `map_runtime_ready` generation으로 남았다.
+`pinvi-admin-bootstrap` one-shot의 생성·성공 증거는 없다. 따라서 이 실행은 Map/PinVi live acceptance나
+M01~M05 activation의 근거가 아니며, d9 command는 다시 실행하지 않는다.
+
+후속 Manager 후보는 role lifecycle이 정확히 `pinvi_role_open` 또는 `pinvi_role_seal`에서
+`role_topology_noncanonical`으로 실패할 때에만 비밀 비포함 terminal receipt를 같은 v8 journal에 fsync한다.
+같은 pinset의 다음 rebuild admission은 role credential write, source materialize, paired build, Docker/Compose,
+DB mutation과 role one-shot보다 먼저 이 receipt를 읽고 일반화된 차단 오류로 종료한다. 다른 stage/code와 raw
+stderr·DSN·role·비밀번호·path는 receipt와 public error에 저장하지 않는다. 기존 d9 journal을 소급 수정하지
+않으며, 새 guard가 merge·CI·전문 적대 리뷰·trusted deployment를 통과하기 전에는 어떤 rebuild도 재실행하지
+않는다.
+
+Linux `/tmp` 보안-mode filesystem에서 journal/lifecycle/rebuild focused regression 14개와 해당 두 test
+module 전체 130개, 변경 module Ruff 및 strict mypy를 통과했다. 전체 backend suite는 Docker integration
+cleanup까지 시작했으며 hosted CI에서 다시 확인한다.
+
+---
+
 ## 2026-08-26 — d9 PinVi role lifecycle의 비밀 비포함 단계 진단 후보
 
 Manager #233의 fetch 가능한 Map merge pin 회전을 trusted release로 배포한 뒤, 사용자 승인된

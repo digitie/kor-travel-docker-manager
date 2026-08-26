@@ -29,6 +29,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
+    PinviRoleLifecycleBlock,
     RebuildPhase,
     ensure_pinned_runtime_state_directory,
     f1d_legacy_artifact_paths,
@@ -859,6 +860,51 @@ def test_map_runtime_ready_journal_can_attest_one_role_credential_environment_re
             current_environment_sha256=_digest("e"),
             current_resolved_compose_sha256=_digest("f"),
         )
+
+
+def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block() -> None:
+    journal = (
+        _journal_with_map_application_ready()
+        .transition("map_dagster_storage_intent_durable")
+        .transition("map_dagster_ready")
+        .transition("map_runtime_ready")
+    )
+    receipt = PinviRoleLifecycleBlock(
+        stage="pinvi_role_open",
+        code="role_topology_noncanonical",
+    )
+    blocked = journal.with_pinvi_role_lifecycle_block(receipt)
+
+    assert blocked.journal_generation == journal.journal_generation + 1
+    assert blocked.pinvi_role_lifecycle_block == receipt
+    assert journal_from_payload(blocked.to_payload()) == blocked
+
+    legacy_payload = journal.to_payload()
+    legacy_payload.pop("pinvi_role_credential_environment_rebind")
+    legacy_payload.pop("pinvi_role_lifecycle_block")
+    assert journal_from_payload(legacy_payload) == journal
+
+    rebind = journal.with_pinvi_role_credential_environment_rebind(
+        previous_environment_sha256=journal.environment_sha256,
+        compose_sha256=journal.compose_sha256,
+        current_environment_sha256=_digest("e"),
+        current_resolved_compose_sha256=_digest("f"),
+    )
+    both = rebind.with_pinvi_role_lifecycle_block(receipt)
+    assert journal_from_payload(both.to_payload()) == both
+
+    malformed_payload = blocked.to_payload()
+    malformed_payload["pinvi_role_lifecycle_block"] = {
+        "stage": "pinvi_admin_bootstrap",
+        "code": "role_topology_noncanonical",
+    }
+    with pytest.raises(DeploymentContractError, match="block payload"):
+        journal_from_payload(malformed_payload)
+
+    with pytest.raises(DeploymentContractError, match="not permitted"):
+        _journal_with_map_application_ready().with_pinvi_role_lifecycle_block(receipt)
+    with pytest.raises(DeploymentContractError, match="not permitted"):
+        blocked.with_pinvi_role_lifecycle_block(receipt)
 
 
 def test_rebuild_journal_sha256_is_canonical_and_evidence_sensitive() -> None:
