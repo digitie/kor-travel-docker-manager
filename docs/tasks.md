@@ -69,6 +69,10 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   failure로 남긴다. archive 뒤 재생성만 실패하면 `compose-boundary activate-concierge --confirm`으로 같은 계약을
   재검증한 뒤 재시도한다. home source는 rename/delete/Compose 실행 대상이 아니며, 그 전에는 override를 수동
   삭제하거나 rebuild를 재시도하지 않는다.
+- [/] #224 merged trusted release를 n150에 공식 installer로 반영했고 source 권한 precondition도 정렬했다.
+  공식 stage는 Docker/DB/runtime/root `.env` mutation 전에, 실제 legacy Compose가 사용하는 장형 `env_file`
+  mapping을 구형 문자열 allowlist가 거부하는 P1을 확인했다. 후속 보정은 override 위치에서 계산한 exact sibling
+  `.env`와 boolean `required: true` 한 항목만 수용하며, home Compose 실행·source 변환·수동 삭제를 추가하지 않는다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 
