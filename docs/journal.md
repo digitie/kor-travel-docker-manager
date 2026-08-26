@@ -29,6 +29,11 @@ temporary file에 복사·검증하고, 그 staged file만 clean environment로 
 staging과 expected source revision을 사용한다. 새 PR의 두 전문 적대 리뷰와 전체 backend gate,
 trusted deployment가 끝나기 전에는 `rebuild-pinned`를 다시 실행하지 않는다.
 
+기본 destination이 다른 release·operator의 root-owned artifact와 충돌하면 그 artifact를 삭제·수정·채택하지
+않는다. exact merged commit을 포함한 새 root-owned destination을 provisioner와 installer에 함께 넘기는
+versioned issuance만 허용한다. 이 선택은 existing wheelhouse의 provenance 불명 상태를 정상 artifact로
+승격하지 않으면서, concurrent 운영 WIP와의 충돌을 피한다.
+
 ---
 
 ## 2026-08-26 — fresh PinVi role credential의 trusted rebuild/rebind 보정 후보

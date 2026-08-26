@@ -59,7 +59,9 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   official installer는 root-owned source wheelhouse에 `poetry-core`가 없어 activation 전에 fail-close했다.
   staging/rollback 외 canonical `.env`, Docker/Compose, candidate, journal, runtime, DB에는 변경이 없었다.
   따라서 다음 재개 전에는 검증된 Debian package에서 이 build dependency를 포함한 새 root-owned wheelhouse를
-  atomic 발행하는 후속 Manager PR을 merge·배포해야 하며, 그 전에는 rebuild를 재시도하지 않는다.
+  atomic 발행하는 후속 Manager PR을 merge·배포해야 하며, 그 전에는 rebuild를 재시도하지 않는다. 기본
+  wheelhouse 경로가 다른 provenance의 pre-existing root artifact라면 이를 삭제·수정·채택하지 않고, exact
+  merged commit을 포함한 새 destination을 provisioner와 installer에 같은 explicit path로 넘긴다.
 - [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
   preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용하도록 Manager #222로
   보정·병합·배포했다. 실제 빈 `.env`와 Compose resolution 회귀를 포함한 587개 backend 테스트, 전문 적대 리뷰
