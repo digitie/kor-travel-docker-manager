@@ -8,7 +8,8 @@ import re
 import stat
 import subprocess
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
@@ -130,6 +131,12 @@ _CONCIERGE_RECREATE_SERVICES = (
     "kor-travel-concierge-mcp",
     "kor-travel-concierge-scheduler",
     "kor-travel-concierge-ui",
+)
+_CANONICAL_COMPOSE_PROJECTION_ENTITY_KEYS = (
+    "configs",
+    "networks",
+    "secrets",
+    "volumes",
 )
 
 
@@ -608,12 +615,28 @@ def _validate_canonical_compose_boundary(
     environment: Mapping[str, str],
     runner: ComposeConfigRunner,
 ) -> None:
-    try:
-        raw_document = yaml.safe_load(_read_regular_bytes(compose_path).decode("utf-8"))
-    except (UnicodeError, yaml.YAMLError) as exc:
-        raise LegacyOverrideRetirementError("canonical Compose cannot be parsed") from exc
-    if not isinstance(raw_document, Mapping):
-        raise LegacyOverrideRetirementError("canonical Compose is invalid")
+    with _canonical_concierge_compose_projection(compose_path) as (
+        projection_path,
+        raw_document,
+    ):
+        _validate_canonical_compose_projection(
+            project_root,
+            projection_path,
+            env_path,
+            raw_document,
+            environment,
+            runner,
+        )
+
+
+def _validate_canonical_compose_projection(
+    project_root: Path,
+    projection_path: Path,
+    env_path: Path,
+    raw_document: Mapping[str, Any],
+    environment: Mapping[str, str],
+    runner: ComposeConfigRunner,
+) -> None:
     result = runner(
         [
             "docker",
@@ -621,7 +644,7 @@ def _validate_canonical_compose_boundary(
             "--env-file",
             str(env_path),
             "--file",
-            str(compose_path),
+            str(projection_path),
             "config",
             "--format",
             "json",
@@ -655,24 +678,198 @@ def _activate_canonical_concierge_locked(
     config_runner: ComposeConfigRunner,
     up_runner: ComposeUpRunner,
 ) -> None:
-    _validate_canonical_compose_boundary(
-        project_root, compose_path, env_path, environment, config_runner
-    )
-    command = [
-        "docker",
-        "compose",
-        "--env-file",
-        str(env_path),
-        "--file",
-        str(compose_path),
-        "up",
-        "--detach",
-        "--no-deps",
-        "--force-recreate",
-        *_CONCIERGE_RECREATE_SERVICES,
-    ]
-    if up_runner(command, project_root, environment) != 0:
-        raise LegacyOverrideActivationError("canonical Concierge recreation failed")
+    with _canonical_concierge_compose_projection(compose_path) as (
+        projection_path,
+        raw_document,
+    ):
+        _validate_canonical_compose_projection(
+            project_root,
+            projection_path,
+            env_path,
+            raw_document,
+            environment,
+            config_runner,
+        )
+        command = [
+            "docker",
+            "compose",
+            "--env-file",
+            str(env_path),
+            "--file",
+            str(projection_path),
+            "up",
+            "--detach",
+            "--no-deps",
+            "--force-recreate",
+            *_CONCIERGE_RECREATE_SERVICES,
+        ]
+        if up_runner(command, project_root, environment) != 0:
+            raise LegacyOverrideActivationError("canonical Concierge recreation failed")
+
+
+@contextmanager
+def _canonical_concierge_compose_projection(
+    compose_path: Path,
+) -> Iterator[tuple[Path, Mapping[str, Any]]]:
+    """Concierge 재생성에 필요한 trusted Compose 부분만 일시적으로 고정한다.
+
+    full Manager Compose에는 이번 retire가 건드리지 않는 Map/PinVi 후보의 explicit
+    credential guard가 함께 있다. 그 전체 문서를 해석하면 Concierge candidate 검증이
+    unrelated candidate의 미준비 값에 의존한다. 이 projection은 trusted canonical
+    source에서 Concierge runtime과 그 transitive ``depends_on`` 서비스만 복사해
+    config와 recreate의 입력을 동일하게 제한한다.
+    """
+
+    try:
+        raw_document = yaml.safe_load(_read_regular_bytes(compose_path).decode("utf-8"))
+    except (UnicodeError, yaml.YAMLError) as exc:
+        raise LegacyOverrideRetirementError("canonical Compose cannot be parsed") from exc
+    if not isinstance(raw_document, Mapping):
+        raise LegacyOverrideRetirementError("canonical Compose is invalid")
+    projection = _concierge_compose_projection_document(raw_document)
+    try:
+        payload = yaml.safe_dump(projection, sort_keys=False).encode("utf-8")
+    except yaml.YAMLError as exc:
+        raise LegacyOverrideRetirementError("canonical Compose projection cannot be serialized") from exc
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=".concierge-c6c-",
+            suffix=".yml",
+            dir=compose_path.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(payload)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        yield temporary_path, projection
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError as exc:
+                raise LegacyOverrideRetirementError(
+                    "canonical Compose projection cleanup failed"
+                ) from exc
+
+
+def _concierge_compose_projection_document(
+    raw_document: Mapping[str, Any],
+) -> dict[str, Any]:
+    services = raw_document.get("services")
+    if not isinstance(services, Mapping):
+        raise LegacyOverrideRetirementError("canonical Compose has no valid services mapping")
+
+    selected_names: set[str] = set()
+    pending_names = list(_CONCIERGE_RECREATE_SERVICES)
+    while pending_names:
+        service_name = pending_names.pop()
+        if service_name in selected_names:
+            continue
+        service = services.get(service_name)
+        if not isinstance(service, Mapping):
+            raise LegacyOverrideRetirementError(
+                "canonical Concierge projection has an invalid service dependency"
+            )
+        selected_names.add(service_name)
+        dependencies = service.get("depends_on", {})
+        dependency_names: Iterable[object]
+        if isinstance(dependencies, Mapping):
+            dependency_names = dependencies.keys()
+        elif isinstance(dependencies, list):
+            dependency_names = dependencies
+        elif dependencies is None:
+            dependency_names = ()
+        else:
+            raise LegacyOverrideRetirementError(
+                "canonical Concierge projection has an invalid service dependency"
+            )
+        for dependency_name in dependency_names:
+            if not isinstance(dependency_name, str):
+                raise LegacyOverrideRetirementError(
+                    "canonical Concierge projection has an invalid service dependency"
+                )
+            pending_names.append(dependency_name)
+
+    selected_services = {
+        service_name: service
+        for service_name, service in services.items()
+        if service_name in selected_names
+    }
+    projection: dict[str, Any] = {"services": selected_services}
+    name = raw_document.get("name")
+    if isinstance(name, str):
+        projection["name"] = name
+    for entity_key in _CANONICAL_COMPOSE_PROJECTION_ENTITY_KEYS:
+        definitions = raw_document.get(entity_key)
+        if definitions is None:
+            continue
+        if not isinstance(definitions, Mapping):
+            raise LegacyOverrideRetirementError(
+                "canonical Concierge projection has invalid top-level definitions"
+            )
+        references = _compose_entity_references(selected_services, entity_key)
+        selected_definitions = {
+            name: definition for name, definition in definitions.items() if name in references
+        }
+        if selected_definitions:
+            projection[entity_key] = selected_definitions
+    return projection
+
+
+def _compose_entity_references(
+    services: Mapping[Any, Any], entity_key: str
+) -> set[str]:
+    references: set[str] = set()
+    for service in services.values():
+        if not isinstance(service, Mapping):  # pragma: no cover - caller has already verified this.
+            raise LegacyOverrideRetirementError(
+                "canonical Concierge projection has an invalid service dependency"
+            )
+        declarations = service.get(entity_key)
+        if declarations is None:
+            continue
+        if isinstance(declarations, Mapping):
+            if entity_key == "networks":
+                references.update(name for name in declarations if isinstance(name, str))
+                continue
+            declaration_items: Iterable[object] = declarations.values()
+        elif isinstance(declarations, list):
+            declaration_items = declarations
+        else:
+            raise LegacyOverrideRetirementError(
+                "canonical Concierge projection has an invalid top-level reference"
+            )
+        for declaration in declaration_items:
+            source = _compose_entity_reference_name(declaration, entity_key)
+            if source is not None:
+                references.add(source)
+    return references
+
+
+def _compose_entity_reference_name(declaration: object, entity_key: str) -> str | None:
+    if isinstance(declaration, Mapping):
+        source = declaration.get("source")
+        if source is None:
+            return None
+        if isinstance(source, str):
+            return source
+        raise LegacyOverrideRetirementError(
+            "canonical Concierge projection has an invalid top-level reference"
+        )
+    if not isinstance(declaration, str):
+        raise LegacyOverrideRetirementError(
+            "canonical Concierge projection has an invalid top-level reference"
+        )
+    if entity_key != "volumes":
+        return declaration
+    source = declaration.split(":", 1)[0]
+    if not source or source.startswith(("/", ".")):
+        return None
+    return source
 
 
 def _collect_updates(

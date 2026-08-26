@@ -48,6 +48,14 @@ def _canonical_compose_document() -> dict[str, object]:
                 "command": list(c6c_module._CONCIERGE_UI_CANONICAL_RAW_COMMAND),
                 "environment": dict(c6c_module._CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES)
             },
+            "kor-travel-concierge-mcp": {
+                "image": "alpine:3.20",
+                "network_mode": c6c_module._CONCIERGE_CANONICAL_RAW_NETWORK_MODE,
+            },
+            "kor-travel-concierge-scheduler": {
+                "image": "alpine:3.20",
+                "network_mode": c6c_module._CONCIERGE_CANONICAL_RAW_NETWORK_MODE,
+            },
         }
     }
 
@@ -527,17 +535,19 @@ def test_retire_legacy_override_migrates_exact_values_and_archives_after_config(
     assert (archive / "docker-compose.override.yml").stat().st_mode & 0o777 == 0o600
     assert (archive / "concierge-source.env").stat().st_mode & 0o777 == 0o600
     assert archive.parent.stat().st_mode & 0o777 == 0o700
-    assert observed["commands"] == [[
-        "docker",
-        "compose",
-        "--env-file",
-        str(root_env),
-        "--file",
-        str(root / "docker-compose.yml"),
-        "config",
-        "--format",
-        "json",
-    ]] * 2
+    commands = observed["commands"]
+    assert isinstance(commands, list)
+    assert len(commands) == 2
+    projection_paths = []
+    for command in commands:
+        assert command[:4] == ["docker", "compose", "--env-file", str(root_env)]
+        assert command[-3:] == ["config", "--format", "json"]
+        projection_path = Path(command[command.index("--file") + 1])
+        assert projection_path.parent == root
+        assert projection_path.name.startswith(".concierge-c6c-")
+        assert projection_path.suffix == ".yml"
+        projection_paths.append(projection_path)
+    assert not any(path.exists() for path in projection_paths)
     assert observed["project_root"] == root
     values = dotenv_values(root_env, interpolate=False)
     assert values["KOR_TRAVEL_GEO_BACKUP_SCHEDULE_ENABLED"] == "true"
@@ -804,6 +814,71 @@ def test_retire_legacy_override_restores_root_when_actual_c6c_contract_mismatche
 
     assert root_env.read_bytes() == original_root
     assert override.exists()
+
+
+def test_retire_legacy_override_projects_out_unrelated_required_candidate_values(
+    tmp_path: Path,
+) -> None:
+    root, _root_env, override = _migration_tree(tmp_path)
+    compose_path = root / "docker-compose.yml"
+    document = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    document["services"]["pinvi-db-runtime-role"] = {
+        "environment": {
+            "PINVI_APP_DB_PASSWORD": "${PINVI_APP_DB_PASSWORD:?must be set}",
+        }
+    }
+    document["services"]["kor-travel-concierge-api"]["depends_on"] = {
+        "concierge-support": {"condition": "service_started"},
+    }
+    document["services"]["concierge-support"] = {"image": "alpine:3.20"}
+    document["services"]["kor-travel-concierge-api"]["secrets"] = [
+        "kor-travel-concierge-postgres-password"
+    ]
+    document["secrets"] = {
+        "kor-travel-concierge-postgres-password": {
+            "environment": "KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD",
+        },
+        "pinvi-postgres-password": {
+            "environment": "PINVI_POSTGRES_PASSWORD",
+        },
+    }
+    compose_path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    compose_path.chmod(0o644)
+    observed_projection_documents: list[dict[str, object]] = []
+
+    def config_runner(
+        command: list[str], _project_root: Path, values: dict[str, str]
+    ) -> ComposeConfigResult:
+        projection_path = Path(command[command.index("--file") + 1])
+        projection = yaml.safe_load(projection_path.read_text(encoding="utf-8"))
+        assert isinstance(projection, dict)
+        observed_projection_documents.append(projection)
+        return _canonical_config_result(values)
+
+    retire_legacy_compose_override(
+        project_root=root,
+        compose_config_runner=config_runner,
+        compose_up_runner=_no_op_up_runner,
+        require_root=False,
+    )
+
+    assert len(observed_projection_documents) == 2
+    assert all(
+        "pinvi-db-runtime-role" not in document["services"]
+        for document in observed_projection_documents
+    )
+    assert all(
+        "concierge-support" in document["services"]
+        for document in observed_projection_documents
+    )
+    assert all(
+        document["secrets"] == {
+            "kor-travel-concierge-postgres-password": {
+                "environment": "KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD",
+            }
+        }
+        for document in observed_projection_documents
+    )
 
 
 def test_retire_legacy_override_rejects_raw_ui_production_command_drift_before_archive(

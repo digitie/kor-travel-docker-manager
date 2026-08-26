@@ -80,6 +80,12 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   **미선언**일 때에만 이미 있는 canonical root authority를 다시 검증해 사용하고, source에 선언된 빈 값과 모든
   `KTC_*` UI 값 누락은 계속 fail-close한다. raw/resolved C6c, API key-set membership, production/authentication
   guard, trusted `/opt` execution root, home source 비재사용은 바꾸지 않는다.
+- [/] #227 merge trusted release의 official retire는 위 fallback을 지난 뒤에도 전체 Compose가 무관한 PinVi role
+  candidate의 미준비 explicit credential guard를 해석해 archive·Concierge recreate 전에 fail-close했다. 후속 후보는
+  trusted canonical Compose에서 Concierge API/MCP/scheduler/UI와 transitive dependency·실참조 top-level entity만
+  root-owned temporary projection으로 만들고, 그 동일 projection으로 raw/resolved C6c 검증과 네 service recreate를
+  수행한다. Map/PinVi source·값·runtime을 Concierge retirement에 섞지 않으며, projection은 caller가 지정하거나
+  보존할 수 없다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 

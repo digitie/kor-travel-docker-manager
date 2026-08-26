@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-26 — Concierge retirement를 무관한 PinVi candidate interpolation에서 분리하는 보정 후보
+
+#227 merge trusted release를 n150에 공식 installer로 반영한 뒤 protected snapshot을 확인하고 sanctioned
+`retire-legacy-override`를 실행했다. API auth 세 값의 canonical root fallback은 통과했지만, archive·Concierge
+recreate 전에 full Manager Compose가 아직 materialize하지 않은 PinVi role candidate의 explicit credential guard를
+해석해 fail-close했다. 이 실패는 pending snapshot·legacy source·Docker/Compose runtime·DB를 바꾸지 않았다.
+
+후속 후보는 full Compose를 약화하거나 PinVi 값을 임의로 채우지 않는다. trusted canonical Compose에서 Concierge
+API/MCP/scheduler/UI와 transitive `depends_on` service, 그 service가 실제 참조한 top-level
+secret/network/volume/config만 root-owned temporary projection으로 만든다. raw/resolved C6c 검증과 archive 뒤 네
+service recreate가 같은 projection을 사용하므로, retirement에 무관한 Map/PinVi candidate guard가 Concierge
+preflight를 막지 않고 그쪽 source·value·runtime도 이 경로에 유입되지 않는다.
+
+projection은 trusted canonical file의 안전한 parent에 `0600`으로 생성해 실행 동안만 쓰고 즉시 제거한다. caller와
+legacy home source는 projection path·내용·Compose cwd·env-file을 지정할 수 없다. UI/API auth allowlist, root
+authority fallback 범위, protected pending→archive와 rebuild host lease는 그대로 유지한다. 값·경로·digest는
+출력하거나 기록하지 않는다.
+
+---
+
 ## 2026-08-26 — legacy UI source의 미선언 API auth 값을 canonical root authority로 재검증하는 보정 후보
 
 #226 merge trusted release를 n150에 공식 installer로 반영한 뒤, 이전에 준비된 final source를 `stage-legacy-override`
