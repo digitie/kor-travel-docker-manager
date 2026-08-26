@@ -104,6 +104,9 @@ Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제�
 - `kor-travel-concierge-ui`에 `env_file`이 없고, UI environment가 정확한 allowlist다. provider/LLM/search 키가
   섞인 Concierge 전체 `.env`는 browser-facing UI process에 전달하지 않는다.
 - BFF `BACKEND_ORIGIN`은 canonical loopback API 주소에 고정하며 public API base는 빈 same-origin BFF다.
+- API와 UI는 raw Compose의 `${KTDM_DOCKER_NETWORK_MODE:-host}` 및 resolved `host` network를 같이 유지한다.
+  API는 loopback BFF가 요구하는 `ktc.cli api --host 0.0.0.0 --port 12601`, UI는 auth guard 뒤
+  `npm run build && exec npm run start` production command와 `12605` port를 정확히 유지해야 한다.
 - API와 UI의 `KTC_ADMIN_PROXY_SECRET`은 단 하나의 Manager root source
   `KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET`를 같이 사용한다.
 - UI credential source는 Manager root `.env`의 `KOR_TRAVEL_CONCIERGE_UI_*`와

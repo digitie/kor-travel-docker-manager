@@ -534,6 +534,17 @@ def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> N
             resolved=False,
         )
 
+    raw_command_drift = deepcopy(source_services)
+    raw_command_ui = raw_command_drift["kor-travel-concierge-ui"]
+    assert isinstance(raw_command_ui, dict)
+    raw_command_ui["command"] = ["npm", "run", "dev"]
+    with pytest.raises(DeploymentContractError, match="canonical production command"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            raw_command_drift,
+            environment,
+            resolved=False,
+        )
+
     root_authority_drift = dict(environment)
     root_authority_drift["KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY"] = "not-in-api-key-set"
     with pytest.raises(DeploymentContractError, match="Manager root environment is invalid"):
@@ -549,6 +560,15 @@ def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> N
         c6c_deployment_module._validate_concierge_ui_canonical_contract(
             source_services,
             api_auth_drift,
+            resolved=False,
+        )
+
+    ui_port_drift = dict(environment)
+    ui_port_drift["KOR_TRAVEL_CONCIERGE_UI_PORT"] = "12606"
+    with pytest.raises(DeploymentContractError, match="canonical production port"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            source_services,
+            ui_port_drift,
             resolved=False,
         )
 
@@ -570,6 +590,30 @@ def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> N
     with pytest.raises(DeploymentContractError, match="share the canonical Manager proxy"):
         c6c_deployment_module._validate_concierge_ui_canonical_contract(
             resolved_proxy_drift,
+            environment,
+            resolved=True,
+        )
+
+    resolved_network_drift = deepcopy(resolved_services)
+    resolved_ui = resolved_network_drift["kor-travel-concierge-ui"]
+    assert isinstance(resolved_ui, dict)
+    resolved_ui["network_mode"] = "bridge"
+    with pytest.raises(DeploymentContractError, match="canonical host network"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            resolved_network_drift,
+            environment,
+            resolved=True,
+        )
+
+    resolved_port_drift = deepcopy(resolved_services)
+    resolved_api = resolved_port_drift["kor-travel-concierge-api"]
+    assert isinstance(resolved_api, dict)
+    resolved_api_command = resolved_api["command"]
+    assert isinstance(resolved_api_command, list)
+    resolved_api_command[-1] = "12602"
+    with pytest.raises(DeploymentContractError, match="canonical loopback BFF command"):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            resolved_port_drift,
             environment,
             resolved=True,
         )

@@ -35,10 +35,14 @@ def _canonical_compose_document() -> dict[str, object]:
         "services": {
             "kor-travel-concierge-api": {
                 "image": "alpine:3.20",
+                "network_mode": c6c_module._CONCIERGE_CANONICAL_RAW_NETWORK_MODE,
+                "command": list(c6c_module._CONCIERGE_API_CANONICAL_RAW_COMMAND),
                 "environment": dict(c6c_module._CONCIERGE_API_CANONICAL_RAW_ENV_VALUES)
             },
             "kor-travel-concierge-ui": {
                 "image": "alpine:3.20",
+                "network_mode": c6c_module._CONCIERGE_CANONICAL_RAW_NETWORK_MODE,
+                "command": list(c6c_module._CONCIERGE_UI_CANONICAL_RAW_COMMAND),
                 "environment": dict(c6c_module._CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES)
             },
         }
@@ -55,6 +59,12 @@ def _canonical_config_result(values: dict[str, str]) -> ComposeConfigResult:
     api_environment = api["environment"]
     ui_environment = ui["environment"]
     assert isinstance(api_environment, dict) and isinstance(ui_environment, dict)
+    api["network_mode"] = c6c_module._CONCIERGE_CANONICAL_RESOLVED_NETWORK_MODE
+    api["command"] = list(c6c_module._CONCIERGE_API_CANONICAL_RESOLVED_COMMAND)
+    ui["network_mode"] = c6c_module._CONCIERGE_CANONICAL_RESOLVED_NETWORK_MODE
+    ui["command"] = list(
+        c6c_module._concierge_ui_expected_command(values, resolved=True)
+    )
     api_sources = {
         c6c_module._CONCIERGE_UI_ADMIN_PROXY_SECRET_ENV: (
             c6c_module._CONCIERGE_ROOT_PROXY_SECRET_ENV
@@ -336,6 +346,66 @@ def test_retire_legacy_override_restores_root_when_actual_c6c_contract_mismatche
         resolved["services"]["kor-travel-concierge-ui"]["environment"][
             "BACKEND_ORIGIN"
         ] = "http://unsafe.example.test"
+        return ComposeConfigResult(returncode=0, stdout=json.dumps(resolved))
+
+    with pytest.raises(LegacyOverrideRetirementError, match="C6c contract"):
+        retire_legacy_compose_override(
+            project_root=root,
+            compose_config_runner=mismatched_config,
+            require_root=False,
+        )
+
+    assert root_env.read_bytes() == original_root
+    assert override.exists()
+
+
+def test_retire_legacy_override_rejects_raw_ui_production_command_drift_before_archive(
+    tmp_path: Path,
+) -> None:
+    root, root_env, override = _migration_tree(tmp_path)
+    compose_path = root / "docker-compose.yml"
+    compose_path.write_text(
+        compose_path.read_text(encoding="utf-8").replace(
+            "npm run build && exec npm run start", "npm run dev"
+        ),
+        encoding="utf-8",
+    )
+    compose_path.chmod(0o644)
+    original_root = root_env.read_bytes()
+
+    with pytest.raises(LegacyOverrideRetirementError, match="C6c contract"):
+        retire_legacy_compose_override(
+            project_root=root,
+            compose_config_runner=_valid_config_runner,
+            require_root=False,
+        )
+
+    assert root_env.read_bytes() == original_root
+    assert override.exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "value"),
+    [
+        ("network_mode", "bridge"),
+        ("api_port", "12602"),
+    ],
+)
+def test_retire_legacy_override_rejects_resolved_runtime_boundary_drift_before_archive(
+    tmp_path: Path, target: str, value: str
+) -> None:
+    root, root_env, override = _migration_tree(tmp_path)
+    original_root = root_env.read_bytes()
+
+    def mismatched_config(
+        _command: list[str], _project_root: Path, values: dict[str, str]
+    ) -> ComposeConfigResult:
+        resolved = json.loads(_canonical_config_result(values).stdout)
+        services = resolved["services"]
+        if target == "network_mode":
+            services["kor-travel-concierge-ui"]["network_mode"] = value
+        else:
+            services["kor-travel-concierge-api"]["command"][-1] = value
         return ComposeConfigResult(returncode=0, stdout=json.dumps(resolved))
 
     with pytest.raises(LegacyOverrideRetirementError, match="C6c contract"):

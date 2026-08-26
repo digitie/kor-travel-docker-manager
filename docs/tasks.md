@@ -59,7 +59,8 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   이관하고, Concierge UI는 전체 provider `.env`가 아니라 exact allowlisted auth/proxy/origin·same-origin BFF 값과
   production command만 canonical Compose에 둘 후속 Manager PR을 merge·배포한다. root-only
   `ktdctl compose-boundary retire-legacy-override --confirm`은 raw source allowlist, backend key/API key-set membership,
-  production+authentication API guard, atomic root `.env`, 실제 raw/resolved C6c config, owner-only archive를 모두 통과한 경우에만
+  production+authentication API guard, host network·API/UI production command/port, atomic root `.env`, 실제 raw/resolved C6c config,
+  owner-only archive를 모두 통과한 경우에만
   override를 retire하고 같은 global mutation lock 안에서 Concierge API/MCP/scheduler/UI를 재생성한다. archive rename 뒤 durability
   불확실성은 candidate `.env`를 되돌리지 않는 typed failure로 남긴다. archive 뒤 재생성만 실패하면
   `compose-boundary activate-concierge --confirm`으로 같은 계약을 재검증한 뒤 재시도한다.

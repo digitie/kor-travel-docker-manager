@@ -27,7 +27,8 @@ owner-only archive로 rename한다. 이 전 과정은 production C6c global muta
 중단해 split-brain rollback을 만들지 않는다. archive 성공 뒤에는 같은 lock 안에서 Concierge API/MCP/scheduler/UI 정확한
 service만 canonical source로 재생성한다. 이 재생성만 실패하면 archive와 candidate를 보존하고
 `compose-boundary activate-concierge --confirm`으로 재시도한다. source credential file은 group/other-readable mode와 dotenv
-공백·tab duplicate 선언을 거부한다. raw/resolved C6c contract와 special character가 든 fake secret의 dotenv round-trip 회귀를
+공백·tab duplicate 선언을 거부한다. raw/resolved C6c는 API/UI host network, API loopback port, UI auth guard·production command도
+고정한다. special character가 든 fake secret의 dotenv round-trip 회귀를
 고정했다. 값·경로·digest는 출력하거나 작업 일지에 기록하지 않는다. 이 후보의 merge·배포와 two-review 승인 전에는 rebuild를
 재시도하지 않는다.
 

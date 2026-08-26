@@ -183,6 +183,36 @@ _CONCIERGE_ROOT_TRUST_FORWARDED_IPS_ENV = "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARD
 _CONCIERGE_ROOT_PUBLIC_ORIGINS_ENV = "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS"
 _CONCIERGE_ROOT_PUBLIC_API_BASE_ENV = "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL"
 _CONCIERGE_FIXED_BACKEND_ORIGIN = "http://127.0.0.1:12601"
+_CONCIERGE_CANONICAL_RAW_NETWORK_MODE = "${KTDM_DOCKER_NETWORK_MODE:-host}"
+_CONCIERGE_CANONICAL_RESOLVED_NETWORK_MODE = "host"
+_CONCIERGE_API_CANONICAL_RAW_COMMAND = (
+    "python",
+    "-m",
+    "ktc.cli",
+    "api",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}",
+)
+_CONCIERGE_API_CANONICAL_RESOLVED_COMMAND = (
+    "python",
+    "-m",
+    "ktc.cli",
+    "api",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "12601",
+)
+_CONCIERGE_UI_CANONICAL_RAW_COMMAND = (
+    "sh",
+    "-ec",
+    '[ -n "$$KTC_ADMIN_PASSWORD_HASH" ] && [ -n "$$KTC_UI_SESSION_SECRET" ] && '
+    '[ "$${#KTC_UI_SESSION_SECRET}" -ge 32 ] && [ -n "$$KTC_ADMIN_PROXY_SECRET" ] && '
+    '[ "$${#KTC_ADMIN_PROXY_SECRET}" -ge 32 ] || { echo "FATAL concierge-ui auth env invalid" >&2; exit 1; }; '
+    "npm run build && exec npm run start -- -H 0.0.0.0 -p ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}",
+)
 _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = frozenset(
     {
         "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
@@ -2532,6 +2562,43 @@ def _validate_concierge_ui_canonical_contract(
         raise ComposeCandidateContractError(
             "Concierge UI backend origin must keep the canonical loopback API port"
         )
+    if environment.get("KOR_TRAVEL_CONCIERGE_UI_PORT", "12605") != "12605":
+        raise ComposeCandidateContractError(
+            "Concierge UI must keep the canonical production port"
+        )
+    expected_network_mode = (
+        _CONCIERGE_CANONICAL_RESOLVED_NETWORK_MODE
+        if resolved
+        else _CONCIERGE_CANONICAL_RAW_NETWORK_MODE
+    )
+    for service_name, service in (
+        (_CONCIERGE_API_SERVICE, api_service),
+        (_CONCIERGE_UI_SERVICE, ui_service),
+    ):
+        network_mode = service.get("network_mode")
+        if not isinstance(network_mode, str) or not hmac.compare_digest(
+            network_mode, expected_network_mode
+        ):
+            raise ComposeCandidateContractError(
+                f"Concierge {service_name} must keep the canonical host network boundary"
+            )
+
+    expected_api_command = (
+        _CONCIERGE_API_CANONICAL_RESOLVED_COMMAND
+        if resolved
+        else _CONCIERGE_API_CANONICAL_RAW_COMMAND
+    )
+    api_command = api_service.get("command")
+    if not isinstance(api_command, list) or tuple(api_command) != expected_api_command:
+        raise ComposeCandidateContractError(
+            "Concierge API must keep the canonical loopback BFF command"
+        )
+    expected_ui_command = _concierge_ui_expected_command(environment, resolved=resolved)
+    ui_command = ui_service.get("command")
+    if not isinstance(ui_command, list) or tuple(ui_command) != expected_ui_command:
+        raise ComposeCandidateContractError(
+            "Concierge UI must keep the canonical production command"
+        )
 
     if resolved:
         expected_ui_environment = {
@@ -2580,6 +2647,19 @@ def _validate_concierge_ui_canonical_contract(
             raise ComposeCandidateContractError(
                 f"Concierge API {target_name} canonical wiring is invalid"
             )
+
+
+def _concierge_ui_expected_command(
+    environment: Mapping[str, str], *, resolved: bool
+) -> tuple[str, ...]:
+    if not resolved:
+        return _CONCIERGE_UI_CANONICAL_RAW_COMMAND
+    return (
+        *_CONCIERGE_UI_CANONICAL_RAW_COMMAND[:2],
+        _CONCIERGE_UI_CANONICAL_RAW_COMMAND[2].replace(
+            "${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}", "12605"
+        ),
+    )
 
 
 def validate_concierge_ui_canonical_compose_boundary(
