@@ -228,6 +228,96 @@ def test_stage_legacy_override_accepts_exact_long_form_source_reference(tmp_path
     assert (pending / "docker-compose.override.yml").read_bytes() == source.read_bytes()
 
 
+def test_long_form_source_reference_completes_stage_retire_and_activate_without_reusing_home_path(
+    tmp_path: Path,
+) -> None:
+    root, root_env, source = _migration_tree(tmp_path)
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document["services"]["kor-travel-concierge-ui"]["env_file"] = [
+        {
+            "path": str(tmp_path / "kor-travel-concierge" / ".env"),
+            "required": True,
+        }
+    ]
+    source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    source.chmod(0o600)
+    observed: list[tuple[list[str], Path]] = []
+
+    def config_runner(
+        command: list[str], project_root: Path, values: dict[str, str]
+    ) -> ComposeConfigResult:
+        observed.append((command, project_root))
+        return _canonical_config_result(values)
+
+    def up_runner(command: list[str], project_root: Path, _values: dict[str, str]) -> int:
+        observed.append((command, project_root))
+        return 0
+
+    stage_legacy_compose_override(source_path=source, project_root=root, require_root=False)
+    _retire_legacy_compose_override(
+        project_root=root,
+        compose_config_runner=config_runner,
+        compose_up_runner=up_runner,
+        require_root=False,
+    )
+    activate_canonical_concierge(
+        project_root=root,
+        compose_config_runner=config_runner,
+        compose_up_runner=up_runner,
+        require_root=False,
+    )
+
+    assert all(project_root == root for _command, project_root in observed)
+    assert all(str(source) not in command for command, _project_root in observed)
+    assert all(str(root_env) in command for command, _project_root in observed)
+
+
+@pytest.mark.parametrize(
+    "variant", ["optional", "string", "integer", "extra", "multiple", "relative", "nonlist"]
+)
+def test_stage_legacy_override_rejects_noncanonical_long_form_source_reference(
+    tmp_path: Path, variant: str
+) -> None:
+    root, _root_env, source = _migration_tree(tmp_path)
+    expected_path = str(tmp_path / "kor-travel-concierge" / ".env")
+    mapping: dict[str, object] = {"path": expected_path, "required": True}
+    if variant == "optional":
+        mapping["required"] = False
+    elif variant == "string":
+        mapping["required"] = "true"
+    elif variant == "integer":
+        mapping["required"] = 1
+    elif variant == "extra":
+        mapping["extra"] = "rejected"
+    elif variant == "relative":
+        mapping["path"] = "../kor-travel-concierge/.env"
+    elif variant == "multiple":
+        mapping = {"path": expected_path, "required": True}
+    elif variant == "nonlist":
+        mapping = {"path": expected_path, "required": True}
+    else:  # pragma: no cover - pytest parameter is the complete variant set.
+        pytest.fail(f"unexpected variant: {variant}")
+    source_reference: object = [mapping]
+    if variant == "multiple":
+        assert isinstance(source_reference, list)
+        source_reference.append({"path": expected_path, "required": True})
+    if variant == "nonlist":
+        source_reference = mapping
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document["services"]["kor-travel-concierge-ui"]["env_file"] = source_reference
+    source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    source.chmod(0o600)
+
+    with pytest.raises(LegacyOverrideRetirementError, match="source reference"):
+        stage_legacy_compose_override(
+            source_path=source,
+            project_root=root,
+            require_root=False,
+        )
+
+    assert not (root / ".legacy-compose-override-state" / "pending").exists()
+
+
 def test_stage_legacy_override_rejects_long_form_source_reference_outside_sibling(
     tmp_path: Path,
 ) -> None:
