@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-26 — pinset artifact preflight 순서 보정 후보
+
+n150의 별도 사전 점검은 source provenance 및 PinVi role credential을 통과했다. 그 뒤 승인된 rebuild의
+첫 base candidate는 source materialize보다 먼저 네 Map fence/permit mount path를 빈 `.env` 값으로
+해석하면서 DB reset 전에 fail-close했다. 이 path들은 현재 pinset state root에서 결정론적으로 도출되고,
+이후 candidate override에도 같은 값으로 전달된다. 따라서 운영자가 pinset별 artifact path를 설정할 문제가
+아니라 Manager가 source materialize·image build·journal·DB mutation 전에 directory를 준비해 기본 candidate에
+제공해야 하는 순서 결함이다. 이 보정이 merge·재배포되기 전에는 rebuild를 더 재시도하지 않는다.
+
+---
+
 ## 2026-08-26 — PinVi M05 role lifecycle 후보 보정
 
 PinVi #488은 source authority `main` commit

@@ -5546,38 +5546,16 @@ class ComposeService:
                 environment_snapshot.effective,
                 require_nonempty=True,
             )
-            prebuild_transaction, _ = self._capture_transaction_unlocked(
-                environment_override=None,
-                environment_snapshot=environment_snapshot,
-            )
-            _assert_transaction_matches_c6c_lock(prebuild_transaction, lock_snapshot)
-            # 외부 prerequisite는 source materialize, paired builder, image tag,
-            # receipt/journal write보다 먼저 base frozen Compose에서 확인한다.
-            self._require_services_ready(
-                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
-                transaction=prebuild_transaction,
-                frozen_recovery=True,
-            )
             release = current_pinned_runtime_release()
             state_paths = pinned_runtime_state_paths(
                 environment_snapshot.effective,
                 pinset_sha256=release.pinset_sha256,
             )
             ensure_pinned_runtime_state_directory(state_paths.state_root)
-            sources = materialize_pinned_runtime_sources(
-                release=release,
-                state_paths=state_paths,
-                values=environment_snapshot.effective,
-            )
             application_paths = _map_application_300_paths(
                 state_root=state_paths.state_root,
                 pinset_sha256=release.pinset_sha256,
             )
-            try:
-                state_paths.journal.lstat()
-                journal_exists = True
-            except FileNotFoundError:
-                journal_exists = False
             artifact_directories = MapApplication300ArtifactDirectories(
                 fresh_migrate_fence=application_paths.root_fence_directory,
                 fresh_finalize_fence=application_paths.finalize_fence_directory,
@@ -5586,6 +5564,29 @@ class ComposeService:
                 ),
                 dagster_storage_permit=application_paths.metadata_permit_directory,
             )
+            prebuild_transaction, _ = self._capture_transaction_unlocked(
+                environment_override=dict(artifact_directories.compose_environment()),
+                environment_snapshot=environment_snapshot,
+            )
+            _assert_transaction_matches_c6c_lock(prebuild_transaction, lock_snapshot)
+            # 외부 prerequisite는 source materialize, paired builder, image tag,
+            # receipt/journal write보다 먼저 확인한다. fixed artifact directory만
+            # base candidate가 volume graph를 검증할 수 있도록 먼저 준비한다.
+            self._require_services_ready(
+                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
+                transaction=prebuild_transaction,
+                frozen_recovery=True,
+            )
+            sources = materialize_pinned_runtime_sources(
+                release=release,
+                state_paths=state_paths,
+                values=environment_snapshot.effective,
+            )
+            try:
+                state_paths.journal.lstat()
+                journal_exists = True
+            except FileNotFoundError:
+                journal_exists = False
             paired_build_images = map_application_300_paired_build_image_names(sources)
             _run_map_application_300_paired_builder(
                 sources=sources,

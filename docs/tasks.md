@@ -50,6 +50,9 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. Manager release pin은 #488
   commit과 pinset `9073c294d6138fff895983adbc9ca483ab2eede6da15bb1ef4888572fe7fe491`으로 회전했다. Manager
   PR의 적대 리뷰·CI와 n150의 새 role credential 구성이 모두 완료되기 전에는 rebuild를 재개하지 않는다.
+- [/] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
+  preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용해야 하며, 이
+  보정의 리뷰·병합·배포 전에는 artifact environment를 수동으로 주입하거나 rebuild를 재시도하지 않는다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 
