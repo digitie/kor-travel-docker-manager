@@ -447,6 +447,13 @@ migration은 journal transaction ID를 operation ID로 쓰는 DB intent+receipt�
 복구·완결하며, web·daemon은 `--no-deps`로 기동해 migration을 암묵적으로 다시 실행하지 않는다. 이후
 PinVi bootstrap·서비스 readiness·F1J smoke를 순서대로 검증한다.
 
+PinVi M05의 database role topology는 `pinvi-db-runtime-role` bootstrap one-shot이 한 번만
+만든다. PostgreSQL initial-superuser secret file은 PostgreSQL·DB 생성 one-shot·이 role one-shot만
+읽으며, normal PinVi API·Dagster에는 runtime application role DSN만, `pinvi-admin-bootstrap`에는
+migrator role DSN만 전달한다. rebuild는 role one-shot을 명시적으로 open한 뒤 admin/schema bootstrap을
+수행하고, 성공·실패 어느 경우에도 같은 one-shot으로 migrator login을 seal한다. endpoint는 host network의
+`127.0.0.1:12800`으로 고정한다. 이 lifecycle 밖의 수동 Compose·SQL 실행은 허용하지 않는다.
+
 manifest는 v6, pinset별 resume journal/tombstone은 v8이다. final/committed resume은 일곱 실행 중
 container의 실제 image ID와 세 DB head를 generation에 다시 exact 대조한다. 실패와 재실행 모두 기존 DB,
 image, manifest를 복원하지 않는다. backup·scratch restore·이전 revision rollback은 release gate가 아니다.

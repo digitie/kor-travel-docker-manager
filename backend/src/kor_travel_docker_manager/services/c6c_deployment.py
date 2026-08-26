@@ -26,6 +26,7 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import yaml
 from dotenv import dotenv_values
+
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
@@ -57,16 +58,26 @@ _MAP_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_MAP_POSTGRES_PASSWORD_SECRET}"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
+_PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
 _PINVI_POSTGRES_INITDB_ARGS = "--auth-host=scram-sha-256"
+_PINVI_DEDICATED_POSTGRES_PORT = 12800
 _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
 _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DAGSTER_SERVICE = "pinvi-dagster"
 _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
-_PINVI_DOCKER_DATABASE_URL_ENV = "PINVI_DOCKER_DATABASE_URL"
+_PINVI_APP_DB_USER_ENV = "PINVI_APP_DB_USER"
+_PINVI_APP_DB_PASSWORD_ENV = "PINVI_APP_DB_PASSWORD"
+_PINVI_APP_SCHEMA_OWNER_ENV = "PINVI_APP_SCHEMA_OWNER"
+_PINVI_MIGRATION_OWNER_ENV = "PINVI_MIGRATION_OWNER"
+_PINVI_MIGRATOR_DB_USER_ENV = "PINVI_MIGRATOR_DB_USER"
+_PINVI_MIGRATOR_DB_PASSWORD_ENV = "PINVI_MIGRATOR_DB_PASSWORD"
+_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET = "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
+_PINVI_ROLE_BOOTSTRAP_ENTRYPOINT_SCRIPT = f"""export POSTGRES_PASSWORD="$(cat {_PINVI_POSTGRES_PASSWORD_FILE})"
+exec {_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET}"""
 _PINVI_DB_INIT_COMMAND_SCRIPT = """PGPASSWORD=\"$(cat /run/secrets/pinvi-postgres-password)\"
 export PGPASSWORD
 if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$PINVI_POSTGRES_DB'\" | grep -q 1; then
@@ -237,7 +248,7 @@ _MAP_PRODUCTION_API_LITERAL_VALUES = {
 _MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
     _MAP_PRODUCTION_API_LITERAL_VALUES
 )
-_MAP_DATABASE_SECRET_ENV_NAMES = frozenset(
+_DATABASE_SECRET_ENV_NAMES = frozenset(
     {
         "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
@@ -250,6 +261,8 @@ _MAP_DATABASE_SECRET_ENV_NAMES = frozenset(
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
         "PINVI_POSTGRES_PASSWORD",
+        _PINVI_APP_DB_PASSWORD_ENV,
+        _PINVI_MIGRATOR_DB_PASSWORD_ENV,
     }
 )
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
@@ -260,6 +273,7 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         _MAP_POSTGRES_SERVICE,
         _PINVI_POSTGRES_SERVICE,
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _MAP_APPLICATION_FRESH_300_SERVICE,
@@ -294,29 +308,19 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_API_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
     (_MAP_UI_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
     (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): _MAP_SERVICE_TOKEN_ENV,
-    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
-        _MAP_CURSOR_SIGNING_SECRET_ENV
-    ),
+    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (_MAP_CURSOR_SIGNING_SECRET_ENV),
     (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): _MAP_GEO_API_KEY_SOURCE_ENV,
     (_MAP_UI_SERVICE, _MAP_UI_GEO_API_KEY_ENV): _MAP_GEO_API_KEY_SOURCE_ENV,
-    (_MAP_DAGSTER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
-        _MAP_GEO_API_KEY_SOURCE_ENV
-    ),
-    (_MAP_DAGSTER_DAEMON_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
-        _MAP_GEO_API_KEY_SOURCE_ENV
-    ),
-    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
-        _MAP_CURATION_SNAPSHOT_DIGEST_ENV
-    ),
+    (_MAP_DAGSTER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (_MAP_GEO_API_KEY_SOURCE_ENV),
+    (_MAP_DAGSTER_DAEMON_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (_MAP_GEO_API_KEY_SOURCE_ENV),
+    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (_MAP_CURATION_SNAPSHOT_DIGEST_ENV),
     (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
         _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV
     ),
     (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV): (
         _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV
     ),
-    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (
-        _MAP_FEATURE_CREATE_ENABLED_ENV
-    ),
+    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (_MAP_FEATURE_CREATE_ENABLED_ENV),
     (_MAP_APPLICATION_FRESH_300_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
     ),
@@ -329,15 +333,9 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_APPLICATION_FRESH_FINALIZE_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
     ),
-    (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (
-        _MAP_FEATURE_CREATE_TOKEN_ENV
-    ),
-    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
-        _PINVI_CURATION_SNAPSHOT_ENV
-    ),
-    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
-        _PINVI_CUTOVER_MAPPING_ENV
-    ),
+    (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (_MAP_FEATURE_CREATE_TOKEN_ENV),
+    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (_PINVI_CURATION_SNAPSHOT_ENV),
+    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (_PINVI_CUTOVER_MAPPING_ENV),
     (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): "KOR_TRAVEL_MAP_POSTGRES_USER",
     (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
@@ -354,9 +352,7 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
         "KOR_TRAVEL_MAP_POSTGRES_DB"
     ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): (
-        "KOR_TRAVEL_MAP_POSTGRES_DB"
-    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): ("KOR_TRAVEL_MAP_POSTGRES_DB"),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
         "KOR_TRAVEL_MAP_POSTGRES_USER"
     ),
@@ -393,13 +389,9 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
     ),
-    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
-        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"
-    ),
+    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): ("KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"),
     (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
-    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-    ),
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): ("KOR_TRAVEL_MAP_DAGSTER_PG_URL"),
     (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
     ),
@@ -412,15 +404,76 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
     ),
-    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
-    ),
+    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): ("KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"),
     (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
+    ),
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_USER"): "PINVI_POSTGRES_USER",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_DB"): "PINVI_POSTGRES_DB",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_PORT"): "PINVI_DB_PORT",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_APP_DB_USER_ENV): _PINVI_APP_DB_USER_ENV,
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_APP_DB_PASSWORD_ENV): (_PINVI_APP_DB_PASSWORD_ENV),
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_APP_SCHEMA_OWNER_ENV): (_PINVI_APP_SCHEMA_OWNER_ENV),
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_MIGRATION_OWNER_ENV): (_PINVI_MIGRATION_OWNER_ENV),
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_MIGRATOR_DB_USER_ENV): (_PINVI_MIGRATOR_DB_USER_ENV),
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_MIGRATOR_DB_PASSWORD_ENV): (
+        _PINVI_MIGRATOR_DB_PASSWORD_ENV
     ),
 }
 _CANDIDATE_SOURCE_DEFAULT_VALUES = {
     _MAP_FEATURE_CREATE_ENABLED_ENV: "false",
+    "PINVI_DB_PORT": str(_PINVI_DEDICATED_POSTGRES_PORT),
+    "PINVI_POSTGRES_DB": "pinvi",
+    "PINVI_POSTGRES_USER": "pinvi",
+}
+_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES = {
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_USER"): "${PINVI_POSTGRES_USER:-pinvi}",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_DB"): "${PINVI_POSTGRES_DB:-pinvi}",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_HOST"): "127.0.0.1",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_PORT"): "${PINVI_DB_PORT:-12800}",
+    (
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        _PINVI_APP_DB_USER_ENV,
+    ): "${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}",
+    (
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        _PINVI_APP_DB_PASSWORD_ENV,
+    ): "${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}",
+    (
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        _PINVI_APP_SCHEMA_OWNER_ENV,
+    ): "${PINVI_APP_SCHEMA_OWNER:?PINVI_APP_SCHEMA_OWNER must be explicitly set}",
+    (
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        _PINVI_MIGRATION_OWNER_ENV,
+    ): "${PINVI_MIGRATION_OWNER:?PINVI_MIGRATION_OWNER must be explicitly set}",
+    (
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        _PINVI_MIGRATOR_DB_USER_ENV,
+    ): "${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}",
+    (
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        _PINVI_MIGRATOR_DB_PASSWORD_ENV,
+    ): "${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_M05_LEGACY_REBASELINE"): "0",
+    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_MIGRATOR_DISABLE_LOGIN"): "1",
+}
+_PINVI_DATABASE_URL_RAW_VALUES = {
+    service_name: (
+        "postgresql+asyncpg://"
+        f"${{{username_env}:?{username_env} must be explicitly set}}:"
+        f"${{{password_env}:?{password_env} must be explicitly set}}"
+        "@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}"
+    )
+    for service_name, username_env, password_env in (
+        (_PINVI_API_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
+        (_PINVI_DAGSTER_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
+        (
+            _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+            _PINVI_MIGRATOR_DB_USER_ENV,
+            _PINVI_MIGRATOR_DB_PASSWORD_ENV,
+        ),
+    )
 }
 _PINVI_DATABASE_URL_ALLOWED_PATHS = frozenset(
     ("services", service_name, "environment", _PINVI_DATABASE_URL_ENV)
@@ -569,7 +622,7 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         )
     },
 }
-_MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
+_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
     {
         (
             "services",
@@ -587,6 +640,12 @@ _MAP_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
             _PINVI_POSTGRES_PASSWORD_SECRET,
             "environment",
         ),
+        (
+            "services",
+            _PINVI_DB_RUNTIME_ROLE_SERVICE,
+            "entrypoint",
+            "2",
+        ),
     }
 )
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
@@ -598,12 +657,8 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
     ),
     (_PINVI_API_SERVICE, _PINVI_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
-    (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): (
-        "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
-    ),
-    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): (
-        "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
-    ),
+    (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): ("${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"),
+    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): ("${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"),
     (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): (
         "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
     ),
@@ -635,9 +690,7 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
     ),
-    (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
-        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
-    ),
+    (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): ("${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"),
     (_MAP_UI_SERVICE, _MAP_UI_GEO_API_KEY_ENV): (
         "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?"
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
@@ -676,12 +729,13 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
     },
     **_MAP_DATABASE_CANONICAL_ENV_VALUES,
+    **_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES,
 }
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES
     | _MAP_PRODUCTION_SECRET_ENV_NAMES
-    | _MAP_DATABASE_SECRET_ENV_NAMES
+    | _DATABASE_SECRET_ENV_NAMES
     | _CURATION_PRINCIPAL_ENV_NAMES
     | _MAP_FEATURE_CREATE_ENV_NAMES
     | {
@@ -795,25 +849,59 @@ def _validate_pinvi_database_url_identities(
     *,
     resolved: bool,
 ) -> None:
-    """PinVi application DSN이 reset 대상 DB identity를 가리키는지 확인한다."""
+    """PinVi runtime/migrator DSN과 dedicated DB 역할 분리를 고정한다."""
 
     try:
-        expected_port = int(environment.get("PINVI_DB_PORT", "12800"))
+        expected_port = int(environment.get("PINVI_DB_PORT", str(_PINVI_DEDICATED_POSTGRES_PORT)))
     except (TypeError, ValueError) as exc:
         raise ComposeCandidateContractError("PinVi database URL identity is invalid") from exc
     expected_database = environment.get("PINVI_POSTGRES_DB", "pinvi")
-    expected_user = environment.get("PINVI_POSTGRES_USER", "pinvi")
-    expected_password = environment.get("PINVI_POSTGRES_PASSWORD")
+    bootstrap_user = environment.get("PINVI_POSTGRES_USER", "pinvi")
+    bootstrap_password = environment.get("PINVI_POSTGRES_PASSWORD")
+    role_values = {
+        _PINVI_APP_DB_USER_ENV: environment.get(_PINVI_APP_DB_USER_ENV),
+        _PINVI_APP_DB_PASSWORD_ENV: environment.get(_PINVI_APP_DB_PASSWORD_ENV),
+        _PINVI_APP_SCHEMA_OWNER_ENV: environment.get(_PINVI_APP_SCHEMA_OWNER_ENV),
+        _PINVI_MIGRATION_OWNER_ENV: environment.get(_PINVI_MIGRATION_OWNER_ENV),
+        _PINVI_MIGRATOR_DB_USER_ENV: environment.get(_PINVI_MIGRATOR_DB_USER_ENV),
+        _PINVI_MIGRATOR_DB_PASSWORD_ENV: environment.get(_PINVI_MIGRATOR_DB_PASSWORD_ENV),
+    }
+    role_names = (
+        bootstrap_user,
+        role_values[_PINVI_APP_DB_USER_ENV],
+        role_values[_PINVI_APP_SCHEMA_OWNER_ENV],
+        role_values[_PINVI_MIGRATION_OWNER_ENV],
+        role_values[_PINVI_MIGRATOR_DB_USER_ENV],
+    )
     if (
-        not 1 <= expected_port <= 65535
+        expected_port != _PINVI_DEDICATED_POSTGRES_PORT
         or not expected_database
-        or not expected_user
-        or not isinstance(expected_password, str)
-        or not expected_password
+        or not isinstance(bootstrap_password, str)
+        or not bootstrap_password
+        or any(not isinstance(value, str) or not value for value in role_values.values())
+        or any(
+            not isinstance(role_name, str) or re.fullmatch(r"[a-z_][a-z0-9_]*", role_name) is None
+            for role_name in role_names
+        )
+        or len(set(role_names)) != len(role_names)
     ):
         raise ComposeCandidateContractError("PinVi database URL identity is invalid")
 
-    for service_name in (_PINVI_API_SERVICE, _PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_DAGSTER_SERVICE):
+    expected_credentials = {
+        _PINVI_API_SERVICE: (
+            cast(str, role_values[_PINVI_APP_DB_USER_ENV]),
+            cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV]),
+        ),
+        _PINVI_DAGSTER_SERVICE: (
+            cast(str, role_values[_PINVI_APP_DB_USER_ENV]),
+            cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV]),
+        ),
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE: (
+            cast(str, role_values[_PINVI_MIGRATOR_DB_USER_ENV]),
+            cast(str, role_values[_PINVI_MIGRATOR_DB_PASSWORD_ENV]),
+        ),
+    }
+    for service_name, (expected_user, expected_password) in expected_credentials.items():
         service = services.get(service_name)
         if not isinstance(service, Mapping):
             continue
@@ -824,7 +912,7 @@ def _validate_pinvi_database_url_identities(
         if not isinstance(value, str) or not value:
             raise ComposeCandidateContractError("PinVi database URL identity is invalid")
         if not resolved:
-            if not value.startswith(f"${{{_PINVI_DOCKER_DATABASE_URL_ENV}:-") or not value.endswith("}"):
+            if not hmac.compare_digest(value, _PINVI_DATABASE_URL_RAW_VALUES[service_name]):
                 raise ComposeCandidateContractError("PinVi database URL identity is invalid")
             continue
         try:
@@ -837,7 +925,7 @@ def _validate_pinvi_database_url_identities(
             or parsed.hostname != "127.0.0.1"
             or parsed_port != expected_port
             or unquote(parsed.username or "") != expected_user
-            or unquote(parsed.password or "") != expected_password
+            or not hmac.compare_digest(unquote(parsed.password or ""), expected_password)
             or parsed.path != f"/{expected_database}"
             or parsed.query
             or parsed.fragment
@@ -988,6 +1076,104 @@ def _validate_pinvi_db_init_identity(
             raise ComposeCandidateContractError("PinVi database init identity is invalid")
 
 
+def _validate_pinvi_db_runtime_role(
+    services: Mapping[str, Any],
+    environment: Mapping[str, str],
+    *,
+    resolved: bool,
+) -> None:
+    """PinVi role one-shot만 root secret file과 role password를 함께 소비하게 고정한다."""
+
+    service = services.get(_PINVI_DB_RUNTIME_ROLE_SERVICE)
+    if not isinstance(service, Mapping):
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+    if (
+        service.get("image") != _PINVI_POSTGRES_IMAGE
+        or service.get("restart") != "no"
+        or service.get("profiles") != ["bootstrap"]
+        or service.get("command") is not None
+    ):
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+    expected_network_mode = "host" if resolved else "${KTDM_DOCKER_NETWORK_MODE:-host}"
+    if service.get("network_mode") != expected_network_mode:
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+    depends_on = service.get("depends_on")
+    expected_dependencies = {
+        _PINVI_POSTGRES_SERVICE: "service_healthy",
+        _PINVI_DB_INIT_SERVICE: "service_completed_successfully",
+    }
+    if not isinstance(depends_on, Mapping) or set(depends_on) != set(expected_dependencies):
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+    for dependency_name, expected_condition in expected_dependencies.items():
+        dependency = depends_on.get(dependency_name)
+        if not isinstance(dependency, Mapping) or dependency.get("condition") != expected_condition:
+            raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+
+    service_environment = service.get("environment")
+    if not isinstance(service_environment, Mapping):
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+    expected_environment: dict[str, str] = {}
+    for (service_name, env_name), raw_value in _PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES.items():
+        if service_name != _PINVI_DB_RUNTIME_ROLE_SERVICE:
+            continue
+        source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get((service_name, env_name))
+        expected_environment[env_name] = (
+            environment.get(
+                source_name,
+                _CANDIDATE_SOURCE_DEFAULT_VALUES.get(source_name, ""),
+            )
+            if resolved and source_name is not None
+            else raw_value
+        )
+    if (
+        set(service_environment) != set(expected_environment)
+        or any(
+            not isinstance(service_environment.get(name), str)
+            or not hmac.compare_digest(service_environment[name], value)
+            for name, value in expected_environment.items()
+        )
+        or {"POSTGRES_PASSWORD", "PINVI_POSTGRES_PASSWORD", _PINVI_DATABASE_URL_ENV}.intersection(
+            service_environment
+        )
+    ):
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+
+    entrypoint = service.get("entrypoint")
+    if (
+        not isinstance(entrypoint, list)
+        or entrypoint[:2] != ["sh", "-ec"]
+        or len(entrypoint) != 3
+        or not isinstance(entrypoint[2], str)
+        or entrypoint[2].strip().replace("$$", "$") != _PINVI_ROLE_BOOTSTRAP_ENTRYPOINT_SCRIPT
+    ):
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+    expected_secret_reference = {
+        "source": _PINVI_POSTGRES_PASSWORD_SECRET,
+        "target": _PINVI_POSTGRES_PASSWORD_FILE,
+    }
+    if service.get("secrets") != [expected_secret_reference]:
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+
+    volumes = service.get("volumes")
+    if not isinstance(volumes, list) or len(volumes) != 1:
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+    if not resolved:
+        expected_volume = (
+            "${PINVI_REPO_DIR:-../pinvi}/infra/postgres/"
+            "bootstrap-pinvi-runtime-role.sh:"
+            f"{_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET}:ro"
+        )
+        if volumes != [expected_volume]:
+            raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
+        return
+    volume = volumes[0]
+    if (
+        not isinstance(volume, Mapping)
+        or volume.get("type") != "bind"
+        or volume.get("target") != _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET
+        or volume.get("read_only") is not True
+    ):
+        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
 def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
     if service.get("network_mode") != "host":
         raise ComposeCandidateContractError(
@@ -1173,9 +1359,7 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
     if not isinstance(secrets, Mapping):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
     source = secrets.get(_PINVI_POSTGRES_PASSWORD_SECRET)
-    if not isinstance(source, Mapping) or source.get("environment") != (
-        "PINVI_POSTGRES_PASSWORD"
-    ):
+    if not isinstance(source, Mapping) or source.get("environment") != ("PINVI_POSTGRES_PASSWORD"):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
 
     services = document.get("services")
@@ -1221,9 +1405,7 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
             elif isinstance(candidate_reference, Mapping):
                 source_name = candidate_reference.get("source")
             else:
-                raise ComposeCandidateContractError(
-                    "PinVi PostgreSQL password secret is invalid"
-                )
+                raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
             if source_name != _PINVI_POSTGRES_PASSWORD_SECRET:
                 continue
             if service_name == _PINVI_POSTGRES_SERVICE:
@@ -1231,7 +1413,7 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
                     raise ComposeCandidateContractError(
                         "PinVi PostgreSQL password secret has an unauthorized consumer"
                     )
-            elif service_name != _PINVI_DB_INIT_SERVICE or candidate_reference not in (
+            elif service_name == _PINVI_DB_INIT_SERVICE and candidate_reference in (
                 _PINVI_POSTGRES_PASSWORD_SECRET,
                 {
                     "source": _PINVI_POSTGRES_PASSWORD_SECRET,
@@ -1242,6 +1424,13 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
                     "target": _PINVI_POSTGRES_PASSWORD_FILE,
                 },
             ):
+                continue
+            elif service_name == _PINVI_DB_RUNTIME_ROLE_SERVICE and candidate_reference == {
+                "source": _PINVI_POSTGRES_PASSWORD_SECRET,
+                "target": _PINVI_POSTGRES_PASSWORD_FILE,
+            }:
+                continue
+            else:
                 raise ComposeCandidateContractError(
                     "PinVi PostgreSQL password secret has an unauthorized consumer"
                 )
@@ -1306,6 +1495,7 @@ _MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset(
         "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
     }
 )
+_PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset({_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET})
 _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     (
         "kor-travel-concierge-postgres",
@@ -1331,10 +1521,12 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
         "kor-travel-map-db-role-bootstrap",
         "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
         True,
-    ): (
-        "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}"
-        "/scripts/database-credential-preflight.sh"
-    ),
+    ): ("${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/database-credential-preflight.sh"),
+    (
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
+        _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET,
+        True,
+    ): ("${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh"),
     (
         _MAP_APPLICATION_FRESH_300_SERVICE,
         "/run/kor-travel-map-application-fresh-migrate",
@@ -1400,9 +1592,7 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
         "/opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh",
         True,
     ): "./scripts/verify-kor-travel-geo-source.sh",
-    ("rustfs", "/data", False): (
-        "${RUSTFS_DATA_DIR:-/home/digitie/kor-travel-geo-data/rustfs}"
-    ),
+    ("rustfs", "/data", False): ("${RUSTFS_DATA_DIR:-/home/digitie/kor-travel-geo-data/rustfs}"),
     (
         "rustfs-init",
         "/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh",
@@ -1414,9 +1604,7 @@ _CANDIDATE_ALLOWED_OPERATOR_BINDS = {
     ("kor-travel-geo-api", "/app/data/backups", False): (
         "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
     ),
-    ("prometheus", "/etc/prometheus/prometheus.yml", True): (
-        "./config/prometheus/prometheus.yml"
-    ),
+    ("prometheus", "/etc/prometheus/prometheus.yml", True): ("./config/prometheus/prometheus.yml"),
     ("prometheus", "/prometheus", False): (
         "${PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-geo-data/prometheus}"
     ),
@@ -2955,9 +3143,7 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_map_production_secret_values(
         environment,
         error_type=ComposeCandidateContractError,
-        reject_published_examples=(
-            environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"
-        ),
+        reject_published_examples=(environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"),
     )
     _assert_candidate_single_file_boundary(resolved, environment=environment)
     _validate_map_database_dsn_identities(environment)
@@ -2970,6 +3156,7 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_pinvi_postgres_password_secret(resolved)
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
     _validate_pinvi_db_init_identity(services, environment, resolved=True)
+    _validate_pinvi_db_runtime_role(services, environment, resolved=True)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -2983,21 +3170,25 @@ def validate_resolved_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-        | _MAP_DATABASE_SECRET_ENV_NAMES
+        | _DATABASE_SECRET_ENV_NAMES
         | _CURATION_PRINCIPAL_ENV_NAMES
         | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
     )
     protected_values = (
         *(
-        _compose_resolved_escaped_value(value)
-        for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
-        if (value := environment.get(name, ""))
+            _compose_resolved_escaped_value(value)
+            for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
+            if (value := environment.get(name, ""))
         ),
     )
-    allowed_paths = {
-        ("services", service_name, "environment", target_name)
-        for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS | _PINVI_DATABASE_URL_ALLOWED_PATHS
+    allowed_paths = (
+        {
+            ("services", service_name, "environment", target_name)
+            for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
+        }
+        | _DATABASE_ALLOWED_NON_ENV_PATHS
+        | _PINVI_DATABASE_URL_ALLOWED_PATHS
+    )
 
     for service_name in (
         _MAP_API_SERVICE,
@@ -3011,6 +3202,7 @@ def validate_resolved_compose_candidate_protected_values(
         _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -3032,6 +3224,7 @@ def validate_resolved_compose_candidate_protected_values(
             _MAP_APPLICATION_FRESH_300_SERVICE,
             _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
             _PINVI_DB_INIT_SERVICE,
+            _PINVI_DB_RUNTIME_ROLE_SERVICE,
         }:
             _require_map_database_host_network(service)
         service_environment = service.get("environment")
@@ -3065,9 +3258,7 @@ def validate_resolved_compose_candidate_protected_values(
             if allowed_service != service_name:
                 continue
             actual = service_environment.get(target_name)
-            source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get(
-                (allowed_service, target_name)
-            )
+            source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get((allowed_service, target_name))
             if source_name is not None:
                 source_value = environment.get(
                     source_name,
@@ -3075,16 +3266,12 @@ def validate_resolved_compose_candidate_protected_values(
                 )
                 expected = _compose_resolved_escaped_value(source_value)
             else:
-                expected = _CANDIDATE_CANONICAL_API_ENV_VALUES[
-                    (allowed_service, target_name)
-                ]
+                expected = _CANDIDATE_CANONICAL_API_ENV_VALUES[(allowed_service, target_name)]
             if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
                 raise ComposeCandidateContractError(
                     f"resolved compose candidate {service_name}.{target_name} wiring is invalid"
                 )
-        if service_name == _MAP_UI_SERVICE and not _map_ui_auth_values_are_valid(
-            environment
-        ):
+        if service_name == _MAP_UI_SERVICE and not _map_ui_auth_values_are_valid(environment):
             raise ComposeCandidateContractError(
                 "resolved compose candidate Map UI authentication is invalid"
             )
@@ -3094,9 +3281,7 @@ def validate_resolved_compose_candidate_protected_values(
             )
 
     for path, scalar in _walk_scalars(resolved):
-        if path in allowed_paths or (
-            path[-1:] == ("<key>",) and path[:-1] in allowed_paths
-        ):
+        if path in allowed_paths or (path[-1:] == ("<key>",) and path[:-1] in allowed_paths):
             continue
         text = "" if scalar is None else str(scalar)
         if any(name in text for name in protected_names) or any(
@@ -3399,12 +3584,12 @@ def validate_compose_candidate_protected_values(
     _validate_map_database_dsn_identities(environment)
     services = candidate.get("services")
     if not isinstance(services, Mapping):
-        raise ComposeCandidateContractError(
-            "compose candidate has no valid services mapping"
-        )
+        raise ComposeCandidateContractError("compose candidate has no valid services mapping")
     _validate_map_postgres_password_secret(candidate)
+    _validate_pinvi_postgres_password_secret(candidate)
     _validate_pinvi_database_url_identities(services, environment, resolved=False)
     _validate_pinvi_db_init_identity(services, environment, resolved=False)
+    _validate_pinvi_db_runtime_role(services, environment, resolved=False)
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
@@ -3418,21 +3603,25 @@ def validate_compose_candidate_protected_values(
         | _MAP_UI_AUTH_ENV_NAMES
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-        | _MAP_DATABASE_SECRET_ENV_NAMES
+        | _DATABASE_SECRET_ENV_NAMES
         | _CURATION_PRINCIPAL_ENV_NAMES
         | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
     )
     protected_values = (
         *(
-        value
-        for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
-        if (value := environment.get(name, ""))
+            value
+            for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
+            if (value := environment.get(name, ""))
         ),
     )
-    allowed_paths = {
-        ("services", service_name, "environment", target_name)
-        for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-    } | _MAP_DATABASE_ALLOWED_NON_ENV_PATHS | _PINVI_DATABASE_URL_ALLOWED_PATHS
+    allowed_paths = (
+        {
+            ("services", service_name, "environment", target_name)
+            for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
+        }
+        | _DATABASE_ALLOWED_NON_ENV_PATHS
+        | _PINVI_DATABASE_URL_ALLOWED_PATHS
+    )
 
     for service_name in (
         _MAP_API_SERVICE,
@@ -3446,6 +3635,7 @@ def validate_compose_candidate_protected_values(
         _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
+        _PINVI_DB_RUNTIME_ROLE_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -3490,9 +3680,7 @@ def validate_compose_candidate_protected_values(
             if not require_api_wiring and target_name not in raw_environment:
                 continue
             raw_value = raw_environment.get(target_name)
-            canonical = _CANDIDATE_CANONICAL_API_ENV_VALUES[
-                (service_name, target_name)
-            ]
+            canonical = _CANDIDATE_CANONICAL_API_ENV_VALUES[(service_name, target_name)]
             if raw_value != canonical:
                 raise ComposeCandidateContractError(
                     f"compose candidate {service_name}.{target_name} wiring is invalid"
@@ -3519,9 +3707,7 @@ def validate_compose_candidate_protected_values(
         if any(name in text for name in protected_names) or any(
             value in text for value in protected_values
         ):
-            raise ComposeCandidateContractError(
-                "compose candidate leaks a protected C6c reference"
-            )
+            raise ComposeCandidateContractError("compose candidate leaks a protected C6c reference")
 
     try:
         compose_directory = Path(compose_path).resolve().parent
@@ -6430,8 +6616,7 @@ def _validate_candidate_volume_graph(
     if root_env is not None:
         try:
             state_paths = tuple(
-                Path(path).expanduser().resolve()
-                for path in c6c_state_paths(environment)
+                Path(path).expanduser().resolve() for path in c6c_state_paths(environment)
             )
         except (DeploymentContractError, OSError, RuntimeError, ValueError) as exc:
             raise ComposeCandidateContractError(
@@ -6481,8 +6666,7 @@ def _validate_candidate_volume_graph(
                 compose_directory,
             )
             if any(
-                resolved_source == manager_path
-                or resolved_source in manager_path.parents
+                resolved_source == manager_path or resolved_source in manager_path.parents
                 for manager_path in manager_paths
             ):
                 raise ComposeCandidateContractError(
@@ -6500,9 +6684,7 @@ def _validate_candidate_volume_graph(
                     system_source,
                     compose_directory,
                 )
-                source_is_exact = (
-                    mount.declared_source or mount.source
-                ) == system_source
+                source_is_exact = (mount.declared_source or mount.source) == system_source
                 if resolved_document:
                     source_is_exact = resolved_source == expected_source
                 if not source_is_exact or resolved_source != expected_source:
@@ -6555,6 +6737,18 @@ def _validate_candidate_volume_graph(
                     # helper는 role/password env identifier를 선언한다. candidate
                     # source staging/provenance가 이 exact bind를 동결하므로 protected
                     # identifier 이름은 허용하되 실제 protected 값은 계속 거절한다.
+                    if any(value in source_text for value in protected_values):
+                        raise ComposeCandidateContractError(
+                            f"compose candidate {service_name} bind source leaks C6c data"
+                        )
+                    continue
+                if (
+                    str(service_name) == _PINVI_DB_RUNTIME_ROLE_SERVICE
+                    and mount.target in _PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS
+                ):
+                    # PinVi release source의 role script는 one-shot에 필요한 role/password
+                    # identifier만 선언할 수 있다. frozen source bind가 exact revision에
+                    # 결박되므로 실제 protected value가 없다는 것만 별도로 확인한다.
                     if any(value in source_text for value in protected_values):
                         raise ComposeCandidateContractError(
                             f"compose candidate {service_name} bind source leaks C6c data"

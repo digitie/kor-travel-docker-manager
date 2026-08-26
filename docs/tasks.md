@@ -44,6 +44,11 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   이전 pinset의 immutable 이력으로 보존하며, 새 candidate가 committed되기 전에는 #477 runtime
   반영 증거나 Map/PinVi live acceptance 근거로 사용하지 않는다. 비밀 비포함 외부 인시던트 증적이
   원인을 분리할 때까지 이 항목을 완료 처리하지 않는다.
+- [/] 원인은 M05가 요구하는 role topology와 #477의 root 단일 DSN 배선 불일치로 분리됐다. PinVi
+  #488 merge commit `93296aee5d47676e6b9b79303bf417c598a273ac`은 Manager가 허용하는 exact loopback
+  endpoint에서만 role bootstrap을 실행하도록 보정했다. Manager 후보는 root·runtime·schema owner·migration
+  owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. 새 source pin·Manager
+  PR의 적대 리뷰·CI와 n150의 새 role credential 구성이 모두 완료되기 전에는 rebuild를 재개하지 않는다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 

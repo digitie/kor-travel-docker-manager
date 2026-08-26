@@ -3312,6 +3312,106 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     create_database.assert_not_called()
 
 
+@pytest.mark.parametrize("failure_stage", ("none", "admin", "seal"))
+def test_pinvi_role_lifecycle_seals_the_migrator_after_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    service = ComposeService()
+    transaction = cast(Any, SimpleNamespace())
+    state_paths = cast(Any, SimpleNamespace())
+    values = {
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "test-admin-password",
+    }
+    operations: list[tuple[str, ...]] = []
+    credential_request = Mock()
+
+    @contextmanager
+    def credential_file(**kwargs: object):
+        credential_request(**kwargs)
+        yield SimpleNamespace(path=Path("/run/manager/bootstrap-admin.json"))
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operation = tuple(args)
+        operations.append(operation)
+        if operation[-1] == "pinvi-admin-bootstrap" and failure_stage == "admin":
+            raise DeploymentContractError("admin bootstrap failed")
+        if (
+            operation[-1] == "pinvi-db-runtime-role"
+            and operation[-2] == "PINVI_MIGRATOR_DISABLE_LOGIN=1"
+            and failure_stage == "seal"
+        ):
+            raise DeploymentContractError("role seal failed")
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "pinvi_bootstrap_credential_file",
+        credential_file,
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    if failure_stage == "admin":
+        with pytest.raises(DeploymentContractError, match="admin bootstrap failed"):
+            service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+                transaction=transaction,
+                state_paths=state_paths,
+                values=values,
+                transaction_id="transaction-id",
+            )
+    elif failure_stage == "seal":
+        with pytest.raises(DeploymentContractError, match="could not be sealed"):
+            service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+                transaction=transaction,
+                state_paths=state_paths,
+                values=values,
+                transaction_id="transaction-id",
+            )
+    else:
+        service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+            transaction=transaction,
+            state_paths=state_paths,
+            values=values,
+            transaction_id="transaction-id",
+        )
+
+    role_prefix = (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-e",
+    )
+    assert operations[0] == (
+        *role_prefix,
+        "PINVI_MIGRATOR_DISABLE_LOGIN=0",
+        "pinvi-db-runtime-role",
+    )
+    assert operations[-1] == (
+        *role_prefix,
+        "PINVI_MIGRATOR_DISABLE_LOGIN=1",
+        "pinvi-db-runtime-role",
+    )
+    assert (
+        operations.count(
+            (
+                *role_prefix,
+                "PINVI_MIGRATOR_DISABLE_LOGIN=1",
+                "pinvi-db-runtime-role",
+            )
+        )
+        == 1
+    )
+    credential_request.assert_called_once_with(
+        state_paths=state_paths,
+        values=values,
+        transaction_id="transaction-id",
+        email="admin@example.test",
+        password="test-admin-password",
+    )
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3340,6 +3440,7 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     assert [command[2] for command in operations] == ["rm", "ps"]
     expected_writers = (
         "pinvi-db-init",
+        "pinvi-db-runtime-role",
         "kor-travel-map-dagster-db-init",
         "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-application-fresh-300",
