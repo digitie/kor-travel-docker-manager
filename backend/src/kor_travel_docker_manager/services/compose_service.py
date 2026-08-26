@@ -133,6 +133,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
     PinnedRuntimeStatePaths,
+    PinviRoleLifecycleBlock,
     RebuildPhase,
     RuntimeService,
     ensure_pinned_runtime_state_directory,
@@ -496,6 +497,21 @@ _PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE = {
 _PINVI_DB_RUNTIME_ROLE_ERROR_CODES = frozenset(
     _PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE.values()
 )
+
+
+class _PinviRoleLifecycleError(DeploymentContractError):
+    """lifecycle의 공개 오류와 재실행 차단 receipt를 함께 전달한다."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        role_topology_block: PinviRoleLifecycleBlock | None,
+    ) -> None:
+        super().__init__(message)
+        self.role_topology_block = role_topology_block
+
+
 # fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
 
 
@@ -4730,6 +4746,24 @@ class ComposeService:
                 return code
         return "unclassified"
 
+    @staticmethod
+    def _pinvi_role_topology_block(
+        *,
+        stage: str,
+        diagnostic: str,
+    ) -> PinviRoleLifecycleBlock | None:
+        """정확히 확인된 topology failure만 same-pinset terminal receipt로 만든다."""
+
+        if (
+            stage not in {"pinvi_role_open", "pinvi_role_seal"}
+            or diagnostic != "role_topology_noncanonical"
+        ):
+            return None
+        return PinviRoleLifecycleBlock(
+            stage=cast(Literal["pinvi_role_open", "pinvi_role_seal"], stage),
+            code="role_topology_noncanonical",
+        )
+
     def _retire_pinned_runtime_oneshot_writers(
         self,
         *,
@@ -4830,6 +4864,7 @@ class ComposeService:
         ]
         primary_stage = "pinvi_role_open"
         primary_lifecycle_error: str | None = None
+        role_topology_block: PinviRoleLifecycleBlock | None = None
         try:
             self._run_pinned_runtime_rebuild_compose(open_role, transaction=transaction)
             primary_stage = "pinvi_bootstrap_credential"
@@ -4878,6 +4913,13 @@ class ComposeService:
                         "PinVi migrator login could not be sealed after bootstrap failure"
                     ) from seal_error
                 seal_diagnostic = self._pinvi_lifecycle_diagnostic(seal_error)
+                role_topology_block = self._pinvi_role_topology_block(
+                    stage=primary_stage,
+                    diagnostic=primary_diagnostic,
+                ) or self._pinvi_role_topology_block(
+                    stage="pinvi_role_seal",
+                    diagnostic=seal_diagnostic,
+                )
                 primary_lifecycle_error = (
                     "PinVi bootstrap failed at "
                     f"{primary_stage} ({primary_diagnostic}); migrator seal also failed "
@@ -4885,13 +4927,20 @@ class ComposeService:
                 )
             else:
                 if isinstance(primary_error, Exception):
+                    role_topology_block = self._pinvi_role_topology_block(
+                        stage=primary_stage,
+                        diagnostic=primary_diagnostic,
+                    )
                     primary_lifecycle_error = (
                         f"PinVi bootstrap failed at {primary_stage} ({primary_diagnostic})"
                     )
                 else:
                     raise
         if primary_lifecycle_error is not None:
-            raise DeploymentContractError(primary_lifecycle_error)
+            raise _PinviRoleLifecycleError(
+                primary_lifecycle_error,
+                role_topology_block=role_topology_block,
+            ) from None
         final_seal_error: str | None = None
         try:
             self._run_pinned_runtime_rebuild_compose(seal_role, transaction=transaction)
@@ -4901,12 +4950,19 @@ class ComposeService:
                     "PinVi migrator login could not be sealed after bootstrap"
                 ) from seal_error
             seal_diagnostic = self._pinvi_lifecycle_diagnostic(seal_error)
+            role_topology_block = self._pinvi_role_topology_block(
+                stage="pinvi_role_seal",
+                diagnostic=seal_diagnostic,
+            )
             final_seal_error = (
                 "PinVi migrator seal failed at "
                 f"pinvi_role_seal ({seal_diagnostic})"
             )
         if final_seal_error is not None:
-            raise DeploymentContractError(final_seal_error)
+            raise _PinviRoleLifecycleError(
+                final_seal_error,
+                role_topology_block=role_topology_block,
+            ) from None
 
     @staticmethod
     def _inspect_image_reference_id(image_reference: str, *, label: str) -> str:
@@ -5333,6 +5389,32 @@ class ComposeService:
                 "PinVi role credentials differ from the pinned runtime journal"
             )
         return None
+
+    @staticmethod
+    def _assert_pinvi_role_lifecycle_block_admission(
+        journal: PinnedRuntimeRebuildJournal,
+    ) -> None:
+        """terminal role topology receipt가 있으면 어떤 same-pinset write도 시작하지 않는다."""
+
+        if journal.pinvi_role_lifecycle_block is not None:
+            raise DeploymentContractError(
+                "pinned runtime rebuild is blocked by durable PinVi role topology failure"
+            )
+
+    @staticmethod
+    def _record_pinvi_role_lifecycle_block(
+        journal: PinnedRuntimeRebuildJournal,
+        *,
+        journal_path: Path,
+        error: _PinviRoleLifecycleError,
+    ) -> PinnedRuntimeRebuildJournal:
+        """확정 topology failure를 같은 v8 journal에 먼저 fsync한다."""
+
+        if error.role_topology_block is None:
+            return journal
+        updated = journal.with_pinvi_role_lifecycle_block(error.role_topology_block)
+        write_pinned_runtime_rebuild_journal(journal_path, updated)
+        return updated
 
     @staticmethod
     def _assert_pinned_runtime_journal_matches_candidate_input(
@@ -5795,6 +5877,7 @@ class ComposeService:
             except FileNotFoundError:
                 return None
             resume_journal = read_pinned_runtime_rebuild_journal(state_paths.journal)
+            self._assert_pinvi_role_lifecycle_block_admission(resume_journal)
             return self._assert_pinvi_role_credential_rebind_admission(
                 resume_journal,
                 environment_bytes=environment_snapshot.env_file_bytes,
@@ -6897,12 +6980,20 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 if journal.phase == "map_runtime_ready":
-                    self._run_pinvi_schema_bootstrap_with_role_lifecycle(
-                        transaction=runtime_transaction,
-                        state_paths=state_paths,
-                        values=environment_snapshot.effective,
-                        transaction_id=journal.transaction_id,
-                    )
+                    try:
+                        self._run_pinvi_schema_bootstrap_with_role_lifecycle(
+                            transaction=runtime_transaction,
+                            state_paths=state_paths,
+                            values=environment_snapshot.effective,
+                            transaction_id=journal.transaction_id,
+                        )
+                    except _PinviRoleLifecycleError as exc:
+                        journal = self._record_pinvi_role_lifecycle_block(
+                            journal,
+                            journal_path=state_paths.journal,
+                            error=exc,
+                        )
+                        raise
                 if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
                     raise DeploymentContractError("PinVi schema differs from candidate head")
                 updated = self._advance_pinned_runtime_journal(
