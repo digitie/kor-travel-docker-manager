@@ -165,7 +165,12 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 retire는 protected pending snapshot의 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고,
 값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. 위 API auth 세 값의 허용된 root fallback도
 candidate에 새 값을 쓰지 않고 existing root authority를 재검증할 뿐이다. candidate root `.env`를 원자적으로
-갱신한 뒤 canonical `/opt` Compose를 출력 없이 raw/resolved C6c 경계까지 검증하고, 성공한 경우에만 **같은
+갱신한 뒤 canonical `/opt` Compose에서 Concierge API/MCP/scheduler/UI와 그 전이 `depends_on` 서비스, 실제로 참조한
+top-level secret/network/volume/config만 추린 root-owned 일시 projection을 출력 없이 raw/resolved C6c 경계까지
+검증한다. 같은 projection만 정확한 네 Concierge service의 recreate에도 사용하므로, 이번 retire와 무관한 Map/PinVi
+candidate의 아직 준비되지 않은 explicit credential guard가 Concierge 경로를 막거나 반대로 runtime 입력으로 섞일 수 없다.
+projection은 trusted canonical source에서 매번 만들고 즉시 제거하며, caller/home source가 경로나 내용을 지정할 수 없다.
+성공한 경우에만 **같은
 protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
 rehearsal/rebuildable에서는 pinned-runtime rebuild host lease(production에서는 fixed C6c global mutation lock)를
 계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
