@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-08-26 — PinVi #477 새 pinset rebuild 미종결 인시던트 기록
+
+PR #219가 회전한 PinVi #477 source와 정규 pinset
+`cb8d15591480111d7f4cd70398ad46b129e814ad3b9375dfa0fc83562b366752`을 사용해 신뢰된 n150
+Manager의 승인된 `ktdctl pinvi-pair rebuild-pinned --confirm`을 실행했다. 최초 실행과 동일한
+공식 재개를 한 번만 추가로 실행했으나 두 경우 모두 0이 아닌 종료로 끝났고, 새 pinset의 v8
+journal은 `phase=map_runtime_ready`, `journal_generation=20`에 남았다. source pin은 Map
+`cc81081ff2e540a6ad9c428a296515e1d79bc316`, PinVi #477 squash
+`10efb21ad84b23db2eeb6d09856cda16d3337822`와 정확히 일치하지만 새 generation은
+`committed`되지 않았다.
+
+두 전문 적대 리뷰어가 독립적으로 확인한 결과, 현재 v8 journal에는 Map runtime 기동, PinVi
+bootstrap one-shot, PinVi schema head 확인 중 어느 실패 지점인지를 구분할 비밀 비포함 durable
+failure receipt가 없다. raw 실행 출력은 보안상 폐기했으므로, 세 번째 재시도와 raw
+Docker/Compose/SQL 조작, DB·journal·permit 삭제 또는 수정은 하지 않는다. 읽기 전용 상태에서는
+두 PostgreSQL만 healthy/running이고 seven runtime은 fail-closed 정리 후 종료됐으며 OOM과 Docker
+`State.Error`가 없는 것만 확인했다. 이 상태만으로 daemon, Compose 또는 PinVi 원인을 단정하지
+않는다.
+
+새 후보가 `committed`되기 전에는 Map/PinVi live consumer acceptance를 진행하거나 H300의 이전
+generation을 새 candidate 증거로 재사용하지 않는다. 이번 인시던트에서 application row·건수·
+업무상 무결성은 조회·대조하지 않았고, 이전 revision 또는 DB restore도 수행하지 않았다. 다음
+조치는 값·로그 원문이 아닌 허용목록 failure stage나 service-level 상태를 얻는 외부 인시던트
+절차가 결정한다. 현재 active journal에 hotfix를 덧씌우거나 version을 바꾸지 않는다.
+
+---
+
 ## 2026-08-26 — PinVi #477 source pinset 회전 준비
 
 PinVi #477은 squash merge된 `main` commit
