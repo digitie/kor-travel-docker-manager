@@ -238,6 +238,7 @@ def test_long_form_source_reference_completes_stage_retire_and_activate_without_
         {
             "path": str(tmp_path / "kor-travel-concierge" / ".env"),
             "required": True,
+            "format": "raw",
         }
     ]
     source.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
