@@ -1948,9 +1948,8 @@ def assert_compose_mutation_allowed(
     if not normalized:
         return
     if capability is _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY:
-        _assert_pinned_runtime_rebuild_environment(
-            env_path=env_path,
-            environment=environment,
+        assert_pinned_runtime_rebuild_allowed(
+            env_path=env_path, environment=environment
         )
         return
     mode = assert_manager_mutation_allowed(
@@ -1963,10 +1962,10 @@ def assert_compose_mutation_allowed(
         )
 
 
-def _assert_pinned_runtime_rebuild_environment(
+def assert_pinned_runtime_rebuild_allowed(
     *,
-    env_path: str | None,
-    environment: Mapping[str, str] | None,
+    env_path: str | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> None:
     """v5의 파기형 단일-active rebuild에만 별도 mutation capability를 준다."""
 

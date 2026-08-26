@@ -6,7 +6,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -42,6 +42,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _expand_env_path,
     assert_compose_mutation_allowed,
     assert_manager_mutation_allowed,
+    assert_pinned_runtime_rebuild_allowed,
     c6c_deployment_lock,
     c6c_global_mutation_lock_path,
     c6c_state_paths,
@@ -172,6 +173,12 @@ from kor_travel_docker_manager.services.pinned_runtime_sources import (
 from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     pinvi_bootstrap_credential_file,
     reconcile_orphaned_pinvi_bootstrap_credentials,
+)
+from kor_travel_docker_manager.services.pinvi_database_role_credentials import (
+    ensure_pinned_runtime_pinvi_role_credentials,
+    pinvi_role_credentials_are_all_undeclared,
+    rebind_source_environment_sha256,
+    trusted_pinned_runtime_project_root,
 )
 from kor_travel_docker_manager.services.registry import (
     init_steps_for_target,
@@ -1397,6 +1404,106 @@ def c6c_deployment_lock_from_environment() -> Iterator[C6cDeploymentLockSnapshot
         yield snapshot
 
 
+@contextmanager
+def _pinned_runtime_rebuild_environment_lock(
+    *,
+    prewrite_admission: Callable[["ComposeEnvironmentSnapshot"], str | None],
+) -> Iterator[
+    tuple[C6cDeploymentLockSnapshot, "ComposeEnvironmentSnapshot", bool]
+]:
+    """fresh PinVi role credential을 포함한 rebuild 전용 lock/snapshot 순서.
+
+    먼저 root-owned pinned lease로 legacy stage/retire와 직렬화한다. trusted `/opt`
+    root `.env`만 process ambient 없이 frozen snapshot으로 읽고, non-mutating
+    admission을 통과해야 fresh role credential을 초기화할 수 있다.
+    """
+
+    with pinned_runtime_rebuild_lock():
+        initial_environment_snapshot = (
+            _capture_pinned_runtime_rebuild_environment_snapshot()
+        )
+        assert_pinned_runtime_rebuild_allowed(
+            environment=initial_environment_snapshot.effective
+        )
+        validate_c6c_operation_tokens(
+            initial_environment_snapshot.effective,
+            require_nonempty=True,
+        )
+        rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
+        role_credentials = ensure_pinned_runtime_pinvi_role_credentials(
+            Path(initial_environment_snapshot.env_path),
+            expected_environment_bytes=initial_environment_snapshot.env_file_bytes,
+            rebind_source_sha256=rebind_source_sha256,
+        )
+        current_environment_snapshot = (
+            _capture_pinned_runtime_rebuild_environment_snapshot(
+                environment_override=role_credentials
+            )
+        )
+        assert_pinned_runtime_rebuild_allowed(
+            environment=current_environment_snapshot.effective
+        )
+        validate_c6c_operation_tokens(
+            current_environment_snapshot.effective,
+            require_nonempty=True,
+        )
+        lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
+            current_environment_snapshot
+        )
+        with c6c_deployment_lock(lock_snapshot.lock_path):
+            _revalidate_c6c_deployment_lock_snapshot(lock_snapshot)
+            yield (
+                lock_snapshot,
+                current_environment_snapshot,
+                initial_environment_snapshot.env_file_bytes
+                != current_environment_snapshot.env_file_bytes,
+            )
+
+
+def _capture_pinned_runtime_rebuild_environment_snapshot(
+    *,
+    environment_override: Mapping[str, str] | None = None,
+) -> "ComposeEnvironmentSnapshot":
+    """root rebuild의 canonical release root와 env/Compose pair를 ambient에서 분리한다."""
+
+    root = trusted_pinned_runtime_project_root()
+    _assert_pinned_runtime_rebuild_execution_paths(root)
+    return _capture_compose_environment_snapshot(
+        environment_override=environment_override,
+        env_path=root / ".env",
+        compose_path=root / "docker-compose.yml",
+        override_path=root / "docker-compose.override.yml",
+        include_process_environment=False,
+        interpolate_env_file=False,
+    )
+
+
+def _assert_pinned_runtime_rebuild_execution_paths(root: Path) -> None:
+    """root command가 caller의 Manager path override를 authority로 쓰지 못하게 막는다."""
+
+    expected = {
+        "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT": root,
+        "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE": root / ".env",
+        "KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE": root / "docker-compose.yml",
+    }
+    for name, expected_path in expected.items():
+        value = os.environ.get(name)
+        if value is None or not value.strip():
+            continue
+        configured = Path(value)
+        if (
+            not configured.is_absolute()
+            or configured.resolve(strict=False) != expected_path
+        ):
+            raise DeploymentContractError(
+                "pinned runtime rebuild execution path is not trusted"
+            )
+    if os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE", "").strip():
+        raise DeploymentContractError(
+            "pinned runtime rebuild does not permit an override-file path"
+        )
+
+
 def _c6c_deployment_lock_snapshot_from_environment(
     environment_snapshot: "ComposeEnvironmentSnapshot",
 ) -> C6cDeploymentLockSnapshot:
@@ -2140,10 +2247,27 @@ def _env_file_identity(path: Path) -> ComposeEnvFileIdentity:
 def _capture_compose_environment_snapshot(
     *,
     environment_override: Mapping[str, str] | None,
+    env_path: Path | None = None,
+    compose_path: Path | None = None,
+    override_path: Path | None = None,
+    include_process_environment: bool = True,
+    interpolate_env_file: bool = True,
 ) -> ComposeEnvironmentSnapshot:
-    env_path = Path(get_env_path()).resolve(strict=False)
-    compose_path = Path(get_compose_path()).resolve(strict=False)
-    override_path = Path(get_override_path()).resolve(strict=False)
+    env_path = (
+        Path(get_env_path()).resolve(strict=False)
+        if env_path is None
+        else env_path.resolve(strict=False)
+    )
+    compose_path = (
+        Path(get_compose_path()).resolve(strict=False)
+        if compose_path is None
+        else compose_path.resolve(strict=False)
+    )
+    override_path = (
+        Path(get_override_path()).resolve(strict=False)
+        if override_path is None
+        else override_path.resolve(strict=False)
+    )
     before = _env_file_identity(env_path)
     env_file_bytes = b""
     values: dict[str, str] = {}
@@ -2165,7 +2289,8 @@ def _capture_compose_environment_snapshot(
                 {
                     key: value or ""
                     for key, value in dotenv_values(
-                        stream=StringIO(decoded)
+                        stream=StringIO(decoded),
+                        interpolate=interpolate_env_file,
                     ).items()
                     if isinstance(key, str)
                 }
@@ -2178,7 +2303,8 @@ def _capture_compose_environment_snapshot(
         raise ComposeCandidateContractError(
             "compose env-file appeared during snapshot"
         )
-    values.update(dict(os.environ))
+    if include_process_environment:
+        values.update(dict(os.environ))
     if environment_override is not None:
         values.update(environment_override)
     values = derive_curation_service_principal_environment(values)
@@ -5089,6 +5215,41 @@ class ComposeService:
         )
 
     @staticmethod
+    def _assert_pinvi_role_credential_rebind_admission(
+        journal: PinnedRuntimeRebuildJournal,
+        *,
+        environment_bytes: bytes,
+        values: Mapping[str, str],
+    ) -> str | None:
+        """root `.env` write 전에 current v8 resume과의 유일한 재결박을 판정한다."""
+
+        current_environment_sha256 = hashlib.sha256(environment_bytes).hexdigest()
+        rebind_source_sha256 = rebind_source_environment_sha256(values)
+        if journal.environment_sha256 == current_environment_sha256:
+            if (
+                pinvi_role_credentials_are_all_undeclared(values)
+                and (
+                    journal.phase != "map_runtime_ready"
+                    or journal.pinvi_role_credential_environment_rebind is not None
+                )
+            ):
+                raise DeploymentContractError(
+                    "PinVi role credentials cannot rebind this pinned runtime journal"
+                )
+            if pinvi_role_credentials_are_all_undeclared(values):
+                return journal.environment_sha256
+            return None
+        if (
+            rebind_source_sha256 != journal.environment_sha256
+            or journal.phase != "map_runtime_ready"
+            or journal.pinvi_role_credential_environment_rebind is not None
+        ):
+            raise DeploymentContractError(
+                "PinVi role credentials differ from the pinned runtime journal"
+            )
+        return None
+
+    @staticmethod
     def _assert_pinned_runtime_journal_matches_candidate_input(
         journal: PinnedRuntimeRebuildJournal,
         *,
@@ -5533,20 +5694,41 @@ class ComposeService:
         """application-300 paired candidate에 결박된 destructive rebuild를 실행한다."""
 
         _require_pinned_runtime_rebuild_root()
-        with (
-            pinned_runtime_rebuild_lock(),
-            c6c_deployment_lock_from_environment() as lock_snapshot,
+        release = current_pinned_runtime_release()
+        resume_journal: PinnedRuntimeRebuildJournal | None = None
+
+        def prewrite_admission(
+            environment_snapshot: ComposeEnvironmentSnapshot,
+        ) -> str | None:
+            nonlocal resume_journal
+            state_paths = pinned_runtime_state_paths(
+                environment_snapshot.effective,
+                pinset_sha256=release.pinset_sha256,
+            )
+            try:
+                state_paths.journal.lstat()
+            except FileNotFoundError:
+                return None
+            resume_journal = read_pinned_runtime_rebuild_journal(state_paths.journal)
+            return self._assert_pinvi_role_credential_rebind_admission(
+                resume_journal,
+                environment_bytes=environment_snapshot.env_file_bytes,
+                values=environment_snapshot.effective,
+            )
+
+        with _pinned_runtime_rebuild_environment_lock(
+            prewrite_admission=prewrite_admission
+        ) as (
+            lock_snapshot,
+            environment_snapshot,
+            _role_credentials_initialized,
         ):
             # application head 300은 paired receipt와 설치된 baseline contract가
             # 정본이다. Dagster/PinVi head만 network-less candidate 명령으로 읽는다.
-            environment_snapshot = _capture_compose_environment_snapshot(
-                environment_override=None
-            )
             validate_c6c_operation_tokens(
                 environment_snapshot.effective,
                 require_nonempty=True,
             )
-            release = current_pinned_runtime_release()
             state_paths = pinned_runtime_state_paths(
                 environment_snapshot.effective,
                 pinset_sha256=release.pinset_sha256,
@@ -5582,11 +5764,7 @@ class ComposeService:
                 state_paths=state_paths,
                 values=environment_snapshot.effective,
             )
-            try:
-                state_paths.journal.lstat()
-                journal_exists = True
-            except FileNotFoundError:
-                journal_exists = False
+            journal_exists = resume_journal is not None
             paired_build_images = map_application_300_paired_build_image_names(sources)
             _run_map_application_300_paired_builder(
                 sources=sources,
@@ -5631,7 +5809,7 @@ class ComposeService:
                 frozen_recovery=True,
             )
             if journal_exists:
-                journal = read_pinned_runtime_rebuild_journal(state_paths.journal)
+                journal = cast(PinnedRuntimeRebuildJournal, resume_journal)
                 if journal.phase == "committed":
                     manifest = read_pinned_runtime_manifest(state_paths.manifest)
                     if manifest.active_generation != journal.candidate:
@@ -5703,6 +5881,28 @@ class ComposeService:
             )
             _assert_transaction_matches_c6c_lock(runtime_transaction, lock_snapshot)
             if journal_exists:
+                current_environment_sha256 = hashlib.sha256(
+                    environment_snapshot.env_file_bytes
+                ).hexdigest()
+                if journal.environment_sha256 != current_environment_sha256:
+                    rebind_source_sha256 = rebind_source_environment_sha256(
+                        environment_snapshot.effective
+                    )
+                    if rebind_source_sha256 is None:
+                        raise DeploymentContractError(
+                            "PinVi role credential rebind source is missing"
+                        )
+                    journal = journal.with_pinvi_role_credential_environment_rebind(
+                        previous_environment_sha256=rebind_source_sha256,
+                        compose_sha256=hashlib.sha256(
+                            runtime_transaction.compose_source_bytes
+                        ).hexdigest(),
+                        current_environment_sha256=current_environment_sha256,
+                        current_resolved_compose_sha256=(
+                            runtime_transaction.resolved_document_hash
+                        ),
+                    )
+                    write_pinned_runtime_rebuild_journal(state_paths.journal, journal)
                 self._assert_pinned_runtime_journal_matches_candidate_input(
                     journal,
                     release_pinset_sha256=release.pinset_sha256,

@@ -113,6 +113,32 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
             result_directory=base / "results",
         ),
     )
+    # 각 orchestration 회귀는 그 이전/이후 phase만 격리한다. root `.env`를 실제로
+    # 바꾸는 fresh role credential 초기화는 전용 unit suite가 소유한다. admission과
+    # frozen snapshot 전달 순서는 production과 동일하게 유지한다.
+    @contextmanager
+    def isolated_rebuild_environment_lock(*, prewrite_admission: Any) -> Any:
+        with compose_service_module.pinned_runtime_rebuild_lock():
+            snapshot = compose_service_module._capture_compose_environment_snapshot(
+                environment_override=None
+            )
+            # Broad orchestration fixtures intentionally model an already
+            # configured role authority; fresh role creation itself belongs to
+            # the dedicated credential-boundary suite.
+            monkeypatch.setattr(
+                compose_service_module,
+                "pinvi_role_credentials_are_all_undeclared",
+                lambda values: False,
+            )
+            prewrite_admission(snapshot)
+            with compose_service_module.c6c_deployment_lock_from_environment() as lock:
+                yield lock, snapshot, False
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "_pinned_runtime_rebuild_environment_lock",
+        isolated_rebuild_environment_lock,
+    )
 
 
 def _sources() -> PinnedRuntimeSourceMaterialization:
@@ -1210,6 +1236,11 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "COMPOSE_PROJECT_NAME": "f1d-token-preflight",
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
     }

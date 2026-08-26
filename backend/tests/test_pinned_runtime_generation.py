@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
@@ -823,6 +824,41 @@ def test_rebuild_journal_binds_candidate_evidence_and_strict_payload() -> None:
     ] = "nope"
     with pytest.raises(DeploymentContractError, match="operation plan payload"):
         journal_from_payload(nested_extra)
+
+
+def test_map_runtime_ready_journal_can_attest_one_role_credential_environment_rebind() -> None:
+    journal = (
+        _journal_with_map_application_ready()
+        .transition("map_dagster_storage_intent_durable")
+        .transition("map_dagster_ready")
+        .transition("map_runtime_ready")
+    )
+    rebound = journal.with_pinvi_role_credential_environment_rebind(
+        previous_environment_sha256=journal.environment_sha256,
+        compose_sha256=journal.compose_sha256,
+        current_environment_sha256=_digest("e"),
+        current_resolved_compose_sha256=_digest("f"),
+    )
+
+    assert rebound.journal_generation == journal.journal_generation + 1
+    assert rebound.environment_sha256 == _digest("e")
+    assert rebound.resolved_compose_sha256 == _digest("f")
+    receipt = rebound.pinvi_role_credential_environment_rebind
+    assert receipt is not None
+    assert receipt.previous_environment_sha256 == journal.environment_sha256
+    assert journal_from_payload(rebound.to_payload()) == rebound
+
+    legacy_payload = journal.to_payload()
+    legacy_payload.pop("pinvi_role_credential_environment_rebind")
+    assert journal_from_payload(legacy_payload) == journal
+
+    with pytest.raises(DeploymentContractError, match="not permitted"):
+        journal.with_pinvi_role_credential_environment_rebind(
+            previous_environment_sha256=_digest("0"),
+            compose_sha256=journal.compose_sha256,
+            current_environment_sha256=_digest("e"),
+            current_resolved_compose_sha256=_digest("f"),
+        )
 
 
 def test_rebuild_journal_sha256_is_canonical_and_evidence_sensitive() -> None:

@@ -1384,6 +1384,38 @@ def _validate_same_pending_operation_plan(
 
 
 @dataclass(frozen=True)
+class PinviRoleCredentialEnvironmentRebind:
+    """resume 중 fresh PinVi DB role source를 결박하는 비밀 비포함 receipt."""
+
+    previous_environment_sha256: str
+    previous_resolved_compose_sha256: str
+    current_environment_sha256: str
+    current_resolved_compose_sha256: str
+
+    def __post_init__(self) -> None:
+        if not all(
+            _SHA256.fullmatch(value) is not None
+            for value in (
+                self.previous_environment_sha256,
+                self.previous_resolved_compose_sha256,
+                self.current_environment_sha256,
+                self.current_resolved_compose_sha256,
+            )
+        ) or self.previous_environment_sha256 == self.current_environment_sha256:
+            raise DeploymentContractError(
+                "PinVi role credential environment rebind receipt is invalid"
+            )
+
+    def to_payload(self) -> dict[str, str]:
+        return {
+            "previous_environment_sha256": self.previous_environment_sha256,
+            "previous_resolved_compose_sha256": self.previous_resolved_compose_sha256,
+            "current_environment_sha256": self.current_environment_sha256,
+            "current_resolved_compose_sha256": self.current_resolved_compose_sha256,
+        }
+
+
+@dataclass(frozen=True)
 class PinnedRuntimeRebuildJournal:
     """candidate image 보존부터 v6 manifest commit까지의 v8 same-pinset resume receipt."""
 
@@ -1402,6 +1434,9 @@ class PinnedRuntimeRebuildJournal:
         default_factory=MapApplication300ExecutionEvidence
     )
     cancel_probe: PinnedRuntimeCancelProbeReceipt = PinnedRuntimeCancelProbeReceipt()
+    pinvi_role_credential_environment_rebind: (
+        PinviRoleCredentialEnvironmentRebind | None
+    ) = None
 
     def __post_init__(self) -> None:
         if self.version != _REBUILD_JOURNAL_VERSION:
@@ -1422,7 +1457,22 @@ class PinnedRuntimeRebuildJournal:
             self.resolved_compose_sha256,
         ):
             if _SHA256.fullmatch(digest) is None:
-                raise DeploymentContractError("pinned runtime rebuild input digest is invalid")
+                raise DeploymentContractError(
+                    "pinned runtime rebuild input digest is invalid"
+                )
+        rebind = self.pinvi_role_credential_environment_rebind
+        if rebind is not None:
+            if (
+                not isinstance(rebind, PinviRoleCredentialEnvironmentRebind)
+                or REBUILD_PHASES.index(self.phase)
+                < REBUILD_PHASES.index("map_runtime_ready")
+                or self.environment_sha256 != rebind.current_environment_sha256
+                or self.resolved_compose_sha256
+                != rebind.current_resolved_compose_sha256
+            ):
+                raise DeploymentContractError(
+                    "pinned runtime rebuild has invalid PinVi role credential environment rebind"
+                )
         _validate_utc_timestamp(self.created_at, "pinned runtime rebuild timestamp")
         if not isinstance(
             self.map_application_300_candidate_evidence,
@@ -1476,6 +1526,39 @@ class PinnedRuntimeRebuildJournal:
                 "Map application 300 phase transition requires evidence-specific method"
             )
         return replace(self, phase=phase, journal_generation=self.journal_generation + 1)
+
+    def with_pinvi_role_credential_environment_rebind(
+        self,
+        *,
+        previous_environment_sha256: str,
+        compose_sha256: str,
+        current_environment_sha256: str,
+        current_resolved_compose_sha256: str,
+    ) -> PinnedRuntimeRebuildJournal:
+        """Map runtime ready resume에만 fresh role config input을 한 번 재결박한다."""
+
+        if (
+            self.phase != "map_runtime_ready"
+            or self.pinvi_role_credential_environment_rebind is not None
+            or self.environment_sha256 != previous_environment_sha256
+            or self.compose_sha256 != compose_sha256
+        ):
+            raise DeploymentContractError(
+                "PinVi role credential environment rebind is not permitted"
+            )
+        receipt = PinviRoleCredentialEnvironmentRebind(
+            previous_environment_sha256=previous_environment_sha256,
+            previous_resolved_compose_sha256=self.resolved_compose_sha256,
+            current_environment_sha256=current_environment_sha256,
+            current_resolved_compose_sha256=current_resolved_compose_sha256,
+        )
+        return replace(
+            self,
+            environment_sha256=current_environment_sha256,
+            resolved_compose_sha256=current_resolved_compose_sha256,
+            journal_generation=self.journal_generation + 1,
+            pinvi_role_credential_environment_rebind=receipt,
+        )
 
     def with_application_roles_ready(
         self,
@@ -1914,6 +1997,11 @@ class PinnedRuntimeRebuildJournal:
                 self.map_application_300_execution_evidence.to_payload()
             ),
             "cancel_probe": self.cancel_probe.to_payload(),
+            "pinvi_role_credential_environment_rebind": (
+                None
+                if self.pinvi_role_credential_environment_rebind is None
+                else self.pinvi_role_credential_environment_rebind.to_payload()
+            ),
         }
 
 
@@ -2060,7 +2148,14 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
         "map_application_300_execution_evidence",
         "cancel_probe",
     }
-    if not isinstance(payload, Mapping) or set(payload) != expected:
+    extended_expected = {
+        *expected,
+        "pinvi_role_credential_environment_rebind",
+    }
+    if (
+        not isinstance(payload, Mapping)
+        or (set(payload) != expected and set(payload) != extended_expected)
+    ):
         raise DeploymentContractError("pinned runtime rebuild journal payload is invalid")
     version = payload.get("version")
     transaction_id = payload.get("transaction_id")
@@ -2117,6 +2212,46 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
             )
         ),
         cancel_probe=_cancel_probe_receipt_from_payload(cancel_probe),
+        pinvi_role_credential_environment_rebind=(
+            None
+            if payload.get("pinvi_role_credential_environment_rebind") is None
+            else pinvi_role_credential_environment_rebind_from_payload(
+                payload.get("pinvi_role_credential_environment_rebind")
+            )
+        ),
+    )
+
+
+def pinvi_role_credential_environment_rebind_from_payload(
+    payload: object,
+) -> PinviRoleCredentialEnvironmentRebind:
+    expected = {
+        "previous_environment_sha256",
+        "previous_resolved_compose_sha256",
+        "current_environment_sha256",
+        "current_resolved_compose_sha256",
+    }
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != expected
+        or not all(isinstance(value, str) for value in payload.values())
+    ):
+        raise DeploymentContractError(
+            "PinVi role credential environment rebind receipt payload is invalid"
+        )
+    return PinviRoleCredentialEnvironmentRebind(
+        previous_environment_sha256=cast(
+            str, payload["previous_environment_sha256"]
+        ),
+        previous_resolved_compose_sha256=cast(
+            str, payload["previous_resolved_compose_sha256"]
+        ),
+        current_environment_sha256=cast(
+            str, payload["current_environment_sha256"]
+        ),
+        current_resolved_compose_sha256=cast(
+            str, payload["current_resolved_compose_sha256"]
+        ),
     )
 
 

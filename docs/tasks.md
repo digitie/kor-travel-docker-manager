@@ -48,8 +48,14 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   #488 merge commit `93296aee5d47676e6b9b79303bf417c598a273ac`은 Manager가 허용하는 exact loopback
   endpoint에서만 role bootstrap을 실행하도록 보정했다. Manager 후보는 root·runtime·schema owner·migration
   owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. Manager release pin은 #488
-  commit과 pinset `9073c294d6138fff895983adbc9ca483ab2eede6da15bb1ef4888572fe7fe491`으로 회전했다. Manager
-  PR의 적대 리뷰·CI와 n150의 새 role credential 구성이 모두 완료되기 전에는 rebuild를 재개하지 않는다.
+  commit과 pinset `9073c294d6138fff895983adbc9ca483ab2eede6da15bb1ef4888572fe7fe491`으로 회전했다. n150의
+  canonical root `.env`에는 이 여섯 role 값이 모두 미선언인 fresh 상태여서 trusted `rebuild-pinned`가
+  candidate/journal/DB/runtime mutation 전에 fail-close한다. 후속 Manager PR은 caller 경로 override가 아닌 trusted
+  `/opt` root pair와 root-owned host lease를 사용하며, exact rebuildable admission·C6c token을 **쓰기 전** 통과한
+  경우에만 여섯 값을 원자 초기화한다. 현재 pinset의 `map_runtime_ready` v8 resume에는 기존 environment SHA와
+  candidate raw/resolved Compose SHA를 모두 receipt로 남기는 한 번의 role-source rebind만 허용한다. 다른 phase·
+  digest·partial/blank/duplicate는 덮어쓰기·회전·journal 재사용 추측 없이 거부하며, full 기존 값은 재사용만 한다.
+  Manager PR의 적대 리뷰·CI와 n150 trusted 배포가 끝나기 전에는 rebuild를 재개하지 않는다.
 - [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
   preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용하도록 Manager #222로
   보정·병합·배포했다. 실제 빈 `.env`와 Compose resolution 회귀를 포함한 587개 backend 테스트, 전문 적대 리뷰
@@ -80,12 +86,11 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   **미선언**일 때에만 이미 있는 canonical root authority를 다시 검증해 사용하고, source에 선언된 빈 값과 모든
   `KTC_*` UI 값 누락은 계속 fail-close한다. raw/resolved C6c, API key-set membership, production/authentication
   guard, trusted `/opt` execution root, home source 비재사용은 바꾸지 않는다.
-- [/] #227 merge trusted release의 official retire는 위 fallback을 지난 뒤에도 전체 Compose가 무관한 PinVi role
-  candidate의 미준비 explicit credential guard를 해석해 archive·Concierge recreate 전에 fail-close했다. 후속 후보는
-  trusted canonical Compose에서 Concierge API/MCP/scheduler/UI와 transitive dependency·실참조 top-level entity만
-  root-owned temporary projection으로 만들고, 그 동일 projection으로 raw/resolved C6c 검증과 네 service recreate를
-  수행한다. Map/PinVi source·값·runtime을 Concierge retirement에 섞지 않으며, projection은 caller가 지정하거나
-  보존할 수 없다.
+- [x] #228이 Concierge API/MCP/scheduler/UI와 transitive dependency·실참조 top-level entity만 든 root-owned
+  temporary projection으로 full Compose의 무관한 PinVi credential guard를 분리했다. trusted release 배포 뒤
+  sanctioned stage·retire가 성공해 legacy override를 protected archive로 옮기고 canonical Concierge 네 service를
+  재생성했다. 이어 공개 HTTP와 n150 Linux 실제 브라우저에서 login → authenticated BFF → logout → BFF 재차단을
+  확인했다. Map/PinVi source·값·runtime은 이 retirement 경로에 유입되지 않으며 projection은 보존되지 않는다.
 - [ ] PinVi WebSocket/mutating loop와 consumer reconciliation의 성공·실패 증거를 기록한다.
 - [ ] Map 저장소 `T-VN-41C`·`T-VN-41F1D-D2` 완료 기록과 Manager journal/manifest를 교차 대조한다.
 

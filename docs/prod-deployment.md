@@ -206,6 +206,23 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 
 이 command는 추적된 exact Map·PinVi commit만 Git archive build source로 쓰며 `.env` checkout HEAD,
 old image, old manifest를 candidate authority로 쓰지 않는다.
+fresh root `.env`에 PinVi runtime·schema owner·migration owner·migrator role의 여섯 값이 **모두
+미선언**이면, 이 명령은 caller의 `KOR_TRAVEL_DOCKER_MANAGER_*` 경로 override가 아니라 trusted
+`/opt/kor-travel-docker-manager`의 root-owned Compose·`.env` pair만 고정해 읽는다. root-owned
+pinned-runtime host lease 안에서 exact `rehearsal/rebuildable`·PinVi production·Map principal-required와
+모든 C6c operation token을 **쓰기 전에** 확인한 뒤에만 서로 다른 role명과 무작위 password를 원자적으로
+추가하고 `0600` mode를 유지한 새 environment snapshot을 잡는다. 일부 선언·공백·중복·역할/비밀번호 재사용·
+형식 오류·경로/파일 identity drift는 기존 값을 추측·덮어쓰기·회전하지 않고 candidate, journal, runtime, DB
+mutation 전에 거부한다. pinned root `.env` 값은 dotenv/caller 환경 보간을 적용하지 않는 literal authority이며,
+이미 완전한 여섯 값은 같은 원문을 frozen Compose snapshot에 명시적으로 결박해 재사용만 한다. credential 원문은
+CLI 결과·journal·log에 기록하지 않는다.
+
+현재 pinset의 v8 resume journal이 정확히 `map_runtime_ready`이고 여섯 값이 미선언이었던 경우는 예외적인
+공식 재개 경계다. 이 경우에만 `.env`에는 이전 environment SHA만을 담은 비밀 비포함 marker를 같은 원자 write로
+남기고, candidate raw/resolved Compose를 다시 검증한 뒤 journal에는 이전/현재 environment SHA와 이전/현재
+resolved Compose SHA를 모두 담은 단 한 번의 rebind receipt를 기록한다. 다른 phase·다른 digest·이미 rebind한
+journal은 쓰기 전에 거부한다. marker 또는 receipt는 credential 원문을 포함하지 않으며, write 직후 crash도 같은
+marker로 재개 판정을 다시 검증한다.
 먼저 Map 네 service와 PinVi 세 service의 immutable candidate image ID, source revision, Map application/Dagster와
 PinVi의 expected schema head를 owner-only journal에 고정한다. Map Dagster head는 source pin의 추정값이 아니라
 candidate Dagster image의 head-inspection command 출력으로 attest한다. candidate artifact 하나라도 없으면 database를
