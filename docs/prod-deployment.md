@@ -138,7 +138,8 @@ owner-only pending snapshot에 원자적으로 복사한다. 이미 같은 snaps
 fail-close한다. home source는 rename·delete하지 않으며 stage 뒤 Manager가 다시 읽지 않는다.
 legacy Concierge UI의 `env_file`은 구형 상대 문자열 한 항목 또는 Compose 장형 mapping 한 항목만 허용한다.
 장형 mapping은 override 위치에서 계산한 **정확한** sibling Concierge `.env`를 `path`로, boolean `required: true`를
-가져야 한다. 임의 absolute path·추가 key·optional source는 허용하지 않는다.
+가져야 한다. `format`은 Compose raw mode를 뜻하는 정확한 `raw` 값일 때만 추가로 허용한다. 임의 absolute path,
+다른 추가 key·format·optional source는 허용하지 않는다.
 
 n150의 pinned rebuild 정본은 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`와
 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`을 함께 쓰므로, 이 상태에서는 deployment mode를 수동으로
