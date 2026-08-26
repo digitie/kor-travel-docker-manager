@@ -9,6 +9,7 @@ APP_ROOT="/opt/kor-travel-docker-manager"
 APP_PARENT="/opt"
 SOURCE_ROOT=""
 ENV_FILE=""
+EXPECTED_SOURCE_REVISION="${KTDM_TRUSTED_RELEASE_EXPECTED_SOURCE_REVISION:-}"
 WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-/var/lib/kor-travel-docker-manager/wheelhouse}"
 STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage"
 ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback"
@@ -571,8 +572,13 @@ while [[ "$#" -gt 0 ]]; do
       [[ "$#" -gt 0 ]] || die "--wheelhouse requires a path"
       WHEELHOUSE="$1"
       ;;
+    --expected-source-revision)
+      shift
+      [[ "$#" -gt 0 ]] || die "--expected-source-revision requires a revision"
+      EXPECTED_SOURCE_REVISION="$1"
+      ;;
     --help|-h)
-      echo "usage: install-ktdm-trusted-release [--env-file PATH] [--wheelhouse ROOT_OWNED_WHEELHOUSE] [SOURCE_ROOT]"
+      echo "usage: install-ktdm-trusted-release [--env-file PATH] [--wheelhouse ROOT_OWNED_WHEELHOUSE] [--expected-source-revision SHA] [SOURCE_ROOT]"
       echo "default wheelhouse: /var/lib/kor-travel-docker-manager/wheelhouse"
       exit 0
       ;;
@@ -600,6 +606,9 @@ if [[ ! -d "${SOURCE_ROOT}" ]]; then
 fi
 if [[ ! -d "${WHEELHOUSE}" ]]; then
   die "trusted offline wheelhouse is missing"
+fi
+if [[ -n "${EXPECTED_SOURCE_REVISION}" && ! "${EXPECTED_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]; then
+  die "expected source revision is invalid"
 fi
 if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
   exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
@@ -889,6 +898,9 @@ run_source_git() {
 revision="$(run_source_git rev-parse HEAD)"
 if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
   die "source revision is invalid"
+fi
+if [[ -n "${EXPECTED_SOURCE_REVISION}" && "${revision}" != "${EXPECTED_SOURCE_REVISION}" ]]; then
+  die "source revision does not match expected revision"
 fi
 
 cleanup() {

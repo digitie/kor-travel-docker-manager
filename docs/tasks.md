@@ -55,7 +55,11 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   경우에만 여섯 값을 원자 초기화한다. 현재 pinset의 `map_runtime_ready` v8 resume에는 기존 environment SHA와
   candidate raw/resolved Compose SHA를 모두 receipt로 남기는 한 번의 role-source rebind만 허용한다. 다른 phase·
   digest·partial/blank/duplicate는 덮어쓰기·회전·journal 재사용 추측 없이 거부하며, full 기존 값은 재사용만 한다.
-  Manager PR의 적대 리뷰·CI와 n150 trusted 배포가 끝나기 전에는 rebuild를 재개하지 않는다.
+  Manager #229은 이 보정을 merge했고 두 전문 적대 리뷰와 backend gate를 통과했다. 다만 clean release의
+  official installer는 root-owned source wheelhouse에 `poetry-core`가 없어 activation 전에 fail-close했다.
+  staging/rollback 외 canonical `.env`, Docker/Compose, candidate, journal, runtime, DB에는 변경이 없었다.
+  따라서 다음 재개 전에는 검증된 Debian package에서 이 build dependency를 포함한 새 root-owned wheelhouse를
+  atomic 발행하는 후속 Manager PR을 merge·배포해야 하며, 그 전에는 rebuild를 재시도하지 않는다.
 - [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본
   preflight는 현재 pinset state root에서 네 fence/permit mount directory를 도출해 사용하도록 Manager #222로
   보정·병합·배포했다. 실제 빈 `.env`와 Compose resolution 회귀를 포함한 587개 backend 테스트, 전문 적대 리뷰

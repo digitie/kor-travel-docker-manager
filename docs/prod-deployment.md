@@ -34,13 +34,97 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
 제한된 오프라인 wheelhouse를 준비한다. 그 뒤 저장소의 trusted installer가 archive·wheelhouse
 무결성·`.env` 권한을 확인하고 `/opt/kor-travel-docker-manager`에 설치한다.
 
+### 3.1 Debian `poetry-core` build dependency를 포함한 wheelhouse 발행
+
+trusted installer는 source의 backend wheel을 먼저 오프라인 build하므로, wheelhouse에는 runtime
+wheel뿐 아니라 build backend인 `poetry-core`도 있어야 한다. 운영 호스트에 이미 root-owned
+`/opt/kor-travel-docker-manager/.wheelhouse`가 있고 기본 destination이 아직 없을 때만 destination을
+**한 번** 발행한다. 이 최초 bootstrap에서는 user-owned source checkout의 파일을 `sudo`가 직접
+실행해서는 안 된다. 먼저 root operator가 out-of-band release attestation으로 exact merged commit과
+각 tool의 SHA-256을 승인하고, 아래처럼 exact Git blob을 root-owned temporary file로 복사·hash 검증한
+뒤에만 실행한다.
+
 ```bash
-# SOURCE_ROOT는 non-root 소유의 clean checkout이며 정확한 머지 commit을 가리켜야 한다.
-git -C <SOURCE_ROOT> status --porcelain=v1       # 빈 출력이어야 함
-sudo -n /usr/bin/bash <SOURCE_ROOT>/scripts/install-ktdm-trusted-release \
+# 아래 세 값은 release attestation에서 얻는다. working tree나 같은 clone에서 계산하지 않는다.
+SOURCE_ROOT=<absolute-clean-checkout>
+SOURCE_COMMIT=<exact-40-hex-merged-commit>
+PROVISION_SCRIPT_SHA256=<attested-sha256-of-provision-script>
+INSTALLER_SCRIPT_SHA256=<attested-sha256-of-installer-script>
+ROOT_STAGE_PARENT=/var/lib/kor-travel-docker-manager/trusted-tool-bootstrap
+
+set -euo pipefail
+test "$(/usr/bin/git -C "${SOURCE_ROOT}" rev-parse HEAD)" = "${SOURCE_COMMIT}"
+test -z "$(/usr/bin/git -C "${SOURCE_ROOT}" status --porcelain=v1)"
+sudo -n /usr/bin/install -d -o root -g root -m 0700 "${ROOT_STAGE_PARENT}"
+test "$(sudo -n /usr/bin/stat -c '%u:%a:%F' "${ROOT_STAGE_PARENT}")" = '0:700:directory'
+
+stage_merged_tool() {
+  local relative_path="$1"
+  local expected_sha256="$2"
+  local stage actual
+  stage="$(sudo -n /usr/bin/mktemp -p "${ROOT_STAGE_PARENT}" '.ktdm-tool.XXXXXXXX.py')"
+  if ! env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    /usr/bin/git --no-replace-objects -C "${SOURCE_ROOT}" --no-pager \
+      show --no-textconv "${SOURCE_COMMIT}:${relative_path}" \
+    | sudo -n /usr/bin/tee "${stage}" >/dev/null; then
+    sudo -n /usr/bin/rm -f -- "${stage}"
+    return 1
+  fi
+  if ! sudo -n /usr/bin/chown root:root "${stage}" \
+    || ! sudo -n /usr/bin/chmod 0600 "${stage}" \
+    || ! test "$(sudo -n /usr/bin/stat -c '%u:%a:%h:%F' "${stage}")" = '0:600:1:regular file'; then
+    sudo -n /usr/bin/rm -f -- "${stage}"
+    return 1
+  fi
+  actual="$(sudo -n /usr/bin/sha256sum "${stage}" | /usr/bin/awk '{print $1}')"
+  if [[ "${actual}" != "${expected_sha256}" ]]; then
+    sudo -n /usr/bin/rm -f -- "${stage}"
+    return 1
+  fi
+  printf '%s\n' "${stage}"
+}
+
+STAGED_PROVISION=''
+STAGED_INSTALLER=''
+cleanup_staged_tools() {
+  [[ -z "${STAGED_PROVISION}" ]] || sudo -n /usr/bin/rm -f -- "${STAGED_PROVISION}"
+  [[ -z "${STAGED_INSTALLER}" ]] || sudo -n /usr/bin/rm -f -- "${STAGED_INSTALLER}"
+}
+trap cleanup_staged_tools EXIT
+STAGED_PROVISION="$(stage_merged_tool \
+  scripts/provision-ktdm-offline-wheelhouse.py "${PROVISION_SCRIPT_SHA256}")"
+STAGED_INSTALLER="$(stage_merged_tool \
+  scripts/install-ktdm-trusted-release "${INSTALLER_SCRIPT_SHA256}")"
+
+sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  /usr/bin/python3 -I -S "${STAGED_PROVISION}" \
+  --source-wheelhouse /opt/kor-travel-docker-manager/.wheelhouse \
+  --destination-wheelhouse /var/lib/kor-travel-docker-manager/wheelhouse
+```
+
+이 도구는 network·PyPI·user-writable 입력을 사용하지 않는다. source wheel과 모든 ancestor가
+root-owned/non-writable인지, Debian `python3-poetry-core`가 설치됐고 `dpkg --verify`가 깨끗한지를
+확인한 뒤 설치된 Debian package에서 pure-Python `poetry_core-<version>-py3-none-any.whl`를 만든다.
+발행 directory에는 source wheel SHA와 생성 wheel SHA만 담은 비밀 비포함 provenance manifest가 함께
+생기며, temporary directory를 fsync한 뒤 atomic publish한다. 이 manifest는 발행 시점의 audit record이며
+installer의 wheel snapshot 자체를 대체하지 않는다. 기존 destination을 덮어쓰지 않고, crash 뒤 남은
+`.wheelhouse.stage.*` 또는 이미 있는 destination이 있으면 자동 삭제·재발행하지 않고 중단해 조사한다.
+source wheelhouse에 filename·version·대소문자가 무엇이든 `poetry-core` candidate가 이미 있으면 Debian
+provenance wheel과 pip 선택이 섞이지 않도록 역시 중단한다.
+
+wheel을 인터넷에서 내려받거나, home/user-writable 경로에서 복사하거나, `pip install`로 wheelhouse를
+수정해서는 안 된다. `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
+모두 installer 재시도보다 먼저 해결해야 할 fail-close 조건이다.
+
+```bash
+# 위에서 hash 대조해 root staging한 installer만 실행한다. source checkout은 code 실행 입력이 아니다.
+sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  /usr/bin/bash "${STAGED_INSTALLER}" \
   --env-file /opt/kor-travel-docker-manager/.env \
   --wheelhouse /var/lib/kor-travel-docker-manager/wheelhouse \
-  <SOURCE_ROOT>
+  --expected-source-revision "${SOURCE_COMMIT}" \
+  "${SOURCE_ROOT}"
 ```
 
 installer는 `--no-index` wheelhouse에서 `backend/.venv`를 만들고 `ktdctl`을 설치한다. `.env`는
