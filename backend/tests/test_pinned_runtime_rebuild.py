@@ -2154,7 +2154,21 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     )
     assert candidate_journal.phase == "candidate_attested"
     assert candidate_journal.candidate.map_application_head == "300"
-    assert captured[0] is None
+    artifact_root = tmp_path / "application-300"
+    assert captured[0] == {
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": str(
+            artifact_root / "fresh-root-fence"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": str(
+            artifact_root / "fresh-finalize-fence"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": str(
+            artifact_root / "application-final-permit"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": str(
+            artifact_root / "dagster-storage-permit"
+        ),
+    }
     assert captured[1] is not None
     assert captured[1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "300"
     assert captured[-1] is not None

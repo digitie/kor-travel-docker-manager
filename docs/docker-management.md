@@ -447,6 +447,11 @@ migration은 journal transaction ID를 operation ID로 쓰는 DB intent+receipt�
 복구·완결하며, web·daemon은 `--no-deps`로 기동해 migration을 암묵적으로 다시 실행하지 않는다. 이후
 PinVi bootstrap·서비스 readiness·F1J smoke를 순서대로 검증한다.
 
+기본 후보는 현재 pinset state root에서 root/finalize fence와 application/Dagster permit의 고정
+mount directory를 먼저 계산한다. 이 directory의 준비와 candidate volume graph 검증 외에는 source
+materialize·image build·journal·DB reset보다 먼저 발생하는 작업이 없다. 운영 `.env`에 pinset별
+artifact 경로를 따로 유지하거나 수동으로 주입해서는 안 된다.
+
 PinVi M05의 database role topology는 `pinvi-db-runtime-role` bootstrap one-shot이 한 번만
 만든다. PostgreSQL initial-superuser secret file은 PostgreSQL·DB 생성 one-shot·이 role one-shot만
 읽으며, normal PinVi API·Dagster에는 runtime application role DSN만, `pinvi-admin-bootstrap`에는
