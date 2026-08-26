@@ -20,7 +20,8 @@ admin/schema bootstrap을 수행하고 성공·실패 모두 explicit seal을 �
 `127.0.0.1:12800`, source bind, exact env/secret/depends-on, role names의 상호 분리, normal runtime으로의
 root-secret 누출 금지를 raw/resolved Compose 모두에서 검증한다. 관련 계약·rebuild 단위 테스트 114건,
 Compose mutation fixture 회귀 97건, 전체 backend 테스트 584건과 변경 Python 모듈의 strict type 검사를
-통과했다. 새 source pin 회전, Manager 적대 리뷰·CI, n150의 role
+통과했다. Manager release pin은 #488 commit과 pinset
+`9073c294d6138fff895983adbc9ca483ab2eede6da15bb1ef4888572fe7fe491`으로 회전했다. Manager 적대 리뷰·CI, n150의 role
 credential 구성이 끝나기 전에는 rebuild나 live acceptance를 재개하지 않는다.
 
 ---
