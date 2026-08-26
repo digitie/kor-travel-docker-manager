@@ -473,6 +473,29 @@ _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE = {
     "schema_version_unavailable": "schema_check",
     "static_head_unavailable": "migration",
 }
+_PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE = {
+    "invalid PostgreSQL role name": "role_input_invalid",
+    "invalid POSTGRES_DB": "role_input_invalid",
+    "PINVI_M05_LEGACY_REBASELINE must be 0 or 1": "role_input_invalid",
+    "PINVI_MIGRATOR_DISABLE_LOGIN must be 0 or 1": "role_input_invalid",
+    (
+        "PINVI_DB_HOST and PINVI_DB_PORT must name an approved PostgreSQL endpoint"
+    ): "role_input_invalid",
+    (
+        "runtime, schema owner, migration owner, migrator, and bootstrap roles must differ"
+    ): "role_input_invalid",
+    "Postgres TCP endpoint did not become ready for DB role bootstrap": "role_endpoint_not_ready",
+    (
+        "existing app objects are not owned by PINVI_APP_SCHEMA_OWNER; "
+        "use the approved root-only legacy rebaseline profile"
+    ): "role_existing_owner_noncanonical",
+    "runtime/migrator/migration-owner role topology is not canonical": (
+        "role_topology_noncanonical"
+    ),
+}
+_PINVI_DB_RUNTIME_ROLE_ERROR_CODES = frozenset(
+    _PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE.values()
+)
 # fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
 
 
@@ -4653,6 +4676,12 @@ class ComposeService:
                 if prefixed is not None:
                     candidates += (prefixed,)
                 for candidate in candidates:
+                    if target == _PINVI_DB_RUNTIME_ROLE_SERVICE:
+                        code = _PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE.get(
+                            candidate.strip()
+                        )
+                        if code is not None:
+                            return f"; pinvi_role:{code}"
                     try:
                         payload = json.loads(
                             candidate,
@@ -4684,7 +4713,22 @@ class ComposeService:
                             == phase
                         ):
                             return f"; pinvi:{code}"
+        if target == _PINVI_DB_RUNTIME_ROLE_SERVICE:
+            return "; pinvi_role:unclassified"
         return ""
+
+    @staticmethod
+    def _pinvi_lifecycle_diagnostic(error: BaseException) -> str:
+        """이미 allowlist한 PinVi one-shot 코드만 lifecycle 오류에 보존한다."""
+
+        message = str(error)
+        for code in _PINVI_DB_RUNTIME_ROLE_ERROR_CODES | {"unclassified"}:
+            if f"; pinvi_role:{code})" in message:
+                return code
+        for code in _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE:
+            if f"; pinvi:{code})" in message:
+                return code
+        return "unclassified"
 
     def _retire_pinned_runtime_oneshot_writers(
         self,
@@ -4784,44 +4828,85 @@ class ComposeService:
             "PINVI_MIGRATOR_DISABLE_LOGIN=1",
             _PINVI_DB_RUNTIME_ROLE_SERVICE,
         ]
+        primary_stage = "pinvi_role_open"
+        primary_lifecycle_error: str | None = None
         try:
             self._run_pinned_runtime_rebuild_compose(open_role, transaction=transaction)
-            with pinvi_bootstrap_credential_file(
+            primary_stage = "pinvi_bootstrap_credential"
+            credential_context = pinvi_bootstrap_credential_file(
                 state_paths=state_paths,
                 values=values,
                 transaction_id=transaction_id,
                 email=values["KTDM_C6C_PINVI_ADMIN_EMAIL"],
                 password=values["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
-            ) as credential:
-                self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "--profile",
-                        "bootstrap",
-                        "run",
-                        "--rm",
-                        "--no-deps",
-                        "-v",
-                        f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
-                        "-e",
-                        "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
-                        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-                    ],
-                    transaction=transaction,
-                )
-        except BaseException:
+            )
+            admin_error: BaseException | None = None
+            with credential_context as credential:
+                try:
+                    primary_stage = "pinvi_admin_bootstrap"
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            "-v",
+                            f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
+                            "-e",
+                            "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
+                            _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+                        ],
+                        transaction=transaction,
+                    )
+                except BaseException as exc:
+                    admin_error = exc
+                finally:
+                    primary_stage = "pinvi_bootstrap_credential_cleanup"
+            if admin_error is not None:
+                primary_stage = "pinvi_admin_bootstrap"
+                raise admin_error
+        except BaseException as primary_error:
+            primary_diagnostic = self._pinvi_lifecycle_diagnostic(primary_error)
             try:
                 self._run_pinned_runtime_rebuild_compose(seal_role, transaction=transaction)
             except BaseException as seal_error:
-                raise DeploymentContractError(
-                    "PinVi migrator login could not be sealed after bootstrap failure"
-                ) from seal_error
-            raise
+                if not isinstance(primary_error, Exception) or not isinstance(
+                    seal_error, Exception
+                ):
+                    raise DeploymentContractError(
+                        "PinVi migrator login could not be sealed after bootstrap failure"
+                    ) from seal_error
+                seal_diagnostic = self._pinvi_lifecycle_diagnostic(seal_error)
+                primary_lifecycle_error = (
+                    "PinVi bootstrap failed at "
+                    f"{primary_stage} ({primary_diagnostic}); migrator seal also failed "
+                    f"at pinvi_role_seal ({seal_diagnostic})"
+                )
+            else:
+                if isinstance(primary_error, Exception):
+                    primary_lifecycle_error = (
+                        f"PinVi bootstrap failed at {primary_stage} ({primary_diagnostic})"
+                    )
+                else:
+                    raise
+        if primary_lifecycle_error is not None:
+            raise DeploymentContractError(primary_lifecycle_error)
+        final_seal_error: str | None = None
         try:
             self._run_pinned_runtime_rebuild_compose(seal_role, transaction=transaction)
         except BaseException as seal_error:
-            raise DeploymentContractError(
-                "PinVi migrator login could not be sealed after bootstrap"
-            ) from seal_error
+            if not isinstance(seal_error, Exception):
+                raise DeploymentContractError(
+                    "PinVi migrator login could not be sealed after bootstrap"
+                ) from seal_error
+            seal_diagnostic = self._pinvi_lifecycle_diagnostic(seal_error)
+            final_seal_error = (
+                "PinVi migrator seal failed at "
+                f"pinvi_role_seal ({seal_diagnostic})"
+            )
+        if final_seal_error is not None:
+            raise DeploymentContractError(final_seal_error)
 
     @staticmethod
     def _inspect_image_reference_id(image_reference: str, *, label: str) -> str:

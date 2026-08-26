@@ -1912,6 +1912,327 @@ def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_bootstrap_code(
 
 
 @pytest.mark.parametrize(
+    ("stderr", "expected"),
+    (
+        (
+            "runtime/migrator/migration-owner role topology is not canonical",
+            "role_topology_noncanonical",
+        ),
+        (
+            "pinvi-db-runtime-role-1 | "
+            "Postgres TCP endpoint did not become ready for DB role bootstrap",
+            "role_endpoint_not_ready",
+        ),
+        (
+            "pinvi-db-runtime-role | invalid PostgreSQL role name",
+            "role_input_invalid",
+        ),
+        (
+            "pinvi-db-runtime-role-1 | "
+            "existing app objects are not owned by PINVI_APP_SCHEMA_OWNER; "
+            "use the approved root-only legacy rebaseline profile",
+            "role_existing_owner_noncanonical",
+        ),
+    ),
+)
+def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_role_code(
+    monkeypatch: pytest.MonkeyPatch,
+    stderr: str,
+    expected: str,
+) -> None:
+    service = ComposeService()
+    secret = "test-pinvi-role-diagnostic-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": secret,
+                "stderr": f"{secret}\n{stderr}",
+            }
+        ),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=rf"Compose run command failed \(exit 1; pinvi_role:{expected}\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "pinvi-db-runtime-role"],
+            transaction=_opaque_transaction(),
+        )
+
+    assert secret not in str(captured.value)
+
+
+def test_rebuild_compose_error_keeps_unclassified_pinvi_role_output_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    secret = "test-pinvi-role-unclassified-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": secret,
+                "stderr": f"psql: error: {secret}",
+            }
+        ),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"Compose run command failed \(exit 1; pinvi_role:unclassified\)",
+    ) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "pinvi-db-runtime-role"],
+            transaction=_opaque_transaction(),
+        )
+
+    assert secret not in str(captured.value)
+
+
+def test_pinvi_role_lifecycle_reports_primary_and_seal_failures_without_raw_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    transaction = cast(Any, SimpleNamespace())
+    state_paths = cast(Any, SimpleNamespace())
+    values = {
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "test-admin-password",
+    }
+    operations: list[tuple[str, ...]] = []
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operation = tuple(args)
+        operations.append(operation)
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-db-runtime-role"):
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose run command failed "
+                "(exit 1; pinvi_role:role_topology_noncanonical)"
+            )
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-db-runtime-role"):
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose run command failed "
+                "(exit 1; pinvi_role:unclassified)"
+            )
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=(
+            r"PinVi bootstrap failed at pinvi_role_open \(role_topology_noncanonical\); "
+            r"migrator seal also failed at pinvi_role_seal \(unclassified\)"
+        ),
+    ) as captured:
+        service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+            transaction=transaction,
+            state_paths=state_paths,
+            values=values,
+            transaction_id="transaction-id",
+        )
+
+    assert "test-admin-password" not in str(captured.value)
+    assert [operation[-1] for operation in operations] == [
+        "pinvi-db-runtime-role",
+        "pinvi-db-runtime-role",
+    ]
+
+
+def test_pinvi_role_lifecycle_preserves_cancellation_after_successful_seal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    operations: list[tuple[str, ...]] = []
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operation = tuple(args)
+        operations.append(operation)
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-db-runtime-role"):
+            raise KeyboardInterrupt()
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(KeyboardInterrupt):
+        service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+            transaction=cast(Any, SimpleNamespace()),
+            state_paths=cast(Any, SimpleNamespace()),
+            values={
+                "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+                "KTDM_C6C_PINVI_ADMIN_PASSWORD": "test-admin-password",
+            },
+            transaction_id="transaction-id",
+        )
+
+    assert [operation[-2:] for operation in operations] == [
+        ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-db-runtime-role"),
+        ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-db-runtime-role"),
+    ]
+
+
+def test_pinvi_role_lifecycle_separates_credential_preparation_from_admin_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    operations: list[tuple[str, ...]] = []
+    secret = "credential-path-or-secret-must-not-leak"
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(args))
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(
+        compose_service_module,
+        "pinvi_bootstrap_credential_file",
+        Mock(side_effect=DeploymentContractError(secret)),
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=r"PinVi bootstrap failed at pinvi_bootstrap_credential \(unclassified\)",
+    ) as captured:
+        service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+            transaction=cast(Any, SimpleNamespace()),
+            state_paths=cast(Any, SimpleNamespace()),
+            values={
+                "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+                "KTDM_C6C_PINVI_ADMIN_PASSWORD": "test-admin-password",
+            },
+            transaction_id="transaction-id",
+        )
+
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert [operation[-1] for operation in operations] == [
+        "pinvi-db-runtime-role",
+        "pinvi-db-runtime-role",
+    ]
+
+
+def test_pinvi_role_lifecycle_separates_credential_cleanup_from_admin_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    operations: list[tuple[str, ...]] = []
+    secret = "credential-cleanup-path-or-secret-must-not-leak"
+
+    @contextmanager
+    def credential_file(**_kwargs: object):
+        yield SimpleNamespace(path=Path("/run/manager/credential.json"))
+        raise DeploymentContractError(secret)
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(args))
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(
+        compose_service_module, "pinvi_bootstrap_credential_file", credential_file
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=(
+            r"PinVi bootstrap failed at pinvi_bootstrap_credential_cleanup "
+            r"\(unclassified\)"
+        ),
+    ) as captured:
+        service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+            transaction=cast(Any, SimpleNamespace()),
+            state_paths=cast(Any, SimpleNamespace()),
+            values={
+                "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+                "KTDM_C6C_PINVI_ADMIN_PASSWORD": "test-admin-password",
+            },
+            transaction_id="transaction-id",
+        )
+
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert [operation[-1] for operation in operations] == [
+        "pinvi-db-runtime-role",
+        "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
+    ]
+
+
+def test_pinvi_role_lifecycle_keeps_admin_and_seal_codes_without_raw_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    operations: list[tuple[str, ...]] = []
+    secret = "admin-or-seal-raw-output-must-not-leak"
+
+    @contextmanager
+    def credential_file(**_kwargs: object):
+        yield SimpleNamespace(path=Path("/run/manager/credential.json"))
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operation = tuple(args)
+        operations.append(operation)
+        if operation[-1] == "pinvi-admin-bootstrap":
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose run command failed "
+                "(exit 1; pinvi:migration_failed)"
+            )
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-db-runtime-role"):
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose run command failed "
+                "(exit 1; pinvi_role:role_topology_noncanonical); "
+                f"raw={secret}"
+            )
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(
+        compose_service_module, "pinvi_bootstrap_credential_file", credential_file
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=(
+            r"PinVi bootstrap failed at pinvi_admin_bootstrap \(migration_failed\); "
+            r"migrator seal also failed at pinvi_role_seal \(role_topology_noncanonical\)"
+        ),
+    ) as captured:
+        service._run_pinvi_schema_bootstrap_with_role_lifecycle(
+            transaction=cast(Any, SimpleNamespace()),
+            state_paths=cast(Any, SimpleNamespace()),
+            values={
+                "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+                "KTDM_C6C_PINVI_ADMIN_PASSWORD": "test-admin-password",
+            },
+            transaction_id="transaction-id",
+        )
+
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert [operation[-1] for operation in operations] == [
+        "pinvi-db-runtime-role",
+        "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
+    ]
+
+
+@pytest.mark.parametrize(
     "stderr",
     (
         '{"error_code":"credential_file_owner_mismatch",'
@@ -2897,7 +3218,7 @@ def test_expired_finalize_fence_reconciliation_converges_file_first_crash(
         (
             "map_application_ready",
             "pinvi-admin-bootstrap",
-            "stop after map runtime startup",
+            r"PinVi bootstrap failed at pinvi_bootstrap_credential \(unclassified\)",
         ),
         (
             "pinvi_schema_ready",
@@ -3330,8 +3651,11 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             ),
         )
 
-    with pytest.raises(DeploymentContractError, match=expected_error):
+    with pytest.raises(DeploymentContractError, match=expected_error) as captured:
         service.rebuild_pinned_runtime()
+
+    if phase == "map_application_ready":
+        assert "stop after map runtime startup" not in str(captured.value)
 
     root_execution_command = (
         "--profile",
@@ -3493,8 +3817,11 @@ def test_pinvi_role_lifecycle_seals_the_migrator_after_bootstrap(
     monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
 
     if failure_stage in {"open", "admin"}:
-        message = "role open failed" if failure_stage == "open" else "admin bootstrap failed"
-        with pytest.raises(DeploymentContractError, match=message):
+        stage = "pinvi_role_open" if failure_stage == "open" else "pinvi_admin_bootstrap"
+        with pytest.raises(
+            DeploymentContractError,
+            match=rf"PinVi bootstrap failed at {stage} \(unclassified\)",
+        ) as captured:
             service._run_pinvi_schema_bootstrap_with_role_lifecycle(
                 transaction=transaction,
                 state_paths=state_paths,
@@ -3502,7 +3829,10 @@ def test_pinvi_role_lifecycle_seals_the_migrator_after_bootstrap(
                 transaction_id="transaction-id",
             )
     elif failure_stage == "seal":
-        with pytest.raises(DeploymentContractError, match="could not be sealed"):
+        with pytest.raises(
+            DeploymentContractError,
+            match=r"PinVi migrator seal failed at pinvi_role_seal \(unclassified\)",
+        ) as captured:
             service._run_pinvi_schema_bootstrap_with_role_lifecycle(
                 transaction=transaction,
                 state_paths=state_paths,
@@ -3516,6 +3846,9 @@ def test_pinvi_role_lifecycle_seals_the_migrator_after_bootstrap(
             values=values,
             transaction_id="transaction-id",
         )
+
+    if failure_stage != "none":
+        assert "test-admin-password" not in str(captured.value)
 
     role_prefix = (
         "--profile",
