@@ -232,6 +232,37 @@ def test_pinvi_role_bootstrap_source_bind_is_in_canonical_candidate_allowlist() 
     assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
         ("pinvi-db-runtime-role", "/opt/pinvi/bootstrap-pinvi-runtime-role.sh", True)
     ] == ("${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh")
+
+
+def test_pinvi_role_bootstrap_entrypoint_interprets_a_non_executable_source(
+    tmp_path: Path,
+) -> None:
+    source = _source_compose()
+    services = source["services"]
+    assert isinstance(services, dict)
+    role_service = services["pinvi-db-runtime-role"]
+    assert isinstance(role_service, dict)
+    assert role_service["entrypoint"] == [
+        "sh",
+        "-ec",
+        'export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
+        "exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh\n",
+    ]
+
+    script = tmp_path / "bootstrap-pinvi-runtime-role.sh"
+    script.write_text('test "$POSTGRES_PASSWORD" = "root-password"\n', encoding="utf-8")
+    script.chmod(0o444)
+    assert script.stat().st_mode & 0o111 == 0
+    completed = subprocess.run(
+        ["sh", str(script)],
+        env={"POSTGRES_PASSWORD": "root-password"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_concierge_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
     assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
         ("kor-travel-concierge-postgres", "/var/lib/postgresql/data", False)
@@ -1113,6 +1144,96 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
             environment=repeated_pinvi_role,
+        )
+
+    repeated_pinvi_password = dict(environment)
+    repeated_pinvi_password["PINVI_MIGRATOR_DB_PASSWORD"] = repeated_pinvi_password[
+        "PINVI_APP_DB_PASSWORD"
+    ]
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=repeated_pinvi_password,
+        )
+    resolved_repeated_pinvi_password = deepcopy(resolved)
+    resolved_repeated_password_services = resolved_repeated_pinvi_password["services"]
+    assert isinstance(resolved_repeated_password_services, dict)
+    resolved_repeated_admin = resolved_repeated_password_services["pinvi-admin-bootstrap"]
+    assert isinstance(resolved_repeated_admin, dict)
+    resolved_repeated_admin_environment = resolved_repeated_admin["environment"]
+    assert isinstance(resolved_repeated_admin_environment, dict)
+    resolved_repeated_admin_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-app-password@"
+        "127.0.0.1:12800/pinvi"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_repeated_pinvi_password,
+            environment=repeated_pinvi_password,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    runtime_uses_root_password = dict(environment)
+    runtime_uses_root_password["PINVI_APP_DB_PASSWORD"] = runtime_uses_root_password[
+        "PINVI_POSTGRES_PASSWORD"
+    ]
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=runtime_uses_root_password,
+        )
+    resolved_runtime_uses_root_password = deepcopy(resolved)
+    resolved_runtime_uses_root_services = resolved_runtime_uses_root_password["services"]
+    assert isinstance(resolved_runtime_uses_root_services, dict)
+    resolved_runtime_api = resolved_runtime_uses_root_services["pinvi-api"]
+    assert isinstance(resolved_runtime_api, dict)
+    resolved_runtime_api_environment = resolved_runtime_api["environment"]
+    assert isinstance(resolved_runtime_api_environment, dict)
+    resolved_runtime_api_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-postgres-password@"
+        "127.0.0.1:12800/pinvi"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_runtime_uses_root_password,
+            environment=runtime_uses_root_password,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+    migrator_uses_root_password = dict(environment)
+    migrator_uses_root_password["PINVI_MIGRATOR_DB_PASSWORD"] = migrator_uses_root_password[
+        "PINVI_POSTGRES_PASSWORD"
+    ]
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=migrator_uses_root_password,
+        )
+    resolved_migrator_uses_root_password = deepcopy(resolved)
+    resolved_migrator_uses_root_services = resolved_migrator_uses_root_password["services"]
+    assert isinstance(resolved_migrator_uses_root_services, dict)
+    resolved_migrator_admin = resolved_migrator_uses_root_services["pinvi-admin-bootstrap"]
+    assert isinstance(resolved_migrator_admin, dict)
+    resolved_migrator_admin_environment = resolved_migrator_admin["environment"]
+    assert isinstance(resolved_migrator_admin_environment, dict)
+    resolved_migrator_admin_environment["PINVI_DATABASE_URL"] = (
+        "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-postgres-password@"
+        "127.0.0.1:12800/pinvi"
+    )
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved_migrator_uses_root_password,
+            environment=migrator_uses_root_password,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
         )
 
     root_secret_leak = deepcopy(candidate)

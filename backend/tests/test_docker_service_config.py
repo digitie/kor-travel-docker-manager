@@ -474,7 +474,7 @@ def _compose_with_canonical_c6c_services(
                 "sh",
                 "-ec",
                 'export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
-                "exec /opt/pinvi/bootstrap-pinvi-runtime-role.sh",
+                "exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh",
             ],
         },
         _MAP_API_SERVICE: {

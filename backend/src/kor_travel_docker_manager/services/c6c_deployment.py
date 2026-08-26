@@ -77,7 +77,7 @@ _PINVI_MIGRATOR_DB_USER_ENV = "PINVI_MIGRATOR_DB_USER"
 _PINVI_MIGRATOR_DB_PASSWORD_ENV = "PINVI_MIGRATOR_DB_PASSWORD"
 _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET = "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
 _PINVI_ROLE_BOOTSTRAP_ENTRYPOINT_SCRIPT = f"""export POSTGRES_PASSWORD="$(cat {_PINVI_POSTGRES_PASSWORD_FILE})"
-exec {_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET}"""
+exec sh {_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET}"""
 _PINVI_DB_INIT_COMMAND_SCRIPT = """PGPASSWORD=\"$(cat /run/secrets/pinvi-postgres-password)\"
 export PGPASSWORD
 if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$PINVI_POSTGRES_DB'\" | grep -q 1; then
@@ -873,6 +873,9 @@ def _validate_pinvi_database_url_identities(
         role_values[_PINVI_MIGRATION_OWNER_ENV],
         role_values[_PINVI_MIGRATOR_DB_USER_ENV],
     )
+    application_password = cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV])
+    migrator_password = cast(str, role_values[_PINVI_MIGRATOR_DB_PASSWORD_ENV])
+    root_password = cast(str, bootstrap_password)
     if (
         expected_port != _PINVI_DEDICATED_POSTGRES_PORT
         or not expected_database
@@ -884,6 +887,9 @@ def _validate_pinvi_database_url_identities(
             for role_name in role_names
         )
         or len(set(role_names)) != len(role_names)
+        or hmac.compare_digest(root_password, application_password)
+        or hmac.compare_digest(root_password, migrator_password)
+        or hmac.compare_digest(application_password, migrator_password)
     ):
         raise ComposeCandidateContractError("PinVi database URL identity is invalid")
 

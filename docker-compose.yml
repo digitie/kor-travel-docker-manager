@@ -328,7 +328,7 @@ services:
     - -ec
     - |
       export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"
-      exec /opt/pinvi/bootstrap-pinvi-runtime-role.sh
+      exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh
 
   rustfs:
     image: rustfs/rustfs:latest
