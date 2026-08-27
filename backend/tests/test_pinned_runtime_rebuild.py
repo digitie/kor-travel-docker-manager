@@ -982,6 +982,9 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
     assert ("--verify" in command) is verify
     assert command[command.index("--api-receipt") + 1] == str(paths.api_receipt)
     assert command[command.index("--receipt") + 1] == str(paths.paired_receipt)
+    assert runner.call_args.kwargs["stdout"] is subprocess.DEVNULL
+    assert runner.call_args.kwargs["stderr"] is subprocess.DEVNULL
+    assert "capture_output" not in runner.call_args.kwargs
 
 
 @pytest.mark.parametrize(

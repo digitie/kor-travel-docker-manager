@@ -3175,8 +3175,8 @@ def _run_map_application_300_paired_builder(
             command,
             cwd="/",
             env=builder_environment,
-            text=True,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             check=False,
             timeout=3600,
         )
