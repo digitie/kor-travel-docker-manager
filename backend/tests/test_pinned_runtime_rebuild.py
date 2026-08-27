@@ -982,6 +982,81 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
     assert ("--verify" in command) is verify
     assert command[command.index("--api-receipt") + 1] == str(paths.api_receipt)
     assert command[command.index("--receipt") + 1] == str(paths.paired_receipt)
+    assert runner.call_args.kwargs["stdout"] is subprocess.DEVNULL
+    assert runner.call_args.kwargs["stderr"] is subprocess.DEVNULL
+    assert "capture_output" not in runner.call_args.kwargs
+
+
+@pytest.mark.parametrize(
+    ("api_receipt", "paired_receipt", "expected"),
+    (
+        (False, False, "api_receipt_missing"),
+        (True, False, "paired_receipt_missing"),
+        (False, True, "unclassified"),
+        (True, True, "unclassified"),
+    ),
+)
+def test_application_300_paired_builder_failure_code_uses_only_receipt_state(
+    tmp_path: Path,
+    *,
+    api_receipt: bool,
+    paired_receipt: bool,
+    expected: str,
+) -> None:
+    _, paths = _paired_builder_inputs(tmp_path)
+    for receipt_path, should_exist in (
+        (paths.api_receipt, api_receipt),
+        (paths.paired_receipt, paired_receipt),
+    ):
+        if should_exist:
+            receipt_path.write_text("{}\n", encoding="utf-8")
+            receipt_path.chmod(0o600)
+
+    assert (
+        compose_service_module._map_application_300_builder_failure_code(paths)
+        == expected
+    )
+
+
+def test_application_300_paired_builder_failure_code_rejects_unsafe_receipt(
+    tmp_path: Path,
+) -> None:
+    _, paths = _paired_builder_inputs(tmp_path)
+    paths.api_receipt.write_text("{}\n", encoding="utf-8")
+    paths.api_receipt.chmod(0o644)
+
+    assert (
+        compose_service_module._map_application_300_builder_failure_code(paths)
+        == "unclassified"
+    )
+
+
+def test_application_300_paired_builder_failure_never_leaks_builder_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    raw_output = "build-application-300-candidate: password=not-a-real-secret"
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=(), returncode=1, stdout=raw_output, stderr=""
+        )
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    with pytest.raises(DeploymentContractError) as exc_info:
+        compose_service_module._run_map_application_300_paired_builder(
+            sources=sources,
+            api_image="map-api:test",
+            dagster_image="map-dagster:test",
+            paths=paths,
+            resume_journal=False,
+        )
+
+    assert str(exc_info.value) == (
+        "application 300 paired builder failed: api_receipt_missing"
+    )
+    assert raw_output not in str(exc_info.value)
 
 
 def test_application_300_paired_builder_rejects_paired_only_receipt(

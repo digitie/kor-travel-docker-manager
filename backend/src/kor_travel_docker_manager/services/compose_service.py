@@ -3175,8 +3175,8 @@ def _run_map_application_300_paired_builder(
             command,
             cwd="/",
             env=builder_environment,
-            text=True,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             check=False,
             timeout=3600,
         )
@@ -3185,7 +3185,44 @@ def _run_map_application_300_paired_builder(
             "application 300 paired builder could not complete"
         ) from exc
     if completed.returncode != 0:
-        raise DeploymentContractError("application 300 paired builder failed")
+        raise DeploymentContractError(
+            "application 300 paired builder failed: "
+            f"{_map_application_300_builder_failure_code(paths)}"
+        )
+
+
+def _map_application_300_builder_failure_code(
+    paths: _MapApplication300Paths,
+) -> str:
+    """sealed builder 출력 대신 owner-only receipt 상태만 분류한다."""
+
+    api_status = _application_300_owner_only_receipt_status(paths.api_receipt)
+    paired_status = _application_300_owner_only_receipt_status(paths.paired_receipt)
+    if api_status == "missing" and paired_status == "missing":
+        return "api_receipt_missing"
+    if api_status == "trusted" and paired_status == "missing":
+        return "paired_receipt_missing"
+    return "unclassified"
+
+
+def _application_300_owner_only_receipt_status(path: Path) -> str:
+    """분류에 쓸 수 있는 owner-only receipt 상태만 fail-close로 관측한다."""
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    if (
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == 0o600
+        and metadata.st_nlink == 1
+    ):
+        return "trusted"
+    return "unsafe"
 
 
 class ComposeService:
