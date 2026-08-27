@@ -97,15 +97,20 @@ def _isolate_map_application_300_base_image_preflight(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    """orchestration unit은 fake source root 대신 전용 preflight 회귀로 host I/O를 검증한다."""
+    """orchestration unit은 전용 회귀 밖 host I/O/one-shot을 격리한다."""
 
-    if request.node.name.startswith("test_map_application_300_python_base_images"):
-        return
-    monkeypatch.setattr(
-        compose_service_module,
-        "_ensure_map_application_300_python_base_images",
-        lambda _sources: None,
-    )
+    if not request.node.name.startswith("test_map_application_300_python_base_images"):
+        monkeypatch.setattr(
+            compose_service_module,
+            "_ensure_map_application_300_python_base_images",
+            lambda _sources: None,
+        )
+    if not request.node.name.startswith("test_pinvi_sealed_role_topology_verifier"):
+        monkeypatch.setattr(
+            ComposeService,
+            "_verify_pinned_runtime_pinvi_role_topology",
+            lambda _self, *, transaction: None,
+        )
 
 
 @pytest.fixture
@@ -1805,6 +1810,105 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
     assert not state_paths.journal.exists()
 
 
+def test_role_topology_preflight_precedes_journal_runtime_stop_and_database_reset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sealed verifier의 noncanonical 결과는 Map candidate 뒤 변이 전에 종료한다."""
+
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-role-topology-preflight",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    service = ComposeService()
+    topology_refusal = DeploymentContractError(
+        "PinVi sealed role topology is noncanonical"
+    )
+    run_compose = Mock()
+    database_reset = Mock()
+    journal_write = Mock()
+    paired_builder = Mock()
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
+    monkeypatch.setattr(
+        compose_service_module, "_assert_transaction_matches_c6c_lock", Mock()
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        lambda **_kwargs: _sources(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_run_map_application_300_paired_builder",
+        paired_builder,
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_application_300_paired_candidate",
+        Mock(return_value=_map_application_300_candidate()),
+    )
+    monkeypatch.setattr(
+        service,
+        "_capture_transaction_unlocked",
+        lambda **_kwargs: (transaction, None),
+    )
+    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
+    monkeypatch.setattr(
+        service,
+        "_verify_pinned_runtime_pinvi_role_topology",
+        Mock(side_effect=topology_refusal),
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(
+        compose_service_module,
+        "reset_databases_for_application_300",
+        database_reset,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        journal_write,
+    )
+
+    with pytest.raises(DeploymentContractError) as captured:
+        service.rebuild_pinned_runtime()
+
+    assert captured.value is topology_refusal
+    journal_write.assert_not_called()
+    run_compose.assert_not_called()
+    database_reset.assert_not_called()
+    paired_builder.assert_called_once()
+
+
 def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2188,6 +2292,91 @@ def test_rebuild_compose_error_keeps_unclassified_pinvi_role_output_private(
         service._run_pinned_runtime_rebuild_compose(
             ["run", "--rm", "--no-deps", "pinvi-db-runtime-role"],
             transaction=_opaque_transaction(),
+        )
+
+    assert secret not in str(captured.value)
+
+
+def test_pinvi_sealed_role_topology_verifier_accepts_only_canonical_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    operations: list[tuple[str, ...]] = []
+
+    def run_compose(args: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(args))
+        return {
+            "success": True,
+            "stdout": (
+                '{"schema":"pinvi.role-topology-diagnostic.v1",'
+                '"status":"canonical","mode":"sealed","reasons":[]}\n'
+            ),
+        }
+
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    service._verify_pinned_runtime_pinvi_role_topology(
+        transaction=cast(Any, SimpleNamespace()),
+    )
+
+    assert operations == [
+        (
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            "PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1",
+            "-e",
+            "PINVI_MIGRATOR_DISABLE_LOGIN=1",
+            "-e",
+            "PINVI_M05_LEGACY_REBASELINE=0",
+            "pinvi-db-runtime-role",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        (
+            '{"schema":"pinvi.role-topology-diagnostic.v1",'
+            '"status":"noncanonical","mode":"sealed",'
+            '"reasons":["principal_identity","runtime_role"]}\n',
+            "PinVi sealed role topology is noncanonical",
+        ),
+        (
+            '{"schema":"pinvi.role-topology-diagnostic.v1",'
+            '"status":"unavailable","mode":"sealed",'
+            '"reasons":["endpoint_unavailable"]}\n',
+            "PinVi sealed role topology verifier is unavailable",
+        ),
+        (
+            '{"schema":"pinvi.role-topology-diagnostic.v1",'
+            '"status":"noncanonical","mode":"sealed",'
+            '"reasons":["unknown_reason"]}\n',
+            "PinVi sealed role topology verifier is unavailable",
+        ),
+    ],
+)
+def test_pinvi_sealed_role_topology_verifier_keeps_output_private(
+    monkeypatch: pytest.MonkeyPatch,
+    output: str,
+    expected: str,
+) -> None:
+    service = ComposeService()
+    secret = "pinvi-role-topology-verifier-output-must-not-leak"
+    monkeypatch.setattr(
+        service,
+        "_run_pinned_runtime_rebuild_compose",
+        Mock(return_value={"success": True, "stdout": output, "stderr": secret}),
+    )
+
+    with pytest.raises(DeploymentContractError, match=expected) as captured:
+        service._verify_pinned_runtime_pinvi_role_topology(
+            transaction=cast(Any, SimpleNamespace()),
         )
 
     assert secret not in str(captured.value)

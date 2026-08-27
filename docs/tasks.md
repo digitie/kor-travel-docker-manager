@@ -48,6 +48,13 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   n150 read-only 확인으로 Map immutable Python base image cache 부재를 원인으로 확정했다. Manager는
   materialized API/Dagster Dockerfile의 exact digest base만 trusted preflight에서 pull·재관측하며,
   이 변경과 Map execution journal의 fresh source pinset 없이는 같은 candidate를 재실행하지 않는다.
+- [/] `cbb577d3…` candidate는 Map runtime 준비 뒤 PinVi role topology terminal receipt로 끝났고 같은
+  pinset을 재시도하지 않는다. PinVi #497 이후의 sealed read-only verifier를 포함한 immutable
+  `9778c9b8…` source와 Map `9c64e862…`를 새 v5 pinset `52c6e538…`으로 고정한다. Manager는
+  Map paired candidate·frozen Compose·external readiness 뒤, 네 runtime image build·journal·Compose·DB
+  mutation보다 먼저 verifier의 canonical fixed JSON만 수용한다. noncanonical·invalid·unavailable·malformed
+  결과는 raw output을 보존하지 않고 종료한다. 이 PR의 두 전문 적대 리뷰·검증·trusted deployment 전에는
+  새 pinset의 official rebuild를 호출하지 않는다.
 - [/] 원인은 M05가 요구하는 role topology와 #477의 root 단일 DSN 배선 불일치로 분리됐다. PinVi
   #488 merge commit `93296aee5d47676e6b9b79303bf417c598a273ac`은 Manager가 허용하는 exact loopback
   endpoint에서만 role bootstrap을 실행하도록 보정했다. Manager 후보는 root·runtime·schema owner·migration

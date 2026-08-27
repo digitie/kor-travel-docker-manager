@@ -489,6 +489,13 @@ migrator role DSN만 전달한다. initial superuser·runtime application·migra
 `127.0.0.1:12800`으로 고정한다. source bootstrap script는 읽기 전용 bind에 실행 비트를 요구하지 않도록
 `sh`로 호출한다. 이 lifecycle 밖의 수동 Compose·SQL 실행은 허용하지 않는다.
 
+새 pinset candidate는 Map paired candidate와 frozen Compose source contract를 확인한 뒤, Manager가
+네 runtime image를 build하거나 journal·Compose·DB 변이를 시작하기 전에 같은 one-shot을
+`PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`·sealed migrator로 실행한다. verifier는 고정 schema의
+canonical 결과만 통과시키며, ordered fixed reason의 noncanonical·입력/endpoint/검증 불가·형식 불일치는
+원문 출력 없이 fail-close한다. verify-only를 지원하는 PinVi immutable revision과 함께만 이 gate를
+배포하며, 기존 pinset이나 historical journal을 재시도·수정하지 않는다.
+
 `rebuild-pinned --confirm`은 fresh root `.env`에 위 topology의 여섯 role 값이 모두 **미선언**인 경우에만,
 trusted `/opt/kor-travel-docker-manager`의 Compose·`.env` pair를 caller path override 없이 고정하고, root-owned
 pinned-runtime host lease 안에서 exact rebuildable admission과 C6c token을 먼저 확인한 뒤 정해진 서로 다른 role명과

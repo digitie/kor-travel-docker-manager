@@ -215,6 +215,19 @@ _MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE = (
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
+_PINVI_ROLE_TOPOLOGY_DIAGNOSTIC_SCHEMA = "pinvi.role-topology-diagnostic.v1"
+_PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS = (
+    "principal_identity",
+    "bootstrap_catalog",
+    "fence_acl",
+    "runtime_role",
+    "schema_owner_membership",
+    "migration_owner_policy",
+    "migrator_sealed",
+    "migrator_membership_setting",
+    "app_ownership",
+    "extension_ownership",
+)
 
 
 def _application_300_profile_operation_args(
@@ -4981,6 +4994,99 @@ class ComposeService:
             transaction=transaction,
         )
 
+    def _verify_pinned_runtime_pinvi_role_topology(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """새 후보가 runtime/DB 변이를 시작하기 전 sealed topology만 읽는다."""
+
+        result = self._run_pinned_runtime_rebuild_compose(
+            [
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "-e",
+                "PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1",
+                "-e",
+                "PINVI_MIGRATOR_DISABLE_LOGIN=1",
+                "-e",
+                "PINVI_M05_LEGACY_REBASELINE=0",
+                _PINVI_DB_RUNTIME_ROLE_SERVICE,
+            ],
+            transaction=transaction,
+        )
+        output = result.get("stdout")
+        if not isinstance(output, str):
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        try:
+            payload = json.loads(
+                output,
+                object_pairs_hook=_json_object_without_duplicate_keys,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            ) from exc
+        if not isinstance(payload, Mapping) or set(payload) != {
+            "schema",
+            "status",
+            "mode",
+            "reasons",
+        }:
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        status = payload.get("status")
+        reasons = payload.get("reasons")
+        if (
+            payload.get("schema") != _PINVI_ROLE_TOPOLOGY_DIAGNOSTIC_SCHEMA
+            or payload.get("mode") != "sealed"
+            or not isinstance(status, str)
+            or not isinstance(reasons, list)
+            or not all(isinstance(reason, str) for reason in reasons)
+        ):
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        if status == "canonical" and reasons == []:
+            return
+        if (
+            status == "noncanonical"
+            and reasons
+            and all(
+                reason in _PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS
+                for reason in reasons
+            )
+            and len(set(reasons)) == len(reasons)
+            and tuple(reasons)
+            == tuple(
+                sorted(
+                    reasons,
+                    key=_PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS.index,
+                )
+            )
+        ):
+            raise DeploymentContractError("PinVi sealed role topology is noncanonical")
+        if (
+            (status == "invalid" and reasons == ["input_invalid"])
+            or (
+                status == "unavailable"
+                and reasons in (
+                    ["endpoint_unavailable"],
+                    ["verification_unavailable"],
+                )
+            )
+        ):
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        raise DeploymentContractError("PinVi sealed role topology verifier is unavailable")
+
     def _run_pinvi_schema_bootstrap_with_role_lifecycle(
         self,
         *,
@@ -6130,6 +6236,12 @@ class ComposeService:
                 _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
                 transaction=candidate_transaction,
                 frozen_recovery=True,
+            )
+            # PinVi source가 제공하는 sealed verifier는 candidate transaction의 exact
+            # source bind·frozen Compose에서만 실행한다. raw output은 보존하지 않으며,
+            # noncanonical이면 image build/journal/Compose/DB 변이 전에 닫는다.
+            self._verify_pinned_runtime_pinvi_role_topology(
+                transaction=candidate_transaction,
             )
             if journal_exists:
                 journal = cast(PinnedRuntimeRebuildJournal, resume_journal)
