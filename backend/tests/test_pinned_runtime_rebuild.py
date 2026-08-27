@@ -18,14 +18,16 @@ from typing import Any, cast
 from unittest.mock import ANY, Mock, call
 
 import pytest
-
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     DeploymentContractError,
 )
-from kor_travel_docker_manager.services.compose_service import ComposeService
+from kor_travel_docker_manager.services.compose_service import (
+    ComposeService,
+    ComposeTransactionSnapshot,
+)
 from kor_travel_docker_manager.services.database_runtime import (
     Application300DatabaseIdentity as RuntimeApplication300DatabaseIdentity,
 )
@@ -1810,103 +1812,44 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
     assert not state_paths.journal.exists()
 
 
-def test_role_topology_preflight_precedes_journal_runtime_stop_and_database_reset(
-    tmp_path: Path,
+def test_sealed_role_topology_verifier_is_a_fresh_target_state_postcondition() -> None:
+    """폐기할 기존 DB가 아니라 role bootstrap 뒤 fresh PinVi DB만 검증한다."""
+
+    source = inspect.getsource(ComposeService.rebuild_pinned_runtime)
+
+    assert source.index("reset_databases_for_application_300") < source.index(
+        "_run_pinvi_schema_bootstrap_with_role_lifecycle"
+    )
+    assert source.index("_run_pinvi_schema_bootstrap_with_role_lifecycle") < source.index(
+        "_verify_pinned_runtime_pinvi_role_topology_after_bootstrap"
+    )
+    assert source.index("_verify_pinned_runtime_pinvi_role_topology_after_bootstrap") < source.index(
+        'journal, "pinvi_schema_ready"'
+    )
+    assert "_verify_pinned_runtime_pinvi_role_topology(\n                transaction=candidate_transaction" not in source
+
+
+def test_post_bootstrap_sealed_role_topology_failure_is_typed_and_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sealed verifier의 noncanonical 결과는 Map candidate 뒤 변이 전에 종료한다."""
-
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-role-topology-preflight",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
     service = ComposeService()
-    topology_refusal = DeploymentContractError(
+    raw_refusal = DeploymentContractError(
         "PinVi sealed role topology is noncanonical"
     )
-    run_compose = Mock()
-    database_reset = Mock()
-    journal_write = Mock()
-    paired_builder = Mock()
+    verifier = Mock(side_effect=raw_refusal)
+    monkeypatch.setattr(service, "_verify_pinned_runtime_pinvi_role_topology", verifier)
 
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(
-        compose_service_module, "_assert_transaction_matches_c6c_lock", Mock()
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "materialize_pinned_runtime_sources",
-        lambda **_kwargs: _sources(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_run_map_application_300_paired_builder",
-        paired_builder,
-    )
-    monkeypatch.setattr(
-        service,
-        "_load_application_300_paired_candidate",
-        Mock(return_value=_map_application_300_candidate()),
-    )
-    monkeypatch.setattr(
-        service,
-        "_capture_transaction_unlocked",
-        lambda **_kwargs: (transaction, None),
-    )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
-    monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
-    monkeypatch.setattr(
-        service,
-        "_verify_pinned_runtime_pinvi_role_topology",
-        Mock(side_effect=topology_refusal),
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
-    monkeypatch.setattr(
-        compose_service_module,
-        "reset_databases_for_application_300",
-        database_reset,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        journal_write,
-    )
+    with pytest.raises(compose_service_module._PinviRoleLifecycleError) as captured:
+        service._verify_pinned_runtime_pinvi_role_topology_after_bootstrap(
+            transaction=cast(ComposeTransactionSnapshot, SimpleNamespace())
+        )
 
-    with pytest.raises(DeploymentContractError) as captured:
-        service.rebuild_pinned_runtime()
-
-    assert captured.value is topology_refusal
-    journal_write.assert_not_called()
-    run_compose.assert_not_called()
-    database_reset.assert_not_called()
-    paired_builder.assert_called_once()
+    assert str(captured.value) == "PinVi sealed role topology verification failed"
+    assert captured.value.role_topology_block == PinviRoleLifecycleBlock(
+        stage="pinvi_role_verify",
+        code="role_topology_noncanonical",
+    )
+    verifier.assert_called_once()
 
 
 def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(

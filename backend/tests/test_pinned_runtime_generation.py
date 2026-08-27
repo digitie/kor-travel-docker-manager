@@ -879,6 +879,14 @@ def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block()
     assert blocked.pinvi_role_lifecycle_block == receipt
     assert journal_from_payload(blocked.to_payload()) == blocked
 
+    verifier_unavailable = journal.with_pinvi_role_lifecycle_block(
+        PinviRoleLifecycleBlock(
+            stage="pinvi_role_verify",
+            code="role_topology_unavailable",
+        )
+    )
+    assert journal_from_payload(verifier_unavailable.to_payload()) == verifier_unavailable
+
     legacy_payload = journal.to_payload()
     legacy_payload.pop("pinvi_role_credential_environment_rebind")
     legacy_payload.pop("pinvi_role_lifecycle_block")
@@ -897,6 +905,14 @@ def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block()
     malformed_payload["pinvi_role_lifecycle_block"] = {
         "stage": "pinvi_admin_bootstrap",
         "code": "role_topology_noncanonical",
+    }
+    with pytest.raises(DeploymentContractError, match="block payload"):
+        journal_from_payload(malformed_payload)
+
+    malformed_payload = blocked.to_payload()
+    malformed_payload["pinvi_role_lifecycle_block"] = {
+        "stage": "pinvi_role_open",
+        "code": "role_topology_unavailable",
     }
     with pytest.raises(DeploymentContractError, match="block payload"):
         journal_from_payload(malformed_payload)

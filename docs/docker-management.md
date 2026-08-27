@@ -489,12 +489,15 @@ migrator role DSN만 전달한다. initial superuser·runtime application·migra
 `127.0.0.1:12800`으로 고정한다. source bootstrap script는 읽기 전용 bind에 실행 비트를 요구하지 않도록
 `sh`로 호출한다. 이 lifecycle 밖의 수동 Compose·SQL 실행은 허용하지 않는다.
 
-새 pinset candidate는 Map paired candidate와 frozen Compose source contract를 확인한 뒤, Manager가
-네 runtime image를 build하거나 journal·Compose·DB 변이를 시작하기 전에 같은 one-shot을
-`PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`·sealed migrator로 실행한다. verifier는 고정 schema의
-canonical 결과만 통과시키며, ordered fixed reason의 noncanonical·입력/endpoint/검증 불가·형식 불일치는
-원문 출력 없이 fail-close한다. verify-only를 지원하는 PinVi immutable revision과 함께만 이 gate를
-배포하며, 기존 pinset이나 historical journal을 재시도·수정하지 않는다.
+새 pinset candidate의 Map paired candidate·frozen Compose source contract·external readiness는 기존 DB를
+폐기하기 전에 확인한다. 반면 sealed topology verifier는 폐기 대상인 기존 catalog를 target-state로
+해석하지 않는다. Manager는 DB reset 뒤 PinVi role open → admin/migration bootstrap → migrator seal과 exact
+PinVi schema head 확인을 마친 fresh DB에만 같은 one-shot을
+`PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`·sealed migrator로 실행한다. verifier는 고정 schema의 canonical
+결과만 통과시키며, ordered fixed reason의 noncanonical·입력/endpoint/검증 불가·형식 불일치는 원문 출력
+없이 fail-close한다. 이 실패는 `pinvi_role_verify`의 비밀 비포함 terminal receipt로 v8 journal에 먼저
+기록하고 seven runtime을 정지하므로 같은 pinset은 재시도할 수 없다. verify-only를 지원하는 PinVi immutable
+revision과 함께만 이 gate를 배포하며, 기존 pinset이나 historical journal을 재시도·수정하지 않는다.
 
 `rebuild-pinned --confirm`은 fresh root `.env`에 위 topology의 여섯 role 값이 모두 **미선언**인 경우에만,
 trusted `/opt/kor-travel-docker-manager`의 Compose·`.env` pair를 caller path override 없이 고정하고, root-owned

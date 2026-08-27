@@ -5087,6 +5087,38 @@ class ComposeService:
             )
         raise DeploymentContractError("PinVi sealed role topology verifier is unavailable")
 
+    def _verify_pinned_runtime_pinvi_role_topology_after_bootstrap(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """fresh PinVi target DB의 sealed 후조건을 terminal receipt로 바꾼다.
+
+        기존 DB는 rebuild가 폐기할 입력일 뿐 sealed runtime target이 아니다. 따라서
+        role open·admin/migration bootstrap·seal 뒤의 fresh DB에만 full verifier를
+        적용한다. verifier 원문과 reason enum은 receipt·CLI에 보존하지 않는다.
+        """
+
+        try:
+            self._verify_pinned_runtime_pinvi_role_topology(
+                transaction=transaction
+            )
+        except DeploymentContractError as exc:
+            code: Literal[
+                "role_topology_noncanonical", "role_topology_unavailable"
+            ] = (
+                "role_topology_noncanonical"
+                if str(exc) == "PinVi sealed role topology is noncanonical"
+                else "role_topology_unavailable"
+            )
+            raise _PinviRoleLifecycleError(
+                "PinVi sealed role topology verification failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_verify",
+                    code=code,
+                ),
+            ) from None
+
     def _run_pinvi_schema_bootstrap_with_role_lifecycle(
         self,
         *,
@@ -6237,12 +6269,6 @@ class ComposeService:
                 transaction=candidate_transaction,
                 frozen_recovery=True,
             )
-            # PinVi source가 제공하는 sealed verifier는 candidate transaction의 exact
-            # source bind·frozen Compose에서만 실행한다. raw output은 보존하지 않으며,
-            # noncanonical이면 image build/journal/Compose/DB 변이 전에 닫는다.
-            self._verify_pinned_runtime_pinvi_role_topology(
-                transaction=candidate_transaction,
-            )
             if journal_exists:
                 journal = cast(PinnedRuntimeRebuildJournal, resume_journal)
                 if journal.phase == "committed":
@@ -7263,6 +7289,29 @@ class ComposeService:
                         raise
                 if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
                     raise DeploymentContractError("PinVi schema differs from candidate head")
+                try:
+                    # sealed verifier는 기존 DB admission이 아니라 fresh target-state
+                    # 후조건이다. open → bootstrap/migration → seal과 head 검증 뒤에만
+                    # 실행하고 raw verifier output은 durable receipt에 남기지 않는다.
+                    self._verify_pinned_runtime_pinvi_role_topology_after_bootstrap(
+                        transaction=runtime_transaction,
+                    )
+                except _PinviRoleLifecycleError as exc:
+                    journal = self._record_pinvi_role_lifecycle_block(
+                        journal,
+                        journal_path=state_paths.journal,
+                        error=exc,
+                    )
+                    try:
+                        self._run_pinned_runtime_rebuild_compose(
+                            ["stop", *RUNTIME_SERVICES],
+                            transaction=runtime_transaction,
+                        )
+                    except DeploymentContractError as stop_error:
+                        raise DeploymentContractError(
+                            "PinVi runtime could not be stopped after sealed topology failure"
+                        ) from stop_error
+                    raise
                 updated = self._advance_pinned_runtime_journal(
                     journal, "pinvi_schema_ready"
                 )

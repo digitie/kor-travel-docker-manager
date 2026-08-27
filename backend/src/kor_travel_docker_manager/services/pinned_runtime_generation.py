@@ -1419,13 +1419,17 @@ class PinviRoleCredentialEnvironmentRebind:
 class PinviRoleLifecycleBlock:
     """동일 pinset의 role topology 재실행을 막는 비밀 비포함 terminal receipt."""
 
-    stage: Literal["pinvi_role_open", "pinvi_role_seal"]
-    code: Literal["role_topology_noncanonical"]
+    stage: Literal["pinvi_role_open", "pinvi_role_seal", "pinvi_role_verify"]
+    code: Literal["role_topology_noncanonical", "role_topology_unavailable"]
 
     def __post_init__(self) -> None:
-        if self.stage not in {"pinvi_role_open", "pinvi_role_seal"} or self.code != (
-            "role_topology_noncanonical"
-        ):
+        if self.stage not in {
+            "pinvi_role_open",
+            "pinvi_role_seal",
+            "pinvi_role_verify",
+        } or self.code not in {"role_topology_noncanonical", "role_topology_unavailable"}:
+            raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
+        if self.stage != "pinvi_role_verify" and self.code != "role_topology_noncanonical":
             raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
 
     def to_payload(self) -> dict[str, str]:
@@ -2318,13 +2322,25 @@ def pinvi_role_lifecycle_block_from_payload(
     if (
         not isinstance(payload, Mapping)
         or set(payload) != {"stage", "code"}
-        or payload.get("stage") not in {"pinvi_role_open", "pinvi_role_seal"}
-        or payload.get("code") != "role_topology_noncanonical"
+        or payload.get("stage")
+        not in {"pinvi_role_open", "pinvi_role_seal", "pinvi_role_verify"}
+        or payload.get("code")
+        not in {"role_topology_noncanonical", "role_topology_unavailable"}
     ):
         raise DeploymentContractError("PinVi role lifecycle block payload is invalid")
+    stage = cast(
+        Literal["pinvi_role_open", "pinvi_role_seal", "pinvi_role_verify"],
+        payload["stage"],
+    )
+    code = cast(
+        Literal["role_topology_noncanonical", "role_topology_unavailable"],
+        payload["code"],
+    )
+    if stage != "pinvi_role_verify" and code != "role_topology_noncanonical":
+        raise DeploymentContractError("PinVi role lifecycle block payload is invalid")
     return PinviRoleLifecycleBlock(
-        stage=cast(Literal["pinvi_role_open", "pinvi_role_seal"], payload["stage"]),
-        code="role_topology_noncanonical",
+        stage=stage,
+        code=code,
     )
 
 
