@@ -177,8 +177,8 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
         <section className="border-t border-line pt-4 lg:border-t-0 lg:border-r lg:pr-5 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
-              <h3 className="text-sm font-semibold text-strong">공개 API 키</h3>
-              <p className="text-xs text-secondary mt-1">
+              <h3 className="ops-section-title">공개 API 키</h3>
+              <p className="ops-section-copy">
                 생성된 키는 DB에 hash와 hint로 저장되며, 평문은 생성 직후 한 번만 표시됩니다.
               </p>
             </div>
@@ -297,8 +297,8 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
         <section className="border-t border-line pt-4 lg:border-t-0 lg:pl-1 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
-              <h3 className="text-sm font-semibold text-strong">로그인 기록</h3>
-              <p className="text-xs text-secondary mt-1">
+              <h3 className="ops-section-title">로그인 기록</h3>
+              <p className="ops-section-copy">
                 로그인 시도, 성공, 실패, 로그아웃과 key 관리 이벤트를 최신순으로 표시합니다.
               </p>
             </div>

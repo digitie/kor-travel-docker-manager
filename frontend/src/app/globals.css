@@ -143,21 +143,6 @@
     width: 2.5rem;
   }
 
-  .ops-brand__mark {
-    display: grid;
-    width: 2.5rem;
-    height: 2.5rem;
-    flex: 0 0 auto;
-    place-items: center;
-    border-radius: var(--radius-card);
-    color: var(--color-graphite-ink);
-    background: var(--color-graphite);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-  }
-
   .brand-copy {
     display: grid;
     gap: 0.125rem;
@@ -352,14 +337,30 @@
 
   .ops-summary,
   .ops-signal,
-  .ops-ledger,
-  .ops-modal,
+  .ops-ledger {
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-panel);
+    background: var(--color-card);
+    box-shadow: var(--shadow-card);
+  }
+
+  /* kor-travel-geo-ui의 .login-panel/.app-error-panel과 동일하게, 화면 중앙에 떠 있는
+     단독 카드·모달은 일반 콘텐츠 패널보다 강한 그림자(shadow-modal)를 쓴다. */
   .ops-auth-card,
   .ops-error-card {
     border: 1px solid var(--color-line);
     border-radius: var(--radius-panel);
     background: var(--color-card);
-    box-shadow: var(--shadow-card);
+    box-shadow: var(--shadow-modal);
+  }
+
+  /* geo의 실제 shadcn Dialog(`rounded-lg` → --radius → --radius-control)와 맞춰
+     콘텐츠 패널(--radius-panel)보다 좁은 --radius-card를 쓴다. */
+  .ops-modal {
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    background: var(--color-card);
+    box-shadow: var(--shadow-modal);
   }
 
   .ops-summary {
@@ -587,6 +588,8 @@
   }
   .ops-command-dialog__option:hover { background: var(--color-subtle); color: var(--color-brand-ink); }
 
+  /* kor-travel-geo-ui의 login-shell/login-panel과 동일한 구조 — 화면 중앙에 단일 카드
+     하나만 두는 단순한 로그인 화면이다(예전의 좌측 hero+우측 폼 2단 구성은 geo에 없다). */
   .ops-auth-shell,
   .ops-error-shell {
     display: grid;
@@ -595,21 +598,66 @@
     padding: var(--space-md);
     background: var(--color-page);
   }
-  .ops-auth-frame {
+  .ops-auth-card {
     display: grid;
-    width: min(100%, 64rem);
-    grid-template-columns: minmax(0, 0.9fr) minmax(19rem, 0.7fr);
-    overflow: hidden;
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-panel);
-    background: var(--color-card);
-    box-shadow: var(--shadow-card);
+    gap: 1.25rem;
+    justify-self: center;
+    max-width: 26.25rem;
+    padding: var(--space-md);
+    width: min(100%, 26.25rem);
   }
-  .ops-auth-intro { padding: clamp(1.5rem, 5vw, 4rem); color: var(--color-graphite-ink); background: var(--color-graphite); }
-  .ops-auth-intro h1 { margin: var(--space-md) 0 var(--space-sm); color: inherit; font-family: var(--font-display); font-size: clamp(2rem, 4vw, 3.5rem); font-weight: 620; line-height: 0.98; letter-spacing: -0.055em; }
-  .ops-auth-intro p { max-width: 29rem; margin: 0; color: color-mix(in oklch, var(--color-graphite-ink) 72%, transparent); font-size: 0.875rem; line-height: 1.65; }
-  .ops-auth-card { border: 0; border-radius: 0; box-shadow: none; padding: clamp(1.5rem, 4vw, 3rem); }
-  .ops-form-label { color: var(--color-secondary); font-size: 0.75rem; font-weight: 700; letter-spacing: 0.025em; }
+  .ops-auth-brand {
+    align-items: center;
+    display: flex;
+    gap: 0.75rem;
+  }
+  .ops-auth-brand p {
+    color: var(--color-secondary);
+    font-size: 0.8125rem;
+    margin: 0 0 0.1875rem;
+  }
+  .ops-auth-brand h1 {
+    color: var(--color-strong);
+    font-size: 1.5rem;
+    line-height: 1.25;
+    margin: 0;
+  }
+  .ops-login-icon {
+    align-items: center;
+    background: var(--color-brand-tint);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    color: var(--color-brand);
+    display: grid;
+    height: 3rem;
+    justify-items: center;
+    width: 3rem;
+  }
+  .ops-auth-form {
+    display: grid;
+    gap: 0.875rem;
+  }
+  .ops-auth-submit {
+    justify-content: center;
+  }
+  .ops-auth-error {
+    color: var(--color-danger);
+    font-size: 0.8125rem;
+    margin: 0;
+  }
+  .ops-auth-error:empty {
+    display: none;
+  }
+  .ops-field {
+    display: grid;
+    gap: var(--space-xs);
+  }
+  .ops-form-label {
+    color: var(--color-ink);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.025em;
+  }
   .ops-input { width: 100%; min-height: 2.75rem; border: 1px solid var(--color-line); border-radius: var(--radius-card); padding-inline: 0.75rem; background: var(--color-card); color: var(--color-strong); font-size: 0.875rem; }
   .ops-input:hover { border-color: var(--color-tertiary); }
   .ops-input:focus { border-color: var(--color-brand); box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-brand) 18%, transparent); outline: 0; }
@@ -710,9 +758,6 @@
     .ops-archive-table tbody tr { padding: var(--space-sm) 0; border-bottom: 1px solid var(--color-line); }
     .ops-archive-table td { display: grid; grid-template-columns: minmax(6.5rem, 0.45fr) minmax(0, 1fr); gap: var(--space-xs); padding: 0.25rem 0.75rem; }
     .ops-archive-table td::before { color: var(--color-secondary); font-family: var(--font-display); font-size: 0.625rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; content: attr(data-label); }
-    .ops-auth-frame { grid-template-columns: 1fr; }
-    .ops-auth-intro { padding: var(--space-lg); }
-    .ops-auth-intro h1 { font-size: 2rem; }
   }
 }
 

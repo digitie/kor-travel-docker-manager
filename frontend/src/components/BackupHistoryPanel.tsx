@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Database, RefreshCw, X } from 'lucide-react';
+import { RefreshCw, X } from 'lucide-react';
 import { BackupListResponse, StandaloneBackupManifest, apiJson } from '@/lib/api';
 
 const ROLE_OPTIONS: Array<{ value: StandaloneBackupManifest['role'] | 'all'; label: string }> = [
@@ -124,10 +124,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             {error instanceof Error ? error.message : String(error)}
           </p>
         ) : backups.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 py-12 text-secondary">
-            <Database className="w-8 h-8" />
-            <p className="text-sm">저장된 백업이 없습니다.</p>
-          </div>
+          <p className="text-sm text-secondary text-center py-12">저장된 백업이 없습니다.</p>
         ) : (
           <div className="border-t border-line pt-2">
             <table className="ops-archive-table w-full table-fixed text-sm">
