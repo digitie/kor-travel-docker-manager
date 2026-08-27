@@ -985,36 +985,46 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
 
 
 @pytest.mark.parametrize(
-    ("stdout", "stderr", "expected"),
+    ("api_receipt", "paired_receipt", "expected"),
     (
-        ("", "build-application-300-candidate: rejected", "api_candidate_rejected"),
-        ("build-application-300-paired-candidate: rejected", "", "paired_builder_rejected"),
-        (
-            "untrusted diagnostic: build-application-300-candidate: rejected",
-            "",
-            "unclassified",
-        ),
-        (
-            "build-application-300-candidate: rejected\n"
-            "build-application-300-paired-candidate: rejected",
-            "",
-            "unclassified",
-        ),
-        ("untrusted diagnostic", "", "unclassified"),
+        (False, False, "api_receipt_missing"),
+        (True, False, "paired_receipt_missing"),
+        (False, True, "unclassified"),
+        (True, True, "unclassified"),
     ),
 )
-def test_application_300_paired_builder_failure_code_never_returns_output(
-    stdout: str,
-    stderr: str,
+def test_application_300_paired_builder_failure_code_uses_only_receipt_state(
+    tmp_path: Path,
+    *,
+    api_receipt: bool,
+    paired_receipt: bool,
     expected: str,
 ) -> None:
-    completed = subprocess.CompletedProcess(
-        args=(), returncode=1, stdout=stdout, stderr=stderr
-    )
+    _, paths = _paired_builder_inputs(tmp_path)
+    for receipt_path, should_exist in (
+        (paths.api_receipt, api_receipt),
+        (paths.paired_receipt, paired_receipt),
+    ):
+        if should_exist:
+            receipt_path.write_text("{}\n", encoding="utf-8")
+            receipt_path.chmod(0o600)
 
     assert (
-        compose_service_module._map_application_300_builder_failure_code(completed)
+        compose_service_module._map_application_300_builder_failure_code(paths)
         == expected
+    )
+
+
+def test_application_300_paired_builder_failure_code_rejects_unsafe_receipt(
+    tmp_path: Path,
+) -> None:
+    _, paths = _paired_builder_inputs(tmp_path)
+    paths.api_receipt.write_text("{}\n", encoding="utf-8")
+    paths.api_receipt.chmod(0o644)
+
+    assert (
+        compose_service_module._map_application_300_builder_failure_code(paths)
+        == "unclassified"
     )
 
 
@@ -1041,7 +1051,7 @@ def test_application_300_paired_builder_failure_never_leaks_builder_output(
         )
 
     assert str(exc_info.value) == (
-        "application 300 paired builder failed: api_candidate_rejected"
+        "application 300 paired builder failed: api_receipt_missing"
     )
     assert raw_output not in str(exc_info.value)
 

@@ -3187,35 +3187,42 @@ def _run_map_application_300_paired_builder(
     if completed.returncode != 0:
         raise DeploymentContractError(
             "application 300 paired builder failed: "
-            f"{_map_application_300_builder_failure_code(completed)}"
+            f"{_map_application_300_builder_failure_code(paths)}"
         )
 
 
 def _map_application_300_builder_failure_code(
-    completed: subprocess.CompletedProcess[str],
+    paths: _MapApplication300Paths,
 ) -> str:
-    """sealed builder 원문을 보존하지 않고 고정된 failure class만 반환한다."""
+    """sealed builder 출력 대신 owner-only receipt 상태만 분류한다."""
 
-    output = "\n".join(
-        value
-        for value in (
-            getattr(completed, "stdout", ""),
-            getattr(completed, "stderr", ""),
-        )
-        if isinstance(value, str)
-    )
-    api_marker = "build-application-300-candidate: "
-    paired_marker = "build-application-300-paired-candidate: "
-    lines = output.splitlines()
-    api_rejected = any(line.startswith(api_marker) for line in lines)
-    paired_rejected = any(line.startswith(paired_marker) for line in lines)
-    if api_rejected == paired_rejected:
-        return "unclassified"
-    if api_rejected:
-        return "api_candidate_rejected"
-    if paired_rejected:
-        return "paired_builder_rejected"
+    api_status = _application_300_owner_only_receipt_status(paths.api_receipt)
+    paired_status = _application_300_owner_only_receipt_status(paths.paired_receipt)
+    if api_status == "missing" and paired_status == "missing":
+        return "api_receipt_missing"
+    if api_status == "trusted" and paired_status == "missing":
+        return "paired_receipt_missing"
     return "unclassified"
+
+
+def _application_300_owner_only_receipt_status(path: Path) -> str:
+    """분류에 쓸 수 있는 owner-only receipt 상태만 fail-close로 관측한다."""
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return "unsafe"
+    if (
+        stat.S_ISREG(metadata.st_mode)
+        and not stat.S_ISLNK(metadata.st_mode)
+        and metadata.st_uid == os.geteuid()
+        and stat.S_IMODE(metadata.st_mode) == 0o600
+        and metadata.st_nlink == 1
+    ):
+        return "trusted"
+    return "unsafe"
 
 
 class ComposeService:
