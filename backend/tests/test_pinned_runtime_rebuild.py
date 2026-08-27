@@ -989,6 +989,17 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
     (
         ("", "build-application-300-candidate: rejected", "api_candidate_rejected"),
         ("build-application-300-paired-candidate: rejected", "", "paired_builder_rejected"),
+        (
+            "untrusted diagnostic: build-application-300-candidate: rejected",
+            "",
+            "unclassified",
+        ),
+        (
+            "build-application-300-candidate: rejected\n"
+            "build-application-300-paired-candidate: rejected",
+            "",
+            "unclassified",
+        ),
         ("untrusted diagnostic", "", "unclassified"),
     ),
 )
@@ -1005,6 +1016,34 @@ def test_application_300_paired_builder_failure_code_never_returns_output(
         compose_service_module._map_application_300_builder_failure_code(completed)
         == expected
     )
+
+
+def test_application_300_paired_builder_failure_never_leaks_builder_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, paths = _paired_builder_inputs(tmp_path)
+    raw_output = "build-application-300-candidate: password=not-a-real-secret"
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            args=(), returncode=1, stdout=raw_output, stderr=""
+        )
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    with pytest.raises(DeploymentContractError) as exc_info:
+        compose_service_module._run_map_application_300_paired_builder(
+            sources=sources,
+            api_image="map-api:test",
+            dagster_image="map-dagster:test",
+            paths=paths,
+            resume_journal=False,
+        )
+
+    assert str(exc_info.value) == (
+        "application 300 paired builder failed: api_candidate_rejected"
+    )
+    assert raw_output not in str(exc_info.value)
 
 
 def test_application_300_paired_builder_rejects_paired_only_receipt(

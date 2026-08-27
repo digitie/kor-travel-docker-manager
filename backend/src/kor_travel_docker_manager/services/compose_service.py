@@ -3204,9 +3204,16 @@ def _map_application_300_builder_failure_code(
         )
         if isinstance(value, str)
     )
-    if "build-application-300-candidate:" in output:
+    api_marker = "build-application-300-candidate: "
+    paired_marker = "build-application-300-paired-candidate: "
+    lines = output.splitlines()
+    api_rejected = any(line.startswith(api_marker) for line in lines)
+    paired_rejected = any(line.startswith(paired_marker) for line in lines)
+    if api_rejected == paired_rejected:
+        return "unclassified"
+    if api_rejected:
         return "api_candidate_rejected"
-    if "build-application-300-paired-candidate:" in output:
+    if paired_rejected:
         return "paired_builder_rejected"
     return "unclassified"
 
