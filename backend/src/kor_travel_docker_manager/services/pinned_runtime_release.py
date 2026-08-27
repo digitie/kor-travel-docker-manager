@@ -171,7 +171,7 @@ MAP_PINNED_RUNTIME_SOURCE: Final = PinnedRuntimeSourceSpec(
 PINVI_PINNED_RUNTIME_SOURCE: Final = PinnedRuntimeSourceSpec(
     role="pinvi",
     canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["pinvi"],
-    revision="fc01e5d623ba23a470d0050a6709c3f7fc6ca32b",
+    revision="28ca250d9da6d820ab47a555a109975c78166d59",
 )
 _CURRENT_SOURCES: Final[tuple[PinnedRuntimeSourceSpec, ...]] = (
     MAP_PINNED_RUNTIME_SOURCE,
@@ -180,7 +180,7 @@ _CURRENT_SOURCES: Final[tuple[PinnedRuntimeSourceSpec, ...]] = (
 PINNED_RUNTIME_RELEASE: Final = PinnedRuntimeRelease(
     version=PINNED_RUNTIME_RELEASE_VERSION,
     sources=_CURRENT_SOURCES,
-    pinset_sha256="3793216950779cbd5d3649fa62010ebe7d91cd2c3c74191d59f2edbf5289f77d",
+    pinset_sha256="31fe73ad782e86f64467aee4ecd2d989e318709b2a76b62a531618f0e10e444d",
 )
 
 
