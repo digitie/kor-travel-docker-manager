@@ -12,6 +12,7 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -33,79 +34,63 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
   }
 
   return (
-    <main className="ops-auth-shell">
-      <section className="ops-auth-frame" aria-labelledby="login-title">
-        <div className="ops-auth-intro">
-          <div className="ops-brand__mark" aria-hidden="true">KT</div>
-          <p className="ops-eyebrow mt-8 text-graphite-ink">Kor Travel Docker Manager</p>
-          <h1>운영 인프라를<br />안전하게 제어합니다.</h1>
-          <p>컨테이너 상태, 로그, 백업 이력과 인증 설정은 승인된 관리자 세션에서만 확인할 수 있습니다.</p>
-        </div>
-        <div className="ops-auth-card">
-          <div className="flex items-center gap-3 pb-5 border-b border-line">
-            <div className="p-2 bg-brand-tint text-brand border border-line rounded-card">
-              <LockKeyhole className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="ops-eyebrow">관리자 세션</p>
-              <h2 className="ops-section-title mt-1" id="login-title">로그인</h2>
-            </div>
+    <section className="ops-auth-shell" aria-labelledby="login-title">
+      <div className="ops-auth-card">
+        <div className="ops-auth-brand">
+          <div className="ops-login-icon" aria-hidden="true">
+            <LockKeyhole size={24} />
           </div>
-
-        <form aria-busy={busy} className="pt-5 space-y-4" onSubmit={submit}>
-          <div className="space-y-1.5">
+          <div>
+            <p>Kor Travel Docker Manager</p>
+            <h1 id="login-title">관리자 로그인</h1>
+          </div>
+        </div>
+        <form aria-busy={busy} className="ops-auth-form" onSubmit={submit}>
+          <div className="ops-field">
             <label className="ops-form-label" htmlFor="admin-username">
               아이디
             </label>
             <input
-              aria-describedby={error ? 'login-error' : undefined}
-              aria-invalid={Boolean(error)}
               autoComplete="username"
               className="ops-input"
               disabled={busy}
               id="admin-username"
               value={username}
+              aria-describedby="login-error"
+              aria-invalid={error ? true : undefined}
               onChange={(event) => setUsername(event.target.value)}
             />
           </div>
-          <div className="space-y-1.5">
+          <div className="ops-field">
             <label className="ops-form-label" htmlFor="admin-password">
               비밀번호
             </label>
             <input
-              aria-describedby={error ? 'login-error' : undefined}
-              aria-invalid={Boolean(error)}
               autoComplete="current-password"
-              autoFocus
               className="ops-input"
               disabled={busy}
               id="admin-password"
               type="password"
               value={password}
+              aria-describedby="login-error"
+              aria-invalid={error ? true : undefined}
               onChange={(event) => setPassword(event.target.value)}
             />
           </div>
           <button
-            className="ops-button ops-button--primary w-full"
+            className="ops-button ops-button--primary ops-auth-submit"
             disabled={busy}
             type="submit"
           >
-            <LogIn className="w-4 h-4" />
+            <LogIn size={17} />
             로그인
           </button>
-          {error ? (
-            <p
-              aria-live="polite"
-              className="text-sm text-danger bg-danger/5 border border-danger/30 rounded-card px-3 py-2"
-              id="login-error"
-              role="alert"
-            >
-              {error}
-            </p>
-          ) : null}
+          {/* 실패 메시지를 AT에 확실히 알리기 위해 live region을 항상 마운트해 둔다. */}
+          <p aria-live="assertive" className="ops-auth-error" id="login-error" role="alert">
+            {error}
+          </p>
         </form>
-        </div>
-      </section>
-    </main>
+      </div>
+    </section>
   );
 }

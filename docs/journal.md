@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-08-27 — Manager 로그인 화면과 모달·패널을 kor-travel-geo-ui와 재정합
+
+로그인 화면이 geo와 다르다는 지적을 받아 실제 geo `LoginForm.tsx`/`.login-shell`/
+`.login-panel`을 다시 확인했다. Manager의 기존 로그인은 좌측 dark hero(headline·설명 문구)
++ 우측 폼의 2단 구성이었는데, geo에는 이런 hero 구성이 아예 없고 화면 중앙에 카드 하나만
+띄우는 훨씬 단순한 구조다. `LoginScreen.tsx`를 geo와 동일한 구조로 다시 썼다 — 아이콘+제품명+
+"관리자 로그인" 제목이 한 줄에 나란히, 필드 라벨은 uppercase 없이, 에러 메시지는 항상
+마운트된 `aria-live="assertive"` 문단(빈 값이면 `:empty`로 숨김, geo와 동일한 접근성 패턴)으로
+교체했다. hero 전용이던 `.ops-auth-frame`/`.ops-auth-intro`/`.ops-brand__mark`는 삭제하고
+`.ops-auth-card`/`.ops-auth-brand`/`.ops-login-icon`/`.ops-auth-form`/`.ops-field`를 geo의
+실측 spacing(카드 max-width 420px, gap 20px, 필드 gap 12px, 폼 gap 14px)에 맞춰 새로 정의했다.
+`.ops-form-label`의 글자색도 geo의 `--text-primary`에 대응하는 `--color-ink`로 바로잡았다.
+
+이어서 "로그인뿐 아니라 UI 전반을 검토"하라는 요청에 따라 서브에이전트 포크로 모달·테이블·
+패널 헤더·배지·빈 상태를 geo의 실제 컴포넌트(`components/ui/dialog.tsx`,
+`components/admin/BackupsPanel.tsx`, `components/admin/SettingsPanel.tsx`)와 대조했다.
+확인된 것 중 실제로 반영한 항목: (1) `.ops-modal`의 corner radius가 geo의 실제 shadcn
+Dialog(`rounded-lg` → `--radius` → `--radius-control`)보다 컸던 것을 `--radius-card`로
+좁히고 shadow도 `--shadow-modal`로 올림(콘텐츠 패널 `--radius-panel`과는 분리), (2)
+AdminSettingsPanel의 임시방편 섹션 헤더(`text-sm font-semibold`)를 이미 존재하던
+`.ops-section-title`/`.ops-section-copy`로 통일, (3) BackupHistoryPanel의 아이콘이 있는
+빈 상태를 geo처럼 아이콘 없는 평범한 텍스트로 단순화. 감사에서 나온 "모달 하단 우측 정렬
+액션 버튼 행(geo의 DialogFooter)" 항목은 실제로 geo의 SettingsPanel류처럼 "저장/취소"가
+아닌 상시 편집 패널 성격의 화면에는 억지로 끼워 맞출 명확한 커밋 액션이 없어 보류했다
+(ContainerDetailModal의 유일한 하단 액션 행은 `NODE_ENV=production`에서 렌더되지 않는
+개발 전용 버튼이라 실사용자에게는 애초에 보이지 않는다).
+
+WSL에서 `next build`/`eslint`/`tsc --noEmit`을 통과시켰고, 로컬 QA 세션에서 로그인 화면·
+백업 이력 모달·인증 설정 모달을 Playwright로 직접 확인했다.
+
+---
+
 ## 2026-08-27 — Manager 오렌지 톤을 사용자 제공 참고 팔레트 값으로 정합
 
 직전 오렌지 재조정(hue 50, 임의 추정치)이 사용자가 제공한
