@@ -3185,7 +3185,30 @@ def _run_map_application_300_paired_builder(
             "application 300 paired builder could not complete"
         ) from exc
     if completed.returncode != 0:
-        raise DeploymentContractError("application 300 paired builder failed")
+        raise DeploymentContractError(
+            "application 300 paired builder failed: "
+            f"{_map_application_300_builder_failure_code(completed)}"
+        )
+
+
+def _map_application_300_builder_failure_code(
+    completed: subprocess.CompletedProcess[str],
+) -> str:
+    """sealed builder 원문을 보존하지 않고 고정된 failure class만 반환한다."""
+
+    output = "\n".join(
+        value
+        for value in (
+            getattr(completed, "stdout", ""),
+            getattr(completed, "stderr", ""),
+        )
+        if isinstance(value, str)
+    )
+    if "build-application-300-candidate:" in output:
+        return "api_candidate_rejected"
+    if "build-application-300-paired-candidate:" in output:
+        return "paired_builder_rejected"
+    return "unclassified"
 
 
 class ComposeService:

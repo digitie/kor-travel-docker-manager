@@ -984,6 +984,29 @@ def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_rece
     assert command[command.index("--receipt") + 1] == str(paths.paired_receipt)
 
 
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "expected"),
+    (
+        ("", "build-application-300-candidate: rejected", "api_candidate_rejected"),
+        ("build-application-300-paired-candidate: rejected", "", "paired_builder_rejected"),
+        ("untrusted diagnostic", "", "unclassified"),
+    ),
+)
+def test_application_300_paired_builder_failure_code_never_returns_output(
+    stdout: str,
+    stderr: str,
+    expected: str,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        args=(), returncode=1, stdout=stdout, stderr=stderr
+    )
+
+    assert (
+        compose_service_module._map_application_300_builder_failure_code(completed)
+        == expected
+    )
+
+
 def test_application_300_paired_builder_rejects_paired_only_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

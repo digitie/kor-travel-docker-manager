@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-27 — paired builder failure의 비밀 비포함 분류 후보
+
+새 `872e3262…` pinset의 trusted `rebuild-pinned --confirm`은 source worktree와 paired-builder
+file의 root ownership·exact revision을 확인한 뒤, candidate journal·receipt·DB/runtime mutation 전
+`application 300 paired builder failed`로 fail-closed했다. 원문 stderr는 기록하거나 출력하지 않았고,
+같은 candidate를 자동 재시도하지 않는다.
+
+후속 진단은 sealed builder stdout/stderr를 저장·전달하지 않고, 고정 marker만
+`api_candidate_rejected`, `paired_builder_rejected`, `unclassified`로 분류한다. 이 분류는 secret·raw
+diagnostic·path를 포함하지 않으며 다음 trusted candidate의 단 한 번의 결과에서 후속 source 계약을
+분리하기 위한 것이다.
+
+---
+
 ## 2026-08-27 — Map M05·PinVi #487 merge source의 fresh pinset 회전 후보
 
 Map #1081 merge `cf65e97345b5792420cfbc994e49ce6a7e3cd650`와 PinVi #487 squash merge

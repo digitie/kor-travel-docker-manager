@@ -41,6 +41,8 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   `872e3262…`으로 candidate build·attestation에 반영한다. d9의 `map_runtime_ready` journal은
   historical failure evidence로 보존하며 새 pinset이 재사용하지 않는다. 두 전문 적대 리뷰·검증·trusted
   deployment 전에는 rebuild를 호출하거나 수동 Docker/Compose/SQL·DB/journal/permit 조작을 하지 않는다.
+  trusted 첫 실행은 candidate journal·receipt·DB/runtime mutation 전에 paired builder에서 fail-close했고,
+  원문 없이 고정 failure class만 남기는 후속 Manager 진단 PR이 merged·배포되기 전에는 재시도하지 않는다.
 - [/] 원인은 M05가 요구하는 role topology와 #477의 root 단일 DSN 배선 불일치로 분리됐다. PinVi
   #488 merge commit `93296aee5d47676e6b9b79303bf417c598a273ac`은 Manager가 허용하는 exact loopback
   endpoint에서만 role bootstrap을 실행하도록 보정했다. Manager 후보는 root·runtime·schema owner·migration
