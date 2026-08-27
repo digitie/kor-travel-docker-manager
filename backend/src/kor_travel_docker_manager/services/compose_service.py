@@ -5341,7 +5341,25 @@ class ComposeService:
         """Manager가 방금 만든 PinVi DB에만 root-owned reset permit을 발행한다."""
 
         identity = journal.pinvi_database_identity
-        if identity is None or read_pinned_database_identity(runtime) != identity:
+        if identity is None:
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                ),
+            ) from None
+        live_identity = read_pinned_database_identity(runtime)
+        if not isinstance(live_identity, PinnedDatabaseIdentity):
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                ),
+            ) from None
+        observed_identity = _pinned_runtime_journal_database_identity(live_identity)
+        if observed_identity != identity:
             raise _PinviRoleLifecycleError(
                 "PinVi fresh role catalog reset failed",
                 role_topology_block=PinviRoleLifecycleBlock(

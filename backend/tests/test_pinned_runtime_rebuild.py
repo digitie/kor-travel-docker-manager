@@ -1852,7 +1852,11 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
         path.write_bytes(raw)
 
     run_compose = Mock(return_value={"success": True, "stdout": ""})
-    monkeypatch.setattr(compose_service_module, "read_pinned_database_identity", Mock(return_value=journal.pinvi_database_identity))
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_pinned_database_identity",
+        Mock(return_value=_runtime_pinvi_database_identity()),
+    )
     writes.side_effect = write_artifact
     monkeypatch.setattr(compose_service_module, "write_owner_only_artifact", writes)
     monkeypatch.setattr(
@@ -1994,7 +1998,7 @@ def test_fresh_role_catalog_reset_receipt_read_failure_is_terminal(
     monkeypatch.setattr(
         compose_service_module,
         "read_pinned_database_identity",
-        Mock(return_value=journal.pinvi_database_identity),
+        Mock(return_value=_runtime_pinvi_database_identity()),
     )
     monkeypatch.setattr(compose_service_module, "write_owner_only_artifact", write_artifact)
     monkeypatch.setattr(
