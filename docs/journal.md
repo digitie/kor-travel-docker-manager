@@ -11,7 +11,9 @@
 actual pinset별 root-owned `O_NOFOLLOW|O_EXCL` ledger claim과 상위 directory fsync를 먼저 영구 기록한다. trusted
 installer와 같은 global mutation lock은 admission부터 실제 `ktdctl` child 종료까지 유지한다. 따라서 output directory 이름을
 바꿔도 같은 installed pinset은 다시 `ktdctl`을 호출할 수 없고, stale Manager release도 새 candidate 실행을 시작할 수 없다.
-claim은 성공·실패 모두 보존한다.
+claim은 성공·실패 모두 보존한다. rebuild 내부는 같은 lock path를 새 descriptor로 다시 열지 않고, inode·owner·mode와
+nonblocking flock을 재검증한 inherited descriptor를 재사용하므로 one-shot admission과 Manager mutation이 한 transaction으로
+이어진다.
 
 ## 2026-08-28 — M05 one-shot launcher를 포함한 새 candidate 회전
 
