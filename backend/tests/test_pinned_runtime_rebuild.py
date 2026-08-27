@@ -480,9 +480,11 @@ def _operation_plan(
 
 def _journal_at_application_300_phase(
     phase: RebuildPhase,
+    *,
+    sources: PinnedRuntimeSourceMaterialization | None = None,
 ) -> PinnedRuntimeRebuildJournal:
     journal = new_candidate_journal(
-        candidate=_candidate_generation(),
+        candidate=_candidate_generation(sources),
         environment_bytes=b"frozen-env\n",
         compose_source_bytes=b"services: {}\n",
         resolved_compose_sha256="c" * 64,
@@ -596,8 +598,14 @@ def _finalized_cancel_probe() -> PinnedRuntimeCancelProbeReceipt:
     return _cancel_probe_receipts()[-1]
 
 
-def _journal_at_runtime_phase(phase: RebuildPhase) -> PinnedRuntimeRebuildJournal:
-    journal = _journal_at_application_300_phase("map_application_ready")
+def _journal_at_runtime_phase(
+    phase: RebuildPhase,
+    *,
+    sources: PinnedRuntimeSourceMaterialization | None = None,
+) -> PinnedRuntimeRebuildJournal:
+    journal = _journal_at_application_300_phase(
+        "map_application_ready", sources=sources
+    )
     for next_phase in REBUILD_PHASES[
         REBUILD_PHASES.index("map_application_ready") + 1 :
         REBUILD_PHASES.index(phase) + 1
@@ -2356,14 +2364,34 @@ def test_legacy_d9_role_topology_failure_precedes_credential_or_source_mutation(
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(linux_tmp_path / "state"),
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
     }
     environment = SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n")
+    legacy_sources = (
+        PinnedRuntimeSourceSpec(
+            role="map",
+            canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["map"],
+            revision="14d18230e5a9ff21caf26d6abe37aed1e4944685",
+        ),
+        PinnedRuntimeSourceSpec(
+            role="pinvi",
+            canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["pinvi"],
+            revision="93296aee5d47676e6b9b79303bf417c598a273ac",
+        ),
+    )
+    legacy_release = PinnedRuntimeRelease(
+        version=5,
+        sources=legacy_sources,
+        pinset_sha256=canonical_pinset_sha256(version=5, sources=legacy_sources),
+    )
     state_paths = pinned_runtime_state_paths(
         values,
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        pinset_sha256=legacy_release.pinset_sha256,
     )
     state_paths.state_root.mkdir(parents=True, mode=0o700)
-    payload = _journal_at_runtime_phase("map_runtime_ready").to_payload()
+    payload = _journal_at_runtime_phase(
+        "map_runtime_ready", sources=_sources_for(legacy_release)
+    ).to_payload()
     del payload["pinvi_role_lifecycle_block"]
     legacy_journal = journal_from_payload(payload)
     assert legacy_journal.pinvi_role_lifecycle_block is None
@@ -2383,6 +2411,11 @@ def test_legacy_d9_role_topology_failure_precedes_credential_or_source_mutation(
         compose_service_module,
         "_capture_compose_environment_snapshot",
         lambda *, environment_override: environment,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "current_pinned_runtime_release",
+        lambda: legacy_release,
     )
     monkeypatch.setattr(
         compose_service_module,

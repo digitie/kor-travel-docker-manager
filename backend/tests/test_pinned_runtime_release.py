@@ -30,9 +30,9 @@ def test_current_release_is_exact_map_and_pinvi_v5_authority() -> None:
     assert release.version == PINNED_RUNTIME_RELEASE_VERSION == 5
     assert release.source_for("map") == MAP_PINNED_RUNTIME_SOURCE
     assert release.source_for("pinvi") == PINVI_PINNED_RUNTIME_SOURCE
-    assert release.source_for("map").revision == "14d18230e5a9ff21caf26d6abe37aed1e4944685"
+    assert release.source_for("map").revision == "cf65e97345b5792420cfbc994e49ce6a7e3cd650"
     assert release.source_for("map").revision == MAP_APPLICATION_300_SOURCE_COMMIT
-    assert release.source_for("pinvi").revision == "93296aee5d47676e6b9b79303bf417c598a273ac"
+    assert release.source_for("pinvi").revision == "97d2f924678f68c9aed7f60dbf41e73311012ebd"
     assert release.sources_by_role == {
         "map": MAP_PINNED_RUNTIME_SOURCE,
         "pinvi": PINVI_PINNED_RUNTIME_SOURCE,
@@ -43,46 +43,43 @@ def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
     release = PINNED_RUNTIME_RELEASE
 
     assert canonical_pinset_bytes(version=release.version, sources=release.sources) == (
-        b'{"sources":[{"revision":"14d18230e5a9ff21caf26d6abe37aed1e4944685",'
+        b'{"sources":[{"revision":"cf65e97345b5792420cfbc994e49ce6a7e3cd650",'
         b'"role":"map","url":"https://github.com/digitie/kor-travel-map.git"},'
-        b'{"revision":"93296aee5d47676e6b9b79303bf417c598a273ac",'
+        b'{"revision":"97d2f924678f68c9aed7f60dbf41e73311012ebd",'
         b'"role":"pinvi","url":"https://github.com/digitie/pinvi.git"}],"version":5}'
     )
     assert canonical_pinset_sha256(version=release.version, sources=release.sources) == (
-        "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898"
+        "872e3262275190208553db4f31c865882365f46d67b9e40b99ef66af1154d457"
     )
-    assert release.pinset_sha256 == "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898"
+    assert release.pinset_sha256 == "872e3262275190208553db4f31c865882365f46d67b9e40b99ef66af1154d457"
 
 
 def test_d9_legacy_role_topology_retry_policy_is_exact() -> None:
+    legacy = {
+        "pinset_sha256": "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898",
+        "map_source_revision": "14d18230e5a9ff21caf26d6abe37aed1e4944685",
+        "pinvi_source_revision": "93296aee5d47676e6b9b79303bf417c598a273ac",
+        "phase": "map_runtime_ready",
+    }
     assert is_d9_legacy_pinvi_role_topology_retry(
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
-        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
-        phase="map_runtime_ready",
+        **legacy,
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        **(legacy | {"phase": "candidate_attested"}),
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        **(legacy | {"pinset_sha256": "a" * 64}),
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        **(legacy | {"map_source_revision": "a" * 40}),
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        **(legacy | {"pinvi_source_revision": "a" * 40}),
     )
     assert not is_d9_legacy_pinvi_role_topology_retry(
         pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
         map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
         pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
-        phase="candidate_attested",
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        pinset_sha256="a" * 64,
-        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
-        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
-        phase="map_runtime_ready",
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-        map_source_revision="a" * 40,
-        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
-        phase="map_runtime_ready",
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
-        pinvi_source_revision="a" * 40,
         phase="map_runtime_ready",
     )
 

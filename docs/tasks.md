@@ -37,17 +37,14 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   확인했다.
 - [x] PinVi exact pair에서 logout 뒤 `/admin/features` protected route 재진입이 `/admin/login`으로
   재차단되는지 확인했다. 이 검증은 `/auth/logout` 204를 확인하고 application row를 쓰지 않았다.
-- [/] PinVi #477 squash merge의 exact source와 새 pinset을 candidate build·attestation으로
-  반영한다. 신뢰된 Manager의 최초 rebuild와 동일한 공식 재개는 새 pinset별 v8 journal을
-  `map_runtime_ready` 미종결 상태에 남기고 각각 0이 아닌 종료로 끝났다. 두 전문 적대 리뷰는
-  추가 재시도·수동 Docker/Compose/SQL·DB/journal/permit 조작을 금지했다. 기존 H300 generation은
-  이전 pinset의 immutable 이력으로 보존하며, 새 candidate가 committed되기 전에는 #477 runtime
-  반영 증거나 Map/PinVi live acceptance 근거로 사용하지 않는다. 비밀 비포함 외부 인시던트 증적이
-  원인을 분리할 때까지 이 항목을 완료 처리하지 않는다.
+- [/] Map #1081 merge `cf65e973…`와 PinVi #487 squash merge `97d2f924…`를 새 v5 pinset
+  `872e3262…`으로 candidate build·attestation에 반영한다. d9의 `map_runtime_ready` journal은
+  historical failure evidence로 보존하며 새 pinset이 재사용하지 않는다. 두 전문 적대 리뷰·검증·trusted
+  deployment 전에는 rebuild를 호출하거나 수동 Docker/Compose/SQL·DB/journal/permit 조작을 하지 않는다.
 - [/] 원인은 M05가 요구하는 role topology와 #477의 root 단일 DSN 배선 불일치로 분리됐다. PinVi
   #488 merge commit `93296aee5d47676e6b9b79303bf417c598a273ac`은 Manager가 허용하는 exact loopback
   endpoint에서만 role bootstrap을 실행하도록 보정했다. Manager 후보는 root·runtime·schema owner·migration
-  owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. 현재 Manager release pin은
+  owner·migrator identity를 분리하고 open → bootstrap → seal lifecycle을 강제한다. 이전 Manager release pin은
   Map #1066 merge `14d18230e5a9ff21caf26d6abe37aed1e4944685`와 PinVi #488 commit을 함께 고정한
   pinset `d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898`이다. n150의
   canonical root `.env` role credential tuple은 fresh 최초 admission에서만 원자 초기화할 수 있고, 현재는
