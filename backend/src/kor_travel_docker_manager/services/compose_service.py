@@ -568,6 +568,29 @@ def _parse_pinvi_role_catalog_reset_result(
     return "unclassified"
 
 
+def _read_pinvi_role_catalog_reset_result(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int],
+    transaction_id: str,
+    pinset_sha256: str,
+) -> str:
+    """Read a reset receipt only when the Manager-created inode is preserved."""
+
+    raw = read_owner_only_artifact(path)
+    try:
+        observed = path.lstat()
+    except OSError as exc:
+        raise MapApplication300ContractError("reset receipt is unavailable") from exc
+    if (observed.st_dev, observed.st_ino) != expected_identity:
+        return "unclassified"
+    return _parse_pinvi_role_catalog_reset_result(
+        raw,
+        transaction_id=transaction_id,
+        pinset_sha256=pinset_sha256,
+    )
+
+
 def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | None:
     """정확한 Compose service attach prefix 뒤의 JSON 한 줄만 반환한다."""
 
@@ -5333,9 +5356,12 @@ class ComposeService:
             f"{journal.transaction_id}|{journal.candidate.pinset_sha256}|"
             f"{identity.system_identifier}|{identity.oid}|{identity.name}|{identity.owner}\n"
         ).encode()
+        result_identity: tuple[int, int] | None = None
         try:
             write_owner_only_artifact(permit_path, permit)
             write_owner_only_artifact(result_path, b"{}")
+            result_metadata = result_path.lstat()
+            result_identity = (result_metadata.st_dev, result_metadata.st_ino)
             self._run_pinned_runtime_rebuild_compose(
                 [
                     "--profile",
@@ -5357,21 +5383,26 @@ class ComposeService:
                 ],
                 transaction=transaction,
             )
-            if _parse_pinvi_role_catalog_reset_result(
-                read_owner_only_artifact(result_path),
+            if _read_pinvi_role_catalog_reset_result(
+                result_path,
+                expected_identity=result_identity,
                 transaction_id=journal.transaction_id,
                 pinset_sha256=journal.candidate.pinset_sha256,
             ) != "completed":
                 raise DeploymentContractError("PinVi fresh role catalog reset result is invalid")
         except DeploymentContractError:
-            try:
-                diagnostic = _parse_pinvi_role_catalog_reset_result(
-                    read_owner_only_artifact(result_path),
-                    transaction_id=journal.transaction_id,
-                    pinset_sha256=journal.candidate.pinset_sha256,
-                )
-            except MapApplication300ContractError:
+            if result_identity is None:
                 diagnostic = "unclassified"
+            else:
+                try:
+                    diagnostic = _read_pinvi_role_catalog_reset_result(
+                        result_path,
+                        expected_identity=result_identity,
+                        transaction_id=journal.transaction_id,
+                        pinset_sha256=journal.candidate.pinset_sha256,
+                    )
+                except MapApplication300ContractError:
+                    diagnostic = "unclassified"
             raise _PinviRoleLifecycleError(
                 "PinVi fresh role catalog reset failed",
                 role_topology_block=PinviRoleLifecycleBlock(

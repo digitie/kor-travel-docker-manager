@@ -18,6 +18,7 @@ from typing import Any, cast
 from unittest.mock import ANY, Mock, call
 
 import pytest
+
 from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -1845,8 +1846,13 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
         pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="intent"),
     )
     writes = Mock()
+
+    def write_artifact(path: Path, raw: bytes) -> None:
+        path.write_bytes(raw)
+
     run_compose = Mock(return_value={"success": True, "stdout": ""})
     monkeypatch.setattr(compose_service_module, "read_pinned_database_identity", Mock(return_value=journal.pinvi_database_identity))
+    writes.side_effect = write_artifact
     monkeypatch.setattr(compose_service_module, "write_owner_only_artifact", writes)
     monkeypatch.setattr(
         compose_service_module,
@@ -1929,6 +1935,44 @@ def test_fresh_role_catalog_reset_identity_mismatch_is_terminal_before_compose(
     )
     writes.assert_not_called()
     run_compose.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("status", "result_class", "expected"),
+    [
+        ("completed", "completed", "completed"),
+        ("failed", "lifecycle_invalid", "lifecycle_invalid"),
+        ("failed", "target_not_isolated", "target_not_isolated"),
+        ("failed", "permit_invalid", "unclassified"),
+        ("failed", "untrusted", "unclassified"),
+    ],
+)
+def test_fresh_role_catalog_reset_receipt_parser_is_fixed_and_bound(
+    status: str,
+    result_class: str,
+    expected: str,
+) -> None:
+    raw = (
+        "{"
+        '\"schema\":\"pinvi.role-catalog-reset-diagnostic.v1\",'
+        f'\"status\":\"{status}\",'
+        f'\"class\":\"{result_class}\",'
+        '\"transaction\":\"transaction\",'
+        '\"pinset\":\"pinset\"'
+        "}"
+    ).encode()
+
+    assert compose_service_module._parse_pinvi_role_catalog_reset_result(
+        raw, transaction_id="transaction", pinset_sha256="pinset"
+    ) == expected
+    assert compose_service_module._parse_pinvi_role_catalog_reset_result(
+        raw, transaction_id="other-transaction", pinset_sha256="pinset"
+    ) == "unclassified"
+    assert compose_service_module._parse_pinvi_role_catalog_reset_result(
+        raw + b'\n{\"unexpected\":true}',
+        transaction_id="transaction",
+        pinset_sha256="pinset",
+    ) == "unclassified"
 
 
 def test_post_bootstrap_sealed_role_topology_failure_is_typed_and_private(
