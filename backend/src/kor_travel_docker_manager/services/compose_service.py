@@ -3191,6 +3191,100 @@ def _run_map_application_300_paired_builder(
         )
 
 
+def _map_application_300_python_base_references(
+    sources: PinnedRuntimeSourceMaterialization,
+) -> tuple[str, ...]:
+    """sealed Map Dockerfile이 요구하는 immutable Python base만 반환한다."""
+
+    map_root = sources.source_for("map").root
+    references: set[str] = set()
+    for dockerfile_name in ("api.Dockerfile", "dagster.Dockerfile"):
+        try:
+            dockerfile = (map_root / "docker" / dockerfile_name).read_text(
+                encoding="utf-8"
+            )
+        except OSError as exc:
+            raise DeploymentContractError(
+                "Map application candidate Dockerfile is unavailable"
+            ) from exc
+        stages = re.findall(
+            r"^FROM (python@sha256:[0-9a-f]{64}) AS (builder|runtime)$",
+            dockerfile,
+            flags=re.MULTILINE,
+        )
+        if len(stages) != 2 or {stage for _, stage in stages} != {
+            "builder",
+            "runtime",
+        }:
+            raise DeploymentContractError(
+                "Map application candidate base image contract is invalid"
+            )
+        image_references = {reference for reference, _ in stages}
+        if len(image_references) != 1:
+            raise DeploymentContractError(
+                "Map application candidate base image contract is invalid"
+            )
+        references.update(image_references)
+    return tuple(sorted(references))
+
+
+def _ensure_map_application_300_python_base_images(
+    sources: PinnedRuntimeSourceMaterialization,
+) -> None:
+    """candidate build 전에 digest-pinned Python base를 cache에 확보·재관측한다."""
+
+    for image_reference in _map_application_300_python_base_references(sources):
+        try:
+            inspected = subprocess.run(
+                ["docker", "image", "inspect", image_reference],
+                cwd="/",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                "Map application immutable base image is unavailable"
+            ) from exc
+        if inspected.returncode == 0:
+            continue
+        try:
+            pulled = subprocess.run(
+                ["docker", "pull", image_reference],
+                cwd="/",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=900,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                "Map application immutable base image is unavailable"
+            ) from exc
+        if pulled.returncode != 0:
+            raise DeploymentContractError(
+                "Map application immutable base image is unavailable"
+            )
+        try:
+            verified = subprocess.run(
+                ["docker", "image", "inspect", image_reference],
+                cwd="/",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                "Map application immutable base image is unavailable"
+            ) from exc
+        if verified.returncode != 0:
+            raise DeploymentContractError(
+                "Map application immutable base image is unavailable"
+            )
+
+
 def _map_application_300_builder_failure_code(
     paths: _MapApplication300Paths,
 ) -> str:
@@ -5979,6 +6073,7 @@ class ComposeService:
             )
             journal_exists = resume_journal is not None
             paired_build_images = map_application_300_paired_build_image_names(sources)
+            _ensure_map_application_300_python_base_images(sources)
             _run_map_application_300_paired_builder(
                 sources=sources,
                 api_image=paired_build_images["kor-travel-map-api"],

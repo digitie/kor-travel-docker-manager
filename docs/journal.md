@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-27 — Map immutable Python base의 trusted candidate preflight 후보
+
+n150의 `872e3262…` candidate는 API receipt 전 generic paired builder 오류로 fail-close했다. 이후
+read-only Docker inspect로 Map API Dockerfile이 요구하는 digest-pinned Python base가 host image store에 없음을
+확인했다. 같은 exact Map source의 sealed API candidate는 로컬에서 receipt까지 발행됐으므로 source tree나
+PinVi evidence를 추측·수정하지 않는다.
+
+Manager는 materialized·immutable Map source의 API/Dagster Dockerfile에서 `builder`/`runtime`의 동일한
+`python@sha256` base만 엄격하게 읽고, cache 부재일 때만 raw stdout/stderr를 `DEVNULL`으로 폐기한 trusted
+`docker pull` 뒤 다시 inspect한다. Dockerfile contract·pull·재관측 어느 하나라도 실패하면 paired build와
+journal/Compose/DB/runtime mutation 전에 닫는다. 같은 pinset은 다시 실행하지 않으며, Map execution journal을
+병합해 새 source pinset을 만든 뒤에만 fresh candidate를 한 번 실행한다.
+
+---
+
 ## 2026-08-27 — paired builder failure의 비밀 비포함 분류 후보
 
 새 `872e3262…` pinset의 trusted `rebuild-pinned --confirm`은 source worktree와 paired-builder
