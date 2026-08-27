@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-27 — Manager 컬러 톤을 오렌지 계열로 재조정
+
+`tokens.css`의 OKLCH 팔레트를 호박색 계열(hue 85)에서 오렌지 계열(hue 50)로 재조정했다. hue 50은
+`--color-danger`(28)와 `--color-warn`(72) 사이에 있어 세 색 모두 hue만으로는 구별이 약할 수
+있으므로, brand는 두 상태색보다 채도를 뚜렷이 높게(chroma 0.19, danger 0.2/warn 0.16과 경계는
+가깝지만 hue가 명확히 다른 순수 주황) 잡아 "진한 빨강(danger)"·"밝은 황금색(warn)"과 육안으로
+분명히 구별되는 비비드한 오렌지가 되도록 했다. neutral 계열(paper/ink/graphite/shadow 틴트)도
+hue 50으로 맞췄다. info/warn/danger/ok 상태색 자체는 변경하지 않았다.
+
+WSL에서 `next build`/`eslint`/`tsc --noEmit`을 통과시켰고, 로컬 QA 세션에서 로그인 화면과 인증된
+대시보드를 Playwright로 확인해 brand accent가 danger(빨강)/ok(초록) 상태색과 혼동되지 않음을
+확인했다.
+
+---
+
 ## 2026-08-27 — Map execution journal merge를 새 M05 source pinset으로 회전 후보
 
 Map #1083 merge `9c64e862c9da82016e12038e2e135526b300ca9d`는 prior generic paired-builder
