@@ -13,6 +13,13 @@ PinVi source가 current main rebase로 `61dffcb5…`로 회전했으므로, Map 
 새 pinset은 n150에서 단 한 번만 rebuild하며, committed 뒤에만 isolated M04/M05 live E2E와 signed activation
 attestation을 실행한다. 두 전문 적대 리뷰는 이 provenance·canonical hash 결박에 P0/P1 없음을 확인했다.
 
+## 2026-08-28 — pre-journal candidate 결과 회수의 durable 경계
+
+`6269138f…`는 단 한 번 실행됐으나 durable journal/manifest를 남기지 않았다. 실행 SSH의 장시간 source build로
+구조화된 stdout을 회수하지 못했으며 raw stderr는 열지 않는다. 다음 candidate는 root-owned 신규 output directory를
+단 한 번 만들고 `result.json`과 raw `stderr.log`를 분리하는 `scripts/run-pinned-rebuild-once`만 사용한다. output
+directory가 이미 있으면 launcher는 command를 호출하지 않아 같은 candidate 재시도를 막는다.
+
 ---
 
 ## 2026-08-27 — ktdctl → UI 이관 설계 문서 작성(코드 변경 없음)

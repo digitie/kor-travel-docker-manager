@@ -1,0 +1,58 @@
+#!/usr/bin/bash
+# n150 pinned rebuild의 구조화된 결과를 durable하게 보존하는 단발 launcher.
+set -euo pipefail
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: run-pinned-rebuild-once ROOT_OWNED_OUTPUT_DIRECTORY" >&2
+  exit 2
+fi
+
+if [[ "$(id -u)" != "0" ]]; then
+  echo "pinned rebuild launcher must run as root" >&2
+  exit 2
+fi
+
+output_dir="$1"
+if [[ "${output_dir}" != /* || -e "${output_dir}" ]]; then
+  echo "pinned rebuild output directory must be a new absolute path" >&2
+  exit 2
+fi
+
+parent_dir="$(dirname "${output_dir}")"
+if [[ ! -d "${parent_dir}" || -L "${parent_dir}" ]]; then
+  echo "pinned rebuild output parent is invalid" >&2
+  exit 2
+fi
+parent_uid="$(stat -c '%u' "${parent_dir}")"
+parent_mode="$(stat -c '%a' "${parent_dir}")"
+if [[ "${parent_uid}" != "0" || $((8#${parent_mode} & 022)) -ne 0 ]]; then
+  echo "pinned rebuild output parent is not root locked" >&2
+  exit 2
+fi
+
+install -d -o root -g root -m 0700 "${output_dir}"
+result_tmp="${output_dir}/.result.json.tmp"
+result_path="${output_dir}/result.json"
+stderr_path="${output_dir}/stderr.log"
+
+set +e
+/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  pinvi-pair rebuild-pinned --confirm --json >"${result_tmp}" 2>"${stderr_path}"
+status="$?"
+set -e
+
+chown root:root "${result_tmp}" "${stderr_path}"
+chmod 0600 "${result_tmp}" "${stderr_path}"
+mv -T "${result_tmp}" "${result_path}"
+
+python3 -I -S - "${result_path}" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(value, dict):
+    raise SystemExit("pinned rebuild result must be a JSON object")
+PY
+
+exit "${status}"
