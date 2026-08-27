@@ -4,6 +4,12 @@
 
 ---
 
+## 2026-08-28 — installed launcher execute bit 보존과 candidate 회전
+
+`53d4639f…`은 trusted release가 `run-pinned-rebuild-once`를 executable로 설치하지 않아 admission 이전에 끝났다.
+durable output·ledger·raw stderr가 모두 없으며 같은 pinset을 재시도하지 않는다. installer가 archive의 일반 script mode에
+의존하지 않도록 launcher의 `0755` execute bit을 명시적으로 복원한다. 다음 PinVi source와 새 pinset만 사용한다.
+
 ## 2026-08-28 — one-shot launcher의 pinset ledger와 설치 provenance fail-close
 
 전문 적대 보안 리뷰의 P1 두 건을 반영했다. launcher는 caller가 제공한 exact Manager source revision을 root-owned
