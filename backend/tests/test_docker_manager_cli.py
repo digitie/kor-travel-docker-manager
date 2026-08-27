@@ -1,3 +1,4 @@
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
+    PinnedRuntimePrejournalFailure,
     ValidatedComposeCandidate,
 )
 from kor_travel_docker_manager.services.docker_service import (
@@ -455,6 +457,24 @@ def test_cli_rebuilds_pinned_runtime(mock_compose_service):
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 0
 
     mock_compose_service.rebuild_pinned_runtime.assert_called_once_with()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
+    mock_compose_service,
+    capsys,
+):
+    mock_compose_service.rebuild_pinned_runtime.side_effect = PinnedRuntimePrejournalFailure(
+        "application_builder"
+    )
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "classification": "prejournal_failure",
+        "stage": "application_builder",
+    }
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")

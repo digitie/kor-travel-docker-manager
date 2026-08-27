@@ -1804,15 +1804,16 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
         journal_write,
     )
 
-    with pytest.raises(ComposeCandidateContractError) as captured:
+    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
         service.rebuild_pinned_runtime()
 
     state_paths = pinned_runtime_state_paths(
         values,
         pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
     )
-    assert captured.value is candidate_refusal
-    assert str(captured.value) == "candidate diagnostic preserved"
+    assert captured.value.stage == "candidate_contract"
+    assert isinstance(captured.value.__cause__, ComposeCandidateContractError)
+    assert captured.value.__cause__ is candidate_refusal
     journal_write.assert_not_called()
     run_compose.assert_not_called()
     database_reset.assert_not_called()
@@ -2209,10 +2210,11 @@ def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(
         journal_write,
     )
 
-    with pytest.raises(
-        DeploymentContractError, match="external prerequisite unavailable"
-    ):
+    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
         service.rebuild_pinned_runtime()
+
+    assert captured.value.stage == "external_prerequisites"
+    assert isinstance(captured.value.__cause__, DeploymentContractError)
 
     materialize.assert_not_called()
     paired_builder.assert_not_called()

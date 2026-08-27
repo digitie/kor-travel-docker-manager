@@ -207,6 +207,18 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
+_PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
+    {
+        "prebuild_snapshot",
+        "external_prerequisites",
+        "source_materialization",
+        "application_base_images",
+        "application_builder",
+        "application_candidate",
+        "candidate_snapshot",
+        "candidate_contract",
+    }
+)
 _MAP_APPLICATION_FRESH_PYTHON = "/usr/local/bin/python"
 _MAP_APPLICATION_FRESH_300_EXECUTABLE = (
     "/usr/local/bin/ktm-application-schema-fresh-300"
@@ -230,6 +242,28 @@ _PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS = (
     "app_ownership",
     "extension_ownership",
 )
+
+
+class PinnedRuntimePrejournalFailure(DeploymentContractError):
+    """journal 전 후보 준비 실패를 비밀 없는 고정 단계로 전달한다."""
+
+    def __init__(self, stage: str) -> None:
+        if stage not in _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES:
+            raise ValueError("pinned runtime pre-journal failure stage is invalid")
+        self.stage = stage
+        super().__init__("pinned runtime candidate preparation failed")
+
+
+@contextmanager
+def _pinned_runtime_prejournal_step(stage: str) -> Iterator[None]:
+    """journal 전 ``DeploymentContractError``를 safe stage로 봉인한다."""
+
+    try:
+        yield
+    except PinnedRuntimePrejournalFailure:
+        raise
+    except DeploymentContractError as exc:
+        raise PinnedRuntimePrejournalFailure(stage) from exc
 
 
 def _application_300_profile_operation_args(
@@ -6399,38 +6433,46 @@ class ComposeService:
                 ),
                 dagster_storage_permit=application_paths.metadata_permit_directory,
             )
-            prebuild_transaction, _ = self._capture_transaction_unlocked(
-                environment_override=dict(artifact_directories.compose_environment()),
-                environment_snapshot=environment_snapshot,
-            )
-            _assert_transaction_matches_c6c_lock(prebuild_transaction, lock_snapshot)
+            with _pinned_runtime_prejournal_step("prebuild_snapshot"):
+                prebuild_transaction, _ = self._capture_transaction_unlocked(
+                    environment_override=dict(artifact_directories.compose_environment()),
+                    environment_snapshot=environment_snapshot,
+                )
+                _assert_transaction_matches_c6c_lock(
+                    prebuild_transaction, lock_snapshot
+                )
             # 외부 prerequisite는 source materialize, paired builder, image tag,
             # receipt/journal write보다 먼저 확인한다. fixed artifact directory만
             # base candidate가 volume graph를 검증할 수 있도록 먼저 준비한다.
-            self._require_services_ready(
-                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
-                transaction=prebuild_transaction,
-                frozen_recovery=True,
-            )
-            sources = materialize_pinned_runtime_sources(
-                release=release,
-                state_paths=state_paths,
-                values=environment_snapshot.effective,
-            )
+            with _pinned_runtime_prejournal_step("external_prerequisites"):
+                self._require_services_ready(
+                    _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
+                    transaction=prebuild_transaction,
+                    frozen_recovery=True,
+                )
+            with _pinned_runtime_prejournal_step("source_materialization"):
+                sources = materialize_pinned_runtime_sources(
+                    release=release,
+                    state_paths=state_paths,
+                    values=environment_snapshot.effective,
+                )
             journal_exists = resume_journal is not None
             paired_build_images = map_application_300_paired_build_image_names(sources)
-            _ensure_map_application_300_python_base_images(sources)
-            _run_map_application_300_paired_builder(
-                sources=sources,
-                api_image=paired_build_images["kor-travel-map-api"],
-                dagster_image=paired_build_images["kor-travel-map-dagster"],
-                paths=application_paths,
-                resume_journal=journal_exists,
-            )
-            map_candidate = self._load_application_300_paired_candidate(
-                sources=sources,
-                paths=application_paths,
-            )
+            with _pinned_runtime_prejournal_step("application_base_images"):
+                _ensure_map_application_300_python_base_images(sources)
+            with _pinned_runtime_prejournal_step("application_builder"):
+                _run_map_application_300_paired_builder(
+                    sources=sources,
+                    api_image=paired_build_images["kor-travel-map-api"],
+                    dagster_image=paired_build_images["kor-travel-map-dagster"],
+                    paths=application_paths,
+                    resume_journal=journal_exists,
+                )
+            with _pinned_runtime_prejournal_step("application_candidate"):
+                map_candidate = self._load_application_300_paired_candidate(
+                    sources=sources,
+                    paths=application_paths,
+                )
             build = CandidateRuntimeBuild(
                 sources=sources,
                 map_application_300_candidate=map_candidate,
@@ -6444,24 +6486,29 @@ class ComposeService:
                 **artifact_directories.compose_environment(),
                 "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
             }
-            candidate_transaction, _ = self._capture_transaction_unlocked(
-                environment_override=candidate_environment,
-                environment_snapshot=environment_snapshot,
-            )
-            _assert_transaction_matches_c6c_lock(candidate_transaction, lock_snapshot)
-            self._validate_pinned_runtime_candidate_build_contract(
-                candidate_transaction,
-                build=build,
-                environment_override=candidate_environment,
-            )
+            with _pinned_runtime_prejournal_step("candidate_snapshot"):
+                candidate_transaction, _ = self._capture_transaction_unlocked(
+                    environment_override=candidate_environment,
+                    environment_snapshot=environment_snapshot,
+                )
+                _assert_transaction_matches_c6c_lock(
+                    candidate_transaction, lock_snapshot
+                )
+            with _pinned_runtime_prejournal_step("candidate_contract"):
+                self._validate_pinned_runtime_candidate_build_contract(
+                    candidate_transaction,
+                    build=build,
+                    environment_override=candidate_environment,
+                )
             # Geo·Concierge·RustFS는 F1D가 소유하지 않는 선행 runtime이다. 후보를
             # build하거나 journal을 쓰기 전에 frozen Compose의 read-only ``ps``로
             # exact readiness를 증명하고, 부재/불건강이면 시작·변경 없이 닫는다.
-            self._require_services_ready(
-                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
-                transaction=candidate_transaction,
-                frozen_recovery=True,
-            )
+            with _pinned_runtime_prejournal_step("external_prerequisites"):
+                self._require_services_ready(
+                    _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
+                    transaction=candidate_transaction,
+                    frozen_recovery=True,
+                )
             if journal_exists:
                 journal = cast(PinnedRuntimeRebuildJournal, resume_journal)
                 if journal.phase == "committed":
