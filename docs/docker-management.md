@@ -491,7 +491,10 @@ migrator role DSN만 전달한다. initial superuser·runtime application·migra
 
 새 pinset candidate의 Map paired candidate·frozen Compose source contract·external readiness는 기존 DB를
 폐기하기 전에 확인한다. 반면 sealed topology verifier는 폐기 대상인 기존 catalog를 target-state로
-해석하지 않는다. Manager는 DB reset 뒤 PinVi role open → admin/migration bootstrap → migrator seal과 exact
+해석하지 않는다. PinVi DB drop/create만으로는 PostgreSQL cluster-global role catalog가 비워지지 않으므로,
+Manager는 reset intent를 journal에 fsync하고 새 DB identity를 결박한 root-owned `0600` permit을 발행한 뒤
+fresh-only exact four-role catalog reset one-shot을 실행한다. permit·empty target·foreign dependency·catalog lock
+검증 하나라도 실패하면 generic terminal receipt만 남기고 runtime을 정지한다. 이후 PinVi role open → admin/migration bootstrap → migrator seal과 exact
 PinVi schema head 확인을 마친 fresh DB에만 같은 one-shot을
 `PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`·sealed migrator로 실행한다. verifier는 고정 schema의 canonical
 결과만 통과시키며, ordered fixed reason의 noncanonical·입력/endpoint/검증 불가·형식 불일치는 원문 출력

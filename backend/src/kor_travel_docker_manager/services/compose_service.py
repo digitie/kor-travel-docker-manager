@@ -3801,7 +3801,7 @@ class ComposeService:
             default_flow_style=False,
             sort_keys=False,
             allow_unicode=True,
-        ).encode("utf-8")
+        ).encode()
         resolved = json.loads(
             _serialize_resolved_compose_document(candidate_validation.resolved)
         )
@@ -5273,6 +5273,62 @@ class ComposeService:
             raise _PinviRoleLifecycleError(
                 final_seal_error,
                 role_topology_block=role_topology_block,
+            ) from None
+
+    def _run_pinvi_fresh_role_catalog_reset(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        state_paths: PinnedRuntimeStatePaths,
+        journal: PinnedRuntimeRebuildJournal,
+        runtime: DatabaseRuntime,
+    ) -> None:
+        """Manager가 방금 만든 PinVi DB에만 root-owned reset permit을 발행한다."""
+
+        identity = journal.pinvi_database_identity
+        if identity is None or read_pinned_database_identity(runtime) != identity:
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                ),
+            ) from None
+        permit_path = (
+            state_paths.state_root
+            / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.permit"
+        )
+        permit = (
+            "pinvi-role-catalog-reset-v1|"
+            f"{journal.transaction_id}|{journal.candidate.pinset_sha256}|"
+            f"{identity.system_identifier}|{identity.oid}|{identity.name}|{identity.owner}\n"
+        ).encode()
+        try:
+            write_owner_only_artifact(permit_path, permit)
+            self._run_pinned_runtime_rebuild_compose(
+                [
+                    "--profile",
+                    "bootstrap",
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "-v",
+                    f"{permit_path}:/run/pinvi/role-catalog-reset.permit:ro",
+                    "-e",
+                    "PINVI_ROLE_CATALOG_RESET_ONLY=1",
+                    "-e",
+                    "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
+                    _PINVI_DB_RUNTIME_ROLE_SERVICE,
+                ],
+                transaction=transaction,
+            )
+        except DeploymentContractError:
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                ),
             ) from None
 
     @staticmethod
@@ -7300,6 +7356,34 @@ class ComposeService:
                     journal = updated
                 if journal.phase == "map_runtime_ready":
                     try:
+                        if journal.pinvi_role_catalog_reset is None:
+                            raise _PinviRoleLifecycleError(
+                                "PinVi fresh role catalog reset receipt is missing",
+                                role_topology_block=PinviRoleLifecycleBlock(
+                                    stage="pinvi_role_catalog_reset",
+                                    code="role_catalog_reset_failed",
+                                ),
+                            )
+                        if journal.pinvi_role_catalog_reset.state == "intent":
+                            if not reset_required:
+                                raise _PinviRoleLifecycleError(
+                                    "PinVi fresh role catalog reset outcome is ambiguous",
+                                    role_topology_block=PinviRoleLifecycleBlock(
+                                        stage="pinvi_role_catalog_reset",
+                                        code="role_catalog_reset_failed",
+                                    ),
+                                )
+                            self._run_pinvi_fresh_role_catalog_reset(
+                                transaction=runtime_transaction,
+                                state_paths=state_paths,
+                                journal=journal,
+                                runtime=runtimes[2],
+                            )
+                            updated = journal.with_pinvi_role_catalog_reset_completed()
+                            write_pinned_runtime_rebuild_journal(
+                                state_paths.journal, updated
+                            )
+                            journal = updated
                         self._run_pinvi_schema_bootstrap_with_role_lifecycle(
                             transaction=runtime_transaction,
                             state_paths=state_paths,

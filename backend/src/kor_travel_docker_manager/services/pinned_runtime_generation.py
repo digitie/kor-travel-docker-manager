@@ -1419,21 +1419,52 @@ class PinviRoleCredentialEnvironmentRebind:
 class PinviRoleLifecycleBlock:
     """동일 pinset의 role topology 재실행을 막는 비밀 비포함 terminal receipt."""
 
-    stage: Literal["pinvi_role_open", "pinvi_role_seal", "pinvi_role_verify"]
-    code: Literal["role_topology_noncanonical", "role_topology_unavailable"]
+    stage: Literal[
+        "pinvi_role_catalog_reset",
+        "pinvi_role_open",
+        "pinvi_role_seal",
+        "pinvi_role_verify",
+    ]
+    code: Literal[
+        "role_catalog_reset_failed",
+        "role_topology_noncanonical",
+        "role_topology_unavailable",
+    ]
 
     def __post_init__(self) -> None:
         if self.stage not in {
+            "pinvi_role_catalog_reset",
             "pinvi_role_open",
             "pinvi_role_seal",
             "pinvi_role_verify",
-        } or self.code not in {"role_topology_noncanonical", "role_topology_unavailable"}:
+        } or self.code not in {
+            "role_catalog_reset_failed",
+            "role_topology_noncanonical",
+            "role_topology_unavailable",
+        }:
             raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
-        if self.stage != "pinvi_role_verify" and self.code != "role_topology_noncanonical":
+        if self.stage == "pinvi_role_catalog_reset":
+            if self.code != "role_catalog_reset_failed":
+                raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
+        elif self.stage != "pinvi_role_verify" and self.code != "role_topology_noncanonical":
             raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
 
     def to_payload(self) -> dict[str, str]:
         return {"stage": self.stage, "code": self.code}
+
+
+@dataclass(frozen=True)
+class PinviRoleCatalogResetReceipt:
+    """fresh-only cluster role catalog reset의 durable intent/result."""
+
+    state: Literal["intent", "completed"]
+
+    def __post_init__(self) -> None:
+        if self.state not in {"intent", "completed"}:
+            raise DeploymentContractError("PinVi role catalog reset receipt is invalid")
+
+    def to_payload(self) -> dict[str, str]:
+        return {"state": self.state}
 
 
 @dataclass(frozen=True)
@@ -1458,6 +1489,7 @@ class PinnedRuntimeRebuildJournal:
     pinvi_role_credential_environment_rebind: (
         PinviRoleCredentialEnvironmentRebind | None
     ) = None
+    pinvi_role_catalog_reset: PinviRoleCatalogResetReceipt | None = None
     pinvi_role_lifecycle_block: PinviRoleLifecycleBlock | None = None
 
     def __post_init__(self) -> None:
@@ -1502,6 +1534,26 @@ class PinnedRuntimeRebuildJournal:
         ):
             raise DeploymentContractError(
                 "pinned runtime rebuild has invalid PinVi role lifecycle block"
+            )
+        catalog_reset = self.pinvi_role_catalog_reset
+        if catalog_reset is not None and (
+            not isinstance(catalog_reset, PinviRoleCatalogResetReceipt)
+            or self.pinvi_database_identity is None
+            or REBUILD_PHASES.index(self.phase)
+            < REBUILD_PHASES.index("databases_recreated")
+            or (
+                catalog_reset.state == "intent"
+                and REBUILD_PHASES.index(self.phase)
+                > REBUILD_PHASES.index("map_runtime_ready")
+            )
+            or (
+                catalog_reset.state == "completed"
+                and REBUILD_PHASES.index(self.phase)
+                < REBUILD_PHASES.index("map_runtime_ready")
+            )
+        ):
+            raise DeploymentContractError(
+                "pinned runtime rebuild has invalid PinVi role catalog reset receipt"
             )
         _validate_utc_timestamp(self.created_at, "pinned runtime rebuild timestamp")
         if not isinstance(
@@ -1608,6 +1660,22 @@ class PinnedRuntimeRebuildJournal:
             pinvi_role_lifecycle_block=receipt,
         )
 
+    def with_pinvi_role_catalog_reset_completed(self) -> PinnedRuntimeRebuildJournal:
+        """fresh catalog reset의 성공만 다음 role-open 단계로 넘긴다."""
+
+        if (
+            self.phase != "map_runtime_ready"
+            or self.pinvi_role_catalog_reset
+            != PinviRoleCatalogResetReceipt(state="intent")
+            or self.pinvi_role_lifecycle_block is not None
+        ):
+            raise DeploymentContractError("PinVi role catalog reset completion is not permitted")
+        return replace(
+            self,
+            journal_generation=self.journal_generation + 1,
+            pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="completed"),
+        )
+
     def with_application_roles_ready(
         self,
         *,
@@ -1656,6 +1724,7 @@ class PinnedRuntimeRebuildJournal:
             phase="databases_recreated",
             journal_generation=self.journal_generation + 1,
             pinvi_database_identity=pinvi_database_identity,
+            pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="intent"),
         )
 
     def with_application_create_intent(self) -> PinnedRuntimeRebuildJournal:
@@ -2050,6 +2119,11 @@ class PinnedRuntimeRebuildJournal:
                 if self.pinvi_role_credential_environment_rebind is None
                 else self.pinvi_role_credential_environment_rebind.to_payload()
             ),
+            "pinvi_role_catalog_reset": (
+                None
+                if self.pinvi_role_catalog_reset is None
+                else self.pinvi_role_catalog_reset.to_payload()
+            ),
             "pinvi_role_lifecycle_block": (
                 None
                 if self.pinvi_role_lifecycle_block is None
@@ -2203,6 +2277,7 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
     }
     optional_keys = {
         "pinvi_role_credential_environment_rebind",
+        "pinvi_role_catalog_reset",
         "pinvi_role_lifecycle_block",
     }
     if (
@@ -2273,6 +2348,13 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
                 payload.get("pinvi_role_credential_environment_rebind")
             )
         ),
+        pinvi_role_catalog_reset=(
+            None
+            if payload.get("pinvi_role_catalog_reset") is None
+            else pinvi_role_catalog_reset_from_payload(
+                payload.get("pinvi_role_catalog_reset")
+            )
+        ),
         pinvi_role_lifecycle_block=(
             None
             if payload.get("pinvi_role_lifecycle_block") is None
@@ -2323,24 +2405,58 @@ def pinvi_role_lifecycle_block_from_payload(
         not isinstance(payload, Mapping)
         or set(payload) != {"stage", "code"}
         or payload.get("stage")
-        not in {"pinvi_role_open", "pinvi_role_seal", "pinvi_role_verify"}
+        not in {
+            "pinvi_role_catalog_reset",
+            "pinvi_role_open",
+            "pinvi_role_seal",
+            "pinvi_role_verify",
+        }
         or payload.get("code")
-        not in {"role_topology_noncanonical", "role_topology_unavailable"}
+        not in {
+            "role_catalog_reset_failed",
+            "role_topology_noncanonical",
+            "role_topology_unavailable",
+        }
     ):
         raise DeploymentContractError("PinVi role lifecycle block payload is invalid")
     stage = cast(
-        Literal["pinvi_role_open", "pinvi_role_seal", "pinvi_role_verify"],
+        Literal[
+            "pinvi_role_catalog_reset",
+            "pinvi_role_open",
+            "pinvi_role_seal",
+            "pinvi_role_verify",
+        ],
         payload["stage"],
     )
     code = cast(
-        Literal["role_topology_noncanonical", "role_topology_unavailable"],
+        Literal[
+            "role_catalog_reset_failed",
+            "role_topology_noncanonical",
+            "role_topology_unavailable",
+        ],
         payload["code"],
     )
-    if stage != "pinvi_role_verify" and code != "role_topology_noncanonical":
+    if stage == "pinvi_role_catalog_reset" and code != "role_catalog_reset_failed":
+        raise DeploymentContractError("PinVi role lifecycle block receipt payload is invalid")
+    if stage not in {"pinvi_role_catalog_reset", "pinvi_role_verify"} and code != "role_topology_noncanonical":
         raise DeploymentContractError("PinVi role lifecycle block payload is invalid")
     return PinviRoleLifecycleBlock(
         stage=stage,
         code=code,
+    )
+
+
+def pinvi_role_catalog_reset_from_payload(
+    payload: object,
+) -> PinviRoleCatalogResetReceipt:
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != {"state"}
+        or payload.get("state") not in {"intent", "completed"}
+    ):
+        raise DeploymentContractError("PinVi role catalog reset receipt payload is invalid")
+    return PinviRoleCatalogResetReceipt(
+        state=cast(Literal["intent", "completed"], payload["state"])
     )
 
 
