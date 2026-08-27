@@ -8,7 +8,8 @@
 
 `53d4639f…`은 trusted release가 `run-pinned-rebuild-once`를 executable로 설치하지 않아 admission 이전에 끝났다.
 durable output·ledger·raw stderr가 모두 없으며 같은 pinset을 재시도하지 않는다. installer가 archive의 일반 script mode에
-의존하지 않도록 launcher의 `0755` execute bit을 명시적으로 복원한다. 다음 PinVi source와 새 pinset만 사용한다.
+의존하지 않도록 launcher의 `0755` execute bit을 명시적으로 복원한다. PinVi `41a36ee6…`·Map `9c64e862…`의
+`c1ad5a3e…`만 다음 candidate로 사용한다.
 
 ## 2026-08-28 — one-shot launcher의 pinset ledger와 설치 provenance fail-close
 
@@ -24,7 +25,8 @@ nonblocking flock을 재검증한 inherited descriptor를 재사용하므로 one
 ## 2026-08-28 — M05 one-shot launcher를 포함한 새 candidate 회전
 
 `6269138f…`은 durable journal/manifest 없이 끝난 pre-journal 단회 시도로 보존하며 재실행하지 않는다. PinVi의
-그 기록 source `55687a4f…`와 Map `9c64e862…`를 canonical pinset `53d4639f…`으로 다시 결박했다. 다음 n150
+그 기록 source `55687a4f…`와 Map `9c64e862…`를 canonical pinset `53d4639f…`으로 다시 결박했으나, 이는 executable
+bit 미보존으로 admission 이전에 끝나 재시도하지 않는다. 다음 n150
 candidate는 trusted Manager release의 `run-pinned-rebuild-once`가 root-owned `result.json`을 남기는 경우에만 단 한 번
 실행한다. raw stderr는 root 전용으로 보존하고 판정에 읽지 않는다.
 
