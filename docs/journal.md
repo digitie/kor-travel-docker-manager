@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-08-27 — ktdctl → UI 이관 설계 문서 작성(코드 변경 없음)
+
+`ktdctl` CLI 기능 중 UI로 옮길 만한 것과, GitHub source pull+build·git revision/계약
+정합·git 이력 조회·Docker 이미지 업데이트·백업·설정/secret 변경 등 운영에 필요한 기능의
+격차를 조사해 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)로 정리했다. 조사
+서브에이전트가 초안을 작성한 뒤 보안/blast-radius 리뷰와 완결성/실현가능성 리뷰를 각각
+독립 서브에이전트로 수행했다.
+
+두 리뷰가 일치되게 지적한 핵심 정정: (1) 초안이 "개별 컨테이너 조작이 C6c 보호를
+우회한다"는 근거로 삼은 `assert_c6c_mutation_allowed`는 저장소 어디에도 존재하지 않는
+함수였다 — 실제로는 control/config/reset이 C6c lock **안에서** 실행되고, `ensure`만
+production 전용 하드스톱을 추가로 갖는다. 이 잘못된 전제 위에 세워졌던
+`image rebuild-service` 제안은 로드맵에서 제외했다. (2) `pinvi-pair diff-pinned`
+제안은 "read-only 최우선 후보"로 분류돼 있었지만, 실제로는 기존 pinned mirror가
+per-pinset·root-owned 0700·rehearsal 전용이라 재사용할 수 없어 별도 fetch(네트워크
+mutation)가 필요하다는 것이 확인돼 "정책 결정 필요" 군으로 내렸다. (3) 두 리뷰 중
+하나가 초안에 없던 항목 — 이미 backend가 읽을 수 있는 0700 자기 소유
+pinned-runtime-generation manifest — 을 찾아내 이번 문서의 최우선 후보로 승격했다.
+그 외 `db-backup create/gc` API 노출을 가로막는 실질적 UID/ownership 장벽(이미
+`docs/docker-management.md`에 문서화돼 있었음), `secret rotate`의 human/machine
+credential 구분 필요성과 self-lockout 재분석도 반영했다.
+
+이번 라운드는 오너 지시대로 **설계·문서화·`docs/tasks.md`의 `KTDCTL-UI-MIGRATION`
+태스크 등록까지만** 진행했다. 코드 변경도 n150 배포도 없다. 문서의 열린 질문 6건에
+오너가 답한 뒤 승인된 항목만 별도 구현 태스크로 분리한다.
+
+---
+
 ## 2026-08-27 — Manager 로그인 화면과 모달·패널을 kor-travel-geo-ui와 재정합
 
 로그인 화면이 geo와 다르다는 지적을 받아 실제 geo `LoginForm.tsx`/`.login-shell`/
