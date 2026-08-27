@@ -4,12 +4,19 @@
 
 ---
 
+## 2026-08-28 — M05 one-shot launcher를 포함한 새 candidate 회전
+
+`6269138f…`은 durable journal/manifest 없이 끝난 pre-journal 단회 시도로 보존하며 재실행하지 않는다. PinVi의
+그 기록 source `55687a4f…`와 Map `9c64e862…`를 canonical pinset `53d4639f…`으로 다시 결박했다. 다음 n150
+candidate는 trusted Manager release의 `run-pinned-rebuild-once`가 root-owned `result.json`을 남기는 경우에만 단 한 번
+실행한다. raw stderr는 root 전용으로 보존하고 판정에 읽지 않는다.
+
 ## 2026-08-28 — M05 committed Map runtime provenance 재결박
 
 기존 `030b12fc…` generation은 Map `9c64e862…`, API image `2260ec…`, UI image `5dc547…`로
 `committed` 되었고 재실행 금지다. PinVi M05 attestation이 source와 image identity를 exact pair로 검사하므로,
 PinVi source가 current main rebase로 `61dffcb5…`로 회전했으므로, Map `9c64e862…`와 새 canonical pinset
-`6269138f…`만 다음 trusted candidate로 고정했다.
+`6269138f…`는 이전 trusted candidate로 고정했다.
 새 pinset은 n150에서 단 한 번만 rebuild하며, committed 뒤에만 isolated M04/M05 live E2E와 signed activation
 attestation을 실행한다. 두 전문 적대 리뷰는 이 provenance·canonical hash 결박에 P0/P1 없음을 확인했다.
 
