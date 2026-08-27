@@ -121,6 +121,7 @@ from kor_travel_docker_manager.services.map_application_300_candidate import (
     load_map_application_300_candidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS,
     REBUILD_PHASES,
     RUNTIME_SERVICES,
     MapApplication300ApplicationDatabaseIdentity,
@@ -133,6 +134,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
     PinnedRuntimeStatePaths,
+    PinviRoleCatalogResetDiagnostic,
     PinviRoleLifecycleBlock,
     RebuildPhase,
     RuntimeService,
@@ -561,9 +563,11 @@ def _parse_pinvi_role_catalog_reset_result(
         return "unclassified"
     if payload.get("status") == "completed" and payload.get("class") == "completed":
         return "completed"
-    if payload.get("status") == "failed" and payload.get("class") in {
-        "lifecycle_invalid", "target_not_isolated"
-    }:
+    if (
+        payload.get("status") == "failed"
+        and payload.get("class") in PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS
+        and payload.get("class") not in {"permit_invalid", "unclassified"}
+    ):
         return cast(str, payload["class"])
     return "unclassified"
 
@@ -5434,15 +5438,7 @@ class ComposeService:
                 role_topology_block=PinviRoleLifecycleBlock(
                     stage="pinvi_role_catalog_reset",
                     code="role_catalog_reset_failed",
-                    diagnostic=cast(
-                        Literal[
-                            "lifecycle_invalid",
-                            "permit_invalid",
-                            "target_not_isolated",
-                            "unclassified",
-                        ],
-                        diagnostic,
-                    ),
+                    diagnostic=cast(PinviRoleCatalogResetDiagnostic, diagnostic),
                 ),
             ) from None
 

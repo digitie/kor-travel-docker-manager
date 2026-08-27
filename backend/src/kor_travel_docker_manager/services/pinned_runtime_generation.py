@@ -33,6 +33,42 @@ RuntimeService = Literal[
     "pinvi-dagster",
 ]
 SchemaRole = Literal["map_application", "map_dagster", "pinvi"]
+PinviRoleCatalogResetDiagnostic = Literal[
+    "lifecycle_invalid",
+    "permit_invalid",
+    "target_not_isolated",
+    "target_identity_invalid",
+    "protected_namespace_present",
+    "extra_namespace_present",
+    "extension_present",
+    "relation_present",
+    "routine_present",
+    "foreign_membership",
+    "foreign_database_owner",
+    "foreign_role_setting",
+    "foreign_shared_dependency",
+    "foreign_namespace_object",
+    "unclassified",
+]
+PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS = frozenset(
+    {
+        "lifecycle_invalid",
+        "permit_invalid",
+        "target_not_isolated",
+        "target_identity_invalid",
+        "protected_namespace_present",
+        "extra_namespace_present",
+        "extension_present",
+        "relation_present",
+        "routine_present",
+        "foreign_membership",
+        "foreign_database_owner",
+        "foreign_role_setting",
+        "foreign_shared_dependency",
+        "foreign_namespace_object",
+        "unclassified",
+    }
+)
 RebuildPhase = Literal[
     "candidate_attested",
     "reset_intent_durable",
@@ -1430,9 +1466,7 @@ class PinviRoleLifecycleBlock:
         "role_topology_noncanonical",
         "role_topology_unavailable",
     ]
-    diagnostic: Literal[
-        "lifecycle_invalid", "permit_invalid", "target_not_isolated", "unclassified"
-    ] = "unclassified"
+    diagnostic: PinviRoleCatalogResetDiagnostic = "unclassified"
 
     def __post_init__(self) -> None:
         if self.stage not in {
@@ -1447,9 +1481,10 @@ class PinviRoleLifecycleBlock:
         }:
             raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
         if self.stage == "pinvi_role_catalog_reset":
-            if self.code != "role_catalog_reset_failed" or self.diagnostic not in {
-                "lifecycle_invalid", "permit_invalid", "target_not_isolated", "unclassified"
-            }:
+            if (
+                self.code != "role_catalog_reset_failed"
+                or self.diagnostic not in PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS
+            ):
                 raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
         elif self.stage != "pinvi_role_verify" and self.code != "role_topology_noncanonical":
             raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
@@ -2443,11 +2478,8 @@ def pinvi_role_lifecycle_block_from_payload(
         ],
         payload["code"],
     )
-    diagnostic = cast(
-        Literal["lifecycle_invalid", "permit_invalid", "target_not_isolated", "unclassified"],
-        payload.get("diagnostic", "unclassified"),
-    )
-    if diagnostic not in {"lifecycle_invalid", "permit_invalid", "target_not_isolated", "unclassified"}:
+    diagnostic = cast(PinviRoleCatalogResetDiagnostic, payload.get("diagnostic", "unclassified"))
+    if diagnostic not in PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS:
         raise DeploymentContractError("PinVi role lifecycle block payload is invalid")
     if stage == "pinvi_role_catalog_reset" and code != "role_catalog_reset_failed":
         raise DeploymentContractError("PinVi role lifecycle block receipt payload is invalid")

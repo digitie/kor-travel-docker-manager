@@ -1985,6 +1985,8 @@ def test_fresh_role_catalog_reset_changed_live_identity_is_terminal_before_compo
         ("completed", "completed", "completed"),
         ("failed", "lifecycle_invalid", "lifecycle_invalid"),
         ("failed", "target_not_isolated", "target_not_isolated"),
+        ("failed", "foreign_membership", "foreign_membership"),
+        ("failed", "foreign_namespace_object", "foreign_namespace_object"),
         ("failed", "permit_invalid", "unclassified"),
         ("failed", "untrusted", "unclassified"),
     ],
