@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-27 — Manager 오렌지 톤을 사용자 제공 참고 팔레트 값으로 정합
+
+직전 오렌지 재조정(hue 50, 임의 추정치)이 사용자가 제공한
+`web_service_palette_testset.html`(10개 서비스 후보 색상 비교용 HTML, Tailwind 기본 팔레트
+기반)의 Orange 정의(`#EA580C`/`#C2410C`/`#FFEDD5`, Tailwind orange-600/700/100)를 실제로
+참조하지 않고 지어낸 값이었음을 확인했다. 세 hex를 OKLCH로 정확히 변환해
+(`oklch(64.6% 0.222 41.1)` / `oklch(55.3% 0.195 38.4)` / `oklch(95.4% 0.038 75.2)`)
+`--color-brand`/`--color-brand-ink`/`--color-brand-tint`를 교체하고, neutral 계열 hue도
+41로 맞췄다. info/warn/danger/ok 상태색은 변경하지 않았다.
+
+WSL에서 `next build`/`eslint`/`tsc --noEmit`을 통과시켰고, 로컬 dev 서버에서 로그인 화면을
+Playwright로 확인해 결과 색상이 Tailwind orange-600(널리 알려진 색)과 일치함을 확인했다.
+
+---
+
 ## 2026-08-27 — Manager 컬러 톤을 오렌지 계열로 재조정
 
 `tokens.css`의 OKLCH 팔레트를 호박색 계열(hue 85)에서 오렌지 계열(hue 50)로 재조정했다. hue 50은
