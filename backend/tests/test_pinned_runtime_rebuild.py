@@ -43,6 +43,7 @@ from kor_travel_docker_manager.services.database_runtime import (
 from kor_travel_docker_manager.services.map_application_300 import (
     Application300Contract,
     FreshRootResult,
+    MapApplication300ContractError,
 )
 from kor_travel_docker_manager.services.map_application_300_candidate import (
     MapApplication300Candidate,
@@ -1904,6 +1905,8 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
             "PINVI_ROLE_CATALOG_RESET_RESULT_FILE=/run/pinvi/role-catalog-reset.result",
         "pinvi-db-runtime-role",
     ]
+    assert run_compose.call_args.kwargs["capture_output"] is False
+    assert run_compose.call_args.kwargs["allow_typed_error_diagnostic"] is False
 
 
 def test_fresh_role_catalog_reset_identity_mismatch_is_terminal_before_compose(
@@ -1973,6 +1976,51 @@ def test_fresh_role_catalog_reset_receipt_parser_is_fixed_and_bound(
         transaction_id="transaction",
         pinset_sha256="pinset",
     ) == "unclassified"
+
+
+def test_fresh_role_catalog_reset_receipt_read_failure_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    linux_tmp_path: Path,
+) -> None:
+    service = ComposeService()
+    journal = replace(
+        _journal_at_runtime_phase("map_runtime_ready"),
+        pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="intent"),
+    )
+
+    def write_artifact(path: Path, raw: bytes) -> None:
+        path.write_bytes(raw)
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_pinned_database_identity",
+        Mock(return_value=journal.pinvi_database_identity),
+    )
+    monkeypatch.setattr(compose_service_module, "write_owner_only_artifact", write_artifact)
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_owner_only_artifact",
+        Mock(side_effect=MapApplication300ContractError("unsafe artifact")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_pinned_runtime_rebuild_compose",
+        Mock(return_value={"success": True, "stdout": ""}),
+    )
+
+    with pytest.raises(compose_service_module._PinviRoleLifecycleError) as captured:
+        service._run_pinvi_fresh_role_catalog_reset(
+            transaction=cast(ComposeTransactionSnapshot, SimpleNamespace()),
+            state_paths=cast(Any, SimpleNamespace(state_root=linux_tmp_path)),
+            journal=journal,
+            runtime=cast(DatabaseRuntime, SimpleNamespace()),
+        )
+
+    assert captured.value.role_topology_block == PinviRoleLifecycleBlock(
+        stage="pinvi_role_catalog_reset",
+        code="role_catalog_reset_failed",
+        diagnostic="unclassified",
+    )
 
 
 def test_post_bootstrap_sealed_role_topology_failure_is_typed_and_private(

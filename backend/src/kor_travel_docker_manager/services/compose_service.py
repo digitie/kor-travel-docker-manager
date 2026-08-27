@@ -4829,6 +4829,8 @@ class ComposeService:
         args: Sequence[str],
         *,
         transaction: ComposeTransactionSnapshot,
+        capture_output: bool = True,
+        allow_typed_error_diagnostic: bool = True,
     ) -> dict[str, Any]:
         compose_action = self._pinned_runtime_compose_action(args)
         if compose_action in {"run", "up"} and "--no-deps" not in args:
@@ -4851,18 +4853,22 @@ class ComposeService:
                 build_result = self._run_pinned_runtime_rebuild_compose(
                     ["build", service],
                     transaction=transaction,
+                    capture_output=capture_output,
+                    allow_typed_error_diagnostic=allow_typed_error_diagnostic,
                 )
             return build_result
         result = self._run_frozen_recovery(
             args,
             transaction=transaction,
             mutation_capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+            capture_output=capture_output,
         )
         if result["success"]:
             return result
-        diagnostic = self._pinned_runtime_compose_failure_diagnostic(
-            args,
-            result,
+        diagnostic = (
+            self._pinned_runtime_compose_failure_diagnostic(args, result)
+            if allow_typed_error_diagnostic
+            else ""
         )
         raise DeploymentContractError(
             "pinned runtime rebuild Compose "
@@ -5382,6 +5388,8 @@ class ComposeService:
                     _PINVI_DB_RUNTIME_ROLE_SERVICE,
                 ],
                 transaction=transaction,
+                capture_output=False,
+                allow_typed_error_diagnostic=False,
             )
             if _read_pinvi_role_catalog_reset_result(
                 result_path,
@@ -5390,7 +5398,7 @@ class ComposeService:
                 pinset_sha256=journal.candidate.pinset_sha256,
             ) != "completed":
                 raise DeploymentContractError("PinVi fresh role catalog reset result is invalid")
-        except DeploymentContractError:
+        except (DeploymentContractError, MapApplication300ContractError):
             if result_identity is None:
                 diagnostic = "unclassified"
             else:

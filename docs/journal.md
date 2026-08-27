@@ -30,6 +30,11 @@ credential 구분 필요성과 self-lockout 재분석도 반영했다.
 태스크 등록까지만** 진행했다. 코드 변경도 n150 배포도 없다. 문서의 열린 질문 6건에
 오너가 답한 뒤 승인된 항목만 별도 구현 태스크로 분리한다.
 
+전문 적대 리뷰가 receipt 안전성 오류가 terminal journal을 우회할 수 있고 reset `run`이 generic Compose
+typed-output parser를 거칠 수 있는 P1을 지적했다. receipt read/metadata 오류는 이제 `unclassified` terminal
+block으로 봉인하며, reset one-shot은 output capture와 typed-output diagnostic을 모두 끈다. 실패 분류의 유일한
+입력은 inode-bound result receipt이고, focused generation/rebuild/release 회귀 167건으로 고정했다.
+
 ---
 
 ## 2026-08-27 — Manager 로그인 화면과 모달·패널을 kor-travel-geo-ui와 재정합
