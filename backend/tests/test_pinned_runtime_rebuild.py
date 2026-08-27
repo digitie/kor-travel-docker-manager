@@ -60,6 +60,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinviRoleLifecycleBlock,
     RebuildPhase,
     RuntimeService,
+    journal_from_payload,
     manifest_from_payload,
     pinned_runtime_state_paths,
     read_rebuild_journal,
@@ -2339,6 +2340,86 @@ def test_terminal_role_topology_block_precedes_source_or_database_mutation(
         ComposeService().rebuild_pinned_runtime()
 
     materialize.assert_not_called()
+    reset_databases.assert_not_called()
+
+
+def test_legacy_d9_role_topology_failure_precedes_credential_or_source_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    linux_tmp_path: Path,
+) -> None:
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "COMPOSE_PROJECT_NAME": "f1d-legacy-role-block",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(linux_tmp_path / "state"),
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+    }
+    environment = SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n")
+    state_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    )
+    state_paths.state_root.mkdir(parents=True, mode=0o700)
+    payload = _journal_at_runtime_phase("map_runtime_ready").to_payload()
+    del payload["pinvi_role_lifecycle_block"]
+    legacy_journal = journal_from_payload(payload)
+    assert legacy_journal.pinvi_role_lifecycle_block is None
+    write_rebuild_journal(state_paths.journal, legacy_journal)
+    credential_write = Mock()
+    materialize = Mock()
+    paired_builder = Mock()
+    external_ready = Mock()
+    reset_databases = Mock()
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: environment,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "ensure_pinned_runtime_pinvi_role_credentials",
+        credential_write,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        materialize,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_run_map_application_300_paired_builder",
+        paired_builder,
+    )
+    monkeypatch.setattr(
+        ComposeService,
+        "_require_services_ready",
+        external_ready,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "reset_databases_for_application_300",
+        reset_databases,
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="blocked by durable PinVi role topology failure",
+    ):
+        ComposeService().rebuild_pinned_runtime()
+
+    credential_write.assert_not_called()
+    materialize.assert_not_called()
+    paired_builder.assert_not_called()
+    external_ready.assert_not_called()
     reset_databases.assert_not_called()
 
 

@@ -89,7 +89,9 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   하지 않으며 d9 command도 재실행하지 않는다. 후속 Manager PR은 동일 pinset에서 확정된
   `pinvi_role_open` 또는 `pinvi_role_seal`의 `role_topology_noncanonical`만 비밀 비포함 terminal receipt로
   v8 journal에 기록하고, 다음 admission을 source materialize·role credential write·build·DB mutation보다 앞서
-  차단한다. Compose argv, lifecycle, root secret mount, cleanup과 journal/candidate 입력은 바꾸지 않는다.
+  차단한다. receipt 이전의 이미 알려진 d9 historical journal은 소급 수정하지 않고 exact pinset·Map/PinVi source
+  revision·`map_runtime_ready` policy로 같은 pre-mutation admission에서 차단한다. Compose argv, lifecycle,
+  root secret mount, cleanup과 journal/candidate 입력은 바꾸지 않는다.
   raw stderr, DSN, role, 비밀번호, path, 자동 retry, topology/권한 완화, journal 소급 기록은 금지한다. 해당
   PR의 두 전문 적대 리뷰·CI·trusted deployment 전에는 rebuild를 재실행하지 않는다.
 - [x] n150 candidate가 빈 artifact path 설정 때문에 DB reset 전에 fail-close한 것을 확인했다. 기본

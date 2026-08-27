@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-27 — receipt 이전 d9 role topology failure의 pre-mutation 차단
+
+서로 독립인 두 전문 적대 리뷰가, Manager #235의 새 `pinvi_role_lifecycle_block` receipt가 이미
+`map_runtime_ready`에 남은 d9 historical journal에는 존재하지 않아 첫 재실행을 막지 못함을 확인했다.
+historical journal을 소급 수정하지 않는 원칙은 유지한다. 대신 release policy에 d9의 exact pinset,
+Map/PinVi source revision과 `map_runtime_ready` phase를 고정하고, 그 조합은 role credential write,
+source materialize, paired build, Docker/Compose와 DB mutation보다 먼저 같은 generic 오류로 거부한다.
+새 pinset은 이 one-off policy에 일치하지 않아 fresh v8 journal로만 진행한다. raw stderr·DSN·role·비밀번호·path는
+policy, journal, 오류와 문서에 기록하지 않는다.
+
+pre-PR v8 payload에서 새 receipt field를 제거한 회귀는 credential write와 source/build/Compose/DB 호출 전
+차단됨을 고정한다.
+
+---
+
 ## 2026-08-27 — Manager 컬러 톤을 코랄 계열로 재조정
 
 `tokens.css`의 OKLCH 팔레트를 보라 계열(hue 295/298/300)에서 코랄 계열(hue 32)로 재조정했다.

@@ -166,6 +166,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
+    is_d9_legacy_pinvi_role_topology_retry,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     PinnedRuntimeSourceMaterialization,
@@ -5396,7 +5397,14 @@ class ComposeService:
     ) -> None:
         """terminal role topology receipt가 있으면 어떤 same-pinset write도 시작하지 않는다."""
 
-        if journal.pinvi_role_lifecycle_block is not None:
+        if journal.pinvi_role_lifecycle_block is not None or (
+            is_d9_legacy_pinvi_role_topology_retry(
+                pinset_sha256=journal.candidate.pinset_sha256,
+                map_source_revision=journal.candidate.map_source_revision,
+                pinvi_source_revision=journal.candidate.pinvi_source_revision,
+                phase=journal.phase,
+            )
+        ):
             raise DeploymentContractError(
                 "pinned runtime rebuild is blocked by durable PinVi role topology failure"
             )

@@ -31,6 +31,19 @@ CANONICAL_RUNTIME_SOURCE_URLS: Final[Mapping[RuntimeSourceRole, str]] = MappingP
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
+# d9은 새 lifecycle receipt schema가 도입되기 전에 topology failure로 끝난
+# historical pinset이다. journal을 소급 변경하지 않고 같은 immutable candidate의
+# 첫 재실행까지 admission에서 막기 위해, 이 식별자는 release pin과 분리해 고정한다.
+_D9_LEGACY_ROLE_TOPOLOGY_PINSET_SHA256: Final = (
+    "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898"
+)
+_D9_LEGACY_ROLE_TOPOLOGY_MAP_REVISION: Final = (
+    "14d18230e5a9ff21caf26d6abe37aed1e4944685"
+)
+_D9_LEGACY_ROLE_TOPOLOGY_PINVI_REVISION: Final = (
+    "93296aee5d47676e6b9b79303bf417c598a273ac"
+)
+
 
 @dataclass(frozen=True)
 class PinnedRuntimeSourceSpec:
@@ -86,6 +99,23 @@ def canonical_pinset_sha256(
     """candidate generation과 durable journal이 공유하는 pinset identity."""
 
     return hashlib.sha256(canonical_pinset_bytes(version=version, sources=sources)).hexdigest()
+
+
+def is_d9_legacy_pinvi_role_topology_retry(
+    *,
+    pinset_sha256: str,
+    map_source_revision: str,
+    pinvi_source_revision: str,
+    phase: str,
+) -> bool:
+    """receipt 이전 d9 topology failure의 재실행만 fail-close로 식별한다."""
+
+    return (
+        pinset_sha256 == _D9_LEGACY_ROLE_TOPOLOGY_PINSET_SHA256
+        and map_source_revision == _D9_LEGACY_ROLE_TOPOLOGY_MAP_REVISION
+        and pinvi_source_revision == _D9_LEGACY_ROLE_TOPOLOGY_PINVI_REVISION
+        and phase == "map_runtime_ready"
+    )
 
 
 @dataclass(frozen=True)
