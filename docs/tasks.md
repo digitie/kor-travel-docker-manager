@@ -13,7 +13,7 @@
 |:---|:---|:---:|:---|
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
-| **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 설계 | `[/]` | 오너가 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)의 열린 질문에 답하면 승인된 항목만 구현 태스크로 분리 |
+| **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 설계 | `[/]` | v3 문서 3부의 태스크 분해(KUM-M*·KUM-MAP-*·KUM-PV-*)를 기준으로 승인 항목을 구현 태스크로 분리 |
 
 ## 공통 진행 규율
 
@@ -168,4 +168,12 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
 - [x] 오너가 설계 문서의 열린 질문 7건에 전부 답했다(2026-08-28, 문서 말미 "오너 결정
   사항" 표 참조 — pin registry·백업 create UI·비밀번호 폼·2-step rotate·rehearsal
   rebuild 버튼·restore 로드맵 승인, CLAUDE.md 동기화는 별도 작업).
-- [ ] 승인된 항목만 구현 태스크(코드 변경 포함)로 새로 분리해 이 목록에 추가한다.
+- [x] v3 개정(2026-08-28): kor-travel-map·pinvi·본 저장소의 08-25~28 커밋 전수를
+  교차 감사해 계약·pinning·결박 이슈를 발굴·반영했다 — 문제 진단 6건(1부), pinset
+  lifecycle registry(`blocked_pinsets`·`history`·`pin block`·terminal rollback 제한),
+  P2 권한 모델 정정(root-side publisher 의존), P6 rebuild journal 충돌 위험, preflight
+  readiness·typed 진단 소비·계약 소유 경계 명문화, 태스크 분해(3부: KUM-M1~18,
+  KUM-MAP-1~4, KUM-PV-1~4).
+- [ ] 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크(코드 변경 포함)로 새로
+  분리해 이 목록에 추가한다(신규 제안 항목은 분리 시 오너 확정 — KUM-M17은 별도
+  결정 사안).

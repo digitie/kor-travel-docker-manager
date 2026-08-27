@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-08-28 — ktdctl → UI 이관 설계 문서 v3: 3저장소 커밋 교차 감사 반영·태스크 분해 (코드 변경 없음)
+
+오너 지시에 따라 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)를 v3로 전면
+재구성했다. (1) P1 트레이드오프를 항목별(리뷰 게이트/git 이력/테스트 고정/코드-배포본
+단일성) 손실·보상 병기 서술로 확장하고, (2) kor-travel-map(3일 99커밋)·pinvi(25커밋)·
+본 저장소(실질 94커밋)의 2026-08-25~28 커밋 전수를 저장소별 전담 조사 에이전트로
+분석해 계약·pinning·결박 관련 이슈를 발굴, (3) 발굴 이슈와 P1 계열 개선을 문서
+1부(문제 진단 6건 + P1 확장 + P10-1~5)로 최상위 재편, (4) 전 항목에 "왜 문제인가 /
+현재의 불합리 / 수정 후 개선" 상세 서술을 추가, (5) 전체 작업을 태스크 단위
+(KUM-M1~18, KUM-MAP-1~4, KUM-PV-1~4)로 분해하고 map·pinvi 쪽 수정사항도 동급 상세로
+포함했다.
+
+핵심 발굴: 3.5일간 pin 회전 15회(그중 5회는 3,900~4,100줄 기능 커밋에 매몰 — "PR
+review = pin 승인" 게이트가 명목상으로도 작동 불가), 회전 1회의 실제 blast radius는
+Manager 4-6파일이 아니라 pair 9-11파일 + 제3 저장소 부기(map 부기 커밋 19건, pinvi는
+Manager generation 보유 값의 수기 사본 14개), "terminal pinset 재시도 금지" 규약이 세
+저장소 문서에 수기로만 존재하며 **현행 Manager pin 자체가 이미 terminal 선언된
+pinset**(pinvi journal·map 차단 목록)이라는 사실, d9 legacy 상수가 "역사적 고정값"이
+아니라 실패 위를 회전이 지나갈 때마다 축적되는 파생 하드코딩이라는 정정. 이에 따라
+registry 스키마에 `blocked_pinsets`/`history`/`supersedes`를 추가하고 `pin block`과
+`rebuild-pinned`의 terminal 자동 거부, rollback의 terminal 제한을 설계했다.
+
+주요 정정 3건: P2 조회는 mode 게이트가 아니라 **권한 모델**(state root 0700/0600 +
+리더의 uid/mode fail-close)이 실제 제약이라 P1-(c) root-side publisher에 의존한다는
+재설계(P9-1단계 "기존 코드 무변경" 추정 철회), P3 `--self`는 installer가 이미 쓰는
+0644 provenance 파일의 리더 ~10줄이면 된다는 정정, P6 비밀번호 변경이 미종결 rebuild
+journal의 `environment_sha256` 대조와 충돌해 재개를 영구 차단할 수 있다는 신규
+위험(가드 요건 추가). 신규 노출 설계: builder receipt 2종·fence/permit 5종·journal
+행동 결정 필드·manifest/journal 버전(P2-4), preflight readiness 4행(P10-4), typed
+진단 소비(P10-3), 계약 소유 경계 명문화(P10-5 — manifest/journal 키는 map attestation이
+exact-dict로 결박한 공개 계약). `.env.example`의 PinVi role credential 6종 누락·폐기
+변수 잔존 결함도 태스크(KUM-M15)로 등재했다. 이번 라운드도 설계·문서화만이며 코드
+변경과 n150 배포는 없다.
+
+---
+
 ## 2026-08-28 — ktdctl → UI 이관 설계 문서 v2 개정 (코드 변경 없음)
 
 오너 지시에 따라 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)를 v2로
