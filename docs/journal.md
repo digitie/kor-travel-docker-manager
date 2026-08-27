@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-27 — Map execution journal merge를 새 M05 source pinset으로 회전 후보
+
+Map #1083 merge `9c64e862c9da82016e12038e2e135526b300ca9d`는 prior generic paired-builder
+fail-close와 immutable Python base cache 원인을 provenance-safe하게 기록한다. 이 Map execution journal을
+PinVi `97d2f924678f68c9aed7f60dbf41e73311012ebd`와 새 v5 pinset
+`cbb577d37e664c56d11ed97f70117911b77547921857287fa87da1b73ce24fc5`으로 고정한다.
+
+이 회전은 historical `872e3262…` candidate·journal·receipt·image·Compose·DB/runtime을 수정하거나
+재사용하지 않는다. Manager #240 trusted immutable-base preflight의 merge·deployment 뒤 새 pinset의 official
+candidate를 정확히 한 번 실행하고, `committed` evidence가 생기기 전에는 PinVi M05 live E2E를 시작하지 않는다.
+
+---
+
 ## 2026-08-27 — Manager 컬러 톤을 호박색(amber) 계열로 재조정
 
 `tokens.css`의 OKLCH 팔레트를 코랄 계열(hue 32)에서 호박색 계열로 재조정했다. 기존 `--color-warn`이
