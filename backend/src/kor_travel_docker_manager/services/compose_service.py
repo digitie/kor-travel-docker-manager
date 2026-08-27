@@ -542,6 +542,32 @@ def _json_object_without_duplicate_keys(
     return payload
 
 
+def _parse_pinvi_role_catalog_reset_result(
+    raw: bytes, *, transaction_id: str, pinset_sha256: str
+) -> str:
+    try:
+        payload = json.loads(raw, object_pairs_hook=_json_object_without_duplicate_keys)
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        return "unclassified"
+    if not isinstance(payload, Mapping) or set(payload) != {
+        "schema", "status", "class", "transaction", "pinset"
+    }:
+        return "unclassified"
+    if (
+        payload.get("schema") != "pinvi.role-catalog-reset-diagnostic.v1"
+        or payload.get("transaction") != transaction_id
+        or payload.get("pinset") != pinset_sha256
+    ):
+        return "unclassified"
+    if payload.get("status") == "completed" and payload.get("class") == "completed":
+        return "completed"
+    if payload.get("status") == "failed" and payload.get("class") in {
+        "lifecycle_invalid", "target_not_isolated"
+    }:
+        return cast(str, payload["class"])
+    return "unclassified"
+
+
 def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | None:
     """정확한 Compose service attach prefix 뒤의 JSON 한 줄만 반환한다."""
 
@@ -5298,6 +5324,10 @@ class ComposeService:
             state_paths.state_root
             / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.permit"
         )
+        result_path = (
+            state_paths.state_root
+            / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.result"
+        )
         permit = (
             "pinvi-role-catalog-reset-v1|"
             f"{journal.transaction_id}|{journal.candidate.pinset_sha256}|"
@@ -5305,6 +5335,7 @@ class ComposeService:
         ).encode()
         try:
             write_owner_only_artifact(permit_path, permit)
+            write_owner_only_artifact(result_path, b"{}")
             self._run_pinned_runtime_rebuild_compose(
                 [
                     "--profile",
@@ -5314,20 +5345,47 @@ class ComposeService:
                     "--no-deps",
                     "-v",
                     f"{permit_path}:/run/pinvi/role-catalog-reset.permit:ro",
+                    "-v",
+                    f"{result_path}:/run/pinvi/role-catalog-reset.result",
                     "-e",
                     "PINVI_ROLE_CATALOG_RESET_ONLY=1",
                     "-e",
                     "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
+                    "-e",
+                    "PINVI_ROLE_CATALOG_RESET_RESULT_FILE=/run/pinvi/role-catalog-reset.result",
                     _PINVI_DB_RUNTIME_ROLE_SERVICE,
                 ],
                 transaction=transaction,
             )
+            if _parse_pinvi_role_catalog_reset_result(
+                read_owner_only_artifact(result_path),
+                transaction_id=journal.transaction_id,
+                pinset_sha256=journal.candidate.pinset_sha256,
+            ) != "completed":
+                raise DeploymentContractError("PinVi fresh role catalog reset result is invalid")
         except DeploymentContractError:
+            try:
+                diagnostic = _parse_pinvi_role_catalog_reset_result(
+                    read_owner_only_artifact(result_path),
+                    transaction_id=journal.transaction_id,
+                    pinset_sha256=journal.candidate.pinset_sha256,
+                )
+            except MapApplication300ContractError:
+                diagnostic = "unclassified"
             raise _PinviRoleLifecycleError(
                 "PinVi fresh role catalog reset failed",
                 role_topology_block=PinviRoleLifecycleBlock(
                     stage="pinvi_role_catalog_reset",
                     code="role_catalog_reset_failed",
+                    diagnostic=cast(
+                        Literal[
+                            "lifecycle_invalid",
+                            "permit_invalid",
+                            "target_not_isolated",
+                            "unclassified",
+                        ],
+                        diagnostic,
+                    ),
                 ),
             ) from None
 

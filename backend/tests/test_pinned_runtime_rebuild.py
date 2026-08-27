@@ -1848,6 +1848,18 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
     run_compose = Mock(return_value={"success": True, "stdout": ""})
     monkeypatch.setattr(compose_service_module, "read_pinned_database_identity", Mock(return_value=journal.pinvi_database_identity))
     monkeypatch.setattr(compose_service_module, "write_owner_only_artifact", writes)
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_owner_only_artifact",
+        Mock(
+            return_value=(
+                b'{"schema":"pinvi.role-catalog-reset-diagnostic.v1",'
+                b'"status":"completed","class":"completed",'
+                + f'"transaction":"{journal.transaction_id}",'.encode()
+                + f'"pinset":"{journal.candidate.pinset_sha256}"}}'.encode()
+            )
+        ),
+    )
     monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
 
     service._run_pinvi_fresh_role_catalog_reset(
@@ -1857,7 +1869,7 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
         runtime=cast(DatabaseRuntime, SimpleNamespace()),
     )
 
-    permit_path, permit = writes.call_args.args
+    permit_path, permit = writes.call_args_list[0].args
     assert permit_path.parent == linux_tmp_path
     assert permit == (
         "pinvi-role-catalog-reset-v1|"
@@ -1865,18 +1877,25 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
         f"{journal.pinvi_database_identity.system_identifier}|"
         f"{journal.pinvi_database_identity.oid}|pinvi|pinvi\n"
     ).encode()
+    result_path, result = writes.call_args_list[1].args
+    assert result_path.parent == linux_tmp_path
+    assert result == b"{}"
     assert run_compose.call_args.args[0] == [
         "--profile",
         "bootstrap",
         "run",
         "--rm",
         "--no-deps",
-        "-v",
-        f"{permit_path}:/run/pinvi/role-catalog-reset.permit:ro",
+            "-v",
+            f"{permit_path}:/run/pinvi/role-catalog-reset.permit:ro",
+            "-v",
+            f"{result_path}:/run/pinvi/role-catalog-reset.result",
         "-e",
         "PINVI_ROLE_CATALOG_RESET_ONLY=1",
         "-e",
-        "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
+            "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
+            "-e",
+            "PINVI_ROLE_CATALOG_RESET_RESULT_FILE=/run/pinvi/role-catalog-reset.result",
         "pinvi-db-runtime-role",
     ]
 
