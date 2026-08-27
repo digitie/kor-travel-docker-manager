@@ -1944,6 +1944,41 @@ def test_fresh_role_catalog_reset_identity_mismatch_is_terminal_before_compose(
     run_compose.assert_not_called()
 
 
+def test_fresh_role_catalog_reset_changed_live_identity_is_terminal_before_compose(
+    monkeypatch: pytest.MonkeyPatch,
+    linux_tmp_path: Path,
+) -> None:
+    service = ComposeService()
+    journal = replace(
+        _journal_at_runtime_phase("map_runtime_ready"),
+        pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="intent"),
+    )
+    writes = Mock()
+    run_compose = Mock()
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_pinned_database_identity",
+        Mock(return_value=replace(_runtime_pinvi_database_identity(), oid=127004)),
+    )
+    monkeypatch.setattr(compose_service_module, "write_owner_only_artifact", writes)
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(compose_service_module._PinviRoleLifecycleError) as captured:
+        service._run_pinvi_fresh_role_catalog_reset(
+            transaction=cast(ComposeTransactionSnapshot, SimpleNamespace()),
+            state_paths=cast(Any, SimpleNamespace(state_root=linux_tmp_path)),
+            journal=journal,
+            runtime=cast(DatabaseRuntime, SimpleNamespace()),
+        )
+
+    assert captured.value.role_topology_block == PinviRoleLifecycleBlock(
+        stage="pinvi_role_catalog_reset",
+        code="role_catalog_reset_failed",
+    )
+    writes.assert_not_called()
+    run_compose.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("status", "result_class", "expected"),
     [
