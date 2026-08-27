@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-27 — Manager 컬러 톤을 호박색(amber) 계열로 재조정
+
+`tokens.css`의 OKLCH 팔레트를 코랄 계열(hue 32)에서 호박색 계열로 재조정했다. 기존 `--color-warn`이
+이미 hue 72(주황빛 amber, 경고색)를 쓰고 있어 brand를 같은 hue로 두면 "주요 실행"과 "경고" 색이
+구별되지 않는 문제가 있었다. brand는 hue 85(더 노란/황금빛)로 warn과 hue를 13° 띄우고, lightness도
+54%로 warn(64%)보다 뚜렷이 어둡게, chroma도 0.14로 낮춰 — 밝고 채도 높은 주황(warn)과 짙은 호박·
+캐러멜 톤(brand)이 명확히 구별되도록 세 축(hue·lightness·chroma)을 함께 분리했다. neutral 계열
+(paper/ink/graphite/shadow 틴트)은 hue 75로 맞춰 brand와 같은 따뜻한 계열을 유지했다. info/warn/
+danger/ok 상태색 자체는 변경하지 않았다.
+
+WSL에서 `next build`/`eslint`/`tsc --noEmit`을 통과시켰고, 로컬 QA 세션에서 로그인 화면과 인증된
+대시보드를 Playwright로 확인해 brand accent가 warn(경고) 배지·색과 혼동되지 않음을 확인했다.
+
+---
+
 ## 2026-08-27 — Map immutable Python base의 trusted candidate preflight 후보
 
 n150의 `872e3262…` candidate는 API receipt 전 generic paired builder 오류로 fail-close했다. 이후
