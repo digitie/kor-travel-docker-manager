@@ -1,33 +1,33 @@
-/* Hallmark: Coral — 2026-08-27 (kor-travel-geo와 동일한 Workbench look and feel, 코랄 계통) */
+/* Hallmark: Amber — 2026-08-27 (kor-travel-geo와 동일한 Workbench look and feel, 호박색 계통) */
 /* Kor Travel 운영 콘솔의 단일 설계 토큰 정본. 컴포넌트에서 색상·그림자 값을 직접 만들지 않는다. */
 @theme {
-  --color-page: oklch(98.2% 0.006 32);
+  --color-page: oklch(98.2% 0.006 75);
   --color-card: oklch(100% 0 0);
-  --color-subtle: oklch(95.9% 0.012 32);
-  --color-elevated: oklch(92.8% 0.018 32);
-  --color-row: oklch(99% 0.004 32);
-  --color-line: oklch(87.4% 0.018 32);
+  --color-subtle: oklch(95.9% 0.012 75);
+  --color-elevated: oklch(92.8% 0.018 75);
+  --color-row: oklch(99% 0.004 75);
+  --color-line: oklch(87.4% 0.018 75);
 
-  --color-strong: oklch(24.5% 0.021 32);
-  --color-ink: oklch(35% 0.025 32);
-  --color-secondary: oklch(49% 0.023 32);
-  --color-tertiary: oklch(61% 0.019 32);
-  --color-disabled: oklch(70% 0.015 32);
+  --color-strong: oklch(24.5% 0.021 75);
+  --color-ink: oklch(35% 0.025 75);
+  --color-secondary: oklch(49% 0.023 75);
+  --color-tertiary: oklch(61% 0.019 75);
+  --color-disabled: oklch(70% 0.015 75);
 
-  --color-brand: oklch(64% 0.19 32);
-  --color-brand-ink: oklch(44% 0.16 32);
-  --color-brand-tint: oklch(95% 0.045 32);
+  --color-brand: oklch(54% 0.14 85);
+  --color-brand-ink: oklch(36% 0.11 85);
+  --color-brand-tint: oklch(95% 0.04 85);
   --color-info: oklch(56% 0.205 260);
   --color-warn: oklch(64% 0.16 72);
   --color-danger: oklch(53% 0.2 28);
   --color-ok: oklch(54% 0.14 150);
-  --color-graphite: oklch(22% 0.025 32);
-  --color-graphite-2: oklch(28% 0.026 32);
-  --color-graphite-ink: oklch(92% 0.012 32);
+  --color-graphite: oklch(22% 0.025 75);
+  --color-graphite-2: oklch(28% 0.026 75);
+  --color-graphite-ink: oklch(92% 0.012 75);
 
-  --shadow-card: 0 1px 2px oklch(24.5% 0.021 32 / 0.05), 0 8px 20px oklch(24.5% 0.021 32 / 0.035);
-  --shadow-card-hover: 0 2px 5px oklch(24.5% 0.021 32 / 0.08), 0 12px 28px oklch(24.5% 0.021 32 / 0.06);
-  --shadow-modal: 0 24px 64px oklch(24.5% 0.021 32 / 0.22);
+  --shadow-card: 0 1px 2px oklch(24.5% 0.021 75 / 0.05), 0 8px 20px oklch(24.5% 0.021 75 / 0.035);
+  --shadow-card-hover: 0 2px 5px oklch(24.5% 0.021 75 / 0.08), 0 12px 28px oklch(24.5% 0.021 75 / 0.06);
+  --shadow-modal: 0 24px 64px oklch(24.5% 0.021 75 / 0.22);
 
   --radius-card: 0.5rem;
   --radius-panel: 0.75rem;
