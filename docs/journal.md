@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-27 — receipt 이전 d9 role topology failure의 pre-mutation 차단
+
+서로 독립인 두 전문 적대 리뷰가, Manager #235의 새 `pinvi_role_lifecycle_block` receipt가 이미
+`map_runtime_ready`에 남은 d9 historical journal에는 존재하지 않아 첫 재실행을 막지 못함을 확인했다.
+historical journal을 소급 수정하지 않는 원칙은 유지한다. 대신 release policy에 d9의 exact pinset,
+Map/PinVi source revision과 `map_runtime_ready` phase를 고정하고, 그 조합은 role credential write,
+source materialize, paired build, Docker/Compose와 DB mutation보다 먼저 같은 generic 오류로 거부한다.
+새 pinset은 이 one-off policy에 일치하지 않아 fresh v8 journal로만 진행한다. raw stderr·DSN·role·비밀번호·path는
+policy, journal, 오류와 문서에 기록하지 않는다.
+
+pre-PR v8 payload에서 새 receipt field를 제거한 회귀는 credential write와 source/build/Compose/DB 호출 전
+차단됨을 고정한다.
+
+---
+
 ## 2026-08-27 — Manager 컬러 톤을 코랄 계열로 재조정
 
 `tokens.css`의 OKLCH 팔레트를 보라 계열(hue 295/298/300)에서 코랄 계열(hue 32)로 재조정했다.
@@ -18,6 +33,28 @@ duration 등 구조적 토큰은 이전 보라 톤 작업에서 그대로 가져
 WSL에서 `next build`/`eslint`/`tsc --noEmit`을 통과시켰고, 로컬 QA 전용 admin credential로
 로그인 화면과 인증된 대시보드(사이드바 활성 nav·KPI·아이콘 배경)를 Playwright로 확인해 코랄
 accent가 기존 danger(빨강)/ok(초록) 상태색과 혼동 없이 구별됨을 확인했다.
+
+---
+
+## 2026-08-27 — d9 PinVi role topology의 동일 후보 재실행 차단 후보
+
+Manager #234 trusted release에 lifecycle stage와 allowlisted 비밀 비포함 failure code가 반영된 뒤,
+모든 읽기 전용 preflight를 마친 d9 candidate에 승인된 official rebuild를 정확히 한 번 실행했다. 결과는
+`role_topology_noncanonical`이었고, v8 journal은 기존 `map_runtime_ready` generation으로 남았다.
+`pinvi-admin-bootstrap` one-shot의 생성·성공 증거는 없다. 따라서 이 실행은 Map/PinVi live acceptance나
+M01~M05 activation의 근거가 아니며, d9 command는 다시 실행하지 않는다.
+
+후속 Manager 후보는 role lifecycle이 정확히 `pinvi_role_open` 또는 `pinvi_role_seal`에서
+`role_topology_noncanonical`으로 실패할 때에만 비밀 비포함 terminal receipt를 같은 v8 journal에 fsync한다.
+같은 pinset의 다음 rebuild admission은 role credential write, source materialize, paired build, Docker/Compose,
+DB mutation과 role one-shot보다 먼저 이 receipt를 읽고 일반화된 차단 오류로 종료한다. 다른 stage/code와 raw
+stderr·DSN·role·비밀번호·path는 receipt와 public error에 저장하지 않는다. 기존 d9 journal을 소급 수정하지
+않으며, 새 guard가 merge·CI·전문 적대 리뷰·trusted deployment를 통과하기 전에는 어떤 rebuild도 재실행하지
+않는다.
+
+Linux `/tmp` 보안-mode filesystem에서 journal/lifecycle/rebuild focused regression 14개와 해당 두 test
+module 전체 130개, 변경 module Ruff 및 strict mypy를 통과했다. 전체 backend suite는 Docker integration
+cleanup까지 시작했으며 hosted CI에서 다시 확인한다.
 
 ---
 

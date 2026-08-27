@@ -19,6 +19,7 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
     canonical_pinset_bytes,
     canonical_pinset_sha256,
     current_pinned_runtime_release,
+    is_d9_legacy_pinvi_role_topology_retry,
 )
 
 
@@ -51,6 +52,39 @@ def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
         "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898"
     )
     assert release.pinset_sha256 == "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898"
+
+
+def test_d9_legacy_role_topology_retry_policy_is_exact() -> None:
+    assert is_d9_legacy_pinvi_role_topology_retry(
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
+        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
+        phase="map_runtime_ready",
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
+        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
+        phase="candidate_attested",
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        pinset_sha256="a" * 64,
+        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
+        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
+        phase="map_runtime_ready",
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        map_source_revision="a" * 40,
+        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
+        phase="map_runtime_ready",
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
+        pinvi_source_revision="a" * 40,
+        phase="map_runtime_ready",
+    )
 
 
 @pytest.mark.parametrize(

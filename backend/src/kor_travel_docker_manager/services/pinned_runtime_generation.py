@@ -1416,6 +1416,23 @@ class PinviRoleCredentialEnvironmentRebind:
 
 
 @dataclass(frozen=True)
+class PinviRoleLifecycleBlock:
+    """동일 pinset의 role topology 재실행을 막는 비밀 비포함 terminal receipt."""
+
+    stage: Literal["pinvi_role_open", "pinvi_role_seal"]
+    code: Literal["role_topology_noncanonical"]
+
+    def __post_init__(self) -> None:
+        if self.stage not in {"pinvi_role_open", "pinvi_role_seal"} or self.code != (
+            "role_topology_noncanonical"
+        ):
+            raise DeploymentContractError("PinVi role lifecycle block receipt is invalid")
+
+    def to_payload(self) -> dict[str, str]:
+        return {"stage": self.stage, "code": self.code}
+
+
+@dataclass(frozen=True)
 class PinnedRuntimeRebuildJournal:
     """candidate image 보존부터 v6 manifest commit까지의 v8 same-pinset resume receipt."""
 
@@ -1437,6 +1454,7 @@ class PinnedRuntimeRebuildJournal:
     pinvi_role_credential_environment_rebind: (
         PinviRoleCredentialEnvironmentRebind | None
     ) = None
+    pinvi_role_lifecycle_block: PinviRoleLifecycleBlock | None = None
 
     def __post_init__(self) -> None:
         if self.version != _REBUILD_JOURNAL_VERSION:
@@ -1473,6 +1491,14 @@ class PinnedRuntimeRebuildJournal:
                 raise DeploymentContractError(
                     "pinned runtime rebuild has invalid PinVi role credential environment rebind"
                 )
+        role_lifecycle_block = self.pinvi_role_lifecycle_block
+        if role_lifecycle_block is not None and (
+            not isinstance(role_lifecycle_block, PinviRoleLifecycleBlock)
+            or self.phase != "map_runtime_ready"
+        ):
+            raise DeploymentContractError(
+                "pinned runtime rebuild has invalid PinVi role lifecycle block"
+            )
         _validate_utc_timestamp(self.created_at, "pinned runtime rebuild timestamp")
         if not isinstance(
             self.map_application_300_candidate_evidence,
@@ -1558,6 +1584,24 @@ class PinnedRuntimeRebuildJournal:
             resolved_compose_sha256=current_resolved_compose_sha256,
             journal_generation=self.journal_generation + 1,
             pinvi_role_credential_environment_rebind=receipt,
+        )
+
+    def with_pinvi_role_lifecycle_block(
+        self,
+        receipt: PinviRoleLifecycleBlock,
+    ) -> PinnedRuntimeRebuildJournal:
+        """role topology failure 뒤 같은 candidate의 lifecycle 재실행을 봉인한다."""
+
+        if (
+            self.phase != "map_runtime_ready"
+            or self.pinvi_role_lifecycle_block is not None
+            or not isinstance(receipt, PinviRoleLifecycleBlock)
+        ):
+            raise DeploymentContractError("PinVi role lifecycle block is not permitted")
+        return replace(
+            self,
+            journal_generation=self.journal_generation + 1,
+            pinvi_role_lifecycle_block=receipt,
         )
 
     def with_application_roles_ready(
@@ -2002,6 +2046,11 @@ class PinnedRuntimeRebuildJournal:
                 if self.pinvi_role_credential_environment_rebind is None
                 else self.pinvi_role_credential_environment_rebind.to_payload()
             ),
+            "pinvi_role_lifecycle_block": (
+                None
+                if self.pinvi_role_lifecycle_block is None
+                else self.pinvi_role_lifecycle_block.to_payload()
+            ),
         }
 
 
@@ -2148,13 +2197,14 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
         "map_application_300_execution_evidence",
         "cancel_probe",
     }
-    extended_expected = {
-        *expected,
+    optional_keys = {
         "pinvi_role_credential_environment_rebind",
+        "pinvi_role_lifecycle_block",
     }
     if (
         not isinstance(payload, Mapping)
-        or (set(payload) != expected and set(payload) != extended_expected)
+        or not expected.issubset(payload)
+        or not set(payload).issubset(expected | optional_keys)
     ):
         raise DeploymentContractError("pinned runtime rebuild journal payload is invalid")
     version = payload.get("version")
@@ -2219,6 +2269,13 @@ def journal_from_payload(payload: object) -> PinnedRuntimeRebuildJournal:
                 payload.get("pinvi_role_credential_environment_rebind")
             )
         ),
+        pinvi_role_lifecycle_block=(
+            None
+            if payload.get("pinvi_role_lifecycle_block") is None
+            else pinvi_role_lifecycle_block_from_payload(
+                payload.get("pinvi_role_lifecycle_block")
+            )
+        ),
     )
 
 
@@ -2252,6 +2309,22 @@ def pinvi_role_credential_environment_rebind_from_payload(
         current_resolved_compose_sha256=cast(
             str, payload["current_resolved_compose_sha256"]
         ),
+    )
+
+
+def pinvi_role_lifecycle_block_from_payload(
+    payload: object,
+) -> PinviRoleLifecycleBlock:
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload) != {"stage", "code"}
+        or payload.get("stage") not in {"pinvi_role_open", "pinvi_role_seal"}
+        or payload.get("code") != "role_topology_noncanonical"
+    ):
+        raise DeploymentContractError("PinVi role lifecycle block payload is invalid")
+    return PinviRoleLifecycleBlock(
+        stage=cast(Literal["pinvi_role_open", "pinvi_role_seal"], payload["stage"]),
+        code="role_topology_noncanonical",
     )
 
 
