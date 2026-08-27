@@ -1,8 +1,8 @@
-# TASKS — 진행 중 백로그
+# TASKS — 활성 작업
 
-이 문서는 진행 중이거나 아직 시작하지 않은 작업만 관리한다. 완료·퇴역·대체된 작업은
-[`docs/tasks-done.md`](tasks-done.md)에 기록한다. 코드와 맞지 않는 과거 실행 절차는 active task로
-남기지 않는다.
+이 문서는 완료되지 않은 작업만 의존 순서대로 한 줄씩 나열한다. lane, 담당자 구분,
+계층형 하위 작업은 사용하지 않는다. 완료·퇴역 이력은
+[`docs/tasks-done.md`](tasks-done.md), 실행 근거는 [`docs/journal.md`](journal.md)가 정본이다.
 
 - 진행 중: `[/]`
 - 미진행: `[ ]`
