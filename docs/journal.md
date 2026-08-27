@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-27 — Manager 컬러 톤을 코랄 계열로 재조정
+
+`tokens.css`의 OKLCH 팔레트를 보라 계열(hue 295/298/300)에서 코랄 계열(hue 32)로 재조정했다.
+`--color-brand`/`--color-brand-ink`/`--color-brand-tint`뿐 아니라 paper/ink 계열 neutral과
+`--color-graphite*`, `--shadow-*` 틴트 hue도 함께 32로 맞춰 geo와 동일한 "neutral이 accent
+hue 근처에 머문다"는 원칙을 유지했다. `--color-info`(파랑, hue 260)와
+`--color-warn`/`--color-danger`/`--color-ok`는 이전과 마찬가지로 변경하지 않았다 — 특히
+danger(hue 28)와 hue가 가깝기 때문에 brand는 danger보다 훨씬 밝고(64% vs 53%) chroma도 낮게
+(0.19 vs 0.2) 잡아 시각적으로 분명히 구별되도록 했다. 레이아웃·타이포그래피·spacing·radius·
+duration 등 구조적 토큰은 이전 보라 톤 작업에서 그대로 가져왔으며 이번 변경 대상이 아니다.
+
+WSL에서 `next build`/`eslint`/`tsc --noEmit`을 통과시켰고, 로컬 QA 전용 admin credential로
+로그인 화면과 인증된 대시보드(사이드바 활성 nav·KPI·아이콘 배경)를 Playwright로 확인해 코랄
+accent가 기존 danger(빨강)/ok(초록) 상태색과 혼동 없이 구별됨을 확인했다.
+
+---
+
 ## 2026-08-26 — d9 PinVi role lifecycle의 비밀 비포함 단계 진단 후보
 
 Manager #233의 fetch 가능한 Map merge pin 회전을 trusted release로 배포한 뒤, 사용자 승인된
