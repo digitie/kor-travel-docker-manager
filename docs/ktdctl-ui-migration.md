@@ -1,431 +1,554 @@
-# ktdctl → UI 이관 및 운영 기능 격차 설계
+# ktdctl → UI 이관 및 운영 기능 격차 설계 (v2)
 
 ## 범위와 비목표
 
-이 문서는 **설계 문서**다. 코드 변경은 전혀 없다. 목적은 두 가지다: (1) `ktdctl`이
-이미 할 수 있는 일 중 UI에 아직 없는 것을 찾아 이관 후보를 정리하고, (2) 운영에
-필요하다고 지목된 영역 — GitHub source pull+build, git revision/계약 정합, git 이력
-조회, Docker 이미지 업데이트, 백업, 설정/secret 변경, 기타 — 에 대해 `ktdctl`/API/UI가
-각각 무엇을 갖고 있고 무엇이 없는지, 없다면 무엇을 어떤 안전장치와 함께 추가해야 하는지
-제안한다.
+이 문서는 **설계 문서**다. 코드 변경은 전혀 없다. 목적: (1) `ktdctl`이 이미 할 수 있는
+일 중 UI에 아직 없는 것을 찾아 이관 후보를 정리하고, (2) 운영에 필요하다고 지목된 영역
+— GitHub source pull+build, git revision/계약 정합, git 이력 조회, Docker 이미지
+업데이트, 백업, 설정/secret 변경, 기타 — 의 격차와 안전장치를 제안하며, (3) **v2에서
+추가**: 반복되는 pin 회전 작업의 설정파일화, 비전문 관리자 편의성 중심의 우선순위
+재정렬, 구조 리팩토링 필요성 평가를 다룬다.
 
-**비목표**: 이 문서는 구현하지 않는다. 여기 제안된 CLI 서브커맨드, API 엔드포인트,
-UI 화면은 전부 미착수 상태이며, 표기된 서명·경로·플래그는 설계 초안이지 확정 계약이
-아니다. 이 저장소는 production mutation을 host-wide lock, `--confirm` 플래그,
-`KTDM_DEPLOYMENT_ENVIRONMENT`/`KTDM_DEPLOYMENT_LIFECYCLE` 조합으로 엄격히 게이트하는
-문화를 갖고 있고, 이 문서는 그 문화를 존중한다 — "버튼 하나로 `git pull && docker
-build`"류 제안은 의도적으로 배제했다.
+**비목표**: 이 문서는 구현하지 않는다. 제안된 CLI 서브커맨드, API 엔드포인트, UI 화면은
+전부 미착수 상태이며, 표기된 서명·경로·플래그는 설계 초안이지 확정 계약이 아니다.
 
-**작성 경위**: 초안은 조사 전담 서브에이전트가 작성했다. 이후 서로 다른 두 관점 —
-보안/blast-radius 리뷰어와 완결성/실현가능성 리뷰어 — 가 실제 코드를 대조해 독립적으로
-검증했다. 두 리뷰는 초안의 핵심 근거 중 하나(§"기존 비대칭" 서술)가 **존재하지 않는
-함수를 인용한 잘못된 근거**였다는 점, `diff-pinned` 제안이 실제로는 read-only가 아니라는
-점, `image rebuild-service` 제안이 그 잘못된 근거 위에 세워져 있었다는 점을 일치되게
-지적했다. 이 문서는 그 지적을 반영해 초안을 고쳐 쓴 최종본이다. 리뷰가 언급한 세부
-근거(파일:라인)는 아래 각 절에 인용해 남긴다.
+**v2 개정 배경**: v1은 보안/안정성 우선으로 작성됐다. 오너가 방향을 재지정했다 —
+"보안·안정성보다는 **비전문가의 관리 편의성·직관성**을 중심으로 검토하라." v2는 이
+기준으로 전 항목을 재평가했다. 안전 속성을 내주는 항목은 무엇을 내주는지 명시하되,
+안전을 이유로 편의성 항목을 기각하지 않는다. v2는 5개 분석 축(웹 UI 재점검 / pin
+하드코딩의 설정파일화 / 기능 격차 재검증 / 비전문가 직관성 / 구조 리팩토링)을 각각
+독립 조사 에이전트로 실코드 대조 조사한 뒤, **사실 정확성 리뷰와 지시 정합·일관성
+리뷰 두 전문 리뷰를 독립 수행**해 확인된 지적(커밋 수·라인 인용 오류, manifest 읽기
+경로의 rehearsal 게이트, P1의 배포·캐시·부트스트랩 공백, P6과 P1의 경계 논거 충돌 등)을
+반영한 최종본이다.
 
 ---
 
-## 현재 상태 인벤토리
+## 현재 상태 인벤토리 (HEAD `b964958` 재검증 — 변경 0건)
 
-`ktdctl`은 `build_parser()`(`backend/src/kor_travel_docker_manager/cli.py:260-418`)가
-등록하는 서브커맨드로 구성된다. 리뷰 결과 **이 표는 HEAD 기준으로 정확하고 누락이
-없다** — 실제 `add_parser` 호출과 대조해 12개 leaf 명령이 전부 확인됐다. 짧은 별칭
-(`db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `srv`, `all`
-등, `config/docker-targets.yml` 기반)은 `main()`에서 `DIRECT_ENSURE_ALIASES`로 즉시
-`ensure`로 치환된다.
+v1 작성 이후 M05 계열 PR(#238–#242)이 merge됐지만 `git log b467c02..HEAD -- cli.py
+api/`는 빈 결과다 — **CLI/API 표면은 v1 표와 동일**하다(M05 PR들은 전부 rebuild 내부
+변경: pin 회전, builder 실패 분류, base-image preflight). `ktdctl`은
+`build_parser()`(`backend/src/kor_travel_docker_manager/cli.py:260-418`)가 등록하는
+**13개 leaf 명령**(기본 6 + `pinvi-pair rebuild-pinned` + `compose-boundary` 3 +
+`db-backup` 3)으로 구성된다.
 
 | ktdctl 명령 | 하는 일 | API 노출 | UI 노출 |
 |---|---|---|---|
 | `targets [--json]` | target 목록·의존 순서·해석된 service 목록 | `GET /api/v1/targets` | 간접적 — `ContainerDetailModal`의 영향 범위 계산에만 사용 |
-| `status [target] [--json]` | `docker compose ps` 결과 | `GET /api/v1/containers`, `WS /api/v1/ws/status`가 사실상 동등 기능 | 컨테이너 테이블 |
-| `ensure <target> [--build] [--recreate] [--stream] [--json]` | target의 `depends_on` 폐포를 위상정렬 순서로 `docker compose up -d`(+`init_steps`) 실행 | `POST /api/v1/targets/{target}/ensure` — production에서 두 지점에서 전면 차단(`compose_service.py:4472`, `:4483`, T-044) | `ContainerDetailModal`의 `IS_DEV`(빌드타임 분기) 전용 버튼. 서버가 이미 차단하므로 실행돼도 409 |
+| `status [target] [--json]` | `docker compose ps` 결과 | `GET /api/v1/containers`, `WS /api/v1/ws/status`가 사실상 동등 | 컨테이너 테이블 |
+| `ensure <target> [--build] [--recreate] [--stream] [--json]` | target의 `depends_on` 폐포를 위상정렬 순서로 `docker compose up -d`(+`init_steps`) 실행 | `POST /api/v1/targets/{target}/ensure` — production에서 두 지점 하드스톱(`compose_service.py:4472`, `:4483`, T-044) | `ContainerDetailModal`의 `IS_DEV` 전용 버튼(서버가 차단, 409) |
 | `logs <name> [-f] [--tail N] [--json]` | compose/service 로그 | `GET /containers/{id}/logs`, `WS /ws/logs/{id}` | 실시간 로그 모달 |
 | `action <container> start\|stop\|restart` | 컨테이너 제어 | `POST /containers/{id}/action` | Start/Stop/Restart 버튼 |
 | `inspect <container> [--json]` | inspect 요약 | `GET /containers/{id}/inspect` | `ContainerDetailModal` 5개 탭 |
-| `pinvi-pair rebuild-pinned --confirm [--json]` | Map 4종+PinVi 3종 destructive 재구축(고정 commit fetch → paired build → 3 DB reset → 7 runtime 기동), `rehearsal/rebuildable` 조합 아니면 거부 | 없음 | 없음 |
-| `compose-boundary stage-legacy-override / retire-legacy-override / activate-concierge --confirm` | legacy Compose override 이관(1회성) | 없음 | 없음 |
-| `db-backup create/list/gc` | pg_dump 백업 생성/조회/정리 | `list`만 `GET /api/v1/backups?role=`(docstring에 create/gc 미노출을 명시) | `BackupHistoryPanel`(읽기 전용) |
+| `pinvi-pair rebuild-pinned --confirm [--json]` | Map 4종+PinVi 3종 destructive 재구축, `rehearsal/rebuildable` 조합 아니면 거부 | 없음 | 없음 |
+| `compose-boundary stage/retire/activate --confirm` | legacy Compose override 이관(1회성) | 없음 | 없음 |
+| `db-backup create/list/gc` | pg_dump 백업 생성/조회/정리 | `list`만 `GET /api/v1/backups?role=` | `BackupHistoryPanel`(읽기 전용) |
 
-추가로 `GET /health`(`main.py:202`)가 있으며 어느 표에도 없어 누락되기 쉽다.
+그 외 API 전체 표면: `api/admin.py`(login-audit-events, public-api-keys GET/POST/DELETE),
+`api/auth.py`(login/logout/me), `main.py:202`의 `GET /health`. **`GET /health`는 어느
+UI에도 표시되지 않는다** — "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데
+답할 화면이 없다(→ P7-D).
 
-역방향 격차(설계상 자연스러움): config 편집, 메트릭 이력, 인증, 공개 API 키, 로그인
-감사는 API/UI 전용이며 `ktdctl`에 동등 CLI가 없다.
+`ContainerConfigUpdate`(`api/routes.py:37-46`)의 `volumes`는 편집 필드가 아니라
+echo-only 계약이다(값 변경 시 `ComposeCandidateContractError`로 거부). `image` 필드는
+스키마에 없다.
 
-`ContainerConfigUpdate`(`api/routes.py:37-46`)는 `ports`/`env`/`volumes`/`networks`를
-받지만, **`volumes`는 편집 가능한 필드가 아니라 echo-only 계약이다** — 호출자는 현재
-값을 그대로 되돌려줘야 하고, 값이 바뀌면 `save_compose_config`가
-`ComposeCandidateContractError("compose candidate volume configuration is immutable
-through the Manager API")`로 거부한다(`compose_service.py` ~137-148). `image` 필드는
-스키마에 아예 없다.
+**컨테이너 단위 조작과 target 재생성의 실제 관계**(v1 정정 유지):
+`control_container`/`update_container_config`/`reset_container_config`는 C6c host-wide
+lock **안에서** 실행되고, `ensure_target`만 production 전용 하드스톱을 추가로 갖는다.
+config/reset이 production에서 허용되는 실질 이유는 바이트 동일 이미지 재사용·볼륨 그래프
+불변·실패 시 restore 트랜잭션이다 — 코드가 바뀌는 작업(이미지 재빌드)에는 이 성질이
+적용되지 않는다.
 
-**컨테이너 단위 조작과 target 재생성의 실제 관계** (초안의 "비대칭" 서술을 정정):
-`control_container`(`docker_service.py:676`), `update_container_config`(`:903`),
-`reset_container_config`(`:1256`)는 모두 C6c host-wide lock을 획득하고
-`assert_environment_snapshot_matches_c6c_lock` → `assert_manager_mutation_allowed`를
-거친다 — 즉 이들은 **C6c 보호를 우회하는 게 아니라 그 안에서 실행된다**. `ensure_target`
-만 이 위에 **production 전용 추가 하드스톱**을 두 지점에서 건다(`compose_service.py:4472`,
-`:4483`, T-044). `assert_c6c_mutation_allowed`라는 함수는 저장소 어디에도 존재하지
-않는다(`docs/journal.md`·`docs/tasks-done.md`의 서술과 `ContainerDetailModal.tsx:22`의
-낡은 주석에만 등장) — 초안은 이 실재하지 않는 함수를 근거로 "개별 조작은 넓게 허용된다"는
-결론을 냈고, 이 결론 위에 (d) `image rebuild-service`를 세웠다. 정정된 사실은 다르다:
-config/reset/action이 production에서 이미 허용되는 이유는 "느슨해서"가 아니라 **바이트
-단위로 동일한 이미지를 재사용하고, 볼륨 그래프가 불변이며, 실패 시 복원되는 트랜잭션이기
-때문**이다(config는 `_validate_compose_candidate` + 실패 시 restore, `env` 값은
-`validate_env_entry`가 리터럴 `scheme://user:pass@` 삽입을 거부). 이 성질은 이미지를
-재빌드해 교체하는 작업에는 적용되지 않는다 — 코드가 바뀌기 때문이다. 아래 (d)는 이
-정정된 전제로 다시 썼다.
+**CLI/API 계층 중복 없음(구조 건강)**: `cli.py`(431줄)와 `routes.py`(261줄)는 로직을
+중복하지 않고 동일 서비스 함수를 공유한다(`ensure_target`, `control_container`,
+`list_standalone_backups`, `list_targets` 모두 양쪽에서 같은 함수 호출). 중복은 표현
+계층(exit code vs HTTP detail)뿐이다. 의미: **"ktdctl→UI 이관"은 대부분 신규 route +
+기존 서비스 함수 호출로 끝나며, CLI 리팩토링이 선행 조건이 아니다.**
 
 ---
 
-## (a)+(b) source 상태·정합성 — 통합 설계
+## P0. UI 화면 지도 — "무엇이 Web UI가 되는가"의 한눈 답
 
-초안은 (a) "GitHub pull+build"와 (b) "git revision 정합성"을 별도 절로 다루면서
-서로 다른 두 가지 `source status` 설계(로컬 checkout `git rev-parse`만 vs. 실행 중
-이미지의 OCI label 비교)를 냈다. 두 리뷰 모두 이 불일치를 지적했고, 하나의 명령으로
-합치는 게 맞다는 데 일치했다.
+| 화면/패널 | 상태 | 요구하는 신규 백엔드 |
+|---|---|---|
+| 컨테이너 테이블(상태·메트릭·로그·제어) | 현존 → **개선**(P7: 라벨 한국어화·그룹 뷰·미리보기) | 없음 |
+| 설정 편집 모달(ports/env/networks) | 현존 → **개선**(P7-H 볼륨 읽기 전용화) | 없음 |
+| 백업 이력 패널 | 현존 → **확장**(P5: freshness 배지·생성 버튼·복원 안내) | 생성 버튼만 job_runner 필요 |
+| 인증 설정 패널(API 키·감사) | 현존 → **확장**(P6: 비밀번호 변경 폼) | `POST /admin/password` |
+| Manager 자기 상태 카드 | **신규**(P7-D) | 없음(`GET /health` 기존) |
+| 배포 정합성 패널(pin·generation·drift) | **신규**(P1-c, P2, P3) | 읽기 전용 route 2-3개 |
+| 디스크 사용량 카드 | **신규**(P8b) | `docker system df` wrapper |
+| CLI 명령 카드(전 CLI-전용 작업 공통) | **신규**(P7-E) | 없음 |
 
-**Today**: `pinvi-pair rebuild-pinned`만 있고, hardcoded commit SHA + root-owned bare
-fetch, `rehearsal/rebuildable` 조합 전용이다. Geo/Concierge/Manager 자신을 포함한
-일반형 "GitHub에서 pull"은 없다(의도된 부재 — root-owned bare fetch, HTTPS 전용,
-clean-tree 강제, 임의 URL/브랜치 파라미터 없음이 기존 설계다). `inspect_c6c_image_source_revision`
-(`c6c_deployment.py:6709`)이 이미지 provenance를 검증하는 함수로 존재하긴 하지만, 이는
-**fail-closed 검증기**이지 조회 함수가 아니다 — 불변 sha256 image ID를 요구하고
-(`_validate_image_id`, `:6650`, mutable 태그 명시적 거부), label이 없거나 40-hex가
-아니면 예외를 던진다(`_SOURCE_REVISION_PATTERN`, `:1594`). 지금은 방금 빌드한 candidate
-이미지에만 호출된다(`compose_service.py:5368-5378`) — **이 저장소는 실행 중인 Map/PinVi
-이미지에 `org.opencontainers.image.revision` label을 아예 찍지 않는다**
-(`docker-compose.yml`에 `labels:` 항목이 0개이고, 이미지는
-`${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}`처럼 sibling 저장소가
-빌드한 태그 참조로 들어온다). 즉 "이미 있는 검증기를 그대로 읽기용으로 쓴다"는 초안의
-전제는 틀렸다 — 새 non-raising wrapper와 label이 없을 때의 `unknown` 경로가 필요하다.
-
-**Gap — 통합 명령 제안**: `ktdctl source-status [--role <role>] [--json]`(하이픈 표기로
-통일, `db-backup`/`pinvi-pair`/`compose-boundary`와 일관). **읽기 전용, `--confirm`
-불필요**, 모든 `KTDM_DEPLOYMENT_ENVIRONMENT`에서 실행 가능:
-- Map/PinVi 7개 runtime: 컨테이너 → image ID를 resolve한 뒤 새 non-raising wrapper로
-  OCI revision label을 조회, `current_pinned_runtime_release()`의 pinned SHA와 비교 →
-  MATCH/DRIFT/`unknown`(label 부재 시). 원시 label을 그대로 반환하지 않고 기존 redaction
-  (`_sanitize_labels`/`_is_sensitive_key`, `docker_service.py:182-242`)을 재사용하고,
-  절대 checkout 경로는 응답에 포함하지 않는다(경로 노출이 유일한 실질적 정보 유출 지점).
-- Geo/Concierge sibling checkout: `git rev-parse HEAD` + clean/dirty만(네트워크 접근
-  없음, 로컬 파일시스템 read만).
-- Manager 자신(`--self`): trusted installer가 현재 git commit을 provenance manifest에
-  기록하도록 설치 스크립트를 확장해야 조회 가능하다 — 지금은 기록하지 않으므로
-  `unknown`으로 fail-close 보고한다. 이 확장 자체는 순수 개선이라 열린 질문이 아니라
-  **채택 권고**로 승격한다(아래 우선순위 참고).
-
-**성능/DoS 주의**: 호출당 Map/PinVi 7회 inspect + Geo/Concierge git subprocess가
-발생한다. 자동 새로고침 KPI 카드로 만들지 말고 **TTL 캐시(수 분) + 수동 새로고침 +
-single-flight guard**를 요구한다 — 없으면 데몬에 부하를 주는 self-inflicted DoS 벡터가
-된다.
-
-**UI 노출 제안**: 새 "배포 정합성" 패널(예: `AdminSettingsPanel` 세 번째 섹션, 또는
-커맨드 팔레트에서 여는 독립 패널) — `GET /api/v1/source-status`가 집계 결과를 표로
-렌더링. **읽기 전용, 액션 버튼 없음.**
-
-**일반형 GitHub pull+build(Geo/Concierge/Manager 자신)**: 이번 사이클에서도 만들지
-않는다. 이는 기능 격차가 아니라 **의도된 경계**로 재확인한다 — Manager는 이 세
-저장소의 자격증명을 갖고 있지 않고, "fetch해서 신뢰"가 아니라 "검증하고 거부"가 이
-프로젝트의 일관된 원칙이다. 오너가 재론하지 않는 한 영구 범위 밖으로 기록한다(이건
-"아직 안 만들었다"가 아니라 "안 만들기로 했다"는 명시적 결정이다).
-
-**Risk**: `source-status` 자체는 낮음(read-only, redaction 재사용, TTL 캐시 전제).
-`rebuild-pinned` 실행은 여전히 매우 높음(3 DB destructive reset) — **CLI/SSH 전용
-유지**.
+실행(mutation)이 UI로 들어오는 것은 백업 생성(P5)·비밀번호 변경(P6)·2-step pin 회전
+요청(P1-c)·rehearsal 한정 rebuild 버튼(P8)이고 — 넷 다 오너 승인됨(문서 말미 결정
+사항 참조) — 나머지는 전부 읽기 전용 관측이다. P9-3단계(프론트 구조 추출)의 착수
+트리거 "신규 패널 2개 이상"은 이 표의 신규 4행 기준으로 센다.
 
 ---
 
-## (c) git 이력/diff 조회 — 재분류: read-only 아님
+## P1. 반복 pin 회전의 설정파일화 — churn의 구조적 해법 (v2 신규, 최상위 후보)
 
-초안은 `pinvi-pair diff-pinned`(root-owned bare mirror에서 `git log old..new`)를
-"read-only, 최우선 후보"로 분류했다. 두 리뷰 모두 이것이 **틀렸다**고 지적했다.
+### 문제의 크기
 
-**왜 read-only가 아닌가**: `pinned_runtime_sources.py:298-301`의 fetch는
-`--no-tags <canonical_url> <revision>` — **정확히 하나의 revision만**, refspec도
-브랜치 참조도 없이 받는다. 기존 pin과 새 pin은 서로 다른 release-digest 디렉터리 아래
-서로 다른 bare repo에 들어간다(`pinned_runtime_source_paths()`, `:130-147`) — 한
-저장소가 `old..new` 양끝을 동시에 갖는 경우가 없다. 게다가 이 디렉터리는 root가
-`_run_root_git(["init","--bare",...])`로 만들고 `0700`으로 잠그며
-(`_validate_private_directory`, `:284-293`), FastAPI 백엔드는 root로 실행되지 않으므로
-**API/UI 경로에서는 이 디렉터리를 읽을 수조차 없다**. 마지막으로 이 mirror는
-`assert_pinned_runtime_rebuild_allowed`(rehearsal 전용) 아래에서만 생성되므로 production
-호스트에는 보통 아예 존재하지 않는다. 즉 diff를 보려면 **추가 네트워크 fetch가
-필요**하고, 이는 read가 아니라 mutation-adjacent 네트워크 작업이다.
+최근 200 커밋 중 42개가 "pin"을 언급한다. `pinned_runtime_release.py`는 도입 이후 총
+23커밋을 겪었다. 회전 1회의 실측 diff(최근 회전 커밋들 `--stat` 확인): 의미상
+**40-hex 값 1-2개** 변경이 → `pinned_runtime_release.py`(revision + digest) +
+`map_application_300.py`(Map 회전 시 중복 상수 1줄) + 테스트 1-2개 파일의 하드코딩
+기대값(`db77fcd`에서는 두 파일 합계 86줄) + journal/tasks 기록 = **전형 5개(4-6개) 파일
+수정 + PR + rsync 재배포 + 백엔드 재기동**으로 증폭된다. prod는 `.git` 없는 rsync
+배포본이라 pin이 코드 상수인 한 회전마다 전체 배포 사이클이 강제된다.
 
-**범위도 좁다**: 이 설계는 Map/PinVi pinned-pair 재구축 직전 diff만 다룬다. 오너가
-요청한 "git 업데이트 내역 보기"는 더 일반적인데, Geo/Concierge/Manager 자신의 이력은
-전혀 다루지 않는다 — 그쪽은 이미 `git log`/GitHub UI로 충분히 해결되므로 새로 만들
-가치가 낮다는 것이 진짜 결론이다.
+### 하드코딩 전수 조사 결과
 
-**GitHub egress에 대한 정정**: 초안은 "production host가 처음으로 능동적 GitHub
-HTTPS egress를 낸다"고 썼는데 **이미 사실이 아니다** — `rebuild-pinned`가 이미
-`pinned_runtime_sources.py:298`에서 root로 GitHub에 HTTPS fetch를 수행하고 있고,
-`_run_root_git`(`:445-473`)이 `core.hooksPath=/dev/null`,
-`protocol.file.allow=never`, `protocol.ext.allow=never`, `credential.helper=`로,
-`_root_git_environment`(`:488-497`)가 `GIT_CONFIG_NOSYSTEM`,
-`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_TERMINAL_PROMPT=0`,
-`GIT_ALLOW_PROTOCOL=https`로 이미 강하게 하드닝돼 있다. fetch 뒤
-`cat-file -e <sha>^{commit}`(`:302`) 검증이 실질적 방어선이다 — content-addressed
-SHA라 악의적 remote가 내용을 바꿔치기할 수 없다. **진짜 위험은 연결 자체가 아니라
-트리거와 빈도다**: 지금은 드물게, root로, host lock 아래, rehearsal 게이트, 사람이
-TTY에서 시작한다. 이를 HTTP로 트리거 가능하게 만드는 순간 "인증된 웹 요청 하나가 root
-서브프로세스의 네트워크 소켓을 연다"는 새로운 위험 등급이 생긴다.
+churn하는 하드코딩은 정확히 네 줄이다:
+- `services/pinned_runtime_release.py:169` — Map pinned revision
+- `services/pinned_runtime_release.py:174` — PinVi pinned revision
+- `services/pinned_runtime_release.py:183` — `pinset_sha256`(위 2개에서
+  `canonical_pinset_sha256()`(`:94-101`)로 계산 가능한 파생값을 리터럴로 재기재)
+- `services/map_application_300.py:26-28` — `MAP_APPLICATION_300_SOURCE_COMMIT`
+  (**Map revision과 같아야 하는 중복본**)
 
-**Gap(재설계안)**: `diff-pinned`를 만들려면 **기존 pinned mirror가 아닌, Manager가
-소유하는 별도 scratch bare repo**에 양쪽 revision을 받아야 한다. 그리고:
-- CLI/SSH 트리거 전용, **HTTP 핸들러로 절대 노출하지 않는다.**
-- `_run_root_git`의 하드닝을 재사용하되, 현재 빠져 있는
-  `-c fetch.fsckObjects=true -c transfer.fsckObjects=true`를 추가한다(트리거 빈도가
-  올라가는 만큼 미검증 객체를 더 자주 받게 되므로).
-- 가능하면 fetch에 `_drop_privileges`(`:500`, 현재 root fetch 경로는 이를 쓰지 않음)를
-  적용한다.
-- 호스트 방화벽에서 github.com만 허용하는 것을 검토한다.
-- 모든 fetch를 journal에 남긴다.
+churn하지 **않는** 인접 상수(전환 대상 아님): canonical URL 2개(도입 후 불변),
+`PINNED_RUNTIME_RELEASE_VERSION`(구조 버전), d9 legacy 상수(역사적 고정값),
+`APPLICATION_HEAD = "300"`(도입 후 무변경), schema 계약 문자열. PinVi/Dagster schema
+head는 하드코딩이 아니라 candidate 명령으로 동적으로 읽는다는 것이
+`compose_service.py:6048-6049`의 주석에 명시돼 있다. **ride-along 후보는 없다** —
+churn하는 것은 SHA 3종(실질 2종)뿐이다.
 
-**UI 노출**: diff 결과 자체는 CLI 실행 후 산출물을 (b)의 "배포 정합성" 패널에서
-읽기 전용으로 보여주는 것까지만 — fetch를 트리거하는 버튼은 만들지 않는다.
+### 현행 구조의 독립적 결함 2건 (usability와 무관한 전환 근거)
 
-**Risk**: 중간(fetch 자체는 이미 하드닝된 패턴 재사용, 그러나 트리거 표면 확대는
-실질적 등급 변화). **우선순위에서 1군에서 제외하고 "정책 결정 + CLI 전용 재설계" 군으로
-내린다.**
+1. **동일 SHA의 이원 관리**: `MAP_APPLICATION_300_SOURCE_COMMIT`과
+   `MAP_PINNED_RUNTIME_SOURCE.revision`은 같아야 하지만 런타임 비교 코드가 없다 —
+   테스트 한 줄이 유일한 방어선이고, 어긋나면 rebuild가 candidate
+   admission(`map_application_300.py:471-476`)에서야 fail한다. 단일 registry로 합치면
+   hazard 자체가 소멸한다.
+2. **파생값의 수동 재기재**: `pinset_sha256`은 계산 가능한 값인데 사람이 손으로 돌려
+   붙여넣는다. `__post_init__`(`:141-145`)의 재계산 대조가 실수를 잡아주긴 하지만,
+   "digest 수동 갱신"은 비전문 관리자에게 가장 실수 잦은 단계다.
 
----
+### 설계 (a) — pin registry 파일 (root 소유 0600, self-describing)
 
-## (d) Docker 이미지 업데이트 — 권장하지 않음(정정)
+```json
+{
+  "schema": "kor-travel-docker-manager.runtime-pin-registry.v1",
+  "release_version": 5,
+  "sources": [
+    {"role": "map",   "url": "https://github.com/digitie/kor-travel-map.git", "revision": "<40-hex>"},
+    {"role": "pinvi", "url": "https://github.com/digitie/pinvi.git",          "revision": "<40-hex>"}
+  ],
+  "rotated_at": "...", "rotated_by": "...", "reason": "...",
+  "pinset_sha256": "<rotate 시 자동 계산되어 기록>"
+}
+```
 
-**Today**: 일반형 없음. `ContainerConfigUpdate`에 `image` 필드가 없다. 이미지가 바뀌는
-유일한 경로는 `rebuild-pinned`(rehearsal 전용)와 `ensure --build`(production 전면
-차단)뿐이다.
+- 로딩은 기존 선례를 그대로 탄다: `services/registry.py:16-35`가 이미 env 오버라이드
+  + 구조 검증 + `lru_cache`로 `config/docker-targets.yml`에 동일한 일을 한다.
+  `current_pinned_runtime_release()`(`pinned_runtime_release.py:187-190`)의 시그니처를
+  유지한 채 내부만 파일 로드로 바꾸면 **rebuild 경로의 소비처는
+  `compose_service.py:6018` 한 곳**이라 전파가 작다.
+- **검증은 전부 유지**: `PinnedRuntimeSourceSpec.__post_init__`(`:56-63`)의 canonical
+  URL 강제·40-hex 검증, `PinnedRuntimeRelease.__post_init__`(`:129-145`)의 role
+  순서·digest 재계산 대조가 파일 파싱 직후 그대로 실행된다. **URL은 파일에 있어도
+  코드의 `CANONICAL_RUNTIME_SOURCE_URLS`와 불일치하면 fail-close** — 파일로 옮겨도
+  "임의 저장소를 가리키게 조작"은 코드 수정 없이는 불가능하다. 이것이 이 전환의 안전성
+  핵심 논거다.
+- `pinset_sha256`은 파일에 기록하되 로드 시 항상 재계산 대조(부분 편집·truncation 방어).
+- `MAP_APPLICATION_300_SOURCE_COMMIT` 상수는 삭제하고 `release.source_for("map").revision`
+  참조로 통합(결함 1 해소).
 
-**초안의 논리가 무너지는 지점**: 초안은 "개별 컨테이너 action/config/reset이 이미
-production에서 C6c 보호 대상까지 허용되는 비대칭"을 근거로 "비-C6c 서비스의 단일 이미지
-재빌드도 같은 패턴으로 production에서 `--confirm` 하에 허용하자"고 제안했다. 위
-인벤토리 절에서 정정했듯 그 전제 자체가 틀렸다 — config/reset은 C6c lock **안에서**
-실행되는, 이미지가 바이트 단위로 동일하게 유지되는 되돌릴 수 있는 작업이고, 이미지
-재빌드는 실행 코드 자체를 바꾸는 되돌릴 수 없는 작업이다. 같은 패턴이 아니다.
+### 설계 (a′) — 배포·캐시·부트스트랩 (리뷰 지적 반영, 구현 착수의 전제)
 
-추가로 실무적 결함이 세 가지 더 있다:
-- **"기존 `ensure`의 후보 검증 경로 재사용"이 불가능하다.** `ensure`는 production에서
-  검증 경로에 도달하기 전에 이미 하드스톱으로 막힌다(`compose_service.py:4472`,
-  `:4483`). 이걸 우회해 재사용하려면 production compose mutation 전체를 지키는 단일
-  신뢰 토큰(`_MANAGED_COMPOSE_MUTATION_CAPABILITY`)을 새로 발급해야 한다 — 이건 "작은
-  추가"가 아니라 핵심 방어선에 새 발급 경로를 여는 것이다.
-- **provenance/rollback이 없다.** pinned SHA, root-owned bare fetch, `cat-file -e`
-  검증, PR #73의 content-addressed active/rollback reference, generation manifest
-  v6 — 이 모든 장치는 production 코드에 출처와 롤백을 보장하기 위해 존재한다.
-  `rebuild-service`는 prod 디스크에 있는 아무 상태에서나 빌드하고, revision을 기록하지
-  않으며, 롤백 참조를 남기지 않는다. prod는 `.git` 없는 rsync 배포본이라 빌드 대상
-  트리 자체가 부분 동기화 상태일 수 있다.
-- **`--no-deps`가 실제 `init_steps`를 조용히 건너뛴다.** `ensure`는 대상 서비스를 올린
-  뒤 target 순서대로 `init_steps_for_target`을 실행한다. `config/docker-targets.yml`은
-  실제로 비어 있지 않은 `init_steps`를 여러 target에 정의하고 있다(240, 265, 345행) —
-  이 설계가 말이 되려면 `init_steps`가 빈 target으로 한정해야 하는데, 초안은 이 제약을
-  전혀 언급하지 않았다.
-- "비-C6c"도 작은 집합이 아니다 — 전용 PostgreSQL 4개, RustFS, geo API/UI, concierge
-  API/MCP/UI, Grafana/Prometheus/cAdvisor가 전부 해당한다.
+- **파일 위치는 배포 트리 밖의 prod-local 경로다.** prod는 `backend/src/`만 rsync하는
+  배포본이고 보존 파일 목록을 별도 관리한다 — registry 파일이 배포 트리 안이면 재배포가
+  회전 결과를 덮어 P1의 존재 이유가 무너진다. `services/registry.py:17-20`의 env
+  오버라이드 선례를 그대로 써서 `KTDM_RUNTIME_PINS_FILE`로 경로를 지정하고(개발 기본값은
+  저장소 내 `config/runtime-pins.json`, prod는 `/opt/...` 밖의 운영 경로), 런북의 보존
+  파일 목록에 등재한다.
+- **캐시 무효화**: `registry.py`의 `lru_cache` 선례는 "불변 파일" 전제라 그대로 쓸 수
+  없다. 로드 시 mtime+digest 검사로 재로드하거나 캐시 없이 매 호출 로드한다(rebuild
+  시작 시 1회 + 조회 API뿐이라 성능 무의미). 따라서 **`pin rotate`는 실행 중 Manager에
+  재기동 없이 즉시 반영된다** — 이것이 현행 대비 핵심 개선점이므로 명시한다.
+- **부트스트랩과 부재 시 동작**: 최초 1회 `ktdctl pin init`(현행 코드 상수 값으로 파일
+  생성)을 제공하고, 이후 **파일 부재·파싱 실패·digest 불일치는 전부 fail-close**다(상수
+  폴백 없음 — 폴백이 있으면 "파일이 진실"이라는 단일성이 깨진다).
 
-**결론**: `image rebuild-service`는 **로드맵에서 제외한다.** 재론한다면 "검증된 SHA
-기준 빌드 + active/rollback 참조 보유"로 다시 설계해야 하는데, 그건 결국
-`rebuild-pinned`이고 CLI/SSH 영역에 남아야 한다.
+### 설계 (b) — `ktdctl pin` 서브커맨드 패밀리
 
----
+- `ktdctl pin init --confirm` — 최초 부트스트랩(위).
+- `ktdctl pin show [--json]` — registry 내용 + digest + 회전 메타. 읽기 전용.
+- `ktdctl pin verify [--json]` — digest 재계산 대조 + canonical URL 대조. 읽기 전용.
+- `ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm` —
+  검증 → digest 자동 계산 → atomic write → 이전 파일을
+  `runtime-pins.<old-digest>.json`으로 보존(회전 이력 = 롤백 소스) → backend용
+  world-readable 사본 갱신(아래 (c)) → journal 기록. root 요구(rotate하는 사람은
+  어차피 rebuild도 root로 실행).
+- `ktdctl pin rollback --to <pinset-digest> --confirm` — 보존 파일로 원복. **현재는
+  존재하지 않는 기능**(git revert + 재배포가 유일한 롤백)이며 config 전환의 순수 이득.
 
-## (e) 백업
+비전문 관리자 관점 핵심: "GitHub에서 SHA 복사 → 명령 하나 → digest 자동 계산"이 현재의
+"5-6개 파일 편집 + digest 수동 계산 + 테스트 기대값 갱신 + PR + rsync + 재기동"을
+대체한다.
 
-**Today**: `db-backup create/list/gc`가 6개 role을 전부 커버한다. API는 `list`(읽기
-전용)만 있고, create/gc는 문서화된 "표준 mutation 경계"로 CLI 전용이다. **restore는
-CLI에도 없다** — `routes.py:100-101`이 "Restore isn't implemented anywhere yet (CLI
-or API)"라고 명시한다. 초안은 이를 "복원은 영구 CLI 전용"이라 서술했는데 정확히는
-**아직 어디에도 구현되지 않았다** — CLI 전용이 아니라 부재다. 이 정정은 사소해 보이지만
-로드맵 우선순위에 영향을 준다: "CLI로는 가능하다"는 안전망이 없다는 뜻이다.
+### 설계 (c) — API/UI: 읽기 주체가 둘이므로 로더도 둘이다
 
-**API/UI 노출이 단순 정책 결정이 아닌 이유**: `docs/docker-management.md:955-961`이
-이미 실질적 장벽을 명시한다 — 백엔드와 CLI가 `Path.home()`을 다르게 resolve해서 API가
-만드는 dump는 `/root/backups`(root 소유 0600)에 생기고, 이는 운영자의 cron이 관리하는
-경로와 다르다. 문서는 "root service가 같은 경로에 dump를 생성하도록 확장할 때는 동일
-UID 또는 명시적 shared group/ACL을 먼저 정하고, root 소유 0700/0600 artifact를
-operator가 읽을 수 있다고 가정하지 않는다"고 이미 못박아 뒀다. 이 UID/ACL 결정 없이
-API로 create를 열면 운영자의 `gc --keep 7` cron이 API가 만든 파일을 지우지 못해
-보존이 조용히 멈추고, 디스크가 차서 5개 PostgreSQL 인스턴스가 전부 쓰기를 거부하는
-사태로 이어질 수 있다.
+- **root 로더**(rebuild 경로): (a)의 registry 파일을 직접 읽는다 — 소비처
+  `compose_service.py:6018`.
+- **backend 로더**(조회 API): registry는 root 0600이라 backend가 못 읽으므로,
+  `pin rotate`/`init`의 atomic 시퀀스가 **secret 없는 world-readable 사본**(내용 전부
+  공개 저장소의 commit SHA + 메타)을 backend가 읽을 수 있는 경로에 함께 쓴다. 사본에도
+  `pinset_sha256`을 넣어 backend 로더가 재계산 대조하고, 사본 부재·stale(원본과 digest
+  불일치 판단 불가 시)에는 `unknown`으로 fail-close 표시한다.
+- `GET /api/v1/runtime-pins` — role별 revision, pinset digest, 회전 메타, 그리고
+  **현재 committed generation의 digest와의 일치 여부**(P2와 결합: "registry엔 X, 살아
+  있는 generation은 Y = 회전 후 rebuild 대기 중"을 그대로 보여준다).
+- **쓰기(UI rotate)**: registry가 root 소유인 한 API 프로세스는 물리적으로 쓸 수
+  없고, 이 경계가 가장 값싼 안전장치다. 따라서 UI 회전은 2-step 승인 모델로 간다 —
+  "UI는 회전 **요청**(새 SHA + reason)을 audit row로 기록(`api/admin.py:54-63`의 감사
+  패턴)하고, 실제 적용은 SSH에서 `ktdctl pin apply-pending --confirm`". **오너 승인됨
+  (Q4)** — 읽기 전용에서 멈추지 않고 이 2-step 모델까지 구현한다.
 
-`gc`는 `create`보다 더 위험하다 — `gc_standalone_backups`는 `_role_lock`을 잡지 않는다
-(`create`만 잡음). 즉 UI에서 gc를 누르면 4시간짜리 create와 경합할 수 있다. 복원
-경로도 off-box 사본도 없는 상태에서, 로컬 유일 사본을 지우는 버튼을 브라우저에 두는
-것은 이 문서 전체에서 위험 대비 효용이 가장 나쁜 항목이다. 또한 `create`는 현재
-**동기 처리**라 최대 14400초(role별로 최대 3배까지 누적 가능)를 AnyIO 스레드풀 스레드
-하나가 그대로 차지한다 — API로 열려면 반드시 비동기 job(202 + job id + 폴링)이어야
-하고, 절대 inline 호출이면 안 된다.
+### 트레이드오프 (정직하게)
 
-**부수적으로 발견된 기존 `gc` 결함**(이번 설계와 무관하게 이미 존재, 더 넓게 노출하기
-전에 고쳐야 함): 선택 로직이 manifest **내용** 기준이라 manifest가 다른 dump 파일을
-가리키면 엉뚱한 파일이 지워질 수 있고, manifest 없는 orphan `.dump` 파일은 영원히
-수거되지 않는다(`root.glob("*.manifest")` 기준 선택).
-
-**결론(초안 대비 강화)**:
-- `create`: UID/ACL 결정 **및** 비동기 job 설계가 선행되지 않으면 착수하지 않는다.
-- `gc`: "정책 결정" 군에서 내려 **영구 CLI 전용** 군으로 옮긴다(role-lock 부재로 인한
-  경합, 복원 부재와 결합한 비가역성 때문).
-- `restore`: 부재를 정확히 기록만 하고, 로드맵에 넣더라도 CLI/SSH 시작을 전제한다.
-
-**Risk**: `create`(재설계 후) 낮음~중간. `gc`(API 노출) 높음. `restore` 미정 — 만들면
-높음.
-
----
-
-## (f) 설정/secret 변경
-
-**Today**: ports/env/networks는 API+UI로 성숙해 있다(volumes는 위에서 정정했듯
-echo-only). production에서도 개별 config/reset은 C6c 보호 대상 포함 전부 허용된다 —
-이는 위에서 정정한 대로 "느슨함"이 아니라 "이미지 불변·트랜잭션 롤백 보장" 때문이다.
-`compose-boundary` 3종은 1회성 마이그레이션이라 반복 투자 가치가 낮다. `CLAUDE.md`가
-언급하는 T-045(Map UI credential rotation)는 최신 `docs/tasks-done.md`에서 이미
-퇴역 처리됐다(ADR-34/ADR-39로 대체) — `CLAUDE.md` 자체가 이 점에서 낡아 있다(별도
-문서 동기화 과제, 이 설계 문서의 범위 밖).
-
-**진짜 격차**: `.env`가 쥔 secret(Map UI password hash/session secret, PinVi role
-password, API token 등)의 회전이 SSH+편집기 수작업뿐이다.
-
-**"새 값을 절대 출력하지 않는다"는 원칙은 human credential에는 치명적이다.**
-`KTDM_ADMIN_PASSWORD_HASH`(`auth_service.py:72`)와
-`KTDM_SESSION_SECRET`(`auth_service.py:412`)처럼 사람이 다시 입력해야 하는 credential을
-회전시키면서 새 값을 한 번도 보여주지 않으면 **영구적으로 복구 불가능한 lockout**이다.
-설계는 두 클래스를 구분해야 한다:
-- **machine secret**(다른 서비스가 프로그램적으로 읽는 값): 절대 출력하지 않는다(원안 유지).
-- **human credential**(관리자가 다시 입력해야 하는 값): 회전 직후 한 번, operator TTY에만
-  출력하고 log/journal에는 절대 남기지 않는다 — 이는 이미 이 저장소의
-  `공개 API 키 생성` 흐름(`AdminSettingsPanel`의 "생성된 키는 지금 한 번만 표시됩니다")과
-  같은 패턴이다.
-
-**self-lockout 재분석**: `KTDM_SESSION_SECRET` 회전은 다음 Manager 재기동 시점에
-모든 관리자 세션을 무효화한다. 재기동은 (g)에서 보듯 SSH 전용이다. 즉 회전 직후부터
-재기동 전까지는 **`.env`의 새 값이 아니라 실행 중 프로세스의 옛 값이 여전히 유효하다.**
-초안이 제안한 "마지막 회전 시각"만 보여주는 읽기 전용 패널은 이 상태를 오도한다 —
-"회전됨"이라고 표시하지만 실제로는 옛 secret이 여전히 살아 있는 상태일 수 있다.
-대신 **`.env` 값의 다이제스트와 실행 중 프로세스가 로드한 값의 다이제스트를 비교해
-"재기동 대기 중" 상태를 보여주는 편**이 정확하다.
-
-**재사용할 기존 패턴**: `pinvi_database_role_credentials.py:73+`의
-`ensure_pinned_runtime_pinvi_role_credentials`는 이미 하드닝된 `.env` writer다 —
-trusted-root 경로 검증(89-92), 파일 바이트에 대한 `hmac.compare_digest` 사전조건
-(97-103), 중복 대입 탐지(105), atomic apply. 다만 이 함수의 불변식은 **"한 번만
-생성하고 절대 덮어쓰지 않는다"**(부분 상태는 fail-close)이며, `secret rotate`는 정확히
-그 반대(덮어쓰기가 목적)다 — 그러니 이 함수를 그대로 재사용하지 말고, **검증 로직만**
-가져와 새로 설계한다. 또한 `docs/journal.md`에 T-045가 이미
-`ktdctl map-ui-auth rotate`라는 프로토타입을 만들었던 기록이 있다 — 일반형 allowlist를
-새로 설계하기보다 그 프로토타입을 확장하는 쪽이 낫다.
-
-**Gap(수정 제안)**: `ktdctl secret rotate <secret-name> --confirm` — 명시
-allowlist된 키만, machine/human 클래스 구분, human 클래스는 회전 직후 1회 TTY 출력,
-회전과 재기동을 분리된 확인 단계로 나눔(기존 `compose-boundary stage`/`retire` 패턴과
-동일), 모든 회전을 감사 테이블에 기록(아래 "감사 로깅" 참고).
-
-**UI 노출**: rotate 버튼은 만들지 않는다(원안 유지, 강화된 이유로). "재기동 대기 중"
-다이제스트 비교 상태만 읽기 전용으로 노출한다.
-
-**Risk**: rotation 실행 자체는 여전히 높음(self-lockout, 연쇄 재기동 필요) — CLI 전용
-유지. 상태 표시는 낮음.
+**잃는 것**: PR review가 곧 pin 승인이던 암묵적 게이트 / git 이력 = pin 이력 / 테스트가
+현재 pin 값을 고정하는 성질 / 코드=배포본 단일성.
+**보상**: `--confirm`+root+reason 필수+journal·audit(실측상 최근 회전 PR은 사실상 1인
+셀프 머지라 리뷰 게이트는 명목적이었다) / digest-명명 이전 파일 보존(롤백은 오히려
+개선) / 테스트를 "값 고정"에서 "구조·digest 계산 검증"으로 재작성 — **회전 시 테스트
+churn 자체가 소멸** / 로드 시 digest 재계산 + `pin verify` + 부재 시 fail-close.
+**남는 실질 손실 1건**: 파일이면 rebuild 도중 교체가 이론상 가능하다 — 단 rebuild는
+시작 시 release를 한 번 읽고(`compose_service.py:6018`) 전 과정이 그 digest로 키잉된
+journal에 결박되므로, 도중 교체는 다른 digest의 별개 상태 공간으로 갈라질 뿐 진행 중
+작업을 오염시키지 않는다. generation/journal 정합 모델은 무손상이다
+(`pinned_runtime_sources.py:137-140`, `pinned_runtime_generation.py:314-334`의 digest
+키잉은 digest 출처와 무관).
 
 ---
 
-## 새로 추가: 이미 읽을 수 있는 pinned-runtime generation manifest 노출
+## P2. 이미 존재하는 상태의 노출 — release·manifest·journal (v1 1순위 확장)
 
-두 리뷰 중 하나가 초안에 없던 항목을 찾아냈고, **이번 문서에서 1순위 후보로 승격한다.**
-`services/pinned_runtime_generation.py`는 generation 상태(예: `manifest_committing`
-등), 활성 generation의 `image_ids`, `schema_heads`를 담은 durable JSON manifest를
-관리한다(`pinned_runtime_manifest_path()`, `:308-311`). 이 디렉터리는
-**root가 아니라 현재 Manager 소유자 권한으로 0700**이다
-(`ensure_pinned_runtime_state_directory`, `:342-349`) — 즉 **백엔드 프로세스가 이미
-읽을 수 있다.** "지금 어떤 generation이 살아 있는가"라는, 오너가 원하는 것과 정확히
-같은 질문에 답하면서도 `source-status`보다 구현 비용이 낮고 새 wrapper나 unknown 처리도
-필요 없다.
+v1의 1순위(generation manifest 노출)를 유지하되, v2 재조사에서 같은 계열의 더 싼
+항목과 정정이 추가됐다.
 
-**제안**: `GET /api/v1/pinned-runtime/manifest`(읽기 전용) — 현재 committed
-generation의 phase, image_ids, schema_heads를 그대로 노출(secret 없음, 이미
-non-sensitive JSON). UI는 (b)의 "배포 정합성" 패널 상단에 이 요약을 배치.
+1. **`GET /api/v1/pinned-runtime/release` — 노출 비용 최저(0-IO).**
+   `current_pinned_runtime_release()`(`pinned_runtime_release.py:187`)는 순수 in-code
+   상수 + `to_payload()` 직렬화까지 이미 있다. pin 회전이 지배적 chore인데 **현재 pin이
+   뭔지 보는 방법이 소스코드 열람뿐이다**(SSH도 아닌 git checkout 필요). 파일 IO조차
+   없어 캐시 불요. **P1 채택 시 이 endpoint는 `GET /runtime-pins`(P1-c)로 대체·병합
+   된다** — P1보다 먼저 만들면 P1 시점에 소폭 재작업이 있음을 우선순위 배치에 명시한다.
+2. **manifest + rebuild journal 통합 노출 — `GET /api/v1/pinned-runtime/generation`**
+   (응답 키: `manifest` / `journal` / `summary`). `read_manifest`
+   (`pinned_runtime_generation.py:2810`)에 더해 v1이 놓친
+   `read_rebuild_journal`(`:2818`)도 노출한다 — journal은 실패/진행 중 rebuild의 phase를
+   담는 durable JSON으로, 비전문 운영자에게 "지난 재구축이 어디까지 갔고 왜 멈췄나"는
+   성공한 세대(manifest)보다 오히려 더 실용적이다.
+   **환경 스코프 정정(리뷰 반영)**: 정식 경로 도우미 `pinned_runtime_state_paths()`
+   (`:314`)는 내부에서 `require_rebuildable_mode`(`:327`)를 호출해
+   `rehearsal/rebuildable` 조합이 아니면 예외를 던진다. 즉 이 패널의 주 무대는
+   rehearsal 환경(현재 n150의 운용 모드)이며, 조회 route는 mode 게이트가 없는 읽기
+   전용 진입점 `pinned_runtime_state_root()`(`:282`)를 기반으로 별도 구성해야 하고,
+   상태 디렉터리가 없는 호스트에서는 "세대 기록 없음"을 정직하게 표시한다.
+3. **평이한 언어 요약 계층은 설계 요건이다(v1 정정).** 실제 phase 값은
+   `application_bootstrap_intent_durable`, `databases_recreated` 같은 내부 상태기계
+   이름이고 image_ids는 sha256 다이제스트다 — 그대로 노출하면 비전문가에게 무의미하다.
+   요건: **"재구축 진행 중 (n/전체 단계) / 정상 커밋됨 / 운영자 개입 필요"** 수준의
+   한국어 요약 배지(`summary` 키) + 원시 값은 접힌 상세로. 이 요약 계층이 곧
+   "rebuild-pinned 진행 관측 UI"다 — 실행자는 SSH에서 CLI를 돌리고, 관측자는 화면에서
+   진행을 본다(실행자와 관측자가 다른 사람일 수 있다).
 
-**Risk**: 낮음. 이번 사이클 최우선 후보로 (b)보다 앞에 둔다.
+## P3. source 상태·정합성 — `source-status` (v1 설계 유지, 프레이밍 변경)
+
+v1의 통합 설계(단일 `ktdctl source-status` + `GET /api/v1/source-status`)를 유지한다.
+세부 사실관계(실행 이미지에 OCI revision label이 없어 non-raising wrapper와 `unknown`
+경로가 필요, redaction 재사용, 절대 경로 비노출, TTL 캐시+수동 새로고침+single-flight)도
+전부 유지. v2 변경점:
+
+- **목적 재정의**: "감사"가 아니라 **"지금 뭐가 돌고 있나"를 사람 말로 보여주기**다.
+  MATCH/DRIFT/unknown 영어 토큰과 raw SHA 비교는 비전문가에게 무의미하다 —
+  **"최신 상태입니다 / 업데이트가 필요합니다(재구축 요청) / 확인할 수 없습니다"** +
+  다음 행동 안내로 번역하고, SHA는 접힌 상세로 둔다.
+- Geo/Concierge sibling checkout의 `git rev-parse` + clean/dirty, Manager 자신의
+  `--self`(trusted installer의 provenance 기록 확장 필요 — 순수 개선이므로 채택 권고)도
+  v1 그대로.
+- 일반형 GitHub pull+build(Geo/Concierge/Manager 자신)는 **영구 범위 밖 결정** 유지.
+  근거(v1에서 이월): Manager는 이 세 저장소의 자격증명을 갖지 않으며, "fetch해서
+  신뢰"가 아니라 "검증하고 거부"가 이 프로젝트의 일관된 원칙이다.
+
+## P4. git 이력 조회 — 대체안: GitHub compare 링크 (v1 설계 전면 교체)
+
+v1은 `diff-pinned`(별도 scratch mirror + fetch)를 설계했다. v2 재검토 결론:
+**비전문가는 commit diff를 읽지 않으며, diff를 호스트에서 계산할 필요가 애초에 없다.**
+pinned SHA(P1/P2로 노출)와 실행 중 revision(P3)이 있으면
+`github.com/<repo>/compare/<old>...<new>` **외부 링크만 렌더링**하면 된다 — fetch 0회,
+신규 백엔드 0줄, 브라우저에서 GitHub이 diff를 보여준다.
+
+v1의 scratch-mirror 설계는 "오프라인/air-gap 환경에서 diff가 필요해지는 경우"의
+예비안으로만 남긴다(현재 니즈 없음). 예비안 요약(재론 시 상세 재설계 전제): 기존
+pinned mirror는 per-pinset·단일 revision fetch·root 0700·rehearsal 전용이라 재사용
+불가 → Manager 소유 별도 scratch bare에 양쪽 revision을 fetch하되 CLI/SSH 트리거
+전용(HTTP 핸들러 금지), 기존 `_run_root_git` 하드닝 재사용 + `fetch.fsckObjects`
+추가, fetch마다 journal 기록. GitHub egress 자체는 `rebuild-pinned`가 이미 수행 중이라
+쟁점은 "처음 허용"이 아니라 "트리거 표면 확대"다.
+
+## P5. 백업 (v1 대폭 개정 — usability-first 재배치)
+
+### create — "백업 버튼"은 비전문가 관리도구의 핵심 기능 (승격)
+
+v1은 "정책 결정 선행" 군에 뒀다. v2 판정: **주간·비상시 반복 작업 중 UI화 효용이 가장
+큰 항목**이며, v1이 든 선행 과제 2개는 "하지 않을 이유"가 아니라 "구현 명세"다:
+
+- **비동기 job 인프라(신규)**: 현재 저장소에 job 추상화가 전무하다 — `routes.py` 전
+  핸들러가 sync `def`이고 create는 기본 timeout 14,400초(geo 실측 879초~22분)다.
+  최소 설계: `services/job_runner.py` — job id → `{kind, state, started_at,
+  result|error}`, `asyncio.create_task(asyncio.to_thread(fn))` 실행(기존
+  `metrics_collector.py:19-23`·`main.py:129-148` lifespan 패턴 조합), kind별
+  single-flight는 `_role_lock`(`standalone_backup.py:315`) 재사용. API:
+  `POST /api/v1/backups/{role}` → 202 + job id,
+  `GET /api/v1/backups/{role}/jobs/{id}` 폴링(경로에 role을 포함해 `/backups/{role}`과의
+  세그먼트 충돌 회피), 기존 status WS에 완료 이벤트 편승. 핵심 효용: **"버튼 누르고
+  브라우저 닫아도 되는 백업"**.
+- **UID/ACL 결정(배포 설정)**: backend가 만드는 dump 경로와 운영자 cron gc 경로의
+  분리 문제(`docs/docker-management.md` 명시)는 **shared group + setgid 디렉터리
+  방식으로 확정했다(Q2)** — backend와 cron 프로세스 구성을 바꾸지 않고 백업 디렉터리를
+  공유 그룹 소유로 두어 양쪽 모두 읽기·삭제할 수 있게 한다.
+- UI: role 선택 + **"geo는 수 시간이 걸릴 수 있습니다"** 예고 + 경과 표시(role별 실측
+  소요가 이미 문서에 있어 예상 시간 하드코딩 가능) + 실행 중 버튼 비활성.
+  가드레일은 일반 확인 다이얼로그면 충분하다 — create는 파괴적이지 않다.
+
+### freshness 배지 — 백엔드 0줄 (v2 신규)
+
+`scripts/run-standalone-backup.sh:7-11`이 cron 주기를 확정해 두었는데
+`BackupHistoryPanel`은 생성 시각만 표시하고 신선도 판단이 없다 — "마지막 백업이 26시간
+전이면 cron이 죽은 것"을 운영자가 암산해야 한다. **기존 `GET /api/v1/backups` 응답만으로
+프론트 단독 구현 가능**: role별 기대 주기 상수 + "마지막 백업 N시간 전" + 임계 초과 시
+경고색. "crontab 설치 여부" 감지 자체는 신규 코드 + UID 문제가 있어 보류 — freshness
+배지만으로 실질 효용의 대부분을 얻는다.
+
+### gc — CLI 전용 유지 (v1 결론 유지, 근거는 usability 기반)
+
+usability 관점에서도 승격하지 않는다: gc는 cron 성격의 chore이지 화면에서 즉흥적으로
+누를 일이 아니고, restore 부재 상태에서 유일 사본 삭제 버튼은 "실수 복구 불가 = 최악의
+UX"다. UI 대체: `BackupHistoryPanel`에 보존 개수·최고령 표시 + 복사 가능한
+`ktdctl db-backup gc` 명령 카드(→ P7-E).
+
+**gc 결함 수선(한 곳에서 확정)**: `gc_standalone_backups`(`standalone_backup.py:
+277-299`)의 `_role_lock` 부재(4시간 create와 경합 가능)와 orphan `.dump`
+미수거·manifest 내용 기반 오삭제 가능성은 **UI 노출 여부와 무관한 독립 버그 수정**이다
+(lock은 3줄). job_runner(P9 2단계)에 편승해 함께 고치면 되고, job_runner를 하지 않아도
+단독 착수 가능하다. 이 문서에서 이 수선을 언급하는 다른 절은 모두 이 문단을 가리킨다.
+
+### restore — 정정: "CLI 전용"이 아니라 "부재" (v1 오기 수정)
+
+restore는 CLI에도 없다(`routes.py:100-101` "Restore isn't implemented anywhere yet").
+create 버튼을 만들수록 restore 부재가 더 위험해진다 — 버튼이 안전감의 착시를 만든다.
+최소 조치(프론트 전용): `BackupHistoryPanel`에 "복원은 아직 미구현 — 절차는 runbook
+참조" 명시 + 백업 행에 향후 복원 명령 원형 복사 버튼. 구현 순서는 CLI 먼저(v1 유지).
+규모 추정: `standalone_backup.py`(573줄)와 대칭인 restore 서비스 + CLI 서브커맨드로
+**대략 300-500줄 + role별 정지/기동 절차 설계**가 필요하다 — 이 문서의 다른 항목
+(~150-200줄)보다 한 단계 큰 투자다. **로드맵 편입 확정(Q6)** — Q2로 create 버튼이
+승인된 만큼 "복원 못 하는 백업" 공백을 방치하지 않는다.
+
+## P6. 설정/secret 변경 (v1 분할 개정)
+
+### 관리자 비밀번호 변경 폼 — UI로 승격 (v2 신규 분리, 오너 승인됨 Q3)
+
+v1은 secret rotate 전체를 CLI로 묶었다. v2 판정: **"관리자 비밀번호 변경"은 모든 웹앱의
+표준 UX이고 없는 쪽이 이상하다.** 분리 근거: `KTDM_ADMIN_PASSWORD_HASH`는
+`verify_admin_password`가 **호출 시마다 `os.environ`에서 읽으므로**
+(`auth_service.py:72` — 코드베이스 유일 읽기 지점), API 핸들러가 자기 프로세스의
+`os.environ`을 갱신하면 재기동 없이 즉시 적용된다. 세션 검증은 password hash를 건드리지
+않으므로 진행 중 세션도 죽지 않는다 — v1의 self-lockout 분석(session secret 대상)이
+그대로 적용되지 않는다.
+
+설계: `POST /api/v1/admin/password` — 현재 비밀번호 재검증(그 자체가 typed
+confirmation) → 새 hash 생성(`hash_password_for_env`, `auth_service.py:52`) → `.env`
+atomic 갱신 + `os.environ` 동시 갱신 → audit row(`admin.py:54-63` 감사 패턴).
+
+**P1 경계 논거와의 관계(리뷰 지적 반영, 정직하게)**: P1-(c)는 "API 프로세스가 registry
+파일을 물리적으로 못 쓴다"를 안전장치로 드는데, 이 항목은 같은 API 프로세스에 **`.env`
+쓰기 능력**을 부여한다 — `.env`는 machine secret 전부가 든 파일이므로 이는 실질적 경계
+완화다. 완화를 한정하는 조건: (i) 쓰기는 **`KTDM_ADMIN_PASSWORD_HASH` 단일 키
+allowlist**로 제한하고 임의 key=value 쓰기는 구현하지 않는다(경로·파일 바이트 사전조건
+검증은 `pinvi_database_role_credentials.py`의 **검증 로직만** 차용 — 함수 재사용 금지,
+v1 경고 유지). (ii) prod `.env`의 소유·퍼미션이 backend 쓰기를 허용하는 구성인지가
+전제조건이며 구현 시 확인한다. (iii) 이 완화로도 pin registry는 여전히 root 전용이다 —
+P1의 경계 논거는 "backend가 어떤 파일도 못 쓴다"가 아니라 "pin은 못 쓴다"로 유지된다.
+
+### 나머지 secret 회전 — CLI 전용 유지
+
+usability 렌즈로 재도출해도 결론은 같다: session secret 회전은 "적용 = 전 관리자 세션
+즉시 무효화 + SSH 재기동"이라 **UI 버튼을 눌러도 그 자리에서 완결되지 않는 작업**이고,
+machine secret(PinVi role password, API token)은 비전문가가 화면에서 회전할 동기
+자체가 없다(값을 쓰는 곳이 전부 기계다). v1 설계 유지: `ktdctl secret rotate` CLI 전용,
+human/machine 클래스 구분(machine은 절대 비출력, human은 TTY 1회 출력), 회전과 재기동
+분리, T-045 프로토타입(`ktdctl map-ui-auth rotate`) 기반. UI는 "재기동 대기 중"
+다이제스트 비교 상태 표시 + **해소 명령(SSH 재기동 명령 원형) 복사 버튼**(P7-E)까지.
+
+## P7. 비전문가 직관성 개선 — 프론트 전용 quick wins (v2 신규 절)
+
+v2 조사에서 확인된, **백엔드 0줄로 가능한** 개선 목록. 어느 것도 v1에 없었다. 현
+대시보드는 "관측은 친절, 조작은 전무"이며 그 관측조차 개발자 어휘다.
+
+- **A. 오류 humanize.** `apiJson`이 실패 response body 원문을 그대로
+  `ApiError.message`에 넣고(`frontend/src/lib/api.ts:194-195`) `DashboardClient`가
+  `alert()`로 띄운다(`:563`, `:566`, `:580`, `:583`) — 비전문가가 raw JSON
+  `{"detail":{"code":"COMPOSE_CANDIDATE_..."}}`를 브라우저 alert로 본다. detail
+  code→한국어 설명 매핑 + "자세히" 접기로 원문 보존 + toast/panel 교체.
+  `ContainerDetailModal.tsx:203-208`이 이미 모범 패턴(raw detail 숨기고 평이한 문구)
+  이므로 전역화하는 것뿐이다.
+- **B. 라벨 한국어화.** 상태 칸이 raw 영어(`running`/`not_created`,
+  `DashboardClient.tsx:948-950`)인데 같은 화면 KPI는 한국어("실행 중")라 어휘가
+  이중이다. role 칸도 내부 식별자(`map-api`, `metrics-exporter`) 그대로 —
+  `getContainerPresentation`(`:157-193`)에 이미 한국어 표시명이 있다. 백업 role 필터
+  (`geo_dagster` 등)와 열 이름(`alembic`, `SHA-256`)도 설명 라벨로.
+- **C. target 그룹 뷰.** 21개 컨테이너가 평면 테이블 하나다. `GET /targets`가 의존
+  구조를 이미 반환하므로 앱 단위(지오코더/컨시어지/지도/PinVi/공용 인프라) 섹션 접기 +
+  섹션 헤더에 "모두 정상 / 1개 중지됨" 요약이 프론트 전용으로 가능하다.
+- **D. Manager 자기 상태 카드.** `GET /health` 표시(인벤토리 참고).
+- **E. 복사 가능한 CLI 명령 카드.** CLI 전용으로 남는 모든 작업에 "이 명령을 SSH에서
+  실행" 원형 복사 카드를 둔다 — **CLI-전용 정책과 usability를 동시에 만족하는 최저비용
+  수단**이며 이 문서의 CLI-전용 결정 전부에 공통 적용한다. 대상: `db-backup gc`,
+  (향후) restore, secret rotate, `rebuild-pinned`, `pin rotate`, Manager 재기동,
+  그리고 **sibling 앱 이미지 갱신**(Geo/Concierge 등의 `ensure --build` — P8 참고).
+- **F. mutation 미리보기 전역화.** 이미 두 곳에 모범 패턴이 있다 —
+  `ContainerDetailModal.runEnsure`의 영향 서비스 나열 confirm(`:93-109`)과 설정 모달의
+  변경 diff 미리보기(`DashboardClient.tsx:1669-1713`). 이를 stop/restart(현재 확인
+  없이 즉시 실행, `:548-550`)와 reset(문구뿐인 confirm, `:1720`)에 확장 — stop은 "의존
+  서비스 N개 영향"을 이미 로드된 targets 데이터에서 계산 가능.
+- **G. 기존 API 파라미터의 UI 노출.** 메트릭 기간(`hours` 지원하나 UI는 1 고정,
+  `:594`), 로그 tail 선택/복사, 커맨드 팔레트 확충(현재 4항목, `:792-817`).
+- **H. 볼륨 필드 읽기 전용화.** 편집 input과 `+ 추가` 버튼이 활성이지만
+  (`:1521-1560`) 서버가 불변 계약으로 거부한다 — 현재는 편집 후에야 경고가 뜬다
+  (`:1563-1568`의 사후 경고). "편집 후 경고"를 "처음부터 읽기 전용 렌더"로 바꾼다.
+- **I. target 단위 일괄 재시작.** start/stop/restart가 컨테이너 1개씩뿐 — "geo 전체
+  재시작"은 클라이언트 순차 호출로 시작 가능(각 호출이 기존 C6c 락 통과), 영향 목록
+  확인 다이얼로그 필수. 신규 엔드포인트 불요이므로 0군에 배치한다.
+
+## P8. 제외 확정 항목 (v1 결론 재확인)
+
+- **`image rebuild-service`** — 제외 유지. 정직한 usability 비용 명시: 이 결정으로
+  **Geo/Concierge/공용 인프라의 이미지 갱신은 UI에 어떤 경로도 없이 남는다**(수용된
+  격차). 기각의 실제 근거는 안전(unpinned 배포·rollback 부재)과 정확성(`--no-deps`가
+  `init_steps`를 조용히 건너뛰어 반쪽 기동 — 이것 자체가 나쁜 UX)이다. usability
+  보완재: P3의 "업데이트 필요" 표시가 "언제 CLI를 돌려야 하는지"를 알려주고, P7-E
+  카드가 실행할 `ensure --build` 명령 원형을 제공한다.
+- **`rebuild-pinned` production 실행 버튼** — 제외 유지. 단 v1의 "절대 금지"에서 두
+  갈래를 분리했다: (i) **진행 관측 UI는 만든다**(P2-3의 요약 계층 — v1은 이 관측 뷰를
+  제안하지 않은 것이 공백이었다). (ii) 서버가 이미 `rehearsal/rebuildable` 조합이
+  아니면 거부하므로 **rehearsal 환경 한정 버튼**은 기존 `IS_DEV` + 서버 거부 이중
+  패턴으로 성립 가능하다 — **오너 승인됨(Q5)**: typed confirmation("rebuild-pinned"
+  타이핑) + 기존 서버측 environment 게이트 하에 이 버튼을 추가한다. 현재 n150이
+  rehearsal/rebuildable 모드로 운용 중이므로 실호스트에서 실제로 동작하는 버튼이다.
+  production 모드 호스트에서 필요한 것은 여전히 버튼이 아니라 전제조건 체크리스트
+  (락 상태·pinned SHA·generation phase — 전부 P1/P2 데이터) + 붙여넣을 SSH
+  명령(P7-E)이다.
+- **`compose-boundary` 3종** — 1회성 레거시, 투자 보류(무변경).
+- **일반형 GitHub pull+build** — 영구 범위 밖(무변경, 근거는 P3).
+- **Manager 자기 재기동** — 기술적 필연으로 SSH 전용(무변경). "재기동 필요" 감지 시
+  정확한 SSH 명령을 표시(P7-E).
+
+## P8b. 교차 요건·승격 항목 (제외 아님 — 활성 tier의 출처)
+
+- **Docker disk-usage 카드 — 승격**: 비전문가가 시스템을 죽이는 가장 그럴듯한 경로가
+  "디스크 참"이다. `docker system df` wrapper 신규(현재 저장소에 호출 0건) + KPI 카드
+  + 임계 경고(85% 등). TTL 캐시·수동 새로고침·single-flight 전제(v1 유지). raw
+  수치보다 "정리 시 약 N GB 확보 가능" 요약을 우선한다.
+- **감사 로깅 공통 전제**(v1 유지): 이 문서의 신규 mutation 전부(`pin rotate`, backup
+  create, password change)에 `admin.py:54-63` 패턴의 durable audit row.
+- **Push 알림** — Grafana로 해결, 범위 밖(v1 유지, Grafana가 Manager를 실제 스크레이핑
+  하는지는 미검증 전제로 명시).
 
 ---
 
-## (g) 기타 운영 격차
+## P9. 구조 리팩토링 평가 (v2 신규 절)
 
-1. **Manager 자기 배포 상태/재기동**: 자기 자신을 서빙 중인 프로세스가 스스로
-   재기동하면 그 요청 자체가 끊긴다 — **영구히 SSH 전용**이 맞는 경계다(격차가
-   아니라 의도된 경계).
-2. **`compose-boundary` 3종**: legacy override 이관이 끝나면 점차 쓸모가 줄어드는
-   1회성 코드다. UI 투자 가치 낮음.
-3. **Docker 디스크 사용량/정리**: `c6c_image_retention.py`는 pinned generation
-   이미지만 관리하고, 반복된 `ensure --build`가 쌓는 dangling image/build cache는
-   아무도 관리하지 않는다. `ktdctl docker disk-usage`(읽기 전용, `docker system df`
-   래퍼)와 `ktdctl docker gc --confirm`(비보호 이미지만 prune)을 제안한다. 읽기
-   전용 쪽은 **TTL 캐시 + 수동 새로고침 + single-flight guard**를 전제로 UI KPI
-   카드에 넣을 가치가 있다 — 전제 없이 자동 새로고침으로 만들면 데몬에 부하를 주는
-   self-inflicted DoS다.
-4. **감사 로깅(교차 항목)**: 이 문서가 제안하는 새 mutation(특히 `secret rotate`,
-   `db-backup create`)은 전부 기존 로그인/API-key 감사(`admin.py:56-81`)와 동일한
-   수준의 durable audit row가 필요하다. 초안에는 이 요구사항이 없었다 — 모든 신규
-   mutation 제안에 공통 전제로 추가한다.
-5. **Push 알림**: 컨테이너 다운/백업 실패를 능동적으로 알리는 경로가 없다. 이미 있는
-   Grafana로 해결하는 것이 자연스럽고, 이번 설계 범위 밖으로 유지한다(단, Grafana가
-   실제로 Manager를 스크레이핑하는지는 별도로 확인이 필요하다 — 이 문서는 그 전제를
-   검증하지 않았다).
+**결론: 전면 리팩토링 불필요.** UI 로드맵을 막는 것은 두 god-module(compose_service.py
+7,503줄 / c6c_deployment.py 7,675줄)의 "크기"가 아니라 4개의 구체적 결손이다:
+(1) job runner 부재, (2) DashboardClient 단일 컴포넌트(195-1770줄이 한 함수 —
+useState 22개, raw WS effect 2개, 인라인 모달 4개), (3) pin이 소스코드 상수(→ P1),
+(4) read-only facade 함수 몇 개의 부재. god-module 내용 대부분(rebuild 오케스트레이션
+약 1,290줄 단일 메서드 `:6014-7307`, smoke 검증기 약 2,000줄)은 UI 로드맵이 **건드릴
+필요가 없는** 코드다. 서비스 생태계는 이미 21개 모듈로 잘 추출돼 있고
+(`standalone_backup.py` 573줄, `pinned_runtime_release.py` 190줄 등), 문서의 신규
+엔드포인트가 필요로 하는 함수는 대부분 그 작은 모듈들에 있다.
 
----
+**점진 계획 — 5단계, 각각 단독 배포 가능:**
 
-## 우선순위 권고(리뷰 반영 후 재정렬)
+1. **읽기 전용 facade + route**: `services/deployment_status.py` 신설 —
+   manifest/journal 읽기(mode 게이트 없는 `pinned_runtime_state_root()` 기반, P2-2의
+   스코프 정정 참조) + `inspect_c6c_image_source_revision`의 non-raising wrapper.
+   P2·P3 해제. ~200줄 신규, 기존 코드 무변경.
+2. **`services/job_runner.py`** + backup create 202-비동기 노출. gc 결함 수선(P5)도
+   이때 편승. ~150줄 신규.
+3. **프론트 추출**: status/log WS effect → 훅 2개, 인라인 모달 4개 → 파일 분리(기존
+   `BackupHistoryPanel` 선례 패턴). 동작 무변경 순수 이동, DashboardClient 잔여
+   ~600줄. **신규 패널이 2개 이상 되기 전에 선행**(P0 표의 신규 4행 기준) — 지금
+   구조에 더하면 2,300줄+로 가고 ESC-스택 effect(`:285-302`)에 분기가 계속 늘어난다.
+4. **pin registry 데이터화**(P1). 소비처 1곳이라 파급 최소.
+5. **(선택, 로드맵 무관) god-module 기계적 분할**: rebuild 오케스트레이션 →
+   `pinned_runtime_orchestrator.py`, smoke 검증기 → `c6c_smoke.py`. **UI 로드맵의 어떤
+   항목도 이 단계를 선행조건으로 요구하지 않는다** — 유지보수성 투자로만 정당화되므로
+   맨 뒤이고, 생략해도 로드맵은 완주된다.
 
-**먼저 만들 가치 있음(낮은 리스크, 이미 접근 가능한 상태 기반)**
-1. **pinned-runtime generation manifest 읽기 전용 노출** — 새로 발견한 항목, 이미
-   backend가 읽을 수 있는 0700 자기 소유 디렉터리, 구현 비용 최저.
-2. `ktdctl source-status`(통합안) + `GET /api/v1/source-status` 읽기 전용 패널 —
-   단, 새 non-raising wrapper·redaction 재사용·TTL 캐시가 전제.
-3. `ktdctl docker disk-usage` 읽기 전용 카드 — TTL 캐시·수동 새로고침·single-flight
-   전제.
-4. trusted installer에 git commit provenance 기록 추가(`source-status --self`
-   전제조건) — 순수 개선, 열린 질문에서 승격.
-
-**가치는 있으나 정책 결정 + 상당한 재설계가 먼저 필요함**
-5. `db-backup create`의 API/UI 노출 — UID/ACL 결정 **및** 비동기 job 설계 둘 다 선행.
-6. git 이력/diff 조회(구 `diff-pinned`) — 별도 Manager 소유 scratch mirror로 재설계,
-   CLI/SSH 트리거 전용(HTTP 핸들러 금지), `fsckObjects` 추가, 결과만 UI에서 읽기 전용
-   표시.
-
-**신중, 당장 만들지 않기를 권고**
-7. `secret rotate` — CLI 전용, human/machine 클래스 구분 재설계, T-045 프로토타입
-   기반. UI는 "재기동 대기" 상태 표시까지만.
-8. `db-backup gc`의 API/UI 노출 — role-lock 부재로 인한 경합 위험 + 복원 부재 결합,
-   영구 CLI 전용으로 하향.
-9. `db-backup restore` — **아직 존재하지 않음**(CLI 전용이 아니라 부재). 로드맵에
-   넣더라도 CLI/SSH 시작 전제.
-
-**로드맵에서 제외**
-10. `image rebuild-service` — 정정된 전제(§d)에서 코히런트하지 않음. 재론한다면
-    검증된 SHA+rollback 참조를 갖춘 `rebuild-pinned` 계열로 다시 설계해야 하며, 그건
-    CLI/SSH 영역이다.
-11. `pinvi-pair rebuild-pinned` 실행 버튼 자체 — UI에 절대 넣지 않는다.
-12. `compose-boundary` 3종 — 1회성 레거시, 투자 보류.
-13. Geo/Concierge/Manager 자신에 대한 일반형 GitHub pull+build — 의도된 영구 범위 밖
-    결정으로 기록(재검토는 오너 판단).
+안전 트레이드오프: 1·3·4단계는 위험 중립~감소(4단계는 "코드 수정으로 pin 회전"이라는
+현재의 오류 유발 경로를 검증된 데이터 경로로 대체). 2단계만 실질 트레이드오프 — 장시간
+mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k 라인 이동이라 리뷰
+부담 대비 UI 효용이 0이다.
 
 ---
 
-## 오너가 결정할 열린 질문
+## 우선순위 권고 (v2 — usability-first 재정렬)
 
-1. `db-backup create`를 API/UI에 노출할지 — UID/ACL 결정과 비동기 job 설계가 둘 다
-   선행돼야 하는 큰 작업이다. 이 투자를 이번에 할지.
-2. git 이력/diff 조회를 위해 Manager가 별도 scratch mirror로 GitHub HTTPS fetch를
-   (CLI 트리거로 한정해서라도) 늘리는 것을 허용할지. 기존 `rebuild-pinned`의 egress는
-   이미 실재하고 하드닝돼 있으므로, 질문은 "egress를 처음 허용하는가"가 아니라
-   "트리거 빈도/표면을 늘리는가"다.
-3. `secret rotate`를 이번 사이클에서 만들지 — T-045 프로토타입(`ktdctl
-   map-ui-auth rotate`)을 확장하는 형태로. human/machine 클래스 구분과 TTY 1회 출력
-   설계에 동의하는지.
-4. `db-backup restore`를 로드맵에 넣을지 — 지금은 CLI/API 어디에도 없다는 것을
-   전제로 논의를 시작해야 한다.
-5. `docker gc --confirm`(비보호 이미지 prune)을 CLI에 추가할지, 읽기 전용
-   `disk-usage`만으로 충분한지.
-6. 이 문서가 발견한 CLAUDE.md의 두 지점(퇴역한 `pinvi-pair capture` 언급, 퇴역한
-   T-045 언급)을 별도 문서 동기화 작업으로 처리할지 — 이 설계 문서의 범위 밖이라
-   여기서는 사실만 기록한다.
+**0군 — 프론트 전용, 백엔드 0줄 (즉시 착수 가능, 정책 결정 불요)**
+1. 오류 humanize + 라벨 한국어화 (P7-A·B) — 코드 변경 최소, 체감 최대.
+2. 백업 freshness 배지 (P5) / Manager health 카드 (P7-D) / target 그룹 뷰 (P7-C).
+3. 복사 가능한 CLI 명령 카드 (P7-E) — CLI-전용 정책 전체의 usability 보완재.
+4. mutation 미리보기 전역화 (P7-F) / 볼륨 필드 읽기 전용화 (P7-H) / 기존 파라미터
+   노출 (P7-G) / target 단위 일괄 재시작 (P7-I).
+
+**1군 — 저비용 백엔드 read-only (리팩토링 1단계와 함께)**
+5. ~~`GET /pinned-runtime/release`~~ — **Q1 승인으로 건너뛴다**: 별도 endpoint를
+   만들지 않고 9번의 `GET /runtime-pins`에서 한 번에 만든다(P2-1의 재작업 주의 그대로).
+6. `GET /pinned-runtime/generation`(manifest+journal+요약, P2-2·3) = rebuild 진행
+   관측 UI.
+7. `source-status` + "사람 말" 정합성 패널 + GitHub compare 링크 (P3·P4).
+8. disk-usage 카드 (P8b) / installer provenance 기록 (P3 `--self` 전제).
+
+**2군 — 구조 투자 (정책 결정이 필요했던 항목은 전부 오너 승인됨 — 말미 결정 사항 참조)**
+9. **pin registry 설정파일화 + `ktdctl pin` 패밀리 + `GET /runtime-pins`** (P1) —
+   시간 절감 총량 최대. [승인됨 Q1]
+10. job_runner + 백업 create 버튼 (P5, 리팩토링 2단계) — dump 소유권은 shared group
+    + setgid 방식. [승인됨 Q2]
+11. 관리자 비밀번호 변경 폼 (P6). [승인됨 Q3]
+12. 프론트 구조 추출 (리팩토링 3단계 — P0 표의 신규 패널 2개 이상 시점 전에).
+13. UI 2-step pin rotate — 요청 기록(UI) + `pin apply-pending`(SSH) (P1-c).
+    [승인됨 Q4]
+14. rehearsal 환경 한정 `rebuild-pinned` 버튼 — typed confirmation + 서버 게이트
+    (P8). [승인됨 Q5]
+15. `db-backup restore` — CLI 우선, ~300-500줄 (P5). [승인됨 Q6 — 로드맵 편입]
+
+**3군 — CLI 전용 유지 / 제외 (v1 결론 유지분)**
+16. secret rotate(비밀번호 외 전부) — CLI 전용 + 상태 표시 + 해소 명령 카드 (P6).
+17. `db-backup gc` — CLI 전용(결함 수선은 P5의 단일 문단 참조).
+18. `image rebuild-service` / `compose-boundary` / 일반형 pull+build /
+    production rebuild 버튼 — 제외 (P8).
+
+## 오너 결정 사항 (2026-08-28 확정)
+
+v2의 열린 질문 7건에 오너가 전부 답했다. 결정은 아래와 같고, 위 우선순위·각 절에
+반영돼 있다.
+
+| # | 질문 | 결정 |
+|---|---|---|
+| Q1 | pin registry 전환(P1) | **승인** — "PR review = pin 승인" 게이트를 CLI(`--confirm`+root+reason+감사기록)로 대체하는 트레이드오프 수용 |
+| Q2 | 백업 create UI화(job_runner) | **승인** — dump 소유권은 **shared group + setgid 디렉터리** 방식(기존 프로세스 구성 무변경) |
+| Q3 | 관리자 비밀번호 변경 폼 | **승인** — backend의 `.env` 단일 키(`KTDM_ADMIN_PASSWORD_HASH`) 쓰기 경계 완화 수용 |
+| Q4 | UI pin 회전 범위 | **2-step rotate까지** — UI 요청 기록 + SSH `pin apply-pending --confirm` 적용 |
+| Q5 | rehearsal 한정 rebuild 버튼 | **버튼 추가** — typed confirmation + 기존 서버측 environment 게이트 유지. 현 n150이 rehearsal 모드라 실동작 버튼임을 인지하고 승인 |
+| Q6 | restore 로드맵 | **포함** — CLI 우선, ~300-500줄 + role별 정지/기동 절차 설계 |
+| Q7 | CLAUDE.md 낡은 지점 동기화 | **별도 작업으로 진행** — 이 설계 PR과 분리한 작은 docs-only PR |
+
+이로써 이 문서의 미결 정책 결정은 없다. 다음 단계는 `docs/tasks.md`의
+`KTDCTL-UI-MIGRATION` 태스크에서 승인 항목을 구현 태스크로 분리하는 것이다.
