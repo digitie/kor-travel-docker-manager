@@ -50,8 +50,8 @@ consumer reconciliation은 별도 운영 acceptance로 남긴다. 구현·실행
   이 변경과 Map execution journal의 fresh source pinset 없이는 같은 candidate를 재실행하지 않는다.
 - [/] `cbb577d3…` candidate는 Map runtime 준비 뒤 PinVi role topology terminal receipt로 끝났고 같은
   pinset을 재시도하지 않는다. sealed verifier를 포함한 `52c6e538…` 후보도 기존의 폐기 대상 catalog에
-  sealed 후조건을 적용해 v8 journal 전 종료했으므로 재시도하지 않는다. 새 PinVi immutable revision과 Map
-  `9c64e862…`를 새 v5 pinset으로 고정한다. Manager는 Map paired candidate·frozen Compose·external
+  sealed 후조건을 적용해 v8 journal 전 종료했으므로 재시도하지 않는다. PinVi `b9acd4ff…`와 Map
+  `9c64e862…`를 새 v5 pinset `06045da4…`으로 고정한다. Manager는 Map paired candidate·frozen Compose·external
   readiness를 먼저 확인하되, sealed verifier는 DB reset 뒤 role open → admin/migration bootstrap → seal 및
   exact PinVi head 확인 뒤에만 실행한다. noncanonical·invalid·unavailable·malformed 결과는 raw output을
   보존하지 않고 `pinvi_role_verify` terminal receipt를 먼저 남긴 뒤 seven runtime을 정지한다. 이 PR의 두

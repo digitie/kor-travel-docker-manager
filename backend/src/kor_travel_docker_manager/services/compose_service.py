@@ -15,7 +15,7 @@ from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
@@ -4999,7 +4999,7 @@ class ComposeService:
         *,
         transaction: ComposeTransactionSnapshot,
     ) -> None:
-        """새 후보가 runtime/DB 변이를 시작하기 전 sealed topology만 읽는다."""
+        """frozen candidate transaction에서 sealed topology JSON만 엄격히 읽는다."""
 
         result = self._run_pinned_runtime_rebuild_compose(
             [
@@ -5118,6 +5118,32 @@ class ComposeService:
                     code=code,
                 ),
             ) from None
+
+    def _terminate_pinned_runtime_after_pinvi_role_topology_failure(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        journal_path: Path,
+        transaction: ComposeTransactionSnapshot,
+        error: _PinviRoleLifecycleError,
+    ) -> NoReturn:
+        """sealed target-state failure를 durable no-retry receipt 뒤 runtime stop으로 끝낸다."""
+
+        self._record_pinvi_role_lifecycle_block(
+            journal,
+            journal_path=journal_path,
+            error=error,
+        )
+        try:
+            self._run_pinned_runtime_rebuild_compose(
+                ["stop", *RUNTIME_SERVICES],
+                transaction=transaction,
+            )
+        except DeploymentContractError as stop_error:
+            raise DeploymentContractError(
+                "PinVi runtime could not be stopped after sealed topology failure"
+            ) from stop_error
+        raise error
 
     def _run_pinvi_schema_bootstrap_with_role_lifecycle(
         self,
@@ -7297,21 +7323,12 @@ class ComposeService:
                         transaction=runtime_transaction,
                     )
                 except _PinviRoleLifecycleError as exc:
-                    journal = self._record_pinvi_role_lifecycle_block(
-                        journal,
+                    self._terminate_pinned_runtime_after_pinvi_role_topology_failure(
+                        journal=journal,
                         journal_path=state_paths.journal,
+                        transaction=runtime_transaction,
                         error=exc,
                     )
-                    try:
-                        self._run_pinned_runtime_rebuild_compose(
-                            ["stop", *RUNTIME_SERVICES],
-                            transaction=runtime_transaction,
-                        )
-                    except DeploymentContractError as stop_error:
-                        raise DeploymentContractError(
-                            "PinVi runtime could not be stopped after sealed topology failure"
-                        ) from stop_error
-                    raise
                 updated = self._advance_pinned_runtime_journal(
                     journal, "pinvi_schema_ready"
                 )

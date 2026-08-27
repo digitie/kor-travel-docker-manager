@@ -1852,6 +1852,51 @@ def test_post_bootstrap_sealed_role_topology_failure_is_typed_and_private(
     verifier.assert_called_once()
 
 
+def test_post_bootstrap_topology_terminal_receipt_stops_runtime_and_blocks_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_runtime_phase("map_runtime_ready")
+    failure = compose_service_module._PinviRoleLifecycleError(
+        "PinVi sealed role topology verification failed",
+        role_topology_block=PinviRoleLifecycleBlock(
+            stage="pinvi_role_verify",
+            code="role_topology_noncanonical",
+        ),
+    )
+    written: list[PinnedRuntimeRebuildJournal] = []
+    run_compose = Mock(return_value={"success": True, "stdout": ""})
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        lambda _path, value: written.append(value),
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(compose_service_module._PinviRoleLifecycleError) as captured:
+        service._terminate_pinned_runtime_after_pinvi_role_topology_failure(
+            journal=journal,
+            journal_path=tmp_path / "journal.json",
+            transaction=cast(ComposeTransactionSnapshot, SimpleNamespace()),
+            error=failure,
+        )
+
+    assert captured.value is failure
+    assert written == [
+        journal.with_pinvi_role_lifecycle_block(failure.role_topology_block)
+    ]
+    run_compose.assert_called_once_with(
+        ["stop", *RUNTIME_SERVICES],
+        transaction=ANY,
+    )
+    with pytest.raises(
+        DeploymentContractError,
+        match="blocked by durable PinVi role topology failure",
+    ):
+        ComposeService._assert_pinvi_role_lifecycle_block_admission(written[0])
+
+
 def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
