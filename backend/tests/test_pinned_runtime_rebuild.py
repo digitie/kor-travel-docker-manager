@@ -1887,10 +1887,11 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
     permit_path, permit = writes.call_args_list[0].args
     assert permit_path.parent == linux_tmp_path
     assert permit == (
-        "pinvi-role-catalog-reset-v1|"
+        "pinvi-role-catalog-reset-v2|"
         f"{journal.transaction_id}|{journal.candidate.pinset_sha256}|"
         f"{journal.pinvi_database_identity.system_identifier}|"
-        f"{journal.pinvi_database_identity.oid}|pinvi|pinvi\n"
+        f"{journal.pinvi_database_identity.oid}|pinvi|pinvi|"
+        "revoke_external_memberships\n"
     ).encode()
     result_path, result = writes.call_args_list[1].args
     assert result_path.parent == linux_tmp_path

@@ -5420,9 +5420,10 @@ class ComposeService:
             / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.result"
         )
         permit = (
-            "pinvi-role-catalog-reset-v1|"
+            "pinvi-role-catalog-reset-v2|"
             f"{journal.transaction_id}|{journal.candidate.pinset_sha256}|"
-            f"{identity.system_identifier}|{identity.oid}|{identity.name}|{identity.owner}\n"
+            f"{identity.system_identifier}|{identity.oid}|{identity.name}|{identity.owner}|"
+            "revoke_external_memberships\n"
         ).encode()
         result_identity: tuple[int, int] | None = None
         try:
