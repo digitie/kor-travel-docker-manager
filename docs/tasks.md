@@ -13,6 +13,7 @@
 |:---|:---|:---:|:---|
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
+| **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 설계 | `[/]` | 오너가 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)의 열린 질문에 답하면 승인된 항목만 구현 태스크로 분리 |
 
 ## 공통 진행 규율
 
@@ -144,3 +145,25 @@ Issue #177의 create/list/gc, cron, API/UI 구현과 n150 Geo Dagster·Concierge
 
 Geo application DB의 첫 standalone 대용량 backup 실측 완료 이력은
 [`docs/tasks-done.md`](tasks-done.md)의 `BACKUP-FOLLOWUP-GEO-INITIAL`에 보관한다.
+
+## KTDCTL-UI-MIGRATION — ktdctl CLI 기능의 UI 이관·운영 기능 격차 설계
+
+`ktdctl`이 이미 갖고 있는 기능 중 UI로 이관할 만한 것과, GitHub source pull+build·
+git revision/계약 정합·git 이력 조회·Docker 이미지 업데이트·백업·설정/secret 변경 등
+운영에 필요한 기능 중 `ktdctl`/API/UI 어디에도 없는 격차를 조사했다. 조사 서브에이전트가
+초안을 작성한 뒤 보안/blast-radius 리뷰어와 완결성/실현가능성 리뷰어가 각각 독립적으로
+실제 코드와 대조 검증했고, 두 리뷰가 일치되게 지적한 정정(초안이 존재하지 않는
+`assert_c6c_mutation_allowed`를 근거로 삼았던 점, `diff-pinned` 제안이 실제로는
+read-only가 아니었던 점, `image rebuild-service` 제안이 잘못된 전제 위에 있었던 점 등)을
+반영해 최종본을 만들었다. 정본은 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)다.
+
+이번 라운드는 **설계·문서화·태스크 등록까지만** 진행했다 — 코드 변경은 전혀 없다. 문서의
+"우선순위 권고"와 "열린 질문" 절에 따라 오너가 각 항목(특히 `db-backup create` API/UI
+노출, git 이력 조회를 위한 GitHub egress 확대, `secret rotate` 착수 여부, `db-backup
+restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구현 태스크로 분리한다.
+
+- [x] `ktdctl` CLI 전체 서브커맨드와 API/UI 노출 여부 인벤토리를 작성하고 실제 코드로 검증했다.
+- [x] 7개 운영 영역 각각에 대해 Today/Gap/UI 노출안/Risk를 정리했다.
+- [x] 보안/blast-radius 리뷰와 완결성/실현가능성 리뷰를 각각 독립 수행하고 확인된 지적을 최종본에 반영했다.
+- [ ] 오너가 열린 질문 6건에 답한다.
+- [ ] 승인된 항목만 구현 태스크(코드 변경 포함)로 새로 분리해 이 목록에 추가한다.
