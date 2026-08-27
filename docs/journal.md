@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-28 — M05 격리 bridge harness 선행 결정
+
+`c1ad5a3e…` committed runtime은 host network이므로 M04/M05 attestation의 loopback published-port
+검증을 만족하지 않는다. 과거 격리 checkout은 source pin이 달라 증거로 재사용할 수 없다. 두 전문 적대
+리뷰는 canonical runtime을 bridge로 바꾸는 임시 우회와 수동 격리 실행을 모두 거절하고, exact Map/PinVi
+source와 fresh bridge resource만 허용하는 root-only harness를 먼저 만들도록 요구했다. harness는 Docker
+mutation 전에 `(harness, pinset, Manager revision)` immutable ledger claim과 inherited global lock을 확보하고,
+production DB·volume·network·container와의 비공유를 strict inspect로 증명해야 한다. 그 성공 증적은 production
+activation receipt로 승격하지 않는다.
+
+임시로 시작한 standalone Map bridge build는 어떠한 runtime container·volume도 만들기 전에 중지했고, exact
+Map checkout의 실행 전용 env file도 제거하여 clean 상태를 복구했다. 이후 M04/M05 live E2E는 harness PR의
+review·CI·trusted release 설치 뒤에만 재개한다.
+
 ## 2026-08-28 — installed launcher execute bit 보존과 candidate 회전
 
 `53d4639f…`은 trusted release가 `run-pinned-rebuild-once`를 executable로 설치하지 않아 admission 이전에 끝났다.
