@@ -1129,6 +1129,33 @@ def test_map_application_300_python_base_images_reject_invalid_source_contract(
         compose_service_module._ensure_map_application_300_python_base_images(sources)
 
 
+def test_map_application_300_python_base_images_reject_extra_docker_stage(
+    tmp_path: Path,
+) -> None:
+    sources, _ = _paired_builder_inputs(tmp_path)
+    docker_directory = sources.source_for("map").root / "docker"
+    docker_directory.mkdir()
+    base = "python@sha256:" + "a" * 64
+    for name in ("api.Dockerfile", "dagster.Dockerfile"):
+        (docker_directory / name).write_text(
+            "\n".join(
+                (
+                    f"FROM {base} AS builder",
+                    f"FROM {base} AS runtime",
+                    "FROM registry.example/other:latest AS auxiliary",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="Map application candidate base image contract is invalid",
+    ):
+        compose_service_module._ensure_map_application_300_python_base_images(sources)
+
+
 def test_application_300_paired_builder_rejects_paired_only_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -3207,19 +3207,34 @@ def _map_application_300_python_base_references(
             raise DeploymentContractError(
                 "Map application candidate Dockerfile is unavailable"
             ) from exc
-        stages = re.findall(
-            r"^FROM (python@sha256:[0-9a-f]{64}) AS (builder|runtime)$",
-            dockerfile,
-            flags=re.MULTILINE,
+        from_lines = tuple(
+            line.strip()
+            for line in dockerfile.splitlines()
+            if re.match(r"^FROM(?:\s|$)", line.strip(), flags=re.IGNORECASE)
         )
-        if len(stages) != 2 or {stage for _, stage in stages} != {
+        if len(from_lines) != 2:
+            raise DeploymentContractError(
+                "Map application candidate base image contract is invalid"
+            )
+        stages = tuple(
+            re.fullmatch(
+                r"FROM (python@sha256:[0-9a-f]{64}) AS (builder|runtime)", line
+            )
+            for line in from_lines
+        )
+        if any(stage is None for stage in stages):
+            raise DeploymentContractError(
+                "Map application candidate base image contract is invalid"
+            )
+        resolved_stages = tuple(cast(re.Match[str], stage).groups() for stage in stages)
+        if {stage for _, stage in resolved_stages} != {
             "builder",
             "runtime",
         }:
             raise DeploymentContractError(
                 "Map application candidate base image contract is invalid"
             )
-        image_references = {reference for reference, _ in stages}
+        image_references = {reference for reference, _ in resolved_stages}
         if len(image_references) != 1:
             raise DeploymentContractError(
                 "Map application candidate base image contract is invalid"
