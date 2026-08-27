@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-08-28 — ktdctl → UI 이관 설계 문서 v2 개정 (코드 변경 없음)
+
+오너 지시에 따라 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)를 v2로
+개정했다. 개정 축 5개: (0) Web UI화 대상 재점검과 필요한 추가 구현 확인, (1) 반복되는
+pin 회전의 하드코딩을 설정파일+CLI+API로 전환하는 설계, (2) 기능 격차·API 노출 가능성
+재검증, (3) 보안·안정성 대신 **비전문가 관리 편의성·직관성 중심** 재검토, (4) 전체 구조
+리팩토링 필요성 평가. 각 축을 독립 조사 에이전트로 병렬 조사(전부 실코드 file:line
+대조)한 뒤, 사실 정확성 리뷰와 지시 정합·일관성 리뷰 두 전문 리뷰를 독립 수행해 확인된
+지적을 반영했다.
+
+핵심 신규 내용: pin 회전이 최근 200커밋 중 42건을 차지하는 지배적 chore이며 하드코딩
+4줄(`pinned_runtime_release.py` 3줄 + `map_application_300.py` 중복 상수 1줄)이 회전
+1회를 "전형 5개 파일 수정 + PR + rsync + 재기동"으로 증폭시킨다는 실측 → root 소유
+`runtime-pins` registry 파일 + `ktdctl pin init/show/verify/rotate/rollback` + 읽기
+전용 `GET /runtime-pins` 설계(배포 트리 밖 경로·캐시 무효화·부트스트랩·backend용
+world-readable 사본까지 리뷰 지적을 반영해 명세). usability-first 재정렬로 프론트 전용
+quick win 9건(오류 humanize, 라벨 한국어화, freshness 배지, CLI 명령 카드 등)을 0군
+신설, 백업 생성 버튼(비동기 job_runner)과 관리자 비밀번호 변경 폼을 2군으로 승격,
+`diff-pinned`는 GitHub compare 링크로 전면 대체. 구조 리팩토링은 "전면 불필요 — job
+runner·프론트 추출·pin 데이터화·read-only facade 4개 결손만 메우면 됨" 결론과 5단계
+점진 계획으로 정리했다.
+
+리뷰가 잡아낸 정정: manifest/journal 정식 경로 도우미가 `require_rebuildable_mode`로
+게이트되어 있어 조회 route는 mode 게이트 없는 `pinned_runtime_state_root()` 기반으로
+별도 구성해야 한다는 점, 관리자 비밀번호 폼이 P1의 "backend는 파일을 못 쓴다" 경계
+논거를 완화한다는 점의 명시, 커밋 수(61→23)·leaf 명령 수(12→13)·회전 diff 파일 수
+(6→전형 5) 등 수치 정정. 이번 라운드도 설계·문서화만이며 코드 변경과 n150 배포는 없다.
+
+---
+
 ## 2026-08-27 — ktdctl → UI 이관 설계 문서 작성(코드 변경 없음)
 
 `ktdctl` CLI 기능 중 UI로 옮길 만한 것과, GitHub source pull+build·git revision/계약
