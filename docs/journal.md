@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-08-28 — one-shot launcher의 pinset ledger와 설치 provenance fail-close
+
+전문 적대 보안 리뷰의 P1 두 건을 반영했다. launcher는 caller가 제공한 exact Manager source revision을 root-owned
+`.ktdm-source-revision`·release manifest의 `O_NOFOLLOW` evidence와 대조하고, installed Python package에서 읽은
+actual pinset별 root-owned `O_NOFOLLOW|O_EXCL` ledger claim을 먼저 영구 기록한다. 따라서 output directory 이름을
+바꿔도 같은 installed pinset은 다시 `ktdctl`을 호출할 수 없고, stale Manager release도 새 candidate 실행을 시작할 수 없다.
+claim은 성공·실패 모두 보존한다.
+
 ## 2026-08-28 — M05 one-shot launcher를 포함한 새 candidate 회전
 
 `6269138f…`은 durable journal/manifest 없이 끝난 pre-journal 단회 시도로 보존하며 재실행하지 않는다. PinVi의
