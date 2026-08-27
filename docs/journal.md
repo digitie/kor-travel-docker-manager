@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-28 — M05 committed Map runtime provenance 재결박
+
+기존 `030b12fc…` generation은 Map `9c64e862…`, API image `2260ec…`, UI image `5dc547…`로
+`committed` 되었고 재실행 금지다. PinVi M05 attestation이 source와 image identity를 exact pair로 검사하므로,
+PinVi `a90b1f06…`과 Map `9c64e862…`의 새 canonical pinset `87fe2abc…`만 다음 trusted candidate로 고정했다.
+새 pinset은 n150에서 단 한 번만 rebuild하며, committed 뒤에만 isolated M04/M05 live E2E와 signed activation
+attestation을 실행한다. 두 전문 적대 리뷰는 이 provenance·canonical hash 결박에 P0/P1 없음을 확인했다.
+
+---
+
 ## 2026-08-27 — ktdctl → UI 이관 설계 문서 작성(코드 변경 없음)
 
 `ktdctl` CLI 기능 중 UI로 옮길 만한 것과, GitHub source pull+build·git revision/계약
