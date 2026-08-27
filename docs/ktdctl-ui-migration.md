@@ -82,9 +82,10 @@ config/reset이 production에서 허용되는 실질 이유는 바이트 동일 
 | 디스크 사용량 카드 | **신규**(P8b) | `docker system df` wrapper |
 | CLI 명령 카드(전 CLI-전용 작업 공통) | **신규**(P7-E) | 없음 |
 
-실행(mutation)이 UI로 들어오는 것은 백업 생성(P5)·비밀번호 변경(P6)·(승인 시) 2-step
-pin 회전 요청(P1-c)뿐이고, 나머지는 전부 읽기 전용 관측이다. P9-3단계(프론트 구조
-추출)의 착수 트리거 "신규 패널 2개 이상"은 이 표의 신규 4행 기준으로 센다.
+실행(mutation)이 UI로 들어오는 것은 백업 생성(P5)·비밀번호 변경(P6)·2-step pin 회전
+요청(P1-c)·rehearsal 한정 rebuild 버튼(P8)이고 — 넷 다 오너 승인됨(문서 말미 결정
+사항 참조) — 나머지는 전부 읽기 전용 관측이다. P9-3단계(프론트 구조 추출)의 착수
+트리거 "신규 패널 2개 이상"은 이 표의 신규 4행 기준으로 센다.
 
 ---
 
@@ -203,10 +204,11 @@ churn하는 것은 SHA 3종(실질 2종)뿐이다.
 - `GET /api/v1/runtime-pins` — role별 revision, pinset digest, 회전 메타, 그리고
   **현재 committed generation의 digest와의 일치 여부**(P2와 결합: "registry엔 X, 살아
   있는 generation은 Y = 회전 후 rebuild 대기 중"을 그대로 보여준다).
-- **쓰기(UI rotate 버튼)**: 1단계에서는 만들지 않는다 — registry가 root 소유인 한 API
-  프로세스는 물리적으로 쓸 수 없고, 이 경계가 가장 값싼 안전장치다. 오너가 원하면
-  2단계로 "UI는 회전 **요청**을 audit row로 기록(`api/admin.py:54-63`의 감사 패턴)하고
-  실제 적용은 `ktdctl pin apply-pending --confirm`(SSH)"의 2-step 승인 모델이 가능하다.
+- **쓰기(UI rotate)**: registry가 root 소유인 한 API 프로세스는 물리적으로 쓸 수
+  없고, 이 경계가 가장 값싼 안전장치다. 따라서 UI 회전은 2-step 승인 모델로 간다 —
+  "UI는 회전 **요청**(새 SHA + reason)을 audit row로 기록(`api/admin.py:54-63`의 감사
+  패턴)하고, 실제 적용은 SSH에서 `ktdctl pin apply-pending --confirm`". **오너 승인됨
+  (Q4)** — 읽기 전용에서 멈추지 않고 이 2-step 모델까지 구현한다.
 
 ### 트레이드오프 (정직하게)
 
@@ -308,8 +310,9 @@ v1은 "정책 결정 선행" 군에 뒀다. v2 판정: **주간·비상시 반�
   세그먼트 충돌 회피), 기존 status WS에 완료 이벤트 편승. 핵심 효용: **"버튼 누르고
   브라우저 닫아도 되는 백업"**.
 - **UID/ACL 결정(배포 설정)**: backend가 만드는 dump 경로와 운영자 cron gc 경로의
-  분리 문제(`docs/docker-management.md` 명시)는 배포 설정 결정 하나로 풀린다 —
-  선택지는 열린 질문 Q2에 정리했다.
+  분리 문제(`docs/docker-management.md` 명시)는 **shared group + setgid 디렉터리
+  방식으로 확정했다(Q2)** — backend와 cron 프로세스 구성을 바꾸지 않고 백업 디렉터리를
+  공유 그룹 소유로 두어 양쪽 모두 읽기·삭제할 수 있게 한다.
 - UI: role 선택 + **"geo는 수 시간이 걸릴 수 있습니다"** 예고 + 경과 표시(role별 실측
   소요가 이미 문서에 있어 예상 시간 하드코딩 가능) + 실행 중 버튼 비활성.
   가드레일은 일반 확인 다이얼로그면 충분하다 — create는 파괴적이지 않다.
@@ -341,14 +344,15 @@ UX"다. UI 대체: `BackupHistoryPanel`에 보존 개수·최고령 표시 + 복
 restore는 CLI에도 없다(`routes.py:100-101` "Restore isn't implemented anywhere yet").
 create 버튼을 만들수록 restore 부재가 더 위험해진다 — 버튼이 안전감의 착시를 만든다.
 최소 조치(프론트 전용): `BackupHistoryPanel`에 "복원은 아직 미구현 — 절차는 runbook
-참조" 명시 + 백업 행에 향후 복원 명령 원형 복사 버튼. 구현 순서는 CLI 먼저(v1 유지),
-로드맵 중요도는 승격. 규모 추정: `standalone_backup.py`(573줄)와 대칭인 restore 서비스
-+ CLI 서브커맨드로 **대략 300-500줄 + role별 정지/기동 절차 설계**가 필요하다 — 이
-문서의 다른 항목(~150-200줄)보다 한 단계 큰 투자다.
+참조" 명시 + 백업 행에 향후 복원 명령 원형 복사 버튼. 구현 순서는 CLI 먼저(v1 유지).
+규모 추정: `standalone_backup.py`(573줄)와 대칭인 restore 서비스 + CLI 서브커맨드로
+**대략 300-500줄 + role별 정지/기동 절차 설계**가 필요하다 — 이 문서의 다른 항목
+(~150-200줄)보다 한 단계 큰 투자다. **로드맵 편입 확정(Q6)** — Q2로 create 버튼이
+승인된 만큼 "복원 못 하는 백업" 공백을 방치하지 않는다.
 
 ## P6. 설정/secret 변경 (v1 분할 개정)
 
-### 관리자 비밀번호 변경 폼 — UI로 승격 (v2 신규 분리)
+### 관리자 비밀번호 변경 폼 — UI로 승격 (v2 신규 분리, 오너 승인됨 Q3)
 
 v1은 secret rotate 전체를 CLI로 묶었다. v2 판정: **"관리자 비밀번호 변경"은 모든 웹앱의
 표준 UX이고 없는 쪽이 이상하다.** 분리 근거: `KTDM_ADMIN_PASSWORD_HASH`는
@@ -434,9 +438,12 @@ v2 조사에서 확인된, **백엔드 0줄로 가능한** 개선 목록. 어느
   갈래를 분리했다: (i) **진행 관측 UI는 만든다**(P2-3의 요약 계층 — v1은 이 관측 뷰를
   제안하지 않은 것이 공백이었다). (ii) 서버가 이미 `rehearsal/rebuildable` 조합이
   아니면 거부하므로 **rehearsal 환경 한정 버튼**은 기존 `IS_DEV` + 서버 거부 이중
-  패턴으로 성립 가능하다 — 채택 여부는 Q5. production에서 필요한 것은 버튼이 아니라
-  전제조건 체크리스트(락 상태·pinned SHA·generation phase — 전부 P1/P2 데이터) +
-  붙여넣을 SSH 명령(P7-E)이다.
+  패턴으로 성립 가능하다 — **오너 승인됨(Q5)**: typed confirmation("rebuild-pinned"
+  타이핑) + 기존 서버측 environment 게이트 하에 이 버튼을 추가한다. 현재 n150이
+  rehearsal/rebuildable 모드로 운용 중이므로 실호스트에서 실제로 동작하는 버튼이다.
+  production 모드 호스트에서 필요한 것은 여전히 버튼이 아니라 전제조건 체크리스트
+  (락 상태·pinned SHA·generation phase — 전부 P1/P2 데이터) + 붙여넣을 SSH
+  명령(P7-E)이다.
 - **`compose-boundary` 3종** — 1회성 레거시, 투자 보류(무변경).
 - **일반형 GitHub pull+build** — 영구 범위 밖(무변경, 근거는 P3).
 - **Manager 자기 재기동** — 기술적 필연으로 SSH 전용(무변경). "재기동 필요" 감지 시
@@ -502,47 +509,46 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
    노출 (P7-G) / target 단위 일괄 재시작 (P7-I).
 
 **1군 — 저비용 백엔드 read-only (리팩토링 1단계와 함께)**
-5. `GET /pinned-runtime/release` (P2-1, 0-IO). **주의: P1(9번) 채택 시
-   `GET /runtime-pins`로 대체되는 소폭 재작업이 있다** — Q1을 먼저 결정하면 이 항목은
-   건너뛰고 9번에서 한 번에 만든다.
+5. ~~`GET /pinned-runtime/release`~~ — **Q1 승인으로 건너뛴다**: 별도 endpoint를
+   만들지 않고 9번의 `GET /runtime-pins`에서 한 번에 만든다(P2-1의 재작업 주의 그대로).
 6. `GET /pinned-runtime/generation`(manifest+journal+요약, P2-2·3) = rebuild 진행
    관측 UI.
 7. `source-status` + "사람 말" 정합성 패널 + GitHub compare 링크 (P3·P4).
 8. disk-usage 카드 (P8b) / installer provenance 기록 (P3 `--self` 전제).
 
-**2군 — 구조 투자 (오너 정책 승인 후)**
+**2군 — 구조 투자 (정책 결정이 필요했던 항목은 전부 오너 승인됨 — 말미 결정 사항 참조)**
 9. **pin registry 설정파일화 + `ktdctl pin` 패밀리 + `GET /runtime-pins`** (P1) —
-   시간 절감 총량 최대. [Q1 승인 시]
-10. job_runner + 백업 create 버튼 (P5, 리팩토링 2단계). [Q2 승인 시]
-11. 관리자 비밀번호 변경 폼 (P6). [Q3 승인 시]
+   시간 절감 총량 최대. [승인됨 Q1]
+10. job_runner + 백업 create 버튼 (P5, 리팩토링 2단계) — dump 소유권은 shared group
+    + setgid 방식. [승인됨 Q2]
+11. 관리자 비밀번호 변경 폼 (P6). [승인됨 Q3]
 12. 프론트 구조 추출 (리팩토링 3단계 — P0 표의 신규 패널 2개 이상 시점 전에).
-    — Q4 승인 시 "UI 2-step pin rotate"가, Q5 승인 시 "rehearsal 한정 rebuild 버튼"이
-    이 군에 추가된다.
+13. UI 2-step pin rotate — 요청 기록(UI) + `pin apply-pending`(SSH) (P1-c).
+    [승인됨 Q4]
+14. rehearsal 환경 한정 `rebuild-pinned` 버튼 — typed confirmation + 서버 게이트
+    (P8). [승인됨 Q5]
+15. `db-backup restore` — CLI 우선, ~300-500줄 (P5). [승인됨 Q6 — 로드맵 편입]
 
 **3군 — CLI 전용 유지 / 제외 (v1 결론 유지분)**
-13. secret rotate(비밀번호 외 전부) — CLI 전용 + 상태 표시 + 해소 명령 카드 (P6).
-14. `db-backup gc` — CLI 전용(결함 수선은 P5의 단일 문단 참조).
-15. `db-backup restore` — 부재 명시 + CLI 우선 로드맵 (P5). [Q6 승인 시 로드맵 편입]
-16. `image rebuild-service` / `compose-boundary` / 일반형 pull+build /
+16. secret rotate(비밀번호 외 전부) — CLI 전용 + 상태 표시 + 해소 명령 카드 (P6).
+17. `db-backup gc` — CLI 전용(결함 수선은 P5의 단일 문단 참조).
+18. `image rebuild-service` / `compose-boundary` / 일반형 pull+build /
     production rebuild 버튼 — 제외 (P8).
 
-## 오너가 결정할 열린 질문 (v2)
+## 오너 결정 사항 (2026-08-28 확정)
 
-1. **P1 pin registry 전환을 승인하는가.** 42/200 커밋 chore의 구조적 해법. 승인 시
-   되돌리기 어려운 변화 요약: "PR review = pin 승인" 게이트가 CLI(`--confirm`+root+
-   reason+audit)로 대체되고, git 이력 대신 digest-명명 보존 파일이 pin 이력이 되며,
-   테스트가 현재 pin 값을 고정하는 성질이 사라진다(대신 회전 시 테스트 churn 소멸).
-2. **백업 create의 UI화(job_runner)를 투자하는가.** 부속 배포 결정 — dump 경로의
-   소유권을 (i) backend와 cron을 같은 UID로 통일 또는 (ii) shared group + setgid
-   디렉터리 중 택일해야 한다. 권고: (ii)가 기존 프로세스 구성을 안 바꾼다.
-3. **관리자 비밀번호 변경 폼**(P6)을 승인하는가 — backend에 `.env` 단일 키 쓰기를
-   부여하는 경계 완화를 수반한다(P6에 명시).
-4. [Q1이 "예"일 때만] UI 2-step pin rotate(요청 기록 + CLI 적용, P1-c)까지 갈
-   것인가, 읽기 전용까지만 할 것인가.
-5. rehearsal 환경 한정 `rebuild-pinned` 버튼(P8)을 둘 것인가 — 현재 n150이
-   `rehearsal/rebuildable` 모드로 운용 중이므로 이 버튼은 실호스트에서 동작하는
-   버튼이다(성립 조건이 이미 충족돼 있다는 뜻이자, 그만큼 실효 위험도 실재한다).
-6. restore를 로드맵에 넣는가 — CLI 우선 전제, 규모는 대략 300-500줄 + role별
-   정지/기동 절차 설계(P5의 추정 참조).
-7. CLAUDE.md의 낡은 두 지점(퇴역한 `pinvi-pair capture`·T-045 언급) 동기화를 별도
-   작업으로 처리하는가(v1에서 이월).
+v2의 열린 질문 7건에 오너가 전부 답했다. 결정은 아래와 같고, 위 우선순위·각 절에
+반영돼 있다.
+
+| # | 질문 | 결정 |
+|---|---|---|
+| Q1 | pin registry 전환(P1) | **승인** — "PR review = pin 승인" 게이트를 CLI(`--confirm`+root+reason+감사기록)로 대체하는 트레이드오프 수용 |
+| Q2 | 백업 create UI화(job_runner) | **승인** — dump 소유권은 **shared group + setgid 디렉터리** 방식(기존 프로세스 구성 무변경) |
+| Q3 | 관리자 비밀번호 변경 폼 | **승인** — backend의 `.env` 단일 키(`KTDM_ADMIN_PASSWORD_HASH`) 쓰기 경계 완화 수용 |
+| Q4 | UI pin 회전 범위 | **2-step rotate까지** — UI 요청 기록 + SSH `pin apply-pending --confirm` 적용 |
+| Q5 | rehearsal 한정 rebuild 버튼 | **버튼 추가** — typed confirmation + 기존 서버측 environment 게이트 유지. 현 n150이 rehearsal 모드라 실동작 버튼임을 인지하고 승인 |
+| Q6 | restore 로드맵 | **포함** — CLI 우선, ~300-500줄 + role별 정지/기동 절차 설계 |
+| Q7 | CLAUDE.md 낡은 지점 동기화 | **별도 작업으로 진행** — 이 설계 PR과 분리한 작은 docs-only PR |
+
+이로써 이 문서의 미결 정책 결정은 없다. 다음 단계는 `docs/tasks.md`의
+`KTDCTL-UI-MIGRATION` 태스크에서 승인 항목을 구현 태스크로 분리하는 것이다.
