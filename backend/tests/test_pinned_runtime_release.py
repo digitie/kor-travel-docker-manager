@@ -73,6 +73,18 @@ def test_d9_legacy_role_topology_retry_policy_is_exact() -> None:
         pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
         phase="map_runtime_ready",
     )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        map_source_revision="a" * 40,
+        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
+        phase="map_runtime_ready",
+    )
+    assert not is_d9_legacy_pinvi_role_topology_retry(
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
+        pinvi_source_revision="a" * 40,
+        phase="map_runtime_ready",
+    )
 
 
 @pytest.mark.parametrize(
