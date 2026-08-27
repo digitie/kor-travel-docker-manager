@@ -5,7 +5,7 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거는 [`docs/journal.md`](journal.md)가 정본이다.
 
 - [/] T-VN-M05-CATALOG-TEMPLATE0 — n150에서 단 한 번 실행한 `68d99705…`·`285618c0…`·`37932169…`·`31fe73ad…`·`b22bfb8c…`·`89330403…`·`c6c73cdf…` candidate는 terminal로 보존하고 재시도하지 않는다. `c6c73cdf…`은 `map_runtime_ready` 뒤 `role_catalog_reset_failed/foreign_membership`으로 끝났고 raw stderr·catalog row는 읽지 않았다.
-- [/] T-VN-M05-NEW-CANDIDATE — `6269138f…`는 n150에서 단 한 번 실행됐으나 durable journal/manifest 없이 pre-journal에서 끝났고 raw stderr는 열지 않는다. PinVi `55687a4f…`·Map `9c64e862…`의 `53d4639f…`만 다음 candidate로 고정한다. `run-pinned-rebuild-once`는 exact installed Manager source revision을 확인하고 pinset별 root-owned `O_NOFOLLOW` ledger claim을 남겨, output path를 바꿔도 이 새 pinset의 rebuild를 한 번만 허용한다.
+- [/] T-VN-M05-NEW-CANDIDATE — `6269138f…`는 n150에서 단 한 번 실행됐으나 durable journal/manifest 없이 pre-journal에서 끝났고 raw stderr는 열지 않는다. PinVi `55687a4f…`·Map `9c64e862…`의 `53d4639f…`만 다음 candidate로 고정한다. `run-pinned-rebuild-once`는 trusted installer와 같은 global mutation lock을 실제 `ktdctl` 종료까지 유지하고, exact installed Manager source revision 및 pinset별 root-owned `O_NOFOLLOW|O_EXCL` ledger claim+directory fsync를 확인해 output path를 바꿔도 이 새 pinset의 rebuild를 한 번만 허용한다.
 - [ ] T-VN-M05-ACTIVATION — provenance가 재결박된 committed candidate에서만 n150 isolated M04/M05 live mutating E2E와 activation attestation을 실행한다.
 - [ ] T-VN-41F1D-D1 — 최종 격리 리허설과 provenance attestation을 기록한다.
 - [ ] T-VN-41F1D-D2 — data-dependent Map/PinVi admin live E2E와 receipt 승격을 완료한다.

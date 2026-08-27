@@ -18,6 +18,86 @@ if [[ ! "${expected_manager_revision}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "expected Manager source revision is invalid" >&2
   exit 2
 fi
+
+if [[ -z "${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD:-}" ]]; then
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "$@" <<'PY'
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+arguments = sys.argv[2:]
+lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
+lock_path = lock_dir / "global-mutation.lock"
+lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+directory_stat = lock_dir.lstat()
+if (
+    stat.S_ISLNK(directory_stat.st_mode)
+    or not stat.S_ISDIR(directory_stat.st_mode)
+    or directory_stat.st_uid != 0
+    or stat.S_IMODE(directory_stat.st_mode) != 0o700
+):
+    raise SystemExit("production global mutation lock directory is unsafe")
+if not hasattr(os, "O_NOFOLLOW"):
+    raise SystemExit("production global mutation lock requires O_NOFOLLOW")
+descriptor = os.open(
+    lock_path,
+    os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+    0o600,
+)
+lock_stat = os.fstat(descriptor)
+if (
+    not stat.S_ISREG(lock_stat.st_mode)
+    or lock_stat.st_nlink != 1
+    or lock_stat.st_uid != 0
+    or stat.S_IMODE(lock_stat.st_mode) != 0o600
+):
+    os.close(descriptor)
+    raise SystemExit("production global mutation lock is unsafe")
+try:
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as error:
+    os.close(descriptor)
+    raise SystemExit("another manager mutation is already active") from error
+os.set_inheritable(descriptor, True)
+environment = dict(os.environ)
+environment["KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"] = str(descriptor)
+os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
+PY
+fi
+
+lock_fd="${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD}"
+if [[ ! "${lock_fd}" =~ ^[0-9]+$ ]]; then
+  echo "pinned rebuild lock descriptor evidence is invalid" >&2
+  exit 2
+fi
+/usr/bin/python3 -I -S - "${lock_fd}" <<'PY'
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+descriptor = int(sys.argv[1])
+lock_path = pathlib.Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
+opened = os.fstat(descriptor)
+named = lock_path.lstat()
+if (
+    (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+    or not stat.S_ISREG(opened.st_mode)
+    or opened.st_nlink != 1
+    or opened.st_uid != 0
+    or stat.S_IMODE(opened.st_mode) != 0o600
+):
+    raise SystemExit("production global mutation lock descriptor is unsafe")
+try:
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as error:
+    raise SystemExit("production global mutation lock is not held") from error
+PY
+
 if [[ "${output_dir}" != /* || -e "${output_dir}" ]]; then
   echo "pinned rebuild output directory must be a new absolute path" >&2
   exit 2
@@ -122,6 +202,12 @@ if (
     raise SystemExit("pinned rebuild ledger root is invalid")
 if not hasattr(os, "O_NOFOLLOW"):
     raise SystemExit("pinned rebuild ledger requires O_NOFOLLOW")
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+directory_descriptor = os.open(ledger_dir, directory_flags)
+opened_directory = os.fstat(directory_descriptor)
+if (opened_directory.st_dev, opened_directory.st_ino) != (metadata.st_dev, metadata.st_ino):
+    os.close(directory_descriptor)
+    raise SystemExit("pinned rebuild ledger root changed while reading")
 claim = ledger_dir / pinset
 payload = json.dumps(
     {"manager_source_revision": revision, "output_directory": output_dir, "pinset_sha256": pinset},
@@ -136,12 +222,17 @@ try:
         0o600,
     )
 except FileExistsError as error:
+    os.close(directory_descriptor)
     raise SystemExit("pinned rebuild candidate was already claimed") from error
 try:
     os.write(descriptor, payload)
     os.fsync(descriptor)
 finally:
     os.close(descriptor)
+try:
+    os.fsync(directory_descriptor)
+finally:
+    os.close(directory_descriptor)
 PY
 
 result_tmp="${output_dir}/.result.json.tmp"

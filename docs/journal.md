@@ -8,7 +8,8 @@
 
 전문 적대 보안 리뷰의 P1 두 건을 반영했다. launcher는 caller가 제공한 exact Manager source revision을 root-owned
 `.ktdm-source-revision`·release manifest의 `O_NOFOLLOW` evidence와 대조하고, installed Python package에서 읽은
-actual pinset별 root-owned `O_NOFOLLOW|O_EXCL` ledger claim을 먼저 영구 기록한다. 따라서 output directory 이름을
+actual pinset별 root-owned `O_NOFOLLOW|O_EXCL` ledger claim과 상위 directory fsync를 먼저 영구 기록한다. trusted
+installer와 같은 global mutation lock은 admission부터 실제 `ktdctl` child 종료까지 유지한다. 따라서 output directory 이름을
 바꿔도 같은 installed pinset은 다시 `ktdctl`을 호출할 수 없고, stale Manager release도 새 candidate 실행을 시작할 수 없다.
 claim은 성공·실패 모두 보존한다.
 
