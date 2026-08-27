@@ -92,6 +92,22 @@ from kor_travel_docker_manager.services.pinned_runtime_sources import (
 _real_map_application_300_paths = compose_service_module._map_application_300_paths
 
 
+@pytest.fixture(autouse=True)
+def _isolate_map_application_300_base_image_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """orchestration unit은 fake source root 대신 전용 preflight 회귀로 host I/O를 검증한다."""
+
+    if request.node.name.startswith("test_map_application_300_python_base_images"):
+        return
+    monkeypatch.setattr(
+        compose_service_module,
+        "_ensure_map_application_300_python_base_images",
+        lambda _sources: None,
+    )
+
+
 @pytest.fixture
 def linux_tmp_path() -> Iterator[Path]:
     """owner/mode receipt test는 NTFS pytest temp가 아닌 Linux filesystem을 쓴다."""
@@ -1057,6 +1073,87 @@ def test_application_300_paired_builder_failure_never_leaks_builder_output(
         "application 300 paired builder failed: api_receipt_missing"
     )
     assert raw_output not in str(exc_info.value)
+
+
+def test_map_application_300_python_base_images_pull_and_reinspect_missing_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources, _ = _paired_builder_inputs(tmp_path)
+    docker_directory = sources.source_for("map").root / "docker"
+    docker_directory.mkdir()
+    base = "python@sha256:" + "a" * 64
+    for name in ("api.Dockerfile", "dagster.Dockerfile"):
+        (docker_directory / name).write_text(
+            f"FROM {base} AS builder\nFROM {base} AS runtime\n",
+            encoding="utf-8",
+        )
+    runner = Mock(
+        side_effect=(
+            subprocess.CompletedProcess(args=(), returncode=1),
+            subprocess.CompletedProcess(args=(), returncode=0),
+            subprocess.CompletedProcess(args=(), returncode=0),
+        )
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+
+    compose_service_module._ensure_map_application_300_python_base_images(sources)
+
+    assert [call.args[0] for call in runner.call_args_list] == [
+        ["docker", "image", "inspect", base],
+        ["docker", "pull", base],
+        ["docker", "image", "inspect", base],
+    ]
+    for invocation in runner.call_args_list:
+        assert invocation.kwargs["stdout"] is subprocess.DEVNULL
+        assert invocation.kwargs["stderr"] is subprocess.DEVNULL
+
+
+def test_map_application_300_python_base_images_reject_invalid_source_contract(
+    tmp_path: Path,
+) -> None:
+    sources, _ = _paired_builder_inputs(tmp_path)
+    docker_directory = sources.source_for("map").root / "docker"
+    docker_directory.mkdir()
+    (docker_directory / "api.Dockerfile").write_text(
+        "FROM python:latest AS builder\n", encoding="utf-8"
+    )
+    (docker_directory / "dagster.Dockerfile").write_text(
+        "FROM python:latest AS builder\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="Map application candidate base image contract is invalid",
+    ):
+        compose_service_module._ensure_map_application_300_python_base_images(sources)
+
+
+def test_map_application_300_python_base_images_reject_extra_docker_stage(
+    tmp_path: Path,
+) -> None:
+    sources, _ = _paired_builder_inputs(tmp_path)
+    docker_directory = sources.source_for("map").root / "docker"
+    docker_directory.mkdir()
+    base = "python@sha256:" + "a" * 64
+    for name in ("api.Dockerfile", "dagster.Dockerfile"):
+        (docker_directory / name).write_text(
+            "\n".join(
+                (
+                    f"FROM {base} AS builder",
+                    f"FROM {base} AS runtime",
+                    "FROM registry.example/other:latest AS auxiliary",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="Map application candidate base image contract is invalid",
+    ):
+        compose_service_module._ensure_map_application_300_python_base_images(sources)
 
 
 def test_application_300_paired_builder_rejects_paired_only_receipt(
