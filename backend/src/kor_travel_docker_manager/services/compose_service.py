@@ -1572,7 +1572,10 @@ def _pinned_runtime_rebuild_environment_lock(
                 initial_environment_snapshot.effective,
                 require_nonempty=True,
             )
-            rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
+        # 기존 journal의 lifecycle admission은 immutable terminal evidence를
+        # 해석하는 경계다. 새 candidate preparation failure로 재분류하지 않는다.
+        rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
+        with _pinned_runtime_prejournal_step("environment_admission"):
             role_credentials = ensure_pinned_runtime_pinvi_role_credentials(
                 Path(initial_environment_snapshot.env_path),
                 expected_environment_bytes=initial_environment_snapshot.env_file_bytes,
