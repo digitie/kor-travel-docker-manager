@@ -8,7 +8,8 @@
 
 기존 `030b12fc…` generation은 Map `9c64e862…`, API image `2260ec…`, UI image `5dc547…`로
 `committed` 되었고 재실행 금지다. PinVi M05 attestation이 source와 image identity를 exact pair로 검사하므로,
-PinVi `a90b1f06…`과 Map `9c64e862…`의 새 canonical pinset `87fe2abc…`만 다음 trusted candidate로 고정했다.
+PinVi source가 current main rebase로 `61dffcb5…`로 회전했으므로, Map `9c64e862…`와 새 canonical pinset
+`6269138f…`만 다음 trusted candidate로 고정했다.
 새 pinset은 n150에서 단 한 번만 rebuild하며, committed 뒤에만 isolated M04/M05 live E2E와 signed activation
 attestation을 실행한다. 두 전문 적대 리뷰는 이 provenance·canonical hash 결박에 P0/P1 없음을 확인했다.
 
