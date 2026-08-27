@@ -209,6 +209,8 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
 )
 _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
     {
+        "environment_admission",
+        "state_initialization",
         "prebuild_snapshot",
         "external_prerequisites",
         "source_materialization",
@@ -1559,37 +1561,38 @@ def _pinned_runtime_rebuild_environment_lock(
     """
 
     with pinned_runtime_rebuild_lock():
-        initial_environment_snapshot = (
-            _capture_pinned_runtime_rebuild_environment_snapshot()
-        )
-        assert_pinned_runtime_rebuild_allowed(
-            environment=initial_environment_snapshot.effective
-        )
-        validate_c6c_operation_tokens(
-            initial_environment_snapshot.effective,
-            require_nonempty=True,
-        )
-        rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
-        role_credentials = ensure_pinned_runtime_pinvi_role_credentials(
-            Path(initial_environment_snapshot.env_path),
-            expected_environment_bytes=initial_environment_snapshot.env_file_bytes,
-            rebind_source_sha256=rebind_source_sha256,
-        )
-        current_environment_snapshot = (
-            _capture_pinned_runtime_rebuild_environment_snapshot(
-                environment_override=role_credentials
+        with _pinned_runtime_prejournal_step("environment_admission"):
+            initial_environment_snapshot = (
+                _capture_pinned_runtime_rebuild_environment_snapshot()
             )
-        )
-        assert_pinned_runtime_rebuild_allowed(
-            environment=current_environment_snapshot.effective
-        )
-        validate_c6c_operation_tokens(
-            current_environment_snapshot.effective,
-            require_nonempty=True,
-        )
-        lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
-            current_environment_snapshot
-        )
+            assert_pinned_runtime_rebuild_allowed(
+                environment=initial_environment_snapshot.effective
+            )
+            validate_c6c_operation_tokens(
+                initial_environment_snapshot.effective,
+                require_nonempty=True,
+            )
+            rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
+            role_credentials = ensure_pinned_runtime_pinvi_role_credentials(
+                Path(initial_environment_snapshot.env_path),
+                expected_environment_bytes=initial_environment_snapshot.env_file_bytes,
+                rebind_source_sha256=rebind_source_sha256,
+            )
+            current_environment_snapshot = (
+                _capture_pinned_runtime_rebuild_environment_snapshot(
+                    environment_override=role_credentials
+                )
+            )
+            assert_pinned_runtime_rebuild_allowed(
+                environment=current_environment_snapshot.effective
+            )
+            validate_c6c_operation_tokens(
+                current_environment_snapshot.effective,
+                require_nonempty=True,
+            )
+            lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
+                current_environment_snapshot
+            )
         with c6c_deployment_lock(lock_snapshot.lock_path):
             _revalidate_c6c_deployment_lock_snapshot(lock_snapshot)
             yield (
@@ -6412,27 +6415,28 @@ class ComposeService:
         ):
             # application head 300은 paired receipt와 설치된 baseline contract가
             # 정본이다. Dagster/PinVi head만 network-less candidate 명령으로 읽는다.
-            validate_c6c_operation_tokens(
-                environment_snapshot.effective,
-                require_nonempty=True,
-            )
-            state_paths = pinned_runtime_state_paths(
-                environment_snapshot.effective,
-                pinset_sha256=release.pinset_sha256,
-            )
-            ensure_pinned_runtime_state_directory(state_paths.state_root)
-            application_paths = _map_application_300_paths(
-                state_root=state_paths.state_root,
-                pinset_sha256=release.pinset_sha256,
-            )
-            artifact_directories = MapApplication300ArtifactDirectories(
-                fresh_migrate_fence=application_paths.root_fence_directory,
-                fresh_finalize_fence=application_paths.finalize_fence_directory,
-                application_final_permit=(
-                    application_paths.application_permit_directory
-                ),
-                dagster_storage_permit=application_paths.metadata_permit_directory,
-            )
+            with _pinned_runtime_prejournal_step("state_initialization"):
+                validate_c6c_operation_tokens(
+                    environment_snapshot.effective,
+                    require_nonempty=True,
+                )
+                state_paths = pinned_runtime_state_paths(
+                    environment_snapshot.effective,
+                    pinset_sha256=release.pinset_sha256,
+                )
+                ensure_pinned_runtime_state_directory(state_paths.state_root)
+                application_paths = _map_application_300_paths(
+                    state_root=state_paths.state_root,
+                    pinset_sha256=release.pinset_sha256,
+                )
+                artifact_directories = MapApplication300ArtifactDirectories(
+                    fresh_migrate_fence=application_paths.root_fence_directory,
+                    fresh_finalize_fence=application_paths.finalize_fence_directory,
+                    application_final_permit=(
+                        application_paths.application_permit_directory
+                    ),
+                    dagster_storage_permit=application_paths.metadata_permit_directory,
+                )
             with _pinned_runtime_prejournal_step("prebuild_snapshot"):
                 prebuild_transaction, _ = self._capture_transaction_unlocked(
                     environment_override=dict(artifact_directories.compose_environment()),

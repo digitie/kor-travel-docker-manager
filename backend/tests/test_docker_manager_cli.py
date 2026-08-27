@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from kor_travel_docker_manager.cli import build_parser, main
+from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     PinnedRuntimePrejournalFailure,
@@ -475,6 +476,26 @@ def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
         "classification": "prejournal_failure",
         "stage": "application_builder",
     }
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
+    mock_compose_service,
+    capsys,
+):
+    mock_compose_service.rebuild_pinned_runtime.side_effect = DeploymentContractError(
+        "sensitive unexpected contract detail"
+    )
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "failed",
+        "classification": "unclassified",
+    }
+    assert "sensitive unexpected contract detail" not in captured.out
+    assert not captured.err
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")

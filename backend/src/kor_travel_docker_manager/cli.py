@@ -158,6 +158,15 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             )
         return 2
     except DeploymentContractError as exc:
+        if args.json:
+            print(
+                json.dumps(
+                    {"status": "failed", "classification": "unclassified"},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 2
         print(str(exc), file=sys.stderr)
         return 2
     except ValueError as exc:

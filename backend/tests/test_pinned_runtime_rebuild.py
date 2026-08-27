@@ -1501,8 +1501,11 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
         materialize,
     )
 
-    with pytest.raises(DeploymentContractError, match="tokens must be configured together"):
+    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
         ComposeService().rebuild_pinned_runtime()
+
+    assert captured.value.stage == "state_initialization"
+    assert isinstance(captured.value.__cause__, DeploymentContractError)
 
     assert lock_events == [
         "host-enter",
