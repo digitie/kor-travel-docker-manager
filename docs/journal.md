@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-27 — Map M05·PinVi #487 merge source의 fresh pinset 회전 후보
+
+Map #1081 merge `cf65e97345b5792420cfbc994e49ce6a7e3cd650`와 PinVi #487 squash merge
+`97d2f924678f68c9aed7f60dbf41e73311012ebd`를 새 runtime source authority로 함께 고정했다.
+canonical compact JSON의 v5 pinset은
+`872e3262275190208553db4f31c865882365f46d67b9e40b99ef66af1154d457`이다. Map application-300
+source commit도 같은 Map merge로 결박했다.
+
+기존 d9 pinset과 `map_runtime_ready` journal은 historical failure evidence로 보존한다. 이 회전은
+그 journal·candidate·image·Compose·DB·role을 변경하지 않으며, 새 pinset만 fresh v8 journal로
+candidate build와 attestation을 시작할 수 있다. Manager PR의 두 전문 적대 리뷰·검증·trusted deployment
+전에는 rebuild를 호출하지 않는다.
+
+---
+
 ## 2026-08-27 — receipt 이전 d9 role topology failure의 pre-mutation 차단
 
 서로 독립인 두 전문 적대 리뷰가, Manager #235의 새 `pinvi_role_lifecycle_block` receipt가 이미
