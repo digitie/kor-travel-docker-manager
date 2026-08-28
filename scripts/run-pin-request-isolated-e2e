@@ -73,6 +73,27 @@ assert check.state in {"missing", "ok"}, check
 PYEOF
 pass "the readiness check reads the pinned blob on the real host"
 
+echo "== 0c. terminal pinset 에서는 단일 role 회전이 거부된다 (pair 만 허용) =="
+# 동봉 seed 의 현재 pinset 은 terminal 이다. 그 상태에서 한쪽만 회전하면
+# pair-incomplete pinset 을 M05 ledger 가 먼저 소비할 수 있으므로 registry 가 막는다.
+set +e
+as_root pin rotate --role pinvi --revision "$(printf 'a%.0s' $(seq 1 40))" \
+  --reason "terminal 상태 단일 회전 시도" --confirm >/dev/null 2>"$BASE/out/err_single.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "single-role rotation on a terminal pinset must be refused (got $CODE)"
+grep -q "pair rotation" "$BASE/out/err_single.txt" || fail "pair rotation refusal message"
+pass "a terminal pinset refuses single-role rotation and demands an atomic pair"
+
+echo "== 0d. pair 회전으로 신선한 pinset 을 만든다 =="
+# 회전 요청 경로 자체를 시험하려면 단일 role 회전이 가능한 상태여야 한다.
+as_root pin rotate-pair \
+  --map-revision "$(printf '1%.0s' $(seq 1 40))" \
+  --pinvi-revision "$(printf '2%.0s' $(seq 1 40))" \
+  --reason "회전 요청 경로 시험용 신선 pinset" --confirm >"$BASE/out/pair.txt"
+grep -q "rotated Map/PinVi pair" "$BASE/out/pair.txt" || fail "pair rotation output"
+pass "an atomic pair rotation is the documented way out of a terminal pinset"
+
 echo "== 1. 대기 요청이 없을 때 show-pending 은 exit 1 =="
 set +e
 as_user pin show-pending >"$BASE/out/nopending.txt" 2>&1
