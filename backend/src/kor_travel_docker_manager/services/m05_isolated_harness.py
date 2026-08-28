@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.pinned_runtime_release import PinnedRuntimeRelease
@@ -27,8 +27,9 @@ M05_ISOLATED_HARNESS_VERSION: Final = 1
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TRANSACTION = re.compile(r"^[0-9a-f]{32}$")
-_PROJECT = re.compile(r"^m05i-[a-z0-9-]{8,63}$")
+_NETWORK = re.compile(r"^m05i-(?:map|pinvi)-[0-9a-f]{32}_default$")
 _CONTAINER_ID = re.compile(r"^[0-9a-f]{64}$")
+M05IsolatedRuntimeRole = Literal["map", "pinvi"]
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,101 @@ class M05IsolatedHarnessPlan:
         ).encode("ascii") + b"\n"
 
 
+@dataclass(frozen=True)
+class M05IsolatedNetworkExpectation:
+    """claim 뒤 Docker가 만든 dedicated bridge network의 immutable inspect evidence."""
+
+    role: M05IsolatedRuntimeRole
+    name: str
+    network_id: str
+
+    def __post_init__(self) -> None:
+        if self.role not in {"map", "pinvi"} or _NETWORK.fullmatch(self.name) is None:
+            raise DeploymentContractError("M05 isolated network expectation is invalid")
+        if _CONTAINER_ID.fullmatch(self.network_id) is None:
+            raise DeploymentContractError("M05 isolated network ID is invalid")
+
+
+@dataclass(frozen=True)
+class M05IsolatedServiceExpectation:
+    """receipt에 넣을 service 하나의 port·source·image immutable identity."""
+
+    role: M05IsolatedRuntimeRole
+    container_port: int
+    host_port: int
+    image_id: str
+
+    def __post_init__(self) -> None:
+        if self.role not in {"map", "pinvi"}:
+            raise DeploymentContractError("M05 isolated service role is invalid")
+        if not 1 <= self.container_port <= 65535 or not 1 <= self.host_port <= 65535:
+            raise DeploymentContractError("M05 isolated service port is invalid")
+        if not isinstance(self.image_id, str) or not self.image_id.startswith("sha256:"):
+            raise DeploymentContractError("M05 isolated service image ID is invalid")
+        if _SHA256.fullmatch(self.image_id[7:]) is None:
+            raise DeploymentContractError("M05 isolated service image ID is invalid")
+
+
+@dataclass(frozen=True)
+class M05IsolatedPairEvidence:
+    """Map/PinVi exact source와 vendored full/admin OpenAPI digest의 receipt input."""
+
+    map_full_openapi_sha256: str
+    map_source_revision: str
+    pinvi_full_openapi_sha256: str
+    pinvi_source_revision: str
+
+    def __post_init__(self) -> None:
+        for value, label, pattern in (
+            (self.map_source_revision, "Map source revision", _REVISION),
+            (self.pinvi_source_revision, "PinVi source revision", _REVISION),
+            (self.map_full_openapi_sha256, "Map full OpenAPI hash", _SHA256),
+            (self.pinvi_full_openapi_sha256, "PinVi full OpenAPI hash", _SHA256),
+        ):
+            if not isinstance(value, str) or pattern.fullmatch(value) is None:
+                raise DeploymentContractError(f"M05 isolated {label} is invalid")
+        if self.map_full_openapi_sha256 != self.pinvi_full_openapi_sha256:
+            raise DeploymentContractError("M05 isolated full OpenAPI hashes differ")
+
+
+@dataclass(frozen=True)
+class M05IsolatedRuntimeExpectation:
+    """root driver가 network creation·image build 뒤 freeze하는 inspect allowlist."""
+
+    plan: M05IsolatedHarnessPlan
+    networks: tuple[M05IsolatedNetworkExpectation, ...]
+    pair: M05IsolatedPairEvidence
+    services: Mapping[str, M05IsolatedServiceExpectation]
+
+    def __post_init__(self) -> None:
+        networks = tuple(self.networks)
+        services = MappingProxyType(dict(self.services))
+        object.__setattr__(self, "networks", networks)
+        object.__setattr__(self, "services", services)
+        if len(networks) != 2 or {item.role for item in networks} != {"map", "pinvi"}:
+            raise DeploymentContractError("M05 isolated network roles are incomplete")
+        expected_names = {"map": self.plan.map_network, "pinvi": self.plan.pinvi_network}
+        if any(item.name != expected_names[item.role] for item in networks):
+            raise DeploymentContractError("M05 isolated network name differs from the plan")
+        if len({item.network_id for item in networks}) != len(networks):
+            raise DeploymentContractError("M05 isolated network IDs must differ")
+        if not services or len(set(services)) != len(services):
+            raise DeploymentContractError("M05 isolated service set is invalid")
+        release_revisions = {
+            "map": self.plan.release.source_for("map").revision,
+            "pinvi": self.plan.release.source_for("pinvi").revision,
+        }
+        pair_revisions = {
+            "map": self.pair.map_source_revision,
+            "pinvi": self.pair.pinvi_source_revision,
+        }
+        if release_revisions != pair_revisions:
+            raise DeploymentContractError("M05 isolated pair source differs from the release")
+
+    def network_for(self, role: M05IsolatedRuntimeRole) -> M05IsolatedNetworkExpectation:
+        return next(item for item in self.networks if item.role == role)
+
+
 def claim_m05_isolated_harness_ledger(*, ledger_root: Path, plan: M05IsolatedHarnessPlan) -> Path:
     """새 run의 immutable root claim을 O_NOFOLLOW|O_EXCL+fsync로 남긴다.
 
@@ -147,25 +243,22 @@ def claim_m05_isolated_harness_ledger(*, ledger_root: Path, plan: M05IsolatedHar
 
 def assert_m05_isolated_runtime(
     *,
-    plan: M05IsolatedHarnessPlan,
+    expectation: M05IsolatedRuntimeExpectation,
     containers: Mapping[str, Mapping[str, Any]],
-    expected_ports: Mapping[str, tuple[int, int]],
-    expected_networks: Mapping[str, str],
+    network_inspects: Mapping[str, Mapping[str, Any]],
 ) -> Mapping[str, str]:
     """launch 뒤 inspect JSON이 bridge·label·loopback port를 모두 만족하는지 확인한다.
 
-    ``expected_ports``는 ``service -> (container_port, host_port)`` 정본이다. 허용되지 않은
-    published port, host network, extra network 및 label drift는 모두 completion 전에 거절한다.
+    driver가 image build·network creation 직후 만든 typed expectation만 받는다. 허용되지 않은
+    published port, host network, extra network, source/image/label drift는 completion 전에 거절한다.
     """
 
-    if (
-        not expected_ports
-        or set(containers) != set(expected_ports)
-        or set(containers) != set(expected_networks)
-    ):
+    plan = expectation.plan
+    if set(containers) != set(expectation.services) or set(network_inspects) != {
+        item.name for item in expectation.networks
+    }:
         raise DeploymentContractError("M05 isolated runtime service set is invalid")
     identities: dict[str, str] = {}
-    required_networks = frozenset({plan.map_network, plan.pinvi_network})
     for service, item in containers.items():
         if not isinstance(item, Mapping):
             raise DeploymentContractError("M05 isolated runtime inspect is invalid")
@@ -177,19 +270,26 @@ def assert_m05_isolated_runtime(
             raise DeploymentContractError("M05 isolated runtime inspect is invalid")
         if state.get("Running") is not True:
             raise DeploymentContractError("M05 isolated runtime container is not running")
-        if host_config.get("NetworkMode") != "bridge":
+        service_expectation = expectation.services[service]
+        network_expectation = expectation.network_for(service_expectation.role)
+        if host_config.get("NetworkMode") != network_expectation.name:
             raise DeploymentContractError("M05 isolated runtime must use bridge network")
         labels = config.get("Labels")
         if not isinstance(labels, Mapping) or any(labels.get(key) != value for key, value in plan.labels.items()):
             raise DeploymentContractError("M05 isolated runtime labels differ")
-        networks = network_settings.get("Networks")
-        expected_network = expected_networks[service]
-        if expected_network not in required_networks:
-            raise DeploymentContractError("M05 isolated runtime expected network is invalid")
-        if not isinstance(networks, Mapping) or set(networks) != {expected_network}:
+        attached_networks = network_settings.get("Networks")
+        if (
+            not isinstance(attached_networks, Mapping)
+            or set(attached_networks) != {network_expectation.name}
+        ):
             raise DeploymentContractError("M05 isolated runtime network differs")
-        container_port, host_port = expected_ports[service]
-        port_key = f"{container_port}/tcp"
+        attached_network = attached_networks[network_expectation.name]
+        if (
+            not isinstance(attached_network, Mapping)
+            or attached_network.get("NetworkID") != network_expectation.network_id
+        ):
+            raise DeploymentContractError("M05 isolated runtime network ID differs")
+        port_key = f"{service_expectation.container_port}/tcp"
         ports = network_settings.get("Ports")
         if not isinstance(ports, Mapping) or set(ports) != {port_key}:
             raise DeploymentContractError("M05 isolated runtime published ports differ")
@@ -200,14 +300,36 @@ def assert_m05_isolated_runtime(
         if (
             not isinstance(binding, Mapping)
             or binding.get("HostIp") != "127.0.0.1"
-            or binding.get("HostPort") != str(host_port)
+            or binding.get("HostPort") != str(service_expectation.host_port)
         ):
             raise DeploymentContractError("M05 isolated runtime is not loopback bound")
         raw_id = item.get("Id")
         if not isinstance(raw_id, str) or _CONTAINER_ID.fullmatch(raw_id) is None:
             raise DeploymentContractError("M05 isolated runtime container ID is invalid")
         image = item.get("Image")
-        if not isinstance(image, str) or not image.startswith("sha256:") or _SHA256.fullmatch(image[7:]) is None:
-            raise DeploymentContractError("M05 isolated runtime image ID is invalid")
+        if image != service_expectation.image_id:
+            raise DeploymentContractError("M05 isolated runtime image ID differs")
+        image_labels = config.get("Labels")
+        source_revision = (
+            expectation.pair.map_source_revision
+            if service_expectation.role == "map"
+            else expectation.pair.pinvi_source_revision
+        )
+        if image_labels.get("org.opencontainers.image.revision") != source_revision:
+            raise DeploymentContractError("M05 isolated runtime source revision differs")
         identities[service] = image
+    for network_expectation in expectation.networks:
+        network = network_inspects[network_expectation.name]
+        if not isinstance(network, Mapping):
+            raise DeploymentContractError("M05 isolated Docker network inspect is invalid")
+        labels = network.get("Labels")
+        if (
+            network.get("Id") != network_expectation.network_id
+            or network.get("Name") != network_expectation.name
+            or network.get("Driver") != "bridge"
+            or network.get("Internal") is not False
+            or not isinstance(labels, Mapping)
+            or any(labels.get(key) != value for key, value in plan.labels.items())
+        ):
+            raise DeploymentContractError("M05 isolated Docker network differs")
     return MappingProxyType(identities)

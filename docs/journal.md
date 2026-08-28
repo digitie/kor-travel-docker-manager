@@ -12,11 +12,12 @@ claim과 file·directory `fsync`를 child Docker mutation 전에 남기므로 tr
 재실행을 막는다. 이 claim은 실패에도 남으며 production rebuild ledger와 별도 namespace로 보존한다.
 
 runtime receipt 입력은 Docker 원문 log가 아니라 strict inspect 결과만 쓴다. service set, running state,
-bridge network mode, service별 정확히 하나의 dedicated network, exact harness/pinset/revision/transaction label,
-그리고 exact 하나의 `127.0.0.1` published binding 외에는 모두 fail-close한다. receipt에는 검증된 immutable
-image ID만 넣을 수 있다. focused 회귀는 replay ledger, host network, wildcard binding, provenance label drift,
-multi-network drift를 고정했다. 다음 구현은 이 contract를 소비하는 root-only source snapshot·compose driver와
-label-scoped cleanup이다.
+named user-defined bridge network와 inspect ID, service별 정확히 하나의 dedicated network, exact
+harness/pinset/revision/transaction label, image label의 source revision, source-pair와 같은 exact immutable image
+ID, 그리고 정확히 하나의 `127.0.0.1` published binding 외에는 모두 fail-close한다. bridge driver·network
+ID·label도 network inspect에서 다시 대조한다. focused 회귀는 replay ledger, host network, wildcard binding,
+provenance/image drift, multi-network와 network driver drift를 고정했다. 다음 구현은 이 contract를 소비하는
+root-only source snapshot·compose driver와 label-scoped cleanup이다.
 
 ## 2026-08-28 — M05 격리 bridge harness 선행 결정
 

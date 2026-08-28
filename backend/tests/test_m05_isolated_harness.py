@@ -10,6 +10,10 @@ from kor_travel_docker_manager.services.c6c_deployment import DeploymentContract
 from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05_ISOLATED_HARNESS_KIND,
     M05IsolatedHarnessPlan,
+    M05IsolatedNetworkExpectation,
+    M05IsolatedPairEvidence,
+    M05IsolatedRuntimeExpectation,
+    M05IsolatedServiceExpectation,
     assert_m05_isolated_runtime,
     claim_m05_isolated_harness_ledger,
 )
@@ -24,17 +28,64 @@ def _plan() -> M05IsolatedHarnessPlan:
     )
 
 
-def _inspect(plan: M05IsolatedHarnessPlan, *, network: str, port: int, host_port: int) -> dict[str, object]:
+def _expectation() -> M05IsolatedRuntimeExpectation:
+    plan = _plan()
+    return M05IsolatedRuntimeExpectation(
+        plan=plan,
+        networks=(
+            M05IsolatedNetworkExpectation("map", plan.map_network, "e" * 64),
+            M05IsolatedNetworkExpectation("pinvi", plan.pinvi_network, "f" * 64),
+        ),
+        pair=M05IsolatedPairEvidence(
+            map_full_openapi_sha256="1" * 64,
+            map_source_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
+            pinvi_full_openapi_sha256="1" * 64,
+            pinvi_source_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+        ),
+        services={
+            "map-api": M05IsolatedServiceExpectation("map", 8000, 30101, "sha256:" + "2" * 64),
+            "pinvi-api": M05IsolatedServiceExpectation("pinvi", 8000, 30102, "sha256:" + "3" * 64),
+        },
+    )
+
+
+def _inspect(
+    expectation: M05IsolatedRuntimeExpectation, *, service: str
+) -> dict[str, object]:
+    plan = expectation.plan
+    service_expectation = expectation.services[service]
+    network = expectation.network_for(service_expectation.role)
+    source_revision = (
+        expectation.pair.map_source_revision
+        if service_expectation.role == "map"
+        else expectation.pair.pinvi_source_revision
+    )
     return {
-        "Config": {"Labels": dict(plan.labels)},
-        "HostConfig": {"NetworkMode": "bridge"},
+        "Config": {
+            "Labels": {
+                **dict(plan.labels),
+                "org.opencontainers.image.revision": source_revision,
+            }
+        },
+        "HostConfig": {"NetworkMode": network.name},
         "Id": "c" * 64,
-        "Image": "sha256:" + "d" * 64,
+        "Image": service_expectation.image_id,
         "NetworkSettings": {
-            "Networks": {network: {}},
-            "Ports": {f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(host_port)}]},
+            "Networks": {network.name: {"NetworkID": network.network_id}},
+            "Ports": {
+                f"{service_expectation.container_port}/tcp": [
+                    {"HostIp": "127.0.0.1", "HostPort": str(service_expectation.host_port)}
+                ]
+            },
         },
         "State": {"Running": True},
+    }
+
+
+def _network_inspects(expectation: M05IsolatedRuntimeExpectation) -> dict[str, dict[str, object]]:
+    return {
+        item.name: {"Driver": "bridge", "Id": item.network_id, "Internal": False, "Labels": dict(expectation.plan.labels), "Name": item.name}
+        for item in expectation.networks
     }
 
 
@@ -66,18 +117,17 @@ def test_claim_is_durable_and_refuses_replay(tmp_path: Path) -> None:
 
 
 def test_runtime_accepts_only_expected_loopback_bridge_bindings() -> None:
-    plan = _plan()
+    expectation = _expectation()
     containers = {
-        "map-api": _inspect(plan, network=plan.map_network, port=8000, host_port=30101),
-        "pinvi-api": _inspect(plan, network=plan.pinvi_network, port=8000, host_port=30102),
+        "map-api": _inspect(expectation, service="map-api"),
+        "pinvi-api": _inspect(expectation, service="pinvi-api"),
     }
     identities = assert_m05_isolated_runtime(
-        plan=plan,
+        expectation=expectation,
         containers=containers,
-        expected_ports={"map-api": (8000, 30101), "pinvi-api": (8000, 30102)},
-        expected_networks={"map-api": plan.map_network, "pinvi-api": plan.pinvi_network},
+        network_inspects=_network_inspects(expectation),
     )
-    assert identities == {"map-api": "sha256:" + "d" * 64, "pinvi-api": "sha256:" + "d" * 64}
+    assert identities == {"map-api": "sha256:" + "2" * 64, "pinvi-api": "sha256:" + "3" * 64}
 
 
 @pytest.mark.parametrize(
@@ -91,30 +141,58 @@ def test_runtime_accepts_only_expected_loopback_bridge_bindings() -> None:
 def test_runtime_rejects_topology_or_provenance_drift(
     path: tuple[object, ...], value: object, message: str
 ) -> None:
-    plan = _plan()
-    item = _inspect(plan, network=plan.map_network, port=8000, host_port=30101)
+    expectation = _expectation()
+    item = _inspect(expectation, service="map-api")
     target: object = item
     for key in path[:-1]:
         target = target[key]  # type: ignore[index]
     target[path[-1]] = value  # type: ignore[index]
     with pytest.raises(DeploymentContractError, match=message):
         assert_m05_isolated_runtime(
-            plan=plan,
-            containers={"map-api": item},
-            expected_ports={"map-api": (8000, 30101)},
-            expected_networks={"map-api": plan.map_network},
+            expectation=expectation,
+            containers={
+                "map-api": item,
+                "pinvi-api": _inspect(expectation, service="pinvi-api"),
+            },
+            network_inspects=_network_inspects(expectation),
         )
 
 
 def test_runtime_rejects_a_second_or_wrong_network() -> None:
-    plan = _plan()
-    item = _inspect(plan, network=plan.map_network, port=8000, host_port=30101)
+    expectation = _expectation()
+    item = _inspect(expectation, service="map-api")
     networks = item["NetworkSettings"]["Networks"]  # type: ignore[index]
-    networks[plan.pinvi_network] = {}  # type: ignore[index]
+    networks[expectation.plan.pinvi_network] = {}  # type: ignore[index]
     with pytest.raises(DeploymentContractError, match="network differs"):
         assert_m05_isolated_runtime(
-            plan=plan,
-            containers={"map-api": item},
-            expected_ports={"map-api": (8000, 30101)},
-            expected_networks={"map-api": plan.map_network},
+            expectation=expectation,
+            containers={
+                "map-api": item,
+                "pinvi-api": _inspect(expectation, service="pinvi-api"),
+            },
+            network_inspects=_network_inspects(expectation),
+        )
+
+
+def test_runtime_rejects_image_or_network_inspect_drift() -> None:
+    expectation = _expectation()
+    containers = {
+        "map-api": _inspect(expectation, service="map-api"),
+        "pinvi-api": _inspect(expectation, service="pinvi-api"),
+    }
+    containers["map-api"]["Image"] = "sha256:" + "4" * 64
+    with pytest.raises(DeploymentContractError, match="image ID differs"):
+        assert_m05_isolated_runtime(
+            expectation=expectation,
+            containers=containers,
+            network_inspects=_network_inspects(expectation),
+        )
+    containers["map-api"] = _inspect(expectation, service="map-api")
+    network_inspects = _network_inspects(expectation)
+    network_inspects[expectation.plan.map_network]["Driver"] = "host"
+    with pytest.raises(DeploymentContractError, match="Docker network differs"):
+        assert_m05_isolated_runtime(
+            expectation=expectation,
+            containers=containers,
+            network_inspects=network_inspects,
         )
