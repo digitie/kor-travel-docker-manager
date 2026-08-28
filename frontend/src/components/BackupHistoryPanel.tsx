@@ -12,6 +12,7 @@ import {
   postJson,
 } from '@/lib/api';
 import { HumanError, humanizeError } from '@/lib/errors';
+import CopyableCommand from './CopyableCommand';
 
 const ROLE_OPTIONS: Array<{ value: StandaloneBackupManifest['role'] | 'all'; label: string }> = [
   { value: 'all', label: '전체' },
@@ -178,7 +179,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
           <p className="text-xs text-secondary mt-1">
             생성은 이 화면에서 할 수 있습니다. 정리(GC)와 복원은 CLI 전용이며,
             <strong> 복원은 아직 구현돼 있지 않습니다</strong> — 백업이 있다는 것과
-            복원할 수 있다는 것은 다릅니다.
+            복원할 수 있다는 것은 다릅니다. 아래 명령으로 그 차이를 미리 확인하세요.
           </p>
         </div>
         <button
@@ -233,6 +234,17 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             </button>
           </div>
         </div>
+
+        {role !== 'all' ? (
+          // 목록에 보인다고 복원할 수 있는 것이 아니다 — dump가 잘렸거나 digest가
+          // 어긋났거나 live schema가 백업 시점과 달라도 이 표는 똑같이 보인다.
+          <div className="mb-4">
+            <CopyableCommand
+              command={`sudo -n backend/.venv/bin/ktdctl db-backup restore-plan ${role}`}
+              hint="이 백업으로 복원하면 무슨 일이 일어나는지 계산합니다(읽기 전용)."
+            />
+          </div>
+        ) : null}
 
         {freshness.length > 0 ? (
           <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-4">

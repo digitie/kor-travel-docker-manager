@@ -15,6 +15,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     create_standalone_backup,
     gc_standalone_backups,
     list_standalone_backups,
+    plan_standalone_restore,
 )
 
 _CMD_JSON = json.dumps(["postgres", "-p", "12500", "-c", "listen_addresses=127.0.0.1"]).encode(
@@ -445,6 +446,195 @@ def test_backup_roles_cover_four_instances() -> None:
         "map_dagster",
         "pinvi",
     }
+
+
+# --- 복원 계획(KUM-M13, 읽기 전용) --------------------------------------------
+#
+# 이 블록의 요점: 목록에 백업이 보이는 것과 그 백업으로 복원할 수 있는 것은 다르다.
+# dump가 잘려 있어도, digest가 어긋나도, live schema가 백업 시점과 달라도 목록은
+# 똑같이 초록색이다. 계획은 그 거짓 안전감을 걷어내야 하고, **아무것도 바꾸지 않아야**
+# 한다.
+
+
+def _seed_backup(root: Path, role: str, created_at: int, body: bytes) -> str:
+    import hashlib
+
+    name = f"{role}-{created_at}.dump"
+    (root / name).write_bytes(body)
+    payload = _manifest_payload(role, created_at, name)
+    payload["byte_size"] = len(body)
+    payload["sha256"] = hashlib.sha256(body).hexdigest()
+    (root / f"{role}-{created_at}.manifest").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+    return name
+
+
+def _plan_probes(monkeypatch: pytest.MonkeyPatch, *, live_head: str | None) -> None:
+    monkeypatch.setattr(standalone_backup, "_discover_port", lambda name: 12500)
+    monkeypatch.setattr(standalone_backup, "_discover_admin_role", lambda name: "addr")
+    monkeypatch.setattr(
+        standalone_backup,
+        "_discover_alembic_head",
+        lambda *args, **kwargs: live_head,
+    )
+
+
+def test_restore_plan_confirms_a_healthy_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _plan_probes(monkeypatch, live_head="0001_head")
+    before = {path.name: path.read_bytes() for path in root.iterdir()}
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert plan.restorable is True
+    assert plan.backup_filename == "geo-1000.dump"
+    assert plan.live_alembic_head == "0001_head"
+    assert plan.containers == ("kor-travel-geo-postgres",)
+    # 계획은 아무것도 바꾸지 않는다.
+    assert {path.name: path.read_bytes() for path in root.iterdir()} == before
+
+
+def test_restore_plan_picks_the_newest_backup_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"old")
+    _seed_backup(root, "geo", 3000, b"new")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    assert plan_standalone_restore("geo", backup_root=root).backup_filename == (
+        "geo-3000.dump"
+    )
+    assert plan_standalone_restore(
+        "geo", backup_filename="geo-1000.dump", backup_root=root
+    ).backup_filename == "geo-1000.dump"
+
+
+def test_restore_plan_recomputes_the_digest_rather_than_trusting_the_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """manifest에 적힌 값을 그대로 믿으면 이 점검은 아무것도 검증하지 않는다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    # dump만 조용히 바뀐 상태 — 크기는 같고 내용이 다르다.
+    (root / "geo-1000.dump").write_bytes(b"dump-BYTES")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert plan.restorable is False
+    assert [f.code for f in plan.findings if f.blocking] == ["SHA256_MISMATCH"]
+
+
+def test_restore_plan_blocks_a_truncated_dump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    (root / "geo-1000.dump").write_bytes(b"dump")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert plan.restorable is False
+    assert "SIZE_MISMATCH" in [f.code for f in plan.findings]
+
+
+def test_restore_plan_blocks_when_the_dump_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    (root / "geo-1000.dump").unlink()
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert plan.restorable is False
+    assert [f.code for f in plan.findings if f.blocking] == ["DUMP_MISSING"]
+
+
+def test_a_schema_revision_drift_is_reported_but_does_not_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """복원 자체는 가능하다 — 다만 코드가 기대하는 schema보다 과거로 간다는 사실을
+    모르고 실행하면 안 된다. 판단은 사람이 한다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _plan_probes(monkeypatch, live_head="0007_much_later")
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert plan.restorable is True
+    drift = [f for f in plan.findings if f.code == "HEAD_MISMATCH"]
+    assert drift and drift[0].blocking is False
+    assert "0007_much_later" in drift[0].text
+
+
+def test_an_unreadable_live_head_is_reported_not_assumed_equal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _plan_probes(monkeypatch, live_head=None)
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert "LIVE_HEAD_UNKNOWN" in [f.code for f in plan.findings]
+
+
+def test_restore_plan_blocks_when_the_instance_cannot_be_inspected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+
+    def explode(name: str) -> int:
+        raise StandaloneBackupError("container is not running")
+
+    monkeypatch.setattr(standalone_backup, "_discover_port", explode)
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert plan.restorable is False
+    assert [f.code for f in plan.findings if f.blocking] == ["INSTANCE_UNREACHABLE"]
+    assert plan.containers == ()
+
+
+def test_restore_plan_refuses_an_unknown_backup_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    with pytest.raises(StandaloneBackupError, match="no backup named"):
+        plan_standalone_restore("geo", backup_filename="geo-9999.dump", backup_root=root)
+    with pytest.raises(StandaloneBackupError, match="invalid"):
+        plan_standalone_restore("geo", backup_filename="../etc/passwd", backup_root=root)
+
+
+def test_restore_plan_refuses_when_there_is_nothing_to_restore(tmp_path: Path) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+
+    with pytest.raises(StandaloneBackupError, match="no backup"):
+        plan_standalone_restore("geo", backup_root=root)
 
 
 def _manifest_payload(role: str, created_at: int, backup_filename: str) -> dict[str, object]:

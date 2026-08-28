@@ -440,6 +440,186 @@ def _unlink_backup_set(root: Path, backup_filename: str) -> None:
     _manifest_path(root, backup_filename).unlink(missing_ok=True)
 
 
+@dataclass(frozen=True)
+class RestorePlanFinding:
+    """복원 계획에서 발견한 사실 하나. 차단인지 아닌지를 스스로 안다."""
+
+    code: str
+    text: str
+    blocking: bool
+
+    def to_json(self) -> dict[str, object]:
+        return {"code": self.code, "text": self.text, "blocking": self.blocking}
+
+
+@dataclass(frozen=True)
+class RestorePlan:
+    """"이 백업으로 복원하면 무슨 일이 일어나는가"를 **아무것도 바꾸지 않고** 답한다.
+
+    복원 자체는 아직 구현하지 않는다. 먼저 이것을 만드는 이유는, 목록에 백업이 보이는
+    것과 그 백업으로 실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있거나
+    manifest와 digest가 어긋나거나 live schema revision이 백업 시점과 달라도 목록은
+    똑같이 초록색이다. 그 거짓 안전감을 복원을 만들기 전에 걷어낸다.
+    """
+
+    role: BackupRole
+    backup_filename: str
+    dump_path: str
+    manifest: BackupManifest
+    observed_sha256: str | None
+    observed_byte_size: int | None
+    live_alembic_head: str | None
+    containers: tuple[str, ...]
+    findings: tuple[RestorePlanFinding, ...]
+
+    @property
+    def restorable(self) -> bool:
+        return not any(finding.blocking for finding in self.findings)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "backup_filename": self.backup_filename,
+            "dump_path": self.dump_path,
+            "manifest": self.manifest.to_json(),
+            "observed_sha256": self.observed_sha256,
+            "observed_byte_size": self.observed_byte_size,
+            "live_alembic_head": self.live_alembic_head,
+            "containers": list(self.containers),
+            "findings": [finding.to_json() for finding in self.findings],
+            "restorable": self.restorable,
+        }
+
+
+def plan_standalone_restore(
+    role: BackupRole,
+    *,
+    backup_filename: str | None = None,
+    backup_root: Path | None = None,
+) -> RestorePlan:
+    """복원 **계획**만 만든다. 파일도 DB도 컨테이너도 건드리지 않는다.
+
+    `backup_filename`을 주지 않으면 가장 최근 백업을 고른다. digest는 실제로 다시
+    계산한다 — manifest에 적힌 값을 그대로 믿으면 이 점검이 아무것도 검증하지 않는다.
+    """
+
+    container_name, database_name = _role_config(role)
+    root = _resolve_backup_root(role, backup_root)
+    manifests = list_standalone_backups(role, backup_root=backup_root)
+    if not manifests:
+        raise StandaloneBackupError(f"{role} has no backup to restore from")
+    if backup_filename is None:
+        manifest = max(manifests, key=lambda item: item.created_at_unix)
+    else:
+        if not _FILENAME.fullmatch(backup_filename):
+            raise StandaloneBackupError(f"backup filename is invalid: {backup_filename}")
+        selected = [item for item in manifests if item.backup_filename == backup_filename]
+        if not selected:
+            raise StandaloneBackupError(f"{role} has no backup named {backup_filename}")
+        manifest = selected[0]
+
+    dump_path = root / manifest.backup_filename
+    findings: list[RestorePlanFinding] = []
+    observed_sha256: str | None = None
+    observed_byte_size: int | None = None
+
+    if not dump_path.is_file():
+        findings.append(
+            RestorePlanFinding(
+                "DUMP_MISSING",
+                f"manifest는 있지만 dump 파일이 없습니다: {dump_path.name}",
+                True,
+            )
+        )
+    else:
+        observed_byte_size = dump_path.stat().st_size
+        if observed_byte_size != manifest.byte_size:
+            findings.append(
+                RestorePlanFinding(
+                    "SIZE_MISMATCH",
+                    f"dump 크기가 manifest와 다릅니다"
+                    f"({observed_byte_size} vs {manifest.byte_size}).",
+                    True,
+                )
+            )
+        observed_sha256 = _sha256_file(dump_path)
+        if observed_sha256 != manifest.sha256:
+            findings.append(
+                RestorePlanFinding(
+                    "SHA256_MISMATCH",
+                    "dump의 sha256이 manifest와 다릅니다. 이 파일로 복원하면 안 됩니다.",
+                    True,
+                )
+            )
+
+    # live schema revision은 best-effort다. 읽지 못하는 것을 "맞다"로 말하지 않는다.
+    live_alembic_head: str | None = None
+    containers: tuple[str, ...] = ()
+    try:
+        port = _discover_port(container_name)
+        admin_name = _discover_admin_role(container_name)
+    except StandaloneBackupError as exc:
+        findings.append(
+            RestorePlanFinding(
+                "INSTANCE_UNREACHABLE",
+                f"대상 인스턴스를 확인할 수 없습니다: {exc}",
+                True,
+            )
+        )
+    else:
+        containers = (container_name,)
+        live_alembic_head = _discover_alembic_head(
+            container_name, port, admin_name, database_name
+        )
+        if live_alembic_head is None:
+            findings.append(
+                RestorePlanFinding(
+                    "LIVE_HEAD_UNKNOWN",
+                    "현재 DB의 schema revision을 읽지 못했습니다. 백업 시점과 같은지 "
+                    "확인할 수 없습니다.",
+                    False,
+                )
+            )
+        elif manifest.alembic_head is None:
+            findings.append(
+                RestorePlanFinding(
+                    "MANIFEST_HEAD_UNKNOWN",
+                    "백업 manifest에 schema revision이 없습니다. 현재 DB와 같은 "
+                    "시점인지 확인할 수 없습니다.",
+                    False,
+                )
+            )
+        elif live_alembic_head != manifest.alembic_head:
+            findings.append(
+                RestorePlanFinding(
+                    "HEAD_MISMATCH",
+                    f"현재 DB의 schema revision({live_alembic_head})이 백업 시점"
+                    f"({manifest.alembic_head})과 다릅니다. 복원하면 코드가 기대하는 "
+                    "schema보다 과거로 되돌아갑니다.",
+                    False,
+                )
+            )
+
+    if not findings:
+        findings.append(
+            RestorePlanFinding(
+                "OK", "이 백업은 무결성과 schema revision이 모두 일치합니다.", False
+            )
+        )
+
+    return RestorePlan(
+        role=role,
+        backup_filename=manifest.backup_filename,
+        dump_path=str(dump_path),
+        manifest=manifest,
+        observed_sha256=observed_sha256,
+        observed_byte_size=observed_byte_size,
+        live_alembic_head=live_alembic_head,
+        containers=containers,
+        findings=tuple(findings),
+    )
+
+
 def _role_config(role: BackupRole) -> tuple[str, str]:
     if role not in _ROLE_CONFIG:
         raise StandaloneBackupError(f"unknown backup role: {role}")

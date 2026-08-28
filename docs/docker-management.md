@@ -1027,7 +1027,29 @@ migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼�
 ktdctl db-backup create concierge
 ktdctl db-backup list concierge
 ktdctl db-backup gc concierge --keep 7
+ktdctl db-backup restore-plan concierge [--file <name>] [--json]   # 읽기 전용
 ```
+
+#### `restore-plan` — 복원하기 전에 "복원할 수 있는가"를 먼저 묻는다
+
+**복원 명령 자체는 아직 없다.** `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이는
+것과 그 백업으로 실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있어도, digest가
+manifest와 어긋나도, live schema revision이 백업 시점과 달라도 목록은 똑같이 보인다.
+
+계획은 아무것도 바꾸지 않고 다음을 답한다:
+
+- 어느 dump를 쓸 것인가(생략 시 가장 최근).
+- **digest를 다시 계산해** manifest와 대조한다. manifest에 적힌 값을 그대로 믿으면 이
+  점검은 아무것도 검증하지 않는다.
+- 크기가 manifest와 같은가(잘린 dump 탐지).
+- live schema revision과 백업 시점 revision이 같은가.
+- 어느 컨테이너가 영향을 받는가.
+
+차단(`DUMP_MISSING`·`SIZE_MISMATCH`·`SHA256_MISMATCH`·`INSTANCE_UNREACHABLE`)과 참고
+(`HEAD_MISMATCH`·`LIVE_HEAD_UNKNOWN`·`MANIFEST_HEAD_UNKNOWN`)를 구분한다. schema revision
+불일치는 **차단이 아니다** — 복원 자체는 가능하고, 코드가 기대하는 schema보다 과거로
+간다는 사실을 알고 결정하는 것이 사람의 몫이다. 차단 요인이 있으면 exit 1이라 스크립트
+게이트로 쓸 수 있다.
 
 geo application DB는 위 앱 레벨 백업이 정본이다. 운영자가 장애 대응을 위해 한 번만 수동 dump가 필요할 때는
 `ktdctl db-backup create geo --timeout <초>`처럼 명시적으로 실행하고, cron/systemd timer에는 넣지 않는다.

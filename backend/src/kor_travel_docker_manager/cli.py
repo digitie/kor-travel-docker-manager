@@ -46,6 +46,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     create_standalone_backup,
     gc_standalone_backups,
     list_standalone_backups,
+    plan_standalone_restore,
 )
 
 DIRECT_ENSURE_ALIASES = {
@@ -547,6 +548,47 @@ def _registry_or_none() -> Any:
         return load_runtime_pin_registry()
     except DeploymentContractError:
         return None
+
+
+def _cmd_db_backup_restore_plan(args: argparse.Namespace) -> int:
+    """복원 **계획**만 출력한다. 파일도 DB도 컨테이너도 건드리지 않는다.
+
+    복원 자체는 아직 없다. 이것을 먼저 만드는 이유는, 목록에 백업이 보이는 것과 그
+    백업으로 실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있어도, digest가
+    어긋나도, live schema가 백업 시점과 달라도 목록은 똑같이 초록색이다.
+    """
+
+    try:
+        plan = plan_standalone_restore(args.role, backup_filename=args.file)
+    except StandaloneBackupError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(plan.to_json(), ensure_ascii=False, indent=2))
+    else:
+        manifest = plan.manifest
+        print(f"대상      {plan.role} · {plan.backup_filename}")
+        print(f"파일      {plan.dump_path}")
+        print(f"크기      {manifest.byte_size} bytes (manifest 기준)")
+        print(f"sha256    {manifest.sha256}")
+        if plan.observed_sha256 is not None:
+            match = "일치" if plan.observed_sha256 == manifest.sha256 else "불일치"
+            print(f"실측      {plan.observed_sha256} ({match})")
+        print(f"백업 시점 schema  {manifest.alembic_head or '알 수 없음'}")
+        print(f"현재 schema       {plan.live_alembic_head or '알 수 없음'}")
+        if plan.containers:
+            print(f"영향 컨테이너     {', '.join(plan.containers)}")
+        print()
+        for finding in plan.findings:
+            marker = "차단" if finding.blocking else "참고"
+            print(f"  [{marker}] {finding.text}")
+        print()
+        if plan.restorable:
+            print("이 백업은 복원 가능한 상태로 보입니다. 다만 복원 명령은 아직 없습니다.")
+        else:
+            print("이 백업으로는 복원하면 안 됩니다.")
+    # 차단 요인이 있으면 비정상 종료로 알린다 — 스크립트에서 게이트로 쓸 수 있다.
+    return 0 if plan.restorable else 1
 
 
 def _cmd_pin_show_pending(args: argparse.Namespace) -> int:
@@ -1085,6 +1127,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     db_backup_gc.add_argument("--json", action="store_true")
     db_backup_gc.set_defaults(func=_cmd_db_backup_gc)
+
+    db_backup_restore_plan = db_backup_subparsers.add_parser(
+        "restore-plan",
+        help=(
+            "이 백업으로 복원하면 무슨 일이 일어나는지 계산합니다(읽기 전용). "
+            "복원 명령 자체는 아직 없습니다."
+        ),
+    )
+    db_backup_restore_plan.add_argument("role", choices=BACKUP_ROLES)
+    db_backup_restore_plan.add_argument(
+        "--file", help="검사할 백업 파일명. 생략하면 가장 최근 백업입니다."
+    )
+    db_backup_restore_plan.add_argument("--json", action="store_true")
+    db_backup_restore_plan.set_defaults(func=_cmd_db_backup_restore_plan)
 
     return parser
 

@@ -862,6 +862,73 @@ def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, caps
     assert "새 PinVi head" in output
 
 
+def test_cli_db_backup_restore_plan_is_read_only_and_gates_on_findings(capsys) -> None:
+    """계획은 아무것도 바꾸지 않고, 차단 요인이 있으면 비정상 종료로 알린다."""
+
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        dump_path="/backups/geo/geo-1.dump",
+        manifest=SimpleNamespace(
+            byte_size=10,
+            sha256="a" * 64,
+            alembic_head="0001_head",
+            to_json=lambda: {},
+        ),
+        observed_sha256="b" * 64,
+        observed_byte_size=10,
+        live_alembic_head="0007_later",
+        containers=("kor-travel-geo-postgres",),
+        findings=(
+            SimpleNamespace(
+                code="SHA256_MISMATCH", text="digest가 다릅니다", blocking=True
+            ),
+        ),
+        restorable=False,
+        to_json=lambda: {"restorable": False},
+    )
+
+    with patch(
+        "kor_travel_docker_manager.cli.plan_standalone_restore", return_value=plan
+    ) as planner:
+        exit_code = main(["db-backup", "restore-plan", "geo"])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "digest가 다릅니다" in output
+    assert "복원하면 안 됩니다" in output
+    planner.assert_called_once_with("geo", backup_filename=None)
+
+
+def test_cli_db_backup_restore_plan_reports_a_healthy_backup(capsys) -> None:
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        dump_path="/backups/geo/geo-1.dump",
+        manifest=SimpleNamespace(
+            byte_size=10, sha256="a" * 64, alembic_head="0001_head", to_json=lambda: {}
+        ),
+        observed_sha256="a" * 64,
+        observed_byte_size=10,
+        live_alembic_head="0001_head",
+        containers=(),
+        findings=(SimpleNamespace(code="OK", text="모두 일치합니다", blocking=False),),
+        restorable=True,
+        to_json=lambda: {"restorable": True},
+    )
+
+    with patch("kor_travel_docker_manager.cli.plan_standalone_restore", return_value=plan):
+        assert main(["db-backup", "restore-plan", "geo"]) == 0
+
+    output = capsys.readouterr().out
+    # 복원 명령이 아직 없다는 사실을 계획이 스스로 말한다.
+    assert "복원 명령은 아직 없습니다" in output
+
+
 # --- ktdctl pin apply-pending (KUM-M5) ---------------------------------------
 
 
