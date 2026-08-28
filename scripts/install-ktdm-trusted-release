@@ -642,7 +642,14 @@ script = pathlib.Path(sys.argv[1]).resolve(strict=True)
 arguments = sys.argv[2:]
 lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
 lock_path = lock_dir / "global-mutation.lock"
-lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+try:
+    lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+except FileExistsError:
+    # `exist_ok`는 **디렉터리로** 이미 있을 때만 예외를 삼킨다. 일반 파일·FIFO·
+    # dangling symlink로 선점된 경우 — `1777` 아래에서 `touch` 한 번이면 되는 가장
+    # 값싼 선점이다 — 여기서 예외가 나가 버려 아래 진단이 영영 실행되지 않았다.
+    # 아래 lstat/검사가 타입까지 보고 보고하게 넘긴다.
+    pass
 directory_stat = lock_dir.lstat()
 if (
     not stat.S_ISDIR(directory_stat.st_mode)
@@ -1400,7 +1407,10 @@ install_host_lease_tmpfiles() {
     echo "host lease tmpfiles unit is writable or not root-owned: ${source}" >&2
     return 1
   fi
-  if ! /usr/bin/install -o root -g root -m 0644 -- "${source}" "${destination}"; then
+  # `-T`가 없으면 GNU install은 destination이 디렉터리일 때 그 **안에** 써 넣는다.
+  # 그러면 이 분기는 성공하고, 엉뚱한 자리에 파일이 생긴 채 systemd-tmpfiles 쪽이
+  # 원인으로 보고된다. 파일 하나를 파일 하나로 쓴다고 명시한다(`mv -T`와 같은 관례).
+  if ! /usr/bin/install -T -o root -g root -m 0644 -- "${source}" "${destination}"; then
     echo "cannot install host lease tmpfiles unit: ${destination}" >&2
     return 1
   fi
@@ -1423,8 +1433,13 @@ install_host_lease_tmpfiles() {
   # `d`는 소유자·mode만 바로잡고 **내용은 지우지 않는다.** 이미 선점된 호스트라면
   # 침입자가 심어 둔 파일이 그대로 남는다. lock fd 검증이 fail-close로 잡지만,
   # 설치 시점에 운영자에게 보이는 편이 낫다.
+  # `2>/dev/null || true`로 감싸면 find 실패가 "잔여 항목 없음"으로 둔갑한다 —
+  # 감사(audit)가 fail-open이 된다. 실패는 실패로 보고한다.
   local stray
-  stray="$(/usr/bin/find "${lease}" -mindepth 1 ! -uid 0 2>/dev/null || true)"
+  if ! stray="$(/usr/bin/find "${lease}" -mindepth 1 ! -uid 0)"; then
+    echo "cannot audit host lease directory contents: ${lease}" >&2
+    return 1
+  fi
   if [[ -n "${stray}" ]]; then
     echo "host lease directory contains entries not owned by root:" >&2
     printf '%s\n' "${stray}" >&2
