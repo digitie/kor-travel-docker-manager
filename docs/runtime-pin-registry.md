@@ -67,6 +67,19 @@ terminal phase를 `completed` 외 exact 같은 집합으로 수용한다. 이 �
 driver의 blocked receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의
 fallback으로 바뀌지 않는다.
 
+### 단발 실행의 완료 판정
+
+`run-pinned-rebuild-once`와 `run-m05-isolated-e2e-once`는 실행권을 claim한 뒤 host-global mutation lock을
+프로세스 수명 동안 보유한다. SSH client가 즉시 종료됐거나 출력 회수가 지연됐다는 사실은 실패·종료·차단의
+증거가 아니다. **lock이 보유된 동안에는** 같은 pinset의 rebuild/E2E 재실행, `pin block`, 다음 pair 회전을
+하지 않고 안전한 lock 상태만 기다린다. lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact
+Map/PinVi/pinset, `published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
+
+이 절차는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지 않는다. 공개 gate가
+`match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그 뒤에만 새 root-owned leaf에서 M04/M05 one-shot을
+한 번 실행할 수 있다. `match` 전에는 terminal block을 쓰지 않는다. 이미 terminal로 block된 pinset은 이
+판정과 관계없이 재실행하지 않고 fresh source pair로만 교체한다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식
