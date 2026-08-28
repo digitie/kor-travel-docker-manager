@@ -2541,3 +2541,65 @@ sealed paired candidate가 같은 commit을 선언해야 한다**는 admission�
 
 pin 회전 UI(2-step 승인), typed 진단 소비, preflight readiness 노출은
 `docs/ktdctl-ui-migration.md` 3부의 별도 태스크(KUM-M5·M6·M7)로 분리한다.
+
+## ADR-41: host mutation lease는 부팅 시 생성하고, 소유자는 root와 선언된 서비스 계정 둘을 인정한다
+
+- 상태: accepted
+- 날짜: 2026-08-28
+- 결정자: agent (오너 승인 — "셋다 진행")
+
+### 컨텍스트
+
+`KTDM_DEPLOYMENT_ENVIRONMENT=production`에서 모든 Compose mutation은
+`/run/lock/kor-travel-docker-manager/global-mutation.lock` 하나를 지난다. 이 디렉터리를
+Manager가 **런타임에 처음 만들고** 있었고, 부모인 `/run/lock`은 Debian 계열에서 `1777`
+sticky다. 즉 재부팅 직후 비특권 로컬 사용자가 같은 이름을 선점하면 소유자·mode 검증이
+실패해 **모든 컨테이너 mutation이 다음 재부팅까지 거부**된다. sticky bit 때문에 정리도
+root만 할 수 있어, 권한 없는 사용자가 운영 전체를 잠글 수 있는 비대칭이 남아 있었다.
+
+같은 지점이 두 번째 문제도 만들고 있었다. lease 소유자를 리터럴 `uid 0`으로 요구했기
+때문에 **백엔드가 root로 돌아야만 컨테이너를 다룰 수 있었다.** 근거를 확인해 보면 백엔드
+소스의 나머지 소유권 검사는 전부 `st_uid != os.geteuid()`(자기 자신) 기준이고, 남은 리터럴
+root 게이트는 rebuild·pin 회전·fixed artifact 발행·legacy retirement 같은 **root 전용
+워크플로**뿐이다. 즉 상시 실행되는 백엔드를 root로 묶어 두는 구조적 이유는 이 lease 하나였다.
+
+### 결정
+
+1. lease 디렉터리는 `systemd-tmpfiles`가 early boot에 만든다
+   (`deploy/tmpfiles.d/kor-travel-docker-manager.conf`).
+2. lease 소유자로 root와 `KTDM_SERVICE_USER`가 선언한 계정을 함께 인정한다. 미설정이면
+   `0`으로 해석되어 기존 계약과 동치다.
+
+### 근거
+
+- **선점 창은 시점의 문제다.** `d` 타입은 이미 있는 디렉터리의 소유자·mode까지 바로잡고
+  early boot에 돌므로, 경쟁할 사용자 프로세스가 아직 없다. 런타임 검증을 아무리 조여도
+  "먼저 만든 쪽이 이긴다"는 성질은 사라지지 않는다.
+- **서비스 계정 모드에서는 런타임 생성을 아예 금지한다.** `1777` 아래의 런타임 생성이 곧
+  위의 창이므로, 없으면 tmpfiles.d를 가리키는 계약 오류로 거부한다. root 실행 경로는 창이
+  없으므로 생성을 허용하되, 서비스 계정이 선언돼 있으면 만든 직후 그 계정으로 `lchown`해
+  tmpfiles.d가 만들어 두었을 상태로 수렴시킨다 — 설치 누락이 "root가 `0700 root:root`로
+  선점해 서비스 계정이 영영 못 들어가는" 조용한 잠금이 되지 않게 한다.
+- **소유자를 하나만 인정하면 자가 교착이다.** `rebuild-pinned`는 root로, 백엔드는 서비스
+  계정으로 도는데 lease는 공유한다. 한쪽만 허용하면 둘이 서로를 거부한다. 인정 집합을
+  `{root, 선언된 계정}`으로 두면 두 신뢰 주체는 통과하고 제3의 uid는 여전히 막힌다.
+- **rebuild lease는 건드리지 않는다.** `production` 판정은 global mutation lease일 때만
+  참이고 `pinned-runtime-rebuild.lock`은 예전처럼 자기 소유(`os.geteuid()`)를 본다.
+- **기본값은 오늘과 완전히 같다.** 환경변수 미설정이 `uid 0`이므로 이 변경만으로 운영
+  동작이 바뀌지 않는다. 비-root 전환은 별도의 명시적 결정이다.
+
+### 트레이드오프 (내주는 것)
+
+1. **동작이 배포 트리 밖 파일(tmpfiles.d) 설치 여부에 의존한다.** 미설치 호스트에서 root
+   경로는 예전처럼 동작하지만 선점 창이 남고, 서비스 계정 모드는 아예 거부된다. 설치는 배포
+   절차 문서(`docs/prod-deployment.md` 3.z)의 필수 항목으로 등재했다.
+2. **신뢰 집합이 1개에서 2개로 늘었다.** `KTDM_SERVICE_USER`를 잘못 선언하면 그 계정이 host
+   lease를 소유할 수 있다. 선언은 root `0600` `.env`에만 존재하므로, 이 값을 쓸 수 있는
+   주체는 이미 Manager를 통제하는 주체다.
+3. **비-root 전환이 자동으로 완결되지는 않는다.** `.env` 소유권 이전, `docker` 보조 그룹,
+   tmpfiles.d의 UID 필드를 함께 옮겨야 하고, root 전용 워크플로 네 가지는 `sudo`로 남는다.
+
+### 후속
+
+n150 운영 백엔드의 실제 계정 전환은 별도 작업으로 분리한다. 이 ADR은 전환을 **가능하게 하는
+seam과 부팅 시 생성**까지만 확정한다.

@@ -2,6 +2,33 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — root 권한 축소 3건: artifact 읽기 경로, host lease 선점 창, 비-root 서비스 계정 seam
+
+오너 질문 "root 권한이 필요한 이유는?"에 대한 근거 확인에서 나온 후속 3건을 반영했다. 세
+가지 모두 **기본 동작은 오늘과 동일**하고, 운영 계정 전환 자체는 별도 작업으로 남긴다.
+
+1. **fixed artifact 읽기 경로의 중복 root 조건 제거.** `_require_fixed_artifact_directory`가
+   `os.geteuid() != 0`을 검사해 `read_root_read_only_artifact`까지 root를 요구하고 있었다.
+   쓰기 두 진입점(`publish_root_read_only_artifact`, `replace_root_read_only_artifact`)이
+   각각 독립적으로 root를 검사하므로 이 조건은 계약을 넓히지 않고 비-root 읽기만 막았다.
+2. **host mutation lease 디렉터리를 부팅 시 생성.** `/run/lock`이 `1777`이라 런타임 최초
+   생성이 선점 창이었고, 선점되면 모든 컨테이너 mutation이 재부팅까지 거부되며 sticky bit
+   때문에 정리도 root만 가능했다. `deploy/tmpfiles.d/kor-travel-docker-manager.conf`를
+   추가하고 배포 절차의 필수 항목으로 등재했다.
+3. **`KTDM_SERVICE_USER` seam.** 백엔드를 root로 묶어 두던 구조적 이유가 이 lease의 리터럴
+   `uid 0` 요구 하나였음을 확인했다(나머지 소유권 검사는 전부 자기 자신 기준이고, 남은
+   리터럴 root 게이트는 rebuild·pin 회전·artifact 발행·legacy retirement의 root 전용
+   워크플로뿐이다). lease 소유자로 root와 선언된 계정을 함께 인정하고, 서비스 계정 모드에서는
+   런타임 생성을 금지한다. 미설정 시 `0`이라 기존 계약과 동치다.
+
+리뷰 중 자체 발견해 고친 것 둘: (a) 서비스 계정 모드에서 root가 lease 디렉터리를 먼저 만들면
+`0700 root:root`가 되어 서비스 계정이 영영 진입하지 못하는 조용한 잠금 — 생성 직후
+`lchown`으로 수렴시킨다. (b) 기본 모드에서 디렉터리가 이미 있을 때 euid 게이트를 지나쳐
+raw `PermissionError`가 새어 나가는 퇴화 — 예전 계약 오류 문구를 복원했다.
+
+ADR-41 등재, `docs/prod-deployment.md` 3.z 신설. 회귀 테스트 20건 추가
+(`tests/test_c6c_service_account_lock.py`), 백엔드 전체 1,076 passed / 1 skipped, ruff clean.
+
 ## 2026-08-28 — M05 `b46743ea…` terminal 보존 후 대기
 
 Map `6bfa47038b439845662f89524531d2ef72374c2a`·PinVi

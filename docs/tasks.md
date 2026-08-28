@@ -15,6 +15,7 @@
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 | **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (1부 트랙 KUM-M1~M4 구현 완료) | `[/]` | 1부 잔여(KUM-M5·M6·M7)와 v3 문서 3부의 나머지 태스크 분해 |
 | **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종이 Map attestation의 exact-dict를 통과하지 못한다 (**다음 재구축의 선행 조건**) | `[ ]` | pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를 함께 넣고, 정렬을 확인한 뒤에 재구축 |
+| **NONROOT-BACKEND** | n150 백엔드를 전용 서비스 계정으로 내린다 (ADR-41의 seam은 구현 완료, 전환은 미실시) | `[ ]` | tmpfiles.d 설치 → `ktdm` 계정·`docker` 보조 그룹·`.env` 소유권 이전 → `KTDM_SERVICE_USER` 선언 후 격리 환경에서 mutation 1회 검증. root 전용 워크플로 4종은 `sudo` 유지 |
 
 ## M05 재개 규율
 
