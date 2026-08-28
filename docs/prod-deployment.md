@@ -40,13 +40,18 @@ registry가 트리 안에 있으면 다음 release 설치가 회전 결과를 �
 
 ```bash
 # 설치 root에서 도는 경우의 기본값(별도 설정 불필요)
-/var/lib/kor-travel-docker-manager/runtime-pins.json
-/var/lib/kor-travel-docker-manager/public/runtime-pins.json
+/var/lib/kor-travel-docker-manager/runtime-pins.json          # registry, root 0600
+/var/lib/kor-travel-docker-manager-public/runtime-pins.json   # 공개 사본, 0644
 
 # 다른 경로를 쓰려면
 KTDM_RUNTIME_PINS_FILE=<배포 트리 밖 경로>
-KTDM_RUNTIME_PINS_PUBLIC_FILE=<배포 트리 밖 경로>
+KTDM_RUNTIME_PINS_PUBLIC_FILE=<배포 트리 밖, 비-root가 읽을 수 있는 경로>
 ```
+
+**공개 사본은 별도 트리에 둔다.** installer가 `/var/lib/kor-travel-docker-manager`를 매
+설치마다 `0700 root:root`로 되돌리므로, 그 안에 사본을 두면 비-root 백엔드가 traverse조차
+하지 못해 조회 API가 영구히 `unknown`이 된다(n150 실측). 사본에는 공개 저장소 커밋 SHA와
+회전 메타뿐이라 비밀이 없다.
 
 배포 트리 안(`/opt/kor-travel-docker-manager/...`) 경로로는 회전이 **거부된다** — 다음
 release 설치가 회전 결과를 조용히 되돌리기 때문이다.

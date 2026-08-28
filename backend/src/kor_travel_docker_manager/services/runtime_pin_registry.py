@@ -49,15 +49,20 @@ _DEFAULT_PUBLIC_BASENAME: Final = ".ktdm-runtime-pins.json"
 _TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
 # 설치 root에서 돌 때의 registry 기본 위치. 트리 교체에 살아남아야 하므로 트리 밖이다.
 _TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
+# 공개 사본은 **별도 트리**다. installer가 위 상태 root를 매 설치마다 0700 root:root로
+# 되돌리므로 그 안에 두면 비-root backend가 traverse조차 못 해 조회 API가 영구
+# ``unknown``이 된다(n150 실측). 사본은 비밀이 없으므로 world-readable 트리에 둔다.
+_TRUSTED_PUBLIC_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-public")
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 
-# 상한을 가득 채운 registry(history 500 + blocked 500)의 실측 직렬화 크기가
-# 1MB에 근접한다. 읽기 한도가 그보다 작으면 쓰기 경로가 읽기 경로에서 거부되는
-# 파일을 만들어 스스로를 brick한다 — 여유를 두고 잡는다.
-_MAX_REGISTRY_BYTES: Final = 4 * 1024 * 1024
+# 쓰기 경로가 읽기 경로에서 거부되는 파일을 만들면 스스로를 brick한다.
+# ``_require_text``는 **문자 수**를 제한하는데 저장은 ``ensure_ascii=True``라 비ASCII
+# 1자가 6~12바이트가 된다. 이 프로젝트의 사유 문자열은 한국어이므로 상한을 가득 채운
+# registry(history 500 + blocked 500)의 실측 크기가 ASCII 약 1MB, 한국어 약 4.5MB다.
+_MAX_REGISTRY_BYTES: Final = 16 * 1024 * 1024
 _MAX_REASON_LENGTH: Final = 500
 _MAX_ACTOR_LENGTH: Final = 200
 _MAX_HISTORY_ENTRIES: Final = 500
@@ -556,8 +561,9 @@ def _project_root() -> Path:
 def _running_from_trusted_install_root() -> bool:
     """trusted installer가 통째 교체하는 canonical execution root에서 도는가."""
 
+    project_root = _project_root()
     try:
-        return _project_root().resolve() == _TRUSTED_INSTALL_ROOT.resolve()
+        return project_root.resolve() == _TRUSTED_INSTALL_ROOT.resolve()
     except OSError:
         return False
 
@@ -594,7 +600,7 @@ def runtime_pin_registry_public_path() -> Path:
     if configured:
         return Path(configured)
     if _running_from_trusted_install_root():
-        return _TRUSTED_STATE_ROOT / "public" / "runtime-pins.json"
+        return _TRUSTED_PUBLIC_ROOT / "runtime-pins.json"
     return _project_root() / _DEFAULT_PUBLIC_BASENAME
 
 
@@ -607,10 +613,17 @@ def clear_runtime_pin_registry_cache() -> None:
     _CACHE.clear()
 
 
+def _effective_uid() -> int | None:
+    """POSIX가 아니면 ``None``. 소유자 개념이 없는 플랫폼에서 AttributeError로 죽지 않는다."""
+
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid() if geteuid is not None else None
+
+
 def _insecure_mode_allowed() -> bool:
     """개발 환경에서만 mode 검사를 완화한다. 소유자 검사는 완화하지 않는다."""
 
-    if os.geteuid() == 0:
+    if _effective_uid() == 0:
         return False
     return os.environ.get(RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV, "").strip() == "1"
 
@@ -647,7 +660,8 @@ def _assert_registry_file_integrity(path: Path) -> None:
         raise RuntimePinRegistryError(
             f"runtime pin registry path is not a regular file: {path.name}"
         )
-    if file_stat.st_uid not in {0, os.geteuid()}:
+    euid = _effective_uid()
+    if euid is not None and file_stat.st_uid not in {0, euid}:
         raise RuntimePinRegistryError(
             f"runtime pin registry file is owned by an unexpected user: {path.name}"
         )
@@ -664,9 +678,8 @@ def _read_registry_document(path: Path) -> dict[str, Any]:
             raw = handle.read(_MAX_REGISTRY_BYTES + 1)
     except FileNotFoundError as exc:
         raise RuntimePinRegistryError(
-            f"runtime pin registry file is missing: {path.name} (bootstrap it with "
-            "'ktdctl pin init --seed /opt/kor-travel-docker-manager/config/"
-            "runtime-pins.json --confirm')"
+            f"runtime pin registry file is missing: {path.name} "
+            "(bootstrap it with 'ktdctl pin init --confirm')"
         ) from exc
     except OSError as exc:
         raise RuntimePinRegistryError(
@@ -699,9 +712,8 @@ def load_runtime_pin_registry(*, path: Path | None = None) -> RuntimePinRegistry
     except FileNotFoundError as exc:
         _CACHE.pop(key, None)
         raise RuntimePinRegistryError(
-            f"runtime pin registry file is missing: {registry_path.name} (bootstrap it "
-            "with 'ktdctl pin init --seed /opt/kor-travel-docker-manager/config/"
-            "runtime-pins.json --confirm')"
+            f"runtime pin registry file is missing: {registry_path.name} "
+            "(bootstrap it with 'ktdctl pin init --confirm')"
         ) from exc
     except OSError as exc:
         _CACHE.pop(key, None)
@@ -726,11 +738,18 @@ def _atomic_write_json(
     payload: Mapping[str, Any],
     *,
     mode: int,
+    directory_mode: int | None = None,
 ) -> None:
     """같은 디렉터리의 임시 파일에 쓰고 fsync 뒤 원자 교체한다."""
 
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
+    if directory_mode is not None:
+        # 파일 mode만 맞아도 부모가 traverse 불가면 읽는 쪽은 lstat조차 못 한다.
+        try:
+            os.chmod(parent, directory_mode)
+        except OSError:
+            pass
     body = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=False) + "\n"
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
@@ -774,7 +793,7 @@ def publish_runtime_pins(
     target = public_path or runtime_pin_registry_public_path()
     payload = dict(registry.to_payload())
     payload["published_at"] = utc_timestamp()
-    _atomic_write_json(target, payload, mode=0o644)
+    _atomic_write_json(target, payload, mode=0o644, directory_mode=0o755)
     return target
 
 
@@ -879,7 +898,8 @@ def _assert_registry_is_writable_target(path: Path) -> None:
     """
 
     try:
-        inside_trusted_root = path.resolve().is_relative_to(_TRUSTED_INSTALL_ROOT)
+        # 양쪽 다 resolve한다 — 설치 root가 symlink면 한쪽만 해석해서는 가드를 지나친다.
+        inside_trusted_root = path.resolve().is_relative_to(_TRUSTED_INSTALL_ROOT.resolve())
     except (OSError, ValueError):
         inside_trusted_root = False
     if inside_trusted_root:
@@ -1017,11 +1037,14 @@ def rotate_runtime_pin(
         map_revision=map_revision,
         pinvi_revision=pinvi_revision,
     )
-    for entry in blocked:
-        if entry.pinset_sha256 == next_pinset:
-            raise RuntimePinRegistryError(
-                "runtime pin rotation targets a pinset that is permanently blocked"
-            )
+    # declared 목록뿐 아니라 코드 하한선까지 본다 — registry에서 d9을 지운 상태에서
+    # 그 pinset으로 회전하면 회전은 성공하지만 resume이 영구 불가한 곳에 착지한다.
+    if current.is_blocked_pinset(next_pinset) or any(
+        entry.pinset_sha256 == next_pinset for entry in blocked
+    ):
+        raise RuntimePinRegistryError(
+            "runtime pin rotation targets a pinset that is permanently blocked"
+        )
 
     history = (
         *current.history,

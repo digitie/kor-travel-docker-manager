@@ -228,8 +228,11 @@ ktdctl pin rollback --to <pinset-sha256> --reason "..." --confirm
   group/other 쓰기 금지를 확인하고, 위반하면 값을 쓰지 않고 fail-close한다.
 - **공개 사본**: registry는 root `0600`이라 비-root backend가 읽지 못한다. root가
   실행하는 `pin init`/`pin rotate`가 secret 없는 `0644` 공개 사본을 함께 쓰고
-  (`KTDM_RUNTIME_PINS_PUBLIC_FILE`), 조회 API는 그 사본을 읽는다. 사본이 없거나
-  손상되면 값을 추측하지 않고 `unknown`으로 표시한다.
+  (`KTDM_RUNTIME_PINS_PUBLIC_FILE`), 조회 API는 그 사본을 읽는다. 설치 root에서의
+  기본 경로는 registry와 **다른 트리**(`/var/lib/kor-travel-docker-manager-public/`)다 —
+  registry 트리는 installer가 매 설치마다 `0700`으로 되돌려 비-root가 traverse할 수 없다.
+  사본이 registry보다 오래되면 `stale`, 사본 없이 registry를 직접 읽었으면 `degraded`,
+  둘 다 읽을 수 없으면 `unknown`으로 표시하고 값을 추측하지 않는다.
 - **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 `pin rotate`는
   실행 중 Manager에 즉시 반영된다.
 - **회전 이력과 롤백**: rotate는 digest를 자동 계산하고 이전 registry를

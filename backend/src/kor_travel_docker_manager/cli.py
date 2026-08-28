@@ -344,10 +344,10 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
             # 재시딩이 이력과 차단 목록을 지우면 롤백 소스와 terminal 규율이 함께
             # 사라진다. 기존 값이 있으면 승계하고, 이전 상태도 보존한다.
             history=existing.history if existing is not None else (),
+            # declared 목록만 승계한다. 코드 하한선은 파일이 아니라 코드가 소유하므로
+            # 파일에 적어 넣으면 사람이 지울 수 있는 값이 되어 하한선이 아니게 된다.
             blocked_pinsets=(
-                existing.effective_blocked_pinsets
-                if existing is not None
-                else seed.blocked_pinsets
+                existing.blocked_pinsets if existing is not None else seed.blocked_pinsets
             ),
         )
         write_runtime_pin_registry(

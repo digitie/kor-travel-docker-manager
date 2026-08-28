@@ -475,9 +475,11 @@ def test_packaged_seed_registry_satisfies_the_contract(
     assert seed_path.name == "runtime-pins.seed.json"
     assert registry.release_version == 5
     assert registry.release().pinset_sha256 == registry.pinset_sha256
-    # 코드가 강제하는 차단 하한선은 seed 내용과 무관하게 항상 유효해야 한다.
+    # seed가 실제로 선언한 목록을 본다. effective 집합을 보면 코드 하한선 때문에
+    # seed가 비어 있어도 통과하는 동어반복이 된다.
+    declared = {entry.pinset_sha256 for entry in registry.blocked_pinsets}
     for entry in registry_module._CODE_ENFORCED_BLOCKED_PINSETS:
-        assert registry.is_blocked_pinset(entry.pinset_sha256)
+        assert entry.pinset_sha256 in declared
 
 
 def test_supported_release_version_mirror_matches_the_release_module() -> None:
@@ -715,3 +717,112 @@ def test_every_write_path_refuses_a_path_inside_the_install_tree(
 
     with pytest.raises(RuntimePinRegistryError, match="trusted install root"):
         write_runtime_pin_registry(registry)
+
+
+def test_rotation_target_is_checked_against_the_code_enforced_floor(
+    _isolated_registry,
+) -> None:
+    """registry에서 하한선 항목을 지워도 그 pinset으로는 회전할 수 없다."""
+
+    floor = registry_module._CODE_ENFORCED_BLOCKED_PINSETS[0]
+    _seed(map_revision=floor.map_revision, pinvi_revision=MAP_C)
+
+    with pytest.raises(RuntimePinRegistryError, match="permanently blocked"):
+        rotate_runtime_pin(
+            role="pinvi",
+            revision=floor.pinvi_revision,
+            reason="would land on the floor entry",
+            rotated_by="tester",
+        )
+
+
+def test_unsupported_release_version_is_refused_at_parse_time(
+    _isolated_registry,
+) -> None:
+    registry_path, _ = _isolated_registry
+    _seed()
+    document = json.loads(registry_path.read_text(encoding="utf-8"))
+    document["release_version"] = 4
+    registry_path.write_text(json.dumps(document), encoding="utf-8")
+    clear_runtime_pin_registry_cache()
+
+    with pytest.raises(RuntimePinRegistryError, match="release_version"):
+        load_runtime_pin_registry()
+
+
+def test_blocked_list_overflow_fails_closed_instead_of_dropping_entries() -> None:
+    """가장 오래된 terminal 항목이 조용히 빠지면 그 candidate가 다시 실행 가능해진다."""
+
+    entries = []
+    for index in range(registry_module._MAX_BLOCKED_ENTRIES + 1):
+        map_revision = f"{index:040x}"
+        entries.append(
+            BlockedPinset(
+                pinset_sha256=_consistent_digest(map_revision, PINVI_B),
+                map_revision=map_revision,
+                pinvi_revision=PINVI_B,
+                reason="terminal",
+                blocked_at="2026-08-28T00:00:00Z",
+            )
+        )
+
+    with pytest.raises(RuntimePinRegistryError, match="too long"):
+        build_registry(
+            release_version=5,
+            map_revision=MAP_A,
+            pinvi_revision=PINVI_B,
+            rotated_by="tester",
+            reason="overflow",
+            blocked_pinsets=entries,
+        )
+
+
+def test_symlinked_registry_is_refused(_isolated_registry) -> None:
+    """symlink를 따라가 다른 파일을 registry로 읽지 않는다."""
+
+    if os.name == "nt":
+        pytest.skip("POSIX symlink 계약")
+    registry_path, _ = _isolated_registry
+    _seed()
+    real = registry_path.with_suffix(".real")
+    registry_path.rename(real)
+    registry_path.symlink_to(real)
+    clear_runtime_pin_registry_cache()
+
+    with pytest.raises(RuntimePinRegistryError, match="not a regular file"):
+        load_runtime_pin_registry()
+
+
+def test_backend_read_path_reports_stale_when_the_copy_lags(_isolated_registry) -> None:
+    """공개 사본이 registry보다 오래됐으면 ok라고 말하지 않는다."""
+
+    _seed()
+    stale = build_registry(
+        release_version=5,
+        map_revision=MAP_C,
+        pinvi_revision=PINVI_B,
+        rotated_by="tester",
+        reason="stale copy",
+    )
+    publish_runtime_pins(stale)
+
+    payload = read_published_runtime_pins()
+
+    assert payload["status"] == "stale"
+    assert payload["source"] == "published_copy"
+
+
+def test_backend_read_path_reports_degraded_when_only_the_registry_is_readable(
+    _isolated_registry,
+) -> None:
+    """배포본 seed를 권위 있는 값으로 위장하지 않는다."""
+
+    _, public_path = _isolated_registry
+    _seed()
+    public_path.unlink()
+
+    payload = read_published_runtime_pins()
+
+    assert payload["status"] == "degraded"
+    assert payload["source"] == "registry"
+    assert "배포본 기본값" in payload["detail"]
