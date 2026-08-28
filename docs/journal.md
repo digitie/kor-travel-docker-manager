@@ -191,6 +191,46 @@ claim의 실행 순서를 고정한다. final pair의 `pin verify`가 성공하�
 
 ---
 
+## 2026-08-28 — n150 운영 배포 (`208751d7`)와, 그 과정에서 드러난 런북 함정
+
+로드맵 잔여 전부(M5·M6·M7·M9·M10·M12·M13 1단계·M14·M18)를 main에 머지하고 n150에
+배포했다. PR #253(`rotate-pair`, CI)을 먼저 머지하고 그 위에서 충돌을 해소했으며,
+PR #235는 **이미 main에 더 넓은 형태로 들어와 있어** 병합하면 104 커밋을 되돌리므로
+닫았다(근거는 PR 코멘트에 남겼다).
+
+배포 자체보다 중요한 것은 배포하려다 발견한 사실이다.
+
+**런북이 백엔드를 배포하지 못하는 절차를 적고 있었다.** `deploy-runbook.local.md` §3은
+`backend/src/`를 home 트리로 rsync하고 재기동하라고 했는데, 실행 중인 백엔드는
+`/opt/kor-travel-docker-manager`(trusted release)에서 돈다. 그대로 따르면 **아무것도
+배포되지 않은 채 재기동이 성공하고 `/health`도 200을 준다** — 배포한 줄 알고 넘어가게
+되는 정확한 모양의 함정이다.
+
+실제로 그 함정에 이미 빠져 있었다. 배포 전 상태:
+
+- `/opt` 설치본은 오늘 08:32에 `00c33ad7`로 갱신돼 있었는데,
+- **실행 중이던 프로세스는 어제 10:50에 뜬 것**이라 그보다 훨씬 옛 코드를 서비스 중이었고,
+- `/api/v1/runtime-pins`를 비롯한 새 route가 전부 404였다(옛 route는 403 — origin
+  가드까지 도달하므로, 이 둘의 차이가 "재기동 안 됨"과 "코드 없음"을 갈라 준다).
+
+그래서 `prod-deployment.md` §3의 trusted 설치 경로를 그대로 밟았다: 커밋 전용 clean
+체크아웃(`~/ktdm-src-208751d7…`), release 전용 wheelhouse(`wheelhouse-208751d7`),
+git blob에서 root-staging 후 SHA-256 대조한 provisioner/installer 실행,
+`--expected-source-revision`으로 설치, 그다음 재기동. 설치본 manifest의
+`manager_source_revision`이 `208751d788ae…`임을 확인했다. installer가 M5용
+`/var/lib/kor-travel-docker-manager-requests`도 `0700 root:root`로 만들었다.
+
+배포 후 검증: `/health` 200, `:12905` 200, 새 route 7종 전부 401(= 존재하고 인증을
+요구), origin 없는 요청 403, 세션 없는 요청 401, 틀린 비밀번호 401, 공존하는 다른 next
+앱 7개와 `:12815` 200 보존.
+
+런북 §3을 실제 절차로 고치고, 체크리스트에 "설치본 revision이 방금 머지한 커밋인가"와
+"새 route가 401인가(404면 재기동 누락)"를 넣었다. **백엔드를 먼저 올린다**는 순서도
+적었다 — 프론트를 먼저 배포하면 새 패널이 없는 백엔드로 404를 쏘아 대시보드 대부분이
+깨져 보인다.
+
+---
+
 ## 2026-08-28 — KUM-M12: 표시 규약을 찾을 수 있는 자리로 옮긴다
 
 `DashboardClient.tsx`가 2,138줄이었다. 그중 라벨 매핑·아이콘 판정·포맷터는 컴포넌트
