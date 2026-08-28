@@ -305,6 +305,11 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
 | `pin show-pending [--json]` | 읽기 전용 | UI가 남긴 대기 요청. 요청 이후 pin이 바뀌었으면 **먼저 그 사실을 경고**한다. 대기 요청이 없으면 exit 1. `--json`은 부재·손상 경로에서도 JSON만 stdout에 낸다 |
 
+M05 one-shot 뒤 `pin verify --json`가 `current_pinset_is_blocked: true`로 exit 1이면, 이는
+검증기 장애가 아니라 terminal candidate의 재시도 금지 판정이다. 이어서 `pin show --json`의 **현재
+pinset과 같은** `blocked_pinsets[]` 항목에서 fixed M05 phase와 timestamp를 기록한다. `reason`은 root
+운영자 자유 입력이므로 자동화가 원문을 해석하거나 비밀을 넣어서는 안 된다.
+
 `GET /api/v1/pinned-rebuild/preflight`도 같은 generation gate를 사용한다. registry가 정상이어도
 공개 generation이 `partial`·`malformed`·`unverified`·`drift`·`unknown`이면 `can_start=false`이고
 `ktdctl pin verify`만 안내한다. 새 pair 회전 직후의 strict `pending_rebuild`와 current `match`만

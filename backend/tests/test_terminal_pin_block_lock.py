@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from kor_travel_docker_manager.services.c6c_deployment import DeploymentContract
 
 def _open_held_lock(path: Path) -> int:
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.fchmod(descriptor, 0o600)
     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     return descriptor
 
@@ -128,9 +131,12 @@ def test_cli_pin_apply_pending_does_not_read_during_an_active_global_mutation(
 
 
 def test_launcher_can_record_terminal_block_with_its_inherited_global_lock(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    lock_path = tmp_path / "global-mutation.lock"
+    # Windows-mounted pytest temp root는 POSIX mode를 보존하지 않는다. inherited FD의
+    # exact 0600 계약은 Linux filesystem fixture에서 검증한다.
+    linux_tmp = Path(tempfile.mkdtemp(prefix="ktdm-lock-", dir="/tmp"))
+    lock_path = linux_tmp / "global-mutation.lock"
     descriptor = _open_held_lock(lock_path)
     monkeypatch.setattr(cli_module, "_GLOBAL_MUTATION_LOCK_PATH", lock_path)
     monkeypatch.setenv(cli_module._INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, str(descriptor))
@@ -144,3 +150,4 @@ def test_launcher_can_record_terminal_block_with_its_inherited_global_lock(
                 os.close(contender)
     finally:
         os.close(descriptor)
+        shutil.rmtree(linux_tmp)

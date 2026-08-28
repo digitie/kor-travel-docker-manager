@@ -2,6 +2,28 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — root 권한 보정 위 M05 재결박 준비
+
+Manager #256을 main의 root 권한·환경 의존성 보정 위로 rebase했다. M05의 runtime pin mutation
+직렬화·admission·public generation 계약은 보존했고, 새 head는 이전 trusted installer source와 다른
+immutable candidate다.
+
+`9b6eab1e…` exact pair는 clean trusted release, atomic `pin rotate-pair`, 단 한 번의 pinned rebuild와
+공개 generation `match` 뒤 isolated M04/M05 E2E를 정확히 한 번 실행했다. 실행 완료 후 공개 `pin verify`가
+same pair의 unconditional terminal block을 보였으므로, 이 pinset·source tuple·두 output leaf는 재실행하거나
+열지 않는다. 공개 상태만으로 특정 component의 결함을 단정하지 않는다.
+
+rebase 뒤 inherited global-lock 회귀가 Windows-mounted pytest 임시 루트에서 POSIX `0600` mode를 보존하지 않아
+실행 환경에 따라 실패할 수 있음을 확인했다. 계약 test만 Linux `/tmp` fixture로 옮기고 existing-file mode도
+명시적으로 고정했다. runtime 구현은 바꾸지 않았다. focused M05 lock/driver/harness 검증은 54 passed, 1 skipped와
+Ruff clean이다.
+
+후속 forensic에서 서로 다른 후보 네 개가 Map container health 뒤 host loopback transport에서 같은 방식으로
+종료했음을 확인했다. Compose `--wait`가 container 내부 health를 보장해도 host publish socket의 즉시 수신까지
+보장하지 않는 짧은 경합을 같은 immutable candidate 안에서 흡수하도록, `map_health_transport_failed`만 1초 간격
+최대 6회 재시도한다. HTTP status·응답 계약 오류는 재시도하지 않는다. terminal `pin verify` 뒤에는 `pin show`
+exact block entry의 fixed phase/timestamp만 기록하며, 자유 입력 reason 원문을 자동화 판단에 쓰지 않는다.
+
 ## 2026-08-28 — root 권한 축소: 채택 2건, 적대 리뷰로 기각 1건
 
 오너 질문 "root 권한이 필요한 이유는?"의 근거 확인에서 나온 후속 3건 중 2건을 반영하고,

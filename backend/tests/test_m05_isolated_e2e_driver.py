@@ -307,6 +307,45 @@ def test_map_health_keeps_http_status_and_loopback_transport_separate(
         )
 
 
+def test_map_health_retries_only_a_transient_loopback_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    calls = 0
+    waits: list[int] = []
+
+    def transient_health(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise driver._PhaseError("map_health_transport_failed")
+        return {"data": {}}
+
+    monkeypatch.setattr(driver, "_http_json", transient_health)
+    monkeypatch.setattr(driver.time, "sleep", waits.append)
+
+    assert driver._wait_for_map_health(url="http://127.0.0.1:13701/health") == {"data": {}}
+    assert calls == 2
+    assert waits == [driver._MAP_HEALTH_TRANSPORT_RETRY_SECONDS]
+
+
+def test_map_health_does_not_retry_a_received_http_status_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    waits: list[int] = []
+
+    def status_failure(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise driver._PhaseError("map_health_status_failed")
+
+    monkeypatch.setattr(driver, "_http_json", status_failure)
+    monkeypatch.setattr(driver.time, "sleep", waits.append)
+
+    with pytest.raises(driver._PhaseError, match="map_health_status_failed"):
+        driver._wait_for_map_health(url="http://127.0.0.1:13701/health")
+    assert waits == []
+
+
 def test_pinvi_receipt_transport_phase_is_not_collapsed_into_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

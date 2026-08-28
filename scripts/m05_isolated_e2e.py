@@ -16,6 +16,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Mapping
 from http.cookiejar import CookieJar
@@ -114,6 +115,8 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     55: "metadata_contract_invalid",
     127: "unclassified",
 }
+_MAP_HEALTH_TRANSPORT_ATTEMPTS = 6
+_MAP_HEALTH_TRANSPORT_RETRY_SECONDS = 1
 
 # terminal pinset registry는 비-root도 읽는 감사 표면이다. driver의 예외 원문을
 # reason에 흘리지 않고, 다음 immutable candidate의 보정 범위만 나타내는 고정 phase만
@@ -775,6 +778,32 @@ def _http_json(
     if not isinstance(value, dict):
         _fail("runtime_http_contract_failed")
     return value
+
+
+def _wait_for_map_health(*, url: str) -> dict[str, object]:
+    """Compose health와 host loopback publish 사이의 짧은 경합만 같은 one-shot 안에서 흡수한다.
+
+    HTTP status와 응답 계약 오류는 즉시 terminal로 보존한다. 재시도 대상은 API container가
+    healthy가 된 직후 host publish socket이 아직 수신하지 않는 transport 오류뿐이며, 원문
+    socket detail은 저장하지 않는다.
+    """
+
+    for attempt in range(_MAP_HEALTH_TRANSPORT_ATTEMPTS):
+        try:
+            return _http_json(
+                url,
+                headers={},
+                failure_phase="map_health_transport_failed",
+                http_error_phase="map_health_status_failed",
+            )
+        except _PhaseError as error:
+            if (
+                error.phase != "map_health_transport_failed"
+                or attempt + 1 == _MAP_HEALTH_TRANSPORT_ATTEMPTS
+            ):
+                raise
+            time.sleep(_MAP_HEALTH_TRANSPORT_RETRY_SECONDS)
+    raise AssertionError("map health retry loop must return or raise")
 
 
 def _data(value: dict[str, object]) -> dict[str, object]:
@@ -1637,12 +1666,7 @@ def main(expected_revision: str, output: Path) -> int:
             failure_phase="map_application_start_failed",
         )
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
-        _http_json(
-            f"{admin_url}/health",
-            headers={},
-            failure_phase="map_health_transport_failed",
-            http_error_phase="map_health_status_failed",
-        )
+        _wait_for_map_health(url=f"{admin_url}/health")
         phase = "map_subscription"
         _data(
             _http_json(
