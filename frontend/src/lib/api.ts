@@ -290,6 +290,29 @@ export type DeploymentReadinessResponse = {
   unavailable_checks: UnavailableReadinessCheck[];
 };
 
+export type RebuildFinding = {
+  code: string;
+  text: string;
+  next_action?: string;
+};
+
+/** `GET /api/v1/pinned-rebuild/preflight`.
+ *
+ * **실행 버튼이 아니다.** `rebuild-pinned`는 root를 요구하고 3개 DB를 파기하므로,
+ * 화면은 "지금 눌러도 되는가"만 판정하고 실행은 SSH에 남긴다. `can_start`가 true여도
+ * 화면이 실행하지 않는다 — payload가 주는 것은 명령 문자열뿐이다. */
+export type PinnedRebuildPreflight = {
+  schema: string;
+  collected_at: string;
+  can_start: boolean;
+  pinset_sha256: string | null;
+  blockers: RebuildFinding[];
+  warnings: RebuildFinding[];
+  unverified: RebuildFinding[];
+  command: string;
+  summary: { state: 'ok' | 'blocked' | 'unverified'; text: string };
+};
+
 export type DiskUsageRow = {
   type: string;
   label_ko: string;

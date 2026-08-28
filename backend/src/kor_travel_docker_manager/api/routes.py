@@ -29,6 +29,9 @@ from kor_travel_docker_manager.services.job_runner import (
     job_runner,
 )
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.pinned_rebuild_preflight import (
+    read_pinned_rebuild_preflight,
+)
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
@@ -362,6 +365,19 @@ def get_source_status(refresh: bool = Query(default=False)):
     `refresh=true` bypasses the TTL cache. That still spawns no mutation, so there
     is no audit row; the durable-audit pattern belongs to mutations."""
     return collect_source_status(force_refresh=refresh)
+
+
+@router.get("/pinned-rebuild/preflight")
+def get_pinned_rebuild_preflight():
+    """Read-only "can a pinned rebuild start right now?" verdict (KUM-M14 / design Q5).
+
+    Deliberately **not** a rebuild trigger. `rebuild-pinned` requires root and destroys
+    three databases; letting one HTTP request start that removes a boundary rather than
+    adding convenience. This route judges, and the operator executes over SSH with the
+    command the payload carries.
+
+    Observation only — no mutation, so no audit row."""
+    return read_pinned_rebuild_preflight()
 
 
 @router.get("/system/disk-usage")

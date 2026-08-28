@@ -901,7 +901,7 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 | KUM-M11 | 프론트 quick wins 일괄: P7-A~I(오류 humanize, 라벨 한국어화, 그룹 뷰, health 카드, CLI 명령 카드, 미리보기 전역화, 파라미터 노출, 볼륨/계약 키 read-only, 일괄 재시작) | P7 | — |
 | KUM-M12 | 프론트 구조 추출(WS 훅 2개·모달 4개 분리) — 신규 패널 2개 이상 전 선행 | P9-3 | — |
 | KUM-M13 | `db-backup restore` CLI(~300-500줄, role별 정지/기동 절차 설계, 적용 경계 runbook 명시) + 이후 UI 안내 | P5, Q6 | KUM-M9 권장 |
-| KUM-M14 | rehearsal 한정 rebuild 버튼: typed confirmation + 서버 environment 게이트 + terminal/실행이력 게이트 | P8, Q5 | **KUM-M2 필수** |
+| KUM-M14 | rehearsal 한정 rebuild 버튼: typed confirmation + 서버 environment 게이트 + terminal/실행이력 게이트 (**완료 2026-08-28 — 오너 결정으로 버튼이 아니라 게이트된 CLI 카드**. `rebuild-pinned`는 root를 요구해 HTTP 요청으로 실행할 수 없고, 실행 가능하게 만드는 것은 편의가 아니라 경계 제거다. `GET /api/v1/pinned-rebuild/preflight`가 차단 사유를 판정하고 화면은 실행할 명령만 준다) | P8, Q5 | **KUM-M2 필수** |
 | KUM-M15 | `.env.example` drift 수정: PinVi role credential 6종 추가, 폐기 `PINVI_DOCKER_DATABASE_URL` 제거 (docs-only, 즉시 가능) | P3 [v3] | — |
 | KUM-M16 | CLAUDE.md 낡은 지점 동기화 (별도 작은 PR) | Q7 | — |
 | KUM-M17 | (기록만 — 착수는 별도 결정) M05 활성화 선행 조건: Manager compose의 M05 env/mount 확장, `PINVI_*_IMAGE_DIGEST` 주입, pinned↔activation generation 병렬 표시 | §1.3 P10-5 | 오너 별도 결정 |

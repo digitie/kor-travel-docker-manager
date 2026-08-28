@@ -201,6 +201,9 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   백업 산출물 공유 그룹(setgid) 모드, 화면의 생성 버튼·신선도 배지·복원 부재 고지.
 - [x] KUM-M10 완료(2026-08-28): 관리자 비밀번호 변경 폼 + 미종결 rebuild journal 3갈래
   가드. 증명된 미종결 journal은 우회 경로가 없고, 확인 불가는 명시 승인을 요구한다.
+- [x] KUM-M14 완료(2026-08-28, **오너 결정: 버튼이 아니라 게이트된 CLI 카드**):
+  `GET /api/v1/pinned-rebuild/preflight`가 차단 사유를 판정하고 화면은 실행할 명령만
+  준다. 실행 경로를 만들지 않는다는 사실을 회귀로 결박했다.
 - [ ] **다음 pin 회전 전 필수**: 고정 PinVi revision이 `PINVI_ROLE_CATALOG_RESET_ONLY`와
   permit/result 경로 3종을 구현해야 한다. 현재 `97d2f924…`는 구현하지 않아 readiness가
   `missing`으로 보고한다(n150 실측). 회전 대상 revision을 그 기준으로 고른다.

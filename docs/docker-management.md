@@ -290,6 +290,7 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록·대기 중인 회전 요청. registry 자체는 읽기 전용이다 |
 | `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --confirm` 전용이다 |
 | `GET` | `/api/v1/deployment-readiness` | 재구축 사전 점검(관측 전용). 무엇도 pull하지 않으며 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. 검사하지 않기로 **결정한** 항목은 `unavailable_checks`로 이유와 함께 노출한다. 검사 4종: Compose 단일 파일, 사이드카 필수 스크립트, 고정 PinVi revision의 역할 부트스트랩 계약, Map 후보 빌드의 고정 Python base image |
+| `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
 | `GET` | `/api/v1/source-status` | 설치 기록·작업 사본·실행 중 이미지·계약 일치·환경 완결성(관측 전용) |
 | `GET` | `/api/v1/system/disk-usage` | `docker system df`를 사람 말로 번역. 정리(prune)는 파괴적이라 CLI에만 있다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |

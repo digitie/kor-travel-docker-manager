@@ -6,7 +6,9 @@ import { AlertTriangle, CheckCircle2, HelpCircle, RefreshCw, X } from 'lucide-re
 import {
   DeploymentReadinessResponse,
   HumanVerdict,
+  PinnedRebuildPreflight,
   ReadinessCheck,
+  RebuildFinding,
   RuntimePinsResponse,
   SourceStatusResponse,
   SourceStatusRow,
@@ -89,6 +91,13 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
     retry: false,
   });
 
+  // 재구축 실행 가능 여부. 이 패널은 **실행하지 않는다** — 판정만 하고 명령을 준다.
+  const { data: rebuild, refetch: refetchRebuild } = useQuery<PinnedRebuildPreflight>({
+    queryKey: ['pinned-rebuild-preflight'],
+    queryFn: () => apiJson<PinnedRebuildPreflight>('/api/v1/pinned-rebuild/preflight'),
+    retry: false,
+  });
+
   // 사전 점검은 별도 엔드포인트다. 실패해도 이 패널의 나머지는 그대로 보여야 하므로
   // 같은 쿼리에 묶지 않는다.
   const {
@@ -161,6 +170,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
               forceReadiness.current = true;
               void refetch();
               void refetchReadiness();
+              void refetchRebuild();
             }}
             type="button"
           >
@@ -259,6 +269,94 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
             <p className="text-sm text-secondary">사전 점검을 수행하는 중입니다.</p>
           )}
         </section>
+
+        {rebuild ? (
+          <section>
+            <h3 className="text-sm font-semibold text-strong mb-1">재구축 실행</h3>
+            {/* 버튼을 두지 않는 것은 누락이 아니라 설계다. 재구축은 root를 요구하고
+                세 개 DB를 파기하므로, HTTP 요청 하나가 그것을 시작할 수 있게 만들면
+                경계가 사라진다. 화면은 판정하고, 실행은 사람이 SSH에서 한다. */}
+            <p className="text-xs text-secondary mb-2">
+              재구축은 되돌릴 수 없고 세 개의 데이터베이스를 새로 만듭니다. 이 화면은
+              지금 실행해도 되는지만 판정하고, 실행은 SSH에서 직접 합니다.
+            </p>
+            <div
+              className={`rounded-card border p-3 ${
+                rebuild.summary.state === 'blocked' ? 'border-danger' : 'border-line'
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <VerdictIcon
+                  level={
+                    rebuild.summary.state === 'blocked'
+                      ? 'action_required'
+                      : rebuild.summary.state === 'unverified'
+                        ? 'unverified'
+                        : 'ok'
+                  }
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-strong">{rebuild.summary.text}</p>
+                  {rebuild.pinset_sha256 ? (
+                    <p className="text-xs text-secondary mt-1 font-mono break-all">
+                      대상 세트 {rebuild.pinset_sha256.slice(0, 12)}…
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              {rebuild.blockers.length > 0 ? (
+                <ul className="mt-3 space-y-1">
+                  {rebuild.blockers.map((finding: RebuildFinding) => (
+                    <li className="text-xs text-danger break-all" key={finding.code}>
+                      · {finding.text}
+                      {finding.next_action ? (
+                        <span className="text-secondary font-mono">
+                          {' '}
+                          ({finding.next_action})
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {rebuild.warnings.length > 0 ? (
+                <ul className="mt-3 space-y-1">
+                  {rebuild.warnings.map((finding: RebuildFinding) => (
+                    <li className="text-xs text-secondary break-all" key={finding.code}>
+                      · {finding.text}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {rebuild.unverified.length > 0 ? (
+                <ul className="mt-3 space-y-1">
+                  {rebuild.unverified.map((finding: RebuildFinding) => (
+                    <li className="text-xs text-secondary break-all" key={finding.code}>
+                      · {finding.text}
+                      {finding.next_action ? (
+                        <span className="font-mono"> ({finding.next_action})</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {/* 차단 상태에서도 명령을 숨기지 않는다 — 무엇을 실행하려던 것인지
+                  보이지 않으면 차단 사유와 연결 짓기 어렵다. 대신 실행하지 말라고 쓴다. */}
+              <CopyableCommand
+                command={rebuild.command}
+                hint={
+                  rebuild.can_start
+                    ? '이 명령을 SSH에서 실행하면 재구축이 시작됩니다.'
+                    : '위 항목을 먼저 해소하기 전에는 실행하지 마세요.'
+                }
+              />
+            </div>
+          </section>
+        ) : null}
 
         {isLoading ? (
           <p className="text-sm text-secondary">배포 상태를 확인하는 중입니다.</p>
