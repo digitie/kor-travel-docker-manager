@@ -85,6 +85,48 @@ def test_cli_pin_rotate_pair_does_not_write_during_an_active_global_mutation(
         os.close(descriptor)
 
 
+def test_cli_pin_init_does_not_read_or_write_during_an_active_global_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    lock_path = tmp_path / "global-mutation.lock"
+    descriptor = _open_held_lock(lock_path)
+    monkeypatch.setattr(cli_module, "_GLOBAL_MUTATION_LOCK_PATH", lock_path)
+    try:
+        with patch.object(cli_module, "load_runtime_pin_registry") as load_registry:
+            assert cli_module.main(["pin", "init", "--confirm"]) == 2
+        load_registry.assert_not_called()
+    finally:
+        os.close(descriptor)
+
+
+def test_cli_pin_apply_pending_does_not_read_during_an_active_global_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    lock_path = tmp_path / "global-mutation.lock"
+    descriptor = _open_held_lock(lock_path)
+    monkeypatch.setattr(cli_module, "_GLOBAL_MUTATION_LOCK_PATH", lock_path)
+    try:
+        with (
+            patch.object(cli_module, "_running_as_root", return_value=True),
+            patch.object(cli_module, "read_runtime_pin_request") as read_request,
+        ):
+            assert (
+                cli_module.main(
+                    [
+                        "pin",
+                        "apply-pending",
+                        "--expect-revision",
+                        "a" * 40,
+                        "--confirm",
+                    ]
+                )
+                == 2
+            )
+        read_request.assert_not_called()
+    finally:
+        os.close(descriptor)
+
+
 def test_launcher_can_record_terminal_block_with_its_inherited_global_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -375,26 +375,29 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
         print("pin init requires --confirm (no file was written)", file=sys.stderr)
         return 2
     path = runtime_pin_registry_path()
-    if path.exists() and not args.force:
-        print(
-            f"runtime pin registry already exists at {path.name}; refusing to overwrite "
-            "(use --force only to reseed a host)",
-            file=sys.stderr,
-        )
-        return 2
-    existing = None
-    if path.exists():
-        try:
-            existing = load_runtime_pin_registry(path=path)
-        except DeploymentContractError:
-            existing = None
-        if existing is not None and existing.history:
-            print(
-                f"기존 registry의 회전 이력 {len(existing.history)}건을 승계합니다 "
-                "(이전 상태는 digest 이름으로 보존됩니다).",
-            )
     try:
         with _runtime_pin_mutation_lock():
+            # 존재 여부와 history/blocked 목록은 모두 같은 lock 안에서 읽는다. 밖에서
+            # 읽으면 다른 회전이 끝난 뒤 stale `--force` reseed가 그 terminal 이력을
+            # 지울 수 있다.
+            if path.exists() and not args.force:
+                print(
+                    f"runtime pin registry already exists at {path.name}; refusing to overwrite "
+                    "(use --force only to reseed a host)",
+                    file=sys.stderr,
+                )
+                return 2
+            existing = None
+            if path.exists():
+                try:
+                    existing = load_runtime_pin_registry(path=path)
+                except DeploymentContractError:
+                    existing = None
+                if existing is not None and existing.history:
+                    print(
+                        f"기존 registry의 회전 이력 {len(existing.history)}건을 승계합니다 "
+                        "(이전 상태는 digest 이름으로 보존됩니다).",
+                    )
             seed = load_runtime_pin_registry(path=Path(args.seed))
             registry = build_registry(
                 release_version=seed.release_version,
@@ -886,6 +889,35 @@ def _applied_reason(request: Any) -> str:
 
 
 def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
+    """대기 요청의 read·검증·회전·정리를 하나의 mutation lock으로 감싼다."""
+
+    if not args.confirm:
+        print("pin apply-pending requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print(
+            "pin apply-pending requires root execution (the registry is root-owned 0600)",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.expect_revision and not args.any_revision:
+        print(
+            "pin apply-pending requires --expect-revision <40-hex> (or --any-revision to "
+            "apply whatever is pending); run 'ktdctl pin show-pending' first",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        # request/base/prospective 검증과 요청 파일 정리까지 같은 경계 안에 둔다.
+        # lock 밖에서 읽으면 다른 회전 직후 stale 요청을 새 pair에 적용할 수 있다.
+        with _runtime_pin_mutation_lock():
+            return _cmd_pin_apply_pending_locked(args)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
     """UI가 남긴 요청을 root 권한으로 적용한다.
 
     요청에서 취하는 것은 role과 40-hex revision, 표시용 문자열뿐이다. canonical URL과
@@ -962,14 +994,13 @@ def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        with _runtime_pin_mutation_lock():
-            updated = rotate_runtime_pin(
-                role=request.role,
-                revision=request.revision,
-                reason=_applied_reason(request),
-                rotated_by=_applied_actor(request),
-                block_previous=args.block_previous,
-            )
+        updated = rotate_runtime_pin(
+            role=request.role,
+            revision=request.revision,
+            reason=_applied_reason(request),
+            rotated_by=_applied_actor(request),
+            block_previous=args.block_previous,
+        )
     except DeploymentContractError as exc:
         print(f"{exc} (요청은 그대로 남아 있습니다)", file=sys.stderr)
         if "pair rotation" in str(exc):

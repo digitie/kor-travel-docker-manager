@@ -310,8 +310,9 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 `ktdctl pin verify`만 안내한다. 새 pair 회전 직후의 strict `pending_rebuild`와 current `match`만
 preflight가 command를 제시할 수 있는 상태다.
 
-모든 runtime pin mutation은 같은 host-global mutation lock을 nonblocking으로 획득한다. 예외는 launcher가
-검증한 상속 descriptor로 기록하는 terminal fallback 하나뿐이다. 따라서 외부 관찰자는 lock 해제 뒤
+모든 runtime pin mutation은 같은 host-global mutation lock을 nonblocking으로 획득하고, 변경 대상의 읽기·
+검증·write·대기 요청 정리를 **한 lock 안에서** 끝낸다. 예외는 launcher가 검증한 상속 descriptor로 기록하는
+terminal fallback 하나뿐이다. 따라서 외부 관찰자는 lock 해제 뒤
 `pin verify --json`만 읽어 완료를 판정하며, lock 보유 중 어떤 pin 명령도 retry·block·pair 교체에 쓰지 않는다.
 
 ### 6-1. 후보 동결과 문서 전용 변경
