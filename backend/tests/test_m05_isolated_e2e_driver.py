@@ -533,13 +533,15 @@ def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_
     assert "launcher-result.json" in launcher
     assert ">/dev/null 2>&1" in launcher[launcher.index("m05_isolated_e2e.py") :]
     assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
-    block_check = launcher[launcher.rindex('"$ktdctl" pin show --json') :]
+    block_start = launcher.index("has_unconditional_terminal_block() {")
+    block_end = launcher.index('install -d -o root -g root -m 0700 "$output_dir"')
+    block_check = launcher[block_start:block_end]
     assert "/usr/bin/python3 -I -S -c" in block_check
-    assert "<<'PY'" not in block_check[: block_check.index("fallback_path=")]
+    assert "<<'PY'" not in block_check
 
 
 def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> None:
-    """rotation race와 임의 driver envelope은 fresh candidate 성공 근거가 될 수 없다."""
+    """rotation race와 임의 driver envelope은 fresh candidate 근거가 될 수 없다."""
 
     launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
         encoding="utf-8"
@@ -550,13 +552,14 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert "post_snapshot" in launcher
     assert '"$post_snapshot" == "$initial_snapshot"' in launcher
     assert 'value.get("pinset_sha256") != expected_pinset' in launcher
-    assert 'value.get("status") != "passed"' in launcher
+    assert 'value.get("status") not in {"passed", "blocked"}' in launcher
+    assert 'raise SystemExit(0 if value["status"] == "passed" else 3)' in launcher
     assert "if set(value) != expected_keys:" in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
 
 def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
-    """driver가 쓴 안전 phase를 launcher가 fallback으로 다시 뭉개면 안 된다."""
+    """검증된 blocked receipt는 exact terminal block 뒤에만 보존한다."""
 
     launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
         encoding="utf-8"
@@ -572,6 +575,11 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     )
 
     assert all(f'"{phase}"' in launcher for phase in phases)
+    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_block; then'
+    fallback = 'if ! has_unconditional_terminal_block; then'
+    assert accepted_block in launcher
+    assert fallback in launcher
+    assert launcher.index(accepted_block) < launcher.index(fallback)
 
 
 def test_free_ports_uses_the_standard_ss_binary(

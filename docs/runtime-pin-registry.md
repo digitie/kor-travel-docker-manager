@@ -55,7 +55,11 @@ isolated runtime 준비는 `runtime_setup_ports` → `runtime_setup_workspace` �
 정적 보정 범위를 한 단계로만 좁히는 것이다.
 
 `run-m05-isolated-e2e-once`의 strict result schema는 이 일곱 setup phase를 driver와 똑같이 수용한다.
-driver의 blocked receipt가 안전한 allowlist phase여도 launcher가 임의 fallback으로 다시 바꾸는 경로는 없다.
+`blocked` receipt는 exact source revision·launch 전후 같은 snapshot·고정 schema를 모두 만족해도, root registry가
+같은 pinset·Map·PinVi revision의 unconditional terminal block을 확인할 때만 launcher가 보존한다. registry 증명이
+없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block`과 fixed fallback으로 fail-close한다. 그러므로
+driver의 blocked receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의
+fallback으로 바뀌지 않는다.
 
 ---
 

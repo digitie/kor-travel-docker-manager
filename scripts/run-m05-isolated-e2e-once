@@ -143,6 +143,29 @@ if [[ "$initial_snapshot" != "$stable_snapshot" ]]; then
   exit 1
 fi
 read -r initial_pinset initial_map_revision initial_pinvi_revision <<<"$initial_snapshot"
+has_unconditional_terminal_block() {
+  "$ktdctl" pin show --json | /usr/bin/python3 -I -S -c '
+from __future__ import annotations
+
+import json
+import sys
+
+pinset, map_revision, pinvi_revision = sys.argv[1:]
+value = json.load(sys.stdin)
+entries = value.get("blocked_pinsets") if isinstance(value, dict) else None
+if not isinstance(entries, list):
+    raise SystemExit(1)
+if not any(
+    isinstance(entry, dict)
+    and entry.get("pinset_sha256") == pinset
+    and entry.get("map_revision") == map_revision
+    and entry.get("pinvi_revision") == pinvi_revision
+    and entry.get("phase") is None
+    for entry in entries
+):
+    raise SystemExit(1)
+' "$initial_pinset" "$initial_map_revision" "$initial_pinvi_revision"
+}
 install -d -o root -g root -m 0700 "$output_dir"
 
 set +e
@@ -158,7 +181,9 @@ set -e
 result_path="$output_dir/result.json"
 launcher_result_path="$output_dir/launcher-result.json"
 post_snapshot="$(snapshot_runtime_pin 2>/dev/null || true)"
-if [[ ! -e "$launcher_result_path" && "$post_snapshot" == "$initial_snapshot" ]] && \
+receipt_validation_status=1
+if [[ ! -e "$launcher_result_path" && "$post_snapshot" == "$initial_snapshot" ]]; then
+  set +e
   /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$initial_pinset" "$driver_status" <<'PY'
 from __future__ import annotations
 
@@ -243,10 +268,7 @@ try:
         value.get("harness") != "m05-isolated-bridge-v1"
         or value.get("manager_source_revision") != expected_revision
         or value.get("pinset_sha256") != expected_pinset
-        # A blocked driver receipt is never the launcher's final authority:
-        # route every non-success through the exact snapshot terminal gate so a
-        # driver-side pin-block write failure cannot make the candidate reusable.
-        or value.get("status") != "passed"
+        or value.get("status") not in {"passed", "blocked"}
         or value.get("phase") not in PHASES
         or value.get("driver_phase") not in PHASES
         or not isinstance(value.get("cleanup_failed"), bool)
@@ -269,9 +291,20 @@ try:
         raise ValueError
 except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
     raise SystemExit(1)
-raise SystemExit(0)
+raise SystemExit(0 if value["status"] == "passed" else 3)
 PY
-then
+  receipt_validation_status="$?"
+  set -e
+fi
+if [[ "$receipt_validation_status" == 0 ]]; then
+  exit "$driver_status"
+fi
+
+# A well-formed blocked receipt is authoritative only after the root registry
+# proves that this exact launch snapshot is terminal. Otherwise fall through to
+# the idempotent root block below; no driver-originated output becomes reuse
+# evidence.
+if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_block; then
   exit "$driver_status"
 fi
 
@@ -283,27 +316,7 @@ fi
 
 # block write가 phase-scoped 기록으로 끝나거나 다른 pair를 block한 경우에는 이
 # candidate를 재실행할 수 있으므로 fail-close한다. stdout에는 registry 원문을 남기지 않는다.
-if ! "$ktdctl" pin show --json | /usr/bin/python3 -I -S -c '
-from __future__ import annotations
-
-import json
-import sys
-
-pinset, map_revision, pinvi_revision = sys.argv[1:]
-value = json.load(sys.stdin)
-entries = value.get("blocked_pinsets") if isinstance(value, dict) else None
-if not isinstance(entries, list):
-    raise SystemExit(1)
-if not any(
-    isinstance(entry, dict)
-    and entry.get("pinset_sha256") == pinset
-    and entry.get("map_revision") == map_revision
-    and entry.get("pinvi_revision") == pinvi_revision
-    and entry.get("phase") is None
-    for entry in entries
-):
-    raise SystemExit(1)
-' "$initial_pinset" "$initial_map_revision" "$initial_pinvi_revision"; then
+if ! has_unconditional_terminal_block; then
   echo "M05 runtime pin terminal block is not durable" >&2
   exit 1
 fi
