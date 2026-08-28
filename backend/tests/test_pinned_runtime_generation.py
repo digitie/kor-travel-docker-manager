@@ -1223,42 +1223,77 @@ def test_legacy_tombstone_rejects_unsafe_artifact_before_receipt(tmp_path: Path)
 # --- 교차 저장소 계약 동결 (ADR-40 후속, docs/runtime-pin-registry.md §1-2) ------
 
 
-def test_rebuild_journal_payload_keys_are_frozen_by_the_map_attestation_contract() -> None:
-    """v8 journal 문서의 키 집합은 이 저장소 혼자 정할 수 없다.
+# kor-travel-map `scripts/lib/c7_prod_attestation.py`의 `_JOURNAL_KEYS`를 그대로 옮긴 것.
+# 그쪽은 `_exact_dict(value, set(_JOURNAL_KEYS))`로 **정확히 이 집합**을 요구한다.
+_MAP_ATTESTATION_JOURNAL_KEYS = {
+    "version",
+    "transaction_id",
+    "phase",
+    "candidate",
+    "map_application_300_candidate_evidence",
+    "environment_sha256",
+    "compose_sha256",
+    "resolved_compose_sha256",
+    "created_at",
+    "pinvi_database_identity",
+    "journal_generation",
+    "map_application_300_execution_evidence",
+    "cancel_probe",
+}
 
-    kor-travel-map의 ``scripts/lib/c7_prod_attestation.py``가 이 문서를 **exact-dict**로
-    검증한다 — 키가 하나라도 늘거나 줄면 map의 production attestation이 통째로
-    fail-close한다. 요약·번역·배지 같은 가공이 필요하면 문서가 아니라 **API 응답
-    envelope**에 넣어야 한다.
+# `journal_from_payload`가 optional로 허용하는, map이 모르는 확장 키.
+_MANAGER_ONLY_JOURNAL_KEYS = {
+    "pinvi_role_credential_environment_rebind",
+    "pinvi_role_lifecycle_block",
+}
 
-    이 테스트가 깨지면 고치기 전에 멈춰라. 키를 바꾸려면 map 저장소의 동시 PR이
-    전제이며, 그 조율 없이 기대값만 갱신하면 운영에서 발견된다.
+
+def _declared_journal_payload_keys() -> set[str]:
+    source = inspect.getsource(PinnedRuntimeRebuildJournal.to_payload)
+    return set(re.findall(r'^\s{12}"([a-z0-9_]+)":', source, flags=re.MULTILINE))
+
+
+def test_rebuild_journal_required_keys_match_the_map_attestation_contract() -> None:
+    """v8 journal의 **필수** 키 집합은 이 저장소 혼자 정할 수 없다.
+
+    kor-travel-map의 `c7_prod_attestation.py`가 이 문서를 exact-dict로 검증한다.
+    필수 키가 늘거나 줄면 map의 production attestation이 통째로 fail-close하므로,
+    바꾸려면 map 저장소의 동시 PR이 전제다. 요약·번역·배지 같은 가공이 필요하면
+    문서가 아니라 **API 응답 envelope**에 넣는다.
     """
 
-    expected = {
-        "version",
-        "transaction_id",
-        "phase",
-        "candidate",
-        "map_application_300_candidate_evidence",
-        "environment_sha256",
-        "compose_sha256",
-        "resolved_compose_sha256",
-        "created_at",
-        "pinvi_database_identity",
-        "journal_generation",
-        "map_application_300_execution_evidence",
-        "cancel_probe",
-        "pinvi_role_credential_environment_rebind",
-        "pinvi_role_lifecycle_block",
-    }
+    parser_source = inspect.getsource(generation_module.journal_from_payload)
+    required_block = parser_source.split("optional_keys")[0]
+    required = set(re.findall(r'^\s{8}"([a-z0-9_]+)",', required_block, flags=re.MULTILINE))
 
-    source = inspect.getsource(PinnedRuntimeRebuildJournal.to_payload)
-    declared = set(re.findall(r'^\s{12}"([a-z0-9_]+)":', source, flags=re.MULTILINE))
+    assert required == _MAP_ATTESTATION_JOURNAL_KEYS, (
+        "v8 rebuild journal의 필수 키 집합이 map attestation의 _JOURNAL_KEYS와 갈라졌다. "
+        "map 동시 PR 없이는 바꿀 수 없다."
+    )
 
-    assert declared == expected, (
-        "v8 rebuild journal의 키 집합이 바뀌었다. kor-travel-map attestation이 "
-        "exact-dict로 결박한 교차 저장소 계약이므로 map 동시 PR 없이는 바꿀 수 없다."
+
+def test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects() -> None:
+    """**알려진 교차 저장소 괴리를 눈에 보이게 고정한다.**
+
+    `to_payload()`는 두 확장 키를 값이 ``None``일 때도 **항상** 내보내고
+    `write_rebuild_journal`은 그대로 기록한다. 그런데 map의 `_exact_dict`는 13키
+    정확 일치를 요구하므로, 지금 Manager가 쓰는 journal은 map의 production
+    attestation을 통과하지 못한다. 이 괴리는 v8 도입 이후 실재하는 상태다.
+
+    해소 경로는 둘 중 하나이며 **둘 다 map 저장소의 변경을 수반한다**:
+    (a) map의 `_JOURNAL_KEYS`에 두 키를 추가한다, 또는
+    (b) 두 키를 journal 문서 밖(별도 receipt 파일)으로 옮긴다.
+
+    이 테스트는 "괜찮다"고 말하지 않는다 — 괴리의 **범위가 넓어지지 않도록** 막는다.
+    확장 키가 늘면 여기서 먼저 걸린다.
+    """
+
+    declared = _declared_journal_payload_keys()
+
+    assert declared == _MAP_ATTESTATION_JOURNAL_KEYS | _MANAGER_ONLY_JOURNAL_KEYS
+    assert declared - _MAP_ATTESTATION_JOURNAL_KEYS == _MANAGER_ONLY_JOURNAL_KEYS, (
+        "map이 모르는 journal 확장 키가 늘었다. 이미 attestation을 통과하지 못하는 "
+        "상태인데 괴리를 더 벌리는 변경이다 — map 동시 PR 없이 넣지 마라."
     )
 
 

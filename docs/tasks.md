@@ -14,6 +14,7 @@
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 | **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (1부 트랙 KUM-M1~M4 구현 완료) | `[/]` | 1부 잔여(KUM-M5·M6·M7)와 v3 문서 3부의 나머지 태스크 분해 |
+| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 2종이 Map attestation의 exact-dict를 통과하지 못한다 | `[ ]` | Map `_JOURNAL_KEYS`에 두 키를 추가하는 동시 PR, 또는 두 키를 journal 문서 밖 receipt로 이동 |
 
 ## 공통 진행 규율
 
@@ -183,3 +184,25 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   KUM-M7(preflight readiness 노출).
 - [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
   항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).
+
+## JOURNAL-ATTESTATION-DRIFT — v8 journal이 Map attestation을 통과하지 못한다
+
+2026-08-28에 확인했다. kor-travel-map `scripts/lib/c7_prod_attestation.py`의
+`_JOURNAL_KEYS`는 **13키**이고 `_exact_dict(value, set(_JOURNAL_KEYS))`로 정확 일치를
+요구하는데, Manager의 `PinnedRuntimeRebuildJournal.to_payload()`는 **15키**를 내보낸다.
+차이는 v8 도입 때 Manager만 추가한 확장 키 두 개다.
+
+- `pinvi_role_credential_environment_rebind`
+- `pinvi_role_lifecycle_block`
+
+두 키는 값이 `None`일 때도 항상 실리고 `write_rebuild_journal`이 그대로 기록하므로,
+**Manager가 지금 쓰는 journal 파일은 Map의 production attestation을 통과하지 못한다.**
+`journal_from_payload`가 두 키를 optional로 받아 주기 때문에 Manager 안에서는 드러나지
+않았다.
+
+- [ ] 해소 경로를 오너가 택한다: (a) Map `_JOURNAL_KEYS`에 두 키를 추가하는 동시 PR,
+      또는 (b) 두 키를 journal 문서 밖(별도 receipt 파일)으로 옮긴다. (b)가 Manager
+      단독으로 가능하지만 journal의 자기완결성을 줄인다.
+- [ ] 택한 경로를 적용하고 회귀
+      `test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects`를
+      갱신한다. 그 전까지 이 테스트는 괴리가 **더 넓어지는 것만** 막는다.

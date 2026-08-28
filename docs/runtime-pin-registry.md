@@ -49,6 +49,20 @@ kor-travel-map의 `scripts/lib/c7_prod_attestation.py`가 결박한 값과 일�
 넣고 문서 자체는 그대로 통과시킨다. 문서 스키마를 바꿔야 한다면 map 저장소의 동시 PR
 없이는 불가능하다.
 
+> **⚠ 이미 어긋나 있다 (2026-08-28 확인).** map의 `_JOURNAL_KEYS`는 **13키**인데
+> Manager의 `to_payload()`는 **15키**를 내보낸다 — 확장 키
+> `pinvi_role_credential_environment_rebind`·`pinvi_role_lifecycle_block`가 값이
+> `None`일 때도 항상 실리고 `write_rebuild_journal`이 그대로 기록한다. 즉 **지금
+> Manager가 쓰는 journal은 map의 production attestation을 통과하지 못한다.** v8
+> 도입 때 Manager만 확장한 결과다.
+>
+> 해소 경로는 둘뿐이고 **둘 다 map 저장소 변경을 수반한다**: (a) map의
+> `_JOURNAL_KEYS`에 두 키를 추가하거나, (b) 두 키를 journal 문서 밖(별도 receipt
+> 파일)으로 옮긴다. 그 전까지 회귀
+> `test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects`가
+> **괴리의 범위가 넓어지는 것만** 막는다 — "괜찮다"고 말하는 테스트가 아니다.
+> 확장 키를 더 넣지 마라.
+
 ### 1-3. canonical URL은 코드가 공급한다
 
 registry 파일에 `url` 필드가 있지만, 로드할 때 코드의
