@@ -239,7 +239,10 @@ try:
         value.get("harness") != "m05-isolated-bridge-v1"
         or value.get("manager_source_revision") != expected_revision
         or value.get("pinset_sha256") != expected_pinset
-        or value.get("status") not in {"passed", "blocked"}
+        # A blocked driver receipt is never the launcher's final authority:
+        # route every non-success through the exact snapshot terminal gate so a
+        # driver-side pin-block write failure cannot make the candidate reusable.
+        or value.get("status") != "passed"
         or value.get("phase") not in PHASES
         or value.get("driver_phase") not in PHASES
         or not isinstance(value.get("cleanup_failed"), bool)
@@ -258,8 +261,6 @@ try:
             digest = value[key]
             if not isinstance(digest, str) or len(digest) != 64 or any(char not in HEX for char in digest):
                 raise ValueError
-    elif value["phase"] == "completed" or value["driver_phase"] == "completed":
-        raise ValueError
     if "map_fresh_init_reason" in value and value["map_fresh_init_reason"] not in FRESH_INIT_REASONS:
         raise ValueError
 except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):

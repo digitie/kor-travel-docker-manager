@@ -12,7 +12,7 @@ driver 시작 뒤의 current pinset을 block할 수 있었다. 또한 driver std
 launcher는 이제 public-copy 검증을 두 번 통과한 Map·PinVi·pinset snapshot을 실행권으로
 고정한다. driver의 stdout/stderr는 모두 버리고, 종료 뒤 snapshot이 같고 root-owned
 `result.json`이 정확한 schema·source revision·pinset·phase·hash 계약을 만족할 때만
-수용한다. 그 외에는 실행 시작 snapshot의 두 revision을 명시해 terminal block을 쓰고,
+성공 결과로 수용한다. driver의 모든 blocked 결과를 포함한 그 외에는 실행 시작 snapshot의 두 revision을 명시해 terminal block을 쓰고,
 그 exact unconditional entry를 다시 확인한 뒤 `launcher-result.json`의 fixed safe envelope만
 권위 결과로 남긴다. registry는 phase-scoped entry 위에도 unconditional entry를 추가한다.
 그러므로 rotation race가 다른 candidate를 terminal로 만들거나 임의 driver envelope이 새

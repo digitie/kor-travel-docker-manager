@@ -22,7 +22,8 @@
   후속 `pin verify`가 exact pinset의 terminal 차단을 확인했다. HTTP 원문·container log·환경값·output leaf는
   읽거나 남기지 않으며, root registry가 조건 없이 차단한 같은 pinset·source pair·Manager source·output leaf는
   재실행하지 않는다. 다음 Manager source는 public-copy 검증 뒤 Map·PinVi·pinset snapshot을 고정하고, driver
-  stdout/stderr를 버리며, exact root-owned schema 결과와 종료 후 동일 snapshot일 때만 수용한다. 그 외에는 시작
+  stdout/stderr를 버리며, exact root-owned 성공 상태 schema 결과와 종료 후 동일 snapshot일 때만 수용한다. driver의
+  모든 blocked 결과를 포함한 그 외에는 시작
   snapshot의 exact pair를 unconditional terminal block으로 승격·재검증하고 `launcher-result.json`의
   `launcher_safe_result_unavailable` fixed envelope만 권위 결과로 쓴다. terminal 기록 Map `73150672…`·새 PinVi
   provenance와 이 source를 fresh atomic pinset으로 결박하고 CI·source-head 전문 적대 리뷰 두 건을 모두 통과하기

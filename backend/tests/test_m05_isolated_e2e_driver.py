@@ -391,6 +391,7 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert "post_snapshot" in launcher
     assert '"$post_snapshot" == "$initial_snapshot"' in launcher
     assert 'value.get("pinset_sha256") != expected_pinset' in launcher
+    assert 'value.get("status") != "passed"' in launcher
     assert "if set(value) != expected_keys:" in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
