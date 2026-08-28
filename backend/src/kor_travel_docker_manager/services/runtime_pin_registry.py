@@ -909,6 +909,10 @@ def write_runtime_pin_registry(
     """registry를 원자적으로 교체하고 이전 상태를 digest 이름으로 보존한다."""
 
     registry_path = path or runtime_pin_registry_path()
+    # 모든 쓰기 경로가 같은 가드를 지나게 한다. rotate/block/rollback은 계산 전에 미리
+    # 부르지만, ``pin init``은 여기로 바로 들어오므로 여기서도 확인해야 설치 트리 안이나
+    # 읽기 전용 seed로 부트스트랩하는 사고를 막을 수 있다.
+    _assert_registry_is_writable_target(registry_path)
     if preserve_previous and registry_path.exists():
         try:
             previous = load_runtime_pin_registry(path=registry_path)

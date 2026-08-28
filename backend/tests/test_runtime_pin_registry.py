@@ -677,3 +677,41 @@ def test_pinset_digest_algorithm_is_pinned_to_a_literal() -> None:
     )
 
     assert digest == "46732f376843b2e84579267b86cc700041e18736f7f4858d5d84c5cd369d8f4e"
+
+
+def test_every_write_path_refuses_the_read_only_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pin init``도 같은 가드를 지난다 — 추적되는 seed는 회전 대상이 아니다."""
+
+    seed_path = registry_module.packaged_seed_path()
+    registry = build_registry(
+        release_version=5,
+        map_revision=MAP_A,
+        pinvi_revision=PINVI_B,
+        rotated_by="tester",
+        reason="should never land on the seed",
+    )
+
+    with pytest.raises(RuntimePinRegistryError, match="read-only bootstrap input"):
+        write_runtime_pin_registry(registry, path=seed_path)
+
+
+def test_every_write_path_refuses_a_path_inside_the_install_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """설치 트리 안이면 다음 release 설치가 회전을 조용히 되돌린다."""
+
+    monkeypatch.setattr(
+        registry_module, "_TRUSTED_INSTALL_ROOT", Path("/"), raising=True
+    )
+    registry = build_registry(
+        release_version=5,
+        map_revision=MAP_A,
+        pinvi_revision=PINVI_B,
+        rotated_by="tester",
+        reason="inside the deploy tree",
+    )
+
+    with pytest.raises(RuntimePinRegistryError, match="trusted install root"):
+        write_runtime_pin_registry(registry)
