@@ -1355,3 +1355,59 @@ def test_get_runtime_pins_requires_authentication():
     response = client.get("/api/v1/runtime-pins")
 
     assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.read_deployment_readiness")
+def test_get_deployment_readiness_returns_the_service_payload(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "schema": "kor-travel-docker-manager.deployment-readiness.v1",
+        "generated_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "cache_age_seconds": 0.0,
+        "summary": {"state": "blocked", "blocking_count": 1, "warn_count": 0,
+                    "unknown_count": 0, "text": "지금 재구축을 실행하면 실패합니다."},
+        "checks": [
+            {"id": "compose_single_file", "state": "missing", "label_ko": "Compose 입력이 단일 파일인가",
+             "detail": "override가 있습니다", "source": "project_root", "evidence": {}}
+        ],
+        "unavailable_checks": [{"id": "offline_wheelhouse", "label_ko": "x", "reason": "y"}],
+    }
+
+    response = client.get("/api/v1/deployment-readiness")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["state"] == "blocked"
+    assert body["checks"][0]["id"] == "compose_single_file"
+    assert body["unavailable_checks"][0]["id"] == "offline_wheelhouse"
+
+
+@patch("kor_travel_docker_manager.api.routes.read_deployment_readiness")
+def test_get_deployment_readiness_does_not_500_on_an_unreadable_host(mock_read):
+    """진단 패널이 500을 내면 운영자는 상태를 볼 유일한 창을 잃는다."""
+
+    login_client()
+    mock_read.return_value = {
+        "schema": "kor-travel-docker-manager.deployment-readiness.v1",
+        "generated_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "cache_age_seconds": 0.0,
+        "summary": {"state": "unverified", "blocking_count": 0, "warn_count": 0,
+                    "unknown_count": 3, "text": "일부 항목을 확인하지 못했습니다."},
+        "checks": [],
+        "unavailable_checks": [],
+    }
+
+    response = client.get("/api/v1/deployment-readiness")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["state"] == "unverified"
+
+
+def test_get_deployment_readiness_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/deployment-readiness")
+
+    assert response.status_code == 401

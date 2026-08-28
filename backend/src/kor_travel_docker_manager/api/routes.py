@@ -10,6 +10,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.compose_service import compose_service
+from kor_travel_docker_manager.services.deployment_readiness import (
+    read_deployment_readiness,
+)
 from kor_travel_docker_manager.services.docker_service import (
     ContainerConfigValidationError,
     docker_service,
@@ -204,6 +207,19 @@ def _runtime_pin_summary(
         "text": f"고정된 pinset이 정상 등록돼 있습니다. 마지막 회전: {rotated_at or '알 수 없음'}",
         "next_action": "",
     }
+
+
+@router.get("/deployment-readiness")
+def get_deployment_readiness():
+    """Read-only preflight readiness rows (KUM-M7 / design P10-4).
+
+    Answers "would a rebuild fail right now?" without touching anything. There is no
+    mutation, so there is no audit row. The service never raises — an unreadable host
+    degrades to `unknown` rows rather than a 500 that hides the whole panel.
+
+    The payload carries absolute host paths and sibling revisions, so it must stay on
+    this router, whose `require_admin_session` dependency gates every route."""
+    return read_deployment_readiness()
 
 
 @router.post("/targets/{target}/ensure")

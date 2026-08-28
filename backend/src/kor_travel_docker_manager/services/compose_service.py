@@ -3214,12 +3214,18 @@ def _run_map_application_300_paired_builder(
         )
 
 
-def _map_application_300_python_base_references(
-    sources: PinnedRuntimeSourceMaterialization,
+def map_application_300_python_base_references_from_root(
+    map_root: Path,
 ) -> tuple[str, ...]:
-    """sealed Map Dockerfile이 요구하는 immutable Python base만 반환한다."""
+    """sealed Map Dockerfile이 요구하는 immutable Python base만 반환한다.
 
-    map_root = sources.source_for("map").root
+    root를 인자로 받는 이유는 읽기 전용 readiness 점검(P10-4)이 **같은 파서**를 써야
+    하기 때문이다. 판독 규칙이 두 벌이 되면 화면의 사전 점검과 실제 rebuild가 서로
+    다른 base를 보게 되고, 그건 이 점검이 없애려던 실패 그 자체다. 이 함수는
+    materialization을 요구하지 않아 비-root 프로세스도 호출할 수 있으며, 그 root가
+    어떤 revision인지(pin과 일치하는지)는 **호출자가 책임진다.**
+    """
+
     references: set[str] = set()
     for dockerfile_name in ("api.Dockerfile", "dagster.Dockerfile"):
         try:
@@ -3264,6 +3270,14 @@ def _map_application_300_python_base_references(
             )
         references.update(image_references)
     return tuple(sorted(references))
+
+
+def _map_application_300_python_base_references(
+    sources: PinnedRuntimeSourceMaterialization,
+) -> tuple[str, ...]:
+    """materialized pinned tree 전용 래퍼. 기존 호출부 계약을 그대로 보존한다."""
+
+    return map_application_300_python_base_references_from_root(sources.source_for("map").root)
 
 
 def _ensure_map_application_300_python_base_images(
