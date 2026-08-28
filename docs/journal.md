@@ -42,9 +42,20 @@ NO-GO를 받고 되돌렸다. 직접 확인한 결정적 사실:
 lease 디렉터리를 먼저 만들면 조용한 잠금이 되는 문제, 기본 모드에서 계약 오류가 raw
 `PermissionError`로 퇴화하는 문제. 둘 다 기각된 설계와 함께 사라졌다.
 
-회귀 테스트는 `tests/test_c6c_lock_hardening.py` 7건(경로 재대조, symlink·장치 구분, 획득 중
-바꿔치기)과 fixed artifact 계약 2건이다. 후자는 리뷰가 지적한 공백을 메운 것으로, 읽기 경로에
-root 게이트를 되돌려 넣는 변이로 실제 검출을 확인했다. 백엔드 전체 green, ruff clean.
+회귀 테스트는 `tests/test_c6c_lock_hardening.py` 8건(경로 재대조, symlink·장치 구분, 획득 중
+바꿔치기와 mode 확장)과 fixed artifact 계약 2건이다. 전부 변이 주입으로 실제 검출을 확인했다.
+
+테스트 효력 자체를 전담 리뷰로 돌린 것이 이번 작업에서 가장 값이 컸다. 세 라운드 연속으로
+같은 양식의 결함이 나왔다 — 테스트는 있는데 효력이 없는 경우다. (1) 읽기 경로 게이트를
+되돌려 넣어도 green(유일한 reader 테스트가 `geteuid`를 `0`으로 고정), (2) symlink 테스트가
+*다른* 파일을 가리켜 `lstat`→`stat` 변이에도 green, (3) 이번 diff가 추가한 두 번째
+`_validate_c6c_lock_fd`를 지워도 green, 그리고 바꿔치기 테스트가 `unlink`로 `nlink`가 0이
+되는 바람에 **다른 검사가 대신 걸려** 통과하고 있었다 — hardlink를 먼저 만들어 `nlink == 1`을
+유지시키자 경로 재대조가 유일한 방어가 되고, 그때서야 계약을 고정한다. `match=` 문구도
+`"requires root"`로 느슨해 복합 변이(공용 헬퍼에 게이트 추가 + `replace` 게이트 삭제)가
+통과하고 있어 전체 문구로 좁혔다.
+
+백엔드 1066 passed / 1 skipped, ruff clean.
 
 ## 2026-08-28 — M05 `b46743ea…` terminal 보존 후 대기
 

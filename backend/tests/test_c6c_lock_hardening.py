@@ -140,6 +140,13 @@ def test_deployment_lock_fails_closed_when_the_path_is_swapped_mid_acquisition(
         result = real_flock(fd, operation)
         if operation & fcntl.LOCK_EX:
             # 경합자가 경로를 새 inode로 갈아끼운 상황을 재현한다.
+            #
+            # 먼저 hardlink를 만드는 것이 핵심이다. 그냥 unlink하면 우리가 잡고 있는
+            # inode의 `st_nlink`가 0이 되어 `_validate_c6c_lock_fd`의 `nlink != 1`
+            # 검사가 대신 걸린다 — 그러면 이 테스트는 경로 재대조가 없어도 통과해
+            # 정작 겨냥한 계약을 고정하지 못한다. hardlink로 `nlink == 1`을 유지하면
+            # 경로 재대조만이 유일한 방어가 된다.
+            os.link(lock_path, tmp_path / "twin.lock")
             lock_path.unlink()
             os.close(_open_lock(lock_path))
         return result
@@ -149,3 +156,29 @@ def test_deployment_lock_fails_closed_when_the_path_is_swapped_mid_acquisition(
     with pytest.raises(DeploymentContractError, match="replaced during acquisition"):
         with c6c_module.c6c_deployment_lock(str(lock_path)):
             pytest.fail("바꿔치기된 lock으로 임계 구역에 들어가면 안 된다")
+
+
+def test_deployment_lock_fails_closed_when_the_mode_widens_mid_acquisition(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """신원은 그대로인데 mode만 넓어진 경우도 거부해야 한다.
+
+    경로 재대조는 inode 신원만 본다. 잠그는 사이에 **같은 inode**가 world-writable로
+    바뀌면 신원 대조는 통과하므로, 획득 뒤 소유권·mode 계약을 다시 확인하는 쪽이
+    유일한 방어다. 그 재확인이 없으면 이 테스트는 임계 구역에 들어가 버린다.
+    """
+
+    lock_path = tmp_path / "deployment.lock"
+    real_flock = fcntl.flock
+
+    def widening_flock(fd: int, operation: int) -> None:
+        result = real_flock(fd, operation)
+        if operation & fcntl.LOCK_EX:
+            os.chmod(lock_path, 0o666)
+        return result
+
+    monkeypatch.setattr(fcntl, "flock", widening_flock)
+
+    with pytest.raises(DeploymentContractError, match="C6c deployment lock is unsafe"):
+        with c6c_module.c6c_deployment_lock(str(lock_path)):
+            pytest.fail("world-writable lease로 임계 구역에 들어가면 안 된다")

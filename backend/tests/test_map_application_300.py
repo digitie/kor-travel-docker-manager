@@ -780,7 +780,9 @@ def test_fixed_artifact_publisher_requires_root(
 ) -> None:
     monkeypatch.setattr("os.geteuid", lambda: 1000)
 
-    with pytest.raises(MapApplication300ContractError, match="requires root"):
+    with pytest.raises(
+        MapApplication300ContractError, match="fixed artifact publishing requires root"
+    ):
         publish_root_read_only_artifact(tmp_path / "permit.json", b"{}")
 
 
@@ -794,7 +796,9 @@ def test_fixed_artifact_replacement_requires_root(
 
     monkeypatch.setattr("os.geteuid", lambda: 1000)
 
-    with pytest.raises(MapApplication300ContractError, match="requires root"):
+    with pytest.raises(
+        MapApplication300ContractError, match="fixed artifact replacement requires root"
+    ):
         replace_root_read_only_artifact(
             tmp_path / "permit.json", expected_old_sha256=_digest("a"), raw=b"{}"
         )
