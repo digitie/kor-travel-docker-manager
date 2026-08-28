@@ -1,8 +1,9 @@
-# ktdctl → UI 이관 및 운영 기능 격차 설계 (v3)
+# ktdctl → UI 이관 및 운영 기능 격차 설계 (v4)
 
 ## 범위와 비목표
 
-이 문서는 **설계 문서**다. 코드 변경은 전혀 없다. 목적: (1) `ktdctl`이 이미 할 수 있는
+이 문서는 `ktdctl`이 운영 정본인 경계를 설명하는 설계·이행 문서다. 일반 UI 이관 항목은
+여전히 설계 초안일 수 있지만, 아래 v4 M05 execution identity 계약은 구현·검증 중인 정본이다. 목적: (1) `ktdctl`이 이미 할 수 있는
 일 중 UI에 아직 없는 것을 찾아 이관 후보를 정리하고, (2) 운영에 필요하다고 지목된 영역
 — GitHub source pull+build, git revision/계약 정합, git 이력 조회, Docker 이미지
 업데이트, 백업, 설정/secret 변경, 기타 — 의 격차와 안전장치를 제안하며, (3) v2에서
@@ -31,6 +32,44 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
   상세 서술 추가, (5) 전체 작업을 태스크 단위로 분해(3부), (6) map·pinvi 쪽
   수정사항도 동급 상세로 포함. 기존 라인 인용 전체는 `f0edac7`에서 재검증했다(오류
   0건 — 단 사실 서술 정정 3건은 1부·2부에 반영).
+- **v4 (2026-08-29)**: M05 one-shot terminal 반복을 문서 SHA 변경으로 우회하던 구조를
+  해소한다. v5 Map·PinVi source pinset은 역사적 materialization identity로 보존하고,
+  trusted installed Manager revision을 더한 v6 execution identity를 execution ledger,
+  terminal block, public generation binding, PinVi admission과 Map attestation의 새 실행
+  권한으로 분리한다.
+
+---
+
+## v4 M05 실행 identity — `ktdctl`이 실제로 수행하는 결박
+
+v5 `pinset_sha256`은 Map·PinVi revision 두 개로만 계산한다. 그래서 Manager의 실제
+bug fix가 새 trusted release에 들어가도 동일 source pair는 과거 terminal block 때문에
+새 one-shot을 만들 수 없다. Map/PinVi 문서 commit을 새 SHA로 만들어 pinset을 바꾸면
+코드 변화와 무관한 CI·전문 리뷰·PR·rebuild/E2E를 반복하고 기록도 왜곡한다.
+
+해결은 v5 pinset을 바꾸는 것이 아니다. `ktdctl`은 v5 source pinset, canonical
+Manager repository URL, trusted installed Manager revision으로 v6
+`execution_identity_sha256`을 계산한다. 이 값만 새 Manager implementation으로의
+M05 execution namespace·one-shot ledger·terminal block을 결정한다.
+
+Manager revision은 CLI 인자·UI 요청·환경변수에서 절대 받지 않는다. clean trusted
+install root의 `.ktdm-source-revision`과 `.ktdm-release-manifest.json`을 root
+no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
+
+- `ktdctl pin migrate-execution-v6 --confirm`은 v5 registry의 history와 blocked
+  pinset을 변경 없이 legacy audit으로 보존하고 v6 execution registry를 만든다.
+- `ktdctl pin rebind-execution --expected-manager-revision <40-hex> --confirm`의
+  revision은 trusted installed revision과의 TOCTOU 확인값일 뿐이다. terminal current와
+  다른 trusted Manager revision일 때만 Map/PinVi source를 건드리지 않고 새 execution
+  identity를 만든다.
+- `pin verify`와 read-only UI/API는 v5 source pinset, Manager revision, v6 execution
+  identity, legacy v5 terminal 수, v6 execution terminal 수를 분리 표시한다. v6 success
+  gate는 구 `pinset_binding`만으로 green을 판단하지 않는다.
+- PinVi admission·activation receipt와 Map attestation은 Map SHA, PinVi SHA, v5 source
+  pinset, Manager SHA, v6 execution identity를 모두 exact 대조한다. 한 필드라도 다르면
+  fail-close한다.
+- 문서-only Map/PinVi merge는 위 execution identity를 바꾸지 않고 즉시 병합한다. raw
+  E2E forensic은 M05 완주 전까지 gitignored local 분석 파일에만 기록한다.
 
 ---
 
