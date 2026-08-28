@@ -2,6 +2,19 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 runtime HTTP terminal을 고정 enum으로 분리
+
+Map `b8d108bd…`·PinVi `50c875f5…`·pinset `22563762…`의 n150 isolated M04/M05 one-shot은
+`runtime_http_failed`로 끝났고 cleanup은 성공했다. 구조화 result의 fixed phase만 읽었으며 HTTP status/body,
+socket 원문, container log, 환경값은 읽거나 보관하지 않았다. 해당 pinset은 root registry의 terminal evidence로
+즉시 차단돼 재실행하지 않는다.
+
+다음 driver는 loopback HTTP transport failure를 Map health/subscription, PinVi login/M04 fixture, Map approval,
+M05 case lookup/decision, PinVi receipt polling의 fixed enum으로만 분리한다. 원문 transport detail은 계속 폐기하고,
+새 Manager source와 새 Map/PinVi pair에서만 다음 one-shot을 실행한다.
+
+---
+
 ## 2026-08-28 — isolated launcher의 installed-wheel project root 회귀 차단
 
 Map `e6c08e…`·PinVi `932fb140…`·pinset `a3f6a8f3…`의 새 M05 isolated launcher는

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from urllib.error import URLError
 from urllib.request import Request
 
 import pytest
@@ -185,6 +186,26 @@ def test_http_json_default_transport_is_proxy_free_loopback_opener(
     monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fake_open)
     assert driver._http_json("http://127.0.0.1:13701/health", headers={}) == {"data": {}}
     assert len(seen) == 1
+
+
+def test_http_json_emits_only_the_caller_fixed_transport_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 원문을 저장하지 않고 다음 immutable candidate의 보정 범위만 남긴다."""
+
+    driver = _driver()
+
+    def fail_open(*_args: object, **_kwargs: object) -> object:
+        raise URLError("transport detail must not escape")
+
+    monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fail_open)
+
+    with pytest.raises(driver._PhaseError, match="map_health_http_failed"):
+        driver._http_json(
+            "http://127.0.0.1:13701/health",
+            headers={},
+            failure_phase="map_health_http_failed",
+        )
 
 
 def test_free_ports_uses_the_standard_ss_binary(

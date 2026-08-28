@@ -560,6 +560,7 @@ def _http_json(
     headers: dict[str, str],
     body: dict[str, object] | None = None,
     opener: Any | None = None,
+    failure_phase: str = "runtime_http_failed",
 ) -> dict[str, object]:
     try:
         parsed = urlsplit(url)
@@ -595,7 +596,9 @@ def _http_json(
         with request_opener(request, timeout=10) as response:
             raw = response.read(2_000_000)
     except (HTTPError, OSError, URLError):
-        _fail("runtime_http_failed")
+        # 원문 HTTP status/body/socket error는 receipt에 기록하지 않는다. 대신 caller가
+        # 고정 enum을 주면 다음 immutable candidate의 보정 범위만 식별할 수 있다.
+        _fail(failure_phase)
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -629,6 +632,7 @@ def _pinvi_admin_opener(api_url: str, *, email: str, password: str) -> Any:
             headers={},
             body={"email": email, "password": password},
             opener=opener,
+            failure_phase="pinvi_login_http_failed",
         )
     )
     roles = login.get("roles")
@@ -653,6 +657,7 @@ def _pinvi_submit_m04_fixture(*, api_url: str, opener: Any, transaction: str) ->
                 "coord_source": "map_pick",
             },
             opener=opener,
+            failure_phase="m04_fixture_http_failed",
         )
     )
     request_id = value.get("request_id")
@@ -678,6 +683,7 @@ def _approve_map_request(
                 "marker_color": "P-01",
                 "marker_icon": "marker",
             },
+            failure_phase="m04_map_approval_http_failed",
         )
     )
     if value.get("request_id") != request_id or value.get("status") != "approved":
@@ -750,6 +756,7 @@ def _resolve_m05_case(
         _http_json(
             f"{admin_url.rstrip('/')}/v1/admin/manual-provider-dedup-cases/{case_id}",
             headers=_map_headers(proxy_secret),
+            failure_phase="m05_case_lookup_http_failed",
         )
     )
     manual = before.get("manual_feature")
@@ -779,6 +786,7 @@ def _resolve_m05_case(
                 "survivor_feature_id": provider_feature_id,
                 "reason": "M05 isolated signed E2E rebind",
             },
+            failure_phase="m05_case_decision_http_failed",
         )
     )
     if decision.get("outcome") != "merged":
@@ -798,6 +806,7 @@ def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
                     f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
                     headers={},
                     opener=opener,
+                    failure_phase="m05_pinvi_receipt_http_failed",
                 )
             )
         except _PhaseError:
@@ -1401,7 +1410,9 @@ def main(expected_revision: str, output: Path) -> int:
             failure_phase="map_application_start_failed",
         )
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
-        _http_json(f"{admin_url}/health", headers={})
+        _http_json(
+            f"{admin_url}/health", headers={}, failure_phase="map_health_http_failed"
+        )
         phase = "map_subscription"
         _data(
             _http_json(
@@ -1411,6 +1422,7 @@ def main(expected_revision: str, output: Path) -> int:
                     "Idempotency-Key": str(uuid.uuid4()),
                 },
                 body={"initial_event_sequence": 0},
+                failure_phase="map_subscription_http_failed",
             )
         )
         phase = "pinvi_runtime"
