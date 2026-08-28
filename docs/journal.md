@@ -2,6 +2,20 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 `b46743ea…` terminal 보존 후 대기
+
+Map `6bfa47038b439845662f89524531d2ef72374c2a`·PinVi
+`340717de33b3672f7da84795626c4302eddd1176`·Manager
+`00c33ad79f8e43b01fe543699428701aa9733c67`·pinset
+`b46743ea72d86329d9574c21cc445fb9b33fdeaad07a2704a68a91fd7a0a89fe`는 PinVi·Manager CI와 exact-head 전문
+적대 리뷰 두 건의 GO, clean trusted release, atomic pair rotation과 registry/public-copy gate 뒤 n150 isolated
+M04/M05 launcher를 정확히 한 번 실행했다. launcher의 권위 있는 고정 결과는
+`launcher_safe_result_unavailable`이었다. HTTP 원문·컨테이너 로그·환경값·output leaf는 읽거나 보관하지 않았다.
+
+후속 gate는 exact unconditional terminal entry와 public copy를 확인했다. 따라서 이 candidate·source pair·Manager
+source·output leaf는 절대 재실행하지 않는다. 사용자 지시에 따라 새 source·pair·pinset 생성이나 후속 n150 실행은 하지
+않고 여기까지의 기록을 보존한 채 대기한다.
+
 ## 2026-08-28 — M05 `41be91fe…` terminal 보존과 driver receipt 수렴
 
 Map `fa55316d858d95367b6a1ca6f17094408b543afe`·PinVi

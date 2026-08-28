@@ -17,15 +17,14 @@
 
 ## M05 재개 규율
 
-- [/] `fa28a6e7…`, `5512ce12…`, `41be91fe…`는 각각 한 번의 n150 isolated M04/M05 one-shot 뒤 terminal로
-  차단됐다. 최신 `41be91fe…`는 Map `fa55316d…`·PinVi `f9fce72f…`·Manager `cd8b3054…`의
+- [/] `fa28a6e7…`, `5512ce12…`, `41be91fe…`, `b46743ea…`는 각각 한 번의 n150 isolated M04/M05 one-shot 뒤 terminal로
+  차단됐다. 최신 `b46743ea…`는 Map `6bfa4703…`·PinVi `340717de…`·Manager `00c33ad…`의
   registry/public-copy gate 뒤 실행했고 launcher exit 1의 권위 있는 고정 결과는
   `launcher_safe_result_unavailable`이었다. HTTP 원문·container log·환경값·output leaf는 읽거나 남기지 않으며,
   root registry의 exact unconditional terminal entry와 public copy를 확인했다. 이 모든 pinset과 source pair·Manager
-  source·output leaf는 재실행하지 않는다. 다음 Manager source는 main·cleanup·terminal block 단계의 예상하지 못한 ordinary
-  exception도 raw output 부재로 새기지 않고 `driver_contract_failed` fixed terminal receipt로 기록한다. 새 Map terminal 기록·새 PinVi paired
-  provenance·이 source를 fresh atomic pinset으로 결박하고 CI·source-head 전문 적대 리뷰 두 건을 모두 통과하기 전에는
-  n150 실행권이 없다.
+  source·output leaf는 재실행하지 않는다. 사용자 지시에 따라 현재 cycle은 이 terminal 기록까지 문서화하고 대기한다.
+  재개 시에만 새 Map terminal 기록·새 PinVi paired provenance·새 Manager source를 fresh atomic pinset으로 결박하고
+  CI·source-head 전문 적대 리뷰 두 건을 모두 통과한 뒤 새 n150 실행권을 만든다.
 - [/] `a3f6a8f3…`은 trusted installed-wheel project-root preflight failure로 terminal 차단됐다. 같은
   Map/PinVi pinset·Manager source·one-shot output leaf는 어떤 이유로도 재실행하지 않는다. installed `python -I`
   경로의 external registry 선택 회귀와 두 전문 적대 리뷰를 통과한 새 Manager source, 새 pair pinset만 다음
