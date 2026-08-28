@@ -18,7 +18,9 @@ immutable image ID, 그리고 정확히 하나의 `127.0.0.1` published binding 
 label만 신뢰하지 않고 image inspect의 OCI revision label도 release source와 다시 대조한다. bridge driver·network
 ID·label도 network inspect에서 재검증한다. focused 회귀는 replay ledger, host network, wildcard binding,
 Map 또는 PinVi 역할 누락, provenance/image drift, multi-network와 network driver drift를 고정했다. 다음 구현은 이
-contract를 소비하는 root-only source snapshot·compose driver와 label-scoped cleanup이다.
+contract를 소비하는 root-only source snapshot·compose driver와 label-scoped cleanup이다. 두 전문 적대 리뷰는
+이 admission/inspect 범위의 P0/P1이 없음을 확인했고, source snapshot·global lock·receipt driver가 없는 동안에는
+어떤 live candidate도 실행하지 않는다는 조건을 다시 고정했다.
 
 ## 2026-08-28 — M05 격리 bridge harness 선행 결정
 
