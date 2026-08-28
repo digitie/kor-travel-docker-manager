@@ -45,6 +45,132 @@ attestation을 실행한다. 두 전문 적대 리뷰는 이 provenance·canonic
 구조화된 stdout을 회수하지 못했으며 raw stderr는 열지 않는다. 다음 candidate는 root-owned 신규 output directory를
 단 한 번 만들고 `result.json`과 raw `stderr.log`를 분리하는 `scripts/run-pinned-rebuild-once`만 사용한다. output
 directory가 이미 있으면 launcher는 command를 호출하지 않아 같은 candidate 재시도를 막는다.
+## 2026-08-28 — pin registry 파일화와 pinset lifecycle 게이트 구현 (KUM-M1~M4, ADR-40)
+
+설계 문서 v3 1부 트랙을 구현했다. pinned revision을 코드 상수에서 root 소유 JSON
+registry로 옮기고(`services/runtime_pin_registry.py` 신설), pinset의 생애 상태를
+기계가 강제하게 했다. `ktdctl pin init/show/verify/rotate/block/rollback`,
+읽기 전용 `GET /api/v1/runtime-pins`, 프론트 "배포 버전 고정" 패널까지 포함한다.
+결정 근거와 트레이드오프는 ADR-40에 기록했다.
+
+**가장 중요한 동작 변경**: 현행 pin `cbb577d3…`를 terminal로 등재했다. 근거는 pinvi
+`docs/journal.md`(origin/main, 2026-08-27)의 직접 기술이며, 직접 grep으로 확인했다 —
+"`cbb577d3…`와 `52c6e538…` candidate/journal은 역사 증거로 보존하며 재시도·수정하지
+않는다". 따라서 이 pinset으로 `rebuild-pinned`를 실행하면 mutation 이전에 fail-close하고,
+해소 경로는 `ktdctl pin rotate`로 새 pinset을 만드는 것뿐이다. 지금까지 세 저장소가
+문서 규율로만 지키던 규약을 코드가 강제한다. n150 상태 루트를 실측해 이 pinset의 미완
+v8 journal이 **없음**을 확인했으므로(v5/v7 구 산출물만 존재) 진행 중 작업이 끊기지 않는다.
+
+**전문 적대 리뷰 2건**(계약·fail-close 렌즈 / 운영·회귀·사용성 렌즈)을 독립 수행하고
+확인된 지적을 전부 반영했다. 주요 반영: (1) 설치본은 트리를 통째 교체하므로 registry
+기본값을 `/var/lib` 상태 디렉터리로 옮기고 트리 안 경로로의 회전을 거부, (2) 로드 시점
+파일 무결성 검증 추가(lstat·소유자·쓰기 권한, 경로 기반 면제 제거), (3) 차단 항목도
+digest를 revision으로 재계산 대조 — 어긋난 항목은 "차단했다"고 기록되지만 실제로는
+아무것도 막지 못했다, (4) 차단 목록 truncate 제거(조용한 유실 대신 fail-close),
+(5) 코드가 강제하는 제거 불가능한 차단 하한선(d9) 복원과 `is_blocked_pinset_retry`의
+fail-open 제거, (6) 공개 사본이 stale이면 `stale`, registry 직접 읽기는 `degraded`로
+표시해 배포본 seed를 권위 있는 값으로 위장하지 않음, (7) API가 phase 한정 차단과 무조건
+차단을 게이트와 같은 의미로 구분, (8) `pin verify`가 재시도 금지 상태에 비정상 종료,
+`pin show`가 "rebuild 거부됨"을 평문으로 안내, (9) `pin init --force`가 이력·차단
+목록을 승계하고 이전 상태를 보존, (10) 동봉본을 읽기 전용 seed로 분리해 추적 파일을
+mutation하지 않음.
+
+**검증 범위(무엇을 live로, 무엇을 mock으로 했는지)**:
+- **n150 격리 live E2E 16항목 전부 통과**(전용 홈 디렉터리 + 격리 env, 운영 트리 무변경을
+  전후로 확인). 부재 시 fail-close, `--confirm` 없는 mutation 거부, 부트스트랩의 0600/0644
+  퍼미션, show·verify의 읽기 전용성, seed terminal 등재 유지, **시작 게이트의 terminal
+  거부**, 회전의 digest 자동 계산·이력·supersedes, **재기동 없는 즉시 반영**, 회전 뒤
+  게이트 통과, 보존본 생성과 terminal rollback 거부, 비-canonical URL 변조 거부,
+  group/world writable 거부, verify의 비정상 종료, 설치 트리 안 회전 거부, 그리고
+  **root 전용 registry + 별도 공개 트리 배치에서 비-root 프로세스가 공개 사본을 `ok`로
+  읽는지**까지 실제 root/비-root 프로세스로 확인했다.
+- 세 번째 검증 리뷰가 찾은 P1 하나를 live로 재현·수정했다: 공개 사본 기본 경로가 installer가
+  매 설치 `0700 root:root`로 되돌리는 상태 root 안이라 비-root 백엔드가 traverse조차 못 해
+  조회 API가 영구 `unknown`이 됐을 것이다. 사본을 별도 트리로 분리했다. 또 live 실행 중
+  **root가 사용자 소유 seed를 신뢰 입력으로 읽는 것을 무결성 규칙이 거부**함을 확인했고
+  (설치본은 트리 전체가 root 소유라 정상 경로에서는 만족), 그 전제를 런북에 명시했다.
+- **mock/단위로 대체한 것**: 실제 `rebuild-pinned` 전체 실행(파괴적 — 세 DB recreate와
+  일곱 runtime 재기동이라 격리 불가). 게이트가 mutation·락 획득 이전에 거부한다는 사실은
+  `rebuild_pinned_runtime()`을 실제로 호출해 source materialize와 락이 호출되지 않았음을
+  단언하는 회귀로 고정했다. 또한 개발 체크아웃이 Windows 공유 마운트라 모든 파일이 0777로
+  보고돼 mode 검사를 만족할 수 없으므로, 그 항목만 명시 opt-in 완화를 두고(root에서는 무효)
+  실제 퍼미션 계약은 위 n150 live E2E로 검증했다.
+- backend 751 tests pass, ruff clean, 프론트 type-check·lint·build 통과.
+
+이번 라운드 범위 밖(후속 태스크): UI 2-step rotate(KUM-M5), typed 진단 소비(KUM-M6),
+preflight readiness 노출(KUM-M7).
+
+---
+
+## 2026-08-28 — ktdctl → UI 이관 설계 문서 v3: 3저장소 커밋 교차 감사 반영·태스크 분해 (코드 변경 없음)
+
+오너 지시에 따라 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)를 v3로 전면
+재구성했다. (1) P1 트레이드오프를 항목별(리뷰 게이트/git 이력/테스트 고정/코드-배포본
+단일성) 손실·보상 병기 서술로 확장하고, (2) kor-travel-map(3일 99커밋)·pinvi(25커밋)·
+본 저장소(실질 94커밋)의 2026-08-25~28 커밋 전수를 저장소별 전담 조사 에이전트로
+분석해 계약·pinning·결박 관련 이슈를 발굴, (3) 발굴 이슈와 P1 계열 개선을 문서
+1부(문제 진단 6건 + P1 확장 + P10-1~5)로 최상위 재편, (4) 전 항목에 "왜 문제인가 /
+현재의 불합리 / 수정 후 개선" 상세 서술을 추가, (5) 전체 작업을 태스크 단위
+(KUM-M1~18, KUM-MAP-1~4, KUM-PV-1~4)로 분해하고 map·pinvi 쪽 수정사항도 동급 상세로
+포함했다.
+
+핵심 발굴: 3.5일간 pin 회전 15회(그중 5회는 3,900~4,100줄 기능 커밋에 매몰 — "PR
+review = pin 승인" 게이트가 명목상으로도 작동 불가), 회전 1회의 실제 blast radius는
+Manager 4-6파일이 아니라 pair 9-11파일 + 제3 저장소 부기(map 부기 커밋 19건, pinvi는
+Manager generation 보유 값의 수기 사본 14개), "terminal pinset 재시도 금지" 규약이 세
+저장소 문서에 수기로만 존재하며 **현행 Manager pin 자체가 이미 terminal 선언된
+pinset**(pinvi journal·map 차단 목록)이라는 사실, d9 legacy 상수가 "역사적 고정값"이
+아니라 실패 위를 회전이 지나갈 때마다 축적되는 파생 하드코딩이라는 정정. 이에 따라
+registry 스키마에 `blocked_pinsets`/`history`/`supersedes`를 추가하고 `pin block`과
+`rebuild-pinned`의 terminal 자동 거부, rollback의 terminal 제한을 설계했다.
+
+주요 정정 3건: P2 조회는 mode 게이트가 아니라 **권한 모델**(state root 0700/0600 +
+리더의 uid/mode fail-close)이 실제 제약이라 P1-(c) root-side publisher에 의존한다는
+재설계(P9-1단계 "기존 코드 무변경" 추정 철회), P3 `--self`는 installer가 이미 쓰는
+0644 provenance 파일의 리더 ~10줄이면 된다는 정정, P6 비밀번호 변경이 미종결 rebuild
+journal의 `environment_sha256` 대조와 충돌해 재개를 영구 차단할 수 있다는 신규
+위험(가드 요건 추가). 신규 노출 설계: builder receipt 2종·fence/permit 5종·journal
+행동 결정 필드·manifest/journal 버전(P2-4), preflight readiness 4행(P10-4), typed
+진단 소비(P10-3), 계약 소유 경계 명문화(P10-5 — manifest/journal 키는 map attestation이
+exact-dict로 결박한 공개 계약). `.env.example`의 PinVi role credential 6종 누락·폐기
+변수 잔존 결함도 태스크(KUM-M15)로 등재했다. 이번 라운드도 설계·문서화만이며 코드
+변경과 n150 배포는 없다.
+
+---
+
+## 2026-08-28 — ktdctl → UI 이관 설계 문서 v2 개정 (코드 변경 없음)
+
+오너 지시에 따라 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)를 v2로
+개정했다. 개정 축 5개: (0) Web UI화 대상 재점검과 필요한 추가 구현 확인, (1) 반복되는
+pin 회전의 하드코딩을 설정파일+CLI+API로 전환하는 설계, (2) 기능 격차·API 노출 가능성
+재검증, (3) 보안·안정성 대신 **비전문가 관리 편의성·직관성 중심** 재검토, (4) 전체 구조
+리팩토링 필요성 평가. 각 축을 독립 조사 에이전트로 병렬 조사(전부 실코드 file:line
+대조)한 뒤, 사실 정확성 리뷰와 지시 정합·일관성 리뷰 두 전문 리뷰를 독립 수행해 확인된
+지적을 반영했다.
+
+핵심 신규 내용: pin 회전이 최근 200커밋 중 42건을 차지하는 지배적 chore이며 하드코딩
+4줄(`pinned_runtime_release.py` 3줄 + `map_application_300.py` 중복 상수 1줄)이 회전
+1회를 "전형 5개 파일 수정 + PR + rsync + 재기동"으로 증폭시킨다는 실측 → root 소유
+`runtime-pins` registry 파일 + `ktdctl pin init/show/verify/rotate/rollback` + 읽기
+전용 `GET /runtime-pins` 설계(배포 트리 밖 경로·캐시 무효화·부트스트랩·backend용
+world-readable 사본까지 리뷰 지적을 반영해 명세). usability-first 재정렬로 프론트 전용
+quick win 9건(오류 humanize, 라벨 한국어화, freshness 배지, CLI 명령 카드 등)을 0군
+신설, 백업 생성 버튼(비동기 job_runner)과 관리자 비밀번호 변경 폼을 2군으로 승격,
+`diff-pinned`는 GitHub compare 링크로 전면 대체. 구조 리팩토링은 "전면 불필요 — job
+runner·프론트 추출·pin 데이터화·read-only facade 4개 결손만 메우면 됨" 결론과 5단계
+점진 계획으로 정리했다.
+
+리뷰가 잡아낸 정정: manifest/journal 정식 경로 도우미가 `require_rebuildable_mode`로
+게이트되어 있어 조회 route는 mode 게이트 없는 `pinned_runtime_state_root()` 기반으로
+별도 구성해야 한다는 점, 관리자 비밀번호 폼이 P1의 "backend는 파일을 못 쓴다" 경계
+논거를 완화한다는 점의 명시, 커밋 수(61→23)·leaf 명령 수(12→13)·회전 diff 파일 수
+(6→전형 5) 등 수치 정정. 이번 라운드도 설계·문서화만이며 코드 변경과 n150 배포는 없다.
+
+문서의 열린 질문 7건은 PR 머지 전에 오너에게 직접 물어 전부 확정했다 — pin registry
+전환(승인), 백업 create UI화(승인, shared group 방식), 관리자 비밀번호 폼(승인),
+UI 2-step pin rotate(승인), rehearsal 한정 rebuild 버튼(승인), restore 로드맵(포함),
+CLAUDE.md 동기화(별도 작업). 결정은 문서 말미 "오너 결정 사항" 표와 우선순위 각
+항목에 반영했고, 이 문서의 미결 정책 결정은 더 이상 없다.
 
 ---
 

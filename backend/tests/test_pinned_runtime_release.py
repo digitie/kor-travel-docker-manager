@@ -1,3 +1,13 @@
+"""pinned release 계약 테스트.
+
+v3 전환 이후 이 파일은 **특정 SHA 값을 고정하지 않는다.** pin은 registry 파일에
+있으므로 여기서 값을 박아 두면 회전할 때마다 테스트가 함께 churn한다(그 churn을
+없애는 것이 전환의 목적이다). 대신 값이 무엇이든 성립해야 하는 성질 —
+canonical URL 강제, 40-hex 형식, role 순서, digest 재계산 대조, 파생 상수의 단일화 —
+을 검증한다. 값 자체의 무결성은 런타임의 digest 재계산과 ``ktdctl pin verify``가
+담당하고, 그 경로는 ``test_runtime_pin_registry.py``가 검증한다.
+"""
+
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
@@ -6,82 +16,81 @@ import pytest
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.map_application_300 import (
-    MAP_APPLICATION_300_SOURCE_COMMIT,
+    expected_application_300_source_commit,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     CANONICAL_RUNTIME_SOURCE_URLS,
-    MAP_PINNED_RUNTIME_SOURCE,
-    PINNED_RUNTIME_RELEASE,
     PINNED_RUNTIME_RELEASE_VERSION,
-    PINVI_PINNED_RUNTIME_SOURCE,
+    RUNTIME_SOURCE_ROLES,
     PinnedRuntimeRelease,
     PinnedRuntimeSourceSpec,
     canonical_pinset_bytes,
     canonical_pinset_sha256,
+    current_map_source_revision,
     current_pinned_runtime_release,
-    is_d9_legacy_pinvi_role_topology_retry,
+    source_specs_for,
 )
 
+_REVISION_A = "a" * 40
+_REVISION_B = "b" * 40
 
-def test_current_release_is_exact_map_and_pinvi_v5_authority() -> None:
+
+def _release(map_revision: str = _REVISION_A, pinvi_revision: str = _REVISION_B):
+    sources = source_specs_for(map_revision=map_revision, pinvi_revision=pinvi_revision)
+    return PinnedRuntimeRelease(
+        version=PINNED_RUNTIME_RELEASE_VERSION,
+        sources=sources,
+        pinset_sha256=canonical_pinset_sha256(
+            version=PINNED_RUNTIME_RELEASE_VERSION,
+            sources=sources,
+        ),
+    )
+
+
+def test_current_release_reads_the_registry_and_keeps_the_v5_shape() -> None:
     release = current_pinned_runtime_release()
 
-    assert release is PINNED_RUNTIME_RELEASE
     assert release.version == PINNED_RUNTIME_RELEASE_VERSION == 5
-    assert release.source_for("map") == MAP_PINNED_RUNTIME_SOURCE
-    assert release.source_for("pinvi") == PINVI_PINNED_RUNTIME_SOURCE
-    assert release.source_for("map").revision == "9c64e862c9da82016e12038e2e135526b300ca9d"
-    assert release.source_for("map").revision == MAP_APPLICATION_300_SOURCE_COMMIT
-    assert release.source_for("pinvi").revision == "41a36ee65323a32e2a108f91c0b7905c445f28f4"
-    assert release.sources_by_role == {
-        "map": MAP_PINNED_RUNTIME_SOURCE,
-        "pinvi": PINVI_PINNED_RUNTIME_SOURCE,
-    }
+    assert tuple(source.role for source in release.sources) == RUNTIME_SOURCE_ROLES
+    for role in RUNTIME_SOURCE_ROLES:
+        source = release.source_for(role)
+        assert source.canonical_url == CANONICAL_RUNTIME_SOURCE_URLS[role]
+        assert len(source.revision) == 40
+    # digest는 파일에 적힌 값이 아니라 재계산 결과여야 한다.
+    assert release.pinset_sha256 == canonical_pinset_sha256(
+        version=release.version,
+        sources=release.sources,
+    )
+
+
+def test_map_application_300_expects_the_same_commit_as_the_pin() -> None:
+    """이원 관리 hazard가 소멸했는지 — 두 경로가 같은 registry 값을 읽는다."""
+
+    release = current_pinned_runtime_release()
+
+    assert expected_application_300_source_commit() == release.source_for("map").revision
+    assert current_map_source_revision() == release.source_for("map").revision
 
 
 def test_pinset_digest_uses_stable_canonical_compact_json() -> None:
-    release = PINNED_RUNTIME_RELEASE
+    """digest 계산 규칙은 map 저장소 attestation과 공유하는 계약이라 고정한다."""
 
-    assert canonical_pinset_bytes(version=release.version, sources=release.sources) == (
-        b'{"sources":[{"revision":"9c64e862c9da82016e12038e2e135526b300ca9d",'
+    sources = source_specs_for(map_revision=_REVISION_A, pinvi_revision=_REVISION_B)
+
+    assert canonical_pinset_bytes(version=5, sources=sources) == (
+        b'{"sources":[{"revision":"' + _REVISION_A.encode() + b'",'
         b'"role":"map","url":"https://github.com/digitie/kor-travel-map.git"},'
-        b'{"revision":"41a36ee65323a32e2a108f91c0b7905c445f28f4",'
+        b'{"revision":"' + _REVISION_B.encode() + b'",'
         b'"role":"pinvi","url":"https://github.com/digitie/pinvi.git"}],"version":5}'
     )
-    assert canonical_pinset_sha256(version=release.version, sources=release.sources) == (
-        "c1ad5a3ec2e7c31fa294d2fa431ca76e149ff982563f27d36d7eef8c91f11e5c"
-    )
-    assert release.pinset_sha256 == "c1ad5a3ec2e7c31fa294d2fa431ca76e149ff982563f27d36d7eef8c91f11e5c"
 
 
-def test_d9_legacy_role_topology_retry_policy_is_exact() -> None:
-    legacy = {
-        "pinset_sha256": "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898",
-        "map_source_revision": "14d18230e5a9ff21caf26d6abe37aed1e4944685",
-        "pinvi_source_revision": "93296aee5d47676e6b9b79303bf417c598a273ac",
-        "phase": "map_runtime_ready",
-    }
-    assert is_d9_legacy_pinvi_role_topology_retry(
-        **legacy,
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        **(legacy | {"phase": "candidate_attested"}),
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        **(legacy | {"pinset_sha256": "a" * 64}),
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        **(legacy | {"map_source_revision": "a" * 40}),
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        **(legacy | {"pinvi_source_revision": "a" * 40}),
-    )
-    assert not is_d9_legacy_pinvi_role_topology_retry(
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-        map_source_revision=MAP_PINNED_RUNTIME_SOURCE.revision,
-        pinvi_source_revision=PINVI_PINNED_RUNTIME_SOURCE.revision,
-        phase="map_runtime_ready",
-    )
+def test_source_specs_for_supplies_canonical_urls_from_code() -> None:
+    sources = source_specs_for(map_revision=_REVISION_A, pinvi_revision=_REVISION_B)
+
+    assert [source.role for source in sources] == ["map", "pinvi"]
+    assert sources[0].canonical_url == CANONICAL_RUNTIME_SOURCE_URLS["map"]
+    assert sources[1].canonical_url == CANONICAL_RUNTIME_SOURCE_URLS["pinvi"]
 
 
 @pytest.mark.parametrize(
@@ -122,40 +131,48 @@ def test_source_spec_rejects_noncanonical_or_malformed_values(
 
 
 def test_release_requires_each_source_role_once_in_canonical_order() -> None:
-    digest = canonical_pinset_sha256(
-        version=5,
-        sources=(MAP_PINNED_RUNTIME_SOURCE, MAP_PINNED_RUNTIME_SOURCE),
-    )
+    map_source = source_specs_for(map_revision=_REVISION_A, pinvi_revision=_REVISION_B)[0]
+    digest = canonical_pinset_sha256(version=5, sources=(map_source, map_source))
 
     with pytest.raises(DeploymentContractError, match="exactly once"):
-        PinnedRuntimeRelease(
-            version=5,
-            sources=(MAP_PINNED_RUNTIME_SOURCE, MAP_PINNED_RUNTIME_SOURCE),
-            pinset_sha256=digest,
-        )
+        PinnedRuntimeRelease(version=5, sources=(map_source, map_source), pinset_sha256=digest)
 
 
 def test_release_rejects_digest_for_different_source_order() -> None:
+    release = _release()
+    reversed_sources = tuple(reversed(release.sources))
+
     with pytest.raises(DeploymentContractError, match="exactly once"):
         PinnedRuntimeRelease(
             version=5,
-            sources=(PINVI_PINNED_RUNTIME_SOURCE, MAP_PINNED_RUNTIME_SOURCE),
-            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+            sources=reversed_sources,
+            pinset_sha256=release.pinset_sha256,
         )
 
 
 @pytest.mark.parametrize("pinset_sha256", ["z" * 64, "a" * 63])
 def test_release_rejects_malformed_pinset_digest(pinset_sha256: str) -> None:
+    sources = source_specs_for(map_revision=_REVISION_A, pinvi_revision=_REVISION_B)
+
     with pytest.raises(DeploymentContractError, match="digest"):
+        PinnedRuntimeRelease(version=5, sources=sources, pinset_sha256=pinset_sha256)
+
+
+def test_release_rejects_a_digest_that_does_not_match_its_sources() -> None:
+    other = _release(map_revision="c" * 40)
+
+    with pytest.raises(DeploymentContractError, match="digest differs"):
         PinnedRuntimeRelease(
             version=5,
-            sources=(MAP_PINNED_RUNTIME_SOURCE, PINVI_PINNED_RUNTIME_SOURCE),
-            pinset_sha256=pinset_sha256,
+            sources=source_specs_for(map_revision=_REVISION_A, pinvi_revision=_REVISION_B),
+            pinset_sha256=other.pinset_sha256,
         )
 
 
 def test_source_specs_and_role_view_are_immutable() -> None:
+    release = _release()
+
     with pytest.raises(FrozenInstanceError):
-        MAP_PINNED_RUNTIME_SOURCE.revision = "a" * 40  # type: ignore[misc]
+        release.source_for("map").revision = "a" * 40  # type: ignore[misc]
     with pytest.raises(TypeError):
-        PINNED_RUNTIME_RELEASE.sources_by_role["map"] = PINVI_PINNED_RUNTIME_SOURCE  # type: ignore[index]
+        release.sources_by_role["map"] = release.source_for("pinvi")  # type: ignore[index]
