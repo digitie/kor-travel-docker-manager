@@ -20,6 +20,7 @@ TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"
 TRANSACTION_STATE_TMP="${STATE_ROOT}/.trusted-release-transaction.json.tmp"
 GLOBAL_LOCK_DIR="/run/lock/kor-travel-docker-manager"
 GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"
+LEASE_TMPFILES_UNIT="/usr/lib/tmpfiles.d/kor-travel-docker-manager.conf"
 
 die() {
   echo "$1" >&2
@@ -612,6 +613,37 @@ if [[ -n "${EXPECTED_SOURCE_REVISION}" && ! "${EXPECTED_SOURCE_REVISION}" =~ ^[0
   die "expected source revision is invalid"
 fi
 if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
+  # 이미 설치된 tmpfiles 유닛이 있으면 lock을 잡기 **전에** 한 번 적용한다.
+  #
+  # 아래 preflight는 lease 디렉터리가 선점돼 있으면 설치를 중단시킨다. 그런데 그 선점을
+  # 막는 유닛의 설치는 스크립트 맨 끝에 있으므로, 구제책이 자신이 막으려는 실패 뒤에
+  # 갇힌다. `d` 타입은 기존 디렉터리의 소유자·mode를 바로잡으므로, 유닛이 한 번이라도
+  # 설치된 호스트는 여기서 스스로 복구된다. 최초 설치 호스트는 아래 오류 메시지가
+  # 수동 복구 경로를 알려 준다.
+  #
+  # 이것은 이 스크립트에서 **lease를 잡기 전에 호스트를 건드리는 유일한 지점**이며,
+  # "lock first" 규율의 의도적 예외다. 성립 근거: 대상이 lease 디렉터리 자신의 소유자와
+  # mode뿐이고, 이미 열려 있는 flock fd는 소유자·mode 변경에 영향받지 않으므로 진행 중인
+  # mutation을 방해하지 않는다. 그 범위를 넘는 작업을 여기에 추가해서는 안 된다.
+  # 실패는 무시한다 — 여기서 못 고쳐도 바로 아래 preflight가 fail-close로 잡는다.
+  # 실행 대상은 root가 boot마다 돌리는 general primitive다(`r`/`R` 삭제, `z`/`Z` 재귀
+  # chown/chmod, `w`/`f` 쓰기, `C`/`L` 복사·링크). 쓰려면 이미 root여야 하므로 상승
+  # 경로는 아니지만, 이 스크립트가 root로 소비하는 다른 모든 입력에 적용하는 검사를
+  # 유일하게 여기만 건너뛸 이유는 없다 — `install_host_lease_tmpfiles`가 source에 거는
+  # 세 가지(symlink 아님·root 소유·group/other 쓰기 없음)를 그대로 건다.
+  if [[ ! -L "${LEASE_TMPFILES_UNIT}" && -f "${LEASE_TMPFILES_UNIT}" ]] \
+    && [[ -x /usr/bin/systemd-tmpfiles ]]; then
+    unit_uid="$(/usr/bin/stat -c '%u' "${LEASE_TMPFILES_UNIT}" 2>/dev/null || true)"
+    unit_mode="$(/usr/bin/stat -c '%a' "${LEASE_TMPFILES_UNIT}" 2>/dev/null || true)"
+    if [[ "${unit_uid}" =~ ^[0-9]+$ && "${unit_mode}" =~ ^[0-7]{3,4}$ ]] \
+      && [[ "${unit_uid}" == "0" && $((8#${unit_mode} & 022)) == "0" ]]; then
+      # 실패는 무시한다 — 여기서 못 고쳐도 바로 아래 preflight가 fail-close로 잡는다.
+      /usr/bin/systemd-tmpfiles --create "${LEASE_TMPFILES_UNIT}" || true
+    else
+      echo "host lease tmpfiles unit is writable or not root-owned; not applying: ${LEASE_TMPFILES_UNIT}" >&2
+    fi
+    unset unit_uid unit_mode
+  fi
   exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
@@ -625,14 +657,30 @@ script = pathlib.Path(sys.argv[1]).resolve(strict=True)
 arguments = sys.argv[2:]
 lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
 lock_path = lock_dir / "global-mutation.lock"
-lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+try:
+    lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+except FileExistsError:
+    # `exist_ok`는 **디렉터리로** 이미 있을 때만 예외를 삼킨다. 일반 파일·FIFO·
+    # dangling symlink로 선점된 경우 — `1777` 아래에서 `touch` 한 번이면 되는 가장
+    # 값싼 선점이다 — 여기서 예외가 나가 버려 아래 진단이 영영 실행되지 않았다.
+    # 아래 lstat/검사가 타입까지 보고 보고하게 넘긴다.
+    pass
 directory_stat = lock_dir.lstat()
 if (
     not stat.S_ISDIR(directory_stat.st_mode)
     or directory_stat.st_uid != 0
     or stat.S_IMODE(directory_stat.st_mode) != 0o700
 ):
-    raise SystemExit("production global mutation lock directory is unsafe")
+    # `/run/lock`은 `1777` sticky라 비특권 사용자가 이 자리를 선점할 수 있다. 원인을
+    # 감춘 채 멈추면 운영자는 복구 경로를 알 수 없으므로 실측값과 명령을 함께 보고한다.
+    raise SystemExit(
+        "production global mutation lock directory is unsafe: "
+        f"{lock_dir} uid={directory_stat.st_uid} "
+        f"mode={stat.S_IMODE(directory_stat.st_mode):04o} "
+        f"type={'dir' if stat.S_ISDIR(directory_stat.st_mode) else 'not-a-directory'}"
+        f" — inspect with `ls -la {lock_dir}`, then remove it as root and rerun"
+        " (it is tmpfs; a reboot also clears it)"
+    )
 flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
@@ -645,7 +693,21 @@ if (
     or stat.S_IMODE(lock_stat.st_mode) != 0o600
 ):
     os.close(fd)
-    raise SystemExit("production global mutation lock is unsafe")
+    # 위 디렉터리 진단과 같은 수준으로 보고한다. 흔한 선점은 "디렉터리를 만든다"가
+    # 아니라 "디렉터리를 만들고 lock 파일까지 심는다"이고(`touch` 한 번 더), 그 경우
+    # 앞의 자가복구가 디렉터리 소유자·mode를 고쳐 버리므로 **여기로 떨어진다**.
+    # `d` 타입은 내용을 지우지 않으니 심어 둔 파일은 남는다. 여기서 실측값을 주지
+    # 않으면 자가복구가 오히려 진단을 지우는 셈이 된다. 게다가 복구된 디렉터리는
+    # `0700 root`라 운영자의 비-root `ls -la`가 거부되므로 경로만으로는 부족하다.
+    raise SystemExit(
+        "production global mutation lock is unsafe: "
+        f"{lock_path} uid={lock_stat.st_uid} "
+        f"mode={stat.S_IMODE(lock_stat.st_mode):04o} "
+        f"nlink={lock_stat.st_nlink} "
+        f"type={'file' if stat.S_ISREG(lock_stat.st_mode) else 'not-a-regular-file'}"
+        f" — inspect with `sudo ls -la {lock_dir}`, then remove it as root and rerun"
+        " (it is tmpfs; a reboot also clears it)"
+    )
 try:
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError as exc:
@@ -1340,4 +1402,81 @@ trusted_release_transaction commit
 trap - EXIT
 if ! trusted_release_transaction reconcile; then
   echo "trusted release committed; post-commit cleanup requires attention" >&2
+fi
+
+# host mutation lease 디렉터리를 부팅 시점에 만든다.
+#
+# `/run/lock`은 `1777` sticky라 런타임 최초 생성이 선점 창이다. 선점되면 소유자·mode
+# 검증이 실패해 모든 컨테이너 mutation이 다음 재부팅까지 거부되고, sticky bit 때문에
+# 정리도 root만 할 수 있다. 이 창은 코드로 닫히지 않고 "부팅 시점에 이미 존재하게
+# 만드는 것"으로만 닫히므로, 사람의 기억이 아니라 설치가 책임진다.
+#
+# release는 이미 commit됐다. 여기서의 실패는 배포를 되돌리지 않고 경고로 보고한다.
+install_host_lease_tmpfiles() {
+  local source="${APP_ROOT}/deploy/tmpfiles.d/kor-travel-docker-manager.conf"
+  local destination="${LEASE_TMPFILES_UNIT}"
+
+  if [[ -L "${source}" || ! -f "${source}" ]]; then
+    echo "host lease tmpfiles unit missing from the installed release: ${source}" >&2
+    return 1
+  fi
+  local source_uid source_mode
+  source_uid="$(/usr/bin/stat -c '%u' "${source}" 2>/dev/null || true)"
+  source_mode="$(/usr/bin/stat -c '%a' "${source}" 2>/dev/null || true)"
+  # 산술 확장에 넣기 전에 형식을 확인한다. `-f` 검사와 `stat` 사이에 파일이 사라지면
+  # `${source_mode}`가 빈 값이 되고, `$((8#))`는 산술 오류라 **두 분기 어느 쪽도 실행되지
+  # 않은 채** 함수가 조용히 빠져나간다 — 신뢰 검사에서 fail-open이다.
+  if [[ ! "${source_uid}" =~ ^[0-9]+$ || ! "${source_mode}" =~ ^[0-7]{3,4}$ ]]; then
+    echo "cannot read host lease tmpfiles unit metadata: ${source}" >&2
+    return 1
+  fi
+  # 이 스크립트의 다른 신뢰 검사(`require_root_locked_dir`)와 같은 기준을 쓴다:
+  # root 소유이면서 group/other 쓰기가 없어야 한다.
+  if [[ "${source_uid}" != "0" || $((8#${source_mode} & 022)) != "0" ]]; then
+    echo "host lease tmpfiles unit is writable or not root-owned: ${source}" >&2
+    return 1
+  fi
+  # `-T`가 없으면 GNU install은 destination이 디렉터리일 때 그 **안에** 써 넣는다.
+  # 그러면 이 분기는 성공하고, 엉뚱한 자리에 파일이 생긴 채 systemd-tmpfiles 쪽이
+  # 원인으로 보고된다. 파일 하나를 파일 하나로 쓴다고 명시한다(`mv -T`와 같은 관례).
+  if ! /usr/bin/install -T -o root -g root -m 0644 -- "${source}" "${destination}"; then
+    echo "cannot install host lease tmpfiles unit: ${destination}" >&2
+    return 1
+  fi
+  if [[ ! -x /usr/bin/systemd-tmpfiles ]]; then
+    echo "systemd-tmpfiles unavailable; host lease directory is not boot-created" >&2
+    return 1
+  fi
+  if ! /usr/bin/systemd-tmpfiles --create "${destination}"; then
+    echo "systemd-tmpfiles could not apply ${destination}" >&2
+    return 1
+  fi
+  # `--create`는 경로가 **디렉터리가 아닌 것으로** 선점돼 있으면 그 사실을 stdout에
+  # 적고 exit 0으로 끝난다. 위 분기만으로는 그 경우가 성공으로 보고된다. 타입은
+  # 직접 확인한다.
+  local lease="${GLOBAL_LOCK_DIR}"
+  if [[ -L "${lease}" || ! -d "${lease}" ]]; then
+    echo "host lease path exists and is not a directory: ${lease}" >&2
+    return 1
+  fi
+  # `d`는 소유자·mode만 바로잡고 **내용은 지우지 않는다.** 이미 선점된 호스트라면
+  # 침입자가 심어 둔 파일이 그대로 남는다. lock fd 검증이 fail-close로 잡지만,
+  # 설치 시점에 운영자에게 보이는 편이 낫다.
+  # `2>/dev/null || true`로 감싸면 find 실패가 "잔여 항목 없음"으로 둔갑한다 —
+  # 감사(audit)가 fail-open이 된다. 실패는 실패로 보고한다.
+  local stray
+  if ! stray="$(/usr/bin/find "${lease}" -mindepth 1 ! -uid 0)"; then
+    echo "cannot audit host lease directory contents: ${lease}" >&2
+    return 1
+  fi
+  if [[ -n "${stray}" ]]; then
+    echo "host lease directory contains entries not owned by root:" >&2
+    printf '%s\n' "${stray}" >&2
+    return 1
+  fi
+  return 0
+}
+
+if ! install_host_lease_tmpfiles; then
+  echo "trusted release committed; host lease boot provisioning requires attention" >&2
 fi

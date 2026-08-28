@@ -36,6 +36,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     publish_root_read_only_artifact,
     read_owner_only_artifact,
     read_root_read_only_artifact,
+    replace_root_read_only_artifact,
     sha256_bytes,
     validate_application_final_permit,
     validate_dagster_metadata_permit,
@@ -779,14 +780,61 @@ def test_fixed_artifact_publisher_requires_root(
 ) -> None:
     monkeypatch.setattr("os.geteuid", lambda: 1000)
 
-    with pytest.raises(MapApplication300ContractError, match="requires root"):
+    with pytest.raises(
+        MapApplication300ContractError, match="fixed artifact publishing requires root"
+    ):
         publish_root_read_only_artifact(tmp_path / "permit.json", b"{}")
 
 
-def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
+def test_fixed_artifact_replacement_requires_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """reconciliation은 owner-only 0600 결과가 아닌 root-owned 0444 fence를 읽는다."""
+    """읽기 경로에서 root 조건을 뺀 근거는 쓰기 두 진입점이 각각 막는다는 것이다.
+
+    publish 쪽만 테스트되어 있었다. replace가 조용히 열리면 그 근거가 무너진다.
+    """
+
+    monkeypatch.setattr("os.geteuid", lambda: 1000)
+
+    with pytest.raises(
+        MapApplication300ContractError, match="fixed artifact replacement requires root"
+    ):
+        replace_root_read_only_artifact(
+            tmp_path / "permit.json", expected_old_sha256=_digest("a"), raw=b"{}"
+        )
+
+
+def _root_owned_stat(metadata: os.stat_result) -> os.stat_result:
+    mode = stat.S_IFMT(metadata.st_mode) | (
+        0o755 if stat.S_ISDIR(metadata.st_mode) else 0o444
+    )
+    return os.stat_result(
+        (
+            mode,
+            metadata.st_ino,
+            metadata.st_dev,
+            metadata.st_nlink,
+            0,
+            metadata.st_gid,
+            metadata.st_size,
+            metadata.st_atime,
+            metadata.st_mtime,
+            metadata.st_ctime,
+        )
+    )
+
+
+@pytest.mark.parametrize("euid", [0, 1000])
+def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, euid: int
+) -> None:
+    """reconciliation은 owner-only 0600 결과가 아닌 root-owned 0444 fence를 읽는다.
+
+    ``euid``를 함께 돌리는 이유: 읽기 경로는 호출자의 euid를 보지 않는다는 것이 계약인데,
+    이 테스트가 `0`으로만 돌던 동안에는 읽기 경로에 root 게이트를 되돌려 넣어도 전체
+    스위트가 green이었다. 바이트는 world-readable(`0444`)이 계약이므로 비-root 읽기는
+    아무것도 넓히지 않는다 — 쓰기는 진입점 두 곳이 각자 root를 요구한다.
+    """
 
     target_directory = tmp_path / "fixed"
     target_directory.mkdir(mode=0o755)
@@ -803,31 +851,14 @@ def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
     original_lstat = Path.lstat
     original_fstat = module.os.fstat
 
-    def root_owned(metadata: os.stat_result) -> os.stat_result:
-        mode = stat.S_IFMT(metadata.st_mode) | (
-            0o755 if stat.S_ISDIR(metadata.st_mode) else 0o444
-        )
-        return os.stat_result(
-            (
-                mode,
-                metadata.st_ino,
-                metadata.st_dev,
-                metadata.st_nlink,
-                0,
-                metadata.st_gid,
-                metadata.st_size,
-                metadata.st_atime,
-                metadata.st_mtime,
-                metadata.st_ctime,
-            )
-        )
-
-    monkeypatch.setattr(module.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(module.os, "geteuid", lambda: euid)
     monkeypatch.setattr(
-        Path, "lstat", lambda path: root_owned(original_lstat(path))
+        Path, "lstat", lambda path: _root_owned_stat(original_lstat(path))
     )
     monkeypatch.setattr(
-        module.os, "fstat", lambda descriptor: root_owned(original_fstat(descriptor))
+        module.os,
+        "fstat",
+        lambda descriptor: _root_owned_stat(original_fstat(descriptor)),
     )
 
     assert read_root_read_only_artifact(target) == raw

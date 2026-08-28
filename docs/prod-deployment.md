@@ -282,6 +282,98 @@ sudo ls -l ~root/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/p
 거부한다. **권한을 완화하지 마라** — 그 권한이 이 파일의 유일한 보호다. backend를 해당
 소유자 권한으로 재기동하거나 SSH에서 해시를 직접 교체한다.
 
+### 3.z host mutation lease 디렉터리는 부팅 시점에 만든다
+
+`KTDM_DEPLOYMENT_ENVIRONMENT=production`에서 **모든** Compose mutation은
+`/run/lock/kor-travel-docker-manager/global-mutation.lock` 하나를 지난다
+(`c6c_global_mutation_lock_path`). 비운영에서는 이 lease가 `$HOME/.local/state/...`로 간다.
+
+**단, rebuild lease는 환경과 무관하다.** `pinned_runtime_rebuild_lock_path()`는 조건 없이
+`/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock`을 반환한다. rehearsal
+호스트도 이 디렉터리를 쓰므로 이 절은 비운영 호스트에도 적용된다.
+
+Debian 계열의 `/run/lock`은 `1777` sticky다(n150 실측 `drwxrwxrwt root:root`). Manager가
+런타임에 이 디렉터리를 처음 만드는 구조라면, 재부팅 직후 비특권 로컬 사용자가 같은 이름을
+선점할 수 있다. 그러면 소유자·mode 검증이 실패해 **모든 컨테이너 mutation이 다음
+재부팅까지 거부**되고, sticky bit 때문에 정리도 root만 할 수 있다. `/run/lock`은 tmpfs라
+디렉터리가 재부팅마다 사라지므로, 이 창은 부팅할 때마다 다시 열린다.
+
+**이 창은 코드로 닫히지 않는다.** 런타임 검증을 아무리 조여도 "먼저 만든 쪽이 이긴다"는
+성질은 남는다. 부팅 시점에 이미 존재하게 만드는 것만이 닫는다.
+
+`scripts/install-ktdm-trusted-release`가 설치 말미에 아래를 자동으로 수행한다. 사람이
+기억해야 하는 절차가 아니다.
+
+```bash
+install -o root -g root -m 0644 \
+  /opt/kor-travel-docker-manager/deploy/tmpfiles.d/kor-travel-docker-manager.conf \
+  /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+```
+
+실패하면 release는 유지한 채 `host lease boot provisioning requires attention`을 stderr로
+보고한다. **installer의 종료 코드는 release 설치 결과만 나타낸다** — lease provisioning
+실패는 종료 코드에 반영되지 않으므로, 자동화는 stderr 또는 아래 확인 명령으로 판단한다.
+
+installer는 **시작 시점에도** 이미 설치된 유닛이 있으면 한 번 적용한다. 설치 절차의 첫
+단계가 이 lease를 잡는 것이라, 선점된 호스트에서는 구제책(맨 끝의 유닛 설치)이 자신이
+막으려는 실패 뒤에 갇히기 때문이다. 유닛이 한 번이라도 설치된 호스트는 이 조기 적용으로
+스스로 복구되고, 최초 설치 호스트는 preflight 오류가 실측 소유자·mode와 복구 명령을
+함께 보고한다.
+
+설치 뒤 확인:
+
+```bash
+ls -l /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+sudo ls -la /run/lock/kor-travel-docker-manager     # -ld가 아니라 -la로 본다
+```
+
+`ls -la`인 이유: tmpfiles의 `d` 타입은 기존 디렉터리의 **소유자와 mode만 바로잡고 내용은
+지우지 않는다.** 이미 선점된 호스트에서 `--create`를 돌리면 디렉터리는 `drwx------ root
+root`로 깨끗해 보이지만 침입자가 심어 둔 파일이 남는다. lock fd 검증(`st_uid == 0`,
+`nlink == 1`, `0600`)이 fail-close로 잡고 installer도 root 아닌 항목을 발견하면 보고하지만,
+눈으로도 확인한다.
+
+설치 직후 정상 상태는 **빈 디렉터리**다. tmpfiles는 디렉터리만 만든다.
+
+```
+drwx------ 2 root root ...  .
+drwxrwxrwt 5 root root ...  ..
+```
+
+lock 파일은 나중에 생긴다 — `global-mutation.lock`은 첫 mutation 때,
+`pinned-runtime-rebuild.lock`은 첫 `rebuild-pinned` 때다. 둘 다 tmpfs라 재부팅하면
+사라진다. 즉 **비어 있다고 해서 설치가 실패한 것이 아니다.** 가동 중 상태는 이렇다.
+
+```
+drwx------ 2 root root ...  .
+drwxrwxrwt 5 root root ...  ..
+-rw------- 1 root root ...  global-mutation.lock
+-rw------- 1 root root ...  pinned-runtime-rebuild.lock
+```
+
+`root` 이외가 소유한 항목이 보이면 선점된 것이다.
+
+**trusted installer를 쓰지 않는 호스트**(2절의 rsync 배포본, rehearsal 등)에는 `deploy/`
+트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접
+실행한다. 유닛 자체는 release와 무관하므로 재설치할 필요가 없다.
+
+**이 유닛은 `/opt/kor-travel-docker-manager` 밖에 남는 유일한 설치 산출물이다.** release
+rollback은 이것을 되돌리지 않는다 — 이전 release로 내려가도 `/usr/lib/tmpfiles.d`의 유닛은
+그대로 남는다. 내용이 경로·mode·소유자 한 줄뿐이라 실무상 문제가 되지 않지만, 완전히
+제거하려면 다음과 같이 한다.
+
+```bash
+sudo rm -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+sudo rm -rf /run/lock/kor-travel-docker-manager   # 진행 중인 mutation이 없을 때만
+```
+
+제거하면 lease 디렉터리는 다시 런타임에 생성되고 부팅마다 선점 창이 열린다.
+
+> **백엔드는 계속 root로 돈다.** 이 절은 lease 디렉터리의 생성 시점만 다룬다. 전용 서비스
+> 계정 전환은 `docs/tasks.md`의 `NONROOT-BACKEND`로 분리했다 — ADR-41의 "기각한 설계"
+> 절에 왜 환경변수 기반 seam이 계약이 되지 못하는지 기록해 두었다.
+
 ## 4. 프론트엔드 (Next.js, :12905)
 
 ```bash

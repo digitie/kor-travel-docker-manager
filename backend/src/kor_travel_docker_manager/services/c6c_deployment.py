@@ -2134,13 +2134,14 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
     _prepare_c6c_lock_directory(lock_path.parent)
     fd: int | None = None
     context_token = None
+    production_lease = lock_path == _C6C_GLOBAL_MUTATION_LOCK
     try:
         try:
             flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(lock_path, flags, 0o600)
-            _validate_c6c_lock_fd(fd, production=lock_path == _C6C_GLOBAL_MUTATION_LOCK)
+            _validate_c6c_lock_fd(fd, production=production_lease)
         except OSError as exc:
             raise DeploymentContractError("cannot acquire C6c deployment lock") from exc
         try:
@@ -2149,6 +2150,10 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
             raise DeploymentContractError(
                 "another C6c compatible-pair operation is already active"
             ) from exc
+        _assert_locked_fd_still_owns_path(fd, lock_path)
+        # 소유권·mode 계약도 다시 본다. 신원(inode)만 재대조하면, 잠그는 사이에 그
+        # inode가 world-writable로 바뀌어도 통과한다.
+        _validate_c6c_lock_fd(fd, production=production_lease)
         context_token = _HELD_DEPLOYMENT_LOCKS.set(held_locks | {lock_key})
         yield
     finally:
@@ -2225,6 +2230,10 @@ def _prepare_c6c_lock_directory(path: Path) -> None:
         raise DeploymentContractError(
             "production compatible-pair managed workflow requires root"
         )
+    # `/run/lock`은 `1777` sticky다. 런타임 최초 생성은 그래서 선점 창이고, 이 창은
+    # 코드로 닫히지 않는다 — 부팅 시점에 이미 존재하게 만드는 것만이 닫는다
+    # (`deploy/tmpfiles.d/kor-travel-docker-manager.conf`). 아래 `mkdir`은 그 유닛이
+    # 설치되지 않은 호스트를 위한 폴백이며, 창을 없애지 못한다.
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path == _C6C_GLOBAL_MUTATION_LOCK.parent:
         st = path.lstat()
@@ -2234,6 +2243,31 @@ def _prepare_c6c_lock_directory(path: Path) -> None:
             or stat.S_IMODE(st.st_mode) != 0o700
         ):
             raise DeploymentContractError("production C6c deployment lock directory is unsafe")
+
+
+def _assert_locked_fd_still_owns_path(fd: int, lock_path: Path) -> None:
+    """flock을 잡은 inode가 지금도 그 경로의 inode인지 확인한다.
+
+    ``flock``은 경로가 아니라 inode 단위다. 우리가 열고 잠근 사이에 누군가 그 경로를
+    unlink하고 새 파일을 만들었다면, 두 주체가 서로 다른 inode를 잠근 채 자기가
+    상호배제를 얻었다고 믿게 된다. ``_verified_inherited_global_mutation_lock_fd``는
+    이미 같은 대조를 한다.
+
+    **창을 좁힐 뿐 닫지는 못한다.** 두 주체가 각자 자기 시점에 통과한 뒤 서로 다른
+    inode를 들고 있는 상태는 시점 검사로 잡히지 않는다. 상호배제는 여전히 lease
+    디렉터리에 아무도 쓸 수 없다는 전제(`0700 root:root`) 위에 성립한다. 그 전제가
+    코드 밖에 있으므로, 깨졌을 때 조용히 통과하지는 않게 해 두는 것이 목적이다.
+    """
+
+    descriptor = os.fstat(fd)
+    try:
+        current = lock_path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            "C6c deployment lock vanished after acquisition"
+        ) from exc
+    if (descriptor.st_dev, descriptor.st_ino) != (current.st_dev, current.st_ino):
+        raise DeploymentContractError("C6c deployment lock was replaced during acquisition")
 
 
 def _validate_c6c_lock_fd(fd: int, *, production: bool) -> None:

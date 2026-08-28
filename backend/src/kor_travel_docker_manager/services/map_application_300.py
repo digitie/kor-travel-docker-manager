@@ -2196,7 +2196,18 @@ def _require_artifact_directory(path: Path) -> None:
 
 
 def _require_fixed_artifact_directory(path: Path) -> None:
-    """root만 쓰고 비-root container가 읽을 수 있는 fixed mount를 검증한다."""
+    """root만 쓰고 비-root가 읽을 수 있는 fixed mount를 검증한다.
+
+    **호출자의 euid는 보지 않는다.** 이 헬퍼가 지키는 것은 "이 디렉터리를 root만 쓸 수
+    있었는가"이고, 그 답은 디렉터리의 소유자와 mode(`uid 0`, `0755`)에 전부 들어 있다.
+    여기에 euid 조건을 얹으면 **읽기까지 root 전용이 된다** — 컨테이너와 진단 경로가
+    fence·permit을 읽지 못하게 되는데, 그 아티팩트는 애초에 `0444`로 세상에 읽히라고
+    만든 것이다.
+
+    쓰기는 진입점 두 곳(``publish_root_read_only_artifact``,
+    ``replace_root_read_only_artifact``)이 각자 root를 요구하므로, 이 조건이 빠져도
+    발행 권한은 좁아진 채로 남는다.
+    """
 
     try:
         metadata = path.lstat()
@@ -2205,8 +2216,7 @@ def _require_fixed_artifact_directory(path: Path) -> None:
             "fixed artifact directory is unavailable"
         ) from exc
     if (
-        os.geteuid() != 0
-        or not stat.S_ISDIR(metadata.st_mode)
+        not stat.S_ISDIR(metadata.st_mode)
         or stat.S_ISLNK(metadata.st_mode)
         or metadata.st_uid != 0
         or stat.S_IMODE(metadata.st_mode) != 0o755

@@ -2541,3 +2541,91 @@ sealed paired candidate가 같은 commit을 선언해야 한다**는 admission�
 
 pin 회전 UI(2-step 승인), typed 진단 소비, preflight readiness 노출은
 `docs/ktdctl-ui-migration.md` 3부의 별도 태스크(KUM-M5·M6·M7)로 분리한다.
+
+## ADR-41: host mutation lease는 부팅 시점에 만들고, 상호배제는 자기 자신이 보증한다
+
+- 상태: accepted
+- 날짜: 2026-08-28
+- 결정자: agent (오너 승인 — root 권한 축소 후속)
+
+### 컨텍스트
+
+`KTDM_DEPLOYMENT_ENVIRONMENT=production`에서 모든 Compose mutation은
+`/run/lock/kor-travel-docker-manager/global-mutation.lock` 하나를 지난다. 이 디렉터리를
+Manager가 **런타임에 처음 만들고** 있었고, 부모인 `/run/lock`은 Debian 계열에서 `1777`
+sticky다(n150 실측 `drwxrwxrwt root:root`, tmpfs). 즉 재부팅마다 창이 다시 열리고, 그 사이
+비특권 로컬 사용자가 같은 이름을 선점하면 소유자·mode 검증이 실패해 **모든 컨테이너
+mutation이 다음 재부팅까지 거부**된다. sticky bit 때문에 정리도 root만 할 수 있다.
+
+두 번째로, `c6c_deployment_lock`은 `os.open` → `_validate_c6c_lock_fd` → `flock` 순으로
+동작하면서 **획득 뒤 경로를 다시 대조하지 않았다.** `flock`은 경로가 아니라 inode 단위이므로,
+그 사이 경로가 새 inode로 갈아끼워지면 두 주체가 서로 다른 inode를 잠근 채 각자 상호배제를
+얻었다고 믿는다. 같은 파일의 `_verified_inherited_global_mutation_lock_fd`는 이미 `(st_dev,
+st_ino)`를 대조하고 있었다 — idiom은 있었고 일반 경로에만 빠져 있었다.
+
+### 결정
+
+1. lease 디렉터리는 `systemd-tmpfiles`가 early boot에 만든다
+   (`deploy/tmpfiles.d/kor-travel-docker-manager.conf`), 그리고 **그 유닛의 설치는
+   `scripts/install-ktdm-trusted-release`가 책임진다.**
+2. `flock` 획득 직후 fd의 `(st_dev, st_ino)`를 경로의 것과 대조하고, 불일치·부재는
+   fail-close한다.
+
+lease 소유자 계약은 그대로 root(`uid 0`, `0700` 디렉터리, `0600`/`nlink==1` lock 파일)다.
+
+### 근거
+
+- **선점 창은 시점의 문제이지 검증의 문제가 아니다.** 런타임 검증을 아무리 조여도 "먼저
+  만든 쪽이 이긴다"는 성질은 남는다. tmpfiles의 `d` 타입은 early boot(`sysinit.target`
+  이전)에 돌고 기존 디렉터리의 소유자·mode까지 바로잡으므로, 경쟁할 사용자 프로세스가
+  아직 없다.
+- **문서에 적힌 절차는 배달된 것이 아니다.** 최초 설계는 운영자가 `sudo install` 두 줄을
+  기억해 실행하는 것이었다. 그러면 창은 "사람이 잊지 않는 한" 닫힌다 — 즉 닫히지 않는다.
+  installer가 수행하고, 실패하면 release는 유지한 채 경고로 보고한다.
+- **`d`는 내용을 지우지 않는다.** 이미 선점된 호스트에서 `--create`는 디렉터리를 깨끗하게
+  보이게 만들지만 심어 둔 파일은 남는다. installer가 root 아닌 항목을 찾아 보고하고,
+  런북의 확인 명령을 `ls -ld`가 아니라 `ls -la`로 둔다.
+- **획득 뒤 재대조는 창을 좁힌다 — 닫지는 못한다.** 정확히 적어 둔다: `open`과 `flock`
+  사이의 바꿔치기는 잡지만, 두 주체가 **각자 자기 시점에** 통과한 뒤 서로 다른 inode를
+  잡고 있는 상태는 시점 검사로 잡히지 않는다. 상호배제 자체는 여전히 "lease 디렉터리에
+  아무도 쓸 수 없다"(`0700 root:root`)를 전제로 성립한다. 그래도 넣는 이유는, 그 전제가
+  코드 밖에 있고 전제가 바뀌는 순간(예: 서비스 계정과의 디렉터리 공유) 깨진 결과가
+  "두 주체가 동시에 일곱 runtime을 만진다"이기 때문이다. 신원 대조와 함께 소유권·mode
+  계약(`_validate_c6c_lock_fd`)도 다시 확인해, 잠그는 사이에 mode가 넓어진 inode를
+  들고 임계 구역에 들어가지 않게 한다.
+  `NONROOT-BACKEND`는 이 전제를 **유지한 채로**(소유자는 root, 접근만 그룹) 설계해야 한다.
+
+### 기각한 설계: `KTDM_SERVICE_USER` 환경변수 seam
+
+같은 작업에서 비-root 백엔드를 가능하게 하려고 "lease 소유자로 root와 선언된 계정을 함께
+인정한다"를 구현했다가 **적대 리뷰에서 기각했다.** 기록해 둔다.
+
+- **자기 증명이라 계약이 되지 못한다.** `configured_service_uid()`는 `os.environ`만 읽었다.
+  백엔드 전체에서 `load_dotenv`는 `main.py`의 한 곳뿐이고 기본값 `override=False`라 프로세스
+  env가 root 소유 `.env`를 이긴다. `cli.py`는 `.env`를 아예 읽지 않는다. 따라서 uid *U*는
+  `KTDM_SERVICE_USER=U`를 export하는 것만으로 두 검사를 모두 통과한다 — `euid == euid`.
+- **문서대로 하면 운영이 멈춘다.** `sudo`는 Debian 기본 `env_reset`으로 `KTDM_*`를 벗긴다.
+  `.env`에 계정을 선언하고 tmpfiles UID를 그 계정으로 바꾸면, root의
+  `configured_service_uid()`는 `0`을 반환하고 디렉터리 소유자는 서비스 계정이라
+  `rebuild-pinned`·`pin rotate-pair`·`pin apply-pending`·legacy retirement가 전부 거부된다.
+- **디렉터리 소유자를 넓히면 flock 상호배제가 깨진다.** 서비스 계정이 디렉터리 쓰기 권한을
+  가지면 lock 파일을 unlink하고 새로 만들 수 있고, 그러면 root의 rebuild와 백엔드의 mutation이
+  서로 다른 inode를 잠근 채 동시에 진행된다. (이 결함의 일반형은 위 결정 2로 막았다.)
+- **두 lease의 계약이 어긋난다.** `pinned-runtime-rebuild.lock`은 같은 디렉터리에 있으면서
+  `production=False`라 `{os.geteuid()}`를 요구한다. 디렉터리 소유자만 넓히면 서비스 계정이
+  그 파일을 먼저 만들어 root의 rebuild를 부팅 내내 거부할 수 있다.
+
+교훈은 **신뢰 결정의 입력을 프로세스 env에서 읽지 않는다**는 것이다. 이 저장소는 이미 옳은
+패턴을 갖고 있다 — `_capture_c6c_deployment_lock_snapshot`은 **production 판정에 한해**
+(비운영 분기는 다섯 키를 `os.environ`에서 보충한다) root 소유 `.env` 바이트를 읽어
+identity를 고정한 뒤 그 값으로 lock 경로를 정한다.
+
+### 후속
+
+비-root 백엔드는 `docs/tasks.md`의 `NONROOT-BACKEND`로 분리한다. 올바른 방향은 소유자를
+넓히는 것이 아니라 **소유자는 root로 두고 접근만 그룹으로 여는 것**이다: lease 디렉터리
+`0710 root:<svcgrp>`(서비스 계정은 traverse만, 생성·unlink 불가), lock 파일도 tmpfiles가
+`f` 타입으로 미리 만들어 `0660 root:<svcgrp>`, rebuild lease는 `0600 root:root` 유지.
+그러면 어떤 파일도 비-root가 만들 수 없으므로 자기 증명이 성립하지 않고, 기대 gid를 잘못
+선언해도 fail-close다. 서비스 identity는 `.env` 스냅샷에서 파라미터로 주입한다.
+

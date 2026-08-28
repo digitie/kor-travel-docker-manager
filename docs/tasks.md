@@ -15,6 +15,7 @@
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 | **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (M1~M3 완료, M4의 public generation API/CLI 완료) | `[/]` | M4 UI 패널·확장 receipt/fence 관측과 M5~M7, v3 문서 3부의 나머지 태스크 분해 |
 | **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종을 Map attestation exact-dict에 동시 정렬 | `[/]` | Manager #254와 Map #1112가 모두 병합되고 CI가 exact 16-key·committed semantics를 확인한 뒤에만 새 재구축 |
+| **NONROOT-BACKEND** | n150 백엔드를 전용 서비스 계정으로 내린다 (환경변수 기반 첫 설계는 ADR-41에서 기각) | `[ ]` | 소유자는 root로 두고 접근만 그룹으로 연다 — lease 디렉터리 `0710 root:<svcgrp>`, lock 파일도 tmpfiles `f` 타입으로 `0660 root:<svcgrp>` 선생성, rebuild lease는 `0600 root:root` 유지. 서비스 identity는 `os.environ`이 아니라 `.env` 스냅샷에서 파라미터로 주입. 격리 환경에서 root/서비스 계정 양쪽 mutation 1회씩 검증 |
 
 ## M05 재개 규율
 
