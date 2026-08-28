@@ -211,7 +211,7 @@ fail-close한다. 따라서 파일을 편집해 임의 저장소를 가리키게
 
 ```bash
 ktdctl pin show [--json]     # 현재 pin·digest·회전 메타·차단 목록 (읽기 전용)
-ktdctl pin verify [--json]   # digest 재계산·canonical URL·공개 사본 정합 (읽기 전용)
+ktdctl pin verify [--json]   # registry와 v6/v8 generation 공개 사본 strict 정합 (읽기 전용)
 ktdctl pin publish-generation --manifest <absolute-v6-path> --journal <absolute-v8-path> --confirm
 ktdctl pin init --confirm    # 호스트 최초 1회 (기본 seed: config/runtime-pins.seed.json)
 ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm
@@ -274,9 +274,10 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
   "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다.
 - **차단 하한선은 코드가 소유한다.** registry가 손상되거나 오래된 사본으로 시딩돼도
   d9 계열 historical 차단은 유지된다 — 목록은 데이터, 하한선은 코드다.
-- `pin verify`는 현재 pinset이 재시도 금지 상태이거나 공개 사본이 최신이 아니면
-  비정상 종료한다. digest가 맞다는 이유만으로 0을 반환하면 운영자가 rebuild 직전에
-  잘못 안심하게 되기 때문이다.
+- `pin verify`는 현재 pinset이 재시도 금지 상태이거나 registry/generation 공개 사본이
+  incomplete·malformed·drift이면 비정상 종료한다. pair 회전 직후의 완전한 이전 generation은
+  `pending_rebuild`로 알리되 current라고 부르지 않는다. digest가 맞다는 이유만으로 0을 반환하면
+  운영자가 rebuild 직전에 잘못 안심하게 되기 때문이다.
 - 의도적으로 `pin unblock`은 제공하지 않는다. 해소 경로는 새 revision으로의 회전이다.
 
 ### 5.2 API

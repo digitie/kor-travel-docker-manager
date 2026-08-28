@@ -260,7 +260,8 @@ v3 교차 감사의 결론을 한 문장으로 요약하면: **Manager가 이미
 - `ktdctl pin init --confirm` — 최초 부트스트랩(위).
 - `ktdctl pin show [--json]` — registry 내용 + digest + 회전 메타 + **[v3]** lifecycle
   (`history`·`blocked_pinsets` 포함). 읽기 전용.
-- `ktdctl pin verify [--json]` — digest 재계산 대조 + canonical URL 대조. 읽기 전용.
+- `ktdctl pin verify [--json]` — digest·canonical URL과 registry/generation public copy strict
+  대조. 읽기 전용. pair 회전 직후의 완전한 이전 generation은 `pending_rebuild`로 분리한다.
 - `ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm` —
   검증 → digest 자동 계산 → atomic write → 이전 파일을
   `runtime-pins.<old-digest>.json`으로 보존(회전 이력 = 롤백 소스) → backend용

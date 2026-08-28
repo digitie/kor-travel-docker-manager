@@ -525,6 +525,74 @@ def test_public_generation_copy_fails_closed_when_all_public_artifacts_are_inval
     assert observed["journal"] is None
 
 
+def test_public_generation_copy_fails_closed_when_only_one_artifact_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=_generation()),
+    )
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "unknown"
+    assert observed["manifest"] is None
+    assert observed["journal"] is None
+    assert observed["summary"]["state"] == "unknown"
+
+
+def test_public_generation_copy_rejects_mismatched_manifest_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=_generation("a")),
+    )
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", _journal("b"))
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "unverified"
+    assert observed["pinset_binding"]["status"] == "unknown"
+    assert observed["summary"]["state"] == "unverified"
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "writable"])
+def test_public_generation_writer_rejects_an_unsafe_public_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    public_root = tmp_path / "public"
+    if unsafe == "symlink":
+        target = tmp_path / "target"
+        target.mkdir(mode=0o755)
+        public_root.symlink_to(target, target_is_directory=True)
+    else:
+        public_root.mkdir(mode=0o755)
+        os.chmod(public_root, 0o777)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="canonical absolute path|public copy directory is unsafe",
+    ):
+        write_manifest(
+            state / "pinned-runtime-generation-v6.json",
+            PinnedRuntimeManifest(version=6, active_generation=_generation()),
+        )
+
+
 def test_public_generation_binding_distinguishes_current_pair_and_pending_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

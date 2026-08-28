@@ -950,14 +950,14 @@ def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, cap
     show_output = capsys.readouterr().out
     assert '"blocked_pinsets"' in show_output
 
-    # seed의 현재 pinset이 terminal이면 verify는 비정상 종료로 그 사실을 알린다 —
-    # digest가 맞다는 이유로 0을 반환하면 운영자가 rebuild 직전에 안심하게 된다.
+    # generation public copy가 없으면 registry digest가 맞아도 verify는 비정상 종료한다.
+    # registry만 보고 0을 주면 M05 public generation gate가 반쪽 상태를 놓친다.
     verify_code = main(["pin", "verify", "--json"])
     verify_output = capsys.readouterr().out
     assert '"digest_recomputation": "ok"' in verify_output
     assert '"current_pinset_is_blocked"' in verify_output
-    seed_blocks_current = '"current_pinset_is_blocked": true' in verify_output
-    assert verify_code == (1 if seed_blocks_current else 0)
+    assert '"generation_public_copy": "invalid"' in verify_output
+    assert verify_code == 1
     assert pin_cli_env.read_bytes() == before
 
 

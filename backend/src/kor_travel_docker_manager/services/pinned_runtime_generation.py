@@ -3105,11 +3105,14 @@ def read_published_pinned_runtime_generation() -> dict[str, object]:
         else:
             journal = cast(PinnedRuntimeRebuildJournal, parsed)
 
-    if manifest is None and journal is None:
+    # manifest와 journal은 같은 committed generation을 증명하는 한 쌍이다. 하나만
+    # 공개됐거나 한쪽이 깨졌다면 raw 한 조각을 API로 돌려 주지 않는다. 부분 사본을
+    # complete generation으로 오인하면 terminal pinset 재시도 gate가 무력화된다.
+    if manifest is None or journal is None:
         return {
             "status": "unknown",
             "source": "published_copy",
-            "detail": "pinned runtime generation public copy is unavailable or invalid",
+            "detail": "pinned runtime generation public copy is incomplete or invalid",
             "manifest": None,
             "journal": None,
             "pinset_binding": _published_generation_pinset_binding(
@@ -3119,6 +3122,24 @@ def read_published_pinned_runtime_generation() -> dict[str, object]:
             "summary": _published_generation_summary(
                 manifest=None,
                 journal=None,
+                pinset_binding="unknown",
+            ),
+        }
+
+    if manifest.active_generation != journal.candidate:
+        return {
+            "status": "unverified",
+            "source": "published_copy",
+            "detail": "published manifest and rebuild journal generation differ",
+            "manifest": manifest.to_payload(),
+            "journal": journal.to_payload(),
+            "pinset_binding": _published_generation_pinset_binding(
+                manifest=manifest, journal=journal
+            ),
+            "terminal": None,
+            "summary": _published_generation_summary(
+                manifest=manifest,
+                journal=journal,
                 pinset_binding="unknown",
             ),
         }
@@ -3160,7 +3181,11 @@ def _published_generation_pinset_binding(
     journal이 다른 pair면 `drift`로 나눠 사람이 one-shot을 잘못 시작하지 않게 한다.
     """
 
-    if manifest is None and journal is None:
+    if (
+        manifest is None
+        or journal is None
+        or manifest.active_generation != journal.candidate
+    ):
         return {
             "status": "unknown",
             "registry_pinset_sha256": None,
@@ -3244,6 +3269,19 @@ def _published_generation_summary(
             "manifest_version": None,
             "journal_version": None,
         }
+    if manifest is not None and journal is not None and (
+        manifest.active_generation != journal.candidate
+    ):
+        return {
+            "state": "unverified",
+            "text": "공개된 manifest와 rebuild journal의 세대가 일치하지 않습니다.",
+            "next_action": (
+                "sudo -n backend/.venv/bin/ktdctl pin publish-generation "
+                "--manifest <absolute-v6-path> --journal <absolute-v8-path> --confirm"
+            ),
+            "manifest_version": manifest.version,
+            "journal_version": journal.version,
+        }
     if journal is not None and journal.pinvi_role_lifecycle_block is not None:
         return {
             "state": "action_required",
@@ -3272,19 +3310,6 @@ def _published_generation_summary(
             "next_action": "" if pinset_binding == "pending_rebuild" else "sudo -n backend/.venv/bin/ktdctl pin verify",
             "manifest_version": None if manifest is None else manifest.version,
             "journal_version": None if journal is None else journal.version,
-        }
-    if manifest is not None and journal is not None and (
-        manifest.active_generation != journal.candidate
-    ):
-        return {
-            "state": "unverified",
-            "text": "공개된 committed manifest와 rebuild journal의 세대가 일치하지 않습니다.",
-            "next_action": (
-                "sudo -n backend/.venv/bin/ktdctl pin publish-generation "
-                "--manifest <absolute-v6-path> --journal <absolute-v8-path> --confirm"
-            ),
-            "manifest_version": manifest.version,
-            "journal_version": journal.version,
         }
     return {
         "state": "committed",
@@ -3683,66 +3708,183 @@ def _write_public_json(path: Path, payload: Mapping[str, object]) -> None:
     ).encode("utf-8")
     if len(raw) > _MAX_STATE_BYTES:
         raise DeploymentContractError("pinned runtime public copy is too large")
-    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    os.chmod(path.parent, 0o755)
-    temporary: Path | None = None
+    if path.name not in {_MANIFEST_FILENAME, _PUBLIC_JOURNAL_FILENAME}:
+        raise DeploymentContractError("pinned runtime public copy filename is invalid")
+    directory = _open_public_state_directory(path.parent, create=True)
+    temporary_name: str | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            os.fchmod(handle.fileno(), 0o644)
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        temporary = None
-        _fsync_directory(path.parent)
+        _validate_existing_public_file(directory, path.name)
+        temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=directory,
+        )
+        try:
+            os.fchmod(descriptor, 0o644)
+            _write_all(descriptor, raw)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        temporary_name = None
+        os.fsync(directory)
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy cannot be written") from exc
     finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        os.close(directory)
 
 
 def _read_public_json(path: Path, label: str) -> object:
     """public copy를 symlink·권한·크기 검증 뒤 읽는다."""
 
     try:
-        before = path.lstat()
-    except FileNotFoundError:
-        raise DeploymentContractError(f"{label} is missing") from None
-    except OSError as exc:
-        raise DeploymentContractError(f"{label} cannot be inspected") from exc
-    euid = os.geteuid()
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or before.st_uid not in {0, euid}
-        or stat.S_IMODE(before.st_mode) & 0o022
-        or before.st_nlink != 1
-        or before.st_size > _MAX_STATE_BYTES
-    ):
-        raise DeploymentContractError(f"{label} is unsafe")
+        directory = _open_public_state_directory(path.parent, create=False)
+    except DeploymentContractError:
+        raise
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError as exc:
-        raise DeploymentContractError(f"{label} cannot be opened safely") from exc
-    try:
-        after = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(after.st_mode)
-            or after.st_uid not in {0, euid}
-            or stat.S_IMODE(after.st_mode) & 0o022
-            or after.st_nlink != 1
-            or after.st_size > _MAX_STATE_BYTES
-            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
-        ):
-            raise DeploymentContractError(f"{label} changed during read")
-        raw = _read_bounded(descriptor, label)
+        try:
+            before = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            raise DeploymentContractError(f"{label} is missing") from None
+        except OSError as exc:
+            raise DeploymentContractError(f"{label} cannot be inspected") from exc
+        _validate_public_file_stat(before, label)
+        descriptor: int | None = None
+        try:
+            try:
+                descriptor = os.open(
+                    path.name,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=directory,
+                )
+            except OSError as exc:
+                raise DeploymentContractError(f"{label} cannot be opened safely") from exc
+            after = os.fstat(descriptor)
+            _validate_public_file_stat(after, label)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise DeploymentContractError(f"{label} changed during read")
+            raw = _read_bounded(descriptor, label)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
     finally:
-        os.close(descriptor)
+        os.close(directory)
     try:
         return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise DeploymentContractError(f"{label} is invalid") from exc
+
+
+def _open_public_state_directory(path: Path, *, create: bool) -> int:
+    """root-owned public state root를 no-follow directory FD로 연다.
+
+    공개 파일은 world-readable여도 되지만, 그 부모를 group/other가 쓸 수 있으면 root
+    publisher의 ``replace`` 대상이 바뀔 수 있다. 디렉터리 검사와 파일 생성·교체를 같은
+    FD에 묶어 symlink 및 경로 TOCTOU를 fail-close한다.
+    """
+
+    try:
+        parent = path.parent.lstat()
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy parent is unavailable") from exc
+    _validate_public_directory_stat(parent, "pinned runtime public copy parent", exact_mode=False)
+    created = False
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        if not create:
+            raise DeploymentContractError("pinned runtime public copy directory is missing") from None
+        try:
+            path.mkdir(mode=0o755)
+            created = True
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise DeploymentContractError("pinned runtime public copy directory cannot be created") from exc
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise DeploymentContractError("pinned runtime public copy directory is unavailable") from exc
+    _validate_public_directory_stat(
+        before,
+        "pinned runtime public copy directory",
+        exact_mode=not created,
+    )
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy directory cannot be opened safely") from exc
+    after = os.fstat(descriptor)
+    try:
+        if created:
+            os.fchmod(descriptor, 0o755)
+            after = os.fstat(descriptor)
+        _validate_public_directory_stat(after, "pinned runtime public copy directory", exact_mode=True)
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise DeploymentContractError("pinned runtime public copy directory changed during open")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _validate_public_directory_stat(
+    file_stat: os.stat_result,
+    label: str,
+    *,
+    exact_mode: bool,
+) -> None:
+    mode = stat.S_IMODE(file_stat.st_mode)
+    if (
+        not stat.S_ISDIR(file_stat.st_mode)
+        or file_stat.st_uid not in {0, os.geteuid()}
+        or (mode != 0o755 if exact_mode else mode & 0o022)
+    ):
+        raise DeploymentContractError(f"{label} is unsafe")
+
+
+def _validate_public_file_stat(file_stat: os.stat_result, label: str) -> None:
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(file_stat.st_mode) != 0o644
+        or file_stat.st_nlink != 1
+        or file_stat.st_size > _MAX_STATE_BYTES
+    ):
+        raise DeploymentContractError(f"{label} is unsafe")
+
+
+def _validate_existing_public_file(directory: int, name: str) -> None:
+    try:
+        observed = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy cannot be inspected") from exc
+    _validate_public_file_stat(observed, "pinned runtime public copy")
+
+
+def _write_all(descriptor: int, raw: bytes) -> None:
+    offset = 0
+    while offset < len(raw):
+        written = os.write(descriptor, raw[offset:])
+        if written <= 0:
+            raise OSError("pinned runtime public copy write failed")
+        offset += written
 
 
 def _running_from_trusted_install_root() -> bool:

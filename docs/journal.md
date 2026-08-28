@@ -2,6 +2,24 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 public generation P1 fail-close 보강
+
+전문 적대 리뷰가 generation 공개 사본의 세 P1을 확인했다. manifest/journal 중 한 파일만
+유효해도 committed처럼 보일 수 있었고, `pin verify`가 registry 사본만 검사했으며, custom
+public root는 publisher가 경로를 바꿔치기당할 수 있었다. reader는 이제 두 strict raw 문서가
+모두 있고 same generation일 때만 관측값을 반환한다. public root·부모·기존 파일은 no-follow
+FD에서 소유권·mode·hard-link를 검증하고, publisher의 검사·교체·fsync도 같은 FD에 결박했다.
+
+`pin verify`는 generation strict parse와 registry binding을 함께 보고한다. pair 회전 직후
+완전한 이전 committed generation은 `pending_rebuild`로 구별하되 current로 승격하지 않고,
+partial·malformed·drift는 exit 1이다. `pin publish-generation`도 current pair `match`까지
+재검증한다. terminal 대응 문서는 atomic `pin rotate-pair`로 정정했다.
+
+Map PR #1112는 v8 journal의 3개 PinVi role 확장 키를 exact-dict attestation에 추가하고
+committed 의미까지 검증한다. 이 교차 저장소 pair가 모두 병합되기 전에는 generation API를
+M05 acceptance gate로 사용하지 않는다. 관련 backend 272개는 POSIX `/tmp` 격리에서 통과했고,
+terminal artifact나 n150 one-shot은 열거나 재실행하지 않았다.
+
 ## 2026-08-28 — KUM-M4 public generation 계약·CLI 수선
 
 `ktdctl-ui-migration.md`의 KUM-M4 완료 표기와 실제 API 표면을 다시 대조했다. 기존에는

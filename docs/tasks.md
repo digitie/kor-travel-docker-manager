@@ -14,7 +14,7 @@
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 | **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (M1~M3 완료, M4의 public generation API/CLI 완료) | `[/]` | M4 UI 패널·확장 receipt/fence 관측과 M5~M7, v3 문서 3부의 나머지 태스크 분해 |
-| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종이 Map attestation의 exact-dict를 통과하지 못한다 (**다음 재구축의 선행 조건**) | `[ ]` | pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를 함께 넣고, 정렬을 확인한 뒤에 재구축 |
+| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종을 Map attestation exact-dict에 동시 정렬 | `[/]` | Manager #254와 Map #1112가 모두 병합되고 CI가 exact 16-key·committed semantics를 확인한 뒤에만 새 재구축 |
 
 ## M05 재개 규율
 

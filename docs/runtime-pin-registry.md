@@ -53,19 +53,13 @@ kor-travel-map의 `scripts/lib/c7_prod_attestation.py`가 결박한 값과 일�
 넣고 문서 자체는 그대로 통과시킨다. 문서 스키마를 바꿔야 한다면 map 저장소의 동시 PR
 없이는 불가능하다.
 
-> **⚠ 이미 어긋나 있다 (2026-08-28 확인).** map의 `_JOURNAL_KEYS`는 **13키**인데
-> Manager의 `to_payload()`는 **15키**를 내보낸다 — 확장 키
-> `pinvi_role_credential_environment_rebind`·`pinvi_role_lifecycle_block`가 값이
-> `None`일 때도 항상 실리고 `write_rebuild_journal`이 그대로 기록한다. 즉 **지금
-> Manager가 쓰는 journal은 map의 production attestation을 통과하지 못한다.** v8
-> 도입 때 Manager만 확장한 결과다.
->
-> 해소 경로는 둘뿐이고 **둘 다 map 저장소 변경을 수반한다**: (a) map의
-> `_JOURNAL_KEYS`에 두 키를 추가하거나, (b) 두 키를 journal 문서 밖(별도 receipt
-> 파일)으로 옮긴다. 그 전까지 회귀
-> `test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects`가
-> **괴리의 범위가 넓어지는 것만** 막는다 — "괜찮다"고 말하는 테스트가 아니다.
-> 확장 키를 더 넣지 마라.
+**2026-08-28 교차 저장소 정렬**: v8 journal은 16키이며 Map
+`scripts/lib/c7_prod_attestation.py`도 같은 exact dict를 검증한다. 추가된 세 키는
+`pinvi_role_credential_environment_rebind`, `pinvi_role_catalog_reset`,
+`pinvi_role_lifecycle_block`다. committed journal에서는 catalog reset이 `completed`이고
+lifecycle block은 `null`이어야 한다. credential rebind가 있으면 현재 environment/Compose
+digest와 다시 결박한다. 이 규칙은 Manager PR #254와 Map PR #1112가 함께 적용하는 계약이며,
+둘 중 하나가 병합되지 않은 release를 M05 generation gate에 쓰지 않는다.
 
 ### 1-3. canonical URL은 코드가 공급한다
 
@@ -126,10 +120,14 @@ sudo -n backend/.venv/bin/ktdctl pin publish-generation \
   --confirm
 ```
 
-공개 파일은 Map exact-dict attestation과 같은 schema를 보존한다. 사람용 상태·terminal
+공개 파일은 Map exact-dict attestation과 같은 schema를 보존한다. public root 자체와 즉시
+부모는 root(개발에서는 실행 uid) 소유·group/other 비쓰기여야 하며, public root는 symlink
+없이 `0755`여야 한다. publisher는 같은 no-follow directory FD에서 검사·원자 교체한다.
+사람용 상태·terminal
 분류·다음 행동은 파일이 아니라 `GET /api/v1/pinned-runtime/generation`의 envelope에만
 있다. custom `KTDM_PINNED_RUNTIME_STATE_ROOT` 배포는 읽기 가능한 별도 절대 경로를
-`KTDM_PINNED_RUNTIME_PUBLIC_ROOT`로 함께 지정해야 한다.
+`KTDM_PINNED_RUNTIME_PUBLIC_ROOT`로 함께 지정해야 하며, 위 소유권·권한 규칙을 만족하지
+않으면 publisher와 reader가 모두 fail-close한다.
 
 ---
 
@@ -246,8 +244,8 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 |---|---|---|
 | `pin init [--seed PATH] [--reason R] [--force] --confirm` | mutation | 호스트 최초 1회. `--seed` 기본값은 설치본의 `config/runtime-pins.seed.json`. 기존 파일이 있으면 `--force` 없이는 거부하고, `--force`여도 **이력·차단 목록을 승계하고 이전 상태를 digest 이름으로 보존**한다 |
 | `pin show [--json]` | 읽기 전용 | 현재 pin·digest·회전 메타·차단 목록·최근 이력. 현재 pinset이 조건 없이 차단됐으면 **"rebuild가 거부됩니다"를 평문으로 경고**한다 |
-| `pin verify [--json]` | 읽기 전용 | digest 재계산·canonical URL·공개 사본 정합. **현재 pinset이 차단됐거나 공개 사본이 current가 아니면 exit 1** — digest가 맞다는 이유로 0을 반환하면 운영자가 rebuild 직전에 잘못 안심한다 |
-| `pin publish-generation --manifest PATH --journal PATH --confirm` | mutation, **root 전용** | 검증된 private v6 manifest·current v8 journal을 `0644` 공개 사본으로 원자 복제한다. 경로는 절대 경로만 허용하며, API가 root state를 직접 읽는 우회로는 만들지 않는다 |
+| `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6/v8 generation 공개 사본의 strict parse를 함께 확인한다. incomplete/malformed/drift generation 또는 차단된 current pinset이면 exit 1이다. pair 회전 직후의 유효한 이전 committed generation은 `pending_rebuild`로 보고하되 current라고 부르지 않는다 |
+| `pin publish-generation --manifest PATH --journal PATH --confirm` | mutation, **root 전용** | 검증된 private v6 manifest·current v8 journal을 `0644` 공개 사본으로 원자 복제한 뒤 strict reader와 current registry pair까지 다시 검증한다. 경로는 절대 경로만 허용하며, API가 root state를 직접 읽는 우회로는 만들지 않는다 |
 | `pin rotate --role map\|pinvi --revision <40-hex> --reason R [--block-previous] --confirm` | mutation | digest 자동 계산, 이력에 `supersedes` 기록, 이전 파일을 `runtime-pins.<old-digest>.json`으로 보존, 공개 사본 갱신. 아무것도 바뀌지 않는 회전과 **차단된 pinset을 만들어 내는 회전은 거부** |
 | `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
@@ -485,8 +483,9 @@ ktdctl pinvi-pair rebuild-pinned --confirm
 ```bash
 cd /opt/kor-travel-docker-manager
 sudo -n backend/.venv/bin/ktdctl pin show           # 왜 차단됐는지 확인
-sudo -n backend/.venv/bin/ktdctl pin rotate \
-  --role pinvi --revision <새 40-hex> \
+sudo -n backend/.venv/bin/ktdctl pin rotate-pair \
+  --map-revision <새 Map 40-hex> \
+  --pinvi-revision <새 PinVi 40-hex> \
   --reason "<직전 candidate의 terminal 사유와 그것을 고친 revision>" \
   --block-previous --confirm
 sudo -n backend/.venv/bin/ktdctl pin verify         # 0이면 재구축 가능
