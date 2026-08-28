@@ -27,6 +27,35 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
   별도로 안전하게 준비한다. `--delete`와 저장소 루트 전체 동기화는 사용하지 않는다. 신규
   설치는 아래 trusted installer를 우선하고, 이 rsync 절차는 기존 rsync 배포본을 갱신할 때만 쓴다.
 
+### 2.1 runtime pin registry는 배포 트리 밖에 둔다 (설치 전 필수 준비)
+
+Map·PinVi pinned revision은 소스코드 상수가 아니라 root 소유 JSON registry 파일에
+있다(`docs/docker-management.md` 5.1의 `ktdctl pin` 절). trusted installer는
+`/opt/kor-travel-docker-manager` 트리를 staging→commit으로 **통째 교체**하므로,
+registry가 트리 안에 있으면 다음 release 설치가 회전 결과를 덮어쓴다. 따라서 운영
+호스트는 아래 두 값을 배포 트리 밖 경로로 고정하고 백엔드·CLI 양쪽 환경에 넣는다.
+
+```bash
+# 예시 — 배포 트리 밖의 운영 상태 디렉터리
+KTDM_RUNTIME_PINS_FILE=/var/lib/kor-travel-docker-manager/runtime-pins.json
+KTDM_RUNTIME_PINS_PUBLIC_FILE=/var/lib/kor-travel-docker-manager/public/runtime-pins.json
+```
+
+- registry 본체는 root `0600`이어야 한다(그룹·타인 접근 가능하면 회전이 거부된다).
+  공개 사본은 비-root backend가 읽어야 하므로 `0644`이며 secret을 담지 않는다.
+- 최초 1회만 저장소의 개발 기본값을 seed로 부트스트랩한다. 이후 회전은 `pin rotate`다.
+  ```bash
+  cd /opt/kor-travel-docker-manager
+  sudo -n backend/.venv/bin/ktdctl pin init --seed config/runtime-pins.json --confirm
+  sudo -n backend/.venv/bin/ktdctl pin verify
+  ```
+- **백업·보존 대상**: 위 두 파일과 같은 디렉터리의 `runtime-pins.<digest>.json`
+  보존본(= 회전 이력이자 `pin rollback`의 유일한 소스). git 밖에 있으므로 이 디렉터리가
+  유실되면 롤백 소스도 함께 유실된다.
+- registry가 없으면 `rebuild-pinned`와 pin 조회는 fail-close하고, 조회 API는 값을
+  추측하지 않고 `unknown`을 표시한다. 그 외 target 관리·컨테이너 제어·백업 조회 등
+  나머지 기능은 영향받지 않는다.
+
 ## 3. 신뢰된 운영 설치와 백엔드 (FastAPI, uvicorn :12901)
 
 운영 설치는 외부 `get-pip.py`와 비고정 `pip install -e .`를 사용하지 않는다. 먼저 운영 호스트
