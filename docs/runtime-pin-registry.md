@@ -54,6 +54,9 @@ isolated runtime 준비는 `runtime_setup_ports` → `runtime_setup_workspace` �
 드러내지 않으며, 이미 terminal인 pinset의 재시도 근거가 아니다. 목적은 다음 immutable Manager source의
 정적 보정 범위를 한 단계로만 좁히는 것이다.
 
+`run-m05-isolated-e2e-once`의 strict result schema는 이 일곱 setup phase를 driver와 똑같이 수용한다.
+driver의 blocked receipt가 안전한 allowlist phase여도 launcher가 임의 fallback으로 다시 바꾸는 경로는 없다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식

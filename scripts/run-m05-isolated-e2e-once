@@ -191,6 +191,10 @@ PHASES = frozenset(
         "runtime_http_contract_failed", "runtime_http_failed", "runtime_http_url_invalid",
         "runtime_image_identity_invalid", "runtime_inspect_invalid",
         "runtime_pin_registry_changed", "runtime_pin_registry_invalid",
+        "runtime_setup_admission", "runtime_setup_credentials",
+        "runtime_setup_map_config", "runtime_setup_network",
+        "runtime_setup_pinvi_config", "runtime_setup_ports",
+        "runtime_setup_workspace",
         "secret_cleanup_identity_invalid", "terminal_pinset_blocked",
         "trusted_release_invalid", "trusted_release_revision_mismatch", "completed",
     }

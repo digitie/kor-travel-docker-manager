@@ -555,6 +555,25 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
 
+def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
+    """driver가 쓴 안전 phase를 launcher가 fallback으로 다시 뭉개면 안 된다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+    phases = (
+        "runtime_setup_ports",
+        "runtime_setup_workspace",
+        "runtime_setup_admission",
+        "runtime_setup_network",
+        "runtime_setup_credentials",
+        "runtime_setup_map_config",
+        "runtime_setup_pinvi_config",
+    )
+
+    assert all(f'"{phase}"' in launcher for phase in phases)
+
+
 def test_free_ports_uses_the_standard_ss_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
