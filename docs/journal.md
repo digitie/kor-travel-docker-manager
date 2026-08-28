@@ -5,10 +5,12 @@
 ## 2026-08-28 — PR backend CI의 TestClient 의존성 고정
 
 새 PR CI의 첫 원격 실행은 애플리케이션 runtime 의존성만 설치해 `fastapi.testclient`가 요구하는 dev 의존성
-`httpx` 없이 collection 단계에서 종료됐다. 이는 M05 실행·pin rotate·n150 mutation 이전의 CI 환경 결함이며,
-후보 실행 근거가 아니다. CI는 검증한 `httpx==0.28.1`을 pytest·Ruff와 함께 명시 설치해 backend 전체 수집을
-로컬과 같은 조건으로 만든다. 새 CI run과 두 전문 적대 리뷰가 green/GO가 되기 전에는 trusted release나
-one-shot admission을 진행하지 않는다.
+`httpx` 없이 collection 단계에서 종료됐다. 후속 run은 local Compose v5와 GitHub Compose v2가 기본 bind option을
+서로 다르게 JSON에 나타내고, fixture가 개발기 절대 `PINVI_PGDATA` 경로에 우연히 의존함도 발견했다. 이는 M05
+실행·pin rotate·n150 mutation 이전의 CI 환경 결함이며 후보 실행 근거가 아니다. CI는 검증한 `httpx==0.28.1`을
+pytest·Ruff와 함께 명시 설치하고, contract fixture는 임시 PinVi data directory를 직접 만들며 Compose의 동등한
+기본 bind 표현만 허용한다. 새 CI run과 두 전문 적대 리뷰가 green/GO가 되기 전에는 trusted release나 one-shot
+admission을 진행하지 않는다.
 
 ---
 
