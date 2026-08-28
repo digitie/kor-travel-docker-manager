@@ -43,7 +43,10 @@ as_user() {
 
 echo "== 0. 격리 트리 준비 =="
 sudo -n rm -rf "$BASE/rootstate" "$BASE/pubstate" "$BASE/requests" "$BASE/out"
-mkdir -p "$BASE/out" "$BASE/requests"
+mkdir -p "$BASE/out"
+# 요청 디렉터리는 group/other 쓰기가 금지다(installer가 0700으로 만드는 것과 같은 계약).
+# `mkdir -p`의 umask 기본값으로 두면 무결성 검사가 정당하게 거부한다.
+install -d -m 0700 "$BASE/requests"
 sudo -n install -d -o root -g root -m 0700 "$BASE/rootstate"
 sudo -n install -d -o root -g root -m 0755 "$BASE/pubstate"
 sudo -n install -o root -g root -m 0644 "$BASE/seed-runtime-pins.json" "$BASE/root-seed.json"
@@ -135,7 +138,7 @@ pass "the request path did not widen non-root access to the registry"
 
 echo "== 4. 비-root apply-pending 은 거부된다 (실제 euid) =="
 set +e
-as_user pin apply-pending --confirm >/dev/null 2>"$BASE/out/err_apply.txt"
+as_user pin apply-pending --any-revision --confirm >/dev/null 2>"$BASE/out/err_apply.txt"
 CODE=$?
 set -e
 [ "$CODE" -eq 2 ] || fail "non-root apply-pending must exit 2 (got $CODE)"
@@ -146,7 +149,7 @@ pass "apply-pending refuses a real non-root euid and writes nothing"
 echo "== 5. --confirm 없는 apply-pending 은 아무것도 하지 않는다 =="
 BEFORE=$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)
 set +e
-as_root pin apply-pending >/dev/null 2>"$BASE/out/err_confirm.txt"
+as_root pin apply-pending --any-revision >/dev/null 2>"$BASE/out/err_confirm.txt"
 CODE=$?
 set -e
 [ "$CODE" -eq 2 ] || fail "apply-pending without --confirm must exit 2"
@@ -173,7 +176,7 @@ grep -q "apply-pending" "$BASE/out/pending.txt" || fail "show-pending must print
 pass "show-pending is read-only and prints the next command"
 
 echo "== 8. root apply-pending 이 적용하고 요청을 지운다 =="
-as_root pin apply-pending --confirm >"$BASE/out/applied.txt"
+as_root pin apply-pending --any-revision --confirm >"$BASE/out/applied.txt"
 grep -q "applied pending rotation for pinvi" "$BASE/out/applied.txt" || fail "apply output"
 grep -q -- "<-admin" "$BASE/out/applied.txt" || fail "both actors must be recorded"
 grep -q "$REQUEST_ID" "$BASE/out/applied.txt" || fail "request id must be recorded in the reason"
@@ -228,7 +231,7 @@ PYEOF
 STALE_ID=$(head -1 "$BASE/out/stale.txt")
 AFTER_APPLY=$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)
 set +e
-as_root pin apply-pending --confirm >/dev/null 2>"$BASE/out/err_stale.txt"
+as_root pin apply-pending --any-revision --confirm >/dev/null 2>"$BASE/out/err_stale.txt"
 CODE=$?
 set -e
 [ "$CODE" -eq 2 ] || fail "a stale request must be refused (got $CODE)"
@@ -335,7 +338,104 @@ print("echoing the locked value unchanged still saves")
 PYEOF
 pass "contract-locked env changes are refused while unchanged echoes pass"
 
-echo "== 15. 운영 트리 무변경 =="
+echo "== 15. 요청 기록은 배타 생성이다 (동시 요청이 앞의 것을 덮지 않는다) =="
+"$PY" - <<'PYEOF' || exit 1
+from uuid import uuid4
+
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    RuntimePinRequestError,
+    read_runtime_pin_request,
+    utc_timestamp,
+    write_runtime_pin_request,
+)
+
+
+def make(revision: str) -> RuntimePinRequest:
+    return RuntimePinRequest(
+        request_id=str(uuid4()),
+        role="map",
+        revision=revision,
+        reason="배타 생성 확인",
+        requested_by="admin",
+        requested_at=utc_timestamp(),
+        base_pinset_sha256="1" * 64,
+        prospective_pinset_sha256="2" * 64,
+    )
+
+
+first = make("a" * 40)
+write_runtime_pin_request(first)
+try:
+    write_runtime_pin_request(make("b" * 40))
+except RuntimePinRequestError as exc:
+    print("second refused:", exc)
+else:
+    raise SystemExit("a second request must not overwrite the pending one")
+on_disk = read_runtime_pin_request()
+assert on_disk is not None and on_disk.request_id == first.request_id, on_disk
+PYEOF
+as_user pin clear-pending --force --confirm >/dev/null 2>&1 || true
+"$PY" - <<'PYEOF' || exit 1
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    read_runtime_pin_request,
+    runtime_pin_request_path,
+)
+
+path = runtime_pin_request_path()
+if read_runtime_pin_request() is not None:
+    path.unlink()
+PYEOF
+pass "concurrent requests cannot silently replace one another"
+
+echo "== 16. 손상된 요청 파일은 --force 로만 지워진다 =="
+printf '{not json' > "$REQUEST_PATH"
+chmod 0600 "$REQUEST_PATH"
+set +e
+as_user pin show-pending >/dev/null 2>"$BASE/out/err_corrupt.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "a corrupt request must fail closed (got $CODE)"
+grep -q "clear-pending --force" "$BASE/out/err_corrupt.txt" || fail "escape hatch must be printed"
+grep -q "$REQUEST_PATH" "$BASE/out/err_corrupt.txt" || fail "the full path must be printed"
+as_user pin clear-pending --force --confirm >/dev/null
+[ ! -e "$REQUEST_PATH" ] || fail "--force must remove the corrupt file"
+pass "a corrupt request file does not lock the rotation-request path"
+
+echo "== 17. --force 는 멀쩡한 요청을 지우지 않는다 =="
+"$PY" - <<'PYEOF' >/dev/null || exit 1
+from uuid import uuid4
+
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    utc_timestamp,
+    write_runtime_pin_request,
+)
+
+write_runtime_pin_request(
+    RuntimePinRequest(
+        request_id=str(uuid4()),
+        role="map",
+        revision="c" * 40,
+        reason="--force 방어 확인",
+        requested_by="admin",
+        requested_at=utc_timestamp(),
+        base_pinset_sha256="1" * 64,
+        prospective_pinset_sha256="2" * 64,
+    )
+)
+PYEOF
+set +e
+as_user pin clear-pending --force --confirm >/dev/null 2>"$BASE/out/err_force.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "--force must refuse a readable request (got $CODE)"
+grep -q "cancel it by id" "$BASE/out/err_force.txt" || fail "--force refusal message"
+[ -f "$REQUEST_PATH" ] || fail "--force must not delete a readable request"
+rm -f "$REQUEST_PATH"
+pass "--force is a wreckage-removal tool, not a bypass"
+
+echo "== 18. 운영 트리 무변경 =="
 [ ! -e /var/lib/kor-travel-docker-manager-requests ] || \
   fail "the isolated run created the production request root"
 sudo -n rm -rf "$BASE/rootstate" "$BASE/pubstate" "$BASE/root-seed.json"

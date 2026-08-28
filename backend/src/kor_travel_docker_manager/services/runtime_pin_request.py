@@ -227,7 +227,7 @@ def _open_verified_request_file(path: Path) -> int:
         if stat.S_IMODE(parent_stat.st_mode) & 0o022:
             raise RuntimePinRequestError(
                 f"runtime pin request directory must not be group or world writable: "
-                f"{path.parent}"
+                f"{path.parent} — fix it with: sudo chmod 0700 {path.parent}"
             )
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
