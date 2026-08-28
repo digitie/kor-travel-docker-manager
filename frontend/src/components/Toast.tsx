@@ -41,7 +41,7 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: () => void
 
   return (
     <div
-      className={`ops-card w-full max-w-md p-4 shadow-lg border ${
+      className={`w-full max-w-md p-4 shadow-lg rounded-panel bg-card border ${
         item.tone === 'error' ? 'border-danger' : 'border-line'
       }`}
       role={item.tone === 'error' ? 'alert' : 'status'}
@@ -50,7 +50,7 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: () => void
         {item.tone === 'error' ? (
           <AlertTriangle className="w-5 h-5 text-danger shrink-0 mt-0.5" />
         ) : (
-          <CheckCircle2 className="w-5 h-5 text-success shrink-0 mt-0.5" />
+          <CheckCircle2 className="w-5 h-5 text-ok shrink-0 mt-0.5" />
         )}
         <div className="flex-1 min-w-0">
           <p className="text-sm font-semibold text-strong">{item.title}</p>

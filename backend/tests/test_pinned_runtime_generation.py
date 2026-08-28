@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
+import re
 import stat
 import uuid
 from pathlib import Path
@@ -10,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import pinned_runtime_generation as generation_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     DeploymentContractError,
@@ -1215,3 +1218,63 @@ def test_legacy_tombstone_rejects_unsafe_artifact_before_receipt(tmp_path: Path)
         state_root,
         pinset_sha256=_generation().pinset_sha256,
     ).exists()
+
+
+# --- 교차 저장소 계약 동결 (ADR-40 후속, docs/runtime-pin-registry.md §1-2) ------
+
+
+def test_rebuild_journal_payload_keys_are_frozen_by_the_map_attestation_contract() -> None:
+    """v8 journal 문서의 키 집합은 이 저장소 혼자 정할 수 없다.
+
+    kor-travel-map의 ``scripts/lib/c7_prod_attestation.py``가 이 문서를 **exact-dict**로
+    검증한다 — 키가 하나라도 늘거나 줄면 map의 production attestation이 통째로
+    fail-close한다. 요약·번역·배지 같은 가공이 필요하면 문서가 아니라 **API 응답
+    envelope**에 넣어야 한다.
+
+    이 테스트가 깨지면 고치기 전에 멈춰라. 키를 바꾸려면 map 저장소의 동시 PR이
+    전제이며, 그 조율 없이 기대값만 갱신하면 운영에서 발견된다.
+    """
+
+    expected = {
+        "version",
+        "transaction_id",
+        "phase",
+        "candidate",
+        "map_application_300_candidate_evidence",
+        "environment_sha256",
+        "compose_sha256",
+        "resolved_compose_sha256",
+        "created_at",
+        "pinvi_database_identity",
+        "journal_generation",
+        "map_application_300_execution_evidence",
+        "cancel_probe",
+        "pinvi_role_credential_environment_rebind",
+        "pinvi_role_lifecycle_block",
+    }
+
+    source = inspect.getsource(PinnedRuntimeRebuildJournal.to_payload)
+    declared = set(re.findall(r'^\s{12}"([a-z0-9_]+)":', source, flags=re.MULTILINE))
+
+    assert declared == expected, (
+        "v8 rebuild journal의 키 집합이 바뀌었다. kor-travel-map attestation이 "
+        "exact-dict로 결박한 교차 저장소 계약이므로 map 동시 PR 없이는 바꿀 수 없다."
+    )
+
+
+def test_document_versions_are_frozen() -> None:
+    """manifest v6 / journal v8은 map attestation이 값으로 대조하는 버전이다."""
+
+    assert generation_module._MANIFEST_VERSION == 6
+    assert generation_module._REBUILD_JOURNAL_VERSION == 8
+
+
+def test_rebuild_phase_vocabulary_is_frozen() -> None:
+    """phase는 journal 문서에 실려 나가므로 어휘 자체가 계약이다.
+
+    새 단계를 추가해야 하면 map 쪽이 그 값을 받아들이는지 먼저 확인해야 한다.
+    """
+
+    assert len(generation_module.REBUILD_PHASES) == 28
+    assert generation_module.REBUILD_PHASES[0] == "candidate_attested"
+    assert len(set(generation_module.REBUILD_PHASES)) == len(generation_module.REBUILD_PHASES)

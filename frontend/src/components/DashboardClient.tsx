@@ -157,15 +157,21 @@ const ROLE_LABELS: Record<string, string> = {
   'metrics-exporter': '메트릭 노출',
 };
 
+// 분기 순서가 곧 우선순위다. 넓은 패턴(`api`, `ui`)을 먼저 두면 좁은 패턴이 도달하지
+// 못한다 — 예: `geocoder-api`는 `-api`에, `geocoder-ui`는 `ui`에 먼저 걸려 "지오코더"가
+// 영원히 나오지 않는다. 좁은 것부터 검사한다.
 const roleLabel = (role: string | null | undefined): string => {
   const value = (role || '').toLowerCase();
   if (!value) return '-';
   if (ROLE_LABELS[value]) return ROLE_LABELS[value];
+  // `map-postgresql`·`concierge-postgresql`처럼 접두사가 붙은 실제 role 값은 exact key와
+  // 맞지 않는다(config/docker-targets.yml). 접미사로 판정한다.
+  if (value.endsWith('postgresql') || value.endsWith('postgres')) return '데이터베이스';
+  if (value.includes('geocoder')) return '지오코더';
   if (value.includes('dagster') || value.includes('scheduler')) return '워크플로';
   if (value.includes('mcp')) return 'MCP 서버';
   if (value.endsWith('-api') || value.includes('api')) return 'API 서버';
   if (value.includes('ui') || value.includes('web')) return '웹 UI';
-  if (value.includes('geocoder')) return '지오코더';
   return role || '-';
 };
 
@@ -316,6 +322,7 @@ export default function DashboardClient() {
   const [isChartModalOpen, setIsChartModalOpen] = useState<boolean>(false);
   const [chartContainerId, setChartContainerId] = useState<string | null>(null);
   const [chartMetricType, setChartMetricType] = useState<'cpu' | 'memory' | 'io'>('cpu');
+  const [chartHours, setChartHours] = useState<number>(1);
 
   // Real-time rolling metrics points from WebSocket (replaces state copy from queryChartData)
   const [wsMetricsPoints, setWsMetricsPoints] = useState<MetricHistoryPoint[]>([]);
@@ -389,6 +396,7 @@ export default function DashboardClient() {
   // 미리 캐시해 두어야 패널이 열린 뒤 footer가 뒤늦게 튀어나오지 않는다.
   type TargetSummary = {
     id: string;
+    display_name?: string;
     containers?: string[];
     resolved_services?: string[];
   };
@@ -418,6 +426,102 @@ export default function DashboardClient() {
 
   // Active containers dataset (WS if available, fallback query otherwise)
   const displayContainers = wsContainers || fallbackContainers;
+
+  // 관리도구 자신의 상태. `/health`는 인증이 필요 없고 부작용도 없으므로 가볍게 폴링한다.
+  const { data: healthData, isError: healthErrored } = useQuery<{ status?: string }>({
+    queryKey: ['manager-health'],
+    queryFn: () => apiJson<{ status?: string }>('/health', { redirectOnUnauthorized: false }),
+    enabled: isAuthenticated,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  const managerHealth: 'healthy' | 'checking' | 'down' = healthErrored
+    ? 'down'
+    : healthData?.status === 'healthy'
+      ? 'healthy'
+      : 'checking';
+
+  // 21개 컨테이너가 평면 테이블 하나라 "PinVi 쪽이 지금 정상인가"에 답하려면 행을 눈으로
+  // 골라 세야 했다. 앱 단위로 묶어 한 줄 요약을 준다.
+  //
+  // `targets.containers`는 target이 직접 소유한 목록이 아니라 depends_on 전이 폐포라
+  // 공용 인프라가 여러 target에 중복 등장한다. 그래서 컨테이너마다 **가장 좁은** target에
+  // 한 번만 배정한다(`detailTarget`이 쓰는 것과 같은 규칙).
+  const containerGroups = useMemo(() => {
+    const groups = new Map<string, { label: string; containers: ContainerStatus[] }>();
+    for (const container of displayContainers) {
+      const matches = targets.filter((target) => (target.containers ?? []).includes(container.id));
+      const narrowest = matches.length
+        ? matches.reduce((current, candidate) =>
+            (candidate.containers?.length ?? Infinity) < (current.containers?.length ?? Infinity)
+              ? candidate
+              : current
+          )
+        : null;
+      const key = narrowest?.id ?? '__other__';
+      const label = narrowest ? narrowest.display_name || narrowest.id : '기타';
+      const bucket = groups.get(key) ?? { label, containers: [] };
+      bucket.containers.push(container);
+      groups.set(key, bucket);
+    }
+    return Array.from(groups.entries()).map(([id, group]) => {
+      const running = group.containers.filter(
+        (container: ContainerStatus) => (container.status || '').toLowerCase() === 'running'
+      );
+      return {
+        id,
+        label: group.label,
+        containers: group.containers,
+        runningCount: running.length,
+        healthy: running.length === group.containers.length,
+      };
+    });
+  }, [displayContainers, targets]);
+
+  // 컨테이너 단위 제어만 있어서 "geo 전체 재시작"이 수동 N회 클릭이었다. 신규
+  // 엔드포인트 없이 순차 호출로 처리한다 — 각 호출이 기존 C6c 락을 그대로 통과한다.
+  const [bulkRestartingGroup, setBulkRestartingGroup] = useState<string | null>(null);
+  const restartGroup = useCallback(
+    async (group: { id: string; label: string; containers: ContainerStatus[] }) => {
+      const running = group.containers.filter((c) => (c.status || '').toLowerCase() === 'running');
+      if (running.length === 0) {
+        pushToast(successToast(`${group.label}에 실행 중인 컨테이너가 없습니다.`));
+        return;
+      }
+      const names = running.map((c) => c.display_name || c.name).join(', ');
+      if (
+        !window.confirm(
+          `${group.label}의 실행 중인 컨테이너 ${running.length}개를 순서대로 재시작합니다.\n\n` +
+            `대상: ${names}\n\n계속할까요?`
+        )
+      ) {
+        return;
+      }
+      setBulkRestartingGroup(group.id);
+      let failed = 0;
+      for (const container of running) {
+        try {
+          await apiJson(`/api/v1/containers/${container.id}/action`, {
+            method: 'POST',
+            body: JSON.stringify({ action: 'restart' }),
+          });
+        } catch (error) {
+          failed += 1;
+          pushToast(
+            errorToast(humanizeError(error, `${container.display_name || container.name} 재시작`))
+          );
+        }
+      }
+      setBulkRestartingGroup(null);
+      queryClient.invalidateQueries({ queryKey: ['containers'] });
+      if (failed === 0) {
+        pushToast(
+          successToast(`${group.label} 재시작 완료`, `${running.length}개 컨테이너를 재시작했습니다.`)
+        );
+      }
+    },
+    [pushToast, queryClient]
+  );
 
   // KPI summary counts derived from the active container list
   const kpiCounts = useMemo(() => {
@@ -596,6 +700,16 @@ export default function DashboardClient() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
     },
+    // onError가 없어서 start/stop/restart 실패가 완전히 무음이었다 — 버튼을 눌러도
+    // 아무 일도 일어나지 않는 것처럼 보였고, production 하드스톱처럼 서버가 의도적으로
+    // 거부하는 경우조차 이유를 알 수 없었다.
+    onError: (err: unknown, variables) => {
+      const container = displayContainers.find((item) => item.id === variables.id);
+      const label = container?.display_name || container?.name || variables.id;
+      const verb =
+        variables.action === 'start' ? '시작' : variables.action === 'stop' ? '중지' : '재시작';
+      pushToast(errorToast(humanizeError(err, `${label} ${verb}`)));
+    },
   });
 
   // 컨테이너 하나를 멈추면 그것에 의존하는 서비스도 함께 영향을 받는다. 그 범위는
@@ -671,14 +785,15 @@ export default function DashboardClient() {
     },
   });
 
-  // 1-Hour Performance Metrics History Query - Versioned v1
-  // Disabled conditional triggers / useEffect copies to resolve 'no-derived-state' and 'no-event-handler'
+  // Performance Metrics History Query - Versioned v1
+  // 백엔드는 `hours`를 지원하는데 UI가 1로 고정하고 있어 "어제 밤에 뭐가 있었나"를
+  // 볼 방법이 없었다. 이미 있는 파라미터를 노출만 한다.
   const { data: queryChartData = [], isLoading: isLoadingChart } = useQuery<MetricHistoryPoint[]>({
-    queryKey: ['metrics-history', chartContainerId, chartMetricType],
+    queryKey: ['metrics-history', chartContainerId, chartMetricType, chartHours],
     queryFn: async () => {
       if (!chartContainerId) return [];
       return apiJson<MetricHistoryPoint[]>(
-        `/api/v1/containers/${chartContainerId}/metrics?hours=1`
+        `/api/v1/containers/${chartContainerId}/metrics?hours=${chartHours}`
       );
     },
     enabled: isAuthenticated && !!chartContainerId && isChartModalOpen,
@@ -980,6 +1095,34 @@ export default function DashboardClient() {
             </p>
           </div>
           <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
+          {/* "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데 답할 화면이
+              없었다. /health는 이미 있었지만 어느 UI에도 표시되지 않았다. */}
+          <div className="mt-3 pt-3 border-t border-line">
+            <p className="ops-signal__label">manager health</p>
+            <p className="ops-signal__value">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  managerHealth === 'healthy'
+                    ? 'bg-ok'
+                    : managerHealth === 'checking'
+                      ? 'bg-warn animate-pulse'
+                      : 'bg-danger'
+                }`}
+              />
+              {managerHealth === 'healthy'
+                ? '관리도구 정상'
+                : managerHealth === 'checking'
+                  ? '관리도구 확인 중'
+                  : '관리도구 응답 없음'}
+            </p>
+            <p className="ops-signal__detail">
+              {managerHealth === 'healthy'
+                ? '백엔드 API가 응답하고 있습니다.'
+                : managerHealth === 'checking'
+                  ? '백엔드 상태를 확인하는 중입니다.'
+                  : '백엔드가 응답하지 않습니다. 아래 컨테이너 상태도 최신이 아닐 수 있습니다.'}
+            </p>
+          </div>
         </aside>
       </section>
 
@@ -989,6 +1132,48 @@ export default function DashboardClient() {
           <div>
             <p className="font-semibold text-danger">통신 연결 오류</p>
             <p className="mt-1 text-ink">백엔드 서버가 {BACKEND_URL}에서 실행 중인지와 Docker 엔진 상태를 확인해 주세요.</p>
+          </div>
+        </section>
+      )}
+
+      {containerGroups.length > 0 && (
+        <section className="ops-ledger mb-4" aria-labelledby="service-groups-title">
+          <div className="ops-ledger__header">
+            <div>
+              <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
+              <p className="ops-section-copy">
+                컨테이너를 앱 단위로 묶어 보여 줍니다. 재시작은 실행 중인 것만 순서대로 진행합니다.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {containerGroups.map((group) => (
+              <div className="rounded-card border border-line p-3" key={group.id}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-strong truncate">{group.label}</p>
+                    <p
+                      className={`text-xs mt-0.5 ${group.healthy ? 'text-ok' : 'text-warn'}`}
+                    >
+                      {group.healthy
+                        ? `모두 정상 (${group.containers.length}개)`
+                        : `${group.containers.length - group.runningCount}개 중지됨 / 전체 ${group.containers.length}개`}
+                    </p>
+                  </div>
+                  <button
+                    className="ops-button shrink-0"
+                    disabled={bulkRestartingGroup !== null || group.runningCount === 0}
+                    onClick={() => void restartGroup(group)}
+                    type="button"
+                  >
+                    <RotateCw
+                      className={`w-4 h-4 ${bulkRestartingGroup === group.id ? 'animate-spin' : ''}`}
+                    />
+                    재시작
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       )}
@@ -1357,9 +1542,28 @@ export default function DashboardClient() {
                   <Activity className="w-5 h-5 text-brand" />
                 </div>
                 <div>
-                  <h3 className="font-semibold text-strong text-base uppercase tracking-[0.05em]">실시간 성능 롤링 차트 (1시간)</h3>
+                  <h3 className="font-semibold text-strong text-base tracking-[0.05em]">
+                    성능 이력 ({chartHours === 1 ? '최근 1시간' : `최근 ${chartHours}시간`})
+                  </h3>
                   <p className="text-xs text-secondary mt-0.5 font-light font-mono">대상 컨테이너: {chartContainerId}</p>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-secondary" htmlFor="chart-hours">
+                  기간
+                </label>
+                <select
+                  className="ops-input min-h-[36px] py-1 text-xs"
+                  id="chart-hours"
+                  onChange={(event) => setChartHours(Number(event.target.value))}
+                  value={chartHours}
+                >
+                  <option value={1}>1시간</option>
+                  <option value={6}>6시간</option>
+                  <option value={24}>24시간</option>
+                  <option value={72}>3일</option>
+                </select>
               </div>
 
               <button

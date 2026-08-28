@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Copy, HelpCircle, RefreshCw, X } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, HelpCircle, RefreshCw, X } from 'lucide-react';
 import { RuntimePinsResponse, apiJson } from '@/lib/api';
+import CopyableCommand from './CopyableCommand';
 
 const ROLE_LABELS: Record<string, string> = {
   map: '지도 (kor-travel-map)',
@@ -21,29 +22,6 @@ function formatTimestamp(value: string | null | undefined): string {
 
 function short(digest: string): string {
   return digest.length > 14 ? `${digest.slice(0, 12)}…` : digest;
-}
-
-function CopyableCommand({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-
-  return (
-    <div className="flex items-start gap-2 mt-2">
-      <code className="flex-1 text-xs bg-subtle rounded-card px-3 py-2 break-all">{command}</code>
-      <button
-        className="ops-button shrink-0"
-        onClick={() => {
-          void navigator.clipboard?.writeText(command).then(() => {
-            setCopied(true);
-            window.setTimeout(() => setCopied(false), 2000);
-          });
-        }}
-        type="button"
-      >
-        <Copy className="w-4 h-4" />
-        {copied ? '복사됨' : '복사'}
-      </button>
-    </div>
-  );
 }
 
 export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
@@ -131,7 +109,7 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                 ) : summary?.state === 'action_required' ? (
                   <AlertTriangle className="w-5 h-5 text-danger shrink-0 mt-0.5" />
                 ) : (
-                  <CheckCircle2 className="w-5 h-5 text-success shrink-0 mt-0.5" />
+                  <CheckCircle2 className="w-5 h-5 text-ok shrink-0 mt-0.5" />
                 )}
                 <div className="flex-1">
                   <p className="text-sm text-strong font-semibold">
