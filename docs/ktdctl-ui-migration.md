@@ -519,6 +519,16 @@ Manager 단독으로 완료. (i)의 typed 이관과 (ii)의 verifier phase 편�
   스키마에 요약 키를 넣는 사고(즉시 map attestation 파손)나 Manager 밖 계약을
   Manager에 구현하는 범위 침범을 방지한다.
 
+#### P10-5 보정 — M05 isolated direct Compose admission
+
+전문 보안 적대 리뷰가 PinVi의 기존 isolated Compose gate가 root UID와 호출자가 설정할 수 있는
+environment marker만 신뢰한다는 P1을 발견했다. 이는 `ktdctl`만 pinning·pair 결박·one-shot을
+소유한다는 계약과 모순된다. Manager root driver는 이제 private runtime directory에 `0600` admission을
+만들고, exact transaction project·current pinset·Manager·Map·PinVi source revision을 함께 결박한다.
+PinVi는 그 파일을 no-follow로 읽어 exact schema와 결박을 확인할 때만 isolated mutation을 허용하며,
+legacy environment marker는 거부한다. admission은 private one-shot 입력일 뿐 API·UI 공개 표면이나
+manifest/journal schema를 바꾸지 않는다.
+
 ---
 
 # 2부 — UI 이관과 운영 기능 격차 (v2 본문 + v3 정정)

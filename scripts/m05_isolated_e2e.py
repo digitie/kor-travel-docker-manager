@@ -37,6 +37,7 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05IsolatedRuntimeExpectation,
     M05IsolatedServiceExpectation,
     assert_m05_isolated_runtime,
+    build_m05_isolated_manager_admission,
     build_m05_isolated_runtime_provenance,
     claim_m05_isolated_harness_ledger,
 )
@@ -70,6 +71,18 @@ _RAW_ENV_NAMES = (
     "M05_PINVI_PASSWORD",
     "PINVI_M04_LIVE_EMAIL",
     "PINVI_M04_LIVE_PASSWORD",
+)
+_PINVI_MANAGER_ADMISSION_FILES = (
+    "scripts/docker-app.sh",
+    "scripts/m05_isolated_manager_admission.py",
+)
+_PINVI_MANAGER_ADMISSION_TOKENS = frozenset(
+    {
+        "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH",
+        "PINVI_M05_PINSET_SHA256",
+        "m05_isolated_manager_admission.py",
+        "pinvi-m05-isolated-manager-admission-v1",
+    }
 )
 _SAFE_SUBPROCESS_ENV = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -1036,6 +1049,27 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
     )
 
 
+def _assert_pinvi_manager_admission_contract(pinvi_root: Path) -> None:
+    """Pinned PinVi source가 Manager-only isolated admission을 실제로 강제하는지 확인한다."""
+
+    values: dict[str, str] = {}
+    for relative in _PINVI_MANAGER_ADMISSION_FILES:
+        path = pinvi_root / relative
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 128_000:
+                raise OSError
+            values[relative] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            _fail("pinvi_manager_admission_contract_invalid")
+    if not all(
+        token in values["scripts/docker-app.sh"]
+        or token in values["scripts/m05_isolated_manager_admission.py"]
+        for token in _PINVI_MANAGER_ADMISSION_TOKENS
+    ):
+        _fail("pinvi_manager_admission_contract_invalid")
+
+
 def _container_id(
     project: str, service: str, *, root: Path, env_file: Path, files: tuple[Path, ...]
 ) -> str:
@@ -1201,6 +1235,7 @@ def main(expected_revision: str, output: Path) -> int:
         pair, service_openapi_sha256, service_source_revision = _pair(
             pinvi_root, map_root
         )
+        _assert_pinvi_manager_admission_contract(pinvi_root)
         # source pair가 정합하지 않으면 one-shot ledger를 소비하지 않는다. 잘못 회전한
         # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
         phase = "ledger_claim"
@@ -1211,6 +1246,7 @@ def main(expected_revision: str, output: Path) -> int:
         runtime.mkdir(mode=0o700)
         _root_directory(runtime)
         map_env, pinvi_env = runtime / "map.env", runtime / "pinvi.env"
+        pinvi_admission = runtime / "pinvi-isolated-manager-admission.json"
         map_override, pinvi_override = (
             runtime / "map.override.yml",
             runtime / "pinvi.override.yml",
@@ -1228,6 +1264,7 @@ def main(expected_revision: str, output: Path) -> int:
             fixture_env,
             map_override,
             pinvi_override,
+            pinvi_admission,
             bootstrap,
             private_key,
         )
@@ -1236,6 +1273,10 @@ def main(expected_revision: str, output: Path) -> int:
         m05_evidence.mkdir(mode=0o700)
         _root_directory(m04_evidence)
         _root_directory(m05_evidence)
+        _write_private_json(
+            pinvi_admission,
+            build_m05_isolated_manager_admission(plan=plan, pair=pair),
+        )
         subnet, map_api_ip, map_frontend_ip = _map_network_addresses(transaction)
         map_secret, feature_request_token, read_token, ack_token = (
             _random_secret(),
@@ -1384,8 +1425,9 @@ def main(expected_revision: str, output: Path) -> int:
             "\n".join(
                 (
                     "PINVI_ENVIRONMENT=isolated",
-                    "PINVI_M05_ISOLATED_MANAGER_HARNESS=1",
                     f"PINVI_SOURCE_REVISION={pair.pinvi_source_revision}",
+                    f"PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH={pinvi_admission}",
+                    f"PINVI_M05_PINSET_SHA256={PINNED_RUNTIME_RELEASE.pinset_sha256}",
                     f"PINVI_API_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_APP_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_DOCKER_PROJECT={plan.pinvi_project}",
@@ -1508,7 +1550,6 @@ def main(expected_revision: str, output: Path) -> int:
         environment = {
             "PINVI_ENV_FILE": str(pinvi_env),
             "PINVI_DOCKER_PROJECT": plan.pinvi_project,
-            "PINVI_M05_ISOLATED_MANAGER_HARNESS": "1",
         }
         _command(
             str(pinvi_root / "scripts/docker-app.sh"),

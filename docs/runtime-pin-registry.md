@@ -29,6 +29,13 @@ registry는 현재 pin뿐 아니라 **pinset의 생애 상태**(재시도 금지
 관측(어디까지 이행됐나) → root 공개 사본이 소유     → GET /pinned-runtime/generation (§7-a)
 ```
 
+M05 isolated PinVi runtime을 기동할 때도 이 소유 경계를 우회하지 않는다. Manager root driver는
+private `0700` runtime directory에 `0600` admission을 만들고 exact transaction ID, current
+pinset, Manager·Map·PinVi source revision을 함께 쓴다. PinVi `docker-app.sh`는 caller environment
+marker가 아니라 이 admission을 no-follow로 검증한 경우만 `m05i-pinvi-<transaction>` Compose
+mutation을 허용한다. 따라서 direct Compose·수동 root marker·환경변수는 Manager의 `rotate-pair`,
+registry, one-shot ledger를 대체하지 못한다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식

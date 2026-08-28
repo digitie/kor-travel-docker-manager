@@ -25,6 +25,7 @@ from kor_travel_docker_manager.services.pinned_runtime_release import PinnedRunt
 M05IsolatedRuntimeRole = Literal["map", "pinvi"]
 M05_ISOLATED_HARNESS_KIND: Final = "m05-isolated-bridge-v1"
 M05_ISOLATED_HARNESS_VERSION: Final = 1
+M05_ISOLATED_MANAGER_ADMISSION_KIND: Final = "pinvi-m05-isolated-manager-admission-v1"
 _EXPOSED_RUNTIME_SERVICE_ROLES: Final[Mapping[str, M05IsolatedRuntimeRole]] = MappingProxyType(
     {"map-api": "map", "pinvi-api": "pinvi"}
 )
@@ -256,6 +257,34 @@ def claim_m05_isolated_harness_ledger(*, ledger_root: Path, plan: M05IsolatedHar
         return ledger_root / filename
     finally:
         os.close(directory_fd)
+
+
+def build_m05_isolated_manager_admission(
+    *, plan: M05IsolatedHarnessPlan, pair: M05IsolatedPairEvidence
+) -> Mapping[str, object]:
+    """PinVi direct Compose를 열 수 있는 Manager-only one-shot admission을 만든다.
+
+    이 문서는 root driver가 private ``0700`` runtime directory에 ``0600``으로만 쓴다.
+    PinVi는 caller environment marker가 아니라 이 exact transaction·pinset·source pair를
+    no-follow로 읽어 isolated mutation을 허용한다.
+    """
+
+    if (
+        pair.map_source_revision != plan.release.source_for("map").revision
+        or pair.pinvi_source_revision != plan.release.source_for("pinvi").revision
+    ):
+        raise DeploymentContractError("M05 isolated admission pair differs from the release")
+    return MappingProxyType(
+        {
+            "kind": M05_ISOLATED_MANAGER_ADMISSION_KIND,
+            "manager_source_revision": plan.manager_source_revision,
+            "map_source_revision": pair.map_source_revision,
+            "pinset_sha256": plan.release.pinset_sha256,
+            "pinvi_source_revision": pair.pinvi_source_revision,
+            "transaction_id": plan.transaction_id,
+            "version": 1,
+        }
+    )
 
 
 def assert_m05_isolated_runtime(

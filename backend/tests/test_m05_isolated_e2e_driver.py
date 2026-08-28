@@ -130,6 +130,27 @@ def test_pair_rejects_a_historical_blob_digest_mismatch(
         driver._pair(pinvi_root, map_root)
 
 
+def test_pinvi_manager_admission_contract_requires_the_gate_and_verifier(tmp_path: Path) -> None:
+    driver = _driver()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "docker-app.sh").write_text(
+        "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH\n"
+        "PINVI_M05_PINSET_SHA256\n"
+        "m05_isolated_manager_admission.py\n",
+        encoding="utf-8",
+    )
+    (scripts / "m05_isolated_manager_admission.py").write_text(
+        "pinvi-m05-isolated-manager-admission-v1\n", encoding="utf-8"
+    )
+
+    driver._assert_pinvi_manager_admission_contract(tmp_path)
+
+    (scripts / "m05_isolated_manager_admission.py").unlink()
+    with pytest.raises(driver._PhaseError, match="pinvi_manager_admission_contract_invalid"):
+        driver._assert_pinvi_manager_admission_contract(tmp_path)
+
+
 def test_generated_pbkdf2_hash_verifies_the_original_value() -> None:
     value = "isolated-password"
     encoded = _driver()._pbkdf2_password_hash(value)
@@ -687,6 +708,21 @@ def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
         encoding="utf-8"
     )
     pair_preflight = source.index("pair, service_openapi_sha256, service_source_revision = _pair(")
+    admission_contract = source.index("_assert_pinvi_manager_admission_contract(pinvi_root)")
     ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
 
-    assert pair_preflight < ledger_claim
+    assert pair_preflight < admission_contract < ledger_claim
+
+
+def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    admission_write = source.index("build_m05_isolated_manager_admission(plan=plan, pair=pair)")
+    pinvi_up = source.index('str(pinvi_root / "scripts/docker-app.sh"),')
+
+    assert admission_write < pinvi_up
+    assert "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH={pinvi_admission}" in source
+    assert "PINVI_M05_PINSET_SHA256={PINNED_RUNTIME_RELEASE.pinset_sha256}" in source
+    assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in source

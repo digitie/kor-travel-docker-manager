@@ -57,6 +57,18 @@ lease 디렉터리를 먼저 만들면 조용한 잠금이 되는 문제, 기본
 
 백엔드 1066 passed / 1 skipped, ruff clean.
 
+## 2026-08-28 — M05 isolated Compose admission P1 보정
+
+전문 보안 적대 리뷰가 PinVi `docker-app.sh`의 isolated Compose 허용이 root UID와 호출자 설정
+environment marker만 확인해 Manager `ktdctl` 밖의 mutation을 막지 못하는 P1을 발견했다. terminal
+candidate와 raw artifact는 열거나 재실행하지 않았다.
+
+Manager root driver는 private `0700` runtime directory에 `0600` admission을 만들고 exact transaction,
+current pinset, Manager·Map·PinVi source revision을 함께 결박한다. PinVi는 이 파일을 no-follow로
+검증할 때만 isolated direct Compose를 허용하며 legacy marker는 거부한다. 이 admission은 private
+one-shot 입력이므로 generation public copy·manifest v6·journal v8의 공개 schema를 바꾸지 않는다.
+새 source는 Map·PinVi CI와 exact-head 전문 적대 리뷰 두 건을 통과한 뒤에만 fresh pair로 쓸 수 있다.
+
 ## 2026-08-28 — M05 public generation P1 fail-close 보강
 
 전문 적대 리뷰가 generation 공개 사본의 세 P1을 확인했다. manifest/journal 중 한 파일만

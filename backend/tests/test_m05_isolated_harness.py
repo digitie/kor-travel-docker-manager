@@ -9,12 +9,14 @@ import pytest
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05_ISOLATED_HARNESS_KIND,
+    M05_ISOLATED_MANAGER_ADMISSION_KIND,
     M05IsolatedHarnessPlan,
     M05IsolatedNetworkExpectation,
     M05IsolatedPairEvidence,
     M05IsolatedRuntimeExpectation,
     M05IsolatedServiceExpectation,
     assert_m05_isolated_runtime,
+    build_m05_isolated_manager_admission,
     build_m05_isolated_runtime_provenance,
     claim_m05_isolated_harness_ledger,
 )
@@ -317,6 +319,24 @@ def test_runtime_provenance_seals_all_six_image_identities() -> None:
         "dagster_image_id": "sha256:" + "6" * 64,
         "source_revision": PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
         "web_image_id": "sha256:" + "7" * 64,
+    }
+
+
+def test_manager_admission_binds_the_exact_pair_and_transaction() -> None:
+    expectation = _expectation()
+
+    admission = build_m05_isolated_manager_admission(
+        plan=expectation.plan, pair=expectation.pair
+    )
+
+    assert dict(admission) == {
+        "kind": M05_ISOLATED_MANAGER_ADMISSION_KIND,
+        "manager_source_revision": "a" * 40,
+        "map_source_revision": PINNED_RUNTIME_RELEASE.source_for("map").revision,
+        "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+        "pinvi_source_revision": PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+        "transaction_id": "b" * 32,
+        "version": 1,
     }
 
 
