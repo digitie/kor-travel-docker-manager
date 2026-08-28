@@ -2,6 +2,22 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 safe-result 부재 terminal과 launcher envelope 보강
+
+Map `f90b7c28ee0a51cc5e2dce7a332e7feef9afe477`·PinVi
+`fdff06ba746bf2de198fab075a356f88b9f228c9`·pinset
+`fa28a6e7d7ee27b7bb6be6cd6c0a04ffc458cda329beca339a4ce6d038480381`은 최신 CI와 전문 적대
+리뷰 두 건의 GO, trusted Manager `b45f54d5…` release, atomic pair rotation과 registry/public-copy 검증 뒤
+n150 isolated M04/M05 launcher를 정확히 한 번 실행했다. launcher는 exit 1이었고 허용된 durable safe result는
+없었다. HTTP 원문·container log·환경값·output leaf는 읽거나 보관하지 않았다. 후속 `pin verify`는 exact pinset의
+terminal 차단을 확인했으므로 이 candidate는 재실행하지 않는다.
+
+다음 launcher는 기존 `result.json`이 root-owned·고정 schema로 유효한 경우에만 driver 종료값을 수용한다. 그렇지
+않으면 current pinset을 idempotent terminal block으로 결박하고 `launcher_safe_result_unavailable` fixed envelope를
+`result.json` 또는 충돌 없는 `launcher-result.json`에 `0600`으로 남긴다. 원문 stderr·HTTP·컨테이너·환경값은
+읽거나 쓰지 않는다. 다음 candidate는 Map `73150672…`·새 PinVi provenance·이 새 Manager source를 atomic pinset으로
+결박한 경우에만 만들 수 있다.
+
 ## 2026-08-28 — M05 Map health terminal의 원문 없는 다음 진단 범위
 
 Map `bbb29d177…`·PinVi `663e21b4…`·pinset `c700bd2e…`은 trusted Manager `4a6e1b0…` release의 atomic

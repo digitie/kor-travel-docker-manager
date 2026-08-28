@@ -17,12 +17,13 @@
 
 ## M05 재개 규율
 
-- [/] `c700bd2e…`는 Map `bbb29d17…`·PinVi `663e21b4…`·Manager `4a6e1b0…`의 registry/public-copy gate 뒤
-  n150 isolated one-shot에서 `map_health_http_failed` terminal로 끝났고 cleanup은 통과했다. HTTP 원문·container
-  log·환경값은 읽거나 남기지 않으며, root registry가 조건 없이 차단한 같은 pinset·source pair·Manager source·
-  output leaf는 재실행하지 않는다. 다음 Manager source는 Map health HTTP status와 loopback transport를 서로 다른
-  fixed phase로 남긴다. terminal 기록을 반영한 새 Map·PinVi provenance와 이 source를 fresh atomic pinset으로
-  결박하기 전에는 n150 실행권이 없다.
+- [/] `fa28a6e7…`는 Map `f90b7c28…`·PinVi `fdff06ba…`·Manager `b45f54d5…`의 registry/public-copy gate 뒤
+  n150 isolated one-shot을 정확히 한 번 실행했다. launcher는 exit 1이었고 허용된 durable safe result는 없었지만,
+  후속 `pin verify`가 exact pinset의 terminal 차단을 확인했다. HTTP 원문·container log·환경값·output leaf는
+  읽거나 남기지 않으며, root registry가 조건 없이 차단한 같은 pinset·source pair·Manager source·output leaf는
+  재실행하지 않는다. 다음 Manager source는 driver 결과가 없더라도 `launcher_safe_result_unavailable` fixed envelope를
+  쓰고 terminal block을 보장한다. terminal 기록 Map `73150672…`·새 PinVi provenance와 이 source를 fresh atomic
+  pinset으로 결박하기 전에는 n150 실행권이 없다.
 - [/] `a3f6a8f3…`은 trusted installed-wheel project-root preflight failure로 terminal 차단됐다. 같은
   Map/PinVi pinset·Manager source·one-shot output leaf는 어떤 이유로도 재실행하지 않는다. installed `python -I`
   경로의 external registry 선택 회귀와 두 전문 적대 리뷰를 통과한 새 Manager source, 새 pair pinset만 다음

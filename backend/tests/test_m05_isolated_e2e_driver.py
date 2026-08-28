@@ -360,6 +360,19 @@ def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
     )
 
 
+def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_unavailable() -> None:
+    """driver raw output 부재도 terminal evidence 없이 재시도할 수 없게 고정한다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    assert "launcher_safe_result_unavailable" in launcher
+    assert "ktdctl pin block \"$pinset\"" in launcher
+    assert "launcher-result.json" in launcher
+    assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
+
+
 def test_free_ports_uses_the_standard_ss_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

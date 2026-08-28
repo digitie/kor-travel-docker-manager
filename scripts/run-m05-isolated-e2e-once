@@ -99,6 +99,147 @@ if ! /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify --json >
 fi
 install -d -o root -g root -m 0700 "$output_dir"
 
-exec /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
+set +e
+/opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
   /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
   "$expected_revision" "$output_dir"
+driver_status="$?"
+set -e
+
+# Driver가 terminal block까지 남기기 전에 interpreter/결과 쓰기 경계에서 끝나도, 원문
+# stderr를 보관하거나 재시도 근거로 쓰지 않는다. 유효한 `result.json`만 그대로 수용하고
+# 그 외에는 같은 one-shot을 terminal로 차단한 고정 envelope 하나를 쓴다.
+result_path="$output_dir/result.json"
+if /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$driver_status" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+expected_revision = sys.argv[2]
+driver_status = int(sys.argv[3])
+try:
+    metadata = path.lstat()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError
+    with path.open(encoding="utf-8") as handle:
+        value = json.load(handle)
+    if (
+        not isinstance(value, dict)
+        or value.get("manager_source_revision") != expected_revision
+        or value.get("status") not in {"passed", "blocked"}
+        or not isinstance(value.get("phase"), str)
+        or not isinstance(value.get("driver_phase"), str)
+        or not isinstance(value.get("cleanup_failed"), bool)
+        or not isinstance(value.get("pinset_sha256"), str)
+        or len(value["pinset_sha256"]) != 64
+        or any(char not in "0123456789abcdef" for char in value["pinset_sha256"])
+        or (value["status"] == "passed") != (driver_status == 0)
+    ):
+        raise ValueError
+except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+then
+  exit "$driver_status"
+fi
+
+pinset="$('/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl' pin show --json | /usr/bin/python3 -I -S -c '
+from __future__ import annotations
+import json
+import sys
+value = json.load(sys.stdin)
+pinset = value.get("pinset_sha256") if isinstance(value, dict) else None
+if not isinstance(pinset, str) or len(pinset) != 64 or any(char not in "0123456789abcdef" for char in pinset):
+    raise SystemExit(1)
+print(pinset)
+')"
+
+# `pin block`은 이미 driver가 terminal 차단을 마친 경우에도 idempotent다. block 자체가
+# 실패하면 실행권을 복원하지 않으며 launcher도 성공으로 보고하지 않는다.
+/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin block "$pinset" \
+  --reason 'M05 isolated launcher safe result unavailable' --confirm >/dev/null
+
+fallback_path="$result_path"
+if [[ -e "$fallback_path" ]]; then
+  fallback_path="$output_dir/launcher-result.json"
+fi
+/usr/bin/python3 -I -S - "$fallback_path" "$expected_revision" "$pinset" <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import stat
+import sys
+
+path = pathlib.Path(sys.argv[1])
+revision = sys.argv[2]
+pinset = sys.argv[3]
+parent = path.parent.lstat()
+if (
+    path.is_absolute() is False
+    or path.is_symlink()
+    or not stat.S_ISDIR(parent.st_mode)
+    or parent.st_uid != 0
+    or stat.S_IMODE(parent.st_mode) != 0o700
+):
+    raise SystemExit(1)
+payload = (
+    json.dumps(
+        {
+            "cleanup_failed": True,
+            "driver_phase": "launcher_safe_result_unavailable",
+            "harness": "m05-isolated-bridge-v1",
+            "manager_source_revision": revision,
+            "phase": "launcher_safe_result_unavailable",
+            "pinset_sha256": pinset,
+            "status": "blocked",
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    + "\n"
+).encode("ascii")
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+fd = os.open(path, flags, 0o600)
+try:
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise SystemExit(1)
+        view = view[written:]
+    os.fsync(fd)
+finally:
+    os.close(fd)
+metadata = path.lstat()
+if (
+    not stat.S_ISREG(metadata.st_mode)
+    or metadata.st_uid != 0
+    or stat.S_IMODE(metadata.st_mode) != 0o600
+    or metadata.st_nlink != 1
+):
+    raise SystemExit(1)
+directory = os.open(path.parent, os.O_RDONLY | os.O_CLOEXEC)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+
+exit 1
