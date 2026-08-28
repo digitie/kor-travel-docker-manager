@@ -1,0 +1,97 @@
+#!/usr/bin/bash
+# M05 disposable bridge runtime을 정확히 한 번만 실행하는 root launcher.
+set -euo pipefail
+
+if [[ "$#" != 2 ]]; then
+  echo "usage: run-m05-isolated-e2e-once EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
+  exit 2
+fi
+if [[ "$(id -u)" != 0 ]]; then
+  echo "M05 isolated launcher must run as root" >&2
+  exit 2
+fi
+expected_revision="$1"
+output_dir="$2"
+if [[ ! "$expected_revision" =~ ^[0-9a-f]{40}$ || "$output_dir" != /* || -e "$output_dir" ]]; then
+  echo "M05 isolated launcher arguments are invalid" >&2
+  exit 2
+fi
+
+# rebuild one-shot과 동일한 host-global lock을 process lifetime 전체에 보존한다.
+if [[ -z "${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD:-}" ]]; then
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "$@" <<'PY'
+import fcntl
+import os
+from pathlib import Path
+import stat
+import sys
+
+script = Path(sys.argv[1]).resolve(strict=True)
+arguments = sys.argv[2:]
+directory = Path("/run/lock/kor-travel-docker-manager")
+path = directory / "global-mutation.lock"
+directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+metadata = directory.lstat()
+if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o700):
+    raise SystemExit("M05 global mutation lock directory is unsafe")
+if not hasattr(os, "O_NOFOLLOW"):
+    raise SystemExit("M05 global mutation lock requires O_NOFOLLOW")
+fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+opened = os.fstat(fd)
+if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+        or opened.st_uid != 0 or stat.S_IMODE(opened.st_mode) != 0o600):
+    os.close(fd)
+    raise SystemExit("M05 global mutation lock is unsafe")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as exc:
+    os.close(fd)
+    raise SystemExit("another manager mutation is already active") from exc
+os.set_inheritable(fd, True)
+env = dict(os.environ)
+env["KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"] = str(fd)
+os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], env)
+PY
+fi
+
+lock_fd="${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD}"
+if [[ ! "$lock_fd" =~ ^[0-9]+$ ]]; then
+  echo "M05 global mutation lock descriptor is invalid" >&2
+  exit 2
+fi
+/usr/bin/python3 -I -S - "$lock_fd" <<'PY'
+import fcntl
+import os
+from pathlib import Path
+import stat
+import sys
+
+fd = int(sys.argv[1])
+path = Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
+opened = os.fstat(fd)
+named = path.lstat()
+if ((opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+        or not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+        or opened.st_uid != 0 or stat.S_IMODE(opened.st_mode) != 0o600):
+    raise SystemExit("M05 global mutation lock descriptor is unsafe")
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as exc:
+    raise SystemExit("M05 global mutation lock is not held") from exc
+PY
+
+parent="$(dirname "$output_dir")"
+if [[ ! -d "$parent" || -L "$parent" || "$(stat -c '%u' "$parent")" != 0 ]]; then
+  echo "M05 output parent is unsafe" >&2
+  exit 2
+fi
+if (( 8#$(stat -c '%a' "$parent") & 022 )); then
+  echo "M05 output parent is writable by another principal" >&2
+  exit 2
+fi
+install -d -o root -g root -m 0700 "$output_dir"
+
+exec /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
+  /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
+  "$expected_revision" "$output_dir"

@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-28 — PinVi isolated migrator boundary를 포함한 pinset 회전
+
+PinVi `7d66523a…`는 root Manager harness marker와 transaction-bound project에서만 isolated
+migration을 허용한다. 이 실행 경계 변경을 exact Map `9c64e862…`와 새 pinset `9835cfcc…`으로
+회전했다. 이전 `d4b34826…`은 실행하지 않으며, 새 root launcher가 완성·리뷰된 뒤 이 pinset만
+한 번 admission한다.
+
+이전 PinVi revision pin은 실제 merge commit과 달라 P0 계약 오류였다. Manager는 현재
+pair가 지정한 네 OpenAPI source revision을 canonical 원격에서 exact object로 읽어 raw/canonical
+SHA까지 대조한다. disposable driver는 M04 UI 승인, Map 승인, provider candidate 결선,
+PinVi reconciliation receipt, M05 live attestation 순서를 실제로 실행하며, 실패 위치와
+관계없이 private env·bootstrap credential·signing key를 제거한다. n150 실행은 수정 재리뷰와
+draft PR CI가 통과한 뒤 한 번만 한다.
+
 ## 2026-08-28 — M05 isolated runtime provenance receipt와 PinVi source 회전
 
 Manager는 Map admin/API/frontend와 PinVi API/Web/Dagster 여섯 image를 각각 image inspect ID 및 OCI

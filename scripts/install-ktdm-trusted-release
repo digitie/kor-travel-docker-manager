@@ -929,6 +929,7 @@ run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
 /usr/bin/chmod 0700 "${STAGING}"
 /usr/bin/chmod 0755 "${STAGING}/scripts/install-ktdm-trusted-release"
 /usr/bin/chmod 0755 "${STAGING}/scripts/run-pinned-rebuild-once"
+/usr/bin/chmod 0755 "${STAGING}/scripts/run-m05-isolated-e2e-once"
 
 /usr/bin/printf '%s\n' "${revision}" > "${STAGING}/.ktdm-source-revision"
 /usr/bin/chown root:root "${STAGING}/.ktdm-source-revision"
