@@ -113,9 +113,6 @@ _C6C_GLOBAL_MUTATION_LOCK = Path(
 _PINNED_RUNTIME_REBUILD_LOCK = Path(
     "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
 )
-# host-wide lease의 소유자로 인정할 계정. 미설정이면 `0`(root) — 오늘의 동작 그대로다.
-# 전용 서비스 계정으로 backend를 돌릴 때만 설정한다.
-_SERVICE_USER_ENV = "KTDM_SERVICE_USER"
 _DEFAULT_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
 _C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
@@ -2152,6 +2149,7 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
             raise DeploymentContractError(
                 "another C6c compatible-pair operation is already active"
             ) from exc
+        _assert_locked_fd_still_owns_path(fd, lock_path)
         context_token = _HELD_DEPLOYMENT_LOCKS.set(held_locks | {lock_key})
         yield
     finally:
@@ -2223,79 +2221,54 @@ def pinned_runtime_rebuild_lock() -> Iterator[None]:
         yield
 
 
-def configured_service_uid() -> int:
-    """host lease의 소유자로 인정할 uid. 미설정이면 root다.
-
-    이 seam이 있는 이유: 소유권 검사 대부분은 이미 ``st_uid != os.geteuid()``(자기 자신)
-    기준이라 전용 비-root 계정으로 옮겨도 그대로 동작한다. 남은 걸림돌은 production
-    host lease가 리터럴 uid 0을 요구하는 이 지점 하나였다.
-    """
-
-    raw = os.environ.get(_SERVICE_USER_ENV, "").strip()
-    if not raw:
-        return 0
-    if raw.isdigit():
-        return int(raw)
-    try:
-        import pwd
-
-        return pwd.getpwnam(raw).pw_uid
-    except (ImportError, KeyError) as exc:
-        raise DeploymentContractError(
-            f"{_SERVICE_USER_ENV}={raw!r} is not a user on this host"
-        ) from exc
-
-
 def _prepare_c6c_lock_directory(path: Path) -> None:
-    if path != _C6C_GLOBAL_MUTATION_LOCK.parent:
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        return
-
-    service_uid = configured_service_uid()
-    if os.geteuid() not in {0, service_uid}:
-        # 기본(서비스 계정 미설정) 모드에서는 이 조건이 `euid != 0`과 동치라 예전 계약
-        # 그대로다. 여기서 막지 않으면 root 소유 `0700` 디렉터리 진입 실패가 raw
-        # PermissionError로 새어 나가 운영자에게 원인을 감춘다.
+    if path == _C6C_GLOBAL_MUTATION_LOCK.parent and os.geteuid() != 0:
         raise DeploymentContractError(
             "production compatible-pair managed workflow requires root"
         )
-    if not path.is_dir():
-        # `/run/lock`은 1777이라 **런타임 생성이 곧 선점 창**이다. root가 만드는 것은
-        # 그 창이 없으므로 허용하고, 비-root 모드에서는 부팅 시 systemd-tmpfiles가
-        # 미리 만들어 두기를 요구한다(deploy/tmpfiles.d/).
-        if os.geteuid() != 0:
-            raise DeploymentContractError(
-                "production compatible-pair managed workflow requires root, or the host "
-                f"lease directory {path} pre-created at boot by systemd-tmpfiles "
-                "(deploy/tmpfiles.d/kor-travel-docker-manager.conf)"
-            )
-        path.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if service_uid != 0:
-            # root가 먼저 만들면 `0700 root:root`가 되어 서비스 계정이 진입조차 못
-            # 한다. tmpfiles.d가 만들어 두었을 상태로 수렴시켜, 설정 누락이 조용한
-            # 잠금으로 이어지지 않게 한다. lchown이라 symlink 교체에 안전하다.
-            os.chown(path, service_uid, -1, follow_symlinks=False)
+    # `/run/lock`은 `1777` sticky다. 런타임 최초 생성은 그래서 선점 창이고, 이 창은
+    # 코드로 닫히지 않는다 — 부팅 시점에 이미 존재하게 만드는 것만이 닫는다
+    # (`deploy/tmpfiles.d/kor-travel-docker-manager.conf`). 아래 `mkdir`은 그 유닛이
+    # 설치되지 않은 호스트를 위한 폴백이며, 창을 없애지 못한다.
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path == _C6C_GLOBAL_MUTATION_LOCK.parent:
+        st = path.lstat()
+        if (
+            not stat.S_ISDIR(st.st_mode)
+            or st.st_uid != 0
+            or stat.S_IMODE(st.st_mode) != 0o700
+        ):
+            raise DeploymentContractError("production C6c deployment lock directory is unsafe")
 
-    st = path.lstat()
-    # root와 설정된 서비스 계정 **둘 다** 인정한다. 한쪽만 허용하면 root로 도는
-    # rebuild와 서비스 계정으로 도는 backend가 같은 디렉터리를 두고 서로를 거부한다.
-    if (
-        not stat.S_ISDIR(st.st_mode)
-        or st.st_uid not in {0, service_uid}
-        or stat.S_IMODE(st.st_mode) != 0o700
-    ):
-        raise DeploymentContractError("production C6c deployment lock directory is unsafe")
+
+def _assert_locked_fd_still_owns_path(fd: int, lock_path: Path) -> None:
+    """flock을 잡은 inode가 지금도 그 경로의 inode인지 확인한다.
+
+    ``flock``은 경로가 아니라 inode 단위다. 우리가 열고 잠근 사이에 누군가 그 경로를
+    unlink하고 새 파일을 만들었다면, 두 주체가 서로 다른 inode를 잠근 채 자기가
+    상호배제를 얻었다고 믿게 된다. lease 디렉터리는 `0700 root:root`라 오늘은 root만
+    그럴 수 있지만, 상호배제는 디렉터리 권한이 아니라 자기 자신이 보증해야 한다.
+    ``_verified_inherited_global_mutation_lock_fd``는 이미 같은 대조를 한다.
+    """
+
+    descriptor = os.fstat(fd)
+    try:
+        current = lock_path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            "C6c deployment lock vanished after acquisition"
+        ) from exc
+    if (descriptor.st_dev, descriptor.st_ino) != (current.st_dev, current.st_ino):
+        raise DeploymentContractError("C6c deployment lock was replaced during acquisition")
 
 
 def _validate_c6c_lock_fd(fd: int, *, production: bool) -> None:
     st = os.fstat(fd)
-    # production lease는 root 또는 설정된 서비스 계정이 소유해야 한다. 그 외 uid가
-    # 소유했다면 누군가 자리를 선점한 것이다.
-    expected_uids = {0, configured_service_uid()} if production else {os.geteuid()}
+    expected_uid = 0 if production else os.geteuid()
     if (
         not stat.S_ISREG(st.st_mode)
         or st.st_nlink != 1
-        or st.st_uid not in expected_uids
+        or st.st_uid != expected_uid
         or stat.S_IMODE(st.st_mode) != 0o600
     ):
         raise DeploymentContractError("C6c deployment lock is unsafe")

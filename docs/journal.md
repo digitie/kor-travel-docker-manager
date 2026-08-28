@@ -2,32 +2,48 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
-## 2026-08-28 — root 권한 축소 3건: artifact 읽기 경로, host lease 선점 창, 비-root 서비스 계정 seam
+## 2026-08-28 — root 권한 축소: 채택 2건, 적대 리뷰로 기각 1건
 
-오너 질문 "root 권한이 필요한 이유는?"에 대한 근거 확인에서 나온 후속 3건을 반영했다. 세
-가지 모두 **기본 동작은 오늘과 동일**하고, 운영 계정 전환 자체는 별도 작업으로 남긴다.
+오너 질문 "root 권한이 필요한 이유는?"의 근거 확인에서 나온 후속 3건 중 2건을 반영하고,
+1건은 적대 리뷰에서 기각했다.
 
-1. **fixed artifact 읽기 경로의 중복 root 조건 제거.** `_require_fixed_artifact_directory`가
-   `os.geteuid() != 0`을 검사해 `read_root_read_only_artifact`까지 root를 요구하고 있었다.
-   쓰기 두 진입점(`publish_root_read_only_artifact`, `replace_root_read_only_artifact`)이
-   각각 독립적으로 root를 검사하므로 이 조건은 계약을 넓히지 않고 비-root 읽기만 막았다.
-2. **host mutation lease 디렉터리를 부팅 시 생성.** `/run/lock`이 `1777`이라 런타임 최초
-   생성이 선점 창이었고, 선점되면 모든 컨테이너 mutation이 재부팅까지 거부되며 sticky bit
-   때문에 정리도 root만 가능했다. `deploy/tmpfiles.d/kor-travel-docker-manager.conf`를
-   추가하고 배포 절차의 필수 항목으로 등재했다.
-3. **`KTDM_SERVICE_USER` seam.** 백엔드를 root로 묶어 두던 구조적 이유가 이 lease의 리터럴
-   `uid 0` 요구 하나였음을 확인했다(나머지 소유권 검사는 전부 자기 자신 기준이고, 남은
-   리터럴 root 게이트는 rebuild·pin 회전·artifact 발행·legacy retirement의 root 전용
-   워크플로뿐이다). lease 소유자로 root와 선언된 계정을 함께 인정하고, 서비스 계정 모드에서는
-   런타임 생성을 금지한다. 미설정 시 `0`이라 기존 계약과 동치다.
+**채택 (1) fixed artifact 읽기 경로의 중복 root 조건 제거.**
+`_require_fixed_artifact_directory`가 `os.geteuid() != 0`을 검사해
+`read_root_read_only_artifact`까지 root를 요구했다. 호출자 3곳을 전수 확인한 결과 쓰기 두
+진입점은 각각 독립적으로 root를 검사하고 이 헬퍼 자체는 mutation을 하지 않으므로, 이
+조건은 계약을 넓히지 않고 비-root 읽기만 막고 있었다.
 
-리뷰 중 자체 발견해 고친 것 둘: (a) 서비스 계정 모드에서 root가 lease 디렉터리를 먼저 만들면
-`0700 root:root`가 되어 서비스 계정이 영영 진입하지 못하는 조용한 잠금 — 생성 직후
-`lchown`으로 수렴시킨다. (b) 기본 모드에서 디렉터리가 이미 있을 때 euid 게이트를 지나쳐
-raw `PermissionError`가 새어 나가는 퇴화 — 예전 계약 오류 문구를 복원했다.
+**채택 (2) host lease 부팅 시 생성 + flock 획득 뒤 경로 재대조 (ADR-41).**
+`/run/lock`은 `1777` sticky tmpfs(n150 실측)라 런타임 최초 생성이 매 부팅 선점 창이었다.
+`deploy/tmpfiles.d/`를 추가하고 **설치를 trusted installer가 책임지게** 했다 — 문서에 적힌
+`sudo install` 두 줄은 배달된 것이 아니다. 함께, `flock` 획득 뒤 `(st_dev, st_ino)`를
+경로와 대조한다. `flock`은 inode 단위라 경로가 갈아끼워지면 두 주체가 각자 상호배제를
+얻었다고 믿는다. 같은 파일의 inherited-fd 경로는 이미 같은 대조를 하고 있었다.
 
-ADR-41 등재, `docs/prod-deployment.md` 3.z 신설. 회귀 테스트 20건 추가
-(`tests/test_c6c_service_account_lock.py`), 백엔드 전체 1,076 passed / 1 skipped, ruff clean.
+**기각 (3) `KTDM_SERVICE_USER` 기반 비-root 백엔드 seam.**
+lease 소유자로 root와 선언된 계정을 함께 인정하도록 구현했다가, 머지 전 적대 리뷰에서
+NO-GO를 받고 되돌렸다. 직접 확인한 결정적 사실:
+
+- 백엔드 전체에서 `load_dotenv`는 `main.py:30` 한 곳뿐이고 기본 `override=False`라 프로세스
+  env가 root 소유 `.env`를 이긴다. `cli.py`는 `.env`를 아예 읽지 않는다. 즉
+  `os.environ`에서 읽는 uid 선언은 `euid == euid` 자기 증명이다.
+- `sudo`의 `env_reset`이 `KTDM_*`를 벗기므로, 문서대로 설정하면 root 전용 워크플로 4종이
+  전부 거부된다.
+- 디렉터리 소유자를 넓히면 서비스 계정이 lock 파일을 unlink·재생성할 수 있어 flock 상호
+  배제가 깨지고, 같은 디렉터리의 rebuild lease는 계약이 어긋나 root의 rebuild가 부팅 내내
+  거부될 수 있다.
+
+교훈은 신뢰 결정의 입력을 프로세스 env에서 읽지 않는다는 것이고, 이 저장소에는 이미 옳은
+패턴이 있다(`_capture_c6c_deployment_lock_snapshot`은 root 소유 `.env` 바이트로 identity를
+고정한다). 올바른 방향은 소유자를 넓히는 것이 아니라 소유자는 root로 두고 접근만 그룹으로
+여는 것이며, `NONROOT-BACKEND` 태스크로 분리했다. ADR-41에 기각 근거를 남겼다.
+
+리뷰가 지적하기 전에 자체 발견해 고친 것 둘도 기록해 둔다: 서비스 계정 모드에서 root가
+lease 디렉터리를 먼저 만들면 조용한 잠금이 되는 문제, 기본 모드에서 계약 오류가 raw
+`PermissionError`로 퇴화하는 문제. 둘 다 기각된 설계와 함께 사라졌다.
+
+회귀 테스트 8건(`tests/test_c6c_lock_hardening.py` — 경로 재대조와 획득 중 바꿔치기),
+백엔드 전체 green, ruff clean.
 
 ## 2026-08-28 — M05 `b46743ea…` terminal 보존 후 대기
 

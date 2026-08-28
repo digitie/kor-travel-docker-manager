@@ -1341,3 +1341,52 @@ trap - EXIT
 if ! trusted_release_transaction reconcile; then
   echo "trusted release committed; post-commit cleanup requires attention" >&2
 fi
+
+# host mutation lease 디렉터리를 부팅 시점에 만든다.
+#
+# `/run/lock`은 `1777` sticky라 런타임 최초 생성이 선점 창이다. 선점되면 소유자·mode
+# 검증이 실패해 모든 컨테이너 mutation이 다음 재부팅까지 거부되고, sticky bit 때문에
+# 정리도 root만 할 수 있다. 이 창은 코드로 닫히지 않고 "부팅 시점에 이미 존재하게
+# 만드는 것"으로만 닫히므로, 사람의 기억이 아니라 설치가 책임진다.
+#
+# release는 이미 commit됐다. 여기서의 실패는 배포를 되돌리지 않고 경고로 보고한다.
+install_host_lease_tmpfiles() {
+  local source="${APP_ROOT}/deploy/tmpfiles.d/kor-travel-docker-manager.conf"
+  local destination=/usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+
+  if [[ -L "${source}" || ! -f "${source}" ]]; then
+    echo "host lease tmpfiles unit missing from the installed release: ${source}" >&2
+    return 1
+  fi
+  if [[ "$(/usr/bin/stat -c '%u' "${source}")" != "0" ]]; then
+    echo "host lease tmpfiles unit is not root-owned: ${source}" >&2
+    return 1
+  fi
+  if ! /usr/bin/install -o root -g root -m 0644 -- "${source}" "${destination}"; then
+    echo "cannot install host lease tmpfiles unit: ${destination}" >&2
+    return 1
+  fi
+  if ! command -v systemd-tmpfiles >/dev/null 2>&1; then
+    echo "systemd-tmpfiles unavailable; host lease directory is not boot-created" >&2
+    return 1
+  fi
+  if ! systemd-tmpfiles --create "${destination}"; then
+    echo "systemd-tmpfiles could not apply ${destination}" >&2
+    return 1
+  fi
+  # `d`는 소유자·mode만 바로잡고 **내용은 지우지 않는다.** 이미 선점된 호스트라면
+  # 침입자가 심어 둔 파일이 그대로 남는다. lock fd 검증이 fail-close로 잡지만,
+  # 설치 시점에 운영자에게 보이는 편이 낫다.
+  local stray
+  stray="$(/usr/bin/find /run/lock/kor-travel-docker-manager -mindepth 1 ! -uid 0 2>/dev/null || true)"
+  if [[ -n "${stray}" ]]; then
+    echo "host lease directory contains entries not owned by root:" >&2
+    printf '%s\n' "${stray}" >&2
+    return 1
+  fi
+  return 0
+}
+
+if ! install_host_lease_tmpfiles; then
+  echo "trusted release committed; host lease boot provisioning requires attention" >&2
+fi

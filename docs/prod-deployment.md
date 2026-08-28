@@ -282,66 +282,65 @@ sudo ls -l ~root/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/p
 거부한다. **권한을 완화하지 마라** — 그 권한이 이 파일의 유일한 보호다. backend를 해당
 소유자 권한으로 재기동하거나 SSH에서 해시를 직접 교체한다.
 
-### 3.z host mutation lease 디렉터리 (필수) 와 비-root 서비스 계정 (선택)
+### 3.z host mutation lease 디렉터리는 부팅 시점에 만든다
 
 `KTDM_DEPLOYMENT_ENVIRONMENT=production`에서 **모든** Compose mutation은
 `/run/lock/kor-travel-docker-manager/global-mutation.lock` 하나를 지난다
-(`c6c_global_mutation_lock_path`). 비운영은 `$HOME/.local/state/...`를 쓰므로 이 절과
-무관하다.
+(`c6c_global_mutation_lock_path`). 비운영에서는 이 lease가 `$HOME/.local/state/...`로 간다.
 
-**필수 — 부팅 시점에 디렉터리를 만들어 둔다.** Debian 계열의 `/run/lock`은 `1777`
-sticky다. Manager가 런타임에 이 디렉터리를 처음 만드는 구조라면, 재부팅 직후 비특권
-로컬 사용자가 같은 이름을 선점할 수 있다. 그러면 소유자·mode 검증이 실패해
-**모든 컨테이너 mutation이 다음 재부팅까지 거부**되고, sticky bit 때문에 정리도 root만
-할 수 있다. `systemd-tmpfiles`는 early boot에 돌고 `d` 타입은 기존 디렉터리의 소유자와
-mode까지 바로잡으므로 선점 창 자체가 사라진다.
+**단, rebuild lease는 환경과 무관하다.** `pinned_runtime_rebuild_lock_path()`는 조건 없이
+`/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock`을 반환한다. rehearsal
+호스트도 이 디렉터리를 쓰므로 이 절은 비운영 호스트에도 적용된다.
+
+Debian 계열의 `/run/lock`은 `1777` sticky다(n150 실측 `drwxrwxrwt root:root`). Manager가
+런타임에 이 디렉터리를 처음 만드는 구조라면, 재부팅 직후 비특권 로컬 사용자가 같은 이름을
+선점할 수 있다. 그러면 소유자·mode 검증이 실패해 **모든 컨테이너 mutation이 다음
+재부팅까지 거부**되고, sticky bit 때문에 정리도 root만 할 수 있다. `/run/lock`은 tmpfs라
+디렉터리가 재부팅마다 사라지므로, 이 창은 부팅할 때마다 다시 열린다.
+
+**이 창은 코드로 닫히지 않는다.** 런타임 검증을 아무리 조여도 "먼저 만든 쪽이 이긴다"는
+성질은 남는다. 부팅 시점에 이미 존재하게 만드는 것만이 닫는다.
+
+`scripts/install-ktdm-trusted-release`가 설치 말미에 아래를 자동으로 수행한다. 사람이
+기억해야 하는 절차가 아니다.
 
 ```bash
-sudo install -o root -g root -m 0644 \
-  deploy/tmpfiles.d/kor-travel-docker-manager.conf \
+install -o root -g root -m 0644 \
+  /opt/kor-travel-docker-manager/deploy/tmpfiles.d/kor-travel-docker-manager.conf \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
-sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
-sudo ls -ld /run/lock/kor-travel-docker-manager   # drwx------ root root
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
 ```
 
-**선택 — 백엔드를 전용 계정으로 내린다.** 그동안 백엔드가 root로 돌아야 했던 유일한
-구조적 이유가 이 host lease의 리터럴 `uid 0` 요구였다. 나머지 소유권 검사는 전부
-`st_uid != os.geteuid()`(자기 자신) 기준이라 어떤 계정에서도 성립한다. 이제
-`.env`에 계정을 선언하면 lease 소유자로 root와 함께 인정된다.
+실패하면 release는 유지한 채 `host lease boot provisioning requires attention`을 stderr로
+보고한다. 설치 뒤 확인:
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin ktdm
-sudo usermod -aG docker ktdm          # Docker mutation 권한의 실체는 docker.sock 그룹이다
-sudo chown ktdm /opt/kor-travel-docker-manager/.env   # 0600은 유지한다
-# tmpfiles.d의 UID 필드를 root -> ktdm으로 바꾸고 다시 --create
-# .env:
-#   KTDM_SERVICE_USER=ktdm
+ls -l /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+sudo ls -la /run/lock/kor-travel-docker-manager     # -ld가 아니라 -la로 본다
 ```
 
-미설정이면 `0`(root)으로 해석되어 **오늘과 동일하게** 동작한다. 값은 계정명 또는 숫자
-uid를 받고, 없는 계정이면 기동이 아니라 mutation 시점에 계약 오류로 거부한다.
+`ls -la`인 이유: tmpfiles의 `d` 타입은 기존 디렉터리의 **소유자와 mode만 바로잡고 내용은
+지우지 않는다.** 이미 선점된 호스트에서 `--create`를 돌리면 디렉터리는 `drwx------ root
+root`로 깨끗해 보이지만 침입자가 심어 둔 파일이 남는다. lock fd 검증(`st_uid == 0`,
+`nlink == 1`, `0600`)이 fail-close로 잡고 installer도 root 아닌 항목을 발견하면 보고하지만,
+눈으로도 확인한다.
 
-lease 디렉터리는 root와 선언된 계정 **둘 다** 소유자로 인정한다. 한쪽만 허용하면 root로
-도는 `rebuild-pinned`와 서비스 계정으로 도는 백엔드가 같은 디렉터리를 두고 서로를
-거부하기 때문이다. 반대로 서비스 계정 모드에서는 백엔드가 디렉터리를 **런타임에 만들지
-않는다** — `1777` 아래에서의 런타임 생성이 곧 위의 선점 창이므로, 없으면 tmpfiles.d를
-가리키는 오류로 거부한다.
+정상 상태는 다음과 같다.
 
-계정을 내려도 **root가 계속 필요한 작업**은 그대로다. 이들은 SSH에서 `sudo`로 실행한다.
+```
+drwx------ 2 root root ...  .
+drwxrwxrwt 5 root root ...  ..
+-rw------- 1 root root ...  global-mutation.lock
+-rw------- 1 root root ...  pinned-runtime-rebuild.lock
+```
 
-| 작업 | 이유 |
-| --- | --- |
-| `ktdctl pinvi-pair rebuild-pinned` | source staging과 state owner를 root로 고정 |
-| `ktdctl pin rotate-pair` / `pin apply-pending` | registry가 root `0600` |
-| application 300 fixed artifact 발행·교체 | 비-root image가 읽고 root만 쓰는 `0755`/`0644` 계약 |
-| legacy override retirement | trusted release 경로 고정 |
+**trusted installer를 쓰지 않는 호스트**(2절의 rsync 배포본, rehearsal 등)에는 `deploy/`
+트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접
+실행한다. 유닛 자체는 release와 무관하므로 재설치할 필요가 없다.
 
-fixed artifact **읽기**는 root를 요구하지 않는다. 쓰기 두 경로가 각각 독립적으로 root를
-검사하므로, 읽기 경로에까지 걸려 있던 조건은 계약을 넓히지 않고 비-root 백엔드만
-막고 있었다.
-
-`.env` 소유권을 옮기면 3.y의 `ENV_NOT_WRITABLE` 제약도 함께 풀린다 — 권한은 `0600`
-그대로 두고 **소유자만** 바꾼다.
+> **백엔드는 계속 root로 돈다.** 이 절은 lease 디렉터리의 생성 시점만 다룬다. 전용 서비스
+> 계정 전환은 `docs/tasks.md`의 `NONROOT-BACKEND`로 분리했다 — ADR-41의 "기각한 설계"
+> 절에 왜 환경변수 기반 seam이 계약이 되지 못하는지 기록해 두었다.
 
 ## 4. 프론트엔드 (Next.js, :12905)
 
