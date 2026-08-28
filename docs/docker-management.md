@@ -294,6 +294,8 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `GET` | `/api/v1/system/disk-usage` | `docker system df`를 사람 말로 번역. 정리(prune)는 파괴적이라 CLI에만 있다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |
 | `GET/POST/DELETE` | `/api/v1/admin/public-api-keys...` | public API key 관리 |
+| `GET` | `/api/v1/admin/password/preflight` | 미종결 rebuild journal 가드 판정(읽기 전용). 폼을 그리기 전에 읽는다 |
+| `POST` | `/api/v1/admin/password` | 관리자 비밀번호 회전. `.env` 단일 키만 다시 쓰고 재기동 없이 즉시 적용된다. 증명된 미종결 journal은 **우회 불가** 거부 |
 | `WS` | `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}` | 상태·로그 실시간 스트림 |
 
 `ensure`는 Docker SDK가 아니라 `docker compose`를 인자 배열로 실행한다. 반면 stats, logs, inspect, 개별 action은 Docker SDK를 유지한다.

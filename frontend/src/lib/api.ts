@@ -193,6 +193,19 @@ export type BackupJob = {
 
 export type LatestBackupJobResponse = { job: BackupJob | null };
 
+/** `GET /api/v1/admin/password/preflight`.
+ *
+ * `unfinished_journal`은 **우회 경로가 없는** 거부다(증명된 사실이고, 증명됐다는 것은
+ * 재개가 실제로 걸려 있다는 뜻이다). `unverifiable`/`unknown`은 backend가 root의 0700
+ * 디렉터리를 읽지 못한 상태이며, "못 봤다"를 "안전"으로 읽지 않으려고 명시 승인을
+ * 요구한다. */
+export type AdminPasswordPreflight = {
+  verdict: 'not_rebuildable' | 'no_journal' | 'unfinished_journal' | 'unverifiable' | 'unknown';
+  detail: string;
+  requires_acknowledgement: boolean;
+  blocking: boolean;
+};
+
 export type HumanVerdict = {
   level: 'ok' | 'action_required' | 'unverified';
   text: string;

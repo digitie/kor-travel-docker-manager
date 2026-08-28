@@ -1359,6 +1359,110 @@ def test_get_runtime_pins_requires_authentication():
     assert response.status_code == 401
 
 
+# --- KUM-M10: 관리자 비밀번호 변경 ---------------------------------------------
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_change):
+    login_client()
+    mock_change.return_value = {
+        "ok": True,
+        "guard": "no_journal",
+        "acknowledged": False,
+        "env_path": "/opt/x/.env",
+    }
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "a-new-password-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "guard": "no_journal"}
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
+    ).json()
+    detail = events[0]["detail"]
+    assert detail == {"guard": "no_journal", "acknowledged": False}
+    # 비밀번호도 해시도 감사에 남기지 않는다.
+    assert "a-new-password-1" not in str(events)
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_a_wrong_current_password_joins_the_login_bruteforce_counter(mock_change):
+    """자격증명 추측만 로그인 카운터에 합류시킨다 — 다른 거부로 오염시키지 않는다."""
+
+    from kor_travel_docker_manager.services.admin_password_service import (
+        AdminPasswordError,
+    )
+
+    login_client()
+    mock_change.side_effect = AdminPasswordError(
+        "INVALID_CREDENTIALS", "현재 비밀번호가 일치하지 않습니다.", status_code=401
+    )
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": "wrong", "new_password": "a-new-password-1"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+    login_events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=login&outcome=denied"
+    ).json()
+    assert any(event["reason"] == "invalid_credentials" for event in login_events)
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_a_guard_refusal_does_not_pollute_the_login_counter(mock_change):
+    from kor_travel_docker_manager.services.admin_password_service import (
+        AdminPasswordError,
+    )
+
+    login_client()
+    mock_change.side_effect = AdminPasswordError(
+        "PINNED_REBUILD_JOURNAL_UNFINISHED", "미종결 재구축 기록이 있습니다."
+    )
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "a-new-password-1"},
+    )
+
+    assert response.status_code == 409
+    denied = client.get(
+        "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=denied"
+    ).json()
+    assert any(
+        event["reason"] == "pinned_rebuild_journal_unfinished" for event in denied
+    )
+
+
+def test_the_password_route_enforces_the_minimum_length_before_any_work():
+    login_client()
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "short"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_password_routes_require_authentication():
+    client.cookies.clear()
+
+    assert client.get("/api/v1/admin/password/preflight").status_code == 401
+    assert (
+        client.post(
+            "/api/v1/admin/password",
+            json={"current_password": "x", "new_password": "a-new-password-1"},
+        ).status_code
+        == 401
+    )
+
+
 # --- KUM-M9: 백업 생성은 202 + job id로 비동기다 -------------------------------
 
 

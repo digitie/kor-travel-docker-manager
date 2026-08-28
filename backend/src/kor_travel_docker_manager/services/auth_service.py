@@ -68,6 +68,12 @@ def hash_password_for_env(password: str) -> str:
 
 
 def verify_admin_password(username: str, password: str) -> str:
+    """호출 시마다 `os.environ`에서 hash를 읽는다.
+
+    이 성질이 `POST /api/v1/admin/password`가 재기동 없이 즉시 적용되는 근거이므로
+    모듈 상수로 캐시하지 않는다.
+    """
+
     expected_username = admin_username()
     password_hash = os.environ.get("KTDM_ADMIN_PASSWORD_HASH", "").strip()
     session_secret = _session_secret()

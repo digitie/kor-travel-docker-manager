@@ -48,6 +48,17 @@ KTDM_RUNTIME_PINS_FILE=<배포 트리 밖 경로>
 KTDM_RUNTIME_PINS_PUBLIC_FILE=<배포 트리 밖, 비-root가 읽을 수 있는 경로>
 ```
 
+**회전 요청 디렉터리**(대시보드가 요청을 남기는 자리)는 installer가
+`/var/lib/kor-travel-docker-manager-requests`를 `root:root 0700`으로 만든다. backend를
+비-root로 돌리는 호스트에서는 설치 후 소유자를 그 사용자로 바꾼다:
+
+```bash
+sudo chown <backend-user>:<backend-group> /var/lib/kor-travel-docker-manager-requests
+```
+
+**group-writable로 만들지 않는다**(`0770` 등). 무결성 검사가 그 디렉터리를 영구히
+거부해 회전 요청 경로 전체가 잠긴다.
+
 **공개 사본은 별도 트리에 둔다.** installer가 `/var/lib/kor-travel-docker-manager`를 매
 설치마다 `0700 root:root`로 되돌리므로, 그 안에 사본을 두면 비-root 백엔드가 traverse조차
 하지 못해 조회 API가 영구히 `unknown`이 된다(n150 실측). 사본에는 공개 저장소 커밋 SHA와
@@ -221,6 +232,50 @@ nohup setsid env PYTHONPATH=src .venv/bin/python \
   -m uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 12901 \
   > /tmp/ktdm_backend.log 2>&1 &
 ```
+
+### 3.x 백업 산출물을 UI와 cron이 공유할 때 (선택)
+
+`POST /api/v1/backups/{role}`이 생기면서 백업을 만드는 주체가 UI와 cron 둘이 된다. 두
+주체가 서로의 산출물을 읽고 지우려면 **디렉터리** 쓰기 권한이 필요하다(unlink는 파일이
+아니라 디렉터리 권한이다).
+
+```bash
+sudo groupadd ktdm-backup
+sudo usermod -aG ktdm-backup <backend-user>
+sudo usermod -aG ktdm-backup <cron-user>
+sudo chgrp -R ktdm-backup "$KTDM_BACKUP_ROOT"
+sudo chmod -R 2770 "$KTDM_BACKUP_ROOT"
+# .env에 그룹 이름을 선언한다.
+#   KTDM_BACKUP_SHARED_GROUP=ktdm-backup
+```
+
+**보조 그룹 변경은 backend 프로세스를 재기동해야 반영된다.** 선언하지 않으면 기존
+`0700`/`0600` 그대로이고, 전제가 깨져 있으면 백업이 시작되지 않고 복구 명령과 함께
+거부한다.
+
+### 3.y 관리자 비밀번호 변경
+
+이제 대시보드의 "인증 및 공개 API 키" 패널에서 바꾼다. `.env`의
+`KTDM_ADMIN_PASSWORD_HASH` **한 줄만** 다시 쓰고, 재기동 없이 즉시 적용되며 진행 중인
+세션은 끊기지 않는다.
+
+> **미종결 pinned rebuild journal이 있는 동안 비밀번호를 바꾸면 그 rebuild의 재개가
+> 영구 차단된다.** resume이 journal의 `environment_sha256`을 현재 `.env` 바이트와
+> 대조하기 때문이다. 이 위험은 손으로 `.env`를 고칠 때도 똑같이 있었고 UI가 만든 것이
+> 아니다 — 다만 이제는 화면이 먼저 막는다.
+
+backend가 journal을 **항상 볼 수 있는 것은 아니다.** journal은 `rebuild-pinned`를 실행한
+프로세스의 `$HOME` 아래 `0700` 디렉터리에 있고 그 명령은 root를 요구한다. 확인할 수
+없으면 API가 `unverifiable`을 반환하고, 화면은 명시 문구 입력을 요구한다. 그때 운영자가
+SSH에서 확인할 것:
+
+```bash
+sudo ls -l ~root/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/pinned-runtime-rebuild-v8-*.json
+```
+
+`.env`가 root `0600`인데 backend가 비-root로 돌면 이 기능은 `ENV_NOT_WRITABLE`로
+거부한다. **권한을 완화하지 마라** — 그 권한이 이 파일의 유일한 보호다. backend를 해당
+소유자 권한으로 재기동하거나 SSH에서 해시를 직접 교체한다.
 
 ## 4. 프론트엔드 (Next.js, :12905)
 
