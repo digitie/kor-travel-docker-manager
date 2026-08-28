@@ -243,6 +243,7 @@ def _compose(
     arguments: tuple[str, ...],
     capture: bool = False,
     environment: dict[str, str] | None = None,
+    failure_phase: str | None = None,
 ) -> str:
     command = [
         "/usr/bin/docker",
@@ -255,7 +256,12 @@ def _compose(
     for item in files:
         command.extend(("--file", str(item)))
     command.extend(arguments)
-    return _command(*command, cwd=root, env=environment, capture=capture)
+    try:
+        return _command(*command, cwd=root, env=environment, capture=capture)
+    except _PhaseError as error:
+        if failure_phase is not None and error.phase == "runtime_command_failed":
+            _fail(failure_phase)
+        raise
 
 
 def _unlink_private(path: Path) -> None:
@@ -1229,6 +1235,7 @@ def main(expected_revision: str, output: Path) -> int:
             env_file=map_env,
             files=map_files,
             arguments=("up", "--detach", "--build", "--wait", "postgres"),
+            failure_phase="map_postgres_start_failed",
         )
         _compose(
             root=map_root,
@@ -1242,6 +1249,7 @@ def main(expected_revision: str, output: Path) -> int:
                 "--rm",
                 "db-application-schema-fresh-300",
             ),
+            failure_phase="map_fresh_init_failed",
         )
         _compose(
             root=map_root,
@@ -1258,6 +1266,7 @@ def main(expected_revision: str, output: Path) -> int:
                 "api",
                 "frontend",
             ),
+            failure_phase="map_application_start_failed",
         )
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
         _http_json(f"{admin_url}/health", headers={})

@@ -246,6 +246,27 @@ def test_cleanup_includes_map_fresh_init_profile(
     assert len(commands) == 3
 
 
+def test_compose_records_the_supplied_fixed_failure_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+
+    def fail_command(*_args: str, **_kwargs: object) -> str:
+        raise driver._PhaseError("runtime_command_failed")
+
+    monkeypatch.setattr(driver, "_command", fail_command)
+
+    with pytest.raises(driver._PhaseError, match="map_postgres_start_failed"):
+        driver._compose(
+            root=tmp_path,
+            project="m05i-map",
+            env_file=tmp_path / "map.env",
+            files=(tmp_path / "docker-compose.yml",),
+            arguments=("up", "postgres"),
+            failure_phase="map_postgres_start_failed",
+        )
+
+
 def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     fixture = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_fixture.py").read_text(
         encoding="utf-8"

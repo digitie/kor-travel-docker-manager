@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-28 — M05 Map command별 비밀 비포함 failure phase
+
+`bc704aef…` candidate는 cleanup을 완결했고 잔여 container·network·volume이 없었지만, result의
+`driver_phase`가 generic `runtime_command_failed`여서 Map postgres start·fresh-init·application start 중
+정확한 명령을 구분할 수 없었다. candidate와 ledger는 terminal로 보존하고 재실행하지 않는다.
+
+Map의 세 Compose command는 각각 고정된 failure phase로 변환해 result에 기록한다. command output·stderr·env
+값은 계속 저장하지 않으며, fixed phase 문자열만 다음 candidate의 root-owned `0600` result에 남긴다.
+focused test가 generic command failure의 phase 변환을 고정한다.
+
+---
+
 ## 2026-08-28 — M05 fresh-init cleanup profile과 안전한 실패 단계 증적
 
 `66bb373d…` candidate는 n150 Map `fresh-init` one-shot 세 개가 정상 종료한 뒤, cleanup이 profile을
