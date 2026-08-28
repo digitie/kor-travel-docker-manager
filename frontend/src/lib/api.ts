@@ -219,6 +219,34 @@ export type SourceStatusResponse = {
   summary: HumanVerdict;
 };
 
+export type DiskUsageRow = {
+  type: string;
+  label_ko: string;
+  total_count?: string | null;
+  active_count?: string | null;
+  size_bytes: number | null;
+  size_text: string | null;
+  reclaimable_bytes: number | null;
+  reclaimable_text: string | null;
+};
+
+/** `GET /api/v1/system/disk-usage` 응답. 관측 전용 — 정리(prune)는 파괴적이라
+ * CLI에만 있고 이 응답은 실행할 명령만 알려 준다. */
+export type DiskUsageResponse = {
+  schema: string;
+  collected_at: string;
+  cached: boolean;
+  state: 'ok' | 'warn' | 'unknown';
+  rows: DiskUsageRow[];
+  reclaimable_bytes: number | null;
+  summary: {
+    state: 'ok' | 'warn' | 'unknown';
+    text: string;
+    detail: string;
+    next_action: string;
+  };
+};
+
 export type RuntimePinSource = {
   role: 'map' | 'pinvi';
   url: string;

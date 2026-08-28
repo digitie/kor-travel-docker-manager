@@ -13,6 +13,7 @@ from kor_travel_docker_manager.services.compose_service import compose_service
 from kor_travel_docker_manager.services.deployment_readiness import (
     read_deployment_readiness,
 )
+from kor_travel_docker_manager.services.disk_usage import read_disk_usage
 from kor_travel_docker_manager.services.docker_service import (
     ContainerConfigValidationError,
     docker_service,
@@ -221,6 +222,16 @@ def get_source_status(refresh: bool = Query(default=False)):
     `refresh=true` bypasses the TTL cache. That still spawns no mutation, so there
     is no audit row; the durable-audit pattern belongs to mutations."""
     return collect_source_status(force_refresh=refresh)
+
+
+@router.get("/system/disk-usage")
+def get_disk_usage(refresh: bool = Query(default=False)):
+    """Read-only Docker disk usage (design P8b).
+
+    "디스크 참"이 비전문 관리자가 이 시스템을 죽이는 가장 그럴듯한 경로인데, 지금까지
+    어느 화면도 그것을 보여 주지 않았다. 관측만 한다 — `prune`은 파괴적이라 CLI 전용이고
+    이 카드는 실행할 명령만 알려 준다."""
+    return read_disk_usage(force_refresh=refresh)
 
 
 @router.get("/deployment-readiness")

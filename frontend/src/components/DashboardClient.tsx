@@ -36,6 +36,7 @@ import AppShell from './layout/AppShell';
 import { humanizeError } from '@/lib/errors';
 import {
   ApiError,
+  DiskUsageResponse,
   AuthMe,
   BACKEND_URL,
   WS_CLOSE_AUTH_REQUIRED,
@@ -428,6 +429,16 @@ export default function DashboardClient() {
 
   // Active containers dataset (WS if available, fallback query otherwise)
   const displayContainers = wsContainers || fallbackContainers;
+
+  // "디스크 참"은 비전문 관리자가 이 시스템을 죽이는 가장 그럴듯한 경로인데 어느
+  // 화면에도 없었다. 원시 수치가 아니라 "정리 시 약 N GB 확보 가능"으로 보여 준다.
+  const { data: diskUsage } = useQuery<DiskUsageResponse>({
+    queryKey: ['disk-usage'],
+    queryFn: () => apiJson<DiskUsageResponse>('/api/v1/system/disk-usage'),
+    enabled: isAuthenticated,
+    refetchInterval: 60_000,
+    retry: false,
+  });
 
   // 관리도구 자신의 상태. `/health`는 인증이 필요 없고 부작용도 없으므로 가볍게 폴링한다.
   const { data: healthData, isError: healthErrored } = useQuery<{ status?: string }>({
@@ -1093,7 +1104,26 @@ export default function DashboardClient() {
             <div className="ops-count ops-count--ok"><span className="ops-count__label">실행 중</span><strong className="ops-count__value">{kpiCounts.running}</strong></div>
             <div className="ops-count"><span className="ops-count__label">중지·미생성</span><strong className="ops-count__value">{kpiCounts.stopped}</strong></div>
             <div className="ops-count ops-count--danger"><span className="ops-count__label">오류</span><strong className="ops-count__value">{kpiCounts.error}</strong></div>
+            {diskUsage ? (
+              <div
+                className={`ops-count ${diskUsage.state === 'warn' ? 'ops-count--danger' : ''}`}
+                title={diskUsage.summary.detail}
+              >
+                <span className="ops-count__label">정리 가능 용량</span>
+                <strong className="ops-count__value text-base">
+                  {diskUsage.state === 'unknown'
+                    ? '확인 불가'
+                    : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', '')}
+                </strong>
+              </div>
+            ) : null}
           </div>
+          {diskUsage?.state === 'warn' ? (
+            <p className="text-xs text-danger mt-2">
+              {diskUsage.summary.detail} 정리는 SSH에서{' '}
+              <code className="font-mono">{diskUsage.summary.next_action}</code>
+            </p>
+          ) : null}
         </div>
         <aside className="ops-signal" aria-label="동기화 상태">
           <div>

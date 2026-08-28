@@ -1451,3 +1451,36 @@ def test_get_source_status_requires_authentication():
     response = client.get("/api/v1/source-status")
 
     assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.read_disk_usage")
+def test_get_disk_usage_returns_plain_language_summary(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "schema": "kor-travel-docker-manager.disk-usage.v1",
+        "collected_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "state": "warn",
+        "rows": [{"type": "Images", "label_ko": "이미지"}],
+        "reclaimable_bytes": 30 * 1024**3,
+        "summary": {
+            "state": "warn",
+            "text": "정리 시 약 30.0 GB 확보 가능",
+            "detail": "회수 가능한 용량이 큽니다.",
+            "next_action": "sudo -n docker system prune --all --volumes",
+        },
+    }
+
+    response = client.get("/api/v1/system/disk-usage")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["text"].startswith("정리 시 약")
+    mock_read.assert_called_once_with(force_refresh=False)
+
+
+def test_get_disk_usage_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/system/disk-usage")
+
+    assert response.status_code == 401
