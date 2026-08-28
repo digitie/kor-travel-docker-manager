@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import ModuleType
+from urllib.request import Request
 
 import pytest
 
@@ -138,3 +139,66 @@ def test_generated_pbkdf2_hash_verifies_the_original_value() -> None:
     assert hashlib.pbkdf2_hmac(
         "sha256", value.encode("utf-8"), restore(salt), int(iterations)
     ) == restore(digest)
+
+
+def test_http_json_rejects_non_loopback_url_before_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+
+    monkeypatch.setattr(
+        driver._LOOPBACK_OPENER,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("transport must not be called"),
+    )
+
+    with pytest.raises(driver._PhaseError, match="runtime_http_url_invalid"):
+        driver._http_json("http://localhost:13701/health", headers={})
+    with pytest.raises(driver._PhaseError, match="runtime_http_url_invalid"):
+        driver._http_json("https://127.0.0.1:13701/health", headers={})
+
+
+def test_http_json_default_transport_is_proxy_free_loopback_opener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    seen: list[Request] = []
+
+    class _Response:
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b'{"data":{}}'
+
+    def fake_open(request: Request, *, timeout: int) -> _Response:
+        assert timeout == 10
+        seen.append(request)
+        return _Response()
+
+    monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fake_open)
+    assert driver._http_json("http://127.0.0.1:13701/health", headers={}) == {"data": {}}
+    assert len(seen) == 1
+
+
+def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
+    fixture = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_fixture.py").read_text(
+        encoding="utf-8"
+    )
+    driver_source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    fixture_env_start = driver_source.index("_write_private_text(\n            fixture_env,")
+    fixture_env_end = driver_source.index("        # API에는", fixture_env_start)
+    fixture_env = driver_source[fixture_env_start:fixture_env_end]
+
+    assert "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" not in fixture
+    assert "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" not in fixture_env
+    assert "KOR_TRAVEL_MAP_PG_DSN" in fixture_env
+    assert "assert_runtime_db_privilege_boundary" in fixture
+    assert "AsyncKorTravelMapClient" in fixture
+    assert "SET LOCAL ROLE" not in fixture
+    assert "INSERT INTO" not in fixture

@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-28 — M05 isolated loopback·fixture 권한 경계 보강
+
+전문 적대 보안 재리뷰의 P1 두 건을 반영했다. root driver의 모든 host HTTP 대상은 명시적인
+`127.0.0.1:port` HTTP URL만 허용하고 기본 opener와 PinVi cookie opener 모두 ambient proxy를
+무시한다. 이로써 Map admin proxy credential을 host의 `HTTP_PROXY`/`HTTPS_PROXY` 경로로 보낼 수
+없다.
+
+provider fixture는 더 이상 bootstrap/migrator owner DSN이나 `SET ROLE`을 사용하지 않는다. generic
+Map API image에는 `ktm_feature_dagster_runtime` DSN 하나만 주입하고, 실제 `FeatureBundle` provider
+적재 경로와 `record_manual_provider_dedup_candidate` procedure만 호출한다. runtime privilege preflight,
+loopback URL 차단·proxy-free transport, owner credential/직접 INSERT 부재를 focused 회귀로 고정했다.
+다음 단계는 두 전문 재리뷰와 trusted release의 n150 단발 실행이다.
+
 ## 2026-08-28 — PinVi isolated migrator boundary를 포함한 pinset 회전
 
 PinVi `7d66523a…`는 root Manager harness marker와 transaction-bound project에서만 isolated

@@ -21,12 +21,12 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any, NoReturn
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import (
     HTTPCookieProcessor,
     ProxyHandler,
     Request,
     build_opener,
-    urlopen,
 )
 
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -69,6 +69,9 @@ _SAFE_SUBPROCESS_ENV = {
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
 }
+# Root driver가 host loopback에만 연결할 때에도 ambient HTTP(S)_PROXY를 신뢰하지
+# 않는다. PinVi cookie opener도 아래와 같은 proxy-free opener를 명시적으로 만든다.
+_LOOPBACK_OPENER = build_opener(ProxyHandler({}))
 
 
 class _PhaseError(RuntimeError):
@@ -425,6 +428,21 @@ def _http_json(
     body: dict[str, object] | None = None,
     opener: Any | None = None,
 ) -> dict[str, object]:
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        _fail("runtime_http_url_invalid")
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or port is None
+        or not 1 <= port <= 65535
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+    ):
+        _fail("runtime_http_url_invalid")
     encoded = (
         json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
         if body is not None
@@ -440,7 +458,7 @@ def _http_json(
         method="POST" if encoded else "GET",
     )
     try:
-        request_opener = opener.open if opener is not None else urlopen
+        request_opener = opener.open if opener is not None else _LOOPBACK_OPENER.open
         with request_opener(request, timeout=10) as response:
             raw = response.read(2_000_000)
     except (HTTPError, OSError, URLError):
@@ -1085,8 +1103,13 @@ def main(expected_revision: str, output: Path) -> int:
             )
             + "\n",
         )
+        # generic Map API image에서 실행하는 fixture에는 ordinary Dagster runtime
+        # credential만 넣는다. bootstrap/migrator owner DSN은 전달하지 않는다.
         _write_private_text(
-            fixture_env, f"KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN={map_bootstrap_dsn}\n"
+            fixture_env,
+            "KOR_TRAVEL_MAP_PG_DSN="
+            f"postgresql+asyncpg://ktm_feature_dagster_runtime:{dagster_password}"
+            "@postgres:5432/kor_travel_map\n",
         )
         # API에는 digest capability만, frontend에는 raw manual-create credential만 전달한다.
         map_override_lines = [
