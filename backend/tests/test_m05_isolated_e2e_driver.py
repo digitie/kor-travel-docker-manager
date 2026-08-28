@@ -182,6 +182,32 @@ def test_terminal_registry_reason_exposes_only_allowlisted_phase() -> None:
         driver._terminal_registry_reason("untrusted detail must never be published")
         == "M05 isolated one-shot terminal: driver_contract_failed"
     )
+    assert (
+        driver._terminal_registry_reason("runtime_setup_credentials")
+        == "M05 isolated one-shot terminal: runtime_setup_credentials"
+    )
+
+
+def test_runtime_setup_uses_ordered_safe_subphases() -> None:
+    """setup의 ordinary exception도 raw 없이 다음 source 보정 범위로만 수렴한다."""
+
+    driver = _driver()
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    phases = (
+        "runtime_setup_ports",
+        "runtime_setup_workspace",
+        "runtime_setup_admission",
+        "runtime_setup_network",
+        "runtime_setup_credentials",
+        "runtime_setup_map_config",
+        "runtime_setup_pinvi_config",
+    )
+    positions = [source.index(f'phase = "{phase}"') for phase in phases]
+
+    assert positions == sorted(positions)
+    assert all(phase in driver._PUBLIC_TERMINAL_PHASES for phase in phases)
 
 
 def test_http_json_rejects_non_loopback_url_before_transport(

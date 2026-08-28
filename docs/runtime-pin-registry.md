@@ -48,6 +48,12 @@ cleanup·terminal block 경계는 각각 `runtime_cleanup_failed`·`runtime_pin_
 allowlist 밖의 값만 `driver_contract_failed`로 좁혀진다. 따라서 공개 registry로 raw 예외를 역추론할
 수 없고, 다음 immutable source pair의 보정 범위만 결정할 수 있다.
 
+isolated runtime 준비는 `runtime_setup_ports` → `runtime_setup_workspace` →
+`runtime_setup_admission` → `runtime_setup_network` → `runtime_setup_credentials` →
+`runtime_setup_map_config` → `runtime_setup_pinvi_config`의 고정 순서로 나뉜다. 이 값은 예외 원문·경로·값을
+드러내지 않으며, 이미 terminal인 pinset의 재시도 근거가 아니다. 목적은 다음 immutable Manager source의
+정적 보정 범위를 한 단계로만 좁히는 것이다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식

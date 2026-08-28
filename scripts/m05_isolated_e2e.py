@@ -164,6 +164,13 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "runtime_pin_registry_changed",
         "runtime_pin_registry_invalid",
         "runtime_setup",
+        "runtime_setup_admission",
+        "runtime_setup_credentials",
+        "runtime_setup_map_config",
+        "runtime_setup_network",
+        "runtime_setup_pinvi_config",
+        "runtime_setup_ports",
+        "runtime_setup_workspace",
         "secret_cleanup_identity_invalid",
         "source_materialization",
         "terminal_pinset_blocked",
@@ -1330,8 +1337,12 @@ def main(expected_revision: str, output: Path) -> int:
         # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
         phase = "ledger_claim"
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
-        phase = "runtime_setup"
+        # setup 전체를 하나의 `runtime_setup` receipt로 뭉개면 새 immutable source가
+        # 어느 안전 경계를 보정해야 하는지 알 수 없다. 아래 단계명은 raw exception,
+        # 경로, secret을 싣지 않는 allowlist receipt일 뿐 동일 pinset 재시도 권한은 아니다.
+        phase = "runtime_setup_ports"
         ports = _free_ports(transaction)
+        phase = "runtime_setup_workspace"
         runtime = output / "runtime"
         runtime.mkdir(mode=0o700)
         _root_directory(runtime)
@@ -1363,11 +1374,14 @@ def main(expected_revision: str, output: Path) -> int:
         m05_evidence.mkdir(mode=0o700)
         _root_directory(m04_evidence)
         _root_directory(m05_evidence)
+        phase = "runtime_setup_admission"
         _write_private_json(
             pinvi_admission,
             build_m05_isolated_manager_admission(plan=plan, pair=pair),
         )
+        phase = "runtime_setup_network"
         subnet, map_api_ip, map_frontend_ip = _map_network_addresses(transaction)
+        phase = "runtime_setup_credentials"
         map_secret, feature_request_token, read_token, ack_token = (
             _random_secret(),
             _random_secret(),
@@ -1389,6 +1403,7 @@ def main(expected_revision: str, output: Path) -> int:
             str(private_key),
         )
         _root_file(private_key, mode=0o600)
+        phase = "runtime_setup_map_config"
         password = _random_secret()
         token_sha = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
         migrator_password, api_password, dagster_password, metadata_password = (
@@ -1510,6 +1525,7 @@ def main(expected_revision: str, output: Path) -> int:
             *[f"      {key}: {value}" for key, value in plan.labels.items()],
         ]
         _write_private_text(map_override, "\n".join(map_override_lines) + "\n")
+        phase = "runtime_setup_pinvi_config"
         _write_private_text(
             pinvi_env,
             "\n".join(
