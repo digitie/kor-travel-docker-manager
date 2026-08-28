@@ -28,6 +28,7 @@ import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import BackupHistoryPanel from './BackupHistoryPanel';
 import RuntimePinPanel from './RuntimePinPanel';
+import SourceStatusPanel from './SourceStatusPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
 import ToastStack, { ToastItem, errorToast, successToast } from './Toast';
@@ -247,6 +248,7 @@ export default function DashboardClient() {
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
   const [isRuntimePinsOpen, setIsRuntimePinsOpen] = useState<boolean>(false);
+  const [isSourceStatusOpen, setIsSourceStatusOpen] = useState<boolean>(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   // 실패는 사람이 읽고 닫아야 하므로 쌓이되, 화면을 덮지 않게 최근 것만 남긴다.
   const pushToast = useCallback((item: ToastItem) => {
@@ -1011,6 +1013,12 @@ export default function DashboardClient() {
       run: () => setIsRuntimePinsOpen(true),
     },
     {
+      id: 'source-status',
+      label: '배포 상태 확인 열기',
+      hint: '조회',
+      run: () => setIsSourceStatusOpen(true),
+    },
+    {
       id: 'refresh',
       label: '컨테이너 상태 새로고침',
       hint: '동기화',
@@ -1059,6 +1067,7 @@ export default function DashboardClient() {
       onOpenBackupHistory={() => setIsBackupHistoryOpen(true)}
       onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
       onOpenRuntimePins={() => setIsRuntimePinsOpen(true)}
+      onOpenSourceStatus={() => setIsSourceStatusOpen(true)}
     >
       <div className="page-head">
         <div className="page-title">
@@ -1467,6 +1476,12 @@ export default function DashboardClient() {
       {isRuntimePinsOpen && (
         <div className="ops-modal-backdrop select-text">
           <RuntimePinPanel onClose={() => setIsRuntimePinsOpen(false)} />
+        </div>
+      )}
+
+      {isSourceStatusOpen && (
+        <div className="ops-modal-backdrop select-text">
+          <SourceStatusPanel onClose={() => setIsSourceStatusOpen(false)} />
         </div>
       )}
 

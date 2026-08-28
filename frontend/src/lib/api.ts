@@ -176,6 +176,49 @@ export type BackupListResponse = {
   backups: StandaloneBackupManifest[];
 };
 
+export type HumanVerdict = {
+  level: 'ok' | 'action_required' | 'unverified';
+  text: string;
+  next_action: string;
+};
+
+export type SourceStatusRow = {
+  id?: string;
+  role?: string;
+  label?: string;
+  title?: string;
+  state: string;
+  detail?: string | null;
+  revision?: string | null;
+  pinned_revision?: string | null;
+  head_revision?: string | null;
+  image_id?: string | null;
+  scope?: string;
+  human: HumanVerdict;
+};
+
+export type SourceStatusEnvironment = SourceStatusRow & {
+  required_count: number;
+  missing: string[];
+  injected_at_rebuild: string[];
+  documented_but_unused: string[];
+};
+
+/** `GET /api/v1/source-status` 응답. 관측 전용이라 mutation이 없다. 각 행은
+ * "최신 상태입니다 / 업데이트가 필요합니다 / 확인할 수 없습니다"로 번역돼 온다. */
+export type SourceStatusResponse = {
+  schema: string;
+  collected_at: string;
+  cached: boolean;
+  cache_ttl_seconds?: number;
+  manager: SourceStatusRow & { manifest?: Record<string, unknown> | null };
+  checkouts: SourceStatusRow[];
+  running_images: SourceStatusRow[];
+  contracts: SourceStatusRow[];
+  environment: SourceStatusEnvironment;
+  summary: HumanVerdict;
+};
+
 export type RuntimePinSource = {
   role: 'map' | 'pinvi';
   url: string;
