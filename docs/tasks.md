@@ -196,6 +196,12 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
 - [ ] KUM-M6 잔여 (**KUM-PV-3 선행**): PinVi가 일반 부트스트랩 실행에서도 typed
   envelope을 내보내면 Manager의 문자열 map을 제거한다. 그때까지 `compose_service.py`의
   9문구 map은 고정 revision `97d2f924…` 기준으로 정확함을 확인했다.
+- [x] KUM-M9 완료(2026-08-28): gc 결함 3종 수선(role lock·manifest 이름/role 결박·고아
+  dump 수거), `services/job_runner.py`, `POST /api/v1/backups/{role}` 202 + job 폴링,
+  백업 산출물 공유 그룹(setgid) 모드, 화면의 생성 버튼·신선도 배지·복원 부재 고지.
+- [ ] **다음 pin 회전 전 필수**: 고정 PinVi revision이 `PINVI_ROLE_CATALOG_RESET_ONLY`와
+  permit/result 경로 3종을 구현해야 한다. 현재 `97d2f924…`는 구현하지 않아 readiness가
+  `missing`으로 보고한다(n150 실측). 회전 대상 revision을 그 기준으로 고른다.
 - [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
   항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).
 

@@ -23,6 +23,11 @@ from kor_travel_docker_manager.services.docker_service import (
     ContainerConfigValidationError,
     docker_service,
 )
+from kor_travel_docker_manager.services.job_runner import (
+    JobConflictError,
+    JobNotFoundError,
+    job_runner,
+)
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
@@ -42,6 +47,7 @@ from kor_travel_docker_manager.services.source_status import collect_source_stat
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
+    create_standalone_backup,
     list_standalone_backups,
 )
 
@@ -67,6 +73,12 @@ class ContainerConfigUpdate(BaseModel):
         ),
     )
     networks: list[str] = Field(..., description="Compose networks list, e.g. ['default']")
+
+
+class BackupCreateRequest(BaseModel):
+    # geo 실측 소요가 879초~22분이고 기본 상한이 4시간이다. 24시간을 넘기면 job이
+    # 재기동에 걸릴 확률이 사실상 1이라 상한을 둔다.
+    timeout_seconds: int = Field(default=14_400, ge=60, le=86_400)
 
 
 class RuntimePinRotationRequestBody(BaseModel):
@@ -155,6 +167,69 @@ def get_backups(role: str | None = Query(default=None)):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     backups.sort(key=lambda item: item["created_at_unix"])
     return {"backups": backups}
+
+
+@router.post("/backups/{role}", status_code=202)
+async def post_backup(
+    role: str,
+    payload: BackupCreateRequest,
+    request: Request,
+    session: Annotated[AdminSessionContext, Depends(require_admin_session)],
+) -> dict[str, Any]:
+    """Start a standalone dump asynchronously and return 202 + a job id.
+
+    A `def` handler runs in the threadpool where there is no running loop, so this one
+    must be `async def` — `asyncio.create_task` inside the runner would raise otherwise.
+
+    Only the *start* is audited. The job finishes in a worker thread with no `Request`
+    object, and the audit helper needs one. Completion is observable through
+    `GET /backups/{role}/jobs/{job_id}`, the runner's log line, and — the durable record
+    — the manifest that `GET /backups` lists."""
+    if role not in BACKUP_ROLES:
+        raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
+
+    timeout_seconds = payload.timeout_seconds
+
+    def run() -> dict[str, Any]:
+        return create_standalone_backup(role, timeout=timeout_seconds).to_json()
+
+    try:
+        record = await job_runner.submit(kind="db_backup_create", key=role, run=run)
+    except JobConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    record_login_audit_event(
+        request,
+        event_type="backup",
+        outcome="succeeded",
+        attempted_username=session.username,
+        reason="db_backup_create_started",
+        session_id_hash=session.session_id_hash,
+        detail={
+            "role": role,
+            "job_id": record.job_id,
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+    return record.to_json()
+
+
+@router.get("/backups/{role}/jobs")
+async def get_latest_backup_job(role: str) -> dict[str, Any]:
+    """Page reloads lose the job id; this lets the panel re-attach to a running job."""
+    if role not in BACKUP_ROLES:
+        raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
+    record = job_runner.latest(kind="db_backup_create", key=role)
+    return {"job": None if record is None else record.to_json()}
+
+
+@router.get("/backups/{role}/jobs/{job_id}")
+async def get_backup_job(role: str, job_id: str) -> dict[str, Any]:
+    if role not in BACKUP_ROLES:
+        raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
+    try:
+        return job_runner.get(job_id, kind="db_backup_create", key=role).to_json()
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="BACKUP_JOB_NOT_FOUND") from exc
 
 
 @router.get("/runtime-pins")

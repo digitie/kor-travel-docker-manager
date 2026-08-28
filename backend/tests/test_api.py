@@ -1,6 +1,7 @@
 import hashlib
 import os
-from unittest.mock import patch
+import time
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -17,6 +18,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.public_api_key_service import public_api_key_is_valid
+from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
 
 FRONTEND_ORIGIN = "http://localhost:12905"
 os.environ["KTDM_ADMIN_USERNAME"] = "admin"
@@ -1355,6 +1357,90 @@ def test_get_runtime_pins_requires_authentication():
     response = client.get("/api/v1/runtime-pins")
 
     assert response.status_code == 401
+
+
+# --- KUM-M9: 백업 생성은 202 + job id로 비동기다 -------------------------------
+
+
+@pytest.fixture
+def clean_job_runner():
+    """모듈 싱글턴이므로 남은 running 기록이 다음 테스트의 submit을 막는다."""
+
+    from kor_travel_docker_manager.services.job_runner import job_runner
+
+    job_runner.reset()
+    yield job_runner
+    for _ in range(200):
+        if job_runner.latest(kind="db_backup_create", key="geo") is None:
+            break
+        if job_runner.latest(kind="db_backup_create", key="geo").state != "running":
+            break
+        time.sleep(0.05)
+    try:
+        job_runner.reset()
+    except RuntimeError:
+        pass
+
+
+def _await_job(role: str, job_id: str) -> dict:
+    for _ in range(200):
+        body = client.get(f"/api/v1/backups/{role}/jobs/{job_id}").json()
+        if body["state"] != "running":
+            return body
+        time.sleep(0.05)
+    raise AssertionError("job did not finish in time")
+
+
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_returns_202_and_a_job_that_finishes(mock_create, clean_job_runner):
+    """4시간짜리 dump를 HTTP 요청 수명에 묶을 수 없다."""
+
+    login_client()
+    manifest = Mock()
+    manifest.to_json.return_value = {"role": "geo", "backup_filename": "geo-1.dump"}
+    mock_create.return_value = manifest
+
+    response = client.post("/api/v1/backups/geo", json={"timeout_seconds": 60})
+
+    assert response.status_code == 202
+    started = response.json()
+    assert started["state"] == "running"
+    assert started["key"] == "geo"
+
+    finished = _await_job("geo", started["job_id"])
+    assert finished["state"] == "succeeded"
+    assert finished["result"]["backup_filename"] == "geo-1.dump"
+    mock_create.assert_called_once_with("geo", timeout=60)
+
+
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_a_failed_backup_job_reports_the_failure_instead_of_vanishing(
+    mock_create, clean_job_runner
+):
+    login_client()
+    mock_create.side_effect = StandaloneBackupError("pg_dump produced an empty file")
+
+    started = client.post("/api/v1/backups/geo", json={}).json()
+    finished = _await_job("geo", started["job_id"])
+
+    assert finished["state"] == "failed"
+    assert "empty file" in finished["error"]
+
+
+def test_backup_job_lookup_rejects_an_unknown_role_and_id(clean_job_runner):
+    login_client()
+
+    assert client.post("/api/v1/backups/nope", json={}).status_code == 400
+    assert client.get("/api/v1/backups/nope/jobs").status_code == 400
+    assert client.get("/api/v1/backups/geo/jobs/missing").status_code == 404
+    assert client.get("/api/v1/backups/geo/jobs").json() == {"job": None}
+
+
+def test_backup_routes_require_authentication():
+    client.cookies.clear()
+
+    assert client.post("/api/v1/backups/geo", json={}).status_code == 401
+    assert client.get("/api/v1/backups/geo/jobs").status_code == 401
 
 
 # --- KUM-M5: UI는 회전을 '요청'만 하고, 적용은 root CLI가 한다 -----------------

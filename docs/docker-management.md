@@ -284,7 +284,9 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `GET` | `/api/v1/containers/{container_id}/metrics` | 최근 메트릭 이력 |
 | `POST` | `/api/v1/auth/login`, `/api/v1/auth/logout` | 관리자 세션 로그인·로그아웃 |
 | `GET` | `/api/v1/auth/me` | 현재 관리자 세션 확인 |
-| `GET` | `/api/v1/backups` | 전용 PostgreSQL 백업 산출물 목록 |
+| `GET` | `/api/v1/backups` | 전용 PostgreSQL 백업 산출물 목록(디스크 manifest — 무엇이 실제로 남았는지의 권위) |
+| `POST` | `/api/v1/backups/{role}` | 백업 생성을 시작하고 `202` + job id를 돌려준다. 동시 실행은 `409` |
+| `GET` | `/api/v1/backups/{role}/jobs[/{job_id}]` | job 상태 폴링. `/jobs`는 새로고침 뒤 재접속용 최신 job |
 | `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록·대기 중인 회전 요청. registry 자체는 읽기 전용이다 |
 | `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --confirm` 전용이다 |
 | `GET` | `/api/v1/deployment-readiness` | 재구축 사전 점검(관측 전용). 무엇도 pull하지 않으며 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. 검사하지 않기로 **결정한** 항목은 `unavailable_checks`로 이유와 함께 노출한다. 검사 4종: Compose 단일 파일, 사이드카 필수 스크립트, 고정 PinVi revision의 역할 부트스트랩 계약, Map 후보 빌드의 고정 Python base image |
@@ -1041,10 +1043,50 @@ Manager backend가 root service로 실행되고 operator가 별도 계정으로 
 환경에서는 두 프로세스가 `Path.home()`을 서로 다르게 해석한다. 따라서 백업 root는
 `KTDM_BACKUP_ROOT=<operator-owned-absolute-backup-root>`처럼 명시하고 API와 CLI가
 같은 절대 경로를 사용하게 한다. 이 값을 생략하면 backend가 `/root/backups`에 새
-목록을 만들 수 있어 UI가 CLI 백업을 보지 못한다. `GET /api/v1/backups`는 읽기 전용
-route이고 생성·GC는 operator 계정의 CLI/cron만 수행한다. root service가 같은 경로에
-dump를 생성하도록 확장할 때는 동일 UID 또는 명시적 shared group/ACL을 먼저 정하고,
-root 소유 0700/0600 artifact를 operator가 읽을 수 있다고 가정하지 않는다.
+목록을 만들 수 있어 UI가 CLI 백업을 보지 못한다.
+
+#### 공유 그룹(setgid) — UI와 cron이 같은 디렉터리를 쓸 때
+
+`POST /api/v1/backups/{role}`이 생기면서 백업을 만드는 주체가 둘이 된다. 두 주체가 서로의
+산출물을 읽고 지우려면 **디렉터리** 쓰기 권한이 필요하다(unlink는 파일 권한이 아니라
+디렉터리 권한이다). 그래서 `KTDM_BACKUP_SHARED_GROUP`(그룹 이름 또는 gid)을 선언하면
+산출물이 `0640`, 디렉터리는 setgid `2770` 계약으로 다뤄진다. 선언하지 않으면 기존
+`0700`/`0600` 그대로다 — 아무도 요구하지 않은 권한 완화를 기본값으로 만들지 않는다.
+
+전제(코드가 만들지 않고 **확인만** 한다. 운영자가 건 setgid/ACL을 코드가 추측해 되돌리면
+조용히 원상복구되기 때문이다):
+
+```bash
+sudo groupadd ktdm-backup
+sudo usermod -aG ktdm-backup <backend-user>
+sudo usermod -aG ktdm-backup <cron-user>
+sudo chgrp -R ktdm-backup "$KTDM_BACKUP_ROOT"
+sudo chmod -R 2770 "$KTDM_BACKUP_ROOT"
+# 보조 그룹은 프로세스 재기동 후에야 반영된다.
+```
+
+전제가 깨져 있으면 백업이 **시작되지 않고** 위 복구 명령과 함께 거부한다. setgid가 실제로
+먹지 않아 산출물이 다른 그룹에 떨어지면 그 dump를 **지우고** 실패한다 — 목록에는 보이는데
+아무도 못 읽는 백업은 "백업이 있다"는 거짓 안전감만 만든다.
+
+#### job 폴링의 단일 프로세스 전제
+
+`POST`가 돌려주는 job id는 **프로세스 메모리**에 있다. uvicorn을 `--workers 2` 이상으로
+띄우면 폴링이 다른 worker에 닿아 404가 난다. 운영 기동은 worker 1개이므로 성립하지만,
+worker를 늘리려면 `services/job_runner.py`부터 durable store로 바꿔야 한다. job 기록의
+소실은 데이터 손실이 아니다 — 무엇이 남았는지의 권위는 언제나 디스크의 manifest다.
+
+**재기동 위험**: role lock은 이 프로세스가 쥔 `flock`이다. 종료하면 락은 풀리지만 컨테이너
+안의 `pg_dump`는 계속 돈다. UI가 시작한 백업이 도는 동안 backend를 재기동하면 같은 DB에
+두 번째 `pg_dump`가 붙을 수 있다.
+
+#### gc의 동작 변화
+
+`gc`는 이제 role lock을 잡고, **manifest 없는 고아 dump를 함께 수거**한다(중단된 create가
+copy-out과 manifest 쓰기 사이에서 죽으면 그 dump는 어떤 목록에도 뜨지 않고 어떤 gc도
+지우지 않아 영구히 디스크를 먹는다). manifest 내용의 `backup_filename`이 자기 파일 이름과
+다르거나 role이 디렉터리와 어긋나면 **그 role의 gc 전체를 거부한다** — 그대로 두면 남겨야
+할 최신 dump를 지우고 손상된 manifest는 남아 매 실행마다 같은 오삭제를 반복한다.
 
 기존 plain-text manifest를 새 standalone JSON manifest와 같은 role directory에 두지
 않는다. 새 parser가 schema 오류로 fail-close하므로 dump·sha256·manifest triplet을

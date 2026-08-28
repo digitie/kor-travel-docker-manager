@@ -896,7 +896,7 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 | KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 (**부분 완료 2026-08-28** — (iii) 계약 결박 env read-only화와 `pinvi_role_bootstrap_modes` readiness 검사는 완료. (i)(ii)는 P10-3 정정대로 KUM-PV-3 선행이며 Manager 단독으로는 불가능) | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
 | KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 (**완료 2026-08-28** — wheelhouse는 검사 불가로 판정해 이유와 함께 `unavailable_checks`로 노출. 화면은 pin 패널이 아니라 `SourceStatusPanel`에 붙였다: pin 패널이 M5로 mutation 패널이 됐기 때문) | §1.3 P10-4, 진단 5 | KUM-M4(패널) |
 | KUM-M8 | `source-status` + compare 링크 + installer provenance 리더(~10줄) + Map entrypoint/Dockerfile 계약 drift 행 + 환경 완결성 카드 | P3, P4 | — |
-| KUM-M9 | `services/job_runner.py` + backup create 202 비동기 + shared group/setgid + gc 결함 수선(lock 3줄 등) | P5, P9-2, Q2 | — |
+| KUM-M9 | `services/job_runner.py` + backup create 202 비동기 + shared group/setgid + gc 결함 수선(lock 3줄 등) (**완료 2026-08-28** — job 기록은 권위가 아니고 디스크 manifest가 권위라는 점을 코드·문서에 명시. shutdown은 진행 중 job을 취소하지 않는다) | P5, P9-2, Q2 | — |
 | KUM-M10 | 관리자 비밀번호 변경 폼: `POST /admin/password`(단일 키 allowlist, atomic) + **미종결 rebuild journal 가드(거부 또는 경고+typed confirm)** + audit | P6, Q3 | — |
 | KUM-M11 | 프론트 quick wins 일괄: P7-A~I(오류 humanize, 라벨 한국어화, 그룹 뷰, health 카드, CLI 명령 카드, 미리보기 전역화, 파라미터 노출, 볼륨/계약 키 read-only, 일괄 재시작) | P7 | — |
 | KUM-M12 | 프론트 구조 추출(WS 훅 2개·모달 4개 분리) — 신규 패널 2개 이상 전 선행 | P9-3 | — |

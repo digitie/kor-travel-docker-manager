@@ -176,6 +176,23 @@ export type BackupListResponse = {
   backups: StandaloneBackupManifest[];
 };
 
+/** `POST /api/v1/backups/{role}`의 202 응답이자 `GET .../jobs/{id}` 폴링 응답.
+ *
+ * 이 기록은 **권위가 아니다** — 프로세스가 죽으면 사라진다. 무엇이 실제로 남았는지는
+ * `GET /api/v1/backups`가 읽는 디스크의 manifest가 말한다. */
+export type BackupJob = {
+  job_id: string;
+  kind: 'db_backup_create';
+  key: StandaloneBackupManifest['role'];
+  state: 'running' | 'succeeded' | 'failed';
+  started_at_unix: number;
+  finished_at_unix: number | null;
+  result: StandaloneBackupManifest | null;
+  error: string | null;
+};
+
+export type LatestBackupJobResponse = { job: BackupJob | null };
+
 export type HumanVerdict = {
   level: 'ok' | 'action_required' | 'unverified';
   text: string;
