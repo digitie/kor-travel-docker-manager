@@ -2,6 +2,16 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — PR backend CI의 TestClient 의존성 고정
+
+새 PR CI의 첫 원격 실행은 애플리케이션 runtime 의존성만 설치해 `fastapi.testclient`가 요구하는 dev 의존성
+`httpx` 없이 collection 단계에서 종료됐다. 이는 M05 실행·pin rotate·n150 mutation 이전의 CI 환경 결함이며,
+후보 실행 근거가 아니다. CI는 검증한 `httpx==0.28.1`을 pytest·Ruff와 함께 명시 설치해 backend 전체 수집을
+로컬과 같은 조건으로 만든다. 새 CI run과 두 전문 적대 리뷰가 green/GO가 되기 전에는 trusted release나
+one-shot admission을 진행하지 않는다.
+
+---
+
 ## 2026-08-28 — M05 receipt 상태 계약과 terminal registry binding 보정
 
 전문 data-contract 재리뷰는 두 P1을 확인했다. PinVi detail 계약은 `applied`·`blocked`만 선언하는데,

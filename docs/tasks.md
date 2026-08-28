@@ -28,7 +28,8 @@
   확인하고, non-success result를 같은 pinset의 unconditional block으로 결박한다. 같은 pinset·Manager source·
   output leaf는 재실행하지 않고 Map `bbb29d17…`·새 PinVi pair·새 Manager source만 다음 실행권을 가진다.
 - [/] M05 fresh Manager source는 backend Ruff·pytest와 frontend type-check·build를 PR에서 모두 통과해야 한다.
-  원격 CI workflow가 없거나 green이 아닌 source는 trusted release·pin rotate-pair·n150 E2E 후보가 될 수 없다.
+  CI는 FastAPI `TestClient` 수집에 필요한 `httpx==0.28.1`을 명시 설치한다. 원격 CI workflow가 없거나 green이 아닌
+  source는 trusted release·pin rotate-pair·n150 E2E 후보가 될 수 없다.
 
 ## 공통 진행 규율
 
