@@ -16,7 +16,6 @@ import secrets
 import stat
 import subprocess
 import sys
-import time
 import uuid
 from http.cookiejar import CookieJar
 from pathlib import Path
@@ -52,6 +51,11 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
+)
+from kor_travel_docker_manager.services.runtime_pin_registry import (
+    RuntimePinRegistryError,
+    block_runtime_pinset,
+    load_runtime_pin_registry,
 )
 
 # pinned revision은 코드 상수가 아니라 root 소유 registry가 소유한다(ADR-40).
@@ -107,6 +111,38 @@ class _PhaseError(RuntimeError):
 
 def _fail(phase: str, *, diagnostic: str | None = None) -> NoReturn:
     raise _PhaseError(phase, diagnostic=diagnostic)
+
+
+def _assert_current_m05_pinset_is_runnable() -> None:
+    """terminal registry를 ledger·Docker mutation보다 먼저 fail-close로 확인한다."""
+
+    try:
+        registry = load_runtime_pin_registry()
+    except RuntimePinRegistryError:
+        _fail("runtime_pin_registry_invalid")
+    if (
+        registry.pinset_sha256 != PINNED_RUNTIME_RELEASE.pinset_sha256
+        or registry.map_revision != PINNED_RUNTIME_RELEASE.source_for("map").revision
+        or registry.pinvi_revision != PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+    ):
+        _fail("runtime_pin_registry_changed")
+    if registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256):
+        _fail("terminal_pinset_blocked")
+
+
+def _block_terminal_m05_pinset() -> bool:
+    """terminal result를 root registry의 unconditional block과 결박한다."""
+
+    try:
+        registry = block_runtime_pinset(
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+            map_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
+            pinvi_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+            reason="M05 isolated one-shot terminal",
+        )
+    except RuntimePinRegistryError:
+        return False
+    return registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256)
 
 
 def _root_file(path: Path, *, mode: int = 0o600) -> os.stat_result:
@@ -799,25 +835,28 @@ def _resolve_m05_case(
 
 
 def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
-    """정상 응답의 pending만 기다리고 transport·형식 오류는 fixed phase로 전파한다."""
+    """PinVi detail 계약의 `applied`만 성공으로 수용하고 나머지는 즉시 종료한다."""
 
-    for _ in range(90):
-        data = _data(
-            _http_json(
-                f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
-                headers={},
-                opener=opener,
-                failure_phase="m05_pinvi_receipt_http_failed",
-            )
+    data = _data(
+        _http_json(
+            f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
+            headers={},
+            opener=opener,
+            failure_phase="m05_pinvi_receipt_http_failed",
         )
-        receipt = data.get("receipt")
-        if data.get("status") == "applied" and isinstance(receipt, dict):
-            impact_count = receipt.get("impact_count")
-            if type(impact_count) is int and impact_count >= 0:
-                return impact_count
-            _fail("m05_pinvi_receipt_invalid")
-        time.sleep(2)
-    _fail("m05_pinvi_receipt_timeout")
+    )
+    status = data.get("status")
+    if status == "blocked":
+        _fail("m05_pinvi_receipt_blocked")
+    if status != "applied":
+        _fail("m05_pinvi_receipt_invalid")
+    receipt = data.get("receipt")
+    if not isinstance(receipt, dict):
+        _fail("m05_pinvi_receipt_invalid")
+    impact_count = receipt.get("impact_count")
+    if type(impact_count) is not int or impact_count < 0:
+        _fail("m05_pinvi_receipt_invalid")
+    return impact_count
 
 
 def _canonical_json(value: object) -> bytes:
@@ -1097,6 +1136,7 @@ def main(expected_revision: str, output: Path) -> int:
     try:
         os.umask(0o077)
         _validate_trusted_release(expected_revision)
+        _assert_current_m05_pinset_is_runnable()
         _root_directory(output)
         _LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(_LEDGER, 0o700)
@@ -1734,6 +1774,8 @@ def main(expected_revision: str, output: Path) -> int:
         if cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
+        if not completed and not _block_terminal_m05_pinset():
+            phase = "runtime_pin_block_failed"
         for name in _RAW_ENV_NAMES:
             os.environ.pop(name, None)
         result: dict[str, object] = {

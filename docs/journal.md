@@ -2,21 +2,43 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 receipt 상태 계약과 terminal registry binding 보정
+
+전문 data-contract 재리뷰는 두 P1을 확인했다. PinVi detail 계약은 `applied`·`blocked`만 선언하는데,
+이전 driver가 `blocked`와 미정의 상태를 polling timeout으로 합쳤다. driver는 이제 `applied`와 유효한
+receipt만 성공으로 수용하고 `blocked`는 `m05_pinvi_receipt_blocked`, 나머지는
+`m05_pinvi_receipt_invalid`로 즉시 terminal 처리한다.
+
+또한 M05 direct launcher는 이전에 root registry의 unconditional terminal block을 확인하지 않아 다른
+Manager revision이 같은 pinset을 다시 ledger claim할 여지가 있었다. admission은 이제 registry의 current
+Map·PinVi·pinset 정합과 unconditional block을 ledger·Docker mutation 전에 확인하고, non-success result는
+exact current pinset을 phase-scoped가 아닌 root registry unconditional block으로 결박한다. 새 회귀는
+두 status와 gate 순서, block의 exact pair·unconditional 성질을 고정한다.
+
+`22563762…`를 포함한 기존 terminal candidate와 output leaf는 계속 재실행하지 않는다. 이 보정, PinVi
+trace artifact 보정, 두 전문 적대 재리뷰 및 green CI를 모두 통과한 fresh source pair만 다음 n150 E2E 후보가
+된다.
+
+---
+
 ## 2026-08-28 — receipt polling transport phase의 timeout 합류 차단
 
 전문 data-contract 재리뷰는 receipt polling이 모든 `_PhaseError`를 재시도한 뒤
 `m05_pinvi_receipt_timeout`으로 합쳐, 호출 단계 고정 HTTP 분류 계약을 깨는 P1을 확인했다. 다음 source는
-transport·응답 형식 오류를 `m05_pinvi_receipt_http_failed` 등 이미 허용된 fixed phase로 즉시 전파하고,
-정상 응답이 아직 applied가 아닌 경우에만 timeout을 사용한다. 회귀는 polling 경로에서 transport failure가
-재시도 없이 caller phase로 끝남을 고정한다.
+transport·응답 형식 오류를 `m05_pinvi_receipt_http_failed` 등 이미 허용된 fixed phase로 즉시 전파한다.
+후속 P1 보정 전 이력으로서, 이 항목의 polling timeout 설명은 최신 `M05 receipt 상태 계약과 terminal registry
+binding 보정` 항목으로 대체됐다.
 
 Map `b8d108bd…`·PinVi `50c875f5…`·pinset `22563762…` terminal 및 그 output leaf는 그대로 차단해
 재실행하지 않는다. 다음 실행은 Map `bbb29d17…`·PinVi `a06086a4…` pair와 이 새 Manager source의
 registry/public-copy gate, 최신 CI, 전문 적대 재리뷰 두 건이 모두 정합한 fresh candidate에서만 허용한다.
 
 같은 검증 누락이 반복되지 않도록 이 저장소에는 backend Ruff·pytest와 frontend type-check·build를 PR마다
-실행하는 GitHub Actions CI를 추가한다. 이전 PR에 원격 CI workflow가 없었다는 사실은 성공 근거로 취급하지
-않고, 이 workflow가 green인 fresh source만 trusted release 후보가 된다.
+실행하는 GitHub Actions CI를 추가한다. backend toolchain은 검증한 `pytest==9.1.1`·`ruff==0.16.4`로
+고정하고 action도 reviewed commit으로 고정한다. interpreter로만 호출하는 tracked non-executable shebang
+script의 `EXE001`만 제외하며, 나머지 lint rule은 전체 backend/test/script에 적용한다. 이전 PR에 원격 CI
+workflow가 없었다는 사실은 성공 근거로 취급하지 않고, 이 workflow가 green인 fresh source만 trusted release
+후보가 된다.
 
 ---
 

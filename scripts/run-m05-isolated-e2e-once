@@ -90,6 +90,13 @@ if (( 8#$(stat -c '%a' "$parent") & 022 )); then
   echo "M05 output parent is writable by another principal" >&2
   exit 2
 fi
+
+# terminal pinset은 Manager source revision이 바뀌어도 다시 실행하지 않는다. output leaf
+# 생성보다 먼저 root registry와 공개 사본을 함께 검증해 blocked/stale 상태를 fail-close한다.
+if ! /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify --json >/dev/null; then
+  echo "M05 runtime pin registry is not runnable" >&2
+  exit 1
+fi
 install -d -o root -g root -m 0700 "$output_dir"
 
 exec /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \

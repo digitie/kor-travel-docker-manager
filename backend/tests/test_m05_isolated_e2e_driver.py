@@ -219,7 +219,6 @@ def test_pinvi_receipt_transport_phase_is_not_collapsed_into_timeout(
         raise driver._PhaseError("m05_pinvi_receipt_http_failed")
 
     monkeypatch.setattr(driver, "_http_json", fail_http)
-    monkeypatch.setattr(driver.time, "sleep", lambda _seconds: pytest.fail("must not retry"))
 
     with pytest.raises(driver._PhaseError, match="m05_pinvi_receipt_http_failed"):
         driver._wait_for_pinvi_receipt(
@@ -227,6 +226,106 @@ def test_pinvi_receipt_transport_phase_is_not_collapsed_into_timeout(
             opener=object(),
             event_id="00000000-0000-0000-0000-000000000000",
         )
+
+
+@pytest.mark.parametrize(
+    ("status", "phase"),
+    [
+        ("blocked", "m05_pinvi_receipt_blocked"),
+        ("unexpected", "m05_pinvi_receipt_invalid"),
+    ],
+)
+def test_pinvi_receipt_non_applied_status_is_terminal(
+    monkeypatch: pytest.MonkeyPatch, status: str, phase: str
+) -> None:
+    """PinVi detail 계약에 없는 pending retry가 terminal 상태를 timeout으로 감추지 않는다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_http_json",
+        lambda *_args, **_kwargs: {"data": {"status": status}},
+    )
+
+    with pytest.raises(driver._PhaseError, match=phase):
+        driver._wait_for_pinvi_receipt(
+            api_url="http://127.0.0.1:13701",
+            opener=object(),
+            event_id="00000000-0000-0000-0000-000000000000",
+        )
+
+
+def test_terminal_registry_gate_precedes_the_m05_ledger_claim() -> None:
+    """다른 Manager revision도 terminal pinset을 재실행할 수 없어야 한다."""
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    gate = source.index("_assert_current_m05_pinset_is_runnable()")
+    ledger_directory = source.index("_LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)")
+    ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
+
+    assert gate < ledger_directory
+    assert gate < ledger_claim
+
+
+def test_terminal_registry_gate_refuses_the_current_pinset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """다른 Manager revision도 unconditional block을 실행권으로 바꾸지 못한다."""
+
+    driver = _driver()
+
+    class _TerminalRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+        def is_unconditionally_blocked_pinset(self, _pinset_sha256: str) -> bool:
+            return True
+
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _TerminalRegistry())
+
+    with pytest.raises(driver._PhaseError, match="terminal_pinset_blocked"):
+        driver._assert_current_m05_pinset_is_runnable()
+
+
+def test_terminal_result_blocks_the_exact_current_pinset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """terminal output은 phase-scoped entry가 아닌 unconditional registry block을 남긴다."""
+
+    driver = _driver()
+    seen: dict[str, object] = {}
+
+    class _BlockedRegistry:
+        def is_unconditionally_blocked_pinset(self, pinset_sha256: str) -> bool:
+            return pinset_sha256 == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+
+    def block(**kwargs: object) -> _BlockedRegistry:
+        seen.update(kwargs)
+        return _BlockedRegistry()
+
+    monkeypatch.setattr(driver, "block_runtime_pinset", block)
+
+    assert driver._block_terminal_m05_pinset() is True
+    assert seen["pinset_sha256"] == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+    assert seen["map_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+    assert seen["pinvi_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+    assert "phase" not in seen
+
+
+def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
+    """terminal direct launch은 새 leaf·driver·ledger를 만들기 전에 끝난다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    assert launcher.index("ktdctl pin verify --json >/dev/null") < launcher.index(
+        'install -d -o root -g root -m 0700 "$output_dir"'
+    )
 
 
 def test_free_ports_uses_the_standard_ss_binary(
