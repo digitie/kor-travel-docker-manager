@@ -3,11 +3,49 @@ export const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localh
 export class ApiError extends Error {
   status: number;
 
-  constructor(status: number, message: string) {
-    super(message);
+  /** 백엔드가 보낸 `detail`의 구조화된 코드. FastAPI가 문자열 detail을 보내면 null이다. */
+  code: string | null;
+
+  /** 사람이 읽을 수 있는 서버 메시지. 없으면 null이고, 그때는 `message`(원문)를 쓴다. */
+  serverMessage: string | null;
+
+  /** 응답 본문 원문. "자세히" 접기에서 그대로 보여 준다. */
+  raw: string;
+
+  constructor(status: number, raw: string) {
+    const parsed = parseErrorBody(raw);
+    super(parsed.serverMessage || raw || `${status}`);
     this.name = 'ApiError';
     this.status = status;
+    this.code = parsed.code;
+    this.serverMessage = parsed.serverMessage;
+    this.raw = raw;
   }
+}
+
+/** FastAPI의 `{"detail": ...}` 본문에서 코드와 메시지를 뽑는다.
+ *
+ * detail은 문자열일 때도, `{code, message, ...}` 객체일 때도 있다
+ * (`api/routes.py`의 candidate/post-mutation 계약 오류가 후자다). 어느 쪽이든
+ * 실패하면 원문을 그대로 쓰고 예외를 던지지 않는다 — 오류 표시 경로가 다시
+ * 오류를 내면 안 된다. */
+function parseErrorBody(raw: string): { code: string | null; serverMessage: string | null } {
+  if (!raw) return { code: null, serverMessage: null };
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return { code: null, serverMessage: null };
+  }
+  const detail = (body as { detail?: unknown })?.detail;
+  if (typeof detail === 'string') return { code: null, serverMessage: detail };
+  if (detail && typeof detail === 'object') {
+    const record = detail as Record<string, unknown>;
+    const code = typeof record.code === 'string' ? record.code : null;
+    const message = typeof record.message === 'string' ? record.message : null;
+    return { code, serverMessage: message };
+  }
+  return { code: null, serverMessage: null };
 }
 
 export type AuthMe = {
@@ -138,6 +176,171 @@ export type BackupListResponse = {
   backups: StandaloneBackupManifest[];
 };
 
+/** `POST /api/v1/backups/{role}`의 202 응답이자 `GET .../jobs/{id}` 폴링 응답.
+ *
+ * 이 기록은 **권위가 아니다** — 프로세스가 죽으면 사라진다. 무엇이 실제로 남았는지는
+ * `GET /api/v1/backups`가 읽는 디스크의 manifest가 말한다. */
+export type BackupJob = {
+  job_id: string;
+  kind: 'db_backup_create';
+  key: StandaloneBackupManifest['role'];
+  state: 'running' | 'succeeded' | 'failed';
+  started_at_unix: number;
+  finished_at_unix: number | null;
+  result: StandaloneBackupManifest | null;
+  error: string | null;
+};
+
+export type LatestBackupJobResponse = { job: BackupJob | null };
+
+/** `GET /api/v1/admin/password/preflight`.
+ *
+ * `unfinished_journal`은 **우회 경로가 없는** 거부다(증명된 사실이고, 증명됐다는 것은
+ * 재개가 실제로 걸려 있다는 뜻이다). `unverifiable`/`unknown`은 backend가 root의 0700
+ * 디렉터리를 읽지 못한 상태이며, "못 봤다"를 "안전"으로 읽지 않으려고 명시 승인을
+ * 요구한다. */
+export type AdminPasswordPreflight = {
+  verdict: 'not_rebuildable' | 'no_journal' | 'unfinished_journal' | 'unverifiable' | 'unknown';
+  detail: string;
+  requires_acknowledgement: boolean;
+  blocking: boolean;
+};
+
+export type HumanVerdict = {
+  level: 'ok' | 'action_required' | 'unverified';
+  text: string;
+  next_action: string;
+};
+
+export type SourceStatusRow = {
+  id?: string;
+  role?: string;
+  label?: string;
+  title?: string;
+  state: string;
+  detail?: string | null;
+  revision?: string | null;
+  pinned_revision?: string | null;
+  head_revision?: string | null;
+  image_id?: string | null;
+  scope?: string;
+  human: HumanVerdict;
+};
+
+export type SourceStatusEnvironment = SourceStatusRow & {
+  required_count: number;
+  missing: string[];
+  injected_at_rebuild: string[];
+  documented_but_unused: string[];
+};
+
+/** `GET /api/v1/source-status` 응답. 관측 전용이라 mutation이 없다. 각 행은
+ * "최신 상태입니다 / 업데이트가 필요합니다 / 확인할 수 없습니다"로 번역돼 온다. */
+export type SourceStatusResponse = {
+  schema: string;
+  collected_at: string;
+  cached: boolean;
+  cache_ttl_seconds?: number;
+  manager: SourceStatusRow & { manifest?: Record<string, unknown> | null };
+  checkouts: SourceStatusRow[];
+  running_images: SourceStatusRow[];
+  contracts: SourceStatusRow[];
+  environment: SourceStatusEnvironment;
+  summary: HumanVerdict;
+};
+
+/** `GET /api/v1/deployment-readiness`의 항목 하나.
+ *
+ * `state`는 재구축을 기준으로 읽는다: `missing`은 지금 실행하면 확실히 실패하는
+ * 결손, `warn`은 막지는 않지만 사람이 봐야 하는 것, `unknown`은 판단 근거가 없다는
+ * 뜻이다(추측한 값을 보여 주지 않는다). */
+export type ReadinessCheck = {
+  id: string;
+  state: 'ok' | 'warn' | 'unknown' | 'missing';
+  label_ko: string;
+  detail: string;
+  source: 'project_root' | 'sibling_checkout' | 'docker_cli' | 'none';
+  evidence: Record<string, unknown>;
+};
+
+/** 검사하지 않기로 **결정한** 항목. 화면에서 숨기면 "전부 확인됨"으로 읽히므로
+ * 이유와 함께 그대로 보여 준다. */
+export type UnavailableReadinessCheck = {
+  id: string;
+  label_ko: string;
+  reason: string;
+};
+
+/** `GET /api/v1/deployment-readiness` 응답. 관측 전용이며 무엇도 pull하지 않는다.
+ * 서비스는 예외를 던지지 않으므로 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. */
+export type DeploymentReadinessResponse = {
+  schema: string;
+  generated_at: string;
+  cached: boolean;
+  cache_age_seconds: number;
+  stale?: boolean;
+  summary: {
+    state: 'ok' | 'blocked' | 'unverified';
+    blocking_count: number;
+    warn_count: number;
+    unknown_count: number;
+    text: string;
+  };
+  checks: ReadinessCheck[];
+  unavailable_checks: UnavailableReadinessCheck[];
+};
+
+export type RebuildFinding = {
+  code: string;
+  text: string;
+  next_action?: string;
+};
+
+/** `GET /api/v1/pinned-rebuild/preflight`.
+ *
+ * **실행 버튼이 아니다.** `rebuild-pinned`는 root를 요구하고 3개 DB를 파기하므로,
+ * 화면은 "지금 눌러도 되는가"만 판정하고 실행은 SSH에 남긴다. `can_start`가 true여도
+ * 화면이 실행하지 않는다 — payload가 주는 것은 명령 문자열뿐이다. */
+export type PinnedRebuildPreflight = {
+  schema: string;
+  collected_at: string;
+  can_start: boolean;
+  pinset_sha256: string | null;
+  blockers: RebuildFinding[];
+  warnings: RebuildFinding[];
+  unverified: RebuildFinding[];
+  command: string;
+  summary: { state: 'ok' | 'blocked' | 'unverified'; text: string };
+};
+
+export type DiskUsageRow = {
+  type: string;
+  label_ko: string;
+  total_count?: string | null;
+  active_count?: string | null;
+  size_bytes: number | null;
+  size_text: string | null;
+  reclaimable_bytes: number | null;
+  reclaimable_text: string | null;
+};
+
+/** `GET /api/v1/system/disk-usage` 응답. 관측 전용 — 정리(prune)는 파괴적이라
+ * CLI에만 있고 이 응답은 실행할 명령만 알려 준다. */
+export type DiskUsageResponse = {
+  schema: string;
+  collected_at: string;
+  cached: boolean;
+  state: 'ok' | 'warn' | 'unknown';
+  rows: DiskUsageRow[];
+  reclaimable_bytes: number | null;
+  summary: {
+    state: 'ok' | 'warn' | 'unknown';
+    text: string;
+    detail: string;
+    next_action: string;
+  };
+};
+
 export type RuntimePinSource = {
   role: 'map' | 'pinvi';
   url: string;
@@ -163,8 +366,24 @@ export type RuntimePinRotation = {
   supersedes_pinset_sha256?: string | null;
 };
 
-/** `GET /api/v1/runtime-pins` 응답. 회전은 root 전용 `ktdctl pin rotate`이므로 이
- * API는 읽기만 한다. registry를 읽을 수 없으면 값을 추측하지 않고 `unknown`이다. */
+/** UI가 기록한 회전 **요청**. 적용은 SSH의 `ktdctl pin apply-pending --confirm`이며,
+ * API 프로세스는 registry(root 0600)를 쓸 수 없다. `stale`은 요청 이후 pin이 바뀌어
+ * 이 요청으로는 적용되지 않는 상태, `unreadable`은 요청 파일 자체를 읽지 못한 상태다. */
+export type RuntimePinRequestSummary = {
+  status: 'pending' | 'stale' | 'unreadable';
+  detail?: string | null;
+  request_id?: string;
+  role?: 'map' | 'pinvi';
+  revision?: string;
+  reason?: string;
+  requested_by?: string;
+  requested_at?: string;
+  base_pinset_sha256?: string;
+  prospective_pinset_sha256?: string;
+};
+
+/** `GET /api/v1/runtime-pins` 응답. 회전 적용은 root 전용 `ktdctl pin`이므로 이 API는
+ * 읽기와 **요청 기록**만 한다. registry를 읽을 수 없으면 값을 추측하지 않고 `unknown`이다. */
 export type RuntimePinsResponse = {
   status: 'ok' | 'stale' | 'degraded' | 'unknown';
   source: string | null;
@@ -178,6 +397,7 @@ export type RuntimePinsResponse = {
     rotated_by: string;
     reason: string;
   } | null;
+  pending_request?: RuntimePinRequestSummary | null;
   lifecycle?: {
     current_pinset_is_blocked: boolean;
     current_pinset_has_phase_scoped_block?: boolean;

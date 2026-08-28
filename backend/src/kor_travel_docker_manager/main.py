@@ -19,6 +19,7 @@ from kor_travel_docker_manager.api.websocket import (
 )
 from kor_travel_docker_manager.services.auth_service import allowed_frontend_origins
 from kor_travel_docker_manager.services.compose_service import get_env_path
+from kor_travel_docker_manager.services.job_runner import job_runner
 from kor_travel_docker_manager.services.metrics_collector import metrics_collector
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 
@@ -147,6 +148,11 @@ async def lifespan(app: FastAPI):
         await asyncio.gather(broadcast_task, cleanup_task, return_exceptions=True)
     except Exception:
         pass
+
+    # job은 취소하지 않는다 — asyncio.to_thread는 실행 중인 pg_dump를 중단시키지
+    # 못하고, 취소는 기록만 잃는다. 짧게 배수하고 남은 job은 경고로 남긴다.
+    logger.info("Draining background jobs...")
+    await job_runner.shutdown()
 
     logger.info("Shutting down log stream executor...")
     shutdown_log_stream_executor()

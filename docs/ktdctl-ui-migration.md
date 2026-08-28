@@ -403,6 +403,31 @@ rebuild 도중 교체가 이론상 가능하다 — 단 rebuild는 시작 시 re
 - **개선 효과**: PinVi의 문구 수정이 Manager 분류를 깨뜨리는 결합이 사라지고, 실패
   reason이 enum 그대로 화면에 뜨며, UI발 계약 위반(포트 변경) 경로가 봉쇄된다.
 
+#### P10-3 정정 (2026-08-28, PinVi 소스 실측)
+
+설계 (i)의 전제가 틀렸다. PinVi `infra/postgres/bootstrap-pinvi-runtime-role.sh`를 직접
+읽어 확인한 사실:
+
+- `pinvi.role-topology-diagnostic.v1`은 **`PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`일 때만**
+  stdout 한 줄로 나오고 언제나 exit 0이다. Manager가 문자열로 분류하는 9문구는 **일반
+  부트스트랩 실행**의 stderr이며, 그 경로에는 typed envelope이 아예 없다(exit 2=입력
+  검증, 1=endpoint 미준비, 3=topology/소유권 거부).
+- 따라서 **"stderr 파싱을 typed JSON 소비로 이관"은 Manager만으로는 불가능하다.** 두
+  진단은 같은 실패의 다른 표현이 아니라 **서로 다른 실행**의 출력이다. 이관은 PinVi가
+  일반 실행에서도 envelope을 내보내야 성립하며, 그 작업이 KUM-PV-3다.
+- 고정 revision `97d2f924…`의 스크립트에는 `PINVI_ROLE_CATALOG_RESET_ONLY` 처리가
+  **없다**. Manager는 그 모드를 `-e`로 주입하는데, 변수는 조용히 무시되고 일반
+  부트스트랩이 실행된 뒤 Manager가 `{}` 결과를 읽고 fail-close한다. 데이터는 안전하지만
+  **의도하지 않은 부트스트랩이 한 번 돌고 pinset 하나가 소모된다.** → readiness 검사
+  `pinvi_role_bootstrap_modes`로 실행 전에 잡는다(KUM-M6에서 구현).
+- Manager의 `PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS`에는 스크립트가 결코 쓰지 않는
+  `target_not_isolated`가 있다(그 실패 경로는 결과 파일을 쓰지 않고 exit 3). 받아들이는
+  집합이 넓기만 한 것이라 fail-close 결함은 아니므로 **좁히지 않고 기록만 한다** —
+  좁히면 다른 revision에서 거짓 거부가 될 수 있다.
+
+**그래서 KUM-M6의 실제 범위**: (iii) 계약 결박 env의 read-only화와 위 readiness 검사는
+Manager 단독으로 완료. (i)의 typed 이관과 (ii)의 verifier phase 편입은 KUM-PV-3 선행.
+
 ### P10-4. preflight readiness 노출 — "실행 전에 실패를 아는" 패널
 
 - **관측(사실)**: 진단 5의 blocker 3건.
@@ -867,16 +892,16 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 | KUM-M2 | pinset lifecycle: `blocked_pinsets`/`history`/`supersedes` 필드, `pin block`, rotate 시 terminal 자동 등재, `rebuild-pinned`의 terminal/재실행 자동 거부, rollback의 terminal 제한, d9 상수 3종 이관·삭제 | §1.3 P10-1·2, 진단 3 | KUM-M1 |
 | KUM-M3 | root-side world-readable publisher: rotate/init/rebuild가 pin·manifest·journal의 secret-free 사본을 backend 가독 경로에 원자 기록(installer 0644 선례 답습), backend 로더의 digest 재계산+stale fail-close | §1.2 (c), 진단 6 | KUM-M1 |
 | KUM-M4 | 조회 API 2종: `GET /runtime-pins`(lifecycle·history·generation 일치 여부·Manager provenance 동봉), `GET /pinned-runtime/generation`(manifest/journal 원본+envelope summary+terminal 분류+receipt/fence 상태+버전 명시) + 배포 정합성 패널 UI | P2, §1.3 P10-2 | KUM-M3 |
-| KUM-M5 | UI 2-step pin rotate: 회전 요청 폼→audit row 기록, `pin apply-pending --confirm` CLI, 대기 중 요청 표시 | §1.2 (c), Q4 | KUM-M1, KUM-M4 |
-| KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
-| KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 | §1.3 P10-4, 진단 5 | KUM-M4(패널) |
+| KUM-M5 | UI 2-step pin rotate: 회전 요청 폼→audit row 기록, `pin apply-pending --confirm` CLI, 대기 중 요청 표시 (**완료 2026-08-28** — 요청 저장소는 registry와 다른 트리의 backend-writable 파일이며 어떤 로드 경로도 읽지 않는다) | §1.2 (c), Q4 | KUM-M1, KUM-M4 |
+| KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 (**부분 완료 2026-08-28** — (iii) 계약 결박 env read-only화와 `pinvi_role_bootstrap_modes` readiness 검사는 완료. (i)(ii)는 P10-3 정정대로 KUM-PV-3 선행이며 Manager 단독으로는 불가능) | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
+| KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 (**완료 2026-08-28** — wheelhouse는 검사 불가로 판정해 이유와 함께 `unavailable_checks`로 노출. 화면은 pin 패널이 아니라 `SourceStatusPanel`에 붙였다: pin 패널이 M5로 mutation 패널이 됐기 때문) | §1.3 P10-4, 진단 5 | KUM-M4(패널) |
 | KUM-M8 | `source-status` + compare 링크 + installer provenance 리더(~10줄) + Map entrypoint/Dockerfile 계약 drift 행 + 환경 완결성 카드 | P3, P4 | — |
-| KUM-M9 | `services/job_runner.py` + backup create 202 비동기 + shared group/setgid + gc 결함 수선(lock 3줄 등) | P5, P9-2, Q2 | — |
-| KUM-M10 | 관리자 비밀번호 변경 폼: `POST /admin/password`(단일 키 allowlist, atomic) + **미종결 rebuild journal 가드(거부 또는 경고+typed confirm)** + audit | P6, Q3 | — |
+| KUM-M9 | `services/job_runner.py` + backup create 202 비동기 + shared group/setgid + gc 결함 수선(lock 3줄 등) (**완료 2026-08-28** — job 기록은 권위가 아니고 디스크 manifest가 권위라는 점을 코드·문서에 명시. shutdown은 진행 중 job을 취소하지 않는다) | P5, P9-2, Q2 | — |
+| KUM-M10 | 관리자 비밀번호 변경 폼: `POST /admin/password`(단일 키 allowlist, atomic) + **미종결 rebuild journal 가드(거부 또는 경고+typed confirm)** + audit (**완료 2026-08-28** — 가드는 3갈래다: 증명된 미종결은 우회 불가, 확인 불가는 명시 승인. backend가 root의 `0700` journal을 늘 볼 수 있는 것은 아니라는 사실을 설계에 반영했다) | P6, Q3 | — |
 | KUM-M11 | 프론트 quick wins 일괄: P7-A~I(오류 humanize, 라벨 한국어화, 그룹 뷰, health 카드, CLI 명령 카드, 미리보기 전역화, 파라미터 노출, 볼륨/계약 키 read-only, 일괄 재시작) | P7 | — |
-| KUM-M12 | 프론트 구조 추출(WS 훅 2개·모달 4개 분리) — 신규 패널 2개 이상 전 선행 | P9-3 | — |
-| KUM-M13 | `db-backup restore` CLI(~300-500줄, role별 정지/기동 절차 설계, 적용 경계 runbook 명시) + 이후 UI 안내 | P5, Q6 | KUM-M9 권장 |
-| KUM-M14 | rehearsal 한정 rebuild 버튼: typed confirmation + 서버 environment 게이트 + terminal/실행이력 게이트 | P8, Q5 | **KUM-M2 필수** |
+| KUM-M12 | 프론트 구조 추출(WS 훅 2개·모달 4개 분리) — 신규 패널 2개 이상 전 선행 (**완료 2026-08-28** — 라벨·아이콘·포맷터와 타입을 `lib/containerPresentation.ts`·`lib/format.ts`로 이관해 표시 규약을 찾을 수 있는 자리에 뒀다(2,138 → 1,968줄). **JSX 본문은 의도적으로 쪼개지 않았다**: 서른 개 가까운 state를 공유하는 하나의 컴포넌트라 하위 컴포넌트로 뜯으려면 그 state를 전부 prop으로 꿰어야 하고, 순수 리팩터가 행동 변경 위험을 안게 된다) | P9-3 | — |
+| KUM-M13 | `db-backup restore` CLI(~300-500줄, role별 정지/기동 절차 설계, 적용 경계 runbook 명시) + 이후 UI 안내 (**1단계 완료 2026-08-28 — 오너 결정으로 읽기 전용 `restore-plan`만 먼저**. 목록에 백업이 보이는 것과 복원할 수 있는 것이 다르므로, 파괴적 명령을 그 거짓 안전감 위에 얹지 않는다. digest 재계산·크기·schema revision 대조를 하고 차단/참고를 구분한다. 파괴적 `restore`는 이 계획이 실제로 무엇을 잡는지 본 뒤 결정) | P5, Q6 | KUM-M9 권장 |
+| KUM-M14 | rehearsal 한정 rebuild 버튼: typed confirmation + 서버 environment 게이트 + terminal/실행이력 게이트 (**완료 2026-08-28 — 오너 결정으로 버튼이 아니라 게이트된 CLI 카드**. `rebuild-pinned`는 root를 요구해 HTTP 요청으로 실행할 수 없고, 실행 가능하게 만드는 것은 편의가 아니라 경계 제거다. `GET /api/v1/pinned-rebuild/preflight`가 차단 사유를 판정하고 화면은 실행할 명령만 준다) | P8, Q5 | **KUM-M2 필수** |
 | KUM-M15 | `.env.example` drift 수정: PinVi role credential 6종 추가, 폐기 `PINVI_DOCKER_DATABASE_URL` 제거 (docs-only, 즉시 가능) | P3 [v3] | — |
 | KUM-M16 | CLAUDE.md 낡은 지점 동기화 (별도 작은 PR) | Q7 | — |
 | KUM-M17 | (기록만 — 착수는 별도 결정) M05 활성화 선행 조건: Manager compose의 M05 env/mount 확장, `PINVI_*_IMAGE_DIGEST` 주입, pinned↔activation generation 병렬 표시 | §1.3 P10-5 | 오너 별도 결정 |
@@ -918,8 +943,9 @@ M6·M8~M13·M15·M18은 상호 독립. 프론트 신규 패널이 2개 이상 �
   경로(실제 `rebuild-pinned` 등)는 mock/단위 테스트로 대체하고, 무엇을 mock으로
   대체했는지 저널에 명시한다.
 - **범위 경계**: 이번 라운드는 pin registry·lifecycle·publisher·조회 API와 그
-  readiness 노출까지다. mutation UI(M5)·typed 진단 이관(M6)·운영 기능 트랙
-  (M9·M10·M13)은 후속 라운드로 분리한다.
+  readiness 노출까지다. typed 진단 이관(M6)·운영 기능 트랙(M9·M10·M13)은 후속 라운드로
+  분리한다. **M5(UI 2-step pin rotate)는 오너 지시로 이 라운드에 편입해 완료했다**
+  (2026-08-28) — 계약은 `runtime-pin-registry.md` §7-1이 정본이다.
 
 ---
 

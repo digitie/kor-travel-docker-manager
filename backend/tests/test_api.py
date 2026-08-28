@@ -1,6 +1,7 @@
 import hashlib
 import os
-from unittest.mock import patch
+import time
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import WebSocketDisconnect
@@ -17,6 +18,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.public_api_key_service import public_api_key_is_valid
+from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
 
 FRONTEND_ORIGIN = "http://localhost:12905"
 os.environ["KTDM_ADMIN_USERNAME"] = "admin"
@@ -1353,5 +1355,633 @@ def test_get_runtime_pins_requires_authentication():
     client.cookies.clear()
 
     response = client.get("/api/v1/runtime-pins")
+
+    assert response.status_code == 401
+
+
+# --- KUM-M10: 관리자 비밀번호 변경 ---------------------------------------------
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_change):
+    login_client()
+    mock_change.return_value = {
+        "ok": True,
+        "guard": "no_journal",
+        "acknowledged": False,
+        "env_path": "/opt/x/.env",
+    }
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "a-new-password-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "guard": "no_journal"}
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
+    ).json()
+    detail = events[0]["detail"]
+    assert detail == {"guard": "no_journal", "acknowledged": False}
+    # 비밀번호도 해시도 감사에 남기지 않는다.
+    assert "a-new-password-1" not in str(events)
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_a_wrong_current_password_joins_the_login_bruteforce_counter(mock_change):
+    """자격증명 추측만 로그인 카운터에 합류시킨다 — 다른 거부로 오염시키지 않는다."""
+
+    from kor_travel_docker_manager.services.admin_password_service import (
+        AdminPasswordError,
+    )
+
+    login_client()
+    mock_change.side_effect = AdminPasswordError(
+        "INVALID_CREDENTIALS", "현재 비밀번호가 일치하지 않습니다.", status_code=401
+    )
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": "wrong", "new_password": "a-new-password-1"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INVALID_CREDENTIALS"
+    login_events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=login&outcome=denied"
+    ).json()
+    assert any(event["reason"] == "invalid_credentials" for event in login_events)
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_a_guard_refusal_does_not_pollute_the_login_counter(mock_change):
+    from kor_travel_docker_manager.services.admin_password_service import (
+        AdminPasswordError,
+    )
+
+    login_client()
+    mock_change.side_effect = AdminPasswordError(
+        "PINNED_REBUILD_JOURNAL_UNFINISHED", "미종결 재구축 기록이 있습니다."
+    )
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "a-new-password-1"},
+    )
+
+    assert response.status_code == 409
+    denied = client.get(
+        "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=denied"
+    ).json()
+    assert any(
+        event["reason"] == "pinned_rebuild_journal_unfinished" for event in denied
+    )
+
+
+def test_the_password_route_enforces_the_minimum_length_before_any_work():
+    login_client()
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "short"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_admin_password_routes_require_authentication():
+    client.cookies.clear()
+
+    assert client.get("/api/v1/admin/password/preflight").status_code == 401
+    assert (
+        client.post(
+            "/api/v1/admin/password",
+            json={"current_password": "x", "new_password": "a-new-password-1"},
+        ).status_code
+        == 401
+    )
+
+
+# --- KUM-M9: 백업 생성은 202 + job id로 비동기다 -------------------------------
+
+
+@pytest.fixture
+def clean_job_runner():
+    """모듈 싱글턴이므로 남은 running 기록이 다음 테스트의 submit을 막는다."""
+
+    from kor_travel_docker_manager.services.job_runner import job_runner
+
+    job_runner.reset()
+    yield job_runner
+    for _ in range(200):
+        if job_runner.latest(kind="db_backup_create", key="geo") is None:
+            break
+        if job_runner.latest(kind="db_backup_create", key="geo").state != "running":
+            break
+        time.sleep(0.05)
+    try:
+        job_runner.reset()
+    except RuntimeError:
+        pass
+
+
+def _await_job(role: str, job_id: str) -> dict:
+    for _ in range(200):
+        body = client.get(f"/api/v1/backups/{role}/jobs/{job_id}").json()
+        if body["state"] != "running":
+            return body
+        time.sleep(0.05)
+    raise AssertionError("job did not finish in time")
+
+
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_returns_202_and_a_job_that_finishes(mock_create, clean_job_runner):
+    """4시간짜리 dump를 HTTP 요청 수명에 묶을 수 없다."""
+
+    login_client()
+    manifest = Mock()
+    manifest.to_json.return_value = {"role": "geo", "backup_filename": "geo-1.dump"}
+    mock_create.return_value = manifest
+
+    response = client.post("/api/v1/backups/geo", json={"timeout_seconds": 60})
+
+    assert response.status_code == 202
+    started = response.json()
+    assert started["state"] == "running"
+    assert started["key"] == "geo"
+
+    finished = _await_job("geo", started["job_id"])
+    assert finished["state"] == "succeeded"
+    assert finished["result"]["backup_filename"] == "geo-1.dump"
+    mock_create.assert_called_once_with("geo", timeout=60)
+
+
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_a_failed_backup_job_reports_the_failure_instead_of_vanishing(
+    mock_create, clean_job_runner
+):
+    login_client()
+    mock_create.side_effect = StandaloneBackupError("pg_dump produced an empty file")
+
+    started = client.post("/api/v1/backups/geo", json={}).json()
+    finished = _await_job("geo", started["job_id"])
+
+    assert finished["state"] == "failed"
+    assert "empty file" in finished["error"]
+
+
+def test_backup_job_lookup_rejects_an_unknown_role_and_id(clean_job_runner):
+    login_client()
+
+    assert client.post("/api/v1/backups/nope", json={}).status_code == 400
+    assert client.get("/api/v1/backups/nope/jobs").status_code == 400
+    assert client.get("/api/v1/backups/geo/jobs/missing").status_code == 404
+    assert client.get("/api/v1/backups/geo/jobs").json() == {"job": None}
+
+
+def test_backup_routes_require_authentication():
+    client.cookies.clear()
+
+    assert client.post("/api/v1/backups/geo", json={}).status_code == 401
+    assert client.get("/api/v1/backups/geo/jobs").status_code == 401
+
+
+# --- KUM-M5: UI는 회전을 '요청'만 하고, 적용은 root CLI가 한다 -----------------
+
+MAP_REVISION = "b" * 40
+PINVI_REVISION = "c" * 40
+
+
+def _published_pins(**overrides):
+    payload = {
+        "status": "ok",
+        "source": "published_copy",
+        "published_at": "2026-08-28T00:00:00Z",
+        "release_version": 5,
+        "pinset_sha256": "a" * 64,
+        "sources": [
+            {
+                "role": "map",
+                "url": "https://github.com/digitie/kor-travel-map.git",
+                "revision": MAP_REVISION,
+            },
+            {
+                "role": "pinvi",
+                "url": "https://github.com/digitie/pinvi.git",
+                "revision": PINVI_REVISION,
+            },
+        ],
+        "rotated_at": "2026-08-28T00:00:00Z",
+        "rotated_by": "operator",
+        "reason": "seed",
+        "history": [],
+        "blocked_pinsets": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.fixture
+def isolated_pin_requests(tmp_path, monkeypatch):
+    """요청 파일을 tmp_path로 옮긴다 — 테스트가 호스트 상태를 건드리면 안 된다."""
+
+    from kor_travel_docker_manager.services import runtime_pin_request
+
+    target = tmp_path / "requests" / "runtime-pin-requests.json"
+    monkeypatch.setenv(runtime_pin_request.RUNTIME_PIN_REQUEST_FILE_ENV, str(target))
+    return target
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_records_a_proposal_not_a_rotation(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["request"]["role"] == "map"
+    assert body["request"]["base_pinset_sha256"] == "a" * 64
+    assert "apply-pending" in body["next_action"]
+    # 요청은 파일 하나일 뿐이고 registry는 건드리지 않는다.
+    assert isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_when_the_published_copy_is_stale(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins(status="stale")
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RUNTIME_PINS_UNVERIFIED"
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_a_no_op(mock_read, isolated_pin_requests):
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": MAP_REVISION, "reason": "그대로 두기"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RUNTIME_PIN_UNCHANGED"
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_a_single_role_rotation_on_a_terminal_pinset(
+    mock_read, isolated_pin_requests
+):
+    """terminal 상태에서는 registry가 단일 role 회전을 거부한다 — 결코 적용될 수 없는
+    요청을 화면에 대기 중으로 남기면 그 자체가 거짓말이다."""
+
+    login_client()
+    mock_read.return_value = _published_pins(
+        blocked_pinsets=[
+            {
+                "pinset_sha256": "a" * 64,
+                "map_revision": MAP_REVISION,
+                "pinvi_revision": PINVI_REVISION,
+                "reason": "terminal",
+                "blocked_at": "2026-08-28T00:00:00Z",
+            }
+        ]
+    )
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "RUNTIME_PIN_TERMINAL_REQUIRES_PAIR"
+    # 실제 해소 명령을 함께 준다.
+    assert "rotate-pair" in detail["message"]
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_a_permanently_blocked_target(
+    mock_read, isolated_pin_requests
+):
+    from kor_travel_docker_manager.services.runtime_pin_request import (
+        prospective_pinset_sha256,
+    )
+
+    login_client()
+    target_revision = "d" * 40
+    blocked_digest = prospective_pinset_sha256(
+        release_version=5, map_revision=target_revision, pinvi_revision=PINVI_REVISION
+    )
+    mock_read.return_value = _published_pins(
+        blocked_pinsets=[
+            {
+                "pinset_sha256": blocked_digest,
+                "map_revision": target_revision,
+                "pinvi_revision": PINVI_REVISION,
+                "reason": "upstream이 terminal로 선언",
+                "blocked_at": "2026-08-28T00:00:00Z",
+            }
+        ]
+    )
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": target_revision, "reason": "재시도"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RUNTIME_PIN_BLOCKED_TARGET"
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_never_overwrites_a_pending_one(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+    first = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "첫 요청"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "pinvi", "revision": "e" * 40, "reason": "두 번째 요청"},
+    )
+
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["code"] == "RUNTIME_PIN_REQUEST_EXISTS"
+    assert detail["request_id"] == first.json()["request"]["request_id"]
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_rejects_a_multiline_reason(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "사유\n두 번째 줄"},
+    )
+
+    # 여기서 통과시키면 CLI가 읽지 못해 요청이 영원히 적용되지 않는다.
+    assert response.status_code == 422
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_get_runtime_pins_marks_a_request_stale_after_the_pin_moved(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+    client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    pending = client.get("/api/v1/runtime-pins").json()["pending_request"]
+    assert pending["status"] == "pending"
+
+    # 그 사이 누군가 SSH에서 회전시켰다면, 이 요청으로는 더 이상 적용되지 않는다.
+    mock_read.return_value = _published_pins(pinset_sha256="f" * 64)
+    moved = client.get("/api/v1/runtime-pins").json()["pending_request"]
+
+    assert moved["status"] == "stale"
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_delete_runtime_pin_request_requires_the_exact_id(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+    created = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    ).json()["request"]
+
+    # 오래된 화면이 그 사이 들어온 다른 요청을 지우지 못한다.
+    stale_delete = client.delete(
+        "/api/v1/runtime-pins/requests/6f9619ff-8b86-4d01-b42d-00cf4fc964ff"
+    )
+    assert stale_delete.status_code == 404
+    assert stale_delete.json()["detail"]["code"] == "RUNTIME_PIN_REQUEST_NOT_FOUND"
+
+    cancelled = client.delete(f"/api/v1/runtime-pins/requests/{created['request_id']}")
+
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {"status": "cancelled", "request_id": created["request_id"]}
+    assert client.get("/api/v1/runtime-pins").json()["pending_request"] is None
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_a_pending_request_stays_visible_when_the_registry_is_unreadable(
+    mock_read, isolated_pin_requests
+):
+    """id를 볼 수 없으면 취소도 못 한다 — 정작 그때 가장 필요한 정보다."""
+
+    login_client()
+    mock_read.return_value = _published_pins()
+    created = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    ).json()["request"]
+
+    mock_read.return_value = {"status": "unknown", "source": None, "detail": "unreadable"}
+    body = client.get("/api/v1/runtime-pins").json()
+
+    assert body["status"] == "unknown"
+    assert body["pins"] is None
+    assert body["pending_request"]["request_id"] == created["request_id"]
+    # base를 대조할 값이 없으므로 'pending'이라고 단정하지도 않는다.
+    assert body["pending_request"]["status"] == "pending"
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_a_rejected_cancel_is_audited(mock_read, isolated_pin_requests):
+    """남지 않은 거부는 조사할 수 없다."""
+
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.delete(
+        "/api/v1/runtime-pins/requests/6f9619ff-8b86-4d01-b42d-00cf4fc964ff"
+    )
+
+    assert response.status_code == 404
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=runtime_pin&outcome=rejected"
+    ).json()
+    assert any(
+        (event.get("detail") or {}).get("code") == "RUNTIME_PIN_REQUEST_NOT_FOUND"
+        for event in events
+    )
+
+
+def test_runtime_pin_request_routes_require_authentication():
+    client.cookies.clear()
+
+    created = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+    cancelled = client.delete("/api/v1/runtime-pins/requests/anything")
+
+    assert created.status_code == 401
+    assert cancelled.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.read_deployment_readiness")
+def test_get_deployment_readiness_returns_the_service_payload(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "schema": "kor-travel-docker-manager.deployment-readiness.v1",
+        "generated_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "cache_age_seconds": 0.0,
+        "summary": {"state": "blocked", "blocking_count": 1, "warn_count": 0,
+                    "unknown_count": 0, "text": "지금 재구축을 실행하면 실패합니다."},
+        "checks": [
+            {"id": "compose_single_file", "state": "missing", "label_ko": "Compose 입력이 단일 파일인가",
+             "detail": "override가 있습니다", "source": "project_root", "evidence": {}}
+        ],
+        "unavailable_checks": [{"id": "offline_wheelhouse", "label_ko": "x", "reason": "y"}],
+    }
+
+    response = client.get("/api/v1/deployment-readiness")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"]["state"] == "blocked"
+    assert body["checks"][0]["id"] == "compose_single_file"
+    assert body["unavailable_checks"][0]["id"] == "offline_wheelhouse"
+
+
+@patch("kor_travel_docker_manager.api.routes.read_deployment_readiness")
+def test_get_deployment_readiness_does_not_500_on_an_unreadable_host(mock_read):
+    """진단 패널이 500을 내면 운영자는 상태를 볼 유일한 창을 잃는다."""
+
+    login_client()
+    mock_read.return_value = {
+        "schema": "kor-travel-docker-manager.deployment-readiness.v1",
+        "generated_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "cache_age_seconds": 0.0,
+        "summary": {"state": "unverified", "blocking_count": 0, "warn_count": 0,
+                    "unknown_count": 3, "text": "일부 항목을 확인하지 못했습니다."},
+        "checks": [],
+        "unavailable_checks": [],
+    }
+
+    response = client.get("/api/v1/deployment-readiness")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["state"] == "unverified"
+
+
+def test_get_deployment_readiness_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/deployment-readiness")
+
+    assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.collect_source_status")
+def test_get_source_status_returns_the_card(mock_collect):
+    login_client()
+    mock_collect.return_value = {
+        "schema": "ktdm.source-status.v1",
+        "collected_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "summary": {"level": "ok", "text": "최신 상태입니다", "next_action": ""},
+        "manager": {"state": "recorded"},
+        "checkouts": [],
+        "running_images": [],
+        "contracts": [],
+        "environment": {"state": "complete"},
+    }
+
+    response = client.get("/api/v1/source-status")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["level"] == "ok"
+    mock_collect.assert_called_once_with(force_refresh=False)
+
+
+@patch("kor_travel_docker_manager.api.routes.collect_source_status")
+def test_get_source_status_honours_refresh(mock_collect):
+    login_client()
+    mock_collect.return_value = {"schema": "ktdm.source-status.v1", "summary": {"level": "ok"}}
+
+    client.get("/api/v1/source-status?refresh=true")
+
+    mock_collect.assert_called_once_with(force_refresh=True)
+
+
+def test_get_source_status_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/source-status")
+
+    assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.read_disk_usage")
+def test_get_disk_usage_returns_plain_language_summary(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "schema": "kor-travel-docker-manager.disk-usage.v1",
+        "collected_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "state": "warn",
+        "rows": [{"type": "Images", "label_ko": "이미지"}],
+        "reclaimable_bytes": 30 * 1024**3,
+        "summary": {
+            "state": "warn",
+            "text": "정리 시 약 30.0 GB 확보 가능",
+            "detail": "회수 가능한 용량이 큽니다.",
+            "next_action": "sudo -n docker system prune --all --volumes",
+        },
+    }
+
+    response = client.get("/api/v1/system/disk-usage")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["text"].startswith("정리 시 약")
+    mock_read.assert_called_once_with(force_refresh=False)
+
+
+def test_get_disk_usage_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/system/disk-usage")
 
     assert response.status_code == 401

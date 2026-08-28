@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Final, Literal, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import yaml
@@ -36,6 +36,11 @@ _MAP_API_SERVICE = "kor-travel-map-api"
 # 봉인된다. Map release는 ENTRYPOINT를 절대 경로로 고정하고 CMD를 비워 둔다.
 _MAP_API_IMMUTABLE_ENTRYPOINT = ["/app/docker/api-entrypoint.sh"]
 _MAP_API_IMMUTABLE_COMMAND = None
+# 관측 카드(source_status)가 같은 값을 두 번 적지 않게 공개 별칭만 준다 — 값을
+# 복제하면 화면이 보여 주는 기대 계약과 실제 강제 지점이 조용히 갈라진다. 이 계약은
+# 실제로 사흘 만에 정반대로 뒤집힌 적이 있어서(ENTRYPOINT↔CMD) 특히 위험하다.
+MAP_API_IMMUTABLE_ENTRYPOINT: Final[tuple[str, ...]] = tuple(_MAP_API_IMMUTABLE_ENTRYPOINT)
+MAP_API_IMMUTABLE_COMMAND: Final[None] = _MAP_API_IMMUTABLE_COMMAND
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _CONCIERGE_API_SERVICE = "kor-travel-concierge-api"
 _CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
@@ -848,6 +853,85 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     **_MAP_DATABASE_CANONICAL_ENV_VALUES,
     **_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES,
 }
+# 계약이 값을 고정한 env 이름 — 화면이 처음부터 잠글 수 있도록 service별로 공개한다.
+#
+# 이 이름들을 UI 설정 편집기가 편집 가능하게 노출하면 저장은 성공하고, 그 다음
+# `rebuild-pinned`가 candidate 검증에서 fail-close한다. 실패가 mutation보다 한참 뒤에
+# 오므로 원인이 화면 조작이었다는 사실이 드러나지 않고, 그 사이 pinset 하나가 소모된다.
+# 이 목록은 candidate 계약 자체(`_CANDIDATE_CANONICAL_API_ENV_VALUES`)에서 유도하므로
+# 계약이 바뀌면 화면도 함께 바뀐다 — 손으로 관리하는 두 번째 목록을 만들지 않는다.
+_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE: Final[dict[str, frozenset[str]]] = {
+    service_name: frozenset(
+        env_name
+        for candidate_service, env_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
+        if candidate_service == service_name
+    )
+    for service_name in {service for service, _ in _CANDIDATE_CANONICAL_API_ENV_VALUES}
+}
+# DSN과 PostgreSQL identity는 위 dict가 아니라 별도 검증기가 결박한다
+# (`_validate_pinvi_db_init_identity`, `_PINVI_DATABASE_URL_RAW_VALUES`). 계약의
+# 소유자가 다르므로 유도하지 않고 명시하되, **덮어쓰지 않고 합집합을 취한다** —
+# 대입으로 두면 나중에 같은 service가 candidate 계약에 등장했을 때 유도된 이름들이
+# 조용히 사라진다.
+for _service_name, _extra_locked in (
+    (_PINVI_POSTGRES_SERVICE, {"POSTGRES_USER", "POSTGRES_DB", "POSTGRES_INITDB_ARGS"}),
+    *(
+        (_dsn_service, {_PINVI_DATABASE_URL_ENV})
+        for _dsn_service in _PINVI_DATABASE_URL_RAW_VALUES
+    ),
+):
+    _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE[_service_name] = frozenset(
+        _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(_service_name, frozenset())
+        | frozenset(_extra_locked)
+    )
+
+CONTRACT_LOCKED_ENV_REASON: Final = (
+    "이 값은 배포 계약이 고정한 값입니다. 여기서 바꾸면 저장은 되지만 다음 재구축이 "
+    "거부됩니다."
+)
+
+
+def contract_locked_env_names(service_name: str) -> tuple[str, ...]:
+    """이 compose service에서 배포 계약이 값을 고정한 env 이름(정렬)."""
+
+    return tuple(sorted(_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(service_name, ())))
+
+
+def assert_contract_locked_env_unchanged(
+    *,
+    service_name: str,
+    env: Mapping[str, Any],
+    baseline_env: Mapping[str, Any],
+) -> None:
+    """계약이 고정한 값의 변경을 **저장 시점에** 거부한다.
+
+    재구축까지 미루면 실패가 조작과 멀어져 원인을 찾기 어렵다. 여기서 막으면
+    "무엇을 바꾸려 했는지"가 그대로 오류에 남는다.
+
+    **삭제와 추가도 변경이다.** 저장은 environment 매핑을 통째로 교체하므로, 키를
+    빼고 보내는 것이 곧 삭제다. "양쪽에 있을 때만 비교"하면 삭제와 추가가 전부
+    통과해 같은 지연 실패가 그대로 남는다 — 없음을 sentinel로 두고 비교한다.
+    """
+
+    locked = _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(service_name)
+    if not locked:
+        return
+    missing = object()
+
+    def _value(mapping: Mapping[str, Any], name: str) -> Any:
+        raw = mapping.get(name, missing)
+        return raw if raw is missing else str(raw)
+
+    changed = sorted(
+        name for name in locked if _value(env, name) != _value(baseline_env, name)
+    )
+    if changed:
+        raise ComposeCandidateContractError(
+            f"배포 계약이 고정한 환경변수는 이 화면에서 바꿀 수 없습니다"
+            f"(삭제·추가 포함): {', '.join(changed)}"
+        )
+
+
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES

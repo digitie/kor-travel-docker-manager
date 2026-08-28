@@ -1,0 +1,527 @@
+'use client';
+
+import { useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { AlertTriangle, CheckCircle2, HelpCircle, RefreshCw, X } from 'lucide-react';
+import {
+  DeploymentReadinessResponse,
+  HumanVerdict,
+  PinnedRebuildPreflight,
+  ReadinessCheck,
+  RebuildFinding,
+  RuntimePinsResponse,
+  SourceStatusResponse,
+  SourceStatusRow,
+  apiJson,
+} from '@/lib/api';
+import { buildGithubCommitUrl, buildGithubCompareUrl, shortRevision } from '@/lib/github';
+import CopyableCommand from './CopyableCommand';
+
+function VerdictIcon({ level }: { level: HumanVerdict['level'] }) {
+  if (level === 'action_required') {
+    return <AlertTriangle className="w-4 h-4 text-danger shrink-0 mt-0.5" />;
+  }
+  if (level === 'unverified') {
+    return <HelpCircle className="w-4 h-4 text-secondary shrink-0 mt-0.5" />;
+  }
+  return <CheckCircle2 className="w-4 h-4 text-ok shrink-0 mt-0.5" />;
+}
+
+/** 사전 점검 항목의 `state`를 이 패널의 기존 3단계 어휘로 옮긴다.
+ *
+ * `warn`을 `action_required`로 올리지 않는다 — 막지 않는 항목을 빨갛게 칠하면 진짜
+ * 차단 항목이 묻힌다. */
+const READINESS_LEVEL: Record<ReadinessCheck['state'], HumanVerdict['level']> = {
+  ok: 'ok',
+  warn: 'unverified',
+  unknown: 'unverified',
+  missing: 'action_required',
+};
+
+const READINESS_STATE_TEXT: Record<ReadinessCheck['state'], string> = {
+  ok: '문제 없습니다',
+  warn: '확인이 필요합니다',
+  unknown: '확인할 수 없습니다',
+  missing: '지금 재구축하면 실패합니다',
+};
+
+function Row({
+  label,
+  row,
+  extra,
+}: {
+  label: string;
+  row: SourceStatusRow;
+  extra?: React.ReactNode;
+}) {
+  return (
+    <li className="rounded-card border border-line p-3">
+      <div className="flex items-start gap-2">
+        <VerdictIcon level={row.human.level} />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-strong font-semibold">{label}</p>
+          <p className="text-xs text-secondary mt-0.5">{row.human.text}</p>
+          {extra}
+          {row.human.next_action ? (
+            <p className="text-xs text-secondary mt-1.5 font-mono break-all">
+              다음: {row.human.next_action}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+export default function SourceStatusPanel({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const forceReadiness = useRef(false);
+
+  const { data, isLoading, isFetching, error, refetch } = useQuery<SourceStatusResponse>({
+    queryKey: ['source-status'],
+    queryFn: () => apiJson<SourceStatusResponse>('/api/v1/source-status'),
+    retry: false,
+  });
+
+  // 고정 pin의 저장소 URL은 pin 카드가 이미 알고 있다. compare 링크를 만들려면 그
+  // URL이 필요하므로 같은 응답을 재사용한다(백엔드 추가 호출 없음).
+  const { data: pins } = useQuery<RuntimePinsResponse>({
+    queryKey: ['runtime-pins'],
+    queryFn: () => apiJson<RuntimePinsResponse>('/api/v1/runtime-pins'),
+    retry: false,
+  });
+
+  // 재구축 실행 가능 여부. 이 패널은 **실행하지 않는다** — 판정만 하고 명령을 준다.
+  const { data: rebuild, refetch: refetchRebuild } = useQuery<PinnedRebuildPreflight>({
+    queryKey: ['pinned-rebuild-preflight'],
+    queryFn: () => apiJson<PinnedRebuildPreflight>('/api/v1/pinned-rebuild/preflight'),
+    retry: false,
+  });
+
+  // 사전 점검은 별도 엔드포인트다. 실패해도 이 패널의 나머지는 그대로 보여야 하므로
+  // 같은 쿼리에 묶지 않는다.
+  const {
+    data: readiness,
+    isFetching: readinessFetching,
+    error: readinessError,
+    refetch: refetchReadiness,
+  } = useQuery<DeploymentReadinessResponse>({
+    queryKey: ['deployment-readiness'],
+    // 새로고침 버튼은 서버의 30초 TTL 캐시를 건너뛴다. 그러지 않으면 SSH에서 조치한
+    // 운영자가 몇 번을 눌러도 같은 차단 문구를 보고 "조치가 실패했다"고 오해한다.
+    queryFn: () => {
+      const force = forceReadiness.current;
+      forceReadiness.current = false;
+      return apiJson<DeploymentReadinessResponse>(
+        `/api/v1/deployment-readiness${force ? '?refresh=true' : ''}`
+      );
+    },
+    retry: false,
+  });
+
+  useEffect(() => {
+    dialogRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  const remoteFor = (role: string | undefined): string | null =>
+    pins?.pins?.sources.find((source) => source.role === role)?.url ?? null;
+
+  return (
+    <div
+      aria-labelledby="source-status-title"
+      aria-modal="true"
+      className="ops-modal max-w-4xl flex flex-col outline-hidden"
+      ref={dialogRef}
+      role="dialog"
+      tabIndex={-1}
+    >
+      <div className="ops-modal__header">
+        <div>
+          <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
+            Source Status
+          </p>
+          <h2 className="text-lg font-semibold text-strong mt-1" id="source-status-title">
+            지금 뭐가 돌고 있나 (읽기 전용)
+          </h2>
+          <p className="text-xs text-secondary mt-1">
+            재구축 사전 점검, 설치 기록, 작업 사본, 실행 중 이미지, 계약 일치 여부를
+            관측만 합니다. 아무것도 바꾸지 않습니다.
+          </p>
+        </div>
+        <button className="ops-icon-button" onClick={onClose} type="button">
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+
+      <div className="overflow-y-auto p-6 space-y-5">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-secondary">
+            {data?.cached ? '캐시된 결과입니다.' : '방금 관측한 결과입니다.'}
+          </p>
+          <button
+            className="ops-button"
+            disabled={isFetching || readinessFetching}
+            onClick={() => {
+              forceReadiness.current = true;
+              void refetch();
+              void refetchReadiness();
+              void refetchRebuild();
+            }}
+            type="button"
+          >
+            <RefreshCw
+              className={`w-4 h-4 ${isFetching || readinessFetching ? 'animate-spin' : ''}`}
+            />
+            새로고침
+          </button>
+        </div>
+
+        <section>
+          <h3 className="text-sm font-semibold text-strong mb-1">재구축 사전 점검</h3>
+          <p className="text-xs text-secondary mb-2">
+            지금 재구축을 실행하면 실패할 만한 결손이 있는지만 봅니다. 통과해도 성공을
+            보장하지는 않습니다.
+            {readiness?.cached
+              ? ` 아래 값은 ${Math.round(readiness.cache_age_seconds ?? 0)}초 전 관측 결과입니다 — 새로고침하면 다시 확인합니다.`
+              : ''}
+            {readiness?.stale
+              ? ' 다른 점검이 진행 중이라 이전 결과를 그대로 보여 주고 있습니다.'
+              : ''}
+          </p>
+          {readiness && readiness.summary.warn_count > 0 ? (
+            // 초록 요약 아래에 warn을 묻어 두면 스크롤하지 않는 사람은 영영 못 본다.
+            <p className="text-xs text-secondary mb-2">
+              확인이 필요한 항목 {readiness.summary.warn_count}건이 아래에 있습니다.
+            </p>
+          ) : null}
+          {readinessError ? (
+            <p className="text-sm text-danger">
+              사전 점검 결과를 불러오지 못했습니다.{' '}
+              {readinessError instanceof Error
+                ? readinessError.message
+                : String(readinessError)}
+            </p>
+          ) : readiness ? (
+            <>
+              <div
+                className={`rounded-card border p-3 ${
+                  readiness.summary.state === 'blocked' ? 'border-danger' : 'border-line'
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <VerdictIcon
+                    level={
+                      readiness.summary.state === 'blocked'
+                        ? 'action_required'
+                        : readiness.summary.state === 'unverified'
+                          ? 'unverified'
+                          : 'ok'
+                    }
+                  />
+                  <p className="text-sm text-strong">{readiness.summary.text}</p>
+                </div>
+              </div>
+              <ul className="space-y-2 mt-2">
+                {readiness.checks.map((check) => (
+                  <Row
+                    key={check.id}
+                    label={check.label_ko}
+                    row={{
+                      state: check.state,
+                      human: {
+                        level: READINESS_LEVEL[check.state],
+                        text: READINESS_STATE_TEXT[check.state],
+                        next_action: '',
+                      },
+                    }}
+                    extra={<p className="text-xs text-secondary mt-1">{check.detail}</p>}
+                  />
+                ))}
+              </ul>
+              {readiness.unavailable_checks.length > 0 ? (
+                <ul className="space-y-2 mt-2">
+                  {readiness.unavailable_checks.map((entry) => (
+                    <li className="rounded-card border border-line p-3" key={entry.id}>
+                      <div className="flex items-start gap-2">
+                        <HelpCircle className="w-4 h-4 text-secondary shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-strong font-semibold">
+                            {entry.label_ko}
+                          </p>
+                          {/* 검사하지 않기로 결정한 항목을 숨기면 "전부 확인됨"으로
+                              읽힌다. 이유까지 그대로 보여 준다. */}
+                          <p className="text-xs text-secondary mt-0.5">
+                            검사하지 않습니다 — {entry.reason}
+                          </p>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          ) : (
+            <p className="text-sm text-secondary">사전 점검을 수행하는 중입니다.</p>
+          )}
+        </section>
+
+        {rebuild ? (
+          <section>
+            <h3 className="text-sm font-semibold text-strong mb-1">재구축 실행</h3>
+            {/* 버튼을 두지 않는 것은 누락이 아니라 설계다. 재구축은 root를 요구하고
+                세 개 DB를 파기하므로, HTTP 요청 하나가 그것을 시작할 수 있게 만들면
+                경계가 사라진다. 화면은 판정하고, 실행은 사람이 SSH에서 한다. */}
+            <p className="text-xs text-secondary mb-2">
+              재구축은 되돌릴 수 없고 세 개의 데이터베이스를 새로 만듭니다. 이 화면은
+              지금 실행해도 되는지만 판정하고, 실행은 SSH에서 직접 합니다.
+            </p>
+            <div
+              className={`rounded-card border p-3 ${
+                rebuild.summary.state === 'blocked' ? 'border-danger' : 'border-line'
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <VerdictIcon
+                  level={
+                    rebuild.summary.state === 'blocked'
+                      ? 'action_required'
+                      : rebuild.summary.state === 'unverified'
+                        ? 'unverified'
+                        : 'ok'
+                  }
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-strong">{rebuild.summary.text}</p>
+                  {rebuild.pinset_sha256 ? (
+                    <p className="text-xs text-secondary mt-1 font-mono break-all">
+                      대상 세트 {rebuild.pinset_sha256.slice(0, 12)}…
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+
+              {rebuild.blockers.length > 0 ? (
+                <ul className="mt-3 space-y-1">
+                  {rebuild.blockers.map((finding: RebuildFinding) => (
+                    <li className="text-xs text-danger break-all" key={finding.code}>
+                      · {finding.text}
+                      {finding.next_action ? (
+                        <span className="text-secondary font-mono">
+                          {' '}
+                          ({finding.next_action})
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {rebuild.warnings.length > 0 ? (
+                <ul className="mt-3 space-y-1">
+                  {rebuild.warnings.map((finding: RebuildFinding) => (
+                    <li className="text-xs text-secondary break-all" key={finding.code}>
+                      · {finding.text}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {rebuild.unverified.length > 0 ? (
+                <ul className="mt-3 space-y-1">
+                  {rebuild.unverified.map((finding: RebuildFinding) => (
+                    <li className="text-xs text-secondary break-all" key={finding.code}>
+                      · {finding.text}
+                      {finding.next_action ? (
+                        <span className="font-mono"> ({finding.next_action})</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {/* 차단 상태에서도 명령을 숨기지 않는다 — 무엇을 실행하려던 것인지
+                  보이지 않으면 차단 사유와 연결 짓기 어렵다. 대신 실행하지 말라고 쓴다. */}
+              <CopyableCommand
+                command={rebuild.command}
+                hint={
+                  rebuild.can_start
+                    ? '이 명령을 SSH에서 실행하면 재구축이 시작됩니다.'
+                    : '위 항목을 먼저 해소하기 전에는 실행하지 마세요.'
+                }
+              />
+            </div>
+          </section>
+        ) : null}
+
+        {isLoading ? (
+          <p className="text-sm text-secondary">배포 상태를 확인하는 중입니다.</p>
+        ) : error ? (
+          <p className="text-sm text-danger">
+            배포 상태를 불러오지 못했습니다.{' '}
+            {error instanceof Error ? error.message : String(error)}
+          </p>
+        ) : data ? (
+          <>
+            <section
+              className={`rounded-card border p-4 ${
+                data.summary.level === 'action_required' ? 'border-danger' : 'border-line'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <VerdictIcon level={data.summary.level} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-strong">{data.summary.text}</p>
+                  {data.summary.next_action ? (
+                    <CopyableCommand
+                      command={data.summary.next_action}
+                      hint="SSH에서 실행해 자세히 확인할 수 있습니다."
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </section>
+
+            <section>
+              <h3 className="text-sm font-semibold text-strong mb-2">관리도구 설치 기록</h3>
+              <ul className="space-y-2">
+                <Row
+                  label="설치된 Manager 버전"
+                  row={data.manager}
+                  extra={
+                    data.manager.revision ? (
+                      <p className="text-xs text-secondary mt-1 font-mono break-all">
+                        {shortRevision(data.manager.revision)}
+                      </p>
+                    ) : null
+                  }
+                />
+              </ul>
+            </section>
+
+            {data.running_images.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold text-strong mb-2">실행 중인 이미지</h3>
+                <ul className="space-y-2">
+                  {data.running_images.map((row) => {
+                    const remote = remoteFor(row.role);
+                    const compare =
+                      remote && row.revision && row.pinned_revision
+                        ? buildGithubCompareUrl(remote, row.revision, row.pinned_revision)
+                        : null;
+                    const commit =
+                      remote && row.revision ? buildGithubCommitUrl(remote, row.revision) : null;
+                    return (
+                      <Row
+                        key={row.role}
+                        label={row.label ?? row.role ?? ''}
+                        row={row}
+                        extra={
+                          row.revision ? (
+                            <p className="text-xs text-secondary mt-1 break-all">
+                              <span className="font-mono">{shortRevision(row.revision)}</span>
+                              {compare ? (
+                                <>
+                                  {' · '}
+                                  <a
+                                    className="underline"
+                                    href={compare}
+                                    rel="noreferrer noopener"
+                                    target="_blank"
+                                  >
+                                    고정 버전과 무엇이 다른지 보기
+                                  </a>
+                                </>
+                              ) : commit ? (
+                                <>
+                                  {' · '}
+                                  <a
+                                    className="underline"
+                                    href={commit}
+                                    rel="noreferrer noopener"
+                                    target="_blank"
+                                  >
+                                    커밋 보기
+                                  </a>
+                                </>
+                              ) : null}
+                            </p>
+                          ) : null
+                        }
+                      />
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+
+            {data.checkouts.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold text-strong mb-2">작업 사본</h3>
+                <ul className="space-y-2">
+                  {data.checkouts.map((row) => (
+                    <Row
+                      key={row.role}
+                      label={row.label ?? row.role ?? ''}
+                      row={row}
+                      extra={
+                        row.revision ? (
+                          <p className="text-xs text-secondary mt-1 font-mono break-all">
+                            {shortRevision(row.revision)}
+                          </p>
+                        ) : null
+                      }
+                    />
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            <section>
+              <h3 className="text-sm font-semibold text-strong mb-2">계약 일치</h3>
+              <ul className="space-y-2">
+                {data.contracts.map((row) => (
+                  <Row
+                    key={row.id}
+                    label={row.title ?? row.id ?? ''}
+                    row={row}
+                    extra={
+                      row.scope === 'sibling_checkout' ? (
+                        <p className="text-xs text-secondary mt-1">
+                          작업 사본 기준입니다 — 고정된 소스 자체를 검증한 것이 아닙니다.
+                        </p>
+                      ) : null
+                    }
+                  />
+                ))}
+                <Row
+                  label={data.environment.title ?? '환경 변수 완결성'}
+                  row={data.environment}
+                  extra={
+                    <>
+                      {data.environment.missing.length > 0 ? (
+                        <p className="text-xs text-danger mt-1 break-all">
+                          누락: {data.environment.missing.join(', ')}
+                        </p>
+                      ) : null}
+                      {data.environment.injected_at_rebuild.length > 0 ? (
+                        <p className="text-xs text-secondary mt-1">
+                          재구축이 주입하는 값 {data.environment.injected_at_rebuild.length}개는
+                          정상적으로 비어 있습니다.
+                        </p>
+                      ) : null}
+                    </>
+                  }
+                />
+              </ul>
+            </section>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}

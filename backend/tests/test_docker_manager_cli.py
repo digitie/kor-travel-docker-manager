@@ -221,6 +221,8 @@ def test_env_redaction_keeps_non_secret_values(pair):
         ),
     ],
 )
+
+
 def test_env_redaction_masks_credentials_embedded_in_dsn_values(pair, expected):
     assert _redact_env_pair(pair) == expected
 
@@ -274,6 +276,8 @@ def test_label_sanitizer_uses_the_same_predicate():
 )
 @patch("kor_travel_docker_manager.services.compose_service.subprocess.run")
 @patch("kor_travel_docker_manager.services.compose_service.os.path.exists", return_value=False)
+
+
 def test_compose_ensure_build_command(
     mock_exists,
     mock_run,
@@ -350,6 +354,8 @@ def test_compose_ensure_build_command(
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_status_returns_compose_exit_code(mock_compose_service):
     mock_compose_service.status_target.return_value = {
         "success": False,
@@ -363,6 +369,8 @@ def test_cli_status_returns_compose_exit_code(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_ensure_passes_build_flag(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -382,6 +390,8 @@ def test_cli_ensure_passes_build_flag(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_direct_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -401,6 +411,8 @@ def test_cli_direct_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_direct_gra_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -420,6 +432,8 @@ def test_cli_direct_gra_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -439,6 +453,8 @@ def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_pinned_runtime_rebuild_requires_confirmation(mock_compose_service, capsys):
     assert main(["pinvi-pair", "rebuild-pinned"]) == 2
 
@@ -447,6 +463,8 @@ def test_cli_pinned_runtime_rebuild_requires_confirmation(mock_compose_service, 
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_rebuilds_pinned_runtime(mock_compose_service):
     mock_compose_service.rebuild_pinned_runtime.return_value = {
         "success": True,
@@ -461,6 +479,8 @@ def test_cli_rebuilds_pinned_runtime(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
     mock_compose_service,
     capsys,
@@ -479,6 +499,8 @@ def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
     mock_compose_service,
     capsys,
@@ -499,6 +521,8 @@ def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+
+
 def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, capsys):
     assert main(["compose-boundary", "retire-legacy-override"]) == 2
 
@@ -507,6 +531,8 @@ def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, c
 
 
 @patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
+
+
 def test_cli_legacy_override_stage_requires_confirmation(mock_stage, capsys):
     assert (
         main(
@@ -525,6 +551,8 @@ def test_cli_legacy_override_stage_requires_confirmation(mock_stage, capsys):
 
 
 @patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
+
+
 def test_cli_stages_legacy_override_through_official_boundary(mock_stage):
     source = "/legacy/kor-travel-docker-manager/docker-compose.override.yml"
 
@@ -545,6 +573,8 @@ def test_cli_stages_legacy_override_through_official_boundary(mock_stage):
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+
+
 def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
     assert main(["compose-boundary", "retire-legacy-override", "--confirm"]) == 0
 
@@ -552,6 +582,8 @@ def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
 
 
 @patch("kor_travel_docker_manager.cli.activate_canonical_concierge")
+
+
 def test_cli_canonical_concierge_activation_requires_confirmation(mock_activation, capsys):
     assert main(["compose-boundary", "activate-concierge"]) == 2
 
@@ -560,6 +592,8 @@ def test_cli_canonical_concierge_activation_requires_confirmation(mock_activatio
 
 
 @patch("kor_travel_docker_manager.cli.activate_canonical_concierge")
+
+
 def test_cli_activates_canonical_concierge_through_official_boundary(mock_activation):
     assert main(["compose-boundary", "activate-concierge", "--confirm"]) == 0
 
@@ -612,6 +646,8 @@ def test_cli_db_backup_restore_is_not_implemented() -> None:
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_invokes_service_and_prints_summary(
     mock_create, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -639,6 +675,8 @@ def test_cli_db_backup_create_invokes_service_and_prints_summary(
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_passes_custom_timeout(mock_create) -> None:
     from kor_travel_docker_manager.services.standalone_backup import BackupManifest
 
@@ -661,6 +699,8 @@ def test_cli_db_backup_create_passes_custom_timeout(mock_create) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_rejects_unknown_role(mock_create) -> None:
     with pytest.raises(SystemExit, match="2"):
         main(["db-backup", "create", "not-a-real-role"])
@@ -668,6 +708,8 @@ def test_cli_db_backup_create_rejects_unknown_role(mock_create) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_surfaces_service_error(mock_create) -> None:
     from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
 
@@ -677,6 +719,8 @@ def test_cli_db_backup_create_surfaces_service_error(mock_create) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.list_standalone_backups")
+
+
 def test_cli_db_backup_list_invokes_service_with_role(
     mock_list, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -689,6 +733,8 @@ def test_cli_db_backup_list_invokes_service_with_role(
 
 
 @patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
 def test_cli_db_backup_gc_requires_keep_flag(mock_gc) -> None:
     with pytest.raises(SystemExit, match="2"):
         main(["db-backup", "gc", "geo"])
@@ -696,15 +742,41 @@ def test_cli_db_backup_gc_requires_keep_flag(mock_gc) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
 def test_cli_db_backup_gc_invokes_service_with_keep(
     mock_gc, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    mock_gc.return_value = ["geo-1000.dump"]
+    from kor_travel_docker_manager.services.standalone_backup import GcOutcome
+
+    mock_gc.return_value = GcOutcome(deleted=("geo-1000.dump",), orphans_removed=())
 
     assert main(["db-backup", "gc", "geo", "--keep", "2"]) == 0
 
     mock_gc.assert_called_once_with("geo", keep=2)
     assert "geo-1000.dump" in capsys.readouterr().out
+
+
+@patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
+def test_cli_db_backup_gc_reports_orphans_separately(
+    mock_gc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """회전과 잔해 수거를 합쳐 세면 '왜 예상보다 많이 지워졌나'를 알 수 없다."""
+
+    from kor_travel_docker_manager.services.standalone_backup import GcOutcome
+
+    mock_gc.return_value = GcOutcome(
+        deleted=("geo-1000.dump",), orphans_removed=("geo-2000.dump",)
+    )
+
+    assert main(["db-backup", "gc", "geo", "--keep", "2"]) == 0
+
+    output = capsys.readouterr().out
+    assert "deleted 1 backup(s)" in output
+    assert "removed 1 orphaned dump(s)" in output
+    assert "geo-2000.dump" in output
 
 
 # --- ktdctl pin (KUM-M1·M2) ---------------------------------------------------
@@ -860,27 +932,422 @@ def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, caps
     assert "새 PinVi head" in output
 
 
-def test_terminal_seed_refuses_a_single_role_rotation(pin_cli_env, capsys):
+def test_cli_db_backup_restore_plan_is_read_only_and_gates_on_findings(capsys) -> None:
+    """계획은 아무것도 바꾸지 않고, 차단 요인이 있으면 비정상 종료로 알린다."""
+
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        dump_path="/backups/geo/geo-1.dump",
+        manifest=SimpleNamespace(
+            byte_size=10,
+            sha256="a" * 64,
+            alembic_head="0001_head",
+            to_json=lambda: {},
+        ),
+        observed_sha256="b" * 64,
+        observed_byte_size=10,
+        live_alembic_head="0007_later",
+        containers=("kor-travel-geo-postgres",),
+        findings=(
+            SimpleNamespace(
+                code="SHA256_MISMATCH", text="digest가 다릅니다", blocking=True
+            ),
+        ),
+        restorable=False,
+        to_json=lambda: {"restorable": False},
+    )
+
+    with patch(
+        "kor_travel_docker_manager.cli.plan_standalone_restore", return_value=plan
+    ) as planner:
+        exit_code = main(["db-backup", "restore-plan", "geo"])
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "digest가 다릅니다" in output
+    assert "복원하면 안 됩니다" in output
+    planner.assert_called_once_with("geo", backup_filename=None)
+
+
+def test_cli_db_backup_restore_plan_reports_a_healthy_backup(capsys) -> None:
+    from types import SimpleNamespace
+
+    plan = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        dump_path="/backups/geo/geo-1.dump",
+        manifest=SimpleNamespace(
+            byte_size=10, sha256="a" * 64, alembic_head="0001_head", to_json=lambda: {}
+        ),
+        observed_sha256="a" * 64,
+        observed_byte_size=10,
+        live_alembic_head="0001_head",
+        containers=(),
+        findings=(SimpleNamespace(code="OK", text="모두 일치합니다", blocking=False),),
+        restorable=True,
+        to_json=lambda: {"restorable": True},
+    )
+
+    with patch("kor_travel_docker_manager.cli.plan_standalone_restore", return_value=plan):
+        assert main(["db-backup", "restore-plan", "geo"]) == 0
+
+    output = capsys.readouterr().out
+    # 복원 명령이 아직 없다는 사실을 계획이 스스로 말한다.
+    assert "복원 명령은 아직 없습니다" in output
+
+
+# --- ktdctl pin apply-pending (KUM-M5) ---------------------------------------
+
+
+@pytest.fixture
+def pending_request_env(tmp_path, monkeypatch):
+    """UI가 남긴 요청 파일을 격리한다."""
+
+    from kor_travel_docker_manager.services import runtime_pin_request
+
+    target = tmp_path / "requests" / "runtime-pin-requests.json"
+    monkeypatch.setenv(runtime_pin_request.RUNTIME_PIN_REQUEST_FILE_ENV, str(target))
+    return target
+
+
+def _init_rotatable_registry():
+    """단일 role 회전이 가능한 상태를 만든다.
+
+    동봉 seed의 현재 pinset은 terminal이고, terminal 상태에서는 registry가 단일 role
+    회전을 거부한다(pair-incomplete pinset을 M05 ledger가 먼저 소비할 수 있기 때문).
+    회전 요청 경로 자체를 시험하려면 먼저 pair 회전으로 신선한 pinset을 만들어야 한다.
+    """
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    main(
+        [
+            "pin",
+            "rotate-pair",
+            "--map-revision",
+            "1" * 40,
+            "--pinvi-revision",
+            "2" * 40,
+            "--reason",
+            "회전 요청 경로 시험용 신선 pinset",
+            "--confirm",
+        ]
+    )
+
+
+def _file_a_request(*, role="pinvi", revision="d" * 40, reason="새 PinVi head"):
+    """현재 registry를 base로 하는 요청을 UI가 남긴 것처럼 기록한다."""
+
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_request import (
+        RuntimePinRequest,
+        prospective_pinset_sha256,
+        utc_timestamp,
+        write_runtime_pin_request,
+    )
+
+    registry = load_runtime_pin_registry()
+    request = RuntimePinRequest(
+        request_id="6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        role=role,
+        revision=revision,
+        reason=reason,
+        requested_by="admin",
+        requested_at=utc_timestamp(),
+        base_pinset_sha256=registry.pinset_sha256,
+        prospective_pinset_sha256=prospective_pinset_sha256(
+            release_version=registry.release_version,
+            map_revision=revision if role == "map" else registry.map_revision,
+            pinvi_revision=revision if role == "pinvi" else registry.pinvi_revision,
+        ),
+    )
+    write_runtime_pin_request(request)
+    return request
+
+
+def test_pin_pending_parser_registers_every_leaf_command():
+    parser = build_parser()
+
+    for action, argv in {
+        "apply-pending": ["pin", "apply-pending", "--any-revision"],
+        "show-pending": ["pin", "show-pending"],
+        "clear-pending": ["pin", "clear-pending", "--request-id", "x"],
+    }.items():
+        args = parser.parse_args(argv)
+        assert args.pin_action == action
+        assert callable(args.func)
+
+
+def test_pin_apply_pending_refuses_without_confirm(
+    pin_cli_env, pending_request_env, capsys
+):
     main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
     capsys.readouterr()
+    _file_a_request()
+    before = pin_cli_env.read_bytes()
+
+    assert main(["pin", "apply-pending"]) == 2
+
+    assert "--confirm" in capsys.readouterr().err
+    assert pin_cli_env.read_bytes() == before
+    assert pending_request_env.exists()
+
+
+def test_pin_apply_pending_refuses_without_root(pin_cli_env, pending_request_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
+        assert main(["pin", "apply-pending", "--any-revision", "--confirm"]) == 2
+
+    assert "root" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+
+def test_pin_show_pending_is_read_only(pin_cli_env, pending_request_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+    before = pin_cli_env.read_bytes()
+
+    assert main(["pin", "show-pending"]) == 0
+
+    output = capsys.readouterr().out
+    assert "새 PinVi head" in output
+    assert "apply-pending" in output
+    assert pin_cli_env.read_bytes() == before
+
+
+def test_pin_show_pending_reports_nothing_pending(pin_cli_env, pending_request_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert main(["pin", "show-pending"]) == 1
+    assert "없습니다" in capsys.readouterr().out
+
+
+def test_pin_apply_pending_rotates_and_records_both_actors(
+    pin_cli_env, pending_request_env, capsys
+):
+    _init_rotatable_registry()
+    capsys.readouterr()
+    request = _file_a_request()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(
+            ["pin", "apply-pending", "--expect-revision", "d" * 40, "--confirm"]
+        )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "applied pending rotation for pinvi" in output
+    # 요청자와 적용자가 모두 남아야 사후에 누가 무엇을 했는지 알 수 있다.
+    assert "<-admin" in output
+    assert request.request_id in output
+    # 적용된 요청은 남겨 두지 않는다 — 두 번 적용될 여지를 없앤다.
+    assert not pending_request_env.exists()
+
+
+def test_pin_apply_pending_refuses_a_request_the_pin_moved_past(
+    pin_cli_env, pending_request_env, capsys
+):
+    _init_rotatable_registry()
+    capsys.readouterr()
+    _file_a_request(role="pinvi", revision="d" * 40)
+    # 요청을 남긴 뒤 운영자가 SSH에서 직접 회전시킨 상황.
+    main(
+        [
+            "pin",
+            "rotate",
+            "--role",
+            "map",
+            "--revision",
+            "e" * 40,
+            "--reason",
+            "직접 회전",
+            "--confirm",
+        ]
+    )
+    capsys.readouterr()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert exit_code == 2
+    error = capsys.readouterr().err
+    assert "pin이 바뀌었습니다" in error
+    # 자동으로 지우지 않는다 — 무엇이 버려지는지 사람이 보고 결정해야 한다.
+    assert pending_request_env.exists()
+
+
+def test_pin_apply_pending_honours_expect_revision(
+    pin_cli_env, pending_request_env, capsys
+):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request(role="pinvi", revision="d" * 40)
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(
+            ["pin", "apply-pending", "--expect-revision", "f" * 40, "--confirm"]
+        )
+
+    assert exit_code == 2
+    assert "--expect-revision" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+
+def test_pin_clear_pending_requires_confirm_and_the_exact_id(
+    pin_cli_env, pending_request_env, capsys
+):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    request = _file_a_request()
+
+    assert main(["pin", "clear-pending", "--request-id", request.request_id]) == 2
+    assert "--confirm" in capsys.readouterr().err
+    assert pending_request_env.exists()
 
     assert (
         main(
             [
                 "pin",
-                "rotate",
-                "--role",
-                "map",
-                "--revision",
-                "c" * 40,
-                "--reason",
-                "would split M05 pair",
+                "clear-pending",
+                "--request-id",
+                "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
                 "--confirm",
             ]
         )
-        == 2
+        == 1
     )
-    assert "atomic Map/PinVi pair" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+    assert (
+        main(["pin", "clear-pending", "--request-id", request.request_id, "--confirm"])
+        == 0
+    )
+    assert not pending_request_env.exists()
+
+
+def test_pin_apply_pending_requires_the_operator_to_name_the_revision(
+    pin_cli_env, pending_request_env, capsys
+):
+    """무엇을 고정하는지 적지 않으면 '파일에 있던 것'이 그대로 적용된다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+    before = pin_cli_env.read_bytes()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        assert main(["pin", "apply-pending", "--confirm"]) == 2
+
+    assert "--expect-revision" in capsys.readouterr().err
+    assert pin_cli_env.read_bytes() == before
+    assert pending_request_env.exists()
+
+
+def test_pin_apply_pending_reports_a_distinct_code_when_cleanup_fails(
+    pin_cli_env, pending_request_env, capsys
+):
+    """'적용됨'과 '할 일 없음'이 같은 코드면 스크립트가 pinset 소모를 놓친다."""
+
+    _init_rotatable_registry()
+    capsys.readouterr()
+    _file_a_request()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.clear_runtime_pin_request",
+            side_effect=OSError("read-only file system"),
+        ),
+    ):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert exit_code == 3
+    captured = capsys.readouterr()
+    assert "회전은 적용됐으나" in captured.err
+    assert str(pending_request_env) in captured.err
+    # 적용된 registry 상태는 그래도 보여 준다 — 무엇이 됐는지 봐야 수습할 수 있다.
+    assert "pinset" in captured.out
+
+
+def test_pin_clear_pending_force_removes_an_unreadable_request(
+    pin_cli_env, pending_request_env, capsys
+):
+    """읽을 수 없는 파일은 id를 알 수 없어 id 대조 삭제로는 영원히 남는다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    pending_request_env.parent.mkdir(parents=True, exist_ok=True)
+    pending_request_env.write_text("{not json", encoding="utf-8")
+    pending_request_env.chmod(0o600)
+
+    assert main(["pin", "show-pending"]) == 2
+    assert "clear-pending --force" in capsys.readouterr().err
+
+    assert main(["pin", "clear-pending", "--force", "--confirm"]) == 0
+    assert not pending_request_env.exists()
+
+
+def test_pin_clear_pending_force_refuses_a_readable_request(
+    pin_cli_env, pending_request_env, capsys
+):
+    """--force는 잔재 제거용이다. 멀쩡한 요청까지 id 없이 지우면 안 된다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+
+    assert main(["pin", "clear-pending", "--force", "--confirm"]) == 2
+    assert "cancel it by id" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+
+def test_pin_show_pending_json_is_parseable_on_every_path(
+    pin_cli_env, pending_request_env, capsys
+):
+    """--json이 사람 문장을 stdout에 섞으면 스크립트가 파싱할 수 없다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert main(["pin", "show-pending", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"status": "absent"}
+
+    _file_a_request()
+    assert main(["pin", "show-pending", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "pending"
+    assert payload["role"] == "pinvi"
+
+
+def test_applied_reason_keeps_the_request_provenance_when_the_reason_is_long(
+    pin_cli_env, pending_request_env, capsys
+):
+    """긴 사유를 그냥 이어 붙이면 요청 id·요청자·시각이 통째로 잘려 나간다."""
+
+    from kor_travel_docker_manager.cli import _applied_actor, _applied_reason
+    from kor_travel_docker_manager.services.runtime_pin_request import MAX_REASON_LENGTH
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    request = _file_a_request(reason="가" * MAX_REASON_LENGTH)
+
+    reason = _applied_reason(request)
+    assert len(reason) <= MAX_REASON_LENGTH
+    assert request.request_id in reason
+    assert request.requested_by in reason
+
+    actor = _applied_actor(request)
+    assert len(actor) <= 200
+    assert actor.endswith(request.requested_by)
 
 
 def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
@@ -903,3 +1370,26 @@ def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
 
     assert exit_code == 2
     assert "40-hex" in capsys.readouterr().err
+
+
+def test_terminal_seed_refuses_a_single_role_rotation(pin_cli_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "pin",
+                "rotate",
+                "--role",
+                "map",
+                "--revision",
+                "c" * 40,
+                "--reason",
+                "would split M05 pair",
+                "--confirm",
+            ]
+        )
+        == 2
+    )
+    assert "atomic Map/PinVi pair" in capsys.readouterr().err

@@ -26,8 +26,10 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -60,6 +62,8 @@ _DATABASE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _SCHEMA_REVISION = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
 _FILENAME = re.compile(r"^[a-z][a-z0-9_]{0,32}-[0-9]{1,20}\.dump$")
 _ALEMBIC_SCHEMA_CANDIDATES = ("public", "app")
+_logger = logging.getLogger(__name__)
+BACKUP_SHARED_GROUP_ENV = "KTDM_BACKUP_SHARED_GROUP"
 
 # (container_env, container_default, database_name). container_default는
 # config/docker-targets.yml의 4-instance 계약과 같은 이름이다. docker-compose.yml이
@@ -121,6 +125,117 @@ class BackupManifest:
         }
 
 
+@dataclass(frozen=True)
+class GcOutcome:
+    """gc가 실제로 지운 것. 회전과 잔해 수거는 성격이 달라 분리해 알린다.
+
+    ``deleted``는 "최신 keep개만 남긴다"는 정책의 결과이고, ``orphans_removed``는
+    중단된 create가 남긴 복원 불가능한 dump다. 둘을 한 목록으로 합치면 운영자가
+    "왜 예상보다 많이 지워졌나"를 알 수 없다.
+    """
+
+    deleted: tuple[str, ...]
+    orphans_removed: tuple[str, ...]
+
+    @property
+    def total(self) -> int:
+        return len(self.deleted) + len(self.orphans_removed)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "deleted": list(self.deleted),
+            "orphans_removed": list(self.orphans_removed),
+        }
+
+
+@dataclass(frozen=True)
+class _ArtifactModePolicy:
+    """backup 디렉터리·파일의 소유 모드 정책.
+
+    UI(backend 프로세스)와 cron(별도 계정)이 같은 디렉터리를 공유하면 한쪽이 만든
+    dump를 다른 쪽이 읽지도 지우지도 못한다. 특히 unlink는 파일이 아니라 **디렉터리**
+    쓰기 권한이라, 공유하려면 setgid 그룹 디렉터리가 필요하다. 공유 그룹을 선언하지
+    않은 설치본은 기존 `0700`/`0600` 그대로다 — 아무도 요구하지 않은 권한 완화를
+    기본값으로 만들지 않는다.
+    """
+
+    shared_gid: int | None
+    directory_mode: int
+    file_mode: int
+
+
+def _resolve_shared_gid(raw: str) -> int:
+    if raw.isdigit():
+        return int(raw)
+    try:
+        import grp
+
+        return grp.getgrnam(raw).gr_gid
+    except (ImportError, KeyError) as exc:
+        raise StandaloneBackupError(
+            f"{BACKUP_SHARED_GROUP_ENV}={raw!r} is not a group on this host — create it and "
+            f"add both the backend service user and the cron user to it "
+            f"(groupadd {raw}; usermod -aG {raw} <backend-user>; usermod -aG {raw} "
+            f"<cron-user>), then restart the backend so the new supplementary group takes "
+            f"effect"
+        ) from exc
+
+
+def _artifact_mode_policy() -> _ArtifactModePolicy:
+    raw = os.environ.get(BACKUP_SHARED_GROUP_ENV, "").strip()
+    if not raw:
+        return _ArtifactModePolicy(shared_gid=None, directory_mode=0o700, file_mode=0o600)
+    return _ArtifactModePolicy(
+        shared_gid=_resolve_shared_gid(raw), directory_mode=0o2770, file_mode=0o640
+    )
+
+
+def _prepare_backup_root(root: Path, policy: _ArtifactModePolicy) -> None:
+    """공유 그룹 모드에서는 디렉터리 mode를 **덮어쓰지 않는다.**
+
+    운영자가 건 setgid나 ACL을 코드가 추측해 재설정하면 조용히 되돌아간다. 대신 전제가
+    깨졌으면 정확한 복구 명령과 함께 fail-close한다. 새 role 하위 디렉터리는 setgid
+    부모에서 mkdir하면 그룹과 setgid를 상속하므로 전제는 루트 한 곳에만 걸면 된다.
+    """
+
+    root.mkdir(parents=True, exist_ok=True)
+    if policy.shared_gid is None:
+        os.chmod(root, policy.directory_mode)
+        return
+    metadata = root.lstat()
+    if (
+        metadata.st_gid != policy.shared_gid
+        or not (metadata.st_mode & stat.S_ISGID)
+        or (stat.S_IMODE(metadata.st_mode) & 0o070) != 0o070
+    ):
+        raise StandaloneBackupError(
+            f"backup directory {root} is not a shared setgid directory "
+            f"(gid={metadata.st_gid}, mode={stat.S_IMODE(metadata.st_mode):04o}); "
+            f"run: chgrp -R <group> {root.parent} && chmod -R 2770 {root.parent}"
+        )
+
+
+def _assert_shared_group_effective(
+    path: Path, policy: _ArtifactModePolicy, *, role: BackupRole
+) -> None:
+    """읽을 수 없는 dump를 남기느니 지운다.
+
+    목록에는 보이는데 cron이 열지 못하는 백업은 "백업이 있다"는 거짓 안전감만 만든다.
+    """
+
+    if policy.shared_gid is None:
+        return
+    actual_gid = path.stat().st_gid
+    if actual_gid == policy.shared_gid:
+        return
+    path.unlink(missing_ok=True)
+    raise StandaloneBackupError(
+        f"{role} backup landed in group {actual_gid} instead of shared group "
+        f"{policy.shared_gid} — the setgid bit on {path.parent} is not effective; "
+        f"the unreadable dump was removed rather than left behind"
+    )
+
+
 def create_standalone_backup(
     role: BackupRole,
     *,
@@ -141,9 +256,9 @@ def create_standalone_backup(
     port = _discover_port(container_name)
     admin_name = _discover_admin_role(container_name)
 
+    policy = _artifact_mode_policy()
     root = _resolve_backup_root(role, backup_root)
-    root.mkdir(parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
+    _prepare_backup_root(root, policy)
 
     with _role_lock(root):
         created_at_unix = int(time.time())
@@ -186,7 +301,7 @@ def create_standalone_backup(
             )
             if not copy_path.is_file():
                 raise StandaloneBackupError(f"{role} backup copy-out produced no file")
-            os.chmod(copy_path, 0o600)
+            os.chmod(copy_path, policy.file_mode)
             os.replace(copy_path, dest_path)
         finally:
             # pg_dump 실패/timeout이어도 시도한 만큼은 지운다 — 시도가 계속 서버
@@ -201,6 +316,7 @@ def create_standalone_backup(
             )
 
         return _finish_standalone_backup(
+            policy=policy,
             role=role,
             container_name=container_name,
             database_name=database_name,
@@ -217,6 +333,7 @@ def create_standalone_backup(
 
 def _finish_standalone_backup(
     *,
+    policy: _ArtifactModePolicy,
     role: BackupRole,
     container_name: str,
     database_name: str,
@@ -231,7 +348,8 @@ def _finish_standalone_backup(
 ) -> BackupManifest:
     if not dest_path.is_file():
         raise StandaloneBackupError(f"{role} backup copy-out produced no file")
-    os.chmod(dest_path, 0o600)
+    os.chmod(dest_path, policy.file_mode)
+    _assert_shared_group_effective(dest_path, policy, role=role)
     byte_size = dest_path.stat().st_size
     if byte_size == 0:
         dest_path.unlink(missing_ok=True)
@@ -241,7 +359,7 @@ def _finish_standalone_backup(
     # `sha256sum -c`가 그대로 먹는 형태: "<hash>  <filename>"
     sha256_path = root / f"{filename}.sha256"
     _atomic_write_bytes(sha256_path, f"{sha256}  {filename}\n".encode("ascii"))
-    os.chmod(sha256_path, 0o600)
+    os.chmod(sha256_path, policy.file_mode)
 
     manifest = BackupManifest(
         role=role,
@@ -257,7 +375,7 @@ def _finish_standalone_backup(
     )
     manifest_path = _manifest_path(root, filename)
     _atomic_write_json(manifest_path, manifest.to_json())
-    os.chmod(manifest_path, 0o600)
+    os.chmod(manifest_path, policy.file_mode)
     return manifest
 
 
@@ -270,7 +388,9 @@ def list_standalone_backups(
     root = _resolve_backup_root(role, backup_root)
     if not root.is_dir():
         return []
-    manifests = [_read_manifest(path) for path in sorted(root.glob("*.manifest"))]
+    manifests = [
+        _read_manifest(path, expected_role=role) for path in sorted(root.glob("*.manifest"))
+    ]
     return sorted(manifests, key=lambda item: item.created_at_unix)
 
 
@@ -279,24 +399,225 @@ def gc_standalone_backups(
     *,
     keep: int,
     backup_root: Path | None = None,
-) -> list[str]:
-    """가장 최신 `keep`개만 남기고 나머지 dump/sha256/manifest 세트를 지운다."""
+) -> GcOutcome:
+    """가장 최신 `keep`개만 남기고 나머지 dump/sha256/manifest 세트를 지운다.
+
+    **create와 같은 role lock 아래에서 실행한다.** 락이 없으면 진행 중인 백업
+    (geo는 실측 20분 이상)의 산출물을 지울 수 있다 — dump는 manifest보다 먼저
+    쓰이므로 그 창에서는 orphan과 구분되지 않는다.
+    """
 
     if keep < 1:
         raise StandaloneBackupError("keep must be at least 1")
-    manifests = list_standalone_backups(role, backup_root=backup_root)
-    if len(manifests) <= keep:
-        return []
     root = _resolve_backup_root(role, backup_root)
-    deleted: list[str] = []
-    for manifest in manifests[: len(manifests) - keep]:
-        if not _FILENAME.fullmatch(manifest.backup_filename):
-            raise StandaloneBackupError(f"{role} manifest filename is invalid")
-        (root / manifest.backup_filename).unlink(missing_ok=True)
-        (root / f"{manifest.backup_filename}.sha256").unlink(missing_ok=True)
-        _manifest_path(root, manifest.backup_filename).unlink(missing_ok=True)
-        deleted.append(manifest.backup_filename)
-    return deleted
+    if not root.is_dir():
+        return GcOutcome(deleted=(), orphans_removed=())
+    with _role_lock(root):
+        manifests = list_standalone_backups(role, backup_root=backup_root)
+        deleted: list[str] = []
+        for manifest in manifests[: max(len(manifests) - keep, 0)]:
+            _unlink_backup_set(root, manifest.backup_filename)
+            deleted.append(manifest.backup_filename)
+        # manifest가 없는 dump는 목록에도 안 잡히고 복원 경로도 없다(무결성 메타가
+        # 없어 검증할 수 없다). 중단된 create의 잔해이므로 락 아래에서만 수거한다.
+        kept_names = {manifest.backup_filename for manifest in manifests} - set(deleted)
+        orphans: list[str] = []
+        for dump in sorted(root.glob("*.dump")):
+            if dump.name in kept_names or not _FILENAME.fullmatch(dump.name):
+                continue
+            _unlink_backup_set(root, dump.name)
+            orphans.append(dump.name)
+    return GcOutcome(deleted=tuple(deleted), orphans_removed=tuple(orphans))
+
+
+def _unlink_backup_set(root: Path, backup_filename: str) -> None:
+    """dump·sha256·manifest 3종 세트를 함께 지운다."""
+
+    if not _FILENAME.fullmatch(backup_filename):
+        raise StandaloneBackupError(f"backup filename is invalid: {backup_filename}")
+    (root / backup_filename).unlink(missing_ok=True)
+    (root / f"{backup_filename}.sha256").unlink(missing_ok=True)
+    _manifest_path(root, backup_filename).unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class RestorePlanFinding:
+    """복원 계획에서 발견한 사실 하나. 차단인지 아닌지를 스스로 안다."""
+
+    code: str
+    text: str
+    blocking: bool
+
+    def to_json(self) -> dict[str, object]:
+        return {"code": self.code, "text": self.text, "blocking": self.blocking}
+
+
+@dataclass(frozen=True)
+class RestorePlan:
+    """"이 백업으로 복원하면 무슨 일이 일어나는가"를 **아무것도 바꾸지 않고** 답한다.
+
+    복원 자체는 아직 구현하지 않는다. 먼저 이것을 만드는 이유는, 목록에 백업이 보이는
+    것과 그 백업으로 실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있거나
+    manifest와 digest가 어긋나거나 live schema revision이 백업 시점과 달라도 목록은
+    똑같이 초록색이다. 그 거짓 안전감을 복원을 만들기 전에 걷어낸다.
+    """
+
+    role: BackupRole
+    backup_filename: str
+    dump_path: str
+    manifest: BackupManifest
+    observed_sha256: str | None
+    observed_byte_size: int | None
+    live_alembic_head: str | None
+    containers: tuple[str, ...]
+    findings: tuple[RestorePlanFinding, ...]
+
+    @property
+    def restorable(self) -> bool:
+        return not any(finding.blocking for finding in self.findings)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "backup_filename": self.backup_filename,
+            "dump_path": self.dump_path,
+            "manifest": self.manifest.to_json(),
+            "observed_sha256": self.observed_sha256,
+            "observed_byte_size": self.observed_byte_size,
+            "live_alembic_head": self.live_alembic_head,
+            "containers": list(self.containers),
+            "findings": [finding.to_json() for finding in self.findings],
+            "restorable": self.restorable,
+        }
+
+
+def plan_standalone_restore(
+    role: BackupRole,
+    *,
+    backup_filename: str | None = None,
+    backup_root: Path | None = None,
+) -> RestorePlan:
+    """복원 **계획**만 만든다. 파일도 DB도 컨테이너도 건드리지 않는다.
+
+    `backup_filename`을 주지 않으면 가장 최근 백업을 고른다. digest는 실제로 다시
+    계산한다 — manifest에 적힌 값을 그대로 믿으면 이 점검이 아무것도 검증하지 않는다.
+    """
+
+    container_name, database_name = _role_config(role)
+    root = _resolve_backup_root(role, backup_root)
+    manifests = list_standalone_backups(role, backup_root=backup_root)
+    if not manifests:
+        raise StandaloneBackupError(f"{role} has no backup to restore from")
+    if backup_filename is None:
+        manifest = max(manifests, key=lambda item: item.created_at_unix)
+    else:
+        if not _FILENAME.fullmatch(backup_filename):
+            raise StandaloneBackupError(f"backup filename is invalid: {backup_filename}")
+        selected = [item for item in manifests if item.backup_filename == backup_filename]
+        if not selected:
+            raise StandaloneBackupError(f"{role} has no backup named {backup_filename}")
+        manifest = selected[0]
+
+    dump_path = root / manifest.backup_filename
+    findings: list[RestorePlanFinding] = []
+    observed_sha256: str | None = None
+    observed_byte_size: int | None = None
+
+    if not dump_path.is_file():
+        findings.append(
+            RestorePlanFinding(
+                "DUMP_MISSING",
+                f"manifest는 있지만 dump 파일이 없습니다: {dump_path.name}",
+                True,
+            )
+        )
+    else:
+        observed_byte_size = dump_path.stat().st_size
+        if observed_byte_size != manifest.byte_size:
+            findings.append(
+                RestorePlanFinding(
+                    "SIZE_MISMATCH",
+                    f"dump 크기가 manifest와 다릅니다"
+                    f"({observed_byte_size} vs {manifest.byte_size}).",
+                    True,
+                )
+            )
+        observed_sha256 = _sha256_file(dump_path)
+        if observed_sha256 != manifest.sha256:
+            findings.append(
+                RestorePlanFinding(
+                    "SHA256_MISMATCH",
+                    "dump의 sha256이 manifest와 다릅니다. 이 파일로 복원하면 안 됩니다.",
+                    True,
+                )
+            )
+
+    # live schema revision은 best-effort다. 읽지 못하는 것을 "맞다"로 말하지 않는다.
+    live_alembic_head: str | None = None
+    containers: tuple[str, ...] = ()
+    try:
+        port = _discover_port(container_name)
+        admin_name = _discover_admin_role(container_name)
+    except StandaloneBackupError as exc:
+        findings.append(
+            RestorePlanFinding(
+                "INSTANCE_UNREACHABLE",
+                f"대상 인스턴스를 확인할 수 없습니다: {exc}",
+                True,
+            )
+        )
+    else:
+        containers = (container_name,)
+        live_alembic_head = _discover_alembic_head(
+            container_name, port, admin_name, database_name
+        )
+        if live_alembic_head is None:
+            findings.append(
+                RestorePlanFinding(
+                    "LIVE_HEAD_UNKNOWN",
+                    "현재 DB의 schema revision을 읽지 못했습니다. 백업 시점과 같은지 "
+                    "확인할 수 없습니다.",
+                    False,
+                )
+            )
+        elif manifest.alembic_head is None:
+            findings.append(
+                RestorePlanFinding(
+                    "MANIFEST_HEAD_UNKNOWN",
+                    "백업 manifest에 schema revision이 없습니다. 현재 DB와 같은 "
+                    "시점인지 확인할 수 없습니다.",
+                    False,
+                )
+            )
+        elif live_alembic_head != manifest.alembic_head:
+            findings.append(
+                RestorePlanFinding(
+                    "HEAD_MISMATCH",
+                    f"현재 DB의 schema revision({live_alembic_head})이 백업 시점"
+                    f"({manifest.alembic_head})과 다릅니다. 복원하면 코드가 기대하는 "
+                    "schema보다 과거로 되돌아갑니다.",
+                    False,
+                )
+            )
+
+    if not findings:
+        findings.append(
+            RestorePlanFinding(
+                "OK", "이 백업은 무결성과 schema revision이 모두 일치합니다.", False
+            )
+        )
+
+    return RestorePlan(
+        role=role,
+        backup_filename=manifest.backup_filename,
+        dump_path=str(dump_path),
+        manifest=manifest,
+        observed_sha256=observed_sha256,
+        observed_byte_size=observed_byte_size,
+        live_alembic_head=live_alembic_head,
+        containers=containers,
+        findings=tuple(findings),
+    )
 
 
 def _role_config(role: BackupRole) -> tuple[str, str]:
@@ -515,7 +836,11 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
     _atomic_write_bytes(path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
 
 
-def _read_manifest(manifest_path: Path) -> BackupManifest:
+def _read_manifest(
+    manifest_path: Path,
+    *,
+    expected_role: BackupRole | None = None,
+) -> BackupManifest:
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -539,6 +864,17 @@ def _read_manifest(manifest_path: Path) -> BackupManifest:
         raise StandaloneBackupError(f"manifest role is invalid: {manifest_path.name}")
     if not _FILENAME.fullmatch(backup_filename):
         raise StandaloneBackupError(f"manifest backup_filename is invalid: {manifest_path.name}")
+    # manifest 내용이 **자기 파일 이름과 결박**되지 않으면, 손상되거나 손으로 편집된
+    # manifest 하나가 gc로 하여금 전혀 다른(살아 있는) 백업을 지우게 만든다.
+    # 정본은 파일 이름이므로 내용이 그와 다르면 그 manifest를 신뢰하지 않는다.
+    if _manifest_path(manifest_path.parent, backup_filename).name != manifest_path.name:
+        raise StandaloneBackupError(
+            f"manifest backup_filename does not match its own file: {manifest_path.name}"
+        )
+    if expected_role is not None and role != expected_role:
+        raise StandaloneBackupError(
+            f"manifest role does not match the requested role: {manifest_path.name}"
+        )
     return BackupManifest(
         role=role,
         created_at_unix=created_at_unix,

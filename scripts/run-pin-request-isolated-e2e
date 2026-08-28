@@ -1,0 +1,466 @@
+#!/usr/bin/env bash
+# 격리 live E2E — KUM-M5(2-step 회전 요청) / M6(계약 결박 env·PinVi 모드 점검) /
+# M7(readiness). 운영 호스트(n150)에서 실행하되 /opt 배포 트리와 운영 registry,
+# 운영 요청 디렉터리는 **건드리지 않는다**. root 소유 파일을 만들므로 `sudo -n`이
+# 필요하다.
+#
+# 준비 (WSL에서):
+#   ssh <host> mkdir -p ~/ktdm-pin-request-e2e
+#   rsync -az --exclude=__pycache__/ backend/src/ <host>:ktdm-pin-request-e2e/src/
+#   scp config/runtime-pins.seed.json <host>:ktdm-pin-request-e2e/seed-runtime-pins.json
+#   scp scripts/run-pin-request-isolated-e2e <host>:ktdm-pin-request-e2e/
+#   ssh <host> bash ~/ktdm-pin-request-e2e/run-pin-request-isolated-e2e
+#
+# 검사 0b는 **고정된 PinVi revision이 재구축이 부르는 모드를 구현하는지**를 실제
+# 체크아웃에서 확인한다. 그 결과가 `missing`이면 회전 대상 revision을 바꿔야 한다는
+# 뜻이며, 그것이 이 harness의 가장 중요한 산출물이다.
+set -euo pipefail
+
+BASE="${KTDM_E2E_BASE:-$HOME/ktdm-pin-request-e2e}"
+PY="${KTDM_E2E_PYTHON:-/opt/kor-travel-docker-manager/backend/.venv/bin/python}"
+PINVI_REPO_DIR="${PINVI_REPO_DIR:-$HOME/pinvi}"
+export PYTHONPATH="$BASE/src"
+export KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE="${KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE:-/opt/kor-travel-docker-manager/config/docker-targets.yml}"
+export KTDM_RUNTIME_PINS_PUBLIC_FILE="$BASE/pubstate/runtime-pins.json"
+export KTDM_RUNTIME_PIN_REQUEST_FILE="$BASE/requests/runtime-pin-requests.json"
+ROOT_REGISTRY="$BASE/rootstate/runtime-pins.json"
+
+pass() { echo "PASS  $1"; }
+fail() { echo "FAIL  $1"; exit 1; }
+
+as_root() {
+  sudo -n env PYTHONPATH="$PYTHONPATH" \
+    KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE="$KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE" \
+    KTDM_RUNTIME_PINS_FILE="$ROOT_REGISTRY" \
+    KTDM_RUNTIME_PINS_PUBLIC_FILE="$KTDM_RUNTIME_PINS_PUBLIC_FILE" \
+    KTDM_RUNTIME_PIN_REQUEST_FILE="$KTDM_RUNTIME_PIN_REQUEST_FILE" \
+    "$PY" -m kor_travel_docker_manager.cli "$@"
+}
+
+as_user() {
+  KTDM_RUNTIME_PINS_FILE="$ROOT_REGISTRY" "$PY" -m kor_travel_docker_manager.cli "$@"
+}
+
+echo "== 0. 격리 트리 준비 =="
+sudo -n rm -rf "$BASE/rootstate" "$BASE/pubstate" "$BASE/requests" "$BASE/out"
+mkdir -p "$BASE/out"
+# 요청 디렉터리는 group/other 쓰기가 금지다(installer가 0700으로 만드는 것과 같은 계약).
+# `mkdir -p`의 umask 기본값으로 두면 무결성 검사가 정당하게 거부한다.
+install -d -m 0700 "$BASE/requests"
+sudo -n install -d -o root -g root -m 0700 "$BASE/rootstate"
+sudo -n install -d -o root -g root -m 0755 "$BASE/pubstate"
+sudo -n install -o root -g root -m 0644 "$BASE/seed-runtime-pins.json" "$BASE/root-seed.json"
+as_root pin init --seed "$BASE/root-seed.json" --reason "m5-m7 isolated e2e" --confirm >"$BASE/out/init.txt"
+[ "$(sudo -n stat -c '%U %a' "$ROOT_REGISTRY")" = "root 600" ] || fail "root registry mode"
+[ "$(stat -c '%U %a' "$KTDM_RUNTIME_PINS_PUBLIC_FILE")" = "root 644" ] || fail "public copy mode"
+pass "root-owned 0600 registry + world-readable 0644 published copy"
+
+echo "== 0b. readiness: 고정 PinVi revision 의 부트스트랩 모드 (회전 전에 본다) =="
+PINVI_REPO_DIR="$PINVI_REPO_DIR" "$PY" - <<'PYEOF' || exit 1
+import os
+
+from kor_travel_docker_manager.services import deployment_readiness as readiness
+
+pinvi_root = os.environ["PINVI_REPO_DIR"]
+check = readiness._check_pinvi_role_bootstrap_modes({"PINVI_REPO_DIR": pinvi_root})
+print("state:", check.state)
+print("detail:", check.detail)
+print("evidence:", check.evidence)
+# 어떤 결과든 무엇을 어디서 찾았는지는 남아야 한다.
+assert check.evidence["pinned_revision"], check.evidence
+assert check.evidence["pinvi_root"] == pinvi_root, check.evidence
+assert check.state in {"missing", "ok"}, check
+PYEOF
+pass "the readiness check reads the pinned blob on the real host"
+
+echo "== 0c. terminal pinset 에서는 단일 role 회전이 거부된다 (pair 만 허용) =="
+# 동봉 seed 의 현재 pinset 은 terminal 이다. 그 상태에서 한쪽만 회전하면
+# pair-incomplete pinset 을 M05 ledger 가 먼저 소비할 수 있으므로 registry 가 막는다.
+set +e
+as_root pin rotate --role pinvi --revision "$(printf 'a%.0s' $(seq 1 40))" \
+  --reason "terminal 상태 단일 회전 시도" --confirm >/dev/null 2>"$BASE/out/err_single.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "single-role rotation on a terminal pinset must be refused (got $CODE)"
+grep -q "pair rotation" "$BASE/out/err_single.txt" || fail "pair rotation refusal message"
+pass "a terminal pinset refuses single-role rotation and demands an atomic pair"
+
+echo "== 0d. pair 회전으로 신선한 pinset 을 만든다 =="
+# 회전 요청 경로 자체를 시험하려면 단일 role 회전이 가능한 상태여야 한다.
+as_root pin rotate-pair \
+  --map-revision "$(printf '1%.0s' $(seq 1 40))" \
+  --pinvi-revision "$(printf '2%.0s' $(seq 1 40))" \
+  --reason "회전 요청 경로 시험용 신선 pinset" --confirm >"$BASE/out/pair.txt"
+grep -q "rotated Map/PinVi pair" "$BASE/out/pair.txt" || fail "pair rotation output"
+pass "an atomic pair rotation is the documented way out of a terminal pinset"
+
+echo "== 1. 대기 요청이 없을 때 show-pending 은 exit 1 =="
+set +e
+as_user pin show-pending >"$BASE/out/nopending.txt" 2>&1
+CODE=$?
+set -e
+[ "$CODE" -eq 1 ] || fail "show-pending should exit 1 with no request (got $CODE)"
+grep -q "없습니다" "$BASE/out/nopending.txt" || fail "show-pending message"
+pass "show-pending reports 'nothing pending' with exit 1"
+
+echo "== 2. 비-root(backend 역할)가 공개 사본만 읽고 요청을 남긴다 =="
+"$PY" - <<'PYEOF' >"$BASE/out/request.txt" || exit 1
+import os
+from uuid import uuid4
+
+from kor_travel_docker_manager.services.runtime_pin_registry import (
+    read_published_runtime_pins,
+)
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    prospective_pinset_sha256,
+    utc_timestamp,
+    write_runtime_pin_request,
+)
+
+published = read_published_runtime_pins()
+assert published["status"] == "ok", published
+assert published["source"] == "published_copy", published
+revisions = {s["role"]: s["revision"] for s in published["sources"]}
+new_pinvi = "d" * 40
+prospective = prospective_pinset_sha256(
+    release_version=published["release_version"],
+    map_revision=revisions["map"],
+    pinvi_revision=new_pinvi,
+)
+request = RuntimePinRequest(
+    request_id=str(uuid4()),
+    role="pinvi",
+    revision=new_pinvi,
+    reason="n150 격리 e2e 회전 요청",
+    requested_by="admin",
+    requested_at=utc_timestamp(),
+    base_pinset_sha256=published["pinset_sha256"],
+    prospective_pinset_sha256=prospective,
+)
+path = write_runtime_pin_request(request)
+print(request.request_id)
+print(path)
+PYEOF
+REQUEST_ID=$(head -1 "$BASE/out/request.txt")
+REQUEST_PATH=$(sed -n 2p "$BASE/out/request.txt")
+[ -f "$REQUEST_PATH" ] || fail "request file was not written"
+[ "$(stat -c '%a' "$REQUEST_PATH")" = "600" ] || fail "request file mode"
+[ "$(stat -c '%U' "$REQUEST_PATH")" != "root" ] || fail "request should be written by the non-root caller"
+pass "a non-root process records a request using only the published copy"
+
+echo "== 3. registry 는 비-root가 여전히 읽지 못한다 =="
+set +e
+as_user pin show >/dev/null 2>"$BASE/out/err_show.txt"
+CODE=$?
+set -e
+[ "$CODE" -ne 0 ] || fail "non-root must not read the root-only registry"
+pass "the request path did not widen non-root access to the registry"
+
+echo "== 4. 비-root apply-pending 은 거부된다 (실제 euid) =="
+set +e
+as_user pin apply-pending --any-revision --confirm >/dev/null 2>"$BASE/out/err_apply.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "non-root apply-pending must exit 2 (got $CODE)"
+grep -q "requires root execution" "$BASE/out/err_apply.txt" || fail "root gate message"
+[ -f "$REQUEST_PATH" ] || fail "a refused apply must leave the request in place"
+pass "apply-pending refuses a real non-root euid and writes nothing"
+
+echo "== 5. --confirm 없는 apply-pending 은 아무것도 하지 않는다 =="
+BEFORE=$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)
+set +e
+as_root pin apply-pending --any-revision >/dev/null 2>"$BASE/out/err_confirm.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "apply-pending without --confirm must exit 2"
+grep -q -- "--confirm" "$BASE/out/err_confirm.txt" || fail "confirm gate message"
+[ "$BEFORE" = "$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)" ] || fail "registry changed"
+pass "apply-pending without --confirm leaves the registry byte-identical"
+
+echo "== 6. --expect-revision 불일치는 거부된다 =="
+set +e
+as_root pin apply-pending --expect-revision "$(printf 'f%.0s' $(seq 1 40))" --confirm \
+  >/dev/null 2>"$BASE/out/err_expect.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "--expect-revision mismatch must exit 2"
+grep -q -- "--expect-revision" "$BASE/out/err_expect.txt" || fail "expect-revision message"
+[ "$BEFORE" = "$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)" ] || fail "registry changed"
+pass "--expect-revision mismatch refuses before any write"
+
+echo "== 7. show-pending 은 요청을 읽기만 한다 =="
+as_user pin show-pending >"$BASE/out/pending.txt"
+grep -q "$REQUEST_ID" "$BASE/out/pending.txt" || fail "show-pending must name the request"
+grep -q "apply-pending" "$BASE/out/pending.txt" || fail "show-pending must print the apply command"
+[ "$BEFORE" = "$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)" ] || fail "registry changed"
+pass "show-pending is read-only and prints the next command"
+
+echo "== 8. root apply-pending 이 적용하고 요청을 지운다 =="
+as_root pin apply-pending --any-revision --confirm >"$BASE/out/applied.txt"
+grep -q "applied pending rotation for pinvi" "$BASE/out/applied.txt" || fail "apply output"
+grep -q -- "<-admin" "$BASE/out/applied.txt" || fail "both actors must be recorded"
+grep -q "$REQUEST_ID" "$BASE/out/applied.txt" || fail "request id must be recorded in the reason"
+[ ! -e "$REQUEST_PATH" ] || fail "an applied request must not survive"
+sudo -n env KTDM_RUNTIME_PINS_FILE="$ROOT_REGISTRY" "$PY" - <<'PYEOF' || exit 1
+import json, os
+doc = json.load(open(os.environ["KTDM_RUNTIME_PINS_FILE"]))
+assert doc["sources"][1]["revision"] == "d" * 40, doc["sources"]
+assert doc["history"], "rotation must be recorded"
+assert "UI 요청" in doc["history"][-1]["reason"], doc["history"][-1]
+print("applied pinset:", doc["pinset_sha256"])
+PYEOF
+pass "root applies the request, records both actors, and clears the request atomically"
+
+echo "== 9. 공개 사본이 즉시 갱신된다 =="
+"$PY" - <<'PYEOF' || exit 1
+from kor_travel_docker_manager.services.runtime_pin_registry import (
+    read_published_runtime_pins,
+)
+
+published = read_published_runtime_pins()
+assert published["status"] == "ok", published
+revisions = {s["role"]: s["revision"] for s in published["sources"]}
+assert revisions["pinvi"] == "d" * 40, revisions
+print("published copy sees the applied rotation")
+PYEOF
+pass "the non-root readable copy reflects the applied rotation with no restart"
+
+echo "== 10. 회전 뒤 남은 오래된 요청은 적용되지 않고 보존된다 =="
+"$PY" - <<'PYEOF' >"$BASE/out/stale.txt" || exit 1
+from uuid import uuid4
+
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    utc_timestamp,
+    write_runtime_pin_request,
+)
+
+request = RuntimePinRequest(
+    request_id=str(uuid4()),
+    role="map",
+    revision="e" * 40,
+    reason="이 요청은 base 가 어긋난다",
+    requested_by="admin",
+    requested_at=utc_timestamp(),
+    base_pinset_sha256="1" * 64,
+    prospective_pinset_sha256="2" * 64,
+)
+write_runtime_pin_request(request)
+print(request.request_id)
+PYEOF
+STALE_ID=$(head -1 "$BASE/out/stale.txt")
+AFTER_APPLY=$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)
+set +e
+as_root pin apply-pending --any-revision --confirm >/dev/null 2>"$BASE/out/err_stale.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "a stale request must be refused (got $CODE)"
+grep -q "pin이 바뀌었습니다" "$BASE/out/err_stale.txt" || fail "stale refusal message"
+[ -f "$REQUEST_PATH" ] || fail "a refused stale request must be preserved for the operator"
+[ "$AFTER_APPLY" = "$(sudo -n sha256sum "$ROOT_REGISTRY" | cut -d' ' -f1)" ] || fail "registry changed"
+pass "a stale request is refused without being silently discarded"
+
+echo "== 11. clear-pending 은 id 가 맞을 때만 지운다 =="
+set +e
+as_user pin clear-pending --request-id "6f9619ff-8b86-4d01-b42d-00cf4fc964ff" --confirm \
+  >/dev/null 2>&1
+CODE=$?
+set -e
+[ "$CODE" -eq 1 ] || fail "clearing a foreign id must exit 1 (got $CODE)"
+[ -f "$REQUEST_PATH" ] || fail "a foreign id must not delete the pending request"
+as_user pin clear-pending --request-id "$STALE_ID" --confirm >/dev/null
+[ ! -e "$REQUEST_PATH" ] || fail "the matching id must clear the request"
+pass "clear-pending deletes only on an exact id match"
+
+echo "== 12. group/world 쓰기 가능한 요청 파일은 root 가 거부한다 =="
+"$PY" - <<'PYEOF' >/dev/null || exit 1
+from uuid import uuid4
+
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    utc_timestamp,
+    write_runtime_pin_request,
+)
+
+write_runtime_pin_request(
+    RuntimePinRequest(
+        request_id=str(uuid4()),
+        role="map",
+        revision="e" * 40,
+        reason="무결성 검사용",
+        requested_by="admin",
+        requested_at=utc_timestamp(),
+        base_pinset_sha256="1" * 64,
+        prospective_pinset_sha256="2" * 64,
+    )
+)
+PYEOF
+chmod 0666 "$REQUEST_PATH"
+set +e
+as_root pin show-pending >/dev/null 2>"$BASE/out/err_mode.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "a world-writable request must be refused (got $CODE)"
+grep -q "world writable" "$BASE/out/err_mode.txt" || fail "integrity message"
+chmod 0600 "$REQUEST_PATH"
+rm -f "$REQUEST_PATH"
+pass "root refuses a request file anyone could have written"
+
+echo "== 13. readiness: fetch 되지 않은 revision 은 unknown 이지 결손이 아니다 =="
+# 12번까지 오면 pin 은 존재하지 않는 'd'*40 으로 회전돼 있다 — 실제 호스트에서
+# "고정 revision 을 못 읽는" 상황을 그대로 만든 셈이다.
+PINVI_REPO_DIR="$PINVI_REPO_DIR" "$PY" - <<'PYEOF' || exit 1
+import os
+
+from kor_travel_docker_manager.services import deployment_readiness as readiness
+
+check = readiness._check_pinvi_role_bootstrap_modes(
+    {"PINVI_REPO_DIR": os.environ["PINVI_REPO_DIR"]}
+)
+print("state:", check.state)
+print("detail:", check.detail)
+assert check.state == "unknown", check
+assert check.evidence["pinned_revision"] == "d" * 40, check.evidence
+PYEOF
+pass "an unfetched pinned revision degrades to unknown, never to a false block"
+
+echo "== 14. 계약 결박 env 는 저장 시점에 거부된다 =="
+"$PY" - <<'PYEOF' || exit 1
+from kor_travel_docker_manager.services.c6c_deployment import contract_locked_env_names
+from kor_travel_docker_manager.services.docker_service import (
+    ContainerConfigValidationError,
+    validate_container_config_update,
+)
+
+locked = contract_locked_env_names("kor-travel-map-api")
+assert "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED" in locked, locked
+print("locked names on kor-travel-map-api:", len(locked))
+try:
+    validate_container_config_update(
+        ports=[],
+        env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true"},
+        networks=[],
+        baseline_env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false"},
+        service_name="kor-travel-map-api",
+    )
+except ContainerConfigValidationError as exc:
+    print("refused:", exc)
+else:
+    raise SystemExit("a contract-locked env change must be refused at save time")
+validate_container_config_update(
+    ports=[],
+    env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false"},
+    networks=[],
+    baseline_env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false"},
+    service_name="kor-travel-map-api",
+)
+print("echoing the locked value unchanged still saves")
+PYEOF
+pass "contract-locked env changes are refused while unchanged echoes pass"
+
+echo "== 15. 요청 기록은 배타 생성이다 (동시 요청이 앞의 것을 덮지 않는다) =="
+"$PY" - <<'PYEOF' || exit 1
+from uuid import uuid4
+
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    RuntimePinRequestError,
+    read_runtime_pin_request,
+    utc_timestamp,
+    write_runtime_pin_request,
+)
+
+
+def make(revision: str) -> RuntimePinRequest:
+    return RuntimePinRequest(
+        request_id=str(uuid4()),
+        role="map",
+        revision=revision,
+        reason="배타 생성 확인",
+        requested_by="admin",
+        requested_at=utc_timestamp(),
+        base_pinset_sha256="1" * 64,
+        prospective_pinset_sha256="2" * 64,
+    )
+
+
+first = make("a" * 40)
+write_runtime_pin_request(first)
+try:
+    write_runtime_pin_request(make("b" * 40))
+except RuntimePinRequestError as exc:
+    print("second refused:", exc)
+else:
+    raise SystemExit("a second request must not overwrite the pending one")
+on_disk = read_runtime_pin_request()
+assert on_disk is not None and on_disk.request_id == first.request_id, on_disk
+PYEOF
+as_user pin clear-pending --force --confirm >/dev/null 2>&1 || true
+"$PY" - <<'PYEOF' || exit 1
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    read_runtime_pin_request,
+    runtime_pin_request_path,
+)
+
+path = runtime_pin_request_path()
+if read_runtime_pin_request() is not None:
+    path.unlink()
+PYEOF
+pass "concurrent requests cannot silently replace one another"
+
+echo "== 16. 손상된 요청 파일은 --force 로만 지워진다 =="
+printf '{not json' > "$REQUEST_PATH"
+chmod 0600 "$REQUEST_PATH"
+set +e
+as_user pin show-pending >/dev/null 2>"$BASE/out/err_corrupt.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "a corrupt request must fail closed (got $CODE)"
+grep -q "clear-pending --force" "$BASE/out/err_corrupt.txt" || fail "escape hatch must be printed"
+grep -q "$REQUEST_PATH" "$BASE/out/err_corrupt.txt" || fail "the full path must be printed"
+as_user pin clear-pending --force --confirm >/dev/null
+[ ! -e "$REQUEST_PATH" ] || fail "--force must remove the corrupt file"
+pass "a corrupt request file does not lock the rotation-request path"
+
+echo "== 17. --force 는 멀쩡한 요청을 지우지 않는다 =="
+"$PY" - <<'PYEOF' >/dev/null || exit 1
+from uuid import uuid4
+
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    utc_timestamp,
+    write_runtime_pin_request,
+)
+
+write_runtime_pin_request(
+    RuntimePinRequest(
+        request_id=str(uuid4()),
+        role="map",
+        revision="c" * 40,
+        reason="--force 방어 확인",
+        requested_by="admin",
+        requested_at=utc_timestamp(),
+        base_pinset_sha256="1" * 64,
+        prospective_pinset_sha256="2" * 64,
+    )
+)
+PYEOF
+set +e
+as_user pin clear-pending --force --confirm >/dev/null 2>"$BASE/out/err_force.txt"
+CODE=$?
+set -e
+[ "$CODE" -eq 2 ] || fail "--force must refuse a readable request (got $CODE)"
+grep -q "cancel it by id" "$BASE/out/err_force.txt" || fail "--force refusal message"
+[ -f "$REQUEST_PATH" ] || fail "--force must not delete a readable request"
+rm -f "$REQUEST_PATH"
+pass "--force is a wreckage-removal tool, not a bypass"
+
+echo "== 18. 운영 트리 무변경 =="
+[ ! -e /var/lib/kor-travel-docker-manager-requests ] || \
+  fail "the isolated run created the production request root"
+sudo -n rm -rf "$BASE/rootstate" "$BASE/pubstate" "$BASE/root-seed.json"
+pass "the isolated run left the production state roots untouched"
+
+echo
+echo "ALL CHECKS PASSED on $(hostname)"

@@ -3,6 +3,7 @@
 import {
   Command,
   Database,
+  GitCompare,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -36,6 +37,7 @@ type AppShellProps = {
   onOpenBackupHistory: () => void;
   onOpenCommandPalette: () => void;
   onOpenRuntimePins: () => void;
+  onOpenSourceStatus: () => void;
 };
 
 export default function AppShell({
@@ -46,6 +48,7 @@ export default function AppShell({
   onOpenBackupHistory,
   onOpenCommandPalette,
   onOpenRuntimePins,
+  onOpenSourceStatus,
 }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const isDrawerLayout = useIsDrawerLayout();
@@ -195,6 +198,14 @@ export default function AppShell({
           >
             <Pin size={17} />
             배포 버전 고정
+          </button>
+          <button
+            className="nav-link nav-button"
+            onClick={() => runAndCloseMenu(onOpenSourceStatus)}
+            type="button"
+          >
+            <GitCompare size={17} />
+            배포 상태 확인
           </button>
           <button
             className="nav-link nav-button"

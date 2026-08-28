@@ -79,9 +79,27 @@ docs/
   architecture.md             — 아키텍처 가이드 (백엔드 ⇄ Docker 소켓, API ⇄ 프론트엔드)
   decisions.md                — 의사결정 기록 (ADRs)
   journal.md                  — 작업 일지 (역시간순)
-  tasks.md                    — T-NNN 백로그 태스크
+  tasks.md                    — 백로그 태스크
   dev-environment.md          — 개발 환경 설치 가이드
+  docker-management.md        — CLI/API 표면과 target 모델의 정본
+  prod-deployment.md          — 운영 호스트 설치·배포 런북
+  runtime-pin-registry.md     — pin registry 기능 레퍼런스 (고치기 전에 읽을 것)
+  ktdctl-ui-migration.md      — ktdctl→UI 이관 설계와 태스크 분해
 ```
+
+---
+
+## 3.1 기능별 레퍼런스 (해당 영역을 고치기 전에 읽는다)
+
+기능을 고치기 전에 그 기능의 레퍼런스를 먼저 읽는다. 각 문서 첫 절에 "절대 깨뜨리면
+안 되는 불변식"이 있고, 그중 상당수는 **다른 저장소와 공유하는 계약**이라 이 저장소만
+보고는 위험을 알 수 없다.
+
+| 기능 | 레퍼런스 | 대표 함정 |
+|---|---|---|
+| Map·PinVi pin 고정과 재구축 게이트 | [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) | pinset digest 직렬화와 generation/journal 문서 스키마는 kor-travel-map attestation이 exact-dict로 결박한 교차 저장소 계약이다. 키 추가·직렬화 변경은 map 동시 PR 없이는 불가 |
+| UI에서의 pin 회전(2-step 요청) | [`docs/runtime-pin-registry.md` §7-1](docs/runtime-pin-registry.md) | 요청 파일은 제안일 뿐 pin이 아니다. 어떤 로드 경로에서도 `runtime_pin_request`를 import하면 안 되고, 그 사실을 회귀가 결박한다 |
+| 대시보드 화면 규약 | [`docs/dashboard-ui.md`](docs/dashboard-ui.md) | 오류는 `humanizeError`를 거치고 `alert()`는 금지다. `targets[].containers`는 `depends_on` 전이 폐포라 "첫 매치"로 그룹을 만들면 안 된다 |
 
 ---
 
@@ -95,6 +113,9 @@ docs/
 6. **인프라 생명주기 재분산 금지**: `kor-travel-geo` 등 하위 프로젝트 저장소가 PostgreSQL/RustFS 및 `kor-travel-geo` API/Web UI 컨테이너를 직접 정지/재시작하지 않도록, 포트·credential·bucket·compose 설정은 이 저장소의 `docker-compose.yml`, `ktdctl` CLI에 둔다.
 7. **target 순서 하드코딩 금지**: 새 Docker 의존성을 추가할 때는 `config/docker-targets.yml`의 `dependency_order`, `targets`, `init_steps`를 갱신하고 API/CLI가 같은 registry를 읽게 유지한다.
 8. **실행 위치 정책 위반 금지**: `git`, CodeGraph, 개발/검증/Docker/서버 명령은 Linux shell에서만 실행한다. Playwright E2E는 n150 Linux에서 우선 실행하고, 불가능한 경우에만 Windows 호스트를 예외로 사용한다.
+9. **`ruff format` 전체 실행 금지**: 이 저장소는 ruff-format 적용본이 아니다. 전체에 돌리면 무관한 파일 수천 줄이 재작성돼 리뷰가 불가능해진다. 린트는 `ruff check`만 쓴다.
+10. **교차 저장소 계약 무단 변경 금지**: pinset digest 직렬화, generation manifest(v6)·rebuild journal(v8) 문서 스키마는 kor-travel-map이 결박한 값이다. 바꾸려면 해당 저장소의 동시 PR이 전제다 — 자세한 내용은 [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) 1절.
+11. **fail-close 경로에서 예외 삼키기 금지**: 신뢰 판정을 하는 코드에서 `except: return False`/`pass`로 넘어가면 파일이 사라진 순간 보호가 통째로 열린다. 판정할 수 없으면 거부한다.
 
 ---
 
@@ -111,10 +132,15 @@ docs/
 
 ## 6. 작업 후 체크리스트
 
-- [ ] 백엔드 `poetry run ruff check .` 통과
-- [ ] 백엔드 `poetry run pytest` 통과
+- [ ] 백엔드 `ruff check` 통과 (`ruff format` 전체 실행은 금지 — DO NOT 9번)
+- [ ] 백엔드 `pytest` 통과
 - [ ] 프론트엔드 `npm run type-check` 통과
 - [ ] 프론트엔드 `npm run build` 통과 (Next.js 빌드 성공 확인)
 - [ ] `docs/journal.md`에 작업 항목 추가 (역시간순)
 - [ ] `docs/tasks.md`의 태스크 상태 갱신
 - [ ] 새로운 구조나 설계 추가 시 `docs/decisions.md`에 ADR 추가
+- [ ] **새 기능을 추가했으면 기능 레퍼런스 문서를 함께 작성/갱신한다** (§3.1 표에 등재).
+      다른 에이전트가 그 기능을 고치기 전에 읽을 문서이므로, 불변식·계약·실패 모드·
+      흔한 상황별 대응을 포함한다. 코드 주석으로 대신하지 않는다
+- [ ] 줄바꿈이 LF인지 확인한다. Windows에서 스크립트로 파일을 다시 쓰면 CRLF가 섞여
+      diff가 파일 전체 재작성으로 부푼다 (`file <path>`로 확인)

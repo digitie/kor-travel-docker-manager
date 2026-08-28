@@ -15,6 +15,7 @@ STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage"
 ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback"
 ARCHIVE="/var/lib/kor-travel-docker-manager/trusted-release.archive"
 STATE_ROOT="/var/lib/kor-travel-docker-manager"
+REQUEST_ROOT="/var/lib/kor-travel-docker-manager-requests"
 TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"
 TRANSACTION_STATE_TMP="${STATE_ROOT}/.trusted-release-transaction.json.tmp"
 GLOBAL_LOCK_DIR="/run/lock/kor-travel-docker-manager"
@@ -690,6 +691,14 @@ except BlockingIOError as exc:
 PY
 
 /usr/bin/install -d -o root -g root -m 0700 "${STATE_ROOT}"
+# 대시보드가 남기는 pin 회전 **요청**의 디렉터리. STATE_ROOT는 매 설치마다 0700
+# root:root로 되돌아가므로 요청을 그 안에 둘 수 없다(비-root backend는 traverse조차
+# 못 하고, root backend라면 registry와 권한 구분이 사라진다). 여기서 미리 만들어 두지
+# 않으면 backend가 /var/lib 아래에 디렉터리를 만들 수 없어 첫 요청이 503으로 끝난다.
+#
+# backend를 비-root로 돌리는 호스트에서는 설치 후 소유자를 그 사용자로 바꾼다:
+#   sudo chown <backend-user>:<backend-group> "${REQUEST_ROOT}"
+/usr/bin/install -d -o root -g root -m 0700 "${REQUEST_ROOT}"
 trusted_release_transaction reconcile
 
 if [[ -z "${KTDM_TRUSTED_INSTALL_ENV_FD:-}" ]]; then

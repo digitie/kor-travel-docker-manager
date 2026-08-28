@@ -14,10 +14,17 @@ PinVi 구동에 필요한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS
 
 C6c production은 일반 runtime mutation을 차단하고, host-wide lock을 소유하는 pinned
 workflow만 Map·PinVi 일곱 runtime을 같은 generation으로 다룬다. 비운영 환경의 재구축은
-`pinvi-pair rebuild-pinned --confirm`으로 제한된다. application `300`의 current authority는
-v6 pinned generation과 v8 rebuild journal뿐이다. 설치본에 `pinvi-pair capture`가 보이면
-과거 v4 명령이므로 실행하지 말고, 정확한 merged trusted Manager release를 먼저 설치한다.
-독립적인 `ktdctl db-backup`과 `GET /api/v1/backups`는 전용 PostgreSQL backup primitive다.
+`pinvi-pair rebuild-pinned --confirm`으로 제한된다. application `300`의 running state
+authority는 v6 pinned generation과 v8 rebuild journal이고, **어느 source revision으로
+재구축할지는 root 소유 runtime pin registry가 소유한다**(ADR-40). 설치본에
+`pinvi-pair capture`가 보이면 과거 v4 명령이므로 실행하지 말고, 정확한 merged trusted
+Manager release를 먼저 설치한다. 독립적인 `ktdctl db-backup`과 `GET /api/v1/backups`는
+전용 PostgreSQL backup primitive다.
+
+pinned revision은 더 이상 소스코드 상수가 아니다. `ktdctl pin show/verify/rotate`가
+정본 인터페이스이고, terminal(재시도 금지) 판정을 받은 pinset은 `rebuild-pinned`가
+mutation 이전에 거부한다 — 해소 경로는 새 revision으로의 회전뿐이다. 계약과 운영 절차는
+`docs/docker-management.md` 5.1과 `docs/prod-deployment.md` 2.1을 정본으로 본다.
 
 Manager는 Map API의 destructive/features route를 production에서 literal `true`로 명시 승인하고,
 read/cancel principal은 Map API와 PinVi API에만 격리한다. Map UI는 `/ops/datasets` 기준의
@@ -36,8 +43,9 @@ reference 가용성과 cleanup을 확인했다. T-037/038/039/040/041은
 candidate가 API·Dagster image와 application contract를 제공하고, Manager는 Map UI와 PinVi
 API·Web·Dagster 네 image만 build한다. generation manifest는 v6, pinset별 resume journal은 v8이다.
 세 DB를 fresh recreate한 뒤 root/finalize fence·intent·result, application/metadata permit과 exact
-running image를 검증한다. 다음 gate는 전문 적대 리뷰 2건, Map PR #1064 merge, Manager PR #197
-rebase, n150 `rebuild-pinned --confirm`과 live UI/PinVi acceptance다.
+running image를 검증한다. 다음 gate는 전문 적대 리뷰 2건, n150 `rebuild-pinned --confirm`과
+live UI/PinVi acceptance이며, **재구축 전에 `ktdctl pin verify`가 0을 반환해야 한다** —
+2026-08-28 기준 동봉 seed의 현재 pinset은 terminal이라 회전이 선행되어야 한다.
 
 T-047은 production compatible-pair readiness를 frozen canonical resolved Compose와 정렬한다.
 활성 healthcheck service는 `running + healthy`, healthcheck가 없거나 명시 비활성화된 service는

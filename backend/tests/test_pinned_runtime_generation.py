@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
+import re
 import stat
 import uuid
 from pathlib import Path
@@ -10,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import pinned_runtime_generation as generation_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     DeploymentContractError,
@@ -1278,3 +1281,101 @@ def test_legacy_tombstone_rejects_unsafe_artifact_before_receipt(tmp_path: Path)
         state_root,
         pinset_sha256=_generation().pinset_sha256,
     ).exists()
+
+
+# --- 교차 저장소 계약 동결 (ADR-40 후속, docs/runtime-pin-registry.md §1-2) ------
+
+
+# kor-travel-map `scripts/lib/c7_prod_attestation.py`의 `_JOURNAL_KEYS`를 그대로 옮긴 것.
+# 그쪽은 `_exact_dict(value, set(_JOURNAL_KEYS))`로 **정확히 이 집합**을 요구한다.
+_MAP_ATTESTATION_JOURNAL_KEYS = {
+    "version",
+    "transaction_id",
+    "phase",
+    "candidate",
+    "map_application_300_candidate_evidence",
+    "environment_sha256",
+    "compose_sha256",
+    "resolved_compose_sha256",
+    "created_at",
+    "pinvi_database_identity",
+    "journal_generation",
+    "map_application_300_execution_evidence",
+    "cancel_probe",
+}
+
+# `journal_from_payload`가 optional로 허용하는, map이 모르는 확장 키.
+# 2026-08-28 현재 3종이다(PR #243이 `pinvi_role_catalog_reset`을 추가했다).
+_MANAGER_ONLY_JOURNAL_KEYS = {
+    "pinvi_role_credential_environment_rebind",
+    "pinvi_role_lifecycle_block",
+    "pinvi_role_catalog_reset",
+}
+
+
+def _declared_journal_payload_keys() -> set[str]:
+    source = inspect.getsource(PinnedRuntimeRebuildJournal.to_payload)
+    return set(re.findall(r'^\s{12}"([a-z0-9_]+)":', source, flags=re.MULTILINE))
+
+
+def test_rebuild_journal_required_keys_match_the_map_attestation_contract() -> None:
+    """v8 journal의 **필수** 키 집합은 이 저장소 혼자 정할 수 없다.
+
+    kor-travel-map의 `c7_prod_attestation.py`가 이 문서를 exact-dict로 검증한다.
+    필수 키가 늘거나 줄면 map의 production attestation이 통째로 fail-close하므로,
+    바꾸려면 map 저장소의 동시 PR이 전제다. 요약·번역·배지 같은 가공이 필요하면
+    문서가 아니라 **API 응답 envelope**에 넣는다.
+    """
+
+    parser_source = inspect.getsource(generation_module.journal_from_payload)
+    required_block = parser_source.split("optional_keys")[0]
+    required = set(re.findall(r'^\s{8}"([a-z0-9_]+)",', required_block, flags=re.MULTILINE))
+
+    assert required == _MAP_ATTESTATION_JOURNAL_KEYS, (
+        "v8 rebuild journal의 필수 키 집합이 map attestation의 _JOURNAL_KEYS와 갈라졌다. "
+        "map 동시 PR 없이는 바꿀 수 없다."
+    )
+
+
+def test_rebuild_journal_extension_keys_the_map_attestation_currently_rejects() -> None:
+    """**알려진 교차 저장소 괴리를 눈에 보이게 고정한다.**
+
+    `to_payload()`는 확장 키를 값이 ``None``일 때도 **항상** 내보내고
+    `write_rebuild_journal`은 그대로 기록한다. 그런데 map의 `_exact_dict`는 13키
+    정확 일치를 요구하므로, 지금 Manager가 쓰는 journal은 map의 production
+    attestation을 통과하지 못한다. 이 괴리는 v8 도입 이후 실재하는 상태다.
+
+    해소 경로는 오너가 정했다(2026-08-28, `docs/tasks.md`
+    JOURNAL-ATTESTATION-DRIFT): **pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를
+    함께 넣는다.** 그 정렬을 확인하기 전에는 재구축을 실행하지 않는다 — 미루면
+    파괴적 재구축을 끝낸 뒤 attestation 실패로 발견된다.
+
+    이 테스트는 "괜찮다"고 말하지 않는다 — 괴리의 **범위가 넓어지지 않도록** 막는다.
+    확장 키가 늘면 여기서 먼저 걸리고, 그때는 Map 쪽 합의부터 해야 한다.
+    """
+
+    declared = _declared_journal_payload_keys()
+
+    assert declared == _MAP_ATTESTATION_JOURNAL_KEYS | _MANAGER_ONLY_JOURNAL_KEYS
+    assert declared - _MAP_ATTESTATION_JOURNAL_KEYS == _MANAGER_ONLY_JOURNAL_KEYS, (
+        "map이 모르는 journal 확장 키가 늘었다. 이미 attestation을 통과하지 못하는 "
+        "상태인데 괴리를 더 벌리는 변경이다 — map 동시 PR 없이 넣지 마라."
+    )
+
+
+def test_document_versions_are_frozen() -> None:
+    """manifest v6 / journal v8은 map attestation이 값으로 대조하는 버전이다."""
+
+    assert generation_module._MANIFEST_VERSION == 6
+    assert generation_module._REBUILD_JOURNAL_VERSION == 8
+
+
+def test_rebuild_phase_vocabulary_is_frozen() -> None:
+    """phase는 journal 문서에 실려 나가므로 어휘 자체가 계약이다.
+
+    새 단계를 추가해야 하면 map 쪽이 그 값을 받아들이는지 먼저 확인해야 한다.
+    """
+
+    assert len(generation_module.REBUILD_PHASES) == 28
+    assert generation_module.REBUILD_PHASES[0] == "candidate_attested"
+    assert len(set(generation_module.REBUILD_PHASES)) == len(generation_module.REBUILD_PHASES)

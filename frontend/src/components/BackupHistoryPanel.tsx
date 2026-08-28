@@ -1,9 +1,18 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, X } from 'lucide-react';
-import { BackupListResponse, StandaloneBackupManifest, apiJson } from '@/lib/api';
+import {
+  BackupJob,
+  BackupListResponse,
+  LatestBackupJobResponse,
+  StandaloneBackupManifest,
+  apiJson,
+  postJson,
+} from '@/lib/api';
+import { HumanError, humanizeError } from '@/lib/errors';
+import CopyableCommand from './CopyableCommand';
 
 const ROLE_OPTIONS: Array<{ value: StandaloneBackupManifest['role'] | 'all'; label: string }> = [
   { value: 'all', label: '전체' },
@@ -14,6 +23,30 @@ const ROLE_OPTIONS: Array<{ value: StandaloneBackupManifest['role'] | 'all'; lab
   { value: 'map_dagster', label: 'map_dagster' },
   { value: 'pinvi', label: 'pinvi' },
 ];
+
+// scripts/run-standalone-backup.sh가 확정한 cron 주기(하루 1회). 나머지 role은 그
+// wrapper의 대상이 아니므로 배지를 달지 않는다 — 없는 기대치로 경고를 만들지 않는다.
+const EXPECTED_INTERVAL_HOURS: Partial<Record<StandaloneBackupManifest['role'], number>> = {
+  geo_dagster: 24,
+  concierge: 24,
+  pinvi: 24,
+};
+const FRESHNESS_WARN_MULTIPLIER = 1.25;
+
+const BACKUP_TIMEOUT_SECONDS = 14_400;
+
+/** geo 실측 소요. 누르기 전에 알아야 할 유일한 숫자다. */
+const DURATION_WARNING =
+  'geo는 수 시간이 걸릴 수 있습니다(실측 879초~22분, 상한 4시간). ' +
+  '브라우저를 닫아도 진행됩니다.';
+
+function formatElapsed(startedAtUnix: number): string {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - startedAtUnix);
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return `${seconds}초`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 1 ? `${minutes}분` : `${hours}시간 ${minutes % 60}분`;
+}
 
 function formatBytes(byteSize: number): string {
   if (byteSize < 1024) return `${byteSize} B`;
@@ -33,7 +66,10 @@ function formatTimestamp(createdAtUnix: number): string {
 
 export default function BackupHistoryPanel({ onClose }: { onClose: () => void }) {
   const [role, setRole] = useState<StandaloneBackupManifest['role'] | 'all'>('all');
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobError, setJobError] = useState<HumanError | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
 
   const { data, isLoading, isFetching, error, refetch } = useQuery<BackupListResponse>({
     queryKey: ['backups', role],
@@ -46,6 +82,51 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     retry: false,
   });
 
+  // role을 바꾸면 이전 role의 job을 따라다니지 않는다.
+  useEffect(() => {
+    setJobId(null);
+    setJobError(null);
+  }, [role]);
+
+  // 새로고침으로 job id를 잃어도 진행 중인 작업에 다시 붙는다.
+  const { data: latestJob } = useQuery<LatestBackupJobResponse>({
+    queryKey: ['backup-job-latest', role],
+    queryFn: () => apiJson<LatestBackupJobResponse>(`/api/v1/backups/${role}/jobs`),
+    enabled: role !== 'all',
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!jobId && latestJob?.job?.state === 'running') setJobId(latestJob.job.job_id);
+  }, [jobId, latestJob]);
+
+  const { data: job } = useQuery<BackupJob>({
+    queryKey: ['backup-job', role, jobId],
+    queryFn: () => apiJson<BackupJob>(`/api/v1/backups/${role}/jobs/${jobId}`),
+    enabled: role !== 'all' && jobId !== null,
+    // 진행 중일 때만 폴링한다. 끝난 job을 계속 두드릴 이유가 없다.
+    refetchInterval: (query) => (query.state.data?.state === 'running' ? 5000 : false),
+    retry: false,
+  });
+
+  const finishedJobId = job?.state === 'succeeded' ? job.job_id : null;
+  useEffect(() => {
+    // 성공하면 목록을 다시 읽는다 — 실제로 남은 것은 manifest가 말한다.
+    if (finishedJobId) void queryClient.invalidateQueries({ queryKey: ['backups'] });
+  }, [finishedJobId, queryClient]);
+
+  const createBackup = useMutation({
+    mutationFn: () =>
+      postJson<BackupJob>(`/api/v1/backups/${role}`, {
+        timeout_seconds: BACKUP_TIMEOUT_SECONDS,
+      }),
+    onSuccess: (started) => {
+      setJobError(null);
+      setJobId(started.job_id);
+    },
+    onError: (error) => setJobError(humanizeError(error, '백업 생성')),
+  });
+
   useEffect(() => {
     dialogRef.current?.focus();
     function onKeyDown(event: KeyboardEvent) {
@@ -56,6 +137,27 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
   }, [onClose]);
 
   const backups = data?.backups ?? [];
+  const running = job?.state === 'running';
+
+  // role별 최신 백업 시각. 기대 주기가 있는 role만 신선도를 판정한다.
+  const freshness = ROLE_OPTIONS.filter((option) => option.value !== 'all')
+    .map((option) => {
+      const value = option.value as StandaloneBackupManifest['role'];
+      const expected = EXPECTED_INTERVAL_HOURS[value];
+      if (expected === undefined) return null;
+      const newest = backups
+        .filter((backup) => backup.role === value)
+        .reduce<number | null>(
+          (latest, backup) => Math.max(latest ?? 0, backup.created_at_unix),
+          null
+        );
+      if (newest === null) return { role: value, hours: null, stale: true };
+      const hours = (Date.now() / 1000 - newest) / 3600;
+      return { role: value, hours, stale: hours > expected * FRESHNESS_WARN_MULTIPLIER };
+    })
+    .filter((row): row is { role: StandaloneBackupManifest['role']; hours: number | null; stale: boolean } =>
+      row !== null
+    );
 
   return (
     <div
@@ -75,8 +177,9 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             DB 백업 이력 (읽기 전용)
           </h2>
           <p className="text-xs text-secondary mt-1">
-            생성·GC는 `ktdctl db-backup` CLI 전용입니다(복원 CLI는 아직 없습니다). 이
-            화면은 조회만 지원합니다.
+            생성은 이 화면에서 할 수 있습니다. 정리(GC)와 복원은 CLI 전용이며,
+            <strong> 복원은 아직 구현돼 있지 않습니다</strong> — 백업이 있다는 것과
+            복원할 수 있다는 것은 다릅니다. 아래 명령으로 그 차이를 미리 확인하세요.
           </p>
         </div>
         <button
@@ -106,16 +209,88 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
               </button>
             ))}
           </div>
-          <button
-            className="ops-button"
-            disabled={isFetching}
-            onClick={() => void refetch()}
-            type="button"
-          >
-            <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
-            새로고침
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="ops-button"
+              disabled={role === 'all' || running || createBackup.isPending}
+              onClick={() => {
+                if (role === 'all') return;
+                if (!confirm(`${role} 백업을 시작합니다.\n\n${DURATION_WARNING}`)) return;
+                createBackup.mutate();
+              }}
+              title={role === 'all' ? '백업할 role을 하나 선택하세요' : undefined}
+              type="button"
+            >
+              백업 생성
+            </button>
+            <button
+              className="ops-button"
+              disabled={isFetching}
+              onClick={() => void refetch()}
+              type="button"
+            >
+              <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
+              새로고침
+            </button>
+          </div>
         </div>
+
+        {role !== 'all' ? (
+          // 목록에 보인다고 복원할 수 있는 것이 아니다 — dump가 잘렸거나 digest가
+          // 어긋났거나 live schema가 백업 시점과 달라도 이 표는 똑같이 보인다.
+          <div className="mb-4">
+            <CopyableCommand
+              command={`sudo -n backend/.venv/bin/ktdctl db-backup restore-plan ${role}`}
+              hint="이 백업으로 복원하면 무슨 일이 일어나는지 계산합니다(읽기 전용)."
+            />
+          </div>
+        ) : null}
+
+        {freshness.length > 0 ? (
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs mb-4">
+            {freshness.map((row) => (
+              <li className={row.stale ? 'text-danger' : 'text-secondary'} key={row.role}>
+                <span className="font-mono">{row.role}</span>{' '}
+                {row.hours === null
+                  ? '백업 없음'
+                  : `마지막 백업 ${Math.floor(row.hours)}시간 전`}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {job ? (
+          <div
+            aria-live="polite"
+            className={`rounded-card border p-3 mb-4 text-xs ${
+              job.state === 'failed' ? 'border-danger' : 'border-line'
+            }`}
+          >
+            {job.state === 'running' ? (
+              <p className="text-strong">
+                {job.key} 백업이 진행 중입니다 · {formatElapsed(job.started_at_unix)} 경과.
+                이 화면을 닫아도 계속됩니다.
+              </p>
+            ) : job.state === 'succeeded' ? (
+              <p className="text-strong">
+                {job.key} 백업이 끝났습니다
+                {job.result ? ` — ${job.result.backup_filename}` : ''}.
+              </p>
+            ) : (
+              <>
+                <p className="text-danger font-semibold">{job.key} 백업이 실패했습니다.</p>
+                <p className="text-secondary mt-1 break-all">{job.error}</p>
+              </>
+            )}
+          </div>
+        ) : null}
+
+        {jobError ? (
+          <div className="rounded-card border border-danger p-3 mb-4" role="alert">
+            <p className="text-sm font-semibold text-danger">{jobError.title}</p>
+            <p className="text-xs text-secondary mt-1">{jobError.hint}</p>
+          </div>
+        ) : null}
 
         {isLoading ? (
           <p className="text-sm text-secondary">백업 이력을 불러오는 중입니다.</p>

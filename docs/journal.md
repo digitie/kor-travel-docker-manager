@@ -191,6 +191,326 @@ claim의 실행 순서를 고정한다. final pair의 `pin verify`가 성공하�
 
 ---
 
+## 2026-08-28 — KUM-M12: 표시 규약을 찾을 수 있는 자리로 옮긴다
+
+`DashboardClient.tsx`가 2,138줄이었다. 그중 라벨 매핑·아이콘 판정·포맷터는 컴포넌트
+상태와 아무 관계가 없는 순수 함수인데도 그 안에 묻혀 있었고, `dashboard-ui.md` §2가
+"셋 다 DashboardClient.tsx 상단에 있다"고 안내해야 했다 — 규약을 찾으려면 2천 줄짜리
+파일을 열어야 한다는 뜻이다.
+
+`lib/containerPresentation.ts`(타입 2종 + `statusLabel`·`roleLabel`·`getStatusConfig`·
+`getContainerPresentation`)와 `lib/format.ts`(`formatBytes`·`formatTimestamp`)로 옮겼다.
+컴포넌트는 1,968줄이 됐고, 옮긴 심볼이 다시 정의되지 않았다는 것과 죽은 lucide import가
+남지 않았다는 것을 이관 스크립트가 확인했다.
+
+**JSX 본문은 일부러 쪼개지 않았다.** 남은 것은 서른 개 가까운 state를 공유하는 하나의
+컴포넌트라, 하위 컴포넌트로 뜯으려면 그 state를 전부 prop으로 꿰어야 한다. 순수 리팩터가
+행동 변경 위험을 안게 되는 지점이고, 지금 얻는 가독성보다 잃는 것이 크다. 이 판단을
+여기 남겨 다음 사람이 같은 계산을 다시 하지 않게 한다.
+
+`dashboard-ui.md` §2는 새 위치를 가리키고, 분기 순서가 우선순위라는 사실
+(`geocoder-api`가 `-api`에 먼저 걸리는 함정)을 함께 적었다.
+
+---
+
+## 2026-08-28 — KUM-M13(1단계): 복원을 만들기 전에 "복원할 수 있는가"를 먼저 묻는다
+
+오너 결정에 따라 파괴적 복원은 뒤로 미루고 읽기 전용 `ktdctl db-backup restore-plan`을
+먼저 만들었다. 순서를 이렇게 잡은 이유가 있다 — **목록에 백업이 보이는 것과 그 백업으로
+실제 복원할 수 있는 것은 다르다.** dump가 잘려 있어도, digest가 manifest와 어긋나도,
+live schema revision이 백업 시점과 달라도 백업 목록은 똑같이 보인다. 복원 버튼을 먼저
+만들면 그 거짓 안전감 위에 파괴적 명령을 얹게 된다.
+
+계획은 아무것도 바꾸지 않고 답한다: 어느 dump를 쓸지, **digest를 다시 계산해** manifest와
+대조한 결과, 크기가 맞는지, live schema revision이 백업 시점과 같은지, 어느 컨테이너가
+영향을 받는지. manifest에 적힌 sha256을 그대로 믿었다면 이 점검은 아무것도 검증하지 않는
+셈이 됐을 것이다 — 회귀 하나가 "크기는 같고 내용만 바뀐 dump"로 그 경로를 지킨다.
+
+**차단과 참고를 구분한다.** schema revision 불일치는 차단이 아니다 — 복원 자체는 가능하고,
+코드가 기대하는 schema보다 과거로 간다는 사실을 알고 결정하는 것이 사람의 몫이다. 읽지
+못한 것을 "맞다"로 말하지도 않는다(`LIVE_HEAD_UNKNOWN`). 차단 요인이 있으면 exit 1이라
+스크립트 게이트로 쓸 수 있다.
+
+백업 패널은 role을 하나 고르면 이 명령을 복사할 수 있게 준다. "복원은 아직 구현돼 있지
+않습니다"라는 문구 옆에 그 차이를 미리 확인할 방법을 두는 것이 요점이다.
+
+---
+
+## 2026-08-28 — KUM-M14: 버튼을 만들지 않기로 하고, 대신 판정을 준다 (오너 결정)
+
+설계 Q5는 "rehearsal 한정 재구축 버튼"을 승인했지만 그것은 만들 수 없다.
+`rebuild-pinned`는 root를 요구하고, backend가 root로 도는 호스트에서도 **HTTP 요청
+하나가 세 개 DB를 파기하는 작업을 시작할 수 있게 만드는 것은 경계를 없애는 것**이지
+편의가 아니다. 오너가 게이트된 CLI 카드를 선택했고, 그대로 구현했다.
+
+화면이 하는 일을 둘로 나눴다. **판정은 서버가** 하고(값싸고 안전하다), **실행은 SSH**에
+남는다. `GET /api/v1/pinned-rebuild/preflight`가 이미 있는 읽기 전용 관측 셋 셋을 합쳐
+"지금 눌러도 되는가"에 답한다 — 공개된 pin 상태(terminal 여부), 배포 모드와 미종결
+journal, 사전 점검 결과. 어떤 mutation도 하지 않고 어떤 명령도 실행하지 않으며, 회귀
+`test_the_module_never_executes_a_rebuild`가 그 모듈에 `subprocess`나
+`compose_service` 참조가 없다는 사실로 이를 결박한다.
+
+판정에서 지킨 구분:
+
+- **phase 한정 차단은 시작을 막지 않는다.** journal 재개만 막는 것이므로 합치면
+  재구축이 실제로 허용되는데도 "회전하라"고 말하게 된다.
+- **미종결 journal은 차단이 아니라 경고다.** 그 상태에서 `rebuild-pinned`는 새로
+  시작하지 않고 **재개**한다 — 그 사실을 모르면 결과를 잘못 읽는다.
+- **확인 못 한 것이 확실한 차단을 덮지 않는다.** 둘 다 있으면 `blocked`다.
+- **차단 상태에서도 명령을 숨기지 않는다.** 무엇을 실행하려던 것인지 보이지 않으면
+  차단 사유와 연결 짓기 어렵다. 대신 "해소 전에는 실행하지 마세요"라고 쓴다.
+
+비전문 관리자에게 실제 장벽은 "SSH로 가라"가 아니라 "가서 무엇을 쳐야 하고 지금 쳐도
+되는지"였다. 그 장벽만 없애고 파괴적 실행의 마찰은 그대로 남긴다.
+
+---
+
+## 2026-08-28 — KUM-M10: 비밀번호를 화면에서 바꾸되, 재구축을 무효화할 수 있으면 막는다
+
+관리자 비밀번호는 그동안 SSH에서 `.env`를 손으로 고치는 일이었다. 이제 패널에서 바꾼다 —
+`KTDM_ADMIN_PASSWORD_HASH` **한 줄만** 다시 쓰고, `verify_admin_password`가 매번
+`os.environ`을 읽으므로 재기동 없이 즉시 적용되며 진행 중인 세션은 끊기지 않는다.
+
+**경계를 함수 모양으로 만들었다.** `_rewrite_env_single_key`는 매핑을 받지 않는다 — 임의
+key=value 쓰기를 **표현할 수 없다.** 그 위에 allowlist와 사후 대조를 얹어, 재작성 결과에서
+그 키 하나만 달라졌는지 확인하고 아니면 아무것도 쓰지 않는다.
+
+**미종결 rebuild journal 가드는 세 갈래다.** resume은 journal의 `environment_sha256`을
+현재 `.env` 바이트와 대조하므로, 비밀번호를 바꾸면 진행 중이던 rebuild의 재개가 영구
+차단된다. 그런데 backend가 그것을 **항상 볼 수 있는 것은 아니다** — journal은
+`rebuild-pinned`를 실행한 root의 `$HOME` 아래 `0700`에 있다. 그래서:
+
+- `not_rebuildable`/`no_journal` — 통과.
+- `unfinished_journal` — **거부, 우회 경로 없음.** 증명됐다는 것은 재개가 실제로 걸려
+  있다는 뜻이므로 승인 플래그로도 뚫리지 않는다. 화면에도 우회 컨트롤이 없다.
+- `unverifiable`/`unknown` — 명시 승인 없이는 거부. 화면은 SSH 확인 명령을 주고
+  "재구축 무효화 동의"를 그대로 입력해야 버튼이 열린다.
+
+"확인 불가"를 "안전"으로 읽지 않는 것이 이 설계의 요점이다.
+
+**감사 기록의 분리**: 잘못된 현재 비밀번호만 `event_type=login`으로 남겨 브루트포스
+카운터에 합류시키고, 가드 거부 같은 나머지는 `admin_password`로 남긴다 — 자격증명 추측이
+아닌 거부가 카운터를 오염시키면 진짜 공격이 묻힌다. 비밀번호도 해시도 감사에 넣지 않는다.
+
+**mock으로 대체한 것**: 실제 미종결 journal을 만들려면 파괴적 재구축을 돌려야 하므로 그
+경로는 mock으로 검증했다. `.env` 재작성 자체는 tmp_path의 실제 파일로 검증한다.
+
+---
+
+## 2026-08-28 — KUM-M9: 백업 생성을 화면에서, 단 job 기록은 권위가 아니라고 말하면서
+
+백업 생성은 그동안 CLI 전용이었다. geo 실측 소요가 879초~22분이고 기본 상한이 4시간이라
+HTTP 요청 수명에 묶을 수 없었기 때문이다. `POST /api/v1/backups/{role}`이 `202`와 job id를
+돌려주고 화면이 5초 간격으로 폴링한다.
+
+설계에서 지킨 것:
+
+- **job 기록은 권위가 아니다.** 프로세스가 죽으면 사라진다. 무엇이 실제로 남았는지는
+  디스크의 manifest가 말하고 `GET /backups`가 그것을 읽는다. 그래서 job 소실은 데이터
+  손실이 아니라 진행 표시의 손실이다 — 이 구분을 모듈 docstring과 문서에 명시했다.
+- **shutdown은 진행 중 job을 취소하지 않는다.** `asyncio.to_thread`는 실행 중인 `pg_dump`를
+  중단시키지 못하고, 취소는 기록만 잃는다. 짧게 배수하고 경고로 남긴다. 함께 기록한
+  위험: role lock은 이 프로세스의 `flock`이라 재기동하면 풀리는데 컨테이너 안 `pg_dump`는
+  계속 돈다 — 그 창에서 두 번째 dump가 붙을 수 있다.
+- **실행 중 job은 어떤 축출 규칙으로도 버리지 않는다.** 진행 중에 사라지면 폴링이 404가
+  되고 운영자는 결과를 볼 방법이 없다.
+- **화면은 복원이 없다는 사실을 먼저 말한다.** 생성 버튼을 다는 순간 "백업이 있다"가
+  "복원할 수 있다"로 읽히기 쉽다. 헤더 문구가 그 둘을 갈라 놓는다.
+
+**공유 그룹 모드**를 함께 넣었다. 만드는 주체가 UI와 cron 둘이 되면 서로의 산출물을 지울 수
+있어야 하는데, unlink는 파일이 아니라 **디렉터리** 권한이라 setgid 공유 디렉터리가 필요하다.
+`KTDM_BACKUP_SHARED_GROUP`을 선언하면 `2770`/`0640` 계약으로 다루고, 선언하지 않으면 기존
+`0700`/`0600` 그대로다 — 아무도 요구하지 않은 권한 완화를 기본값으로 만들지 않는다. 전제는
+코드가 만들지 않고 **확인만** 한다(운영자가 건 setgid/ACL을 추측해 재설정하면 조용히
+되돌아간다). setgid가 실제로 먹지 않아 산출물이 다른 그룹에 떨어지면 그 dump를 지우고
+실패한다 — 목록에는 보이는데 아무도 못 읽는 백업은 거짓 안전감만 만든다.
+
+---
+
+## 2026-08-28 — 적대 리뷰 2건 반영: 죽어 있던 경로와 잠기는 상태들
+
+전문 리뷰어 서브에이전트 2인이 각각 계약·fail-close 관점과 운영·사용성 관점으로 M5·M6·M7
+커밋을 독립 리뷰했다. 확인된 지적을 전부 반영했다. 무거운 것부터:
+
+**요청 경로가 배포에서 죽어 있었다.** `/var/lib`는 root `0755`라 비-root backend가 그
+아래에 디렉터리를 만들 수 없는데, installer는 `-requests` 트리를 만들지 않았고 어떤 런북에도
+그 단계가 없었다. 첫 클릭이 503으로 끝나고 메시지는 "운영자에게 확인하세요"였다 — 보고 있는
+사람이 그 운영자다. installer가 디렉터리를 만들고, 503은 실행할 `install -d` 명령을 그대로
+준다.
+
+**손상된 요청 파일이 회전 요청 경로 전체를 잠갔다.** 읽지 못하면 id를 알 수 없어 id 대조
+삭제가 불가능하고, 파일이 있으니 새 요청도 못 받는다. 화면의 unreadable 카드는 취소 버튼도
+없이 방금 실패한 `show-pending`을 권하고 있었다. `clear-pending --force`를 넣었다 — 읽을 수
+없는 파일만 파싱 없이 지우고 멀쩡한 요청에는 거부한다. 모든 손상 메시지에 전체 경로를 싣는다.
+
+**`apply-pending`의 exit 1이 "아무 일 없음"과 "적용됐으나 정리 미완"을 겸했다.**
+`|| echo "적용 안 됨"` 같은 스크립트가 pinset을 태워 놓고 적용 안 됐다고 보고할 수 있었다.
+정리 미완을 exit 3으로 분리했고, `clear_runtime_pin_request`가 던지는
+`RuntimePinRequestError`가 `except OSError`를 빠져나가 회전 뒤에 traceback으로 터지던 것도
+함께 고쳤다.
+
+**요청 기록에 경합이 있었다.** 읽고-나서-`os.replace`는 두 관리자가 동시에 요청할 때 나중
+쓰기가 앞의 것을 말없이 덮으면서 **둘 다 "기록됨"으로 감사에 남았다.** `O_CREAT|O_EXCL`로
+커널이 승자를 정하게 했다.
+
+**계약 결박 env 검사가 추가·삭제를 통과시켰다.** 저장은 environment 매핑을 통째로 교체하므로
+키를 빼는 것이 곧 삭제인데, "양쪽에 있을 때만 비교"라 삭제도 추가도 그대로 통과했다. 없음을
+sentinel로 두고 비교한다. 같은 구멍이 있던 기존 `POSTGRES_INITDB_ARGS` 가드도 함께 닫혔다.
+DSN을 결박하는 검증기가 candidate dict 밖에 있어 `pinvi-dagster`가 잠금 목록에서 통째로
+빠져 있던 것도 합집합으로 고쳤다(대입이라 유도된 이름이 사라질 수 있던 것도 함께).
+
+**readiness 새로고침이 실제로 다시 관측하지 않았다.** 서버에 30초 TTL이 있는데 route에
+`refresh` 파라미터가 없어, SSH에서 image를 pull한 운영자가 새로고침을 눌러도 같은 차단
+문구를 계속 봤다 — 조치가 실패한 줄 알게 되는 경로다. 같은 파일의 disk-usage route가 이미
+쓰던 패턴을 그대로 적용했다. 실패 payload가 한국어 화면에 `compose_single_file` 같은 내부
+id를 라벨로 띄우던 것도 고쳤다.
+
+**`COMPOSE_PROJECT_NAME`이 영구 노란불이었다.** 운영 `.env`가 반드시 설정하는 값인데
+"확인이 필요한 변수"로 분류돼 있어, 정상 호스트가 해소 방법 없는 경고를 영원히 달고 있었다.
+지워지지 않는 경고는 패널을 안 읽게 만든다 — advisory 목록에서 뺐다.
+
+**non-UTF-8 blob 하나가 패널 전체를 가렸다.** `_git_text`의 `text=True`가 던지는
+`UnicodeDecodeError`는 `OSError`가 아니라 밖으로 새고, 최상위 `except Exception`이 그것을
+받아 네 행 전부를 `unknown`으로 만들었다. 크기 상한도 다 읽은 뒤에 재고 있어 장식이었다.
+파이프에서 상한+1 바이트만 읽는 `_git_blob_text`로 분리했다.
+
+이 밖에 무결성 검사의 TOCTOU(검사와 읽기가 다른 syscall이라 그 사이 바꿔치기 가능)와
+hardlink 통과, 개발 체크아웃에서 저장소 루트를 `0700`으로 만들던 chmod, 긴 사유가 요청
+출처를 밀어내던 절단, `unknown`일 때 대기 요청이 화면에서 사라지던 문제, DELETE 거부가 감사에
+남지 않던 문제, 취소 실패 후 유령 카드가 남던 문제를 고쳤다.
+
+backend 975 passed / 1 skipped.
+
+---
+
+## 2026-08-28 — n150 격리 live E2E와, 그 과정에서 드러난 두 가지 사실
+
+M5·M6·M7을 실제 호스트에서 16항목 격리 E2E로 검증했다(`scripts/run-pin-request-isolated-e2e`,
+`ALL CHECKS PASSED on digitie-at-n150`). `/opt` 배포 트리와 운영 registry, 운영 요청
+디렉터리는 건드리지 않는다. 통과 항목에는 실제 euid 기반 root 게이트, root가 비-root가
+쓴 요청 파일을 읽는 무결성 검사, 회전 뒤 공개 사본 즉시 갱신, stale 요청 보존,
+id 불일치 시 미삭제가 포함된다.
+
+**사실 1 — 이 배포에서 backend는 root로 돈다.** `deploy-runbook.local.md` §3-3이
+`.env`가 root `0600`이면 `sudo -n`으로 띄우라고 명시하고, n150의 uvicorn 프로세스 uid는
+실제로 0이었다. 그래서 `runtime-pin-registry.md` §1-4가 오래 담고 있던 "backend는
+비-root라 registry를 물리적으로 못 쓴다"는 논거는 **이 호스트에서 성립하지 않는다.**
+그 문장을 정정하고, 대신 실제로 강제되는 경계를 회귀로 만들었다 —
+`test_the_http_layer_never_mutates_the_pin_registry`가 `api/` 전체에서
+`rotate_runtime_pin`·`write_runtime_pin_registry` 등 mutator 참조를 금지한다. 남은 보호는
+그 규칙과, `apply-pending`이 요청에서 role·revision만 취하고 나머지를 재유도한다는 계약
+둘이다. 설계 논거를 권한에만 걸지 않는다.
+
+**사실 2 — 지금 고정된 PinVi revision으로는 재구축이 성립하지 않는다.** 새 readiness
+검사를 실제 체크아웃에 돌린 결과 `missing`이었다: `97d2f924…`의 역할 부트스트랩
+스크립트는 Manager가 주입하는 4개 모드 중 `PINVI_ROLE_CATALOG_RESET_ONLY`와 그
+permit/result 경로 3개를 모른다(선언된 것은 `PINVI_ROLE_TOPOLOGY_VERIFY_ONLY` 하나뿐).
+다음 pin 회전은 이 3개를 구현한 revision을 골라야 한다.
+
+E2E가 잡아낸 결함 하나도 고쳤다. readiness의 `unknown` 경로가 evidence를 비워 반환해,
+"읽지 못했습니다"만 있고 **어느 revision을 어느 체크아웃에서 찾았는지**가 없었다.
+화면에서 진단을 시작할 수 없는 상태였으므로 `pinned_revision`·`pinvi_root`·`script_path`를
+unknown 경로에도 싣는다.
+
+---
+
+## 2026-08-28 — KUM-M6: 설계 전제 정정과, Manager 단독으로 가능한 부분의 완료
+
+설계 P10-3(i)은 "`compose_service.py`의 stderr 9문구 파싱을
+`pinvi.role-topology-diagnostic.v1` typed JSON 소비로 이관"하라고 했다. PinVi의
+`infra/postgres/bootstrap-pinvi-runtime-role.sh`를 직접 읽어 보니 **그 전제가 틀렸다.**
+
+- typed envelope은 `PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`일 때만 stdout 한 줄로 나오고
+  언제나 exit 0이다. Manager가 분류하는 9문구는 **일반 부트스트랩 실행**의 stderr이며
+  그 경로에는 envelope이 아예 없다(exit 2=입력 검증, 1=endpoint 미준비, 3=topology·소유권
+  거부). 둘은 같은 실패의 다른 표현이 아니라 **서로 다른 실행**의 출력이다.
+- 따라서 이관은 Manager만으로 불가능하다. PinVi가 일반 실행에서도 envelope을 내보내야
+  성립하며 그것이 KUM-PV-3다. 고정 revision `97d2f924…` 기준으로 현재 9문구 map은
+  정확하다는 것은 확인했다(문구 대조).
+
+같은 조사에서 **실행 전에 알 수 있었던 결손 하나**를 찾았다. 고정 revision의 스크립트에는
+`PINVI_ROLE_CATALOG_RESET_ONLY` 처리가 없다. Manager는 그 모드를 `-e`로 주입하는데,
+변수는 조용히 무시되고 일반 부트스트랩이 실행된 뒤 Manager가 `{}` 결과를 읽고
+fail-close한다. 데이터는 안전하지만 의도하지 않은 실행이 한 번 일어나고 pinset 하나가
+소모된다 — 진단 5가 말하는 바로 그 낭비다.
+
+그래서 이번에 한 일:
+
+- readiness 검사 `pinvi_role_bootstrap_modes` 추가. **체크아웃 HEAD가 아니라 고정
+  revision의 blob을 직접 읽는다**(`git show <rev>:<path>`) — 재구축이 실제로 쓰는 것이 그
+  tree이고, 체크아웃이 어느 브랜치에 있든 답이 달라지면 안 된다. revision이 로컬에
+  없으면 `unknown`이지 결손이 아니다(fetch 안 된 것을 차단으로 보고하면 거짓 차단이다).
+- P10-3(iii) 계약 결박 env의 read-only화. 목록은 candidate 계약
+  (`_CANDIDATE_CANONICAL_API_ENV_VALUES`)에서 **유도**한다 — 손으로 관리하는 두 번째
+  목록을 만들면 계약과 화면이 갈라진다. 잠기는 이름은 14개 service에 걸쳐 82개이고,
+  그중 `kor-travel-map-api` 한 서비스에만 21개가 그동안 편집 가능했다. 서버는 저장
+  시점에 거부하고(재구축까지 미루면 실패가 조작에서 멀어진다) 화면은
+  `config.locked_env`로 처음부터 잠근다.
+- Manager의 `PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS`에 스크립트가 결코 쓰지 않는
+  `target_not_isolated`가 있다. 받아들이는 집합이 넓기만 한 것이라 fail-close 결함은
+  아니므로 좁히지 않고 기록만 했다 — 좁히면 다른 revision에서 거짓 거부가 된다.
+
+backend 946 passed / 1 skipped, frontend type-check·lint·build 통과.
+
+---
+
+## 2026-08-28 — KUM-M7 마무리: 재구축 사전 점검을 화면에 노출
+
+백엔드(`GET /api/v1/deployment-readiness`)와 회귀는 앞선 라운드에서 끝나 있었고 화면만
+비어 있었다. `SourceStatusPanel`에 "재구축 사전 점검" 섹션을 붙여 마감했다.
+
+설계 문서(P10-4)는 선행으로 pin 패널을 적었지만, pin 패널은 M5로 mutation 패널이 됐다.
+관측 전용 행을 거기 섞으면 그 패널이 무엇을 하는 곳인지 흐려지고, source-status 패널에는
+이미 같은 모양의 `Row`/`VerdictIcon`이 있다. 그래서 배치를 옮겼다.
+
+- **쿼리는 분리**했다. readiness가 실패해도 설치 기록·실행 이미지·계약 행은 그대로
+  보여야 한다. 새로고침 버튼은 두 쿼리를 함께 다시 부른다.
+- **`warn`/`unknown`을 차단으로 승격하지 않는다.** `missing`만 빨간 "지금 재구축하면
+  실패합니다"이고 나머지는 "확인이 필요합니다"다. 전부 빨갛게 칠하면 진짜 차단 항목이
+  묻힌다.
+- **검사하지 않기로 결정한 항목(`unavailable_checks`)을 이유까지 그대로 표시한다.**
+  오프라인 wheelhouse가 그것이다 — 숨기면 남은 항목이 전부인 것처럼 읽혀 잘못된 안심을
+  준다.
+
+화면 규약은 `docs/dashboard-ui.md` §6·§7에 반영했고, 관측 API 3종(readiness,
+source-status, disk-usage)을 `docs/docker-management.md` 5.2 표에 등재했다.
+
+---
+
+## 2026-08-28 — KUM-M5: UI에서 pin 회전을 '요청'하고 root가 적용하는 2-step
+
+대시보드에서 Map·PinVi pinned revision을 바꾸려면 지금까지는 SSH로 나가는 수밖에 없었다.
+그렇다고 backend에 회전 권한을 주면 registry가 root `0600`이라는 물리적 경계 — 이 시스템에서
+가장 값싼 안전장치 — 가 사라진다. 그래서 화면은 **요청만 기록**하고 적용은 여전히 root가
+한다.
+
+- 새 저장소 `services/runtime_pin_request.py`. registry와 **다른 트리**
+  (`/var/lib/kor-travel-docker-manager-requests/`, 파일 `0600`)에 둔다 — registry 트리는
+  installer가 매 설치마다 `0700 root:root`로 되돌려 비-root backend가 traverse할 수 없다.
+  SQLite를 쓰지 않은 이유는 `database.py`의 DB 경로가 `__file__`에서 유도돼 backend와
+  `ktdctl`이 같은 호스트에서 서로 다른 파일을 열기 때문이다.
+- `POST/DELETE /api/v1/runtime-pins/requests`. 거부 코드 6종을 정의했고 **거부도 전부 감사
+  행으로 남긴다**. `GET /api/v1/runtime-pins`에 `pending_request`가 붙으며, 요청 이후 pin이
+  움직였으면 `pending`이 아니라 `stale`로 말한다 — CLI가 반드시 거부할 요청을 화면이 적용
+  가능한 것처럼 보여 주면 안 된다.
+- `ktdctl pin show-pending / apply-pending --confirm / clear-pending`. 적용은 요청에서
+  role과 40-hex revision, 표시용 문자열만 취하고 canonical URL·digest·차단 목록은 코드와
+  root registry에서 다시 만든다. base pinset이 어긋나면 거부하되 **요청을 지우지 않는다**
+  (무엇이 버려지는지 사람이 보고 정해야 한다). 성공 시 요청 파일은 id 대조 후 삭제한다.
+- 화면(`RuntimePinPanel`)은 제목의 "(읽기 전용)"을 떼고 요청 폼과 대기 요청 카드를 얻었다.
+  폼은 `status === 'ok'`이고 대기 요청이 없을 때만 렌더링한다 — 눌러 본 뒤에야 거부를
+  알게 하지 않는다.
+
+**mock으로 대체한 것**: root 전용 경로(`apply-pending`의 euid 게이트)는 테스트에서
+`_running_as_root`를 patch해 검증했다. 이 판정을 이름 있는 함수로 뽑은 것도 그 때문이다.
+실제 root 소유권·퍼미션 계약은 n150 격리 E2E에서 확인한다.
+
+계약 정본은 `docs/runtime-pin-registry.md` §7-1, 화면 규약은 `docs/dashboard-ui.md` §5-1.
+회귀는 `test_runtime_pin_request.py`(16건), `test_api.py`의 `runtime_pin` 13건,
+`test_docker_manager_cli.py`의 pending 9건. backend 938 passed / 1 skipped.
+
+---
+
 ## 2026-08-28 — M05 baseline artifact 진단 정정과 immutable image 원인 확정
 
 `29fbcdd…` candidate는 `baseline_reference_invalid`로 terminal 처리됐고 cleanup 뒤 Map·PinVi

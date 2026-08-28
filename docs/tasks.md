@@ -14,6 +14,7 @@
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 | **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (1부 트랙 KUM-M1~M4 구현 완료) | `[/]` | 1부 잔여(KUM-M5·M6·M7)와 v3 문서 3부의 나머지 태스크 분해 |
+| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종이 Map attestation의 exact-dict를 통과하지 못한다 (**다음 재구축의 선행 조건**) | `[ ]` | pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를 함께 넣고, 정렬을 확인한 뒤에 재구축 |
 
 ## M05 재개 규율
 
@@ -203,8 +204,37 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   d9 상수 이관), KUM-M3(root-side world-readable publisher), KUM-M4(`GET
   /api/v1/runtime-pins` + 배포 버전 고정 패널). 전문 적대 리뷰 2건 반영,
   n150 격리 live E2E 15항목 통과, backend 751 tests.
-- [ ] 1부 잔여: KUM-M5(UI 2-step pin rotate), KUM-M6(typed 진단 소비 이관),
-  KUM-M7(preflight readiness 노출).
+- [x] KUM-M5 완료(2026-08-28): UI는 회전 **요청**만 기록하고 적용은 root
+  `ktdctl pin apply-pending --confirm`이 한다. 요청 저장소는 registry와 다른 트리의
+  backend-writable 파일이며 어떤 pin 로드 경로도 읽지 않는다(회귀로 결박). 계약은
+  `docs/runtime-pin-registry.md` §7-1.
+- [x] KUM-M7 완료(2026-08-28): `GET /api/v1/deployment-readiness` + `SourceStatusPanel`의
+  "재구축 사전 점검" 섹션. 설계 문서는 pin 패널을 선행으로 적었으나 pin 패널이 M5로
+  mutation 패널이 되어 관측 행은 source-status 패널에 붙였다. 검사하지 않기로 결정한
+  항목(`unavailable_checks`)도 이유와 함께 노출한다.
+- [x] KUM-M6 부분 완료(2026-08-28): 설계 P10-3의 (iii) 계약 결박 env read-only화와
+  readiness 검사 `pinvi_role_bootstrap_modes`는 완료했다. (i) stderr→typed JSON 이관은
+  **불가능**함을 PinVi 소스 실측으로 확인했다 — typed envelope은 verify-only 실행에서만
+  나오고 Manager가 분류하는 9문구는 일반 실행의 stderr다. 근거와 정정은
+  `ktdctl-ui-migration.md` "P10-3 정정".
+- [ ] KUM-M6 잔여 (**KUM-PV-3 선행**): PinVi가 일반 부트스트랩 실행에서도 typed
+  envelope을 내보내면 Manager의 문자열 map을 제거한다. 그때까지 `compose_service.py`의
+  9문구 map은 고정 revision `97d2f924…` 기준으로 정확함을 확인했다.
+- [x] KUM-M9 완료(2026-08-28): gc 결함 3종 수선(role lock·manifest 이름/role 결박·고아
+  dump 수거), `services/job_runner.py`, `POST /api/v1/backups/{role}` 202 + job 폴링,
+  백업 산출물 공유 그룹(setgid) 모드, 화면의 생성 버튼·신선도 배지·복원 부재 고지.
+- [x] KUM-M10 완료(2026-08-28): 관리자 비밀번호 변경 폼 + 미종결 rebuild journal 3갈래
+  가드. 증명된 미종결 journal은 우회 경로가 없고, 확인 불가는 명시 승인을 요구한다.
+- [x] KUM-M12 완료(2026-08-28): 라벨·아이콘·포맷터를 lib/containerPresentation.ts와\n  lib/format.ts로 이관(2,138 → 1,968줄). JSX 본문은 state 공유 때문에 의도적으로\n  쪼개지 않았고 그 판단을 저널에 남겼다.\n- [x] KUM-M13 1단계 완료(2026-08-28, **오너 결정: restore-plan 읽기 전용만 먼저**):
+  `ktdctl db-backup restore-plan`이 digest를 재계산해 무결성과 schema revision을
+  대조한다. 파괴적 `restore`는 이 계획이 실제 운영에서 무엇을 잡아내는지 본 뒤에
+  결정한다.
+- [x] KUM-M14 완료(2026-08-28, **오너 결정: 버튼이 아니라 게이트된 CLI 카드**):
+  `GET /api/v1/pinned-rebuild/preflight`가 차단 사유를 판정하고 화면은 실행할 명령만
+  준다. 실행 경로를 만들지 않는다는 사실을 회귀로 결박했다.
+- [ ] **다음 pin 회전 전 필수**: 고정 PinVi revision이 `PINVI_ROLE_CATALOG_RESET_ONLY`와
+  permit/result 경로 3종을 구현해야 한다. 현재 `97d2f924…`는 구현하지 않아 readiness가
+  `missing`으로 보고한다(n150 실측). 회전 대상 revision을 그 기준으로 고른다.
 - [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
   항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).
 
@@ -227,3 +257,42 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
 - [ ] T-VN-41F1D-E — 이전 generation 퇴역과 v6/v8 attestation 전환을 완료한다.
 - [ ] T-VN-H43 — production backup의 정기 dump, SHA-256, 보존, rollback 기준선을 확정한다.
 - [ ] T-VN-H49 — 분할 인스턴스 backup의 주기 실행, bounded retention, off-box 증거를 완료한다.
+## JOURNAL-ATTESTATION-DRIFT — v8 journal이 Map attestation을 통과하지 못한다
+
+2026-08-28에 확인했다. kor-travel-map `scripts/lib/c7_prod_attestation.py`의
+`_JOURNAL_KEYS`는 **13키**이고 `_exact_dict(value, set(_JOURNAL_KEYS))`로 정확 일치를
+요구하는데, Manager의 `PinnedRuntimeRebuildJournal.to_payload()`는 **15키**를 내보낸다.
+차이는 v8 도입 때 Manager만 추가한 확장 키 두 개다.
+
+- `pinvi_role_credential_environment_rebind`
+- `pinvi_role_lifecycle_block`
+
+두 키는 값이 `None`일 때도 항상 실리고 `write_rebuild_journal`이 그대로 기록하므로,
+**Manager가 지금 쓰는 journal 파일은 Map의 production attestation을 통과하지 못한다.**
+`journal_from_payload`가 두 키를 optional로 받아 주기 때문에 Manager 안에서는 드러나지
+않았다.
+
+PR #243 병합으로 `pinvi_role_catalog_reset`이 더해져 지금은 **13 대 16**이다.
+
+### 해소 경로 (오너 결정, 2026-08-28): Map 동시 PR로 한꺼번에 정리한다
+
+세 키를 journal 밖으로 옮기는 방법도 있었지만 채택하지 않았다. 새 키 하나만 빼면
+이미 어긋난 두 키가 그대로 남아 문제가 해소되지 않고, 같은 계열 상태가 journal 안팎에
+갈라지는 중간 상태가 된다. 반면 **pin 회전을 위한 Map PR이 이미 예정돼 있어**
+(`T-VN-M05-HARNESS` 참조) `_JOURNAL_KEYS`에 세 키를 추가하는 것은 그 PR에 몇 줄
+얹는 일이다.
+
+### ⚠ 이것은 다음 운영 재구축의 **선행 조건**이다
+
+미루면 파괴적 재구축을 다 끝낸 **뒤** attestation 실패로 발견된다 — 가장 비싼
+시점이다. Map PR이 `_JOURNAL_KEYS`를 갱신했는지 확인하기 전에는 `rebuild-pinned`를
+실행하지 않는다.
+
+- [ ] Map Compose digest 고정 PR에 `_JOURNAL_KEYS` 세 키 추가를 **함께** 넣는다
+      (`pinvi_role_credential_environment_rebind`, `pinvi_role_lifecycle_block`,
+      `pinvi_role_catalog_reset`).
+- [ ] Map PR 머지 후 회귀
+      `test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects`의
+      기대값을 정렬 상태로 갱신한다. 그 전까지 이 테스트는 괴리가 **더 넓어지는
+      것만** 막는다.
+- [ ] 그 정렬을 확인한 뒤에야 pin 회전과 재구축을 진행한다.

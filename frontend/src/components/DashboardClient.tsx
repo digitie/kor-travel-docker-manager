@@ -3,8 +3,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Database,
-  FolderGit2,
   Play,
   Square,
   RotateCw,
@@ -14,12 +12,8 @@ import {
   ShieldAlert,
   Settings,
   X,
-  Radio,
   Cpu,
   HardDrive,
-  BarChart3,
-  Gauge,
-  ServerCog,
   Boxes
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
@@ -28,11 +22,15 @@ import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import BackupHistoryPanel from './BackupHistoryPanel';
 import RuntimePinPanel from './RuntimePinPanel';
+import SourceStatusPanel from './SourceStatusPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
+import ToastStack, { ToastItem, errorToast, successToast } from './Toast';
 import AppShell from './layout/AppShell';
+import { humanizeError } from '@/lib/errors';
 import {
   ApiError,
+  DiskUsageResponse,
   AuthMe,
   BACKEND_URL,
   WS_CLOSE_AUTH_REQUIRED,
@@ -49,6 +47,15 @@ import {
   validateNetworkName,
   validatePortMapping,
 } from '@/lib/configValidation';
+import {
+  ContainerStatus,
+  MetricHistoryPoint,
+  getContainerPresentation,
+  getStatusConfig,
+  roleLabel,
+  statusLabel,
+} from '@/lib/containerPresentation';
+import { formatBytes, formatTimestamp } from '@/lib/format';
 
 // 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
 const _unusedForm = typeof useForm !== 'undefined';
@@ -64,140 +71,20 @@ const CartesianGrid = dynamic(() => import('recharts').then(mod => mod.Cartesian
 const RechartsTooltip = dynamic(() => import('recharts').then(mod => mod.Tooltip), { ssr: false });
 const Legend = dynamic(() => import('recharts').then(mod => mod.Legend), { ssr: false });
 
-interface ContainerStatus {
-  id: string;
-  name: string;
-  display_name?: string;
-  role?: string;
-  connection?: string;
-  public_url?: string;
-  expected_ports?: string[];
-  image?: string;
-  status: string;
-  state: string;
-  ports: string[];
-  metrics?: {
-    timestamp: string;
-    cpu_pct: number;
-    mem_pct: number;
-    mem_usage: number;
-    mem_limit: number;
-    io_read: number;
-    io_write: number;
-  };
-  config?: {
-    ports: string[];
-    env: Record<string, string>;
-    volumes: string[];
-    networks: string[];
-  };
-}
-
-interface MetricHistoryPoint {
-  timestamp: string;
-  cpu_pct: number;
-  mem_pct: number;
-  io_read: number;
-  io_write: number;
-}
-
-// Byte Formatting Helper
-function formatBytes(bytes: number | undefined, decimals = 1) {
-  if (bytes === undefined || bytes === 0) return '0 B';
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-}
-
-// Time Formatting Helper for Chart X-Axis
-function formatTimestamp(timestampStr: string) {
-  if (!timestampStr) return '';
-  try {
-    const parts = timestampStr.split(' ');
-    if (parts.length === 2) {
-      return parts[1];
-    }
-    const d = new Date(timestampStr.replace(' ', 'T') + 'Z');
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-  } catch (e) {
-    return timestampStr;
-  }
-}
-
-const getStatusConfig = (status: string) => {
-  const s = status.toLowerCase();
-  if (s === 'running') {
-    return {
-      dotClass: 'bg-ok animate-pulse',
-      textClass: 'text-ok font-semibold',
-      rowClass: 'bg-card hover:bg-subtle'
-    };
-  } else if (s === 'exited' || s === 'offline') {
-    return {
-      dotClass: 'bg-danger',
-      textClass: 'text-danger font-semibold',
-      rowClass: 'bg-danger/5 hover:bg-subtle'
-    };
-  } else if (s.includes('starting') || s.includes('restarting') || s.includes('paused')) {
-    return {
-      dotClass: 'bg-warn animate-ping',
-      textClass: 'text-warn font-semibold',
-      rowClass: 'bg-card hover:bg-subtle'
-    };
-  } else {
-    return {
-      dotClass: 'bg-disabled',
-      textClass: 'text-secondary font-semibold',
-      rowClass: 'bg-card hover:bg-subtle'
-    };
-  }
-};
-
-const getContainerPresentation = (container: ContainerStatus) => {
-  const role = container.role || '';
-  const id = container.id || '';
-
-  if (role === 'postgresql' || id.includes('postgresql')) {
-    return { Icon: Database, displayName: container.display_name || 'PostgreSQL (PostGIS)' };
-  }
-  if (role === 'rustfs') {
-    return { Icon: FolderGit2, displayName: container.display_name || 'RustFS Store' };
-  }
-  if (role.includes('geocoder')) {
-    return { Icon: ServerCog, displayName: container.display_name || 'Kor Travel Geo' };
-  }
-  if (role.includes('mcp')) {
-    return { Icon: Radio, displayName: container.display_name || 'MCP HTTP' };
-  }
-  if (role.includes('scheduler') || role.includes('dagster')) {
-    return { Icon: Activity, displayName: container.display_name || 'Workflow' };
-  }
-  if (role.includes('concierge') || role.includes('map-api') || role.includes('pinvi-api')) {
-    return { Icon: ServerCog, displayName: container.display_name || 'App API' };
-  }
-  if (role.includes('ui') || role.includes('web')) {
-    return { Icon: Boxes, displayName: container.display_name || 'Web UI' };
-  }
-  if (role === 'prometheus') {
-    return { Icon: Activity, displayName: container.display_name || 'Prometheus 메트릭 저장소' };
-  }
-  if (role === 'grafana') {
-    return { Icon: BarChart3, displayName: container.display_name || 'Grafana 시각화 도구' };
-  }
-  if (role === 'metrics-exporter') {
-    return { Icon: Gauge, displayName: container.display_name || 'cAdvisor Exporter' };
-  }
-
-  return { Icon: Boxes, displayName: container.display_name || container.name };
-};
-
 export default function DashboardClient() {
   const queryClient = useQueryClient();
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
   const [isRuntimePinsOpen, setIsRuntimePinsOpen] = useState<boolean>(false);
+  const [isSourceStatusOpen, setIsSourceStatusOpen] = useState<boolean>(false);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  // 실패는 사람이 읽고 닫아야 하므로 쌓이되, 화면을 덮지 않게 최근 것만 남긴다.
+  const pushToast = useCallback((item: ToastItem) => {
+    setToasts((current) => [...current, item].slice(-3));
+  }, []);
+  const dismissToast = useCallback((id: number) => {
+    setToasts((current) => current.filter((item) => item.id !== id));
+  }, []);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [commandQuery, setCommandQuery] = useState('');
   const commandInputRef = useRef<HTMLInputElement>(null);
@@ -265,6 +152,7 @@ export default function DashboardClient() {
   const [isChartModalOpen, setIsChartModalOpen] = useState<boolean>(false);
   const [chartContainerId, setChartContainerId] = useState<string | null>(null);
   const [chartMetricType, setChartMetricType] = useState<'cpu' | 'memory' | 'io'>('cpu');
+  const [chartHours, setChartHours] = useState<number>(1);
 
   // Real-time rolling metrics points from WebSocket (replaces state copy from queryChartData)
   const [wsMetricsPoints, setWsMetricsPoints] = useState<MetricHistoryPoint[]>([]);
@@ -338,6 +226,7 @@ export default function DashboardClient() {
   // 미리 캐시해 두어야 패널이 열린 뒤 footer가 뒤늦게 튀어나오지 않는다.
   type TargetSummary = {
     id: string;
+    display_name?: string;
     containers?: string[];
     resolved_services?: string[];
   };
@@ -367,6 +256,112 @@ export default function DashboardClient() {
 
   // Active containers dataset (WS if available, fallback query otherwise)
   const displayContainers = wsContainers || fallbackContainers;
+
+  // "디스크 참"은 비전문 관리자가 이 시스템을 죽이는 가장 그럴듯한 경로인데 어느
+  // 화면에도 없었다. 원시 수치가 아니라 "정리 시 약 N GB 확보 가능"으로 보여 준다.
+  const { data: diskUsage } = useQuery<DiskUsageResponse>({
+    queryKey: ['disk-usage'],
+    queryFn: () => apiJson<DiskUsageResponse>('/api/v1/system/disk-usage'),
+    enabled: isAuthenticated,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+
+  // 관리도구 자신의 상태. `/health`는 인증이 필요 없고 부작용도 없으므로 가볍게 폴링한다.
+  const { data: healthData, isError: healthErrored } = useQuery<{ status?: string }>({
+    queryKey: ['manager-health'],
+    queryFn: () => apiJson<{ status?: string }>('/health', { redirectOnUnauthorized: false }),
+    enabled: isAuthenticated,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  const managerHealth: 'healthy' | 'checking' | 'down' = healthErrored
+    ? 'down'
+    : healthData?.status === 'healthy'
+      ? 'healthy'
+      : 'checking';
+
+  // 21개 컨테이너가 평면 테이블 하나라 "PinVi 쪽이 지금 정상인가"에 답하려면 행을 눈으로
+  // 골라 세야 했다. 앱 단위로 묶어 한 줄 요약을 준다.
+  //
+  // `targets.containers`는 target이 직접 소유한 목록이 아니라 depends_on 전이 폐포라
+  // 공용 인프라가 여러 target에 중복 등장한다. 그래서 컨테이너마다 **가장 좁은** target에
+  // 한 번만 배정한다(`detailTarget`이 쓰는 것과 같은 규칙).
+  const containerGroups = useMemo(() => {
+    const groups = new Map<string, { label: string; containers: ContainerStatus[] }>();
+    for (const container of displayContainers) {
+      const matches = targets.filter((target) => (target.containers ?? []).includes(container.id));
+      const narrowest = matches.length
+        ? matches.reduce((current, candidate) =>
+            (candidate.containers?.length ?? Infinity) < (current.containers?.length ?? Infinity)
+              ? candidate
+              : current
+          )
+        : null;
+      const key = narrowest?.id ?? '__other__';
+      const label = narrowest ? narrowest.display_name || narrowest.id : '기타';
+      const bucket = groups.get(key) ?? { label, containers: [] };
+      bucket.containers.push(container);
+      groups.set(key, bucket);
+    }
+    return Array.from(groups.entries()).map(([id, group]) => {
+      const running = group.containers.filter(
+        (container: ContainerStatus) => (container.status || '').toLowerCase() === 'running'
+      );
+      return {
+        id,
+        label: group.label,
+        containers: group.containers,
+        runningCount: running.length,
+        healthy: running.length === group.containers.length,
+      };
+    });
+  }, [displayContainers, targets]);
+
+  // 컨테이너 단위 제어만 있어서 "geo 전체 재시작"이 수동 N회 클릭이었다. 신규
+  // 엔드포인트 없이 순차 호출로 처리한다 — 각 호출이 기존 C6c 락을 그대로 통과한다.
+  const [bulkRestartingGroup, setBulkRestartingGroup] = useState<string | null>(null);
+  const restartGroup = useCallback(
+    async (group: { id: string; label: string; containers: ContainerStatus[] }) => {
+      const running = group.containers.filter((c) => (c.status || '').toLowerCase() === 'running');
+      if (running.length === 0) {
+        pushToast(successToast(`${group.label}에 실행 중인 컨테이너가 없습니다.`));
+        return;
+      }
+      const names = running.map((c) => c.display_name || c.name).join(', ');
+      if (
+        !window.confirm(
+          `${group.label}의 실행 중인 컨테이너 ${running.length}개를 순서대로 재시작합니다.\n\n` +
+            `대상: ${names}\n\n계속할까요?`
+        )
+      ) {
+        return;
+      }
+      setBulkRestartingGroup(group.id);
+      let failed = 0;
+      for (const container of running) {
+        try {
+          await apiJson(`/api/v1/containers/${container.id}/action`, {
+            method: 'POST',
+            body: JSON.stringify({ action: 'restart' }),
+          });
+        } catch (error) {
+          failed += 1;
+          pushToast(
+            errorToast(humanizeError(error, `${container.display_name || container.name} 재시작`))
+          );
+        }
+      }
+      setBulkRestartingGroup(null);
+      queryClient.invalidateQueries({ queryKey: ['containers'] });
+      if (failed === 0) {
+        pushToast(
+          successToast(`${group.label} 재시작 완료`, `${running.length}개 컨테이너를 재시작했습니다.`)
+        );
+      }
+    },
+    [pushToast, queryClient]
+  );
 
   // KPI summary counts derived from the active container list
   const kpiCounts = useMemo(() => {
@@ -545,9 +540,43 @@ export default function DashboardClient() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
     },
+    // onError가 없어서 start/stop/restart 실패가 완전히 무음이었다 — 버튼을 눌러도
+    // 아무 일도 일어나지 않는 것처럼 보였고, production 하드스톱처럼 서버가 의도적으로
+    // 거부하는 경우조차 이유를 알 수 없었다.
+    onError: (err: unknown, variables) => {
+      const container = displayContainers.find((item) => item.id === variables.id);
+      const label = container?.display_name || container?.name || variables.id;
+      const verb =
+        variables.action === 'start' ? '시작' : variables.action === 'stop' ? '중지' : '재시작';
+      pushToast(errorToast(humanizeError(err, `${label} ${verb}`)));
+    },
   });
 
+  // 컨테이너 하나를 멈추면 그것에 의존하는 서비스도 함께 영향을 받는다. 그 범위는
+  // 이미 받아 둔 target 데이터로 계산할 수 있는데, 지금까지는 확인 없이 즉시 실행돼
+  // 누르기 전에는 알 수 없었다. `ContainerDetailModal.runEnsure`가 쓰는 것과 같은
+  // "영향 범위를 세어 보여 주고 확인받는" 패턴을 stop/restart에도 적용한다.
+  const impactedTargetsFor = useCallback(
+    (containerId: string) =>
+      targets.filter((target) => (target.containers ?? []).includes(containerId)),
+    [targets]
+  );
+
   const handleAction = (id: string, action: string) => {
+    if (action === 'stop' || action === 'restart') {
+      const container = displayContainers.find((item) => item.id === id);
+      const label = container?.display_name || container?.name || id;
+      const impacted = impactedTargetsFor(id);
+      const verb = action === 'stop' ? '중지' : '재시작';
+      const scope = impacted.length
+        ? `\n\n이 컨테이너는 다음 ${impacted.length}개 target에 포함됩니다: ` +
+          `${impacted.map((target) => target.id).join(', ')}\n` +
+          '해당 target을 쓰는 앱이 함께 영향을 받습니다.'
+        : '';
+      if (!window.confirm(`${label}을(를) ${verb}합니다.${scope}\n\n계속할까요?`)) {
+        return;
+      }
+    }
     actionMutation.mutate({ id, action });
   };
 
@@ -562,11 +591,16 @@ export default function DashboardClient() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
       setIsConfigModalOpen(false);
-      alert('설정이 성공적으로 반영되었으며, 컨테이너가 재생성되었습니다.');
+      pushToast(
+        successToast(
+          '설정을 반영했습니다.',
+          '컨테이너가 새 설정으로 재생성되었습니다.'
+        )
+      );
     },
-    onError: (err: any) => {
-      alert(`설정 변경 실패: ${err.message}`);
-    }
+    onError: (err: unknown) => {
+      pushToast(errorToast(humanizeError(err, '설정 변경')));
+    },
   });
 
   // Config Reset mutation - Versioned v1
@@ -579,21 +613,27 @@ export default function DashboardClient() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
       setIsConfigModalOpen(false);
-      alert('설정이 기본값으로 원복되었으며, 컨테이너가 재생성되었습니다.');
+      pushToast(
+        successToast(
+          '설정을 기본값으로 되돌렸습니다.',
+          '컨테이너가 기본 설정으로 재생성되었습니다.'
+        )
+      );
     },
-    onError: (err: any) => {
-      alert(`설정 원복 실패: ${err.message}`);
-    }
+    onError: (err: unknown) => {
+      pushToast(errorToast(humanizeError(err, '설정 원복')));
+    },
   });
 
-  // 1-Hour Performance Metrics History Query - Versioned v1
-  // Disabled conditional triggers / useEffect copies to resolve 'no-derived-state' and 'no-event-handler'
+  // Performance Metrics History Query - Versioned v1
+  // 백엔드는 `hours`를 지원하는데 UI가 1로 고정하고 있어 "어제 밤에 뭐가 있었나"를
+  // 볼 방법이 없었다. 이미 있는 파라미터를 노출만 한다.
   const { data: queryChartData = [], isLoading: isLoadingChart } = useQuery<MetricHistoryPoint[]>({
-    queryKey: ['metrics-history', chartContainerId, chartMetricType],
+    queryKey: ['metrics-history', chartContainerId, chartMetricType, chartHours],
     queryFn: async () => {
       if (!chartContainerId) return [];
       return apiJson<MetricHistoryPoint[]>(
-        `/api/v1/containers/${chartContainerId}/metrics?hours=1`
+        `/api/v1/containers/${chartContainerId}/metrics?hours=${chartHours}`
       );
     },
     enabled: isAuthenticated && !!chartContainerId && isChartModalOpen,
@@ -746,6 +786,12 @@ export default function DashboardClient() {
     const envDiff = diffEnv(baseline.env ?? {}, inputEnvDict).filter(
       (row) => row.kind !== 'same'
     );
+    // 계약이 값을 고정한 키. 입력칸을 잠그므로 여기서 바뀔 일이 없지만, 서버가
+    // 거부하는 조건과 같은 판정을 화면에도 둬서 잠금이 뚫린 경우를 제출 전에 잡는다.
+    const lockedEnv = new Set(baseline.locked_env ?? []);
+    const lockedEnvChanged = envDiff
+      .filter((row) => lockedEnv.has(row.key))
+      .map((row) => row.key);
     // volumes는 서버에서 불변이다(compose_volume_graph_hash 비교로 첫 mutation 전에
     // 거부). 여기서 미리 감지해 제출 왕복 없이 안내한다.
     const volumesChanged = diffList(baseline.volumes ?? [], inputVolumesList).changed;
@@ -763,7 +809,9 @@ export default function DashboardClient() {
       networksDiff,
       envDiff,
       volumesChanged,
-      hasBlockingIssue: hasFieldError || volumesChanged,
+      lockedEnv,
+      lockedEnvChanged,
+      hasBlockingIssue: hasFieldError || volumesChanged || lockedEnvChanged.length > 0,
     };
   }, [configTargetContainer, inputPortsList, inputNetworksList, inputEnvDict, inputVolumesList]);
 
@@ -809,6 +857,12 @@ export default function DashboardClient() {
       label: '배포 버전 고정 상태 열기',
       hint: '조회',
       run: () => setIsRuntimePinsOpen(true),
+    },
+    {
+      id: 'source-status',
+      label: '배포 상태 확인 열기',
+      hint: '조회',
+      run: () => setIsSourceStatusOpen(true),
     },
     {
       id: 'refresh',
@@ -859,6 +913,7 @@ export default function DashboardClient() {
       onOpenBackupHistory={() => setIsBackupHistoryOpen(true)}
       onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
       onOpenRuntimePins={() => setIsRuntimePinsOpen(true)}
+      onOpenSourceStatus={() => setIsSourceStatusOpen(true)}
     >
       <div className="page-head">
         <div className="page-title">
@@ -884,7 +939,26 @@ export default function DashboardClient() {
             <div className="ops-count ops-count--ok"><span className="ops-count__label">실행 중</span><strong className="ops-count__value">{kpiCounts.running}</strong></div>
             <div className="ops-count"><span className="ops-count__label">중지·미생성</span><strong className="ops-count__value">{kpiCounts.stopped}</strong></div>
             <div className="ops-count ops-count--danger"><span className="ops-count__label">오류</span><strong className="ops-count__value">{kpiCounts.error}</strong></div>
+            {diskUsage ? (
+              <div
+                className={`ops-count ${diskUsage.state === 'warn' ? 'ops-count--danger' : ''}`}
+                title={diskUsage.summary.detail}
+              >
+                <span className="ops-count__label">정리 가능 용량</span>
+                <strong className="ops-count__value text-base">
+                  {diskUsage.state === 'unknown'
+                    ? '확인 불가'
+                    : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', '')}
+                </strong>
+              </div>
+            ) : null}
           </div>
+          {diskUsage?.state === 'warn' ? (
+            <p className="text-xs text-danger mt-2">
+              {diskUsage.summary.detail} 정리는 SSH에서{' '}
+              <code className="font-mono">{diskUsage.summary.next_action}</code>
+            </p>
+          ) : null}
         </div>
         <aside className="ops-signal" aria-label="동기화 상태">
           <div>
@@ -895,6 +969,34 @@ export default function DashboardClient() {
             </p>
           </div>
           <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
+          {/* "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데 답할 화면이
+              없었다. /health는 이미 있었지만 어느 UI에도 표시되지 않았다. */}
+          <div className="mt-3 pt-3 border-t border-line">
+            <p className="ops-signal__label">manager health</p>
+            <p className="ops-signal__value">
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  managerHealth === 'healthy'
+                    ? 'bg-ok'
+                    : managerHealth === 'checking'
+                      ? 'bg-warn animate-pulse'
+                      : 'bg-danger'
+                }`}
+              />
+              {managerHealth === 'healthy'
+                ? '관리도구 정상'
+                : managerHealth === 'checking'
+                  ? '관리도구 확인 중'
+                  : '관리도구 응답 없음'}
+            </p>
+            <p className="ops-signal__detail">
+              {managerHealth === 'healthy'
+                ? '백엔드 API가 응답하고 있습니다.'
+                : managerHealth === 'checking'
+                  ? '백엔드 상태를 확인하는 중입니다.'
+                  : '백엔드가 응답하지 않습니다. 아래 컨테이너 상태도 최신이 아닐 수 있습니다.'}
+            </p>
+          </div>
         </aside>
       </section>
 
@@ -904,6 +1006,48 @@ export default function DashboardClient() {
           <div>
             <p className="font-semibold text-danger">통신 연결 오류</p>
             <p className="mt-1 text-ink">백엔드 서버가 {BACKEND_URL}에서 실행 중인지와 Docker 엔진 상태를 확인해 주세요.</p>
+          </div>
+        </section>
+      )}
+
+      {containerGroups.length > 0 && (
+        <section className="ops-ledger mb-4" aria-labelledby="service-groups-title">
+          <div className="ops-ledger__header">
+            <div>
+              <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
+              <p className="ops-section-copy">
+                컨테이너를 앱 단위로 묶어 보여 줍니다. 재시작은 실행 중인 것만 순서대로 진행합니다.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {containerGroups.map((group) => (
+              <div className="rounded-card border border-line p-3" key={group.id}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-strong truncate">{group.label}</p>
+                    <p
+                      className={`text-xs mt-0.5 ${group.healthy ? 'text-ok' : 'text-warn'}`}
+                    >
+                      {group.healthy
+                        ? `모두 정상 (${group.containers.length}개)`
+                        : `${group.containers.length - group.runningCount}개 중지됨 / 전체 ${group.containers.length}개`}
+                    </p>
+                  </div>
+                  <button
+                    className="ops-button shrink-0"
+                    disabled={bulkRestartingGroup !== null || group.runningCount === 0}
+                    onClick={() => void restartGroup(group)}
+                    type="button"
+                  >
+                    <RotateCw
+                      className={`w-4 h-4 ${bulkRestartingGroup === group.id ? 'animate-spin' : ''}`}
+                    />
+                    재시작
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       )}
@@ -954,8 +1098,11 @@ export default function DashboardClient() {
                       <td data-label="상태">
                         <div className="flex items-center gap-2.5">
                           <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
-                          <span className={`${statusCfg.textClass} text-xs md:text-sm uppercase tracking-[0.05em] font-bold`}>
-                            {container.status}
+                          <span
+                            className={`${statusCfg.textClass} text-xs md:text-sm tracking-[0.05em] font-bold`}
+                            title={container.status}
+                          >
+                            {statusLabel(container.status)}
                           </span>
                         </div>
                       </td>
@@ -986,7 +1133,7 @@ export default function DashboardClient() {
 
                       {/* Role */}
                       <td data-label="역할" className="text-ink text-xs md:text-sm">
-                        {container.role}
+                        <span title={container.role ?? undefined}>{roleLabel(container.role)}</span>
                       </td>
 
                       {/* Port Bindings */}
@@ -1197,6 +1344,12 @@ export default function DashboardClient() {
         </div>
       )}
 
+      {isSourceStatusOpen && (
+        <div className="ops-modal-backdrop select-text">
+          <SourceStatusPanel onClose={() => setIsSourceStatusOpen(false)} />
+        </div>
+      )}
+
       {/* Live Log Terminal Modal */}
       {isLogModalOpen && logContainerId && (
         <div className="ops-modal-backdrop select-text">
@@ -1269,9 +1422,28 @@ export default function DashboardClient() {
                   <Activity className="w-5 h-5 text-brand" />
                 </div>
                 <div>
-                  <h3 className="font-semibold text-strong text-base uppercase tracking-[0.05em]">실시간 성능 롤링 차트 (1시간)</h3>
+                  <h3 className="font-semibold text-strong text-base tracking-[0.05em]">
+                    성능 이력 ({chartHours === 1 ? '최근 1시간' : `최근 ${chartHours}시간`})
+                  </h3>
                   <p className="text-xs text-secondary mt-0.5 font-light font-mono">대상 컨테이너: {chartContainerId}</p>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-secondary" htmlFor="chart-hours">
+                  기간
+                </label>
+                <select
+                  className="ops-input min-h-[36px] py-1 text-xs"
+                  id="chart-hours"
+                  onChange={(event) => setChartHours(Number(event.target.value))}
+                  value={chartHours}
+                >
+                  <option value={1}>1시간</option>
+                  <option value={6}>6시간</option>
+                  <option value={24}>24시간</option>
+                  <option value={72}>3일</option>
+                </select>
               </div>
 
               <button
@@ -1533,53 +1705,29 @@ export default function DashboardClient() {
                 </div>
               </div>
 
-              {/* Volumes section */}
+              {/* Volumes section — 서버가 불변 계약으로 거부하므로 처음부터 읽기 전용이다.
+                  편집을 허용한 뒤 저장 시점에 경고하면 사용자는 이미 값을 잃은 뒤다. */}
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">볼륨 마운트 (host:container:mode)</h4>
-                  <button
-                    type="button"
-                    onClick={() => setInputVolumesList(prev => [...prev, ''])}
-                    className="text-[10px] text-brand hover:underline font-bold uppercase tracking-[0.05em]"
-                  >
-                    + 추가
-                  </button>
+                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">
+                    볼륨 마운트 (읽기 전용)
+                  </h4>
                 </div>
                 <div className="space-y-2">
-                  {/* index-only key — 값을 key에 넣으면 keystroke마다 재마운트돼 포커스를 잃는다. */}
+                  <p className="text-xs text-secondary">
+                    볼륨은 이 화면에서 바꿀 수 없습니다. 데이터 위치가 바뀌면 기존 데이터를
+                    잃을 수 있어 서버가 변경을 거부합니다.
+                  </p>
                   {inputVolumesList.map((vol, idx) => (
-                    <div key={`vol-${idx}`} className="flex gap-2 items-center">
-                      <input
-                        type="text"
-                        value={vol}
-                        onChange={(e) => {
-                          const next = [...inputVolumesList];
-                          next[idx] = e.target.value;
-                          setInputVolumesList(next);
-                        }}
-                        placeholder="e.g. ${KOR_TRAVEL_GEO_PGDATA:-/tmp/pgdata}:/var/lib/postgresql/data"
-                        className="bg-card border border-line focus:border-brand focus:ring-0 rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand flex-grow font-mono"
-                        aria-label={`볼륨 마운트 ${idx + 1}`} // Added aria-label for accessibility
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setInputVolumesList(prev => prev.filter((_, i) => i !== idx))}
-                        className="text-danger hover:text-danger/80 p-1.5"
-                        aria-label={`볼륨 마운트 ${idx + 1} 삭제`} // Added aria-label for accessibility
-                      >
-                        <X className="w-4.5 h-4.5" />
-                      </button>
-                    </div>
+                    <p
+                      className="bg-subtle border border-line rounded-card px-4 py-2 text-xs text-secondary font-mono break-all"
+                      key={`vol-${idx}`}
+                    >
+                      {vol}
+                    </p>
                   ))}
                   {inputVolumesList.length === 0 && (
                     <p className="text-xs text-secondary font-light italic">볼륨 바인딩 설정이 없습니다.</p>
-                  )}
-                  {configValidation.volumesChanged && (
-                    <p className="text-danger text-[11px] bg-danger/10 border border-danger/30 rounded-card p-2">
-                      볼륨은 이 화면에서 변경할 수 없습니다. 서버가 컨테이너 변경 전에
-                      거부합니다(volume graph 불변 계약). 원래 값으로 되돌려 주세요.
-                    </p>
                   )}
                 </div>
               </div>
@@ -1651,19 +1799,32 @@ export default function DashboardClient() {
                   <div className="grid grid-cols-1 gap-4">
                     {Object.entries(inputEnvDict).map(([key, val]) => {
                       const envError = configValidation.envErrors[key];
+                      // 계약이 고정한 값은 서버가 저장 시점에 거부한다. 편집 가능하게
+                      // 두면 "저장했는데 다음 재구축이 실패"하는 경로가 열린다.
+                      const locked = configValidation.lockedEnv.has(key);
                       return (
                         <div key={key} className="flex flex-col gap-1.5">
                           <label className="text-xs text-secondary font-mono font-light" htmlFor={`env-input-${key}`}>
                             {key}
+                            {locked ? <span className="ml-2 font-sans">· 읽기 전용</span> : null}
                           </label>
                           <input
                             id={`env-input-${key}`}
                             type="text"
                             value={val}
+                            readOnly={locked}
                             onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
                             aria-invalid={!!envError}
-                            aria-describedby={envError ? `env-error-${key}` : undefined}
-                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 w-full transition-colors font-mono ${
+                            aria-describedby={
+                              envError
+                                ? `env-error-${key}`
+                                : locked
+                                  ? `env-locked-${key}`
+                                  : undefined
+                            }
+                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs outline-hidden focus-visible:outline-2 w-full transition-colors font-mono ${
+                              locked ? 'text-secondary bg-subtle' : 'text-strong'
+                            } ${
                               envError
                                 ? 'border-danger focus:border-danger focus-visible:outline-danger'
                                 : 'border-line focus:border-brand focus-visible:outline-brand'
@@ -1671,6 +1832,12 @@ export default function DashboardClient() {
                             aria-label={`환경 변수 ${key}`} // Added aria-label for accessibility
                             required
                           />
+                          {locked && (
+                            <p id={`env-locked-${key}`} className="text-secondary text-[11px]">
+                              배포 계약이 고정한 값입니다. 바꾸려면 계약 자체를 수정해야 하며,
+                              여기서 바꾸면 다음 재구축이 거부됩니다.
+                            </p>
+                          )}
                           {envError && (
                             <p id={`env-error-${key}`} className="text-danger text-[11px]">{envError}</p>
                           )}
@@ -1679,6 +1846,14 @@ export default function DashboardClient() {
                     })}
                   </div>
                 </div>
+              )}
+
+              {/* 잠금이 뚫린 경우의 최종 안내. 정상 경로에서는 나타나지 않는다. */}
+              {configValidation.lockedEnvChanged.length > 0 && (
+                <p aria-live="polite" className="text-danger text-xs">
+                  배포 계약이 고정한 환경변수가 바뀌었습니다:{' '}
+                  {configValidation.lockedEnvChanged.join(', ')}. 저장할 수 없습니다.
+                </p>
               )}
 
               {/* 변경 사항 미리보기: 제출 전 무엇이 바뀌는지 요약한다. */}
@@ -1780,6 +1955,8 @@ export default function DashboardClient() {
           onClose={closeDetailModal}
         />
       )}
+
+      <ToastStack items={toasts} onDismiss={dismissToast} />
     </AppShell>
   );
 }

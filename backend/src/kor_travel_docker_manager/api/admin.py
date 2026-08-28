@@ -3,8 +3,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from kor_travel_docker_manager.services.admin_password_service import (
+    MIN_NEW_PASSWORD_LENGTH,
+    AdminPasswordError,
+    change_admin_password,
+    pinned_rebuild_guard_state,
+)
 from kor_travel_docker_manager.services.auth_service import (
     AdminSessionContext,
+    admin_username,
+    check_login_rate_limit,
     list_login_audit_events,
     record_login_audit_event,
     require_admin_session,
@@ -23,6 +31,14 @@ router = APIRouter(
 
 class PublicApiKeyCreateRequest(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class AdminPasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=MIN_NEW_PASSWORD_LENGTH, max_length=200)
+    # 미종결 rebuild journal을 backend가 **증명하지 못할 때만** 필요한 명시 승인.
+    # 증명된 미종결 journal은 이 플래그로도 통과하지 못한다.
+    acknowledge_pinned_rebuild_invalidation: bool = Field(default=False)
 
 
 @router.get("/login-audit-events")
@@ -83,3 +99,80 @@ def delete_public_api_key(
         detail={"key_hint": result["key_hint"]},
     )
     return result
+
+
+@router.get("/password/preflight")
+def get_admin_password_preflight(
+    _session: Annotated[AdminSessionContext, Depends(require_admin_session)],
+):
+    """UI가 폼을 그리기 전에 rebuild journal 가드 상태를 먼저 읽는다.
+
+    눌러 본 뒤에야 거부를 알게 하지 않기 위한 읽기 전용 route다."""
+    return pinned_rebuild_guard_state()
+
+
+@router.post("/password")
+def post_admin_password(
+    payload: AdminPasswordChangeRequest,
+    request: Request,
+    session: Annotated[AdminSessionContext, Depends(require_admin_session)],
+):
+    """관리자 비밀번호를 `.env` 단일 키로 회전한다.
+
+    현재 비밀번호 재검증이 typed confirmation 역할을 하지만, 세션을 쥔 상대가 현재
+    비밀번호를 무제한 시도하는 것은 막아야 한다. 로그인과 같은 durable 카운터를 쓰려면
+    실패 행의 `event_type`이 `login`이어야 하므로 그 경우에만 그렇게 기록한다."""
+    retry_after = check_login_rate_limit(request)
+    if retry_after is not None:
+        record_login_audit_event(
+            request,
+            event_type="login",
+            outcome="denied",
+            attempted_username=session.username,
+            reason="rate_limited",
+            session_id_hash=session.session_id_hash,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail="RATE_LIMITED",
+            headers={"Retry-After": str(retry_after)},
+        )
+    try:
+        result = change_admin_password(
+            current_password=payload.current_password,
+            new_password=payload.new_password,
+            acknowledge_pinned_rebuild_invalidation=(
+                payload.acknowledge_pinned_rebuild_invalidation
+            ),
+        )
+    except AdminPasswordError as exc:
+        record_login_audit_event(
+            request,
+            # 잘못된 현재 비밀번호만 로그인 카운터에 합류시킨다. 나머지 거부는 자격증명
+            # 추측이 아니므로 브루트포스 카운터를 오염시키면 안 된다.
+            event_type="login" if exc.code == "INVALID_CREDENTIALS" else "admin_password",
+            outcome="denied",
+            attempted_username=admin_username(),
+            reason=(
+                "invalid_credentials"
+                if exc.code == "INVALID_CREDENTIALS"
+                else exc.code.lower()[:80]
+            ),
+            session_id_hash=session.session_id_hash,
+            detail={"code": exc.code},
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    # 비밀번호도 해시도 감사에 넣지 않는다 — 판정 문자열과 불리언뿐이다.
+    record_login_audit_event(
+        request,
+        event_type="admin_password",
+        outcome="succeeded",
+        attempted_username=session.username,
+        reason="admin_password_changed",
+        session_id_hash=session.session_id_hash,
+        detail={"guard": result["guard"], "acknowledged": result["acknowledged"]},
+    )
+    return {"ok": True, "guard": result["guard"]}
