@@ -33,7 +33,9 @@ M05 isolated PinVi runtime을 기동할 때도 이 소유 경계를 우회하지
 private `0700` runtime directory에 `0600` admission을 만들고 exact transaction ID, current
 pinset, Manager·Map·PinVi source revision을 함께 쓴다. PinVi `docker-app.sh`는 caller environment
 marker가 아니라 이 admission을 no-follow로 검증한 경우만 `m05i-pinvi-<transaction>` Compose
-mutation을 허용한다. 따라서 direct Compose·수동 root marker·환경변수는 Manager의 `rotate-pair`,
+mutation을 허용한다. Manager는 env file에 쓰는 값과 별개로 exact source revision·admission path·pinset을
+clean child environment로 전달하고, PinVi는 root EUID에서 `/usr/bin/python3 -I`를 clean environment로
+실행한다. 따라서 direct Compose·수동 root marker·PATH shim·환경변수는 Manager의 `rotate-pair`,
 registry, one-shot ledger를 대체하지 못한다.
 
 ---

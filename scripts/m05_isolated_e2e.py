@@ -82,6 +82,8 @@ _PINVI_MANAGER_ADMISSION_TOKENS = frozenset(
         "PINVI_M05_PINSET_SHA256",
         "m05_isolated_manager_admission.py",
         "pinvi-m05-isolated-manager-admission-v1",
+        '[[ "$EUID" -eq 0 ]]',
+        "/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I",
     }
 )
 _SAFE_SUBPROCESS_ENV = {
@@ -1070,6 +1072,24 @@ def _assert_pinvi_manager_admission_contract(pinvi_root: Path) -> None:
         _fail("pinvi_manager_admission_contract_invalid")
 
 
+def _pinvi_manager_admission_environment(
+    *,
+    env_file: Path,
+    project: str,
+    pinvi_source_revision: str,
+    admission_path: Path,
+) -> dict[str, str]:
+    """Manager가 검증한 admission tuple만 PinVi direct gate에 전달한다."""
+
+    return {
+        "PINVI_ENV_FILE": str(env_file),
+        "PINVI_DOCKER_PROJECT": project,
+        "PINVI_SOURCE_REVISION": pinvi_source_revision,
+        "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission_path),
+        "PINVI_M05_PINSET_SHA256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+    }
+
+
 def _container_id(
     project: str, service: str, *, root: Path, env_file: Path, files: tuple[Path, ...]
 ) -> str:
@@ -1547,10 +1567,12 @@ def main(expected_revision: str, output: Path) -> int:
         phase = "pinvi_runtime"
         pinvi_files = (pinvi_root / "infra/docker-compose.app.yml", pinvi_override)
         pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ())
-        environment = {
-            "PINVI_ENV_FILE": str(pinvi_env),
-            "PINVI_DOCKER_PROJECT": plan.pinvi_project,
-        }
+        environment = _pinvi_manager_admission_environment(
+            env_file=pinvi_env,
+            project=plan.pinvi_project,
+            pinvi_source_revision=pair.pinvi_source_revision,
+            admission_path=pinvi_admission,
+        )
         _command(
             str(pinvi_root / "scripts/docker-app.sh"),
             "up",

@@ -141,7 +141,10 @@ def test_pinvi_manager_admission_contract_requires_the_gate_and_verifier(tmp_pat
         encoding="utf-8",
     )
     (scripts / "m05_isolated_manager_admission.py").write_text(
-        "pinvi-m05-isolated-manager-admission-v1\n", encoding="utf-8"
+        "pinvi-m05-isolated-manager-admission-v1\n"
+        '[[ "$EUID" -eq 0 ]]\n'
+        "/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I\n",
+        encoding="utf-8",
     )
 
     driver._assert_pinvi_manager_admission_contract(tmp_path)
@@ -715,14 +718,31 @@ def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
 
 
 def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:
+    driver = _driver()
+    admission = Path("/private/runtime/pinvi-isolated-manager-admission.json")
+
+    environment = driver._pinvi_manager_admission_environment(
+        env_file=Path("/private/runtime/pinvi.env"),
+        project="m05i-pinvi-" + "e" * 32,
+        pinvi_source_revision="d" * 40,
+        admission_path=admission,
+    )
+
+    assert environment == {
+        "PINVI_ENV_FILE": "/private/runtime/pinvi.env",
+        "PINVI_DOCKER_PROJECT": "m05i-pinvi-" + "e" * 32,
+        "PINVI_SOURCE_REVISION": "d" * 40,
+        "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission),
+        "PINVI_M05_PINSET_SHA256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+    }
+    assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in environment
+
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
-
     admission_write = source.index("build_m05_isolated_manager_admission(plan=plan, pair=pair)")
     pinvi_up = source.index('str(pinvi_root / "scripts/docker-app.sh"),')
 
     assert admission_write < pinvi_up
-    assert "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH={pinvi_admission}" in source
-    assert "PINVI_M05_PINSET_SHA256={PINNED_RUNTIME_RELEASE.pinset_sha256}" in source
+    assert "_pinvi_manager_admission_environment(" in source
     assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in source

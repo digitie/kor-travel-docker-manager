@@ -526,7 +526,9 @@ environment marker만 신뢰한다는 P1을 발견했다. 이는 `ktdctl`만 pin
 소유한다는 계약과 모순된다. Manager root driver는 이제 private runtime directory에 `0600` admission을
 만들고, exact transaction project·current pinset·Manager·Map·PinVi source revision을 함께 결박한다.
 PinVi는 그 파일을 no-follow로 읽어 exact schema와 결박을 확인할 때만 isolated mutation을 허용하며,
-legacy environment marker는 거부한다. admission은 private one-shot 입력일 뿐 API·UI 공개 표면이나
+legacy environment marker는 거부한다. Manager는 이 tuple을 clean child environment로 전달하고 PinVi는
+root EUID에서 `/usr/bin/python3 -I`로 검증하므로 PATH shim·임의 environment는 admission을 대체하지
+못한다. admission은 private one-shot 입력일 뿐 API·UI 공개 표면이나
 manifest/journal schema를 바꾸지 않는다.
 
 ---
