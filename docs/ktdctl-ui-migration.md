@@ -21,8 +21,8 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
 
 - **v4 (2026-08-29)**: M05 control-plane terminal 재발 방지 구현을 반영했다. runtime
   pin mutation(`init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`,
-  `rollback`, `block`)은 모두 `ktdctl`의 host-global mutation lock으로 직렬화하며,
-  실행 중 one-shot과 병렬인 외부 write는 거절한다. 검증된 launcher inherited-lock의
+  `rollback`, `block`)은 모두 `ktdctl`의 host-global mutation lock 안에서 대상 read·검증·
+  derive·write·대기 요청 정리까지 원자화하며, 실행 중 one-shot과 병렬인 외부 write는 거절한다. 검증된 launcher inherited-lock의
   terminal fallback만 예외다. 또한 Map·PinVi·Manager의 문서 전용 병합은 candidate
   source tuple·provenance·pinset을 다시 만들지 않고, 코드·Compose·계약·빌드 입력 변경만
   새 CI·전문 리뷰·one-shot 후보를 만든다.
