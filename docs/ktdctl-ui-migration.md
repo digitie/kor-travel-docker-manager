@@ -26,6 +26,8 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
   terminal fallback만 예외다. 또한 Map·PinVi·Manager의 문서 전용 병합은 candidate
   source tuple·provenance·pinset을 다시 만들지 않고, 코드·Compose·계약·빌드 입력 변경만
   새 CI·전문 리뷰·one-shot 후보를 만든다.
+  PR synchronize CI가 생성되지 않으면 `workflow_dispatch`로 같은 exact head의 read-only
+  CI를 재실행한다. 이는 runtime mutation이나 candidate 재결박 권한을 주지 않는다.
 
 - **v1**: 보안/안정성 우선의 초판(ktdctl 인벤토리 + 7개 운영 영역 격차 분석).
 - **v2**: 오너 방향 재지정("보안·안정성보다는 **비전문가의 관리 편의성·직관성** 중심")
