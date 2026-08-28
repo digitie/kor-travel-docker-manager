@@ -370,6 +370,52 @@ def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
     assert "discarded" not in json.dumps(receipt, sort_keys=True)
 
 
+def test_cleanup_boundary_marks_ordinary_exceptions_for_fixed_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup의 OSError도 driver raw-output 부재로 전파하지 않는다."""
+
+    driver = _driver()
+    cleanup = (tmp_path, "m05i-test", tmp_path / "runtime.env", (tmp_path / "x.yml",), ())
+    monkeypatch.setattr(
+        driver,
+        "_cleanup_project",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("discarded")),
+    )
+
+    assert driver._cleanup_temporary_resources(
+        map_cleanup=cleanup,
+        pinvi_cleanup=None,
+        private_files=(),
+    ) == (False, True)
+
+
+def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """registry block 내부 오류도 원문 없이 fixed driver receipt로 수렴한다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(driver._PhaseError("admission_failed")),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_pinset",
+        lambda: (_ for _ in ()).throw(OSError("discarded")),
+    )
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert receipt["status"] == "blocked"
+    assert receipt["phase"] == "driver_contract_failed"
+    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert "discarded" not in json.dumps(receipt, sort_keys=True)
+
+
 def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
     """terminal direct launch은 새 leaf·driver·ledger를 만들기 전에 끝난다."""
 

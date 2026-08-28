@@ -59,6 +59,7 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
 # 이 드라이버는 한 번의 격리 실행 전체가 같은 pinset에 결박돼야 하므로 모듈 로드
 # 시점에 한 번만 해석한다 — 실행 도중 회전이 끼어들면 전후가 다른 pinset이 된다.
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
+_CleanupProject = tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]]
 
 _ROOT = Path("/opt/kor-travel-docker-manager")
 _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")
@@ -413,6 +414,41 @@ def _cleanup_project(
     ).strip()
     if remaining or networks or volumes:
         _fail("runtime_cleanup_failed")
+
+
+def _cleanup_temporary_resources(
+    *,
+    map_cleanup: _CleanupProject | None,
+    pinvi_cleanup: _CleanupProject | None,
+    private_files: tuple[Path, ...],
+) -> tuple[bool, bool]:
+    """정상 cleanup failure와 receipt로 수렴해야 할 unexpected failure를 분리한다."""
+
+    cleanup_failed = False
+    unexpected_failure = False
+    for cleanup in (pinvi_cleanup, map_cleanup):
+        if cleanup is None:
+            continue
+        try:
+            _cleanup_project(
+                root=cleanup[0],
+                project=cleanup[1],
+                env_file=cleanup[2],
+                files=cleanup[3],
+                profiles=cleanup[4],
+            )
+        except _PhaseError:
+            cleanup_failed = True
+        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            unexpected_failure = True
+    for path in private_files:
+        try:
+            _unlink_private(path)
+        except _PhaseError:
+            cleanup_failed = True
+        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            unexpected_failure = True
+    return cleanup_failed, unexpected_failure
 
 
 def _random_secret() -> str:
@@ -1129,10 +1165,8 @@ def main(expected_revision: str, output: Path) -> int:
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
     failure_diagnostic: str | None = None
-    map_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = None
-    pinvi_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = (
-        None
-    )
+    map_cleanup: _CleanupProject | None = None
+    pinvi_cleanup: _CleanupProject | None = None
     private_files: tuple[Path, ...] = ()
     result_hashes: dict[str, str] = {}
     try:
@@ -1759,31 +1793,28 @@ def main(expected_revision: str, output: Path) -> int:
     except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
         phase = "driver_contract_failed"
     finally:
-        cleanup_failed = False
-        for cleanup in (pinvi_cleanup, map_cleanup):
-            if cleanup is None:
-                continue
-            try:
-                _cleanup_project(
-                    root=cleanup[0],
-                    project=cleanup[1],
-                    env_file=cleanup[2],
-                    files=cleanup[3],
-                    profiles=cleanup[4],
-                )
-            except _PhaseError:
-                cleanup_failed = True
-        for path in private_files:
-            try:
-                _unlink_private(path)
-            except _PhaseError:
-                cleanup_failed = True
-        driver_phase = phase
-        if cleanup_failed:
+        cleanup_failed, unexpected_finalization_failure = _cleanup_temporary_resources(
+            map_cleanup=map_cleanup,
+            pinvi_cleanup=pinvi_cleanup,
+            private_files=private_files,
+        )
+        if unexpected_finalization_failure:
+            completed = False
+            phase = "driver_contract_failed"
+        elif cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
-        if not completed and not _block_terminal_m05_pinset():
-            phase = "runtime_pin_block_failed"
+        if not completed:
+            try:
+                pinset_blocked = _block_terminal_m05_pinset()
+            except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+                pinset_blocked = False
+                unexpected_finalization_failure = True
+            if unexpected_finalization_failure:
+                phase = "driver_contract_failed"
+            elif not pinset_blocked:
+                phase = "runtime_pin_block_failed"
+        driver_phase = phase
         for name in _RAW_ENV_NAMES:
             os.environ.pop(name, None)
         result: dict[str, object] = {
