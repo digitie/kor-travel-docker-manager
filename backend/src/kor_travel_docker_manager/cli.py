@@ -394,25 +394,26 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
                 "(이전 상태는 digest 이름으로 보존됩니다).",
             )
     try:
-        seed = load_runtime_pin_registry(path=Path(args.seed))
-        registry = build_registry(
-            release_version=seed.release_version,
-            map_revision=seed.map_revision,
-            pinvi_revision=seed.pinvi_revision,
-            rotated_by=_pin_actor(),
-            reason=args.reason,
-            # 재시딩이 이력과 차단 목록을 지우면 롤백 소스와 terminal 규율이 함께
-            # 사라진다. 기존 값이 있으면 승계하고, 이전 상태도 보존한다.
-            history=existing.history if existing is not None else (),
-            # declared 목록만 승계한다. 코드 하한선은 파일이 아니라 코드가 소유하므로
-            # 파일에 적어 넣으면 사람이 지울 수 있는 값이 되어 하한선이 아니게 된다.
-            blocked_pinsets=(
-                existing.blocked_pinsets if existing is not None else seed.blocked_pinsets
-            ),
-        )
-        write_runtime_pin_registry(
-            registry, path=path, preserve_previous=existing is not None
-        )
+        with _runtime_pin_mutation_lock():
+            seed = load_runtime_pin_registry(path=Path(args.seed))
+            registry = build_registry(
+                release_version=seed.release_version,
+                map_revision=seed.map_revision,
+                pinvi_revision=seed.pinvi_revision,
+                rotated_by=_pin_actor(),
+                reason=args.reason,
+                # 재시딩이 이력과 차단 목록을 지우면 롤백 소스와 terminal 규율이 함께
+                # 사라진다. 기존 값이 있으면 승계하고, 이전 상태도 보존한다.
+                history=existing.history if existing is not None else (),
+                # declared 목록만 승계한다. 코드 하한선은 파일이 아니라 코드가 소유하므로
+                # 파일에 적어 넣으면 사람이 지울 수 있는 값이 되어 하한선이 아니게 된다.
+                blocked_pinsets=(
+                    existing.blocked_pinsets if existing is not None else seed.blocked_pinsets
+                ),
+            )
+            write_runtime_pin_registry(
+                registry, path=path, preserve_previous=existing is not None
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -542,10 +543,11 @@ def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
         print("manifest and journal paths must be absolute", file=sys.stderr)
         return 2
     try:
-        paths = publish_pinned_runtime_generation(
-            manifest=read_manifest(manifest_path),
-            journal=read_rebuild_journal(journal_path),
-        )
+        with _runtime_pin_mutation_lock():
+            paths = publish_pinned_runtime_generation(
+                manifest=read_manifest(manifest_path),
+                journal=read_rebuild_journal(journal_path),
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -576,13 +578,14 @@ def _cmd_pin_rotate(args: argparse.Namespace) -> int:
         print("pin rotate requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        registry = rotate_runtime_pin(
-            role=args.role,
-            revision=args.revision,
-            reason=args.reason,
-            rotated_by=_pin_actor(),
-            block_previous=args.block_previous,
-        )
+        with _runtime_pin_mutation_lock():
+            registry = rotate_runtime_pin(
+                role=args.role,
+                revision=args.revision,
+                reason=args.reason,
+                rotated_by=_pin_actor(),
+                block_previous=args.block_previous,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -596,13 +599,14 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
         print("pin rotate-pair requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        registry = rotate_runtime_pin_pair(
-            map_revision=args.map_revision,
-            pinvi_revision=args.pinvi_revision,
-            reason=args.reason,
-            rotated_by=_pin_actor(),
-            block_previous=args.block_previous,
-        )
+        with _runtime_pin_mutation_lock():
+            registry = rotate_runtime_pin_pair(
+                map_revision=args.map_revision,
+                pinvi_revision=args.pinvi_revision,
+                reason=args.reason,
+                rotated_by=_pin_actor(),
+                block_previous=args.block_previous,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -619,7 +623,7 @@ def _cmd_pin_block(args: argparse.Namespace) -> int:
         print("pin block requires root", file=sys.stderr)
         return 2
     try:
-        with _terminal_pin_block_mutation_lock():
+        with _runtime_pin_mutation_lock(allow_inherited_terminal_block=True):
             registry = block_runtime_pinset(
                 pinset_sha256=args.pinset,
                 reason=args.reason,
@@ -659,25 +663,25 @@ def _running_as_root() -> bool:
 
 
 @contextmanager
-def _terminal_pin_block_mutation_lock() -> Iterator[None]:
-    """외부 terminal block을 global mutation과 직렬화한다.
+def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) -> Iterator[None]:
+    """모든 runtime pin mutation을 one-shot과 직렬화한다.
 
-    one-shot launcher는 검증한 driver 종료 뒤 상속 받은 같은 open-file-description으로
-    이 경계를 재진입한다. 반면 별도 SSH/CLI 호출은 lock이 비어 있을 때만 이 registry
-    mutation을 수행할 수 있다. 따라서 출력 회수 지연을 실패로 오인해 실행 중 candidate를
-    premature terminal로 봉인할 수 없다.
+    one-shot launcher의 terminal fallback만 검증한 inherited descriptor로 재진입할 수
+    있다. 그 밖의 `init`·공개 복사·회전·rollback·block은 별도 SSH/CLI 호출이므로 lock이
+    비어 있을 때만 수행한다. 따라서 출력 회수 지연을 실패로 오인해 실행 중 candidate를
+    봉인하거나 pair/generation을 바꿀 수 없다.
     """
 
     inherited_text = os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, "")
     if inherited_text:
-        if not inherited_text.isdecimal():
-            raise DeploymentContractError("terminal pin block inherited lock is invalid")
+        if not allow_inherited_terminal_block or not inherited_text.isdecimal():
+            raise DeploymentContractError("runtime pin mutation inherited lock is invalid")
         descriptor = int(inherited_text)
         try:
             opened = os.fstat(descriptor)
             named = _GLOBAL_MUTATION_LOCK_PATH.lstat()
         except OSError as exc:
-            raise DeploymentContractError("terminal pin block inherited lock is invalid") from exc
+            raise DeploymentContractError("runtime pin mutation inherited lock is invalid") from exc
         if (
             (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
             or not stat.S_ISREG(opened.st_mode)
@@ -688,11 +692,11 @@ def _terminal_pin_block_mutation_lock() -> Iterator[None]:
             or stat.S_IMODE(opened.st_mode) != 0o600
             or opened.st_nlink != 1
         ):
-            raise DeploymentContractError("terminal pin block inherited lock is unsafe")
+            raise DeploymentContractError("runtime pin mutation inherited lock is unsafe")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise DeploymentContractError("terminal pin block inherited lock is not held") from exc
+            raise DeploymentContractError("runtime pin mutation inherited lock is not held") from exc
         yield
         return
 
@@ -706,14 +710,23 @@ def _terminal_pin_block_mutation_lock() -> Iterator[None]:
         # mutation이 없으므로, registry 자체의 root ownership gate에 맡긴다.
         yield
         return
+    except PermissionError:
+        # production lock directory는 root `0700`이다. 비root 개발 fixture는 registry를
+        # 임시 경로로 바꿔 검증하므로 이 host lock을 열 수 없고, 실제 production에서는
+        # 이어지는 root-owned registry write 자체가 거절된다. 따라서 권한 없는 개발
+        # 호출을 active mutation으로 오인하지 않는다.
+        if getattr(os, "geteuid", lambda: 1)() != 0:
+            yield
+            return
+        raise DeploymentContractError("runtime pin mutation lock is unavailable") from None
     except OSError as exc:
-        raise DeploymentContractError("terminal pin block lock is unavailable") from exc
+        raise DeploymentContractError("runtime pin mutation lock is unavailable") from exc
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise DeploymentContractError(
-                "terminal pin block is refused while a Manager mutation is active"
+                "runtime pin mutation is refused while a Manager mutation is active"
             ) from exc
         yield
     finally:
@@ -949,13 +962,14 @@ def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        updated = rotate_runtime_pin(
-            role=request.role,
-            revision=request.revision,
-            reason=_applied_reason(request),
-            rotated_by=_applied_actor(request),
-            block_previous=args.block_previous,
-        )
+        with _runtime_pin_mutation_lock():
+            updated = rotate_runtime_pin(
+                role=request.role,
+                revision=request.revision,
+                reason=_applied_reason(request),
+                rotated_by=_applied_actor(request),
+                block_previous=args.block_previous,
+            )
     except DeploymentContractError as exc:
         print(f"{exc} (요청은 그대로 남아 있습니다)", file=sys.stderr)
         if "pair rotation" in str(exc):
@@ -1041,11 +1055,12 @@ def _cmd_pin_rollback(args: argparse.Namespace) -> int:
         print("pin rollback requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        registry = rollback_runtime_pin(
-            pinset_sha256=args.to,
-            rotated_by=_pin_actor(),
-            reason=args.reason,
-        )
+        with _runtime_pin_mutation_lock():
+            registry = rollback_runtime_pin(
+                pinset_sha256=args.to,
+                rotated_by=_pin_actor(),
+                reason=args.reason,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
