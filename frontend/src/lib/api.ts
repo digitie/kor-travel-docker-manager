@@ -3,11 +3,49 @@ export const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localh
 export class ApiError extends Error {
   status: number;
 
-  constructor(status: number, message: string) {
-    super(message);
+  /** 백엔드가 보낸 `detail`의 구조화된 코드. FastAPI가 문자열 detail을 보내면 null이다. */
+  code: string | null;
+
+  /** 사람이 읽을 수 있는 서버 메시지. 없으면 null이고, 그때는 `message`(원문)를 쓴다. */
+  serverMessage: string | null;
+
+  /** 응답 본문 원문. "자세히" 접기에서 그대로 보여 준다. */
+  raw: string;
+
+  constructor(status: number, raw: string) {
+    const parsed = parseErrorBody(raw);
+    super(parsed.serverMessage || raw || `${status}`);
     this.name = 'ApiError';
     this.status = status;
+    this.code = parsed.code;
+    this.serverMessage = parsed.serverMessage;
+    this.raw = raw;
   }
+}
+
+/** FastAPI의 `{"detail": ...}` 본문에서 코드와 메시지를 뽑는다.
+ *
+ * detail은 문자열일 때도, `{code, message, ...}` 객체일 때도 있다
+ * (`api/routes.py`의 candidate/post-mutation 계약 오류가 후자다). 어느 쪽이든
+ * 실패하면 원문을 그대로 쓰고 예외를 던지지 않는다 — 오류 표시 경로가 다시
+ * 오류를 내면 안 된다. */
+function parseErrorBody(raw: string): { code: string | null; serverMessage: string | null } {
+  if (!raw) return { code: null, serverMessage: null };
+  let body: unknown;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    return { code: null, serverMessage: null };
+  }
+  const detail = (body as { detail?: unknown })?.detail;
+  if (typeof detail === 'string') return { code: null, serverMessage: detail };
+  if (detail && typeof detail === 'object') {
+    const record = detail as Record<string, unknown>;
+    const code = typeof record.code === 'string' ? record.code : null;
+    const message = typeof record.message === 'string' ? record.message : null;
+    return { code, serverMessage: message };
+  }
+  return { code: null, serverMessage: null };
 }
 
 export type AuthMe = {

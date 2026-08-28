@@ -30,7 +30,9 @@ import BackupHistoryPanel from './BackupHistoryPanel';
 import RuntimePinPanel from './RuntimePinPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
+import ToastStack, { ToastItem, errorToast, successToast } from './Toast';
 import AppShell from './layout/AppShell';
+import { humanizeError } from '@/lib/errors';
 import {
   ApiError,
   AuthMe,
@@ -126,6 +128,47 @@ function formatTimestamp(timestampStr: string) {
   }
 }
 
+// 상태 칸은 Docker의 원문(running/not_created…)을 그대로 보여 줬는데 같은 화면의 KPI는
+// 한국어라 어휘가 이중이었다. 표시는 한국어로 통일하고 원문은 title 속성으로 남긴다.
+const STATUS_LABELS: Record<string, string> = {
+  running: '실행 중',
+  exited: '중지됨',
+  offline: '연결 끊김',
+  paused: '일시정지',
+  restarting: '재시작 중',
+  starting: '시작 중',
+  created: '생성됨',
+  not_created: '미생성',
+  'not created': '미생성',
+  dead: '비정상 종료',
+  error: '오류',
+};
+
+const statusLabel = (status: string): string =>
+  STATUS_LABELS[(status || '').toLowerCase()] ?? status;
+
+// role은 내부 식별자(map-api, metrics-exporter…)라 처음 보는 사람에게 의미가 없다.
+const ROLE_LABELS: Record<string, string> = {
+  postgresql: '데이터베이스',
+  rustfs: '오브젝트 저장소',
+  prometheus: '메트릭 수집',
+  grafana: '메트릭 시각화',
+  cadvisor: '컨테이너 메트릭',
+  'metrics-exporter': '메트릭 노출',
+};
+
+const roleLabel = (role: string | null | undefined): string => {
+  const value = (role || '').toLowerCase();
+  if (!value) return '-';
+  if (ROLE_LABELS[value]) return ROLE_LABELS[value];
+  if (value.includes('dagster') || value.includes('scheduler')) return '워크플로';
+  if (value.includes('mcp')) return 'MCP 서버';
+  if (value.endsWith('-api') || value.includes('api')) return 'API 서버';
+  if (value.includes('ui') || value.includes('web')) return '웹 UI';
+  if (value.includes('geocoder')) return '지오코더';
+  return role || '-';
+};
+
 const getStatusConfig = (status: string) => {
   const s = status.toLowerCase();
   if (s === 'running') {
@@ -198,6 +241,14 @@ export default function DashboardClient() {
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
   const [isRuntimePinsOpen, setIsRuntimePinsOpen] = useState<boolean>(false);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  // 실패는 사람이 읽고 닫아야 하므로 쌓이되, 화면을 덮지 않게 최근 것만 남긴다.
+  const pushToast = useCallback((item: ToastItem) => {
+    setToasts((current) => [...current, item].slice(-3));
+  }, []);
+  const dismissToast = useCallback((id: number) => {
+    setToasts((current) => current.filter((item) => item.id !== id));
+  }, []);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [commandQuery, setCommandQuery] = useState('');
   const commandInputRef = useRef<HTMLInputElement>(null);
@@ -547,7 +598,31 @@ export default function DashboardClient() {
     },
   });
 
+  // 컨테이너 하나를 멈추면 그것에 의존하는 서비스도 함께 영향을 받는다. 그 범위는
+  // 이미 받아 둔 target 데이터로 계산할 수 있는데, 지금까지는 확인 없이 즉시 실행돼
+  // 누르기 전에는 알 수 없었다. `ContainerDetailModal.runEnsure`가 쓰는 것과 같은
+  // "영향 범위를 세어 보여 주고 확인받는" 패턴을 stop/restart에도 적용한다.
+  const impactedTargetsFor = useCallback(
+    (containerId: string) =>
+      targets.filter((target) => (target.containers ?? []).includes(containerId)),
+    [targets]
+  );
+
   const handleAction = (id: string, action: string) => {
+    if (action === 'stop' || action === 'restart') {
+      const container = displayContainers.find((item) => item.id === id);
+      const label = container?.display_name || container?.name || id;
+      const impacted = impactedTargetsFor(id);
+      const verb = action === 'stop' ? '중지' : '재시작';
+      const scope = impacted.length
+        ? `\n\n이 컨테이너는 다음 ${impacted.length}개 target에 포함됩니다: ` +
+          `${impacted.map((target) => target.id).join(', ')}\n` +
+          '해당 target을 쓰는 앱이 함께 영향을 받습니다.'
+        : '';
+      if (!window.confirm(`${label}을(를) ${verb}합니다.${scope}\n\n계속할까요?`)) {
+        return;
+      }
+    }
     actionMutation.mutate({ id, action });
   };
 
@@ -562,11 +637,16 @@ export default function DashboardClient() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
       setIsConfigModalOpen(false);
-      alert('설정이 성공적으로 반영되었으며, 컨테이너가 재생성되었습니다.');
+      pushToast(
+        successToast(
+          '설정을 반영했습니다.',
+          '컨테이너가 새 설정으로 재생성되었습니다.'
+        )
+      );
     },
-    onError: (err: any) => {
-      alert(`설정 변경 실패: ${err.message}`);
-    }
+    onError: (err: unknown) => {
+      pushToast(errorToast(humanizeError(err, '설정 변경')));
+    },
   });
 
   // Config Reset mutation - Versioned v1
@@ -579,11 +659,16 @@ export default function DashboardClient() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['containers'] });
       setIsConfigModalOpen(false);
-      alert('설정이 기본값으로 원복되었으며, 컨테이너가 재생성되었습니다.');
+      pushToast(
+        successToast(
+          '설정을 기본값으로 되돌렸습니다.',
+          '컨테이너가 기본 설정으로 재생성되었습니다.'
+        )
+      );
     },
-    onError: (err: any) => {
-      alert(`설정 원복 실패: ${err.message}`);
-    }
+    onError: (err: unknown) => {
+      pushToast(errorToast(humanizeError(err, '설정 원복')));
+    },
   });
 
   // 1-Hour Performance Metrics History Query - Versioned v1
@@ -954,8 +1039,11 @@ export default function DashboardClient() {
                       <td data-label="상태">
                         <div className="flex items-center gap-2.5">
                           <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
-                          <span className={`${statusCfg.textClass} text-xs md:text-sm uppercase tracking-[0.05em] font-bold`}>
-                            {container.status}
+                          <span
+                            className={`${statusCfg.textClass} text-xs md:text-sm tracking-[0.05em] font-bold`}
+                            title={container.status}
+                          >
+                            {statusLabel(container.status)}
                           </span>
                         </div>
                       </td>
@@ -986,7 +1074,7 @@ export default function DashboardClient() {
 
                       {/* Role */}
                       <td data-label="역할" className="text-ink text-xs md:text-sm">
-                        {container.role}
+                        <span title={container.role ?? undefined}>{roleLabel(container.role)}</span>
                       </td>
 
                       {/* Port Bindings */}
@@ -1533,53 +1621,29 @@ export default function DashboardClient() {
                 </div>
               </div>
 
-              {/* Volumes section */}
+              {/* Volumes section — 서버가 불변 계약으로 거부하므로 처음부터 읽기 전용이다.
+                  편집을 허용한 뒤 저장 시점에 경고하면 사용자는 이미 값을 잃은 뒤다. */}
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">볼륨 마운트 (host:container:mode)</h4>
-                  <button
-                    type="button"
-                    onClick={() => setInputVolumesList(prev => [...prev, ''])}
-                    className="text-[10px] text-brand hover:underline font-bold uppercase tracking-[0.05em]"
-                  >
-                    + 추가
-                  </button>
+                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">
+                    볼륨 마운트 (읽기 전용)
+                  </h4>
                 </div>
                 <div className="space-y-2">
-                  {/* index-only key — 값을 key에 넣으면 keystroke마다 재마운트돼 포커스를 잃는다. */}
+                  <p className="text-xs text-secondary">
+                    볼륨은 이 화면에서 바꿀 수 없습니다. 데이터 위치가 바뀌면 기존 데이터를
+                    잃을 수 있어 서버가 변경을 거부합니다.
+                  </p>
                   {inputVolumesList.map((vol, idx) => (
-                    <div key={`vol-${idx}`} className="flex gap-2 items-center">
-                      <input
-                        type="text"
-                        value={vol}
-                        onChange={(e) => {
-                          const next = [...inputVolumesList];
-                          next[idx] = e.target.value;
-                          setInputVolumesList(next);
-                        }}
-                        placeholder="e.g. ${KOR_TRAVEL_GEO_PGDATA:-/tmp/pgdata}:/var/lib/postgresql/data"
-                        className="bg-card border border-line focus:border-brand focus:ring-0 rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 focus-visible:outline-brand flex-grow font-mono"
-                        aria-label={`볼륨 마운트 ${idx + 1}`} // Added aria-label for accessibility
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setInputVolumesList(prev => prev.filter((_, i) => i !== idx))}
-                        className="text-danger hover:text-danger/80 p-1.5"
-                        aria-label={`볼륨 마운트 ${idx + 1} 삭제`} // Added aria-label for accessibility
-                      >
-                        <X className="w-4.5 h-4.5" />
-                      </button>
-                    </div>
+                    <p
+                      className="bg-subtle border border-line rounded-card px-4 py-2 text-xs text-secondary font-mono break-all"
+                      key={`vol-${idx}`}
+                    >
+                      {vol}
+                    </p>
                   ))}
                   {inputVolumesList.length === 0 && (
                     <p className="text-xs text-secondary font-light italic">볼륨 바인딩 설정이 없습니다.</p>
-                  )}
-                  {configValidation.volumesChanged && (
-                    <p className="text-danger text-[11px] bg-danger/10 border border-danger/30 rounded-card p-2">
-                      볼륨은 이 화면에서 변경할 수 없습니다. 서버가 컨테이너 변경 전에
-                      거부합니다(volume graph 불변 계약). 원래 값으로 되돌려 주세요.
-                    </p>
                   )}
                 </div>
               </div>
@@ -1780,6 +1844,8 @@ export default function DashboardClient() {
           onClose={closeDetailModal}
         />
       )}
+
+      <ToastStack items={toasts} onDismiss={dismissToast} />
     </AppShell>
   );
 }
