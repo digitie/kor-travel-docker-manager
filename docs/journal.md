@@ -16,9 +16,14 @@ FD에서 소유권·mode·hard-link를 검증하고, publisher의 검사·교체
 `pin publish-generation`도 current pair `match`까지
 재검증한다. terminal 대응 문서는 atomic `pin rotate-pair`로 정정했다.
 
+같은 리뷰에서 preflight가 registry만 보고 stale·partial generation에도 재구축 명령을 안내할 수
+있는 경계를 확인했다. preflight도 public generation의 `match` 또는 strict `pending_rebuild`를
+필수로 읽으며, 그 외 status/binding은 `GENERATION_UNVERIFIED` fail-close와 `ktdctl pin verify`
+안내로 수렴한다.
+
 Map PR #1112는 v8 journal의 3개 PinVi role 확장 키를 exact-dict attestation에 추가하고
 committed 의미까지 검증한다. 이 교차 저장소 pair가 모두 병합되기 전에는 generation API를
-M05 acceptance gate로 사용하지 않는다. 관련 backend 276개는 POSIX `/tmp` 격리에서 통과했고,
+M05 acceptance gate로 사용하지 않는다. 관련 backend 295개는 POSIX `/tmp` 격리에서 통과했고,
 terminal artifact나 n150 one-shot은 열거나 재실행하지 않았다.
 
 ## 2026-08-28 — KUM-M4 public generation 계약·CLI 수선

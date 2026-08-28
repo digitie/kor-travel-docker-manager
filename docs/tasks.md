@@ -232,8 +232,9 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   대조한다. 파괴적 `restore`는 이 계획이 실제 운영에서 무엇을 잡아내는지 본 뒤에
   결정한다.
 - [x] KUM-M14 완료(2026-08-28, **오너 결정: 버튼이 아니라 게이트된 CLI 카드**):
-  `GET /api/v1/pinned-rebuild/preflight`가 차단 사유를 판정하고 화면은 실행할 명령만
-  준다. 실행 경로를 만들지 않는다는 사실을 회귀로 결박했다.
+  `GET /api/v1/pinned-rebuild/preflight`가 registry와 public generation의
+  `match|pending_rebuild`를 함께 판정하고 화면은 실행할 명령만 준다. 실행 경로를 만들지
+  않는다는 사실과 partial·drift generation에서 fail-close한다는 사실을 회귀로 결박했다.
 - [ ] **다음 pin 회전 전 필수**: 고정 PinVi revision이 `PINVI_ROLE_CATALOG_RESET_ONLY`와
   permit/result 경로 3종을 구현해야 한다. 현재 `97d2f924…`는 구현하지 않아 readiness가
   `missing`으로 보고한다(n150 실측). 회전 대상 revision을 그 기준으로 고른다.

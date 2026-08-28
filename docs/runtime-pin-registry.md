@@ -250,6 +250,11 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 | `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
 | `pin show-pending [--json]` | 읽기 전용 | UI가 남긴 대기 요청. 요청 이후 pin이 바뀌었으면 **먼저 그 사실을 경고**한다. 대기 요청이 없으면 exit 1. `--json`은 부재·손상 경로에서도 JSON만 stdout에 낸다 |
+
+`GET /api/v1/pinned-rebuild/preflight`도 같은 generation gate를 사용한다. registry가 정상이어도
+공개 generation이 `partial`·`malformed`·`unverified`·`drift`·`unknown`이면 `can_start=false`이고
+`ktdctl pin verify`만 안내한다. 새 pair 회전 직후의 strict `pending_rebuild`와 current `match`만
+preflight가 command를 제시할 수 있는 상태다.
 | `pin apply-pending (--expect-revision R \| --any-revision) [--block-previous] --confirm` | mutation, **root 전용** | 대기 요청을 적용한다. §7-1의 순서대로 전부 재검증하고, 성공 시 요청 파일을 id 대조 후 삭제한다 |
 | `pin clear-pending (--request-id <id> \| --force) --confirm` | mutation | 대기 요청을 폐기한다. id가 어긋나면 exit 1이며 **아무것도 지우지 않는다**. `--force`는 **읽을 수 없는** 파일만 파싱 없이 지운다(멀쩡한 요청은 거부) |
 
