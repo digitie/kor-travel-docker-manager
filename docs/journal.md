@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-08-28 — N150 `ss` 경로 회귀 방지와 M05 candidate 회전
+
+PinVi `323e3ba8…`·Map `9c64e862…`·pinset `2d6d5ad5…`로 결박한 Manager `d7a048a1…`의 n150
+isolated live E2E는 source materialization과 pair provenance를 통과했지만, Docker mutation 전 port
+preflight가 존재하지 않는 `/usr/sbin/ss`를 호출해 `driver_contract_failed`로 끝났다. root-owned
+`m05-isolated-once` ledger와 결과 증적은 보존하고, 그 candidate는 재실행하지 않는다.
+
+portable Debian runtime 위치인 `/usr/bin/ss`로 고정하고, 모든 port probe가 그 경로만 호출하는 focused
+회귀를 추가했다. 이후 새 Manager revision과 새 ledger claim으로만 n150 live E2E를 한 번 실행한다.
+
+---
+
 ## 2026-08-28 — N150 host Ed25519 fallback을 포함한 PinVi pinset 회전
 
 PinVi `323e3ba8…`은 M04/M05 attestation의 N150 host runner·source·evidence 경계를 유지하면서,

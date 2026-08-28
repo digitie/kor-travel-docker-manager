@@ -365,7 +365,7 @@ def _free_ports(transaction: str) -> dict[str, int]:
             break
         if all(
             not _command(
-                "/usr/sbin/ss", "-H", "-ltn", f"sport = :{port}", capture=True
+                "/usr/bin/ss", "-H", "-ltn", f"sport = :{port}", capture=True
             ).strip()
             for port in ports.values()
         ):

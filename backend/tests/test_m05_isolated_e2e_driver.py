@@ -184,6 +184,34 @@ def test_http_json_default_transport_is_proxy_free_loopback_opener(
     assert len(seen) == 1
 
 
+def test_free_ports_uses_the_standard_ss_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    commands: list[tuple[str, ...]] = []
+
+    def fake_command(*args: str, **_kwargs: object) -> str:
+        commands.append(args)
+        return ""
+
+    monkeypatch.setattr(driver, "_command", fake_command)
+
+    ports = driver._free_ports("a" * 32)
+
+    assert set(ports) == {
+        "map_api",
+        "map_dagster",
+        "map_postgres",
+        "map_rustfs",
+        "pinvi_api",
+        "pinvi_web",
+        "pinvi_rustfs",
+        "pinvi_dagster",
+    }
+    assert commands
+    assert {command[0] for command in commands} == {"/usr/bin/ss"}
+
+
 def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     fixture = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_fixture.py").read_text(
         encoding="utf-8"
