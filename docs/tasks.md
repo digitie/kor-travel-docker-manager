@@ -22,8 +22,8 @@
   registry/public-copy gate 뒤 실행했고 launcher exit 1의 권위 있는 고정 결과는
   `launcher_safe_result_unavailable`이었다. HTTP 원문·container log·환경값·output leaf는 읽거나 남기지 않으며,
   root registry의 exact unconditional terminal entry와 public copy를 확인했다. 이 모든 pinset과 source pair·Manager
-  source·output leaf는 재실행하지 않는다. 다음 Manager source는 driver의 예상하지 못한 ordinary exception도 raw output
-  부재로 새기지 않고 `driver_contract_failed` fixed terminal receipt로 기록한다. 새 Map terminal 기록·새 PinVi paired
+  source·output leaf는 재실행하지 않는다. 다음 Manager source는 main·cleanup·terminal block 단계의 예상하지 못한 ordinary
+  exception도 raw output 부재로 새기지 않고 `driver_contract_failed` fixed terminal receipt로 기록한다. 새 Map terminal 기록·새 PinVi paired
   provenance·이 source를 fresh atomic pinset으로 결박하고 CI·source-head 전문 적대 리뷰 두 건을 모두 통과하기 전에는
   n150 실행권이 없다.
 - [/] `a3f6a8f3…`은 trusted installed-wheel project-root preflight failure로 terminal 차단됐다. 같은

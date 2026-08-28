@@ -15,9 +15,10 @@ exact unconditional terminal entry와 public copy를 다시 확인했으므로 �
 leaf는 재실행하지 않는다.
 
 이번 terminal은 driver가 고정 result를 만들기 전 예상하지 못한 ordinary exception으로 종료할 수 있는 경계를
-보였다. driver는 이제 `BaseException`을 제외한 모든 ordinary exception을 `driver_contract_failed` fixed terminal
-receipt로 수렴시키며, 원문 exception을 receipt에 기록하지 않는다. 회귀 테스트는 unknown exception에서도 blocked
-receipt와 fixed phase가 남고 원문이 없음을 고정한다. 다음 후보는 이 source, 새 Map terminal 기록과 새 PinVi
+보였다. driver는 이제 `BaseException`을 제외한 main·cleanup·terminal block의 모든 ordinary exception을
+`driver_contract_failed` fixed terminal receipt로 수렴시키며, 원문 exception을 receipt에 기록하지 않는다. 회귀
+테스트는 unknown exception·cleanup 오류·terminal block 오류에서도 blocked receipt와 fixed phase가 남고 원문이
+없음을 고정한다. 다음 후보는 이 source, 새 Map terminal 기록과 새 PinVi
 provenance를 fresh atomic pinset으로 결박하고 CI·source-head 전문 적대 리뷰 두 건을 통과한 경우에만 n150에서
 한 번 실행할 수 있다.
 
