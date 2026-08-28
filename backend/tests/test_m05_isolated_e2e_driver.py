@@ -212,6 +212,40 @@ def test_free_ports_uses_the_standard_ss_binary(
     assert {command[0] for command in commands} == {"/usr/bin/ss"}
 
 
+def test_cleanup_includes_map_fresh_init_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+    compose_arguments: list[tuple[str, ...]] = []
+    commands: list[tuple[str, ...]] = []
+
+    def fake_compose(*_args: object, **kwargs: object) -> str:
+        arguments = kwargs["arguments"]
+        assert isinstance(arguments, tuple)
+        compose_arguments.append(arguments)
+        return ""
+
+    def fake_command(*args: str, **_kwargs: object) -> str:
+        commands.append(args)
+        return ""
+
+    monkeypatch.setattr(driver, "_compose", fake_compose)
+    monkeypatch.setattr(driver, "_command", fake_command)
+
+    driver._cleanup_project(
+        root=tmp_path,
+        project="m05i-map-a" * 4,
+        env_file=tmp_path / "map.env",
+        files=(tmp_path / "docker-compose.yml",),
+        profiles=("fresh-init",),
+    )
+
+    assert compose_arguments == [
+        ("--profile", "fresh-init", "down", "--volumes", "--remove-orphans")
+    ]
+    assert len(commands) == 3
+
+
 def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     fixture = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_fixture.py").read_text(
         encoding="utf-8"

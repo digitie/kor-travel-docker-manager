@@ -287,15 +287,23 @@ def _root_directory(path: Path, *, mode: int = 0o700) -> None:
 
 
 def _cleanup_project(
-    *, root: Path, project: str, env_file: Path, files: tuple[Path, ...]
+    *,
+    root: Path,
+    project: str,
+    env_file: Path,
+    files: tuple[Path, ...],
+    profiles: tuple[str, ...] = (),
 ) -> None:
+    profile_arguments = tuple(
+        item for profile in profiles for item in ("--profile", profile)
+    )
     try:
         _compose(
             root=root,
             project=project,
             env_file=env_file,
             files=files,
-            arguments=("down", "--volumes", "--remove-orphans"),
+            arguments=(*profile_arguments, "down", "--volumes", "--remove-orphans"),
         )
     except _PhaseError:
         _fail("runtime_cleanup_failed")
@@ -947,8 +955,10 @@ def main(expected_revision: str, output: Path) -> int:
     completed = False
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
-    map_cleanup: tuple[Path, str, Path, tuple[Path, ...]] | None = None
-    pinvi_cleanup: tuple[Path, str, Path, tuple[Path, ...]] | None = None
+    map_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = None
+    pinvi_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = (
+        None
+    )
     private_files: tuple[Path, ...] = ()
     result_hashes: dict[str, str] = {}
     try:
@@ -1212,7 +1222,7 @@ def main(expected_revision: str, output: Path) -> int:
             map_root / "docker-compose.local-dev.yml",
             map_override,
         )
-        map_cleanup = (map_root, plan.map_project, map_env, map_files)
+        map_cleanup = (map_root, plan.map_project, map_env, map_files, ("fresh-init",))
         _compose(
             root=map_root,
             project=plan.map_project,
@@ -1264,7 +1274,7 @@ def main(expected_revision: str, output: Path) -> int:
         )
         phase = "pinvi_runtime"
         pinvi_files = (pinvi_root / "infra/docker-compose.app.yml", pinvi_override)
-        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files)
+        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ())
         environment = {
             "PINVI_ENV_FILE": str(pinvi_env),
             "PINVI_DOCKER_PROJECT": plan.pinvi_project,
@@ -1559,6 +1569,7 @@ def main(expected_revision: str, output: Path) -> int:
                     project=cleanup[1],
                     env_file=cleanup[2],
                     files=cleanup[3],
+                    profiles=cleanup[4],
                 )
             except _PhaseError:
                 cleanup_failed = True
@@ -1567,15 +1578,18 @@ def main(expected_revision: str, output: Path) -> int:
                 _unlink_private(path)
             except _PhaseError:
                 cleanup_failed = True
+        driver_phase = phase
         if cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
         for name in _RAW_ENV_NAMES:
             os.environ.pop(name, None)
-        result = {
+        result: dict[str, object] = {
             "harness": "m05-isolated-bridge-v1",
             "manager_source_revision": expected_revision,
             "phase": "completed" if completed else phase,
+            "driver_phase": driver_phase,
+            "cleanup_failed": cleanup_failed,
             "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
             "status": "passed" if completed else "blocked",
             "transaction_id": transaction,

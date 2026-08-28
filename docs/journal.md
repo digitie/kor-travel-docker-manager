@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-28 — M05 fresh-init cleanup profile과 안전한 실패 단계 증적
+
+`66bb373d…` candidate는 n150 Map `fresh-init` one-shot 세 개가 정상 종료한 뒤, cleanup이 profile을
+명시하지 않아 해당 컨테이너 세 개와 transaction 전용 volume 하나를 누락했다. 결과는
+`runtime_cleanup_failed`로 fail-close 되었고 재실행하지 않는다. 남은 리소스는 root-owned result의
+transaction과 Compose owner label을 모두 대조한 뒤 그 exact 네 개만 제거했다.
+
+Map cleanup에는 `--profile fresh-init`을 명시하고, result에는 raw command output 없이 cleanup 전
+`driver_phase`와 `cleanup_failed` boolean을 함께 기록한다. 이 회귀는 profile 인자가 `down`에도
+전달되는 focused test로 고정한다. 다음 실행은 새 Manager revision·새 ledger claim에서만 가능하다.
+
+---
+
 ## 2026-08-28 — N150 `ss` 경로 회귀 방지와 M05 candidate 회전
 
 PinVi `323e3ba8…`·Map `9c64e862…`·pinset `2d6d5ad5…`로 결박한 Manager `d7a048a1…`의 n150
