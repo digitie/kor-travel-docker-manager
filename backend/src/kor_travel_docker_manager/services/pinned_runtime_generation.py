@@ -3227,17 +3227,23 @@ def _published_generation_pinset_binding(
         or registry_pinset != generation.pinset_sha256
     ):
         return {
-            # 이전 candidate가 terminal lifecycle receipt를 남겼다면 phase는
-            # `map_runtime_ready`에서 멈춘다. 새 atomic pair로 회전한 뒤 그 old receipt가
-            # `drift`가 되면 `pin verify`가 1로 끝나 정상적인 새 one-shot까지 막힌다.
-            # strict public copy인 old committed/terminal generation은 pending으로만
-            # 보존하고, partial·mismatched·현재 candidate의 비terminal 중단만 drift다.
+            # 이전 candidate의 terminal은 typed role receipt만으로 표현되지 않는다.
+            # launcher/HTTP/preflight 계열은 root registry의 exact unconditional block이
+            # terminal 정본이다. 새 atomic pair로 회전한 뒤 그런 old generation을
+            # `drift`로 남기면 `pin verify`가 1로 끝나 정상적인 새 one-shot까지 막힌다.
+            # strict public copy인 old committed 또는 exact unconditional terminal
+            # generation만 pending으로 보존하고, partial·mismatched·phase-scoped block·
+            # 현재 candidate의 비terminal 중단은 drift다.
             "status": (
                 "pending_rebuild"
                 if journal is not None
                 and (
                     journal.phase == "committed"
                     or journal.pinvi_role_lifecycle_block is not None
+                    or _is_unconditionally_blocked_public_generation(
+                        payload=payload,
+                        generation=generation,
+                    )
                 )
                 else "drift"
             ),
@@ -3249,6 +3255,30 @@ def _published_generation_pinset_binding(
         "registry_pinset_sha256": registry_pinset,
         "generation_pinset_sha256": generation.pinset_sha256,
     }
+
+
+def _is_unconditionally_blocked_public_generation(
+    *,
+    payload: Mapping[str, object],
+    generation: PinnedRuntimeGeneration,
+) -> bool:
+    """공개 registry가 generation의 모든 재실행을 차단했는지 exact로 판정한다.
+
+    이 helper는 registry reader가 strict parse한 공개 payload만 받는다. phase가 있는
+    block은 특정 재개만 막으므로 새 pair 회전 뒤에도 `pending_rebuild` 근거가 아니다.
+    """
+
+    blocked_pinsets = payload.get("blocked_pinsets")
+    if not isinstance(blocked_pinsets, list):
+        return False
+    return any(
+        isinstance(entry, Mapping)
+        and entry.get("phase") is None
+        and entry.get("pinset_sha256") == generation.pinset_sha256
+        and entry.get("map_revision") == generation.map_source_revision
+        and entry.get("pinvi_revision") == generation.pinvi_source_revision
+        for entry in blocked_pinsets
+    )
 
 
 def _generation_for_public_binding(

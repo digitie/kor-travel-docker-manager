@@ -244,7 +244,7 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 |---|---|---|
 | `pin init [--seed PATH] [--reason R] [--force] --confirm` | mutation | 호스트 최초 1회. `--seed` 기본값은 설치본의 `config/runtime-pins.seed.json`. 기존 파일이 있으면 `--force` 없이는 거부하고, `--force`여도 **이력·차단 목록을 승계하고 이전 상태를 digest 이름으로 보존**한다 |
 | `pin show [--json]` | 읽기 전용 | 현재 pin·digest·회전 메타·차단 목록·최근 이력. 현재 pinset이 조건 없이 차단됐으면 **"rebuild가 거부됩니다"를 평문으로 경고**한다 |
-| `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6/v8 generation 공개 사본의 strict parse를 함께 확인한다. incomplete/malformed/drift generation 또는 차단된 current pinset이면 exit 1이다. pair 회전 직후의 유효한 이전 committed generation은 `pending_rebuild`로 보고하되 current라고 부르지 않는다 |
+| `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6/v8 generation 공개 사본의 strict parse를 함께 확인한다. incomplete/malformed/drift generation 또는 차단된 current pinset이면 exit 1이다. pair 회전 직후의 유효한 이전 committed generation 또는 exact unconditional terminal generation은 `pending_rebuild`로 보고하되 current라고 부르지 않는다 |
 | `pin publish-generation --manifest PATH --journal PATH --confirm` | mutation, **root 전용** | 검증된 private v6 manifest·current v8 journal을 `0644` 공개 사본으로 원자 복제한 뒤 strict reader와 current registry pair까지 다시 검증한다. 경로는 절대 경로만 허용하며, API가 root state를 직접 읽는 우회로는 만들지 않는다 |
 | `pin rotate --role map\|pinvi --revision <40-hex> --reason R [--block-previous] --confirm` | mutation | digest 자동 계산, 이력에 `supersedes` 기록, 이전 파일을 `runtime-pins.<old-digest>.json`으로 보존, 공개 사본 갱신. 아무것도 바뀌지 않는 회전과 **차단된 pinset을 만들어 내는 회전은 거부** |
 | `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
@@ -348,9 +348,10 @@ generation이면 `status=unverified`로 raw 두 문서를 보존하되 gate는 f
 유효하거나 둘 다 없으면 `unknown`이며 raw 문서를 반환하지 않는다. `summary`가 그 상태를
 명확히 말하고, terminal은 journal의 typed lifecycle receipt가 있을 때만 고정 enum으로 나온다.
 `pinset_binding`은 `GET /runtime-pins`의 current Map·PinVi pair와 비교한 결과다. 새 pair를
-rotate한 직후 이전 committed **또는 terminal** generation만 남은 경우는 `pending_rebuild`, 새
-journal 후보가 current pair와 다르면 `drift`, registry 공개 사본을 신뢰할 수 없으면 `unknown`으로
-fail-close한다.
+rotate한 직후 이전 committed **또는 registry가 Map·PinVi revision과 pinset까지 exact로 일치시킨
+unconditional terminal** generation만 남은 경우는 `pending_rebuild`, 새 journal 후보가 current
+pair와 다르면 `drift`, phase-scoped block뿐인 중단 또는 registry 공개 사본을 신뢰할 수 없으면
+`unknown`/`drift`로 fail-close한다.
 
 ---
 
