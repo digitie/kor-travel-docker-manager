@@ -361,13 +361,19 @@ def _recreate_empty_database_after_owner_preflight(
             ],
             label=f"{runtime.role} database destructive drop",
         )
+    create_command = [
+        *_database_admin_command(runtime, "createdb"),
+        "--owner",
+        runtime.owner_name,
+    ]
+    # PinVi의 fresh role-catalog reset은 extension·user namespace가 전혀 없는
+    # catalog만 허용한다. template1은 클러스터 관리자가 추가한 객체를 상속할 수 있으므로
+    # PinVi target은 PostgreSQL 기본 template0에서만 다시 만든다.
+    if runtime.role == "pinvi":
+        create_command.extend(("--template", "template0"))
+    create_command.append(runtime.database_name)
     _run_checked(
-        [
-            *_database_admin_command(runtime, "createdb"),
-            "--owner",
-            runtime.owner_name,
-            runtime.database_name,
-        ],
+        create_command,
         label=f"{runtime.role} database destructive create",
     )
 

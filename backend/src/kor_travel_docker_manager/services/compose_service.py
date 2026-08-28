@@ -15,7 +15,7 @@ from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
@@ -121,6 +121,7 @@ from kor_travel_docker_manager.services.map_application_300_candidate import (
     load_map_application_300_candidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS,
     REBUILD_PHASES,
     RUNTIME_SERVICES,
     MapApplication300ApplicationDatabaseIdentity,
@@ -133,6 +134,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
     PinnedRuntimeStatePaths,
+    PinviRoleCatalogResetDiagnostic,
     PinviRoleLifecycleBlock,
     RebuildPhase,
     RuntimeService,
@@ -205,6 +207,20 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
+_PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
+    {
+        "environment_admission",
+        "state_initialization",
+        "prebuild_snapshot",
+        "external_prerequisites",
+        "source_materialization",
+        "application_base_images",
+        "application_builder",
+        "application_candidate",
+        "candidate_snapshot",
+        "candidate_contract",
+    }
+)
 _MAP_APPLICATION_FRESH_PYTHON = "/usr/local/bin/python"
 _MAP_APPLICATION_FRESH_300_EXECUTABLE = (
     "/usr/local/bin/ktm-application-schema-fresh-300"
@@ -215,6 +231,41 @@ _MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE = (
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
+_PINVI_ROLE_TOPOLOGY_DIAGNOSTIC_SCHEMA = "pinvi.role-topology-diagnostic.v1"
+_PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS = (
+    "principal_identity",
+    "bootstrap_catalog",
+    "fence_acl",
+    "runtime_role",
+    "schema_owner_membership",
+    "migration_owner_policy",
+    "migrator_sealed",
+    "migrator_membership_setting",
+    "app_ownership",
+    "extension_ownership",
+)
+
+
+class PinnedRuntimePrejournalFailure(DeploymentContractError):
+    """journal 전 후보 준비 실패를 비밀 없는 고정 단계로 전달한다."""
+
+    def __init__(self, stage: str) -> None:
+        if stage not in _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES:
+            raise ValueError("pinned runtime pre-journal failure stage is invalid")
+        self.stage = stage
+        super().__init__("pinned runtime candidate preparation failed")
+
+
+@contextmanager
+def _pinned_runtime_prejournal_step(stage: str) -> Iterator[None]:
+    """journal 전 ``DeploymentContractError``를 safe stage로 봉인한다."""
+
+    try:
+        yield
+    except PinnedRuntimePrejournalFailure:
+        raise
+    except DeploymentContractError as exc:
+        raise PinnedRuntimePrejournalFailure(stage) from exc
 
 
 def _application_300_profile_operation_args(
@@ -527,6 +578,57 @@ def _json_object_without_duplicate_keys(
             raise ValueError("duplicate JSON object key")
         payload[key] = value
     return payload
+
+
+def _parse_pinvi_role_catalog_reset_result(
+    raw: bytes, *, transaction_id: str, pinset_sha256: str
+) -> str:
+    try:
+        payload = json.loads(raw, object_pairs_hook=_json_object_without_duplicate_keys)
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        return "unclassified"
+    if not isinstance(payload, Mapping) or set(payload) != {
+        "schema", "status", "class", "transaction", "pinset"
+    }:
+        return "unclassified"
+    if (
+        payload.get("schema") != "pinvi.role-catalog-reset-diagnostic.v1"
+        or payload.get("transaction") != transaction_id
+        or payload.get("pinset") != pinset_sha256
+    ):
+        return "unclassified"
+    if payload.get("status") == "completed" and payload.get("class") == "completed":
+        return "completed"
+    if (
+        payload.get("status") == "failed"
+        and payload.get("class") in PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS
+        and payload.get("class") not in {"permit_invalid", "unclassified"}
+    ):
+        return cast(str, payload["class"])
+    return "unclassified"
+
+
+def _read_pinvi_role_catalog_reset_result(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int],
+    transaction_id: str,
+    pinset_sha256: str,
+) -> str:
+    """Read a reset receipt only when the Manager-created inode is preserved."""
+
+    raw = read_owner_only_artifact(path)
+    try:
+        observed = path.lstat()
+    except OSError as exc:
+        raise MapApplication300ContractError("reset receipt is unavailable") from exc
+    if (observed.st_dev, observed.st_ino) != expected_identity:
+        return "unclassified"
+    return _parse_pinvi_role_catalog_reset_result(
+        raw,
+        transaction_id=transaction_id,
+        pinset_sha256=pinset_sha256,
+    )
 
 
 def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | None:
@@ -1482,37 +1584,46 @@ def _pinned_runtime_rebuild_environment_lock(
     """
 
     with pinned_runtime_rebuild_lock():
-        initial_environment_snapshot = (
-            _capture_pinned_runtime_rebuild_environment_snapshot()
-        )
+        with _pinned_runtime_prejournal_step("environment_admission"):
+            initial_environment_snapshot = (
+                _capture_pinned_runtime_rebuild_environment_snapshot()
+            )
+        # 배포 lifecycle 게이트는 **봉인 밖**이다. 이 거부는 호스트 상태에서 유도한
+        # 진단이 아니라 고정 정책 문장("rehearsal/rebuildable이 아니다")이라 비밀이
+        # 없고, 운영자가 알아야 하는 유일한 정보가 그 문장 자체다. 이것까지
+        # "candidate preparation failed"로 봉인하면 왜 거부됐는지 알 방법이 사라진다.
         assert_pinned_runtime_rebuild_allowed(
             environment=initial_environment_snapshot.effective
         )
-        validate_c6c_operation_tokens(
-            initial_environment_snapshot.effective,
-            require_nonempty=True,
-        )
-        rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
-        role_credentials = ensure_pinned_runtime_pinvi_role_credentials(
-            Path(initial_environment_snapshot.env_path),
-            expected_environment_bytes=initial_environment_snapshot.env_file_bytes,
-            rebind_source_sha256=rebind_source_sha256,
-        )
-        current_environment_snapshot = (
-            _capture_pinned_runtime_rebuild_environment_snapshot(
-                environment_override=role_credentials
+        with _pinned_runtime_prejournal_step("environment_admission"):
+            validate_c6c_operation_tokens(
+                initial_environment_snapshot.effective,
+                require_nonempty=True,
             )
-        )
-        assert_pinned_runtime_rebuild_allowed(
-            environment=current_environment_snapshot.effective
-        )
-        validate_c6c_operation_tokens(
-            current_environment_snapshot.effective,
-            require_nonempty=True,
-        )
-        lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
-            current_environment_snapshot
-        )
+        # 기존 journal의 lifecycle admission은 immutable terminal evidence를
+        # 해석하는 경계다. 새 candidate preparation failure로 재분류하지 않는다.
+        rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
+        with _pinned_runtime_prejournal_step("environment_admission"):
+            role_credentials = ensure_pinned_runtime_pinvi_role_credentials(
+                Path(initial_environment_snapshot.env_path),
+                expected_environment_bytes=initial_environment_snapshot.env_file_bytes,
+                rebind_source_sha256=rebind_source_sha256,
+            )
+            current_environment_snapshot = (
+                _capture_pinned_runtime_rebuild_environment_snapshot(
+                    environment_override=role_credentials
+                )
+            )
+            assert_pinned_runtime_rebuild_allowed(
+                environment=current_environment_snapshot.effective
+            )
+            validate_c6c_operation_tokens(
+                current_environment_snapshot.effective,
+                require_nonempty=True,
+            )
+            lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
+                current_environment_snapshot
+            )
         with c6c_deployment_lock(lock_snapshot.lock_path):
             _revalidate_c6c_deployment_lock_snapshot(lock_snapshot)
             yield (
@@ -3811,7 +3922,7 @@ class ComposeService:
             default_flow_style=False,
             sort_keys=False,
             allow_unicode=True,
-        ).encode("utf-8")
+        ).encode()
         resolved = json.loads(
             _serialize_resolved_compose_document(candidate_validation.resolved)
         )
@@ -4790,6 +4901,8 @@ class ComposeService:
         args: Sequence[str],
         *,
         transaction: ComposeTransactionSnapshot,
+        capture_output: bool = True,
+        allow_typed_error_diagnostic: bool = True,
     ) -> dict[str, Any]:
         compose_action = self._pinned_runtime_compose_action(args)
         if compose_action in {"run", "up"} and "--no-deps" not in args:
@@ -4812,18 +4925,22 @@ class ComposeService:
                 build_result = self._run_pinned_runtime_rebuild_compose(
                     ["build", service],
                     transaction=transaction,
+                    capture_output=capture_output,
+                    allow_typed_error_diagnostic=allow_typed_error_diagnostic,
                 )
             return build_result
         result = self._run_frozen_recovery(
             args,
             transaction=transaction,
             mutation_capability=_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+            capture_output=capture_output,
         )
         if result["success"]:
             return result
-        diagnostic = self._pinned_runtime_compose_failure_diagnostic(
-            args,
-            result,
+        diagnostic = (
+            self._pinned_runtime_compose_failure_diagnostic(args, result)
+            if allow_typed_error_diagnostic
+            else ""
         )
         raise DeploymentContractError(
             "pinned runtime rebuild Compose "
@@ -5004,6 +5121,157 @@ class ComposeService:
             transaction=transaction,
         )
 
+    def _verify_pinned_runtime_pinvi_role_topology(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """frozen candidate transaction에서 sealed topology JSON만 엄격히 읽는다."""
+
+        result = self._run_pinned_runtime_rebuild_compose(
+            [
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                "-e",
+                "PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1",
+                "-e",
+                "PINVI_MIGRATOR_DISABLE_LOGIN=1",
+                "-e",
+                "PINVI_M05_LEGACY_REBASELINE=0",
+                _PINVI_DB_RUNTIME_ROLE_SERVICE,
+            ],
+            transaction=transaction,
+        )
+        output = result.get("stdout")
+        if not isinstance(output, str):
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        try:
+            payload = json.loads(
+                output,
+                object_pairs_hook=_json_object_without_duplicate_keys,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            ) from exc
+        if not isinstance(payload, Mapping) or set(payload) != {
+            "schema",
+            "status",
+            "mode",
+            "reasons",
+        }:
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        status = payload.get("status")
+        reasons = payload.get("reasons")
+        if (
+            payload.get("schema") != _PINVI_ROLE_TOPOLOGY_DIAGNOSTIC_SCHEMA
+            or payload.get("mode") != "sealed"
+            or not isinstance(status, str)
+            or not isinstance(reasons, list)
+            or not all(isinstance(reason, str) for reason in reasons)
+        ):
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        if status == "canonical" and reasons == []:
+            return
+        if (
+            status == "noncanonical"
+            and reasons
+            and all(
+                reason in _PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS
+                for reason in reasons
+            )
+            and len(set(reasons)) == len(reasons)
+            and tuple(reasons)
+            == tuple(
+                sorted(
+                    reasons,
+                    key=_PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS.index,
+                )
+            )
+        ):
+            raise DeploymentContractError("PinVi sealed role topology is noncanonical")
+        if (
+            (status == "invalid" and reasons == ["input_invalid"])
+            or (
+                status == "unavailable"
+                and reasons in (
+                    ["endpoint_unavailable"],
+                    ["verification_unavailable"],
+                )
+            )
+        ):
+            raise DeploymentContractError(
+                "PinVi sealed role topology verifier is unavailable"
+            )
+        raise DeploymentContractError("PinVi sealed role topology verifier is unavailable")
+
+    def _verify_pinned_runtime_pinvi_role_topology_after_bootstrap(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """fresh PinVi target DB의 sealed 후조건을 terminal receipt로 바꾼다.
+
+        기존 DB는 rebuild가 폐기할 입력일 뿐 sealed runtime target이 아니다. 따라서
+        role open·admin/migration bootstrap·seal 뒤의 fresh DB에만 full verifier를
+        적용한다. verifier 원문과 reason enum은 receipt·CLI에 보존하지 않는다.
+        """
+
+        try:
+            self._verify_pinned_runtime_pinvi_role_topology(
+                transaction=transaction
+            )
+        except DeploymentContractError as exc:
+            code: Literal[
+                "role_topology_noncanonical", "role_topology_unavailable"
+            ] = (
+                "role_topology_noncanonical"
+                if str(exc) == "PinVi sealed role topology is noncanonical"
+                else "role_topology_unavailable"
+            )
+            raise _PinviRoleLifecycleError(
+                "PinVi sealed role topology verification failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_verify",
+                    code=code,
+                ),
+            ) from None
+
+    def _terminate_pinned_runtime_after_pinvi_role_topology_failure(
+        self,
+        *,
+        journal: PinnedRuntimeRebuildJournal,
+        journal_path: Path,
+        transaction: ComposeTransactionSnapshot,
+        error: _PinviRoleLifecycleError,
+    ) -> NoReturn:
+        """sealed target-state failure를 durable no-retry receipt 뒤 runtime stop으로 끝낸다."""
+
+        self._record_pinvi_role_lifecycle_block(
+            journal,
+            journal_path=journal_path,
+            error=error,
+        )
+        try:
+            self._run_pinned_runtime_rebuild_compose(
+                ["stop", *RUNTIME_SERVICES],
+                transaction=transaction,
+            )
+        except DeploymentContractError as stop_error:
+            raise DeploymentContractError(
+                "PinVi runtime could not be stopped after sealed topology failure"
+            ) from stop_error
+        raise error
+
     def _run_pinvi_schema_bootstrap_with_role_lifecycle(
         self,
         *,
@@ -5132,6 +5400,115 @@ class ComposeService:
             raise _PinviRoleLifecycleError(
                 final_seal_error,
                 role_topology_block=role_topology_block,
+            ) from None
+
+    def _run_pinvi_fresh_role_catalog_reset(
+        self,
+        *,
+        transaction: ComposeTransactionSnapshot,
+        state_paths: PinnedRuntimeStatePaths,
+        journal: PinnedRuntimeRebuildJournal,
+        runtime: DatabaseRuntime,
+    ) -> None:
+        """Manager가 방금 만든 PinVi DB에만 root-owned reset permit을 발행한다."""
+
+        identity = journal.pinvi_database_identity
+        if identity is None:
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                ),
+            ) from None
+        live_identity = read_pinned_database_identity(runtime)
+        if not isinstance(live_identity, PinnedDatabaseIdentity):
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                ),
+            ) from None
+        observed_identity = _pinned_runtime_journal_database_identity(live_identity)
+        if observed_identity != identity:
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                ),
+            ) from None
+        permit_path = (
+            state_paths.state_root
+            / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.permit"
+        )
+        result_path = (
+            state_paths.state_root
+            / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.result"
+        )
+        permit = (
+            "pinvi-role-catalog-reset-v2|"
+            f"{journal.transaction_id}|{journal.candidate.pinset_sha256}|"
+            f"{identity.system_identifier}|{identity.oid}|{identity.name}|{identity.owner}|"
+            "revoke_external_memberships\n"
+        ).encode()
+        result_identity: tuple[int, int] | None = None
+        try:
+            write_owner_only_artifact(permit_path, permit)
+            write_owner_only_artifact(result_path, b"{}")
+            result_metadata = result_path.lstat()
+            result_identity = (result_metadata.st_dev, result_metadata.st_ino)
+            self._run_pinned_runtime_rebuild_compose(
+                [
+                    "--profile",
+                    "bootstrap",
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "-v",
+                    f"{permit_path}:/run/pinvi/role-catalog-reset.permit:ro",
+                    "-v",
+                    f"{result_path}:/run/pinvi/role-catalog-reset.result",
+                    "-e",
+                    "PINVI_ROLE_CATALOG_RESET_ONLY=1",
+                    "-e",
+                    "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
+                    "-e",
+                    "PINVI_ROLE_CATALOG_RESET_RESULT_FILE=/run/pinvi/role-catalog-reset.result",
+                    _PINVI_DB_RUNTIME_ROLE_SERVICE,
+                ],
+                transaction=transaction,
+                capture_output=False,
+                allow_typed_error_diagnostic=False,
+            )
+            if _read_pinvi_role_catalog_reset_result(
+                result_path,
+                expected_identity=result_identity,
+                transaction_id=journal.transaction_id,
+                pinset_sha256=journal.candidate.pinset_sha256,
+            ) != "completed":
+                raise DeploymentContractError("PinVi fresh role catalog reset result is invalid")
+        except (DeploymentContractError, MapApplication300ContractError):
+            if result_identity is None:
+                diagnostic = "unclassified"
+            else:
+                try:
+                    diagnostic = _read_pinvi_role_catalog_reset_result(
+                        result_path,
+                        expected_identity=result_identity,
+                        transaction_id=journal.transaction_id,
+                        pinset_sha256=journal.candidate.pinset_sha256,
+                    )
+                except MapApplication300ContractError:
+                    diagnostic = "unclassified"
+            raise _PinviRoleLifecycleError(
+                "PinVi fresh role catalog reset failed",
+                role_topology_block=PinviRoleLifecycleBlock(
+                    stage="pinvi_role_catalog_reset",
+                    code="role_catalog_reset_failed",
+                    diagnostic=cast(PinviRoleCatalogResetDiagnostic, diagnostic),
+                ),
             ) from None
 
     @staticmethod
@@ -6071,59 +6448,68 @@ class ComposeService:
         ):
             # application head 300은 paired receipt와 설치된 baseline contract가
             # 정본이다. Dagster/PinVi head만 network-less candidate 명령으로 읽는다.
-            validate_c6c_operation_tokens(
-                environment_snapshot.effective,
-                require_nonempty=True,
-            )
-            state_paths = pinned_runtime_state_paths(
-                environment_snapshot.effective,
-                pinset_sha256=release.pinset_sha256,
-            )
-            ensure_pinned_runtime_state_directory(state_paths.state_root)
-            application_paths = _map_application_300_paths(
-                state_root=state_paths.state_root,
-                pinset_sha256=release.pinset_sha256,
-            )
-            artifact_directories = MapApplication300ArtifactDirectories(
-                fresh_migrate_fence=application_paths.root_fence_directory,
-                fresh_finalize_fence=application_paths.finalize_fence_directory,
-                application_final_permit=(
-                    application_paths.application_permit_directory
-                ),
-                dagster_storage_permit=application_paths.metadata_permit_directory,
-            )
-            prebuild_transaction, _ = self._capture_transaction_unlocked(
-                environment_override=dict(artifact_directories.compose_environment()),
-                environment_snapshot=environment_snapshot,
-            )
-            _assert_transaction_matches_c6c_lock(prebuild_transaction, lock_snapshot)
+            with _pinned_runtime_prejournal_step("state_initialization"):
+                validate_c6c_operation_tokens(
+                    environment_snapshot.effective,
+                    require_nonempty=True,
+                )
+                state_paths = pinned_runtime_state_paths(
+                    environment_snapshot.effective,
+                    pinset_sha256=release.pinset_sha256,
+                )
+                ensure_pinned_runtime_state_directory(state_paths.state_root)
+                application_paths = _map_application_300_paths(
+                    state_root=state_paths.state_root,
+                    pinset_sha256=release.pinset_sha256,
+                )
+                artifact_directories = MapApplication300ArtifactDirectories(
+                    fresh_migrate_fence=application_paths.root_fence_directory,
+                    fresh_finalize_fence=application_paths.finalize_fence_directory,
+                    application_final_permit=(
+                        application_paths.application_permit_directory
+                    ),
+                    dagster_storage_permit=application_paths.metadata_permit_directory,
+                )
+            with _pinned_runtime_prejournal_step("prebuild_snapshot"):
+                prebuild_transaction, _ = self._capture_transaction_unlocked(
+                    environment_override=dict(artifact_directories.compose_environment()),
+                    environment_snapshot=environment_snapshot,
+                )
+                _assert_transaction_matches_c6c_lock(
+                    prebuild_transaction, lock_snapshot
+                )
             # 외부 prerequisite는 source materialize, paired builder, image tag,
             # receipt/journal write보다 먼저 확인한다. fixed artifact directory만
             # base candidate가 volume graph를 검증할 수 있도록 먼저 준비한다.
-            self._require_services_ready(
-                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
-                transaction=prebuild_transaction,
-                frozen_recovery=True,
-            )
-            sources = materialize_pinned_runtime_sources(
-                release=release,
-                state_paths=state_paths,
-                values=environment_snapshot.effective,
-            )
+            with _pinned_runtime_prejournal_step("external_prerequisites"):
+                self._require_services_ready(
+                    _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
+                    transaction=prebuild_transaction,
+                    frozen_recovery=True,
+                )
+            with _pinned_runtime_prejournal_step("source_materialization"):
+                sources = materialize_pinned_runtime_sources(
+                    release=release,
+                    state_paths=state_paths,
+                    values=environment_snapshot.effective,
+                )
             journal_exists = resume_journal is not None
             paired_build_images = map_application_300_paired_build_image_names(sources)
-            _ensure_map_application_300_python_base_images(sources)
-            _run_map_application_300_paired_builder(
-                sources=sources,
-                api_image=paired_build_images["kor-travel-map-api"],
-                dagster_image=paired_build_images["kor-travel-map-dagster"],
-                paths=application_paths,
-                resume_journal=journal_exists,
-            )
-            map_candidate = self._load_application_300_paired_candidate(
-                sources=sources,
-                paths=application_paths,
-            )
+            with _pinned_runtime_prejournal_step("application_base_images"):
+                _ensure_map_application_300_python_base_images(sources)
+            with _pinned_runtime_prejournal_step("application_builder"):
+                _run_map_application_300_paired_builder(
+                    sources=sources,
+                    api_image=paired_build_images["kor-travel-map-api"],
+                    dagster_image=paired_build_images["kor-travel-map-dagster"],
+                    paths=application_paths,
+                    resume_journal=journal_exists,
+                )
+            with _pinned_runtime_prejournal_step("application_candidate"):
+                map_candidate = self._load_application_300_paired_candidate(
+                    sources=sources,
+                    paths=application_paths,
+                )
             build = CandidateRuntimeBuild(
                 sources=sources,
                 map_application_300_candidate=map_candidate,
@@ -6137,24 +6523,29 @@ class ComposeService:
                 **artifact_directories.compose_environment(),
                 "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
             }
-            candidate_transaction, _ = self._capture_transaction_unlocked(
-                environment_override=candidate_environment,
-                environment_snapshot=environment_snapshot,
-            )
-            _assert_transaction_matches_c6c_lock(candidate_transaction, lock_snapshot)
-            self._validate_pinned_runtime_candidate_build_contract(
-                candidate_transaction,
-                build=build,
-                environment_override=candidate_environment,
-            )
+            with _pinned_runtime_prejournal_step("candidate_snapshot"):
+                candidate_transaction, _ = self._capture_transaction_unlocked(
+                    environment_override=candidate_environment,
+                    environment_snapshot=environment_snapshot,
+                )
+                _assert_transaction_matches_c6c_lock(
+                    candidate_transaction, lock_snapshot
+                )
+            with _pinned_runtime_prejournal_step("candidate_contract"):
+                self._validate_pinned_runtime_candidate_build_contract(
+                    candidate_transaction,
+                    build=build,
+                    environment_override=candidate_environment,
+                )
             # Geo·Concierge·RustFS는 F1D가 소유하지 않는 선행 runtime이다. 후보를
             # build하거나 journal을 쓰기 전에 frozen Compose의 read-only ``ps``로
             # exact readiness를 증명하고, 부재/불건강이면 시작·변경 없이 닫는다.
-            self._require_services_ready(
-                _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
-                transaction=candidate_transaction,
-                frozen_recovery=True,
-            )
+            with _pinned_runtime_prejournal_step("external_prerequisites"):
+                self._require_services_ready(
+                    _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
+                    transaction=candidate_transaction,
+                    frozen_recovery=True,
+                )
             if journal_exists:
                 journal = cast(PinnedRuntimeRebuildJournal, resume_journal)
                 if journal.phase == "committed":
@@ -7160,6 +7551,34 @@ class ComposeService:
                     journal = updated
                 if journal.phase == "map_runtime_ready":
                     try:
+                        if journal.pinvi_role_catalog_reset is None:
+                            raise _PinviRoleLifecycleError(
+                                "PinVi fresh role catalog reset receipt is missing",
+                                role_topology_block=PinviRoleLifecycleBlock(
+                                    stage="pinvi_role_catalog_reset",
+                                    code="role_catalog_reset_failed",
+                                ),
+                            )
+                        if journal.pinvi_role_catalog_reset.state == "intent":
+                            if not reset_required:
+                                raise _PinviRoleLifecycleError(
+                                    "PinVi fresh role catalog reset outcome is ambiguous",
+                                    role_topology_block=PinviRoleLifecycleBlock(
+                                        stage="pinvi_role_catalog_reset",
+                                        code="role_catalog_reset_failed",
+                                    ),
+                                )
+                            self._run_pinvi_fresh_role_catalog_reset(
+                                transaction=runtime_transaction,
+                                state_paths=state_paths,
+                                journal=journal,
+                                runtime=runtimes[2],
+                            )
+                            updated = journal.with_pinvi_role_catalog_reset_completed()
+                            write_pinned_runtime_rebuild_journal(
+                                state_paths.journal, updated
+                            )
+                            journal = updated
                         self._run_pinvi_schema_bootstrap_with_role_lifecycle(
                             transaction=runtime_transaction,
                             state_paths=state_paths,
@@ -7175,6 +7594,20 @@ class ComposeService:
                         raise
                 if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
                     raise DeploymentContractError("PinVi schema differs from candidate head")
+                try:
+                    # sealed verifier는 기존 DB admission이 아니라 fresh target-state
+                    # 후조건이다. open → bootstrap/migration → seal과 head 검증 뒤에만
+                    # 실행하고 raw verifier output은 durable receipt에 남기지 않는다.
+                    self._verify_pinned_runtime_pinvi_role_topology_after_bootstrap(
+                        transaction=runtime_transaction,
+                    )
+                except _PinviRoleLifecycleError as exc:
+                    self._terminate_pinned_runtime_after_pinvi_role_topology_failure(
+                        journal=journal,
+                        journal_path=state_paths.journal,
+                        transaction=runtime_transaction,
+                        error=exc,
+                    )
                 updated = self._advance_pinned_runtime_journal(
                     journal, "pinvi_schema_ready"
                 )

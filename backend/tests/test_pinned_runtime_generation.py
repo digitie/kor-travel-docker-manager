@@ -29,6 +29,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
+    PinviRoleCatalogResetReceipt,
     PinviRoleLifecycleBlock,
     RebuildPhase,
     ensure_pinned_runtime_state_directory,
@@ -879,6 +880,14 @@ def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block()
     assert blocked.pinvi_role_lifecycle_block == receipt
     assert journal_from_payload(blocked.to_payload()) == blocked
 
+    verifier_unavailable = journal.with_pinvi_role_lifecycle_block(
+        PinviRoleLifecycleBlock(
+            stage="pinvi_role_verify",
+            code="role_topology_unavailable",
+        )
+    )
+    assert journal_from_payload(verifier_unavailable.to_payload()) == verifier_unavailable
+
     legacy_payload = journal.to_payload()
     legacy_payload.pop("pinvi_role_credential_environment_rebind")
     legacy_payload.pop("pinvi_role_lifecycle_block")
@@ -901,10 +910,63 @@ def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block()
     with pytest.raises(DeploymentContractError, match="block payload"):
         journal_from_payload(malformed_payload)
 
+    malformed_payload = blocked.to_payload()
+    malformed_payload["pinvi_role_lifecycle_block"] = {
+        "stage": "pinvi_role_open",
+        "code": "role_topology_unavailable",
+    }
+    with pytest.raises(DeploymentContractError, match="block payload"):
+        journal_from_payload(malformed_payload)
+
     with pytest.raises(DeploymentContractError, match="not permitted"):
         _journal_with_map_application_ready().with_pinvi_role_lifecycle_block(receipt)
     with pytest.raises(DeploymentContractError, match="not permitted"):
         blocked.with_pinvi_role_lifecycle_block(receipt)
+
+
+def test_fresh_role_catalog_reset_receipt_requires_database_to_runtime_order() -> None:
+    database_recreated = _journal().transition("reset_intent_durable").with_databases_recreated(
+        pinvi_database_identity=_pinvi_database_identity()
+    )
+    intent = database_recreated
+
+    assert intent.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(state="intent")
+    assert journal_from_payload(intent.to_payload()) == intent
+    with pytest.raises(DeploymentContractError, match="completion is not permitted"):
+        intent.with_pinvi_role_catalog_reset_completed()
+
+    map_runtime_ready = (
+        _journal_with_map_application_ready()
+        .transition("map_dagster_storage_intent_durable")
+        .transition("map_dagster_ready")
+        .transition("map_runtime_ready")
+    )
+    resumed_intent = PinnedRuntimeRebuildJournal(
+        version=map_runtime_ready.version,
+        transaction_id=map_runtime_ready.transaction_id,
+        phase=map_runtime_ready.phase,
+        candidate=map_runtime_ready.candidate,
+        map_application_300_candidate_evidence=map_runtime_ready.map_application_300_candidate_evidence,
+        environment_sha256=map_runtime_ready.environment_sha256,
+        compose_sha256=map_runtime_ready.compose_sha256,
+        resolved_compose_sha256=map_runtime_ready.resolved_compose_sha256,
+        created_at=map_runtime_ready.created_at,
+        pinvi_database_identity=map_runtime_ready.pinvi_database_identity,
+        journal_generation=map_runtime_ready.journal_generation,
+        map_application_300_execution_evidence=map_runtime_ready.map_application_300_execution_evidence,
+        cancel_probe=map_runtime_ready.cancel_probe,
+        pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="intent"),
+    )
+    completed = resumed_intent.with_pinvi_role_catalog_reset_completed()
+
+    assert completed.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(state="completed")
+    assert completed.journal_generation == resumed_intent.journal_generation + 1
+    assert journal_from_payload(completed.to_payload()) == completed
+
+    malformed_payload = intent.to_payload()
+    malformed_payload["pinvi_role_catalog_reset"] = {"state": "completed"}
+    with pytest.raises(DeploymentContractError, match="role catalog reset receipt"):
+        journal_from_payload(malformed_payload)
 
 
 def test_rebuild_journal_sha256_is_canonical_and_evidence_sensitive() -> None:
@@ -993,6 +1055,7 @@ def test_rebuild_journal_rejects_fixture_timestamp_drift() -> None:
     journal = journal.transition("map_dagster_storage_intent_durable")
     journal = journal.transition("map_dagster_ready")
     journal = journal.transition("map_runtime_ready")
+    journal = journal.with_pinvi_role_catalog_reset_completed()
     journal = journal.transition("pinvi_schema_ready")
     journal = journal.transition("pinvi_api_ready")
     armed = PinnedRuntimeCancelProbeReceipt().transition(

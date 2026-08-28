@@ -256,6 +256,18 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
         arguments[arguments.index("--port") + 1]
         for arguments, _ in calls
     ] == ["12700", "12700", "12700", "12700", "12800", "12800"]
+    create_commands = {
+        label: arguments
+        for arguments, label in calls
+        if "createdb" in arguments
+    }
+    assert "--template" not in create_commands[
+        "map_application database destructive create"
+    ]
+    assert "--template" not in create_commands["map_dagster database destructive create"]
+    assert create_commands["pinvi database destructive create"][
+        create_commands["pinvi database destructive create"].index("--template") + 1
+    ] == "template0"
     assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
 
 
@@ -313,6 +325,7 @@ def test_application_300_reset_leaves_map_databases_absent_and_recreates_pinvi(
     ]
     assert sum("createdb" in arguments for arguments, _ in calls) == 1
     assert "createdb" in calls[-1][0]
+    assert calls[-1][0][calls[-1][0].index("--template") + 1] == "template0"
 
 
 def test_fresh_application_300_database_requires_absence_and_template0(

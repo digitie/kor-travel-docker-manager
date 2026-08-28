@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-08-28 — installed launcher execute bit 보존과 candidate 회전
+
+`53d4639f…`은 trusted release가 `run-pinned-rebuild-once`를 executable로 설치하지 않아 admission 이전에 끝났다.
+durable output·ledger·raw stderr가 모두 없으며 같은 pinset을 재시도하지 않는다. installer가 archive의 일반 script mode에
+의존하지 않도록 launcher의 `0755` execute bit을 명시적으로 복원한다. PinVi `41a36ee6…`·Map `9c64e862…`의
+`c1ad5a3e…`만 다음 candidate로 사용한다.
+
+## 2026-08-28 — one-shot launcher의 pinset ledger와 설치 provenance fail-close
+
+전문 적대 보안 리뷰의 P1 두 건을 반영했다. launcher는 caller가 제공한 exact Manager source revision을 root-owned
+`.ktdm-source-revision`·release manifest의 `O_NOFOLLOW` evidence와 대조하고, installed Python package에서 읽은
+actual pinset별 root-owned `O_NOFOLLOW|O_EXCL` ledger claim과 상위 directory fsync를 먼저 영구 기록한다. trusted
+installer와 같은 global mutation lock은 admission부터 실제 `ktdctl` child 종료까지 유지한다. 따라서 output directory 이름을
+바꿔도 같은 installed pinset은 다시 `ktdctl`을 호출할 수 없고, stale Manager release도 새 candidate 실행을 시작할 수 없다.
+claim은 성공·실패 모두 보존한다. rebuild 내부는 같은 lock path를 새 descriptor로 다시 열지 않고, inode·owner·mode와
+nonblocking flock을 재검증한 inherited descriptor를 재사용하므로 one-shot admission과 Manager mutation이 한 transaction으로
+이어진다.
+
+## 2026-08-28 — M05 one-shot launcher를 포함한 새 candidate 회전
+
+`6269138f…`은 durable journal/manifest 없이 끝난 pre-journal 단회 시도로 보존하며 재실행하지 않는다. PinVi의
+그 기록 source `55687a4f…`와 Map `9c64e862…`를 canonical pinset `53d4639f…`으로 다시 결박했으나, 이는 executable
+bit 미보존으로 admission 이전에 끝나 재시도하지 않는다. 다음 n150
+candidate는 trusted Manager release의 `run-pinned-rebuild-once`가 root-owned `result.json`을 남기는 경우에만 단 한 번
+실행한다. raw stderr는 root 전용으로 보존하고 판정에 읽지 않는다.
+
+## 2026-08-28 — M05 committed Map runtime provenance 재결박
+
+기존 `030b12fc…` generation은 Map `9c64e862…`, API image `2260ec…`, UI image `5dc547…`로
+`committed` 되었고 재실행 금지다. PinVi M05 attestation이 source와 image identity를 exact pair로 검사하므로,
+PinVi source가 current main rebase로 `61dffcb5…`로 회전했으므로, Map `9c64e862…`와 새 canonical pinset
+`6269138f…`는 이전 trusted candidate로 고정했다.
+새 pinset은 n150에서 단 한 번만 rebuild하며, committed 뒤에만 isolated M04/M05 live E2E와 signed activation
+attestation을 실행한다. 두 전문 적대 리뷰는 이 provenance·canonical hash 결박에 P0/P1 없음을 확인했다.
+
+## 2026-08-28 — pre-journal candidate 결과 회수의 durable 경계
+
+`6269138f…`는 단 한 번 실행됐으나 durable journal/manifest를 남기지 않았다. 실행 SSH의 장시간 source build로
+구조화된 stdout을 회수하지 못했으며 raw stderr는 열지 않는다. 다음 candidate는 root-owned 신규 output directory를
+단 한 번 만들고 `result.json`과 raw `stderr.log`를 분리하는 `scripts/run-pinned-rebuild-once`만 사용한다. output
+directory가 이미 있으면 launcher는 command를 호출하지 않아 같은 candidate 재시도를 막는다.
 ## 2026-08-28 — pin registry 파일화와 pinset lifecycle 게이트 구현 (KUM-M1~M4, ADR-40)
 
 설계 문서 v3 1부 트랙을 구현했다. pinned revision을 코드 상수에서 root 소유 JSON
@@ -158,6 +199,11 @@ credential 구분 필요성과 self-lockout 재분석도 반영했다.
 이번 라운드는 오너 지시대로 **설계·문서화·`docs/tasks.md`의 `KTDCTL-UI-MIGRATION`
 태스크 등록까지만** 진행했다. 코드 변경도 n150 배포도 없다. 문서의 열린 질문 6건에
 오너가 답한 뒤 승인된 항목만 별도 구현 태스크로 분리한다.
+
+전문 적대 리뷰가 receipt 안전성 오류가 terminal journal을 우회할 수 있고 reset `run`이 generic Compose
+typed-output parser를 거칠 수 있는 P1을 지적했다. receipt read/metadata 오류는 이제 `unclassified` terminal
+block으로 봉인하며, reset one-shot은 output capture와 typed-output diagnostic을 모두 끈다. 실패 분류의 유일한
+입력은 inode-bound result receipt이고, focused generation/rebuild/release 회귀 167건으로 고정했다.
 
 ---
 

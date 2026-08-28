@@ -1748,6 +1748,9 @@ _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
+_PINNED_REBUILD_INHERITED_GLOBAL_LOCK_FD_ENV = (
+    "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
+)
 
 
 class _ManagedComposeMutationCapability:
@@ -2036,6 +2039,14 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
     if lock_key in held_locks:
         yield
         return
+    inherited_fd = _verified_inherited_global_mutation_lock_fd(lock_path)
+    if inherited_fd is not None:
+        context_token = _HELD_DEPLOYMENT_LOCKS.set(held_locks | {lock_key})
+        try:
+            yield
+        finally:
+            _HELD_DEPLOYMENT_LOCKS.reset(context_token)
+        return
     _prepare_c6c_lock_directory(lock_path.parent)
     fd: int | None = None
     context_token = None
@@ -2064,6 +2075,39 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 os.close(fd)
+
+
+def _verified_inherited_global_mutation_lock_fd(lock_path: Path) -> int | None:
+    """one-shot launcher가 보유한 production lock FD만 안전하게 재사용한다."""
+
+    if lock_path != _C6C_GLOBAL_MUTATION_LOCK:
+        return None
+    raw_fd = os.environ.get(_PINNED_REBUILD_INHERITED_GLOBAL_LOCK_FD_ENV, "")
+    if not raw_fd:
+        return None
+    if not raw_fd.isdecimal():
+        raise DeploymentContractError("inherited C6c deployment lock descriptor is invalid")
+    try:
+        fd = int(raw_fd)
+        descriptor_stat = os.fstat(fd)
+        path_stat = lock_path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            "inherited C6c deployment lock descriptor is unavailable"
+        ) from exc
+    if (
+        (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        != (path_stat.st_dev, path_stat.st_ino)
+    ):
+        raise DeploymentContractError("inherited C6c deployment lock descriptor is unsafe")
+    _validate_c6c_lock_fd(fd, production=True)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        raise DeploymentContractError(
+            "inherited C6c deployment lock is not held"
+        ) from exc
+    return fd
 
 
 def pinned_runtime_rebuild_lock_path() -> str:
