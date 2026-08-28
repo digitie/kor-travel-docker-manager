@@ -2,6 +2,16 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 pair 회전의 intermediate pinset admission 차단
+
+runtime pin registry의 role별 두 회전은 첫 write 뒤 intermediate Map/PinVi tuple을 만들 수 있었고,
+M05 launcher는 source pair 검증보다 one-shot ledger를 먼저 claim했다. terminal seed에서의 단일 role
+회전을 거부하고 `pin rotate-pair`가 두 revision을 한 registry replace로 바꾸도록 보정했다. launcher도
+source pair를 확인한 뒤에만 ledger를 claim하므로 invalid pair는 candidate 실행권을 소진하지 않는다.
+
+새 regression은 intermediate registry 보존본 부재, terminal seed의 single-role CLI 거부, pair 검증과 ledger
+claim의 실행 순서를 고정한다. final pair의 `pin verify`가 성공하기 전에는 n150 E2E를 실행하지 않는다.
+
 ---
 
 ## 2026-08-28 — M05 baseline artifact 진단 정정과 immutable image 원인 확정

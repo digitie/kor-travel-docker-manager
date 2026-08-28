@@ -29,6 +29,7 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
     rollback_runtime_pin,
     rotate_runtime_pin,
+    rotate_runtime_pin_pair,
     verify_runtime_pin_registry,
     write_runtime_pin_registry,
 )
@@ -36,6 +37,7 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
 MAP_A = "a" * 40
 PINVI_B = "b" * 40
 MAP_C = "c" * 40
+PINVI_D = "d" * 40
 
 
 @pytest.fixture(autouse=True)
@@ -192,6 +194,41 @@ def test_rotation_records_history_with_the_superseded_pinset() -> None:
     assert entry.supersedes_pinset_sha256 == previous.pinset_sha256
     assert entry.reason == "pinvi fix"
     assert entry.rotated_by == "tester"
+
+
+def test_pair_rotation_replaces_both_sources_without_an_intermediate_pinset(
+    _isolated_registry,
+) -> None:
+    """terminal M05 source pair는 role별 두 write가 아닌 한 번의 replace로 회전한다."""
+
+    registry_path, _ = _isolated_registry
+    previous = _seed()
+
+    updated = rotate_runtime_pin_pair(
+        map_revision=MAP_C,
+        pinvi_revision=PINVI_D,
+        reason="compatible M05 pair",
+        rotated_by="tester",
+    )
+
+    assert (updated.map_revision, updated.pinvi_revision) == (MAP_C, PINVI_D)
+    assert len(updated.history) == 1
+    assert updated.history[-1].supersedes_pinset_sha256 == previous.pinset_sha256
+    intermediate = _consistent_digest(map_revision=MAP_C, pinvi_revision=PINVI_B)
+    assert updated.pinset_sha256 != intermediate
+    assert not registry_path.with_name(f"runtime-pins.{intermediate}.json").exists()
+
+
+def test_terminal_current_pinset_refuses_single_role_rotation() -> None:
+    seed = _seed()
+    terminal = block_runtime_pinset(pinset_sha256=seed.pinset_sha256, reason="terminal")
+
+    with pytest.raises(RuntimePinRegistryError, match="atomic Map/PinVi pair"):
+        rotate_runtime_pin(
+            role="map", revision=MAP_C, reason="would split pair", rotated_by="tester"
+        )
+
+    assert load_runtime_pin_registry().pinset_sha256 == terminal.pinset_sha256
 
 
 def test_rotation_that_changes_nothing_is_rejected() -> None:

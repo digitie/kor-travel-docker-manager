@@ -401,3 +401,15 @@ def test_manager_does_not_require_pinvi_crypto_dependency() -> None:
     )
 
     assert "cryptography" not in pyproject
+
+
+def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
+    """invalid source pair는 ledger를 소비하지 않아 corrected pair를 막지 않는다."""
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    pair_preflight = source.index("pair, service_openapi_sha256, service_source_revision = _pair(")
+    ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
+
+    assert pair_preflight < ledger_claim

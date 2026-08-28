@@ -992,28 +992,21 @@ def build_registry(
     )
 
 
-def rotate_runtime_pin(
+def _apply_runtime_pin_rotation(
     *,
-    role: str,
-    revision: str,
+    current: RuntimePinRegistry,
+    registry_path: Path,
+    map_revision: str,
+    pinvi_revision: str,
     reason: str,
     rotated_by: str,
-    path: Path | None = None,
-    block_previous: bool = False,
-    block_reason: str | None = None,
+    block_previous: bool,
+    block_reason: str | None,
 ) -> RuntimePinRegistry:
-    """한 role의 revision을 교체하고 digest·이력·직전 pinset 차단을 자동 처리한다."""
+    """검증된 두 revision을 원자적으로 교체하고 lifecycle 이력을 남긴다."""
 
-    from kor_travel_docker_manager.services.pinned_runtime_release import RUNTIME_SOURCE_ROLES
-
-    if role not in RUNTIME_SOURCE_ROLES:
-        raise RuntimePinRegistryError("runtime pin role must be map or pinvi")
-    registry_path = path or runtime_pin_registry_path()
-    _assert_registry_is_writable_target(registry_path)
-    current = load_runtime_pin_registry(path=registry_path)
-    revision = _require_revision(revision, "revision")
-    map_revision = revision if role == "map" else current.map_revision
-    pinvi_revision = revision if role == "pinvi" else current.pinvi_revision
+    map_revision = _require_revision(map_revision, "map revision")
+    pinvi_revision = _require_revision(pinvi_revision, "pinvi revision")
     if (map_revision, pinvi_revision) == (current.map_revision, current.pinvi_revision):
         raise RuntimePinRegistryError("runtime pin rotation would not change any revision")
 
@@ -1069,6 +1062,74 @@ def rotate_runtime_pin(
     )
     write_runtime_pin_registry(updated, path=registry_path)
     return updated
+
+
+def rotate_runtime_pin(
+    *,
+    role: str,
+    revision: str,
+    reason: str,
+    rotated_by: str,
+    path: Path | None = None,
+    block_previous: bool = False,
+    block_reason: str | None = None,
+) -> RuntimePinRegistry:
+    """한 role의 revision을 교체한다.
+
+    현재 pinset이 terminal이면 두 source의 compatibility를 한 번에 바꿔야 한다. 그
+    상태에서 role별 회전을 열어 두면 M05가 pair-incomplete pinset을 one-shot ledger에
+    먼저 소비할 수 있으므로 ``rotate_runtime_pin_pair``만 허용한다.
+    """
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import RUNTIME_SOURCE_ROLES
+
+    if role not in RUNTIME_SOURCE_ROLES:
+        raise RuntimePinRegistryError("runtime pin role must be map or pinvi")
+    registry_path = path or runtime_pin_registry_path()
+    _assert_registry_is_writable_target(registry_path)
+    current = load_runtime_pin_registry(path=registry_path)
+    if current.is_unconditionally_blocked_pinset(current.pinset_sha256):
+        raise RuntimePinRegistryError(
+            "a terminal current pinset requires atomic Map/PinVi pair rotation"
+        )
+    revision = _require_revision(revision, "revision")
+    return _apply_runtime_pin_rotation(
+        current=current,
+        registry_path=registry_path,
+        map_revision=revision if role == "map" else current.map_revision,
+        pinvi_revision=revision if role == "pinvi" else current.pinvi_revision,
+        reason=reason,
+        rotated_by=rotated_by,
+        block_previous=block_previous,
+        block_reason=block_reason,
+    )
+
+
+def rotate_runtime_pin_pair(
+    *,
+    map_revision: str,
+    pinvi_revision: str,
+    reason: str,
+    rotated_by: str,
+    path: Path | None = None,
+    block_previous: bool = False,
+    block_reason: str | None = None,
+) -> RuntimePinRegistry:
+    """Map·PinVi revision을 하나의 registry replace로 원자 회전한다."""
+
+    registry_path = path or runtime_pin_registry_path()
+    _assert_registry_is_writable_target(registry_path)
+    current = load_runtime_pin_registry(path=registry_path)
+    return _apply_runtime_pin_rotation(
+        current=current,
+        registry_path=registry_path,
+        map_revision=map_revision,
+        pinvi_revision=pinvi_revision,
+        reason=reason,
+        rotated_by=rotated_by,
+        block_previous=block_previous,
+        block_reason=block_reason,
+    )
 
 
 def block_runtime_pinset(

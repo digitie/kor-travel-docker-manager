@@ -1097,7 +1097,6 @@ def main(expected_revision: str, output: Path) -> int:
         plan = M05IsolatedHarnessPlan(
             PINNED_RUNTIME_RELEASE, expected_revision, transaction
         )
-        claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
         phase = "source_materialization"
         ambient = dict(os.environ)
         try:
@@ -1119,6 +1118,11 @@ def main(expected_revision: str, output: Path) -> int:
         pair, service_openapi_sha256, service_source_revision = _pair(
             pinvi_root, map_root
         )
+        # source pair가 정합하지 않으면 one-shot ledger를 소비하지 않는다. 잘못 회전한
+        # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
+        phase = "ledger_claim"
+        claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
+        phase = "runtime_setup"
         ports = _free_ports(transaction)
         runtime = output / "runtime"
         runtime.mkdir(mode=0o700)
