@@ -457,3 +457,101 @@ def test_packaged_seed_registry_is_valid_and_records_known_terminal_pinsets(
     assert registry.release().pinset_sha256 == registry.pinset_sha256
     # 현재 pin이 terminal로 등재돼 있다는 것 자체가 이번 감사의 핵심 발견이다.
     assert registry.is_blocked_pinset(registry.pinset_sha256)
+
+
+# --- rebuild 시작 게이트 ------------------------------------------------------
+
+
+def _blocked_seed(*, phase: str | None) -> RuntimePinRegistry:
+    seeded = build_registry(
+        release_version=5,
+        map_revision=MAP_A,
+        pinvi_revision=PINVI_B,
+        rotated_by="tester",
+        reason="seed",
+    )
+    blocked = BlockedPinset(
+        pinset_sha256=seeded.pinset_sha256,
+        map_revision=MAP_A,
+        pinvi_revision=PINVI_B,
+        reason="terminal upstream",
+        blocked_at="2026-08-28T00:00:00Z",
+        phase=phase,
+    )
+    registry = RuntimePinRegistry(
+        release_version=seeded.release_version,
+        map_revision=seeded.map_revision,
+        pinvi_revision=seeded.pinvi_revision,
+        pinset_sha256=seeded.pinset_sha256,
+        rotated_at=seeded.rotated_at,
+        rotated_by=seeded.rotated_by,
+        reason=seeded.reason,
+        blocked_pinsets=(blocked,),
+    )
+    write_runtime_pin_registry(registry, preserve_previous=False)
+    return registry
+
+
+def test_rebuild_start_gate_refuses_an_unconditionally_blocked_pinset() -> None:
+    """destructive 작업 이전에 거부한다 — 사람의 기억이 아니라 기계가 규약을 지킨다."""
+
+    from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+    from kor_travel_docker_manager.services.compose_service import (
+        _assert_pinset_is_not_permanently_blocked,
+    )
+
+    registry = _blocked_seed(phase=None)
+
+    with pytest.raises(DeploymentContractError, match="must not be retried"):
+        _assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
+
+
+def test_rebuild_start_gate_ignores_phase_scoped_blocks() -> None:
+    """phase 한정 차단은 특정 journal 재개만 막는다 — 시작 게이트가 관여하면 과차단이다."""
+
+    from kor_travel_docker_manager.services.compose_service import (
+        _assert_pinset_is_not_permanently_blocked,
+    )
+
+    registry = _blocked_seed(phase="map_runtime_ready")
+
+    _assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
+    assert registry.is_blocked_pinset(registry.pinset_sha256)
+    assert not registry.is_unconditionally_blocked_pinset(registry.pinset_sha256)
+
+
+def test_rebuild_start_gate_fails_closed_when_the_registry_vanishes(
+    _isolated_registry,
+) -> None:
+    from kor_travel_docker_manager.services.compose_service import (
+        _assert_pinset_is_not_permanently_blocked,
+    )
+
+    registry_path, _ = _isolated_registry
+    seeded = _seed()
+    registry_path.unlink()
+    clear_runtime_pin_registry_cache()
+
+    with pytest.raises(RuntimePinRegistryError, match="missing"):
+        _assert_pinset_is_not_permanently_blocked(seeded.pinset_sha256)
+
+
+def test_blocked_pinset_retry_helper_honours_phase_scope() -> None:
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        is_blocked_pinset_retry,
+    )
+
+    registry = _blocked_seed(phase="map_runtime_ready")
+
+    assert is_blocked_pinset_retry(
+        pinset_sha256=registry.pinset_sha256,
+        map_source_revision=MAP_A,
+        pinvi_source_revision=PINVI_B,
+        phase="map_runtime_ready",
+    )
+    assert not is_blocked_pinset_retry(
+        pinset_sha256=registry.pinset_sha256,
+        map_source_revision=MAP_A,
+        pinvi_source_revision=PINVI_B,
+        phase="candidate_attested",
+    )

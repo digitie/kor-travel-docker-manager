@@ -1267,3 +1267,91 @@ def test_get_backups_requires_authentication():
     response = client.get("/api/v1/backups")
 
     assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_get_runtime_pins_exposes_lifecycle_and_plain_language_summary(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "status": "ok",
+        "source": "published_copy",
+        "published_at": "2026-08-28T00:00:00Z",
+        "release_version": 5,
+        "pinset_sha256": "a" * 64,
+        "sources": [
+            {"role": "map", "url": "https://github.com/digitie/kor-travel-map.git", "revision": "b" * 40},
+            {"role": "pinvi", "url": "https://github.com/digitie/pinvi.git", "revision": "c" * 40},
+        ],
+        "rotated_at": "2026-08-28T00:00:00Z",
+        "rotated_by": "operator",
+        "reason": "새 candidate",
+        "history": [],
+        "blocked_pinsets": [],
+    }
+
+    response = client.get("/api/v1/runtime-pins")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["pins"]["pinset_sha256"] == "a" * 64
+    assert body["lifecycle"]["current_pinset_is_blocked"] is False
+    assert body["summary"]["state"] == "ok"
+    assert body["summary"]["next_action"] == ""
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_get_runtime_pins_flags_a_terminal_current_pinset(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "status": "ok",
+        "source": "published_copy",
+        "release_version": 5,
+        "pinset_sha256": "a" * 64,
+        "sources": [],
+        "rotated_at": "2026-08-28T00:00:00Z",
+        "rotated_by": "operator",
+        "reason": "seed",
+        "history": [],
+        "blocked_pinsets": [
+            {
+                "pinset_sha256": "a" * 64,
+                "map_revision": "b" * 40,
+                "pinvi_revision": "c" * 40,
+                "reason": "upstream이 terminal로 선언",
+                "blocked_at": "2026-08-28T00:00:00Z",
+            }
+        ],
+    }
+
+    response = client.get("/api/v1/runtime-pins")
+
+    body = response.json()
+    assert body["lifecycle"]["current_pinset_is_blocked"] is True
+    assert body["summary"]["state"] == "action_required"
+    assert "pin rotate" in body["summary"]["next_action"]
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_get_runtime_pins_reports_unknown_instead_of_guessing(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "status": "unknown",
+        "source": None,
+        "detail": "runtime pin registry is not readable by this process",
+    }
+
+    response = client.get("/api/v1/runtime-pins")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "unknown"
+    assert body["pins"] is None
+
+
+def test_get_runtime_pins_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/runtime-pins")
+
+    assert response.status_code == 401
