@@ -4,6 +4,200 @@
 
 ---
 
+## 2026-08-28 — M05 baseline artifact 진단 정정과 immutable image 원인 확정
+
+`29fbcdd…` candidate는 `baseline_reference_invalid`로 terminal 처리됐고 cleanup 뒤 Map·PinVi
+transaction resource는 각각 0개였다. candidate와 ledger는 보존하며 재실행하지 않는다. Map
+`9c64e862…`의 `application-reference.json`, manifest sidecar와 모든 tracked baseline artifact를 다시
+정적으로 대조한 결과, 이전 기록과 달리 `application-seed.sql`을 포함한 declared digest는 실제 bytes와
+일치했다. 기존의 source artifact 불일치 주장은 철회한다.
+
+n150의 읽기 전용 image identity 확인에서는 Map Compose의 부동 `postgis/postgis:16-3.5-alpine` 태그가
+baseline reference의 immutable PostGIS image와 달랐다. exact catalog receipt가 다른 source image에서
+fail-close한 것이므로 Manager·PinVi의 runtime override로 고치지 않는다. 다음 변경은 Map Compose를
+baseline digest에 고정하는 source PR이며, 그 committed Map revision을 PinVi pair·Manager pinset에
+재결박한 새 candidate만 one-shot admission할 수 있다.
+
+---
+
+## 2026-08-28 — [철회됨] 고정 Map baseline artifact 불일치 판단
+
+이 판단은 같은 날 후속 정적 재검증으로 철회했다. exact Map `9c64e862…`의
+`application-reference.json`, sidecar와 `application-seed.sql`을 포함한 declared artifact bytes는 모두
+정합했다. `29fbcdd…` candidate의 `baseline_reference_invalid`는 source artifact 불일치가 아니라 baseline이
+고정한 immutable PostGIS image와 Compose 부동 태그가 가리킨 image identity의 drift였다.
+
+candidate와 ledger는 terminal 기록으로 보존하며 재실행하지 않는다. 현재의 원인·후속 순서는 이 파일 최상단
+`M05 baseline artifact 진단 정정과 immutable image 원인 확정` 항목이 정본이다. 이 철회된 판단은 Map
+artifact 변경 또는 새 candidate 생성의 근거로 사용하지 않는다.
+
+---
+
+## 2026-08-28 — Alembic runtime contract의 고정 원인 분류
+
+`6c888a5…` candidate는 `alembic_runtime_contract_failed`로 끝났고 cleanup 뒤 Map·PinVi
+transaction resource는 각각 0개였다. candidate와 ledger는 terminal로 보존하고 재실행하지 않는다.
+
+다음 candidate는 immutable Map source에 선언된 Alembic `RuntimeError` 문구만 memory 안에서
+closed allowlist로 대조한다. destination facet, runtime configuration, baseline reference, schema
+lineage, metadata contract의 다섯 enum만 종료 코드로 남기며, 문자열·hash·exception 원문은 result에
+기록하지 않는다. allowlist 밖의 runtime error는 기존 generic enum으로 fail-close한다.
+exact·prefix·unknown 세 경우를 실제 runner 종료 코드 회귀로 고정해 이후 진단 분류가 임의로 바뀌지 않게 한다.
+
+---
+
+## 2026-08-28 — Map fresh-init 예외 계열 분류 확장
+
+`bea60f5…` candidate는 fixed `map_fresh_init_failed`와 `unclassified`로 끝났고, cleanup 뒤
+Map·PinVi transaction resource는 각각 0개였다. candidate와 ledger는 terminal로 보존하고 재실행하지
+않는다. launcher가 output directory를 스스로 새로 만들도록 요구하므로, admission 전 빈 output directory를
+미리 만든 첫 호출은 ledger·result를 만들지 않았고 해당 빈 directory만 정확히 확인한 뒤 제거했다.
+
+Map source는 고정한 채, one-shot runner는 `FreshMigrationError` allowlist 뒤에
+`RuntimePrivilegeReconciliationError`, Alembic command/runtime contract, SQLAlchemy statement의 네
+고정 예외 계열만 별도 종료 코드로 분류한다. 결과에는 enum만 남기고 원문 exception·stderr·환경값은
+계속 폐기한다.
+
+---
+
+## 2026-08-28 — Map fresh-init 고정 종료 코드 진단과 candidate 회전
+
+`aa78b4ec…` candidate는 Map `fresh-init`까지 명시해 `map_fresh_init_failed`로 끝났고,
+cleanup 뒤 Map·PinVi transaction resource는 모두 없었다. 이 candidate와 ledger는 terminal로
+보존하고 재실행하지 않는다. 원문 stderr·container log·환경값은 읽거나 결과에 쓰지 않았다.
+
+다음 candidate의 fresh-init one-shot은 고정 Map source의 `migrate` 인자·동일 `_migrate` 경로를
+실행하되, 알려진 `FreshMigrationError`만 고정 종료 코드로 바꾼다. Manager는 그 코드와 정적
+allowlist를 대조해 제한된 `map_fresh_init_reason`만 root-owned `0600` result에 기록한다. 알려지지
+않은 오류도 `unclassified`로만 남기며, stdout·stderr는 계속 폐기한다. 이 반복 절차는 원문 로그
+접근 없이 다음 수정 범위를 좁히고 한 번의 ledger candidate를 재시도하지 않게 한다.
+
+---
+
+## 2026-08-28 — M05 Map command별 비밀 비포함 failure phase
+
+`bc704aef…` candidate는 cleanup을 완결했고 잔여 container·network·volume이 없었지만, result의
+`driver_phase`가 generic `runtime_command_failed`여서 Map postgres start·fresh-init·application start 중
+정확한 명령을 구분할 수 없었다. candidate와 ledger는 terminal로 보존하고 재실행하지 않는다.
+
+Map의 세 Compose command는 각각 고정된 failure phase로 변환해 result에 기록한다. command output·stderr·env
+값은 계속 저장하지 않으며, fixed phase 문자열만 다음 candidate의 root-owned `0600` result에 남긴다.
+focused test가 generic command failure의 phase 변환을 고정한다.
+
+---
+
+## 2026-08-28 — M05 fresh-init cleanup profile과 안전한 실패 단계 증적
+
+`66bb373d…` candidate는 n150 Map `fresh-init` one-shot 세 개가 정상 종료한 뒤, cleanup이 profile을
+명시하지 않아 해당 컨테이너 세 개와 transaction 전용 volume 하나를 누락했다. 결과는
+`runtime_cleanup_failed`로 fail-close 되었고 재실행하지 않는다. 남은 리소스는 root-owned result의
+transaction과 Compose owner label을 모두 대조한 뒤 그 exact 네 개만 제거했다.
+
+Map cleanup에는 `--profile fresh-init`을 명시하고, result에는 raw command output 없이 cleanup 전
+`driver_phase`와 `cleanup_failed` boolean을 함께 기록한다. 이 회귀는 profile 인자가 `down`에도
+전달되는 focused test로 고정한다. 다음 실행은 새 Manager revision·새 ledger claim에서만 가능하다.
+
+---
+
+## 2026-08-28 — N150 `ss` 경로 회귀 방지와 M05 candidate 회전
+
+PinVi `323e3ba8…`·Map `9c64e862…`·pinset `2d6d5ad5…`로 결박한 Manager `d7a048a1…`의 n150
+isolated live E2E는 source materialization과 pair provenance를 통과했지만, Docker mutation 전 port
+preflight가 존재하지 않는 `/usr/sbin/ss`를 호출해 `driver_contract_failed`로 끝났다. root-owned
+`m05-isolated-once` ledger와 결과 증적은 보존하고, 그 candidate는 재실행하지 않는다.
+
+portable Debian runtime 위치인 `/usr/bin/ss`로 고정하고, 모든 port probe가 그 경로만 호출하는 focused
+회귀를 추가했다. 이후 새 Manager revision과 새 ledger claim으로만 n150 live E2E를 한 번 실행한다.
+
+---
+
+## 2026-08-28 — N150 host Ed25519 fallback을 포함한 PinVi pinset 회전
+
+PinVi `323e3ba8…`은 M04/M05 attestation의 N150 host runner·source·evidence 경계를 유지하면서,
+Manager release Python에만 없는 `cryptography` Ed25519 primitive를 `/usr/bin/openssl` fallback으로
+fail-close 처리한다. container 안에서 attestation을 실행하려던 경로는 N150-only Node/host preflight와
+nested Docker bind source를 깨므로 전문 적대 리뷰 P1로 폐기했다. host fallback은 `0600` temporary regular
+file, opened-FD mode/owner 검증, fixed tool environment, Ed25519/SPKI/signature 검증, cleanup failure를
+고정하고, 실제 n150 Manager venv에서도 sign/verify smoke를 통과했다.
+
+exact Map `9c64e862…`와의 새 pinset은 `2d6d5ad5…`이다. 이전 `9835cfcc…`은 candidate로 admission하지
+않으며, 이 새 PinVi source·Manager revision 조합의 root-owned ledger가 없는 경우에만 n150 isolated
+M04/M05 live E2E를 정확히 한 번 실행한다.
+
+---
+
+## 2026-08-28 — M05 isolated loopback·fixture 권한 경계 보강
+
+전문 적대 보안 재리뷰의 P1 두 건을 반영했다. root driver의 모든 host HTTP 대상은 명시적인
+`127.0.0.1:port` HTTP URL만 허용하고 기본 opener와 PinVi cookie opener 모두 ambient proxy를
+무시한다. 이로써 Map admin proxy credential을 host의 `HTTP_PROXY`/`HTTPS_PROXY` 경로로 보낼 수
+없다.
+
+provider fixture는 더 이상 bootstrap/migrator owner DSN이나 `SET ROLE`을 사용하지 않는다. generic
+Map API image에는 `ktm_feature_dagster_runtime` DSN 하나만 주입하고, 실제 `FeatureBundle` provider
+적재 경로와 `record_manual_provider_dedup_candidate` procedure만 호출한다. runtime privilege preflight,
+loopback URL 차단·proxy-free transport, owner credential/직접 INSERT 부재를 focused 회귀로 고정했다.
+다음 단계는 두 전문 재리뷰와 trusted release의 n150 단발 실행이다.
+
+## 2026-08-28 — PinVi isolated migrator boundary를 포함한 pinset 회전
+
+PinVi `7d66523a…`는 root Manager harness marker와 transaction-bound project에서만 isolated
+migration을 허용한다. 이 실행 경계 변경을 exact Map `9c64e862…`와 새 pinset `9835cfcc…`으로
+회전했다. 이전 `d4b34826…`은 실행하지 않으며, 새 root launcher가 완성·리뷰된 뒤 이 pinset만
+한 번 admission한다.
+
+이전 PinVi revision pin은 실제 merge commit과 달라 P0 계약 오류였다. Manager는 현재
+pair가 지정한 네 OpenAPI source revision을 canonical 원격에서 exact object로 읽어 raw/canonical
+SHA까지 대조한다. disposable driver는 M04 UI 승인, Map 승인, provider candidate 결선,
+PinVi reconciliation receipt, M05 live attestation 순서를 실제로 실행하며, 실패 위치와
+관계없이 private env·bootstrap credential·signing key를 제거한다. n150 실행은 수정 재리뷰와
+draft PR CI가 통과한 뒤 한 번만 한다.
+
+## 2026-08-28 — M05 isolated runtime provenance receipt와 PinVi source 회전
+
+Manager는 Map admin/API/frontend와 PinVi API/Web/Dagster 여섯 image를 각각 image inspect ID 및 OCI
+source revision label로 exact source pin과 대조한 뒤에만 fixed runtime provenance schema를 만든다. 공개
+loopback endpoint 두 개의 bridge topology는 기존 strict inspect로 추가 검증한다. PinVi M05 `isolated`
+attestation은 이 `0600` root receipt의 source·Map full OpenAPI·image ID 전체를 소비하며, canonical runtime
+digest를 재사용하지 않는다.
+
+PinVi source는 runtime provenance consumer가 포함된 `f9df39bc…`로 회전했고, 새 Manager pinset은
+`d4b34826…`이다. 기존 `c1ad5a3e…` 및 그 historical candidate는 재실행하지 않는다. 다음 작업은 이
+새 pinset 전용 root driver를 구현·검토하고 source snapshot/build/fixture/cleanup을 한 번의 ledger claim 아래
+결선하는 것이다.
+
+## 2026-08-28 — M05 격리 harness admission·runtime inspect 계약 구현
+
+새 `m05_isolated_harness` module은 exact current pinset, installed Manager revision, harness version만으로
+canonical JSON claim bytes와 ledger filename을 계산한다. root-owned `0700` ledger 아래 `O_NOFOLLOW|O_EXCL`
+claim과 file·directory `fsync`를 child Docker mutation 전에 남기므로 transaction ID나 output path만 바꾼
+재실행을 막는다. 이 claim은 실패에도 남으며 production rebuild ledger와 별도 namespace로 보존한다.
+
+runtime receipt 입력은 Docker 원문 log가 아니라 strict inspect 결과만 쓴다. Map API와 PinVi API의 둘을
+정확히 요구하고, running state, named user-defined bridge network와 inspect ID, service별 정확히 하나의 dedicated
+network, exact harness/pinset/revision/transaction label, image label의 source revision, source-pair와 같은 exact
+immutable image ID, 그리고 정확히 하나의 `127.0.0.1` published binding 외에는 모두 fail-close한다. container
+label만 신뢰하지 않고 image inspect의 OCI revision label도 release source와 다시 대조한다. bridge driver·network
+ID·label도 network inspect에서 재검증한다. focused 회귀는 replay ledger, host network, wildcard binding,
+Map 또는 PinVi 역할 누락, provenance/image drift, multi-network와 network driver drift를 고정했다. 다음 구현은 이
+contract를 소비하는 root-only source snapshot·compose driver와 label-scoped cleanup이다. 두 전문 적대 리뷰는
+이 admission/inspect 범위의 P0/P1이 없음을 확인했고, source snapshot·global lock·receipt driver가 없는 동안에는
+어떤 live candidate도 실행하지 않는다는 조건을 다시 고정했다.
+
+## 2026-08-28 — M05 격리 bridge harness 선행 결정
+
+`c1ad5a3e…` committed runtime은 host network이므로 M04/M05 attestation의 loopback published-port
+검증을 만족하지 않는다. 과거 격리 checkout은 source pin이 달라 증거로 재사용할 수 없다. 두 전문 적대
+리뷰는 canonical runtime을 bridge로 바꾸는 임시 우회와 수동 격리 실행을 모두 거절하고, exact Map/PinVi
+source와 fresh bridge resource만 허용하는 root-only harness를 먼저 만들도록 요구했다. harness는 Docker
+mutation 전에 `(harness, pinset, Manager revision)` immutable ledger claim과 inherited global lock을 확보하고,
+production DB·volume·network·container와의 비공유를 strict inspect로 증명해야 한다. 그 성공 증적은 production
+activation receipt로 승격하지 않는다.
+
+임시로 시작한 standalone Map bridge build는 어떠한 runtime container·volume도 만들기 전에 중지했고, exact
+Map checkout의 실행 전용 env file도 제거하여 clean 상태를 복구했다. 이후 M04/M05 live E2E는 harness PR의
+review·CI·trusted release 설치 뒤에만 재개한다.
+
 ## 2026-08-28 — installed launcher execute bit 보존과 candidate 회전
 
 `53d4639f…`은 trusted release가 `run-pinned-rebuild-once`를 executable로 설치하지 않아 admission 이전에 끝났다.
