@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-28 — M05 isolated runtime provenance receipt와 PinVi source 회전
+
+Manager는 Map admin/API/frontend와 PinVi API/Web/Dagster 여섯 image를 각각 image inspect ID 및 OCI
+source revision label로 exact source pin과 대조한 뒤에만 fixed runtime provenance schema를 만든다. 공개
+loopback endpoint 두 개의 bridge topology는 기존 strict inspect로 추가 검증한다. PinVi M05 `isolated`
+attestation은 이 `0600` root receipt의 source·Map full OpenAPI·image ID 전체를 소비하며, canonical runtime
+digest를 재사용하지 않는다.
+
+PinVi source는 runtime provenance consumer가 포함된 `f9df39bc…`로 회전했고, 새 Manager pinset은
+`d4b34826…`이다. 기존 `c1ad5a3e…` 및 그 historical candidate는 재실행하지 않는다. 다음 작업은 이
+새 pinset 전용 root driver를 구현·검토하고 source snapshot/build/fixture/cleanup을 한 번의 ledger claim 아래
+결선하는 것이다.
+
 ## 2026-08-28 — M05 격리 harness admission·runtime inspect 계약 구현
 
 새 `m05_isolated_harness` module은 exact current pinset, installed Manager revision, harness version만으로

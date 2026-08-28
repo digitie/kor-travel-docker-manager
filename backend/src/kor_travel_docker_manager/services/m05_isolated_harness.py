@@ -28,8 +28,19 @@ M05_ISOLATED_HARNESS_VERSION: Final = 1
 _EXPOSED_RUNTIME_SERVICE_ROLES: Final[Mapping[str, M05IsolatedRuntimeRole]] = MappingProxyType(
     {"map-api": "map", "pinvi-api": "pinvi"}
 )
+_RUNTIME_IMAGE_ROLES: Final[Mapping[str, M05IsolatedRuntimeRole]] = MappingProxyType(
+    {
+        "map-admin": "map",
+        "map-api": "map",
+        "map-frontend": "map",
+        "pinvi-api": "pinvi",
+        "pinvi-dagster": "pinvi",
+        "pinvi-web": "pinvi",
+    }
+)
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TRANSACTION = re.compile(r"^[0-9a-f]{32}$")
 _NETWORK = re.compile(r"^m05i-(?:map|pinvi)-[0-9a-f]{32}_default$")
 _CONTAINER_ID = re.compile(r"^[0-9a-f]{64}$")
@@ -355,3 +366,66 @@ def assert_m05_isolated_runtime(
         ):
             raise DeploymentContractError("M05 isolated Docker network differs")
     return MappingProxyType(identities)
+
+
+def build_m05_isolated_runtime_provenance(
+    *,
+    expectation: M05IsolatedRuntimeExpectation,
+    image_inspects: Mapping[str, Mapping[str, Any]],
+) -> dict[str, object]:
+    """PinVi M05 attestation이 소비할 root-only isolated image/source receipt를 만든다.
+
+    caller는 raw Docker output을 그대로 저장하지 않고 이 function이 반환한 fixed schema만 `0600`
+    receipt로 내보낸다. Map/PinVi의 모든 M05 runtime image는 image inspect ID와 OCI source label을
+    exact source pin으로 대조한다. `assert_m05_isolated_runtime`은 이 중 public loopback endpoint
+    두 개의 container/network topology도 별도로 검증한다.
+    """
+
+    if set(image_inspects) != set(_RUNTIME_IMAGE_ROLES):
+        raise DeploymentContractError("M05 isolated runtime image set is invalid")
+    image_ids: dict[str, str] = {}
+    for name, role in _RUNTIME_IMAGE_ROLES.items():
+        image = image_inspects[name]
+        if not isinstance(image, Mapping):
+            raise DeploymentContractError("M05 isolated runtime image inspect is invalid")
+        image_id = image.get("Id")
+        config = image.get("Config")
+        labels = config.get("Labels") if isinstance(config, Mapping) else None
+        source_revision = (
+            expectation.pair.map_source_revision
+            if role == "map"
+            else expectation.pair.pinvi_source_revision
+        )
+        if (
+            not isinstance(image_id, str)
+            or _DIGEST_RE.fullmatch(image_id) is None
+            or not isinstance(labels, Mapping)
+            or labels.get("org.opencontainers.image.revision") != source_revision
+        ):
+            raise DeploymentContractError("M05 isolated runtime image provenance differs")
+        image_ids[name] = image_id
+    if (
+        image_ids["map-api"] != expectation.services["map-api"].image_id
+        or image_ids["pinvi-api"] != expectation.services["pinvi-api"].image_id
+    ):
+        raise DeploymentContractError("M05 isolated runtime API image differs from topology")
+    return {
+        "kind": "m05-isolated-runtime-provenance-v1",
+        "manager_source_revision": expectation.plan.manager_source_revision,
+        "map": {
+            "admin_image_id": image_ids["map-admin"],
+            "api_image_id": image_ids["map-api"],
+            "frontend_image_id": image_ids["map-frontend"],
+            "full_openapi_sha256": expectation.pair.map_full_openapi_sha256,
+            "source_revision": expectation.pair.map_source_revision,
+        },
+        "pinset_sha256": expectation.plan.release.pinset_sha256,
+        "pinvi": {
+            "api_image_id": image_ids["pinvi-api"],
+            "dagster_image_id": image_ids["pinvi-dagster"],
+            "source_revision": expectation.pair.pinvi_source_revision,
+            "web_image_id": image_ids["pinvi-web"],
+        },
+        "transaction_id": expectation.plan.transaction_id,
+        "version": 1,
+    }

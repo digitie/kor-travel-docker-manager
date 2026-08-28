@@ -15,6 +15,7 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05IsolatedRuntimeExpectation,
     M05IsolatedServiceExpectation,
     assert_m05_isolated_runtime,
+    build_m05_isolated_runtime_provenance,
     claim_m05_isolated_harness_ledger,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
@@ -104,6 +105,34 @@ def _image_inspects(expectation: M05IsolatedRuntimeExpectation) -> dict[str, dic
             "Id": service.image_id,
         }
         for service in expectation.services.values()
+    }
+
+
+def _provenance_image_inspects(
+    expectation: M05IsolatedRuntimeExpectation,
+) -> dict[str, dict[str, object]]:
+    image_ids = {
+        "map-admin": "sha256:" + "4" * 64,
+        "map-api": expectation.services["map-api"].image_id,
+        "map-frontend": "sha256:" + "5" * 64,
+        "pinvi-api": expectation.services["pinvi-api"].image_id,
+        "pinvi-dagster": "sha256:" + "6" * 64,
+        "pinvi-web": "sha256:" + "7" * 64,
+    }
+    return {
+        name: {
+            "Config": {
+                "Labels": {
+                    "org.opencontainers.image.revision": (
+                        expectation.pair.map_source_revision
+                        if name.startswith("map-")
+                        else expectation.pair.pinvi_source_revision
+                    )
+                }
+            },
+            "Id": image_id,
+        }
+        for name, image_id in image_ids.items()
     }
 
 
@@ -260,4 +289,41 @@ def test_runtime_rejects_image_label_drift() -> None:
             containers=containers,
             image_inspects=image_inspects,
             network_inspects=_network_inspects(expectation),
+        )
+
+
+def test_runtime_provenance_seals_all_six_image_identities() -> None:
+    expectation = _expectation()
+    receipt = build_m05_isolated_runtime_provenance(
+        expectation=expectation,
+        image_inspects=_provenance_image_inspects(expectation),
+    )
+
+    assert receipt["kind"] == "m05-isolated-runtime-provenance-v1"
+    assert receipt["pinset_sha256"] == PINNED_RUNTIME_RELEASE.pinset_sha256
+    assert receipt["map"] == {
+        "admin_image_id": "sha256:" + "4" * 64,
+        "api_image_id": "sha256:" + "2" * 64,
+        "frontend_image_id": "sha256:" + "5" * 64,
+        "full_openapi_sha256": "1" * 64,
+        "source_revision": PINNED_RUNTIME_RELEASE.source_for("map").revision,
+    }
+    assert receipt["pinvi"] == {
+        "api_image_id": "sha256:" + "3" * 64,
+        "dagster_image_id": "sha256:" + "6" * 64,
+        "source_revision": PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+        "web_image_id": "sha256:" + "7" * 64,
+    }
+
+
+def test_runtime_provenance_rejects_unexpected_image_or_source_label() -> None:
+    expectation = _expectation()
+    image_inspects = _provenance_image_inspects(expectation)
+    image_inspects["map-frontend"]["Config"]["Labels"][
+        "org.opencontainers.image.revision"
+    ] = "0" * 40
+    with pytest.raises(DeploymentContractError, match="image provenance differs"):
+        build_m05_isolated_runtime_provenance(
+            expectation=expectation,
+            image_inspects=image_inspects,
         )
