@@ -121,6 +121,29 @@ class BackupManifest:
         }
 
 
+@dataclass(frozen=True)
+class GcOutcome:
+    """gc가 실제로 지운 것. 회전과 잔해 수거는 성격이 달라 분리해 알린다.
+
+    ``deleted``는 "최신 keep개만 남긴다"는 정책의 결과이고, ``orphans_removed``는
+    중단된 create가 남긴 복원 불가능한 dump다. 둘을 한 목록으로 합치면 운영자가
+    "왜 예상보다 많이 지워졌나"를 알 수 없다.
+    """
+
+    deleted: tuple[str, ...]
+    orphans_removed: tuple[str, ...]
+
+    @property
+    def total(self) -> int:
+        return len(self.deleted) + len(self.orphans_removed)
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "deleted": list(self.deleted),
+            "orphans_removed": list(self.orphans_removed),
+        }
+
+
 def create_standalone_backup(
     role: BackupRole,
     *,
@@ -270,7 +293,9 @@ def list_standalone_backups(
     root = _resolve_backup_root(role, backup_root)
     if not root.is_dir():
         return []
-    manifests = [_read_manifest(path) for path in sorted(root.glob("*.manifest"))]
+    manifests = [
+        _read_manifest(path, expected_role=role) for path in sorted(root.glob("*.manifest"))
+    ]
     return sorted(manifests, key=lambda item: item.created_at_unix)
 
 
@@ -279,24 +304,45 @@ def gc_standalone_backups(
     *,
     keep: int,
     backup_root: Path | None = None,
-) -> list[str]:
-    """가장 최신 `keep`개만 남기고 나머지 dump/sha256/manifest 세트를 지운다."""
+) -> GcOutcome:
+    """가장 최신 `keep`개만 남기고 나머지 dump/sha256/manifest 세트를 지운다.
+
+    **create와 같은 role lock 아래에서 실행한다.** 락이 없으면 진행 중인 백업
+    (geo는 실측 20분 이상)의 산출물을 지울 수 있다 — dump는 manifest보다 먼저
+    쓰이므로 그 창에서는 orphan과 구분되지 않는다.
+    """
 
     if keep < 1:
         raise StandaloneBackupError("keep must be at least 1")
-    manifests = list_standalone_backups(role, backup_root=backup_root)
-    if len(manifests) <= keep:
-        return []
     root = _resolve_backup_root(role, backup_root)
-    deleted: list[str] = []
-    for manifest in manifests[: len(manifests) - keep]:
-        if not _FILENAME.fullmatch(manifest.backup_filename):
-            raise StandaloneBackupError(f"{role} manifest filename is invalid")
-        (root / manifest.backup_filename).unlink(missing_ok=True)
-        (root / f"{manifest.backup_filename}.sha256").unlink(missing_ok=True)
-        _manifest_path(root, manifest.backup_filename).unlink(missing_ok=True)
-        deleted.append(manifest.backup_filename)
-    return deleted
+    if not root.is_dir():
+        return GcOutcome(deleted=(), orphans_removed=())
+    with _role_lock(root):
+        manifests = list_standalone_backups(role, backup_root=backup_root)
+        deleted: list[str] = []
+        for manifest in manifests[: max(len(manifests) - keep, 0)]:
+            _unlink_backup_set(root, manifest.backup_filename)
+            deleted.append(manifest.backup_filename)
+        # manifest가 없는 dump는 목록에도 안 잡히고 복원 경로도 없다(무결성 메타가
+        # 없어 검증할 수 없다). 중단된 create의 잔해이므로 락 아래에서만 수거한다.
+        kept_names = {manifest.backup_filename for manifest in manifests} - set(deleted)
+        orphans: list[str] = []
+        for dump in sorted(root.glob("*.dump")):
+            if dump.name in kept_names or not _FILENAME.fullmatch(dump.name):
+                continue
+            _unlink_backup_set(root, dump.name)
+            orphans.append(dump.name)
+    return GcOutcome(deleted=tuple(deleted), orphans_removed=tuple(orphans))
+
+
+def _unlink_backup_set(root: Path, backup_filename: str) -> None:
+    """dump·sha256·manifest 3종 세트를 함께 지운다."""
+
+    if not _FILENAME.fullmatch(backup_filename):
+        raise StandaloneBackupError(f"backup filename is invalid: {backup_filename}")
+    (root / backup_filename).unlink(missing_ok=True)
+    (root / f"{backup_filename}.sha256").unlink(missing_ok=True)
+    _manifest_path(root, backup_filename).unlink(missing_ok=True)
 
 
 def _role_config(role: BackupRole) -> tuple[str, str]:
@@ -515,7 +561,11 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
     _atomic_write_bytes(path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
 
 
-def _read_manifest(manifest_path: Path) -> BackupManifest:
+def _read_manifest(
+    manifest_path: Path,
+    *,
+    expected_role: BackupRole | None = None,
+) -> BackupManifest:
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -539,6 +589,17 @@ def _read_manifest(manifest_path: Path) -> BackupManifest:
         raise StandaloneBackupError(f"manifest role is invalid: {manifest_path.name}")
     if not _FILENAME.fullmatch(backup_filename):
         raise StandaloneBackupError(f"manifest backup_filename is invalid: {manifest_path.name}")
+    # manifest 내용이 **자기 파일 이름과 결박**되지 않으면, 손상되거나 손으로 편집된
+    # manifest 하나가 gc로 하여금 전혀 다른(살아 있는) 백업을 지우게 만든다.
+    # 정본은 파일 이름이므로 내용이 그와 다르면 그 manifest를 신뢰하지 않는다.
+    if _manifest_path(manifest_path.parent, backup_filename).name != manifest_path.name:
+        raise StandaloneBackupError(
+            f"manifest backup_filename does not match its own file: {manifest_path.name}"
+        )
+    if expected_role is not None and role != expected_role:
+        raise StandaloneBackupError(
+            f"manifest role does not match the requested role: {manifest_path.name}"
+        )
     return BackupManifest(
         role=role,
         created_at_unix=created_at_unix,

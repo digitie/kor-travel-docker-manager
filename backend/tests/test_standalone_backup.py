@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 from unittest.mock import Mock
@@ -317,14 +318,17 @@ def test_gc_standalone_backups_keeps_newest_and_deletes_rest(tmp_path: Path) -> 
             json.dumps(_manifest_payload("geo", created_at, name)), encoding="utf-8"
         )
 
-    deleted = gc_standalone_backups("geo", keep=1, backup_root=root)
+    outcome = gc_standalone_backups("geo", keep=1, backup_root=root)
 
-    assert deleted == ["geo-1000.dump", "geo-2000.dump"]
+    assert outcome.deleted == ("geo-1000.dump", "geo-2000.dump")
+    assert outcome.orphans_removed == ()
     remaining = {p.name for p in root.iterdir()}
     assert remaining == {
         "geo-3000.dump",
         "geo-3000.dump.sha256",
         "geo-3000.manifest",
+        # gc가 create와 같은 role lock을 잡으므로 lock 파일이 남는다.
+        ".backup.lock",
     }
 
 
@@ -337,7 +341,7 @@ def test_gc_standalone_backups_noop_when_within_keep(tmp_path: Path) -> None:
         json.dumps(_manifest_payload("geo", 1000, name)), encoding="utf-8"
     )
 
-    assert gc_standalone_backups("geo", keep=5, backup_root=root) == []
+    assert gc_standalone_backups("geo", keep=5, backup_root=root).total == 0
 
 
 def test_gc_standalone_backups_keeps_all_when_keep_equals_count(tmp_path: Path) -> None:
@@ -350,7 +354,7 @@ def test_gc_standalone_backups_keeps_all_when_keep_equals_count(tmp_path: Path) 
             json.dumps(_manifest_payload("geo", created_at, name)), encoding="utf-8"
         )
 
-    assert gc_standalone_backups("geo", keep=3, backup_root=root) == []
+    assert gc_standalone_backups("geo", keep=3, backup_root=root).total == 0
     assert {p.stem for p in root.glob("*.manifest")} == {"geo-1000", "geo-2000", "geo-3000"}
 
 
@@ -456,3 +460,85 @@ def _manifest_payload(role: str, created_at: int, backup_filename: str) -> dict[
         "toc_entry_count": 2,
         "alembic_head": "0001_head",
     }
+
+
+def test_gc_binds_manifest_content_to_its_own_filename(tmp_path: Path) -> None:
+    """손상된 manifest 하나가 살아 있는 다른 백업을 지우게 하면 안 된다.
+
+    이전에는 gc가 삭제 대상을 manifest **내용**의 `backup_filename`에서 가져왔고
+    그 값이 자기 파일 이름과 같은지 확인하지 않았다. 그래서 `geo-1000.manifest`의
+    내용을 `geo-3000.dump`로 바꿔 두면 최신 백업이 지워졌다.
+    """
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    for created_at in (1000, 3000):
+        name = f"geo-{created_at}.dump"
+        (root / name).write_bytes(b"x")
+        (root / name.replace(".dump", ".manifest")).write_text(
+            json.dumps(_manifest_payload("geo", created_at, name)), encoding="utf-8"
+        )
+    # 내용만 최신 백업을 가리키게 바꾼다.
+    (root / "geo-1000.manifest").write_text(
+        json.dumps(_manifest_payload("geo", 1000, "geo-3000.dump")), encoding="utf-8"
+    )
+
+    with pytest.raises(StandaloneBackupError, match="does not match its own file"):
+        gc_standalone_backups("geo", keep=1, backup_root=root)
+
+    assert (root / "geo-3000.dump").exists()
+
+
+def test_gc_rejects_a_manifest_belonging_to_another_role(tmp_path: Path) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    name = "geo-1000.dump"
+    (root / name).write_bytes(b"x")
+    (root / "geo-1000.manifest").write_text(
+        json.dumps(_manifest_payload("pinvi", 1000, name)), encoding="utf-8"
+    )
+
+    with pytest.raises(StandaloneBackupError, match="does not match the requested role"):
+        list_standalone_backups("geo", backup_root=root)
+
+
+def test_gc_collects_orphan_dumps_left_by_an_interrupted_backup(tmp_path: Path) -> None:
+    """manifest 없는 dump는 목록에도 안 잡히고 복원할 수도 없어 영원히 쌓였다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    name = "geo-3000.dump"
+    (root / name).write_bytes(b"x")
+    (root / name.replace(".dump", ".manifest")).write_text(
+        json.dumps(_manifest_payload("geo", 3000, name)), encoding="utf-8"
+    )
+    # 중단된 create가 남긴 잔해: dump와 sha256만 있고 manifest가 없다.
+    (root / "geo-1000.dump").write_bytes(b"orphan")
+    (root / "geo-1000.dump.sha256").write_text("deadbeef  geo-1000.dump", encoding="ascii")
+
+    outcome = gc_standalone_backups("geo", keep=5, backup_root=root)
+
+    assert outcome.deleted == ()
+    assert outcome.orphans_removed == ("geo-1000.dump",)
+    assert not (root / "geo-1000.dump").exists()
+    assert not (root / "geo-1000.dump.sha256").exists()
+    # 정상 백업은 keep 안에 있으므로 그대로다.
+    assert (root / "geo-3000.dump").exists()
+
+
+def test_gc_refuses_while_a_backup_holds_the_role_lock(tmp_path: Path) -> None:
+    """gc가 락을 잡지 않으면 진행 중인 백업(geo는 20분 이상)의 산출물을 지운다."""
+
+    import fcntl as _fcntl
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    lock_path = root / ".backup.lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        with pytest.raises(StandaloneBackupError, match="already running"):
+            gc_standalone_backups("geo", keep=1, backup_root=root)
+    finally:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+        os.close(fd)

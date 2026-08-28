@@ -658,12 +658,34 @@ def test_cli_db_backup_gc_requires_keep_flag(mock_gc) -> None:
 def test_cli_db_backup_gc_invokes_service_with_keep(
     mock_gc, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    mock_gc.return_value = ["geo-1000.dump"]
+    from kor_travel_docker_manager.services.standalone_backup import GcOutcome
+
+    mock_gc.return_value = GcOutcome(deleted=("geo-1000.dump",), orphans_removed=())
 
     assert main(["db-backup", "gc", "geo", "--keep", "2"]) == 0
 
     mock_gc.assert_called_once_with("geo", keep=2)
     assert "geo-1000.dump" in capsys.readouterr().out
+
+
+@patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+def test_cli_db_backup_gc_reports_orphans_separately(
+    mock_gc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """회전과 잔해 수거를 합쳐 세면 '왜 예상보다 많이 지워졌나'를 알 수 없다."""
+
+    from kor_travel_docker_manager.services.standalone_backup import GcOutcome
+
+    mock_gc.return_value = GcOutcome(
+        deleted=("geo-1000.dump",), orphans_removed=("geo-2000.dump",)
+    )
+
+    assert main(["db-backup", "gc", "geo", "--keep", "2"]) == 0
+
+    output = capsys.readouterr().out
+    assert "deleted 1 backup(s)" in output
+    assert "removed 1 orphaned dump(s)" in output
+    assert "geo-2000.dump" in output
 
 
 # --- ktdctl pin (KUM-M1·M2) ---------------------------------------------------

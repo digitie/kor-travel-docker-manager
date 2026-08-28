@@ -256,15 +256,28 @@ def _cmd_db_backup_list(args: argparse.Namespace) -> int:
 
 def _cmd_db_backup_gc(args: argparse.Namespace) -> int:
     try:
-        deleted = gc_standalone_backups(args.role, keep=args.keep)
+        outcome = gc_standalone_backups(args.role, keep=args.keep)
     except StandaloneBackupError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if args.json:
-        print(json.dumps({"role": args.role, "deleted": deleted}, ensure_ascii=False, indent=2))
-    elif deleted:
-        print(f"deleted {len(deleted)} backup(s): {', '.join(deleted)}")
-    else:
+        print(
+            json.dumps(
+                {"role": args.role, **outcome.to_json()},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if outcome.deleted:
+        print(f"deleted {len(outcome.deleted)} backup(s): {', '.join(outcome.deleted)}")
+    # 회전과 잔해 수거를 합쳐 세면 "왜 예상보다 많이 지워졌나"를 알 수 없다.
+    if outcome.orphans_removed:
+        print(
+            f"removed {len(outcome.orphans_removed)} orphaned dump(s) left by an interrupted "
+            f"backup: {', '.join(outcome.orphans_removed)}"
+        )
+    if outcome.total == 0:
         print("nothing to delete")
     return 0
 
