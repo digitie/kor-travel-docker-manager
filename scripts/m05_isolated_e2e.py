@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import uuid
+from collections.abc import Mapping
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any, NoReturn
@@ -325,9 +326,9 @@ def _validate_trusted_release(expected: str) -> None:
         _fail("trusted_release_revision_mismatch")
 
 
-def _write_private_json(path: Path, value: dict[str, object]) -> str:
+def _write_private_json(path: Path, value: Mapping[str, object]) -> str:
     raw = (
-        json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        json.dumps(dict(value), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         + "\n"
     ).encode("utf-8")
     _write_private_bytes(path, raw)

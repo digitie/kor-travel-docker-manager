@@ -8,7 +8,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -858,3 +858,21 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
     assert admission_write < pinvi_up
     assert "_pinvi_manager_admission_environment(" in source
     assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in source
+
+
+def test_private_json_writer_serializes_immutable_manager_admission(tmp_path: Path) -> None:
+    driver = _driver()
+    admission = MappingProxyType(
+        {
+            "kind": "pinvi-m05-isolated-manager-admission-v1",
+            "transaction_id": "a" * 32,
+            "version": 1,
+        }
+    )
+    path = tmp_path / "pinvi-isolated-manager-admission.json"
+
+    digest = driver._write_private_json(path, admission)
+
+    raw = path.read_bytes()
+    assert json.loads(raw) == dict(admission)
+    assert digest == hashlib.sha256(raw).hexdigest()

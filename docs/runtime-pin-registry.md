@@ -48,6 +48,10 @@ cleanup·terminal block 경계는 각각 `runtime_cleanup_failed`·`runtime_pin_
 allowlist 밖의 값만 `driver_contract_failed`로 좁혀진다. 따라서 공개 registry로 raw 예외를 역추론할
 수 없고, 다음 immutable source pair의 보정 범위만 결정할 수 있다.
 
+immutable admission mapping은 private JSON write 경계에서 plain mapping으로 복사한 뒤 canonical JSON으로만
+직렬화한다. 따라서 불변 typed admission의 `MappingProxyType` 자체가 JSON serializer로 새지 않으며, 이
+경계는 fixture가 아닌 실제 private writer 회귀로 고정한다.
+
 isolated runtime 준비는 `runtime_setup_ports` → `runtime_setup_workspace` →
 `runtime_setup_admission_build` → `runtime_setup_admission_write` → `runtime_setup_network` → `runtime_setup_credentials` →
 `runtime_setup_map_config` → `runtime_setup_pinvi_config`의 고정 순서로 나뉜다. 이 값은 예외 원문·경로·값을
