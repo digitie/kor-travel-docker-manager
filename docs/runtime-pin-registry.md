@@ -325,9 +325,9 @@ pinset을 태워 놓고 "적용 안 됨"이라고 보고한다:
 
 ```jsonc
 {
-  "status": "ok" | "unknown",
+  "status": "ok" | "unverified" | "unknown",
   "source": "published_copy",
-  "detail": "<unknown일 때 고정 설명>",
+  "detail": "<unknown 또는 unverified일 때 고정 설명>",
   "manifest": {"version": 6, "active_generation": {"...": "..."}} | null,
   "journal": {"version": 8, "candidate": {"...": "..."}, "phase": "..."} | null,
   "pinset_binding": {"status": "match" | "pending_rebuild" | "drift" | "unknown",
@@ -343,12 +343,14 @@ pinset을 태워 놓고 "적용 안 됨"이라고 보고한다:
 ```
 
 `manifest`와 `journal`은 그대로의 raw document다. 두 파일의 교체 사이처럼 in-progress
-상태에서 서로 다를 수 있으므로 API가 내용을 고쳐 맞추지 않는다. `summary`가 그 상태를
-명확히 말하고, terminal은 journal의 typed lifecycle receipt가 있을 때만 고정 enum으로
-나온다. `pinset_binding`은 `GET /runtime-pins`의 current Map·PinVi pair와 비교한 결과다.
-새 pair를 rotate한 직후 이전 committed generation만 남은 경우는 `pending_rebuild`, 새
-journal 후보가 current pair와 다르면 `drift`, registry 공개 사본을 신뢰할 수 없으면
-`unknown`으로 fail-close한다.
+상태에서 서로 다를 수 있으므로 API가 내용을 고쳐 맞추지 않는다. 두 문서가 서로 다른
+generation이면 `status=unverified`로 raw 두 문서를 보존하되 gate는 fail-close한다. 하나만
+유효하거나 둘 다 없으면 `unknown`이며 raw 문서를 반환하지 않는다. `summary`가 그 상태를
+명확히 말하고, terminal은 journal의 typed lifecycle receipt가 있을 때만 고정 enum으로 나온다.
+`pinset_binding`은 `GET /runtime-pins`의 current Map·PinVi pair와 비교한 결과다. 새 pair를
+rotate한 직후 이전 committed **또는 terminal** generation만 남은 경우는 `pending_rebuild`, 새
+journal 후보가 current pair와 다르면 `drift`, registry 공개 사본을 신뢰할 수 없으면 `unknown`으로
+fail-close한다.
 
 ---
 

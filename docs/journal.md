@@ -11,13 +11,13 @@ public root는 publisher가 경로를 바꿔치기당할 수 있었다. reader�
 FD에서 소유권·mode·hard-link를 검증하고, publisher의 검사·교체·fsync도 같은 FD에 결박했다.
 
 `pin verify`는 generation strict parse와 registry binding을 함께 보고한다. pair 회전 직후
-완전한 이전 committed generation은 `pending_rebuild`로 구별하되 current로 승격하지 않고,
+완전한 이전 committed 또는 typed terminal generation은 `pending_rebuild`로 구별하되 current로 승격하지 않고,
 partial·malformed·drift는 exit 1이다. `pin publish-generation`도 current pair `match`까지
 재검증한다. terminal 대응 문서는 atomic `pin rotate-pair`로 정정했다.
 
 Map PR #1112는 v8 journal의 3개 PinVi role 확장 키를 exact-dict attestation에 추가하고
 committed 의미까지 검증한다. 이 교차 저장소 pair가 모두 병합되기 전에는 generation API를
-M05 acceptance gate로 사용하지 않는다. 관련 backend 272개는 POSIX `/tmp` 격리에서 통과했고,
+M05 acceptance gate로 사용하지 않는다. 관련 backend 274개는 POSIX `/tmp` 격리에서 통과했고,
 terminal artifact나 n150 one-shot은 열거나 재실행하지 않았다.
 
 ## 2026-08-28 — KUM-M4 public generation 계약·CLI 수선

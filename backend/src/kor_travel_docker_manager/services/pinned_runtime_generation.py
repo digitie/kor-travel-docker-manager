@@ -3227,7 +3227,20 @@ def _published_generation_pinset_binding(
         or registry_pinset != generation.pinset_sha256
     ):
         return {
-            "status": "pending_rebuild" if journal is not None and journal.phase == "committed" else "drift",
+            # 이전 candidate가 terminal lifecycle receipt를 남겼다면 phase는
+            # `map_runtime_ready`에서 멈춘다. 새 atomic pair로 회전한 뒤 그 old receipt가
+            # `drift`가 되면 `pin verify`가 1로 끝나 정상적인 새 one-shot까지 막힌다.
+            # strict public copy인 old committed/terminal generation은 pending으로만
+            # 보존하고, partial·mismatched·현재 candidate의 비terminal 중단만 drift다.
+            "status": (
+                "pending_rebuild"
+                if journal is not None
+                and (
+                    journal.phase == "committed"
+                    or journal.pinvi_role_lifecycle_block is not None
+                )
+                else "drift"
+            ),
             "registry_pinset_sha256": registry_pinset if isinstance(registry_pinset, str) else None,
             "generation_pinset_sha256": generation.pinset_sha256,
         }
@@ -3282,6 +3295,18 @@ def _published_generation_summary(
             "manifest_version": manifest.version,
             "journal_version": journal.version,
         }
+    if pinset_binding in {"pending_rebuild", "drift", "unknown"}:
+        return {
+            "state": "pending_rebuild" if pinset_binding == "pending_rebuild" else "unverified",
+            "text": (
+                "현재 pinset은 새 재구축을 기다리고 있습니다."
+                if pinset_binding == "pending_rebuild"
+                else "현재 registry와 공개 generation의 Map·PinVi pair 결박을 확인할 수 없습니다."
+            ),
+            "next_action": "" if pinset_binding == "pending_rebuild" else "sudo -n backend/.venv/bin/ktdctl pin verify",
+            "manifest_version": None if manifest is None else manifest.version,
+            "journal_version": None if journal is None else journal.version,
+        }
     if journal is not None and journal.pinvi_role_lifecycle_block is not None:
         return {
             "state": "action_required",
@@ -3298,18 +3323,6 @@ def _published_generation_summary(
             "next_action": "",
             "manifest_version": None if manifest is None else manifest.version,
             "journal_version": journal.version,
-        }
-    if pinset_binding in {"pending_rebuild", "drift", "unknown"}:
-        return {
-            "state": "pending_rebuild" if pinset_binding == "pending_rebuild" else "unverified",
-            "text": (
-                "현재 pinset은 새 재구축을 기다리고 있습니다."
-                if pinset_binding == "pending_rebuild"
-                else "현재 registry와 공개 generation의 Map·PinVi pair 결박을 확인할 수 없습니다."
-            ),
-            "next_action": "" if pinset_binding == "pending_rebuild" else "sudo -n backend/.venv/bin/ktdctl pin verify",
-            "manifest_version": None if manifest is None else manifest.version,
-            "journal_version": None if journal is None else journal.version,
         }
     return {
         "state": "committed",

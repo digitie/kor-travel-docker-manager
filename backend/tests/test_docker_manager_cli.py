@@ -961,6 +961,29 @@ def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, cap
     assert pin_cli_env.read_bytes() == before
 
 
+@patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
+@patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
+def test_pin_verify_allows_a_valid_terminal_generation_pending_new_pair(
+    generation_reader,
+    registry_verifier,
+    capsys,
+):
+    registry_verifier.return_value = {
+        "published_copy": "current",
+        "current_pinset_is_blocked": False,
+    }
+    generation_reader.return_value = {
+        "status": "ok",
+        "pinset_binding": {"status": "pending_rebuild"},
+    }
+
+    assert main(["pin", "verify", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["generation_public_copy"] == "pending_rebuild"
+    assert output["generation_pinset_binding"] == "pending_rebuild"
+
+
 def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, capsys):
     main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
     capsys.readouterr()

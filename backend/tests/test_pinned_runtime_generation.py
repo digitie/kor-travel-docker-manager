@@ -507,7 +507,7 @@ def test_public_generation_copy_preserves_exact_raw_contract(
     assert observed["status"] == "ok"
     assert observed["manifest"] == manifest.to_payload()
     assert observed["journal"] == journal.to_payload()
-    assert observed["summary"]["state"] == "rebuilding"
+    assert observed["summary"]["state"] == "unverified"
 
 
 def test_public_generation_copy_fails_closed_when_all_public_artifacts_are_invalid(
@@ -623,6 +623,50 @@ def test_public_generation_binding_distinguishes_current_pair_and_pending_rebuil
     )
     # 현재 journal은 committed가 아니므로 다른 pair는 정상 대기가 아니라 drift다.
     assert read_published_pinned_runtime_generation()["pinset_binding"]["status"] == "drift"
+
+
+def test_terminal_generation_becomes_pending_after_atomic_pair_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    terminal_journal = (
+        _journal_with_map_application_ready()
+        .transition("map_dagster_storage_intent_durable")
+        .transition("map_dagster_ready")
+        .transition("map_runtime_ready")
+        .with_pinvi_role_lifecycle_block(
+            PinviRoleLifecycleBlock(
+                stage="pinvi_role_open",
+                code="role_topology_noncanonical",
+            )
+        )
+    )
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=terminal_journal.candidate),
+    )
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", terminal_journal)
+    monkeypatch.setattr(
+        runtime_pin_registry,
+        "read_published_runtime_pins",
+        lambda: {
+            "status": "ok",
+            "pinset_sha256": _digest("f"),
+            "sources": [
+                {"role": "map", "revision": _revision("f")},
+                {"role": "pinvi", "revision": _revision("f")},
+            ],
+        },
+    )
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "ok"
+    assert observed["pinset_binding"]["status"] == "pending_rebuild"
+    assert observed["summary"]["state"] == "pending_rebuild"
 
 
 def test_rebuild_journal_application_300_phases_require_evidence_methods() -> None:
