@@ -71,9 +71,23 @@ _SIBLING_REQUIRED_FILES: Final = (
     ("KOR_TRAVEL_MAP_REPO_DIR", "../kor-travel-map", "scripts/database-credential-preflight.sh"),
 )
 
+_PINVI_ROLE_BOOTSTRAP_SCRIPT: Final = "infra/postgres/bootstrap-pinvi-runtime-role.sh"
+# rebuild가 이 스크립트를 부르는 두 가지 특수 모드. Manager는 둘 다 `-e`로 주입하는데,
+# 스크립트가 그 이름을 모르면 변수는 **조용히 무시되고 일반 부트스트랩이 돌아간다**.
+# 그 뒤 Manager가 결과를 읽고 fail-close하므로 데이터가 깨지지는 않지만, 의도하지 않은
+# 부트스트랩이 한 번 실행되고 pinset 하나가 소모된다. 실행 전에 알 수 있는 일이다.
+_PINVI_ROLE_BOOTSTRAP_REQUIRED_MODES: Final = (
+    ("PINVI_ROLE_TOPOLOGY_VERIFY_ONLY", "역할 토폴로지 검증(읽기 전용)"),
+    ("PINVI_ROLE_CATALOG_RESET_ONLY", "fresh DB 역할 카탈로그 reset"),
+    ("PINVI_ROLE_CATALOG_RESET_PERMIT_FILE", "reset permit 파일 경로"),
+    ("PINVI_ROLE_CATALOG_RESET_RESULT_FILE", "reset 결과 파일 경로"),
+)
+_MAX_SCRIPT_BYTES: Final = 512 * 1024
+
 _CHECK_ORDER: Final = (
     "compose_single_file",
     "sibling_bootstrap_scripts",
+    "pinvi_role_bootstrap_modes",
     "map_python_base_images",
 )
 
@@ -436,6 +450,107 @@ def _check_sibling_bootstrap_scripts(values: Mapping[str, str] | None) -> Readin
     )
 
 
+def _unknown_pinvi_mode_check(detail: str, *, source: CheckSource) -> ReadinessCheck:
+    return ReadinessCheck(
+        id="pinvi_role_bootstrap_modes",
+        state="unknown",
+        label_ko="고정된 PinVi revision의 역할 부트스트랩 계약",
+        detail=detail,
+        source=source,
+        evidence={},
+    )
+
+
+def _check_pinvi_role_bootstrap_modes(values: Mapping[str, str] | None) -> ReadinessCheck:
+    """고정된 PinVi revision이 Manager가 부르는 두 모드를 실제로 구현하는지 본다.
+
+    Map base image 점검과 달리 체크아웃 HEAD를 보지 않고 **고정 revision의 blob을
+    직접 읽는다**(``git show <rev>:<path>``). 재구축이 실제로 쓰는 것이 그 tree이고,
+    체크아웃이 어느 브랜치에 있든 답이 달라지면 안 되기 때문이다.
+    """
+
+    label = "고정된 PinVi revision의 역할 부트스트랩 계약"
+    if values is None:
+        return _unknown_pinvi_mode_check(
+            ".env를 읽을 수 없어 PinVi 체크아웃 경로를 해석하지 못했습니다.", source="none"
+        )
+    pins = read_published_runtime_pins()
+    status = pins.get("status")
+    if status != "ok":
+        return _unknown_pinvi_mode_check(
+            f"고정 revision이 권위 있는 값이 아닙니다(status={status}). "
+            "무엇을 대조해야 하는지 알 수 없습니다.",
+            source="none",
+        )
+    pinned = next(
+        (
+            source.get("revision")
+            for source in pins.get("sources", [])
+            if source.get("role") == "pinvi"
+        ),
+        None,
+    )
+    if not isinstance(pinned, str) or _REVISION.fullmatch(pinned) is None:
+        return _unknown_pinvi_mode_check("고정된 PinVi revision을 읽지 못했습니다.", source="none")
+    pinvi_root = _repository_root(values, "PINVI_REPO_DIR", "../pinvi")
+    if pinvi_root is None:
+        return _unknown_pinvi_mode_check(
+            "PinVi 체크아웃 경로를 해석할 수 없습니다.", source="sibling_checkout"
+        )
+    script = _git_text(pinvi_root, ["show", f"{pinned}:{_PINVI_ROLE_BOOTSTRAP_SCRIPT}"])
+    if script is None:
+        # revision이 로컬에 없거나 그 tree에 파일이 없다. 둘 다 "모른다"이지 "없다"가
+        # 아니다 — fetch되지 않은 revision을 결손으로 보고하면 거짓 차단이 된다.
+        return _unknown_pinvi_mode_check(
+            f"고정 revision({pinned[:12]})의 {_PINVI_ROLE_BOOTSTRAP_SCRIPT}를 읽지 "
+            "못했습니다. 체크아웃에 그 revision이 fetch돼 있는지 확인하세요.",
+            source="sibling_checkout",
+        )
+    if len(script.encode("utf-8", "ignore")) > _MAX_SCRIPT_BYTES:
+        return _unknown_pinvi_mode_check(
+            "역할 부트스트랩 스크립트가 예상 범위를 벗어나게 큽니다.", source="sibling_checkout"
+        )
+    missing = [
+        (name, description)
+        for name, description in _PINVI_ROLE_BOOTSTRAP_REQUIRED_MODES
+        if name not in script
+    ]
+    evidence = {
+        "pinvi_root": str(pinvi_root),
+        "pinned_revision": pinned,
+        "script_path": _PINVI_ROLE_BOOTSTRAP_SCRIPT,
+        "required": len(_PINVI_ROLE_BOOTSTRAP_REQUIRED_MODES),
+        "present": len(_PINVI_ROLE_BOOTSTRAP_REQUIRED_MODES) - len(missing),
+        "missing": [name for name, _ in missing],
+    }
+    if missing:
+        return ReadinessCheck(
+            id="pinvi_role_bootstrap_modes",
+            state="missing",
+            label_ko=label,
+            detail=(
+                "고정된 PinVi revision의 역할 부트스트랩 스크립트가 재구축이 요구하는 "
+                f"모드를 모릅니다: {', '.join(description for _, description in missing)}. "
+                "이 상태로 실행하면 주입한 설정이 무시된 채 일반 부트스트랩이 돌고, "
+                "재구축은 그 뒤에 실패합니다. 해당 모드를 구현한 PinVi revision으로 "
+                "회전하세요."
+            ),
+            source="sibling_checkout",
+            evidence=evidence,
+        )
+    return ReadinessCheck(
+        id="pinvi_role_bootstrap_modes",
+        state="ok",
+        label_ko=label,
+        detail=(
+            f"고정 revision({pinned[:12]})이 재구축이 요구하는 모드 "
+            f"{len(_PINVI_ROLE_BOOTSTRAP_REQUIRED_MODES)}종을 모두 선언합니다."
+        ),
+        source="sibling_checkout",
+        evidence=evidence,
+    )
+
+
 def _unknown_base_image_check(detail: str, *, source: CheckSource) -> ReadinessCheck:
     return ReadinessCheck(
         id="map_python_base_images",
@@ -624,6 +739,7 @@ def _probe_deployment_readiness() -> dict[str, Any]:
     checks = [
         _check_compose_single_file(values),
         _check_sibling_bootstrap_scripts(values),
+        _check_pinvi_role_bootstrap_modes(values),
         _check_map_python_base_images(values),
     ]
     return {

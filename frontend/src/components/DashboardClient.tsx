@@ -94,6 +94,9 @@ interface ContainerStatus {
     env: Record<string, string>;
     volumes: string[];
     networks: string[];
+    /** 배포 계약이 값을 고정한 환경변수 이름. 서버가 저장 시점에 변경을 거부하므로
+     * 편집기도 처음부터 잠근다 — 눌러 본 뒤에야 거부를 알게 하지 않는다. */
+    locked_env?: string[];
   };
 }
 
@@ -959,6 +962,12 @@ export default function DashboardClient() {
     const envDiff = diffEnv(baseline.env ?? {}, inputEnvDict).filter(
       (row) => row.kind !== 'same'
     );
+    // 계약이 값을 고정한 키. 입력칸을 잠그므로 여기서 바뀔 일이 없지만, 서버가
+    // 거부하는 조건과 같은 판정을 화면에도 둬서 잠금이 뚫린 경우를 제출 전에 잡는다.
+    const lockedEnv = new Set(baseline.locked_env ?? []);
+    const lockedEnvChanged = envDiff
+      .filter((row) => lockedEnv.has(row.key))
+      .map((row) => row.key);
     // volumes는 서버에서 불변이다(compose_volume_graph_hash 비교로 첫 mutation 전에
     // 거부). 여기서 미리 감지해 제출 왕복 없이 안내한다.
     const volumesChanged = diffList(baseline.volumes ?? [], inputVolumesList).changed;
@@ -976,7 +985,9 @@ export default function DashboardClient() {
       networksDiff,
       envDiff,
       volumesChanged,
-      hasBlockingIssue: hasFieldError || volumesChanged,
+      lockedEnv,
+      lockedEnvChanged,
+      hasBlockingIssue: hasFieldError || volumesChanged || lockedEnvChanged.length > 0,
     };
   }, [configTargetContainer, inputPortsList, inputNetworksList, inputEnvDict, inputVolumesList]);
 
@@ -1964,19 +1975,32 @@ export default function DashboardClient() {
                   <div className="grid grid-cols-1 gap-4">
                     {Object.entries(inputEnvDict).map(([key, val]) => {
                       const envError = configValidation.envErrors[key];
+                      // 계약이 고정한 값은 서버가 저장 시점에 거부한다. 편집 가능하게
+                      // 두면 "저장했는데 다음 재구축이 실패"하는 경로가 열린다.
+                      const locked = configValidation.lockedEnv.has(key);
                       return (
                         <div key={key} className="flex flex-col gap-1.5">
                           <label className="text-xs text-secondary font-mono font-light" htmlFor={`env-input-${key}`}>
                             {key}
+                            {locked ? <span className="ml-2 font-sans">· 읽기 전용</span> : null}
                           </label>
                           <input
                             id={`env-input-${key}`}
                             type="text"
                             value={val}
+                            readOnly={locked}
                             onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
                             aria-invalid={!!envError}
-                            aria-describedby={envError ? `env-error-${key}` : undefined}
-                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 w-full transition-colors font-mono ${
+                            aria-describedby={
+                              envError
+                                ? `env-error-${key}`
+                                : locked
+                                  ? `env-locked-${key}`
+                                  : undefined
+                            }
+                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs outline-hidden focus-visible:outline-2 w-full transition-colors font-mono ${
+                              locked ? 'text-secondary bg-subtle' : 'text-strong'
+                            } ${
                               envError
                                 ? 'border-danger focus:border-danger focus-visible:outline-danger'
                                 : 'border-line focus:border-brand focus-visible:outline-brand'
@@ -1984,6 +2008,12 @@ export default function DashboardClient() {
                             aria-label={`환경 변수 ${key}`} // Added aria-label for accessibility
                             required
                           />
+                          {locked && (
+                            <p id={`env-locked-${key}`} className="text-secondary text-[11px]">
+                              배포 계약이 고정한 값입니다. 바꾸려면 계약 자체를 수정해야 하며,
+                              여기서 바꾸면 다음 재구축이 거부됩니다.
+                            </p>
+                          )}
                           {envError && (
                             <p id={`env-error-${key}`} className="text-danger text-[11px]">{envError}</p>
                           )}
@@ -1992,6 +2022,14 @@ export default function DashboardClient() {
                     })}
                   </div>
                 </div>
+              )}
+
+              {/* 잠금이 뚫린 경우의 최종 안내. 정상 경로에서는 나타나지 않는다. */}
+              {configValidation.lockedEnvChanged.length > 0 && (
+                <p aria-live="polite" className="text-danger text-xs">
+                  배포 계약이 고정한 환경변수가 바뀌었습니다:{' '}
+                  {configValidation.lockedEnvChanged.join(', ')}. 저장할 수 없습니다.
+                </p>
               )}
 
               {/* 변경 사항 미리보기: 제출 전 무엇이 바뀌는지 요약한다. */}

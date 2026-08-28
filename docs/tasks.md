@@ -188,7 +188,14 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   "재구축 사전 점검" 섹션. 설계 문서는 pin 패널을 선행으로 적었으나 pin 패널이 M5로
   mutation 패널이 되어 관측 행은 source-status 패널에 붙였다. 검사하지 않기로 결정한
   항목(`unavailable_checks`)도 이유와 함께 노출한다.
-- [ ] 1부 잔여: KUM-M6(typed 진단 소비 이관).
+- [x] KUM-M6 부분 완료(2026-08-28): 설계 P10-3의 (iii) 계약 결박 env read-only화와
+  readiness 검사 `pinvi_role_bootstrap_modes`는 완료했다. (i) stderr→typed JSON 이관은
+  **불가능**함을 PinVi 소스 실측으로 확인했다 — typed envelope은 verify-only 실행에서만
+  나오고 Manager가 분류하는 9문구는 일반 실행의 stderr다. 근거와 정정은
+  `ktdctl-ui-migration.md` "P10-3 정정".
+- [ ] KUM-M6 잔여 (**KUM-PV-3 선행**): PinVi가 일반 부트스트랩 실행에서도 typed
+  envelope을 내보내면 Manager의 문자열 map을 제거한다. 그때까지 `compose_service.py`의
+  9문구 map은 고정 revision `97d2f924…` 기준으로 정확함을 확인했다.
 - [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
   항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).
 

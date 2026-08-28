@@ -462,6 +462,85 @@ def test_daemon_probe_distinguishes_failure_from_unreachable(
     assert readiness._docker_daemon_reachable() is True
 
 
+# --- 고정 PinVi revision의 역할 부트스트랩 계약 (KUM-M6) ----------------------
+
+_ALL_MODES_SCRIPT = "\n".join(
+    ["#!/bin/sh"] + [f'echo "${{{name}}}"' for name, _ in readiness._PINVI_ROLE_BOOTSTRAP_REQUIRED_MODES]
+)
+
+
+def test_pinvi_mode_check_refuses_an_untrusted_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(readiness, "read_published_runtime_pins", lambda: _pins("stale"))
+
+    check = readiness._check_pinvi_role_bootstrap_modes({})
+
+    assert check.state == "unknown"
+    assert "stale" in check.detail
+
+
+def test_pinvi_mode_check_reads_the_pinned_blob_not_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """체크아웃이 어느 브랜치에 있든 답이 달라지면 안 된다."""
+
+    monkeypatch.setattr(readiness, "_compose_directory", lambda: tmp_path)
+    monkeypatch.setattr(readiness, "read_published_runtime_pins", lambda: _pins())
+    seen: list[list[str]] = []
+
+    def git_text(root: Path, args: list[str]) -> str:
+        seen.append(list(args))
+        return _ALL_MODES_SCRIPT
+
+    monkeypatch.setattr(readiness, "_git_text", git_text)
+    values = _sibling_tree(tmp_path)
+
+    check = readiness._check_pinvi_role_bootstrap_modes(values)
+
+    assert check.state == "ok"
+    # HEAD를 묻지 않는다 — 고정 revision의 blob을 직접 읽는다.
+    assert seen == [["show", f"{PINVI_REVISION}:{readiness._PINVI_ROLE_BOOTSTRAP_SCRIPT}"]]
+
+
+def test_pinvi_mode_check_blocks_when_a_required_mode_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """모드를 모르는 revision은 주입한 설정을 조용히 무시하고 일반 부트스트랩을 돌린다."""
+
+    monkeypatch.setattr(readiness, "_compose_directory", lambda: tmp_path)
+    monkeypatch.setattr(readiness, "read_published_runtime_pins", lambda: _pins())
+    monkeypatch.setattr(
+        readiness,
+        "_git_text",
+        lambda root, args: '#!/bin/sh\necho "${PINVI_ROLE_TOPOLOGY_VERIFY_ONLY}"\n',
+    )
+    values = _sibling_tree(tmp_path)
+
+    check = readiness._check_pinvi_role_bootstrap_modes(values)
+
+    assert check.state == "missing"
+    assert check.evidence["missing"] == [
+        "PINVI_ROLE_CATALOG_RESET_ONLY",
+        "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE",
+        "PINVI_ROLE_CATALOG_RESET_RESULT_FILE",
+    ]
+
+
+def test_pinvi_mode_check_is_unknown_when_the_revision_is_not_fetched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fetch되지 않은 revision을 결손으로 보고하면 거짓 차단이 된다."""
+
+    monkeypatch.setattr(readiness, "_compose_directory", lambda: tmp_path)
+    monkeypatch.setattr(readiness, "read_published_runtime_pins", lambda: _pins())
+    monkeypatch.setattr(readiness, "_git_text", lambda root, args: None)
+    values = _sibling_tree(tmp_path)
+
+    check = readiness._check_pinvi_role_bootstrap_modes(values)
+
+    assert check.state == "unknown"
+    assert PINVI_REVISION[:12] in check.detail
+
+
 def test_image_presence_probe_never_pulls(monkeypatch: pytest.MonkeyPatch) -> None:
     """pull은 15분짜리 작업이다 — 패널 폴링마다 그것을 유발하면 안 된다."""
 

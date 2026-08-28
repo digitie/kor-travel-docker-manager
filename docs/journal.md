@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-08-28 — KUM-M6: 설계 전제 정정과, Manager 단독으로 가능한 부분의 완료
+
+설계 P10-3(i)은 "`compose_service.py`의 stderr 9문구 파싱을
+`pinvi.role-topology-diagnostic.v1` typed JSON 소비로 이관"하라고 했다. PinVi의
+`infra/postgres/bootstrap-pinvi-runtime-role.sh`를 직접 읽어 보니 **그 전제가 틀렸다.**
+
+- typed envelope은 `PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`일 때만 stdout 한 줄로 나오고
+  언제나 exit 0이다. Manager가 분류하는 9문구는 **일반 부트스트랩 실행**의 stderr이며
+  그 경로에는 envelope이 아예 없다(exit 2=입력 검증, 1=endpoint 미준비, 3=topology·소유권
+  거부). 둘은 같은 실패의 다른 표현이 아니라 **서로 다른 실행**의 출력이다.
+- 따라서 이관은 Manager만으로 불가능하다. PinVi가 일반 실행에서도 envelope을 내보내야
+  성립하며 그것이 KUM-PV-3다. 고정 revision `97d2f924…` 기준으로 현재 9문구 map은
+  정확하다는 것은 확인했다(문구 대조).
+
+같은 조사에서 **실행 전에 알 수 있었던 결손 하나**를 찾았다. 고정 revision의 스크립트에는
+`PINVI_ROLE_CATALOG_RESET_ONLY` 처리가 없다. Manager는 그 모드를 `-e`로 주입하는데,
+변수는 조용히 무시되고 일반 부트스트랩이 실행된 뒤 Manager가 `{}` 결과를 읽고
+fail-close한다. 데이터는 안전하지만 의도하지 않은 실행이 한 번 일어나고 pinset 하나가
+소모된다 — 진단 5가 말하는 바로 그 낭비다.
+
+그래서 이번에 한 일:
+
+- readiness 검사 `pinvi_role_bootstrap_modes` 추가. **체크아웃 HEAD가 아니라 고정
+  revision의 blob을 직접 읽는다**(`git show <rev>:<path>`) — 재구축이 실제로 쓰는 것이 그
+  tree이고, 체크아웃이 어느 브랜치에 있든 답이 달라지면 안 된다. revision이 로컬에
+  없으면 `unknown`이지 결손이 아니다(fetch 안 된 것을 차단으로 보고하면 거짓 차단이다).
+- P10-3(iii) 계약 결박 env의 read-only화. 목록은 candidate 계약
+  (`_CANDIDATE_CANONICAL_API_ENV_VALUES`)에서 **유도**한다 — 손으로 관리하는 두 번째
+  목록을 만들면 계약과 화면이 갈라진다. `kor-travel-map-api` 한 서비스에만 21개 키가
+  그동안 편집 가능했다. 서버는 저장 시점에 거부하고(재구축까지 미루면 실패가 조작에서
+  멀어진다) 화면은 `config.locked_env`로 처음부터 잠근다.
+- Manager의 `PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS`에 스크립트가 결코 쓰지 않는
+  `target_not_isolated`가 있다. 받아들이는 집합이 넓기만 한 것이라 fail-close 결함은
+  아니므로 좁히지 않고 기록만 했다 — 좁히면 다른 revision에서 거짓 거부가 된다.
+
+backend 946 passed / 1 skipped, frontend type-check·lint·build 통과.
+
+---
+
 ## 2026-08-28 — KUM-M7 마무리: 재구축 사전 점검을 화면에 노출
 
 백엔드(`GET /api/v1/deployment-readiness`)와 회귀는 앞선 라운드에서 끝나 있었고 화면만

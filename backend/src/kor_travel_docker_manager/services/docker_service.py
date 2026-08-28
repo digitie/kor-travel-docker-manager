@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _PINVI_POSTGRES_INITDB_ARGS,
     ComposeCandidateContractError,
     ComposePostMutationContractError,
+    assert_contract_locked_env_unchanged,
     assert_manager_mutation_allowed,
     compose_volume_graph_hash,
+    contract_locked_env_names,
     revalidate_candidate_system_bind_snapshots,
 )
 from kor_travel_docker_manager.services.compose_service import (
@@ -36,6 +39,19 @@ logger = logging.getLogger(__name__)
 
 def _get_compose_path() -> str:
     return get_compose_path()
+
+
+def _locked_env_present(service_name: str, svc_config: Mapping[str, Any]) -> list[str]:
+    """이 service의 env 중 배포 계약이 값을 고정한 이름.
+
+    화면이 처음부터 잠그기 위한 값이다. 계약에는 있으나 이 Compose 파일에 없는 이름은
+    보내지 않는다 — 편집기에 존재하지도 않는 항목을 "잠김"으로 표시하면 안 된다.
+    """
+
+    environment = svc_config.get("environment")
+    if not isinstance(environment, Mapping):
+        return []
+    return [name for name in contract_locked_env_names(service_name) if name in environment]
 
 
 def _public_url(spec: dict[str, Any]) -> str | None:
@@ -476,6 +492,17 @@ def validate_container_config_update(
             raise ContainerConfigValidationError(
                 "PinVi PostgreSQL initdb authentication policy is immutable."
             )
+    if service_name is not None:
+        # candidate 계약이 값을 고정한 env는 저장 시점에 막는다. 재구축까지 미루면
+        # 실패가 조작에서 멀어져 원인이 화면 조작이었다는 사실이 드러나지 않는다.
+        try:
+            assert_contract_locked_env_unchanged(
+                service_name=service_name,
+                env=env,
+                baseline_env=baseline_env,
+            )
+        except ComposeCandidateContractError as exc:
+            raise ContainerConfigValidationError(str(exc)) from exc
 
 
 class DockerService:
@@ -548,6 +575,7 @@ class DockerService:
                             "env": svc_config.get("environment", {}),
                             "volumes": svc_config.get("volumes", []),
                             "networks": svc_config.get("networks", []),
+                            "locked_env": _locked_env_present(svc_name, svc_config),
                         },
                     }
                 )
@@ -595,6 +623,7 @@ class DockerService:
                             "env": svc_config.get("environment", {}),
                             "volumes": svc_config.get("volumes", []),
                             "networks": svc_config.get("networks", []),
+                            "locked_env": _locked_env_present(svc_name, svc_config),
                         },
                     }
                 )
@@ -624,6 +653,7 @@ class DockerService:
                             "env": svc_config.get("environment", {}),
                             "volumes": svc_config.get("volumes", []),
                             "networks": svc_config.get("networks", []),
+                            "locked_env": _locked_env_present(svc_name, svc_config),
                         },
                     }
                 )
@@ -654,6 +684,7 @@ class DockerService:
                             "env": svc_config.get("environment", {}),
                             "volumes": svc_config.get("volumes", []),
                             "networks": svc_config.get("networks", []),
+                            "locked_env": _locked_env_present(svc_name, svc_config),
                         },
                     }
                 )

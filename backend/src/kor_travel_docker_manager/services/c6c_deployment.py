@@ -853,6 +853,68 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     **_MAP_DATABASE_CANONICAL_ENV_VALUES,
     **_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES,
 }
+# 계약이 값을 고정한 env 이름 — 화면이 처음부터 잠글 수 있도록 service별로 공개한다.
+#
+# 이 이름들을 UI 설정 편집기가 편집 가능하게 노출하면 저장은 성공하고, 그 다음
+# `rebuild-pinned`가 candidate 검증에서 fail-close한다. 실패가 mutation보다 한참 뒤에
+# 오므로 원인이 화면 조작이었다는 사실이 드러나지 않고, 그 사이 pinset 하나가 소모된다.
+# 이 목록은 candidate 계약 자체(`_CANDIDATE_CANONICAL_API_ENV_VALUES`)에서 유도하므로
+# 계약이 바뀌면 화면도 함께 바뀐다 — 손으로 관리하는 두 번째 목록을 만들지 않는다.
+_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE: Final[dict[str, frozenset[str]]] = {
+    service_name: frozenset(
+        env_name
+        for candidate_service, env_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
+        if candidate_service == service_name
+    )
+    for service_name in {service for service, _ in _CANDIDATE_CANONICAL_API_ENV_VALUES}
+}
+# PostgreSQL identity는 위 dict가 아니라 별도 검증기가 결박한다
+# (`_assert_pinvi_postgres_identity`). 계약의 소유자가 다르므로 유도하지 않고 명시한다.
+_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE[_PINVI_POSTGRES_SERVICE] = frozenset(
+    {"POSTGRES_USER", "POSTGRES_DB", "POSTGRES_INITDB_ARGS"}
+)
+
+CONTRACT_LOCKED_ENV_REASON: Final = (
+    "이 값은 배포 계약이 고정한 값입니다. 여기서 바꾸면 저장은 되지만 다음 재구축이 "
+    "거부됩니다."
+)
+
+
+def contract_locked_env_names(service_name: str) -> tuple[str, ...]:
+    """이 compose service에서 배포 계약이 값을 고정한 env 이름(정렬)."""
+
+    return tuple(sorted(_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(service_name, ())))
+
+
+def assert_contract_locked_env_unchanged(
+    *,
+    service_name: str,
+    env: Mapping[str, Any],
+    baseline_env: Mapping[str, Any],
+) -> None:
+    """계약이 고정한 값의 변경을 **저장 시점에** 거부한다.
+
+    재구축까지 미루면 실패가 조작과 멀어져 원인을 찾기 어렵다. 여기서 막으면
+    "무엇을 바꾸려 했는지"가 그대로 오류에 남는다.
+    """
+
+    locked = _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(service_name)
+    if not locked:
+        return
+    changed = sorted(
+        name
+        for name in locked
+        if name in env
+        and name in baseline_env
+        and str(env[name]) != str(baseline_env[name])
+    )
+    if changed:
+        raise ComposeCandidateContractError(
+            f"배포 계약이 고정한 환경변수는 이 화면에서 바꿀 수 없습니다: "
+            f"{', '.join(changed)}"
+        )
+
+
 _CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
     (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
     | _MANAGER_ONLY_CREDENTIAL_NAMES

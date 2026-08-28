@@ -1615,6 +1615,69 @@ def test_validate_container_config_update_rejects_pinvi_initdb_auth_drift(
         )
 
 
+# --- 계약이 고정한 env는 저장 시점에 막는다 (KUM-M6, 설계 P10-3 iii) -----------
+
+
+def test_contract_locked_env_names_come_from_the_candidate_contract() -> None:
+    """손으로 관리하는 두 번째 목록을 만들지 않는다 — 계약에서 유도한다."""
+
+    from kor_travel_docker_manager.services.c6c_deployment import (
+        _CANDIDATE_CANONICAL_API_ENV_VALUES,
+        contract_locked_env_names,
+    )
+
+    locked = contract_locked_env_names("pinvi-db-runtime-role")
+
+    assert "PINVI_DB_PORT" in locked
+    assert "PINVI_DB_HOST" in locked
+    assert set(locked) == {
+        env_name
+        for service, env_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
+        if service == "pinvi-db-runtime-role"
+    }
+    assert list(locked) == sorted(locked)
+    # 계약에 없는 service는 빈 튜플이다 — 없는 잠금을 지어내지 않는다.
+    assert contract_locked_env_names("rustfs") == ()
+
+
+def test_config_update_refuses_to_change_a_contract_locked_env() -> None:
+    """저장은 되고 재구축이 나중에 실패하면 원인이 화면 조작이었다는 사실이 묻힌다."""
+
+    with pytest.raises(ContainerConfigValidationError, match="배포 계약이 고정한"):
+        validate_container_config_update(
+            ports=[],
+            env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true"},
+            networks=[],
+            baseline_env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false"},
+            service_name="kor-travel-map-api",
+        )
+
+
+def test_config_update_allows_echoing_a_contract_locked_env_unchanged() -> None:
+    """화면은 잠긴 값을 그대로 되돌려 보낸다 — 그 경로가 막히면 저장 자체가 불가능하다."""
+
+    validate_container_config_update(
+        ports=[],
+        env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false", "TZ": "Asia/Seoul"},
+        networks=[],
+        baseline_env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false"},
+        service_name="kor-travel-map-api",
+    )
+
+
+def test_container_payload_only_reports_locked_names_that_exist_in_the_service() -> None:
+    """편집기에 존재하지도 않는 항목을 '잠김'으로 표시하면 안 된다."""
+
+    present = docker_service_module._locked_env_present(
+        "kor-travel-map-api",
+        {"environment": {"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false", "TZ": "Asia/Seoul"}},
+    )
+
+    assert present == ["KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED"]
+    assert docker_service_module._locked_env_present("kor-travel-map-api", {}) == []
+    assert docker_service_module._locked_env_present("rustfs", {"environment": {"TZ": "x"}}) == []
+
+
 def test_update_container_config_validates_before_lock_or_environment_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

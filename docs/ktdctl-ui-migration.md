@@ -403,6 +403,31 @@ rebuild 도중 교체가 이론상 가능하다 — 단 rebuild는 시작 시 re
 - **개선 효과**: PinVi의 문구 수정이 Manager 분류를 깨뜨리는 결합이 사라지고, 실패
   reason이 enum 그대로 화면에 뜨며, UI발 계약 위반(포트 변경) 경로가 봉쇄된다.
 
+#### P10-3 정정 (2026-08-28, PinVi 소스 실측)
+
+설계 (i)의 전제가 틀렸다. PinVi `infra/postgres/bootstrap-pinvi-runtime-role.sh`를 직접
+읽어 확인한 사실:
+
+- `pinvi.role-topology-diagnostic.v1`은 **`PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`일 때만**
+  stdout 한 줄로 나오고 언제나 exit 0이다. Manager가 문자열로 분류하는 9문구는 **일반
+  부트스트랩 실행**의 stderr이며, 그 경로에는 typed envelope이 아예 없다(exit 2=입력
+  검증, 1=endpoint 미준비, 3=topology/소유권 거부).
+- 따라서 **"stderr 파싱을 typed JSON 소비로 이관"은 Manager만으로는 불가능하다.** 두
+  진단은 같은 실패의 다른 표현이 아니라 **서로 다른 실행**의 출력이다. 이관은 PinVi가
+  일반 실행에서도 envelope을 내보내야 성립하며, 그 작업이 KUM-PV-3다.
+- 고정 revision `97d2f924…`의 스크립트에는 `PINVI_ROLE_CATALOG_RESET_ONLY` 처리가
+  **없다**. Manager는 그 모드를 `-e`로 주입하는데, 변수는 조용히 무시되고 일반
+  부트스트랩이 실행된 뒤 Manager가 `{}` 결과를 읽고 fail-close한다. 데이터는 안전하지만
+  **의도하지 않은 부트스트랩이 한 번 돌고 pinset 하나가 소모된다.** → readiness 검사
+  `pinvi_role_bootstrap_modes`로 실행 전에 잡는다(KUM-M6에서 구현).
+- Manager의 `PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS`에는 스크립트가 결코 쓰지 않는
+  `target_not_isolated`가 있다(그 실패 경로는 결과 파일을 쓰지 않고 exit 3). 받아들이는
+  집합이 넓기만 한 것이라 fail-close 결함은 아니므로 **좁히지 않고 기록만 한다** —
+  좁히면 다른 revision에서 거짓 거부가 될 수 있다.
+
+**그래서 KUM-M6의 실제 범위**: (iii) 계약 결박 env의 read-only화와 위 readiness 검사는
+Manager 단독으로 완료. (i)의 typed 이관과 (ii)의 verifier phase 편입은 KUM-PV-3 선행.
+
 ### P10-4. preflight readiness 노출 — "실행 전에 실패를 아는" 패널
 
 - **관측(사실)**: 진단 5의 blocker 3건.
@@ -868,7 +893,7 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 | KUM-M3 | root-side world-readable publisher: rotate/init/rebuild가 pin·manifest·journal의 secret-free 사본을 backend 가독 경로에 원자 기록(installer 0644 선례 답습), backend 로더의 digest 재계산+stale fail-close | §1.2 (c), 진단 6 | KUM-M1 |
 | KUM-M4 | 조회 API 2종: `GET /runtime-pins`(lifecycle·history·generation 일치 여부·Manager provenance 동봉), `GET /pinned-runtime/generation`(manifest/journal 원본+envelope summary+terminal 분류+receipt/fence 상태+버전 명시) + 배포 정합성 패널 UI | P2, §1.3 P10-2 | KUM-M3 |
 | KUM-M5 | UI 2-step pin rotate: 회전 요청 폼→audit row 기록, `pin apply-pending --confirm` CLI, 대기 중 요청 표시 (**완료 2026-08-28** — 요청 저장소는 registry와 다른 트리의 backend-writable 파일이며 어떤 로드 경로도 읽지 않는다) | §1.2 (c), Q4 | KUM-M1, KUM-M4 |
-| KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
+| KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 (**부분 완료 2026-08-28** — (iii) 계약 결박 env read-only화와 `pinvi_role_bootstrap_modes` readiness 검사는 완료. (i)(ii)는 P10-3 정정대로 KUM-PV-3 선행이며 Manager 단독으로는 불가능) | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
 | KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 (**완료 2026-08-28** — wheelhouse는 검사 불가로 판정해 이유와 함께 `unavailable_checks`로 노출. 화면은 pin 패널이 아니라 `SourceStatusPanel`에 붙였다: pin 패널이 M5로 mutation 패널이 됐기 때문) | §1.3 P10-4, 진단 5 | KUM-M4(패널) |
 | KUM-M8 | `source-status` + compare 링크 + installer provenance 리더(~10줄) + Map entrypoint/Dockerfile 계약 drift 행 + 환경 완결성 카드 | P3, P4 | — |
 | KUM-M9 | `services/job_runner.py` + backup create 202 비동기 + shared group/setgid + gc 결함 수선(lock 3줄 등) | P5, P9-2, Q2 | — |

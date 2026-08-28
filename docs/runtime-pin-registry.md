@@ -394,6 +394,21 @@ sudo -n backend/.venv/bin/ktdctl pin verify         # 0이면 재구축 가능
 공개 사본이 갱신되지 않은 것이다(`status: stale`). root로 `pin verify`를 실행해 확인하고,
 사본을 다시 쓰려면 root pin 명령을 한 번 더 돌린다. **backend는 사본을 쓸 수 없다.**
 
+### "어느 PinVi revision으로 회전해도 되나요"
+
+아무 revision이나 되지 않는다. rebuild는 PinVi의
+`infra/postgres/bootstrap-pinvi-runtime-role.sh`를 두 가지 특수 모드로 부른다
+(`PINVI_ROLE_TOPOLOGY_VERIFY_ONLY`, `PINVI_ROLE_CATALOG_RESET_ONLY`와 그 permit/result
+경로). **스크립트가 그 이름을 모르면 변수는 조용히 무시되고 일반 부트스트랩이 실행된
+뒤** Manager가 결과를 읽고 fail-close한다 — 데이터는 안전하지만 의도하지 않은 실행이
+한 번 일어나고 pinset 하나가 소모된다.
+
+회전 전에 화면의 **재구축 사전 점검 → "고정된 PinVi revision의 역할 부트스트랩 계약"**
+행을 본다(`GET /api/v1/deployment-readiness`의 `pinvi_role_bootstrap_modes`). 이 검사는
+체크아웃 HEAD가 아니라 **고정 revision의 blob을 직접 읽는다**(`git show <rev>:<path>`) —
+재구축이 실제로 쓰는 것이 그 tree이기 때문이다. revision이 로컬에 fetch돼 있지 않으면
+`unknown`이며, 그것을 결손으로 보고하지 않는다.
+
 ### "UI에서 변경 요청을 남겼는데 아무것도 안 바뀝니다"
 
 정상이다. 요청은 제안일 뿐이고 적용은 root가 한다(§7-1).
