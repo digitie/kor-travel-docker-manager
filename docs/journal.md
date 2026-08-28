@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-08-28 — pin registry 파일화와 pinset lifecycle 게이트 구현 (KUM-M1~M4, ADR-40)
+
+설계 문서 v3 1부 트랙을 구현했다. pinned revision을 코드 상수에서 root 소유 JSON
+registry로 옮기고(`services/runtime_pin_registry.py` 신설), pinset의 생애 상태를
+기계가 강제하게 했다. `ktdctl pin init/show/verify/rotate/block/rollback`,
+읽기 전용 `GET /api/v1/runtime-pins`, 프론트 "배포 버전 고정" 패널까지 포함한다.
+결정 근거와 트레이드오프는 ADR-40에 기록했다.
+
+**가장 중요한 동작 변경**: 현행 pin `cbb577d3…`를 terminal로 등재했다. 근거는 pinvi
+`docs/journal.md`(origin/main, 2026-08-27)의 직접 기술이며, 직접 grep으로 확인했다 —
+"`cbb577d3…`와 `52c6e538…` candidate/journal은 역사 증거로 보존하며 재시도·수정하지
+않는다". 따라서 이 pinset으로 `rebuild-pinned`를 실행하면 mutation 이전에 fail-close하고,
+해소 경로는 `ktdctl pin rotate`로 새 pinset을 만드는 것뿐이다. 지금까지 세 저장소가
+문서 규율로만 지키던 규약을 코드가 강제한다. n150 상태 루트를 실측해 이 pinset의 미완
+v8 journal이 **없음**을 확인했으므로(v5/v7 구 산출물만 존재) 진행 중 작업이 끊기지 않는다.
+
+**전문 적대 리뷰 2건**(계약·fail-close 렌즈 / 운영·회귀·사용성 렌즈)을 독립 수행하고
+확인된 지적을 전부 반영했다. 주요 반영: (1) 설치본은 트리를 통째 교체하므로 registry
+기본값을 `/var/lib` 상태 디렉터리로 옮기고 트리 안 경로로의 회전을 거부, (2) 로드 시점
+파일 무결성 검증 추가(lstat·소유자·쓰기 권한, 경로 기반 면제 제거), (3) 차단 항목도
+digest를 revision으로 재계산 대조 — 어긋난 항목은 "차단했다"고 기록되지만 실제로는
+아무것도 막지 못했다, (4) 차단 목록 truncate 제거(조용한 유실 대신 fail-close),
+(5) 코드가 강제하는 제거 불가능한 차단 하한선(d9) 복원과 `is_blocked_pinset_retry`의
+fail-open 제거, (6) 공개 사본이 stale이면 `stale`, registry 직접 읽기는 `degraded`로
+표시해 배포본 seed를 권위 있는 값으로 위장하지 않음, (7) API가 phase 한정 차단과 무조건
+차단을 게이트와 같은 의미로 구분, (8) `pin verify`가 재시도 금지 상태에 비정상 종료,
+`pin show`가 "rebuild 거부됨"을 평문으로 안내, (9) `pin init --force`가 이력·차단
+목록을 승계하고 이전 상태를 보존, (10) 동봉본을 읽기 전용 seed로 분리해 추적 파일을
+mutation하지 않음.
+
+**검증 범위(무엇을 live로, 무엇을 mock으로 했는지)**:
+- **n150 격리 live E2E 15항목 전부 통과**(전용 홈 디렉터리 + 격리 env, 운영 트리 무변경을
+  전후로 확인). 부재 시 fail-close, `--confirm` 없는 mutation 거부, 부트스트랩의 0600/0644
+  퍼미션, show·verify의 읽기 전용성, seed terminal 등재 유지, **시작 게이트의 terminal
+  거부**, 회전의 digest 자동 계산·이력·supersedes, **재기동 없는 즉시 반영**, 회전 뒤
+  게이트 통과, 보존본 생성과 terminal rollback 거부, 비-canonical URL 변조 거부,
+  group/world writable 거부, verify의 비정상 종료, 설치 트리 안 회전 거부.
+- **mock/단위로 대체한 것**: 실제 `rebuild-pinned` 전체 실행(파괴적 — 세 DB recreate와
+  일곱 runtime 재기동이라 격리 불가). 게이트가 mutation·락 획득 이전에 거부한다는 사실은
+  `rebuild_pinned_runtime()`을 실제로 호출해 source materialize와 락이 호출되지 않았음을
+  단언하는 회귀로 고정했다. 또한 개발 체크아웃이 Windows 공유 마운트라 모든 파일이 0777로
+  보고돼 mode 검사를 만족할 수 없으므로, 그 항목만 명시 opt-in 완화를 두고(root에서는 무효)
+  실제 퍼미션 계약은 위 n150 live E2E로 검증했다.
+- backend 751 tests pass, ruff clean, 프론트 type-check·lint·build 통과.
+
+이번 라운드 범위 밖(후속 태스크): UI 2-step rotate(KUM-M5), typed 진단 소비(KUM-M6),
+preflight readiness 노출(KUM-M7).
+
+---
+
 ## 2026-08-28 — ktdctl → UI 이관 설계 문서 v3: 3저장소 커밋 교차 감사 반영·태스크 분해 (코드 변경 없음)
 
 오너 지시에 따라 [`docs/ktdctl-ui-migration.md`](ktdctl-ui-migration.md)를 v3로 전면
