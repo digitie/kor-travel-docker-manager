@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import importlib.util
@@ -559,22 +560,38 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
 
 
 def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
-    """검증된 blocked receipt는 exact terminal block 뒤에만 보존한다."""
+    """driver의 모든 public terminal phase는 launcher도 exact하게 수용한다."""
 
     launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
         encoding="utf-8"
     )
-    phases = (
-        "runtime_setup_ports",
-        "runtime_setup_workspace",
-        "runtime_setup_admission",
-        "runtime_setup_network",
-        "runtime_setup_credentials",
-        "runtime_setup_map_config",
-        "runtime_setup_pinvi_config",
+    driver_source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
     )
 
-    assert all(f'"{phase}"' in launcher for phase in phases)
+    def frozenset_literal(source: str, name: str) -> set[str]:
+        tree = ast.parse(source)
+        for statement in tree.body:
+            if not isinstance(statement, ast.Assign) or not any(
+                isinstance(target, ast.Name) and target.id == name for target in statement.targets
+            ):
+                continue
+            assert isinstance(statement.value, ast.Call)
+            assert isinstance(statement.value.func, ast.Name)
+            assert statement.value.func.id == "frozenset"
+            assert len(statement.value.args) == 1
+            value = ast.literal_eval(statement.value.args[0])
+            assert isinstance(value, set)
+            assert all(isinstance(item, str) for item in value)
+            return value
+        raise AssertionError(f"{name} literal was not found")
+
+    driver_phases = frozenset_literal(driver_source, "_PUBLIC_TERMINAL_PHASES")
+    launcher_start = launcher.index("PHASES = frozenset(")
+    launcher_end = launcher.index("FRESH_INIT_REASONS =", launcher_start)
+    launcher_phases = frozenset_literal(launcher[launcher_start:launcher_end], "PHASES")
+
+    assert launcher_phases == driver_phases | {"completed"}
     accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_block; then'
     fallback = 'if ! has_unconditional_terminal_block; then'
     assert accepted_block in launcher
