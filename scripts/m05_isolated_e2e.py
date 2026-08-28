@@ -80,6 +80,10 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     44: "migrator_identity_invalid",
     45: "pre_root_state_invalid",
     46: "alembic_root_result_invalid",
+    47: "alembic_command_failed",
+    48: "alembic_runtime_contract_failed",
+    49: "database_statement_failed",
+    50: "runtime_privilege_reconciliation_failed",
     127: "unclassified",
 }
 
@@ -412,8 +416,18 @@ def _map_fresh_init_diagnostic_runner() -> str:
             "    asyncio.run(module['_migrate']())",
             "except module['FreshMigrationError'] as error:",
             f"    raise SystemExit({error_codes!r}.get(str(error), 127))",
-            "except BaseException:",
-            "    raise SystemExit(127)",
+            "except BaseException as error:",
+            "    identity = (type(error).__module__, type(error).__name__)",
+            "    codes = {",
+            "        ('kortravelmap.infra.runtime_privileges',",
+            "         'RuntimePrivilegeReconciliationError'): 50,",
+            "        ('alembic.util.exc', 'CommandError'): 47,",
+            "        ('sqlalchemy.exc', 'OperationalError'): 49,",
+            "        ('sqlalchemy.exc', 'ProgrammingError'): 49,",
+            "        ('sqlalchemy.exc', 'SQLAlchemyError'): 49,",
+            "        ('builtins', 'RuntimeError'): 48,",
+            "    }",
+            "    raise SystemExit(codes.get(identity, 127))",
         )
     )
 

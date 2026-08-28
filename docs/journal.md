@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-28 — Map fresh-init 예외 계열 분류 확장
+
+`bea60f5…` candidate는 fixed `map_fresh_init_failed`와 `unclassified`로 끝났고, cleanup 뒤
+Map·PinVi transaction resource는 각각 0개였다. candidate와 ledger는 terminal로 보존하고 재실행하지
+않는다. launcher가 output directory를 스스로 새로 만들도록 요구하므로, admission 전 빈 output directory를
+미리 만든 첫 호출은 ledger·result를 만들지 않았고 해당 빈 directory만 정확히 확인한 뒤 제거했다.
+
+Map source는 고정한 채, one-shot runner는 `FreshMigrationError` allowlist 뒤에
+`RuntimePrivilegeReconciliationError`, Alembic command/runtime contract, SQLAlchemy statement의 네
+고정 예외 계열만 별도 종료 코드로 분류한다. 결과에는 enum만 남기고 원문 exception·stderr·환경값은
+계속 폐기한다.
+
+---
+
 ## 2026-08-28 — Map fresh-init 고정 종료 코드 진단과 candidate 회전
 
 `aa78b4ec…` candidate는 Map `fresh-init`까지 명시해 `map_fresh_init_failed`로 끝났고,

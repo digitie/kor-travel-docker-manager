@@ -323,6 +323,9 @@ def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
     assert "print(" not in runner
     assert "sys.stderr" not in runner
     assert "FreshMigrationError" in runner
+    assert "RuntimePrivilegeReconciliationError" in runner
+    assert "SQLAlchemyError" in runner
+    assert "CommandError" in runner
     assert "raise SystemExit" in runner
     assert "base64.b64decode" in entrypoint
 
