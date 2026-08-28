@@ -203,16 +203,18 @@ def test_rotation_that_changes_nothing_is_rejected() -> None:
         )
 
 
-def test_rotation_refuses_a_group_readable_operational_registry(
+def test_rotation_refuses_a_group_writable_operational_registry(
     _isolated_registry,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     if os.name == "nt":
         pytest.skip("POSIX 퍼미션 계약")
     registry_path, _ = _isolated_registry
     _seed()
-    os.chmod(registry_path, 0o644)
+    monkeypatch.delenv(registry_module.RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV, raising=False)
+    os.chmod(registry_path, 0o666)
 
-    with pytest.raises(RuntimePinRegistryError, match="world accessible"):
+    with pytest.raises(RuntimePinRegistryError, match="world writable"):
         rotate_runtime_pin(
             role="map", revision=MAP_C, reason="rotate", rotated_by="tester"
         )
@@ -254,9 +256,16 @@ def test_rotating_into_a_blocked_pinset_is_refused() -> None:
     assert load_runtime_pin_registry().is_blocked_pinset(first.pinset_sha256)
 
 
+def _consistent_digest(map_revision: str = MAP_A, pinvi_revision: str = PINVI_B) -> str:
+    return registry_module._compute_pinset_sha256(
+        release_version=5, map_revision=map_revision, pinvi_revision=pinvi_revision
+    )
+
+
 def test_block_entry_matches_only_the_declared_phase() -> None:
+    digest = _consistent_digest()
     entry = BlockedPinset(
-        pinset_sha256="d" * 64,
+        pinset_sha256=digest,
         map_revision=MAP_A,
         pinvi_revision=PINVI_B,
         reason="terminal",
@@ -265,13 +274,13 @@ def test_block_entry_matches_only_the_declared_phase() -> None:
     )
 
     assert entry.matches(
-        pinset_sha256="d" * 64,
+        pinset_sha256=digest,
         map_source_revision=MAP_A,
         pinvi_source_revision=PINVI_B,
         phase="map_runtime_ready",
     )
     assert not entry.matches(
-        pinset_sha256="d" * 64,
+        pinset_sha256=digest,
         map_source_revision=MAP_A,
         pinvi_source_revision=PINVI_B,
         phase="candidate_attested",
@@ -279,8 +288,9 @@ def test_block_entry_matches_only_the_declared_phase() -> None:
 
 
 def test_block_entry_without_a_phase_matches_every_phase() -> None:
+    digest = _consistent_digest()
     entry = BlockedPinset(
-        pinset_sha256="d" * 64,
+        pinset_sha256=digest,
         map_revision=MAP_A,
         pinvi_revision=PINVI_B,
         reason="terminal",
@@ -289,7 +299,7 @@ def test_block_entry_without_a_phase_matches_every_phase() -> None:
 
     for phase in ("map_runtime_ready", "candidate_attested", "databases_recreated"):
         assert entry.matches(
-            pinset_sha256="d" * 64,
+            pinset_sha256=digest,
             map_source_revision=MAP_A,
             pinvi_source_revision=PINVI_B,
             phase=phase,
@@ -435,28 +445,49 @@ def test_verify_counts_lifecycle_state() -> None:
     report = verify_runtime_pin_registry()
 
     assert report["published_copy"] == "current"
-    assert report["blocked_pinset_count"] == 1
+    assert report["current_pinset_is_blocked"] is False
+    # 등재한 1건 + 코드가 강제하는 하한선.
+    assert report["blocked_pinset_count"] == 1 + len(
+        registry_module._CODE_ENFORCED_BLOCKED_PINSETS
+    )
     assert report["history_length"] == 1
 
 
 # --- 저장소에 포함된 seed 파일 ------------------------------------------------
 
 
-def test_packaged_seed_registry_is_valid_and_records_known_terminal_pinsets(
+def test_packaged_seed_registry_satisfies_the_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """저장소의 개발 기본 registry가 계약을 만족하는지 확인한다."""
+    """저장소에 추적된 읽기 전용 seed가 계약을 만족하는지 확인한다.
 
-    seed_path = Path(__file__).resolve().parents[2] / "config" / "runtime-pins.json"
+    seed의 **현재 pin이 무엇인지**는 단언하지 않는다 — 그건 정당한 회전마다 바뀌는
+    값이고, 그런 단언이 바로 이 전환이 없애려던 테스트 churn이다. 회전과 무관하게
+    성립해야 하는 성질만 본다.
+    """
+
+    seed_path = registry_module.packaged_seed_path()
     monkeypatch.delenv(registry_module.RUNTIME_PINS_FILE_ENV, raising=False)
     clear_runtime_pin_registry_cache()
 
     registry = load_runtime_pin_registry(path=seed_path)
 
+    assert seed_path.name == "runtime-pins.seed.json"
     assert registry.release_version == 5
     assert registry.release().pinset_sha256 == registry.pinset_sha256
-    # 현재 pin이 terminal로 등재돼 있다는 것 자체가 이번 감사의 핵심 발견이다.
-    assert registry.is_blocked_pinset(registry.pinset_sha256)
+    # 코드가 강제하는 차단 하한선은 seed 내용과 무관하게 항상 유효해야 한다.
+    for entry in registry_module._CODE_ENFORCED_BLOCKED_PINSETS:
+        assert registry.is_blocked_pinset(entry.pinset_sha256)
+
+
+def test_supported_release_version_mirror_matches_the_release_module() -> None:
+    """순환 import를 피하려 복제한 상수가 갈라지지 않는지 고정한다."""
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        PINNED_RUNTIME_RELEASE_VERSION,
+    )
+
+    assert registry_module._SUPPORTED_RELEASE_VERSION == PINNED_RUNTIME_RELEASE_VERSION
 
 
 # --- rebuild 시작 게이트 ------------------------------------------------------
@@ -555,3 +586,94 @@ def test_blocked_pinset_retry_helper_honours_phase_scope() -> None:
         pinvi_source_revision=PINVI_B,
         phase="candidate_attested",
     )
+
+
+# --- 리뷰 지적 회귀 (P2-7·P2-8·P2-9) -----------------------------------------
+
+
+def test_external_rotation_is_seen_without_an_explicit_cache_clear(
+    _isolated_registry,
+) -> None:
+    """실제 무효화 메커니즘을 검증한다.
+
+    회전 헬퍼는 캐시를 명시적으로 비우므로, 그 경로만 보면 스탬프 로직을 통째로
+    지워도 테스트가 통과한다. 여기서는 별도 프로세스가 파일을 교체한 상황을 흉내
+    내어(캐시를 비우지 않고 os.replace) 재로드가 새 값을 주는지 본다 — root CLI가
+    회전했을 때 실행 중 backend가 재기동 없이 보게 되는 바로 그 경로다.
+    """
+
+    registry_path, _ = _isolated_registry
+    _seed()
+    assert load_runtime_pin_registry().map_revision == MAP_A
+
+    rotated = build_registry(
+        release_version=5,
+        map_revision=MAP_C,
+        pinvi_revision=PINVI_B,
+        rotated_by="another-process",
+        reason="external rotation",
+    )
+    replacement = registry_path.with_suffix(".incoming")
+    replacement.write_text(
+        json.dumps(rotated.to_payload()), encoding="utf-8"
+    )
+    os.replace(replacement, registry_path)
+
+    assert load_runtime_pin_registry().map_revision == MAP_C
+
+
+def test_rebuild_refuses_a_blocked_pinset_before_touching_anything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """게이트가 mutation 이전에 있다는 사실을 end-to-end로 결박한다.
+
+    게이트 헬퍼만 단위로 부르면 누가 호출을 mutation 뒤로 옮기거나 지워도 스위트가
+    초록으로 남는다. 실제 ``rebuild_pinned_runtime()``을 호출해 source materialize와
+    DB reset이 **호출되지 않았음**을 단언한다.
+    """
+
+    from unittest.mock import Mock
+
+    from kor_travel_docker_manager.services import compose_service as compose_service_module
+    from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+
+    registry = _blocked_seed(phase=None)
+    materialize = Mock()
+    lock = Mock()
+    monkeypatch.setattr(
+        compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
+    )
+    monkeypatch.setattr(
+        compose_service_module, "materialize_pinned_runtime_sources", materialize
+    )
+    monkeypatch.setattr(
+        compose_service_module, "_pinned_runtime_rebuild_environment_lock", lock
+    )
+
+    with pytest.raises(DeploymentContractError, match="must not be retried"):
+        compose_service_module.ComposeService().rebuild_pinned_runtime()
+
+    materialize.assert_not_called()
+    # 락조차 잡지 않는다 — 거부는 어떤 host-wide 부작용보다도 앞선다.
+    lock.assert_not_called()
+    assert registry.is_unconditionally_blocked_pinset(registry.pinset_sha256)
+
+
+def test_pinset_digest_algorithm_is_pinned_to_a_literal() -> None:
+    """digest는 kor-travel-map attestation과 공유하는 계약이다.
+
+    self-consistent 단언만 있으면 알고리즘을 바꿔도 전부 통과한다. 알고리즘 교체가
+    즉시 실패하도록 리터럴 하나를 직접 고정한다.
+    """
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        canonical_pinset_sha256,
+        source_specs_for,
+    )
+
+    digest = canonical_pinset_sha256(
+        version=5,
+        sources=source_specs_for(map_revision="a" * 40, pinvi_revision="b" * 40),
+    )
+
+    assert digest == "46732f376843b2e84579267b86cc700041e18736f7f4858d5d84c5cd369d8f4e"

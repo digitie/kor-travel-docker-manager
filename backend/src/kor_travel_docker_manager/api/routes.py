@@ -126,7 +126,9 @@ def get_runtime_pins():
     published copy is missing or malformed the payload says `unknown` instead of
     guessing a value."""
     payload = read_published_runtime_pins()
-    if payload.get("status") != "ok":
+    # degraded/stale은 값이 있으므로 그대로 보여주되 상태를 그대로 전달한다.
+    # unknown만 값 자체가 없다.
+    if payload.get("status") == "unknown":
         return {
             "status": payload.get("status", "unknown"),
             "source": payload.get("source"),
@@ -135,11 +137,19 @@ def get_runtime_pins():
         }
     blocked = payload.get("blocked_pinsets", [])
     pinset_sha256 = payload.get("pinset_sha256")
+    # The rebuild start gate only honours entries without a phase; phase-scoped entries
+    # block one journal state, not the pinset. Collapsing the two here would tell the
+    # operator to rotate when a rebuild would in fact be allowed.
     current_is_blocked = any(
-        entry.get("pinset_sha256") == pinset_sha256 for entry in blocked
+        entry.get("pinset_sha256") == pinset_sha256 and entry.get("phase") is None
+        for entry in blocked
+    )
+    current_has_phase_scoped_block = any(
+        entry.get("pinset_sha256") == pinset_sha256 and entry.get("phase") is not None
+        for entry in blocked
     )
     return {
-        "status": "ok",
+        "status": payload.get("status", "ok"),
         "source": payload.get("source"),
         "published_at": payload.get("published_at"),
         "pins": {
@@ -152,10 +162,12 @@ def get_runtime_pins():
         },
         "lifecycle": {
             "current_pinset_is_blocked": current_is_blocked,
+            "current_pinset_has_phase_scoped_block": current_has_phase_scoped_block,
             "blocked_pinsets": blocked,
             "history": payload.get("history", []),
         },
         "summary": _runtime_pin_summary(
+            status=payload.get("status", "ok"),
             current_is_blocked=current_is_blocked,
             rotated_at=payload.get("rotated_at"),
         ),
@@ -164,10 +176,20 @@ def get_runtime_pins():
 
 def _runtime_pin_summary(
     *,
+    status: str,
     current_is_blocked: bool,
     rotated_at: str | None,
 ) -> dict[str, str]:
     """Plain-language status for operators who do not read digests."""
+    if status != "ok":
+        return {
+            "state": "unverified",
+            "text": (
+                "표시된 값이 이 호스트의 최신 고정 값이 아닐 수 있습니다. "
+                "SSH에서 확인이 필요합니다."
+            ),
+            "next_action": "sudo -n backend/.venv/bin/ktdctl pin verify",
+        }
     if current_is_blocked:
         return {
             "state": "action_required",

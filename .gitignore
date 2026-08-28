@@ -71,6 +71,8 @@ win_venv/
 # root-only Compose boundary retirement evidence (운영 source가 아님)
 .retired-compose-overrides/
 
-# runtime pin registry의 host-local 산출물 (공개 사본과 digest 보존본)
+# runtime pin registry의 host-local 산출물. 추적되는 것은 읽기 전용 seed
+# (config/runtime-pins.seed.json) 하나뿐이고, 실제 registry와 그 파생물은 호스트 로컬이다.
 .ktdm-runtime-pins.json
-config/runtime-pins.*.json
+config/runtime-pins.json
+config/runtime-pins.[0-9a-f]*.json

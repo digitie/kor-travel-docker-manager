@@ -68,6 +68,8 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
   const lifecycle = data?.lifecycle;
   const pins = data?.pins;
   const unknown = data?.status === 'unknown';
+  // stale/degraded는 값은 있으나 권위 있는 값이 아니다 — 정상으로 보여주지 않는다.
+  const unverified = data?.status === 'stale' || data?.status === 'degraded';
 
   return (
     <div
@@ -120,15 +122,11 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
           <>
             <section
               className={`rounded-card border p-4 ${
-                unknown
-                  ? 'border-line'
-                  : summary?.state === 'action_required'
-                    ? 'border-danger'
-                    : 'border-line'
+                summary?.state === 'action_required' ? 'border-danger' : 'border-line'
               }`}
             >
               <div className="flex items-start gap-3">
-                {unknown ? (
+                {unknown || unverified ? (
                   <HelpCircle className="w-5 h-5 text-secondary shrink-0 mt-0.5" />
                 ) : summary?.state === 'action_required' ? (
                   <AlertTriangle className="w-5 h-5 text-danger shrink-0 mt-0.5" />
@@ -141,15 +139,18 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                       ? '고정 정보를 확인할 수 없습니다.'
                       : (summary?.text ?? '고정 정보가 등록돼 있습니다.')}
                   </p>
-                  {unknown ? (
+                  {unknown || unverified ? (
                     <p className="text-xs text-secondary mt-1">
-                      이 호스트에 pin registry가 아직 준비되지 않았거나 관리도구가 읽을 수
-                      없습니다. SSH에서 아래 명령으로 초기화하세요.
+                      {unknown
+                        ? '이 호스트에 pin registry가 아직 준비되지 않았거나 관리도구가 읽을 수 없습니다. SSH에서 아래 명령으로 초기화하세요.'
+                        : '아래 값은 참고용입니다. 권위 있는 값인지 SSH에서 확인하세요.'}
                       {data?.detail ? ` (${data.detail})` : ''}
                     </p>
                   ) : null}
                   {unknown ? (
-                    <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin init --seed config/runtime-pins.json --confirm" />
+                    <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin init --confirm" />
+                  ) : unverified ? (
+                    <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin verify" />
                   ) : summary?.next_action ? (
                     <>
                       <p className="text-xs text-secondary mt-1">

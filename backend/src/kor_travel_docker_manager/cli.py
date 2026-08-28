@@ -21,10 +21,10 @@ from kor_travel_docker_manager.services.legacy_override_retirement import (
 )
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
-    RuntimePinRegistryError,
     block_runtime_pinset,
     build_registry,
     load_runtime_pin_registry,
+    packaged_seed_path,
     rollback_runtime_pin,
     rotate_runtime_pin,
     runtime_pin_registry_path,
@@ -289,9 +289,17 @@ def _print_registry(registry: Any, *, json_output: bool) -> None:
     print(f"pinvi    {registry.pinvi_revision}")
     print(f"rotated  {registry.rotated_at} by {registry.rotated_by}")
     print(f"reason   {registry.reason}")
-    if registry.blocked_pinsets:
-        print(f"blocked  {len(registry.blocked_pinsets)} pinset(s):")
-        for entry in registry.blocked_pinsets:
+    if registry.is_unconditionally_blocked_pinset(registry.pinset_sha256):
+        print()
+        print("⚠ 현재 고정된 pinset은 재시도가 금지된 candidate입니다 — 이 상태로는")
+        print("  'ktdctl pinvi-pair rebuild-pinned'가 거부됩니다. 새 revision으로 회전하세요:")
+        print("  ktdctl pin rotate --role <map|pinvi> --revision <40-hex> \\")
+        print('    --reason "<사유>" --confirm')
+        print()
+    blocked = registry.effective_blocked_pinsets
+    if blocked:
+        print(f"blocked  {len(blocked)} pinset(s):")
+        for entry in blocked:
             scope = f" phase={entry.phase}" if entry.phase else ""
             marker = " <- CURRENT" if entry.pinset_sha256 == registry.pinset_sha256 else ""
             print(f"  - {entry.pinset_sha256}{scope}{marker}")
@@ -314,6 +322,17 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    existing = None
+    if path.exists():
+        try:
+            existing = load_runtime_pin_registry(path=path)
+        except DeploymentContractError:
+            existing = None
+        if existing is not None and existing.history:
+            print(
+                f"기존 registry의 회전 이력 {len(existing.history)}건을 승계합니다 "
+                "(이전 상태는 digest 이름으로 보존됩니다).",
+            )
     try:
         seed = load_runtime_pin_registry(path=Path(args.seed))
         registry = build_registry(
@@ -322,10 +341,19 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
             pinvi_revision=seed.pinvi_revision,
             rotated_by=_pin_actor(),
             reason=args.reason,
-            blocked_pinsets=seed.blocked_pinsets,
+            # 재시딩이 이력과 차단 목록을 지우면 롤백 소스와 terminal 규율이 함께
+            # 사라진다. 기존 값이 있으면 승계하고, 이전 상태도 보존한다.
+            history=existing.history if existing is not None else (),
+            blocked_pinsets=(
+                existing.effective_blocked_pinsets
+                if existing is not None
+                else seed.blocked_pinsets
+            ),
         )
-        write_runtime_pin_registry(registry, path=path, preserve_previous=False)
-    except RuntimePinRegistryError as exc:
+        write_runtime_pin_registry(
+            registry, path=path, preserve_previous=existing is not None
+        )
+    except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(f"runtime pin registry bootstrapped at {path.name}")
@@ -336,7 +364,7 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
 def _cmd_pin_show(args: argparse.Namespace) -> int:
     try:
         registry = load_runtime_pin_registry()
-    except RuntimePinRegistryError as exc:
+    except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     _print_registry(registry, json_output=args.json)
@@ -346,7 +374,7 @@ def _cmd_pin_show(args: argparse.Namespace) -> int:
 def _cmd_pin_verify(args: argparse.Namespace) -> int:
     try:
         report = verify_runtime_pin_registry()
-    except RuntimePinRegistryError as exc:
+    except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if args.json:
@@ -354,13 +382,23 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     else:
         for key, value in report.items():
             print(f"{key:24s} {value}")
-    if report.get("published_copy") in {"stale", "malformed"}:
+    exit_code = 0
+    if report.get("current_pinset_is_blocked"):
         print(
-            "published copy is not current; re-run a root pin command to refresh it",
+            "현재 고정된 pinset은 재시도 금지 상태입니다 — rebuild-pinned가 거부됩니다. "
+            "'ktdctl pin rotate'로 새 revision을 고정하세요.",
             file=sys.stderr,
         )
-        return 1
-    return 0
+        exit_code = 1
+    if report.get("published_copy") != "current":
+        # 사본 부재는 stale보다 나쁘다 — 조회 API가 영구적으로 unknown/degraded가 된다.
+        print(
+            f"published copy is {report.get('published_copy')}; the read-only API cannot "
+            "report the authoritative pin until a root pin command refreshes it",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    return exit_code
 
 
 def _cmd_pin_rotate(args: argparse.Namespace) -> int:
@@ -375,7 +413,7 @@ def _cmd_pin_rotate(args: argparse.Namespace) -> int:
             rotated_by=_pin_actor(),
             block_previous=args.block_previous,
         )
-    except RuntimePinRegistryError as exc:
+    except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(f"rotated {args.role} pin; new pinset {registry.pinset_sha256}")
@@ -395,7 +433,7 @@ def _cmd_pin_block(args: argparse.Namespace) -> int:
             pinvi_revision=args.pinvi_revision,
             phase=args.phase,
         )
-    except RuntimePinRegistryError as exc:
+    except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(f"pinset {args.pinset} is now permanently blocked")
@@ -413,7 +451,7 @@ def _cmd_pin_rollback(args: argparse.Namespace) -> int:
             rotated_by=_pin_actor(),
             reason=args.reason,
         )
-    except RuntimePinRegistryError as exc:
+    except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(f"rolled back to pinset {registry.pinset_sha256}")
@@ -554,8 +592,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pin_init.add_argument(
         "--seed",
-        required=True,
-        help="부트스트랩 원본 registry 경로(예: config/runtime-pins.json).",
+        default=str(packaged_seed_path()),
+        help="부트스트랩 원본 seed 경로. 기본값은 설치본의 config/runtime-pins.seed.json입니다.",
     )
     pin_init.add_argument("--reason", default="host bootstrap", help="생성 사유입니다.")
     pin_init.add_argument("--confirm", action="store_true", help="파일 생성을 확인합니다.")
@@ -580,7 +618,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pin_rotate.add_argument("--role", required=True, choices=["map", "pinvi"])
     pin_rotate.add_argument("--revision", required=True, help="40-hex commit SHA입니다.")
-    pin_rotate.add_argument("--reason", required=True, help="회전 사유(감사 기록 필수).")
+    pin_rotate.add_argument(
+        "--reason",
+        required=True,
+        help="회전 사유(감사 기록 필수). world-readable 공개 사본에 그대로 기록되므로 비밀을 적지 않습니다.",
+    )
     pin_rotate.add_argument(
         "--block-previous",
         action="store_true",

@@ -108,7 +108,7 @@ def _isolate_runtime_pin_registry(
     phase 한정 차단(d9 계열)은 그대로 남겨 resume admission 회귀를 보존한다.
     """
 
-    packaged = Path(__file__).resolve().parents[2] / "config" / "runtime-pins.json"
+    packaged = Path(__file__).resolve().parents[2] / "config" / "runtime-pins.seed.json"
     document = json.loads(packaged.read_text(encoding="utf-8"))
     document["blocked_pinsets"] = [
         entry for entry in document.get("blocked_pinsets", []) if entry.get("phase")

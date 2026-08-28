@@ -166,7 +166,7 @@ export type RuntimePinRotation = {
 /** `GET /api/v1/runtime-pins` 응답. 회전은 root 전용 `ktdctl pin rotate`이므로 이
  * API는 읽기만 한다. registry를 읽을 수 없으면 값을 추측하지 않고 `unknown`이다. */
 export type RuntimePinsResponse = {
-  status: 'ok' | 'unknown';
+  status: 'ok' | 'stale' | 'degraded' | 'unknown';
   source: string | null;
   detail?: string | null;
   published_at?: string | null;
@@ -180,11 +180,12 @@ export type RuntimePinsResponse = {
   } | null;
   lifecycle?: {
     current_pinset_is_blocked: boolean;
+    current_pinset_has_phase_scoped_block?: boolean;
     blocked_pinsets: BlockedPinset[];
     history: RuntimePinRotation[];
   };
   summary?: {
-    state: 'ok' | 'action_required';
+    state: 'ok' | 'action_required' | 'unverified';
     text: string;
     next_action: string;
   };

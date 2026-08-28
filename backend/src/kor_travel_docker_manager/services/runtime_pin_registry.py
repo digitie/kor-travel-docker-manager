@@ -31,15 +31,33 @@ from kor_travel_docker_manager.services.c6c_deployment import DeploymentContract
 RUNTIME_PIN_REGISTRY_SCHEMA: Final = "kor-travel-docker-manager.runtime-pin-registry.v1"
 RUNTIME_PINS_FILE_ENV: Final = "KTDM_RUNTIME_PINS_FILE"
 RUNTIME_PINS_PUBLIC_FILE_ENV: Final = "KTDM_RUNTIME_PINS_PUBLIC_FILE"
+# 개발 전용 완화. 기본은 안전하고 완화만 명시적이다. Windows 공유 마운트(drvfs 등)는
+# 모든 파일을 0777로 보고해 mode 검사를 통과할 수 없으므로 그 환경에서만 쓴다.
+# root에서는 절대 적용되지 않는다 — 파괴적 작업을 수행하는 주체가 완화 대상이 되면
+# 완화가 곧 구멍이 된다.
+RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV: Final = "KTDM_RUNTIME_PINS_ALLOW_INSECURE_MODE"
 
 _DEFAULT_REGISTRY_RELPATH: Final = ("config", "runtime-pins.json")
+# 저장소에 추적되는 읽기 전용 부트스트랩 입력. 회전 대상이 아니다.
+_SEED_BASENAME: Final = "runtime-pins.seed.json"
+_SEED_RELPATH: Final = ("config", _SEED_BASENAME)
+# ``pinned_runtime_release.PINNED_RUNTIME_RELEASE_VERSION``의 거울. 그 모듈을 module
+# scope에서 import하면 순환이 되므로 값을 복제하고 테스트로 동일성을 고정한다.
+_SUPPORTED_RELEASE_VERSION: Final = 5
 _DEFAULT_PUBLIC_BASENAME: Final = ".ktdm-runtime-pins.json"
+# trusted installer의 canonical execution root. 이 트리는 release마다 통째 교체된다.
+_TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
+# 설치 root에서 돌 때의 registry 기본 위치. 트리 교체에 살아남아야 하므로 트리 밖이다.
+_TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 
-_MAX_REGISTRY_BYTES: Final = 512 * 1024
+# 상한을 가득 채운 registry(history 500 + blocked 500)의 실측 직렬화 크기가
+# 1MB에 근접한다. 읽기 한도가 그보다 작으면 쓰기 경로가 읽기 경로에서 거부되는
+# 파일을 만들어 스스로를 brick한다 — 여유를 두고 잡는다.
+_MAX_REGISTRY_BYTES: Final = 4 * 1024 * 1024
 _MAX_REASON_LENGTH: Final = 500
 _MAX_ACTOR_LENGTH: Final = 200
 _MAX_HISTORY_ENTRIES: Final = 500
@@ -83,6 +101,18 @@ def _require_timestamp(value: Any, field: str) -> str:
     return value
 
 
+def _compute_pinset_sha256(*, release_version: int, map_revision: str, pinvi_revision: str) -> str:
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        canonical_pinset_sha256,
+        source_specs_for,
+    )
+
+    return canonical_pinset_sha256(
+        version=release_version,
+        sources=source_specs_for(map_revision=map_revision, pinvi_revision=pinvi_revision),
+    )
+
+
 def utc_timestamp() -> str:
     """registry가 기록하는 canonical UTC timestamp."""
 
@@ -113,6 +143,18 @@ class BlockedPinset:
         _require_timestamp(self.blocked_at, "blocked_pinsets[].blocked_at")
         if self.phase is not None:
             _require_text(self.phase, "blocked_pinsets[].phase", max_length=_MAX_ACTOR_LENGTH)
+        # digest와 revision이 어긋난 차단 항목은 어떤 journal에도 매치하지 않는다 —
+        # 즉 "차단했다"고 기록됐지만 실제로는 아무것도 막지 못하는 조용한 무력화다.
+        # 최상위 pinset digest와 같은 강도로 재계산 대조한다.
+        expected = _compute_pinset_sha256(
+            release_version=_SUPPORTED_RELEASE_VERSION,
+            map_revision=self.map_revision,
+            pinvi_revision=self.pinvi_revision,
+        )
+        if self.pinset_sha256 != expected:
+            raise RuntimePinRegistryError(
+                "runtime pin registry blocked_pinsets[] digest does not match its revisions"
+            )
 
     def matches(
         self,
@@ -168,6 +210,48 @@ class BlockedPinset:
         if self.phase is not None:
             payload["phase"] = self.phase
         return payload
+
+
+# 코드가 소유하는 제거 불가능한 차단 하한선.
+#
+# 값은 registry가 소유하지만 **하한선은 코드가 소유한다.** registry가 손상되거나,
+# 오래된 사본으로 시딩되거나, 사람이 목록에서 지워도 이 항목만은 계속 차단된다.
+# d9은 lifecycle receipt schema 도입 전 PinVi role topology failure로 끝난 historical
+# candidate로, 전환 이전에는 코드 상수 3종으로 무조건 차단되던 대상이다 — 파일로
+# 옮기면서 그 방어를 잃지 않기 위해 여기 남긴다.
+_CODE_ENFORCED_BLOCKED_PINSETS: Final[tuple[BlockedPinset, ...]] = (
+    BlockedPinset(
+        pinset_sha256="d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898",
+        map_revision="14d18230e5a9ff21caf26d6abe37aed1e4944685",
+        pinvi_revision="93296aee5d47676e6b9b79303bf417c598a273ac",
+        phase="map_runtime_ready",
+        reason=(
+            "lifecycle receipt schema 도입 전 PinVi role topology failure로 끝난 "
+            "historical candidate (코드가 강제하는 차단 하한선)"
+        ),
+        blocked_at="2026-08-27T09:26:00Z",
+    ),
+)
+
+
+def code_enforced_blocked_entry(
+    *,
+    pinset_sha256: str,
+    map_source_revision: str,
+    pinvi_source_revision: str,
+    phase: str,
+) -> BlockedPinset | None:
+    """registry를 읽지 못해도 성립하는 차단 판정."""
+
+    for entry in _CODE_ENFORCED_BLOCKED_PINSETS:
+        if entry.matches(
+            pinset_sha256=pinset_sha256,
+            map_source_revision=map_source_revision,
+            pinvi_source_revision=pinvi_source_revision,
+            phase=phase,
+        ):
+            return entry
+    return None
 
 
 @dataclass(frozen=True)
@@ -236,6 +320,10 @@ class RuntimePinRegistry:
     blocked_pinsets: tuple[BlockedPinset, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.release_version != _SUPPORTED_RELEASE_VERSION:
+            raise RuntimePinRegistryError(
+                "runtime pin registry release_version is not the supported version"
+            )
         _require_revision(self.map_revision, "sources[map].revision")
         _require_revision(self.pinvi_revision, "sources[pinvi].revision")
         _require_digest(self.pinset_sha256, "pinset_sha256")
@@ -284,6 +372,24 @@ class RuntimePinRegistry:
             pinset_sha256=self.pinset_sha256,
         )
 
+    @property
+    def effective_blocked_pinsets(self) -> tuple[BlockedPinset, ...]:
+        """registry 목록과 코드 하한선의 합집합.
+
+        ``to_payload``에는 넣지 않는다 — 하한선은 파일이 아니라 코드가 소유하므로
+        파일에 기록하면 사람이 지울 수 있는 값이 되어 하한선이 아니게 된다.
+        """
+
+        declared = {
+            (entry.pinset_sha256, entry.phase) for entry in self.blocked_pinsets
+        }
+        extra = tuple(
+            entry
+            for entry in _CODE_ENFORCED_BLOCKED_PINSETS
+            if (entry.pinset_sha256, entry.phase) not in declared
+        )
+        return (*self.blocked_pinsets, *extra)
+
     def blocked_entry_for(
         self,
         *,
@@ -294,7 +400,7 @@ class RuntimePinRegistry:
     ) -> BlockedPinset | None:
         """journal 식별자에 해당하는 차단 항목을 찾는다."""
 
-        for entry in self.blocked_pinsets:
+        for entry in self.effective_blocked_pinsets:
             if entry.matches(
                 pinset_sha256=pinset_sha256,
                 map_source_revision=map_source_revision,
@@ -311,7 +417,9 @@ class RuntimePinRegistry:
         phase 조건이 의미가 없기 때문이다.
         """
 
-        return any(entry.pinset_sha256 == pinset_sha256 for entry in self.blocked_pinsets)
+        return any(
+            entry.pinset_sha256 == pinset_sha256 for entry in self.effective_blocked_pinsets
+        )
 
     def is_unconditionally_blocked_pinset(self, pinset_sha256: str) -> bool:
         """이 pinset의 **모든** 실행이 금지됐는지 확인한다.
@@ -323,7 +431,7 @@ class RuntimePinRegistry:
 
         return any(
             entry.pinset_sha256 == pinset_sha256 and entry.phase is None
-            for entry in self.blocked_pinsets
+            for entry in self.effective_blocked_pinsets
         )
 
     @classmethod
@@ -445,17 +553,31 @@ def _project_root() -> Path:
     return Path(get_project_root())
 
 
-def runtime_pin_registry_path() -> Path:
-    """registry 파일 경로. prod는 배포 트리 밖을 env로 지정한다.
+def _running_from_trusted_install_root() -> bool:
+    """trusted installer가 통째 교체하는 canonical execution root에서 도는가."""
 
-    배포 트리 안에 두면 trusted installer의 staging→commit 트리 교체가 회전 결과를
-    덮어 registry의 존재 이유가 무너진다. 개발 기본값만 저장소 안의
-    ``config/runtime-pins.json``이다.
+    try:
+        return _project_root().resolve() == _TRUSTED_INSTALL_ROOT.resolve()
+    except OSError:
+        return False
+
+
+def runtime_pin_registry_path() -> Path:
+    """registry 파일 경로.
+
+    **운영 기본값은 배포 트리 밖이다.** trusted installer는 canonical execution root를
+    staging→commit으로 통째 교체하므로 registry가 트리 안에 있으면 다음 release 설치가
+    회전 결과를 조용히 되돌린다 — 그 조용한 되돌림은 이 전환이 없애려던 실패 그
+    자체다. 설치 root에서 도는 경우 env가 없어도 ``/var/lib/...`` 상태 디렉터리를
+    기본값으로 쓰고, 저장소 안의 ``config/runtime-pins.json``은 개발 기본값이자
+    ``pin init``의 seed로만 남는다. ``KTDM_RUNTIME_PINS_FILE``로 언제든 덮어쓸 수 있다.
     """
 
     configured = os.environ.get(RUNTIME_PINS_FILE_ENV, "").strip()
     if configured:
         return Path(configured)
+    if _running_from_trusted_install_root():
+        return _TRUSTED_STATE_ROOT / "runtime-pins.json"
     return _project_root().joinpath(*_DEFAULT_REGISTRY_RELPATH)
 
 
@@ -464,12 +586,15 @@ def runtime_pin_registry_public_path() -> Path:
 
     registry 본체는 root 0600이라 비-root backend가 읽지 못한다. root가 실행하는
     rotate/init이 공개 사본을 함께 갱신한다 — trusted installer가
-    ``.ktdm-release-manifest.json``을 0644로 남기는 선례와 같은 패턴이다.
+    ``.ktdm-release-manifest.json``을 0644로 남기는 선례와 같은 패턴이다. 다만 사본도
+    registry와 같은 이유로 배포 트리 밖에 두어야 release 설치에 지워지지 않는다.
     """
 
     configured = os.environ.get(RUNTIME_PINS_PUBLIC_FILE_ENV, "").strip()
     if configured:
         return Path(configured)
+    if _running_from_trusted_install_root():
+        return _TRUSTED_STATE_ROOT / "public" / "runtime-pins.json"
     return _project_root() / _DEFAULT_PUBLIC_BASENAME
 
 
@@ -482,14 +607,66 @@ def clear_runtime_pin_registry_cache() -> None:
     _CACHE.clear()
 
 
+def _insecure_mode_allowed() -> bool:
+    """개발 환경에서만 mode 검사를 완화한다. 소유자 검사는 완화하지 않는다."""
+
+    if os.geteuid() == 0:
+        return False
+    return os.environ.get(RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV, "").strip() == "1"
+
+
+def _assert_registry_file_integrity(path: Path) -> None:
+    """읽기 시점에 파일 자체를 검증한다.
+
+    "값은 파일, 신뢰는 소유권"이 이 전환의 안전 논거인데, 그 소유권을 실제로 보는
+    코드가 없으면 논거가 성립하지 않는다. 같은 저장소의 root 아티팩트 표준
+    (``map_application_300._require_artifact_directory``)과 같은 기준을 쓴다.
+
+    - ``lstat``으로 본다. symlink를 따라가 다른 파일을 읽지 않는다.
+    - 일반 파일이어야 한다.
+    - 소유자는 root이거나 이 프로세스 자신이어야 한다.
+    - group·other 쓰기 권한이 있으면 거부한다. 0600(운영)과 0644(개발 체크아웃)는
+      통과하고 0664·0666은 거부된다. 모든 파일을 0777로 보고하는 공유 마운트에서만
+      ``KTDM_RUNTIME_PINS_ALLOW_INSECURE_MODE=1``로 이 항목을 완화할 수 있고, 그
+      완화는 root에서 무효다.
+    - stat 실패는 통과가 아니라 거부다.
+    """
+
+    try:
+        file_stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimePinRegistryError(
+            f"runtime pin registry file is missing: {path.name} (bootstrap it with "
+            "'ktdctl pin init --confirm')"
+        ) from exc
+    except OSError as exc:
+        raise RuntimePinRegistryError(
+            f"runtime pin registry file cannot be inspected: {path.name}"
+        ) from exc
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise RuntimePinRegistryError(
+            f"runtime pin registry path is not a regular file: {path.name}"
+        )
+    if file_stat.st_uid not in {0, os.geteuid()}:
+        raise RuntimePinRegistryError(
+            f"runtime pin registry file is owned by an unexpected user: {path.name}"
+        )
+    if stat.S_IMODE(file_stat.st_mode) & 0o022 and not _insecure_mode_allowed():
+        raise RuntimePinRegistryError(
+            f"runtime pin registry file must not be group or world writable: {path.name}"
+        )
+
+
 def _read_registry_document(path: Path) -> dict[str, Any]:
+    _assert_registry_file_integrity(path)
     try:
         with path.open("rb") as handle:
             raw = handle.read(_MAX_REGISTRY_BYTES + 1)
     except FileNotFoundError as exc:
         raise RuntimePinRegistryError(
-            f"runtime pin registry file is missing: {path.name} "
-            "(run 'ktdctl pin init --confirm' to bootstrap it)"
+            f"runtime pin registry file is missing: {path.name} (bootstrap it with "
+            "'ktdctl pin init --seed /opt/kor-travel-docker-manager/config/"
+            "runtime-pins.json --confirm')"
         ) from exc
     except OSError as exc:
         raise RuntimePinRegistryError(
@@ -522,8 +699,9 @@ def load_runtime_pin_registry(*, path: Path | None = None) -> RuntimePinRegistry
     except FileNotFoundError as exc:
         _CACHE.pop(key, None)
         raise RuntimePinRegistryError(
-            f"runtime pin registry file is missing: {registry_path.name} "
-            "(run 'ktdctl pin init --confirm' to bootstrap it)"
+            f"runtime pin registry file is missing: {registry_path.name} (bootstrap it "
+            "with 'ktdctl pin init --seed /opt/kor-travel-docker-manager/config/"
+            "runtime-pins.json --confirm')"
         ) from exc
     except OSError as exc:
         _CACHE.pop(key, None)
@@ -533,6 +711,9 @@ def load_runtime_pin_registry(*, path: Path | None = None) -> RuntimePinRegistry
 
     cached = _CACHE.get(key)
     if cached is not None and cached[0] == stamp:
+        # 캐시 적중이어도 파일 무결성은 매번 확인한다 — 내용이 그대로여도 소유권이나
+        # 권한이 바뀌었을 수 있고, 그 상태로 파괴적 작업을 진행해서는 안 된다.
+        _assert_registry_file_integrity(registry_path)
         return cached[1]
 
     registry = RuntimePinRegistry.from_payload(_read_registry_document(registry_path))
@@ -584,8 +765,10 @@ def publish_runtime_pins(
 ) -> Path:
     """backend가 읽을 수 있는 secret-free 공개 사본을 갱신한다.
 
-    내용은 전부 공개 저장소의 commit SHA와 회전 메타뿐이라 비밀이 없다. 사본에도
-    ``pinset_sha256``이 있어 읽는 쪽이 재계산 대조할 수 있다.
+    내용은 공개 저장소의 commit SHA와 회전 메타뿐이라 구조적으로 비밀이 없다. 다만
+    ``reason``·``rotated_by``는 운영자 자유 입력이므로 **그대로 world-readable 사본과
+    인증된 API 응답에 실린다** — 비밀을 사유에 적지 않는다는 규약이 필요하다.
+    사본에도 ``pinset_sha256``이 있어 읽는 쪽이 재계산 대조할 수 있다.
     """
 
     target = public_path or runtime_pin_registry_public_path()
@@ -596,8 +779,13 @@ def publish_runtime_pins(
 
 
 def read_published_runtime_pins() -> dict[str, Any]:
-    """backend용 읽기 경로. 사본이 없으면 registry 본체를 읽어보고, 둘 다 실패하면
-    ``unknown``으로 정직하게 표시한다(추측하지 않는다).
+    """backend용 읽기 경로. 값을 추측하지 않는 것이 이 함수의 계약이다.
+
+    - 공개 사본을 읽었으면 ``ok``.
+    - 사본이 없어 registry 본체를 대신 읽었으면 ``degraded`` — 그 파일이 이 호스트의
+      운영 registry가 아니라 배포본에 딸려 온 개발 seed일 수 있기 때문이다. 값을
+      보여주되 권위 있는 값이라고 말하지 않는다.
+    - 둘 다 읽을 수 없으면 ``unknown``.
     """
 
     public_path = runtime_pin_registry_public_path()
@@ -619,7 +807,27 @@ def read_published_runtime_pins() -> dict[str, Any]:
                 "detail": str(exc),
             }
         payload = registry.to_payload()
-        payload["status"] = "ok"
+        payload["blocked_pinsets"] = [
+            entry.to_payload() for entry in registry.effective_blocked_pinsets
+        ]
+        if source == "published_copy":
+            payload["status"] = "ok"
+            # 판별할 수 있으면 판별한다. registry를 읽을 수 있는 프로세스가 stale
+            # 사본을 "정상"이라고 보고하면, 회전 뒤 UI가 옛 pin을 자신 있게 보여준다.
+            authoritative = _authoritative_pinset_or_none()
+            if authoritative is not None and authoritative != registry.pinset_sha256:
+                payload["status"] = "stale"
+                payload["detail"] = (
+                    "공개 사본이 registry보다 오래됐습니다. root로 "
+                    "'ktdctl pin verify'를 실행해 사본을 갱신하세요."
+                )
+        else:
+            payload["status"] = "degraded"
+            payload["detail"] = (
+                "공개 사본이 없어 registry 파일을 직접 읽었습니다. 이 값은 이 호스트의 "
+                "운영 pin이 아니라 배포본 기본값일 수 있습니다 — root로 "
+                "'ktdctl pin verify'를 실행해 공개 사본을 확인하세요."
+            )
         payload["source"] = source
         if published_at is not None:
             payload["published_at"] = published_at
@@ -631,23 +839,64 @@ def read_published_runtime_pins() -> dict[str, Any]:
     }
 
 
+def _authoritative_pinset_or_none() -> str | None:
+    """registry 본체를 읽을 수 있으면 그 pinset을, 아니면 ``None``을 준다."""
+
+    try:
+        return load_runtime_pin_registry().pinset_sha256
+    except RuntimePinRegistryError:
+        return None
+
+
 def _preserved_copy_path(registry_path: Path, pinset_sha256: str) -> Path:
     return registry_path.with_name(f"{registry_path.stem}.{pinset_sha256}.json")
 
 
-def _assert_registry_is_owner_only(path: Path) -> None:
-    """운영 registry는 소유자 전용이어야 한다(개발 기본 경로는 예외)."""
+def packaged_seed_path() -> Path:
+    """저장소에 추적된 읽기 전용 seed 경로(``pin init``의 기본 입력)."""
 
-    if path == _project_root().joinpath(*_DEFAULT_REGISTRY_RELPATH):
-        return
+    return _project_root().joinpath(*_SEED_RELPATH)
+
+
+def _is_packaged_seed_path(path: Path) -> bool:
     try:
-        file_stat = path.stat()
+        return path.resolve() == packaged_seed_path().resolve()
     except OSError:
-        return
-    if stat.S_IMODE(file_stat.st_mode) & 0o077:
+        return False
+
+
+def _assert_registry_is_writable_target(path: Path) -> None:
+    """회전 대상 registry가 운영 규약을 만족하는지 mutation 이전에 확인한다.
+
+    두 가지를 막는다.
+
+    1. **설치 트리 안에서의 회전.** trusted installer는 canonical execution root를
+       staging→commit으로 통째 교체하므로, 배포 트리 안의 registry에 회전하면 다음
+       release 설치가 그 결과를 조용히 되돌린다. 이 조용한 되돌림은 registry 전환이
+       없애려던 실패 모드 그 자체라 fail-close한다.
+    2. **그룹·타인 접근 가능한 운영 registry.** 회전 권한이 root 밖으로 새는 상태다.
+       저장소 안의 개발 기본값은 git이 관리하는 world-readable 파일이므로 예외다.
+    """
+
+    try:
+        inside_trusted_root = path.resolve().is_relative_to(_TRUSTED_INSTALL_ROOT)
+    except (OSError, ValueError):
+        inside_trusted_root = False
+    if inside_trusted_root:
         raise RuntimePinRegistryError(
-            "runtime pin registry file must not be group or world accessible"
+            "runtime pin registry must not live inside the trusted install root "
+            f"({_TRUSTED_INSTALL_ROOT}); the next release install would revert the "
+            f"rotation. Point {RUNTIME_PINS_FILE_ENV} outside the deploy tree and "
+            f"bootstrap it with 'ktdctl pin init --seed {_TRUSTED_INSTALL_ROOT}/config/"
+            f"{_SEED_BASENAME} --confirm'"
         )
+    if _is_packaged_seed_path(path):
+        raise RuntimePinRegistryError(
+            f"the packaged seed ({_SEED_BASENAME}) is read-only bootstrap input and is "
+            "never a rotation target; bootstrap a registry with 'ktdctl pin init' first"
+        )
+    if path.exists():
+        _assert_registry_file_integrity(path)
 
 
 def write_runtime_pin_registry(
@@ -674,20 +923,17 @@ def write_runtime_pin_registry(
     _atomic_write_json(registry_path, registry.to_payload(), mode=0o600)
     clear_runtime_pin_registry_cache()
     if publish:
-        publish_runtime_pins(registry)
+        try:
+            publish_runtime_pins(registry)
+        except OSError as exc:
+            # registry 교체는 이미 확정됐다. 실패를 그대로 던지면 운영자가 "회전이
+            # 실패했다"고 읽는다 — 실제 상태를 정확히 말한다.
+            raise RuntimePinRegistryError(
+                "the rotation was applied but the published copy could not be updated; "
+                "the read-only API will report a stale or unknown value until a root "
+                "'ktdctl pin verify' refreshes it"
+            ) from exc
     return registry_path
-
-
-def _compute_pinset_sha256(*, release_version: int, map_revision: str, pinvi_revision: str) -> str:
-    from kor_travel_docker_manager.services.pinned_runtime_release import (
-        canonical_pinset_sha256,
-        source_specs_for,
-    )
-
-    return canonical_pinset_sha256(
-        version=release_version,
-        sources=source_specs_for(map_revision=map_revision, pinvi_revision=pinvi_revision),
-    )
 
 
 def build_registry(
@@ -739,7 +985,7 @@ def rotate_runtime_pin(
     if role not in RUNTIME_SOURCE_ROLES:
         raise RuntimePinRegistryError("runtime pin role must be map or pinvi")
     registry_path = path or runtime_pin_registry_path()
-    _assert_registry_is_owner_only(registry_path)
+    _assert_registry_is_writable_target(registry_path)
     current = load_runtime_pin_registry(path=registry_path)
     revision = _require_revision(revision, "revision")
     map_revision = revision if role == "map" else current.map_revision
@@ -810,7 +1056,7 @@ def block_runtime_pinset(
     """terminal 판정된 pinset을 영구 차단 목록에 등재한다."""
 
     registry_path = path or runtime_pin_registry_path()
-    _assert_registry_is_owner_only(registry_path)
+    _assert_registry_is_writable_target(registry_path)
     current = load_runtime_pin_registry(path=registry_path)
     pinset_sha256 = _require_digest(pinset_sha256, "pinset_sha256")
     if pinset_sha256 == current.pinset_sha256:
@@ -839,7 +1085,9 @@ def block_runtime_pinset(
         rotated_by=current.rotated_by,
         reason=current.reason,
         history=current.history,
-        blocked_pinsets=(*current.blocked_pinsets, entry)[-_MAX_BLOCKED_ENTRIES:],
+        # 차단 목록은 truncate하지 않는다 — 가장 오래된 terminal pinset이 조용히
+        # 빠지면 그 candidate가 다시 실행 가능해진다. 초과는 fail-close다.
+        blocked_pinsets=(*current.blocked_pinsets, entry),
     )
     write_runtime_pin_registry(updated, path=registry_path, preserve_previous=False)
     return updated
@@ -859,7 +1107,7 @@ def rollback_runtime_pin(
     """
 
     registry_path = path or runtime_pin_registry_path()
-    _assert_registry_is_owner_only(registry_path)
+    _assert_registry_is_writable_target(registry_path)
     current = load_runtime_pin_registry(path=registry_path)
     pinset_sha256 = _require_digest(pinset_sha256, "pinset_sha256")
     if pinset_sha256 == current.pinset_sha256:
@@ -924,6 +1172,11 @@ def verify_runtime_pin_registry(*, path: Path | None = None) -> dict[str, Any]:
         "pinvi_revision": registry.pinvi_revision,
         "digest_recomputation": "ok",
         "published_copy": published_state,
-        "blocked_pinset_count": len(registry.blocked_pinsets),
+        # digest가 맞아도 현재 pinset이 terminal이면 rebuild는 거부된다. verify가 그
+        # 사실을 말하지 않으면 운영자가 "ok"를 보고 안심한 뒤 rebuild에서 막힌다.
+        "current_pinset_is_blocked": registry.is_unconditionally_blocked_pinset(
+            registry.pinset_sha256
+        ),
+        "blocked_pinset_count": len(registry.effective_blocked_pinsets),
         "history_length": len(registry.history),
     }
