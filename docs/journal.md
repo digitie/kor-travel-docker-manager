@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-28 — Map fresh-init 고정 종료 코드 진단과 candidate 회전
+
+`aa78b4ec…` candidate는 Map `fresh-init`까지 명시해 `map_fresh_init_failed`로 끝났고,
+cleanup 뒤 Map·PinVi transaction resource는 모두 없었다. 이 candidate와 ledger는 terminal로
+보존하고 재실행하지 않는다. 원문 stderr·container log·환경값은 읽거나 결과에 쓰지 않았다.
+
+다음 candidate의 fresh-init one-shot은 고정 Map source의 `migrate` 인자·동일 `_migrate` 경로를
+실행하되, 알려진 `FreshMigrationError`만 고정 종료 코드로 바꾼다. Manager는 그 코드와 정적
+allowlist를 대조해 제한된 `map_fresh_init_reason`만 root-owned `0600` result에 기록한다. 알려지지
+않은 오류도 `unclassified`로만 남기며, stdout·stderr는 계속 폐기한다. 이 반복 절차는 원문 로그
+접근 없이 다음 수정 범위를 좁히고 한 번의 ledger candidate를 재시도하지 않게 한다.
+
+---
+
 ## 2026-08-28 — M05 Map command별 비밀 비포함 failure phase
 
 `bc704aef…` candidate는 cleanup을 완결했고 잔여 container·network·volume이 없었지만, result의

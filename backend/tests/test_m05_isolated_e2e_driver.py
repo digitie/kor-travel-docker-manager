@@ -256,7 +256,7 @@ def test_compose_records_the_supplied_fixed_failure_phase(
 
     monkeypatch.setattr(driver, "_command", fail_command)
 
-    with pytest.raises(driver._PhaseError, match="map_postgres_start_failed"):
+    with pytest.raises(driver._PhaseError, match="map_postgres_start_failed") as error:
         driver._compose(
             root=tmp_path,
             project="m05i-map",
@@ -265,6 +265,66 @@ def test_compose_records_the_supplied_fixed_failure_phase(
             arguments=("up", "postgres"),
             failure_phase="map_postgres_start_failed",
         )
+
+    assert error.value.diagnostic is None
+
+
+def test_compose_preserves_only_the_fixed_exit_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+
+    def fail_command(*_args: str, **_kwargs: object) -> str:
+        raise driver._PhaseError(
+            "runtime_command_failed", diagnostic="pre_root_state_invalid"
+        )
+
+    monkeypatch.setattr(driver, "_command", fail_command)
+
+    with pytest.raises(driver._PhaseError, match="map_fresh_init_failed") as error:
+        driver._compose(
+            root=tmp_path,
+            project="m05i-map",
+            env_file=tmp_path / "map.env",
+            files=(tmp_path / "docker-compose.yml",),
+            arguments=("run", "db-application-schema-fresh-300"),
+            failure_phase="map_fresh_init_failed",
+            failure_exit_diagnostics={45: "pre_root_state_invalid"},
+        )
+
+    assert error.value.diagnostic == "pre_root_state_invalid"
+
+
+def test_command_accepts_only_a_declared_failure_exit_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+
+    monkeypatch.setattr(
+        driver.subprocess,
+        "run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(args, 45),
+    )
+
+    with pytest.raises(driver._PhaseError, match="runtime_command_failed") as error:
+        driver._command(
+            "/usr/bin/false", failure_exit_diagnostics={45: "pre_root_state_invalid"}
+        )
+
+    assert error.value.diagnostic == "pre_root_state_invalid"
+
+
+def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
+    driver = _driver()
+
+    runner = driver._map_fresh_init_diagnostic_runner()
+    entrypoint = driver._map_fresh_init_diagnostic_entrypoint()
+
+    assert "print(" not in runner
+    assert "sys.stderr" not in runner
+    assert "FreshMigrationError" in runner
+    assert "raise SystemExit" in runner
+    assert "base64.b64decode" in entrypoint
 
 
 def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:

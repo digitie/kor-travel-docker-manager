@@ -7,6 +7,7 @@ Manager release에서만 ``run-m05-isolated-e2e-once``를 통해 실행한다.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -72,16 +73,26 @@ _SAFE_SUBPROCESS_ENV = {
 # Root driver가 host loopback에만 연결할 때에도 ambient HTTP(S)_PROXY를 신뢰하지
 # 않는다. PinVi cookie opener도 아래와 같은 proxy-free opener를 명시적으로 만든다.
 _LOOPBACK_OPENER = build_opener(ProxyHandler({}))
+_MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
+    41: "migrator_dsn_missing",
+    42: "image_alembic_root_invalid",
+    43: "migrator_session_unverifiable",
+    44: "migrator_identity_invalid",
+    45: "pre_root_state_invalid",
+    46: "alembic_root_result_invalid",
+    127: "unclassified",
+}
 
 
 class _PhaseError(RuntimeError):
-    def __init__(self, phase: str) -> None:
+    def __init__(self, phase: str, *, diagnostic: str | None = None) -> None:
         super().__init__(phase)
         self.phase = phase
+        self.diagnostic = diagnostic
 
 
-def _fail(phase: str) -> NoReturn:
-    raise _PhaseError(phase)
+def _fail(phase: str, *, diagnostic: str | None = None) -> NoReturn:
+    raise _PhaseError(phase, diagnostic=diagnostic)
 
 
 def _root_file(path: Path, *, mode: int = 0o600) -> os.stat_result:
@@ -215,6 +226,7 @@ def _command(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     capture: bool = False,
+    failure_exit_diagnostics: dict[int, str] | None = None,
 ) -> str:
     child_env = dict(_SAFE_SUBPROCESS_ENV)
     if env is not None:
@@ -230,7 +242,12 @@ def _command(
         text=True,
     )
     if completed.returncode != 0:
-        _fail("runtime_command_failed")
+        diagnostic = (
+            failure_exit_diagnostics.get(completed.returncode)
+            if failure_exit_diagnostics is not None
+            else None
+        )
+        _fail("runtime_command_failed", diagnostic=diagnostic)
     return completed.stdout if capture else ""
 
 
@@ -244,6 +261,7 @@ def _compose(
     capture: bool = False,
     environment: dict[str, str] | None = None,
     failure_phase: str | None = None,
+    failure_exit_diagnostics: dict[int, str] | None = None,
 ) -> str:
     command = [
         "/usr/bin/docker",
@@ -257,10 +275,16 @@ def _compose(
         command.extend(("--file", str(item)))
     command.extend(arguments)
     try:
-        return _command(*command, cwd=root, env=environment, capture=capture)
+        return _command(
+            *command,
+            cwd=root,
+            env=environment,
+            capture=capture,
+            failure_exit_diagnostics=failure_exit_diagnostics,
+        )
     except _PhaseError as error:
         if failure_phase is not None and error.phase == "runtime_command_failed":
-            _fail(failure_phase)
+            _fail(failure_phase, diagnostic=error.diagnostic)
         raise
 
 
@@ -357,6 +381,51 @@ def _pbkdf2_password_hash(value: str) -> str:
     digest = hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), salt, 310_000)
     encode = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
     return f"pbkdf2_sha256$310000${encode(salt)}${encode(digest)}"
+
+
+def _map_fresh_init_diagnostic_runner() -> str:
+    """Map source 오류를 원문 없이 고정 종료 코드로만 분류하는 one-shot runner."""
+
+    error_codes = {
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN is required": 41,
+        "installed application Alembic root is unavailable": 42,
+        "installed active Alembic graph head is not exactly 300": 42,
+        "fresh 300 migration cannot verify migrator session": 43,
+        "fresh 300 migration must connect as restricted migrator": 44,
+        "fresh 300 migration requires no existing public.alembic_version table": 45,
+        "fresh 300 pre-root state cannot be attested": 45,
+        "fresh 300 pre-root state is not exact": 45,
+        "fresh 300 migration did not produce exact raw revision 300": 46,
+        "fresh 300 migration destination facet does not match baseline": 46,
+    }
+    return "\n".join(
+        (
+            "import asyncio",
+            "import runpy",
+            "module = runpy.run_path(",
+            "    '/usr/local/bin/ktm-application-schema-fresh-300',",
+            "    run_name='m05_map_fresh_init_diagnostic',",
+            ")",
+            "try:",
+            "    if module['_parse_args'](['migrate']) != ('migrate', None):",
+            "        raise SystemExit(127)",
+            "    asyncio.run(module['_migrate']())",
+            "except module['FreshMigrationError'] as error:",
+            f"    raise SystemExit({error_codes!r}.get(str(error), 127))",
+            "except BaseException:",
+            "    raise SystemExit(127)",
+        )
+    )
+
+
+def _map_fresh_init_diagnostic_entrypoint() -> str:
+    encoded = base64.b64encode(
+        _map_fresh_init_diagnostic_runner().encode("utf-8")
+    ).decode("ascii")
+    return (
+        "import base64; exec(compile(base64.b64decode("
+        f"{encoded!r}), '<m05-map-fresh-init>', 'exec'))"
+    )
 
 
 def _free_ports(transaction: str) -> dict[str, int]:
@@ -961,6 +1030,7 @@ def main(expected_revision: str, output: Path) -> int:
     completed = False
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
+    failure_diagnostic: str | None = None
     map_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = None
     pinvi_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = (
         None
@@ -1130,6 +1200,13 @@ def main(expected_revision: str, output: Path) -> int:
         # API에는 digest capability만, frontend에는 raw manual-create credential만 전달한다.
         map_override_lines = [
             "services:",
+            "  db-application-schema-fresh-300:",
+            "    entrypoint:",
+            "      - /usr/local/bin/python",
+            "      - -I",
+            "      - -c",
+            "      - >-",
+            f"        {_map_fresh_init_diagnostic_entrypoint()}",
             "  api:",
             "    env_file: !reset []",
             "    labels:",
@@ -1250,6 +1327,7 @@ def main(expected_revision: str, output: Path) -> int:
                 "db-application-schema-fresh-300",
             ),
             failure_phase="map_fresh_init_failed",
+            failure_exit_diagnostics=_MAP_FRESH_INIT_EXIT_DIAGNOSTICS,
         )
         _compose(
             root=map_root,
@@ -1565,6 +1643,7 @@ def main(expected_revision: str, output: Path) -> int:
         completed = True
     except _PhaseError as error:
         phase = error.phase
+        failure_diagnostic = error.diagnostic
     except (DeploymentContractError, OSError, ValueError):
         phase = "driver_contract_failed"
     finally:
@@ -1604,6 +1683,8 @@ def main(expected_revision: str, output: Path) -> int:
             "transaction_id": transaction,
             **result_hashes,
         }
+        if failure_diagnostic is not None:
+            result["map_fresh_init_reason"] = failure_diagnostic
         try:
             _write_private_json(output / "result.json", result)
         except (OSError, _PhaseError):
