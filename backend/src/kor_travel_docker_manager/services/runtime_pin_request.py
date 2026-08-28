@@ -2,7 +2,8 @@
 
 설계 정본: ``docs/ktdctl-ui-migration.md`` §1.2 (c), 오너 승인 Q4.
 
-registry는 root `0600`이고 회전은 root CLI(``ktdctl pin apply-pending --confirm``)만
+registry는 root `0600`이고 회전은 root CLI(``ktdctl pin apply-pending
+--expect-revision <40-hex> --confirm``)만
 한다. 그래서 UI는 **요청만** 남긴다.
 
 .. warning::
@@ -73,6 +74,15 @@ _UUID4 = re.compile(
 
 class RuntimePinRequestError(DeploymentContractError):
     """요청 파일의 손상·계약 위반을 fail-close로 알린다."""
+
+
+class RuntimePinRequestReadableError(RuntimePinRequestError):
+    """읽을 수 있는 요청을 잔재 제거 도구로 지우려 했다.
+
+    별도 타입인 이유: 이전에는 오류 **문자열에 "readable"이 들어 있는가**로 판정했다.
+    그 방식은 다른 무결성 실패(hardlink, group-writable 부모 등)를 전부 "손상됨"으로
+    분류해 **멀쩡하고 id로 지울 수 있는 요청을 삭제**한다.
+    """
 
 
 def _require_text(value: Any, field: str, *, max_length: int) -> str:
@@ -425,19 +435,29 @@ def discard_unreadable_runtime_pin_request(*, path: Path | None = None) -> Path 
     """
 
     target = path or runtime_pin_request_path()
-    try:
-        if read_runtime_pin_request(path=target) is not None:
-            raise RuntimePinRequestError(
-                f"the pending request is readable; cancel it by id instead: {target}"
-            )
-        return None
-    except RuntimePinRequestError as exc:
-        if "readable" in str(exc):
-            raise
+
+    # `exists()`는 symlink를 따라간다. 끊어진 symlink는 "없다"로 읽히는데 `write`는 그
+    # 자리 때문에 계속 실패한다 — 요청 경로가 영구히 잠기고 --force가 그것을 못 푼다.
+    if target.is_symlink():
+        target.unlink(missing_ok=True)
+        return target
     if not target.exists():
         return None
-    target.unlink(missing_ok=True)
-    return target
+
+    # **무결성 실패와 내용 손상을 구분한다.** 무결성(hardlink, 소유자, 부모 권한)은
+    # "이 내용을 믿고 행동해도 되는가"의 문제고, 버릴지 말지는 "이것이 요청이기는
+    # 한가"의 문제다. 둘을 뭉뚱그려 지우면 멀쩡하고 id로 취소할 수 있는 요청이
+    # 사라진다 — 무결성 문제는 고칠 수 있고, 지워진 요청은 되돌릴 수 없다.
+    try:
+        raw = target.read_bytes()[: _MAX_REQUEST_BYTES + 1]
+        RuntimePinRequest.from_payload(json.loads(raw.decode("utf-8")))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimePinRequestError):
+        target.unlink(missing_ok=True)
+        return target
+    raise RuntimePinRequestReadableError(
+        f"the pending request parses as a valid request; cancel it by id instead "
+        f"(fix the integrity problem first if one is reported): {target}"
+    )
 
 
 def prospective_pinset_sha256(
@@ -462,6 +482,7 @@ __all__ = [
     "RUNTIME_PIN_REQUEST_SCHEMA",
     "RuntimePinRequest",
     "RuntimePinRequestError",
+    "RuntimePinRequestReadableError",
     "clear_runtime_pin_request",
     "discard_unreadable_runtime_pin_request",
     "prospective_pinset_sha256",

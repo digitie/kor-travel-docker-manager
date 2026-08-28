@@ -247,7 +247,9 @@ sudo groupadd ktdm-backup
 sudo usermod -aG ktdm-backup <backend-user>
 sudo usermod -aG ktdm-backup <cron-user>
 sudo chgrp -R ktdm-backup "$KTDM_BACKUP_ROOT"
-sudo chmod -R 2770 "$KTDM_BACKUP_ROOT"
+# 디렉터리만 2770. `-R 2770`은 dump 파일까지 group-writable로 만들어 0640 정책과 어긋난다.
+sudo find "$KTDM_BACKUP_ROOT" -type d -exec chmod 2770 {} +
+sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 # .env에 그룹 이름을 선언한다.
 #   KTDM_BACKUP_SHARED_GROUP=ktdm-backup
 ```

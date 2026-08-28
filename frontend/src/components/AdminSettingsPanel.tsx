@@ -17,8 +17,7 @@ import CopyableCommand from './CopyableCommand';
 const MIN_PASSWORD_LENGTH = 12;
 /** 서버가 이 문구를 요구하지는 않는다. 화면이 "무심코 진행"을 막는 마찰이다. */
 const ACKNOWLEDGEMENT_PHRASE = '재구축 무효화 동의';
-const JOURNAL_CHECK_COMMAND =
-  'sudo ls -l ~root/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/';
+
 
 type PublicKeyState = {
   busy: boolean;
@@ -148,7 +147,9 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
           typedAcknowledgement: '',
           message:
             '비밀번호를 변경했습니다. 다음 로그인부터 새 비밀번호를 사용합니다. ' +
-            '현재 세션은 그대로 유지됩니다.',
+            '세션 검증은 비밀번호 해시를 보지 않으므로 이미 열려 있던 세션은 ' +
+            '내 것도 남의 것도 그대로 유지됩니다 — 유출이 의심되어 바꾸는 경우라면 ' +
+            '기존 세션을 따로 끊어야 합니다.',
         });
         // 감사 행이 변경의 눈에 보이는 증거다.
         await loadAuditEvents();
@@ -468,6 +469,17 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               <p className="text-xs text-secondary mt-1">
                 재구축이 끝나거나 정리된 뒤에 다시 시도하세요. 이 판정은 우회할 수 없습니다.
               </p>
+              {/* 실제로 조치해야 하는 쪽에 확인 경로가 없으면 "기다리라"는 말만 남는다. */}
+              {preflight?.check_command ? (
+                <CopyableCommand command={preflight.check_command} />
+              ) : null}
+              <button
+                className="ops-button mt-2"
+                onClick={() => void loadPasswordPreflight()}
+                type="button"
+              >
+                다시 확인
+              </button>
             </div>
           ) : null}
 
@@ -480,7 +492,9 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 {preflight?.detail} 진행 중인 재구축이 있다면 이 변경으로 그 재구축의 재개가
                 영구 차단됩니다. SSH에서 아래를 확인한 뒤 진행하세요.
               </p>
-              <CopyableCommand command={JOURNAL_CHECK_COMMAND} />
+              {preflight?.check_command ? (
+                <CopyableCommand command={preflight.check_command} />
+              ) : null}
               <label className="block text-xs text-secondary mt-3">
                 확인했다면 <span className="font-semibold">{ACKNOWLEDGEMENT_PHRASE}</span>를
                 그대로 입력하세요.
@@ -565,6 +579,13 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
 function eventTitle(event: LoginAuditEvent): string {
   if (event.event_type === 'logout') return `로그아웃 · ${event.attempted_username ?? '-'}`;
   if (event.event_type === 'api_key') return `API 키 · ${event.reason ?? '-'}`;
+  // 비밀번호 변경 감사 행이 "로그인"으로 표시되면 설정 오류(env_not_writable 등)가
+  // 실패한 로그인 시도처럼 읽혀 보안 사고로 오인된다.
+  if (event.event_type === 'admin_password') {
+    return `비밀번호 변경 · ${event.attempted_username ?? '-'}`;
+  }
+  if (event.event_type === 'runtime_pin') return `고정 버전 · ${event.reason ?? '-'}`;
+  if (event.event_type === 'backup') return `백업 · ${event.reason ?? '-'}`;
   return `로그인 · ${event.attempted_username ?? '-'}`;
 }
 

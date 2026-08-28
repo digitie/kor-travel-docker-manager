@@ -158,13 +158,31 @@ def pinned_rebuild_guard_state(*, env_path: Path | None = None) -> dict[str, Any
     return _verdict("no_journal", "미종결 재구축 기록이 없습니다.")
 
 
-def _verdict(verdict: str, detail: str) -> dict[str, Any]:
+def _journal_check_command(env_path: Path | None = None) -> str:
+    """운영자가 SSH에서 실행할 확인 명령.
+
+    화면에 `<COMPOSE_PROJECT_NAME>` 같은 placeholder를 넣으면 안 된다. 붙여넣으면
+    존재하지 않는 경로를 조회해 `No such file or directory`가 나오고, 운영자는 그것을
+    **"journal이 없다 = 안전"**으로 읽는다 — 살아 있는 재구축의 재개를 영구 차단하는
+    선택을 그 오해 위에서 하게 된다. 경로를 아는 쪽이 명령을 만든다.
+    """
+
+    try:
+        text = _env_path(env_path).read_bytes().decode("utf-8")
+        state_root = pinned_runtime_state_root(_parse_dotenv(text))
+    except (OSError, UnicodeDecodeError, DeploymentContractError):
+        return "sudo -n backend/.venv/bin/ktdctl pin verify   # 경로를 해석하지 못했습니다"
+    return f"sudo ls -l {state_root}/{_JOURNAL_GLOB}"
+
+
+def _verdict(verdict: str, detail: str, *, env_path: Path | None = None) -> dict[str, Any]:
     blocking = verdict == "unfinished_journal"
     return {
         "verdict": verdict,
         "detail": detail,
         "requires_acknowledgement": verdict in {"unverifiable", "unknown"},
         "blocking": blocking,
+        "check_command": _journal_check_command(env_path),
     }
 
 
@@ -185,7 +203,14 @@ def _assert_parent(parent: Path) -> None:
         )
 
 
-def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
+def _identity(metadata: os.stat_result) -> tuple[int, ...]:
+    """파일을 식별하는 튜플.
+
+    크기와 ctime을 포함해야 **제자리 수정**을 감지한다. inode 기반 필드만 보면
+    `vim`(backupcopy=yes)이나 `>` 리다이렉트처럼 같은 inode를 유지하며 내용을 바꾸는
+    편집이 전부 통과하고, 우리 `os.replace`가 그 편집을 조용히 덮어쓴다.
+    """
+
     return (
         metadata.st_dev,
         metadata.st_ino,
@@ -193,10 +218,12 @@ def _identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
         metadata.st_uid,
         metadata.st_gid,
         metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_ctime_ns,
     )
 
 
-def _read_env(path: Path) -> tuple[str, tuple[int, int, int, int, int, int]]:
+def _read_env(path: Path) -> tuple[str, tuple[int, ...]]:
     """``.env``를 무결성 검사와 함께 읽고, 쓰기 전 대조할 identity를 함께 돌려준다."""
 
     _assert_parent(path.parent)

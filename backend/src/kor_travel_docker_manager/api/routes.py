@@ -154,9 +154,12 @@ def get_targets():
 
 @router.get("/backups")
 def get_backups(role: str | None = Query(default=None)):
-    """Read-only standalone DB backup listing (issue #177). `create`/`gc` stay
-    CLI-only (`ktdctl db-backup ...`) and are not exposed here. Restore isn't
-    implemented anywhere yet (CLI or API) — this route only lists what exists."""
+    """The durable record of what backups actually exist on disk.
+
+    Creation now has its own route (`POST /backups/{role}`); `gc` and restore stay
+    CLI-only. Restore itself is still unimplemented — `ktdctl db-backup restore-plan`
+    only *judges* whether a backup could be restored. This listing is the authority:
+    job records are process-local and vanish on restart, manifests do not."""
     roles = BACKUP_ROLES if role is None else (role,)
     if role is not None and role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
@@ -345,7 +348,12 @@ def _runtime_pin_summary(
                 "현재 고정된 pinset은 재시도가 금지된 candidate입니다. "
                 "새 revision으로 회전해야 재구축할 수 있습니다."
             ),
-            "next_action": "ktdctl pin rotate --role <map|pinvi> --revision <40-hex> --confirm",
+            # terminal pinset에서는 registry가 단일 role 회전을 거부한다. 그 상태에서만
+            # 뜨는 배너이므로 `pin rotate`를 주면 **반드시 실패하는 명령**을 쥐여 주는 셈이다.
+            "next_action": (
+                "ktdctl pin rotate-pair --map-revision <40-hex> "
+                '--pinvi-revision <40-hex> --reason "..." --confirm'
+            ),
         }
     return {
         "state": "ok",
@@ -368,7 +376,7 @@ def get_source_status(refresh: bool = Query(default=False)):
 
 
 @router.get("/pinned-rebuild/preflight")
-def get_pinned_rebuild_preflight():
+def get_pinned_rebuild_preflight(refresh: bool = Query(default=False)):
     """Read-only "can a pinned rebuild start right now?" verdict (KUM-M14 / design Q5).
 
     Deliberately **not** a rebuild trigger. `rebuild-pinned` requires root and destroys
@@ -377,7 +385,7 @@ def get_pinned_rebuild_preflight():
     command the payload carries.
 
     Observation only — no mutation, so no audit row."""
-    return read_pinned_rebuild_preflight()
+    return read_pinned_rebuild_preflight(force_refresh=refresh)
 
 
 @router.get("/system/disk-usage")
@@ -404,7 +412,12 @@ def get_deployment_readiness(refresh: bool = Query(default=False)):
     return read_deployment_readiness(force_refresh=refresh)
 
 
-APPLY_PENDING_COMMAND = "sudo -n backend/.venv/bin/ktdctl pin apply-pending --confirm"
+# `--expect-revision`(또는 `--any-revision`)이 없으면 CLI가 거부한다. 안내 문자열이
+# 그 요구를 반영하지 않으면 운영자는 붙여넣고 exit 2를 받는다.
+APPLY_PENDING_COMMAND = (
+    "sudo -n backend/.venv/bin/ktdctl pin apply-pending "
+    "--expect-revision <40-hex> --confirm"
+)
 
 
 def _reject_runtime_pin_request(

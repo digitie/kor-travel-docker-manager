@@ -1021,7 +1021,12 @@ def _apply_runtime_pin_rotation(
 
     rotated_at = utc_timestamp()
     blocked = list(current.blocked_pinsets)
-    if block_previous and not current.is_blocked_pinset(current.pinset_sha256):
+    # phase 한정 항목은 terminal이 아니다. 여기서 phase 무관 술어를 쓰면 그런
+    # pinset에 --block-previous를 걸어도 아무것도 등재되지 않고 exit 0으로 성공을
+    # 보고한다 — 이후 모든 시작 게이트가 그 pinset을 실행 가능하다고 판정한다.
+    if block_previous and not current.is_unconditionally_blocked_pinset(
+        current.pinset_sha256
+    ):
         blocked.append(
             BlockedPinset(
                 pinset_sha256=current.pinset_sha256,

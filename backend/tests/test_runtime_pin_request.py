@@ -19,6 +19,7 @@ from kor_travel_docker_manager.services.runtime_pin_request import (
     RuntimePinRequest,
     RuntimePinRequestError,
     clear_runtime_pin_request,
+    discard_unreadable_runtime_pin_request,
     prospective_pinset_sha256,
     read_runtime_pin_request,
     runtime_pin_request_path,
@@ -244,3 +245,44 @@ def test_the_http_layer_never_mutates_the_pin_registry() -> None:
                 referenced.add(node.attr)
         offending = sorted(referenced & mutators)
         assert not offending, f"{module_path.name} references {offending}"
+
+
+def test_force_refuses_a_request_that_is_merely_hardlinked(tmp_path: Path) -> None:
+    """무결성 실패를 전부 "손상됨"으로 뭉뚱그리면 멀쩡한 요청이 지워진다.
+
+    이전 구현은 오류 **문자열에 "readable"이 있는가**로 판정해서, hardlink처럼 내용이
+    멀쩡한 경우까지 잔재로 보고 삭제했다.
+    """
+
+    from kor_travel_docker_manager.services.runtime_pin_request import (
+        RuntimePinRequestReadableError,
+    )
+
+    written = write_runtime_pin_request(_request())
+    (written.parent / "link.json").hardlink_to(written)
+    try:
+        with pytest.raises(RuntimePinRequestError):
+            discard_unreadable_runtime_pin_request()
+        assert written.exists(), "hardlink는 손상이 아니다 — 지우면 안 된다"
+    finally:
+        (written.parent / "link.json").unlink()
+
+    # 링크를 풀면 다시 읽히므로 id 경로로 취소된다.
+    with pytest.raises(RuntimePinRequestReadableError):
+        discard_unreadable_runtime_pin_request()
+
+
+def test_force_clears_a_dangling_symlink_that_would_wedge_the_path(
+    tmp_path: Path,
+) -> None:
+    """`exists()`는 symlink를 따라간다 — 끊어진 링크는 "없다"로 읽히는데 write는 계속
+    실패한다. 그러면 회전 요청 경로가 영구히 잠기고 --force가 그것을 못 푼다."""
+
+    target = runtime_pin_request_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.symlink_to(target.parent / "nowhere.json")
+
+    assert discard_unreadable_runtime_pin_request() == target
+    assert not target.is_symlink()
+    # 이제 다시 요청을 받을 수 있다.
+    write_runtime_pin_request(_request())
