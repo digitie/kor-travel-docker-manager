@@ -19,6 +19,14 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
 
 ## 개정 이력
 
+- **v4 (2026-08-29)**: M05 control-plane terminal 재발 방지 구현을 반영했다. runtime
+  pin mutation(`init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`,
+  `rollback`, `block`)은 모두 `ktdctl`의 host-global mutation lock으로 직렬화하며,
+  실행 중 one-shot과 병렬인 외부 write는 거절한다. 검증된 launcher inherited-lock의
+  terminal fallback만 예외다. 또한 Map·PinVi·Manager의 문서 전용 병합은 candidate
+  source tuple·provenance·pinset을 다시 만들지 않고, 코드·Compose·계약·빌드 입력 변경만
+  새 CI·전문 리뷰·one-shot 후보를 만든다.
+
 - **v1**: 보안/안정성 우선의 초판(ktdctl 인벤토리 + 7개 운영 영역 격차 분석).
 - **v2**: 오너 방향 재지정("보안·안정성보다는 **비전문가의 관리 편의성·직관성** 중심")
   에 따라 전 항목 재평가. 5개 분석 축(웹 UI 재점검 / pin 하드코딩의 설정파일화 / 기능
