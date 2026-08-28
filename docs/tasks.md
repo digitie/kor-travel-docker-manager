@@ -184,8 +184,11 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   `ktdctl pin apply-pending --confirm`이 한다. 요청 저장소는 registry와 다른 트리의
   backend-writable 파일이며 어떤 pin 로드 경로도 읽지 않는다(회귀로 결박). 계약은
   `docs/runtime-pin-registry.md` §7-1.
-- [ ] 1부 잔여: KUM-M6(typed 진단 소비 이관), KUM-M7(readiness 프론트 섹션 — 백엔드와
-  회귀는 완료).
+- [x] KUM-M7 완료(2026-08-28): `GET /api/v1/deployment-readiness` + `SourceStatusPanel`의
+  "재구축 사전 점검" 섹션. 설계 문서는 pin 패널을 선행으로 적었으나 pin 패널이 M5로
+  mutation 패널이 되어 관측 행은 source-status 패널에 붙였다. 검사하지 않기로 결정한
+  항목(`unavailable_checks`)도 이유와 함께 노출한다.
+- [ ] 1부 잔여: KUM-M6(typed 진단 소비 이관).
 - [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
   항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).
 

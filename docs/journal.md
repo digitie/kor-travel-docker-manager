@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-08-28 — KUM-M7 마무리: 재구축 사전 점검을 화면에 노출
+
+백엔드(`GET /api/v1/deployment-readiness`)와 회귀는 앞선 라운드에서 끝나 있었고 화면만
+비어 있었다. `SourceStatusPanel`에 "재구축 사전 점검" 섹션을 붙여 마감했다.
+
+설계 문서(P10-4)는 선행으로 pin 패널을 적었지만, pin 패널은 M5로 mutation 패널이 됐다.
+관측 전용 행을 거기 섞으면 그 패널이 무엇을 하는 곳인지 흐려지고, source-status 패널에는
+이미 같은 모양의 `Row`/`VerdictIcon`이 있다. 그래서 배치를 옮겼다.
+
+- **쿼리는 분리**했다. readiness가 실패해도 설치 기록·실행 이미지·계약 행은 그대로
+  보여야 한다. 새로고침 버튼은 두 쿼리를 함께 다시 부른다.
+- **`warn`/`unknown`을 차단으로 승격하지 않는다.** `missing`만 빨간 "지금 재구축하면
+  실패합니다"이고 나머지는 "확인이 필요합니다"다. 전부 빨갛게 칠하면 진짜 차단 항목이
+  묻힌다.
+- **검사하지 않기로 결정한 항목(`unavailable_checks`)을 이유까지 그대로 표시한다.**
+  오프라인 wheelhouse가 그것이다 — 숨기면 남은 항목이 전부인 것처럼 읽혀 잘못된 안심을
+  준다.
+
+화면 규약은 `docs/dashboard-ui.md` §6·§7에 반영했고, 관측 API 3종(readiness,
+source-status, disk-usage)을 `docs/docker-management.md` 5.2 표에 등재했다.
+
+---
+
 ## 2026-08-28 — KUM-M5: UI에서 pin 회전을 '요청'하고 root가 적용하는 2-step
 
 대시보드에서 Map·PinVi pinned revision을 바꾸려면 지금까지는 SSH로 나가는 수밖에 없었다.

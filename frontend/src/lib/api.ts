@@ -219,6 +219,47 @@ export type SourceStatusResponse = {
   summary: HumanVerdict;
 };
 
+/** `GET /api/v1/deployment-readiness`의 항목 하나.
+ *
+ * `state`는 재구축을 기준으로 읽는다: `missing`은 지금 실행하면 확실히 실패하는
+ * 결손, `warn`은 막지는 않지만 사람이 봐야 하는 것, `unknown`은 판단 근거가 없다는
+ * 뜻이다(추측한 값을 보여 주지 않는다). */
+export type ReadinessCheck = {
+  id: string;
+  state: 'ok' | 'warn' | 'unknown' | 'missing';
+  label_ko: string;
+  detail: string;
+  source: 'project_root' | 'sibling_checkout' | 'docker_cli' | 'none';
+  evidence: Record<string, unknown>;
+};
+
+/** 검사하지 않기로 **결정한** 항목. 화면에서 숨기면 "전부 확인됨"으로 읽히므로
+ * 이유와 함께 그대로 보여 준다. */
+export type UnavailableReadinessCheck = {
+  id: string;
+  label_ko: string;
+  reason: string;
+};
+
+/** `GET /api/v1/deployment-readiness` 응답. 관측 전용이며 무엇도 pull하지 않는다.
+ * 서비스는 예외를 던지지 않으므로 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. */
+export type DeploymentReadinessResponse = {
+  schema: string;
+  generated_at: string;
+  cached: boolean;
+  cache_age_seconds: number;
+  stale?: boolean;
+  summary: {
+    state: 'ok' | 'blocked' | 'unverified';
+    blocking_count: number;
+    warn_count: number;
+    unknown_count: number;
+    text: string;
+  };
+  checks: ReadinessCheck[];
+  unavailable_checks: UnavailableReadinessCheck[];
+};
+
 export type DiskUsageRow = {
   type: string;
   label_ko: string;

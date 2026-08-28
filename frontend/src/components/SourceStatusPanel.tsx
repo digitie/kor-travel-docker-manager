@@ -4,7 +4,9 @@ import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, HelpCircle, RefreshCw, X } from 'lucide-react';
 import {
+  DeploymentReadinessResponse,
   HumanVerdict,
+  ReadinessCheck,
   RuntimePinsResponse,
   SourceStatusResponse,
   SourceStatusRow,
@@ -22,6 +24,24 @@ function VerdictIcon({ level }: { level: HumanVerdict['level'] }) {
   }
   return <CheckCircle2 className="w-4 h-4 text-ok shrink-0 mt-0.5" />;
 }
+
+/** 사전 점검 항목의 `state`를 이 패널의 기존 3단계 어휘로 옮긴다.
+ *
+ * `warn`을 `action_required`로 올리지 않는다 — 막지 않는 항목을 빨갛게 칠하면 진짜
+ * 차단 항목이 묻힌다. */
+const READINESS_LEVEL: Record<ReadinessCheck['state'], HumanVerdict['level']> = {
+  ok: 'ok',
+  warn: 'unverified',
+  unknown: 'unverified',
+  missing: 'action_required',
+};
+
+const READINESS_STATE_TEXT: Record<ReadinessCheck['state'], string> = {
+  ok: '문제 없습니다',
+  warn: '확인이 필요합니다',
+  unknown: '확인할 수 없습니다',
+  missing: '지금 재구축하면 실패합니다',
+};
 
 function Row({
   label,
@@ -68,6 +88,19 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
     retry: false,
   });
 
+  // 사전 점검은 별도 엔드포인트다. 실패해도 이 패널의 나머지는 그대로 보여야 하므로
+  // 같은 쿼리에 묶지 않는다.
+  const {
+    data: readiness,
+    isFetching: readinessFetching,
+    error: readinessError,
+    refetch: refetchReadiness,
+  } = useQuery<DeploymentReadinessResponse>({
+    queryKey: ['deployment-readiness'],
+    queryFn: () => apiJson<DeploymentReadinessResponse>('/api/v1/deployment-readiness'),
+    retry: false,
+  });
+
   useEffect(() => {
     dialogRef.current?.focus();
     function onKeyDown(event: KeyboardEvent) {
@@ -98,8 +131,8 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
             지금 뭐가 돌고 있나 (읽기 전용)
           </h2>
           <p className="text-xs text-secondary mt-1">
-            설치 기록, 작업 사본, 실행 중 이미지, 계약 일치 여부를 관측만 합니다. 아무것도
-            바꾸지 않습니다.
+            재구축 사전 점검, 설치 기록, 작업 사본, 실행 중 이미지, 계약 일치 여부를
+            관측만 합니다. 아무것도 바꾸지 않습니다.
           </p>
         </div>
         <button className="ops-icon-button" onClick={onClose} type="button">
@@ -114,14 +147,96 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           </p>
           <button
             className="ops-button"
-            disabled={isFetching}
-            onClick={() => void refetch()}
+            disabled={isFetching || readinessFetching}
+            onClick={() => {
+              void refetch();
+              void refetchReadiness();
+            }}
             type="button"
           >
-            <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
+            <RefreshCw
+              className={`w-4 h-4 ${isFetching || readinessFetching ? 'animate-spin' : ''}`}
+            />
             새로고침
           </button>
         </div>
+
+        <section>
+          <h3 className="text-sm font-semibold text-strong mb-1">재구축 사전 점검</h3>
+          <p className="text-xs text-secondary mb-2">
+            지금 재구축을 실행하면 실패할 만한 결손이 있는지만 봅니다. 통과해도 성공을
+            보장하지는 않습니다.
+          </p>
+          {readinessError ? (
+            <p className="text-sm text-danger">
+              사전 점검 결과를 불러오지 못했습니다.{' '}
+              {readinessError instanceof Error
+                ? readinessError.message
+                : String(readinessError)}
+            </p>
+          ) : readiness ? (
+            <>
+              <div
+                className={`rounded-card border p-3 ${
+                  readiness.summary.state === 'blocked' ? 'border-danger' : 'border-line'
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <VerdictIcon
+                    level={
+                      readiness.summary.state === 'blocked'
+                        ? 'action_required'
+                        : readiness.summary.state === 'unverified'
+                          ? 'unverified'
+                          : 'ok'
+                    }
+                  />
+                  <p className="text-sm text-strong">{readiness.summary.text}</p>
+                </div>
+              </div>
+              <ul className="space-y-2 mt-2">
+                {readiness.checks.map((check) => (
+                  <Row
+                    key={check.id}
+                    label={check.label_ko}
+                    row={{
+                      state: check.state,
+                      human: {
+                        level: READINESS_LEVEL[check.state],
+                        text: READINESS_STATE_TEXT[check.state],
+                        next_action: '',
+                      },
+                    }}
+                    extra={<p className="text-xs text-secondary mt-1">{check.detail}</p>}
+                  />
+                ))}
+              </ul>
+              {readiness.unavailable_checks.length > 0 ? (
+                <ul className="space-y-2 mt-2">
+                  {readiness.unavailable_checks.map((entry) => (
+                    <li className="rounded-card border border-line p-3" key={entry.id}>
+                      <div className="flex items-start gap-2">
+                        <HelpCircle className="w-4 h-4 text-secondary shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm text-strong font-semibold">
+                            {entry.label_ko}
+                          </p>
+                          {/* 검사하지 않기로 결정한 항목을 숨기면 "전부 확인됨"으로
+                              읽힌다. 이유까지 그대로 보여 준다. */}
+                          <p className="text-xs text-secondary mt-0.5">
+                            검사하지 않습니다 — {entry.reason}
+                          </p>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </>
+          ) : (
+            <p className="text-sm text-secondary">사전 점검을 수행하는 중입니다.</p>
+          )}
+        </section>
 
         {isLoading ? (
           <p className="text-sm text-secondary">배포 상태를 확인하는 중입니다.</p>

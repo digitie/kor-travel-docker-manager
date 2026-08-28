@@ -145,7 +145,13 @@ pin 회전처럼 **backend가 물리적으로 실행할 수 없는** 조작은 C
 ## 6. 패널 추가 규약
 
 기존 패널: `AdminSettingsPanel`, `BackupHistoryPanel`, `RuntimePinPanel`,
-`ContainerDetailModal`.
+`SourceStatusPanel`, `ContainerDetailModal`.
+
+**관측 전용 행은 새 패널을 만들지 말고 `SourceStatusPanel`에 붙인다.** 재구축 사전
+점검(`/api/v1/deployment-readiness`)이 그 예다 — 설계 문서는 pin 패널을 선행으로
+적었지만, pin 패널은 M5 이후 mutation 패널이 됐고 관측 행은 이미 여기에 `Row` /
+`VerdictIcon` 기계가 있다. 단, **쿼리는 분리한다**: 한 엔드포인트의 실패가 나머지 행을
+같이 가리면 안 된다.
 
 새 패널을 만들 때 `RuntimePinPanel.tsx`를 원형으로 삼는다. 지켜야 할 것:
 
@@ -167,6 +173,15 @@ pin 회전처럼 **backend가 물리적으로 실행할 수 없는** 조작은 C
 반환하면 화면도 그대로 "확인 필요"로 표시하고, 확인 방법(SSH 명령)을 함께 준다.
 `RuntimePinPanel`이 이 패턴의 원형이다 — 자세한 상태 의미는
 [`runtime-pin-registry.md`](runtime-pin-registry.md) 7절.
+
+**검사하지 않기로 결정한 항목도 화면에 남긴다.** `GET /api/v1/deployment-readiness`의
+`unavailable_checks`가 그것이고, `SourceStatusPanel`의 "재구축 사전 점검"이 이유까지
+그대로 표시한다. 숨기면 남은 항목이 전부인 것처럼 읽혀 "전부 확인됨"이라는 잘못된
+안심을 준다.
+
+**경고를 차단으로 승격하지 않는다.** readiness의 `warn`/`unknown`은 "확인 필요"로,
+`missing`만 빨간 "지금 재구축하면 실패합니다"로 표시한다(`READINESS_LEVEL` 매핑).
+전부 빨갛게 칠하면 진짜 차단 항목이 묻힌다.
 
 ---
 

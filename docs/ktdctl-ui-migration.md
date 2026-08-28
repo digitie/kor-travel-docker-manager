@@ -869,7 +869,7 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 | KUM-M4 | 조회 API 2종: `GET /runtime-pins`(lifecycle·history·generation 일치 여부·Manager provenance 동봉), `GET /pinned-runtime/generation`(manifest/journal 원본+envelope summary+terminal 분류+receipt/fence 상태+버전 명시) + 배포 정합성 패널 UI | P2, §1.3 P10-2 | KUM-M3 |
 | KUM-M5 | UI 2-step pin rotate: 회전 요청 폼→audit row 기록, `pin apply-pending --confirm` CLI, 대기 중 요청 표시 (**완료 2026-08-28** — 요청 저장소는 registry와 다른 트리의 backend-writable 파일이며 어떤 로드 경로도 읽지 않는다) | §1.2 (c), Q4 | KUM-M1, KUM-M4 |
 | KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
-| KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 | §1.3 P10-4, 진단 5 | KUM-M4(패널) |
+| KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 (**완료 2026-08-28** — wheelhouse는 검사 불가로 판정해 이유와 함께 `unavailable_checks`로 노출. 화면은 pin 패널이 아니라 `SourceStatusPanel`에 붙였다: pin 패널이 M5로 mutation 패널이 됐기 때문) | §1.3 P10-4, 진단 5 | KUM-M4(패널) |
 | KUM-M8 | `source-status` + compare 링크 + installer provenance 리더(~10줄) + Map entrypoint/Dockerfile 계약 drift 행 + 환경 완결성 카드 | P3, P4 | — |
 | KUM-M9 | `services/job_runner.py` + backup create 202 비동기 + shared group/setgid + gc 결함 수선(lock 3줄 등) | P5, P9-2, Q2 | — |
 | KUM-M10 | 관리자 비밀번호 변경 폼: `POST /admin/password`(단일 키 allowlist, atomic) + **미종결 rebuild journal 가드(거부 또는 경고+typed confirm)** + audit | P6, Q3 | — |
