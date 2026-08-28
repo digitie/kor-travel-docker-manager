@@ -26,8 +26,10 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -60,6 +62,8 @@ _DATABASE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _SCHEMA_REVISION = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
 _FILENAME = re.compile(r"^[a-z][a-z0-9_]{0,32}-[0-9]{1,20}\.dump$")
 _ALEMBIC_SCHEMA_CANDIDATES = ("public", "app")
+_logger = logging.getLogger(__name__)
+BACKUP_SHARED_GROUP_ENV = "KTDM_BACKUP_SHARED_GROUP"
 
 # (container_env, container_default, database_name). container_default는
 # config/docker-targets.yml의 4-instance 계약과 같은 이름이다. docker-compose.yml이
@@ -144,6 +148,94 @@ class GcOutcome:
         }
 
 
+@dataclass(frozen=True)
+class _ArtifactModePolicy:
+    """backup 디렉터리·파일의 소유 모드 정책.
+
+    UI(backend 프로세스)와 cron(별도 계정)이 같은 디렉터리를 공유하면 한쪽이 만든
+    dump를 다른 쪽이 읽지도 지우지도 못한다. 특히 unlink는 파일이 아니라 **디렉터리**
+    쓰기 권한이라, 공유하려면 setgid 그룹 디렉터리가 필요하다. 공유 그룹을 선언하지
+    않은 설치본은 기존 `0700`/`0600` 그대로다 — 아무도 요구하지 않은 권한 완화를
+    기본값으로 만들지 않는다.
+    """
+
+    shared_gid: int | None
+    directory_mode: int
+    file_mode: int
+
+
+def _resolve_shared_gid(raw: str) -> int:
+    if raw.isdigit():
+        return int(raw)
+    try:
+        import grp
+
+        return grp.getgrnam(raw).gr_gid
+    except (ImportError, KeyError) as exc:
+        raise StandaloneBackupError(
+            f"{BACKUP_SHARED_GROUP_ENV}={raw!r} is not a group on this host — create it and "
+            f"add both the backend service user and the cron user to it "
+            f"(groupadd {raw}; usermod -aG {raw} <backend-user>; usermod -aG {raw} "
+            f"<cron-user>), then restart the backend so the new supplementary group takes "
+            f"effect"
+        ) from exc
+
+
+def _artifact_mode_policy() -> _ArtifactModePolicy:
+    raw = os.environ.get(BACKUP_SHARED_GROUP_ENV, "").strip()
+    if not raw:
+        return _ArtifactModePolicy(shared_gid=None, directory_mode=0o700, file_mode=0o600)
+    return _ArtifactModePolicy(
+        shared_gid=_resolve_shared_gid(raw), directory_mode=0o2770, file_mode=0o640
+    )
+
+
+def _prepare_backup_root(root: Path, policy: _ArtifactModePolicy) -> None:
+    """공유 그룹 모드에서는 디렉터리 mode를 **덮어쓰지 않는다.**
+
+    운영자가 건 setgid나 ACL을 코드가 추측해 재설정하면 조용히 되돌아간다. 대신 전제가
+    깨졌으면 정확한 복구 명령과 함께 fail-close한다. 새 role 하위 디렉터리는 setgid
+    부모에서 mkdir하면 그룹과 setgid를 상속하므로 전제는 루트 한 곳에만 걸면 된다.
+    """
+
+    root.mkdir(parents=True, exist_ok=True)
+    if policy.shared_gid is None:
+        os.chmod(root, policy.directory_mode)
+        return
+    metadata = root.lstat()
+    if (
+        metadata.st_gid != policy.shared_gid
+        or not (metadata.st_mode & stat.S_ISGID)
+        or (stat.S_IMODE(metadata.st_mode) & 0o070) != 0o070
+    ):
+        raise StandaloneBackupError(
+            f"backup directory {root} is not a shared setgid directory "
+            f"(gid={metadata.st_gid}, mode={stat.S_IMODE(metadata.st_mode):04o}); "
+            f"run: chgrp -R <group> {root.parent} && chmod -R 2770 {root.parent}"
+        )
+
+
+def _assert_shared_group_effective(
+    path: Path, policy: _ArtifactModePolicy, *, role: BackupRole
+) -> None:
+    """읽을 수 없는 dump를 남기느니 지운다.
+
+    목록에는 보이는데 cron이 열지 못하는 백업은 "백업이 있다"는 거짓 안전감만 만든다.
+    """
+
+    if policy.shared_gid is None:
+        return
+    actual_gid = path.stat().st_gid
+    if actual_gid == policy.shared_gid:
+        return
+    path.unlink(missing_ok=True)
+    raise StandaloneBackupError(
+        f"{role} backup landed in group {actual_gid} instead of shared group "
+        f"{policy.shared_gid} — the setgid bit on {path.parent} is not effective; "
+        f"the unreadable dump was removed rather than left behind"
+    )
+
+
 def create_standalone_backup(
     role: BackupRole,
     *,
@@ -164,9 +256,9 @@ def create_standalone_backup(
     port = _discover_port(container_name)
     admin_name = _discover_admin_role(container_name)
 
+    policy = _artifact_mode_policy()
     root = _resolve_backup_root(role, backup_root)
-    root.mkdir(parents=True, exist_ok=True)
-    os.chmod(root, 0o700)
+    _prepare_backup_root(root, policy)
 
     with _role_lock(root):
         created_at_unix = int(time.time())
@@ -209,7 +301,7 @@ def create_standalone_backup(
             )
             if not copy_path.is_file():
                 raise StandaloneBackupError(f"{role} backup copy-out produced no file")
-            os.chmod(copy_path, 0o600)
+            os.chmod(copy_path, policy.file_mode)
             os.replace(copy_path, dest_path)
         finally:
             # pg_dump 실패/timeout이어도 시도한 만큼은 지운다 — 시도가 계속 서버
@@ -224,6 +316,7 @@ def create_standalone_backup(
             )
 
         return _finish_standalone_backup(
+            policy=policy,
             role=role,
             container_name=container_name,
             database_name=database_name,
@@ -240,6 +333,7 @@ def create_standalone_backup(
 
 def _finish_standalone_backup(
     *,
+    policy: _ArtifactModePolicy,
     role: BackupRole,
     container_name: str,
     database_name: str,
@@ -254,7 +348,8 @@ def _finish_standalone_backup(
 ) -> BackupManifest:
     if not dest_path.is_file():
         raise StandaloneBackupError(f"{role} backup copy-out produced no file")
-    os.chmod(dest_path, 0o600)
+    os.chmod(dest_path, policy.file_mode)
+    _assert_shared_group_effective(dest_path, policy, role=role)
     byte_size = dest_path.stat().st_size
     if byte_size == 0:
         dest_path.unlink(missing_ok=True)
@@ -264,7 +359,7 @@ def _finish_standalone_backup(
     # `sha256sum -c`가 그대로 먹는 형태: "<hash>  <filename>"
     sha256_path = root / f"{filename}.sha256"
     _atomic_write_bytes(sha256_path, f"{sha256}  {filename}\n".encode("ascii"))
-    os.chmod(sha256_path, 0o600)
+    os.chmod(sha256_path, policy.file_mode)
 
     manifest = BackupManifest(
         role=role,
@@ -280,7 +375,7 @@ def _finish_standalone_backup(
     )
     manifest_path = _manifest_path(root, filename)
     _atomic_write_json(manifest_path, manifest.to_json())
-    os.chmod(manifest_path, 0o600)
+    os.chmod(manifest_path, policy.file_mode)
     return manifest
 
 
