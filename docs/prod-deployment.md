@@ -312,7 +312,8 @@ systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
 ```
 
 실패하면 release는 유지한 채 `host lease boot provisioning requires attention`을 stderr로
-보고한다.
+보고한다. **installer의 종료 코드는 release 설치 결과만 나타낸다** — lease provisioning
+실패는 종료 코드에 반영되지 않으므로, 자동화는 stderr 또는 아래 확인 명령으로 판단한다.
 
 installer는 **시작 시점에도** 이미 설치된 유닛이 있으면 한 번 적용한다. 설치 절차의 첫
 단계가 이 lease를 잡는 것이라, 선점된 호스트에서는 구제책(맨 끝의 유닛 설치)이 자신이
@@ -356,6 +357,18 @@ drwxrwxrwt 5 root root ...  ..
 **trusted installer를 쓰지 않는 호스트**(2절의 rsync 배포본, rehearsal 등)에는 `deploy/`
 트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접
 실행한다. 유닛 자체는 release와 무관하므로 재설치할 필요가 없다.
+
+**이 유닛은 `/opt/kor-travel-docker-manager` 밖에 남는 유일한 설치 산출물이다.** release
+rollback은 이것을 되돌리지 않는다 — 이전 release로 내려가도 `/usr/lib/tmpfiles.d`의 유닛은
+그대로 남는다. 내용이 경로·mode·소유자 한 줄뿐이라 실무상 문제가 되지 않지만, 완전히
+제거하려면 다음과 같이 한다.
+
+```bash
+sudo rm -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+sudo rm -rf /run/lock/kor-travel-docker-manager   # 진행 중인 mutation이 없을 때만
+```
+
+제거하면 lease 디렉터리는 다시 런타임에 생성되고 부팅마다 선점 창이 열린다.
 
 > **백엔드는 계속 root로 돈다.** 이 절은 lease 디렉터리의 생성 시점만 다룬다. 전용 서비스
 > 계정 전환은 `docs/tasks.md`의 `NONROOT-BACKEND`로 분리했다 — ADR-41의 "기각한 설계"

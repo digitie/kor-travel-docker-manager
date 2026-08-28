@@ -626,8 +626,23 @@ if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
   # mode뿐이고, 이미 열려 있는 flock fd는 소유자·mode 변경에 영향받지 않으므로 진행 중인
   # mutation을 방해하지 않는다. 그 범위를 넘는 작업을 여기에 추가해서는 안 된다.
   # 실패는 무시한다 — 여기서 못 고쳐도 바로 아래 preflight가 fail-close로 잡는다.
-  if [[ -f "${LEASE_TMPFILES_UNIT}" ]] && [[ -x /usr/bin/systemd-tmpfiles ]]; then
-    /usr/bin/systemd-tmpfiles --create "${LEASE_TMPFILES_UNIT}" || true
+  # 실행 대상은 root가 boot마다 돌리는 general primitive다(`r`/`R` 삭제, `z`/`Z` 재귀
+  # chown/chmod, `w`/`f` 쓰기, `C`/`L` 복사·링크). 쓰려면 이미 root여야 하므로 상승
+  # 경로는 아니지만, 이 스크립트가 root로 소비하는 다른 모든 입력에 적용하는 검사를
+  # 유일하게 여기만 건너뛸 이유는 없다 — `install_host_lease_tmpfiles`가 source에 거는
+  # 세 가지(symlink 아님·root 소유·group/other 쓰기 없음)를 그대로 건다.
+  if [[ ! -L "${LEASE_TMPFILES_UNIT}" && -f "${LEASE_TMPFILES_UNIT}" ]] \
+    && [[ -x /usr/bin/systemd-tmpfiles ]]; then
+    unit_uid="$(/usr/bin/stat -c '%u' "${LEASE_TMPFILES_UNIT}" 2>/dev/null || true)"
+    unit_mode="$(/usr/bin/stat -c '%a' "${LEASE_TMPFILES_UNIT}" 2>/dev/null || true)"
+    if [[ "${unit_uid}" =~ ^[0-9]+$ && "${unit_mode}" =~ ^[0-7]{3,4}$ ]] \
+      && [[ "${unit_uid}" == "0" && $((8#${unit_mode} & 022)) == "0" ]]; then
+      # 실패는 무시한다 — 여기서 못 고쳐도 바로 아래 preflight가 fail-close로 잡는다.
+      /usr/bin/systemd-tmpfiles --create "${LEASE_TMPFILES_UNIT}" || true
+    else
+      echo "host lease tmpfiles unit is writable or not root-owned; not applying: ${LEASE_TMPFILES_UNIT}" >&2
+    fi
+    unset unit_uid unit_mode
   fi
   exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
@@ -678,7 +693,21 @@ if (
     or stat.S_IMODE(lock_stat.st_mode) != 0o600
 ):
     os.close(fd)
-    raise SystemExit("production global mutation lock is unsafe")
+    # 위 디렉터리 진단과 같은 수준으로 보고한다. 흔한 선점은 "디렉터리를 만든다"가
+    # 아니라 "디렉터리를 만들고 lock 파일까지 심는다"이고(`touch` 한 번 더), 그 경우
+    # 앞의 자가복구가 디렉터리 소유자·mode를 고쳐 버리므로 **여기로 떨어진다**.
+    # `d` 타입은 내용을 지우지 않으니 심어 둔 파일은 남는다. 여기서 실측값을 주지
+    # 않으면 자가복구가 오히려 진단을 지우는 셈이 된다. 게다가 복구된 디렉터리는
+    # `0700 root`라 운영자의 비-root `ls -la`가 거부되므로 경로만으로는 부족하다.
+    raise SystemExit(
+        "production global mutation lock is unsafe: "
+        f"{lock_path} uid={lock_stat.st_uid} "
+        f"mode={stat.S_IMODE(lock_stat.st_mode):04o} "
+        f"nlink={lock_stat.st_nlink} "
+        f"type={'file' if stat.S_ISREG(lock_stat.st_mode) else 'not-a-regular-file'}"
+        f" — inspect with `sudo ls -la {lock_dir}`, then remove it as root and rerun"
+        " (it is tmpfs; a reboot also clears it)"
+    )
 try:
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError as exc:
