@@ -1648,6 +1648,39 @@ def test_post_runtime_pin_request_refuses_a_no_op(mock_read, isolated_pin_reques
 
 
 @patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_a_single_role_rotation_on_a_terminal_pinset(
+    mock_read, isolated_pin_requests
+):
+    """terminal 상태에서는 registry가 단일 role 회전을 거부한다 — 결코 적용될 수 없는
+    요청을 화면에 대기 중으로 남기면 그 자체가 거짓말이다."""
+
+    login_client()
+    mock_read.return_value = _published_pins(
+        blocked_pinsets=[
+            {
+                "pinset_sha256": "a" * 64,
+                "map_revision": MAP_REVISION,
+                "pinvi_revision": PINVI_REVISION,
+                "reason": "terminal",
+                "blocked_at": "2026-08-28T00:00:00Z",
+            }
+        ]
+    )
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "RUNTIME_PIN_TERMINAL_REQUIRES_PAIR"
+    # 실제 해소 명령을 함께 준다.
+    assert "rotate-pair" in detail["message"]
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
 def test_post_runtime_pin_request_refuses_a_permanently_blocked_target(
     mock_read, isolated_pin_requests
 ):

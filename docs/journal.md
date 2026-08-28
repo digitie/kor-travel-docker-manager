@@ -2,6 +2,193 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 `b46743ea…` terminal 보존 후 대기
+
+Map `6bfa47038b439845662f89524531d2ef72374c2a`·PinVi
+`340717de33b3672f7da84795626c4302eddd1176`·Manager
+`00c33ad79f8e43b01fe543699428701aa9733c67`·pinset
+`b46743ea72d86329d9574c21cc445fb9b33fdeaad07a2704a68a91fd7a0a89fe`는 PinVi·Manager CI와 exact-head 전문
+적대 리뷰 두 건의 GO, clean trusted release, atomic pair rotation과 registry/public-copy gate 뒤 n150 isolated
+M04/M05 launcher를 정확히 한 번 실행했다. launcher의 권위 있는 고정 결과는
+`launcher_safe_result_unavailable`이었다. HTTP 원문·컨테이너 로그·환경값·output leaf는 읽거나 보관하지 않았다.
+
+후속 gate는 exact unconditional terminal entry와 public copy를 확인했다. 따라서 이 candidate·source pair·Manager
+source·output leaf는 절대 재실행하지 않는다. 사용자 지시에 따라 새 source·pair·pinset 생성이나 후속 n150 실행은 하지
+않고 여기까지의 기록을 보존한 채 대기한다.
+
+## 2026-08-28 — M05 `41be91fe…` terminal 보존과 driver receipt 수렴
+
+Map `fa55316d858d95367b6a1ca6f17094408b543afe`·PinVi
+`f9fce72fbc6ef73f3ec1700ef76995fdfc068e88`·Manager
+`cd8b3054d9f49af88ef6f58e9319343c1453df27`·pinset
+`41be91feb62feff039452e23a0d889c3b32c3e97e08c28e86ad0a1068ec8ad67`는 최신 CI와 exact-head 전문 적대
+리뷰 두 건의 GO, clean trusted release, atomic pair rotation과 registry/public-copy gate 뒤 n150 isolated
+M04/M05 launcher를 정확히 한 번 실행했다. launcher exit은 1이고 권위 있는 고정 결과는
+`launcher_safe_result_unavailable`이었다. HTTP 원문·컨테이너 로그·환경값·output leaf는 읽거나 보관하지 않았다.
+exact unconditional terminal entry와 public copy를 다시 확인했으므로 이 candidate·source pair·Manager source·output
+leaf는 재실행하지 않는다.
+
+이번 terminal은 driver가 고정 result를 만들기 전 예상하지 못한 ordinary exception으로 종료할 수 있는 경계를
+보였다. driver는 이제 `BaseException`을 제외한 main·cleanup·terminal block의 모든 ordinary exception을
+`driver_contract_failed` fixed terminal receipt로 수렴시키며, 원문 exception을 receipt에 기록하지 않는다. 회귀
+테스트는 unknown exception·cleanup 오류·terminal block 오류에서도 blocked receipt와 fixed phase가 남고 원문이
+없음을 고정한다. 다음 후보는 이 source, 새 Map terminal 기록과 새 PinVi
+provenance를 fresh atomic pinset으로 결박하고 CI·source-head 전문 적대 리뷰 두 건을 통과한 경우에만 n150에서
+한 번 실행할 수 있다.
+
+## 2026-08-28 — M05 `5512ce12…` launcher safe-result terminal 보존
+
+Map `73150672d26866122e231c085e9beefe81bfd776`·PinVi
+`d8dc386dec7a800b83d457e1753b63f51470afc6`·Manager
+`c31c8448fcade3ace84b0dbd0682328283ae20b9`·pinset
+`5512ce12ca316e10404b9faf60eba8130815a4c7cdb3b91f4d8c80de1805cc8d`는 최신 CI와 exact-head 전문 적대
+리뷰 두 건의 GO, clean trusted release, atomic pair rotation과 registry/public-copy gate 뒤 n150 isolated
+M04/M05 launcher를 정확히 한 번 실행했다. launcher exit은 1이고 권위 있는 고정 결과는
+`launcher_safe_result_unavailable`이었다. HTTP 원문·컨테이너 로그·환경값·output leaf는 읽거나 보관하지 않았다.
+
+후속 gate는 exact Map·PinVi·pinset의 unconditional terminal entry와 public copy를 확인했다. 따라서 이
+candidate와 source pair·Manager source·output leaf는 재실행하지 않는다. 다음 후보는 Map `fa55316d…` terminal
+기록, 새 PinVi paired provenance, 이 기록을 반영한 새 Manager source를 새 atomic pinset으로 결박하고 CI와 전문
+적대 리뷰 두 건을 다시 통과한 경우에만 만들 수 있다.
+
+## 2026-08-28 — M05 launcher snapshot·safe envelope 재검증 보강
+
+safe-result 부재 fallback의 전문 적대 재리뷰에서 두 P1을 확인했다. phase-scoped 차단만
+존재할 때 unconditional terminal 판정이 idempotent 처리되어 승격되지 않았고, launcher가
+driver 시작 뒤의 current pinset을 block할 수 있었다. 또한 driver stdout/stderr가 상위
+호출자에게 남으며 `result.json`의 허용 필드·phase·pinset 검증이 느슨했다.
+
+launcher는 이제 public-copy 검증을 두 번 통과한 Map·PinVi·pinset snapshot을 실행권으로
+고정한다. driver의 stdout/stderr는 모두 버리고, 종료 뒤 snapshot이 같고 root-owned
+`result.json`이 정확한 schema·source revision·pinset·phase·hash 계약을 만족할 때만
+성공 결과로 수용한다. driver의 모든 blocked 결과를 포함한 그 외에는 실행 시작 snapshot의 두 revision을 명시해 terminal block을 쓰고,
+그 exact unconditional entry를 다시 확인한 뒤 `launcher-result.json`의 fixed safe envelope만
+권위 결과로 남긴다. registry는 phase-scoped entry 위에도 unconditional entry를 추가한다.
+그러므로 rotation race가 다른 candidate를 terminal로 만들거나 임의 driver envelope이 새
+candidate 성공 근거가 되는 경로가 없다. 이 새 Manager source의 CI와 source-head 전문
+적대 리뷰 두 건이 모두 GO가 되기 전에는 n150 실행권이 없다.
+
+## 2026-08-28 — M05 safe-result 부재 terminal과 launcher envelope 보강
+
+Map `f90b7c28ee0a51cc5e2dce7a332e7feef9afe477`·PinVi
+`fdff06ba746bf2de198fab075a356f88b9f228c9`·pinset
+`fa28a6e7d7ee27b7bb6be6cd6c0a04ffc458cda329beca339a4ce6d038480381`은 최신 CI와 전문 적대
+리뷰 두 건의 GO, trusted Manager `b45f54d5…` release, atomic pair rotation과 registry/public-copy 검증 뒤
+n150 isolated M04/M05 launcher를 정확히 한 번 실행했다. launcher는 exit 1이었고 허용된 durable safe result는
+없었다. HTTP 원문·container log·환경값·output leaf는 읽거나 보관하지 않았다. 후속 `pin verify`는 exact pinset의
+terminal 차단을 확인했으므로 이 candidate는 재실행하지 않는다.
+
+다음 launcher는 기존 `result.json`이 root-owned·고정 schema로 유효한 경우에만 driver 종료값을 수용한다. 그렇지
+않으면 current pinset을 idempotent terminal block으로 결박하고 `launcher_safe_result_unavailable` fixed envelope를
+`result.json` 또는 충돌 없는 `launcher-result.json`에 `0600`으로 남긴다. 원문 stderr·HTTP·컨테이너·환경값은
+읽거나 쓰지 않는다. 다음 candidate는 Map `73150672…`·새 PinVi provenance·이 새 Manager source를 atomic pinset으로
+결박한 경우에만 만들 수 있다.
+
+## 2026-08-28 — M05 Map health terminal의 원문 없는 다음 진단 범위
+
+Map `bbb29d177…`·PinVi `663e21b4…`·pinset `c700bd2e…`은 trusted Manager `4a6e1b0…` release의 atomic
+pair rotation과 registry/public-copy gate 뒤 n150 isolated M04/M05 launcher를 정확히 한 번 실행했고
+`map_health_http_failed` terminal로 끝났다. cleanup은 통과했다. HTTP response/body·container log·환경값은
+읽거나 보관하지 않았고, driver가 root registry에 조건 없이 차단한 해당 pinset·source pair·Manager source·
+output leaf는 재실행하지 않는다.
+
+다음 fresh Manager source는 raw status나 socket detail을 저장하지 않으면서 HTTP status를
+`map_health_status_failed`, loopback transport를 `map_health_transport_failed`로 분리한다. 이 고정 enum과
+terminal 기록 Map revision·새 PinVi provenance를 fresh atomic pinset으로 결박하고 CI·전문 적대 리뷰·registry gate를
+다시 통과한 경우에만 다음 one-shot을 허용한다.
+
+---
+
+## 2026-08-28 — PR backend CI의 TestClient 의존성 고정
+
+새 PR CI의 첫 원격 실행은 애플리케이션 runtime 의존성만 설치해 `fastapi.testclient`가 요구하는 dev 의존성
+`httpx` 없이 collection 단계에서 종료됐다. 후속 run은 local Compose v5와 GitHub Compose v2가 기본 bind option을
+서로 다르게 JSON에 나타내고, fixture가 개발기 절대 `PINVI_PGDATA` 경로에 우연히 의존함도 발견했다. 이는 M05
+실행·pin rotate·n150 mutation 이전의 CI 환경 결함이며 후보 실행 근거가 아니다. CI는 검증한 `httpx==0.28.1`을
+pytest·Ruff와 함께 명시 설치하고, contract fixture는 임시 PinVi data directory를 직접 만들며 Compose의 동등한
+기본 bind 표현만 허용한다. 새 CI run과 두 전문 적대 리뷰가 green/GO가 되기 전에는 trusted release나 one-shot
+admission을 진행하지 않는다.
+
+---
+
+## 2026-08-28 — M05 receipt 상태 계약과 terminal registry binding 보정
+
+전문 data-contract 재리뷰는 두 P1을 확인했다. PinVi detail 계약은 `applied`·`blocked`만 선언하는데,
+이전 driver가 `blocked`와 미정의 상태를 polling timeout으로 합쳤다. driver는 이제 `applied`와 유효한
+receipt만 성공으로 수용하고 `blocked`는 `m05_pinvi_receipt_blocked`, 나머지는
+`m05_pinvi_receipt_invalid`로 즉시 terminal 처리한다.
+
+또한 M05 direct launcher는 이전에 root registry의 unconditional terminal block을 확인하지 않아 다른
+Manager revision이 같은 pinset을 다시 ledger claim할 여지가 있었다. admission은 이제 registry의 current
+Map·PinVi·pinset 정합과 unconditional block을 ledger·Docker mutation 전에 확인하고, non-success result는
+exact current pinset을 phase-scoped가 아닌 root registry unconditional block으로 결박한다. 새 회귀는
+두 status와 gate 순서, block의 exact pair·unconditional 성질을 고정한다.
+
+`22563762…`를 포함한 기존 terminal candidate와 output leaf는 계속 재실행하지 않는다. 이 보정, PinVi
+trace artifact 보정, 두 전문 적대 재리뷰 및 green CI를 모두 통과한 fresh source pair만 다음 n150 E2E 후보가
+된다.
+
+---
+
+## 2026-08-28 — receipt polling transport phase의 timeout 합류 차단
+
+전문 data-contract 재리뷰는 receipt polling이 모든 `_PhaseError`를 재시도한 뒤
+`m05_pinvi_receipt_timeout`으로 합쳐, 호출 단계 고정 HTTP 분류 계약을 깨는 P1을 확인했다. 다음 source는
+transport·응답 형식 오류를 `m05_pinvi_receipt_http_failed` 등 이미 허용된 fixed phase로 즉시 전파한다.
+후속 P1 보정 전 이력으로서, 이 항목의 polling timeout 설명은 최신 `M05 receipt 상태 계약과 terminal registry
+binding 보정` 항목으로 대체됐다.
+
+Map `b8d108bd…`·PinVi `50c875f5…`·pinset `22563762…` terminal 및 그 output leaf는 그대로 차단해
+재실행하지 않는다. 다음 실행은 Map `bbb29d17…`·PinVi `a06086a4…` pair와 이 새 Manager source의
+registry/public-copy gate, 최신 CI, 전문 적대 재리뷰 두 건이 모두 정합한 fresh candidate에서만 허용한다.
+
+같은 검증 누락이 반복되지 않도록 이 저장소에는 backend Ruff·pytest와 frontend type-check·build를 PR마다
+실행하는 GitHub Actions CI를 추가한다. backend toolchain은 검증한 `pytest==9.1.1`·`ruff==0.16.4`로
+고정하고 action도 reviewed commit으로 고정한다. interpreter로만 호출하는 tracked non-executable shebang
+script의 `EXE001`만 제외하며, 나머지 lint rule은 전체 backend/test/script에 적용한다. 이전 PR에 원격 CI
+workflow가 없었다는 사실은 성공 근거로 취급하지 않고, 이 workflow가 green인 fresh source만 trusted release
+후보가 된다.
+
+---
+
+## 2026-08-28 — M05 runtime HTTP terminal을 고정 enum으로 분리
+
+Map `b8d108bd…`·PinVi `50c875f5…`·pinset `22563762…`의 n150 isolated M04/M05 one-shot은
+`runtime_http_failed`로 끝났고 cleanup은 성공했다. 구조화 result의 fixed phase만 읽었으며 HTTP status/body,
+socket 원문, container log, 환경값은 읽거나 보관하지 않았다. 해당 pinset은 root registry의 terminal evidence로
+즉시 차단돼 재실행하지 않는다.
+
+다음 driver는 loopback HTTP transport failure를 Map health/subscription, PinVi login/M04 fixture, Map approval,
+M05 case lookup/decision, PinVi receipt polling의 fixed enum으로만 분리한다. 원문 transport detail은 계속 폐기하고,
+새 Manager source와 새 Map/PinVi pair에서만 다음 one-shot을 실행한다.
+
+---
+
+## 2026-08-28 — isolated launcher의 installed-wheel project root 회귀 차단
+
+Map `e6c08e…`·PinVi `932fb140…`·pinset `a3f6a8f3…`의 새 M05 isolated launcher는
+trusted release를 올바르게 검증했지만, wheel 안 `python -I` 경로가 개발 checkout의 package 부모 규칙으로
+project root를 계산해 runtime registry를 읽기 전 import 단계에서 fail-close했다. Docker·Compose·DB·driver
+ledger가 시작되기 전의 fixed preflight failure이며, 해당 pinset은 `launcher_preflight` terminal evidence로
+즉시 차단해 재실행하지 않는다.
+
+runtime pin registry는 installed venv의 `sys.prefix`가 trusted `/opt` root와 일치하면 외부 root registry와
+public copy를 직접 선택하도록 보정한다. 이 경로를 회귀 테스트로 고정해 `-I` launcher와 일반 CLI entrypoint의
+project-root 발견 방식이 다시 어긋나지 않게 한다. 다음 live E2E는 새 Manager source와 새 Map/PinVi pinset에서만
+정확히 한 번 실행한다.
+
+---
+
+## 2026-08-28 — M05 pair 회전의 intermediate pinset admission 차단
+
+runtime pin registry의 role별 두 회전은 첫 write 뒤 intermediate Map/PinVi tuple을 만들 수 있었고,
+M05 launcher는 source pair 검증보다 one-shot ledger를 먼저 claim했다. terminal seed에서의 단일 role
+회전을 거부하고 `pin rotate-pair`가 두 revision을 한 registry replace로 바꾸도록 보정했다. launcher도
+source pair를 확인한 뒤에만 ledger를 claim하므로 invalid pair는 candidate 실행권을 소진하지 않는다.
+
+새 regression은 intermediate registry 보존본 부재, terminal seed의 single-role CLI 거부, pair 검증과 ledger
+claim의 실행 순서를 고정한다. final pair의 `pin verify`가 성공하기 전에는 n150 E2E를 실행하지 않는다.
+
 ---
 
 ## 2026-08-28 — KUM-M12: 표시 규약을 찾을 수 있는 자리로 옮긴다

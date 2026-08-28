@@ -501,6 +501,27 @@ def post_runtime_pin_request(
             message="이미 그 revision이 고정돼 있습니다 — 바뀌는 것이 없습니다.",
         )
 
+    # 현재 pinset이 terminal이면 단일 role 회전이 registry에서 거부된다
+    # (`rotate_runtime_pin`). 그 상태의 요청은 **결코 적용될 수 없으므로** 기록하지
+    # 않는다 — 적용 불가능한 요청을 화면에 대기 중으로 남기면 그 자체가 거짓말이다.
+    if any(
+        entry.get("pinset_sha256") == published.get("pinset_sha256")
+        and entry.get("phase") is None
+        for entry in published.get("blocked_pinsets", [])
+        if isinstance(entry, dict)
+    ):
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_TERMINAL_REQUIRES_PAIR",
+            message=(
+                "지금 고정된 세트가 재시도 금지 상태라 한쪽만 회전할 수 없습니다. "
+                "SSH에서 Map과 PinVi를 한 번에 회전해야 합니다: "
+                "ktdctl pin rotate-pair --map-revision <40-hex> "
+                "--pinvi-revision <40-hex> --reason \"...\" --confirm"
+            ),
+        )
+
     # phase 유무와 무관하게 차단한다: 그 pinset을 다시 고정하는 것 자체가 금지다.
     if any(
         entry.get("pinset_sha256") == prospective

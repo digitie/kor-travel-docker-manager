@@ -212,21 +212,35 @@ def test_the_http_layer_never_mutates_the_pin_registry() -> None:
     role·revision만 취하고 나머지를 재유도한다는 계약이다. 이 테스트가 (1)을 지킨다.
     """
 
+    import ast
+
     import kor_travel_docker_manager.api as api_package
 
-    mutators = (
+    mutators = {
         "rotate_runtime_pin",
+        "rotate_runtime_pin_pair",
         "block_runtime_pinset",
         "rollback_runtime_pin",
         "write_runtime_pin_registry",
         "publish_runtime_pins",
         "build_registry",
-    )
+    }
+    # 문자열 검색이 아니라 **AST**로 본다. 주석이나 오류 메시지에 함수 이름이 등장하는
+    # 것은 위반이 아니고(오히려 운영자에게 필요한 안내다), 실제 import·호출·속성 접근만
+    # 위반이다. 문자열 검색으로 두면 정확한 안내 문구를 쓸 수 없게 된다.
     # `api`는 `__init__.py`가 없는 namespace package라 `__file__`이 None이다.
     api_root = Path(next(iter(api_package.__path__)))
     modules = sorted(api_root.rglob("*.py"))
     assert modules, "api 패키지를 찾지 못했다 — 경로가 바뀌면 이 가드는 무력해진다"
     for module_path in modules:
-        source = module_path.read_text(encoding="utf-8")
-        for name in mutators:
-            assert name not in source, f"{module_path.name} references {name}"
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+        referenced: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                referenced.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Name):
+                referenced.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                referenced.add(node.attr)
+        offending = sorted(referenced & mutators)
+        assert not offending, f"{module_path.name} references {offending}"

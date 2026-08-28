@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import pytest
@@ -185,6 +186,282 @@ def test_http_json_default_transport_is_proxy_free_loopback_opener(
     monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fake_open)
     assert driver._http_json("http://127.0.0.1:13701/health", headers={}) == {"data": {}}
     assert len(seen) == 1
+
+
+def test_http_json_emits_only_the_caller_fixed_transport_phase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 원문을 저장하지 않고 다음 immutable candidate의 보정 범위만 남긴다."""
+
+    driver = _driver()
+
+    def fail_open(*_args: object, **_kwargs: object) -> object:
+        raise URLError("transport detail must not escape")
+
+    monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fail_open)
+
+    with pytest.raises(driver._PhaseError, match="map_health_http_failed"):
+        driver._http_json(
+            "http://127.0.0.1:13701/health",
+            headers={},
+            failure_phase="map_health_http_failed",
+        )
+
+
+def test_map_health_keeps_http_status_and_loopback_transport_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """다음 one-shot source가 원문 없이 startup 보정 범위를 구별하게 한다."""
+
+    driver = _driver()
+
+    def fail_status(request: Request, **_kwargs: object) -> object:
+        raise HTTPError(request.full_url, 503, "discarded", None, None)
+
+    monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fail_status)
+    with pytest.raises(driver._PhaseError, match="map_health_status_failed"):
+        driver._http_json(
+            "http://127.0.0.1:13701/health",
+            headers={},
+            failure_phase="map_health_transport_failed",
+            http_error_phase="map_health_status_failed",
+        )
+
+    def fail_transport(*_args: object, **_kwargs: object) -> object:
+        raise URLError("discarded")
+
+    monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fail_transport)
+    with pytest.raises(driver._PhaseError, match="map_health_transport_failed"):
+        driver._http_json(
+            "http://127.0.0.1:13701/health",
+            headers={},
+            failure_phase="map_health_transport_failed",
+            http_error_phase="map_health_status_failed",
+        )
+
+
+def test_pinvi_receipt_transport_phase_is_not_collapsed_into_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """receipt polling은 transport failure를 fixed caller phase로 보존한다."""
+
+    driver = _driver()
+
+    def fail_http(*_args: object, **_kwargs: object) -> object:
+        raise driver._PhaseError("m05_pinvi_receipt_http_failed")
+
+    monkeypatch.setattr(driver, "_http_json", fail_http)
+
+    with pytest.raises(driver._PhaseError, match="m05_pinvi_receipt_http_failed"):
+        driver._wait_for_pinvi_receipt(
+            api_url="http://127.0.0.1:13701",
+            opener=object(),
+            event_id="00000000-0000-0000-0000-000000000000",
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "phase"),
+    [
+        ("blocked", "m05_pinvi_receipt_blocked"),
+        ("unexpected", "m05_pinvi_receipt_invalid"),
+    ],
+)
+def test_pinvi_receipt_non_applied_status_is_terminal(
+    monkeypatch: pytest.MonkeyPatch, status: str, phase: str
+) -> None:
+    """PinVi detail 계약에 없는 pending retry가 terminal 상태를 timeout으로 감추지 않는다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_http_json",
+        lambda *_args, **_kwargs: {"data": {"status": status}},
+    )
+
+    with pytest.raises(driver._PhaseError, match=phase):
+        driver._wait_for_pinvi_receipt(
+            api_url="http://127.0.0.1:13701",
+            opener=object(),
+            event_id="00000000-0000-0000-0000-000000000000",
+        )
+
+
+def test_terminal_registry_gate_precedes_the_m05_ledger_claim() -> None:
+    """다른 Manager revision도 terminal pinset을 재실행할 수 없어야 한다."""
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    gate = source.index("_assert_current_m05_pinset_is_runnable()")
+    ledger_directory = source.index("_LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)")
+    ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
+
+    assert gate < ledger_directory
+    assert gate < ledger_claim
+
+
+def test_terminal_registry_gate_refuses_the_current_pinset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """다른 Manager revision도 unconditional block을 실행권으로 바꾸지 못한다."""
+
+    driver = _driver()
+
+    class _TerminalRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+        def is_unconditionally_blocked_pinset(self, _pinset_sha256: str) -> bool:
+            return True
+
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _TerminalRegistry())
+
+    with pytest.raises(driver._PhaseError, match="terminal_pinset_blocked"):
+        driver._assert_current_m05_pinset_is_runnable()
+
+
+def test_terminal_result_blocks_the_exact_current_pinset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """terminal output은 phase-scoped entry가 아닌 unconditional registry block을 남긴다."""
+
+    driver = _driver()
+    seen: dict[str, object] = {}
+
+    class _BlockedRegistry:
+        def is_unconditionally_blocked_pinset(self, pinset_sha256: str) -> bool:
+            return pinset_sha256 == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+
+    def block(**kwargs: object) -> _BlockedRegistry:
+        seen.update(kwargs)
+        return _BlockedRegistry()
+
+    monkeypatch.setattr(driver, "block_runtime_pinset", block)
+
+    assert driver._block_terminal_m05_pinset() is True
+    assert seen["pinset_sha256"] == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+    assert seen["map_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+    assert seen["pinvi_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+    assert "phase" not in seen
+
+
+def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unknown exception도 launcher에 raw-output 부재를 남기지 않는다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(RuntimeError("discarded")),
+    )
+    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda: True)
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert receipt["status"] == "blocked"
+    assert receipt["phase"] == "driver_contract_failed"
+    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert "discarded" not in json.dumps(receipt, sort_keys=True)
+
+
+def test_cleanup_boundary_marks_ordinary_exceptions_for_fixed_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup의 OSError도 driver raw-output 부재로 전파하지 않는다."""
+
+    driver = _driver()
+    cleanup = (tmp_path, "m05i-test", tmp_path / "runtime.env", (tmp_path / "x.yml",), ())
+    monkeypatch.setattr(
+        driver,
+        "_cleanup_project",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("discarded")),
+    )
+
+    assert driver._cleanup_temporary_resources(
+        map_cleanup=cleanup,
+        pinvi_cleanup=None,
+        private_files=(),
+    ) == (False, True)
+
+
+def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """registry block 내부 오류도 원문 없이 fixed driver receipt로 수렴한다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(driver._PhaseError("admission_failed")),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_pinset",
+        lambda: (_ for _ in ()).throw(OSError("discarded")),
+    )
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert receipt["status"] == "blocked"
+    assert receipt["phase"] == "driver_contract_failed"
+    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert "discarded" not in json.dumps(receipt, sort_keys=True)
+
+
+def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
+    """terminal direct launch은 새 leaf·driver·ledger를 만들기 전에 끝난다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    assert launcher.index('"$ktdctl" pin verify --json >/dev/null 2>&1') < launcher.index(
+        'install -d -o root -g root -m 0700 "$output_dir"'
+    )
+
+
+def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_unavailable() -> None:
+    """driver raw output 부재도 terminal evidence 없이 재시도할 수 없게 고정한다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    assert "launcher_safe_result_unavailable" in launcher
+    assert '"$ktdctl" pin block "$initial_pinset"' in launcher
+    assert "--map-revision \"$initial_map_revision\"" in launcher
+    assert "--pinvi-revision \"$initial_pinvi_revision\"" in launcher
+    assert "launcher-result.json" in launcher
+    assert ">/dev/null 2>&1" in launcher[launcher.index("m05_isolated_e2e.py") :]
+    assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
+    block_check = launcher[launcher.rindex('"$ktdctl" pin show --json') :]
+    assert "/usr/bin/python3 -I -S -c" in block_check
+    assert "<<'PY'" not in block_check[: block_check.index("fallback_path=")]
+
+
+def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> None:
+    """rotation race와 임의 driver envelope은 fresh candidate 성공 근거가 될 수 없다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    assert "initial_snapshot" in launcher
+    assert "stable_snapshot" in launcher
+    assert "post_snapshot" in launcher
+    assert '"$post_snapshot" == "$initial_snapshot"' in launcher
+    assert 'value.get("pinset_sha256") != expected_pinset' in launcher
+    assert 'value.get("status") != "passed"' in launcher
+    assert "if set(value) != expected_keys:" in launcher
+    assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
 
 def test_free_ports_uses_the_standard_ss_binary(
@@ -401,3 +678,15 @@ def test_manager_does_not_require_pinvi_crypto_dependency() -> None:
     )
 
     assert "cryptography" not in pyproject
+
+
+def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
+    """invalid source pair는 ledger를 소비하지 않아 corrected pair를 막지 않는다."""
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    pair_preflight = source.index("pair, service_openapi_sha256, service_source_revision = _pair(")
+    ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
+
+    assert pair_preflight < ledger_claim

@@ -221,6 +221,8 @@ def test_env_redaction_keeps_non_secret_values(pair):
         ),
     ],
 )
+
+
 def test_env_redaction_masks_credentials_embedded_in_dsn_values(pair, expected):
     assert _redact_env_pair(pair) == expected
 
@@ -274,6 +276,8 @@ def test_label_sanitizer_uses_the_same_predicate():
 )
 @patch("kor_travel_docker_manager.services.compose_service.subprocess.run")
 @patch("kor_travel_docker_manager.services.compose_service.os.path.exists", return_value=False)
+
+
 def test_compose_ensure_build_command(
     mock_exists,
     mock_run,
@@ -350,6 +354,8 @@ def test_compose_ensure_build_command(
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_status_returns_compose_exit_code(mock_compose_service):
     mock_compose_service.status_target.return_value = {
         "success": False,
@@ -363,6 +369,8 @@ def test_cli_status_returns_compose_exit_code(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_ensure_passes_build_flag(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -382,6 +390,8 @@ def test_cli_ensure_passes_build_flag(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_direct_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -401,6 +411,8 @@ def test_cli_direct_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_direct_gra_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -420,6 +432,8 @@ def test_cli_direct_gra_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
     mock_compose_service.ensure_target.return_value = {
         "success": True,
@@ -439,6 +453,8 @@ def test_cli_direct_srv_alias_runs_ensure(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_pinned_runtime_rebuild_requires_confirmation(mock_compose_service, capsys):
     assert main(["pinvi-pair", "rebuild-pinned"]) == 2
 
@@ -447,6 +463,8 @@ def test_cli_pinned_runtime_rebuild_requires_confirmation(mock_compose_service, 
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_rebuilds_pinned_runtime(mock_compose_service):
     mock_compose_service.rebuild_pinned_runtime.return_value = {
         "success": True,
@@ -461,6 +479,8 @@ def test_cli_rebuilds_pinned_runtime(mock_compose_service):
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
     mock_compose_service,
     capsys,
@@ -479,6 +499,8 @@ def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
     mock_compose_service,
     capsys,
@@ -499,6 +521,8 @@ def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+
+
 def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, capsys):
     assert main(["compose-boundary", "retire-legacy-override"]) == 2
 
@@ -507,6 +531,8 @@ def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, c
 
 
 @patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
+
+
 def test_cli_legacy_override_stage_requires_confirmation(mock_stage, capsys):
     assert (
         main(
@@ -525,6 +551,8 @@ def test_cli_legacy_override_stage_requires_confirmation(mock_stage, capsys):
 
 
 @patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
+
+
 def test_cli_stages_legacy_override_through_official_boundary(mock_stage):
     source = "/legacy/kor-travel-docker-manager/docker-compose.override.yml"
 
@@ -545,6 +573,8 @@ def test_cli_stages_legacy_override_through_official_boundary(mock_stage):
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+
+
 def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
     assert main(["compose-boundary", "retire-legacy-override", "--confirm"]) == 0
 
@@ -552,6 +582,8 @@ def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
 
 
 @patch("kor_travel_docker_manager.cli.activate_canonical_concierge")
+
+
 def test_cli_canonical_concierge_activation_requires_confirmation(mock_activation, capsys):
     assert main(["compose-boundary", "activate-concierge"]) == 2
 
@@ -560,6 +592,8 @@ def test_cli_canonical_concierge_activation_requires_confirmation(mock_activatio
 
 
 @patch("kor_travel_docker_manager.cli.activate_canonical_concierge")
+
+
 def test_cli_activates_canonical_concierge_through_official_boundary(mock_activation):
     assert main(["compose-boundary", "activate-concierge", "--confirm"]) == 0
 
@@ -612,6 +646,8 @@ def test_cli_db_backup_restore_is_not_implemented() -> None:
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_invokes_service_and_prints_summary(
     mock_create, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -639,6 +675,8 @@ def test_cli_db_backup_create_invokes_service_and_prints_summary(
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_passes_custom_timeout(mock_create) -> None:
     from kor_travel_docker_manager.services.standalone_backup import BackupManifest
 
@@ -661,6 +699,8 @@ def test_cli_db_backup_create_passes_custom_timeout(mock_create) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_rejects_unknown_role(mock_create) -> None:
     with pytest.raises(SystemExit, match="2"):
         main(["db-backup", "create", "not-a-real-role"])
@@ -668,6 +708,8 @@ def test_cli_db_backup_create_rejects_unknown_role(mock_create) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
 def test_cli_db_backup_create_surfaces_service_error(mock_create) -> None:
     from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
 
@@ -677,6 +719,8 @@ def test_cli_db_backup_create_surfaces_service_error(mock_create) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.list_standalone_backups")
+
+
 def test_cli_db_backup_list_invokes_service_with_role(
     mock_list, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -689,6 +733,8 @@ def test_cli_db_backup_list_invokes_service_with_role(
 
 
 @patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
 def test_cli_db_backup_gc_requires_keep_flag(mock_gc) -> None:
     with pytest.raises(SystemExit, match="2"):
         main(["db-backup", "gc", "geo"])
@@ -696,6 +742,8 @@ def test_cli_db_backup_gc_requires_keep_flag(mock_gc) -> None:
 
 
 @patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
 def test_cli_db_backup_gc_invokes_service_with_keep(
     mock_gc, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -710,6 +758,8 @@ def test_cli_db_backup_gc_invokes_service_with_keep(
 
 
 @patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
 def test_cli_db_backup_gc_reports_orphans_separately(
     mock_gc, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -756,7 +806,7 @@ def _seed_path() -> Path:
 def test_pin_parser_registers_every_leaf_command():
     parser = build_parser()
 
-    for action in ("init", "show", "verify", "rotate", "block", "rollback"):
+    for action in ("init", "show", "verify", "rotate", "rotate-pair", "block", "rollback"):
         args = parser.parse_args(
             {
                 "init": ["pin", "init", "--seed", "x"],
@@ -769,6 +819,16 @@ def test_pin_parser_registers_every_leaf_command():
                     "map",
                     "--revision",
                     "a" * 40,
+                    "--reason",
+                    "r",
+                ],
+                "rotate-pair": [
+                    "pin",
+                    "rotate-pair",
+                    "--map-revision",
+                    "a" * 40,
+                    "--pinvi-revision",
+                    "b" * 40,
                     "--reason",
                     "r",
                 ],
@@ -785,6 +845,16 @@ def test_pin_parser_registers_every_leaf_command():
     [
         ["pin", "init", "--seed", "seed.json"],
         ["pin", "rotate", "--role", "map", "--revision", "a" * 40, "--reason", "r"],
+        [
+            "pin",
+            "rotate-pair",
+            "--map-revision",
+            "a" * 40,
+            "--pinvi-revision",
+            "b" * 40,
+            "--reason",
+            "r",
+        ],
         ["pin", "block", "a" * 64, "--reason", "r"],
         ["pin", "rollback", "--to", "a" * 64, "--reason", "r"],
     ],
@@ -845,10 +915,10 @@ def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, caps
     exit_code = main(
         [
             "pin",
-            "rotate",
-            "--role",
-            "pinvi",
-            "--revision",
+            "rotate-pair",
+            "--map-revision",
+            "c" * 40,
+            "--pinvi-revision",
             "d" * 40,
             "--reason",
             "새 PinVi head",
@@ -858,7 +928,7 @@ def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, caps
 
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "rotated pinvi pin" in output
+    assert "rotated Map/PinVi pair" in output
     assert "새 PinVi head" in output
 
 
@@ -941,6 +1011,30 @@ def pending_request_env(tmp_path, monkeypatch):
     target = tmp_path / "requests" / "runtime-pin-requests.json"
     monkeypatch.setenv(runtime_pin_request.RUNTIME_PIN_REQUEST_FILE_ENV, str(target))
     return target
+
+
+def _init_rotatable_registry():
+    """단일 role 회전이 가능한 상태를 만든다.
+
+    동봉 seed의 현재 pinset은 terminal이고, terminal 상태에서는 registry가 단일 role
+    회전을 거부한다(pair-incomplete pinset을 M05 ledger가 먼저 소비할 수 있기 때문).
+    회전 요청 경로 자체를 시험하려면 먼저 pair 회전으로 신선한 pinset을 만들어야 한다.
+    """
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    main(
+        [
+            "pin",
+            "rotate-pair",
+            "--map-revision",
+            "1" * 40,
+            "--pinvi-revision",
+            "2" * 40,
+            "--reason",
+            "회전 요청 경로 시험용 신선 pinset",
+            "--confirm",
+        ]
+    )
 
 
 def _file_a_request(*, role="pinvi", revision="d" * 40, reason="새 PinVi head"):
@@ -1040,7 +1134,7 @@ def test_pin_show_pending_reports_nothing_pending(pin_cli_env, pending_request_e
 def test_pin_apply_pending_rotates_and_records_both_actors(
     pin_cli_env, pending_request_env, capsys
 ):
-    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    _init_rotatable_registry()
     capsys.readouterr()
     request = _file_a_request()
 
@@ -1062,7 +1156,7 @@ def test_pin_apply_pending_rotates_and_records_both_actors(
 def test_pin_apply_pending_refuses_a_request_the_pin_moved_past(
     pin_cli_env, pending_request_env, capsys
 ):
-    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    _init_rotatable_registry()
     capsys.readouterr()
     _file_a_request(role="pinvi", revision="d" * 40)
     # 요청을 남긴 뒤 운영자가 SSH에서 직접 회전시킨 상황.
@@ -1163,7 +1257,7 @@ def test_pin_apply_pending_reports_a_distinct_code_when_cleanup_fails(
 ):
     """'적용됨'과 '할 일 없음'이 같은 코드면 스크립트가 pinset 소모를 놓친다."""
 
-    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    _init_rotatable_registry()
     capsys.readouterr()
     _file_a_request()
 
@@ -1263,11 +1357,11 @@ def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
     exit_code = main(
         [
             "pin",
-            "rotate",
-            "--role",
-            "map",
-            "--revision",
+            "rotate-pair",
+            "--map-revision",
             "not-a-sha",
+            "--pinvi-revision",
+            "d" * 40,
             "--reason",
             "bad",
             "--confirm",
@@ -1276,3 +1370,26 @@ def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
 
     assert exit_code == 2
     assert "40-hex" in capsys.readouterr().err
+
+
+def test_terminal_seed_refuses_a_single_role_rotation(pin_cli_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "pin",
+                "rotate",
+                "--role",
+                "map",
+                "--revision",
+                "c" * 40,
+                "--reason",
+                "would split M05 pair",
+                "--confirm",
+            ]
+        )
+        == 2
+    )
+    assert "atomic Map/PinVi pair" in capsys.readouterr().err
