@@ -14,6 +14,10 @@ Map `b8d108bd…`·PinVi `50c875f5…`·pinset `22563762…` terminal 및 그 ou
 재실행하지 않는다. 다음 실행은 Map `bbb29d17…`·PinVi `a06086a4…` pair와 이 새 Manager source의
 registry/public-copy gate, 최신 CI, 전문 적대 재리뷰 두 건이 모두 정합한 fresh candidate에서만 허용한다.
 
+같은 검증 누락이 반복되지 않도록 이 저장소에는 backend Ruff·pytest와 frontend type-check·build를 PR마다
+실행하는 GitHub Actions CI를 추가한다. 이전 PR에 원격 CI workflow가 없었다는 사실은 성공 근거로 취급하지
+않고, 이 workflow가 green인 fresh source만 trusted release 후보가 된다.
+
 ---
 
 ## 2026-08-28 — M05 runtime HTTP terminal을 고정 enum으로 분리

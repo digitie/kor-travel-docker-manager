@@ -26,6 +26,8 @@
   오류를 timeout으로 합치지 않고 caller별 fixed phase로 즉시 전파하며, 정상 응답의 pending만 timeout으로 처리한다.
   같은 pinset·Manager source·output leaf는 재실행하지 않고 Map `bbb29d17…`·PinVi `a06086a4…` pair와 새
   Manager source만 다음 실행권을 가진다.
+- [/] M05 fresh Manager source는 backend Ruff·pytest와 frontend type-check·build를 PR에서 모두 통과해야 한다.
+  원격 CI workflow가 없거나 green이 아닌 source는 trusted release·pin rotate-pair·n150 E2E 후보가 될 수 없다.
 
 ## 공통 진행 규율
 
