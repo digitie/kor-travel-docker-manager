@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-28 — M05 baseline artifact 진단 정정과 immutable image 원인 확정
+
+`29fbcdd…` candidate는 `baseline_reference_invalid`로 terminal 처리됐고 cleanup 뒤 Map·PinVi
+transaction resource는 각각 0개였다. candidate와 ledger는 보존하며 재실행하지 않는다. Map
+`9c64e862…`의 `application-reference.json`, manifest sidecar와 모든 tracked baseline artifact를 다시
+정적으로 대조한 결과, 이전 기록과 달리 `application-seed.sql`을 포함한 declared digest는 실제 bytes와
+일치했다. 기존의 source artifact 불일치 주장은 철회한다.
+
+n150의 읽기 전용 image identity 확인에서는 Map Compose의 부동 `postgis/postgis:16-3.5-alpine` 태그가
+baseline reference의 immutable PostGIS image와 달랐다. exact catalog receipt가 다른 source image에서
+fail-close한 것이므로 Manager·PinVi의 runtime override로 고치지 않는다. 다음 변경은 Map Compose를
+baseline digest에 고정하는 source PR이며, 그 committed Map revision을 PinVi pair·Manager pinset에
+재결박한 새 candidate만 one-shot admission할 수 있다.
+
+---
+
 ## 2026-08-28 — 고정 Map baseline artifact 불일치 확인
 
 `29fbcdd…` candidate는 `baseline_reference_invalid`로 끝났고 cleanup 뒤 Map·PinVi transaction
