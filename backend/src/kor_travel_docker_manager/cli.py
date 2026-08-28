@@ -10,6 +10,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.compose_service import (
+    PinnedRuntimePrejournalFailure,
     compose_service,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
@@ -154,7 +155,30 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             )
             return 2
         result = compose_service.rebuild_pinned_runtime()
+    except PinnedRuntimePrejournalFailure as exc:
+        payload = {
+            "status": "failed",
+            "classification": "prejournal_failure",
+            "stage": exc.stage,
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(
+                "pinned runtime candidate preparation failed: " + exc.stage,
+                file=sys.stderr,
+            )
+        return 2
     except DeploymentContractError as exc:
+        if args.json:
+            print(
+                json.dumps(
+                    {"status": "failed", "classification": "unclassified"},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 2
         print(str(exc), file=sys.stderr)
         return 2
     except ValueError as exc:

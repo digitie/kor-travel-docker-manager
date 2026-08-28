@@ -1,8 +1,8 @@
-# TASKS — 진행 중 백로그
+# TASKS — 활성 작업
 
-이 문서는 진행 중이거나 아직 시작하지 않은 작업만 관리한다. 완료·퇴역·대체된 작업은
-[`docs/tasks-done.md`](tasks-done.md)에 기록한다. 코드와 맞지 않는 과거 실행 절차는 active task로
-남기지 않는다.
+이 문서는 완료되지 않은 작업만 의존 순서대로 한 줄씩 나열한다. lane, 담당자 구분,
+계층형 하위 작업은 사용하지 않는다. 완료·퇴역 이력은
+[`docs/tasks-done.md`](tasks-done.md), 실행 근거는 [`docs/journal.md`](journal.md)가 정본이다.
 
 - 진행 중: `[/]`
 - 미진행: `[ ]`
@@ -14,7 +14,7 @@
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 | **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (1부 트랙 KUM-M1~M4 구현 완료) | `[/]` | 1부 잔여(KUM-M5·M6·M7)와 v3 문서 3부의 나머지 태스크 분해 |
-| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 2종이 Map attestation의 exact-dict를 통과하지 못한다 | `[ ]` | Map `_JOURNAL_KEYS`에 두 키를 추가하는 동시 PR, 또는 두 키를 journal 문서 밖 receipt로 이동 |
+| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종이 Map attestation의 exact-dict를 통과하지 못한다 (**다음 재구축의 선행 조건**) | `[ ]` | pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를 함께 넣고, 정렬을 확인한 뒤에 재구축 |
 
 ## 공통 진행 규율
 
@@ -185,6 +185,25 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
 - [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
   항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).
 
+## T-VN-M05-HARNESS — M05 격리 harness와 catalog reset (PR #243/#250)
+
+이 항목들은 `fix/m05-pinvi-topology-preflight` / `fix/m05-isolated-e2e-harness`
+브랜치가 관리하던 목록이다. main 병합 시 태스크 문서가 통째로 갈라져 여기로 보존한다.
+
+**pin 회전은 Map Compose digest 고정 PR 이후로 미룬다(오너 결정, 2026-08-28).**
+그 전까지 registry는 회전하지 않으며, 병합된 코드는 재구축을 실행하지 않는 상태로
+머문다 — 현재 pinset은 registry가 terminal로 차단 중이다.
+
+- [/] T-VN-M05-CATALOG-TEMPLATE0 — n150에서 단 한 번 실행한 `68d99705…`·`285618c0…`·`37932169…`·`31fe73ad…`·`b22bfb8c…`·`89330403…`·`c6c73cdf…` candidate는 terminal로 보존하고 재시도하지 않는다. `c6c73cdf…`은 `map_runtime_ready` 뒤 `role_catalog_reset_failed/foreign_membership`으로 끝났고 raw stderr·catalog row는 읽지 않았다.
+- [/] T-VN-M05-NEW-CANDIDATE — `6269138f…`와 `53d4639f…`는 모두 재실행하지 않는다. 후자는 trusted release가 launcher 파일을 실행 가능하게 설치하지 않아 admission 이전에 끝났고 durable output·ledger·raw stderr가 없다. installer는 launcher mode `0755`을 명시적으로 보존한다. PinVi `7d66523a…`·Map `9c64e862…`의 `9835cfcc…`도 실행하지 않는다. PinVi `323e3ba8…`·Map `9c64e862…`의 `2d6d5ad5…`에 결박된 Manager `d7a048a1…`은 n150에서 한 번 admission했고 `/usr/sbin/ss` 부재로 `driver_contract_failed`가 되어 재실행하지 않는다. `66bb373d…`은 Map `fresh-init` profile resource를 profile 없는 cleanup으로 누락해 `runtime_cleanup_failed`가 되어 재실행하지 않으며, 남은 정확한 transaction resource는 owner label을 재검증한 뒤 정리했다. `bc704aef…`은 cleanup은 완결했으나 generic `runtime_command_failed`가 Map 세 command 중 어디인지 구별하지 못해 재실행하지 않는다. `aa78b4ec…`은 cleanup을 완결하고 Map `fresh-init` 명령까지 고정했으나 그 내부 실패 분류가 없어 재실행하지 않는다. `bea60f5…`은 cleanup을 완결했으나 첫 allowlist 밖 예외가 `unclassified`로 끝나 재실행하지 않는다. `6c888a5…`은 cleanup을 완결했으나 Alembic runtime contract 예외가 더 세분화되지 않아 재실행하지 않는다. `29fbcdd…`은 cleanup을 완결했으나 Map `9c64e862…`의 baseline artifact 정적 검증은 통과했고, baseline이 고정한 PostGIS immutable image와 Compose의 부동 태그 image identity가 달라 `baseline_reference_invalid`가 되어 재실행하지 않는다. Manager/PinVi runtime override로 우회하지 않는다. 새 candidate는 Map Compose가 baseline PostGIS digest를 직접 사용하도록 고정한 committed revision을 PinVi pair와 pinset에 다시 결박한 뒤에만 사용한다. harness는 trusted installer와 같은 global mutation lock을 종료까지 유지하고, pinset별 root-owned `O_NOFOLLOW|O_EXCL` ledger claim+directory fsync로 output path를 바꿔도 재실행을 막는다.
+- [ ] T-VN-M05-ACTIVATION — Map Compose PostGIS digest 고정 PR의 committed revision을 PinVi pair·pinset에 재결박한 candidate에서만 n150 isolated M04/M05 live mutating E2E와 activation attestation을 실행한다.
+- [/] T-VN-M05-ISOLATED-HARNESS — host-network canonical runtime을 변경하지 않고, exact Map/PinVi source·bridge network·fresh volume·loopback binding만 쓰는 root-only M04/M05 isolated harness를 추가한다. receipt schema는 여섯 image ID·두 source·Map full OpenAPI를 PinVi consumer와 결박했고, Docker mutation driver와 fresh source snapshot·cleanup receipt를 이어서 결선한다. pair의 admin/full/service/user historical source object는 canonical 원격에서 exact raw/canonical SHA로 먼저 검증하며, M04 UI 승인→Map 승인→candidate rebind→PinVi receipt→M05 attestation을 실제 실행한다. host loopback HTTP는 ambient proxy를 타지 않으며, generic Map image fixture에는 owner credential을 주입하지 않고 `ktm_feature_dagster_runtime`의 provider 적재·candidate procedure 경로만 쓴다. Docker mutation 전 `(harness, pinset, Manager revision)` ledger claim과 global lock을 고정하고, 증적은 production activation과 분리한다.
+- [ ] T-VN-41F1D-D1 — 최종 격리 리허설과 provenance attestation을 기록한다.
+- [ ] T-VN-41F1D-D2 — data-dependent Map/PinVi admin live E2E와 receipt 승격을 완료한다.
+- [ ] T-VN-41C — relay, reconciliation, consumer enable paired acceptance를 완료한다.
+- [ ] T-VN-41F1D-E — 이전 generation 퇴역과 v6/v8 attestation 전환을 완료한다.
+- [ ] T-VN-H43 — production backup의 정기 dump, SHA-256, 보존, rollback 기준선을 확정한다.
+- [ ] T-VN-H49 — 분할 인스턴스 backup의 주기 실행, bounded retention, off-box 증거를 완료한다.
 ## JOURNAL-ATTESTATION-DRIFT — v8 journal이 Map attestation을 통과하지 못한다
 
 2026-08-28에 확인했다. kor-travel-map `scripts/lib/c7_prod_attestation.py`의
@@ -200,9 +219,27 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
 `journal_from_payload`가 두 키를 optional로 받아 주기 때문에 Manager 안에서는 드러나지
 않았다.
 
-- [ ] 해소 경로를 오너가 택한다: (a) Map `_JOURNAL_KEYS`에 두 키를 추가하는 동시 PR,
-      또는 (b) 두 키를 journal 문서 밖(별도 receipt 파일)으로 옮긴다. (b)가 Manager
-      단독으로 가능하지만 journal의 자기완결성을 줄인다.
-- [ ] 택한 경로를 적용하고 회귀
-      `test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects`를
-      갱신한다. 그 전까지 이 테스트는 괴리가 **더 넓어지는 것만** 막는다.
+PR #243 병합으로 `pinvi_role_catalog_reset`이 더해져 지금은 **13 대 16**이다.
+
+### 해소 경로 (오너 결정, 2026-08-28): Map 동시 PR로 한꺼번에 정리한다
+
+세 키를 journal 밖으로 옮기는 방법도 있었지만 채택하지 않았다. 새 키 하나만 빼면
+이미 어긋난 두 키가 그대로 남아 문제가 해소되지 않고, 같은 계열 상태가 journal 안팎에
+갈라지는 중간 상태가 된다. 반면 **pin 회전을 위한 Map PR이 이미 예정돼 있어**
+(`T-VN-M05-HARNESS` 참조) `_JOURNAL_KEYS`에 세 키를 추가하는 것은 그 PR에 몇 줄
+얹는 일이다.
+
+### ⚠ 이것은 다음 운영 재구축의 **선행 조건**이다
+
+미루면 파괴적 재구축을 다 끝낸 **뒤** attestation 실패로 발견된다 — 가장 비싼
+시점이다. Map PR이 `_JOURNAL_KEYS`를 갱신했는지 확인하기 전에는 `rebuild-pinned`를
+실행하지 않는다.
+
+- [ ] Map Compose digest 고정 PR에 `_JOURNAL_KEYS` 세 키 추가를 **함께** 넣는다
+      (`pinvi_role_credential_environment_rebind`, `pinvi_role_lifecycle_block`,
+      `pinvi_role_catalog_reset`).
+- [ ] Map PR 머지 후 회귀
+      `test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects`의
+      기대값을 정렬 상태로 갱신한다. 그 전까지 이 테스트는 괴리가 **더 넓어지는
+      것만** 막는다.
+- [ ] 그 정렬을 확인한 뒤에야 pin 회전과 재구축을 진행한다.

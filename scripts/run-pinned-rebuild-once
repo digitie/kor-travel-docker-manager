@@ -1,0 +1,267 @@
+#!/usr/bin/bash
+# n150 pinned rebuild의 구조화된 결과를 durable하게 보존하는 단발 launcher.
+set -euo pipefail
+
+if [[ "$#" -ne 2 ]]; then
+  echo "usage: run-pinned-rebuild-once EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
+  exit 2
+fi
+
+if [[ "$(id -u)" != "0" ]]; then
+  echo "pinned rebuild launcher must run as root" >&2
+  exit 2
+fi
+
+expected_manager_revision="$1"
+output_dir="$2"
+if [[ ! "${expected_manager_revision}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "expected Manager source revision is invalid" >&2
+  exit 2
+fi
+
+if [[ -z "${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD:-}" ]]; then
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "$@" <<'PY'
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+script = pathlib.Path(sys.argv[1]).resolve(strict=True)
+arguments = sys.argv[2:]
+lock_dir = pathlib.Path("/run/lock/kor-travel-docker-manager")
+lock_path = lock_dir / "global-mutation.lock"
+lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+directory_stat = lock_dir.lstat()
+if (
+    stat.S_ISLNK(directory_stat.st_mode)
+    or not stat.S_ISDIR(directory_stat.st_mode)
+    or directory_stat.st_uid != 0
+    or stat.S_IMODE(directory_stat.st_mode) != 0o700
+):
+    raise SystemExit("production global mutation lock directory is unsafe")
+if not hasattr(os, "O_NOFOLLOW"):
+    raise SystemExit("production global mutation lock requires O_NOFOLLOW")
+descriptor = os.open(
+    lock_path,
+    os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+    0o600,
+)
+lock_stat = os.fstat(descriptor)
+if (
+    not stat.S_ISREG(lock_stat.st_mode)
+    or lock_stat.st_nlink != 1
+    or lock_stat.st_uid != 0
+    or stat.S_IMODE(lock_stat.st_mode) != 0o600
+):
+    os.close(descriptor)
+    raise SystemExit("production global mutation lock is unsafe")
+try:
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as error:
+    os.close(descriptor)
+    raise SystemExit("another manager mutation is already active") from error
+os.set_inheritable(descriptor, True)
+environment = dict(os.environ)
+environment["KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"] = str(descriptor)
+os.execve("/usr/bin/bash", ["/usr/bin/bash", str(script), *arguments], environment)
+PY
+fi
+
+lock_fd="${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD}"
+if [[ ! "${lock_fd}" =~ ^[0-9]+$ ]]; then
+  echo "pinned rebuild lock descriptor evidence is invalid" >&2
+  exit 2
+fi
+/usr/bin/python3 -I -S - "${lock_fd}" <<'PY'
+import fcntl
+import os
+import pathlib
+import stat
+import sys
+
+descriptor = int(sys.argv[1])
+lock_path = pathlib.Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
+opened = os.fstat(descriptor)
+named = lock_path.lstat()
+if (
+    (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+    or not stat.S_ISREG(opened.st_mode)
+    or opened.st_nlink != 1
+    or opened.st_uid != 0
+    or stat.S_IMODE(opened.st_mode) != 0o600
+):
+    raise SystemExit("production global mutation lock descriptor is unsafe")
+try:
+    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError as error:
+    raise SystemExit("production global mutation lock is not held") from error
+PY
+
+if [[ "${output_dir}" != /* || -e "${output_dir}" ]]; then
+  echo "pinned rebuild output directory must be a new absolute path" >&2
+  exit 2
+fi
+
+parent_dir="$(dirname "${output_dir}")"
+if [[ ! -d "${parent_dir}" || -L "${parent_dir}" ]]; then
+  echo "pinned rebuild output parent is invalid" >&2
+  exit 2
+fi
+parent_uid="$(stat -c '%u' "${parent_dir}")"
+parent_mode="$(stat -c '%a' "${parent_dir}")"
+if [[ "${parent_uid}" != "0" || $((8#${parent_mode} & 022)) -ne 0 ]]; then
+  echo "pinned rebuild output parent is not root locked" >&2
+  exit 2
+fi
+
+install -d -o root -g root -m 0700 "${output_dir}"
+
+python3 -I -S - "${expected_manager_revision}" <<'PY'
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+
+root = pathlib.Path("/opt/kor-travel-docker-manager")
+expected_revision = sys.argv[1]
+
+def root_locked_regular(path: pathlib.Path, mode: int) -> str:
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != mode
+        or metadata.st_nlink != 1
+    ):
+        raise SystemExit(f"trusted Manager evidence is invalid: {path}")
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise SystemExit("trusted Manager evidence requires O_NOFOLLOW")
+    descriptor = os.open(path, flags | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise SystemExit(f"trusted Manager evidence changed while reading: {path}")
+        return os.read(descriptor, 4096).decode("ascii").strip()
+    finally:
+        os.close(descriptor)
+
+root_metadata = root.lstat()
+if (
+    stat.S_ISLNK(root_metadata.st_mode)
+    or not stat.S_ISDIR(root_metadata.st_mode)
+    or root_metadata.st_uid != 0
+    or stat.S_IMODE(root_metadata.st_mode) & 0o022
+):
+    raise SystemExit("trusted Manager root is invalid")
+revision = root_locked_regular(root / ".ktdm-source-revision", 0o644)
+manifest_text = root_locked_regular(root / ".ktdm-release-manifest.json", 0o644)
+if re.fullmatch(r"[0-9a-f]{40}", revision) is None or revision != expected_revision:
+    raise SystemExit("installed Manager source revision does not match expected revision")
+try:
+    manifest = json.loads(manifest_text)
+except json.JSONDecodeError as error:
+    raise SystemExit("trusted Manager release manifest is invalid") from error
+if not isinstance(manifest, dict) or manifest.get("manager_source_revision") != revision:
+    raise SystemExit("trusted Manager release manifest revision mismatch")
+PY
+
+# pinned revision은 코드 상수가 아니라 root 소유 registry가 소유한다(ADR-40).
+# 상수 import는 ImportError로 죽으므로 accessor를 쓴다 — registry 부재·손상은
+# 여기서 비정상 종료로 드러나며, 그게 fail-close의 의도다.
+installed_pinset="$(/opt/kor-travel-docker-manager/backend/.venv/bin/python -I -c '
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    current_pinned_runtime_release,
+)
+print(current_pinned_runtime_release().pinset_sha256)
+')"
+if [[ ! "${installed_pinset}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "installed Manager pinset is invalid" >&2
+  exit 2
+fi
+
+ledger_dir="/var/lib/kor-travel-docker-manager/pinned-rebuild-once"
+install -d -o root -g root -m 0700 "${ledger_dir}"
+python3 -I -S - "${ledger_dir}" "${installed_pinset}" "${expected_manager_revision}" "${output_dir}" <<'PY'
+import json
+import os
+import pathlib
+import stat
+import sys
+
+ledger_dir = pathlib.Path(sys.argv[1])
+pinset = sys.argv[2]
+revision = sys.argv[3]
+output_dir = sys.argv[4]
+metadata = ledger_dir.lstat()
+if (
+    stat.S_ISLNK(metadata.st_mode)
+    or not stat.S_ISDIR(metadata.st_mode)
+    or metadata.st_uid != 0
+    or stat.S_IMODE(metadata.st_mode) != 0o700
+):
+    raise SystemExit("pinned rebuild ledger root is invalid")
+if not hasattr(os, "O_NOFOLLOW"):
+    raise SystemExit("pinned rebuild ledger requires O_NOFOLLOW")
+directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+directory_descriptor = os.open(ledger_dir, directory_flags)
+opened_directory = os.fstat(directory_descriptor)
+if (opened_directory.st_dev, opened_directory.st_ino) != (metadata.st_dev, metadata.st_ino):
+    os.close(directory_descriptor)
+    raise SystemExit("pinned rebuild ledger root changed while reading")
+claim = ledger_dir / pinset
+payload = json.dumps(
+    {"manager_source_revision": revision, "output_directory": output_dir, "pinset_sha256": pinset},
+    ensure_ascii=True,
+    separators=(",", ":"),
+    sort_keys=True,
+).encode("ascii") + b"\n"
+try:
+    descriptor = os.open(
+        claim,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+except FileExistsError as error:
+    os.close(directory_descriptor)
+    raise SystemExit("pinned rebuild candidate was already claimed") from error
+try:
+    os.write(descriptor, payload)
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+try:
+    os.fsync(directory_descriptor)
+finally:
+    os.close(directory_descriptor)
+PY
+
+result_tmp="${output_dir}/.result.json.tmp"
+result_path="${output_dir}/result.json"
+stderr_path="${output_dir}/stderr.log"
+
+set +e
+/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  pinvi-pair rebuild-pinned --confirm --json >"${result_tmp}" 2>"${stderr_path}"
+status="$?"
+set -e
+
+chown root:root "${result_tmp}" "${stderr_path}"
+chmod 0600 "${result_tmp}" "${stderr_path}"
+mv -T "${result_tmp}" "${result_path}"
+
+python3 -I -S - "${result_path}" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if not isinstance(value, dict):
+    raise SystemExit("pinned rebuild result must be a JSON object")
+PY
+
+exit "${status}"

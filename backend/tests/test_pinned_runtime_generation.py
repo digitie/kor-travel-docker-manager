@@ -32,6 +32,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
+    PinviRoleCatalogResetReceipt,
     PinviRoleLifecycleBlock,
     RebuildPhase,
     ensure_pinned_runtime_state_directory,
@@ -882,6 +883,14 @@ def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block()
     assert blocked.pinvi_role_lifecycle_block == receipt
     assert journal_from_payload(blocked.to_payload()) == blocked
 
+    verifier_unavailable = journal.with_pinvi_role_lifecycle_block(
+        PinviRoleLifecycleBlock(
+            stage="pinvi_role_verify",
+            code="role_topology_unavailable",
+        )
+    )
+    assert journal_from_payload(verifier_unavailable.to_payload()) == verifier_unavailable
+
     legacy_payload = journal.to_payload()
     legacy_payload.pop("pinvi_role_credential_environment_rebind")
     legacy_payload.pop("pinvi_role_lifecycle_block")
@@ -904,10 +913,63 @@ def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block()
     with pytest.raises(DeploymentContractError, match="block payload"):
         journal_from_payload(malformed_payload)
 
+    malformed_payload = blocked.to_payload()
+    malformed_payload["pinvi_role_lifecycle_block"] = {
+        "stage": "pinvi_role_open",
+        "code": "role_topology_unavailable",
+    }
+    with pytest.raises(DeploymentContractError, match="block payload"):
+        journal_from_payload(malformed_payload)
+
     with pytest.raises(DeploymentContractError, match="not permitted"):
         _journal_with_map_application_ready().with_pinvi_role_lifecycle_block(receipt)
     with pytest.raises(DeploymentContractError, match="not permitted"):
         blocked.with_pinvi_role_lifecycle_block(receipt)
+
+
+def test_fresh_role_catalog_reset_receipt_requires_database_to_runtime_order() -> None:
+    database_recreated = _journal().transition("reset_intent_durable").with_databases_recreated(
+        pinvi_database_identity=_pinvi_database_identity()
+    )
+    intent = database_recreated
+
+    assert intent.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(state="intent")
+    assert journal_from_payload(intent.to_payload()) == intent
+    with pytest.raises(DeploymentContractError, match="completion is not permitted"):
+        intent.with_pinvi_role_catalog_reset_completed()
+
+    map_runtime_ready = (
+        _journal_with_map_application_ready()
+        .transition("map_dagster_storage_intent_durable")
+        .transition("map_dagster_ready")
+        .transition("map_runtime_ready")
+    )
+    resumed_intent = PinnedRuntimeRebuildJournal(
+        version=map_runtime_ready.version,
+        transaction_id=map_runtime_ready.transaction_id,
+        phase=map_runtime_ready.phase,
+        candidate=map_runtime_ready.candidate,
+        map_application_300_candidate_evidence=map_runtime_ready.map_application_300_candidate_evidence,
+        environment_sha256=map_runtime_ready.environment_sha256,
+        compose_sha256=map_runtime_ready.compose_sha256,
+        resolved_compose_sha256=map_runtime_ready.resolved_compose_sha256,
+        created_at=map_runtime_ready.created_at,
+        pinvi_database_identity=map_runtime_ready.pinvi_database_identity,
+        journal_generation=map_runtime_ready.journal_generation,
+        map_application_300_execution_evidence=map_runtime_ready.map_application_300_execution_evidence,
+        cancel_probe=map_runtime_ready.cancel_probe,
+        pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="intent"),
+    )
+    completed = resumed_intent.with_pinvi_role_catalog_reset_completed()
+
+    assert completed.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(state="completed")
+    assert completed.journal_generation == resumed_intent.journal_generation + 1
+    assert journal_from_payload(completed.to_payload()) == completed
+
+    malformed_payload = intent.to_payload()
+    malformed_payload["pinvi_role_catalog_reset"] = {"state": "completed"}
+    with pytest.raises(DeploymentContractError, match="role catalog reset receipt"):
+        journal_from_payload(malformed_payload)
 
 
 def test_rebuild_journal_sha256_is_canonical_and_evidence_sensitive() -> None:
@@ -996,6 +1058,7 @@ def test_rebuild_journal_rejects_fixture_timestamp_drift() -> None:
     journal = journal.transition("map_dagster_storage_intent_durable")
     journal = journal.transition("map_dagster_ready")
     journal = journal.transition("map_runtime_ready")
+    journal = journal.with_pinvi_role_catalog_reset_completed()
     journal = journal.transition("pinvi_schema_ready")
     journal = journal.transition("pinvi_api_ready")
     armed = PinnedRuntimeCancelProbeReceipt().transition(
@@ -1242,9 +1305,11 @@ _MAP_ATTESTATION_JOURNAL_KEYS = {
 }
 
 # `journal_from_payload`가 optional로 허용하는, map이 모르는 확장 키.
+# 2026-08-28 현재 3종이다(PR #243이 `pinvi_role_catalog_reset`을 추가했다).
 _MANAGER_ONLY_JOURNAL_KEYS = {
     "pinvi_role_credential_environment_rebind",
     "pinvi_role_lifecycle_block",
+    "pinvi_role_catalog_reset",
 }
 
 
@@ -1272,20 +1337,21 @@ def test_rebuild_journal_required_keys_match_the_map_attestation_contract() -> N
     )
 
 
-def test_rebuild_journal_emits_two_keys_the_map_attestation_currently_rejects() -> None:
+def test_rebuild_journal_extension_keys_the_map_attestation_currently_rejects() -> None:
     """**알려진 교차 저장소 괴리를 눈에 보이게 고정한다.**
 
-    `to_payload()`는 두 확장 키를 값이 ``None``일 때도 **항상** 내보내고
+    `to_payload()`는 확장 키를 값이 ``None``일 때도 **항상** 내보내고
     `write_rebuild_journal`은 그대로 기록한다. 그런데 map의 `_exact_dict`는 13키
     정확 일치를 요구하므로, 지금 Manager가 쓰는 journal은 map의 production
     attestation을 통과하지 못한다. 이 괴리는 v8 도입 이후 실재하는 상태다.
 
-    해소 경로는 둘 중 하나이며 **둘 다 map 저장소의 변경을 수반한다**:
-    (a) map의 `_JOURNAL_KEYS`에 두 키를 추가한다, 또는
-    (b) 두 키를 journal 문서 밖(별도 receipt 파일)으로 옮긴다.
+    해소 경로는 오너가 정했다(2026-08-28, `docs/tasks.md`
+    JOURNAL-ATTESTATION-DRIFT): **pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를
+    함께 넣는다.** 그 정렬을 확인하기 전에는 재구축을 실행하지 않는다 — 미루면
+    파괴적 재구축을 끝낸 뒤 attestation 실패로 발견된다.
 
     이 테스트는 "괜찮다"고 말하지 않는다 — 괴리의 **범위가 넓어지지 않도록** 막는다.
-    확장 키가 늘면 여기서 먼저 걸린다.
+    확장 키가 늘면 여기서 먼저 걸리고, 그때는 Map 쪽 합의부터 해야 한다.
     """
 
     declared = _declared_journal_payload_keys()
