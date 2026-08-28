@@ -199,7 +199,8 @@ def test_runtime_setup_uses_ordered_safe_subphases() -> None:
     phases = (
         "runtime_setup_ports",
         "runtime_setup_workspace",
-        "runtime_setup_admission",
+        "runtime_setup_admission_build",
+        "runtime_setup_admission_write",
         "runtime_setup_network",
         "runtime_setup_credentials",
         "runtime_setup_map_config",

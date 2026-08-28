@@ -165,6 +165,8 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "runtime_pin_registry_invalid",
         "runtime_setup",
         "runtime_setup_admission",
+        "runtime_setup_admission_build",
+        "runtime_setup_admission_write",
         "runtime_setup_credentials",
         "runtime_setup_map_config",
         "runtime_setup_network",
@@ -1374,10 +1376,12 @@ def main(expected_revision: str, output: Path) -> int:
         m05_evidence.mkdir(mode=0o700)
         _root_directory(m04_evidence)
         _root_directory(m05_evidence)
-        phase = "runtime_setup_admission"
+        phase = "runtime_setup_admission_build"
+        admission_payload = build_m05_isolated_manager_admission(plan=plan, pair=pair)
+        phase = "runtime_setup_admission_write"
         _write_private_json(
             pinvi_admission,
-            build_m05_isolated_manager_admission(plan=plan, pair=pair),
+            admission_payload,
         )
         phase = "runtime_setup_network"
         subnet, map_api_ip, map_frontend_ip = _map_network_addresses(transaction)
