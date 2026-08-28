@@ -374,6 +374,9 @@ def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_
     assert "launcher-result.json" in launcher
     assert ">/dev/null 2>&1" in launcher[launcher.index("m05_isolated_e2e.py") :]
     assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
+    block_check = launcher[launcher.rindex('"$ktdctl" pin show --json') :]
+    assert "/usr/bin/python3 -I -S -c" in block_check
+    assert "<<'PY'" not in block_check[: block_check.index("fallback_path=")]
 
 
 def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> None:
