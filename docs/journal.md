@@ -35,12 +35,19 @@ fail-open 제거, (6) 공개 사본이 stale이면 `stale`, registry 직접 읽�
 mutation하지 않음.
 
 **검증 범위(무엇을 live로, 무엇을 mock으로 했는지)**:
-- **n150 격리 live E2E 15항목 전부 통과**(전용 홈 디렉터리 + 격리 env, 운영 트리 무변경을
+- **n150 격리 live E2E 16항목 전부 통과**(전용 홈 디렉터리 + 격리 env, 운영 트리 무변경을
   전후로 확인). 부재 시 fail-close, `--confirm` 없는 mutation 거부, 부트스트랩의 0600/0644
   퍼미션, show·verify의 읽기 전용성, seed terminal 등재 유지, **시작 게이트의 terminal
   거부**, 회전의 digest 자동 계산·이력·supersedes, **재기동 없는 즉시 반영**, 회전 뒤
   게이트 통과, 보존본 생성과 terminal rollback 거부, 비-canonical URL 변조 거부,
-  group/world writable 거부, verify의 비정상 종료, 설치 트리 안 회전 거부.
+  group/world writable 거부, verify의 비정상 종료, 설치 트리 안 회전 거부, 그리고
+  **root 전용 registry + 별도 공개 트리 배치에서 비-root 프로세스가 공개 사본을 `ok`로
+  읽는지**까지 실제 root/비-root 프로세스로 확인했다.
+- 세 번째 검증 리뷰가 찾은 P1 하나를 live로 재현·수정했다: 공개 사본 기본 경로가 installer가
+  매 설치 `0700 root:root`로 되돌리는 상태 root 안이라 비-root 백엔드가 traverse조차 못 해
+  조회 API가 영구 `unknown`이 됐을 것이다. 사본을 별도 트리로 분리했다. 또 live 실행 중
+  **root가 사용자 소유 seed를 신뢰 입력으로 읽는 것을 무결성 규칙이 거부**함을 확인했고
+  (설치본은 트리 전체가 root 소유라 정상 경로에서는 만족), 그 전제를 런북에 명시했다.
 - **mock/단위로 대체한 것**: 실제 `rebuild-pinned` 전체 실행(파괴적 — 세 DB recreate와
   일곱 runtime 재기동이라 격리 불가). 게이트가 mutation·락 획득 이전에 거부한다는 사실은
   `rebuild_pinned_runtime()`을 실제로 호출해 source materialize와 락이 호출되지 않았음을

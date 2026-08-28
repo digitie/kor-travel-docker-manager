@@ -76,6 +76,10 @@ release 설치가 회전 결과를 조용히 되돌리기 때문이다.
 - registry 파일은 root 소유 `0600`, 공개 사본은 `0644`여야 하며 group/other 쓰기 권한이
   있으면 읽기 자체가 거부된다. `config/runtime-pins.seed.json`은 추적되는 **읽기 전용
   seed**이며 회전 대상이 아니다.
+- **seed도 root 소유여야 한다.** root가 사용자 소유 파일을 신뢰 입력으로 읽지 않기
+  때문이다. trusted installer는 트리 전체를 `root:root`로 설치하므로 정상 경로에서는
+  자동으로 만족한다. 수동으로 seed를 옮겨 왔다면 `install -o root -g root -m 0644`로
+  배치한다(사용자 소유 seed는 `pin init`이 거부한다 — n150 실측).
 
 #### 재시도 금지(terminal) pinset과 재구축 선행 절차
 
