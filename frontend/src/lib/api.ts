@@ -138,6 +138,58 @@ export type BackupListResponse = {
   backups: StandaloneBackupManifest[];
 };
 
+export type RuntimePinSource = {
+  role: 'map' | 'pinvi';
+  url: string;
+  revision: string;
+};
+
+/** terminal(재시도 금지) 판정을 받은 candidate pinset. `phase`가 있으면 그 상태의
+ * 재개만 막고, 없으면 그 pinset의 모든 실행을 막는다. */
+export type BlockedPinset = {
+  pinset_sha256: string;
+  map_revision: string;
+  pinvi_revision: string;
+  reason: string;
+  blocked_at: string;
+  phase?: string | null;
+};
+
+export type RuntimePinRotation = {
+  pinset_sha256: string;
+  rotated_at: string;
+  rotated_by: string;
+  reason: string;
+  supersedes_pinset_sha256?: string | null;
+};
+
+/** `GET /api/v1/runtime-pins` 응답. 회전은 root 전용 `ktdctl pin rotate`이므로 이
+ * API는 읽기만 한다. registry를 읽을 수 없으면 값을 추측하지 않고 `unknown`이다. */
+export type RuntimePinsResponse = {
+  status: 'ok' | 'unknown';
+  source: string | null;
+  detail?: string | null;
+  published_at?: string | null;
+  pins: {
+    release_version: number;
+    pinset_sha256: string;
+    sources: RuntimePinSource[];
+    rotated_at: string;
+    rotated_by: string;
+    reason: string;
+  } | null;
+  lifecycle?: {
+    current_pinset_is_blocked: boolean;
+    blocked_pinsets: BlockedPinset[];
+    history: RuntimePinRotation[];
+  };
+  summary?: {
+    state: 'ok' | 'action_required';
+    text: string;
+    next_action: string;
+  };
+};
+
 type ApiRequestInit = RequestInit & {
   redirectOnUnauthorized?: boolean;
 };
