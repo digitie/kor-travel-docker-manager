@@ -398,6 +398,36 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_source_status(args: argparse.Namespace) -> int:
+    """배포 provenance를 사람 말로 출력한다. 관측만 하므로 --confirm이 없다."""
+
+    from kor_travel_docker_manager.services.source_status import collect_source_status
+
+    payload = collect_source_status(force_refresh=args.refresh)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        summary = payload["summary"]
+        print(f"요약: {summary['text']}")
+        if summary.get("next_action"):
+            print(f"다음: {summary['next_action']}")
+        print()
+
+        def line(label: str, row: dict[str, Any]) -> None:
+            print(f"  {label:22s} {row.get('human', {}).get('text', '')}")
+
+        line("설치 기록", payload["manager"])
+        for row in payload["checkouts"]:
+            line(f"작업 사본 {row['label']}", row)
+        for row in payload["running_images"]:
+            line(f"실행 중 {row['label']}", row)
+        for row in payload["contracts"]:
+            line(row["title"], row)
+        line(payload["environment"]["title"], payload["environment"])
+    # 관측 결과가 '조치 필요'면 비정상 종료로 알린다 — 스크립트에서 게이트로 쓸 수 있다.
+    return 1 if payload["summary"]["level"] == "action_required" else 0
+
+
 def _cmd_pin_show(args: argparse.Namespace) -> int:
     try:
         registry = load_runtime_pin_registry()
@@ -617,6 +647,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="API/MCP/scheduler/UI를 canonical single-file source로 재생성함을 확인합니다.",
     )
     activate_concierge.set_defaults(func=_cmd_activate_canonical_concierge)
+
+    source_status = subparsers.add_parser(
+        "source-status",
+        help="배포 provenance(설치 기록·작업 사본·실행 중 이미지·계약)를 조회합니다.",
+    )
+    source_status.add_argument(
+        "--refresh", action="store_true", help="TTL 캐시를 무시하고 다시 관측합니다."
+    )
+    source_status.add_argument("--json", action="store_true")
+    source_status.set_defaults(func=_cmd_source_status)
 
     pin = subparsers.add_parser(
         "pin",

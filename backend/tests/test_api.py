@@ -1411,3 +1411,43 @@ def test_get_deployment_readiness_requires_authentication():
     response = client.get("/api/v1/deployment-readiness")
 
     assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.collect_source_status")
+def test_get_source_status_returns_the_card(mock_collect):
+    login_client()
+    mock_collect.return_value = {
+        "schema": "ktdm.source-status.v1",
+        "collected_at": "2026-08-28T00:00:00Z",
+        "cached": False,
+        "summary": {"level": "ok", "text": "최신 상태입니다", "next_action": ""},
+        "manager": {"state": "recorded"},
+        "checkouts": [],
+        "running_images": [],
+        "contracts": [],
+        "environment": {"state": "complete"},
+    }
+
+    response = client.get("/api/v1/source-status")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["level"] == "ok"
+    mock_collect.assert_called_once_with(force_refresh=False)
+
+
+@patch("kor_travel_docker_manager.api.routes.collect_source_status")
+def test_get_source_status_honours_refresh(mock_collect):
+    login_client()
+    mock_collect.return_value = {"schema": "ktdm.source-status.v1", "summary": {"level": "ok"}}
+
+    client.get("/api/v1/source-status?refresh=true")
+
+    mock_collect.assert_called_once_with(force_refresh=True)
+
+
+def test_get_source_status_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/source-status")
+
+    assert response.status_code == 401

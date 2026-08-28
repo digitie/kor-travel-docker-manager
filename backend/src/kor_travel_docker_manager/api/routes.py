@@ -22,6 +22,7 @@ from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
 )
+from kor_travel_docker_manager.services.source_status import collect_source_status
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
@@ -207,6 +208,19 @@ def _runtime_pin_summary(
         "text": f"고정된 pinset이 정상 등록돼 있습니다. 마지막 회전: {rotated_at or '알 수 없음'}",
         "next_action": "",
     }
+
+
+@router.get("/source-status")
+def get_source_status(refresh: bool = Query(default=False)):
+    """Read-only deployment provenance card (design P3/P4).
+
+    Observation only — git and docker are invoked read-only and nothing is written.
+    A collection failure degrades that one row to `확인할 수 없습니다`, so this
+    handler has no try/except: the service is total by contract.
+
+    `refresh=true` bypasses the TTL cache. That still spawns no mutation, so there
+    is no audit row; the durable-audit pattern belongs to mutations."""
+    return collect_source_status(force_refresh=refresh)
 
 
 @router.get("/deployment-readiness")

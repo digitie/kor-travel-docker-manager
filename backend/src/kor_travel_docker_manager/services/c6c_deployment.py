@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Final, Literal, TypeVar, cast
 from urllib.parse import quote, unquote, urlencode, urlsplit
 
 import yaml
@@ -36,6 +36,11 @@ _MAP_API_SERVICE = "kor-travel-map-api"
 # 봉인된다. Map release는 ENTRYPOINT를 절대 경로로 고정하고 CMD를 비워 둔다.
 _MAP_API_IMMUTABLE_ENTRYPOINT = ["/app/docker/api-entrypoint.sh"]
 _MAP_API_IMMUTABLE_COMMAND = None
+# 관측 카드(source_status)가 같은 값을 두 번 적지 않게 공개 별칭만 준다 — 값을
+# 복제하면 화면이 보여 주는 기대 계약과 실제 강제 지점이 조용히 갈라진다. 이 계약은
+# 실제로 사흘 만에 정반대로 뒤집힌 적이 있어서(ENTRYPOINT↔CMD) 특히 위험하다.
+MAP_API_IMMUTABLE_ENTRYPOINT: Final[tuple[str, ...]] = tuple(_MAP_API_IMMUTABLE_ENTRYPOINT)
+MAP_API_IMMUTABLE_COMMAND: Final[None] = _MAP_API_IMMUTABLE_COMMAND
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _CONCIERGE_API_SERVICE = "kor-travel-concierge-api"
 _CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
