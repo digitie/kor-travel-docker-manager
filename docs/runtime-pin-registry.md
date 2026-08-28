@@ -71,9 +71,11 @@ fallback으로 바뀌지 않는다.
 
 `run-pinned-rebuild-once`와 `run-m05-isolated-e2e-once`는 실행권을 claim한 뒤 host-global mutation lock을
 프로세스 수명 동안 보유한다. SSH client가 즉시 종료됐거나 출력 회수가 지연됐다는 사실은 실패·종료·차단의
-증거가 아니다. **lock이 보유된 동안에는** 같은 pinset의 rebuild/E2E 재실행, `pin block`, 다음 pair 회전을
-하지 않고 안전한 lock 상태만 기다린다. lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact
-Map/PinVi/pinset, `published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
+증거가 아니다. **별도 외부 호출은 lock이 보유된 동안** 같은 pinset의 rebuild/E2E 재실행, `pin block`, 다음
+pair 회전을 하지 않고 안전한 lock 상태만 기다린다. root `ktdctl pin block`은 이 상태에서 코드로 거절된다.
+launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descriptor 안에서만 terminal block을 기록할 수 있다.
+외부 호출은 lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact Map/PinVi/pinset,
+`published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
 
 이 절차는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지 않는다. 공개 gate가
 `match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그 뒤에만 새 root-owned leaf에서 M04/M05 one-shot을

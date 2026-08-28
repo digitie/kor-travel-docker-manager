@@ -1,8 +1,12 @@
 import argparse
+import fcntl
 import json
 import os
+import stat
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +63,9 @@ from kor_travel_docker_manager.services.standalone_backup import (
 DIRECT_ENSURE_ALIASES = {
     alias for target in list_targets() for alias in [target["id"], *target.get("aliases", [])]
 }
+
+_GLOBAL_MUTATION_LOCK_PATH = Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
+_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV = "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
 
 
 def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -> int:
@@ -608,14 +615,18 @@ def _cmd_pin_block(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("pin block requires --confirm (no file was written)", file=sys.stderr)
         return 2
+    if not _running_as_root():
+        print("pin block requires root", file=sys.stderr)
+        return 2
     try:
-        registry = block_runtime_pinset(
-            pinset_sha256=args.pinset,
-            reason=args.reason,
-            map_revision=args.map_revision,
-            pinvi_revision=args.pinvi_revision,
-            phase=args.phase,
-        )
+        with _terminal_pin_block_mutation_lock():
+            registry = block_runtime_pinset(
+                pinset_sha256=args.pinset,
+                reason=args.reason,
+                map_revision=args.map_revision,
+                pinvi_revision=args.pinvi_revision,
+                phase=args.phase,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -645,6 +656,68 @@ def _running_as_root() -> bool:
 
     geteuid = getattr(os, "geteuid", None)
     return geteuid is None or geteuid() == 0
+
+
+@contextmanager
+def _terminal_pin_block_mutation_lock() -> Iterator[None]:
+    """외부 terminal block을 global mutation과 직렬화한다.
+
+    one-shot launcher는 검증한 driver 종료 뒤 상속 받은 같은 open-file-description으로
+    이 경계를 재진입한다. 반면 별도 SSH/CLI 호출은 lock이 비어 있을 때만 이 registry
+    mutation을 수행할 수 있다. 따라서 출력 회수 지연을 실패로 오인해 실행 중 candidate를
+    premature terminal로 봉인할 수 없다.
+    """
+
+    inherited_text = os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, "")
+    if inherited_text:
+        if not inherited_text.isdecimal():
+            raise DeploymentContractError("terminal pin block inherited lock is invalid")
+        descriptor = int(inherited_text)
+        try:
+            opened = os.fstat(descriptor)
+            named = _GLOBAL_MUTATION_LOCK_PATH.lstat()
+        except OSError as exc:
+            raise DeploymentContractError("terminal pin block inherited lock is invalid") from exc
+        if (
+            (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+            or not stat.S_ISREG(opened.st_mode)
+            # `_cmd_pin_block` 자체가 root 전용이므로 production에서는 root FD만
+            # 수용한다. test/local에서는 실행 uid와의 동등성으로 같은 ownership
+            # invariant를 확인한다.
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_nlink != 1
+        ):
+            raise DeploymentContractError("terminal pin block inherited lock is unsafe")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise DeploymentContractError("terminal pin block inherited lock is not held") from exc
+        yield
+        return
+
+    try:
+        descriptor = os.open(
+            _GLOBAL_MUTATION_LOCK_PATH,
+            os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except FileNotFoundError:
+        # 개발·테스트처럼 launcher를 한 번도 실행하지 않은 환경에는 active global
+        # mutation이 없으므로, registry 자체의 root ownership gate에 맡긴다.
+        yield
+        return
+    except OSError as exc:
+        raise DeploymentContractError("terminal pin block lock is unavailable") from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise DeploymentContractError(
+                "terminal pin block is refused while a Manager mutation is active"
+            ) from exc
+        yield
+    finally:
+        os.close(descriptor)
 
 
 _ACTOR_LENGTH_LIMIT = 200
