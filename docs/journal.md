@@ -2,6 +2,21 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 `5512ce12…` launcher safe-result terminal 보존
+
+Map `73150672d26866122e231c085e9beefe81bfd776`·PinVi
+`d8dc386dec7a800b83d457e1753b63f51470afc6`·Manager
+`c31c8448fcade3ace84b0dbd0682328283ae20b9`·pinset
+`5512ce12ca316e10404b9faf60eba8130815a4c7cdb3b91f4d8c80de1805cc8d`는 최신 CI와 exact-head 전문 적대
+리뷰 두 건의 GO, clean trusted release, atomic pair rotation과 registry/public-copy gate 뒤 n150 isolated
+M04/M05 launcher를 정확히 한 번 실행했다. launcher exit은 1이고 권위 있는 고정 결과는
+`launcher_safe_result_unavailable`이었다. HTTP 원문·컨테이너 로그·환경값·output leaf는 읽거나 보관하지 않았다.
+
+후속 gate는 exact Map·PinVi·pinset의 unconditional terminal entry와 public copy를 확인했다. 따라서 이
+candidate와 source pair·Manager source·output leaf는 재실행하지 않는다. 다음 후보는 Map `fa55316d…` terminal
+기록, 새 PinVi paired provenance, 이 기록을 반영한 새 Manager source를 새 atomic pinset으로 결박하고 CI와 전문
+적대 리뷰 두 건을 다시 통과한 경우에만 만들 수 있다.
+
 ## 2026-08-28 — M05 launcher snapshot·safe envelope 재검증 보강
 
 safe-result 부재 fallback의 전문 적대 재리뷰에서 두 P1을 확인했다. phase-scoped 차단만
