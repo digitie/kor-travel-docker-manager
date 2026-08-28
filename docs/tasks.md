@@ -13,8 +13,8 @@
 |:---|:---|:---:|:---|
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
-| **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (1부 트랙 KUM-M1~M4 구현 완료) | `[/]` | 1부 잔여(KUM-M5·M6·M7)와 v3 문서 3부의 나머지 태스크 분해 |
-| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종이 Map attestation의 exact-dict를 통과하지 못한다 (**다음 재구축의 선행 조건**) | `[ ]` | pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를 함께 넣고, 정렬을 확인한 뒤에 재구축 |
+| **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (M1~M3 완료, M4의 public generation API/CLI 완료) | `[/]` | M4 UI 패널·확장 receipt/fence 관측과 M5~M7, v3 문서 3부의 나머지 태스크 분해 |
+| **JOURNAL-ATTESTATION-DRIFT** | v8 journal 확장 키 3종을 Map attestation exact-dict에 동시 정렬 | `[/]` | Manager #254와 Map #1112가 모두 병합되고 CI가 exact 16-key·committed semantics를 확인한 뒤에만 새 재구축 |
 | **NONROOT-BACKEND** | n150 백엔드를 전용 서비스 계정으로 내린다 (환경변수 기반 첫 설계는 ADR-41에서 기각) | `[ ]` | 소유자는 root로 두고 접근만 그룹으로 연다 — lease 디렉터리 `0710 root:<svcgrp>`, lock 파일도 tmpfiles `f` 타입으로 `0660 root:<svcgrp>` 선생성, rebuild lease는 `0600 root:root` 유지. 서비스 identity는 `os.environ`이 아니라 `.env` 스냅샷에서 파라미터로 주입. 격리 환경에서 root/서비스 계정 양쪽 mutation 1회씩 검증 |
 
 ## M05 재개 규율
@@ -200,11 +200,13 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   P2 권한 모델 정정(root-side publisher 의존), P6 rebuild journal 충돌 위험, preflight
   readiness·typed 진단 소비·계약 소유 경계 명문화, 태스크 분해(3부: KUM-M1~18,
   KUM-MAP-1~4, KUM-PV-1~4).
-- [x] 1부 트랙 구현 완료(2026-08-28, ADR-40): KUM-M1(registry 파일화 + `ktdctl pin`
+- [/] 1부 트랙 구현(2026-08-28, ADR-40): KUM-M1(registry 파일화 + `ktdctl pin`
   패밀리 + 중복 상수 제거), KUM-M2(pinset lifecycle·terminal 자동 거부·rollback 제한·
-  d9 상수 이관), KUM-M3(root-side world-readable publisher), KUM-M4(`GET
-  /api/v1/runtime-pins` + 배포 버전 고정 패널). 전문 적대 리뷰 2건 반영,
-  n150 격리 live E2E 15항목 통과, backend 751 tests.
+  d9 상수 이관), KUM-M3(root-side world-readable **registry** publisher)는 완료됐다.
+  KUM-M4는 `GET /api/v1/runtime-pins`·`GET /api/v1/pinned-runtime/generation`, v6/v8
+  공개 사본의 strict reader/publisher, `ktdctl pin publish-generation`까지 완료됐고,
+  배포 정합성 UI panel 및 builder receipt/fence 관측이 남았다. 전문 적대 리뷰 2건 반영,
+  n150 격리 live E2E 15항목과 backend 751 tests는 당시 범위의 근거로만 보존한다.
 - [x] KUM-M5 완료(2026-08-28): UI는 회전 **요청**만 기록하고 적용은 root
   `ktdctl pin apply-pending --confirm`이 한다. 요청 저장소는 registry와 다른 트리의
   backend-writable 파일이며 어떤 pin 로드 경로도 읽지 않는다(회귀로 결박). 계약은
@@ -231,8 +233,9 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   대조한다. 파괴적 `restore`는 이 계획이 실제 운영에서 무엇을 잡아내는지 본 뒤에
   결정한다.
 - [x] KUM-M14 완료(2026-08-28, **오너 결정: 버튼이 아니라 게이트된 CLI 카드**):
-  `GET /api/v1/pinned-rebuild/preflight`가 차단 사유를 판정하고 화면은 실행할 명령만
-  준다. 실행 경로를 만들지 않는다는 사실을 회귀로 결박했다.
+  `GET /api/v1/pinned-rebuild/preflight`가 registry와 public generation의
+  `match|pending_rebuild`를 함께 판정하고 화면은 실행할 명령만 준다. 실행 경로를 만들지
+  않는다는 사실과 partial·drift generation에서 fail-close한다는 사실을 회귀로 결박했다.
 - [ ] **다음 pin 회전 전 필수**: 고정 PinVi revision이 `PINVI_ROLE_CATALOG_RESET_ONLY`와
   permit/result 경로 3종을 구현해야 한다. 현재 `97d2f924…`는 구현하지 않아 readiness가
   `missing`으로 보고한다(n150 실측). 회전 대상 revision을 그 기준으로 고른다.

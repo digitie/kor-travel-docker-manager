@@ -260,7 +260,10 @@ v3 교차 감사의 결론을 한 문장으로 요약하면: **Manager가 이미
 - `ktdctl pin init --confirm` — 최초 부트스트랩(위).
 - `ktdctl pin show [--json]` — registry 내용 + digest + 회전 메타 + **[v3]** lifecycle
   (`history`·`blocked_pinsets` 포함). 읽기 전용.
-- `ktdctl pin verify [--json]` — digest 재계산 대조 + canonical URL 대조. 읽기 전용.
+- `ktdctl pin verify [--json]` — digest·canonical URL과 registry/generation public copy strict
+  대조. 읽기 전용. pair 회전 직후의 완전한 이전 committed generation 또는 registry가 exact로
+  차단한 terminal generation은 `pending_rebuild`로 분리한다. `pinned-rebuild/preflight`도 같은
+  `match|pending_rebuild` gate를 써서 서로 다른 실행 안내를 내지 않는다.
 - `ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm` —
   검증 → digest 자동 계산 → atomic write → 이전 파일을
   `runtime-pins.<old-digest>.json`으로 보존(회전 이력 = 롤백 소스) → backend용
@@ -890,8 +893,8 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 |---|---|---|---|
 | KUM-M1 | pin registry 파일화: `runtime-pins.json` 스키마+로더(검증 유지)+`KTDM_RUNTIME_PINS_FILE`+캐시(mtime+digest)+`pin init/show/verify/rotate/rollback`+중복 상수 삭제+테스트 재작성(값 고정→구조 검증) | §1.2 (a)(a′)(b), Q1 | — |
 | KUM-M2 | pinset lifecycle: `blocked_pinsets`/`history`/`supersedes` 필드, `pin block`, rotate 시 terminal 자동 등재, `rebuild-pinned`의 terminal/재실행 자동 거부, rollback의 terminal 제한, d9 상수 3종 이관·삭제 | §1.3 P10-1·2, 진단 3 | KUM-M1 |
-| KUM-M3 | root-side world-readable publisher: rotate/init/rebuild가 pin·manifest·journal의 secret-free 사본을 backend 가독 경로에 원자 기록(installer 0644 선례 답습), backend 로더의 digest 재계산+stale fail-close | §1.2 (c), 진단 6 | KUM-M1 |
-| KUM-M4 | 조회 API 2종: `GET /runtime-pins`(lifecycle·history·generation 일치 여부·Manager provenance 동봉), `GET /pinned-runtime/generation`(manifest/journal 원본+envelope summary+terminal 분류+receipt/fence 상태+버전 명시) + 배포 정합성 패널 UI | P2, §1.3 P10-2 | KUM-M3 |
+| KUM-M3 | root-side world-readable **pin registry** publisher: rotate/init가 pin의 secret-free 사본을 backend 가독 경로에 원자 기록, backend 로더의 digest 재계산+stale fail-close (**완료 2026-08-28**) | §1.2 (c), 진단 6 | KUM-M1 |
+| KUM-M4 | 조회 API 2종: `GET /runtime-pins`(lifecycle·history·generation 일치 여부·Manager provenance 동봉), `GET /pinned-runtime/generation`(manifest/journal 원본+envelope summary+terminal 분류+receipt/fence 상태+버전 명시) + 배포 정합성 패널 UI. **2026-08-28 정정**: public v6/v8 publisher·strict reader·`ktdctl pin publish-generation`·API raw/envelope까지 완료. UI panel 및 P2-4의 builder receipt/fence 관측은 남은 범위다 | P2, §1.3 P10-2 | KUM-M3 |
 | KUM-M5 | UI 2-step pin rotate: 회전 요청 폼→audit row 기록, `pin apply-pending --confirm` CLI, 대기 중 요청 표시 (**완료 2026-08-28** — 요청 저장소는 registry와 다른 트리의 backend-writable 파일이며 어떤 로드 경로도 읽지 않는다) | §1.2 (c), Q4 | KUM-M1, KUM-M4 |
 | KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 (**부분 완료 2026-08-28** — (iii) 계약 결박 env read-only화와 `pinvi_role_bootstrap_modes` readiness 검사는 완료. (i)(ii)는 P10-3 정정대로 KUM-PV-3 선행이며 Manager 단독으로는 불가능) | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
 | KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 (**완료 2026-08-28** — wheelhouse는 검사 불가로 판정해 이유와 함께 `unavailable_checks`로 노출. 화면은 pin 패널이 아니라 `SourceStatusPanel`에 붙였다: pin 패널이 M5로 mutation 패널이 됐기 때문) | §1.3 P10-4, 진단 5 | KUM-M4(패널) |

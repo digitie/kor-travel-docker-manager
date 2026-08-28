@@ -211,7 +211,8 @@ fail-close한다. 따라서 파일을 편집해 임의 저장소를 가리키게
 
 ```bash
 ktdctl pin show [--json]     # 현재 pin·digest·회전 메타·차단 목록 (읽기 전용)
-ktdctl pin verify [--json]   # digest 재계산·canonical URL·공개 사본 정합 (읽기 전용)
+ktdctl pin verify [--json]   # registry와 v6/v8 generation 공개 사본 strict 정합 (읽기 전용)
+ktdctl pin publish-generation --manifest <absolute-v6-path> --journal <absolute-v8-path> --confirm
 ktdctl pin init --confirm    # 호스트 최초 1회 (기본 seed: config/runtime-pins.seed.json)
 ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm
 ktdctl pin rotate-pair --map-revision <40-hex> --pinvi-revision <40-hex> --reason "..." --confirm
@@ -237,6 +238,11 @@ ktdctl pin clear-pending --request-id <id> --confirm
   registry 트리는 installer가 매 설치마다 `0700`으로 되돌려 비-root가 traverse할 수 없다.
   사본이 registry보다 오래되면 `stale`, 사본 없이 registry를 직접 읽었으면 `degraded`,
   둘 다 읽을 수 없으면 `unknown`으로 표시하고 값을 추측하지 않는다.
+- **generation 공개 계약**: v6 manifest·v8 journal은 root private state에 계속 두고,
+  writer와 root `pin publish-generation`만 같은 public 트리에 `0644` 원본 사본을 원자
+  기록한다. backend·Map·PinVi의 관측 정본은
+  `GET /api/v1/pinned-runtime/generation`이며, 사람이 읽는 summary·terminal은 API
+  envelope에만 둔다. raw 문서 키를 바꾸지 않는다.
 - **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 pin 회전은
   실행 중 Manager에 즉시 반영된다.
 - **회전 이력과 롤백**: rotate는 digest를 자동 계산하고 이전 registry를
@@ -259,7 +265,7 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 
 - **조건 없는 차단**(`phase` 없음) — 그 pinset의 모든 실행을 금지한다.
   `rebuild-pinned`가 **어떤 mutation보다 먼저** 거부한다. 해소 경로는
-  `ktdctl pin rotate`로 새 pinset을 만드는 것뿐이다(의도적으로 `pin unblock`은 없다).
+  `ktdctl pin rotate-pair`로 새 Map·PinVi pinset을 만드는 것뿐이다(의도적으로 `pin unblock`은 없다).
 - M05처럼 Map·PinVi compatibility pair를 바꿀 때는 `ktdctl pin rotate-pair`만 사용한다.
   terminal current pinset의 role별 `pin rotate`는 intermediate tuple을 만들지 않도록 거부된다.
 - **phase 한정 차단** — 그 phase의 journal 재개만 금지한다. 기존 d9 admission과
@@ -268,9 +274,10 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
   "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다.
 - **차단 하한선은 코드가 소유한다.** registry가 손상되거나 오래된 사본으로 시딩돼도
   d9 계열 historical 차단은 유지된다 — 목록은 데이터, 하한선은 코드다.
-- `pin verify`는 현재 pinset이 재시도 금지 상태이거나 공개 사본이 최신이 아니면
-  비정상 종료한다. digest가 맞다는 이유만으로 0을 반환하면 운영자가 rebuild 직전에
-  잘못 안심하게 되기 때문이다.
+- `pin verify`는 현재 pinset이 재시도 금지 상태이거나 registry/generation 공개 사본이
+  incomplete·malformed·drift이면 비정상 종료한다. pair 회전 직후의 완전한 이전 generation은
+  `pending_rebuild`로 알리되 current라고 부르지 않는다. digest가 맞다는 이유만으로 0을 반환하면
+  운영자가 rebuild 직전에 잘못 안심하게 되기 때문이다.
 - 의도적으로 `pin unblock`은 제공하지 않는다. 해소 경로는 새 revision으로의 회전이다.
 
 ### 5.2 API
@@ -292,9 +299,10 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `POST` | `/api/v1/backups/{role}` | 백업 생성을 시작하고 `202` + job id를 돌려준다. 동시 실행은 `409` |
 | `GET` | `/api/v1/backups/{role}/jobs[/{job_id}]` | job 상태 폴링. `/jobs`는 새로고침 뒤 재접속용 최신 job |
 | `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록·대기 중인 회전 요청. registry 회전은 root `ktdctl pin rotate`/`pin rotate-pair`/`pin apply-pending` 전용이라 이 route는 registry를 쓰지 않는다 |
+| `GET` | `/api/v1/pinned-runtime/generation` | root가 발행한 v6 manifest·v8 rebuild journal 원본과 terminal·진행 요약. backend는 private state를 읽지 않으며, raw 문서 키를 바꾸지 않는다 |
 | `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --expect-revision <40-hex> --confirm` 전용이다 |
 | `GET` | `/api/v1/deployment-readiness` | 재구축 사전 점검(관측 전용). 무엇도 pull하지 않으며 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. 검사하지 않기로 **결정한** 항목은 `unavailable_checks`로 이유와 함께 노출한다. 검사 4종: Compose 단일 파일, 사이드카 필수 스크립트, 고정 PinVi revision의 역할 부트스트랩 계약, Map 후보 빌드의 고정 Python base image |
-| `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
+| `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). registry뿐 아니라 공개 generation이 `match` 또는 회전 직후의 유효한 `pending_rebuild`인지 함께 요구한다. **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
 | `GET` | `/api/v1/source-status` | 설치 기록·작업 사본·실행 중 이미지·계약 일치·환경 완결성(관측 전용) |
 | `GET` | `/api/v1/system/disk-usage` | `docker system df`를 사람 말로 번역. 정리(prune)는 파괴적이라 CLI에만 있다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |

@@ -47,6 +47,15 @@ def _guard(verdict: str = "no_journal") -> dict[str, Any]:
     }
 
 
+def _generation(
+    *, status: str = "ok", binding: str = "match"
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "pinset_binding": {"status": binding},
+    }
+
+
 @pytest.fixture(autouse=True)
 def _clear_readiness_cache():
     from kor_travel_docker_manager.services.deployment_readiness import (
@@ -64,8 +73,14 @@ def _patch(
     pins: dict[str, Any] | None = None,
     guard: dict[str, Any] | None = None,
     readiness: dict[str, Any] | None = None,
+    generation: dict[str, Any] | None = None,
 ) -> None:
     monkeypatch.setattr(preflight, "read_published_runtime_pins", lambda: pins or _pins())
+    monkeypatch.setattr(
+        preflight,
+        "read_published_pinned_runtime_generation",
+        lambda: generation or _generation(),
+    )
     monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", lambda: guard or _guard())
     # 실제 함수는 `force_refresh` 키워드를 받는다 — 스텁이 그것을 못 받으면 TypeError가
     # 광범위 except에 먹혀 "관측 실패"로 둔갑하고, 테스트가 엉뚱한 경로를 검증하게 된다.
@@ -124,6 +139,45 @@ def test_a_phase_scoped_block_does_not_block_the_start(
 
     assert payload["blockers"] == []
     assert payload["can_start"] is True
+
+
+@pytest.mark.parametrize(
+    ("generation", "expected_status", "expected_binding"),
+    [
+        (_generation(status="unknown", binding="unknown"), "unknown", "unknown"),
+        (_generation(status="unverified", binding="unknown"), "unverified", "unknown"),
+        (_generation(status="ok", binding="drift"), "ok", "drift"),
+        (_generation(status="ok", binding="unknown"), "ok", "unknown"),
+    ],
+)
+def test_an_invalid_public_generation_withholds_the_green_light(
+    monkeypatch: pytest.MonkeyPatch,
+    generation: dict[str, Any],
+    expected_status: str,
+    expected_binding: str,
+) -> None:
+    _patch(monkeypatch, generation=generation)
+
+    payload = preflight.read_pinned_rebuild_preflight()
+
+    assert payload["can_start"] is False
+    assert payload["summary"]["state"] == "unverified"
+    assert [row["code"] for row in payload["unverified"]] == [
+        "GENERATION_UNVERIFIED"
+    ]
+    assert f"status={expected_status}" in payload["unverified"][0]["text"]
+    assert f"binding={expected_binding}" in payload["unverified"][0]["text"]
+
+
+def test_a_valid_pending_generation_allows_the_new_pair_to_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch(monkeypatch, generation=_generation(binding="pending_rebuild"))
+
+    payload = preflight.read_pinned_rebuild_preflight()
+
+    assert payload["can_start"] is True
+    assert payload["unverified"] == []
 
 
 def test_a_non_rebuildable_mode_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,6 +283,7 @@ def test_the_entry_point_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError("호스트를 읽을 수 없음")
 
     monkeypatch.setattr(preflight, "read_published_runtime_pins", explode)
+    monkeypatch.setattr(preflight, "read_published_pinned_runtime_generation", explode)
     monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", explode)
     monkeypatch.setattr(preflight, "read_deployment_readiness", explode)
 
@@ -269,6 +324,9 @@ def test_force_refresh_reaches_the_readiness_reader(
         return _readiness()
 
     monkeypatch.setattr(preflight, "read_published_runtime_pins", lambda: _pins())
+    monkeypatch.setattr(
+        preflight, "read_published_pinned_runtime_generation", lambda: _generation()
+    )
     monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", lambda: _guard())
     monkeypatch.setattr(preflight, "read_deployment_readiness", readiness)
 

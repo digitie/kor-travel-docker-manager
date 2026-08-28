@@ -1359,6 +1359,38 @@ def test_get_runtime_pins_requires_authentication():
     assert response.status_code == 401
 
 
+@patch("kor_travel_docker_manager.api.routes.read_published_pinned_runtime_generation")
+def test_get_pinned_runtime_generation_returns_public_contract_and_summary(mock_read):
+    login_client()
+    mock_read.return_value = {
+        "status": "ok",
+        "source": "published_copy",
+        "manifest": {"version": 6, "active_generation": {"pinset_sha256": "a" * 64}},
+        "journal": {"version": 8, "phase": "committed", "candidate": {"pinset_sha256": "a" * 64}},
+        "terminal": None,
+        "summary": {
+            "state": "committed",
+            "text": "고정된 runtime 세대가 커밋되어 있습니다.",
+            "next_action": "",
+            "manifest_version": 6,
+            "journal_version": 8,
+        },
+    }
+
+    response = client.get("/api/v1/pinned-runtime/generation")
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["state"] == "committed"
+    assert response.json()["manifest"]["version"] == 6
+    mock_read.assert_called_once_with()
+
+
+def test_get_pinned_runtime_generation_requires_authentication():
+    client.cookies.clear()
+
+    assert client.get("/api/v1/pinned-runtime/generation").status_code == 401
+
+
 # --- KUM-M10: 관리자 비밀번호 변경 ---------------------------------------------
 
 
