@@ -70,3 +70,7 @@ win_venv/
 
 # root-only Compose boundary retirement evidence (운영 source가 아님)
 .retired-compose-overrides/
+
+# runtime pin registry의 host-local 산출물 (공개 사본과 digest 보존본)
+.ktdm-runtime-pins.json
+config/runtime-pins.*.json

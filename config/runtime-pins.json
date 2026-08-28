@@ -1,0 +1,38 @@
+{
+  "schema": "kor-travel-docker-manager.runtime-pin-registry.v1",
+  "release_version": 5,
+  "sources": [
+    {
+      "role": "map",
+      "url": "https://github.com/digitie/kor-travel-map.git",
+      "revision": "9c64e862c9da82016e12038e2e135526b300ca9d"
+    },
+    {
+      "role": "pinvi",
+      "url": "https://github.com/digitie/pinvi.git",
+      "revision": "97d2f924678f68c9aed7f60dbf41e73311012ebd"
+    }
+  ],
+  "pinset_sha256": "cbb577d37e664c56d11ed97f70117911b77547921857287fa87da1b73ce24fc5",
+  "rotated_at": "2026-08-27T12:03:00Z",
+  "rotated_by": "seed:code-constants",
+  "reason": "pinned_runtime_release.py 코드 상수에서 registry 파일로 이관한 최초 seed. 개발 기본값이며 운영 호스트는 KTDM_RUNTIME_PINS_FILE로 배포 트리 밖 경로를 쓴다.",
+  "history": [],
+  "blocked_pinsets": [
+    {
+      "pinset_sha256": "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898",
+      "map_revision": "14d18230e5a9ff21caf26d6abe37aed1e4944685",
+      "pinvi_revision": "93296aee5d47676e6b9b79303bf417c598a273ac",
+      "phase": "map_runtime_ready",
+      "reason": "lifecycle receipt schema 도입 전 PinVi role topology failure로 끝난 historical candidate. journal을 소급 변경하지 않고 같은 immutable candidate의 재실행만 막는다.",
+      "blocked_at": "2026-08-27T09:26:00Z"
+    },
+    {
+      "pinset_sha256": "cbb577d37e664c56d11ed97f70117911b77547921857287fa87da1b73ce24fc5",
+      "map_revision": "9c64e862c9da82016e12038e2e135526b300ca9d",
+      "pinvi_revision": "97d2f924678f68c9aed7f60dbf41e73311012ebd",
+      "reason": "PinVi docs/journal.md(2026-08-27)가 terminal로 선언한 candidate — 역사 증거로 보존하며 재시도하지 않는다. 다음 official rebuild는 새 PinVi source와 새 pinset에서만 실행한다.",
+      "blocked_at": "2026-08-27T21:43:00Z"
+    }
+  ]
+}

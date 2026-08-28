@@ -22,8 +22,10 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeGeneration,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
-    PINNED_RUNTIME_RELEASE,
+    current_pinned_runtime_release,
 )
+
+PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 
 
 def _image(character: str) -> str:

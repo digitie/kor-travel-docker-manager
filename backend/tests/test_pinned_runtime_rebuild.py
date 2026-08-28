@@ -19,7 +19,7 @@ from unittest.mock import ANY, Mock, call
 
 import pytest
 
-from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import c6c_deployment, runtime_pin_registry
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
@@ -79,17 +79,50 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     CANONICAL_RUNTIME_SOURCE_URLS,
-    PINNED_RUNTIME_RELEASE,
     PinnedRuntimeRelease,
     PinnedRuntimeSourceSpec,
     canonical_pinset_sha256,
+    current_pinned_runtime_release,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     MaterializedRuntimeSource,
     PinnedRuntimeSourceMaterialization,
 )
 
+PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
+
 _real_map_application_300_paths = compose_service_module._map_application_300_paths
+
+
+@pytest.fixture(autouse=True)
+def _isolate_runtime_pin_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """rebuild orchestration 단위는 lifecycle 정책과 분리해 검증한다.
+
+    저장소 기본 registry는 현재 pinset을 terminal로 등재하고 있어서
+    ``rebuild_pinned_runtime``이 시작 게이트에서 즉시 거부된다(그 게이트 자체는
+    ``test_runtime_pin_registry``와 아래 전용 회귀가 검증한다). 여기서는 조건 없는
+    차단만 제거한 사본으로 격리해 orchestration 경로를 그대로 확인한다.
+    phase 한정 차단(d9 계열)은 그대로 남겨 resume admission 회귀를 보존한다.
+    """
+
+    packaged = Path(__file__).resolve().parents[2] / "config" / "runtime-pins.json"
+    document = json.loads(packaged.read_text(encoding="utf-8"))
+    document["blocked_pinsets"] = [
+        entry for entry in document.get("blocked_pinsets", []) if entry.get("phase")
+    ]
+    isolated = tmp_path / "runtime-pins-unit.json"
+    isolated.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setenv(runtime_pin_registry.RUNTIME_PINS_FILE_ENV, str(isolated))
+    monkeypatch.setenv(
+        runtime_pin_registry.RUNTIME_PINS_PUBLIC_FILE_ENV,
+        str(tmp_path / "public-runtime-pins.json"),
+    )
+    runtime_pin_registry.clear_runtime_pin_registry_cache()
+    yield
+    runtime_pin_registry.clear_runtime_pin_registry_cache()
 
 
 @pytest.fixture(autouse=True)

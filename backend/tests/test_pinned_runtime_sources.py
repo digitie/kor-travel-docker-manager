@@ -17,7 +17,11 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import PinnedR
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths as canonical_pinned_runtime_state_paths,
 )
-from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    current_pinned_runtime_release,
+)
+
+PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
     pinned_runtime_source_paths,

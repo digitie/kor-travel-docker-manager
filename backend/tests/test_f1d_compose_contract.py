@@ -50,7 +50,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
-    PINNED_RUNTIME_RELEASE,
+    current_pinned_runtime_release,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     MaterializedRuntimeSource,
@@ -2073,8 +2073,9 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
             dockerfile = root / relative
             dockerfile.parent.mkdir(parents=True, exist_ok=True)
             dockerfile.write_text("FROM scratch\n", encoding="utf-8")
-    map_revision = PINNED_RUNTIME_RELEASE.source_for("map").revision
-    pinvi_revision = PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+    release = current_pinned_runtime_release()
+    map_revision = release.source_for("map").revision
+    pinvi_revision = release.source_for("pinvi").revision
     resolved = _resolved_compose(
         *_MAP_RUNTIME_SERVICES,
         *_PINVI_RUNTIME_SERVICES,
@@ -2087,7 +2088,7 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
         },
     )
     sources = PinnedRuntimeSourceMaterialization(
-        release=PINNED_RUNTIME_RELEASE,
+        release=release,
         sources=(
             MaterializedRuntimeSource(
                 role="map",

@@ -14,7 +14,11 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeStatePaths,
     pinned_runtime_state_paths,
 )
-from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    current_pinned_runtime_release,
+)
+
+PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     PinviBootstrapCredentialFile,
     cleanup_pinvi_bootstrap_credential,

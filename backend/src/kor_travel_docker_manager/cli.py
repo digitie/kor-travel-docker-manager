@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -19,6 +20,17 @@ from kor_travel_docker_manager.services.legacy_override_retirement import (
     stage_legacy_compose_override,
 )
 from kor_travel_docker_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.runtime_pin_registry import (
+    RuntimePinRegistryError,
+    block_runtime_pinset,
+    build_registry,
+    load_runtime_pin_registry,
+    rollback_runtime_pin,
+    rotate_runtime_pin,
+    runtime_pin_registry_path,
+    verify_runtime_pin_registry,
+    write_runtime_pin_registry,
+)
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
@@ -257,6 +269,158 @@ def _cmd_db_backup_gc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pin_actor() -> str:
+    """회전 주체를 감사 기록에 남긴다."""
+
+    import getpass
+
+    try:
+        return getpass.getuser()
+    except Exception:  # pragma: no cover - 사용자 정보가 없는 환경
+        return f"uid:{os.getuid()}" if hasattr(os, "getuid") else "unknown"
+
+
+def _print_registry(registry: Any, *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(registry.to_payload(), ensure_ascii=False, indent=2))
+        return
+    print(f"pinset   {registry.pinset_sha256}")
+    print(f"map      {registry.map_revision}")
+    print(f"pinvi    {registry.pinvi_revision}")
+    print(f"rotated  {registry.rotated_at} by {registry.rotated_by}")
+    print(f"reason   {registry.reason}")
+    if registry.blocked_pinsets:
+        print(f"blocked  {len(registry.blocked_pinsets)} pinset(s):")
+        for entry in registry.blocked_pinsets:
+            scope = f" phase={entry.phase}" if entry.phase else ""
+            marker = " <- CURRENT" if entry.pinset_sha256 == registry.pinset_sha256 else ""
+            print(f"  - {entry.pinset_sha256}{scope}{marker}")
+            print(f"    {entry.reason}")
+    if registry.history:
+        print(f"history  {len(registry.history)} rotation(s), latest first:")
+        for entry in reversed(registry.history[-5:]):
+            print(f"  - {entry.rotated_at} {entry.pinset_sha256[:12]}... {entry.reason}")
+
+
+def _cmd_pin_init(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin init requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    path = runtime_pin_registry_path()
+    if path.exists() and not args.force:
+        print(
+            f"runtime pin registry already exists at {path.name}; refusing to overwrite "
+            "(use --force only to reseed a host)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        seed = load_runtime_pin_registry(path=Path(args.seed))
+        registry = build_registry(
+            release_version=seed.release_version,
+            map_revision=seed.map_revision,
+            pinvi_revision=seed.pinvi_revision,
+            rotated_by=_pin_actor(),
+            reason=args.reason,
+            blocked_pinsets=seed.blocked_pinsets,
+        )
+        write_runtime_pin_registry(registry, path=path, preserve_previous=False)
+    except RuntimePinRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"runtime pin registry bootstrapped at {path.name}")
+    _print_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_show(args: argparse.Namespace) -> int:
+    try:
+        registry = load_runtime_pin_registry()
+    except RuntimePinRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_verify(args: argparse.Namespace) -> int:
+    try:
+        report = verify_runtime_pin_registry()
+    except RuntimePinRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for key, value in report.items():
+            print(f"{key:24s} {value}")
+    if report.get("published_copy") in {"stale", "malformed"}:
+        print(
+            "published copy is not current; re-run a root pin command to refresh it",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+def _cmd_pin_rotate(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin rotate requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    try:
+        registry = rotate_runtime_pin(
+            role=args.role,
+            revision=args.revision,
+            reason=args.reason,
+            rotated_by=_pin_actor(),
+            block_previous=args.block_previous,
+        )
+    except RuntimePinRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"rotated {args.role} pin; new pinset {registry.pinset_sha256}")
+    _print_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_block(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin block requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    try:
+        registry = block_runtime_pinset(
+            pinset_sha256=args.pinset,
+            reason=args.reason,
+            map_revision=args.map_revision,
+            pinvi_revision=args.pinvi_revision,
+            phase=args.phase,
+        )
+    except RuntimePinRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"pinset {args.pinset} is now permanently blocked")
+    _print_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_rollback(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin rollback requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    try:
+        registry = rollback_runtime_pin(
+            pinset_sha256=args.to,
+            rotated_by=_pin_actor(),
+            reason=args.reason,
+        )
+    except RuntimePinRegistryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"rolled back to pinset {registry.pinset_sha256}")
+    _print_registry(registry, json_output=args.json)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ktdctl",
@@ -378,6 +542,74 @@ def build_parser() -> argparse.ArgumentParser:
         help="API/MCP/scheduler/UI를 canonical single-file source로 재생성함을 확인합니다.",
     )
     activate_concierge.set_defaults(func=_cmd_activate_canonical_concierge)
+
+    pin = subparsers.add_parser(
+        "pin",
+        help="Map·PinVi pinned revision registry를 조회/검증/회전합니다.",
+    )
+    pin_subparsers = pin.add_subparsers(dest="pin_action", required=True)
+
+    pin_init = pin_subparsers.add_parser(
+        "init", help="호스트의 runtime pin registry를 최초 1회 생성합니다."
+    )
+    pin_init.add_argument(
+        "--seed",
+        required=True,
+        help="부트스트랩 원본 registry 경로(예: config/runtime-pins.json).",
+    )
+    pin_init.add_argument("--reason", default="host bootstrap", help="생성 사유입니다.")
+    pin_init.add_argument("--confirm", action="store_true", help="파일 생성을 확인합니다.")
+    pin_init.add_argument("--force", action="store_true", help="기존 registry를 재시딩합니다.")
+    pin_init.add_argument("--json", action="store_true")
+    pin_init.set_defaults(func=_cmd_pin_init)
+
+    pin_show = pin_subparsers.add_parser(
+        "show", help="현재 pin·digest·회전 메타·차단 목록을 출력합니다."
+    )
+    pin_show.add_argument("--json", action="store_true")
+    pin_show.set_defaults(func=_cmd_pin_show)
+
+    pin_verify = pin_subparsers.add_parser(
+        "verify", help="digest 재계산·canonical URL·공개 사본 정합을 점검합니다."
+    )
+    pin_verify.add_argument("--json", action="store_true")
+    pin_verify.set_defaults(func=_cmd_pin_verify)
+
+    pin_rotate = pin_subparsers.add_parser(
+        "rotate", help="한 role의 revision을 교체하고 digest를 자동 계산합니다."
+    )
+    pin_rotate.add_argument("--role", required=True, choices=["map", "pinvi"])
+    pin_rotate.add_argument("--revision", required=True, help="40-hex commit SHA입니다.")
+    pin_rotate.add_argument("--reason", required=True, help="회전 사유(감사 기록 필수).")
+    pin_rotate.add_argument(
+        "--block-previous",
+        action="store_true",
+        help="직전 pinset을 terminal로 등재해 재시도를 영구 차단합니다.",
+    )
+    pin_rotate.add_argument("--confirm", action="store_true")
+    pin_rotate.add_argument("--json", action="store_true")
+    pin_rotate.set_defaults(func=_cmd_pin_rotate)
+
+    pin_block = pin_subparsers.add_parser(
+        "block", help="terminal 판정 pinset을 영구 차단 목록에 등재합니다."
+    )
+    pin_block.add_argument("pinset", help="차단할 pinset sha256입니다.")
+    pin_block.add_argument("--reason", required=True)
+    pin_block.add_argument("--map-revision", dest="map_revision")
+    pin_block.add_argument("--pinvi-revision", dest="pinvi_revision")
+    pin_block.add_argument("--phase", help="이 phase의 journal에서만 차단합니다.")
+    pin_block.add_argument("--confirm", action="store_true")
+    pin_block.add_argument("--json", action="store_true")
+    pin_block.set_defaults(func=_cmd_pin_block)
+
+    pin_rollback = pin_subparsers.add_parser(
+        "rollback", help="보존된 이전 registry로 원복합니다(차단 pinset은 거부)."
+    )
+    pin_rollback.add_argument("--to", required=True, help="원복할 pinset sha256입니다.")
+    pin_rollback.add_argument("--reason", required=True)
+    pin_rollback.add_argument("--confirm", action="store_true")
+    pin_rollback.add_argument("--json", action="store_true")
+    pin_rollback.set_defaults(func=_cmd_pin_rollback)
 
     db_backup = subparsers.add_parser(
         "db-backup",
