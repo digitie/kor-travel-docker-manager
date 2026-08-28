@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-08-28 — n150 격리 live E2E와, 그 과정에서 드러난 두 가지 사실
+
+M5·M6·M7을 실제 호스트에서 16항목 격리 E2E로 검증했다(`scripts/run-pin-request-isolated-e2e`,
+`ALL CHECKS PASSED on digitie-at-n150`). `/opt` 배포 트리와 운영 registry, 운영 요청
+디렉터리는 건드리지 않는다. 통과 항목에는 실제 euid 기반 root 게이트, root가 비-root가
+쓴 요청 파일을 읽는 무결성 검사, 회전 뒤 공개 사본 즉시 갱신, stale 요청 보존,
+id 불일치 시 미삭제가 포함된다.
+
+**사실 1 — 이 배포에서 backend는 root로 돈다.** `deploy-runbook.local.md` §3-3이
+`.env`가 root `0600`이면 `sudo -n`으로 띄우라고 명시하고, n150의 uvicorn 프로세스 uid는
+실제로 0이었다. 그래서 `runtime-pin-registry.md` §1-4가 오래 담고 있던 "backend는
+비-root라 registry를 물리적으로 못 쓴다"는 논거는 **이 호스트에서 성립하지 않는다.**
+그 문장을 정정하고, 대신 실제로 강제되는 경계를 회귀로 만들었다 —
+`test_the_http_layer_never_mutates_the_pin_registry`가 `api/` 전체에서
+`rotate_runtime_pin`·`write_runtime_pin_registry` 등 mutator 참조를 금지한다. 남은 보호는
+그 규칙과, `apply-pending`이 요청에서 role·revision만 취하고 나머지를 재유도한다는 계약
+둘이다. 설계 논거를 권한에만 걸지 않는다.
+
+**사실 2 — 지금 고정된 PinVi revision으로는 재구축이 성립하지 않는다.** 새 readiness
+검사를 실제 체크아웃에 돌린 결과 `missing`이었다: `97d2f924…`의 역할 부트스트랩
+스크립트는 Manager가 주입하는 4개 모드 중 `PINVI_ROLE_CATALOG_RESET_ONLY`와 그
+permit/result 경로 3개를 모른다(선언된 것은 `PINVI_ROLE_TOPOLOGY_VERIFY_ONLY` 하나뿐).
+다음 pin 회전은 이 3개를 구현한 revision을 골라야 한다.
+
+E2E가 잡아낸 결함 하나도 고쳤다. readiness의 `unknown` 경로가 evidence를 비워 반환해,
+"읽지 못했습니다"만 있고 **어느 revision을 어느 체크아웃에서 찾았는지**가 없었다.
+화면에서 진단을 시작할 수 없는 상태였으므로 `pinned_revision`·`pinvi_root`·`script_path`를
+unknown 경로에도 싣는다.
+
+---
+
 ## 2026-08-28 — KUM-M6: 설계 전제 정정과, Manager 단독으로 가능한 부분의 완료
 
 설계 P10-3(i)은 "`compose_service.py`의 stderr 9문구 파싱을

@@ -539,6 +539,10 @@ def test_pinvi_mode_check_is_unknown_when_the_revision_is_not_fetched(
 
     assert check.state == "unknown"
     assert PINVI_REVISION[:12] in check.detail
+    # 모른다고 말할 때도 무엇을 어디서 찾았는지는 남아야 진단을 시작할 수 있다.
+    assert check.evidence["pinned_revision"] == PINVI_REVISION
+    assert check.evidence["script_path"] == readiness._PINVI_ROLE_BOOTSTRAP_SCRIPT
+    assert check.evidence["pinvi_root"].endswith("pinvi")
 
 
 def test_image_presence_probe_never_pulls(monkeypatch: pytest.MonkeyPatch) -> None:

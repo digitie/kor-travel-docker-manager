@@ -200,3 +200,33 @@ def test_the_request_store_is_not_a_pin_source() -> None:
     for module in (pinned_runtime_release, compose_service):
         source = Path(module.__file__).read_text(encoding="utf-8")
         assert "runtime_pin_request" not in source, module.__name__
+
+
+def test_the_http_layer_never_mutates_the_pin_registry() -> None:
+    """HTTP 계층은 registry를 **쓰지 않는다** — 이것이 실제로 강제되는 경계다.
+
+    "backend는 비-root라 물리적으로 못 쓴다"는 논거는 배포에 따라 성립하지 않는다.
+    n150 운영 배포는 `.env`가 root `0600`이라 backend를 `sudo -n`으로 띄운다
+    (`docs/deploy-runbook.local.md` §3-3). 그 호스트에서 uid 경계는 없으므로, 남는
+    보호는 (1) HTTP 계층에 쓰기 경로가 없다는 이 규칙과 (2) apply-pending이 요청에서
+    role·revision만 취하고 나머지를 재유도한다는 계약이다. 이 테스트가 (1)을 지킨다.
+    """
+
+    import kor_travel_docker_manager.api as api_package
+
+    mutators = (
+        "rotate_runtime_pin",
+        "block_runtime_pinset",
+        "rollback_runtime_pin",
+        "write_runtime_pin_registry",
+        "publish_runtime_pins",
+        "build_registry",
+    )
+    # `api`는 `__init__.py`가 없는 namespace package라 `__file__`이 None이다.
+    api_root = Path(next(iter(api_package.__path__)))
+    modules = sorted(api_root.rglob("*.py"))
+    assert modules, "api 패키지를 찾지 못했다 — 경로가 바뀌면 이 가드는 무력해진다"
+    for module_path in modules:
+        source = module_path.read_text(encoding="utf-8")
+        for name in mutators:
+            assert name not in source, f"{module_path.name} references {name}"

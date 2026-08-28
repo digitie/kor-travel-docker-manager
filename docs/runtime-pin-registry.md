@@ -77,9 +77,22 @@ registry 파일에 `url` 필드가 있지만, 로드할 때 코드의
 
 ### 1-4. API 프로세스는 registry를 쓰지 않는다
 
-registry는 root `0600`이고 backend는 비-root다. 이 물리적 경계가 가장 값싼 안전장치다.
-UI에서 회전이 필요하면 **요청을 기록하고 root가 적용하는 2-step**으로 간다(KUM-M5,
-§7-1). backend가 registry를 직접 쓰게 만드는 변경은 넣지 마라.
+registry는 root `0600`이다. UI에서 회전이 필요하면 **요청을 기록하고 root가 적용하는
+2-step**으로 간다(KUM-M5, §7-1). backend가 registry를 직접 쓰게 만드는 변경은 넣지 마라.
+
+> **주의 — "backend는 비-root라 물리적으로 못 쓴다"는 논거는 이 배포에서 성립하지
+> 않는다.** n150 운영 배포는 `.env`가 root `0600`이라 backend를 `sudo -n`으로 띄운다
+> (`deploy-runbook.local.md` §3-3, 실제 프로세스 uid 0으로 확인). 그 호스트에서 uid
+> 경계는 없다. 실제로 강제되는 보호는 둘이다:
+>
+> 1. **HTTP 계층에 쓰기 경로가 없다.** 회귀
+>    `test_the_http_layer_never_mutates_the_pin_registry`가 `api/` 전체를 훑어
+>    `rotate_runtime_pin`·`write_runtime_pin_registry` 등 mutator 참조를 금지한다.
+> 2. **`apply-pending`이 요청에서 role과 40-hex revision, 표시용 문자열만 취한다.**
+>    URL·digest·차단 목록은 코드와 root registry에서 다시 만든다(§7-1).
+>
+> 비-root로 돌리는 호스트에서는 여기에 파일 권한 경계가 하나 더 얹힐 뿐이다. 설계
+> 논거를 권한에만 걸지 마라.
 
 요청 저장소(`services/runtime_pin_request.py`)는 **pin이 아니다.** 어떤 로드 경로도 그
 파일을 읽지 않으며, 회귀 `test_the_request_store_is_not_a_pin_source`가
@@ -273,13 +286,15 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 
 ## 7-1. 회전 요청 2-step — UI는 제안하고 root가 적용한다
 
-**왜 2-step인가.** UI에서 버튼 한 번으로 회전하려면 backend가 registry를 쓸 수 있어야
-하고, 그러면 §1-4의 물리적 경계가 사라진다. 반대로 회전을 CLI 전용으로 두면 화면에서
+**왜 2-step인가.** UI에서 버튼 한 번으로 회전하려면 HTTP 계층에 registry 쓰기 경로가
+생기고, 그러면 §1-4의 규칙이 무너진다. 반대로 회전을 CLI 전용으로 두면 화면에서
 "바꾸려면 SSH로 가라"는 막다른 길만 보여 주게 된다. 2-step은 둘 다 피한다 — 화면은
-무엇을 바꾸고 싶은지 기록하고, 실제 변경은 여전히 root만 한다.
+무엇을 바꾸고 싶은지 기록하고, 실제 변경은 여전히 root 명령이 한다.
 
 **저장 위치가 registry와 다른 트리인 이유.** `/var/lib/kor-travel-docker-manager`는
-설치 때마다 `0700 root:root`로 재설정되므로 비-root backend가 쓸 수 없다. 요청은
+설치 때마다 `0700 root:root`로 재설정된다. 비-root로 도는 backend는 그 안에 쓸 수 없고,
+root로 도는 backend라면 **쓸 수 있어서 더 문제다** — 요청이 registry 옆에 놓이면 두
+파일의 권한 구분이 사라진다. 요청은
 `/var/lib/kor-travel-docker-manager-requests/runtime-pin-requests.json`(설치 root에서
 실행할 때의 기본값, 파일 `0600`)에 둔다. env `KTDM_RUNTIME_PIN_REQUEST_FILE`로 덮어쓸 수
 있고, 개발 체크아웃에서는 `<repo>/.ktdm-runtime-pin-requests.json`이다.

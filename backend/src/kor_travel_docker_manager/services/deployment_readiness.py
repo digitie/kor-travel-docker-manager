@@ -450,14 +450,22 @@ def _check_sibling_bootstrap_scripts(values: Mapping[str, str] | None) -> Readin
     )
 
 
-def _unknown_pinvi_mode_check(detail: str, *, source: CheckSource) -> ReadinessCheck:
+def _unknown_pinvi_mode_check(
+    detail: str, *, source: CheckSource, evidence: Mapping[str, Any] | None = None
+) -> ReadinessCheck:
+    """모른다고 말할 때도 **무엇을 보려 했는지**는 남긴다.
+
+    "읽지 못했습니다"만 있고 어느 revision을 어느 체크아웃에서 찾았는지가 없으면,
+    운영자는 진단을 화면에서 시작할 수 없다.
+    """
+
     return ReadinessCheck(
         id="pinvi_role_bootstrap_modes",
         state="unknown",
         label_ko="고정된 PinVi revision의 역할 부트스트랩 계약",
         detail=detail,
         source=source,
-        evidence={},
+        evidence=dict(evidence or {}),
     )
 
 
@@ -495,8 +503,15 @@ def _check_pinvi_role_bootstrap_modes(values: Mapping[str, str] | None) -> Readi
     pinvi_root = _repository_root(values, "PINVI_REPO_DIR", "../pinvi")
     if pinvi_root is None:
         return _unknown_pinvi_mode_check(
-            "PinVi 체크아웃 경로를 해석할 수 없습니다.", source="sibling_checkout"
+            "PinVi 체크아웃 경로를 해석할 수 없습니다.",
+            source="sibling_checkout",
+            evidence={"pinned_revision": pinned},
         )
+    looked_for = {
+        "pinvi_root": str(pinvi_root),
+        "pinned_revision": pinned,
+        "script_path": _PINVI_ROLE_BOOTSTRAP_SCRIPT,
+    }
     script = _git_text(pinvi_root, ["show", f"{pinned}:{_PINVI_ROLE_BOOTSTRAP_SCRIPT}"])
     if script is None:
         # revision이 로컬에 없거나 그 tree에 파일이 없다. 둘 다 "모른다"이지 "없다"가
@@ -505,10 +520,13 @@ def _check_pinvi_role_bootstrap_modes(values: Mapping[str, str] | None) -> Readi
             f"고정 revision({pinned[:12]})의 {_PINVI_ROLE_BOOTSTRAP_SCRIPT}를 읽지 "
             "못했습니다. 체크아웃에 그 revision이 fetch돼 있는지 확인하세요.",
             source="sibling_checkout",
+            evidence=looked_for,
         )
     if len(script.encode("utf-8", "ignore")) > _MAX_SCRIPT_BYTES:
         return _unknown_pinvi_mode_check(
-            "역할 부트스트랩 스크립트가 예상 범위를 벗어나게 큽니다.", source="sibling_checkout"
+            "역할 부트스트랩 스크립트가 예상 범위를 벗어나게 큽니다.",
+            source="sibling_checkout",
+            evidence=looked_for,
         )
     missing = [
         (name, description)
