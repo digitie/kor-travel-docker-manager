@@ -2,6 +2,21 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 Map health terminal의 원문 없는 다음 진단 범위
+
+Map `bbb29d177…`·PinVi `663e21b4…`·pinset `c700bd2e…`은 trusted Manager `4a6e1b0…` release의 atomic
+pair rotation과 registry/public-copy gate 뒤 n150 isolated M04/M05 launcher를 정확히 한 번 실행했고
+`map_health_http_failed` terminal로 끝났다. cleanup은 통과했다. HTTP response/body·container log·환경값은
+읽거나 보관하지 않았고, driver가 root registry에 조건 없이 차단한 해당 pinset·source pair·Manager source·
+output leaf는 재실행하지 않는다.
+
+다음 fresh Manager source는 raw status나 socket detail을 저장하지 않으면서 HTTP status를
+`map_health_status_failed`, loopback transport를 `map_health_transport_failed`로 분리한다. 이 고정 enum과
+terminal 기록 Map revision·새 PinVi provenance를 fresh atomic pinset으로 결박하고 CI·전문 적대 리뷰·registry gate를
+다시 통과한 경우에만 다음 one-shot을 허용한다.
+
+---
+
 ## 2026-08-28 — PR backend CI의 TestClient 의존성 고정
 
 새 PR CI의 첫 원격 실행은 애플리케이션 runtime 의존성만 설치해 `fastapi.testclient`가 요구하는 dev 의존성

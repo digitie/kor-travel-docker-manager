@@ -597,6 +597,7 @@ def _http_json(
     body: dict[str, object] | None = None,
     opener: Any | None = None,
     failure_phase: str = "runtime_http_failed",
+    http_error_phase: str | None = None,
 ) -> dict[str, object]:
     try:
         parsed = urlsplit(url)
@@ -631,7 +632,11 @@ def _http_json(
         request_opener = opener.open if opener is not None else _LOOPBACK_OPENER.open
         with request_opener(request, timeout=10) as response:
             raw = response.read(2_000_000)
-    except (HTTPError, OSError, URLError):
+    except HTTPError:
+        # HTTP status와 loopback transport 오류를 같은 원문 없는 enum으로 합치면
+        # 다음 one-shot 후보가 어느 startup 경계를 보정해야 하는지 알 수 없다.
+        _fail(http_error_phase or failure_phase)
+    except (OSError, URLError):
         # 원문 HTTP status/body/socket error는 receipt에 기록하지 않는다. 대신 caller가
         # 고정 enum을 주면 다음 immutable candidate의 보정 범위만 식별할 수 있다.
         _fail(failure_phase)
@@ -1449,7 +1454,10 @@ def main(expected_revision: str, output: Path) -> int:
         )
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
         _http_json(
-            f"{admin_url}/health", headers={}, failure_phase="map_health_http_failed"
+            f"{admin_url}/health",
+            headers={},
+            failure_phase="map_health_transport_failed",
+            http_error_phase="map_health_status_failed",
         )
         phase = "map_subscription"
         _data(

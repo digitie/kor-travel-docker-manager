@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import pytest
@@ -205,6 +205,38 @@ def test_http_json_emits_only_the_caller_fixed_transport_phase(
             "http://127.0.0.1:13701/health",
             headers={},
             failure_phase="map_health_http_failed",
+        )
+
+
+def test_map_health_keeps_http_status_and_loopback_transport_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """다음 one-shot source가 원문 없이 startup 보정 범위를 구별하게 한다."""
+
+    driver = _driver()
+
+    def fail_status(request: Request, **_kwargs: object) -> object:
+        raise HTTPError(request.full_url, 503, "discarded", None, None)
+
+    monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fail_status)
+    with pytest.raises(driver._PhaseError, match="map_health_status_failed"):
+        driver._http_json(
+            "http://127.0.0.1:13701/health",
+            headers={},
+            failure_phase="map_health_transport_failed",
+            http_error_phase="map_health_status_failed",
+        )
+
+    def fail_transport(*_args: object, **_kwargs: object) -> object:
+        raise URLError("discarded")
+
+    monkeypatch.setattr(driver._LOOPBACK_OPENER, "open", fail_transport)
+    with pytest.raises(driver._PhaseError, match="map_health_transport_failed"):
+        driver._http_json(
+            "http://127.0.0.1:13701/health",
+            headers={},
+            failure_phase="map_health_transport_failed",
+            http_error_phase="map_health_status_failed",
         )
 
 
