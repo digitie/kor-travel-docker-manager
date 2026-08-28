@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-28 — 고정 Map baseline artifact 불일치 확인
+
+`29fbcdd…` candidate는 `baseline_reference_invalid`로 끝났고 cleanup 뒤 Map·PinVi transaction
+resource는 각각 0개였다. candidate와 ledger는 terminal로 보존하고 재실행하지 않는다.
+
+원문 Docker log·stderr를 읽지 않고 exact Map `9c64e862…`의 tracked artifact만 정적 검증했다.
+`application-reference.json` 자체 digest와 13개 baseline artifact 중 12개는 정합하지만,
+`application-seed.sql`의 hash가 manifest의 declared value와 다르다. pin 이후 Map source 변경은 문서만이며
+baseline 경로 변경은 없다. 따라서 n150 fresh-init의 fail-close는 재현 가능한 source artifact 불일치다.
+
+Manager 또는 PinVi에서 runtime file을 덮어쓰면 Map source/image provenance와 M05 pair identity가 깨지므로
+우회하지 않는다. 다음 변경은 Map source에서 baseline artifact를 정합화해 PR로 merge하고, committed Map
+revision을 PinVi pair·pinset과 Manager candidate에 재결박하는 것이다.
+
+---
+
 ## 2026-08-28 — Alembic runtime contract의 고정 원인 분류
 
 `6c888a5…` candidate는 `alembic_runtime_contract_failed`로 끝났고 cleanup 뒤 Map·PinVi
