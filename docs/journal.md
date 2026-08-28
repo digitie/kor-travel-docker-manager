@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-08-28 — KUM-M12: 표시 규약을 찾을 수 있는 자리로 옮긴다
+
+`DashboardClient.tsx`가 2,138줄이었다. 그중 라벨 매핑·아이콘 판정·포맷터는 컴포넌트
+상태와 아무 관계가 없는 순수 함수인데도 그 안에 묻혀 있었고, `dashboard-ui.md` §2가
+"셋 다 DashboardClient.tsx 상단에 있다"고 안내해야 했다 — 규약을 찾으려면 2천 줄짜리
+파일을 열어야 한다는 뜻이다.
+
+`lib/containerPresentation.ts`(타입 2종 + `statusLabel`·`roleLabel`·`getStatusConfig`·
+`getContainerPresentation`)와 `lib/format.ts`(`formatBytes`·`formatTimestamp`)로 옮겼다.
+컴포넌트는 1,968줄이 됐고, 옮긴 심볼이 다시 정의되지 않았다는 것과 죽은 lucide import가
+남지 않았다는 것을 이관 스크립트가 확인했다.
+
+**JSX 본문은 일부러 쪼개지 않았다.** 남은 것은 서른 개 가까운 state를 공유하는 하나의
+컴포넌트라, 하위 컴포넌트로 뜯으려면 그 state를 전부 prop으로 꿰어야 한다. 순수 리팩터가
+행동 변경 위험을 안게 되는 지점이고, 지금 얻는 가독성보다 잃는 것이 크다. 이 판단을
+여기 남겨 다음 사람이 같은 계산을 다시 하지 않게 한다.
+
+`dashboard-ui.md` §2는 새 위치를 가리키고, 분기 순서가 우선순위라는 사실
+(`geocoder-api`가 `-api`에 먼저 걸리는 함정)을 함께 적었다.
+
+---
+
 ## 2026-08-28 — KUM-M13(1단계): 복원을 만들기 전에 "복원할 수 있는가"를 먼저 묻는다
 
 오너 결정에 따라 파괴적 복원은 뒤로 미루고 읽기 전용 `ktdctl db-backup restore-plan`을

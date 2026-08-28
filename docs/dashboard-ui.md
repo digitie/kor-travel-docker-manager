@@ -63,9 +63,15 @@ apiJson 실패
 | 컨테이너 상태 | `statusLabel(status)` | `title` 속성 |
 | 컨테이너 role | `roleLabel(role)` | `title` 속성 |
 | 컨테이너 표시명·아이콘 | `getContainerPresentation(container)` | — |
+| 상태별 색·점 | `getStatusConfig(status)` | — |
 
-셋 다 `components/DashboardClient.tsx` 상단에 있다. 새 상태값·role이 백엔드에 생기면
-매핑을 추가한다. **매핑에 없으면 원문을 그대로 보여 주므로 화면이 비지는 않는다.**
+넷 다 `lib/containerPresentation.ts`에 있다(`ContainerStatus` 타입도 같은 파일).
+바이트·시각 포맷터는 `lib/format.ts`다. 새 상태값·role이 백엔드에 생기면 매핑을
+추가한다. **매핑에 없으면 원문을 그대로 보여 주므로 화면이 비지는 않는다.**
+
+`roleLabel`과 `getContainerPresentation`은 **분기 순서가 곧 우선순위다.** 넓은
+패턴(`api`, `ui`)을 먼저 두면 좁은 패턴이 도달하지 못한다 — `geocoder-api`가 `-api`에
+먼저 걸려 "지오코더"가 영원히 나오지 않는다. 순서를 바꾸기 전에 그 사실을 확인하라.
 
 ---
 

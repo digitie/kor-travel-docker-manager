@@ -201,7 +201,7 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   백업 산출물 공유 그룹(setgid) 모드, 화면의 생성 버튼·신선도 배지·복원 부재 고지.
 - [x] KUM-M10 완료(2026-08-28): 관리자 비밀번호 변경 폼 + 미종결 rebuild journal 3갈래
   가드. 증명된 미종결 journal은 우회 경로가 없고, 확인 불가는 명시 승인을 요구한다.
-- [x] KUM-M13 1단계 완료(2026-08-28, **오너 결정: restore-plan 읽기 전용만 먼저**):
+- [x] KUM-M12 완료(2026-08-28): 라벨·아이콘·포맷터를 lib/containerPresentation.ts와\n  lib/format.ts로 이관(2,138 → 1,968줄). JSX 본문은 state 공유 때문에 의도적으로\n  쪼개지 않았고 그 판단을 저널에 남겼다.\n- [x] KUM-M13 1단계 완료(2026-08-28, **오너 결정: restore-plan 읽기 전용만 먼저**):
   `ktdctl db-backup restore-plan`이 digest를 재계산해 무결성과 schema revision을
   대조한다. 파괴적 `restore`는 이 계획이 실제 운영에서 무엇을 잡아내는지 본 뒤에
   결정한다.
