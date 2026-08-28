@@ -2,6 +2,20 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — receipt polling transport phase의 timeout 합류 차단
+
+전문 data-contract 재리뷰는 receipt polling이 모든 `_PhaseError`를 재시도한 뒤
+`m05_pinvi_receipt_timeout`으로 합쳐, 호출 단계 고정 HTTP 분류 계약을 깨는 P1을 확인했다. 다음 source는
+transport·응답 형식 오류를 `m05_pinvi_receipt_http_failed` 등 이미 허용된 fixed phase로 즉시 전파하고,
+정상 응답이 아직 applied가 아닌 경우에만 timeout을 사용한다. 회귀는 polling 경로에서 transport failure가
+재시도 없이 caller phase로 끝남을 고정한다.
+
+Map `b8d108bd…`·PinVi `50c875f5…`·pinset `22563762…` terminal 및 그 output leaf는 그대로 차단해
+재실행하지 않는다. 다음 실행은 Map `bbb29d17…`·PinVi `a06086a4…` pair와 이 새 Manager source의
+registry/public-copy gate, 최신 CI, 전문 적대 재리뷰 두 건이 모두 정합한 fresh candidate에서만 허용한다.
+
+---
+
 ## 2026-08-28 — M05 runtime HTTP terminal을 고정 enum으로 분리
 
 Map `b8d108bd…`·PinVi `50c875f5…`·pinset `22563762…`의 n150 isolated M04/M05 one-shot은

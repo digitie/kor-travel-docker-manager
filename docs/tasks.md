@@ -22,9 +22,10 @@
   경로의 external registry 선택 회귀와 두 전문 적대 리뷰를 통과한 새 Manager source, 새 pair pinset만 다음
   isolated M04/M05 실행권을 가질 수 있다.
 - [/] `22563762…`는 M04/M05 isolated one-shot에서 cleanup 성공 뒤 `runtime_http_failed` terminal로 차단됐다.
-  HTTP 원문·container log·환경값을 읽거나 남기지 않으며, 다음 source는 caller별 fixed transport phase만 result에
-  남긴다. 같은 pinset·Manager source·output leaf는 재실행하지 않고 새 Map/PinVi pair와 새 Manager source만
-  다음 실행권을 가진다.
+  HTTP 원문·container log·환경값을 읽거나 남기지 않는다. 다음 source는 receipt polling의 transport·응답 형식
+  오류를 timeout으로 합치지 않고 caller별 fixed phase로 즉시 전파하며, 정상 응답의 pending만 timeout으로 처리한다.
+  같은 pinset·Manager source·output leaf는 재실행하지 않고 Map `bbb29d17…`·PinVi `a06086a4…` pair와 새
+  Manager source만 다음 실행권을 가진다.
 
 ## 공통 진행 규율
 

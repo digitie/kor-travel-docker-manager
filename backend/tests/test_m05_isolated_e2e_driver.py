@@ -208,6 +208,27 @@ def test_http_json_emits_only_the_caller_fixed_transport_phase(
         )
 
 
+def test_pinvi_receipt_transport_phase_is_not_collapsed_into_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """receipt polling은 transport failure를 fixed caller phase로 보존한다."""
+
+    driver = _driver()
+
+    def fail_http(*_args: object, **_kwargs: object) -> object:
+        raise driver._PhaseError("m05_pinvi_receipt_http_failed")
+
+    monkeypatch.setattr(driver, "_http_json", fail_http)
+    monkeypatch.setattr(driver.time, "sleep", lambda _seconds: pytest.fail("must not retry"))
+
+    with pytest.raises(driver._PhaseError, match="m05_pinvi_receipt_http_failed"):
+        driver._wait_for_pinvi_receipt(
+            api_url="http://127.0.0.1:13701",
+            opener=object(),
+            event_id="00000000-0000-0000-0000-000000000000",
+        )
+
+
 def test_free_ports_uses_the_standard_ss_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

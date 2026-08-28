@@ -799,19 +799,17 @@ def _resolve_m05_case(
 
 
 def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
+    """정상 응답의 pending만 기다리고 transport·형식 오류는 fixed phase로 전파한다."""
+
     for _ in range(90):
-        try:
-            data = _data(
-                _http_json(
-                    f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
-                    headers={},
-                    opener=opener,
-                    failure_phase="m05_pinvi_receipt_http_failed",
-                )
+        data = _data(
+            _http_json(
+                f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
+                headers={},
+                opener=opener,
+                failure_phase="m05_pinvi_receipt_http_failed",
             )
-        except _PhaseError:
-            time.sleep(2)
-            continue
+        )
         receipt = data.get("receipt")
         if data.get("status") == "applied" and isinstance(receipt, dict):
             impact_count = receipt.get("impact_count")
