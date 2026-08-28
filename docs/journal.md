@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-08-28 — N150 host Ed25519 fallback을 포함한 PinVi pinset 회전
+
+PinVi `323e3ba8…`은 M04/M05 attestation의 N150 host runner·source·evidence 경계를 유지하면서,
+Manager release Python에만 없는 `cryptography` Ed25519 primitive를 `/usr/bin/openssl` fallback으로
+fail-close 처리한다. container 안에서 attestation을 실행하려던 경로는 N150-only Node/host preflight와
+nested Docker bind source를 깨므로 전문 적대 리뷰 P1로 폐기했다. host fallback은 `0600` temporary regular
+file, opened-FD mode/owner 검증, fixed tool environment, Ed25519/SPKI/signature 검증, cleanup failure를
+고정하고, 실제 n150 Manager venv에서도 sign/verify smoke를 통과했다.
+
+exact Map `9c64e862…`와의 새 pinset은 `2d6d5ad5…`이다. 이전 `9835cfcc…`은 candidate로 admission하지
+않으며, 이 새 PinVi source·Manager revision 조합의 root-owned ledger가 없는 경우에만 n150 isolated
+M04/M05 live E2E를 정확히 한 번 실행한다.
+
+---
+
 ## 2026-08-28 — M05 isolated loopback·fixture 권한 경계 보강
 
 전문 적대 보안 재리뷰의 P1 두 건을 반영했다. root driver의 모든 host HTTP 대상은 명시적인

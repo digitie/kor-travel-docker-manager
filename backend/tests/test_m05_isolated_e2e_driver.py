@@ -202,3 +202,11 @@ def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     assert "AsyncKorTravelMapClient" in fixture
     assert "SET LOCAL ROLE" not in fixture
     assert "INSERT INTO" not in fixture
+
+
+def test_manager_does_not_require_pinvi_crypto_dependency() -> None:
+    pyproject = (Path(__file__).resolve().parents[2] / "backend/pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "cryptography" not in pyproject
