@@ -2,6 +2,50 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 public generation P1 fail-close 보강
+
+전문 적대 리뷰가 generation 공개 사본의 세 P1을 확인했다. manifest/journal 중 한 파일만
+유효해도 committed처럼 보일 수 있었고, `pin verify`가 registry 사본만 검사했으며, custom
+public root는 publisher가 경로를 바꿔치기당할 수 있었다. reader는 이제 두 strict raw 문서가
+모두 있고 same generation일 때만 관측값을 반환한다. public root·부모·기존 파일은 no-follow
+FD에서 소유권·mode·hard-link를 검증하고, publisher의 검사·교체·fsync도 같은 FD에 결박했다.
+
+`pin verify`는 generation strict parse와 registry binding을 함께 보고한다. pair 회전 직후
+완전한 이전 committed 또는 registry의 exact unconditional terminal generation은 `pending_rebuild`로
+구별하되 current로 승격하지 않고, partial·malformed·phase-scoped block·drift는 exit 1이다.
+`pin publish-generation`도 current pair `match`까지
+재검증한다. terminal 대응 문서는 atomic `pin rotate-pair`로 정정했다.
+
+같은 리뷰에서 preflight가 registry만 보고 stale·partial generation에도 재구축 명령을 안내할 수
+있는 경계를 확인했다. preflight도 public generation의 `match` 또는 strict `pending_rebuild`를
+필수로 읽으며, 그 외 status/binding은 `GENERATION_UNVERIFIED` fail-close와 `ktdctl pin verify`
+안내로 수렴한다.
+
+Map PR #1112는 v8 journal의 3개 PinVi role 확장 키를 exact-dict attestation에 추가하고
+committed 의미까지 검증한다. 이 교차 저장소 pair가 모두 병합되기 전에는 generation API를
+M05 acceptance gate로 사용하지 않는다. 관련 backend 295개는 POSIX `/tmp` 격리에서 통과했고,
+terminal artifact나 n150 one-shot은 열거나 재실행하지 않았다.
+
+## 2026-08-28 — KUM-M4 public generation 계약·CLI 수선
+
+`ktdctl-ui-migration.md`의 KUM-M4 완료 표기와 실제 API 표면을 다시 대조했다. 기존에는
+`GET /api/v1/runtime-pins`만 있었고, 문서가 요구한
+`GET /api/v1/pinned-runtime/generation`은 없었다. backend가 root private state를 직접
+읽는 방식은 권한 경계를 무너뜨리므로 채택하지 않았다.
+
+`write_manifest`·`write_rebuild_journal`은 typed model로 검증된 v6/v8 raw JSON만 `0644`
+public copy에 원자 복제하고, 이미 존재하는 상태는 root
+`ktdctl pin publish-generation --manifest … --journal … --confirm`으로 같은 경로에
+발행한다. API는 그 공개 사본만 strict parse해 원문 `manifest`/`journal`과 별도
+`summary`·`terminal` envelope 및 current registry와의 `pinset_binding`을 반환한다.
+Map의 exact-dict 계약을 보존하기 위해 raw 문서 키·버전은 바꾸지 않았다.
+
+terminal current pinset의 다음 행동도 role별 `pin rotate`가 아니라 atomic
+`pin rotate-pair`로 바로잡았다. focused public-copy/API/CLI 검증과 관련 backend 스위트
+266개가 `/tmp` 격리에서 통과했다. WSL 공유 temp의 POSIX mode 한계로 기본 pytest capture는
+state-file 무결성 테스트를 시작 전에 실패시키므로, 운영과 동일한 POSIX mode를 보장하는
+임시 루트로 실행했다.
+
 ## 2026-08-28 — M05 `b46743ea…` terminal 보존 후 대기
 
 Map `6bfa47038b439845662f89524531d2ef72374c2a`·PinVi

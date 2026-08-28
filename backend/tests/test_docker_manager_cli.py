@@ -806,12 +806,29 @@ def _seed_path() -> Path:
 def test_pin_parser_registers_every_leaf_command():
     parser = build_parser()
 
-    for action in ("init", "show", "verify", "rotate", "rotate-pair", "block", "rollback"):
+    for action in (
+        "init",
+        "show",
+        "verify",
+        "publish-generation",
+        "rotate",
+        "rotate-pair",
+        "block",
+        "rollback",
+    ):
         args = parser.parse_args(
             {
                 "init": ["pin", "init", "--seed", "x"],
                 "show": ["pin", "show"],
                 "verify": ["pin", "verify"],
+                "publish-generation": [
+                    "pin",
+                    "publish-generation",
+                    "--manifest",
+                    "/root/state/pinned-runtime-generation-v6.json",
+                    "--journal",
+                    "/root/state/pinned-runtime-rebuild-v8-a.json",
+                ],
                 "rotate": [
                     "pin",
                     "rotate",
@@ -865,6 +882,42 @@ def test_pin_mutations_refuse_without_confirm(argv, pin_cli_env, capsys):
     assert not pin_cli_env.exists()
 
 
+def test_pin_publish_generation_refuses_without_confirm(capsys):
+    assert (
+        main(
+            [
+                "pin",
+                "publish-generation",
+                "--manifest",
+                "/root/state/pinned-runtime-generation-v6.json",
+                "--journal",
+                "/root/state/pinned-runtime-rebuild-v8-a.json",
+            ]
+        )
+        == 2
+    )
+    assert "--confirm" in capsys.readouterr().err
+
+
+def test_pin_publish_generation_requires_root(capsys):
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
+        assert (
+            main(
+                [
+                    "pin",
+                    "publish-generation",
+                    "--manifest",
+                    "/root/state/pinned-runtime-generation-v6.json",
+                    "--journal",
+                    "/root/state/pinned-runtime-rebuild-v8-a.json",
+                    "--confirm",
+                ]
+            )
+            == 2
+        )
+    assert "root" in capsys.readouterr().err
+
+
 def test_pin_show_without_a_registry_fails_closed(pin_cli_env, capsys):
     assert main(["pin", "show"]) == 2
     assert "missing" in capsys.readouterr().err
@@ -897,15 +950,38 @@ def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, cap
     show_output = capsys.readouterr().out
     assert '"blocked_pinsets"' in show_output
 
-    # seed의 현재 pinset이 terminal이면 verify는 비정상 종료로 그 사실을 알린다 —
-    # digest가 맞다는 이유로 0을 반환하면 운영자가 rebuild 직전에 안심하게 된다.
+    # generation public copy가 없으면 registry digest가 맞아도 verify는 비정상 종료한다.
+    # registry만 보고 0을 주면 M05 public generation gate가 반쪽 상태를 놓친다.
     verify_code = main(["pin", "verify", "--json"])
     verify_output = capsys.readouterr().out
     assert '"digest_recomputation": "ok"' in verify_output
     assert '"current_pinset_is_blocked"' in verify_output
-    seed_blocks_current = '"current_pinset_is_blocked": true' in verify_output
-    assert verify_code == (1 if seed_blocks_current else 0)
+    assert '"generation_public_copy": "invalid"' in verify_output
+    assert verify_code == 1
     assert pin_cli_env.read_bytes() == before
+
+
+@patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
+@patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
+def test_pin_verify_allows_a_valid_terminal_generation_pending_new_pair(
+    generation_reader,
+    registry_verifier,
+    capsys,
+):
+    registry_verifier.return_value = {
+        "published_copy": "current",
+        "current_pinset_is_blocked": False,
+    }
+    generation_reader.return_value = {
+        "status": "ok",
+        "pinset_binding": {"status": "pending_rebuild"},
+    }
+
+    assert main(["pin", "verify", "--json"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["generation_public_copy"] == "pending_rebuild"
+    assert output["generation_pinset_binding"] == "pending_rebuild"
 
 
 def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, capsys):

@@ -199,10 +199,13 @@ _F1D_PINSET_LEGACY_ARTIFACT = re.compile(
     r"^(pinned-runtime-rebuild-v7|legacy-tombstone-v7)-[0-9a-f]{64}\.json$"
 )
 _STATE_ROOT_ENV = "KTDM_PINNED_RUNTIME_STATE_ROOT"
+_PUBLIC_ROOT_ENV = "KTDM_PINNED_RUNTIME_PUBLIC_ROOT"
 _PROJECT_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
 _DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
+_DEFAULT_PUBLIC_ROOT = Path("/var/lib/kor-travel-docker-manager-public")
 _MANIFEST_FILENAME = "pinned-runtime-generation-v6.json"
 _JOURNAL_FILENAME_PREFIX = "pinned-runtime-rebuild-v8-"
+_PUBLIC_JOURNAL_FILENAME = "pinned-runtime-rebuild-v8.json"
 _TOMBSTONE_FILENAME_PREFIX = "legacy-tombstone-v8-"
 _CANCEL_PROBE_STAGES: tuple[CancelProbeStage, ...] = (
     "uninitialized",
@@ -274,6 +277,18 @@ class PinnedRuntimeStatePaths:
     manifest: Path
     journal: Path
     tombstone_receipt: Path
+
+
+@dataclass(frozen=True)
+class PinnedRuntimePublicPaths:
+    """비-root 관측자가 읽는 v6/v8 공개 사본 경로.
+
+    private state의 정확한 JSON을 복제할 뿐 envelope나 진단 원문을 파일에 섞지 않는다.
+    Map의 exact-dict attestation은 private·public 원본 모두 같은 schema를 본다.
+    """
+
+    manifest: Path
+    journal: Path
 
 
 def load_deployment_mode(values: Mapping[str, str]) -> DeploymentMode:
@@ -2993,6 +3008,12 @@ def read_manifest(path: Path) -> PinnedRuntimeManifest:
 
 def write_manifest(path: Path, manifest: PinnedRuntimeManifest) -> None:
     _write_private_json(path, manifest.to_payload(), "pinned runtime manifest")
+    try:
+        publish_pinned_runtime_generation(manifest=manifest, private_path=path)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "pinned runtime manifest was written but its public copy could not be updated"
+        ) from exc
 
 
 def read_rebuild_journal(path: Path) -> PinnedRuntimeRebuildJournal:
@@ -3001,6 +3022,345 @@ def read_rebuild_journal(path: Path) -> PinnedRuntimeRebuildJournal:
 
 def write_rebuild_journal(path: Path, journal: PinnedRuntimeRebuildJournal) -> None:
     _write_private_json(path, journal.to_payload(), "pinned runtime rebuild journal")
+    try:
+        publish_pinned_runtime_generation(journal=journal, private_path=path)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "pinned runtime rebuild journal was written but its public copy could not be updated"
+        ) from exc
+
+
+def pinned_runtime_public_paths(*, private_path: Path | None = None) -> PinnedRuntimePublicPaths:
+    """generation 관측 API가 읽을 공개 사본 경로를 반환한다.
+
+    설치본은 release 교체에 살아남는 `/var/lib` 경로를 쓴다. 개발 테스트처럼 trusted
+    install 밖에서 private path를 직접 넘긴 경우에는 그 path 옆의 임시 공개 디렉터리를
+    사용해, 테스트가 호스트 전역 state를 만들지 않게 한다. custom state root를 쓰는
+    실제 배포는 반드시 `KTDM_PINNED_RUNTIME_PUBLIC_ROOT`를 함께 지정한다.
+    """
+
+    configured = os.environ.get(_PUBLIC_ROOT_ENV, "").strip()
+    if configured:
+        root = Path(configured)
+        if not root.is_absolute() or root != root.resolve(strict=False):
+            raise DeploymentContractError(
+                "KTDM_PINNED_RUNTIME_PUBLIC_ROOT must be a canonical absolute path"
+            )
+    elif private_path is not None and not _running_from_trusted_install_root():
+        root = private_path.parent / ".ktdm-pinned-runtime-public"
+    else:
+        root = _DEFAULT_PUBLIC_ROOT
+    return PinnedRuntimePublicPaths(
+        manifest=root / _MANIFEST_FILENAME,
+        journal=root / _PUBLIC_JOURNAL_FILENAME,
+    )
+
+
+def publish_pinned_runtime_generation(
+    *,
+    manifest: PinnedRuntimeManifest | None = None,
+    journal: PinnedRuntimeRebuildJournal | None = None,
+    private_path: Path | None = None,
+) -> PinnedRuntimePublicPaths:
+    """검증된 private v6/v8 원본을 backend 가독 사본으로 원자 복제한다.
+
+    이 함수는 private 파일을 다시 읽지 않는다. caller가 typed model로 이미 검증한
+    payload만 받아서 쓰므로 symlink·mode가 다른 private artifact를 API에 중계할 여지가
+    없다. 한 번에 둘 다 주면 같은 public root로 각각 atomic replace한다. 파일 두 개의
+    교체 사이를 API가 읽으면 summary가 `재구축 진행 중` 또는 `정합성 확인 필요`로
+    fail-close하며, raw JSON schema 자체는 절대 바꾸지 않는다.
+    """
+
+    if manifest is None and journal is None:
+        raise DeploymentContractError("pinned runtime public publication needs an artifact")
+    paths = pinned_runtime_public_paths(private_path=private_path)
+    if manifest is not None:
+        _write_public_json(paths.manifest, manifest.to_payload())
+    if journal is not None:
+        _write_public_json(paths.journal, journal.to_payload())
+    return paths
+
+
+def read_published_pinned_runtime_generation() -> dict[str, object]:
+    """backend 전용 public-copy reader.
+
+    root-owned private state의 경로·권한을 우회하지 않는다. 사본이 없거나 schema가 틀리면
+    원문/경로를 노출하지 않고 `unknown`으로 끝낸다.
+    """
+
+    paths = pinned_runtime_public_paths()
+    manifest: PinnedRuntimeManifest | None = None
+    journal: PinnedRuntimeRebuildJournal | None = None
+    for label, path, parser in (
+        ("manifest", paths.manifest, manifest_from_payload),
+        ("journal", paths.journal, journal_from_payload),
+    ):
+        try:
+            raw = _read_public_json(path, f"pinned runtime {label} public copy")
+            parsed = parser(raw)
+        except DeploymentContractError:
+            continue
+        if label == "manifest":
+            manifest = cast(PinnedRuntimeManifest, parsed)
+        else:
+            journal = cast(PinnedRuntimeRebuildJournal, parsed)
+
+    # manifest와 journal은 같은 committed generation을 증명하는 한 쌍이다. 하나만
+    # 공개됐거나 한쪽이 깨졌다면 raw 한 조각을 API로 돌려 주지 않는다. 부분 사본을
+    # complete generation으로 오인하면 terminal pinset 재시도 gate가 무력화된다.
+    if manifest is None or journal is None:
+        return {
+            "status": "unknown",
+            "source": "published_copy",
+            "detail": "pinned runtime generation public copy is incomplete or invalid",
+            "manifest": None,
+            "journal": None,
+            "pinset_binding": _published_generation_pinset_binding(
+                manifest=None, journal=None
+            ),
+            "terminal": None,
+            "summary": _published_generation_summary(
+                manifest=None,
+                journal=None,
+                pinset_binding="unknown",
+            ),
+        }
+
+    if manifest.active_generation != journal.candidate:
+        return {
+            "status": "unverified",
+            "source": "published_copy",
+            "detail": "published manifest and rebuild journal generation differ",
+            "manifest": manifest.to_payload(),
+            "journal": journal.to_payload(),
+            "pinset_binding": _published_generation_pinset_binding(
+                manifest=manifest, journal=journal
+            ),
+            "terminal": None,
+            "summary": _published_generation_summary(
+                manifest=manifest,
+                journal=journal,
+                pinset_binding="unknown",
+            ),
+        }
+
+    pinset_binding = _published_generation_pinset_binding(
+        manifest=manifest, journal=journal
+    )
+    terminal: dict[str, str] | None = None
+    if journal is not None and journal.pinvi_role_lifecycle_block is not None:
+        terminal = {
+            "class": "pinvi_role_lifecycle_block",
+            "subclass": journal.pinvi_role_lifecycle_block.diagnostic,
+            "pinset_sha256": journal.candidate.pinset_sha256,
+        }
+    return {
+        "status": "ok",
+        "source": "published_copy",
+        "manifest": None if manifest is None else manifest.to_payload(),
+        "journal": None if journal is None else journal.to_payload(),
+        "pinset_binding": pinset_binding,
+        "terminal": terminal,
+        "summary": _published_generation_summary(
+            manifest=manifest,
+            journal=journal,
+            pinset_binding=cast(str, pinset_binding["status"]),
+        ),
+    }
+
+
+def _published_generation_pinset_binding(
+    *,
+    manifest: PinnedRuntimeManifest | None,
+    journal: PinnedRuntimeRebuildJournal | None,
+) -> dict[str, str | None]:
+    """public registry와 generation 후보의 Map·PinVi pair 결박을 비교한다.
+
+    `runtime-pins`가 unknown/stale/degraded이면 generation API가 값을 추측해 match라고
+    말하지 않는다. 아직 journal이 없는 신규 rotation은 `pending_rebuild`, current candidate
+    journal이 다른 pair면 `drift`로 나눠 사람이 one-shot을 잘못 시작하지 않게 한다.
+    """
+
+    if (
+        manifest is None
+        or journal is None
+        or manifest.active_generation != journal.candidate
+    ):
+        return {
+            "status": "unknown",
+            "registry_pinset_sha256": None,
+            "generation_pinset_sha256": None,
+        }
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        read_published_runtime_pins,
+    )
+
+    payload = read_published_runtime_pins()
+    if payload.get("status") != "ok":
+        return {
+            "status": "unknown",
+            "registry_pinset_sha256": None,
+            "generation_pinset_sha256": _generation_for_public_binding(
+                manifest=manifest, journal=journal
+            ).pinset_sha256,
+        }
+    sources = payload.get("sources")
+    if not isinstance(sources, list):
+        return {
+            "status": "unknown",
+            "registry_pinset_sha256": None,
+            "generation_pinset_sha256": _generation_for_public_binding(
+                manifest=manifest, journal=journal
+            ).pinset_sha256,
+        }
+    revisions = {
+        entry.get("role"): entry.get("revision")
+        for entry in sources
+        if isinstance(entry, Mapping)
+    }
+    generation = _generation_for_public_binding(manifest=manifest, journal=journal)
+    registry_pinset = payload.get("pinset_sha256")
+    if (
+        not isinstance(registry_pinset, str)
+        or revisions.get("map") != generation.map_source_revision
+        or revisions.get("pinvi") != generation.pinvi_source_revision
+        or registry_pinset != generation.pinset_sha256
+    ):
+        return {
+            # 이전 candidate의 terminal은 typed role receipt만으로 표현되지 않는다.
+            # launcher/HTTP/preflight 계열은 root registry의 exact unconditional block이
+            # terminal 정본이다. 새 atomic pair로 회전한 뒤 그런 old generation을
+            # `drift`로 남기면 `pin verify`가 1로 끝나 정상적인 새 one-shot까지 막힌다.
+            # strict public copy인 old committed 또는 exact unconditional terminal
+            # generation만 pending으로 보존하고, partial·mismatched·phase-scoped block·
+            # 현재 candidate의 비terminal 중단은 drift다.
+            "status": (
+                "pending_rebuild"
+                if journal is not None
+                and (
+                    journal.phase == "committed"
+                    or journal.pinvi_role_lifecycle_block is not None
+                    or _is_unconditionally_blocked_public_generation(
+                        payload=payload,
+                        generation=generation,
+                    )
+                )
+                else "drift"
+            ),
+            "registry_pinset_sha256": registry_pinset if isinstance(registry_pinset, str) else None,
+            "generation_pinset_sha256": generation.pinset_sha256,
+        }
+    return {
+        "status": "match",
+        "registry_pinset_sha256": registry_pinset,
+        "generation_pinset_sha256": generation.pinset_sha256,
+    }
+
+
+def _is_unconditionally_blocked_public_generation(
+    *,
+    payload: Mapping[str, object],
+    generation: PinnedRuntimeGeneration,
+) -> bool:
+    """공개 registry가 generation의 모든 재실행을 차단했는지 exact로 판정한다.
+
+    이 helper는 registry reader가 strict parse한 공개 payload만 받는다. phase가 있는
+    block은 특정 재개만 막으므로 새 pair 회전 뒤에도 `pending_rebuild` 근거가 아니다.
+    """
+
+    blocked_pinsets = payload.get("blocked_pinsets")
+    if not isinstance(blocked_pinsets, list):
+        return False
+    return any(
+        isinstance(entry, Mapping)
+        and entry.get("phase") is None
+        and entry.get("pinset_sha256") == generation.pinset_sha256
+        and entry.get("map_revision") == generation.map_source_revision
+        and entry.get("pinvi_revision") == generation.pinvi_source_revision
+        for entry in blocked_pinsets
+    )
+
+
+def _generation_for_public_binding(
+    *,
+    manifest: PinnedRuntimeManifest | None,
+    journal: PinnedRuntimeRebuildJournal | None,
+) -> PinnedRuntimeGeneration:
+    if journal is not None:
+        return journal.candidate
+    if manifest is not None:
+        return manifest.active_generation
+    raise DeploymentContractError("published generation binding has no generation")
+
+
+def _published_generation_summary(
+    *,
+    manifest: PinnedRuntimeManifest | None,
+    journal: PinnedRuntimeRebuildJournal | None,
+    pinset_binding: str,
+) -> dict[str, object]:
+    """raw v6/v8 원본을 바꾸지 않는 API envelope의 인간용 요약."""
+
+    if journal is None and manifest is None:
+        return {
+            "state": "unknown",
+            "text": "공개된 pinned runtime 세대 기록이 없습니다.",
+            "next_action": (
+                "sudo -n backend/.venv/bin/ktdctl pin publish-generation "
+                "--manifest <absolute-v6-path> --journal <absolute-v8-path> --confirm"
+            ),
+            "manifest_version": None,
+            "journal_version": None,
+        }
+    if manifest is not None and journal is not None and (
+        manifest.active_generation != journal.candidate
+    ):
+        return {
+            "state": "unverified",
+            "text": "공개된 manifest와 rebuild journal의 세대가 일치하지 않습니다.",
+            "next_action": (
+                "sudo -n backend/.venv/bin/ktdctl pin publish-generation "
+                "--manifest <absolute-v6-path> --journal <absolute-v8-path> --confirm"
+            ),
+            "manifest_version": manifest.version,
+            "journal_version": journal.version,
+        }
+    if pinset_binding in {"pending_rebuild", "drift", "unknown"}:
+        return {
+            "state": "pending_rebuild" if pinset_binding == "pending_rebuild" else "unverified",
+            "text": (
+                "현재 pinset은 새 재구축을 기다리고 있습니다."
+                if pinset_binding == "pending_rebuild"
+                else "현재 registry와 공개 generation의 Map·PinVi pair 결박을 확인할 수 없습니다."
+            ),
+            "next_action": "" if pinset_binding == "pending_rebuild" else "sudo -n backend/.venv/bin/ktdctl pin verify",
+            "manifest_version": None if manifest is None else manifest.version,
+            "journal_version": None if journal is None else journal.version,
+        }
+    if journal is not None and journal.pinvi_role_lifecycle_block is not None:
+        return {
+            "state": "action_required",
+            "text": "PinVi role lifecycle 차단 기록이 있어 이 pinset은 재시도할 수 없습니다.",
+            "next_action": "ktdctl pin rotate-pair --map-revision <40-hex> --pinvi-revision <40-hex> --reason <reason> --confirm",
+            "manifest_version": None if manifest is None else manifest.version,
+            "journal_version": journal.version,
+        }
+    if journal is not None and journal.phase != "committed":
+        position = REBUILD_PHASES.index(journal.phase) + 1
+        return {
+            "state": "rebuilding",
+            "text": f"재구축 진행 중 ({position}/{len(REBUILD_PHASES)} 단계)",
+            "next_action": "",
+            "manifest_version": None if manifest is None else manifest.version,
+            "journal_version": journal.version,
+        }
+    return {
+        "state": "committed",
+        "text": "고정된 runtime 세대가 커밋되어 있습니다.",
+        "next_action": "",
+        "manifest_version": None if manifest is None else manifest.version,
+        "journal_version": None if journal is None else journal.version,
+    }
 
 
 def rebuild_journal_sha256(journal: PinnedRuntimeRebuildJournal) -> str:
@@ -3376,6 +3736,209 @@ def _write_private_json(path: Path, payload: Mapping[str, object], label: str) -
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _write_public_json(path: Path, payload: Mapping[str, object]) -> None:
+    """world-readable state 사본을 atomic replace한다.
+
+    공개본은 endpoint가 root state에 닿지 않고 읽는 유일한 경로다. payload는 이미
+    typed constructor를 통과했으므로 여기서는 schema를 확장하거나 metadata를 삽입하지
+    않는다. 디렉터리는 traverse 가능한 0755, 파일은 0644로 고정한다.
+    """
+
+    raw = (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if len(raw) > _MAX_STATE_BYTES:
+        raise DeploymentContractError("pinned runtime public copy is too large")
+    if path.name not in {_MANIFEST_FILENAME, _PUBLIC_JOURNAL_FILENAME}:
+        raise DeploymentContractError("pinned runtime public copy filename is invalid")
+    directory = _open_public_state_directory(path.parent, create=True)
+    temporary_name: str | None = None
+    try:
+        _validate_existing_public_file(directory, path.name)
+        temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=directory,
+        )
+        try:
+            os.fchmod(descriptor, 0o644)
+            _write_all(descriptor, raw)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        temporary_name = None
+        os.fsync(directory)
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy cannot be written") from exc
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        os.close(directory)
+
+
+def _read_public_json(path: Path, label: str) -> object:
+    """public copy를 symlink·권한·크기 검증 뒤 읽는다."""
+
+    try:
+        directory = _open_public_state_directory(path.parent, create=False)
+    except DeploymentContractError:
+        raise
+    try:
+        try:
+            before = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            raise DeploymentContractError(f"{label} is missing") from None
+        except OSError as exc:
+            raise DeploymentContractError(f"{label} cannot be inspected") from exc
+        _validate_public_file_stat(before, label)
+        descriptor: int | None = None
+        try:
+            try:
+                descriptor = os.open(
+                    path.name,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=directory,
+                )
+            except OSError as exc:
+                raise DeploymentContractError(f"{label} cannot be opened safely") from exc
+            after = os.fstat(descriptor)
+            _validate_public_file_stat(after, label)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise DeploymentContractError(f"{label} changed during read")
+            raw = _read_bounded(descriptor, label)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+    finally:
+        os.close(directory)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DeploymentContractError(f"{label} is invalid") from exc
+
+
+def _open_public_state_directory(path: Path, *, create: bool) -> int:
+    """root-owned public state root를 no-follow directory FD로 연다.
+
+    공개 파일은 world-readable여도 되지만, 그 부모를 group/other가 쓸 수 있으면 root
+    publisher의 ``replace`` 대상이 바뀔 수 있다. 디렉터리 검사와 파일 생성·교체를 같은
+    FD에 묶어 symlink 및 경로 TOCTOU를 fail-close한다.
+    """
+
+    try:
+        parent = path.parent.lstat()
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy parent is unavailable") from exc
+    _validate_public_directory_stat(parent, "pinned runtime public copy parent", exact_mode=False)
+    created = False
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        if not create:
+            raise DeploymentContractError("pinned runtime public copy directory is missing") from None
+        try:
+            path.mkdir(mode=0o755)
+            created = True
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise DeploymentContractError("pinned runtime public copy directory cannot be created") from exc
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise DeploymentContractError("pinned runtime public copy directory is unavailable") from exc
+    _validate_public_directory_stat(
+        before,
+        "pinned runtime public copy directory",
+        exact_mode=not created,
+    )
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy directory cannot be opened safely") from exc
+    after = os.fstat(descriptor)
+    try:
+        if created:
+            os.fchmod(descriptor, 0o755)
+            after = os.fstat(descriptor)
+        _validate_public_directory_stat(after, "pinned runtime public copy directory", exact_mode=True)
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise DeploymentContractError("pinned runtime public copy directory changed during open")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _validate_public_directory_stat(
+    file_stat: os.stat_result,
+    label: str,
+    *,
+    exact_mode: bool,
+) -> None:
+    mode = stat.S_IMODE(file_stat.st_mode)
+    if (
+        not stat.S_ISDIR(file_stat.st_mode)
+        or file_stat.st_uid not in {0, os.geteuid()}
+        or (mode != 0o755 if exact_mode else mode & 0o022)
+    ):
+        raise DeploymentContractError(f"{label} is unsafe")
+
+
+def _validate_public_file_stat(file_stat: os.stat_result, label: str) -> None:
+    if (
+        not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(file_stat.st_mode) != 0o644
+        or file_stat.st_nlink != 1
+        or file_stat.st_size > _MAX_STATE_BYTES
+    ):
+        raise DeploymentContractError(f"{label} is unsafe")
+
+
+def _validate_existing_public_file(directory: int, name: str) -> None:
+    try:
+        observed = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise DeploymentContractError("pinned runtime public copy cannot be inspected") from exc
+    _validate_public_file_stat(observed, "pinned runtime public copy")
+
+
+def _write_all(descriptor: int, raw: bytes) -> None:
+    offset = 0
+    while offset < len(raw):
+        written = os.write(descriptor, raw[offset:])
+        if written <= 0:
+            raise OSError("pinned runtime public copy write failed")
+        offset += written
+
+
+def _running_from_trusted_install_root() -> bool:
+    """설치 tree에서는 public state를 release 밖 `/var/lib`에 고정한다."""
+
+    try:
+        return Path(__file__).resolve().is_relative_to(
+            Path("/opt/kor-travel-docker-manager").resolve()
+        )
+    except OSError:
+        return False
 
 
 def _validate_state_parent(path: Path, label: str) -> None:

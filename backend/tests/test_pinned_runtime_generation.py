@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services import c6c_deployment, runtime_pin_registry
 from kor_travel_docker_manager.services import pinned_runtime_generation as generation_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
@@ -42,8 +42,10 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     journal_from_payload,
     legacy_tombstone_receipt_path,
     load_deployment_mode,
+    pinned_runtime_public_paths,
     pinned_runtime_state_paths,
     read_manifest,
+    read_published_pinned_runtime_generation,
     read_rebuild_journal,
     rebuild_journal_sha256,
     require_rebuildable_mode,
@@ -476,6 +478,285 @@ def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path
     assert restored.transition("reset_intent_durable").phase == "reset_intent_durable"
     with pytest.raises(DeploymentContractError, match="phase transition"):
         restored.transition("databases_recreated")
+
+
+def test_public_generation_copy_preserves_exact_raw_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """API 관측 사본은 Map attestation이 보는 v6/v8 dict를 바꾸면 안 된다."""
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    public_root = tmp_path / "public"
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
+    manifest = PinnedRuntimeManifest(version=6, active_generation=_generation())
+    journal = _journal()
+
+    write_manifest(state / "pinned-runtime-generation-v6.json", manifest)
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
+
+    paths = pinned_runtime_public_paths()
+    assert paths.manifest.parent == public_root
+    assert paths.manifest.exists()
+    assert paths.journal.exists()
+    if os.name != "nt":
+        assert stat.S_IMODE(paths.manifest.stat().st_mode) == 0o644
+        assert stat.S_IMODE(paths.journal.stat().st_mode) == 0o644
+    observed = read_published_pinned_runtime_generation()
+    assert observed["status"] == "ok"
+    assert observed["manifest"] == manifest.to_payload()
+    assert observed["journal"] == journal.to_payload()
+    assert observed["summary"]["state"] == "unverified"
+
+
+def test_public_generation_copy_fails_closed_when_all_public_artifacts_are_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    public_root = tmp_path / "public"
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
+    public_root.mkdir(mode=0o755)
+    (public_root / "pinned-runtime-generation-v6.json").write_text("{}", encoding="utf-8")
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "unknown"
+    assert observed["manifest"] is None
+    assert observed["journal"] is None
+
+
+def test_public_generation_copy_fails_closed_when_only_one_artifact_is_published(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=_generation()),
+    )
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "unknown"
+    assert observed["manifest"] is None
+    assert observed["journal"] is None
+    assert observed["summary"]["state"] == "unknown"
+
+
+def test_public_generation_copy_rejects_mismatched_manifest_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=_generation("a")),
+    )
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", _journal("b"))
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "unverified"
+    assert observed["pinset_binding"]["status"] == "unknown"
+    assert observed["summary"]["state"] == "unverified"
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "writable"])
+def test_public_generation_writer_rejects_an_unsafe_public_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    public_root = tmp_path / "public"
+    if unsafe == "symlink":
+        target = tmp_path / "target"
+        target.mkdir(mode=0o755)
+        public_root.symlink_to(target, target_is_directory=True)
+    else:
+        public_root.mkdir(mode=0o755)
+        os.chmod(public_root, 0o777)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
+
+    with pytest.raises(
+        DeploymentContractError,
+        match="canonical absolute path|public copy directory is unsafe",
+    ):
+        write_manifest(
+            state / "pinned-runtime-generation-v6.json",
+            PinnedRuntimeManifest(version=6, active_generation=_generation()),
+        )
+
+
+def test_public_generation_binding_distinguishes_current_pair_and_pending_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    manifest = PinnedRuntimeManifest(version=6, active_generation=_generation())
+    journal = _journal()
+    write_manifest(state / "pinned-runtime-generation-v6.json", manifest)
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
+    matching = {
+        "status": "ok",
+        "pinset_sha256": journal.candidate.pinset_sha256,
+        "sources": [
+            {"role": "map", "revision": journal.candidate.map_source_revision},
+            {"role": "pinvi", "revision": journal.candidate.pinvi_source_revision},
+        ],
+    }
+    monkeypatch.setattr(runtime_pin_registry, "read_published_runtime_pins", lambda: matching)
+
+    assert read_published_pinned_runtime_generation()["pinset_binding"]["status"] == "match"
+
+    monkeypatch.setattr(
+        runtime_pin_registry,
+        "read_published_runtime_pins",
+        lambda: {**matching, "pinset_sha256": "f" * 64},
+    )
+    # 현재 journal은 committed가 아니므로 다른 pair는 정상 대기가 아니라 drift다.
+    assert read_published_pinned_runtime_generation()["pinset_binding"]["status"] == "drift"
+
+
+def test_terminal_generation_becomes_pending_after_atomic_pair_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    terminal_journal = (
+        _journal_with_map_application_ready()
+        .transition("map_dagster_storage_intent_durable")
+        .transition("map_dagster_ready")
+        .transition("map_runtime_ready")
+        .with_pinvi_role_lifecycle_block(
+            PinviRoleLifecycleBlock(
+                stage="pinvi_role_open",
+                code="role_topology_noncanonical",
+            )
+        )
+    )
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=terminal_journal.candidate),
+    )
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", terminal_journal)
+    monkeypatch.setattr(
+        runtime_pin_registry,
+        "read_published_runtime_pins",
+        lambda: {
+            "status": "ok",
+            "pinset_sha256": _digest("f"),
+            "sources": [
+                {"role": "map", "revision": _revision("f")},
+                {"role": "pinvi", "revision": _revision("f")},
+            ],
+        },
+    )
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "ok"
+    assert observed["pinset_binding"]["status"] == "pending_rebuild"
+    assert observed["summary"]["state"] == "pending_rebuild"
+
+
+def test_unconditionally_blocked_generation_becomes_pending_after_pair_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """launcher/HTTP terminal은 role receipt 없이 registry exact block으로 보존된다."""
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    terminal_journal = (
+        _journal_with_map_application_ready()
+        .transition("map_dagster_storage_intent_durable")
+        .transition("map_dagster_ready")
+        .transition("map_runtime_ready")
+    )
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=terminal_journal.candidate),
+    )
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", terminal_journal)
+    monkeypatch.setattr(
+        runtime_pin_registry,
+        "read_published_runtime_pins",
+        lambda: {
+            "status": "ok",
+            "pinset_sha256": _digest("f"),
+            "sources": [
+                {"role": "map", "revision": _revision("f")},
+                {"role": "pinvi", "revision": _revision("f")},
+            ],
+            "blocked_pinsets": [
+                {
+                    "pinset_sha256": terminal_journal.candidate.pinset_sha256,
+                    "map_revision": terminal_journal.candidate.map_source_revision,
+                    "pinvi_revision": terminal_journal.candidate.pinvi_source_revision,
+                    "reason": "launcher safe result unavailable",
+                    "blocked_at": "2026-08-28T00:00:00Z",
+                    "phase": None,
+                }
+            ],
+        },
+    )
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["pinset_binding"]["status"] == "pending_rebuild"
+    assert observed["summary"]["state"] == "pending_rebuild"
+
+
+def test_phase_scoped_old_block_remains_generation_drift_after_pair_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """특정 재개 차단은 모든 실행을 금지하지 않으므로 pending 근거가 아니다."""
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    journal = _journal()
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
+    )
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
+    monkeypatch.setattr(
+        runtime_pin_registry,
+        "read_published_runtime_pins",
+        lambda: {
+            "status": "ok",
+            "pinset_sha256": _digest("f"),
+            "sources": [
+                {"role": "map", "revision": _revision("f")},
+                {"role": "pinvi", "revision": _revision("f")},
+            ],
+            "blocked_pinsets": [
+                {
+                    "pinset_sha256": journal.candidate.pinset_sha256,
+                    "map_revision": journal.candidate.map_source_revision,
+                    "pinvi_revision": journal.candidate.pinvi_source_revision,
+                    "reason": "resume only",
+                    "blocked_at": "2026-08-28T00:00:00Z",
+                    "phase": "map_runtime_ready",
+                }
+            ],
+        },
+    )
+
+    assert read_published_pinned_runtime_generation()["pinset_binding"]["status"] == "drift"
 
 
 def test_rebuild_journal_application_300_phases_require_evidence_methods() -> None:

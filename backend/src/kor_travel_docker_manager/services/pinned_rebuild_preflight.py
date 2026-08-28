@@ -25,6 +25,9 @@ from kor_travel_docker_manager.services.admin_password_service import (
 from kor_travel_docker_manager.services.deployment_readiness import (
     read_deployment_readiness,
 )
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    read_published_pinned_runtime_generation,
+)
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
 )
@@ -90,7 +93,32 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
                 )
             )
 
-    # 2. 배포 모드가 재구축을 허용하는가, 그리고 진행 중인 재구축이 있는가.
+    # 2. v6/v8 공개 세대가 현재 registry의 one-shot 계약과 정합한가. registry만
+    #    green이면 stale/partial generation을 무시하고 destructive command를 안내할 수
+    #    있다. rotation 직후의 strict old committed/unconditional-terminal generation은
+    #    `pending_rebuild`로 유효하지만, 그 외 partial·drift·unknown은 fail-close다.
+    try:
+        generation = read_published_pinned_runtime_generation()
+    except Exception as exc:  # noqa: BLE001 - 진단 route는 500이 되면 안 된다
+        generation = {"status": "unknown", "detail": str(exc)}
+    generation_status = generation.get("status")
+    generation_binding = generation.get("pinset_binding")
+    binding_status = (
+        generation_binding.get("status")
+        if isinstance(generation_binding, dict)
+        else None
+    )
+    if generation_status != "ok" or binding_status not in {"match", "pending_rebuild"}:
+        unverified.append(
+            _finding(
+                "GENERATION_UNVERIFIED",
+                "공개된 runtime generation이 현재 one-shot 계약과 정합한지 확인하지 "
+                f"못했습니다(status={generation_status}, binding={binding_status}).",
+                PIN_VERIFY_COMMAND,
+            )
+        )
+
+    # 3. 배포 모드가 재구축을 허용하는가, 그리고 진행 중인 재구축이 있는가.
     #    두 사실이 같은 판정 함수에서 나온다 — 모드 게이트를 통과해야 journal도 읽는다.
     try:
         guard = pinned_rebuild_guard_state()
@@ -123,7 +151,7 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
             )
         )
 
-    # 3. 실행 전에 알 수 있는 결손(사전 점검).
+    # 4. 실행 전에 알 수 있는 결손(사전 점검).
     try:
         # 같은 화면의 사전 점검 섹션과 다른 스냅샷을 보면 두 판정이 서로 모순되게 보인다.
         readiness = read_deployment_readiness(force_refresh=force_refresh)
