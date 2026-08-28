@@ -180,8 +180,12 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   d9 상수 이관), KUM-M3(root-side world-readable publisher), KUM-M4(`GET
   /api/v1/runtime-pins` + 배포 버전 고정 패널). 전문 적대 리뷰 2건 반영,
   n150 격리 live E2E 15항목 통과, backend 751 tests.
-- [ ] 1부 잔여: KUM-M5(UI 2-step pin rotate), KUM-M6(typed 진단 소비 이관),
-  KUM-M7(preflight readiness 노출).
+- [x] KUM-M5 완료(2026-08-28): UI는 회전 **요청**만 기록하고 적용은 root
+  `ktdctl pin apply-pending --confirm`이 한다. 요청 저장소는 registry와 다른 트리의
+  backend-writable 파일이며 어떤 pin 로드 경로도 읽지 않는다(회귀로 결박). 계약은
+  `docs/runtime-pin-registry.md` §7-1.
+- [ ] 1부 잔여: KUM-M6(typed 진단 소비 이관), KUM-M7(readiness 프론트 섹션 — 백엔드와
+  회귀는 완료).
 - [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
   항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).
 

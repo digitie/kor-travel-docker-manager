@@ -862,6 +862,215 @@ def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, caps
     assert "새 PinVi head" in output
 
 
+# --- ktdctl pin apply-pending (KUM-M5) ---------------------------------------
+
+
+@pytest.fixture
+def pending_request_env(tmp_path, monkeypatch):
+    """UI가 남긴 요청 파일을 격리한다."""
+
+    from kor_travel_docker_manager.services import runtime_pin_request
+
+    target = tmp_path / "requests" / "runtime-pin-requests.json"
+    monkeypatch.setenv(runtime_pin_request.RUNTIME_PIN_REQUEST_FILE_ENV, str(target))
+    return target
+
+
+def _file_a_request(*, role="pinvi", revision="d" * 40, reason="새 PinVi head"):
+    """현재 registry를 base로 하는 요청을 UI가 남긴 것처럼 기록한다."""
+
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_request import (
+        RuntimePinRequest,
+        prospective_pinset_sha256,
+        utc_timestamp,
+        write_runtime_pin_request,
+    )
+
+    registry = load_runtime_pin_registry()
+    request = RuntimePinRequest(
+        request_id="6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+        role=role,
+        revision=revision,
+        reason=reason,
+        requested_by="admin",
+        requested_at=utc_timestamp(),
+        base_pinset_sha256=registry.pinset_sha256,
+        prospective_pinset_sha256=prospective_pinset_sha256(
+            release_version=registry.release_version,
+            map_revision=revision if role == "map" else registry.map_revision,
+            pinvi_revision=revision if role == "pinvi" else registry.pinvi_revision,
+        ),
+    )
+    write_runtime_pin_request(request)
+    return request
+
+
+def test_pin_pending_parser_registers_every_leaf_command():
+    parser = build_parser()
+
+    for action, argv in {
+        "apply-pending": ["pin", "apply-pending"],
+        "show-pending": ["pin", "show-pending"],
+        "clear-pending": ["pin", "clear-pending", "--request-id", "x"],
+    }.items():
+        args = parser.parse_args(argv)
+        assert args.pin_action == action
+        assert callable(args.func)
+
+
+def test_pin_apply_pending_refuses_without_confirm(
+    pin_cli_env, pending_request_env, capsys
+):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+    before = pin_cli_env.read_bytes()
+
+    assert main(["pin", "apply-pending"]) == 2
+
+    assert "--confirm" in capsys.readouterr().err
+    assert pin_cli_env.read_bytes() == before
+    assert pending_request_env.exists()
+
+
+def test_pin_apply_pending_refuses_without_root(pin_cli_env, pending_request_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
+        assert main(["pin", "apply-pending", "--confirm"]) == 2
+
+    assert "root" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+
+def test_pin_show_pending_is_read_only(pin_cli_env, pending_request_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+    before = pin_cli_env.read_bytes()
+
+    assert main(["pin", "show-pending"]) == 0
+
+    output = capsys.readouterr().out
+    assert "새 PinVi head" in output
+    assert "apply-pending" in output
+    assert pin_cli_env.read_bytes() == before
+
+
+def test_pin_show_pending_reports_nothing_pending(pin_cli_env, pending_request_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert main(["pin", "show-pending"]) == 1
+    assert "없습니다" in capsys.readouterr().out
+
+
+def test_pin_apply_pending_rotates_and_records_both_actors(
+    pin_cli_env, pending_request_env, capsys
+):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    request = _file_a_request()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(["pin", "apply-pending", "--confirm"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "applied pending rotation for pinvi" in output
+    # 요청자와 적용자가 모두 남아야 사후에 누가 무엇을 했는지 알 수 있다.
+    assert "<-admin" in output
+    assert request.request_id in output
+    # 적용된 요청은 남겨 두지 않는다 — 두 번 적용될 여지를 없앤다.
+    assert not pending_request_env.exists()
+
+
+def test_pin_apply_pending_refuses_a_request_the_pin_moved_past(
+    pin_cli_env, pending_request_env, capsys
+):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request(role="pinvi", revision="d" * 40)
+    # 요청을 남긴 뒤 운영자가 SSH에서 직접 회전시킨 상황.
+    main(
+        [
+            "pin",
+            "rotate",
+            "--role",
+            "map",
+            "--revision",
+            "e" * 40,
+            "--reason",
+            "직접 회전",
+            "--confirm",
+        ]
+    )
+    capsys.readouterr()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(["pin", "apply-pending", "--confirm"])
+
+    assert exit_code == 2
+    error = capsys.readouterr().err
+    assert "pin이 바뀌었습니다" in error
+    # 자동으로 지우지 않는다 — 무엇이 버려지는지 사람이 보고 결정해야 한다.
+    assert pending_request_env.exists()
+
+
+def test_pin_apply_pending_honours_expect_revision(
+    pin_cli_env, pending_request_env, capsys
+):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request(role="pinvi", revision="d" * 40)
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(
+            ["pin", "apply-pending", "--expect-revision", "f" * 40, "--confirm"]
+        )
+
+    assert exit_code == 2
+    assert "--expect-revision" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+
+def test_pin_clear_pending_requires_confirm_and_the_exact_id(
+    pin_cli_env, pending_request_env, capsys
+):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    request = _file_a_request()
+
+    assert main(["pin", "clear-pending", "--request-id", request.request_id]) == 2
+    assert "--confirm" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+    assert (
+        main(
+            [
+                "pin",
+                "clear-pending",
+                "--request-id",
+                "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                "--confirm",
+            ]
+        )
+        == 1
+    )
+    assert pending_request_env.exists()
+
+    assert (
+        main(["pin", "clear-pending", "--request-id", request.request_id, "--confirm"])
+        == 0
+    )
+    assert not pending_request_env.exists()
+
+
 def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
     main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
     capsys.readouterr()

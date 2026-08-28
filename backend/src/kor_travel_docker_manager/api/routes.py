@@ -1,9 +1,14 @@
-from typing import Any
+from typing import Annotated, Any, Literal
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, field_validator
 
-from kor_travel_docker_manager.services.auth_service import require_admin_session
+from kor_travel_docker_manager.services.auth_service import (
+    AdminSessionContext,
+    record_login_audit_event,
+    require_admin_session,
+)
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -22,6 +27,16 @@ from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
+)
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    RuntimePinRequest,
+    RuntimePinRequestError,
+    clear_runtime_pin_request,
+    prospective_pinset_sha256,
+    read_runtime_pin_request,
+    runtime_pin_request_path,
+    utc_timestamp,
+    write_runtime_pin_request,
 )
 from kor_travel_docker_manager.services.source_status import collect_source_status
 from kor_travel_docker_manager.services.standalone_backup import (
@@ -52,6 +67,26 @@ class ContainerConfigUpdate(BaseModel):
         ),
     )
     networks: list[str] = Field(..., description="Compose networks list, e.g. ['default']")
+
+
+class RuntimePinRotationRequestBody(BaseModel):
+    """UI가 남기는 회전 **요청** 본문. 이 값이 pin이 되지는 않는다."""
+
+    role: Literal["map", "pinvi"]
+    revision: str = Field(..., min_length=40, max_length=40, pattern=r"^[0-9a-f]{40}$")
+    reason: str = Field(..., min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def _single_line(cls, value: str) -> str:
+        # runtime_pin_request._require_text와 같은 규칙이어야 한다 — 여기서 통과시킨
+        # 값을 CLI가 읽지 못하면 요청은 영원히 적용되지 않는다.
+        text = value.strip()
+        if not text:
+            raise ValueError("reason must not be empty")
+        if any(character in text for character in ("\n", "\r", "\x00")):
+            raise ValueError("reason must be a single line")
+        return text
 
 
 def _config_failure_detail(result: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +174,7 @@ def get_runtime_pins():
             "source": payload.get("source"),
             "detail": payload.get("detail"),
             "pins": None,
+            "pending_request": None,
         }
     blocked = payload.get("blocked_pinsets", [])
     pinset_sha256 = payload.get("pinset_sha256")
@@ -171,11 +207,37 @@ def get_runtime_pins():
             "blocked_pinsets": blocked,
             "history": payload.get("history", []),
         },
+        "pending_request": _pending_request_payload(current_pinset=pinset_sha256),
         "summary": _runtime_pin_summary(
             status=payload.get("status", "ok"),
             current_is_blocked=current_is_blocked,
             rotated_at=payload.get("rotated_at"),
         ),
+    }
+
+
+def _pending_request_payload(*, current_pinset: str | None) -> dict[str, Any] | None:
+    """UI가 남긴 대기 요청. 읽지 못하면 값을 지어내지 않고 그 사실을 말한다."""
+
+    try:
+        request = read_runtime_pin_request()
+    except RuntimePinRequestError as exc:
+        return {"status": "unreadable", "detail": str(exc)}
+    if request is None:
+        return None
+    # base가 어긋난 요청을 'pending'이라 부르지 않는다 — apply-pending이 반드시 거부할
+    # 요청을 UI가 적용 가능한 것처럼 보여주면 안 된다.
+    stale = current_pinset is not None and request.base_pinset_sha256 != current_pinset
+    return {
+        "status": "stale" if stale else "pending",
+        "request_id": request.request_id,
+        "role": request.role,
+        "revision": request.revision,
+        "reason": request.reason,
+        "requested_by": request.requested_by,
+        "requested_at": request.requested_at,
+        "base_pinset_sha256": request.base_pinset_sha256,
+        "prospective_pinset_sha256": request.prospective_pinset_sha256,
     }
 
 
@@ -245,6 +307,230 @@ def get_deployment_readiness():
     The payload carries absolute host paths and sibling revisions, so it must stay on
     this router, whose `require_admin_session` dependency gates every route."""
     return read_deployment_readiness()
+
+
+APPLY_PENDING_COMMAND = "sudo -n backend/.venv/bin/ktdctl pin apply-pending --confirm"
+
+
+def _reject_runtime_pin_request(
+    request: Request,
+    session: AdminSessionContext,
+    *,
+    code: str,
+    message: str,
+    extra: dict[str, Any] | None = None,
+    status_code: int = 409,
+) -> HTTPException:
+    """거부도 감사에 남긴다 — 남지 않은 거부는 조사할 수 없다."""
+
+    record_login_audit_event(
+        request,
+        event_type="runtime_pin",
+        outcome="rejected",
+        attempted_username=session.username,
+        reason="runtime_pin_rotation_request_rejected",
+        session_id_hash=session.session_id_hash,
+        detail={"code": code, **(extra or {})},
+    )
+    detail: dict[str, Any] = {"code": code, "message": message}
+    if extra:
+        detail.update(extra)
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+@router.post("/runtime-pins/requests", status_code=201)
+def post_runtime_pin_request(
+    payload: RuntimePinRotationRequestBody,
+    request: Request,
+    session: Annotated[AdminSessionContext, Depends(require_admin_session)],
+) -> dict[str, Any]:
+    """Record a pin rotation **request**; applying it stays root-only.
+
+    The registry is root-owned `0600`, so this process cannot write it even if this
+    handler were wrong. What lands here is a proposal: `ktdctl pin apply-pending
+    --confirm` re-derives the canonical URLs, recomputes the digest and re-checks the
+    block list from the root registry before anything changes."""
+    published = read_published_runtime_pins()
+    if published.get("status") != "ok":
+        # stale/degraded 값을 base로 삼으면 apply-pending이 반드시 거부한다.
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PINS_UNVERIFIED",
+            message=(
+                "현재 고정 값을 확인할 수 없어 회전 요청을 받을 수 없습니다. "
+                "SSH에서 'ktdctl pin verify'로 공개 사본을 갱신하세요."
+            ),
+            extra={"published_status": published.get("status")},
+        )
+
+    sources = published.get("sources", [])
+    revisions = {
+        entry.get("role"): entry.get("revision")
+        for entry in sources
+        if isinstance(entry, dict)
+    }
+    if set(revisions) != {"map", "pinvi"} or not all(
+        isinstance(value, str) and len(value) == 40 for value in revisions.values()
+    ):
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PINS_MALFORMED",
+            message="공개된 고정 값의 형식이 올바르지 않습니다. SSH에서 확인이 필요합니다.",
+        )
+
+    next_map = payload.revision if payload.role == "map" else revisions["map"]
+    next_pinvi = payload.revision if payload.role == "pinvi" else revisions["pinvi"]
+    try:
+        prospective = prospective_pinset_sha256(
+            release_version=published["release_version"],
+            map_revision=next_map,
+            pinvi_revision=next_pinvi,
+        )
+    except DeploymentContractError as exc:
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PINS_MALFORMED",
+            message=str(exc),
+        ) from exc
+
+    if payload.revision == revisions[payload.role] or prospective == published.get(
+        "pinset_sha256"
+    ):
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_UNCHANGED",
+            message="이미 그 revision이 고정돼 있습니다 — 바뀌는 것이 없습니다.",
+        )
+
+    # phase 유무와 무관하게 차단한다: 그 pinset을 다시 고정하는 것 자체가 금지다.
+    if any(
+        entry.get("pinset_sha256") == prospective
+        for entry in published.get("blocked_pinsets", [])
+        if isinstance(entry, dict)
+    ):
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_BLOCKED_TARGET",
+            message=(
+                "이 조합은 재시도가 영구 금지된 세트입니다. 다른 revision을 지정하세요."
+            ),
+            extra={"prospective_pinset_sha256": prospective},
+        )
+
+    try:
+        existing = read_runtime_pin_request()
+    except RuntimePinRequestError as exc:
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_REQUEST_UNREADABLE",
+            message=str(exc),
+        ) from exc
+    if existing is not None:
+        # 조용히 덮어쓰지 않는다 — 대기 중인 요청을 없앨지는 사람이 정한다.
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_REQUEST_EXISTS",
+            message="이미 대기 중인 회전 요청이 있습니다. 먼저 적용하거나 취소하세요.",
+            extra={
+                "request_id": existing.request_id,
+                "role": existing.role,
+                "revision": existing.revision,
+            },
+        )
+
+    pending = RuntimePinRequest(
+        request_id=str(uuid4()),
+        role=payload.role,
+        revision=payload.revision,
+        reason=payload.reason,
+        requested_by=session.username,
+        requested_at=utc_timestamp(),
+        base_pinset_sha256=published["pinset_sha256"],
+        prospective_pinset_sha256=prospective,
+    )
+    try:
+        written = write_runtime_pin_request(pending)
+    except (RuntimePinRequestError, OSError) as exc:
+        # 경로만 말한다. 파일 내용이나 uid는 오류 메시지에 넣지 않는다.
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_REQUEST_NOT_WRITABLE",
+            message=(
+                "요청을 저장할 수 없습니다. 백엔드 사용자가 요청 디렉터리에 쓸 수 "
+                "있는지 확인하세요."
+            ),
+            extra={"directory": str(runtime_pin_request_path().parent)},
+            status_code=503,
+        ) from exc
+
+    # 감사 기록은 파일 쓰기 뒤에 남긴다 — 존재하지 않는 요청을 기록하면 안 된다.
+    record_login_audit_event(
+        request,
+        event_type="runtime_pin",
+        outcome="succeeded",
+        attempted_username=session.username,
+        reason="runtime_pin_rotation_requested",
+        session_id_hash=session.session_id_hash,
+        detail={
+            "request_id": pending.request_id,
+            "role": pending.role,
+            "revision": pending.revision,
+            "base_pinset_sha256": pending.base_pinset_sha256,
+            "prospective_pinset_sha256": pending.prospective_pinset_sha256,
+            "operator_reason": pending.reason,
+            "stored_in": written.parent.name,
+        },
+    )
+    return {
+        "status": "pending",
+        "request": pending.to_payload(),
+        "next_action": APPLY_PENDING_COMMAND,
+    }
+
+
+@router.delete("/runtime-pins/requests/{request_id}")
+def delete_runtime_pin_request(
+    request_id: str,
+    request: Request,
+    session: Annotated[AdminSessionContext, Depends(require_admin_session)],
+) -> dict[str, Any]:
+    """Discard the pending rotation request identified by `request_id`.
+
+    The id must match what is on disk, so a stale browser tab cannot delete a newer
+    request someone else just filed."""
+    try:
+        cleared = clear_runtime_pin_request(expect_request_id=request_id)
+    except RuntimePinRequestError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "RUNTIME_PIN_REQUEST_UNREADABLE", "message": str(exc)},
+        ) from exc
+    if not cleared:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "RUNTIME_PIN_REQUEST_NOT_FOUND",
+                "message": "그 id의 대기 중인 요청이 없습니다. 화면을 새로 고치세요.",
+            },
+        )
+    record_login_audit_event(
+        request,
+        event_type="runtime_pin",
+        outcome="succeeded",
+        attempted_username=session.username,
+        reason="runtime_pin_rotation_request_cancelled",
+        session_id_hash=session.session_id_hash,
+        detail={"request_id": request_id},
+    )
+    return {"status": "cancelled", "request_id": request_id}
 
 
 @router.post("/targets/{target}/ensure")

@@ -98,6 +98,8 @@ docs/
 | 기능 | 레퍼런스 | 대표 함정 |
 |---|---|---|
 | Map·PinVi pin 고정과 재구축 게이트 | [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) | pinset digest 직렬화와 generation/journal 문서 스키마는 kor-travel-map attestation이 exact-dict로 결박한 교차 저장소 계약이다. 키 추가·직렬화 변경은 map 동시 PR 없이는 불가 |
+| UI에서의 pin 회전(2-step 요청) | [`docs/runtime-pin-registry.md` §7-1](docs/runtime-pin-registry.md) | 요청 파일은 제안일 뿐 pin이 아니다. 어떤 로드 경로에서도 `runtime_pin_request`를 import하면 안 되고, 그 사실을 회귀가 결박한다 |
+| 대시보드 화면 규약 | [`docs/dashboard-ui.md`](docs/dashboard-ui.md) | 오류는 `humanizeError`를 거치고 `alert()`는 금지다. `targets[].containers`는 `depends_on` 전이 폐포라 "첫 매치"로 그룹을 만들면 안 된다 |
 
 ---
 

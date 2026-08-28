@@ -867,7 +867,7 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 | KUM-M2 | pinset lifecycle: `blocked_pinsets`/`history`/`supersedes` 필드, `pin block`, rotate 시 terminal 자동 등재, `rebuild-pinned`의 terminal/재실행 자동 거부, rollback의 terminal 제한, d9 상수 3종 이관·삭제 | §1.3 P10-1·2, 진단 3 | KUM-M1 |
 | KUM-M3 | root-side world-readable publisher: rotate/init/rebuild가 pin·manifest·journal의 secret-free 사본을 backend 가독 경로에 원자 기록(installer 0644 선례 답습), backend 로더의 digest 재계산+stale fail-close | §1.2 (c), 진단 6 | KUM-M1 |
 | KUM-M4 | 조회 API 2종: `GET /runtime-pins`(lifecycle·history·generation 일치 여부·Manager provenance 동봉), `GET /pinned-runtime/generation`(manifest/journal 원본+envelope summary+terminal 분류+receipt/fence 상태+버전 명시) + 배포 정합성 패널 UI | P2, §1.3 P10-2 | KUM-M3 |
-| KUM-M5 | UI 2-step pin rotate: 회전 요청 폼→audit row 기록, `pin apply-pending --confirm` CLI, 대기 중 요청 표시 | §1.2 (c), Q4 | KUM-M1, KUM-M4 |
+| KUM-M5 | UI 2-step pin rotate: 회전 요청 폼→audit row 기록, `pin apply-pending --confirm` CLI, 대기 중 요청 표시 (**완료 2026-08-28** — 요청 저장소는 registry와 다른 트리의 backend-writable 파일이며 어떤 로드 경로도 읽지 않는다) | §1.2 (c), Q4 | KUM-M1, KUM-M4 |
 | KUM-M6 | typed 진단 소비: stderr 9문구 파싱(`compose_service.py:478-497`)을 `pinvi.role-topology-diagnostic.v1` 소비로 이관, reason enum→P2 배지, verifier 호출의 journal phase 편입 | §1.3 P10-3 | (pinvi 짝: KUM-PV-3) |
 | KUM-M7 | preflight readiness 노출: base image present / wheelhouse 완결성 / single-file Compose / sibling 필수 파일 — read-only 행 4종 | §1.3 P10-4, 진단 5 | KUM-M4(패널) |
 | KUM-M8 | `source-status` + compare 링크 + installer provenance 리더(~10줄) + Map entrypoint/Dockerfile 계약 drift 행 + 환경 완결성 카드 | P3, P4 | — |
@@ -918,8 +918,9 @@ M6·M8~M13·M15·M18은 상호 독립. 프론트 신규 패널이 2개 이상 �
   경로(실제 `rebuild-pinned` 등)는 mock/단위 테스트로 대체하고, 무엇을 mock으로
   대체했는지 저널에 명시한다.
 - **범위 경계**: 이번 라운드는 pin registry·lifecycle·publisher·조회 API와 그
-  readiness 노출까지다. mutation UI(M5)·typed 진단 이관(M6)·운영 기능 트랙
-  (M9·M10·M13)은 후속 라운드로 분리한다.
+  readiness 노출까지다. typed 진단 이관(M6)·운영 기능 트랙(M9·M10·M13)은 후속 라운드로
+  분리한다. **M5(UI 2-step pin rotate)는 오너 지시로 이 라운드에 편입해 완료했다**
+  (2026-08-28) — 계약은 `runtime-pin-registry.md` §7-1이 정본이다.
 
 ---
 

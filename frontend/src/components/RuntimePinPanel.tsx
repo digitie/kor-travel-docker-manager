@@ -1,9 +1,16 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, HelpCircle, RefreshCw, X } from 'lucide-react';
-import { RuntimePinsResponse, apiJson } from '@/lib/api';
+import {
+  RuntimePinRequestSummary,
+  RuntimePinsResponse,
+  apiJson,
+  deleteJson,
+  postJson,
+} from '@/lib/api';
+import { HumanError, humanizeError } from '@/lib/errors';
 import CopyableCommand from './CopyableCommand';
 
 const ROLE_LABELS: Record<string, string> = {
@@ -13,6 +20,16 @@ const ROLE_LABELS: Record<string, string> = {
 
 const ROTATE_COMMAND =
   'sudo -n backend/.venv/bin/ktdctl pin rotate --role <map|pinvi> --revision <커밋 SHA> --reason "..." --confirm';
+
+const APPLY_COMMAND = 'sudo -n backend/.venv/bin/ktdctl pin apply-pending --confirm';
+
+const REVISION_PATTERN = /^[0-9a-f]{40}$/;
+
+const MAX_REASON_LENGTH = 500;
+
+function clearPendingCommand(requestId: string): string {
+  return `sudo -n backend/.venv/bin/ktdctl pin clear-pending --request-id ${requestId} --confirm`;
+}
 
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return '알 수 없음';
@@ -24,13 +41,140 @@ function short(digest: string): string {
   return digest.length > 14 ? `${digest.slice(0, 12)}…` : digest;
 }
 
+/** 실패 원문을 접어 둔 채 사람 말만 먼저 보여 준다. 모달 안이라 토스트를 쓰지 않는다. */
+function InlineError({ error }: { error: HumanError }) {
+  const [showRaw, setShowRaw] = useState(false);
+  return (
+    <div className="rounded-card border border-danger p-3" role="alert">
+      <p className="text-sm font-semibold text-danger">{error.title}</p>
+      <p className="text-xs text-secondary mt-1">{error.hint}</p>
+      {error.raw ? (
+        <>
+          <button
+            className="text-xs text-secondary underline mt-2"
+            onClick={() => setShowRaw((value) => !value)}
+            type="button"
+          >
+            자세히
+          </button>
+          {showRaw ? (
+            <pre className="text-[11px] bg-subtle rounded-card p-2 mt-2 overflow-x-auto whitespace-pre-wrap break-all">
+              {error.raw}
+            </pre>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function PendingRequestCard({
+  request,
+  commitUrl,
+  onCancel,
+  cancelPending,
+}: {
+  request: RuntimePinRequestSummary;
+  commitUrl: string | null;
+  onCancel: () => void;
+  cancelPending: boolean;
+}) {
+  if (request.status === 'unreadable') {
+    return (
+      <section className="rounded-card border border-danger p-4">
+        <h3 className="text-sm font-semibold text-strong">대기 중인 요청을 읽지 못했습니다</h3>
+        <p className="text-xs text-secondary mt-1">
+          {request.detail ?? '요청 파일이 손상됐거나 권한이 맞지 않습니다.'}
+        </p>
+        <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin show-pending" />
+      </section>
+    );
+  }
+
+  const stale = request.status === 'stale';
+  return (
+    <section className={`rounded-card border p-4 ${stale ? 'border-danger' : 'border-line'}`}>
+      <h3 className="text-sm font-semibold text-strong">
+        {stale ? '무효가 된 변경 요청' : '적용 대기 중인 변경 요청'}
+      </h3>
+      <p className="text-xs text-secondary mt-1">
+        {stale
+          ? '이 요청이 기록된 뒤 고정 값이 바뀌어, 이대로는 적용되지 않습니다. 취소하고 다시 요청하세요.'
+          : '아직 아무것도 바뀌지 않았습니다. 아래 명령을 SSH에서 실행해야 실제로 적용됩니다.'}
+      </p>
+      <dl className="grid grid-cols-[7rem_1fr] gap-x-4 gap-y-1 text-xs text-secondary mt-3">
+        <dt>대상</dt>
+        <dd className="text-strong">{ROLE_LABELS[request.role ?? ''] ?? request.role}</dd>
+        <dt>요청한 커밋</dt>
+        <dd className="break-all">
+          {commitUrl ? (
+            <a className="underline" href={commitUrl} rel="noreferrer noopener" target="_blank">
+              {short(request.revision ?? '')}
+            </a>
+          ) : (
+            short(request.revision ?? '')
+          )}
+        </dd>
+        <dt>요청자</dt>
+        <dd>
+          {request.requested_by} · {formatTimestamp(request.requested_at)}
+        </dd>
+        <dt>사유</dt>
+        <dd className="break-all">{request.reason}</dd>
+        <dt>적용 후 세트</dt>
+        <dd className="break-all">{short(request.prospective_pinset_sha256 ?? '')}</dd>
+      </dl>
+      <CopyableCommand
+        command={
+          stale ? clearPendingCommand(request.request_id ?? '<id>') : APPLY_COMMAND
+        }
+      />
+      <button
+        className="ops-button mt-3"
+        disabled={cancelPending}
+        onClick={onCancel}
+        type="button"
+      >
+        요청 취소
+      </button>
+    </section>
+  );
+}
+
 export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const queryClient = useQueryClient();
+  const [role, setRole] = useState<'map' | 'pinvi'>('map');
+  const [revision, setRevision] = useState('');
+  const [reason, setReason] = useState('');
+  const [formError, setFormError] = useState<HumanError | null>(null);
 
   const { data, isLoading, isFetching, error, refetch } = useQuery<RuntimePinsResponse>({
     queryKey: ['runtime-pins'],
     queryFn: () => apiJson<RuntimePinsResponse>('/api/v1/runtime-pins'),
     retry: false,
+  });
+
+  const createRequest = useMutation({
+    mutationFn: () =>
+      postJson<unknown>('/api/v1/runtime-pins/requests', { role, revision, reason }),
+    onSuccess: () => {
+      setRevision('');
+      setReason('');
+      setFormError(null);
+      void queryClient.invalidateQueries({ queryKey: ['runtime-pins'] });
+    },
+    onError: (mutationError) => setFormError(humanizeError(mutationError, '변경 요청 기록')),
+  });
+
+  const cancelRequest = useMutation({
+    mutationFn: (requestId: string) =>
+      deleteJson<unknown>(`/api/v1/runtime-pins/requests/${requestId}`),
+    onSuccess: () => {
+      setFormError(null);
+      void queryClient.invalidateQueries({ queryKey: ['runtime-pins'] });
+    },
+    onError: (mutationError) => setFormError(humanizeError(mutationError, '요청 취소')),
   });
 
   useEffect(() => {
@@ -49,6 +193,19 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
   // stale/degraded는 값은 있으나 권위 있는 값이 아니다 — 정상으로 보여주지 않는다.
   const unverified = data?.status === 'stale' || data?.status === 'degraded';
 
+  const pending = data?.pending_request ?? null;
+  const revisionValid = REVISION_PATTERN.test(revision);
+  const reasonValid = reason.trim().length > 0;
+  // 요청을 받을 수 없는 상태에서 입력칸을 보여 주면, 눌러 본 뒤에야 거부를 알게 된다.
+  const canRequest = data?.status === 'ok' && !pending;
+  // 요청의 커밋 링크는 registry가 소유한 canonical URL에서만 만든다 — 요청이 URL을
+  // 정하지 못하게 하는 백엔드 규칙과 화면을 일치시킨다.
+  const pendingRepository = pins?.sources.find((source) => source.role === pending?.role)?.url;
+  const pendingCommitUrl =
+    pendingRepository && pending?.revision
+      ? `${pendingRepository.replace(/\.git$/, '')}/commit/${pending.revision}`
+      : null;
+
   return (
     <div
       aria-labelledby="runtime-pin-title"
@@ -64,11 +221,12 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
             Deployment Pins
           </p>
           <h2 className="text-lg font-semibold text-strong mt-1" id="runtime-pin-title">
-            고정된 배포 버전 (읽기 전용)
+            고정된 배포 버전
           </h2>
           <p className="text-xs text-secondary mt-1">
-            지도와 PinVi를 어느 시점 코드로 재구축할지 고정해 둔 값입니다. 변경은 SSH에서
-            `ktdctl pin rotate`로만 가능합니다.
+            지도와 PinVi를 어느 시점 코드로 재구축할지 고정해 둔 값입니다. 여기서는 변경
+            요청만 기록되고, 실제 적용은 SSH에서 `ktdctl pin apply-pending --confirm`을 실행한
+            뒤에 이뤄집니다.
           </p>
         </div>
         <button className="ops-icon-button" onClick={onClose} type="button">
@@ -141,6 +299,17 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
               </div>
             </section>
 
+            {formError ? <InlineError error={formError} /> : null}
+
+            {pending ? (
+              <PendingRequestCard
+                cancelPending={cancelRequest.isPending}
+                commitUrl={pendingCommitUrl}
+                onCancel={() => cancelRequest.mutate(pending.request_id ?? '')}
+                request={pending}
+              />
+            ) : null}
+
             {pins ? (
               <section>
                 <h3 className="text-sm font-semibold text-strong mb-2">현재 고정 버전</h3>
@@ -179,6 +348,77 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                   <dt>변경 사유</dt>
                   <dd className="break-all">{pins.reason}</dd>
                 </dl>
+              </section>
+            ) : null}
+
+            {canRequest ? (
+              <section className="rounded-card border border-line p-4">
+                <h3 className="text-sm font-semibold text-strong">버전 변경 요청</h3>
+                <p className="text-xs text-secondary mt-1">
+                  요청을 기록해도 아직 아무것도 바뀌지 않습니다. 적용은 운영자가 SSH에서
+                  명령을 실행할 때 이뤄지며, 그때 커밋 주소와 세트 식별자는 관리도구가 다시
+                  계산합니다.
+                </p>
+                <form
+                  className="mt-3 space-y-3"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    createRequest.mutate();
+                  }}
+                >
+                  <label className="block text-xs text-secondary">
+                    대상
+                    <select
+                      className="ops-input mt-1 w-full"
+                      onChange={(event) => setRole(event.target.value as 'map' | 'pinvi')}
+                      value={role}
+                    >
+                      {(['map', 'pinvi'] as const).map((value) => (
+                        <option key={value} value={value}>
+                          {ROLE_LABELS[value]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="block text-xs text-secondary">
+                    고정할 커밋 SHA
+                    <input
+                      className="ops-input mt-1 w-full font-mono"
+                      onChange={(event) => setRevision(event.target.value.trim())}
+                      placeholder="40자리 소문자 16진수"
+                      value={revision}
+                    />
+                  </label>
+                  {revision && !revisionValid ? (
+                    <p className="text-xs text-danger">
+                      40자리 소문자 16진수 커밋 SHA여야 합니다.
+                    </p>
+                  ) : null}
+
+                  <label className="block text-xs text-secondary">
+                    변경 사유
+                    <textarea
+                      className="ops-input mt-1 w-full"
+                      maxLength={MAX_REASON_LENGTH}
+                      onChange={(event) => setReason(event.target.value)}
+                      rows={2}
+                      value={reason}
+                    />
+                  </label>
+                  <p className="text-xs text-secondary">
+                    {reason.length}/{MAX_REASON_LENGTH}자 · 사유는 공개 사본과 API 응답에 그대로
+                    기록되므로 비밀번호나 토큰을 적지 마세요.
+                  </p>
+
+                  <button
+                    className="ops-button"
+                    disabled={!revisionValid || !reasonValid || createRequest.isPending}
+                    type="submit"
+                  >
+                    변경 요청 기록
+                  </button>
+                </form>
               </section>
             ) : null}
 

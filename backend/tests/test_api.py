@@ -1357,6 +1357,240 @@ def test_get_runtime_pins_requires_authentication():
     assert response.status_code == 401
 
 
+# --- KUM-M5: UI는 회전을 '요청'만 하고, 적용은 root CLI가 한다 -----------------
+
+MAP_REVISION = "b" * 40
+PINVI_REVISION = "c" * 40
+
+
+def _published_pins(**overrides):
+    payload = {
+        "status": "ok",
+        "source": "published_copy",
+        "published_at": "2026-08-28T00:00:00Z",
+        "release_version": 5,
+        "pinset_sha256": "a" * 64,
+        "sources": [
+            {
+                "role": "map",
+                "url": "https://github.com/digitie/kor-travel-map.git",
+                "revision": MAP_REVISION,
+            },
+            {
+                "role": "pinvi",
+                "url": "https://github.com/digitie/pinvi.git",
+                "revision": PINVI_REVISION,
+            },
+        ],
+        "rotated_at": "2026-08-28T00:00:00Z",
+        "rotated_by": "operator",
+        "reason": "seed",
+        "history": [],
+        "blocked_pinsets": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.fixture
+def isolated_pin_requests(tmp_path, monkeypatch):
+    """요청 파일을 tmp_path로 옮긴다 — 테스트가 호스트 상태를 건드리면 안 된다."""
+
+    from kor_travel_docker_manager.services import runtime_pin_request
+
+    target = tmp_path / "requests" / "runtime-pin-requests.json"
+    monkeypatch.setenv(runtime_pin_request.RUNTIME_PIN_REQUEST_FILE_ENV, str(target))
+    return target
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_records_a_proposal_not_a_rotation(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "pending"
+    assert body["request"]["role"] == "map"
+    assert body["request"]["base_pinset_sha256"] == "a" * 64
+    assert "apply-pending" in body["next_action"]
+    # 요청은 파일 하나일 뿐이고 registry는 건드리지 않는다.
+    assert isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_when_the_published_copy_is_stale(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins(status="stale")
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RUNTIME_PINS_UNVERIFIED"
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_a_no_op(mock_read, isolated_pin_requests):
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": MAP_REVISION, "reason": "그대로 두기"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RUNTIME_PIN_UNCHANGED"
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_refuses_a_permanently_blocked_target(
+    mock_read, isolated_pin_requests
+):
+    from kor_travel_docker_manager.services.runtime_pin_request import (
+        prospective_pinset_sha256,
+    )
+
+    login_client()
+    target_revision = "d" * 40
+    blocked_digest = prospective_pinset_sha256(
+        release_version=5, map_revision=target_revision, pinvi_revision=PINVI_REVISION
+    )
+    mock_read.return_value = _published_pins(
+        blocked_pinsets=[
+            {
+                "pinset_sha256": blocked_digest,
+                "map_revision": target_revision,
+                "pinvi_revision": PINVI_REVISION,
+                "reason": "upstream이 terminal로 선언",
+                "blocked_at": "2026-08-28T00:00:00Z",
+            }
+        ]
+    )
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": target_revision, "reason": "재시도"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "RUNTIME_PIN_BLOCKED_TARGET"
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_never_overwrites_a_pending_one(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+    first = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "첫 요청"},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "pinvi", "revision": "e" * 40, "reason": "두 번째 요청"},
+    )
+
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["code"] == "RUNTIME_PIN_REQUEST_EXISTS"
+    assert detail["request_id"] == first.json()["request"]["request_id"]
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_post_runtime_pin_request_rejects_a_multiline_reason(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "사유\n두 번째 줄"},
+    )
+
+    # 여기서 통과시키면 CLI가 읽지 못해 요청이 영원히 적용되지 않는다.
+    assert response.status_code == 422
+    assert not isolated_pin_requests.exists()
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_get_runtime_pins_marks_a_request_stale_after_the_pin_moved(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+    client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+
+    pending = client.get("/api/v1/runtime-pins").json()["pending_request"]
+    assert pending["status"] == "pending"
+
+    # 그 사이 누군가 SSH에서 회전시켰다면, 이 요청으로는 더 이상 적용되지 않는다.
+    mock_read.return_value = _published_pins(pinset_sha256="f" * 64)
+    moved = client.get("/api/v1/runtime-pins").json()["pending_request"]
+
+    assert moved["status"] == "stale"
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_delete_runtime_pin_request_requires_the_exact_id(
+    mock_read, isolated_pin_requests
+):
+    login_client()
+    mock_read.return_value = _published_pins()
+    created = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    ).json()["request"]
+
+    # 오래된 화면이 그 사이 들어온 다른 요청을 지우지 못한다.
+    stale_delete = client.delete(
+        "/api/v1/runtime-pins/requests/6f9619ff-8b86-4d01-b42d-00cf4fc964ff"
+    )
+    assert stale_delete.status_code == 404
+    assert stale_delete.json()["detail"]["code"] == "RUNTIME_PIN_REQUEST_NOT_FOUND"
+
+    cancelled = client.delete(f"/api/v1/runtime-pins/requests/{created['request_id']}")
+
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {"status": "cancelled", "request_id": created["request_id"]}
+    assert client.get("/api/v1/runtime-pins").json()["pending_request"] is None
+
+
+def test_runtime_pin_request_routes_require_authentication():
+    client.cookies.clear()
+
+    created = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    )
+    cancelled = client.delete("/api/v1/runtime-pins/requests/anything")
+
+    assert created.status_code == 401
+    assert cancelled.status_code == 401
+
+
 @patch("kor_travel_docker_manager.api.routes.read_deployment_readiness")
 def test_get_deployment_readiness_returns_the_service_payload(mock_read):
     login_client()

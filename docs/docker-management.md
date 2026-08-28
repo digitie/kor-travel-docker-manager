@@ -216,6 +216,9 @@ ktdctl pin init --confirm    # 호스트 최초 1회 (기본 seed: config/runtim
 ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm
 ktdctl pin block <pinset-sha256> --reason "..." --confirm
 ktdctl pin rollback --to <pinset-sha256> --reason "..." --confirm
+ktdctl pin show-pending [--json]        # 대시보드가 남긴 회전 요청 (읽기 전용)
+ktdctl pin apply-pending --confirm      # 그 요청을 적용 (root 전용)
+ktdctl pin clear-pending --request-id <id> --confirm
 ```
 
 - **경로**: 설치 root(`/opt/kor-travel-docker-manager`)에서 실행하면 기본값이 자동으로
@@ -239,6 +242,12 @@ ktdctl pin rollback --to <pinset-sha256> --reason "..." --confirm
   `runtime-pins.<old-digest>.json`으로 보존하며 `history`에 사유·주체·직전 pinset을
   남긴다. `pin rollback`은 그 보존본으로 원복하되 **차단된 pinset으로는 원복하지
   않는다**.
+- **대시보드 회전 요청(2-step)**: 대시보드는 registry를 쓸 수 없으므로 회전 **요청**만
+  별도 파일(`/var/lib/kor-travel-docker-manager-requests/`, `0600`)에 남기고, 적용은
+  root의 `pin apply-pending --confirm`이 한다. 적용 시 요청에서 취하는 것은 role과
+  40-hex revision, 표시용 문자열뿐이며 URL·digest·차단 목록은 코드와 registry에서 다시
+  만든다. 요청 이후 pin이 바뀌었으면 거부하고 요청을 남겨 둔다. 상세 계약은
+  [`runtime-pin-registry.md`](runtime-pin-registry.md) §7-1.
 
 #### pinset lifecycle — terminal candidate 차단
 
@@ -276,7 +285,8 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `POST` | `/api/v1/auth/login`, `/api/v1/auth/logout` | 관리자 세션 로그인·로그아웃 |
 | `GET` | `/api/v1/auth/me` | 현재 관리자 세션 확인 |
 | `GET` | `/api/v1/backups` | 전용 PostgreSQL 백업 산출물 목록 |
-| `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록(읽기 전용). 회전은 root `ktdctl pin rotate` 전용이라 mutation을 노출하지 않는다 |
+| `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록·대기 중인 회전 요청. registry 자체는 읽기 전용이다 |
+| `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --confirm` 전용이다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |
 | `GET/POST/DELETE` | `/api/v1/admin/public-api-keys...` | public API key 관리 |
 | `WS` | `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}` | 상태·로그 실시간 스트림 |

@@ -32,6 +32,12 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     verify_runtime_pin_registry,
     write_runtime_pin_registry,
 )
+from kor_travel_docker_manager.services.runtime_pin_request import (
+    clear_runtime_pin_request,
+    prospective_pinset_sha256,
+    read_runtime_pin_request,
+    runtime_pin_request_path,
+)
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
@@ -508,6 +514,188 @@ def _cmd_pin_block(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pending_request_banner(request: Any, registry: Any) -> str | None:
+    """요청이 만들어진 뒤 pin이 바뀌었으면 그 사실을 먼저 말한다."""
+
+    if registry is None or request.base_pinset_sha256 == registry.pinset_sha256:
+        return None
+    return (
+        "⚠ 요청이 만들어진 이후 pin이 바뀌었습니다(요청 base "
+        f"{request.base_pinset_sha256[:12]}... vs 현재 "
+        f"{registry.pinset_sha256[:12]}...). 이 요청은 적용되지 않습니다."
+    )
+
+
+def _running_as_root() -> bool:
+    """registry는 root `0600`이라 이 판정이 apply-pending의 첫 관문이다.
+
+    `geteuid`가 없는 플랫폼(Windows)에서는 판정하지 않고 통과시킨다 — 그때는 registry
+    쓰기 자체가 뒤에서 실패하므로, 여기서 막으면 오해를 부르는 메시지만 남는다.
+    """
+
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is None or geteuid() == 0
+
+
+def _registry_or_none() -> Any:
+    try:
+        return load_runtime_pin_registry()
+    except DeploymentContractError:
+        return None
+
+
+def _cmd_pin_show_pending(args: argparse.Namespace) -> int:
+    try:
+        request = read_runtime_pin_request()
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if request is None:
+        print("대기 중인 회전 요청이 없습니다.")
+        return 1
+    if args.json:
+        print(json.dumps(request.to_payload(), ensure_ascii=False, indent=2))
+        return 0
+    banner = _pending_request_banner(request, _registry_or_none())
+    if banner:
+        print(banner)
+        print()
+    print(f"요청 id   {request.request_id}")
+    print(f"대상      {request.role}")
+    print(f"revision  {request.revision}")
+    print(f"요청자    {request.requested_by} ({request.requested_at})")
+    print(f"사유      {request.reason}")
+    print(f"적용 후   pinset {request.prospective_pinset_sha256}")
+    print()
+    print("적용: ktdctl pin apply-pending --confirm")
+    return 0
+
+
+def _applied_actor(request: Any) -> str:
+    """누가 요청하고 누가 적용했는지를 한 줄에 함께 남긴다."""
+
+    actor = f"{_pin_actor()}<-{request.requested_by}"
+    return actor.replace("\n", " ").replace("\r", " ")[:200]
+
+
+def _applied_reason(request: Any) -> str:
+    reason = (
+        f"{request.reason} (UI 요청 {request.request_id}, 요청자 {request.requested_by}, "
+        f"요청 시각 {request.requested_at})"
+    )
+    return reason.replace("\n", " ").replace("\r", " ")[:500]
+
+
+def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
+    """UI가 남긴 요청을 root 권한으로 적용한다.
+
+    요청에서 취하는 것은 role과 40-hex revision, 표시용 문자열뿐이다. canonical URL과
+    digest, 차단 목록은 전부 코드와 root registry에서 다시 만든다.
+    """
+
+    if not args.confirm:
+        print("pin apply-pending requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    # registry 쓰기와 backend 소유 요청 파일 삭제를 함께 하므로, 권한 부족을 절반쯤
+    # 진행한 뒤에 알게 되면 안 된다.
+    if not _running_as_root():
+        print(
+            "pin apply-pending requires root execution (the registry is root-owned 0600)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        request = read_runtime_pin_request()
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if request is None:
+        print("대기 중인 회전 요청이 없습니다.")
+        return 1
+    try:
+        registry = load_runtime_pin_registry()
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if request.base_pinset_sha256 != registry.pinset_sha256:
+        # 자동으로 지우지 않는다 — 무엇이 버려지는지 운영자가 보고 결정해야 한다.
+        print(
+            "요청이 만들어진 이후 pin이 바뀌었습니다(요청 base "
+            f"{request.base_pinset_sha256[:12]}... vs 현재 "
+            f"{registry.pinset_sha256[:12]}...). UI에서 취소 후 다시 요청하거나 "
+            f'"ktdctl pin clear-pending --request-id {request.request_id} --confirm"'
+            "으로 지우세요.",
+            file=sys.stderr,
+        )
+        return 2
+
+    expected = prospective_pinset_sha256(
+        release_version=registry.release_version,
+        map_revision=(request.revision if request.role == "map" else registry.map_revision),
+        pinvi_revision=(request.revision if request.role == "pinvi" else registry.pinvi_revision),
+    )
+    if expected != request.prospective_pinset_sha256:
+        print("request digest does not match the canonical recomputation", file=sys.stderr)
+        return 2
+    if args.expect_revision and args.expect_revision != request.revision:
+        print("pending request revision does not match --expect-revision", file=sys.stderr)
+        return 2
+    if registry.is_blocked_pinset(expected):
+        print("this request targets a permanently blocked pinset", file=sys.stderr)
+        return 2
+    if expected == registry.pinset_sha256:
+        print("this request would not change any revision", file=sys.stderr)
+        return 2
+
+    try:
+        updated = rotate_runtime_pin(
+            role=request.role,
+            revision=request.revision,
+            reason=_applied_reason(request),
+            rotated_by=_applied_actor(request),
+            block_previous=args.block_previous,
+        )
+    except DeploymentContractError as exc:
+        print(f"{exc} (요청은 그대로 남아 있습니다)", file=sys.stderr)
+        return 2
+
+    try:
+        cleared = clear_runtime_pin_request(expect_request_id=request.request_id)
+    except OSError:
+        print(
+            "회전은 적용됐으나 요청 파일을 지우지 못했습니다 — 수동으로 삭제하세요: "
+            f"{runtime_pin_request_path()}",
+            file=sys.stderr,
+        )
+        return 1
+    if not cleared:
+        print(
+            "회전은 적용됐지만 그 사이 다른 요청이 들어와 요청 파일은 지우지 않았습니다.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"applied pending rotation for {request.role}; new pinset {updated.pinset_sha256}")
+    _print_registry(updated, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_clear_pending(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin clear-pending requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    try:
+        cleared = clear_runtime_pin_request(expect_request_id=args.request_id)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not cleared:
+        print("그 id의 대기 중인 요청이 없습니다.", file=sys.stderr)
+        return 1
+    print(f"discarded pending rotation request {args.request_id}")
+    return 0
+
+
 def _cmd_pin_rollback(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("pin rollback requires --confirm (no file was written)", file=sys.stderr)
@@ -729,6 +917,34 @@ def build_parser() -> argparse.ArgumentParser:
     pin_rollback.add_argument("--confirm", action="store_true")
     pin_rollback.add_argument("--json", action="store_true")
     pin_rollback.set_defaults(func=_cmd_pin_rollback)
+
+    pin_apply = pin_subparsers.add_parser(
+        "apply-pending", help="UI가 기록한 회전 요청을 root 권한으로 적용합니다."
+    )
+    pin_apply.add_argument(
+        "--expect-revision", help="이 revision을 가리키는 요청이 아니면 적용하지 않습니다."
+    )
+    pin_apply.add_argument(
+        "--block-previous",
+        action="store_true",
+        help="직전 pinset을 terminal로 등재해 재시도를 영구 차단합니다.",
+    )
+    pin_apply.add_argument("--confirm", action="store_true")
+    pin_apply.add_argument("--json", action="store_true")
+    pin_apply.set_defaults(func=_cmd_pin_apply_pending)
+
+    pin_show_pending = pin_subparsers.add_parser(
+        "show-pending", help="대기 중인 회전 요청을 출력합니다(읽기 전용)."
+    )
+    pin_show_pending.add_argument("--json", action="store_true")
+    pin_show_pending.set_defaults(func=_cmd_pin_show_pending)
+
+    pin_clear_pending = pin_subparsers.add_parser(
+        "clear-pending", help="대기 중인 회전 요청을 적용하지 않고 폐기합니다."
+    )
+    pin_clear_pending.add_argument("--request-id", required=True, help="폐기할 요청 id입니다.")
+    pin_clear_pending.add_argument("--confirm", action="store_true")
+    pin_clear_pending.set_defaults(func=_cmd_pin_clear_pending)
 
     db_backup = subparsers.add_parser(
         "db-backup",

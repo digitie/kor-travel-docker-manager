@@ -24,6 +24,38 @@ const CODE_MESSAGES: Record<string, { title: string; hint: string }> = {
     title: '변경은 적용됐지만 이후 검증에서 문제가 발견됐습니다.',
     hint: '자동 복구를 시도했습니다. 아래 원문의 복구 결과를 확인하고, 상태가 이상하면 운영자에게 알리세요.',
   },
+  RUNTIME_PINS_UNVERIFIED: {
+    title: '현재 고정 값을 확인할 수 없어 요청을 받지 못했습니다.',
+    hint: 'SSH에서 `ktdctl pin verify`를 실행해 공개 사본을 갱신한 뒤 다시 시도하세요.',
+  },
+  RUNTIME_PINS_MALFORMED: {
+    title: '공개된 고정 값의 형식이 올바르지 않습니다.',
+    hint: '요청은 기록되지 않았습니다. SSH에서 `ktdctl pin verify`로 registry 상태를 확인하세요.',
+  },
+  RUNTIME_PIN_UNCHANGED: {
+    title: '이미 그 버전이 고정돼 있습니다.',
+    hint: '바뀌는 것이 없어 요청을 기록하지 않았습니다. 다른 커밋 SHA를 입력하세요.',
+  },
+  RUNTIME_PIN_BLOCKED_TARGET: {
+    title: '재시도가 영구 금지된 버전 조합입니다.',
+    hint: '이 조합은 과거에 재구축이 실패로 종료됐습니다. 다른 커밋 SHA를 지정하세요.',
+  },
+  RUNTIME_PIN_REQUEST_EXISTS: {
+    title: '이미 대기 중인 회전 요청이 있습니다.',
+    hint: '먼저 그 요청을 적용하거나 취소한 뒤 새 요청을 남기세요. 기존 요청은 덮어쓰지 않습니다.',
+  },
+  RUNTIME_PIN_REQUEST_NOT_FOUND: {
+    title: '그 요청이 이미 없습니다.',
+    hint: '다른 사람이 적용했거나 취소했을 수 있습니다. 새로고침 후 확인하세요.',
+  },
+  RUNTIME_PIN_REQUEST_UNREADABLE: {
+    title: '대기 중인 요청 파일을 읽지 못했습니다.',
+    hint: 'SSH에서 `ktdctl pin show-pending`으로 상태를 확인하세요.',
+  },
+  RUNTIME_PIN_REQUEST_NOT_WRITABLE: {
+    title: '요청을 저장하지 못했습니다.',
+    hint: '백엔드 사용자가 요청 디렉터리에 쓸 수 있는지 운영자에게 확인하세요. 고정 값은 그대로입니다.',
+  },
 };
 
 const STATUS_MESSAGES: Record<number, { title: string; hint: string }> = {

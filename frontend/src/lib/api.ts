@@ -272,8 +272,24 @@ export type RuntimePinRotation = {
   supersedes_pinset_sha256?: string | null;
 };
 
-/** `GET /api/v1/runtime-pins` 응답. 회전은 root 전용 `ktdctl pin rotate`이므로 이
- * API는 읽기만 한다. registry를 읽을 수 없으면 값을 추측하지 않고 `unknown`이다. */
+/** UI가 기록한 회전 **요청**. 적용은 SSH의 `ktdctl pin apply-pending --confirm`이며,
+ * API 프로세스는 registry(root 0600)를 쓸 수 없다. `stale`은 요청 이후 pin이 바뀌어
+ * 이 요청으로는 적용되지 않는 상태, `unreadable`은 요청 파일 자체를 읽지 못한 상태다. */
+export type RuntimePinRequestSummary = {
+  status: 'pending' | 'stale' | 'unreadable';
+  detail?: string | null;
+  request_id?: string;
+  role?: 'map' | 'pinvi';
+  revision?: string;
+  reason?: string;
+  requested_by?: string;
+  requested_at?: string;
+  base_pinset_sha256?: string;
+  prospective_pinset_sha256?: string;
+};
+
+/** `GET /api/v1/runtime-pins` 응답. 회전 적용은 root 전용 `ktdctl pin`이므로 이 API는
+ * 읽기와 **요청 기록**만 한다. registry를 읽을 수 없으면 값을 추측하지 않고 `unknown`이다. */
 export type RuntimePinsResponse = {
   status: 'ok' | 'stale' | 'degraded' | 'unknown';
   source: string | null;
@@ -287,6 +303,7 @@ export type RuntimePinsResponse = {
     rotated_by: string;
     reason: string;
   } | null;
+  pending_request?: RuntimePinRequestSummary | null;
   lifecycle?: {
     current_pinset_is_blocked: boolean;
     current_pinset_has_phase_scoped_block?: boolean;

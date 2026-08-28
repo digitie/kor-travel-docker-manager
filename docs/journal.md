@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-08-28 — KUM-M5: UI에서 pin 회전을 '요청'하고 root가 적용하는 2-step
+
+대시보드에서 Map·PinVi pinned revision을 바꾸려면 지금까지는 SSH로 나가는 수밖에 없었다.
+그렇다고 backend에 회전 권한을 주면 registry가 root `0600`이라는 물리적 경계 — 이 시스템에서
+가장 값싼 안전장치 — 가 사라진다. 그래서 화면은 **요청만 기록**하고 적용은 여전히 root가
+한다.
+
+- 새 저장소 `services/runtime_pin_request.py`. registry와 **다른 트리**
+  (`/var/lib/kor-travel-docker-manager-requests/`, 파일 `0600`)에 둔다 — registry 트리는
+  installer가 매 설치마다 `0700 root:root`로 되돌려 비-root backend가 traverse할 수 없다.
+  SQLite를 쓰지 않은 이유는 `database.py`의 DB 경로가 `__file__`에서 유도돼 backend와
+  `ktdctl`이 같은 호스트에서 서로 다른 파일을 열기 때문이다.
+- `POST/DELETE /api/v1/runtime-pins/requests`. 거부 코드 6종을 정의했고 **거부도 전부 감사
+  행으로 남긴다**. `GET /api/v1/runtime-pins`에 `pending_request`가 붙으며, 요청 이후 pin이
+  움직였으면 `pending`이 아니라 `stale`로 말한다 — CLI가 반드시 거부할 요청을 화면이 적용
+  가능한 것처럼 보여 주면 안 된다.
+- `ktdctl pin show-pending / apply-pending --confirm / clear-pending`. 적용은 요청에서
+  role과 40-hex revision, 표시용 문자열만 취하고 canonical URL·digest·차단 목록은 코드와
+  root registry에서 다시 만든다. base pinset이 어긋나면 거부하되 **요청을 지우지 않는다**
+  (무엇이 버려지는지 사람이 보고 정해야 한다). 성공 시 요청 파일은 id 대조 후 삭제한다.
+- 화면(`RuntimePinPanel`)은 제목의 "(읽기 전용)"을 떼고 요청 폼과 대기 요청 카드를 얻었다.
+  폼은 `status === 'ok'`이고 대기 요청이 없을 때만 렌더링한다 — 눌러 본 뒤에야 거부를
+  알게 하지 않는다.
+
+**mock으로 대체한 것**: root 전용 경로(`apply-pending`의 euid 게이트)는 테스트에서
+`_running_as_root`를 patch해 검증했다. 이 판정을 이름 있는 함수로 뽑은 것도 그 때문이다.
+실제 root 소유권·퍼미션 계약은 n150 격리 E2E에서 확인한다.
+
+계약 정본은 `docs/runtime-pin-registry.md` §7-1, 화면 규약은 `docs/dashboard-ui.md` §5-1.
+회귀는 `test_runtime_pin_request.py`(16건), `test_api.py`의 `runtime_pin` 13건,
+`test_docker_manager_cli.py`의 pending 9건. backend 938 passed / 1 skipped.
+
+---
+
 ## 2026-08-28 — M05 baseline artifact 진단 정정과 immutable image 원인 확정
 
 `29fbcdd…` candidate는 `baseline_reference_invalid`로 terminal 처리됐고 cleanup 뒤 Map·PinVi
