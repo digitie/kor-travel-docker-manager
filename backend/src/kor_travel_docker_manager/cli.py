@@ -28,6 +28,7 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     packaged_seed_path,
     rollback_runtime_pin,
     rotate_runtime_pin,
+    rotate_runtime_pin_pair,
     runtime_pin_registry_path,
     verify_runtime_pin_registry,
     write_runtime_pin_registry,
@@ -445,6 +446,26 @@ def _cmd_pin_rotate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin rotate-pair requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    try:
+        registry = rotate_runtime_pin_pair(
+            map_revision=args.map_revision,
+            pinvi_revision=args.pinvi_revision,
+            reason=args.reason,
+            rotated_by=_pin_actor(),
+            block_previous=args.block_previous,
+        )
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"rotated Map/PinVi pair; new pinset {registry.pinset_sha256}")
+    _print_registry(registry, json_output=args.json)
+    return 0
+
+
 def _cmd_pin_block(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("pin block requires --confirm (no file was written)", file=sys.stderr)
@@ -655,6 +676,28 @@ def build_parser() -> argparse.ArgumentParser:
     pin_rotate.add_argument("--confirm", action="store_true")
     pin_rotate.add_argument("--json", action="store_true")
     pin_rotate.set_defaults(func=_cmd_pin_rotate)
+
+    pin_rotate_pair = pin_subparsers.add_parser(
+        "rotate-pair",
+        help="Map·PinVi revision을 intermediate pinset 없이 원자적으로 회전합니다.",
+    )
+    pin_rotate_pair.add_argument("--map-revision", required=True, help="Map 40-hex commit SHA입니다.")
+    pin_rotate_pair.add_argument(
+        "--pinvi-revision", required=True, help="PinVi 40-hex commit SHA입니다."
+    )
+    pin_rotate_pair.add_argument(
+        "--reason",
+        required=True,
+        help="회전 사유(감사 기록 필수). world-readable 공개 사본에 그대로 기록되므로 비밀을 적지 않습니다.",
+    )
+    pin_rotate_pair.add_argument(
+        "--block-previous",
+        action="store_true",
+        help="직전 pinset을 terminal로 등재해 재시도를 영구 차단합니다.",
+    )
+    pin_rotate_pair.add_argument("--confirm", action="store_true")
+    pin_rotate_pair.add_argument("--json", action="store_true")
+    pin_rotate_pair.set_defaults(func=_cmd_pin_rotate_pair)
 
     pin_block = pin_subparsers.add_parser(
         "block", help="terminal 판정 pinset을 영구 차단 목록에 등재합니다."

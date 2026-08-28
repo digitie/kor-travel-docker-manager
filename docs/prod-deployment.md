@@ -58,7 +58,8 @@ release 설치가 회전 결과를 조용히 되돌리기 때문이다.
 
 - registry 본체는 root `0600`이어야 한다(그룹·타인 접근 가능하면 회전이 거부된다).
   공개 사본은 비-root backend가 읽어야 하므로 `0644`이며 secret을 담지 않는다.
-- 최초 1회만 저장소의 개발 기본값을 seed로 부트스트랩한다. 이후 회전은 `pin rotate`다.
+- 최초 1회만 저장소의 개발 기본값을 seed로 부트스트랩한다. 이후 M05 pair 회전은
+  `pin rotate-pair`다.
   ```bash
   cd /opt/kor-travel-docker-manager
   sudo -n backend/.venv/bin/ktdctl pin init --confirm   # 기본 seed: config/runtime-pins.seed.json
@@ -91,14 +92,16 @@ release 설치가 회전 결과를 조용히 되돌리기 때문이다.
 ```bash
 cd /opt/kor-travel-docker-manager
 sudo -n backend/.venv/bin/ktdctl pin show          # 현재 상태와 차단 여부 확인
-sudo -n backend/.venv/bin/ktdctl pin rotate \
-  --role pinvi --revision <새 40-hex 커밋> \
+sudo -n backend/.venv/bin/ktdctl pin rotate-pair \
+  --map-revision <Map 40-hex 커밋> --pinvi-revision <PinVi 40-hex 커밋> \
   --reason "<직전 candidate의 terminal 사유와 그것을 고친 revision>" \
   --block-previous --confirm
 sudo -n backend/.venv/bin/ktdctl pin verify        # 0이면 재구축 가능
 sudo -n backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm
 ```
 
+M05 source pair는 role별 `pin rotate` 두 번으로 바꾸지 않는다. 첫 write가 intermediate pinset을
+만들면 source pair 검증 실패가 one-shot ledger를 소비할 수 있으므로 `pin rotate-pair`만 사용한다.
 `--reason`은 world-readable 공개 사본과 조회 API에 그대로 기록되므로 비밀을 적지 않는다.
 `--block-previous`는 직전 pinset을 terminal로 등재해 재시도를 영구 차단한다 — 회전 사유가
 "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다. 의도적으로 `pin unblock`은

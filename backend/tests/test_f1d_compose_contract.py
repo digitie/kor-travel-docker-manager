@@ -673,9 +673,11 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
             "source": "/tmp/ktdm-map-dagster-storage-permit",
             "target": "/run/kor-travel-map-dagster-storage-permit",
             "read_only": True,
-            "bind": {},
+            # Compose v2는 기본 bind option을 생략하고 v5는 이를 명시한다.
+            "bind": migration["volumes"][0]["bind"],
         }
     ]
+    assert migration["volumes"][0]["bind"] in ({}, {"create_host_path": True})
 
     for service_name in (
         "kor-travel-map-dagster",
@@ -1032,6 +1034,8 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     )
     environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
     pinvi_source = tmp_path / "pinvi-source"
+    pinvi_pgdata = tmp_path / "pinvi-pgdata"
+    pinvi_pgdata.mkdir()
     role_bootstrap_script = pinvi_source / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
     role_bootstrap_script.parent.mkdir(parents=True)
     role_bootstrap_script.write_text(
@@ -1039,6 +1043,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         encoding="utf-8",
     )
     environment["PINVI_REPO_DIR"] = str(pinvi_source)
+    environment["PINVI_PGDATA"] = str(pinvi_pgdata)
     for environment_name, directory_name in (
         ("KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR", "application-permit"),
         ("KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR", "metadata-permit"),
@@ -1143,9 +1148,10 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": environment[
                 "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR"
             ],
-            "PINVI_REPO_DIR": str(pinvi_source),
-        },
-    )
+                "PINVI_REPO_DIR": str(pinvi_source),
+                "PINVI_PGDATA": str(pinvi_pgdata),
+            },
+        )
     assert (
         validate_resolved_compose_candidate_protected_values(
             resolved,

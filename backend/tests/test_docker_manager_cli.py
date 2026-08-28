@@ -734,7 +734,7 @@ def _seed_path() -> Path:
 def test_pin_parser_registers_every_leaf_command():
     parser = build_parser()
 
-    for action in ("init", "show", "verify", "rotate", "block", "rollback"):
+    for action in ("init", "show", "verify", "rotate", "rotate-pair", "block", "rollback"):
         args = parser.parse_args(
             {
                 "init": ["pin", "init", "--seed", "x"],
@@ -747,6 +747,16 @@ def test_pin_parser_registers_every_leaf_command():
                     "map",
                     "--revision",
                     "a" * 40,
+                    "--reason",
+                    "r",
+                ],
+                "rotate-pair": [
+                    "pin",
+                    "rotate-pair",
+                    "--map-revision",
+                    "a" * 40,
+                    "--pinvi-revision",
+                    "b" * 40,
                     "--reason",
                     "r",
                 ],
@@ -763,6 +773,16 @@ def test_pin_parser_registers_every_leaf_command():
     [
         ["pin", "init", "--seed", "seed.json"],
         ["pin", "rotate", "--role", "map", "--revision", "a" * 40, "--reason", "r"],
+        [
+            "pin",
+            "rotate-pair",
+            "--map-revision",
+            "a" * 40,
+            "--pinvi-revision",
+            "b" * 40,
+            "--reason",
+            "r",
+        ],
         ["pin", "block", "a" * 64, "--reason", "r"],
         ["pin", "rollback", "--to", "a" * 64, "--reason", "r"],
     ],
@@ -823,10 +843,10 @@ def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, caps
     exit_code = main(
         [
             "pin",
-            "rotate",
-            "--role",
-            "pinvi",
-            "--revision",
+            "rotate-pair",
+            "--map-revision",
+            "c" * 40,
+            "--pinvi-revision",
             "d" * 40,
             "--reason",
             "새 PinVi head",
@@ -836,8 +856,31 @@ def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, caps
 
     assert exit_code == 0
     output = capsys.readouterr().out
-    assert "rotated pinvi pin" in output
+    assert "rotated Map/PinVi pair" in output
     assert "새 PinVi head" in output
+
+
+def test_terminal_seed_refuses_a_single_role_rotation(pin_cli_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "pin",
+                "rotate",
+                "--role",
+                "map",
+                "--revision",
+                "c" * 40,
+                "--reason",
+                "would split M05 pair",
+                "--confirm",
+            ]
+        )
+        == 2
+    )
+    assert "atomic Map/PinVi pair" in capsys.readouterr().err
 
 
 def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
@@ -847,11 +890,11 @@ def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
     exit_code = main(
         [
             "pin",
-            "rotate",
-            "--role",
-            "map",
-            "--revision",
+            "rotate-pair",
+            "--map-revision",
             "not-a-sha",
+            "--pinvi-revision",
+            "d" * 40,
             "--reason",
             "bad",
             "--confirm",

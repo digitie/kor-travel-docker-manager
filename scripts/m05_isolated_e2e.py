@@ -16,7 +16,6 @@ import secrets
 import stat
 import subprocess
 import sys
-import time
 import uuid
 from http.cookiejar import CookieJar
 from pathlib import Path
@@ -30,10 +29,7 @@ from urllib.request import (
     build_opener,
 )
 
-from kor_travel_docker_manager.services.c6c_deployment import (
-    DeploymentContractError,
-    effective_environment,
-)
+from kor_travel_docker_manager.services.c6c_deployment import effective_environment
 from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05IsolatedHarnessPlan,
     M05IsolatedNetworkExpectation,
@@ -53,11 +49,17 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
 )
+from kor_travel_docker_manager.services.runtime_pin_registry import (
+    RuntimePinRegistryError,
+    block_runtime_pinset,
+    load_runtime_pin_registry,
+)
 
 # pinned revision은 코드 상수가 아니라 root 소유 registry가 소유한다(ADR-40).
 # 이 드라이버는 한 번의 격리 실행 전체가 같은 pinset에 결박돼야 하므로 모듈 로드
 # 시점에 한 번만 해석한다 — 실행 도중 회전이 끼어들면 전후가 다른 pinset이 된다.
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
+_CleanupProject = tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]]
 
 _ROOT = Path("/opt/kor-travel-docker-manager")
 _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")
@@ -107,6 +109,38 @@ class _PhaseError(RuntimeError):
 
 def _fail(phase: str, *, diagnostic: str | None = None) -> NoReturn:
     raise _PhaseError(phase, diagnostic=diagnostic)
+
+
+def _assert_current_m05_pinset_is_runnable() -> None:
+    """terminal registry를 ledger·Docker mutation보다 먼저 fail-close로 확인한다."""
+
+    try:
+        registry = load_runtime_pin_registry()
+    except RuntimePinRegistryError:
+        _fail("runtime_pin_registry_invalid")
+    if (
+        registry.pinset_sha256 != PINNED_RUNTIME_RELEASE.pinset_sha256
+        or registry.map_revision != PINNED_RUNTIME_RELEASE.source_for("map").revision
+        or registry.pinvi_revision != PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+    ):
+        _fail("runtime_pin_registry_changed")
+    if registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256):
+        _fail("terminal_pinset_blocked")
+
+
+def _block_terminal_m05_pinset() -> bool:
+    """terminal result를 root registry의 unconditional block과 결박한다."""
+
+    try:
+        registry = block_runtime_pinset(
+            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+            map_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
+            pinvi_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+            reason="M05 isolated one-shot terminal",
+        )
+    except RuntimePinRegistryError:
+        return False
+    return registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256)
 
 
 def _root_file(path: Path, *, mode: int = 0o600) -> os.stat_result:
@@ -382,6 +416,41 @@ def _cleanup_project(
         _fail("runtime_cleanup_failed")
 
 
+def _cleanup_temporary_resources(
+    *,
+    map_cleanup: _CleanupProject | None,
+    pinvi_cleanup: _CleanupProject | None,
+    private_files: tuple[Path, ...],
+) -> tuple[bool, bool]:
+    """정상 cleanup failure와 receipt로 수렴해야 할 unexpected failure를 분리한다."""
+
+    cleanup_failed = False
+    unexpected_failure = False
+    for cleanup in (pinvi_cleanup, map_cleanup):
+        if cleanup is None:
+            continue
+        try:
+            _cleanup_project(
+                root=cleanup[0],
+                project=cleanup[1],
+                env_file=cleanup[2],
+                files=cleanup[3],
+                profiles=cleanup[4],
+            )
+        except _PhaseError:
+            cleanup_failed = True
+        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            unexpected_failure = True
+    for path in private_files:
+        try:
+            _unlink_private(path)
+        except _PhaseError:
+            cleanup_failed = True
+        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            unexpected_failure = True
+    return cleanup_failed, unexpected_failure
+
+
 def _random_secret() -> str:
     return secrets.token_urlsafe(36)
 
@@ -560,6 +629,8 @@ def _http_json(
     headers: dict[str, str],
     body: dict[str, object] | None = None,
     opener: Any | None = None,
+    failure_phase: str = "runtime_http_failed",
+    http_error_phase: str | None = None,
 ) -> dict[str, object]:
     try:
         parsed = urlsplit(url)
@@ -594,8 +665,14 @@ def _http_json(
         request_opener = opener.open if opener is not None else _LOOPBACK_OPENER.open
         with request_opener(request, timeout=10) as response:
             raw = response.read(2_000_000)
-    except (HTTPError, OSError, URLError):
-        _fail("runtime_http_failed")
+    except HTTPError:
+        # HTTP status와 loopback transport 오류를 같은 원문 없는 enum으로 합치면
+        # 다음 one-shot 후보가 어느 startup 경계를 보정해야 하는지 알 수 없다.
+        _fail(http_error_phase or failure_phase)
+    except (OSError, URLError):
+        # 원문 HTTP status/body/socket error는 receipt에 기록하지 않는다. 대신 caller가
+        # 고정 enum을 주면 다음 immutable candidate의 보정 범위만 식별할 수 있다.
+        _fail(failure_phase)
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -629,6 +706,7 @@ def _pinvi_admin_opener(api_url: str, *, email: str, password: str) -> Any:
             headers={},
             body={"email": email, "password": password},
             opener=opener,
+            failure_phase="pinvi_login_http_failed",
         )
     )
     roles = login.get("roles")
@@ -653,6 +731,7 @@ def _pinvi_submit_m04_fixture(*, api_url: str, opener: Any, transaction: str) ->
                 "coord_source": "map_pick",
             },
             opener=opener,
+            failure_phase="m04_fixture_http_failed",
         )
     )
     request_id = value.get("request_id")
@@ -678,6 +757,7 @@ def _approve_map_request(
                 "marker_color": "P-01",
                 "marker_icon": "marker",
             },
+            failure_phase="m04_map_approval_http_failed",
         )
     )
     if value.get("request_id") != request_id or value.get("status") != "approved":
@@ -750,6 +830,7 @@ def _resolve_m05_case(
         _http_json(
             f"{admin_url.rstrip('/')}/v1/admin/manual-provider-dedup-cases/{case_id}",
             headers=_map_headers(proxy_secret),
+            failure_phase="m05_case_lookup_http_failed",
         )
     )
     manual = before.get("manual_feature")
@@ -779,6 +860,7 @@ def _resolve_m05_case(
                 "survivor_feature_id": provider_feature_id,
                 "reason": "M05 isolated signed E2E rebind",
             },
+            failure_phase="m05_case_decision_http_failed",
         )
     )
     if decision.get("outcome") != "merged":
@@ -791,26 +873,28 @@ def _resolve_m05_case(
 
 
 def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
-    for _ in range(90):
-        try:
-            data = _data(
-                _http_json(
-                    f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
-                    headers={},
-                    opener=opener,
-                )
-            )
-        except _PhaseError:
-            time.sleep(2)
-            continue
-        receipt = data.get("receipt")
-        if data.get("status") == "applied" and isinstance(receipt, dict):
-            impact_count = receipt.get("impact_count")
-            if type(impact_count) is int and impact_count >= 0:
-                return impact_count
-            _fail("m05_pinvi_receipt_invalid")
-        time.sleep(2)
-    _fail("m05_pinvi_receipt_timeout")
+    """PinVi detail 계약의 `applied`만 성공으로 수용하고 나머지는 즉시 종료한다."""
+
+    data = _data(
+        _http_json(
+            f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
+            headers={},
+            opener=opener,
+            failure_phase="m05_pinvi_receipt_http_failed",
+        )
+    )
+    status = data.get("status")
+    if status == "blocked":
+        _fail("m05_pinvi_receipt_blocked")
+    if status != "applied":
+        _fail("m05_pinvi_receipt_invalid")
+    receipt = data.get("receipt")
+    if not isinstance(receipt, dict):
+        _fail("m05_pinvi_receipt_invalid")
+    impact_count = receipt.get("impact_count")
+    if type(impact_count) is not int or impact_count < 0:
+        _fail("m05_pinvi_receipt_invalid")
+    return impact_count
 
 
 def _canonical_json(value: object) -> bytes:
@@ -1081,15 +1165,14 @@ def main(expected_revision: str, output: Path) -> int:
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
     failure_diagnostic: str | None = None
-    map_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = None
-    pinvi_cleanup: tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]] | None = (
-        None
-    )
+    map_cleanup: _CleanupProject | None = None
+    pinvi_cleanup: _CleanupProject | None = None
     private_files: tuple[Path, ...] = ()
     result_hashes: dict[str, str] = {}
     try:
         os.umask(0o077)
         _validate_trusted_release(expected_revision)
+        _assert_current_m05_pinset_is_runnable()
         _root_directory(output)
         _LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(_LEDGER, 0o700)
@@ -1097,7 +1180,6 @@ def main(expected_revision: str, output: Path) -> int:
         plan = M05IsolatedHarnessPlan(
             PINNED_RUNTIME_RELEASE, expected_revision, transaction
         )
-        claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
         phase = "source_materialization"
         ambient = dict(os.environ)
         try:
@@ -1119,6 +1201,11 @@ def main(expected_revision: str, output: Path) -> int:
         pair, service_openapi_sha256, service_source_revision = _pair(
             pinvi_root, map_root
         )
+        # source pair가 정합하지 않으면 one-shot ledger를 소비하지 않는다. 잘못 회전한
+        # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
+        phase = "ledger_claim"
+        claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
+        phase = "runtime_setup"
         ports = _free_ports(transaction)
         runtime = output / "runtime"
         runtime.mkdir(mode=0o700)
@@ -1397,7 +1484,12 @@ def main(expected_revision: str, output: Path) -> int:
             failure_phase="map_application_start_failed",
         )
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
-        _http_json(f"{admin_url}/health", headers={})
+        _http_json(
+            f"{admin_url}/health",
+            headers={},
+            failure_phase="map_health_transport_failed",
+            http_error_phase="map_health_status_failed",
+        )
         phase = "map_subscription"
         _data(
             _http_json(
@@ -1407,6 +1499,7 @@ def main(expected_revision: str, output: Path) -> int:
                     "Idempotency-Key": str(uuid.uuid4()),
                 },
                 body={"initial_event_sequence": 0},
+                failure_phase="map_subscription_http_failed",
             )
         )
         phase = "pinvi_runtime"
@@ -1694,32 +1787,34 @@ def main(expected_revision: str, output: Path) -> int:
     except _PhaseError as error:
         phase = error.phase
         failure_diagnostic = error.diagnostic
-    except (DeploymentContractError, OSError, ValueError):
+    # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
+    # 관측한다. 예상하지 못한 ordinary exception도 고정된 terminal receipt로 수렴시킨다.
+    # BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
+    except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
         phase = "driver_contract_failed"
     finally:
-        cleanup_failed = False
-        for cleanup in (pinvi_cleanup, map_cleanup):
-            if cleanup is None:
-                continue
-            try:
-                _cleanup_project(
-                    root=cleanup[0],
-                    project=cleanup[1],
-                    env_file=cleanup[2],
-                    files=cleanup[3],
-                    profiles=cleanup[4],
-                )
-            except _PhaseError:
-                cleanup_failed = True
-        for path in private_files:
-            try:
-                _unlink_private(path)
-            except _PhaseError:
-                cleanup_failed = True
-        driver_phase = phase
-        if cleanup_failed:
+        cleanup_failed, unexpected_finalization_failure = _cleanup_temporary_resources(
+            map_cleanup=map_cleanup,
+            pinvi_cleanup=pinvi_cleanup,
+            private_files=private_files,
+        )
+        if unexpected_finalization_failure:
+            completed = False
+            phase = "driver_contract_failed"
+        elif cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
+        if not completed:
+            try:
+                pinset_blocked = _block_terminal_m05_pinset()
+            except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+                pinset_blocked = False
+                unexpected_finalization_failure = True
+            if unexpected_finalization_failure:
+                phase = "driver_contract_failed"
+            elif not pinset_blocked:
+                phase = "runtime_pin_block_failed"
+        driver_phase = phase
         for name in _RAW_ENV_NAMES:
             os.environ.pop(name, None)
         result: dict[str, object] = {

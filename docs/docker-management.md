@@ -214,6 +214,7 @@ ktdctl pin show [--json]     # 현재 pin·digest·회전 메타·차단 목록 
 ktdctl pin verify [--json]   # digest 재계산·canonical URL·공개 사본 정합 (읽기 전용)
 ktdctl pin init --confirm    # 호스트 최초 1회 (기본 seed: config/runtime-pins.seed.json)
 ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm
+ktdctl pin rotate-pair --map-revision <40-hex> --pinvi-revision <40-hex> --reason "..." --confirm
 ktdctl pin block <pinset-sha256> --reason "..." --confirm
 ktdctl pin rollback --to <pinset-sha256> --reason "..." --confirm
 ```
@@ -227,13 +228,13 @@ ktdctl pin rollback --to <pinset-sha256> --reason "..." --confirm
 - **파일 무결성**: 읽을 때마다 `lstat`으로 일반 파일·소유자(root 또는 자기 자신)·
   group/other 쓰기 금지를 확인하고, 위반하면 값을 쓰지 않고 fail-close한다.
 - **공개 사본**: registry는 root `0600`이라 비-root backend가 읽지 못한다. root가
-  실행하는 `pin init`/`pin rotate`가 secret 없는 `0644` 공개 사본을 함께 쓰고
+  실행하는 `pin init`/`pin rotate`/`pin rotate-pair`가 secret 없는 `0644` 공개 사본을 함께 쓰고
   (`KTDM_RUNTIME_PINS_PUBLIC_FILE`), 조회 API는 그 사본을 읽는다. 설치 root에서의
   기본 경로는 registry와 **다른 트리**(`/var/lib/kor-travel-docker-manager-public/`)다 —
   registry 트리는 installer가 매 설치마다 `0700`으로 되돌려 비-root가 traverse할 수 없다.
   사본이 registry보다 오래되면 `stale`, 사본 없이 registry를 직접 읽었으면 `degraded`,
   둘 다 읽을 수 없으면 `unknown`으로 표시하고 값을 추측하지 않는다.
-- **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 `pin rotate`는
+- **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 pin 회전은
   실행 중 Manager에 즉시 반영된다.
 - **회전 이력과 롤백**: rotate는 digest를 자동 계산하고 이전 registry를
   `runtime-pins.<old-digest>.json`으로 보존하며 `history`에 사유·주체·직전 pinset을
@@ -249,9 +250,11 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 - **조건 없는 차단**(`phase` 없음) — 그 pinset의 모든 실행을 금지한다.
   `rebuild-pinned`가 **어떤 mutation보다 먼저** 거부한다. 해소 경로는
   `ktdctl pin rotate`로 새 pinset을 만드는 것뿐이다(의도적으로 `pin unblock`은 없다).
+- M05처럼 Map·PinVi compatibility pair를 바꿀 때는 `ktdctl pin rotate-pair`만 사용한다.
+  terminal current pinset의 role별 `pin rotate`는 intermediate tuple을 만들지 않도록 거부된다.
 - **phase 한정 차단** — 그 phase의 journal 재개만 금지한다. 기존 d9 admission과
   동일한 의미이며 rebuild 시작 게이트는 관여하지 않는다.
-- `pin rotate --block-previous`는 직전 pinset을 terminal로 등재한다. 회전 사유가
+- `pin rotate`/`pin rotate-pair --block-previous`는 직전 pinset을 terminal로 등재한다. 회전 사유가
   "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다.
 - **차단 하한선은 코드가 소유한다.** registry가 손상되거나 오래된 사본으로 시딩돼도
   d9 계열 historical 차단은 유지된다 — 목록은 데이터, 하한선은 코드다.
@@ -276,7 +279,7 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `POST` | `/api/v1/auth/login`, `/api/v1/auth/logout` | 관리자 세션 로그인·로그아웃 |
 | `GET` | `/api/v1/auth/me` | 현재 관리자 세션 확인 |
 | `GET` | `/api/v1/backups` | 전용 PostgreSQL 백업 산출물 목록 |
-| `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록(읽기 전용). 회전은 root `ktdctl pin rotate` 전용이라 mutation을 노출하지 않는다 |
+| `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록(읽기 전용). 회전은 root `ktdctl pin rotate`/`pin rotate-pair` 전용이라 mutation을 노출하지 않는다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |
 | `GET/POST/DELETE` | `/api/v1/admin/public-api-keys...` | public API key 관리 |
 | `WS` | `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}` | 상태·로그 실시간 스트림 |
