@@ -18,7 +18,11 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
     build_m05_isolated_runtime_provenance,
     claim_m05_isolated_harness_ledger,
 )
-from kor_travel_docker_manager.services.pinned_runtime_release import PINNED_RUNTIME_RELEASE
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    current_pinned_runtime_release,
+)
+
+PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 
 
 def _plan() -> M05IsolatedHarnessPlan:

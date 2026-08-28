@@ -48,11 +48,16 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
-    PINNED_RUNTIME_RELEASE,
+    current_pinned_runtime_release,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
 )
+
+# pinned revision은 코드 상수가 아니라 root 소유 registry가 소유한다(ADR-40).
+# 이 드라이버는 한 번의 격리 실행 전체가 같은 pinset에 결박돼야 하므로 모듈 로드
+# 시점에 한 번만 해석한다 — 실행 도중 회전이 끼어들면 전후가 다른 pinset이 된다.
+PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 
 _ROOT = Path("/opt/kor-travel-docker-manager")
 _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")

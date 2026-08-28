@@ -1,8 +1,13 @@
 """F1D v5 rebuild가 소비하는 tracked Map·PinVi source release authority.
 
 이 모듈은 cache-target release나 legacy compatible-pair의 pin을 읽지 않는다.
-v5 rebuild는 여기의 exact revision·canonical HTTPS URL과 canonical pinset digest만
-source provenance로 수용한다.
+v5 rebuild는 exact revision·canonical HTTPS URL과 canonical pinset digest만 source
+provenance로 수용한다.
+
+**값의 출처는 registry 파일이고, 계약의 소유자는 이 모듈이다.** pinned revision은
+``runtime_pin_registry``가 읽는 root 소유 JSON 파일에 있지만, canonical URL 집합·
+40-hex 형식·role 순서·digest 재계산 대조는 여기 dataclass가 파싱 직후 강제한다.
+파일을 편집해 임의 저장소를 가리키게 만드는 것은 코드 수정 없이는 불가능하다.
 """
 
 from __future__ import annotations
@@ -30,19 +35,6 @@ CANONICAL_RUNTIME_SOURCE_URLS: Final[Mapping[RuntimeSourceRole, str]] = MappingP
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-
-# d9은 새 lifecycle receipt schema가 도입되기 전에 topology failure로 끝난
-# historical pinset이다. journal을 소급 변경하지 않고 같은 immutable candidate의
-# 첫 재실행까지 admission에서 막기 위해, 이 식별자는 release pin과 분리해 고정한다.
-_D9_LEGACY_ROLE_TOPOLOGY_PINSET_SHA256: Final = (
-    "d9aded44779114ed0595d3a4fb50908efb56b57c85148faf3083b0087a35e898"
-)
-_D9_LEGACY_ROLE_TOPOLOGY_MAP_REVISION: Final = (
-    "14d18230e5a9ff21caf26d6abe37aed1e4944685"
-)
-_D9_LEGACY_ROLE_TOPOLOGY_PINVI_REVISION: Final = (
-    "93296aee5d47676e6b9b79303bf417c598a273ac"
-)
 
 
 @dataclass(frozen=True)
@@ -101,20 +93,70 @@ def canonical_pinset_sha256(
     return hashlib.sha256(canonical_pinset_bytes(version=version, sources=sources)).hexdigest()
 
 
-def is_d9_legacy_pinvi_role_topology_retry(
+def source_specs_for(
+    *,
+    map_revision: str,
+    pinvi_revision: str,
+) -> tuple[PinnedRuntimeSourceSpec, ...]:
+    """canonical role 순서로 source spec tuple을 만든다(URL은 코드가 공급한다)."""
+
+    return (
+        PinnedRuntimeSourceSpec(
+            role="map",
+            canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["map"],
+            revision=map_revision,
+        ),
+        PinnedRuntimeSourceSpec(
+            role="pinvi",
+            canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["pinvi"],
+            revision=pinvi_revision,
+        ),
+    )
+
+
+def is_blocked_pinset_retry(
     *,
     pinset_sha256: str,
     map_source_revision: str,
     pinvi_source_revision: str,
     phase: str,
 ) -> bool:
-    """receipt 이전 d9 topology failure의 재실행만 fail-close로 식별한다."""
+    """registry의 차단 목록에 해당하는 candidate 재실행인지 판정한다.
 
+    이전에는 receipt schema 도입 전 topology failure로 끝난 d9 pinset 하나만 코드
+    상수 3종으로 고정했다. 실제 운영 규율은 "terminal 판정 candidate는 영구 재시도
+    금지"이고 그 목록은 회전마다 늘어나므로, 목록은 registry가 소유한다.
+
+    registry를 읽지 못하면 예외를 전파한다. 여기서 ``False``를 반환하면 파일이 사라진
+    순간 d9 계열 차단이 통째로 열리는 fail-open이 된다 — 호출자가 이미 registry를 읽은
+    뒤라 정상 경로에서 예외가 날 일이 없으므로 전파 비용은 0이고, 이득은 "파일이
+    사라지면 멈춘다"이다. 코드가 강제하는 하한선은 registry와 무관하게 먼저 판정한다.
+    """
+
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        code_enforced_blocked_entry,
+        load_runtime_pin_registry,
+    )
+
+    if (
+        code_enforced_blocked_entry(
+            pinset_sha256=pinset_sha256,
+            map_source_revision=map_source_revision,
+            pinvi_source_revision=pinvi_source_revision,
+            phase=phase,
+        )
+        is not None
+    ):
+        return True
+    registry = load_runtime_pin_registry()
     return (
-        pinset_sha256 == _D9_LEGACY_ROLE_TOPOLOGY_PINSET_SHA256
-        and map_source_revision == _D9_LEGACY_ROLE_TOPOLOGY_MAP_REVISION
-        and pinvi_source_revision == _D9_LEGACY_ROLE_TOPOLOGY_PINVI_REVISION
-        and phase == "map_runtime_ready"
+        registry.blocked_entry_for(
+            pinset_sha256=pinset_sha256,
+            map_source_revision=map_source_revision,
+            pinvi_source_revision=pinvi_source_revision,
+            phase=phase,
+        )
+        is not None
     )
 
 
@@ -163,28 +205,22 @@ class PinnedRuntimeRelease:
         }
 
 
-MAP_PINNED_RUNTIME_SOURCE: Final = PinnedRuntimeSourceSpec(
-    role="map",
-    canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["map"],
-    revision="9c64e862c9da82016e12038e2e135526b300ca9d",
-)
-PINVI_PINNED_RUNTIME_SOURCE: Final = PinnedRuntimeSourceSpec(
-    role="pinvi",
-    canonical_url=CANONICAL_RUNTIME_SOURCE_URLS["pinvi"],
-    revision="323e3ba85e60c339a39af99a200cefa95ea962b6",
-)
-_CURRENT_SOURCES: Final[tuple[PinnedRuntimeSourceSpec, ...]] = (
-    MAP_PINNED_RUNTIME_SOURCE,
-    PINVI_PINNED_RUNTIME_SOURCE,
-)
-PINNED_RUNTIME_RELEASE: Final = PinnedRuntimeRelease(
-    version=PINNED_RUNTIME_RELEASE_VERSION,
-    sources=_CURRENT_SOURCES,
-    pinset_sha256="2d6d5ad5b5d75a61d7883912703fc8bfe0970b647f0100e9f6b13b2f968f2eb2",
-)
-
-
 def current_pinned_runtime_release() -> PinnedRuntimeRelease:
-    """tracked v5 release authority를 반환한다."""
+    """tracked v5 release authority를 registry 파일에서 읽어 반환한다.
 
-    return PINNED_RUNTIME_RELEASE
+    시그니처는 상수 시절과 동일하다 — rebuild 경로의 소비처는
+    ``compose_service.rebuild_pinned_runtime`` 한 곳뿐이라 전파가 없다.
+    registry 부재·파싱 실패·digest 불일치는 상수 폴백 없이 fail-close다.
+    """
+
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    return load_runtime_pin_registry().release()
+
+
+def current_map_source_revision() -> str:
+    """Map application 300 계약이 기대하는 source commit."""
+
+    return current_pinned_runtime_release().source_for("map").revision

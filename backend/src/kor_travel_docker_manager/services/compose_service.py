@@ -168,7 +168,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
-    is_d9_legacy_pinvi_role_topology_retry,
+    is_blocked_pinset_retry,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     PinnedRuntimeSourceMaterialization,
@@ -654,6 +654,29 @@ def _require_pinned_runtime_rebuild_root() -> None:
 
     if os.geteuid() != 0:
         raise DeploymentContractError("pinned runtime rebuild requires root execution")
+
+
+def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
+    """terminal 판정된 pinset의 실행을 mutation 이전에 거부한다.
+
+    Map·PinVi 저장소는 "terminal candidate는 영구 재시도 금지"를 문서 규율로만
+    지켜 왔고 어긴 실행을 막는 기계 게이트가 없었다. 차단 목록은 registry가
+    소유하므로 새 pinset으로 회전하는 것이 유일한 해소 경로다.
+    """
+
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    # release를 이미 registry에서 읽은 뒤이므로 여기서 실패하면 파일이 방금
+    # 사라진 것이다. 차단 판정을 못 하는 상태로 파괴적 작업을 진행하지 않는다.
+    registry = load_runtime_pin_registry()
+    if registry.is_unconditionally_blocked_pinset(pinset_sha256):
+        raise DeploymentContractError(
+            "pinned runtime rebuild is blocked: this pinset is recorded as a terminal "
+            "candidate that must not be retried (rotate to a fresh pinset with "
+            "'ktdctl pin rotate')"
+        )
 
 
 def get_project_root() -> str:
@@ -1565,9 +1588,14 @@ def _pinned_runtime_rebuild_environment_lock(
             initial_environment_snapshot = (
                 _capture_pinned_runtime_rebuild_environment_snapshot()
             )
-            assert_pinned_runtime_rebuild_allowed(
-                environment=initial_environment_snapshot.effective
-            )
+        # 배포 lifecycle 게이트는 **봉인 밖**이다. 이 거부는 호스트 상태에서 유도한
+        # 진단이 아니라 고정 정책 문장("rehearsal/rebuildable이 아니다")이라 비밀이
+        # 없고, 운영자가 알아야 하는 유일한 정보가 그 문장 자체다. 이것까지
+        # "candidate preparation failed"로 봉인하면 왜 거부됐는지 알 방법이 사라진다.
+        assert_pinned_runtime_rebuild_allowed(
+            environment=initial_environment_snapshot.effective
+        )
+        with _pinned_runtime_prejournal_step("environment_admission"):
             validate_c6c_operation_tokens(
                 initial_environment_snapshot.effective,
                 require_nonempty=True,
@@ -5916,7 +5944,7 @@ class ComposeService:
         """terminal role topology receipt가 있으면 어떤 same-pinset write도 시작하지 않는다."""
 
         if journal.pinvi_role_lifecycle_block is not None or (
-            is_d9_legacy_pinvi_role_topology_retry(
+            is_blocked_pinset_retry(
                 pinset_sha256=journal.candidate.pinset_sha256,
                 map_source_revision=journal.candidate.map_source_revision,
                 pinvi_source_revision=journal.candidate.pinvi_source_revision,
@@ -6388,6 +6416,7 @@ class ComposeService:
 
         _require_pinned_runtime_rebuild_root()
         release = current_pinned_runtime_release()
+        _assert_pinset_is_not_permanently_blocked(release.pinset_sha256)
         resume_journal: PinnedRuntimeRebuildJournal | None = None
 
         def prewrite_admission(

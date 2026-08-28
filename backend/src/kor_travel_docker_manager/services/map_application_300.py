@@ -23,9 +23,6 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
 
-MAP_APPLICATION_300_SOURCE_COMMIT: Final = (
-    "9c64e862c9da82016e12038e2e135526b300ca9d"
-)
 APPLICATION_HEAD: Final = "300"
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
 
@@ -460,6 +457,25 @@ class Application300Contract:
         }
 
 
+def expected_application_300_source_commit() -> str:
+    """application ``300`` candidate가 가져야 하는 Map source commit.
+
+    이전에는 이 값이 ``MAP_APPLICATION_300_SOURCE_COMMIT`` 상수로 여기 한 번, pinned
+    release pin으로 또 한 번 이원 관리됐다. 두 값이 어긋나도 런타임 비교가 없어
+    candidate admission에서야 늦게 실패했고 유일한 방어선이 테스트 한 줄이었다.
+    이제 단일 registry에서만 읽으므로 그 hazard 자체가 소멸한다.
+
+    import는 함수 안에서 한다 — ``c6c_deployment``가 이 모듈을 import하므로
+    module-level import는 순환이 된다.
+    """
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        current_map_source_revision,
+    )
+
+    return current_map_source_revision()
+
+
 @dataclass(frozen=True)
 class Application300Candidate:
     """Map application ``300`` API/Dagster image identity."""
@@ -470,7 +486,7 @@ class Application300Candidate:
 
     def __post_init__(self) -> None:
         commit = _require_commit(self.map_source_commit, "map_source_commit")
-        if commit != MAP_APPLICATION_300_SOURCE_COMMIT:
+        if commit != expected_application_300_source_commit():
             raise MapApplication300ContractError(
                 "Map application 300 source commit is not the fixed release candidate"
             )

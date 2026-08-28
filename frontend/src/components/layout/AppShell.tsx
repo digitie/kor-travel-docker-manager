@@ -1,6 +1,16 @@
 'use client';
 
-import { Command, Database, KeyRound, LayoutDashboard, LogOut, Menu, ServerCog, X } from 'lucide-react';
+import {
+  Command,
+  Database,
+  KeyRound,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  Pin,
+  ServerCog,
+  X,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /** kor-travel-geo-ui의 AppShell과 동일한 breakpoint에서 사이드바가 drawer로 전환된다. */
@@ -25,6 +35,7 @@ type AppShellProps = {
   onOpenAdminSettings: () => void;
   onOpenBackupHistory: () => void;
   onOpenCommandPalette: () => void;
+  onOpenRuntimePins: () => void;
 };
 
 export default function AppShell({
@@ -34,6 +45,7 @@ export default function AppShell({
   onOpenAdminSettings,
   onOpenBackupHistory,
   onOpenCommandPalette,
+  onOpenRuntimePins,
 }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const isDrawerLayout = useIsDrawerLayout();
@@ -175,6 +187,14 @@ export default function AppShell({
           >
             <Database size={17} />
             백업 이력
+          </button>
+          <button
+            className="nav-link nav-button"
+            onClick={() => runAndCloseMenu(onOpenRuntimePins)}
+            type="button"
+          >
+            <Pin size={17} />
+            배포 버전 고정
           </button>
           <button
             className="nav-link nav-button"

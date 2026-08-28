@@ -13,8 +13,10 @@ from urllib.request import Request
 import pytest
 
 from kor_travel_docker_manager.services.pinned_runtime_release import (
-    PINNED_RUNTIME_RELEASE,
+    current_pinned_runtime_release,
 )
+
+PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 
 
 def _driver() -> ModuleType:

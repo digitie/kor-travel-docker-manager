@@ -201,6 +201,65 @@ ktdctl inspect kor-travel-geo-postgresql --json
 ktdctl srv --build
 ```
 
+#### `ktdctl pin` — Map·PinVi pinned revision registry
+
+pinned revision은 더 이상 소스코드 상수가 아니라 **root 소유 JSON registry 파일**에
+있다. 값은 파일에 있어도 검증은 코드가 소유한다 — canonical URL 집합, 40-hex 형식,
+role 순서(map→pinvi), pinset digest 재계산 대조가 로드마다 실행되고 하나라도 어긋나면
+fail-close한다. 따라서 파일을 편집해 임의 저장소를 가리키게 만드는 것은 코드 수정
+없이는 불가능하다. 부재·파싱 실패·digest 불일치도 **상수 폴백 없이** fail-close다.
+
+```bash
+ktdctl pin show [--json]     # 현재 pin·digest·회전 메타·차단 목록 (읽기 전용)
+ktdctl pin verify [--json]   # digest 재계산·canonical URL·공개 사본 정합 (읽기 전용)
+ktdctl pin init --confirm    # 호스트 최초 1회 (기본 seed: config/runtime-pins.seed.json)
+ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm
+ktdctl pin block <pinset-sha256> --reason "..." --confirm
+ktdctl pin rollback --to <pinset-sha256> --reason "..." --confirm
+```
+
+- **경로**: 설치 root(`/opt/kor-travel-docker-manager`)에서 실행하면 기본값이 자동으로
+  배포 트리 밖(`/var/lib/kor-travel-docker-manager/`)을 가리킨다. trusted installer는
+  트리를 staging→commit으로 통째 교체하므로 registry가 트리 안에 있으면 다음 release
+  설치가 회전 결과를 조용히 덮어쓰기 때문이며, **트리 안 경로로의 회전은 거부된다**.
+  저장소의 `config/runtime-pins.seed.json`은 추적되는 **읽기 전용 seed**이고 회전 대상이
+  아니다. 운영 registry와 `runtime-pins.<digest>.json` 보존본은 백업 대상에 등재한다.
+- **파일 무결성**: 읽을 때마다 `lstat`으로 일반 파일·소유자(root 또는 자기 자신)·
+  group/other 쓰기 금지를 확인하고, 위반하면 값을 쓰지 않고 fail-close한다.
+- **공개 사본**: registry는 root `0600`이라 비-root backend가 읽지 못한다. root가
+  실행하는 `pin init`/`pin rotate`가 secret 없는 `0644` 공개 사본을 함께 쓰고
+  (`KTDM_RUNTIME_PINS_PUBLIC_FILE`), 조회 API는 그 사본을 읽는다. 설치 root에서의
+  기본 경로는 registry와 **다른 트리**(`/var/lib/kor-travel-docker-manager-public/`)다 —
+  registry 트리는 installer가 매 설치마다 `0700`으로 되돌려 비-root가 traverse할 수 없다.
+  사본이 registry보다 오래되면 `stale`, 사본 없이 registry를 직접 읽었으면 `degraded`,
+  둘 다 읽을 수 없으면 `unknown`으로 표시하고 값을 추측하지 않는다.
+- **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 `pin rotate`는
+  실행 중 Manager에 즉시 반영된다.
+- **회전 이력과 롤백**: rotate는 digest를 자동 계산하고 이전 registry를
+  `runtime-pins.<old-digest>.json`으로 보존하며 `history`에 사유·주체·직전 pinset을
+  남긴다. `pin rollback`은 그 보존본으로 원복하되 **차단된 pinset으로는 원복하지
+  않는다**.
+
+#### pinset lifecycle — terminal candidate 차단
+
+registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`blocked_pinsets`)도
+소유한다. 이전에는 이 규율이 Manager 코드의 d9 상수 3종과 kor-travel-map·pinvi 저장소
+문서의 수기 목록에만 있어서, 어긴 실행을 막는 기계 게이트가 없었다.
+
+- **조건 없는 차단**(`phase` 없음) — 그 pinset의 모든 실행을 금지한다.
+  `rebuild-pinned`가 **어떤 mutation보다 먼저** 거부한다. 해소 경로는
+  `ktdctl pin rotate`로 새 pinset을 만드는 것뿐이다(의도적으로 `pin unblock`은 없다).
+- **phase 한정 차단** — 그 phase의 journal 재개만 금지한다. 기존 d9 admission과
+  동일한 의미이며 rebuild 시작 게이트는 관여하지 않는다.
+- `pin rotate --block-previous`는 직전 pinset을 terminal로 등재한다. 회전 사유가
+  "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다.
+- **차단 하한선은 코드가 소유한다.** registry가 손상되거나 오래된 사본으로 시딩돼도
+  d9 계열 historical 차단은 유지된다 — 목록은 데이터, 하한선은 코드다.
+- `pin verify`는 현재 pinset이 재시도 금지 상태이거나 공개 사본이 최신이 아니면
+  비정상 종료한다. digest가 맞다는 이유만으로 0을 반환하면 운영자가 rebuild 직전에
+  잘못 안심하게 되기 때문이다.
+- 의도적으로 `pin unblock`은 제공하지 않는다. 해소 경로는 새 revision으로의 회전이다.
+
 ### 5.2 API
 
 | 메서드 | 경로 | 설명 |
@@ -217,6 +276,7 @@ ktdctl srv --build
 | `POST` | `/api/v1/auth/login`, `/api/v1/auth/logout` | 관리자 세션 로그인·로그아웃 |
 | `GET` | `/api/v1/auth/me` | 현재 관리자 세션 확인 |
 | `GET` | `/api/v1/backups` | 전용 PostgreSQL 백업 산출물 목록 |
+| `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록(읽기 전용). 회전은 root `ktdctl pin rotate` 전용이라 mutation을 노출하지 않는다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |
 | `GET/POST/DELETE` | `/api/v1/admin/public-api-keys...` | public API key 관리 |
 | `WS` | `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}` | 상태·로그 실시간 스트림 |
