@@ -43,6 +43,11 @@ M05 isolated one-shot이 실패하면 root registry의 조건 없는 차단 항�
 candidate의 재시도 근거로 쓰지 않는다. 이 phase는 새 source pair를 만들 때 보정 범위를 정하는 용도일
 뿐, 동일 pinset을 다시 실행하게 하는 권한이 아니다.
 
+ordinary exception도 같은 원칙을 따른다. driver 본문은 이미 진입한 allowlist phase를 유지하고,
+cleanup·terminal block 경계는 각각 `runtime_cleanup_failed`·`runtime_pin_block_failed`로 수렴한다.
+allowlist 밖의 값만 `driver_contract_failed`로 좁혀진다. 따라서 공개 registry로 raw 예외를 역추론할
+수 없고, 다음 immutable source pair의 보정 범위만 결정할 수 있다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식

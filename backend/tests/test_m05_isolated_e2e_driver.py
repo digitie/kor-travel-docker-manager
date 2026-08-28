@@ -391,7 +391,7 @@ def test_terminal_result_blocks_the_exact_current_pinset(
 def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """unknown exception도 launcher에 raw-output 부재를 남기지 않는다."""
+    """unknown exception은 raw 없이 현재 admission 경계로 수렴한다."""
 
     driver = _driver()
     monkeypatch.setattr(
@@ -399,14 +399,14 @@ def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
         "_validate_trusted_release",
         lambda _expected: (_ for _ in ()).throw(RuntimeError("discarded")),
     )
-    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda: True)
+    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda _phase: True)
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
     assert receipt["status"] == "blocked"
-    assert receipt["phase"] == "driver_contract_failed"
-    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert receipt["phase"] == "admission"
+    assert receipt["driver_phase"] == "admission"
     assert "discarded" not in json.dumps(receipt, sort_keys=True)
 
 
@@ -430,6 +430,31 @@ def test_cleanup_boundary_marks_ordinary_exceptions_for_fixed_receipt(
     ) == (False, True)
 
 
+def test_unexpected_cleanup_keeps_the_fixed_cleanup_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup boundary의 ordinary exception은 generic phase로 덮어쓰지 않는다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(driver._PhaseError("admission")),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_cleanup_temporary_resources",
+        lambda **_kwargs: (False, True),
+    )
+    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda _phase: True)
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert receipt["phase"] == "runtime_cleanup_failed"
+    assert receipt["driver_phase"] == "runtime_cleanup_failed"
+
+
 def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -444,15 +469,15 @@ def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
     monkeypatch.setattr(
         driver,
         "_block_terminal_m05_pinset",
-        lambda: (_ for _ in ()).throw(OSError("discarded")),
+        lambda _phase: (_ for _ in ()).throw(OSError("discarded")),
     )
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
     assert receipt["status"] == "blocked"
-    assert receipt["phase"] == "driver_contract_failed"
-    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert receipt["phase"] == "runtime_pin_block_failed"
+    assert receipt["driver_phase"] == "runtime_pin_block_failed"
     assert "discarded" not in json.dumps(receipt, sort_keys=True)
 
 

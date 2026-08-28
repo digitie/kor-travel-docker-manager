@@ -204,8 +204,13 @@ def _assert_current_m05_pinset_is_runnable() -> None:
 def _terminal_registry_reason(phase: str) -> str:
     """root registry에는 고정 phase만 남겨 원문 유출을 막는다."""
 
-    safe_phase = phase if phase in _PUBLIC_TERMINAL_PHASES else "driver_contract_failed"
-    return f"M05 isolated one-shot terminal: {safe_phase}"
+    return f"M05 isolated one-shot terminal: {_public_terminal_phase(phase)}"
+
+
+def _public_terminal_phase(phase: str) -> str:
+    """원문 없이 이미 추적 중인 실행 경계만 public receipt에 남긴다."""
+
+    return phase if phase in _PUBLIC_TERMINAL_PHASES else "driver_contract_failed"
 
 
 def _block_terminal_m05_pinset(phase: str) -> bool:
@@ -1916,20 +1921,18 @@ def main(expected_revision: str, output: Path) -> int:
         phase = error.phase
         failure_diagnostic = error.diagnostic
     # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
-    # 관측한다. 예상하지 못한 ordinary exception도 고정된 terminal receipt로 수렴시킨다.
+    # 관측한다. 예상하지 못한 ordinary exception도 현재 allowlist 실행 경계로만
+    # 수렴하므로, raw detail 없이 다음 immutable candidate의 보정 범위를 좁힐 수 있다.
     # BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
     except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
-        phase = "driver_contract_failed"
+        phase = _public_terminal_phase(phase)
     finally:
         cleanup_failed, unexpected_finalization_failure = _cleanup_temporary_resources(
             map_cleanup=map_cleanup,
             pinvi_cleanup=pinvi_cleanup,
             private_files=private_files,
         )
-        if unexpected_finalization_failure:
-            completed = False
-            phase = "driver_contract_failed"
-        elif cleanup_failed:
+        if unexpected_finalization_failure or cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
         if not completed:
@@ -1937,10 +1940,7 @@ def main(expected_revision: str, output: Path) -> int:
                 pinset_blocked = _block_terminal_m05_pinset(phase)
             except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
                 pinset_blocked = False
-                unexpected_finalization_failure = True
-            if unexpected_finalization_failure:
-                phase = "driver_contract_failed"
-            elif not pinset_blocked:
+            if not pinset_blocked:
                 phase = "runtime_pin_block_failed"
         driver_phase = phase
         for name in _RAW_ENV_NAMES:
