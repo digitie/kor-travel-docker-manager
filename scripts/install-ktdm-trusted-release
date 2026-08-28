@@ -20,6 +20,7 @@ TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"
 TRANSACTION_STATE_TMP="${STATE_ROOT}/.trusted-release-transaction.json.tmp"
 GLOBAL_LOCK_DIR="/run/lock/kor-travel-docker-manager"
 GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"
+LEASE_TMPFILES_UNIT="/usr/lib/tmpfiles.d/kor-travel-docker-manager.conf"
 
 die() {
   echo "$1" >&2
@@ -619,9 +620,14 @@ if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
   # 갇힌다. `d` 타입은 기존 디렉터리의 소유자·mode를 바로잡으므로, 유닛이 한 번이라도
   # 설치된 호스트는 여기서 스스로 복구된다. 최초 설치 호스트는 아래 오류 메시지가
   # 수동 복구 경로를 알려 준다.
-  if [[ -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf ]] \
-    && command -v systemd-tmpfiles >/dev/null 2>&1; then
-    systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf || true
+  #
+  # 이것은 이 스크립트에서 **lease를 잡기 전에 호스트를 건드리는 유일한 지점**이며,
+  # "lock first" 규율의 의도적 예외다. 성립 근거: 대상이 lease 디렉터리 자신의 소유자와
+  # mode뿐이고, 이미 열려 있는 flock fd는 소유자·mode 변경에 영향받지 않으므로 진행 중인
+  # mutation을 방해하지 않는다. 그 범위를 넘는 작업을 여기에 추가해서는 안 된다.
+  # 실패는 무시한다 — 여기서 못 고쳐도 바로 아래 preflight가 fail-close로 잡는다.
+  if [[ -f "${LEASE_TMPFILES_UNIT}" ]] && [[ -x /usr/bin/systemd-tmpfiles ]]; then
+    /usr/bin/systemd-tmpfiles --create "${LEASE_TMPFILES_UNIT}" || true
   fi
   exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
@@ -1372,17 +1378,24 @@ fi
 # release는 이미 commit됐다. 여기서의 실패는 배포를 되돌리지 않고 경고로 보고한다.
 install_host_lease_tmpfiles() {
   local source="${APP_ROOT}/deploy/tmpfiles.d/kor-travel-docker-manager.conf"
-  local destination=/usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
+  local destination="${LEASE_TMPFILES_UNIT}"
 
   if [[ -L "${source}" || ! -f "${source}" ]]; then
     echo "host lease tmpfiles unit missing from the installed release: ${source}" >&2
     return 1
   fi
   local source_uid source_mode
-  source_uid="$(/usr/bin/stat -c '%u' "${source}")"
-  source_mode="$(/usr/bin/stat -c '%a' "${source}")"
-  # 이 스크립트의 다른 신뢰 검사(`require_root_locked_dir`, `assert_root_locked`)와
-  # 같은 기준을 쓴다: root 소유이면서 group/other 쓰기가 없어야 한다.
+  source_uid="$(/usr/bin/stat -c '%u' "${source}" 2>/dev/null || true)"
+  source_mode="$(/usr/bin/stat -c '%a' "${source}" 2>/dev/null || true)"
+  # 산술 확장에 넣기 전에 형식을 확인한다. `-f` 검사와 `stat` 사이에 파일이 사라지면
+  # `${source_mode}`가 빈 값이 되고, `$((8#))`는 산술 오류라 **두 분기 어느 쪽도 실행되지
+  # 않은 채** 함수가 조용히 빠져나간다 — 신뢰 검사에서 fail-open이다.
+  if [[ ! "${source_uid}" =~ ^[0-9]+$ || ! "${source_mode}" =~ ^[0-7]{3,4}$ ]]; then
+    echo "cannot read host lease tmpfiles unit metadata: ${source}" >&2
+    return 1
+  fi
+  # 이 스크립트의 다른 신뢰 검사(`require_root_locked_dir`)와 같은 기준을 쓴다:
+  # root 소유이면서 group/other 쓰기가 없어야 한다.
   if [[ "${source_uid}" != "0" || $((8#${source_mode} & 022)) != "0" ]]; then
     echo "host lease tmpfiles unit is writable or not root-owned: ${source}" >&2
     return 1
@@ -1391,18 +1404,18 @@ install_host_lease_tmpfiles() {
     echo "cannot install host lease tmpfiles unit: ${destination}" >&2
     return 1
   fi
-  if ! command -v systemd-tmpfiles >/dev/null 2>&1; then
+  if [[ ! -x /usr/bin/systemd-tmpfiles ]]; then
     echo "systemd-tmpfiles unavailable; host lease directory is not boot-created" >&2
     return 1
   fi
-  if ! systemd-tmpfiles --create "${destination}"; then
+  if ! /usr/bin/systemd-tmpfiles --create "${destination}"; then
     echo "systemd-tmpfiles could not apply ${destination}" >&2
     return 1
   fi
   # `--create`는 경로가 **디렉터리가 아닌 것으로** 선점돼 있으면 그 사실을 stdout에
   # 적고 exit 0으로 끝난다. 위 분기만으로는 그 경우가 성공으로 보고된다. 타입은
   # 직접 확인한다.
-  local lease=/run/lock/kor-travel-docker-manager
+  local lease="${GLOBAL_LOCK_DIR}"
   if [[ -L "${lease}" || ! -d "${lease}" ]]; then
     echo "host lease path exists and is not a directory: ${lease}" >&2
     return 1

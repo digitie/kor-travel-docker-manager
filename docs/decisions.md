@@ -2616,7 +2616,8 @@ lease 소유자 계약은 그대로 root(`uid 0`, `0700` 디렉터리, `0600`/`n
   그 파일을 먼저 만들어 root의 rebuild를 부팅 내내 거부할 수 있다.
 
 교훈은 **신뢰 결정의 입력을 프로세스 env에서 읽지 않는다**는 것이다. 이 저장소는 이미 옳은
-패턴을 갖고 있다 — `_capture_c6c_deployment_lock_snapshot`은 root 소유 `.env` 바이트를 읽어
+패턴을 갖고 있다 — `_capture_c6c_deployment_lock_snapshot`은 **production 판정에 한해**
+(비운영 분기는 다섯 키를 `os.environ`에서 보충한다) root 소유 `.env` 바이트를 읽어
 identity를 고정한 뒤 그 값으로 lock 경로를 정한다.
 
 ### 후속

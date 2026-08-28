@@ -42,8 +42,9 @@ NO-GO를 받고 되돌렸다. 직접 확인한 결정적 사실:
 lease 디렉터리를 먼저 만들면 조용한 잠금이 되는 문제, 기본 모드에서 계약 오류가 raw
 `PermissionError`로 퇴화하는 문제. 둘 다 기각된 설계와 함께 사라졌다.
 
-회귀 테스트 8건(`tests/test_c6c_lock_hardening.py` — 경로 재대조와 획득 중 바꿔치기),
-백엔드 전체 green, ruff clean.
+회귀 테스트는 `tests/test_c6c_lock_hardening.py` 7건(경로 재대조, symlink·장치 구분, 획득 중
+바꿔치기)과 fixed artifact 계약 2건이다. 후자는 리뷰가 지적한 공백을 메운 것으로, 읽기 경로에
+root 게이트를 되돌려 넣는 변이로 실제 검출을 확인했다. 백엔드 전체 green, ruff clean.
 
 ## 2026-08-28 — M05 `b46743ea…` terminal 보존 후 대기
 

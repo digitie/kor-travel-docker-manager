@@ -333,7 +333,16 @@ root`로 깨끗해 보이지만 침입자가 심어 둔 파일이 남는다. loc
 `nlink == 1`, `0600`)이 fail-close로 잡고 installer도 root 아닌 항목을 발견하면 보고하지만,
 눈으로도 확인한다.
 
-정상 상태는 다음과 같다.
+설치 직후 정상 상태는 **빈 디렉터리**다. tmpfiles는 디렉터리만 만든다.
+
+```
+drwx------ 2 root root ...  .
+drwxrwxrwt 5 root root ...  ..
+```
+
+lock 파일은 나중에 생긴다 — `global-mutation.lock`은 첫 mutation 때,
+`pinned-runtime-rebuild.lock`은 첫 `rebuild-pinned` 때다. 둘 다 tmpfs라 재부팅하면
+사라진다. 즉 **비어 있다고 해서 설치가 실패한 것이 아니다.** 가동 중 상태는 이렇다.
 
 ```
 drwx------ 2 root root ...  .
@@ -341,6 +350,8 @@ drwxrwxrwt 5 root root ...  ..
 -rw------- 1 root root ...  global-mutation.lock
 -rw------- 1 root root ...  pinned-runtime-rebuild.lock
 ```
+
+`root` 이외가 소유한 항목이 보이면 선점된 것이다.
 
 **trusted installer를 쓰지 않는 호스트**(2절의 rsync 배포본, rehearsal 등)에는 `deploy/`
 트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접

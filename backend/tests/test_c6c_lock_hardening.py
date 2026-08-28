@@ -58,16 +58,53 @@ def test_path_re_check_rejects_a_vanished_lock(tmp_path: Path) -> None:
         os.close(descriptor)
 
 
-def test_path_re_check_rejects_a_symlinked_lock_path(tmp_path: Path) -> None:
-    """``lstat``이라 경로가 symlink로 바뀐 경우도 inode 불일치로 걸린다."""
+def test_path_re_check_rejects_a_symlink_to_the_held_inode(tmp_path: Path) -> None:
+    """``lstat``이어야만 잡히는 경우를 고정한다.
+
+    symlink가 **우리가 잡고 있는 바로 그 inode**의 hardlink를 가리키게 만든다. 그러면
+    ``stat``(추종)으로는 dev/ino가 일치해 통과하고, ``lstat``(비추종)으로만 symlink 자신의
+    inode가 보여 불일치로 걸린다. 다른 파일을 가리키는 symlink로는 이 구분이 되지 않는다
+    — 그 경우 두 방식 모두 불일치라 ``stat``으로 바꿔도 테스트가 통과해 버린다.
+    """
 
     lock_path = tmp_path / "global-mutation.lock"
     descriptor = _open_lock(lock_path)
     try:
-        other = tmp_path / "other.lock"
-        os.close(_open_lock(other))
+        twin = tmp_path / "twin.lock"
+        os.link(lock_path, twin)  # 같은 inode
         lock_path.unlink()
-        lock_path.symlink_to(other)
+        lock_path.symlink_to(twin)
+        assert lock_path.stat().st_ino == os.fstat(descriptor).st_ino
+        with pytest.raises(DeploymentContractError, match="replaced during acquisition"):
+            c6c_module._assert_locked_fd_still_owns_path(descriptor, lock_path)
+    finally:
+        os.close(descriptor)
+
+
+def test_path_re_check_compares_the_device_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """inode 번호만 보면 다른 파일시스템의 동명이인이 통과한다."""
+
+    lock_path = tmp_path / "global-mutation.lock"
+    descriptor = _open_lock(lock_path)
+    try:
+        real = os.fstat(descriptor)
+        shifted = os.stat_result(
+            (
+                real.st_mode,
+                real.st_ino,  # 같은 inode 번호
+                real.st_dev + 1,  # 다른 장치
+                real.st_nlink,
+                real.st_uid,
+                real.st_gid,
+                real.st_size,
+                real.st_atime,
+                real.st_mtime,
+                real.st_ctime,
+            )
+        )
+        monkeypatch.setattr(c6c_module.os, "fstat", lambda _fd: shifted)
         with pytest.raises(DeploymentContractError, match="replaced during acquisition"):
             c6c_module._assert_locked_fd_still_owns_path(descriptor, lock_path)
     finally:

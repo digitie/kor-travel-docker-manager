@@ -820,14 +820,16 @@ def _root_owned_stat(metadata: os.stat_result) -> os.stat_result:
     )
 
 
-def test_fixed_artifact_reader_does_not_require_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("euid", [0, 1000])
+def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, euid: int
 ) -> None:
-    """비-root도 root 소유 `0444` fence를 읽을 수 있어야 한다.
+    """reconciliation은 owner-only 0600 결과가 아닌 root-owned 0444 fence를 읽는다.
 
-    이 계약에는 테스트가 없었다 — 유일한 reader 테스트가 `geteuid`를 `0`으로 고정해
-    두어, 읽기 경로에 root 게이트를 되돌려 넣어도 전체 스위트가 green이었다.
-    바이트는 world-readable(`0444`)이 계약이므로 비-root 읽기는 아무것도 넓히지 않는다.
+    ``euid``를 함께 돌리는 이유: 읽기 경로는 호출자의 euid를 보지 않는다는 것이 계약인데,
+    이 테스트가 `0`으로만 돌던 동안에는 읽기 경로에 root 게이트를 되돌려 넣어도 전체
+    스위트가 green이었다. 바이트는 world-readable(`0444`)이 계약이므로 비-root 읽기는
+    아무것도 넓히지 않는다 — 쓰기는 진입점 두 곳이 각자 root를 요구한다.
     """
 
     target_directory = tmp_path / "fixed"
@@ -845,7 +847,7 @@ def test_fixed_artifact_reader_does_not_require_root(
     original_lstat = Path.lstat
     original_fstat = module.os.fstat
 
-    monkeypatch.setattr(module.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(module.os, "geteuid", lambda: euid)
     monkeypatch.setattr(
         Path, "lstat", lambda path: _root_owned_stat(original_lstat(path))
     )
@@ -853,56 +855,6 @@ def test_fixed_artifact_reader_does_not_require_root(
         module.os,
         "fstat",
         lambda descriptor: _root_owned_stat(original_fstat(descriptor)),
-    )
-
-    assert read_root_read_only_artifact(target) == raw
-
-
-def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """reconciliation은 owner-only 0600 결과가 아닌 root-owned 0444 fence를 읽는다."""
-
-    target_directory = tmp_path / "fixed"
-    target_directory.mkdir(mode=0o755)
-    target_directory.chmod(0o755)
-    target = target_directory / "fence.json"
-    raw = b'{"schema":"fixed"}\n'
-    target.write_bytes(raw)
-    target.chmod(0o444)
-
-    module = __import__(
-        "kor_travel_docker_manager.services.map_application_300",
-        fromlist=["map_application_300"],
-    )
-    original_lstat = Path.lstat
-    original_fstat = module.os.fstat
-
-    def root_owned(metadata: os.stat_result) -> os.stat_result:
-        mode = stat.S_IFMT(metadata.st_mode) | (
-            0o755 if stat.S_ISDIR(metadata.st_mode) else 0o444
-        )
-        return os.stat_result(
-            (
-                mode,
-                metadata.st_ino,
-                metadata.st_dev,
-                metadata.st_nlink,
-                0,
-                metadata.st_gid,
-                metadata.st_size,
-                metadata.st_atime,
-                metadata.st_mtime,
-                metadata.st_ctime,
-            )
-        )
-
-    monkeypatch.setattr(module.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(
-        Path, "lstat", lambda path: root_owned(original_lstat(path))
-    )
-    monkeypatch.setattr(
-        module.os, "fstat", lambda descriptor: root_owned(original_fstat(descriptor))
     )
 
     assert read_root_read_only_artifact(target) == raw

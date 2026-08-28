@@ -64,6 +64,7 @@ canonical scale/replica/container name은 exact singleton이어야 한다.
 │   ├── src/            # 백엔드 소스코드
 │   └── tests/          # 백엔드 단위/통합 테스트
 ├── config/             # Docker target alias, 의존 순서, 초기화 step 설정
+├── deploy/             # 호스트 프로비저닝 자산 (systemd-tmpfiles 유닛 등)
 ├── frontend/           # Next.js 프론트엔드 (React, TS, Tailwind, Shadcn)
 │   ├── src/app/        # App Router 및 페이지
 │   └── src/components/ # UI 컴포넌트
