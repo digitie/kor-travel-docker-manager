@@ -485,20 +485,20 @@ def test_pinvi_mode_check_reads_the_pinned_blob_not_the_checkout(
 
     monkeypatch.setattr(readiness, "_compose_directory", lambda: tmp_path)
     monkeypatch.setattr(readiness, "read_published_runtime_pins", lambda: _pins())
-    seen: list[list[str]] = []
+    seen: list[str] = []
 
-    def git_text(root: Path, args: list[str]) -> str:
-        seen.append(list(args))
+    def git_blob(root: Path, revision_path: str, *, max_bytes: int) -> str:
+        seen.append(revision_path)
         return _ALL_MODES_SCRIPT
 
-    monkeypatch.setattr(readiness, "_git_text", git_text)
+    monkeypatch.setattr(readiness, "_git_blob_text", git_blob)
     values = _sibling_tree(tmp_path)
 
     check = readiness._check_pinvi_role_bootstrap_modes(values)
 
     assert check.state == "ok"
     # HEAD를 묻지 않는다 — 고정 revision의 blob을 직접 읽는다.
-    assert seen == [["show", f"{PINVI_REVISION}:{readiness._PINVI_ROLE_BOOTSTRAP_SCRIPT}"]]
+    assert seen == [f"{PINVI_REVISION}:{readiness._PINVI_ROLE_BOOTSTRAP_SCRIPT}"]
 
 
 def test_pinvi_mode_check_blocks_when_a_required_mode_is_absent(
@@ -510,8 +510,10 @@ def test_pinvi_mode_check_blocks_when_a_required_mode_is_absent(
     monkeypatch.setattr(readiness, "read_published_runtime_pins", lambda: _pins())
     monkeypatch.setattr(
         readiness,
-        "_git_text",
-        lambda root, args: '#!/bin/sh\necho "${PINVI_ROLE_TOPOLOGY_VERIFY_ONLY}"\n',
+        "_git_blob_text",
+        lambda root, revision_path, *, max_bytes: (
+            '#!/bin/sh\necho "${PINVI_ROLE_TOPOLOGY_VERIFY_ONLY}"\n'
+        ),
     )
     values = _sibling_tree(tmp_path)
 
@@ -532,7 +534,9 @@ def test_pinvi_mode_check_is_unknown_when_the_revision_is_not_fetched(
 
     monkeypatch.setattr(readiness, "_compose_directory", lambda: tmp_path)
     monkeypatch.setattr(readiness, "read_published_runtime_pins", lambda: _pins())
-    monkeypatch.setattr(readiness, "_git_text", lambda root, args: None)
+    monkeypatch.setattr(
+        readiness, "_git_blob_text", lambda root, revision_path, *, max_bytes: None
+    )
     values = _sibling_tree(tmp_path)
 
     check = readiness._check_pinvi_role_bootstrap_modes(values)
@@ -543,6 +547,103 @@ def test_pinvi_mode_check_is_unknown_when_the_revision_is_not_fetched(
     assert check.evidence["pinned_revision"] == PINVI_REVISION
     assert check.evidence["script_path"] == readiness._PINVI_ROLE_BOOTSTRAP_SCRIPT
     assert check.evidence["pinvi_root"].endswith("pinvi")
+
+
+def test_a_non_utf8_blob_degrades_one_row_not_the_whole_panel(tmp_path: Path) -> None:
+    """한 행의 디코딩 실패가 패널 전체를 unknown으로 만들면 안 된다."""
+
+    repository = tmp_path / "pinvi"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repository, check=True)
+    script = repository / "infra" / "postgres"
+    script.mkdir(parents=True)
+    (script / "bootstrap-pinvi-runtime-role.sh").write_bytes(b"\x80\x81\x82" * 64)
+    subprocess.run(["git", "add", "-A"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "binary"], cwd=repository, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    text = readiness._git_blob_text(
+        repository, f"{head}:infra/postgres/bootstrap-pinvi-runtime-role.sh", max_bytes=4096
+    )
+
+    # 예외가 새어 나오지 않고, 판정에 쓸 수 있는 문자열이 돌아온다.
+    assert isinstance(text, str)
+    assert "PINVI_ROLE_CATALOG_RESET_ONLY" not in text
+
+
+def test_a_blob_larger_than_the_cap_is_refused_without_buffering_it_all(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "pinvi"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repository, check=True)
+    (repository / "big.txt").write_text("x" * 8192, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "big"], cwd=repository, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert readiness._git_blob_text(repository, f"{head}:big.txt", max_bytes=1024) is None
+    assert readiness._git_blob_text(repository, f"{head}:big.txt", max_bytes=8192) is not None
+
+
+def test_a_canonical_production_environment_is_not_permanently_warned() -> None:
+    """운영에서 반드시 설정되는 값을 '확인 필요'로 두면 노란불이 영원히 남는다."""
+
+    check = readiness._check_compose_single_file(
+        {
+            "COMPOSE_PROJECT_NAME": "kor-travel-docker-manager",
+            "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT": "/opt/kor-travel-docker-manager",
+        }
+    )
+
+    assert check.state == "ok"
+    assert check.evidence["ambient_advisory"] == []
+
+
+def test_force_refresh_bypasses_the_ttl_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """조치 뒤에도 같은 차단 문구가 남으면 운영자는 조치가 실패한 줄 안다."""
+
+    calls = {"count": 0}
+
+    def probe() -> dict[str, Any]:
+        calls["count"] += 1
+        return readiness._unknown_payload("probe")
+
+    monkeypatch.setattr(readiness, "_probe_deployment_readiness", probe)
+
+    readiness.read_deployment_readiness()
+    readiness.read_deployment_readiness()
+    assert calls["count"] == 1
+
+    forced = readiness.read_deployment_readiness(force_refresh=True)
+    assert calls["count"] == 2
+    assert forced["cached"] is False
+
+
+def test_the_unknown_payload_uses_human_labels() -> None:
+    """한국어 화면에 `compose_single_file` 같은 내부 id를 그대로 띄우지 않는다."""
+
+    payload = readiness._unknown_payload("근거 없음")
+
+    labels = {check["label_ko"] for check in payload["checks"]}
+    assert labels == set(readiness._CHECK_LABELS.values())
+    assert not labels & set(readiness._CHECK_ORDER)
 
 
 def test_image_presence_probe_never_pulls(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -73,6 +73,7 @@ function Row({
 
 export default function SourceStatusPanel({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const forceReadiness = useRef(false);
 
   const { data, isLoading, isFetching, error, refetch } = useQuery<SourceStatusResponse>({
     queryKey: ['source-status'],
@@ -97,7 +98,15 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
     refetch: refetchReadiness,
   } = useQuery<DeploymentReadinessResponse>({
     queryKey: ['deployment-readiness'],
-    queryFn: () => apiJson<DeploymentReadinessResponse>('/api/v1/deployment-readiness'),
+    // 새로고침 버튼은 서버의 30초 TTL 캐시를 건너뛴다. 그러지 않으면 SSH에서 조치한
+    // 운영자가 몇 번을 눌러도 같은 차단 문구를 보고 "조치가 실패했다"고 오해한다.
+    queryFn: () => {
+      const force = forceReadiness.current;
+      forceReadiness.current = false;
+      return apiJson<DeploymentReadinessResponse>(
+        `/api/v1/deployment-readiness${force ? '?refresh=true' : ''}`
+      );
+    },
     retry: false,
   });
 
@@ -149,6 +158,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
             className="ops-button"
             disabled={isFetching || readinessFetching}
             onClick={() => {
+              forceReadiness.current = true;
               void refetch();
               void refetchReadiness();
             }}
@@ -166,7 +176,19 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           <p className="text-xs text-secondary mb-2">
             지금 재구축을 실행하면 실패할 만한 결손이 있는지만 봅니다. 통과해도 성공을
             보장하지는 않습니다.
+            {readiness?.cached
+              ? ` 아래 값은 ${Math.round(readiness.cache_age_seconds ?? 0)}초 전 관측 결과입니다 — 새로고침하면 다시 확인합니다.`
+              : ''}
+            {readiness?.stale
+              ? ' 다른 점검이 진행 중이라 이전 결과를 그대로 보여 주고 있습니다.'
+              : ''}
           </p>
+          {readiness && readiness.summary.warn_count > 0 ? (
+            // 초록 요약 아래에 warn을 묻어 두면 스크롤하지 않는 사람은 영영 못 본다.
+            <p className="text-xs text-secondary mb-2">
+              확인이 필요한 항목 {readiness.summary.warn_count}건이 아래에 있습니다.
+            </p>
+          ) : null}
           {readinessError ? (
             <p className="text-sm text-danger">
               사전 점검 결과를 불러오지 못했습니다.{' '}

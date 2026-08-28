@@ -230,9 +230,24 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 | `pin rotate --role map\|pinvi --revision <40-hex> --reason R [--block-previous] --confirm` | mutation | digest 자동 계산, 이력에 `supersedes` 기록, 이전 파일을 `runtime-pins.<old-digest>.json`으로 보존, 공개 사본 갱신. 아무것도 바뀌지 않는 회전과 **차단된 pinset을 만들어 내는 회전은 거부** |
 | `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
-| `pin show-pending [--json]` | 읽기 전용 | UI가 남긴 대기 요청. 요청 이후 pin이 바뀌었으면 **먼저 그 사실을 경고**한다. 대기 요청이 없으면 exit 1 |
-| `pin apply-pending [--expect-revision R] [--block-previous] --confirm` | mutation, **root 전용** | 대기 요청을 적용한다. §7-1의 순서대로 전부 재검증하고, 성공 시 요청 파일을 id 대조 후 삭제한다 |
-| `pin clear-pending --request-id <id> --confirm` | mutation | 대기 요청을 적용하지 않고 폐기한다. id가 어긋나면 exit 1이며 **아무것도 지우지 않는다** |
+| `pin show-pending [--json]` | 읽기 전용 | UI가 남긴 대기 요청. 요청 이후 pin이 바뀌었으면 **먼저 그 사실을 경고**한다. 대기 요청이 없으면 exit 1. `--json`은 부재·손상 경로에서도 JSON만 stdout에 낸다 |
+| `pin apply-pending (--expect-revision R \| --any-revision) [--block-previous] --confirm` | mutation, **root 전용** | 대기 요청을 적용한다. §7-1의 순서대로 전부 재검증하고, 성공 시 요청 파일을 id 대조 후 삭제한다 |
+| `pin clear-pending (--request-id <id> \| --force) --confirm` | mutation | 대기 요청을 폐기한다. id가 어긋나면 exit 1이며 **아무것도 지우지 않는다**. `--force`는 **읽을 수 없는** 파일만 파싱 없이 지운다(멀쩡한 요청은 거부) |
+
+**`apply-pending`의 종료 코드** — 이 구분이 없으면 `|| echo "적용 안 됨"` 같은 스크립트가
+pinset을 태워 놓고 "적용 안 됨"이라고 보고한다:
+
+| 코드 | 의미 | registry |
+|---|---|---|
+| `0` | 적용 완료, 요청 파일도 정리됨 | 바뀜 |
+| `1` | 대기 중인 요청이 없음 | 그대로 |
+| `2` | 사전 조건 거부(`--confirm`·root·revision 미지정·base 불일치·차단·무변경) | 그대로 |
+| `3` | **적용됐으나 요청 파일 정리 미완** — 수동 삭제 필요 | **바뀜** |
+
+**`--expect-revision`이 사실상 필수인 이유.** 이 명령은 인자를 주지 않으면 "그 순간
+파일에 들어 있는 것"을 적용한다. `show-pending`과 `apply-pending` 사이에 요청이 바뀔 수
+있으므로, 무엇을 고정하는지 손으로 적었을 때(`--expect-revision`)만, 혹은 확인하지 않기로
+명시했을 때(`--any-revision`)만 진행한다.
 
 **`pin unblock`은 의도적으로 없다.** 해소 경로는 새 revision으로의 회전이다.
 
@@ -299,6 +314,21 @@ root로 도는 backend라면 **쓸 수 있어서 더 문제다** — 요청이 r
 실행할 때의 기본값, 파일 `0600`)에 둔다. env `KTDM_RUNTIME_PIN_REQUEST_FILE`로 덮어쓸 수
 있고, 개발 체크아웃에서는 `<repo>/.ktdm-runtime-pin-requests.json`이다.
 
+**디렉터리는 설치가 만든다.** `/var/lib`는 root 소유 `0755`라 비-root backend가 그 아래에
+디렉터리를 만들 수 없다. trusted installer가 `-requests` 트리를 `root:root 0700`으로
+미리 만들고, backend를 비-root로 돌리는 호스트에서는 설치 후 소유자를 그 사용자로 바꾼다
+(`sudo chown <backend-user>:<backend-group> /var/lib/kor-travel-docker-manager-requests`).
+디렉터리를 group-writable로 만들면 안 된다 — 무결성 검사가 영구히 거부한다.
+
+**요청 기록은 배타 생성이다.** "읽어 보고 없으면 쓴다"로는 두 관리자가(또는 한 관리자의
+두 탭이) 경합할 때 나중 쓰기가 앞의 요청을 말없이 덮고 **둘 다 "기록됨"으로 감사에
+남는다.** `O_CREAT|O_EXCL`로 커널이 승자를 정한다.
+
+**손상된 요청 파일은 잠금이 된다.** 읽지 못하면 id를 알 수 없어 id 대조 삭제가 불가능하고,
+파일이 있으니 새 요청도 받을 수 없다. 그래서 `pin clear-pending --force --confirm`이
+있다 — **읽을 수 없는 파일만** 파싱 없이 지우며, 멀쩡한 요청에는 거부한다. 모든 손상
+메시지는 전체 경로를 함께 낸다.
+
 **왜 SQLite가 아닌가.** `database.py`의 DB 경로는 `__file__`에서 유도되고 env 오버라이드가
 없다. 운영에서 backend는 소스 트리에서, `ktdctl`은 wheel이 설치된 site-packages에서 돌아
 **같은 호스트에서 서로 다른 파일**을 연다. 사람이 읽는 감사 행은 그대로 SQLite에 남기되,
@@ -318,7 +348,8 @@ root로 도는 backend라면 **쓸 수 있어서 더 문제다** — 요청이 r
 | `RUNTIME_PIN_UNCHANGED` | 그 role이 이미 그 revision | 바뀌는 것이 없는 요청은 형식 자체가 잘못된 것이다 |
 | `RUNTIME_PIN_BLOCKED_TARGET` | 적용 후 digest가 차단 목록에 있음 | phase 무관으로 본다. 그 조합을 다시 고정하는 것 자체가 금지다 |
 | `RUNTIME_PIN_REQUEST_EXISTS` | 이미 대기 요청이 있음 | 조용히 덮어쓰지 않는다. 무엇을 버릴지는 사람이 정한다 |
-| `RUNTIME_PIN_REQUEST_NOT_WRITABLE` (503) | 요청 디렉터리에 쓸 수 없음 | 경로만 알린다. 파일 내용이나 uid는 메시지에 넣지 않는다 |
+| `RUNTIME_PIN_REQUEST_NOT_WRITABLE` (503) | 요청 디렉터리에 쓸 수 없음 | 경로와 **한 번 실행할 `install -d` 명령**을 알린다. "운영자에게 확인하세요"는 그 운영자가 보고 있을 때 막다른 길이다 |
+| `RUNTIME_PIN_REQUEST_UNREADABLE` (409) | 요청 파일이 손상됨 | `clear-pending --force`로 해소한다 |
 
 `reason`은 개행을 거부한다(`422`). 여기서 통과시키면 CLI가 읽지 못해 요청이 영원히
 적용되지 않는다.
@@ -327,7 +358,12 @@ root로 도는 backend라면 **쓸 수 있어서 더 문제다** — 요청이 r
 
 id가 디스크의 것과 다르면 `404 RUNTIME_PIN_REQUEST_NOT_FOUND`다. 없는 요청과 "그 사이
 다른 요청이 들어옴"을 같은 응답으로 묶는 것은 의도된 것이다 — 오래된 브라우저 탭이 방금
-들어온 남의 요청을 지우지 못하게 한다.
+들어온 남의 요청을 지우지 못하게 한다. **거부도 감사 행으로 남는다** — id를 바꿔 가며
+두드리는 시도가 흔적 없이 지나가면 안 된다.
+
+`GET /api/v1/runtime-pins`는 `status`가 `unknown`일 때도 `pending_request`를 낸다.
+요청 파일의 가독성은 registry의 가독성과 무관하고, 그 상태에서 id를 볼 수 없으면 취소도
+못 하기 때문이다.
 
 ### 적용 — `ktdctl pin apply-pending --confirm` (root)
 
@@ -347,12 +383,20 @@ id가 디스크의 것과 다르면 `404 RUNTIME_PIN_REQUEST_NOT_FOUND`다. 없�
 8. 차단(phase 무관)·무변경 사전 점검.
 9. `rotate_runtime_pin(...)` — `rotated_by`에 `<적용자><-<요청자>`, `reason`에 요청 id와
    요청 시각을 함께 남긴다. 누가 제안하고 누가 실행했는지가 한 행에 남아야 한다.
-10. 요청 파일을 **id 대조 후** 삭제한다. 그 사이 새 요청이 들어왔으면 지우지 않고 exit 1.
+   길이가 상한을 넘으면 **출처가 아니라 사유 쪽을 줄인다** — 그냥 이어 붙인 뒤 뒤를
+   자르면 500자짜리 사유 하나가 요청 id·요청자·시각을 통째로 밀어내 2-step의 감사
+   가치가 사라진다.
+10. 요청 파일을 **id 대조 후** 삭제한다. 그 사이 id가 달라졌으면 지우지 않고 exit 3
+    (registry는 이미 바뀌었으므로 "할 일 없음"과 같은 코드를 쓰면 안 된다).
 
 요청 파일을 root가 읽는 것은 이 시스템에서 root가 비-root의 파일을 읽는 유일한
-지점이다. 그래서 `_assert_request_file_integrity`는 내용이 아니라 **누가 그 자리에 쓸 수
-있었는가**를 본다 — symlink를 따라가지 않고, 일반 파일이어야 하며, 파일과 부모 모두
-group/other 쓰기가 금지되고, 소유자는 `0` 또는 부모 디렉터리 소유자여야 한다.
+지점이다. 그래서 `_open_verified_request_file`은 내용이 아니라 **누가 그 자리에 쓸 수
+있었는가**를 본다 — `O_NOFOLLOW`로 열고(symlink 거부), 일반 파일이어야 하며, hardlink를
+거부하고(`st_nlink == 1`), 파일과 부모 모두 group/other 쓰기가 금지되고, 소유자는 `0`
+또는 부모 디렉터리 소유자여야 한다.
+
+검사와 읽기가 **같은 fd** 위에서 일어나는 것이 중요하다. `lstat` 뒤에 경로로 다시 열면
+그 사이에 파일을 바꿔치기할 수 있고, 그러면 "검사한 것"과 "읽은 것"이 달라진다.
 
 ---
 
@@ -437,6 +481,29 @@ sudo -n backend/.venv/bin/ktdctl pin apply-pending --confirm
 화면이 그 요청을 **"무효가 된 변경 요청"**으로 표시한다면 요청 이후 pin이 바뀐 것이다.
 그 요청으로는 적용되지 않으므로 취소하고 다시 요청하거나
 `ktdctl pin clear-pending --request-id <id> --confirm`으로 지운다.
+
+### "대기 중인 요청을 읽지 못했습니다"
+
+요청 파일이 손상됐거나 권한이 어긋난 상태다. id를 알 수 없어 화면에서는 취소할 수 없고,
+파일이 있으니 새 요청도 받지 못한다. 파싱 없이 지운다:
+
+```bash
+sudo -n backend/.venv/bin/ktdctl pin clear-pending --force --confirm
+```
+
+이 명령은 **읽을 수 없는 파일만** 지운다. 멀쩡한 요청에는 거부하므로 실수로 남의 요청을
+날릴 수 없다.
+
+### "요청을 저장하지 못했습니다(503)"
+
+요청 디렉터리가 없거나 backend 사용자가 쓸 수 없다. 응답에 실행할 명령이 함께 온다:
+
+```bash
+sudo install -d -o <backend-user> -g <backend-user> -m 0700 \
+  /var/lib/kor-travel-docker-manager-requests
+```
+
+group-writable(`0770` 등)로 만들지 마라 — 무결성 검사가 그 디렉터리를 영구히 거부한다.
 
 ### "회전은 즉시 반영되나요?"
 

@@ -1653,6 +1653,56 @@ def test_config_update_refuses_to_change_a_contract_locked_env() -> None:
         )
 
 
+def test_config_update_refuses_to_delete_a_contract_locked_env() -> None:
+    """저장은 environment 매핑을 통째로 교체한다 — 키를 빼는 것이 곧 삭제다."""
+
+    with pytest.raises(ContainerConfigValidationError, match="삭제·추가 포함"):
+        validate_container_config_update(
+            ports=[],
+            env={"TZ": "Asia/Seoul"},
+            networks=[],
+            baseline_env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "false"},
+            service_name="kor-travel-map-api",
+        )
+
+
+def test_config_update_refuses_to_add_a_contract_locked_env() -> None:
+    with pytest.raises(ContainerConfigValidationError, match="삭제·추가 포함"):
+        validate_container_config_update(
+            ports=[],
+            env={"KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED": "true"},
+            networks=[],
+            baseline_env={},
+            service_name="kor-travel-map-api",
+        )
+
+
+def test_config_update_refuses_to_delete_the_pinvi_initdb_policy() -> None:
+    """기존 initdb 가드는 `in env`라 삭제를 통과시켰다 — 같은 구멍을 남기지 않는다."""
+
+    with pytest.raises(ContainerConfigValidationError):
+        validate_container_config_update(
+            ports=[],
+            env={},
+            networks=[],
+            baseline_env={"POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS},
+            service_name="pinvi-postgres",
+        )
+
+
+def test_contract_locked_names_cover_the_dsn_bound_services() -> None:
+    """DSN을 결박하는 검증기는 candidate dict 밖에 있다 — 합집합으로 합쳐야 한다."""
+
+    from kor_travel_docker_manager.services.c6c_deployment import (
+        contract_locked_env_names,
+    )
+
+    for service in ("pinvi-api", "pinvi-dagster", "pinvi-admin-bootstrap"):
+        assert "PINVI_DATABASE_URL" in contract_locked_env_names(service), service
+    # 유도된 이름이 명시 추가로 사라지지 않는다.
+    assert "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN" in contract_locked_env_names("pinvi-api")
+
+
 def test_config_update_allows_echoing_a_contract_locked_env_unchanged() -> None:
     """화면은 잠긴 값을 그대로 되돌려 보낸다 — 그 경로가 막히면 저장 자체가 불가능하다."""
 

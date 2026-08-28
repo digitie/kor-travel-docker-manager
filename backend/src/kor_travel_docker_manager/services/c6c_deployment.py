@@ -868,11 +868,22 @@ _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE: Final[dict[str, frozenset[str]]] = {
     )
     for service_name in {service for service, _ in _CANDIDATE_CANONICAL_API_ENV_VALUES}
 }
-# PostgreSQL identity는 위 dict가 아니라 별도 검증기가 결박한다
-# (`_assert_pinvi_postgres_identity`). 계약의 소유자가 다르므로 유도하지 않고 명시한다.
-_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE[_PINVI_POSTGRES_SERVICE] = frozenset(
-    {"POSTGRES_USER", "POSTGRES_DB", "POSTGRES_INITDB_ARGS"}
-)
+# DSN과 PostgreSQL identity는 위 dict가 아니라 별도 검증기가 결박한다
+# (`_validate_pinvi_db_init_identity`, `_PINVI_DATABASE_URL_RAW_VALUES`). 계약의
+# 소유자가 다르므로 유도하지 않고 명시하되, **덮어쓰지 않고 합집합을 취한다** —
+# 대입으로 두면 나중에 같은 service가 candidate 계약에 등장했을 때 유도된 이름들이
+# 조용히 사라진다.
+for _service_name, _extra_locked in (
+    (_PINVI_POSTGRES_SERVICE, {"POSTGRES_USER", "POSTGRES_DB", "POSTGRES_INITDB_ARGS"}),
+    *(
+        (_dsn_service, {_PINVI_DATABASE_URL_ENV})
+        for _dsn_service in _PINVI_DATABASE_URL_RAW_VALUES
+    ),
+):
+    _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE[_service_name] = frozenset(
+        _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(_service_name, frozenset())
+        | frozenset(_extra_locked)
+    )
 
 CONTRACT_LOCKED_ENV_REASON: Final = (
     "이 값은 배포 계약이 고정한 값입니다. 여기서 바꾸면 저장은 되지만 다음 재구축이 "
@@ -896,22 +907,28 @@ def assert_contract_locked_env_unchanged(
 
     재구축까지 미루면 실패가 조작과 멀어져 원인을 찾기 어렵다. 여기서 막으면
     "무엇을 바꾸려 했는지"가 그대로 오류에 남는다.
+
+    **삭제와 추가도 변경이다.** 저장은 environment 매핑을 통째로 교체하므로, 키를
+    빼고 보내는 것이 곧 삭제다. "양쪽에 있을 때만 비교"하면 삭제와 추가가 전부
+    통과해 같은 지연 실패가 그대로 남는다 — 없음을 sentinel로 두고 비교한다.
     """
 
     locked = _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(service_name)
     if not locked:
         return
+    missing = object()
+
+    def _value(mapping: Mapping[str, Any], name: str) -> Any:
+        raw = mapping.get(name, missing)
+        return raw if raw is missing else str(raw)
+
     changed = sorted(
-        name
-        for name in locked
-        if name in env
-        and name in baseline_env
-        and str(env[name]) != str(baseline_env[name])
+        name for name in locked if _value(env, name) != _value(baseline_env, name)
     )
     if changed:
         raise ComposeCandidateContractError(
-            f"배포 계약이 고정한 환경변수는 이 화면에서 바꿀 수 없습니다: "
-            f"{', '.join(changed)}"
+            f"배포 계약이 고정한 환경변수는 이 화면에서 바꿀 수 없습니다"
+            f"(삭제·추가 포함): {', '.join(changed)}"
         )
 
 

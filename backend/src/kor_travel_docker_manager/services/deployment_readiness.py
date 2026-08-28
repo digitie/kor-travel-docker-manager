@@ -56,11 +56,13 @@ _BLOCKING_AMBIENT_ENV_NAMES: Final = (
     "COMPOSE_FILE",
     "KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE",
 )
+# `COMPOSE_PROJECT_NAME`과 `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`는 **운영에서 반드시
+# 설정돼 있어야 하는 값**이다(전자는 C6c state 경로가 요구하고, 후자는 trusted installer가
+# ktdctl shim에 박는다). 이것을 "확인이 필요한 변수"로 분류하면 정상 호스트가 영구히
+# 노란불이 되고, 해소 방법도 없다 — 지워지지 않는 경고는 패널을 안 읽게 만든다.
 _ADVISORY_AMBIENT_ENV_NAMES: Final = (
     "COMPOSE_PROFILES",
-    "COMPOSE_PROJECT_NAME",
     "COMPOSE_PATH_SEPARATOR",
-    "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT",
 )
 
 # docker-compose.yml의 bind-mount source 계약. 이 파일들이 없으면 DB bootstrap이
@@ -83,6 +85,13 @@ _PINVI_ROLE_BOOTSTRAP_REQUIRED_MODES: Final = (
     ("PINVI_ROLE_CATALOG_RESET_RESULT_FILE", "reset 결과 파일 경로"),
 )
 _MAX_SCRIPT_BYTES: Final = 512 * 1024
+
+_CHECK_LABELS: Final = {
+    "compose_single_file": "Compose 입력이 단일 파일인가",
+    "sibling_bootstrap_scripts": "사이드카 저장소 필수 스크립트",
+    "pinvi_role_bootstrap_modes": "고정된 PinVi revision의 역할 부트스트랩 계약",
+    "map_python_base_images": "Map 후보 빌드의 고정 Python base image",
+}
 
 _CHECK_ORDER: Final = (
     "compose_single_file",
@@ -212,6 +221,47 @@ def _git_text(repository: Path, args: Sequence[str]) -> str | None:
     if completed.returncode != 0:
         return None
     return completed.stdout.strip()
+
+
+def _git_blob_text(repository: Path, revision_path: str, *, max_bytes: int) -> str | None:
+    """`git show <rev>:<path>`의 내용을 **크기 상한 안에서** 텍스트로 읽는다.
+
+    `_git_text`를 쓰지 않는 이유가 둘이다. (1) 그쪽은 `text=True`라 non-UTF-8 blob에서
+    `UnicodeDecodeError`를 던지는데 그것은 `OSError`가 아니어서 밖으로 새고, 결국 패널
+    전체가 `unknown`이 된다 — 한 행만 degrade해야 한다. (2) `capture_output`은 blob을
+    통째로 버퍼링하므로 "다 읽은 뒤 크기를 재는" 상한은 장식이다. 여기서는 파이프에서
+    `max_bytes + 1`만 읽고 나머지를 버린다.
+    """
+
+    try:
+        process = subprocess.Popen(  # noqa: S603 - 인자 배열, shell 없음
+            ["git", "-C", str(repository), "show", revision_path],
+            cwd="/",
+            env=_child_environment(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        assert process.stdout is not None
+        raw = process.stdout.read(max_bytes + 1)
+    except OSError:
+        process.kill()
+        process.wait(timeout=_GIT_TIMEOUT_SECONDS)
+        return None
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+    try:
+        returncode = process.wait(timeout=_GIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return None
+    if returncode != 0 or len(raw) > max_bytes:
+        return None
+    # 선언 여부만 보므로 손상된 바이트는 버려도 판정이 달라지지 않는다.
+    return raw.decode("utf-8", "replace")
 
 
 def _docker_daemon_reachable() -> bool | None:
@@ -512,19 +562,17 @@ def _check_pinvi_role_bootstrap_modes(values: Mapping[str, str] | None) -> Readi
         "pinned_revision": pinned,
         "script_path": _PINVI_ROLE_BOOTSTRAP_SCRIPT,
     }
-    script = _git_text(pinvi_root, ["show", f"{pinned}:{_PINVI_ROLE_BOOTSTRAP_SCRIPT}"])
+    script = _git_blob_text(
+        pinvi_root,
+        f"{pinned}:{_PINVI_ROLE_BOOTSTRAP_SCRIPT}",
+        max_bytes=_MAX_SCRIPT_BYTES,
+    )
     if script is None:
         # revision이 로컬에 없거나 그 tree에 파일이 없다. 둘 다 "모른다"이지 "없다"가
         # 아니다 — fetch되지 않은 revision을 결손으로 보고하면 거짓 차단이 된다.
         return _unknown_pinvi_mode_check(
             f"고정 revision({pinned[:12]})의 {_PINVI_ROLE_BOOTSTRAP_SCRIPT}를 읽지 "
             "못했습니다. 체크아웃에 그 revision이 fetch돼 있는지 확인하세요.",
-            source="sibling_checkout",
-            evidence=looked_for,
-        )
-    if len(script.encode("utf-8", "ignore")) > _MAX_SCRIPT_BYTES:
-        return _unknown_pinvi_mode_check(
-            "역할 부트스트랩 스크립트가 예상 범위를 벗어나게 큽니다.",
             source="sibling_checkout",
             evidence=looked_for,
         )
@@ -734,7 +782,8 @@ def _unknown_payload(detail: str) -> dict[str, Any]:
         ReadinessCheck(
             id=check_id,
             state="unknown",
-            label_ko=check_id,
+            # 한국어 화면에 `compose_single_file` 같은 내부 id를 그대로 띄우지 않는다.
+            label_ko=_CHECK_LABELS.get(check_id, check_id),
             detail=detail,
             source="none",
             evidence={},
@@ -771,7 +820,7 @@ def _probe_deployment_readiness() -> dict[str, Any]:
     }
 
 
-def read_deployment_readiness() -> dict[str, Any]:
+def read_deployment_readiness(*, force_refresh: bool = False) -> dict[str, Any]:
     """공개 진입점. **절대 예외를 던지지 않는다.**
 
     진단 패널이 500을 내면 운영자는 상태를 볼 유일한 창을 잃는다 — 호스트를 읽지
@@ -781,7 +830,13 @@ def read_deployment_readiness() -> dict[str, Any]:
     global _CACHE
     cached = _CACHE
     now = time.monotonic()
-    if cached is not None and now - cached.monotonic_at < READINESS_TTL_SECONDS:
+    # 강제 새로고침이 없으면 운영자는 조치 뒤에도 같은 차단 문구를 계속 본다 — 고쳤는데
+    # 화면이 안 바뀌면 조치가 실패한 줄 알게 된다.
+    if (
+        not force_refresh
+        and cached is not None
+        and now - cached.monotonic_at < READINESS_TTL_SECONDS
+    ):
         return dict(cached.payload) | {
             "cached": True,
             "cache_age_seconds": round(now - cached.monotonic_at, 1),
@@ -799,7 +854,11 @@ def read_deployment_readiness() -> dict[str, Any]:
     try:
         cached = _CACHE
         now = time.monotonic()
-        if cached is not None and now - cached.monotonic_at < READINESS_TTL_SECONDS:
+        if (
+            not force_refresh
+            and cached is not None
+            and now - cached.monotonic_at < READINESS_TTL_SECONDS
+        ):
             return dict(cached.payload) | {
                 "cached": True,
                 "cache_age_seconds": round(now - cached.monotonic_at, 1),

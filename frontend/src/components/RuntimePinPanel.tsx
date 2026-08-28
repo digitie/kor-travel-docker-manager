@@ -21,7 +21,16 @@ const ROLE_LABELS: Record<string, string> = {
 const ROTATE_COMMAND =
   'sudo -n backend/.venv/bin/ktdctl pin rotate --role <map|pinvi> --revision <커밋 SHA> --reason "..." --confirm';
 
-const APPLY_COMMAND = 'sudo -n backend/.venv/bin/ktdctl pin apply-pending --confirm';
+const CLEAR_FORCE_COMMAND =
+  'sudo -n backend/.venv/bin/ktdctl pin clear-pending --force --confirm';
+
+function applyCommand(revision: string | undefined): string {
+  // revision을 적어 넣는다. 적지 않으면 CLI가 거부하며, 그 강제 자체가 "무엇을
+  // 고정하는지 손으로 확인한다"는 계약이다.
+  return `sudo -n backend/.venv/bin/ktdctl pin apply-pending --expect-revision ${
+    revision ?? '<커밋 SHA>'
+  } --confirm`;
+}
 
 const REVISION_PATTERN = /^[0-9a-f]{40}$/;
 
@@ -86,7 +95,13 @@ function PendingRequestCard({
         <p className="text-xs text-secondary mt-1">
           {request.detail ?? '요청 파일이 손상됐거나 권한이 맞지 않습니다.'}
         </p>
-        <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin show-pending" />
+        {/* 읽지 못하면 id를 알 수 없어 화면에서는 취소할 수 없다. 그 상태에서는 새
+            요청도 받지 못하므로, 파일을 지우는 명령을 그대로 준다. */}
+        <p className="text-xs text-secondary mt-2">
+          이 상태에서는 새 요청도 받을 수 없습니다. SSH에서 아래 명령으로 손상된 파일을
+          지운 뒤 다시 요청하세요.
+        </p>
+        <CopyableCommand command={CLEAR_FORCE_COMMAND} />
       </section>
     );
   }
@@ -126,7 +141,9 @@ function PendingRequestCard({
       </dl>
       <CopyableCommand
         command={
-          stale ? clearPendingCommand(request.request_id ?? '<id>') : APPLY_COMMAND
+          stale
+            ? clearPendingCommand(request.request_id ?? '<id>')
+            : applyCommand(request.revision)
         }
       />
       <button
@@ -170,11 +187,11 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
   const cancelRequest = useMutation({
     mutationFn: (requestId: string) =>
       deleteJson<unknown>(`/api/v1/runtime-pins/requests/${requestId}`),
-    onSuccess: () => {
-      setFormError(null);
-      void queryClient.invalidateQueries({ queryKey: ['runtime-pins'] });
-    },
+    onSuccess: () => setFormError(null),
     onError: (mutationError) => setFormError(humanizeError(mutationError, '요청 취소')),
+    // 실패했을 때도 다시 읽는다. 404는 "이미 없다"는 뜻이므로, 그대로 두면 사라진
+    // 요청의 카드가 계속 남아 취소 버튼과 적용 명령을 권한다.
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['runtime-pins'] }),
   });
 
   useEffect(() => {
@@ -351,14 +368,31 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
               </section>
             ) : null}
 
+            {!canRequest && !pending ? (
+              // 폼이 그냥 사라지면 "왜 못 바꾸지"만 남는다. 무엇이 막고 있는지 말한다.
+              <section className="rounded-card border border-line p-4">
+                <h3 className="text-sm font-semibold text-strong">버전 변경 요청</h3>
+                <p className="text-xs text-secondary mt-1">
+                  지금은 변경 요청을 받을 수 없습니다. 현재 고정 값이 권위 있는 값으로
+                  확인되지 않으면 어떤 값을 기준으로 바꾸는지 알 수 없기 때문입니다. 아래
+                  명령으로 공개 사본을 갱신한 뒤 다시 시도하세요.
+                </p>
+                <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin verify" />
+              </section>
+            ) : null}
+
             {canRequest ? (
               <section className="rounded-card border border-line p-4">
                 <h3 className="text-sm font-semibold text-strong">버전 변경 요청</h3>
                 <p className="text-xs text-secondary mt-1">
                   요청을 기록해도 아직 아무것도 바뀌지 않습니다. 적용은 운영자가 SSH에서
-                  명령을 실행할 때 이뤄지며, 그때 커밋 주소와 세트 식별자는 관리도구가 다시
-                  계산합니다.
+                  아래 명령을 실행할 때 이뤄지며, 그때 커밋 주소와 세트 식별자는 관리도구가
+                  다시 계산합니다.
                 </p>
+                <CopyableCommand
+                  command={applyCommand(revisionValid ? revision : undefined)}
+                  hint="요청을 기록한 뒤 SSH에서 실행합니다."
+                />
                 <form
                   className="mt-3 space-y-3"
                   onSubmit={(event) => {

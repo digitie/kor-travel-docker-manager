@@ -174,7 +174,10 @@ def get_runtime_pins():
             "source": payload.get("source"),
             "detail": payload.get("detail"),
             "pins": None,
-            "pending_request": None,
+            # 요청 파일의 가독성은 registry의 가독성과 무관하다. 여기서 None으로
+            # 잘라 버리면 대기 중인 요청이 화면에서 사라지고, id를 볼 수 없으니
+            # 취소도 못 하게 된다 — 정작 그 상태에서 가장 필요한 정보다.
+            "pending_request": _pending_request_payload(current_pinset=None),
         }
     blocked = payload.get("blocked_pinsets", [])
     pinset_sha256 = payload.get("pinset_sha256")
@@ -297,7 +300,7 @@ def get_disk_usage(refresh: bool = Query(default=False)):
 
 
 @router.get("/deployment-readiness")
-def get_deployment_readiness():
+def get_deployment_readiness(refresh: bool = Query(default=False)):
     """Read-only preflight readiness rows (KUM-M7 / design P10-4).
 
     Answers "would a rebuild fail right now?" without touching anything. There is no
@@ -306,7 +309,8 @@ def get_deployment_readiness():
 
     The payload carries absolute host paths and sibling revisions, so it must stay on
     this router, whose `require_admin_session` dependency gates every route."""
-    return read_deployment_readiness()
+    # `refresh=true`는 30초 TTL을 건너뛴다. 관측만 하므로 mutation도 감사 행도 없다.
+    return read_deployment_readiness(force_refresh=refresh)
 
 
 APPLY_PENDING_COMMAND = "sudo -n backend/.venv/bin/ktdctl pin apply-pending --confirm"
@@ -464,8 +468,9 @@ def post_runtime_pin_request(
             session,
             code="RUNTIME_PIN_REQUEST_NOT_WRITABLE",
             message=(
-                "요청을 저장할 수 없습니다. 백엔드 사용자가 요청 디렉터리에 쓸 수 "
-                "있는지 확인하세요."
+                "요청을 저장할 수 없습니다. 요청 디렉터리를 백엔드 사용자 소유로 한 번 "
+                "만들어 주세요: sudo install -d -o <backend-user> -g <backend-user> "
+                f"-m 0700 {runtime_pin_request_path().parent}"
             ),
             extra={"directory": str(runtime_pin_request_path().parent)},
             status_code=503,
@@ -506,20 +511,24 @@ def delete_runtime_pin_request(
 
     The id must match what is on disk, so a stale browser tab cannot delete a newer
     request someone else just filed."""
+    # 거부도 남긴다. 남지 않은 거부는 조사할 수 없고, id를 바꿔 가며 두드리는 시도가
+    # 흔적 없이 지나가면 안 된다.
     try:
         cleared = clear_runtime_pin_request(expect_request_id=request_id)
     except RuntimePinRequestError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "RUNTIME_PIN_REQUEST_UNREADABLE", "message": str(exc)},
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_REQUEST_UNREADABLE",
+            message=str(exc),
         ) from exc
     if not cleared:
-        raise HTTPException(
+        raise _reject_runtime_pin_request(
+            request,
+            session,
+            code="RUNTIME_PIN_REQUEST_NOT_FOUND",
+            message="그 id의 대기 중인 요청이 없습니다. 화면을 새로 고치세요.",
             status_code=404,
-            detail={
-                "code": "RUNTIME_PIN_REQUEST_NOT_FOUND",
-                "message": "그 id의 대기 중인 요청이 없습니다. 화면을 새로 고치세요.",
-            },
         )
     record_login_audit_event(
         request,

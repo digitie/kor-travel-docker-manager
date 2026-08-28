@@ -912,7 +912,7 @@ def test_pin_pending_parser_registers_every_leaf_command():
     parser = build_parser()
 
     for action, argv in {
-        "apply-pending": ["pin", "apply-pending"],
+        "apply-pending": ["pin", "apply-pending", "--any-revision"],
         "show-pending": ["pin", "show-pending"],
         "clear-pending": ["pin", "clear-pending", "--request-id", "x"],
     }.items():
@@ -942,7 +942,7 @@ def test_pin_apply_pending_refuses_without_root(pin_cli_env, pending_request_env
     _file_a_request()
 
     with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
-        assert main(["pin", "apply-pending", "--confirm"]) == 2
+        assert main(["pin", "apply-pending", "--any-revision", "--confirm"]) == 2
 
     assert "root" in capsys.readouterr().err
     assert pending_request_env.exists()
@@ -978,7 +978,9 @@ def test_pin_apply_pending_rotates_and_records_both_actors(
     request = _file_a_request()
 
     with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
-        exit_code = main(["pin", "apply-pending", "--confirm"])
+        exit_code = main(
+            ["pin", "apply-pending", "--expect-revision", "d" * 40, "--confirm"]
+        )
 
     assert exit_code == 0
     output = capsys.readouterr().out
@@ -1013,7 +1015,7 @@ def test_pin_apply_pending_refuses_a_request_the_pin_moved_past(
     capsys.readouterr()
 
     with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
-        exit_code = main(["pin", "apply-pending", "--confirm"])
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
 
     assert exit_code == 2
     error = capsys.readouterr().err
@@ -1069,6 +1071,122 @@ def test_pin_clear_pending_requires_confirm_and_the_exact_id(
         == 0
     )
     assert not pending_request_env.exists()
+
+
+def test_pin_apply_pending_requires_the_operator_to_name_the_revision(
+    pin_cli_env, pending_request_env, capsys
+):
+    """무엇을 고정하는지 적지 않으면 '파일에 있던 것'이 그대로 적용된다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+    before = pin_cli_env.read_bytes()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        assert main(["pin", "apply-pending", "--confirm"]) == 2
+
+    assert "--expect-revision" in capsys.readouterr().err
+    assert pin_cli_env.read_bytes() == before
+    assert pending_request_env.exists()
+
+
+def test_pin_apply_pending_reports_a_distinct_code_when_cleanup_fails(
+    pin_cli_env, pending_request_env, capsys
+):
+    """'적용됨'과 '할 일 없음'이 같은 코드면 스크립트가 pinset 소모를 놓친다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.clear_runtime_pin_request",
+            side_effect=OSError("read-only file system"),
+        ),
+    ):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert exit_code == 3
+    captured = capsys.readouterr()
+    assert "회전은 적용됐으나" in captured.err
+    assert str(pending_request_env) in captured.err
+    # 적용된 registry 상태는 그래도 보여 준다 — 무엇이 됐는지 봐야 수습할 수 있다.
+    assert "pinset" in captured.out
+
+
+def test_pin_clear_pending_force_removes_an_unreadable_request(
+    pin_cli_env, pending_request_env, capsys
+):
+    """읽을 수 없는 파일은 id를 알 수 없어 id 대조 삭제로는 영원히 남는다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    pending_request_env.parent.mkdir(parents=True, exist_ok=True)
+    pending_request_env.write_text("{not json", encoding="utf-8")
+    pending_request_env.chmod(0o600)
+
+    assert main(["pin", "show-pending"]) == 2
+    assert "clear-pending --force" in capsys.readouterr().err
+
+    assert main(["pin", "clear-pending", "--force", "--confirm"]) == 0
+    assert not pending_request_env.exists()
+
+
+def test_pin_clear_pending_force_refuses_a_readable_request(
+    pin_cli_env, pending_request_env, capsys
+):
+    """--force는 잔재 제거용이다. 멀쩡한 요청까지 id 없이 지우면 안 된다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    _file_a_request()
+
+    assert main(["pin", "clear-pending", "--force", "--confirm"]) == 2
+    assert "cancel it by id" in capsys.readouterr().err
+    assert pending_request_env.exists()
+
+
+def test_pin_show_pending_json_is_parseable_on_every_path(
+    pin_cli_env, pending_request_env, capsys
+):
+    """--json이 사람 문장을 stdout에 섞으면 스크립트가 파싱할 수 없다."""
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert main(["pin", "show-pending", "--json"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"status": "absent"}
+
+    _file_a_request()
+    assert main(["pin", "show-pending", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "pending"
+    assert payload["role"] == "pinvi"
+
+
+def test_applied_reason_keeps_the_request_provenance_when_the_reason_is_long(
+    pin_cli_env, pending_request_env, capsys
+):
+    """긴 사유를 그냥 이어 붙이면 요청 id·요청자·시각이 통째로 잘려 나간다."""
+
+    from kor_travel_docker_manager.cli import _applied_actor, _applied_reason
+    from kor_travel_docker_manager.services.runtime_pin_request import MAX_REASON_LENGTH
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    request = _file_a_request(reason="가" * MAX_REASON_LENGTH)
+
+    reason = _applied_reason(request)
+    assert len(reason) <= MAX_REASON_LENGTH
+    assert request.request_id in reason
+    assert request.requested_by in reason
+
+    actor = _applied_actor(request)
+    assert len(actor) <= 200
+    assert actor.endswith(request.requested_by)
 
 
 def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):

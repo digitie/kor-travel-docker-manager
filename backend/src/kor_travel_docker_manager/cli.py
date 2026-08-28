@@ -33,7 +33,9 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     write_runtime_pin_registry,
 )
 from kor_travel_docker_manager.services.runtime_pin_request import (
+    MAX_REASON_LENGTH,
     clear_runtime_pin_request,
+    discard_unreadable_runtime_pin_request,
     prospective_pinset_sha256,
     read_runtime_pin_request,
     runtime_pin_request_path,
@@ -537,6 +539,9 @@ def _running_as_root() -> bool:
     return geteuid is None or geteuid() == 0
 
 
+_ACTOR_LENGTH_LIMIT = 200
+
+
 def _registry_or_none() -> Any:
     try:
         return load_runtime_pin_registry()
@@ -548,15 +553,35 @@ def _cmd_pin_show_pending(args: argparse.Namespace) -> int:
     try:
         request = read_runtime_pin_request()
     except DeploymentContractError as exc:
+        if args.json:
+            # --json은 어떤 경로에서도 stdout에 JSON만 낸다 — 스크립트가 파싱한다.
+            print(json.dumps({"status": "unreadable", "detail": str(exc)}, ensure_ascii=False))
         print(str(exc), file=sys.stderr)
+        print(
+            "손상된 요청 파일은 'ktdctl pin clear-pending --force --confirm'으로 지웁니다.",
+            file=sys.stderr,
+        )
         return 2
     if request is None:
-        print("대기 중인 회전 요청이 없습니다.")
+        if args.json:
+            print(json.dumps({"status": "absent"}, ensure_ascii=False))
+        else:
+            print("대기 중인 회전 요청이 없습니다.")
         return 1
+    registry = _registry_or_none()
+    stale = registry is not None and request.base_pinset_sha256 != registry.pinset_sha256
     if args.json:
-        print(json.dumps(request.to_payload(), ensure_ascii=False, indent=2))
+        # staleness는 사람 화면에만 있던 정보였다. 스크립트도 같은 판정을 볼 수 있어야
+        # base 대조를 각자 다시 구현하지 않는다.
+        print(
+            json.dumps(
+                {"status": "stale" if stale else "pending", **request.to_payload()},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
-    banner = _pending_request_banner(request, _registry_or_none())
+    banner = _pending_request_banner(request, registry)
     if banner:
         print(banner)
         print()
@@ -566,24 +591,46 @@ def _cmd_pin_show_pending(args: argparse.Namespace) -> int:
     print(f"요청자    {request.requested_by} ({request.requested_at})")
     print(f"사유      {request.reason}")
     print(f"적용 후   pinset {request.prospective_pinset_sha256}")
+    print(f"파일      {runtime_pin_request_path()}")
     print()
-    print("적용: ktdctl pin apply-pending --confirm")
+    print(f"적용: ktdctl pin apply-pending --expect-revision {request.revision} --confirm")
     return 0
 
 
 def _applied_actor(request: Any) -> str:
-    """누가 요청하고 누가 적용했는지를 한 줄에 함께 남긴다."""
+    """누가 요청하고 누가 적용했는지를 한 줄에 함께 남긴다.
 
-    actor = f"{_pin_actor()}<-{request.requested_by}"
-    return actor.replace("\n", " ").replace("\r", " ")[:200]
+    길이가 넘치면 **적용자 쪽이 아니라 요청자 문자열**을 줄인다. 뒤에서 자르면 적용자만
+    남고 "누가 제안했는가"가 통째로 사라진다.
+    """
+
+    applier = _pin_actor().replace("\n", " ").replace("\r", " ")
+    requester = request.requested_by.replace("\n", " ").replace("\r", " ")
+    budget = _ACTOR_LENGTH_LIMIT - len(applier) - len("<-")
+    if budget < 1:
+        return applier[:_ACTOR_LENGTH_LIMIT]
+    return f"{applier}<-{requester[:budget]}"
 
 
 def _applied_reason(request: Any) -> str:
-    reason = (
-        f"{request.reason} (UI 요청 {request.request_id}, 요청자 {request.requested_by}, "
+    """사유와 출처를 함께 남기되, 넘치면 **사유 쪽을** 줄인다.
+
+    요청 사유는 최대 500자이고 registry의 reason 상한도 500자라, 그냥 이어 붙인 뒤
+    뒤를 자르면 요청 id·요청자·시각이 통째로 잘려 나간다. 그러면 registry 이력에서
+    이 회전이 어느 요청에서 왔는지 되짚을 수 없다 — 2-step의 감사 가치가 사라진다.
+    """
+
+    provenance = (
+        f" (UI 요청 {request.request_id}, 요청자 {request.requested_by}, "
         f"요청 시각 {request.requested_at})"
-    )
-    return reason.replace("\n", " ").replace("\r", " ")[:500]
+    ).replace("\n", " ").replace("\r", " ")
+    budget = MAX_REASON_LENGTH - len(provenance)
+    reason = request.reason.replace("\n", " ").replace("\r", " ")
+    if budget < 1:
+        return provenance[:MAX_REASON_LENGTH]
+    if len(reason) > budget:
+        reason = f"{reason[: max(budget - 1, 0)]}…"
+    return f"{reason}{provenance}"
 
 
 def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
@@ -604,10 +651,24 @@ def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # revision을 명시하지 않으면 "파일에 들어 있는 것"을 그대로 적용하게 된다. 그 사이
+    # 요청이 바뀌었을 수 있으므로, 무엇을 고정하는지 손으로 적었거나 적지 않기로
+    # 명시했을 때만 진행한다.
+    if not args.expect_revision and not args.any_revision:
+        print(
+            "pin apply-pending requires --expect-revision <40-hex> (or --any-revision to "
+            "apply whatever is pending); run 'ktdctl pin show-pending' first",
+            file=sys.stderr,
+        )
+        return 2
     try:
         request = read_runtime_pin_request()
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
+        print(
+            "손상된 요청 파일은 'ktdctl pin clear-pending --force --confirm'으로 지웁니다.",
+            file=sys.stderr,
+        )
         return 2
     if request is None:
         print("대기 중인 회전 요청이 없습니다.")
@@ -660,34 +721,67 @@ def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
         print(f"{exc} (요청은 그대로 남아 있습니다)", file=sys.stderr)
         return 2
 
+    # 여기서부터 registry는 이미 바뀌었다. 남은 실패는 전부 "적용됐으나 정리 미완"이며
+    # exit 3으로 구분한다 — 1(할 일 없음)과 같은 코드를 쓰면 스크립트가 "적용 안 됨"으로
+    # 오해하고, terminal 규약 때문에 그 오해가 pinset 하나를 태운다.
+    def _applied(message: str | None = None) -> int:
+        if message:
+            print(message, file=sys.stderr)
+        if not args.json:
+            print(
+                f"applied pending rotation for {request.role}; "
+                f"new pinset {updated.pinset_sha256}"
+            )
+        _print_registry(updated, json_output=args.json)
+        return 3 if message else 0
+
     try:
         cleared = clear_runtime_pin_request(expect_request_id=request.request_id)
-    except OSError:
-        print(
+    except (OSError, DeploymentContractError) as exc:
+        return _applied(
             "회전은 적용됐으나 요청 파일을 지우지 못했습니다 — 수동으로 삭제하세요: "
-            f"{runtime_pin_request_path()}",
-            file=sys.stderr,
+            f"{runtime_pin_request_path()} ({exc})"
         )
-        return 1
     if not cleared:
-        print(
-            "회전은 적용됐지만 그 사이 다른 요청이 들어와 요청 파일은 지우지 않았습니다.",
-            file=sys.stderr,
+        return _applied(
+            "회전은 적용됐지만 요청 파일의 id가 그 사이 달라져 지우지 않았습니다"
+            "(취소되었거나 새 요청으로 교체됐습니다): "
+            f"{runtime_pin_request_path()}"
         )
-        return 1
-    print(f"applied pending rotation for {request.role}; new pinset {updated.pinset_sha256}")
-    _print_registry(updated, json_output=args.json)
-    return 0
+    return _applied()
 
 
 def _cmd_pin_clear_pending(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("pin clear-pending requires --confirm (no file was written)", file=sys.stderr)
         return 2
+    if args.force:
+        # 읽을 수 없는 파일은 id를 알 수 없어 id 대조 삭제로는 영원히 지울 수 없고,
+        # 파일이 있으니 새 요청도 받을 수 없다 — 회전 요청 경로 전체가 잠긴다.
+        try:
+            discarded = discard_unreadable_runtime_pin_request()
+        except DeploymentContractError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if discarded is None:
+            print("지울 손상된 요청 파일이 없습니다.", file=sys.stderr)
+            return 1
+        print(f"discarded an unreadable pending request file: {discarded}")
+        return 0
+    if not args.request_id:
+        print(
+            "pin clear-pending requires --request-id <id> (or --force for an unreadable file)",
+            file=sys.stderr,
+        )
+        return 2
     try:
         cleared = clear_runtime_pin_request(expect_request_id=args.request_id)
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
+        print(
+            "손상된 요청 파일은 '--force --confirm'으로 지웁니다.",
+            file=sys.stderr,
+        )
         return 2
     if not cleared:
         print("그 id의 대기 중인 요청이 없습니다.", file=sys.stderr)
@@ -925,6 +1019,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--expect-revision", help="이 revision을 가리키는 요청이 아니면 적용하지 않습니다."
     )
     pin_apply.add_argument(
+        "--any-revision",
+        action="store_true",
+        help="대기 중인 요청의 revision을 확인하지 않고 그대로 적용합니다.",
+    )
+    pin_apply.add_argument(
         "--block-previous",
         action="store_true",
         help="직전 pinset을 terminal로 등재해 재시도를 영구 차단합니다.",
@@ -942,7 +1041,12 @@ def build_parser() -> argparse.ArgumentParser:
     pin_clear_pending = pin_subparsers.add_parser(
         "clear-pending", help="대기 중인 회전 요청을 적용하지 않고 폐기합니다."
     )
-    pin_clear_pending.add_argument("--request-id", required=True, help="폐기할 요청 id입니다.")
+    pin_clear_pending.add_argument("--request-id", help="폐기할 요청 id입니다.")
+    pin_clear_pending.add_argument(
+        "--force",
+        action="store_true",
+        help="읽을 수 없는 요청 파일을 파싱하지 않고 지웁니다(id 불필요).",
+    )
     pin_clear_pending.add_argument("--confirm", action="store_true")
     pin_clear_pending.set_defaults(func=_cmd_pin_clear_pending)
 

@@ -4,6 +4,62 @@
 
 ---
 
+## 2026-08-28 — 적대 리뷰 2건 반영: 죽어 있던 경로와 잠기는 상태들
+
+전문 리뷰어 서브에이전트 2인이 각각 계약·fail-close 관점과 운영·사용성 관점으로 M5·M6·M7
+커밋을 독립 리뷰했다. 확인된 지적을 전부 반영했다. 무거운 것부터:
+
+**요청 경로가 배포에서 죽어 있었다.** `/var/lib`는 root `0755`라 비-root backend가 그
+아래에 디렉터리를 만들 수 없는데, installer는 `-requests` 트리를 만들지 않았고 어떤 런북에도
+그 단계가 없었다. 첫 클릭이 503으로 끝나고 메시지는 "운영자에게 확인하세요"였다 — 보고 있는
+사람이 그 운영자다. installer가 디렉터리를 만들고, 503은 실행할 `install -d` 명령을 그대로
+준다.
+
+**손상된 요청 파일이 회전 요청 경로 전체를 잠갔다.** 읽지 못하면 id를 알 수 없어 id 대조
+삭제가 불가능하고, 파일이 있으니 새 요청도 못 받는다. 화면의 unreadable 카드는 취소 버튼도
+없이 방금 실패한 `show-pending`을 권하고 있었다. `clear-pending --force`를 넣었다 — 읽을 수
+없는 파일만 파싱 없이 지우고 멀쩡한 요청에는 거부한다. 모든 손상 메시지에 전체 경로를 싣는다.
+
+**`apply-pending`의 exit 1이 "아무 일 없음"과 "적용됐으나 정리 미완"을 겸했다.**
+`|| echo "적용 안 됨"` 같은 스크립트가 pinset을 태워 놓고 적용 안 됐다고 보고할 수 있었다.
+정리 미완을 exit 3으로 분리했고, `clear_runtime_pin_request`가 던지는
+`RuntimePinRequestError`가 `except OSError`를 빠져나가 회전 뒤에 traceback으로 터지던 것도
+함께 고쳤다.
+
+**요청 기록에 경합이 있었다.** 읽고-나서-`os.replace`는 두 관리자가 동시에 요청할 때 나중
+쓰기가 앞의 것을 말없이 덮으면서 **둘 다 "기록됨"으로 감사에 남았다.** `O_CREAT|O_EXCL`로
+커널이 승자를 정하게 했다.
+
+**계약 결박 env 검사가 추가·삭제를 통과시켰다.** 저장은 environment 매핑을 통째로 교체하므로
+키를 빼는 것이 곧 삭제인데, "양쪽에 있을 때만 비교"라 삭제도 추가도 그대로 통과했다. 없음을
+sentinel로 두고 비교한다. 같은 구멍이 있던 기존 `POSTGRES_INITDB_ARGS` 가드도 함께 닫혔다.
+DSN을 결박하는 검증기가 candidate dict 밖에 있어 `pinvi-dagster`가 잠금 목록에서 통째로
+빠져 있던 것도 합집합으로 고쳤다(대입이라 유도된 이름이 사라질 수 있던 것도 함께).
+
+**readiness 새로고침이 실제로 다시 관측하지 않았다.** 서버에 30초 TTL이 있는데 route에
+`refresh` 파라미터가 없어, SSH에서 image를 pull한 운영자가 새로고침을 눌러도 같은 차단
+문구를 계속 봤다 — 조치가 실패한 줄 알게 되는 경로다. 같은 파일의 disk-usage route가 이미
+쓰던 패턴을 그대로 적용했다. 실패 payload가 한국어 화면에 `compose_single_file` 같은 내부
+id를 라벨로 띄우던 것도 고쳤다.
+
+**`COMPOSE_PROJECT_NAME`이 영구 노란불이었다.** 운영 `.env`가 반드시 설정하는 값인데
+"확인이 필요한 변수"로 분류돼 있어, 정상 호스트가 해소 방법 없는 경고를 영원히 달고 있었다.
+지워지지 않는 경고는 패널을 안 읽게 만든다 — advisory 목록에서 뺐다.
+
+**non-UTF-8 blob 하나가 패널 전체를 가렸다.** `_git_text`의 `text=True`가 던지는
+`UnicodeDecodeError`는 `OSError`가 아니라 밖으로 새고, 최상위 `except Exception`이 그것을
+받아 네 행 전부를 `unknown`으로 만들었다. 크기 상한도 다 읽은 뒤에 재고 있어 장식이었다.
+파이프에서 상한+1 바이트만 읽는 `_git_blob_text`로 분리했다.
+
+이 밖에 무결성 검사의 TOCTOU(검사와 읽기가 다른 syscall이라 그 사이 바꿔치기 가능)와
+hardlink 통과, 개발 체크아웃에서 저장소 루트를 `0700`으로 만들던 chmod, 긴 사유가 요청
+출처를 밀어내던 절단, `unknown`일 때 대기 요청이 화면에서 사라지던 문제, DELETE 거부가 감사에
+남지 않던 문제, 취소 실패 후 유령 카드가 남던 문제를 고쳤다.
+
+backend 975 passed / 1 skipped.
+
+---
+
 ## 2026-08-28 — n150 격리 live E2E와, 그 과정에서 드러난 두 가지 사실
 
 M5·M6·M7을 실제 호스트에서 16항목 격리 E2E로 검증했다(`scripts/run-pin-request-isolated-e2e`,
@@ -63,9 +119,10 @@ fail-close한다. 데이터는 안전하지만 의도하지 않은 실행이 한
   없으면 `unknown`이지 결손이 아니다(fetch 안 된 것을 차단으로 보고하면 거짓 차단이다).
 - P10-3(iii) 계약 결박 env의 read-only화. 목록은 candidate 계약
   (`_CANDIDATE_CANONICAL_API_ENV_VALUES`)에서 **유도**한다 — 손으로 관리하는 두 번째
-  목록을 만들면 계약과 화면이 갈라진다. `kor-travel-map-api` 한 서비스에만 21개 키가
-  그동안 편집 가능했다. 서버는 저장 시점에 거부하고(재구축까지 미루면 실패가 조작에서
-  멀어진다) 화면은 `config.locked_env`로 처음부터 잠근다.
+  목록을 만들면 계약과 화면이 갈라진다. 잠기는 이름은 14개 service에 걸쳐 82개이고,
+  그중 `kor-travel-map-api` 한 서비스에만 21개가 그동안 편집 가능했다. 서버는 저장
+  시점에 거부하고(재구축까지 미루면 실패가 조작에서 멀어진다) 화면은
+  `config.locked_env`로 처음부터 잠근다.
 - Manager의 `PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS`에 스크립트가 결코 쓰지 않는
   `target_not_isolated`가 있다. 받아들이는 집합이 넓기만 한 것이라 fail-close 결함은
   아니므로 좁히지 않고 기록만 했다 — 좁히면 다른 revision에서 거짓 거부가 된다.

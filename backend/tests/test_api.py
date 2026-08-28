@@ -1578,6 +1578,50 @@ def test_delete_runtime_pin_request_requires_the_exact_id(
     assert client.get("/api/v1/runtime-pins").json()["pending_request"] is None
 
 
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_a_pending_request_stays_visible_when_the_registry_is_unreadable(
+    mock_read, isolated_pin_requests
+):
+    """id를 볼 수 없으면 취소도 못 한다 — 정작 그때 가장 필요한 정보다."""
+
+    login_client()
+    mock_read.return_value = _published_pins()
+    created = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "새 후보 커밋"},
+    ).json()["request"]
+
+    mock_read.return_value = {"status": "unknown", "source": None, "detail": "unreadable"}
+    body = client.get("/api/v1/runtime-pins").json()
+
+    assert body["status"] == "unknown"
+    assert body["pins"] is None
+    assert body["pending_request"]["request_id"] == created["request_id"]
+    # base를 대조할 값이 없으므로 'pending'이라고 단정하지도 않는다.
+    assert body["pending_request"]["status"] == "pending"
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_a_rejected_cancel_is_audited(mock_read, isolated_pin_requests):
+    """남지 않은 거부는 조사할 수 없다."""
+
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.delete(
+        "/api/v1/runtime-pins/requests/6f9619ff-8b86-4d01-b42d-00cf4fc964ff"
+    )
+
+    assert response.status_code == 404
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=runtime_pin&outcome=rejected"
+    ).json()
+    assert any(
+        (event.get("detail") or {}).get("code") == "RUNTIME_PIN_REQUEST_NOT_FOUND"
+        for event in events
+    )
+
+
 def test_runtime_pin_request_routes_require_authentication():
     client.cookies.clear()
 

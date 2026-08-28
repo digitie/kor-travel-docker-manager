@@ -2,22 +2,32 @@
 
 설계 정본: ``docs/ktdctl-ui-migration.md`` §1.2 (c), 오너 승인 Q4.
 
-registry는 root `0600`이라 API 프로세스가 물리적으로 쓸 수 없고, 그 경계가 이
-시스템에서 가장 값싼 안전장치다. 그래서 UI는 **요청만** 남기고 적용은 root CLI가
-한다(``ktdctl pin apply-pending --confirm``).
+registry는 root `0600`이고 회전은 root CLI(``ktdctl pin apply-pending --confirm``)만
+한다. 그래서 UI는 **요청만** 남긴다.
+
+.. warning::
+
+   **"backend가 비-root라 물리적으로 못 쓴다"는 논거에 기대지 마라.** n150 운영 배포는
+   ``.env``가 root ``0600``이라 backend를 ``sudo -n``으로 띄운다
+   (``docs/deploy-runbook.local.md`` §3-3, 실제 uid 0으로 확인). 그 호스트에서 uid
+   경계는 존재하지 않는다. 아래 1·3·4가 실제로 강제되는 보호이고, 2는 비-root로
+   돌리는 호스트에서만 추가로 얹힌다.
 
 **이 저장소가 pin이 될 수 없는 이유** (설계의 핵심 논거이므로 여기 남긴다):
 
 1. **어떤 로드 경로도 이 파일을 읽지 않는다.** authority는
    ``current_pinned_runtime_release()`` → ``load_runtime_pin_registry()`` 하나뿐이고
-   rebuild 소비처도 ``compose_service.rebuild_pinned_runtime`` 한 곳이다.
+   rebuild 소비처도 ``compose_service.rebuild_pinned_runtime`` 한 곳이다. HTTP 계층에
+   registry mutator가 없다는 사실은 회귀
+   ``test_the_http_layer_never_mutates_the_pin_registry``가 지킨다.
 2. **registry는 읽을 때마다 무결성 검사를 통과해야 한다** — 소유자가 root이거나
-   자기 자신이어야 하고 group/other 쓰기가 금지된다. 비-root backend는 registry를
-   만들 수도 위조할 수도 없다.
+   자기 자신이어야 하고 group/other 쓰기가 금지된다. (위 경고 참조: backend가 root면
+   이 조건은 자동으로 만족되므로 경계가 아니다.)
 3. **apply-pending은 요청에서 role과 40-hex revision, 표시용 문자열만 취한다.**
    canonical URL은 코드가, digest는 코드가 재계산하고, 차단 목록은 root registry와
    코드 하한선에서 다시 만든다. 요청이 이 중 무엇도 결정하지 못한다.
-4. **적용은 root + ``--confirm`` + base pinset 일치를 동시에 요구한다.**
+4. **적용은 root + ``--confirm`` + base pinset 일치 + revision 명시를 동시에
+   요구한다**(``--expect-revision`` 또는 ``--any-revision``).
 
 **왜 SQLite가 아닌가**: ``database.py``의 DB 경로는 ``__file__``에서 유도되고 env
 오버라이드가 없다. 운영에서 backend는 소스 트리에서, ``ktdctl``은 wheel이 설치된
@@ -182,54 +192,107 @@ def runtime_pin_request_path() -> Path:
     return Path(get_project_root()) / ".ktdm-runtime-pin-requests.json"
 
 
-def _assert_request_file_integrity(path: Path) -> None:
-    """root가 비-root의 파일을 읽는 유일한 지점이다.
+def _open_verified_request_file(path: Path) -> int:
+    """무결성을 확인한 **그 inode의 fd**를 돌려준다.
 
-    그래서 내용이 아니라 **누가 이 자리에 쓸 수 있었는가**를 본다. symlink를 따라가지
-    않고, 일반 파일이어야 하며, 파일과 그 부모 모두 group/other 쓰기가 금지돼야 한다.
+    root가 비-root의 파일을 읽는 유일한 지점이므로, 내용이 아니라 **누가 이 자리에 쓸
+    수 있었는가**를 본다. 검사와 읽기가 서로 다른 syscall이면 그 사이에 파일을
+    바꿔치기할 수 있으므로, ``O_NOFOLLOW``로 연 fd에 ``fstat``을 걸어 **검사한 대상과
+    읽는 대상이 같은 inode임을 보장**한다.
+
+    hardlink도 거부한다(``st_nlink != 1``). 그러지 않으면 root 소유 임의 파일로의
+    hardlink가 "root가 썼으니 신뢰"라는 규칙을 통과한다.
     """
 
+    # 파일부터 연다. 부모 디렉터리가 없는 경우도 "요청이 없다"이지 오류가 아니므로,
+    # 부모를 먼저 stat하면 정상적인 부재를 손상으로 오인한다.
     try:
-        file_stat = path.lstat()
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
     except FileNotFoundError:
         raise
+    except NotADirectoryError as exc:
+        raise FileNotFoundError(str(path)) from exc
     except OSError as exc:
+        # ELOOP(symlink)도 여기로 온다 — 따라가지 않고 거부한다.
         raise RuntimePinRequestError(
-            f"runtime pin request file cannot be inspected: {path.name}"
+            f"runtime pin request file cannot be opened: {path}"
         ) from exc
-    if not stat.S_ISREG(file_stat.st_mode):
-        raise RuntimePinRequestError(
-            f"runtime pin request path is not a regular file: {path.name}"
-        )
-    if stat.S_IMODE(file_stat.st_mode) & 0o022:
-        raise RuntimePinRequestError(
-            f"runtime pin request file must not be group or world writable: {path.name}"
-        )
     try:
-        parent_stat = path.parent.stat()
+        try:
+            parent_stat = path.parent.stat()
+        except OSError as exc:
+            raise RuntimePinRequestError(
+                f"runtime pin request directory cannot be inspected: {path.parent}"
+            ) from exc
+        if stat.S_IMODE(parent_stat.st_mode) & 0o022:
+            raise RuntimePinRequestError(
+                f"runtime pin request directory must not be group or world writable: "
+                f"{path.parent}"
+            )
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise RuntimePinRequestError(
+                f"runtime pin request path is not a regular file: {path}"
+            )
+        if file_stat.st_nlink != 1:
+            raise RuntimePinRequestError(
+                f"runtime pin request file has more than one link: {path}"
+            )
+        if stat.S_IMODE(file_stat.st_mode) & 0o022:
+            raise RuntimePinRequestError(
+                f"runtime pin request file must not be group or world writable: {path}"
+            )
+        if file_stat.st_uid not in {0, parent_stat.st_uid}:
+            raise RuntimePinRequestError(
+                f"runtime pin request file is owned by an unexpected user: {path}"
+            )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _prepare_request_parent(parent: Path) -> None:
+    """요청 디렉터리를 준비한다.
+
+    **우리가 만든 디렉터리만** mode를 정한다. 개발 체크아웃에서 요청 경로의 부모는
+    저장소 루트 자체이므로, 이미 있는 디렉터리에 chmod 0700을 걸면 한 번의 클릭이
+    트리 전체를 소유자 전용으로 만든다(같은 트리를 읽는 nginx·다른 앱이 함께 죽는다).
+    """
+
+    created = not parent.exists()
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise RuntimePinRequestError(
-            "runtime pin request directory cannot be inspected"
+            f"runtime pin request directory cannot be created: {parent} — create it once "
+            f"as the backend user: sudo install -d -o $(id -un) -g $(id -gn) -m 0700 {parent}"
         ) from exc
-    if stat.S_IMODE(parent_stat.st_mode) & 0o022:
-        raise RuntimePinRequestError(
-            "runtime pin request directory must not be group or world writable"
-        )
-    if file_stat.st_uid not in {0, parent_stat.st_uid}:
-        raise RuntimePinRequestError(
-            f"runtime pin request file is owned by an unexpected user: {path.name}"
-        )
+    if created:
+        try:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
+
+
+def _fsync_directory(parent: Path) -> None:
+    try:
+        directory_fd = os.open(str(parent), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(directory_fd)
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:
     """registry의 원자 쓰기를 복제한다 — 그쪽은 private이고 디렉터리 mode 계약이 다르다."""
 
     parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(parent, 0o700)
-    except OSError:
-        pass
+    _prepare_request_parent(parent)
     body = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=False) + "\n"
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
@@ -245,16 +308,39 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> 
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
+    _fsync_directory(parent)
+
+
+def _exclusive_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:
+    """배타 생성. 이미 있으면 커널이 ``FileExistsError``로 거절한다.
+
+    ``os.replace``와 달리 승자가 하나로 정해지므로, 두 요청이 동시에 도착해도 나중
+    것이 앞의 것을 덮지 않는다.
+    """
+
+    _prepare_request_parent(path.parent)
+    body = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=False) + "\n"
     try:
-        directory_fd = os.open(str(parent), os.O_RDONLY)
-    except OSError:
-        return
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    except FileExistsError as exc:
+        raise RuntimePinRequestError(
+            "a runtime pin rotation request is already pending"
+        ) from exc
+    except OSError as exc:
+        raise RuntimePinRequestError(
+            f"runtime pin request file cannot be created: {path}"
+        ) from exc
     try:
-        os.fsync(directory_fd)
-    except OSError:
-        pass
-    finally:
-        os.close(directory_fd)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # umask가 mode를 깎을 수 있으므로 명시적으로 다시 건다.
+        os.chmod(path, mode)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    _fsync_directory(path.parent)
 
 
 def read_runtime_pin_request(*, path: Path | None = None) -> RuntimePinRequest | None:
@@ -262,20 +348,27 @@ def read_runtime_pin_request(*, path: Path | None = None) -> RuntimePinRequest |
 
     target = path or runtime_pin_request_path()
     try:
-        _assert_request_file_integrity(target)
-        raw = target.read_bytes()[: _MAX_REQUEST_BYTES + 1]
+        descriptor = _open_verified_request_file(target)
     except FileNotFoundError:
         return None
+    try:
+        raw = os.read(descriptor, _MAX_REQUEST_BYTES + 1)
     except OSError as exc:
         raise RuntimePinRequestError(
-            f"runtime pin request file cannot be read: {target.name}"
+            f"runtime pin request file cannot be read: {target}"
         ) from exc
+    finally:
+        os.close(descriptor)
     if len(raw) > _MAX_REQUEST_BYTES:
-        raise RuntimePinRequestError("runtime pin request file is too large")
+        raise RuntimePinRequestError(f"runtime pin request file is too large: {target}")
     try:
         document = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimePinRequestError("runtime pin request file is not valid JSON") from exc
+        # 경로를 함께 알린다 — 손상된 파일은 지워야 하고, 어디를 지울지 모르면
+        # 회전 요청 경로 전체가 잠긴다.
+        raise RuntimePinRequestError(
+            f"runtime pin request file is not valid JSON: {target}"
+        ) from exc
     return RuntimePinRequest.from_payload(document)
 
 
@@ -285,12 +378,24 @@ def write_runtime_pin_request(
     path: Path | None = None,
     replace_existing: bool = False,
 ) -> Path:
-    """요청을 기록한다. **기존 요청을 조용히 덮어쓰지 않는다.**"""
+    """요청을 기록한다. **기존 요청을 조용히 덮어쓰지 않는다.**
+
+    "읽어 보고 없으면 쓴다"로는 부족하다. 이 핸들러는 threadpool에서 돌아 두 관리자가
+    (또는 한 관리자의 두 탭이) 실제로 경합하고, 그때 뒤에 도착한 쓰기가 앞의 요청을
+    말없이 덮으면서 **둘 다 "기록됨"으로 감사에 남는다.** 그래서 배타 생성
+    (``O_CREAT|O_EXCL``)으로 커널이 승자를 정하게 한다.
+    """
 
     target = path or runtime_pin_request_path()
-    if not replace_existing and read_runtime_pin_request(path=target) is not None:
+    if replace_existing:
+        _atomic_write_json(target, request.to_payload(), mode=0o600)
+        return target
+    # 형식이 깨진 잔재가 남아 있으면 그 사실부터 알린다 — O_EXCL은 "이미 있다"만
+    # 말할 수 있고, 무엇이 있는지는 말하지 못한다.
+    existing = read_runtime_pin_request(path=target)
+    if existing is not None:
         raise RuntimePinRequestError("a runtime pin rotation request is already pending")
-    _atomic_write_json(target, request.to_payload(), mode=0o600)
+    _exclusive_write_json(target, request.to_payload(), mode=0o600)
     return target
 
 
@@ -307,6 +412,32 @@ def clear_runtime_pin_request(*, expect_request_id: str, path: Path | None = Non
         return False
     target.unlink(missing_ok=True)
     return True
+
+
+def discard_unreadable_runtime_pin_request(*, path: Path | None = None) -> Path | None:
+    """읽을 수 없는 요청 파일을 **파싱하지 않고** 지운다.
+
+    id 대조 삭제만 있으면 손상된 파일은 영원히 남는다. 읽지 못하니 id를 알 수 없고,
+    파일이 있으니 새 요청도 받을 수 없어 회전 요청 경로 전체가 잠긴다. 여기서 내용을
+    믿고 무엇을 하는 것이 아니라 **버리기만** 하므로 파싱하지 않는 것이 옳다.
+
+    이미 잘 읽히는 요청은 이 함수로 지울 수 없다 — 그것은 id 대조 경로의 일이다.
+    """
+
+    target = path or runtime_pin_request_path()
+    try:
+        if read_runtime_pin_request(path=target) is not None:
+            raise RuntimePinRequestError(
+                f"the pending request is readable; cancel it by id instead: {target}"
+            )
+        return None
+    except RuntimePinRequestError as exc:
+        if "readable" in str(exc):
+            raise
+    if not target.exists():
+        return None
+    target.unlink(missing_ok=True)
+    return target
 
 
 def prospective_pinset_sha256(
@@ -332,6 +463,7 @@ __all__ = [
     "RuntimePinRequest",
     "RuntimePinRequestError",
     "clear_runtime_pin_request",
+    "discard_unreadable_runtime_pin_request",
     "prospective_pinset_sha256",
     "read_runtime_pin_request",
     "runtime_pin_request_path",
