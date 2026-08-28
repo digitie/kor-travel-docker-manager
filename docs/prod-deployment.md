@@ -312,7 +312,15 @@ systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
 ```
 
 실패하면 release는 유지한 채 `host lease boot provisioning requires attention`을 stderr로
-보고한다. 설치 뒤 확인:
+보고한다.
+
+installer는 **시작 시점에도** 이미 설치된 유닛이 있으면 한 번 적용한다. 설치 절차의 첫
+단계가 이 lease를 잡는 것이라, 선점된 호스트에서는 구제책(맨 끝의 유닛 설치)이 자신이
+막으려는 실패 뒤에 갇히기 때문이다. 유닛이 한 번이라도 설치된 호스트는 이 조기 적용으로
+스스로 복구되고, 최초 설치 호스트는 preflight 오류가 실측 소유자·mode와 복구 명령을
+함께 보고한다.
+
+설치 뒤 확인:
 
 ```bash
 ls -l /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf

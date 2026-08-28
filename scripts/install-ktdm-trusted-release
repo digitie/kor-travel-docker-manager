@@ -612,6 +612,17 @@ if [[ -n "${EXPECTED_SOURCE_REVISION}" && ! "${EXPECTED_SOURCE_REVISION}" =~ ^[0
   die "expected source revision is invalid"
 fi
 if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
+  # 이미 설치된 tmpfiles 유닛이 있으면 lock을 잡기 **전에** 한 번 적용한다.
+  #
+  # 아래 preflight는 lease 디렉터리가 선점돼 있으면 설치를 중단시킨다. 그런데 그 선점을
+  # 막는 유닛의 설치는 스크립트 맨 끝에 있으므로, 구제책이 자신이 막으려는 실패 뒤에
+  # 갇힌다. `d` 타입은 기존 디렉터리의 소유자·mode를 바로잡으므로, 유닛이 한 번이라도
+  # 설치된 호스트는 여기서 스스로 복구된다. 최초 설치 호스트는 아래 오류 메시지가
+  # 수동 복구 경로를 알려 준다.
+  if [[ -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf ]] \
+    && command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf || true
+  fi
   exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
@@ -632,7 +643,16 @@ if (
     or directory_stat.st_uid != 0
     or stat.S_IMODE(directory_stat.st_mode) != 0o700
 ):
-    raise SystemExit("production global mutation lock directory is unsafe")
+    # `/run/lock`은 `1777` sticky라 비특권 사용자가 이 자리를 선점할 수 있다. 원인을
+    # 감춘 채 멈추면 운영자는 복구 경로를 알 수 없으므로 실측값과 명령을 함께 보고한다.
+    raise SystemExit(
+        "production global mutation lock directory is unsafe: "
+        f"{lock_dir} uid={directory_stat.st_uid} "
+        f"mode={stat.S_IMODE(directory_stat.st_mode):04o} "
+        f"type={'dir' if stat.S_ISDIR(directory_stat.st_mode) else 'not-a-directory'}"
+        f" — inspect with `ls -la {lock_dir}`, then remove it as root and rerun"
+        " (it is tmpfs; a reboot also clears it)"
+    )
 flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
 if hasattr(os, "O_NOFOLLOW"):
     flags |= os.O_NOFOLLOW
@@ -1358,8 +1378,13 @@ install_host_lease_tmpfiles() {
     echo "host lease tmpfiles unit missing from the installed release: ${source}" >&2
     return 1
   fi
-  if [[ "$(/usr/bin/stat -c '%u' "${source}")" != "0" ]]; then
-    echo "host lease tmpfiles unit is not root-owned: ${source}" >&2
+  local source_uid source_mode
+  source_uid="$(/usr/bin/stat -c '%u' "${source}")"
+  source_mode="$(/usr/bin/stat -c '%a' "${source}")"
+  # 이 스크립트의 다른 신뢰 검사(`require_root_locked_dir`, `assert_root_locked`)와
+  # 같은 기준을 쓴다: root 소유이면서 group/other 쓰기가 없어야 한다.
+  if [[ "${source_uid}" != "0" || $((8#${source_mode} & 022)) != "0" ]]; then
+    echo "host lease tmpfiles unit is writable or not root-owned: ${source}" >&2
     return 1
   fi
   if ! /usr/bin/install -o root -g root -m 0644 -- "${source}" "${destination}"; then
@@ -1374,11 +1399,19 @@ install_host_lease_tmpfiles() {
     echo "systemd-tmpfiles could not apply ${destination}" >&2
     return 1
   fi
+  # `--create`는 경로가 **디렉터리가 아닌 것으로** 선점돼 있으면 그 사실을 stdout에
+  # 적고 exit 0으로 끝난다. 위 분기만으로는 그 경우가 성공으로 보고된다. 타입은
+  # 직접 확인한다.
+  local lease=/run/lock/kor-travel-docker-manager
+  if [[ -L "${lease}" || ! -d "${lease}" ]]; then
+    echo "host lease path exists and is not a directory: ${lease}" >&2
+    return 1
+  fi
   # `d`는 소유자·mode만 바로잡고 **내용은 지우지 않는다.** 이미 선점된 호스트라면
   # 침입자가 심어 둔 파일이 그대로 남는다. lock fd 검증이 fail-close로 잡지만,
   # 설치 시점에 운영자에게 보이는 편이 낫다.
   local stray
-  stray="$(/usr/bin/find /run/lock/kor-travel-docker-manager -mindepth 1 ! -uid 0 2>/dev/null || true)"
+  stray="$(/usr/bin/find "${lease}" -mindepth 1 ! -uid 0 2>/dev/null || true)"
   if [[ -n "${stray}" ]]; then
     echo "host lease directory contains entries not owned by root:" >&2
     printf '%s\n' "${stray}" >&2

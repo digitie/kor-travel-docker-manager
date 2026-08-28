@@ -2134,13 +2134,14 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
     _prepare_c6c_lock_directory(lock_path.parent)
     fd: int | None = None
     context_token = None
+    production_lease = lock_path == _C6C_GLOBAL_MUTATION_LOCK
     try:
         try:
             flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(lock_path, flags, 0o600)
-            _validate_c6c_lock_fd(fd, production=lock_path == _C6C_GLOBAL_MUTATION_LOCK)
+            _validate_c6c_lock_fd(fd, production=production_lease)
         except OSError as exc:
             raise DeploymentContractError("cannot acquire C6c deployment lock") from exc
         try:
@@ -2150,6 +2151,9 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
                 "another C6c compatible-pair operation is already active"
             ) from exc
         _assert_locked_fd_still_owns_path(fd, lock_path)
+        # 소유권·mode 계약도 다시 본다. 신원(inode)만 재대조하면, 잠그는 사이에 그
+        # inode가 world-writable로 바뀌어도 통과한다.
+        _validate_c6c_lock_fd(fd, production=production_lease)
         context_token = _HELD_DEPLOYMENT_LOCKS.set(held_locks | {lock_key})
         yield
     finally:
@@ -2246,9 +2250,13 @@ def _assert_locked_fd_still_owns_path(fd: int, lock_path: Path) -> None:
 
     ``flock``은 경로가 아니라 inode 단위다. 우리가 열고 잠근 사이에 누군가 그 경로를
     unlink하고 새 파일을 만들었다면, 두 주체가 서로 다른 inode를 잠근 채 자기가
-    상호배제를 얻었다고 믿게 된다. lease 디렉터리는 `0700 root:root`라 오늘은 root만
-    그럴 수 있지만, 상호배제는 디렉터리 권한이 아니라 자기 자신이 보증해야 한다.
-    ``_verified_inherited_global_mutation_lock_fd``는 이미 같은 대조를 한다.
+    상호배제를 얻었다고 믿게 된다. ``_verified_inherited_global_mutation_lock_fd``는
+    이미 같은 대조를 한다.
+
+    **창을 좁힐 뿐 닫지는 못한다.** 두 주체가 각자 자기 시점에 통과한 뒤 서로 다른
+    inode를 들고 있는 상태는 시점 검사로 잡히지 않는다. 상호배제는 여전히 lease
+    디렉터리에 아무도 쓸 수 없다는 전제(`0700 root:root`) 위에 성립한다. 그 전제가
+    코드 밖에 있으므로, 깨졌을 때 조용히 통과하지는 않게 해 두는 것이 목적이다.
     """
 
     descriptor = os.fstat(fd)
