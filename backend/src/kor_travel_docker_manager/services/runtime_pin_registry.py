@@ -1163,7 +1163,10 @@ def block_runtime_pinset(
         raise RuntimePinRegistryError(
             "blocking a pinset other than the current one requires both revisions"
         )
-    if current.is_blocked_pinset(pinset_sha256):
+    # phase-scoped journal entries only block the corresponding resume phase. A
+    # later terminal verdict must add an unconditional entry rather than treat
+    # the scoped record as an idempotent terminal block.
+    if current.is_unconditionally_blocked_pinset(pinset_sha256):
         return current
     entry = BlockedPinset(
         pinset_sha256=pinset_sha256,

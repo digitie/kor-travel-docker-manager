@@ -93,35 +93,121 @@ fi
 
 # terminal pinset은 Manager source revision이 바뀌어도 다시 실행하지 않는다. output leaf
 # 생성보다 먼저 root registry와 공개 사본을 함께 검증해 blocked/stale 상태를 fail-close한다.
-if ! /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify --json >/dev/null; then
+ktdctl="/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl"
+snapshot_runtime_pin() {
+  "$ktdctl" pin show --json | /usr/bin/python3 -I -S -c '
+from __future__ import annotations
+
+import json
+import sys
+
+value = json.load(sys.stdin)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+pinset = value.get("pinset_sha256")
+sources = value.get("sources")
+if not isinstance(sources, list) or len(sources) != 2:
+    raise SystemExit(1)
+revisions = {entry.get("role"): entry.get("revision") for entry in sources if isinstance(entry, dict)}
+map_revision = revisions.get("map")
+pinvi_revision = revisions.get("pinvi")
+for expected_length, item in ((64, pinset), (40, map_revision), (40, pinvi_revision)):
+    if not isinstance(item, str) or len(item) != expected_length or any(
+        char not in "0123456789abcdef" for char in item
+    ):
+        raise SystemExit(1)
+print(pinset, map_revision, pinvi_revision)
+'
+}
+if ! "$ktdctl" pin verify --json >/dev/null 2>&1; then
   echo "M05 runtime pin registry is not runnable" >&2
   exit 1
 fi
+initial_snapshot="$(snapshot_runtime_pin)" || {
+  echo "M05 runtime pin snapshot is invalid" >&2
+  exit 1
+}
+# rotate-pair does not share this launcher's lifetime lock. A second verified
+# snapshot establishes the exact candidate owned by this one-shot; acceptance
+# below requires it to remain unchanged through driver completion.
+if ! "$ktdctl" pin verify --json >/dev/null 2>&1; then
+  echo "M05 runtime pin registry is not runnable" >&2
+  exit 1
+fi
+stable_snapshot="$(snapshot_runtime_pin)" || {
+  echo "M05 runtime pin snapshot is invalid" >&2
+  exit 1
+}
+if [[ "$initial_snapshot" != "$stable_snapshot" ]]; then
+  echo "M05 runtime pin registry changed before launch" >&2
+  exit 1
+fi
+read -r initial_pinset initial_map_revision initial_pinvi_revision <<<"$initial_snapshot"
 install -d -o root -g root -m 0700 "$output_dir"
 
 set +e
 /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
   /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
-  "$expected_revision" "$output_dir"
+  "$expected_revision" "$output_dir" >/dev/null 2>&1
 driver_status="$?"
 set -e
 
 # Driver가 terminal block까지 남기기 전에 interpreter/결과 쓰기 경계에서 끝나도, 원문
-# stderr를 보관하거나 재시도 근거로 쓰지 않는다. 유효한 `result.json`만 그대로 수용하고
-# 그 외에는 같은 one-shot을 terminal로 차단한 고정 envelope 하나를 쓴다.
+# stderr를 보관하거나 재시도 근거로 쓰지 않는다. 고정 schema·snapshot·종료값이 모두
+# 일치한 `result.json`만 수용한다. launcher fallback가 있으면 그 파일이 언제나 권위다.
 result_path="$output_dir/result.json"
-if /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$driver_status" <<'PY'
+launcher_result_path="$output_dir/launcher-result.json"
+post_snapshot="$(snapshot_runtime_pin 2>/dev/null || true)"
+if [[ ! -e "$launcher_result_path" && "$post_snapshot" == "$initial_snapshot" ]] && \
+  /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$initial_pinset" "$driver_status" <<'PY'
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import stat
 import sys
 
 path = pathlib.Path(sys.argv[1])
 expected_revision = sys.argv[2]
-driver_status = int(sys.argv[3])
+expected_pinset = sys.argv[3]
+driver_status = int(sys.argv[4])
+PHASES = frozenset(
+    {
+        "admission", "source_materialization", "ledger_claim", "runtime_setup",
+        "map_runtime", "map_postgres_start_failed", "map_fresh_init_failed",
+        "map_application_start_failed", "map_health_status_failed",
+        "map_health_transport_failed", "map_subscription",
+        "map_subscription_http_failed", "pinvi_runtime", "m04_m05_e2e",
+        "driver_contract_failed", "runtime_cleanup_failed", "runtime_pin_block_failed",
+        "m04_fixture_http_failed", "m04_fixture_invalid",
+        "m04_map_approval_http_failed", "m04_map_approval_invalid",
+        "m05_case_decision_http_failed", "m05_case_invalid",
+        "m05_case_lookup_http_failed", "m05_fixture_invalid",
+        "m05_pinvi_receipt_blocked", "m05_pinvi_receipt_http_failed",
+        "m05_pinvi_receipt_invalid", "network_inspect_invalid",
+        "network_subnet_unavailable", "pair_contract_invalid", "pinvi_auth_invalid",
+        "pinvi_login_http_failed", "ports_unavailable", "runtime_command_failed",
+        "runtime_container_identity_invalid", "runtime_directory_invalid",
+        "runtime_http_contract_failed", "runtime_http_failed", "runtime_http_url_invalid",
+        "runtime_image_identity_invalid", "runtime_inspect_invalid",
+        "runtime_pin_registry_changed", "runtime_pin_registry_invalid",
+        "secret_cleanup_identity_invalid", "terminal_pinset_blocked",
+        "trusted_release_invalid", "trusted_release_revision_mismatch", "completed",
+    }
+)
+FRESH_INIT_REASONS = frozenset(
+    {
+        "migrator_dsn_missing", "image_alembic_root_invalid",
+        "migrator_session_unverifiable", "migrator_identity_invalid",
+        "pre_root_state_invalid", "alembic_root_result_invalid",
+        "alembic_command_failed", "alembic_runtime_contract_failed",
+        "database_statement_failed", "runtime_privilege_reconciliation_failed",
+        "fresh_destination_contract_invalid", "alembic_runtime_configuration_invalid",
+        "baseline_reference_invalid", "schema_lineage_invalid",
+        "metadata_contract_invalid", "unclassified",
+    }
+)
+HEX = frozenset("0123456789abcdef")
 try:
     metadata = path.lstat()
     if (
@@ -134,18 +220,47 @@ try:
         raise ValueError
     with path.open(encoding="utf-8") as handle:
         value = json.load(handle)
+    if not isinstance(value, dict):
+        raise ValueError
+    expected_keys = {
+        "harness", "manager_source_revision", "phase", "driver_phase",
+        "cleanup_failed", "pinset_sha256", "status", "transaction_id",
+    }
+    if value.get("status") == "passed":
+        expected_keys |= {
+            "m04_attestation_sha256", "m05_attestation_sha256",
+            "runtime_provenance_sha256",
+        }
+    if "map_fresh_init_reason" in value:
+        expected_keys.add("map_fresh_init_reason")
+    if set(value) != expected_keys:
+        raise ValueError
     if (
-        not isinstance(value, dict)
+        value.get("harness") != "m05-isolated-bridge-v1"
         or value.get("manager_source_revision") != expected_revision
+        or value.get("pinset_sha256") != expected_pinset
         or value.get("status") not in {"passed", "blocked"}
-        or not isinstance(value.get("phase"), str)
-        or not isinstance(value.get("driver_phase"), str)
+        or value.get("phase") not in PHASES
+        or value.get("driver_phase") not in PHASES
         or not isinstance(value.get("cleanup_failed"), bool)
-        or not isinstance(value.get("pinset_sha256"), str)
-        or len(value["pinset_sha256"]) != 64
-        or any(char not in "0123456789abcdef" for char in value["pinset_sha256"])
+        or not isinstance(value.get("transaction_id"), str)
+        or len(value["transaction_id"]) != 32
+        or any(char not in HEX for char in value["transaction_id"])
         or (value["status"] == "passed") != (driver_status == 0)
     ):
+        raise ValueError
+    if value["status"] == "passed":
+        if value["phase"] != "completed" or value["driver_phase"] != "completed" or value["cleanup_failed"]:
+            raise ValueError
+        for key in (
+            "m04_attestation_sha256", "m05_attestation_sha256", "runtime_provenance_sha256"
+        ):
+            digest = value[key]
+            if not isinstance(digest, str) or len(digest) != 64 or any(char not in HEX for char in digest):
+                raise ValueError
+    elif value["phase"] == "completed" or value["driver_phase"] == "completed":
+        raise ValueError
+    if "map_fresh_init_reason" in value and value["map_fresh_init_reason"] not in FRESH_INIT_REASONS:
         raise ValueError
 except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
     raise SystemExit(1)
@@ -155,27 +270,45 @@ then
   exit "$driver_status"
 fi
 
-pinset="$('/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl' pin show --json | /usr/bin/python3 -I -S -c '
+# pin block은 driver가 terminal block을 먼저 남긴 경우에도 idempotent다. snapshot과 다른
+# candidate를 차단하지 않으며, phase-scoped 기록은 registry가 unconditional entry로 승격한다.
+"$ktdctl" pin block "$initial_pinset" \
+  --map-revision "$initial_map_revision" --pinvi-revision "$initial_pinvi_revision" \
+  --reason 'M05 isolated launcher safe result unavailable' --confirm >/dev/null 2>&1
+
+# block write가 phase-scoped 기록으로 끝나거나 다른 pair를 block한 경우에는 이
+# candidate를 재실행할 수 있으므로 fail-close한다. stdout에는 registry 원문을 남기지 않는다.
+if ! "$ktdctl" pin show --json | /usr/bin/python3 -I -S - \
+  "$initial_pinset" "$initial_map_revision" "$initial_pinvi_revision" <<'PY'
 from __future__ import annotations
+
 import json
 import sys
+
+pinset, map_revision, pinvi_revision = sys.argv[1:]
 value = json.load(sys.stdin)
-pinset = value.get("pinset_sha256") if isinstance(value, dict) else None
-if not isinstance(pinset, str) or len(pinset) != 64 or any(char not in "0123456789abcdef" for char in pinset):
+entries = value.get("blocked_pinsets") if isinstance(value, dict) else None
+if not isinstance(entries, list):
     raise SystemExit(1)
-print(pinset)
-')"
-
-# `pin block`은 이미 driver가 terminal 차단을 마친 경우에도 idempotent다. block 자체가
-# 실패하면 실행권을 복원하지 않으며 launcher도 성공으로 보고하지 않는다.
-/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin block "$pinset" \
-  --reason 'M05 isolated launcher safe result unavailable' --confirm >/dev/null
-
-fallback_path="$result_path"
-if [[ -e "$fallback_path" ]]; then
-  fallback_path="$output_dir/launcher-result.json"
+if not any(
+    isinstance(entry, dict)
+    and entry.get("pinset_sha256") == pinset
+    and entry.get("map_revision") == map_revision
+    and entry.get("pinvi_revision") == pinvi_revision
+    and entry.get("phase") is None
+    for entry in entries
+):
+    raise SystemExit(1)
+PY
+then
+  echo "M05 runtime pin terminal block is not durable" >&2
+  exit 1
 fi
-/usr/bin/python3 -I -S - "$fallback_path" "$expected_revision" "$pinset" <<'PY'
+
+# launcher-result.json is always the fallback authority. It is created only
+# once, never overwrites a driver result, and carries no raw driver output.
+fallback_path="$launcher_result_path"
+/usr/bin/python3 -I -S - "$fallback_path" "$expected_revision" "$initial_pinset" <<'PY'
 from __future__ import annotations
 
 import json

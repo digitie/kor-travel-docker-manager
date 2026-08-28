@@ -21,9 +21,12 @@
   n150 isolated one-shot을 정확히 한 번 실행했다. launcher는 exit 1이었고 허용된 durable safe result는 없었지만,
   후속 `pin verify`가 exact pinset의 terminal 차단을 확인했다. HTTP 원문·container log·환경값·output leaf는
   읽거나 남기지 않으며, root registry가 조건 없이 차단한 같은 pinset·source pair·Manager source·output leaf는
-  재실행하지 않는다. 다음 Manager source는 driver 결과가 없더라도 `launcher_safe_result_unavailable` fixed envelope를
-  쓰고 terminal block을 보장한다. terminal 기록 Map `73150672…`·새 PinVi provenance와 이 source를 fresh atomic
-  pinset으로 결박하기 전에는 n150 실행권이 없다.
+  재실행하지 않는다. 다음 Manager source는 public-copy 검증 뒤 Map·PinVi·pinset snapshot을 고정하고, driver
+  stdout/stderr를 버리며, exact root-owned schema 결과와 종료 후 동일 snapshot일 때만 수용한다. 그 외에는 시작
+  snapshot의 exact pair를 unconditional terminal block으로 승격·재검증하고 `launcher-result.json`의
+  `launcher_safe_result_unavailable` fixed envelope만 권위 결과로 쓴다. terminal 기록 Map `73150672…`·새 PinVi
+  provenance와 이 source를 fresh atomic pinset으로 결박하고 CI·source-head 전문 적대 리뷰 두 건을 모두 통과하기
+  전에는 n150 실행권이 없다.
 - [/] `a3f6a8f3…`은 trusted installed-wheel project-root preflight failure로 terminal 차단됐다. 같은
   Map/PinVi pinset·Manager source·one-shot output leaf는 어떤 이유로도 재실행하지 않는다. installed `python -I`
   경로의 external registry 선택 회귀와 두 전문 적대 리뷰를 통과한 새 Manager source, 새 pair pinset만 다음

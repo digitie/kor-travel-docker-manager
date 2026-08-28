@@ -375,6 +375,27 @@ def test_pin_block_registers_the_current_pinset_without_revision_arguments() -> 
     assert updated.pinset_sha256 == seeded.pinset_sha256
 
 
+def test_pin_block_upgrades_a_phase_scoped_entry_to_an_unconditional_block() -> None:
+    """safe launcher fallback must make a previously scoped record terminal."""
+
+    seeded = _seed()
+    scoped = block_runtime_pinset(
+        pinset_sha256=seeded.pinset_sha256,
+        reason="phase journal only",
+        phase="map_runtime_ready",
+    )
+    assert not scoped.is_unconditionally_blocked_pinset(seeded.pinset_sha256)
+
+    updated = block_runtime_pinset(
+        pinset_sha256=seeded.pinset_sha256,
+        reason="launcher result unavailable",
+    )
+
+    assert updated.is_unconditionally_blocked_pinset(seeded.pinset_sha256)
+    assert len(updated.blocked_pinsets) == 2
+    assert updated.blocked_pinsets[-1].phase is None
+
+
 def test_pin_block_requires_revisions_for_a_foreign_pinset() -> None:
     _seed()
 

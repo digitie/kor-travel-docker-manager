@@ -355,7 +355,7 @@ def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
         encoding="utf-8"
     )
 
-    assert launcher.index("ktdctl pin verify --json >/dev/null") < launcher.index(
+    assert launcher.index('"$ktdctl" pin verify --json >/dev/null 2>&1') < launcher.index(
         'install -d -o root -g root -m 0700 "$output_dir"'
     )
 
@@ -368,9 +368,28 @@ def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_
     )
 
     assert "launcher_safe_result_unavailable" in launcher
-    assert "ktdctl pin block \"$pinset\"" in launcher
+    assert '"$ktdctl" pin block "$initial_pinset"' in launcher
+    assert "--map-revision \"$initial_map_revision\"" in launcher
+    assert "--pinvi-revision \"$initial_pinvi_revision\"" in launcher
     assert "launcher-result.json" in launcher
+    assert ">/dev/null 2>&1" in launcher[launcher.index("m05_isolated_e2e.py") :]
     assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
+
+
+def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> None:
+    """rotation race와 임의 driver envelope은 fresh candidate 성공 근거가 될 수 없다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    assert "initial_snapshot" in launcher
+    assert "stable_snapshot" in launcher
+    assert "post_snapshot" in launcher
+    assert '"$post_snapshot" == "$initial_snapshot"' in launcher
+    assert 'value.get("pinset_sha256") != expected_pinset' in launcher
+    assert "if set(value) != expected_keys:" in launcher
+    assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
 
 def test_free_ports_uses_the_standard_ss_binary(

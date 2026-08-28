@@ -2,6 +2,23 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 launcher snapshot·safe envelope 재검증 보강
+
+safe-result 부재 fallback의 전문 적대 재리뷰에서 두 P1을 확인했다. phase-scoped 차단만
+존재할 때 unconditional terminal 판정이 idempotent 처리되어 승격되지 않았고, launcher가
+driver 시작 뒤의 current pinset을 block할 수 있었다. 또한 driver stdout/stderr가 상위
+호출자에게 남으며 `result.json`의 허용 필드·phase·pinset 검증이 느슨했다.
+
+launcher는 이제 public-copy 검증을 두 번 통과한 Map·PinVi·pinset snapshot을 실행권으로
+고정한다. driver의 stdout/stderr는 모두 버리고, 종료 뒤 snapshot이 같고 root-owned
+`result.json`이 정확한 schema·source revision·pinset·phase·hash 계약을 만족할 때만
+수용한다. 그 외에는 실행 시작 snapshot의 두 revision을 명시해 terminal block을 쓰고,
+그 exact unconditional entry를 다시 확인한 뒤 `launcher-result.json`의 fixed safe envelope만
+권위 결과로 남긴다. registry는 phase-scoped entry 위에도 unconditional entry를 추가한다.
+그러므로 rotation race가 다른 candidate를 terminal로 만들거나 임의 driver envelope이 새
+candidate 성공 근거가 되는 경로가 없다. 이 새 Manager source의 CI와 source-head 전문
+적대 리뷰 두 건이 모두 GO가 되기 전에는 n150 실행권이 없다.
+
 ## 2026-08-28 — M05 safe-result 부재 terminal과 launcher envelope 보강
 
 Map `f90b7c28ee0a51cc5e2dce7a332e7feef9afe477`·PinVi
