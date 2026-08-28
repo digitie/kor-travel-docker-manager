@@ -162,6 +162,9 @@ class _ArtifactModePolicy:
     shared_gid: int | None
     directory_mode: int
     file_mode: int
+    # lock은 양쪽이 `O_RDWR`로 열어야 하므로 **그룹 쓰기**가 필요하다. 산출물(0640)과
+    # 같은 mode를 쓰면 읽기만 되어 두 번째 프로세스가 lock을 잡지 못한다.
+    lock_mode: int
 
 
 def _resolve_shared_gid(raw: str) -> int:
@@ -184,9 +187,14 @@ def _resolve_shared_gid(raw: str) -> int:
 def _artifact_mode_policy() -> _ArtifactModePolicy:
     raw = os.environ.get(BACKUP_SHARED_GROUP_ENV, "").strip()
     if not raw:
-        return _ArtifactModePolicy(shared_gid=None, directory_mode=0o700, file_mode=0o600)
+        return _ArtifactModePolicy(
+            shared_gid=None, directory_mode=0o700, file_mode=0o600, lock_mode=0o600
+        )
     return _ArtifactModePolicy(
-        shared_gid=_resolve_shared_gid(raw), directory_mode=0o2770, file_mode=0o640
+        shared_gid=_resolve_shared_gid(raw),
+        directory_mode=0o2770,
+        file_mode=0o640,
+        lock_mode=0o660,
     )
 
 
@@ -198,20 +206,34 @@ def _prepare_backup_root(root: Path, policy: _ArtifactModePolicy) -> None:
     부모에서 mkdir하면 그룹과 setgid를 상속하므로 전제는 루트 한 곳에만 걸면 된다.
     """
 
+    created = not root.exists()
     root.mkdir(parents=True, exist_ok=True)
     if policy.shared_gid is None:
         os.chmod(root, policy.directory_mode)
         return
+    # setgid 부모 아래에서 mkdir하면 **그룹과 setgid 비트는** 상속하지만 permission
+    # 비트는 umask가 정한다(2770 부모 아래 자식이 2755가 된다). 그래서 role 하위
+    # 디렉터리를 우리가 방금 만들었다면 mode를 명시적으로 맞춘다 — 이걸 빼면 그 role의
+    # **첫 백업**이 항상 실패한다.
+    if created:
+        try:
+            os.chmod(root, policy.directory_mode)
+        except OSError:
+            pass
     metadata = root.lstat()
     if (
         metadata.st_gid != policy.shared_gid
         or not (metadata.st_mode & stat.S_ISGID)
         or (stat.S_IMODE(metadata.st_mode) & 0o070) != 0o070
     ):
+        # 붙여넣어서 그대로 도는 명령을 준다. 파일까지 2770으로 만들면 dump가
+        # group-writable·실행 가능해져 0640 정책과 어긋나므로 디렉터리만 손댄다.
         raise StandaloneBackupError(
             f"backup directory {root} is not a shared setgid directory "
-            f"(gid={metadata.st_gid}, mode={stat.S_IMODE(metadata.st_mode):04o}); "
-            f"run: chgrp -R <group> {root.parent} && chmod -R 2770 {root.parent}"
+            f"(gid={metadata.st_gid}, mode={stat.S_IMODE(metadata.st_mode):04o}); run: "
+            f"sudo chgrp -R {policy.shared_gid} {root.parent} && "
+            f"sudo find {root.parent} -type d -exec chmod 2770 {{}} + && "
+            f"sudo find {root.parent} -type f -exec chmod 0640 {{}} +"
         )
 
 
@@ -532,8 +554,22 @@ def plan_standalone_restore(
             )
         )
     else:
-        observed_byte_size = dump_path.stat().st_size
-        if observed_byte_size != manifest.byte_size:
+        try:
+            observed_byte_size = dump_path.stat().st_size
+            observed_sha256 = _sha256_file(dump_path)
+        except OSError as exc:
+            # gc가 lock을 잡고 지우는 사이일 수 있다. 여기서 raw OSError가 새어 나가면
+            # CLI가 traceback으로 죽고, 이 함수가 만들어야 할 "판정"이 사라진다.
+            findings.append(
+                RestorePlanFinding(
+                    "DUMP_UNREADABLE",
+                    f"dump를 읽는 중 사라졌거나 읽을 수 없습니다: {exc.strerror}",
+                    True,
+                )
+            )
+            observed_byte_size = None
+            observed_sha256 = None
+        if observed_byte_size is not None and observed_byte_size != manifest.byte_size:
             findings.append(
                 RestorePlanFinding(
                     "SIZE_MISMATCH",
@@ -542,8 +578,7 @@ def plan_standalone_restore(
                     True,
                 )
             )
-        observed_sha256 = _sha256_file(dump_path)
-        if observed_sha256 != manifest.sha256:
+        if observed_sha256 is not None and observed_sha256 != manifest.sha256:
             findings.append(
                 RestorePlanFinding(
                     "SHA256_MISMATCH",
@@ -635,11 +670,33 @@ def _role_config(role: BackupRole) -> tuple[str, str]:
 @contextlib.contextmanager
 def _role_lock(root: Path) -> Iterator[None]:
     """같은 role의 동시 백업 생성을 막는다 — 겹치면 두 pg_dump가 같은
-    `container_tmp`/`dest_path`에 동시에 쓰면서 서로의 산출물을 덮어쓸 수 있다."""
+    `container_tmp`/`dest_path`에 동시에 쓰면서 서로의 산출물을 덮어쓸 수 있다.
 
+    lock 파일도 **산출물과 같은 mode 정책**을 따라야 한다. `0600`으로 고정하면 공유 그룹
+    모드에서 처음 만든 쪽만 열 수 있고, 다른 쪽(UI가 먼저 만들었다면 cron)은 이후 영원히
+    `EACCES`를 받는다 — 공유 디렉터리 기능 전체가 조용히 죽는다.
+    """
+
+    policy = _artifact_mode_policy()
     lock_path = root / ".backup.lock"
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, policy.lock_mode)
+    except OSError as exc:  # noqa: TRY302 - 아래에서 typed error로 바꾼다
+        # 여기서 raw OSError가 새어 나가면 CLI가 traceback으로 죽는다 —
+        # `_cmd_db_backup_create`는 StandaloneBackupError만 잡는다.
+        raise StandaloneBackupError(
+            f"backup lock cannot be opened: {lock_path} ({exc.strerror}). 공유 그룹 "
+            f"모드라면 'sudo chgrp <group> {lock_path} && sudo chmod 0660 {lock_path}'로 "
+            "기존 lock의 소유·권한을 맞추세요."
+        ) from exc
+    try:
+        # `os.open`의 mode는 umask에 깎인다(0660 → 0640). 그러면 두 번째 프로세스가
+        # `O_RDWR`로 열지 못해 공유가 깨지므로 명시적으로 다시 건다. 우리 소유가 아니면
+        # 이미 상대가 정한 것이므로 조용히 넘어간다.
+        try:
+            os.fchmod(fd, policy.lock_mode)
+        except OSError:
+            pass
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:

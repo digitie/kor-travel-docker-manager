@@ -218,7 +218,7 @@ ktdctl pin rotate-pair --map-revision <40-hex> --pinvi-revision <40-hex> --reaso
 ktdctl pin block <pinset-sha256> --reason "..." --confirm
 ktdctl pin rollback --to <pinset-sha256> --reason "..." --confirm
 ktdctl pin show-pending [--json]        # 대시보드가 남긴 회전 요청 (읽기 전용)
-ktdctl pin apply-pending --confirm      # 그 요청을 적용 (root 전용)
+ktdctl pin apply-pending --expect-revision <40-hex> --confirm   # 요청 적용 (root 전용)
 ktdctl pin clear-pending --request-id <id> --confirm
 ```
 
@@ -245,7 +245,8 @@ ktdctl pin clear-pending --request-id <id> --confirm
   않는다**.
 - **대시보드 회전 요청(2-step)**: 대시보드는 registry를 쓸 수 없으므로 회전 **요청**만
   별도 파일(`/var/lib/kor-travel-docker-manager-requests/`, `0600`)에 남기고, 적용은
-  root의 `pin apply-pending --confirm`이 한다. 적용 시 요청에서 취하는 것은 role과
+  root의 `pin apply-pending --expect-revision <40-hex> --confirm`이 한다. 적용 시
+  요청에서 취하는 것은 role과
   40-hex revision, 표시용 문자열뿐이며 URL·digest·차단 목록은 코드와 registry에서 다시
   만든다. 요청 이후 pin이 바뀌었으면 거부하고 요청을 남겨 둔다. 상세 계약은
   [`runtime-pin-registry.md`](runtime-pin-registry.md) §7-1.
@@ -291,7 +292,7 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `POST` | `/api/v1/backups/{role}` | 백업 생성을 시작하고 `202` + job id를 돌려준다. 동시 실행은 `409` |
 | `GET` | `/api/v1/backups/{role}/jobs[/{job_id}]` | job 상태 폴링. `/jobs`는 새로고침 뒤 재접속용 최신 job |
 | `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록·대기 중인 회전 요청. registry 회전은 root `ktdctl pin rotate`/`pin rotate-pair`/`pin apply-pending` 전용이라 이 route는 registry를 쓰지 않는다 |
-| `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --confirm` 전용이다 |
+| `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --expect-revision <40-hex> --confirm` 전용이다 |
 | `GET` | `/api/v1/deployment-readiness` | 재구축 사전 점검(관측 전용). 무엇도 pull하지 않으며 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. 검사하지 않기로 **결정한** 항목은 `unavailable_checks`로 이유와 함께 노출한다. 검사 4종: Compose 단일 파일, 사이드카 필수 스크립트, 고정 PinVi revision의 역할 부트스트랩 계약, Map 후보 빌드의 고정 Python base image |
 | `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
 | `GET` | `/api/v1/source-status` | 설치 기록·작업 사본·실행 중 이미지·계약 일치·환경 완결성(관측 전용) |
@@ -1089,7 +1090,10 @@ sudo groupadd ktdm-backup
 sudo usermod -aG ktdm-backup <backend-user>
 sudo usermod -aG ktdm-backup <cron-user>
 sudo chgrp -R ktdm-backup "$KTDM_BACKUP_ROOT"
-sudo chmod -R 2770 "$KTDM_BACKUP_ROOT"
+# 디렉터리만 setgid 2770으로 만든다. `chmod -R 2770`은 **dump 파일까지** group-writable·
+# 실행 가능으로 만들어 코드가 강제하는 0640 정책과 어긋난다.
+sudo find "$KTDM_BACKUP_ROOT" -type d -exec chmod 2770 {} +
+sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 # 보조 그룹은 프로세스 재기동 후에야 반영된다.
 ```
 

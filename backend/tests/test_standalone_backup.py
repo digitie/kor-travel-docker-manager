@@ -732,3 +732,116 @@ def test_gc_refuses_while_a_backup_holds_the_role_lock(tmp_path: Path) -> None:
     finally:
         _fcntl.flock(fd, _fcntl.LOCK_UN)
         os.close(fd)
+
+
+# --- 공유 그룹(setgid) 모드 — 적대 리뷰 2건이 각각 다른 각도로 찾은 결함 -------
+
+
+def _shared_group_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`2770` setgid 루트를 만들고 정책을 그 그룹으로 고정한다."""
+
+    root = tmp_path / "backups"
+    root.mkdir()
+    gid = os.stat(root).st_gid
+    monkeypatch.setenv(standalone_backup.BACKUP_SHARED_GROUP_ENV, str(gid))
+    os.chmod(root, 0o2770)
+    return root
+
+
+def test_a_new_role_directory_gets_the_shared_mode_not_the_umask_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """setgid 부모 아래 mkdir은 그룹과 setgid만 상속하고 permission 비트는 umask가 정한다.
+
+    그 사실을 놓치면 `2770` 부모 아래 자식이 `2755`가 되어 그 role의 **첫 백업**이
+    항상 거부된다 — 하필 cron이 건드리지 않아 UI로만 만드는 role들이다.
+    """
+
+    root = _shared_group_root(tmp_path, monkeypatch)
+    policy = standalone_backup._artifact_mode_policy()
+    assert policy.shared_gid is not None
+
+    role_root = root / "geo"
+    standalone_backup._prepare_backup_root(role_root, policy)
+
+    mode = stat.S_IMODE(role_root.lstat().st_mode)
+    assert mode & 0o070 == 0o070, f"group bits missing: {mode:04o}"
+    assert role_root.lstat().st_mode & stat.S_ISGID
+
+
+def test_the_role_lock_follows_the_shared_mode_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lock을 `0600`으로 고정하면 처음 만든 쪽만 열 수 있어 공유가 조용히 끝난다."""
+
+    root = _shared_group_root(tmp_path, monkeypatch)
+    role_root = root / "geo"
+    standalone_backup._prepare_backup_root(
+        role_root, standalone_backup._artifact_mode_policy()
+    )
+
+    with standalone_backup._role_lock(role_root):
+        pass
+
+    mode = stat.S_IMODE((role_root / ".backup.lock").lstat().st_mode)
+    assert mode & 0o060 == 0o060, f"lock is not group-accessible: {mode:04o}"
+
+
+def test_an_unopenable_role_lock_is_a_typed_error_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI는 StandaloneBackupError만 잡는다 — raw OSError는 traceback으로 죽는다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+
+    def refuse(*args: object, **kwargs: object) -> int:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(standalone_backup.os, "open", refuse)
+
+    with pytest.raises(StandaloneBackupError, match="backup lock cannot be opened"):
+        with standalone_backup._role_lock(root):
+            pass
+
+
+def test_the_shared_group_recovery_message_has_no_placeholder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """붙여넣어서 그대로 도는 명령이어야 한다 — `<group>`은 실행되지 않는다."""
+
+    root = _shared_group_root(tmp_path, monkeypatch)
+    role_root = root / "geo"
+    role_root.mkdir(mode=0o755)
+    os.chmod(role_root, 0o755)
+
+    with pytest.raises(StandaloneBackupError) as caught:
+        standalone_backup._prepare_backup_root(
+            role_root, standalone_backup._artifact_mode_policy()
+        )
+
+    message = str(caught.value)
+    assert "<group>" not in message
+    # 파일까지 2770으로 만들라고 하지 않는다 — 0640 정책과 어긋난다.
+    assert "chmod -R 2770" not in message
+
+
+def test_restore_plan_turns_a_vanishing_dump_into_a_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gc가 lock을 잡고 지우는 사이일 수 있다 — traceback 대신 판정을 내야 한다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    def vanish(path: Path) -> str:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(standalone_backup, "_sha256_file", vanish)
+
+    plan = plan_standalone_restore("geo", backup_root=root)
+
+    assert plan.restorable is False
+    assert "DUMP_UNREADABLE" in [f.code for f in plan.findings]

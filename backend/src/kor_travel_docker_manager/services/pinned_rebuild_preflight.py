@@ -43,7 +43,7 @@ def _finding(code: str, text: str, next_action: str = "") -> dict[str, str]:
     return {"code": code, "text": text, "next_action": next_action}
 
 
-def read_pinned_rebuild_preflight() -> dict[str, Any]:
+def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, Any]:
     """재구축 실행 가능 여부. **절대 예외를 던지지 않는다.**
 
     판정 근거를 하나라도 잃으면 ``unverified``로 떨어뜨린다 — 근거 없이 초록불을 켜면
@@ -125,7 +125,8 @@ def read_pinned_rebuild_preflight() -> dict[str, Any]:
 
     # 3. 실행 전에 알 수 있는 결손(사전 점검).
     try:
-        readiness = read_deployment_readiness()
+        # 같은 화면의 사전 점검 섹션과 다른 스냅샷을 보면 두 판정이 서로 모순되게 보인다.
+        readiness = read_deployment_readiness(force_refresh=force_refresh)
     except Exception as exc:  # noqa: BLE001
         readiness = {"summary": {"state": "unverified", "text": str(exc)}, "checks": []}
     readiness_summary = readiness.get("summary", {})
@@ -155,6 +156,15 @@ def read_pinned_rebuild_preflight() -> dict[str, Any]:
         text = (
             "재구축을 실행해도 되는지 확인하지 못했습니다. 화면 값만으로 판단하지 마세요."
         )
+    elif warnings:
+        # 차단은 아니지만 초록불도 아니다. "막는 요인이 없다 + 실행하세요"를 띄우면
+        # 운영자는 새로 시작한다고 믿고 누르고, 실제로는 중단됐던 재구축이 재개된다.
+        # 그 오해가 정확히 pinset 하나와 반나절을 태우는 경로다.
+        state = "attention"
+        text = (
+            "재구축을 막는 요인은 없지만, 그냥 시작되지 않습니다. 아래 내용을 먼저 "
+            "읽으세요."
+        )
     else:
         state = "ok"
         text = (
@@ -166,7 +176,8 @@ def read_pinned_rebuild_preflight() -> dict[str, Any]:
         "schema": PINNED_REBUILD_PREFLIGHT_SCHEMA,
         "collected_at": _now(),
         # 이 값이 true여도 화면은 실행하지 않는다. 실행 주체는 언제나 SSH의 사람이다.
-        "can_start": state == "ok",
+        # `attention`은 실행 가능하지만 **읽고 나서** 해야 하는 상태다.
+        "can_start": state in {"ok", "attention"},
         "pinset_sha256": pinset_sha256 if pin_status == "ok" else None,
         "blockers": blockers,
         "warnings": warnings,

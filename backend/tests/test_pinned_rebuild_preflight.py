@@ -67,8 +67,12 @@ def _patch(
 ) -> None:
     monkeypatch.setattr(preflight, "read_published_runtime_pins", lambda: pins or _pins())
     monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", lambda: guard or _guard())
+    # 실제 함수는 `force_refresh` 키워드를 받는다 — 스텁이 그것을 못 받으면 TypeError가
+    # 광범위 except에 먹혀 "관측 실패"로 둔갑하고, 테스트가 엉뚱한 경로를 검증하게 된다.
     monkeypatch.setattr(
-        preflight, "read_deployment_readiness", lambda: readiness or _readiness()
+        preflight,
+        "read_deployment_readiness",
+        lambda *, force_refresh=False: readiness or _readiness(),
     )
 
 
@@ -134,14 +138,21 @@ def test_a_non_rebuildable_mode_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_an_unfinished_journal_warns_that_it_will_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """차단이 아니다 — 다만 새로 시작하는 것이 아니라는 사실을 모르면 결과를 잘못 읽는다."""
+    """차단은 아니지만 **초록불도 아니다.**
+
+    "막는 요인이 없다 + 실행하세요"를 띄우면 운영자는 새로 시작한다고 믿고 누르고,
+    실제로는 중단됐던 재구축이 재개된다. 그 오해가 pinset 하나를 태운다.
+    """
 
     _patch(monkeypatch, guard=_guard("unfinished_journal"))
 
     payload = preflight.read_pinned_rebuild_preflight()
 
+    assert payload["summary"]["state"] == "attention"
     assert payload["can_start"] is True
     assert [row["code"] for row in payload["warnings"]] == ["JOURNAL_WILL_RESUME"]
+    # 초록불 문구를 쓰지 않는다.
+    assert "실행하세요" not in payload["summary"]["text"]
 
 
 @pytest.mark.parametrize("verdict", ["unverifiable", "unknown"])
@@ -233,3 +244,34 @@ def test_the_module_never_executes_a_rebuild() -> None:
     source = Path(preflight.__file__).read_text(encoding="utf-8")
     for forbidden in ("subprocess", "rebuild_pinned_runtime", "compose_service"):
         assert forbidden not in source, forbidden
+
+
+def test_a_resume_never_renders_as_a_green_light(monkeypatch: pytest.MonkeyPatch) -> None:
+    """초록불 + "실행하세요"를 보고 누르면 새로 시작하는 줄 알고 재개를 돌린다."""
+
+    _patch(monkeypatch, guard=_guard("unfinished_journal"))
+
+    payload = preflight.read_pinned_rebuild_preflight()
+
+    assert payload["summary"]["state"] != "ok"
+    assert payload["warnings"], "재개 사실이 어딘가에는 반드시 남아야 한다"
+
+
+def test_force_refresh_reaches_the_readiness_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """카드와 그 위 사전 점검이 다른 스냅샷을 보면 모순된 판정이 나란히 뜬다."""
+
+    seen: list[bool] = []
+
+    def readiness(*, force_refresh: bool = False) -> dict[str, Any]:
+        seen.append(force_refresh)
+        return _readiness()
+
+    monkeypatch.setattr(preflight, "read_published_runtime_pins", lambda: _pins())
+    monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", lambda: _guard())
+    monkeypatch.setattr(preflight, "read_deployment_readiness", readiness)
+
+    preflight.read_pinned_rebuild_preflight(force_refresh=True)
+
+    assert seen == [True]

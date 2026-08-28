@@ -42,6 +42,12 @@ as_user() {
 }
 
 echo "== 0. 격리 트리 준비 =="
+# 운영 요청 디렉터리의 기준선. 마지막 검사에서 "건드리지 않았다"를 이것과 대조한다.
+if sudo -n test -e /var/lib/kor-travel-docker-manager-requests; then
+  BEFORE_REQ="$(sudo -n find /var/lib/kor-travel-docker-manager-requests -mindepth 1 | wc -l)"
+else
+  BEFORE_REQ=0
+fi
 sudo -n rm -rf "$BASE/rootstate" "$BASE/pubstate" "$BASE/requests" "$BASE/out"
 mkdir -p "$BASE/out"
 # 요청 디렉터리는 group/other 쓰기가 금지다(installer가 0700으로 만드는 것과 같은 계약).
@@ -457,8 +463,18 @@ rm -f "$REQUEST_PATH"
 pass "--force is a wreckage-removal tool, not a bypass"
 
 echo "== 18. 운영 트리 무변경 =="
-[ ! -e /var/lib/kor-travel-docker-manager-requests ] || \
-  fail "the isolated run created the production request root"
+# 운영 요청 디렉터리는 installer가 만든다(정상). 확인할 것은 "없다"가 아니라
+# **격리 실행이 그것을 건드리지 않았다**는 사실이다 — 앞의 것은 설치만 하면 깨지는
+# 단언이라 harness가 진짜 회귀 대신 배포 사실에 반응하게 된다.
+PROD_REQUESTS=/var/lib/kor-travel-docker-manager-requests
+if sudo -n test -e "$PROD_REQUESTS"; then
+  AFTER_REQ="$(sudo -n find "$PROD_REQUESTS" -mindepth 1 | wc -l)"
+  [ "$AFTER_REQ" -eq "${BEFORE_REQ:-0}" ] || \
+    fail "the isolated run wrote into the production request root"
+  echo "  production request root untouched (entries: $AFTER_REQ)"
+else
+  echo "  production request root absent (installer has not run here)"
+fi
 sudo -n rm -rf "$BASE/rootstate" "$BASE/pubstate" "$BASE/root-seed.json"
 pass "the isolated run left the production state roots untouched"
 

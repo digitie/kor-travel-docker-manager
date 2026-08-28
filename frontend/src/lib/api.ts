@@ -204,6 +204,9 @@ export type AdminPasswordPreflight = {
   detail: string;
   requires_acknowledgement: boolean;
   blocking: boolean;
+  /** 서버가 실제 경로로 만들어 준 확인 명령. 화면이 placeholder를 넣으면 붙여넣었을 때
+   * 없는 경로를 조회해 "journal 없음 = 안전"으로 오독하게 된다. */
+  check_command: string;
 };
 
 export type HumanVerdict = {
@@ -310,7 +313,9 @@ export type PinnedRebuildPreflight = {
   warnings: RebuildFinding[];
   unverified: RebuildFinding[];
   command: string;
-  summary: { state: 'ok' | 'blocked' | 'unverified'; text: string };
+  /** `attention`은 차단은 아니지만 초록불도 아니다 — 읽고 나서 실행해야 한다
+   * (예: 미종결 journal이 있어 새로 시작하지 않고 재개한다). */
+  summary: { state: 'ok' | 'attention' | 'blocked' | 'unverified'; text: string };
 };
 
 export type DiskUsageRow = {
@@ -366,7 +371,8 @@ export type RuntimePinRotation = {
   supersedes_pinset_sha256?: string | null;
 };
 
-/** UI가 기록한 회전 **요청**. 적용은 SSH의 `ktdctl pin apply-pending --confirm`이며,
+/** UI가 기록한 회전 **요청**. 적용은 SSH의 `ktdctl pin apply-pending --expect-revision
+ * <40-hex> --confirm`이며,
  * API 프로세스는 registry(root 0600)를 쓸 수 없다. `stale`은 요청 이후 pin이 바뀌어
  * 이 요청으로는 적용되지 않는 상태, `unreadable`은 요청 파일 자체를 읽지 못한 상태다. */
 export type RuntimePinRequestSummary = {

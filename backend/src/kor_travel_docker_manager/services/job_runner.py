@@ -120,7 +120,15 @@ class JobRunner:
             )
             self._jobs[record.job_id] = record
             snapshot = dataclasses.replace(record)
-        task = asyncio.create_task(self._supervise(record.job_id, kind, key, run))
+        try:
+            task = asyncio.create_task(self._supervise(record.job_id, kind, key, run))
+        except BaseException:
+            # task를 못 만들면 running 기록만 남는다. 그 기록은 어떤 축출 규칙으로도
+            # 사라지지 않으므로(실행 중은 보존이 원칙), 그 role은 프로세스가 죽을
+            # 때까지 409만 돌려준다. 만들지 못했으면 기록도 되돌린다.
+            with self._guard:
+                self._jobs.pop(record.job_id, None)
+            raise
         with self._guard:
             self._tasks[record.job_id] = task
         return snapshot

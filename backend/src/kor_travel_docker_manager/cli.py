@@ -582,8 +582,17 @@ def _cmd_db_backup_restore_plan(args: argparse.Namespace) -> int:
     try:
         plan = plan_standalone_restore(args.role, backup_filename=args.file)
     except StandaloneBackupError as exc:
+        # --json은 어떤 경로에서도 stdout에 JSON만 낸다 — 같은 파일의 `pin show-pending`이
+        # 이미 그 계약을 지킨다. 여기서 빈 stdout을 주면 `| jq`가 죽는다.
+        if args.json:
+            print(
+                json.dumps(
+                    {"status": "unavailable", "detail": str(exc)}, ensure_ascii=False
+                )
+            )
         print(str(exc), file=sys.stderr)
-        return 2
+        # "복원할 백업이 없다"는 도구 오류가 아니라 판정 결과다 — exit 1로 낸다.
+        return 1 if "no backup" in str(exc) else 2
     if args.json:
         print(json.dumps(plan.to_json(), ensure_ascii=False, indent=2))
     else:
@@ -604,7 +613,15 @@ def _cmd_db_backup_restore_plan(args: argparse.Namespace) -> int:
             marker = "차단" if finding.blocking else "참고"
             print(f"  [{marker}] {finding.text}")
         print()
-        if plan.restorable:
+        advisories = [f for f in plan.findings if not f.blocking and f.code != "OK"]
+        if plan.restorable and advisories:
+            # 차단은 아니지만 "그냥 괜찮다"고 끝내면 바로 위에 적은 schema 되돌림 경고를
+            # 마지막 문장이 지워 버린다.
+            print(
+                "무결성은 확인됐지만 위 [참고] 항목을 읽고 판단해야 합니다. "
+                "복원 명령은 아직 없습니다."
+            )
+        elif plan.restorable:
             print("이 백업은 복원 가능한 상태로 보입니다. 다만 복원 명령은 아직 없습니다.")
         else:
             print("이 백업으로는 복원하면 안 됩니다.")

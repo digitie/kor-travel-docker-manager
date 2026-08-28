@@ -12,14 +12,19 @@ import {
 } from '@/lib/api';
 import { HumanError, humanizeError } from '@/lib/errors';
 import CopyableCommand from './CopyableCommand';
+import InlineError from './InlineError';
 
 const ROLE_LABELS: Record<string, string> = {
   map: '지도 (kor-travel-map)',
   pinvi: 'PinVi',
 };
 
-const ROTATE_COMMAND =
-  'sudo -n backend/.venv/bin/ktdctl pin rotate --role <map|pinvi> --revision <커밋 SHA> --reason "..." --confirm';
+// 이 명령은 `summary.next_action`이 뜨는 상황 — 즉 **현재 세트가 재시도 금지 상태**일 때만
+// 보인다. 그 상태에서 registry는 단일 role 회전을 거부하므로(`pin rotate`는 exit 2),
+// 여기에 `pin rotate`를 두면 반드시 실패하는 명령을 쥐여 주는 셈이 된다.
+const ROTATE_PAIR_COMMAND =
+  'sudo -n backend/.venv/bin/ktdctl pin rotate-pair --map-revision <커밋 SHA> ' +
+  '--pinvi-revision <커밋 SHA> --reason "..." --confirm';
 
 const CLEAR_FORCE_COMMAND =
   'sudo -n backend/.venv/bin/ktdctl pin clear-pending --force --confirm';
@@ -48,33 +53,6 @@ function formatTimestamp(value: string | null | undefined): string {
 
 function short(digest: string): string {
   return digest.length > 14 ? `${digest.slice(0, 12)}…` : digest;
-}
-
-/** 실패 원문을 접어 둔 채 사람 말만 먼저 보여 준다. 모달 안이라 토스트를 쓰지 않는다. */
-function InlineError({ error }: { error: HumanError }) {
-  const [showRaw, setShowRaw] = useState(false);
-  return (
-    <div className="rounded-card border border-danger p-3" role="alert">
-      <p className="text-sm font-semibold text-danger">{error.title}</p>
-      <p className="text-xs text-secondary mt-1">{error.hint}</p>
-      {error.raw ? (
-        <>
-          <button
-            className="text-xs text-secondary underline mt-2"
-            onClick={() => setShowRaw((value) => !value)}
-            type="button"
-          >
-            자세히
-          </button>
-          {showRaw ? (
-            <pre className="text-[11px] bg-subtle rounded-card p-2 mt-2 overflow-x-auto whitespace-pre-wrap break-all">
-              {error.raw}
-            </pre>
-          ) : null}
-        </>
-      ) : null}
-    </div>
-  );
 }
 
 function PendingRequestCard({
@@ -242,7 +220,7 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
           </h2>
           <p className="text-xs text-secondary mt-1">
             지도와 PinVi를 어느 시점 코드로 재구축할지 고정해 둔 값입니다. 여기서는 변경
-            요청만 기록되고, 실제 적용은 SSH에서 `ktdctl pin apply-pending --confirm`을 실행한
+            요청만 기록되고, 실제 적용은 SSH에서 `ktdctl pin apply-pending --expect-revision`을 실행한
             뒤에 이뤄집니다.
           </p>
         </div>
@@ -307,9 +285,11 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                   ) : summary?.next_action ? (
                     <>
                       <p className="text-xs text-secondary mt-1">
-                        아래 명령을 SSH에서 실행해 새 버전으로 회전해야 합니다.
+                        아래 명령을 SSH에서 실행해 새 버전으로 회전해야 합니다. 지금
+                        세트는 재시도 금지 상태라 <strong>Map과 PinVi를 한 번에</strong>{' '}
+                        바꿔야 합니다 — 한쪽만 바꾸는 명령은 거부됩니다.
                       </p>
-                      <CopyableCommand command={ROTATE_COMMAND} />
+                      <CopyableCommand command={ROTATE_PAIR_COMMAND} />
                     </>
                   ) : null}
                 </div>

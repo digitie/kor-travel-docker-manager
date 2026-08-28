@@ -92,9 +92,20 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
   });
 
   // 재구축 실행 가능 여부. 이 패널은 **실행하지 않는다** — 판정만 하고 명령을 준다.
-  const { data: rebuild, refetch: refetchRebuild } = useQuery<PinnedRebuildPreflight>({
+  const {
+    data: rebuild,
+    error: rebuildError,
+    refetch: refetchRebuild,
+  } = useQuery<PinnedRebuildPreflight>({
     queryKey: ['pinned-rebuild-preflight'],
-    queryFn: () => apiJson<PinnedRebuildPreflight>('/api/v1/pinned-rebuild/preflight'),
+    // 새로고침은 이 판정이 참조하는 사전 점검까지 함께 다시 관측하게 한다. 아니면 위
+    // 섹션과 이 카드가 서로 다른 스냅샷을 보고 모순된 결론을 나란히 보여 준다.
+    queryFn: () => {
+      const force = forceReadiness.current;
+      return apiJson<PinnedRebuildPreflight>(
+        `/api/v1/pinned-rebuild/preflight${force ? '?refresh=true' : ''}`
+      );
+    },
     retry: false,
   });
 
@@ -111,7 +122,6 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
     // 운영자가 몇 번을 눌러도 같은 차단 문구를 보고 "조치가 실패했다"고 오해한다.
     queryFn: () => {
       const force = forceReadiness.current;
-      forceReadiness.current = false;
       return apiJson<DeploymentReadinessResponse>(
         `/api/v1/deployment-readiness${force ? '?refresh=true' : ''}`
       );
@@ -167,10 +177,12 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
             className="ops-button"
             disabled={isFetching || readinessFetching}
             onClick={() => {
+              // 두 쿼리가 모두 소비한 뒤에 내린다 — 먼저 내리면 둘 중 하나만 강제된다.
               forceReadiness.current = true;
               void refetch();
-              void refetchReadiness();
-              void refetchRebuild();
+              void Promise.all([refetchReadiness(), refetchRebuild()]).finally(() => {
+                forceReadiness.current = false;
+              });
             }}
             type="button"
           >
@@ -270,9 +282,18 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           )}
         </section>
 
-        {rebuild ? (
-          <section>
-            <h3 className="text-sm font-semibold text-strong mb-1">재구축 실행</h3>
+        <section>
+          <h3 className="text-sm font-semibold text-strong mb-1">재구축 실행</h3>
+          {rebuildError ? (
+            // 섹션이 통째로 사라지면 "보고할 것이 없다"로 읽힌다 — 정직성 규약 위반이다.
+            <p className="text-sm text-danger">
+              재구축 실행 가능 여부를 확인하지 못했습니다.{' '}
+              {rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}
+            </p>
+          ) : !rebuild ? (
+            <p className="text-sm text-secondary">재구축 실행 조건을 확인하는 중입니다.</p>
+          ) : (
+          <>
             {/* 버튼을 두지 않는 것은 누락이 아니라 설계다. 재구축은 root를 요구하고
                 세 개 DB를 파기하므로, HTTP 요청 하나가 그것을 시작할 수 있게 만들면
                 경계가 사라진다. 화면은 판정하고, 실행은 사람이 SSH에서 한다. */}
@@ -290,9 +311,9 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
                   level={
                     rebuild.summary.state === 'blocked'
                       ? 'action_required'
-                      : rebuild.summary.state === 'unverified'
-                        ? 'unverified'
-                        : 'ok'
+                      : rebuild.summary.state === 'ok'
+                        ? 'ok'
+                        : 'unverified'
                   }
                 />
                 <div className="min-w-0 flex-1">
@@ -322,17 +343,21 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
               ) : null}
 
               {rebuild.warnings.length > 0 ? (
-                <ul className="mt-3 space-y-1">
-                  {rebuild.warnings.map((finding: RebuildFinding) => (
-                    <li className="text-xs text-secondary break-all" key={finding.code}>
-                      · {finding.text}
-                    </li>
-                  ))}
-                </ul>
+                <div className="mt-3 rounded-card border border-warn p-2">
+                  <p className="text-xs font-semibold text-strong">먼저 알아 둘 것</p>
+                  <ul className="mt-1 space-y-1">
+                    {rebuild.warnings.map((finding: RebuildFinding) => (
+                      <li className="text-xs text-strong break-all" key={finding.code}>
+                        · {finding.text}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
 
               {rebuild.unverified.length > 0 ? (
                 <ul className="mt-3 space-y-1">
+                  <li className="text-xs font-semibold text-secondary">확인하지 못한 것</li>
                   {rebuild.unverified.map((finding: RebuildFinding) => (
                     <li className="text-xs text-secondary break-all" key={finding.code}>
                       · {finding.text}
@@ -349,14 +374,21 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
               <CopyableCommand
                 command={rebuild.command}
                 hint={
-                  rebuild.can_start
+                  rebuild.summary.state === 'ok'
                     ? '이 명령을 SSH에서 실행하면 재구축이 시작됩니다.'
-                    : '위 항목을 먼저 해소하기 전에는 실행하지 마세요.'
+                    : rebuild.summary.state === 'attention'
+                      ? '위 내용을 읽은 뒤에 실행하세요 — 새로 시작하지 않을 수 있습니다.'
+                      : '⛔ 위 항목을 해소하기 전에는 실행하지 마세요. 지금 실행하면 실패하거나 거부됩니다.'
                 }
               />
+              <p className="text-xs text-secondary mt-2">
+                판정 시각 {new Date(rebuild.collected_at).toLocaleString('ko-KR')} · 새로고침하면
+                다시 확인합니다.
+              </p>
             </div>
-          </section>
-        ) : null}
+          </>
+          )}
+        </section>
 
         {isLoading ? (
           <p className="text-sm text-secondary">배포 상태를 확인하는 중입니다.</p>
