@@ -89,6 +89,24 @@ def _network_inspects(expectation: M05IsolatedRuntimeExpectation) -> dict[str, d
     }
 
 
+def _image_inspects(expectation: M05IsolatedRuntimeExpectation) -> dict[str, dict[str, object]]:
+    return {
+        service.image_id: {
+            "Config": {
+                "Labels": {
+                    "org.opencontainers.image.revision": (
+                        expectation.pair.map_source_revision
+                        if service.role == "map"
+                        else expectation.pair.pinvi_source_revision
+                    )
+                }
+            },
+            "Id": service.image_id,
+        }
+        for service in expectation.services.values()
+    }
+
+
 def test_plan_claim_is_canonical_and_does_not_include_transaction() -> None:
     plan = _plan()
     payload = json.loads(plan.claim_bytes)
@@ -125,6 +143,7 @@ def test_runtime_accepts_only_expected_loopback_bridge_bindings() -> None:
     identities = assert_m05_isolated_runtime(
         expectation=expectation,
         containers=containers,
+        image_inspects=_image_inspects(expectation),
         network_inspects=_network_inspects(expectation),
     )
     assert identities == {"map-api": "sha256:" + "2" * 64, "pinvi-api": "sha256:" + "3" * 64}
@@ -154,6 +173,7 @@ def test_runtime_rejects_topology_or_provenance_drift(
                 "map-api": item,
                 "pinvi-api": _inspect(expectation, service="pinvi-api"),
             },
+            image_inspects=_image_inspects(expectation),
             network_inspects=_network_inspects(expectation),
         )
 
@@ -170,6 +190,7 @@ def test_runtime_rejects_a_second_or_wrong_network() -> None:
                 "map-api": item,
                 "pinvi-api": _inspect(expectation, service="pinvi-api"),
             },
+            image_inspects=_image_inspects(expectation),
             network_inspects=_network_inspects(expectation),
         )
 
@@ -185,6 +206,7 @@ def test_runtime_rejects_image_or_network_inspect_drift() -> None:
         assert_m05_isolated_runtime(
             expectation=expectation,
             containers=containers,
+            image_inspects=_image_inspects(expectation),
             network_inspects=_network_inspects(expectation),
         )
     containers["map-api"] = _inspect(expectation, service="map-api")
@@ -194,5 +216,48 @@ def test_runtime_rejects_image_or_network_inspect_drift() -> None:
         assert_m05_isolated_runtime(
             expectation=expectation,
             containers=containers,
+            image_inspects=_image_inspects(expectation),
             network_inspects=network_inspects,
+        )
+
+
+def test_expectation_rejects_a_missing_runtime_role() -> None:
+    plan = _plan()
+    with pytest.raises(DeploymentContractError, match="service set is invalid"):
+        M05IsolatedRuntimeExpectation(
+            plan=plan,
+            networks=(
+                M05IsolatedNetworkExpectation("map", plan.map_network, "e" * 64),
+                M05IsolatedNetworkExpectation("pinvi", plan.pinvi_network, "f" * 64),
+            ),
+            pair=M05IsolatedPairEvidence(
+                map_full_openapi_sha256="1" * 64,
+                map_source_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
+                pinvi_full_openapi_sha256="1" * 64,
+                pinvi_source_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+            ),
+            services={
+                "map-api": M05IsolatedServiceExpectation(
+                    "map", 8000, 30101, "sha256:" + "2" * 64
+                )
+            },
+        )
+
+
+def test_runtime_rejects_image_label_drift() -> None:
+    expectation = _expectation()
+    containers = {
+        "map-api": _inspect(expectation, service="map-api"),
+        "pinvi-api": _inspect(expectation, service="pinvi-api"),
+    }
+    image_inspects = _image_inspects(expectation)
+    image_inspects["sha256:" + "2" * 64]["Config"]["Labels"][
+        "org.opencontainers.image.revision"
+    ] = "0" * 40
+    with pytest.raises(DeploymentContractError, match="source revision differs"):
+        assert_m05_isolated_runtime(
+            expectation=expectation,
+            containers=containers,
+            image_inspects=image_inspects,
+            network_inspects=_network_inspects(expectation),
         )

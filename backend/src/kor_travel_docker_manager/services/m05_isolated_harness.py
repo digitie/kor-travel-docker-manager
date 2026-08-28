@@ -22,14 +22,17 @@ from typing import Any, Final, Literal
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.pinned_runtime_release import PinnedRuntimeRelease
 
+M05IsolatedRuntimeRole = Literal["map", "pinvi"]
 M05_ISOLATED_HARNESS_KIND: Final = "m05-isolated-bridge-v1"
 M05_ISOLATED_HARNESS_VERSION: Final = 1
+_EXPOSED_RUNTIME_SERVICE_ROLES: Final[Mapping[str, M05IsolatedRuntimeRole]] = MappingProxyType(
+    {"map-api": "map", "pinvi-api": "pinvi"}
+)
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TRANSACTION = re.compile(r"^[0-9a-f]{32}$")
 _NETWORK = re.compile(r"^m05i-(?:map|pinvi)-[0-9a-f]{32}_default$")
 _CONTAINER_ID = re.compile(r"^[0-9a-f]{64}$")
-M05IsolatedRuntimeRole = Literal["map", "pinvi"]
 
 
 @dataclass(frozen=True)
@@ -172,7 +175,10 @@ class M05IsolatedRuntimeExpectation:
             raise DeploymentContractError("M05 isolated network name differs from the plan")
         if len({item.network_id for item in networks}) != len(networks):
             raise DeploymentContractError("M05 isolated network IDs must differ")
-        if not services or len(set(services)) != len(services):
+        if set(services) != set(_EXPOSED_RUNTIME_SERVICE_ROLES) or any(
+            service.role != _EXPOSED_RUNTIME_SERVICE_ROLES[name]
+            for name, service in services.items()
+        ):
             raise DeploymentContractError("M05 isolated service set is invalid")
         release_revisions = {
             "map": self.plan.release.source_for("map").revision,
@@ -245,6 +251,7 @@ def assert_m05_isolated_runtime(
     *,
     expectation: M05IsolatedRuntimeExpectation,
     containers: Mapping[str, Mapping[str, Any]],
+    image_inspects: Mapping[str, Mapping[str, Any]],
     network_inspects: Mapping[str, Mapping[str, Any]],
 ) -> Mapping[str, str]:
     """launch 뒤 inspect JSON이 bridge·label·loopback port를 모두 만족하는지 확인한다.
@@ -254,9 +261,14 @@ def assert_m05_isolated_runtime(
     """
 
     plan = expectation.plan
-    if set(containers) != set(expectation.services) or set(network_inspects) != {
+    expected_images = {service.image_id for service in expectation.services.values()}
+    if (
+        set(containers) != set(expectation.services)
+        or set(image_inspects) != expected_images
+        or set(network_inspects) != {
         item.name for item in expectation.networks
-    }:
+        }
+    ):
         raise DeploymentContractError("M05 isolated runtime service set is invalid")
     identities: dict[str, str] = {}
     for service, item in containers.items():
@@ -310,12 +322,22 @@ def assert_m05_isolated_runtime(
         if image != service_expectation.image_id:
             raise DeploymentContractError("M05 isolated runtime image ID differs")
         image_labels = config.get("Labels")
+        image_inspect = image_inspects[service_expectation.image_id]
+        image_config = image_inspect.get("Config") if isinstance(image_inspect, Mapping) else None
+        image_inspect_id = image_inspect.get("Id") if isinstance(image_inspect, Mapping) else None
+        image_inspect_labels = image_config.get("Labels") if isinstance(image_config, Mapping) else None
         source_revision = (
             expectation.pair.map_source_revision
             if service_expectation.role == "map"
             else expectation.pair.pinvi_source_revision
         )
-        if image_labels.get("org.opencontainers.image.revision") != source_revision:
+        if (
+            image_inspect_id != service_expectation.image_id
+            or not isinstance(image_labels, Mapping)
+            or not isinstance(image_inspect_labels, Mapping)
+            or image_labels.get("org.opencontainers.image.revision") != source_revision
+            or image_inspect_labels.get("org.opencontainers.image.revision") != source_revision
+        ):
             raise DeploymentContractError("M05 isolated runtime source revision differs")
         identities[service] = image
     for network_expectation in expectation.networks:
