@@ -2,6 +2,25 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — M05 `41be91fe…` terminal 보존과 driver receipt 수렴
+
+Map `fa55316d858d95367b6a1ca6f17094408b543afe`·PinVi
+`f9fce72fbc6ef73f3ec1700ef76995fdfc068e88`·Manager
+`cd8b3054d9f49af88ef6f58e9319343c1453df27`·pinset
+`41be91feb62feff039452e23a0d889c3b32c3e97e08c28e86ad0a1068ec8ad67`는 최신 CI와 exact-head 전문 적대
+리뷰 두 건의 GO, clean trusted release, atomic pair rotation과 registry/public-copy gate 뒤 n150 isolated
+M04/M05 launcher를 정확히 한 번 실행했다. launcher exit은 1이고 권위 있는 고정 결과는
+`launcher_safe_result_unavailable`이었다. HTTP 원문·컨테이너 로그·환경값·output leaf는 읽거나 보관하지 않았다.
+exact unconditional terminal entry와 public copy를 다시 확인했으므로 이 candidate·source pair·Manager source·output
+leaf는 재실행하지 않는다.
+
+이번 terminal은 driver가 고정 result를 만들기 전 예상하지 못한 ordinary exception으로 종료할 수 있는 경계를
+보였다. driver는 이제 `BaseException`을 제외한 모든 ordinary exception을 `driver_contract_failed` fixed terminal
+receipt로 수렴시키며, 원문 exception을 receipt에 기록하지 않는다. 회귀 테스트는 unknown exception에서도 blocked
+receipt와 fixed phase가 남고 원문이 없음을 고정한다. 다음 후보는 이 source, 새 Map terminal 기록과 새 PinVi
+provenance를 fresh atomic pinset으로 결박하고 CI·source-head 전문 적대 리뷰 두 건을 통과한 경우에만 n150에서
+한 번 실행할 수 있다.
+
 ## 2026-08-28 — M05 `5512ce12…` launcher safe-result terminal 보존
 
 Map `73150672d26866122e231c085e9beefe81bfd776`·PinVi

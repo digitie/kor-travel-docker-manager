@@ -348,6 +348,28 @@ def test_terminal_result_blocks_the_exact_current_pinset(
     assert "phase" not in seen
 
 
+def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unknown exception도 launcher에 raw-output 부재를 남기지 않는다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(RuntimeError("discarded")),
+    )
+    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda: True)
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert receipt["status"] == "blocked"
+    assert receipt["phase"] == "driver_contract_failed"
+    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert "discarded" not in json.dumps(receipt, sort_keys=True)
+
+
 def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
     """terminal direct launch은 새 leaf·driver·ledger를 만들기 전에 끝난다."""
 

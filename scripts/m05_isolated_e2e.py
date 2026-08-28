@@ -29,10 +29,7 @@ from urllib.request import (
     build_opener,
 )
 
-from kor_travel_docker_manager.services.c6c_deployment import (
-    DeploymentContractError,
-    effective_environment,
-)
+from kor_travel_docker_manager.services.c6c_deployment import effective_environment
 from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05IsolatedHarnessPlan,
     M05IsolatedNetworkExpectation,
@@ -1756,7 +1753,10 @@ def main(expected_revision: str, output: Path) -> int:
     except _PhaseError as error:
         phase = error.phase
         failure_diagnostic = error.diagnostic
-    except (DeploymentContractError, OSError, ValueError):
+    # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
+    # 관측한다. 예상하지 못한 ordinary exception도 고정된 terminal receipt로 수렴시킨다.
+    # BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
+    except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
         phase = "driver_contract_failed"
     finally:
         cleanup_failed = False
