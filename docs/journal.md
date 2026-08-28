@@ -5595,3 +5595,11 @@ T-011 구현 직후 적대적 리뷰어 2명(Agent 도구 병렬 실행, 이 시
   - 루트 `.gitignore`, `docker-compose.yml`, `README.md` 작성.
   - 백엔드 (`backend/`) Poetry 초기화 및 FastAPI 뼈대 코드 작성.
   - 프론트엔드 (`frontend/`) Next.js 뼈대 코드 및 실시간 상태 대시보드 UI 구현.
+## 2026-08-28 — M05 terminal registry의 원문 없는 phase 진단
+
+Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`로 결박한 뒤 trusted
+`run-pinned-rebuild-once`와 public generation gate를 통과했다. 그 다음 isolated M04/M05 one-shot은 정확히
+한 번 실행되어 canonical pinset `5ad3b08c…`을 terminal로 차단했다. output leaf·HTTP 원문·container log·환경값은
+열지 않는다. root registry의 공개 reason은 이제 임의 예외 문자열이 아니라 allowlist fixed phase만 기록한다.
+따라서 다음 immutable source pair는 raw artifact 없이도 보정 범위를 알 수 있고, 같은 pinset의 재실행은 계속
+불가능하다.

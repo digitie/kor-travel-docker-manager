@@ -169,6 +169,21 @@ def test_generated_pbkdf2_hash_verifies_the_original_value() -> None:
     ) == restore(digest)
 
 
+def test_terminal_registry_reason_exposes_only_allowlisted_phase() -> None:
+    """registry는 다음 candidate의 보정 범위만 말하고 예외 원문은 싣지 않는다."""
+
+    driver = _driver()
+
+    assert (
+        driver._terminal_registry_reason("map_health_transport_failed")
+        == "M05 isolated one-shot terminal: map_health_transport_failed"
+    )
+    assert (
+        driver._terminal_registry_reason("untrusted detail must never be published")
+        == "M05 isolated one-shot terminal: driver_contract_failed"
+    )
+
+
 def test_http_json_rejects_non_loopback_url_before_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -365,11 +380,12 @@ def test_terminal_result_blocks_the_exact_current_pinset(
 
     monkeypatch.setattr(driver, "block_runtime_pinset", block)
 
-    assert driver._block_terminal_m05_pinset() is True
+    assert driver._block_terminal_m05_pinset("map_health_transport_failed") is True
     assert seen["pinset_sha256"] == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
     assert seen["map_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
     assert seen["pinvi_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
     assert "phase" not in seen
+    assert seen["reason"] == "M05 isolated one-shot terminal: map_health_transport_failed"
 
 
 def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(

@@ -38,6 +38,11 @@ clean child environment로 전달하고, PinVi는 root EUID에서 `/usr/bin/pyth
 실행한다. 따라서 direct Compose·수동 root marker·PATH shim·환경변수는 Manager의 `rotate-pair`,
 registry, one-shot ledger를 대체하지 못한다.
 
+M05 isolated one-shot이 실패하면 root registry의 조건 없는 차단 항목에는 allowlist 고정 phase만
+기록한다. HTTP body·status 원문, container log, 환경값, 파일 경로, 예외 문자열은 기록하거나 다음
+candidate의 재시도 근거로 쓰지 않는다. 이 phase는 새 source pair를 만들 때 보정 범위를 정하는 용도일
+뿐, 동일 pinset을 다시 실행하게 하는 권한이 아니다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식

@@ -114,6 +114,64 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     127: "unclassified",
 }
 
+# terminal pinset registry는 비-root도 읽는 감사 표면이다. driver의 예외 원문을
+# reason에 흘리지 않고, 다음 immutable candidate의 보정 범위만 나타내는 고정 phase만
+# 허용한다. 이 집합 밖의 값은 가장 좁은 안전 진단으로 수렴한다.
+_PUBLIC_TERMINAL_PHASES = frozenset(
+    {
+        "admission",
+        "driver_contract_failed",
+        "ledger_claim",
+        "m04_fixture_http_failed",
+        "m04_fixture_invalid",
+        "m04_m05_e2e",
+        "m04_map_approval_http_failed",
+        "m04_map_approval_invalid",
+        "m05_case_decision_http_failed",
+        "m05_case_invalid",
+        "m05_case_lookup_http_failed",
+        "m05_fixture_invalid",
+        "m05_pinvi_receipt_blocked",
+        "m05_pinvi_receipt_http_failed",
+        "m05_pinvi_receipt_invalid",
+        "map_application_start_failed",
+        "map_fresh_init_failed",
+        "map_health_status_failed",
+        "map_health_transport_failed",
+        "map_postgres_start_failed",
+        "map_runtime",
+        "map_subscription",
+        "map_subscription_http_failed",
+        "network_inspect_invalid",
+        "network_subnet_unavailable",
+        "pair_contract_invalid",
+        "pinvi_auth_invalid",
+        "pinvi_login_http_failed",
+        "pinvi_manager_admission_contract_invalid",
+        "pinvi_runtime",
+        "ports_unavailable",
+        "result_write_failed",
+        "runtime_cleanup_failed",
+        "runtime_command_failed",
+        "runtime_container_identity_invalid",
+        "runtime_directory_invalid",
+        "runtime_http_contract_failed",
+        "runtime_http_failed",
+        "runtime_http_url_invalid",
+        "runtime_image_identity_invalid",
+        "runtime_inspect_invalid",
+        "runtime_pin_block_failed",
+        "runtime_pin_registry_changed",
+        "runtime_pin_registry_invalid",
+        "runtime_setup",
+        "secret_cleanup_identity_invalid",
+        "source_materialization",
+        "terminal_pinset_blocked",
+        "trusted_release_invalid",
+        "trusted_release_revision_mismatch",
+    }
+)
+
 
 class _PhaseError(RuntimeError):
     def __init__(self, phase: str, *, diagnostic: str | None = None) -> None:
@@ -143,7 +201,14 @@ def _assert_current_m05_pinset_is_runnable() -> None:
         _fail("terminal_pinset_blocked")
 
 
-def _block_terminal_m05_pinset() -> bool:
+def _terminal_registry_reason(phase: str) -> str:
+    """root registry에는 고정 phase만 남겨 원문 유출을 막는다."""
+
+    safe_phase = phase if phase in _PUBLIC_TERMINAL_PHASES else "driver_contract_failed"
+    return f"M05 isolated one-shot terminal: {safe_phase}"
+
+
+def _block_terminal_m05_pinset(phase: str) -> bool:
     """terminal result를 root registry의 unconditional block과 결박한다."""
 
     try:
@@ -151,7 +216,7 @@ def _block_terminal_m05_pinset() -> bool:
             pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
             map_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
             pinvi_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
-            reason="M05 isolated one-shot terminal",
+            reason=_terminal_registry_reason(phase),
         )
     except RuntimePinRegistryError:
         return False
@@ -1869,7 +1934,7 @@ def main(expected_revision: str, output: Path) -> int:
             phase = "runtime_cleanup_failed"
         if not completed:
             try:
-                pinset_blocked = _block_terminal_m05_pinset()
+                pinset_blocked = _block_terminal_m05_pinset(phase)
             except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
                 pinset_blocked = False
                 unexpected_finalization_failure = True
