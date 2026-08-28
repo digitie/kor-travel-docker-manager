@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 from urllib.request import Request
@@ -326,8 +327,50 @@ def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
     assert "RuntimePrivilegeReconciliationError" in runner
     assert "SQLAlchemyError" in runner
     assert "CommandError" in runner
+    assert "baseline_reference_invalid" not in runner
+    assert "fresh 300 destination reference manifest is invalid" in runner
     assert "raise SystemExit" in runner
     assert "base64.b64decode" in entrypoint
+
+
+def _map_fresh_runner_exit_code(
+    driver: ModuleType, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> int:
+    class FreshMigrationError(RuntimeError):
+        pass
+
+    async def migrate() -> None:
+        raise error
+
+    fake_runpy = ModuleType("runpy")
+    fake_runpy.run_path = lambda *_args, **_kwargs: {
+        "FreshMigrationError": FreshMigrationError,
+        "_migrate": migrate,
+        "_parse_args": lambda _arguments: ("migrate", None),
+    }
+    monkeypatch.setitem(sys.modules, "runpy", fake_runpy)
+
+    with pytest.raises(SystemExit) as stopped:
+        exec(compile(driver._map_fresh_init_diagnostic_runner(), "<runner>", "exec"))
+
+    assert isinstance(stopped.value.code, int)
+    return stopped.value.code
+
+
+def test_map_fresh_diagnostic_runner_maps_exact_prefix_and_unknown_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+
+    assert _map_fresh_runner_exit_code(
+        driver,
+        monkeypatch,
+        RuntimeError("fresh 300 destination reference manifest is invalid"),
+    ) == 51
+    assert _map_fresh_runner_exit_code(
+        driver, monkeypatch, RuntimeError("unlisted Map runtime failure")
+    ) == 48
+    assert _map_fresh_runner_exit_code(driver, monkeypatch, ValueError("ignored")) == 127
 
 
 def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:

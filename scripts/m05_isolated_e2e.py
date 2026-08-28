@@ -84,6 +84,11 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     48: "alembic_runtime_contract_failed",
     49: "database_statement_failed",
     50: "runtime_privilege_reconciliation_failed",
+    51: "fresh_destination_contract_invalid",
+    52: "alembic_runtime_configuration_invalid",
+    53: "baseline_reference_invalid",
+    54: "schema_lineage_invalid",
+    55: "metadata_contract_invalid",
     127: "unclassified",
 }
 
@@ -402,6 +407,15 @@ def _map_fresh_init_diagnostic_runner() -> str:
         "fresh 300 migration did not produce exact raw revision 300": 46,
         "fresh 300 migration destination facet does not match baseline": 46,
     }
+    runtime_error_codes = {
+        "fresh 300 destination reference manifest is invalid": 51,
+        "fresh 300 destination artifact map is invalid": 51,
+        "fresh 300 destination facet SQL is invalid": 51,
+        "fresh 300 destination facet does not match immutable reference": 51,
+        "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE must be exactly true or false": 52,
+        "Alembic external connection must be a SQLAlchemy Connection": 52,
+        "300_schema_baseline is forward-only — older Alembic lineages are unsupported": 54,
+    }
     return "\n".join(
         (
             "import asyncio",
@@ -425,8 +439,25 @@ def _map_fresh_init_diagnostic_runner() -> str:
             "        ('sqlalchemy.exc', 'OperationalError'): 49,",
             "        ('sqlalchemy.exc', 'ProgrammingError'): 49,",
             "        ('sqlalchemy.exc', 'SQLAlchemyError'): 49,",
-            "        ('builtins', 'RuntimeError'): 48,",
             "    }",
+            "    if identity == ('builtins', 'RuntimeError'):",
+            "        message = str(error)",
+            f"        runtime_codes = {runtime_error_codes!r}",
+            "        if message in runtime_codes:",
+            "            raise SystemExit(runtime_codes[message])",
+            "        if message.startswith('300 baseline reference') or message.startswith(",
+            "            '300 baseline application-',",
+            "        ):",
+            "            raise SystemExit(53)",
+            "        if message.startswith('0236-to-300 ') or message.startswith(",
+            "            '0236 application schema',",
+            "        ) or message.startswith('generic Alembic stamp'):",
+            "            raise SystemExit(54)",
+            "        if message.startswith('application metadata maps') or message.startswith(",
+            "            'alembic unmapped-table exclusions',",
+            "        ):",
+            "            raise SystemExit(55)",
+            "        raise SystemExit(48)",
             "    raise SystemExit(codes.get(identity, 127))",
         )
     )

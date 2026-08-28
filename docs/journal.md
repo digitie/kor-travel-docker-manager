@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-28 — Alembic runtime contract의 고정 원인 분류
+
+`6c888a5…` candidate는 `alembic_runtime_contract_failed`로 끝났고 cleanup 뒤 Map·PinVi
+transaction resource는 각각 0개였다. candidate와 ledger는 terminal로 보존하고 재실행하지 않는다.
+
+다음 candidate는 immutable Map source에 선언된 Alembic `RuntimeError` 문구만 memory 안에서
+closed allowlist로 대조한다. destination facet, runtime configuration, baseline reference, schema
+lineage, metadata contract의 다섯 enum만 종료 코드로 남기며, 문자열·hash·exception 원문은 result에
+기록하지 않는다. allowlist 밖의 runtime error는 기존 generic enum으로 fail-close한다.
+exact·prefix·unknown 세 경우를 실제 runner 종료 코드 회귀로 고정해 이후 진단 분류가 임의로 바뀌지 않게 한다.
+
+---
+
 ## 2026-08-28 — Map fresh-init 예외 계열 분류 확장
 
 `bea60f5…` candidate는 fixed `map_fresh_init_failed`와 `unclassified`로 끝났고, cleanup 뒤
