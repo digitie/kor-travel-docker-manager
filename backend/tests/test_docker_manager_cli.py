@@ -806,12 +806,29 @@ def _seed_path() -> Path:
 def test_pin_parser_registers_every_leaf_command():
     parser = build_parser()
 
-    for action in ("init", "show", "verify", "rotate", "rotate-pair", "block", "rollback"):
+    for action in (
+        "init",
+        "show",
+        "verify",
+        "publish-generation",
+        "rotate",
+        "rotate-pair",
+        "block",
+        "rollback",
+    ):
         args = parser.parse_args(
             {
                 "init": ["pin", "init", "--seed", "x"],
                 "show": ["pin", "show"],
                 "verify": ["pin", "verify"],
+                "publish-generation": [
+                    "pin",
+                    "publish-generation",
+                    "--manifest",
+                    "/root/state/pinned-runtime-generation-v6.json",
+                    "--journal",
+                    "/root/state/pinned-runtime-rebuild-v8-a.json",
+                ],
                 "rotate": [
                     "pin",
                     "rotate",
@@ -863,6 +880,42 @@ def test_pin_mutations_refuse_without_confirm(argv, pin_cli_env, capsys):
     assert main(argv) == 2
     assert "--confirm" in capsys.readouterr().err
     assert not pin_cli_env.exists()
+
+
+def test_pin_publish_generation_refuses_without_confirm(capsys):
+    assert (
+        main(
+            [
+                "pin",
+                "publish-generation",
+                "--manifest",
+                "/root/state/pinned-runtime-generation-v6.json",
+                "--journal",
+                "/root/state/pinned-runtime-rebuild-v8-a.json",
+            ]
+        )
+        == 2
+    )
+    assert "--confirm" in capsys.readouterr().err
+
+
+def test_pin_publish_generation_requires_root(capsys):
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
+        assert (
+            main(
+                [
+                    "pin",
+                    "publish-generation",
+                    "--manifest",
+                    "/root/state/pinned-runtime-generation-v6.json",
+                    "--journal",
+                    "/root/state/pinned-runtime-rebuild-v8-a.json",
+                    "--confirm",
+                ]
+            )
+            == 2
+        )
+    assert "root" in capsys.readouterr().err
 
 
 def test_pin_show_without_a_registry_fails_closed(pin_cli_env, capsys):

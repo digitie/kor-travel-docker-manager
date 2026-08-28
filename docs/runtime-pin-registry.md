@@ -22,10 +22,11 @@ registry는 현재 pin뿐 아니라 **pinset의 생애 상태**(재시도 금지
 `rebuild-pinned`는 재시도 금지 pinset에 대해 **어떤 mutation보다 먼저 거부**한다.
 
 ```
-값(어떤 커밋인가)      → registry 파일이 소유       → ktdctl pin rotate 로 바꾼다
+값(어떤 커밋인가)      → registry 파일이 소유       → M05는 ktdctl pin rotate-pair 로 함께 바꾼다
 계약(무엇이 유효한가)  → 코드가 소유                → 코드를 고쳐야 바뀐다
 생애(실행해도 되는가)  → registry + 코드 하한선     → ktdctl pin block / rotate --block-previous
 제안(무엇을 바꾸고 싶은가) → 별도 요청 파일이 소유  → UI가 기록, root가 apply-pending (§7-1)
+관측(어디까지 이행됐나) → root 공개 사본이 소유     → GET /pinned-runtime/generation (§7-a)
 ```
 
 ---
@@ -110,6 +111,25 @@ registry는 root `0600`이다. UI에서 회전이 필요하면 **요청을 기�
 
 파일 부재·파싱 실패·digest 불일치·소유권 위반은 예외를 던진다. "값을 모르면 기본값으로
 진행"하는 경로를 만들면 안 된다. 조회 API도 값을 추측하지 않고 `unknown`을 반환한다.
+
+### 1-7. generation 공개 사본은 private state를 읽는 우회로가 아니다
+
+v6 manifest와 v8 rebuild journal은 root 소유 private state(`0700` 디렉터리·`0600` 파일)에
+남는다. backend가 그 경로를 직접 읽거나 권한을 완화해서는 안 된다. `write_manifest`와
+`write_rebuild_journal`은 typed model 검증 뒤 **같은 raw JSON**을 `0644` 공개 경로에 원자
+복제하고, 기존 상태를 한 번 공개해야 할 때만 root가 다음 명령을 쓴다.
+
+```bash
+sudo -n backend/.venv/bin/ktdctl pin publish-generation \
+  --manifest <root-owned-pinned-runtime-generation-v6.json> \
+  --journal <root-owned-pinned-runtime-rebuild-v8-<pinset>.json> \
+  --confirm
+```
+
+공개 파일은 Map exact-dict attestation과 같은 schema를 보존한다. 사람용 상태·terminal
+분류·다음 행동은 파일이 아니라 `GET /api/v1/pinned-runtime/generation`의 envelope에만
+있다. custom `KTDM_PINNED_RUNTIME_STATE_ROOT` 배포는 읽기 가능한 별도 절대 경로를
+`KTDM_PINNED_RUNTIME_PUBLIC_ROOT`로 함께 지정해야 한다.
 
 ---
 
@@ -227,6 +247,7 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 | `pin init [--seed PATH] [--reason R] [--force] --confirm` | mutation | 호스트 최초 1회. `--seed` 기본값은 설치본의 `config/runtime-pins.seed.json`. 기존 파일이 있으면 `--force` 없이는 거부하고, `--force`여도 **이력·차단 목록을 승계하고 이전 상태를 digest 이름으로 보존**한다 |
 | `pin show [--json]` | 읽기 전용 | 현재 pin·digest·회전 메타·차단 목록·최근 이력. 현재 pinset이 조건 없이 차단됐으면 **"rebuild가 거부됩니다"를 평문으로 경고**한다 |
 | `pin verify [--json]` | 읽기 전용 | digest 재계산·canonical URL·공개 사본 정합. **현재 pinset이 차단됐거나 공개 사본이 current가 아니면 exit 1** — digest가 맞다는 이유로 0을 반환하면 운영자가 rebuild 직전에 잘못 안심한다 |
+| `pin publish-generation --manifest PATH --journal PATH --confirm` | mutation, **root 전용** | 검증된 private v6 manifest·current v8 journal을 `0644` 공개 사본으로 원자 복제한다. 경로는 절대 경로만 허용하며, API가 root state를 직접 읽는 우회로는 만들지 않는다 |
 | `pin rotate --role map\|pinvi --revision <40-hex> --reason R [--block-previous] --confirm` | mutation | digest 자동 계산, 이력에 `supersedes` 기록, 이전 파일을 `runtime-pins.<old-digest>.json`으로 보존, 공개 사본 갱신. 아무것도 바뀌지 않는 회전과 **차단된 pinset을 만들어 내는 회전은 거부** |
 | `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
@@ -296,6 +317,40 @@ pinset을 태워 놓고 "적용 안 됨"이라고 보고한다:
 
 프론트(`components/RuntimePinPanel.tsx`)는 `ok`가 아닌 모든 상태를 "확인 필요"로
 표시하고 복사 가능한 SSH 명령을 함께 준다.
+
+---
+
+## 7-a. API 계약 — `GET /api/v1/pinned-runtime/generation`
+
+인증 필요(미인증 401). 이 route는 public copy만 다시 strict parse하며, private state
+경로·원문 오류·환경값은 반환하지 않는다.
+
+```jsonc
+{
+  "status": "ok" | "unknown",
+  "source": "published_copy",
+  "detail": "<unknown일 때 고정 설명>",
+  "manifest": {"version": 6, "active_generation": {"...": "..."}} | null,
+  "journal": {"version": 8, "candidate": {"...": "..."}, "phase": "..."} | null,
+  "pinset_binding": {"status": "match" | "pending_rebuild" | "drift" | "unknown",
+                     "registry_pinset_sha256": "..." | null,
+                     "generation_pinset_sha256": "..." | null},
+  "terminal": null | {"class": "pinvi_role_lifecycle_block", "subclass": "...", "pinset_sha256": "..."},
+  "summary": {
+    "state": "committed" | "rebuilding" | "pending_rebuild" | "action_required" | "unverified" | "unknown",
+    "text": "<한국어>", "next_action": "<SSH 명령 또는 빈 문자열>",
+    "manifest_version": 6 | null, "journal_version": 8 | null
+  }
+}
+```
+
+`manifest`와 `journal`은 그대로의 raw document다. 두 파일의 교체 사이처럼 in-progress
+상태에서 서로 다를 수 있으므로 API가 내용을 고쳐 맞추지 않는다. `summary`가 그 상태를
+명확히 말하고, terminal은 journal의 typed lifecycle receipt가 있을 때만 고정 enum으로
+나온다. `pinset_binding`은 `GET /runtime-pins`의 current Map·PinVi pair와 비교한 결과다.
+새 pair를 rotate한 직후 이전 committed generation만 남은 경우는 `pending_rebuild`, 새
+journal 후보가 current pair와 다르면 `drift`, registry 공개 사본을 신뢰할 수 없으면
+`unknown`으로 fail-close한다.
 
 ---
 

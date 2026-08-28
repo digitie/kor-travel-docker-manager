@@ -32,6 +32,9 @@ from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.pinned_rebuild_preflight import (
     read_pinned_rebuild_preflight,
 )
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    read_published_pinned_runtime_generation,
+)
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
@@ -360,6 +363,19 @@ def _runtime_pin_summary(
         "text": f"고정된 pinset이 정상 등록돼 있습니다. 마지막 회전: {rotated_at or '알 수 없음'}",
         "next_action": "",
     }
+
+
+@router.get("/pinned-runtime/generation")
+def get_pinned_runtime_generation():
+    """공개된 v6 manifest·v8 journal 원본과 안전한 요약을 조회한다.
+
+    backend는 root-owned state를 읽지 않는다. root `ktdctl pin publish-generation`과
+    rebuild writer가 갱신하는 0644 public copy만 parser로 다시 검증해 반환한다.
+    manifest/journal JSON은 Map attestation의 exact-dict 계약이므로 summary 이외의
+    가공·필드 추가를 하지 않는다.
+    """
+
+    return read_published_pinned_runtime_generation()
 
 
 @router.get("/source-status")
