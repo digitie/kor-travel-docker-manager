@@ -27,6 +27,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import BackupHistoryPanel from './BackupHistoryPanel';
+import RuntimePinPanel from './RuntimePinPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
 import AppShell from './layout/AppShell';
@@ -196,6 +197,7 @@ export default function DashboardClient() {
   const queryClient = useQueryClient();
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
+  const [isRuntimePinsOpen, setIsRuntimePinsOpen] = useState<boolean>(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [commandQuery, setCommandQuery] = useState('');
   const commandInputRef = useRef<HTMLInputElement>(null);
@@ -803,6 +805,12 @@ export default function DashboardClient() {
       run: () => setIsBackupHistoryOpen(true),
     },
     {
+      id: 'runtime-pins',
+      label: '배포 버전 고정 상태 열기',
+      hint: '조회',
+      run: () => setIsRuntimePinsOpen(true),
+    },
+    {
       id: 'refresh',
       label: '컨테이너 상태 새로고침',
       hint: '동기화',
@@ -850,6 +858,7 @@ export default function DashboardClient() {
       onOpenAdminSettings={() => setIsAdminSettingsOpen(true)}
       onOpenBackupHistory={() => setIsBackupHistoryOpen(true)}
       onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+      onOpenRuntimePins={() => setIsRuntimePinsOpen(true)}
     >
       <div className="page-head">
         <div className="page-title">
@@ -1179,6 +1188,12 @@ export default function DashboardClient() {
       {isBackupHistoryOpen && (
         <div className="ops-modal-backdrop select-text">
           <BackupHistoryPanel onClose={() => setIsBackupHistoryOpen(false)} />
+        </div>
+      )}
+
+      {isRuntimePinsOpen && (
+        <div className="ops-modal-backdrop select-text">
+          <RuntimePinPanel onClose={() => setIsRuntimePinsOpen(false)} />
         </div>
       )}
 

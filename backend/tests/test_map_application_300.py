@@ -12,7 +12,6 @@ import pytest
 
 from kor_travel_docker_manager.services.map_application_300 import (
     APPLICATION_DATABASE_OWNER,
-    MAP_APPLICATION_300_SOURCE_COMMIT,
     Application300Candidate,
     Application300Contract,
     ApplicationDatabaseIdentity,
@@ -28,6 +27,7 @@ from kor_travel_docker_manager.services.map_application_300 import (
     build_fresh_finalize_fence,
     build_fresh_migration_fence,
     canonical_json_bytes,
+    expected_application_300_source_commit,
     json_artifact,
     parse_fresh_finalize_missing_receipt,
     parse_fresh_finalize_result,
@@ -67,7 +67,7 @@ def _contract() -> Application300Contract:
 
 def _candidate() -> Application300Candidate:
     return Application300Candidate(
-        map_source_commit=MAP_APPLICATION_300_SOURCE_COMMIT,
+        map_source_commit=expected_application_300_source_commit(),
         api_image_id=_image("a"),
         dagster_image_id=_image("b"),
     )

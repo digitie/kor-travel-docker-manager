@@ -664,3 +664,158 @@ def test_cli_db_backup_gc_invokes_service_with_keep(
 
     mock_gc.assert_called_once_with("geo", keep=2)
     assert "geo-1000.dump" in capsys.readouterr().out
+
+
+# --- ktdctl pin (KUM-M1·M2) ---------------------------------------------------
+
+
+@pytest.fixture
+def pin_cli_env(tmp_path, monkeypatch):
+    """pin CLI를 격리 registry에서 실행한다."""
+
+    from kor_travel_docker_manager.services import runtime_pin_registry
+
+    registry_path = tmp_path / "runtime-pins.json"
+    monkeypatch.setenv(runtime_pin_registry.RUNTIME_PINS_FILE_ENV, str(registry_path))
+    monkeypatch.setenv(
+        runtime_pin_registry.RUNTIME_PINS_PUBLIC_FILE_ENV,
+        str(tmp_path / "public.json"),
+    )
+    runtime_pin_registry.clear_runtime_pin_registry_cache()
+    yield registry_path
+    runtime_pin_registry.clear_runtime_pin_registry_cache()
+
+
+def _seed_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "config" / "runtime-pins.seed.json"
+
+
+def test_pin_parser_registers_every_leaf_command():
+    parser = build_parser()
+
+    for action in ("init", "show", "verify", "rotate", "block", "rollback"):
+        args = parser.parse_args(
+            {
+                "init": ["pin", "init", "--seed", "x"],
+                "show": ["pin", "show"],
+                "verify": ["pin", "verify"],
+                "rotate": [
+                    "pin",
+                    "rotate",
+                    "--role",
+                    "map",
+                    "--revision",
+                    "a" * 40,
+                    "--reason",
+                    "r",
+                ],
+                "block": ["pin", "block", "a" * 64, "--reason", "r"],
+                "rollback": ["pin", "rollback", "--to", "a" * 64, "--reason", "r"],
+            }[action]
+        )
+        assert args.pin_action == action
+        assert callable(args.func)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["pin", "init", "--seed", "seed.json"],
+        ["pin", "rotate", "--role", "map", "--revision", "a" * 40, "--reason", "r"],
+        ["pin", "block", "a" * 64, "--reason", "r"],
+        ["pin", "rollback", "--to", "a" * 64, "--reason", "r"],
+    ],
+)
+def test_pin_mutations_refuse_without_confirm(argv, pin_cli_env, capsys):
+    assert main(argv) == 2
+    assert "--confirm" in capsys.readouterr().err
+    assert not pin_cli_env.exists()
+
+
+def test_pin_show_without_a_registry_fails_closed(pin_cli_env, capsys):
+    assert main(["pin", "show"]) == 2
+    assert "missing" in capsys.readouterr().err
+
+
+def test_pin_init_bootstraps_from_the_packaged_seed(pin_cli_env, capsys):
+    assert main(["pin", "init", "--seed", str(_seed_path()), "--confirm"]) == 0
+
+    assert pin_cli_env.exists()
+    output = capsys.readouterr().out
+    assert "bootstrapped" in output
+    # seed의 terminal 목록은 부트스트랩에서도 유지된다.
+    assert "blocked" in output
+
+
+def test_pin_init_refuses_to_overwrite_without_force(pin_cli_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    assert main(["pin", "init", "--seed", str(_seed_path()), "--confirm"]) == 2
+    assert "refusing to overwrite" in capsys.readouterr().err
+
+
+def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+    before = pin_cli_env.read_bytes()
+
+    assert main(["pin", "show", "--json"]) == 0
+    show_output = capsys.readouterr().out
+    assert '"blocked_pinsets"' in show_output
+
+    # seed의 현재 pinset이 terminal이면 verify는 비정상 종료로 그 사실을 알린다 —
+    # digest가 맞다는 이유로 0을 반환하면 운영자가 rebuild 직전에 안심하게 된다.
+    verify_code = main(["pin", "verify", "--json"])
+    verify_output = capsys.readouterr().out
+    assert '"digest_recomputation": "ok"' in verify_output
+    assert '"current_pinset_is_blocked"' in verify_output
+    seed_blocks_current = '"current_pinset_is_blocked": true' in verify_output
+    assert verify_code == (1 if seed_blocks_current else 0)
+    assert pin_cli_env.read_bytes() == before
+
+
+def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "pin",
+            "rotate",
+            "--role",
+            "pinvi",
+            "--revision",
+            "d" * 40,
+            "--reason",
+            "새 PinVi head",
+            "--confirm",
+        ]
+    )
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "rotated pinvi pin" in output
+    assert "새 PinVi head" in output
+
+
+def test_pin_rotate_rejects_a_malformed_revision(pin_cli_env, capsys):
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "pin",
+            "rotate",
+            "--role",
+            "map",
+            "--revision",
+            "not-a-sha",
+            "--reason",
+            "bad",
+            "--confirm",
+        ]
+    )
+
+    assert exit_code == 2
+    assert "40-hex" in capsys.readouterr().err

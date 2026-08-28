@@ -13,7 +13,7 @@
 |:---|:---|:---:|:---|
 | **MAP-LIVE-FOLLOWUP** | Map/PinVi cross-repo live consumer acceptance 후속 | `[/]` | PinVi WebSocket/mutating loop·consumer reconciliation과 Map task/journal/manifest 교차 대조를 실제 pair에서 기록 |
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
-| **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 설계 | `[/]` | v3 문서 3부의 태스크 분해(KUM-M*·KUM-MAP-*·KUM-PV-*)를 기준으로 승인 항목을 구현 태스크로 분리 |
+| **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (1부 트랙 KUM-M1~M4 구현 완료) | `[/]` | 1부 잔여(KUM-M5·M6·M7)와 v3 문서 3부의 나머지 태스크 분해 |
 
 ## 공통 진행 규율
 
@@ -174,6 +174,12 @@ restore` 로드맵 포함 여부)을 결정하면 승인된 항목만 별도 구
   P2 권한 모델 정정(root-side publisher 의존), P6 rebuild journal 충돌 위험, preflight
   readiness·typed 진단 소비·계약 소유 경계 명문화, 태스크 분해(3부: KUM-M1~18,
   KUM-MAP-1~4, KUM-PV-1~4).
-- [ ] 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크(코드 변경 포함)로 새로
-  분리해 이 목록에 추가한다(신규 제안 항목은 분리 시 오너 확정 — KUM-M17은 별도
-  결정 사안).
+- [x] 1부 트랙 구현 완료(2026-08-28, ADR-40): KUM-M1(registry 파일화 + `ktdctl pin`
+  패밀리 + 중복 상수 제거), KUM-M2(pinset lifecycle·terminal 자동 거부·rollback 제한·
+  d9 상수 이관), KUM-M3(root-side world-readable publisher), KUM-M4(`GET
+  /api/v1/runtime-pins` + 배포 버전 고정 패널). 전문 적대 리뷰 2건 반영,
+  n150 격리 live E2E 15항목 통과, backend 751 tests.
+- [ ] 1부 잔여: KUM-M5(UI 2-step pin rotate), KUM-M6(typed 진단 소비 이관),
+  KUM-M7(preflight readiness 노출).
+- [ ] 나머지 3부 태스크 분해를 기준으로 승인 항목을 구현 태스크로 분리한다(신규 제안
+  항목은 분리 시 오너 확정 — KUM-M17은 별도 결정 사안).

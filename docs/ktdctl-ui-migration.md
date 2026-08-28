@@ -903,6 +903,24 @@ mutation의 HTTP 트리거화이며 UID/ACL 결정(Q2) 선행. 5단계는 15k �
 **의존 요약**: KUM-M1 → M2 → (M14), M1 → M3 → M4 → (M5, M7, MAP-1·2, PV-1·2).
 M6·M8~M13·M15·M18은 상호 독립. 프론트 신규 패널이 2개 이상 되기 전 KUM-M12 선행.
 
+## 진행안 — 1부 트랙 실행 규약 (2026-08-28 착수)
+
+1부 트랙(KUM-M1~M4 코어 + M7)은 아래 규약으로 진행한다.
+
+- **브랜치**: `feat/pin-registry-part1`을 `main`에서 분기해 그 위에서만 작업하고, 완주
+  뒤 `main`에 머지한다. 작업 중 `origin/main`을 자주 fetch·rebase한다.
+- **PR**: 착수 즉시 draft PR을 올리고 작은 단위로 자주 커밋·push해 진행을 공개한다.
+  완주 시점에 ready 전환 후 머지한다.
+- **적대 리뷰**: 전문 리뷰어 서브에이전트 **2인**이 서로 다른 각도(계약·fail-close
+  정합성 / 운영·회귀·사용성 관점)로 독립 리뷰하고, 확인된 지적은 전부 반영한 뒤에만
+  머지한다.
+- **테스트**: 격리 환경에서 n150 live E2E를 우선한다. live 실행이 불가능하거나 파괴적
+  경로(실제 `rebuild-pinned` 등)는 mock/단위 테스트로 대체하고, 무엇을 mock으로
+  대체했는지 저널에 명시한다.
+- **범위 경계**: 이번 라운드는 pin registry·lifecycle·publisher·조회 API와 그
+  readiness 노출까지다. mutation UI(M5)·typed 진단 이관(M6)·운영 기능 트랙
+  (M9·M10·M13)은 후속 라운드로 분리한다.
+
 ---
 
 ## 우선순위 권고 (usability-first, v3 태스크 매핑)

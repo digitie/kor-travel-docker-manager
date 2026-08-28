@@ -2475,3 +2475,69 @@ committed 또는 final resume은 일곱 running container의 실제 Docker image
   재개 가능한 generation으로 기록한다.
 - receipt가 없고 pre-state도 exact하지 않은 execution intent, image/receipt/DB identity drift,
   non-root가 읽을 수 없는 permit, implicit storage 재실행은 모두 runtime 기동 전에 fail-close한다.
+
+## ADR-40: pinned revision은 코드 상수가 아니라 root 소유 registry 파일이 소유하고, pinset의 생애 상태를 기계가 강제한다
+
+- 상태: accepted
+- 날짜: 2026-08-28
+- 결정자: agent (오너 승인 Q1, `docs/ktdctl-ui-migration.md` 1부)
+
+### 컨텍스트
+
+Map·PinVi의 pinned revision(40-hex 2개)과 그 파생 digest가 `services/pinned_runtime_release.py`의
+코드 상수였고, Map revision의 중복본이 `services/map_application_300.py`에 하나 더 있었다.
+pin은 이 시스템에서 가장 자주 바뀌는 값인데(2026-08-25~28 3.5일 실측 회전 15회, 그중 5회는
+3,900~4,100줄짜리 기능 커밋에 매몰돼 "PR 리뷰 = pin 승인" 게이트가 명목상으로도 작동하지
+못했다) 가장 바꾸기 비싼 곳에 있었다. 회전 1회가 코드 2파일 + 테스트 기대값(실측 86줄) +
+PR + 릴리스 설치 + 재기동으로 증폭됐고, 그 여파는 이 저장소에 그치지 않았다 — 같은 3일
+창에서 kor-travel-map은 pinset 부기 전용 커밋 19건, pinvi는 Manager generation이 이미 보유한
+값 14개를 문서에 수기 복제했다.
+
+더 심각한 것은 **"terminal(실패 종결) 판정된 pinset은 영구 재시도 금지"라는 핵심 운영
+규약이 세 저장소의 수기 문서에만 존재**했다는 점이다. 어긴 실행을 막는 기계 게이트가 없었고,
+실제로 이 감사에서 **현행 Manager pin `cbb577d3…`가 pinvi journal이 terminal로 선언한
+pinset인데 Manager 코드만으로는 알 방법이 없다**는 사실이 드러났다.
+
+### 결정
+
+pinned revision과 pinset의 생애 상태를 root 소유 JSON registry 파일(`runtime-pin-registry.v1`)로
+옮기고, terminal pinset의 실행을 rebuild가 mutation 이전에 거부한다.
+
+### 근거
+
+- **값은 파일, 계약은 코드.** canonical URL 집합·40-hex 형식·role 순서·pinset digest 재계산
+  대조는 파싱 직후 코드가 강제한다. 파일을 편집해 임의 저장소를 가리키게 만드는 것은 코드
+  수정 없이 불가능하다. digest 계산 규칙(`canonical_pinset_bytes`)은 kor-travel-map
+  attestation과 공유하는 계약이므로 한 바이트도 바꾸지 않았다.
+- **읽기 시점에 파일 자체를 검증한다.** `lstat`(symlink 미추종), 일반 파일, 소유자(root 또는
+  자기 자신), group/other 쓰기 금지. "값은 파일, 신뢰는 소유권"이라는 논거는 소유권을 실제로
+  보는 코드가 있어야 성립한다.
+- **하한선은 코드가 소유한다.** registry가 손상되거나 오래된 사본으로 시딩돼도 d9 계열
+  차단은 유지된다. 목록은 데이터, 하한선은 코드다.
+- **차단에는 두 의미가 있고 섞지 않는다.** phase 한정 차단은 특정 journal 재개만 막고(기존
+  d9 admission과 동일), 조건 없는 차단은 그 pinset의 모든 실행을 막는다(rebuild 시작 게이트).
+- **배포 트리 밖.** trusted installer는 canonical execution root를 통째 교체하므로 트리 안
+  registry는 다음 설치가 회전을 조용히 되돌린다. 설치 root에서 도는 경우 기본값을
+  `/var/lib/kor-travel-docker-manager`로 두고, 트리 안 경로로의 회전은 거부한다.
+- **재기동 불요.** mtime·size·inode 스탬프로 캐시를 무효화하므로 root CLI의 회전이 실행 중
+  backend에 즉시 반영된다.
+
+### 트레이드오프 (내주는 것)
+
+1. PR 리뷰가 곧 pin 승인이던 암묵적 게이트 → `--confirm` + root + `--reason` 필수 + 이력·감사
+   기록으로 대체. 실측상 그 게이트는 셀프 머지이거나 대형 diff에 매몰돼 명목적이었다.
+2. git 이력 = pin 이력 → registry의 `history`와 digest 이름의 보존본으로 대체. 롤백은 오히려
+   개선되지만(명령 1개) 보존본이 git처럼 분산 백업되지 않으므로 백업 대상 등재가 필요하다.
+3. 테스트가 pin 값을 고정하던 성질 → 값 고정에서 구조 검증으로 재작성. 회전 시 값 고정
+   churn은 소멸하고, rebuild 시나리오 fixture는 잔존한다.
+4. **코드 = 배포본 단일성(가장 실질적 손실).** 동작이 코드 + 호스트 로컬 파일의 함수가 된다.
+   부재·파싱 실패·digest 불일치는 전부 fail-close로 관리하되, 단일성 자체는 회복되지 않는다.
+
+Map application `300`의 소스 commit 중복 상수는 삭제했다. 이원 관리 hazard가 소멸하는 대신
+로컬 이중화가 사라지지만, 실질적인 교차 검증은 원래 로컬 중복본이 아니라 **Map이 공급하는
+sealed paired candidate가 같은 commit을 선언해야 한다**는 admission이며 그 검증은 그대로다.
+
+### 후속
+
+pin 회전 UI(2-step 승인), typed 진단 소비, preflight readiness 노출은
+`docs/ktdctl-ui-migration.md` 3부의 별도 태스크(KUM-M5·M6·M7)로 분리한다.
