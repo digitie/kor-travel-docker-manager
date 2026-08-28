@@ -15,6 +15,13 @@
 | **BACKUP-FOLLOWUP** | 독립 standalone backup의 남은 운영 보강 | `[/]` | off-box 사본 자동화와 보존 정책. Alembic downgrade/이전 revision restore는 범위 밖 |
 | **KTDCTL-UI-MIGRATION** | ktdctl CLI 기능의 UI 이관·운영 기능 격차 (1부 트랙 KUM-M1~M4 구현 완료) | `[/]` | 1부 잔여(KUM-M5·M6·M7)와 v3 문서 3부의 나머지 태스크 분해 |
 
+## M05 재개 규율
+
+- [/] `a3f6a8f3…`은 trusted installed-wheel project-root preflight failure로 terminal 차단됐다. 같은
+  Map/PinVi pinset·Manager source·one-shot output leaf는 어떤 이유로도 재실행하지 않는다. installed `python -I`
+  경로의 external registry 선택 회귀와 두 전문 적대 리뷰를 통과한 새 Manager source, 새 pair pinset만 다음
+  isolated M04/M05 실행권을 가질 수 있다.
+
 ## 공통 진행 규율
 
 1. 작업 시작과 PR merge 직전에 `origin/main`을 fetch하고 필요하면 rebase한다.

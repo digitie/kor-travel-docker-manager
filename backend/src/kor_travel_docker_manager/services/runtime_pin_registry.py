@@ -19,6 +19,7 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -553,6 +554,14 @@ def _parse_sources(payload: Any, *, release_version: int) -> Mapping[str, str]:
 
 
 def _project_root() -> Path:
+    # trusted release의 root launcher는 wheel 안의 Python을 ``-I``로 직접 실행한다.
+    # 그때 entrypoint가 주입하는 project-root env가 없더라도 sys.prefix는 설치 venv를
+    # 그대로 보존한다. package 부모를 네 번 거슬러 올리는 개발 checkout 규칙을 먼저
+    # 적용하면 ``.../.venv/lib/config``이라는 존재하지 않는 경로가 되어 one-shot이
+    # ledger claim 전 import 단계에서 끝난다.
+    if Path(sys.prefix) == _TRUSTED_INSTALL_ROOT / "backend" / ".venv":
+        return _TRUSTED_INSTALL_ROOT
+
     from kor_travel_docker_manager.services.registry import get_project_root
 
     return Path(get_project_root())

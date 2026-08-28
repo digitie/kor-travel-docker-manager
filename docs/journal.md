@@ -2,6 +2,21 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-28 — isolated launcher의 installed-wheel project root 회귀 차단
+
+Map `e6c08e…`·PinVi `932fb140…`·pinset `a3f6a8f3…`의 새 M05 isolated launcher는
+trusted release를 올바르게 검증했지만, wheel 안 `python -I` 경로가 개발 checkout의 package 부모 규칙으로
+project root를 계산해 runtime registry를 읽기 전 import 단계에서 fail-close했다. Docker·Compose·DB·driver
+ledger가 시작되기 전의 fixed preflight failure이며, 해당 pinset은 `launcher_preflight` terminal evidence로
+즉시 차단해 재실행하지 않는다.
+
+runtime pin registry는 installed venv의 `sys.prefix`가 trusted `/opt` root와 일치하면 외부 root registry와
+public copy를 직접 선택하도록 보정한다. 이 경로를 회귀 테스트로 고정해 `-I` launcher와 일반 CLI entrypoint의
+project-root 발견 방식이 다시 어긋나지 않게 한다. 다음 live E2E는 새 Manager source와 새 Map/PinVi pinset에서만
+정확히 한 번 실행한다.
+
+---
+
 ## 2026-08-28 — M05 pair 회전의 intermediate pinset admission 차단
 
 runtime pin registry의 role별 두 회전은 첫 write 뒤 intermediate Map/PinVi tuple을 만들 수 있었고,

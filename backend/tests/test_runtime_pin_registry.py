@@ -85,6 +85,27 @@ def test_registry_round_trips_into_a_valid_release() -> None:
     assert release.source_for("pinvi").revision == PINVI_B
 
 
+def test_installed_isolated_interpreter_uses_external_runtime_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """root one-shot이 ``python -I``로 실행돼도 wheel 부모를 project root로 오인하지 않는다."""
+
+    monkeypatch.delenv(registry_module.RUNTIME_PINS_FILE_ENV)
+    monkeypatch.delenv(registry_module.RUNTIME_PINS_PUBLIC_FILE_ENV)
+    monkeypatch.setattr(
+        registry_module.sys,
+        "prefix",
+        "/opt/kor-travel-docker-manager/backend/.venv",
+    )
+
+    assert registry_module.runtime_pin_registry_path() == (
+        Path("/var/lib/kor-travel-docker-manager") / "runtime-pins.json"
+    )
+    assert registry_module.runtime_pin_registry_public_path() == (
+        Path("/var/lib/kor-travel-docker-manager-public") / "runtime-pins.json"
+    )
+
+
 def test_tampered_digest_is_rejected_even_though_the_file_says_otherwise(
     _isolated_registry,
 ) -> None:
