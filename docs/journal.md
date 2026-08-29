@@ -2,6 +2,14 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-30 — root launcher의 명시적 forensic capture
+
+direct command terminal의 기본 receipt는 return code만 보존하므로, 원인 분석이 필요한 root operator는 기존에
+환경변수를 직접 전달해야 했다. launcher는 이제 `--forensic-capture`를 root-only argument로 받는다. 명시하지
+않으면 inherited capture 환경을 제거해 default raw discard를 유지하고, 명시하면 lock 재실행 경로까지 같은
+argument를 전달해 bounded stderr capture가 확실히 유지된다. 이는 특정 consumer failure를 Manager registry에
+새로 넣지 않는 일반 one-shot forensic authority 경계다.
+
 ## 2026-08-29 — isolated runtime의 전체 host-port 예약을 단일화
 
 M05 isolated driver가 RustFS console port를 storage port의 `+1`로 유도했지만, 예약 표에는 그 값을 별도
