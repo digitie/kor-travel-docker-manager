@@ -85,6 +85,9 @@ _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 _FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
 _FORENSIC_CAPTURE_LIMIT = 256_000
+# Compose config은 trusted input이라도 외부 CLI 출력이다. JSON parser에 넘기는
+# 원문은 이 상한만 보관하고, 초과분도 끝까지 drain해 child pipe를 막지 않는다.
+_COMPOSE_CONFIG_OUTPUT_LIMIT = 256_000
 _RAW_ENV_NAMES = (
     "M05_MAP_ADMIN_PROXY_SECRET",
     "M05_PINVI_EMAIL",
@@ -214,12 +217,16 @@ class _PhaseError(RuntimeError):
         diagnostic: str | None = None,
         returncode: int | None = None,
         stderr: bytes | None = None,
+        stdout: bytes | None = None,
+        stdout_truncated: bool = False,
     ) -> None:
         super().__init__(phase)
         self.phase = phase
         self.diagnostic = diagnostic
         self.returncode = returncode
         self.stderr = stderr
+        self.stdout = stdout
+        self.stdout_truncated = stdout_truncated
 
 
 def _fail(
@@ -228,12 +235,16 @@ def _fail(
     diagnostic: str | None = None,
     returncode: int | None = None,
     stderr: bytes | None = None,
+    stdout: bytes | None = None,
+    stdout_truncated: bool = False,
 ) -> NoReturn:
     raise _PhaseError(
         phase,
         diagnostic=diagnostic,
         returncode=returncode,
         stderr=stderr,
+        stdout=stdout,
+        stdout_truncated=stdout_truncated,
     )
 
 
@@ -434,13 +445,19 @@ def _command(
     capture: bool = False,
     failure_exit_diagnostics: dict[int, str] | None = None,
     capture_failure_stderr: bool = False,
+    capture_output_limit: int | None = None,
 ) -> str:
     child_env = dict(_SAFE_SUBPROCESS_ENV)
     if env is not None:
         child_env.update(env)
-    if capture_failure_stderr:
-        stdout, returncode, stderr = _run_with_bounded_stderr(
-            args, cwd=cwd, env=child_env, capture=capture
+    if capture_failure_stderr or capture_output_limit is not None:
+        stdout, returncode, stderr, stdout_bytes, stdout_truncated = _run_with_bounded_output(
+            args,
+            cwd=cwd,
+            env=child_env,
+            capture=capture,
+            capture_stderr=capture_failure_stderr,
+            stdout_limit=capture_output_limit,
         )
     else:
         completed = subprocess.run(
@@ -456,6 +473,8 @@ def _command(
         stdout = completed.stdout if capture else ""
         returncode = completed.returncode
         stderr = None
+        stdout_bytes = None
+        stdout_truncated = False
     if returncode != 0:
         diagnostic = (
             failure_exit_diagnostics.get(returncode)
@@ -468,13 +487,25 @@ def _command(
             returncode=returncode,
             stderr=stderr,
         )
+    if stdout_truncated:
+        _fail(
+            "runtime_command_output_too_large",
+            stdout=stdout_bytes,
+            stdout_truncated=True,
+        )
     return stdout
 
 
-def _run_with_bounded_stderr(
-    args: tuple[str, ...], *, cwd: Path | None, env: dict[str, str], capture: bool
-) -> tuple[str, int, bytes]:
-    """Drain forensic stderr without allowing a failing child to exhaust root memory."""
+def _run_with_bounded_output(
+    args: tuple[str, ...],
+    *,
+    cwd: Path | None,
+    env: dict[str, str],
+    capture: bool,
+    capture_stderr: bool,
+    stdout_limit: int | None,
+) -> tuple[str, int, bytes | None, bytes | None, bool]:
+    """Bound captured child streams while draining every byte needed to avoid pipe stalls."""
 
     process = subprocess.Popen(
         list(args),
@@ -482,27 +513,44 @@ def _run_with_bounded_stderr(
         env=env,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=subprocess.PIPE if capture_stderr else subprocess.DEVNULL,
     )
-    assert process.stderr is not None
-    captured = bytearray()
+    captured_stderr = bytearray()
 
     def drain_stderr() -> None:
+        assert process.stderr is not None
         while chunk := process.stderr.read(65_536):
-            remaining = _FORENSIC_CAPTURE_LIMIT - len(captured)
+            remaining = _FORENSIC_CAPTURE_LIMIT - len(captured_stderr)
             if remaining > 0:
-                captured.extend(chunk[:remaining])
+                captured_stderr.extend(chunk[:remaining])
 
-    reader = threading.Thread(target=drain_stderr, daemon=True)
-    reader.start()
+    reader = (
+        threading.Thread(target=drain_stderr, daemon=True) if capture_stderr else None
+    )
+    if reader is not None:
+        reader.start()
+    captured_stdout = bytearray()
+    stdout_truncated = False
     if capture:
         assert process.stdout is not None
-        stdout = process.stdout.read().decode("utf-8", errors="replace")
+        while chunk := process.stdout.read(65_536):
+            if stdout_limit is None:
+                captured_stdout.extend(chunk)
+                continue
+            remaining = stdout_limit - len(captured_stdout)
+            if remaining > 0:
+                captured_stdout.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                stdout_truncated = True
+        stdout_bytes: bytes | None = bytes(captured_stdout)
+        stdout = stdout_bytes.decode("utf-8", errors="replace")
     else:
         stdout = ""
+        stdout_bytes = None
     returncode = process.wait()
-    reader.join()
-    return stdout, returncode, bytes(captured)
+    if reader is not None:
+        reader.join()
+    return stdout, returncode, bytes(captured_stderr) if capture_stderr else None, stdout_bytes, stdout_truncated
 
 
 def _compose(
@@ -517,6 +565,7 @@ def _compose(
     failure_phase: str | None = None,
     failure_exit_diagnostics: dict[int, str] | None = None,
     failure_evidence_path: Path | None = None,
+    output_evidence_path: Path | None = None,
 ) -> str:
     command = [
         "/usr/bin/docker",
@@ -540,6 +589,9 @@ def _compose(
                 failure_evidence_path is not None
                 and os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
             ),
+            capture_output_limit=(
+                _COMPOSE_CONFIG_OUTPUT_LIMIT if output_evidence_path is not None else None
+            ),
         )
     except _PhaseError as error:
         if failure_evidence_path is not None and error.phase == "runtime_command_failed":
@@ -548,7 +600,19 @@ def _compose(
                 returncode=error.returncode,
                 stderr=error.stderr,
             )
-        if failure_phase is not None and error.phase == "runtime_command_failed":
+        if (
+            output_evidence_path is not None
+            and error.phase == "runtime_command_output_too_large"
+        ):
+            _write_compose_output_evidence(
+                output_evidence_path,
+                output=error.stdout or b"",
+                truncated=error.stdout_truncated,
+            )
+        if failure_phase is not None and error.phase in {
+            "runtime_command_failed",
+            "runtime_command_output_too_large",
+        }:
             _fail(failure_phase, diagnostic=error.diagnostic)
         raise
 
@@ -571,13 +635,23 @@ def _write_compose_failure_evidence(
     _write_private_bytes(path.with_suffix(".stderr"), stderr or b"\n")
 
 
-def _write_compose_output_evidence(path: Path, *, output: str) -> None:
+def _write_compose_output_evidence(
+    path: Path, *, output: str | bytes, truncated: bool = False
+) -> None:
     """Keep a fixed parse-failure marker; raw successful-command output remains opt-in only."""
 
-    _write_private_json(path, {"kind": "compose_config_output", "version": 1})
+    _write_private_json(
+        path,
+        {
+            "kind": "compose_config_output",
+            "truncated": truncated,
+            "version": 1,
+        },
+    )
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1":
         return
-    raw = output.encode("utf-8", errors="replace")[:_FORENSIC_CAPTURE_LIMIT]
+    raw = output if isinstance(output, bytes) else output.encode("utf-8", errors="replace")
+    raw = raw[:_FORENSIC_CAPTURE_LIMIT]
     _write_private_bytes(path.with_suffix(".stdout"), raw or b"\n")
 
 
@@ -1866,6 +1940,7 @@ def main(expected_revision: str, output: Path) -> int:
                 capture=True,
                 failure_phase="runtime_loopback_publish_config_invalid",
                 failure_evidence_path=runtime / "rendered-loopback-publish-error.json",
+                output_evidence_path=runtime / "rendered-loopback-publish-output.json",
             ),
             service="api",
             container_port=13701,
