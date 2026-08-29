@@ -66,6 +66,12 @@ console, PinVi API/Web/RustFS/console/Dagster 및 observability profile의 cAdvi
 `run-m05-isolated-e2e-once`의 strict result schema는 이 일곱 setup phase를 포함한 driver의 모든 public
 terminal phase를 `completed` 외 exact 같은 집합으로 수용한다. 이 동등성은 source literal AST 회귀로 고정하므로,
 새 driver phase는 launcher contract를 함께 바꾸지 않으면 CI에서 거부된다.
+
+기본 launcher는 raw command output을 보존하지 않는다. root operator가 원인 분석을 명시적으로 승인한 때만
+`run-m05-isolated-e2e-once --forensic-capture <Manager SHA> <새 root-owned leaf>`를 사용한다. 이 옵션은
+호출 shell에 우연히 남은 환경변수를 무시하고 launcher가 직접 bounded capture를 켜며, 이미 cap을 적용한 최대
+256 KiB stderr만 private leaf에 남긴다. 이 artifact는 registry·public receipt·tracked 문서의 입력이 아니며
+same execution의 재시도 권한도 만들지 않는다.
 `blocked` receipt는 exact source revision·launch 전후 같은 snapshot·고정 schema를 모두 만족해도, root registry가
 같은 pinset·Map·PinVi revision의 unconditional terminal block을 확인할 때만 launcher가 보존한다. registry 증명이
 없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block`과 fixed fallback으로 fail-close한다. 그러므로

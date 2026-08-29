@@ -2,13 +2,28 @@
 # M05 disposable bridge runtime을 정확히 한 번만 실행하는 root launcher.
 set -euo pipefail
 
+forensic_capture=0
+if [[ "$#" == 3 && "$1" == "--forensic-capture" ]]; then
+  forensic_capture=1
+  shift
+fi
 if [[ "$#" != 2 ]]; then
-  echo "usage: run-m05-isolated-e2e-once EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
+  echo "usage: run-m05-isolated-e2e-once [--forensic-capture] EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
   exit 2
 fi
 if [[ "$(id -u)" != 0 ]]; then
   echo "M05 isolated launcher must run as root" >&2
   exit 2
+fi
+if (( forensic_capture )); then
+  # 기본값은 원문 폐기다. root가 이 launcher argument를 명시한 경우에만 이미
+  # bounded-drain한 stderr를 root-owned leaf에 보존한다.
+  export KTDM_M05_FORENSIC_CAPTURE=1
+  launcher_arguments=(--forensic-capture "$@")
+else
+  # 호출 shell의 우연한 환경값이 raw retention을 켜지 못하게 한다.
+  unset KTDM_M05_FORENSIC_CAPTURE
+  launcher_arguments=("$@")
 fi
 expected_revision="$1"
 output_dir="$2"
@@ -19,7 +34,7 @@ fi
 
 # rebuild one-shot과 동일한 host-global lock을 process lifetime 전체에 보존한다.
 if [[ -z "${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD:-}" ]]; then
-  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "$@" <<'PY'
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${launcher_arguments[@]}" <<'PY'
 import fcntl
 import os
 from pathlib import Path

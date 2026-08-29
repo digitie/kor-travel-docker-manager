@@ -791,6 +791,19 @@ def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
     )
 
 
+def test_root_launcher_requires_an_explicit_root_forensic_capture_argument() -> None:
+    """원문 보존은 caller environment가 아니라 launcher argument로만 켠다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"$1" == "--forensic-capture"' in launcher
+    assert "export KTDM_M05_FORENSIC_CAPTURE=1" in launcher
+    assert "unset KTDM_M05_FORENSIC_CAPTURE" in launcher
+    assert '"${launcher_arguments[@]}"' in launcher
+
+
 def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_unavailable() -> None:
     """driver raw output 부재도 terminal evidence 없이 재시도할 수 없게 고정한다."""
 
