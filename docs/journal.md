@@ -2,6 +2,16 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-30 — isolated PinVi bootstrap credential의 host-side 전달 정합
+
+isolated driver는 Compose에 private `PINVI_ENV_FILE`을 전달했지만, PinVi `docker-app.sh`의 migration 전
+host-side bootstrap validator는 그 파일을 shell에 load하지 않고 현재 process 환경의
+`PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE`만 읽는다. 따라서 owner-only absolute credential file을 정상 생성해도
+direct `up`이 그 경로를 보지 못해 runtime command가 실패할 수 있었다. Manager는 credential 내용이 아닌
+absolute host file path 하나만 direct command 환경에 함께 전달하도록 보정했고, admission tuple의 모든
+필수 경계가 실제 child environment에 들어가는 회귀를 추가했다. 이 수정은 PinVi business rule을 generic
+registry에 넣지 않으며, private file mode·lifetime·Compose 전달 계약도 바꾸지 않는다.
+
 ## 2026-08-30 — root launcher의 명시적 forensic capture
 
 direct command terminal의 기본 receipt는 return code만 보존하므로, 원인 분석이 필요한 root operator는 기존에

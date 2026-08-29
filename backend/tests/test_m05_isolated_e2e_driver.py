@@ -1497,6 +1497,7 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
 
     environment = driver._pinvi_manager_admission_environment(
         env_file=Path("/private/runtime/pinvi.env"),
+        bootstrap_credential_file=Path("/private/runtime/pinvi-admin.json"),
         project="m05i-pinvi-" + "e" * 32,
         pinvi_source_revision="d" * 40,
         execution_identity_sha256="c" * 64,
@@ -1505,6 +1506,7 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
 
     assert environment == {
         "PINVI_ENV_FILE": "/private/runtime/pinvi.env",
+        "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE": "/private/runtime/pinvi-admin.json",
         "PINVI_DOCKER_PROJECT": "m05i-pinvi-" + "e" * 32,
         "PINVI_SOURCE_REVISION": "d" * 40,
         "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission),
@@ -1512,6 +1514,9 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
         "PINVI_M05_EXECUTION_IDENTITY_SHA256": "c" * 64,
     }
     assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in environment
+    assert environment["PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE"] == (
+        "/private/runtime/pinvi-admin.json"
+    )
 
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
