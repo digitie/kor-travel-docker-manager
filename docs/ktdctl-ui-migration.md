@@ -19,6 +19,20 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
 
 ## 개정 이력
 
+- **v5 (2026-08-29)**: source pin registry와 execution registry는 각각 private/public
+  파일을 가지므로 host-global mutation lock만으로는 다중 파일 commit이 원자적이지 않다.
+  `ktdctl pin rotate-pair`는 v6 host에서 두 target을 먼저 검증·계산한 뒤 root-only
+  durable rotation intent를 기록하고, v5/v6의 private/public 사본을 모두 다시 쓴 후에만
+  intent를 지운다. 중간 write/fsync/권한 오류는 intent를 남기며 모든 runtime mutation과
+  `pin verify`를 fail-close한다. 이 gate는 공통 mutation lock에 있으므로 `init`·단일
+  `rotate`·`block`·`rollback`·execution rebind/block·generation publish·대기 요청 적용도
+  pending intent를 바꾸거나 audit을 덮어쓸 수 없다. 같은 Map SHA·PinVi SHA·trusted Manager SHA로
+  `rotate-pair`를 다시 실행하면 manual file edit 없이 정확히 그 target을 idempotent하게
+  완료한다. 다른 target은 복구 중인 state를 덮지 못한다. 이는 특정 M05 규칙이 아니라
+  여러 runtime registry를 사용하는 일반 `ktdctl` lifecycle 계약이다.
+  v6 private registry가 partial 실패로 없어져도 pending intent를 먼저 판별하므로 legacy
+  source-only 분기로 우회하지 않는다. legacy 회전은 pending이 없고 v6 registry도 없는 host만 쓴다.
+
 - **v4 (2026-08-29)**: M05 control-plane terminal 재발 방지 구현을 반영했다. runtime
   pin mutation(`init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`,
   `rollback`, `block`)은 모두 `ktdctl`의 host-global mutation lock 안에서 대상 read·검증·
@@ -76,6 +90,10 @@ no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
   revision은 trusted installed revision과의 TOCTOU 확인값일 뿐이다. terminal current와
   다른 trusted Manager revision일 때만 Map/PinVi source를 건드리지 않고 새 execution
   identity를 만든다.
+- `ktdctl pin rotate-pair`는 source pair가 실제로 바뀌면 existing v6 registry의 current execution도
+  durable rotation intent 아래 새 source pinset으로 이행한다. mutation lease는 동시 write를
+  직렬화하고, intent는 다중 registry write의 중단을 recoverable하게 만든다. 이는 source를 바꾸지 않는
+  Manager-only terminal rebind와 별도 lifecycle이며, old execution history/terminal audit은 보존한다.
 - root `pin verify`는 v5 source pinset, Manager revision, v6 execution identity와 양쪽
   terminal 상태를 함께 판정한다. read-only UI/API는 private/public v6 parity를 증명할 수
   없으므로 execution success를 green으로 표시하지 않고 `pin verify`를 안내한다. v6 success

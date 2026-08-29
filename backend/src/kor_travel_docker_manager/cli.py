@@ -36,9 +36,14 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     load_runtime_execution_registry,
     migrate_execution_registry,
     rebind_execution_registry,
+    runtime_execution_registry_path,
     trusted_manager_source_revision,
     verify_runtime_execution_registry,
     write_runtime_execution_registry,
+)
+from kor_travel_docker_manager.services.runtime_pair_rotation import (
+    load_pending_runtime_pair_rotation,
+    rotate_pair_with_execution,
 )
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     block_runtime_pinset,
@@ -476,6 +481,7 @@ def _cmd_pin_show(args: argparse.Namespace) -> int:
 def _cmd_pin_verify(args: argparse.Namespace) -> int:
     try:
         report = verify_runtime_pin_registry()
+        pending_rotation = load_pending_runtime_pair_rotation()
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -520,6 +526,7 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     report["execution_binding"] = execution_binding
     report["current_execution_is_blocked"] = execution_terminal
     report["execution_public_copy"] = execution_public_copy
+    report["pair_rotation"] = "pending" if pending_rotation is not None else "idle"
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -551,6 +558,13 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         print(
             "runtime execution public copy is missing, malformed, or stale; root must "
             "repair the execution binding before a runtime mutation",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    if pending_rotation is not None:
+        print(
+            "runtime pair rotation is incomplete; resume the same root 'ktdctl pin "
+            "rotate-pair' command before a runtime mutation",
             file=sys.stderr,
         )
         exit_code = 1
@@ -768,14 +782,49 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
         print("pin rotate-pair requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        with _runtime_pin_mutation_lock():
-            registry = rotate_runtime_pin_pair(
-                map_revision=args.map_revision,
-                pinvi_revision=args.pinvi_revision,
-                reason=args.reason,
-                rotated_by=_pin_actor(),
-                block_previous=args.block_previous,
-            )
+        with _runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
+            # v6 private 파일이 partial write에서 사라졌더라도 durable intent가 있으면
+            # 이를 legacy host로 오인하면 안 된다. recovery helper만 exact target을
+            # 허용하므로 intent를 먼저 판별해 같은 pair 재개/다른 pair 거부를 보장한다.
+            if load_pending_runtime_pair_rotation() is not None:
+                registry = rotate_pair_with_execution(
+                    map_revision=args.map_revision,
+                    pinvi_revision=args.pinvi_revision,
+                    manager_source_revision=trusted_manager_source_revision(),
+                    reason=args.reason,
+                    rotated_by=_pin_actor(),
+                    block_previous=args.block_previous,
+                )
+                print(f"rotated Map/PinVi pair; new pinset {registry.pinset_sha256}")
+                _print_registry(registry, json_output=args.json)
+                return 0
+            try:
+                executions = load_runtime_execution_registry()
+            except DeploymentContractError:
+                # v6 migration 전 host는 source registry만 회전한다. migration command가
+                # 해당 source pair의 첫 execution을 별도로 만든다.
+                if runtime_execution_registry_path().exists():
+                    raise
+                registry = rotate_runtime_pin_pair(
+                    map_revision=args.map_revision,
+                    pinvi_revision=args.pinvi_revision,
+                    reason=args.reason,
+                    rotated_by=_pin_actor(),
+                    block_previous=args.block_previous,
+                )
+            else:
+                # v6 host는 별도 v5/v6 파일을 순차적으로 "성공" 처리하지 않는다.
+                # helper가 durable intent·idempotent recovery를 소유하며, 여기서는
+                # legacy 여부만 판별한다.
+                del executions
+                registry = rotate_pair_with_execution(
+                    map_revision=args.map_revision,
+                    pinvi_revision=args.pinvi_revision,
+                    manager_source_revision=trusted_manager_source_revision(),
+                    reason=args.reason,
+                    rotated_by=_pin_actor(),
+                    block_previous=args.block_previous,
+                )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -832,14 +881,29 @@ def _running_as_root() -> bool:
 
 
 @contextmanager
-def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) -> Iterator[None]:
+def _runtime_pin_mutation_lock(
+    *,
+    allow_inherited_terminal_block: bool = False,
+    allow_pending_pair_recovery: bool = False,
+) -> Iterator[None]:
     """모든 runtime pin mutation을 one-shot과 직렬화한다.
 
     one-shot launcher의 terminal fallback만 검증한 inherited descriptor로 재진입할 수
     있다. 그 밖의 `init`·공개 복사·회전·rollback·block은 별도 SSH/CLI 호출이므로 lock이
     비어 있을 때만 수행한다. 따라서 출력 회수 지연을 실패로 오인해 실행 중 candidate를
-    봉인하거나 pair/generation을 바꿀 수 없다.
+    봉인하거나 pair/generation을 바꿀 수 없다. pair+execution durable intent가 남아 있으면
+    모든 mutation을 거부한다. 유일한 예외는 동일 target을 끝까지 publish하는
+    ``rotate-pair`` recovery이며, 그 target 대조는 transaction helper가 소유한다.
     """
+
+    def reject_pending_pair_rotation() -> None:
+        if allow_pending_pair_recovery:
+            return
+        from kor_travel_docker_manager.services.runtime_pair_rotation import (
+            require_no_pending_runtime_pair_rotation,
+        )
+
+        require_no_pending_runtime_pair_rotation()
 
     inherited_text = os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, "")
     if inherited_text:
@@ -866,6 +930,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise DeploymentContractError("runtime pin mutation inherited lock is not held") from exc
+        reject_pending_pair_rotation()
         yield
         return
 
@@ -877,6 +942,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
     except FileNotFoundError:
         # 개발·테스트처럼 launcher를 한 번도 실행하지 않은 환경에는 active global
         # mutation이 없으므로, registry 자체의 root ownership gate에 맡긴다.
+        reject_pending_pair_rotation()
         yield
         return
     except PermissionError:
@@ -885,6 +951,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
         # 이어지는 root-owned registry write 자체가 거절된다. 따라서 권한 없는 개발
         # 호출을 active mutation으로 오인하지 않는다.
         if getattr(os, "geteuid", lambda: 1)() != 0:
+            reject_pending_pair_rotation()
             yield
             return
         raise DeploymentContractError("runtime pin mutation lock is unavailable") from None
@@ -897,6 +964,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
             raise DeploymentContractError(
                 "runtime pin mutation is refused while a Manager mutation is active"
             ) from exc
+        reject_pending_pair_rotation()
         yield
     finally:
         os.close(descriptor)

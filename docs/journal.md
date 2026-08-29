@@ -2,6 +2,47 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — 일반 runtime pair 회전의 durable recovery
+
+전문 적대 리뷰가 기존 `rotate-pair`의 P1을 확인했다. host-global mutation lock은 동시
+mutation을 막지만 v5 source registry와 v6 execution registry의 private/public 파일 네 개를
+한 filesystem rename으로 바꾸지는 못한다. 이전 구현은 v5를 먼저 publish한 뒤 v6 write가
+실패하면 stale binding을 남기고, 같은 pair 재시도도 v5 no-op 거부로 막을 수 있었다.
+
+일반 `runtime_pair_rotation` transaction을 추가했다. CLI는 trusted Manager revision과 두
+target registry를 먼저 검증·계산하고 root-only 0600 intent에 저장한다. 이후 각 registry의
+private/public 사본을 publish하고 모두 성공했을 때만 intent를 fsync 후 삭제한다. 중간 실패는
+intent를 남겨 root `pin verify`와 rebuild/E2E mutation gate를 fail-close하며, 같은 source pair와
+trusted Manager revision의 `rotate-pair`는 target 전체를 idempotent하게 다시 publish해 수동
+파일 편집 없이 복구한다. 다른 target은 미완료 intent를 덮지 못한다. M05는 이 일반 runtime
+lifecycle의 consumer일 뿐 transaction schema에는 등장하지 않는다.
+
+후속 재리뷰에서 intent가 남은 사이 다른 root mutation이 execution terminal/rebind audit을
+바꾼 뒤 recovery가 과거 target을 다시 쓰는 P1도 발견했다. pending 검사를 Compose나 M05에만
+둘 수 없으므로, `ktdctl`의 공통 runtime mutation lock이 기본적으로 intent를 거부하도록
+올렸다. `rotate-pair`만 recovery target을 transaction helper에서 exact 대조하므로 예외다.
+따라서 init·단일 rotate·block·rollback·generation publish·execution migrate/rebind/block과
+대기 요청 적용 모두 pending state를 관측하면 write 전에 멈춘다.
+
+같은 검토에서 partial 실패로 v6 private file 자체가 없을 때 CLI가 legacy host 분기로
+떨어지는 P1도 발견했다. pending intent를 v6 존재 여부보다 먼저 읽도록 고쳐, v6 파일이
+없는 복구 상태도 반드시 transaction helper의 exact same-target 재개 또는 different-target
+거부를 거친다. legacy source-only 회전은 **pending intent가 없고** v6 registry도 없는 host에만
+남는다.
+
+## 2026-08-29 — source pair 회전과 v6 execution을 함께 이행
+
+v6 registry가 존재하는 host에서 `rotate-pair`가 v5 source registry만 바꾸면 current execution은
+stale이 되고, `migrate-execution-v6`은 existing registry를 거부하며 `rebind-execution`은 source가
+달라 거부한다. 즉 manual state edit 없이 새 source pair를 실행할 generic lifecycle이 없었다.
+
+`ktdctl pin rotate-pair`는 이제 같은 host-global mutation lock 안에서 existing v6 registry를 읽고,
+새 v5 pair와 trusted Manager revision으로 새 execution binding을 history에 append해 private/public registry를
+갱신한다. 다중 registry write는 상단의 durable recovery intent가 완료될 때만 관측 가능 상태가 되며,
+기존 terminal audit은 보존하고 새 source execution만 unblocked다. v6 registry가 아직 없는 legacy host는
+기존처럼 source pair만 회전한 뒤 explicit migration을 한다. execution registry가 존재하지만 손상된 경우는
+migration으로 오인하지 않고 fail-close한다.
+
 ## 2026-08-29 — M05 source pair provenance를 terminal 전에 검사
 
 신규 v6 execution candidate는 Map main의 최신 문서 commit을 runtime pair로 회전했지만,

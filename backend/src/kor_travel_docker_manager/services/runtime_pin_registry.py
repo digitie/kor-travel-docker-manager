@@ -1014,6 +1014,37 @@ def _apply_runtime_pin_rotation(
 ) -> RuntimePinRegistry:
     """검증된 두 revision을 원자적으로 교체하고 lifecycle 이력을 남긴다."""
 
+    updated = build_runtime_pin_pair_rotation(
+        current=current,
+        map_revision=map_revision,
+        pinvi_revision=pinvi_revision,
+        reason=reason,
+        rotated_by=rotated_by,
+        block_previous=block_previous,
+        block_reason=block_reason,
+    )
+    write_runtime_pin_registry(updated, path=registry_path)
+    return updated
+
+
+def build_runtime_pin_pair_rotation(
+    *,
+    current: RuntimePinRegistry,
+    map_revision: str,
+    pinvi_revision: str,
+    reason: str,
+    rotated_by: str,
+    block_previous: bool,
+    block_reason: str | None = None,
+) -> RuntimePinRegistry:
+    """pair 회전 결과를 **기록하지 않고** 준비한다.
+
+    source registry와 Manager-aware execution registry를 함께 바꿔야 하는 일반
+    runtime에서는 두 문서를 모두 검증한 뒤 durable transaction intent를 먼저 남긴다.
+    그 준비 단계가 v5만 먼저 영구 반영하는 일을 막으려면, v5 회전 계산도 writer와
+    분리되어 있어야 한다.
+    """
+
     map_revision = _require_revision(map_revision, "map revision")
     pinvi_revision = _require_revision(pinvi_revision, "pinvi revision")
     if (map_revision, pinvi_revision) == (current.map_revision, current.pinvi_revision):
@@ -1074,7 +1105,6 @@ def _apply_runtime_pin_rotation(
         history=history,
         blocked_pinsets=tuple(blocked),
     )
-    write_runtime_pin_registry(updated, path=registry_path)
     return updated
 
 
