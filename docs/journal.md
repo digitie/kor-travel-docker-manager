@@ -2,6 +2,13 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — Compose 출력 파싱 실패를 command 실패와 분리
+
+`docker compose config`가 nonzero인 경우와 성공 종료 뒤 JSON contract를 만족하지 않는 경우는 다른
+보정 대상이다. rendered topology parser는 이제 후자에도 fixed root-only `compose_config_output` marker를
+남기고, root forensic opt-in일 때만 최대 256 KiB의 raw stdout을 별도 `0600` artifact로 보존한다. 기본
+운영은 원문을 폐기하며 두 failure 모두 ledger claim 전의 non-consuming preflight로 유지한다.
+
 ## 2026-08-29 — Compose config failure와 topology mismatch의 증거 분리
 
 rendered publish preflight는 `docker compose config`가 성공한 뒤의 topology만 검사할 수 있지만,

@@ -571,6 +571,16 @@ def _write_compose_failure_evidence(
     _write_private_bytes(path.with_suffix(".stderr"), stderr or b"\n")
 
 
+def _write_compose_output_evidence(path: Path, *, output: str) -> None:
+    """Keep a fixed parse-failure marker; raw successful-command output remains opt-in only."""
+
+    _write_private_json(path, {"kind": "compose_config_output", "version": 1})
+    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1":
+        return
+    raw = output.encode("utf-8", errors="replace")[:_FORENSIC_CAPTURE_LIMIT]
+    _write_private_bytes(path.with_suffix(".stdout"), raw or b"\n")
+
+
 def _unlink_private(path: Path) -> None:
     try:
         metadata = path.lstat()
@@ -1472,6 +1482,7 @@ def _assert_rendered_loopback_tcp_publish(
     container_port: int,
     host_port: int,
     evidence_path: Path | None = None,
+    parse_failure_evidence_path: Path | None = None,
 ) -> None:
     """Fail before ledger claim when Compose cannot render the required loopback publish."""
 
@@ -1481,6 +1492,8 @@ def _assert_rendered_loopback_tcp_publish(
         item = services[service]
         ports = item["ports"]
     except (KeyError, TypeError, json.JSONDecodeError):
+        if parse_failure_evidence_path is not None:
+            _write_compose_output_evidence(parse_failure_evidence_path, output=rendered)
         _fail("runtime_loopback_publish_config_invalid")
     if not isinstance(ports, list) or not all(isinstance(port, Mapping) for port in ports):
         _fail("runtime_loopback_publish_config_invalid")
@@ -1858,6 +1871,7 @@ def main(expected_revision: str, output: Path) -> int:
             container_port=13701,
             host_port=ports["map_api"],
             evidence_path=runtime / "rendered-loopback-publish.json",
+            parse_failure_evidence_path=runtime / "rendered-loopback-publish-output.json",
         )
         # source pair와 rendered runtime topology가 정합할 때만 one-shot ledger를
         # 소비한다. O_EXCL create 뒤 write/fsync 실패도 execution을 소비한 것으로 본다.

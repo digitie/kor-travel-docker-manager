@@ -453,6 +453,41 @@ def test_rendered_loopback_publish_keeps_only_safe_port_evidence(tmp_path: Path)
     }
 
 
+def test_rendered_loopback_publish_parse_failure_keeps_only_opt_in_bounded_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+    safe = tmp_path / "parse.json"
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._assert_rendered_loopback_tcp_publish(
+            "not-json",
+            service="api",
+            container_port=13701,
+            host_port=31337,
+            parse_failure_evidence_path=safe,
+        )
+    assert json.loads(safe.read_text(encoding="utf-8")) == {
+        "kind": "compose_config_output",
+        "version": 1,
+    }
+    assert not safe.with_suffix(".stdout").exists()
+
+    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
+    forensic = tmp_path / "forensic.json"
+    oversized = "x" * (driver._FORENSIC_CAPTURE_LIMIT + 1)
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._assert_rendered_loopback_tcp_publish(
+            oversized,
+            service="api",
+            container_port=13701,
+            host_port=31337,
+            parse_failure_evidence_path=forensic,
+        )
+    assert forensic.with_suffix(".stdout").read_bytes() == (
+        b"x" * driver._FORENSIC_CAPTURE_LIMIT
+    )
+
+
 def test_rendered_loopback_publish_evidence_drops_unknown_or_invalid_values(
     tmp_path: Path,
 ) -> None:
