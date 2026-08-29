@@ -1,4 +1,4 @@
-"""M05 one-shot의 Manager-aware 실행 식별자(v6).
+"""Manager-aware runtime 실행 식별자(v6).
 
 v5 ``pinset_sha256``은 Map·PinVi source materialization의 식별자다. 이를 Manager
 revision까지 억지로 확장하면 이미 생성된 registry·generation·terminal audit의 뜻이
