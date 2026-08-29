@@ -319,7 +319,7 @@ try:
         or value.get("manager_source_revision") != expected_revision
         or value.get("pinset_sha256") != expected_pinset
         or value.get("execution_identity_sha256") != expected_execution
-        or value.get("status") not in {"passed", "blocked"}
+        or value.get("status") not in {"passed", "blocked", "preflight_rejected"}
         or value.get("phase") not in PHASES
         or value.get("driver_phase") not in PHASES
         or not isinstance(value.get("cleanup_failed"), bool)
@@ -342,12 +342,23 @@ try:
         raise ValueError
 except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
     raise SystemExit(1)
-raise SystemExit(0 if value["status"] == "passed" else 3)
+raise SystemExit(
+    0
+    if value["status"] == "passed"
+    else 4
+    if value["status"] == "preflight_rejected"
+    else 3
+)
 PY
   receipt_validation_status="$?"
   set -e
 fi
 if [[ "$receipt_validation_status" == 0 ]]; then
+  exit "$driver_status"
+fi
+if [[ "$receipt_validation_status" == 4 ]]; then
+  # driver가 ledger claim 전에 source materialization/provenance를 거부했다. 이 경우는
+  # M05 execution을 소비하지 않았으므로 terminal fallback block을 만들지 않는다.
   exit "$driver_status"
 fi
 

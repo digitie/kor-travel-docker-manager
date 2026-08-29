@@ -11,7 +11,7 @@ boundary가 이 pre-ledger failure도 execution terminal로 기록해 잘못된 
 execution을 소비했다.
 
 generic runtime pin registry·v6 execution identity에는 Map/PinVi business contract를 넣지 않았다.
-대신 M05 integration adapter에 read-only pair preflight를 추가해 launcher가 output leaf·ledger claim
+대신 M05 integration adapter에 비소비 source-materialization pair preflight를 추가해 launcher가 output leaf·ledger claim
 전에 pinned source를 materialize하고 Map/PinVi provenance와 admission contract를 확인한다. 불일치면
 fixed 오류만 반환하고 execution terminal·ledger·runtime build·Compose mutation은 만들지 않는다. driver
 내부의 동일 검사는 TOCTOU 방어로 유지한다. 이로써 root `pin verify`의 generic registry/generation
