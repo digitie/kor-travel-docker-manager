@@ -453,6 +453,42 @@ def test_rendered_loopback_publish_keeps_only_safe_port_evidence(tmp_path: Path)
     }
 
 
+def test_rendered_loopback_publish_parse_failure_keeps_only_opt_in_bounded_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+    safe = tmp_path / "parse.json"
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._assert_rendered_loopback_tcp_publish(
+            "not-json",
+            service="api",
+            container_port=13701,
+            host_port=31337,
+            parse_failure_evidence_path=safe,
+        )
+    assert json.loads(safe.read_text(encoding="utf-8")) == {
+        "kind": "compose_config_output",
+        "truncated": False,
+        "version": 1,
+    }
+    assert not safe.with_suffix(".stdout").exists()
+
+    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
+    forensic = tmp_path / "forensic.json"
+    oversized = "x" * (driver._FORENSIC_CAPTURE_LIMIT + 1)
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._assert_rendered_loopback_tcp_publish(
+            oversized,
+            service="api",
+            container_port=13701,
+            host_port=31337,
+            parse_failure_evidence_path=forensic,
+        )
+    assert forensic.with_suffix(".stdout").read_bytes() == (
+        b"x" * driver._FORENSIC_CAPTURE_LIMIT
+    )
+
+
 def test_rendered_loopback_publish_evidence_drops_unknown_or_invalid_values(
     tmp_path: Path,
 ) -> None:
@@ -1019,6 +1055,96 @@ def test_compose_config_failure_evidence_is_safe_by_default_and_forensic_on_opt_
             failure_evidence_path=forensic,
         )
     assert forensic.with_suffix(".stderr").read_bytes() == b"x" * driver._FORENSIC_CAPTURE_LIMIT
+
+
+def test_compose_config_output_is_stream_bounded_and_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+    oversized_stdout = b"x" * (driver._COMPOSE_CONFIG_OUTPUT_LIMIT + 1)
+
+    class OversizedCompose:
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO(oversized_stdout)
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        driver.subprocess, "Popen", lambda *_args, **_kwargs: OversizedCompose()
+    )
+    safe = tmp_path / "oversized.json"
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._compose(
+            root=tmp_path,
+            project="m05i-map",
+            env_file=tmp_path / "map.env",
+            files=(tmp_path / "docker-compose.yml",),
+            arguments=("config", "--format", "json"),
+            capture=True,
+            failure_phase="runtime_loopback_publish_config_invalid",
+            output_evidence_path=safe,
+        )
+    assert json.loads(safe.read_text(encoding="utf-8")) == {
+        "kind": "compose_config_output",
+        "truncated": True,
+        "version": 1,
+    }
+    assert not safe.with_suffix(".stdout").exists()
+
+    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
+    forensic = tmp_path / "oversized-forensic.json"
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._compose(
+            root=tmp_path,
+            project="m05i-map",
+            env_file=tmp_path / "map.env",
+            files=(tmp_path / "docker-compose.yml",),
+            arguments=("config", "--format", "json"),
+            capture=True,
+            failure_phase="runtime_loopback_publish_config_invalid",
+            output_evidence_path=forensic,
+        )
+    assert forensic.with_suffix(".stdout").read_bytes() == (
+        b"x" * driver._FORENSIC_CAPTURE_LIMIT
+    )
+
+
+def test_nonzero_compose_config_keeps_exit_evidence_when_stdout_is_oversized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+
+    class FailedOversizedCompose:
+        def __init__(self) -> None:
+            self.stdout = io.BytesIO(b"x" * (driver._COMPOSE_CONFIG_OUTPUT_LIMIT + 1))
+
+        def wait(self) -> int:
+            return 2
+
+    monkeypatch.setattr(
+        driver.subprocess, "Popen", lambda *_args, **_kwargs: FailedOversizedCompose()
+    )
+    command_evidence = tmp_path / "command.json"
+    output_evidence = tmp_path / "output.json"
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._compose(
+            root=tmp_path,
+            project="m05i-map",
+            env_file=tmp_path / "map.env",
+            files=(tmp_path / "docker-compose.yml",),
+            arguments=("config", "--format", "json"),
+            capture=True,
+            failure_phase="runtime_loopback_publish_config_invalid",
+            failure_evidence_path=command_evidence,
+            output_evidence_path=output_evidence,
+        )
+    assert json.loads(command_evidence.read_text(encoding="utf-8")) == {
+        "kind": "compose_config",
+        "returncode": 2,
+        "version": 1,
+    }
+    assert not output_evidence.exists()
 
 
 def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
