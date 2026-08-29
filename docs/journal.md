@@ -24,6 +24,12 @@ lifecycle의 consumer일 뿐 transaction schema에는 등장하지 않는다.
 따라서 init·단일 rotate·block·rollback·generation publish·execution migrate/rebind/block과
 대기 요청 적용 모두 pending state를 관측하면 write 전에 멈춘다.
 
+같은 검토에서 partial 실패로 v6 private file 자체가 없을 때 CLI가 legacy host 분기로
+떨어지는 P1도 발견했다. pending intent를 v6 존재 여부보다 먼저 읽도록 고쳐, v6 파일이
+없는 복구 상태도 반드시 transaction helper의 exact same-target 재개 또는 different-target
+거부를 거친다. legacy source-only 회전은 **pending intent가 없고** v6 registry도 없는 host에만
+남는다.
+
 ## 2026-08-29 — source pair 회전과 v6 execution을 함께 이행
 
 v6 registry가 존재하는 host에서 `rotate-pair`가 v5 source registry만 바꾸면 current execution은

@@ -783,6 +783,21 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
         return 2
     try:
         with _runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
+            # v6 private 파일이 partial write에서 사라졌더라도 durable intent가 있으면
+            # 이를 legacy host로 오인하면 안 된다. recovery helper만 exact target을
+            # 허용하므로 intent를 먼저 판별해 같은 pair 재개/다른 pair 거부를 보장한다.
+            if load_pending_runtime_pair_rotation() is not None:
+                registry = rotate_pair_with_execution(
+                    map_revision=args.map_revision,
+                    pinvi_revision=args.pinvi_revision,
+                    manager_source_revision=trusted_manager_source_revision(),
+                    reason=args.reason,
+                    rotated_by=_pin_actor(),
+                    block_previous=args.block_previous,
+                )
+                print(f"rotated Map/PinVi pair; new pinset {registry.pinset_sha256}")
+                _print_registry(registry, json_output=args.json)
+                return 0
             try:
                 executions = load_runtime_execution_registry()
             except DeploymentContractError:

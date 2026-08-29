@@ -238,6 +238,48 @@ def test_cli_pair_rotation_advances_an_existing_execution_binding(
     assert saved[0]["manager_source_revision"] == _MANAGER_A
 
 
+def test_cli_pending_pair_recovery_never_falls_back_to_legacy_when_v6_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "pin",
+            "rotate-pair",
+            "--map-revision",
+            "e" * 40,
+            "--pinvi-revision",
+            _PINVI,
+            "--reason",
+            "recover partial pair",
+            "--confirm",
+        ]
+    )
+    recovered = build_registry(
+        release_version=5,
+        map_revision="e" * 40,
+        pinvi_revision=_PINVI,
+        rotated_by="tester",
+        reason="recover partial pair",
+    )
+    called: list[dict[str, object]] = []
+    monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda **_kwargs: nullcontext())
+    monkeypatch.setattr(cli, "load_pending_runtime_pair_rotation", lambda: object())
+    monkeypatch.setattr(
+        cli,
+        "load_runtime_execution_registry",
+        lambda: (_ for _ in ()).throw(AssertionError("must not choose legacy branch")),
+    )
+    monkeypatch.setattr(cli, "trusted_manager_source_revision", lambda: _MANAGER_A)
+    monkeypatch.setattr(
+        cli,
+        "rotate_pair_with_execution",
+        lambda **kwargs: called.append(kwargs) or recovered,
+    )
+
+    assert cli._cmd_pin_rotate_pair(args) == 0
+    assert called[0]["map_revision"] == "e" * 40
+
+
 def test_pair_rotation_recovers_partial_v5_v6_write_without_manual_state_edit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

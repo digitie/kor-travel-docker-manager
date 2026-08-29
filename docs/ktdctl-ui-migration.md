@@ -30,6 +30,8 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
   `rotate-pair`를 다시 실행하면 manual file edit 없이 정확히 그 target을 idempotent하게
   완료한다. 다른 target은 복구 중인 state를 덮지 못한다. 이는 특정 M05 규칙이 아니라
   여러 runtime registry를 사용하는 일반 `ktdctl` lifecycle 계약이다.
+  v6 private registry가 partial 실패로 없어져도 pending intent를 먼저 판별하므로 legacy
+  source-only 분기로 우회하지 않는다. legacy 회전은 pending이 없고 v6 registry도 없는 host만 쓴다.
 
 - **v4 (2026-08-29)**: M05 control-plane terminal 재발 방지 구현을 반영했다. runtime
   pin mutation(`init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`,
