@@ -2,6 +2,21 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — legacy terminal 이관을 직전 trusted release에만 보존
+
+v6 registry의 첫 이관이 새 Manager release 설치 뒤 실행되면, v5 terminal을 새 release의
+execution까지 terminal로 복제해 `rebind-execution`이 불가능해지는 일반 migration 결함을
+발견했다. source pinset을 바꾸거나 terminal을 지우는 대신, trusted installer가 기존 `/opt`
+release의 revision·manifest를 검증해 root-only state에 바로 직전 release provenance를
+원자 기록하도록 보정했다.
+
+`pin migrate-execution-v6`는 현재 v5 source가 terminal일 때 그 기록과 새 installed revision을
+반드시 exact 대조한다. 이전 Manager execution만 terminal history로 보존하고, 새 trusted
+Manager execution을 현재·미차단 상태로 결박한다. provenance가 없거나 stale·권한 이상이면
+fail-close하며 CLI/환경 인자로 이전 revision을 받지 않는다. 따라서 이 변경은 M05가 아닌 모든
+legacy terminal을 일반적으로 안전 이관한다. registry 회귀 15개와 Ruff, installer shell syntax를
+통과했다.
+
 ## 2026-08-29 — v6 execution registry를 one-shot과 sibling receipt에 연결
 
 일반 runtime execution registry를 actual mutation gate까지 연결했다. `ktdctl pin verify`는

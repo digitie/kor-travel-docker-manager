@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,6 +17,7 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     block_current_execution,
     load_runtime_execution_registry,
     migrate_execution_registry,
+    migrate_legacy_terminal_execution_registry,
     rebind_execution_registry,
     trusted_manager_source_revision,
     verify_runtime_execution_registry,
@@ -124,6 +126,57 @@ def test_terminal_execution_can_rebind_only_for_new_manager_revision() -> None:
     assert rebound.current.execution_identity_sha256 != terminal.current.execution_identity_sha256
     assert len(rebound.blocked_executions) == 1
     assert not rebound.is_unconditionally_blocked_current()
+
+
+def test_legacy_terminal_migration_blocks_only_the_previous_manager_execution() -> None:
+    migrated = migrate_legacy_terminal_execution_registry(
+        pins=_pins(),
+        previous_manager_source_revision=_MANAGER_A,
+        manager_source_revision=_MANAGER_B,
+        bound_by="tester",
+        reason="new trusted release",
+    )
+
+    assert migrated.current.manager_source_revision == _MANAGER_B
+    assert not migrated.is_unconditionally_blocked_current()
+    assert [item.manager_source_revision for item in migrated.history] == [
+        _MANAGER_A,
+        _MANAGER_B,
+    ]
+    assert migrated.blocked_executions[0].manager_source_revision == _MANAGER_A
+
+
+def test_cli_legacy_terminal_migration_uses_installer_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = build_parser().parse_args(
+        ["pin", "migrate-execution-v6", "--reason", "release transition", "--confirm"]
+    )
+    pins = MagicMock()
+    pins.pinset_sha256 = "e" * 64
+    pins.map_revision = _MAP
+    pins.pinvi_revision = _PINVI
+    pins.is_unconditionally_blocked_pinset.return_value = True
+    saved: list[object] = []
+
+    monkeypatch.setattr(cli, "_running_as_root", lambda: True)
+    monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda: nullcontext())
+    monkeypatch.setattr(
+        cli,
+        "load_runtime_execution_registry",
+        lambda: (_ for _ in ()).throw(RuntimeExecutionRegistryError("absent")),
+    )
+    monkeypatch.setattr(cli, "load_runtime_pin_registry", lambda: pins)
+    monkeypatch.setattr(cli, "trusted_manager_source_revision", lambda: _MANAGER_B)
+    monkeypatch.setattr(
+        cli, "trusted_previous_manager_source_revision", lambda *, current_revision: _MANAGER_A
+    )
+    monkeypatch.setattr(cli, "write_runtime_execution_registry", saved.append)
+
+    assert cli._cmd_pin_migrate_execution(args) == 0
+    migrated = saved[0]
+    assert migrated.current.manager_source_revision == _MANAGER_B
+    assert not migrated.is_unconditionally_blocked_current()
 
 
 def test_rebind_refuses_nonterminal_or_same_manager_revision() -> None:

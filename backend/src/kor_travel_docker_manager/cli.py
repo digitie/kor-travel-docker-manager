@@ -35,8 +35,10 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     block_current_execution,
     load_runtime_execution_registry,
     migrate_execution_registry,
+    migrate_legacy_terminal_execution_registry,
     rebind_execution_registry,
     trusted_manager_source_revision,
+    trusted_previous_manager_source_revision,
     verify_runtime_execution_registry,
     write_runtime_execution_registry,
 )
@@ -609,16 +611,23 @@ def _cmd_pin_migrate_execution(args: argparse.Namespace) -> int:
                 print("runtime execution registry already exists; migration is refused", file=sys.stderr)
                 return 2
             pins = load_runtime_pin_registry()
-            registry = migrate_execution_registry(
-                pins=pins,
-                manager_source_revision=trusted_manager_source_revision(),
-                bound_by=_pin_actor(),
-                reason=args.reason,
-            )
+            trusted_revision = trusted_manager_source_revision()
             if pins.is_unconditionally_blocked_pinset(pins.pinset_sha256):
-                registry = block_current_execution(
-                    registry=registry,
-                    reason="legacy source pinset was terminal before execution migration",
+                registry = migrate_legacy_terminal_execution_registry(
+                    pins=pins,
+                    previous_manager_source_revision=trusted_previous_manager_source_revision(
+                        current_revision=trusted_revision
+                    ),
+                    manager_source_revision=trusted_revision,
+                    bound_by=_pin_actor(),
+                    reason=args.reason,
+                )
+            else:
+                registry = migrate_execution_registry(
+                    pins=pins,
+                    manager_source_revision=trusted_revision,
+                    bound_by=_pin_actor(),
+                    reason=args.reason,
                 )
             write_runtime_execution_registry(registry)
     except DeploymentContractError as exc:

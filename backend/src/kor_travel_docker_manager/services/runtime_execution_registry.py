@@ -40,6 +40,8 @@ RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV: Final = (
 _TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
 _TRUSTED_PUBLIC_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-public")
 _TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
+_PREVIOUS_RELEASE_RECORD: Final = "previous-manager-release.json"
+_PREVIOUS_RELEASE_SCHEMA: Final = "kor-travel-docker-manager.previous-release.v1"
 _DEFAULT_BASENAME: Final = "runtime-executions.json"
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -279,13 +281,13 @@ def runtime_execution_registry_public_path() -> Path:
     return Path(configured) if configured else _TRUSTED_PUBLIC_ROOT / _DEFAULT_BASENAME
 
 
-def _read_trusted_text(path: Path, *, expected_uid: int) -> str:
+def _read_trusted_text(path: Path, *, expected_uid: int, expected_mode: int = 0o644) -> str:
     try:
         before = path.lstat()
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_uid != expected_uid
-            or stat.S_IMODE(before.st_mode) != 0o644
+            or stat.S_IMODE(before.st_mode) != expected_mode
         ):
             raise RuntimeExecutionRegistryError("trusted Manager provenance file is unsafe")
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -349,6 +351,57 @@ def trusted_manager_source_revision(*, install_root: Path = _TRUSTED_INSTALL_ROO
     if not isinstance(manifest, dict) or manifest.get("manager_source_revision") != revision:
         raise RuntimeExecutionRegistryError("trusted Manager provenance revisions differ")
     return revision
+
+
+def trusted_previous_manager_source_revision(
+    *, current_revision: str, state_root: Path = _TRUSTED_STATE_ROOT
+) -> str:
+    """직전 trusted release가 남긴 transition provenance만 migration에 사용한다.
+
+    legacy v5 terminal은 이전 implementation의 실행 결과다. 새 release 설치 뒤 이를
+    새 execution으로 이관하면 새 구현까지 terminal이 되어 Manager-only bug fix의 실행
+    권한이 사라진다. installer가 root-only state에 남긴 바로 직전 release record만
+    받아 old execution을 terminal로 보존한다.
+    """
+
+    current_revision = _revision(current_revision, "trusted Manager source revision")
+    try:
+        root = state_root.lstat()
+    except OSError as exc:
+        raise RuntimeExecutionRegistryError("trusted previous Manager state cannot be inspected") from exc
+    if (
+        state_root.is_symlink()
+        or not stat.S_ISDIR(root.st_mode)
+        or root.st_uid != 0
+        or stat.S_IMODE(root.st_mode) != 0o700
+    ):
+        raise RuntimeExecutionRegistryError("trusted previous Manager state root is unsafe")
+    try:
+        payload = json.loads(
+            _read_trusted_text(
+                state_root / _PREVIOUS_RELEASE_RECORD,
+                expected_uid=0,
+                expected_mode=0o600,
+            )
+        )
+    except json.JSONDecodeError as exc:
+        raise RuntimeExecutionRegistryError("trusted previous Manager release record is invalid") from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema",
+        "previous_manager_source_revision",
+        "installed_manager_source_revision",
+    }:
+        raise RuntimeExecutionRegistryError("trusted previous Manager release record has invalid fields")
+    if payload["schema"] != _PREVIOUS_RELEASE_SCHEMA:
+        raise RuntimeExecutionRegistryError("trusted previous Manager release record schema is unsupported")
+    if payload["installed_manager_source_revision"] != current_revision:
+        raise RuntimeExecutionRegistryError("trusted previous Manager release record is stale")
+    previous = _revision(
+        payload["previous_manager_source_revision"], "trusted previous Manager source revision"
+    )
+    if previous == current_revision:
+        raise RuntimeExecutionRegistryError("trusted previous Manager release did not change")
+    return previous
 
 
 def _insecure_mode_allowed() -> bool:
@@ -498,6 +551,43 @@ def migrate_execution_registry(
         reason=reason,
     )
     return RuntimeExecutionRegistry(current=current, history=(current,))
+
+
+def migrate_legacy_terminal_execution_registry(
+    *,
+    pins: RuntimePinRegistry,
+    previous_manager_source_revision: str,
+    manager_source_revision: str,
+    bound_by: str,
+    reason: str,
+) -> RuntimeExecutionRegistry:
+    """v5 terminal을 직전 Manager execution에만 보존하고 새 release를 결박한다."""
+
+    previous = _revision(previous_manager_source_revision, "previous Manager source revision")
+    current_revision = _revision(manager_source_revision, "Manager source revision")
+    if previous == current_revision:
+        raise RuntimeExecutionRegistryError("legacy terminal migration requires a changed Manager release")
+    legacy = migrate_execution_registry(
+        pins=pins,
+        manager_source_revision=previous,
+        bound_by=bound_by,
+        reason="legacy v5 terminal execution",
+    )
+    legacy = block_current_execution(
+        registry=legacy,
+        reason="legacy source pinset was terminal before execution migration",
+    )
+    current = new_execution_binding(
+        pins=pins,
+        manager_source_revision=current_revision,
+        bound_by=bound_by,
+        reason=reason,
+    )
+    return RuntimeExecutionRegistry(
+        current=current,
+        history=(legacy.current, current),
+        blocked_executions=legacy.blocked_executions,
+    )
 
 
 def rebind_execution_registry(
