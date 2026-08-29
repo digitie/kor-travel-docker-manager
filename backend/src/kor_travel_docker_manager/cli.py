@@ -36,11 +36,14 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     load_runtime_execution_registry,
     migrate_execution_registry,
     rebind_execution_registry,
-    rotate_execution_source_binding,
     runtime_execution_registry_path,
     trusted_manager_source_revision,
     verify_runtime_execution_registry,
     write_runtime_execution_registry,
+)
+from kor_travel_docker_manager.services.runtime_pair_rotation import (
+    load_pending_runtime_pair_rotation,
+    rotate_pair_with_execution,
 )
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     block_runtime_pinset,
@@ -478,6 +481,7 @@ def _cmd_pin_show(args: argparse.Namespace) -> int:
 def _cmd_pin_verify(args: argparse.Namespace) -> int:
     try:
         report = verify_runtime_pin_registry()
+        pending_rotation = load_pending_runtime_pair_rotation()
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -522,6 +526,7 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     report["execution_binding"] = execution_binding
     report["current_execution_is_blocked"] = execution_terminal
     report["execution_public_copy"] = execution_public_copy
+    report["pair_rotation"] = "pending" if pending_rotation is not None else "idle"
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -553,6 +558,13 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         print(
             "runtime execution public copy is missing, malformed, or stale; root must "
             "repair the execution binding before a runtime mutation",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    if pending_rotation is not None:
+        print(
+            "runtime pair rotation is incomplete; resume the same root 'ktdctl pin "
+            "rotate-pair' command before a runtime mutation",
             file=sys.stderr,
         )
         exit_code = 1
@@ -771,13 +783,6 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
         return 2
     try:
         with _runtime_pin_mutation_lock():
-            registry = rotate_runtime_pin_pair(
-                map_revision=args.map_revision,
-                pinvi_revision=args.pinvi_revision,
-                reason=args.reason,
-                rotated_by=_pin_actor(),
-                block_previous=args.block_previous,
-            )
             try:
                 executions = load_runtime_execution_registry()
             except DeploymentContractError:
@@ -785,15 +790,26 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
                 # 해당 source pair의 첫 execution을 별도로 만든다.
                 if runtime_execution_registry_path().exists():
                     raise
-            else:
-                updated_executions = rotate_execution_source_binding(
-                    registry=executions,
-                    pins=registry,
-                    manager_source_revision=trusted_manager_source_revision(),
-                    bound_by=_pin_actor(),
+                registry = rotate_runtime_pin_pair(
+                    map_revision=args.map_revision,
+                    pinvi_revision=args.pinvi_revision,
                     reason=args.reason,
+                    rotated_by=_pin_actor(),
+                    block_previous=args.block_previous,
                 )
-                write_runtime_execution_registry(updated_executions)
+            else:
+                # v6 host는 별도 v5/v6 파일을 순차적으로 "성공" 처리하지 않는다.
+                # helper가 durable intent·idempotent recovery를 소유하며, 여기서는
+                # legacy 여부만 판별한다.
+                del executions
+                registry = rotate_pair_with_execution(
+                    map_revision=args.map_revision,
+                    pinvi_revision=args.pinvi_revision,
+                    manager_source_revision=trusted_manager_source_revision(),
+                    reason=args.reason,
+                    rotated_by=_pin_actor(),
+                    block_previous=args.block_previous,
+                )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2

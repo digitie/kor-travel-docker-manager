@@ -10,6 +10,7 @@ import pytest
 
 from kor_travel_docker_manager import cli
 from kor_travel_docker_manager.cli import build_parser
+from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV,
     RuntimeExecutionRegistryError,
@@ -22,7 +23,16 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     verify_runtime_execution_registry,
     write_runtime_execution_registry,
 )
-from kor_travel_docker_manager.services.runtime_pin_registry import build_registry
+from kor_travel_docker_manager.services.runtime_pair_rotation import (
+    RuntimePairRotationError,
+    load_pending_runtime_pair_rotation,
+    require_no_pending_runtime_pair_rotation,
+    rotate_pair_with_execution,
+)
+from kor_travel_docker_manager.services.runtime_pin_registry import (
+    build_registry,
+    verify_runtime_pin_registry,
+)
 
 _MAP = "a" * 40
 _PINVI = "b" * 40
@@ -33,6 +43,7 @@ _MANAGER_B = "d" * 40
 @pytest.fixture(autouse=True)
 def _allow_drvfs_modes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV, "1")
+    monkeypatch.setenv(pair_rotation.RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV, "1")
 
 
 def _pins():
@@ -218,14 +229,129 @@ def test_cli_pair_rotation_advances_an_existing_execution_binding(
     saved: list[object] = []
 
     monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda: nullcontext())
-    monkeypatch.setattr(cli, "rotate_runtime_pin_pair", lambda **_kwargs: rotated_pins)
     monkeypatch.setattr(cli, "load_runtime_execution_registry", lambda: executions)
     monkeypatch.setattr(cli, "trusted_manager_source_revision", lambda: _MANAGER_A)
-    monkeypatch.setattr(cli, "write_runtime_execution_registry", saved.append)
+    monkeypatch.setattr(cli, "rotate_pair_with_execution", lambda **_kwargs: saved.append(_kwargs) or rotated_pins)
 
     assert cli._cmd_pin_rotate_pair(args) == 0
-    assert saved[0].current.source_pinset_sha256 == rotated_pins.pinset_sha256
-    assert not saved[0].is_unconditionally_blocked_current()
+    assert saved[0]["map_revision"] == "e" * 40
+    assert saved[0]["manager_source_revision"] == _MANAGER_A
+
+
+def test_pair_rotation_recovers_partial_v5_v6_write_without_manual_state_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v5가 먼저 기록돼도 intent가 남아 같은 CLI target으로 끝까지 복구한다."""
+
+    from kor_travel_docker_manager.services import runtime_execution_registry as executions_module
+    from kor_travel_docker_manager.services import runtime_pin_registry as pins_module
+
+    pin_private = tmp_path / "pins.json"
+    pin_public = tmp_path / "public" / "pins.json"
+    execution_private = tmp_path / "executions.json"
+    execution_public = tmp_path / "public" / "executions.json"
+    transaction = tmp_path / "rotation.json"
+    monkeypatch.setenv(pins_module.RUNTIME_PINS_FILE_ENV, str(pin_private))
+    monkeypatch.setenv(pins_module.RUNTIME_PINS_PUBLIC_FILE_ENV, str(pin_public))
+    monkeypatch.setenv(executions_module.RUNTIME_EXECUTIONS_FILE_ENV, str(execution_private))
+    monkeypatch.setenv(
+        executions_module.RUNTIME_EXECUTIONS_PUBLIC_FILE_ENV, str(execution_public)
+    )
+    monkeypatch.setenv(pair_rotation.RUNTIME_PAIR_ROTATION_FILE_ENV, str(transaction))
+
+    initial_pins = _pins()
+    from kor_travel_docker_manager.services.runtime_pin_registry import write_runtime_pin_registry
+
+    write_runtime_pin_registry(initial_pins, preserve_previous=False)
+    initial_executions = migrate_execution_registry(
+        pins=initial_pins,
+        manager_source_revision=_MANAGER_A,
+        bound_by="tester",
+        reason="migrate",
+    )
+    write_runtime_execution_registry(initial_executions)
+
+    original_writer = pair_rotation.write_runtime_execution_registry
+    monkeypatch.setattr(
+        pair_rotation,
+        "write_runtime_execution_registry",
+        lambda _registry: (_ for _ in ()).throw(OSError("simulated v6 write failure")),
+    )
+    with pytest.raises(OSError, match="simulated"):
+        rotate_pair_with_execution(
+            map_revision="e" * 40,
+            pinvi_revision=_PINVI,
+            manager_source_revision=_MANAGER_A,
+            reason="source correction",
+            rotated_by="tester",
+            block_previous=True,
+        )
+
+    pending = load_pending_runtime_pair_rotation()
+    assert pending is not None
+    assert pending.pin_registry.map_revision == "e" * 40
+    assert load_runtime_execution_registry().current_matches(
+        pins=initial_pins, manager_source_revision=_MANAGER_A
+    )
+    with pytest.raises(RuntimePairRotationError, match="incomplete"):
+        require_no_pending_runtime_pair_rotation()
+
+    monkeypatch.setattr(pair_rotation, "write_runtime_execution_registry", original_writer)
+    recovered = rotate_pair_with_execution(
+        map_revision="e" * 40,
+        pinvi_revision=_PINVI,
+        manager_source_revision=_MANAGER_A,
+        reason="source correction",
+        rotated_by="tester",
+        block_previous=True,
+    )
+    assert load_pending_runtime_pair_rotation() is None
+    assert load_runtime_execution_registry().current_matches(
+        pins=recovered, manager_source_revision=_MANAGER_A
+    )
+    assert verify_runtime_pin_registry()["published_copy"] == "current"
+    assert verify_runtime_execution_registry()["execution_public_copy"] == "current"
+
+
+def test_pending_pair_rotation_refuses_a_different_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction = tmp_path / "rotation.json"
+    monkeypatch.setenv(pair_rotation.RUNTIME_PAIR_ROTATION_FILE_ENV, str(transaction))
+    pins = _pins()
+    executions = migrate_execution_registry(
+        pins=pins, manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
+    )
+    target_pins = build_registry(
+        release_version=5,
+        map_revision="e" * 40,
+        pinvi_revision=_PINVI,
+        rotated_by="tester",
+        reason="source correction",
+    )
+    target_executions = rotate_execution_source_binding(
+        registry=executions,
+        pins=target_pins,
+        manager_source_revision=_MANAGER_A,
+        bound_by="tester",
+        reason="source correction",
+    )
+    pending = pair_rotation.RuntimePairRotation(
+        created_at="2026-08-29T00:00:00Z",
+        pin_registry=target_pins,
+        execution_registry=target_executions,
+    )
+    pair_rotation._atomic_write(transaction, pending.to_payload())
+
+    with pytest.raises(RuntimePairRotationError, match="different target"):
+        rotate_pair_with_execution(
+            map_revision="f" * 40,
+            pinvi_revision=_PINVI,
+            manager_source_revision=_MANAGER_A,
+            reason="wrong",
+            rotated_by="tester",
+            block_previous=True,
+        )
 
 
 def test_rebind_refuses_nonterminal_or_same_manager_revision() -> None:

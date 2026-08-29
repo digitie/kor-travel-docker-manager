@@ -665,9 +665,14 @@ def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
     소유하고, 실제 재실행 판정은 결박된 v6 execution lifecycle이 소유한다.
     """
 
+    from kor_travel_docker_manager.services.runtime_pair_rotation import (
+        require_no_pending_runtime_pair_rotation,
+    )
     from kor_travel_docker_manager.services.runtime_pin_registry import (
         load_runtime_pin_registry,
     )
+
+    require_no_pending_runtime_pair_rotation()
 
     # release를 이미 registry에서 읽은 뒤이므로 여기서 실패하면 파일이 방금
     # 사라진 것이다. 차단 판정을 못 하는 상태로 파괴적 작업을 진행하지 않는다.

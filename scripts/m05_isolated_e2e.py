@@ -31,7 +31,10 @@ from urllib.request import (
     build_opener,
 )
 
-from kor_travel_docker_manager.services.c6c_deployment import effective_environment
+from kor_travel_docker_manager.services.c6c_deployment import (
+    DeploymentContractError,
+    effective_environment,
+)
 from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05IsolatedHarnessPlan,
     M05IsolatedNetworkExpectation,
@@ -212,8 +215,13 @@ def _assert_current_m05_execution_is_runnable(
     """현재 source pair와 trusted Manager 실행 결박을 mutation 전에 확인한다."""
 
     try:
+        from kor_travel_docker_manager.services.runtime_pair_rotation import (
+            require_no_pending_runtime_pair_rotation,
+        )
+
+        require_no_pending_runtime_pair_rotation()
         registry = load_runtime_pin_registry()
-    except RuntimePinRegistryError:
+    except (RuntimePinRegistryError, DeploymentContractError):
         _fail("runtime_pin_registry_invalid")
     if (
         registry.pinset_sha256 != PINNED_RUNTIME_RELEASE.pinset_sha256
