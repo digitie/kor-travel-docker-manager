@@ -2,6 +2,15 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — Compose config failure와 topology mismatch의 증거 분리
+
+rendered publish preflight는 `docker compose config`가 성공한 뒤의 topology만 검사할 수 있지만,
+command 자체가 실패하면 이전에는 같은 fixed phase로 수렴해 topology mismatch와 구분되지 않았다.
+preflight는 이제 config command failure에도 return code만 담은 fixed root-only evidence를 남긴다.
+원문 stderr는 기본적으로 폐기하며, root operator가 일시적으로 `KTDM_M05_FORENSIC_CAPTURE=1`을 명시한
+경우에만 최대 256 KiB의 별도 `0600` forensic artifact로 보존한다. 이 opt-in은 일반 운영 기본값을
+바꾸지 않고 one-shot ledger 전 단계에서 configuration failure를 좁히는 진단 경계다.
+
 ## 2026-08-29 — terminal 여부와 무관한 일반 execution rebind
 
 trusted Manager release 설치 뒤 current execution이 이전 release를 가리키면 `pin verify`는 stale로

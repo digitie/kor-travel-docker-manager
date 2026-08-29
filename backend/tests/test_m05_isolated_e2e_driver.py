@@ -4,6 +4,7 @@ import ast
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -965,6 +966,61 @@ def test_command_accepts_only_a_declared_failure_exit_diagnostic(
     assert error.value.diagnostic == "pre_root_state_invalid"
 
 
+def test_compose_config_failure_evidence_is_safe_by_default_and_forensic_on_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+
+    monkeypatch.setattr(
+        driver.subprocess,
+        "run",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 2, stdout="", stderr="exact compose parser failure\n"
+        ),
+    )
+    safe = tmp_path / "safe.json"
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._compose(
+            root=tmp_path,
+            project="m05i-map",
+            env_file=tmp_path / "map.env",
+            files=(tmp_path / "docker-compose.yml",),
+            arguments=("config", "--format", "json"),
+            failure_phase="runtime_loopback_publish_config_invalid",
+            failure_evidence_path=safe,
+        )
+    assert json.loads(safe.read_text(encoding="utf-8")) == {
+        "kind": "compose_config",
+        "returncode": 2,
+        "version": 1,
+    }
+    assert not safe.with_suffix(".stderr").exists()
+
+    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
+    oversized_stderr = b"x" * (driver._FORENSIC_CAPTURE_LIMIT + 1)
+
+    class FailedCompose:
+        stdout = io.BytesIO(b"")
+        stderr = io.BytesIO(oversized_stderr)
+
+        def wait(self) -> int:
+            return 2
+
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *_args, **_kwargs: FailedCompose())
+    forensic = tmp_path / "forensic.json"
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._compose(
+            root=tmp_path,
+            project="m05i-map",
+            env_file=tmp_path / "map.env",
+            files=(tmp_path / "docker-compose.yml",),
+            arguments=("config", "--format", "json"),
+            failure_phase="runtime_loopback_publish_config_invalid",
+            failure_evidence_path=forensic,
+        )
+    assert forensic.with_suffix(".stderr").read_bytes() == b"x" * driver._FORENSIC_CAPTURE_LIMIT
+
+
 def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
     driver = _driver()
 
@@ -1189,7 +1245,13 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     monkeypatch.setattr(
         driver, "build_m05_isolated_manager_admission", lambda **_kwargs: {}
     )
-    monkeypatch.setattr(driver, "_compose", lambda **_kwargs: "{}")
+    compose_arguments: dict[str, object] = {}
+
+    def compose(**kwargs: object) -> str:
+        compose_arguments.update(kwargs)
+        return "{}"
+
+    monkeypatch.setattr(driver, "_compose", compose)
     monkeypatch.setattr(
         driver, "_assert_rendered_loopback_tcp_publish", lambda *_args, **_kwargs: None
     )
@@ -1213,6 +1275,10 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     assert calls == ["blocked"]
     assert receipt["status"] == "blocked"
     assert receipt["phase"] == "ledger_claim"
+    assert isinstance(compose_arguments["failure_evidence_path"], Path)
+    assert compose_arguments["failure_evidence_path"].name == (
+        "rendered-loopback-publish-error.json"
+    )
 
 
 def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:
