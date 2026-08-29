@@ -174,6 +174,15 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
         "pinned_runtime_rebuild_lock",
         lambda: nullcontext(),
     )
+    # 이 모듈의 대형 orchestration fixture는 각 사례가 필요한 v5 source release를
+    # 직접 주입한다. 실제 root registry/trusted Manager v6 snapshot은 만들지 않으므로
+    # 새 execution gate는 여기서만 명시적으로 격리한다. gate 자체(legacy/current/terminal,
+    # lock ordering)는 ``test_runtime_pin_registry`` 전용 회귀가 소유한다.
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_pinset_is_not_permanently_blocked",
+        lambda _pinset_sha256: None,
+    )
     base = tmp_path / "application-300"
     monkeypatch.setattr(
         compose_service_module,
