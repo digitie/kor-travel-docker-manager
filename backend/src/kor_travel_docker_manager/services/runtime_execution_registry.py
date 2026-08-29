@@ -508,10 +508,8 @@ def rebind_execution_registry(
     bound_by: str,
     reason: str,
 ) -> RuntimeExecutionRegistry:
-    if not registry.is_unconditionally_blocked_current():
-        raise RuntimeExecutionRegistryError(
-            "current execution is not terminal; execution rebind is refused"
-        )
+    """새 trusted release를 결박하거나 같은 target의 private/public parity를 복구한다."""
+
     if (
         registry.current.source_pinset_sha256 != pins.pinset_sha256
         or registry.current.map_revision != pins.map_revision
@@ -519,7 +517,10 @@ def rebind_execution_registry(
     ):
         raise RuntimeExecutionRegistryError("execution rebind source pinset differs")
     if registry.current.manager_source_revision == manager_source_revision:
-        raise RuntimeExecutionRegistryError("execution rebind Manager revision did not change")
+        # private write 뒤 public write가 실패·중단되면 private current가 이미 이 exact
+        # target을 가리킨다. 같은 root rebind는 새 identity를 만들지 않고 양쪽 사본을
+        # idempotent하게 다시 publish하여 manual registry edit 없이 복구한다.
+        return registry
     current = new_execution_binding(
         pins=pins,
         manager_source_revision=manager_source_revision,

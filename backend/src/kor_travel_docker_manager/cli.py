@@ -1509,7 +1509,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pin_rebind_execution = pin_subparsers.add_parser(
         "rebind-execution",
-        help="terminal execution을 새 trusted Manager release로만 재결박합니다.",
+        help="현재 execution을 새 trusted Manager release로 재결박합니다.",
     )
     pin_rebind_execution.add_argument("--expected-manager-revision", required=True)
     pin_rebind_execution.add_argument("--reason", required=True)
