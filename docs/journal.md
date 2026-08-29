@@ -2,6 +2,15 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — isolated loopback admin 요청의 bridge gateway admission
+
+rendered loopback publish가 정상인데 host root driver의 Map admin subscription 요청이 실패한 candidate를
+대조했다. API의 trusted-proxy CIDR에는 frontend와 `127.0.0.1`만 있었지만, Docker published-port
+forwarding 요청은 isolated bridge gateway에서 API에 도달한다. network allocator는 이제 gateway를 명시적으로
+반환하고, API admin allowlist가 frontend·gateway·loopback 세 `/32`만 허용한다. subnet allocation과
+주소 순서, generated CIDR presence를 회귀로 고정했다. 이는 isolated Docker transport admission의 보정이지
+Map/PinVi source provenance나 generic pin registry의 업무 규칙 변경이 아니다.
+
 ## 2026-08-29 — Compose replacement tag로 isolated loopback publish 보존
 
 root forensic으로 rendered config JSON을 확인한 결과, Compose output format 문제가 아니라 API override의
