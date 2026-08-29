@@ -795,7 +795,7 @@ def _cmd_pin_block(args: argparse.Namespace) -> int:
         print("pin block requires root", file=sys.stderr)
         return 2
     try:
-        with _runtime_pin_mutation_lock(allow_inherited_terminal_block=True):
+        with _runtime_pin_mutation_lock():
             registry = block_runtime_pinset(
                 pinset_sha256=args.pinset,
                 reason=args.reason,
