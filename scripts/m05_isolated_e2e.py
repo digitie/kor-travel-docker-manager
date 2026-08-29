@@ -1702,7 +1702,7 @@ def _build_runtime_provenance(
                 "map", 13701, map_api_port, map_api_id
             ),
             "pinvi-api": M05IsolatedServiceExpectation(
-                "pinvi", 8000, pinvi_api_port, pinvi_api_id
+                "pinvi", 8000, pinvi_api_port, pinvi_api_id, ("map",)
             ),
         },
     )
@@ -2022,8 +2022,12 @@ def main(expected_revision: str, output: Path) -> int:
                     f"NEXT_PUBLIC_PINVI_API_URL=http://127.0.0.1:{ports['pinvi_api']}",
                     f'PINVI_CORS_ALLOWED_ORIGINS=["http://127.0.0.1:{ports["pinvi_web"]}"]',
                     "PINVI_RATE_LIMIT_ENABLED=false",
-                    f"PINVI_KOR_TRAVEL_MAP_API_BASE_URL=http://host.docker.internal:{ports['map_api']}",
-                    f"PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL=http://host.docker.internal:{ports['map_api']}",
+                    # Map API는 host loopback으로만 publish한다. PinVi runtime이
+                    # host gateway를 거쳐 그 listener에 붙으면 loopback boundary를
+                    # 넘지 못하므로, app-api만 Map isolated bridge에도 join해 API의
+                    # fixed private address로 service request를 보낸다.
+                    f"PINVI_KOR_TRAVEL_MAP_API_BASE_URL=http://{map_api_ip}:13701",
+                    f"PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL=http://{map_api_ip}:13701",
                     f"KOR_TRAVEL_MAP_FEATURE_REQUEST_TOKEN={feature_request_token}",
                     "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_ENABLED=true",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_READ_TOKEN={read_token}",
@@ -2037,7 +2041,19 @@ def main(expected_revision: str, output: Path) -> int:
         )
         pinvi_override_lines = ["services:"]
         for service in ("app-api", "app-web", "app-dagster"):
-            pinvi_override_lines.extend((f"  {service}:", "    labels:"))
+            pinvi_override_lines.append(f"  {service}:")
+            if service == "app-api":
+                # app-api는 PinVi default network를 유지해 own DB/object-store와
+                # 통신하고, 별도 external Map network에는 private service call만
+                # 할 수 있게 join한다. host publish는 여전히 loopback 하나다.
+                pinvi_override_lines.extend(
+                    (
+                        "    networks:",
+                        "      default: {}",
+                        "      m05-map: {}",
+                    )
+                )
+            pinvi_override_lines.append("    labels:")
             pinvi_override_lines.extend(
                 f"      {key}: {value}" for key, value in plan.labels.items()
             )
@@ -2052,6 +2068,13 @@ def main(expected_revision: str, output: Path) -> int:
         )
         pinvi_override_lines.extend(
             f"      {key}: {value}" for key, value in plan.labels.items()
+        )
+        pinvi_override_lines.extend(
+            (
+                "  m05-map:",
+                "    external: true",
+                f"    name: {plan.map_network}",
+            )
         )
         _write_private_text(pinvi_override, "\n".join(pinvi_override_lines) + "\n")
         phase = "map_runtime"

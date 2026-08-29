@@ -142,6 +142,7 @@ class M05IsolatedServiceExpectation:
     container_port: int
     host_port: int
     image_id: str
+    additional_network_roles: tuple[M05IsolatedRuntimeRole, ...] = ()
 
     def __post_init__(self) -> None:
         if self.role not in {"map", "pinvi"}:
@@ -152,6 +153,14 @@ class M05IsolatedServiceExpectation:
             raise DeploymentContractError("M05 isolated service image ID is invalid")
         if _SHA256.fullmatch(self.image_id[7:]) is None:
             raise DeploymentContractError("M05 isolated service image ID is invalid")
+        additional_network_roles = tuple(self.additional_network_roles)
+        if (
+            len(set(additional_network_roles)) != len(additional_network_roles)
+            or self.role in additional_network_roles
+            or any(role not in {"map", "pinvi"} for role in additional_network_roles)
+        ):
+            raise DeploymentContractError("M05 isolated service additional network roles are invalid")
+        object.__setattr__(self, "additional_network_roles", additional_network_roles)
 
 
 @dataclass(frozen=True)
@@ -341,17 +350,22 @@ def assert_m05_isolated_runtime(
         if not isinstance(labels, Mapping) or any(labels.get(key) != value for key, value in plan.labels.items()):
             raise DeploymentContractError("M05 isolated runtime labels differ")
         attached_networks = network_settings.get("Networks")
+        expected_networks = tuple(
+            expectation.network_for(role)
+            for role in (service_expectation.role, *service_expectation.additional_network_roles)
+        )
         if (
             not isinstance(attached_networks, Mapping)
-            or set(attached_networks) != {network_expectation.name}
+            or set(attached_networks) != {item.name for item in expected_networks}
         ):
             raise DeploymentContractError("M05 isolated runtime network differs")
-        attached_network = attached_networks[network_expectation.name]
-        if (
-            not isinstance(attached_network, Mapping)
-            or attached_network.get("NetworkID") != network_expectation.network_id
-        ):
-            raise DeploymentContractError("M05 isolated runtime network ID differs")
+        for expected_network in expected_networks:
+            attached_network = attached_networks[expected_network.name]
+            if (
+                not isinstance(attached_network, Mapping)
+                or attached_network.get("NetworkID") != expected_network.network_id
+            ):
+                raise DeploymentContractError("M05 isolated runtime network ID differs")
         port_key = f"{service_expectation.container_port}/tcp"
         ports = network_settings.get("Ports")
         if not isinstance(ports, Mapping) or set(ports) != {port_key}:
