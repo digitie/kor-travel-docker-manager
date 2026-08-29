@@ -58,6 +58,11 @@ isolated runtime 준비는 `runtime_setup_ports` → `runtime_setup_workspace` �
 드러내지 않으며, 이미 terminal인 pinset의 재시도 근거가 아니다. 목적은 다음 immutable Manager source의
 정적 보정 범위를 한 단계로만 좁히는 것이다.
 
+`runtime_setup_ports`는 실제 host publish를 쓰는 모든 endpoint를 하나의 예약 표로 뽑는다. Map RustFS와
+console, PinVi API/Web/RustFS/console/Dagster 및 observability profile의 cAdvisor/Prometheus/Grafana까지
+각각 별도 port를 검사하고 같은 값을 재사용하지 않는다. 이는 특정 앱의 업무 규칙이 아니라, Compose wrapper가
+후속 기동 단계에서 검사하는 host endpoint와 driver의 사전 점검을 같은 집합으로 유지하는 일반 lifecycle 규칙이다.
+
 `run-m05-isolated-e2e-once`의 strict result schema는 이 일곱 setup phase를 포함한 driver의 모든 public
 terminal phase를 `completed` 외 exact 같은 집합으로 수용한다. 이 동등성은 source literal AST 회귀로 고정하므로,
 새 driver phase는 launcher contract를 함께 바꾸지 않으면 CI에서 거부된다.
