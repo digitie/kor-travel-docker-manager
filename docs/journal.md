@@ -2,6 +2,15 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — Compose replacement tag로 isolated loopback publish 보존
+
+root forensic으로 rendered config JSON을 확인한 결과, Compose output format 문제가 아니라 API override의
+`ports: !reset`이 기존 publish뿐 아니라 뒤의 replacement list까지 기본값(빈 list)으로 처리하고 있었다.
+isolated runtime은 기존 host publish를 정확한 loopback publish 하나로 **교체**해야 하므로 `!override`를
+사용한다. frontend의 의도적인 empty-port reset과 다른 의미임을 코드 주석과 source regression으로 고정했다.
+이는 Compose merge semantics를 바로잡는 Manager runtime override 보정이며 Map/PinVi source provenance나
+generic pin/registry 계약을 바꾸지 않는다.
+
 ## 2026-08-29 — Compose config stdout의 bounded streaming admission
 
 Compose config parse failure를 보존하는 추가 경로가 `stdout=PIPE` 전체를 메모리에 읽은 뒤

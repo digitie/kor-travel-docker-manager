@@ -1899,7 +1899,9 @@ def main(expected_revision: str, output: Path) -> int:
             # frontend BFF와 root one-shot만 admin endpoint에 닿는다. API port는
             # loopback publish이므로 host 밖에서 이 별도 harness principal을 흉내낼 수 없다.
             f'      KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS: \'["{map_frontend_ip}/32","127.0.0.1/32"]\'',
-            "    ports: !reset",
+            # !reset은 list를 기본값(빈 값)으로 되돌린다. 기존 publish를 정확한
+            # isolated loopback publish 하나로 교체하려면 Compose의 !override여야 한다.
+            "    ports: !override",
             f"      - 127.0.0.1:{ports['map_api']}:13701",
             "    networks: !reset",
             "      default:",

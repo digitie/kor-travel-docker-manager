@@ -1246,6 +1246,18 @@ def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
     assert pair_preflight < admission_contract < ledger_claim
 
 
+def test_isolated_map_override_replaces_the_api_publish_instead_of_resetting_it() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    override_start = source.index('            "  api:",')
+    override_end = source.index('            "  frontend:",', override_start)
+    api_override = source[override_start:override_end]
+
+    assert '"    ports: !override",' in api_override
+    assert '"    ports: !reset",' not in api_override
+
+
 def test_root_launcher_checks_the_m05_pair_before_creating_an_output_leaf() -> None:
     """wrong Map/PinVi provenance은 execution terminal·ledger를 소비하지 않는다."""
 
