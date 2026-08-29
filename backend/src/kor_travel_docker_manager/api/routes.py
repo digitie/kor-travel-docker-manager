@@ -348,15 +348,10 @@ def _runtime_pin_summary(
         return {
             "state": "action_required",
             "text": (
-                "현재 고정된 pinset은 재시도가 금지된 candidate입니다. "
-                "새 revision으로 회전해야 재구축할 수 있습니다."
+                "현재 고정된 pinset에는 legacy terminal 기록이 있습니다. 현재 trusted "
+                "execution의 실행 가능 여부를 root 검증으로 확인해야 합니다."
             ),
-            # terminal pinset에서는 registry가 단일 role 회전을 거부한다. 그 상태에서만
-            # 뜨는 배너이므로 `pin rotate`를 주면 **반드시 실패하는 명령**을 쥐여 주는 셈이다.
-            "next_action": (
-                "ktdctl pin rotate-pair --map-revision <40-hex> "
-                '--pinvi-revision <40-hex> --reason "..." --confirm'
-            ),
+            "next_action": "sudo -n backend/.venv/bin/ktdctl pin verify",
         }
     return {
         "state": "ok",

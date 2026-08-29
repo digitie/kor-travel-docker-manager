@@ -2,12 +2,32 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — v5 terminal 감사와 v6 실행 출처를 엄격 분리
+
+v5 terminal에는 Manager revision이 없으므로, 그것을 직전 설치 release의 v6 execution으로
+귀속하는 설계는 역사적 provenance를 만들어 내는 P1 오류였다. 해당 transition record와
+installer 변경을 폐기했다. v5 registry는 source materialization의 원본 terminal 감사로 변경
+없이 남기고, `pin migrate-execution-v6`은 현재 trusted Manager revision의 v6 execution 하나만
+생성한다. 따라서 새 execution의 terminal은 실제 v6 one-shot 결과로만 기록된다.
+
+적대 재리뷰에서 v5 source가 미차단일 때 v6 terminal을 건너뛸 수 있는 P1도 발견했다.
+`rebuild-pinned`는 이제 source 상태와 무관하게 exact trusted v6 execution을 확인하고, missing·stale·terminal이면
+mutation 전에 거부한다. UI preflight는 비-root라 private/public v6 parity를 증명할 수 없으므로 실행 가능
+초록불을 내지 않고 root `pin verify`만 요구한다. 이 규칙은 M05에 한정되지 않으며, 기존 v5 audit을
+삭제하거나 과거 실행의 출처를 추측하지 않는다.
+
+같은 재리뷰에서 release snapshot을 global mutation lock 앞에서 읽으면 rotation이 그 사이에 끼어 old
+source와 new execution을 섞을 수 있는 TOCTOU도 확인했다. pinned rebuild는 이제 global lease를 먼저 잡고
+그 안에서 release·v5 registry·trusted Manager·v6 execution을 한 snapshot으로 검사한다. rotate/block/install과의
+lock ordering은 `global → pinned`으로 고정했고, 실제 flock 회귀와 ordering 회귀를 추가했다.
+
 ## 2026-08-29 — v6 execution registry를 one-shot과 sibling receipt에 연결
 
 일반 runtime execution registry를 actual mutation gate까지 연결했다. `ktdctl pin verify`는
 source registry와 trusted Manager-derived execution binding을 함께 확인하며, migration 시 기존 v5
-unconditional terminal은 같은 Manager revision의 v6 execution에도 그대로 보존한다. 새 execution은
-terminal인 current binding을 trusted Manager release revision이 달라진 경우에만 rebind할 수 있다.
+unconditional terminal은 v5 source audit으로만 남긴다. v6 execution은 현재 trusted Manager release에
+새로 결박하며 terminal은 실제 v6 one-shot 결과에서만 기록한다. 새 execution은 terminal인 current
+binding을 trusted Manager release revision이 달라진 경우에만 rebind할 수 있다.
 `block-execution`도 generic root CLI로 제공해 launcher fallback이 임의 pair가 아닌 verified current
 execution만 idempotent하게 차단한다.
 

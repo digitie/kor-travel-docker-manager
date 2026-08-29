@@ -67,13 +67,18 @@ install root의 `.ktdm-source-revision`과 `.ktdm-release-manifest.json`을 root
 no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
 
 - `ktdctl pin migrate-execution-v6 --confirm`은 v5 registry의 history와 blocked
-  pinset을 변경 없이 legacy audit으로 보존하고 v6 execution registry를 만든다.
+  pinset을 변경 없이 legacy audit으로 보존하고 v6 execution registry를 만든다. current
+  v5 source가 terminal이어도 그 기록에는 Manager revision이 없으므로, 임의의 과거 release에
+  terminal을 귀속하지 않는다. 현재 trusted release의 v6 execution 하나만 미차단으로 만들고,
+  legacy terminal은 v5 source audit에 그대로 둔다. 새 execution의 terminal은 실제 v6 실행
+  결과로만 기록한다.
 - `ktdctl pin rebind-execution --expected-manager-revision <40-hex> --confirm`의
   revision은 trusted installed revision과의 TOCTOU 확인값일 뿐이다. terminal current와
   다른 trusted Manager revision일 때만 Map/PinVi source를 건드리지 않고 새 execution
   identity를 만든다.
-- `pin verify`와 read-only UI/API는 v5 source pinset, Manager revision, v6 execution
-  identity, legacy v5 terminal 수, v6 execution terminal 수를 분리 표시한다. v6 success
+- root `pin verify`는 v5 source pinset, Manager revision, v6 execution identity와 양쪽
+  terminal 상태를 함께 판정한다. read-only UI/API는 private/public v6 parity를 증명할 수
+  없으므로 execution success를 green으로 표시하지 않고 `pin verify`를 안내한다. v6 success
   gate는 구 `pinset_binding`만으로 green을 판단하지 않는다.
 - PinVi admission·activation receipt와 Map attestation은 Map SHA, PinVi SHA, v5 source
   pinset, Manager SHA, v6 execution identity를 모두 exact 대조한다. 한 필드라도 다르면

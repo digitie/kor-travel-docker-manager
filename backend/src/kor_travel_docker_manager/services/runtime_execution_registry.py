@@ -279,13 +279,13 @@ def runtime_execution_registry_public_path() -> Path:
     return Path(configured) if configured else _TRUSTED_PUBLIC_ROOT / _DEFAULT_BASENAME
 
 
-def _read_trusted_text(path: Path, *, expected_uid: int) -> str:
+def _read_trusted_text(path: Path, *, expected_uid: int, expected_mode: int = 0o644) -> str:
     try:
         before = path.lstat()
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_uid != expected_uid
-            or stat.S_IMODE(before.st_mode) != 0o644
+            or stat.S_IMODE(before.st_mode) != expected_mode
         ):
             raise RuntimeExecutionRegistryError("trusted Manager provenance file is unsafe")
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)

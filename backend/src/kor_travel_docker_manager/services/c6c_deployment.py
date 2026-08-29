@@ -2221,8 +2221,13 @@ def pinned_runtime_rebuild_lock() -> Iterator[None]:
     """
 
     _require_pinned_runtime_rebuild_root()
-    with c6c_deployment_lock(pinned_runtime_rebuild_lock_path()):
-        yield
+    # runtime pin rotate/block과 trusted installer도 global lease를 쓴다. rebuild가
+    # 별도 pinned lease만 잡으면 release snapshot과 v6 execution gate 사이에 rotate가
+    # 끼어 서로 다른 candidate를 검증·실행할 수 있다. global → pinned 순서를 모든
+    # destructive rebuild의 공통 ordering으로 고정한다.
+    with c6c_deployment_lock(str(_C6C_GLOBAL_MUTATION_LOCK)):
+        with c6c_deployment_lock(pinned_runtime_rebuild_lock_path()):
+            yield
 
 
 def _prepare_c6c_lock_directory(path: Path) -> None:

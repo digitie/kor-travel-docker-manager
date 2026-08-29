@@ -1331,7 +1331,7 @@ def test_get_runtime_pins_flags_a_terminal_current_pinset(mock_read):
     body = response.json()
     assert body["lifecycle"]["current_pinset_is_blocked"] is True
     assert body["summary"]["state"] == "action_required"
-    assert "pin rotate" in body["summary"]["next_action"]
+    assert body["summary"]["next_action"].endswith("ktdctl pin verify")
 
 
 @patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")

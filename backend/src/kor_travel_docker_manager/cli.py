@@ -360,10 +360,9 @@ def _print_registry(registry: Any, *, json_output: bool) -> None:
     print(f"reason   {registry.reason}")
     if registry.is_unconditionally_blocked_pinset(registry.pinset_sha256):
         print()
-        print("⚠ 현재 고정된 pinset은 재시도가 금지된 candidate입니다 — 이 상태로는")
-        print("  'ktdctl pinvi-pair rebuild-pinned'가 거부됩니다. 새 revision으로 회전하세요:")
-        print("  ktdctl pin rotate --role <map|pinvi> --revision <40-hex> \\")
-        print('    --reason "<사유>" --confirm')
+        print("⚠ 현재 고정된 pinset은 legacy source terminal 감사 기록을 가집니다.")
+        print("  기존 source candidate를 다시 실행할 수는 없습니다. v6 execution migration 뒤에는")
+        print("  'ktdctl pin verify'가 새 trusted implementation의 실행 가능 여부를 판정합니다.")
         print()
     blocked = registry.effective_blocked_pinsets
     if blocked:
@@ -609,17 +608,15 @@ def _cmd_pin_migrate_execution(args: argparse.Namespace) -> int:
                 print("runtime execution registry already exists; migration is refused", file=sys.stderr)
                 return 2
             pins = load_runtime_pin_registry()
+            # v5 terminal에는 Manager revision provenance가 없다. 기존 source audit은
+            # 그대로 두고, 이 trusted release의 새 v6 execution만 생성한다. 그래서
+            # legacy verdict를 임의의 과거 Manager execution으로 위조하지 않는다.
             registry = migrate_execution_registry(
                 pins=pins,
                 manager_source_revision=trusted_manager_source_revision(),
                 bound_by=_pin_actor(),
                 reason=args.reason,
             )
-            if pins.is_unconditionally_blocked_pinset(pins.pinset_sha256):
-                registry = block_current_execution(
-                    registry=registry,
-                    reason="legacy source pinset was terminal before execution migration",
-                )
             write_runtime_execution_registry(registry)
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)

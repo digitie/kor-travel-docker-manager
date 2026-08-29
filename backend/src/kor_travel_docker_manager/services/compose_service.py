@@ -167,6 +167,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     parse_candidate_static_head,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
+    PinnedRuntimeRelease,
     current_pinned_runtime_release,
     is_blocked_pinset_retry,
 )
@@ -657,11 +658,11 @@ def _require_pinned_runtime_rebuild_root() -> None:
 
 
 def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
-    """terminal 판정된 pinset의 실행을 mutation 이전에 거부한다.
+    """legacy source terminal 또는 현재 v6 execution terminal을 mutation 전에 거부한다.
 
     Map·PinVi 저장소는 "terminal candidate는 영구 재시도 금지"를 문서 규율로만
-    지켜 왔고 어긴 실행을 막는 기계 게이트가 없었다. 차단 목록은 registry가
-    소유하므로 새 pinset으로 회전하는 것이 유일한 해소 경로다.
+    지켜 왔고 어긴 실행을 막는 기계 게이트가 없었다. v5 차단 목록은 source audit을
+    소유하고, 실제 재실행 판정은 결박된 v6 execution lifecycle이 소유한다.
     """
 
     from kor_travel_docker_manager.services.runtime_pin_registry import (
@@ -671,11 +672,34 @@ def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
     # release를 이미 registry에서 읽은 뒤이므로 여기서 실패하면 파일이 방금
     # 사라진 것이다. 차단 판정을 못 하는 상태로 파괴적 작업을 진행하지 않는다.
     registry = load_runtime_pin_registry()
-    if registry.is_unconditionally_blocked_pinset(pinset_sha256):
+
+    # v5 terminal은 source materialization의 감사 기록이며 Manager revision을 담지
+    # 않는다. 그러나 v5가 미차단이라고 v6 execution이 미차단이라는 뜻은 아니다.
+    # 따라서 모든 destructive rebuild는 exact trusted v6 binding과 그 terminal state를
+    # 확인한다. 이 gate를 legacy terminal일 때만 적용하면 실제 v6 one-shot terminal을
+    # 다음 rebuild가 우회할 수 있다.
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+        trusted_manager_source_revision,
+    )
+
+    try:
+        execution = load_runtime_execution_registry()
+        execution_is_runnable = execution.current_matches(
+            pins=registry, manager_source_revision=trusted_manager_source_revision()
+        ) and not execution.is_unconditionally_blocked_current()
+    except DeploymentContractError:
+        execution_is_runnable = False
+    if not execution_is_runnable:
+        source_state = (
+            "legacy source pinset is terminal and "
+            if registry.is_unconditionally_blocked_pinset(pinset_sha256)
+            else ""
+        )
         raise DeploymentContractError(
-            "pinned runtime rebuild is blocked: this pinset is recorded as a terminal "
-            "candidate that must not be retried (rotate to a fresh pinset with "
-            "'ktdctl pin rotate')"
+            "pinned runtime rebuild is blocked: "
+            + source_state
+            + "the current trusted execution is missing, stale, or terminal"
         )
 
 
@@ -6429,14 +6453,18 @@ class ComposeService:
         """application-300 paired candidate에 결박된 destructive rebuild를 실행한다."""
 
         _require_pinned_runtime_rebuild_root()
-        release = current_pinned_runtime_release()
-        _assert_pinset_is_not_permanently_blocked(release.pinset_sha256)
+        release: PinnedRuntimeRelease | None = None
         resume_journal: PinnedRuntimeRebuildJournal | None = None
 
         def prewrite_admission(
             environment_snapshot: ComposeEnvironmentSnapshot,
         ) -> str | None:
-            nonlocal resume_journal
+            nonlocal release, resume_journal
+            # global mutation lock을 잡은 뒤 하나의 registry snapshot을 만들고 즉시
+            # source/v6 execution gate를 확인한다. rotate가 두 read 사이에 끼어 old
+            # release와 new execution을 섞는 TOCTOU를 막는다.
+            release = current_pinned_runtime_release()
+            _assert_pinset_is_not_permanently_blocked(release.pinset_sha256)
             state_paths = pinned_runtime_state_paths(
                 environment_snapshot.effective,
                 pinset_sha256=release.pinset_sha256,
@@ -6460,6 +6488,8 @@ class ComposeService:
             environment_snapshot,
             _role_credentials_initialized,
         ):
+            if release is None:  # pragma: no cover - context contract 방어
+                raise DeploymentContractError("pinned runtime release snapshot is unavailable")
             # application head 300은 paired receipt와 설치된 baseline contract가
             # 정본이다. Dagster/PinVi head만 network-less candidate 명령으로 읽는다.
             with _pinned_runtime_prejournal_step("state_initialization"):

@@ -35,7 +35,6 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
 PINNED_REBUILD_PREFLIGHT_SCHEMA: Final = "ktdm.pinned-rebuild-preflight.v1"
 REBUILD_COMMAND: Final = "sudo -n backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm"
 PIN_VERIFY_COMMAND: Final = "sudo -n backend/.venv/bin/ktdctl pin verify"
-PIN_SHOW_COMMAND: Final = "sudo -n backend/.venv/bin/ktdctl pin show"
 
 
 def _now() -> str:
@@ -84,12 +83,28 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
             and entry.get("phase") is None
         ]
         if blocked:
-            blockers.append(
+            # v5 terminal에는 Manager revision이 없다. 비-root UI가 public source
+            # audit만으로 새 v6 execution의 실행권을 판정하면 거짓 초록불이 된다.
+            # root ``pin verify``만 trusted install provenance와 private execution
+            # registry를 함께 확인할 수 있으므로, 회전을 강요하지 않고 fail-close한다.
+            unverified.append(
                 _finding(
-                    "PINSET_TERMINAL",
-                    "지금 고정된 버전 세트는 재시도가 영구 금지된 조합입니다. 새 "
-                    "revision으로 회전해야 재구축할 수 있습니다.",
-                    PIN_SHOW_COMMAND,
+                    "LEGACY_SOURCE_TERMINAL",
+                    "현재 고정된 source 버전 세트에 legacy terminal 기록이 있습니다. "
+                    "새 trusted execution의 실행 가능 여부를 root 검증으로 확인해야 합니다.",
+                    PIN_VERIFY_COMMAND,
+                )
+            )
+        else:
+            # execution registry의 authoritative copy는 root 0600이며 public copy는
+            # private copy와의 parity를 비-root UI가 증명할 수 없다. source가 깨끗해도
+            # v6 terminal을 보지 못한 채 초록불을 주면 one-shot을 재실행하게 된다.
+            unverified.append(
+                _finding(
+                    "EXECUTION_VERIFICATION_REQUIRED",
+                    "현재 trusted runtime execution의 terminal 상태는 root 검증으로만 "
+                    "확인할 수 있습니다.",
+                    PIN_VERIFY_COMMAND,
                 )
             )
 

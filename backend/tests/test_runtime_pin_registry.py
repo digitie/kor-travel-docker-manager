@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from kor_travel_docker_manager.services import runtime_execution_registry as execution_module
 from kor_travel_docker_manager.services import runtime_pin_registry as registry_module
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     RUNTIME_PIN_REGISTRY_SCHEMA,
@@ -48,6 +50,14 @@ def _isolated_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     public_path = tmp_path / "public" / ".ktdm-runtime-pins.json"
     monkeypatch.setenv(registry_module.RUNTIME_PINS_FILE_ENV, str(registry_path))
     monkeypatch.setenv(registry_module.RUNTIME_PINS_PUBLIC_FILE_ENV, str(public_path))
+    monkeypatch.setenv(
+        execution_module.RUNTIME_EXECUTIONS_FILE_ENV, str(tmp_path / "runtime-executions.json")
+    )
+    monkeypatch.setenv(
+        execution_module.RUNTIME_EXECUTIONS_PUBLIC_FILE_ENV,
+        str(tmp_path / "public" / ".ktdm-runtime-executions.json"),
+    )
+    monkeypatch.setenv(execution_module.RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV, "1")
     clear_runtime_pin_registry_cache()
     yield registry_path, public_path
     clear_runtime_pin_registry_cache()
@@ -614,20 +624,91 @@ def test_rebuild_start_gate_refuses_an_unconditionally_blocked_pinset() -> None:
 
     registry = _blocked_seed(phase=None)
 
-    with pytest.raises(DeploymentContractError, match="must not be retried"):
+    with pytest.raises(DeploymentContractError, match="missing, stale, or terminal"):
         _assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
 
 
-def test_rebuild_start_gate_ignores_phase_scoped_blocks() -> None:
-    """phase 한정 차단은 특정 journal 재개만 막는다 — 시작 게이트가 관여하면 과차단이다."""
+def test_rebuild_start_gate_allows_only_a_current_unblocked_v6_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v5 terminal audit은 보존하되 새 trusted execution의 one-shot만 허용한다."""
 
-    from kor_travel_docker_manager.services.compose_service import (
-        _assert_pinset_is_not_permanently_blocked,
+    from kor_travel_docker_manager.services import compose_service
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        migrate_execution_registry,
+    )
+
+    registry = _blocked_seed(phase=None)
+    execution = migrate_execution_registry(
+        pins=registry,
+        manager_source_revision="e" * 40,
+        bound_by="tester",
+        reason="legacy audit migration",
+    )
+    monkeypatch.setattr(
+        execution_module,
+        "load_runtime_execution_registry",
+        lambda: execution,
+    )
+    monkeypatch.setattr(
+        execution_module,
+        "trusted_manager_source_revision",
+        lambda: "e" * 40,
+    )
+
+    compose_service._assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
+
+
+def test_rebuild_start_gate_refuses_a_terminal_v6_execution_for_an_unblocked_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v5 source audit이 깨끗해도 v6 one-shot terminal은 절대 우회하지 않는다."""
+
+    from kor_travel_docker_manager.services import compose_service
+    from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        block_current_execution,
+        migrate_execution_registry,
+    )
+
+    registry = _seed()
+    execution = block_current_execution(
+        registry=migrate_execution_registry(
+            pins=registry,
+            manager_source_revision="e" * 40,
+            bound_by="tester",
+            reason="migrate",
+        ),
+        reason="terminal",
+    )
+    monkeypatch.setattr(execution_module, "load_runtime_execution_registry", lambda: execution)
+    monkeypatch.setattr(execution_module, "trusted_manager_source_revision", lambda: "e" * 40)
+
+    with pytest.raises(DeploymentContractError, match="current trusted execution.*terminal"):
+        compose_service._assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
+
+
+def test_rebuild_start_gate_ignores_phase_scoped_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phase 한정 차단은 v6 execution이 유효할 때 시작 게이트를 막지 않는다."""
+
+    from kor_travel_docker_manager.services import compose_service
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        migrate_execution_registry,
     )
 
     registry = _blocked_seed(phase="map_runtime_ready")
+    execution = migrate_execution_registry(
+        pins=registry,
+        manager_source_revision="e" * 40,
+        bound_by="tester",
+        reason="migrate",
+    )
+    monkeypatch.setattr(execution_module, "load_runtime_execution_registry", lambda: execution)
+    monkeypatch.setattr(execution_module, "trusted_manager_source_revision", lambda: "e" * 40)
 
-    _assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
+    compose_service._assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
     assert registry.is_blocked_pinset(registry.pinset_sha256)
     assert not registry.is_unconditionally_blocked_pinset(registry.pinset_sha256)
 
@@ -720,7 +801,14 @@ def test_rebuild_refuses_a_blocked_pinset_before_touching_anything(
 
     registry = _blocked_seed(phase=None)
     materialize = Mock()
-    lock = Mock()
+    lock_entered = False
+
+    @contextmanager
+    def lock(*, prewrite_admission):
+        nonlocal lock_entered
+        lock_entered = True
+        prewrite_admission(Mock())
+        yield (Mock(), Mock(), False)
     monkeypatch.setattr(
         compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
     )
@@ -731,12 +819,12 @@ def test_rebuild_refuses_a_blocked_pinset_before_touching_anything(
         compose_service_module, "_pinned_runtime_rebuild_environment_lock", lock
     )
 
-    with pytest.raises(DeploymentContractError, match="must not be retried"):
+    with pytest.raises(DeploymentContractError, match="missing, stale, or terminal"):
         compose_service_module.ComposeService().rebuild_pinned_runtime()
 
     materialize.assert_not_called()
-    # 락조차 잡지 않는다 — 거부는 어떤 host-wide 부작용보다도 앞선다.
-    lock.assert_not_called()
+    # release snapshot과 v6 gate는 회전과 같은 global lock 안에서만 읽는다.
+    assert lock_entered
     assert registry.is_unconditionally_blocked_pinset(registry.pinset_sha256)
 
 

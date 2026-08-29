@@ -174,6 +174,15 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
         "pinned_runtime_rebuild_lock",
         lambda: nullcontext(),
     )
+    # 이 모듈의 대형 orchestration fixture는 각 사례가 필요한 v5 source release를
+    # 직접 주입한다. 실제 root registry/trusted Manager v6 snapshot은 만들지 않으므로
+    # 새 execution gate는 여기서만 명시적으로 격리한다. gate 자체(legacy/current/terminal,
+    # lock ordering)는 ``test_runtime_pin_registry`` 전용 회귀가 소유한다.
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_pinset_is_not_permanently_blocked",
+        lambda _pinset_sha256: None,
+    )
     base = tmp_path / "application-300"
     monkeypatch.setattr(
         compose_service_module,
@@ -5055,6 +5064,20 @@ def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
     lock_path = tmp_path / "pinned-runtime-rebuild.lock"
     monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", lock_path)
     monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
+    # NTFS drvfs는 mode를 0777로 보이게 한다. 이 회귀의 대상은 mode 정책이 아니라
+    # second holder가 실제 flock을 얻지 못하는지다.
+    monkeypatch.setattr(c6c_deployment, "_validate_c6c_lock_fd", lambda *_args, **_kwargs: None)
+    original_lock = c6c_deployment.c6c_deployment_lock
+
+    @contextmanager
+    def lock_without_global(path: str):
+        if path == str(c6c_deployment._C6C_GLOBAL_MUTATION_LOCK):
+            yield
+        else:
+            with original_lock(path):
+                yield
+
+    monkeypatch.setattr(c6c_deployment, "c6c_deployment_lock", lock_without_global)
     holder = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -5065,6 +5088,30 @@ def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
         os.close(holder)
 
     assert str(excinfo.value) == "another C6c compatible-pair operation is already active"
+
+
+def test_pinned_runtime_rebuild_lease_acquires_global_before_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """release/v6 snapshot과 rotate를 같은 lease ordering으로 직렬화한다."""
+
+    acquired: list[str] = []
+    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
+
+    @contextmanager
+    def record_lock(path: str):
+        acquired.append(path)
+        yield
+
+    monkeypatch.setattr(c6c_deployment, "c6c_deployment_lock", record_lock)
+
+    with c6c_deployment.pinned_runtime_rebuild_lock():
+        pass
+
+    assert acquired == [
+        str(c6c_deployment._C6C_GLOBAL_MUTATION_LOCK),
+        c6c_deployment.pinned_runtime_rebuild_lock_path(),
+    ]
 
 
 def test_pinned_runtime_rebuild_lease_rejects_nonroot(
