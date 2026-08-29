@@ -91,16 +91,19 @@ def _patch(
     )
 
 
-def test_a_clean_host_reports_ok_and_still_does_not_execute(
+def test_a_clean_source_requires_root_execution_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch(monkeypatch)
 
     payload = preflight.read_pinned_rebuild_preflight()
 
-    assert payload["summary"]["state"] == "ok"
-    assert payload["can_start"] is True
+    assert payload["summary"]["state"] == "unverified"
+    assert payload["can_start"] is False
     assert payload["blockers"] == []
+    assert [row["code"] for row in payload["unverified"]] == [
+        "EXECUTION_VERIFICATION_REQUIRED"
+    ]
     # 실행 주체는 언제나 SSH의 사람이다 — payload가 주는 것은 명령 문자열뿐이다.
     assert payload["command"].endswith("rebuild-pinned --confirm")
 
@@ -124,7 +127,7 @@ def test_a_legacy_terminal_requires_root_execution_verification(
     assert [row["code"] for row in payload["unverified"]] == ["LEGACY_SOURCE_TERMINAL"]
 
 
-def test_a_phase_scoped_block_does_not_block_the_start(
+def test_a_phase_scoped_block_still_requires_execution_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """phase 한정 차단은 journal 재개만 막는다 — 여기서 합치면 과차단이 된다."""
@@ -141,7 +144,10 @@ def test_a_phase_scoped_block_does_not_block_the_start(
     payload = preflight.read_pinned_rebuild_preflight()
 
     assert payload["blockers"] == []
-    assert payload["can_start"] is True
+    assert payload["can_start"] is False
+    assert [row["code"] for row in payload["unverified"]] == [
+        "EXECUTION_VERIFICATION_REQUIRED"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -166,10 +172,11 @@ def test_an_invalid_public_generation_withholds_the_green_light(
     assert payload["can_start"] is False
     assert payload["summary"]["state"] == "unverified"
     assert [row["code"] for row in payload["unverified"]] == [
-        "GENERATION_UNVERIFIED"
+        "EXECUTION_VERIFICATION_REQUIRED",
+        "GENERATION_UNVERIFIED",
     ]
-    assert f"status={expected_status}" in payload["unverified"][0]["text"]
-    assert f"binding={expected_binding}" in payload["unverified"][0]["text"]
+    assert f"status={expected_status}" in payload["unverified"][1]["text"]
+    assert f"binding={expected_binding}" in payload["unverified"][1]["text"]
 
 
 def test_a_valid_pending_generation_allows_the_new_pair_to_start(
@@ -179,8 +186,10 @@ def test_a_valid_pending_generation_allows_the_new_pair_to_start(
 
     payload = preflight.read_pinned_rebuild_preflight()
 
-    assert payload["can_start"] is True
-    assert payload["unverified"] == []
+    assert payload["can_start"] is False
+    assert [row["code"] for row in payload["unverified"]] == [
+        "EXECUTION_VERIFICATION_REQUIRED"
+    ]
 
 
 def test_a_non_rebuildable_mode_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -205,8 +214,8 @@ def test_an_unfinished_journal_warns_that_it_will_resume(
 
     payload = preflight.read_pinned_rebuild_preflight()
 
-    assert payload["summary"]["state"] == "attention"
-    assert payload["can_start"] is True
+    assert payload["summary"]["state"] == "unverified"
+    assert payload["can_start"] is False
     assert [row["code"] for row in payload["warnings"]] == ["JOURNAL_WILL_RESUME"]
     # 초록불 문구를 쓰지 않는다.
     assert "실행하세요" not in payload["summary"]["text"]
@@ -222,7 +231,10 @@ def test_an_unverifiable_journal_withholds_the_green_light(
 
     assert payload["summary"]["state"] == "unverified"
     assert payload["can_start"] is False
-    assert [row["code"] for row in payload["unverified"]] == ["JOURNAL_UNVERIFIABLE"]
+    assert [row["code"] for row in payload["unverified"]] == [
+        "EXECUTION_VERIFICATION_REQUIRED",
+        "JOURNAL_UNVERIFIABLE",
+    ]
 
 
 def test_unverified_pins_withhold_the_green_light(monkeypatch: pytest.MonkeyPatch) -> None:

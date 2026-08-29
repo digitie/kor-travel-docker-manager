@@ -95,6 +95,18 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
                     PIN_VERIFY_COMMAND,
                 )
             )
+        else:
+            # execution registry의 authoritative copy는 root 0600이며 public copy는
+            # private copy와의 parity를 비-root UI가 증명할 수 없다. source가 깨끗해도
+            # v6 terminal을 보지 못한 채 초록불을 주면 one-shot을 재실행하게 된다.
+            unverified.append(
+                _finding(
+                    "EXECUTION_VERIFICATION_REQUIRED",
+                    "현재 trusted runtime execution의 terminal 상태는 root 검증으로만 "
+                    "확인할 수 있습니다.",
+                    PIN_VERIFY_COMMAND,
+                )
+            )
 
     # 2. v6/v8 공개 세대가 현재 registry의 one-shot 계약과 정합한가. registry만
     #    green이면 stale/partial generation을 무시하고 destructive command를 안내할 수

@@ -10,9 +10,10 @@ installer 변경을 폐기했다. v5 registry는 source materialization의 원�
 없이 남기고, `pin migrate-execution-v6`은 현재 trusted Manager revision의 v6 execution 하나만
 생성한다. 따라서 새 execution의 terminal은 실제 v6 one-shot 결과로만 기록된다.
 
-`rebuild-pinned`는 v5 source terminal만 있을 때는 계속 fail-close한다. 다만 exact
-source·trusted Manager revision·public copy가 일치하고 현재 v6 execution이 미차단일 때만, 그
-새 implementation의 단 한 번 실행을 허용한다. 이 규칙은 M05에 한정되지 않으며, 기존 v5 audit을
+적대 재리뷰에서 v5 source가 미차단일 때 v6 terminal을 건너뛸 수 있는 P1도 발견했다.
+`rebuild-pinned`는 이제 source 상태와 무관하게 exact trusted v6 execution을 확인하고, missing·stale·terminal이면
+mutation 전에 거부한다. UI preflight는 비-root라 private/public v6 parity를 증명할 수 없으므로 실행 가능
+초록불을 내지 않고 root `pin verify`만 요구한다. 이 규칙은 M05에 한정되지 않으며, 기존 v5 audit을
 삭제하거나 과거 실행의 출처를 추측하지 않는다.
 
 ## 2026-08-29 — v6 execution registry를 one-shot과 sibling receipt에 연결

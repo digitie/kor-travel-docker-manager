@@ -671,13 +671,12 @@ def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
     # release를 이미 registry에서 읽은 뒤이므로 여기서 실패하면 파일이 방금
     # 사라진 것이다. 차단 판정을 못 하는 상태로 파괴적 작업을 진행하지 않는다.
     registry = load_runtime_pin_registry()
-    if not registry.is_unconditionally_blocked_pinset(pinset_sha256):
-        return
 
     # v5 terminal은 source materialization의 감사 기록이며 Manager revision을 담지
-    # 않는다. v6 registry가 없거나 현재 trusted execution과 일치하지 않으면 예전처럼
-    # fail-close한다. 반대로 정확히 결박된 미차단 v6 execution은 새 implementation의
-    # 단 한 번 실행권이므로 source audit을 지우지 않고 진행할 수 있다.
+    # 않는다. 그러나 v5가 미차단이라고 v6 execution이 미차단이라는 뜻은 아니다.
+    # 따라서 모든 destructive rebuild는 exact trusted v6 binding과 그 terminal state를
+    # 확인한다. 이 gate를 legacy terminal일 때만 적용하면 실제 v6 one-shot terminal을
+    # 다음 rebuild가 우회할 수 있다.
     from kor_travel_docker_manager.services.runtime_execution_registry import (
         load_runtime_execution_registry,
         trusted_manager_source_revision,
@@ -691,9 +690,15 @@ def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
     except DeploymentContractError:
         execution_is_runnable = False
     if not execution_is_runnable:
+        source_state = (
+            "legacy source pinset is terminal and "
+            if registry.is_unconditionally_blocked_pinset(pinset_sha256)
+            else ""
+        )
         raise DeploymentContractError(
-            "pinned runtime rebuild is blocked: legacy source pinset is terminal and "
-            "the current trusted execution is missing, stale, or terminal"
+            "pinned runtime rebuild is blocked: "
+            + source_state
+            + "the current trusted execution is missing, stale, or terminal"
         )
 
 

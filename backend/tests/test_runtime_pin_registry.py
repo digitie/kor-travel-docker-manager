@@ -658,16 +658,56 @@ def test_rebuild_start_gate_allows_only_a_current_unblocked_v6_execution(
     compose_service._assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
 
 
-def test_rebuild_start_gate_ignores_phase_scoped_blocks() -> None:
-    """phase 한정 차단은 특정 journal 재개만 막는다 — 시작 게이트가 관여하면 과차단이다."""
+def test_rebuild_start_gate_refuses_a_terminal_v6_execution_for_an_unblocked_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v5 source audit이 깨끗해도 v6 one-shot terminal은 절대 우회하지 않는다."""
 
-    from kor_travel_docker_manager.services.compose_service import (
-        _assert_pinset_is_not_permanently_blocked,
+    from kor_travel_docker_manager.services import compose_service
+    from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        block_current_execution,
+        migrate_execution_registry,
+    )
+
+    registry = _seed()
+    execution = block_current_execution(
+        registry=migrate_execution_registry(
+            pins=registry,
+            manager_source_revision="e" * 40,
+            bound_by="tester",
+            reason="migrate",
+        ),
+        reason="terminal",
+    )
+    monkeypatch.setattr(execution_module, "load_runtime_execution_registry", lambda: execution)
+    monkeypatch.setattr(execution_module, "trusted_manager_source_revision", lambda: "e" * 40)
+
+    with pytest.raises(DeploymentContractError, match="current trusted execution.*terminal"):
+        compose_service._assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
+
+
+def test_rebuild_start_gate_ignores_phase_scoped_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """phase 한정 차단은 v6 execution이 유효할 때 시작 게이트를 막지 않는다."""
+
+    from kor_travel_docker_manager.services import compose_service
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        migrate_execution_registry,
     )
 
     registry = _blocked_seed(phase="map_runtime_ready")
+    execution = migrate_execution_registry(
+        pins=registry,
+        manager_source_revision="e" * 40,
+        bound_by="tester",
+        reason="migrate",
+    )
+    monkeypatch.setattr(execution_module, "load_runtime_execution_registry", lambda: execution)
+    monkeypatch.setattr(execution_module, "trusted_manager_source_revision", lambda: "e" * 40)
 
-    _assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
+    compose_service._assert_pinset_is_not_permanently_blocked(registry.pinset_sha256)
     assert registry.is_blocked_pinset(registry.pinset_sha256)
     assert not registry.is_unconditionally_blocked_pinset(registry.pinset_sha256)
 

@@ -231,7 +231,7 @@ sudo -n backend/.venv/bin/ktdctl pin publish-generation \
 
 | 종류 | `phase` | 무엇을 막나 | 누가 판정하나 |
 |---|---|---|---|
-| **조건 없는 차단** | 없음 | 그 pinset의 **legacy source 실행** | `compose_service._assert_pinset_is_not_permanently_blocked` (v6 execution 결박이 없거나 terminal이면 rebuild 시작 게이트) |
+| **조건 없는 차단** | 없음 | 그 pinset의 **legacy source 실행** | `compose_service._assert_pinset_is_not_permanently_blocked` (모든 rebuild에서 current v6 execution 결박·terminal을 확인하고, legacy terminal은 추가 감사 근거로 쓴다) |
 | **phase 한정 차단** | 있음 | 그 phase 상태의 **journal 재개만** | `pinned_runtime_release.is_blocked_pinset_retry` → resume admission |
 
 두 술어를 섞으면 안 된다:
@@ -311,9 +311,9 @@ M05 one-shot 뒤 `pin verify --json`가 exit 1이고 `current_execution_is_block
 `current_execution_is_blocked: false`가 함께 있어야 새 trusted implementation의 one-shot이 가능하다.
 `reason`은 root 운영자 자유 입력이므로 자동화가 원문을 해석하거나 비밀을 넣어서는 안 된다.
 
-`GET /api/v1/pinned-rebuild/preflight`는 legacy v5 terminal을 단독으로 실행 거부 또는 회전 지시로
-해석하지 않는다. 비-root UI는 private v6 execution과 trusted Manager provenance를 확인할 수 없으므로
-`can_start=false`와 `ktdctl pin verify`만 안내한다. registry가 정상이어도 공개 generation이
+`GET /api/v1/pinned-rebuild/preflight`는 v5 source 상태와 무관하게 v6 execution의 private/public parity를
+비-root UI에서 증명할 수 없으므로 `can_start=false`와 `ktdctl pin verify`만 안내한다. 따라서 UI가 v6
+terminal을 보지 못하고 초록불을 주는 일이 없다. registry가 정상이어도 공개 generation이
 `partial`·`malformed`·`unverified`·`drift`·`unknown`이면 같은 방식으로 `can_start=false`이고, 새 pair
 회전 직후의 strict `pending_rebuild`와 current `match`만
 preflight가 command를 제시할 수 있는 상태다.
@@ -542,7 +542,7 @@ id가 디스크의 것과 다르면 `404 RUNTIME_PIN_REQUEST_NOT_FOUND`다. 없�
 ktdctl pinvi-pair rebuild-pinned --confirm
   └─ _require_pinned_runtime_rebuild_root()            root 강제
   └─ current_pinned_runtime_release()                  registry 로드 (없으면 fail-close)
-  └─ _assert_pinset_is_not_permanently_blocked(digest) ★ legacy terminal이면 current v6 execution을 검증하고, 없거나 terminal이면 거부
+  └─ _assert_pinset_is_not_permanently_blocked(digest) ★ 항상 current v6 execution을 검증하고, 없거나 terminal이면 거부; legacy terminal은 추가 감사 근거
   └─ (락 획득, env snapshot, source materialize, DB reset …)   ← 여기부터가 mutation
        └─ resume journal이 있으면
             _assert_pinvi_role_lifecycle_block_admission()
@@ -561,10 +561,10 @@ ktdctl pinvi-pair rebuild-pinned --confirm
 
 ### "rebuild-pinned가 거부됩니다"
 
-우선 `ktdctl pin verify`로 v6 execution binding을 확인한다. legacy v5 terminal만 있고
-`execution_binding: current`, `current_execution_is_blocked: false`이면 새 trusted Manager
-implementation의 one-shot은 허용된다. execution이 없거나 stale·terminal이면 회전 또는 새 trusted
-Manager release rebind가 필요하다.
+항상 `ktdctl pin verify`로 v6 execution binding을 확인한다. `execution_binding: current`,
+`current_execution_is_blocked: false`일 때만 새 trusted Manager implementation의 one-shot이
+허용된다. execution이 없거나 stale·terminal이면 회전 또는 새 trusted Manager release rebind가
+필요하다.
 
 ```bash
 cd /opt/kor-travel-docker-manager

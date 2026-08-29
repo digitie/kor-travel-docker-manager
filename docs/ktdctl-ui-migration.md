@@ -76,8 +76,9 @@ no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
   revision은 trusted installed revision과의 TOCTOU 확인값일 뿐이다. terminal current와
   다른 trusted Manager revision일 때만 Map/PinVi source를 건드리지 않고 새 execution
   identity를 만든다.
-- `pin verify`와 read-only UI/API는 v5 source pinset, Manager revision, v6 execution
-  identity, legacy v5 terminal 수, v6 execution terminal 수를 분리 표시한다. v6 success
+- root `pin verify`는 v5 source pinset, Manager revision, v6 execution identity와 양쪽
+  terminal 상태를 함께 판정한다. read-only UI/API는 private/public v6 parity를 증명할 수
+  없으므로 execution success를 green으로 표시하지 않고 `pin verify`를 안내한다. v6 success
   gate는 구 `pinset_binding`만으로 green을 판단하지 않는다.
 - PinVi admission·activation receipt와 Map attestation은 Map SHA, PinVi SHA, v5 source
   pinset, Manager SHA, v6 execution identity를 모두 exact 대조한다. 한 필드라도 다르면
