@@ -2,6 +2,13 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — isolated PinVi image build를 runtime start 전에 명시
+
+isolated PinVi `docker-app.sh up`은 local API image가 이미 존재한다고 가정한다. pinned source만 materialize한
+새 host에서는 이 전제가 성립하지 않아 startup이 image-not-found로 끝났다. Manager는 같은 verified isolated
+environment로 `build`를 먼저 수행한 뒤 `up`을 실행하며, 어느 단계가 실패했는지 action별 generic bounded
+failure evidence로 구분한다. 이는 일반 build-before-start lifecycle 보정이며 pin/provenance 계약은 그대로다.
+
 ## 2026-08-29 — generic direct-command failure forensic boundary
 
 Compose config 이외의 direct child command가 실패하면 fixed `runtime_command_failed`만 남아 root operator도

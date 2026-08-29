@@ -2117,22 +2117,23 @@ def main(expected_revision: str, output: Path) -> int:
             execution_identity_sha256=plan.execution_identity_sha256,
             admission_path=pinvi_admission,
         )
-        try:
-            _command(
-                str(pinvi_root / "scripts/docker-app.sh"),
-                "up",
-                cwd=pinvi_root,
-                env=environment,
-                capture_failure_stderr=os.environ.get(_FORENSIC_CAPTURE_ENV) == "1",
-            )
-        except _PhaseError as error:
-            if error.phase == "runtime_command_failed":
-                _write_command_failure_evidence(
-                    runtime / "pinvi-runtime-command-error.json",
-                    returncode=error.returncode,
-                    stderr=error.stderr,
+        for action in ("build", "up"):
+            try:
+                _command(
+                    str(pinvi_root / "scripts/docker-app.sh"),
+                    action,
+                    cwd=pinvi_root,
+                    env=environment,
+                    capture_failure_stderr=os.environ.get(_FORENSIC_CAPTURE_ENV) == "1",
                 )
-            raise
+            except _PhaseError as error:
+                if error.phase == "runtime_command_failed":
+                    _write_command_failure_evidence(
+                        runtime / f"pinvi-runtime-{action}-error.json",
+                        returncode=error.returncode,
+                        stderr=error.stderr,
+                    )
+                raise
         _compose(
             root=pinvi_root,
             project=plan.pinvi_project,
