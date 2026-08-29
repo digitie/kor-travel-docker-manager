@@ -16,6 +16,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -82,6 +83,8 @@ _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")
 _REVISION_LENGTH = 40
 _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
+_FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
+_FORENSIC_CAPTURE_LIMIT = 256_000
 _RAW_ENV_NAMES = (
     "M05_MAP_ADMIN_PROXY_SECRET",
     "M05_PINVI_EMAIL",
@@ -204,14 +207,34 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
 
 
 class _PhaseError(RuntimeError):
-    def __init__(self, phase: str, *, diagnostic: str | None = None) -> None:
+    def __init__(
+        self,
+        phase: str,
+        *,
+        diagnostic: str | None = None,
+        returncode: int | None = None,
+        stderr: bytes | None = None,
+    ) -> None:
         super().__init__(phase)
         self.phase = phase
         self.diagnostic = diagnostic
+        self.returncode = returncode
+        self.stderr = stderr
 
 
-def _fail(phase: str, *, diagnostic: str | None = None) -> NoReturn:
-    raise _PhaseError(phase, diagnostic=diagnostic)
+def _fail(
+    phase: str,
+    *,
+    diagnostic: str | None = None,
+    returncode: int | None = None,
+    stderr: bytes | None = None,
+) -> NoReturn:
+    raise _PhaseError(
+        phase,
+        diagnostic=diagnostic,
+        returncode=returncode,
+        stderr=stderr,
+    )
 
 
 def _assert_current_m05_execution_is_runnable(
@@ -410,28 +433,76 @@ def _command(
     env: dict[str, str] | None = None,
     capture: bool = False,
     failure_exit_diagnostics: dict[int, str] | None = None,
+    capture_failure_stderr: bool = False,
 ) -> str:
     child_env = dict(_SAFE_SUBPROCESS_ENV)
     if env is not None:
         child_env.update(env)
-    completed = subprocess.run(
-        list(args),
-        cwd=str(cwd) if cwd is not None else "/",
-        env=child_env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        text=True,
-    )
-    if completed.returncode != 0:
+    if capture_failure_stderr:
+        stdout, returncode, stderr = _run_with_bounded_stderr(
+            args, cwd=cwd, env=child_env, capture=capture
+        )
+    else:
+        completed = subprocess.run(
+            list(args),
+            cwd=str(cwd) if cwd is not None else "/",
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            text=True,
+        )
+        stdout = completed.stdout if capture else ""
+        returncode = completed.returncode
+        stderr = None
+    if returncode != 0:
         diagnostic = (
-            failure_exit_diagnostics.get(completed.returncode)
+            failure_exit_diagnostics.get(returncode)
             if failure_exit_diagnostics is not None
             else None
         )
-        _fail("runtime_command_failed", diagnostic=diagnostic)
-    return completed.stdout if capture else ""
+        _fail(
+            "runtime_command_failed",
+            diagnostic=diagnostic,
+            returncode=returncode,
+            stderr=stderr,
+        )
+    return stdout
+
+
+def _run_with_bounded_stderr(
+    args: tuple[str, ...], *, cwd: Path | None, env: dict[str, str], capture: bool
+) -> tuple[str, int, bytes]:
+    """Drain forensic stderr without allowing a failing child to exhaust root memory."""
+
+    process = subprocess.Popen(
+        list(args),
+        cwd=str(cwd) if cwd is not None else "/",
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stderr is not None
+    captured = bytearray()
+
+    def drain_stderr() -> None:
+        while chunk := process.stderr.read(65_536):
+            remaining = _FORENSIC_CAPTURE_LIMIT - len(captured)
+            if remaining > 0:
+                captured.extend(chunk[:remaining])
+
+    reader = threading.Thread(target=drain_stderr, daemon=True)
+    reader.start()
+    if capture:
+        assert process.stdout is not None
+        stdout = process.stdout.read().decode("utf-8", errors="replace")
+    else:
+        stdout = ""
+    returncode = process.wait()
+    reader.join()
+    return stdout, returncode, bytes(captured)
 
 
 def _compose(
@@ -445,6 +516,7 @@ def _compose(
     environment: dict[str, str] | None = None,
     failure_phase: str | None = None,
     failure_exit_diagnostics: dict[int, str] | None = None,
+    failure_evidence_path: Path | None = None,
 ) -> str:
     command = [
         "/usr/bin/docker",
@@ -464,11 +536,39 @@ def _compose(
             env=environment,
             capture=capture,
             failure_exit_diagnostics=failure_exit_diagnostics,
+            capture_failure_stderr=(
+                failure_evidence_path is not None
+                and os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
+            ),
         )
     except _PhaseError as error:
+        if failure_evidence_path is not None and error.phase == "runtime_command_failed":
+            _write_compose_failure_evidence(
+                failure_evidence_path,
+                returncode=error.returncode,
+                stderr=error.stderr,
+            )
         if failure_phase is not None and error.phase == "runtime_command_failed":
             _fail(failure_phase, diagnostic=error.diagnostic)
         raise
+
+
+def _write_compose_failure_evidence(
+    path: Path, *, returncode: int | None, stderr: bytes | None
+) -> None:
+    """Persist fixed failure metadata; raw stderr requires an explicit root forensic opt-in."""
+
+    if not isinstance(returncode, int) or returncode < 1 or returncode > 255:
+        safe_returncode: int | None = None
+    else:
+        safe_returncode = returncode
+    _write_private_json(
+        path,
+        {"kind": "compose_config", "returncode": safe_returncode, "version": 1},
+    )
+    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
+        return
+    _write_private_bytes(path.with_suffix(".stderr"), stderr or b"\n")
 
 
 def _unlink_private(path: Path) -> None:
@@ -1752,6 +1852,7 @@ def main(expected_revision: str, output: Path) -> int:
                 arguments=("config", "--format", "json"),
                 capture=True,
                 failure_phase="runtime_loopback_publish_config_invalid",
+                failure_evidence_path=runtime / "rendered-loopback-publish-error.json",
             ),
             service="api",
             container_port=13701,
