@@ -118,6 +118,12 @@ M05 source pair는 role별 `pin rotate` 두 번으로 바꾸지 않는다. 첫 w
 "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다. 의도적으로 `pin unblock`은
 제공하지 않는다.
 
+v5 terminal은 source materialization의 감사 기록이다. v6 execution registry를 도입한 뒤에는
+`ktdctl pin migrate-execution-v6 --confirm`과 `ktdctl pin verify`가 현재 trusted Manager
+implementation의 실행 가능 여부를 정한다. v5 기록에는 Manager revision이 없으므로 과거 v6
+execution으로 이관하거나 추측하지 않으며, 새 v6 execution이 실제로 terminal이 된 경우에만 그
+execution을 다시 거부한다.
+
 ## 3. 신뢰된 운영 설치와 백엔드 (FastAPI, uvicorn :12901)
 
 운영 설치는 외부 `get-pip.py`와 비고정 `pip install -e .`를 사용하지 않는다. 먼저 운영 호스트

@@ -2,27 +2,26 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
-## 2026-08-29 — legacy terminal 이관을 직전 trusted release에만 보존
+## 2026-08-29 — v5 terminal 감사와 v6 실행 출처를 엄격 분리
 
-v6 registry의 첫 이관이 새 Manager release 설치 뒤 실행되면, v5 terminal을 새 release의
-execution까지 terminal로 복제해 `rebind-execution`이 불가능해지는 일반 migration 결함을
-발견했다. source pinset을 바꾸거나 terminal을 지우는 대신, trusted installer가 기존 `/opt`
-release의 revision·manifest를 검증해 root-only state에 바로 직전 release provenance를
-원자 기록하도록 보정했다.
+v5 terminal에는 Manager revision이 없으므로, 그것을 직전 설치 release의 v6 execution으로
+귀속하는 설계는 역사적 provenance를 만들어 내는 P1 오류였다. 해당 transition record와
+installer 변경을 폐기했다. v5 registry는 source materialization의 원본 terminal 감사로 변경
+없이 남기고, `pin migrate-execution-v6`은 현재 trusted Manager revision의 v6 execution 하나만
+생성한다. 따라서 새 execution의 terminal은 실제 v6 one-shot 결과로만 기록된다.
 
-`pin migrate-execution-v6`는 현재 v5 source가 terminal일 때 그 기록과 새 installed revision을
-반드시 exact 대조한다. 이전 Manager execution만 terminal history로 보존하고, 새 trusted
-Manager execution을 현재·미차단 상태로 결박한다. provenance가 없거나 stale·권한 이상이면
-fail-close하며 CLI/환경 인자로 이전 revision을 받지 않는다. 따라서 이 변경은 M05가 아닌 모든
-legacy terminal을 일반적으로 안전 이관한다. registry 회귀 15개와 Ruff, installer shell syntax를
-통과했다.
+`rebuild-pinned`는 v5 source terminal만 있을 때는 계속 fail-close한다. 다만 exact
+source·trusted Manager revision·public copy가 일치하고 현재 v6 execution이 미차단일 때만, 그
+새 implementation의 단 한 번 실행을 허용한다. 이 규칙은 M05에 한정되지 않으며, 기존 v5 audit을
+삭제하거나 과거 실행의 출처를 추측하지 않는다.
 
 ## 2026-08-29 — v6 execution registry를 one-shot과 sibling receipt에 연결
 
 일반 runtime execution registry를 actual mutation gate까지 연결했다. `ktdctl pin verify`는
 source registry와 trusted Manager-derived execution binding을 함께 확인하며, migration 시 기존 v5
-unconditional terminal은 같은 Manager revision의 v6 execution에도 그대로 보존한다. 새 execution은
-terminal인 current binding을 trusted Manager release revision이 달라진 경우에만 rebind할 수 있다.
+unconditional terminal은 v5 source audit으로만 남긴다. v6 execution은 현재 trusted Manager release에
+새로 결박하며 terminal은 실제 v6 one-shot 결과에서만 기록한다. 새 execution은 terminal인 current
+binding을 trusted Manager release revision이 달라진 경우에만 rebind할 수 있다.
 `block-execution`도 generic root CLI로 제공해 launcher fallback이 임의 pair가 아닌 verified current
 execution만 idempotent하게 차단한다.
 

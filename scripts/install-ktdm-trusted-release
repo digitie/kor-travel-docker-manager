@@ -18,7 +18,6 @@ STATE_ROOT="/var/lib/kor-travel-docker-manager"
 REQUEST_ROOT="/var/lib/kor-travel-docker-manager-requests"
 TRANSACTION_STATE="${STATE_ROOT}/trusted-release-transaction.json"
 TRANSACTION_STATE_TMP="${STATE_ROOT}/.trusted-release-transaction.json.tmp"
-PREVIOUS_RELEASE_RECORD="${STATE_ROOT}/previous-manager-release.json"
 GLOBAL_LOCK_DIR="/run/lock/kor-travel-docker-manager"
 GLOBAL_LOCK="${GLOBAL_LOCK_DIR}/global-mutation.lock"
 LEASE_TMPFILES_UNIT="/usr/lib/tmpfiles.d/kor-travel-docker-manager.conf"
@@ -1369,110 +1368,6 @@ fi
 trusted_release_transaction set-new-app
 if [[ -e "${APP_ROOT}" ]]; then
   /usr/bin/mv -T "${APP_ROOT}" "${ROLLBACK}"
-  /usr/bin/python3 -I -S - \
-    "${ROLLBACK}" "${STATE_ROOT}" "${PREVIOUS_RELEASE_RECORD}" "${revision}" <<'PY'
-from __future__ import annotations
-
-import json
-import os
-import pathlib
-import re
-import stat
-import sys
-import tempfile
-
-previous_root = pathlib.Path(sys.argv[1])
-state_root = pathlib.Path(sys.argv[2])
-destination = pathlib.Path(sys.argv[3])
-installed_revision = sys.argv[4]
-
-if not re.fullmatch(r"[0-9a-f]{40}", installed_revision):
-    raise SystemExit("trusted release target revision is invalid")
-root = previous_root.lstat()
-state = state_root.lstat()
-if (
-    previous_root.is_symlink()
-    or not stat.S_ISDIR(root.st_mode)
-    or root.st_uid != 0
-    or stat.S_IMODE(root.st_mode) & 0o022
-    or state_root.is_symlink()
-    or not stat.S_ISDIR(state.st_mode)
-    or state.st_uid != 0
-    or stat.S_IMODE(state.st_mode) != 0o700
-    or destination.parent != state_root
-):
-    raise SystemExit("trusted previous release provenance boundary is unsafe")
-
-def read_root_file(path: pathlib.Path) -> str:
-    evidence = path.lstat()
-    if (
-        path.is_symlink()
-        or not stat.S_ISREG(evidence.st_mode)
-        or evidence.st_uid != 0
-        or stat.S_IMODE(evidence.st_mode) != 0o644
-        or evidence.st_nlink != 1
-    ):
-        raise SystemExit("trusted previous release provenance file is unsafe")
-    flags = os.O_RDONLY | os.O_CLOEXEC
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    descriptor = os.open(path, flags)
-    try:
-        after = os.fstat(descriptor)
-        if (after.st_dev, after.st_ino) != (evidence.st_dev, evidence.st_ino):
-            raise SystemExit("trusted previous release provenance changed while reading")
-        return os.read(descriptor, 1_000_001).decode("utf-8")
-    finally:
-        os.close(descriptor)
-
-previous_revision = read_root_file(previous_root / ".ktdm-source-revision").strip()
-if not re.fullmatch(r"[0-9a-f]{40}", previous_revision):
-    raise SystemExit("trusted previous release revision is invalid")
-manifest = json.loads(read_root_file(previous_root / ".ktdm-release-manifest.json"))
-if not isinstance(manifest, dict) or manifest.get("manager_source_revision") != previous_revision:
-    raise SystemExit("trusted previous release manifest revision mismatch")
-payload = json.dumps(
-    {
-        "schema": "kor-travel-docker-manager.previous-release.v1",
-        "previous_manager_source_revision": previous_revision,
-        "installed_manager_source_revision": installed_revision,
-    },
-    sort_keys=True,
-    separators=(",", ":"),
-).encode("utf-8")
-descriptor, temporary = tempfile.mkstemp(
-    prefix=".previous-manager-release.", dir=state_root
-)
-try:
-    try:
-        os.fchmod(descriptor, 0o600)
-        view = memoryview(payload)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise SystemExit("trusted previous release record write made no progress")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    evidence = pathlib.Path(temporary).lstat()
-    if (
-        not stat.S_ISREG(evidence.st_mode)
-        or evidence.st_uid != 0
-        or stat.S_IMODE(evidence.st_mode) != 0o600
-        or evidence.st_nlink != 1
-    ):
-        raise SystemExit("trusted previous release record evidence is invalid")
-    os.replace(temporary, destination)
-except BaseException:
-    pathlib.Path(temporary).unlink(missing_ok=True)
-    raise
-directory = os.open(state_root, os.O_RDONLY | os.O_CLOEXEC)
-try:
-    os.fsync(directory)
-finally:
-    os.close(directory)
-PY
 fi
 /usr/bin/mv -T "${STAGING}" "${APP_ROOT}"
 /usr/bin/chmod 0755 "${APP_ROOT}"

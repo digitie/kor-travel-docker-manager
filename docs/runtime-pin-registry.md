@@ -231,7 +231,7 @@ sudo -n backend/.venv/bin/ktdctl pin publish-generation \
 
 | 종류 | `phase` | 무엇을 막나 | 누가 판정하나 |
 |---|---|---|---|
-| **조건 없는 차단** | 없음 | 그 pinset의 **모든 실행** | `compose_service._assert_pinset_is_not_permanently_blocked` (rebuild 시작 게이트) |
+| **조건 없는 차단** | 없음 | 그 pinset의 **legacy source 실행** | `compose_service._assert_pinset_is_not_permanently_blocked` (v6 execution 결박이 없거나 terminal이면 rebuild 시작 게이트) |
 | **phase 한정 차단** | 있음 | 그 phase 상태의 **journal 재개만** | `pinned_runtime_release.is_blocked_pinset_retry` → resume admission |
 
 두 술어를 섞으면 안 된다:
@@ -297,22 +297,25 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 | 명령 | 성격 | 요지 |
 |---|---|---|
 | `pin init [--seed PATH] [--reason R] [--force] --confirm` | mutation | 호스트 최초 1회. `--seed` 기본값은 설치본의 `config/runtime-pins.seed.json`. 기존 파일이 있으면 `--force` 없이는 거부하고, `--force`여도 **이력·차단 목록을 승계하고 이전 상태를 digest 이름으로 보존**한다 |
-| `pin show [--json]` | 읽기 전용 | 현재 pin·digest·회전 메타·차단 목록·최근 이력. 현재 pinset이 조건 없이 차단됐으면 **"rebuild가 거부됩니다"를 평문으로 경고**한다 |
-| `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6/v8 generation 공개 사본의 strict parse를 함께 확인한다. incomplete/malformed/drift generation 또는 차단된 current pinset이면 exit 1이다. pair 회전 직후의 유효한 이전 committed generation 또는 exact unconditional terminal generation은 `pending_rebuild`로 보고하되 current라고 부르지 않는다 |
+| `pin show [--json]` | 읽기 전용 | 현재 pin·digest·회전 메타·차단 목록·최근 이력. 현재 pinset이 조건 없이 차단됐으면 legacy source terminal임을 평문으로 경고하고, 현재 실행권은 `pin verify`로 확인하도록 안내한다 |
+| `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6/v8 generation 및 v6 execution 공개 사본의 strict parse를 함께 확인한다. incomplete/malformed/drift generation, missing/stale execution, 또는 terminal current execution이면 exit 1이다. legacy v5 terminal은 exact current·미차단 v6 execution이 있을 때만 단독으로 exit 1 사유가 아니다. pair 회전 직후의 유효한 이전 committed generation 또는 exact unconditional terminal generation은 `pending_rebuild`로 보고하되 current라고 부르지 않는다 |
 | `pin publish-generation --manifest PATH --journal PATH --confirm` | mutation, **root 전용** | 검증된 private v6 manifest·current v8 journal을 `0644` 공개 사본으로 원자 복제한 뒤 strict reader와 current registry pair까지 다시 검증한다. 경로는 절대 경로만 허용하며, API가 root state를 직접 읽는 우회로는 만들지 않는다 |
 | `pin rotate --role map\|pinvi --revision <40-hex> --reason R [--block-previous] --confirm` | mutation | digest 자동 계산, 이력에 `supersedes` 기록, 이전 파일을 `runtime-pins.<old-digest>.json`으로 보존, 공개 사본 갱신. 아무것도 바뀌지 않는 회전과 **차단된 pinset을 만들어 내는 회전은 거부** |
 | `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation, **root 전용** | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
 | `pin show-pending [--json]` | 읽기 전용 | UI가 남긴 대기 요청. 요청 이후 pin이 바뀌었으면 **먼저 그 사실을 경고**한다. 대기 요청이 없으면 exit 1. `--json`은 부재·손상 경로에서도 JSON만 stdout에 낸다 |
 
-M05 one-shot 뒤 `pin verify --json`가 `current_pinset_is_blocked: true`로 exit 1이면, 이는
-검증기 장애가 아니라 terminal candidate의 재시도 금지 판정이다. 이어서 `pin show --json`의 **현재
-pinset과 같은** `blocked_pinsets[]` 항목에서 fixed M05 phase와 timestamp를 기록한다. `reason`은 root
-운영자 자유 입력이므로 자동화가 원문을 해석하거나 비밀을 넣어서는 안 된다.
+M05 one-shot 뒤 `pin verify --json`가 exit 1이고 `current_execution_is_blocked: true`이면, 이는
+검증기 장애가 아니라 해당 v6 terminal execution의 재시도 금지 판정이다. legacy v5
+`current_pinset_is_blocked: true`는 source audit으로 보존되며, `execution_binding: current`와
+`current_execution_is_blocked: false`가 함께 있어야 새 trusted implementation의 one-shot이 가능하다.
+`reason`은 root 운영자 자유 입력이므로 자동화가 원문을 해석하거나 비밀을 넣어서는 안 된다.
 
-`GET /api/v1/pinned-rebuild/preflight`도 같은 generation gate를 사용한다. registry가 정상이어도
-공개 generation이 `partial`·`malformed`·`unverified`·`drift`·`unknown`이면 `can_start=false`이고
-`ktdctl pin verify`만 안내한다. 새 pair 회전 직후의 strict `pending_rebuild`와 current `match`만
+`GET /api/v1/pinned-rebuild/preflight`는 legacy v5 terminal을 단독으로 실행 거부 또는 회전 지시로
+해석하지 않는다. 비-root UI는 private v6 execution과 trusted Manager provenance를 확인할 수 없으므로
+`can_start=false`와 `ktdctl pin verify`만 안내한다. registry가 정상이어도 공개 generation이
+`partial`·`malformed`·`unverified`·`drift`·`unknown`이면 같은 방식으로 `can_start=false`이고, 새 pair
+회전 직후의 strict `pending_rebuild`와 current `match`만
 preflight가 command를 제시할 수 있는 상태다.
 
 모든 runtime pin mutation은 같은 host-global mutation lock을 nonblocking으로 획득하고, 변경 대상의 읽기·
@@ -539,7 +542,7 @@ id가 디스크의 것과 다르면 `404 RUNTIME_PIN_REQUEST_NOT_FOUND`다. 없�
 ktdctl pinvi-pair rebuild-pinned --confirm
   └─ _require_pinned_runtime_rebuild_root()            root 강제
   └─ current_pinned_runtime_release()                  registry 로드 (없으면 fail-close)
-  └─ _assert_pinset_is_not_permanently_blocked(digest) ★ 조건 없는 차단이면 여기서 거부
+  └─ _assert_pinset_is_not_permanently_blocked(digest) ★ legacy terminal이면 current v6 execution을 검증하고, 없거나 terminal이면 거부
   └─ (락 획득, env snapshot, source materialize, DB reset …)   ← 여기부터가 mutation
        └─ resume journal이 있으면
             _assert_pinvi_role_lifecycle_block_admission()
@@ -558,7 +561,10 @@ ktdctl pinvi-pair rebuild-pinned --confirm
 
 ### "rebuild-pinned가 거부됩니다"
 
-정상 동작이다. 현재 pinset이 terminal로 등재돼 있다는 뜻이고, 해소는 회전뿐이다.
+우선 `ktdctl pin verify`로 v6 execution binding을 확인한다. legacy v5 terminal만 있고
+`execution_binding: current`, `current_execution_is_blocked: false`이면 새 trusted Manager
+implementation의 one-shot은 허용된다. execution이 없거나 stale·terminal이면 회전 또는 새 trusted
+Manager release rebind가 필요하다.
 
 ```bash
 cd /opt/kor-travel-docker-manager

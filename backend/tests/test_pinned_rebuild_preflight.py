@@ -105,7 +105,9 @@ def test_a_clean_host_reports_ok_and_still_does_not_execute(
     assert payload["command"].endswith("rebuild-pinned --confirm")
 
 
-def test_a_terminal_pinset_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_legacy_terminal_requires_root_execution_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _patch(
         monkeypatch,
         pins=_pins(
@@ -118,7 +120,8 @@ def test_a_terminal_pinset_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = preflight.read_pinned_rebuild_preflight()
 
     assert payload["can_start"] is False
-    assert [row["code"] for row in payload["blockers"]] == ["PINSET_TERMINAL"]
+    assert payload["blockers"] == []
+    assert [row["code"] for row in payload["unverified"]] == ["LEGACY_SOURCE_TERMINAL"]
 
 
 def test_a_phase_scoped_block_does_not_block_the_start(
@@ -260,8 +263,10 @@ def test_a_readiness_blocker_is_named_row_by_row(monkeypatch: pytest.MonkeyPatch
     assert "모드 3종이 없습니다" in payload["blockers"][0]["text"]
 
 
-def test_a_blocker_outranks_an_unverified_finding(monkeypatch: pytest.MonkeyPatch) -> None:
-    """확인 못 한 것이 확실한 차단을 덮으면 사람이 실제로 막는 것부터 고치지 못한다."""
+def test_legacy_terminal_and_unverified_guard_stay_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UI public audit만으로 v6 실행권을 추측하지 않는다."""
 
     _patch(
         monkeypatch,
@@ -273,7 +278,7 @@ def test_a_blocker_outranks_an_unverified_finding(monkeypatch: pytest.MonkeyPatc
 
     payload = preflight.read_pinned_rebuild_preflight()
 
-    assert payload["summary"]["state"] == "blocked"
+    assert payload["summary"]["state"] == "unverified"
 
 
 def test_the_entry_point_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
