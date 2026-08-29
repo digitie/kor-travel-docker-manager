@@ -2,7 +2,7 @@ import json
 import os
 import tomllib
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -967,6 +967,7 @@ def test_pin_verify_allows_a_valid_terminal_generation_pending_new_pair(
     generation_reader,
     registry_verifier,
     capsys,
+    monkeypatch,
 ):
     registry_verifier.return_value = {
         "published_copy": "current",
@@ -976,12 +977,29 @@ def test_pin_verify_allows_a_valid_terminal_generation_pending_new_pair(
         "status": "ok",
         "pinset_binding": {"status": "pending_rebuild"},
     }
+    execution_registry = MagicMock()
+    execution_registry.current_matches.return_value = True
+    execution_registry.is_unconditionally_blocked_current.return_value = False
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.load_runtime_execution_registry",
+        lambda: execution_registry,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+        lambda: "a" * 40,
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.verify_runtime_execution_registry",
+        lambda: {"execution_public_copy": "current"},
+    )
 
     assert main(["pin", "verify", "--json"]) == 0
 
     output = json.loads(capsys.readouterr().out)
     assert output["generation_public_copy"] == "pending_rebuild"
     assert output["generation_pinset_binding"] == "pending_rebuild"
+    assert output["execution_binding"] == "current"
+    assert output["execution_public_copy"] == "current"
 
 
 def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, capsys):

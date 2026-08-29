@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import importlib.util
@@ -7,7 +8,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -130,6 +131,31 @@ def test_pair_rejects_a_historical_blob_digest_mismatch(
         driver._pair(pinvi_root, map_root)
 
 
+def test_pinvi_manager_admission_contract_requires_the_gate_and_verifier(tmp_path: Path) -> None:
+    driver = _driver()
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "docker-app.sh").write_text(
+            "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH\n"
+            "PINVI_M05_PINSET_SHA256\n"
+            "PINVI_M05_EXECUTION_IDENTITY_SHA256\n"
+        "m05_isolated_manager_admission.py\n",
+        encoding="utf-8",
+    )
+    (scripts / "m05_isolated_manager_admission.py").write_text(
+        "pinvi-m05-isolated-manager-admission-v1\n"
+        '[[ "$EUID" -eq 0 ]]\n'
+        "/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I\n",
+        encoding="utf-8",
+    )
+
+    driver._assert_pinvi_manager_admission_contract(tmp_path)
+
+    (scripts / "m05_isolated_manager_admission.py").unlink()
+    with pytest.raises(driver._PhaseError, match="pinvi_manager_admission_contract_invalid"):
+        driver._assert_pinvi_manager_admission_contract(tmp_path)
+
+
 def test_generated_pbkdf2_hash_verifies_the_original_value() -> None:
     value = "isolated-password"
     encoded = _driver()._pbkdf2_password_hash(value)
@@ -143,6 +169,48 @@ def test_generated_pbkdf2_hash_verifies_the_original_value() -> None:
     assert hashlib.pbkdf2_hmac(
         "sha256", value.encode("utf-8"), restore(salt), int(iterations)
     ) == restore(digest)
+
+
+def test_terminal_registry_reason_exposes_only_allowlisted_phase() -> None:
+    """registry는 다음 candidate의 보정 범위만 말하고 예외 원문은 싣지 않는다."""
+
+    driver = _driver()
+
+    assert (
+        driver._terminal_registry_reason("map_health_transport_failed")
+        == "M05 isolated one-shot terminal: map_health_transport_failed"
+    )
+    assert (
+        driver._terminal_registry_reason("untrusted detail must never be published")
+        == "M05 isolated one-shot terminal: driver_contract_failed"
+    )
+    assert (
+        driver._terminal_registry_reason("runtime_setup_credentials")
+        == "M05 isolated one-shot terminal: runtime_setup_credentials"
+    )
+
+
+def test_runtime_setup_uses_ordered_safe_subphases() -> None:
+    """setup의 ordinary exception도 raw 없이 다음 source 보정 범위로만 수렴한다."""
+
+    driver = _driver()
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    phases = (
+        "runtime_setup_ports",
+        "runtime_setup_workspace",
+        "runtime_setup_admission_build",
+        "runtime_setup_admission_write",
+        "runtime_setup_network",
+        "runtime_setup_credentials",
+        "runtime_setup_map_config",
+        "runtime_setup_pinvi_config",
+    )
+    positions = [source.index(f'phase = "{phase}"') for phase in phases]
+
+    assert positions == sorted(positions)
+    assert all(phase in driver._PUBLIC_TERMINAL_PHASES for phase in phases)
 
 
 def test_http_json_rejects_non_loopback_url_before_transport(
@@ -240,6 +308,45 @@ def test_map_health_keeps_http_status_and_loopback_transport_separate(
         )
 
 
+def test_map_health_retries_only_a_transient_loopback_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    calls = 0
+    waits: list[int] = []
+
+    def transient_health(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise driver._PhaseError("map_health_transport_failed")
+        return {"data": {}}
+
+    monkeypatch.setattr(driver, "_http_json", transient_health)
+    monkeypatch.setattr(driver.time, "sleep", waits.append)
+
+    assert driver._wait_for_map_health(url="http://127.0.0.1:13701/health") == {"data": {}}
+    assert calls == 2
+    assert waits == [driver._MAP_HEALTH_TRANSPORT_RETRY_SECONDS]
+
+
+def test_map_health_does_not_retry_a_received_http_status_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    waits: list[int] = []
+
+    def status_failure(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise driver._PhaseError("map_health_status_failed")
+
+    monkeypatch.setattr(driver, "_http_json", status_failure)
+    monkeypatch.setattr(driver.time, "sleep", waits.append)
+
+    with pytest.raises(driver._PhaseError, match="map_health_status_failed"):
+        driver._wait_for_map_health(url="http://127.0.0.1:13701/health")
+    assert waits == []
+
+
 def test_pinvi_receipt_transport_phase_is_not_collapsed_into_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -287,14 +394,14 @@ def test_pinvi_receipt_non_applied_status_is_terminal(
         )
 
 
-def test_terminal_registry_gate_precedes_the_m05_ledger_claim() -> None:
-    """다른 Manager revision도 terminal pinset을 재실행할 수 없어야 한다."""
+def test_execution_registry_gate_precedes_the_m05_ledger_claim() -> None:
+    """현재 exact execution은 ledger claim 전에 terminal로 거절한다."""
 
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
 
-    gate = source.index("_assert_current_m05_pinset_is_runnable()")
+    gate = source.index("_assert_current_m05_execution_is_runnable(expected_revision)")
     ledger_directory = source.index("_LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)")
     ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
 
@@ -302,28 +409,35 @@ def test_terminal_registry_gate_precedes_the_m05_ledger_claim() -> None:
     assert gate < ledger_claim
 
 
-def test_terminal_registry_gate_refuses_the_current_pinset(
+def test_execution_registry_gate_refuses_the_current_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """다른 Manager revision도 unconditional block을 실행권으로 바꾸지 못한다."""
 
     driver = _driver()
 
-    class _TerminalRegistry:
+    class _SourceRegistry:
         pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
         map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
         pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
 
-        def is_unconditionally_blocked_pinset(self, _pinset_sha256: str) -> bool:
+    class _TerminalExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
             return True
 
-    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _TerminalRegistry())
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
 
-    with pytest.raises(driver._PhaseError, match="terminal_pinset_blocked"):
-        driver._assert_current_m05_pinset_is_runnable()
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(
+        driver, "load_runtime_execution_registry", lambda: _TerminalExecutionRegistry()
+    )
+
+    with pytest.raises(driver._PhaseError, match="terminal_execution_blocked"):
+        driver._assert_current_m05_execution_is_runnable("a" * 40)
 
 
-def test_terminal_result_blocks_the_exact_current_pinset(
+def test_terminal_result_blocks_the_exact_current_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """terminal output은 phase-scoped entry가 아닌 unconditional registry block을 남긴다."""
@@ -331,27 +445,39 @@ def test_terminal_result_blocks_the_exact_current_pinset(
     driver = _driver()
     seen: dict[str, object] = {}
 
+    class _SourceRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+    class _ExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
+            return True
+
     class _BlockedRegistry:
-        def is_unconditionally_blocked_pinset(self, pinset_sha256: str) -> bool:
-            return pinset_sha256 == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
 
     def block(**kwargs: object) -> _BlockedRegistry:
         seen.update(kwargs)
         return _BlockedRegistry()
 
-    monkeypatch.setattr(driver, "block_runtime_pinset", block)
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
+    monkeypatch.setattr(driver, "block_current_execution", block)
+    monkeypatch.setattr(driver, "write_runtime_execution_registry", lambda _registry: None)
 
-    assert driver._block_terminal_m05_pinset() is True
-    assert seen["pinset_sha256"] == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
-    assert seen["map_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
-    assert seen["pinvi_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
-    assert "phase" not in seen
+    assert driver._block_terminal_m05_execution(
+        "map_health_transport_failed", expected_manager_revision="a" * 40
+    ) is True
+    assert isinstance(seen["registry"], _ExecutionRegistry)
+    assert seen["reason"] == "M05 isolated one-shot terminal: map_health_transport_failed"
 
 
 def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """unknown exception도 launcher에 raw-output 부재를 남기지 않는다."""
+    """unknown exception은 raw 없이 현재 admission 경계로 수렴한다."""
 
     driver = _driver()
     monkeypatch.setattr(
@@ -359,14 +485,14 @@ def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
         "_validate_trusted_release",
         lambda _expected: (_ for _ in ()).throw(RuntimeError("discarded")),
     )
-    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda: True)
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_args, **_kwargs: True)
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
     assert receipt["status"] == "blocked"
-    assert receipt["phase"] == "driver_contract_failed"
-    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert receipt["phase"] == "admission"
+    assert receipt["driver_phase"] == "admission"
     assert "discarded" not in json.dumps(receipt, sort_keys=True)
 
 
@@ -390,6 +516,31 @@ def test_cleanup_boundary_marks_ordinary_exceptions_for_fixed_receipt(
     ) == (False, True)
 
 
+def test_unexpected_cleanup_keeps_the_fixed_cleanup_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup boundary의 ordinary exception은 generic phase로 덮어쓰지 않는다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(driver._PhaseError("admission")),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_cleanup_temporary_resources",
+        lambda **_kwargs: (False, True),
+    )
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_args, **_kwargs: True)
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert receipt["phase"] == "runtime_cleanup_failed"
+    assert receipt["driver_phase"] == "runtime_cleanup_failed"
+
+
 def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -403,16 +554,16 @@ def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
     )
     monkeypatch.setattr(
         driver,
-        "_block_terminal_m05_pinset",
-        lambda: (_ for _ in ()).throw(OSError("discarded")),
+        "_block_terminal_m05_execution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("discarded")),
     )
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
     assert receipt["status"] == "blocked"
-    assert receipt["phase"] == "driver_contract_failed"
-    assert receipt["driver_phase"] == "driver_contract_failed"
+    assert receipt["phase"] == "runtime_execution_block_failed"
+    assert receipt["driver_phase"] == "runtime_execution_block_failed"
     assert "discarded" not in json.dumps(receipt, sort_keys=True)
 
 
@@ -436,19 +587,19 @@ def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_
     )
 
     assert "launcher_safe_result_unavailable" in launcher
-    assert '"$ktdctl" pin block "$initial_pinset"' in launcher
-    assert "--map-revision \"$initial_map_revision\"" in launcher
-    assert "--pinvi-revision \"$initial_pinvi_revision\"" in launcher
+    assert '"$ktdctl" pin block-execution' in launcher
     assert "launcher-result.json" in launcher
     assert ">/dev/null 2>&1" in launcher[launcher.index("m05_isolated_e2e.py") :]
     assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
-    block_check = launcher[launcher.rindex('"$ktdctl" pin show --json') :]
+    block_start = launcher.index("has_unconditional_terminal_execution_block() {")
+    block_end = launcher.index('install -d -o root -g root -m 0700 "$output_dir"')
+    block_check = launcher[block_start:block_end]
     assert "/usr/bin/python3 -I -S -c" in block_check
-    assert "<<'PY'" not in block_check[: block_check.index("fallback_path=")]
+    assert "<<'PY'" not in block_check
 
 
 def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> None:
-    """rotation race와 임의 driver envelope은 fresh candidate 성공 근거가 될 수 없다."""
+    """rotation race와 임의 driver envelope은 fresh candidate 근거가 될 수 없다."""
 
     launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
         encoding="utf-8"
@@ -459,9 +610,51 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert "post_snapshot" in launcher
     assert '"$post_snapshot" == "$initial_snapshot"' in launcher
     assert 'value.get("pinset_sha256") != expected_pinset' in launcher
-    assert 'value.get("status") != "passed"' in launcher
+    assert 'value.get("execution_identity_sha256") != expected_execution' in launcher
+    assert 'value.get("status") not in {"passed", "blocked"}' in launcher
+    assert 'raise SystemExit(0 if value["status"] == "passed" else 3)' in launcher
     assert "if set(value) != expected_keys:" in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
+
+
+def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
+    """driver의 모든 public terminal phase는 launcher도 exact하게 수용한다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+    driver_source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    def frozenset_literal(source: str, name: str) -> set[str]:
+        tree = ast.parse(source)
+        for statement in tree.body:
+            if not isinstance(statement, ast.Assign) or not any(
+                isinstance(target, ast.Name) and target.id == name for target in statement.targets
+            ):
+                continue
+            assert isinstance(statement.value, ast.Call)
+            assert isinstance(statement.value.func, ast.Name)
+            assert statement.value.func.id == "frozenset"
+            assert len(statement.value.args) == 1
+            value = ast.literal_eval(statement.value.args[0])
+            assert isinstance(value, set)
+            assert all(isinstance(item, str) for item in value)
+            return value
+        raise AssertionError(f"{name} literal was not found")
+
+    driver_phases = frozenset_literal(driver_source, "_PUBLIC_TERMINAL_PHASES")
+    launcher_start = launcher.index("PHASES = frozenset(")
+    launcher_end = launcher.index("FRESH_INIT_REASONS =", launcher_start)
+    launcher_phases = frozenset_literal(launcher[launcher_start:launcher_end], "PHASES")
+
+    assert launcher_phases == driver_phases | {"completed"}
+    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_execution_block; then'
+    fallback = 'if ! has_unconditional_terminal_execution_block; then'
+    assert accepted_block in launcher
+    assert fallback in launcher
+    assert launcher.index(accepted_block) < launcher.index(fallback)
 
 
 def test_free_ports_uses_the_standard_ss_binary(
@@ -687,6 +880,60 @@ def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
         encoding="utf-8"
     )
     pair_preflight = source.index("pair, service_openapi_sha256, service_source_revision = _pair(")
+    admission_contract = source.index("_assert_pinvi_manager_admission_contract(pinvi_root)")
     ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
 
-    assert pair_preflight < ledger_claim
+    assert pair_preflight < admission_contract < ledger_claim
+
+
+def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:
+    driver = _driver()
+    admission = Path("/private/runtime/pinvi-isolated-manager-admission.json")
+
+    environment = driver._pinvi_manager_admission_environment(
+        env_file=Path("/private/runtime/pinvi.env"),
+        project="m05i-pinvi-" + "e" * 32,
+        pinvi_source_revision="d" * 40,
+        execution_identity_sha256="c" * 64,
+        admission_path=admission,
+    )
+
+    assert environment == {
+        "PINVI_ENV_FILE": "/private/runtime/pinvi.env",
+        "PINVI_DOCKER_PROJECT": "m05i-pinvi-" + "e" * 32,
+        "PINVI_SOURCE_REVISION": "d" * 40,
+        "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission),
+        "PINVI_M05_PINSET_SHA256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+        "PINVI_M05_EXECUTION_IDENTITY_SHA256": "c" * 64,
+    }
+    assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in environment
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    admission_write = source.index("build_m05_isolated_manager_admission(plan=plan, pair=pair)")
+    pinvi_up = source.index('str(pinvi_root / "scripts/docker-app.sh"),')
+
+    assert admission_write < pinvi_up
+    assert "_pinvi_manager_admission_environment(" in source
+    assert '"--isolated-execution-identity-sha256"' in source
+    assert "plan.execution_identity_sha256" in source
+    assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in source
+
+
+def test_private_json_writer_serializes_immutable_manager_admission(tmp_path: Path) -> None:
+    driver = _driver()
+    admission = MappingProxyType(
+        {
+            "kind": "pinvi-m05-isolated-manager-admission-v1",
+            "transaction_id": "a" * 32,
+            "version": 1,
+        }
+    )
+    path = tmp_path / "pinvi-isolated-manager-admission.json"
+
+    digest = driver._write_private_json(path, admission)
+
+    raw = path.read_bytes()
+    assert json.loads(raw) == dict(admission)
+    assert digest == hashlib.sha256(raw).hexdigest()

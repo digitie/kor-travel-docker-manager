@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+  # PR synchronize 이벤트가 지연·유실돼도 exact branch head를 다시 검증할 수 있는
+  # recovery 진입점이다. release/E2E 권한을 주지 않고 같은 read-only CI만 실행한다.
+  workflow_dispatch:
 
 permissions:
   contents: read

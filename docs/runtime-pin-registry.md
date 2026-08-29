@@ -29,6 +29,60 @@ registry는 현재 pin뿐 아니라 **pinset의 생애 상태**(재시도 금지
 관측(어디까지 이행됐나) → root 공개 사본이 소유     → GET /pinned-runtime/generation (§7-a)
 ```
 
+M05 isolated PinVi runtime을 기동할 때도 이 소유 경계를 우회하지 않는다. Manager root driver는
+private `0700` runtime directory에 `0600` admission을 만들고 exact transaction ID, current
+pinset, Manager·Map·PinVi source revision을 함께 쓴다. PinVi `docker-app.sh`는 caller environment
+marker가 아니라 이 admission을 no-follow로 검증한 경우만 `m05i-pinvi-<transaction>` Compose
+mutation을 허용한다. Manager는 env file에 쓰는 값과 별개로 exact source revision·admission path·pinset을
+clean child environment로 전달하고, PinVi는 root EUID에서 `/usr/bin/python3 -I`를 clean environment로
+실행한다. 따라서 direct Compose·수동 root marker·PATH shim·환경변수는 Manager의 `rotate-pair`,
+registry, one-shot ledger를 대체하지 못한다.
+
+M05 isolated one-shot이 실패하면 root registry의 조건 없는 차단 항목에는 allowlist 고정 phase만
+기록한다. HTTP body·status 원문, container log, 환경값, 파일 경로, 예외 문자열은 기록하거나 다음
+candidate의 재시도 근거로 쓰지 않는다. 이 phase는 새 source pair를 만들 때 보정 범위를 정하는 용도일
+뿐, 동일 pinset을 다시 실행하게 하는 권한이 아니다.
+
+ordinary exception도 같은 원칙을 따른다. driver 본문은 이미 진입한 allowlist phase를 유지하고,
+cleanup·terminal block 경계는 각각 `runtime_cleanup_failed`·`runtime_pin_block_failed`로 수렴한다.
+allowlist 밖의 값만 `driver_contract_failed`로 좁혀진다. 따라서 공개 registry로 raw 예외를 역추론할
+수 없고, 다음 immutable source pair의 보정 범위만 결정할 수 있다.
+
+immutable admission mapping은 private JSON write 경계에서 plain mapping으로 복사한 뒤 canonical JSON으로만
+직렬화한다. 따라서 불변 typed admission의 `MappingProxyType` 자체가 JSON serializer로 새지 않으며, 이
+경계는 fixture가 아닌 실제 private writer 회귀로 고정한다.
+
+isolated runtime 준비는 `runtime_setup_ports` → `runtime_setup_workspace` →
+`runtime_setup_admission_build` → `runtime_setup_admission_write` → `runtime_setup_network` → `runtime_setup_credentials` →
+`runtime_setup_map_config` → `runtime_setup_pinvi_config`의 고정 순서로 나뉜다. 이 값은 예외 원문·경로·값을
+드러내지 않으며, 이미 terminal인 pinset의 재시도 근거가 아니다. 목적은 다음 immutable Manager source의
+정적 보정 범위를 한 단계로만 좁히는 것이다.
+
+`run-m05-isolated-e2e-once`의 strict result schema는 이 일곱 setup phase를 포함한 driver의 모든 public
+terminal phase를 `completed` 외 exact 같은 집합으로 수용한다. 이 동등성은 source literal AST 회귀로 고정하므로,
+새 driver phase는 launcher contract를 함께 바꾸지 않으면 CI에서 거부된다.
+`blocked` receipt는 exact source revision·launch 전후 같은 snapshot·고정 schema를 모두 만족해도, root registry가
+같은 pinset·Map·PinVi revision의 unconditional terminal block을 확인할 때만 launcher가 보존한다. registry 증명이
+없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block`과 fixed fallback으로 fail-close한다. 그러므로
+driver의 blocked receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의
+fallback으로 바뀌지 않는다.
+
+### 단발 실행의 완료 판정
+
+`run-pinned-rebuild-once`와 `run-m05-isolated-e2e-once`는 실행권을 claim한 뒤 host-global mutation lock을
+프로세스 수명 동안 보유한다. SSH client가 즉시 종료됐거나 출력 회수가 지연됐다는 사실은 실패·종료·차단의
+증거가 아니다. **별도 외부 호출은 lock이 보유된 동안** 같은 pinset의 rebuild/E2E 재실행과 모든 runtime
+pin 변경(`pin init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`, `rollback`, `block`)을
+하지 않고 안전한 lock 상태만 기다린다. 이 명령들은 active lock이면 write 전에 코드로 거절된다.
+launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descriptor 안에서만 terminal block을 기록할 수 있다.
+외부 호출은 lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact Map/PinVi/pinset,
+`published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
+
+이 절차는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지 않는다. 공개 gate가
+`match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그 뒤에만 새 root-owned leaf에서 M04/M05 one-shot을
+한 번 실행할 수 있다. `match` 전에는 terminal block을 쓰지 않는다. 이미 terminal로 block된 pinset은 이
+판정과 관계없이 재실행하지 않고 fresh source pair로만 교체한다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식
@@ -247,14 +301,32 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 | `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6/v8 generation 공개 사본의 strict parse를 함께 확인한다. incomplete/malformed/drift generation 또는 차단된 current pinset이면 exit 1이다. pair 회전 직후의 유효한 이전 committed generation 또는 exact unconditional terminal generation은 `pending_rebuild`로 보고하되 current라고 부르지 않는다 |
 | `pin publish-generation --manifest PATH --journal PATH --confirm` | mutation, **root 전용** | 검증된 private v6 manifest·current v8 journal을 `0644` 공개 사본으로 원자 복제한 뒤 strict reader와 current registry pair까지 다시 검증한다. 경로는 절대 경로만 허용하며, API가 root state를 직접 읽는 우회로는 만들지 않는다 |
 | `pin rotate --role map\|pinvi --revision <40-hex> --reason R [--block-previous] --confirm` | mutation | digest 자동 계산, 이력에 `supersedes` 기록, 이전 파일을 `runtime-pins.<old-digest>.json`으로 보존, 공개 사본 갱신. 아무것도 바뀌지 않는 회전과 **차단된 pinset을 만들어 내는 회전은 거부** |
-| `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
+| `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation, **root 전용** | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
 | `pin show-pending [--json]` | 읽기 전용 | UI가 남긴 대기 요청. 요청 이후 pin이 바뀌었으면 **먼저 그 사실을 경고**한다. 대기 요청이 없으면 exit 1. `--json`은 부재·손상 경로에서도 JSON만 stdout에 낸다 |
+
+M05 one-shot 뒤 `pin verify --json`가 `current_pinset_is_blocked: true`로 exit 1이면, 이는
+검증기 장애가 아니라 terminal candidate의 재시도 금지 판정이다. 이어서 `pin show --json`의 **현재
+pinset과 같은** `blocked_pinsets[]` 항목에서 fixed M05 phase와 timestamp를 기록한다. `reason`은 root
+운영자 자유 입력이므로 자동화가 원문을 해석하거나 비밀을 넣어서는 안 된다.
 
 `GET /api/v1/pinned-rebuild/preflight`도 같은 generation gate를 사용한다. registry가 정상이어도
 공개 generation이 `partial`·`malformed`·`unverified`·`drift`·`unknown`이면 `can_start=false`이고
 `ktdctl pin verify`만 안내한다. 새 pair 회전 직후의 strict `pending_rebuild`와 current `match`만
 preflight가 command를 제시할 수 있는 상태다.
+
+모든 runtime pin mutation은 같은 host-global mutation lock을 nonblocking으로 획득하고, 변경 대상의 읽기·
+검증·write·대기 요청 정리를 **한 lock 안에서** 끝낸다. 예외는 launcher가 검증한 상속 descriptor로 기록하는
+terminal fallback 하나뿐이다. 따라서 외부 관찰자는 lock 해제 뒤
+`pin verify --json`만 읽어 완료를 판정하며, lock 보유 중 어떤 pin 명령도 retry·block·pair 교체에 쓰지 않는다.
+
+### 6-1. 후보 동결과 문서 전용 변경
+
+M05 candidate는 Map·PinVi runtime source와 Manager source를 한 번 확정해 pinset을 계산한 시점에 동결한다.
+그 뒤의 **문서 전용** Map/PinVi/Manager PR은 즉시 병합할 수 있으나, runtime source revision·PinVi
+`source_revision`·registry pair·pinset을 다시 결박하지 않는다. 문서는 동결된 candidate를 참조만 한다.
+코드·Compose·계약·빌드 입력처럼 runtime 결과를 바꾸는 변경만 새 candidate와 한 번의 CI/전문 리뷰/E2E를
+필요로 한다. 이 규칙은 사소한 문서 정정마다 pair를 재생성해 one-shot과 CI를 낭비하는 일을 막는다.
 | `pin apply-pending (--expect-revision R \| --any-revision) [--block-previous] --confirm` | mutation, **root 전용** | 대기 요청을 적용한다. §7-1의 순서대로 전부 재검증하고, 성공 시 요청 파일을 id 대조 후 삭제한다 |
 | `pin clear-pending (--request-id <id> \| --force) --confirm` | mutation | 대기 요청을 폐기한다. id가 어긋나면 exit 1이며 **아무것도 지우지 않는다**. `--force`는 **읽을 수 없는** 파일만 파싱 없이 지운다(멀쩡한 요청은 거부) |
 

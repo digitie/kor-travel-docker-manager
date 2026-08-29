@@ -1,8 +1,12 @@
 import argparse
+import fcntl
 import json
 import os
+import stat
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +31,15 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     read_rebuild_journal,
 )
 from kor_travel_docker_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.runtime_execution_registry import (
+    block_current_execution,
+    load_runtime_execution_registry,
+    migrate_execution_registry,
+    rebind_execution_registry,
+    trusted_manager_source_revision,
+    verify_runtime_execution_registry,
+    write_runtime_execution_registry,
+)
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     block_runtime_pinset,
     build_registry,
@@ -59,6 +72,9 @@ from kor_travel_docker_manager.services.standalone_backup import (
 DIRECT_ENSURE_ALIASES = {
     alias for target in list_targets() for alias in [target["id"], *target.get("aliases", [])]
 }
+
+_GLOBAL_MUTATION_LOCK_PATH = Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
+_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV = "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
 
 
 def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -> int:
@@ -368,44 +384,48 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
         print("pin init requires --confirm (no file was written)", file=sys.stderr)
         return 2
     path = runtime_pin_registry_path()
-    if path.exists() and not args.force:
-        print(
-            f"runtime pin registry already exists at {path.name}; refusing to overwrite "
-            "(use --force only to reseed a host)",
-            file=sys.stderr,
-        )
-        return 2
-    existing = None
-    if path.exists():
-        try:
-            existing = load_runtime_pin_registry(path=path)
-        except DeploymentContractError:
-            existing = None
-        if existing is not None and existing.history:
-            print(
-                f"기존 registry의 회전 이력 {len(existing.history)}건을 승계합니다 "
-                "(이전 상태는 digest 이름으로 보존됩니다).",
-            )
     try:
-        seed = load_runtime_pin_registry(path=Path(args.seed))
-        registry = build_registry(
-            release_version=seed.release_version,
-            map_revision=seed.map_revision,
-            pinvi_revision=seed.pinvi_revision,
-            rotated_by=_pin_actor(),
-            reason=args.reason,
-            # 재시딩이 이력과 차단 목록을 지우면 롤백 소스와 terminal 규율이 함께
-            # 사라진다. 기존 값이 있으면 승계하고, 이전 상태도 보존한다.
-            history=existing.history if existing is not None else (),
-            # declared 목록만 승계한다. 코드 하한선은 파일이 아니라 코드가 소유하므로
-            # 파일에 적어 넣으면 사람이 지울 수 있는 값이 되어 하한선이 아니게 된다.
-            blocked_pinsets=(
-                existing.blocked_pinsets if existing is not None else seed.blocked_pinsets
-            ),
-        )
-        write_runtime_pin_registry(
-            registry, path=path, preserve_previous=existing is not None
-        )
+        with _runtime_pin_mutation_lock():
+            # 존재 여부와 history/blocked 목록은 모두 같은 lock 안에서 읽는다. 밖에서
+            # 읽으면 다른 회전이 끝난 뒤 stale `--force` reseed가 그 terminal 이력을
+            # 지울 수 있다.
+            if path.exists() and not args.force:
+                print(
+                    f"runtime pin registry already exists at {path.name}; refusing to overwrite "
+                    "(use --force only to reseed a host)",
+                    file=sys.stderr,
+                )
+                return 2
+            existing = None
+            if path.exists():
+                try:
+                    existing = load_runtime_pin_registry(path=path)
+                except DeploymentContractError:
+                    existing = None
+                if existing is not None and existing.history:
+                    print(
+                        f"기존 registry의 회전 이력 {len(existing.history)}건을 승계합니다 "
+                        "(이전 상태는 digest 이름으로 보존됩니다).",
+                    )
+            seed = load_runtime_pin_registry(path=Path(args.seed))
+            registry = build_registry(
+                release_version=seed.release_version,
+                map_revision=seed.map_revision,
+                pinvi_revision=seed.pinvi_revision,
+                rotated_by=_pin_actor(),
+                reason=args.reason,
+                # 재시딩이 이력과 차단 목록을 지우면 롤백 소스와 terminal 규율이 함께
+                # 사라진다. 기존 값이 있으면 승계하고, 이전 상태도 보존한다.
+                history=existing.history if existing is not None else (),
+                # declared 목록만 승계한다. 코드 하한선은 파일이 아니라 코드가 소유하므로
+                # 파일에 적어 넣으면 사람이 지울 수 있는 값이 되어 하한선이 아니게 된다.
+                blocked_pinsets=(
+                    existing.blocked_pinsets if existing is not None else seed.blocked_pinsets
+                ),
+            )
+            write_runtime_pin_registry(
+                registry, path=path, preserve_previous=existing is not None
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -480,16 +500,58 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         generation_public_copy = "invalid"
     report["generation_public_copy"] = generation_public_copy
     report["generation_pinset_binding"] = binding_status
+    execution_binding = "missing"
+    execution_terminal = True
+    execution_public_copy = "missing"
+    try:
+        execution_registry = load_runtime_execution_registry()
+        execution_report = verify_runtime_execution_registry()
+        execution_public_copy = str(execution_report["execution_public_copy"])
+        execution_binding = (
+            "current"
+            if execution_registry.current_matches(
+                pins=load_runtime_pin_registry(),
+                manager_source_revision=trusted_manager_source_revision(),
+            )
+            else "stale"
+        )
+        execution_terminal = execution_registry.is_unconditionally_blocked_current()
+    except DeploymentContractError:
+        execution_binding = "invalid"
+    report["execution_binding"] = execution_binding
+    report["current_execution_is_blocked"] = execution_terminal
+    report["execution_public_copy"] = execution_public_copy
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         for key, value in report.items():
             print(f"{key:24s} {value}")
     exit_code = 0
-    if report.get("current_pinset_is_blocked"):
+    if report.get("current_pinset_is_blocked") and execution_binding != "current":
         print(
             "현재 고정된 pinset은 재시도 금지 상태입니다 — rebuild-pinned가 거부됩니다. "
             "'ktdctl pin rotate-pair'로 새 Map/PinVi pair를 고정하세요.",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    if execution_binding != "current":
+        print(
+            "runtime execution binding is missing, invalid, or stale; root must migrate or "
+            "rebind it before a runtime mutation",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    elif execution_terminal:
+        print(
+            "현재 Manager-aware execution은 재시도 금지 상태입니다 — 새 trusted Manager "
+            "release 뒤 'ktdctl pin rebind-execution'으로만 새 실행을 결박하세요.",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    if execution_public_copy != "current":
+        print(
+            "runtime execution public copy is missing, malformed, or stale; root must "
+            "repair the execution binding before a runtime mutation",
             file=sys.stderr,
         )
         exit_code = 1
@@ -517,6 +579,124 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _print_execution_registry(registry: Any, *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(registry.to_payload(), ensure_ascii=False, indent=2))
+        return
+    current = registry.current
+    print(f"execution  {current.execution_identity_sha256}")
+    print(f"source-pin {current.source_pinset_sha256}")
+    print(f"manager    {current.manager_source_revision}")
+    print(f"bound      {current.bound_at} by {current.bound_by}")
+    print(f"reason     {current.reason}")
+    print(f"terminal   {registry.is_unconditionally_blocked_current()}")
+
+
+def _cmd_pin_migrate_execution(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin migrate-execution-v6 requires --confirm", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print("pin migrate-execution-v6 requires root", file=sys.stderr)
+        return 2
+    try:
+        with _runtime_pin_mutation_lock():
+            try:
+                load_runtime_execution_registry()
+            except DeploymentContractError:
+                pass
+            else:
+                print("runtime execution registry already exists; migration is refused", file=sys.stderr)
+                return 2
+            pins = load_runtime_pin_registry()
+            registry = migrate_execution_registry(
+                pins=pins,
+                manager_source_revision=trusted_manager_source_revision(),
+                bound_by=_pin_actor(),
+                reason=args.reason,
+            )
+            if pins.is_unconditionally_blocked_pinset(pins.pinset_sha256):
+                registry = block_current_execution(
+                    registry=registry,
+                    reason="legacy source pinset was terminal before execution migration",
+                )
+            write_runtime_execution_registry(registry)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_rebind_execution(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin rebind-execution requires --confirm", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print("pin rebind-execution requires root", file=sys.stderr)
+        return 2
+    try:
+        with _runtime_pin_mutation_lock():
+            trusted_revision = trusted_manager_source_revision()
+            if args.expected_manager_revision != trusted_revision:
+                print(
+                    "expected Manager revision differs from the trusted installed release",
+                    file=sys.stderr,
+                )
+                return 2
+            registry = rebind_execution_registry(
+                registry=load_runtime_execution_registry(),
+                pins=load_runtime_pin_registry(),
+                manager_source_revision=trusted_revision,
+                bound_by=_pin_actor(),
+                reason=args.reason,
+            )
+            write_runtime_execution_registry(registry)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_show_execution(args: argparse.Namespace) -> int:
+    try:
+        registry = load_runtime_execution_registry()
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_block_execution(args: argparse.Namespace) -> int:
+    """현재 verified execution만 idempotent하게 terminal 처리한다."""
+
+    if not args.confirm:
+        print("pin block-execution requires --confirm", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print("pin block-execution requires root", file=sys.stderr)
+        return 2
+    try:
+        with _runtime_pin_mutation_lock(allow_inherited_terminal_block=True):
+            pins = load_runtime_pin_registry()
+            registry = load_runtime_execution_registry()
+            trusted_revision = trusted_manager_source_revision()
+            if not registry.current_matches(
+                pins=pins, manager_source_revision=trusted_revision
+            ):
+                print("current runtime execution binding is stale", file=sys.stderr)
+                return 2
+            updated = block_current_execution(registry=registry, reason=args.reason)
+            write_runtime_execution_registry(updated)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(updated, json_output=args.json)
+    return 0
+
+
 def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
     """root private state를 검증한 뒤 API용 public copy만 갱신한다."""
 
@@ -535,10 +715,11 @@ def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
         print("manifest and journal paths must be absolute", file=sys.stderr)
         return 2
     try:
-        paths = publish_pinned_runtime_generation(
-            manifest=read_manifest(manifest_path),
-            journal=read_rebuild_journal(journal_path),
-        )
+        with _runtime_pin_mutation_lock():
+            paths = publish_pinned_runtime_generation(
+                manifest=read_manifest(manifest_path),
+                journal=read_rebuild_journal(journal_path),
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -569,13 +750,14 @@ def _cmd_pin_rotate(args: argparse.Namespace) -> int:
         print("pin rotate requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        registry = rotate_runtime_pin(
-            role=args.role,
-            revision=args.revision,
-            reason=args.reason,
-            rotated_by=_pin_actor(),
-            block_previous=args.block_previous,
-        )
+        with _runtime_pin_mutation_lock():
+            registry = rotate_runtime_pin(
+                role=args.role,
+                revision=args.revision,
+                reason=args.reason,
+                rotated_by=_pin_actor(),
+                block_previous=args.block_previous,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -589,13 +771,14 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
         print("pin rotate-pair requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        registry = rotate_runtime_pin_pair(
-            map_revision=args.map_revision,
-            pinvi_revision=args.pinvi_revision,
-            reason=args.reason,
-            rotated_by=_pin_actor(),
-            block_previous=args.block_previous,
-        )
+        with _runtime_pin_mutation_lock():
+            registry = rotate_runtime_pin_pair(
+                map_revision=args.map_revision,
+                pinvi_revision=args.pinvi_revision,
+                reason=args.reason,
+                rotated_by=_pin_actor(),
+                block_previous=args.block_previous,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -608,14 +791,18 @@ def _cmd_pin_block(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("pin block requires --confirm (no file was written)", file=sys.stderr)
         return 2
+    if not _running_as_root():
+        print("pin block requires root", file=sys.stderr)
+        return 2
     try:
-        registry = block_runtime_pinset(
-            pinset_sha256=args.pinset,
-            reason=args.reason,
-            map_revision=args.map_revision,
-            pinvi_revision=args.pinvi_revision,
-            phase=args.phase,
-        )
+        with _runtime_pin_mutation_lock():
+            registry = block_runtime_pinset(
+                pinset_sha256=args.pinset,
+                reason=args.reason,
+                map_revision=args.map_revision,
+                pinvi_revision=args.pinvi_revision,
+                phase=args.phase,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -645,6 +832,77 @@ def _running_as_root() -> bool:
 
     geteuid = getattr(os, "geteuid", None)
     return geteuid is None or geteuid() == 0
+
+
+@contextmanager
+def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) -> Iterator[None]:
+    """모든 runtime pin mutation을 one-shot과 직렬화한다.
+
+    one-shot launcher의 terminal fallback만 검증한 inherited descriptor로 재진입할 수
+    있다. 그 밖의 `init`·공개 복사·회전·rollback·block은 별도 SSH/CLI 호출이므로 lock이
+    비어 있을 때만 수행한다. 따라서 출력 회수 지연을 실패로 오인해 실행 중 candidate를
+    봉인하거나 pair/generation을 바꿀 수 없다.
+    """
+
+    inherited_text = os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, "")
+    if inherited_text:
+        if not allow_inherited_terminal_block or not inherited_text.isdecimal():
+            raise DeploymentContractError("runtime pin mutation inherited lock is invalid")
+        descriptor = int(inherited_text)
+        try:
+            opened = os.fstat(descriptor)
+            named = _GLOBAL_MUTATION_LOCK_PATH.lstat()
+        except OSError as exc:
+            raise DeploymentContractError("runtime pin mutation inherited lock is invalid") from exc
+        if (
+            (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+            or not stat.S_ISREG(opened.st_mode)
+            # `_cmd_pin_block` 자체가 root 전용이므로 production에서는 root FD만
+            # 수용한다. test/local에서는 실행 uid와의 동등성으로 같은 ownership
+            # invariant를 확인한다.
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_nlink != 1
+        ):
+            raise DeploymentContractError("runtime pin mutation inherited lock is unsafe")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise DeploymentContractError("runtime pin mutation inherited lock is not held") from exc
+        yield
+        return
+
+    try:
+        descriptor = os.open(
+            _GLOBAL_MUTATION_LOCK_PATH,
+            os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+        )
+    except FileNotFoundError:
+        # 개발·테스트처럼 launcher를 한 번도 실행하지 않은 환경에는 active global
+        # mutation이 없으므로, registry 자체의 root ownership gate에 맡긴다.
+        yield
+        return
+    except PermissionError:
+        # production lock directory는 root `0700`이다. 비root 개발 fixture는 registry를
+        # 임시 경로로 바꿔 검증하므로 이 host lock을 열 수 없고, 실제 production에서는
+        # 이어지는 root-owned registry write 자체가 거절된다. 따라서 권한 없는 개발
+        # 호출을 active mutation으로 오인하지 않는다.
+        if getattr(os, "geteuid", lambda: 1)() != 0:
+            yield
+            return
+        raise DeploymentContractError("runtime pin mutation lock is unavailable") from None
+    except OSError as exc:
+        raise DeploymentContractError("runtime pin mutation lock is unavailable") from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise DeploymentContractError(
+                "runtime pin mutation is refused while a Manager mutation is active"
+            ) from exc
+        yield
+    finally:
+        os.close(descriptor)
 
 
 _ACTOR_LENGTH_LIMIT = 200
@@ -800,6 +1058,35 @@ def _applied_reason(request: Any) -> str:
 
 
 def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
+    """대기 요청의 read·검증·회전·정리를 하나의 mutation lock으로 감싼다."""
+
+    if not args.confirm:
+        print("pin apply-pending requires --confirm (no file was written)", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print(
+            "pin apply-pending requires root execution (the registry is root-owned 0600)",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.expect_revision and not args.any_revision:
+        print(
+            "pin apply-pending requires --expect-revision <40-hex> (or --any-revision to "
+            "apply whatever is pending); run 'ktdctl pin show-pending' first",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        # request/base/prospective 검증과 요청 파일 정리까지 같은 경계 안에 둔다.
+        # lock 밖에서 읽으면 다른 회전 직후 stale 요청을 새 pair에 적용할 수 있다.
+        with _runtime_pin_mutation_lock():
+            return _cmd_pin_apply_pending_locked(args)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
     """UI가 남긴 요청을 root 권한으로 적용한다.
 
     요청에서 취하는 것은 role과 40-hex revision, 표시용 문자열뿐이다. canonical URL과
@@ -968,11 +1255,12 @@ def _cmd_pin_rollback(args: argparse.Namespace) -> int:
         print("pin rollback requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        registry = rollback_runtime_pin(
-            pinset_sha256=args.to,
-            rotated_by=_pin_actor(),
-            reason=args.reason,
-        )
+        with _runtime_pin_mutation_lock():
+            registry = rollback_runtime_pin(
+                pinset_sha256=args.to,
+                rotated_by=_pin_actor(),
+                reason=args.reason,
+            )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1144,6 +1432,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pin_verify.add_argument("--json", action="store_true")
     pin_verify.set_defaults(func=_cmd_pin_verify)
+
+    pin_migrate_execution = pin_subparsers.add_parser(
+        "migrate-execution-v6",
+        help="v5 source pin을 보존하고 trusted Manager-aware execution registry를 생성합니다.",
+    )
+    pin_migrate_execution.add_argument("--reason", required=True)
+    pin_migrate_execution.add_argument("--confirm", action="store_true")
+    pin_migrate_execution.add_argument("--json", action="store_true")
+    pin_migrate_execution.set_defaults(func=_cmd_pin_migrate_execution)
+
+    pin_rebind_execution = pin_subparsers.add_parser(
+        "rebind-execution",
+        help="terminal execution을 새 trusted Manager release로만 재결박합니다.",
+    )
+    pin_rebind_execution.add_argument("--expected-manager-revision", required=True)
+    pin_rebind_execution.add_argument("--reason", required=True)
+    pin_rebind_execution.add_argument("--confirm", action="store_true")
+    pin_rebind_execution.add_argument("--json", action="store_true")
+    pin_rebind_execution.set_defaults(func=_cmd_pin_rebind_execution)
+
+    pin_show_execution = pin_subparsers.add_parser(
+        "show-execution", help="현재 Manager-aware execution binding을 읽기 전용으로 출력합니다."
+    )
+    pin_show_execution.add_argument("--json", action="store_true")
+    pin_show_execution.set_defaults(func=_cmd_pin_show_execution)
+
+    pin_block_execution = pin_subparsers.add_parser(
+        "block-execution", help="현재 trusted runtime execution을 terminal 처리합니다."
+    )
+    pin_block_execution.add_argument("--reason", required=True)
+    pin_block_execution.add_argument("--confirm", action="store_true")
+    pin_block_execution.add_argument("--json", action="store_true")
+    pin_block_execution.set_defaults(func=_cmd_pin_block_execution)
 
     pin_publish_generation = pin_subparsers.add_parser(
         "publish-generation",

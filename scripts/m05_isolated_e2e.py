@@ -16,7 +16,9 @@ import secrets
 import stat
 import subprocess
 import sys
+import time
 import uuid
+from collections.abc import Mapping
 from http.cookiejar import CookieJar
 from pathlib import Path
 from typing import Any, NoReturn
@@ -37,6 +39,7 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05IsolatedRuntimeExpectation,
     M05IsolatedServiceExpectation,
     assert_m05_isolated_runtime,
+    build_m05_isolated_manager_admission,
     build_m05_isolated_runtime_provenance,
     claim_m05_isolated_harness_ledger,
 )
@@ -49,9 +52,15 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
 )
+from kor_travel_docker_manager.services.runtime_execution_registry import (
+    RuntimeExecutionRegistry,
+    RuntimeExecutionRegistryError,
+    block_current_execution,
+    load_runtime_execution_registry,
+    write_runtime_execution_registry,
+)
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     RuntimePinRegistryError,
-    block_runtime_pinset,
     load_runtime_pin_registry,
 )
 
@@ -70,6 +79,21 @@ _RAW_ENV_NAMES = (
     "M05_PINVI_PASSWORD",
     "PINVI_M04_LIVE_EMAIL",
     "PINVI_M04_LIVE_PASSWORD",
+)
+_PINVI_MANAGER_ADMISSION_FILES = (
+    "scripts/docker-app.sh",
+    "scripts/m05_isolated_manager_admission.py",
+)
+_PINVI_MANAGER_ADMISSION_TOKENS = frozenset(
+    {
+        "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH",
+        "PINVI_M05_PINSET_SHA256",
+        "PINVI_M05_EXECUTION_IDENTITY_SHA256",
+        "m05_isolated_manager_admission.py",
+        "pinvi-m05-isolated-manager-admission-v1",
+        '[[ "$EUID" -eq 0 ]]',
+        "/usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I",
+    }
 )
 _SAFE_SUBPROCESS_ENV = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
@@ -98,6 +122,77 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     55: "metadata_contract_invalid",
     127: "unclassified",
 }
+_MAP_HEALTH_TRANSPORT_ATTEMPTS = 6
+_MAP_HEALTH_TRANSPORT_RETRY_SECONDS = 1
+
+# terminal pinset registry는 비-root도 읽는 감사 표면이다. driver의 예외 원문을
+# reason에 흘리지 않고, 다음 immutable candidate의 보정 범위만 나타내는 고정 phase만
+# 허용한다. 이 집합 밖의 값은 가장 좁은 안전 진단으로 수렴한다.
+_PUBLIC_TERMINAL_PHASES = frozenset(
+    {
+        "admission",
+        "driver_contract_failed",
+        "ledger_claim",
+        "m04_fixture_http_failed",
+        "m04_fixture_invalid",
+        "m04_m05_e2e",
+        "m04_map_approval_http_failed",
+        "m04_map_approval_invalid",
+        "m05_case_decision_http_failed",
+        "m05_case_invalid",
+        "m05_case_lookup_http_failed",
+        "m05_fixture_invalid",
+        "m05_pinvi_receipt_blocked",
+        "m05_pinvi_receipt_http_failed",
+        "m05_pinvi_receipt_invalid",
+        "map_application_start_failed",
+        "map_fresh_init_failed",
+        "map_health_status_failed",
+        "map_health_transport_failed",
+        "map_postgres_start_failed",
+        "map_runtime",
+        "map_subscription",
+        "map_subscription_http_failed",
+        "network_inspect_invalid",
+        "network_subnet_unavailable",
+        "pair_contract_invalid",
+        "pinvi_auth_invalid",
+        "pinvi_login_http_failed",
+        "pinvi_manager_admission_contract_invalid",
+        "pinvi_runtime",
+        "ports_unavailable",
+        "result_write_failed",
+        "runtime_cleanup_failed",
+        "runtime_command_failed",
+        "runtime_container_identity_invalid",
+        "runtime_directory_invalid",
+        "runtime_http_contract_failed",
+        "runtime_http_failed",
+        "runtime_http_url_invalid",
+        "runtime_image_identity_invalid",
+        "runtime_inspect_invalid",
+        "runtime_execution_block_failed",
+        "runtime_execution_registry_changed",
+        "runtime_execution_registry_invalid",
+        "runtime_pin_registry_changed",
+        "runtime_pin_registry_invalid",
+        "runtime_setup",
+        "runtime_setup_admission",
+        "runtime_setup_admission_build",
+        "runtime_setup_admission_write",
+        "runtime_setup_credentials",
+        "runtime_setup_map_config",
+        "runtime_setup_network",
+        "runtime_setup_pinvi_config",
+        "runtime_setup_ports",
+        "runtime_setup_workspace",
+        "secret_cleanup_identity_invalid",
+        "source_materialization",
+        "terminal_execution_blocked",
+        "trusted_release_invalid",
+        "trusted_release_revision_mismatch",
+    }
+)
 
 
 class _PhaseError(RuntimeError):
@@ -111,8 +206,10 @@ def _fail(phase: str, *, diagnostic: str | None = None) -> NoReturn:
     raise _PhaseError(phase, diagnostic=diagnostic)
 
 
-def _assert_current_m05_pinset_is_runnable() -> None:
-    """terminal registry를 ledger·Docker mutation보다 먼저 fail-close로 확인한다."""
+def _assert_current_m05_execution_is_runnable(
+    expected_manager_revision: str,
+) -> RuntimeExecutionRegistry:
+    """현재 source pair와 trusted Manager 실행 결박을 mutation 전에 확인한다."""
 
     try:
         registry = load_runtime_pin_registry()
@@ -124,23 +221,48 @@ def _assert_current_m05_pinset_is_runnable() -> None:
         or registry.pinvi_revision != PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
     ):
         _fail("runtime_pin_registry_changed")
-    if registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256):
-        _fail("terminal_pinset_blocked")
+    try:
+        execution = load_runtime_execution_registry()
+    except RuntimeExecutionRegistryError:
+        _fail("runtime_execution_registry_invalid")
+    if not execution.current_matches(
+        pins=registry, manager_source_revision=expected_manager_revision
+    ):
+        _fail("runtime_execution_registry_changed")
+    if execution.is_unconditionally_blocked_current():
+        _fail("terminal_execution_blocked")
+    return execution
 
 
-def _block_terminal_m05_pinset() -> bool:
-    """terminal result를 root registry의 unconditional block과 결박한다."""
+def _terminal_registry_reason(phase: str) -> str:
+    """root registry에는 고정 phase만 남겨 원문 유출을 막는다."""
+
+    return f"M05 isolated one-shot terminal: {_public_terminal_phase(phase)}"
+
+
+def _public_terminal_phase(phase: str) -> str:
+    """원문 없이 이미 추적 중인 실행 경계만 public receipt에 남긴다."""
+
+    return phase if phase in _PUBLIC_TERMINAL_PHASES else "driver_contract_failed"
+
+
+def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str) -> bool:
+    """terminal result를 현재 v6 execution의 unconditional block과 결박한다."""
 
     try:
-        registry = block_runtime_pinset(
-            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-            map_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
-            pinvi_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
-            reason="M05 isolated one-shot terminal",
+        pins = load_runtime_pin_registry()
+        registry = load_runtime_execution_registry()
+        if not registry.current_matches(
+            pins=pins, manager_source_revision=expected_manager_revision
+        ):
+            return False
+        updated = block_current_execution(
+            registry=registry, reason=_terminal_registry_reason(phase)
         )
-    except RuntimePinRegistryError:
+        write_runtime_execution_registry(updated)
+    except (RuntimePinRegistryError, RuntimeExecutionRegistryError):
         return False
-    return registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256)
+    return updated.is_unconditionally_blocked_current()
 
 
 def _root_file(path: Path, *, mode: int = 0o600) -> os.stat_result:
@@ -231,9 +353,9 @@ def _validate_trusted_release(expected: str) -> None:
         _fail("trusted_release_revision_mismatch")
 
 
-def _write_private_json(path: Path, value: dict[str, object]) -> str:
+def _write_private_json(path: Path, value: Mapping[str, object]) -> str:
     raw = (
-        json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        json.dumps(dict(value), ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         + "\n"
     ).encode("utf-8")
     _write_private_bytes(path, raw)
@@ -682,6 +804,32 @@ def _http_json(
     return value
 
 
+def _wait_for_map_health(*, url: str) -> dict[str, object]:
+    """Compose health와 host loopback publish 사이의 짧은 경합만 같은 one-shot 안에서 흡수한다.
+
+    HTTP status와 응답 계약 오류는 즉시 terminal로 보존한다. 재시도 대상은 API container가
+    healthy가 된 직후 host publish socket이 아직 수신하지 않는 transport 오류뿐이며, 원문
+    socket detail은 저장하지 않는다.
+    """
+
+    for attempt in range(_MAP_HEALTH_TRANSPORT_ATTEMPTS):
+        try:
+            return _http_json(
+                url,
+                headers={},
+                failure_phase="map_health_transport_failed",
+                http_error_phase="map_health_status_failed",
+            )
+        except _PhaseError as error:
+            if (
+                error.phase != "map_health_transport_failed"
+                or attempt + 1 == _MAP_HEALTH_TRANSPORT_ATTEMPTS
+            ):
+                raise
+            time.sleep(_MAP_HEALTH_TRANSPORT_RETRY_SECONDS)
+    raise AssertionError("map health retry loop must return or raise")
+
+
 def _data(value: dict[str, object]) -> dict[str, object]:
     data = value.get("data")
     if not isinstance(data, dict):
@@ -1036,6 +1184,47 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
     )
 
 
+def _assert_pinvi_manager_admission_contract(pinvi_root: Path) -> None:
+    """Pinned PinVi source가 Manager-only isolated admission을 실제로 강제하는지 확인한다."""
+
+    values: dict[str, str] = {}
+    for relative in _PINVI_MANAGER_ADMISSION_FILES:
+        path = pinvi_root / relative
+        try:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 128_000:
+                raise OSError
+            values[relative] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            _fail("pinvi_manager_admission_contract_invalid")
+    if not all(
+        token in values["scripts/docker-app.sh"]
+        or token in values["scripts/m05_isolated_manager_admission.py"]
+        for token in _PINVI_MANAGER_ADMISSION_TOKENS
+    ):
+        _fail("pinvi_manager_admission_contract_invalid")
+
+
+def _pinvi_manager_admission_environment(
+    *,
+    env_file: Path,
+    project: str,
+    pinvi_source_revision: str,
+    execution_identity_sha256: str,
+    admission_path: Path,
+) -> dict[str, str]:
+    """Manager가 검증한 admission tuple만 PinVi direct gate에 전달한다."""
+
+    return {
+        "PINVI_ENV_FILE": str(env_file),
+        "PINVI_DOCKER_PROJECT": project,
+        "PINVI_SOURCE_REVISION": pinvi_source_revision,
+        "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission_path),
+        "PINVI_M05_PINSET_SHA256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+        "PINVI_M05_EXECUTION_IDENTITY_SHA256": execution_identity_sha256,
+    }
+
+
 def _container_id(
     project: str, service: str, *, root: Path, env_file: Path, files: tuple[Path, ...]
 ) -> str:
@@ -1172,13 +1361,16 @@ def main(expected_revision: str, output: Path) -> int:
     try:
         os.umask(0o077)
         _validate_trusted_release(expected_revision)
-        _assert_current_m05_pinset_is_runnable()
+        execution = _assert_current_m05_execution_is_runnable(expected_revision)
         _root_directory(output)
         _LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(_LEDGER, 0o700)
         _root_directory(_LEDGER)
         plan = M05IsolatedHarnessPlan(
-            PINNED_RUNTIME_RELEASE, expected_revision, transaction
+            PINNED_RUNTIME_RELEASE,
+            expected_revision,
+            execution.current.execution_identity_sha256,
+            transaction,
         )
         phase = "source_materialization"
         ambient = dict(os.environ)
@@ -1201,16 +1393,22 @@ def main(expected_revision: str, output: Path) -> int:
         pair, service_openapi_sha256, service_source_revision = _pair(
             pinvi_root, map_root
         )
+        _assert_pinvi_manager_admission_contract(pinvi_root)
         # source pair가 정합하지 않으면 one-shot ledger를 소비하지 않는다. 잘못 회전한
         # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
         phase = "ledger_claim"
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
-        phase = "runtime_setup"
+        # setup 전체를 하나의 `runtime_setup` receipt로 뭉개면 새 immutable source가
+        # 어느 안전 경계를 보정해야 하는지 알 수 없다. 아래 단계명은 raw exception,
+        # 경로, secret을 싣지 않는 allowlist receipt일 뿐 동일 pinset 재시도 권한은 아니다.
+        phase = "runtime_setup_ports"
         ports = _free_ports(transaction)
+        phase = "runtime_setup_workspace"
         runtime = output / "runtime"
         runtime.mkdir(mode=0o700)
         _root_directory(runtime)
         map_env, pinvi_env = runtime / "map.env", runtime / "pinvi.env"
+        pinvi_admission = runtime / "pinvi-isolated-manager-admission.json"
         map_override, pinvi_override = (
             runtime / "map.override.yml",
             runtime / "pinvi.override.yml",
@@ -1228,6 +1426,7 @@ def main(expected_revision: str, output: Path) -> int:
             fixture_env,
             map_override,
             pinvi_override,
+            pinvi_admission,
             bootstrap,
             private_key,
         )
@@ -1236,7 +1435,16 @@ def main(expected_revision: str, output: Path) -> int:
         m05_evidence.mkdir(mode=0o700)
         _root_directory(m04_evidence)
         _root_directory(m05_evidence)
+        phase = "runtime_setup_admission_build"
+        admission_payload = build_m05_isolated_manager_admission(plan=plan, pair=pair)
+        phase = "runtime_setup_admission_write"
+        _write_private_json(
+            pinvi_admission,
+            admission_payload,
+        )
+        phase = "runtime_setup_network"
         subnet, map_api_ip, map_frontend_ip = _map_network_addresses(transaction)
+        phase = "runtime_setup_credentials"
         map_secret, feature_request_token, read_token, ack_token = (
             _random_secret(),
             _random_secret(),
@@ -1258,6 +1466,7 @@ def main(expected_revision: str, output: Path) -> int:
             str(private_key),
         )
         _root_file(private_key, mode=0o600)
+        phase = "runtime_setup_map_config"
         password = _random_secret()
         token_sha = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
         migrator_password, api_password, dagster_password, metadata_password = (
@@ -1379,13 +1588,16 @@ def main(expected_revision: str, output: Path) -> int:
             *[f"      {key}: {value}" for key, value in plan.labels.items()],
         ]
         _write_private_text(map_override, "\n".join(map_override_lines) + "\n")
+        phase = "runtime_setup_pinvi_config"
         _write_private_text(
             pinvi_env,
             "\n".join(
                 (
                     "PINVI_ENVIRONMENT=isolated",
-                    "PINVI_M05_ISOLATED_MANAGER_HARNESS=1",
                     f"PINVI_SOURCE_REVISION={pair.pinvi_source_revision}",
+                    f"PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH={pinvi_admission}",
+                    f"PINVI_M05_PINSET_SHA256={PINNED_RUNTIME_RELEASE.pinset_sha256}",
+                    f"PINVI_M05_EXECUTION_IDENTITY_SHA256={plan.execution_identity_sha256}",
                     f"PINVI_API_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_APP_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_DOCKER_PROJECT={plan.pinvi_project}",
@@ -1484,12 +1696,7 @@ def main(expected_revision: str, output: Path) -> int:
             failure_phase="map_application_start_failed",
         )
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
-        _http_json(
-            f"{admin_url}/health",
-            headers={},
-            failure_phase="map_health_transport_failed",
-            http_error_phase="map_health_status_failed",
-        )
+        _wait_for_map_health(url=f"{admin_url}/health")
         phase = "map_subscription"
         _data(
             _http_json(
@@ -1505,11 +1712,13 @@ def main(expected_revision: str, output: Path) -> int:
         phase = "pinvi_runtime"
         pinvi_files = (pinvi_root / "infra/docker-compose.app.yml", pinvi_override)
         pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ())
-        environment = {
-            "PINVI_ENV_FILE": str(pinvi_env),
-            "PINVI_DOCKER_PROJECT": plan.pinvi_project,
-            "PINVI_M05_ISOLATED_MANAGER_HARNESS": "1",
-        }
+        environment = _pinvi_manager_admission_environment(
+            env_file=pinvi_env,
+            project=plan.pinvi_project,
+            pinvi_source_revision=pair.pinvi_source_revision,
+            execution_identity_sha256=plan.execution_identity_sha256,
+            admission_path=pinvi_admission,
+        )
         _command(
             str(pinvi_root / "scripts/docker-app.sh"),
             "up",
@@ -1740,6 +1949,8 @@ def main(expected_revision: str, output: Path) -> int:
             expected_revision,
             "--isolated-pinset-sha256",
             PINNED_RUNTIME_RELEASE.pinset_sha256,
+            "--isolated-execution-identity-sha256",
+            plan.execution_identity_sha256,
             "--playwright-runner-image",
             "mcr.microsoft.com/playwright@sha256:9bd26ad900bb5e0f4dee75839e957a89ae89c2b7ab1e76050e559790e946b948",
             "--require-root-owned",
@@ -1788,32 +1999,29 @@ def main(expected_revision: str, output: Path) -> int:
         phase = error.phase
         failure_diagnostic = error.diagnostic
     # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
-    # 관측한다. 예상하지 못한 ordinary exception도 고정된 terminal receipt로 수렴시킨다.
+    # 관측한다. 예상하지 못한 ordinary exception도 현재 allowlist 실행 경계로만
+    # 수렴하므로, raw detail 없이 다음 immutable candidate의 보정 범위를 좁힐 수 있다.
     # BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
     except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
-        phase = "driver_contract_failed"
+        phase = _public_terminal_phase(phase)
     finally:
         cleanup_failed, unexpected_finalization_failure = _cleanup_temporary_resources(
             map_cleanup=map_cleanup,
             pinvi_cleanup=pinvi_cleanup,
             private_files=private_files,
         )
-        if unexpected_finalization_failure:
-            completed = False
-            phase = "driver_contract_failed"
-        elif cleanup_failed:
+        if unexpected_finalization_failure or cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
         if not completed:
             try:
-                pinset_blocked = _block_terminal_m05_pinset()
+                pinset_blocked = _block_terminal_m05_execution(
+                    phase, expected_manager_revision=expected_revision
+                )
             except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
                 pinset_blocked = False
-                unexpected_finalization_failure = True
-            if unexpected_finalization_failure:
-                phase = "driver_contract_failed"
-            elif not pinset_blocked:
-                phase = "runtime_pin_block_failed"
+            if not pinset_blocked:
+                phase = "runtime_execution_block_failed"
         driver_phase = phase
         for name in _RAW_ENV_NAMES:
             os.environ.pop(name, None)
@@ -1824,6 +2032,9 @@ def main(expected_revision: str, output: Path) -> int:
             "driver_phase": driver_phase,
             "cleanup_failed": cleanup_failed,
             "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+            "execution_identity_sha256": (
+                plan.execution_identity_sha256 if plan is not None else None
+            ),
             "status": "passed" if completed else "blocked",
             "transaction_id": transaction,
             **result_hashes,

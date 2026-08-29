@@ -19,6 +19,16 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
 
 ## 개정 이력
 
+- **v4 (2026-08-29)**: M05 control-plane terminal 재발 방지 구현을 반영했다. runtime
+  pin mutation(`init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`,
+  `rollback`, `block`)은 모두 `ktdctl`의 host-global mutation lock 안에서 대상 read·검증·
+  derive·write·대기 요청 정리까지 원자화하며, 실행 중 one-shot과 병렬인 외부 write는 거절한다. 검증된 launcher inherited-lock의
+  terminal fallback만 예외다. 또한 Map·PinVi·Manager의 문서 전용 병합은 candidate
+  source tuple·provenance·pinset을 다시 만들지 않고, 코드·Compose·계약·빌드 입력 변경만
+  새 CI·전문 리뷰·one-shot 후보를 만든다.
+  PR synchronize CI가 생성되지 않으면 `workflow_dispatch`로 같은 exact head의 read-only
+  CI를 재실행한다. 이는 runtime mutation이나 candidate 재결박 권한을 주지 않는다.
+
 - **v1**: 보안/안정성 우선의 초판(ktdctl 인벤토리 + 7개 운영 영역 격차 분석).
 - **v2**: 오너 방향 재지정("보안·안정성보다는 **비전문가의 관리 편의성·직관성** 중심")
   에 따라 전 항목 재평가. 5개 분석 축(웹 UI 재점검 / pin 하드코딩의 설정파일화 / 기능
@@ -518,6 +528,18 @@ Manager 단독으로 완료. (i)의 typed 이관과 (ii)의 verifier phase 편�
 - **개선 효과**: "Manager가 어디까지 책임지는가"가 문서로 고정돼, 구현자가 문서
   스키마에 요약 키를 넣는 사고(즉시 map attestation 파손)나 Manager 밖 계약을
   Manager에 구현하는 범위 침범을 방지한다.
+
+#### P10-5 보정 — M05 isolated direct Compose admission
+
+전문 보안 적대 리뷰가 PinVi의 기존 isolated Compose gate가 root UID와 호출자가 설정할 수 있는
+environment marker만 신뢰한다는 P1을 발견했다. 이는 `ktdctl`만 pinning·pair 결박·one-shot을
+소유한다는 계약과 모순된다. Manager root driver는 이제 private runtime directory에 `0600` admission을
+만들고, exact transaction project·current pinset·Manager·Map·PinVi source revision을 함께 결박한다.
+PinVi는 그 파일을 no-follow로 읽어 exact schema와 결박을 확인할 때만 isolated mutation을 허용하며,
+legacy environment marker는 거부한다. Manager는 이 tuple을 clean child environment로 전달하고 PinVi는
+root EUID에서 `/usr/bin/python3 -I`로 검증하므로 PATH shim·임의 environment는 admission을 대체하지
+못한다. admission은 private one-shot 입력일 뿐 API·UI 공개 표면이나
+manifest/journal schema를 바꾸지 않는다.
 
 ---
 

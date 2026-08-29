@@ -2,6 +2,63 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — v6 execution registry를 one-shot과 sibling receipt에 연결
+
+일반 runtime execution registry를 actual mutation gate까지 연결했다. `ktdctl pin verify`는
+source registry와 trusted Manager-derived execution binding을 함께 확인하며, migration 시 기존 v5
+unconditional terminal은 같은 Manager revision의 v6 execution에도 그대로 보존한다. 새 execution은
+terminal인 current binding을 trusted Manager release revision이 달라진 경우에만 rebind할 수 있다.
+`block-execution`도 generic root CLI로 제공해 launcher fallback이 임의 pair가 아닌 verified current
+execution만 idempotent하게 차단한다.
+
+M05는 이 generic mechanism의 첫 소비자로만 바뀌었다. one-shot ledger, Docker labels, driver result,
+private PinVi admission, runtime provenance가 모두 exact execution identity를 포함한다. launcher는 source와
+execution snapshot을 두 번 대조하고, old v5 terminal audit 자체가 아니라 current v6 execution terminal을
+재실행 거부 근거로 쓴다. 적대 리뷰에서 발견한 inherited global-lock fallback과 public-copy parity도 함께
+보정했다. focused identity/registry/harness/driver 회귀는 63 passed, 1 skipped와 Ruff clean이다.
+
+## 2026-08-29 — 일반 runtime execution identity와 trusted rebind 기반
+
+반복 terminal을 Map/PinVi 문서 SHA 변경으로 우회하지 않도록 v5 source pinset과 별도의
+v6 runtime execution identity를 도입했다. v5 pinset은 source materialization과 historical
+audit의 identity로 그대로 두고, v6 identity는 canonical Manager repository URL·v5 pinset·trusted
+installed Manager revision을 SHA-256으로 결박한다. 따라서 같은 source pin에서 Manager implementation만
+바뀌면 새 execution이 되지만, 같은 v6 identity는 계속 하나의 terminal lifecycle만 가진다.
+
+새 execution registry와 `ktdctl pin migrate-execution-v6`,
+`ktdctl pin show-execution`, `ktdctl pin rebind-execution`을 추가했다. migration은 기존
+source registry를 바꾸지 않으며, rebind는 current execution이 terminal이고 trusted installed Manager
+revision이 바뀐 경우에만 가능하다. 사용자가 전달한 expected SHA는 trusted
+`.ktdm-source-revision`과 `.ktdm-release-manifest.json` 양쪽과의 TOCTOU 확인값일 뿐, 새
+실행권을 만드는 입력이 아니다. 일반 registry/CLI는 특정 M05 harness에 종속되지 않고 M05는 첫
+consumer로만 남긴다.
+
+순수 identity·registry·CLI parser 회귀는 10 passed, Ruff clean을 통과했다. 다음은 이 identity를
+generation/one-shot ledger와 sibling admission/attestation에 연결하는 일이다.
+
+## 2026-08-29 — root 권한 보정 위 M05 재결박 준비
+
+Manager #256을 main의 root 권한·환경 의존성 보정 위로 rebase했다. M05의 runtime pin mutation
+직렬화·admission·public generation 계약은 보존했고, 새 head는 이전 trusted installer source와 다른
+immutable candidate다.
+
+`9b6eab1e…` exact pair는 clean trusted release, atomic `pin rotate-pair`, 단 한 번의 pinned rebuild와
+공개 generation `match` 뒤 isolated M04/M05 E2E를 정확히 한 번 실행했다. 실행 완료 후 공개 `pin verify`가
+same pair의 unconditional terminal block을 보였으므로, 이 pinset·source tuple·두 output leaf는 재실행하거나
+열지 않는다. 단, 이후 오너의 최신 지시에 따라 raw forensic 열람은 gitignored local analysis에만 상세
+기록하며 tracked journal·commit·push에는 넣지 않는다. 공개 상태만으로 특정 component의 결함을 단정하지 않는다.
+
+rebase 뒤 inherited global-lock 회귀가 Windows-mounted pytest 임시 루트에서 POSIX `0600` mode를 보존하지 않아
+실행 환경에 따라 실패할 수 있음을 확인했다. 계약 test만 Linux `/tmp` fixture로 옮기고 existing-file mode도
+명시적으로 고정했다. runtime 구현은 바꾸지 않았다. focused M05 lock/driver/harness 검증은 54 passed, 1 skipped와
+Ruff clean이다.
+
+후속 forensic에서 서로 다른 후보 네 개가 Map container health 뒤 host loopback transport에서 같은 방식으로
+종료했음을 확인했다. Compose `--wait`가 container 내부 health를 보장해도 host publish socket의 즉시 수신까지
+보장하지 않는 짧은 경합을 같은 immutable candidate 안에서 흡수하도록, `map_health_transport_failed`만 1초 간격
+최대 6회 재시도한다. HTTP status·응답 계약 오류는 재시도하지 않는다. terminal `pin verify` 뒤에는 `pin show`
+exact block entry의 fixed phase/timestamp만 기록하며, 자유 입력 reason 원문을 자동화 판단에 쓰지 않는다.
+
 ## 2026-08-28 — root 권한 축소: 채택 2건, 적대 리뷰로 기각 1건
 
 오너 질문 "root 권한이 필요한 이유는?"의 근거 확인에서 나온 후속 3건 중 2건을 반영하고,
@@ -56,6 +113,18 @@ lease 디렉터리를 먼저 만들면 조용한 잠금이 되는 문제, 기본
 통과하고 있어 전체 문구로 좁혔다.
 
 백엔드 1066 passed / 1 skipped, ruff clean.
+
+## 2026-08-28 — M05 isolated Compose admission P1 보정
+
+전문 보안 적대 리뷰가 PinVi `docker-app.sh`의 isolated Compose 허용이 root UID와 호출자 설정
+environment marker만 확인해 Manager `ktdctl` 밖의 mutation을 막지 못하는 P1을 발견했다. terminal
+candidate와 raw artifact는 열거나 재실행하지 않았다.
+
+Manager root driver는 private `0700` runtime directory에 `0600` admission을 만들고 exact transaction,
+current pinset, Manager·Map·PinVi source revision을 함께 결박한다. PinVi는 이 파일을 no-follow로
+검증할 때만 isolated direct Compose를 허용하며 legacy marker는 거부한다. 이 admission은 private
+one-shot 입력이므로 generation public copy·manifest v6·journal v8의 공개 schema를 바꾸지 않는다.
+새 source는 Map·PinVi CI와 exact-head 전문 적대 리뷰 두 건을 통과한 뒤에만 fresh pair로 쓸 수 있다.
 
 ## 2026-08-28 — M05 public generation P1 fail-close 보강
 
@@ -5583,3 +5652,11 @@ T-011 구현 직후 적대적 리뷰어 2명(Agent 도구 병렬 실행, 이 시
   - 루트 `.gitignore`, `docker-compose.yml`, `README.md` 작성.
   - 백엔드 (`backend/`) Poetry 초기화 및 FastAPI 뼈대 코드 작성.
   - 프론트엔드 (`frontend/`) Next.js 뼈대 코드 및 실시간 상태 대시보드 UI 구현.
+## 2026-08-28 — M05 terminal registry의 원문 없는 phase 진단
+
+Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`로 결박한 뒤 trusted
+`run-pinned-rebuild-once`와 public generation gate를 통과했다. 그 다음 isolated M04/M05 one-shot은 정확히
+한 번 실행되어 canonical pinset `5ad3b08c…`을 terminal로 차단했다. output leaf·HTTP 원문·container log·환경값은
+열지 않는다. root registry의 공개 reason은 이제 임의 예외 문자열이 아니라 allowlist fixed phase만 기록한다.
+따라서 다음 immutable source pair는 raw artifact 없이도 보정 범위를 알 수 있고, 같은 pinset의 재실행은 계속
+불가능하다.

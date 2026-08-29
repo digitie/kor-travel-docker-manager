@@ -9,26 +9,36 @@ import pytest
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05_ISOLATED_HARNESS_KIND,
+    M05_ISOLATED_MANAGER_ADMISSION_KIND,
     M05IsolatedHarnessPlan,
     M05IsolatedNetworkExpectation,
     M05IsolatedPairEvidence,
     M05IsolatedRuntimeExpectation,
     M05IsolatedServiceExpectation,
     assert_m05_isolated_runtime,
+    build_m05_isolated_manager_admission,
     build_m05_isolated_runtime_provenance,
     claim_m05_isolated_harness_ledger,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
 )
+from kor_travel_docker_manager.services.runtime_execution_identity import (
+    canonical_execution_identity_sha256,
+)
 
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 
 
 def _plan() -> M05IsolatedHarnessPlan:
+    manager_revision = "a" * 40
     return M05IsolatedHarnessPlan(
         release=PINNED_RUNTIME_RELEASE,
-        manager_source_revision="a" * 40,
+        manager_source_revision=manager_revision,
+        execution_identity_sha256=canonical_execution_identity_sha256(
+            source_pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+            manager_source_revision=manager_revision,
+        ),
         transaction_id="b" * 32,
     )
 
@@ -146,6 +156,7 @@ def test_plan_claim_is_canonical_and_does_not_include_transaction() -> None:
     assert payload == {
         "harness": M05_ISOLATED_HARNESS_KIND,
         "manager_source_revision": "a" * 40,
+        "execution_identity_sha256": _plan().execution_identity_sha256,
         "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
         "version": 1,
     }
@@ -317,6 +328,25 @@ def test_runtime_provenance_seals_all_six_image_identities() -> None:
         "dagster_image_id": "sha256:" + "6" * 64,
         "source_revision": PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
         "web_image_id": "sha256:" + "7" * 64,
+    }
+
+
+def test_manager_admission_binds_the_exact_pair_and_transaction() -> None:
+    expectation = _expectation()
+
+    admission = build_m05_isolated_manager_admission(
+        plan=expectation.plan, pair=expectation.pair
+    )
+
+    assert dict(admission) == {
+        "kind": M05_ISOLATED_MANAGER_ADMISSION_KIND,
+        "execution_identity_sha256": expectation.plan.execution_identity_sha256,
+        "manager_source_revision": "a" * 40,
+        "map_source_revision": PINNED_RUNTIME_RELEASE.source_for("map").revision,
+        "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+        "pinvi_source_revision": PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+        "transaction_id": "b" * 32,
+        "version": 1,
     }
 
 
