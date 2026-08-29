@@ -1258,6 +1258,22 @@ def test_isolated_map_override_replaces_the_api_publish_instead_of_resetting_it(
     assert '"    ports: !reset",' not in api_override
 
 
+def test_isolated_map_network_allowlists_the_bridge_gateway_for_host_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    monkeypatch.setattr(driver, "_command", lambda *_args, **_kwargs: "")
+
+    subnet, gateway, api, frontend = driver._map_network_addresses("a" * 32)
+
+    assert subnet == "172.29.170.0/29"
+    assert (gateway, api, frontend) == ("172.29.170.1", "172.29.170.2", "172.29.170.3")
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"{map_gateway_ip}/32"' in source
+
+
 def test_root_launcher_checks_the_m05_pair_before_creating_an_output_leaf() -> None:
     """wrong Map/PinVi provenance은 execution terminal·ledger를 소비하지 않는다."""
 

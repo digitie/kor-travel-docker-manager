@@ -894,8 +894,8 @@ def _free_ports(transaction: str) -> dict[str, int]:
     _fail("ports_unavailable")
 
 
-def _map_network_addresses(transaction: str) -> tuple[str, str, str]:
-    """기존 Docker subnet과 겹치지 않는 Map 단일 bridge /29와 API/BFF 주소를 고른다."""
+def _map_network_addresses(transaction: str) -> tuple[str, str, str, str]:
+    """기존 Docker subnet과 겹치지 않는 bridge gateway·Map API/BFF 주소를 고른다."""
 
     raw = _command(
         "/usr/bin/docker",
@@ -938,7 +938,7 @@ def _map_network_addresses(transaction: str) -> tuple[str, str, str]:
         candidate = ipaddress.ip_network(f"172.29.{(seed + offset) % 224}.0/29")
         if not any(candidate.overlaps(item) for item in existing):
             hosts = list(candidate.hosts())
-            return str(candidate), str(hosts[1]), str(hosts[2])
+            return str(candidate), str(hosts[0]), str(hosts[1]), str(hosts[2])
     _fail("network_subnet_unavailable")
 
 
@@ -1777,7 +1777,9 @@ def main(expected_revision: str, output: Path) -> int:
             admission_payload,
         )
         phase = "runtime_setup_network"
-        subnet, map_api_ip, map_frontend_ip = _map_network_addresses(transaction)
+        subnet, map_gateway_ip, map_api_ip, map_frontend_ip = _map_network_addresses(
+            transaction
+        )
         phase = "runtime_setup_credentials"
         map_secret, feature_request_token, read_token, ack_token = (
             _random_secret(),
@@ -1896,9 +1898,10 @@ def main(expected_revision: str, output: Path) -> int:
             f"      KOR_TRAVEL_MAP_API_FEATURE_REQUEST_TOKEN_SHA256: {token_sha(feature_request_token)}",
             f"      KOR_TRAVEL_MAP_API_FEATURE_REFERENCE_RECONCILIATION_READ_TOKEN_SHA256: {token_sha(read_token)}",
             f"      KOR_TRAVEL_MAP_API_FEATURE_REFERENCE_RECONCILIATION_ACK_TOKEN_SHA256: {token_sha(ack_token)}",
-            # frontend BFF와 root one-shot만 admin endpoint에 닿는다. API port는
-            # loopback publish이므로 host 밖에서 이 별도 harness principal을 흉내낼 수 없다.
-            f'      KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS: \'["{map_frontend_ip}/32","127.0.0.1/32"]\'',
+            # frontend BFF와 root one-shot만 admin endpoint에 닿는다. published
+            # loopback 요청은 bridge gateway에서 API로 전달되므로 이를 explicit
+            # allowlist에 포함한다. host 밖에서는 이 harness principal을 흉내낼 수 없다.
+            f'      KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS: \'["{map_frontend_ip}/32","{map_gateway_ip}/32","127.0.0.1/32"]\'',
             # !reset은 list를 기본값(빈 값)으로 되돌린다. 기존 publish를 정확한
             # isolated loopback publish 하나로 교체하려면 Compose의 !override여야 한다.
             "    ports: !override",
