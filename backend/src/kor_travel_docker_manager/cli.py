@@ -37,6 +37,7 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     migrate_execution_registry,
     rebind_execution_registry,
     trusted_manager_source_revision,
+    verify_runtime_execution_registry,
     write_runtime_execution_registry,
 )
 from kor_travel_docker_manager.services.runtime_pin_registry import (
@@ -501,8 +502,11 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     report["generation_pinset_binding"] = binding_status
     execution_binding = "missing"
     execution_terminal = True
+    execution_public_copy = "missing"
     try:
         execution_registry = load_runtime_execution_registry()
+        execution_report = verify_runtime_execution_registry()
+        execution_public_copy = str(execution_report["execution_public_copy"])
         execution_binding = (
             "current"
             if execution_registry.current_matches(
@@ -516,6 +520,7 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         execution_binding = "invalid"
     report["execution_binding"] = execution_binding
     report["current_execution_is_blocked"] = execution_terminal
+    report["execution_public_copy"] = execution_public_copy
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -540,6 +545,13 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         print(
             "현재 Manager-aware execution은 재시도 금지 상태입니다 — 새 trusted Manager "
             "release 뒤 'ktdctl pin rebind-execution'으로만 새 실행을 결박하세요.",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    if execution_public_copy != "current":
+        print(
+            "runtime execution public copy is missing, malformed, or stale; root must "
+            "repair the execution binding before a runtime mutation",
             file=sys.stderr,
         )
         exit_code = 1
@@ -667,7 +679,7 @@ def _cmd_pin_block_execution(args: argparse.Namespace) -> int:
         print("pin block-execution requires root", file=sys.stderr)
         return 2
     try:
-        with _runtime_pin_mutation_lock():
+        with _runtime_pin_mutation_lock(allow_inherited_terminal_block=True):
             pins = load_runtime_pin_registry()
             registry = load_runtime_execution_registry()
             trusted_revision = trusted_manager_source_revision()

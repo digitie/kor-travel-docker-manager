@@ -88,6 +88,7 @@ _PINVI_MANAGER_ADMISSION_TOKENS = frozenset(
     {
         "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH",
         "PINVI_M05_PINSET_SHA256",
+        "PINVI_M05_EXECUTION_IDENTITY_SHA256",
         "m05_isolated_manager_admission.py",
         "pinvi-m05-isolated-manager-admission-v1",
         '[[ "$EUID" -eq 0 ]]',

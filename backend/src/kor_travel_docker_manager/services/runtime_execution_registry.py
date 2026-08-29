@@ -411,6 +411,32 @@ def load_runtime_execution_registry(*, path: Path | None = None) -> RuntimeExecu
     return RuntimeExecutionRegistry.from_payload(_read(path or runtime_execution_registry_path()))
 
 
+def verify_runtime_execution_registry() -> dict[str, object]:
+    """private execution registry와 public copy의 strict parity를 읽기 전용으로 확인한다."""
+
+    private_path = runtime_execution_registry_path()
+    registry = load_runtime_execution_registry(path=private_path)
+    public_state = "missing"
+    public_path = runtime_execution_registry_public_path()
+    try:
+        published = load_runtime_execution_registry(path=public_path)
+    except RuntimeExecutionRegistryError:
+        published = None
+        public_state = "missing" if not public_path.exists() else "malformed"
+    if published is not None:
+        public_state = "current" if published.to_payload() == registry.to_payload() else "stale"
+    return {
+        "registry_path_name": private_path.name,
+        "execution_identity_sha256": registry.current.execution_identity_sha256,
+        "source_pinset_sha256": registry.current.source_pinset_sha256,
+        "manager_source_revision": registry.current.manager_source_revision,
+        "execution_public_copy": public_state,
+        "current_execution_is_blocked": registry.is_unconditionally_blocked_current(),
+        "blocked_execution_count": len(registry.blocked_executions),
+        "history_length": len(registry.history),
+    }
+
+
 def _write(path: Path, payload: Mapping[str, object], *, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _assert_registry_parent(path)

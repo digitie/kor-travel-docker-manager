@@ -14,7 +14,8 @@ execution만 idempotent하게 차단한다.
 M05는 이 generic mechanism의 첫 소비자로만 바뀌었다. one-shot ledger, Docker labels, driver result,
 private PinVi admission, runtime provenance가 모두 exact execution identity를 포함한다. launcher는 source와
 execution snapshot을 두 번 대조하고, old v5 terminal audit 자체가 아니라 current v6 execution terminal을
-재실행 거부 근거로 쓴다. focused identity/registry/harness/driver 회귀는 60 passed, 1 skipped와 Ruff clean이다.
+재실행 거부 근거로 쓴다. 적대 리뷰에서 발견한 inherited global-lock fallback과 public-copy parity도 함께
+보정했다. focused identity/registry/harness/driver 회귀는 63 passed, 1 skipped와 Ruff clean이다.
 
 ## 2026-08-29 — 일반 runtime execution identity와 trusted rebind 기반
 
