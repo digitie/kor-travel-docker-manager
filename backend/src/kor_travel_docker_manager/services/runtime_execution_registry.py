@@ -359,13 +359,45 @@ def _insecure_mode_allowed() -> bool:
     )
 
 
+def _expected_registry_owner() -> int | None:
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid() if geteuid is not None else None
+
+
+def _assert_registry_parent(path: Path) -> None:
+    try:
+        metadata = path.parent.lstat()
+    except OSError as exc:
+        raise RuntimeExecutionRegistryError("runtime execution registry directory is unsafe") from exc
+    expected_owner = _expected_registry_owner()
+    if (
+        path.parent.is_symlink()
+        or not stat.S_ISDIR(metadata.st_mode)
+        or (expected_owner is not None and metadata.st_uid != expected_owner)
+        or (stat.S_IMODE(metadata.st_mode) & 0o022 and not _insecure_mode_allowed())
+    ):
+        raise RuntimeExecutionRegistryError("runtime execution registry directory is unsafe")
+
+
+def _assert_registry_file(path: Path) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise RuntimeExecutionRegistryError("runtime execution registry file is unsafe") from exc
+    expected_owner = _expected_registry_owner()
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(metadata.st_mode)
+        or (expected_owner is not None and metadata.st_uid != expected_owner)
+        or (stat.S_IMODE(metadata.st_mode) & 0o022 and not _insecure_mode_allowed())
+    ):
+        raise RuntimeExecutionRegistryError("runtime execution registry file is unsafe")
+
+
 def _read(path: Path) -> dict[str, Any]:
     try:
-        file_stat = path.lstat()
-        if not stat.S_ISREG(file_stat.st_mode) or (
-            stat.S_IMODE(file_stat.st_mode) & 0o022 and not _insecure_mode_allowed()
-        ):
-            raise RuntimeExecutionRegistryError("runtime execution registry file is unsafe")
+        _assert_registry_parent(path)
+        _assert_registry_file(path)
         raw = path.read_bytes()
         value = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -381,6 +413,7 @@ def load_runtime_execution_registry(*, path: Path | None = None) -> RuntimeExecu
 
 def _write(path: Path, payload: Mapping[str, object], *, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_registry_parent(path)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:

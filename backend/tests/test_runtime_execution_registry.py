@@ -57,6 +57,23 @@ def test_migration_creates_manager_aware_execution_without_changing_source_pinse
     assert loaded.current.execution_identity_sha256 != pins.pinset_sha256
 
 
+def test_registry_writer_refuses_a_symlinked_state_directory(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(target, target_is_directory=True)
+    registry = migrate_execution_registry(
+        pins=_pins(), manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
+    )
+
+    with pytest.raises(RuntimeExecutionRegistryError, match="directory is unsafe"):
+        write_runtime_execution_registry(
+            registry,
+            path=linked / "private.json",
+            public_path=tmp_path / "public.json",
+        )
+
+
 def test_terminal_execution_can_rebind_only_for_new_manager_revision() -> None:
     pins = _pins()
     registry = migrate_execution_registry(
