@@ -1469,15 +1469,21 @@ def preflight(expected_revision: str) -> int:
 def _pinvi_manager_admission_environment(
     *,
     env_file: Path,
+    bootstrap_credential_file: Path,
     project: str,
     pinvi_source_revision: str,
     execution_identity_sha256: str,
     admission_path: Path,
 ) -> dict[str, str]:
-    """Manager가 검증한 admission tuple만 PinVi direct gate에 전달한다."""
+    """Manager가 검증한 admission tuple과 one-shot credential 경로만 전달한다."""
 
     return {
         "PINVI_ENV_FILE": str(env_file),
+        # ``docker-app.sh``는 Compose에는 ``PINVI_ENV_FILE``를 넘기지만, migration
+        # 전 host-side bootstrap validator는 현재 process 환경에서 이 path를 읽는다.
+        # credential 내용은 env에 넣지 않고, owner-only absolute host file path만
+        # direct command boundary로 전달한다.
+        "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE": str(bootstrap_credential_file),
         "PINVI_DOCKER_PROJECT": project,
         "PINVI_SOURCE_REVISION": pinvi_source_revision,
         "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission_path),
@@ -2120,6 +2126,7 @@ def main(expected_revision: str, output: Path) -> int:
         pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ())
         environment = _pinvi_manager_admission_environment(
             env_file=pinvi_env,
+            bootstrap_credential_file=bootstrap,
             project=plan.pinvi_project,
             pinvi_source_revision=pair.pinvi_source_revision,
             execution_identity_sha256=plan.execution_identity_sha256,
