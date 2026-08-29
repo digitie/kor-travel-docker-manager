@@ -393,14 +393,14 @@ def test_pinvi_receipt_non_applied_status_is_terminal(
         )
 
 
-def test_terminal_registry_gate_precedes_the_m05_ledger_claim() -> None:
-    """다른 Manager revision도 terminal pinset을 재실행할 수 없어야 한다."""
+def test_execution_registry_gate_precedes_the_m05_ledger_claim() -> None:
+    """현재 exact execution은 ledger claim 전에 terminal로 거절한다."""
 
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
 
-    gate = source.index("_assert_current_m05_pinset_is_runnable()")
+    gate = source.index("_assert_current_m05_execution_is_runnable(expected_revision)")
     ledger_directory = source.index("_LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)")
     ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
 
@@ -408,28 +408,35 @@ def test_terminal_registry_gate_precedes_the_m05_ledger_claim() -> None:
     assert gate < ledger_claim
 
 
-def test_terminal_registry_gate_refuses_the_current_pinset(
+def test_execution_registry_gate_refuses_the_current_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """다른 Manager revision도 unconditional block을 실행권으로 바꾸지 못한다."""
 
     driver = _driver()
 
-    class _TerminalRegistry:
+    class _SourceRegistry:
         pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
         map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
         pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
 
-        def is_unconditionally_blocked_pinset(self, _pinset_sha256: str) -> bool:
+    class _TerminalExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
             return True
 
-    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _TerminalRegistry())
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
 
-    with pytest.raises(driver._PhaseError, match="terminal_pinset_blocked"):
-        driver._assert_current_m05_pinset_is_runnable()
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(
+        driver, "load_runtime_execution_registry", lambda: _TerminalExecutionRegistry()
+    )
+
+    with pytest.raises(driver._PhaseError, match="terminal_execution_blocked"):
+        driver._assert_current_m05_execution_is_runnable("a" * 40)
 
 
-def test_terminal_result_blocks_the_exact_current_pinset(
+def test_terminal_result_blocks_the_exact_current_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """terminal output은 phase-scoped entry가 아닌 unconditional registry block을 남긴다."""
@@ -437,21 +444,32 @@ def test_terminal_result_blocks_the_exact_current_pinset(
     driver = _driver()
     seen: dict[str, object] = {}
 
+    class _SourceRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+    class _ExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
+            return True
+
     class _BlockedRegistry:
-        def is_unconditionally_blocked_pinset(self, pinset_sha256: str) -> bool:
-            return pinset_sha256 == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
 
     def block(**kwargs: object) -> _BlockedRegistry:
         seen.update(kwargs)
         return _BlockedRegistry()
 
-    monkeypatch.setattr(driver, "block_runtime_pinset", block)
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
+    monkeypatch.setattr(driver, "block_current_execution", block)
+    monkeypatch.setattr(driver, "write_runtime_execution_registry", lambda _registry: None)
 
-    assert driver._block_terminal_m05_pinset("map_health_transport_failed") is True
-    assert seen["pinset_sha256"] == driver.PINNED_RUNTIME_RELEASE.pinset_sha256
-    assert seen["map_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
-    assert seen["pinvi_revision"] == driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
-    assert "phase" not in seen
+    assert driver._block_terminal_m05_execution(
+        "map_health_transport_failed", expected_manager_revision="a" * 40
+    ) is True
+    assert isinstance(seen["registry"], _ExecutionRegistry)
     assert seen["reason"] == "M05 isolated one-shot terminal: map_health_transport_failed"
 
 
@@ -466,7 +484,7 @@ def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
         "_validate_trusted_release",
         lambda _expected: (_ for _ in ()).throw(RuntimeError("discarded")),
     )
-    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda _phase: True)
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_args, **_kwargs: True)
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
@@ -513,7 +531,7 @@ def test_unexpected_cleanup_keeps_the_fixed_cleanup_phase(
         "_cleanup_temporary_resources",
         lambda **_kwargs: (False, True),
     )
-    monkeypatch.setattr(driver, "_block_terminal_m05_pinset", lambda _phase: True)
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_args, **_kwargs: True)
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
@@ -535,16 +553,16 @@ def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
     )
     monkeypatch.setattr(
         driver,
-        "_block_terminal_m05_pinset",
-        lambda _phase: (_ for _ in ()).throw(OSError("discarded")),
+        "_block_terminal_m05_execution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("discarded")),
     )
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
     assert receipt["status"] == "blocked"
-    assert receipt["phase"] == "runtime_pin_block_failed"
-    assert receipt["driver_phase"] == "runtime_pin_block_failed"
+    assert receipt["phase"] == "runtime_execution_block_failed"
+    assert receipt["driver_phase"] == "runtime_execution_block_failed"
     assert "discarded" not in json.dumps(receipt, sort_keys=True)
 
 
@@ -568,13 +586,11 @@ def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_
     )
 
     assert "launcher_safe_result_unavailable" in launcher
-    assert '"$ktdctl" pin block "$initial_pinset"' in launcher
-    assert "--map-revision \"$initial_map_revision\"" in launcher
-    assert "--pinvi-revision \"$initial_pinvi_revision\"" in launcher
+    assert '"$ktdctl" pin block-execution' in launcher
     assert "launcher-result.json" in launcher
     assert ">/dev/null 2>&1" in launcher[launcher.index("m05_isolated_e2e.py") :]
     assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
-    block_start = launcher.index("has_unconditional_terminal_block() {")
+    block_start = launcher.index("has_unconditional_terminal_execution_block() {")
     block_end = launcher.index('install -d -o root -g root -m 0700 "$output_dir"')
     block_check = launcher[block_start:block_end]
     assert "/usr/bin/python3 -I -S -c" in block_check
@@ -593,6 +609,7 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert "post_snapshot" in launcher
     assert '"$post_snapshot" == "$initial_snapshot"' in launcher
     assert 'value.get("pinset_sha256") != expected_pinset' in launcher
+    assert 'value.get("execution_identity_sha256") != expected_execution' in launcher
     assert 'value.get("status") not in {"passed", "blocked"}' in launcher
     assert 'raise SystemExit(0 if value["status"] == "passed" else 3)' in launcher
     assert "if set(value) != expected_keys:" in launcher
@@ -632,8 +649,8 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     launcher_phases = frozenset_literal(launcher[launcher_start:launcher_end], "PHASES")
 
     assert launcher_phases == driver_phases | {"completed"}
-    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_block; then'
-    fallback = 'if ! has_unconditional_terminal_block; then'
+    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_execution_block; then'
+    fallback = 'if ! has_unconditional_terminal_execution_block; then'
     assert accepted_block in launcher
     assert fallback in launcher
     assert launcher.index(accepted_block) < launcher.index(fallback)
@@ -876,6 +893,7 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
         env_file=Path("/private/runtime/pinvi.env"),
         project="m05i-pinvi-" + "e" * 32,
         pinvi_source_revision="d" * 40,
+        execution_identity_sha256="c" * 64,
         admission_path=admission,
     )
 
@@ -885,6 +903,7 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
         "PINVI_SOURCE_REVISION": "d" * 40,
         "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission),
         "PINVI_M05_PINSET_SHA256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+        "PINVI_M05_EXECUTION_IDENTITY_SHA256": "c" * 64,
     }
     assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in environment
 
@@ -896,6 +915,8 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
 
     assert admission_write < pinvi_up
     assert "_pinvi_manager_admission_environment(" in source
+    assert '"--isolated-execution-identity-sha256"' in source
+    assert "plan.execution_identity_sha256" in source
     assert "PINVI_M05_ISOLATED_MANAGER_HARNESS" not in source
 
 

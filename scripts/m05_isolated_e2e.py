@@ -52,9 +52,15 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
 )
+from kor_travel_docker_manager.services.runtime_execution_registry import (
+    RuntimeExecutionRegistry,
+    RuntimeExecutionRegistryError,
+    block_current_execution,
+    load_runtime_execution_registry,
+    write_runtime_execution_registry,
+)
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     RuntimePinRegistryError,
-    block_runtime_pinset,
     load_runtime_pin_registry,
 )
 
@@ -164,7 +170,9 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "runtime_http_url_invalid",
         "runtime_image_identity_invalid",
         "runtime_inspect_invalid",
-        "runtime_pin_block_failed",
+        "runtime_execution_block_failed",
+        "runtime_execution_registry_changed",
+        "runtime_execution_registry_invalid",
         "runtime_pin_registry_changed",
         "runtime_pin_registry_invalid",
         "runtime_setup",
@@ -179,7 +187,7 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "runtime_setup_workspace",
         "secret_cleanup_identity_invalid",
         "source_materialization",
-        "terminal_pinset_blocked",
+        "terminal_execution_blocked",
         "trusted_release_invalid",
         "trusted_release_revision_mismatch",
     }
@@ -197,8 +205,10 @@ def _fail(phase: str, *, diagnostic: str | None = None) -> NoReturn:
     raise _PhaseError(phase, diagnostic=diagnostic)
 
 
-def _assert_current_m05_pinset_is_runnable() -> None:
-    """terminal registry를 ledger·Docker mutation보다 먼저 fail-close로 확인한다."""
+def _assert_current_m05_execution_is_runnable(
+    expected_manager_revision: str,
+) -> RuntimeExecutionRegistry:
+    """현재 source pair와 trusted Manager 실행 결박을 mutation 전에 확인한다."""
 
     try:
         registry = load_runtime_pin_registry()
@@ -210,8 +220,17 @@ def _assert_current_m05_pinset_is_runnable() -> None:
         or registry.pinvi_revision != PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
     ):
         _fail("runtime_pin_registry_changed")
-    if registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256):
-        _fail("terminal_pinset_blocked")
+    try:
+        execution = load_runtime_execution_registry()
+    except RuntimeExecutionRegistryError:
+        _fail("runtime_execution_registry_invalid")
+    if not execution.current_matches(
+        pins=registry, manager_source_revision=expected_manager_revision
+    ):
+        _fail("runtime_execution_registry_changed")
+    if execution.is_unconditionally_blocked_current():
+        _fail("terminal_execution_blocked")
+    return execution
 
 
 def _terminal_registry_reason(phase: str) -> str:
@@ -226,19 +245,23 @@ def _public_terminal_phase(phase: str) -> str:
     return phase if phase in _PUBLIC_TERMINAL_PHASES else "driver_contract_failed"
 
 
-def _block_terminal_m05_pinset(phase: str) -> bool:
-    """terminal result를 root registry의 unconditional block과 결박한다."""
+def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str) -> bool:
+    """terminal result를 현재 v6 execution의 unconditional block과 결박한다."""
 
     try:
-        registry = block_runtime_pinset(
-            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-            map_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
-            pinvi_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
-            reason=_terminal_registry_reason(phase),
+        pins = load_runtime_pin_registry()
+        registry = load_runtime_execution_registry()
+        if not registry.current_matches(
+            pins=pins, manager_source_revision=expected_manager_revision
+        ):
+            return False
+        updated = block_current_execution(
+            registry=registry, reason=_terminal_registry_reason(phase)
         )
-    except RuntimePinRegistryError:
+        write_runtime_execution_registry(updated)
+    except (RuntimePinRegistryError, RuntimeExecutionRegistryError):
         return False
-    return registry.is_unconditionally_blocked_pinset(PINNED_RUNTIME_RELEASE.pinset_sha256)
+    return updated.is_unconditionally_blocked_current()
 
 
 def _root_file(path: Path, *, mode: int = 0o600) -> os.stat_result:
@@ -1186,6 +1209,7 @@ def _pinvi_manager_admission_environment(
     env_file: Path,
     project: str,
     pinvi_source_revision: str,
+    execution_identity_sha256: str,
     admission_path: Path,
 ) -> dict[str, str]:
     """Manager가 검증한 admission tuple만 PinVi direct gate에 전달한다."""
@@ -1196,6 +1220,7 @@ def _pinvi_manager_admission_environment(
         "PINVI_SOURCE_REVISION": pinvi_source_revision,
         "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH": str(admission_path),
         "PINVI_M05_PINSET_SHA256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+        "PINVI_M05_EXECUTION_IDENTITY_SHA256": execution_identity_sha256,
     }
 
 
@@ -1335,13 +1360,16 @@ def main(expected_revision: str, output: Path) -> int:
     try:
         os.umask(0o077)
         _validate_trusted_release(expected_revision)
-        _assert_current_m05_pinset_is_runnable()
+        execution = _assert_current_m05_execution_is_runnable(expected_revision)
         _root_directory(output)
         _LEDGER.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(_LEDGER, 0o700)
         _root_directory(_LEDGER)
         plan = M05IsolatedHarnessPlan(
-            PINNED_RUNTIME_RELEASE, expected_revision, transaction
+            PINNED_RUNTIME_RELEASE,
+            expected_revision,
+            execution.current.execution_identity_sha256,
+            transaction,
         )
         phase = "source_materialization"
         ambient = dict(os.environ)
@@ -1568,6 +1596,7 @@ def main(expected_revision: str, output: Path) -> int:
                     f"PINVI_SOURCE_REVISION={pair.pinvi_source_revision}",
                     f"PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH={pinvi_admission}",
                     f"PINVI_M05_PINSET_SHA256={PINNED_RUNTIME_RELEASE.pinset_sha256}",
+                    f"PINVI_M05_EXECUTION_IDENTITY_SHA256={plan.execution_identity_sha256}",
                     f"PINVI_API_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_APP_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_DOCKER_PROJECT={plan.pinvi_project}",
@@ -1686,6 +1715,7 @@ def main(expected_revision: str, output: Path) -> int:
             env_file=pinvi_env,
             project=plan.pinvi_project,
             pinvi_source_revision=pair.pinvi_source_revision,
+            execution_identity_sha256=plan.execution_identity_sha256,
             admission_path=pinvi_admission,
         )
         _command(
@@ -1918,6 +1948,8 @@ def main(expected_revision: str, output: Path) -> int:
             expected_revision,
             "--isolated-pinset-sha256",
             PINNED_RUNTIME_RELEASE.pinset_sha256,
+            "--isolated-execution-identity-sha256",
+            plan.execution_identity_sha256,
             "--playwright-runner-image",
             "mcr.microsoft.com/playwright@sha256:9bd26ad900bb5e0f4dee75839e957a89ae89c2b7ab1e76050e559790e946b948",
             "--require-root-owned",
@@ -1982,11 +2014,13 @@ def main(expected_revision: str, output: Path) -> int:
             phase = "runtime_cleanup_failed"
         if not completed:
             try:
-                pinset_blocked = _block_terminal_m05_pinset(phase)
+                pinset_blocked = _block_terminal_m05_execution(
+                    phase, expected_manager_revision=expected_revision
+                )
             except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
                 pinset_blocked = False
             if not pinset_blocked:
-                phase = "runtime_pin_block_failed"
+                phase = "runtime_execution_block_failed"
         driver_phase = phase
         for name in _RAW_ENV_NAMES:
             os.environ.pop(name, None)
@@ -1997,6 +2031,9 @@ def main(expected_revision: str, output: Path) -> int:
             "driver_phase": driver_phase,
             "cleanup_failed": cleanup_failed,
             "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
+            "execution_identity_sha256": (
+                plan.execution_identity_sha256 if plan is not None else None
+            ),
             "status": "passed" if completed else "blocked",
             "transaction_id": transaction,
             **result_hashes,

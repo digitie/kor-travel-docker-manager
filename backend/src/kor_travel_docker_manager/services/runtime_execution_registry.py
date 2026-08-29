@@ -295,7 +295,15 @@ def _read_trusted_text(path: Path, *, expected_uid: int) -> str:
         after = os.fstat(descriptor)
         if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
             raise RuntimeExecutionRegistryError("trusted Manager provenance changed while reading")
-        raw = os.read(descriptor, 1_000_001)
+        chunks: list[bytes] = []
+        remaining = 1_000_001
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
     finally:
         os.close(descriptor)
     if len(raw) > 1_000_000:

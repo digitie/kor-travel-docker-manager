@@ -133,7 +133,11 @@ def test_cli_exposes_generic_execution_migration_and_rebind_commands() -> None:
         ]
     )
     shown = parser.parse_args(["pin", "show-execution", "--json"])
+    blocked = parser.parse_args(
+        ["pin", "block-execution", "--reason", "safe receipt unavailable", "--confirm"]
+    )
 
     assert migrated.pin_action == "migrate-execution-v6"
     assert rebound.expected_manager_revision == _MANAGER_B
     assert shown.pin_action == "show-execution"
+    assert blocked.pin_action == "block-execution"

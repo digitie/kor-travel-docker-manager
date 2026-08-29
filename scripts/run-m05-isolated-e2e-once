@@ -91,8 +91,9 @@ if (( 8#$(stat -c '%a' "$parent") & 022 )); then
   exit 2
 fi
 
-# terminal pinset은 Manager source revision이 바뀌어도 다시 실행하지 않는다. output leaf
-# 생성보다 먼저 root registry와 공개 사본을 함께 검증해 blocked/stale 상태를 fail-close한다.
+# source pinset과 Manager release를 별도 v6 execution으로 결박한다. output leaf 생성보다
+# 먼저 root registry와 public copy를 함께 검증한다. 과거 v5 terminal은 audit이며, 현재
+# exact execution terminal만 재실행을 막는다.
 ktdctl="/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl"
 snapshot_runtime_pin() {
   "$ktdctl" pin show --json | /usr/bin/python3 -I -S -c '
@@ -120,7 +121,7 @@ print(pinset, map_revision, pinvi_revision)
 '
 }
 if ! "$ktdctl" pin verify --json >/dev/null 2>&1; then
-  echo "M05 runtime pin registry is not runnable" >&2
+  echo "M05 runtime execution registry is not runnable" >&2
   exit 1
 fi
 initial_snapshot="$(snapshot_runtime_pin)" || {
@@ -130,41 +131,76 @@ initial_snapshot="$(snapshot_runtime_pin)" || {
 # rotate-pair does not share this launcher's lifetime lock. A second verified
 # snapshot establishes the exact candidate owned by this one-shot; acceptance
 # below requires it to remain unchanged through driver completion.
+snapshot_runtime_execution() {
+  "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
+from __future__ import annotations
+
+import json
+import sys
+
+value = json.load(sys.stdin)
+current = value.get("current") if isinstance(value, dict) else None
+if not isinstance(current, dict):
+    raise SystemExit(1)
+execution = current.get("execution_identity_sha256")
+pinset = current.get("source_pinset_sha256")
+revision = current.get("manager_source_revision")
+for expected_length, item in ((64, execution), (64, pinset), (40, revision)):
+    if not isinstance(item, str) or len(item) != expected_length or any(
+        char not in "0123456789abcdef" for char in item
+    ):
+        raise SystemExit(1)
+print(execution, pinset, revision)
+'
+}
+initial_execution_snapshot="$(snapshot_runtime_execution)" || {
+  echo "M05 runtime execution snapshot is invalid" >&2
+  exit 1
+}
 if ! "$ktdctl" pin verify --json >/dev/null 2>&1; then
-  echo "M05 runtime pin registry is not runnable" >&2
+  echo "M05 runtime execution registry is not runnable" >&2
   exit 1
 fi
 stable_snapshot="$(snapshot_runtime_pin)" || {
   echo "M05 runtime pin snapshot is invalid" >&2
   exit 1
 }
-if [[ "$initial_snapshot" != "$stable_snapshot" ]]; then
+stable_execution_snapshot="$(snapshot_runtime_execution)" || {
+  echo "M05 runtime execution snapshot is invalid" >&2
+  exit 1
+}
+if [[ "$initial_snapshot" != "$stable_snapshot" || "$initial_execution_snapshot" != "$stable_execution_snapshot" ]]; then
   echo "M05 runtime pin registry changed before launch" >&2
   exit 1
 fi
 read -r initial_pinset initial_map_revision initial_pinvi_revision <<<"$initial_snapshot"
-has_unconditional_terminal_block() {
-  "$ktdctl" pin show --json | /usr/bin/python3 -I -S -c '
+read -r initial_execution initial_execution_pinset initial_execution_revision <<<"$initial_execution_snapshot"
+if [[ "$initial_execution_pinset" != "$initial_pinset" || "$initial_execution_revision" != "$expected_revision" ]]; then
+  echo "M05 runtime execution snapshot differs from launch candidate" >&2
+  exit 1
+fi
+has_unconditional_terminal_execution_block() {
+  "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
 
 import json
 import sys
 
-pinset, map_revision, pinvi_revision = sys.argv[1:]
+execution, pinset, revision = sys.argv[1:]
 value = json.load(sys.stdin)
-entries = value.get("blocked_pinsets") if isinstance(value, dict) else None
+entries = value.get("blocked_executions") if isinstance(value, dict) else None
 if not isinstance(entries, list):
     raise SystemExit(1)
 if not any(
     isinstance(entry, dict)
-    and entry.get("pinset_sha256") == pinset
-    and entry.get("map_revision") == map_revision
-    and entry.get("pinvi_revision") == pinvi_revision
+    and entry.get("execution_identity_sha256") == execution
+    and entry.get("source_pinset_sha256") == pinset
+    and entry.get("manager_source_revision") == revision
     and entry.get("phase") is None
     for entry in entries
 ):
     raise SystemExit(1)
-' "$initial_pinset" "$initial_map_revision" "$initial_pinvi_revision"
+' "$initial_execution" "$initial_pinset" "$expected_revision"
 }
 install -d -o root -g root -m 0700 "$output_dir"
 
@@ -181,10 +217,11 @@ set -e
 result_path="$output_dir/result.json"
 launcher_result_path="$output_dir/launcher-result.json"
 post_snapshot="$(snapshot_runtime_pin 2>/dev/null || true)"
+post_execution_snapshot="$(snapshot_runtime_execution 2>/dev/null || true)"
 receipt_validation_status=1
-if [[ ! -e "$launcher_result_path" && "$post_snapshot" == "$initial_snapshot" ]]; then
+if [[ ! -e "$launcher_result_path" && "$post_snapshot" == "$initial_snapshot" && "$post_execution_snapshot" == "$initial_execution_snapshot" ]]; then
   set +e
-  /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$initial_pinset" "$driver_status" <<'PY'
+  /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$initial_pinset" "$initial_execution" "$driver_status" <<'PY'
 from __future__ import annotations
 
 import json
@@ -195,7 +232,8 @@ import sys
 path = pathlib.Path(sys.argv[1])
 expected_revision = sys.argv[2]
 expected_pinset = sys.argv[3]
-driver_status = int(sys.argv[4])
+expected_execution = sys.argv[4]
+driver_status = int(sys.argv[5])
 PHASES = frozenset(
     {
         "admission", "source_materialization", "ledger_claim", "runtime_setup",
@@ -203,7 +241,7 @@ PHASES = frozenset(
         "map_application_start_failed", "map_health_status_failed",
         "map_health_transport_failed", "map_subscription",
         "map_subscription_http_failed", "pinvi_runtime", "m04_m05_e2e",
-        "driver_contract_failed", "runtime_cleanup_failed", "runtime_pin_block_failed",
+        "driver_contract_failed", "runtime_cleanup_failed", "runtime_execution_block_failed",
         "m04_fixture_http_failed", "m04_fixture_invalid",
         "m04_map_approval_http_failed", "m04_map_approval_invalid",
         "m05_case_decision_http_failed", "m05_case_invalid",
@@ -217,12 +255,13 @@ PHASES = frozenset(
         "runtime_http_contract_failed", "runtime_http_failed", "runtime_http_url_invalid",
         "runtime_image_identity_invalid", "runtime_inspect_invalid",
         "runtime_pin_registry_changed", "runtime_pin_registry_invalid",
+        "runtime_execution_registry_changed", "runtime_execution_registry_invalid",
         "runtime_setup_admission", "runtime_setup_admission_build",
         "runtime_setup_admission_write", "runtime_setup_credentials",
         "runtime_setup_map_config", "runtime_setup_network",
         "runtime_setup_pinvi_config", "runtime_setup_ports",
         "runtime_setup_workspace",
-        "secret_cleanup_identity_invalid", "terminal_pinset_blocked",
+        "secret_cleanup_identity_invalid", "terminal_execution_blocked",
         "trusted_release_invalid", "trusted_release_revision_mismatch", "completed",
     }
 )
@@ -255,7 +294,7 @@ try:
         raise ValueError
     expected_keys = {
         "harness", "manager_source_revision", "phase", "driver_phase",
-        "cleanup_failed", "pinset_sha256", "status", "transaction_id",
+        "cleanup_failed", "pinset_sha256", "execution_identity_sha256", "status", "transaction_id",
     }
     if value.get("status") == "passed":
         expected_keys |= {
@@ -270,6 +309,7 @@ try:
         value.get("harness") != "m05-isolated-bridge-v1"
         or value.get("manager_source_revision") != expected_revision
         or value.get("pinset_sha256") != expected_pinset
+        or value.get("execution_identity_sha256") != expected_execution
         or value.get("status") not in {"passed", "blocked"}
         or value.get("phase") not in PHASES
         or value.get("driver_phase") not in PHASES
@@ -306,27 +346,26 @@ fi
 # proves that this exact launch snapshot is terminal. Otherwise fall through to
 # the idempotent root block below; no driver-originated output becomes reuse
 # evidence.
-if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_block; then
+if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_execution_block; then
   exit "$driver_status"
 fi
 
-# pin block은 driver가 terminal block을 먼저 남긴 경우에도 idempotent다. snapshot과 다른
-# candidate를 차단하지 않으며, phase-scoped 기록은 registry가 unconditional entry로 승격한다.
-"$ktdctl" pin block "$initial_pinset" \
-  --map-revision "$initial_map_revision" --pinvi-revision "$initial_pinvi_revision" \
+# generic execution block은 driver가 terminal block을 먼저 남긴 경우에도 idempotent다.
+# trusted 현재 binding이 snapshot에서 달라지면 CLI가 fail-close한다.
+"$ktdctl" pin block-execution \
   --reason 'M05 isolated launcher safe result unavailable' --confirm >/dev/null 2>&1
 
 # block write가 phase-scoped 기록으로 끝나거나 다른 pair를 block한 경우에는 이
 # candidate를 재실행할 수 있으므로 fail-close한다. stdout에는 registry 원문을 남기지 않는다.
-if ! has_unconditional_terminal_block; then
-  echo "M05 runtime pin terminal block is not durable" >&2
+if ! has_unconditional_terminal_execution_block; then
+  echo "M05 runtime execution terminal block is not durable" >&2
   exit 1
 fi
 
 # launcher-result.json is always the fallback authority. It is created only
 # once, never overwrites a driver result, and carries no raw driver output.
 fallback_path="$launcher_result_path"
-/usr/bin/python3 -I -S - "$fallback_path" "$expected_revision" "$initial_pinset" <<'PY'
+/usr/bin/python3 -I -S - "$fallback_path" "$expected_revision" "$initial_pinset" "$initial_execution" <<'PY'
 from __future__ import annotations
 
 import json
@@ -338,6 +377,7 @@ import sys
 path = pathlib.Path(sys.argv[1])
 revision = sys.argv[2]
 pinset = sys.argv[3]
+execution = sys.argv[4]
 parent = path.parent.lstat()
 if (
     path.is_absolute() is False
@@ -356,6 +396,7 @@ payload = (
             "manager_source_revision": revision,
             "phase": "launcher_safe_result_unavailable",
             "pinset_sha256": pinset,
+            "execution_identity_sha256": execution,
             "status": "blocked",
         },
         ensure_ascii=True,

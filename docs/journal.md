@@ -2,6 +2,20 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — v6 execution registry를 one-shot과 sibling receipt에 연결
+
+일반 runtime execution registry를 actual mutation gate까지 연결했다. `ktdctl pin verify`는
+source registry와 trusted Manager-derived execution binding을 함께 확인하며, migration 시 기존 v5
+unconditional terminal은 같은 Manager revision의 v6 execution에도 그대로 보존한다. 새 execution은
+terminal인 current binding을 trusted Manager release revision이 달라진 경우에만 rebind할 수 있다.
+`block-execution`도 generic root CLI로 제공해 launcher fallback이 임의 pair가 아닌 verified current
+execution만 idempotent하게 차단한다.
+
+M05는 이 generic mechanism의 첫 소비자로만 바뀌었다. one-shot ledger, Docker labels, driver result,
+private PinVi admission, runtime provenance가 모두 exact execution identity를 포함한다. launcher는 source와
+execution snapshot을 두 번 대조하고, old v5 terminal audit 자체가 아니라 current v6 execution terminal을
+재실행 거부 근거로 쓴다. focused identity/registry/harness/driver 회귀는 60 passed, 1 skipped와 Ruff clean이다.
+
 ## 2026-08-29 — 일반 runtime execution identity와 trusted rebind 기반
 
 반복 terminal을 Map/PinVi 문서 SHA 변경으로 우회하지 않도록 v5 source pinset과 별도의

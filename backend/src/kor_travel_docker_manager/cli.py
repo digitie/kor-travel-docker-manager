@@ -32,6 +32,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 )
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_execution_registry import (
+    block_current_execution,
     load_runtime_execution_registry,
     migrate_execution_registry,
     rebind_execution_registry,
@@ -498,16 +499,47 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         generation_public_copy = "invalid"
     report["generation_public_copy"] = generation_public_copy
     report["generation_pinset_binding"] = binding_status
+    execution_binding = "missing"
+    execution_terminal = True
+    try:
+        execution_registry = load_runtime_execution_registry()
+        execution_binding = (
+            "current"
+            if execution_registry.current_matches(
+                pins=load_runtime_pin_registry(),
+                manager_source_revision=trusted_manager_source_revision(),
+            )
+            else "stale"
+        )
+        execution_terminal = execution_registry.is_unconditionally_blocked_current()
+    except DeploymentContractError:
+        execution_binding = "invalid"
+    report["execution_binding"] = execution_binding
+    report["current_execution_is_blocked"] = execution_terminal
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         for key, value in report.items():
             print(f"{key:24s} {value}")
     exit_code = 0
-    if report.get("current_pinset_is_blocked"):
+    if report.get("current_pinset_is_blocked") and execution_binding != "current":
         print(
             "현재 고정된 pinset은 재시도 금지 상태입니다 — rebuild-pinned가 거부됩니다. "
             "'ktdctl pin rotate-pair'로 새 Map/PinVi pair를 고정하세요.",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    if execution_binding != "current":
+        print(
+            "runtime execution binding is missing, invalid, or stale; root must migrate or "
+            "rebind it before a runtime mutation",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    elif execution_terminal:
+        print(
+            "현재 Manager-aware execution은 재시도 금지 상태입니다 — 새 trusted Manager "
+            "release 뒤 'ktdctl pin rebind-execution'으로만 새 실행을 결박하세요.",
             file=sys.stderr,
         )
         exit_code = 1
@@ -564,12 +596,18 @@ def _cmd_pin_migrate_execution(args: argparse.Namespace) -> int:
             else:
                 print("runtime execution registry already exists; migration is refused", file=sys.stderr)
                 return 2
+            pins = load_runtime_pin_registry()
             registry = migrate_execution_registry(
-                pins=load_runtime_pin_registry(),
+                pins=pins,
                 manager_source_revision=trusted_manager_source_revision(),
                 bound_by=_pin_actor(),
                 reason=args.reason,
             )
+            if pins.is_unconditionally_blocked_pinset(pins.pinset_sha256):
+                registry = block_current_execution(
+                    registry=registry,
+                    reason="legacy source pinset was terminal before execution migration",
+                )
             write_runtime_execution_registry(registry)
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
@@ -616,6 +654,34 @@ def _cmd_pin_show_execution(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     _print_execution_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_block_execution(args: argparse.Namespace) -> int:
+    """현재 verified execution만 idempotent하게 terminal 처리한다."""
+
+    if not args.confirm:
+        print("pin block-execution requires --confirm", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print("pin block-execution requires root", file=sys.stderr)
+        return 2
+    try:
+        with _runtime_pin_mutation_lock():
+            pins = load_runtime_pin_registry()
+            registry = load_runtime_execution_registry()
+            trusted_revision = trusted_manager_source_revision()
+            if not registry.current_matches(
+                pins=pins, manager_source_revision=trusted_revision
+            ):
+                print("current runtime execution binding is stale", file=sys.stderr)
+                return 2
+            updated = block_current_execution(registry=registry, reason=args.reason)
+            write_runtime_execution_registry(updated)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(updated, json_output=args.json)
     return 0
 
 
@@ -1379,6 +1445,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pin_show_execution.add_argument("--json", action="store_true")
     pin_show_execution.set_defaults(func=_cmd_pin_show_execution)
+
+    pin_block_execution = pin_subparsers.add_parser(
+        "block-execution", help="현재 trusted runtime execution을 terminal 처리합니다."
+    )
+    pin_block_execution.add_argument("--reason", required=True)
+    pin_block_execution.add_argument("--confirm", action="store_true")
+    pin_block_execution.add_argument("--json", action="store_true")
+    pin_block_execution.set_defaults(func=_cmd_pin_block_execution)
 
     pin_publish_generation = pin_subparsers.add_parser(
         "publish-generation",

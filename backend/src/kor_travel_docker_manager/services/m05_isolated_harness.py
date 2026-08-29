@@ -21,6 +21,7 @@ from typing import Any, Final, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.pinned_runtime_release import PinnedRuntimeRelease
+from kor_travel_docker_manager.services.runtime_execution_identity import ExecutionIdentityV6
 
 M05IsolatedRuntimeRole = Literal["map", "pinvi"]
 M05_ISOLATED_HARNESS_KIND: Final = "m05-isolated-bridge-v1"
@@ -53,6 +54,7 @@ class M05IsolatedHarnessPlan:
 
     release: PinnedRuntimeRelease
     manager_source_revision: str
+    execution_identity_sha256: str
     transaction_id: str
 
     def __post_init__(self) -> None:
@@ -60,6 +62,12 @@ class M05IsolatedHarnessPlan:
             raise DeploymentContractError("M05 isolated harness release is invalid")
         if _REVISION.fullmatch(self.manager_source_revision) is None:
             raise DeploymentContractError("M05 isolated harness Manager revision is invalid")
+        expected_identity = ExecutionIdentityV6.build(
+            source_pinset_sha256=self.release.pinset_sha256,
+            manager_source_revision=self.manager_source_revision,
+        ).execution_identity_sha256
+        if self.execution_identity_sha256 != expected_identity:
+            raise DeploymentContractError("M05 isolated harness execution identity is invalid")
         if _TRANSACTION.fullmatch(self.transaction_id) is None:
             raise DeploymentContractError("M05 isolated harness transaction is invalid")
 
@@ -85,6 +93,7 @@ class M05IsolatedHarnessPlan:
             {
                 "io.kortravelmap.m05.harness": M05_ISOLATED_HARNESS_KIND,
                 "io.kortravelmap.m05.manager-revision": self.manager_source_revision,
+                "io.kortravelmap.m05.execution": self.execution_identity_sha256,
                 "io.kortravelmap.m05.pinset": self.release.pinset_sha256,
                 "io.kortravelmap.m05.transaction": self.transaction_id,
             }
@@ -101,6 +110,7 @@ class M05IsolatedHarnessPlan:
         payload = {
             "harness": M05_ISOLATED_HARNESS_KIND,
             "manager_source_revision": self.manager_source_revision,
+            "execution_identity_sha256": self.execution_identity_sha256,
             "pinset_sha256": self.release.pinset_sha256,
             "version": M05_ISOLATED_HARNESS_VERSION,
         }
@@ -278,6 +288,7 @@ def build_m05_isolated_manager_admission(
         {
             "kind": M05_ISOLATED_MANAGER_ADMISSION_KIND,
             "manager_source_revision": plan.manager_source_revision,
+            "execution_identity_sha256": plan.execution_identity_sha256,
             "map_source_revision": pair.map_source_revision,
             "pinset_sha256": plan.release.pinset_sha256,
             "pinvi_source_revision": pair.pinvi_source_revision,
@@ -440,6 +451,7 @@ def build_m05_isolated_runtime_provenance(
         raise DeploymentContractError("M05 isolated runtime API image differs from topology")
     return {
         "kind": "m05-isolated-runtime-provenance-v1",
+        "execution_identity_sha256": expectation.plan.execution_identity_sha256,
         "manager_source_revision": expectation.plan.manager_source_revision,
         "map": {
             "admin_image_id": image_ids["map-admin"],
