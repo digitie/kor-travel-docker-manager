@@ -59,7 +59,9 @@ def _expectation() -> M05IsolatedRuntimeExpectation:
         ),
         services={
             "map-api": M05IsolatedServiceExpectation("map", 8000, 30101, "sha256:" + "2" * 64),
-            "pinvi-api": M05IsolatedServiceExpectation("pinvi", 8000, 30102, "sha256:" + "3" * 64),
+            "pinvi-api": M05IsolatedServiceExpectation(
+                "pinvi", 8000, 30102, "sha256:" + "3" * 64, ("map",)
+            ),
         },
     )
 
@@ -86,7 +88,15 @@ def _inspect(
         "Id": "c" * 64,
         "Image": service_expectation.image_id,
         "NetworkSettings": {
-            "Networks": {network.name: {"NetworkID": network.network_id}},
+            "Networks": {
+                expectation.network_for(role).name: {
+                    "NetworkID": expectation.network_for(role).network_id
+                }
+                for role in (
+                    service_expectation.role,
+                    *service_expectation.additional_network_roles,
+                )
+            },
             "Ports": {
                 f"{service_expectation.container_port}/tcp": [
                     {"HostIp": "127.0.0.1", "HostPort": str(service_expectation.host_port)}
@@ -234,6 +244,49 @@ def test_runtime_rejects_a_second_or_wrong_network() -> None:
                 "map-api": item,
                 "pinvi-api": _inspect(expectation, service="pinvi-api"),
             },
+            image_inspects=_image_inspects(expectation),
+            network_inspects=_network_inspects(expectation),
+        )
+
+
+def test_pinvi_api_accepts_only_the_planned_map_bridge_attachment() -> None:
+    expectation = _expectation()
+    containers = {
+        "map-api": _inspect(expectation, service="map-api"),
+        "pinvi-api": _inspect(expectation, service="pinvi-api"),
+    }
+
+    assert_m05_isolated_runtime(
+        expectation=expectation,
+        containers=containers,
+        image_inspects=_image_inspects(expectation),
+        network_inspects=_network_inspects(expectation),
+    )
+
+    pinvi_networks = containers["pinvi-api"]["NetworkSettings"]["Networks"]  # type: ignore[index]
+    del pinvi_networks[expectation.plan.map_network]  # type: ignore[index]
+    with pytest.raises(DeploymentContractError, match="network differs"):
+        assert_m05_isolated_runtime(
+            expectation=expectation,
+            containers=containers,
+            image_inspects=_image_inspects(expectation),
+            network_inspects=_network_inspects(expectation),
+        )
+
+
+def test_pinvi_api_rejects_an_unplanned_third_network_attachment() -> None:
+    expectation = _expectation()
+    containers = {
+        "map-api": _inspect(expectation, service="map-api"),
+        "pinvi-api": _inspect(expectation, service="pinvi-api"),
+    }
+    pinvi_networks = containers["pinvi-api"]["NetworkSettings"]["Networks"]  # type: ignore[index]
+    pinvi_networks["unplanned-network"] = {"NetworkID": "a" * 64}  # type: ignore[index]
+
+    with pytest.raises(DeploymentContractError, match="network differs"):
+        assert_m05_isolated_runtime(
+            expectation=expectation,
+            containers=containers,
             image_inspects=_image_inspects(expectation),
             network_inspects=_network_inspects(expectation),
         )

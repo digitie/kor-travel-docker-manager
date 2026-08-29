@@ -1330,6 +1330,28 @@ def test_isolated_map_network_allowlists_the_bridge_gateway_for_host_publish(
     assert '"{map_gateway_ip}/32"' in source
 
 
+def test_isolated_pinvi_api_uses_the_private_map_network_not_host_loopback() -> None:
+    """PinVi worker의 Map service request는 loopback-only publish를 우회하지 않는다."""
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    pinvi_env_start = source.index("_write_private_text(\n            pinvi_env,")
+    pinvi_env_end = source.index("        pinvi_override_lines =", pinvi_env_start)
+    pinvi_env = source[pinvi_env_start:pinvi_env_end]
+    override_start = source.index("        pinvi_override_lines =", pinvi_env_end)
+    override_end = source.index("        _write_private_text(pinvi_override", override_start)
+    override = source[override_start:override_end]
+
+    assert 'PINVI_KOR_TRAVEL_MAP_API_BASE_URL=http://{map_api_ip}:13701' in pinvi_env
+    assert 'PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL=http://{map_api_ip}:13701' in pinvi_env
+    assert "host.docker.internal:{ports['map_api']}" not in pinvi_env
+    assert '"      default: {}"' in override
+    assert '"      m05-map: {}"' in override
+    assert '"    external: true"' in override
+    assert 'f"    name: {plan.map_network}"' in override
+
+
 def test_root_launcher_checks_the_m05_pair_before_creating_an_output_leaf() -> None:
     """wrong Map/PinVi provenance은 execution terminal·ledger를 소비하지 않는다."""
 

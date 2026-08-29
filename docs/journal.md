@@ -2,6 +2,17 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-30 — isolated PinVi→Map service 경로를 private bridge로 분리
+
+Map API의 isolated host publish는 root driver의 host-loopback 검증용이다. PinVi API container가
+`host.docker.internal` gateway로 이 loopback listener에 붙으면 host network boundary상 도달할 수 없어,
+M05 worker startup이 readiness 전에 실패한다. isolated override는 이제 PinVi `app-api`가 기존 default
+network를 유지한 채 Map external bridge에도 함께 join하고, Map service base URL은 그 bridge의 fixed private
+API address를 사용한다. host publish는 계속 loopback 하나이며, app-web·Dagster나 일반 Manager pin registry에는
+Map/PinVi 업무 규칙을 추가하지 않는다. typed runtime expectation도 PinVi API에만 exact Map bridge의
+secondary attachment를 허용하고 두 network ID를 모두 대조하며, missing·third attachment는 fail-close한다.
+source regression은 host gateway URL 재도입 및 PinVi default network 탈락을 막는다.
+
 ## 2026-08-30 — isolated PinVi bootstrap credential의 host-side 전달 정합
 
 isolated driver는 Compose에 private `PINVI_ENV_FILE`을 전달했지만, PinVi `docker-app.sh`의 migration 전
