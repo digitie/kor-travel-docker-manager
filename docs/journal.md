@@ -2,6 +2,17 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — preflight publish 불일치의 root-only 안전 증거
+
+rendered Compose preflight는 execution 소비 전 잘못된 publish를 멈추지만, raw config 전체를
+cleanup하면 operator는 어느 port field가 달랐는지 다시 추측해야 했다. preflight는 이제 API
+service의 ports declaration에서 고정 allowlist인 `host_ip`·`protocol`·`published`·`target`만
+정규화한 최대 16개와 expected container/host port만 fixed v1 JSON으로 root-only runtime directory에
+남긴다. 알 수 없는 Compose key·`name`·extension·임의 문자열은 절대 보존하지 않고, 유효하지 않은
+허용 필드는 `null`로 치환한다. env, 전체 Compose config, container/HTTP output은 포함하지 않는다.
+이 안전한 topology evidence는 preflight rejection과 성공 모두에서 다음 보정의 근거가 되며 generic
+pin이나 Map/PinVi business contract에는 들어가지 않는다.
+
 ## 2026-08-29 — execution 소비 전 rendered loopback publish preflight
 
 runtime inspect에서 loopback publish가 어긋난 것은 정확히 분류했지만, 기존 driver는 source

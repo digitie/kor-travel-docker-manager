@@ -80,6 +80,8 @@ _CleanupProject = tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]]
 _ROOT = Path("/opt/kor-travel-docker-manager")
 _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")
 _REVISION_LENGTH = 40
+_RENDERED_PORT_EVIDENCE_LIMIT = 16
+_SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 _RAW_ENV_NAMES = (
     "M05_MAP_ADMIN_PROXY_SECRET",
     "M05_PINVI_EMAIL",
@@ -1321,8 +1323,55 @@ def _assert_loopback_tcp_publish(
         _fail("runtime_loopback_publish_invalid")
 
 
+def _safe_rendered_port_value(value: object, *, kind: str) -> str | int | None:
+    """Project one rendered Compose port scalar into a fixed, non-raw evidence type."""
+
+    if kind == "host_ip":
+        if not isinstance(value, str) or len(value) > 45:
+            return None
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            return None
+    if kind == "protocol":
+        if not isinstance(value, str):
+            return None
+        normalized = value.lower()
+        return normalized if normalized in _SAFE_PORT_PROTOCOLS else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 5:
+        number = int(value)
+    else:
+        return None
+    if not 1 <= number <= 65535:
+        return None
+    return number if kind == "target" else str(number)
+
+
+def _safe_rendered_port_evidence(ports: list[Mapping[str, Any]]) -> tuple[dict[str, object], ...]:
+    """Return a bounded whitelist projection; never persist a raw Compose mapping."""
+
+    return tuple(
+        {
+            "host_ip": _safe_rendered_port_value(port.get("host_ip"), kind="host_ip"),
+            "protocol": _safe_rendered_port_value(port.get("protocol", "tcp"), kind="protocol"),
+            "published": _safe_rendered_port_value(port.get("published"), kind="published"),
+            "target": _safe_rendered_port_value(port.get("target"), kind="target"),
+        }
+        for port in ports[:_RENDERED_PORT_EVIDENCE_LIMIT]
+    )
+
+
 def _assert_rendered_loopback_tcp_publish(
-    rendered: str, *, service: str, container_port: int, host_port: int
+    rendered: str,
+    *,
+    service: str,
+    container_port: int,
+    host_port: int,
+    evidence_path: Path | None = None,
 ) -> None:
     """Fail before ledger claim when Compose cannot render the required loopback publish."""
 
@@ -1333,16 +1382,33 @@ def _assert_rendered_loopback_tcp_publish(
         ports = item["ports"]
     except (KeyError, TypeError, json.JSONDecodeError):
         _fail("runtime_loopback_publish_config_invalid")
-    if not isinstance(ports, list):
+    if not isinstance(ports, list) or not all(isinstance(port, Mapping) for port in ports):
+        _fail("runtime_loopback_publish_config_invalid")
+    safe_ports = _safe_rendered_port_evidence(ports)
+    if evidence_path is not None:
+        # 검증한 고정 allowlist만 root-only로 남긴다. env·service 전체·raw Compose
+        # mapping이나 extension field는 보존하지 않아 다음 preflight 보정에 필요한
+        # topology만 남긴다.
+        _write_private_json(
+            evidence_path,
+            {
+                "container_port": container_port,
+                "host_port": host_port,
+                "port_count": len(ports),
+                "ports": safe_ports,
+                "service": service,
+                "version": 1,
+            },
+        )
+    if len(ports) > _RENDERED_PORT_EVIDENCE_LIMIT:
         _fail("runtime_loopback_publish_config_invalid")
     matches = [
         port
-        for port in ports
-        if isinstance(port, Mapping)
-        and port.get("target") == container_port
-        and str(port.get("published")) == str(host_port)
-        and port.get("host_ip") == "127.0.0.1"
-        and port.get("protocol", "tcp") == "tcp"
+        for port in safe_ports
+        if port["target"] == container_port
+        and port["published"] == str(host_port)
+        and port["host_ip"] == "127.0.0.1"
+        and port["protocol"] == "tcp"
     ]
     if len(matches) != 1:
         _fail("runtime_loopback_publish_config_invalid")
@@ -1690,6 +1756,7 @@ def main(expected_revision: str, output: Path) -> int:
             service="api",
             container_port=13701,
             host_port=ports["map_api"],
+            evidence_path=runtime / "rendered-loopback-publish.json",
         )
         # source pair와 rendered runtime topology가 정합할 때만 one-shot ledger를
         # 소비한다. O_EXCL create 뒤 write/fsync 실패도 execution을 소비한 것으로 본다.

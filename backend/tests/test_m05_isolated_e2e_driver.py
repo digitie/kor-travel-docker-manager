@@ -407,6 +407,101 @@ def test_rendered_loopback_publish_is_checked_before_a_claim() -> None:
         )
 
 
+def test_rendered_loopback_publish_keeps_only_safe_port_evidence(tmp_path: Path) -> None:
+    driver = _driver()
+    evidence = tmp_path / "rendered-loopback-publish.json"
+    rendered = json.dumps(
+        {
+            "services": {
+                "api": {
+                    "ports": [
+                        {
+                            "host_ip": "127.0.0.1",
+                            "protocol": "tcp",
+                            "published": "31337",
+                            "target": 13701,
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    driver._assert_rendered_loopback_tcp_publish(
+        rendered,
+        service="api",
+        container_port=13701,
+        host_port=31337,
+        evidence_path=evidence,
+    )
+
+    assert json.loads(evidence.read_text(encoding="utf-8")) == {
+        "container_port": 13701,
+        "host_port": 31337,
+        "port_count": 1,
+        "ports": [
+            {
+                "host_ip": "127.0.0.1",
+                "protocol": "tcp",
+                "published": "31337",
+                "target": 13701,
+            }
+        ],
+        "service": "api",
+        "version": 1,
+    }
+
+
+def test_rendered_loopback_publish_evidence_drops_unknown_or_invalid_values(
+    tmp_path: Path,
+) -> None:
+    driver = _driver()
+    evidence = tmp_path / "rendered-loopback-publish.json"
+    rendered = json.dumps(
+        {
+            "services": {
+                "api": {
+                    "ports": [
+                        {
+                            "host_ip": "127.0.0.1",
+                            "name": "untrusted-env-interpolation-value",
+                            "protocol": "tcp",
+                            "published": "not-a-port",
+                            "target": 13701,
+                            "x-unexpected": {"arbitrary": "rendered-compose-data"},
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._assert_rendered_loopback_tcp_publish(
+            rendered,
+            service="api",
+            container_port=13701,
+            host_port=31337,
+            evidence_path=evidence,
+        )
+
+    assert json.loads(evidence.read_text(encoding="utf-8")) == {
+        "container_port": 13701,
+        "host_port": 31337,
+        "port_count": 1,
+        "ports": [
+            {
+                "host_ip": "127.0.0.1",
+                "protocol": "tcp",
+                "published": None,
+                "target": 13701,
+            }
+        ],
+        "service": "api",
+        "version": 1,
+    }
+
+
 def test_map_health_does_not_retry_a_received_http_status_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
