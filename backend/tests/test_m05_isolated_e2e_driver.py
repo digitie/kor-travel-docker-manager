@@ -379,6 +379,34 @@ def test_loopback_publish_is_verified_before_http_readiness() -> None:
         driver._assert_loopback_tcp_publish(invalid, container_port=13701, host_port=13701)
 
 
+def test_rendered_loopback_publish_is_checked_before_a_claim() -> None:
+    driver = _driver()
+    rendered = json.dumps(
+        {
+            "services": {
+                "api": {
+                    "ports": [
+                        {
+                            "host_ip": "127.0.0.1",
+                            "protocol": "tcp",
+                            "published": "31337",
+                            "target": 13701,
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    driver._assert_rendered_loopback_tcp_publish(
+        rendered, service="api", container_port=13701, host_port=31337
+    )
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+        driver._assert_rendered_loopback_tcp_publish(
+            rendered, service="api", container_port=13701, host_port=31338
+        )
+
+
 def test_map_health_does_not_retry_a_received_http_status_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -991,12 +1019,20 @@ def test_driver_pair_failure_before_ledger_never_blocks_the_execution(
 
     class _Plan:
         execution_identity_sha256 = "b" * 64
+        labels: dict[str, str] = {}
+        map_network = "test-map-network"
+        map_project = "test-map-project"
+
+    class _Pair:
+        map_source_revision = "c" * 40
+        pinvi_source_revision = "d" * 40
 
     monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
     monkeypatch.setattr(
         driver, "_assert_current_m05_execution_is_runnable", lambda _expected: _Execution()
     )
     monkeypatch.setattr(driver, "_root_directory", lambda _path: None)
+    monkeypatch.setattr(driver, "_root_file", lambda _path, **_kwargs: None)
     monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
     monkeypatch.setattr(driver, "M05IsolatedHarnessPlan", lambda *_args: _Plan())
     monkeypatch.setattr(
@@ -1034,18 +1070,36 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
 
     class _Plan:
         execution_identity_sha256 = "b" * 64
+        labels: dict[str, str] = {}
+        map_network = "test-map-network"
+        map_project = "test-map-project"
+
+    class _Pair:
+        map_source_revision = "c" * 40
+        pinvi_source_revision = "d" * 40
 
     monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
     monkeypatch.setattr(
         driver, "_assert_current_m05_execution_is_runnable", lambda _expected: _Execution()
     )
     monkeypatch.setattr(driver, "_root_directory", lambda _path: None)
+    monkeypatch.setattr(driver, "_root_file", lambda _path, **_kwargs: None)
     monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
     monkeypatch.setattr(driver, "M05IsolatedHarnessPlan", lambda *_args: _Plan())
     monkeypatch.setattr(
         driver,
         "_source_pair_preflight",
-        lambda: (tmp_path, tmp_path, object(), "a" * 64, "b" * 40),
+        lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40),
+    )
+    monkeypatch.setattr(
+        driver, "build_m05_isolated_manager_admission", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(driver, "_compose", lambda **_kwargs: "{}")
+    monkeypatch.setattr(
+        driver, "_assert_rendered_loopback_tcp_publish", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False)
     )
     monkeypatch.setattr(
         driver,

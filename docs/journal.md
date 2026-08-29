@@ -2,6 +2,19 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — execution 소비 전 rendered loopback publish preflight
+
+runtime inspect에서 loopback publish가 어긋난 것은 정확히 분류했지만, 기존 driver는 source
+pair preflight 직후 ledger를 claim했다. 즉 실제 Docker mutation 전에 `docker compose config`로
+알 수 있는 malformed publish도 v6 execution 하나를 terminal로 만들 수 있었다.
+
+driver는 private isolated config를 만든 뒤, API service가 정확히 하나의
+`127.0.0.1:<dynamic host port> → 13701/tcp` publish를 render하는지 non-mutating Compose config
+출력에서 대조하고 그 뒤에만 ledger를 claim한다. 실패는 `preflight_rejected`로 cleanup될 뿐
+execution을 block하지 않는다. runtime inspect 검사는 launch 뒤 TOCTOU 방어로 유지한다. 이는
+Map/PinVi business contract가 아닌 모든 isolated consumer가 재사용할 수 있는 Manager runtime
+topology admission pattern이다.
+
 ## 2026-08-29 — 일반 loopback publish readiness를 container health와 분리
 
 isolated one-shot의 Map consumer만 container health 뒤 host loopback health GET을 여섯 번만

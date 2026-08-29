@@ -264,6 +264,7 @@ PHASES = frozenset(
         "runtime_http_contract_failed", "runtime_http_failed", "runtime_http_url_invalid",
         "runtime_image_identity_invalid", "runtime_inspect_invalid",
         "runtime_loopback_publish_invalid",
+        "runtime_loopback_publish_config_invalid",
         "runtime_pin_registry_changed", "runtime_pin_registry_invalid",
         "runtime_execution_registry_changed", "runtime_execution_registry_invalid",
         "runtime_setup_admission", "runtime_setup_admission_build",
@@ -281,6 +282,7 @@ PREFLIGHT_REJECTED_PHASES = frozenset(
         "source_materialization",
         "pair_contract_invalid",
         "pinvi_manager_admission_contract_invalid",
+        "runtime_loopback_publish_config_invalid",
     }
 )
 FRESH_INIT_REASONS = frozenset(
