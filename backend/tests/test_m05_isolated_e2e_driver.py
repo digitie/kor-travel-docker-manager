@@ -1257,7 +1257,8 @@ def test_pinvi_runtime_command_uses_bounded_generic_failure_evidence() -> None:
         encoding="utf-8"
     )
 
-    assert 'runtime / "pinvi-runtime-command-error.json"' in source
+    assert 'for action in ("build", "up"):' in source
+    assert 'runtime / f"pinvi-runtime-{action}-error.json"' in source
     assert "_write_command_failure_evidence(" in source
 
 
