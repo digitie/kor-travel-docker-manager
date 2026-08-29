@@ -188,6 +188,10 @@ def test_terminal_registry_reason_exposes_only_allowlisted_phase() -> None:
         driver._terminal_registry_reason("runtime_setup_credentials")
         == "M05 isolated one-shot terminal: runtime_setup_credentials"
     )
+    assert (
+        driver._terminal_registry_reason("runtime_loopback_publish_invalid")
+        == "M05 isolated one-shot terminal: runtime_loopback_publish_invalid"
+    )
 
 
 def test_runtime_setup_uses_ordered_safe_subphases() -> None:
@@ -327,7 +331,52 @@ def test_map_health_retries_only_a_transient_loopback_transport_failure(
 
     assert driver._wait_for_map_health(url="http://127.0.0.1:13701/health") == {"data": {}}
     assert calls == 2
-    assert waits == [driver._MAP_HEALTH_TRANSPORT_RETRY_SECONDS]
+    assert waits == [driver.LOOPBACK_HTTP_READINESS_RETRY_SECONDS]
+
+
+def test_map_health_uses_the_general_loopback_readiness_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M05 consumer는 Manager의 bounded host-loopback startup 정책을 따른다."""
+
+    driver = _driver()
+    calls = 0
+    waits: list[int] = []
+
+    def transient_until_final_attempt(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls < driver.LOOPBACK_HTTP_READINESS_ATTEMPTS:
+            raise driver._PhaseError("map_health_transport_failed")
+        return {"data": {}}
+
+    monkeypatch.setattr(driver, "_http_json", transient_until_final_attempt)
+    monkeypatch.setattr(driver.time, "sleep", waits.append)
+
+    assert driver._wait_for_map_health(url="http://127.0.0.1:13701/health") == {"data": {}}
+    assert calls == driver.LOOPBACK_HTTP_READINESS_ATTEMPTS
+    assert waits == [driver.LOOPBACK_HTTP_READINESS_RETRY_SECONDS] * (
+        driver.LOOPBACK_HTTP_READINESS_ATTEMPTS - 1
+    )
+
+
+def test_loopback_publish_is_verified_before_http_readiness() -> None:
+    driver = _driver()
+    valid = {
+        "NetworkSettings": {
+            "Ports": {"13701/tcp": [{"HostIp": "127.0.0.1", "HostPort": "13701"}]}
+        }
+    }
+
+    driver._assert_loopback_tcp_publish(valid, container_port=13701, host_port=13701)
+
+    invalid = {
+        "NetworkSettings": {
+            "Ports": {"13701/tcp": [{"HostIp": "0.0.0.0", "HostPort": "13701"}]}
+        }
+    }
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_invalid"):
+        driver._assert_loopback_tcp_publish(invalid, container_port=13701, host_port=13701)
 
 
 def test_map_health_does_not_retry_a_received_http_status_failure(
