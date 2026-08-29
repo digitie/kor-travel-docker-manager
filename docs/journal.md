@@ -2,6 +2,21 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — M05 source pair provenance를 terminal 전에 검사
+
+신규 v6 execution candidate는 Map main의 최신 문서 commit을 runtime pair로 회전했지만,
+PinVi가 vendoring한 M05 provenance의 `full.source_revision`과 달라 `pair_contract_invalid`로
+끝났다. source materialization은 ledger claim 전에 pair를 검사했지만 driver의 final terminal
+boundary가 이 pre-ledger failure도 execution terminal로 기록해 잘못된 pair 하나가 새 Manager
+execution을 소비했다.
+
+generic runtime pin registry·v6 execution identity에는 Map/PinVi business contract를 넣지 않았다.
+대신 M05 integration adapter에 read-only pair preflight를 추가해 launcher가 output leaf·ledger claim
+전에 pinned source를 materialize하고 Map/PinVi provenance와 admission contract를 확인한다. 불일치면
+fixed 오류만 반환하고 execution terminal·ledger·runtime build·Compose mutation은 만들지 않는다. driver
+내부의 동일 검사는 TOCTOU 방어로 유지한다. 이로써 root `pin verify`의 generic registry/generation
+authority와 M05 consumer provenance authority가 섞이지 않는다.
+
 ## 2026-08-29 — v5 terminal 감사와 v6 실행 출처를 엄격 분리
 
 v5 terminal에는 Manager revision이 없으므로, 그것을 직전 설치 release의 v6 execution으로

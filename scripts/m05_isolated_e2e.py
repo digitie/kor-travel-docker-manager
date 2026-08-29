@@ -1205,6 +1205,43 @@ def _assert_pinvi_manager_admission_contract(pinvi_root: Path) -> None:
         _fail("pinvi_manager_admission_contract_invalid")
 
 
+def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, str]:
+    """실행권을 소비하기 전에 pinned source pair의 integration 계약만 검사한다."""
+
+    ambient = dict(os.environ)
+    try:
+        os.environ.clear()
+        values = effective_environment(str(_ROOT / ".env"))
+    finally:
+        os.environ.clear()
+        os.environ.update(ambient)
+    state_paths = pinned_runtime_state_paths(
+        values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
+    )
+    sources = materialize_pinned_runtime_sources(
+        release=PINNED_RUNTIME_RELEASE, state_paths=state_paths, values=values
+    )
+    map_root, pinvi_root = (
+        sources.source_for("map").root,
+        sources.source_for("pinvi").root,
+    )
+    pair, service_openapi_sha256, service_source_revision = _pair(pinvi_root, map_root)
+    _assert_pinvi_manager_admission_contract(pinvi_root)
+    return map_root, pinvi_root, pair, service_openapi_sha256, service_source_revision
+
+
+def preflight(expected_revision: str) -> int:
+    """launcher용 read-only M05 integration preflight; terminal/ledger를 쓰지 않는다."""
+
+    try:
+        _validate_trusted_release(expected_revision)
+        _assert_current_m05_execution_is_runnable(expected_revision)
+        _source_pair_preflight()
+    except (_PhaseError, OSError, RuntimeError, ValueError):
+        return 1
+    return 0
+
+
 def _pinvi_manager_admission_environment(
     *,
     env_file: Path,
@@ -1373,27 +1410,13 @@ def main(expected_revision: str, output: Path) -> int:
             transaction,
         )
         phase = "source_materialization"
-        ambient = dict(os.environ)
-        try:
-            os.environ.clear()
-            values = effective_environment(str(_ROOT / ".env"))
-        finally:
-            os.environ.clear()
-            os.environ.update(ambient)
-        state_paths = pinned_runtime_state_paths(
-            values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
-        )
-        sources = materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE, state_paths=state_paths, values=values
-        )
-        map_root, pinvi_root = (
-            sources.source_for("map").root,
-            sources.source_for("pinvi").root,
-        )
-        pair, service_openapi_sha256, service_source_revision = _pair(
-            pinvi_root, map_root
-        )
-        _assert_pinvi_manager_admission_contract(pinvi_root)
+        (
+            map_root,
+            pinvi_root,
+            pair,
+            service_openapi_sha256,
+            service_source_revision,
+        ) = _source_pair_preflight()
         # source pair가 정합하지 않으면 one-shot ledger를 소비하지 않는다. 잘못 회전한
         # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
         phase = "ledger_claim"
@@ -2049,6 +2072,10 @@ def main(expected_revision: str, output: Path) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or os.geteuid() != 0:
+    if os.geteuid() != 0:
+        raise SystemExit(2)
+    if len(sys.argv) == 3 and sys.argv[1] == "--preflight":
+        raise SystemExit(preflight(sys.argv[2]))
+    if len(sys.argv) != 3:
         raise SystemExit(2)
     raise SystemExit(main(sys.argv[1], Path(sys.argv[2])))

@@ -886,6 +886,40 @@ def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
     assert pair_preflight < admission_contract < ledger_claim
 
 
+def test_root_launcher_checks_the_m05_pair_before_creating_an_output_leaf() -> None:
+    """wrong Map/PinVi provenance은 execution terminal·ledger를 소비하지 않는다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    pair_preflight = launcher.index("m05_isolated_e2e.py \\")
+    output_leaf = launcher.index('install -d -o root -g root -m 0700 "$output_dir"')
+
+    assert pair_preflight < output_leaf
+
+
+def test_preflight_rejects_a_pair_without_blocking_the_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """launcher preflight은 diagnostic-free failure만 반환하고 mutation을 하지 않는다."""
+
+    driver = _driver()
+    calls: list[str] = []
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: calls.append("release"))
+    monkeypatch.setattr(
+        driver, "_assert_current_m05_execution_is_runnable", lambda _expected: calls.append("execution")
+    )
+    monkeypatch.setattr(
+        driver,
+        "_source_pair_preflight",
+        lambda: (_ for _ in ()).throw(driver._PhaseError("pair_contract_invalid")),
+    )
+
+    assert driver.preflight("a" * 40) == 1
+    assert calls == ["release", "execution"]
+
+
 def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:
     driver = _driver()
     admission = Path("/private/runtime/pinvi-isolated-manager-admission.json")

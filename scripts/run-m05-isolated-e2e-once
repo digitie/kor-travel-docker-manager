@@ -179,6 +179,15 @@ if [[ "$initial_execution_pinset" != "$initial_pinset" || "$initial_execution_re
   echo "M05 runtime execution snapshot differs from launch candidate" >&2
   exit 1
 fi
+# Map/PinVi integration provenance는 generic pin registry가 아니라 M05 adapter가 소유한다.
+# 이를 one-shot ledger/output leaf 전에 검사해 잘못 회전한 source pair가 execution terminal을
+# 소비하지 않게 한다. stderr 원문은 기존 launcher 경계와 같이 보관하지 않는다.
+if ! /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
+  /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
+  --preflight "$expected_revision" >/dev/null 2>&1; then
+  echo "M05 isolated source pair preflight is not runnable" >&2
+  exit 1
+fi
 has_unconditional_terminal_execution_block() {
   "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
