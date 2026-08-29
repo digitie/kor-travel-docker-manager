@@ -2,6 +2,25 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — 일반 runtime execution identity와 trusted rebind 기반
+
+반복 terminal을 Map/PinVi 문서 SHA 변경으로 우회하지 않도록 v5 source pinset과 별도의
+v6 runtime execution identity를 도입했다. v5 pinset은 source materialization과 historical
+audit의 identity로 그대로 두고, v6 identity는 canonical Manager repository URL·v5 pinset·trusted
+installed Manager revision을 SHA-256으로 결박한다. 따라서 같은 source pin에서 Manager implementation만
+바뀌면 새 execution이 되지만, 같은 v6 identity는 계속 하나의 terminal lifecycle만 가진다.
+
+새 execution registry와 `ktdctl pin migrate-execution-v6`,
+`ktdctl pin show-execution`, `ktdctl pin rebind-execution`을 추가했다. migration은 기존
+source registry를 바꾸지 않으며, rebind는 current execution이 terminal이고 trusted installed Manager
+revision이 바뀐 경우에만 가능하다. 사용자가 전달한 expected SHA는 trusted
+`.ktdm-source-revision`과 `.ktdm-release-manifest.json` 양쪽과의 TOCTOU 확인값일 뿐, 새
+실행권을 만드는 입력이 아니다. 일반 registry/CLI는 특정 M05 harness에 종속되지 않고 M05는 첫
+consumer로만 남긴다.
+
+순수 identity·registry·CLI parser 회귀는 10 passed, Ruff clean을 통과했다. 다음은 이 identity를
+generation/one-shot ledger와 sibling admission/attestation에 연결하는 일이다.
+
 ## 2026-08-29 — root 권한 보정 위 M05 재결박 준비
 
 Manager #256을 main의 root 권한·환경 의존성 보정 위로 rebase했다. M05의 runtime pin mutation
@@ -11,7 +30,8 @@ immutable candidate다.
 `9b6eab1e…` exact pair는 clean trusted release, atomic `pin rotate-pair`, 단 한 번의 pinned rebuild와
 공개 generation `match` 뒤 isolated M04/M05 E2E를 정확히 한 번 실행했다. 실행 완료 후 공개 `pin verify`가
 same pair의 unconditional terminal block을 보였으므로, 이 pinset·source tuple·두 output leaf는 재실행하거나
-열지 않는다. 공개 상태만으로 특정 component의 결함을 단정하지 않는다.
+열지 않는다. 단, 이후 오너의 최신 지시에 따라 raw forensic 열람은 gitignored local analysis에만 상세
+기록하며 tracked journal·commit·push에는 넣지 않는다. 공개 상태만으로 특정 component의 결함을 단정하지 않는다.
 
 rebase 뒤 inherited global-lock 회귀가 Windows-mounted pytest 임시 루트에서 POSIX `0600` mode를 보존하지 않아
 실행 환경에 따라 실패할 수 있음을 확인했다. 계약 test만 Linux `/tmp` fixture로 옮기고 existing-file mode도
