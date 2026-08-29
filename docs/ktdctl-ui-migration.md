@@ -76,6 +76,9 @@ no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
   revision은 trusted installed revision과의 TOCTOU 확인값일 뿐이다. terminal current와
   다른 trusted Manager revision일 때만 Map/PinVi source를 건드리지 않고 새 execution
   identity를 만든다.
+- `ktdctl pin rotate-pair`는 source pair가 실제로 바뀌면 existing v6 registry의 current execution도
+  같은 atomic mutation lease 안에서 새 source pinset으로 이행한다. 이는 source를 바꾸지 않는
+  Manager-only terminal rebind와 별도 lifecycle이며, old execution history/terminal audit은 보존한다.
 - root `pin verify`는 v5 source pinset, Manager revision, v6 execution identity와 양쪽
   terminal 상태를 함께 판정한다. read-only UI/API는 private/public v6 parity를 증명할 수
   없으므로 execution success를 green으로 표시하지 않고 `pin verify`를 안내한다. v6 success

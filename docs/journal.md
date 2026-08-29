@@ -2,6 +2,18 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — source pair 회전과 v6 execution을 함께 이행
+
+v6 registry가 존재하는 host에서 `rotate-pair`가 v5 source registry만 바꾸면 current execution은
+stale이 되고, `migrate-execution-v6`은 existing registry를 거부하며 `rebind-execution`은 source가
+달라 거부한다. 즉 manual state edit 없이 새 source pair를 실행할 generic lifecycle이 없었다.
+
+`ktdctl pin rotate-pair`는 이제 같은 host-global mutation lock 안에서 existing v6 registry를 읽고,
+새 v5 pair와 trusted Manager revision으로 새 execution binding을 history에 append해 private/public registry를
+갱신한다. 기존 terminal audit은 보존하며 새 source execution만 unblocked다. v6 registry가 아직 없는
+legacy host는 기존처럼 source pair만 회전한 뒤 explicit migration을 한다. execution registry가 존재하지만
+손상된 경우는 migration으로 오인하지 않고 fail-close한다.
+
 ## 2026-08-29 — M05 source pair provenance를 terminal 전에 검사
 
 신규 v6 execution candidate는 Map main의 최신 문서 commit을 runtime pair로 회전했지만,

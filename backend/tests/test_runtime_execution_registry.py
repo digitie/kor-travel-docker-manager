@@ -17,6 +17,7 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     load_runtime_execution_registry,
     migrate_execution_registry,
     rebind_execution_registry,
+    rotate_execution_source_binding,
     trusted_manager_source_revision,
     verify_runtime_execution_registry,
     write_runtime_execution_registry,
@@ -126,6 +127,36 @@ def test_terminal_execution_can_rebind_only_for_new_manager_revision() -> None:
     assert not rebound.is_unconditionally_blocked_current()
 
 
+def test_source_rotation_creates_a_new_execution_and_preserves_terminal_audit() -> None:
+    initial = _pins()
+    terminal = block_current_execution(
+        registry=migrate_execution_registry(
+            pins=initial, manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
+        ),
+        reason="terminal",
+    )
+    rotated_pins = build_registry(
+        release_version=5,
+        map_revision="e" * 40,
+        pinvi_revision=_PINVI,
+        rotated_by="tester",
+        reason="source rotation",
+    )
+
+    rotated = rotate_execution_source_binding(
+        registry=terminal,
+        pins=rotated_pins,
+        manager_source_revision=_MANAGER_A,
+        bound_by="tester",
+        reason="source rotation",
+    )
+
+    assert rotated.current.source_pinset_sha256 == rotated_pins.pinset_sha256
+    assert not rotated.is_unconditionally_blocked_current()
+    assert len(rotated.history) == 2
+    assert len(rotated.blocked_executions) == 1
+
+
 def test_cli_legacy_terminal_migration_creates_only_the_current_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -152,6 +183,49 @@ def test_cli_legacy_terminal_migration_creates_only_the_current_execution(
     assert not migrated.is_unconditionally_blocked_current()
     assert migrated.history == (migrated.current,)
     assert not migrated.blocked_executions
+
+
+def test_cli_pair_rotation_advances_an_existing_execution_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = build_parser().parse_args(
+        [
+            "pin",
+            "rotate-pair",
+            "--map-revision",
+            "e" * 40,
+            "--pinvi-revision",
+            _PINVI,
+            "--reason",
+            "correct pair",
+            "--confirm",
+        ]
+    )
+    initial = _pins()
+    executions = block_current_execution(
+        registry=migrate_execution_registry(
+            pins=initial, manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
+        ),
+        reason="terminal",
+    )
+    rotated_pins = build_registry(
+        release_version=5,
+        map_revision="e" * 40,
+        pinvi_revision=_PINVI,
+        rotated_by="tester",
+        reason="correct pair",
+    )
+    saved: list[object] = []
+
+    monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda: nullcontext())
+    monkeypatch.setattr(cli, "rotate_runtime_pin_pair", lambda **_kwargs: rotated_pins)
+    monkeypatch.setattr(cli, "load_runtime_execution_registry", lambda: executions)
+    monkeypatch.setattr(cli, "trusted_manager_source_revision", lambda: _MANAGER_A)
+    monkeypatch.setattr(cli, "write_runtime_execution_registry", saved.append)
+
+    assert cli._cmd_pin_rotate_pair(args) == 0
+    assert saved[0].current.source_pinset_sha256 == rotated_pins.pinset_sha256
+    assert not saved[0].is_unconditionally_blocked_current()
 
 
 def test_rebind_refuses_nonterminal_or_same_manager_revision() -> None:

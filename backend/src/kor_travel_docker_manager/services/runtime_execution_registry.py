@@ -533,6 +533,36 @@ def rebind_execution_registry(
     )
 
 
+def rotate_execution_source_binding(
+    *,
+    registry: RuntimeExecutionRegistry,
+    pins: RuntimePinRegistry,
+    manager_source_revision: str,
+    bound_by: str,
+    reason: str,
+) -> RuntimeExecutionRegistry:
+    """원자 source pair 회전 뒤 현재 v6 execution을 새 source로 이행한다.
+
+    이는 Manager release만 바꾸는 terminal rebind와 다르다. `rotate-pair`가 source
+    identity를 바꿨으므로 기존 execution의 terminal 여부와 무관하게 새 immutable
+    execution을 current로 두고 이전 history/terminal audit은 보존한다.
+    """
+
+    if registry.current_matches(pins=pins, manager_source_revision=manager_source_revision):
+        raise RuntimeExecutionRegistryError("execution source binding did not change")
+    current = new_execution_binding(
+        pins=pins,
+        manager_source_revision=manager_source_revision,
+        bound_by=bound_by,
+        reason=reason,
+    )
+    return RuntimeExecutionRegistry(
+        current=current,
+        history=(*registry.history, current)[-_MAX_HISTORY:],
+        blocked_executions=registry.blocked_executions,
+    )
+
+
 def block_current_execution(
     *, registry: RuntimeExecutionRegistry, reason: str, phase: str | None = None
 ) -> RuntimeExecutionRegistry:

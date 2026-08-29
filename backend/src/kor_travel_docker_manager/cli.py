@@ -36,6 +36,8 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     load_runtime_execution_registry,
     migrate_execution_registry,
     rebind_execution_registry,
+    rotate_execution_source_binding,
+    runtime_execution_registry_path,
     trusted_manager_source_revision,
     verify_runtime_execution_registry,
     write_runtime_execution_registry,
@@ -776,6 +778,22 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
                 rotated_by=_pin_actor(),
                 block_previous=args.block_previous,
             )
+            try:
+                executions = load_runtime_execution_registry()
+            except DeploymentContractError:
+                # v6 migration 전 host는 source registry만 회전한다. migration command가
+                # 해당 source pair의 첫 execution을 별도로 만든다.
+                if runtime_execution_registry_path().exists():
+                    raise
+            else:
+                updated_executions = rotate_execution_source_binding(
+                    registry=executions,
+                    pins=registry,
+                    manager_source_revision=trusted_manager_source_revision(),
+                    bound_by=_pin_actor(),
+                    reason=args.reason,
+                )
+                write_runtime_execution_registry(updated_executions)
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
         return 2
