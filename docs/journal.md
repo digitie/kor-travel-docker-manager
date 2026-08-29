@@ -14,7 +14,9 @@ generic runtime pin registry·v6 execution identity에는 Map/PinVi business con
 대신 M05 integration adapter에 비소비 source-materialization pair preflight를 추가해 launcher가 output leaf·ledger claim
 전에 pinned source를 materialize하고 Map/PinVi provenance와 admission contract를 확인한다. 불일치면
 fixed 오류만 반환하고 execution terminal·ledger·runtime build·Compose mutation은 만들지 않는다. driver
-내부의 동일 검사는 TOCTOU 방어로 유지한다. 이로써 root `pin verify`의 generic registry/generation
+내부의 동일 검사는 TOCTOU 방어로 유지한다. ledger는 `O_EXCL` create 직후 write/fsync 실패에도 남을 수
+있으므로 claim 호출 직전부터 실행권을 소비한 것으로 terminal 처리한다. `preflight_rejected` receipt는
+엄격한 pre-claim phase와 `cleanup_failed:false`일 때만 launcher가 fallback 없이 수용한다. 이로써 root `pin verify`의 generic registry/generation
 authority와 M05 consumer provenance authority가 섞이지 않는다.
 
 ## 2026-08-29 — v5 terminal 감사와 v6 실행 출처를 엄격 분리

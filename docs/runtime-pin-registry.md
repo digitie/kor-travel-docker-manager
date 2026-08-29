@@ -88,7 +88,10 @@ source-materialization pair preflight를 반드시 통과한다. 이 검사는 g
 Map full revision·OpenAPI hash와 Manager-only admission contract만 대조한다. 따라서 `pin verify`가
 generic pin/execution/generation gate를 통과했어도, 문서 commit 등을 runtime Map revision으로 잘못 회전한
 pair는 E2E terminal이나 Compose mutation을 소비하지 않고 거부된다. pair가 통과한 뒤의 runtime failure만
-current v6 execution terminal로 기록한다.
+current v6 execution terminal로 기록한다. 단 one-shot ledger claim은 `O_EXCL` create 뒤 fsync 오류에도
+durable file을 남길 수 있으므로, claim 호출을 시작한 뒤의 오류는 성공 반환 여부와 무관하게 terminal로
+수렴한다. launcher가 fallback 없이 수용하는 `preflight_rejected` receipt는 strict pre-claim phase와
+`cleanup_failed:false`만 허용한다.
 
 ---
 

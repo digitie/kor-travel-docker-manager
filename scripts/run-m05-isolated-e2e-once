@@ -274,6 +274,14 @@ PHASES = frozenset(
         "trusted_release_invalid", "trusted_release_revision_mismatch", "completed",
     }
 )
+PREFLIGHT_REJECTED_PHASES = frozenset(
+    {
+        "admission",
+        "source_materialization",
+        "pair_contract_invalid",
+        "pinvi_manager_admission_contract_invalid",
+    }
+)
 FRESH_INIT_REASONS = frozenset(
     {
         "migrator_dsn_missing", "image_alembic_root_invalid",
@@ -338,6 +346,13 @@ try:
             digest = value[key]
             if not isinstance(digest, str) or len(digest) != 64 or any(char not in HEX for char in digest):
                 raise ValueError
+    if value["status"] == "preflight_rejected" and (
+        value["phase"] not in PREFLIGHT_REJECTED_PHASES
+        or value["driver_phase"] != value["phase"]
+        or value["cleanup_failed"]
+        or driver_status == 0
+    ):
+        raise ValueError
     if "map_fresh_init_reason" in value and value["map_fresh_init_reason"] not in FRESH_INIT_REASONS:
         raise ValueError
 except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):

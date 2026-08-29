@@ -617,6 +617,8 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert 'value.get("status") not in {"passed", "blocked", "preflight_rejected"}' in launcher
     assert 'if value["status"] == "preflight_rejected"' in launcher
     assert 'receipt_validation_status" == 4' in launcher
+    assert "PREFLIGHT_REJECTED_PHASES" in launcher
+    assert 'value["phase"] not in PREFLIGHT_REJECTED_PHASES' in launcher
     assert "if set(value) != expected_keys:" in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
@@ -965,6 +967,54 @@ def test_driver_pair_failure_before_ledger_never_blocks_the_execution(
     assert calls == []
     assert receipt["status"] == "preflight_rejected"
     assert receipt["phase"] == "pair_contract_invalid"
+
+
+def test_ledger_claim_attempt_failure_blocks_the_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """O_EXCL create 뒤 fsync가 실패해 ledger가 남을 수 있는 경계는 fail-close한다."""
+
+    driver = _driver()
+    calls: list[str] = []
+
+    class _Current:
+        execution_identity_sha256 = "b" * 64
+
+    class _Execution:
+        current = _Current()
+
+    class _Plan:
+        execution_identity_sha256 = "b" * 64
+
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
+    monkeypatch.setattr(
+        driver, "_assert_current_m05_execution_is_runnable", lambda _expected: _Execution()
+    )
+    monkeypatch.setattr(driver, "_root_directory", lambda _path: None)
+    monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
+    monkeypatch.setattr(driver, "M05IsolatedHarnessPlan", lambda *_args: _Plan())
+    monkeypatch.setattr(
+        driver,
+        "_source_pair_preflight",
+        lambda: (tmp_path, tmp_path, object(), "a" * 64, "b" * 40),
+    )
+    monkeypatch.setattr(
+        driver,
+        "claim_m05_isolated_harness_ledger",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("discarded")),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_args, **_kwargs: calls.append("blocked") or True,
+    )
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert calls == ["blocked"]
+    assert receipt["status"] == "blocked"
+    assert receipt["phase"] == "ledger_claim"
 
 
 def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:

@@ -1390,7 +1390,7 @@ def main(expected_revision: str, output: Path) -> int:
     completed = False
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
-    execution_claimed = False
+    claim_attempted = False
     failure_diagnostic: str | None = None
     map_cleanup: _CleanupProject | None = None
     pinvi_cleanup: _CleanupProject | None = None
@@ -1421,8 +1421,10 @@ def main(expected_revision: str, output: Path) -> int:
         # source pair가 정합하지 않으면 one-shot ledger를 소비하지 않는다. 잘못 회전한
         # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
         phase = "ledger_claim"
+        # O_EXCL create 뒤 write/fsync/directory fsync가 실패해도 ledger가 남을 수 있다.
+        # 그러므로 call 성공이 아니라 claim 시도 시작부터 execution을 소비한 것으로 fail-close한다.
+        claim_attempted = True
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
-        execution_claimed = True
         # setup 전체를 하나의 `runtime_setup` receipt로 뭉개면 새 immutable source가
         # 어느 안전 경계를 보정해야 하는지 알 수 없다. 아래 단계명은 raw exception,
         # 경로, secret을 싣지 않는 allowlist receipt일 뿐 동일 pinset 재시도 권한은 아니다.
@@ -2038,7 +2040,7 @@ def main(expected_revision: str, output: Path) -> int:
         if unexpected_finalization_failure or cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
-        if not completed and execution_claimed:
+        if not completed and claim_attempted:
             try:
                 pinset_blocked = _block_terminal_m05_execution(
                     phase, expected_manager_revision=expected_revision
@@ -2064,7 +2066,7 @@ def main(expected_revision: str, output: Path) -> int:
                 "passed"
                 if completed
                 else "blocked"
-                if execution_claimed
+                if claim_attempted
                 else "preflight_rejected"
             ),
             "transaction_id": transaction,
