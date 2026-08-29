@@ -1147,6 +1147,33 @@ def test_nonzero_compose_config_keeps_exit_evidence_when_stdout_is_oversized(
     assert not output_evidence.exists()
 
 
+def test_generic_command_failure_evidence_is_safe_by_default_and_bounded_on_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+    safe = tmp_path / "command.json"
+    driver._write_command_failure_evidence(
+        safe, returncode=17, stderr=b"private command error"
+    )
+    assert json.loads(safe.read_text(encoding="utf-8")) == {
+        "kind": "runtime_command",
+        "returncode": 17,
+        "version": 1,
+    }
+    assert not safe.with_suffix(".stderr").exists()
+
+    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
+    forensic = tmp_path / "command-forensic.json"
+    driver._write_command_failure_evidence(
+        forensic,
+        returncode=17,
+        stderr=b"x" * (driver._FORENSIC_CAPTURE_LIMIT + 1),
+    )
+    assert forensic.with_suffix(".stderr").read_bytes() == (
+        b"x" * driver._FORENSIC_CAPTURE_LIMIT
+    )
+
+
 def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
     driver = _driver()
 
@@ -1223,6 +1250,15 @@ def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     assert "AsyncKorTravelMapClient" in fixture
     assert "SET LOCAL ROLE" not in fixture
     assert "INSERT INTO" not in fixture
+
+
+def test_pinvi_runtime_command_uses_bounded_generic_failure_evidence() -> None:
+    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'runtime / "pinvi-runtime-command-error.json"' in source
+    assert "_write_command_failure_evidence(" in source
 
 
 def test_manager_does_not_require_pinvi_crypto_dependency() -> None:

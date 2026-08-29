@@ -632,7 +632,29 @@ def _write_compose_failure_evidence(
     )
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
         return
-    _write_private_bytes(path.with_suffix(".stderr"), stderr or b"\n")
+    _write_private_bytes(
+        path.with_suffix(".stderr"), stderr[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
+    )
+
+
+def _write_command_failure_evidence(
+    path: Path, *, returncode: int | None, stderr: bytes | None
+) -> None:
+    """Persist a bounded generic external-command receipt without command or env disclosure."""
+
+    if not isinstance(returncode, int) or returncode < 1 or returncode > 255:
+        safe_returncode: int | None = None
+    else:
+        safe_returncode = returncode
+    _write_private_json(
+        path,
+        {"kind": "runtime_command", "returncode": safe_returncode, "version": 1},
+    )
+    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
+        return
+    _write_private_bytes(
+        path.with_suffix(".stderr"), stderr[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
+    )
 
 
 def _write_compose_output_evidence(
@@ -2095,12 +2117,22 @@ def main(expected_revision: str, output: Path) -> int:
             execution_identity_sha256=plan.execution_identity_sha256,
             admission_path=pinvi_admission,
         )
-        _command(
-            str(pinvi_root / "scripts/docker-app.sh"),
-            "up",
-            cwd=pinvi_root,
-            env=environment,
-        )
+        try:
+            _command(
+                str(pinvi_root / "scripts/docker-app.sh"),
+                "up",
+                cwd=pinvi_root,
+                env=environment,
+                capture_failure_stderr=os.environ.get(_FORENSIC_CAPTURE_ENV) == "1",
+            )
+        except _PhaseError as error:
+            if error.phase == "runtime_command_failed":
+                _write_command_failure_evidence(
+                    runtime / "pinvi-runtime-command-error.json",
+                    returncode=error.returncode,
+                    stderr=error.stderr,
+                )
+            raise
         _compose(
             root=pinvi_root,
             project=plan.pinvi_project,
