@@ -5055,6 +5055,20 @@ def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
     lock_path = tmp_path / "pinned-runtime-rebuild.lock"
     monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", lock_path)
     monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
+    # NTFS drvfs는 mode를 0777로 보이게 한다. 이 회귀의 대상은 mode 정책이 아니라
+    # second holder가 실제 flock을 얻지 못하는지다.
+    monkeypatch.setattr(c6c_deployment, "_validate_c6c_lock_fd", lambda *_args, **_kwargs: None)
+    original_lock = c6c_deployment.c6c_deployment_lock
+
+    @contextmanager
+    def lock_without_global(path: str):
+        if path == str(c6c_deployment._C6C_GLOBAL_MUTATION_LOCK):
+            yield
+        else:
+            with original_lock(path):
+                yield
+
+    monkeypatch.setattr(c6c_deployment, "c6c_deployment_lock", lock_without_global)
     holder = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -5065,6 +5079,30 @@ def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
         os.close(holder)
 
     assert str(excinfo.value) == "another C6c compatible-pair operation is already active"
+
+
+def test_pinned_runtime_rebuild_lease_acquires_global_before_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """release/v6 snapshot과 rotate를 같은 lease ordering으로 직렬화한다."""
+
+    acquired: list[str] = []
+    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
+
+    @contextmanager
+    def record_lock(path: str):
+        acquired.append(path)
+        yield
+
+    monkeypatch.setattr(c6c_deployment, "c6c_deployment_lock", record_lock)
+
+    with c6c_deployment.pinned_runtime_rebuild_lock():
+        pass
+
+    assert acquired == [
+        str(c6c_deployment._C6C_GLOBAL_MUTATION_LOCK),
+        c6c_deployment.pinned_runtime_rebuild_lock_path(),
+    ]
 
 
 def test_pinned_runtime_rebuild_lease_rejects_nonroot(

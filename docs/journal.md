@@ -16,6 +16,11 @@ mutation 전에 거부한다. UI preflight는 비-root라 private/public v6 pari
 초록불을 내지 않고 root `pin verify`만 요구한다. 이 규칙은 M05에 한정되지 않으며, 기존 v5 audit을
 삭제하거나 과거 실행의 출처를 추측하지 않는다.
 
+같은 재리뷰에서 release snapshot을 global mutation lock 앞에서 읽으면 rotation이 그 사이에 끼어 old
+source와 new execution을 섞을 수 있는 TOCTOU도 확인했다. pinned rebuild는 이제 global lease를 먼저 잡고
+그 안에서 release·v5 registry·trusted Manager·v6 execution을 한 snapshot으로 검사한다. rotate/block/install과의
+lock ordering은 `global → pinned`으로 고정했고, 실제 flock 회귀와 ordering 회귀를 추가했다.
+
 ## 2026-08-29 — v6 execution registry를 one-shot과 sibling receipt에 연결
 
 일반 runtime execution registry를 actual mutation gate까지 연결했다. `ktdctl pin verify`는

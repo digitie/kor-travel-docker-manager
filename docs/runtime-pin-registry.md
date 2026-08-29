@@ -541,8 +541,9 @@ id가 디스크의 것과 다르면 `404 RUNTIME_PIN_REQUEST_NOT_FOUND`다. 없�
 ```
 ktdctl pinvi-pair rebuild-pinned --confirm
   └─ _require_pinned_runtime_rebuild_root()            root 강제
-  └─ current_pinned_runtime_release()                  registry 로드 (없으면 fail-close)
-  └─ _assert_pinset_is_not_permanently_blocked(digest) ★ 항상 current v6 execution을 검증하고, 없거나 terminal이면 거부; legacy terminal은 추가 감사 근거
+  └─ global mutation lock → pinned rebuild lock         rotate/block/install과 직렬화
+  └─ current_pinned_runtime_release()                  lock 안에서 registry snapshot 로드 (없으면 fail-close)
+  └─ _assert_pinset_is_not_permanently_blocked(digest) ★ 같은 snapshot의 current v6 execution을 검증하고, 없거나 terminal이면 거부; legacy terminal은 추가 감사 근거
   └─ (락 획득, env snapshot, source materialize, DB reset …)   ← 여기부터가 mutation
        └─ resume journal이 있으면
             _assert_pinvi_role_lifecycle_block_admission()

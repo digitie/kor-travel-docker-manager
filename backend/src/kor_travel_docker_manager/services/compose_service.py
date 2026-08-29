@@ -167,6 +167,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     parse_candidate_static_head,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
+    PinnedRuntimeRelease,
     current_pinned_runtime_release,
     is_blocked_pinset_retry,
 )
@@ -6452,14 +6453,18 @@ class ComposeService:
         """application-300 paired candidate에 결박된 destructive rebuild를 실행한다."""
 
         _require_pinned_runtime_rebuild_root()
-        release = current_pinned_runtime_release()
-        _assert_pinset_is_not_permanently_blocked(release.pinset_sha256)
+        release: PinnedRuntimeRelease | None = None
         resume_journal: PinnedRuntimeRebuildJournal | None = None
 
         def prewrite_admission(
             environment_snapshot: ComposeEnvironmentSnapshot,
         ) -> str | None:
-            nonlocal resume_journal
+            nonlocal release, resume_journal
+            # global mutation lock을 잡은 뒤 하나의 registry snapshot을 만들고 즉시
+            # source/v6 execution gate를 확인한다. rotate가 두 read 사이에 끼어 old
+            # release와 new execution을 섞는 TOCTOU를 막는다.
+            release = current_pinned_runtime_release()
+            _assert_pinset_is_not_permanently_blocked(release.pinset_sha256)
             state_paths = pinned_runtime_state_paths(
                 environment_snapshot.effective,
                 pinset_sha256=release.pinset_sha256,
@@ -6483,6 +6488,8 @@ class ComposeService:
             environment_snapshot,
             _role_credentials_initialized,
         ):
+            if release is None:  # pragma: no cover - context contract 방어
+                raise DeploymentContractError("pinned runtime release snapshot is unavailable")
             # application head 300은 paired receipt와 설치된 baseline contract가
             # 정본이다. Dagster/PinVi head만 network-less candidate 명령으로 읽는다.
             with _pinned_runtime_prejournal_step("state_initialization"):

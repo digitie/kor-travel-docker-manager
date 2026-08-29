@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -800,7 +801,14 @@ def test_rebuild_refuses_a_blocked_pinset_before_touching_anything(
 
     registry = _blocked_seed(phase=None)
     materialize = Mock()
-    lock = Mock()
+    lock_entered = False
+
+    @contextmanager
+    def lock(*, prewrite_admission):
+        nonlocal lock_entered
+        lock_entered = True
+        prewrite_admission(Mock())
+        yield (Mock(), Mock(), False)
     monkeypatch.setattr(
         compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
     )
@@ -815,8 +823,8 @@ def test_rebuild_refuses_a_blocked_pinset_before_touching_anything(
         compose_service_module.ComposeService().rebuild_pinned_runtime()
 
     materialize.assert_not_called()
-    # 락조차 잡지 않는다 — 거부는 어떤 host-wide 부작용보다도 앞선다.
-    lock.assert_not_called()
+    # release snapshot과 v6 gate는 회전과 같은 global lock 안에서만 읽는다.
+    assert lock_entered
     assert registry.is_unconditionally_blocked_pinset(registry.pinset_sha256)
 
 
