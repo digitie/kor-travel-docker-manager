@@ -474,7 +474,7 @@ def test_terminal_result_blocks_the_exact_current_execution(
     assert seen["reason"] == "M05 isolated one-shot terminal: map_health_transport_failed"
 
 
-def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
+def test_preclaim_exception_writes_a_nonterminal_fixed_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """unknown exception은 raw 없이 현재 admission 경계로 수렴한다."""
@@ -485,12 +485,16 @@ def test_unexpected_driver_exception_still_writes_fixed_terminal_receipt(
         "_validate_trusted_release",
         lambda _expected: (_ for _ in ()).throw(RuntimeError("discarded")),
     )
-    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_args, **_kwargs: pytest.fail("preclaim failure must not block execution"),
+    )
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
-    assert receipt["status"] == "blocked"
+    assert receipt["status"] == "preflight_rejected"
     assert receipt["phase"] == "admission"
     assert receipt["driver_phase"] == "admission"
     assert "discarded" not in json.dumps(receipt, sort_keys=True)
@@ -541,10 +545,10 @@ def test_unexpected_cleanup_keeps_the_fixed_cleanup_phase(
     assert receipt["driver_phase"] == "runtime_cleanup_failed"
 
 
-def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
+def test_preclaim_phase_error_does_not_attempt_a_terminal_block(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """registry block 내부 오류도 원문 없이 fixed driver receipt로 수렴한다."""
+    """ledger 이전의 contract failure는 block helper 자체를 호출하지 않는다."""
 
     driver = _driver()
     monkeypatch.setattr(
@@ -555,16 +559,15 @@ def test_terminal_block_exception_still_writes_fixed_terminal_receipt(
     monkeypatch.setattr(
         driver,
         "_block_terminal_m05_execution",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("discarded")),
+        lambda *_args, **_kwargs: pytest.fail("preclaim failure must not block execution"),
     )
 
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
-    assert receipt["status"] == "blocked"
-    assert receipt["phase"] == "runtime_execution_block_failed"
-    assert receipt["driver_phase"] == "runtime_execution_block_failed"
-    assert "discarded" not in json.dumps(receipt, sort_keys=True)
+    assert receipt["status"] == "preflight_rejected"
+    assert receipt["phase"] == "admission_failed"
+    assert receipt["driver_phase"] == "admission_failed"
 
 
 def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
@@ -611,8 +614,11 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert '"$post_snapshot" == "$initial_snapshot"' in launcher
     assert 'value.get("pinset_sha256") != expected_pinset' in launcher
     assert 'value.get("execution_identity_sha256") != expected_execution' in launcher
-    assert 'value.get("status") not in {"passed", "blocked"}' in launcher
-    assert 'raise SystemExit(0 if value["status"] == "passed" else 3)' in launcher
+    assert 'value.get("status") not in {"passed", "blocked", "preflight_rejected"}' in launcher
+    assert 'if value["status"] == "preflight_rejected"' in launcher
+    assert 'receipt_validation_status" == 4' in launcher
+    assert "PREFLIGHT_REJECTED_PHASES" in launcher
+    assert 'value["phase"] not in PREFLIGHT_REJECTED_PHASES' in launcher
     assert "if set(value) != expected_keys:" in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
@@ -884,6 +890,131 @@ def test_pair_preflight_runs_before_the_one_shot_ledger_claim() -> None:
     ledger_claim = source.index("claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)")
 
     assert pair_preflight < admission_contract < ledger_claim
+
+
+def test_root_launcher_checks_the_m05_pair_before_creating_an_output_leaf() -> None:
+    """wrong Map/PinVi provenance은 execution terminal·ledger를 소비하지 않는다."""
+
+    launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
+        encoding="utf-8"
+    )
+
+    pair_preflight = launcher.index("m05_isolated_e2e.py \\")
+    output_leaf = launcher.index('install -d -o root -g root -m 0700 "$output_dir"')
+
+    assert pair_preflight < output_leaf
+
+
+def test_preflight_rejects_a_pair_without_blocking_the_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """launcher preflight은 diagnostic-free failure만 반환하고 mutation을 하지 않는다."""
+
+    driver = _driver()
+    calls: list[str] = []
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: calls.append("release"))
+    monkeypatch.setattr(
+        driver, "_assert_current_m05_execution_is_runnable", lambda _expected: calls.append("execution")
+    )
+    monkeypatch.setattr(
+        driver,
+        "_source_pair_preflight",
+        lambda: (_ for _ in ()).throw(driver._PhaseError("pair_contract_invalid")),
+    )
+
+    assert driver.preflight("a" * 40) == 1
+    assert calls == ["release", "execution"]
+
+
+def test_driver_pair_failure_before_ledger_never_blocks_the_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """launcher preflight 뒤 source cache가 달라져도 terminal 실행권을 소비하지 않는다."""
+
+    driver = _driver()
+    calls: list[str] = []
+
+    class _Current:
+        execution_identity_sha256 = "b" * 64
+
+    class _Execution:
+        current = _Current()
+
+    class _Plan:
+        execution_identity_sha256 = "b" * 64
+
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
+    monkeypatch.setattr(
+        driver, "_assert_current_m05_execution_is_runnable", lambda _expected: _Execution()
+    )
+    monkeypatch.setattr(driver, "_root_directory", lambda _path: None)
+    monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
+    monkeypatch.setattr(driver, "M05IsolatedHarnessPlan", lambda *_args: _Plan())
+    monkeypatch.setattr(
+        driver,
+        "_source_pair_preflight",
+        lambda: (_ for _ in ()).throw(driver._PhaseError("pair_contract_invalid")),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_args, **_kwargs: calls.append("blocked") or True,
+    )
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert calls == []
+    assert receipt["status"] == "preflight_rejected"
+    assert receipt["phase"] == "pair_contract_invalid"
+
+
+def test_ledger_claim_attempt_failure_blocks_the_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """O_EXCL create 뒤 fsync가 실패해 ledger가 남을 수 있는 경계는 fail-close한다."""
+
+    driver = _driver()
+    calls: list[str] = []
+
+    class _Current:
+        execution_identity_sha256 = "b" * 64
+
+    class _Execution:
+        current = _Current()
+
+    class _Plan:
+        execution_identity_sha256 = "b" * 64
+
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
+    monkeypatch.setattr(
+        driver, "_assert_current_m05_execution_is_runnable", lambda _expected: _Execution()
+    )
+    monkeypatch.setattr(driver, "_root_directory", lambda _path: None)
+    monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
+    monkeypatch.setattr(driver, "M05IsolatedHarnessPlan", lambda *_args: _Plan())
+    monkeypatch.setattr(
+        driver,
+        "_source_pair_preflight",
+        lambda: (tmp_path, tmp_path, object(), "a" * 64, "b" * 40),
+    )
+    monkeypatch.setattr(
+        driver,
+        "claim_m05_isolated_harness_ledger",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("discarded")),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_args, **_kwargs: calls.append("blocked") or True,
+    )
+
+    assert driver.main("a" * 40, tmp_path) == 1
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+
+    assert calls == ["blocked"]
+    assert receipt["status"] == "blocked"
+    assert receipt["phase"] == "ledger_claim"
 
 
 def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:

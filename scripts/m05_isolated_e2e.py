@@ -1205,6 +1205,43 @@ def _assert_pinvi_manager_admission_contract(pinvi_root: Path) -> None:
         _fail("pinvi_manager_admission_contract_invalid")
 
 
+def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, str]:
+    """실행권을 소비하기 전에 pinned source pair의 integration 계약만 검사한다."""
+
+    ambient = dict(os.environ)
+    try:
+        os.environ.clear()
+        values = effective_environment(str(_ROOT / ".env"))
+    finally:
+        os.environ.clear()
+        os.environ.update(ambient)
+    state_paths = pinned_runtime_state_paths(
+        values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
+    )
+    sources = materialize_pinned_runtime_sources(
+        release=PINNED_RUNTIME_RELEASE, state_paths=state_paths, values=values
+    )
+    map_root, pinvi_root = (
+        sources.source_for("map").root,
+        sources.source_for("pinvi").root,
+    )
+    pair, service_openapi_sha256, service_source_revision = _pair(pinvi_root, map_root)
+    _assert_pinvi_manager_admission_contract(pinvi_root)
+    return map_root, pinvi_root, pair, service_openapi_sha256, service_source_revision
+
+
+def preflight(expected_revision: str) -> int:
+    """launcher용 비소비 source-materialization preflight; terminal/ledger를 쓰지 않는다."""
+
+    try:
+        _validate_trusted_release(expected_revision)
+        _assert_current_m05_execution_is_runnable(expected_revision)
+        _source_pair_preflight()
+    except (_PhaseError, OSError, RuntimeError, ValueError):
+        return 1
+    return 0
+
+
 def _pinvi_manager_admission_environment(
     *,
     env_file: Path,
@@ -1353,6 +1390,7 @@ def main(expected_revision: str, output: Path) -> int:
     completed = False
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
+    claim_attempted = False
     failure_diagnostic: str | None = None
     map_cleanup: _CleanupProject | None = None
     pinvi_cleanup: _CleanupProject | None = None
@@ -1373,30 +1411,19 @@ def main(expected_revision: str, output: Path) -> int:
             transaction,
         )
         phase = "source_materialization"
-        ambient = dict(os.environ)
-        try:
-            os.environ.clear()
-            values = effective_environment(str(_ROOT / ".env"))
-        finally:
-            os.environ.clear()
-            os.environ.update(ambient)
-        state_paths = pinned_runtime_state_paths(
-            values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
-        )
-        sources = materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE, state_paths=state_paths, values=values
-        )
-        map_root, pinvi_root = (
-            sources.source_for("map").root,
-            sources.source_for("pinvi").root,
-        )
-        pair, service_openapi_sha256, service_source_revision = _pair(
-            pinvi_root, map_root
-        )
-        _assert_pinvi_manager_admission_contract(pinvi_root)
+        (
+            map_root,
+            pinvi_root,
+            pair,
+            service_openapi_sha256,
+            service_source_revision,
+        ) = _source_pair_preflight()
         # source pair가 정합하지 않으면 one-shot ledger를 소비하지 않는다. 잘못 회전한
         # pinset은 source cache 검증까지만 하고, 새 valid pair가 ledger를 독점할 수 있다.
         phase = "ledger_claim"
+        # O_EXCL create 뒤 write/fsync/directory fsync가 실패해도 ledger가 남을 수 있다.
+        # 그러므로 call 성공이 아니라 claim 시도 시작부터 execution을 소비한 것으로 fail-close한다.
+        claim_attempted = True
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
         # setup 전체를 하나의 `runtime_setup` receipt로 뭉개면 새 immutable source가
         # 어느 안전 경계를 보정해야 하는지 알 수 없다. 아래 단계명은 raw exception,
@@ -2013,7 +2040,7 @@ def main(expected_revision: str, output: Path) -> int:
         if unexpected_finalization_failure or cleanup_failed:
             completed = False
             phase = "runtime_cleanup_failed"
-        if not completed:
+        if not completed and claim_attempted:
             try:
                 pinset_blocked = _block_terminal_m05_execution(
                     phase, expected_manager_revision=expected_revision
@@ -2035,7 +2062,13 @@ def main(expected_revision: str, output: Path) -> int:
             "execution_identity_sha256": (
                 plan.execution_identity_sha256 if plan is not None else None
             ),
-            "status": "passed" if completed else "blocked",
+            "status": (
+                "passed"
+                if completed
+                else "blocked"
+                if claim_attempted
+                else "preflight_rejected"
+            ),
             "transaction_id": transaction,
             **result_hashes,
         }
@@ -2049,6 +2082,10 @@ def main(expected_revision: str, output: Path) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or os.geteuid() != 0:
+    if os.geteuid() != 0:
+        raise SystemExit(2)
+    if len(sys.argv) == 3 and sys.argv[1] == "--preflight":
+        raise SystemExit(preflight(sys.argv[2]))
+    if len(sys.argv) != 3:
         raise SystemExit(2)
     raise SystemExit(main(sys.argv[1], Path(sys.argv[2])))

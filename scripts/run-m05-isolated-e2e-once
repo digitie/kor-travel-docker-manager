@@ -179,6 +179,15 @@ if [[ "$initial_execution_pinset" != "$initial_pinset" || "$initial_execution_re
   echo "M05 runtime execution snapshot differs from launch candidate" >&2
   exit 1
 fi
+# Map/PinVi integration provenance는 generic pin registry가 아니라 M05 adapter가 소유한다.
+# 이를 one-shot ledger/output leaf 전에 검사해 잘못 회전한 source pair가 execution terminal을
+# 소비하지 않게 한다. stderr 원문은 기존 launcher 경계와 같이 보관하지 않는다.
+if ! /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
+  /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
+  --preflight "$expected_revision" >/dev/null 2>&1; then
+  echo "M05 isolated source pair preflight is not runnable" >&2
+  exit 1
+fi
 has_unconditional_terminal_execution_block() {
   "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
@@ -265,6 +274,14 @@ PHASES = frozenset(
         "trusted_release_invalid", "trusted_release_revision_mismatch", "completed",
     }
 )
+PREFLIGHT_REJECTED_PHASES = frozenset(
+    {
+        "admission",
+        "source_materialization",
+        "pair_contract_invalid",
+        "pinvi_manager_admission_contract_invalid",
+    }
+)
 FRESH_INIT_REASONS = frozenset(
     {
         "migrator_dsn_missing", "image_alembic_root_invalid",
@@ -310,7 +327,7 @@ try:
         or value.get("manager_source_revision") != expected_revision
         or value.get("pinset_sha256") != expected_pinset
         or value.get("execution_identity_sha256") != expected_execution
-        or value.get("status") not in {"passed", "blocked"}
+        or value.get("status") not in {"passed", "blocked", "preflight_rejected"}
         or value.get("phase") not in PHASES
         or value.get("driver_phase") not in PHASES
         or not isinstance(value.get("cleanup_failed"), bool)
@@ -329,16 +346,34 @@ try:
             digest = value[key]
             if not isinstance(digest, str) or len(digest) != 64 or any(char not in HEX for char in digest):
                 raise ValueError
+    if value["status"] == "preflight_rejected" and (
+        value["phase"] not in PREFLIGHT_REJECTED_PHASES
+        or value["driver_phase"] != value["phase"]
+        or value["cleanup_failed"]
+        or driver_status == 0
+    ):
+        raise ValueError
     if "map_fresh_init_reason" in value and value["map_fresh_init_reason"] not in FRESH_INIT_REASONS:
         raise ValueError
 except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
     raise SystemExit(1)
-raise SystemExit(0 if value["status"] == "passed" else 3)
+raise SystemExit(
+    0
+    if value["status"] == "passed"
+    else 4
+    if value["status"] == "preflight_rejected"
+    else 3
+)
 PY
   receipt_validation_status="$?"
   set -e
 fi
 if [[ "$receipt_validation_status" == 0 ]]; then
+  exit "$driver_status"
+fi
+if [[ "$receipt_validation_status" == 4 ]]; then
+  # driver가 ledger claim 전에 source materialization/provenance를 거부했다. 이 경우는
+  # M05 execution을 소비하지 않았으므로 terminal fallback block을 만들지 않는다.
   exit "$driver_status"
 fi
 

@@ -83,6 +83,16 @@ launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descrip
 한 번 실행할 수 있다. `match` 전에는 terminal block을 쓰지 않는다. 이미 terminal로 block된 pinset은 이
 판정과 관계없이 재실행하지 않고 fresh source pair로만 교체한다.
 
+M05 one-shot launcher는 leaf와 one-shot ledger를 만들기 전에 M05 integration adapter의 비소비
+source-materialization pair preflight를 반드시 통과한다. 이 검사는 generic registry가 소유하지 않는 PinVi provenance의
+Map full revision·OpenAPI hash와 Manager-only admission contract만 대조한다. 따라서 `pin verify`가
+generic pin/execution/generation gate를 통과했어도, 문서 commit 등을 runtime Map revision으로 잘못 회전한
+pair는 E2E terminal이나 Compose mutation을 소비하지 않고 거부된다. pair가 통과한 뒤의 runtime failure만
+current v6 execution terminal로 기록한다. 단 one-shot ledger claim은 `O_EXCL` create 뒤 fsync 오류에도
+durable file을 남길 수 있으므로, claim 호출을 시작한 뒤의 오류는 성공 반환 여부와 무관하게 terminal로
+수렴한다. launcher가 fallback 없이 수용하는 `preflight_rejected` receipt는 strict pre-claim phase와
+`cleanup_failed:false`만 허용한다.
+
 ---
 
 ## 1. 절대 깨뜨리면 안 되는 불변식
