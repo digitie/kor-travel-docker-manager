@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from kor_travel_docker_manager.cli import build_parser
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV,
     RuntimeExecutionRegistryError,
@@ -13,6 +14,7 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
     load_runtime_execution_registry,
     migrate_execution_registry,
     rebind_execution_registry,
+    trusted_manager_source_revision,
     write_runtime_execution_registry,
 )
 from kor_travel_docker_manager.services.runtime_pin_registry import build_registry
@@ -96,3 +98,42 @@ def test_rebind_refuses_nonterminal_or_same_manager_revision() -> None:
             bound_by="tester",
             reason="wrong",
         )
+
+
+def test_trusted_manager_revision_requires_two_root_provenance_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / ".ktdm-source-revision").write_text(_MANAGER_A, encoding="utf-8")
+    (install / ".ktdm-release-manifest.json").write_text(
+        '{"manager_source_revision":"' + _MANAGER_A + '"}', encoding="utf-8"
+    )
+
+    monkeypatch.setattr("os.geteuid", lambda: 0, raising=False)
+    # tmp_path는 root가 소유하지 않으므로 public function은 fail-close한다.
+    with pytest.raises(RuntimeExecutionRegistryError, match="install root is unsafe"):
+        trusted_manager_source_revision(install_root=install)
+
+
+def test_cli_exposes_generic_execution_migration_and_rebind_commands() -> None:
+    parser = build_parser()
+    migrated = parser.parse_args(
+        ["pin", "migrate-execution-v6", "--reason", "migration", "--confirm"]
+    )
+    rebound = parser.parse_args(
+        [
+            "pin",
+            "rebind-execution",
+            "--expected-manager-revision",
+            _MANAGER_B,
+            "--reason",
+            "implementation fix",
+            "--confirm",
+        ]
+    )
+    shown = parser.parse_args(["pin", "show-execution", "--json"])
+
+    assert migrated.pin_action == "migrate-execution-v6"
+    assert rebound.expected_manager_revision == _MANAGER_B
+    assert shown.pin_action == "show-execution"

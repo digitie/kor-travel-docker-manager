@@ -31,6 +31,13 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     read_rebuild_journal,
 )
 from kor_travel_docker_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.runtime_execution_registry import (
+    load_runtime_execution_registry,
+    migrate_execution_registry,
+    rebind_execution_registry,
+    trusted_manager_source_revision,
+    write_runtime_execution_registry,
+)
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     block_runtime_pinset,
     build_registry,
@@ -526,6 +533,90 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     return exit_code
+
+
+def _print_execution_registry(registry: Any, *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(registry.to_payload(), ensure_ascii=False, indent=2))
+        return
+    current = registry.current
+    print(f"execution  {current.execution_identity_sha256}")
+    print(f"source-pin {current.source_pinset_sha256}")
+    print(f"manager    {current.manager_source_revision}")
+    print(f"bound      {current.bound_at} by {current.bound_by}")
+    print(f"reason     {current.reason}")
+    print(f"terminal   {registry.is_unconditionally_blocked_current()}")
+
+
+def _cmd_pin_migrate_execution(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin migrate-execution-v6 requires --confirm", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print("pin migrate-execution-v6 requires root", file=sys.stderr)
+        return 2
+    try:
+        with _runtime_pin_mutation_lock():
+            try:
+                load_runtime_execution_registry()
+            except DeploymentContractError:
+                pass
+            else:
+                print("runtime execution registry already exists; migration is refused", file=sys.stderr)
+                return 2
+            registry = migrate_execution_registry(
+                pins=load_runtime_pin_registry(),
+                manager_source_revision=trusted_manager_source_revision(),
+                bound_by=_pin_actor(),
+                reason=args.reason,
+            )
+            write_runtime_execution_registry(registry)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_rebind_execution(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("pin rebind-execution requires --confirm", file=sys.stderr)
+        return 2
+    if not _running_as_root():
+        print("pin rebind-execution requires root", file=sys.stderr)
+        return 2
+    try:
+        with _runtime_pin_mutation_lock():
+            trusted_revision = trusted_manager_source_revision()
+            if args.expected_manager_revision != trusted_revision:
+                print(
+                    "expected Manager revision differs from the trusted installed release",
+                    file=sys.stderr,
+                )
+                return 2
+            registry = rebind_execution_registry(
+                registry=load_runtime_execution_registry(),
+                pins=load_runtime_pin_registry(),
+                manager_source_revision=trusted_revision,
+                bound_by=_pin_actor(),
+                reason=args.reason,
+            )
+            write_runtime_execution_registry(registry)
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(registry, json_output=args.json)
+    return 0
+
+
+def _cmd_pin_show_execution(args: argparse.Namespace) -> int:
+    try:
+        registry = load_runtime_execution_registry()
+    except DeploymentContractError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _print_execution_registry(registry, json_output=args.json)
+    return 0
 
 
 def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
@@ -1263,6 +1354,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pin_verify.add_argument("--json", action="store_true")
     pin_verify.set_defaults(func=_cmd_pin_verify)
+
+    pin_migrate_execution = pin_subparsers.add_parser(
+        "migrate-execution-v6",
+        help="v5 source pin을 보존하고 trusted Manager-aware execution registry를 생성합니다.",
+    )
+    pin_migrate_execution.add_argument("--reason", required=True)
+    pin_migrate_execution.add_argument("--confirm", action="store_true")
+    pin_migrate_execution.add_argument("--json", action="store_true")
+    pin_migrate_execution.set_defaults(func=_cmd_pin_migrate_execution)
+
+    pin_rebind_execution = pin_subparsers.add_parser(
+        "rebind-execution",
+        help="terminal execution을 새 trusted Manager release로만 재결박합니다.",
+    )
+    pin_rebind_execution.add_argument("--expected-manager-revision", required=True)
+    pin_rebind_execution.add_argument("--reason", required=True)
+    pin_rebind_execution.add_argument("--confirm", action="store_true")
+    pin_rebind_execution.add_argument("--json", action="store_true")
+    pin_rebind_execution.set_defaults(func=_cmd_pin_rebind_execution)
+
+    pin_show_execution = pin_subparsers.add_parser(
+        "show-execution", help="현재 Manager-aware execution binding을 읽기 전용으로 출력합니다."
+    )
+    pin_show_execution.add_argument("--json", action="store_true")
+    pin_show_execution.set_defaults(func=_cmd_pin_show_execution)
 
     pin_publish_generation = pin_subparsers.add_parser(
         "publish-generation",

@@ -39,6 +39,7 @@ RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV: Final = (
 
 _TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
 _TRUSTED_PUBLIC_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-public")
+_TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
 _DEFAULT_BASENAME: Final = "runtime-executions.json"
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -276,6 +277,70 @@ def runtime_execution_registry_path() -> Path:
 def runtime_execution_registry_public_path() -> Path:
     configured = os.environ.get(RUNTIME_EXECUTIONS_PUBLIC_FILE_ENV, "").strip()
     return Path(configured) if configured else _TRUSTED_PUBLIC_ROOT / _DEFAULT_BASENAME
+
+
+def _read_trusted_text(path: Path, *, expected_uid: int) -> str:
+    try:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != expected_uid
+            or stat.S_IMODE(before.st_mode) != 0o644
+        ):
+            raise RuntimeExecutionRegistryError("trusted Manager provenance file is unsafe")
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as exc:
+        raise RuntimeExecutionRegistryError("trusted Manager provenance cannot be opened") from exc
+    try:
+        after = os.fstat(descriptor)
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+            raise RuntimeExecutionRegistryError("trusted Manager provenance changed while reading")
+        raw = os.read(descriptor, 1_000_001)
+    finally:
+        os.close(descriptor)
+    if len(raw) > 1_000_000:
+        raise RuntimeExecutionRegistryError("trusted Manager provenance is too large")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeExecutionRegistryError("trusted Manager provenance is not text") from exc
+
+
+def trusted_manager_source_revision(*, install_root: Path = _TRUSTED_INSTALL_ROOT) -> str:
+    """clean trusted installation에서만 Manager revision을 읽는다.
+
+    CLI/환경 입력을 수용하지 않는다. 이 값은 execution rebind를 위한 freshness 권한이므로
+    root-owned install directory와 provenance 두 파일이 모두 exact contract를 만족해야 한다.
+    """
+
+    try:
+        root = install_root.lstat()
+    except OSError as exc:
+        raise RuntimeExecutionRegistryError("trusted Manager install root cannot be inspected") from exc
+    if (
+        install_root.is_symlink()
+        or not stat.S_ISDIR(root.st_mode)
+        or root.st_uid != 0
+        or stat.S_IMODE(root.st_mode) & 0o022
+    ):
+        raise RuntimeExecutionRegistryError("trusted Manager install root is unsafe")
+    revision = _revision(
+        _read_trusted_text(
+            install_root / ".ktdm-source-revision", expected_uid=0
+        ).strip(),
+        "trusted Manager source revision",
+    )
+    try:
+        manifest = json.loads(
+            _read_trusted_text(
+                install_root / ".ktdm-release-manifest.json", expected_uid=0
+            )
+        )
+    except json.JSONDecodeError as exc:
+        raise RuntimeExecutionRegistryError("trusted Manager release manifest is invalid") from exc
+    if not isinstance(manifest, dict) or manifest.get("manager_source_revision") != revision:
+        raise RuntimeExecutionRegistryError("trusted Manager provenance revisions differ")
+    return revision
 
 
 def _insecure_mode_allowed() -> bool:
