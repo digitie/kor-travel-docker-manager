@@ -891,11 +891,17 @@ def test_free_ports_uses_the_standard_ss_binary(
         "map_dagster",
         "map_postgres",
         "map_rustfs",
+        "map_rustfs_console",
         "pinvi_api",
         "pinvi_web",
         "pinvi_rustfs",
+        "pinvi_rustfs_console",
         "pinvi_dagster",
+        "pinvi_cadvisor",
+        "pinvi_prometheus",
+        "pinvi_grafana",
     }
+    assert len(set(ports.values())) == len(ports)
     assert commands
     assert {command[0] for command in commands} == {"/usr/bin/ss"}
 

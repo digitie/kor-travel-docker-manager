@@ -2,6 +2,14 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — isolated runtime의 전체 host-port 예약을 단일화
+
+M05 isolated driver가 RustFS console port를 storage port의 `+1`로 유도했지만, 예약 표에는 그 값을 별도
+항목으로 넣지 않아 다음 서비스의 동적 port와 겹칠 수 있었다. Map RustFS console, PinVi RustFS console과
+PinVi wrapper가 기동 전 검사하는 observability endpoint까지 모두 독립 port로 예약하고, 모든 값의 유일성을
+회귀로 고정했다. 이는 PinVi 특례가 아니라, 여러 Compose lifecycle을 한 driver가 준비할 때 실제 host publish
+집합과 preflight 집합을 같게 만드는 일반 host-port allocation 보정이다.
+
 ## 2026-08-29 — isolated PinVi image build를 runtime start 전에 명시
 
 isolated PinVi `docker-app.sh up`은 local API image가 이미 존재한다고 가정한다. pinned source만 materialize한
