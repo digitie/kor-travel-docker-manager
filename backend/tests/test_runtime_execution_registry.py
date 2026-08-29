@@ -178,7 +178,7 @@ def test_cli_legacy_terminal_migration_creates_only_the_current_execution(
     saved: list[object] = []
 
     monkeypatch.setattr(cli, "_running_as_root", lambda: True)
-    monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda: nullcontext())
+    monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda **_kwargs: nullcontext())
     monkeypatch.setattr(
         cli,
         "load_runtime_execution_registry",
@@ -228,7 +228,7 @@ def test_cli_pair_rotation_advances_an_existing_execution_binding(
     )
     saved: list[object] = []
 
-    monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda: nullcontext())
+    monkeypatch.setattr(cli, "_runtime_pin_mutation_lock", lambda **_kwargs: nullcontext())
     monkeypatch.setattr(cli, "load_runtime_execution_registry", lambda: executions)
     monkeypatch.setattr(cli, "trusted_manager_source_revision", lambda: _MANAGER_A)
     monkeypatch.setattr(cli, "rotate_pair_with_execution", lambda **_kwargs: saved.append(_kwargs) or rotated_pins)
@@ -342,6 +342,13 @@ def test_pending_pair_rotation_refuses_a_different_target(
         execution_registry=target_executions,
     )
     pair_rotation._atomic_write(transaction, pending.to_payload())
+
+    monkeypatch.setattr(cli, "_GLOBAL_MUTATION_LOCK_PATH", tmp_path / "missing.lock")
+    with pytest.raises(RuntimePairRotationError, match="incomplete"):
+        with cli._runtime_pin_mutation_lock():
+            pass
+    with cli._runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
+        pass
 
     with pytest.raises(RuntimePairRotationError, match="different target"):
         rotate_pair_with_execution(

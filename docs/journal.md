@@ -17,6 +17,13 @@ trusted Manager revision의 `rotate-pair`는 target 전체를 idempotent하게 �
 파일 편집 없이 복구한다. 다른 target은 미완료 intent를 덮지 못한다. M05는 이 일반 runtime
 lifecycle의 consumer일 뿐 transaction schema에는 등장하지 않는다.
 
+후속 재리뷰에서 intent가 남은 사이 다른 root mutation이 execution terminal/rebind audit을
+바꾼 뒤 recovery가 과거 target을 다시 쓰는 P1도 발견했다. pending 검사를 Compose나 M05에만
+둘 수 없으므로, `ktdctl`의 공통 runtime mutation lock이 기본적으로 intent를 거부하도록
+올렸다. `rotate-pair`만 recovery target을 transaction helper에서 exact 대조하므로 예외다.
+따라서 init·단일 rotate·block·rollback·generation publish·execution migrate/rebind/block과
+대기 요청 적용 모두 pending state를 관측하면 write 전에 멈춘다.
+
 ## 2026-08-29 — source pair 회전과 v6 execution을 함께 이행
 
 v6 registry가 존재하는 host에서 `rotate-pair`가 v5 source registry만 바꾸면 current execution은

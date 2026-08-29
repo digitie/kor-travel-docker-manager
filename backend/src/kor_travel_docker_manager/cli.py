@@ -782,7 +782,7 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
         print("pin rotate-pair requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        with _runtime_pin_mutation_lock():
+        with _runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
             try:
                 executions = load_runtime_execution_registry()
             except DeploymentContractError:
@@ -866,14 +866,29 @@ def _running_as_root() -> bool:
 
 
 @contextmanager
-def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) -> Iterator[None]:
+def _runtime_pin_mutation_lock(
+    *,
+    allow_inherited_terminal_block: bool = False,
+    allow_pending_pair_recovery: bool = False,
+) -> Iterator[None]:
     """모든 runtime pin mutation을 one-shot과 직렬화한다.
 
     one-shot launcher의 terminal fallback만 검증한 inherited descriptor로 재진입할 수
     있다. 그 밖의 `init`·공개 복사·회전·rollback·block은 별도 SSH/CLI 호출이므로 lock이
     비어 있을 때만 수행한다. 따라서 출력 회수 지연을 실패로 오인해 실행 중 candidate를
-    봉인하거나 pair/generation을 바꿀 수 없다.
+    봉인하거나 pair/generation을 바꿀 수 없다. pair+execution durable intent가 남아 있으면
+    모든 mutation을 거부한다. 유일한 예외는 동일 target을 끝까지 publish하는
+    ``rotate-pair`` recovery이며, 그 target 대조는 transaction helper가 소유한다.
     """
+
+    def reject_pending_pair_rotation() -> None:
+        if allow_pending_pair_recovery:
+            return
+        from kor_travel_docker_manager.services.runtime_pair_rotation import (
+            require_no_pending_runtime_pair_rotation,
+        )
+
+        require_no_pending_runtime_pair_rotation()
 
     inherited_text = os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, "")
     if inherited_text:
@@ -900,6 +915,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise DeploymentContractError("runtime pin mutation inherited lock is not held") from exc
+        reject_pending_pair_rotation()
         yield
         return
 
@@ -911,6 +927,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
     except FileNotFoundError:
         # 개발·테스트처럼 launcher를 한 번도 실행하지 않은 환경에는 active global
         # mutation이 없으므로, registry 자체의 root ownership gate에 맡긴다.
+        reject_pending_pair_rotation()
         yield
         return
     except PermissionError:
@@ -919,6 +936,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
         # 이어지는 root-owned registry write 자체가 거절된다. 따라서 권한 없는 개발
         # 호출을 active mutation으로 오인하지 않는다.
         if getattr(os, "geteuid", lambda: 1)() != 0:
+            reject_pending_pair_rotation()
             yield
             return
         raise DeploymentContractError("runtime pin mutation lock is unavailable") from None
@@ -931,6 +949,7 @@ def _runtime_pin_mutation_lock(*, allow_inherited_terminal_block: bool = False) 
             raise DeploymentContractError(
                 "runtime pin mutation is refused while a Manager mutation is active"
             ) from exc
+        reject_pending_pair_rotation()
         yield
     finally:
         os.close(descriptor)

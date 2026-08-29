@@ -24,7 +24,9 @@ map·pinvi 저장소 쪽 태스크(3부)는 본 저장소에서 실행할 수 �
   `ktdctl pin rotate-pair`는 v6 host에서 두 target을 먼저 검증·계산한 뒤 root-only
   durable rotation intent를 기록하고, v5/v6의 private/public 사본을 모두 다시 쓴 후에만
   intent를 지운다. 중간 write/fsync/권한 오류는 intent를 남기며 모든 runtime mutation과
-  `pin verify`를 fail-close한다. 같은 Map SHA·PinVi SHA·trusted Manager SHA로
+  `pin verify`를 fail-close한다. 이 gate는 공통 mutation lock에 있으므로 `init`·단일
+  `rotate`·`block`·`rollback`·execution rebind/block·generation publish·대기 요청 적용도
+  pending intent를 바꾸거나 audit을 덮어쓸 수 없다. 같은 Map SHA·PinVi SHA·trusted Manager SHA로
   `rotate-pair`를 다시 실행하면 manual file edit 없이 정확히 그 target을 idempotent하게
   완료한다. 다른 target은 복구 중인 state를 덮지 못한다. 이는 특정 M05 규칙이 아니라
   여러 runtime registry를 사용하는 일반 `ktdctl` lifecycle 계약이다.
