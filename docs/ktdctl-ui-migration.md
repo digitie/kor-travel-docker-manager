@@ -87,9 +87,12 @@ no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
   legacy terminal은 v5 source audit에 그대로 둔다. 새 execution의 terminal은 실제 v6 실행
   결과로만 기록한다.
 - `ktdctl pin rebind-execution --expected-manager-revision <40-hex> --confirm`의
-  revision은 trusted installed revision과의 TOCTOU 확인값일 뿐이다. terminal current와
-  다른 trusted Manager revision일 때만 Map/PinVi source를 건드리지 않고 새 execution
-  identity를 만든다.
+  revision은 trusted installed revision과의 TOCTOU 확인값일 뿐이다. current가 terminal인지와
+  무관하게 다른 trusted Manager revision일 때만 Map/PinVi source를 건드리지 않고 새 execution
+  identity를 만든다. host-global mutation lock이 실행 중인 mutation과의 경쟁을 막으므로,
+  ledger를 claim하지 못한 preflight rejection 뒤 release-only 보정도 새 source SHA 없이 일반적으로
+  이행할 수 있다. private write 뒤 public copy publish가 중단된 경우 같은 exact target rebind는
+  새 identity를 만들지 않고 두 사본을 idempotent하게 다시 publish해 parity를 복구한다.
 - `ktdctl pin rotate-pair`는 source pair가 실제로 바뀌면 existing v6 registry의 current execution도
   durable rotation intent 아래 새 source pinset으로 이행한다. mutation lease는 동시 write를
   직렬화하고, intent는 다중 registry write의 중단을 recoverable하게 만든다. 이는 source를 바꾸지 않는

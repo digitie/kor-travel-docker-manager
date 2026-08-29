@@ -2,6 +2,21 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — terminal 여부와 무관한 일반 execution rebind
+
+trusted Manager release 설치 뒤 current execution이 이전 release를 가리키면 `pin verify`는 stale로
+fail-close하지만, 기존 rebind는 current가 terminal인 경우만 허용했다. ledger claim 전 preflight
+rejection처럼 runtime mutation을 소비하지 않은 execution도 새 Manager-only implementation으로 이행할
+수 없어, source SHA를 불필요하게 바꾸거나 root registry를 수동 편집해야 하는 일반 lifecycle 결함이었다.
+
+`ktdctl pin rebind-execution`은 이제 같은 Map/PinVi source와 **다른** trusted Manager revision이면
+current terminal 여부와 무관하게 새 v6 execution identity를 append한다. root 전용 host-global mutation
+lock은 계속 유지되어 active rebuild/E2E와 경쟁하지 않으며, old execution·terminal audit은 history와
+block list에 보존된다. private registry publish 뒤 public copy write가 실패·중단되면 private current가
+already exact target을 보존하므로, 같은 target rebind는 새 identity를 만들지 않고 private/public parity를
+idempotent하게 복구한다. 이 동작은 M05에 한정되지 않는 Manager release lifecycle이고, Map/PinVi business
+contract를 generic execution registry에 추가하지 않는다.
+
 ## 2026-08-29 — preflight publish 불일치의 root-only 안전 증거
 
 rendered Compose preflight는 execution 소비 전 잘못된 publish를 멈추지만, raw config 전체를

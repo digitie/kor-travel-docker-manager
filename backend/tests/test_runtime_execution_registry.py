@@ -10,6 +10,7 @@ import pytest
 
 from kor_travel_docker_manager import cli
 from kor_travel_docker_manager.cli import build_parser
+from kor_travel_docker_manager.services import runtime_execution_registry as execution_registry
 from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV,
@@ -118,24 +119,34 @@ def test_execution_verify_requires_an_exact_public_copy(
     assert verify_runtime_execution_registry()["execution_public_copy"] == "malformed"
 
 
-def test_terminal_execution_can_rebind_only_for_new_manager_revision() -> None:
+def test_execution_can_rebind_only_for_new_manager_revision() -> None:
     pins = _pins()
     registry = migrate_execution_registry(
         pins=pins, manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
     )
-    terminal = block_current_execution(registry=registry, reason="terminal")
     rebound = rebind_execution_registry(
-        registry=terminal,
+        registry=registry,
         pins=pins,
         manager_source_revision=_MANAGER_B,
         bound_by="tester",
         reason="Manager fix",
     )
 
-    assert rebound.current.source_pinset_sha256 == terminal.current.source_pinset_sha256
-    assert rebound.current.execution_identity_sha256 != terminal.current.execution_identity_sha256
-    assert len(rebound.blocked_executions) == 1
+    assert rebound.current.source_pinset_sha256 == registry.current.source_pinset_sha256
+    assert rebound.current.execution_identity_sha256 != registry.current.execution_identity_sha256
+    assert not rebound.blocked_executions
     assert not rebound.is_unconditionally_blocked_current()
+
+    terminal = block_current_execution(registry=registry, reason="terminal")
+    terminal_rebound = rebind_execution_registry(
+        registry=terminal,
+        pins=pins,
+        manager_source_revision=_MANAGER_B,
+        bound_by="tester",
+        reason="Manager fix",
+    )
+    assert len(terminal_rebound.blocked_executions) == 1
+    assert not terminal_rebound.is_unconditionally_blocked_current()
 
 
 def test_source_rotation_creates_a_new_execution_and_preserves_terminal_audit() -> None:
@@ -403,27 +414,68 @@ def test_pending_pair_rotation_refuses_a_different_target(
         )
 
 
-def test_rebind_refuses_nonterminal_or_same_manager_revision() -> None:
+def test_rebind_same_manager_revision_is_an_exact_target_repair() -> None:
     pins = _pins()
     registry = migrate_execution_registry(
         pins=pins, manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
     )
-    with pytest.raises(RuntimeExecutionRegistryError, match="not terminal"):
+    assert (
         rebind_execution_registry(
             registry=registry,
             pins=pins,
-            manager_source_revision=_MANAGER_B,
-            bound_by="tester",
-            reason="wrong",
-        )
-    with pytest.raises(RuntimeExecutionRegistryError, match="did not change"):
-        rebind_execution_registry(
-            registry=block_current_execution(registry=registry, reason="terminal"),
-            pins=pins,
             manager_source_revision=_MANAGER_A,
             bound_by="tester",
-            reason="wrong",
+            reason="retry",
         )
+        == registry
+    )
+
+
+def test_same_target_rebind_recovers_after_the_public_copy_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private = tmp_path / "private.json"
+    public = tmp_path / "public.json"
+    monkeypatch.setenv("KTDM_RUNTIME_EXECUTIONS_FILE", str(private))
+    monkeypatch.setenv("KTDM_RUNTIME_EXECUTIONS_PUBLIC_FILE", str(public))
+    initial = migrate_execution_registry(
+        pins=_pins(), manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
+    )
+    write_runtime_execution_registry(initial)
+    target = rebind_execution_registry(
+        registry=initial,
+        pins=_pins(),
+        manager_source_revision=_MANAGER_B,
+        bound_by="tester",
+        reason="release",
+    )
+
+    original_write = execution_registry._write
+
+    def fail_public(path: Path, payload: object, *, mode: int) -> None:
+        if path == public:
+            raise OSError("simulated public copy failure")
+        original_write(path, payload, mode=mode)
+
+    monkeypatch.setattr(execution_registry, "_write", fail_public)
+    with pytest.raises(OSError, match="simulated public copy failure"):
+        write_runtime_execution_registry(target)
+
+    partial = load_runtime_execution_registry()
+    assert partial == target
+    assert verify_runtime_execution_registry()["execution_public_copy"] != "current"
+
+    monkeypatch.setattr(execution_registry, "_write", original_write)
+    repaired = rebind_execution_registry(
+        registry=partial,
+        pins=_pins(),
+        manager_source_revision=_MANAGER_B,
+        bound_by="tester",
+        reason="retry",
+    )
+    assert repaired == target
+    write_runtime_execution_registry(repaired)
+    assert verify_runtime_execution_registry()["execution_public_copy"] == "current"
 
 
 def test_trusted_manager_revision_requires_two_root_provenance_records(
