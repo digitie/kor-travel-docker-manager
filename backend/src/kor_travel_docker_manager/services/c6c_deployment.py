@@ -27,6 +27,10 @@ from urllib.parse import quote, unquote, urlencode, urlsplit
 import yaml
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services.loopback_readiness import (
+    LOOPBACK_HTTP_READINESS_ATTEMPTS,
+    LOOPBACK_HTTP_READINESS_RETRY_SECONDS,
+)
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
@@ -245,8 +249,6 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
         _PINVI_ADMIN_PASSWORD_ENV,
     }
 )
-_SMOKE_CONNECTION_ATTEMPTS = 30
-_SMOKE_CONNECTION_RETRY_SECONDS = 1.0
 _SAFE_GET_READINESS_ATTEMPTS = 2
 _T = TypeVar("_T")
 # 읽기 전용 docker/git 조회 주입점. Docker 없는 단위 검증이 argv를 그대로 관측한다.
@@ -6420,7 +6422,7 @@ def _session_request(
             attempt_count=(
                 _SAFE_GET_READINESS_ATTEMPTS
                 if retry_safe_get_readiness
-                else _SMOKE_CONNECTION_ATTEMPTS
+                else LOOPBACK_HTTP_READINESS_ATTEMPTS
             ),
             retry_timeout=retry_safe_get_readiness,
         )
@@ -6436,7 +6438,9 @@ def _retry_smoke_connection(
 ) -> _T:
     """컨테이너 health 직후의 loopback 연결 race만 제한적으로 재시도한다."""
 
-    attempt_count = _SMOKE_CONNECTION_ATTEMPTS if attempt_count is None else attempt_count
+    attempt_count = (
+        LOOPBACK_HTTP_READINESS_ATTEMPTS if attempt_count is None else attempt_count
+    )
     if attempt_count < 1:
         raise ValueError("smoke retry attempt count must be positive")
     for attempt in range(attempt_count):
@@ -6457,7 +6461,7 @@ def _retry_smoke_connection(
                 or attempt + 1 == attempt_count
             ):
                 raise
-            time.sleep(_SMOKE_CONNECTION_RETRY_SECONDS)
+            time.sleep(LOOPBACK_HTTP_READINESS_RETRY_SECONDS)
     raise AssertionError("unreachable smoke retry state")
 
 

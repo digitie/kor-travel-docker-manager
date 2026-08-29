@@ -35,6 +35,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     effective_environment,
 )
+from kor_travel_docker_manager.services.loopback_readiness import (
+    LOOPBACK_HTTP_READINESS_ATTEMPTS,
+    LOOPBACK_HTTP_READINESS_RETRY_SECONDS,
+)
 from kor_travel_docker_manager.services.m05_isolated_harness import (
     M05IsolatedHarnessPlan,
     M05IsolatedNetworkExpectation,
@@ -125,9 +129,6 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     55: "metadata_contract_invalid",
     127: "unclassified",
 }
-_MAP_HEALTH_TRANSPORT_ATTEMPTS = 6
-_MAP_HEALTH_TRANSPORT_RETRY_SECONDS = 1
-
 # terminal pinset registry는 비-root도 읽는 감사 표면이다. driver의 예외 원문을
 # reason에 흘리지 않고, 다음 immutable candidate의 보정 범위만 나타내는 고정 phase만
 # 허용한다. 이 집합 밖의 값은 가장 좁은 안전 진단으로 수렴한다.
@@ -174,6 +175,7 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "runtime_http_url_invalid",
         "runtime_image_identity_invalid",
         "runtime_inspect_invalid",
+        "runtime_loopback_publish_invalid",
         "runtime_execution_block_failed",
         "runtime_execution_registry_changed",
         "runtime_execution_registry_invalid",
@@ -813,14 +815,14 @@ def _http_json(
 
 
 def _wait_for_map_health(*, url: str) -> dict[str, object]:
-    """Compose health와 host loopback publish 사이의 짧은 경합만 같은 one-shot 안에서 흡수한다.
+    """Container health와 host loopback publish 사이의 bounded 경합만 one-shot 안에서 흡수한다.
 
     HTTP status와 응답 계약 오류는 즉시 terminal로 보존한다. 재시도 대상은 API container가
     healthy가 된 직후 host publish socket이 아직 수신하지 않는 transport 오류뿐이며, 원문
     socket detail은 저장하지 않는다.
     """
 
-    for attempt in range(_MAP_HEALTH_TRANSPORT_ATTEMPTS):
+    for attempt in range(LOOPBACK_HTTP_READINESS_ATTEMPTS):
         try:
             return _http_json(
                 url,
@@ -831,10 +833,10 @@ def _wait_for_map_health(*, url: str) -> dict[str, object]:
         except _PhaseError as error:
             if (
                 error.phase != "map_health_transport_failed"
-                or attempt + 1 == _MAP_HEALTH_TRANSPORT_ATTEMPTS
+                or attempt + 1 == LOOPBACK_HTTP_READINESS_ATTEMPTS
             ):
                 raise
-            time.sleep(_MAP_HEALTH_TRANSPORT_RETRY_SECONDS)
+            time.sleep(LOOPBACK_HTTP_READINESS_RETRY_SECONDS)
     raise AssertionError("map health retry loop must return or raise")
 
 
@@ -1286,6 +1288,38 @@ def _container_id(
     return value
 
 
+def _container_inspect(container_id: str) -> dict[str, Any]:
+    """Read one Docker inspect object without allowing its raw payload into a receipt."""
+
+    try:
+        value = json.loads(
+            _command("/usr/bin/docker", "container", "inspect", container_id, capture=True)
+        )[0]
+    except (IndexError, TypeError, json.JSONDecodeError):
+        _fail("runtime_inspect_invalid")
+    if not isinstance(value, dict):
+        _fail("runtime_inspect_invalid")
+    return value
+
+
+def _assert_loopback_tcp_publish(
+    container: Mapping[str, Any], *, container_port: int, host_port: int
+) -> None:
+    """Verify the generic host-loopback publish prerequisite before making HTTP readiness calls."""
+
+    network_settings = container.get("NetworkSettings")
+    ports = network_settings.get("Ports") if isinstance(network_settings, Mapping) else None
+    bindings = ports.get(f"{container_port}/tcp") if isinstance(ports, Mapping) else None
+    if (
+        not isinstance(bindings, list)
+        or len(bindings) != 1
+        or not isinstance(bindings[0], Mapping)
+        or bindings[0].get("HostIp") != "127.0.0.1"
+        or bindings[0].get("HostPort") != str(host_port)
+    ):
+        _fail("runtime_loopback_publish_invalid")
+
+
 def _image_id(reference: str) -> str:
     value = _command(
         "/usr/bin/docker",
@@ -1316,15 +1350,6 @@ def _build_runtime_provenance(
     image_references: dict[str, str],
     path: Path,
 ) -> str:
-    def inspect_container(item: str) -> dict[str, Any]:
-        try:
-            value = json.loads(
-                _command("/usr/bin/docker", "container", "inspect", item, capture=True)
-            )[0]
-        except (IndexError, TypeError, json.JSONDecodeError):
-            _fail("runtime_inspect_invalid")
-        return value
-
     def inspect_network(item: str) -> dict[str, Any]:
         try:
             value = json.loads(
@@ -1368,8 +1393,8 @@ def _build_runtime_provenance(
         },
     )
     containers = {
-        "map-api": inspect_container(map_api_container),
-        "pinvi-api": inspect_container(pinvi_api_container),
+        "map-api": _container_inspect(map_api_container),
+        "pinvi-api": _container_inspect(pinvi_api_container),
     }
     topology_images = {
         map_api_id: inspect_image(image_references["map-api"]),
@@ -1730,6 +1755,17 @@ def main(expected_revision: str, output: Path) -> int:
             ),
             failure_phase="map_application_start_failed",
         )
+        # ``docker compose up --wait``가 container health를 돌려도 host publish
+        # binding은 별도 runtime 경계다. HTTP retry보다 먼저 generic binding을
+        # 검사해 잘못된 Compose topology를 transport timeout으로 오분류하지 않는다.
+        map_api = _container_id(
+            plan.map_project, "api", root=map_root, env_file=map_env, files=map_files
+        )
+        _assert_loopback_tcp_publish(
+            _container_inspect(map_api),
+            container_port=13701,
+            host_port=ports["map_api"],
+        )
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
         _wait_for_map_health(url=f"{admin_url}/health")
         phase = "map_subscription"
@@ -1789,9 +1825,6 @@ def main(expected_revision: str, output: Path) -> int:
                 "--wait",
                 "app-dagster",
             ),
-        )
-        map_api = _container_id(
-            plan.map_project, "api", root=map_root, env_file=map_env, files=map_files
         )
         pinvi_api = _container_id(
             plan.pinvi_project,

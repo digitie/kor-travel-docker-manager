@@ -2,6 +2,21 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — 일반 loopback publish readiness를 container health와 분리
+
+isolated one-shot의 Map consumer만 container health 뒤 host loopback health GET을 여섯 번만
+재시도해, 이미 일반 Manager smoke가 쓰는 30초 bounded startup 정책보다 짧았다. Container의
+healthcheck 성공은 host publish socket의 즉시 수신을 보장하지 않으므로, 이 차이는 M05 업무
+계약이 아니라 일반적인 Docker runtime lifecycle 결함이었다.
+
+driver는 HTTP 전에 Docker inspect의 정확한 `127.0.0.1:<host-port>` TCP binding을 검사한다.
+따라서 잘못된 bridge/publish topology는 transport timeout으로 잘못 분류되지 않고
+`runtime_loopback_publish_invalid`으로 즉시 fail-close한다. binding이 맞으면 body 없는
+loopback health GET의 transport 오류만 1초 간격 최대 30회 같은 one-shot 안에서 기다린다.
+HTTP status와 JSON 계약 오류는 재시도하지 않는다. 이 policy는 Manager가 보편적으로 관리하는
+컨테이너의 readiness 경계이며 Map·PinVi provenance, pin registry, 혹은 M05 business 규칙을
+generic primitive에 넣지 않는다.
+
 ## 2026-08-29 — 일반 runtime pair 회전의 durable recovery
 
 전문 적대 리뷰가 기존 `rotate-pair`의 P1을 확인했다. host-global mutation lock은 동시

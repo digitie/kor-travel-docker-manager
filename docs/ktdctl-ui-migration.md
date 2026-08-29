@@ -107,6 +107,11 @@ no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
   Map/PinVi business 규칙을 넣지 않으며, 불일치는 execution terminal을 소비하지 않는다.
 - 문서-only Map/PinVi merge는 위 execution identity를 바꾸지 않고 즉시 병합한다. raw
   E2E forensic은 M05 완주 전까지 gitignored local 분석 파일에만 기록한다.
+- Manager의 공통 host-loopback readiness 정책은 Compose container health와 publish readiness를
+  같은 사실로 취급하지 않는다. isolated consumer는 publish binding을 먼저 exact 검사하고,
+  body 없는 loopback health GET의 transport 오류만 30초 bounded 창에서 재시도한다. HTTP
+  status·응답 계약 오류는 즉시 fail-close하며, 현재 M05 adapter는 이 일반 runtime 실행
+  경계를 소비할 뿐 M05 business 규칙을 generic primitive에 넣지 않는다.
 
 ---
 
