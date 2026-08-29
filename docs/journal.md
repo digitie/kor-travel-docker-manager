@@ -2,6 +2,14 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-29 — generic direct-command failure forensic boundary
+
+Compose config 이외의 direct child command가 실패하면 fixed `runtime_command_failed`만 남아 root operator도
+exit code와 bounded stderr를 확인할 수 없었다. generic failure evidence writer는 이제 raw command·env를
+기록하지 않고 return code만 담은 root-only receipt를 남기며, 명시적 forensic opt-in에서만 이미 bounded-drain한
+stderr 최대 256 KiB를 별도 `0600` artifact로 보존한다. PinVi isolated startup은 이 공통 경계를 사용하고,
+default discard·one-shot terminal·source provenance는 바뀌지 않는다.
+
 ## 2026-08-29 — isolated loopback admin 요청의 bridge gateway admission
 
 rendered loopback publish가 정상인데 host root driver의 Map admin subscription 요청이 실패한 candidate를
