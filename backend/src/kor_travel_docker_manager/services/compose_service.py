@@ -6570,7 +6570,9 @@ class ComposeService:
             candidate_environment = {
                 **build.compose_environment(),
                 **artifact_directories.compose_environment(),
-                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
+                    map_candidate.application_contract.application_head
+                ),
             }
             with _pinned_runtime_prejournal_step("candidate_snapshot"):
                 candidate_transaction, _ = self._capture_transaction_unlocked(
@@ -6624,6 +6626,17 @@ class ComposeService:
                 self._verify_pinned_runtime_pinvi_bootstrap_settings(
                     transaction=candidate_transaction,
                 )
+                map_application_output = _run_pinned_runtime_static_command(
+                    image_ids["kor-travel-map-api"],
+                    ("head",),
+                    label="Map application",
+                    entrypoint="/usr/local/bin/ktm-application-schema",
+                )
+                map_application_head = parse_candidate_static_head(
+                    map_application_output,
+                    schema="kor-travel-map.application-head.v1",
+                    field="head",
+                )
                 map_dagster_output = _run_pinned_runtime_static_command(
                     image_ids["kor-travel-map-dagster"],
                     ("head",),
@@ -6649,6 +6662,7 @@ class ComposeService:
                     sources=sources,
                     map_application_300_candidate=map_candidate,
                     image_ids=image_ids,
+                    map_application_head=map_application_head,
                     map_dagster_head=map_dagster_head,
                     pinvi_head=pinvi_head,
                 )
@@ -6660,7 +6674,9 @@ class ComposeService:
                     candidate_generation,
                     artifact_directories=artifact_directories,
                 ),
-                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
+                    candidate_generation.map_application_head
+                ),
             }
             runtime_transaction, _ = self._capture_transaction_unlocked(
                 environment_override=runtime_environment,

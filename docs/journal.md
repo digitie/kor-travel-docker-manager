@@ -2,6 +2,47 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-31 — Map application head 값 고정 해제: 리터럴 11사본을 candidate 선언으로
+
+Map이 migration을 **하나**(`301_m03_import_children`) 더하자 Manager가 candidate를 거절했다.
+막은 것은 배포 계약이 아니라 `application_head = "300"` 리터럴 열한 사본이었다.
+
+**가장 위험했던 것은 계약 검증이 아니라 환경변수 세 개다.**
+`KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD`가 `compose_service.py` 두 곳(candidate 환경,
+runtime 환경)과 `scripts/m05_isolated_e2e.py`에서 리터럴이었다. 이 값이 head와 다르면 Map API
+컨테이너가 **기동 자체를 거부**한다. 단위 테스트도 CI도 보지 못하는 자리라, 스키마가 하나
+진화하는 순간 프로덕션이 조용히 죽는 구성이었다.
+
+**`Application300Contract`에 head를 담을 자리가 없었다.** head는 `from_payload`에서 exact
+비교로 검증된 뒤 **버려졌고**, `to_payload`가 상수를 다시 주입했다(왕복 손실, 호출자 0).
+그래서 리터럴을 지우는 것만으로는 부족했다 — 계약 객체가 head를 운반할 수단부터 만들어야
+나머지 여덟 치환이 값을 받을 수 있었다.
+
+**값은 풀고 결박은 강화했다.** head는 두 독립 출처가 일치할 때만 받는다 — paired receipt의
+baseline contract(digest로 receipt·journal까지 결박)와, candidate API image가 network 없이
+출력한 installed graph의 head. 후자의 기계(`/usr/local/bin/ktm-application-schema`)는 Map에
+**이미 있었고**, `map_dagster_head`/`pinvi_head`가 쓰던 `parse_candidate_static_head`를 그대로
+쓴다. 둘이 다르면 거절한다 — 재빌드 없이 receipt를 재사용한 상태이고, 값 고정이 잡아주지
+못하던 종류다.
+
+`300`은 `BASELINE_ROOT_REVISION` 하나로 남는다 — `0236 → 300` handoff의 stamp 목적지이자
+`forbidden_application_raw_revision`이 가리키는 격리 선언의 값이며, head가 아니다.
+`test_baseline_root_stays_pinned`가 반대로 그것이 **움직이지 못하게** 한다.
+
+**게이트는 변이로 확인했다.** runtime 환경 리터럴 재고정(2건 실패) · m05 harness 리터럴
+재고정(1건) · 두 출처 합의 제거(1건) · head 문법 검증 제거(6건). `--wait-timeout 300` 예외는
+바로 앞 줄을 보고 좁히고, **예외의 폭 자체**를 별도 테스트로 시험한다 — 예외가 넓으면
+게이트가 조용히 무의미해지기 때문이다.
+
+리터럴을 지웠다는 것만으로는 유연성의 증명이 아니다. `test_map_application_300.py`가
+fence → root 결과 → finalize → final permit **전 구간**을 `300` / `301_m03_import_children` /
+`0999_squashed.v2` 세 head로 완주시킨다.
+
+검증: n150 CI-parity `ruff` clean, `1105 passed, 1 skipped`. 남은 2건
+(`test_docker_manager_cli`)은 `origin/main`에서 동일하게 실패하는 환경 의존 건이다.
+
+미확인: 실 candidate image로 `ktm-application-schema head`를 돌린 결과, 그리고 `301` 적용
+end-to-end rebuild. 둘 다 Map PR 병합 뒤의 별도 실행이다. ADR-42.
 ## 2026-08-30 — isolated PinVi→Map service 경로를 private bridge로 분리
 
 Map API의 isolated host publish는 root driver의 host-loopback 검증용이다. PinVi API container가

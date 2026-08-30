@@ -27,7 +27,14 @@ _API_RECEIPT_SCHEMA: Final = "kor-travel-map.application-300-candidate-build.v2"
 _APPLICATION_CONTRACT_SCHEMA: Final = "kor-travel-map.application-baseline-contract.v1"
 _LAUNCH_SCHEMA: Final = "kor-travel-map.application-300-dagster-launch.v1"
 _METADATA_PERMIT_SCHEMA: Final = "kor-travel-map.dagster-storage-database-permit.v2"
-_APPLICATION_HEAD: Final = "300"
+_BASELINE_ROOT_REVISION: Final = "300"
+"""application active graph의 유일한 root.
+
+`forbidden_application_raw_revision`이 가리키는 값 — "Dagster metadata DB는 application
+raw revision을 갖지 않는다"는 격리 선언이다. **현재 head가 아니다.**
+"""
+
+_SCHEMA_HEAD = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
 _MAX_RECEIPT_BYTES: Final = 64 * 1024
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -581,7 +588,9 @@ def _validate_application_contract(
     api_manifest_sha256: str,
 ) -> tuple[Application300Contract, str]:
     _require_exact_string(contract, "schema", _APPLICATION_CONTRACT_SCHEMA)
-    _require_exact_string(contract, "application_head", _APPLICATION_HEAD)
+    head = _require_string(contract, "application_head")
+    if _SCHEMA_HEAD.fullmatch(head) is None:
+        raise MapApplication300CandidateError("receipt_contract_invalid")
     reference_sha256 = _require_sha256(contract, "reference_manifest_sha256")
     if reference_sha256 != api_manifest_sha256:
         raise MapApplication300CandidateError("receipt_contract_invalid")
@@ -727,7 +736,9 @@ def _validate_metadata_permit(launch: Mapping[str, object]) -> None:
         "forbidden_application_identity_fields",
         _FORBIDDEN_APPLICATION_IDENTITY_FIELDS,
     )
-    _require_exact_string(permit, "forbidden_application_raw_revision", _APPLICATION_HEAD)
+    _require_exact_string(
+        permit, "forbidden_application_raw_revision", _BASELINE_ROOT_REVISION
+    )
 
 
 def _attest_images(

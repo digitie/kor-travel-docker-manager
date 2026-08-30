@@ -322,6 +322,7 @@ def _map_application_300_candidate(
 ) -> MapApplication300Candidate:
     materialized = sources or _sources()
     contract = Application300Contract(
+        application_head="300",
         reference_manifest_sha256="1" * 64,
         postgres_image_id=postgres_image_id,
         source_catalog_sha256="2" * 64,
@@ -375,6 +376,7 @@ def _candidate_generation(
         sources=materialized,
         map_application_300_candidate=paired,
         image_ids=_candidate_image_ids(paired),
+        map_application_head="300",
         map_dagster_head="map-dagster-head",
         pinvi_head="pinvi-head",
     )
@@ -828,6 +830,7 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
         sources=sources,
         map_application_300_candidate=paired,
         image_ids=image_ids,
+        map_application_head="300",
         map_dagster_head="dagster_storage_1",
         pinvi_head="20260806_0001",
         recorded_at="2026-08-06T00:00:00+00:00",
@@ -908,6 +911,7 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
             sources=sources,
             map_application_300_candidate=paired,
             image_ids={**image_ids, "kor-travel-map-api": f"sha256:{999:064x}"},
+            map_application_head="300",
             map_dagster_head="dagster_storage_1",
             pinvi_head="20260806_0001",
         )
@@ -920,6 +924,7 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
                 **image_ids,
                 "kor-travel-map-dagster-daemon": f"sha256:{998:064x}",
             },
+            map_application_head="300",
             map_dagster_head="dagster_storage_1",
             pinvi_head="20260806_0001",
         )
@@ -3427,9 +3432,14 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         static_commands.append(command)
         static_entrypoints.append(entrypoint)
         return {
-            "head": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
-            "pinvi-admin-bootstrap": '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
-        }[command[0]]
+            "/usr/local/bin/ktm-application-schema": (
+                '{"head":"300","schema":"kor-travel-map.application-head.v1"}\n'
+            ),
+            "/usr/local/bin/ktm-dagster-storage": (
+                '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n'
+            ),
+            None: '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
+        }[entrypoint]
 
     monkeypatch.setattr(
         compose_service_module,
@@ -3493,9 +3503,11 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     ]
     assert static_commands == [
         ("head",),
+        ("head",),
         ("pinvi-admin-bootstrap", "head"),
     ]
     assert static_entrypoints == [
+        "/usr/local/bin/ktm-application-schema",
         "/usr/local/bin/ktm-dagster-storage",
         None,
     ]
@@ -4969,9 +4981,14 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
     ) -> str:
         del label
         return {
-            "head": '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n',
-            "pinvi-admin-bootstrap": '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
-        }[command[0]]
+            "/usr/local/bin/ktm-application-schema": (
+                '{"head":"300","schema":"kor-travel-map.application-head.v1"}\n'
+            ),
+            "/usr/local/bin/ktm-dagster-storage": (
+                '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n'
+            ),
+            None: '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
+        }[entrypoint]
 
     monkeypatch.setattr(
         compose_service_module,
