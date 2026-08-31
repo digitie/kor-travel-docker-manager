@@ -1763,10 +1763,15 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
         pinvi_source_revision="d" * 40,
         execution_identity_sha256="c" * 64,
         admission_path=admission,
+        compose_extra_file=Path("/private/runtime/pinvi.override.yml"),
     )
 
     assert environment == {
         "PINVI_ENV_FILE": "/private/runtime/pinvi.env",
+        # app-api 첫 기동부터 Map network join이 걸리도록 override를 docker-app.sh
+        # compose에 겹친다 — reconciliation preflight가 startup에서 Map lease를
+        # 소비하므로 override 없는 첫 up은 결정적으로 실패한다(2026-09-01 실측).
+        "PINVI_DOCKER_COMPOSE_EXTRA_FILE": "/private/runtime/pinvi.override.yml",
         "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE": "/private/runtime/pinvi-admin.json",
         "PINVI_DOCKER_PROJECT": "m05i-pinvi-" + "e" * 32,
         "PINVI_SOURCE_REVISION": "d" * 40,

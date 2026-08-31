@@ -1559,11 +1559,17 @@ def _pinvi_manager_admission_environment(
     pinvi_source_revision: str,
     execution_identity_sha256: str,
     admission_path: Path,
+    compose_extra_file: Path,
 ) -> dict[str, str]:
     """Manager가 검증한 admission tuple과 one-shot credential 경로만 전달한다."""
 
     return {
         "PINVI_ENV_FILE": str(env_file),
+        # app-api는 첫 기동부터 external Map network에 join해야 한다 — reconciliation
+        # worker preflight가 startup에서 Map lease를 실제로 소비하므로, override 없이
+        # 뜨면 Map에 닿지 못해 docker-app.sh의 health 대기가 결정적으로 실패한다
+        # (2026-09-01 isolated 실측: app-api 내부에서 Map API로 timeout).
+        "PINVI_DOCKER_COMPOSE_EXTRA_FILE": str(compose_extra_file),
         # ``docker-app.sh``는 Compose에는 ``PINVI_ENV_FILE``를 넘기지만, migration
         # 전 host-side bootstrap validator는 현재 process 환경에서 이 path를 읽는다.
         # credential 내용은 env에 넣지 않고, owner-only absolute host file path만
@@ -2278,6 +2284,7 @@ def main(expected_revision: str, output: Path) -> int:
             pinvi_source_revision=pair.pinvi_source_revision,
             execution_identity_sha256=plan.execution_identity_sha256,
             admission_path=pinvi_admission,
+            compose_extra_file=pinvi_override,
         )
         for action in ("build", "up"):
             try:
