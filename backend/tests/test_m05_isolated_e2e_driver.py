@@ -5,11 +5,11 @@ import base64
 import hashlib
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import subprocess
 import sys
-import ipaddress
 from pathlib import Path
 from types import MappingProxyType, ModuleType
 from urllib.error import HTTPError, URLError
