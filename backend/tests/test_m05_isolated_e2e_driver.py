@@ -1890,7 +1890,7 @@ def test_driver_result_keys_match_the_launcher_expected_keys() -> None:
     driver_base_keys = {
         line.split('"')[1]
         for line in base_block.splitlines()
-        if line.strip().startswith('"')
+        if line.strip().startswith('"') and '":' in line
     }
     # 조건부 키: map_fresh_init_reason(진단), result_hashes(passed 3종).
     assert 'result["map_fresh_init_reason"]' in driver_source
