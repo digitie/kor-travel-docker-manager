@@ -55,7 +55,7 @@ export default function StatStrip({
   ].filter(Boolean).join(' ');
 
   return (
-    <dl aria-busy={isLoading || undefined} aria-label={ariaLabel} className={classes} data-slot="stat-strip">
+    <dl aria-busy={isLoading || undefined} aria-label={ariaLabel} className={classes}>
       {items.map((item) => {
         const itemLoading = isLoading;
         return (
