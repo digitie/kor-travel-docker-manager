@@ -90,7 +90,7 @@ _FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
 _FORENSIC_CAPTURE_LIMIT = 256 * 1024
 # Compose config은 trusted input이라도 외부 CLI 출력이다. JSON parser에 넘기는
 # 원문은 이 상한만 보관하고, 초과분도 끝까지 drain해 child pipe를 막지 않는다.
-_COMPOSE_CONFIG_OUTPUT_LIMIT = 256_000
+_COMPOSE_CONFIG_OUTPUT_LIMIT = 256 * 1024
 _RAW_ENV_NAMES = (
     "M05_MAP_ADMIN_PROXY_SECRET",
     "M05_PINVI_EMAIL",
