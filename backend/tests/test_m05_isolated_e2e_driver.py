@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -929,6 +930,47 @@ def test_root_launcher_defaults_to_forensic_capture_with_explicit_opt_out() -> N
     assert "export KTDM_M05_FORENSIC_CAPTURE=1" in launcher
     assert "unset KTDM_M05_FORENSIC_CAPTURE" in launcher
     assert '"${launcher_arguments[@]}"' in launcher
+
+
+def test_root_launcher_forensic_default_is_behavioral_not_textual() -> None:
+    """launcher를 실제 실행(bash -x)해 기본값 대입을 트레이스로 확인한다(R2-S9).
+
+    문구 단언은 주석/데드 브랜치로 우회된다 — 여기서는 non-root 실행의 실제
+    트레이스에서 `forensic_capture=1`(기본) / `=0`(--no-forensic-capture)을 본다.
+    non-root라서 launcher는 root 검사에서 exit 2로 멈춘다(driver 실행 없음).
+    """
+    if os.name != "posix" or os.geteuid() == 0:
+        pytest.skip("non-root POSIX에서만 안전하게 실행할 수 있다")
+    launcher_path = Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
+
+    default_run = subprocess.run(
+        ["bash", "-x", str(launcher_path), "a" * 40, "/nonexistent-m05-out"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert default_run.returncode == 2
+    assert "must run as root" in default_run.stderr
+    assert "+ forensic_capture=1" in default_run.stderr
+    assert "+ forensic_capture=0" not in default_run.stderr
+
+    opt_out_run = subprocess.run(
+        [
+            "bash",
+            "-x",
+            str(launcher_path),
+            "--no-forensic-capture",
+            "a" * 40,
+            "/nonexistent-m05-out",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert opt_out_run.returncode == 2
+    assert "+ forensic_capture=0" in opt_out_run.stderr
 
 
 def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_unavailable() -> None:
