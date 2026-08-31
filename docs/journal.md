@@ -2,6 +2,34 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-01 — M05 isolated one-shot의 잠재 결함 3연쇄 제거 (#280~#282)
+
+pair 재핀으로 one-shot이 사상 처음 `pinvi_runtime` 기동까지 도달하자, 0/27
+시대에는 도달 불가라 노출된 적 없던 결함들이 차례로 드러났다. 각각 컨테이너
+내부 probe/forensic evidence로 실측하고 적대 리뷰 2인(opus·xhigh)을 거쳤다.
+
+- **#280**: driver가 override(app-api의 external Map network join)를 자기
+  `_compose`에만 쓰고 docker-app.sh build/up에는 전달하지 않았다 — PinVi
+  reconciliation preflight가 startup에서 Map lease를 소비하므로 첫 up이
+  결정적으로 실패(내부 probe: Map API로 timeout). PinVi #507의 범용
+  `PINVI_DOCKER_COMPOSE_EXTRA_FILE` overlay(admission 맥락+root 0600 한정)와
+  짝. 리뷰가 3연쇄를 추가 적발: `networks: !reset`이 정적 ipv4_address를
+  삼키는 문제(→`!override`), /29 IPAM 만석, stale pin 무음 우회(→admission
+  토큰). lease 이중 소비 위험이 있는 중복 force-recreate도 제거.
+- **#281**: `!override`로 정적 IP가 실제 적용되자 하단부터 채우는 동적
+  할당(postgres가 .2 선점)과 충돌 — 정적 api/frontend를 subnet 상단
+  (hosts[-1]/-2)으로. 리뷰 반영: ipam `gateway:` 명시(가정→계약), 기동 직후
+  정적 IP 실적용 inspect 단언(silent-drop 클래스 fail-close), forensic
+  evidence path, 규칙 파생 테스트.
+- **#282**: host publish 포트 대역(30000-38999)이 kernel ephemeral(실측
+  32768-60999)과 겹쳐 `ss -ltn` 통과 후 outbound 선점으로 bind가 확률적으로
+  실패(e2e5: rustfs :36464). 20000-29999로 이동 + ephemeral 하한(>29999)을
+  런타임 계약으로 검증 + busy-window에서 상한 가드를 실제로 미는 회귀 테스트.
+
+같은 pinset(a30e1544, Map 2845e142/PinVi c402a80b)의 execution은
+`pin rebind-execution`으로 새 trusted release에 재결박한다 — rotate/rebuild
+불필요(generation 957b730e 유지).
+
 ## 2026-08-31 — 최신 kor-travel-map Rail-Workbench UI 정합화
 
 최신 `kor-travel-map` 관리자 화면의 기준을 확인하고, Manager의 인증·API·모달 동작은 유지한 채

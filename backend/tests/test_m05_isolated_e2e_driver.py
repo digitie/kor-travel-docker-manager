@@ -1064,6 +1064,37 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     assert 'entry.get("execution_identity_sha256") == execution' in any_block
 
 
+def test_free_ports_never_walk_into_the_ephemeral_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """busy window가 쌓여도 탐색은 30000 아래에 머물거나 ports_unavailable로 닫힌다.
+
+    상한 가드(>= 30000 break)를 65535로 되돌리는 회귀는 이 테스트만 잡는다 —
+    기본 happy-path 테스트는 offset 0에서 끝나 가드를 한 번도 실행하지 않는다.
+    """
+
+    driver = _driver()
+    busy_windows = 40
+
+    calls = {"count": 0}
+
+    def fake_command(*args: str, **_kwargs: object) -> str:
+        calls["count"] += 1
+        # 앞쪽 busy_windows개 window(각 13포트)는 전부 사용 중으로 답한다.
+        if calls["count"] <= busy_windows * 13:
+            return "LISTEN 0 128 127.0.0.1:x"
+        return ""
+
+    monkeypatch.setattr(driver, "_command", fake_command)
+
+    try:
+        ports = driver._free_ports("f" * 32)
+    except driver._PhaseError as error:
+        assert error.phase == "ports_unavailable"
+    else:
+        assert all(20000 <= port < 30000 for port in ports.values())
+
+
 def test_free_ports_uses_the_standard_ss_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

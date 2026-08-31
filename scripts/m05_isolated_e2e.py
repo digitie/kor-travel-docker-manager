@@ -956,8 +956,22 @@ def _free_ports(transaction: str) -> dict[str, int]:
     # 포트는 검사 통과 후 임의 outbound 연결이 로컬 포트로 선점해 Docker publish
     # bind가 확률적으로 실패한다(2026-09-01 e2e5 실측: rustfs 127.0.0.1:36464
     # address already in use). 20000-29999 대역은 이 호스트의 고정 서비스
-    # (12xxx/13xxx/15xxx)와도 겹치지 않는다. ip_local_port_range 하한을 30000
-    # 아래로 낮춘 호스트에서는 이 대역도 옮겨야 한다.
+    # (12xxx/13xxx)와도 겹치지 않는다.
+    #
+    # 이 전제(ephemeral 하한 > 29999)는 주석이 아니라 계약이다 — 하한을 낮춘
+    # 호스트에서는 run 중반의 masked bind 실패로 되돌아가는 대신, mutation 전에
+    # 결정적으로 닫는다(적대 리뷰).
+    try:
+        raw_range = (
+            Path("/proc/sys/net/ipv4/ip_local_port_range")
+            .read_text(encoding="ascii")
+            .split()
+        )
+        ephemeral_low = int(raw_range[0])
+    except (OSError, ValueError, IndexError):
+        _fail("ports_unavailable")
+    if ephemeral_low <= 29999:
+        _fail("ports_unavailable")
     base = 20000 + (int(transaction[:8], 16) % 9000)
     names = (
         "map_api",
