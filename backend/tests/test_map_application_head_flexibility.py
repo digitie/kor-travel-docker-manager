@@ -48,92 +48,149 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     build_candidate_generation,
 )
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "kor_travel_docker_manager"
-_SERVICES = _SRC / "services"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_BACKEND_SRC = _REPO_ROOT / "backend" / "src" / "kor_travel_docker_manager"
+_SCRIPTS = _REPO_ROOT / "scripts"
 
-_HEAD_LITERAL = re.compile(r"""(?<![0-9a-zA-Z_])["']300["'](?![0-9])""")
-
-_HEAD_BEARING_MODULES = (
-    "map_application_300.py",
-    "map_application_300_candidate.py",
-    "pinned_runtime_rebuild.py",
-    "compose_service.py",
+_SKIPPED_DIRECTORIES = frozenset({"__pycache__", "node_modules", ".venv", "dist", ".next"})
+_BINARY_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".gz", ".whl", ".woff", ".woff2"}
 )
 
+#: 따옴표로 감싼 형태만 본다 — 숫자 300(초·픽셀)과 구분한다. head는 문자열이다.
+_QUOTED = re.compile(r"""["']300["']""")
+_ENV_ASSIGNMENT = re.compile(
+    r"KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD\s*[=:]\s*[\"']?300"
+)
 
-def _code_lines(path: Path) -> list[tuple[int, str]]:
-    """주석·docstring 본문을 제외한 실행 라인만 돌려준다.
+_EXEMPT: dict[str, str] = {
+    "map_application_300.py": (
+        "`BASELINE_ROOT_REVISION` 선언. `0236 → 300` handoff의 stamp 목적지이자 "
+        "Dagster metadata 격리 선언이 가리키는 역사적 좌표이며 head가 아니다."
+    ),
+    "map_application_300_candidate.py": (
+        "`_BASELINE_ROOT_REVISION` 선언과 `forbidden_application_raw_revision` 대조. "
+        "둘 다 baseline root이며 head가 아니다."
+    ),
+    "compose_service.py": (
+        "`--wait-timeout` 뒤의 `\"300\"`은 초 단위 인자다. 종전에는 앞 줄을 보고 "
+        "좁혔는데, 그 예외가 **뒤따르는 어떤 줄이든 세탁**했다 — 상수 두 개를 나란히 "
+        "두면 두 번째가 head 핀이어도 통과했다. 파일 단위 면제로 바꾸고, 이 파일이 "
+        "head를 쓰는 자리는 `test_expected_head_environment_is_never_a_literal`과 "
+        "`test_generation_requires_the_two_head_sources_to_agree`가 값으로 고정한다."
+    ),
+}
+"""head 리터럴이 **정당한** 파일과 사유.
 
-    설명문에서 `"300"`을 언급하는 것은 막을 이유가 없다 — 막아야 하는 것은 **비교와
-    주입**이다.
+사유 없는 면제는 두지 않는다. 여기 이름을 더하는 것은 "이 파일의 `300`은 head가 아니라
+baseline root(또는 초 단위 인자)다"라는 주장이고, 그 주장이 틀리면 프로덕션이 죽는다.
+"""
+
+
+def _scanned_files() -> list[Path]:
+    """Manager 전체 — backend `src/` 재귀 + `scripts/` 재귀, 확장자 무관.
+
+    종전에는 `services/` 아래 **네 파일 이름**만 훑었다. 적대 리뷰가 새 모듈
+    `services/map_application_head_fence.py` 하나로 통과했고, `api/`·`cli.py`·
+    `main.py`는 애초에 범위 밖이었다.
     """
-    lines: list[tuple[int, str]] = []
-    in_doc = False
-    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        stripped = raw.strip()
-        fences = stripped.count('"""') + stripped.count("'''")
-        if in_doc:
-            if fences:
-                in_doc = False
+    files: list[Path] = []
+    for root in (_BACKEND_SRC, _SCRIPTS):
+        if not root.exists():
             continue
-        if stripped.startswith(('"""', "'''")):
-            if fences == 1:
-                in_doc = True
-            continue
-        if stripped.startswith("#"):
-            continue
-        lines.append((number, raw))
-    return lines
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            if _SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts):
+                continue
+            if path.suffix.lower() in _BINARY_SUFFIXES:
+                continue
+            files.append(path)
+    return files
 
 
-@pytest.mark.parametrize("name", _HEAD_BEARING_MODULES)
-def test_manager_does_not_pin_the_map_application_head(name: str) -> None:
-    """head를 다루는 모듈이 `300` 리터럴을 실행 코드에 두지 않아야 한다.
+def _text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
 
-    baseline root 선언(`BASELINE_ROOT_REVISION`/`_BASELINE_ROOT_REVISION`) 한 줄만
-    예외다. 그것은 head가 아니다.
+
+def test_the_scan_actually_reaches_files() -> None:
+    """스캔이 비면 아래 게이트가 조용히 무의미해진다."""
+    files = _scanned_files()
+
+    assert len(files) > 30, f"Manager 자산 스캔이 {len(files)}개만 찾았다 — 경로가 틀렸다"
+    names = {path.name for path in files}
+    assert "compose_service.py" in names
+    assert "m05_isolated_e2e.py" in names
+    assert "cli.py" in names, "`services/` 밖이 스캔에 없다"
+
+
+def test_manager_does_not_pin_the_map_application_head() -> None:
+    """**이 게이트의 본체 — 존재 기준.**
+
+    비교인지 대입인지 묻지 않는다. 리터럴과 비교를 다른 줄에 두는 것은 우회가 아니라
+    평범한 코드이고, 그러니 "비교에 쓰였나"를 묻는 규칙은 원리적으로 완결될 수 없다.
     """
-    path = _SERVICES / name
-    assert path.exists(), f"head를 다루는 모듈이 사라졌다: {name}"
-
-    code = _code_lines(path)
-    # `--wait-timeout` 뒤에 오는 `"300"`은 초 단위 인자다. 정규식만으로는 head와 구별할
-    # 수 없으므로 **바로 앞 코드 줄**을 본다. 이 예외를 두지 않으면 게이트가 진짜 head
-    # 리터럴을 못 보게 될 만큼 시끄러워지고, 넓게 두면 head 리터럴이 숨을 자리가 생긴다.
-    previous = ["", *(line for _, line in code)][: len(code)]
-    offenders = [
-        f"{name}:{number}: {line.strip()[:88]}"
-        for (number, line), prior in zip(code, previous, strict=True)
-        if _HEAD_LITERAL.search(line)
-        and "BASELINE_ROOT_REVISION" not in line
-        and "--wait-timeout" not in prior
-    ]
+    offenders: list[str] = []
+    for path in _scanned_files():
+        if path.name in _EXEMPT:
+            continue
+        source = _text(path)
+        if source is None:
+            continue
+        for number, line in enumerate(source.splitlines(), 1):
+            if _QUOTED.search(line) or _ENV_ASSIGNMENT.search(line):
+                offenders.append(
+                    f"{path.relative_to(_REPO_ROOT).as_posix()}:{number}: {line.strip()[:88]}"
+                )
 
     assert not offenders, (
         "Manager가 Map application head를 리터럴로 박았다 — candidate가 선언한 head를 "
-        "쓸 것(`contract.application_head` / `generation.map_application_head`):\n  "
-        + "\n  ".join(offenders)
+        "쓸 것(`contract.application_head` / `generation.map_application_head`). "
+        "baseline root를 가리키는 정당한 언급이라면 `_EXEMPT`에 **사유와 함께** 선언할 "
+        "것:\n  " + "\n  ".join(offenders)
     )
 
 
-def test_expected_head_environment_is_never_a_literal() -> None:
-    """`KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD`는 파생값이어야 한다.
+def test_every_exemption_is_alive_reasoned_and_needed() -> None:
+    """면제는 실재 파일에만, 사유와 함께, 실제로 필요한 것만."""
+    names = {path.name for path in _scanned_files()}
+    dead = sorted(set(_EXEMPT) - names)
+    empty = sorted(name for name, reason in _EXEMPT.items() if len(reason.strip()) < 20)
+    unnecessary = sorted(
+        path.name
+        for path in _scanned_files()
+        if path.name in _EXEMPT
+        and (source := _text(path)) is not None
+        and not _QUOTED.search(source)
+        and not _ENV_ASSIGNMENT.search(source)
+    )
 
-    이 값이 리터럴이면 Map API 컨테이너가 head 불일치로 **기동 자체를 거부한다.**
-    테스트도 CI도 못 보는 자리이므로 정적으로 고정한다.
+    assert not dead, f"면제 목록에 존재하지 않는 파일: {dead}"
+    assert not empty, f"사유가 없거나 부실한 면제: {empty}"
+    assert not unnecessary, f"리터럴이 없는데 면제된 파일: {unnecessary}"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '_MAP_APPLICATION_EXPECTED_HEAD: Final[str] = "300"',
+        'EXPECTED_MAP_APPLICATION_HEAD: Final[str] = "300"',
+        '    if installed_head != "300":',
+        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=300",
+        "      KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD: 300",
+        "    head_pin = '300'",
+    ],
+)
+def test_the_rule_catches_every_shape_that_bypassed_the_old_one(line: str) -> None:
+    """적대 리뷰가 실행으로 뚫은 형태를 되짚는다.
+
+    게이트를 고쳤다는 주장은 "고친 코드가 통과한다"가 아니라 "뚫렸던 형태가 이제
+    걸린다"로 증명해야 한다.
     """
-    offenders: list[str] = []
-    for path in (*(_SERVICES.glob("*.py")), *(_SRC.parent.parent.parent / "scripts").glob("*.py")):
-        for number, line in _code_lines(path):
-            if "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD" not in line:
-                continue
-            if _HEAD_LITERAL.search(line) or re.search(r"EXPECTED_HEAD=[0-9]", line):
-                offenders.append(f"{path.name}:{number}: {line.strip()[:88]}")
-
-    assert not offenders, (
-        "기동 기대 head가 리터럴이다 — Map이 migration을 하나 더하면 API가 기동하지 "
-        "못한다:\n  " + "\n  ".join(offenders)
-    )
+    assert _QUOTED.search(line) or _ENV_ASSIGNMENT.search(line)
 
 
 def test_baseline_root_stays_pinned() -> None:
@@ -193,33 +250,3 @@ def _contract(head: str) -> Application300Contract:
     sources = _sources()
     paired = _map_application_300_candidate(sources)
     return replace(paired.application_contract, application_head=head)
-
-
-def test_the_wait_timeout_exemption_is_narrow() -> None:
-    """`--wait-timeout` 예외가 head 리터럴까지 통과시키면 게이트가 무의미하다.
-
-    예외의 폭을 직접 시험한다 — 같은 `"300"`이라도 앞 줄이 무엇이냐에 따라 결과가
-    달라져야 한다.
-    """
-    timeout_shaped = _code_lines(_SERVICES / "compose_service.py")
-    assert any(
-        _HEAD_LITERAL.search(line) for _, line in timeout_shaped
-    ), "compose_service.py에 `300` 인자가 사라졌다 — 예외가 죽은 코드가 됐는지 확인할 것"
-
-    sample = ['                    "--wait-timeout",', '                    "300",']
-    previous = ["", *sample][: len(sample)]
-    exempted = [
-        line
-        for line, prior in zip(sample, previous, strict=True)
-        if _HEAD_LITERAL.search(line) and "--wait-timeout" not in prior
-    ]
-    assert exempted == []
-
-    sample = ['        expected_head = (', '            "300"']
-    previous = ["", *sample][: len(sample)]
-    caught = [
-        line
-        for line, prior in zip(sample, previous, strict=True)
-        if _HEAD_LITERAL.search(line) and "--wait-timeout" not in prior
-    ]
-    assert caught == ['            "300"']
