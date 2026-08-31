@@ -1397,7 +1397,17 @@ def build_application_final_permit(
         },
         "database": database.to_final_permit_payload(),
         "receipts": {
-            "expected_catalog_sha256": contract.destination_catalog_sha256,
+            # head가 baseline root면 봉인된 destination catalog가 기대값이다. 그
+            # 너머에는 미리 선언된 값이 없으므로 finalize가 관측한 값이 곧 기대값이다 —
+            # 봉인된 digest는 `300` 시점만 서술하고, 새 migration이 객체를 더하면 반드시
+            # 어긋난다. 그 어긋남은 계약 위반이 아니라 **비교 대상이 틀린 것**이다.
+            # verifier는 이 두 값의 일치를 보고, 그 값의 출처인 finalize receipt는
+            # `finalize_result_sha256`으로 같은 payload 안에 결박된다.
+            "expected_catalog_sha256": (
+                contract.destination_catalog_sha256
+                if contract.application_head == BASELINE_ROOT_REVISION
+                else finalize_result.post_destination_catalog_sha256
+            ),
             "observed_catalog_sha256": finalize_result.post_destination_catalog_sha256,
             "expected_seed_sha256": contract.seed_sha256,
             "observed_seed_sha256": finalize_result.post_seed_sha256,
