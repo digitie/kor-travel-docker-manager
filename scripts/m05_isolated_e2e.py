@@ -1683,15 +1683,73 @@ def _map_application_head(map_root: Path) -> str:
     return heads[0]
 
 
+def _rendered_service_images(
+    *,
+    root: Path,
+    project: str,
+    env_file: Path,
+    files: tuple[Path, ...],
+    services: tuple[str, ...],
+    profiles: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """rendered Compose 모델에서 서비스별 image 참조를 읽는다.
+
+    이름 **추측**({project}-{service})은 PinVi처럼 명시 ``image:``를 쓰는
+    compose에서 성립하지 않는다(e2e8 forensic: "No such image"). 반대로 실행
+    컨테이너의 ID를 그대로 쓰면 뒤따르는 image-identity 검증들이 X != X로
+    퇴화한다(적대 리뷰). rendered 모델의 참조는 컨테이너와 **독립적인** 소스라
+    검증이 실제로 일을 한다. 명시 image가 없으면 Compose 기본 규칙대로
+    ``{project}-{service}``다.
+    """
+
+    profile_arguments = tuple(
+        item for profile in profiles for item in ("--profile", profile)
+    )
+    raw = _compose(
+        root=root,
+        project=project,
+        env_file=env_file,
+        files=files,
+        arguments=(*profile_arguments, "config", "--format", "json"),
+        capture=True,
+    )
+    try:
+        rendered = json.loads(raw)
+        rendered_services = rendered["services"]
+    except (TypeError, KeyError, json.JSONDecodeError):
+        _fail("runtime_inspect_invalid")
+    references: dict[str, str] = {}
+    for service in services:
+        entry = rendered_services.get(service)
+        if not isinstance(entry, dict):
+            _fail("runtime_inspect_invalid")
+        image = entry.get("image")
+        if image is None:
+            image = f"{project}-{service}"
+        if not isinstance(image, str) or not image:
+            _fail("runtime_inspect_invalid")
+        references[service] = image
+    return references
+
+
 def _container_id(
-    project: str, service: str, *, root: Path, env_file: Path, files: tuple[Path, ...]
+    project: str,
+    service: str,
+    *,
+    root: Path,
+    env_file: Path,
+    files: tuple[Path, ...],
+    profiles: tuple[str, ...] = (),
 ) -> str:
+    profile_arguments = tuple(
+        item for profile in profiles for item in ("--profile", profile)
+    )
     value = _compose(
         root=root,
         project=project,
         env_file=env_file,
         files=files,
-        arguments=("ps", "-q", service),
+        arguments=(*profile_arguments, "ps", "-q", service),
         capture=True,
     ).strip()
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
@@ -2437,13 +2495,28 @@ def main(expected_revision: str, output: Path) -> int:
             env_file=pinvi_env,
             files=pinvi_files,
         )
+        map_rendered_images = _rendered_service_images(
+            root=map_root,
+            project=plan.map_project,
+            env_file=map_env,
+            files=map_files,
+            services=("api", "frontend"),
+        )
+        pinvi_rendered_images = _rendered_service_images(
+            root=pinvi_root,
+            project=plan.pinvi_project,
+            env_file=pinvi_env,
+            files=pinvi_files,
+            services=("app-api", "app-web", "app-dagster"),
+            profiles=("etl",),
+        )
         image_references = {
-            "map-admin": f"{plan.map_project}-api",
-            "map-api": f"{plan.map_project}-api",
-            "map-frontend": f"{plan.map_project}-frontend",
-            "pinvi-api": f"{plan.pinvi_project}-app-api",
-            "pinvi-dagster": f"{plan.pinvi_project}-app-dagster",
-            "pinvi-web": f"{plan.pinvi_project}-app-web",
+            "map-admin": map_rendered_images["api"],
+            "map-api": map_rendered_images["api"],
+            "map-frontend": map_rendered_images["frontend"],
+            "pinvi-api": pinvi_rendered_images["app-api"],
+            "pinvi-dagster": pinvi_rendered_images["app-dagster"],
+            "pinvi-web": pinvi_rendered_images["app-web"],
         }
         _build_runtime_provenance(
             plan=plan,
@@ -2468,12 +2541,16 @@ def main(expected_revision: str, output: Path) -> int:
             env_file=pinvi_env,
             files=pinvi_files,
         )
+        # app-dagster는 etl 프로파일 소속이라 프로파일 없는 ps는 빈 결과를
+        # 돌려 body 진입 후 무조건 소각을 만든다(적대 리뷰 — 프로파일 비가시성은
+        # e2e6 cleanup에서 실측된 것과 동일 클래스).
         pinvi_dagster = _container_id(
             plan.pinvi_project,
             "app-dagster",
             root=pinvi_root,
             env_file=pinvi_env,
             files=pinvi_files,
+            profiles=("etl",),
         )
         map_frontend = _container_id(
             plan.map_project,
