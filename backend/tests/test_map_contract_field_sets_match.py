@@ -15,8 +15,14 @@ CI 전에 잡는다(적대 검증의 축소 지시 그대로).
 ## 어떻게 찾는가
 
 Map 체크아웃은 ADR-044의 로컬 우선 규약을 따른다 — `KTDM_MAP_CHECKOUT` env가 있으면
-그것을, 없으면 형제 디렉터리 후보를 순서대로 본다. 없으면 **시끄럽게 skip**한다 —
-skip이 출력에 남아 "게이트가 돌았다"는 착각이 생기지 않게.
+그것을(**불완전하면 skip이 아니라 실패**), 없으면 형제 디렉터리 후보 중 대조 대상
+파일이 전부 있는 것만 본다. 없으면 **시끄럽게 skip**한다 — skip이 출력에 남아
+"게이트가 돌았다"는 착각이 생기지 않게.
+
+후속(문서화된 한계): Manager CI에는 Map 체크아웃이 없어 이 게이트가 CI에서 skip된다.
+cross-repo checkout은 PAT secret 배선이 필요하다. Map의 contract emitter
+(`docker/application-schema-contract.py`)는 field를 동적으로 구성해 frozenset 추출
+대상이 아니다 — 손 사본 5곳(아래 사이트)이 이 게이트의 범위다.
 """
 
 from __future__ import annotations
@@ -47,19 +53,36 @@ _MANAGER_SITES = (
 )
 
 
+def _checkout_is_complete(root: Path) -> bool:
+    """모든 대조 대상 파일이 실제로 존재해야 후보로 인정한다(R2-S1).
+
+    `docker/` 디렉터리 존재만 보면 stale 체크아웃이 선택돼 FileNotFoundError로
+    죽거나, 파일이 일부만 있는 체크아웃이 절반의 대조로 초록이 된다.
+    """
+    return all((root / relative).is_file() for relative, _ in _MAP_SITES)
+
+
 def _map_checkout() -> Path | None:
     override = os.environ.get("KTDM_MAP_CHECKOUT")
     if override:
         path = Path(override)
-        return path if (path / "docker").is_dir() else None
+        # 명시 override가 쓸 수 없으면 skip이 아니라 실패다 — 운영자가 게이트를
+        # 켰다고 믿는 상태에서 조용히 건너뛰면 "돌았다"는 착각이 생긴다(R2-S1).
+        assert _checkout_is_complete(path), (
+            f"KTDM_MAP_CHECKOUT={path}에 대조 대상 파일이 없다 — "
+            "경로를 고치거나 env를 지울 것"
+        )
+        return path
     for candidate in _MAP_CANDIDATE_PATHS:
-        if (candidate / "docker").is_dir():
+        if _checkout_is_complete(candidate):
             return candidate
     return None
 
 
 def _frozenset_literal(path: Path, name: str) -> frozenset[str]:
+    """이름이 재할당되면 fail-closed — 마지막/첫 매치를 조용히 고르지 않는다."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: list[frozenset[str]] = []
     for node in ast.walk(tree):
         targets: list[ast.expr] = []
         value: ast.expr | None = None
@@ -82,8 +105,13 @@ def _frozenset_literal(path: Path, name: str) -> frozenset[str]:
                     element.value, str
                 ):
                     raise AssertionError(f"{path.name}:{name} 비문자 원소")
-            return frozenset(e.value for e in elements)  # type: ignore[union-attr]
-    raise AssertionError(f"{path}에서 {name} frozenset 리터럴을 찾지 못했다")
+            found.append(frozenset(e.value for e in elements))  # type: ignore[union-attr]
+    if len(found) != 1:
+        raise AssertionError(
+            f"{path}에서 {name} frozenset 리터럴이 {len(found)}개다 — "
+            "정확히 1개여야 한다(재할당은 어느 쪽이 정본인지 모호)"
+        )
+    return found[0]
 
 
 def test_baseline_contract_field_sets_are_identical_across_repos() -> None:
