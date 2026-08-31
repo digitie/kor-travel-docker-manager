@@ -1684,18 +1684,40 @@ def _map_application_head(map_root: Path) -> str:
 
 
 def _container_id(
-    project: str, service: str, *, root: Path, env_file: Path, files: tuple[Path, ...]
+    project: str,
+    service: str,
+    *,
+    root: Path,
+    env_file: Path,
+    files: tuple[Path, ...],
+    profiles: tuple[str, ...] = (),
 ) -> str:
+    profile_arguments = tuple(
+        item for profile in profiles for item in ("--profile", profile)
+    )
     value = _compose(
         root=root,
         project=project,
         env_file=env_file,
         files=files,
-        arguments=("ps", "-q", service),
+        arguments=(*profile_arguments, "ps", "-q", service),
         capture=True,
     ).strip()
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         _fail("runtime_container_identity_invalid")
+    return value
+
+
+def _container_image_id(container_id: str) -> str:
+    """실행 중 컨테이너의 실제 image ID — 이름 추측 대신 이것이 정본이다."""
+
+    value = _container_inspect(container_id).get("Image")
+    if (
+        not isinstance(value, str)
+        or not value.startswith("sha256:")
+        or len(value) != 71
+    ):
+        _fail("runtime_image_identity_invalid")
     return value
 
 
@@ -2437,13 +2459,33 @@ def main(expected_revision: str, output: Path) -> int:
             env_file=pinvi_env,
             files=pinvi_files,
         )
+        pinvi_web = _container_id(
+            plan.pinvi_project,
+            "app-web",
+            root=pinvi_root,
+            env_file=pinvi_env,
+            files=pinvi_files,
+        )
+        pinvi_dagster = _container_id(
+            plan.pinvi_project,
+            "app-dagster",
+            root=pinvi_root,
+            env_file=pinvi_env,
+            files=pinvi_files,
+            profiles=("etl",),
+        )
+        # 이미지 참조는 프로젝트 파생 이름 **추측**이 아니라 실행 중 컨테이너의
+        # 실제 image ID다 — PinVi compose는 명시 image(pinvi-api:local 등)를
+        # 쓰므로 {project}-app-api 같은 추측은 성립한 적이 없다(e2e8 forensic
+        # 실측: "No such image"). 컨테이너 identity에서 파생하므로 이름 정책이
+        # 어느 쪽에서 바뀌어도 provenance는 흔들리지 않는다.
         image_references = {
-            "map-admin": f"{plan.map_project}-api",
-            "map-api": f"{plan.map_project}-api",
-            "map-frontend": f"{plan.map_project}-frontend",
-            "pinvi-api": f"{plan.pinvi_project}-app-api",
-            "pinvi-dagster": f"{plan.pinvi_project}-app-dagster",
-            "pinvi-web": f"{plan.pinvi_project}-app-web",
+            "map-admin": _container_image_id(map_api),
+            "map-api": _container_image_id(map_api),
+            "map-frontend": _container_image_id(map_frontend),
+            "pinvi-api": _container_image_id(pinvi_api),
+            "pinvi-dagster": _container_image_id(pinvi_dagster),
+            "pinvi-web": _container_image_id(pinvi_web),
         }
         _build_runtime_provenance(
             plan=plan,
@@ -2461,13 +2503,6 @@ def main(expected_revision: str, output: Path) -> int:
         )
         phase = "m04_m05_e2e"
         body_entered = True
-        pinvi_web = _container_id(
-            plan.pinvi_project,
-            "app-web",
-            root=pinvi_root,
-            env_file=pinvi_env,
-            files=pinvi_files,
-        )
         pinvi_dagster = _container_id(
             plan.pinvi_project,
             "app-dagster",
