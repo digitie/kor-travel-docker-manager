@@ -53,7 +53,13 @@ FRESH_MIGRATION_FENCE_SCHEMA: Final = (
     "kor-travel-docker-manager.map-fresh-300-migrate-fence.v2"
 )
 FRESH_MIGRATION_OPERATION: Final = "map-fresh-300"
-FRESH_ROOT_RESULT_SCHEMA: Final = "kor-travel-map.application-fresh-300-root.v2"
+FRESH_ROOT_RESULT_SCHEMA: Final = "kor-travel-map.application-fresh-300-root.v3"
+"""v2 → v3: head 상태 catalog/seed digest 두 필드가 늘었다.
+
+봉인된 baseline digest는 `300` 시점만 서술한다. head가 그 너머면 미리 선언된 기대값이
+없으므로 설치가 관측한 값이 receipt에 실려 정본이 되고, finalize와 final permit이
+그것과 대조한다. 이 parser는 exact field set을 요구하므로 필드 추가가 곧 계약 변경이다.
+"""
 FRESH_ROOT_MISSING_RECEIPT_SCHEMA: Final = (
     "kor-travel-map.application-fresh-300-root-missing-receipt.v1"
 )
@@ -152,6 +158,8 @@ _FRESH_ROOT_RESULT_FIELDS: Final = frozenset(
         "expected_privileged_residue_sha256",
         "expected_destination_alembic_version_sha256",
         "post_destination_alembic_version_sha256",
+        "post_head_catalog_sha256",
+        "post_head_seed_sha256",
     }
 )
 _FRESH_ROOT_MISSING_RECEIPT_FIELDS: Final = frozenset(
@@ -817,6 +825,14 @@ class FreshRootResult:
     expected_privileged_residue_sha256: str
     expected_destination_alembic_version_sha256: str
     post_destination_alembic_version_sha256: str
+    post_head_catalog_sha256: str
+    """head 상태에서 관측한 catalog digest.
+
+    head가 baseline root면 `post_source_catalog_sha256`과 같은 값이다. 그 너머에서는
+    봉인된 digest가 서술하는 상태가 존재하지 않으므로, 이 관측이 finalize의 기대값이 된다.
+    """
+
+    post_head_seed_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1061,6 +1077,12 @@ def parse_fresh_root_result(
         post_destination_alembic_version_sha256=_require_sha256(
             payload["post_destination_alembic_version_sha256"],
             "post_destination_alembic_version_sha256",
+        ),
+        post_head_catalog_sha256=_require_sha256(
+            payload["post_head_catalog_sha256"], "post_head_catalog_sha256"
+        ),
+        post_head_seed_sha256=_require_sha256(
+            payload["post_head_seed_sha256"], "post_head_seed_sha256"
         ),
     )
     _require_prior_root_binding(
@@ -1328,7 +1350,11 @@ def parse_fresh_finalize_missing_receipt(
         or result.postgres_image_id != contract.postgres_image_id
         or result.reference_manifest_sha256 != contract.reference_manifest_sha256
         or result.database_identity != prior.database_identity
-        or result.pre_source_catalog_sha256 != contract.source_catalog_sha256
+        or _catalog_mismatch(
+            result.pre_source_catalog_sha256,
+            _sealed_catalog(contract, contract.source_catalog_sha256),
+        )
+        or result.pre_source_catalog_sha256 != prior.post_head_catalog_sha256
         or result.pre_seed_sha256 != contract.seed_sha256
         or result.pre_destination_alembic_version_sha256
         != contract.destination_alembic_version_sha256
@@ -1375,7 +1401,17 @@ def build_application_final_permit(
         },
         "database": database.to_final_permit_payload(),
         "receipts": {
-            "expected_catalog_sha256": contract.destination_catalog_sha256,
+            # head가 baseline root면 봉인된 destination catalog가 기대값이다. 그
+            # 너머에는 미리 선언된 값이 없으므로 finalize가 관측한 값이 곧 기대값이다 —
+            # 봉인된 digest는 `300` 시점만 서술하고, 새 migration이 객체를 더하면 반드시
+            # 어긋난다. 그 어긋남은 계약 위반이 아니라 **비교 대상이 틀린 것**이다.
+            # verifier는 이 두 값의 일치를 보고, 그 값의 출처인 finalize receipt는
+            # `finalize_result_sha256`으로 같은 payload 안에 결박된다.
+            "expected_catalog_sha256": (
+                contract.destination_catalog_sha256
+                if contract.application_head == BASELINE_ROOT_REVISION
+                else finalize_result.post_destination_catalog_sha256
+            ),
             "observed_catalog_sha256": finalize_result.post_destination_catalog_sha256,
             "expected_seed_sha256": contract.seed_sha256,
             "observed_seed_sha256": finalize_result.post_seed_sha256,
@@ -1893,6 +1929,26 @@ def _require_prior_root_binding(
         )
 
 
+def _sealed_catalog(contract: Application300Contract, sealed: str) -> str | None:
+    """head가 baseline root일 때만 봉인된 catalog digest가 기대값이다.
+
+    그 너머에서는 ``None``을 돌려 "미리 선언된 기대값이 없다"를 명시한다. 봉인된 digest는
+    `300` 시점의 물리 catalog를 서술하고, 새 migration이 객체를 더하면 반드시 어긋난다 —
+    그 어긋남은 계약 위반이 아니라 **비교 대상이 틀린 것**이다(ADR-43).
+
+    ``None``을 넘기는 쪽이 아니라 받는 쪽이 건너뛰므로, 호출자가 기대값을 잊어서 검사가
+    조용히 사라지는 일은 없다 — 잊으면 `sealed`를 그대로 넘기게 되고 그건 종전 동작이다.
+    """
+    if contract.application_head == BASELINE_ROOT_REVISION:
+        return sealed
+    return None
+
+
+def _catalog_mismatch(observed: str, expected: str | None) -> bool:
+    """기대값이 선언된 경우에만 대조한다."""
+    return expected is not None and observed != expected
+
+
 def _require_finalize_binding(
     finalize: FreshFinalizeResult,
     *,
@@ -1910,11 +1966,26 @@ def _require_finalize_binding(
             database is not None
             and finalize.database_identity != database
         )
-        or finalize.pre_source_catalog_sha256 != contract.source_catalog_sha256
+        # catalog는 head가 baseline root일 때만 봉인값과 대조한다. 그 너머의 정본은
+        # root receipt(pre-ACL)와 finalize 자신(post-ACL)이다 — 아래에서 root와 직접
+        # 대조하므로 결박이 사라지지 않는다.
+        or _catalog_mismatch(
+            finalize.pre_source_catalog_sha256,
+            _sealed_catalog(contract, contract.source_catalog_sha256),
+        )
         or finalize.pre_seed_sha256 != contract.seed_sha256
-        or finalize.post_destination_catalog_sha256
-        != contract.destination_catalog_sha256
+        or _catalog_mismatch(
+            finalize.post_destination_catalog_sha256,
+            _sealed_catalog(contract, contract.destination_catalog_sha256),
+        )
         or finalize.post_seed_sha256 != contract.seed_sha256
+        # head가 baseline root를 넘어서면 pre-ACL 기대값은 root receipt가 관측한
+        # head 상태다. 봉인값보다 **약하지 않다** — root receipt는 fence → journal →
+        # candidate evidence로 결박돼 있고, 봉인값은 애초에 이 상태를 서술하지 않는다.
+        or (
+            prior is not None
+            and finalize.pre_source_catalog_sha256 != prior.post_head_catalog_sha256
+        )
         or finalize.expected_privileged_residue_sha256
         != contract.privileged_residue_sha256
         or finalize.post_destination_alembic_version_sha256
@@ -1988,8 +2059,15 @@ def _validate_final_permit_receipts(
             "final permit runtime invariant receipt is invalid"
         )
     if (
-        receipts["expected_catalog_sha256"] != contract.destination_catalog_sha256
-        or receipts["observed_catalog_sha256"] != contract.destination_catalog_sha256
+        # permit이 실어 온 두 값은 **서로** 같아야 하고, head가 baseline root일 때만
+        # 봉인값과도 같아야 한다. 종전에는 둘 다 봉인값에 고정돼 있어,
+        # `build_application_final_permit`이 head 인지로 쓴 값을 같은 함수가 자기
+        # 검증에서 거절했다 — 빌더가 자기 출력을 못 통과시켰다.
+        receipts["expected_catalog_sha256"] != receipts["observed_catalog_sha256"]
+        or _catalog_mismatch(
+            str(receipts["observed_catalog_sha256"]),
+            _sealed_catalog(contract, contract.destination_catalog_sha256),
+        )
         or receipts["expected_seed_sha256"] != contract.seed_sha256
         or receipts["observed_seed_sha256"] != contract.seed_sha256
         or receipts["expected_privileged_residue_sha256"]
@@ -2045,9 +2123,14 @@ def _validate_final_permit_evidence(
     ):
         _require_sha256(evidence[key], key)
     if (
-        evidence["pre_source_catalog_sha256"] != contract.source_catalog_sha256
-        or evidence["post_destination_catalog_sha256"]
-        != contract.destination_catalog_sha256
+        _catalog_mismatch(
+            str(evidence["pre_source_catalog_sha256"]),
+            _sealed_catalog(contract, contract.source_catalog_sha256),
+        )
+        or _catalog_mismatch(
+            str(evidence["post_destination_catalog_sha256"]),
+            _sealed_catalog(contract, contract.destination_catalog_sha256),
+        )
         or evidence["post_destination_alembic_version_sha256"]
         != contract.destination_alembic_version_sha256
     ):

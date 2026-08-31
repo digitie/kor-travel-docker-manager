@@ -2,6 +2,50 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-31 — 봉인된 baseline digest를 `300` 도달 순간으로 한정하고, 그 너머를 receipt에 넘긴다
+
+ADR-42가 head **값 고정**을 걷어냈지만 더 깊은 곳에 **상태 고정**이 남아 있었다. 봉인된
+baseline digest는 `300` 시점의 물리 catalog를 서술하는데, 여러 지점이 **live DB를 그
+digest와 exact 대조**한다. Map이 migration을 하나 더하면 새 객체 때문에 반드시 어긋나고,
+그 어긋남은 계약 위반이 아니라 **비교 대상이 틀린 것**이다.
+
+Map PostGIS 통합이 이것을 실증했다. 프로덕션 영향은 fresh 설치 실패에 그치지 않는다 —
+final permit이 막히면 API/Dagster 컨테이너가 기동을 거부한다.
+
+**이 저장소의 변경.** root result schema를 v2 → v3으로 올리고 `post_head_catalog_sha256` /
+`post_head_seed_sha256`을 받는다. 이 parser는 exact field set을 요구하므로 필드 추가가 곧
+계약 변경이고, 버전을 올려 그 사실을 드러낸다. permit의 `expected_catalog_sha256`은 head가
+baseline root일 때만 봉인값이고 그 너머에서는 finalize 관측값이다.
+
+**적용을 절반만 하고 초록이었다.** 처음에는 permit의 `receipts` 블록 한 곳만 고쳤는데,
+같은 성질의 자리가 다섯 남아 있었다. 그중 하나가 특히 나빴다 —
+`build_application_final_permit`이 `:1466`에서 자기 출력을 `validate_application_final_permit`에
+넣는데, 그 함수가 두 catalog 값을 봉인값에 고정하고 있어 **빌더가 방금 쓴 head 인지 값을
+자기 검증에서 거절**했다. head가 baseline root를 넘으면 permit이 아예 만들어지지 않는다.
+
+**테스트가 못 잡은 이유가 더 중요하다.** `test_the_whole_fresh_chain_works_at_any_head`가
+head **문자열**만 세 값으로 바꾸고 catalog digest는 전부 봉인값 그대로였다. head가 움직이면
+catalog가 달라진다는 사실 — ADR-43이 존재하는 이유 자체 — 를 한 번도 태우지 않았다.
+초록인 채로 아무것도 보지 않은 것이다.
+
+fixture가 head > baseline root일 때 실제로 다른 catalog digest를 만들게 고쳤고, 그 상태에서
+두 파라미터가 먼저 **실패**하는 것을 확인한 뒤 다섯 자리를 고쳤다.
+
+**결박은 오히려 강해졌다.** head 너머에서는 봉인값 대신 root receipt가 관측한 head 상태와
+대조한다(`prior.post_head_catalog_sha256`). 봉인값은 애초에 그 상태를 서술하지 않으므로 잃는
+것이 없고, root receipt는 fence → journal → candidate evidence로 결박돼 있다. permit의 두
+catalog 값이 **서로** 같아야 한다는 조건도 새로 생겼다.
+
+`300`에서의 엄격함은 하나도 잃지 않는다 — head == baseline root이면 모든 자리가 종전과
+동일한 봉인값 대조를 한다. 근거가 옮겨가는 것은 그 너머뿐이다.
+
+기각한 대안은 baseline 재cut이다. 기계적으로는 가능하지만(핀 이미지가 n150에 살아 있어
+태그로 보호해 뒀다) baseline은 `0236 → 300` squash 산물인데 head와 뒤섞이고, 무엇보다 **다음
+migration에서 또 재cut**을 요구한다 — 같은 덫을 다시 놓는다. ADR-43.
+
+미확인: 실 프로덕션 rebuild. Map PR digitie/kor-travel-map#1125의 PostGIS 통합이 `301` 적용을
+확인한다.
+
 ## 2026-08-31 — Map application head 값 고정 해제: 리터럴 11사본을 candidate 선언으로
 
 Map이 migration을 **하나**(`301_m03_import_children`) 더하자 Manager가 candidate를 거절했다.

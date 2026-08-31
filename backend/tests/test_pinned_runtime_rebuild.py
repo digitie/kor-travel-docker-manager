@@ -3818,6 +3818,10 @@ def _fresh_root_result_for_finalize_renewal(
             map_candidate.application_contract.source_catalog_sha256
         ),
         post_seed_sha256=map_candidate.application_contract.seed_sha256,
+        post_head_catalog_sha256=(
+            map_candidate.application_contract.source_catalog_sha256
+        ),
+        post_head_seed_sha256=map_candidate.application_contract.seed_sha256,
         expected_privileged_residue_sha256=(
             map_candidate.application_contract.privileged_residue_sha256
         ),
