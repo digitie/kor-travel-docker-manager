@@ -404,7 +404,7 @@ def build_candidate_generation(
     #   2) candidate API image가 network 없이 출력한 installed graph의 head
     #      (`/usr/local/bin/ktm-application-schema head`).
     #
-    # 종전에는 리터럴 `"300"`이었다. 그래서 Map이 migration을 하나 더하는 순간 Manager가
+    # 종전에는 baseline root 리터럴이었다. 그래서 Map이 migration을 하나 더하는 순간 Manager가
     # candidate를 거절했고, 스키마 진화를 막은 것은 배포 안전성이 아니라 값 고정이었다.
     # 여기서 값은 풀되 **결박은 강화한다** — receipt가 선언한 head와 image가 실제로 담고
     # 있는 head가 다르면 그것이야말로 거절해야 할 상태다(재빌드 없이 receipt 재사용 등).

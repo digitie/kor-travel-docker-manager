@@ -1495,7 +1495,7 @@ def _pinvi_manager_admission_environment(
 def _map_application_head(map_root: Path) -> str:
     """materialize된 Map source에서 application Alembic head를 유도한다.
 
-    종전에는 `KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=300` 리터럴이었다. Map이 migration을
+    종전에는 이 값이 baseline root 리터럴로 박혀 있었다. Map이 migration을
     하나 더하면 `api-entrypoint.sh`가 head 불일치로 기동을 거부해, 이 harness는 **스키마가
     진화한 Map을 영원히 e2e할 수 없게** 된다.
 
