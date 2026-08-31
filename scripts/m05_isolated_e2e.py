@@ -1031,7 +1031,12 @@ def _map_network_addresses(transaction: str) -> tuple[str, str, str, str]:
         candidate = ipaddress.ip_network(f"172.29.{(seed + offset) % 224}.0/28")
         if not any(candidate.overlaps(item) for item in existing):
             hosts = list(candidate.hosts())
-            return str(candidate), str(hosts[0]), str(hosts[1]), str(hosts[2])
+            # 정적 주소(api/frontend)는 범위 **상단**에서 고른다. Docker IPAM은
+            # 동적 할당을 하단부터 채우므로, 먼저 뜨는 postgres/rustfs가 하단
+            # 주소를 가져가도 뒤에 뜨는 api/frontend의 정적 claim과 충돌하지
+            # 않는다(2026-09-01 실측: !override로 정적 IP가 실제 적용되자
+            # postgres가 .2를 선점해 api 기동이 결정적으로 실패했다).
+            return str(candidate), str(hosts[0]), str(hosts[-1]), str(hosts[-2])
     _fail("network_subnet_unavailable")
 
 
