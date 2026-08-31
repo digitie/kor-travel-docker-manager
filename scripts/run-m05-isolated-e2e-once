@@ -298,6 +298,7 @@ expected_execution = sys.argv[4]
 driver_status = int(sys.argv[5])
 PHASES = frozenset(
     {
+        "arguments_invalid", "runtime_command_output_too_large",
         "admission", "source_materialization", "ledger_claim", "runtime_setup",
         "map_runtime", "map_postgres_start_failed", "map_fresh_init_failed",
         "map_application_start_failed", "map_health_status_failed",

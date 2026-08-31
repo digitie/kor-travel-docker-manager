@@ -149,6 +149,10 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
 # 허용한다. 이 집합 밖의 값은 가장 좁은 안전 진단으로 수렴한다.
 _PUBLIC_TERMINAL_PHASES = frozenset(
     {
+        # _fail이 만드는 raw phase 중 result/driver_phase로 새어 나올 수 있는
+        # 것들도 어휘에 있어야 launcher receipt 검증이 깨지지 않는다(적대 리뷰).
+        "arguments_invalid",
+        "runtime_command_output_too_large",
         "admission",
         "driver_contract_failed",
         "ledger_claim",
@@ -2345,7 +2349,12 @@ def main(expected_revision: str, output: Path) -> int:
         )
         phase = "pinvi_runtime"
         pinvi_files = (pinvi_root / "infra/docker-compose.app.yml", pinvi_override)
-        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ())
+        # cleanup down은 etl 프로파일까지 포함해야 한다 — 프로파일 밖 down은
+        # app-dagster를 모델에서 못 보고 --remove-orphans도 profile-scoped
+        # 서비스는 남겨, 잔존 컨테이너가 cleanup 검증을 결정적으로 깨뜨린다
+        # (2026-09-01 e2e6 실측: dagster 잔존 → runtime_cleanup_failed가
+        # 실제 실패 phase를 가림).
+        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ("etl",))
         environment = _pinvi_manager_admission_environment(
             env_file=pinvi_env,
             bootstrap_credential_file=bootstrap,
@@ -2644,12 +2653,20 @@ def main(expected_revision: str, output: Path) -> int:
             pinvi_cleanup=pinvi_cleanup,
             private_files=private_files,
         )
+        # driver_phase는 cleanup 전 실행 표면의 정본이다(2026-08-28 journal 계약).
+        # 종전 코드는 강등/블록 표기 **뒤에** 대입해 두 결함을 만들었다:
+        # (1) cleanup 실패가 실제 실패 phase를 통째로 가림 — e2e6에서 원인 재현에
+        #     격리 run 1회를 태웠다. (2) passed 경로에서 마지막 body phase가 실려
+        #     launcher의 passed 검증(driver_phase == "completed")이 첫 PASS를
+        #     무효 receipt로 만들고 무조건 block으로 승격시킨다.
+        driver_phase = "completed" if completed else phase
         if unexpected_finalization_failure or cleanup_failed:
             completed = False
             if not body_entered and _terminal_block_phase(phase) is not None:
                 # 본문 진입 이후(또는 ledger claim 실패)는 무조건 소각을 유지해야
                 # 하므로 cleanup phase가 실패 표면을 강등하지 못한다(R1-S4).
                 # cleanup 신호는 result의 `cleanup_failed` 필드가 이미 나른다.
+                # 실제 실패 phase는 위 driver_phase가 이미 보존한다.
                 phase = "runtime_cleanup_failed"
         if not completed and claim_attempted:
             try:
@@ -2662,7 +2679,6 @@ def main(expected_revision: str, output: Path) -> int:
                 pinset_blocked = False
             if not pinset_blocked:
                 phase = "runtime_execution_block_failed"
-        driver_phase = phase
         for name in _RAW_ENV_NAMES:
             os.environ.pop(name, None)
         result: dict[str, object] = {
