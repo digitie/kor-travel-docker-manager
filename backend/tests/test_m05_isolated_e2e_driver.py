@@ -802,9 +802,16 @@ def test_cleanup_failure_does_not_downgrade_an_unconditional_phase() -> None:
         for line in tail.splitlines()[1:9]
         if line.strip() and not line.strip().startswith("#")
     ]
-    # 강등 전에 실제 phase를 보존한다(e2e6 회귀 방지) — 보존 후 즉시 강등.
-    assert statements[0] == "pre_cleanup_phase = phase"
-    assert statements[1] == 'phase = "runtime_cleanup_failed"'
+    assert statements[0] == 'phase = "runtime_cleanup_failed"'
+    # 실제 실패 phase는 강등 가드 **이전**에 driver_phase로 확정돼 있어야 한다
+    # (e2e6: 가드 뒤 대입이 원인 phase를 통째로 가렸다). passed 경로는
+    # "completed"를 실어야 launcher의 passed 검증이 첫 PASS를 무효화하지 않는다.
+    contract = 'driver_phase = "completed" if completed else phase'
+    assert contract in source
+    assert source.index(contract) < source.index(guard)
+    assert "
+        driver_phase = phase
+" not in source
 
 
 def test_preclaim_exception_writes_a_nonterminal_fixed_receipt(
@@ -875,7 +882,9 @@ def test_unexpected_cleanup_keeps_the_fixed_cleanup_phase(
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
     assert receipt["phase"] == "runtime_cleanup_failed"
-    assert receipt["driver_phase"] == "runtime_cleanup_failed"
+    # driver_phase는 cleanup 전 실행 표면의 정본이다(2026-08-28 journal 계약) —
+    # 강등이 실제 실패 phase를 가리지 않는다(e2e6 회귀 방지).
+    assert receipt["driver_phase"] == "admission"
 
 
 def test_preclaim_phase_error_does_not_attempt_a_terminal_block(
@@ -1863,3 +1872,38 @@ def test_private_json_writer_serializes_immutable_manager_admission(tmp_path: Pa
     raw = path.read_bytes()
     assert json.loads(raw) == dict(admission)
     assert digest == hashlib.sha256(raw).hexdigest()
+
+
+def test_driver_result_keys_match_the_launcher_expected_keys() -> None:
+    """driver가 쓰는 result.json 키 집합은 launcher의 exact key-set 검증과 결합돼야 한다.
+
+    phase 어휘는 결합 테스트가 있었지만 키는 없어서, 새 필드 추가가 receipt를
+    통째로 무효화(→ scoped 실패의 무조건 승격)하는 회귀가 CI green으로 통과할
+    뻔했다(적대 리뷰 critical).
+    """
+
+    root = Path(__file__).resolve().parents[2]
+    driver_source = (root / "scripts/m05_isolated_e2e.py").read_text(encoding="utf-8")
+    launcher = (root / "scripts/run-m05-isolated-e2e-once").read_text(encoding="utf-8")
+
+    base_start = driver_source.index("result: dict[str, object] = {")
+    base_end = driver_source.index("}", driver_source.index("**result_hashes"))
+    base_block = driver_source[base_start:base_end]
+    driver_base_keys = {
+        line.split('"')[1]
+        for line in base_block.splitlines()
+        if line.strip().startswith('"')
+    }
+    # 조건부 키: map_fresh_init_reason(진단), result_hashes(passed 3종).
+    assert 'result["map_fresh_init_reason"]' in driver_source
+
+    launcher_base = launcher[
+        launcher.index("expected_keys = {") : launcher.index("if value.get(")
+    ]
+    launcher_base_keys = {
+        part.strip().strip('"')
+        for line in launcher_base.splitlines()
+        for part in line.replace("expected_keys = {", "").replace("}", "").split(",")
+        if part.strip().strip('"')
+    }
+    assert driver_base_keys == launcher_base_keys
