@@ -2025,3 +2025,36 @@ def test_app_dagster_container_is_resolved_once_with_the_etl_profile() -> None:
     assert len(occurrences) == 1
     window = source[occurrences[0] : occurrences[0] + 300]
     assert 'profiles=("etl",)' in window
+
+
+def test_compose_model_profiles_are_derived_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cleanup 프로파일은 compose 모델에서 파생한다 — 상대 레포 프로파일
+    이름을 Manager에 리터럴로 박으면 프로파일 추가마다 잔존 컨테이너가
+    cleanup 검증을 깨뜨린다(e2e6 클래스, 범용성 지시)."""
+
+    driver = _driver()
+    captured: dict[str, object] = {}
+
+    def fake_compose(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "etl\nobservability\n\netl\n"
+
+    monkeypatch.setattr(driver, "_compose", fake_compose)
+    profiles = driver._compose_model_profiles(
+        root=Path("/tmp"),
+        project="m05i-pinvi-" + "a" * 32,
+        env_file=Path("/tmp/none.env"),
+        files=(Path("/tmp/a.yml"),),
+    )
+    assert profiles == ("etl", "observability")
+    assert captured["arguments"] == ("config", "--profiles")
+
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+    # cleanup 등록부에 프로파일 리터럴이 되살아나지 못하게 한다.
+    assert 'map_files, ("fresh-init",)' not in source
+    assert 'pinvi_files, ("etl",)' not in source
+    assert source.count("_compose_model_profiles(") >= 3

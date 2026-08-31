@@ -1684,6 +1684,34 @@ def _map_application_head(map_root: Path) -> str:
     return heads[0]
 
 
+def _compose_model_profiles(
+    *,
+    root: Path,
+    project: str,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> tuple[str, ...]:
+    """cleanup down이 켜야 할 프로파일을 compose 모델 자체에서 파생한다.
+
+    특정 레포의 프로파일 이름("etl", "fresh-init")을 Manager에 리터럴로 박으면
+    상대 compose에 프로파일이 추가될 때마다 잔존 컨테이너가 cleanup 검증을
+    깨뜨린다(e2e6 실측 클래스). 모델이 선언한 전체 프로파일을 down에 넘기면
+    Manager는 상대 구조 변화에 무수정이다(범용성 지시).
+    """
+
+    raw = _compose(
+        root=root,
+        project=project,
+        env_file=env_file,
+        files=files,
+        arguments=("config", "--profiles"),
+        capture=True,
+    )
+    return tuple(
+        sorted({line.strip() for line in raw.splitlines() if line.strip()})
+    )
+
+
 def _rendered_service_images(
     *,
     root: Path,
@@ -2341,7 +2369,18 @@ def main(expected_revision: str, output: Path) -> int:
         )
         _write_private_text(pinvi_override, "\n".join(pinvi_override_lines) + "\n")
         phase = "map_runtime"
-        map_cleanup = (map_root, plan.map_project, map_env, map_files, ("fresh-init",))
+        map_cleanup = (
+            map_root,
+            plan.map_project,
+            map_env,
+            map_files,
+            _compose_model_profiles(
+                root=map_root,
+                project=plan.map_project,
+                env_file=map_env,
+                files=map_files,
+            ),
+        )
         _compose(
             root=map_root,
             project=plan.map_project,
@@ -2438,12 +2477,23 @@ def main(expected_revision: str, output: Path) -> int:
         )
         phase = "pinvi_runtime"
         pinvi_files = (pinvi_root / "infra/docker-compose.app.yml", pinvi_override)
-        # cleanup down은 etl 프로파일까지 포함해야 한다 — 프로파일 밖 down은
-        # app-dagster를 모델에서 못 보고 --remove-orphans도 profile-scoped
-        # 서비스는 남겨, 잔존 컨테이너가 cleanup 검증을 결정적으로 깨뜨린다
-        # (2026-09-01 e2e6 실측: dagster 잔존 → runtime_cleanup_failed가
-        # 실제 실패 phase를 가림).
-        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ("etl",))
+        # cleanup down은 모델의 **전체** 프로파일을 켜야 한다 — 프로파일 밖
+        # down은 profile-scoped 서비스를 못 보고 --remove-orphans도 남겨,
+        # 잔존 컨테이너가 cleanup 검증을 결정적으로 깨뜨린다(e2e6 실측:
+        # dagster 잔존 → runtime_cleanup_failed가 실제 실패 phase를 가림).
+        # 프로파일 목록은 리터럴이 아니라 모델에서 파생한다(범용성 지시).
+        pinvi_cleanup = (
+            pinvi_root,
+            plan.pinvi_project,
+            pinvi_env,
+            pinvi_files,
+            _compose_model_profiles(
+                root=pinvi_root,
+                project=plan.pinvi_project,
+                env_file=pinvi_env,
+                files=pinvi_files,
+            ),
+        )
         environment = _pinvi_manager_admission_environment(
             env_file=pinvi_env,
             bootstrap_credential_file=bootstrap,
