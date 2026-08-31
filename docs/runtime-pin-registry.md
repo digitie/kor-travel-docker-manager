@@ -73,10 +73,12 @@ terminal phase를 `completed` 외 exact 같은 집합으로 수용한다. 이 �
 256 KiB stderr만 private leaf에 남긴다. 이 artifact는 registry·public receipt·tracked 문서의 입력이 아니며
 same execution의 재시도 권한도 만들지 않는다.
 `blocked` receipt는 exact source revision·launch 전후 같은 snapshot·고정 schema를 모두 만족해도, root registry가
-같은 pinset·Map·PinVi revision의 unconditional terminal block을 확인할 때만 launcher가 보존한다. registry 증명이
-없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block`과 fixed fallback으로 fail-close한다. 그러므로
-driver의 blocked receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의
-fallback으로 바뀌지 않는다.
+같은 pinset·Map·PinVi revision에 결박된 block 기록(scoped든 무조건이든)을 확인할 때만 launcher가 보존한다
+(R1-S1 — 무조건 기록만 인정하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격해 phase-scoped
+설계를 무효화한다). registry 증명이 없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block-execution`
+(phase를 알 수 없는 crash 경로이므로 무조건)과 fixed fallback으로 fail-close한다. 그러므로 driver의 blocked
+receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의 fallback으로 바뀌지
+않는다.
 
 ### 단발 실행의 완료 판정
 
@@ -117,7 +119,9 @@ generic pin/execution/generation gate를 통과했어도, 문서 commit 등을 r
 pair는 E2E terminal이나 Compose mutation을 소비하지 않고 거부된다. pair가 통과한 뒤의 runtime failure만
 current v6 execution terminal로 기록한다. 단 one-shot ledger claim은 `O_EXCL` create 뒤 fsync 오류에도
 durable file을 남길 수 있으므로, claim 호출을 시작한 뒤의 오류는 성공 반환 여부와 무관하게 terminal로
-수렴한다. launcher가 fallback 없이 수용하는 `preflight_rejected` receipt는 strict pre-claim phase와
+수렴한다. ledger 파일명에는 attempt ordinal이 붙는다(R1-S2 — 내용은 identity-순수 유지, 상한 32) —
+scoped 차단 후의 재실행이 파일명 충돌로 소각되지 않고, 재실행 허용의 정본 판정은 registry가 갖는다.
+본문(`m04_m05_e2e`) 진입 이후의 실패는 phase 이름과 무관하게 무조건 소각한다(R1-S4 body_entered). launcher가 fallback 없이 수용하는 `preflight_rejected` receipt는 strict pre-claim phase와
 `cleanup_failed:false`만 허용한다.
 
 ---
