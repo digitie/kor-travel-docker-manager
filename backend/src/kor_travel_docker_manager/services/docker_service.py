@@ -10,7 +10,6 @@ from typing import Any
 import docker
 import yaml
 from docker.errors import DockerException, NotFound
-
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINVI_POSTGRES_INITDB_ARGS,
@@ -823,6 +822,9 @@ class DockerService:
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
 
+        # 순환 참조 방지를 위해 메서드 안에서 최신 stats 캐시를 읽는다.
+        from kor_travel_docker_manager.services.metrics_collector import metrics_collector
+
         spec = MANAGED_CONTAINERS[container_id]
         cname = spec["name"]
         try:
@@ -833,6 +835,18 @@ class DockerService:
             host_config = attrs.get("HostConfig", {})
             network_settings = attrs.get("NetworkSettings", {})
             state = attrs.get("State", {})
+
+            image_id = attrs.get("Image")
+            image_tags: list[str] = []
+            try:
+                image = container.image
+                if image is not None:
+                    image_tags = [str(tag) for tag in (image.tags or []) if tag]
+                if not image_id and image is not None:
+                    image_id = getattr(image, "short_id", None)
+            except Exception:
+                # inspect 본문 전체를 실패시키지 않고 Docker inspect의 image ID만 사용한다.
+                pass
 
             env = [_redact_env_pair(pair) for pair in config.get("Env", [])]
             networks = {
@@ -855,8 +869,12 @@ class DockerService:
                     "display_name": spec["display_name"],
                     "role": spec["role"],
                     "image": config.get("Image"),
+                    "image_id": image_id,
+                    "image_tags": image_tags,
                     "created": attrs.get("Created"),
                     "status": container.status,
+                    "restart_count": attrs.get("RestartCount", 0),
+                    "metrics": metrics_collector.get_latest_metric(container_id),
                     "state": {
                         "status": state.get("Status"),
                         "running": state.get("Running"),

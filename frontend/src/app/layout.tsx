@@ -3,8 +3,8 @@ import "./globals.css";
 import Providers from "./providers";
 
 export const metadata: Metadata = {
-  title: "Kor Travel Docker Manager",
-  description: "Kor Travel infrastructure container management and metrics dashboard",
+  title: "Docker Manager UI",
+  description: "Docker 인프라 컨테이너 관리와 메트릭 운영 대시보드",
 };
 
 export default function RootLayout({

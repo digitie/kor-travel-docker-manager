@@ -102,6 +102,7 @@ graph TD
 - `GET /api/v1/containers/{container_id}/logs`: 최근 100라인의 stdout/stderr 컨테이너 로그 반환.
 - `POST /api/v1/containers/{container_id}/reset`: 허용된 개발 lifecycle에서 컨테이너 reset 실행.
 - `GET /api/v1/containers/{container_id}/metrics`: 최근 CPU, 메모리, I/O 메트릭 이력 반환.
+- `GET /metrics`: Prometheus text exposition format으로 관리 대상별 상태·healthcheck·재시작·종료 코드·시각·CPU·메모리·블록 I/O·네트워크·PID 관측값을 반환. 백그라운드 캐시만 읽으며 인증정보와 환경변수는 노출하지 않는다.
 - `GET /api/v1/backups`: 전용 PostgreSQL backup 산출물의 읽기 전용 목록 반환.
 - `GET /api/v1/admin/login-audit-events`, `GET/POST/DELETE /api/v1/admin/public-api-keys...`: 관리자 감사 및 public API key 관리.
 - `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}`: 상태·로그 WebSocket 스트림.
@@ -122,9 +123,9 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 
 ### 3.2 UI/UX 디자인 시스템
 - **관리 대시보드 우선**: 마케팅 hero나 장식 이미지를 배제하고, 상태 표·액션 버튼·상세 패널을 첫 화면의 중심에 둔다.
-- **시각 양식**: `DESIGN.md`와 `frontend/tokens.css`의 Hallmark Cobalt 토큰, 밝은 Workbench 표면, 얕은 그림자, 6px/10px radius를 적용한다.
+- **시각 양식**: 최신 `kor-travel-map` admin의 Rail-Workbench 구조와 밝은 표면, 얕은 그림자, 6px/10px radius를 따르되, 브랜드 색상은 기존 Ember 오렌지 토큰을 유지한다.
 - **상태 인디케이터**: 컨테이너 상태는 색상 점, 텍스트, 아이콘을 함께 사용해 빠르게 스캔할 수 있게 한다.
-- **상세 패널**: inspect, mounts, networks, redacted env, 최근 로그, 최근 메트릭을 한 화면에서 확인할 수 있게 확장한다.
+- **상세 패널**: inspect, mounts, networks, redacted env, 최근 로그, 최근 메트릭을 한 화면에서 확인할 수 있게 확장하며, 리소스 탭에서 Docker stats의 누적값·델타·네트워크 인터페이스·PID를 구분한다.
 
 ---
 

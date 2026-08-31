@@ -11,9 +11,10 @@
 - 전역 스타일: [`frontend/src/app/globals.css`](../frontend/src/app/globals.css)
 - 대시보드 조립: [`DashboardClient.tsx`](../frontend/src/components/DashboardClient.tsx)
 
-화면은 Hallmark Cobalt Workbench 방향을 따른다. 밝은 페이지·카드 표면과 cobalt 조치 신호,
-graphite 관찰 표면을 사용하며, 운영 데이터가 정보 밀도를 만든다. BMW M, Pure Black,
-M 삼색선, 차량 이미지와 같은 이전 방향은 현재 시스템의 기준이 아니다.
+화면은 최신 `kor-travel-map` admin의 Rail-Workbench 구조를 따른다. 밝은 페이지·카드 표면과
+Ember 오렌지 조치 신호, 얕은 그림자와 hairline 구분선을 사용하며, 운영 데이터가 정보 밀도를
+만든다. 구조와 컴포넌트 간격은 Map과 맞추되 `frontend/tokens.css`의 기존 오렌지 색상톤은
+변경하지 않는다.
 
 ## 토큰 사용
 
@@ -30,7 +31,8 @@ M 삼색선, 차량 이미지와 같은 이전 방향은 현재 시스템의 기
 | 서체 | `--font-display`, `--font-sans`, `--font-mono` |
 
 카드와 모달은 낮은 대비의 그림자를 사용하고, 상태색은 상태 점·배지·작은 수치 강조에
-한정한다. 위험한 조치는 해당 버튼과 확인 문구를 가까이 배치한다.
+한정한다. 위험한 조치는 해당 버튼과 확인 문구를 가까이 배치한다. Docker stats의 값은
+수집되지 않은 경우 임의의 0 대신 확인 필요 상태로 표시한다.
 
 ## 화면 구조
 

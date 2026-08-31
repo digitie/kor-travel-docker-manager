@@ -909,20 +909,8 @@ export default function DashboardClient() {
 
   return (
     <AppShell
-      isLoggingOut={logoutMutation.isPending}
-      onLogout={() => logoutMutation.mutate()}
-      onOpenAdminSettings={() => setIsAdminSettingsOpen(true)}
-      onOpenBackupHistory={() => setIsBackupHistoryOpen(true)}
-      onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
-      onOpenRuntimePins={() => setIsRuntimePinsOpen(true)}
-      onOpenSourceStatus={() => setIsSourceStatusOpen(true)}
-    >
-      <div className="page-head">
-        <div className="page-title">
-          <p className="ops-eyebrow">개요</p>
-          <h1 className="ops-title">인프라 서비스 컨트롤</h1>
-        </div>
-        <div className="page-head__actions">
+      actions={
+        <>
           <button
             className="ops-button"
             disabled={isLoading}
@@ -940,9 +928,20 @@ export default function DashboardClient() {
             <Command size={14} />
             빠른 명령
           </button>
-        </div>
-      </div>
-
+        </>
+      }
+      description="Docker 컨테이너 상태와 조작을 한 화면에서 확인합니다."
+      isLoggingOut={logoutMutation.isPending}
+      onLogout={() => logoutMutation.mutate()}
+      onOpenAdminSettings={() => setIsAdminSettingsOpen(true)}
+      onOpenBackupHistory={() => setIsBackupHistoryOpen(true)}
+      onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+      onOpenRuntimePins={() => setIsRuntimePinsOpen(true)}
+      onOpenSourceStatus={() => setIsSourceStatusOpen(true)}
+      section="개요"
+      title="인프라 서비스 컨트롤"
+    >
+      <div className="dashboard-stack">
       <section className="ops-overview" aria-labelledby="service-summary-title">
         <div className="ops-summary">
           <div className="ops-summary__header">
@@ -1034,7 +1033,7 @@ export default function DashboardClient() {
       )}
 
       {containerGroups.length > 0 && (
-        <section className="ops-ledger mb-4" id="service-groups" aria-labelledby="service-groups-title">
+        <section className="ops-ledger" id="service-groups" aria-labelledby="service-groups-title">
           <div className="ops-ledger__header">
             <div>
               <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
@@ -1105,6 +1104,10 @@ export default function DashboardClient() {
                   const isContainerLoading = isActionPending || isConfigPending || isResetPending;
 
                   const metrics = container.metrics;
+                  const liveMetrics =
+                    container.status === 'running' && metrics?.stats_available === true
+                      ? metrics
+                      : null;
 
                   return (
                     <tr key={container.id}>
@@ -1167,7 +1170,7 @@ export default function DashboardClient() {
                         >
                           <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
                             <Cpu className="text-brand" size={14} />
-                            {container.status === 'running' && metrics ? `${metrics.cpu_pct.toFixed(1)}%` : '—'}
+                            {liveMetrics ? `${liveMetrics.cpu_pct.toFixed(1)}%` : '—'}
                           </span>
                           <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
                         </button>
@@ -1184,10 +1187,10 @@ export default function DashboardClient() {
                         >
                           <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
                             <HardDrive className="text-brand" size={14} />
-                            {container.status === 'running' && metrics ? `${metrics.mem_pct.toFixed(1)}%` : '—'}
+                            {liveMetrics ? `${liveMetrics.mem_pct.toFixed(1)}%` : '—'}
                           </span>
                           <span className="text-xs text-secondary mt-0.5 font-bold font-mono tabular-nums">
-                            {container.status === 'running' && metrics ? formatBytes(metrics.mem_usage) : '—'}
+                            {liveMetrics ? formatBytes(liveMetrics.mem_usage) : '—'}
                           </span>
                         </button>
                       </td>
@@ -1202,8 +1205,8 @@ export default function DashboardClient() {
                           title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
                         >
                           <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
-                            <span className="block text-warn">R: {container.status === 'running' && metrics ? formatBytes(metrics.io_read) : '—'}</span>
-                            <span className="block text-danger">W: {container.status === 'running' && metrics ? formatBytes(metrics.io_write) : '—'}</span>
+                            <span className="block text-warn">R: {liveMetrics ? formatBytes(liveMetrics.io_read) : '—'}</span>
+                            <span className="block text-danger">W: {liveMetrics ? formatBytes(liveMetrics.io_write) : '—'}</span>
                           </span>
                           <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
                         </button>
@@ -1235,7 +1238,7 @@ export default function DashboardClient() {
                               container.status === 'not_created' ||
                               container.status === 'offline'
                                 ? '컨테이너가 생성되지 않아 상세 정보를 볼 수 없습니다'
-                                : 'inspect 상세(mounts·networks·healthcheck·env) 보기'
+                                : 'inspect 상세(상태·리소스·mounts·networks·healthcheck·env) 보기'
                             }
                           >
                             <Boxes className="w-4 h-4" />
@@ -1305,6 +1308,8 @@ export default function DashboardClient() {
           </div>
         )}
       </section>
+
+      </div>
 
       {isCommandPaletteOpen && (
         <div
