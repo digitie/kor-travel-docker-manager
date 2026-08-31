@@ -809,9 +809,7 @@ def test_cleanup_failure_does_not_downgrade_an_unconditional_phase() -> None:
     contract = 'driver_phase = "completed" if completed else phase'
     assert contract in source
     assert source.index(contract) < source.index(guard)
-    assert "
-        driver_phase = phase
-" not in source
+    assert "\n        driver_phase = phase\n" not in source
 
 
 def test_preclaim_exception_writes_a_nonterminal_fixed_receipt(
