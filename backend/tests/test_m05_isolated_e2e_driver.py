@@ -799,10 +799,12 @@ def test_cleanup_failure_does_not_downgrade_an_unconditional_phase() -> None:
     tail = source[source.index(guard) + len(guard):]
     statements = [
         line.strip()
-        for line in tail.splitlines()[1:8]
+        for line in tail.splitlines()[1:9]
         if line.strip() and not line.strip().startswith("#")
     ]
-    assert statements[0] == 'phase = "runtime_cleanup_failed"'
+    # 강등 전에 실제 phase를 보존한다(e2e6 회귀 방지) — 보존 후 즉시 강등.
+    assert statements[0] == "pre_cleanup_phase = phase"
+    assert statements[1] == 'phase = "runtime_cleanup_failed"'
 
 
 def test_preclaim_exception_writes_a_nonterminal_fixed_receipt(
