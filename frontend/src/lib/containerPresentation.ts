@@ -8,6 +8,7 @@ import {
   Radio,
   ServerCog,
 } from 'lucide-react';
+import type { ContainerMetricSnapshot } from './api';
 
 /** `GET /api/v1/containers`의 요소. */
 export interface ContainerStatus {
@@ -22,15 +23,7 @@ export interface ContainerStatus {
   status: string;
   state: string;
   ports: string[];
-  metrics?: {
-    timestamp: string;
-    cpu_pct: number;
-    mem_pct: number;
-    mem_usage: number;
-    mem_limit: number;
-    io_read: number;
-    io_write: number;
-  };
+  metrics?: ContainerMetricSnapshot;
   config?: {
     ports: string[];
     env: Record<string, string>;

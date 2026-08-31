@@ -22,6 +22,11 @@ const SIDEBAR_COLLAPSED_KEY = 'kor-travel-docker-manager:sidebar-collapsed';
 const MAIN_CONTENT_ID = 'main-content';
 
 type AppShellProps = {
+  title: string;
+  description?: string;
+  section?: string;
+  meta?: ReactNode;
+  actions?: ReactNode;
   children: ReactNode;
   isLoggingOut: boolean;
   onLogout: () => void;
@@ -42,13 +47,18 @@ type NavItem = {
 };
 
 type NavGroup = {
-  label: string;
+  label?: string;
   items: NavItem[];
 };
 
 const railRowClass = 'nav-link';
 
 export default function AppShell({
+  title,
+  description,
+  section = '개요',
+  meta,
+  actions,
   children,
   isLoggingOut,
   onLogout,
@@ -59,6 +69,7 @@ export default function AppShell({
   onOpenSourceStatus,
 }: AppShellProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeHref, setActiveHref] = useState('/');
 
   useEffect(() => {
     try {
@@ -76,9 +87,18 @@ export default function AppShell({
     }
   }, [sidebarCollapsed]);
 
+  useEffect(() => {
+    const updateActiveHref = () => {
+      setActiveHref(window.location.hash || '/');
+    };
+    updateActiveHref();
+    window.addEventListener('hashchange', updateActiveHref);
+    return () => window.removeEventListener('hashchange', updateActiveHref);
+  }, []);
+
   const navGroups: NavGroup[] = [
     {
-      label: '개요',
+      label: undefined,
       items: [{ label: '대시보드', icon: LayoutDashboard, href: '/' }],
     },
     {
@@ -115,12 +135,17 @@ export default function AppShell({
         본문으로 건너뛰기
       </a>
 
-      <aside aria-label="주요 메뉴" className="sidebar" id="app-sidebar">
+      <aside
+        aria-label="주요 메뉴"
+        className="sidebar"
+        data-slot="admin-shell-rail"
+        id="app-sidebar"
+      >
         <div className="brand">
-          <a aria-label="Kor Travel Docker Manager 홈" className="brand-wordmark" href="/">
-            <span className="brand-name">kor-travel-docker</span>
-            <span className="brand-subtitle">manager</span>
-            <span aria-hidden="true" className="brand-short">ktd</span>
+          <a aria-label="Docker Manager UI 홈" className="brand-wordmark" href="/">
+            <span className="brand-name">Docker Manager UI</span>
+            <span className="brand-subtitle">admin</span>
+            <span aria-hidden="true" className="brand-short">dmu</span>
           </a>
           <div className="brand-actions">
             <button
@@ -147,8 +172,8 @@ export default function AppShell({
 
         <nav aria-label="관리" className="rail-nav">
           {navGroups.map((group) => (
-            <div className="nav-group" key={group.label}>
-              <div className="nav-title">{group.label}</div>
+            <div className="nav-group" key={group.label ?? 'dashboard'}>
+              {group.label ? <div className="nav-title">{group.label}</div> : null}
               {group.items.map((item) => {
                 const Icon = item.icon;
                 const commonClassName = `${railRowClass}${item.disabled ? ' nav-link--disabled' : ''}`;
@@ -173,12 +198,13 @@ export default function AppShell({
 
                 return (
                   <a
-                    aria-current={item.href === '/' ? 'page' : undefined}
+                    aria-current={item.href === activeHref ? 'page' : undefined}
                     aria-label={sidebarCollapsed ? item.label : undefined}
                     className={commonClassName}
                     href={item.href}
                     key={item.label}
                     title={sidebarCollapsed ? item.label : undefined}
+                    onClick={() => setActiveHref(item.href ?? '/')}
                   >
                     <Icon aria-hidden="true" size={16} />
                     <span className="nav-label">{item.label}</span>
@@ -204,14 +230,30 @@ export default function AppShell({
         </div>
       </aside>
 
-      <main
-        aria-label="대시보드 본문"
-        className="content"
-        id={MAIN_CONTENT_ID}
-        tabIndex={-1}
-      >
-        {children}
-      </main>
+      <div className="app-shell__workspace">
+        <header className="page-head" data-slot="admin-shell-header">
+          <div className="page-head__inner">
+            {section ? <p className="ops-eyebrow">{section}</p> : null}
+            <div className="page-head__row">
+              <div className="page-title">
+                <h1 className="ops-title">{title}</h1>
+              </div>
+              {actions ? <div className="page-head__actions">{actions}</div> : null}
+            </div>
+            {meta ? <div className="page-head__meta">{meta}</div> : null}
+            {description ? <p className="page-head__description">{description}</p> : null}
+          </div>
+        </header>
+        <main
+          aria-label="Docker Manager UI 대시보드 본문"
+          className="content focus-visible:outline-0"
+          data-slot="admin-shell-main"
+          id={MAIN_CONTENT_ID}
+          tabIndex={-1}
+        >
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

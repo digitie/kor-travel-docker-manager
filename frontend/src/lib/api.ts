@@ -54,6 +54,27 @@ export type AuthMe = {
   expires_at: string;
 };
 
+export type ContainerMetricSnapshot = {
+  timestamp: string;
+  cpu_pct: number;
+  mem_pct: number;
+  mem_usage: number;
+  mem_limit: number;
+  io_read: number;
+  io_write: number;
+  io_read_total?: number;
+  io_write_total?: number;
+  network_rx_bytes?: number;
+  network_tx_bytes?: number;
+  network_rx_packets?: number;
+  network_tx_packets?: number;
+  network_rx_errors?: number;
+  network_tx_errors?: number;
+  pids_current?: number | null;
+  pids_limit?: number | null;
+  stats_available?: boolean;
+};
+
 /** `GET /api/v1/containers/{id}/inspect` 응답. env는 백엔드에서 이미 redact된 값이다. */
 export type ContainerInspect = {
   id: string;
@@ -62,8 +83,12 @@ export type ContainerInspect = {
   display_name?: string | null;
   role?: string | null;
   image?: string | null;
+  image_id?: string | null;
+  image_tags?: string[] | null;
   created?: string | null;
   status?: string | null;
+  restart_count?: number | null;
+  metrics?: ContainerMetricSnapshot | null;
   state?: {
     status?: string | null;
     running?: boolean | null;

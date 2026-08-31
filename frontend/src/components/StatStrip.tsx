@@ -10,6 +10,9 @@ export type StatStripItem = {
   caption?: ReactNode;
   tone?: StatTone;
   title?: string;
+  href?: string;
+  loading?: boolean;
+  testId?: string;
 };
 
 type StatStripProps = {
@@ -55,14 +58,25 @@ export default function StatStrip({
   ].filter(Boolean).join(' ');
 
   return (
-    <dl aria-busy={isLoading || undefined} aria-label={ariaLabel} className={classes}>
+    <dl aria-busy={isLoading || undefined} aria-label={ariaLabel} className={classes} data-slot="stat-strip">
       {items.map((item) => {
-        const itemLoading = isLoading;
+        const itemLoading = isLoading || item.loading === true;
         return (
-          <div className="ops-stat" key={item.key ?? item.label} title={item.title}>
+          <div
+            className="ops-stat"
+            data-testid={item.testId}
+            key={item.key ?? item.label}
+            title={item.title}
+          >
             <dt className="ops-stat__label">
               {item.tone ? <span aria-hidden="true" className={`ops-stat__dot ${toneClass[item.tone]}`} /> : null}
-              <span>{item.label}</span>
+              <span>
+                {item.href ? (
+                  <a className="ops-stat__link" href={item.href}>
+                    {item.label}
+                  </a>
+                ) : item.label}
+              </span>
             </dt>
             <dd className="ops-stat__body">
               <span className={`ops-stat__value${itemLoading ? ' is-loading' : ''}${typeof item.value === 'number' ? '' : ' ops-stat__value--text'}`}>

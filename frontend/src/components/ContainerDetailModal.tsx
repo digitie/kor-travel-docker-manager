@@ -2,13 +2,16 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Boxes, HardDrive, Network, HeartPulse, KeyRound, X, Hammer } from 'lucide-react';
-import { ContainerInspect, apiJson, postJson } from '@/lib/api';
+import { Activity, Boxes, HardDrive, Network, HeartPulse, KeyRound, X, Hammer } from 'lucide-react';
+import { apiJson, postJson, type ContainerInspect, type ContainerMetricSnapshot } from '@/lib/api';
+import { statusLabel } from '@/lib/containerPresentation';
+import { formatBytes } from '@/lib/format';
 
-type TabId = 'overview' | 'mounts' | 'networks' | 'health' | 'env';
+type TabId = 'overview' | 'resources' | 'mounts' | 'networks' | 'health' | 'env';
 
 const TABS: Array<{ id: TabId; label: string; Icon: typeof Boxes }> = [
   { id: 'overview', label: '개요', Icon: Boxes },
+  { id: 'resources', label: '리소스', Icon: Activity },
   { id: 'mounts', label: '마운트', Icon: HardDrive },
   { id: 'networks', label: '네트워크', Icon: Network },
   { id: 'health', label: '상태 검사', Icon: HeartPulse },
@@ -37,6 +40,91 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 
 function EmptyState({ children }: { children: React.ReactNode }) {
   return <p className="text-secondary py-6 text-center">{children}</p>;
+}
+
+const HEALTH_LABELS: Record<string, string> = {
+  healthy: '정상',
+  unhealthy: '비정상',
+  starting: '확인 중',
+};
+
+function healthLabel(status: string | null | undefined): string {
+  if (!status) return 'healthcheck 없음';
+  return HEALTH_LABELS[status.toLowerCase()] ?? status;
+}
+
+function detailTimestamp(value: string | null | undefined): string | undefined {
+  if (!value || value.startsWith('0001-01-01')) return undefined;
+  const normalized = value.includes(' ') && !value.includes('T')
+    ? `${value.replace(' ', 'T')}Z`
+    : value;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : parsed.toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'medium' });
+}
+
+function ResourceMetric({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: React.ReactNode;
+  detail?: React.ReactNode;
+}) {
+  return (
+    <div className="ops-detail-metric">
+      <dt className="ops-detail-metric__label">{label}</dt>
+      <dd className="ops-detail-metric__value">{value}</dd>
+      {detail ? <dd className="ops-detail-metric__detail">{detail}</dd> : null}
+    </div>
+  );
+}
+
+function ResourceMetrics({ metrics }: { metrics: ContainerMetricSnapshot | null | undefined }) {
+  if (!metrics?.stats_available) {
+    return <EmptyState>실행 중인 컨테이너의 Docker stats를 아직 수집하지 못했습니다.</EmptyState>;
+  }
+  return (
+    <div className="ops-detail-resources">
+      <dl className="ops-detail-metric-grid">
+        <ResourceMetric label="CPU 사용률" value={`${metrics.cpu_pct.toFixed(1)}%`} />
+        <ResourceMetric
+          label="메모리"
+          value={`${formatBytes(metrics.mem_usage)} / ${formatBytes(metrics.mem_limit)}`}
+          detail={`${metrics.mem_pct.toFixed(1)}% 사용`}
+        />
+        <ResourceMetric
+          label="블록 I/O 읽기"
+          value={formatBytes(metrics.io_read)}
+          detail={`누적 ${formatBytes(metrics.io_read_total ?? 0)}`}
+        />
+        <ResourceMetric
+          label="블록 I/O 쓰기"
+          value={formatBytes(metrics.io_write)}
+          detail={`누적 ${formatBytes(metrics.io_write_total ?? 0)}`}
+        />
+        <ResourceMetric
+          label="네트워크 수신"
+          value={formatBytes(metrics.network_rx_bytes ?? 0)}
+          detail={`${(metrics.network_rx_packets ?? 0).toLocaleString('ko-KR')} packets · 오류 ${(metrics.network_rx_errors ?? 0).toLocaleString('ko-KR')}`}
+        />
+        <ResourceMetric
+          label="네트워크 송신"
+          value={formatBytes(metrics.network_tx_bytes ?? 0)}
+          detail={`${(metrics.network_tx_packets ?? 0).toLocaleString('ko-KR')} packets · 오류 ${(metrics.network_tx_errors ?? 0).toLocaleString('ko-KR')}`}
+        />
+        <ResourceMetric
+          label="프로세스(PID)"
+          value={metrics.pids_current == null ? '—' : metrics.pids_current.toLocaleString('ko-KR')}
+          detail={metrics.pids_limit == null ? '제한 정보 없음' : `제한 ${metrics.pids_limit.toLocaleString('ko-KR')}`}
+        />
+        <ResourceMetric label="마지막 샘플" value={detailTimestamp(metrics.timestamp) ?? '—'} />
+      </dl>
+      <p className="ops-detail-note">블록 I/O·네트워크 값은 컨테이너 재생성 시 누적값이 초기화될 수 있습니다.</p>
+    </div>
+  );
 }
 
 export default function ContainerDetailModal({
@@ -212,15 +300,24 @@ export default function ContainerDetailModal({
           {data && tab === 'overview' && (
             <dl>
               <Row label="이미지" value={data.image} />
+              <Row label="이미지 ID" value={data.image_id} />
+              <Row label="이미지 태그" value={data.image_tags?.length ? data.image_tags.join(', ') : undefined} />
               <Row label="컨테이너" value={data.name} />
               <Row label="Docker ID" value={data.docker_id?.slice(0, 20)} />
-              <Row label="상태" value={data.state?.status} />
-              <Row label="시작" value={data.state?.started_at} />
+              <Row label="상태" value={statusLabel(data.state?.status ?? data.status ?? '') || undefined} />
+              <Row label="생성" value={detailTimestamp(data.created)} />
+              <Row label="시작" value={detailTimestamp(data.state?.started_at)} />
+              <Row label="재시작 횟수" value={data.restart_count ?? undefined} />
               {/* Docker는 running 중에도 ExitCode 0을 보고한다. 그대로 찍으면 '정상 종료'로 읽힌다. */}
               <Row
                 label="종료 코드"
                 value={data.state?.running === false ? data.state?.exit_code : undefined}
               />
+              <Row label="종료" value={data.state?.running === false ? detailTimestamp(data.state.finished_at) : undefined} />
+              <Row label="실행 중" value={data.state?.running == null ? undefined : data.state.running ? '예' : '아니오'} />
+              <Row label="일시정지" value={data.state?.paused == null ? undefined : data.state.paused ? '예' : '아니오'} />
+              <Row label="OOM 종료" value={data.state?.oom_killed == null ? undefined : data.state.oom_killed ? '예' : '아니오'} />
+              <Row label="오류" value={data.state?.error || undefined} />
               <Row label="restart" value={data.host_config?.restart_policy?.Name} />
               <Row label="network mode" value={data.host_config?.network_mode} />
               <Row label="workdir" value={data.config?.working_dir} />
@@ -230,6 +327,8 @@ export default function ContainerDetailModal({
               />
             </dl>
           )}
+
+          {data && tab === 'resources' && <ResourceMetrics metrics={data.metrics} />}
 
           {data && tab === 'mounts' && (
             mounts.length === 0 ? (
@@ -289,7 +388,7 @@ export default function ContainerDetailModal({
             ) : (
               <div className="space-y-3">
                 <dl>
-                  <Row label="상태" value={health.Status} />
+                  <Row label="상태" value={healthLabel(health.Status)} />
                   <Row label="연속 실패" value={health.FailingStreak ?? 0} />
                 </dl>
                 {health.Log?.length ? (

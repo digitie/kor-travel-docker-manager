@@ -8,6 +8,7 @@ from logging.handlers import BaseRotatingHandler
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from kor_travel_docker_manager.api.admin import router as admin_router
 from kor_travel_docker_manager.api.auth import router as auth_router
@@ -20,7 +21,10 @@ from kor_travel_docker_manager.api.websocket import (
 from kor_travel_docker_manager.services.auth_service import allowed_frontend_origins
 from kor_travel_docker_manager.services.compose_service import get_env_path
 from kor_travel_docker_manager.services.job_runner import job_runner
-from kor_travel_docker_manager.services.metrics_collector import metrics_collector
+from kor_travel_docker_manager.services.metrics_collector import (
+    _PROMETHEUS_CONTENT_TYPE,
+    metrics_collector,
+)
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 
 # 프로젝트 루트 .env(gitignore 대상)에서 prod 공개 주소/CORS 설정을 읽어온다.
@@ -183,8 +187,8 @@ def _resolve_cors_allow_origins() -> list[str]:
 CORS_ALLOW_ORIGINS = _resolve_cors_allow_origins()
 
 app = FastAPI(
-    title="Kor Travel Docker Manager API",
-    description="API and WebSockets for monitoring and managing Kor Travel Docker services.",
+    title="Docker Manager UI API",
+    description="Docker Manager UI의 인프라 컨테이너 모니터링·관리 API와 WebSocket입니다.",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -208,6 +212,16 @@ app.include_router(ws_router, prefix="/api/v1", tags=["websocket"])
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "service": "kor-travel-docker-manager-backend"}
+
+
+@app.get("/metrics", include_in_schema=False, response_class=PlainTextResponse)
+def prometheus_metrics() -> PlainTextResponse:
+    """Prometheus용 캐시 기반 컨테이너 상태·리소스 메트릭을 노출한다."""
+    return PlainTextResponse(
+        content=metrics_collector.render_prometheus_metrics(),
+        media_type=_PROMETHEUS_CONTENT_TYPE,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 if __name__ == "__main__":

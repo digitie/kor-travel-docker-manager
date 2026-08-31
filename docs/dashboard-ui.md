@@ -8,6 +8,10 @@ P0·P7, 디자인 토큰과 룩앤필은 [`design-system.md`](design-system.md)�
 
 구현: `frontend/src/components/`, `frontend/src/lib/`
 
+현재 화면의 상단 rail·페이지 헤더·로그인 화면은 최신 `kor-travel-map` admin의
+Rail-Workbench 배치를 따른다. 제품명은 화면과 접근성 이름에서 **Docker Manager UI**로
+표시하고, 내부 저장소·컨테이너·target 식별자는 운영 계약을 위해 기존 값을 유지한다.
+
 ---
 
 ## 0. 이 UI의 설계 원칙
@@ -68,6 +72,15 @@ apiJson 실패
 넷 다 `lib/containerPresentation.ts`에 있다(`ContainerStatus` 타입도 같은 파일).
 바이트·시각 포맷터는 `lib/format.ts`다. 새 상태값·role이 백엔드에 생기면 매핑을
 추가한다. **매핑에 없으면 원문을 그대로 보여 주므로 화면이 비지는 않는다.**
+
+컨테이너 상세 모달의 `리소스` 탭은 백그라운드 Docker stats 캐시를 읽어 CPU·메모리·블록
+I/O 델타와 누적값·네트워크 송수신 바이트와 패킷 및 오류·PID 현재값과 제한·마지막 샘플
+시각을 보여 준다. stats가 없거나 컨테이너가 정지된 경우에는 0을 정상값처럼 표시하지 않고
+수집 대기 문구를 표시한다. 네트워크 인터페이스별 누적값과 컨테이너 상태·healthcheck·
+재시작 횟수·종료 코드·생성/시작/종료 시각은 Prometheus의 `/metrics`에서도 같은 관측
+캐시를 사용한다. 컨테이너 재생성으로 Docker ID가 바뀌면 새 인스턴스의 stats가 수집될 때까지
+이전 인스턴스 값을 반환하지 않는다. Docker가 종료 코드나 PID 제한을 제공하지 않는 경우에는
+해당 샘플을 생략하고 `*_available` 게이지로 구분한다.
 
 `roleLabel`과 `getContainerPresentation`은 **분기 순서가 곧 우선순위다.** 넓은
 패턴(`api`, `ui`)을 먼저 두면 좁은 패턴이 도달하지 못한다 — `geocoder-api`가 `-api`에

@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import DashboardClient from '../components/DashboardClient';
 
 export const metadata: Metadata = {
-  title: 'Kor Travel Docker Manager',
-  description: 'Kor Travel infrastructure container management and metrics control center',
+  title: 'Docker Manager UI',
+  description: 'Docker 인프라 컨테이너 관리와 메트릭 운영 콘솔',
 };
 
 export default function Page() {

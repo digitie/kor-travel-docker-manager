@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
-import { LockKeyhole, LogIn } from 'lucide-react';
+import { LoaderCircle, LogIn } from 'lucide-react';
 import { ApiError, postJson } from '@/lib/api';
 
 export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
@@ -35,15 +35,11 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
 
   return (
     <section className="ops-auth-shell" aria-labelledby="login-title">
-      <div className="ops-auth-card">
+      <div className="ops-auth-content">
         <div className="ops-auth-brand">
-          <div className="ops-login-icon" aria-hidden="true">
-            <LockKeyhole size={24} />
-          </div>
-          <div>
-            <p>Kor Travel Docker Manager</p>
-            <h1 id="login-title">관리자 로그인</h1>
-          </div>
+          <p className="ops-auth-product">Docker Manager UI</p>
+          <h1 id="login-title">관리자 로그인</h1>
+          <p className="ops-auth-description">Docker 인프라 운영 콘솔에 로그인하세요.</p>
         </div>
         <form aria-busy={busy} className="ops-auth-form" onSubmit={submit}>
           <div className="ops-field">
@@ -82,14 +78,15 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
             disabled={busy}
             type="submit"
           >
-            <LogIn size={17} />
-            로그인
+            {busy ? <LoaderCircle className="animate-spin" size={17} /> : <LogIn size={17} />}
+            {busy ? '로그인 중…' : '로그인'}
           </button>
           {/* 실패 메시지를 AT에 확실히 알리기 위해 live region을 항상 마운트해 둔다. */}
           <p aria-live="assertive" className="ops-auth-error" id="login-error" role="alert">
             {error}
           </p>
         </form>
+        <p className="ops-auth-footer">Docker Manager UI · 운영 관리자 전용</p>
       </div>
     </section>
   );
