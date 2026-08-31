@@ -293,9 +293,33 @@ def _public_terminal_phase(phase: str) -> str:
     return phase if phase in _PUBLIC_TERMINAL_PHASES else "driver_contract_failed"
 
 
-def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str) -> bool:
-    """terminal result를 현재 v6 execution의 unconditional block과 결박한다."""
+#: 이 phase들의 실패만 execution을 **무조건** 소각한다 — acceptance 본문과 ledger claim
+#: 자체. 나머지(runtime setup·health·admission 등 인프라 phase)는 scoped 기록으로 남고
+#: 보정 후 같은 pinset에서 재실행할 수 있다. 근거: terminal 27개 중 `m04_m05_e2e` 도달
+#: 0건 — 인프라 실패가 acceptance 실패와 같은 형벌(3-repo 회전)을 받아 후보 예산이
+#: 본문 도달 전에 소진됐다(`ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md` §3 I-1).
+_UNCONDITIONAL_TERMINAL_PHASES = frozenset({"ledger_claim", "m04_m05_e2e"})
 
+
+def _terminal_block_phase(public_phase: str) -> str | None:
+    """무조건 차단이면 ``None``, 아니면 scoped 기록용 phase."""
+
+    if public_phase in _UNCONDITIONAL_TERMINAL_PHASES or public_phase.startswith(
+        ("m04_", "m05_")
+    ):
+        # acceptance 본문 내부 phase(m04_fixture_* / m05_case_* 등)도 본문 실패다 —
+        # "acceptance 본문은 정확히 한 번"이라는 one-shot 성질은 그대로 지킨다.
+        return None
+    return public_phase
+
+
+def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str) -> bool:
+    """terminal result를 현재 v6 execution의 block 기록과 결박한다.
+
+    acceptance 본문 실패는 무조건 차단(phase=None), 인프라 phase 실패는 scoped
+    기록이다 — execution은 보정 후 재실행 가능하되 실패 이력은 append-only로 남는다.
+    """
+    public_phase = _public_terminal_phase(phase)
     try:
         pins = load_runtime_pin_registry()
         registry = load_runtime_execution_registry()
@@ -304,12 +328,16 @@ def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str)
         ):
             return False
         updated = block_current_execution(
-            registry=registry, reason=_terminal_registry_reason(phase)
+            registry=registry,
+            reason=_terminal_registry_reason(phase),
+            phase=_terminal_block_phase(public_phase),
         )
         write_runtime_execution_registry(updated)
     except (RuntimePinRegistryError, RuntimeExecutionRegistryError):
         return False
-    return updated.is_unconditionally_blocked_current()
+    # 성공 판정은 "기록이 남았는가"다. scoped 기록은 무조건 차단이 아니므로
+    # `is_unconditionally_blocked_current()`로 판정하면 정상 기록이 실패로 보인다.
+    return updated.has_block_for_current(phase=public_phase)
 
 
 def _root_file(path: Path, *, mode: int = 0o600) -> os.stat_result:

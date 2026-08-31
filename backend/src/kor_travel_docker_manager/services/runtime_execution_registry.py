@@ -242,6 +242,19 @@ class RuntimeExecutionRegistry:
             for entry in self.blocked_executions
         )
 
+    def has_block_for_current(self, *, phase: str | None = None) -> bool:
+        """현재 execution에 대한 차단 기록이 있는가.
+
+        ``phase``를 주면 그 phase의 scoped 기록(또는 무조건 기록)만 본다 —
+        `BlockedPinset.matches`(runtime_pin_registry.py)와 동형이다. 무조건 차단
+        여부는 `is_unconditionally_blocked_current()`가 계속 소유한다.
+        """
+        return any(
+            entry.execution_identity_sha256 == self.current.execution_identity_sha256
+            and (phase is None or entry.phase is None or entry.phase == phase)
+            for entry in self.blocked_executions
+        )
+
     @classmethod
     def from_payload(cls, payload: Any) -> RuntimeExecutionRegistry:
         if not isinstance(payload, dict) or set(payload) != {
@@ -567,7 +580,20 @@ def rotate_execution_source_binding(
 def block_current_execution(
     *, registry: RuntimeExecutionRegistry, reason: str, phase: str | None = None
 ) -> RuntimeExecutionRegistry:
+    """현재 execution에 terminal 기록을 append한다.
+
+    ``phase=None``은 **무조건 차단**(acceptance 본문·ledger claim 실패) — 이 execution은
+    다시 실행되지 않는다. ``phase``가 있으면 **scoped 기록** — 같은 인프라 phase에서의
+    실패 이력이며 execution 자체는 보정 후 재실행 가능하다. append-only는 유지되고,
+    같은 (identity, phase) 중복만 막는다 — 재시도마다 원장이 무한히 자라지 않게.
+    """
     if registry.is_unconditionally_blocked_current():
+        return registry
+    if phase is not None and any(
+        entry.execution_identity_sha256 == registry.current.execution_identity_sha256
+        and entry.phase == phase
+        for entry in registry.blocked_executions
+    ):
         return registry
     entry = BlockedExecution(
         execution_identity_sha256=registry.current.execution_identity_sha256,
