@@ -53,6 +53,8 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
     read_manifest as read_pinned_runtime_manifest,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
@@ -1490,7 +1492,7 @@ def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, 
     # `_pair`가 이미 pinned release의 digest와 exact 대조한다.
     try:
         committed = read_pinned_runtime_manifest(state_paths.manifest).active_generation
-    except Exception:
+    except (DeploymentContractError, OSError):
         _fail(
             "pair_contract_invalid",
             diagnostic="committed pinned-runtime generation manifest unavailable",

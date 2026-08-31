@@ -392,10 +392,11 @@ def test_fresh_migration_fence_matches_map_executable_field_set() -> None:
     assert "dagster_image_id" not in payload
 
 
-def test_root_result_parser_rejects_extra_fields_and_binds_database() -> None:
+def test_root_result_parser_requires_fields_and_binds_database() -> None:
+    """필수 필드 결손은 여전히 거절한다 — 완화된 것은 추가 필드뿐이다."""
     root_raw, root = _fresh_root()
-    payload = json.loads(root_raw)
-    payload["extra"] = "not allowed"
+    payload = dict(json.loads(root_raw))
+    payload.pop("post_head_catalog_sha256")
 
     assert root.database_identity == _application_database()
     assert root.payload_sha256 == sha256_bytes(root_raw)
