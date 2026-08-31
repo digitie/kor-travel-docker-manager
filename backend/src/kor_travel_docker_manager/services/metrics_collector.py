@@ -9,6 +9,7 @@ from copy import deepcopy
 from typing import Any
 
 from docker.errors import NotFound
+
 from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 

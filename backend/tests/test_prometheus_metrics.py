@@ -1,6 +1,7 @@
 import asyncio
 
 from fastapi.testclient import TestClient
+
 from kor_travel_docker_manager.main import app
 from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
 from kor_travel_docker_manager.services.metrics_collector import MetricsCollector

@@ -10,6 +10,7 @@ from typing import Any
 import docker
 import yaml
 from docker.errors import DockerException, NotFound
+
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINVI_POSTGRES_INITDB_ARGS,
