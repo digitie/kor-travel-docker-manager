@@ -2656,7 +2656,7 @@ def main(expected_revision: str, output: Path) -> int:
                     returncode=error.returncode,
                     stderr=error.stderr,
                 )
-            except Exception:  # noqa: BLE001 - evidence-only boundary
+            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
                 pass
     # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
     # 관측한다. 예상하지 못한 ordinary exception도 현재 allowlist 실행 경계로만
