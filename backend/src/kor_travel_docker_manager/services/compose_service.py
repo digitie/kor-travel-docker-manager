@@ -15,7 +15,7 @@ from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, NoReturn, cast
+from typing import Any, Final, Literal, NoReturn, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
