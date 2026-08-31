@@ -205,15 +205,15 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
     <div
       aria-labelledby="runtime-pin-title"
       aria-modal="true"
-      className="ops-modal max-w-4xl flex flex-col outline-hidden"
+      className="ops-modal max-w-4xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
       role="dialog"
       tabIndex={-1}
     >
       <div className="ops-modal__header">
         <div>
-          <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
-            Deployment Pins
+          <p className="text-xs text-secondary font-semibold">
+            배포 버전
           </p>
           <h2 className="text-lg font-semibold text-strong mt-1" id="runtime-pin-title">
             고정된 배포 버전
@@ -311,7 +311,7 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
               <section>
                 <h3 className="text-sm font-semibold text-strong mb-2">현재 고정 버전</h3>
                 <table className="ops-archive-table w-full table-fixed text-sm">
-                  <thead className="bg-subtle text-xs text-secondary uppercase tracking-[0.05em]">
+                  <thead className="bg-subtle text-xs text-secondary">
                     <tr>
                       <th className="text-left py-2 px-3 font-semibold">대상</th>
                       <th className="text-left py-2 px-3 font-semibold">고정된 커밋</th>

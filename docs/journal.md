@@ -2,6 +2,17 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-31 — 최신 kor-travel-map Rail-Workbench UI 정합화
+
+최신 `kor-travel-map` 관리자 화면의 기준을 확인하고, Manager의 인증·API·모달 동작은 유지한 채
+접히는 좌측 rail, 그룹형 메뉴, 경계선만 있는 헤더, 통계 띠, 평면 섹션, 조밀한 서비스 원장 표로
+화면 구조를 맞췄다. Manager 고유 기능은 실제 존재하는 대시보드 앵커와 운영 도구에만 연결했으며,
+색상 토큰은 기존 Ember 오렌지 계통을 유지했다. 실행 중이 아닌 컨테이너의 메트릭은 임의의 0 대신
+`—`로 표시한다.
+
+검증: `frontend` `npm run type-check`, `npm run lint`, `npm run build`, `git diff --check` 통과.
+미확인: n150 공개 화면 검증은 다음 단계에서 수행한다.
+
 ## 2026-08-31 — 적대 리뷰 라운드2: phase-scoped 차단을 무효화하던 3중 결함과 그 주변
 
 라운드1에서 배선한 phase-scoped terminal(감사 I-1)은 **세 지점이 각각 단독으로 원상복구**시키고

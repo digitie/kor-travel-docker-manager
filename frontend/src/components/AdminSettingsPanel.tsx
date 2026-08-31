@@ -251,15 +251,15 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     <div
       aria-labelledby="admin-settings-title"
       aria-modal="true"
-      className="ops-modal max-w-5xl flex flex-col outline-hidden"
+      className="ops-modal max-w-5xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
       role="dialog"
       tabIndex={-1}
     >
       <div className="ops-modal__header">
         <div>
-          <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
-            Admin Settings
+          <p className="text-xs text-secondary font-semibold">
+            시스템 설정
           </p>
           <h2 className="text-lg font-semibold text-strong mt-1" id="admin-settings-title">
             인증 및 공개 API 키

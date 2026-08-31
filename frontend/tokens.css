@@ -1,4 +1,4 @@
-/* Hallmark: Ember — 2026-08-27 (kor-travel-geo와 동일한 Workbench look and feel, 오렌지 계통) */
+/* Hallmark: Ember — 2026-08-31 (kor-travel-map Rail-Workbench 구조, 오렌지 계통) */
 /* brand/brand-ink/brand-tint는 web_service_palette_testset.html의 Orange(#EA580C/#C2410C/#FFEDD5,
    Tailwind orange-600/700/100)를 OKLCH로 정확히 변환한 값이다 — 임의로 지어낸 hue가 아니다. */
 /* Kor Travel 운영 콘솔의 단일 설계 토큰 정본. 컴포넌트에서 색상·그림자 값을 직접 만들지 않는다. */
@@ -31,8 +31,9 @@
   --shadow-card-hover: 0 2px 5px oklch(24.5% 0.021 41 / 0.08), 0 12px 28px oklch(24.5% 0.021 41 / 0.06);
   --shadow-modal: 0 24px 64px oklch(24.5% 0.021 41 / 0.22);
 
-  --radius-card: 0.5rem;
-  --radius-panel: 0.75rem;
+  /* Map admin과 같은 두 단계 shape: 컨트롤 6px, 패널 8px. 색상값은 Ember를 유지한다. */
+  --radius-card: 0.375rem;
+  --radius-panel: 0.5rem;
   --radius-pill: 999px;
   --ease-default: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);

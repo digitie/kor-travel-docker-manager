@@ -198,15 +198,15 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     <div
       aria-labelledby="backup-history-title"
       aria-modal="true"
-      className="ops-modal max-w-5xl flex flex-col outline-hidden"
+      className="ops-modal max-w-5xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
       role="dialog"
       tabIndex={-1}
     >
       <div className="ops-modal__header">
         <div>
-          <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
-            Backup History
+          <p className="text-xs text-secondary font-semibold">
+            백업 이력
           </p>
           <h2 className="text-lg font-semibold text-strong mt-1" id="backup-history-title">
             DB 백업
@@ -360,7 +360,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
         ) : (
           <div className="border-t border-line pt-2">
             <table className="ops-archive-table w-full table-fixed text-sm">
-              <thead className="bg-subtle text-xs text-secondary uppercase tracking-[0.05em]">
+              <thead className="bg-subtle text-xs text-secondary">
                 <tr>
                   <th className="text-left py-2 px-3 font-semibold break-all">생성 시각</th>
                   <th className="text-left py-2 px-3 font-semibold break-all">역할</th>

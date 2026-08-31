@@ -9,10 +9,10 @@ type TabId = 'overview' | 'mounts' | 'networks' | 'health' | 'env';
 
 const TABS: Array<{ id: TabId; label: string; Icon: typeof Boxes }> = [
   { id: 'overview', label: '개요', Icon: Boxes },
-  { id: 'mounts', label: 'Mounts', Icon: HardDrive },
-  { id: 'networks', label: 'Networks', Icon: Network },
-  { id: 'health', label: 'Healthcheck', Icon: HeartPulse },
-  { id: 'env', label: 'Env', Icon: KeyRound },
+  { id: 'mounts', label: '마운트', Icon: HardDrive },
+  { id: 'networks', label: '네트워크', Icon: Network },
+  { id: 'health', label: '상태 검사', Icon: HeartPulse },
+  { id: 'env', label: '환경 변수', Icon: KeyRound },
 ];
 
 // 개발 빌드에서만 노출한다. 운영 빌드에서는 Next.js가 이 분기를 번들에서 제거한다.
@@ -29,7 +29,7 @@ const IS_DEV = process.env.NODE_ENV !== 'production';
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)] gap-3 py-1.5 border-b border-line/50 last:border-b-0">
-      <dt className="text-secondary text-[11px] uppercase tracking-[0.04em] pt-0.5">{label}</dt>
+      <dt className="text-secondary text-xs font-medium pt-0.5">{label}</dt>
       <dd className="text-ink break-all">{value ?? <span className="text-secondary">—</span>}</dd>
     </div>
   );
@@ -176,7 +176,7 @@ export default function ContainerDetailModal({
                 document.getElementById(`container-detail-tab-${TABS[next].id}`)?.focus();
               }}
               onClick={() => setTab(id)}
-              className={`flex items-center justify-center gap-1.5 px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-colors ${
+              className={`flex items-center justify-center gap-1.5 px-3 py-2 text-xs whitespace-nowrap border-b-2 transition-[color,background-color,border-color] ${
                 tab === id
                   ? 'border-brand text-strong font-semibold'
                   : 'border-transparent text-secondary hover:text-ink'
@@ -195,7 +195,7 @@ export default function ContainerDetailModal({
           // 이 div가 스크롤 컨테이너인데 내부에 포커스 가능한 요소가 없다. tabIndex가 없으면
           // 키보드만 쓰는 사용자가 패널에 포커스를 못 줘서 긴 env 목록을 스크롤할 수 없다.
           tabIndex={0}
-          className="flex-grow overflow-y-auto px-6 py-4 text-xs select-text scrollbar-thin outline-hidden focus-visible:outline-2 focus-visible:outline-brand"
+          className="flex-grow overflow-y-auto px-6 py-4 text-xs select-text scrollbar-thin focus-visible:outline-2 focus-visible:outline-brand"
         >
           {isLoading && <EmptyState>불러오는 중…</EmptyState>}
           {error && (
@@ -237,7 +237,7 @@ export default function ContainerDetailModal({
             ) : (
               <div>
                 <table className="w-full table-fixed text-left">
-                  <thead className="text-secondary text-[11px] uppercase tracking-[0.04em]">
+                  <thead className="text-secondary text-xs font-medium">
                     <tr>
                       <th className="py-1.5 pr-3 font-medium break-all">type</th>
                       <th className="py-1.5 pr-3 font-medium break-all">source</th>
@@ -294,7 +294,7 @@ export default function ContainerDetailModal({
                 </dl>
                 {health.Log?.length ? (
                   <div className="space-y-2">
-                    <p className="text-secondary text-[11px] uppercase tracking-[0.04em]">최근 검사</p>
+                    <p className="text-secondary text-xs font-medium">최근 검사</p>
                     {health.Log.slice(-5).reverse().map((entry, i) => (
                       <div key={`${entry.Start ?? i}`} className="border border-line rounded-card p-2">
                         <p className="text-secondary">
@@ -347,7 +347,7 @@ export default function ContainerDetailModal({
               type="button"
               onClick={runEnsure}
               disabled={ensureState === 'running'}
-              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[36px] px-3 text-xs inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              className="bg-card hover:bg-subtle text-ink border border-line rounded-card min-h-[36px] px-3 text-xs inline-flex items-center gap-1.5 transition-[color,background-color,border-color] disabled:text-secondary"
               title={`${targetId} target의 depends_on 폐포 전체를 docker compose up -d --build로 재생성한다`}
             >
               <Hammer className="w-3.5 h-3.5" />
