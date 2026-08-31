@@ -72,13 +72,6 @@ _EXEMPT: dict[str, str] = {
         "`_BASELINE_ROOT_REVISION` 선언과 `forbidden_application_raw_revision` 대조. "
         "둘 다 baseline root이며 head가 아니다."
     ),
-    "compose_service.py": (
-        "`--wait-timeout` 뒤의 `\"300\"`은 초 단위 인자다. 종전에는 앞 줄을 보고 "
-        "좁혔는데, 그 예외가 **뒤따르는 어떤 줄이든 세탁**했다 — 상수 두 개를 나란히 "
-        "두면 두 번째가 head 핀이어도 통과했다. 파일 단위 면제로 바꾸고, 이 파일이 "
-        "head를 쓰는 자리는 `test_expected_head_environment_is_never_a_literal`과 "
-        "`test_generation_requires_the_two_head_sources_to_agree`가 값으로 고정한다."
-    ),
 }
 """head 리터럴이 **정당한** 파일과 사유.
 

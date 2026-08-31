@@ -2619,6 +2619,10 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
 # 명시한 기대 head와 다르면 배포를 시작하기 전에 fail-close한다.
 _ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 60
 _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 60
+#: compose `--wait-timeout` 초. **정수**로 둔다 — head는 revision 문자열이라
+#: 형이 다르고, 이 파일에 따옴표 두른 숫자가 남지 않아 head 리터럴 게이트가
+#: 파일 단위 면제 없이 이 파일을 전부 볼 수 있다. 면제는 그 자체로 사각지대였다.
+_COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 300
 
 
 def _validate_expected_alembic_head(expected_alembic_head: str) -> None:
@@ -6855,7 +6859,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "kor-travel-map-postgres",
                         "pinvi-postgres",
                     ],
@@ -7515,7 +7519,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "kor-travel-map-api",
                     ],
                     transaction=runtime_transaction,
@@ -7601,7 +7605,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "kor-travel-map-ui",
                         "kor-travel-map-dagster",
                         "kor-travel-map-dagster-daemon",
@@ -7686,7 +7690,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "pinvi-api",
                     ],
                     transaction=runtime_transaction,
@@ -7739,7 +7743,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "pinvi-web",
                         "pinvi-dagster",
                     ],
