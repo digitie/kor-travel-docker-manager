@@ -1683,6 +1683,55 @@ def _map_application_head(map_root: Path) -> str:
     return heads[0]
 
 
+def _rendered_service_images(
+    *,
+    root: Path,
+    project: str,
+    env_file: Path,
+    files: tuple[Path, ...],
+    services: tuple[str, ...],
+    profiles: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """rendered Compose 모델에서 서비스별 image 참조를 읽는다.
+
+    이름 **추측**({project}-{service})은 PinVi처럼 명시 ``image:``를 쓰는
+    compose에서 성립하지 않는다(e2e8 forensic: "No such image"). 반대로 실행
+    컨테이너의 ID를 그대로 쓰면 뒤따르는 image-identity 검증들이 X != X로
+    퇴화한다(적대 리뷰). rendered 모델의 참조는 컨테이너와 **독립적인** 소스라
+    검증이 실제로 일을 한다. 명시 image가 없으면 Compose 기본 규칙대로
+    ``{project}-{service}``다.
+    """
+
+    profile_arguments = tuple(
+        item for profile in profiles for item in ("--profile", profile)
+    )
+    raw = _compose(
+        root=root,
+        project=project,
+        env_file=env_file,
+        files=files,
+        arguments=(*profile_arguments, "config", "--format", "json"),
+        capture=True,
+    )
+    try:
+        rendered = json.loads(raw)
+        rendered_services = rendered["services"]
+    except (TypeError, KeyError, json.JSONDecodeError):
+        _fail("runtime_inspect_invalid")
+    references: dict[str, str] = {}
+    for service in services:
+        entry = rendered_services.get(service)
+        if not isinstance(entry, dict):
+            _fail("runtime_inspect_invalid")
+        image = entry.get("image")
+        if image is None:
+            image = f"{project}-{service}"
+        if not isinstance(image, str) or not image:
+            _fail("runtime_inspect_invalid")
+        references[service] = image
+    return references
+
+
 def _container_id(
     project: str,
     service: str,
@@ -1705,19 +1754,6 @@ def _container_id(
     ).strip()
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         _fail("runtime_container_identity_invalid")
-    return value
-
-
-def _container_image_id(container_id: str) -> str:
-    """실행 중 컨테이너의 실제 image ID — 이름 추측 대신 이것이 정본이다."""
-
-    value = _container_inspect(container_id).get("Image")
-    if (
-        not isinstance(value, str)
-        or not value.startswith("sha256:")
-        or len(value) != 71
-    ):
-        _fail("runtime_image_identity_invalid")
     return value
 
 
@@ -2459,33 +2495,28 @@ def main(expected_revision: str, output: Path) -> int:
             env_file=pinvi_env,
             files=pinvi_files,
         )
-        pinvi_web = _container_id(
-            plan.pinvi_project,
-            "app-web",
-            root=pinvi_root,
-            env_file=pinvi_env,
-            files=pinvi_files,
+        map_rendered_images = _rendered_service_images(
+            root=map_root,
+            project=plan.map_project,
+            env_file=map_env,
+            files=map_files,
+            services=("api", "frontend"),
         )
-        pinvi_dagster = _container_id(
-            plan.pinvi_project,
-            "app-dagster",
+        pinvi_rendered_images = _rendered_service_images(
             root=pinvi_root,
+            project=plan.pinvi_project,
             env_file=pinvi_env,
             files=pinvi_files,
+            services=("app-api", "app-web", "app-dagster"),
             profiles=("etl",),
         )
-        # 이미지 참조는 프로젝트 파생 이름 **추측**이 아니라 실행 중 컨테이너의
-        # 실제 image ID다 — PinVi compose는 명시 image(pinvi-api:local 등)를
-        # 쓰므로 {project}-app-api 같은 추측은 성립한 적이 없다(e2e8 forensic
-        # 실측: "No such image"). 컨테이너 identity에서 파생하므로 이름 정책이
-        # 어느 쪽에서 바뀌어도 provenance는 흔들리지 않는다.
         image_references = {
-            "map-admin": _container_image_id(map_api),
-            "map-api": _container_image_id(map_api),
-            "map-frontend": _container_image_id(map_frontend),
-            "pinvi-api": _container_image_id(pinvi_api),
-            "pinvi-dagster": _container_image_id(pinvi_dagster),
-            "pinvi-web": _container_image_id(pinvi_web),
+            "map-admin": map_rendered_images["api"],
+            "map-api": map_rendered_images["api"],
+            "map-frontend": map_rendered_images["frontend"],
+            "pinvi-api": pinvi_rendered_images["app-api"],
+            "pinvi-dagster": pinvi_rendered_images["app-dagster"],
+            "pinvi-web": pinvi_rendered_images["app-web"],
         }
         _build_runtime_provenance(
             plan=plan,
@@ -2503,12 +2534,23 @@ def main(expected_revision: str, output: Path) -> int:
         )
         phase = "m04_m05_e2e"
         body_entered = True
+        pinvi_web = _container_id(
+            plan.pinvi_project,
+            "app-web",
+            root=pinvi_root,
+            env_file=pinvi_env,
+            files=pinvi_files,
+        )
+        # app-dagster는 etl 프로파일 소속이라 프로파일 없는 ps는 빈 결과를
+        # 돌려 body 진입 후 무조건 소각을 만든다(적대 리뷰 — 프로파일 비가시성은
+        # e2e6 cleanup에서 실측된 것과 동일 클래스).
         pinvi_dagster = _container_id(
             plan.pinvi_project,
             "app-dagster",
             root=pinvi_root,
             env_file=pinvi_env,
             files=pinvi_files,
+            profiles=("etl",),
         )
         map_frontend = _container_id(
             plan.map_project,

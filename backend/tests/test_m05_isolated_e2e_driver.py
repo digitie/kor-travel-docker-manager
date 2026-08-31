@@ -1965,3 +1965,63 @@ def test_scrub_registry_covers_env_kwarg_secrets(
     scrubbed = driver._scrub_forensic_bytes(b"prefix " + secret.encode() + b" suffix")
     assert secret.encode() not in scrubbed
     assert b"[scrubbed:M05_PINVI_PASSWORD]" in scrubbed
+
+
+def test_rendered_service_images_use_explicit_image_or_compose_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이미지 참조는 rendered Compose 모델이 정본이다 — 이름 추측은 PinVi처럼
+    명시 image를 쓰는 compose에서 성립하지 않고(e2e8 forensic), 컨테이너 ID
+    파생은 identity 검증을 X != X로 퇴화시킨다(적대 리뷰)."""
+
+    driver = _driver()
+    rendered = {
+        "services": {
+            "app-api": {"image": "pinvi-api:local"},
+            "app-web": {"image": "pinvi-web:local"},
+            "app-dagster": {"image": "pinvi-dagster:local"},
+            "plain": {},
+        }
+    }
+    captured: dict[str, object] = {}
+
+    def fake_compose(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return json.dumps(rendered)
+
+    monkeypatch.setattr(driver, "_compose", fake_compose)
+    references = driver._rendered_service_images(
+        root=Path("/tmp"),
+        project="m05i-pinvi-" + "a" * 32,
+        env_file=Path("/tmp/none.env"),
+        files=(Path("/tmp/a.yml"),),
+        services=("app-api", "app-web", "app-dagster", "plain"),
+        profiles=("etl",),
+    )
+    assert references["app-api"] == "pinvi-api:local"
+    assert references["plain"] == "m05i-pinvi-" + "a" * 32 + "-plain"
+    assert captured["arguments"] == (
+        "--profile",
+        "etl",
+        "config",
+        "--format",
+        "json",
+    )
+
+
+def test_app_dagster_container_is_resolved_once_with_the_etl_profile() -> None:
+    """프로파일 없는 app-dagster ps는 빈 결과로 body 진입 후 무조건 소각을
+    만든다 — 정확히 한 번, etl 프로파일과 함께만 조회한다(적대 리뷰 critical:
+    프로파일 없는 중복 조회가 남아 있었다)."""
+
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+    occurrences = [
+        index
+        for index in range(len(source))
+        if source.startswith('"app-dagster",\n            root=', index)
+    ]
+    assert len(occurrences) == 1
+    window = source[occurrences[0] : occurrences[0] + 300]
+    assert 'profiles=("etl",)' in window
