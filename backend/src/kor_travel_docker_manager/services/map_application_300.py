@@ -53,7 +53,13 @@ FRESH_MIGRATION_FENCE_SCHEMA: Final = (
     "kor-travel-docker-manager.map-fresh-300-migrate-fence.v2"
 )
 FRESH_MIGRATION_OPERATION: Final = "map-fresh-300"
-FRESH_ROOT_RESULT_SCHEMA: Final = "kor-travel-map.application-fresh-300-root.v2"
+FRESH_ROOT_RESULT_SCHEMA: Final = "kor-travel-map.application-fresh-300-root.v3"
+"""v2 → v3: head 상태 catalog/seed digest 두 필드가 늘었다.
+
+봉인된 baseline digest는 `300` 시점만 서술한다. head가 그 너머면 미리 선언된 기대값이
+없으므로 설치가 관측한 값이 receipt에 실려 정본이 되고, finalize와 final permit이
+그것과 대조한다. 이 parser는 exact field set을 요구하므로 필드 추가가 곧 계약 변경이다.
+"""
 FRESH_ROOT_MISSING_RECEIPT_SCHEMA: Final = (
     "kor-travel-map.application-fresh-300-root-missing-receipt.v1"
 )
@@ -152,6 +158,8 @@ _FRESH_ROOT_RESULT_FIELDS: Final = frozenset(
         "expected_privileged_residue_sha256",
         "expected_destination_alembic_version_sha256",
         "post_destination_alembic_version_sha256",
+        "post_head_catalog_sha256",
+        "post_head_seed_sha256",
     }
 )
 _FRESH_ROOT_MISSING_RECEIPT_FIELDS: Final = frozenset(
@@ -817,6 +825,14 @@ class FreshRootResult:
     expected_privileged_residue_sha256: str
     expected_destination_alembic_version_sha256: str
     post_destination_alembic_version_sha256: str
+    post_head_catalog_sha256: str
+    """head 상태에서 관측한 catalog digest.
+
+    head가 baseline root면 `post_source_catalog_sha256`과 같은 값이다. 그 너머에서는
+    봉인된 digest가 서술하는 상태가 존재하지 않으므로, 이 관측이 finalize의 기대값이 된다.
+    """
+
+    post_head_seed_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1061,6 +1077,12 @@ def parse_fresh_root_result(
         post_destination_alembic_version_sha256=_require_sha256(
             payload["post_destination_alembic_version_sha256"],
             "post_destination_alembic_version_sha256",
+        ),
+        post_head_catalog_sha256=_require_sha256(
+            payload["post_head_catalog_sha256"], "post_head_catalog_sha256"
+        ),
+        post_head_seed_sha256=_require_sha256(
+            payload["post_head_seed_sha256"], "post_head_seed_sha256"
         ),
     )
     _require_prior_root_binding(

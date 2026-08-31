@@ -119,7 +119,7 @@ def _root_result_raw(
     database = _application_database()
     return canonical_json_bytes(
         {
-            "schema": "kor-travel-map.application-fresh-300-root.v2",
+            "schema": "kor-travel-map.application-fresh-300-root.v3",
             "outcome": "root-committed",
             "authorization": "manager-fence",
             "operation_id": root_operation_id,
@@ -139,6 +139,9 @@ def _root_result_raw(
                 "postgres_system_identifier": database.system_identifier,
             },
             "post_source_catalog_sha256": contract.source_catalog_sha256,
+            # head 상태 관측값. baseline root에서는 source catalog와 같다.
+            "post_head_catalog_sha256": contract.source_catalog_sha256,
+            "post_head_seed_sha256": contract.seed_sha256,
             "post_seed_sha256": contract.seed_sha256,
             "expected_privileged_residue_sha256": contract.privileged_residue_sha256,
             "expected_destination_alembic_version_sha256": (
