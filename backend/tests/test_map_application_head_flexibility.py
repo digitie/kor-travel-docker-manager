@@ -88,6 +88,15 @@ def _scanned_files() -> list[Path]:
     `main.py`는 애초에 범위 밖이었다.
     """
     files: list[Path] = []
+    # 저장소 루트의 `.env*`와 compose 파일도 본다. `.env.example`에는 실제로 오래
+    # 죽은 head가 박혀 있었고, `docker-compose.yml`이 그 변수를 필수(`:?`)로 만든다 —
+    # 즉 복사해 쓰면 Map API가 존재하지 않는 head를 기대한 채 기동한다.
+    files.extend(
+        path
+        for pattern in (".env*", "docker-compose*.yml")
+        for path in sorted(_REPO_ROOT.glob(pattern))
+        if path.is_file()
+    )
     for root in (_BACKEND_SRC, _SCRIPTS):
         if not root.exists():
             continue
@@ -118,6 +127,8 @@ def test_the_scan_actually_reaches_files() -> None:
     assert "compose_service.py" in names
     assert "m05_isolated_e2e.py" in names
     assert "cli.py" in names, "`services/` 밖이 스캔에 없다"
+    assert ".env.example" in names, "저장소 루트 `.env*`가 스캔에 없다"
+    assert "docker-compose.yml" in names, "compose 파일이 스캔에 없다"
 
 
 def test_manager_does_not_pin_the_map_application_head() -> None:
