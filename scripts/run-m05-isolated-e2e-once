@@ -2,13 +2,23 @@
 # M05 disposable bridge runtime을 정확히 한 번만 실행하는 root launcher.
 set -euo pipefail
 
-forensic_capture=0
+# 기본값은 **보존**이다. 27개 terminal 중 4개 candidate를 태운 원인(Compose
+# `ports: !reset` 한 줄)은 stderr 한 번이면 즉시 보였을 값이었고, 발견 수단도 root
+# forensic의 rendered config 열람이었다 — 관측 결핍이 후보 예산을 소비했다
+# (ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md §3 I-2, 적대 검증 CONFIRMED).
+# 보존 대상은 이미 bounded-drain한 stderr뿐이고 root 0600 leaf를 벗어나지 않는다 —
+# 공개 registry·tracked 문서·대화 기록으로 옮기지 않는 것이 규칙이다.
+forensic_capture=1
 if [[ "$#" == 3 && "$1" == "--forensic-capture" ]]; then
+  # 종전 opt-in 인자는 호환으로 유지한다(이미 기본값).
   forensic_capture=1
+  shift
+elif [[ "$#" == 3 && "$1" == "--no-forensic-capture" ]]; then
+  forensic_capture=0
   shift
 fi
 if [[ "$#" != 2 ]]; then
-  echo "usage: run-m05-isolated-e2e-once [--forensic-capture] EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
+  echo "usage: run-m05-isolated-e2e-once [--forensic-capture|--no-forensic-capture] EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
   exit 2
 fi
 if [[ "$(id -u)" != 0 ]]; then
@@ -16,12 +26,10 @@ if [[ "$(id -u)" != 0 ]]; then
   exit 2
 fi
 if (( forensic_capture )); then
-  # 기본값은 원문 폐기다. root가 이 launcher argument를 명시한 경우에만 이미
-  # bounded-drain한 stderr를 root-owned leaf에 보존한다.
   export KTDM_M05_FORENSIC_CAPTURE=1
   launcher_arguments=(--forensic-capture "$@")
 else
-  # 호출 shell의 우연한 환경값이 raw retention을 켜지 못하게 한다.
+  # opt-out 시에는 호출 shell의 우연한 환경값이 raw retention을 켜지 못하게 한다.
   unset KTDM_M05_FORENSIC_CAPTURE
   launcher_arguments=("$@")
 fi

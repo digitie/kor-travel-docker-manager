@@ -838,14 +838,22 @@ def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
     )
 
 
-def test_root_launcher_requires_an_explicit_root_forensic_capture_argument() -> None:
-    """원문 보존은 caller environment가 아니라 launcher argument로만 켠다."""
+def test_root_launcher_defaults_to_forensic_capture_with_explicit_opt_out() -> None:
+    """원문 보존이 기본값이다 — 관측 결핍이 후보 예산을 소비했다(감사 I-2).
 
+    4개 candidate를 태운 `ports: !reset`은 stderr 한 번이면 즉시 보였을 값이었다.
+    보존 대상은 bounded stderr뿐이고 root 0600 leaf를 벗어나지 않으며, 끄는 것은
+    caller environment가 아니라 명시 launcher argument로만 가능하다.
+    """
     launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
         encoding="utf-8"
     )
 
-    assert '"$1" == "--forensic-capture"' in launcher
+    # 열 0의 대입만 기본값이다 — 들여쓰기된 호환 분기(`  forensic_capture=1`)와
+    # 구분하지 않으면 기본값을 0으로 되돌려도 이 단언이 통과한다.
+    assert "\nforensic_capture=1\n" in launcher, "기본값이 보존이어야 한다"
+    assert "\nforensic_capture=0\n" not in launcher
+    assert '"$1" == "--no-forensic-capture"' in launcher, "명시 opt-out이 있어야 한다"
     assert "export KTDM_M05_FORENSIC_CAPTURE=1" in launcher
     assert "unset KTDM_M05_FORENSIC_CAPTURE" in launcher
     assert '"${launcher_arguments[@]}"' in launcher
