@@ -2037,11 +2037,12 @@ def test_compose_model_profiles_are_derived_not_hardcoded(
     driver = _driver()
     captured: dict[str, object] = {}
 
-    def fake_compose(**kwargs: object) -> str:
+    def fake_command(*args: str, **kwargs: object) -> str:
+        captured["args"] = args
         captured.update(kwargs)
         return "etl\nobservability\n\netl\n"
 
-    monkeypatch.setattr(driver, "_compose", fake_compose)
+    monkeypatch.setattr(driver, "_command", fake_command)
     profiles = driver._compose_model_profiles(
         root=Path("/tmp"),
         project="m05i-pinvi-" + "a" * 32,
@@ -2049,7 +2050,23 @@ def test_compose_model_profiles_are_derived_not_hardcoded(
         files=(Path("/tmp/a.yml"),),
     )
     assert profiles == ("etl", "observability")
-    assert captured["arguments"] == ("config", "--profiles")
+    args = captured["args"]
+    assert isinstance(args, tuple)
+    assert args[-2:] == ("config", "--profiles")
+    # 파생 출력은 상한을 갖는다(무제한 stdout 누적 금지 — 적대 리뷰).
+    assert captured["capture_output_limit"] == driver._COMPOSE_CONFIG_OUTPUT_LIMIT
+
+    def hostile_command(*_args: str, **_kwargs: object) -> str:
+        return "etl\n--rm\n"
+
+    monkeypatch.setattr(driver, "_command", hostile_command)
+    with pytest.raises(driver._PhaseError, match="runtime_inspect_invalid"):
+        driver._compose_model_profiles(
+            root=Path("/tmp"),
+            project="m05i-pinvi-" + "a" * 32,
+            env_file=Path("/tmp/none.env"),
+            files=(Path("/tmp/a.yml"),),
+        )
 
     source = (
         Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
@@ -2058,7 +2075,6 @@ def test_compose_model_profiles_are_derived_not_hardcoded(
     assert 'map_files, ("fresh-init",)' not in source
     assert 'pinvi_files, ("etl",)' not in source
     assert source.count("_compose_model_profiles(") >= 3
-
 
 def _exception_sink_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forensic: bool
