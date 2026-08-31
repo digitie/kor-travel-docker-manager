@@ -699,7 +699,9 @@ def _cmd_pin_block_execution(args: argparse.Namespace) -> int:
             ):
                 print("current runtime execution binding is stale", file=sys.stderr)
                 return 2
-            updated = block_current_execution(registry=registry, reason=args.reason)
+            updated = block_current_execution(
+                registry=registry, reason=args.reason, phase=args.phase
+            )
             write_runtime_execution_registry(updated)
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
@@ -1527,6 +1529,14 @@ def build_parser() -> argparse.ArgumentParser:
         "block-execution", help="현재 trusted runtime execution을 terminal 처리합니다."
     )
     pin_block_execution.add_argument("--reason", required=True)
+    pin_block_execution.add_argument(
+        "--phase",
+        default=None,
+        help=(
+            "실패 phase로 scoped 차단 기록을 남깁니다(보정 후 재실행 가능). "
+            "생략하면 무조건 차단(terminal)입니다."
+        ),
+    )
     pin_block_execution.add_argument("--confirm", action="store_true")
     pin_block_execution.add_argument("--json", action="store_true")
     pin_block_execution.set_defaults(func=_cmd_pin_block_execution)

@@ -316,13 +316,19 @@ def _terminal_block_phase(public_phase: str) -> str | None:
     return public_phase
 
 
-def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str) -> bool:
+def _block_terminal_m05_execution(
+    phase: str, *, expected_manager_revision: str, force_unconditional: bool = False
+) -> bool:
     """terminal result를 현재 v6 execution의 block 기록과 결박한다.
 
     acceptance 본문 실패는 무조건 차단(phase=None), 인프라 phase 실패는 scoped
     기록이다 — execution은 보정 후 재실행 가능하되 실패 이력은 append-only로 남는다.
+    ``force_unconditional``은 본문 진입 이후의 실패용이다 — 본문 내부 helper가
+    인프라형 phase 이름(_container_id 등)으로 실패해도 one-shot 성질(적대 리뷰
+    R1-S4/R2-S4: body-entered 실패가 scoped로 강등되는 구멍)을 지킨다.
     """
     public_phase = _public_terminal_phase(phase)
+    block_phase = None if force_unconditional else _terminal_block_phase(public_phase)
     try:
         pins = load_runtime_pin_registry()
         registry = load_runtime_execution_registry()
@@ -333,13 +339,15 @@ def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str)
         updated = block_current_execution(
             registry=registry,
             reason=_terminal_registry_reason(phase),
-            phase=_terminal_block_phase(public_phase),
+            phase=block_phase,
         )
         write_runtime_execution_registry(updated)
     except (RuntimePinRegistryError, RuntimeExecutionRegistryError):
         return False
     # 성공 판정은 "기록이 남았는가"다. scoped 기록은 무조건 차단이 아니므로
     # `is_unconditionally_blocked_current()`로 판정하면 정상 기록이 실패로 보인다.
+    if block_phase is None:
+        return updated.is_unconditionally_blocked_current()
     return updated.has_block_for_current(phase=public_phase)
 
 
@@ -1825,6 +1833,9 @@ def _build_runtime_provenance(
 def main(expected_revision: str, output: Path) -> int:
     phase = "admission"
     completed = False
+    #: 본문(m04_m05_e2e) 진입 여부 — 진입 이후의 모든 실패는 무조건 소각한다
+    #: (one-shot: 본문은 정확히 한 번. 적대 리뷰 R1-S4/R2-S4).
+    body_entered = False
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
     claim_attempted = False
@@ -2326,6 +2337,7 @@ def main(expected_revision: str, output: Path) -> int:
             path=runtime / "isolated-runtime-provenance.json",
         )
         phase = "m04_m05_e2e"
+        body_entered = True
         pinvi_web = _container_id(
             plan.pinvi_project,
             "app-web",
@@ -2550,11 +2562,17 @@ def main(expected_revision: str, output: Path) -> int:
         )
         if unexpected_finalization_failure or cleanup_failed:
             completed = False
-            phase = "runtime_cleanup_failed"
+            if not body_entered and _terminal_block_phase(phase) is not None:
+                # 본문 진입 이후(또는 ledger claim 실패)는 무조건 소각을 유지해야
+                # 하므로 cleanup phase가 실패 표면을 강등하지 못한다(R1-S4).
+                # cleanup 신호는 result의 `cleanup_failed` 필드가 이미 나른다.
+                phase = "runtime_cleanup_failed"
         if not completed and claim_attempted:
             try:
                 pinset_blocked = _block_terminal_m05_execution(
-                    phase, expected_manager_revision=expected_revision
+                    phase,
+                    expected_manager_revision=expected_revision,
+                    force_unconditional=body_entered,
                 )
             except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
                 pinset_blocked = False

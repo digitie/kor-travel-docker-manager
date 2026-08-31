@@ -226,11 +226,20 @@ class M05IsolatedRuntimeExpectation:
         return next(item for item in self.networks if item.role == role)
 
 
+#: 같은 identity의 ledger claim 재시도 상한 — registry의 runnable 판정이 재실행의
+#: 정본 게이트이고, 이 상한은 폭주 방어(fail-closed)일 뿐이다.
+_LEDGER_CLAIM_ATTEMPT_LIMIT = 32
+
+
 def claim_m05_isolated_harness_ledger(*, ledger_root: Path, plan: M05IsolatedHarnessPlan) -> Path:
     """새 run의 immutable root claim을 O_NOFOLLOW|O_EXCL+fsync로 남긴다.
 
-    transaction ID나 output path를 바꿔도 release+Manager+harness 조합을 재실행할 수 없다.
     claim은 child Docker mutation 이전에 만들며 실패해도 제거하지 않는다.
+    재실행 가능 여부의 정본은 runtime execution registry다(phase-scoped 차단,
+    감사 I-1) — 무조건 차단된 execution은 registry가 이미 거부한다. ledger는
+    attempt ordinal을 **파일명에만** 붙여(claim 내용은 identity-순수 유지) 모든
+    시도의 append-only 감사 흔적과 동시성 가드(O_EXCL) 역할을 계속 맡는다
+    (적대 리뷰 R1-S2: 파일명 O_EXCL이 scoped 재실행까지 소각하던 결함).
     """
 
     if not hasattr(os, "O_NOFOLLOW"):
@@ -251,7 +260,19 @@ def claim_m05_isolated_harness_ledger(*, ledger_root: Path, plan: M05IsolatedHar
         opened = os.fstat(directory_fd)
         if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
             raise DeploymentContractError("M05 isolated harness ledger root changed")
-        filename = plan.ledger_filename
+        base = plan.ledger_filename
+        existing = [
+            name
+            for name in os.listdir(directory_fd)
+            if name == base or name.startswith(base + "-")
+        ]
+        if len(existing) >= _LEDGER_CLAIM_ATTEMPT_LIMIT:
+            raise DeploymentContractError(
+                "M05 isolated harness ledger claim attempts exceeded the limit"
+            )
+        # 첫 claim은 legacy 파일명(digest)과 동일, 재시도는 `-NN` ordinal이 붙는다.
+        # 동시 claim 경쟁은 같은 ordinal을 계산하므로 O_EXCL이 한쪽을 거부한다.
+        filename = base if not existing else f"{base}-{len(existing):02d}"
         try:
             descriptor = os.open(
                 filename,

@@ -211,6 +211,33 @@ if ! /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
   echo "M05 isolated source pair preflight is not runnable" >&2
   exit 1
 fi
+# driver가 남긴 기록이 scoped(phase-scoped, 보정 후 재실행 가능)든 무조건이든,
+# 이 launch snapshot(execution/pinset/revision)에 결박돼 있으면 blocked receipt의
+# durable 근거로 인정한다(적대 리뷰 R1-S1: 무조건 기록만 인정하면 launcher가
+# 모든 인프라 실패를 아래 fallback에서 무조건 차단으로 승격해 I-1을 무효화한다).
+has_any_terminal_execution_block() {
+  "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
+from __future__ import annotations
+
+import json
+import sys
+
+execution, pinset, revision = sys.argv[1:]
+value = json.load(sys.stdin)
+entries = value.get("blocked_executions") if isinstance(value, dict) else None
+if not isinstance(entries, list):
+    raise SystemExit(1)
+if not any(
+    isinstance(entry, dict)
+    and entry.get("execution_identity_sha256") == execution
+    and entry.get("source_pinset_sha256") == pinset
+    and entry.get("manager_source_revision") == revision
+    for entry in entries
+):
+    raise SystemExit(1)
+' "$initial_execution" "$initial_pinset" "$expected_revision"
+}
+
 has_unconditional_terminal_execution_block() {
   "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
@@ -407,7 +434,7 @@ fi
 # proves that this exact launch snapshot is terminal. Otherwise fall through to
 # the idempotent root block below; no driver-originated output becomes reuse
 # evidence.
-if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_execution_block; then
+if [[ "$receipt_validation_status" == 3 ]] && has_any_terminal_execution_block; then
   exit "$driver_status"
 fi
 

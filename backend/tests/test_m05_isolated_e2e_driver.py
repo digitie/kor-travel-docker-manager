@@ -715,6 +715,9 @@ def test_acceptance_terminal_stays_unconditional(
         def has_block_for_current(self, *, phase: str | None = None) -> bool:
             return True
 
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
+
     def block(**kwargs: object) -> _UpdatedRegistry:
         seen.update(kwargs)
         return _UpdatedRegistry()
@@ -728,6 +731,75 @@ def test_acceptance_terminal_stays_unconditional(
         phase, expected_manager_revision="a" * 40
     ) is True
     assert seen["phase"] is None
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["runtime_container_identity_invalid", "runtime_http_contract_failed"],
+)
+def test_body_entered_failure_is_forced_unconditional(
+    phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """본문 진입 이후에는 인프라형 phase 이름의 실패도 무조건 소각한다(R1-S4/R2-S4).
+
+    본문 내부 helper(_container_id 등)는 인프라형 phase로 _PhaseError를 던진다 —
+    force_unconditional 없이는 그 실패가 scoped 기록으로 강등돼 mutating 본문이
+    재실행될 수 있다(one-shot 위반).
+    """
+    driver = _driver()
+    seen: dict[str, object] = {}
+
+    class _SourceRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+    class _ExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
+            return True
+
+    class _UpdatedRegistry:
+        def has_block_for_current(self, *, phase: str | None = None) -> bool:
+            return True
+
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
+
+    def block(**kwargs: object) -> _UpdatedRegistry:
+        seen.update(kwargs)
+        return _UpdatedRegistry()
+
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
+    monkeypatch.setattr(driver, "block_current_execution", block)
+    monkeypatch.setattr(driver, "write_runtime_execution_registry", lambda _registry: None)
+
+    assert driver._block_terminal_m05_execution(
+        phase, expected_manager_revision="a" * 40, force_unconditional=True
+    ) is True
+    assert seen["phase"] is None
+
+
+def test_cleanup_failure_does_not_downgrade_an_unconditional_phase() -> None:
+    """cleanup 실패가 본문/ledger 실패 표면을 강등하지 못한다(R1-S4).
+
+    guard 바로 다음 실행문이 cleanup overwrite인지 소스에서 확인한다 —
+    본문 진입(body_entered) 또는 무조건-급 phase에서는 overwrite가 없어야 한다.
+    """
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+    guard = (
+        "if not body_entered and _terminal_block_phase(phase) is not None:"
+    )
+    assert guard in source
+    tail = source[source.index(guard) + len(guard):]
+    statements = [
+        line.strip()
+        for line in tail.splitlines()[1:8]
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert statements[0] == 'phase = "runtime_cleanup_failed"'
 
 
 def test_preclaim_exception_writes_a_nonterminal_fixed_receipt(
@@ -933,11 +1005,19 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     launcher_phases = frozenset_literal(launcher[launcher_start:launcher_end], "PHASES")
 
     assert launcher_phases == driver_phases | {"completed"}
-    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_execution_block; then'
+    # blocked receipt는 scoped 기록으로도 durable하다(R1-S1) — 무조건 기록만
+    # 요구하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격한다.
+    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_any_terminal_execution_block; then'
     fallback = 'if ! has_unconditional_terminal_execution_block; then'
     assert accepted_block in launcher
     assert fallback in launcher
     assert launcher.index(accepted_block) < launcher.index(fallback)
+    # scoped predicate는 phase 필터가 없어야 한다(identity/pinset/revision만 결박).
+    any_start = launcher.index("has_any_terminal_execution_block() {")
+    any_end = launcher.index("has_unconditional_terminal_execution_block() {")
+    any_block = launcher[any_start:any_end]
+    assert 'entry.get("phase")' not in any_block
+    assert 'entry.get("execution_identity_sha256") == execution' in any_block
 
 
 def test_free_ports_uses_the_standard_ss_binary(

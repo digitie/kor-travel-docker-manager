@@ -515,10 +515,25 @@ def test_cli_exposes_generic_execution_migration_and_rebind_commands() -> None:
         ["pin", "block-execution", "--reason", "safe receipt unavailable", "--confirm"]
     )
 
+    scoped = parser.parse_args(
+        [
+            "pin",
+            "block-execution",
+            "--reason",
+            "infra phase failed",
+            "--phase",
+            "map_health_transport_failed",
+            "--confirm",
+        ]
+    )
+
     assert migrated.pin_action == "migrate-execution-v6"
     assert rebound.expected_manager_revision == _MANAGER_B
     assert shown.pin_action == "show-execution"
     assert blocked.pin_action == "block-execution"
+    # --phase 생략 = 무조건 차단(default None), 지정 = scoped 기록(I-1).
+    assert blocked.phase is None
+    assert scoped.phase == "map_health_transport_failed"
 
 
 def test_launcher_fallback_block_execution_allows_only_the_inherited_terminal_lock(
@@ -541,15 +556,19 @@ def test_launcher_fallback_block_execution_allows_only_the_inherited_terminal_lo
     monkeypatch.setattr(cli, "load_runtime_pin_registry", _pins)
     monkeypatch.setattr(cli, "load_runtime_execution_registry", lambda: registry)
     monkeypatch.setattr(cli, "trusted_manager_source_revision", lambda: _MANAGER_A)
-    monkeypatch.setattr(
-        cli, "block_current_execution", lambda **_kwargs: block_current_execution(
+    def observed_block(**kwargs: object):
+        seen["phase"] = kwargs.get("phase")
+        return block_current_execution(
             registry=registry, reason="safe receipt unavailable"
         )
-    )
+
+    monkeypatch.setattr(cli, "block_current_execution", observed_block)
     monkeypatch.setattr(cli, "write_runtime_execution_registry", lambda _registry: None)
 
     assert cli._cmd_pin_block_execution(args) == 0
     assert seen["allow"] is True
+    # --phase 없는 launcher fallback은 무조건 차단으로 남는다.
+    assert seen["phase"] is None
 
 
 # -- phase-scoped 차단 (근본원인 감사 I-1) ----------------------------------
