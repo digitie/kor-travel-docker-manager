@@ -646,11 +646,15 @@ def test_execution_registry_gate_refuses_the_current_execution(
         driver._assert_current_m05_execution_is_runnable("a" * 40)
 
 
-def test_terminal_result_blocks_the_exact_current_execution(
+def test_infra_terminal_leaves_a_phase_scoped_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """terminal output은 phase-scoped entry가 아닌 unconditional registry block을 남긴다."""
+    """인프라 phase 실패는 scoped 기록이다 — execution을 소각하지 않는다.
 
+    종전에는 phase를 넘기지 않아 모든 terminal이 무조건 차단이 됐고, 인프라 실패가
+    acceptance 실패와 같은 형벌(3-repo 회전)을 받았다. terminal 27개 중 본문 도달
+    0건이 그 결과다.
+    """
     driver = _driver()
     seen: dict[str, object] = {}
 
@@ -663,13 +667,13 @@ def test_terminal_result_blocks_the_exact_current_execution(
         def current_matches(self, **_kwargs: object) -> bool:
             return True
 
-    class _BlockedRegistry:
-        def is_unconditionally_blocked_current(self) -> bool:
+    class _UpdatedRegistry:
+        def has_block_for_current(self, *, phase: str | None = None) -> bool:
             return True
 
-    def block(**kwargs: object) -> _BlockedRegistry:
+    def block(**kwargs: object) -> _UpdatedRegistry:
         seen.update(kwargs)
-        return _BlockedRegistry()
+        return _UpdatedRegistry()
 
     monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
     monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
@@ -679,8 +683,51 @@ def test_terminal_result_blocks_the_exact_current_execution(
     assert driver._block_terminal_m05_execution(
         "map_health_transport_failed", expected_manager_revision="a" * 40
     ) is True
-    assert isinstance(seen["registry"], _ExecutionRegistry)
+    assert seen["phase"] == "map_health_transport_failed"
     assert seen["reason"] == "M05 isolated one-shot terminal: map_health_transport_failed"
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["ledger_claim", "m04_m05_e2e", "m05_case_invalid", "m04_fixture_http_failed"],
+)
+def test_acceptance_terminal_stays_unconditional(
+    phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """acceptance 본문·ledger claim 실패는 여전히 무조건 소각이다(phase=None).
+
+    "acceptance 본문은 정확히 한 번"이라는 one-shot 성질은 phase-scoped 완화의
+    대상이 아니다 — 완화되는 것은 인프라 phase뿐이다.
+    """
+    driver = _driver()
+    seen: dict[str, object] = {}
+
+    class _SourceRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+    class _ExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
+            return True
+
+    class _UpdatedRegistry:
+        def has_block_for_current(self, *, phase: str | None = None) -> bool:
+            return True
+
+    def block(**kwargs: object) -> _UpdatedRegistry:
+        seen.update(kwargs)
+        return _UpdatedRegistry()
+
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
+    monkeypatch.setattr(driver, "block_current_execution", block)
+    monkeypatch.setattr(driver, "write_runtime_execution_registry", lambda _registry: None)
+
+    assert driver._block_terminal_m05_execution(
+        phase, expected_manager_revision="a" * 40
+    ) is True
+    assert seen["phase"] is None
 
 
 def test_preclaim_exception_writes_a_nonterminal_fixed_receipt(
