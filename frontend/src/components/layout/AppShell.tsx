@@ -172,7 +172,7 @@ export default function AppShell({
 
         <nav aria-label="관리" className="rail-nav">
           {navGroups.map((group) => (
-            <div className="nav-group" key={group.label}>
+            <div className="nav-group" key={group.label ?? 'dashboard'}>
               {group.label ? <div className="nav-title">{group.label}</div> : null}
               {group.items.map((item) => {
                 const Icon = item.icon;

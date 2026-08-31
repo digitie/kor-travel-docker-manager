@@ -584,10 +584,13 @@ class DockerService:
             cname = spec["name"]
             svc_name = spec["compose_service"]
             svc_config = services.get(svc_name, {})
-            metric = metrics_collector.get_latest_metric(key)
 
             try:
                 container = client.containers.get(cname)
+                metric = metrics_collector.get_latest_metric(
+                    key,
+                    docker_id=str(container.attrs.get("Id") or ""),
+                )
                 # Parse exposed ports
                 ports = []
                 port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings", {})
@@ -874,7 +877,10 @@ class DockerService:
                     "created": attrs.get("Created"),
                     "status": container.status,
                     "restart_count": attrs.get("RestartCount", 0),
-                    "metrics": metrics_collector.get_latest_metric(container_id),
+                    "metrics": metrics_collector.get_latest_metric(
+                        container_id,
+                        docker_id=str(attrs.get("Id") or ""),
+                    ),
                     "state": {
                         "status": state.get("Status"),
                         "running": state.get("Running"),

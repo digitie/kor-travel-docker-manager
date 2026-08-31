@@ -31,6 +31,7 @@ class _FakeContainer:
     image = type("FakeImage", (), {"tags": ["example/service:latest"], "short_id": "sha256:fake"})()
     attrs = {
         "Image": "sha256:fake-image",
+        "Id": "sha256:fake-container",
         "Created": "2026-09-01T00:00:00.000000000Z",
         "RestartCount": 2,
         "Config": {"Image": "example/service:latest"},
@@ -134,6 +135,7 @@ def test_collector_keeps_detailed_resource_observation_and_prometheus_series(mon
     assert first["network_tx_bytes"] == 200
     assert first["pids_current"] == 7
     assert first["stats_available"] is True
+    assert collector.get_latest_metric(container_id, docker_id="sha256:new-container")["stats_available"] is False
 
     asyncio.run(collector.collect_metrics())
     second = collector.get_latest_metric(container_id)
@@ -154,4 +156,6 @@ def test_collector_keeps_detailed_resource_observation_and_prometheus_series(mon
     assert 'state="running"' in rendered
     assert 'status="healthy"' in rendered
     assert "ktdm_container_pids_current" in rendered
+    assert "ktdm_container_exit_code_available" in rendered
+    assert "ktdm_container_pids_available" in rendered
     assert 'interface="eth0"' in rendered

@@ -102,7 +102,7 @@ graph TD
 - `GET /api/v1/containers/{container_id}/logs`: 최근 100라인의 stdout/stderr 컨테이너 로그 반환.
 - `POST /api/v1/containers/{container_id}/reset`: 허용된 개발 lifecycle에서 컨테이너 reset 실행.
 - `GET /api/v1/containers/{container_id}/metrics`: 최근 CPU, 메모리, I/O 메트릭 이력 반환.
-- `GET /metrics`: Prometheus text exposition format으로 관리 대상별 상태·healthcheck·재시작·종료 코드·시각·CPU·메모리·블록 I/O·네트워크·PID 관측값을 반환. 백그라운드 캐시만 읽으며 인증정보와 환경변수는 노출하지 않는다.
+- `GET /metrics`: Prometheus text exposition format으로 관리 대상별 상태·healthcheck·재시작·종료 코드·시각·CPU·메모리·블록 I/O·네트워크·PID 관측값을 반환. 백그라운드 캐시만 읽으며 인증정보와 환경변수는 노출하지 않는다. 종료 코드·PID처럼 Docker가 제공하지 않는 값은 샘플을 생략하고 `*_available` 게이지로 구분하며, 컨테이너 재생성 뒤 Docker ID가 다른 캐시를 반환하지 않는다.
 - `GET /api/v1/backups`: 전용 PostgreSQL backup 산출물의 읽기 전용 목록 반환.
 - `GET /api/v1/admin/login-audit-events`, `GET/POST/DELETE /api/v1/admin/public-api-keys...`: 관리자 감사 및 public API key 관리.
 - `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}`: 상태·로그 WebSocket 스트림.

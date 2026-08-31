@@ -237,12 +237,14 @@ class MetricsCollector:
             "oom_killed": False,
             "dead": False,
             "restart_count": 0,
-            "exit_code": 0,
+            "exit_code": None,
+            "exit_code_available": False,
             "created_timestamp": 0.0,
             "started_timestamp": 0.0,
             "finished_timestamp": 0.0,
             "image": "unknown",
             "image_id": "",
+            "docker_id": "",
             "collection_success": False,
             "collection_errors_total": 0,
             "stats_available": False,
@@ -272,6 +274,7 @@ class MetricsCollector:
         image, image_id = _image_metadata(container, attrs)
         state_name = _container_status(container, attrs)
         old = self._container_observations.get(container_id, self._default_observation(container_id))
+        raw_exit_code = state.get("ExitCode")
         return {
             **self._default_observation(container_id),
             "state": state_name,
@@ -282,12 +285,14 @@ class MetricsCollector:
             "oom_killed": _as_bool(state.get("OOMKilled")),
             "dead": _as_bool(state.get("Dead")),
             "restart_count": max(0, _as_int(attrs.get("RestartCount"))),
-            "exit_code": _as_int(state.get("ExitCode")),
+            "exit_code": _as_int(raw_exit_code) if raw_exit_code is not None else None,
+            "exit_code_available": raw_exit_code is not None,
             "created_timestamp": _timestamp_seconds(attrs.get("Created")),
             "started_timestamp": _timestamp_seconds(state.get("StartedAt")),
             "finished_timestamp": _timestamp_seconds(state.get("FinishedAt")),
             "image": image,
             "image_id": image_id,
+            "docker_id": str(attrs.get("Id") or ""),
             "collection_success": collection_success,
             "collection_errors_total": old.get("collection_errors_total", 0),
             "stats_available": stats_available,
@@ -331,9 +336,13 @@ class MetricsCollector:
                 self._task.cancel()
             logger.info("Metrics collector background task stopped.")
 
-    def get_latest_metric(self, container_id: str) -> dict[str, Any]:
+    def get_latest_metric(self, container_id: str, docker_id: str | None = None) -> dict[str, Any]:
         """화면/WebSocket용 최신 캐시를 반환한다."""
         with self._lock:
+            if docker_id:
+                observation = self._container_observations.get(container_id)
+                if observation and observation.get("docker_id") != docker_id:
+                    return _empty_metric()
             return deepcopy(self._latest_metrics.get(container_id, _empty_metric()))
 
     def get_container_observation(self, container_id: str) -> dict[str, Any] | None:
@@ -706,7 +715,6 @@ class MetricsCollector:
 
         for name, help_text, key in (
             ("ktdm_container_restart_count", "Docker restart count for the container.", "restart_count"),
-            ("ktdm_container_exit_code", "Last Docker exit code for the container.", "exit_code"),
             ("ktdm_container_mounts", "Number of mounts attached to the container.", "mounts"),
             ("ktdm_container_networks", "Number of Docker networks attached to the container.", "networks"),
             (
@@ -737,6 +745,24 @@ class MetricsCollector:
                     ],
                 )
             )
+
+        per_container(
+            "ktdm_container_exit_code_available",
+            "Whether a Docker exit code is available for the container.",
+            lambda observation: observation.get("exit_code_available", False),
+        )
+        lines.extend(
+            _metric_block(
+                "ktdm_container_exit_code",
+                "Last Docker exit code for the container when available.",
+                "gauge",
+                [
+                    (labels, observation["exit_code"])
+                    for labels, observation in zip(base_labels, ordered_observations, strict=False)
+                    if observation.get("exit_code_available")
+                ],
+            )
+        )
 
         for name, help_text, key in (
             (
@@ -827,15 +853,37 @@ class MetricsCollector:
             )
 
         per_container(
-            "ktdm_container_pids_current",
-            "Current number of processes in the Docker container.",
-            lambda observation: observation.get("metrics", {}).get("pids_current") or 0,
+            "ktdm_container_pids_available",
+            "Whether Docker exposed PID metrics for the container.",
+            lambda observation: any(
+                observation.get("metrics", {}).get(key) is not None
+                for key in ("pids_current", "pids_limit")
+            ),
         )
-        per_container(
-            "ktdm_container_pids_limit",
-            "Configured process limit for the Docker container.",
-            lambda observation: observation.get("metrics", {}).get("pids_limit") or 0,
-        )
+        for name, help_text, key in (
+            (
+                "ktdm_container_pids_current",
+                "Current number of processes in the Docker container.",
+                "pids_current",
+            ),
+            (
+                "ktdm_container_pids_limit",
+                "Configured process limit for the Docker container.",
+                "pids_limit",
+            ),
+        ):
+            lines.extend(
+                _metric_block(
+                    name,
+                    help_text,
+                    "gauge",
+                    [
+                        (labels, observation.get("metrics", {}).get(key))
+                        for labels, observation in zip(base_labels, ordered_observations, strict=False)
+                        if observation.get("metrics", {}).get(key) is not None
+                    ],
+                )
+            )
 
         interface_samples: dict[str, list[tuple[Mapping[str, Any], Any]]] = {}
         for labels, observation in zip(base_labels, ordered_observations, strict=False):

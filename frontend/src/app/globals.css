@@ -1119,6 +1119,7 @@
   /* Responsive rail and data table */
   @media (min-width: 64rem) {
     .app-shell[data-sidebar-collapsed="true"] .brand {
+      height: auto;
       min-height: auto;
       flex-direction: column;
       justify-content: center;
