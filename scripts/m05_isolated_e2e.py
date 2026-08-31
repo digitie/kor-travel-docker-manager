@@ -53,6 +53,7 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths,
+    read_manifest as read_pinned_runtime_manifest,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
@@ -1477,6 +1478,33 @@ def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, 
         sources.source_for("map").root,
         sources.source_for("pinvi").root,
     )
+    # 파생 head를 **committed generation manifest**와 exact 대조한다. 종전에는 이
+    # 대조가 사람의 선언(배리어 B1 "미반영 변경이 없을 것")이었고, harness는 manifest의
+    # `map_application_head`를 한 번도 읽지 않았다 — 유도값 자기무모순 검사뿐이었다.
+    # 여기서 기계화하면 낡은 candidate는 실행권 소비 전에 fail-close하고, "미래에
+    # 변경이 없을 것"이라는 검증 불가 조건이 필요 없어진다
+    # (ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md §3 I-4).
+    #
+    # image ID는 대조하지 않는다 — 이 harness는 materialize된 source에서 자체 build
+    # 하므로 committed generation의 image ID와 정당하게 다르다. OpenAPI는 아래
+    # `_pair`가 이미 pinned release의 digest와 exact 대조한다.
+    try:
+        committed = read_pinned_runtime_manifest(state_paths.manifest).active_generation
+    except Exception:
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="committed pinned-runtime generation manifest unavailable",
+        )
+    if committed.pinset_sha256 != PINNED_RUNTIME_RELEASE.pinset_sha256:
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="committed generation pinset differs from the current release",
+        )
+    if committed.map_application_head != _map_application_head(map_root):
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="derived application head differs from the committed generation",
+        )
     pair, service_openapi_sha256, service_source_revision = _pair(pinvi_root, map_root)
     _assert_pinvi_manager_admission_contract(pinvi_root)
     return map_root, pinvi_root, pair, service_openapi_sha256, service_source_revision
