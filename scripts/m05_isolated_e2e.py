@@ -1899,6 +1899,7 @@ def main(expected_revision: str, output: Path) -> int:
     plan: M05IsolatedHarnessPlan | None = None
     claim_attempted = False
     failure_diagnostic: str | None = None
+    pre_cleanup_phase: str | None = None
     map_cleanup: _CleanupProject | None = None
     pinvi_cleanup: _CleanupProject | None = None
     private_files: tuple[Path, ...] = ()
@@ -2345,7 +2346,12 @@ def main(expected_revision: str, output: Path) -> int:
         )
         phase = "pinvi_runtime"
         pinvi_files = (pinvi_root / "infra/docker-compose.app.yml", pinvi_override)
-        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ())
+        # cleanup down은 etl 프로파일까지 포함해야 한다 — 프로파일 밖 down은
+        # app-dagster를 모델에서 못 보고 --remove-orphans도 profile-scoped
+        # 서비스는 남겨, 잔존 컨테이너가 cleanup 검증을 결정적으로 깨뜨린다
+        # (2026-09-01 e2e6 실측: dagster 잔존 → runtime_cleanup_failed가
+        # 실제 실패 phase를 가림).
+        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ("etl",))
         environment = _pinvi_manager_admission_environment(
             env_file=pinvi_env,
             bootstrap_credential_file=bootstrap,
@@ -2650,6 +2656,9 @@ def main(expected_revision: str, output: Path) -> int:
                 # 본문 진입 이후(또는 ledger claim 실패)는 무조건 소각을 유지해야
                 # 하므로 cleanup phase가 실패 표면을 강등하지 못한다(R1-S4).
                 # cleanup 신호는 result의 `cleanup_failed` 필드가 이미 나른다.
+                # 강등하되 실제 실패 phase를 잃지 않는다 — e2e6에서 진짜 원인이
+                # 통째로 가려져 재현 1회를 통으로 태워야 했다.
+                pre_cleanup_phase = phase
                 phase = "runtime_cleanup_failed"
         if not completed and claim_attempted:
             try:
@@ -2687,6 +2696,8 @@ def main(expected_revision: str, output: Path) -> int:
         }
         if failure_diagnostic is not None:
             result["map_fresh_init_reason"] = failure_diagnostic
+        if pre_cleanup_phase is not None:
+            result["pre_cleanup_phase"] = pre_cleanup_phase
         try:
             _write_private_json(output / "result.json", result)
         except (OSError, _PhaseError):
