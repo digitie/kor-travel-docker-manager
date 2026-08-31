@@ -1492,6 +1492,38 @@ def _pinvi_manager_admission_environment(
     }
 
 
+def _map_application_head(map_root: Path) -> str:
+    """materialize된 Map source에서 application Alembic head를 유도한다.
+
+    종전에는 이 값이 baseline root 리터럴로 박혀 있었다. Map이 migration을
+    하나 더하면 `api-entrypoint.sh`가 head 불일치로 기동을 거부해, 이 harness는 **스키마가
+    진화한 Map을 영원히 e2e할 수 없게** 된다.
+
+    이미지가 읽는 것과 **같은 파일**을 읽는다 — 이미지는 이 worktree에서 빌드되고,
+    `/usr/local/bin/ktm-application-schema`도 설치본의 같은 graph를 읽는다.
+    """
+    manifest = map_root / "src" / "kortravelmap" / "_application_migration_graph.json"
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        _fail(
+            "source_materialization", diagnostic="map application graph unavailable"
+        )
+    if not isinstance(payload, dict) or not isinstance(payload.get("revisions"), list):
+        _fail("source_materialization", diagnostic="map application graph is invalid")
+    revisions = payload["revisions"]
+    declared = {str(entry["revision"]) for entry in revisions}
+    referenced = {
+        str(parent)
+        for entry in revisions
+        for parent in (entry.get("down_revision") or ())
+    }
+    heads = sorted(declared - referenced)
+    if len(heads) != 1 or not referenced.issubset(declared):
+        _fail("source_materialization", diagnostic="map application head is ambiguous")
+    return heads[0]
+
+
 def _container_id(
     project: str, service: str, *, root: Path, env_file: Path, files: tuple[Path, ...]
 ) -> str:
@@ -1765,6 +1797,10 @@ def main(expected_revision: str, output: Path) -> int:
             service_openapi_sha256,
             service_source_revision,
         ) = _source_pair_preflight()
+        # head를 여기서 확정한다 — materialize된 source를 읽는 일이므로 이 phase에
+        # 속하고, 실패하면 `source_materialization` receipt가 정확히 그 사실을 남긴다.
+        # env를 쓰는 자리에서 읽으면 runtime setup 도중에 source 계약 오류가 나온다.
+        map_application_head = _map_application_head(map_root)
         # setup 전체를 하나의 `runtime_setup` receipt로 뭉개면 새 immutable source가
         # 어느 안전 경계를 보정해야 하는지 알 수 없다. 아래 단계명은 raw exception,
         # 경로, secret을 싣지 않는 allowlist receipt일 뿐 동일 pinset 재시도 권한은 아니다.
@@ -1868,7 +1904,7 @@ def main(expected_revision: str, output: Path) -> int:
                     f"KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN=postgresql+asyncpg://ktm_feature_dagster_runtime:{dagster_password}@postgres:5432/kor_travel_map",
                     f"KOR_TRAVEL_MAP_PG_DSN=postgresql+asyncpg://ktm_feature_dagster_runtime:{dagster_password}@postgres:5432/kor_travel_map",
                     f"KOR_TRAVEL_MAP_DOCKER_DAGSTER_PG_URL=postgresql://kor_travel_map_dagster:{metadata_password}@postgres:5432/kor_travel_map_dagster",
-                    "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD=300",
+                    f"KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD={map_application_head}",
                     "KOR_TRAVEL_MAP_API_PROFILE=local-dev",
                     "KOR_TRAVEL_MAP_DOCKER_BIND_HOST=127.0.0.1",
                     "KOR_TRAVEL_MAP_API_PORT=13701",

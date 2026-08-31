@@ -18,7 +18,6 @@ from types import MappingProxyType
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.map_application_300 import (
-    APPLICATION_HEAD,
     Application300Contract,
 )
 from kor_travel_docker_manager.services.map_application_300_candidate import (
@@ -372,6 +371,7 @@ def build_candidate_generation(
     sources: PinnedRuntimeSourceMaterialization,
     map_application_300_candidate: MapApplication300Candidate,
     image_ids: Mapping[RuntimeService, str],
+    map_application_head: str,
     map_dagster_head: str,
     pinvi_head: str,
     recorded_at: str | None = None,
@@ -394,9 +394,25 @@ def build_candidate_generation(
         raise DeploymentContractError(
             "Map Dagster candidate image differs from the paired candidate"
         )
-    for head in (map_dagster_head, pinvi_head):
+    for head in (map_application_head, map_dagster_head, pinvi_head):
         if _SCHEMA_HEAD.fullmatch(head) is None:
             raise DeploymentContractError("pinned runtime candidate schema head is invalid")
+    # Map application head는 **두 독립 출처가 일치할 때만** 받는다.
+    #
+    #   1) paired receipt의 baseline contract — `_canonical_digest(contract)`가
+    #      `application_contract_sha256`으로 결박돼 receipt sha256까지 전파된다.
+    #   2) candidate API image가 network 없이 출력한 installed graph의 head
+    #      (`/usr/local/bin/ktm-application-schema head`).
+    #
+    # 종전에는 baseline root 리터럴이었다. 그래서 Map이 migration을 하나 더하는 순간 Manager가
+    # candidate를 거절했고, 스키마 진화를 막은 것은 배포 안전성이 아니라 값 고정이었다.
+    # 여기서 값은 풀되 **결박은 강화한다** — receipt가 선언한 head와 image가 실제로 담고
+    # 있는 head가 다르면 그것이야말로 거절해야 할 상태다(재빌드 없이 receipt 재사용 등).
+    declared_head = map_application_300_candidate.application_contract.application_head
+    if map_application_head != declared_head:
+        raise DeploymentContractError(
+            "Map application candidate head differs from the paired baseline contract"
+        )
     timestamp = recorded_at or datetime.now(UTC).isoformat()
     return PinnedRuntimeGeneration(
         map_api_image_id=image_ids["kor-travel-map-api"],
@@ -408,7 +424,7 @@ def build_candidate_generation(
         pinvi_dagster_image_id=image_ids["pinvi-dagster"],
         map_source_revision=sources.release.source_for("map").revision,
         pinvi_source_revision=sources.release.source_for("pinvi").revision,
-        map_application_head=APPLICATION_HEAD,
+        map_application_head=declared_head,
         map_dagster_head=map_dagster_head,
         pinvi_head=pinvi_head,
         pinset_sha256=sources.pinset_sha256,

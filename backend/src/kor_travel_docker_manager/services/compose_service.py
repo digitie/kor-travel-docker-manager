@@ -15,7 +15,7 @@ from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, NoReturn, cast
+from typing import Any, Final, Literal, NoReturn, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
@@ -2619,6 +2619,10 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
 # 명시한 기대 head와 다르면 배포를 시작하기 전에 fail-close한다.
 _ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 60
 _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 60
+#: compose `--wait-timeout` 초. **정수**로 둔다 — head는 revision 문자열이라
+#: 형이 다르고, 이 파일에 따옴표 두른 숫자가 남지 않아 head 리터럴 게이트가
+#: 파일 단위 면제 없이 이 파일을 전부 볼 수 있다. 면제는 그 자체로 사각지대였다.
+_COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 300
 
 
 def _validate_expected_alembic_head(expected_alembic_head: str) -> None:
@@ -6570,7 +6574,9 @@ class ComposeService:
             candidate_environment = {
                 **build.compose_environment(),
                 **artifact_directories.compose_environment(),
-                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
+                    map_candidate.application_contract.application_head
+                ),
             }
             with _pinned_runtime_prejournal_step("candidate_snapshot"):
                 candidate_transaction, _ = self._capture_transaction_unlocked(
@@ -6624,6 +6630,17 @@ class ComposeService:
                 self._verify_pinned_runtime_pinvi_bootstrap_settings(
                     transaction=candidate_transaction,
                 )
+                map_application_output = _run_pinned_runtime_static_command(
+                    image_ids["kor-travel-map-api"],
+                    ("head",),
+                    label="Map application",
+                    entrypoint="/usr/local/bin/ktm-application-schema",
+                )
+                map_application_head = parse_candidate_static_head(
+                    map_application_output,
+                    schema="kor-travel-map.application-head.v1",
+                    field="head",
+                )
                 map_dagster_output = _run_pinned_runtime_static_command(
                     image_ids["kor-travel-map-dagster"],
                     ("head",),
@@ -6649,6 +6666,7 @@ class ComposeService:
                     sources=sources,
                     map_application_300_candidate=map_candidate,
                     image_ids=image_ids,
+                    map_application_head=map_application_head,
                     map_dagster_head=map_dagster_head,
                     pinvi_head=pinvi_head,
                 )
@@ -6660,7 +6678,9 @@ class ComposeService:
                     candidate_generation,
                     artifact_directories=artifact_directories,
                 ),
-                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
+                    candidate_generation.map_application_head
+                ),
             }
             runtime_transaction, _ = self._capture_transaction_unlocked(
                 environment_override=runtime_environment,
@@ -6839,7 +6859,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "kor-travel-map-postgres",
                         "pinvi-postgres",
                     ],
@@ -7499,7 +7519,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "kor-travel-map-api",
                     ],
                     transaction=runtime_transaction,
@@ -7585,7 +7605,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "kor-travel-map-ui",
                         "kor-travel-map-dagster",
                         "kor-travel-map-dagster-daemon",
@@ -7670,7 +7690,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "pinvi-api",
                     ],
                     transaction=runtime_transaction,
@@ -7723,7 +7743,7 @@ class ComposeService:
                         "--no-deps",
                         "--wait",
                         "--wait-timeout",
-                        "300",
+                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
                         "pinvi-web",
                         "pinvi-dagster",
                     ],

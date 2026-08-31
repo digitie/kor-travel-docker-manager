@@ -372,6 +372,7 @@ def _map_application_300_candidate(
     sources: PinnedRuntimeSourceMaterialization,
 ) -> MapApplication300Candidate:
     contract = Application300Contract(
+        application_head="300",
         reference_manifest_sha256="1" * 64,
         postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
         source_catalog_sha256="2" * 64,

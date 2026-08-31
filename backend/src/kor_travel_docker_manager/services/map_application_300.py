@@ -23,7 +23,29 @@ from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
 
-APPLICATION_HEAD: Final = "300"
+#: application active graph의 유일한 root. `0236 → 300` handoff의 stamp 목적지이자
+#: "Dagster metadata DB는 application raw revision을 갖지 않는다"는 격리 선언이 가리키는
+#: 값이다. **현재 head가 아니라 역사적 좌표**이므로 migration이 쌓여도 바뀌지 않는다.
+BASELINE_ROOT_REVISION: Final = "300"
+
+#: candidate가 선언한 application head의 문법. Map `PinnedRuntimeGeneration`의
+#: `_SCHEMA_HEAD`와 같은 패턴을 쓴다 — 값을 고정하지 않고 형식만 본다.
+_SCHEMA_HEAD: Final = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
+
+
+def _require_schema_head(value: Any, field: str) -> str:
+    """application head가 문법에 맞는 revision 문자열인지 확인한다.
+
+    **값을 고정하지 않는다.** 종전에는 `"300"`과의 exact 비교였는데, 그러면 Map이
+    migration을 하나만 더해도 Manager가 candidate를 거절한다. 이 값이 신뢰되는 근거는
+    리터럴 일치가 아니라 `_canonical_digest(contract)`가 head를 **포함해** 해시되고
+    그 digest가 paired receipt → candidate evidence → journal로 전파돼 재대조된다는
+    점이다(`map_application_300_candidate.py`). 즉 결박은 이미 암호학적으로 존재하고,
+    리터럴 비교는 그 위에 얹힌 값 고정일 뿐이었다.
+    """
+    if not isinstance(value, str) or not _SCHEMA_HEAD.fullmatch(value):
+        raise MapApplication300ContractError(f"{field} is not a valid alembic revision")
+    return value
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
 
 BASELINE_CONTRACT_SCHEMA: Final = "kor-travel-map.application-baseline-contract.v1"
@@ -381,8 +403,10 @@ class Application300Contract:
     source_alembic_version_sha256: str
     destination_alembic_version_sha256: str
     runtime_invariants_sql_sha256: str
+    application_head: str
 
     def __post_init__(self) -> None:
+        _require_schema_head(self.application_head, "application_head")
         _require_sha256(self.reference_manifest_sha256, "reference_manifest_sha256")
         _require_image_id(self.postgres_image_id, "postgres_image_id")
         _require_sha256(self.source_catalog_sha256, "source_catalog_sha256")
@@ -403,12 +427,12 @@ class Application300Contract:
     @classmethod
     def from_payload(cls, value: Mapping[str, Any]) -> Application300Contract:
         payload = _require_exact_fields(value, _CONTRACT_FIELDS, "baseline contract")
-        if (
-            payload["schema"] != BASELINE_CONTRACT_SCHEMA
-            or payload["application_head"] != APPLICATION_HEAD
-        ):
+        if payload["schema"] != BASELINE_CONTRACT_SCHEMA:
             raise MapApplication300ContractError("baseline contract identity is invalid")
         return cls(
+            application_head=_require_schema_head(
+                payload["application_head"], "application_head"
+            ),
             reference_manifest_sha256=_require_sha256(
                 payload["reference_manifest_sha256"], "reference_manifest_sha256"
             ),
@@ -442,7 +466,7 @@ class Application300Contract:
     def to_payload(self) -> dict[str, Any]:
         return {
             "schema": BASELINE_CONTRACT_SCHEMA,
-            "application_head": APPLICATION_HEAD,
+            "application_head": self.application_head,
             "reference_manifest_sha256": self.reference_manifest_sha256,
             "postgres_image_id": self.postgres_image_id,
             "source_catalog_sha256": self.source_catalog_sha256,
@@ -902,7 +926,7 @@ def build_fresh_migration_fence(
         "map_candidate_commit": candidate.map_source_commit,
         "map_candidate_image_id": candidate.api_image_id,
         "postgres_image_id": contract.postgres_image_id,
-        "destination_head": APPLICATION_HEAD,
+        "destination_head": contract.application_head,
         "reference_manifest_sha256": contract.reference_manifest_sha256,
         "source_catalog_sha256": contract.source_catalog_sha256,
         "destination_catalog_sha256": contract.destination_catalog_sha256,
@@ -954,7 +978,7 @@ def build_fresh_finalize_fence(
         "map_candidate_commit": candidate.map_source_commit,
         "map_candidate_image_id": candidate.api_image_id,
         "postgres_image_id": contract.postgres_image_id,
-        "destination_head": APPLICATION_HEAD,
+        "destination_head": contract.application_head,
         "reference_manifest_sha256": contract.reference_manifest_sha256,
         "source_catalog_sha256": contract.source_catalog_sha256,
         "destination_catalog_sha256": contract.destination_catalog_sha256,
@@ -988,7 +1012,7 @@ def parse_fresh_root_result(
         payload["schema"] != FRESH_ROOT_RESULT_SCHEMA
         or payload["outcome"] != "root-committed"
         or payload["authorization"] != "manager-fence"
-        or payload["destination_head"] != APPLICATION_HEAD
+        or payload["destination_head"] != contract.application_head
     ):
         raise MapApplication300ContractError("fresh root result identity is invalid")
     identity = ApplicationDatabaseIdentity.from_fresh_result_payload(
@@ -1062,7 +1086,7 @@ def parse_fresh_root_missing_receipt(
     if (
         payload["schema"] != FRESH_ROOT_MISSING_RECEIPT_SCHEMA
         or payload["outcome"] != "receipt-missing-exact-prestate"
-        or payload["destination_head"] != APPLICATION_HEAD
+        or payload["destination_head"] != contract.application_head
     ):
         raise MapApplication300ContractError(
             "fresh root missing receipt identity is invalid"
@@ -1150,7 +1174,7 @@ def parse_fresh_finalize_result(
     if (
         payload["schema"] != FRESH_FINALIZE_RESULT_SCHEMA
         or payload["outcome"] != "finalized"
-        or payload["destination_head"] != APPLICATION_HEAD
+        or payload["destination_head"] != contract.application_head
     ):
         raise MapApplication300ContractError("fresh finalize result identity is invalid")
     result = FreshFinalizeResult(
@@ -1255,7 +1279,7 @@ def parse_fresh_finalize_missing_receipt(
     if (
         payload["schema"] != FRESH_FINALIZE_MISSING_RECEIPT_SCHEMA
         or payload["outcome"] != "receipt-missing-exact-prestate"
-        or payload["destination_head"] != APPLICATION_HEAD
+        or payload["destination_head"] != contract.application_head
     ):
         raise MapApplication300ContractError(
             "fresh finalize missing receipt identity is invalid"
@@ -1339,7 +1363,7 @@ def build_application_final_permit(
             "api_image_id": candidate.api_image_id,
             "dagster_image_id": candidate.dagster_image_id,
             "postgres_image_id": contract.postgres_image_id,
-            "application_head": APPLICATION_HEAD,
+            "application_head": contract.application_head,
             "reference_manifest_sha256": contract.reference_manifest_sha256,
             "source_alembic_version_sha256": (
                 contract.source_alembic_version_sha256
@@ -1819,7 +1843,7 @@ def _validate_common_fence_identity(
         fence["map_candidate_commit"] != candidate.map_source_commit
         or fence["map_candidate_image_id"] != candidate.api_image_id
         or fence["postgres_image_id"] != contract.postgres_image_id
-        or fence["destination_head"] != APPLICATION_HEAD
+        or fence["destination_head"] != contract.application_head
         or fence["reference_manifest_sha256"] != contract.reference_manifest_sha256
         or fence["source_catalog_sha256"] != contract.source_catalog_sha256
         or fence["destination_catalog_sha256"] != contract.destination_catalog_sha256
@@ -1929,7 +1953,7 @@ def _validate_final_permit_candidate(
         or value["api_image_id"] != candidate.api_image_id
         or value["dagster_image_id"] != candidate.dagster_image_id
         or value["postgres_image_id"] != contract.postgres_image_id
-        or value["application_head"] != APPLICATION_HEAD
+        or value["application_head"] != contract.application_head
         or value["reference_manifest_sha256"] != contract.reference_manifest_sha256
         or value["source_alembic_version_sha256"]
         != contract.source_alembic_version_sha256

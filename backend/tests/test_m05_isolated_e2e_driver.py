@@ -1437,6 +1437,29 @@ def test_driver_pair_failure_before_ledger_never_blocks_the_execution(
     assert receipt["phase"] == "pair_contract_invalid"
 
 
+def _write_map_application_graph(root: Path, *, head: str = "300") -> None:
+    """test double의 `map_root`에 Map application migration graph를 놓는다.
+
+    driver는 `source_materialization` phase에서 이 파일을 읽어
+    `KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD`를 유도한다. 종전에는 리터럴 `300`이라
+    fake `map_root`가 비어 있어도 통과했지만, 그 리터럴이 곧 "Map이 migration을 하나
+    더하면 API 컨테이너가 기동을 거부한다"는 뜻이었다.
+
+    실제 materialize된 source에는 이 파일이 **항상** 있다. double을 그에 맞춘다.
+    """
+    package = root / "src" / "kortravelmap"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "_application_migration_graph.json").write_text(
+        json.dumps(
+            {
+                "schema": "kor-travel-map.application-migration-graph.v1",
+                "revisions": [{"revision": head, "down_revision": []}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_ledger_claim_attempt_failure_blocks_the_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1469,6 +1492,7 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     monkeypatch.setattr(driver, "_root_file", lambda _path, **_kwargs: None)
     monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
     monkeypatch.setattr(driver, "M05IsolatedHarnessPlan", lambda *_args: _Plan())
+    _write_map_application_graph(tmp_path)
     monkeypatch.setattr(
         driver,
         "_source_pair_preflight",

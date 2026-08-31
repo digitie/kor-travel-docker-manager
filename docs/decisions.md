@@ -2629,3 +2629,84 @@ identity를 고정한 뒤 그 값으로 lock 경로를 정한다.
 그러면 어떤 파일도 비-root가 만들 수 없으므로 자기 증명이 성립하지 않고, 기대 gid를 잘못
 선언해도 fail-close다. 서비스 identity는 `.env` 스냅샷에서 파라미터로 주입한다.
 
+## ADR-42: Map application head는 candidate가 선언하고 두 독립 출처가 합의할 때만 받는다
+
+- 상태: accepted
+- 날짜: 2026-08-31
+- 결정자: agent (Map `301` child migration 차단 대응)
+
+### 컨텍스트
+
+Map이 migration을 **하나**(`301_m03_import_children`) 더하자 Manager가 candidate를 거절했다.
+
+```
+receipt_contract_invalid                                  # _validate_application_contract
+installed active Alembic graph head is not exactly 300    # Map fresh installer
+```
+
+원인은 배포 계약이 아니라 `application_head = "300"` 리터럴 **열한 사본**이었다.
+
+| 위치 | 형태 |
+|---|---|
+| `map_application_300.py` | `APPLICATION_HEAD` 상수 + `from_payload`의 exact 비교 + fence/result/permit 9곳 |
+| `map_application_300_candidate.py` | `_require_exact_string(contract, "application_head", …)` |
+| `pinned_runtime_rebuild.py` | `map_application_head=APPLICATION_HEAD` |
+| `compose_service.py` ×2 · `scripts/m05_isolated_e2e.py` | `KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD` 주입 |
+
+`Application300Contract`에는 `application_head` **필드가 없었다** — head는 `from_payload`에서
+검증된 뒤 버려졌고, `to_payload`가 상수를 다시 주입했다(왕복 손실). 즉 계약 객체는 head를
+운반할 수단 자체를 갖고 있지 않았다.
+
+세 개의 `KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD` 리터럴은 특히 위험했다. 이 값이 head와
+다르면 Map API 컨테이너가 **기동 자체를 거부**한다. 단위 테스트도 CI도 보지 못하는 자리다.
+
+### 결정
+
+값 고정을 풀고, 결박을 강화한다. Manager는 head를 **candidate로부터** 얻되, 두 독립 출처가
+일치할 때만 받는다.
+
+1. **paired receipt의 baseline contract** — `_canonical_digest(contract)`가
+   `application_contract_sha256`으로 결박되고, 그것이 paired receipt sha256 →
+   `MapApplication300CandidateEvidence` → journal로 전파된다.
+2. **candidate API image의 installed graph** —
+   `docker run --network none --entrypoint /usr/local/bin/ktm-application-schema <api_image> head`.
+   `map_dagster_head`/`pinvi_head`가 이미 쓰던 `parse_candidate_static_head` 기계를 그대로 쓴다.
+
+둘이 다르면 `DeploymentContractError`로 거절한다.
+
+`"300"`은 **baseline root**로만 남는다(`BASELINE_ROOT_REVISION` / `_BASELINE_ROOT_REVISION`) —
+`0236 → 300` handoff의 stamp 목적지이자 `forbidden_application_raw_revision`이 가리키는
+격리 선언의 값이다. head가 아니고, migration이 쌓여도 움직이지 않는다.
+
+### 근거
+
+**결박은 이미 암호학적으로 존재했다.** contract는 digest로 봉인돼 receipt·journal까지
+전파되므로, 리터럴 비교는 그 위에 얹힌 **값 고정**일 뿐이었다. 지운 것은 값 고정 하나이고,
+검증의 엄격함("정확히 기대한 head인가")은 그대로다 — 기대값의 출처만 리터럴에서 candidate로
+바뀐다.
+
+두 출처를 요구하는 쪽이 종전보다 **강하다.** 리터럴 비교는 "receipt가 `300`이라고 말하는가"만
+봤고, image가 실제로 무엇을 담고 있는지는 보지 않았다. 이제 재빌드 없이 receipt를 재사용한
+상태 — 값 고정이 잡아주지 못하던 종류 — 가 거절된다.
+
+값은 풀되 **문법은 조인다**: `_SCHEMA_HEAD = ^[0-9a-z][0-9a-z_.-]{0,127}$`. Map
+`PinnedRuntimeGeneration`의 head 문법과 같은 패턴이며, 임의 문자열이 head 자리에 들어오는
+것을 막는다.
+
+### 결과
+
+- `Application300Contract`가 `application_head`를 필드로 갖는다 — 왕복 무손실.
+- `_assert_pinned_runtime_database_heads`의 exact 대조는 그대로지만, 기대값이 candidate를
+  따라간다. Map이 스키마를 진화시켜도 Manager가 막지 않는다.
+- `backend/tests/test_map_application_head_flexibility.py`가 재고정을 정적으로 막는다.
+  `--wait-timeout 300` 예외는 **바로 앞 줄**을 보고 좁히며, 그 폭 자체를 시험한다.
+- `test_map_application_300.py`가 fence → root 결과 → finalize → final permit 전 구간을
+  `300` / `301_m03_import_children` / `0999_squashed.v2` 세 head로 완주시킨다 — 리터럴 제거가
+  아니라 **유연성 자체**를 증명한다.
+
+### 확인하지 않은 것
+
+- 실 candidate image로 `/usr/local/bin/ktm-application-schema head`를 돌린 결과. Map
+  `api.Dockerfile:68`이 설치하고 `docker/application-schema-head.py`가 계약
+  (`kor-travel-map.application-head.v1`)을 소유하는 것까지만 확인했다.
+- `301`이 실제로 프로덕션에 적용될 때의 end-to-end rebuild. 그것은 Map PR 병합 뒤 별도 실행이다.

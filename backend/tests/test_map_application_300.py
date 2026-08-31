@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import stat
+import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -43,6 +45,13 @@ from kor_travel_docker_manager.services.map_application_300 import (
     write_owner_only_artifact,
 )
 
+_HEAD = "300"
+"""이 모듈의 fixture가 쓰는 application head.
+
+리터럴이 아니라 이름을 두는 이유는 **head를 바꿔 같은 체인을 다시 돌리기 위해서**다.
+값 고정을 푼 뒤에도 `300`에서만 통과하면 유연성을 증명한 것이 아니다.
+"""
+
 
 def _digest(seed: str) -> str:
     return seed * 64
@@ -54,6 +63,7 @@ def _image(seed: str) -> str:
 
 def _contract() -> Application300Contract:
     return Application300Contract(
+        application_head=_HEAD,
         reference_manifest_sha256=_digest("1"),
         postgres_image_id=_image("2"),
         source_catalog_sha256=_digest("3"),
@@ -113,7 +123,7 @@ def _root_result_raw(
             "outcome": "root-committed",
             "authorization": "manager-fence",
             "operation_id": root_operation_id,
-            "destination_head": "300",
+            "destination_head": _HEAD,
             "map_candidate_commit": candidate.map_source_commit,
             "map_candidate_image_id": candidate.api_image_id,
             "postgres_image_id": contract.postgres_image_id,
@@ -181,7 +191,7 @@ def _root_missing_receipt_raw(
             ),
             "outcome": "receipt-missing-exact-prestate",
             "operation_id": root_operation_id,
-            "destination_head": "300",
+            "destination_head": _HEAD,
             "map_candidate_commit": candidate.map_source_commit,
             "map_candidate_image_id": candidate.api_image_id,
             "postgres_image_id": contract.postgres_image_id,
@@ -229,7 +239,7 @@ def _finalize_result_raw(
             "schema": "kor-travel-map.application-fresh-300-finalize.v4",
             "outcome": "finalized",
             "operation_id": finalize_operation_id,
-            "destination_head": "300",
+            "destination_head": _HEAD,
             "map_candidate_commit": candidate.map_source_commit,
             "map_candidate_image_id": candidate.api_image_id,
             "postgres_image_id": contract.postgres_image_id,
@@ -279,7 +289,7 @@ def _finalize_missing_receipt_raw(
             "operation_id": operation_id,
             "prior_fresh_migration_operation_id": prior.operation_id,
             "prior_fresh_migration_result_sha256": prior.payload_sha256,
-            "destination_head": "300",
+            "destination_head": _HEAD,
             "map_candidate_commit": candidate.map_source_commit,
             "map_candidate_image_id": candidate.api_image_id,
             "postgres_image_id": contract.postgres_image_id,
@@ -470,6 +480,78 @@ def test_fresh_finalize_fence_binds_prior_root_lineage() -> None:
             prior=root,
             writer_fence_expires_at=_expiry(),
         )
+
+
+@pytest.mark.parametrize("head", ["300", "301_m03_import_children", "0999_squashed.v2"])
+def test_the_whole_fresh_chain_works_at_any_head(
+    head: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fence → root 결과 → finalize → final permit 전 구간이 head에 무관해야 한다.
+
+    리터럴을 지웠다는 것만으로는 유연성을 증명하지 못한다. `300`에서만 통과하는 체인은
+    여전히 `300`에 고정된 체인이다. 같은 체인을 **다른 head로** 완주시킨다.
+
+    fixture가 읽는 `_HEAD`를 바꾸면 contract·fence·result·permit이 모두 그 값을 타므로,
+    어느 한 지점이라도 리터럴로 되돌아가면 여기서 exact 대조에 걸린다.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "_HEAD", head)
+
+    _root_raw, root = _fresh_root()
+    assert _contract().application_head == head
+
+    finalize_journal = _journal("d", 2)
+    finalize_fence = build_fresh_finalize_fence(
+        contract=_contract(),
+        candidate=_candidate(),
+        database=_application_database(),
+        journal=finalize_journal,
+        prior=root,
+        writer_fence_expires_at=_expiry(),
+    )
+    finalize = parse_fresh_finalize_result(
+        _finalize_result_raw(
+            finalize_fence_sha256=finalize_fence.sha256,
+            finalize_transaction_id=finalize_journal.transaction_id,
+            finalize_operation_id=finalize_journal.operation_id,
+            finalize_journal_sha256=finalize_journal.journal_sha256,
+            finalize_generation=finalize_journal.journal_generation,
+            prior_result_sha256=root.payload_sha256,
+            prior_fence_sha256=root.writer_fence_receipt_sha256,
+            prior_transaction_id=root.writer_fence_transaction_id,
+            prior_operation_id=root.operation_id,
+            prior_journal_sha256=root.journal_sha256,
+            prior_generation=root.journal_generation,
+        ),
+        contract=_contract(),
+        candidate=_candidate(),
+        prior=root,
+    )
+    permit = build_application_final_permit(
+        contract=_contract(),
+        candidate=_candidate(),
+        database=_application_database(),
+        finalize_result=finalize,
+    )
+    payload = validate_application_final_permit(
+        permit.raw, contract=_contract(), candidate=_candidate()
+    )
+
+    assert payload["candidate"]["application_head"] == head
+    assert json.loads(finalize_fence.raw)["destination_head"] == head
+
+
+def test_a_head_that_disagrees_with_the_contract_is_refused() -> None:
+    """반대 방향 — 산출물이 contract와 다른 head를 들고 오면 거절해야 한다.
+
+    값 고정을 풀면서 결박까지 푸는 것이 진짜 위험이다. `300`이 아니어도 **contract가
+    선언한 그 값**이어야 한다.
+    """
+    contract = _contract()
+    drifted = replace(contract, application_head="301_m03_import_children")
+    _root_raw, root = _fresh_root()
+
+    with pytest.raises(MapApplication300ContractError):
+        parse_fresh_root_result(_root_raw, contract=drifted, candidate=_candidate())
 
 
 def test_finalize_result_and_final_permit_are_exact_and_resumable() -> None:
