@@ -1078,6 +1078,9 @@ def test_free_ports_uses_the_standard_ss_binary(
 
     ports = driver._free_ports("a" * 32)
 
+    # 전 포트가 비-ephemeral 대역(20000-29999)이어야 한다 — ephemeral 대역은
+    # listening 검사(ss -ltn)를 통과해도 outbound 선점으로 bind가 깨진다.
+    assert all(20000 <= port < 30000 for port in ports.values())
     assert set(ports) == {
         "map_api",
         "map_dagster",

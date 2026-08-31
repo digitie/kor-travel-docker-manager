@@ -951,7 +951,14 @@ def _map_fresh_init_diagnostic_entrypoint() -> str:
 
 
 def _free_ports(transaction: str) -> dict[str, int]:
-    base = 30000 + (int(transaction[:8], 16) % 9000)
+    # host publish 포트는 kernel ephemeral 대역(기본 32768-60999) **밖**에서 고른다.
+    # 아래 ss -ltn 가용성 검사는 listening 소켓만 보므로, ephemeral 대역 안의
+    # 포트는 검사 통과 후 임의 outbound 연결이 로컬 포트로 선점해 Docker publish
+    # bind가 확률적으로 실패한다(2026-09-01 e2e5 실측: rustfs 127.0.0.1:36464
+    # address already in use). 20000-29999 대역은 이 호스트의 고정 서비스
+    # (12xxx/13xxx/15xxx)와도 겹치지 않는다. ip_local_port_range 하한을 30000
+    # 아래로 낮춘 호스트에서는 이 대역도 옮겨야 한다.
+    base = 20000 + (int(transaction[:8], 16) % 9000)
     names = (
         "map_api",
         "map_dagster",
@@ -971,7 +978,7 @@ def _free_ports(transaction: str) -> dict[str, int]:
         ports = {
             name: base + offset * len(names) + index for index, name in enumerate(names)
         }
-        if max(ports.values()) >= 65535:
+        if max(ports.values()) >= 30000:
             break
         if all(
             not _command(
