@@ -1031,7 +1031,12 @@ def _map_network_addresses(transaction: str) -> tuple[str, str, str, str]:
         candidate = ipaddress.ip_network(f"172.29.{(seed + offset) % 224}.0/28")
         if not any(candidate.overlaps(item) for item in existing):
             hosts = list(candidate.hosts())
-            return str(candidate), str(hosts[0]), str(hosts[1]), str(hosts[2])
+            # 정적 주소(api/frontend)는 범위 **상단**에서 고른다. Docker IPAM은
+            # 동적 할당을 하단부터 채우므로, 먼저 뜨는 postgres/rustfs가 하단
+            # 주소를 가져가도 뒤에 뜨는 api/frontend의 정적 claim과 충돌하지
+            # 않는다(2026-09-01 실측: !override로 정적 IP가 실제 적용되자
+            # postgres가 .2를 선점해 api 기동이 결정적으로 실패했다).
+            return str(candidate), str(hosts[0]), str(hosts[-1]), str(hosts[-2])
     _fail("network_subnet_unavailable")
 
 
@@ -2097,6 +2102,9 @@ def main(expected_revision: str, output: Path) -> int:
             "    ipam:",
             "      config:",
             f"        - subnet: {subnet}",
+            # gateway를 명시해 hosts[0] 가정을 행동이 아니라 계약으로 만든다
+            # (trusted proxy allowlist가 이 값에 결박된다 — 적대 리뷰).
+            f"          gateway: {map_gateway_ip}",
             "    labels:",
             *[f"      {key}: {value}" for key, value in plan.labels.items()],
         ]
@@ -2259,6 +2267,7 @@ def main(expected_revision: str, output: Path) -> int:
                 "frontend",
             ),
             failure_phase="map_application_start_failed",
+            failure_evidence_path=runtime / "map-application-up-error.json",
         )
         # ``docker compose up --wait``가 container health를 돌려도 host publish
         # binding은 별도 runtime 경계다. HTTP retry보다 먼저 generic binding을
@@ -2271,6 +2280,34 @@ def main(expected_revision: str, output: Path) -> int:
             container_port=13701,
             host_port=ports["map_api"],
         )
+        # networks !override의 정적 주소가 **실제로** 적용됐는지 단언한다 — 조용히
+        # 떨어지면(#280 이전의 silent-drop 클래스) PinVi base URL/BFF allowlist가
+        # 허공을 가리켜 훨씬 뒤에서 timeout으로 오분류된다(적대 리뷰).
+        map_frontend = _container_id(
+            plan.map_project,
+            "frontend",
+            root=map_root,
+            env_file=map_env,
+            files=map_files,
+        )
+        for runtime_container, expected_address in (
+            (map_api, map_api_ip),
+            (map_frontend, map_frontend_ip),
+        ):
+            container_networks = _container_inspect(runtime_container).get(
+                "NetworkSettings", {}
+            )
+            if not isinstance(container_networks, dict):
+                _fail("runtime_inspect_invalid")
+            attached = container_networks.get("Networks")
+            if not isinstance(attached, dict):
+                _fail("runtime_inspect_invalid")
+            entry = attached.get(plan.map_network)
+            if (
+                not isinstance(entry, dict)
+                or entry.get("IPAddress") != expected_address
+            ):
+                _fail("runtime_container_identity_invalid")
         admin_url = f"http://127.0.0.1:{ports['map_api']}"
         _wait_for_map_health(url=f"{admin_url}/health")
         phase = "map_subscription"
