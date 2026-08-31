@@ -2710,3 +2710,96 @@ installed active Alembic graph head is not exactly 300    # Map fresh installer
   `api.Dockerfile:68`이 설치하고 `docker/application-schema-head.py`가 계약
   (`kor-travel-map.application-head.v1`)을 소유하는 것까지만 확인했다.
 - `301`이 실제로 프로덕션에 적용될 때의 end-to-end rebuild. 그것은 Map PR 병합 뒤 별도 실행이다.
+
+## ADR-43: 봉인된 baseline digest는 `300` 도달 순간에만 대조하고, 그 너머는 receipt가 정본이다
+
+- 상태: accepted
+- 날짜: 2026-08-31
+- 결정자: agent (오너 선택 — "체인을 baseline 너머로 확장")
+
+### 컨텍스트
+
+Map이 migration을 하나(`301`) 더하자 배포가 막혔다. ADR-42가 head 리터럴을 걷어냈지만
+그것은 **값 고정** 문제였고, 더 깊은 곳에 **상태 고정** 문제가 남아 있었다.
+
+`alembic/baseline/*.sha256`은 `300` 시점의 물리 catalog와 `alembic_version` facet을
+고정한다. 그런데 세 지점이 **live DB를 그 digest와 exact 대조**한다.
+
+| 지점 | 대조 대상 |
+|---|---|
+| `application-schema-fresh-300.py:940` | `contract["source_catalog_sha256"]` |
+| `application-schema-fresh-finalize.py:418` | `expected["destination_catalog_sha256"]` |
+| `application-schema-final-permit.py:490` | `expected["catalog"]` |
+
+PostGIS 통합 실행이 6건 실패로 이것을 실증했다. 프로덕션 영향은 fresh 설치 실패에
+그치지 않는다 — final permit이 막히면 **API/Dagster 컨테이너가 기동을 거부한다.**
+
+두 갈래를 나눠 봐야 했다.
+
+**facet은 상태를 담지 않았다.** `application-destination-alembic-version.sql`의 산출물은
+성공/실패 두 문자열뿐인 단일 boolean이고, 기대 digest는 성공 sentinel의 sha256이다.
+
+    sha256("kor-travel-map.application-destination-alembic-version.v1\n")
+      == 72eac11772cdd5428a856188405bd36bedfed03fd47dbb4550fc94b3e2cde32c
+
+그 안에 `alembic_version = ARRAY['300']`을 넣어 두었기 때문에 head가 움직이면 영원히
+`mismatch`가 되었다 — 옮겨갈 digest가 아예 존재하지 않았다.
+
+**catalog는 진짜 상태 의존이다.** `application-catalog.sql`은 객체마다 한 행을 내므로
+새 migration이 표·제약·함수를 더하면 digest가 반드시 바뀐다.
+
+### 결정
+
+**facet**: SQL에서 revision 술어를 제거한다. 기대 digest는 sentinel 해시이므로 **한 글자도
+바뀌지 않는다**. 재봉인 대상은 SQL 파일 바이트와 reference manifest뿐이라 PostGIS oracle이
+필요 없다. revision 동등성은 배포 executable 넷이 파생 head로 이미 대조한다.
+
+**catalog**: 봉인된 digest는 `300` 도달 순간에만 대조한다. fresh installer가
+`command.upgrade`를 `300`에서 한 번 끊어 exact 대조를 끝내고, head까지 올린 뒤 head 상태를
+관측해 operation receipt에 남긴다. 그 이후의 정본은 receipt다.
+
+    baseline digest ──(300 체크포인트)── root receipt ──(pre-ACL)── finalize receipt
+                                                                        │
+                                                              (post-ACL) └── final permit
+
+root result schema를 v2 → v3으로 올린다(Manager가 exact field set으로 파싱한다).
+`301`이 receipt 표의 `result_schema` 열거를 **넓히기만** 한다 — 기존 v2 행이 있으므로
+좁히면 `ALTER` 자체가 실패한다.
+
+### 근거
+
+신뢰 근거가 "봉인된 digest가 미리 선언한다"에서 "attest된 candidate image가 만든 것을
+receipt가 봉인한다"로 옮겨간다. 사슬은 끊기지 않는다 — head 상태 스키마는 image 안의
+migration이 결정론적으로 만들고, receipt는 fence → journal → Manager evidence로 이미
+결박돼 있다.
+
+`300`에서의 엄격함은 **하나도 잃지 않는다.** 세 지점 모두 head == baseline root일 때
+종전과 동일한 봉인값 대조를 한다. 근거가 옮겨가는 것은 그 너머뿐이다.
+
+대안이던 **baseline 재cut**을 기각한 이유: baseline은 `0236 → 300` squash 산물인데 head와
+뒤섞이고, 무엇보다 **다음 migration에서 또 재cut**을 요구한다 — 같은 덫을 다시 놓는다.
+(제작에 필요한 핀 이미지 `dc17b064a946`가 n150에 untagged로만 남아 있어 `prune` 한 번에
+소실될 수 있다는 점도 확인해 태그로 보호했다.)
+
+### 결과
+
+- `Application300Contract`/`FreshRootResult`에 head 상태 필드가 생긴다.
+- permit의 `expected_catalog_sha256`은 head가 baseline root일 때만 봉인값이고, 그
+  너머에서는 finalize 관측값이다 — verifier는 두 값의 일치를 보고, 그 출처인 finalize
+  receipt는 `finalize_result_sha256`으로 같은 payload에 결박된다.
+- Map `tests/lint/test_baseline_contract_sql_is_not_revision_pinned.py`가 facet 재고정을
+  막고, 기대 digest가 sentinel임을 직접 보이며, "호출자가 대신 본다"는 주장을 executable
+  넷에 대해 코드로 고정한다.
+
+### 잃은 것과 그 보상
+
+head > baseline root에서 **post-ACL catalog의 사전 선언**이 사라진다. 그 상태를 처음
+관측하는 것이 finalize이기 때문이다. 보상은 셋이다 — `privileged_residue`와 `seed`는
+`301`이 건드리지 않아 봉인값 대조가 그대로 살아 있고, `verify_runtime_projection_invariants`가
+runtime ACL 성질을 독립적으로 강제하며, destination facet(이제 head 무관)이
+`alembic_version` ACL을 계속 증명한다.
+
+### 확인하지 않은 것
+
+- 실 프로덕션 rebuild. n150 CI-parity와 PostGIS 통합까지만 확인했다.
+- 이 변경 뒤 baseline을 재cut할 때 `build-baseline.sh`가 새 facet SQL과 정합한지.
