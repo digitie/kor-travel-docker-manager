@@ -515,10 +515,25 @@ def test_cli_exposes_generic_execution_migration_and_rebind_commands() -> None:
         ["pin", "block-execution", "--reason", "safe receipt unavailable", "--confirm"]
     )
 
+    scoped = parser.parse_args(
+        [
+            "pin",
+            "block-execution",
+            "--reason",
+            "infra phase failed",
+            "--phase",
+            "map_health_transport_failed",
+            "--confirm",
+        ]
+    )
+
     assert migrated.pin_action == "migrate-execution-v6"
     assert rebound.expected_manager_revision == _MANAGER_B
     assert shown.pin_action == "show-execution"
     assert blocked.pin_action == "block-execution"
+    # --phase 생략 = 무조건 차단(default None), 지정 = scoped 기록(I-1).
+    assert blocked.phase is None
+    assert scoped.phase == "map_health_transport_failed"
 
 
 def test_launcher_fallback_block_execution_allows_only_the_inherited_terminal_lock(
@@ -541,12 +556,66 @@ def test_launcher_fallback_block_execution_allows_only_the_inherited_terminal_lo
     monkeypatch.setattr(cli, "load_runtime_pin_registry", _pins)
     monkeypatch.setattr(cli, "load_runtime_execution_registry", lambda: registry)
     monkeypatch.setattr(cli, "trusted_manager_source_revision", lambda: _MANAGER_A)
-    monkeypatch.setattr(
-        cli, "block_current_execution", lambda **_kwargs: block_current_execution(
+    def observed_block(**kwargs: object):
+        seen["phase"] = kwargs.get("phase")
+        return block_current_execution(
             registry=registry, reason="safe receipt unavailable"
         )
-    )
+
+    monkeypatch.setattr(cli, "block_current_execution", observed_block)
     monkeypatch.setattr(cli, "write_runtime_execution_registry", lambda _registry: None)
 
     assert cli._cmd_pin_block_execution(args) == 0
     assert seen["allow"] is True
+    # --phase 없는 launcher fallback은 무조건 차단으로 남는다.
+    assert seen["phase"] is None
+
+
+# -- phase-scoped 차단 (근본원인 감사 I-1) ----------------------------------
+
+
+def _registry_with_current():
+    return migrate_execution_registry(
+        pins=_pins(),
+        manager_source_revision="a" * 40,
+        bound_by="test",
+        reason="bind",
+    )
+
+
+def test_scoped_block_records_history_without_burning_the_execution() -> None:
+    """인프라 phase 기록은 남되 execution은 살아 있어야 한다."""
+    registry = _registry_with_current()
+    updated = block_current_execution(
+        registry=registry, reason="infra", phase="runtime_setup"
+    )
+
+    assert len(updated.blocked_executions) == 1
+    assert updated.blocked_executions[0].phase == "runtime_setup"
+    assert not updated.is_unconditionally_blocked_current()
+    assert updated.has_block_for_current(phase="runtime_setup")
+    assert not updated.has_block_for_current(phase="map_runtime")
+
+
+def test_scoped_block_deduplicates_same_identity_and_phase() -> None:
+    """같은 (identity, phase) 재실패가 원장을 무한히 불리지 않는다."""
+    registry = _registry_with_current()
+    once = block_current_execution(registry=registry, reason="x", phase="runtime_setup")
+    twice = block_current_execution(registry=once, reason="y", phase="runtime_setup")
+
+    assert len(twice.blocked_executions) == 1
+    # 다른 phase는 별개 기록이다.
+    third = block_current_execution(registry=twice, reason="z", phase="map_runtime")
+    assert len(third.blocked_executions) == 2
+
+
+def test_unconditional_block_still_terminates_the_execution() -> None:
+    """phase=None(acceptance 본문 실패)은 종전과 동일하게 무조건 소각이다."""
+    registry = _registry_with_current()
+    updated = block_current_execution(registry=registry, reason="body", phase=None)
+
+    assert updated.is_unconditionally_blocked_current()
+    assert updated.has_block_for_current()
+    # 무조건 차단 뒤에는 어떤 기록도 더해지지 않는다(종전 단락 유지).
+    again = block_current_execution(registry=updated, reason="more", phase="runtime_setup")
+    assert len(again.blocked_executions) == len(updated.blocked_executions)

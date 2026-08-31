@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -646,11 +647,15 @@ def test_execution_registry_gate_refuses_the_current_execution(
         driver._assert_current_m05_execution_is_runnable("a" * 40)
 
 
-def test_terminal_result_blocks_the_exact_current_execution(
+def test_infra_terminal_leaves_a_phase_scoped_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """terminal output은 phase-scoped entry가 아닌 unconditional registry block을 남긴다."""
+    """인프라 phase 실패는 scoped 기록이다 — execution을 소각하지 않는다.
 
+    종전에는 phase를 넘기지 않아 모든 terminal이 무조건 차단이 됐고, 인프라 실패가
+    acceptance 실패와 같은 형벌(3-repo 회전)을 받았다. terminal 27개 중 본문 도달
+    0건이 그 결과다.
+    """
     driver = _driver()
     seen: dict[str, object] = {}
 
@@ -663,13 +668,13 @@ def test_terminal_result_blocks_the_exact_current_execution(
         def current_matches(self, **_kwargs: object) -> bool:
             return True
 
-    class _BlockedRegistry:
-        def is_unconditionally_blocked_current(self) -> bool:
+    class _UpdatedRegistry:
+        def has_block_for_current(self, *, phase: str | None = None) -> bool:
             return True
 
-    def block(**kwargs: object) -> _BlockedRegistry:
+    def block(**kwargs: object) -> _UpdatedRegistry:
         seen.update(kwargs)
-        return _BlockedRegistry()
+        return _UpdatedRegistry()
 
     monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
     monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
@@ -679,8 +684,123 @@ def test_terminal_result_blocks_the_exact_current_execution(
     assert driver._block_terminal_m05_execution(
         "map_health_transport_failed", expected_manager_revision="a" * 40
     ) is True
-    assert isinstance(seen["registry"], _ExecutionRegistry)
+    assert seen["phase"] == "map_health_transport_failed"
     assert seen["reason"] == "M05 isolated one-shot terminal: map_health_transport_failed"
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["ledger_claim", "m04_m05_e2e", "m05_case_invalid", "m04_fixture_http_failed"],
+)
+def test_acceptance_terminal_stays_unconditional(
+    phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """acceptance 본문·ledger claim 실패는 여전히 무조건 소각이다(phase=None).
+
+    "acceptance 본문은 정확히 한 번"이라는 one-shot 성질은 phase-scoped 완화의
+    대상이 아니다 — 완화되는 것은 인프라 phase뿐이다.
+    """
+    driver = _driver()
+    seen: dict[str, object] = {}
+
+    class _SourceRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+    class _ExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
+            return True
+
+    class _UpdatedRegistry:
+        def has_block_for_current(self, *, phase: str | None = None) -> bool:
+            return True
+
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
+
+    def block(**kwargs: object) -> _UpdatedRegistry:
+        seen.update(kwargs)
+        return _UpdatedRegistry()
+
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
+    monkeypatch.setattr(driver, "block_current_execution", block)
+    monkeypatch.setattr(driver, "write_runtime_execution_registry", lambda _registry: None)
+
+    assert driver._block_terminal_m05_execution(
+        phase, expected_manager_revision="a" * 40
+    ) is True
+    assert seen["phase"] is None
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["runtime_container_identity_invalid", "runtime_http_contract_failed"],
+)
+def test_body_entered_failure_is_forced_unconditional(
+    phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """본문 진입 이후에는 인프라형 phase 이름의 실패도 무조건 소각한다(R1-S4/R2-S4).
+
+    본문 내부 helper(_container_id 등)는 인프라형 phase로 _PhaseError를 던진다 —
+    force_unconditional 없이는 그 실패가 scoped 기록으로 강등돼 mutating 본문이
+    재실행될 수 있다(one-shot 위반).
+    """
+    driver = _driver()
+    seen: dict[str, object] = {}
+
+    class _SourceRegistry:
+        pinset_sha256 = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+        map_revision = driver.PINNED_RUNTIME_RELEASE.source_for("map").revision
+        pinvi_revision = driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
+
+    class _ExecutionRegistry:
+        def current_matches(self, **_kwargs: object) -> bool:
+            return True
+
+    class _UpdatedRegistry:
+        def has_block_for_current(self, *, phase: str | None = None) -> bool:
+            return True
+
+        def is_unconditionally_blocked_current(self) -> bool:
+            return True
+
+    def block(**kwargs: object) -> _UpdatedRegistry:
+        seen.update(kwargs)
+        return _UpdatedRegistry()
+
+    monkeypatch.setattr(driver, "load_runtime_pin_registry", lambda: _SourceRegistry())
+    monkeypatch.setattr(driver, "load_runtime_execution_registry", lambda: _ExecutionRegistry())
+    monkeypatch.setattr(driver, "block_current_execution", block)
+    monkeypatch.setattr(driver, "write_runtime_execution_registry", lambda _registry: None)
+
+    assert driver._block_terminal_m05_execution(
+        phase, expected_manager_revision="a" * 40, force_unconditional=True
+    ) is True
+    assert seen["phase"] is None
+
+
+def test_cleanup_failure_does_not_downgrade_an_unconditional_phase() -> None:
+    """cleanup 실패가 본문/ledger 실패 표면을 강등하지 못한다(R1-S4).
+
+    guard 바로 다음 실행문이 cleanup overwrite인지 소스에서 확인한다 —
+    본문 진입(body_entered) 또는 무조건-급 phase에서는 overwrite가 없어야 한다.
+    """
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+    guard = (
+        "if not body_entered and _terminal_block_phase(phase) is not None:"
+    )
+    assert guard in source
+    tail = source[source.index(guard) + len(guard):]
+    statements = [
+        line.strip()
+        for line in tail.splitlines()[1:8]
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert statements[0] == 'phase = "runtime_cleanup_failed"'
 
 
 def test_preclaim_exception_writes_a_nonterminal_fixed_receipt(
@@ -791,17 +911,66 @@ def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
     )
 
 
-def test_root_launcher_requires_an_explicit_root_forensic_capture_argument() -> None:
-    """원문 보존은 caller environment가 아니라 launcher argument로만 켠다."""
+def test_root_launcher_defaults_to_forensic_capture_with_explicit_opt_out() -> None:
+    """원문 보존이 기본값이다 — 관측 결핍이 후보 예산을 소비했다(감사 I-2).
 
+    4개 candidate를 태운 `ports: !reset`은 stderr 한 번이면 즉시 보였을 값이었다.
+    보존 대상은 bounded stderr뿐이고 root 0600 leaf를 벗어나지 않으며, 끄는 것은
+    caller environment가 아니라 명시 launcher argument로만 가능하다.
+    """
     launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
         encoding="utf-8"
     )
 
-    assert '"$1" == "--forensic-capture"' in launcher
+    # 열 0의 대입만 기본값이다 — 들여쓰기된 호환 분기(`  forensic_capture=1`)와
+    # 구분하지 않으면 기본값을 0으로 되돌려도 이 단언이 통과한다.
+    assert "\nforensic_capture=1\n" in launcher, "기본값이 보존이어야 한다"
+    assert "\nforensic_capture=0\n" not in launcher
+    assert '"$1" == "--no-forensic-capture"' in launcher, "명시 opt-out이 있어야 한다"
     assert "export KTDM_M05_FORENSIC_CAPTURE=1" in launcher
     assert "unset KTDM_M05_FORENSIC_CAPTURE" in launcher
     assert '"${launcher_arguments[@]}"' in launcher
+
+
+def test_root_launcher_forensic_default_is_behavioral_not_textual() -> None:
+    """launcher를 실제 실행(bash -x)해 기본값 대입을 트레이스로 확인한다(R2-S9).
+
+    문구 단언은 주석/데드 브랜치로 우회된다 — 여기서는 non-root 실행의 실제
+    트레이스에서 `forensic_capture=1`(기본) / `=0`(--no-forensic-capture)을 본다.
+    non-root라서 launcher는 root 검사에서 exit 2로 멈춘다(driver 실행 없음).
+    """
+    if os.name != "posix" or os.geteuid() == 0:
+        pytest.skip("non-root POSIX에서만 안전하게 실행할 수 있다")
+    launcher_path = Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
+
+    default_run = subprocess.run(
+        ["bash", "-x", str(launcher_path), "a" * 40, "/nonexistent-m05-out"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert default_run.returncode == 2
+    assert "must run as root" in default_run.stderr
+    assert "+ forensic_capture=1" in default_run.stderr
+    assert "+ forensic_capture=0" not in default_run.stderr
+
+    opt_out_run = subprocess.run(
+        [
+            "bash",
+            "-x",
+            str(launcher_path),
+            "--no-forensic-capture",
+            "a" * 40,
+            "/nonexistent-m05-out",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert opt_out_run.returncode == 2
+    assert "+ forensic_capture=0" in opt_out_run.stderr
 
 
 def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_unavailable() -> None:
@@ -878,11 +1047,19 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     launcher_phases = frozenset_literal(launcher[launcher_start:launcher_end], "PHASES")
 
     assert launcher_phases == driver_phases | {"completed"}
-    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_unconditional_terminal_execution_block; then'
+    # blocked receipt는 scoped 기록으로도 durable하다(R1-S1) — 무조건 기록만
+    # 요구하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격한다.
+    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_any_terminal_execution_block; then'
     fallback = 'if ! has_unconditional_terminal_execution_block; then'
     assert accepted_block in launcher
     assert fallback in launcher
     assert launcher.index(accepted_block) < launcher.index(fallback)
+    # scoped predicate는 phase 필터가 없어야 한다(identity/pinset/revision만 결박).
+    any_start = launcher.index("has_any_terminal_execution_block() {")
+    any_end = launcher.index("has_unconditional_terminal_execution_block() {")
+    any_block = launcher[any_start:any_end]
+    assert 'entry.get("phase")' not in any_block
+    assert 'entry.get("execution_identity_sha256") == execution' in any_block
 
 
 def test_free_ports_uses_the_standard_ss_binary(
@@ -1191,6 +1368,44 @@ def test_generic_command_failure_evidence_is_safe_by_default_and_bounded_on_opt_
     assert forensic.with_suffix(".stderr").read_bytes() == (
         b"x" * driver._FORENSIC_CAPTURE_LIMIT
     )
+
+
+def test_forensic_capture_scrubs_raw_secret_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opt-in 캡처 leaf에도 raw 비밀값은 남지 않는다(R1-S9 content-scrub).
+
+    자식 프로세스가 비밀값을 stderr/stdout에 에코해도 _RAW_ENV_NAMES의 현재
+    값은 마커로 치환된다. 크기 제한은 총량 방어일 뿐 내용 방어가 아니다.
+    """
+    driver = _driver()
+    secret = "raw-secret-value-0123456789abcdef"
+    monkeypatch.setenv("M05_PINVI_PASSWORD", secret)
+    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
+
+    stderr_leaf = tmp_path / "command.json"
+    driver._write_command_failure_evidence(
+        stderr_leaf,
+        returncode=17,
+        stderr=b"login failed for " + secret.encode() + b" retrying",
+    )
+    captured = stderr_leaf.with_suffix(".stderr").read_bytes()
+    assert secret.encode() not in captured
+    assert b"[scrubbed:M05_PINVI_PASSWORD]" in captured
+
+    stdout_leaf = tmp_path / "compose-output.json"
+    driver._write_compose_output_evidence(
+        stdout_leaf, output="services: {password: " + secret + "}"
+    )
+    captured_out = stdout_leaf.with_suffix(".stdout").read_bytes()
+    assert secret.encode() not in captured_out
+    assert b"[scrubbed:M05_PINVI_PASSWORD]" in captured_out
+
+    # 8바이트 미만 값은 우연 일치 훼손을 피하기 위해 치환하지 않는다.
+    monkeypatch.setenv("M05_PINVI_EMAIL", "a@b.c")
+    tiny = tmp_path / "tiny.json"
+    driver._write_command_failure_evidence(tiny, returncode=3, stderr=b"a@b.c seen")
+    assert tiny.with_suffix(".stderr").read_bytes() == b"a@b.c seen"
 
 
 def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:

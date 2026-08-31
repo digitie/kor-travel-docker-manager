@@ -174,15 +174,40 @@ def test_plan_claim_is_canonical_and_does_not_include_transaction() -> None:
     assert plan.pinvi_project.startswith("m05i-pinvi-")
 
 
-def test_claim_is_durable_and_refuses_replay(tmp_path: Path) -> None:
+def test_claim_is_durable_and_appends_attempt_ordinal(tmp_path: Path) -> None:
+    """재claim은 파일명 ordinal로 append-only 감사 흔적을 남긴다(R1-S2).
+
+    재실행 허용 여부의 정본은 runtime execution registry(phase-scoped 차단)다 —
+    ledger가 O_EXCL 파일명 충돌로 scoped 재실행까지 소각하면 I-1이 무효화된다.
+    claim 내용(claim_bytes)은 identity-순수하게 유지되고 ordinal은 파일명에만 붙는다.
+    """
     ledger_root = tmp_path / "ledger"
     ledger_root.mkdir(mode=0o700)
     plan = _plan()
     if os.geteuid() == 0:
-        claim = claim_m05_isolated_harness_ledger(ledger_root=ledger_root, plan=plan)
-        assert claim.read_bytes() == plan.claim_bytes
-        assert claim.stat().st_mode & 0o777 == 0o600
-        with pytest.raises(DeploymentContractError, match="already claimed"):
+        first = claim_m05_isolated_harness_ledger(ledger_root=ledger_root, plan=plan)
+        assert first.read_bytes() == plan.claim_bytes
+        assert first.stat().st_mode & 0o777 == 0o600
+        assert first.name == plan.ledger_filename
+        second = claim_m05_isolated_harness_ledger(ledger_root=ledger_root, plan=plan)
+        assert second.name == f"{plan.ledger_filename}-01"
+        assert second.read_bytes() == plan.claim_bytes
+        assert first.exists() and second.exists()
+    else:
+        pytest.skip("root-only durable ledger contract")
+
+
+def test_claim_attempts_are_capped(tmp_path: Path) -> None:
+    """ordinal 폭주 방어 — 상한 도달 시 fail-closed."""
+    ledger_root = tmp_path / "ledger"
+    ledger_root.mkdir(mode=0o700)
+    plan = _plan()
+    if os.geteuid() == 0:
+        base = plan.ledger_filename
+        (ledger_root / base).write_bytes(plan.claim_bytes)
+        for ordinal in range(1, 32):
+            (ledger_root / f"{base}-{ordinal:02d}").write_bytes(plan.claim_bytes)
+        with pytest.raises(DeploymentContractError, match="exceeded the limit"):
             claim_m05_isolated_harness_ledger(ledger_root=ledger_root, plan=plan)
     else:
         pytest.skip("root-only durable ledger contract")

@@ -73,10 +73,12 @@ terminal phase를 `completed` 외 exact 같은 집합으로 수용한다. 이 �
 256 KiB stderr만 private leaf에 남긴다. 이 artifact는 registry·public receipt·tracked 문서의 입력이 아니며
 same execution의 재시도 권한도 만들지 않는다.
 `blocked` receipt는 exact source revision·launch 전후 같은 snapshot·고정 schema를 모두 만족해도, root registry가
-같은 pinset·Map·PinVi revision의 unconditional terminal block을 확인할 때만 launcher가 보존한다. registry 증명이
-없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block`과 fixed fallback으로 fail-close한다. 그러므로
-driver의 blocked receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의
-fallback으로 바뀌지 않는다.
+같은 pinset·Map·PinVi revision에 결박된 block 기록(scoped든 무조건이든)을 확인할 때만 launcher가 보존한다
+(R1-S1 — 무조건 기록만 인정하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격해 phase-scoped
+설계를 무효화한다). registry 증명이 없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block-execution`
+(phase를 알 수 없는 crash 경로이므로 무조건)과 fixed fallback으로 fail-close한다. 그러므로 driver의 blocked
+receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의 fallback으로 바뀌지
+않는다.
 
 ### 단발 실행의 완료 판정
 
@@ -89,10 +91,26 @@ launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descrip
 외부 호출은 lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact Map/PinVi/pinset,
 `published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
 
-이 절차는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지 않는다. 공개 gate가
-`match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그 뒤에만 새 root-owned leaf에서 M04/M05 one-shot을
-한 번 실행할 수 있다. `match` 전에는 terminal block을 쓰지 않는다. 이미 terminal로 block된 pinset은 이
-판정과 관계없이 재실행하지 않고 fresh source pair로만 교체한다.
+**이 완료 판정 절차**는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지
+않는다 — 완료는 공개 gate로만 판정한다는 뜻이지 진단 일반의 원문 열람 금지가 아니다. 원문은 root 0600
+private leaf에 보존되며(launcher forensic capture 기본값), **공개 registry·tracked 문서·대화 기록으로
+옮기지 않는 것**이 규칙이다. 공개 gate가 `match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그
+뒤에만 새 root-owned leaf에서 M04/M05 one-shot을 한 번 실행할 수 있다. `match` 전에는 terminal block을
+쓰지 않는다.
+
+terminal block의 효력은 **phase에 따라 다르다** (근본원인 감사 I-1 — 종전 문서는 "모든 terminal은 fresh
+source pair로만 교체"라고 적었지만, 그 무조건 규칙이 인프라 실패에 acceptance 실패와 같은 형벌을 물려
+terminal 27개 중 acceptance 본문 도달 0건으로 후보 예산을 소진시켰다).
+
+- **무조건 차단**(`phase` 없음): acceptance 본문(`m04_*`/`m05_*`)·ledger claim 실패. 이 execution은
+  재실행하지 않고 fresh source pair로만 교체한다 — "acceptance 본문은 정확히 한 번" 성질은 그대로다.
+- **scoped 기록**(`phase` 있음): runtime setup·health·admission 같은 인프라 phase 실패. 실패 이력은
+  append-only로 남지만 execution은 보정 후 **같은 pinset에서 재실행할 수 있다.**
+- ledger claim **이전** 실패는 애초에 execution을 소비하지 않는다(`claim_attempted` 가드) — 같은
+  pinset에서 그대로 재시도한다.
+
+기존 registry의 무조건 차단 항목들은 legacy audit으로 보존한다 — **registry에서 항목을 삭제하는 API는
+만들지 않는다.** 삭제 경로가 생기는 순간 "이 원장은 삭제된 적 없다"를 다시는 주장할 수 없다.
 
 M05 one-shot launcher는 leaf와 one-shot ledger를 만들기 전에 M05 integration adapter의 비소비
 source-materialization pair preflight를 반드시 통과한다. 이 검사는 generic registry가 소유하지 않는 PinVi provenance의
@@ -101,7 +119,9 @@ generic pin/execution/generation gate를 통과했어도, 문서 commit 등을 r
 pair는 E2E terminal이나 Compose mutation을 소비하지 않고 거부된다. pair가 통과한 뒤의 runtime failure만
 current v6 execution terminal로 기록한다. 단 one-shot ledger claim은 `O_EXCL` create 뒤 fsync 오류에도
 durable file을 남길 수 있으므로, claim 호출을 시작한 뒤의 오류는 성공 반환 여부와 무관하게 terminal로
-수렴한다. launcher가 fallback 없이 수용하는 `preflight_rejected` receipt는 strict pre-claim phase와
+수렴한다. ledger 파일명에는 attempt ordinal이 붙는다(R1-S2 — 내용은 identity-순수 유지, 상한 32) —
+scoped 차단 후의 재실행이 파일명 충돌로 소각되지 않고, 재실행 허용의 정본 판정은 registry가 갖는다.
+본문(`m04_m05_e2e`) 진입 이후의 실패는 phase 이름과 무관하게 무조건 소각한다(R1-S4 body_entered). launcher가 fallback 없이 수용하는 `preflight_rejected` receipt는 strict pre-claim phase와
 `cleanup_failed:false`만 허용한다.
 
 ---

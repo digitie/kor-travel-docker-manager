@@ -54,6 +54,9 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths,
 )
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    read_manifest as read_pinned_runtime_manifest,
+)
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
 )
@@ -84,10 +87,10 @@ _REVISION_LENGTH = 40
 _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 _FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
-_FORENSIC_CAPTURE_LIMIT = 256_000
+_FORENSIC_CAPTURE_LIMIT = 256 * 1024
 # Compose config은 trusted input이라도 외부 CLI 출력이다. JSON parser에 넘기는
 # 원문은 이 상한만 보관하고, 초과분도 끝까지 drain해 child pipe를 막지 않는다.
-_COMPOSE_CONFIG_OUTPUT_LIMIT = 256_000
+_COMPOSE_CONFIG_OUTPUT_LIMIT = 256 * 1024
 _RAW_ENV_NAMES = (
     "M05_MAP_ADMIN_PROXY_SECRET",
     "M05_PINVI_EMAIL",
@@ -293,9 +296,39 @@ def _public_terminal_phase(phase: str) -> str:
     return phase if phase in _PUBLIC_TERMINAL_PHASES else "driver_contract_failed"
 
 
-def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str) -> bool:
-    """terminal result를 현재 v6 execution의 unconditional block과 결박한다."""
+#: 이 phase들의 실패만 execution을 **무조건** 소각한다 — acceptance 본문과 ledger claim
+#: 자체. 나머지(runtime setup·health·admission 등 인프라 phase)는 scoped 기록으로 남고
+#: 보정 후 같은 pinset에서 재실행할 수 있다. 근거: terminal 27개 중 `m04_m05_e2e` 도달
+#: 0건 — 인프라 실패가 acceptance 실패와 같은 형벌(3-repo 회전)을 받아 후보 예산이
+#: 본문 도달 전에 소진됐다(`ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md` §3 I-1).
+_UNCONDITIONAL_TERMINAL_PHASES = frozenset({"ledger_claim", "m04_m05_e2e"})
 
+
+def _terminal_block_phase(public_phase: str) -> str | None:
+    """무조건 차단이면 ``None``, 아니면 scoped 기록용 phase."""
+
+    if public_phase in _UNCONDITIONAL_TERMINAL_PHASES or public_phase.startswith(
+        ("m04_", "m05_")
+    ):
+        # acceptance 본문 내부 phase(m04_fixture_* / m05_case_* 등)도 본문 실패다 —
+        # "acceptance 본문은 정확히 한 번"이라는 one-shot 성질은 그대로 지킨다.
+        return None
+    return public_phase
+
+
+def _block_terminal_m05_execution(
+    phase: str, *, expected_manager_revision: str, force_unconditional: bool = False
+) -> bool:
+    """terminal result를 현재 v6 execution의 block 기록과 결박한다.
+
+    acceptance 본문 실패는 무조건 차단(phase=None), 인프라 phase 실패는 scoped
+    기록이다 — execution은 보정 후 재실행 가능하되 실패 이력은 append-only로 남는다.
+    ``force_unconditional``은 본문 진입 이후의 실패용이다 — 본문 내부 helper가
+    인프라형 phase 이름(_container_id 등)으로 실패해도 one-shot 성질(적대 리뷰
+    R1-S4/R2-S4: body-entered 실패가 scoped로 강등되는 구멍)을 지킨다.
+    """
+    public_phase = _public_terminal_phase(phase)
+    block_phase = None if force_unconditional else _terminal_block_phase(public_phase)
     try:
         pins = load_runtime_pin_registry()
         registry = load_runtime_execution_registry()
@@ -304,12 +337,18 @@ def _block_terminal_m05_execution(phase: str, *, expected_manager_revision: str)
         ):
             return False
         updated = block_current_execution(
-            registry=registry, reason=_terminal_registry_reason(phase)
+            registry=registry,
+            reason=_terminal_registry_reason(phase),
+            phase=block_phase,
         )
         write_runtime_execution_registry(updated)
     except (RuntimePinRegistryError, RuntimeExecutionRegistryError):
         return False
-    return updated.is_unconditionally_blocked_current()
+    # 성공 판정은 "기록이 남았는가"다. scoped 기록은 무조건 차단이 아니므로
+    # `is_unconditionally_blocked_current()`로 판정하면 정상 기록이 실패로 보인다.
+    if block_phase is None:
+        return updated.is_unconditionally_blocked_current()
+    return updated.has_block_for_current(phase=public_phase)
 
 
 def _root_file(path: Path, *, mode: int = 0o600) -> os.stat_result:
@@ -617,6 +656,25 @@ def _compose(
         raise
 
 
+def _scrub_forensic_bytes(raw: bytes) -> bytes:
+    """캡처 바이트에서 raw 비밀값 자체를 제거한다(적대 리뷰 R1-S9).
+
+    크기 제한은 유출 총량만 줄일 뿐 내용을 방어하지 못한다 — 자식 프로세스가
+    비밀값을 stderr/stdout에 에코하면 opt-in forensic leaf(0600 root)에 그대로
+    남는다. 여기서 _RAW_ENV_NAMES의 현재 값을 마커로 치환한다. 8바이트 미만
+    값은 치환하지 않는다(우연 일치로 출력이 훼손되는 것 방지 — 실제 비밀은
+    전부 생성 토큰이라 그보다 길다).
+    """
+
+    for name in _RAW_ENV_NAMES:
+        value = os.environ.get(name)
+        if value and len(value) >= 8:
+            raw = raw.replace(
+                value.encode("utf-8"), b"[scrubbed:" + name.encode("ascii") + b"]"
+            )
+    return raw
+
+
 def _write_compose_failure_evidence(
     path: Path, *, returncode: int | None, stderr: bytes | None
 ) -> None:
@@ -633,7 +691,7 @@ def _write_compose_failure_evidence(
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
         return
     _write_private_bytes(
-        path.with_suffix(".stderr"), stderr[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
+        path.with_suffix(".stderr"), _scrub_forensic_bytes(stderr)[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
     )
 
 
@@ -653,7 +711,7 @@ def _write_command_failure_evidence(
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
         return
     _write_private_bytes(
-        path.with_suffix(".stderr"), stderr[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
+        path.with_suffix(".stderr"), _scrub_forensic_bytes(stderr)[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
     )
 
 
@@ -673,7 +731,7 @@ def _write_compose_output_evidence(
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1":
         return
     raw = output if isinstance(output, bytes) else output.encode("utf-8", errors="replace")
-    raw = raw[:_FORENSIC_CAPTURE_LIMIT]
+    raw = _scrub_forensic_bytes(raw)[:_FORENSIC_CAPTURE_LIMIT]
     _write_private_bytes(path.with_suffix(".stdout"), raw or b"\n")
 
 
@@ -1449,6 +1507,33 @@ def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, 
         sources.source_for("map").root,
         sources.source_for("pinvi").root,
     )
+    # 파생 head를 **committed generation manifest**와 exact 대조한다. 종전에는 이
+    # 대조가 사람의 선언(배리어 B1 "미반영 변경이 없을 것")이었고, harness는 manifest의
+    # `map_application_head`를 한 번도 읽지 않았다 — 유도값 자기무모순 검사뿐이었다.
+    # 여기서 기계화하면 낡은 candidate는 실행권 소비 전에 fail-close하고, "미래에
+    # 변경이 없을 것"이라는 검증 불가 조건이 필요 없어진다
+    # (ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md §3 I-4).
+    #
+    # image ID는 대조하지 않는다 — 이 harness는 materialize된 source에서 자체 build
+    # 하므로 committed generation의 image ID와 정당하게 다르다. OpenAPI는 아래
+    # `_pair`가 이미 pinned release의 digest와 exact 대조한다.
+    try:
+        committed = read_pinned_runtime_manifest(state_paths.manifest).active_generation
+    except (DeploymentContractError, OSError):
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="committed pinned-runtime generation manifest unavailable",
+        )
+    if committed.pinset_sha256 != PINNED_RUNTIME_RELEASE.pinset_sha256:
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="committed generation pinset differs from the current release",
+        )
+    if committed.map_application_head != _map_application_head(map_root):
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="derived application head differs from the committed generation",
+        )
     pair, service_openapi_sha256, service_source_revision = _pair(pinvi_root, map_root)
     _assert_pinvi_manager_admission_contract(pinvi_root)
     return map_root, pinvi_root, pair, service_openapi_sha256, service_source_revision
@@ -1767,6 +1852,9 @@ def _build_runtime_provenance(
 def main(expected_revision: str, output: Path) -> int:
     phase = "admission"
     completed = False
+    #: 본문(m04_m05_e2e) 진입 여부 — 진입 이후의 모든 실패는 무조건 소각한다
+    #: (one-shot: 본문은 정확히 한 번. 적대 리뷰 R1-S4/R2-S4).
+    body_entered = False
     transaction = secrets.token_hex(16)
     plan: M05IsolatedHarnessPlan | None = None
     claim_attempted = False
@@ -2268,6 +2356,7 @@ def main(expected_revision: str, output: Path) -> int:
             path=runtime / "isolated-runtime-provenance.json",
         )
         phase = "m04_m05_e2e"
+        body_entered = True
         pinvi_web = _container_id(
             plan.pinvi_project,
             "app-web",
@@ -2492,11 +2581,17 @@ def main(expected_revision: str, output: Path) -> int:
         )
         if unexpected_finalization_failure or cleanup_failed:
             completed = False
-            phase = "runtime_cleanup_failed"
+            if not body_entered and _terminal_block_phase(phase) is not None:
+                # 본문 진입 이후(또는 ledger claim 실패)는 무조건 소각을 유지해야
+                # 하므로 cleanup phase가 실패 표면을 강등하지 못한다(R1-S4).
+                # cleanup 신호는 result의 `cleanup_failed` 필드가 이미 나른다.
+                phase = "runtime_cleanup_failed"
         if not completed and claim_attempted:
             try:
                 pinset_blocked = _block_terminal_m05_execution(
-                    phase, expected_manager_revision=expected_revision
+                    phase,
+                    expected_manager_revision=expected_revision,
+                    force_unconditional=body_entered,
                 )
             except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
                 pinset_blocked = False

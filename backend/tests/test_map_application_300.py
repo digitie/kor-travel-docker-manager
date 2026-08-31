@@ -392,10 +392,11 @@ def test_fresh_migration_fence_matches_map_executable_field_set() -> None:
     assert "dagster_image_id" not in payload
 
 
-def test_root_result_parser_rejects_extra_fields_and_binds_database() -> None:
+def test_root_result_parser_requires_fields_and_binds_database() -> None:
+    """필수 필드 결손은 여전히 거절한다 — 완화된 것은 추가 필드뿐이다."""
     root_raw, root = _fresh_root()
-    payload = json.loads(root_raw)
-    payload["extra"] = "not allowed"
+    payload = dict(json.loads(root_raw))
+    payload.pop("post_head_catalog_sha256")
 
     assert root.database_identity == _application_database()
     assert root.payload_sha256 == sha256_bytes(root_raw)
@@ -970,3 +971,89 @@ def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
     )
 
     assert read_root_read_only_artifact(target) == raw
+
+
+# -- result/receipt의 확장 허용, fence의 exact 유지 (감사 I-9) ----------------
+
+
+def test_root_result_accepts_unknown_additive_fields() -> None:
+    """result는 일어난 일의 서술이다 — 미지 필드가 있어도 받아야 한다.
+
+    무결성은 payload_sha256이 전체 바이트(미지 필드 포함)를 결박한다. exact-set을
+    유지하면 emitter(Map image)와 parser(Manager host)가 필드 하나마다 lockstep
+    배포돼야 한다 — receipt 필드 2개 추가가 2-repo 원자 배포를 요구한 것이 실측이다.
+    """
+    raw, _ = _fresh_root()
+    payload = json.loads(raw)
+    payload["future_observability_field"] = "f" * 64
+    extended = canonical_json_bytes(payload) + b"\n"
+
+    parsed = parse_fresh_root_result(
+        extended, contract=_contract(), candidate=_candidate()
+    )
+
+    assert parsed.payload_sha256 == sha256_bytes(extended)
+
+
+def test_fresh_fence_still_rejects_unknown_fields() -> None:
+    """쓰기를 인가하는 문서는 exact-set을 유지한다 — 미지 필드는 인가 범위를 넓힌다.
+
+    R2-S5: 종전 테스트는 `_load_exact_json` 헬퍼를 직접 불러 tautology였다 —
+    실제 fence 검증 경로는 `_validate_fresh_migration_fence`(`_require_exact_fields`)다.
+    여기서는 그 실경로에 미지 필드를 넣어 거부를 확인한다.
+    """
+    from kor_travel_docker_manager.services.map_application_300 import (
+        _validate_fresh_migration_fence,
+    )
+
+    fence = build_fresh_migration_fence(
+        contract=_contract(),
+        candidate=_candidate(),
+        database=_application_database(),
+        journal=_journal("a", 1),
+        writer_fence_expires_at=_expiry(),
+    )
+    payload = dict(json.loads(fence.raw))
+    payload["surprise_grant"] = True
+
+    with pytest.raises(MapApplication300ContractError):
+        _validate_fresh_migration_fence(
+            payload, contract=_contract(), candidate=_candidate()
+        )
+
+
+def test_forbid_extra_relaxation_is_limited_to_the_two_result_parsers() -> None:
+    """`forbid_extra=False`는 result 문서 2곳에만 허용된다(R1-S13 AST 게이트).
+
+    result는 payload_sha256이 전 바이트를 결박하므로 additive 필드가 안전하다(I-9).
+    fence/permit/missing-receipt는 인가·증명 문서라 exact-set이어야 한다 — 새
+    완화 호출이 생기면 이 게이트가 함수 이름 단위로 잡는다(문구 grep이 아니라
+    AST라 주석/문자열로 우회할 수 없다).
+    """
+    import ast as ast_module
+    from pathlib import Path as _Path
+
+    source = (
+        _Path(__file__).resolve().parents[1]
+        / "src/kor_travel_docker_manager/services/map_application_300.py"
+    ).read_text(encoding="utf-8")
+    tree = ast_module.parse(source)
+    relaxed: set[str] = set()
+    for node in ast_module.walk(tree):
+        if not isinstance(node, ast_module.FunctionDef):
+            continue
+        for call in ast_module.walk(node):
+            if not isinstance(call, ast_module.Call):
+                continue
+            for keyword in call.keywords:
+                if (
+                    keyword.arg == "forbid_extra"
+                    and isinstance(keyword.value, ast_module.Constant)
+                    and keyword.value.value is False
+                ):
+                    relaxed.add(node.name)
+    assert relaxed == {
+        "parse_fresh_root_result",
+        "parse_fresh_finalize_result",
+    }, relaxed
+

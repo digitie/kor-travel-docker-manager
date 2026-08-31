@@ -2,6 +2,29 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-08-31 — 적대 리뷰 라운드2: phase-scoped 차단을 무효화하던 3중 결함과 그 주변
+
+라운드1에서 배선한 phase-scoped terminal(감사 I-1)은 **세 지점이 각각 단독으로 원상복구**시키고
+있었다. (1) launcher가 blocked receipt의 durable 근거로 **무조건 기록만** 인정해, driver가 남긴
+scoped 기록을 무시하고 fallback에서 무조건 차단으로 승격했다(R1-S1). (2) ledger 파일명이
+identity-해시 그대로라 scoped 차단 후 재실행이 **O_EXCL 충돌 → `ledger_claim` 무조건 소각**으로
+끝났다(R1-S2). (3) 본문 진입 후 인프라형 phase 이름의 helper 실패와 cleanup 실패가 실패 표면을
+**scoped로 강등**시켰다(R1-S4/R2-S4 — 반대 방향의 결함: one-shot 위반).
+
+수리: launcher에 `has_any_terminal_execution_block`(identity/pinset/revision 결박만, phase 무관),
+`ktdctl pin block-execution --phase`(범용 옵션), ledger 파일명 attempt ordinal(내용은 identity-순수,
+상한 32, 재실행 정본 판정은 registry), driver `body_entered` 플래그(본문 진입 후 실패는 phase 이름과
+무관하게 무조건 소각, cleanup은 실패 표면을 강등 못 함).
+
+같은 라운드의 나머지: forensic 캡처에 `_RAW_ENV_NAMES` 값 content-scrub(R1-S9 — 크기 제한은 내용
+방어가 아니다), missing-receipt parser 2곳 exact 원복 + `forbid_extra=False` 호출부를 AST로 함수
+이름 단위 고정(R1-S13/R2-S5 — additive 허용은 payload_sha256이 전 바이트를 결박하는 result 2곳만),
+fence 미지필드 테스트를 tautology에서 실경로로 재작성, field-set 교차 게이트 fail-closed 강화(R2-S1),
+forensic 기본값을 `bash -x` 트레이스로 행동 검증(R2-S9 — 문구 단언은 주석으로 우회된다).
+
+검증: n150 게이트 124 passed(+root 전용 ledger ordinal 계약은 sudo 직접 실행으로 확인),
+KTDM_MAP_CHECKOUT=실제 Map 체크아웃으로 5-사본 field-set 동일성 실측 green.
+
 ## 2026-08-31 — 봉인된 baseline digest를 `300` 도달 순간으로 한정하고, 그 너머를 receipt에 넘긴다
 
 ADR-42가 head **값 고정**을 걷어냈지만 더 깊은 곳에 **상태 고정**이 남아 있었다. 봉인된
