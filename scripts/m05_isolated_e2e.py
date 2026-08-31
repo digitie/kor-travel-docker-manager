@@ -15,6 +15,7 @@ import os
 import secrets
 import stat
 import subprocess
+import traceback
 import sys
 import threading
 import time
@@ -2775,6 +2776,22 @@ def main(expected_revision: str, output: Path) -> int:
     # 수렴하므로, raw detail 없이 다음 immutable candidate의 보정 범위를 좁힐 수 있다.
     # BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
     except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+        # ordinary exception은 traceback이 통째로 사라져 phase 이름 하나로
+        # 원인을 재구성해야 했다(e2e9 실측: pinvi_runtime 구간 어딘가의
+        # 익명 예외에 격리 run 1회 소모). forensic 모드에서는 _PhaseError의
+        # stderr 증거와 같은 정책(scrub + root 0600 leaf)으로 traceback을
+        # 남긴다 — receipt/공개 표면에는 여전히 phase만 실린다.
+        if os.environ.get(_FORENSIC_CAPTURE_ENV) == "1":
+            try:
+                _write_private_bytes(
+                    output
+                    / f"failed-{_public_terminal_phase(phase)}-exception.txt",
+                    _scrub_forensic_bytes(
+                        traceback.format_exc().encode("utf-8")
+                    )[:_FORENSIC_CAPTURE_LIMIT],
+                )
+            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
+                pass
         phase = _public_terminal_phase(phase)
     finally:
         cleanup_failed, unexpected_finalization_failure = _cleanup_temporary_resources(
