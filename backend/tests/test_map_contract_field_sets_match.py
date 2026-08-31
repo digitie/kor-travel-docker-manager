@@ -77,7 +77,6 @@ def _frozenset_literal(path: Path, name: str) -> frozenset[str]:
             and isinstance(value.args[0], (ast.Set, ast.List, ast.Tuple))
         ):
             elements = value.args[0].elts
-            out = set()
             for element in elements:
                 if not isinstance(element, ast.Constant) or not isinstance(
                     element.value, str
