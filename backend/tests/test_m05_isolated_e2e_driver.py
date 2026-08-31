@@ -141,6 +141,7 @@ def test_pinvi_manager_admission_contract_requires_the_gate_and_verifier(tmp_pat
             "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH\n"
             "PINVI_M05_PINSET_SHA256\n"
             "PINVI_M05_EXECUTION_IDENTITY_SHA256\n"
+            "PINVI_DOCKER_COMPOSE_EXTRA_FILE\n"
         "m05_isolated_manager_admission.py\n",
         encoding="utf-8",
     )
