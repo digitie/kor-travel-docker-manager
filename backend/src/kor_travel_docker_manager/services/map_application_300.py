@@ -1105,7 +1105,6 @@ def parse_fresh_root_missing_receipt(
         _FRESH_ROOT_MISSING_RECEIPT_FIELDS,
         "fresh root missing receipt",
         canonical_line=True,
-        forbid_extra=False,
     )
     if (
         payload["schema"] != FRESH_ROOT_MISSING_RECEIPT_SCHEMA
@@ -1300,7 +1299,6 @@ def parse_fresh_finalize_missing_receipt(
         _FRESH_FINALIZE_MISSING_RECEIPT_FIELDS,
         "fresh finalize missing receipt",
         canonical_line=True,
-        forbid_extra=False,
     )
     if (
         payload["schema"] != FRESH_FINALIZE_MISSING_RECEIPT_SCHEMA

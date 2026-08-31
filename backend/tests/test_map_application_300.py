@@ -996,10 +996,14 @@ def test_root_result_accepts_unknown_additive_fields() -> None:
 
 
 def test_fresh_fence_still_rejects_unknown_fields() -> None:
-    """쓰기를 인가하는 문서는 exact-set을 유지한다 — 미지 필드는 인가 범위를 넓힌다."""
+    """쓰기를 인가하는 문서는 exact-set을 유지한다 — 미지 필드는 인가 범위를 넓힌다.
+
+    R2-S5: 종전 테스트는 `_load_exact_json` 헬퍼를 직접 불러 tautology였다 —
+    실제 fence 검증 경로는 `_validate_fresh_migration_fence`(`_require_exact_fields`)다.
+    여기서는 그 실경로에 미지 필드를 넣어 거부를 확인한다.
+    """
     from kor_travel_docker_manager.services.map_application_300 import (
-        _FRESH_MIGRATION_FENCE_FIELDS,
-        _load_exact_json,
+        _validate_fresh_migration_fence,
     )
 
     fence = build_fresh_migration_fence(
@@ -1013,9 +1017,43 @@ def test_fresh_fence_still_rejects_unknown_fields() -> None:
     payload["surprise_grant"] = True
 
     with pytest.raises(MapApplication300ContractError):
-        _load_exact_json(
-            canonical_json_bytes(payload) + b"\n",
-            _FRESH_MIGRATION_FENCE_FIELDS,
-            "fresh migration fence",
-            canonical_line=True,
+        _validate_fresh_migration_fence(
+            payload, contract=_contract(), candidate=_candidate()
         )
+
+
+def test_forbid_extra_relaxation_is_limited_to_the_two_result_parsers() -> None:
+    """`forbid_extra=False`는 result 문서 2곳에만 허용된다(R1-S13 AST 게이트).
+
+    result는 payload_sha256이 전 바이트를 결박하므로 additive 필드가 안전하다(I-9).
+    fence/permit/missing-receipt는 인가·증명 문서라 exact-set이어야 한다 — 새
+    완화 호출이 생기면 이 게이트가 함수 이름 단위로 잡는다(문구 grep이 아니라
+    AST라 주석/문자열로 우회할 수 없다).
+    """
+    import ast as ast_module
+    from pathlib import Path as _Path
+
+    source = (
+        _Path(__file__).resolve().parents[1]
+        / "src/kor_travel_docker_manager/services/map_application_300.py"
+    ).read_text(encoding="utf-8")
+    tree = ast_module.parse(source)
+    relaxed: set[str] = set()
+    for node in ast_module.walk(tree):
+        if not isinstance(node, ast_module.FunctionDef):
+            continue
+        for call in ast_module.walk(node):
+            if not isinstance(call, ast_module.Call):
+                continue
+            for keyword in call.keywords:
+                if (
+                    keyword.arg == "forbid_extra"
+                    and isinstance(keyword.value, ast_module.Constant)
+                    and keyword.value.value is False
+                ):
+                    relaxed.add(node.name)
+    assert relaxed == {
+        "parse_fresh_root_result",
+        "parse_fresh_finalize_result",
+    }, relaxed
+

@@ -87,7 +87,7 @@ _REVISION_LENGTH = 40
 _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 _FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
-_FORENSIC_CAPTURE_LIMIT = 256_000
+_FORENSIC_CAPTURE_LIMIT = 256 * 1024
 # Compose config은 trusted input이라도 외부 CLI 출력이다. JSON parser에 넘기는
 # 원문은 이 상한만 보관하고, 초과분도 끝까지 drain해 child pipe를 막지 않는다.
 _COMPOSE_CONFIG_OUTPUT_LIMIT = 256_000
@@ -656,6 +656,25 @@ def _compose(
         raise
 
 
+def _scrub_forensic_bytes(raw: bytes) -> bytes:
+    """캡처 바이트에서 raw 비밀값 자체를 제거한다(적대 리뷰 R1-S9).
+
+    크기 제한은 유출 총량만 줄일 뿐 내용을 방어하지 못한다 — 자식 프로세스가
+    비밀값을 stderr/stdout에 에코하면 opt-in forensic leaf(0600 root)에 그대로
+    남는다. 여기서 _RAW_ENV_NAMES의 현재 값을 마커로 치환한다. 8바이트 미만
+    값은 치환하지 않는다(우연 일치로 출력이 훼손되는 것 방지 — 실제 비밀은
+    전부 생성 토큰이라 그보다 길다).
+    """
+
+    for name in _RAW_ENV_NAMES:
+        value = os.environ.get(name)
+        if value and len(value) >= 8:
+            raw = raw.replace(
+                value.encode("utf-8"), b"[scrubbed:" + name.encode("ascii") + b"]"
+            )
+    return raw
+
+
 def _write_compose_failure_evidence(
     path: Path, *, returncode: int | None, stderr: bytes | None
 ) -> None:
@@ -672,7 +691,7 @@ def _write_compose_failure_evidence(
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
         return
     _write_private_bytes(
-        path.with_suffix(".stderr"), stderr[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
+        path.with_suffix(".stderr"), _scrub_forensic_bytes(stderr)[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
     )
 
 
@@ -692,7 +711,7 @@ def _write_command_failure_evidence(
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
         return
     _write_private_bytes(
-        path.with_suffix(".stderr"), stderr[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
+        path.with_suffix(".stderr"), _scrub_forensic_bytes(stderr)[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
     )
 
 
@@ -712,7 +731,7 @@ def _write_compose_output_evidence(
     if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1":
         return
     raw = output if isinstance(output, bytes) else output.encode("utf-8", errors="replace")
-    raw = raw[:_FORENSIC_CAPTURE_LIMIT]
+    raw = _scrub_forensic_bytes(raw)[:_FORENSIC_CAPTURE_LIMIT]
     _write_private_bytes(path.with_suffix(".stdout"), raw or b"\n")
 
 

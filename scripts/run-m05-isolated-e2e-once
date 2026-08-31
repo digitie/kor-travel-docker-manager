@@ -26,6 +26,9 @@ if [[ "$(id -u)" != 0 ]]; then
   exit 2
 fi
 if (( forensic_capture )); then
+  # 캡처 leaf는 stderr(.stderr)뿐 아니라 compose config stdout(.stdout)도 포함한다.
+  # 전부 root 0600이며, driver가 _RAW_ENV_NAMES 비밀값을 내용-scrub한 뒤에만 남는다
+  # (R1-S9). raw 그대로의 유출 경로가 아니다 — 하지만 tracked 문서/대화로 옮기지 말 것.
   export KTDM_M05_FORENSIC_CAPTURE=1
   launcher_arguments=(--forensic-capture "$@")
 else

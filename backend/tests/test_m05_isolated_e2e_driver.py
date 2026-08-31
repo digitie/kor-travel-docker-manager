@@ -1328,6 +1328,44 @@ def test_generic_command_failure_evidence_is_safe_by_default_and_bounded_on_opt_
     )
 
 
+def test_forensic_capture_scrubs_raw_secret_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """opt-in 캡처 leaf에도 raw 비밀값은 남지 않는다(R1-S9 content-scrub).
+
+    자식 프로세스가 비밀값을 stderr/stdout에 에코해도 _RAW_ENV_NAMES의 현재
+    값은 마커로 치환된다. 크기 제한은 총량 방어일 뿐 내용 방어가 아니다.
+    """
+    driver = _driver()
+    secret = "raw-secret-value-0123456789abcdef"
+    monkeypatch.setenv("M05_PINVI_PASSWORD", secret)
+    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
+
+    stderr_leaf = tmp_path / "command.json"
+    driver._write_command_failure_evidence(
+        stderr_leaf,
+        returncode=17,
+        stderr=b"login failed for " + secret.encode() + b" retrying",
+    )
+    captured = stderr_leaf.with_suffix(".stderr").read_bytes()
+    assert secret.encode() not in captured
+    assert b"[scrubbed:M05_PINVI_PASSWORD]" in captured
+
+    stdout_leaf = tmp_path / "compose-output.json"
+    driver._write_compose_output_evidence(
+        stdout_leaf, output="services: {password: " + secret + "}"
+    )
+    captured_out = stdout_leaf.with_suffix(".stdout").read_bytes()
+    assert secret.encode() not in captured_out
+    assert b"[scrubbed:M05_PINVI_PASSWORD]" in captured_out
+
+    # 8바이트 미만 값은 우연 일치 훼손을 피하기 위해 치환하지 않는다.
+    monkeypatch.setenv("M05_PINVI_EMAIL", "a@b.c")
+    tiny = tmp_path / "tiny.json"
+    driver._write_command_failure_evidence(tiny, returncode=3, stderr=b"a@b.c seen")
+    assert tiny.with_suffix(".stderr").read_bytes() == b"a@b.c seen"
+
+
 def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
     driver = _driver()
 
