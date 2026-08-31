@@ -159,3 +159,21 @@ def test_collector_keeps_detailed_resource_observation_and_prometheus_series(mon
     assert "ktdm_container_exit_code_available" in rendered
     assert "ktdm_container_pids_available" in rendered
     assert 'interface="eth0"' in rendered
+
+
+def test_prometheus_distinguishes_unavailable_exit_code_and_pid_values():
+    collector = MetricsCollector()
+    container_id = next(iter(MANAGED_CONTAINERS))
+    rendered = collector.render_prometheus_metrics()
+
+    assert f'container_id="{container_id}"' in rendered
+    assert "ktdm_container_exit_code_available" in rendered
+    assert "ktdm_container_pids_available" in rendered
+    assert not any(
+        line.startswith("ktdm_container_exit_code{") and f'container_id="{container_id}"' in line
+        for line in rendered.splitlines()
+    )
+    assert not any(
+        line.startswith("ktdm_container_pids_current{") and f'container_id="{container_id}"' in line
+        for line in rendered.splitlines()
+    )
