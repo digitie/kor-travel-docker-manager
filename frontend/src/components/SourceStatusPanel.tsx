@@ -145,15 +145,15 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
     <div
       aria-labelledby="source-status-title"
       aria-modal="true"
-      className="ops-modal max-w-4xl flex flex-col outline-hidden"
+      className="ops-modal max-w-4xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
       role="dialog"
       tabIndex={-1}
     >
       <div className="ops-modal__header">
         <div>
-          <p className="text-xs text-secondary font-semibold tracking-[0.05em] uppercase">
-            Source Status
+          <p className="text-xs text-secondary font-semibold">
+            배포 상태
           </p>
           <h2 className="text-lg font-semibold text-strong mt-1" id="source-status-title">
             지금 뭐가 돌고 있나 (읽기 전용)

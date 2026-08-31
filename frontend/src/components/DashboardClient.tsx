@@ -8,6 +8,7 @@ import {
   RotateCw,
   Terminal,
   Activity,
+  Command,
   RefreshCw,
   ShieldAlert,
   Settings,
@@ -26,6 +27,7 @@ import SourceStatusPanel from './SourceStatusPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
 import ToastStack, { ToastItem, errorToast, successToast } from './Toast';
+import StatStrip from './StatStrip';
 import AppShell from './layout/AppShell';
 import { humanizeError } from '@/lib/errors';
 import {
@@ -917,8 +919,27 @@ export default function DashboardClient() {
     >
       <div className="page-head">
         <div className="page-title">
-          <p className="ops-eyebrow">Kor Travel / infrastructure control</p>
+          <p className="ops-eyebrow">개요</p>
           <h1 className="ops-title">인프라 서비스 컨트롤</h1>
+        </div>
+        <div className="page-head__actions">
+          <button
+            className="ops-button"
+            disabled={isLoading}
+            onClick={() => void queryClient.invalidateQueries({ queryKey: ['containers'] })}
+            type="button"
+          >
+            <RefreshCw className={isLoading ? 'animate-spin' : ''} size={14} />
+            새로고침
+          </button>
+          <button
+            className="ops-button ops-button--primary"
+            onClick={() => setIsCommandPaletteOpen(true)}
+            type="button"
+          >
+            <Command size={14} />
+            빠른 명령
+          </button>
         </div>
       </div>
 
@@ -930,52 +951,54 @@ export default function DashboardClient() {
               <p className="ops-section-copy">현재 수집된 컨테이너 원장을 기준으로 집계합니다.</p>
             </div>
             <span className="ops-status-badge">
-              <span className={`w-1.5 h-1.5 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
               {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
             </span>
           </div>
-          <div className="ops-counts">
-            <div className="ops-count"><span className="ops-count__label">전체</span><strong className="ops-count__value">{kpiCounts.total}</strong></div>
-            <div className="ops-count ops-count--ok"><span className="ops-count__label">실행 중</span><strong className="ops-count__value">{kpiCounts.running}</strong></div>
-            <div className="ops-count"><span className="ops-count__label">중지·미생성</span><strong className="ops-count__value">{kpiCounts.stopped}</strong></div>
-            <div className="ops-count ops-count--danger"><span className="ops-count__label">오류</span><strong className="ops-count__value">{kpiCounts.error}</strong></div>
-            {diskUsage ? (
-              <div
-                className={`ops-count ${diskUsage.state === 'warn' ? 'ops-count--danger' : ''}`}
-                title={diskUsage.summary.detail}
-              >
-                <span className="ops-count__label">정리 가능 용량</span>
-                <strong className="ops-count__value text-base">
-                  {diskUsage.state === 'unknown'
-                    ? '확인 불가'
-                    : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', '')}
-                </strong>
-              </div>
-            ) : null}
-          </div>
+          <StatStrip
+            ariaLabel="서비스 상태 요약"
+            isLoading={isLoading && displayContainers.length === 0}
+            items={[
+              { label: '전체', value: kpiCounts.total },
+              { label: '실행 중', value: kpiCounts.running, tone: 'ok' },
+              { label: '중지·미생성', value: kpiCounts.stopped, tone: 'neutral' },
+              { label: '오류', value: kpiCounts.error, tone: 'danger' },
+              ...(diskUsage
+                ? [{
+                    label: '정리 가능 용량',
+                    value: diskUsage.state === 'unknown'
+                      ? '확인 불가'
+                      : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', ''),
+                    tone: diskUsage.state === 'warn' ? 'danger' as const : 'neutral' as const,
+                    title: diskUsage.summary.detail,
+                  }]
+                : []),
+            ]}
+            size="lg"
+          />
           {diskUsage?.state === 'warn' ? (
-            <p className="text-xs text-danger mt-2">
+            <p className="ops-inline-note ops-inline-note--danger">
               {diskUsage.summary.detail} 정리는 SSH에서{' '}
               <code className="font-mono">{diskUsage.summary.next_action}</code>
             </p>
           ) : null}
         </div>
-        <aside className="ops-signal" aria-label="동기화 상태">
-          <div>
-            <p className="ops-signal__label">observability signal</p>
+        <aside className="ops-signal" aria-label="연결 상태">
+          <div className="ops-signal__item">
+            <p className="ops-signal__label">연결 상태</p>
             <p className="ops-signal__value">
-              <span className={`w-2 h-2 rounded-full ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
               {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
             </p>
+            <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
           </div>
-          <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
           {/* "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데 답할 화면이
               없었다. /health는 이미 있었지만 어느 UI에도 표시되지 않았다. */}
-          <div className="mt-3 pt-3 border-t border-line">
-            <p className="ops-signal__label">manager health</p>
+          <div className="ops-signal__item ops-signal__divider">
+            <p className="ops-signal__label">관리도구 상태</p>
             <p className="ops-signal__value">
               <span
-                className={`w-2 h-2 rounded-full ${
+                className={`ops-status-dot ${
                   managerHealth === 'healthy'
                     ? 'bg-ok'
                     : managerHealth === 'checking'
@@ -1001,7 +1024,7 @@ export default function DashboardClient() {
       </section>
 
       {error && !isWsConnected && (
-        <section className="mb-4 flex items-start gap-3 border border-danger/30 bg-danger/5 p-4 text-sm rounded-panel" role="alert">
+        <section className="ops-alert ops-alert--danger" role="alert">
           <ShieldAlert className="w-5 h-5 shrink-0 text-danger" />
           <div>
             <p className="font-semibold text-danger">통신 연결 오류</p>
@@ -1011,7 +1034,7 @@ export default function DashboardClient() {
       )}
 
       {containerGroups.length > 0 && (
-        <section className="ops-ledger mb-4" aria-labelledby="service-groups-title">
+        <section className="ops-ledger mb-4" id="service-groups" aria-labelledby="service-groups-title">
           <div className="ops-ledger__header">
             <div>
               <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
@@ -1020,39 +1043,36 @@ export default function DashboardClient() {
               </p>
             </div>
           </div>
-          <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="ops-group-list">
             {containerGroups.map((group) => (
-              <div className="rounded-card border border-line p-3" key={group.id}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-strong truncate">{group.label}</p>
-                    <p
-                      className={`text-xs mt-0.5 ${group.healthy ? 'text-ok' : 'text-warn'}`}
-                    >
-                      {group.healthy
-                        ? `모두 정상 (${group.containers.length}개)`
-                        : `${group.containers.length - group.runningCount}개 중지됨 / 전체 ${group.containers.length}개`}
-                    </p>
-                  </div>
-                  <button
-                    className="ops-button shrink-0"
-                    disabled={bulkRestartingGroup !== null || group.runningCount === 0}
-                    onClick={() => void restartGroup(group)}
-                    type="button"
-                  >
-                    <RotateCw
-                      className={`w-4 h-4 ${bulkRestartingGroup === group.id ? 'animate-spin' : ''}`}
-                    />
-                    재시작
-                  </button>
+              <div className="ops-group-row" key={group.id}>
+                <div className="ops-group-copy">
+                  <p className="ops-group-label">{group.label}</p>
+                  <p className={`ops-group-status ${group.healthy ? 'text-ok' : 'text-warn'}`}>
+                    {group.healthy
+                      ? `모두 정상 (${group.containers.length}개)`
+                      : `${group.containers.length - group.runningCount}개 중지됨 / 전체 ${group.containers.length}개`}
+                  </p>
                 </div>
+                <button
+                  className="ops-button"
+                  disabled={bulkRestartingGroup !== null || group.runningCount === 0}
+                  onClick={() => void restartGroup(group)}
+                  type="button"
+                >
+                  <RotateCw
+                    className={bulkRestartingGroup === group.id ? 'animate-spin' : ''}
+                    size={14}
+                  />
+                  재시작
+                </button>
               </div>
             ))}
           </div>
         </section>
       )}
 
-      <section className="ops-ledger" aria-labelledby="service-ledger-title">
+      <section className="ops-ledger" id="service-ledger" aria-labelledby="service-ledger-title">
         <div className="ops-ledger__header">
           <div>
             <h2 className="ops-section-title" id="service-ledger-title">서비스 원장</h2>
@@ -1067,7 +1087,8 @@ export default function DashboardClient() {
             <p className="text-sm text-secondary">컨테이너 상태를 분석하는 중입니다.</p>
           </div>
         ) : (
-          <table className="ops-fleet-table text-left">
+          <div className="ops-table-wrap">
+            <table className="ops-fleet-table text-left">
               <thead className="sticky top-0 z-10">
                 <tr>
                   <th>상태</th><th>컨테이너</th><th>역할</th><th>포트</th><th className="text-center">CPU</th><th className="text-center">메모리</th><th className="text-center">I/O</th><th className="text-center">도구</th><th className="text-right">제어</th>
@@ -1083,14 +1104,7 @@ export default function DashboardClient() {
                   const isResetPending = resetMutation.isPending && resetMutation.variables === container.id;
                   const isContainerLoading = isActionPending || isConfigPending || isResetPending;
 
-                  const metrics = container.metrics || {
-                    cpu_pct: 0.0,
-                    mem_pct: 0.0,
-                    mem_usage: 0,
-                    mem_limit: 0,
-                    io_read: 0,
-                    io_write: 0
-                  };
+                  const metrics = container.metrics;
 
                   return (
                     <tr key={container.id}>
@@ -1099,7 +1113,7 @@ export default function DashboardClient() {
                         <div className="flex items-center gap-2.5">
                           <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
                           <span
-                            className={`${statusCfg.textClass} text-xs md:text-sm tracking-[0.05em] font-bold`}
+                            className={`${statusCfg.textClass} text-xs md:text-sm font-bold`}
                             title={container.status}
                           >
                             {statusLabel(container.status)}
@@ -1110,9 +1124,7 @@ export default function DashboardClient() {
                       {/* Display & Container Name */}
                       <td data-label="컨테이너">
                         <div className="flex items-center gap-3">
-                          <div className="p-2 bg-subtle border border-line rounded-card shrink-0">
-                            <Icon className="w-5 h-5 text-brand" />
-                          </div>
+                          <Icon className="shrink-0 text-brand" size={18} />
                           <div>
                             <div className="font-display font-semibold text-strong text-base">{displayName}</div>
                             <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums">{container.name}</div>
@@ -1122,7 +1134,7 @@ export default function DashboardClient() {
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 title="운영(prod) 공개 주소"
-                                className="block text-brand text-xs md:text-sm mt-0.5 font-mono underline hover:opacity-80 break-all"
+                                className="block text-brand text-xs md:text-sm mt-0.5 font-mono underline hover:text-brand-ink break-all"
                               >
                                 {container.public_url.replace(/^https?:\/\//, '')}
                               </a>
@@ -1154,10 +1166,10 @@ export default function DashboardClient() {
                           title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
                         >
                           <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
-                            <Cpu className="w-3.5 h-3.5 opacity-80" />
-                            {container.status === 'running' ? `${metrics.cpu_pct.toFixed(1)}%` : '0.0%'}
+                            <Cpu className="text-brand" size={14} />
+                            {container.status === 'running' && metrics ? `${metrics.cpu_pct.toFixed(1)}%` : '—'}
                           </span>
-                          <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
+                          <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
                         </button>
                       </td>
 
@@ -1171,11 +1183,11 @@ export default function DashboardClient() {
                           title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
                         >
                           <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
-                            <HardDrive className="w-3.5 h-3.5 opacity-80" />
-                            {container.status === 'running' ? `${metrics.mem_pct.toFixed(1)}%` : '0.0%'}
+                            <HardDrive className="text-brand" size={14} />
+                            {container.status === 'running' && metrics ? `${metrics.mem_pct.toFixed(1)}%` : '—'}
                           </span>
-                          <span className="text-[10px] md:text-xs text-secondary mt-0.5 uppercase tracking-[0.05em] font-bold font-mono tabular-nums">
-                            {container.status === 'running' ? formatBytes(metrics.mem_usage) : '0 B'}
+                          <span className="text-xs text-secondary mt-0.5 font-bold font-mono tabular-nums">
+                            {container.status === 'running' && metrics ? formatBytes(metrics.mem_usage) : '—'}
                           </span>
                         </button>
                       </td>
@@ -1190,10 +1202,10 @@ export default function DashboardClient() {
                           title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
                         >
                           <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
-                            <span className="block text-warn">R: {container.status === 'running' ? formatBytes(metrics.io_read) : '0 B'}</span>
-                            <span className="block text-danger">W: {container.status === 'running' ? formatBytes(metrics.io_write) : '0 B'}</span>
+                            <span className="block text-warn">R: {container.status === 'running' && metrics ? formatBytes(metrics.io_read) : '—'}</span>
+                            <span className="block text-danger">W: {container.status === 'running' && metrics ? formatBytes(metrics.io_write) : '—'}</span>
                           </span>
-                          <span className="text-[10px] md:text-xs text-secondary mt-0.5 font-semibold">차트</span>
+                          <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
                         </button>
                       </td>
 
@@ -1258,7 +1270,7 @@ export default function DashboardClient() {
                                 title="컨테이너 가동"
                               >
                                 <Play className="w-3 h-3" />
-                                Start
+                                시작
                               </button>
 
                               <button
@@ -1269,7 +1281,7 @@ export default function DashboardClient() {
                                 title="컨테이너 정지"
                               >
                                 <Square className="w-3 h-3" />
-                                Stop
+                                중지
                               </button>
 
                               <button
@@ -1290,6 +1302,7 @@ export default function DashboardClient() {
                 })}
               </tbody>
             </table>
+          </div>
         )}
       </section>
 
@@ -1318,7 +1331,7 @@ export default function DashboardClient() {
                   type="button"
                 >
                   <span>{item.label}</span>
-                  <span className="font-mono text-[10px] text-secondary">{item.hint}</span>
+                  <span className="font-mono text-xs text-secondary">{item.hint}</span>
                 </button>
               )) : <p className="px-3 py-5 text-sm text-secondary">일치하는 명령이 없습니다.</p>}
             </div>
@@ -1367,7 +1380,7 @@ export default function DashboardClient() {
                   <Terminal className="w-5 h-5 text-brand" />
                 </div>
                 <div>
-                  <h3 className="font-semibold text-strong text-base uppercase tracking-[0.05em]">실시간 콘솔 로그</h3>
+                  <h3 className="font-semibold text-strong text-base">실시간 콘솔 로그</h3>
                   <p className="text-xs text-secondary mt-0.5 font-light">컨테이너 ID: {logContainerId}</p>
                 </div>
               </div>
@@ -1392,9 +1405,9 @@ export default function DashboardClient() {
             </div>
 
             {/* Tip Footer */}
-            <div className="pt-4 text-[10px] text-secondary shrink-0 z-10 flex justify-between items-center">
+            <div className="pt-4 text-xs text-secondary shrink-0 z-10 flex justify-between items-center">
               <span className="font-light">* 최신 3,000줄의 로그가 메모리에 버퍼링되며 자동으로 아래로 스크롤됩니다.</span>
-              <span className="flex items-center gap-1 font-bold uppercase tracking-[0.05em]">
+              <span className="flex items-center gap-1 font-bold">
                 <span
                   className={`w-1.5 h-1.5 rounded-full ${isLogWsOpen ? 'bg-ok animate-ping' : 'bg-warn'}`}
                 />
@@ -1422,7 +1435,7 @@ export default function DashboardClient() {
                   <Activity className="w-5 h-5 text-brand" />
                 </div>
                 <div>
-                  <h3 className="font-semibold text-strong text-base tracking-[0.05em]">
+                  <h3 className="font-semibold text-strong text-base">
                     성능 이력 ({chartHours === 1 ? '최근 1시간' : `최근 ${chartHours}시간`})
                   </h3>
                   <p className="text-xs text-secondary mt-0.5 font-light font-mono">대상 컨테이너: {chartContainerId}</p>
@@ -1465,7 +1478,7 @@ export default function DashboardClient() {
               <button
                 type="button"
                 onClick={() => setChartMetricType('cpu')}
-                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-colors border-b-2 outline-hidden ${
+                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
                   chartMetricType === 'cpu'
                     ? 'border-brand text-brand'
                     : 'border-transparent text-secondary hover:text-strong'
@@ -1476,7 +1489,7 @@ export default function DashboardClient() {
               <button
                 type="button"
                 onClick={() => setChartMetricType('memory')}
-                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-colors border-b-2 outline-hidden ${
+                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
                   chartMetricType === 'memory'
                     ? 'border-brand text-brand'
                     : 'border-transparent text-secondary hover:text-strong'
@@ -1487,7 +1500,7 @@ export default function DashboardClient() {
               <button
                 type="button"
                 onClick={() => setChartMetricType('io')}
-                className={`py-2 px-4 text-xs font-bold tracking-[0.05em] uppercase transition-colors border-b-2 outline-hidden ${
+                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
                   chartMetricType === 'io'
                     ? 'border-brand text-brand'
                     : 'border-transparent text-secondary hover:text-strong'
@@ -1601,7 +1614,7 @@ export default function DashboardClient() {
             </div>
 
             {/* Note */}
-            <p className="text-[10px] text-secondary mt-4 z-10 shrink-0 font-light">
+            <p className="text-xs text-secondary mt-4 z-10 shrink-0 font-light">
               * 웹소켓 연결 상태에서 매 10초마다 새로운 메트릭 데이터가 이 차트에 실시간으로 추가되어 업데이트(롤링)됩니다.
             </p>
           </div>
@@ -1620,7 +1633,7 @@ export default function DashboardClient() {
 
             {/* Modal Header */}
             <div className="flex justify-between items-center pb-4 border-b border-line z-10">
-              <h3 className="text-sm font-semibold tracking-[0.05em] flex items-center gap-2 text-strong uppercase">
+              <h3 className="text-sm font-semibold flex items-center gap-2 text-strong">
                 <Settings className="w-4 h-4 text-brand" />
                 <span>컨테이너 설정 변경</span>
               </h3>
@@ -1638,18 +1651,18 @@ export default function DashboardClient() {
             {/* Modal Body / Form */}
             <form onSubmit={handleConfigSubmit} className="flex-grow overflow-y-auto pr-2 mt-4 space-y-5 z-10 select-text scrollbar-thin">
               <div className="p-4 bg-subtle border border-line rounded-card text-xs text-ink leading-relaxed">
-                <p className="font-semibold text-strong mb-1 uppercase tracking-[0.05em]">{configTargetContainer.display_name} 설정</p>
+                <p className="font-semibold text-strong mb-1">{configTargetContainer.display_name} 설정</p>
                 <p className="font-light">docker-compose.yml 파일 내 설정을 변경합니다. 변경 후 컨테이너가 중지/삭제된 뒤 재생성됩니다.</p>
               </div>
 
               {/* Ports section */}
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">포트 매핑 (host:container)</h4>
+                  <h4 className="text-xs font-semibold text-secondary">포트 매핑 (host:container)</h4>
                   <button
                     type="button"
                     onClick={() => setInputPortsList(prev => [...prev, ''])}
-                    className="text-[10px] text-brand hover:underline font-bold uppercase tracking-[0.05em]"
+                    className="text-xs text-brand hover:underline font-semibold"
                   >
                     + 추가
                   </button>
@@ -1675,7 +1688,7 @@ export default function DashboardClient() {
                           aria-describedby={
                             configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
                           }
-                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 flex-grow font-mono ${
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
                             configValidation.portErrors[idx]
                               ? 'border-danger focus:border-danger focus-visible:outline-danger'
                               : 'border-line focus:border-brand focus-visible:outline-brand'
@@ -1709,7 +1722,7 @@ export default function DashboardClient() {
                   편집을 허용한 뒤 저장 시점에 경고하면 사용자는 이미 값을 잃은 뒤다. */}
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">
+                  <h4 className="text-xs font-semibold text-secondary">
                     볼륨 마운트 (읽기 전용)
                   </h4>
                 </div>
@@ -1735,11 +1748,11 @@ export default function DashboardClient() {
               {/* Networks section */}
               <div className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">네트워크 (default, etc.)</h4>
+                  <h4 className="text-xs font-semibold text-secondary">네트워크 (default, etc.)</h4>
                   <button
                     type="button"
                     onClick={() => setInputNetworksList(prev => [...prev, ''])}
-                    className="text-[10px] text-brand hover:underline font-bold uppercase tracking-[0.05em]"
+                    className="text-xs text-brand hover:underline font-semibold"
                   >
                     + 추가
                   </button>
@@ -1762,7 +1775,7 @@ export default function DashboardClient() {
                           aria-describedby={
                             configValidation.networkErrors[idx] ? `network-error-${idx}` : undefined
                           }
-                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong outline-hidden focus-visible:outline-2 flex-grow font-mono ${
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
                             configValidation.networkErrors[idx]
                               ? 'border-danger focus:border-danger focus-visible:outline-danger'
                               : 'border-line focus:border-brand focus-visible:outline-brand'
@@ -1795,7 +1808,7 @@ export default function DashboardClient() {
               {/* Env Variables section */}
               {Object.keys(inputEnvDict).length > 0 && (
                 <div className="space-y-3">
-                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">환경 변수</h4>
+                  <h4 className="text-xs font-semibold text-secondary">환경 변수</h4>
                   <div className="grid grid-cols-1 gap-4">
                     {Object.entries(inputEnvDict).map(([key, val]) => {
                       const envError = configValidation.envErrors[key];
@@ -1822,7 +1835,7 @@ export default function DashboardClient() {
                                   ? `env-locked-${key}`
                                   : undefined
                             }
-                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs outline-hidden focus-visible:outline-2 w-full transition-colors font-mono ${
+                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs focus-visible:outline-2 w-full transition-[color,background-color,border-color] font-mono ${
                               locked ? 'text-secondary bg-subtle' : 'text-strong'
                             } ${
                               envError
@@ -1864,7 +1877,7 @@ export default function DashboardClient() {
                   aria-live="polite"
                   className="space-y-2 p-4 bg-subtle border border-line rounded-card text-xs"
                 >
-                  <h4 className="text-[10px] font-bold text-secondary uppercase tracking-[0.05em]">
+                  <h4 className="text-xs font-semibold text-secondary">
                     변경 사항 미리보기
                   </h4>
                   {configValidation.portsDiff.changed && (
@@ -1912,7 +1925,7 @@ export default function DashboardClient() {
                     }
                   }}
                   disabled={resetMutation.isPending || configMutation.isPending}
-                  className="ops-button ops-button--danger flex-1 text-danger border-danger disabled:opacity-40"
+                  className="ops-button ops-button--danger flex-1 text-danger border-danger disabled:bg-subtle disabled:text-secondary"
                 >
                   {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
                 </button>
