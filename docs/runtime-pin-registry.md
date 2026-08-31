@@ -89,10 +89,26 @@ launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descrip
 외부 호출은 lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact Map/PinVi/pinset,
 `published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
 
-이 절차는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지 않는다. 공개 gate가
-`match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그 뒤에만 새 root-owned leaf에서 M04/M05 one-shot을
-한 번 실행할 수 있다. `match` 전에는 terminal block을 쓰지 않는다. 이미 terminal로 block된 pinset은 이
-판정과 관계없이 재실행하지 않고 fresh source pair로만 교체한다.
+**이 완료 판정 절차**는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지
+않는다 — 완료는 공개 gate로만 판정한다는 뜻이지 진단 일반의 원문 열람 금지가 아니다. 원문은 root 0600
+private leaf에 보존되며(launcher forensic capture 기본값), **공개 registry·tracked 문서·대화 기록으로
+옮기지 않는 것**이 규칙이다. 공개 gate가 `match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그
+뒤에만 새 root-owned leaf에서 M04/M05 one-shot을 한 번 실행할 수 있다. `match` 전에는 terminal block을
+쓰지 않는다.
+
+terminal block의 효력은 **phase에 따라 다르다** (근본원인 감사 I-1 — 종전 문서는 "모든 terminal은 fresh
+source pair로만 교체"라고 적었지만, 그 무조건 규칙이 인프라 실패에 acceptance 실패와 같은 형벌을 물려
+terminal 27개 중 acceptance 본문 도달 0건으로 후보 예산을 소진시켰다).
+
+- **무조건 차단**(`phase` 없음): acceptance 본문(`m04_*`/`m05_*`)·ledger claim 실패. 이 execution은
+  재실행하지 않고 fresh source pair로만 교체한다 — "acceptance 본문은 정확히 한 번" 성질은 그대로다.
+- **scoped 기록**(`phase` 있음): runtime setup·health·admission 같은 인프라 phase 실패. 실패 이력은
+  append-only로 남지만 execution은 보정 후 **같은 pinset에서 재실행할 수 있다.**
+- ledger claim **이전** 실패는 애초에 execution을 소비하지 않는다(`claim_attempted` 가드) — 같은
+  pinset에서 그대로 재시도한다.
+
+기존 registry의 무조건 차단 항목들은 legacy audit으로 보존한다 — **registry에서 항목을 삭제하는 API는
+만들지 않는다.** 삭제 경로가 생기는 순간 "이 원장은 삭제된 적 없다"를 다시는 주장할 수 없다.
 
 M05 one-shot launcher는 leaf와 one-shot ledger를 만들기 전에 M05 integration adapter의 비소비
 source-materialization pair preflight를 반드시 통과한다. 이 검사는 generic registry가 소유하지 않는 PinVi provenance의
