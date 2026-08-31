@@ -1023,6 +1023,7 @@ def parse_fresh_root_result(
         _FRESH_ROOT_RESULT_FIELDS,
         "fresh root result",
         canonical_line=True,
+        forbid_extra=False,
     )
     if (
         payload["schema"] != FRESH_ROOT_RESULT_SCHEMA
@@ -1104,6 +1105,7 @@ def parse_fresh_root_missing_receipt(
         _FRESH_ROOT_MISSING_RECEIPT_FIELDS,
         "fresh root missing receipt",
         canonical_line=True,
+        forbid_extra=False,
     )
     if (
         payload["schema"] != FRESH_ROOT_MISSING_RECEIPT_SCHEMA
@@ -1192,6 +1194,7 @@ def parse_fresh_finalize_result(
         _FRESH_FINALIZE_RESULT_FIELDS,
         "fresh finalize result",
         canonical_line=True,
+        forbid_extra=False,
     )
     if (
         payload["schema"] != FRESH_FINALIZE_RESULT_SCHEMA
@@ -1297,6 +1300,7 @@ def parse_fresh_finalize_missing_receipt(
         _FRESH_FINALIZE_MISSING_RECEIPT_FIELDS,
         "fresh finalize missing receipt",
         canonical_line=True,
+        forbid_extra=False,
     )
     if (
         payload["schema"] != FRESH_FINALIZE_MISSING_RECEIPT_SCHEMA
@@ -2163,6 +2167,23 @@ def _require_exact_fields(
     return value
 
 
+def _require_at_least_fields(
+    value: object, required: frozenset[str], label: str
+) -> Mapping[str, Any]:
+    """required ⊆ observed — result/receipt 전용.
+
+    **일어난 일을 서술하는 문서**(result/receipt)는 미지의 추가 필드를 거부하지 않는다.
+    무결성은 `payload_sha256`이 전체 바이트를 결박하므로(미지 필드도 해시에 포함) 위조
+    불가이고, exact-set을 유지하면 emitter(Map image)와 parser(Manager host)가 필드
+    하나마다 lockstep 배포돼야 한다 — receipt 필드 2개 추가가 2-repo 원자 배포를 요구한
+    것이 실측이다(감사 I-9). **쓰기를 인가하는 문서**(fence·permit)는 exact-set을
+    유지한다 — 그쪽은 미지 필드가 인가 범위를 넓힐 수 있다.
+    """
+    if not isinstance(value, Mapping) or not required.issubset(value):
+        raise MapApplication300ContractError(f"{label} field set is invalid")
+    return value
+
+
 def _require_mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise MapApplication300ContractError(f"{label} must be an object")
@@ -2175,6 +2196,7 @@ def _load_exact_json(
     label: str,
     *,
     canonical_line: bool = False,
+    forbid_extra: bool = True,
 ) -> Mapping[str, Any]:
     if not isinstance(raw, bytes) or not raw or len(raw) > 64 * 1024:
         raise MapApplication300ContractError(f"{label} JSON is invalid")
@@ -2182,7 +2204,10 @@ def _load_exact_json(
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise MapApplication300ContractError(f"{label} JSON is invalid") from exc
-    payload = _require_exact_fields(value, expected, label)
+    if forbid_extra:
+        payload = _require_exact_fields(value, expected, label)
+    else:
+        payload = _require_at_least_fields(value, expected, label)
     if canonical_line and raw != canonical_json_bytes(payload) + b"\n":
         raise MapApplication300ContractError(f"{label} JSON is not canonical")
     return payload

@@ -970,3 +970,51 @@ def test_fixed_artifact_reader_accepts_root_owned_mode_0444(
     )
 
     assert read_root_read_only_artifact(target) == raw
+
+
+# -- result/receipt의 확장 허용, fence의 exact 유지 (감사 I-9) ----------------
+
+
+def test_root_result_accepts_unknown_additive_fields() -> None:
+    """result는 일어난 일의 서술이다 — 미지 필드가 있어도 받아야 한다.
+
+    무결성은 payload_sha256이 전체 바이트(미지 필드 포함)를 결박한다. exact-set을
+    유지하면 emitter(Map image)와 parser(Manager host)가 필드 하나마다 lockstep
+    배포돼야 한다 — receipt 필드 2개 추가가 2-repo 원자 배포를 요구한 것이 실측이다.
+    """
+    raw, _ = _fresh_root()
+    payload = json.loads(raw)
+    payload["future_observability_field"] = "f" * 64
+    extended = canonical_json_bytes(payload) + b"\n"
+
+    parsed = parse_fresh_root_result(
+        extended, contract=_contract(), candidate=_candidate()
+    )
+
+    assert parsed.payload_sha256 == sha256_bytes(extended)
+
+
+def test_fresh_fence_still_rejects_unknown_fields() -> None:
+    """쓰기를 인가하는 문서는 exact-set을 유지한다 — 미지 필드는 인가 범위를 넓힌다."""
+    from kor_travel_docker_manager.services.map_application_300 import (
+        _FRESH_MIGRATION_FENCE_FIELDS,
+        _load_exact_json,
+    )
+
+    fence = build_fresh_migration_fence(
+        contract=_contract(),
+        candidate=_candidate(),
+        database=_application_database(),
+        journal=_journal("a", 1),
+        writer_fence_expires_at=_expiry(),
+    )
+    payload = dict(json.loads(fence.raw))
+    payload["surprise_grant"] = True
+
+    with pytest.raises(MapApplication300ContractError):
+        _load_exact_json(
+            canonical_json_bytes(payload) + b"\n",
+            _FRESH_MIGRATION_FENCE_FIELDS,
+            "fresh migration fence",
+            canonical_line=True,
+        )
