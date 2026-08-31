@@ -1538,7 +1538,9 @@ def test_isolated_map_network_allowlists_the_bridge_gateway_for_host_publish(
 
     subnet, gateway, api, frontend = driver._map_network_addresses("a" * 32)
 
-    assert subnet == "172.29.170.0/29"
+    # /28 확장 근거는 driver의 _map_network_addresses 주석 참조(app-api join +
+    # provider fixture까지 담아야 IPAM 고갈이 없다 — 2026-09-01 적대 리뷰).
+    assert subnet == "172.29.170.0/28"
     assert (gateway, api, frontend) == ("172.29.170.1", "172.29.170.2", "172.29.170.3")
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
