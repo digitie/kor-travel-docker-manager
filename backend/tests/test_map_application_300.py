@@ -14,6 +14,7 @@ import pytest
 
 from kor_travel_docker_manager.services.map_application_300 import (
     APPLICATION_DATABASE_OWNER,
+    BASELINE_ROOT_REVISION,
     Application300Candidate,
     Application300Contract,
     ApplicationDatabaseIdentity,
@@ -106,6 +107,22 @@ def _expiry() -> datetime:
     return datetime.now(UTC) + timedelta(hours=1)
 
 
+#: head가 baseline root를 넘어서면 관측 catalog는 봉인값과 **반드시 다르다** —
+#: 새 migration이 객체를 더하기 때문이다. 그 사실을 fixture가 재현하지 않으면 ADR-43이
+#: 존재하는 이유를 테스트가 한 번도 태우지 못한다.
+_HEAD_STATE_CATALOG_SUFFIX = "beef"
+
+
+def _head_state_catalog(sealed: str) -> str:
+    """현재 `_HEAD`에서 관측될 catalog digest.
+
+    baseline root면 봉인값 그대로, 그 너머면 봉인값과 다른 값이다.
+    """
+    if _HEAD == BASELINE_ROOT_REVISION:
+        return sealed
+    return sealed[: -len(_HEAD_STATE_CATALOG_SUFFIX)] + _HEAD_STATE_CATALOG_SUFFIX
+
+
 def _root_result_raw(
     *,
     root_fence_sha256: str,
@@ -140,7 +157,9 @@ def _root_result_raw(
             },
             "post_source_catalog_sha256": contract.source_catalog_sha256,
             # head 상태 관측값. baseline root에서는 source catalog와 같다.
-            "post_head_catalog_sha256": contract.source_catalog_sha256,
+            "post_head_catalog_sha256": _head_state_catalog(
+                contract.source_catalog_sha256
+            ),
             "post_head_seed_sha256": contract.seed_sha256,
             "post_seed_sha256": contract.seed_sha256,
             "expected_privileged_residue_sha256": contract.privileged_residue_sha256,
@@ -265,9 +284,13 @@ def _finalize_result_raw(
             "prior_fresh_migration_operation_id": prior_operation_id,
             "prior_fresh_migration_journal_sha256": prior_journal_sha256,
             "prior_fresh_migration_generation": prior_generation,
-            "pre_source_catalog_sha256": contract.source_catalog_sha256,
+            "pre_source_catalog_sha256": _head_state_catalog(
+                contract.source_catalog_sha256
+            ),
             "pre_seed_sha256": contract.seed_sha256,
-            "post_destination_catalog_sha256": contract.destination_catalog_sha256,
+            "post_destination_catalog_sha256": _head_state_catalog(
+                contract.destination_catalog_sha256
+            ),
             "post_seed_sha256": contract.seed_sha256,
             "expected_privileged_residue_sha256": contract.privileged_residue_sha256,
             "post_destination_alembic_version_sha256": (
