@@ -2025,3 +2025,131 @@ def test_app_dagster_container_is_resolved_once_with_the_etl_profile() -> None:
     assert len(occurrences) == 1
     window = source[occurrences[0] : occurrences[0] + 300]
     assert 'profiles=("etl",)' in window
+
+
+def test_compose_model_profiles_are_derived_not_hardcoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cleanup 프로파일은 compose 모델에서 파생한다 — 상대 레포 프로파일
+    이름을 Manager에 리터럴로 박으면 프로파일 추가마다 잔존 컨테이너가
+    cleanup 검증을 깨뜨린다(e2e6 클래스, 범용성 지시)."""
+
+    driver = _driver()
+    captured: dict[str, object] = {}
+
+    def fake_command(*args: str, **kwargs: object) -> str:
+        captured["args"] = args
+        captured.update(kwargs)
+        return "etl\nobservability\n\netl\n"
+
+    monkeypatch.setattr(driver, "_command", fake_command)
+    profiles = driver._compose_model_profiles(
+        root=Path("/tmp"),
+        project="m05i-pinvi-" + "a" * 32,
+        env_file=Path("/tmp/none.env"),
+        files=(Path("/tmp/a.yml"),),
+    )
+    assert profiles == ("etl", "observability")
+    args = captured["args"]
+    assert isinstance(args, tuple)
+    assert args[-2:] == ("config", "--profiles")
+    # 파생 출력은 상한을 갖는다(무제한 stdout 누적 금지 — 적대 리뷰).
+    assert captured["capture_output_limit"] == driver._COMPOSE_CONFIG_OUTPUT_LIMIT
+
+    def hostile_command(*_args: str, **_kwargs: object) -> str:
+        return "etl\n--rm\n"
+
+    monkeypatch.setattr(driver, "_command", hostile_command)
+    with pytest.raises(driver._PhaseError, match="runtime_inspect_invalid"):
+        driver._compose_model_profiles(
+            root=Path("/tmp"),
+            project="m05i-pinvi-" + "a" * 32,
+            env_file=Path("/tmp/none.env"),
+            files=(Path("/tmp/a.yml"),),
+        )
+
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+    # cleanup 등록부에 프로파일 리터럴이 되살아나지 못하게 한다.
+    assert 'map_files, ("fresh-init",)' not in source
+    assert 'pinvi_files, ("etl",)' not in source
+    assert source.count("_compose_model_profiles(") >= 3
+
+def _exception_sink_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forensic: bool
+) -> Path:
+    driver = _driver()
+    if forensic:
+        monkeypatch.setenv("KTDM_M05_FORENSIC_CAPTURE", "1")
+    else:
+        monkeypatch.delenv("KTDM_M05_FORENSIC_CAPTURE", raising=False)
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(ValueError("boom-ordinary")),
+    )
+    monkeypatch.setattr(
+        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False)
+    )
+    monkeypatch.setattr(
+        driver, "_block_terminal_m05_execution", lambda *_a, **_k: True
+    )
+    assert driver.main("a" * 40, tmp_path) == 1
+    return tmp_path / "failed-admission-exception.txt"
+
+
+def test_ordinary_exception_leaves_forensic_traceback_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """e2e9 클래스: 익명 ordinary exception도 forensic leaf에 traceback을 남긴다.
+
+    파일명은 raw phase가 아니라 public phase 매핑이고, receipt에는 여전히
+    phase만 실린다."""
+
+    evidence = _exception_sink_run(tmp_path, monkeypatch, forensic=True)
+    assert evidence.exists()
+    text = evidence.read_bytes()
+    assert b"boom-ordinary" in text
+    assert b"Traceback" in text
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert receipt["phase"] == "admission"
+    assert "traceback" not in json.dumps(receipt).lower()
+
+
+def test_ordinary_exception_without_forensic_leaves_no_traceback_leaf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = _exception_sink_run(tmp_path, monkeypatch, forensic=False)
+    assert not evidence.exists()
+
+
+def test_traceback_evidence_write_failure_does_not_change_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+    monkeypatch.setenv("KTDM_M05_FORENSIC_CAPTURE", "1")
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(ValueError("boom-ordinary")),
+    )
+    monkeypatch.setattr(
+        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False)
+    )
+    monkeypatch.setattr(
+        driver, "_block_terminal_m05_execution", lambda *_a, **_k: True
+    )
+    original_writer = driver._write_private_bytes
+
+    def failing_evidence_writer(path: Path, raw: bytes) -> None:
+        # traceback leaf 기록만 실패시키고 receipt(result.json) 기록은 살린다.
+        if path.name.endswith("-exception.txt"):
+            raise OSError("disk")
+        original_writer(path, raw)
+
+    monkeypatch.setattr(driver, "_write_private_bytes", failing_evidence_writer)
+    assert driver.main("a" * 40, tmp_path) == 1
+    assert not (tmp_path / "failed-admission-exception.txt").exists()
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert receipt["phase"] == "admission"

@@ -12,12 +12,14 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import secrets
 import stat
 import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from collections.abc import Mapping
 from http.cookiejar import CookieJar
@@ -709,6 +711,18 @@ def _register_forensic_scrub_environment(environment: dict[str, str]) -> None:
 
     for name in _RAW_ENV_NAMES:
         value = environment.get(name)
+        if value:
+            _FORENSIC_SCRUB_VALUES[name] = value
+
+
+def _register_forensic_scrub_secrets(secrets_by_name: dict[str, str]) -> None:
+    """생성 즉시 호출한다 — 등록이 늦으면 이른 phase에서 scrub이 항등이 된다.
+
+    env dict 등록과 달리 필터가 없다: 여기 들어오는 것은 전부 이 run이 만든
+    비밀이다(식별자/URL 같은 진단 가치 있는 값은 넣지 않는다).
+    """
+
+    for name, value in secrets_by_name.items():
         if value:
             _FORENSIC_SCRUB_VALUES[name] = value
 
@@ -1683,6 +1697,46 @@ def _map_application_head(map_root: Path) -> str:
     return heads[0]
 
 
+def _compose_model_profiles(
+    *,
+    root: Path,
+    project: str,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> tuple[str, ...]:
+    """cleanup down이 켜야 할 프로파일을 compose 모델 자체에서 파생한다.
+
+    특정 레포의 프로파일 이름("etl", "fresh-init")을 Manager에 리터럴로 박으면
+    상대 compose에 프로파일이 추가될 때마다 잔존 컨테이너가 cleanup 검증을
+    깨뜨린다(e2e6 실측 클래스). 모델이 선언한 전체 프로파일을 down에 넘기면
+    Manager는 상대 구조 변화에 무수정이다(범용성 지시).
+    """
+
+    raw = _command(
+        "/usr/bin/docker",
+        "compose",
+        "--project-name",
+        project,
+        *(item for file in files for item in ("--file", str(file))),
+        "--env-file",
+        str(env_file),
+        "config",
+        "--profiles",
+        cwd=root,
+        capture=True,
+        capture_output_limit=_COMPOSE_CONFIG_OUTPUT_LIMIT,
+    )
+    profiles = tuple(
+        sorted({line.strip() for line in raw.splitlines() if line.strip()})
+    )
+    # 파생값이 argv(--profile <값>)로 되먹혀지므로 whitelist 투영을 거친다 —
+    # rendered port 규약과 동일 원칙(적대 리뷰).
+    for profile in profiles:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile):
+            _fail("runtime_inspect_invalid")
+    return profiles
+
+
 def _rendered_service_images(
     *,
     root: Path,
@@ -2078,6 +2132,19 @@ def main(expected_revision: str, output: Path) -> int:
         )
         manual_feature_token = _random_secret()
         admin_password = _random_secret()
+        # 비밀은 생성 즉시 scrub 레지스트리에 올린다 — 등록이 body 진입 이후로
+        # 미뤄지면 admission~pinvi_runtime 구간에서 scrub이 항등함수가 되어,
+        # forensic 주석이 주장하는 통제가 그 구간에 존재하지 않는다(적대 리뷰).
+        _register_forensic_scrub_secrets(
+            {
+                "M05_MAP_ADMIN_PROXY_SECRET": map_secret,
+                "M05_FEATURE_REQUEST_TOKEN": feature_request_token,
+                "M05_RECONCILIATION_READ_TOKEN": read_token,
+                "M05_RECONCILIATION_ACK_TOKEN": ack_token,
+                "M05_MANUAL_FEATURE_TOKEN": manual_feature_token,
+                "M05_PINVI_PASSWORD": admin_password,
+            }
+        )
         bootstrap_email = f"m05-{transaction[:12]}@example.com"
         _write_private_json(
             bootstrap, {"email": bootstrap_email, "password": admin_password}
@@ -2099,6 +2166,15 @@ def main(expected_revision: str, output: Path) -> int:
             _random_secret(),
             _random_secret(),
             _random_secret(),
+        )
+        _register_forensic_scrub_secrets(
+            {
+                "MAP_POSTGRES_PASSWORD": password,
+                "MAP_MIGRATOR_PASSWORD": migrator_password,
+                "MAP_API_RUNTIME_PASSWORD": api_password,
+                "MAP_DAGSTER_RUNTIME_PASSWORD": dagster_password,
+                "MAP_DAGSTER_METADATA_PASSWORD": metadata_password,
+            }
         )
         map_bootstrap_dsn = (
             f"postgresql://kor_travel_map:{password}@postgres:5432/kor_travel_map"
@@ -2340,7 +2416,18 @@ def main(expected_revision: str, output: Path) -> int:
         )
         _write_private_text(pinvi_override, "\n".join(pinvi_override_lines) + "\n")
         phase = "map_runtime"
-        map_cleanup = (map_root, plan.map_project, map_env, map_files, ("fresh-init",))
+        map_cleanup = (
+            map_root,
+            plan.map_project,
+            map_env,
+            map_files,
+            _compose_model_profiles(
+                root=map_root,
+                project=plan.map_project,
+                env_file=map_env,
+                files=map_files,
+            ),
+        )
         _compose(
             root=map_root,
             project=plan.map_project,
@@ -2437,12 +2524,23 @@ def main(expected_revision: str, output: Path) -> int:
         )
         phase = "pinvi_runtime"
         pinvi_files = (pinvi_root / "infra/docker-compose.app.yml", pinvi_override)
-        # cleanup down은 etl 프로파일까지 포함해야 한다 — 프로파일 밖 down은
-        # app-dagster를 모델에서 못 보고 --remove-orphans도 profile-scoped
-        # 서비스는 남겨, 잔존 컨테이너가 cleanup 검증을 결정적으로 깨뜨린다
-        # (2026-09-01 e2e6 실측: dagster 잔존 → runtime_cleanup_failed가
-        # 실제 실패 phase를 가림).
-        pinvi_cleanup = (pinvi_root, plan.pinvi_project, pinvi_env, pinvi_files, ("etl",))
+        # cleanup down은 모델의 **전체** 프로파일을 켜야 한다 — 프로파일 밖
+        # down은 profile-scoped 서비스를 못 보고 --remove-orphans도 남겨,
+        # 잔존 컨테이너가 cleanup 검증을 결정적으로 깨뜨린다(e2e6 실측:
+        # dagster 잔존 → runtime_cleanup_failed가 실제 실패 phase를 가림).
+        # 프로파일 목록은 리터럴이 아니라 모델에서 파생한다(범용성 지시).
+        pinvi_cleanup = (
+            pinvi_root,
+            plan.pinvi_project,
+            pinvi_env,
+            pinvi_files,
+            _compose_model_profiles(
+                root=pinvi_root,
+                project=plan.pinvi_project,
+                env_file=pinvi_env,
+                files=pinvi_files,
+            ),
+        )
         environment = _pinvi_manager_admission_environment(
             env_file=pinvi_env,
             bootstrap_credential_file=bootstrap,
@@ -2775,6 +2873,25 @@ def main(expected_revision: str, output: Path) -> int:
     # 수렴하므로, raw detail 없이 다음 immutable candidate의 보정 범위를 좁힐 수 있다.
     # BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
     except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+        # ordinary exception은 traceback이 통째로 사라져 phase 이름 하나로
+        # 원인을 재구성해야 했다(e2e9 실측: pinvi_runtime 구간 어딘가의
+        # 익명 예외에 격리 run 1회 소모). forensic 모드에서는 root 0600
+        # leaf에 traceback을 남긴다 — receipt/공개 표면에는 여전히 phase만
+        # 실린다. 통제의 실체(적대 리뷰가 교정): (1) leaf 자체가 root 0600,
+        # (2) format_exc는 frame locals를 싣지 않는다, (3) scrub은 생성
+        # 즉시 등록된 비밀(_register_forensic_scrub_secrets)에만 기여한다.
+        if os.environ.get(_FORENSIC_CAPTURE_ENV) == "1":
+            try:
+                _write_private_bytes(
+                    output
+                    / f"failed-{_public_terminal_phase(phase)}-exception.txt",
+                    _scrub_forensic_bytes(
+                        traceback.format_exc().encode("utf-8")
+                    )[:_FORENSIC_CAPTURE_LIMIT]
+                    or b"\n",
+                )
+            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
+                pass
         phase = _public_terminal_phase(phase)
     finally:
         cleanup_failed, unexpected_finalization_failure = _cleanup_temporary_resources(
