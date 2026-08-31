@@ -1905,3 +1905,63 @@ def test_driver_result_keys_match_the_launcher_expected_keys() -> None:
         if part.strip().strip('"')
     }
     assert driver_base_keys == launcher_base_keys
+
+
+def test_compose_failure_phase_forwards_command_stderr_and_returncode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """failure_phase 재-fail이 stderr/returncode를 버리면 forensic 일반 증거가
+    정확히 가장 실패 확률 높은 compose 경로(postgres/fresh-init)에서 침묵한다
+    (적대 리뷰 major)."""
+
+    driver = _driver()
+
+    def fake_command(*_args: str, **_kwargs: object) -> str:
+        raise driver._PhaseError(
+            "runtime_command_failed", returncode=17, stderr=b"compose boom"
+        )
+
+    monkeypatch.setattr(driver, "_command", fake_command)
+    with pytest.raises(driver._PhaseError) as caught:
+        driver._compose(
+            root=Path("/tmp"),
+            project="m05i-map-" + "a" * 32,
+            env_file=Path("/tmp/none.env"),
+            files=(Path("/tmp/a.yml"),),
+            arguments=("up", "-d"),
+            failure_phase="map_postgres_start_failed",
+        )
+    assert caught.value.phase == "map_postgres_start_failed"
+    assert caught.value.returncode == 17
+    assert caught.value.stderr == b"compose boom"
+
+
+def test_forensic_mode_captures_stderr_without_per_call_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """forensic env가 켜지면 opt-in 없는 _command 실패도 stderr를 싣는다."""
+
+    driver = _driver()
+    monkeypatch.setenv("KTDM_M05_FORENSIC_CAPTURE", "1")
+    with pytest.raises(driver._PhaseError) as caught:
+        driver._command("/usr/bin/bash", "-c", "echo boom-evidence >&2; exit 3")
+    assert caught.value.phase == "runtime_command_failed"
+    assert caught.value.returncode == 3
+    assert caught.value.stderr is not None
+    assert b"boom-evidence" in caught.value.stderr
+
+
+def test_scrub_registry_covers_env_kwarg_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """os.environ에 없는 env-kwarg 비밀도 레지스트리 경유로 scrub된다
+    (적대 리뷰: environ 기반 scrub은 프로덕션에서 no-op였다)."""
+
+    driver = _driver()
+    secret = "registry-secret-0123456789abcdef"
+    monkeypatch.delenv("M05_PINVI_PASSWORD", raising=False)
+    monkeypatch.setattr(driver, "_FORENSIC_SCRUB_VALUES", {}, raising=True)
+    driver._register_forensic_scrub_environment({"M05_PINVI_PASSWORD": secret})
+    scrubbed = driver._scrub_forensic_bytes(b"prefix " + secret.encode() + b" suffix")
+    assert secret.encode() not in scrubbed
+    assert b"[scrubbed:M05_PINVI_PASSWORD]" in scrubbed

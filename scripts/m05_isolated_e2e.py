@@ -665,7 +665,12 @@ def _compose(
             "runtime_command_failed",
             "runtime_command_output_too_large",
         }:
-            _fail(failure_phase, diagnostic=error.diagnostic)
+            _fail(
+                failure_phase,
+                diagnostic=error.diagnostic,
+                returncode=error.returncode,
+                stderr=error.stderr,
+            )
         raise
 
 
@@ -685,7 +690,27 @@ def _scrub_forensic_bytes(raw: bytes) -> bytes:
             raw = raw.replace(
                 value.encode("utf-8"), b"[scrubbed:" + name.encode("ascii") + b"]"
             )
+    # 이 harness의 비밀 대부분은 os.environ이 아니라 `env=` kwarg 딕셔너리로만
+    # 자식에게 전달된다(적대 리뷰: environ 기반 scrub은 프로덕션에서 no-op였다).
+    # 비밀을 만들어 넘기는 지점이 여기 레지스트리에 등록한다.
+    for name, value in _FORENSIC_SCRUB_VALUES.items():
+        if value and len(value) >= 8:
+            raw = raw.replace(
+                value.encode("utf-8"), b"[scrubbed:" + name.encode("ascii") + b"]"
+            )
     return raw
+
+
+_FORENSIC_SCRUB_VALUES: dict[str, str] = {}
+
+
+def _register_forensic_scrub_environment(environment: dict[str, str]) -> None:
+    """`env=` kwarg로 자식에게 넘기는 _RAW_ENV_NAMES 비밀값을 scrub 대상에 올린다."""
+
+    for name in _RAW_ENV_NAMES:
+        value = environment.get(name)
+        if value:
+            _FORENSIC_SCRUB_VALUES[name] = value
 
 
 def _write_compose_failure_evidence(
@@ -2469,6 +2494,7 @@ def main(expected_revision: str, output: Path) -> int:
             "PINVI_M04_LIVE_EMAIL": bootstrap_email,
             "PINVI_M04_LIVE_PASSWORD": admin_password,
         }
+        _register_forensic_scrub_environment(m04_environment)
         _command(
             sys.executable,
             "-I",
@@ -2542,6 +2568,7 @@ def main(expected_revision: str, output: Path) -> int:
             "PINVI_M05_LIVE_REPLACEMENT_FEATURE_ID": fixture["provider_feature_id"],
             "PINVI_M05_LIVE_IMPACT_COUNT": str(impact_count),
         }
+        _register_forensic_scrub_environment(m05_environment)
         _command(
             sys.executable,
             "-I",
@@ -2644,16 +2671,24 @@ def main(expected_revision: str, output: Path) -> int:
         }
         completed = True
     except _PhaseError as error:
+        # 파일명은 실패 순간의 **진행 phase**(pinvi_runtime 등)에서 딴다 —
+        # error.phase는 대부분 runtime_command_failed 상수라 무정보다(적대 리뷰).
+        progress_phase = phase
         phase = error.phase
         failure_diagnostic = error.diagnostic
-        if os.environ.get(_FORENSIC_CAPTURE_ENV) == "1" and error.stderr:
+        if os.environ.get(_FORENSIC_CAPTURE_ENV) == "1" and (
+            error.stderr or error.returncode is not None
+        ):
             # 증거 기록 실패가 결과/phase를 바꾸면 안 된다. output leaf는
             # launcher가 root 0700으로 만들었으므로 초기 실패에도 존재한다.
+            # returncode만 있는 실패도 고정 영수증은 남긴다(.stderr는
+            # _write_command_failure_evidence가 forensic 게이트로 분리).
             try:
                 _write_command_failure_evidence(
                     output
-                    / f"failed-{_public_terminal_phase(error.phase)}-command.json",
+                    / f"failed-{_public_terminal_phase(progress_phase)}-command.json",
                     returncode=error.returncode,
+                    # scrub은 evidence writer 내부에서 수행된다.
                     stderr=error.stderr,
                 )
             except Exception:  # noqa: BLE001, S110 - evidence-only boundary
