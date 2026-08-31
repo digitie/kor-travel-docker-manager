@@ -141,6 +141,7 @@ def test_pinvi_manager_admission_contract_requires_the_gate_and_verifier(tmp_pat
             "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH\n"
             "PINVI_M05_PINSET_SHA256\n"
             "PINVI_M05_EXECUTION_IDENTITY_SHA256\n"
+            "PINVI_DOCKER_COMPOSE_EXTRA_FILE\n"
         "m05_isolated_manager_admission.py\n",
         encoding="utf-8",
     )
@@ -1537,7 +1538,9 @@ def test_isolated_map_network_allowlists_the_bridge_gateway_for_host_publish(
 
     subnet, gateway, api, frontend = driver._map_network_addresses("a" * 32)
 
-    assert subnet == "172.29.170.0/29"
+    # /28 확장 근거는 driver의 _map_network_addresses 주석 참조(app-api join +
+    # provider fixture까지 담아야 IPAM 고갈이 없다 — 2026-09-01 적대 리뷰).
+    assert subnet == "172.29.170.0/28"
     assert (gateway, api, frontend) == ("172.29.170.1", "172.29.170.2", "172.29.170.3")
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
@@ -1763,10 +1766,15 @@ def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environmen
         pinvi_source_revision="d" * 40,
         execution_identity_sha256="c" * 64,
         admission_path=admission,
+        compose_extra_file=Path("/private/runtime/pinvi.override.yml"),
     )
 
     assert environment == {
         "PINVI_ENV_FILE": "/private/runtime/pinvi.env",
+        # app-api 첫 기동부터 Map network join이 걸리도록 override를 docker-app.sh
+        # compose에 겹친다 — reconciliation preflight가 startup에서 Map lease를
+        # 소비하므로 override 없는 첫 up은 결정적으로 실패한다(2026-09-01 실측).
+        "PINVI_DOCKER_COMPOSE_EXTRA_FILE": "/private/runtime/pinvi.override.yml",
         "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE": "/private/runtime/pinvi-admin.json",
         "PINVI_DOCKER_PROJECT": "m05i-pinvi-" + "e" * 32,
         "PINVI_SOURCE_REVISION": "d" * 40,

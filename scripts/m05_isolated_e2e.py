@@ -105,6 +105,10 @@ _PINVI_MANAGER_ADMISSION_FILES = (
 _PINVI_MANAGER_ADMISSION_TOKENS = frozenset(
     {
         "PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH",
+        # driver는 첫 up부터 override를 겹치는 PinVi 쪽 overlay 지원에 hard-depend
+        # 한다. 지원 없는 stale pin이면 env가 조용히 무시돼 같은 timeout이 진단
+        # 없이 재현되므로, 소스 텍스트 계약으로 fail-close한다.
+        "PINVI_DOCKER_COMPOSE_EXTRA_FILE",
         "PINVI_M05_PINSET_SHA256",
         "PINVI_M05_EXECUTION_IDENTITY_SHA256",
         "m05_isolated_manager_admission.py",
@@ -1020,7 +1024,11 @@ def _map_network_addresses(transaction: str) -> tuple[str, str, str, str]:
                     existing.append(subnet)
     seed = int(transaction[:8], 16)
     for offset in range(224):
-        candidate = ipaddress.ip_network(f"172.29.{(seed + offset) % 224}.0/29")
+        # /28: gateway + Map postgres/rustfs/api/frontend + PinVi app-api join +
+        # provider fixture one-shot까지 담아야 한다. /29(host 6)는 app-api join
+        # 시점에 만석이라 fixture `docker run --network`가 IPAM 고갈로 죽는다
+        # (적대 리뷰 계산 실측).
+        candidate = ipaddress.ip_network(f"172.29.{(seed + offset) % 224}.0/28")
         if not any(candidate.overlaps(item) for item in existing):
             hosts = list(candidate.hosts())
             return str(candidate), str(hosts[0]), str(hosts[1]), str(hosts[2])
@@ -1559,11 +1567,17 @@ def _pinvi_manager_admission_environment(
     pinvi_source_revision: str,
     execution_identity_sha256: str,
     admission_path: Path,
+    compose_extra_file: Path,
 ) -> dict[str, str]:
     """Manager가 검증한 admission tuple과 one-shot credential 경로만 전달한다."""
 
     return {
         "PINVI_ENV_FILE": str(env_file),
+        # app-api는 첫 기동부터 external Map network에 join해야 한다 — reconciliation
+        # worker preflight가 startup에서 Map lease를 실제로 소비하므로, override 없이
+        # 뜨면 Map에 닿지 못해 docker-app.sh의 health 대기가 결정적으로 실패한다
+        # (2026-09-01 isolated 실측: app-api 내부에서 Map API로 timeout).
+        "PINVI_DOCKER_COMPOSE_EXTRA_FILE": str(compose_extra_file),
         # ``docker-app.sh``는 Compose에는 ``PINVI_ENV_FILE``를 넘기지만, migration
         # 전 host-side bootstrap validator는 현재 process 환경에서 이 path를 읽는다.
         # credential 내용은 env에 넣지 않고, owner-only absolute host file path만
@@ -2063,7 +2077,10 @@ def main(expected_revision: str, output: Path) -> int:
             # isolated loopback publish 하나로 교체하려면 Compose의 !override여야 한다.
             "    ports: !override",
             f"      - 127.0.0.1:{ports['map_api']}:13701",
-            "    networks: !reset",
+            # networks도 ports와 같은 이유로 !override다 — !reset은 중첩 값
+            # (ipv4_address)까지 통째로 버려 정적 주소가 적용되지 않는다
+            # (적대 리뷰 실측: 렌더 결과 default: null).
+            "    networks: !override",
             "      default:",
             f"        ipv4_address: {map_api_ip}",
             "  frontend:",
@@ -2071,7 +2088,7 @@ def main(expected_revision: str, output: Path) -> int:
             *[f"      {key}: {value}" for key, value in plan.labels.items()],
             "      io.pinvi.build.environment: isolated",
             "    ports: !reset []",
-            "    networks: !reset",
+            "    networks: !override",
             "      default:",
             f"        ipv4_address: {map_frontend_ip}",
             "networks:",
@@ -2278,6 +2295,7 @@ def main(expected_revision: str, output: Path) -> int:
             pinvi_source_revision=pair.pinvi_source_revision,
             execution_identity_sha256=plan.execution_identity_sha256,
             admission_path=pinvi_admission,
+            compose_extra_file=pinvi_override,
         )
         for action in ("build", "up"):
             try:
@@ -2296,21 +2314,10 @@ def main(expected_revision: str, output: Path) -> int:
                         stderr=error.stderr,
                     )
                 raise
-        _compose(
-            root=pinvi_root,
-            project=plan.pinvi_project,
-            env_file=pinvi_env,
-            files=pinvi_files,
-            arguments=(
-                "up",
-                "--detach",
-                "--no-build",
-                "--force-recreate",
-                "--wait",
-                "app-api",
-                "app-web",
-            ),
-        )
+        # 종전의 `up --force-recreate app-api app-web` 재기동은 제거했다:
+        # docker-app.sh up이 이미 같은 override 세트로 기동·health까지 확인하고,
+        # 재기동은 startup preflight의 Map lease를 두 번째로 소비해 첫 lease와의
+        # 경합(409)을 스스로 만들 수 있다(적대 리뷰).
         _compose(
             root=pinvi_root,
             project=plan.pinvi_project,
