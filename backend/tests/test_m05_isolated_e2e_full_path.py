@@ -2147,24 +2147,20 @@ def test_regression_profileless_app_dagster_lookup_burns_the_body(
 
 
 # ---------------------------------------------------------------------------
-# 이 하네스가 새로 드러낸 계약 구멍 (현재 실패 — 고쳐지면 XPASS로 알린다)
+# 이 하네스가 드러낸 계약 구멍의 회귀 가드 (#295에서 수리됨)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ledger claim 이전의 scoped 실패(ports_unavailable / runtime_setup_* / "
-        "runtime_setup_playwright_runner_image / network_subnet_unavailable)는 "
-        "status=preflight_rejected로 나오지만 launcher의 PREFLIGHT_REJECTED_PHASES에 "
-        "없어 receipt 검증이 ValueError로 떨어진다. 그러면 launcher는 fallback으로 "
-        "`ktdctl pin block-execution`을 실행해 **보정 가능한** 실패가 execution을 "
-        "무조건 소각한다. driver는 실행권을 소비하지 않았는데 pinset이 타는 구멍이다."
-    ),
-)
-def test_preclaim_scoped_rejection_should_be_accepted_by_the_launcher(
+def test_preclaim_scoped_rejection_is_accepted_by_the_launcher(
     harness: _Harness,
 ) -> None:
+    """claim 이전의 scoped 실패는 launcher가 exit 4(무소비)로 받아야 한다.
+
+    이 테스트는 이 하네스가 처음 적발한 구멍이다. driver는 자유형 진단을
+    receipt에 실었고 launcher는 그 필드를 닫힌 enum으로만 받아, 보정 가능한
+    실패가 `pin block-execution`으로 흘러 실행권을 무조건 소각했다. #295가
+    launcher 검증을 권위/진단 두 계층으로 갈라 수리했다."""
+
     harness.host.playwright_driver_version = "1.60.0"
 
     assert harness.run() == 1
