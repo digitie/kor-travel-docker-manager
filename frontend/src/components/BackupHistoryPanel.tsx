@@ -23,19 +23,15 @@ import { HumanError, humanizeError } from '@/lib/errors';
 import CopyableCommand from './CopyableCommand';
 import InlineError from './InlineError';
 
-const ROLE_OPTIONS: Array<{ value: StandaloneBackupManifest['role'] | 'all'; label: string }> = [
-  { value: 'all', label: '전체' },
-  { value: 'geo', label: 'geo' },
-  { value: 'geo_dagster', label: 'geo_dagster' },
-  { value: 'concierge', label: 'concierge' },
-  { value: 'map_application', label: 'map_application' },
-  { value: 'map_dagster', label: 'map_dagster' },
-  { value: 'pinvi', label: 'pinvi' },
-];
+// GM-18: role 목록의 정본은 backend standalone_backup.py의 BACKUP_ROLES고,
+// `GET /api/v1/backups`의 `roles` 필드로 온다 — 여기서 하드코딩하면 새 role 추가 시
+// 백엔드는 이미 인식하는데 이 select/생성 버튼만 조용히 못 보게 된다.
 
 // scripts/run-standalone-backup.sh가 확정한 cron 주기(하루 1회). 나머지 role은 그
 // wrapper의 대상이 아니므로 배지를 달지 않는다 — 없는 기대치로 경고를 만들지 않는다.
-const EXPECTED_INTERVAL_HOURS: Partial<Record<StandaloneBackupManifest['role'], number>> = {
+// 이 정책은 config에서 파생할 수 없다(cron wrapper의 하드코딩된 대상 목록을 그대로
+// 미러링한 것) — role 목록 자체와 달리 이 표는 의도적으로 남겨둔다.
+const EXPECTED_INTERVAL_HOURS: Partial<Record<string, number>> = {
   geo_dagster: 24,
   concierge: 24,
   pinvi: 24,
@@ -46,7 +42,7 @@ const BACKUP_TIMEOUT_SECONDS = 14_400;
 
 /** 누르기 전에 알아야 할 유일한 숫자. role마다 규모가 달라 문구도 달라야 한다 —
  * pinvi 백업을 확인하는데 geo 경고가 뜨면 그 경고를 읽지 않게 된다. */
-function durationWarning(role: StandaloneBackupManifest['role']): string {
+function durationWarning(role: string): string {
   const tail = '브라우저를 닫아도 진행됩니다. 상한은 4시간입니다.';
   if (role === 'geo') {
     return `geo는 수 시간이 걸릴 수 있습니다(실측 879초~22분). ${tail}`;
@@ -79,7 +75,7 @@ function formatTimestamp(createdAtUnix: number): string {
 }
 
 export default function BackupHistoryPanel({ onClose }: { onClose: () => void }) {
-  const [role, setRole] = useState<StandaloneBackupManifest['role'] | 'all'>('all');
+  const [role, setRole] = useState<string>('all');
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobError, setJobError] = useState<HumanError | null>(null);
   // GM-14: 백업 자체는 시작됐지만 그 사실을 남기는 감사 로그 기록이 실패했을
@@ -195,11 +191,13 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     (entry): entry is StandaloneBackupManifest => !isUnreadableBackupEntry(entry)
   );
   const running = job?.state === 'running';
+  // GM-18: 정본은 backend가 실어 보내는 roles다 — 아직 로딩 전이면 빈 배열이라
+  // select/생성 버튼은 '전체'만 보이다가 응답이 오면 채워진다.
+  const roles = allBackups?.roles ?? [];
 
   // role별 최신 백업 시각. 기대 주기가 있는 role만 신선도를 판정한다.
-  const freshness = ROLE_OPTIONS.filter((option) => option.value !== 'all')
-    .map((option) => {
-      const value = option.value as StandaloneBackupManifest['role'];
+  const freshness = roles
+    .map((value) => {
       const expected = EXPECTED_INTERVAL_HOURS[value];
       if (expected === undefined) return null;
       const newest = everyBackup
@@ -214,9 +212,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       const hours = (Date.now() / 1000 - newest) / 3600;
       return { role: value, hours, stale: hours > expected * FRESHNESS_WARN_MULTIPLIER };
     })
-    .filter((row): row is { role: StandaloneBackupManifest['role']; hours: number | null; stale: boolean } =>
-      row !== null
-    );
+    .filter((row): row is { role: string; hours: number | null; stale: boolean } => row !== null);
 
   return (
     <div
@@ -253,20 +249,22 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       <div className="overflow-y-auto p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div className="flex flex-wrap gap-2">
-            {ROLE_OPTIONS.map((option) => (
-              <button
-                className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
-                  role === option.value
-                    ? 'ops-button ops-button--primary'
-                    : 'ops-button'
-                }`}
-                key={option.value}
-                onClick={() => setRole(option.value)}
-                type="button"
-              >
-                {option.label}
-              </button>
-            ))}
+            {[{ value: 'all', label: '전체' }, ...roles.map((value) => ({ value, label: value }))].map(
+              (option) => (
+                <button
+                  className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
+                    role === option.value
+                      ? 'ops-button ops-button--primary'
+                      : 'ops-button'
+                  }`}
+                  key={option.value}
+                  onClick={() => setRole(option.value)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              )
+            )}
           </div>
           <div className="flex gap-2">
             <button

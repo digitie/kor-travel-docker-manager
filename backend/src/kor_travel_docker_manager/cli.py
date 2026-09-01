@@ -36,6 +36,9 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     read_published_pinned_runtime_generation,
     read_rebuild_journal,
 )
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    RUNTIME_SOURCE_ROLES,
+)
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     block_current_execution,
@@ -1903,7 +1906,10 @@ def build_parser() -> argparse.ArgumentParser:
     pin_rotate = pin_subparsers.add_parser(
         "rotate", help="한 role의 revision을 교체하고 digest를 자동 계산합니다."
     )
-    pin_rotate.add_argument("--role", required=True, choices=["map", "pinvi"])
+    # GM-18: pinned pair role의 정본은 pinned_runtime_release.RUNTIME_SOURCE_ROLES다
+    # (pair 구조 자체는 ADR-40으로 동결돼 있어 role 추가는 이 choices 하나로 끝나는
+    # 일이 아니지만, 적어도 이 목록이 정본과 따로 노는 두 번째 리터럴이 되는 것은 막는다).
+    pin_rotate.add_argument("--role", required=True, choices=list(RUNTIME_SOURCE_ROLES))
     pin_rotate.add_argument("--revision", required=True, help="40-hex commit SHA입니다.")
     pin_rotate.add_argument(
         "--reason",

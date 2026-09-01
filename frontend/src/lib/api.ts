@@ -189,7 +189,9 @@ export type LoginAuditEvent = {
 /** `ktdctl db-backup create`가 생성하는 standalone DB backup manifest 항목
  * (issue #177). `GET /api/v1/backups` 응답 요소. */
 export type StandaloneBackupManifest = {
-  role: 'geo' | 'geo_dagster' | 'concierge' | 'map_application' | 'map_dagster' | 'pinvi';
+  // GM-18: role 값의 정본은 backend standalone_backup.py의 BACKUP_ROLES다 — 여기서
+  // 리터럴 union을 다시 적으면 새 role 추가 시 이 타입만 조용히 구식으로 남는다.
+  role: string;
   created_at_unix: number;
   duration_sec: number;
   sha256: string;
@@ -213,6 +215,9 @@ export type UnreadableBackupEntry = {
  * 이 API는 mutation을 노출하지 않는 읽기 전용 목록이다. */
 export type BackupListResponse = {
   backups: (StandaloneBackupManifest | UnreadableBackupEntry)[];
+  /** GM-18: 백엔드 BACKUP_ROLES 정본 목록 — 프론트는 이 값에서 select/생성 버튼을
+   * 파생하고 별도로 role 목록을 하드코딩하지 않는다. */
+  roles: string[];
 };
 
 /** `POST /api/v1/backups/{role}`의 202 응답이자 `GET .../jobs/{id}` 폴링 응답.

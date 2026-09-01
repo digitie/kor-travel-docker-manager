@@ -857,6 +857,34 @@ def test_pin_parser_registers_every_leaf_command():
         assert callable(args.func)
 
 
+def test_pin_rotate_role_choices_come_from_the_canonical_runtime_source_roles():
+    """GM-18: `pin rotate --role`의 choices는 `RUNTIME_SOURCE_ROLES`(정본,
+    pinned_runtime_release.py)에서 가져와야 한다 — 여기서 독립적으로
+    `["map", "pinvi"]`를 다시 적으면 정본이 바뀌어도 이 CLI만 조용히
+    구식으로 남을 수 있다."""
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        RUNTIME_SOURCE_ROLES,
+    )
+
+    parser = build_parser()
+
+    # 정본에 있는 각 role은 그대로 받아들여야 한다.
+    for role in RUNTIME_SOURCE_ROLES:
+        args = parser.parse_args(
+            ["pin", "rotate", "--role", role, "--revision", "a" * 40, "--reason", "r"]
+        )
+        assert args.role == role
+
+    # 정본에 없는 값은 choices 제약으로 거부돼야 한다(하드코딩된 목록이 아니라
+    # 실제로 RUNTIME_SOURCE_ROLES를 참조하고 있다는 것의 반증 — 이 값이 우연히
+    # 통과하면 choices가 더 이상 정본과 연결돼 있지 않다는 뜻이다).
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["pin", "rotate", "--role", "not-a-real-role", "--revision", "a" * 40, "--reason", "r"]
+        )
+
+
 @pytest.mark.parametrize(
     "argv",
     [

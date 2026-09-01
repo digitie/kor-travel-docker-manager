@@ -20,7 +20,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.public_api_key_service import public_api_key_is_valid
-from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+from kor_travel_docker_manager.services.standalone_backup import (
+    BACKUP_ROLES,
+    StandaloneBackupError,
+)
 
 FRONTEND_ORIGIN = "http://localhost:12905"
 os.environ["KTDM_ADMIN_USERNAME"] = "admin"
@@ -1267,6 +1270,9 @@ def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
         "map_dagster",
         "pinvi",
     }
+    # GM-18: 프론트가 select/생성 버튼 role 목록을 하드코딩하지 않고 여기서 파생할 수
+    # 있도록, 응답이 canonical 목록을 함께 실어야 한다.
+    assert data["roles"] == list(BACKUP_ROLES)
 
 
 @patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
@@ -1304,7 +1310,10 @@ def test_get_backups_filters_by_role(mock_list):
                 "toc_entry_count": 2,
                 "alembic_head": "0001_head",
             }
-        ]
+        ],
+        # GM-18: role 필터가 걸려도 roles는 항상 전체 canonical 목록이다 — "무엇을
+        # 고를 수 있는가"는 지금 보고 있는 필터와 무관하다.
+        "roles": list(BACKUP_ROLES),
     }
     mock_list.assert_called_once_with("pinvi")
 
@@ -2010,6 +2019,27 @@ def test_post_runtime_pin_request_records_a_proposal_not_a_rotation(
     assert "apply-pending" in body["next_action"]
     # 요청은 파일 하나일 뿐이고 registry는 건드리지 않는다.
     assert isolated_pin_requests.exists()
+
+
+def test_post_runtime_pin_request_rejects_a_role_outside_the_canonical_set(
+    isolated_pin_requests,
+):
+    """GM-18: `RuntimePinRotationRequestBody.role`은
+    `pinned_runtime_release.RuntimeSourceRole`(정본)을 참조해야 한다 —
+    독립적으로 `Literal["map", "pinvi"]`를 다시 적으면 정본이 바뀔 때
+    이 라우트만 조용히 구식으로 남을 수 있다. Pydantic 검증이 라우트
+    본문에 들어가기도 전에 422로 거부하므로 published pins mock조차
+    필요 없다."""
+
+    login_client()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "not-a-real-role", "revision": "d" * 40, "reason": "x"},
+    )
+
+    assert response.status_code == 422
+    assert not isolated_pin_requests.exists()
 
 
 @patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")

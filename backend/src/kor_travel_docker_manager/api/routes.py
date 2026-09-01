@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -37,6 +37,9 @@ from kor_travel_docker_manager.services.pinned_rebuild_preflight import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     read_published_pinned_runtime_generation,
+)
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    RuntimeSourceRole,
 )
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
@@ -95,7 +98,9 @@ class BackupCreateRequest(BaseModel):
 class RuntimePinRotationRequestBody(BaseModel):
     """UI가 남기는 회전 **요청** 본문. 이 값이 pin이 되지는 않는다."""
 
-    role: Literal["map", "pinvi"]
+    # GM-18: 정본은 pinned_runtime_release.RuntimeSourceRole이다 — 여기서
+    # Literal["map", "pinvi"]를 다시 적으면 그 타입과 독립적으로 어긋날 수 있다.
+    role: RuntimeSourceRole
     revision: str = Field(..., min_length=40, max_length=40, pattern=r"^[0-9a-f]{40}$")
     reason: str = Field(..., min_length=1, max_length=500)
 
@@ -161,7 +166,11 @@ def get_backups(role: str | None = Query(default=None)):
     # 손상된 항목들이 실제 발생 시점과 무관하게 응답 맨 앞에 뭉친다. +inf를 써서
     # 항상 맨 뒤로 보낸다(정렬 키로만 쓰이고 응답 JSON에는 들어가지 않는다).
     backups.sort(key=lambda item: item.get("created_at_unix", float("inf")))
-    return {"backups": backups}
+    # GM-18: role 목록의 정본은 이 모듈이 이미 파생하는 BACKUP_ROLES 하나다 — 프론트가
+    # select/생성 버튼 목록을 별도로 하드코딩하지 않고 여기서 파생하도록 함께 싣는다.
+    # `role` 필터 유무와 무관하게 항상 전체 canonical 목록을 싣는다(필터링된 응답이라도
+    # "무엇을 고를 수 있는가"는 바뀌지 않는다).
+    return {"backups": backups, "roles": list(BACKUP_ROLES)}
 
 
 @router.get("/backups/offbox-sync-status")
