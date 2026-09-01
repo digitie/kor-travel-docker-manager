@@ -3369,11 +3369,16 @@ class ComposeService:
         """GM-20: docker_service.py가 자신이 이미 확보한 host lock 아래에서 직접
         호출하도록 공개 승격했다(이전에는 프라이빗 크로스 모듈 호출이었다).
 
-        **선행조건**: 호출자가 `c6c_deployment_lock_from_environment()` 컨텍스트
-        안에서만 호출해야 한다 — 이름의 "_unlocked"는 이 메서드 자신은 lock을
-        추가로 잡지 않는다는 뜻이지, lock 없이 안전하다는 뜻이 아니다. lock 없이
-        호출하면 동시 mutation과 경합해 읽은 compose 원문이 곧바로 stale해질 수
-        있다."""
+        **선행조건**: 호출자가 c6c deployment host lock(실제 flock)을 이미 잡고
+        있어야 한다 — 이름의 "_unlocked"는 이 메서드 자신은 lock을 추가로 잡지
+        않는다는 뜻이지, lock 없이 안전하다는 뜻이 아니다. 이 lock을 얻는 경로는
+        하나가 아니다: `c6c_deployment_lock_from_environment()`가 가장 흔하지만,
+        `rebuild_pinned_runtime`처럼 `pinned_runtime_rebuild_lock()` 경로를 타는
+        호출자는 `_pinned_runtime_rebuild_environment_lock()` 안에서
+        `c6c_deployment_lock(lock_snapshot.lock_path)`를 직접 잡아 같은 flock에
+        도달한다 — 어느 경로든 "이 host의 c6c deployment lock을 쥔 채로"만
+        만족하면 된다. lock 없이 호출하면 동시 mutation과 경합해 읽은 compose
+        원문이 곧바로 stale해질 수 있다."""
         if environment_snapshot is None:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None,

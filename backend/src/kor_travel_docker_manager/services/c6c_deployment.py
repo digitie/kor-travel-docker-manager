@@ -32,10 +32,8 @@ from kor_travel_docker_manager.services.capabilities import (
 )
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
+    ComposePostMutationContractError,
     DeploymentContractError,
-)
-from kor_travel_docker_manager.services.errors import (
-    ComposePostMutationContractError as ComposePostMutationContractError,
 )
 from kor_travel_docker_manager.services.loopback_readiness import (
     LOOPBACK_HTTP_READINESS_ATTEMPTS,
@@ -7036,3 +7034,15 @@ def _resolve_compose_path_variable(
             "compose candidate path requires a configured environment value"
         )
     return current
+
+
+# GM-20: 이 모듈이 재수출만 하고 내부에서는 쓰지 않는 이름을 ruff의 미사용 import
+# 경고에서 제외한다(metrics_collector.py:971의 3-이름 __all__과 같은 관례 —
+# 이 거대 모듈의 다른 공개 이름 전부를 여기 나열할 필요는 없다).
+__all__ = [
+    "ComposeCandidateContractError",
+    "ComposePostMutationContractError",
+    "DeploymentContractError",
+    "_MANAGED_COMPOSE_MUTATION_CAPABILITY",
+    "_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY",
+]

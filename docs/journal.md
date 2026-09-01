@@ -2,6 +2,76 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-01 — GM 트랙 GM-11~GM-20 순차 이행 (P1 7건에 이어 P2 10건 중 9건 완료)
+
+GM 트랙 개시 뒤 P1 7건(GM-01~GM-07)과 P2 3건(GM-08~GM-10)에 이어, 나머지 P2
+10건(GM-11~GM-20)을 우선순위 순으로 순차 이행했다. 각 태스크는 구현 →
+전문 적대 리뷰 2인(독립, 병렬) → 발견 반영 → mutation 검증 → 커밋/푸시의
+동일한 주기를 거쳤고, 매 커밋 전 시크릿 스캔·rebase 확인을 거쳤다. GM-17만
+오너 결정으로 범위를 축소했다 — 나머지는 전건 완료.
+
+- **GM-11**: `docker-targets.yml` 스키마 사전 검증(`yaml_strict.py`)을 신설해
+  오타 하나로 CLI/API 전체가 raw `KeyError`로 죽던 결함을 없앴다.
+- **GM-12**: `main.py`에 예외 핸들러 3종을 모아 API 오류 envelope를
+  통일했다. 기존 ~20곳의 평문 문자열 단언을 보존하기 위해 base
+  `DeploymentContractError`의 `detail`은 dict로 바꾸지 않는 제약을
+  확정했다(이후 GM-16의 `request_id`도 이 제약을 지켜 형제 키로 추가).
+- **GM-13**: manifest 하나의 손상·형식 위반이 백업 목록 전체를 409로
+  지우던 것을 개별 `{"state": "unreadable"}` 행으로 격리하고, 재기동 후
+  이중 `pg_dump`를 막는 가드를 추가했다.
+- **GM-14**: `post_backup`의 동기 감사 기록과 `metrics_collector`의
+  `cleanup_old_metrics`/`save_metric`을 `asyncio.to_thread`로 내려 event
+  loop 전체 정지를 막았다. SQLite `busy_timeout` PRAGMA도 추가.
+- **GM-15**: WebSocket 상태 broadcast에 3초 send timeout을 걸어, 느린
+  소켓 하나가 모든 탭의 갱신을 무기한 막던 결함을 제거했다.
+- **GM-16**: 이중 로깅(패키지+root 핸들러 중복 부착)을 제거하고 요청
+  상관관계 ID(`X-Request-ID`)를 신설해 UI 오류·서버 로그·감사 행을
+  하나로 이을 수 있게 했다. 리뷰가 감사 로그 주입 키가 `RuntimePinRequest`
+  자체의 도메인 `request_id`를 덮어쓰던 결함을 잡아 `http_request_id`로
+  분리했다.
+- **GM-17**(부분): 원안은 Map/PinVi 14개 서비스 존재 강제 완화와 bind
+  allowlist의 root-owned 설정 외부화였으나, production 보안 경계를 직접
+  건드리는 effort L 작업이라 오너에게 범위를 물었다. 재확인 과정에서
+  "안전한" `docker-compose.yml` 개인 경로 제거조차 로컬/n150 prod가
+  하드코딩 기본값에 의존 중임을 발견해 다시 보고했고, 오너는 최종적으로
+  `.env.example` 플레이스홀더 정리만 승인했다. 본작업은 `docs/tasks.md`에
+  후속 항목으로 남아 있다.
+- **GM-18**: 백업 role(`BACKUP_ROLES`)과 pinned pair role
+  (`RUNTIME_SOURCE_ROLES`)의 다층 하드코딩을 config 파생으로 정리했다.
+  `GET /api/v1/backups`가 이제 `roles` 필드를 실어 보내고 프론트가
+  거기서 파생한다. 리뷰가 CLI/API 회귀 테스트의 실제 보호 범위가
+  과장돼 있었음을 지적해(정본과 우연히 같은 값의 독립 하드코딩을
+  구분 못함) `RUNTIME_SOURCE_ROLES`를 monkeypatch로 바꿔치는 구조적
+  테스트를 추가했다.
+- **GM-19**: `c6c_deployment.py`·`compose_service.py`의 구세대 C6c 경로
+  ~760줄(원안 추정보다 깊었던 4단 map-dataset 검증 서브트리 포함,
+  `tarfile.extractall` 보안 민감 죽은 코드 포함)을 삭제했다. 기계적
+  line-range 삭제가 데코레이터 경계를 두 번 잘못 잘라 32건 테스트
+  실패로 즉시 드러났고 `git diff` 대조로 정확히 복구했다 — 대규모
+  삭제 뒤 전체 스위트 검증의 실사례가 됐다. 프론트 더미 의존성
+  (`react-hook-form`/`zod`)과 무소비 `port_policy`도 제거했고,
+  `require_public_api_key`에 `GET /metrics`의 `KTDM_METRICS_REQUIRE_KEY`
+  opt-in 게이트로 첫 실제 소비처를 만들어 `decisions.md`의 관련 open
+  항목을 종결했다.
+- **GM-20**(서비스 계층 분리 1단계): `services/errors.py`·
+  `services/capabilities.py`를 신설해 `DeploymentContractError` 계열과
+  mutation capability 센티널을 `c6c_deployment.py`(7,800줄대)에서
+  분리하고, 48개 이상 파일의 기존 import를 깨지 않도록 재수출했다.
+  `compose_service.py`의 두 transaction 캡처 메서드를 공개로 승격했고
+  (lock 선보유 규율은 docstring으로 명시, GM-19의 데코레이터 사고
+  직후라 인자 강제보다 저위험 옵션을 택함), `metrics_collector.py`↔
+  `docker_service.py`의 순환 import를 콜백 주입으로 끊었다(docker
+  client accessor를 `docker_service.py`가 자기 싱글턴 생성 직후
+  배선). 후속 c6c_deployment 4분할·compose_service 3분할은 이 태스크
+  범위 밖으로 남겼다.
+
+모든 태스크가 mutation 검증(각 회귀 테스트를 원복해 실패를 실측 확인한
+뒤 복구)을 거쳤고, 리뷰가 발견한 항목 중 이번 라운드에서 고치지 않은
+것(GM-17 본작업, `m05_isolated_harness.py`의 세 번째 pinned role
+리터럴 중복, `_resolve_repository_path` 테스트 커버리지 부재 등)은
+`docs/tasks.md`에 후속 항목으로 남겼다. 작업 브랜치
+`refactor/general-mgmt-improvements`, main에는 아직 머지하지 않았다.
+
 ## 2026-09-01 — 범용 관리툴 감사: 72개 발견 → 검증된 태스크 20건 (GM 트랙 개시)
 
 main `9916b33` 기준으로 저장소 전체를 "범용 관리툴" 관점에서 분석했다. 6개 관점(백엔드
