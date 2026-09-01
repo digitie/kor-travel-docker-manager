@@ -651,6 +651,34 @@ envelope을 실제로 보존했다는 직접 증거. frontend `npm run type-chec
 `npm run lint`·`npm run build` 모두 통과. 전체 backend 1361 passed, 2 skipped,
 ruff 통과.
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 리뷰 A는 백엔드 정확성(MRO 디스패치,
+순서 의존성, base envelope 보존 필요성)을 mutation으로 전부 재현해 확인했고
+Critical/High/Medium 없이 종료했다(부수 정정: 커밋 메시지의 "~20곳 exact-dict
+단언"은 실측 mutation 결과 4건이었다 — 결론에는 영향 없음). 리뷰 B는
+프론트엔드에 집중해 다음을 찾았다.
+
+[Low, 리뷰 B] `AdminSettingsPanel.tsx`의 `loadPublicKeys`가 상태 분리
+과정에서 `patchKeyState({ error: null })`만 초기화하고 `message: null`을
+빠뜨렸다 — "새로고침" 버튼을 눌러도 이전 생성/폐기 성공 문구("공개 API 키를
+생성했습니다.")가 지워지지 않고 방금 일어난 일처럼 계속 남는 회귀였다.
+`message: null`을 함께 초기화하도록 고쳤다.
+
+[Medium, 리뷰 B] 이 정도 규모의 프론트엔드 오류 표시 리팩터링에 컴포넌트
+레벨 자동 회귀 테스트가 전혀 없다 — `@testing-library/react`/`jsdom` 같은
+렌더링 테스트 인프라 자체가 devDependencies에 없고, 실제 테스트는 순수 함수
+2건뿐이다(위 `loadPublicKeys` 버그도 자동 테스트가 아니라 코드 리뷰로만
+잡혔다). 테스트 인프라 신설 자체가 범위가 커서 `docs/tasks.md` 후속 항목으로
+남겼다.
+
+[Low, 리뷰 B] `api/admin.py`의 `PUBLIC_API_KEY_NOT_FOUND`처럼 GM-12 범위
+밖(`api/auth.py`·`api/admin.py`는 애초에 files 목록에서 제외됨)의 평문 토큰이
+`errors.ts`의 `CODE_MESSAGES`에 없어 `revokeKey` 실패 시 원문 토큰이 그대로
+제목에 노출되는 잔여 gap을 확인 — 이번 커밋이 만든 결함은 아니지만 문서에
+언급되지 않았던 점을 `docs/tasks.md`에 추가했다.
+
+frontend type-check/lint 재실행으로 fix 검증. 전체 backend는 변경 없음(이번
+라운드는 프론트엔드 한 줄 수정 + 문서만 반영).
+
 
 ## GM-13: 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다
 

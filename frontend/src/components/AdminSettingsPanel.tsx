@@ -77,7 +77,9 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
   }, []);
 
   const loadPublicKeys = useCallback(async () => {
-    patchKeyState({ error: null });
+    // 이전 생성/폐기 성공 문구를 새로고침 시점에 지운다 — 안 지우면 목록을 새로
+    // 불러온 뒤에도 예전 성공 메시지가 방금 일어난 일처럼 계속 남는다.
+    patchKeyState({ message: null, error: null });
     try {
       patchKeyState({
         keys: await apiJson<PublicApiKeySummary[]>('/api/v1/admin/public-api-keys'),
