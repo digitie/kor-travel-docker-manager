@@ -372,6 +372,50 @@ def test_public_api_key_lifecycle(monkeypatch):
     assert missing.status_code == 404
 
 
+def test_metrics_route_is_open_by_default(monkeypatch):
+    """GM-19: KTDM_METRICS_REQUIRE_KEY 미설정(기본값)이면 인증 없이 접근 가능해야
+    한다 — 기존 Prometheus scrape(config/prometheus/prometheus.yml)를 깨지 않는다."""
+    monkeypatch.delenv("KTDM_METRICS_REQUIRE_KEY", raising=False)
+    client.cookies.clear()
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+
+
+def test_metrics_route_requires_key_when_opted_in(monkeypatch):
+    """GM-19: KTDM_METRICS_REQUIRE_KEY=1이면 세션도 키도 없는 요청은 거부돼야
+    한다 — require_public_api_key에 첫 실제 소비처가 생긴 것의 회귀 검증."""
+    monkeypatch.setenv("KTDM_METRICS_REQUIRE_KEY", "1")
+    client.cookies.clear()
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 401
+
+
+def test_metrics_route_accepts_a_valid_key_when_opted_in(monkeypatch):
+    login_client()
+    created = client.post("/api/v1/admin/public-api-keys", json={"label": "metrics test"})
+    assert created.status_code == 200
+    key = created.json()["key"]
+    client.cookies.clear()
+
+    monkeypatch.setenv("KTDM_METRICS_REQUIRE_KEY", "1")
+    response = client.get("/metrics", params={"key": key})
+
+    assert response.status_code == 200
+
+
+def test_metrics_route_accepts_an_admin_session_when_opted_in(monkeypatch):
+    login_client()
+    monkeypatch.setenv("KTDM_METRICS_REQUIRE_KEY", "1")
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+
+
 @patch("kor_travel_docker_manager.api.routes.docker_service")
 def test_list_containers(mock_docker_service):
     login_client()

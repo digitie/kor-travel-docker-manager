@@ -622,7 +622,7 @@ API는 DB에 active로 등록한 Manager 전용 key만 받는다. Map UI는 Geo�
 
 ### 후속
 
-- (open) 공개 API surface가 실제로 추가될 때 `require_public_api_key` dependency를 붙이고 key 생략 허용 조건을 endpoint별로 검토한다.
+- (closed, GM-19) `require_public_api_key`는 부착된 라우트가 0개인 채 admin UI만 키 발급/폐기 흐름을 제공하는 가짜 보안 어포던스였다. 새 공개 API surface를 만드는 대신, 기존에 무인증이던 `GET /metrics`(0.0.0.0:12901에서 인프라 토폴로지 노출)에 `KTDM_METRICS_REQUIRE_KEY=1` opt-in 게이트로 첫 실제 소비처를 만들었다 — 기본값(미설정)은 기존 Prometheus scrape(127.0.0.1 전용)를 그대로 유지한다.
 - (open) 운영 프록시 배치가 확정되면 `KTDM_FRONTEND_ORIGINS`, `KTDM_CORS_ALLOW_ORIGINS`, `KTG_ADMIN_PROXY_SECRET` 값을 배포 런북에 비공개로 연결한다.
 
 ---

@@ -4,7 +4,6 @@ import os
 import re
 import stat
 import subprocess
-import tarfile
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -788,47 +787,6 @@ def _create_frozen_compose_descriptor(label: str) -> int:
     return descriptor
 
 
-def _clean_repository_revision(
-    configured_path: str,
-    *,
-    compose_directory: Path,
-    label: str,
-) -> str:
-    repository = _resolve_repository_path(
-        configured_path,
-        compose_directory=compose_directory,
-        label=label,
-    )
-
-    root = _run_git_read(repository, ["rev-parse", "--show-toplevel"], label=label)
-    try:
-        git_root = Path(root).resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise DeploymentContractError(f"{label} Git root cannot be resolved") from exc
-    if git_root != repository:
-        raise DeploymentContractError(
-            f"{label} build context must be the exact Git worktree root"
-        )
-    status = _run_git_read(
-        repository,
-        ["status", "--porcelain=v1", "--untracked-files=normal"],
-        label=label,
-        allow_output_whitespace=True,
-    )
-    if status:
-        raise DeploymentContractError(f"{label} build context worktree is not clean")
-    revision = _run_git_read(
-        repository,
-        ["rev-parse", "--verify", "HEAD"],
-        label=label,
-    )
-    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
-        raise DeploymentContractError(
-            f"{label} build context HEAD is not an exact lowercase commit"
-        )
-    return revision
-
-
 def _resolve_repository_path(
     configured_path: str,
     *,
@@ -847,111 +805,6 @@ def _resolve_repository_path(
     if not repository.is_dir():
         raise DeploymentContractError(f"{label} build context is not a directory")
     return repository
-
-
-@contextmanager
-def _c6c_source_snapshot_environment(
-    environment: Mapping[str, str],
-    *,
-    compose_path: str,
-    provenance: C6cBuildProvenance,
-) -> Iterator[dict[str, str]]:
-    """live 파일 대신 두 exact Git tree를 일회성 build context로 제공한다."""
-
-    compose_directory = Path(compose_path).resolve().parent
-    repositories = {
-        "KOR_TRAVEL_MAP_REPO_DIR": (
-            _resolve_repository_path(
-                environment.get("KOR_TRAVEL_MAP_REPO_DIR", "../kor-travel-map"),
-                compose_directory=compose_directory,
-                label="Map",
-            ),
-            provenance.map_source_revision,
-            "Map",
-        ),
-        "PINVI_REPO_DIR": (
-            _resolve_repository_path(
-                environment.get("PINVI_REPO_DIR", "../pinvi"),
-                compose_directory=compose_directory,
-                label="PinVi",
-            ),
-            provenance.pinvi_source_revision,
-            "PinVi",
-        ),
-    }
-    with tempfile.TemporaryDirectory(prefix="ktdm-c6c-source-") as temporary:
-        snapshot_root = Path(temporary)
-        build_environment = provenance.compose_environment()
-        for env_name, (repository, revision, label) in repositories.items():
-            target = snapshot_root / env_name.lower()
-            target.mkdir(mode=0o700)
-            _export_git_tree(repository, revision, target, label=label)
-            build_environment[env_name] = str(target)
-        yield build_environment
-
-
-def _export_git_tree(
-    repository: Path,
-    revision: str,
-    target: Path,
-    *,
-    label: str,
-) -> None:
-    tree = _run_git_read(
-        repository,
-        ["ls-tree", "-r", "--full-tree", revision],
-        label=label,
-        allow_output_whitespace=True,
-    )
-    if re.search(r"(?m)^160000 ", tree) is not None:
-        raise DeploymentContractError(
-            f"{label} build context Git submodules are not supported"
-        )
-    archive_path = target.parent / f"{target.name}.tar"
-    try:
-        completed = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repository),
-                "archive",
-                "--format=tar",
-                f"--output={archive_path}",
-                revision,
-            ],
-            cwd=get_project_root(),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise DeploymentContractError(
-            f"cannot snapshot {label} build context Git tree"
-        ) from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError(
-            f"cannot snapshot {label} build context Git tree"
-        )
-    try:
-        with tarfile.open(archive_path, mode="r:") as archive:
-            for member in archive.getmembers():
-                parts = Path(member.name).parts
-                if (
-                    not parts
-                    or Path(member.name).is_absolute()
-                    or ".." in parts
-                    or not (member.isfile() or member.isdir())
-                ):
-                    raise DeploymentContractError(
-                        f"{label} Git tree has an unsafe build context entry"
-                    )
-            archive.extractall(target)
-    except (OSError, tarfile.TarError) as exc:
-        raise DeploymentContractError(
-            f"cannot extract {label} build context Git tree"
-        ) from exc
-    finally:
-        archive_path.unlink(missing_ok=True)
 
 
 def _run_git_read(
@@ -1469,10 +1322,6 @@ def _map_source_environment_contract_version(
         payload,
     )
     return contract_version
-
-
-def get_c6c_deployment_lock_path() -> str:
-    return _capture_c6c_deployment_lock_snapshot().lock_path
 
 
 @dataclass(frozen=True)

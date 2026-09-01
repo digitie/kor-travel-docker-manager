@@ -5,15 +5,17 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from logging.handlers import BaseRotatingHandler
+from typing import Annotated
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from kor_travel_docker_manager.api.admin import router as admin_router
 from kor_travel_docker_manager.api.auth import router as auth_router
 from kor_travel_docker_manager.api.routes import router as container_router
+from kor_travel_docker_manager.api.security import require_public_api_key
 from kor_travel_docker_manager.api.websocket import router as ws_router
 from kor_travel_docker_manager.api.websocket import (
     shutdown_log_stream_executor,
@@ -38,6 +40,9 @@ from kor_travel_docker_manager.services.metrics_collector import (
     metrics_collector,
 )
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.public_api_key_service import (
+    PUBLIC_API_KEY_QUERY_PARAM,
+)
 
 # 프로젝트 루트 .env(gitignore 대상)에서 prod 공개 주소/CORS 설정을 읽어온다.
 # 개발 환경에서 .env가 없으면 아래 기본값(전체 허용)을 그대로 사용한다.
@@ -355,7 +360,26 @@ def health_check():
     return {"status": "healthy", "service": "kor-travel-docker-manager-backend"}
 
 
-@app.get("/metrics", include_in_schema=False, response_class=PlainTextResponse)
+# GM-19: require_public_api_key는 이전에 부착된 라우트가 0개인 미사용 게이트였다.
+# 기본값(미설정)은 기존 무인증 scrape(config/prometheus/prometheus.yml, 127.0.0.1
+# 전용)를 그대로 유지하고, KTDM_METRICS_REQUIRE_KEY=1로 명시 opt-in한 배포만
+# 인프라 토폴로지 노출(main.py 자체 host binding은 0.0.0.0일 수 있음)을 막는다.
+# env를 매 요청마다 읽는다 — import 시점에 한 번만 고정하면 테스트가 이 라우트를
+# 검증하려고 매번 모듈을 재로드해야 한다.
+def _metrics_auth_gate(
+    request: Request,
+    key: Annotated[str | None, Query(alias=PUBLIC_API_KEY_QUERY_PARAM)] = None,
+) -> None:
+    if os.environ.get("KTDM_METRICS_REQUIRE_KEY", "").strip() == "1":
+        require_public_api_key(request, key)
+
+
+@app.get(
+    "/metrics",
+    include_in_schema=False,
+    response_class=PlainTextResponse,
+    dependencies=[Depends(_metrics_auth_gate)],
+)
 def prometheus_metrics() -> PlainTextResponse:
     """Prometheus용 캐시 기반 컨테이너 상태·리소스 메트릭을 노출한다."""
     return PlainTextResponse(

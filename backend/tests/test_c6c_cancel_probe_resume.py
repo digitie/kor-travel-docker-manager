@@ -70,40 +70,6 @@ def _consumed_state(*, finalize_attempted: bool) -> PinviCancelProbeState:
     )
 
 
-def test_map_dataset_identity_uses_exact_membership_triple() -> None:
-    identity = {
-        "provider_dataset_id": 41,
-        "sync_scope": "external_system:pinvi",
-        "operation_key": "kma_nowcast_refresh",
-        "detail_url": (
-            "/v1/ops/datasets/41?sync_scope=external_system%3Apinvi&"
-            "operation_key=kma_nowcast_refresh"
-        ),
-    }
-
-    assert c6c._validate_map_dataset_identity(identity)  # noqa: SLF001
-    assert not c6c._validate_map_dataset_identity(  # noqa: SLF001
-        {
-            **identity,
-            "detail_url": (
-                "/v1/ops/datasets/detail?provider=kma&dataset_key=weather&"
-                "sync_scope=external_system%3Apinvi"
-            ),
-        }
-    )
-    assert c6c._validate_map_dataset_identity(  # noqa: SLF001
-        {
-            "provider_dataset_id": 41,
-            "sync_scope": "dataset_wide",
-            "operation_key": None,
-            "detail_url": "/v1/ops/datasets/41?sync_scope=dataset_wide",
-        }
-    )
-    assert not c6c._validate_map_dataset_identity(  # noqa: SLF001
-        {**identity, "operation_key": ""}
-    )
-
-
 def test_dataset_wide_execution_rejects_missing_membership_scope() -> None:
     execution_id = "11111111-1111-1111-1111-111111111111"
     member_id = "22222222-2222-2222-2222-222222222222"

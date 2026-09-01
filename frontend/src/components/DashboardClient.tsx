@@ -18,8 +18,6 @@ import {
   Boxes
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import { useForm } from 'react-hook-form';
-import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import BackupHistoryPanel from './BackupHistoryPanel';
 import RuntimePinPanel from './RuntimePinPanel';
@@ -59,10 +57,6 @@ import {
   statusLabel,
 } from '@/lib/containerPresentation';
 import { formatBytes, formatTimestamp } from '@/lib/format';
-
-// 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
-const _unusedForm = typeof useForm !== 'undefined';
-const _unusedZod = typeof z !== 'undefined';
 
 // Dynamic Import for Recharts to resolve 'Heavy library loaded eagerly' warning
 const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
