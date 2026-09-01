@@ -565,6 +565,33 @@ class _PinviRoleLifecycleError(DeploymentContractError):
         self.role_topology_block = role_topology_block
 
 
+@dataclass(frozen=True)
+class _ComposeFailureDiagnostic:
+    """pinned runtime rebuild 실패 진단을 사람이 읽는 문구와 기계 판독 코드로 나눈다.
+
+    ``message_suffix``는 로그·CLI에 그대로 보이는 문구다(``"; pinvi_role:code"``
+    형태, 하위호환 유지). ``pinvi_role_code``는 그 문구를 나중에 다시 파싱하지 않고
+    바로 쓰는 구조화된 값이다 — 문구 조립 형식(괄호 위치 등)이 바뀌어도 lifecycle
+    분류가 조용히 깨지지 않게 한다.
+    """
+
+    message_suffix: str
+    pinvi_role_code: str | None = None
+
+
+class PinnedRuntimeComposeFailure(DeploymentContractError):
+    """pinned runtime rebuild Compose 실행 실패. 진단 코드를 속성으로 전달한다.
+
+    ``_pinvi_lifecycle_diagnostic``는 이 속성을 우선 쓰고, 이 타입이 아니거나 속성이
+    없는 예외에 대해서만 메시지 재파싱으로 폴백한다 — 기존 경로를 깨지 않는 additive
+    변경이다.
+    """
+
+    def __init__(self, message: str, *, pinvi_role_diagnostic: str | None = None) -> None:
+        super().__init__(message)
+        self.pinvi_role_diagnostic = pinvi_role_diagnostic
+
+
 # fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
 
 
@@ -4987,11 +5014,13 @@ class ComposeService:
         diagnostic = (
             self._pinned_runtime_compose_failure_diagnostic(args, result)
             if allow_typed_error_diagnostic
-            else ""
+            else _ComposeFailureDiagnostic(message_suffix="")
         )
-        raise DeploymentContractError(
+        raise PinnedRuntimeComposeFailure(
             "pinned runtime rebuild Compose "
-            f"{compose_action} command failed (exit {result['returncode']}{diagnostic})"
+            f"{compose_action} command failed "
+            f"(exit {result['returncode']}{diagnostic.message_suffix})",
+            pinvi_role_diagnostic=diagnostic.pinvi_role_code,
         )
 
     @staticmethod
@@ -5009,12 +5038,17 @@ class ComposeService:
     def _pinned_runtime_compose_failure_diagnostic(
         args: Sequence[str],
         result: Mapping[str, Any],
-    ) -> str:
-        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다."""
+    ) -> _ComposeFailureDiagnostic:
+        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다.
+
+        ``pinvi_role_code``는 pinvi_role 대상일 때만 채운다 — 그 값이
+        ``_pinvi_lifecycle_diagnostic``이 메시지를 재파싱하지 않고 바로 쓰는
+        구조화된 판정 결과다.
+        """
 
         compose_action = ComposeService._pinned_runtime_compose_action(args)
         if compose_action != "run":
-            return ""
+            return _ComposeFailureDiagnostic(message_suffix="")
         target = args[-1] if args else ""
         for stream_name in ("stderr", "stdout"):
             output = result.get(stream_name)
@@ -5031,7 +5065,10 @@ class ComposeService:
                             candidate.strip()
                         )
                         if code is not None:
-                            return f"; pinvi_role:{code}"
+                            return _ComposeFailureDiagnostic(
+                                message_suffix=f"; pinvi_role:{code}",
+                                pinvi_role_code=code,
+                            )
                     try:
                         payload = json.loads(
                             candidate,
@@ -5050,7 +5087,7 @@ class ComposeService:
                             and isinstance(code, str)
                             and code in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
                         ):
-                            return f"; {code}"
+                            return _ComposeFailureDiagnostic(message_suffix=f"; {code}")
                         continue
                     if target == "pinvi-admin-bootstrap":
                         code = payload.get("error_code")
@@ -5062,15 +5099,35 @@ class ComposeService:
                             and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
                             == phase
                         ):
-                            return f"; pinvi:{code}"
+                            # 두 코드 공간(role/admin-bootstrap)이 같은 다운스트림
+                            # ``_pinvi_lifecycle_diagnostic`` 판정으로 합류하므로 같은
+                            # 속성에 싣는다. 두 enum이 겹치지 않아 충돌하지 않는다.
+                            return _ComposeFailureDiagnostic(
+                                message_suffix=f"; pinvi:{code}",
+                                pinvi_role_code=code,
+                            )
         if target == _PINVI_DB_RUNTIME_ROLE_SERVICE:
-            return "; pinvi_role:unclassified"
-        return ""
+            return _ComposeFailureDiagnostic(
+                message_suffix="; pinvi_role:unclassified",
+                pinvi_role_code="unclassified",
+            )
+        return _ComposeFailureDiagnostic(message_suffix="")
 
     @staticmethod
     def _pinvi_lifecycle_diagnostic(error: BaseException) -> str:
-        """이미 allowlist한 PinVi one-shot 코드만 lifecycle 오류에 보존한다."""
+        """이미 allowlist한 PinVi one-shot 코드만 lifecycle 오류에 보존한다.
 
+        ``PinnedRuntimeComposeFailure``가 코드를 속성으로 실어 오면 그것을 그대로
+        쓴다 — 메시지 문구·괄호 위치가 바뀌어도 판정이 깨지지 않는다. 그 타입이
+        아니거나 속성이 비어 있으면(다른 경로에서 온 예외, 과거 raw 예외 등) 기존
+        메시지 재파싱으로 폴백한다.
+        """
+
+        if (
+            isinstance(error, PinnedRuntimeComposeFailure)
+            and error.pinvi_role_diagnostic is not None
+        ):
+            return error.pinvi_role_diagnostic
         message = str(error)
         for code in _PINVI_DB_RUNTIME_ROLE_ERROR_CODES | {"unclassified"}:
             if f"; pinvi_role:{code})" in message:

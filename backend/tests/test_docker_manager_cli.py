@@ -961,6 +961,96 @@ def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, cap
     assert pin_cli_env.read_bytes() == before
 
 
+def test_pin_show_without_json_flag_still_only_prints_to_stderr(pin_cli_env, capsys):
+    """--json이 없으면 실패해도 stdout은 비운다 — 사람이 읽는 출력은 그대로 stderr다."""
+
+    assert main(["pin", "show"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "missing" in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv, patch_root",
+    [
+        (["pin", "show", "--json"], False),
+        (["pin", "verify", "--json"], False),
+        (
+            [
+                "pin",
+                "rotate",
+                "--role",
+                "map",
+                "--revision",
+                "a" * 40,
+                "--reason",
+                "r",
+                "--confirm",
+                "--json",
+            ],
+            False,
+        ),
+        (
+            [
+                "pin",
+                "rotate-pair",
+                "--map-revision",
+                "a" * 40,
+                "--pinvi-revision",
+                "b" * 40,
+                "--reason",
+                "r",
+                "--confirm",
+                "--json",
+            ],
+            False,
+        ),
+        (["pin", "block", "a" * 64, "--reason", "r", "--confirm", "--json"], True),
+        (
+            ["pin", "rollback", "--to", "a" * 64, "--reason", "r", "--confirm", "--json"],
+            False,
+        ),
+    ],
+)
+def test_pin_json_failures_always_emit_status_failed_json_to_stdout(
+    argv, patch_root, pin_cli_env, capsys
+):
+    """GM-06: --json이면 실패해도 stdout이 비지 않는다 (pin show-pending 관례 확장).
+
+    registry 파일이 없는 상태에서 각 pin 하위 명령을 --json으로 실행하면, 예전에는
+    stderr에만 사람이 읽는 메시지를 내고 stdout은 비웠다 — `| jq`가 파싱 대상 없이
+    죽는다. 이제는 stdout에 {"status": "failed", "detail": ...} JSON을 낸다.
+    """
+
+    if patch_root:
+        with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+            code = main(argv)
+    else:
+        code = main(argv)
+
+    captured = capsys.readouterr()
+    assert code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "missing" in payload["detail"]
+    assert "missing" in captured.err
+
+
+def test_pin_init_json_failure_emits_status_failed_json_to_stdout(
+    pin_cli_env, capsys, tmp_path
+):
+    missing_seed = tmp_path / "does-not-exist-seed.json"
+
+    code = main(["pin", "init", "--seed", str(missing_seed), "--confirm", "--json"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "missing" in payload["detail"]
+    assert "missing" in captured.err
+
+
 @patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
 @patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
 def test_pin_verify_allows_a_valid_terminal_generation_pending_new_pair(

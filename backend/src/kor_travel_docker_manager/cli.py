@@ -71,6 +71,7 @@ from kor_travel_docker_manager.services.runtime_pin_request import (
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
+    StandaloneBackupNotFoundError,
     create_standalone_backup,
     gc_standalone_backups,
     list_standalone_backups,
@@ -357,6 +358,26 @@ def _pin_actor() -> str:
         return f"uid:{os.getuid()}" if hasattr(os, "getuid") else "unknown"
 
 
+def _print_pin_registry_failure(exc: DeploymentContractError, *, json_output: bool) -> None:
+    """pin registry 계열 명령이 실패했을 때 --json이면 stdout에도 JSON을 낸다.
+
+    `pin show-pending`이 먼저 지킨 계약("--json은 어떤 경로에서도 stdout에 JSON만
+    낸다")을 init/show/verify/rotate/rotate-pair/block/rollback도 지키게 한다 —
+    그러지 않으면 실패 시 stdout이 비어 `| jq`가 죽는다.
+
+    여기서 다루는 예외(RuntimePinRegistryError·RuntimePairRotationError 등)는 전부
+    이 모듈이 조립한 안전한 문구다 — pinvi-pair rebuild의 unclassified contract
+    오류(원문 subprocess 출력을 감쌀 수 있음)와 달리 raw str(exc)를 그대로 노출해도
+    비밀이 새지 않는다. 그 다른 경로의 "노출 안 함" 계약은
+    test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json이
+    지키므로 여기서 건드리지 않는다.
+    """
+
+    if json_output:
+        print(json.dumps({"status": "failed", "detail": str(exc)}, ensure_ascii=False))
+    print(str(exc), file=sys.stderr)
+
+
 def _print_registry(registry: Any, *, json_output: bool) -> None:
     if json_output:
         print(json.dumps(registry.to_payload(), ensure_ascii=False, indent=2))
@@ -434,7 +455,7 @@ def _cmd_pin_init(args: argparse.Namespace) -> int:
                 registry, path=path, preserve_previous=existing is not None
             )
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     print(f"runtime pin registry bootstrapped at {path.name}")
     _print_registry(registry, json_output=args.json)
@@ -475,7 +496,7 @@ def _cmd_pin_show(args: argparse.Namespace) -> int:
     try:
         registry = load_runtime_pin_registry()
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     _print_registry(registry, json_output=args.json)
     return 0
@@ -486,7 +507,7 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         report = verify_runtime_pin_registry()
         pending_rotation = load_pending_runtime_pair_rotation()
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     generation = read_published_pinned_runtime_generation()
     generation_binding = generation.get("pinset_binding")
@@ -896,7 +917,7 @@ def _cmd_pin_rotate(args: argparse.Namespace) -> int:
                 block_previous=args.block_previous,
             )
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     except OSError as exc:
         _print_rotation_write_failure(exc)
@@ -950,7 +971,7 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
                     block_previous=args.block_previous,
                 )
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     except OSError as exc:
         _print_rotation_write_failure(exc)
@@ -977,7 +998,7 @@ def _cmd_pin_block(args: argparse.Namespace) -> int:
                 phase=args.phase,
             )
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     print(f"pinset {args.pinset} is now permanently blocked")
     _print_registry(registry, json_output=args.json)
@@ -1129,7 +1150,9 @@ def _cmd_db_backup_restore_plan(args: argparse.Namespace) -> int:
             )
         print(str(exc), file=sys.stderr)
         # "복원할 백업이 없다"는 도구 오류가 아니라 판정 결과다 — exit 1로 낸다.
-        return 1 if "no backup" in str(exc) else 2
+        # 문구가 아니라 타입으로 판정한다(문구를 다듬으면 판정이 조용히 어긋나는
+        # 문자열 매칭을 대체).
+        return 1 if isinstance(exc, StandaloneBackupNotFoundError) else 2
     if args.json:
         print(json.dumps(plan.to_json(), ensure_ascii=False, indent=2))
     else:
@@ -1496,7 +1519,7 @@ def _cmd_pin_rollback(args: argparse.Namespace) -> int:
                     reason=args.reason,
                 )
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     except OSError as exc:
         _print_rotation_write_failure(exc)

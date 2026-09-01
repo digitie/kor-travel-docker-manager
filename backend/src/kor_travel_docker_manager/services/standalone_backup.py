@@ -97,6 +97,14 @@ class StandaloneBackupError(RuntimeError):
     """백업 생성/조회/정리 중 발생한 fail-close 오류."""
 
 
+class StandaloneBackupNotFoundError(StandaloneBackupError):
+    """복원 대상 백업이 없다 — 도구 오류가 아니라 판정 결과다.
+
+    호출자가 exit code를 이 사실과 그 밖의 오류(잘못된 파일명 등)로 구분해야 할 때
+    ``isinstance``로 판별한다. 문구를 바꾸면 판정이 조용히 어긋나는 문자열 매칭
+    (예: ``"no backup" in str(exc)``)을 대체한다."""
+
+
 @dataclass(frozen=True)
 class BackupManifest:
     role: BackupRole
@@ -529,7 +537,7 @@ def plan_standalone_restore(
     root = _resolve_backup_root(role, backup_root)
     manifests = list_standalone_backups(role, backup_root=backup_root)
     if not manifests:
-        raise StandaloneBackupError(f"{role} has no backup to restore from")
+        raise StandaloneBackupNotFoundError(f"{role} has no backup to restore from")
     if backup_filename is None:
         manifest = max(manifests, key=lambda item: item.created_at_unix)
     else:
@@ -537,7 +545,7 @@ def plan_standalone_restore(
             raise StandaloneBackupError(f"backup filename is invalid: {backup_filename}")
         selected = [item for item in manifests if item.backup_filename == backup_filename]
         if not selected:
-            raise StandaloneBackupError(f"{role} has no backup named {backup_filename}")
+            raise StandaloneBackupNotFoundError(f"{role} has no backup named {backup_filename}")
         manifest = selected[0]
 
     dump_path = root / manifest.backup_filename
