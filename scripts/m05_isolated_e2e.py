@@ -159,6 +159,15 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     55: "metadata_contract_invalid",
     127: "unclassified",
 }
+# result.json의 map_fresh_init_reason은 **닫힌 어휘**다 — launcher receipt
+# 검증기가 FRESH_INIT_REASONS로 대조하고, 벗어나면 ValueError로 떨어져 claim
+# 전 실패도 무조건 소각으로 승격된다(full-path 시뮬레이션 적발). 그런데
+# _fail(diagnostic=...)은 사람이 읽는 자유형 문자열도 싣는다. 어휘는 여기서
+# 한 번만 선언하고(위 exit map에서 파생), 그 밖의 값은 이 필드에 싣지 않는다.
+# unclassified로 수렴시키지 않는 이유: 그 값은 "fresh-init runner가 미상 exit
+# code로 죽었다"는 **다른 사실**을 뜻해서, playwright 버전 불일치 같은 무관한
+# 진단에 붙이면 receipt가 거짓을 주장한다. 원문은 root 0600 forensic leaf로.
+_MAP_FRESH_INIT_REASONS = frozenset(_MAP_FRESH_INIT_EXIT_DIAGNOSTICS.values())
 # terminal pinset registry는 비-root도 읽는 감사 표면이다. driver의 예외 원문을
 # reason에 흘리지 않고, 다음 immutable candidate의 보정 범위만 나타내는 고정 phase만
 # 허용한다. 이 집합 밖의 값은 가장 좁은 안전 진단으로 수렴한다.
@@ -3073,6 +3082,23 @@ def main(expected_revision: str, output: Path) -> int:
                 )
             except Exception:  # noqa: BLE001, S110 - evidence-only boundary
                 pass
+        if (
+            os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
+            and failure_diagnostic is not None
+            and failure_diagnostic not in _MAP_FRESH_INIT_REASONS
+        ):
+            # receipt에는 unclassified만 실리므로 자유형 원문은 여기서만 남는다.
+            try:
+                _write_private_bytes(
+                    output
+                    / f"failed-{_public_terminal_phase(phase)}-diagnostic.txt",
+                    _scrub_forensic_bytes(failure_diagnostic.encode("utf-8"))[
+                        :_FORENSIC_CAPTURE_LIMIT
+                    ]
+                    or b"\n",
+                )
+            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
+                pass
     # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
     # 관측한다. 예상하지 못한 ordinary exception도 현재 allowlist 실행 경계로만
     # 수렴하므로, raw detail 없이 다음 immutable candidate의 보정 범위를 좁힐 수 있다.
@@ -3152,7 +3178,7 @@ def main(expected_revision: str, output: Path) -> int:
             "transaction_id": transaction,
             **result_hashes,
         }
-        if failure_diagnostic is not None:
+        if failure_diagnostic in _MAP_FRESH_INIT_REASONS:
             result["map_fresh_init_reason"] = failure_diagnostic
         try:
             _write_private_json(output / "result.json", result)

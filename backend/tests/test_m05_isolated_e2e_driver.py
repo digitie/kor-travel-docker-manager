@@ -2354,3 +2354,55 @@ def test_pinvi_receipt_wait_retries_only_the_not_yet_arrived_window(
     ).read_text(encoding="utf-8")
     assert "_PINVI_RECONCILIATION_POLL_SECONDS}" in source
     assert "_POLL_SECONDS=1" not in source
+
+
+def test_fresh_init_reason_vocabulary_mirrors_the_launcher_and_is_closed() -> None:
+    """map_fresh_init_reason은 닫힌 어휘여야 한다.
+
+    driver는 _fail(diagnostic=...)에 사람이 읽는 자유형 문자열도 싣는데,
+    launcher receipt 검증기는 FRESH_INIT_REASONS 밖의 값을 ValueError로
+    떨어뜨린다 — 그러면 claim 전 실패(preflight_rejected)도 fallback
+    `pin block-execution`으로 흘러 실행권이 무조건 소각된다.
+    (full-path 시뮬레이션이 playwright driverVersion 불일치 경로에서 적발.)
+
+    _PUBLIC_TERMINAL_PHASES ↔ launcher PHASES와 같은 미러 결박 규약이다."""
+
+    driver = _driver()
+    root = Path(__file__).resolve().parents[2]
+    launcher = (root / "scripts/run-m05-isolated-e2e-once").read_text(encoding="utf-8")
+    start = launcher.index("FRESH_INIT_REASONS = frozenset(")
+    end = launcher.index(")", launcher.index("}", start)) + 1
+    launcher_reasons = set(re.findall(r'"([a-z0-9_]+)"', launcher[start:end]))
+
+    assert set(driver._MAP_FRESH_INIT_REASONS) == launcher_reasons
+    # 어휘는 exit map에서 파생돼야 한다 — 재타이핑하면 같은 결함이 재발한다.
+    assert set(driver._MAP_FRESH_INIT_REASONS) == set(
+        driver._MAP_FRESH_INIT_EXIT_DIAGNOSTICS.values()
+    )
+    # unclassified는 "fresh-init runner가 미상 exit code로 죽었다"는 고유
+    # 의미를 갖는다 — 무관한 진단의 수렴처로 재사용하면 안 된다.
+    assert driver._MAP_FRESH_INIT_EXIT_DIAGNOSTICS[127] == "unclassified"
+
+
+def test_free_form_diagnostic_is_omitted_from_the_receipt() -> None:
+    """자유형 진단이 receipt에 그대로 실리면 launcher 검증이 깨진다.
+
+    어휘 밖 진단은 unclassified로 바꾸지 않고 필드 자체를 생략한다 —
+    unclassified는 fresh-init runner의 미상 exit code라는 고유 의미가 있어
+    무관한 진단에 붙이면 receipt가 거짓을 주장하게 된다."""
+
+    driver = _driver()
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "if failure_diagnostic in _MAP_FRESH_INIT_REASONS:\n"
+        '            result["map_fresh_init_reason"] = failure_diagnostic'
+    ) in source
+    assert 'result["map_fresh_init_reason"] = (' not in source
+
+    # 실제로 자유형 문자열을 쓰는 호출부가 존재함을 못 박는다(회귀 방지).
+    free_form = set(re.findall(r'diagnostic=\s*"([^"]{4,})"', source))
+    outside = {value for value in free_form if value not in driver._MAP_FRESH_INIT_REASONS}
+    assert outside, "자유형 진단이 사라졌다면 이 테스트의 전제를 재검토해야 한다"
