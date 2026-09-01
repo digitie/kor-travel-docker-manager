@@ -90,6 +90,12 @@ _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 _FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
 _FORENSIC_CAPTURE_LIMIT = 256 * 1024
+# PinVi reconciliation worker의 폴링 주기(초). driver가 PinVi에 주입하는 값과
+# receipt 대기 창을 **같은 상수**에서 파생시킨다 — 두 곳에 따로 적으면 창이
+# 주기보다 짧아져 receipt가 아직 없는 순간에 단발 실패한다(정합성 스윕 high).
+_PINVI_RECONCILIATION_POLL_SECONDS = 1
+# 워커가 lease→apply→ACK→receipt까지 가는 데 허용할 여유 주기 수.
+_PINVI_RECEIPT_READINESS_ATTEMPTS = 30
 # m04/m05 attestation이 검사·실행하는 Playwright runner의 핀 digest. body에서
 # 부재가 드러나면 무조건 소각이므로, 실행권 소비 전에 존재·버전 정합을 보장한다.
 # v1.62.1-noble — pinned PinVi source의 playwright-core와 driverVersion이 같아야
@@ -1476,16 +1482,40 @@ def _resolve_m05_case(
 
 
 def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
-    """PinVi detail 계약의 `applied`만 성공으로 수용하고 나머지는 즉시 종료한다."""
+    """PinVi detail 계약의 `applied`만 성공으로 수용하고 나머지는 즉시 종료한다.
 
-    data = _data(
-        _http_json(
-            f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
-            headers={},
-            opener=opener,
-            failure_phase="m05_pinvi_receipt_http_failed",
-        )
+    Map decision commit과 PinVi worker의 다음 polling 사이에는 receipt도
+    delivery-attempt row도 없는 창이 있다. 종전 구현은 이름과 달리 단발
+    GET이라 그 창에 걸리면 즉시 실패했다(정합성 스윕 high). 재시도 대상은
+    **아직 도착하지 않음**(transport/404, pending)뿐이고 blocked·계약 위반은
+    여전히 즉시 terminal이다 — 실패를 늦추지 않는다.
+    """
+
+    endpoint = (
+        f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}"
     )
+    data: dict[str, object] | None = None
+    for attempt in range(_PINVI_RECEIPT_READINESS_ATTEMPTS):
+        last = attempt + 1 == _PINVI_RECEIPT_READINESS_ATTEMPTS
+        try:
+            data = _data(
+                _http_json(
+                    endpoint,
+                    headers={},
+                    opener=opener,
+                    failure_phase="m05_pinvi_receipt_http_failed",
+                )
+            )
+        except _PhaseError as error:
+            if error.phase != "m05_pinvi_receipt_http_failed" or last:
+                raise
+            time.sleep(_PINVI_RECONCILIATION_POLL_SECONDS)
+            continue
+        if data.get("status") != "pending" or last:
+            break
+        time.sleep(_PINVI_RECONCILIATION_POLL_SECONDS)
+    if data is None:
+        _fail("m05_pinvi_receipt_invalid")
     status = data.get("status")
     if status == "blocked":
         _fail("m05_pinvi_receipt_blocked")
@@ -2533,7 +2563,8 @@ def main(expected_revision: str, output: Path) -> int:
                     "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_ENABLED=true",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_READ_TOKEN={read_token}",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_ACK_TOKEN={ack_token}",
-                    "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_POLL_SECONDS=1",
+                    "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_POLL_SECONDS="
+                    f"{_PINVI_RECONCILIATION_POLL_SECONDS}",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_EXPECTED_OPENAPI_SHA256={service_openapi_sha256}",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_EXPECTED_SOURCE_REVISION={service_source_revision}",
                 )
