@@ -196,6 +196,10 @@ from kor_travel_docker_manager.services.registry import (
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
 )
+from kor_travel_docker_manager.services.yaml_strict import (
+    UniqueKeySafeLoader,
+    load_yaml_rejecting_duplicate_keys,
+)
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "pinvi-db-init",
@@ -1089,51 +1093,14 @@ _MAP_SOURCE_ENV_FILE_CONTRACT = {
 _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES = 64 * 1024
 
 
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    pass
-
-
-def _construct_unique_yaml_mapping(
-    loader: _UniqueKeySafeLoader,
-    node: yaml.MappingNode,
-    deep: bool = False,
-) -> dict[Any, Any]:
-    loader.flatten_mapping(node)
-    mapping: dict[Any, Any] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError as exc:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found an unhashable mapping key",
-                key_node.start_mark,
-            ) from exc
-        if duplicate:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                f"found duplicate key {key!r}",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeySafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_yaml_mapping,
-)
+# GM-11: 중복 키 거부 YAML 로더의 정본은 services/yaml_strict.py다 — registry.py도
+# 같은 로더를 쓰지만, 여기서 그 모듈을 두면 registry.py→compose_service.py
+# import와 맞물려 순환이 된다.
+_UniqueKeySafeLoader = UniqueKeySafeLoader
 
 
 def _load_unique_map_source_yaml(source: str) -> Any:
-    loader = _UniqueKeySafeLoader(source)
-    try:
-        return loader.get_single_data()
-    finally:
-        loader.dispose()
+    return load_yaml_rejecting_duplicate_keys(source)
 
 
 def _walk_map_source_scalars(

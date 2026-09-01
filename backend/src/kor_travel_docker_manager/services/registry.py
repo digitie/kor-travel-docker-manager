@@ -2,7 +2,18 @@ import os
 from functools import lru_cache
 from typing import Any
 
-import yaml
+from kor_travel_docker_manager.services.yaml_strict import (
+    load_yaml_rejecting_duplicate_keys,
+)
+
+_REQUIRED_CONTAINER_FIELDS = (
+    "compose_service",
+    "name",
+    "display_name",
+    "role",
+    "connection",
+    "expected_ports",
+)
 
 
 def get_project_root() -> str:
@@ -24,7 +35,7 @@ def get_targets_config_path() -> str:
 def load_targets_config() -> dict[str, Any]:
     path = get_targets_config_path()
     with open(path, encoding="utf-8") as f:
-        config = yaml.safe_load(f) or {}
+        config = load_yaml_rejecting_duplicate_keys(f.read()) or {}
 
     if not isinstance(config.get("containers"), dict):
         raise ValueError("docker target config must define containers")
@@ -32,7 +43,67 @@ def load_targets_config() -> dict[str, Any]:
         raise ValueError("docker target config must define targets")
     if not isinstance(config.get("dependency_order"), list):
         raise ValueError("docker target config must define dependency_order")
+    _validate_targets_config(config, label=os.path.basename(path))
     return config
+
+
+def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
+    """GM-11: 오타 하나가 raw KeyError로 죽거나 조용히 무시되지 않게 fail-close한다.
+
+    `containers`가 depends_on 폐포에서 기계적으로 유도 가능하다는 원래 개선안의
+    전제는 틀렸다 — 모니터링 target(gra/cadv/prom)이 앱 target의 `depends_on`
+    폐포에 들어가지만 실제 `containers` 목록에는 없다(기동 순서 선형화일 뿐
+    논리적 의존이 아니기 때문). 그래서 여기서는 유도를 시도하지 않고, 이미 적힌
+    `containers`/`depends_on`/`include`/`aliases`가 서로 참조 무결성을 지키는지만
+    검증한다.
+    """
+
+    containers = config["containers"]
+    targets = config["targets"]
+
+    for container_id, spec in containers.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"{label} containers.{container_id}: must be a mapping")
+        for field in _REQUIRED_CONTAINER_FIELDS:
+            if field not in spec:
+                raise ValueError(
+                    f"{label} containers.{container_id}: missing required field '{field}'"
+                )
+
+    seen_aliases: dict[str, str] = {}
+    for target_id, spec in targets.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"{label} targets.{target_id}: must be a mapping")
+
+        for dep in spec.get("depends_on", []) or []:
+            if dep not in targets:
+                raise ValueError(
+                    f"{label} targets.{target_id}.depends_on: unknown target '{dep}'"
+                )
+        for included in spec.get("include", []) or []:
+            if included not in targets:
+                raise ValueError(
+                    f"{label} targets.{target_id}.include: unknown target '{included}'"
+                )
+        for container_id in spec.get("containers", []) or []:
+            if container_id not in containers:
+                raise ValueError(
+                    f"{label} targets.{target_id}.containers: unknown container '{container_id}'"
+                )
+
+        for alias in [target_id, *(spec.get("aliases", []) or [])]:
+            normalized = str(alias).strip().lower()
+            owner = seen_aliases.get(normalized)
+            if owner is not None and owner != target_id:
+                raise ValueError(
+                    f"{label} targets.{target_id}.aliases: alias '{alias}' already used "
+                    f"by target '{owner}'"
+                )
+            seen_aliases[normalized] = target_id
+
+    for name in config["dependency_order"]:
+        if name not in targets:
+            raise ValueError(f"{label} dependency_order: unknown target '{name}'")
 
 
 def _targets() -> dict[str, dict[str, Any]]:

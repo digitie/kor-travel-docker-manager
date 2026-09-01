@@ -27,7 +27,7 @@
 | GM-08 | `[x]` | P2 | M | operability | CONFIRMED | mock | off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음 |
 | GM-09 | `[x]` | P2 | S | correctness | REVISED | mock | 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화 |
 | GM-10 | `[x]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
-| GM-11 | `[ ]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
+| GM-11 | `[x]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
 | GM-12 | `[ ]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
 | GM-13 | `[ ]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
 | GM-14 | `[ ]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
@@ -506,6 +506,36 @@ false-failure 수정에도 같은 방식의 전용 회귀 테스트를 새로 �
 [수정 필요 3 — _UniqueKeySafeLoader 재사용은 순환 import] compose_service.py:188이 registry를 import하므로 registry가 compose_service.py:1067의 로더를 역으로 import할 수 없다. 공유 모듈로 이동하거나 복제해야 한다.
 
 [계약/대안/effort] fail-close 스키마 검증 자체는 C6c 락 규율·ADR과 충돌 없고 T-047의 fail-close 철학과 정합한다. 더 값싼 대안(검증만 하고 유도는 포기)도 성립하나, 유도부의 전제 수정을 포함하면 effort M은 타당하다. 관련 테스트는 backend/tests에 전무함을 확인.
+
+**구현**: 검증 노트가 확인한 "더 값싼 대안"만 구현했다 — containers 목록을
+depends_on 폐포에서 유도하거나 손 목록과 동등성 검증하는 부분은 전제가 틀려
+(모니터링 target이 폐포엔 들어가지만 앱 target의 실제 `containers`엔 없음 —
+`depends_on`은 기동 순서 선형화이지 논리 의존 그래프가 아니다) 완전히
+제외했다. 대신 `registry.load_targets_config()`에 `_validate_targets_config()`를
+추가해 참조 무결성만 fail-close로 강제한다: (1) 컨테이너 필수 필드
+(`compose_service`/`name`/`display_name`/`role`/`connection`/`expected_ports`)
+누락, (2) `targets.<id>.depends_on`/`include`/`containers`의 미등록 참조,
+(3) 서로 다른 target 간 alias 충돌(대소문자 무시), (4) `dependency_order`의
+미등록 참조를 각각 `"{label} targets.geo.depends_on: unknown target 'promx'"`
+형식의 메시지로 즉시 `ValueError`. YAML 중복 키 거부는 `compose_service.py`의
+기존 `_UniqueKeySafeLoader`를 재사용하려 했으나, `compose_service.py`가 이미
+`registry.py`를 import하므로 역방향 import가 순환이 된다는 검증 노트의 지적이
+사실로 확인돼, 로더를 의존성 없는 새 모듈 `services/yaml_strict.py`로
+추출해 두 파일이 함께 그곳에서 가져오도록 했다. `compose_service.py`의 로더
+사용처는 얇은 위임으로 교체했다.
+
+실제 `config/docker-targets.yml`을 이 검증으로 로드해 거짓양성 0건을 확인했다
+(검증 노트가 경고한 "손 목록≠계산된 폐포" 함정을 정확히 피하는지 직접 검증한
+것). 신규 테스트 25건(`test_registry_targets_config.py` — 필수 필드 6종·
+depends_on/include/containers 미등록 참조·alias 충돌(자기 자신 제외/대소문자
+무시)·dependency_order 미등록 참조·label 포함 여부의 단위 테스트, 임시 파일 +
+`KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE` 환경변수 override로 `load_targets_config()`
+자체의 배선을 확인하는 통합 테스트 3건; `test_yaml_strict.py` — 중복 키
+최상위/중첩 거부와 정상 파싱 4건). 가장 안전 결정적인 검사(`depends_on` 미등록
+참조)를 mutation으로 재검증(검사를 `if False and ...`로 잠시 무력화 →
+단위 테스트와 통합 테스트 둘 다 예상대로 실패 → 원복 후 재통과 확인). 전체
+backend 1355 passed, 2 skipped(변경 전 1330 대비 신규 테스트만큼 증가, 회귀 없음).
+ruff 통과.
 
 
 ## GM-12: API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일
