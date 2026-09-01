@@ -355,7 +355,38 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
 - 포트 `12500`, `12600`, `12700`, `12800`, `12101`, `12105`, `12205`, `12301`, `12401`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다.
 
-### 7.1 Concierge 소비자 read 키 배포
+### 7.1 작업이 만든 컨테이너는 그 작업이 끝날 때 정리한다
+
+**한 작업이 띄운 컨테이너는 그 작업이 끝나면 내린다.** 디버깅·검증·일회성
+재현으로 올린 것이 대상이다. 상시 운영 스택은 여기 해당하지 않는다 —
+무엇이 상시인지는 소유자가 정하고, 판단이 서지 않으면 내리지 말고 묻는다.
+
+근거는 정돈이 아니라 **실패 모드**다. n150은 메모리 14GB 단일 호스트이고,
+M05 격리 one-shot은 그 위에 Map 스택 + PinVi 스택 + Playwright runner를
+한꺼번에 올린다. 남은 여유가 모자라 나는 ENOMEM은 단순 실패가 아니라 이
+저장소가 반복해서 마주친 **소각 경로들의 방아쇠**다 — driver가 본문 진입 후
+OOM-kill되면 `finally`의 terminal block이 돌지 않고, 같은 압박으로 registry
+관측(fork 2개)도 함께 실패한다. 그 조합이 pinset candidate 1개 + 1~2시간을
+태운다(`docs/journal.md` 2026-09-02, `scripts/run-m05-isolated-e2e-once` 헤더).
+
+즉 정리해야 할 것은 **떠도는 잔여물**이지 서비스가 아니다. 잔여물이 쌓이면
+긴 one-shot이 쓸 여유가 그만큼 줄고, 그 대가가 후보 소각이다.
+
+규칙:
+
+- 작업 중 띄운 컨테이너·네트워크·볼륨은 그 작업이 끝나는 즉시 내리고 지운다.
+  재부팅에도 안 뜨게 하려면 `docker update --restart=no <name>` 후 `docker stop`.
+- 실패로 중단된 실행이 남긴 잔해도 같다. M05 격리는 `m05i-map-<txn>` /
+  `m05i-pinvi-<txn>` 이름을 쓰므로 `docker ps -a --filter name=m05i`로 확인한다.
+- **남이 띄운 것을 임의로 내리지 않는다.** 여러 에이전트와 사람이 같은 호스트를
+  쓴다. 자기가 띄운 것만 정리하고, 남의 것이 걸리면 소유자에게 확인한다.
+  상시 스택(weather·concierge·geo·parking-radar·prometheus 등)은 기본이 유지다.
+- 긴 one-shot 전에는 **현재 여유를 측정하고 기록**한다(`free -g`, `docker ps -q | wc -l`).
+  부족하면 스택을 내리는 대신 소유자와 일정을 조율한다.
+- 무엇을 왜 내렸는지와 되돌리는 명령을 작업 기록에 남긴다
+  (`docker update --restart=unless-stopped <name> && docker start <name>`).
+
+### 7.2 Concierge 소비자 read 키 배포
 
 `kor-travel-map`의 Concierge feature pull은 루트 `.env`의
 `KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY` 한 값을 유일한 secret source로 사용한다.
@@ -441,7 +472,7 @@ prod 전환 순서는 다음과 같다.
   확인했다. UI 로그인 POST 200+`Set-Cookie`, BFF settings 200, 잘못된 비밀번호 401도 재확인했다.
 - 성공 뒤 key/cookie 임시 파일과 secret 포함 제한권한 백업을 모두 삭제했다.
 
-### 7.2 Map OpiNet·KREX provider 키 주입
+### 7.3 Map OpiNet·KREX provider 키 주입
 
 `kor-travel-map`의 OpiNet·KREX credential은 gitignore된 루트 `.env`의 현재 이름을 source로
 사용한다.
@@ -470,7 +501,7 @@ resolved config 전체를 출력하지 말고 `docker compose config --quiet`를
 실제 값·길이·digest는 로그에 남기지 않는다. API 컨테이너에는 제거된 provider runtime 이름이
 하나도 없어야 한다.
 
-### 7.3 Map↔PinVi canonical ops read/cancel principal
+### 7.4 Map↔PinVi canonical ops read/cancel principal
 
 PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회, 그리고
 `POST /v1/ops/pipeline/executions/import_job/{job_id}/cancel`만 사용한다. 브라우저 BFF secret,
@@ -513,7 +544,7 @@ trusted CIDR는 `127.0.0.1/32`·`::1/128` exact JSON으로 명시한다. 실제 
   사용하며 schedule command, refresh policy, update request mutation은 같은 token으로도 403이어야
   한다.
 
-### 7.4 T-VN-40 PinVi canonical snapshot principal
+### 7.5 T-VN-40 PinVi canonical snapshot principal
 
 canonical collection snapshot은 기존 ops read/cancel principal과 별도의 두 ServiceToken을 쓴다.
 manager `.env`의 `PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN`과
@@ -530,7 +561,7 @@ manager `.env`의 `PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN`과
   Compose preflight가 container mutation 전에 중단한다. T-VN-40 rollout receipt가 pending인 동안
   빈 pair는 legacy compatible-pair를 위해 허용한다.
 
-### 7.5 T-VN-M01 manual Feature 생성 credential
+### 7.6 T-VN-M01 manual Feature 생성 credential
 
 manual Feature 생성은 특정 provider나 PinVi 전용 기능이 아니다. Manager `.env`의
 `KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN` 원문과 그 SHA-256인
@@ -559,7 +590,7 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 같거나 그 일부여도 허용하지만, Map UI의 exact wiring/runtime equality와 Map UI 밖 username 환경변수 이름
 금지는 유지한다.
 
-### 7.4 F1D application `300` 비운영 runtime 재구축
+### 7.7 F1D application `300` 비운영 runtime 재구축
 
 새 Map·PinVi generation과 새 schema를 만드는 mutation은 격리된
 `rehearsal/rebuildable` 환경의 다음 명령 하나다.
@@ -638,7 +669,7 @@ PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer I
 backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primitive로 설계한다.
 (`db-backup`은 #177에서 pair/cache와 독립된 primitive로 다시 도입됐다.)
 
-### 7.5 퇴역한 C7 v4 `pinvi-pair capture`
+### 7.8 퇴역한 C7 v4 `pinvi-pair capture`
 
 > **실행 금지 · 역사 기록** — application `300`의 current authority는 seven-service v6
 > `pinned-runtime-generation`과 v8 rebuild journal뿐이다. `compatible-pair-v4.json`은
@@ -657,7 +688,7 @@ backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primi
 v4 artifact는 current input으로 재사용하지 않는다. rebuild가 남기는 v6 manifest, v8
 journal 및 legacy tombstone receipt만 현재 generation의 provenance로 사용한다.
 
-### 7.6 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
+### 7.9 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
 
 아래는 이전 v4 구현의 근거를 보존한 역사 기록이다. 여기 나오는 command와 state file은 현행
 Manager에 존재하지 않으며 실행하면 안 된다. 현재 운영 절차로 해석하지 않는다.
