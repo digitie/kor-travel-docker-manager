@@ -13,6 +13,7 @@ import {
   apiJson,
   postJson,
 } from '@/lib/api';
+import { buildBackupRoleOptions } from '@/lib/backupRoles';
 
 function isUnreadableBackupEntry(
   entry: StandaloneBackupManifest | UnreadableBackupEntry
@@ -194,6 +195,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
   // GM-18: 정본은 backend가 실어 보내는 roles다 — 아직 로딩 전이면 빈 배열이라
   // select/생성 버튼은 '전체'만 보이다가 응답이 오면 채워진다.
   const roles = allBackups?.roles ?? [];
+  const roleOptions = buildBackupRoleOptions(roles);
 
   // role별 최신 백업 시각. 기대 주기가 있는 role만 신선도를 판정한다.
   const freshness = roles
@@ -249,22 +251,20 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       <div className="overflow-y-auto p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div className="flex flex-wrap gap-2">
-            {[{ value: 'all', label: '전체' }, ...roles.map((value) => ({ value, label: value }))].map(
-              (option) => (
-                <button
-                  className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
-                    role === option.value
-                      ? 'ops-button ops-button--primary'
-                      : 'ops-button'
-                  }`}
-                  key={option.value}
-                  onClick={() => setRole(option.value)}
-                  type="button"
-                >
-                  {option.label}
-                </button>
-              )
-            )}
+            {roleOptions.map((option) => (
+              <button
+                className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
+                  role === option.value
+                    ? 'ops-button ops-button--primary'
+                    : 'ops-button'
+                }`}
+                key={option.value}
+                onClick={() => setRole(option.value)}
+                type="button"
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
           <div className="flex gap-2">
             <button

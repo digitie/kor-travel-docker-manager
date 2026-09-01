@@ -885,6 +885,35 @@ def test_pin_rotate_role_choices_come_from_the_canonical_runtime_source_roles():
         )
 
 
+def test_pin_rotate_role_choices_track_the_canonical_tuple_dynamically(monkeypatch):
+    """GM-18 리뷰 반영(2인 적대적 리뷰 공통 지적): 위 테스트는 지금 값이 우연히
+    같은 독립 하드코딩(`choices=["map", "pinvi"]`)과 실제 배선을 구분하지
+    못한다 — 둘 다 오늘은 같은 값을 받아들인다. 이 테스트는
+    `kor_travel_docker_manager.cli.RUNTIME_SOURCE_ROLES` 자체를 다른 값으로
+    바꿔치기해 `build_parser()`의 choices가 그 값을 실제로 따라가는지 본다.
+    하드코딩이었다면 patch는 무시되고 여전히 ("map", "pinvi")만 받아들였을
+    것이다."""
+
+    import kor_travel_docker_manager.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "RUNTIME_SOURCE_ROLES", ("only-patched-role",))
+
+    parser = cli_module.build_parser()
+
+    args = parser.parse_args(
+        ["pin", "rotate", "--role", "only-patched-role", "--revision", "a" * 40, "--reason", "r"]
+    )
+    assert args.role == "only-patched-role"
+
+    # patch 전에는 유효했던 "map"이 지금은 거부돼야 한다 — choices가 patch된
+    # 값을 그대로 반영한다는 뜻이고, 어딘가 ["map", "pinvi"]가 여전히
+    # 하드코딩돼 있었다면 이 assert가 실패했을 것이다.
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["pin", "rotate", "--role", "map", "--revision", "a" * 40, "--reason", "r"]
+        )
+
+
 @pytest.mark.parametrize(
     "argv",
     [
