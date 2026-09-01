@@ -43,7 +43,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +51,7 @@ from typing import Any, Final
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.registry import get_project_root
 from kor_travel_docker_manager.services.runtime_pin_registry import utc_timestamp
+from kor_travel_docker_manager.services.secure_state_file import atomic_write_json
 from kor_travel_docker_manager.services.trusted_install import (
     TRUSTED_INSTALL_ROOT,
     TRUSTED_REQUEST_ROOT,
@@ -307,26 +307,18 @@ def _fsync_directory(parent: Path) -> None:
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:
-    """registry의 원자 쓰기를 복제한다 — 그쪽은 private이고 디렉터리 mode 계약이 다르다."""
+    """registry의 원자 쓰기를 복제한다 — 그쪽은 private이고 디렉터리 mode 계약이 다르다.
 
-    parent = path.parent
-    _prepare_request_parent(parent)
-    body = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=False) + "\n"
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(body)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
-    _fsync_directory(parent)
+    GM-10 후속: mkstemp+write+fsync+os.replace+디렉터리 fsync를 인라인으로
+    반복하던 자리였다. 부모 디렉터리 준비(``_prepare_request_parent``, 생성 시에만
+    ``0700``)와 JSON 포맷(``ensure_ascii=True, indent=2`` + 개행 하나, 기본
+    ``sort_keys=False``)이 정본 ``atomic_write_json``과 정확히 일치해 그쪽으로
+    옮겼다. 디렉터리 fsync도 이미 여기 ``_fsync_directory``처럼 best-effort였으므로
+    동작 변화가 없다.
+    """
+
+    _prepare_request_parent(path.parent)
+    atomic_write_json(path, payload, mode=mode)
 
 
 def _exclusive_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:

@@ -122,6 +122,21 @@ def test_the_request_file_is_owner_only() -> None:
     assert written.stat().st_mode & 0o077 == 0
 
 
+def test_replace_existing_overwrites_a_pending_request_atomically() -> None:
+    """``replace_existing=True``는 GM-10 후속으로 정본 ``atomic_write_json``으로
+    옮긴 경로다 — 옮긴 뒤에도 기존 요청을 온전히 대체하고 owner-only mode를
+    유지하는지 확인한다."""
+
+    write_runtime_pin_request(_request())
+
+    replacement = _request(request_id=OTHER_REQUEST_ID, role="pinvi", revision=PINVI_B)
+    written = write_runtime_pin_request(replacement, replace_existing=True)
+
+    loaded = read_runtime_pin_request()
+    assert loaded == replacement
+    assert written.stat().st_mode & 0o077 == 0
+
+
 def test_a_second_request_never_silently_replaces_the_pending_one() -> None:
     write_runtime_pin_request(_request())
 

@@ -33,6 +33,39 @@ execution identity·transaction으로 이미 이 launch에 결박한다. 결박�
 이미 결박된 사실에 텍스트 미러를 얹는 것은 이 저장소가 결함으로 보는 과결박이라
 추가하지 않았다.
 
+## 2026-09-02 — PinVi bootstrap credential 디렉터리 fsync 파괴 버그 수정, atomic-write 프리미티브 후속 이관 2건
+
+`pinvi_bootstrap_credential.py`의 `_fsync_directory_descriptor`가 디렉터리
+fsync 실패 시 항상 `DeploymentContractError`를 던지던 결함을 고쳤다.
+`create_pinvi_bootstrap_credential`은 credential 파일을 쓰고 fsync·stat
+검증까지 이미 성공시킨 **뒤**에 이 함수를 두 번 호출해 디렉터리 항목 교체의
+durability만 보강하는데, 여기서 raise하면 바깥 `except BaseException`이
+metadata가 non-None임을 보고 이미 올바르게 쓰인 파일을 zeroize+unlink해
+버렸다 — durability 실패(디렉터리 fsync)가 correctness(파일 내용)를
+파괴하는 형태의 버그였다. `_fsync_directory_descriptor`에 `best_effort`
+파라미터를 추가해 해당 두 호출부만 경고 로그 후 계속 진행하도록 낮췄고,
+삭제 뒤 디렉터리 fsync를 쓰는 나머지 두 자리(`_remove_empty_transaction_directory`,
+`_zeroize_and_unlink`)는 그 시점에 이미 파일이 지워져 있어 파괴할 대상이
+없으므로 기존 raise 동작을 그대로 뒀다. 회귀 테스트는 `os.fsync`를 감싸
+대상 fd가 디렉터리인지로 구분해, credential 파일 자신의 fsync가 관측된
+이후의 디렉터리 fsync만 실패시켜 실제 디렉터리를 건드리지 않고 재현했다.
+`best_effort` 제거 상태로 되돌려 실패를 확인한 뒤 원복해 통과를 재확인했다.
+
+이어서 GM-10 후속으로 남아 있던 mkstemp 자리 9곳을 모두 다시 읽고 개별
+검토했다. `compose_service.py`의 `_atomic_restore_compose_source`와
+`standalone_backup.py`의 `_atomic_write_bytes`/`_atomic_write_json` 2곳은
+os.replace 기반의 평범한 발행이라 정본 `atomic_write_bytes`/`atomic_write_json`으로
+옮겼다. 문서화되지 않았던 10번째 자리 `runtime_pin_request.py`의
+`_atomic_write_json`도 grep으로 발견해 함께 이관했다(그 파일의 인라인
+`_fsync_directory`가 이미 best-effort였어 동작 변화 없음; 이관 전
+`replace_existing=True` 경로가 어떤 테스트에서도 실행되지 않는다는 것을
+발견해 회귀 테스트를 추가했다). 나머지 7곳은 각각 os.replace 직전/후
+identity 재검사, os.link(hardlink) 발행, 또는 디렉터리 fsync 실패를 별도
+durability-uncertain 에러로 승격하는 의도된 strict 계약을 갖고 있어 정본
+시그니처에 맞지 않는다고 판단해 그대로 뒀다 — 각 사유를 `docs/tasks.md`에
+정리했다. 전체 백엔드 테스트(1469 passed, 2 skipped)와 ruff가 모두
+통과했다.
+
 ## 2026-09-01 — GM 트랙 GM-11~GM-20 순차 이행 (P1 7건에 이어 P2 10건 중 9건 완료)
 
 GM 트랙 개시 뒤 P1 7건(GM-01~GM-07)과 P2 3건(GM-08~GM-10)에 이어, 나머지 P2

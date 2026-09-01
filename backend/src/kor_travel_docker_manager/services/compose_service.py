@@ -196,6 +196,7 @@ from kor_travel_docker_manager.services.registry import (
     services_for_target,
     target_sequence_for_target,
 )
+from kor_travel_docker_manager.services.secure_state_file import atomic_write_bytes
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
 )
@@ -2395,35 +2396,13 @@ def _atomic_restore_compose_source(
     *,
     mode: int,
 ) -> None:
-    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
-    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".restore",
-            delete=False,
-        ) as temporary:
-            temporary.write(payload)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
-        temporary_path = None
-        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temporary_path is not None:
-            try:
-                temporary_path.unlink()
-            except FileNotFoundError:
-                pass
+    """GM-10 후속: mkstemp+write+fsync+os.replace+디렉터리 fsync 인라인 반복을
+    정본 ``atomic_write_bytes``로 옮겼다. 이 자리는 os.replace로 발행하는 평범한
+    바이트 쓰기이고(hardlink 없음, 교체 전 별도 identity 재검사 없음), 실패는
+    호출자(``_recover_persisted_target_runtime``)가 ``except Exception``으로
+    포괄 처리해 예외 타입 변화에 기대지 않는다."""
+
+    atomic_write_bytes(path, payload, mode=mode)
 
 
 # compatible-pair 활성화 단계의 `docker compose up --wait --wait-timeout` 상한(초).
