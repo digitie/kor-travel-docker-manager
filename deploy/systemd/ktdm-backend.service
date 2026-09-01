@@ -19,13 +19,17 @@
 Description=kor-travel-docker-manager backend (FastAPI :12901)
 Wants=network-online.target
 After=network-online.target docker.service
+# 크래시 루프 시 무한 재기동 thrash를 막되 일시 실패는 복구한다([Unit] 섹션 지시어).
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=exec
 WorkingDirectory=/opt/kor-travel-docker-manager/backend
 Environment=PYTHONPATH=/opt/kor-travel-docker-manager/backend/src
 ExecStart=/opt/kor-travel-docker-manager/backend/.venv/bin/python -m uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 12901
-Restart=on-failure
+# 클린 종료(exit 0) 크래시까지 복구하려면 on-failure가 아니라 always가 필요하다.
+Restart=always
 RestartSec=3
 
 [Install]

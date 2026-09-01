@@ -1542,6 +1542,75 @@ def test_pin_apply_pending_resumes_a_partial_v5_v6_write(
     assert not pending_request_env.exists()
 
 
+def test_pin_apply_pending_refuses_a_request_unrelated_to_a_pending_intent(
+    pin_cli_env, pending_request_env, tmp_path, monkeypatch, capsys
+):
+    """재개 경로는 intent가 이 요청의 것일 때만 가드를 건너뛴다.
+
+    운영자의 pair 회전이 v5 write 뒤 crash한 상태에서, 남아 있던 무관한 단일 role
+    요청을 apply-pending이 "적용됨"으로 소비하고 pair 결과를 그 요청에 귀속시키면
+    안 된다. intent의 pinset이 요청의 prospective와 다르면 거부해야 한다.
+    """
+
+    from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        migrate_execution_registry,
+        rotate_execution_source_binding,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        build_registry,
+        load_runtime_pin_registry,
+    )
+
+    _init_rotatable_registry()
+    manager = _make_v6_host(tmp_path, monkeypatch)
+    capsys.readouterr()
+    # 단일 role 요청: pinvi → d*40
+    _file_a_request()
+
+    # 요청과 무관한 pair(map e*40, pinvi f*40)를 향하는 pending intent를 손으로 남긴다.
+    current = load_runtime_pin_registry()
+    other_pins = build_registry(
+        release_version=current.release_version,
+        map_revision="e" * 40,
+        pinvi_revision="f" * 40,
+        rotated_by="tester",
+        reason="무관한 pair",
+    )
+    executions = migrate_execution_registry(
+        pins=current, manager_source_revision=manager, bound_by="tester", reason="seed"
+    )
+    other_executions = rotate_execution_source_binding(
+        registry=executions,
+        pins=other_pins,
+        manager_source_revision=manager,
+        bound_by="tester",
+        reason="무관한 pair",
+    )
+    intent = pair_rotation.RuntimePairRotation(
+        created_at="2026-09-01T00:00:00Z",
+        pin_registry=other_pins,
+        execution_registry=other_executions,
+    )
+    pair_rotation._atomic_write(pair_rotation.runtime_pair_rotation_path(), intent.to_payload())
+
+    before = load_runtime_pin_registry().pinset_sha256
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+    ):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert exit_code == 2
+    assert "다른 pinset을 향합니다" in capsys.readouterr().err
+    # 요청도 registry도 건드리지 않았다 — 무관한 요청을 소비하지 않는다.
+    assert pending_request_env.exists()
+    assert load_runtime_pin_registry().pinset_sha256 == before
+
+
 def test_pin_clear_pending_force_removes_an_unreadable_request(
     pin_cli_env, pending_request_env, capsys
 ):

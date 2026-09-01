@@ -1286,8 +1286,22 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
 
     # 직전 apply가 v5 write와 v6 write 사이에서 중단됐다면 registry는 이미 회전 후
     # 상태다 — base/prospective/no-change 검증은 회전 전 상태를 전제하므로 재개
-    # 경로에서는 건너뛰고, 같은 target인지의 대조는 transaction helper에 맡긴다.
-    if load_pending_runtime_pair_rotation() is None:
+    # 경로에서는 건너뛴다. 단 **그 intent가 이 요청의 것인지**는 반드시 확인한다.
+    # 그러지 않으면 운영자의 pair 회전이 v5 write 뒤 crash한 상태에서 남아 있던
+    # 무관한 단일 role 요청을 apply-pending이 "적용됨"으로 소비하고, 실제로는 요청이
+    # 선언하지 않은 pair 결과를 그 요청에 귀속시킨다.
+    pending_rotation = load_pending_runtime_pair_rotation()
+    if pending_rotation is not None:
+        if pending_rotation.pin_registry.pinset_sha256 != request.prospective_pinset_sha256:
+            print(
+                "대기 중인 transaction이 이 요청과 다른 pinset을 향합니다"
+                f"(intent {pending_rotation.pin_registry.pinset_sha256[:12]}... vs 요청 "
+                f"{request.prospective_pinset_sha256[:12]}...). "
+                "먼저 해당 transaction을 같은 명령으로 재개해 완료한 뒤 이 요청을 처리하세요.",
+                file=sys.stderr,
+            )
+            return 2
+    else:
         if request.base_pinset_sha256 != registry.pinset_sha256:
             # 자동으로 지우지 않는다 — 무엇이 버려지는지 운영자가 보고 결정해야 한다.
             print(

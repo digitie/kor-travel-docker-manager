@@ -396,11 +396,14 @@ drwxrwxrwt 5 root root ...  ..
 트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접
 실행한다. 유닛 자체는 release와 무관하므로 재설치할 필요가 없다.
 
-**`/opt/kor-travel-docker-manager` 밖에 남는 설치 산출물은 넷이다**: 이 tmpfiles 유닛,
+**`/opt/kor-travel-docker-manager` 밖에 남는 설치 산출물**(release rollback이 되돌리지
+않는 것들): `/etc`의 세 파일 — 이 tmpfiles 유닛,
 `/etc/systemd/system/ktdm-backend.service`·`ktdm-frontend.service`(3절·4절),
-`/etc/logrotate.d/kor-travel-docker-manager`(cron 백업 로그 로테이션, `KTDM_BACKUP_ROOT`
-선언 시). release rollback은 이들을 되돌리지 않는다 — 이전 release로 내려가도 각 파일은
-그대로 남고, 다음 설치가 갱신한다. tmpfiles 유닛을 완전히 제거하려면 다음과 같이 한다.
+`/etc/logrotate.d/kor-travel-docker-manager`(백업 로그 로테이션, `KTDM_BACKUP_ROOT` 선언
+시) — 과 `/var/lib`의 상태 트리 — `/var/lib/kor-travel-docker-manager`(state root·
+registry·archive)와 `/var/lib/kor-travel-docker-manager-requests`(회전 요청). 이전
+release로 내려가도 이들은 그대로 남고 다음 설치가 갱신한다(state/registry는 의도된
+영속 상태다). tmpfiles 유닛을 완전히 제거하려면 다음과 같이 한다.
 
 ```bash
 sudo rm -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
