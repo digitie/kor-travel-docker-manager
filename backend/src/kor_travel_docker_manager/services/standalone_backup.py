@@ -1291,6 +1291,8 @@ def _sha256_file(path: Path) -> str:
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:

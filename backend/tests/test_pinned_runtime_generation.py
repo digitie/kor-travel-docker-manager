@@ -464,6 +464,64 @@ def test_manifest_rejects_unsafe_file_mode(tmp_path: Path) -> None:
         read_manifest(path)
 
 
+def test_private_json_write_is_not_reported_as_failed_when_only_dir_fsync_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GM-10 후속 회귀(적대적 리뷰 발견): 디렉터리 fsync는 os.replace가 이미
+    성공한 뒤의 추가 durability 보장일 뿐이다. 예전에는 그 호출이 성공/실패를
+    DeploymentContractError로 매핑하는 try 안에 있어서, fsync만 실패해도 이미
+    끝난 쓰기를 "쓸 수 없음"으로 잘못 보고했다 — runtime_pair_rotation.py에서
+    고친 것과 같은 버그 계열이 이 파일에도 있었다."""
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    path = state / "artifact.json"
+
+    monkeypatch.setattr(
+        generation_module,
+        "_fsync_directory",
+        lambda _path: (_ for _ in ()).throw(OSError("simulated fsync failure")),
+    )
+
+    generation_module._write_private_json(path, {"a": 1}, "test artifact")
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+
+
+def test_public_json_write_is_not_reported_as_failed_when_only_dir_fsync_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """위와 같은 회귀를 _write_public_json(dir_fd 기반 O_EXCL|O_NOFOLLOW 경로)에도
+    확인한다 — 이쪽은 이미 열어 둔 dir_fd를 직접 fsync하므로 별도로 검증해야 한다."""
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    public_root = tmp_path / "public"
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
+    manifest = PinnedRuntimeManifest(version=6, active_generation=_generation())
+
+    real_fsync = os.fsync
+    call_count = 0
+
+    def flaky_fsync(fd: int) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            real_fsync(fd)  # 임시 파일 자체의 fsync는 정상적으로 통과시킨다.
+            return
+        raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr(generation_module.os, "fsync", flaky_fsync)
+    private_path = state / "pinned-runtime-generation-v6.json"
+
+    generation_module.publish_pinned_runtime_generation(manifest=manifest, private_path=private_path)
+
+    paths = generation_module.pinned_runtime_public_paths(private_path=private_path)
+    assert json.loads(paths.manifest.read_text(encoding="utf-8")) == manifest.to_payload()
+
+
 def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir(mode=0o700)

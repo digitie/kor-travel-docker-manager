@@ -734,6 +734,8 @@ def _canonical_concierge_compose_projection(
     except yaml.YAMLError as exc:
         raise LegacyOverrideRetirementError("canonical Compose projection cannot be serialized") from exc
 
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -1253,6 +1255,8 @@ def _read_regular_bytes(path: Path) -> bytes:
 
 
 def _write_atomic(path: Path, payload: bytes, *, mode: int) -> None:
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     replaced = False

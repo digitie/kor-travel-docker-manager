@@ -43,7 +43,7 @@ def fsync_directory(path: Path) -> None:
     """
 
     try:
-        directory_fd = os.open(str(path), os.O_RDONLY)
+        directory_fd = os.open(str(path), os.O_RDONLY | os.O_CLOEXEC)
     except OSError:
         return
     try:

@@ -15,3 +15,4 @@
 - [/] journal/attestation drift — Manager generation receipt와 Map attestation의 execution binding field를 함께 정렬한다.
 - [ ] non-root backend — root ownership을 유지하면서 service-group 접근 경계와 root/서비스 계정 mutation 검증을 완료한다.
 - [/] 범용 관리툴 감사 GM 트랙 — main `9916b33` 기준 전체 분석에서 나온 개선 태스크 20건(P1 7건 포함)을 [`docs/general-mgmt-audit.md`](general-mgmt-audit.md)의 우선순위 순으로 이행한다. 작업 브랜치 `refactor/general-mgmt-improvements`.
+- [ ] atomic-write 프리미티브 잔여 통합 (GM-10 후속) — `services/secure_state_file.py`로 옮기지 않은 mkstemp 자리 9곳(admin_password_service·map_application_300 ×3·compose_service·pinvi_database_role_credentials·legacy_override_retirement·standalone_backup, 각자 back-reference 주석 있음)을 개별 소유권·symlink 정책 검토 후 이관한다. 적대적 리뷰가 발견한 `pinvi_bootstrap_credential.py`의 `_fsync_directory_descriptor`는 우선순위가 더 높다 — 디렉터리 fsync 실패가 이미 성공한 credential 파일을 바깥 `except BaseException`의 zeroize+unlink로 파괴할 수 있는 구조(단순 오탐 보고보다 심각)이며, one-shot 보안 초기화 경로라 개별 검토가 필요하다.

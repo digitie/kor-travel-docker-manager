@@ -432,6 +432,55 @@ O_EXCL|O_NOFOLLOW + directory fd fsync)은 이 프리미티브보다 강한 보�
 mutation으로 재현해 새 테스트가 잡는 것을 확인했고, 프리미티브 자체의 dir_fsync
 분기도 mutation으로 검증함. 전체 backend 1327 passed.
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 리뷰 A가 이 커밋이 고친 것과 **같은
+버그 계열**이 "손대지 않기로 한" 파일에도 실재함을 찾았고, 리뷰 B는 이 부분
+완료 상태가 재추적 가능한 후속 작업으로 기록되지 않는다는 문서화 공백을
+찾았다.
+
+[High, 리뷰 A] `pinned_runtime_generation.py`의 `_write_private_json`
+(3721-3743)과 `_write_public_json`(3746-3796)이 "더 강한 구현이라 손대지 않는다"고
+제외됐지만, symlink/소유권 축과 무관하게 **디렉터리 fsync 실패를 os.replace
+성공 이후에도 여전히 DeploymentContractError로 승격**시키는 바로 그 오탐
+버그를 그대로 갖고 있었다 — `runtime_pair_rotation.py`에서 고친 것과 동일한
+결함이 이 v6 generation manifest·rebuild journal writer(host-lock을 쥔 production
+`rebuild-pinned --confirm` 경로가 쓰는 바로 그 파일)에도 있었다. 두 함수 모두
+디렉터리 fsync를 성공한 쓰기와 분리된 별도 단계로 옮기고 실패를 조용히
+삼키도록 고쳤다 — O_EXCL|O_NOFOLLOW dir-fd 하드닝 자체는 전혀 건드리지
+않았다. 회귀 테스트 2건 추가, 둘 다 mutation(원래 위치로 되돌려 실패 확인)으로
+검증함.
+
+[Medium-High, 리뷰 B] GM-10을 `[x]`로 닫으면서도 12곳 중 3곳만 옮긴 부분
+완료 상태가 `docs/tasks.md`나 재추적 가능한 항목으로 남지 않았다 — GM-07·
+GM-08이 각자 `docs/docker-management.md` "아직 안 된 것"에 남긴 것과 같은
+수준의 문서 규율이 GM-10에는 없었다. `docs/tasks.md`에 독립 항목을 추가해
+남은 9곳과, 이번 라운드에서 새로 발견한 `pinvi_bootstrap_credential.py`의
+더 심각한 변종(디렉터리 fsync 실패가 단순 오탐이 아니라 바깥
+`except BaseException`의 zeroize+unlink로 이미 성공한 credential 파일을 실제로
+파괴할 수 있는 구조 — one-shot 보안 초기화 경로라 이번 라운드에서 손대지
+않음)을 명시했다.
+
+[Low, 리뷰 B] 9곳 자리 어디에도 `secure_state_file.py`를 가리키는 역참조가
+없어 그 파일을 만지는 사람이 정본의 존재를 몰랐다 — 9곳 전부에 한 줄
+주석(정본 위치 + docs/tasks.md 참조)을 추가했다.
+
+[Medium, 리뷰 B] `test_write_fsyncs_the_state_directory_after_replace`가
+`len(fsynced_fds) == 4`처럼 원시 `os.fsync` 총 호출 수에 의존해, 이 함수가
+지키는 진짜 불변("쓰기마다 디렉터리 fsync 한 번")과 무관한 이유로도 나중에
+헷갈리게 깨질 수 있었다 — `secure_state_file.fsync_directory` 자체를
+스파이해 파일 개수(2)와 같은 횟수만 확인하도록 고쳤다. `runtime_pair_rotation.py`의
+false-failure 수정에도 같은 방식의 전용 회귀 테스트를 새로 추가했다(리뷰 A가
+지적한 커버리지 공백).
+
+[Low/Nit, 리뷰 B] `fsync_directory`가 `runtime_pair_rotation.py` 원본에 있던
+`O_CLOEXEC`를 승격 과정에서 빠뜨렸다 — "하강 평준화 금지" 원칙과 모순되므로
+`os.O_RDONLY | os.O_CLOEXEC`로 고쳤다(리뷰 A는 CPython이 PEP 446 이후
+`os.open`에 기본으로 `FD_CLOEXEC`을 설정해 실질적 위험은 없다고 확인했지만,
+정본이 원본보다 약해 보이는 것 자체를 없앴다).
+
+회귀 테스트 4건 추가(pinned_runtime_generation.py 2건 + pair_rotation 전용 1건 +
+브리틀 테스트 교체 1건), 기존 취약 테스트 1건 교체. mutation으로 두 개의
+새로 발견된 버그와 primitive 자체를 모두 재검증함. 전체 backend 1330 passed.
+
 
 ## GM-11: docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포
 
