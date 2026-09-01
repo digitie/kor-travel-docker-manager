@@ -439,3 +439,36 @@ def test_runtime_provenance_rejects_unexpected_image_or_source_label() -> None:
             expectation=expectation,
             image_inspects=image_inspects,
         )
+
+
+def test_runtime_tolerates_unbound_expose_metadata_but_rejects_extra_bindings() -> None:
+    """Docker는 EXPOSE 메타데이터를 binding 없는 Ports 항목(None)으로 항상
+    나열한다 — Map api 이미지는 prod 12701을 EXPOSE하고 격리 publish는
+    13701이라 키 정확일치는 원리적으로 통과 불가였다(e2e12 traceback 실측).
+    published(실제 binding)만 비교하되, 추가 host binding은 여전히 거절한다."""
+
+    expectation = _expectation()
+    containers = {
+        service: _inspect(expectation, service=service)
+        for service in expectation.services
+    }
+    # EXPOSE-only 항목(binding None)은 published가 아니다 — 통과해야 한다.
+    containers["map-api"]["NetworkSettings"]["Ports"]["12701/tcp"] = None
+    assert_m05_isolated_runtime(
+        expectation=expectation,
+        containers=containers,
+        image_inspects=_image_inspects(expectation),
+        network_inspects=_network_inspects(expectation),
+    )
+
+    # 실제 binding이 하나 더 있으면 여전히 fail-close.
+    containers["map-api"]["NetworkSettings"]["Ports"]["9999/tcp"] = [
+        {"HostIp": "127.0.0.1", "HostPort": "29999"}
+    ]
+    with pytest.raises(DeploymentContractError, match="published ports differ"):
+        assert_m05_isolated_runtime(
+            expectation=expectation,
+            containers=containers,
+            image_inspects=_image_inspects(expectation),
+            network_inspects=_network_inspects(expectation),
+        )

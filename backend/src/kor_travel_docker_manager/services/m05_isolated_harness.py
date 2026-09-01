@@ -389,7 +389,16 @@ def assert_m05_isolated_runtime(
                 raise DeploymentContractError("M05 isolated runtime network ID differs")
         port_key = f"{service_expectation.container_port}/tcp"
         ports = network_settings.get("Ports")
-        if not isinstance(ports, Mapping) or set(ports) != {port_key}:
+        if not isinstance(ports, Mapping):
+            raise DeploymentContractError("M05 isolated runtime published ports differ")
+        # Docker는 이미지의 EXPOSE 메타데이터를 binding 없는 항목(None)으로
+        # Ports에 항상 나열한다. "published"는 실제 host binding이 있는 포트만이다
+        # — 키 집합 정확일치를 요구하면 EXPOSE와 publish 포트가 다른 이미지
+        # (예: Map api는 prod 12701을 EXPOSE, 격리 publish는 13701)가 원리적으로
+        # 통과 불가다(e2e12 traceback 실측). 보안 의도(허용되지 않은 host
+        # binding 거절)는 published 집합 비교가 그대로 지킨다.
+        published_ports = {key for key, value in ports.items() if value}
+        if published_ports != {port_key}:
             raise DeploymentContractError("M05 isolated runtime published ports differ")
         bindings = ports.get(port_key)
         if not isinstance(bindings, Sequence) or isinstance(bindings, (str, bytes)) or len(bindings) != 1:
