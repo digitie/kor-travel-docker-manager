@@ -17,20 +17,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
-from kor_travel_docker_manager.services.pinned_runtime_release import (
-    RUNTIME_SOURCE_ROLES,
-    PinnedRuntimeRelease,
-    RuntimeSourceRole,
-)
+from kor_travel_docker_manager.services.pinned_runtime_release import PinnedRuntimeRelease
 from kor_travel_docker_manager.services.runtime_execution_identity import ExecutionIdentityV6
 
-# GM-18: 정본은 pinned_runtime_release.RuntimeSourceRole이다 — 여기서 "map"/"pinvi"
-# 독립 Literal 별칭을 다시 적으면 정본이 바뀔 때 조용히 어긋날 수 있다.
-M05IsolatedRuntimeRole = RuntimeSourceRole
-_ROLE_SET: Final[frozenset[str]] = frozenset(RUNTIME_SOURCE_ROLES)
+M05IsolatedRuntimeRole = Literal["map", "pinvi"]
 M05_ISOLATED_HARNESS_KIND: Final = "m05-isolated-bridge-v1"
 M05_ISOLATED_HARNESS_VERSION: Final = 1
 M05_ISOLATED_MANAGER_ADMISSION_KIND: Final = "pinvi-m05-isolated-manager-admission-v1"
@@ -139,7 +132,7 @@ class M05IsolatedNetworkExpectation:
         # **정확한 등가**를 이미 대조한다 — 더 약한 정규식 재검사는 transaction
         # 모양(`[0-9a-f]{32}`)과 project 접두사를 이 파일에 한 번 더 선언하게
         # 만들 뿐이고, 느슨해져도 사라지는 안전 속성이 없다.
-        if self.role not in _ROLE_SET or not isinstance(self.name, str) or not self.name:
+        if self.role not in {"map", "pinvi"} or not isinstance(self.name, str) or not self.name:
             raise DeploymentContractError("M05 isolated network expectation is invalid")
         if _CONTAINER_ID.fullmatch(self.network_id) is None:
             raise DeploymentContractError("M05 isolated network ID is invalid")
@@ -156,7 +149,7 @@ class M05IsolatedServiceExpectation:
     additional_network_roles: tuple[M05IsolatedRuntimeRole, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.role not in _ROLE_SET:
+        if self.role not in {"map", "pinvi"}:
             raise DeploymentContractError("M05 isolated service role is invalid")
         if not 1 <= self.container_port <= 65535 or not 1 <= self.host_port <= 65535:
             raise DeploymentContractError("M05 isolated service port is invalid")
@@ -168,7 +161,7 @@ class M05IsolatedServiceExpectation:
         if (
             len(set(additional_network_roles)) != len(additional_network_roles)
             or self.role in additional_network_roles
-            or any(role not in _ROLE_SET for role in additional_network_roles)
+            or any(role not in {"map", "pinvi"} for role in additional_network_roles)
         ):
             raise DeploymentContractError("M05 isolated service additional network roles are invalid")
         object.__setattr__(self, "additional_network_roles", additional_network_roles)
@@ -210,7 +203,7 @@ class M05IsolatedRuntimeExpectation:
         services = MappingProxyType(dict(self.services))
         object.__setattr__(self, "networks", networks)
         object.__setattr__(self, "services", services)
-        if len(networks) != 2 or {item.role for item in networks} != _ROLE_SET:
+        if len(networks) != 2 or {item.role for item in networks} != {"map", "pinvi"}:
             raise DeploymentContractError("M05 isolated network roles are incomplete")
         expected_names = {"map": self.plan.map_network, "pinvi": self.plan.pinvi_network}
         if any(item.name != expected_names[item.role] for item in networks):

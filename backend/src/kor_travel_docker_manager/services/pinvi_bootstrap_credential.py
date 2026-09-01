@@ -116,12 +116,12 @@ def create_pinvi_bootstrap_credential(
 
         # credential은 이미 쓰기+fsync+stat 검증까지 성공했다(위 try 블록).
         # 여기부터는 "그 결과가 crash에서도 살아남는가"라는 durability 보강일
-        # 뿐이므로 best_effort=True로 부른다 — 그렇지 않으면 디렉터리 fsync
-        # 실패가 아래 `except BaseException`을 타고 이미 올바른 파일을
-        # zeroize+unlink하게 만든다(문서화된 버그, `_fsync_directory_descriptor`
-        # 정의부 참고).
-        _fsync_directory_descriptor(transaction_fd, best_effort=True)
-        _fsync_directory_descriptor(bootstrap_fd, best_effort=True)
+        # 뿐이다. raise하면 아래 `except BaseException`이 파일을 zeroize+unlink
+        # 하는데, 그 정리 자체는 계약상 올바른 fail-close다 — 실제 피해는
+        # 파괴가 아니라 **가용성**이다: rebuild one-shot이 중단되고 그 claim이
+        # 탄다(claim은 명령 이전에 O_EXCL로 쓰인다).
+        _fsync_directory_descriptor(transaction_fd)
+        _fsync_directory_descriptor(bootstrap_fd)
         creation_complete = True
     except BaseException:
         if metadata is not None and transaction_fd is not None:
@@ -642,7 +642,10 @@ def _open_private_subdirectory(
             raise DeploymentContractError(f"{label} is missing") from None
         try:
             os.mkdir(name, mode=0o700, dir_fd=parent_fd)
-            os.fsync(parent_fd)
+            # mkdir는 이미 성공했다. 디렉터리 fsync는 durability 보강일 뿐이라
+            # 여기서 raise하면 만들어진 디렉터리를 되돌리지 못한 채 중단해
+            # orphan을 남긴다 — 그 orphan이 이후 모든 정리를 잠근다(적대 리뷰).
+            _fsync_directory_descriptor(parent_fd)
             before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except OSError as exc:
             raise DeploymentContractError(f"{label} cannot be created") from exc
@@ -681,7 +684,9 @@ def _create_transaction_directory(
         raise DeploymentContractError("PinVi bootstrap credential transaction already exists")
     try:
         os.mkdir(transaction_id, mode=0o700, dir_fd=bootstrap_fd)
-        os.fsync(bootstrap_fd)
+        # 위와 같은 이유로 best-effort다. 여기서 raise하면 방금 만든
+        # transaction 디렉터리가 그대로 남아 orphan reconcile을 영구히 잠근다.
+        _fsync_directory_descriptor(bootstrap_fd)
     except OSError as exc:
         raise DeploymentContractError("PinVi bootstrap transaction cannot be created") from exc
     return _open_private_subdirectory(
@@ -721,6 +726,9 @@ def _remove_empty_transaction_directory(
         raise DeploymentContractError("PinVi bootstrap transaction changed before cleanup")
     try:
         os.rmdir(transaction_id, dir_fd=bootstrap_fd)
+        # rmdir는 이미 성공했다 — 되돌릴 것이 없다. 나머지 세 자리와 대칭으로
+        # best-effort로 둔다(적대 리뷰: 한 모듈 안에서 fsync 실패 처리가 갈리면
+        # 그 자체가 다음 결함의 씨앗이다).
         _fsync_directory_descriptor(bootstrap_fd)
     except OSError as exc:
         raise DeploymentContractError("PinVi bootstrap transaction cannot be cleaned") from exc
@@ -813,6 +821,11 @@ def _zeroize_and_unlink(
         raise DeploymentContractError("PinVi bootstrap credential artifact changed before removal")
     try:
         os.unlink(name, dir_fd=directory_fd)
+        # unlink는 이미 성공했다 — 시크릿은 zeroize 후 사라졌다. 여기서 raise하면
+        # 호출자의 `artifact_removed = True`에 도달하지 못해 `finally`의
+        # `_remove_empty_transaction_directory`가 건너뛰어지고, 빈 transaction
+        # 디렉터리가 남아 이후 모든 orphan 정리가 영구 fail-close한다(적대 리뷰
+        # 2인이 독립 재현). 생성 쪽과 대칭으로 best-effort로 둔다.
         _fsync_directory_descriptor(directory_fd)
     except OSError as exc:
         raise DeploymentContractError("PinVi bootstrap credential artifact cannot be cleaned") from exc
@@ -865,36 +878,34 @@ def _validate_private_file_stat(metadata: os.stat_result) -> None:
         raise DeploymentContractError("PinVi bootstrap credential artifact is unsafe")
 
 
-def _fsync_directory_descriptor(descriptor: int, *, best_effort: bool = False) -> None:
-    """디렉터리 fsync 실패를 호출부 성격에 따라 다르게 다룬다.
+def _fsync_directory_descriptor(descriptor: int) -> None:
+    """디렉터리 항목 변경을 최선의 노력으로 durable하게 만든다.
 
-    ``best_effort=True``는 correctness가 이미 끝난 뒤 durability만 보강하는
-    자리에서 쓴다 — `create_pinvi_bootstrap_credential`이 credential 파일을
-    쓰고 fsync·stat 검증까지 이미 성공시킨 뒤, 그 디렉터리 항목 교체가
-    crash에서도 살아남는지 보강하는 두 자리(위 호출부 주석 참고)가 그렇다.
-    거기서 raise하면 바깥 `except BaseException`이 "이미 올바르게 쓰여 있는
-    파일"을 실패로 오인해 zeroize+unlink해 버린다 — durability 실패가
-    correctness를 파괴하는 형태다. `secure_state_file.py`의
-    `fsync_directory`, `admin_password_service.py`의 `.env` 디렉터리 fsync와
-    같은 이유로 여기서도 로그만 남기고 계속 진행한다.
+    이 모듈의 여섯 호출부는 전부 **이미 성공한 변경 뒤**에 온다 —
+    `os.mkdir`(디렉터리 생성 2곳), credential 파일 write+fsync+stat 검증
+    (2곳), `os.unlink`(zeroize 후), `os.rmdir`. 되돌릴 것이 없는 시점이므로
+    여기서 raise하면 durability 실패가 correctness를 파괴한다:
 
-    기본값(``best_effort=False``)은 삭제 뒤 디렉터리 fsync를 쓰는 다른 자리
-    (`_remove_empty_transaction_directory`, `_zeroize_and_unlink`)의 기존
-    raise 동작을 그대로 보존한다. 그 자리들은 디렉터리 fsync 이전에 이미
-    zeroize·unlink(또는 rmdir)가 완료돼 있어 "이미 성공한 파일을 파괴"할
-    위험이 없으므로 best-effort로 낮출 필요가 없다 — 최소 변경 원칙상 그대로
-    둔다.
+    - 생성 쪽에서 raise하면 방금 만든 transaction 디렉터리가 그대로 남고,
+    - 삭제 쪽에서 raise하면 호출자의 `artifact_removed = True`에 도달하지
+      못해 `finally`의 `_remove_empty_transaction_directory`가 건너뛰어진다.
+
+    두 경우 모두 **빈 transaction 디렉터리**를 남기고, 그러면
+    `_validate_exact_transaction_contents`가 `entries != [credential.json]`로
+    이후 모든 orphan 정리를 영구 fail-close한다 — 운영자가 손으로 rmdir하기
+    전까지 rebuild가 막힌다(적대 리뷰 2인이 독립적으로 재현).
+
+    이 파일이 실제로 지키는 사후조건은 '컨테이너가 bind-mount로 읽을 수 있는
+    0600 파일이 이 프로세스 수명 동안 존재한다'이지 crash durability가
+    아니다. 정본 규칙은 `services/secure_state_file.fsync_directory`와 같다.
     """
 
     try:
         os.fsync(descriptor)
     except OSError as exc:
-        if best_effort:
-            logger.warning(
-                "PinVi bootstrap credential directory fsync failed after the "
-                "protected file was already written and validated; treating "
-                "as a best-effort durability step and continuing: %s",
-                exc,
-            )
-            return
-        raise DeploymentContractError("PinVi bootstrap credential directory fsync failed") from exc
+        logger.warning(
+            "PinVi bootstrap credential directory fsync failed after the "
+            "change it protects had already succeeded; continuing as a "
+            "best-effort durability step: %s",
+            exc,
+        )

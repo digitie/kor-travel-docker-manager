@@ -495,40 +495,32 @@ def test_runtime_rejects_expected_port_that_is_exposed_but_unbound() -> None:
         )
 
 
-def test_m05_isolated_runtime_role_is_wired_to_the_canonical_runtime_source_role() -> None:
-    """GM-18 후속: 이 파일의 `M05IsolatedRuntimeRole`은 독립적인
-    `Literal["map", "pinvi"]` 재선언이 아니라 `pinned_runtime_release.RuntimeSourceRole`을
-    직접 참조해야 한다 — 그래야 정본이 role을 늘리거나 바꿀 때 이 파일도 같이 움직인다.
+def test_m05_isolated_harness_is_deliberately_two_role() -> None:
+    """이 harness는 구조적으로 map/pinvi 2-role이다 — 정본 별칭에 배선하지 않는다.
 
-    identity 비교(`M05IsolatedRuntimeRole is RuntimeSourceRole`)만으로는 부족하다:
-    `typing.Literal`은 동일 인자 조합을 `_tp_cache`로 캐시하므로, 이 파일이
-    `from typing import Literal`을 유지한 채 `M05IsolatedRuntimeRole = Literal["map", "pinvi"]`를
-    독립적으로 다시 적었더라도 오늘은 두 Literal이 같은 ("map", "pinvi") 인자를 쓰기 때문에
-    캐시 덕분에 identity 비교가 우연히 참이 된다 — 즉 이 비교만으로는 '진짜 배선'과
-    '우연히 같은 값의 독립 선언'을 구분하지 못한다. 그래서 소스 텍스트까지 확인해
-    (1) import 블록이 실제로 canonical 모듈에서 `RuntimeSourceRole`을 가져오고,
-    (2) 독립적인 `Literal[` 재선언이 전혀 없다는 것을 함께 대조한다."""
+    한 차례 `M05IsolatedRuntimeRole`을 `pinned_runtime_release.RuntimeSourceRole`에
+    배선했다가 적대 리뷰 2인이 독립적으로 되돌리라고 판정했다. 이유는 배선이
+    사는 안전 속성이 **0**이기 때문이다:
 
-    import inspect
+    - 오늘은 완전한 no-op이다(정본도 `("map", "pinvi")` 두 원소).
+    - 정본이 role을 하나 늘리면 이 파일은 따라 움직이지 못하고 **부서진다** —
+      `len(networks) != 2`, `expected_names = {"map": …, "pinvi": …}`,
+      `_EXPOSED_RUNTIME_SERVICE_ROLES`, `_RUNTIME_IMAGE_ROLES`, provenance
+      payload 키, `role == "map" else pinvi` 이항 분기가 전부 2-role이다.
+      게다가 그 실패는 두 스택을 다 띄운 뒤(1~2시간)에 나온다.
+    - CI에 mypy가 없어 타입 별칭 정본화는 강제되지도 않는다.
 
-    from kor_travel_docker_manager.services import m05_isolated_harness
-    from kor_travel_docker_manager.services.m05_isolated_harness import (
-        M05IsolatedRuntimeRole,
+    즉 배선은 능력 없는 결합이고, 이 저장소가 결함으로 규정한 과결박이다.
+    ADR-40이 pair를 정확히 두 role로 동결했으므로 리터럴이 정직하다.
+    """
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        RUNTIME_SOURCE_ROLES,
     )
-    from kor_travel_docker_manager.services.pinned_runtime_release import RuntimeSourceRole
 
-    # 약한 신호: 오늘은 참이지만, 캐시된 우연의 일치일 수도 있어 이것만으로는 불충분하다.
-    assert M05IsolatedRuntimeRole is RuntimeSourceRole
-
-    source = inspect.getsource(m05_isolated_harness)
-
-    # 강한 신호: import 블록이 실제로 canonical 모듈에서 RuntimeSourceRole을 가져온다.
-    marker = "from kor_travel_docker_manager.services.pinned_runtime_release import"
-    assert marker in source, "pinned_runtime_release import 블록을 찾을 수 없다"
-    imported_block = source.split(marker, 1)[1].split(")", 1)[0]
-    assert "RuntimeSourceRole" in imported_block
-
-    # 가장 강한 신호: 독립적인 Literal[...] 재선언이 파일 어디에도 없다 — 있었다면
-    # 위 identity 비교는 캐시 덕에 통과했을 뿐 실제로는 정본과 무관한 하드코딩이다.
-    assert "Literal[" not in source
-    assert "typing.Literal" not in source
+    # 정본이 늘어나면 이 테스트가 먼저 붉어져, 배선이 아니라 harness 전체
+    # 일반화가 필요하다는 사실을 1~2시간짜리 실행 전에 알린다.
+    assert tuple(RUNTIME_SOURCE_ROLES) == ("map", "pinvi"), (
+        "정본 role이 늘었다 — M05 harness는 2-role 고정이므로 별칭만 배선하지 말고 "
+        "networks/services/images/provenance/이항 분기를 함께 일반화해야 한다"
+    )

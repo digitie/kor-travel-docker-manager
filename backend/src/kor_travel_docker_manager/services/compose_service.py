@@ -2396,7 +2396,7 @@ def _atomic_restore_compose_source(
     mode: int,
 ) -> None:
     # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 한 차례
-    # 정본 `atomic_write_bytes`로 옮겼다가(7d8f578) 적대적 리뷰로 되돌렸다 — 이
+    # 정본 `atomic_write_bytes`로 옮겼다가 적대적 리뷰로 되돌렸다(PR #300) — 이
     # 자리의 디렉터리 fsync 실패는 `_recover_persisted_target_runtime`이
     # `recovery_succeeded`를 판정하는 유일한 신호원인데, 정본의
     # `fsync_directory`는 디렉터리 fsync 실패를 무조건 삼킨다(best-effort).
