@@ -794,9 +794,13 @@ def test_cleanup_failure_does_not_downgrade_an_unconditional_phase() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
     ).read_text(encoding="utf-8")
-    guard = (
-        "if not body_entered and _terminal_block_phase(phase) is not None:"
-    )
+    guard = "if (\n"
+    guard += "                claim_attempted\n"
+    guard += "                and not body_entered\n"
+    guard += "                and _terminal_block_phase(phase) is not None\n"
+    guard += "            ):"
+    # claim 이전에는 강등 자체가 없어야 한다 — preflight_rejected receipt가
+    # driver_phase != phase가 되면 launcher가 거부해 무소비 실행이 소각된다.
     assert guard in source
     tail = source[source.index(guard) + len(guard):]
     statements = [
@@ -860,10 +864,15 @@ def test_cleanup_boundary_marks_ordinary_exceptions_for_fixed_receipt(
     ) == (False, True)
 
 
-def test_unexpected_cleanup_keeps_the_fixed_cleanup_phase(
+def test_preclaim_cleanup_failure_keeps_the_receipt_launcher_acceptable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """cleanup boundary의 ordinary exception은 generic phase로 덮어쓰지 않는다."""
+    """claim 전 실패에 cleanup 딸꾹질이 겹쳐도 receipt는 여전히 수용 가능해야 한다.
+
+    종전에는 phase가 runtime_cleanup_failed로 재작성돼 driver_phase != phase가
+    됐고, launcher는 그 preflight_rejected receipt를 거부해 **아무것도 claim하지
+    않은 실행을 소각**했다. 이 테스트가 그 소각 receipt를 인증하고 있었다
+    (적대 리뷰 BLOCKER-2). cleanup 신호는 cleanup_failed 필드가 나른다."""
 
     driver = _driver()
     monkeypatch.setattr(
@@ -881,10 +890,11 @@ def test_unexpected_cleanup_keeps_the_fixed_cleanup_phase(
     assert driver.main("a" * 40, tmp_path) == 1
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
 
-    assert receipt["phase"] == "runtime_cleanup_failed"
-    # driver_phase는 cleanup 전 실행 표면의 정본이다(2026-08-28 journal 계약) —
-    # 강등이 실제 실패 phase를 가리지 않는다(e2e6 회귀 방지).
-    assert receipt["driver_phase"] == "admission"
+    assert receipt["status"] == "preflight_rejected"
+    # phase가 재작성되지 않아 launcher의 preflight 수용 조건을 만족한다.
+    assert receipt["phase"] == "admission"
+    assert receipt["driver_phase"] == receipt["phase"]
+    assert receipt["execution_identity_sha256"] is not None
 
 
 def test_preclaim_phase_error_does_not_attempt_a_terminal_block(
@@ -1022,8 +1032,11 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert 'if value["status"] == "preflight_rejected"' in launcher
     assert 'receipt_validation_status" == 4' in launcher
     assert "PREFLIGHT_REJECTED_PHASES" in launcher
-    assert 'value["phase"] not in PREFLIGHT_REJECTED_PHASES' in launcher
-    assert "if set(value) != expected_keys:" in launcher
+    assert 'value.get("phase") not in PREFLIGHT_REJECTED_PHASES' in launcher
+    # Tier 2(진단) 불일치는 소각값이 아니라 저하값으로 간다 — 행동은
+    # test_tier_two_divergence_never_reaches_the_unconditional_burn_value가 덮는다.
+    assert "set(value) != expected_keys" in launcher
+    assert 'receipt_validation_status" == 5' in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
 
@@ -1056,7 +1069,7 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
 
     driver_phases = frozenset_literal(driver_source, "_PUBLIC_TERMINAL_PHASES")
     launcher_start = launcher.index("PHASES = frozenset(")
-    launcher_end = launcher.index("FRESH_INIT_REASONS =", launcher_start)
+    launcher_end = launcher.index("PREFLIGHT_REJECTED_PHASES =", launcher_start)
     launcher_phases = frozenset_literal(launcher[launcher_start:launcher_end], "PHASES")
 
     assert launcher_phases == driver_phases | {"completed"}
@@ -1892,7 +1905,7 @@ def test_driver_result_keys_match_the_launcher_expected_keys() -> None:
     launcher = (root / "scripts/run-m05-isolated-e2e-once").read_text(encoding="utf-8")
 
     base_start = driver_source.index("result: dict[str, object] = {")
-    base_end = driver_source.index("}", driver_source.index("**result_hashes"))
+    base_end = driver_source.index("}", driver_source.index("(result_hashes if completed"))
     base_block = driver_source[base_start:base_end]
     driver_base_keys = {
         line.split('"')[1]
@@ -1902,9 +1915,8 @@ def test_driver_result_keys_match_the_launcher_expected_keys() -> None:
     # 조건부 키: map_fresh_init_reason(진단), result_hashes(passed 3종).
     assert 'result["map_fresh_init_reason"]' in driver_source
 
-    launcher_base = launcher[
-        launcher.index("expected_keys = {") : launcher.index("if value.get(")
-    ]
+    base_open = launcher.index("expected_keys = {")
+    launcher_base = launcher[base_open : launcher.index("}", base_open) + 1]
     launcher_base_keys = {
         part.strip().strip('"')
         for line in launcher_base.splitlines()
@@ -2356,53 +2368,284 @@ def test_pinvi_receipt_wait_retries_only_the_not_yet_arrived_window(
     assert "_POLL_SECONDS=1" not in source
 
 
-def test_fresh_init_reason_vocabulary_mirrors_the_launcher_and_is_closed() -> None:
-    """map_fresh_init_reason은 닫힌 어휘여야 한다.
+def test_free_form_diagnostic_is_omitted_from_the_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """자유형 진단은 receipt에 실리지 않고 launcher가 그 receipt를 수용해야 한다.
 
-    driver는 _fail(diagnostic=...)에 사람이 읽는 자유형 문자열도 싣는데,
-    launcher receipt 검증기는 FRESH_INIT_REASONS 밖의 값을 ValueError로
-    떨어뜨린다 — 그러면 claim 전 실패(preflight_rejected)도 fallback
-    `pin block-execution`으로 흘러 실행권이 무조건 소각된다.
-    (full-path 시뮬레이션이 playwright driverVersion 불일치 경로에서 적발.)
-
-    _PUBLIC_TERMINAL_PHASES ↔ launcher PHASES와 같은 미러 결박 규약이다."""
+    종전 이 테스트는 소스 문자열과 들여쓰기를 결박해 실제 동작을 보지 않았고,
+    올바른 후속 수정(phase 게이트)까지 막았다(적대 리뷰 MINOR-3)."""
 
     driver = _driver()
-    root = Path(__file__).resolve().parents[2]
-    launcher = (root / "scripts/run-m05-isolated-e2e-once").read_text(encoding="utf-8")
-    start = launcher.index("FRESH_INIT_REASONS = frozenset(")
-    end = launcher.index(")", launcher.index("}", start)) + 1
-    launcher_reasons = set(re.findall(r'"([a-z0-9_]+)"', launcher[start:end]))
-
-    assert set(driver._MAP_FRESH_INIT_REASONS) == launcher_reasons
-    # 어휘는 exit map에서 파생돼야 한다 — 재타이핑하면 같은 결함이 재발한다.
-    assert set(driver._MAP_FRESH_INIT_REASONS) == set(
-        driver._MAP_FRESH_INIT_EXIT_DIAGNOSTICS.values()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(
+            driver._PhaseError(
+                "source_materialization", diagnostic="map application graph unavailable"
+            )
+        ),
     )
-    # unclassified는 "fresh-init runner가 미상 exit code로 죽었다"는 고유
-    # 의미를 갖는다 — 무관한 진단의 수렴처로 재사용하면 안 된다.
-    assert driver._MAP_FRESH_INIT_EXIT_DIAGNOSTICS[127] == "unclassified"
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_a, **_k: pytest.fail("preclaim failure must not block execution"),
+    )
+    assert driver.main("a" * 40, tmp_path) == 1
+
+    result_path = tmp_path / "result.json"
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    assert "map_fresh_init_reason" not in receipt
+    assert receipt["phase"] == "source_materialization"
+    assert _validate_receipt(result_path, driver_status=1) == 4
 
 
-def test_free_form_diagnostic_is_omitted_from_the_receipt() -> None:
-    """자유형 진단이 receipt에 그대로 실리면 launcher 검증이 깨진다.
+def test_fresh_init_reason_is_only_carried_for_a_fresh_init_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """어휘 안의 단어라도 fresh-init 실패가 아니면 싣지 않는다.
 
-    어휘 밖 진단은 unclassified로 바꾸지 않고 필드 자체를 생략한다 —
-    unclassified는 fresh-init runner의 미상 exit code라는 고유 의미가 있어
-    무관한 진단에 붙이면 receipt가 거짓을 주장하게 된다."""
+    diagnostic은 _command/_compose의 **범용** 채널이라, 다른 호출부가 겹치는
+    단어를 쓰는 exit map을 넘기는 순간 무관한 실패에 fresh-init 사유가 붙는다
+    (적대 리뷰 MAJOR-2)."""
 
     driver = _driver()
-    source = (
-        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(
+            driver._PhaseError("source_materialization", diagnostic="alembic_command_failed")
+        ),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_a, **_k: pytest.fail("preclaim failure must not block execution"),
+    )
+    assert driver.main("a" * 40, tmp_path) == 1
+
+    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert "map_fresh_init_reason" not in receipt
+# launcher heredoc 경계 — 백슬래시 조립으로 리터럴 이스케이프 붕괴를 피한다.
+LAUNCHER_HEREDOC_MARKER = '"$driver_status" <<' + chr(39) + "PY" + chr(39) + chr(10)
+HEREDOC_TERMINATOR = chr(10) + "PY" + chr(10)
+
+
+
+def _preclaim_phases_reachable_from_validate_trusted_release() -> set[str]:
+    """_validate_trusted_release 실패로 재현 가능한 pre-claim phase 표본.
+
+    driver를 실제로 돌려야 하므로 첫 실패 지점 하나로 전 phase를 대표시킨다 —
+    receipt를 만드는 코드 경로는 phase 값과 무관하게 동일하다.
+    """
+
+    driver = _driver()
+    return set(driver._PRE_CLAIM_PHASES)
+
+# ---------------------------------------------------------------------------
+# launcher receipt 검증기를 **실제로 실행**하는 행동 테스트
+#
+# 종전의 launcher 결합 테스트는 전부 read_text() + 부분 문자열이었다. 그래서
+# driver가 만든 result.json이 launcher에 실제로 수용되는지는 **CI가 한 번도
+# 확인한 적이 없다** — #293/#295와 BLOCKER-1/2가 모두 손으로 돌린 시뮬레이션에서
+# 나온 이유다(적대 리뷰 MAJOR-3). 아래 테스트는 launcher heredoc에서 검증기를
+# 잘라내 실제 receipt를 먹인다.
+# ---------------------------------------------------------------------------
+
+
+def _extract_launcher_validator() -> str:
+    launcher = (
+        Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
     ).read_text(encoding="utf-8")
+    marker = LAUNCHER_HEREDOC_MARKER
+    start = launcher.index(marker) + len(marker)
+    end = launcher.index(HEREDOC_TERMINATOR, start)
+    source = launcher[start:end]
+    # 비-root 테스트에서 재사용할 수 있게 **root 소유 단언만** 완화한다.
+    # 정규 파일 / 모드 0600 / nlink / 스키마 검증은 launcher 원문 그대로 남는다.
+    assert "metadata.st_uid != 0" in source
+    return source.replace("metadata.st_uid != 0", "False", 1)
 
-    assert (
-        "if failure_diagnostic in _MAP_FRESH_INIT_REASONS:\n"
-        '            result["map_fresh_init_reason"] = failure_diagnostic'
-    ) in source
-    assert 'result["map_fresh_init_reason"] = (' not in source
 
-    # 실제로 자유형 문자열을 쓰는 호출부가 존재함을 못 박는다(회귀 방지).
-    free_form = set(re.findall(r'diagnostic=\s*"([^"]{4,})"', source))
-    outside = {value for value in free_form if value not in driver._MAP_FRESH_INIT_REASONS}
-    assert outside, "자유형 진단이 사라졌다면 이 테스트의 전제를 재검토해야 한다"
+def _validate_receipt(
+    result_path: Path,
+    *,
+    driver_status: int,
+    expected: tuple[str, str, str] | None = None,
+) -> int:
+    """launcher 검증기를 실제로 돌린다.
+
+    `expected`를 주지 않으면 launch snapshot이 receipt와 일치하는 경우를
+    재현한다. authority(Tier 1) 변조를 시험할 때는 **고정 기대값**을 넘겨야
+    한다 — receipt에서 읽으면 변조가 기대값도 함께 바꿔 무효가 된다."""
+
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    revision, pinset, execution = expected or (
+        receipt["manager_source_revision"],
+        receipt["pinset_sha256"],
+        receipt["execution_identity_sha256"],
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            _extract_launcher_validator(),
+            str(result_path),
+            str(revision),
+            str(pinset),
+            str(execution),
+            str(driver_status),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    return completed.returncode
+
+
+def _run_driver_failing_at(
+    phase: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """`phase`에서 claim 전에 죽는 driver run을 실제로 실행한다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(driver._PhaseError(phase)),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_a, **_k: pytest.fail("preclaim failure must not block execution"),
+    )
+    assert driver.main("a" * 40, tmp_path) == 1
+    return tmp_path / "result.json"
+
+
+@pytest.mark.parametrize(
+    "phase",
+    sorted(_preclaim_phases_reachable_from_validate_trusted_release()),
+)
+def test_every_preclaim_phase_receipt_is_accepted_as_scoped_by_the_launcher(
+    phase: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """claim 전 실패는 launcher가 exit 4(무소비)로 받아야 한다.
+
+    받지 못하면 launcher는 `ktdctl pin block-execution`으로 흘러 **아무것도
+    소비하지 않은 실행을 소각**한다. driver와 launcher가 phase 집합을 서로
+    미러링하고 있어도, 다른 필드가 receipt를 먼저 죽이면 그 미러는 문 앞의
+    벽을 지키는 셈이다(적대 리뷰: execution identity가 null이라 열 개 phase가
+    exit 4에 도달할 수 없었다)."""
+
+    result_path = _run_driver_failing_at(phase, tmp_path, monkeypatch)
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "preflight_rejected"
+    assert receipt["execution_identity_sha256"] is not None
+    assert _validate_receipt(result_path, driver_status=1) == 4
+
+
+def test_preclaim_receipt_with_a_cleanup_hiccup_is_not_escalated_to_a_burn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup 딸꾹질이 겹쳐도 무소비 실행이 소각되면 안 된다."""
+
+    driver = _driver()
+    monkeypatch.setattr(
+        driver,
+        "_validate_trusted_release",
+        lambda _expected: (_ for _ in ()).throw(driver._PhaseError("admission")),
+    )
+    monkeypatch.setattr(driver, "_cleanup_temporary_resources", lambda **_k: (True, False))
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_a, **_k: True)
+    assert driver.main("a" * 40, tmp_path) == 1
+
+    result_path = tmp_path / "result.json"
+    receipt = json.loads(result_path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "preflight_rejected"
+    assert receipt["cleanup_failed"] is True
+    # cleanup_failed는 진단(Tier 2)이므로 exit 5(저하)까지만 간다 — 소각(1) 아님.
+    assert _validate_receipt(result_path, driver_status=1) == 5
+
+
+def test_tier_two_divergence_never_reaches_the_unconditional_burn_value(
+    tmp_path: Path
+) -> None:
+    """진단 계층 불일치는 exit 1(정체불명 crash)로 접히면 안 된다.
+
+    Tier 1(harness·revision·pinset·execution identity·status·transaction)이
+    모두 일치하면 receipt는 이 launch의 것으로 증명된 것이고, phase 어휘를
+    모른다는 이유로 "receipt가 아예 없다"와 같은 값으로 접으면 관측자의
+    딸꾹질이 피관측자를 태운다(적대 리뷰 Part A)."""
+
+    base = {
+        "harness": "m05-isolated-bridge-v1",
+        "manager_source_revision": "a" * 40,
+        "pinset_sha256": "b" * 64,
+        "execution_identity_sha256": "c" * 64,
+        "status": "preflight_rejected",
+        "transaction_id": "d" * 32,
+        "phase": "admission",
+        "driver_phase": "admission",
+        "cleanup_failed": False,
+    }
+    for label, mutate in (
+        ("unknown phase", {"phase": "totally_unknown", "driver_phase": "totally_unknown"}),
+        ("extra key", {"unexpected_field": "x"}),
+        ("phase mismatch", {"driver_phase": "source_materialization"}),
+        ("cleanup flag", {"cleanup_failed": True}),
+        ("free-form reason", {"map_fresh_init_reason": "runner driverVersion != pinned"}),
+    ):
+        payload = dict(base)
+        payload.update(mutate)
+        path = tmp_path / f"{label.replace(' ', '_')}.json"
+        raw = (json.dumps(payload, sort_keys=True) + chr(10)).encode("utf-8")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(descriptor, raw)
+        finally:
+            os.close(descriptor)
+        assert _validate_receipt(path, driver_status=1) == 5, label
+
+
+def test_authority_divergence_still_fails_closed(tmp_path: Path) -> None:
+    """Tier 1이 어긋나면 여전히 exit 1(소각)이어야 한다 — 과도 완화 방지 가드."""
+
+    base = {
+        "harness": "m05-isolated-bridge-v1",
+        "manager_source_revision": "a" * 40,
+        "pinset_sha256": "b" * 64,
+        "execution_identity_sha256": "c" * 64,
+        "status": "preflight_rejected",
+        "transaction_id": "d" * 32,
+        "phase": "admission",
+        "driver_phase": "admission",
+        "cleanup_failed": False,
+    }
+    for label, mutate in (
+        ("foreign harness", {"harness": "other-harness-v1"}),
+        ("foreign revision", {"manager_source_revision": "e" * 40}),
+        ("foreign pinset", {"pinset_sha256": "e" * 64}),
+        ("null identity", {"execution_identity_sha256": None}),
+        ("unknown status", {"status": "made_up"}),
+        ("short transaction", {"transaction_id": "d" * 31}),
+    ):
+        payload = dict(base)
+        payload.update(mutate)
+        path = tmp_path / f"auth_{label.replace(' ', '_')}.json"
+        raw = (json.dumps(payload, sort_keys=True) + chr(10)).encode("utf-8")
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(descriptor, raw)
+        finally:
+            os.close(descriptor)
+        assert (
+            _validate_receipt(
+                path,
+                driver_status=1,
+                expected=(base["manager_source_revision"], base["pinset_sha256"], base["execution_identity_sha256"]),
+            )
+            == 1
+        ), label
