@@ -184,6 +184,7 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "m05_pinvi_receipt_blocked",
         "m05_pinvi_receipt_http_failed",
         "m05_pinvi_receipt_invalid",
+        "m05_pinvi_receipt_not_ready",
         "map_application_start_failed",
         "map_fresh_init_failed",
         "map_health_status_failed",
@@ -1179,6 +1180,7 @@ def _http_json(
     opener: Any | None = None,
     failure_phase: str = "runtime_http_failed",
     http_error_phase: str | None = None,
+    not_found_phase: str | None = None,
 ) -> dict[str, object]:
     try:
         parsed = urlsplit(url)
@@ -1213,9 +1215,13 @@ def _http_json(
         request_opener = opener.open if opener is not None else _LOOPBACK_OPENER.open
         with request_opener(request, timeout=10) as response:
             raw = response.read(2_000_000)
-    except HTTPError:
+    except HTTPError as error:
         # HTTP status와 loopback transport 오류를 같은 원문 없는 enum으로 합치면
         # 다음 one-shot 후보가 어느 startup 경계를 보정해야 하는지 알 수 없다.
+        # 404("아직 없음")는 호출자가 요청할 때만 별도 enum으로 분리한다 —
+        # 그래야 대기 루프가 404만 재시도하고 401/403/5xx는 즉시 종료한다.
+        if not_found_phase is not None and error.code == 404:
+            _fail(not_found_phase)
         _fail(http_error_phase or failure_phase)
     except (OSError, URLError):
         # 원문 HTTP status/body/socket error는 receipt에 기록하지 않는다. 대신 caller가
@@ -1485,18 +1491,17 @@ def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
     """PinVi detail 계약의 `applied`만 성공으로 수용하고 나머지는 즉시 종료한다.
 
     Map decision commit과 PinVi worker의 다음 polling 사이에는 receipt도
-    delivery-attempt row도 없는 창이 있다. 종전 구현은 이름과 달리 단발
-    GET이라 그 창에 걸리면 즉시 실패했다(정합성 스윕 high). 재시도 대상은
-    **아직 도착하지 않음**(transport/404, pending)뿐이고 blocked·계약 위반은
-    여전히 즉시 terminal이다 — 실패를 늦추지 않는다.
+    delivery-attempt row도 없는 창이 있고, 그 창에서 PinVi detail 라우트는
+    **404**를 준다(schemas: status는 blocked|applied 두 값뿐이라 'pending'
+    응답은 존재하지 않는다 — 적대 리뷰). 종전 구현은 이름과 달리 단발
+    GET이라 그 창에 걸리면 즉시 실패했다. 재시도 대상은 404 하나이고
+    401/403/5xx·transport 오류·blocked·계약 위반은 여전히 즉시 terminal이다.
     """
 
     endpoint = (
         f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}"
     )
-    data: dict[str, object] | None = None
     for attempt in range(_PINVI_RECEIPT_READINESS_ATTEMPTS):
-        last = attempt + 1 == _PINVI_RECEIPT_READINESS_ATTEMPTS
         try:
             data = _data(
                 _http_json(
@@ -1504,18 +1509,17 @@ def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
                     headers={},
                     opener=opener,
                     failure_phase="m05_pinvi_receipt_http_failed",
+                    not_found_phase="m05_pinvi_receipt_not_ready",
                 )
             )
+            break
         except _PhaseError as error:
-            if error.phase != "m05_pinvi_receipt_http_failed" or last:
+            if (
+                error.phase != "m05_pinvi_receipt_not_ready"
+                or attempt + 1 == _PINVI_RECEIPT_READINESS_ATTEMPTS
+            ):
                 raise
             time.sleep(_PINVI_RECONCILIATION_POLL_SECONDS)
-            continue
-        if data.get("status") != "pending" or last:
-            break
-        time.sleep(_PINVI_RECONCILIATION_POLL_SECONDS)
-    if data is None:
-        _fail("m05_pinvi_receipt_invalid")
     status = data.get("status")
     if status == "blocked":
         _fail("m05_pinvi_receipt_blocked")

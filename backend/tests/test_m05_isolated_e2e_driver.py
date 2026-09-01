@@ -2297,28 +2297,29 @@ def test_launcher_preflight_phases_mirror_the_driver_pre_claim_set() -> None:
     for phase in sorted(post_claim_only - {"runtime_cleanup_failed"}):
         marker = f'"{phase}"'
         assert driver_source.index(marker, claim_at) > claim_at
-def test_pinvi_receipt_wait_tolerates_the_worker_poll_window(
+
+
+def test_pinvi_receipt_wait_retries_only_the_not_yet_arrived_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Map decision commit과 PinVi worker의 다음 polling 사이 창을 흡수한다.
+    """Map decision commit과 PinVi worker polling 사이 창은 404다 — 그것만
+    재시도하고 다른 status·blocked·계약 위반은 즉시 terminal이어야 한다.
 
-    종전 구현은 이름과 달리 단발 GET이라 receipt가 아직 없는 순간에 즉시
-    실패했다(정합성 스윕 high). 재시도 대상은 '아직 도착하지 않음'뿐이고
-    blocked/계약 위반은 여전히 즉시 terminal이어야 한다."""
+    PinVi detail 계약의 status는 blocked|applied 두 값뿐이라 'pending' 응답은
+    존재하지 않는다(적대 리뷰 — 종전 구현은 없는 상태를 재시도하고 있었다)."""
 
     driver = _driver()
     monkeypatch.setattr(driver.time, "sleep", lambda _s: None)
     calls = {"n": 0}
 
-    def flaky(*_args: object, **_kwargs: object) -> dict[str, object]:
+    def not_ready_then_applied(*_args: object, **kwargs: object) -> dict[str, object]:
         calls["n"] += 1
-        if calls["n"] == 1:
-            raise driver._PhaseError("m05_pinvi_receipt_http_failed")
-        if calls["n"] == 2:
-            return {"data": {"status": "pending"}}
+        assert kwargs.get("not_found_phase") == "m05_pinvi_receipt_not_ready"
+        if calls["n"] < 3:
+            raise driver._PhaseError("m05_pinvi_receipt_not_ready")
         return {"data": {"status": "applied", "receipt": {"impact_count": 3}}}
 
-    monkeypatch.setattr(driver, "_http_json", flaky)
+    monkeypatch.setattr(driver, "_http_json", not_ready_then_applied)
     assert (
         driver._wait_for_pinvi_receipt(
             api_url="http://127.0.0.1:20001", opener=None, event_id="e" * 32
@@ -2327,18 +2328,27 @@ def test_pinvi_receipt_wait_tolerates_the_worker_poll_window(
     )
     assert calls["n"] == 3
 
-    # blocked는 재시도하지 않는다 — 실패를 늦추면 안 된다.
+    attempts = {"n": 0}
+
+    def forbidden(*_args: object, **_kwargs: object) -> dict[str, object]:
+        attempts["n"] += 1
+        raise driver._PhaseError("m05_pinvi_receipt_http_failed")
+
+    monkeypatch.setattr(driver, "_http_json", forbidden)
+    with pytest.raises(driver._PhaseError, match="m05_pinvi_receipt_http_failed"):
+        driver._wait_for_pinvi_receipt(
+            api_url="http://127.0.0.1:20001", opener=None, event_id="e" * 32
+        )
+    assert attempts["n"] == 1
+
     monkeypatch.setattr(
-        driver,
-        "_http_json",
-        lambda *_a, **_k: {"data": {"status": "blocked"}},
+        driver, "_http_json", lambda *_a, **_k: {"data": {"status": "blocked"}}
     )
     with pytest.raises(driver._PhaseError, match="m05_pinvi_receipt_blocked"):
         driver._wait_for_pinvi_receipt(
             api_url="http://127.0.0.1:20001", opener=None, event_id="e" * 32
         )
 
-    # 주입하는 폴링 주기와 대기 창이 같은 상수에서 파생되어야 한다.
     source = (
         Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
     ).read_text(encoding="utf-8")
