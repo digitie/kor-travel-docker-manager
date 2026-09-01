@@ -322,6 +322,52 @@ def _public_terminal_phase(phase: str) -> str:
 #: 본문 도달 전에 소진됐다(`ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md` §3 I-1).
 _UNCONDITIONAL_TERMINAL_PHASES = frozenset({"ledger_claim", "m04_m05_e2e"})
 
+# ledger claim **이전**에만 도달할 수 있는 phase 집합 — 이 상태로 끝난 run은
+# 실행권을 소비하지 않았으므로(`status="preflight_rejected"`) 보정 후 같은
+# pinset으로 재시도할 수 있어야 한다. launcher의 PREFLIGHT_REJECTED_PHASES가
+# 이 집합의 부분집합만 알고 있으면, 나머지 phase로 끝난 receipt가 검증에서
+# 거절되어 fallback이 execution을 **무조건 소각**한다 — phase-scoped 설계의
+# 정면 부정이다(2026-09-01 driver full-path 시뮬레이션이 적발). 두 곳이
+# 갈라지지 않도록 launcher는 이 상수를 그대로 미러하고 테스트가 결박한다.
+_PRE_CLAIM_PHASES = frozenset(
+    {
+        "admission",
+        "arguments_invalid",
+        "driver_contract_failed",
+        "network_inspect_invalid",
+        "network_subnet_unavailable",
+        "pair_contract_invalid",
+        "pinvi_manager_admission_contract_invalid",
+        "ports_unavailable",
+        "result_write_failed",
+        "runtime_cleanup_failed",
+        "runtime_command_failed",
+        "runtime_command_output_too_large",
+        "runtime_directory_invalid",
+        "runtime_execution_registry_changed",
+        "runtime_execution_registry_invalid",
+        "runtime_inspect_invalid",
+        "runtime_loopback_publish_config_invalid",
+        "runtime_loopback_publish_invalid",
+        "runtime_pin_registry_changed",
+        "runtime_pin_registry_invalid",
+        "runtime_setup_admission",
+        "runtime_setup_admission_build",
+        "runtime_setup_admission_write",
+        "runtime_setup_credentials",
+        "runtime_setup_map_config",
+        "runtime_setup_network",
+        "runtime_setup_pinvi_config",
+        "runtime_setup_playwright_runner_image",
+        "runtime_setup_ports",
+        "runtime_setup_workspace",
+        "source_materialization",
+        "terminal_execution_blocked",
+        "trusted_release_invalid",
+        "trusted_release_revision_mismatch",
+    }
+)
+
 
 def _terminal_block_phase(public_phase: str) -> str | None:
     """무조건 차단이면 ``None``, 아니면 scoped 기록용 phase."""

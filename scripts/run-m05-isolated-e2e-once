@@ -332,12 +332,43 @@ PHASES = frozenset(
     }
 )
 PREFLIGHT_REJECTED_PHASES = frozenset(
+    # driver의 _PRE_CLAIM_PHASES를 그대로 미러한다 — 부분집합만 알면
+    # 재시도 가능한 pre-claim 실패가 무조건 소각으로 승격된다.
     {
         "admission",
-        "source_materialization",
+        "arguments_invalid",
+        "driver_contract_failed",
+        "network_inspect_invalid",
+        "network_subnet_unavailable",
         "pair_contract_invalid",
         "pinvi_manager_admission_contract_invalid",
+        "ports_unavailable",
+        "result_write_failed",
+        "runtime_cleanup_failed",
+        "runtime_command_failed",
+        "runtime_command_output_too_large",
+        "runtime_directory_invalid",
+        "runtime_execution_registry_changed",
+        "runtime_execution_registry_invalid",
+        "runtime_inspect_invalid",
         "runtime_loopback_publish_config_invalid",
+        "runtime_loopback_publish_invalid",
+        "runtime_pin_registry_changed",
+        "runtime_pin_registry_invalid",
+        "runtime_setup_admission",
+        "runtime_setup_admission_build",
+        "runtime_setup_admission_write",
+        "runtime_setup_credentials",
+        "runtime_setup_map_config",
+        "runtime_setup_network",
+        "runtime_setup_pinvi_config",
+        "runtime_setup_playwright_runner_image",
+        "runtime_setup_ports",
+        "runtime_setup_workspace",
+        "source_materialization",
+        "terminal_execution_blocked",
+        "trusted_release_invalid",
+        "trusted_release_revision_mismatch",
     }
 )
 FRESH_INIT_REASONS = frozenset(

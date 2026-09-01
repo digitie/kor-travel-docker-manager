@@ -8,6 +8,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -2247,3 +2248,34 @@ def test_manual_feature_resolution_rejects_missing_text_id(
             proxy_secret="s" * 32,
             feature_uuid=feature_uuid,
         )
+
+
+def test_launcher_preflight_phases_mirror_the_driver_pre_claim_set() -> None:
+    """pre-claim phase 집합이 driver와 launcher에서 갈라지면, 재시도 가능한
+    실패가 무조건 소각으로 승격된다(2026-09-01 full-path 시뮬레이션 적발:
+    launcher는 5개만 알았고 driver는 12개 phase로 pre-claim 종료할 수 있었다).
+
+    _PUBLIC_TERMINAL_PHASES ↔ launcher PHASES와 같은 미러 결박 규약이다."""
+
+    root = Path(__file__).resolve().parents[2]
+    driver_source = (root / "scripts/m05_isolated_e2e.py").read_text(encoding="utf-8")
+    launcher = (root / "scripts/run-m05-isolated-e2e-once").read_text(encoding="utf-8")
+
+    def literal(source: str, name: str) -> set[str]:
+        start = source.index(f"{name} = frozenset(")
+        end = source.index(")", source.index("}", start)) + 1
+        return set(re.findall(r'"([a-z0-9_]+)"', source[start:end]))
+
+    driver_pre_claim = literal(driver_source, "_PRE_CLAIM_PHASES")
+    launcher_pre_claim = literal(launcher, "PREFLIGHT_REJECTED_PHASES")
+    assert driver_pre_claim == launcher_pre_claim
+
+    # pre-claim 집합은 공개 어휘의 부분집합이어야 하고, 무조건 소각 phase를
+    # 포함해서는 안 된다(그것들은 정의상 claim 이후다).
+    public = literal(driver_source, "_PUBLIC_TERMINAL_PHASES")
+    assert driver_pre_claim <= public
+    unconditional = literal(driver_source, "_UNCONDITIONAL_TERMINAL_PHASES")
+    assert not (driver_pre_claim & unconditional)
+
+    # 이번에 추가된 runner 이미지 보장 단계가 실제로 포함돼야 한다(#289 전제).
+    assert "runtime_setup_playwright_runner_image" in driver_pre_claim
