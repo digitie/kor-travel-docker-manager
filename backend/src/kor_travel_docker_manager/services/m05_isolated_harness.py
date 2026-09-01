@@ -44,7 +44,6 @@ _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TRANSACTION = re.compile(r"^[0-9a-f]{32}$")
-_NETWORK = re.compile(r"^m05i-(?:map|pinvi)-[0-9a-f]{32}_default$")
 _CONTAINER_ID = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -128,7 +127,12 @@ class M05IsolatedNetworkExpectation:
     network_id: str
 
     def __post_init__(self) -> None:
-        if self.role not in {"map", "pinvi"} or _NETWORK.fullmatch(self.name) is None:
+        # 이름의 모양은 여기서 다시 보지 않는다. 정본은 plan이고,
+        # M05IsolatedRuntimeExpectation이 `item.name != plan.<role>_network`로
+        # **정확한 등가**를 이미 대조한다 — 더 약한 정규식 재검사는 transaction
+        # 모양(`[0-9a-f]{32}`)과 project 접두사를 이 파일에 한 번 더 선언하게
+        # 만들 뿐이고, 느슨해져도 사라지는 안전 속성이 없다.
+        if self.role not in {"map", "pinvi"} or not self.name:
             raise DeploymentContractError("M05 isolated network expectation is invalid")
         if _CONTAINER_ID.fullmatch(self.network_id) is None:
             raise DeploymentContractError("M05 isolated network ID is invalid")

@@ -2284,6 +2284,11 @@ def main(expected_revision: str, output: Path) -> int:
     #: 본문(m04_m05_e2e) 진입 여부 — 진입 이후의 모든 실패는 무조건 소각한다
     #: (one-shot: 본문은 정확히 한 번. 적대 리뷰 R1-S4/R2-S4).
     body_entered = False
+    # 이 생성기의 **모양**(32자 소문자 hex)은 launcher Tier 1이 receipt에서
+    # 직접 검사하고, test_every_preclaim_phase_receipt_is_accepted_as_scoped_by_
+    # the_launcher가 실제 출력을 실제 검증기에 먹여 결박한다. 그 결박은 전이적이라
+    # **테스트에서 이 호출을 스텁하면 조용히 사라진다** — 결정성이 필요하면 값을
+    # 고정하지 말고 receipt를 읽어라.
     transaction = secrets.token_hex(16)
     # receipt의 execution identity는 **plan보다 먼저** 확정돼야 한다. plan은
     # 다섯 개의 실패 가능한 문장 뒤에 만들어지는데, 그 창에서 죽으면 종전 코드는
