@@ -132,7 +132,7 @@ class M05IsolatedNetworkExpectation:
         # **정확한 등가**를 이미 대조한다 — 더 약한 정규식 재검사는 transaction
         # 모양(`[0-9a-f]{32}`)과 project 접두사를 이 파일에 한 번 더 선언하게
         # 만들 뿐이고, 느슨해져도 사라지는 안전 속성이 없다.
-        if self.role not in {"map", "pinvi"} or not self.name:
+        if self.role not in {"map", "pinvi"} or not isinstance(self.name, str) or not self.name:
             raise DeploymentContractError("M05 isolated network expectation is invalid")
         if _CONTAINER_ID.fullmatch(self.network_id) is None:
             raise DeploymentContractError("M05 isolated network ID is invalid")

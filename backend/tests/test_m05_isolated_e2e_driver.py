@@ -2429,6 +2429,8 @@ def test_fresh_init_reason_is_only_carried_for_a_fresh_init_failure(
 
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert "map_fresh_init_reason" not in receipt
+
+
 _LAUNCHER_PATH = Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
 
 # launcher heredoc 경계 — 백슬래시 조립으로 리터럴 이스케이프 붕괴를 피한다.
@@ -2656,40 +2658,48 @@ def test_authority_divergence_still_fails_closed(tmp_path: Path) -> None:
         ), label
 
 
-def test_unobservable_snapshot_does_not_burn_the_execution(tmp_path: Path) -> None:
-    """관측 실패는 회전의 증거가 아니다 — receipt를 읽지도 않고 태우면 안 된다.
+def test_unobservable_snapshot_still_reads_the_receipt(tmp_path: Path) -> None:
+    """관측 실패는 snapshot 등가 **게이트만** 무효화해야 한다.
 
-    driver 실행 **전**에는 launcher가 같은 관측 함수의 exit status를 살려
-    ``exit 1``로 끝낸다. 실행 **후**에는 종전 구현이 ``|| true``로 그 신호를
-    지웠고, 그러면 receipt_validation_status가 초기값 1(= "receipt가 아예
-    없다")에 머물러 곧장 ``pin block-execution``으로 갔다. fork 실패·ENOMEM·
-    venv 경합 같은 일시 실패에서 **관측자의 딸꾹질이 피관측자를 태운다.**
-    회전이 안 났으므로 CLI의 current_matches가 참이라 소각이 실제로 성공한다.
+    종전 구현은 `|| true`로 관측 실패 신호를 지워 receipt를 읽어보지도 않고
+    태웠다. 그걸 '안 태운다'로만 바꾸면 더 나쁘다 — driver가 본문 진입 뒤
+    하드 크래시하면 원장에 block이 없고 `pin verify`가 '실행 가능'을 보고하며
+    원장 claim은 재시도를 허용하므로, 운영자가 문서대로 재실행하면 **본문이
+    두 번 돈다**(적대 리뷰 BLOCKER).
 
-    launcher 셸에서 관측 구간을 잘라내 실제로 실행하고, 관측이 안 될 때
-    block 명령에 도달하지 않는지 본다."""
+    올바른 형태는 셋 다다: 관측 실패를 회전과 구분해 알리고, receipt는 그대로
+    읽고, 결박에 실패하면 종전대로 소각으로 떨어진다.
+    """
 
     launcher = _LAUNCHER_PATH.read_text(encoding="utf-8")
-
     start = launcher.index("snapshot_pair() {")
-    end = launcher.index('if [[ ! -e "$launcher_result_path"', start)
+    end = launcher.index('  /usr/bin/python3 -I -S - ' + chr(34), start)
+    if end < start:
+        raise AssertionError("관측 구간을 찾지 못했다")
     observation = launcher[start:end]
-    # 잘라낸 구간이 실제로 재시도와 fail-close를 담고 있어야 한다 —
+
+    # 잘라낸 구간이 실제로 재시도·백오프·게이트 우회를 담고 있어야 한다 —
     # 아니면 아래 스텁이 무언의 no-op을 통과시킨다.
     assert "for _attempt in 1 2; do" in observation
-    assert 'exit 1' in observation
+    assert "sleep 1" in observation
+    assert "unobservable" in observation
 
-    script = tmp_path / "observe.sh"
     prelude = [
         "set -euo pipefail",
+        "sleep() { :; }",
         "snapshot_runtime_pin() { if [ -f \"$FAIL\" ]; then return 1; fi; echo pin; }",
         "snapshot_runtime_execution() { if [ -f \"$FAIL\" ]; then return 1; fi; echo exec; }",
         "initial_snapshot=pin",
         "initial_execution_snapshot=exec",
         "launcher_result_path=$TMP/absent.json",
     ]
+    script = tmp_path / "observe.sh"
     script.write_text(
-        chr(10).join(prelude) + chr(10) + observation + "echo REACHED_VALIDATOR" + chr(10),
+        chr(10).join(prelude)
+        + chr(10)
+        + observation
+        + "  echo REACHED_VALIDATOR" + chr(10)
+        + "fi" + chr(10),
         encoding="utf-8",
     )
 
@@ -2711,18 +2721,29 @@ def test_unobservable_snapshot_does_not_burn_the_execution(tmp_path: Path) -> No
     healthy = run(failing=False)
     assert healthy.returncode == 0, healthy.stderr
     assert "REACHED_VALIDATOR" in healthy.stdout
+    assert "unobservable" not in healthy.stderr
 
     unobservable = run(failing=True)
-    # 소각으로 가는 경로(검증기 건너뛰고 fall-through)에 **도달하지 않는다**.
-    assert "REACHED_VALIDATOR" not in unobservable.stdout
-    assert unobservable.returncode == 1
+    # 핵심: 관측이 안 돼도 **검증기에 도달한다**. 그래야 receipt가 읽히고,
+    # 결박 실패면 종전대로 소각으로 떨어진다.
+    assert unobservable.returncode == 0, unobservable.stderr
+    assert "REACHED_VALIDATOR" in unobservable.stdout
+    # 그리고 그 사실이 회전과 구분돼 남는다.
     assert "unobservable" in unobservable.stderr
 
 
-def test_launcher_never_discards_the_post_driver_observation_signal() -> None:
+def test_snapshot_observation_failure_is_never_silently_discarded() -> None:
     """관측 함수의 실패 신호를 버리는 형태가 되돌아오면 안 된다."""
 
     launcher = _LAUNCHER_PATH.read_text(encoding="utf-8")
-    after_driver = launcher[launcher.index('driver_status="$?"') :]
-    assert "snapshot_runtime_pin 2>/dev/null || true" not in after_driver
-    assert "snapshot_runtime_execution 2>/dev/null || true" not in after_driver
+    after_driver = launcher[launcher.index('driver_status=\"$?\"') :]
+    observation = after_driver[: after_driver.index('  /usr/bin/python3 -I -S - ' + chr(34))]
+    # 실패를 삼키는 어떤 형태도 남아 있으면 안 된다 — `|| true`뿐 아니라
+    # `|| :` / `|| echo` 같은 등가 퇴행도 잡는다(적대 리뷰 m-4).
+    code = chr(10).join(
+        line for line in observation.splitlines() if not line.lstrip().startswith("#")
+    )
+    for swallow in ("|| true", "|| :", "|| echo"):
+        assert swallow not in code, swallow
+    # ktdctl 호출은 락을 쥔 채 무기한 대기하면 안 된다.
+    assert launcher.count(chr(39).join(['timeout 30 "$ktdctl" pin'])) >= 4

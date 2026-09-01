@@ -2,6 +2,37 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — 관측자의 딸꾹질이 후보를 태우던 경로를 닫는다
+
+M05 격리 launcher는 driver 실행 **전**에는 registry 관측 함수의 exit status를 살려
+`exit 1`한다. 그런데 **후**에는 `|| true`로 그 신호를 버렸다. 그러면 일시적 실패
+(fork 실패·ENOMEM·venv 경합)에서 `receipt_validation_status`가 초기값 1 —
+"receipt가 아예 없다"와 같은 값 — 에 머물러 모든 분기를 통과하고
+`pin block-execution`에 도달한다. **receipt를 읽어보지도 않고 태운다.** 회전이
+안 났으므로 CLI의 `current_matches`가 참이라 소각이 실제로 성공한다.
+
+첫 수정은 그 자리를 `exit 1`(안 태움)로 바꾼 것이었고, 적대 리뷰가 그걸 blocker로
+잡았다 — "receipt를 읽지도 않고 태운다"를 "**receipt를 읽지도 않고 안 태운다**"로
+바꿨을 뿐이라는 것이다. driver가 본문 진입 뒤 하드 크래시하고 같은 원인으로 관측도
+실패하는(강하게 상관된) 창에서는 원장에 block이 없고 `pin verify`가 실행 가능을
+보고하며 원장 claim은 재시도를 허용하므로, 운영자가 문서대로 재실행하면 **acceptance
+본문이 두 번 돈다**. 소각은 낭비이기 이전에 one-shot 불변식의 집행 수단이었다.
+
+최종 형태: 관측 실패는 snapshot 등가 **게이트만** 무효화하고 검증기는 그대로 돈다.
+receipt는 바로 옆 root 0600 파일이고 ktdctl 없이 읽히며, Tier 1이 revision·pinset·
+execution identity·transaction으로 이미 이 launch에 결박한다. 결박에 실패하면(exit 1)
+종전대로 소각으로 떨어진다. 재시도에는 백오프를 넣었고(겨냥한 실패는 수십~수백 ms
+창이라 간격 없는 2회는 사실상 1회다) ktdctl 호출에 타임아웃을 걸었다(락을 쥔 채
+무기한 대기하면 모든 pin 변경이 봉쇄된다).
+
+함께: fallback 봉투가 receipt와 같은 harness 태그를 달고 tenant의 phase 네임스페이스에
+없는 토큰을 발명하던 것을 걷어냈고, `_NETWORK` 정규식 잉여를 제거했다(plan 등가 비교가
+이미 더 강하게 대조한다).
+
+이중 선언 후보 7건을 병렬 검증한 결과 6건은 **이미 행동 테스트로 결박**돼 있었다.
+이미 결박된 사실에 텍스트 미러를 얹는 것은 이 저장소가 결함으로 보는 과결박이라
+추가하지 않았다.
+
 ## 2026-09-01 — GM 트랙 GM-11~GM-20 순차 이행 (P1 7건에 이어 P2 10건 중 9건 완료)
 
 GM 트랙 개시 뒤 P1 7건(GM-01~GM-07)과 P2 3건(GM-08~GM-10)에 이어, 나머지 P2
