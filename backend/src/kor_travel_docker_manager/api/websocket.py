@@ -336,6 +336,14 @@ class ConnectionManager:
                 # 계속 성공해 zombie handler로 남는다. 명시적으로 닫아 그 루프를
                 # 깨운다(best-effort — 이미 매달린 소켓이라 close 자체도 실패할 수
                 # 있지만, 그때도 무기한 대기하지 않는다).
+                #
+                # 여기서 이 헬퍼는 그 소켓을 소유한 task가 아닌, 이 broadcast task에서
+                # 처음 불린다(다른 호출부는 전부 핸들러 자신의 종료 시점). 그래서
+                # ws_status가 이 close를 disconnect로 감지해 자기 루프를 빠져나온 뒤
+                # finally에서 close_code(보통 NORMAL)로 다시 한번 닫으려 시도할 수 있다
+                # — Starlette가 이미 DISCONNECTED 상태라 RuntimeError를 던지지만
+                # _close_best_effort의 except Exception이 조용히 삼킨다. peer는 이미
+                # 여기서 보낸 진짜 사유(INTERNAL_ERROR)를 받았으므로 무해하다.
                 await _close_best_effort(connection, code=WS_CLOSE_INTERNAL_ERROR)
             except Exception as e:  # noqa: BLE001 — 예외 종류를 좁히면 dead connection이 샌다.
                 logger.warning("Dropping WebSocket client after send failure: %s", e)

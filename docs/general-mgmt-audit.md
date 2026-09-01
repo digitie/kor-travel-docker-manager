@@ -913,6 +913,44 @@ close 헬퍼를 그대로 재사용해, 목록에서만 지우면 그 연결을 
 재검증 — 전용 테스트가 `closed_with`가 `None`으로 남아 정확히 실패, 원복 후
 재통과. 전체 backend 1375 passed, 2 skipped, ruff 통과.
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 두 리뷰어 모두 Critical/High/Medium
+없이 종료했다 — 이 시리즈에서 양쪽 다 실질 결함 없이 끝난 첫 라운드다.
+둘 다 실제 Starlette/asyncio 시맨틱을 별도 재현 스크립트로 직접 검증했다
+(취소 시 `send_text`가 정확히 멈춘 지점에 꽂히는지, `_close_best_effort`의
+`wait_for`가 완전히 wedged된 close에도 실제로 bounded인지, wedged 연결
+처리가 다른 연결의 실제 송신 자체를 지연시키지 않는지 등) — 근거 없는
+신뢰가 아니라 재현으로 뒷받침됐다.
+
+[Low, 리뷰 A] `broadcast()`가 wedged 연결을 `_close_best_effort(...,
+code=WS_CLOSE_INTERNAL_ERROR)`로 먼저 닫으면, 그 소켓을 소유한 `ws_status`
+핸들러가 이를 disconnect로 감지해 자기 루프를 빠져나온 뒤 `finally`에서
+자기 `close_code`(보통 `WS_CLOSE_NORMAL`)로 다시 한번 닫으려 시도한다 —
+Starlette가 이미 DISCONNECTED 상태라 `RuntimeError`를 던지지만
+`_close_best_effort`의 `except Exception`이 조용히 삼킨다. 실제 Starlette
+`WebSocket`에 `close()`를 두 번 호출하는 최소 스크립트로 재현됐다. peer는
+이미 진짜 사유(1011)를 받았으므로 기능적으로 무해하다(크래시·행 없음) —
+다만 이 헬퍼가 "소켓을 소유하지 않은 다른 task"에서 처음 불리는 새로운
+사용 맥락이라는 것을 밝혀 뒀다. 이후 관리자가 debug 로그에서 이 조용한
+RuntimeError를 보고 놀라지 않도록, 그 이유를 설명하는 주석을 `broadcast()`의
+`_close_best_effort` 호출 옆에 추가했다 — 코드 동작 자체는 바꾸지 않았다
+(둘 다 이미 무해하다고 확인).
+
+[Low, 리뷰 A] 완전히 wedged된(close frame write조차 막힌) transport는
+`_close_best_effort`도 결국 `TimeoutError`로 포기하며 OS 소켓/fd는 커널
+tcp_retries2(~13-30분)에 맡겨진다 — 이는 이번 커밋이 새로 만든 갭이 아니라
+검증 노트 자신이 이미 인정한 트레이드오프(주석에 명시)이므로 신규 조치
+없음.
+
+[Low, 리뷰 B] 1011 코드 재사용은 합리적 fallback으로 확인됐다(1013은 인가
+동시성 상한 초과에 이미 좁게 결부, 4000/4401은 명백히 부적합) — 전용 코드
+신설은 불필요. `docs/tasks.md`에 GM-15 전용 후속 항목은 추가하지 않았다 —
+두 리뷰 모두 "신규 결함 아님"으로 확정된 항목뿐이라 착지할 실질 후속
+작업이 없다.
+
+코드 변경은 주석 1건뿐이라 로직 회귀 위험이 없다 — `test_ws_contract.py`
+전체(42건)와 ruff 재확인. 전체 backend는 GM-15 원본 커밋과 동일(1375
+passed, 2 skipped).
+
 
 ## GM-16: 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다
 
