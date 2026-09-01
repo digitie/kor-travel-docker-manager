@@ -169,6 +169,7 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "m04_fixture_invalid",
         "m04_m05_e2e",
         "m04_map_approval_http_failed",
+        "m04_map_feature_ref_resolve_failed",
         "m04_map_approval_invalid",
         "m05_case_decision_http_failed",
         "m05_case_invalid",
@@ -1285,7 +1286,42 @@ def _approve_map_request(
     feature_id = value.get("feature_id")
     if not isinstance(feature_id, str) or not feature_id:
         _fail("m04_map_approval_invalid")
-    return feature_id
+    # T-VN-32C: 승인 응답의 feature_id는 UUID 정본이다 — canonical 형태로
+    # 정규화해 URL 보간 안전성과 결박 비교의 견고성을 함께 얻는다(적대 리뷰).
+    try:
+        return str(uuid.UUID(feature_id))
+    except ValueError:
+        _fail("m04_map_approval_invalid")
+
+
+def _resolve_manual_feature_text_id(
+    *, admin_url: str, proxy_secret: str, feature_uuid: str
+) -> str:
+    """승인 응답의 UUID(T-VN-32C 정본)를 opaque TEXT feature_id로 해석한다.
+
+    dedup 프로시저·reconciliation feed는 feature.features.feature_id(TEXT)를
+    기대하는데 승인/생성 응답은 UUID를 싣는다 — 이 불일치가 e2e15에서
+    'candidate Feature proof is not eligible'(NOT FOUND)로 드러났다. M02
+    creation-provenance 리더가 두 식별자를 최상위에 함께 실으므로 그것으로
+    해석하고, UUID 결박(feature_uuid == 요청 UUID)도 함께 검증한다.
+    """
+
+    value = _data(
+        _http_json(
+            f"{admin_url.rstrip('/')}/v1/admin/features/{feature_uuid}"
+            "/creation-provenance",
+            headers=_map_headers(proxy_secret),
+            failure_phase="m04_map_feature_ref_resolve_failed",
+        )
+    )
+    text_id = value.get("feature_id")
+    if (
+        not isinstance(text_id, str)
+        or not text_id
+        or value.get("feature_uuid") != feature_uuid
+    ):
+        _fail("m04_map_approval_invalid")
+    return text_id
 
 
 def _seed_m05_provider_fixture(
@@ -2790,11 +2826,16 @@ def main(expected_revision: str, output: Path) -> int:
             cwd=pinvi_root,
             env=m04_environment,
         )
-        manual_feature_id = _approve_map_request(
+        manual_feature_uuid = _approve_map_request(
             admin_url=admin_url,
             request_id=feature_request_id,
             proxy_secret=map_secret,
             manual_create_token=manual_feature_token,
+        )
+        manual_feature_id = _resolve_manual_feature_text_id(
+            admin_url=admin_url,
+            proxy_secret=map_secret,
+            feature_uuid=manual_feature_uuid,
         )
         fixture = _seed_m05_provider_fixture(
             map_network=plan.map_network,

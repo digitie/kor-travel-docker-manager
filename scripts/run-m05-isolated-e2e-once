@@ -307,6 +307,7 @@ PHASES = frozenset(
         "driver_contract_failed", "runtime_cleanup_failed", "runtime_execution_block_failed",
         "m04_fixture_http_failed", "m04_fixture_invalid",
         "m04_map_approval_http_failed", "m04_map_approval_invalid",
+        "m04_map_feature_ref_resolve_failed",
         "m05_case_decision_http_failed", "m05_case_invalid",
         "m05_case_lookup_http_failed", "m05_fixture_invalid",
         "m05_pinvi_receipt_blocked", "m05_pinvi_receipt_http_failed",
