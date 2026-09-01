@@ -1028,18 +1028,28 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert "initial_snapshot" in launcher
     assert "stable_snapshot" in launcher
     assert "post_snapshot" in launcher
-    assert '"$post_snapshot" == "$initial_snapshot"' in launcher
+    # snapshot 등가는 이제 검증을 **건너뛰는 게이트가 아니라** 진단이다 —
+    # launcher가 수명 내내 global mutation lock을 쥐므로 이 창에서 회전은
+    # 물리적으로 불가능하고, 값 불일치는 또 다른 관측 이상일 뿐이다.
+    assert 'snapshot_changed=1' in launcher
+    assert '"$post_snapshot" != "$initial_snapshot"' in launcher
     assert 'value.get("pinset_sha256") != expected_pinset' in launcher
     assert 'value.get("execution_identity_sha256") != expected_execution' in launcher
     assert 'value.get("status") not in {"passed", "blocked", "preflight_rejected"}' in launcher
     assert 'if value["status"] == "preflight_rejected"' in launcher
-    assert 'receipt_validation_status" == 4' in launcher
+    # 결정 분기는 case로 통합됐다 — 각 종료값의 의미가 한 곳에 모여 있다.
+    assert 'case "$receipt_validation_status" in' in launcher
+    for outcome in ("  0)", "  4)", "  5)", "  3)", "  *)"):
+        assert outcome in launcher, outcome
+    # receipt를 못 읽으면 claim 마커로 소비 여부를 판정한다(추측으로 태우지 않는다).
+    assert '[[ ! -e "$output_dir/claimed" ]]' in launcher
+    # 가장 무거운 명령의 상태를 포착한다.
+    assert 'block_write_status="$?"' in launcher
     assert "PREFLIGHT_REJECTED_PHASES" in launcher
     assert 'value.get("phase") not in PREFLIGHT_REJECTED_PHASES' in launcher
     # Tier 2(진단) 불일치는 소각값이 아니라 저하값으로 간다 — 행동은
     # test_tier_two_divergence_never_reaches_the_unconditional_burn_value가 덮는다.
     assert "set(value) != expected_keys" in launcher
-    assert 'receipt_validation_status" == 5' in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
 
@@ -1078,7 +1088,7 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     assert launcher_phases == driver_phases | {"completed"}
     # blocked receipt는 scoped 기록으로도 durable하다(R1-S1) — 무조건 기록만
     # 요구하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격한다.
-    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_any_terminal_execution_block; then'
+    accepted_block = 'has_any_terminal_execution_block'
     fallback = 'if ! has_unconditional_terminal_execution_block; then'
     assert accepted_block in launcher
     assert fallback in launcher
@@ -2429,6 +2439,8 @@ def test_fresh_init_reason_is_only_carried_for_a_fresh_init_failure(
 
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert "map_fresh_init_reason" not in receipt
+
+
 _LAUNCHER_PATH = Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
 
 # launcher heredoc 경계 — 백슬래시 조립으로 리터럴 이스케이프 붕괴를 피한다.
@@ -2656,40 +2668,48 @@ def test_authority_divergence_still_fails_closed(tmp_path: Path) -> None:
         ), label
 
 
-def test_unobservable_snapshot_does_not_burn_the_execution(tmp_path: Path) -> None:
-    """관측 실패는 회전의 증거가 아니다 — receipt를 읽지도 않고 태우면 안 된다.
+def test_unobservable_snapshot_still_reads_the_receipt(tmp_path: Path) -> None:
+    """관측 실패는 snapshot 등가 **게이트만** 무효화해야 한다.
 
-    driver 실행 **전**에는 launcher가 같은 관측 함수의 exit status를 살려
-    ``exit 1``로 끝낸다. 실행 **후**에는 종전 구현이 ``|| true``로 그 신호를
-    지웠고, 그러면 receipt_validation_status가 초기값 1(= "receipt가 아예
-    없다")에 머물러 곧장 ``pin block-execution``으로 갔다. fork 실패·ENOMEM·
-    venv 경합 같은 일시 실패에서 **관측자의 딸꾹질이 피관측자를 태운다.**
-    회전이 안 났으므로 CLI의 current_matches가 참이라 소각이 실제로 성공한다.
+    종전 구현은 `|| true`로 관측 실패 신호를 지워 receipt를 읽어보지도 않고
+    태웠다. 그걸 '안 태운다'로만 바꾸면 더 나쁘다 — driver가 본문 진입 뒤
+    하드 크래시하면 원장에 block이 없고 `pin verify`가 '실행 가능'을 보고하며
+    원장 claim은 재시도를 허용하므로, 운영자가 문서대로 재실행하면 **본문이
+    두 번 돈다**(적대 리뷰 BLOCKER).
 
-    launcher 셸에서 관측 구간을 잘라내 실제로 실행하고, 관측이 안 될 때
-    block 명령에 도달하지 않는지 본다."""
+    올바른 형태는 셋 다다: 관측 실패를 회전과 구분해 알리고, receipt는 그대로
+    읽고, 결박에 실패하면 종전대로 소각으로 떨어진다.
+    """
 
     launcher = _LAUNCHER_PATH.read_text(encoding="utf-8")
-
     start = launcher.index("snapshot_pair() {")
-    end = launcher.index('if [[ ! -e "$launcher_result_path"', start)
+    end = launcher.index('  /usr/bin/python3 -I -S - ' + chr(34), start)
+    if end < start:
+        raise AssertionError("관측 구간을 찾지 못했다")
     observation = launcher[start:end]
-    # 잘라낸 구간이 실제로 재시도와 fail-close를 담고 있어야 한다 —
+
+    # 잘라낸 구간이 실제로 재시도·백오프·게이트 우회를 담고 있어야 한다 —
     # 아니면 아래 스텁이 무언의 no-op을 통과시킨다.
     assert "for _attempt in 1 2; do" in observation
-    assert 'exit 1' in observation
+    assert "sleep 1" in observation
+    assert "unobservable" in observation
 
-    script = tmp_path / "observe.sh"
     prelude = [
         "set -euo pipefail",
+        "sleep() { :; }",
         "snapshot_runtime_pin() { if [ -f \"$FAIL\" ]; then return 1; fi; echo pin; }",
         "snapshot_runtime_execution() { if [ -f \"$FAIL\" ]; then return 1; fi; echo exec; }",
         "initial_snapshot=pin",
         "initial_execution_snapshot=exec",
         "launcher_result_path=$TMP/absent.json",
     ]
+    script = tmp_path / "observe.sh"
     script.write_text(
-        chr(10).join(prelude) + chr(10) + observation + "echo REACHED_VALIDATOR" + chr(10),
+        chr(10).join(prelude)
+        + chr(10)
+        + observation
+        + "  echo REACHED_VALIDATOR" + chr(10)
+        + "fi" + chr(10),
         encoding="utf-8",
     )
 
@@ -2711,18 +2731,102 @@ def test_unobservable_snapshot_does_not_burn_the_execution(tmp_path: Path) -> No
     healthy = run(failing=False)
     assert healthy.returncode == 0, healthy.stderr
     assert "REACHED_VALIDATOR" in healthy.stdout
+    assert "unobservable" not in healthy.stderr
 
     unobservable = run(failing=True)
-    # 소각으로 가는 경로(검증기 건너뛰고 fall-through)에 **도달하지 않는다**.
-    assert "REACHED_VALIDATOR" not in unobservable.stdout
-    assert unobservable.returncode == 1
+    # 핵심: 관측이 안 돼도 **검증기에 도달한다**. 그래야 receipt가 읽히고,
+    # 결박 실패면 종전대로 소각으로 떨어진다.
+    assert unobservable.returncode == 0, unobservable.stderr
+    assert "REACHED_VALIDATOR" in unobservable.stdout
+    # 그리고 그 사실이 회전과 구분돼 남는다.
     assert "unobservable" in unobservable.stderr
 
 
-def test_launcher_never_discards_the_post_driver_observation_signal() -> None:
+def test_snapshot_observation_failure_is_never_silently_discarded() -> None:
     """관측 함수의 실패 신호를 버리는 형태가 되돌아오면 안 된다."""
 
     launcher = _LAUNCHER_PATH.read_text(encoding="utf-8")
-    after_driver = launcher[launcher.index('driver_status="$?"') :]
-    assert "snapshot_runtime_pin 2>/dev/null || true" not in after_driver
-    assert "snapshot_runtime_execution 2>/dev/null || true" not in after_driver
+    after_driver = launcher[launcher.index('driver_status=\"$?\"') :]
+    observation = after_driver[: after_driver.index('  /usr/bin/python3 -I -S - ' + chr(34))]
+    # 실패를 삼키는 어떤 형태도 남아 있으면 안 된다 — `|| true`뿐 아니라
+    # `|| :` / `|| echo` 같은 등가 퇴행도 잡는다(적대 리뷰 m-4).
+    code = chr(10).join(
+        line for line in observation.splitlines() if not line.lstrip().startswith("#")
+    )
+    for swallow in ("|| true", "|| :", "|| echo"):
+        assert swallow not in code, swallow
+    # ktdctl 호출은 락을 쥔 채 무기한 대기하면 안 된다.
+    assert launcher.count(chr(39).join(['timeout 30 "$ktdctl" pin'])) >= 4
+
+
+def test_directory_fsync_failure_never_changes_the_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """부차적 durability 단계의 실패가 이미 성공한 쓰기를 되돌리면 안 된다.
+
+    종전에는 디렉터리 fsync의 OSError가 그대로 전파돼 호출부의
+    `except (OSError, _PhaseError): return 1`에 걸렸다. 그러면 디스크에
+    `status=passed, phase=completed` receipt가 멀쩡히 있는데 driver가 1을
+    반환하고, launcher Tier 1의 `(status==passed) != (driver_status==0)`가
+    걸려 **통과한 1~2시간 실행이 무조건 소각된다**.
+
+    이 규칙의 정본은 services/secure_state_file.fsync_directory다(GM-10).
+    """
+
+    driver = _driver()
+    target = tmp_path / 'receipt.json'
+
+    real_open = driver.os.open
+
+    def failing_directory_open(path: object, flags: int, *args: object) -> int:
+        if flags & driver.os.O_DIRECTORY:
+            raise OSError(5, "simulated directory open failure")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(driver.os, "open", failing_directory_open)
+    driver._write_private_bytes(target, b"payload\\n")
+
+    # 쓰기는 성공했고 파일은 그대로다 — 부차 단계의 실패가 아무것도 되돌리지 않는다.
+    assert target.read_bytes() == b"payload\\n"
+
+    real_fsync = driver.os.fsync
+    directory_fds: list[int] = []
+
+    def failing_directory_fsync(descriptor: int) -> None:
+        if descriptor in directory_fds:
+            raise OSError(5, "simulated directory fsync failure")
+        real_fsync(descriptor)
+
+    def recording_open(path: object, flags: int, *args: object) -> int:
+        descriptor = real_open(path, flags, *args)
+        if flags & driver.os.O_DIRECTORY:
+            directory_fds.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(driver.os, "open", recording_open)
+    monkeypatch.setattr(driver.os, "fsync", failing_directory_fsync)
+    second = tmp_path / 'second.json'
+    driver._write_private_bytes(second, b"payload\\n")
+    assert second.read_bytes() == b"payload\\n"
+
+
+def test_passing_run_survives_a_directory_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """claim 마커는 receipt를 못 읽을 때의 소비 판정 근거다 — 반드시 남아야 한다."""
+
+    source = (
+        Path(__file__).resolve().parents[2] / 'scripts/m05_isolated_e2e.py'
+    ).read_text(encoding="utf-8")
+
+    # claim 직후에 마커를 남긴다 — launcher가 receipt 부재 시 이걸로
+    # "실행권을 소비했는가"를 판정한다.
+    claim = source.index('claim_m05_isolated_harness_ledger(ledger_root=')
+    marker = source.index('_write_private_bytes(output / "claimed"')
+    assert marker > claim
+    tail = source[claim:marker]
+    # 사이에 실패 가능한 문장이 끼면 claim과 마커가 갈라진다.
+    assert "_fail(" not in tail
+
+    launcher = _LAUNCHER_PATH.read_text(encoding='utf-8')
+    assert '[[ ! -e "$output_dir/claimed" ]]' in launcher

@@ -552,11 +552,29 @@ def _write_private_bytes(path: Path, raw: bytes) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
-    directory_fd = os.open(
-        path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
-    )
+    # 디렉터리 fsync는 **최선의 노력**이다 — 파일은 위 os.fsync(fd)로 이미
+    # durable하고, 이 단계는 그 사실이 crash에서도 살아남는지에 관한 추가
+    # 보장일 뿐이다. 종전에는 실패가 그대로 전파돼 호출부의
+    # `except (OSError, _PhaseError): return 1`에 걸렸고, 그러면 디스크에
+    # `status=passed, phase=completed` receipt가 멀쩡히 있는데 driver가 1을
+    # 반환한다. launcher Tier 1의 `(status==passed) != (driver_status==0)`가
+    # 걸려 exit 1 -> `pin block-execution`(phase 없음 = 무조건) ->
+    # **통과한 1~2시간 실행과 후보가 영구 소각된다.**
+    #
+    # 이 규칙의 정본은 services/secure_state_file.fsync_directory다(GM-10):
+    # "이 단계의 실패로 이미 끝난 파일 교체 자체를 실패로 되돌리면 안 된다".
+    # 그 함수를 직접 쓰지 않는 이유는 여기 open이 O_DIRECTORY|O_NOFOLLOW로
+    # **더 강하기** 때문이다 — 규칙만 채택하고 강한 open은 유지한다.
+    try:
+        directory_fd = os.open(
+            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+        )
+    except OSError:
+        return
     try:
         os.fsync(directory_fd)
+    except OSError:
+        pass
     finally:
         os.close(directory_fd)
 
@@ -873,11 +891,19 @@ def _unlink_private(path: Path) -> None:
     if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0:
         _fail("secret_cleanup_identity_invalid")
     path.unlink()
-    directory_fd = os.open(
-        path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
-    )
+    # 같은 규칙(GM-10): unlink는 이미 성공했다. 디렉터리 fsync 실패를 전파하면
+    # cleanup 실패로 보고돼 receipt의 cleanup_failed가 켜지고, 그 자체가
+    # 실행 결과를 바꾼다 — 이미 끝난 삭제를 되돌리지도 못하면서.
+    try:
+        directory_fd = os.open(
+            path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+        )
+    except OSError:
+        return
     try:
         os.fsync(directory_fd)
+    except OSError:
+        pass
     finally:
         os.close(directory_fd)
 
@@ -2600,6 +2626,13 @@ def main(expected_revision: str, output: Path) -> int:
         phase = "ledger_claim"
         claim_attempted = True
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
+        # launcher가 receipt를 못 읽는 경우(driver 하드 크래시·검증기 도구
+        # 사망)에도 "실행권을 소비했는가"를 판정할 수 있어야 한다. 그 사실은
+        # registry에도 ledger에도 있지만 둘 다 ktdctl/직렬화 지식이 필요하다 —
+        # launcher는 범용 runner이므로 존재 여부만 보면 되는 마커를 남긴다.
+        # 없으면 receipt 부재가 'claim 전에 죽었다'와 '본문까지 갔다'를 구분
+        # 못 해, 전자는 헛소각되고 후자는 재실행돼 본문이 두 번 돈다(적대 리뷰).
+        _write_private_bytes(output / "claimed", b"1\n")
         phase = "runtime_setup_pinvi_config"
         _write_private_text(
             pinvi_env,

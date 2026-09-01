@@ -76,7 +76,22 @@ same execution의 재시도 권한도 만들지 않는다.
 같은 pinset·Map·PinVi revision에 결박된 block 기록(scoped든 무조건이든)을 확인할 때만 launcher가 보존한다
 (R1-S1 — 무조건 기록만 인정하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격해 phase-scoped
 설계를 무효화한다). registry 증명이 없거나 receipt가 어긋나면 launcher는 idempotent `ktdctl pin block-execution`
-(phase를 알 수 없는 crash 경로이므로 무조건)과 fixed fallback으로 fail-close한다. 그러므로 driver의 blocked
+(phase를 알 수 없는 crash 경로이므로 무조건)과 fixed fallback으로 fail-close한다.
+
+**receipt 검증은 두 계층이다.** Tier 1(권위 — harness·manager revision·pinset·execution
+identity·status·transaction·파일 identity)이 어긋나면 그 receipt를 이 launch의 것으로 볼 수
+없으므로 위 fail-close가 옳다. Tier 2(진단 — phase 어휘·key 집합·`cleanup_failed`·선택 진단
+필드)만 어긋나면 receipt는 이미 이 launch에 결박됐으므로 "정체불명 crash"가 아니다 —
+저하(exit 5)로 알리고 receipt가 주장한 종료값을 따른다. driver와 launcher의 기술이 갈라진 것이
+실행권 소비의 증거가 되면 안 된다.
+
+**driver 종료 후 registry 관측이 실패해도 receipt는 읽는다.** 관측 실패(ktdctl fork 실패·ENOMEM·
+venv 경합)는 snapshot 등가 **게이트만** 무효화하고, 검증기는 그대로 돈다. receipt는 root 0600
+파일이라 ktdctl 없이 읽히고 Tier 1이 이미 이 launch에 결박하므로 snapshot 등가 없이도 판정
+가능하다. 관측 실패를 이유로 receipt를 읽지 않고 태우면 **관측자의 딸꾹질이 후보를 태우고**,
+반대로 읽지 않고 태우지 않으면 driver가 본문 진입 뒤 하드 크래시한 경우 원장에 block이 남지
+않아 `pin verify`가 실행 가능을 보고하고 **본문이 두 번 돈다**. 둘 다 피하는 유일한 형태가
+"게이트만 무효화하고 receipt는 읽는다"이다. 관측 실패 사실은 stderr 고정 문구로 남는다. 그러므로 driver의 blocked
 receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 안전한 allowlist phase가 임의 fallback으로 바뀌지
 않는다.
 

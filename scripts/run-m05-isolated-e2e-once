@@ -122,7 +122,7 @@ fi
 # exact execution terminal만 재실행을 막는다.
 ktdctl="/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl"
 snapshot_runtime_pin() {
-  "$ktdctl" pin show --json | /usr/bin/python3 -I -S -c '
+  timeout 30 "$ktdctl" pin show --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
 
 import json
@@ -154,11 +154,14 @@ initial_snapshot="$(snapshot_runtime_pin)" || {
   echo "M05 runtime pin snapshot is invalid" >&2
   exit 1
 }
-# rotate-pair does not share this launcher's lifetime lock. A second verified
+# 외부 rotate-pair는 이 launcher의 lifetime lock에 막힌다 — ktdctl의
+# non-inherited 경로가 flock(LOCK_EX|LOCK_NB)로 거절한다(cli.py).
+# 그래도 두 번째 검증 snapshot을 두는 이유는 회전 경합이 아니라, 이 창에서
+# 값이 흔들리면 그것 자체가 관측 이상이라는 것을 시작 시점에 못 박기 위함이다. A second verified
 # snapshot establishes the exact candidate owned by this one-shot; acceptance
 # below requires it to remain unchanged through driver completion.
 snapshot_runtime_execution() {
-  "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
+  timeout 30 "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
 
 import json
@@ -219,7 +222,7 @@ fi
 # durable 근거로 인정한다(적대 리뷰 R1-S1: 무조건 기록만 인정하면 launcher가
 # 모든 인프라 실패를 아래 fallback에서 무조건 차단으로 승격해 I-1을 무효화한다).
 has_any_terminal_execution_block() {
-  "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
+  timeout 30 "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
 
 import json
@@ -237,12 +240,15 @@ if not any(
     and entry.get("manager_source_revision") == revision
     for entry in entries
 ):
-    raise SystemExit(1)
+    # 3 = registry를 정상으로 읽었고 일치 항목이 없다. 1(판독 불가)과 구분해야
+    # ktdctl 딸꾹질이 "기록 없음"으로 접혀 scoped 차단을 무조건 소각으로
+    # 승격시키지 않는다(적대 리뷰).
+    raise SystemExit(3)
 ' "$initial_execution" "$initial_pinset" "$expected_revision"
 }
 
 has_unconditional_terminal_execution_block() {
-  "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
+  timeout 30 "$ktdctl" pin show-execution --json | /usr/bin/python3 -I -S -c '
 from __future__ import annotations
 
 import json
@@ -261,7 +267,10 @@ if not any(
     and entry.get("phase") is None
     for entry in entries
 ):
-    raise SystemExit(1)
+    # 3 = registry를 정상으로 읽었고 일치 항목이 없다. 1(판독 불가)과 구분해야
+    # ktdctl 딸꾹질이 "기록 없음"으로 접혀 scoped 차단을 무조건 소각으로
+    # 승격시키지 않는다(적대 리뷰).
+    raise SystemExit(3)
 ' "$initial_execution" "$initial_pinset" "$expected_revision"
 }
 install -d -o root -g root -m 0700 "$output_dir"
@@ -286,31 +295,52 @@ launcher_result_path="$output_dir/launcher-result.json"
 # 회전은 안 났으므로 CLI의 current_matches가 참이라 소각이 실제로 성공한다.
 # 한 번 재시도하고, 그래도 관측이 안 되면 그 사실을 회전과 구분해 남긴다.
 snapshot_pair() {
-  local pin execution
-  pin="$(snapshot_runtime_pin 2>/dev/null)" || return 1
-  execution="$(snapshot_runtime_execution 2>/dev/null)" || return 1
-  printf '%s
-%s
-' "$pin" "$execution"
+  # 전역 두 개를 직접 채운다 — 중간 표현을 두면 값에 개행이 없다는 보장에
+  # 암묵적으로 의존하게 되고, 빈 값이 조용히 행 소실로 나타난다(적대 리뷰).
+  # stderr를 죽이지 않는다 — driver 전 관측(initial_snapshot)과 대칭이고,
+  # 이 파일 헤더가 '관측 결핍이 후보 예산을 소비했다'를 설계 원칙으로 선언한다.
+  # 죽이면 재현 불가능한 1~2시간짜리 실행의 실패 원인이 정확히 지워진다.
+  post_snapshot="$(snapshot_runtime_pin)" || return 1
+  post_execution_snapshot="$(snapshot_runtime_execution)" || return 1
 }
-post_observation=""
+post_snapshot=""
+post_execution_snapshot=""
 post_observed=0
 for _attempt in 1 2; do
-  if post_observation="$(snapshot_pair)"; then
+  if snapshot_pair; then
     post_observed=1
     break
   fi
+  # 겨냥한 실패(fork 실패·ENOMEM·venv 경합)는 수십~수백 ms 창이다. 간격 없이
+  # 두 번 부르면 같은 창에서 함께 실패해 재시도가 사실상 1회다(적대 리뷰).
+  sleep 1
 done
-post_snapshot="$(printf '%s' "$post_observation" | sed -n 1p)"
-post_execution_snapshot="$(printf '%s' "$post_observation" | sed -n 2p)"
 receipt_validation_status=1
-if [[ "$post_observed" != 1 ]]; then
-  # 관측 불가는 회전의 증거가 아니다. 소각은 registry가 **실제로** 이 launch
-  # snapshot을 떠났음을 증명했을 때만 정당하다.
-  echo "M05 runtime snapshot is unobservable after the driver" >&2
-  exit 1
+snapshot_changed=0
+if [[ "$post_observed" == 1 ]] &&
+   { [[ "$post_snapshot" != "$initial_snapshot" ]] ||
+     [[ "$post_execution_snapshot" != "$initial_execution_snapshot" ]]; }; then
+  snapshot_changed=1
+  # launcher는 자기 수명 내내 host-global mutation lock을 쥐고 있고, ktdctl의
+  # non-inherited 경로는 flock(LOCK_EX|LOCK_NB)로 rotate-pair/rollback/block을
+  # 거절한다. 즉 이 창에서 **회전은 물리적으로 불가능하다** — 값 불일치는 회전이
+  # 아니라 또 다른 관측 이상이다. 그러니 이것도 receipt를 안 읽을 이유가 못 된다.
+  echo "M05 runtime snapshot differs after the driver" >&2
 fi
-if [[ ! -e "$launcher_result_path" && "$post_snapshot" == "$initial_snapshot" && "$post_execution_snapshot" == "$initial_execution_snapshot" ]]; then
+if [[ "$post_observed" != 1 ]]; then
+  # 관측 불가는 회전의 증거가 **아니다**. 그렇다고 소각을 건너뛰기만 하면
+  # 더 나쁘다 — driver가 본문 진입 뒤 하드 크래시하면 원장에 block이 없고
+  # `pin verify`가 '실행 가능'을 보고하며 원장 claim은 재시도를 허용하므로,
+  # 운영자가 문서대로 재실행하면 **본문이 두 번 돈다**(적대 리뷰 BLOCKER).
+  #
+  # 그래서 관측 실패는 snapshot 등가 **게이트만 무효화**하고, receipt는 그대로
+  # 읽는다. receipt는 바로 옆에 있는 root 0600 파일이고 ktdctl 없이 읽힌다.
+  # Tier 1이 revision·pinset·execution identity·transaction으로 이미 이 launch에
+  # 결박하므로 snapshot 등가 없이도 '이 실행의 receipt인가'는 증명된다.
+  # 결박에 실패하면(exit 1) 종전대로 소각으로 떨어진다.
+  echo "M05 runtime snapshot is unobservable after the driver" >&2
+fi
+if [[ ! -e "$launcher_result_path" ]]; then
   set +e
   /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$initial_pinset" "$initial_execution" "$driver_status" <<'PY'
 from __future__ import annotations
@@ -506,38 +536,66 @@ PY
   receipt_validation_status="$?"
   set -e
 fi
-if [[ "$receipt_validation_status" == 0 ]]; then
-  exit "$driver_status"
-fi
-if [[ "$receipt_validation_status" == 4 ]]; then
-  # driver가 ledger claim 전에 source materialization/provenance를 거부했다. 이 경우는
-  # M05 execution을 소비하지 않았으므로 terminal fallback block을 만들지 않는다.
-  exit "$driver_status"
-fi
-if [[ "$receipt_validation_status" == 5 ]]; then
-  # Tier 1(harness·revision·pinset·execution identity·status·transaction)은 전부
-  # 일치하는데 Tier 2(phase 어휘·key 집합·선택 진단 필드)만 어긋났다. receipt를 이
-  # launch에 결박하는 사실은 모두 증명됐으므로 "정체불명 crash"가 아니다 —
-  # driver와 launcher의 기술이 갈라졌을 뿐이고, 그건 실행권 소비의 증거가 아니다.
-  # launcher-result.json은 "언제나 권위"인 fallback이고 status=blocked를 주장하므로
-  # 여기서 쓰면 Tier 1이 증명한 receipt와 정면으로 모순된다. receipt 자체를 기록으로
-  # 두고 고정 marker만 남긴다 — driver 원문은 stdout/stderr에 싣지 않는다.
-  echo "M05 isolated receipt is degraded but bound to this launch" >&2
-  exit "$driver_status"
-fi
+# 소각은 **실행권이 소비됐다는 양성 증거**가 있을 때만 정당하다. 아래 분기는
+# 그 원칙 하나로 정리돼 있다 — 관측자(launcher)의 불확실성은 절대 피관측자
+# (candidate)를 태우지 않는다(적대 리뷰 전수 감사).
+case "$receipt_validation_status" in
+  0)
+    exit "$driver_status"
+    ;;
+  4)
+    # driver가 ledger claim 전에 거부했다 — 실행권 미소비가 증명됐다.
+    exit "$driver_status"
+    ;;
+  5)
+    # Tier 1(권위)은 전부 일치하고 Tier 2(진단)만 어긋났다. receipt가 이
+    # launch에 결박됐음이 증명됐으므로 "정체불명 crash"가 아니다.
+    echo "M05 isolated receipt is degraded but bound to this launch" >&2
+    exit "$driver_status"
+    ;;
+  3)
+    # blocked receipt는 claim을 증명한다. 다만 driver가 남긴 차단이 scoped면
+    # 그대로 두어야 한다 — 여기서 무조건 차단을 얹으면 재시도 가능한 인프라
+    # 실패가 소각으로 승격된다(R1-S1).
+    set +e
+    has_any_terminal_execution_block
+    block_probe_status="$?"
+    set -e
+    if [[ "$block_probe_status" == 0 ]]; then
+      exit "$driver_status"
+    fi
+    if [[ "$block_probe_status" != 3 ]]; then
+      # registry를 읽지 못했다. 이건 "기록이 없다"가 아니다 — 같은 ktdctl
+      # 딸꾹질이고, 그걸 근거로 승격하면 scoped 차단이 소각이 된다.
+      echo "M05 terminal execution block is unreadable" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    # receipt를 읽지 못했다(부재 / 결박 실패 / 검증기 도구 자체가 죽음 —
+    # 126·127·137·미포착 예외가 전부 여기로 온다). 소비 여부는 driver가 claim
+    # 직후 남기는 root 0600 마커로 판정한다. 마커 없이 태우면 claim 전에 죽은
+    # 실행을 헛소각하고, 마커가 있는데 안 태우면 본문이 두 번 돈다.
+    if [[ ! -e "$output_dir/claimed" ]]; then
+      echo "M05 driver did not claim the execution" >&2
+      exit 1
+    fi
+    ;;
+esac
 
-# A well-formed blocked receipt is authoritative only after the root registry
-# proves that this exact launch snapshot is terminal. Otherwise fall through to
-# the idempotent root block below; no driver-originated output becomes reuse
-# evidence.
-if [[ "$receipt_validation_status" == 3 ]] && has_any_terminal_execution_block; then
-  exit "$driver_status"
-fi
-
-# generic execution block은 driver가 terminal block을 먼저 남긴 경우에도 idempotent다.
-# trusted 현재 binding이 snapshot에서 달라지면 CLI가 fail-close한다.
+# generic execution block은 driver가 terminal block을 먼저 남긴 경우에도
+# idempotent다. trusted 현재 binding이 snapshot에서 달라지면 CLI가 fail-close한다.
+set +e
 "$ktdctl" pin block-execution \
   --reason 'M05 isolated launcher safe result unavailable' --confirm >/dev/null 2>&1
+block_write_status="$?"
+set -e
+if [[ "$block_write_status" != 0 ]]; then
+  # 이 파일에서 결과가 가장 무거운 명령이 유일하게 상태를 포착하지 않고 있었다.
+  # set -e에 먹히면 아래 durability 진단에도, fixed fallback 봉투에도 도달하지
+  # 못한 채 조용히 죽는다 — 문서가 약속한 fail-close가 일어나지 않는다(적대 리뷰).
+  echo "M05 terminal execution block command failed" >&2
+fi
 
 # block write가 phase-scoped 기록으로 끝나거나 다른 pair를 block한 경우에는 이
 # candidate를 재실행할 수 있으므로 fail-close한다. stdout에는 registry 원문을 남기지 않는다.
