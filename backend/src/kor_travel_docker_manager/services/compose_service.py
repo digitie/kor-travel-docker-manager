@@ -186,6 +186,7 @@ from kor_travel_docker_manager.services.pinvi_database_role_credentials import (
     trusted_pinned_runtime_project_root,
 )
 from kor_travel_docker_manager.services.registry import (
+    get_project_root,
     init_steps_for_target,
     is_known_target,
     runtime_services_for_target,
@@ -733,14 +734,6 @@ def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
             + source_state
             + "the current trusted execution is missing, stale, or terminal"
         )
-
-
-def get_project_root() -> str:
-    configured = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "").strip()
-    if configured:
-        return os.path.abspath(configured)
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.abspath(os.path.join(current_dir, "../../../../"))
 
 
 def get_compose_path() -> str:

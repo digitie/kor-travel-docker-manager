@@ -34,6 +34,10 @@ from kor_travel_docker_manager.services.loopback_readiness import (
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
+from kor_travel_docker_manager.services.trusted_install import (
+    GLOBAL_MUTATION_LOCK_FD_ENV,
+    GLOBAL_MUTATION_LOCK_PATH,
+)
 
 _MAP_API_SERVICE = "kor-travel-map-api"
 # Map API의 기본 실행 경계는 Compose override가 아니라 이미지 Dockerfile에
@@ -108,9 +112,9 @@ _MAP_RUNTIME_CONTAINERS = {
     _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
     _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
 }
-_C6C_GLOBAL_MUTATION_LOCK = Path(
-    "/run/lock/kor-travel-docker-manager/global-mutation.lock"
-)
+# GM-09: cli.py의 _GLOBAL_MUTATION_LOCK_PATH와 반드시 같은 파일을 가리켜야 pinned
+# rebuild와 pin 회전이 서로 직렬화된다 — 정본은 services/trusted_install.py다.
+_C6C_GLOBAL_MUTATION_LOCK = GLOBAL_MUTATION_LOCK_PATH
 # F1D rebuild는 rehearsal에서도 root로만 실행하는 host-wide destructive operation이다.
 # 일반 C6c rehearsal lock은 실행 사용자 home 아래여서 서로 다른 launcher를 직렬화할 수
 # 없으므로, build부터 final commit까지 이 고정 lease를 별도로 잡는다.
@@ -1834,9 +1838,7 @@ _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
-_PINNED_REBUILD_INHERITED_GLOBAL_LOCK_FD_ENV = (
-    "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
-)
+_PINNED_REBUILD_INHERITED_GLOBAL_LOCK_FD_ENV = GLOBAL_MUTATION_LOCK_FD_ENV
 
 
 class _ManagedComposeMutationCapability:

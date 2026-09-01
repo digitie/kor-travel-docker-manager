@@ -84,13 +84,19 @@ from kor_travel_docker_manager.services.standalone_backup import (
     plan_standalone_restore,
     rehearse_standalone_restore,
 )
+from kor_travel_docker_manager.services.trusted_install import (
+    GLOBAL_MUTATION_LOCK_FD_ENV,
+    GLOBAL_MUTATION_LOCK_PATH,
+)
 
 DIRECT_ENSURE_ALIASES = {
     alias for target in list_targets() for alias in [target["id"], *target.get("aliases", [])]
 }
 
-_GLOBAL_MUTATION_LOCK_PATH = Path("/run/lock/kor-travel-docker-manager/global-mutation.lock")
-_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV = "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
+# GM-09: c6c_deployment.py의 _C6C_GLOBAL_MUTATION_LOCK과 반드시 같은 파일을 가리켜야
+# pinned rebuild와 pin 회전이 서로 직렬화된다 — 정본은 services/trusted_install.py다.
+_GLOBAL_MUTATION_LOCK_PATH = GLOBAL_MUTATION_LOCK_PATH
+_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV = GLOBAL_MUTATION_LOCK_FD_ENV
 
 
 def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -> int:

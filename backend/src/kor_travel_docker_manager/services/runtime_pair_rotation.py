@@ -33,13 +33,17 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     utc_timestamp,
     write_runtime_pin_registry,
 )
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_STATE_ROOT,
+)
 
 RUNTIME_PAIR_ROTATION_SCHEMA: Final = "kor-travel-docker-manager.runtime-pair-rotation.v1"
 RUNTIME_PAIR_ROTATION_FILE_ENV: Final = "KTDM_RUNTIME_PAIR_ROTATION_FILE"
 RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV: Final = (
     "KTDM_RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE"
 )
-_TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_STATE_ROOT: Final = TRUSTED_STATE_ROOT
 _DEFAULT_BASENAME: Final = "runtime-pair-rotation.json"
 
 

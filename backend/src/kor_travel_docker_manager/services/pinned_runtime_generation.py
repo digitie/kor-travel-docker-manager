@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.trusted_install import (
+    running_from_trusted_install_root,
+)
 
 DeploymentEnvironment = Literal["local", "rehearsal", "production"]
 DeploymentLifecycle = Literal["development", "rebuildable", "operational"]
@@ -3931,14 +3934,15 @@ def _write_all(descriptor: int, raw: bytes) -> None:
 
 
 def _running_from_trusted_install_root() -> bool:
-    """설치 tree에서는 public state를 release 밖 `/var/lib`에 고정한다."""
+    """설치 tree에서는 public state를 release 밖 `/var/lib`에 고정한다.
 
-    try:
-        return Path(__file__).resolve().is_relative_to(
-            Path("/opt/kor-travel-docker-manager").resolve()
-        )
-    except OSError:
-        return False
+    GM-09: 이 모듈만 `__file__` 상대경로 확인 하나였다 — services/trusted_install.py의
+    running_from_trusted_install_root가 그 확인을 포함해 sys.prefix·
+    get_project_root() 비교까지 셋을 모두 확인하는 정본이다(OR 결합이라 이 모듈이
+    이미 잡던 경우를 그대로 포함하고 잃지 않는다).
+    """
+
+    return running_from_trusted_install_root()
 
 
 def _validate_state_parent(path: Path, label: str) -> None:

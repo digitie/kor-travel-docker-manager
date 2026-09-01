@@ -18,6 +18,7 @@ import pytest
 
 from kor_travel_docker_manager.services import runtime_execution_registry as execution_module
 from kor_travel_docker_manager.services import runtime_pin_registry as registry_module
+from kor_travel_docker_manager.services import trusted_install as trusted_install_module
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     RUNTIME_PIN_REGISTRY_SCHEMA,
     BlockedPinset,
@@ -102,8 +103,10 @@ def test_installed_isolated_interpreter_uses_external_runtime_registry(
 
     monkeypatch.delenv(registry_module.RUNTIME_PINS_FILE_ENV)
     monkeypatch.delenv(registry_module.RUNTIME_PINS_PUBLIC_FILE_ENV)
+    # GM-09: sys.prefix 특례는 services/trusted_install.py로 옮겨갔다 — 그 모듈의
+    # sys를 패치해야 registry_module의 trusted-root 판정에도 반영된다.
     monkeypatch.setattr(
-        registry_module.sys,
+        trusted_install_module.sys,
         "prefix",
         "/opt/kor-travel-docker-manager/backend/.venv",
     )

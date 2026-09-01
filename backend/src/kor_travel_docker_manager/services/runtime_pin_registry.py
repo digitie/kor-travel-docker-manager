@@ -19,7 +19,6 @@ import json
 import os
 import re
 import stat
-import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -28,6 +27,12 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_INSTALL_ROOT,
+    TRUSTED_PUBLIC_ROOT,
+    TRUSTED_STATE_ROOT,
+    running_from_trusted_install_root,
+)
 
 RUNTIME_PIN_REGISTRY_SCHEMA: Final = "kor-travel-docker-manager.runtime-pin-registry.v1"
 RUNTIME_PINS_FILE_ENV: Final = "KTDM_RUNTIME_PINS_FILE"
@@ -46,14 +51,13 @@ _SEED_RELPATH: Final = ("config", _SEED_BASENAME)
 # scope에서 import하면 순환이 되므로 값을 복제하고 테스트로 동일성을 고정한다.
 _SUPPORTED_RELEASE_VERSION: Final = 5
 _DEFAULT_PUBLIC_BASENAME: Final = ".ktdm-runtime-pins.json"
-# trusted installer의 canonical execution root. 이 트리는 release마다 통째 교체된다.
-_TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
-# 설치 root에서 돌 때의 registry 기본 위치. 트리 교체에 살아남아야 하므로 트리 밖이다.
-_TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
-# 공개 사본은 **별도 트리**다. installer가 위 상태 root를 매 설치마다 0700 root:root로
+# GM-09: 경로 상수와 trusted-root 판정의 정본은 services/trusted_install.py다.
+# 공개 사본은 **별도 트리**다. installer가 상태 root를 매 설치마다 0700 root:root로
 # 되돌리므로 그 안에 두면 비-root backend가 traverse조차 못 해 조회 API가 영구
 # ``unknown``이 된다(n150 실측). 사본은 비밀이 없으므로 world-readable 트리에 둔다.
-_TRUSTED_PUBLIC_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-public")
+_TRUSTED_INSTALL_ROOT: Final = TRUSTED_INSTALL_ROOT
+_TRUSTED_STATE_ROOT: Final = TRUSTED_STATE_ROOT
+_TRUSTED_PUBLIC_ROOT: Final = TRUSTED_PUBLIC_ROOT
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -554,12 +558,9 @@ def _parse_sources(payload: Any, *, release_version: int) -> Mapping[str, str]:
 
 
 def _project_root() -> Path:
-    # trusted release의 root launcher는 wheel 안의 Python을 ``-I``로 직접 실행한다.
-    # 그때 entrypoint가 주입하는 project-root env가 없더라도 sys.prefix는 설치 venv를
-    # 그대로 보존한다. package 부모를 네 번 거슬러 올리는 개발 checkout 규칙을 먼저
-    # 적용하면 ``.../.venv/lib/config``이라는 존재하지 않는 경로가 되어 one-shot이
-    # ledger claim 전 import 단계에서 끝난다.
-    if Path(sys.prefix) == _TRUSTED_INSTALL_ROOT / "backend" / ".venv":
+    # GM-09: trusted-root 판정 자체(wheel 직접 실행의 sys.prefix 특례 포함)는
+    # services/trusted_install.py의 running_from_trusted_install_root가 정본이다.
+    if running_from_trusted_install_root():
         return _TRUSTED_INSTALL_ROOT
 
     from kor_travel_docker_manager.services.registry import get_project_root
@@ -570,11 +571,7 @@ def _project_root() -> Path:
 def _running_from_trusted_install_root() -> bool:
     """trusted installer가 통째 교체하는 canonical execution root에서 도는가."""
 
-    project_root = _project_root()
-    try:
-        return project_root.resolve() == _TRUSTED_INSTALL_ROOT.resolve()
-    except OSError:
-        return False
+    return running_from_trusted_install_root()
 
 
 def runtime_pin_registry_path() -> Path:

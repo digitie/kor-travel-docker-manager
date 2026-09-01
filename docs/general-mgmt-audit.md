@@ -25,7 +25,7 @@
 | GM-06 | `[x]` | P1 | M | operability | REVISED | mock | 예외 분류가 영어 문장 문자열 비교에 의존하고, CLI --json은 오류 정보를 버리거나 계약을 절반만 지킨다 |
 | GM-07 | `[x]` | P1 | L | correctness | REVISED | n150 live | 백업 복원 CLI 부재 — restore-plan까지만 있고 실제 복구·리허설 경로는 수동 문서 절차뿐 |
 | GM-08 | `[x]` | P2 | M | operability | CONFIRMED | mock | off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음 |
-| GM-09 | `[ ]` | P2 | S | correctness | REVISED | mock | 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화 |
+| GM-09 | `[x]` | P2 | S | correctness | REVISED | mock | 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화 |
 | GM-10 | `[ ]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
 | GM-11 | `[ ]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
 | GM-12 | `[ ]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
@@ -296,6 +296,47 @@ registry가 0600). 회귀 테스트 6건 추가(대상 격리 2건을 포함해 
 **검증 노트** (구현 시 본문보다 우선):
 
 핵심 4개 하위 주장 모두 라인 단위로 실재 확인: (1) lock 경로 리터럴 중복 cli.py:81 ≡ c6c_deployment.py:111-113, FD env 중복 cli.py:82 ≡ c6c_deployment.py:1837-1839, 그리고 cli.py:944-949 `except FileNotFoundError: ... yield`가 락 부재를 통과 경로로 만든다(테스트 test_runtime_execution_registry.py:399가 이 통과를 고정). 두 상수 동일성 테스트는 없음. (2) `_running_from_trusted_install_root` 3벌 확인 — runtime_pin_registry.py:562(sys.prefix 특례), runtime_pin_request.py:189(get_project_root만), pinned_runtime_generation.py:3937(`__file__` prefix). registry.py:556-561 주석이 wheel 실행에서 get_project_root가 `.venv/lib`을 내는 버그를 명시하며 registry에만 고쳐져 있어, request 쪽 latent 불일치 주장을 코드가 뒷받침. `_TRUSTED_*_ROOT` 리터럴도 4개 모듈(runtime_execution_registry.py:40-42, runtime_pin_registry.py:50-56, runtime_pair_rotation.py:41, runtime_pin_request.py:61-62)에 중복. (3) `_require_pinned_runtime_rebuild_root`(compose_service.py:653-657 ≡ c6c_deployment.py:2210-2214)와 `get_project_root`(compose_service.py:711-716 ≡ registry.py:8-13) 문자 그대로 2벌, 둘 다 사용 중. 다만 수정 필요 3건: (a) "7개 파일 14곳"은 과소 — 실제 22곳(backend 13 + frontend RuntimePinPanel.tsx 8, BackupHistoryPanel.tsx 1). frontend TSX는 Python 모듈을 import할 수 없으므로 "전 소비처가 import" 및 "UI 명령 부정확성 한 번에 제거"는 그대로는 불성립 — API가 명령 문자열을 내려주게 하든가 frontend를 명시적으로 scope 밖으로 빼야 함(전자면 effort는 S가 아니라 M). (b) lock 경로·FD env 리터럴은 scripts/run-pinned-rebuild-once:32-33,84·run-m05-isolated-e2e-once·install-ktdm-trusted-release에도 존재하는데 이 launcher들은 검증 전 프로젝트 코드를 import하지 않으려 의도적으로 `python3 -I -S`로 돌므로 import 통일 불가 — 스크립트 텍스트 대 상수 동일성 회귀 테스트로 닫아야 하며 태스크가 이를 누락. (c) FD env 이름 drift는 조용하지 않다 — cli.py:910에서 상속 텍스트가 비면 직접 open으로 떨어지고 launcher가 flock을 쥐고 있어 BlockingIOError→fail-closed(cli.py:964-968); 조용한 무력화는 lock *경로* drift에만 성립하므로 문제 기술을 그 범위로 좁혀야 함. 계약 충돌 없음: ADR-40(docs/decisions.md:2479)은 pinned revision 소유권에 관한 것이지 경로 상수 중복을 요구하지 않으며, 판정 통일은 registry.py:562에 이미 있는 수정을 request로 확산하는 방향이라 보안 게이트를 약화하지 않는다(pinned_runtime_generation.py:3049 사용처도 True 확대가 의도와 일치).
+
+**구현**: `services/trusted_install.py`를 신설해 `TRUSTED_INSTALL_ROOT`/
+`TRUSTED_STATE_ROOT`/`TRUSTED_PUBLIC_ROOT`/`TRUSTED_REQUEST_ROOT`,
+`GLOBAL_MUTATION_LOCK_PATH`/`GLOBAL_MUTATION_LOCK_FD_ENV`, 그리고
+`running_from_trusted_install_root()`를 정본으로 모았다. 이 판정 함수는 세 원본
+구현(`__file__` 상대경로, `sys.prefix` 특례, `get_project_root()` 비교)을 **전부
+OR로 합친 것**이다 — 기존에 참이던 조건을 하나도 잃지 않으면서, 가장 좁았던
+구현(`runtime_pin_request.py`, `get_project_root()` 비교만 하던 쪽)이 놓치던 wheel
+직접 실행 케이스를 함께 잡는다(실제 latent 버그 수정 — mutation 테스트로 그
+버그를 재현한 뒤 고쳐진 코드가 잡는지 확인함). cli.py·c6c_deployment.py는 lock
+경로·FD env를 이 모듈에서 import해 같은 객체를 참조하도록 고쳤고(동일성 회귀
+테스트로 고정), runtime_pin_registry.py·runtime_pin_request.py·
+runtime_execution_registry.py·runtime_pair_rotation.py·pinned_runtime_generation.py는
+각자의 `_TRUSTED_*` 리터럴을 이 모듈의 상수로 교체했다(모듈별 파일 경로 해석
+로직 자체는 건드리지 않음 — v6 execution registry가 v5 pin registry와 다르게
+trusted-root 여부와 무관하게 항상 `/var/lib/...`로 떨어지는 것처럼, 모듈마다
+그 상수를 "쓰는 방식"은 의도적으로 다르다). `get_project_root` 중복
+(compose_service.py ≡ registry.py)도 registry.py를 정본으로 삼아 import로
+교체했다.
+
+검증 노트의 세 가지 시정 사항을 그대로 반영했다: (a) frontend TSX 8~9곳의 하드코딩
+명령 문자열은 Python 모듈을 import할 수 없어 이번 범위에서 명시적으로 제외했다
+— API가 명령 문자열을 내려주는 방향은 effort가 S가 아니라 M이 되므로 별도
+후속 태스크로 남긴다. (b) `scripts/run-pinned-rebuild-once`·
+`run-m05-isolated-e2e-once`·`install-ktdm-trusted-release`는 검증 전 프로젝트
+코드를 import하지 않으려 의도적으로 격리 실행하므로 이 모듈을 import할 수
+없다 — 대신 `tests/test_trusted_install.py`가 각 스크립트의 리터럴 텍스트와
+이 모듈의 상수를 직접 비교하는 회귀 테스트로 drift를 잡는다(mutation
+테스트로 실제 drift를 재현해 3개 스크립트 테스트가 모두 잡는 것을 확인함).
+(c) `_require_pinned_runtime_rebuild_root`(compose_service.py ≡
+c6c_deployment.py)는 `DeploymentContractError`를 raise하는데 그 클래스가
+c6c_deployment.py에 정의돼 있어, 이 함수까지 옮기면
+`trusted_install.py → c6c_deployment.py → trusted_install.py` 순환 import가
+생긴다 — 2줄짜리 root 확인이라 drift 위험이 lock 경로 drift와 급이 다르므로
+(틀리면 즉시 눈에 띄는 permission 오류이지 조용한 무력화가 아니다) 순환
+import를 감수할 가치가 없다고 판단해 통합하지 않았다(문서로 명시).
+
+회귀 테스트 21건 추가(cli/c6c 동일성, 6개 모듈의 상수 공유, union 판정의 세
+분기, wheel 실행 버그 수정, 3개 launcher 스크립트 텍스트 동일성). 동일성·drift
+버그·스크립트 텍스트 불일치 세 갈래 모두 mutation으로 검증함(원상 복구 확인
+포함). 전체 backend 1304 passed.
 
 
 ## GM-10: root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능

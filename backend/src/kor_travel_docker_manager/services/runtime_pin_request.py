@@ -52,14 +52,20 @@ from typing import Any, Final
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.registry import get_project_root
 from kor_travel_docker_manager.services.runtime_pin_registry import utc_timestamp
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_INSTALL_ROOT,
+    TRUSTED_REQUEST_ROOT,
+    running_from_trusted_install_root,
+)
 
 RUNTIME_PIN_REQUEST_SCHEMA: Final = "kor-travel-docker-manager.runtime-pin-request.v1"
 RUNTIME_PIN_REQUEST_FILE_ENV: Final = "KTDM_RUNTIME_PIN_REQUEST_FILE"
 MAX_REASON_LENGTH: Final = 500
 MAX_ACTOR_LENGTH: Final = 200
 _MAX_REQUEST_BYTES: Final = 64 * 1024
-_TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
-_TRUSTED_REQUEST_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-requests")
+# GM-09: 경로 상수와 trusted-root 판정의 정본은 services/trusted_install.py다.
+_TRUSTED_INSTALL_ROOT: Final = TRUSTED_INSTALL_ROOT
+_TRUSTED_REQUEST_ROOT: Final = TRUSTED_REQUEST_ROOT
 _DEFAULT_BASENAME: Final = "runtime-pin-requests.json"
 
 # registry 모듈의 private 정규식을 import하지 않고 복제한다 — 두 모듈의 계약이
@@ -185,10 +191,12 @@ class RuntimePinRequest:
 
 
 def _running_from_trusted_install_root() -> bool:
-    try:
-        return Path(get_project_root()).resolve() == _TRUSTED_INSTALL_ROOT.resolve()
-    except OSError:
-        return False
+    # GM-09: 예전에는 get_project_root() 비교 하나뿐이라, wheel 직접 실행처럼
+    # registry.py의 4단계 상위 경로 규칙이 깨지는 실행 형태에서 이 모듈만 false
+    # negative를 냈다 — backend가 쓴 요청 파일을 root CLI가 다른 경로에서 찾는
+    # latent 불일치였다. running_from_trusted_install_root()가 그 케이스를 포함한
+    # 셋을 모두 확인한다.
+    return running_from_trusted_install_root()
 
 
 def runtime_pin_request_path() -> Path:

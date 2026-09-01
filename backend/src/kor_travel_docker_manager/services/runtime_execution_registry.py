@@ -27,6 +27,11 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     RuntimePinRegistry,
     utc_timestamp,
 )
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_INSTALL_ROOT,
+    TRUSTED_PUBLIC_ROOT,
+    TRUSTED_STATE_ROOT,
+)
 
 RUNTIME_EXECUTION_REGISTRY_SCHEMA: Final = (
     "kor-travel-docker-manager.runtime-execution-registry.v1"
@@ -37,9 +42,10 @@ RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV: Final = (
     "KTDM_RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE"
 )
 
-_TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
-_TRUSTED_PUBLIC_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-public")
-_TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_STATE_ROOT: Final = TRUSTED_STATE_ROOT
+_TRUSTED_PUBLIC_ROOT: Final = TRUSTED_PUBLIC_ROOT
+_TRUSTED_INSTALL_ROOT: Final = TRUSTED_INSTALL_ROOT
 _DEFAULT_BASENAME: Final = "runtime-executions.json"
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
