@@ -32,6 +32,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_concierge_ui_canonical_compose_boundary,
 )
 from kor_travel_docker_manager.services.compose_service import get_project_root
+from kor_travel_docker_manager.services.trusted_install import TRUSTED_INSTALL_ROOT
 
 _OVERRIDE_NAME = "docker-compose.override.yml"
 _ARCHIVE_DIRECTORY_NAME = ".retired-compose-overrides"
@@ -39,7 +40,8 @@ _LEGACY_STAGE_DIRECTORY_NAME = "legacy-compose-override"
 _LEGACY_PENDING_DIRECTORY_NAME = "pending"
 _STAGED_SOURCE_ENV_NAME = "concierge-source.env"
 _MAX_IMPORT_BYTES = 128 * 1024
-_TRUSTED_PRODUCTION_PROJECT_ROOT = Path("/opt/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_PRODUCTION_PROJECT_ROOT = TRUSTED_INSTALL_ROOT
 _GEO_SERVICES = (
     "kor-travel-geo-api",
     "kor-travel-geo-dagster",

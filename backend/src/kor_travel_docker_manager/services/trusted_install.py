@@ -31,6 +31,7 @@ lock 경로·FD env 리터럴은 `scripts/run-pinned-rebuild-once`·
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Final
@@ -79,3 +80,21 @@ def running_from_trusted_install_root() -> bool:
         return Path(get_project_root()).resolve() == TRUSTED_INSTALL_ROOT.resolve()
     except OSError:
         return False
+
+
+def require_pinned_runtime_rebuild_root() -> None:
+    """source staging·state owner와 host-wide destructive mutation authority를
+    root로 고정한다. compose_service.py·c6c_deployment.py에 바이트 그대로
+    중복돼 있던 2줄짜리 확인이다.
+
+    `DeploymentContractError`는 c6c_deployment.py에 있다 — 모듈 scope에서
+    import하면 그 모듈이 이 모듈의 lock 상수를 import하는 것과 맞물려 순환이
+    된다. 함수 안에서 지연 import하면 호출 시점에는 두 모듈 모두 이미 완전히
+    초기화돼 있으므로 순환이 실제로 발생하지 않는다 — 위 `running_from_trusted_install_root`가
+    `registry.get_project_root`에 이미 쓰는 것과 같은 패턴이다.
+    """
+
+    from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+
+    if os.geteuid() != 0:
+        raise DeploymentContractError("pinned runtime rebuild requires root execution")

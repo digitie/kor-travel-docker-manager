@@ -16,13 +16,17 @@ import pytest
 from kor_travel_docker_manager import cli
 from kor_travel_docker_manager.services import (
     c6c_deployment,
+    compose_service,
+    legacy_override_retirement,
     pinned_runtime_generation,
+    pinvi_database_role_credentials,
     runtime_execution_registry,
     runtime_pair_rotation,
     runtime_pin_registry,
     runtime_pin_request,
 )
 from kor_travel_docker_manager.services import trusted_install as trusted_install_module
+from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
     GLOBAL_MUTATION_LOCK_PATH,
@@ -30,6 +34,7 @@ from kor_travel_docker_manager.services.trusted_install import (
     TRUSTED_PUBLIC_ROOT,
     TRUSTED_REQUEST_ROOT,
     TRUSTED_STATE_ROOT,
+    require_pinned_runtime_rebuild_root,
     running_from_trusted_install_root,
 )
 
@@ -50,6 +55,29 @@ def test_cli_and_c6c_reference_the_identical_lock_fd_env_name() -> None:
     )
 
 
+def test_compose_service_and_c6c_root_checks_delegate_to_the_shared_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """리뷰 지적: 순환 import 우려는 지연 import로 이미 해소 가능했다(이 모듈이
+    `registry.get_project_root`에 쓰는 것과 같은 패턴) — 그래서 2줄짜리 root 확인도
+    통합했다. 실제 root 확인은 `os.geteuid()`를 함수가 정의된 trusted_install 모듈의
+    `os`에서 부르므로, 호출부(compose_service/c6c_deployment)가 아니라 그쪽을
+    패치해야 한다 — CI가 실제로 root로 도는 환경에서도 이 테스트가 흔들리지 않게
+    명시적으로 비-root euid를 강제한다.
+    """
+
+    monkeypatch.setattr(trusted_install_module.os, "geteuid", lambda: 1000)
+
+    with pytest.raises(DeploymentContractError, match="requires root execution") as compose_exc:
+        compose_service._require_pinned_runtime_rebuild_root()
+    with pytest.raises(DeploymentContractError, match="requires root execution") as c6c_exc:
+        c6c_deployment._require_pinned_runtime_rebuild_root()
+    with pytest.raises(DeploymentContractError, match="requires root execution") as shared_exc:
+        require_pinned_runtime_rebuild_root()
+
+    assert str(compose_exc.value) == str(c6c_exc.value) == str(shared_exc.value)
+
+
 @pytest.mark.parametrize(
     "module, attr, expected",
     [
@@ -62,6 +90,20 @@ def test_cli_and_c6c_reference_the_identical_lock_fd_env_name() -> None:
         (runtime_execution_registry, "_TRUSTED_STATE_ROOT", TRUSTED_STATE_ROOT),
         (runtime_execution_registry, "_TRUSTED_PUBLIC_ROOT", TRUSTED_PUBLIC_ROOT),
         (runtime_pair_rotation, "_TRUSTED_STATE_ROOT", TRUSTED_STATE_ROOT),
+        # 리뷰에서 추가로 찾은, _TRUSTED_* 접두 이름이 아니라 grep을 피했던 중복.
+        (c6c_deployment, "_DEFAULT_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
+        (c6c_deployment, "_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
+        (pinned_runtime_generation, "_DEFAULT_PUBLIC_ROOT", TRUSTED_PUBLIC_ROOT),
+        (
+            pinvi_database_role_credentials,
+            "_TRUSTED_PINNED_RUNTIME_PROJECT_ROOT",
+            TRUSTED_INSTALL_ROOT,
+        ),
+        (
+            legacy_override_retirement,
+            "_TRUSTED_PRODUCTION_PROJECT_ROOT",
+            TRUSTED_INSTALL_ROOT,
+        ),
     ],
 )
 def test_every_consumer_shares_the_canonical_trusted_root_constant(
@@ -80,6 +122,27 @@ def test_running_from_trusted_install_root_falls_back_to_project_root_comparison
     """
 
     assert running_from_trusted_install_root() is False
+
+
+def test_running_from_trusted_install_root_is_true_when_own_file_is_under_the_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """분기 1(`__file__` 상대경로)을 다른 두 분기와 분리해 직접 확인한다.
+
+    이전 리뷰에서 지적된 공백: sys.prefix를 패치하는 테스트만으로는 이 모듈 자신의
+    `__file__` 검사(pinned_runtime_generation.py의 원래 구현과 대응하는 분기)가
+    실제로 참을 낼 때 True를 반환하는지 확인하지 못한다 — 그 테스트는 분기 2만
+    태운다. 여기서는 sys.prefix·get_project_root는 그대로 두고 `__file__`만 trusted
+    root 아래로 옮겨 분기 1 단독으로 True가 나오는지 확인한다.
+    """
+
+    monkeypatch.setattr(
+        trusted_install_module,
+        "__file__",
+        str(TRUSTED_INSTALL_ROOT / "backend" / "site-packages" / "trusted_install.py"),
+    )
+
+    assert running_from_trusted_install_root() is True
 
 
 def test_running_from_trusted_install_root_is_true_when_sys_prefix_matches(
@@ -131,12 +194,16 @@ def test_pinned_runtime_generation_still_recognizes_its_own_file_relative_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """예전 구현(`__file__` 상대경로만)이 잡던 경우를 통합 판정이 계속 잡는지
-    확인한다 — union 결합이라 기존 참 조건을 잃으면 안 된다."""
+    확인한다 — union 결합이라 기존 참 조건을 잃으면 안 된다.
+
+    반드시 분기 1(`__file__`)만 패치해야 이 테스트가 의미가 있다 — sys.prefix를
+    패치하면 분기 2가 먼저 참이 돼 분기 1이 실제로 작동하는지는 확인하지 못한다.
+    """
 
     monkeypatch.setattr(
-        trusted_install_module.sys,
-        "prefix",
-        str(TRUSTED_INSTALL_ROOT / "backend" / ".venv"),
+        trusted_install_module,
+        "__file__",
+        str(TRUSTED_INSTALL_ROOT / "backend" / "site-packages" / "trusted_install.py"),
     )
 
     assert pinned_runtime_generation._running_from_trusted_install_root() is True

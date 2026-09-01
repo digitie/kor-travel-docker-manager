@@ -21,6 +21,7 @@ from typing import Any, Literal, cast
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_PUBLIC_ROOT,
     running_from_trusted_install_root,
 )
 
@@ -205,7 +206,8 @@ _STATE_ROOT_ENV = "KTDM_PINNED_RUNTIME_STATE_ROOT"
 _PUBLIC_ROOT_ENV = "KTDM_PINNED_RUNTIME_PUBLIC_ROOT"
 _PROJECT_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
 _DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
-_DEFAULT_PUBLIC_ROOT = Path("/var/lib/kor-travel-docker-manager-public")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_DEFAULT_PUBLIC_ROOT = TRUSTED_PUBLIC_ROOT
 _MANIFEST_FILENAME = "pinned-runtime-generation-v6.json"
 _JOURNAL_FILENAME_PREFIX = "pinned-runtime-rebuild-v8-"
 _PUBLIC_JOURNAL_FILENAME = "pinned-runtime-rebuild-v8.json"

@@ -193,6 +193,9 @@ from kor_travel_docker_manager.services.registry import (
     services_for_target,
     target_sequence_for_target,
 )
+from kor_travel_docker_manager.services.trusted_install import (
+    require_pinned_runtime_rebuild_root,
+)
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "pinvi-db-init",
@@ -679,10 +682,12 @@ def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | 
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
-    """source staging·state owner와 Docker mutation authority를 root로 고정한다."""
+    """source staging·state owner와 Docker mutation authority를 root로 고정한다.
 
-    if os.geteuid() != 0:
-        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+    GM-09: 정본은 services/trusted_install.py다.
+    """
+
+    require_pinned_runtime_rebuild_root()
 
 
 def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:

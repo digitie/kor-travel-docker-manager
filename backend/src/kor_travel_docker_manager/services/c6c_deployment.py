@@ -37,6 +37,8 @@ from kor_travel_docker_manager.services.map_service_contract import (
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
     GLOBAL_MUTATION_LOCK_PATH,
+    TRUSTED_STATE_ROOT,
+    require_pinned_runtime_rebuild_root,
 )
 
 _MAP_API_SERVICE = "kor-travel-map-api"
@@ -121,7 +123,8 @@ _C6C_GLOBAL_MUTATION_LOCK = GLOBAL_MUTATION_LOCK_PATH
 _PINNED_RUNTIME_REBUILD_LOCK = Path(
     "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
 )
-_DEFAULT_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_DEFAULT_C6C_PRODUCTION_STATE_ROOT = TRUSTED_STATE_ROOT
 _C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
@@ -2210,10 +2213,12 @@ def pinned_runtime_rebuild_lock_path() -> str:
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
-    """고정 host lease를 여는 주체도 root로 제한한다."""
+    """고정 host lease를 여는 주체도 root로 제한한다.
 
-    if os.geteuid() != 0:
-        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+    GM-09: 정본은 services/trusted_install.py다.
+    """
+
+    require_pinned_runtime_rebuild_root()
 
 
 @contextmanager

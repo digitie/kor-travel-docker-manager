@@ -338,6 +338,52 @@ import를 감수할 가치가 없다고 판단해 통합하지 않았다(문서�
 버그·스크립트 텍스트 불일치 세 갈래 모두 mutation으로 검증함(원상 복구 확인
 포함). 전체 backend 1304 passed.
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 리뷰 A가 실제 결함 2건을 찾았고, 리뷰
+B는 테스트 공백 1건을 찾았다(둘 다 코드는 정확했다고 확인 — "구현" 단락의 두
+의도적 축소 중 하나는 재검토로 원복, 나머지 하나는 그대로 유지).
+
+[Medium, 리뷰 A] `_require_pinned_runtime_rebuild_root`를 통합하지 않은 순환
+import 근거가 틀렸다 — 리뷰가 직접 재현: 모듈 scope import는 실제로 순환 오류를
+내지만, 이 파일이 `registry.get_project_root`에 이미 쓰던 **지연(함수 내부) import**
+패턴을 그대로 쓰면 순환이 생기지 않는다. `trusted_install.py`에
+`require_pinned_runtime_rebuild_root()`를 추가해(그 함수 안에서
+`c6c_deployment.DeploymentContractError`를 지연 import) 통합했고,
+`compose_service.py`·`c6c_deployment.py`의 2줄짜리 중복을 그 위임 호출로
+교체했다. 세 경로(두 wrapper + 공유 함수)가 실제로 같은 예외 타입·문구를 내는지
+호출로 확인하는 회귀 테스트를 추가함.
+
+[Medium, 리뷰 A] `_TRUSTED_*` 접두 이름으로만 grep해 놓친, 같은 값을 다른 이름으로
+든 리터럴 4곳을 찾았다 — 그중 2곳은 이 커밋이 이미 수정 중이던 파일 안에 있었다:
+`c6c_deployment.py`의 `_DEFAULT_C6C_PRODUCTION_STATE_ROOT`(root ownership 판정에
+쓰임), `pinned_runtime_generation.py`의 `_DEFAULT_PUBLIC_ROOT`,
+`pinvi_database_role_credentials.py`의
+`_TRUSTED_PINNED_RUNTIME_PROJECT_ROOT`, `legacy_override_retirement.py`의
+`_TRUSTED_PRODUCTION_PROJECT_ROOT`. 넷 다 `trusted_install.py`의 상수를 가리키도록
+교체하고 동일성 회귀 테스트에 추가했다(현재 값은 이미 일치해 실사고는 아니었지만,
+검증도 drift 방지도 안 되던 상태였다).
+
+[Low, 리뷰 A] 원래 3개 launcher 스크립트 밖에도 리터럴을 가진 스크립트가
+더 있다(`run-pin-request-isolated-e2e`, `m05_isolated_e2e.py`,
+`provision-ktdm-offline-wheelhouse.py`) — 감사 원문이 이름 붙인 3개 밖이고
+"결함이라기보다 잔여 범위"로 판정돼 이번 라운드에서는 다루지 않는다. 후속으로
+남긴다.
+
+[Nit, 리뷰 A] OR 결합의 대칭적 trade-off: 개발 checkout을 실제로
+`/opt/kor-travel-docker-manager`에 clone하면(있을 법하지 않은 경로) 이제 3개
+모듈이 trusted root로 오판한다(예전에는 `pinned_runtime_generation.py` 하나만).
+새 버그가 아니라 union 설계 자체의 고유한 trade-off로 판단해 그대로 둔다.
+
+[Medium, 리뷰 B] `test_pinned_runtime_generation_still_recognizes_its_own_file_relative_check`가
+분기 1(`__file__` 상대경로)을 검증한다고 docstring에 적었지만 실제로는 분기
+2(`sys.prefix`)만 태웠다 — 21개 테스트 전체에서 분기 1을 단독으로 참으로 만드는
+테스트가 없었다. `trusted_install_module.__file__`을 직접 패치해 분기 1만 단독으로
+확인하는 테스트로 고치고, `running_from_trusted_install_root` 자체에도 같은 분기
+전용 테스트를 추가했다. 둘 다 mutation(분기 1 비활성화)으로 실제로 잡는 것을 확인함.
+
+회귀 테스트 7건 추가(root-check 위임 1, 상수 동일성 5, 분기 1 전용 검증 1),
+기존 테스트 1건 정정. mutation으로 c6c_deployment 상수 재검증·root-check 위임·
+분기 1 격리 세 갈래를 검증함. 전체 backend 1311 passed.
+
 
 ## GM-10: root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능
 

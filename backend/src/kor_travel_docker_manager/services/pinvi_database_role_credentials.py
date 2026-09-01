@@ -23,6 +23,9 @@ from types import MappingProxyType
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_INSTALL_ROOT,
+)
 
 _ROLE_ENVIRONMENT_NAMES = (
     "PINVI_APP_DB_USER",
@@ -57,7 +60,8 @@ _GENERATED_ROLE_NAMES = {
 }
 _ROLE_NAME = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_TRUSTED_PINNED_RUNTIME_PROJECT_ROOT = Path("/opt/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_PINNED_RUNTIME_PROJECT_ROOT = TRUSTED_INSTALL_ROOT
 
 
 @dataclass(frozen=True)
