@@ -6,9 +6,9 @@ from contextlib import asynccontextmanager
 from logging.handlers import BaseRotatingHandler
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from kor_travel_docker_manager.api.admin import router as admin_router
 from kor_travel_docker_manager.api.auth import router as auth_router
@@ -19,6 +19,11 @@ from kor_travel_docker_manager.api.websocket import (
     status_broadcast_loop,
 )
 from kor_travel_docker_manager.services.auth_service import allowed_frontend_origins
+from kor_travel_docker_manager.services.c6c_deployment import (
+    ComposeCandidateContractError,
+    ComposePostMutationContractError,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.compose_service import get_env_path
 from kor_travel_docker_manager.services.job_runner import job_runner
 from kor_travel_docker_manager.services.metrics_collector import (
@@ -207,6 +212,62 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(container_router, prefix="/api/v1", tags=["containers"])
 app.include_router(ws_router, prefix="/api/v1", tags=["websocket"])
+
+
+def _candidate_contract_detail(error: ComposeCandidateContractError) -> dict:
+    return {
+        "code": error.code,
+        "message": str(error),
+        "stage": "candidate_validation",
+        "mutation_applied": False,
+    }
+
+
+def _post_mutation_contract_detail(error: ComposePostMutationContractError) -> dict:
+    original_code = getattr(error.original_error, "code", None)
+    return {
+        "code": error.code,
+        "message": str(error),
+        "stage": "post_mutation_recovery",
+        "mutation_applied": True,
+        "original_error": {
+            "code": original_code,
+            "message": str(error.original_error),
+        },
+        "recovery_attempted": error.recovery_attempted,
+        "recovery_succeeded": error.recovery_succeeded,
+        "recovery_error": error.recovery_error,
+        "restoration": error.restoration,
+    }
+
+
+# GM-12: C6c 계약 위반을 라우트마다 3단 except로 반복해 매핑하던 것을 여기 한 곳으로
+# 모은다. Starlette 예외 미들웨어는 발생한 예외 타입의 MRO를 훑어 가장 구체적으로
+# 등록된 핸들러를 고르므로, 세 핸들러를 모두 등록해 두면 서브클래스 두 종류가 각자의
+# 전용 핸들러로, 그 외 DeploymentContractError는 기본 핸들러로 정확히 갈라진다.
+# base 케이스의 detail은 지금도 평문 문자열이다(예: "compatible-pair" 워크플로 안내) —
+# 이를 {code, message} dict로 바꾸면 `"compatible-pair" in response.json()["detail"]`
+# 같은 기존 부분 문자열 단언(in 연산이 dict에서는 키 검사가 되어 조용히 실패한다)과
+# ~20곳의 exact-dict 단언이 함께 깨진다. 그래서 base는 그대로 평문 문자열로 둔다.
+@app.exception_handler(ComposePostMutationContractError)
+async def _handle_post_mutation_contract_error(
+    request: Request, exc: ComposePostMutationContractError
+) -> JSONResponse:
+    return JSONResponse(status_code=500, content={"detail": _post_mutation_contract_detail(exc)})
+
+
+@app.exception_handler(ComposeCandidateContractError)
+async def _handle_candidate_contract_error(
+    request: Request, exc: ComposeCandidateContractError
+) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": _candidate_contract_detail(exc)})
+
+
+@app.exception_handler(DeploymentContractError)
+async def _handle_deployment_contract_error(
+    request: Request, exc: DeploymentContractError
+) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.get("/health")

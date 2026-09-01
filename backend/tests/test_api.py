@@ -985,6 +985,22 @@ def test_ensure_target_contract_failure_is_conflict_without_secret_body(
 
 
 @patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_ensure_target_unknown_target_is_not_found_not_conflict(mock_compose_service):
+    """GM-12: DeploymentContractError는 ValueError의 하위클래스라, ensure_target의
+    남은 로컬 `except ValueError` 절이 순서상 그것까지 삼켜 404로 잘못 바꿀 수
+    있다 — 위의 `except DeploymentContractError: raise`가 먼저 가로채 막는다. 이
+    테스트는 그 반대 경로(계약 위반이 아닌 bare ValueError는 여전히 404)가 이번
+    app 레벨 핸들러 통합 이후에도 유지되는지 확인한다."""
+    login_client()
+    mock_compose_service.ensure_target.side_effect = ValueError("unknown target: bogus")
+
+    response = client.post("/api/v1/targets/bogus/ensure", json={})
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "unknown target: bogus"}
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
 def test_ensure_target_candidate_rejection_returns_typed_unchanged_detail(
     mock_compose_service,
 ):

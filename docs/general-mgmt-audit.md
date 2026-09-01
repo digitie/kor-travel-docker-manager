@@ -28,7 +28,7 @@
 | GM-09 | `[x]` | P2 | S | correctness | REVISED | mock | 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화 |
 | GM-10 | `[x]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
 | GM-11 | `[x]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
-| GM-12 | `[ ]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
+| GM-12 | `[x]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
 | GM-13 | `[ ]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
 | GM-14 | `[ ]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
 | GM-15 | `[ ]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
@@ -601,6 +601,55 @@ parametrize 케이스 전부 예상대로 실패 → 원복 후 재통과). 전�
 문제 기술은 라인 단위로 전부 사실이다. (a) routes.py:699/743/791/812 모두 `raise HTTPException(status_code=409, detail=str(exc))` — 평문 str(exc) 확인. (b) routes.py:241 `detail="BACKUP_JOB_NOT_FOUND"`, auth_service.py:160 `detail="AUTH_REQUIRED"` — 대문자 토큰 확인. (c) routes.py:110-118 `_config_failure_detail`은 code 없는 dict 확인. (d) routes.py:454 `detail: dict[str, Any] = {"code": code, "message": message}` — code+한국어 dict 확인. 3단 예외 매핑(post-mutation→500, candidate→409, base→409)은 ensure_target(690-699), control_container(734-743), update_container_config(782-791), reset_container_config(803-812) 4곳에 실제 복사돼 있다. dict 이중 채널도 확인: 같은 라우트들이 try/except 뒤 `if not result.get("success")` 분기를 반복하고 logs(757)/inspect(767)는 그것만 쓴다. 프론트도 확인: api.ts:32-49 parseErrorBody shape 스니핑, SourceStatusPanel.tsx:214-219·287-291·395-399가 error.message 원문 노출, AdminSettingsPanel.tsx:395가 keyState.message로 성공("공개 API 키를 생성했습니다")과 오류를 같은 text-secondary 회색 문단에 렌더, ContainerDetailModal.tsx:289-297이 원인을 "컨테이너가 실행 중이 아니거나 Docker 데몬에 연결할 수 없습니다" 고정 문구로 뭉갠다. ADR 충돌 없음(decisions.md에 오류 envelope을 고정한 ADR 없음; C6c exact-dict 계약은 manifest/journal 응답이지 오류 detail이 아니다). 상태코드가 보존되므로 보안 게이트·lock 규율도 무관하다.
 
 수정 필요 3건: (1) envelope 형태를 명시해야 한다 — "{code, message, detail} envelope"을 최상위 새 형태로 읽으면 오히려 5번째 표면이 생긴다. api/auth.py·api/admin.py는 files 목록에 없어 AUTH_REQUIRED와 admin 라우트의 FastAPI 기본 `{"detail": ...}` 형태가 그대로 남고, test_api.py의 exact-dict 단언 ~20곳(462, 490, 534, 999, 1054 등 `response.json()["detail"] == {...}`)과 parseErrorBody(api.ts:40-47, `body.detail.code/message`를 읽음)가 전부 깨진다. 핸들러는 `{"detail": {code, message, ...}}` 형태를 유지하도록 못박아야 기존 테스트·프론트 파서와 수렴한다. (2) "라우트별 try/except 사다리를 제거한다"는 과장 — ensure_target의 `except ValueError → 404`(routes.py:700-701)는 남아야 한다(DeploymentContractError가 ValueError의 하위클래스라 순서 의존이지만, 미지 target의 bare ValueError는 base-class 핸들러 3종이 잡지 못하고, bare ValueError 전역 핸들러는 너무 광범위하다). update_container_config의 `ContainerConfigValidationError → 422`(routes.py:780-781)도 마찬가지 — 이 클래스는 docker_service.py:280에서 ValueError만 상속하므로 4번째 핸들러를 추가하거나 라우트 catch를 유지해야 한다. (3) 사소한 과장: 매핑 누락 시 "500 스택트레이스가 나간다"는 부정확 — main.py의 FastAPI는 debug 미설정이라 응답 본문은 "Internal Server Error"뿐이고 traceback은 로그로만 간다(불투명 500이라는 본질은 맞다). 부수: base DeploymentContractError(c6c_deployment.py:1854-1855)에는 code 속성이 없어 GM-06 선행이 실제로 필수이며, BackupHistoryPanel.tsx:342는 이미 조회 실패에 humanizeError를 쓰고 있어 "채택이 mutation에만 있다"는 일반화도 약간 과하다. 이 수정들을 반영하면 effort M은 현실적이다(테스트 형태 보존 시 백엔드 테스트 수정 최소).
+
+**구현**: 검증 노트의 세 정정을 그대로 따랐다. base `DeploymentContractError`
+케이스의 `detail`은 지금도 평문 문자열이다 — 여기에 `.code`를 추가해 dict로
+바꾸면 `"compatible-pair" in response.json()["detail"]`류 부분 문자열 단언
+(dict에서 `in`은 키 검사가 되어 조용히 실패)과 ~20곳의 exact-dict 단언이 함께
+깨진다는 것을 직접 재현해 확인했다(수정 전 시도에서 실제로 3건이 깨짐). 그래서
+"단일 envelope 강제"는 새 형태를 만드는 것이 아니라 **이미 존재하는 두 형태
+(base=평문 문자열, candidate/post-mutation=code 포함 dict)를 4개 라우트에
+반복 구현하던 것을 한 곳으로 모으는 것**으로 범위를 좁혔다.
+
+`main.py`에 `@app.exception_handler` 3종(`ComposePostMutationContractError`→500,
+`ComposeCandidateContractError`→409, base `DeploymentContractError`→409)을
+등록했다. Starlette 예외 미들웨어는 발생한 예외의 MRO를 훑어 가장 구체적인
+등록 핸들러를 고르므로 서브클래스 2종과 base가 정확히 갈라진다.
+`_candidate_contract_detail`/`_post_mutation_contract_detail` 헬퍼를
+`routes.py`에서 `main.py`로 옮겼다(다른 곳에서 쓰이지 않음을 grep으로 확인).
+`ensure_target`/`control_container`/`update_container_config`/
+`reset_container_config` 4곳에서 반복되던 3단 except 사다리(약 24줄)를
+제거했다. 검증 노트가 지적한 대로 라우트별 예외 처리를 완전히 없애지는
+않았다: `ensure_target`은 `except DeploymentContractError: raise`로 먼저
+가로챈 뒤에만 `except ValueError → 404`를 두어, 하위클래스인 계약 위반이
+그 bare ValueError 절에 잘못 삼켜지지 않게 했다(순서 의존을 명시적으로
+드러냄). `update_container_config`는 `ContainerConfigValidationError`(422)만
+남기고 나머지 3단은 제거했다 — 이 클래스는 `DeploymentContractError`와
+무관한 별도 `ValueError` 하위클래스라 순서와 무관하게 안전하다.
+`control_container`/`reset_container_config`는 로컬 예외 처리가 전혀
+필요 없어져 try/except를 통째로 제거했다(FastAPI가 처리되지 않은 예외를
+자동으로 등록된 핸들러에 전달한다).
+
+프론트는 검증 노트가 구체적으로 지목한 3개 원문 노출 지점만 고쳤다:
+`SourceStatusPanel.tsx`의 사전 점검·재구축 판정·전체 배포 상태 조회 실패
+3곳을 `humanizeError` + `InlineError`로 교체했고, `ContainerDetailModal.tsx`의
+고정 문구("컨테이너가 실행 중이 아니거나...")를 실제 서버 메시지를 보존하는
+`InlineError`로 교체했다. `AdminSettingsPanel.tsx`는 `keyState.message`가
+성공("공개 API 키를 생성했습니다")과 실패를 같은 회색 문단에 섞던 것을
+`passwordState`가 이미 쓰던 성공/실패 분리 관례를 따라 `error: HumanError | null`
+필드로 분리했다(같은 파일의 `auditState`도 동일 패턴으로 함께 정리). `api.ts`/
+`errors.ts`는 손대지 않았다 — `parseErrorBody`가 이미 문자열/dict 두 형태를
+모두 다루므로 백엔드 envelope을 그대로 보존한 이번 변경과 정합한다.
+
+회귀 테스트 1건 추가(`ensure_target`의 bare `ValueError`가 여전히 404로
+남는지 — `except DeploymentContractError: raise` 패스스루가 없으면 하위
+`except ValueError`가 계약 위반까지 삼켜 404로 잘못 바꾼다). mutation으로
+재검증: 패스스루를 제거하자 기존 candidate/post-mutation/base 테스트 4건이
+정확히 예상대로 실패(409/500 기대에서 404 반환), 원복 후 재통과. 기존
+`test_api.py`의 exact-dict·부분 문자열 단언 전부(87건) 변경 없이 통과 —
+envelope을 실제로 보존했다는 직접 증거. frontend `npm run type-check`·
+`npm run lint`·`npm run build` 모두 통과. 전체 backend 1361 passed, 2 skipped,
+ruff 통과.
 
 
 ## GM-13: 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다

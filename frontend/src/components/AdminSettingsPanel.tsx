@@ -11,8 +11,9 @@ import {
   deleteJson,
   postJson,
 } from '@/lib/api';
-import { humanizeError } from '@/lib/errors';
+import { HumanError, humanizeError } from '@/lib/errors';
 import CopyableCommand from './CopyableCommand';
+import InlineError from './InlineError';
 
 const MIN_PASSWORD_LENGTH = 12;
 /** 서버가 이 문구를 요구하지는 않는다. 화면이 "무심코 진행"을 막는 마찰이다. */
@@ -23,13 +24,15 @@ type PublicKeyState = {
   busy: boolean;
   generatedKey: string | null;
   label: string;
+  /** 성공 메시지만 담는다 — 실패는 `error`로 분리해 같은 회색 문단에 섞이지 않게 한다. */
   message: string | null;
+  error: HumanError | null;
   keys: PublicApiKeySummary[] | null;
 };
 
 type AuditState = {
   events: LoginAuditEvent[] | null;
-  message: string | null;
+  error: HumanError | null;
 };
 
 type PasswordState = {
@@ -49,9 +52,10 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     generatedKey: null,
     label: '',
     message: null,
+    error: null,
     keys: null,
   });
-  const [auditState, setAuditState] = useState<AuditState>({ events: null, message: null });
+  const [auditState, setAuditState] = useState<AuditState>({ events: null, error: null });
   const [passwordState, setPasswordState] = useState<PasswordState>({
     busy: false,
     current: '',
@@ -73,25 +77,25 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
   }, []);
 
   const loadPublicKeys = useCallback(async () => {
-    patchKeyState({ message: null });
+    patchKeyState({ error: null });
     try {
       patchKeyState({
         keys: await apiJson<PublicApiKeySummary[]>('/api/v1/admin/public-api-keys'),
       });
     } catch (error) {
-      patchKeyState({ message: error instanceof Error ? error.message : String(error) });
+      patchKeyState({ error: humanizeError(error, '공개 API 키 목록 조회') });
     }
   }, [patchKeyState]);
 
   const loadAuditEvents = useCallback(async () => {
-    setAuditState((current) => ({ ...current, message: null }));
+    setAuditState((current) => ({ ...current, error: null }));
     try {
       const events = await apiJson<LoginAuditEvent[]>('/api/v1/admin/login-audit-events?limit=80');
-      setAuditState({ events, message: null });
+      setAuditState({ events, error: null });
     } catch (error) {
       setAuditState((current) => ({
         ...current,
-        message: error instanceof Error ? error.message : String(error),
+        error: humanizeError(error, '로그인 기록 조회'),
       }));
     }
   }, []);
@@ -181,7 +185,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
 
   async function createKey(event: FormEvent) {
     event.preventDefault();
-    patchKeyState({ busy: true, generatedKey: null, message: null });
+    patchKeyState({ busy: true, generatedKey: null, message: null, error: null });
     try {
       const result = await postJson<PublicApiKeyCreateResponse>('/api/v1/admin/public-api-keys', {
         label: keyState.label.trim() || null,
@@ -198,13 +202,13 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     } catch (error) {
       patchKeyState({
         busy: false,
-        message: error instanceof Error ? error.message : String(error),
+        error: humanizeError(error, '공개 API 키 생성'),
       });
     }
   }
 
   async function revokeKey(publicApiKeyId: string) {
-    patchKeyState({ busy: true, message: null });
+    patchKeyState({ busy: true, message: null, error: null });
     try {
       const result = await deleteJson<PublicApiKeySummary>(
         `/api/v1/admin/public-api-keys/${publicApiKeyId}`
@@ -221,7 +225,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     } catch (error) {
       patchKeyState({
         busy: false,
-        message: error instanceof Error ? error.message : String(error),
+        error: humanizeError(error, '공개 API 키 폐기'),
       });
     }
   }
@@ -392,7 +396,13 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               ))
             )}
           </div>
-          {keyState.message ? <p className="mt-3 text-sm text-secondary">{keyState.message}</p> : null}
+          {keyState.error ? (
+            <div className="mt-3">
+              <InlineError error={keyState.error} />
+            </div>
+          ) : keyState.message ? (
+            <p className="mt-3 text-sm text-secondary">{keyState.message}</p>
+          ) : null}
         </section>
 
         <section className="border-t border-line pt-4 lg:border-t-0 lg:pl-1 lg:pt-0">
@@ -444,8 +454,10 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               ))
             )}
           </div>
-          {auditState.message ? (
-            <p className="mt-3 text-sm text-danger">{auditState.message}</p>
+          {auditState.error ? (
+            <div className="mt-3">
+              <InlineError error={auditState.error} />
+            </div>
           ) : null}
         </section>
 

@@ -9,11 +9,7 @@ from kor_travel_docker_manager.services.auth_service import (
     record_login_audit_event,
     require_admin_session,
 )
-from kor_travel_docker_manager.services.c6c_deployment import (
-    ComposeCandidateContractError,
-    ComposePostMutationContractError,
-    DeploymentContractError,
-)
+from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import compose_service
 from kor_travel_docker_manager.services.deployment_readiness import (
     read_deployment_readiness,
@@ -121,37 +117,6 @@ def _config_failure_detail(result: dict[str, Any]) -> dict[str, Any]:
         if field in result:
             detail[field] = result.get(field)
     return detail
-
-
-def _candidate_contract_detail(
-    error: ComposeCandidateContractError,
-) -> dict[str, Any]:
-    return {
-        "code": error.code,
-        "message": str(error),
-        "stage": "candidate_validation",
-        "mutation_applied": False,
-    }
-
-
-def _post_mutation_contract_detail(
-    error: ComposePostMutationContractError,
-) -> dict[str, Any]:
-    original_code = getattr(error.original_error, "code", None)
-    return {
-        "code": error.code,
-        "message": str(error),
-        "stage": "post_mutation_recovery",
-        "mutation_applied": True,
-        "original_error": {
-            "code": original_code,
-            "message": str(error.original_error),
-        },
-        "recovery_attempted": error.recovery_attempted,
-        "recovery_succeeded": error.recovery_succeeded,
-        "recovery_error": error.recovery_error,
-        "restoration": error.restoration,
-    }
 
 
 @router.get("/targets")
@@ -717,16 +682,11 @@ def ensure_target(target: str, payload: EnsureTargetRequest):
             build=payload.build,
             recreate=payload.recreate,
         )
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+    except DeploymentContractError:
+        # GM-12: main.py의 app 레벨 핸들러 3종(post-mutation/candidate/base)이 처리한다.
+        # 여기서 다시 잡지 않으면 아래 bare ValueError 절이 하위클래스인 이 예외까지
+        # 삼켜 404로 잘못 바꿔 버린다.
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -759,18 +719,9 @@ def control_container(container_id: str, payload: ActionRequest):
     if action not in ["start", "stop", "restart"]:
         raise HTTPException(status_code=400, detail="Action must be start, stop, or restart")
 
-    try:
-        result = docker_service.control_container(container_id, action)
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # GM-12: DeploymentContractError(및 그 하위클래스인 candidate/post-mutation 계약
+    # 위반)는 여기서 잡지 않는다 — main.py의 app 레벨 핸들러 3종이 처리한다.
+    result = docker_service.control_container(container_id, action)
     if not result.get("success"):
         detail: Any = result.get("error")
         if "restoration" in result:
@@ -809,16 +760,6 @@ def update_container_config(container_id: str, payload: ContainerConfigUpdate):
         )
     except ContainerConfigValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=_config_failure_detail(result))
 
@@ -828,18 +769,9 @@ def update_container_config(container_id: str, payload: ContainerConfigUpdate):
 @router.post("/containers/{container_id}/reset")
 def reset_container_config(container_id: str):
     """Reset container configurations to default and recreate the container using Docker SDK."""
-    try:
-        result = docker_service.reset_container_config(container_id)
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # GM-12: DeploymentContractError 계열은 여기서 잡지 않는다 — main.py의 app 레벨
+    # 핸들러 3종이 처리한다.
+    result = docker_service.reset_container_config(container_id)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=_config_failure_detail(result))
 

@@ -6,6 +6,8 @@ import { Activity, Boxes, HardDrive, Network, HeartPulse, KeyRound, X, Hammer } 
 import { apiJson, postJson, type ContainerInspect, type ContainerMetricSnapshot } from '@/lib/api';
 import { statusLabel } from '@/lib/containerPresentation';
 import { formatBytes } from '@/lib/format';
+import { humanizeError } from '@/lib/errors';
+import InlineError from './InlineError';
 
 type TabId = 'overview' | 'resources' | 'mounts' | 'networks' | 'health' | 'env';
 
@@ -287,13 +289,8 @@ export default function ContainerDetailModal({
         >
           {isLoading && <EmptyState>불러오는 중…</EmptyState>}
           {error && (
-            <div className="py-6 text-center space-y-1">
-              <p className="text-danger">상세 정보를 불러오지 못했습니다.</p>
-              {/* 백엔드는 FastAPI detail JSON을 그대로 돌려준다. 원문을 그대로 찍으면
-                  사용자에게 의미 없는 문자열이 보이므로 보조 설명으로만 둔다. */}
-              <p className="text-secondary">
-                컨테이너가 실행 중이 아니거나 Docker 데몬에 연결할 수 없습니다.
-              </p>
+            <div className="py-6">
+              <InlineError error={humanizeError(error, '컨테이너 상세 정보 조회')} />
             </div>
           )}
 
