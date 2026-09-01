@@ -77,6 +77,22 @@ def test_target_spec_must_be_a_mapping() -> None:
         _validate_targets_config(config, label="test.yml")
 
 
+@pytest.mark.parametrize("field", ["depends_on", "include", "containers", "aliases"])
+def test_scalar_instead_of_list_is_rejected_with_a_clear_message(field: str) -> None:
+    config = _minimal_valid_config()
+    config["targets"]["geo"][field] = "geo_db"
+    with pytest.raises(
+        ValueError, match=f"targets.geo.{field}: must be a list, got str"
+    ):
+        _validate_targets_config(config, label="test.yml")
+
+
+def test_null_field_is_treated_as_empty_list() -> None:
+    config = _minimal_valid_config()
+    config["targets"]["geo"]["depends_on"] = None
+    _validate_targets_config(config, label="test.yml")
+
+
 def test_unknown_depends_on_target_is_rejected() -> None:
     config = _minimal_valid_config()
     config["targets"]["geo"]["depends_on"] = ["does_not_exist"]

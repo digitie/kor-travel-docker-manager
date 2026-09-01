@@ -197,7 +197,6 @@ from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
 )
 from kor_travel_docker_manager.services.yaml_strict import (
-    UniqueKeySafeLoader,
     load_yaml_rejecting_duplicate_keys,
 )
 
@@ -1096,9 +1095,6 @@ _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES = 64 * 1024
 # GM-11: 중복 키 거부 YAML 로더의 정본은 services/yaml_strict.py다 — registry.py도
 # 같은 로더를 쓰지만, 여기서 그 모듈을 두면 registry.py→compose_service.py
 # import와 맞물려 순환이 된다.
-_UniqueKeySafeLoader = UniqueKeySafeLoader
-
-
 def _load_unique_map_source_yaml(source: str) -> Any:
     return load_yaml_rejecting_duplicate_keys(source)
 

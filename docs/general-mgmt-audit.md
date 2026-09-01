@@ -537,6 +537,53 @@ depends_on/include/containers 미등록 참조·alias 충돌(자기 자신 제�
 backend 1355 passed, 2 skipped(변경 전 1330 대비 신규 테스트만큼 증가, 회귀 없음).
 ruff 통과.
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 리뷰 A는 검증 로직 자체의 정확성/
+거짓양성을, 리뷰 B는 이 검증이 바뀐 운영상의 실전 영향을 각각 파고들었다.
+
+[Medium, 리뷰 B] `_validate_targets_config`가 `load_targets_config()` 안으로
+들어갔고, `registry.py:135`의 `MANAGED_CONTAINERS = load_targets_config()[...]`가
+모듈 import 시점에 실행되므로, 이 검증이 실패하면 이제 `ktdctl`뿐 아니라
+**backend(FastAPI) 프로세스 자체의 기동**도 막는다는 것을 직접 재현해
+확인했다(`depends_on: [promx]`로 깨진 config를 환경변수로 지정하고
+`import kor_travel_docker_manager.main` 실행 → `ValueError`, exit 1). 검증
+노트가 이 커밋 이전 시점에 "backend는 정상 기동하고 요청 시점에만 500"이라고
+정정했던 전제를, 이번 커밋은 (의도적으로, fail-close 철학에 따라) 다시
+깬다 — 오타 하나가 배포 직후 재기동에서 전체 다운타임으로 이어질 수 있다는
+뜻인데 이를 미리 잡을 사전 검증 도구가 전혀 없었다. `registry.py`는
+`compose_service.py`/`cli.py`에 의존하지 않는 독립 모듈이라(순환 회피를 위해
+이미 그렇게 설계됨) `registry.py`만 단독 import해 검증하는 것이 무거운 전체
+import 체인 없이 안전함을 직접 확인했고, 이를 `docs/docker-management.md`
+3절에 편집 후 재기동 전 실행할 pre-flight 한 줄 검증법으로 문서화했다.
+전용 `ktdctl targets validate` 서브커맨드는 `cli.py` 자신의 `DIRECT_ENSURE_ALIASES`도
+모듈 import 시점에 `list_targets()`를 호출해 같은 문제를 겪으므로(아래
+[Low, 리뷰 A/B 공통] 참고) 이번 라운드에서 만들지 않고 `docs/tasks.md`
+후속 항목으로 남겼다.
+
+[Low, 리뷰 B] `docs/general-mgmt-audit.md`(본 절)와 `docs/tasks.md` 어디에도
+`frontend/src/components/DashboardClient.tsx:289-291`의 "targets.containers는
+depends_on 전이 폐포" 주석이 GM-11 검증 노트 자신이 틀렸다고 확인한 전제라는
+사실이 추적되지 않고 있었다 — `docs/tasks.md`에 후속 항목으로 추가했다.
+
+[Low, 리뷰 A] `depends_on`/`include`/`containers`/`aliases`가 리스트가 아니라
+스칼라(예: 대괄호를 빼먹은 `depends_on: geo` 오타)면 문자열이 글자 단위로
+순회돼 `unknown target 'g'`처럼 원인을 전혀 짐작할 수 없는 메시지가 나는
+것을 직접 재현해 확인했다 — "오타를 명확한 메시지로 드러낸다"는 이 태스크
+자체의 목표를 정확히 이 오타 패턴에서는 달성하지 못하는 것이었다. 새 헬퍼
+`_require_list_field()`로 리스트 타입을 먼저 검사해 `targets.geo.depends_on:
+must be a list, got str`처럼 즉시 지목하도록 고쳤다. `cli.py`의
+`DIRECT_ENSURE_ALIASES`도 같은 이유로 여전히 raw traceback을 노출한다는
+잔여 갭(위 [Medium] 항목과 공통 원인)도 `docs/tasks.md`에 함께 남겼다.
+
+[Low, 리뷰 A] `compose_service.py`의 `_UniqueKeySafeLoader = UniqueKeySafeLoader`
+별칭이 어디서도 참조되지 않는 죽은 코드였다(`grep`으로 확인) — 바로 위 주석이
+마치 이 별칭이 여전히 쓰이는 것처럼 읽혀 혼란을 줬다. 별칭과 이제 불필요해진
+`UniqueKeySafeLoader` import를 함께 제거했다.
+
+회귀 테스트 5건 추가(`_require_list_field` 대상 필드 4종의 parametrize +
+`depends_on: null` 회귀 방지 1건). 새 타입 검사를 mutation으로 재검증(4개
+parametrize 케이스 전부 예상대로 실패 → 원복 후 재통과). 전체 backend
+1360 passed, 2 skipped, ruff 통과.
+
 
 ## GM-12: API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일
 

@@ -131,6 +131,24 @@ db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
 
 핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `db, storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `db, storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
 
+**`docker-targets.yml` 편집 후 재기동 전 검증(GM-11)**: `registry.load_targets_config()`는
+컨테이너 필수 필드·`depends_on`/`include`/`containers`/`dependency_order`의 참조 무결성·
+alias 충돌을 fail-close로 검증한다. 이 검증은 `MANAGED_CONTAINERS` 등 모듈 레벨 상수 계산에
+걸려 있어(registry.py:135), `ktdctl`뿐 아니라 **backend(FastAPI) 프로세스 자체의 기동**도
+막는다 — 오타 하나가 서비스 재기동 직후 전체 다운타임으로 이어질 수 있다는 뜻이므로,
+편집 후 재기동하기 **전에** 다음처럼 별도 프로세스에서 미리 검증한다(무거운 `cli.py`/
+`compose_service.py` import 체인을 타지 않는 `registry.py` 단독 import라 안전하다):
+
+```bash
+KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
+  <venv>/bin/python -c \
+  'from kor_travel_docker_manager.services.registry import load_targets_config; load_targets_config(); print("OK")'
+```
+
+exit 0 + `OK`면 안전하게 배포본에 반영하고 재기동한다. exit 1이면 출력된
+`{파일} targets.<id>.<필드>: ...` 메시지가 고칠 위치를 정확히 짚는다. `ktdctl targets
+validate` 같은 전용 서브커맨드는 아직 없다(`docs/tasks.md`에 후속 항목으로 추적).
+
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
 | `db` | Kor Travel Geo DB | geo 전용 PostgreSQL/PostGIS(:12500) 실행 및 DB/extension/schema grant 복구. 다른 프로젝트 DB는 각 target이 소유한다(ADR-37) | `postgresql`, `postgres`, `database` |

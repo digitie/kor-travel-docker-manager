@@ -47,6 +47,24 @@ def load_targets_config() -> dict[str, Any]:
     return config
 
 
+def _require_list_field(
+    spec: dict[str, Any], field: str, *, target_id: str, label: str
+) -> list[Any]:
+    """`field`가 리스트가 아니라 스칼라(예: 대괄호를 빼먹은 `depends_on: geo`)면
+    글자 단위로 순회돼 `unknown target 'g'`처럼 원인을 짐작할 수 없는 메시지가
+    나간다 — 리스트 여부를 먼저 검사해 그 자리에서 바로 지목한다."""
+
+    value = spec.get(field)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(
+            f"{label} targets.{target_id}.{field}: must be a list, got "
+            f"{type(value).__name__}"
+        )
+    return value
+
+
 def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     """GM-11: 오타 하나가 raw KeyError로 죽거나 조용히 무시되지 않게 fail-close한다.
 
@@ -75,23 +93,26 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
         if not isinstance(spec, dict):
             raise ValueError(f"{label} targets.{target_id}: must be a mapping")
 
-        for dep in spec.get("depends_on", []) or []:
+        for dep in _require_list_field(spec, "depends_on", target_id=target_id, label=label):
             if dep not in targets:
                 raise ValueError(
                     f"{label} targets.{target_id}.depends_on: unknown target '{dep}'"
                 )
-        for included in spec.get("include", []) or []:
+        for included in _require_list_field(spec, "include", target_id=target_id, label=label):
             if included not in targets:
                 raise ValueError(
                     f"{label} targets.{target_id}.include: unknown target '{included}'"
                 )
-        for container_id in spec.get("containers", []) or []:
+        for container_id in _require_list_field(
+            spec, "containers", target_id=target_id, label=label
+        ):
             if container_id not in containers:
                 raise ValueError(
                     f"{label} targets.{target_id}.containers: unknown container '{container_id}'"
                 )
 
-        for alias in [target_id, *(spec.get("aliases", []) or [])]:
+        aliases = _require_list_field(spec, "aliases", target_id=target_id, label=label)
+        for alias in [target_id, *aliases]:
             normalized = str(alias).strip().lower()
             owner = seen_aliases.get(normalized)
             if owner is not None and owner != target_id:
