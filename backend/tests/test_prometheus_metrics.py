@@ -3,7 +3,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from kor_travel_docker_manager.main import app
-from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
+from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS
 from kor_travel_docker_manager.services.metrics_collector import MetricsCollector
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 
@@ -125,7 +125,7 @@ def test_collector_keeps_detailed_resource_observation_and_prometheus_series(mon
     collector = MetricsCollector()
     container_id = next(iter(MANAGED_CONTAINERS))
 
-    monkeypatch.setattr(docker_service, "_get_client", lambda: fake_client)
+    collector.set_docker_client_provider(lambda: fake_client)
     monkeypatch.setattr(metrics_service, "save_metric", lambda **kwargs: None)
 
     asyncio.run(collector.collect_metrics())

@@ -659,7 +659,7 @@ def test_nontrivial_config_change_runs_candidate_transaction(
 
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
 
@@ -670,7 +670,7 @@ def test_nontrivial_config_change_runs_candidate_transaction(
 
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         capture_candidate,
     )
     forward = Mock(return_value=_compose_success())
@@ -716,7 +716,7 @@ def test_locked_config_transaction_revalidates_secret_semantics(
     compose_path.chmod(baseline.compose_source_mode)
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
     capture_candidate = Mock(
@@ -724,7 +724,7 @@ def test_locked_config_transaction_revalidates_secret_semantics(
     )
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         capture_candidate,
     )
 
@@ -764,7 +764,7 @@ def test_candidate_failure_restores_exact_baseline_transaction(
     compose_path.chmod(baseline.compose_source_mode)
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
 
@@ -773,7 +773,7 @@ def test_candidate_failure_restores_exact_baseline_transaction(
 
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         capture_candidate,
     )
     forward = Mock(
@@ -1175,7 +1175,7 @@ def test_update_container_config_recreates_with_compose_and_preserves_host_netwo
     baseline, baseline_validation = _config_transaction(compose_path, compose_config)
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
 
@@ -1184,7 +1184,7 @@ def test_update_container_config_recreates_with_compose_and_preserves_host_netwo
 
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         capture_candidate,
     )
     compose_run.return_value = _compose_success()
@@ -1231,7 +1231,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
     baseline, baseline_validation = _config_transaction(compose_path, compose_config)
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
 
@@ -1240,7 +1240,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
 
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         capture_candidate,
     )
     compose_run.return_value = _compose_success()
@@ -2054,7 +2054,7 @@ def test_system_bind_snapshot_change_before_write_keeps_compose_unchanged(
     original = compose_path.read_bytes()
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
     monkeypatch.setattr(
@@ -2101,7 +2101,7 @@ def test_preflight_rejection_restore_failure_is_typed_post_mutation_error(
 
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         reject_candidate,
     )
     restore = Mock(side_effect=OSError("atomic compose restore failed"))
@@ -2140,7 +2140,7 @@ def test_system_bind_snapshot_change_before_subprocess_restores_compose(
     original_mode = compose_path.stat().st_mode & 0o777
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
     compose_run.side_effect = ComposeCandidateContractError(
@@ -2196,7 +2196,7 @@ def test_rustfs_second_preflight_drift_restores_bytes_mode_and_runtime(
     )
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
     compose_run.side_effect = [
@@ -2241,7 +2241,7 @@ def test_non_api_config_update_rejects_resolved_candidate_before_write(
     )
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         Mock(side_effect=candidate_error),
     )
     original = compose_path.read_bytes()
@@ -2309,7 +2309,7 @@ def test_reset_rejects_persisted_volume_graph_drift_without_mutation(
     candidate_error = ComposeCandidateContractError(message)
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         Mock(side_effect=candidate_error),
     )
 
@@ -2379,12 +2379,12 @@ def test_config_recreate_failure_restores_exact_file_and_runtime(
     )
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         Mock(return_value=(baseline, baseline_validation)),
     )
     monkeypatch.setattr(
         compose_service_runtime,
-        "_capture_candidate_transaction_unlocked",
+        "capture_candidate_transaction_unlocked",
         _candidate_capture_for(compose_path),
     )
     compose_run.return_value = {

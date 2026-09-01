@@ -28,12 +28,12 @@ from kor_travel_docker_manager.request_context import (
     request_id_var,
 )
 from kor_travel_docker_manager.services.auth_service import allowed_frontend_origins
-from kor_travel_docker_manager.services.c6c_deployment import (
+from kor_travel_docker_manager.services.compose_service import get_env_path
+from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
     DeploymentContractError,
 )
-from kor_travel_docker_manager.services.compose_service import get_env_path
 from kor_travel_docker_manager.services.job_runner import job_runner
 from kor_travel_docker_manager.services.metrics_collector import (
     _PROMETHEUS_CONTENT_TYPE,

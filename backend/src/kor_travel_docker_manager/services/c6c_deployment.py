@@ -26,6 +26,17 @@ from urllib.parse import unquote, urlsplit
 
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services.capabilities import (
+    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+)
+from kor_travel_docker_manager.services.errors import (
+    ComposeCandidateContractError,
+    DeploymentContractError,
+)
+from kor_travel_docker_manager.services.errors import (
+    ComposePostMutationContractError as ComposePostMutationContractError,
+)
 from kor_travel_docker_manager.services.loopback_readiness import (
     LOOPBACK_HTTP_READINESS_ATTEMPTS,
     LOOPBACK_HTTP_READINESS_RETRY_SECONDS,
@@ -1841,50 +1852,6 @@ _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
 _PINNED_REBUILD_INHERITED_GLOBAL_LOCK_FD_ENV = GLOBAL_MUTATION_LOCK_FD_ENV
-
-
-class _ManagedComposeMutationCapability:
-    __slots__ = ()
-
-
-class _PinnedRuntimeRebuildMutationCapability:
-    __slots__ = ()
-
-
-_MANAGED_COMPOSE_MUTATION_CAPABILITY = _ManagedComposeMutationCapability()
-_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY = _PinnedRuntimeRebuildMutationCapability()
-
-
-class DeploymentContractError(ValueError):
-    """C6c 배포가 컨테이너 변경 전에 중단되어야 하는 계약 위반."""
-
-
-class ComposeCandidateContractError(DeploymentContractError):
-    """compose candidate가 C6c 보호값 격리 계약을 위반했다."""
-
-    code = "COMPOSE_CANDIDATE_PROTECTED_REFERENCE"
-
-
-class ComposePostMutationContractError(DeploymentContractError):
-    """mutation 성공 뒤 계약 drift가 발생해 복구 결과를 함께 보존한다."""
-
-    code = "COMPOSE_POST_MUTATION_CONTRACT_FAILURE"
-
-    def __init__(
-        self,
-        error: Exception,
-        *,
-        recovery_attempted: bool,
-        recovery_succeeded: bool,
-        recovery_error: str | None,
-        restoration: Mapping[str, Any] | None = None,
-    ) -> None:
-        super().__init__(str(error))
-        self.original_error = error
-        self.recovery_attempted = recovery_attempted
-        self.recovery_succeeded = recovery_succeeded
-        self.recovery_error = recovery_error
-        self.restoration = restoration
 
 
 @dataclass(frozen=True)

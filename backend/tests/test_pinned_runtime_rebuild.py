@@ -1833,7 +1833,7 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
     )
     monkeypatch.setattr(
         service,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         lambda **_kwargs: (transaction, None),
     )
     monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
@@ -2236,7 +2236,7 @@ def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(
     )
     monkeypatch.setattr(
         service,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         lambda **_kwargs: (transaction, None),
     )
     monkeypatch.setattr(
@@ -3382,7 +3382,7 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
         lambda *, environment_override: transaction.environment,
     )
     monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
-    monkeypatch.setattr(service, "_capture_transaction_unlocked", capture)
+    monkeypatch.setattr(service, "capture_transaction_unlocked", capture)
     candidate_contract = Mock()
     monkeypatch.setattr(
         service,
@@ -4348,7 +4348,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     )
     monkeypatch.setattr(
         service,
-        "_capture_transaction_unlocked",
+        "capture_transaction_unlocked",
         lambda **_kwargs: (transaction, None),
     )
     monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
@@ -4885,7 +4885,7 @@ def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
         lambda *, environment_override: transaction.environment,
     )
     monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
-    monkeypatch.setattr(service, "_capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
+    monkeypatch.setattr(service, "capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
     monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
     monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
     monkeypatch.setattr(
@@ -5015,7 +5015,7 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
         "current_pinned_runtime_release",
         lambda: next_release,
     )
-    monkeypatch.setattr(service, "_capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
+    monkeypatch.setattr(service, "capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
     monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
     monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
     monkeypatch.setattr(

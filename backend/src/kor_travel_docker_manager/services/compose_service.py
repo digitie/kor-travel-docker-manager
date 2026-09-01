@@ -21,11 +21,9 @@ import yaml
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
-    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_APPLICATION_FRESH_300_SERVICE,
     _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
     _MAP_RUNTIME_SERVICES,
-    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
     _PINVI_DB_RUNTIME_ROLE_SERVICE,
@@ -33,9 +31,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     C6cCancelProbeFixture,
     C6cDeploymentConfig,
     CandidateSystemBindSnapshot,
-    ComposeCandidateContractError,
-    ComposePostMutationContractError,
-    DeploymentContractError,
     PinviCancelProbeState,
     _assert_candidate_single_file_boundary,
     _expand_env_path,
@@ -67,6 +62,10 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     reconcile_candidate_build_references,
     reconcile_generation_references,
 )
+from kor_travel_docker_manager.services.capabilities import (
+    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+)
 from kor_travel_docker_manager.services.database_runtime import (
     Application300DatabaseIdentity as RuntimeApplication300DatabaseIdentity,
 )
@@ -85,6 +84,11 @@ from kor_travel_docker_manager.services.database_runtime import (
     read_database_schema_revision,
     read_pinned_database_identity,
     reset_databases_for_application_300,
+)
+from kor_travel_docker_manager.services.errors import (
+    ComposeCandidateContractError,
+    ComposePostMutationContractError,
+    DeploymentContractError,
 )
 from kor_travel_docker_manager.services.map_application_300 import (
     Application300Candidate as Application300ExecutionCandidate,
@@ -3355,13 +3359,21 @@ def _application_300_owner_only_receipt_status(path: Path) -> str:
 
 
 class ComposeService:
-    def _capture_transaction_unlocked(
+    def capture_transaction_unlocked(
         self,
         *,
         environment_override: Mapping[str, str] | None = None,
         derive_manifest_path: bool = False,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
     ) -> tuple[ComposeTransactionSnapshot, ValidatedComposeCandidate]:
+        """GM-20: docker_service.py가 자신이 이미 확보한 host lock 아래에서 직접
+        호출하도록 공개 승격했다(이전에는 프라이빗 크로스 모듈 호출이었다).
+
+        **선행조건**: 호출자가 `c6c_deployment_lock_from_environment()` 컨텍스트
+        안에서만 호출해야 한다 — 이름의 "_unlocked"는 이 메서드 자신은 lock을
+        추가로 잡지 않는다는 뜻이지, lock 없이 안전하다는 뜻이 아니다. lock 없이
+        호출하면 동시 mutation과 경합해 읽은 compose 원문이 곧바로 stale해질 수
+        있다."""
         if environment_snapshot is None:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None,
@@ -3625,7 +3637,7 @@ class ComposeService:
             with c6c_deployment_lock_from_environment() as lock_snapshot:
                 captured_validation: ValidatedComposeCandidate | None = None
                 if transaction is None and expected_environment_snapshot is None:
-                    transaction, captured_validation = self._capture_transaction_unlocked(
+                    transaction, captured_validation = self.capture_transaction_unlocked(
                         environment_override=environment,
                     )
                     _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
@@ -3766,19 +3778,19 @@ class ComposeService:
         """mutex 안의 config transaction이 재검증할 candidate identity를 반환한다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            transaction, persisted = self._capture_transaction_unlocked(
+            transaction, persisted = self.capture_transaction_unlocked(
                 environment_override=environment_override,
                 environment_snapshot=environment_snapshot,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            return self._capture_candidate_transaction_unlocked(
+            return self.capture_candidate_transaction_unlocked(
                 candidate,
                 baseline_transaction=transaction,
                 baseline_validation=persisted,
                 environment_override=environment_override,
             )
 
-    def _capture_candidate_transaction_unlocked(
+    def capture_candidate_transaction_unlocked(
         self,
         candidate: Mapping[str, Any],
         *,
@@ -3786,6 +3798,11 @@ class ComposeService:
         baseline_validation: ValidatedComposeCandidate,
         environment_override: Mapping[str, str] | None = None,
     ) -> ValidatedComposeCandidate:
+        """GM-20: `capture_transaction_unlocked`와 같은 이유로 공개 승격했다.
+
+        **선행조건**: `baseline_transaction`은 이미 host lock 아래에서 캡처된
+        것이어야 한다(`capture_transaction_unlocked` 참고) — 이 메서드 자신은
+        lock을 검증하지 않는다."""
         candidate_validation = self._validate_compose_candidate_document_unlocked(
             candidate,
             environment_override=environment_override,
@@ -4495,7 +4512,7 @@ class ComposeService:
                 "manage this service directly on the host instead"
             )
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            transaction, validation = self._capture_transaction_unlocked()
+            transaction, validation = self.capture_transaction_unlocked()
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             mode = assert_manager_mutation_allowed(
                 environment=transaction.environment.effective
@@ -6393,7 +6410,7 @@ class ComposeService:
                     dagster_storage_permit=application_paths.metadata_permit_directory,
                 )
             with _pinned_runtime_prejournal_step("prebuild_snapshot"):
-                prebuild_transaction, _ = self._capture_transaction_unlocked(
+                prebuild_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=dict(artifact_directories.compose_environment()),
                     environment_snapshot=environment_snapshot,
                 )
@@ -6448,7 +6465,7 @@ class ComposeService:
                 ),
             }
             with _pinned_runtime_prejournal_step("candidate_snapshot"):
-                candidate_transaction, _ = self._capture_transaction_unlocked(
+                candidate_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
                 )
@@ -6551,7 +6568,7 @@ class ComposeService:
                     candidate_generation.map_application_head
                 ),
             }
-            runtime_transaction, _ = self._capture_transaction_unlocked(
+            runtime_transaction, _ = self.capture_transaction_unlocked(
                 environment_override=runtime_environment,
                 environment_snapshot=environment_snapshot,
             )

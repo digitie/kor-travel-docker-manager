@@ -4,14 +4,15 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any
 
+import docker
 from docker.errors import NotFound
 
-from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,17 @@ class MetricsCollector:
         self._last_collection_timestamp = 0.0
         self._last_collection_duration = 0.0
         self._docker_daemon_up = 0
+        # GM-20: docker_service를 모듈 레벨로 import하면 docker_service가
+        # metrics_collector를 되읽는 순환이 생긴다(둘 다 서로의 상태를 필요로
+        # 한다). 실제 client 접근만 콜백으로 주입받고, docker_service.py가 자기
+        # 싱글턴 생성 직후 이 accessor를 배선한다(runtime wiring, import-time
+        # 결합 아님).
+        self._docker_client_provider: Callable[[], docker.DockerClient] | None = None
+
+    def set_docker_client_provider(
+        self, provider: Callable[[], docker.DockerClient]
+    ) -> None:
+        self._docker_client_provider = provider
 
     @staticmethod
     def _default_observation(container_id: str) -> dict[str, Any]:
@@ -376,12 +388,19 @@ class MetricsCollector:
             await asyncio.sleep(10)
 
     async def collect_metrics(self):
+        if self._docker_client_provider is None:
+            # docker_service.py가 자기 모듈 로드 시 이 accessor를 배선한다 —
+            # 여기 걸리면 "docker daemon down"이 아니라 배선 자체가 빠진
+            # 것이므로 "offline"으로 조용히 뭉개지 않고 바로 드러낸다.
+            raise RuntimeError(
+                "MetricsCollector.set_docker_client_provider() was never called"
+            )
         started = time.monotonic()
         with self._lock:
             self._collection_runs_total += 1
         try:
             try:
-                client = docker_service._get_client()
+                client = self._docker_client_provider()
             except Exception:
                 with self._lock:
                     self._collection_errors_total += 1
