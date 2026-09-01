@@ -43,9 +43,12 @@ from kor_travel_docker_manager.services.runtime_execution_registry import (
 )
 from kor_travel_docker_manager.services.runtime_pair_rotation import (
     load_pending_runtime_pair_rotation,
+    rollback_with_execution,
     rotate_pair_with_execution,
+    rotate_single_role_with_execution,
 )
 from kor_travel_docker_manager.services.runtime_pin_registry import (
+    RuntimePinRegistry,
     block_runtime_pinset,
     build_registry,
     load_runtime_pin_registry,
@@ -508,6 +511,7 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     execution_binding = "missing"
     execution_terminal = True
     execution_public_copy = "missing"
+    execution_source_pinset: str | None = None
     try:
         execution_registry = load_runtime_execution_registry()
         execution_report = verify_runtime_execution_registry()
@@ -520,6 +524,7 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
             )
             else "stale"
         )
+        execution_source_pinset = execution_registry.current.source_pinset_sha256
         execution_terminal = execution_registry.is_unconditionally_blocked_current()
     except DeploymentContractError:
         execution_binding = "invalid"
@@ -540,10 +545,22 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         exit_code = 1
-    if execution_binding != "current":
+    if execution_binding == "stale":
+        # `pin rebind-execution`은 동일 source pinset의 Manager 교체 전용이고
+        # `pin migrate-execution-v6`는 registry가 이미 있으면 거부한다 — 이 상태에서
+        # 그 두 명령을 안내하면 운영자는 둘 다 거부당한다. 실제 복구 경로를 준다.
         print(
-            "runtime execution binding is missing, invalid, or stale; root must migrate or "
-            "rebind it before a runtime mutation",
+            "runtime execution binding이 source registry와 어긋납니다. 복구: "
+            f"'ktdctl pin rollback --to {execution_source_pinset}'으로 source를 "
+            "execution이 가리키는 pinset으로 되돌리거나(치유형 — execution은 보존), "
+            "'ktdctl pin rotate-pair'로 새 pair를 고정하세요.",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    elif execution_binding != "current":
+        print(
+            "runtime execution binding is missing or invalid; root must migrate "
+            "('ktdctl pin migrate-execution-v6') or repair it before a runtime mutation",
             file=sys.stderr,
         )
         exit_code = 1
@@ -758,13 +775,73 @@ def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
     return 0 if published else 1
 
 
+def _print_rotation_write_failure(exc: OSError) -> None:
+    """registry write 도중의 I/O 실패를 traceback 없이 복구 경로와 함께 보고한다.
+
+    durable intent가 남아 있으므로 같은 명령 재실행이 미완 transaction을 재개한다 —
+    이를 모르면 운영자는 절반 기록된 상태를 수동으로 수술하려 든다.
+    """
+
+    print(f"registry write failed: {exc}", file=sys.stderr)
+    print(
+        "durable intent가 남아 있으면 같은 명령을 다시 실행해 미완 transaction을 "
+        "재개하세요. 'ktdctl pin verify'로 현재 상태를 확인할 수 있습니다.",
+        file=sys.stderr,
+    )
+
+
+def _uses_execution_registry() -> bool:
+    """Manager-aware v6 execution registry를 가진 host인지 판별한다.
+
+    v6 파일이 존재하는데 읽기 불가면 legacy host로 오인해 v5만 회전하는 일이 없도록
+    예외를 전파한다.
+    """
+
+    try:
+        load_runtime_execution_registry()
+    except DeploymentContractError:
+        if runtime_execution_registry_path().exists():
+            raise
+        return False
+    return True
+
+
+def _rotate_single_role_source(
+    *, role: str, revision: str, reason: str, rotated_by: str, block_previous: bool
+) -> RuntimePinRegistry:
+    """단일 role 회전을 host 세대에 맞는 writer로 보낸다.
+
+    v6 host에서 v5만 회전하면 execution binding이 stale이 되어 모든 runtime mutation이
+    fail-close된다. 그래서 v6 host는 durable intent 아래 v5/v6를 함께 회전하고,
+    pending intent가 남아 있으면 같은 target의 재개만 transaction helper가 허용한다.
+    legacy host는 기존 v5 단독 회전을 유지한다.
+    """
+
+    if load_pending_runtime_pair_rotation() is not None or _uses_execution_registry():
+        return rotate_single_role_with_execution(
+            role=role,
+            revision=revision,
+            manager_source_revision=trusted_manager_source_revision(),
+            reason=reason,
+            rotated_by=rotated_by,
+            block_previous=block_previous,
+        )
+    return rotate_runtime_pin(
+        role=role,
+        revision=revision,
+        reason=reason,
+        rotated_by=rotated_by,
+        block_previous=block_previous,
+    )
+
+
 def _cmd_pin_rotate(args: argparse.Namespace) -> int:
     if not args.confirm:
         print("pin rotate requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        with _runtime_pin_mutation_lock():
-            registry = rotate_runtime_pin(
+        with _runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
+            registry = _rotate_single_role_source(
                 role=args.role,
                 revision=args.revision,
                 reason=args.reason,
@@ -773,6 +850,9 @@ def _cmd_pin_rotate(args: argparse.Namespace) -> int:
             )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        _print_rotation_write_failure(exc)
         return 2
     print(f"rotated {args.role} pin; new pinset {registry.pinset_sha256}")
     _print_registry(registry, json_output=args.json)
@@ -800,13 +880,9 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
                 print(f"rotated Map/PinVi pair; new pinset {registry.pinset_sha256}")
                 _print_registry(registry, json_output=args.json)
                 return 0
-            try:
-                executions = load_runtime_execution_registry()
-            except DeploymentContractError:
+            if not _uses_execution_registry():
                 # v6 migration 전 host는 source registry만 회전한다. migration command가
                 # 해당 source pair의 첫 execution을 별도로 만든다.
-                if runtime_execution_registry_path().exists():
-                    raise
                 registry = rotate_runtime_pin_pair(
                     map_revision=args.map_revision,
                     pinvi_revision=args.pinvi_revision,
@@ -818,7 +894,6 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
                 # v6 host는 별도 v5/v6 파일을 순차적으로 "성공" 처리하지 않는다.
                 # helper가 durable intent·idempotent recovery를 소유하며, 여기서는
                 # legacy 여부만 판별한다.
-                del executions
                 registry = rotate_pair_with_execution(
                     map_revision=args.map_revision,
                     pinvi_revision=args.pinvi_revision,
@@ -829,6 +904,9 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
                 )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        _print_rotation_write_failure(exc)
         return 2
     print(f"rotated Map/PinVi pair; new pinset {registry.pinset_sha256}")
     _print_registry(registry, json_output=args.json)
@@ -894,8 +972,9 @@ def _runtime_pin_mutation_lock(
     있다. 그 밖의 `init`·공개 복사·회전·rollback·block은 별도 SSH/CLI 호출이므로 lock이
     비어 있을 때만 수행한다. 따라서 출력 회수 지연을 실패로 오인해 실행 중 candidate를
     봉인하거나 pair/generation을 바꿀 수 없다. pair+execution durable intent가 남아 있으면
-    모든 mutation을 거부한다. 유일한 예외는 동일 target을 끝까지 publish하는
-    ``rotate-pair`` recovery이며, 그 target 대조는 transaction helper가 소유한다.
+    모든 mutation을 거부한다. 예외는 동일 target을 끝까지 publish하는 recovery뿐이다 —
+    ``rotate-pair``와 v6 host의 단일 role ``rotate``/``apply-pending``/``rollback``이
+    해당하며, 그 target 대조는 transaction helper가 소유한다.
     """
 
     def reject_pending_pair_rotation() -> None:
@@ -1146,7 +1225,9 @@ def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
     try:
         # request/base/prospective 검증과 요청 파일 정리까지 같은 경계 안에 둔다.
         # lock 밖에서 읽으면 다른 회전 직후 stale 요청을 새 pair에 적용할 수 있다.
-        with _runtime_pin_mutation_lock():
+        # 직전 apply가 v5/v6 사이에서 중단됐다면 같은 target의 재개를 허용해야 하므로
+        # pending intent recovery를 연다 — target 대조는 transaction helper가 소유한다.
+        with _runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
             return _cmd_pin_apply_pending_locked(args)
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
@@ -1199,38 +1280,47 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    if request.base_pinset_sha256 != registry.pinset_sha256:
-        # 자동으로 지우지 않는다 — 무엇이 버려지는지 운영자가 보고 결정해야 한다.
-        print(
-            "요청이 만들어진 이후 pin이 바뀌었습니다(요청 base "
-            f"{request.base_pinset_sha256[:12]}... vs 현재 "
-            f"{registry.pinset_sha256[:12]}...). UI에서 취소 후 다시 요청하거나 "
-            f'"ktdctl pin clear-pending --request-id {request.request_id} --confirm"'
-            "으로 지우세요.",
-            file=sys.stderr,
-        )
-        return 2
-
-    expected = prospective_pinset_sha256(
-        release_version=registry.release_version,
-        map_revision=(request.revision if request.role == "map" else registry.map_revision),
-        pinvi_revision=(request.revision if request.role == "pinvi" else registry.pinvi_revision),
-    )
-    if expected != request.prospective_pinset_sha256:
-        print("request digest does not match the canonical recomputation", file=sys.stderr)
-        return 2
     if args.expect_revision and args.expect_revision != request.revision:
         print("pending request revision does not match --expect-revision", file=sys.stderr)
         return 2
-    if registry.is_blocked_pinset(expected):
-        print("this request targets a permanently blocked pinset", file=sys.stderr)
-        return 2
-    if expected == registry.pinset_sha256:
-        print("this request would not change any revision", file=sys.stderr)
-        return 2
+
+    # 직전 apply가 v5 write와 v6 write 사이에서 중단됐다면 registry는 이미 회전 후
+    # 상태다 — base/prospective/no-change 검증은 회전 전 상태를 전제하므로 재개
+    # 경로에서는 건너뛰고, 같은 target인지의 대조는 transaction helper에 맡긴다.
+    if load_pending_runtime_pair_rotation() is None:
+        if request.base_pinset_sha256 != registry.pinset_sha256:
+            # 자동으로 지우지 않는다 — 무엇이 버려지는지 운영자가 보고 결정해야 한다.
+            print(
+                "요청이 만들어진 이후 pin이 바뀌었습니다(요청 base "
+                f"{request.base_pinset_sha256[:12]}... vs 현재 "
+                f"{registry.pinset_sha256[:12]}...). UI에서 취소 후 다시 요청하거나 "
+                f'"ktdctl pin clear-pending --request-id {request.request_id} --confirm"'
+                "으로 지우세요.",
+                file=sys.stderr,
+            )
+            return 2
+
+        expected = prospective_pinset_sha256(
+            release_version=registry.release_version,
+            map_revision=(
+                request.revision if request.role == "map" else registry.map_revision
+            ),
+            pinvi_revision=(
+                request.revision if request.role == "pinvi" else registry.pinvi_revision
+            ),
+        )
+        if expected != request.prospective_pinset_sha256:
+            print("request digest does not match the canonical recomputation", file=sys.stderr)
+            return 2
+        if registry.is_blocked_pinset(expected):
+            print("this request targets a permanently blocked pinset", file=sys.stderr)
+            return 2
+        if expected == registry.pinset_sha256:
+            print("this request would not change any revision", file=sys.stderr)
+            return 2
 
     try:
-        updated = rotate_runtime_pin(
+        updated = _rotate_single_role_source(
             role=request.role,
             revision=request.revision,
             reason=_applied_reason(request),
@@ -1246,6 +1336,12 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
                 '--pinvi-revision <40-hex> --reason "<사유>" --confirm',
                 file=sys.stderr,
             )
+        return 2
+    except OSError as exc:
+        # v5/v6 transaction 도중의 I/O 실패다. 요청과 durable intent가 모두 남으므로
+        # 같은 apply-pending 재실행이 미완 transaction을 재개하고 요청을 정리한다.
+        _print_rotation_write_failure(exc)
+        print("(요청은 그대로 남아 있습니다)", file=sys.stderr)
         return 2
 
     # 여기서부터 registry는 이미 바뀌었다. 남은 실패는 전부 "적용됐으나 정리 미완"이며
@@ -1322,14 +1418,27 @@ def _cmd_pin_rollback(args: argparse.Namespace) -> int:
         print("pin rollback requires --confirm (no file was written)", file=sys.stderr)
         return 2
     try:
-        with _runtime_pin_mutation_lock():
-            registry = rollback_runtime_pin(
-                pinset_sha256=args.to,
-                rotated_by=_pin_actor(),
-                reason=args.reason,
-            )
+        with _runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
+            if load_pending_runtime_pair_rotation() is not None or _uses_execution_registry():
+                # v6 host의 rollback은 execution과 함께 기록한다. v5만 앞서간 stale
+                # 상태의 치유형 원복에서는 helper가 execution을 그대로 보존한다.
+                registry = rollback_with_execution(
+                    pinset_sha256=args.to,
+                    manager_source_revision=trusted_manager_source_revision(),
+                    reason=args.reason,
+                    rotated_by=_pin_actor(),
+                )
+            else:
+                registry = rollback_runtime_pin(
+                    pinset_sha256=args.to,
+                    rotated_by=_pin_actor(),
+                    reason=args.reason,
+                )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+    except OSError as exc:
+        _print_rotation_write_failure(exc)
         return 2
     print(f"rolled back to pinset {registry.pinset_sha256}")
     _print_registry(registry, json_output=args.json)

@@ -28,6 +28,7 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     RuntimePinRegistry,
     RuntimePinRegistryError,
     build_runtime_pin_pair_rotation,
+    build_runtime_pin_rollback,
     load_runtime_pin_registry,
     utc_timestamp,
     write_runtime_pin_registry,
@@ -282,3 +283,160 @@ def rotate_pair_with_execution(
     write_runtime_execution_registry(target.execution_registry)
     _clear_pending_runtime_pair_rotation()
     return target.pin_registry
+
+
+def _publish_rotation_target(target: RuntimePairRotation) -> RuntimePinRegistry:
+    """intent에 준비된 v5/v6 target을 끝까지 publish하고 intent를 지운다.
+
+    ``rotate_pair_with_execution``과 동일한 꼬리 계약: 어느 단계에서 실패해도 intent가
+    남아 같은 target의 retry가 전체를 다시 publish한다.
+    """
+
+    write_runtime_pin_registry(target.pin_registry)
+    write_runtime_execution_registry(target.execution_registry)
+    _clear_pending_runtime_pair_rotation()
+    return target.pin_registry
+
+
+def rotate_single_role_with_execution(
+    *,
+    role: str,
+    revision: str,
+    manager_source_revision: str,
+    reason: str,
+    rotated_by: str,
+    block_previous: bool,
+) -> RuntimePinRegistry:
+    """한 role의 source 회전을 v6 execution과 durable intent 아래 함께 기록한다.
+
+    v6 host에서 단일 role 회전이 v5만 바꾸면 execution binding이 stale이 되어 모든
+    runtime mutation이 fail-close된다 — 이 함수가 있기 전 ``pin rotate``와
+    ``pin apply-pending``이 정확히 그 상태를 만들었다. pair 회전과 같은 transaction
+    계약을 쓰되, terminal current pinset은 ``rotate_runtime_pin``과 동일하게 거부한다.
+    pair 선언 없는 단일 role 탈출은 M05가 pair-incomplete pinset을 one-shot ledger에
+    먼저 소비할 수 있는 문이기 때문이다. terminal에서의 탈출은 두 revision을 함께
+    선언하는 ``rotate-pair``만 허용된다.
+    """
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import RUNTIME_SOURCE_ROLES
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+        rotate_execution_source_binding,
+    )
+
+    if role not in RUNTIME_SOURCE_ROLES:
+        raise RuntimePairRotationError("runtime pin role must be map or pinvi")
+
+    current = load_runtime_pin_registry()
+    requested_map = revision if role == "map" else current.map_revision
+    requested_pinvi = revision if role == "pinvi" else current.pinvi_revision
+
+    pending = load_pending_runtime_pair_rotation()
+    if pending is not None:
+        # v5 write 이후 crash면 current의 다른 role slot은 이미 pending과 같고, write
+        # 이전 crash면 회전 전 값 그대로 pending과 같다 — 어느 crash 지점에서도 이
+        # 대조는 "같은 단일 role 재시도"만 통과시킨다.
+        if not _same_requested_target(
+            pending,
+            map_revision=requested_map,
+            pinvi_revision=requested_pinvi,
+            manager_source_revision=manager_source_revision,
+        ):
+            raise RuntimePairRotationError(
+                "runtime pair rotation is incomplete for a different target"
+            )
+        return _publish_rotation_target(pending)
+
+    if current.is_unconditionally_blocked_pinset(current.pinset_sha256):
+        raise RuntimePairRotationError(
+            "a terminal current pinset requires atomic Map/PinVi pair rotation"
+        )
+    target_pins = build_runtime_pin_pair_rotation(
+        current=current,
+        map_revision=requested_map,
+        pinvi_revision=requested_pinvi,
+        reason=reason,
+        rotated_by=rotated_by,
+        block_previous=block_previous,
+    )
+    executions = load_runtime_execution_registry()
+    target_executions = rotate_execution_source_binding(
+        registry=executions,
+        pins=target_pins,
+        manager_source_revision=manager_source_revision,
+        bound_by=rotated_by,
+        reason=reason,
+    )
+    target = RuntimePairRotation(
+        created_at=utc_timestamp(),
+        pin_registry=target_pins,
+        execution_registry=target_executions,
+    )
+    _atomic_write(runtime_pair_rotation_path(), target.to_payload())
+    return _publish_rotation_target(target)
+
+
+def rollback_with_execution(
+    *,
+    pinset_sha256: str,
+    manager_source_revision: str,
+    reason: str,
+    rotated_by: str,
+) -> RuntimePinRegistry:
+    """보존본 원복을 v6 execution과 durable intent 아래 함께 기록한다.
+
+    v6가 이미 target pinset을 가리키는 **치유형** 사례 — 단일 role 회전 결함이나 수동
+    조작으로 v5만 앞서간 상태를 되돌리는 경우 — 에서는 execution을 그대로 보존한다.
+    ``rotate_execution_source_binding``의 "did not change" 거부를 여기서 흡수하지
+    않으면 정확히 그 치유가 막힌다. v5/v6가 함께 current인 일반 원복에서는 execution도
+    새 binding으로 이행한다.
+    """
+
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+        rotate_execution_source_binding,
+    )
+
+    normalized = pinset_sha256.strip().lower()
+    if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
+        raise RuntimePairRotationError("rollback pinset must be a 64-hex digest")
+
+    pending = load_pending_runtime_pair_rotation()
+    if pending is not None:
+        if (
+            pending.pin_registry.pinset_sha256 != normalized
+            or pending.execution_registry.current.manager_source_revision
+            != manager_source_revision
+        ):
+            raise RuntimePairRotationError(
+                "runtime pair rotation is incomplete for a different target"
+            )
+        return _publish_rotation_target(pending)
+
+    target_pins = build_runtime_pin_rollback(
+        pinset_sha256=normalized,
+        rotated_by=rotated_by,
+        reason=reason,
+    )
+    executions = load_runtime_execution_registry()
+    if executions.current_matches(
+        pins=target_pins, manager_source_revision=manager_source_revision
+    ):
+        # 치유형: v6는 이미 정확하다. 새 binding을 만들면 동일 identity가 history에
+        # 중복 등재되고, terminal audit이 붙어 있던 execution이 새 것으로 교체된다.
+        target_executions = executions
+    else:
+        target_executions = rotate_execution_source_binding(
+            registry=executions,
+            pins=target_pins,
+            manager_source_revision=manager_source_revision,
+            bound_by=rotated_by,
+            reason=reason,
+        )
+    target = RuntimePairRotation(
+        created_at=utc_timestamp(),
+        pin_registry=target_pins,
+        execution_registry=target_executions,
+    )
+    _atomic_write(runtime_pair_rotation_path(), target.to_payload())
+    return _publish_rotation_target(target)

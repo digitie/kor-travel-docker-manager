@@ -1411,6 +1411,137 @@ def test_pin_apply_pending_reports_a_distinct_code_when_cleanup_fails(
     assert "pinset" in captured.out
 
 
+def _make_v6_host(tmp_path, monkeypatch):
+    """격리 v5 registry 위에 v6 execution registry와 intent 경로를 얹는다."""
+
+    from kor_travel_docker_manager.services import runtime_execution_registry as executions_module
+    from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        migrate_execution_registry,
+        write_runtime_execution_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    monkeypatch.setenv(
+        executions_module.RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV, "1"
+    )
+    monkeypatch.setenv(
+        pair_rotation.RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV, "1"
+    )
+    monkeypatch.setenv(
+        executions_module.RUNTIME_EXECUTIONS_FILE_ENV, str(tmp_path / "executions.json")
+    )
+    monkeypatch.setenv(
+        executions_module.RUNTIME_EXECUTIONS_PUBLIC_FILE_ENV,
+        str(tmp_path / "public" / "executions.json"),
+    )
+    monkeypatch.setenv(
+        pair_rotation.RUNTIME_PAIR_ROTATION_FILE_ENV, str(tmp_path / "rotation.json")
+    )
+    manager = "9" * 40
+    executions = migrate_execution_registry(
+        pins=load_runtime_pin_registry(),
+        manager_source_revision=manager,
+        bound_by="tester",
+        reason="migrate",
+    )
+    write_runtime_execution_registry(executions)
+    return manager
+
+
+def test_pin_apply_pending_updates_the_execution_registry_on_a_v6_host(
+    pin_cli_env, pending_request_env, tmp_path, monkeypatch, capsys
+):
+    """GM-01 회귀: UI 요청 승인 한 번이 v6 binding을 stale로 만들면 안 된다."""
+
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    _init_rotatable_registry()
+    manager = _make_v6_host(tmp_path, monkeypatch)
+    capsys.readouterr()
+    _file_a_request()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+    ):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert exit_code == 0
+    rotated = load_runtime_pin_registry()
+    assert rotated.pinvi_revision == "d" * 40
+    assert load_runtime_execution_registry().current_matches(
+        pins=rotated, manager_source_revision=manager
+    )
+    assert not pending_request_env.exists()
+
+
+def test_pin_apply_pending_resumes_a_partial_v5_v6_write(
+    pin_cli_env, pending_request_env, tmp_path, monkeypatch, capsys
+):
+    """v5/v6 사이 crash 뒤 같은 apply-pending 재실행이 끝까지 publish하고 요청을 지운다."""
+
+    from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    _init_rotatable_registry()
+    manager = _make_v6_host(tmp_path, monkeypatch)
+    capsys.readouterr()
+    _file_a_request()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+        patch.object(
+            pair_rotation,
+            "write_runtime_execution_registry",
+            side_effect=OSError("simulated v6 write failure"),
+        ),
+    ):
+        first = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert first == 2
+    # 요청은 남아 있고 intent도 남아 있다 — 이 상태에서 재실행이 복구여야 한다.
+    assert pending_request_env.exists()
+    assert pair_rotation.load_pending_runtime_pair_rotation() is not None
+    capsys.readouterr()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+    ):
+        second = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert second == 0
+    assert pair_rotation.load_pending_runtime_pair_rotation() is None
+    rotated = load_runtime_pin_registry()
+    assert load_runtime_execution_registry().current_matches(
+        pins=rotated, manager_source_revision=manager
+    )
+    assert not pending_request_env.exists()
+
+
 def test_pin_clear_pending_force_removes_an_unreadable_request(
     pin_cli_env, pending_request_env, capsys
 ):

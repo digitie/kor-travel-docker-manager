@@ -1228,17 +1228,19 @@ def block_runtime_pinset(
     return updated
 
 
-def rollback_runtime_pin(
+def build_runtime_pin_rollback(
     *,
     pinset_sha256: str,
     rotated_by: str,
     reason: str,
     path: Path | None = None,
 ) -> RuntimePinRegistry:
-    """보존된 이전 registry로 원복한다.
+    """보존본 원복 결과를 **기록하지 않고** 준비한다.
 
     차단(terminal) pinset으로의 원복은 거부한다 — Map·PinVi 저장소가 문서 규율로
     지켜 온 "terminal candidate는 재시도하지 않는다"를 코드가 깨뜨리지 않기 위해서다.
+    v6 execution registry와 함께 durable intent 아래 기록해야 하는 host에서는 이
+    준비 단계와 writer가 분리되어 있어야 v5만 먼저 영구 반영되는 일이 없다.
     """
 
     registry_path = path or runtime_pin_registry_path()
@@ -1265,7 +1267,7 @@ def rollback_runtime_pin(
             supersedes_pinset_sha256=current.pinset_sha256,
         ),
     )[-_MAX_HISTORY_ENTRIES:]
-    updated = build_registry(
+    return build_registry(
         release_version=preserved.release_version,
         map_revision=preserved.map_revision,
         pinvi_revision=preserved.pinvi_revision,
@@ -1274,6 +1276,24 @@ def rollback_runtime_pin(
         rotated_at=rotated_at,
         history=history,
         blocked_pinsets=current.blocked_pinsets,
+    )
+
+
+def rollback_runtime_pin(
+    *,
+    pinset_sha256: str,
+    rotated_by: str,
+    reason: str,
+    path: Path | None = None,
+) -> RuntimePinRegistry:
+    """보존된 이전 registry로 원복한다. (계약은 ``build_runtime_pin_rollback`` 참조)"""
+
+    registry_path = path or runtime_pin_registry_path()
+    updated = build_runtime_pin_rollback(
+        pinset_sha256=pinset_sha256,
+        rotated_by=rotated_by,
+        reason=reason,
+        path=registry_path,
     )
     write_runtime_pin_registry(updated, path=registry_path)
     return updated

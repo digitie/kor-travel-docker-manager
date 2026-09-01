@@ -17,7 +17,7 @@
 
 | ID | 상태 | 심각도 | 규모 | 분류 | 검증 | E2E | 제목 |
 |:---|:---:|:---:|:---:|:---|:---:|:---|:---|
-| GM-01 | `[ ]` | P1 | M | correctness | REVISED | mock | pin rotate/apply-pending/rollback이 v6 execution registry를 갱신하지 않아 복구 불능 stale 상태를 만든다 |
+| GM-01 | `[x]` | P1 | M | correctness | REVISED | mock | pin rotate/apply-pending/rollback이 v6 execution registry를 갱신하지 않아 복구 불능 stale 상태를 만든다 |
 | GM-02 | `[ ]` | P1 | S | correctness | CONFIRMED | mock | 성능 차트에서 6/24/72시간을 선택해도 첫 WS 프레임 도착 즉시 최근 1시간으로 붕괴 |
 | GM-03 | `[ ]` | P1 | M | operability | CONFIRMED | n150 live | Manager 자신의 systemd 유닛 부재 — 재부팅·크래시 후 관리면 전체가 수동 개입 전까지 다운 |
 | GM-04 | `[ ]` | P1 | M | correctness | REVISED | n150 live | trusted installer가 실행 중인 서비스 발밑의 /opt 트리를 교체하고, 매 설치마다 요청 디렉터리 소유권을 리셋한다 |
