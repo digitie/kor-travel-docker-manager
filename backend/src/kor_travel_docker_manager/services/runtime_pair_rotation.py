@@ -210,12 +210,17 @@ def _same_requested_target(
     *,
     map_revision: str,
     pinvi_revision: str,
-    manager_source_revision: str,
 ) -> bool:
+    # target 유일성은 operator가 선언하는 map·pinvi revision으로 판정한다.
+    # manager_source_revision은 여기에 넣지 않는다: operator가 선언하지 않는 값이고
+    # `trusted_manager_source_revision()`은 trusted 설치마다 바뀌므로, 비교에 넣으면
+    # v5/v6 사이 crash 뒤 Manager release를 설치한 순간 모든 재개 경로가
+    # "different target"으로 거부돼 host가 wedge된다(mainline clear 경로도 없다).
+    # 재개는 intent에 baked된 execution을 그대로 publish하고, Manager가 그 사이
+    # 바뀌었으면 이후 `pin rebind-execution`이 정본 복구다(verify가 manager_drift로 안내).
     return (
         pending.pin_registry.map_revision == map_revision
         and pending.pin_registry.pinvi_revision == pinvi_revision
-        and pending.execution_registry.current.manager_source_revision == manager_source_revision
     )
 
 
@@ -241,7 +246,6 @@ def rotate_pair_with_execution(
             pending,
             map_revision=map_revision,
             pinvi_revision=pinvi_revision,
-            manager_source_revision=manager_source_revision,
         ):
             raise RuntimePairRotationError(
                 "runtime pair rotation is incomplete for a different target"
@@ -340,7 +344,6 @@ def rotate_single_role_with_execution(
             pending,
             map_revision=requested_map,
             pinvi_revision=requested_pinvi,
-            manager_source_revision=manager_source_revision,
         ):
             raise RuntimePairRotationError(
                 "runtime pair rotation is incomplete for a different target"
@@ -350,6 +353,17 @@ def rotate_single_role_with_execution(
     if current.is_unconditionally_blocked_pinset(current.pinset_sha256):
         raise RuntimePairRotationError(
             "a terminal current pinset requires atomic Map/PinVi pair rotation"
+        )
+    executions = load_runtime_execution_registry()
+    # v5 미차단이 v6 미차단을 뜻하지 않는다. M05 launcher의 terminal 판정은 `pin
+    # block-execution`으로 v6에만 기록되고 v5 blocked_pinsets는 비어 있는 것이 정상
+    # 경로다(run-m05-isolated-e2e-once). v6 terminal도 검사하지 않으면, 단일 role
+    # 회전이 새 미차단 execution identity를 만들어 rebuild gate를 다시 열어 준다 —
+    # pair 선언 없이 terminal one-shot을 탈출하는 정확히 그 구멍이다. 탈출은
+    # rotate-pair(두 revision 선언)로만 허용한다.
+    if executions.is_unconditionally_blocked_current():
+        raise RuntimePairRotationError(
+            "a terminal current execution requires atomic Map/PinVi pair rotation"
         )
     target_pins = build_runtime_pin_pair_rotation(
         current=current,

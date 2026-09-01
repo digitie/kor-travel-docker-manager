@@ -180,6 +180,89 @@ def test_single_role_rotation_refuses_terminal_current_pinset(
     assert load_pending_runtime_pair_rotation() is None
 
 
+def test_single_role_rotation_refuses_terminal_v6_execution(v6_host) -> None:
+    """v5는 미차단인데 v6 execution만 terminal인 경우도 단일 role 탈출을 막아야 한다.
+
+    M05 launcher는 terminal 판정을 `pin block-execution`으로 v6에만 쓰고 v5
+    blocked_pinsets는 비운다(정상 경로). v5 terminal만 검사하면 단일 role 회전이 새
+    미차단 execution을 만들어 terminal one-shot을 pair 선언 없이 탈출한다.
+    """
+
+    from kor_travel_docker_manager.services import runtime_execution_registry as ex_module
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        block_current_execution,
+        write_runtime_execution_registry,
+    )
+
+    # v6 execution만 무조건 차단(phase=None), v5는 그대로 미차단.
+    blocked = block_current_execution(
+        registry=load_runtime_execution_registry(), reason="terminal one-shot"
+    )
+    write_runtime_execution_registry(blocked)
+    del ex_module
+    assert not load_runtime_pin_registry().is_unconditionally_blocked_pinset(
+        load_runtime_pin_registry().pinset_sha256
+    )
+
+    with pytest.raises(RuntimePairRotationError, match="pair rotation"):
+        rotate_single_role_with_execution(
+            role="map",
+            revision=_MAP_NEXT,
+            manager_source_revision=_MANAGER,
+            reason="terminal v6 탈출 시도",
+            rotated_by="tester",
+            block_previous=False,
+        )
+    # v5/v6 어느 쪽도 바뀌지 않았고 intent도 남지 않았다.
+    assert load_runtime_pin_registry().map_revision == _MAP
+    assert load_pending_runtime_pair_rotation() is None
+
+
+def test_resume_survives_a_manager_release_change_mid_crash(
+    v6_host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """crash 창에서 trusted Manager release가 바뀌어도 재개가 host를 wedge하지 않는다.
+
+    _same_requested_target이 manager_source_revision을 대조하면, v5 write 뒤 crash하고
+    새 Manager release를 설치한 순간 모든 재개 경로가 'different target'으로 거부돼
+    mainline 복구가 사라진다. target 유일성은 map·pinvi로만 판정해야 한다.
+    """
+
+    original_writer = pair_rotation.write_runtime_execution_registry
+    monkeypatch.setattr(
+        pair_rotation,
+        "write_runtime_execution_registry",
+        lambda _registry: (_ for _ in ()).throw(OSError("simulated v6 write failure")),
+    )
+    with pytest.raises(OSError, match="simulated"):
+        rotate_single_role_with_execution(
+            role="map",
+            revision=_MAP_NEXT,
+            manager_source_revision=_MANAGER,
+            reason="새 Map head",
+            rotated_by="tester",
+            block_previous=False,
+        )
+    assert load_pending_runtime_pair_rotation() is not None
+
+    # 그 사이 trusted Manager release가 바뀌었다(_MANAGER -> 다른 값)로 재개한다.
+    monkeypatch.setattr(pair_rotation, "write_runtime_execution_registry", original_writer)
+    recovered = rotate_single_role_with_execution(
+        role="map",
+        revision=_MAP_NEXT,
+        manager_source_revision="f" * 40,  # 새 trusted Manager revision
+        reason="새 Map head",
+        rotated_by="tester",
+        block_previous=False,
+    )
+
+    # wedge되지 않고 끝까지 publish됐다. intent가 baked한 원래 msr로 발행됐고, 이후
+    # rebind가 정본 복구다.
+    assert load_pending_runtime_pair_rotation() is None
+    assert recovered.map_revision == _MAP_NEXT
+    assert load_runtime_execution_registry().current.manager_source_revision == _MANAGER
+
+
 def test_single_role_rotation_recovers_partial_v5_v6_write(
     v6_host, monkeypatch: pytest.MonkeyPatch
 ) -> None:

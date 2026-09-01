@@ -512,12 +512,18 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     execution_terminal = True
     execution_public_copy = "missing"
     execution_source_pinset: str | None = None
+    registry_blocks_execution_source = False
     try:
         execution_registry = load_runtime_execution_registry()
         execution_report = verify_runtime_execution_registry()
         execution_public_copy = str(execution_report["execution_public_copy"])
         current_pins = load_runtime_pin_registry()
         execution_source_pinset = execution_registry.current.source_pinset_sha256
+        # execution이 가리키는 pinset이 registry에서 terminal이면 rollback --to 그 pinset이
+        # 거부되므로, stale 안내가 rollback을 주면 안 된다(아래에서 rotate-pair로 유도).
+        registry_blocks_execution_source = current_pins.is_blocked_pinset(
+            execution_source_pinset
+        )
         if execution_registry.current_matches(
             pins=current_pins,
             manager_source_revision=trusted_manager_source_revision(),
@@ -567,15 +573,34 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         )
         exit_code = 1
     elif execution_binding == "stale":
-        # 여기는 source(pinset 또는 revision)가 실제로 어긋난 경우다. rebind는 동일
-        # source pinset 전용이라 이 상태를 못 고친다. 실제 복구 경로를 준다.
-        print(
-            "runtime execution binding이 source registry와 어긋납니다. 복구: "
-            f"'ktdctl pin rollback --to {execution_source_pinset}'으로 source를 "
-            "execution이 가리키는 pinset으로 되돌리거나(치유형 — execution은 보존), "
-            "'ktdctl pin rotate-pair'로 새 pair를 고정하세요.",
-            file=sys.stderr,
-        )
+        # stale에는 여러 하위 상태가 있고, 잘못된 안내는 항상 거부되는 명령을 준다.
+        if pending_rotation is not None:
+            # v5는 썼고 v6는 못 쓴 crash 창이다. rollback/rotate-pair는 durable
+            # intent가 막아 둘 다 거부된다 — 실제 복구는 같은 명령의 재실행이다.
+            print(
+                "직전 pair 회전이 중단돼 durable intent가 남아 있습니다. 복구: "
+                "중단된 그 명령(pin rotate-pair 또는 apply-pending)을 같은 인자로 다시 "
+                "실행하면 미완 transaction이 끝까지 반영됩니다.",
+                file=sys.stderr,
+            )
+        elif execution_source_pinset is not None and registry_blocks_execution_source:
+            # execution이 가리키는 pinset이 terminal이라 rollback이 거부된다.
+            # 유일한 전진 경로는 새 pair 회전이다.
+            print(
+                "execution이 가리키는 source pinset이 재시도 금지 상태라 rollback이 "
+                "거부됩니다. 'ktdctl pin rotate-pair'로 새 Map/PinVi pair를 고정하세요.",
+                file=sys.stderr,
+            )
+        else:
+            # source(pinset 또는 revision)가 실제로 어긋난 일반 경우. rebind는 동일
+            # source pinset 전용이라 이 상태를 못 고친다.
+            print(
+                "runtime execution binding이 source registry와 어긋납니다. 복구: "
+                f"'ktdctl pin rollback --to {execution_source_pinset}'으로 source를 "
+                "execution이 가리키는 pinset으로 되돌리거나(치유형 — execution은 보존), "
+                "'ktdctl pin rotate-pair'로 새 pair를 고정하세요.",
+                file=sys.stderr,
+            )
         exit_code = 1
     elif execution_binding != "current":
         print(
@@ -820,7 +845,9 @@ def _uses_execution_registry() -> bool:
     try:
         load_runtime_execution_registry()
     except DeploymentContractError:
-        if runtime_execution_registry_path().exists():
+        # lexists: `.exists()`는 symlink를 따라가므로 dangling symlink에서 False가 되어
+        # v6 host를 legacy로 오인(fail-open)한다. 링크 자체의 존재를 본다.
+        if os.path.lexists(runtime_execution_registry_path()):
             raise
         return False
     return True
