@@ -72,6 +72,8 @@ CASE_ID = "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d"
 RESOLUTION_ID = "2c3d4e5f-6071-4b8c-9dae-1f2a3b4c5d6e"
 EVENT_ID = "3d4e5f60-7182-4c9d-aebf-2a3b4c5d6e7f"
 REQUEST_ID = "4e5f6071-8293-4dae-bfc0-3b4c5d6e7f80"
+TRIP_ID = "5f607182-93a4-4ebf-c0d1-4c5d6e7f8091".replace("c0d1", "80d1")
+POI_ID = "60718293-a4b5-4fc0-91e2-5d6e7f809102"
 USER_ID = "5f607182-93a4-4ebf-8c0d-4c5d6e7f8091"
 IMPACT_COUNT = 3
 
@@ -1118,6 +1120,8 @@ class _FakeHttpService:
         self.pinvi_ports: set[int] = set()
         self.approved = False
         self.decided = False
+        self.seeded_trip: str | None = None
+        self.seeded_feature_id: str | None = None
         self.receipt: dict[str, Any] = {
             "event_id": EVENT_ID,
             "event_sequence": 1,
@@ -1305,6 +1309,25 @@ class _FakeHttpService:
                     "email_verified_at": "2026-09-01T00:00:00Z",
                     "has_password": True,
                     "oauth_identities": [],
+                }
+            )
+        if path == "/trips":
+            self.timeline.append("pinvi:seed-trip")
+            assert body["title"], "seed trip에는 제목이 있어야 한다"
+            self.seeded_trip = TRIP_ID
+            return _envelope({"trip_id": TRIP_ID, "title": body["title"]})
+        if path == f"/trips/{TRIP_ID}/pois":
+            self.timeline.append("pinvi:seed-poi")
+            # 리바인드가 고쳐 쓸 참조는 Map 결정 **전에** 있어야 한다.
+            assert not self.decided, "seed는 Map 결정 이전이어야 한다"
+            assert body["feature_id"], "seed POI는 feature 참조를 가져야 한다"
+            self.seeded_feature_id = str(body["feature_id"])
+            return _envelope(
+                {
+                    "attachment_id": POI_ID,
+                    "day_index": body["day_index"],
+                    "sort_order": body["sort_order"],
+                    "feature_id": body["feature_id"],
                 }
             )
         if path == "/features/requests":
@@ -1790,6 +1813,11 @@ def test_full_happy_path_http_contract_order(harness: _Harness) -> None:
         "pinvi:feature-request",
         "map:approve",
         "map:creation-provenance",
+        # 리바인드가 고쳐 쓸 사용자 참조는 Map 결정 **이전에** 있어야 한다 —
+        # 없으면 impact_count가 0이 되고 live spec의 중심 단언이 공허해진다.
+        "pinvi:login",
+        "pinvi:seed-trip",
+        "pinvi:seed-poi",
         "map:case",
         "map:decision",
         "pinvi:login",
@@ -2218,3 +2246,48 @@ def _write_0600_json(path: Path, value: dict[str, Any]) -> None:
         os.write(descriptor, raw)
     finally:
         os.close(descriptor)
+
+
+def test_seeded_reference_is_created_before_the_map_decision(harness: _Harness) -> None:
+    """리바인드가 고쳐 쓸 사용자 참조가 Map 결정 이전에 심어져야 한다.
+
+    심지 않으면 impact_count가 구조적으로 0이 되고, live spec의 중심 단언
+    ``expect(impacts).toHaveLength(0)``이 공허하게 참이 된다 — per-impact 단언
+    본문이 한 줄도 실행되지 않은 채 게이트가 green이 난다. 즉 배관이 도는 것만
+    증명하고 "사용자 참조를 고쳐 쓴다"는 M05의 존재 이유는 증명하지 못한다."""
+
+    assert harness.run() == 0
+    timeline = harness.http.timeline
+    assert "pinvi:seed-poi" in timeline, "참조를 심지 않으면 리바인드가 공허해진다"
+    assert timeline.index("pinvi:seed-poi") < timeline.index("map:decision")
+    # 일상적인 사용자 경로로 심어야 legacy 축만 있는 행(UUID shadow가 NULL)이
+    # 만들어지고, 리바인드가 두 축을 함께 복구하는지까지 증명된다.
+    seed = next(
+        item
+        for item in harness.http.requests
+        if item["path"].endswith("/pois") and item["method"] == "POST"
+    )
+    assert seed["body"]["feature_id"] == MANUAL_FEATURE_TEXT_ID
+    assert "feature_uuid" not in seed["body"]
+
+
+def test_zero_impact_receipt_is_rejected_instead_of_passing_vacuously(
+    harness: _Harness,
+) -> None:
+    """참조를 심었는데 receipt가 impact 0을 보고하면 실패해야 한다.
+
+    이 대조가 없으면 리바인드가 아무것도 고쳐 쓰지 않아도 게이트가 통과한다."""
+
+    harness.http.receipt = {**harness.http.receipt, "impact_count": 0}
+    assert harness.run() == 1
+    assert harness.result["phase"] == "m05_pinvi_impact_missing"
+    assert harness.result["status"] == "blocked"
+
+def test_the_harness_default_receipt_is_not_vacuous() -> None:
+    """하네스 자신의 기본 receipt가 impact 0이면 모든 happy-path 검증이 공허해진다.
+
+    (live spec 환경으로의 전달은 _FakeDockerHost가 이미 결박한다 —
+    ``env["PINVI_M05_LIVE_IMPACT_COUNT"] != str(receipt["impact_count"])`` 이면
+    fake attestation이 실패한다.)"""
+
+    assert IMPACT_COUNT >= 1

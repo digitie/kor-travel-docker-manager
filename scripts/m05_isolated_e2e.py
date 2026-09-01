@@ -197,6 +197,9 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "m05_pinvi_receipt_http_failed",
         "m05_pinvi_receipt_invalid",
         "m05_pinvi_receipt_not_ready",
+        "m05_pinvi_seed_http_failed",
+        "m05_pinvi_seed_invalid",
+        "m05_pinvi_impact_missing",
         "map_application_start_failed",
         "map_fresh_init_failed",
         "map_health_status_failed",
@@ -1448,6 +1451,57 @@ def _seed_m05_provider_fixture(
         "manual_feature_id": manual_feature_id,
         "provider_feature_id": provider_id,
     }
+
+
+def _seed_pinvi_feature_reference(
+    *, api_url: str, opener: object, feature_id: str
+) -> int:
+    """rebind가 실제로 고쳐 쓸 **사용자 참조**를 PinVi에 심는다.
+
+    이걸 심지 않으면 impact_count가 구조적으로 0이 되고, live spec의 중심 단언이
+    `expect(impacts).toHaveLength(0)`로 공허하게 참이 된다 — per-impact 단언
+    본문이 한 줄도 실행되지 않은 채 게이트가 green이 난다. 즉 배관이 도는 것만
+    증명하고 "사용자 참조를 고쳐 쓴다"는 M05의 존재 이유는 증명하지 못한다.
+
+    일부러 **일상적인 사용자 경로**(POST /v1/trips → POST .../pois)를 쓴다.
+    그 경로는 `feature_uuid`를 채우지 않으므로, 리바인드가 legacy 축만 있는
+    행을 처리하고 두 축을 함께 복구하는지까지 같이 증명된다.
+
+    돌려주는 값은 심은 참조 수 — 호출자가 receipt의 impact_count와 대조한다.
+    """
+
+    base = api_url.rstrip("/")
+    trip = _data(
+        _http_json(
+            f"{base}/trips",
+            headers={},
+            body={"title": "M05 isolated rebind reference", "visibility": "private"},
+            opener=opener,
+            failure_phase="m05_pinvi_seed_http_failed",
+        )
+    )
+    trip_id = trip.get("trip_id")
+    try:
+        trip_uuid = str(uuid.UUID(str(trip_id)))
+    except (TypeError, ValueError):
+        _fail("m05_pinvi_seed_invalid")
+    poi = _data(
+        _http_json(
+            f"{base}/trips/{trip_uuid}/pois",
+            headers={},
+            body={
+                "day_index": 1,
+                "sort_order": "a0",
+                "feature_id": feature_id,
+                "feature_snapshot": {},
+            },
+            opener=opener,
+            failure_phase="m05_pinvi_seed_http_failed",
+        )
+    )
+    if poi.get("feature_id") != feature_id:
+        _fail("m05_pinvi_seed_invalid")
+    return 1
 
 
 def _resolve_m05_case(
@@ -2950,6 +3004,16 @@ def main(expected_revision: str, output: Path) -> int:
             image=image_references["map-api"],
             manual_feature_id=manual_feature_id,
         )
+        # Map decision을 커밋하기 **전에** 참조를 심어야 PinVi worker가 그것을
+        # 보고 리바인드한다. 심지 않으면 impact_count가 0이 되고 live spec의
+        # 중심 단언이 공허하게 참이 된다.
+        seeded_references = _seed_pinvi_feature_reference(
+            api_url=pinvi_api_url,
+            opener=_pinvi_admin_opener(
+                pinvi_api_url, email=bootstrap_email, password=admin_password
+            ),
+            feature_id=manual_feature_id,
+        )
         event_id = _resolve_m05_case(
             admin_url=admin_url,
             proxy_secret=map_secret,
@@ -2963,6 +3027,10 @@ def main(expected_revision: str, output: Path) -> int:
             ),
             event_id=event_id,
         )
+        # 심은 참조가 실제로 리바인드됐는지 여기서 못 박는다. 이 대조가 없으면
+        # receipt가 impact 0을 보고해도 게이트가 그대로 통과한다.
+        if impact_count < seeded_references:
+            _fail("m05_pinvi_impact_missing")
         m05_environment = {
             "M05_MAP_ADMIN_PROXY_SECRET": map_secret,
             "M05_PINVI_EMAIL": bootstrap_email,
