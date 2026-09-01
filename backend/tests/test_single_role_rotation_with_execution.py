@@ -91,6 +91,36 @@ def v6_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return pins
 
 
+def test_single_role_rotate_fails_closed_when_v6_registry_is_unreadable(
+    v6_host, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v6 파일이 있는데 읽기 불가면 legacy host로 오인해 v5만 회전하면 안 된다(F4).
+
+    이 fail-close가 없으면 `_uses_execution_registry`가 legacy를 반환해 단일 role
+    회전이 v5만 바꾸고 execution binding이 stale이 되는 GM-01의 원래 사고로 되돌아간다.
+    """
+
+    from kor_travel_docker_manager import cli
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        RuntimeExecutionRegistryError,
+    )
+
+    # v6 파일은 존재하지만 로드가 실패하는 상황(손상·권한 등)을 재현한다.
+    monkeypatch.setattr(
+        cli,
+        "load_runtime_execution_registry",
+        lambda: (_ for _ in ()).throw(RuntimeExecutionRegistryError("unreadable v6")),
+    )
+    before = load_runtime_pin_registry().pinset_sha256
+
+    # v6 파일이 존재하므로(v6_host가 seed) load 실패는 legacy로 삼키지 않고 전파돼야 한다.
+    with pytest.raises(RuntimeExecutionRegistryError):
+        cli._uses_execution_registry()
+
+    # v5 registry는 손대지 않았다.
+    assert load_runtime_pin_registry().pinset_sha256 == before
+
+
 def test_single_role_rotation_updates_both_registries(v6_host) -> None:
     rotated = rotate_single_role_with_execution(
         role="map",

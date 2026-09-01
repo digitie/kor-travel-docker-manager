@@ -516,15 +516,25 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         execution_registry = load_runtime_execution_registry()
         execution_report = verify_runtime_execution_registry()
         execution_public_copy = str(execution_report["execution_public_copy"])
-        execution_binding = (
-            "current"
-            if execution_registry.current_matches(
-                pins=load_runtime_pin_registry(),
-                manager_source_revision=trusted_manager_source_revision(),
-            )
-            else "stale"
-        )
+        current_pins = load_runtime_pin_registry()
         execution_source_pinset = execution_registry.current.source_pinset_sha256
+        if execution_registry.current_matches(
+            pins=current_pins,
+            manager_source_revision=trusted_manager_source_revision(),
+        ):
+            execution_binding = "current"
+        elif (
+            execution_registry.current.source_pinset_sha256 == current_pins.pinset_sha256
+            and execution_registry.current.map_revision == current_pins.map_revision
+            and execution_registry.current.pinvi_revision == current_pins.pinvi_revision
+        ):
+            # source(pinset·두 revision)는 일치하고 trusted Manager revision만 달라진
+            # 상태다 — trusted Manager release 업그레이드의 표준 경로. 해법은 rebind이지
+            # rollback/rotate-pair가 아니다(그 둘은 불필요한 source SHA 변경을 강제하고,
+            # rollback --to <현재 pinset>은 "already uses this pinset"으로 항상 실패한다).
+            execution_binding = "manager_drift"
+        else:
+            execution_binding = "stale"
         execution_terminal = execution_registry.is_unconditionally_blocked_current()
     except DeploymentContractError:
         execution_binding = "invalid"
@@ -545,10 +555,20 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         exit_code = 1
-    if execution_binding == "stale":
-        # `pin rebind-execution`은 동일 source pinset의 Manager 교체 전용이고
-        # `pin migrate-execution-v6`는 registry가 이미 있으면 거부한다 — 이 상태에서
-        # 그 두 명령을 안내하면 운영자는 둘 다 거부당한다. 실제 복구 경로를 준다.
+    if execution_binding == "manager_drift":
+        # source는 그대로고 trusted Manager revision만 바뀐 표준 업그레이드 경로.
+        # rebind가 정본이다(2026-08-29 ADR). rollback/rotate-pair를 안내하면 불필요한
+        # source SHA 변경을 강제하고, rollback --to <현재 pinset>은 항상 거부된다.
+        print(
+            "trusted Manager release가 바뀌어 execution binding이 갱신되어야 합니다. "
+            "복구: 'ktdctl pin rebind-execution'으로 현재 source pinset에 새 Manager "
+            "release를 재결박하세요(rebuild·source 회전 불필요).",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    elif execution_binding == "stale":
+        # 여기는 source(pinset 또는 revision)가 실제로 어긋난 경우다. rebind는 동일
+        # source pinset 전용이라 이 상태를 못 고친다. 실제 복구 경로를 준다.
         print(
             "runtime execution binding이 source registry와 어긋납니다. 복구: "
             f"'ktdctl pin rollback --to {execution_source_pinset}'으로 source를 "

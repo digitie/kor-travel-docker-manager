@@ -1041,6 +1041,60 @@ def test_pin_verify_allows_a_legacy_terminal_with_current_unblocked_execution(
     assert output["current_execution_is_blocked"] is False
 
 
+@patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
+@patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
+def test_pin_verify_guides_manager_drift_to_rebind_not_a_self_targeted_rollback(
+    generation_reader,
+    registry_verifier,
+    capsys,
+    monkeypatch,
+):
+    """GM-01 F1 회귀: source는 그대로고 trusted Manager revision만 바뀐 표준 업그레이드에서,
+    verify는 rebind-execution을 안내해야 한다. rollback --to <현재 pinset>은 항상
+    'already uses this pinset'으로 거부되므로 안내로 주면 안 된다.
+    """
+    from unittest.mock import MagicMock
+
+    registry_verifier.return_value = {
+        "published_copy": "current",
+        "current_pinset_is_blocked": False,
+    }
+    generation_reader.return_value = {"status": "ok", "pinset_binding": {"status": "match"}}
+
+    pins = MagicMock()
+    pins.pinset_sha256 = "a" * 64
+    pins.map_revision = "1" * 40
+    pins.pinvi_revision = "2" * 40
+
+    execution = MagicMock()
+    execution.current_matches.return_value = False  # manager revision만 다름
+    execution.current.source_pinset_sha256 = "a" * 64  # == 현재 pinset
+    execution.current.map_revision = "1" * 40
+    execution.current.pinvi_revision = "2" * 40
+    execution.is_unconditionally_blocked_current.return_value = False
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.load_runtime_execution_registry", lambda: execution
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.load_runtime_pin_registry", lambda: pins
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.trusted_manager_source_revision", lambda: "9" * 40
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.verify_runtime_execution_registry",
+        lambda: {"execution_public_copy": "current"},
+    )
+
+    code = main(["pin", "verify"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "rebind-execution" in captured.err
+    # 자기 자신을 향하는(항상 실패하는) rollback 안내를 주지 않는다.
+    assert "rollback --to" not in captured.err
+
+
 def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, capsys):
     main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
     capsys.readouterr()
