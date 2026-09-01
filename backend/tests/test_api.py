@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import os
 import time
+import uuid
 from unittest.mock import Mock, patch
 
 import pytest
@@ -57,6 +58,54 @@ def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "healthy", "service": "kor-travel-docker-manager-backend"}
+
+
+# --- GM-16: 요청 상관관계 ID -----------------------------------------------------
+
+
+def test_every_response_carries_a_fresh_x_request_id_header():
+    """GM-16: 성공 응답에도 오류 응답에도 항상 붙는다 — 미들웨어가
+    call_next() 뒤에 헤더를 다는데, call_next는 등록된 예외 핸들러를 거친
+    뒤의 Response를 돌려주므로 두 경로 모두 커버된다."""
+
+    success = client.get("/health")
+    assert success.status_code == 200
+    uuid.UUID(success.headers["x-request-id"])  # 유효한 uuid4 형태인지
+
+    login_client()
+    not_found = client.get("/api/v1/backups/geo/jobs/does-not-exist")
+    assert not_found.status_code == 404
+    uuid.UUID(not_found.headers["x-request-id"])
+
+    # 요청마다 새로 발급된다 — 두 응답이 같은 값을 재사용하지 않는다.
+    assert success.headers["x-request-id"] != not_found.headers["x-request-id"]
+
+
+def test_client_supplied_request_id_is_ignored_not_trusted():
+    """서버가 신뢰하지 않고 항상 새로 발급한다 — 클라이언트가 보낸 값을
+    그대로 돌려주면 로그 검색 키를 외부에서 위조(로그 스푸핑)할 수 있다."""
+
+    response = client.get(
+        "/health", headers={"X-Request-ID": "attacker-supplied-value"}
+    )
+    assert response.headers["x-request-id"] != "attacker-supplied-value"
+    uuid.UUID(response.headers["x-request-id"])
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_error_response_request_id_matches_the_response_header(mock_compose_service):
+    """GM-12 예외 핸들러가 본문에 심는 request_id가 미들웨어가 헤더에 심는
+    것과 같은 값이어야 "UI 오류 → 로그 라인"이 실제로 한 키로 조인된다."""
+
+    login_client()
+    mock_compose_service.ensure_target.side_effect = DeploymentContractError(
+        "C6c production preflight failed"
+    )
+
+    response = client.post("/api/v1/targets/main/ensure", json={"recreate": True})
+
+    assert response.status_code == 409
+    assert response.json()["request_id"] == response.headers["x-request-id"]
 
 
 def test_admin_api_requires_frontend_origin_and_session():
@@ -982,7 +1031,13 @@ def test_ensure_target_contract_failure_is_conflict_without_secret_body(
     response = client.post("/api/v1/targets/main/ensure", json={"recreate": True})
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "C6c production preflight failed"}
+    body = response.json()
+    assert body["detail"] == "C6c production preflight failed"
+    # GM-16: request_id는 요청마다 새로 발급되는 uuid4라 리터럴로 고정할 수
+    # 없다 — 존재와 형태만 확인하고, "비밀이 안 새는지"라는 이 테스트 본래의
+    # 목적은 detail이 정확히 이 문자열 하나뿐임을 확인하는 것으로 유지한다.
+    assert set(body.keys()) == {"detail", "request_id"}
+    uuid.UUID(body["request_id"])
 
 
 @patch("kor_travel_docker_manager.api.routes.compose_service")
@@ -1622,9 +1677,43 @@ def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_chang
         "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
     ).json()
     detail = events[0]["detail"]
-    assert detail == {"guard": "no_journal", "acknowledged": False}
+    assert detail["guard"] == "no_journal"
+    assert detail["acknowledged"] is False
+    # GM-16: request_id는 요청마다 새로 발급되는 uuid4라 리터럴로 고정할 수
+    # 없다 — 존재와 형태만 확인한다. 이 테스트 본래의 목적(env_path/비밀번호가
+    # 안 새는지)은 정확한 키 집합 확인으로 유지한다.
+    assert set(detail.keys()) == {"guard", "acknowledged", "request_id"}
+    uuid.UUID(detail["request_id"])
     # 비밀번호도 해시도 감사에 남기지 않는다.
     assert "a-new-password-1" not in str(events)
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_audit_event_request_id_matches_the_triggering_response_header(mock_change):
+    """GM-16의 핵심 주장: UI가 받은 오류(또는 성공) 응답의 request_id가 그
+    요청이 남긴 감사 행의 request_id와 정확히 같은 값이어야 둘을 하나의
+    키로 조인할 수 있다 — 존재만이 아니라 *일치*를 확인한다."""
+
+    login_client()
+    mock_change.return_value = {
+        "ok": True,
+        "guard": "no_journal",
+        "acknowledged": False,
+        "env_path": "/opt/x/.env",
+    }
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "a-different-password-2"},
+    )
+
+    assert response.status_code == 200
+    triggering_request_id = response.headers["x-request-id"]
+
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
+    ).json()
+    assert events[0]["detail"]["request_id"] == triggering_request_id
 
 
 @patch("kor_travel_docker_manager.api.admin.change_admin_password")

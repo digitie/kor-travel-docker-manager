@@ -12,7 +12,12 @@ export class ApiError extends Error {
   /** 응답 본문 원문. "자세히" 접기에서 그대로 보여 준다. */
   raw: string;
 
-  constructor(status: number, raw: string) {
+  /** GM-16: 이 요청의 상관관계 ID(`X-Request-ID` 응답 헤더). 서버 로그·감사
+   * 행과 조인하는 키라, 운영자가 이슈에 붙여넣을 수 있게 화면에도 남긴다.
+   * 헤더가 없으면(예: 네트워크 자체가 끊겨 응답을 못 받은 경우) null. */
+  requestId: string | null;
+
+  constructor(status: number, raw: string, requestId: string | null = null) {
     const parsed = parseErrorBody(raw);
     super(parsed.serverMessage || raw || `${status}`);
     this.name = 'ApiError';
@@ -20,6 +25,7 @@ export class ApiError extends Error {
     this.code = parsed.code;
     this.serverMessage = parsed.serverMessage;
     this.raw = raw;
+    this.requestId = requestId;
   }
 }
 
@@ -534,7 +540,11 @@ export async function apiJson<T>(path: string, init?: ApiRequestInit): Promise<T
   const response = await apiFetch(path, init);
   if (!response.ok) {
     const text = await response.text();
-    throw new ApiError(response.status, text || `${response.status} ${response.statusText}`);
+    throw new ApiError(
+      response.status,
+      text || `${response.status} ${response.statusText}`,
+      response.headers.get('x-request-id')
+    );
   }
   return (await response.json()) as T;
 }

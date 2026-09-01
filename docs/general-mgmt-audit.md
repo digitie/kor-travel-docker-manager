@@ -32,7 +32,7 @@
 | GM-13 | `[x]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
 | GM-14 | `[x]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
 | GM-15 | `[x]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
-| GM-16 | `[ ]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
+| GM-16 | `[x]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
 | GM-17 | `[ ]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화 |
 | GM-18 | `[ ]` | P2 | M | generality | REVISED | mock | 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환 |
 | GM-19 | `[ ]` | P2 | S | dead-code | REVISED | 불필요 | 죽은 코드 일괄 제거 — 구 C6c 경로 ~650줄, 미사용 프론트 의존성, 무소비 port_policy, 무참조 API key 게이트 |
@@ -966,6 +966,65 @@ passed, 2 skipped).
 **검증 노트** (구현 시 본문보다 우선):
 
 전부 라인 단위로 검증됨. (1) 이중 로깅: main.py:76-89에서 패키지 로거에 핸들러 부착 후 92행 `logging.getLogger().handlers = logger.handlers`로 root가 동일 리스트 공유, backend 전체에 propagate=False 없음(grep 0건). 프로젝트 venv에서 동일 설정 재현 실행 결과 패키지 하위 로거 레코드가 정확히 2회 emit됨을 실측 확인. 모든 서비스 모듈이 getLogger(__name__)이라 전 레코드가 대상. (2) 상관관계 ID 부재: 미들웨어는 CORS 하나뿐(main.py:197-203), backend/src의 request_id grep 히트는 전부 runtime-pin 회전 요청 도메인 객체(routes.py:589 등)로 HTTP 상관관계와 무관. ensure_target 500 detail(routes.py:690-711)에 조인 키 없음. (3) audit_event_id는 auth_service.py:290에서 생성, 350행 목록 API에서만 노출되고 로그·응답 어디에도 연결 안 됨. (4) doRollover(main.py:56-58)의 기존 아카이브 os.remove는 다중 프로세스 중첩 시 실제로 아카이브를 파괴하는 경쟁 맞음(두 번째 프로세스의 rename은 FileNotFoundError로 handleError행). 계약 충돌 없음: M05는 Map·PinVi pin/rebuild 규율(docs/docker-management.md:269)로 로깅과 무관하고, root는 이미 현재도 핸들러를 갖고 있어 root 단독 부착은 서드파티 캡처 동작을 바꾸지 않음. 더 싼 대안(logger.propagate=False 한 줄)은 중복만 고치고 상관관계 ID는 못 하므로 반박 사유 아님. effort M 현실적. 구현 시 참고(태스크 무효화 아님): 프론트 JS가 헤더를 읽으려면 CORSMiddleware에 expose_headers=["X-Request-ID"] 추가 필요, HTTPException detail 일괄 주입은 라우트별 수정 대신 전역 exception handler가 필요.
+
+**구현**: 검증 노트의 설계 그대로 구현했다. (1) **이중 로깅**: 핸들러
+부착 로직을 `_configure_logging(root_logger, package_logger, log_file_path)`
+함수로 뽑아 root/package 로거를 파라미터로 받게 했다(전역 `logging.getLogger()`를
+직접 잡지 않음 — 이유는 아래 테스트 항목 참고). 핸들러는 root에만 붙이고
+패키지 로거('kor_travel_docker_manager')는 레벨만 설정해 propagate(기본
+True)에 맡긴다. (2) **요청 상관관계 ID**: 새 모듈 `request_context.py`에
+`request_id_var`(contextvar) + `RequestIdLogFilter`(핸들러에 붙는 로그
+필터) + `current_request_id()`를 뒀다 — `main.py`/`auth_service.py`/
+`routes.py`가 순환 import 없이 공유하기 위한 위치다(GM-11의 `yaml_strict.py`와
+같은 패턴). `main.py`에 `@app.middleware("http")`로 매 요청마다 `uuid4()`를
+새로 발급해 contextvar에 심고 응답에 `X-Request-ID` 헤더를 단다 —
+**클라이언트가 보낸 값은 신뢰하지 않는다**(로그 스푸핑 방지, 검증 노트에는
+없던 결정이지만 감사 로그 시스템의 기본 원칙). `asyncio.to_thread`가 현재
+컨텍스트를 복사해서 실행하므로(3.9+ 표준 동작) GM-14에서 스레드로 내린
+감사 기록 호출도 같은 값을 그대로 읽는다 — 호출부 수정이 필요 없다.
+로그 포맷 문자열에 `[%(request_id)s]`를 추가하고 `RequestIdLogFilter`를
+두 핸들러 모두에 붙였다. GM-12의 3개 계약 위반 예외 핸들러 모두 top-level에
+`request_id` 형제 키를 추가했다(`detail`의 모양은 문자열이든 dict든 건드리지
+않아 기존 `.detail` 단언은 전부 그대로다). `record_login_audit_event`는
+호출부가 신경 쓰지 않아도 모든 감사 행의 `detail_json`에 같은 값을
+주입한다(호출부가 실수로 같은 키를 넘겨도 여기서 덮어씀). `CORSMiddleware`에
+`expose_headers=["X-Request-ID"]`를 추가해 브라우저 JS가 헤더를 읽을 수
+있게 했다. (3) **doRollover**: 아카이브가 이미 존재하면(동시 프로세스가
+먼저 rollover) 무조건 `os.remove` 대신 기존 아카이브 뒤에 활성 로그를
+이어 붙이고, 존재하지 않는 흔한 경우는 기존과 같은 단순 `os.rename`을
+유지한다.
+
+검증 노트가 명시한 프론트 요구사항(`expose_headers`)을 넘어, GM-14 리뷰가
+찾은 것과 같은 종류의 공백("서버가 값을 만들어도 화면에 아무도 안 보여주면
+운영자에게는 없는 것과 같다")을 이번에는 선제적으로 막았다 — `frontend/src/lib/api.ts`의
+`ApiError`가 `X-Request-ID` 응답 헤더를 `requestId` 필드로 갖고,
+`HumanError`/`humanizeError`가 이를 그대로 실어 나르며, `InlineError.tsx`가
+"자세히" 접기 없이 바로 보이는 줄로 렌더한다 — 이 태스크 자신의 "실익"이
+말하는 "스크린샷 하나로 추적"을 실제로 화면에서 달성한다.
+
+**테스트 설계에서 주의한 함정**: 실제 root logger를 직접 검사하는 테스트는
+못 믿는다 — pytest 자신의 logging 플러그인이 세션 내내 root logger에 자기
+캡처용 핸들러를 붙이고 관리하므로, `logging.getLogger().handlers`를 직접
+들여다보면 우리가 등록한 콘솔·파일 핸들러가 아니라 pytest 것만 보이는
+경우가 실제로 재현됐다(`-v`/비-`-v` 둘 다 동일). 그래서 `_configure_logging()`을
+root/package 로거를 파라미터로 받게 리팩터링해 뒀고, 테스트는 전역 매니저에
+등록되지 않는 `logging.Logger(name)` 인스턴스(pytest가 손댈 수 없다)를
+직접 만들어 그 함수의 동작만 독립적으로 검증한다.
+
+신규 테스트 10건 + 기존 테스트 2건 수정: `test_main_logging.py`(신규
+파일, 6건 — 패키지 로거가 핸들러를 안 갖는지, root에 콘솔+파일 핸들러가
+정확히 하나씩인지, 재-import에도 중복 부착 안 되는지, `RequestIdLogFilter`가
+두 핸들러 모두에 걸려 있는지, `doRollover`의 append/rename 분기 2건),
+`test_api.py`(신규 4건 — 모든 응답에 `X-Request-ID` 헤더가 붙는지,
+클라이언트가 보낸 값이 무시되는지, 계약 위반 오류 응답의 `request_id`가
+헤더와 일치하는지, 감사 행의 `request_id`가 그 요청의 헤더와 정확히
+일치하는지 + 기존 base-handler exact-dict 테스트 2건을 새 `request_id`
+필드를 반영하도록 수정). mutation으로 4곳 재검증(핸들러 부착 위치를
+패키지 로거로 되돌리기, `doRollover`를 원래의 무조건 `os.remove`로 되돌리기,
+base 예외 핸들러의 `request_id`를 하드코딩된 값으로 바꾸기, 감사 기록의
+`request_id`를 하드코딩된 값으로 바꾸기 — 넷 다 전용 테스트가 예상대로
+실패, 원복 후 재통과). frontend type-check/lint/build 모두 통과. 전체
+backend 1385 passed, 2 skipped, ruff 통과.
 
 
 ## GM-17: compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화

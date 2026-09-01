@@ -15,6 +15,7 @@ from sqlalchemy import delete, select
 from kor_travel_docker_manager import database
 from kor_travel_docker_manager._time import utcnow
 from kor_travel_docker_manager.models import AdminSession, Base, LoginAuditEvent
+from kor_travel_docker_manager.request_context import current_request_id
 
 SESSION_COOKIE_NAME = "ktdm_admin_session"
 SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -298,7 +299,15 @@ def record_login_audit_event(
                 origin=_safe_header(request.headers.get("origin"), 255),
                 request_path=_safe_value(str(request.url.path), 500),
                 session_id_hash=session_id_hash,
-                detail_json=json.dumps(detail or {}, ensure_ascii=False, sort_keys=True),
+                # GM-16: 호출부가 신경 쓰지 않아도 모든 감사 행이 그 요청의
+                # request_id를 갖도록 여기서 주입한다 — UI가 받은 오류 응답의
+                # request_id와 이 값이 같으면 감사 행과 직접 조인된다. 호출부가
+                # 실수로 같은 키를 넘겨도 여기서 덮어써 항상 진짜 값이 남는다.
+                detail_json=json.dumps(
+                    {**(detail or {}), "request_id": current_request_id()},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             )
         )
         session.commit()
