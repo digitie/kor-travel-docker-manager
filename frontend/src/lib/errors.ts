@@ -71,6 +71,14 @@ const CODE_MESSAGES: Record<string, { title: string; hint: string }> = {
     title: '현재 비밀번호가 일치하지 않습니다.',
     hint: '다시 입력하세요. 5회 연속 실패하면 로그인 자체가 일시적으로 차단됩니다.',
   },
+  PUBLIC_API_KEY_NOT_FOUND: {
+    title: '그 공개 API 키가 이미 없습니다.',
+    hint: '다른 사람이 먼저 폐기했을 수 있습니다. 새로고침 후 목록을 다시 확인하세요.',
+  },
+  RATE_LIMITED: {
+    title: '요청이 너무 많아 잠시 차단됐습니다.',
+    hint: '잠시 후 다시 시도하세요. 반복되면 무차별 대입 시도로 오인됐을 수 있습니다.',
+  },
   AUTH_MISCONFIGURED: {
     title: '관리자 인증 설정이 완전하지 않습니다.',
     hint: '`.env`의 관리자 해시와 세션 비밀이 설정돼 있는지 SSH에서 확인하세요.',

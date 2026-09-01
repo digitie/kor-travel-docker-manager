@@ -49,7 +49,10 @@ def login(payload: LoginRequest, request: Request, response: Response):
         # 예외 발생 시 응답에 반영되지 않아 클라이언트가 재시도 시점을 알 수 없다.
         raise HTTPException(
             status_code=429,
-            detail="RATE_LIMITED",
+            detail={
+                "code": "RATE_LIMITED",
+                "message": "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
+            },
             headers={"Retry-After": str(retry_after)},
         )
 
@@ -65,7 +68,13 @@ def login(payload: LoginRequest, request: Request, response: Response):
             reason="misconfigured",
             next_path=next_path,
         )
-        raise HTTPException(status_code=503, detail="AUTH_MISCONFIGURED")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "AUTH_MISCONFIGURED",
+                "message": "관리자 인증 설정이 완전하지 않습니다.",
+            },
+        )
     if result != "ok":
         record_login_audit_event(
             request,
@@ -75,7 +84,13 @@ def login(payload: LoginRequest, request: Request, response: Response):
             reason="invalid_credentials",
             next_path=next_path,
         )
-        raise HTTPException(status_code=401, detail="INVALID_CREDENTIALS")
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "INVALID_CREDENTIALS",
+                "message": "아이디 또는 비밀번호가 올바르지 않습니다.",
+            },
+        )
 
     old_session_hash = revoke_admin_session(request.cookies.get(SESSION_COOKIE_NAME), request)
     session = create_admin_session(request, response, admin_username())

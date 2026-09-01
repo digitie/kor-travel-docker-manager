@@ -89,7 +89,13 @@ def delete_public_api_key(
     try:
         result = revoke_public_api_key(public_api_key_id, revoked_by=session.username)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="PUBLIC_API_KEY_NOT_FOUND") from exc
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "PUBLIC_API_KEY_NOT_FOUND",
+                "message": "해당 공개 API 키를 찾을 수 없습니다.",
+            },
+        ) from exc
     record_login_audit_event(
         request,
         event_type="api_key",
@@ -136,7 +142,10 @@ def post_admin_password(
         )
         raise HTTPException(
             status_code=429,
-            detail="RATE_LIMITED",
+            detail={
+                "code": "RATE_LIMITED",
+                "message": "요청이 너무 많습니다. 잠시 후 다시 시도하세요.",
+            },
             headers={"Retry-After": str(retry_after)},
         )
     try:
