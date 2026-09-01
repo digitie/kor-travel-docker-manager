@@ -1100,6 +1100,46 @@ is logging.getLogger()` 검증 테스트를 추가해, 격리된 단위 테스�
 
 핵심 사실은 라인 단위로 확인됨: (1) 14개 required-set(c6c_deployment.py:392-409)은 raw 4143-4148·resolved 3709-3714에서 무조건 강제되고, dev `ensure`도 ensure_target(compose_service.py:4637-4703)→_capture_transaction_unlocked(3519)→validate_compose_candidate_protected_values(4057)로 도달한다(require_api_wiring:4124는 required-set을 우회 못 함). (2) bind는 _CANDIDATE_ALLOWED_OPERATOR_BINDS(1708-1832) 밖이면 7255-7261 "bind is not in the canonical baseline"으로 거부 — 새 bind 키 하나에 backend 수정이 필요하다는 주장 사실. (3) 개인 경로 이중 하드코딩(docker-compose.yml:44-45,145,212 vs c6c_deployment.py:1713/1718/1723/1783/1788)과 database_runtime.py:64-176 롤 그래프 상수도 사실. 개선안은 ADR(decisions.md:699-712)이 allowlist의 '존재'만 요구하고 privileged host filesystem actor를 threat model 밖으로 명시하므로 root-owned 설치 데이터로 옮겨도 계약 위반이 아니며, verified root-owned 패턴 선례가 풍부하다(cli.py:1135, legacy_override_retirement.py:459, map_application_300.py:2351). 수정 필요 4건: (a) "다른 호스트에 이식되지 않는다"는 과장 — allowlist 값의 ${VAR:-default}는 _expand_env_path(6993+)가 effective env(.env+process env, compose_service.py:2450+)로 확장되고 7262-7269가 resolved 경로를 비교하므로, 등재된 bind는 KOR_TRAVEL_GEO_PGDATA 등 env 설정만으로 코드 수정 없이 이식된다. 실제 문제는 '커밋된 개인 기본값', '기본값 한쪽만 수정 시 fail-close', '신규 bind 키'로 한정해 기술해야 한다. (b) docker-targets.yml binds: 섹션 옵션은 현재 로더가 KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE 경로 override 허용 + 소유권/권한 검증 전무(registry.py:16-35)라 그대로 옮기면 보안 회귀 — pin registry식 root-owned 검증과 production override 거부를 명시 요건으로 승격해야 "신뢰 모델 유지" 전제가 성립한다. (c) 실질 required는 14가 아니라 15개 — _PINVI_DB_INIT_SERVICE는 frozenset에 없지만 _validate_pinvi_db_init_identity(4140)와 무조건 인덱싱 루프(4176-4193 services[service_name])가 부재를 거부한다. (d) production ensure는 이미 원천 거부(compose_service.py:4653-4657)라 "production 모드로 한정"은 ensure에 한해 공허 — required-set 유지는 pinned-rebuild와 production save/mutation 경로에 실질 적용되고, dev 완화는 문서 전역 보호 이름/값 스캔(3644-3675)을 무조건 유지한 채 다수 cross-service validator를 존재-조건부로 바꾸는 광범위 감사가 필요하다(effort L 추정은 타당, 그 이하로 축소 불가).
 
+**구현 (범위 축소, 오너 결정)**: effort L이면서 production compose candidate
+검증(어떤 서비스·bind path가 Map/PinVi 배포에 허용되는지 결정하는 보안
+경계)을 직접 건드리는 작업이라, 구현 전에 오너에게 범위를 물었다. 검증
+노트의 (b)가 지적한 대로 bind allowlist를 새 root-owned 설정 파일로
+옮기는 것은 그 파일에 대한 소유권·권한 검증 인프라를 새로 만들지 않으면
+그 자체로 보안 회귀이고, required-set 완화는 다수 cross-service validator를
+존재-조건부로 바꾸는 광범위 감사가 필요하다 — 둘 다 review 없이 자동으로
+진행하기에는 위험도가 이 세션의 다른 GM 태스크와 다른 급이라고 판단했다.
+
+오너는 "가장 안전한 부분만"을 골랐고, 이어서 그 "가장 안전한 부분"으로
+제시했던 `docker-compose.yml`의 개인 경로 기본값(`${VAR:-/home/digitie/...}`)
+제거 자체도 재확인한 결과 위험이 있음을 추가로 발견했다: 이 저장소의 실제
+로컬 dev `.env`(gitignored)를 직접 확인한 결과 `KOR_TRAVEL_GEO_PGDATA`
+등 8개 변수 전부가 **전혀 설정돼 있지 않다** — 즉 로컬 dev와(같은
+`/home/digitie/...` 구조를 쓰는) n150 prod 둘 다 지금은 이 하드코딩된
+기본값에만 의존해서 돌아가고 있다. `${VAR:?}`로 필수화하면 `.env`를
+먼저 갱신하지 않는 한 다음 `compose up`/재시작이 즉시 깨진다 — "안전한
+정리"가 아니라 "조율 없이 배포하면 실제 운영 환경을 멈추는 변경"이었다.
+이 사실을 다시 보고하고 재확인을 받은 결과, 오너는 그보다도 더 좁은
+범위(`.env.example`만 플레이스홀더로 수정)를 선택했다.
+
+실제로 구현한 것은 이 축소된 범위뿐이다: `.env.example`에 실제 개인
+경로가 "예시"인 것처럼 커밋돼 있던 자리 9곳(`KOR_TRAVEL_GEO_PGDATA`,
+`KOR_TRAVEL_GEO_JUSO_DATA`, `KOR_TRAVEL_GEO_APP_DATA_DIR`,
+`KOR_TRAVEL_GEO_BACKUP_DIR`, `RUSTFS_DATA_DIR`, `PROMETHEUS_DATA_DIR`,
+`GRAFANA_DATA_DIR`, `KOR_TRAVEL_CONCIERGE_PGDATA`, `PINVI_PGDATA`)를
+같은 파일이 `KOR_TRAVEL_MAP_PGDATA`에 이미 쓰고 있던
+`/path/to/...` 플레이스홀더 관례로 맞췄다 — `docker-compose.yml`은
+전혀 건드리지 않아 로컬/prod 어느 쪽도 동작이 바뀌지 않는다(순수 문서
+템플릿 수정, 런타임 영향 0). `docs/decisions.md`/`docs/journal.md`/
+`docs/tasks-done.md`/`docs/architecture.md`에도 같은 개인 경로가 다수
+등장하지만, 이들은 실제 있었던 일을 기록하는 append-only 이력 문서라
+과거 기록을 사후에 지우는 것은 범위 밖으로 판단해 손대지 않았다.
+
+required-set 완화와 bind allowlist 외부화(이 태스크의 실질 핵심)는
+`docs/tasks.md`에 후속 항목으로 남기고 이번에는 진행하지 않았다 — 코드
+변경이 순수 문서 수정뿐이라 mutation 검증이나 2인 적대적 리뷰 라운드는
+비례성에 맞지 않는다고 판단해 생략했다(`git grep`으로 남은 개인 경로
+없음만 재확인).
+
 
 ## GM-18: 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환
 
