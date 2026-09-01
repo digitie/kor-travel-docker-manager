@@ -472,3 +472,24 @@ def test_runtime_tolerates_unbound_expose_metadata_but_rejects_extra_bindings() 
             image_inspects=_image_inspects(expectation),
             network_inspects=_network_inspects(expectation),
         )
+
+
+def test_runtime_rejects_expected_port_that_is_exposed_but_unbound() -> None:
+    """기대 container 포트가 EXPOSE만 되고 실제 publish되지 않으면 fail-close.
+
+    published 집합 비교로 바뀐 뒤 유일하게 실패 경로가 이동한 케이스 —
+    '기대 포트 미publish 통과' 회귀가 열릴 자리를 고정한다(적대 리뷰)."""
+
+    expectation = _expectation()
+    containers = {
+        service: _inspect(expectation, service=service)
+        for service in expectation.services
+    }
+    containers["map-api"]["NetworkSettings"]["Ports"]["13701/tcp"] = None
+    with pytest.raises(DeploymentContractError, match="published ports differ"):
+        assert_m05_isolated_runtime(
+            expectation=expectation,
+            containers=containers,
+            image_inspects=_image_inspects(expectation),
+            network_inspects=_network_inspects(expectation),
+        )
