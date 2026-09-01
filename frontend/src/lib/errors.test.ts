@@ -36,3 +36,27 @@ describe('humanizeError — CODE_MESSAGES 신규 항목', () => {
     expect(result.hint).not.toBe('');
   });
 });
+
+describe('humanizeError — INVALID_CREDENTIALS 문맥 충돌 회귀', () => {
+  /** 같은 코드가 두 폼에서 나온다: 비밀번호 변경("현재 비밀번호" 입력칸이 있음)과
+   * 일반 로그인(그런 칸이 없음). byCode 매핑이 서버 메시지보다 우선이므로, 문구가
+   * "현재 비밀번호"에 고정돼 있으면 로그인 실패에서도 그 문구가 뜬다 — 로그인 폼에는
+   * "현재 비밀번호"라는 개념 자체가 없으므로 이는 사용자에게 혼란을 준다. */
+  it('로그인 실패(서버 메시지는 "아이디 또는 비밀번호")에도 "현재 비밀번호" 문구를 보여주지 않는다', () => {
+    const error = apiErrorWithCode(401, 'INVALID_CREDENTIALS', '아이디 또는 비밀번호가 올바르지 않습니다.');
+
+    const result = humanizeError(error, '로그인');
+
+    expect(result.title).not.toContain('현재 비밀번호');
+    expect(result.title).toContain('비밀번호가 일치하지 않습니다.');
+  });
+
+  it('비밀번호 변경 실패에서도 여전히 사람이 읽을 수 있는 문구를 돌려준다', () => {
+    const error = apiErrorWithCode(401, 'INVALID_CREDENTIALS', '현재 비밀번호가 일치하지 않습니다.');
+
+    const result = humanizeError(error, '비밀번호 변경');
+
+    expect(result.title).not.toContain('INVALID_CREDENTIALS');
+    expect(result.title).toContain('비밀번호가 일치하지 않습니다.');
+  });
+});

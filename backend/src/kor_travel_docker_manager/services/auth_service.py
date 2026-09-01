@@ -437,7 +437,18 @@ def _session_secret() -> str | None:
 def _require_session_secret() -> str:
     secret = _session_secret()
     if secret is None:
-        raise HTTPException(status_code=503, detail="AUTH_MISCONFIGURED")
+        # bare 문자열이면 frontend/src/lib/api.ts의 parseErrorBody가 `code`를 꺼내지 못해
+        # humanizeError가 이 machine token을 그대로 사용자에게 보여준다(auth.py의 동일 코드
+        # 수정과 같은 사유). verify_admin_password가 로그인 경로에서 먼저 이 조건을 걸러내
+        # 지금은 도달하지 않지만, create_admin_session의 다른 호출부나 두 검사 사이 TOCTOU
+        # 창이 생기면 이 경로도 같은 형태의 봉투여야 한다.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "AUTH_MISCONFIGURED",
+                "message": "관리자 인증 설정이 완전하지 않습니다.",
+            },
+        )
     return secret
 
 

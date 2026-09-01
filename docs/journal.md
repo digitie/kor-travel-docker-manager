@@ -2,6 +2,39 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — admin-auth-envelope 적대적 리뷰 2인 반영
+
+바로 아래 항목(3d0a740d, `admin.py`/`auth.py` bare-string `HTTPException` 5곳을
+`{code, message}` 구조화 봉투로 바꾼 수정)을 독립 적대적 리뷰 2인에게 맡겼다.
+둘 다 Critical/High는 없었고 Medium은 한 리뷰에서 하나 나왔다.
+
+**Medium(설명으로 종결, 코드 수정 없음)**: `auth.py`의 다섯 곳 중 RATE_LIMITED/
+AUTH_MISCONFIGURED/INVALID_CREDENTIALS 세 곳은 봉투를 구조화해도 `LoginScreen.tsx`가
+`humanizeError`/`CODE_MESSAGES`를 아예 부르지 않고 `err.status`만 보고 하드코딩된
+문구를 쓰므로 로그인 화면에 관측 가능한 차이가 없다는 지적이다. 실제로 확인해보니
+LoginScreen을 그대로 `humanizeError`로 옮기면 **새 회귀**가 생긴다는 것도 함께
+드러났다 — 같은 로그인 흐름의 403 분기(`require_frontend_origin`,
+`auth_service.py:95`)가 여전히 bare 문자열 `"INVALID_ORIGIN"`이고 `CODE_MESSAGES`에도
+없어서, `humanizeError`가 `serverMessage`로 폴백해 지금 잘 나오는 "허용되지 않은
+요청입니다..." 대신 원문 토큰을 그대로 보여주게 된다. 이 리팩터는 `require_frontend_origin`
+봉투화까지 함께 해야 하는 별도 범위라 이번 라운드에서 하지 않고 `docs/tasks.md`에
+후속으로 남겼다.
+
+**Low 2건은 고쳤다.** (1) 두 리뷰 모두 6번째 bare-string `AUTH_MISCONFIGURED`
+자리를 찾았다 — `auth_service.py`의 `_require_session_secret()`(`create_admin_session`
+전용, 지금은 `verify_admin_password`가 로그인 경로에서 먼저 같은 조건을 걸러내
+도달하지 않지만, 두 검사 사이 TOCTOU 창이나 `create_admin_session`의 다른 호출부가
+생기면 노출된다). 같은 `{code, message}` 봉투로 바꾸고, 이 함수를 직접 호출해
+검증하는 회귀 테스트를 추가했다(route 테스트로는 도달하지 않는 지점이라 unit 레벨
+호출이 필요했다). (2) `frontend/src/lib/errors.ts`의 `INVALID_CREDENTIALS`
+문구가 "현재 비밀번호가 일치하지 않습니다"로 비밀번호-변경 폼 전용 문구였는데, 이제
+`auth.py`의 일반 로그인 실패도 같은 코드를 탄다 — `humanizeError`는 코드 매핑이
+서버 메시지보다 우선이라, 이 좁은 문구가 로그인 실패에도 그대로 뜰 여지가 생겼다.
+"현재"를 빼고 두 문맥 모두에서 참인 중립적 문구로 통일했다.
+
+두 수정 모두 MUTATION-TEST-TEMP로 되돌려 새 테스트가 실제로 실패하는 것을 먼저
+확인한 뒤 복원해 재통과를 확인했다.
+
 ## 2026-09-02 — 관측자의 딸꾹질이 후보를 태우던 경로를 닫는다
 
 M05 격리 launcher는 driver 실행 **전**에는 registry 관측 함수의 exit status를 살려

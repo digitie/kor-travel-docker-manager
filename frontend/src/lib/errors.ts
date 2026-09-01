@@ -67,8 +67,13 @@ const CODE_MESSAGES: Record<string, { title: string; hint: string }> = {
       '`ktdctl pin rotate-pair --map-revision <40-hex> --pinvi-revision <40-hex> ' +
       '--reason "..." --confirm`을 실행하세요.',
   },
+  // 이 코드는 두 곳에서 나온다 — admin.py/admin_password_service.py의 비밀번호 변경
+  // ("현재 비밀번호" 입력칸이 있는 폼)과 auth.py의 일반 로그인(그런 칸이 없는 폼).
+  // byCode 매핑이 서버 메시지보다 우선이라(humanizeError 우선순위 참고) 문구를 한쪽
+  // 문맥에 고정하면 다른 쪽에서 엉뚱한 말이 나온다 — 두 문맥 모두에서 참인 중립적
+  // 문구로 통일한다.
   INVALID_CREDENTIALS: {
-    title: '현재 비밀번호가 일치하지 않습니다.',
+    title: '비밀번호가 일치하지 않습니다.',
     hint: '다시 입력하세요. 5회 연속 실패하면 로그인 자체가 일시적으로 차단됩니다.',
   },
   PUBLIC_API_KEY_NOT_FOUND: {

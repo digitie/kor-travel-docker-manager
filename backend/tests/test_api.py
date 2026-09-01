@@ -6,7 +6,7 @@ import uuid
 from unittest.mock import Mock, patch
 
 import pytest
-from fastapi import WebSocketDisconnect
+from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -210,6 +210,27 @@ def test_login_misconfigured_returns_structured_error_envelope(mock_verify):
 
     assert response.status_code == 503
     body = response.json()["detail"]
+    assert body["code"] == "AUTH_MISCONFIGURED"
+    assert isinstance(body["message"], str) and body["message"]
+    assert body["message"] != "AUTH_MISCONFIGURED"
+
+
+def test_require_session_secret_returns_structured_error_envelope(monkeypatch):
+    """service 계층의 AUTH_MISCONFIGURED도 bare 문자열이 아니라 { code, message } 봉투여야 한다.
+
+    /api/v1/auth/login 경로는 verify_admin_password가 같은 조건을 먼저 걸러내므로
+    이 함수까지 도달하지 않는다 — 그래서 route 레벨 테스트로는 이 지점을 덮지 못한다.
+    create_admin_session의 다른 호출부나 두 검사 사이 TOCTOU 창을 대비해 이 함수를
+    직접 호출해 검증한다."""
+    from kor_travel_docker_manager.services.auth_service import _require_session_secret
+
+    monkeypatch.setenv("KTDM_SESSION_SECRET", "")
+    with pytest.raises(HTTPException) as excinfo:
+        _require_session_secret()
+
+    assert excinfo.value.status_code == 503
+    body = excinfo.value.detail
+    assert isinstance(body, dict)
     assert body["code"] == "AUTH_MISCONFIGURED"
     assert isinstance(body["message"], str) and body["message"]
     assert body["message"] != "AUTH_MISCONFIGURED"
