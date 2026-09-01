@@ -2342,4 +2342,5 @@ def test_pinvi_receipt_wait_tolerates_the_worker_poll_window(
     source = (
         Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
     ).read_text(encoding="utf-8")
-    assert "POLL_SECONDS=\"\n                    f\"{_PINVI_RECONCILIATION_POLL_SECONDS}" in source
+    assert "_PINVI_RECONCILIATION_POLL_SECONDS}" in source
+    assert "RECONCILIATION_POLL_SECONDS=1" not in source
