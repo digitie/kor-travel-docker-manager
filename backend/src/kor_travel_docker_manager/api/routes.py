@@ -160,9 +160,13 @@ def get_backups(role: str | None = Query(default=None)):
     """The durable record of what backups actually exist on disk.
 
     Creation now has its own route (`POST /backups/{role}`); `gc` and restore stay
-    CLI-only. Restore itself is still unimplemented — `ktdctl db-backup restore-plan`
-    only *judges* whether a backup could be restored. This listing is the authority:
-    job records are process-local and vanish on restart, manifests do not."""
+    CLI-only. `ktdctl db-backup restore-plan` *judges* whether a backup could be
+    restored, and `ktdctl db-backup rehearse-restore` actually restores it into a
+    throwaway scratch database on the same instance to prove it — but restoring
+    over the real application database itself is still unimplemented by design
+    (deferred pending a writer stop/start procedure). This listing is the
+    authority: job records are process-local and vanish on restart, manifests do
+    not."""
     roles = BACKUP_ROLES if role is None else (role,)
     if role is not None and role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")

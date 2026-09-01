@@ -665,6 +665,10 @@ def plan_standalone_restore(
 
 _REHEARSAL_DB_PREFIX = "ktdm_rehearsal_"
 _REHEARSAL_CONTAINER_DIR = "/tmp"
+# 기본 timeout(4시간)보다 넉넉히 커야 "아직 진행 중인" 리허설을 실수로 지우지 않는다.
+_REHEARSAL_STALE_AFTER_SECONDS = 6 * 60 * 60
+# 복원된 크기가 백업 시점 크기의 이 비율에도 못 미치면 "일부만 복원됐을 수 있다"로 본다.
+_REHEARSAL_SIZE_SHORTFALL_RATIO = 0.5
 
 
 @dataclass(frozen=True)
@@ -712,6 +716,87 @@ class RehearsalOutcome:
         }
 
 
+def _rehearsal_database_age_seconds(database_name: str, *, now: float) -> float | None:
+    """scratch DB 이름에 박힌 epoch를 읽어 나이를 계산한다. 형식이 아니면 None."""
+
+    if not database_name.startswith(_REHEARSAL_DB_PREFIX):
+        return None
+    epoch_part = database_name[len(_REHEARSAL_DB_PREFIX) :].split("_", 1)[0]
+    if not epoch_part.isdigit():
+        return None
+    return now - int(epoch_part)
+
+
+def _drop_stale_rehearsal_databases(
+    container_name: str, port: int, admin_name: str
+) -> tuple[str, ...]:
+    """이전 리허설이 kill -9 등으로 죽으면서 남긴 scratch DB를 다음 실행이 스스로 치운다.
+
+    아직 진행 중일 수 있는 DB를 건드리지 않으려 이름의 epoch가
+    `_REHEARSAL_STALE_AFTER_SECONDS`보다 오래된 것만 지운다. 조회·삭제가 실패해도
+    조용히 넘어간다 — 이 스윕은 최선의 노력이지 이번 리허설의 성패를 좌우해서는
+    안 된다. `dropdb --if-exists`라 이미 지워졌거나 다른 스윕과 동시에 지워도 안전하다.
+    """
+
+    try:
+        output = _run_checked(
+            [
+                "docker",
+                "exec",
+                "--user",
+                "postgres",
+                container_name,
+                "psql",
+                "--username",
+                admin_name,
+                "--port",
+                str(port),
+                "--dbname",
+                "postgres",
+                "--no-psqlrc",
+                "--tuples-only",
+                "--no-align",
+                "--command",
+                f"SELECT datname FROM pg_database WHERE datname LIKE '{_REHEARSAL_DB_PREFIX}%'",
+            ],
+            label=f"{container_name} stale rehearsal database listing",
+            timeout=30,
+        ).decode("utf-8", "replace")
+    except StandaloneBackupError:
+        return ()
+
+    now = time.time()
+    dropped: list[str] = []
+    for candidate in output.splitlines():
+        candidate = candidate.strip()
+        if not candidate or not _DATABASE_IDENTIFIER.fullmatch(candidate):
+            continue
+        age = _rehearsal_database_age_seconds(candidate, now=now)
+        if age is None or age < _REHEARSAL_STALE_AFTER_SECONDS:
+            continue
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                "--user",
+                "postgres",
+                container_name,
+                "dropdb",
+                "--username",
+                admin_name,
+                "--port",
+                str(port),
+                "--if-exists",
+                candidate,
+            ],
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        dropped.append(candidate)
+    return tuple(dropped)
+
+
 def rehearse_standalone_restore(
     role: BackupRole,
     *,
@@ -726,6 +811,14 @@ def rehearse_standalone_restore(
     인스턴스 안에 이름이 겹치지 않는 scratch DB를 만들어 그 안에만 `pg_restore`하고,
     TOC 적용이 실제로 끝까지 갔는지(exit code)와 schema revision·DB 크기가 말이 되는지
     확인한 뒤, 결과와 무관하게 scratch DB와 그 안의 dump 사본을 지운다.
+
+    `create_standalone_backup`과 같은 한계를 공유한다 — **timeout에 걸리면 로컬
+    `docker exec` client만 중단되고 컨테이너 안의 `pg_restore`는 서버 쪽에서 계속
+    실행될 수 있다**(docker exec는 timeout을 안쪽 프로세스로 전파하지 않는다). 이
+    호출이 잡고 있는 `_role_lock`이 같은 role의 재시도를 막고, 다음 호출의
+    `_drop_stale_rehearsal_databases`가 결국 그 scratch DB를 회수한다 — 하지만 그
+    사이 대상 인스턴스에 걸리는 부하는 이 함수가 취소할 수 없다. `geo`처럼 큰 role은
+    트래픽이 적은 시간대에 실행하는 것을 권장한다.
     """
 
     plan = plan_standalone_restore(role, backup_filename=backup_filename, backup_root=backup_root)
@@ -754,12 +847,22 @@ def rehearse_standalone_restore(
     root = _resolve_backup_root(role, backup_root)
     port = _discover_port(container_name)
     admin_name = _discover_admin_role(container_name)
-    scratch_database = f"{_REHEARSAL_DB_PREFIX}{int(time.time())}"
+    # epoch만으로는 부족하다 — geo/geo_dagster, map_application/map_dagster처럼 같은
+    # 컨테이너를 공유하는 role 쌍이 같은 초에 각자 리허설을 시작하면 이름이 겹쳐 한쪽의
+    # dropdb가 다른 쪽이 한창 복원 중인 scratch DB를 지울 수 있다. 무작위 접미사를 더해
+    # role/컨테이너와 무관하게 항상 유일하게 만든다.
+    scratch_database = f"{_REHEARSAL_DB_PREFIX}{int(time.time())}_{os.urandom(4).hex()}"
     if not _DATABASE_IDENTIFIER.fullmatch(scratch_database):
         raise StandaloneBackupError(
             f"generated scratch database name is invalid: {scratch_database}"
         )
     container_dump_path = f"{_REHEARSAL_CONTAINER_DIR}/rehearsal-{scratch_database}.dump"
+
+    # kill -9 등으로 죽은 이전 리허설이 남긴 scratch DB를 이번 실행이 스스로 치운다 —
+    # `db-backup list`/`gc`는 파일 manifest만 보므로 DB 잔해는 이 스윕 말고는 발견되지
+    # 않는다. lock 밖에서 해도 안전하다: `dropdb --if-exists`는 멱등이고, 이 스윕이
+    # 건드리는 대상은 이름의 epoch가 오래된(진행 중일 수 없는) DB로 한정된다.
+    stale_databases = _drop_stale_rehearsal_databases(container_name, port, admin_name)
 
     findings: list[RestorePlanFinding] = []
     restore_succeeded: bool | None = None
@@ -767,7 +870,7 @@ def rehearse_standalone_restore(
     restored_db_size_bytes: int | None = None
     started = time.monotonic()
 
-    with _role_lock(root):
+    with _role_lock(root, label="rehearsal"):
         try:
             _run_checked(
                 ["docker", "cp", plan.dump_path, f"{container_name}:{container_dump_path}"],
@@ -862,14 +965,37 @@ def rehearse_standalone_restore(
                             True,
                         )
                     )
+                elif (
+                    plan.manifest.db_size_bytes > 0
+                    and restored_db_size_bytes
+                    < plan.manifest.db_size_bytes * _REHEARSAL_SIZE_SHORTFALL_RATIO
+                ):
+                    # 갓 만든 빈 DB도 카탈로그만으로 몇 MB이므로 위 "0바이트" 판정은
+                    # 실제로는 거의 걸리지 않는다 — 백업 시점 크기 대비 비율로 봐야
+                    # TOC가 일부만 적용된 부분 복원을 실제로 잡는다.
+                    findings.append(
+                        RestorePlanFinding(
+                            "REHEARSAL_SIZE_SHORTFALL",
+                            f"복원된 크기({restored_db_size_bytes} bytes)가 백업 시점 크기"
+                            f"({plan.manifest.db_size_bytes} bytes)의 "
+                            f"{_REHEARSAL_SIZE_SHORTFALL_RATIO:.0%}에도 못 미칩니다 — "
+                            "일부만 복원됐을 수 있습니다.",
+                            True,
+                        )
+                    )
         finally:
+            # 성공/실패와 무관하게 항상 지운다 — scratch 잔해가 다음 리허설과 이름이
+            # 겹치거나 디스크를 잠식하면 안 된다. 정리 실패까지 예외로 새어 나가면
+            # 원래 실패 사유가 가려지므로 여기서는 절대 raise하지 않지만, 조용히
+            # 넘어가지는 않는다 — 못 지웠으면 findings에 남겨 다음 스윕(또는 운영자
+            # 수동 개입)이 필요함을 알린다.
             subprocess.run(
                 ["docker", "exec", container_name, "rm", "-f", container_dump_path],
                 capture_output=True,
                 check=False,
                 timeout=30,
             )
-            subprocess.run(
+            dropdb_result = subprocess.run(
                 [
                     "docker",
                     "exec",
@@ -888,8 +1014,29 @@ def rehearse_standalone_restore(
                 check=False,
                 timeout=60,
             )
+            if dropdb_result.returncode != 0:
+                findings.append(
+                    RestorePlanFinding(
+                        "REHEARSAL_CLEANUP_INCOMPLETE",
+                        f"scratch DB({scratch_database}) 삭제가 실패했을 수 있습니다"
+                        f"(dropdb exit {dropdb_result.returncode}). 다음 리허설이 "
+                        f"{_REHEARSAL_STALE_AFTER_SECONDS // 3600}시간 뒤부터 자동으로 "
+                        "정리를 시도하지만, 급하면 "
+                        f"'DROP DATABASE \"{scratch_database}\"'를 직접 실행하세요.",
+                        False,
+                    )
+                )
 
     duration_sec = round(time.monotonic() - started, 3)
+    if stale_databases:
+        findings.append(
+            RestorePlanFinding(
+                "STALE_REHEARSAL_DATABASES_CLEANED",
+                f"이전 리허설이 남긴 오래된 scratch DB {len(stale_databases)}개를 "
+                f"이번 실행 전에 정리했습니다: {', '.join(stale_databases)}.",
+                False,
+            )
+        )
     if not findings:
         findings.append(
             RestorePlanFinding(
@@ -926,13 +1073,17 @@ def _role_config(role: BackupRole) -> tuple[str, str]:
 
 
 @contextlib.contextmanager
-def _role_lock(root: Path) -> Iterator[None]:
+def _role_lock(root: Path, *, label: str = "backup") -> Iterator[None]:
     """같은 role의 동시 백업 생성을 막는다 — 겹치면 두 pg_dump가 같은
     `container_tmp`/`dest_path`에 동시에 쓰면서 서로의 산출물을 덮어쓸 수 있다.
 
     lock 파일도 **산출물과 같은 mode 정책**을 따라야 한다. `0600`으로 고정하면 공유 그룹
     모드에서 처음 만든 쪽만 열 수 있고, 다른 쪽(UI가 먼저 만들었다면 cron)은 이후 영원히
     `EACCES`를 받는다 — 공유 디렉터리 기능 전체가 조용히 죽는다.
+
+    `label`은 오류 문구에만 쓴다 — 리허설이 이 lock을 잡고 있을 때 cron backup이
+    "another backup is already running"을 보면 실제로는 리허설과 부딪힌 것인데
+    사람이 엉뚱한 백업 프로세스를 찾아 헤맨다.
     """
 
     policy = _artifact_mode_policy()
@@ -959,7 +1110,7 @@ def _role_lock(root: Path) -> Iterator[None]:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise StandaloneBackupError(
-                "another backup is already running for this role"
+                f"another {label} is already running for this role"
             ) from exc
         yield
     finally:

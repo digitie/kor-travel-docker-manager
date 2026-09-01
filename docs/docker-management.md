@@ -1068,10 +1068,25 @@ journal). `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이�
 
 #### `rehearse-restore` — 이 백업이 실제로 복원되는지 scratch DB에서 증명한다
 
-`restore-plan`이 통과(차단 없음)한 백업만 시도한다. 같은 인스턴스 안에 이름이 겹치지
-않는 scratch 데이터베이스(`ktdm_rehearsal_<epoch>`)를 만들어 그 안에만 `pg_restore`하고,
-검증이 끝나면 **성공이든 실패든 항상** scratch DB와 컨테이너 안의 dump 사본을 지운다 —
-운영 DB(`concierge`/`geo` 등 실제 role 데이터베이스)는 어떤 경로로도 건드리지 않는다.
+`restore-plan`이 통과(차단 없음)한 백업만 시도한다. **대상과 같은, 실행 중인 postgres
+인스턴스** 안에 이름이 겹치지 않는 scratch 데이터베이스
+(`ktdm_rehearsal_<epoch>_<random>`)를 만들어 그 안에만 `pg_restore`하고, 검증이
+끝나면 **성공이든 실패든 항상** scratch DB와 컨테이너 안의 dump 사본을 지운다 — 운영
+DB(`concierge`/`geo` 등 실제 role 데이터베이스)는 어떤 경로로도 건드리지 않는다.
+이름에 role을 넣지 않고 epoch+무작위 접미사만 쓰는 이유는 `geo`/`geo_dagster`,
+`map_application`/`map_dagster`처럼 컨테이너를 공유하는 role 쌍이 같은 초에 각자
+리허설을 시작해도 이름이 절대 겹치지 않게 하기 위함이다 — role별 `_role_lock`은
+같은 role의 중복 실행만 막고 컨테이너 공유까지는 막지 않는다.
+
+**운영 비용 — 실제 서비스 중인 인스턴스에 부하를 준다.** scratch DB로의 `pg_restore`는
+같은 postgres 프로세스 안에서 실행되므로 CPU·IO·커넥션을 실제 서비스와 공유한다.
+`map_application`처럼 큰 role은 복원 자체가 90분 이상 걸릴 수 있고(대시보드 "백업
+이력" 실측 참고), 그동안 scratch DB가 원본과 비슷한 만큼의 디스크를 추가로 쓴다.
+**트래픽이 적은 시간대에 실행**하고, 여러 role을 한 번에 리허설하지 말 것. 03:15/
+03:30/03:55 cron(`geo_dagster`/`concierge`/`pinvi` 백업 생성)과 겹치면 `_role_lock`이
+그 role의 backup 생성을 "another rehearsal is already running for this role"로
+거부하고 wrapper는 `set -eu`로 그대로 중단한다 — 자동화 없이 수동으로만 돌리는 지금
+단계에서는 저 cron 시각을 피해서 실행할 것.
 
 검증 항목:
 
@@ -1079,12 +1094,29 @@ journal). `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이�
   낼 수 있다).
 - 복원된 scratch DB의 schema revision이 manifest의 `alembic_head`와 같은가
   (`REHEARSAL_HEAD_MISMATCH`, 차단).
-- 복원된 scratch DB 크기가 0바이트가 아닌가(`REHEARSAL_EMPTY_DATABASE`, 차단).
+- 복원된 scratch DB 크기가 0바이트가 아닌가(`REHEARSAL_EMPTY_DATABASE`, 차단) —
+  드물게만 걸린다(갓 만든 빈 DB도 카탈로그만으로 몇 MB다). 실제로 부분 복원을 잡는
+  것은 다음 항목이다.
+- 복원된 크기가 백업 시점 크기(manifest의 `db_size_bytes`)의 50% 미만인가
+  (`REHEARSAL_SIZE_SHORTFALL`, 차단) — TOC가 일부만 적용된 부분 복원 탐지.
 
-모두 통과해야 `verified: true`이고 exit 0이다. 실제 role DB로 덮어쓰는 경로(운영자가
-직접 압박받는 장애 대응 시나리오)는 writer 정지/재기동 절차 설계가 별도로 필요해
-의도적으로 범위 밖에 남아 있다 — 장애 시에는 여전히 각 프로젝트의 수동 `pg_restore`
-절차를 따른다.
+모두 통과해야 `verified: true`이고 exit 0이다.
+
+**잔해 처리.** 프로세스가 `kill -9`나 OOM으로 죽으면 `finally` cleanup이 못 돌아
+scratch DB와 컨테이너 안 dump 사본이 남을 수 있다 — `db-backup list`/`gc`는 파일
+manifest만 보므로 이 DB 잔해를 발견하지 못한다. 다음 `rehearse-restore` 실행(같은
+role이 아니어도 된다, 인스턴스가 같으면 된다)이 시작할 때마다 이름이
+`ktdm_rehearsal_`로 시작하고 6시간보다 오래된 DB를 스스로 찾아 지운다
+(`STALE_REHEARSAL_DATABASES_CLEANED` 참고 finding으로 결과에 남는다). 급하게 수동
+확인이 필요하면 `docker exec <container> psql -U <admin> -c "SELECT datname FROM
+pg_database WHERE datname LIKE 'ktdm_rehearsal_%'"`로 잔해를 조회하고 `dropdb`로
+직접 지울 수 있다. dropdb 자체가 실패(예: 아직 연결이 남아 있음)해도 예외로 삼키지
+않고 `REHEARSAL_CLEANUP_INCOMPLETE` finding으로 남긴다.
+
+실제 role DB로 덮어쓰는 경로(운영자가 직접 압박받는 장애 대응 시나리오)는 writer
+정지/재기동 절차 설계가 별도로 필요해 의도적으로 범위 밖에 남아 있다 — 장애 시에는
+여전히 각 프로젝트의 수동 `pg_restore` 절차를 따른다. 주기 자동화(cron/systemd
+timer)도 아직 없다 — 지금은 운영자가 수동으로 트리거하는 1차 primitive다.
 
 geo application DB는 위 앱 레벨 백업이 정본이다. 운영자가 장애 대응을 위해 한 번만 수동 dump가 필요할 때는
 `ktdctl db-backup create geo --timeout <초>`처럼 명시적으로 실행하고, cron/systemd timer에는 넣지 않는다.

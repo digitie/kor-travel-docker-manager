@@ -186,6 +186,36 @@ role 하나에 `rehearse-restore`를 한 번 실행해 scratch DB 생성·복원
 실제로 동작하는지 확인하는 후속 단계로 남는다(이 세션에서는 service/CLI 단위
 mock 테스트까지만 완료).
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 두 리뷰어 모두 실제 결함을 찾았다.
+[High, 둘 다 독립적으로 지적] scratch DB 이름이 `ktdm_rehearsal_<epoch초>`뿐이라
+1초 해상도였다 — `geo`/`geo_dagster`, `map_application`/`map_dagster`처럼 같은
+컨테이너를 공유하는 role 쌍이 같은 초에 각자 리허설을 시작하면 이름이 겹치고,
+한쪽의 `finally` cleanup이 다른 쪽의 진행 중인 scratch DB를 지울 수 있었다(role별
+`_role_lock`은 role 단위라 컨테이너 공유까지는 막지 못함). 이름에 무작위 접미사
+(`os.urandom(4).hex()`)를 더해 role/컨테이너와 무관하게 항상 유일하게 만들어
+고쳤다. [Medium, 리뷰 A] `REHEARSAL_EMPTY_DATABASE`가 정확히 0바이트만 잡아
+사실상 발동하지 않았다(갓 만든 빈 DB도 카탈로그만으로 몇 MB) — manifest의
+`db_size_bytes` 대비 50% 미만이면 잡는 `REHEARSAL_SIZE_SHORTFALL`을 추가해 실제
+부분 복원을 잡게 했다. [Medium, 리뷰 A] cleanup(`dropdb`) 실패가 `check=False`로
+완전히 조용히 삼켜졌다 — 실패하면 `REHEARSAL_CLEANUP_INCOMPLETE` non-blocking
+finding으로 남기게 했다(복원 자체의 검증 결과는 바꾸지 않는다). [Medium, 리뷰 B]
+`kill -9` 등으로 죽은 이전 리허설이 남긴 scratch DB를 `db-backup list`/`gc`가
+전혀 발견하지 못했다 — 다음 `rehearse-restore` 실행이 시작할 때마다 같은
+컨테이너에서 6시간(기본 timeout의 여유)보다 오래된 `ktdm_rehearsal_*`를 스스로
+찾아 지우는 `_drop_stale_rehearsal_databases`를 추가하고, 정리한 개수를
+`STALE_REHEARSAL_DATABASES_CLEANED` finding으로 남긴다. [Medium, 리뷰 B] 운영
+비용(트래픽이 적은 시간대 권장, 03:xx cron backup 생성과의 `_role_lock` 충돌
+가능성, "another backup" 문구가 실제로는 리허설과 충돌해도 그렇게 안내해 헷갈리게
+하는 문제)이 문서에 전혀 없었다 — `docs/docker-management.md`에 운영 가이드 문단을
+추가하고, `_role_lock`에 `label` 매개변수를 더해 "another rehearsal is already
+running"처럼 실제 충돌 주체를 알리게 했다. [Low, 리뷰 B] `api/routes.py`의
+"Restore itself is still unimplemented" 문구가 리허설 기능 추가 후에도 그대로였다
+— 갱신했다. 회귀 테스트 5건 추가(유일 이름 생성, size shortfall, cleanup 실패
+가시화, stale DB 스윕 단위 테스트, stale DB 정리 결과가 finding으로 나타남),
+scratch DB 유일성과 shortfall 판정 두 개를 mutation으로 검증함. 두 리뷰 모두
+"실제 role DB로 덮어쓰는 파괴적 복원이 없다"를 결함으로 보지 않았다 — 사용자가
+이미 확인한 의도된 범위임을 정확히 인지했다.
+
 
 ## GM-08: off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음
 
