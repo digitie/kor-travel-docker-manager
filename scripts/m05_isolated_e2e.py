@@ -1472,6 +1472,12 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
     map_hash = _sha256_text(full.get("openapi_sha256"))
     if full.get("source_revision") != PINNED_RUNTIME_RELEASE.source_for("map").revision:
         _fail("pair_contract_invalid")
+    # 이 harness는 runtime 컨테이너의 OCI revision 라벨을 full 기준으로 결박하고,
+    # PinVi attestation은 같은 컨테이너를 admin 기준으로 대조한다. 두 엔트리가
+    # 갈라진 pair를 여기서(실행권 소비 전, scoped) 닫지 않으면 그 모순은 body
+    # 진입 후 무조건 소각으로만 드러난다(적대 리뷰 정찰).
+    if mapping["admin"].get("source_revision") != full.get("source_revision"):
+        _fail("pair_contract_invalid")
     # M05 source attestation은 pair가 지정한 admin/full/service/user Git blob 모두를
     # exact revision으로 다시 읽는다. materializer가 현재 head만 fetch하므로 worktree는
     # 바꾸지 않고 canonical bare source에 이 네 object만 보충한다.
@@ -2339,6 +2345,14 @@ def main(expected_revision: str, output: Path) -> int:
                     f"PINVI_M05_ISOLATED_MANAGER_ADMISSION_PATH={pinvi_admission}",
                     f"PINVI_M05_PINSET_SHA256={PINNED_RUNTIME_RELEASE.pinset_sha256}",
                     f"PINVI_M05_EXECUTION_IDENTITY_SHA256={plan.execution_identity_sha256}",
+                    # 이미지 태그를 transaction 프로젝트로 스코프한다 — 기본값
+                    # pinvi-*:local은 호스트 전역 네임스페이스라 격리 run 사이에
+                    # 태그가 움직이면 container↔image identity 검증이 X!=Y로
+                    # 오탐하고, 격리 run이 전역 태그를 덮어쓴다(적대 리뷰 정찰).
+                    # Manager prod 경로(pinned_runtime_rebuild)와 같은 변수를 쓴다.
+                    f"PINVI_API_IMAGE={plan.pinvi_project}-api",
+                    f"PINVI_WEB_IMAGE={plan.pinvi_project}-web",
+                    f"PINVI_DAGSTER_IMAGE={plan.pinvi_project}-dagster",
                     f"PINVI_API_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_APP_BUILD_CONTEXT={pinvi_root}",
                     f"PINVI_DOCKER_PROJECT={plan.pinvi_project}",
