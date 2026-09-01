@@ -43,6 +43,7 @@ import {
   notifyUnauthorized,
   setUnauthorizedHandler,
 } from '@/lib/api';
+import { mergeChartData } from '@/lib/chartData';
 import { diffEnv, diffList } from '@/lib/configDiff';
 import {
   validateEnvEntry,
@@ -642,25 +643,10 @@ export default function DashboardClient() {
   });
 
   // Derived combined chart data using useMemo (resolves react-doctor's 'no-derived-state')
-  const combinedChartData = useMemo(() => {
-    if (wsMetricsPoints.length === 0) return queryChartData;
-    
-    const merged = [...queryChartData];
-    const existingTimestamps = new Set(queryChartData.map(d => d.timestamp));
-    
-    for (const pt of wsMetricsPoints) {
-      if (!existingTimestamps.has(pt.timestamp)) {
-        merged.push(pt);
-        existingTimestamps.add(pt.timestamp);
-      }
-    }
-    
-    // Max 1 hour (360 points at 10s intervals)
-    if (merged.length > 360) {
-      return merged.slice(merged.length - 360);
-    }
-    return merged;
-  }, [queryChartData, wsMetricsPoints]);
+  const combinedChartData = useMemo(
+    () => mergeChartData(queryChartData, wsMetricsPoints, chartHours),
+    [queryChartData, wsMetricsPoints, chartHours],
+  );
 
   // WebSocket live logs stream hook - Versioned v1
   useEffect(() => {
