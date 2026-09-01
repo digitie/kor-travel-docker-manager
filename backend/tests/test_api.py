@@ -1302,10 +1302,9 @@ def test_get_backups_degrades_a_single_corrupt_manifest_instead_of_hiding_everyt
 
     assert response.status_code == 200
     backups = response.json()["backups"]
-    assert len(backups) == 2
-    readable = [row for row in backups if row.get("state") != "unreadable"]
-    unreadable = [row for row in backups if row.get("state") == "unreadable"]
-    assert readable == [
+    # 순서까지 고정한다 — 손상된 항목을 목록 어디에 두는지는 그 자체가 회귀 대상이다
+    # (적대적 리뷰가 지적: 순서를 안 보는 단언은 정렬 버그를 놓친다).
+    assert backups == [
         {
             "role": "geo",
             "created_at_unix": 1000,
@@ -1317,15 +1316,84 @@ def test_get_backups_degrades_a_single_corrupt_manifest_instead_of_hiding_everyt
             "db_size_bytes": 100,
             "toc_entry_count": 2,
             "alembic_head": "0001_head",
-        }
-    ]
-    assert unreadable == [
+        },
         {
             "state": "unreadable",
             "filename": "geo-999.manifest",
             "reason": "manifest role does not match the requested role: geo-999.manifest",
-        }
+        },
     ]
+
+
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
+def test_get_backups_sorts_unreadable_entries_after_every_readable_entry_across_roles(
+    mock_list,
+):
+    """GM-13 리뷰 반영: unreadable 항목은 created_at_unix가 없어, role을 섞어
+    전역 재정렬할 때 기본값을 잘못 고르면(예: 0) 실제 시각과 무관하게 맨 앞으로
+    쏠린다 — geo의 unreadable 항목 하나가 map_application의 훨씬 나중 백업보다도
+    앞에 뜨는 식으로 재현된다. 이 테스트는 role 두 개에 걸쳐 readable 두 건과
+    unreadable 한 건을 섞어, 최종 응답이 시간순 readable 다음에 unreadable이
+    오는지(그 반대나 뒤섞임이 아닌지) 직접 확인한다."""
+
+    login_client()
+
+    def fake_list(role):
+        if role == "geo":
+            return [
+                {
+                    "state": "unreadable",
+                    "filename": "geo-1.manifest",
+                    "reason": "manifest is unreadable: geo-1.manifest",
+                }
+            ]
+        if role == "map_application":
+            return [
+                {
+                    "role": "map_application",
+                    "created_at_unix": 2_000_000_000,
+                    "duration_sec": 1.0,
+                    "byte_size": 1,
+                    "sha256": "b" * 64,
+                    "backup_filename": "map_application-2000000000.dump",
+                    "instance": "container:127.0.0.1:12700/kor_travel_map",
+                    "db_size_bytes": 100,
+                    "toc_entry_count": 2,
+                    "alembic_head": "0002_head",
+                }
+            ]
+        if role == "pinvi":
+            return [
+                {
+                    "role": "pinvi",
+                    "created_at_unix": 1,
+                    "duration_sec": 1.0,
+                    "byte_size": 1,
+                    "sha256": "c" * 64,
+                    "backup_filename": "pinvi-1.dump",
+                    "instance": "container:127.0.0.1:12800/pinvi",
+                    "db_size_bytes": 100,
+                    "toc_entry_count": 2,
+                    "alembic_head": "0003_head",
+                }
+            ]
+        return []
+
+    mock_list.side_effect = fake_list
+
+    response = client.get("/api/v1/backups")
+
+    assert response.status_code == 200
+    backups = response.json()["backups"]
+    states = [row.get("state") for row in backups]
+    # readable 항목은 시간순(pinvi created_at_unix=1이 map_application의
+    # 2_000_000_000보다 먼저), unreadable은 시각과 무관하게 맨 뒤 하나뿐이어야 한다.
+    assert [row.get("backup_filename") for row in backups if row.get("state") != "unreadable"] == [
+        "pinvi-1.dump",
+        "map_application-2000000000.dump",
+    ]
+    assert states[-1] == "unreadable"
+    assert states.count("unreadable") == 1
 
 
 @patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")

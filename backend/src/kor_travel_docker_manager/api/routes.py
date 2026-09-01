@@ -152,7 +152,11 @@ def get_backups(role: str | None = Query(default=None)):
             backups.extend(list_standalone_backups_for_display(backup_role))
         except StandaloneBackupError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-    backups.sort(key=lambda item: item.get("created_at_unix", 0))
+    # GM-13 리뷰: "unreadable" 행은 created_at_unix가 없다 — 기본값을 0으로 두면
+    # 실제 시각(항상 훨씬 큰 unix timestamp)보다 앞으로 밀려나 role을 섞어 볼 때
+    # 손상된 항목들이 실제 발생 시점과 무관하게 응답 맨 앞에 뭉친다. +inf를 써서
+    # 항상 맨 뒤로 보낸다(정렬 키로만 쓰이고 응답 JSON에는 들어가지 않는다).
+    backups.sort(key=lambda item: item.get("created_at_unix", float("inf")))
     return {"backups": backups}
 
 

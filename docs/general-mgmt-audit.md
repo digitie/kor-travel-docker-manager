@@ -718,12 +718,14 @@ frontend type-check/lint 재실행으로 fix 검증. 전체 backend는 변경 �
 `application_name = 'pg_dump' AND datname = <role의 database>`를 직접 물었다 —
 `create_standalone_backup()`이 role lock을 잡은 **직후, pg_dump를 시작하기
 전에** 이 검사를 통과해야만 진행한다. 이미 돌고 있으면 새 타입
-`StandaloneBackupInProgressError`(409)로 거부한다. `POST /backups/{role}`는
-비동기 job이라 이 거부는 라우트 자체를 바꾸지 않고 job 실패로 자연스럽게
-드러난다(`GET .../jobs/{id}`가 이미 job 실패를 보고하는 기존 경로를 그대로 탄다)
-— 검증 노트가 지적한 "submit 전 psql 조회"를 동기 라우트 가드가 아니라 job
-본문 안, role lock 아래에서 수행하는 것이 라우트를 막지 않으면서도 실제
-위험 구간(락 재기동 유실)을 정확히 덮는다.
+`StandaloneBackupInProgressError`로 거부한다 — 이 이름은 HTTP 상태가 아니라
+예외 클래스다: `POST /backups/{role}`는 비동기 job이라 이 거부는 동기 응답이
+아니라 job 실패로 나타난다(job worker 스레드에서 예외 발생 → `JobRecord.state
+== "failed"` + `error` 문자열 → `GET .../jobs/{id}`는 이를 **200 OK** 본문
+안에 담아 그대로 돌려준다 — 이 경로 어디에도 HTTP 409는 없다). 검증 노트가
+지적한 "submit 전 psql 조회"를 동기 라우트 가드가 아니라 job 본문 안, role
+lock 아래에서 수행하는 것이 라우트를 막지 않으면서도 실제 위험 구간(락
+재기동 유실)을 정확히 덮는다.
 
 프론트는 `BackupListResponse.backups`를 `(StandaloneBackupManifest |
 UnreadableBackupEntry)[]` union으로 넓히고, `BackupHistoryPanel.tsx`가
@@ -731,17 +733,51 @@ UnreadableBackupEntry)[]` union으로 넓히고, `BackupHistoryPanel.tsx`가
 보여주며, freshness 판정(role별 최신 백업 시각)은 손상된 항목을 "없다"로
 잘못 세지 않도록 읽을 수 있는 항목만 걸러서 계산한다.
 
-회귀 테스트 8건 추가(`list_standalone_backups_for_display`의 부분 손상/전체
+신규 테스트 6건(`list_standalone_backups_for_display`의 부분 손상/전체
 손상/디렉터리 자체 unreadable/빈 디렉터리 4건, `create_standalone_backup`의
-in-progress 거부 1건, `test_api.py`의 라우트 레벨 degrade/503 2건 — 기존
-"manifest 손상 → 409" 가정 테스트 1건은 GM-13의 목적 자체와 모순돼 새 계약에
-맞게 다시 작성). 기존 `create_standalone_backup` happy-path/empty-file/
-copy-failure 테스트 3건은 새 pg_stat_activity 호출을 처리하도록 fake
-`_run_checked`에 분기를 추가해 통과시켰다. mutation으로 핵심 로직 2곳
-재검증: degrade의 try/except를 제거하자 전용 단위 테스트가 예상대로 실패,
-in-progress 가드를 무력화하자 전용 테스트가 예상대로 실패 — 둘 다 원복 후
-재통과 확인. frontend type-check/lint/build 모두 통과. 전체 backend
-1367 passed, 2 skipped, ruff 통과.
+in-progress 거부 1건, `test_api.py`의 라우트 레벨 degrade 1건) + 기존
+"manifest 손상 → 409" 가정 테스트 1건을 GM-13의 목적 자체와 모순되므로 새
+계약(degrade/503)에 맞게 재작성. 기존 `create_standalone_backup`
+happy-path/empty-file/copy-failure 테스트 3건은 새 pg_stat_activity 호출을
+처리하도록 fake `_run_checked`에 분기를 추가해 통과시켰다. mutation으로
+핵심 로직 2곳 재검증: degrade의 try/except를 제거하자 전용 단위 테스트가
+예상대로 실패, in-progress 가드를 무력화하자 전용 테스트가 예상대로 실패 —
+둘 다 원복 후 재통과 확인. frontend type-check/lint/build 모두 통과. 전체
+backend 1367 passed, 2 skipped, ruff 통과.
+
+**구현 후 적대적 리뷰 반영** (2명, 독립): 두 리뷰어 모두 같은 정렬 결함을
+서로 다른 각도(리뷰 A는 재현, 리뷰 B는 "그 결함을 놓치는 테스트 설계"까지)에서
+찾았다.
+
+[Medium, 리뷰 B / Low, 리뷰 A] `list_standalone_backups_for_display()`는
+role별로 "readable(시간순) 다음 unreadable"을 반환하지만, 라우트의 전역
+재정렬(`backups.sort(key=lambda item: item.get("created_at_unix", 0))`)이
+unreadable 항목(이 키가 없음)을 `0`으로 취급해 **실제 발생 시점과 무관하게
+항상 맨 앞**으로 밀어냈다 — role을 섞어 전체 조회하면 이제 막 손상된
+manifest 하나가 몇 년 전 정상 백업보다도 앞에 뜬다. 기본값을 `float("inf")`로
+바꿔 항상 맨 뒤로 가도록 고쳤다(정렬 키로만 쓰이고 응답 JSON에는 안 들어간다).
+리뷰 B가 추가로 지적한 대로, 새로 만든 회귀 테스트
+(`test_get_backups_degrades_a_single_corrupt_manifest_instead_of_hiding_everything`)가
+readable/unreadable을 나눠서 비교하는 방식이라 애초에 순서 버그를 잡을 수
+없는 구조였다 — 이 테스트를 순서까지 고정한 exact-list 비교로 바꾸고, role
+두 개에 걸쳐 readable 두 건(시간차 큼)과 unreadable 한 건을 섞는 전용
+테스트(`test_get_backups_sorts_unreadable_entries_after_every_readable_entry_across_roles`)를
+추가했다. mutation으로 재검증(기본값을 `0`으로 되돌리자 두 테스트 모두
+예상대로 실패, 원복 후 재통과).
+
+[Low, 리뷰 B] 위 커밋 메시지의 "회귀 테스트 8건"이 실제 diff(`+def test_`
+6건, 기존 테스트 1건 재작성)와 맞지 않았다 — 이 문서의 해당 문단을 정확한
+수치로 고쳤다(이미 push된 커밋 메시지 자체는 고치지 않는다).
+
+[Low, 리뷰 B / Nit, 리뷰 A] `StandaloneBackupInProgressError(409)`라는 표기와
+새 503의 프론트 힌트 문구(환경변수 누락용 기존 문구를 그대로 씀)가 실제 동작과
+살짝 어긋난다는 지적 — 전자는 이 문서 서술에서 "HTTP 409 아님"을 명시해
+정정했고, 후자는 `humanizeError`가 `serverMessage`를 title에 먼저 보여줘
+실제 원인이 가려지지 않으므로(리뷰 A도 "화장품 수준"으로 확인) 이번 라운드
+에서는 고치지 않는다.
+
+전체 backend 1368 passed, 2 skipped, ruff 통과. frontend 변경 없음(이번
+라운드는 백엔드 정렬 로직 + 테스트 + 문서만 반영).
 
 
 ## GM-14: async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음
