@@ -91,11 +91,12 @@ _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 _FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
 _FORENSIC_CAPTURE_LIMIT = 256 * 1024
 # m04/m05 attestation이 검사·실행하는 Playwright runner의 핀 digest. body에서
-# 부재가 드러나면 무조건 소각이므로, 실행권 소비 전에 존재를 보장한다.
-_PLAYWRIGHT_RUNNER_IMAGE = (
-    "mcr.microsoft.com/playwright@sha256:"
-    "9bd26ad900bb5e0f4dee75839e957a89ae89c2b7ab1e76050e559790e946b948"
-)
+# 부재가 드러나면 무조건 소각이므로, 실행권 소비 전에 존재·버전 정합을 보장한다.
+# v1.62.1-noble — pinned PinVi source의 playwright-core와 driverVersion이 같아야
+# 브라우저 캐시(/ms-playwright)가 적중한다(적대 리뷰 실측: 구 digest v1.60.0은
+# chromium 1223만 실어 pinned 1.62.1의 1234 요구와 어긋났고, 본문 브라우저
+# 기동에서 무조건 소각될 운명이었다). 정합은 아래 claim 전 검사로 기계화한다.
+_PLAYWRIGHT_RUNNER_IMAGE = "mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"  # noqa: E501
 # Compose config은 trusted input이라도 외부 CLI 출력이다. JSON parser에 넘기는
 # 원문은 이 상한만 보관하고, 초과분도 끝까지 drain해 child pipe를 막지 않는다.
 _COMPOSE_CONFIG_OUTPUT_LIMIT = 256 * 1024
@@ -217,6 +218,7 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "runtime_setup_map_config",
         "runtime_setup_network",
         "runtime_setup_pinvi_config",
+        "runtime_setup_playwright_runner_image",
         "runtime_setup_ports",
         "runtime_setup_workspace",
         "secret_cleanup_identity_invalid",
@@ -2342,12 +2344,53 @@ def main(expected_revision: str, output: Path) -> int:
         # 단계에서 이미지 부재(예: 호스트 정리로 미사용 이미지 프룬)가 드러나면
         # 무조건 소각이지만(2026-09-01 e2e13 실측), 여기서는 scoped 실패라
         # 보정 후 재시도할 수 있다. digest 참조라 pull은 내용-불변이다.
+        phase = "runtime_setup_playwright_runner_image"
         try:
             _command(
                 "/usr/bin/docker", "image", "inspect", _PLAYWRIGHT_RUNNER_IMAGE
             )
         except _PhaseError:
             _command("/usr/bin/docker", "pull", _PLAYWRIGHT_RUNNER_IMAGE)
+        # runner 핀과 pinned PinVi source의 playwright-core 핀은 서로 독립적으로
+        # 움직일 수 있는 두 사람-선언이다. 사람 규율 대신 기계로 결박한다:
+        # 이미지의 driverVersion == lockfile의 playwright-core 버전이어야
+        # /ms-playwright 브라우저 캐시가 적중한다(불일치는 body 브라우저 기동
+        # 에서 무조건 소각으로만 드러난다 — 적대 리뷰 실측).
+        try:
+            lock_value = json.loads(
+                (pinvi_root / "package-lock.json").read_text(encoding="utf-8")
+            )
+            pinned_playwright = (
+                lock_value.get("packages", {})
+                .get("node_modules/playwright-core", {})
+                .get("version")
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            _fail("runtime_setup_playwright_runner_image")
+        if not isinstance(pinned_playwright, str) or not pinned_playwright:
+            _fail("runtime_setup_playwright_runner_image")
+        runner_info_raw = _command(
+            "/usr/bin/docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "/bin/cat",
+            _PLAYWRIGHT_RUNNER_IMAGE,
+            "/ms-playwright/.docker-info",
+            capture=True,
+        )
+        try:
+            runner_driver_version = json.loads(runner_info_raw).get("driverVersion")
+        except (TypeError, json.JSONDecodeError):
+            _fail("runtime_setup_playwright_runner_image")
+        if runner_driver_version != pinned_playwright:
+            _fail(
+                "runtime_setup_playwright_runner_image",
+                diagnostic=(
+                    "runner driverVersion != pinned playwright-core "
+                    f"({runner_driver_version} != {pinned_playwright})"
+                ),
+            )
         phase = "ledger_claim"
         claim_attempted = True
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
