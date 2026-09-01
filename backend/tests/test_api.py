@@ -1679,11 +1679,14 @@ def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_chang
     detail = events[0]["detail"]
     assert detail["guard"] == "no_journal"
     assert detail["acknowledged"] is False
-    # GM-16: request_id는 요청마다 새로 발급되는 uuid4라 리터럴로 고정할 수
-    # 없다 — 존재와 형태만 확인한다. 이 테스트 본래의 목적(env_path/비밀번호가
-    # 안 새는지)은 정확한 키 집합 확인으로 유지한다.
-    assert set(detail.keys()) == {"guard", "acknowledged", "request_id"}
-    uuid.UUID(detail["request_id"])
+    # GM-16: http_request_id는 요청마다 새로 발급되는 uuid4라 리터럴로 고정할
+    # 수 없다 — 존재와 형태만 확인한다. 이 테스트 본래의 목적(env_path/비밀번호가
+    # 안 새는지)은 정확한 키 집합 확인으로 유지한다. 감사 주입 키를
+    # "request_id"가 아니라 "http_request_id"로 부르는 이유는 runtime-pin
+    # 회전 요청처럼 도메인 객체가 이미 "request_id"라는 이름을 쓰는 경우와
+    # 충돌해 그 값을 지우는 것을 막기 위해서다(적대적 리뷰가 실제로 재현).
+    assert set(detail.keys()) == {"guard", "acknowledged", "http_request_id"}
+    uuid.UUID(detail["http_request_id"])
     # 비밀번호도 해시도 감사에 남기지 않는다.
     assert "a-new-password-1" not in str(events)
 
@@ -1691,8 +1694,11 @@ def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_chang
 @patch("kor_travel_docker_manager.api.admin.change_admin_password")
 def test_audit_event_request_id_matches_the_triggering_response_header(mock_change):
     """GM-16의 핵심 주장: UI가 받은 오류(또는 성공) 응답의 request_id가 그
-    요청이 남긴 감사 행의 request_id와 정확히 같은 값이어야 둘을 하나의
-    키로 조인할 수 있다 — 존재만이 아니라 *일치*를 확인한다."""
+    요청이 남긴 감사 행의 http_request_id와 정확히 같은 값이어야 둘을 하나의
+    키로 조인할 수 있다 — 존재만이 아니라 *일치*를 확인한다. 감사 쪽 키
+    이름이 "request_id"가 아니라 "http_request_id"인 이유는 위
+    test_post_admin_password_records_the_verdict_but_never_the_secret의
+    주석 참고(도메인 객체의 자체 request_id와 충돌 방지)."""
 
     login_client()
     mock_change.return_value = {
@@ -1713,7 +1719,7 @@ def test_audit_event_request_id_matches_the_triggering_response_header(mock_chan
     events = client.get(
         "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
     ).json()
-    assert events[0]["detail"]["request_id"] == triggering_request_id
+    assert events[0]["detail"]["http_request_id"] == triggering_request_id
 
 
 @patch("kor_travel_docker_manager.api.admin.change_admin_password")
@@ -2127,6 +2133,37 @@ def test_post_runtime_pin_request_never_overwrites_a_pending_one(
     detail = second.json()["detail"]
     assert detail["code"] == "RUNTIME_PIN_REQUEST_EXISTS"
     assert detail["request_id"] == first.json()["request"]["request_id"]
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_runtime_pin_audit_event_keeps_its_own_domain_request_id(
+    mock_read, isolated_pin_requests
+):
+    """GM-16 적대적 리뷰 발견: 감사 기록이 모든 행에 HTTP 상관관계 ID를
+    "request_id"라는 이름으로 주입했다면, 여기서 이미 그 이름을 domain
+    id(대기 중인 회전 요청 자신의 id — 나중에 DELETE .../requests/{id}로
+    그대로 넘겨야 하는 값)로 쓰는 이 이벤트의 값을 조용히 덮어써 지웠을
+    것이다. 감사 쪽 키를 "http_request_id"로 분리했으므로 둘 다 살아남아야
+    한다."""
+
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "첫 요청"},
+    )
+    assert response.status_code == 201
+    domain_request_id = response.json()["request"]["request_id"]
+    http_request_id = response.headers["x-request-id"]
+    assert domain_request_id != http_request_id  # 서로 다른 개념임을 전제로 한 테스트다
+
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=runtime_pin&outcome=succeeded"
+    ).json()
+    detail = events[0]["detail"]
+    assert detail["request_id"] == domain_request_id
+    assert detail["http_request_id"] == http_request_id
 
 
 @patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")

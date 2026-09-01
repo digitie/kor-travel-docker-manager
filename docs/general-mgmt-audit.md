@@ -1026,6 +1026,64 @@ base 예외 핸들러의 `request_id`를 하드코딩된 값으로 바꾸기, �
 실패, 원복 후 재통과). frontend type-check/lint/build 모두 통과. 전체
 backend 1385 passed, 2 skipped, ruff 통과.
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 리뷰 A가 실제 결함(High) 1건을
+찾았고, 리뷰 B는 그 결함과는 다른 실질 공백(Medium) 1건과 사소한 불일치를
+찾았다.
+
+[High, 리뷰 A] `record_login_audit_event`의 자동 주입이 `{**(detail or {}),
+"request_id": current_request_id()}` 형태라, 호출부가 이미 `detail`에
+`"request_id"`라는 이름의 값을 넣어 둔 경우(dict unpacking에서 뒤 키가
+이긴다) 그 값을 조용히 지워 버렸다 — `routes.py`의 runtime-pin 회전 요청
+3곳(:611 중복 거부, :653 신규 생성, :705 취소)이 정확히 이 이름을 도메인
+고유 id(`RuntimePinRequest.request_id`, 나중에 `DELETE .../requests/{id}`로
+그대로 넘겨야 하는 값)로 이미 쓰고 있었다. 리뷰가 실제 TestClient E2E로
+재현: 감사 행의 `request_id`가 HTTP 상관관계 id로 덮어써져 있고 진짜
+회전-요청 id는 어디에도 안 남음을 직접 확인했다. GM-16 자신의 배경
+검증 노트가 "runtime-pin 회전 요청 도메인 객체로 HTTP 상관관계와
+무관하다"고 이미 인지하고 있었음에도 구현이 그 구분을 지키지 못한
+사례다. 주입 키 이름을 `"request_id"`에서 `"http_request_id"`로 바꿔
+충돌 자체를 없앴다 — 도메인 객체가 이미 소유한 이름과 절대 겹치지 않는
+쪽을 새 기능이 양보하는 것이 맞는 방향이다. 전용 회귀 테스트
+(`test_runtime_pin_audit_event_keeps_its_own_domain_request_id`)를
+추가해 도메인 id와 HTTP 상관관계 id가 감사 행에 **둘 다** 살아남는지
+확인한다. mutation으로 재검증: 키 이름을 다시 `"request_id"`로 되돌리자
+이 테스트를 포함해 관련 테스트 3건이 정확히 실패, 원복 후 재통과.
+
+[Medium, 리뷰 B] `main.py`의 `@app.middleware("http")`(Starlette
+`BaseHTTPMiddleware`)는 `scope["type"] != "http"`이면 자기 로직을
+건너뛰므로 WebSocket 연결에는 전혀 적용되지 않는다 — `/ws/status`·
+`/ws/logs/{id}`의 인가 거절·shed 로그 라인은 `request_id`가 항상
+기본값("-")으로 남는다. `_assign_request_id`의 docstring("매 요청마다")과
+어긋나는 실제 한계인데 어디에도 문서화돼 있지 않았다 — `docs/tasks.md`에
+후속 항목으로 남겼다(고치려면 `websocket.py`의 각 핸들러가 `accept()`
+시점에 직접 contextvar를 설정해야 하는데, 이미 여러 차례 적대적 리뷰를
+거친 이 파일에 손대는 것은 GM-16 범위를 넘는 별도 작업으로 판단했다).
+
+[Low, 리뷰 B] `request_context.py`의 docstring·커밋 메시지·이 문서 세
+곳 모두 "`routes.py`가 순환 import 없이 이 모듈을 소비한다"고 적었지만
+실제로는 `routes.py`가 이 모듈을 전혀 쓰지 않는다(grep 0건) — 존재하지
+않는 의존관계를 주장한 사소한 불일치였다. `request_context.py`의
+docstring을 정정해 현재 소비자가 `main.py`/`auth_service.py`뿐임을
+명시했다.
+
+[Nit, 리뷰 B] `main.py`의 3개 예외 핸들러가 `request_id_var.get()`을
+직접 호출하는 반면 `auth_service.py`는 래퍼 `current_request_id()`를
+썼다 — 동작은 동일하지만 스타일을 `current_request_id()`로 통일했다
+(미들웨어 자신의 `.set()`/`.reset()` 호출은 계속 raw contextvar를 쓴다 —
+그건 값을 읽는 게 아니라 관리하는 자리라 래퍼 대상이 아니다).
+
+[Medium, 리뷰 A — 테스트 설계 보강] `test_main_logging.py`의 격리된
+가짜 로거(`logging.Logger(name)`)는 `.parent`가 `None`이라, 이중 로깅
+버그의 실제 메커니즘(propagate를 통한 조상 로거 전파)을 한 번도
+end-to-end로 실행하지 않는다는 지적 — 결론 자체는 Python 표준 동작으로
+보증되므로 실제 버그는 아니지만, 그 가정이 실제 프로덕션과 일치하는지
+별도로 확인해야 한다는 것은 타당했다. 실제(pytest가 관리하지 않는
+읽기 전용 속성만 조회하는) `logging.getLogger("kor_travel_docker_manager").parent
+is logging.getLogger()` 검증 테스트를 추가해, 격리된 단위 테스트들이
+가정하는 계층 구조가 실제와 일치함을 다리 놓듯 확인한다.
+
+전체 backend 1387 passed, 2 skipped, ruff 통과.
+
 
 ## GM-17: compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화
 

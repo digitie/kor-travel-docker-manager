@@ -27,6 +27,22 @@ def _fresh_loggers() -> tuple[logging.Logger, logging.Logger]:
     return root, package
 
 
+def test_the_real_package_logger_is_actually_a_child_of_the_real_root_logger() -> None:
+    """리뷰 발견: `_fresh_loggers()`의 `logging.Logger(name)` 인스턴스는
+    `.parent`가 `None`이라(Manager의 `_fixupParents`를 거치지 않는다), 위
+    테스트들이 검증하는 "패키지 로거가 핸들러가 없으면 이중 emit이 구조적으로
+    불가능하다"는 결론이 실제 propagate 경로에서도 성립하는지는 별도로
+    확인해야 한다. 여기서는 (pytest가 손대지 않는) 읽기 전용 속성만 조회해
+    실제 `logging.getLogger("kor_travel_docker_manager")`가 정말로 실제
+    root의 자식인지, 그리고 앱이 이미 import돼 있으니 propagate가 여전히
+    True인지 확인한다 — 이게 참이면 위의 격리된 단위 테스트들이 가정하는
+    계층 구조가 실제 프로덕션과 일치한다."""
+
+    package_logger = logging.getLogger("kor_travel_docker_manager")
+    assert package_logger.parent is logging.getLogger()
+    assert package_logger.propagate is True
+
+
 def test_configure_logging_gives_the_package_logger_no_handlers_of_its_own(
     tmp_path,
 ) -> None:

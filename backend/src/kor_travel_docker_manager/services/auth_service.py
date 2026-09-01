@@ -300,11 +300,17 @@ def record_login_audit_event(
                 request_path=_safe_value(str(request.url.path), 500),
                 session_id_hash=session_id_hash,
                 # GM-16: 호출부가 신경 쓰지 않아도 모든 감사 행이 그 요청의
-                # request_id를 갖도록 여기서 주입한다 — UI가 받은 오류 응답의
-                # request_id와 이 값이 같으면 감사 행과 직접 조인된다. 호출부가
-                # 실수로 같은 키를 넘겨도 여기서 덮어써 항상 진짜 값이 남는다.
+                # HTTP 상관관계 ID를 갖도록 여기서 주입한다 — UI가 받은 오류
+                # 응답의 request_id와 이 값이 같으면 감사 행과 직접 조인된다.
+                # 키 이름을 "request_id"가 아니라 "http_request_id"로 둔다 —
+                # runtime-pin 회전 요청 같은 도메인 객체는 자기 고유 id를 이미
+                # "request_id"라는 이름으로 detail에 싣는다(routes.py의
+                # RuntimePinRequest.request_id, 나중에 DELETE .../requests/{id}로
+                # 그대로 넘겨야 하는 값). 같은 키 이름을 쓰면 dict unpacking에서
+                # 뒤에 오는 이 값이 이겨 그 도메인 id를 조용히 지워 버린다 —
+                # 적대적 리뷰가 실제로 재현해 찾은 결함이다.
                 detail_json=json.dumps(
-                    {**(detail or {}), "request_id": current_request_id()},
+                    {**(detail or {}), "http_request_id": current_request_id()},
                     ensure_ascii=False,
                     sort_keys=True,
                 ),

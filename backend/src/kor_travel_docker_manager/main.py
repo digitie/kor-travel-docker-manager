@@ -22,6 +22,7 @@ from kor_travel_docker_manager.api.websocket import (
 from kor_travel_docker_manager.request_context import (
     REQUEST_ID_HEADER,
     RequestIdLogFilter,
+    current_request_id,
     request_id_var,
 )
 from kor_travel_docker_manager.services.auth_service import allowed_frontend_origins
@@ -321,7 +322,7 @@ async def _handle_post_mutation_contract_error(
         status_code=500,
         content={
             "detail": _post_mutation_contract_detail(exc),
-            "request_id": request_id_var.get(),
+            "request_id": current_request_id(),
         },
     )
 
@@ -334,7 +335,7 @@ async def _handle_candidate_contract_error(
         status_code=409,
         content={
             "detail": _candidate_contract_detail(exc),
-            "request_id": request_id_var.get(),
+            "request_id": current_request_id(),
         },
     )
 
@@ -345,7 +346,7 @@ async def _handle_deployment_contract_error(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=409,
-        content={"detail": str(exc), "request_id": request_id_var.get()},
+        content={"detail": str(exc), "request_id": current_request_id()},
     )
 
 

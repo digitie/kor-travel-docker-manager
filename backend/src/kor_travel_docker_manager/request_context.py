@@ -11,8 +11,13 @@
 기록, threadpool sync 라우트)에서도 같은 값을 그대로 읽는다 — 호출부마다
 값을 수동으로 전달할 필요가 없다.
 
-세 소비자(main.py/auth_service.py/routes.py)가 순환 import 없이 값을
-주고받게 하려고 별도 모듈로 뺐다(yaml_strict.py와 같은 이유의 패턴).
+현재 소비자는 `main.py`(미들웨어·로그 필터 부착·계약 위반 예외 핸들러)와
+`auth_service.py`(감사 기록)다 — `routes.py`는 아직 이 모듈을 직접 쓰지
+않는다(대부분의 라우트가 `HTTPException`을 직접 던지고, 그 기본 처리는
+`request_id`를 싣지 않는다 — `docs/tasks.md` 후속 항목 참고). 순환 import
+없이 값을 주고받게 하려고 별도 모듈로 뺐다(`yaml_strict.py`와 같은 이유의
+패턴) — 나중에 `routes.py`가 직접 소비해야 할 상황이 생겨도 이 구조는
+그대로 확장된다.
 """
 
 from __future__ import annotations
