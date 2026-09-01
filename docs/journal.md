@@ -33,6 +33,40 @@ execution identity·transaction으로 이미 이 launch에 결박한다. 결박�
 이미 결박된 사실에 텍스트 미러를 얹는 것은 이 저장소가 결함으로 보는 과결박이라
 추가하지 않았다.
 
+## 2026-09-02 — GM-10 이관 적대적 리뷰 반영: compose_service.py 되돌림
+
+바로 아래 항목(PinVi credential 수정 + GM-10 이관 2건)을 독립 적대적 리뷰
+2인에게 맡겼다. 두 리뷰 모두 High/Critical은 없었지만, 한 리뷰가 Medium
+하나를 정확히 잡았다: `compose_service.py`의 `_atomic_restore_compose_source`를
+정본 `atomic_write_bytes`로 옮기면서, os.replace 뒤 디렉터리 fsync 실패
+처리가 strict(uncaught raise)에서 best-effort(무조건 삼킴)로 조용히
+바뀌었다. 이 함수의 유일한 호출자 `_recover_persisted_target_runtime`은
+`except Exception`으로 그 예외를 잡아 `recovery_succeeded=False`를
+보고하는데, 정본의 `fsync_directory`가 그 실패를 삼키면 함수가 정상
+반환해 `ComposePostMutationContractError.recovery_succeeded`가 `True`로
+오보된다 — 하필 사후 뮤테이션 실패를 다루는 안전망 경로에서, rename의
+crash-durability가 실제로는 확인되지 않은 채로다. 같은 세션에서
+`legacy_override_retirement.py`/`pinvi_database_role_credentials.py`의
+`_write_atomic`을 정확히 이 이유로 이관 대상에서 뺐으면서, 같은 논리가
+이 자리에도 적용된다는 것을 놓친 것이었다.
+
+`_atomic_restore_compose_source`를 원래의 strict 인라인 구현(mkstemp+
+write+fsync+os.replace+uncaught 디렉터리 fsync)으로 되돌리고, 새 테스트
+`test_compose_service_atomic_restore.py`를 추가했다 — `os.fsync`를 감싸
+파일 자신의 fsync가 관측된 이후의 디렉터리 fsync만 실패시켜, 그 예외가
+propagate되고(호출자가 실패로 판정할 수 있게) rename 자체는 이미 끝나
+있음(`compose_path`가 새 payload를 담고 있음)을 함께 확인한다.
+mutation-test로 되돌리기 전 버전(정본 경유)이 이 테스트를 통과시키지
+못함을 먼저 확인한 뒤 원복해 재통과를 확인했다.
+
+두 리뷰가 공통으로 지적한 Low 하나(`standalone_backup.py`가 정본
+`atomic_write_json`으로 옮기며 `ensure_ascii=False`→`True`로 조용히
+바뀐 점)는 코드는 그대로 두고 `docs/tasks.md`에 명시적으로 기록했다 —
+`BackupManifest.to_json()`의 필드는 오늘 전부 ASCII라 무해하지만, 향후
+비-ASCII 필드가 추가되면 인코딩이 달라진다는 사실을 남겨야 한다.
+
+전체 백엔드 테스트(1470 passed, 2 skipped)와 ruff가 모두 통과했다.
+
 ## 2026-09-02 — PinVi bootstrap credential 디렉터리 fsync 파괴 버그 수정, atomic-write 프리미티브 후속 이관 2건
 
 `pinvi_bootstrap_credential.py`의 `_fsync_directory_descriptor`가 디렉터리
