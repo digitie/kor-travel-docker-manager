@@ -801,6 +801,65 @@ def _unknown_payload(detail: str) -> dict[str, Any]:
     }
 
 
+def _check_login_rate_limit_proxy(values: Mapping[str, str] | None) -> ReadinessCheck:
+    """production에서 신뢰 프록시 미설정 시 로그인 rate limit이 공유 버킷으로 붕괴한다.
+
+    엣지 프록시(HAProxy 등) 뒤에서 신뢰 CIDR이 loopback 전용이면 모든 WAN 클라이언트가
+    프록시 소켓 IP 하나로 집계돼, 외부인이 5회 실패만으로 진짜 관리자를 잠글 수 있다
+    (GM-05). production에서 이 상태를 warn으로 노출한다.
+    """
+
+    from kor_travel_docker_manager.services.auth_service import trusted_proxy_posture
+
+    label = "로그인 rate limit 프록시 신뢰 설정"
+    env_mode = (values or {}).get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
+    posture = trusted_proxy_posture()
+    if env_mode != "production":
+        return ReadinessCheck(
+            id="login_rate_limit_proxy",
+            state="ok",
+            label_ko=label,
+            detail="비운영 환경에서는 클라이언트 IP가 직접 보이므로 해당 없음.",
+            source="none",
+            evidence=posture,
+        )
+    if posture["loopback_only"]:
+        return ReadinessCheck(
+            id="login_rate_limit_proxy",
+            state="warn",
+            label_ko=label,
+            detail=(
+                "신뢰 프록시 CIDR이 loopback 전용입니다 — 엣지 프록시 뒤에서 로그인 "
+                "rate limit이 공유 버킷으로 붕괴해 외부인이 관리자 로그인을 잠글 수 "
+                "있습니다. KTDM_TRUSTED_PROXY_CIDRS=<프록시IP>/32 와 "
+                "KTDM_TRUSTED_PROXY_SECRET 을 설정하세요."
+            ),
+            source="none",
+            evidence=posture,
+        )
+    if posture["has_wide_cidr"] and not posture["secret_set"]:
+        return ReadinessCheck(
+            id="login_rate_limit_proxy",
+            state="warn",
+            label_ko=label,
+            detail=(
+                "광역 신뢰 CIDR이 secret 없이 설정돼 있습니다 — 그 대역의 피어가 "
+                "X-Forwarded-For를 위조해 rate limit을 우회할 수 있습니다. exact /32 와 "
+                "KTDM_TRUSTED_PROXY_SECRET 을 함께 쓰세요."
+            ),
+            source="none",
+            evidence=posture,
+        )
+    return ReadinessCheck(
+        id="login_rate_limit_proxy",
+        state="ok",
+        label_ko=label,
+        detail="신뢰 프록시 CIDR/secret이 설정돼 per-IP rate limit이 유효합니다.",
+        source="none",
+        evidence=posture,
+    )
+
+
 def _probe_deployment_readiness() -> dict[str, Any]:
     values = _effective_values()
     checks = [
@@ -808,6 +867,7 @@ def _probe_deployment_readiness() -> dict[str, Any]:
         _check_sibling_bootstrap_scripts(values),
         _check_pinvi_role_bootstrap_modes(values),
         _check_map_python_base_images(values),
+        _check_login_rate_limit_proxy(values),
     ]
     return {
         "schema": DEPLOYMENT_READINESS_SCHEMA,

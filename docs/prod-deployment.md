@@ -455,6 +455,32 @@ KTDM_FRONTEND_NPM=<npm 절대 경로, 생략 시 /usr/local/bin/npm>
 이 라우팅이 없으면 대시보드(prod 빌드)가 API(`manager-api.*`)에 닿지 못한다. 라우팅 설정은 라우터/프록시
 인프라 영역이며 이 저장소 범위 밖이다.
 
+### 5.1 신뢰 프록시 설정 (필수 — 로그인 rate limit 정상 동작)
+
+엣지 프록시(HAProxy 등) 뒤에서 백엔드는 모든 공개 트래픽을 프록시의 소켓 IP 하나로 본다.
+로그인 rate limit은 client IP별로 실패를 집계하는데, 프록시를 신뢰하도록 설정하지 않으면
+**모든 WAN 클라이언트가 같은 버킷을 공유**한다 — 인터넷의 아무나 10분 창에 잘못된 로그인
+5회를 보내면 진짜 관리자의 로그인·비밀번호 변경이 함께 429로 잠긴다(외부 DoS). 그래서 아래
+두 값은 **선택이 아니라 필수**다.
+
+```bash
+# .env — 엣지 프록시의 IP를 exact /32 로, 그리고 secret 헤더를 함께 쓴다.
+KTDM_TRUSTED_PROXY_CIDRS=<프록시 IP>/32
+KTDM_TRUSTED_PROXY_SECRET=<프록시가 주입하는 헤더 시크릿>
+```
+
+- **exact /32(IPv6는 /128)를 쓴다.** `/24` 같은 광역 CIDR은 그 대역의 다른 LAN 피어가
+  `X-Forwarded-For`를 위조해 rate limit을 우회하게 한다.
+- **secret을 반드시 함께 쓴다.** CIDR만으로는 host 네트워크의 로컬 프로세스가 loopback
+  출처로 `X-Forwarded-*`를 위조할 수 있다. 프록시가 매 요청에 이 시크릿 헤더를 주입하고,
+  백엔드는 그 일치까지 확인해야 XFF를 신뢰한다.
+- 엣지(HAProxy 등)에도 소스 IP별 연결 수 제한을 두어 이 저장소의 durable 로그인 한도와
+  이중으로 방어한다.
+
+설정이 빠져 있으면 대시보드의 **배포 사전 점검**(`login_rate_limit_proxy` 체크)이
+production에서 `warn`으로 노출하고, rate-limit 429 감사 행에는 `shared_ip_bucket` 사실이
+기록된다.
+
 ## 6. 검증
 
 ```bash

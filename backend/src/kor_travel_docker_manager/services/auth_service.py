@@ -536,6 +536,46 @@ def _trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
     return tuple(networks)
 
 
+def login_bucket_is_shared_fallback(request: Request) -> bool:
+    """이 요청의 rate-limit 버킷이 신뢰되지 않은 프록시 뒤에서 공유되는지 판정한다.
+
+    엣지 프록시가 X-Forwarded-For를 붙여 보내는데 그 프록시가 신뢰 대상이 아니면,
+    ``_client_ip``는 XFF를 무시하고 프록시의 소켓 IP 하나로 떨어진다 — 그러면 WAN의
+    모든 클라이언트가 같은 버킷을 공유해, 외부인이 5회 실패만으로 진짜 관리자를
+    잠글 수 있다(GM-05). 이 사실을 감사 detail에 남겨 운영자가 원인을 알게 한다.
+    """
+
+    has_forwarded = bool(
+        request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    )
+    return has_forwarded and not _request_from_trusted_proxy(request)
+
+
+def trusted_proxy_posture() -> dict[str, object]:
+    """신뢰 프록시 설정 자세를 요약한다(요청 무관, readiness 진단용).
+
+    production에서 신뢰 CIDR이 loopback 전용이면 엣지 프록시의 XFF를 신뢰하지 못해
+    per-IP rate limit이 공유 버킷으로 붕괴한다. 광역 CIDR(/24 등)은 LAN 피어의 XFF
+    위조로 rate limit을 우회당하므로 secret 동반이 아니면 그것도 위험하다.
+    """
+
+    raw = os.environ.get("KTDM_TRUSTED_PROXY_CIDRS", "").strip()
+    configured = [item.strip() for item in raw.split(",") if item.strip()]
+    networks = _trusted_proxy_networks()
+    loopback_only = all(net.is_loopback for net in networks)
+    secret_set = _trusted_proxy_secret() is not None
+    # /32(v4)·/128(v6) 이 아닌 광역 CIDR이 있는가.
+    wide = any(
+        (not net.is_loopback) and net.num_addresses > 1 for net in networks
+    )
+    return {
+        "configured_cidrs": configured,
+        "loopback_only": loopback_only,
+        "secret_set": secret_set,
+        "has_wide_cidr": wide,
+    }
+
+
 def _base64url_encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 

@@ -21,7 +21,7 @@
 | GM-02 | `[x]` | P1 | S | correctness | CONFIRMED | mock | 성능 차트에서 6/24/72시간을 선택해도 첫 WS 프레임 도착 즉시 최근 1시간으로 붕괴 |
 | GM-03 | `[x]` | P1 | M | operability | CONFIRMED | n150 live | Manager 자신의 systemd 유닛 부재 — 재부팅·크래시 후 관리면 전체가 수동 개입 전까지 다운 |
 | GM-04 | `[x]` | P1 | M | correctness | REVISED | n150 live | trusted installer가 실행 중인 서비스 발밑의 /opt 트리를 교체하고, 매 설치마다 요청 디렉터리 소유권을 리셋한다 |
-| GM-05 | `[ ]` | P1 | M | security | REVISED | mock | 로그인 rate limit이 프록시 뒤에서 단일 전역 버킷으로 붕괴 — 외부인이 관리자 로그인을 지속 봉쇄 가능 |
+| GM-05 | `[x]` | P1 | M | security | REVISED | mock | 로그인 rate limit이 프록시 뒤에서 단일 전역 버킷으로 붕괴 — 외부인이 관리자 로그인을 지속 봉쇄 가능 |
 | GM-06 | `[ ]` | P1 | M | operability | REVISED | mock | 예외 분류가 영어 문장 문자열 비교에 의존하고, CLI --json은 오류 정보를 버리거나 계약을 절반만 지킨다 |
 | GM-07 | `[ ]` | P1 | L | correctness | REVISED | n150 live | 백업 복원 CLI 부재 — restore-plan까지만 있고 실제 복구·리허설 경로는 수동 문서 절차뿐 |
 | GM-08 | `[ ]` | P2 | M | operability | CONFIRMED | mock | off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음 |
