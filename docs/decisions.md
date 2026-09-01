@@ -2386,7 +2386,8 @@ state root 규칙은 여전히 새로 만들지 않는다. 1차 개정이 "소�
   `/home/digitie/f1d-v5-rehearsal/manager`), ② root-owned 오프라인 wheelhouse는 이미
   충분하며(이 브랜치는 새 런타임 의존이 **없다**), ③ installer가 capture/rebuild-pinned와
   **같은 global mutation lock**을 잡고, ④ `/opt/.../.env` bytes는 보존되며, ⑤ Manager용
-  systemd unit이 없어 재기동이 필요 없고, ⑥ commit 뒤에는 `.rollback` 트리가 삭제되어
+  systemd unit이 없어 재기동이 필요 없고(당시 기준 — 2026-09-01 GM-03부터 unit이
+  존재하므로 이후 설치는 `systemctl restart`가 반영 시점이다), ⑥ commit 뒤에는 `.rollback` 트리가 삭제되어
   자동 되돌리기 경로가 **없다**. **이번 라운드에서 실행하지 않았다.**
 - (open) n150의 stale `pinned-runtime-generation-v5*`는 capture가 건드리지 않으므로 그대로
   남는다. capture는 이제 불일치를 **보고**하지만 고치지는 않는다. 별개 작업으로 분리한다.

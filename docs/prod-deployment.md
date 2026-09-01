@@ -235,6 +235,23 @@ installer는 `--no-index` wheelhouse에서 `backend/.venv`를 만들고 `ktdctl`
 installer가 새로 전달하지 않으며 운영 호스트에서 별도로 준비한 canonical 파일을 사용한다. 백엔드는
 그 루트 `.env`를 로드해 `KTDM_CORS_ALLOW_ORIGINS`와 `KTDM_PROD_URL_*`를 적용한다.
 
+백엔드는 systemd 유닛으로 구동한다. installer가 `deploy/systemd/ktdm-backend.service`를
+`/etc/systemd/system/`에 설치·enable하므로(재기동은 하지 않는다), **설치 직후에는 옛
+코드가 계속 돌고 있다** — 새 release 반영은 명시적 재기동이다:
+
+```bash
+sudo systemctl restart ktdm-backend
+sudo systemctl status ktdm-backend --no-pager   # active (running) 확인
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12901/health   # 200
+```
+
+재부팅·크래시 복구는 systemd가 소유한다(`Restart=on-failure`, enable됨). 로그는
+journald(`journalctl -u ktdm-backend`)와 백엔드 자체의 월간 로테이션 파일
+(`backend/logs/`) 양쪽에 남는다 — 과거의 `/tmp` 로그는 tmpfs라 재부팅(진단이 가장
+필요한 순간) 직후 증발했다.
+
+유닛이 아직 없는 호스트(첫 설치 전, rehearsal 등)의 폴백만 nohup을 쓴다:
+
 ```bash
 cd /opt/kor-travel-docker-manager/backend
 nohup setsid env PYTHONPATH=src .venv/bin/python \
@@ -364,10 +381,11 @@ drwxrwxrwt 5 root root ...  ..
 트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접
 실행한다. 유닛 자체는 release와 무관하므로 재설치할 필요가 없다.
 
-**이 유닛은 `/opt/kor-travel-docker-manager` 밖에 남는 유일한 설치 산출물이다.** release
-rollback은 이것을 되돌리지 않는다 — 이전 release로 내려가도 `/usr/lib/tmpfiles.d`의 유닛은
-그대로 남는다. 내용이 경로·mode·소유자 한 줄뿐이라 실무상 문제가 되지 않지만, 완전히
-제거하려면 다음과 같이 한다.
+**`/opt/kor-travel-docker-manager` 밖에 남는 설치 산출물은 넷이다**: 이 tmpfiles 유닛,
+`/etc/systemd/system/ktdm-backend.service`·`ktdm-frontend.service`(3절·4절),
+`/etc/logrotate.d/kor-travel-docker-manager`(cron 백업 로그 로테이션, `KTDM_BACKUP_ROOT`
+선언 시). release rollback은 이들을 되돌리지 않는다 — 이전 release로 내려가도 각 파일은
+그대로 남고, 다음 설치가 갱신한다. tmpfiles 유닛을 완전히 제거하려면 다음과 같이 한다.
 
 ```bash
 sudo rm -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
@@ -383,13 +401,28 @@ sudo rm -rf /run/lock/kor-travel-docker-manager   # 진행 중인 mutation이 �
 ## 4. 프론트엔드 (Next.js, :12905)
 
 ```bash
-cd /opt/kor-travel-docker-manager/frontend
+cd <프론트엔드 배포 디렉터리>
 npm ci
 npm run build      # .env.production 의 NEXT_PUBLIC_BACKEND_URL 이 번들에 인라인됨
-nohup setsid npm run start > /tmp/ktdm_frontend.log 2>&1 &   # next start -p 12905
+sudo systemctl restart ktdm-frontend
 ```
 
 `NEXT_PUBLIC_*`은 빌드 타임에 인라인되므로 운영 호스트에서 빌드해야 운영 API 주소가 반영된다.
+
+프론트엔드 유닛은 계정명·경로가 host 민감 정보라 템플릿
+(`deploy/systemd/ktdm-frontend.service.template`)이며, installer가 root 소유 `.env`의
+아래 키로 렌더링해 설치한다. 두 필수 키가 없으면 유닛을 건너뛰고 경고만 남긴다.
+
+```bash
+# .env (root 0600)
+KTDM_FRONTEND_SERVICE_USER=<프론트엔드를 소유·실행할 비root 계정>
+KTDM_FRONTEND_APP_DIR=<frontend 디렉터리 절대 경로>
+KTDM_FRONTEND_NPM=<npm 절대 경로, 생략 시 /usr/local/bin/npm>
+```
+
+프론트엔드는 root 권한이 전혀 필요 없다 — 과거 nohup 방식이 root로 띄우던 것은
+불필요한 권한 확대였고, 유닛은 반드시 비root 계정으로 지정한다. 유닛 미설치 호스트의
+폴백: `nohup setsid npm run start > /tmp/ktdm_frontend.log 2>&1 &`
 
 ## 5. 공개 도메인 라우팅 (네트워크 인프라 — 저장소 밖)
 

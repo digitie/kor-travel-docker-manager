@@ -1480,3 +1480,152 @@ install_host_lease_tmpfiles() {
 if ! install_host_lease_tmpfiles; then
   echo "trusted release committed; host lease boot provisioning requires attention" >&2
 fi
+
+# Manager 자신의 systemd 유닛을 설치한다.
+#
+# 관리 대상 컨테이너는 restart: unless-stopped로 재부팅에서 살아나지만 Manager는
+# nohup으로 떠 있어 재부팅·크래시 후 아무도 다시 띄우지 않았다. 유닛 설치·갱신은
+# 설치가 책임지되, **재기동은 하지 않는다** — 실행 중인 서비스 발밑의 트리를 지금
+# 막 교체했으므로, 새 코드 반영 시점은 운영자의 `systemctl restart` 결정에 맡긴다.
+# 설치 직후에는 옛 코드가 계속 돌고 있음을 아래 안내가 명시한다.
+require_root_trusted_source_file() {
+  # tmpfiles 함수와 같은 신뢰 기준: 존재·일반 파일·root 소유·group/other 쓰기 금지.
+  local source="$1" label="$2" uid mode
+  if [[ -L "${source}" || ! -f "${source}" ]]; then
+    echo "${label} missing from the installed release: ${source}" >&2
+    return 1
+  fi
+  uid="$(/usr/bin/stat -c '%u' "${source}" 2>/dev/null || true)"
+  mode="$(/usr/bin/stat -c '%a' "${source}" 2>/dev/null || true)"
+  if [[ ! "${uid}" =~ ^[0-9]+$ || ! "${mode}" =~ ^[0-7]{3,4}$ ]]; then
+    echo "cannot read ${label} metadata: ${source}" >&2
+    return 1
+  fi
+  if [[ "${uid}" != "0" || $((8#${mode} & 022)) != "0" ]]; then
+    echo "${label} is writable or not root-owned: ${source}" >&2
+    return 1
+  fi
+  return 0
+}
+
+read_env_value() {
+  # root 소유 0600 .env에서 KEY=VALUE 한 줄을 읽는다. 마지막 선언이 이긴다.
+  # 값에 셸 확장을 적용하지 않는다 — 문자 그대로 취급한다.
+  local key="$1" line=""
+  line="$(/usr/bin/grep -E "^${key}=" "${APP_ROOT}/.env" 2>/dev/null | /usr/bin/tail -1 || true)"
+  printf '%s' "${line#"${key}"=}"
+}
+
+install_manager_systemd_units() {
+  local backend_source="${APP_ROOT}/deploy/systemd/ktdm-backend.service"
+  local frontend_template="${APP_ROOT}/deploy/systemd/ktdm-frontend.service.template"
+  local failed=0
+
+  if [[ ! -x /usr/bin/systemctl ]]; then
+    echo "systemctl unavailable; Manager systemd units are not installed" >&2
+    return 1
+  fi
+
+  if require_root_trusted_source_file "${backend_source}" "backend systemd unit"; then
+    if ! /usr/bin/install -T -o root -g root -m 0644 -- \
+      "${backend_source}" /etc/systemd/system/ktdm-backend.service; then
+      echo "cannot install backend systemd unit" >&2
+      failed=1
+    fi
+  else
+    failed=1
+  fi
+
+  # 프론트엔드 유닛은 계정명·경로가 host 민감 정보라 템플릿이다. .env의 두 필수
+  # 키가 없으면 건너뛴다 — 프론트엔드를 다른 방식으로 돌리는 host를 막지 않는다.
+  local frontend_user frontend_dir frontend_npm
+  frontend_user="$(read_env_value KTDM_FRONTEND_SERVICE_USER)"
+  frontend_dir="$(read_env_value KTDM_FRONTEND_APP_DIR)"
+  frontend_npm="$(read_env_value KTDM_FRONTEND_NPM)"
+  frontend_npm="${frontend_npm:-/usr/local/bin/npm}"
+  local frontend_installed=0
+  if [[ -z "${frontend_user}" || -z "${frontend_dir}" ]]; then
+    echo "KTDM_FRONTEND_SERVICE_USER/KTDM_FRONTEND_APP_DIR가 .env에 없어 frontend 유닛을 건너뜁니다" >&2
+  elif ! /usr/bin/id -u -- "${frontend_user}" >/dev/null 2>&1; then
+    echo "frontend service user is not a host account: ${frontend_user}" >&2
+    failed=1
+  elif [[ "${frontend_dir}" != /* || ! -d "${frontend_dir}" ]]; then
+    echo "frontend app dir is not an absolute existing directory: ${frontend_dir}" >&2
+    failed=1
+  elif [[ ! -x "${frontend_npm}" ]]; then
+    echo "frontend npm path is not executable: ${frontend_npm}" >&2
+    failed=1
+  elif require_root_trusted_source_file "${frontend_template}" "frontend systemd unit template"; then
+    local rendered content
+    rendered="$(/usr/bin/mktemp)" || { echo "mktemp failed" >&2; return 1; }
+    # 치환문의 & 는 sed·awk gsub뿐 아니라 bash 5.2+의 patsub_replacement에서도
+    # 특수문자다(매치 패턴으로 확장 — 실행 검증으로 확인). 치환문을 따옴표로
+    # 감싸면 bash가 literal을 보장한다.
+    content="$(<"${frontend_template}")"
+    content="${content//__KTDM_FRONTEND_USER__/"${frontend_user}"}"
+    content="${content//__KTDM_FRONTEND_DIR__/"${frontend_dir}"}"
+    content="${content//__KTDM_FRONTEND_NPM__/"${frontend_npm}"}"
+    printf '%s\n' "${content}" > "${rendered}"
+    if ! /usr/bin/install -T -o root -g root -m 0644 -- \
+      "${rendered}" /etc/systemd/system/ktdm-frontend.service; then
+      echo "cannot install frontend systemd unit" >&2
+      failed=1
+    else
+      frontend_installed=1
+    fi
+    /usr/bin/rm -f -- "${rendered}"
+  else
+    failed=1
+  fi
+
+  if ! /usr/bin/systemctl daemon-reload; then
+    echo "systemctl daemon-reload failed" >&2
+    failed=1
+  fi
+  if [[ -f /etc/systemd/system/ktdm-backend.service ]]; then
+    /usr/bin/systemctl enable ktdm-backend.service >/dev/null 2>&1 || true
+  fi
+  if [[ "${frontend_installed}" == "1" ]]; then
+    /usr/bin/systemctl enable ktdm-frontend.service >/dev/null 2>&1 || true
+  fi
+  echo "systemd units installed/updated. 실행 중인 프로세스는 아직 옛 코드다 —" >&2
+  echo "새 release 반영: sudo systemctl restart ktdm-backend (프론트엔드 갱신 시 ktdm-frontend)" >&2
+  return "${failed}"
+}
+
+install_backup_logrotate() {
+  # cron 백업 로그(`>>` append)의 무한 누적을 막는다. KTDM_BACKUP_ROOT가 .env에
+  # 없으면 백업 자동화를 쓰지 않는 host이므로 조용히 건너뛴다.
+  local template="${APP_ROOT}/deploy/logrotate.d/kor-travel-docker-manager.template"
+  local backup_root
+  backup_root="$(read_env_value KTDM_BACKUP_ROOT)"
+  if [[ -z "${backup_root}" ]]; then
+    return 0
+  fi
+  if [[ "${backup_root}" != /* || ! -d "${backup_root}" ]]; then
+    echo "KTDM_BACKUP_ROOT is not an absolute existing directory: ${backup_root}" >&2
+    return 1
+  fi
+  require_root_trusted_source_file "${template}" "backup logrotate template" || return 1
+  local rendered content
+  rendered="$(/usr/bin/mktemp)" || { echo "mktemp failed" >&2; return 1; }
+  content="$(<"${template}")"
+  # 치환문 따옴표: bash 5.2+ patsub_replacement의 & 확장을 막는다.
+  content="${content//__KTDM_BACKUP_ROOT__/"${backup_root}"}"
+  printf '%s\n' "${content}" > "${rendered}"
+  if ! /usr/bin/install -T -o root -g root -m 0644 -- \
+    "${rendered}" /etc/logrotate.d/kor-travel-docker-manager; then
+    echo "cannot install backup logrotate config" >&2
+    /usr/bin/rm -f -- "${rendered}"
+    return 1
+  fi
+  /usr/bin/rm -f -- "${rendered}"
+  return 0
+}
+
+if ! install_manager_systemd_units; then
+  echo "trusted release committed; Manager systemd unit provisioning requires attention" >&2
+fi
+if ! install_backup_logrotate; then
+  echo "trusted release committed; backup logrotate provisioning requires attention" >&2
+fi

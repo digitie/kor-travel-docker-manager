@@ -1,0 +1,32 @@
+# kor-travel-docker-manager 백엔드 (FastAPI :12901)
+#
+# 왜 필요한가: 관리 대상 컨테이너는 restart: unless-stopped로 재부팅에서 살아나지만,
+# 그들을 관리하는 Manager 자신은 nohup으로 떠 있어 재부팅·크래시 후 아무도 다시
+# 띄우지 않았다. pkill 권한 부족으로 재기동이 조용히 실패해 옛 코드가 계속 떠 있던
+# 실사고도 있었다(docs/journal.md 참조). systemd가 기동·재기동·크래시 복구를 소유하면
+# "재기동했다고 믿었는데 옛 프로세스"인 상태가 성립하지 않는다.
+#
+# 설치는 scripts/install-ktdm-trusted-release가 수행한다(root 소유 검증 후
+# /etc/systemd/system/에 install + daemon-reload + enable). installer는 **재기동은
+# 하지 않는다** — 설치 직후에는 옛 코드가 계속 돌고 있으며, 운영자가
+# `sudo systemctl restart ktdm-backend`로 새 release를 반영한다.
+#
+# root 실행은 현행 계약이다(ADR-41; 전용 계정 전환은 NONROOT-BACKEND 태스크).
+# 표준 출력은 journald로 가고, 백엔드 자체의 월간 로테이션 파일 로그
+# (backend/logs/)는 그대로 유지된다.
+
+[Unit]
+Description=kor-travel-docker-manager backend (FastAPI :12901)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=exec
+WorkingDirectory=/opt/kor-travel-docker-manager/backend
+Environment=PYTHONPATH=/opt/kor-travel-docker-manager/backend/src
+ExecStart=/opt/kor-travel-docker-manager/backend/.venv/bin/python -m uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 12901
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

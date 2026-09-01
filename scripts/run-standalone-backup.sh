@@ -4,6 +4,8 @@
 # cron/systemd timer에 넣지 않는다. geo_dagster metadata DB는 별도 백업 대상으로 남긴다.
 # cron/systemd timer에서는 H49가 승인한 세 role만 부른다. Map application/Dagster와
 # geo application은 각각 #148 정책·geo 앱 백업과 중복되므로 이 wrapper의 주기 대상이 아니다.
+# 아래 `>>` append 로그의 로테이션은 trusted installer가 .env의 KTDM_BACKUP_ROOT로
+# /etc/logrotate.d/kor-travel-docker-manager를 렌더링해 설치한다(GM-03).
 # 다음 줄을 crontab에 한 번 넣어 host timezone과 무관하게 UTC로 고정한다:
 #   CRON_TZ=UTC
 #   15 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh geo_dagster 4 >>/absolute/backup/root/geo_dagster.log 2>&1
