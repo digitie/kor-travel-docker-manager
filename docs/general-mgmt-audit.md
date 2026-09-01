@@ -30,7 +30,7 @@
 | GM-11 | `[x]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
 | GM-12 | `[x]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
 | GM-13 | `[x]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
-| GM-14 | `[ ]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
+| GM-14 | `[x]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
 | GM-15 | `[ ]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
 | GM-16 | `[ ]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
 | GM-17 | `[ ]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화 |
@@ -796,6 +796,45 @@ readable/unreadable을 나눠서 비교하는 방식이라 애초에 순서 버�
 사실로 확인된 것: (1) post_backup은 routes.py의 유일한 async 핸들러 감사 호출자다 — routes.py:182 `async def post_backup`, :209 `record_login_audit_event(...)` 동기 호출. 다른 감사 호출부(auth.py:31/92, admin.py 전부, routes.py:461/641 runtime-pin)는 전부 sync `def`라 threadpool에서 돈다. (2) record_login_audit_event는 INSERT+commit 후 _prune_login_audit_events의 SELECT/DELETE/commit까지 수행한다(auth_service.py:287-334). (3) database.py:12-15 엔진에 WAL/busy_timeout PRAGMA가 전혀 없다(backend/src 전체 grep 0건). pysqlite 기본 busy timeout 5초도 맞다. (4) submit 성공(:206) 뒤 감사 예외를 잡는 try/except가 없어 job이 이미 도는 채로 500이 나가는 것도 맞다 — 이를 고정하는 테스트·ADR·문서 계약은 없고(backend/tests grep, docs/decisions.md·docker-management.md 확인), 95200f0의 '감사 fail-open'은 셸 스크립트(scripts/install-ktdm-trusted-release) 건이라 무관하다. M05 동결은 pin/execution identity 영역이라 이 수정과 충돌하지 않는다.
 
 수정해야 할 것 두 가지. 첫째, **경합 상대 지목이 틀렸다**: metrics collector는 asyncio task로 event loop 위에서 돌고(metrics_collector.py:330 `asyncio.create_task(self._collect_loop())`), save_metric을 async collect_metrics 안에서 **동기 호출**한다(:521). 같은 스레드의 두 동기 호출은 시간상 겹칠 수 없으므로 post_backup 감사 쓰기와 collector 쓰기는 서로 잠금 경합이 불가능하다. 실제 경합 상대는 threadpool 쪽이다: sync def 핸들러의 감사/세션 쓰기와 websocket 인가의 `asyncio.to_thread(_websocket_authorize, ...)` SELECT(websocket.py:269,393,495). 둘째, **개선안의 커버리지가 부족하다**: loop를 실제로 가장 자주 멈추는 것은 post_backup(드문 호출)이 아니라 collector 자신이다 — save_metric(:521)은 10초마다 컨테이너당 1회, cleanup_old_metrics(:357, :365)는 시작 시+약 1시간마다 30일치 대량 DELETE(+commit)를 **loop 위에서 동기로** 실행한다. 이쪽은 경합 없이도 fsync 시간만큼 loop를 세운다. 'event loop 정지 방지'가 목표라면 이 두 호출의 to_thread 이관이 개선안에 포함되어야 한다. 셋째(경미), WAL 제안 주의: DB 파일이 repo 루트(database.py:9, 개발 시 /mnt/f drvfs/9p)에 있어 WAL의 shm/mmap이 drvfs에서 실패할 수 있다 — busy_timeout PRAGMA는 무조건 안전하지만 WAL은 fallback 또는 개발 환경 실측이 필요하다(운영 n150 native fs는 문제없음). 넷째(대안 제시), 500 완화는 계약 위반이 아니지만, 더 엄격한 감사를 원하면 submit **이전에** 'requested' 감사 행을 쓰고 감사 실패 시 mutation 자체를 거부하는 fail-close 설계도 가능하다 — 어느 쪽이든 문서화하면 된다. effort S는 좁은 수정 기준으로 현실적이고, collector 커버리지와 WAL fallback까지 넣으면 S~M.
+
+**구현**: 검증 노트가 재지목한 실제 범위(post_backup 하나가 아니라 metrics
+collector 자신)를 그대로 따랐다. (1) `routes.py`의 `post_backup`: 감사 기록
+호출을 `await asyncio.to_thread(record_login_audit_event, ...)`로 스레드에
+내렸다. 또한 job이 이미 성공적으로 제출된 **뒤**에 이 호출이 있으므로,
+감사 쓰기가 실패해도 요청을 500으로 승격하지 않고 `logger.critical` +
+응답의 `audit_warning` 필드로만 남긴다 — 개선안이 지적한 "이미 시작된
+백업이 실패로 오판된다" 문제를 그대로 고쳤다. (2) `metrics_collector.py`의
+`_collect_loop`: 검증 노트가 실제 dominant 원인으로 지목한
+`cleanup_old_metrics()`(시작 시 1회 + ~1시간마다) 두 호출 지점 모두
+`asyncio.to_thread`로 내렸다. `collect_metrics()` 안의 `save_metric()`(컨테이너당
+10초마다)도 같은 방식으로 내렸다 — 개선안의 커버리지 공백을 정확히 메웠다.
+(3) `database.py`: SQLAlchemy `connect` 이벤트 훅으로 모든 신규 연결에
+`PRAGMA busy_timeout = 3000`을 건다(검증 노트가 "무조건 안전"하다고 확인한
+부분). WAL은 검증 노트가 지적한 drvfs/9p shm·mmap 실패 가능성을 실제
+개발 환경에서 검증하지 않고는 켜지 않기로 하고 `docs/tasks.md` 후속
+항목으로 남겼다.
+
+회귀 테스트 6건 추가: `post_backup`의 감사 쓰기가 실제로 event loop 스레드가
+아닌 곳에서 실행되는지(스레드 *이름* 비교로는 못 잡는다는 것을 먼저
+확인했다 — TestClient 자체가 이미 별도 스레드에서 앱의 이벤트 루프를 돌려
+"메인 스레드 아님"이 to_thread 여부와 무관하게 항상 참이 된다. 대신
+`asyncio.get_running_loop()`의 성공 여부로 판별: to_thread의 실행기 워커
+스레드에는 바인딩된 루프가 없다) 1건, 감사 쓰기 실패가 여전히 202를
+반환하는지 1건, `metrics_collector._collect_loop`의 초기 cleanup 호출이
+같은 방식으로 event loop 밖에서 도는지 1건, `database.py`의 connect 리스너
+함수 자체가 실제로 PRAGMA를 거는지 2건(연결마다 독립적으로 재적용되는지
+포함) — `test_metrics.py`/`test_api.py`가 이미 `kor_travel_docker_manager.database.engine`을
+모듈 레벨에서 테스트용 엔진으로 바꿔치기하므로, `database.engine`을 직접
+참조하는 테스트는 파일 수집 순서에 의존하는 오탐이 남을 수 있다는 것을
+먼저 재현으로 확인하고(`test_metrics.py`를 먼저 수집시켜 재현), connect
+리스너 함수 자체를 raw sqlite3 커넥션에 직접 호출하는 방식으로 다시 짜서
+순서 의존성을 없앴다. `collect_metrics()` 안의 `save_metric()` to_thread
+래핑은 Docker client stats 응답 전체를 흉내 내야 하는 상당한 mock이
+필요해 자동 테스트를 보류했다(`docs/tasks.md`에 기록, 같은 패턴이라
+저위험으로 판단). mutation으로 3곳 재검증(post_backup 감사 to_thread,
+post_backup 감사 실패 시 500 승격 여부, collector cleanup to_thread — 셋 다
+전용 테스트가 예상대로 실패, 원복 후 재통과). 전체 backend 1373 passed,
+2 skipped, ruff 통과.
 
 
 ## GM-15: 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지

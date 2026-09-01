@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
@@ -57,6 +59,8 @@ from kor_travel_docker_manager.services.standalone_backup import (
     create_standalone_backup,
     list_standalone_backups_for_display,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
 
@@ -192,11 +196,20 @@ async def post_backup(
 
     A `def` handler runs in the threadpool where there is no running loop, so this one
     must be `async def` — `asyncio.create_task` inside the runner would raise otherwise.
+    That means any *synchronous* call made directly in this body runs on the event
+    loop itself, not a worker thread — the audit write below is pushed to a thread
+    (`asyncio.to_thread`) so a slow/contended SQLite write here cannot stall every
+    other request and WebSocket the loop is serving (GM-14).
 
     Only the *start* is audited. The job finishes in a worker thread with no `Request`
     object, and the audit helper needs one. Completion is observable through
     `GET /backups/{role}/jobs/{job_id}`, the runner's log line, and — the durable record
-    — the manifest that `GET /backups` lists."""
+    — the manifest that `GET /backups` lists.
+
+    The audit write happens *after* the job is already submitted and running — if it
+    fails, the backup itself is unaffected, so this does not fail the request (GM-14):
+    a 500 here would make the caller think the backup never started when it already
+    has."""
     if role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
 
@@ -209,20 +222,33 @@ async def post_backup(
         record = await job_runner.submit(kind="db_backup_create", key=role, run=run)
     except JobConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    record_login_audit_event(
-        request,
-        event_type="backup",
-        outcome="succeeded",
-        attempted_username=session.username,
-        reason="db_backup_create_started",
-        session_id_hash=session.session_id_hash,
-        detail={
-            "role": role,
-            "job_id": record.job_id,
-            "timeout_seconds": timeout_seconds,
-        },
-    )
-    return record.to_json()
+
+    result = record.to_json()
+    try:
+        await asyncio.to_thread(
+            record_login_audit_event,
+            request,
+            event_type="backup",
+            outcome="succeeded",
+            attempted_username=session.username,
+            reason="db_backup_create_started",
+            session_id_hash=session.session_id_hash,
+            detail={
+                "role": role,
+                "job_id": record.job_id,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+    except Exception:
+        logger.critical(
+            "db_backup_create audit event failed to record (role=%s, job_id=%s) — "
+            "the backup itself started successfully and is unaffected",
+            role,
+            record.job_id,
+            exc_info=True,
+        )
+        result["audit_warning"] = "backup started, but the audit log entry failed to record"
+    return result
 
 
 @router.get("/backups/{role}/jobs")

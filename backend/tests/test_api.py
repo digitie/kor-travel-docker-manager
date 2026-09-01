@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 import time
@@ -1753,6 +1754,69 @@ def test_post_backup_returns_202_and_a_job_that_finishes(mock_create, clean_job_
     assert finished["state"] == "succeeded"
     assert finished["result"]["backup_filename"] == "geo-1.dump"
     mock_create.assert_called_once_with("geo", timeout=60)
+
+
+@patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_records_the_audit_event_off_the_event_loop_thread(
+    mock_create, mock_audit, clean_job_runner
+):
+    """GM-14: 이 감사 기록은 asyncio.to_thread로 내려야 한다 — 그냥 동기 호출로
+    두면 이 async 핸들러가 event loop 스레드 위에서 직접 블로킹 DB 쓰기를
+    하게 되어, 그 사이 /health·모든 WebSocket·broadcast가 함께 멈춘다.
+
+    스레드 *이름* 비교로는 이걸 못 잡는다 — TestClient 자체가 이미 메인
+    스레드가 아닌 별도 스레드에서 앱의 이벤트 루프를 돌리므로, to_thread를
+    빼도 "메인 스레드가 아니다"는 여전히 참이 돼 오탐 없이 통과해 버린다
+    (직접 재현·mutation으로 확인). 대신 asyncio.get_running_loop()의
+    성공 여부로 판별한다 — to_thread의 ThreadPoolExecutor 워커 스레드에는
+    바인딩된 이벤트 루프가 없어 RuntimeError가 나지만, 이벤트 루프 스레드
+    위에서 직접 호출되면 루프가 잡힌다."""
+
+    login_client()
+    manifest = Mock()
+    manifest.to_json.return_value = {"role": "geo", "backup_filename": "geo-1.dump"}
+    mock_create.return_value = manifest
+    ran_without_a_running_loop = None
+
+    def capture_loop_state(*args, **kwargs):
+        nonlocal ran_without_a_running_loop
+        try:
+            asyncio.get_running_loop()
+            ran_without_a_running_loop = False
+        except RuntimeError:
+            ran_without_a_running_loop = True
+
+    mock_audit.side_effect = capture_loop_state
+
+    response = client.post("/api/v1/backups/geo", json={"timeout_seconds": 60})
+
+    assert response.status_code == 202
+    assert ran_without_a_running_loop is True
+
+
+@patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_still_returns_202_when_the_audit_write_fails(
+    mock_create, mock_audit, clean_job_runner
+):
+    """GM-14: 감사 기록은 job이 이미 시작된 *뒤*에 남긴다 — 그 기록이 실패해도
+    백업 자체는 멀쩡히 도는데 이걸 500으로 보고하면 클라이언트가 '시작 안 됐다'고
+    오판하고 재시도해 이중 pg_dump를 유발할 수 있다."""
+
+    login_client()
+    manifest = Mock()
+    manifest.to_json.return_value = {"role": "geo", "backup_filename": "geo-1.dump"}
+    mock_create.return_value = manifest
+    mock_audit.side_effect = RuntimeError("database is locked")
+
+    response = client.post("/api/v1/backups/geo", json={"timeout_seconds": 60})
+
+    assert response.status_code == 202
+    started = response.json()
+    assert started["state"] == "running"
+    assert "failed to record" in started["audit_warning"]
+    mock_audit.assert_called_once()
 
 
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")

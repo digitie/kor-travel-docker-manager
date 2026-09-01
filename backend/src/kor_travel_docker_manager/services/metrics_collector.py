@@ -352,9 +352,13 @@ class MetricsCollector:
             return deepcopy(observation) if observation is not None else None
 
     async def _collect_loop(self):
+        # GM-14: cleanup_old_metrics()는 30일치 대량 DELETE+commit이라 event loop
+        # 위에서 동기로 돌리면 그 fsync 시간만큼 /health·모든 WebSocket·broadcast가
+        # 함께 멈춘다 — 경합 여부와 무관하게 이 호출 자체가 loop를 막는 시간이 크다.
+        # 스레드로 내려 loop가 그 사이에도 다른 요청을 계속 처리하게 한다.
         cleanup_counter = 0
         try:
-            metrics_service.cleanup_old_metrics()
+            await asyncio.to_thread(metrics_service.cleanup_old_metrics)
         except Exception as exc:
             logger.error(f"Initial old metrics cleanup failed: {exc}")
 
@@ -362,7 +366,7 @@ class MetricsCollector:
             try:
                 cleanup_counter += 1
                 if cleanup_counter >= 360:
-                    metrics_service.cleanup_old_metrics()
+                    await asyncio.to_thread(metrics_service.cleanup_old_metrics)
                     cleanup_counter = 0
                 await self.collect_metrics()
             except asyncio.CancelledError:
@@ -518,7 +522,11 @@ class MetricsCollector:
                     }
 
                     try:
-                        metrics_service.save_metric(
+                        # GM-14: 이 컨테이너 루프 전체가 event loop 위에서 도는 async
+                        # 메서드 안이다 — 동기 DB 쓰기를 그대로 두면 컨테이너 수만큼
+                        # 10초마다 loop가 짧게라도 멈춘다. 스레드로 내린다.
+                        await asyncio.to_thread(
+                            metrics_service.save_metric,
                             container_id=key,
                             cpu_pct=metric["cpu_pct"],
                             mem_usage=mem_usage,
