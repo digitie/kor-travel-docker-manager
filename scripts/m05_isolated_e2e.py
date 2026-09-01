@@ -1288,6 +1288,36 @@ def _approve_map_request(
     return feature_id
 
 
+def _resolve_manual_feature_text_id(
+    *, admin_url: str, proxy_secret: str, feature_uuid: str
+) -> str:
+    """승인 응답의 UUID(T-VN-32C 정본)를 opaque TEXT feature_id로 해석한다.
+
+    dedup 프로시저·reconciliation feed는 feature.features.feature_id(TEXT)를
+    기대하는데 승인/생성 응답은 UUID를 싣는다 — 이 불일치가 e2e15에서
+    'candidate Feature proof is not eligible'(NOT FOUND)로 드러났다. M02
+    creation-provenance 리더가 두 식별자를 최상위에 함께 실으므로 그것으로
+    해석하고, UUID 결박(feature_uuid == 요청 UUID)도 함께 검증한다.
+    """
+
+    value = _data(
+        _http_json(
+            f"{admin_url.rstrip('/')}/v1/admin/features/{feature_uuid}"
+            "/creation-provenance",
+            headers=_map_headers(proxy_secret),
+            failure_phase="m04_map_approval_http_failed",
+        )
+    )
+    text_id = value.get("feature_id")
+    if (
+        not isinstance(text_id, str)
+        or not text_id
+        or value.get("feature_uuid") != feature_uuid
+    ):
+        _fail("m04_map_approval_invalid")
+    return text_id
+
+
 def _seed_m05_provider_fixture(
     *, map_network: str, map_env: Path, image: str, manual_feature_id: str
 ) -> dict[str, str]:
@@ -2790,11 +2820,16 @@ def main(expected_revision: str, output: Path) -> int:
             cwd=pinvi_root,
             env=m04_environment,
         )
-        manual_feature_id = _approve_map_request(
+        manual_feature_uuid = _approve_map_request(
             admin_url=admin_url,
             request_id=feature_request_id,
             proxy_secret=map_secret,
             manual_create_token=manual_feature_token,
+        )
+        manual_feature_id = _resolve_manual_feature_text_id(
+            admin_url=admin_url,
+            proxy_secret=map_secret,
+            feature_uuid=manual_feature_uuid,
         )
         fixture = _seed_m05_provider_fixture(
             map_network=plan.map_network,

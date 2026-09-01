@@ -2178,3 +2178,45 @@ def test_playwright_runner_guarantee_precedes_the_ledger_claim() -> None:
     assert inspect_at < claim_at
     assert version_bind_at < claim_at
     assert "runner driverVersion != pinned playwright-core" in source
+
+
+def test_manual_feature_uuid_resolves_to_text_id_via_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """승인 UUID(T-VN-32C)는 M02 provenance로 opaque TEXT id로 해석돼야 한다.
+
+    dedup 프로시저는 feature.features.feature_id(TEXT)를 기대한다 — UUID를
+    그대로 넘기면 NOT FOUND가 'proof is not eligible'로 위장한다(e2e15 실측)."""
+
+    driver = _driver()
+    feature_uuid = "01a05b4c-dc60-7444-95a4-98fde8aeb782"
+
+    def fake_http_json(url: str, **_kwargs: object) -> dict[str, object]:
+        assert url.endswith(f"/v1/admin/features/{feature_uuid}/creation-provenance")
+        return {
+            "data": {
+                "feature_id": "f_manual_abc123",
+                "feature_uuid": feature_uuid,
+            }
+        }
+
+    monkeypatch.setattr(driver, "_http_json", fake_http_json)
+    resolved = driver._resolve_manual_feature_text_id(
+        admin_url="http://127.0.0.1:20001",
+        proxy_secret="s" * 32,
+        feature_uuid=feature_uuid,
+    )
+    assert resolved == "f_manual_abc123"
+
+    def detached_http_json(url: str, **_kwargs: object) -> dict[str, object]:
+        return {
+            "data": {"feature_id": "f_manual_abc123", "feature_uuid": "0" * 36}
+        }
+
+    monkeypatch.setattr(driver, "_http_json", detached_http_json)
+    with pytest.raises(driver._PhaseError, match="m04_map_approval_invalid"):
+        driver._resolve_manual_feature_text_id(
+            admin_url="http://127.0.0.1:20001",
+            proxy_secret="s" * 32,
+            feature_uuid=feature_uuid,
+        )
