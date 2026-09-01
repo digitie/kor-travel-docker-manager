@@ -213,6 +213,7 @@ def test_runtime_setup_uses_ordered_safe_subphases() -> None:
         "runtime_setup_network",
         "runtime_setup_credentials",
         "runtime_setup_map_config",
+        "runtime_setup_playwright_runner_image",
         "runtime_setup_pinvi_config",
     )
     positions = [source.index(f'phase = "{phase}"') for phase in phases]
@@ -1758,6 +1759,11 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
 
     monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
     monkeypatch.setattr(
+        driver,
+        "_assert_playwright_runner_matches_pinned_source",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
         driver, "_assert_current_m05_execution_is_runnable", lambda _expected: _Execution()
     )
     monkeypatch.setattr(driver, "_root_directory", lambda _path: None)
@@ -2153,3 +2159,22 @@ def test_traceback_evidence_write_failure_does_not_change_the_receipt(
     assert not (tmp_path / "failed-admission-exception.txt").exists()
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert receipt["phase"] == "admission"
+
+
+def test_playwright_runner_guarantee_precedes_the_ledger_claim() -> None:
+    """runner 핀 digest 존재·버전 정합 보장은 실행권 소비 **전**이어야 한다.
+
+    claim 뒤로 밀리는 리팩터 회귀의 비용은 immutable candidate 1개 소각
+    (e2e13 실측)이다. 아울러 runner 핀과 pinned playwright-core 버전의
+    기계 결박이 소스에 있는지도 고정한다(적대 리뷰: 두 사람-선언 핀은
+    독립적으로 어긋난다 — v1.60.0 digest vs 1.62.1 lockfile 실측)."""
+
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+    inspect_at = source.index('"image", "inspect", _PLAYWRIGHT_RUNNER_IMAGE')
+    version_bind_at = source.index("/ms-playwright/.docker-info")
+    claim_at = source.index("claim_m05_isolated_harness_ledger(")
+    assert inspect_at < claim_at
+    assert version_bind_at < claim_at
+    assert "runner driverVersion != pinned playwright-core" in source
