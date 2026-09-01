@@ -1028,18 +1028,28 @@ def test_root_launcher_accepts_only_the_launch_snapshot_and_fixed_schema() -> No
     assert "initial_snapshot" in launcher
     assert "stable_snapshot" in launcher
     assert "post_snapshot" in launcher
-    assert '"$post_snapshot" == "$initial_snapshot"' in launcher
+    # snapshot 등가는 이제 검증을 **건너뛰는 게이트가 아니라** 진단이다 —
+    # launcher가 수명 내내 global mutation lock을 쥐므로 이 창에서 회전은
+    # 물리적으로 불가능하고, 값 불일치는 또 다른 관측 이상일 뿐이다.
+    assert 'snapshot_changed=1' in launcher
+    assert '"$post_snapshot" != "$initial_snapshot"' in launcher
     assert 'value.get("pinset_sha256") != expected_pinset' in launcher
     assert 'value.get("execution_identity_sha256") != expected_execution' in launcher
     assert 'value.get("status") not in {"passed", "blocked", "preflight_rejected"}' in launcher
     assert 'if value["status"] == "preflight_rejected"' in launcher
-    assert 'receipt_validation_status" == 4' in launcher
+    # 결정 분기는 case로 통합됐다 — 각 종료값의 의미가 한 곳에 모여 있다.
+    assert 'case "$receipt_validation_status" in' in launcher
+    for outcome in ("  0)", "  4)", "  5)", "  3)", "  *)"):
+        assert outcome in launcher, outcome
+    # receipt를 못 읽으면 claim 마커로 소비 여부를 판정한다(추측으로 태우지 않는다).
+    assert '[[ ! -e "$output_dir/claimed" ]]' in launcher
+    # 가장 무거운 명령의 상태를 포착한다.
+    assert 'block_write_status="$?"' in launcher
     assert "PREFLIGHT_REJECTED_PHASES" in launcher
     assert 'value.get("phase") not in PREFLIGHT_REJECTED_PHASES' in launcher
     # Tier 2(진단) 불일치는 소각값이 아니라 저하값으로 간다 — 행동은
     # test_tier_two_divergence_never_reaches_the_unconditional_burn_value가 덮는다.
     assert "set(value) != expected_keys" in launcher
-    assert 'receipt_validation_status" == 5' in launcher
     assert "if [[ ! -e \"$launcher_result_path\"" in launcher
 
 
@@ -1078,7 +1088,7 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     assert launcher_phases == driver_phases | {"completed"}
     # blocked receipt는 scoped 기록으로도 durable하다(R1-S1) — 무조건 기록만
     # 요구하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격한다.
-    accepted_block = 'if [[ "$receipt_validation_status" == 3 ]] && has_any_terminal_execution_block; then'
+    accepted_block = 'has_any_terminal_execution_block'
     fallback = 'if ! has_unconditional_terminal_execution_block; then'
     assert accepted_block in launcher
     assert fallback in launcher
@@ -2747,3 +2757,76 @@ def test_snapshot_observation_failure_is_never_silently_discarded() -> None:
         assert swallow not in code, swallow
     # ktdctl 호출은 락을 쥔 채 무기한 대기하면 안 된다.
     assert launcher.count(chr(39).join(['timeout 30 "$ktdctl" pin'])) >= 4
+
+
+def test_directory_fsync_failure_never_changes_the_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """부차적 durability 단계의 실패가 이미 성공한 쓰기를 되돌리면 안 된다.
+
+    종전에는 디렉터리 fsync의 OSError가 그대로 전파돼 호출부의
+    `except (OSError, _PhaseError): return 1`에 걸렸다. 그러면 디스크에
+    `status=passed, phase=completed` receipt가 멀쩡히 있는데 driver가 1을
+    반환하고, launcher Tier 1의 `(status==passed) != (driver_status==0)`가
+    걸려 **통과한 1~2시간 실행이 무조건 소각된다**.
+
+    이 규칙의 정본은 services/secure_state_file.fsync_directory다(GM-10).
+    """
+
+    driver = _driver()
+    target = tmp_path / 'receipt.json'
+
+    real_open = driver.os.open
+
+    def failing_directory_open(path: object, flags: int, *args: object) -> int:
+        if flags & driver.os.O_DIRECTORY:
+            raise OSError(5, "simulated directory open failure")
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(driver.os, "open", failing_directory_open)
+    driver._write_private_bytes(target, b"payload\\n")
+
+    # 쓰기는 성공했고 파일은 그대로다 — 부차 단계의 실패가 아무것도 되돌리지 않는다.
+    assert target.read_bytes() == b"payload\\n"
+
+    real_fsync = driver.os.fsync
+    directory_fds: list[int] = []
+
+    def failing_directory_fsync(descriptor: int) -> None:
+        if descriptor in directory_fds:
+            raise OSError(5, "simulated directory fsync failure")
+        real_fsync(descriptor)
+
+    def recording_open(path: object, flags: int, *args: object) -> int:
+        descriptor = real_open(path, flags, *args)
+        if flags & driver.os.O_DIRECTORY:
+            directory_fds.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(driver.os, "open", recording_open)
+    monkeypatch.setattr(driver.os, "fsync", failing_directory_fsync)
+    second = tmp_path / 'second.json'
+    driver._write_private_bytes(second, b"payload\\n")
+    assert second.read_bytes() == b"payload\\n"
+
+
+def test_passing_run_survives_a_directory_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """claim 마커는 receipt를 못 읽을 때의 소비 판정 근거다 — 반드시 남아야 한다."""
+
+    source = (
+        Path(__file__).resolve().parents[2] / 'scripts/m05_isolated_e2e.py'
+    ).read_text(encoding="utf-8")
+
+    # claim 직후에 마커를 남긴다 — launcher가 receipt 부재 시 이걸로
+    # "실행권을 소비했는가"를 판정한다.
+    claim = source.index('claim_m05_isolated_harness_ledger(ledger_root=')
+    marker = source.index('_write_private_bytes(output / "claimed"')
+    assert marker > claim
+    tail = source[claim:marker]
+    # 사이에 실패 가능한 문장이 끼면 claim과 마커가 갈라진다.
+    assert "_fail(" not in tail
+
+    launcher = _LAUNCHER_PATH.read_text(encoding='utf-8')
+    assert '[[ ! -e "$output_dir/claimed" ]]' in launcher
