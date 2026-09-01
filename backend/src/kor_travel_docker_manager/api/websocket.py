@@ -98,6 +98,15 @@ _REAUTH_JITTER_RATIO = 0.2
 # 상태 broadcast 주기(초).
 _STATUS_BROADCAST_INTERVAL_SECONDS = 2.0
 
+# ConnectionManager.broadcast()가 client 하나로의 send를 기다리는 상한(초).
+#
+# TCP 버퍼가 가득 찬 죽은-그러나-닫히지-않은 피어(노트북 절전, 네트워크 단절)는
+# send_text를 예외 없이 매달리게 만든다 — 죽은 peer는 TCP 재전송 타임아웃(tcp_retries2,
+# 보통 13~30분)까지, zero-window인 살아있는 peer는 문자 그대로 무기한. broadcast는
+# status_broadcast_loop가 직접 await하는 유일한 fan-out이라, 이 상한이 없으면 그 시간
+# 동안 다른 모든 client의 상태 갱신이 함께 멈춘다(GM-15).
+_BROADCAST_SEND_TIMEOUT_SECONDS = 3.0
+
 # ws_logs의 blocking docker read 전용 pool. 기본 pool(asyncio.to_thread)을 쓰면 idle
 # container의 미회수 reader가 metrics_collector·log cleanup의 to_thread까지 굶긴다.
 _LOG_STREAM_MAX_WORKERS = 8
@@ -312,7 +321,22 @@ class ConnectionManager:
             return
         for connection in list(self.active_connections):
             try:
-                await connection.send_text(payload)
+                await asyncio.wait_for(
+                    connection.send_text(payload), timeout=_BROADCAST_SEND_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                logger.warning(
+                    "Dropping WebSocket client after send timed out (%.1fs) — "
+                    "peer likely wedged (dead-but-not-closed transport)",
+                    _BROADCAST_SEND_TIMEOUT_SECONDS,
+                )
+                self.disconnect(connection)
+                # 목록에서만 지우면 이 연결을 만든 핸들러(예: ws_status)의 자기
+                # receive 루프는 이 사실을 모른 채 계속 park된다 — 60초 재인가도
+                # 계속 성공해 zombie handler로 남는다. 명시적으로 닫아 그 루프를
+                # 깨운다(best-effort — 이미 매달린 소켓이라 close 자체도 실패할 수
+                # 있지만, 그때도 무기한 대기하지 않는다).
+                await _close_best_effort(connection, code=WS_CLOSE_INTERNAL_ERROR)
             except Exception as e:  # noqa: BLE001 — 예외 종류를 좁히면 dead connection이 샌다.
                 logger.warning("Dropping WebSocket client after send failure: %s", e)
                 self.disconnect(connection)

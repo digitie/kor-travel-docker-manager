@@ -31,7 +31,7 @@
 | GM-12 | `[x]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
 | GM-13 | `[x]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
 | GM-14 | `[x]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
-| GM-15 | `[ ]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
+| GM-15 | `[x]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
 | GM-16 | `[ ]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
 | GM-17 | `[ ]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화 |
 | GM-18 | `[ ]` | P2 | M | generality | REVISED | mock | 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환 |
@@ -886,6 +886,32 @@ post_backup 감사 실패 시 500 승격 여부, collector cleanup to_thread —
 **검증 노트** (구현 시 본문보다 우선):
 
 문제 사실 확인: broadcast(websocket.py:313-315)는 `for connection in list(self.active_connections): await connection.send_text(payload)`로 타임아웃 없는 직렬 전송이고, 유일한 격리 장치인 `except Exception`(:316)은 예외를 던지는 소켓만 잡는다 — wedged transport는 예외 없이 websockets legacy의 `drain()`에 park되므로 이 guard가 절대 발동하지 않는다. status_broadcast_loop(:334)가 이를 직접 await하므로 공유 루프 전체가 정지한다는 주장도 정확하다. 스택 확인: pyproject.toml `uvicorn ^0.28.0`/`websockets ^12.0`, 파일 자체 주석(:83)이 legacy websockets_impl을 명시. 반박 각도 검증: (a) uvicorn 기본 ws ping(20s/20s)이 hang을 bound한다는 반론은 성립하지 않는다 — keepalive_ping의 `await self.ping()`이 pong 타임아웃을 arm하기 전에 같은 `_drain_lock`/`drain()`에 park된다. (b) accept/close 경로엔 `_WS_HANDSHAKE_TIMEOUT_SECONDS`(:71,:138,:155)와 `_REJECT_CLOSE_TIMEOUT_SECONDS`(:76)가 있어 "fan-out에만 없다"는 비대칭 서술도 정확. (c) 기존 테스트 test_broadcast_isolates_failing_connection(test_ws_contract.py:311)은 raise하는 send만 커버하고 hang하는 send는 미커버. (d) 계약 충돌 없음 — C7 close 코드 계약(:24-29)은 거절/인증 코드 규정이고, M05는 PinVi/Map pin/rebuild 규율로 무관하며, decisions.md에 ws 백프레셔 ADR 없음. (e) effort M 타당: wrapper는 작지만 hanging-send 회귀 테스트 + docs 동기화 포함하면 M. 경미한 정정 2건(verdict 불변): ① "커널 keepalive 타임아웃"이 아니라 죽은 peer는 TCP 재전송 타임아웃(tcp_retries2, ~13-30분), zero-window인 살아있는 peer는 문자 그대로 무기한 — 오히려 주장을 강화. ② 구현 시 active_connections에서 제거만 하면 ws_status handler가 zombie가 된다(receive() park + 60초 재인가 계속 성공) — drop 시 소켓 abort/close까지 해야 한다.
+
+**구현**: 개선안이 제시한 두 옵션(per-send timeout+drop, bounded queue+전용
+sender task) 중 더 가벼운 첫 번째를 택했다 — effort M 산정도 이쪽을 전제로
+한 것이었다. `ConnectionManager.broadcast()`의 `await connection.send_text(payload)`를
+`await asyncio.wait_for(connection.send_text(payload), timeout=_BROADCAST_SEND_TIMEOUT_SECONDS)`로
+감쌌다(3초, 개선안이 제시한 2~5초 범위 안). `TimeoutError`를 새 except
+절로 잡아 `self.disconnect(connection)`으로 목록에서 지운다 — 여기까지는
+개선안 그대로다. 검증 노트의 정정 ②를 반영해 그 뒤에 `_close_best_effort(
+connection, code=WS_CLOSE_INTERNAL_ERROR)`를 추가했다: `_accept_and_close`/
+`ws_status`의 `finally`가 이미 쓰는 이 파일 자체의 기존 best-effort bounded
+close 헬퍼를 그대로 재사용해, 목록에서만 지우면 그 연결을 만든 핸들러(예:
+`ws_status`)가 자기 receive 루프에서 계속 park된 채 zombie로 남는 문제(60초
+재인가도 계속 성공)를 막았다 — close 자체가 이미 매달린 소켓이라 실패할 수
+있지만 그것도 같은 헬퍼의 bounded timeout(`_WS_HANDSHAKE_TIMEOUT_SECONDS`)
+안에서 best-effort로 끝난다. 기존 `except Exception`(실제로 예외를 던지는
+전송 실패) 분기는 건드리지 않았다 — 그 경우는 전송이 이미 실패를 보고했으므로
+추가 close가 검증 노트의 지적 대상이 아니다.
+
+회귀 테스트 1건 추가(`test_broadcast_drops_a_hanging_connection_instead_of_blocking_forever`)
+— 예외 없이 영원히 완료되지 않는 `send_text`(`asyncio.Event().wait()`로
+흉내)를 가진 연결 하나가 다른 두 연결의 수신을 막지 않는지, 그리고
+`close()`가 실제로 `WS_CLOSE_INTERNAL_ERROR`로 호출됐는지 모두 확인한다.
+테스트 자체가 실제로 3초씩 기다리지 않도록 `_BROADCAST_SEND_TIMEOUT_SECONDS`를
+0.05초로 monkeypatch했다. mutation으로 `_close_best_effort` 호출을 제거해
+재검증 — 전용 테스트가 `closed_with`가 `None`으로 남아 정확히 실패, 원복 후
+재통과. 전체 backend 1375 passed, 2 skipped, ruff 통과.
 
 
 ## GM-16: 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다

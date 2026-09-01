@@ -298,14 +298,24 @@ def test_reject_settles_between_accept_and_close(monkeypatch):
 
 
 class _FakeConnection:
-    def __init__(self, fail: bool = False):
+    def __init__(self, fail: bool = False, hang: bool = False):
         self.fail = fail
+        self.hang = hang
         self.received: list[str] = []
+        self.closed_with: int | None = None
 
     async def send_text(self, payload: str) -> None:
+        if self.hang:
+            # 예외 없이 영원히 완료되지 않는 send — TCP 버퍼가 가득 찬 죽은-그러나
+            # -닫히지-않은 피어를 흉내낸다(GM-15). asyncio.wait_for의 취소로만
+            # 풀린다.
+            await asyncio.Event().wait()
         if self.fail:
             raise RuntimeError("transport gone")
         self.received.append(payload)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed_with = code
 
 
 def test_broadcast_isolates_failing_connection():
@@ -320,6 +330,28 @@ def test_broadcast_isolates_failing_connection():
     assert len(ok_a.received) == 1
     assert len(ok_b.received) == 1
     assert manager.active_connections == [ok_a, ok_b]
+
+
+def test_broadcast_drops_a_hanging_connection_instead_of_blocking_forever(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """GM-15: 예외 없이 영원히 완료되지 않는 send(죽은-그러나-닫히지-않은 피어)가
+    다른 client의 수신을 막으면 안 되고, active_connections에서만 지우는 게
+    아니라 실제로 close까지 해야 한다 — 안 그러면 그 연결을 만든 핸들러(예:
+    ws_status)가 자기 receive 루프에서 계속 park된 채 zombie로 남는다."""
+
+    monkeypatch.setattr(ws_mod, "_BROADCAST_SEND_TIMEOUT_SECONDS", 0.05)
+    manager = ws_mod.ConnectionManager()
+    ok_a, wedged, ok_b = _FakeConnection(), _FakeConnection(hang=True), _FakeConnection()
+    for conn in (ok_a, wedged, ok_b):
+        manager.register(conn)
+
+    asyncio.run(manager.broadcast({"type": "status", "containers": []}))
+
+    assert len(ok_a.received) == 1
+    assert len(ok_b.received) == 1
+    assert manager.active_connections == [ok_a, ok_b]
+    assert wedged.closed_with == ws_mod.WS_CLOSE_INTERNAL_ERROR
 
 
 def test_broadcast_skips_unserializable_payload():
