@@ -116,13 +116,21 @@ def atomic_write_json(
     )
 
 
-def insecure_mode_allowed(env_name: str) -> bool:
-    """개발 전용 완화 env를 하나의 규칙으로 파싱한다.
+def env_flag(env_name: str) -> bool:
+    """boolean opt-in env 하나를 정본 규칙으로 파싱한다.
 
     이전에는 모듈마다 `.strip() == "1"`과 `== "1"`이 섞여 있었다(공백·개행이
     섞인 shell export 값의 취급이 모듈마다 달랐다는 뜻). `.strip()`을 정본으로
     삼는다 — 이 값은 사람이 명시적으로 "1"을 export하는 opt-in 토글이라 앞뒤
-    공백을 관대하게 봐도 의미가 달라지지 않는다.
+    공백을 관대하게 봐도 의미가 달라지지 않는다. 개발 완화용(`insecure_mode_allowed`)과
+    강화용(예: GM-19의 `KTDM_METRICS_REQUIRE_KEY`) 토글이 방향은 반대라도 파싱
+    규칙 자체는 같으므로 여기 하나로 모은다.
     """
 
     return os.environ.get(env_name, "").strip() == "1"
+
+
+def insecure_mode_allowed(env_name: str) -> bool:
+    """개발 전용 완화 env를 하나의 규칙으로 파싱한다. 규칙 자체는 `env_flag` 참고."""
+
+    return env_flag(env_name)

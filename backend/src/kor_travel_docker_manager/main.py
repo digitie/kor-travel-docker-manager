@@ -43,6 +43,7 @@ from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.public_api_key_service import (
     PUBLIC_API_KEY_QUERY_PARAM,
 )
+from kor_travel_docker_manager.services.secure_state_file import env_flag
 
 # 프로젝트 루트 .env(gitignore 대상)에서 prod 공개 주소/CORS 설정을 읽어온다.
 # 개발 환경에서 .env가 없으면 아래 기본값(전체 허용)을 그대로 사용한다.
@@ -370,7 +371,7 @@ def _metrics_auth_gate(
     request: Request,
     key: Annotated[str | None, Query(alias=PUBLIC_API_KEY_QUERY_PARAM)] = None,
 ) -> None:
-    if os.environ.get("KTDM_METRICS_REQUIRE_KEY", "").strip() == "1":
+    if env_flag("KTDM_METRICS_REQUIRE_KEY"):
         require_public_api_key(request, key)
 
 
