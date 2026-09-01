@@ -213,8 +213,8 @@ def test_runtime_setup_uses_ordered_safe_subphases() -> None:
         "runtime_setup_network",
         "runtime_setup_credentials",
         "runtime_setup_map_config",
-        "runtime_setup_pinvi_config",
         "runtime_setup_playwright_runner_image",
+        "runtime_setup_pinvi_config",
     )
     positions = [source.index(f'phase = "{phase}"') for phase in phases]
 
@@ -1758,6 +1758,11 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
         pinvi_source_revision = "d" * 40
 
     monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
+    monkeypatch.setattr(
+        driver,
+        "_assert_playwright_runner_matches_pinned_source",
+        lambda _root: None,
+    )
     monkeypatch.setattr(
         driver, "_assert_current_m05_execution_is_runnable", lambda _expected: _Execution()
     )

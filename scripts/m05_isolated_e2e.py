@@ -96,7 +96,7 @@ _FORENSIC_CAPTURE_LIMIT = 256 * 1024
 # 브라우저 캐시(/ms-playwright)가 적중한다(적대 리뷰 실측: 구 digest v1.60.0은
 # chromium 1223만 실어 pinned 1.62.1의 1234 요구와 어긋났고, 본문 브라우저
 # 기동에서 무조건 소각될 운명이었다). 정합은 아래 claim 전 검사로 기계화한다.
-_PLAYWRIGHT_RUNNER_IMAGE = "mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"  # noqa: E501
+_PLAYWRIGHT_RUNNER_IMAGE = "mcr.microsoft.com/playwright@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e"
 # Compose config은 trusted input이라도 외부 CLI 출력이다. JSON parser에 넘기는
 # 원문은 이 상한만 보관하고, 초과분도 끝까지 drain해 child pipe를 막지 않는다.
 _COMPOSE_CONFIG_OUTPUT_LIMIT = 256 * 1024
@@ -1711,6 +1711,52 @@ def _map_application_head(map_root: Path) -> str:
     return heads[0]
 
 
+def _assert_playwright_runner_matches_pinned_source(pinvi_root: Path) -> None:
+    """runner 핀과 pinned PinVi source의 playwright-core 핀을 기계로 결박한다.
+
+    두 핀은 서로 독립적으로 움직일 수 있는 사람-선언이다. 이미지의
+    driverVersion == lockfile의 playwright-core 버전이어야 /ms-playwright
+    브라우저 캐시가 적중한다 — 불일치는 body 브라우저 기동에서 무조건
+    소각으로만 드러난다(적대 리뷰 실측: v1.60.0 digest vs 1.62.1 lockfile).
+    """
+
+    try:
+        lock_value = json.loads(
+            (pinvi_root / "package-lock.json").read_text(encoding="utf-8")
+        )
+        pinned_playwright = (
+            lock_value.get("packages", {})
+            .get("node_modules/playwright-core", {})
+            .get("version")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        _fail("runtime_setup_playwright_runner_image")
+    if not isinstance(pinned_playwright, str) or not pinned_playwright:
+        _fail("runtime_setup_playwright_runner_image")
+    runner_info_raw = _command(
+        "/usr/bin/docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "/bin/cat",
+        _PLAYWRIGHT_RUNNER_IMAGE,
+        "/ms-playwright/.docker-info",
+        capture=True,
+    )
+    try:
+        runner_driver_version = json.loads(runner_info_raw).get("driverVersion")
+    except (TypeError, json.JSONDecodeError):
+        _fail("runtime_setup_playwright_runner_image")
+    if runner_driver_version != pinned_playwright:
+        _fail(
+            "runtime_setup_playwright_runner_image",
+            diagnostic=(
+                "runner driverVersion != pinned playwright-core "
+                f"({runner_driver_version} != {pinned_playwright})"
+            ),
+        )
+
+
 def _compose_model_profiles(
     *,
     root: Path,
@@ -2351,46 +2397,7 @@ def main(expected_revision: str, output: Path) -> int:
             )
         except _PhaseError:
             _command("/usr/bin/docker", "pull", _PLAYWRIGHT_RUNNER_IMAGE)
-        # runner 핀과 pinned PinVi source의 playwright-core 핀은 서로 독립적으로
-        # 움직일 수 있는 두 사람-선언이다. 사람 규율 대신 기계로 결박한다:
-        # 이미지의 driverVersion == lockfile의 playwright-core 버전이어야
-        # /ms-playwright 브라우저 캐시가 적중한다(불일치는 body 브라우저 기동
-        # 에서 무조건 소각으로만 드러난다 — 적대 리뷰 실측).
-        try:
-            lock_value = json.loads(
-                (pinvi_root / "package-lock.json").read_text(encoding="utf-8")
-            )
-            pinned_playwright = (
-                lock_value.get("packages", {})
-                .get("node_modules/playwright-core", {})
-                .get("version")
-            )
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            _fail("runtime_setup_playwright_runner_image")
-        if not isinstance(pinned_playwright, str) or not pinned_playwright:
-            _fail("runtime_setup_playwright_runner_image")
-        runner_info_raw = _command(
-            "/usr/bin/docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "/bin/cat",
-            _PLAYWRIGHT_RUNNER_IMAGE,
-            "/ms-playwright/.docker-info",
-            capture=True,
-        )
-        try:
-            runner_driver_version = json.loads(runner_info_raw).get("driverVersion")
-        except (TypeError, json.JSONDecodeError):
-            _fail("runtime_setup_playwright_runner_image")
-        if runner_driver_version != pinned_playwright:
-            _fail(
-                "runtime_setup_playwright_runner_image",
-                diagnostic=(
-                    "runner driverVersion != pinned playwright-core "
-                    f"({runner_driver_version} != {pinned_playwright})"
-                ),
-            )
+        _assert_playwright_runner_matches_pinned_source(pinvi_root)
         phase = "ledger_claim"
         claim_attempted = True
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
