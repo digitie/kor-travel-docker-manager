@@ -1229,6 +1229,14 @@ keep 4/7/7). geo application은 앱 레벨
 경계). **실제 role DB로 덮어쓰는 복원 CLI는 아직 없다** — scratch DB 리허설
 (`rehearse-restore`)은 있다. 아래 "아직 안 된 것" 참고.
 
+**GM-13**: manifest 하나가 손상·형식 위반·role 불일치여도 이 목록 전체를 지우지
+않는다 — 그 항목만 `{"state": "unreadable", "filename", "reason"}` 행으로 격하되고
+나머지 정상 manifest는 그대로 보인다(디렉터리 자체를 못 읽는 경우만 `503`).
+같은 작업에서, `POST /api/v1/backups/{role}`가 시작하는 `pg_dump`는 role lock
+아래에서도 `pg_stat_activity`를 먼저 물어 같은 role의 DB에 이미 pg_dump가
+돌고 있으면 새 pg_dump를 시작하지 않고 거부한다 — role lock(파일 기반)은
+backend 재기동에서 살아남지 못하지만 컨테이너 안 pg_dump는 계속 돌 수 있어서다.
+
 #### `offbox-sync` — 백업과 pin registry 보존본을 원격 호스트로 옮기고 재검증한다 (GM-08)
 
 로컬 백업만으로는 호스트 디스크 유실에서 살아남지 못한다. `runtime-pins.json`과

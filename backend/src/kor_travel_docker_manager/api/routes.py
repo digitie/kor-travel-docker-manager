@@ -55,7 +55,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
     create_standalone_backup,
-    list_standalone_backups,
+    list_standalone_backups_for_display,
 )
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
@@ -136,19 +136,23 @@ def get_backups(role: str | None = Query(default=None)):
     over the real application database itself is still unimplemented by design
     (deferred pending a writer stop/start procedure). This listing is the
     authority: job records are process-local and vanish on restart, manifests do
-    not."""
+    not.
+
+    GM-13: a single corrupt/malformed/wrong-role manifest no longer erases this
+    whole listing with a 409 — it degrades to one `{"state": "unreadable", ...}`
+    row and every other manifest still renders. Only a role's backup directory
+    itself being unreadable (e.g. a permission problem) is fail-close (503) —
+    that is a storage-layer problem, not a single bad file."""
     roles = BACKUP_ROLES if role is None else (role,)
     if role is not None and role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
     backups: list[dict[str, Any]] = []
     for backup_role in roles:
         try:
-            backups.extend(
-                manifest.to_json() for manifest in list_standalone_backups(backup_role)
-            )
+            backups.extend(list_standalone_backups_for_display(backup_role))
         except StandaloneBackupError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-    backups.sort(key=lambda item: item["created_at_unix"])
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    backups.sort(key=lambda item: item.get("created_at_unix", 0))
     return {"backups": backups}
 
 

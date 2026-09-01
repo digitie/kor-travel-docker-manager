@@ -105,6 +105,15 @@ class StandaloneBackupNotFoundError(StandaloneBackupError):
     (예: ``"no backup" in str(exc)``)을 대체한다."""
 
 
+class StandaloneBackupInProgressError(StandaloneBackupError):
+    """GM-13: 같은 role의 DB에 이미 pg_dump가 돌고 있어 새 백업을 시작할 수 없다.
+
+    role lock(파일 기반 fcntl)만으로는 막지 못하는 경우를 잡는다 — 그 lock을
+    쥔 프로세스가 재기동으로 죽으면 커널이 lock을 즉시 풀어주지만, 컨테이너 안의
+    pg_dump 자체는 `docker exec`가 timeout을 전파하지 않아 서버 쪽에서 계속 돈다
+    (진행 상황은 create_standalone_backup의 docstring 참고)."""
+
+
 @dataclass(frozen=True)
 class BackupManifest:
     role: BackupRole
@@ -279,7 +288,10 @@ def create_standalone_backup(
     client만 중단되고 컨테이너 안의 `pg_dump`는 서버 쪽에서 계속 실행된다**(docker
     exec는 timeout을 안쪽 프로세스로 전파하지 않는다) — 같은 role을 바로 재시도하면
     두 pg_dump가 동시에 돌아 DB에 이중 부하가 걸릴 수 있으므로, 같은 role의 동시
-    실행은 아래 파일 락으로 막는다.
+    실행은 아래 파일 락으로 막는다. 이 락은 **프로세스 재기동에서는 살아남지
+    못한다** — backend가 pg_dump 도중 재기동되면 락은 즉시 풀리지만 컨테이너
+    안의 pg_dump는 계속 돈다. 그래서 락을 잡은 뒤에도 `pg_stat_activity`로
+    실제 실행 중인 pg_dump가 있는지 한 번 더 확인한다(`GM-13`).
     """
 
     container_name, database_name = _role_config(role)
@@ -291,6 +303,13 @@ def create_standalone_backup(
     _prepare_backup_root(root, policy)
 
     with _role_lock(root):
+        if _pg_dump_already_running(container_name, port, admin_name, database_name):
+            raise StandaloneBackupInProgressError(
+                f"a pg_dump for {role} ({database_name}) is already running on the "
+                "server — this usually means the backend restarted mid-backup and "
+                "lost track of the job; wait for the existing pg_dump to finish "
+                "instead of starting a second one against the same database"
+            )
         created_at_unix = int(time.time())
         filename = f"{role}-{created_at_unix}.dump"
         dest_path = root / filename
@@ -414,6 +433,14 @@ def list_standalone_backups(
     *,
     backup_root: Path | None = None,
 ) -> list[BackupManifest]:
+    """fail-close 목록 — manifest 하나라도 읽기 실패·형식 위반·role 불일치면
+    예외를 던진다. `gc_standalone_backups`/`plan_standalone_restore`처럼 이
+    목록을 기준으로 "무엇을 지울지/복원할지" 판단하는 mutation-adjacent
+    코드 전용이다: 손상된 manifest를 조용히 건너뛰면 그 백업이 `manifests`에도
+    없고(gc의 kept 집합에서 빠짐) `_FILENAME` 패턴에 맞는 `.dump`가 그대로
+    남아 orphan으로 오인돼 지워질 수 있다. 순수 조회(`GET /api/v1/backups`)는
+    `list_standalone_backups_for_display`를 쓴다."""
+
     _role_config(role)
     root = _resolve_backup_root(role, backup_root)
     if not root.is_dir():
@@ -422,6 +449,39 @@ def list_standalone_backups(
         _read_manifest(path, expected_role=role) for path in sorted(root.glob("*.manifest"))
     ]
     return sorted(manifests, key=lambda item: item.created_at_unix)
+
+
+def list_standalone_backups_for_display(
+    role: BackupRole,
+    *,
+    backup_root: Path | None = None,
+) -> list[dict[str, object]]:
+    """GM-13: `GET /api/v1/backups` 전용 — manifest 하나가 손상돼도 나머지
+    목록은 그대로 보여준다. geo 백업 세트를 map 디렉터리에 잘못 복사하는 것
+    같은 흔한 실수 하나로, 장애 중 가장 필요한 순간에 멀쩡한 백업 전체 목록이
+    사라지는 것을 막는다. 디렉터리 자체를 못 읽는 경우(예: 권한 문제)만
+    `StandaloneBackupError`를 던진다 — 이건 라우트가 503로 옮긴다."""
+
+    _role_config(role)
+    root = _resolve_backup_root(role, backup_root)
+    if not root.is_dir():
+        return []
+    try:
+        manifest_paths = sorted(root.glob("*.manifest"))
+    except OSError as exc:
+        raise StandaloneBackupError(f"{role} backup directory is unreadable: {exc}") from exc
+
+    readable: list[tuple[int, dict[str, object]]] = []
+    unreadable: list[dict[str, object]] = []
+    for path in manifest_paths:
+        try:
+            manifest = _read_manifest(path, expected_role=role)
+        except StandaloneBackupError as exc:
+            unreadable.append({"state": "unreadable", "filename": path.name, "reason": str(exc)})
+            continue
+        readable.append((manifest.created_at_unix, manifest.to_json()))
+    readable.sort(key=lambda item: item[0])
+    return [row for _, row in readable] + unreadable
 
 
 def gc_standalone_backups(
@@ -1241,6 +1301,49 @@ def _query_db_size(container_name: str, port: int, admin_name: str, database_nam
     if not output.isdigit():
         raise StandaloneBackupError(f"{database_name} size query returned an unexpected value")
     return int(output)
+
+
+def _pg_dump_already_running(
+    container_name: str, port: int, admin_name: str, database_name: str
+) -> bool:
+    """GM-13: role lock은 프로세스 재기동에서 살아남지 못한다 — fcntl lock은 그
+    lock을 쥔 프로세스가 죽으면 커널이 즉시 풀어준다. 재기동 직후 같은 role을
+    다시 시작하면 파일 lock은 비어 있어도 컨테이너 안 이전 pg_dump가 여전히
+    돌고 있을 수 있다(`docker exec`는 timeout을 안쪽 프로세스로 전파하지 않는다).
+    pg_dump는 기본적으로 `application_name`을 `pg_dump`로 설정하므로, 새 pg_dump를
+    시작하기 전에 서버 쪽 `pg_stat_activity`를 직접 물어 이미 실행 중인지 확인한다."""
+
+    if not _DATABASE_IDENTIFIER.fullmatch(database_name):
+        raise StandaloneBackupError("database name is invalid")
+    output = _run_checked(
+        [
+            "docker",
+            "exec",
+            "--user",
+            "postgres",
+            container_name,
+            "psql",
+            "--username",
+            admin_name,
+            "--port",
+            str(port),
+            "--dbname",
+            "postgres",
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--command",
+            "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pg_dump' "
+            f"AND datname = '{database_name}'",
+        ],
+        label=f"{database_name} pg_dump activity check",
+        timeout=30,
+    ).decode("ascii", "replace").strip()
+    if not output.isdigit():
+        raise StandaloneBackupError(
+            f"{database_name} pg_dump activity check returned an unexpected value"
+        )
+    return int(output) > 0
 
 
 def _discover_alembic_head(

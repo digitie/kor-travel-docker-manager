@@ -195,10 +195,18 @@ export type StandaloneBackupManifest = {
   alembic_head: string | null;
 };
 
+/** GM-13: manifest 파일 하나가 손상·형식 위반·role 불일치여도 `GET /api/v1/backups`
+ * 전체를 409로 지우지 않고, 그 항목만 이 형태로 성공한 항목들 사이에 끼워 보여준다. */
+export type UnreadableBackupEntry = {
+  state: 'unreadable';
+  filename: string;
+  reason: string;
+};
+
 /** `GET /api/v1/backups` 응답. 생성/보존 정리는 `ktdctl db-backup` CLI 전용이라
  * 이 API는 mutation을 노출하지 않는 읽기 전용 목록이다. */
 export type BackupListResponse = {
-  backups: StandaloneBackupManifest[];
+  backups: (StandaloneBackupManifest | UnreadableBackupEntry)[];
 };
 
 /** `POST /api/v1/backups/{role}`의 202 응답이자 `GET .../jobs/{id}` 폴링 응답.

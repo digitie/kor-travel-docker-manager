@@ -9,9 +9,16 @@ import {
   LatestBackupJobResponse,
   OffboxSyncStatusResponse,
   StandaloneBackupManifest,
+  UnreadableBackupEntry,
   apiJson,
   postJson,
 } from '@/lib/api';
+
+function isUnreadableBackupEntry(
+  entry: StandaloneBackupManifest | UnreadableBackupEntry
+): entry is UnreadableBackupEntry {
+  return 'state' in entry && entry.state === 'unreadable';
+}
 import { HumanError, humanizeError } from '@/lib/errors';
 import CopyableCommand from './CopyableCommand';
 import InlineError from './InlineError';
@@ -177,7 +184,11 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
   }, [onClose]);
 
   const backups = data?.backups ?? [];
-  const everyBackup = allBackups?.backups ?? [];
+  // 신선도 판정은 손상된 manifest를 "없다"로 잘못 세지 않도록 읽을 수 있는 항목만 본다
+  // — 읽지 못한 항목 자체는 위 표에서 별도 경고 행으로 여전히 보인다.
+  const everyBackup = (allBackups?.backups ?? []).filter(
+    (entry): entry is StandaloneBackupManifest => !isUnreadableBackupEntry(entry)
+  );
   const running = job?.state === 'running';
 
   // role별 최신 백업 시각. 기대 주기가 있는 role만 신선도를 판정한다.
@@ -409,37 +420,45 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
                 </tr>
               </thead>
               <tbody>
-                {backups.map((backup) => (
-                  <tr
-                    className="border-t border-line"
-                    key={`${backup.role}-${backup.backup_filename}`}
-                  >
-                    <td data-label="생성 시각" className="py-2 px-3 text-ink break-all">
-                      {formatTimestamp(backup.created_at_unix)}
-                    </td>
-                    <td data-label="역할" className="py-2 px-3 text-ink font-mono">{backup.role}</td>
-                    <td data-label="크기" className="py-2 px-3 text-ink break-all">
-                      {formatBytes(backup.byte_size)}
-                    </td>
-                    <td data-label="alembic" className="py-2 px-3 text-ink font-mono break-all">
-                      {backup.alembic_head ?? '—'}
-                    </td>
-                    <td
-                      className="py-2 px-3 text-secondary font-mono text-xs break-all"
-                      data-label="SHA-256"
-                      title={backup.sha256}
+                {backups.map((backup) =>
+                  isUnreadableBackupEntry(backup) ? (
+                    <tr className="border-t border-line" key={`unreadable-${backup.filename}`}>
+                      <td className="py-2 px-3 text-danger break-all" colSpan={6}>
+                        읽을 수 없는 백업 기록: {backup.filename} — {backup.reason}
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr
+                      className="border-t border-line"
+                      key={`${backup.role}-${backup.backup_filename}`}
                     >
-                      {backup.sha256.slice(0, 12)}…
-                    </td>
-                    <td
-                      className="py-2 px-3 text-secondary font-mono text-xs break-all"
-                      data-label="파일명"
-                      title={backup.backup_filename}
-                    >
-                      {backup.backup_filename}
-                    </td>
-                  </tr>
-                ))}
+                      <td data-label="생성 시각" className="py-2 px-3 text-ink break-all">
+                        {formatTimestamp(backup.created_at_unix)}
+                      </td>
+                      <td data-label="역할" className="py-2 px-3 text-ink font-mono">{backup.role}</td>
+                      <td data-label="크기" className="py-2 px-3 text-ink break-all">
+                        {formatBytes(backup.byte_size)}
+                      </td>
+                      <td data-label="alembic" className="py-2 px-3 text-ink font-mono break-all">
+                        {backup.alembic_head ?? '—'}
+                      </td>
+                      <td
+                        className="py-2 px-3 text-secondary font-mono text-xs break-all"
+                        data-label="SHA-256"
+                        title={backup.sha256}
+                      >
+                        {backup.sha256.slice(0, 12)}…
+                      </td>
+                      <td
+                        className="py-2 px-3 text-secondary font-mono text-xs break-all"
+                        data-label="파일명"
+                        title={backup.backup_filename}
+                      >
+                        {backup.backup_filename}
+                      </td>
+                    </tr>
+                  )
+                )}
               </tbody>
             </table>
           </div>

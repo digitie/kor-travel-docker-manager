@@ -12,9 +12,11 @@ import kor_travel_docker_manager.services.standalone_backup as standalone_backup
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
+    StandaloneBackupInProgressError,
     create_standalone_backup,
     gc_standalone_backups,
     list_standalone_backups,
+    list_standalone_backups_for_display,
     plan_standalone_restore,
     rehearse_standalone_restore,
 )
@@ -40,6 +42,8 @@ def _happy_run_checked():
             return _CMD_JSON
         if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
             return _ENV_OUTPUT
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"0\n"
         if arguments[:3] == ["docker", "exec", "--user"] and "pg_dump" in arguments:
             return b""
         if arguments[:2] == ["docker", "exec"] and "pg_restore" in arguments:
@@ -162,6 +166,8 @@ def test_create_standalone_backup_rejects_empty_dump_file(
             return json.dumps(["postgres", "-p", "12800"]).encode("utf-8")
         if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
             return b"POSTGRES_USER=pinvi\n"
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"0\n"
         if "pg_dump" in arguments:
             return b""
         if "pg_restore" in arguments:
@@ -192,6 +198,8 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
             return json.dumps(["postgres", "-p", "12700"]).encode("utf-8")
         if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
             return b"POSTGRES_USER=kor_travel_map\n"
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"0\n"
         if "pg_dump" in arguments:
             return b""
         if "pg_restore" in arguments:
@@ -211,6 +219,36 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
     cleanup.assert_called_once()
     assert not (root / ".map_application-1000.dump.copying").exists()
     assert not (root / "map_application-1000.dump").exists()
+
+
+def test_create_standalone_backup_refuses_when_a_pg_dump_is_already_running(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """GM-13: role lock은 프로세스 재기동에서 살아남지 못한다 — 재기동 직후 같은
+    role을 다시 시작했을 때 컨테이너 안에 이전 pg_dump가 여전히 돌고 있으면
+    (pg_stat_activity로 확인) 새 pg_dump를 시작하지 않고 즉시 거부해야 한다."""
+
+    root = tmp_path / "geo"
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if arguments[:2] == ["docker", "inspect"] and "Cmd" in arguments[3]:
+            return _CMD_JSON
+        if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
+            return _ENV_OUTPUT
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"1\n"
+        raise AssertionError(f"unexpected command after in-progress guard: {arguments}")
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", Mock(side_effect=run_checked))
+    _fake_time(monkeypatch)
+    subprocess_run = Mock(side_effect=AssertionError("pg_dump must not start"))
+    monkeypatch.setattr(standalone_backup.subprocess, "run", subprocess_run)
+
+    with pytest.raises(StandaloneBackupInProgressError, match="already running"):
+        create_standalone_backup("geo", backup_root=root)
+    subprocess_run.assert_not_called()
+    assert not (root / "geo-1000.dump").exists()
+    assert not (root / "geo-1000.manifest").exists()
 
 
 def test_discover_port_parses_dash_p_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -299,6 +337,79 @@ def test_list_standalone_backups_sorted_by_created_at(tmp_path: Path) -> None:
 
 def test_list_standalone_backups_empty_when_root_missing(tmp_path: Path) -> None:
     assert list_standalone_backups("geo", backup_root=tmp_path / "does-not-exist") == []
+
+
+def test_list_standalone_backups_for_display_degrades_a_single_corrupt_manifest(
+    tmp_path: Path,
+) -> None:
+    """GM-13: manifest 하나가 손상돼도(여기서는 role 불일치) 나머지 정상 manifest는
+    여전히 보이고, 손상된 것은 예외 대신 {"state": "unreadable", ...} 행이 된다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    (root / "geo-1000.manifest").write_text(
+        json.dumps(_manifest_payload("geo", 1000, "geo-1000.dump")), encoding="utf-8"
+    )
+    # role 불일치 — map 세트가 geo 디렉터리에 잘못 복사된 것과 같은 실제 사고를 재현.
+    (root / "geo-999.manifest").write_text(
+        json.dumps(_manifest_payload("map_application", 999, "geo-999.dump")),
+        encoding="utf-8",
+    )
+
+    rows = list_standalone_backups_for_display("geo", backup_root=root)
+
+    assert len(rows) == 2
+    assert rows[0]["backup_filename"] == "geo-1000.dump"
+    assert rows[1]["state"] == "unreadable"
+    assert rows[1]["filename"] == "geo-999.manifest"
+    assert "role does not match" in rows[1]["reason"]
+
+
+def test_list_standalone_backups_for_display_empty_when_root_missing(tmp_path: Path) -> None:
+    assert (
+        list_standalone_backups_for_display("geo", backup_root=tmp_path / "does-not-exist")
+        == []
+    )
+
+
+def test_list_standalone_backups_for_display_all_corrupt_returns_no_readable_rows(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    (root / "geo-1.manifest").write_text("not json", encoding="utf-8")
+
+    rows = list_standalone_backups_for_display("geo", backup_root=root)
+
+    assert rows == [
+        {
+            "state": "unreadable",
+            "filename": "geo-1.manifest",
+            "reason": "manifest is unreadable: geo-1.manifest",
+        }
+    ]
+
+
+def test_list_standalone_backups_for_display_raises_when_the_directory_itself_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """디렉터리 자체를 못 읽는 것(권한 문제 등)은 개별 manifest 손상과 성격이 다르다
+    — 이건 여전히 fail-close다(라우트가 503로 옮긴다). drvfs 마운트에서는 실제
+    chmod 권한 거부가 재현되지 않을 수 있어(conftest.py 참고) glob 자체를
+    OSError로 monkeypatch해 결정적으로 재현한다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+
+    def raising_glob(self: Path, pattern: str):
+        if self == root:
+            raise OSError("Permission denied")
+        return []
+
+    monkeypatch.setattr(standalone_backup.Path, "glob", raising_glob)
+
+    with pytest.raises(StandaloneBackupError, match="unreadable"):
+        list_standalone_backups_for_display("geo", backup_root=root)
 
 
 def test_list_standalone_backups_rejects_malformed_manifest(tmp_path: Path) -> None:

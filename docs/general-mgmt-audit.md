@@ -29,7 +29,7 @@
 | GM-10 | `[x]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
 | GM-11 | `[x]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
 | GM-12 | `[x]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
-| GM-13 | `[ ]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
+| GM-13 | `[x]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
 | GM-14 | `[ ]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
 | GM-15 | `[ ]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
 | GM-16 | `[ ]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
@@ -702,6 +702,46 @@ frontend type-check/lint 재실행으로 fix 검증. 전체 backend는 변경 �
 [수정 필요 2 — 이미 처리된 부분] "프론트가 404를 재기동 소실로 번역하게 한다"는 이미 사실상 구현돼 있다: frontend/src/lib/errors.ts:110-113이 BACKUP_JOB_NOT_FOUND를 "관리도구가 재기동되면 진행 기록은 사라집니다. 실제로 남은 백업은 아래 목록이 정본입니다"로 번역한다. job id는 POST 202 응답과 GET .../jobs(latest, BackupHistoryPanel.tsx:111-123)에서만 오므로 UI가 '잘못된 id'를 만들 경로가 없어 404 ≈ 재기동 소실이며, epoch 필드는 한계효용이 낮다. epoch보다는 [수정 1]의 submit 가드가 실제 사고(404 후 버튼 재활성화 → 재클릭 → 이중 dump)를 막는 본체다. 남는 실질 gap은 힌트 문구가 "작업이 컨테이너에서 계속 돌고 있을 수 있다"를 말하지 않는 것 정도로, 문자열 수정이면 된다.
 
 [effort] 목록 degrade(라우트 한정, list_standalone_backups는 gc/restore-plan 공용이므로 서비스 함수 분리 또는 플래그 필요) + 프론트 타입/필터 + submit 가드(psql 조회) + 테스트로 M 추정은 현실적. epoch/SQLite 영속화를 빼면 S+~M.
+
+**구현**: 검증 노트의 두 정정을 그대로 따랐다. (1) `list_standalone_backups`는
+손대지 않고 `gc_standalone_backups`/`plan_standalone_restore` 전용으로 남겼다
+(fail-close 유지 — 손상된 manifest를 조용히 건너뛰면 orphan 수거가 살아있는
+백업을 잘못 지울 위험이 있다는 검증 노트의 지적을 그대로 반영). 새 함수
+`list_standalone_backups_for_display()`를 추가해 `GET /api/v1/backups` 전용으로
+쓴다 — manifest 하나가 `_read_manifest()`에서 `StandaloneBackupError`를 던지면
+그 항목만 `{"state": "unreadable", "filename", "reason"}` dict로 격하하고 나머지
+정상 manifest는 그대로 반환한다. 디렉터리 자체를 못 읽는 경우(`root.glob()`
+자체가 `OSError`)만 여전히 예외를 던지고, 라우트가 이를 503으로 옮긴다(원래
+409였던 것에서 의미를 좁혔다 — "일부 손상"과 "전체 접근 불가"는 다른 심각도다).
+(2) "manifest 없는 최근 dump 파일" 시그니처는 검증 노트가 증명한 대로 폐기하고,
+`_pg_dump_already_running()`을 새로 추가해 `pg_stat_activity`에서
+`application_name = 'pg_dump' AND datname = <role의 database>`를 직접 물었다 —
+`create_standalone_backup()`이 role lock을 잡은 **직후, pg_dump를 시작하기
+전에** 이 검사를 통과해야만 진행한다. 이미 돌고 있으면 새 타입
+`StandaloneBackupInProgressError`(409)로 거부한다. `POST /backups/{role}`는
+비동기 job이라 이 거부는 라우트 자체를 바꾸지 않고 job 실패로 자연스럽게
+드러난다(`GET .../jobs/{id}`가 이미 job 실패를 보고하는 기존 경로를 그대로 탄다)
+— 검증 노트가 지적한 "submit 전 psql 조회"를 동기 라우트 가드가 아니라 job
+본문 안, role lock 아래에서 수행하는 것이 라우트를 막지 않으면서도 실제
+위험 구간(락 재기동 유실)을 정확히 덮는다.
+
+프론트는 `BackupListResponse.backups`를 `(StandaloneBackupManifest |
+UnreadableBackupEntry)[]` union으로 넓히고, `BackupHistoryPanel.tsx`가
+`isUnreadableBackupEntry()` 타입가드로 손상된 항목을 표에 별도 경고 행으로
+보여주며, freshness 판정(role별 최신 백업 시각)은 손상된 항목을 "없다"로
+잘못 세지 않도록 읽을 수 있는 항목만 걸러서 계산한다.
+
+회귀 테스트 8건 추가(`list_standalone_backups_for_display`의 부분 손상/전체
+손상/디렉터리 자체 unreadable/빈 디렉터리 4건, `create_standalone_backup`의
+in-progress 거부 1건, `test_api.py`의 라우트 레벨 degrade/503 2건 — 기존
+"manifest 손상 → 409" 가정 테스트 1건은 GM-13의 목적 자체와 모순돼 새 계약에
+맞게 다시 작성). 기존 `create_standalone_backup` happy-path/empty-file/
+copy-failure 테스트 3건은 새 pg_stat_activity 호출을 처리하도록 fake
+`_run_checked`에 분기를 추가해 통과시켰다. mutation으로 핵심 로직 2곳
+재검증: degrade의 try/except를 제거하자 전용 단위 테스트가 예상대로 실패,
+in-progress 가드를 무력화하자 전용 테스트가 예상대로 실패 — 둘 다 원복 후
+재통과 확인. frontend type-check/lint/build 모두 통과. 전체 backend
+1367 passed, 2 skipped, ruff 통과.
 
 
 ## GM-14: async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음

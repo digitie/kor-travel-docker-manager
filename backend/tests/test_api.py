@@ -1176,26 +1176,24 @@ def test_is_https_via_configured_public_origin(monkeypatch):
     assert _is_https(make_request("https", None)) is True
 
 
-@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
 def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
-    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
-
     login_client()
 
     def fake_list(role):
         return [
-            BackupManifest(
-                role=role,
-                created_at_unix=1000,
-                duration_sec=1.0,
-                byte_size=1,
-                sha256="a" * 64,
-                backup_filename=f"{role}-1000.dump",
-                instance="container:127.0.0.1:12345/db",
-                db_size_bytes=100,
-                toc_entry_count=2,
-                alembic_head="0001_head",
-            )
+            {
+                "role": role,
+                "created_at_unix": 1000,
+                "duration_sec": 1.0,
+                "byte_size": 1,
+                "sha256": "a" * 64,
+                "backup_filename": f"{role}-1000.dump",
+                "instance": "container:127.0.0.1:12345/db",
+                "db_size_bytes": 100,
+                "toc_entry_count": 2,
+                "alembic_head": "0001_head",
+            }
         ]
 
     mock_list.side_effect = fake_list
@@ -1215,24 +1213,22 @@ def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
     }
 
 
-@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
 def test_get_backups_filters_by_role(mock_list):
-    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
-
     login_client()
     mock_list.return_value = [
-        BackupManifest(
-            role="pinvi",
-            created_at_unix=1000,
-            duration_sec=1.0,
-            byte_size=1,
-            sha256="a" * 64,
-            backup_filename="pinvi-1000.dump",
-            instance="container:127.0.0.1:12345/db",
-            db_size_bytes=100,
-            toc_entry_count=2,
-            alembic_head="0001_head",
-        )
+        {
+            "role": "pinvi",
+            "created_at_unix": 1000,
+            "duration_sec": 1.0,
+            "byte_size": 1,
+            "sha256": "a" * 64,
+            "backup_filename": "pinvi-1000.dump",
+            "instance": "container:127.0.0.1:12345/db",
+            "db_size_bytes": 100,
+            "toc_entry_count": 2,
+            "alembic_head": "0001_head",
+        }
     ]
 
     response = client.get("/api/v1/backups?role=pinvi")
@@ -1266,17 +1262,86 @@ def test_get_backups_rejects_unknown_role():
     assert "not-a-real-role" in response.json()["detail"]
 
 
-@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
-def test_get_backups_surfaces_storage_error_as_conflict(mock_list):
-    from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
+def test_get_backups_degrades_a_single_corrupt_manifest_instead_of_hiding_everything(
+    mock_list,
+):
+    """GM-13: geo 백업 세트를 map 디렉터리에 잘못 복사하는 것 같은 흔한 실수 하나로
+    장애 중 가장 필요한 순간에 멀쩡한 백업 전체 목록이 사라지던 문제의 핵심 회귀
+    테스트. 손상된 manifest 1건은 200 응답 안에서 {"state": "unreadable", ...}
+    행으로 격하되고, 같은 role의 나머지 정상 manifest는 그대로 보인다."""
 
     login_client()
-    mock_list.side_effect = StandaloneBackupError("manifest is malformed: geo-1.dump.manifest.json")
+
+    def fake_list(role):
+        if role != "geo":
+            return []
+        return [
+            {
+                "role": "geo",
+                "created_at_unix": 1000,
+                "duration_sec": 1.0,
+                "byte_size": 1,
+                "sha256": "a" * 64,
+                "backup_filename": "geo-1000.dump",
+                "instance": "container:127.0.0.1:12500/kor_travel_geo",
+                "db_size_bytes": 100,
+                "toc_entry_count": 2,
+                "alembic_head": "0001_head",
+            },
+            {
+                "state": "unreadable",
+                "filename": "geo-999.manifest",
+                "reason": "manifest role does not match the requested role: geo-999.manifest",
+            },
+        ]
+
+    mock_list.side_effect = fake_list
 
     response = client.get("/api/v1/backups?role=geo")
 
-    assert response.status_code == 409
-    assert "malformed" in response.json()["detail"]
+    assert response.status_code == 200
+    backups = response.json()["backups"]
+    assert len(backups) == 2
+    readable = [row for row in backups if row.get("state") != "unreadable"]
+    unreadable = [row for row in backups if row.get("state") == "unreadable"]
+    assert readable == [
+        {
+            "role": "geo",
+            "created_at_unix": 1000,
+            "duration_sec": 1.0,
+            "byte_size": 1,
+            "sha256": "a" * 64,
+            "backup_filename": "geo-1000.dump",
+            "instance": "container:127.0.0.1:12500/kor_travel_geo",
+            "db_size_bytes": 100,
+            "toc_entry_count": 2,
+            "alembic_head": "0001_head",
+        }
+    ]
+    assert unreadable == [
+        {
+            "state": "unreadable",
+            "filename": "geo-999.manifest",
+            "reason": "manifest role does not match the requested role: geo-999.manifest",
+        }
+    ]
+
+
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
+def test_get_backups_surfaces_unreadable_directory_as_service_unavailable(mock_list):
+    """디렉터리 자체를 못 읽는 것(권한 문제 등)은 개별 manifest 손상과 다르다 —
+    이건 여전히 fail-close(503)다. 이전 GM-13 이전 동작은 409였다."""
+
+    from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+
+    login_client()
+    mock_list.side_effect = StandaloneBackupError("geo backup directory is unreadable: ...")
+
+    response = client.get("/api/v1/backups?role=geo")
+
+    assert response.status_code == 503
+    assert "unreadable" in response.json()["detail"]
 
 
 def test_get_backups_requires_authentication():
