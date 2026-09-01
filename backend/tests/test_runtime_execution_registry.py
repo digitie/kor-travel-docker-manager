@@ -91,6 +91,41 @@ def test_registry_writer_refuses_a_symlinked_state_directory(tmp_path: Path) -> 
         )
 
 
+def test_write_fsyncs_the_state_directory_after_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GM-10 회귀: 이전에는 이 registry만 파일 fsync 뒤 디렉터리 fsync가 없어서
+    crash 시 os.replace의 디렉터리 항목 갱신이 유실될 수 있었다(특히
+    block-execution 경로 — terminal 차단 기록이 사라지면 fail-open이 된다).
+    지금은 secure_state_file.atomic_write_json에 위임하므로 파일 핸들과 디렉터리
+    fd가 모두 fsync돼야 한다."""
+
+    import os as os_module
+
+    from kor_travel_docker_manager.services import secure_state_file
+
+    fsynced_fds: list[int] = []
+    real_fsync = os_module.fsync
+
+    def spy_fsync(fd: int) -> None:
+        fsynced_fds.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(secure_state_file.os, "fsync", spy_fsync)
+
+    registry = migrate_execution_registry(
+        pins=_pins(), manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
+    )
+    write_runtime_execution_registry(
+        registry,
+        path=tmp_path / "private.json",
+        public_path=tmp_path / "public.json",
+    )
+
+    # private.json 하나당 파일 fsync 1 + 디렉터리 fsync 1, public.json도 마찬가지다.
+    assert len(fsynced_fds) == 4
+
+
 def test_execution_verify_requires_an_exact_public_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

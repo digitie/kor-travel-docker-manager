@@ -19,7 +19,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,6 +26,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.secure_state_file import (
+    atomic_write_json,
+    insecure_mode_allowed,
+)
 from kor_travel_docker_manager.services.trusted_install import (
     TRUSTED_INSTALL_ROOT,
     TRUSTED_PUBLIC_ROOT,
@@ -627,11 +630,15 @@ def _effective_uid() -> int | None:
 
 
 def _insecure_mode_allowed() -> bool:
-    """개발 환경에서만 mode 검사를 완화한다. 소유자 검사는 완화하지 않는다."""
+    """개발 환경에서만 mode 검사를 완화한다. 소유자 검사는 완화하지 않는다.
+
+    GM-10: env 파싱 규칙(.strip() == "1")의 정본은 services/secure_state_file.py다
+    — 이 함수가 그 규칙의 원본이었다.
+    """
 
     if _effective_uid() == 0:
         return False
-    return os.environ.get(RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV, "").strip() == "1"
+    return insecure_mode_allowed(RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV)
 
 
 def _assert_registry_file_integrity(path: Path) -> None:
@@ -746,41 +753,13 @@ def _atomic_write_json(
     mode: int,
     directory_mode: int | None = None,
 ) -> None:
-    """같은 디렉터리의 임시 파일에 쓰고 fsync 뒤 원자 교체한다."""
+    """같은 디렉터리의 임시 파일에 쓰고 fsync 뒤 원자 교체한다.
 
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    if directory_mode is not None:
-        # 파일 mode만 맞아도 부모가 traverse 불가면 읽는 쪽은 lstat조차 못 한다.
-        try:
-            os.chmod(parent, directory_mode)
-        except OSError:
-            pass
-    body = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=False) + "\n"
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(body)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
-    try:
-        directory_fd = os.open(str(parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(directory_fd)
-    except OSError:
-        pass
-    finally:
-        os.close(directory_fd)
+    GM-10: 정본은 services/secure_state_file.py다 — 이 함수가 원본이었고
+    execution registry 등이 여기서 빠진 디렉터리 fsync 없이 따로 구현했었다.
+    """
+
+    atomic_write_json(path, payload, mode=mode, directory_mode=directory_mode)
 
 
 def publish_runtime_pins(

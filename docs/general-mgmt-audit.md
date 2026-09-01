@@ -26,7 +26,7 @@
 | GM-07 | `[x]` | P1 | L | correctness | REVISED | n150 live | 백업 복원 CLI 부재 — restore-plan까지만 있고 실제 복구·리허설 경로는 수동 문서 절차뿐 |
 | GM-08 | `[x]` | P2 | M | operability | CONFIRMED | mock | off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음 |
 | GM-09 | `[x]` | P2 | S | correctness | REVISED | mock | 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화 |
-| GM-10 | `[ ]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
+| GM-10 | `[x]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
 | GM-11 | `[ ]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
 | GM-12 | `[ ]` | P2 | M | ux | REVISED | mock | API 오류 표면 4종 분열 — app 예외 핸들러로 단일 envelope을 강제하고 프론트 조회 오류 표시를 통일 |
 | GM-13 | `[ ]` | P2 | M | operability | REVISED | mock | 백업 API 견고화 — manifest 1개 손상이 목록 전체를 409로 지우고, 재기동 후 이중 pg_dump를 막는 가드가 없다 |
@@ -399,6 +399,38 @@ import 근거가 틀렸다 — 리뷰가 직접 재현: 모듈 scope import는 �
 **검증 노트** (구현 시 본문보다 우선):
 
 핵심 결함은 라인 단위로 사실이다. runtime_execution_registry.py:453-468 `_write`는 mkstemp→os.fsync(handle.fileno())→chmod→os.replace 후 디렉터리 fsync가 없다. 대조군인 runtime_pin_registry.py:777-786(`directory_fd = os.open(str(parent), os.O_RDONLY)` 후 `os.fsync(directory_fd)`)과 runtime_pair_rotation.py:114-118은 디렉터리 fsync를 수행하므로 execution registry만 빠진 것이 맞다. 호출부도 보상하지 않는다: cli.py:634(migrate-execution-v6), 665(rebind-execution), 705(block-execution)는 journal 없이 `write_runtime_execution_registry`만 호출한다 — 특히 705는 terminal block 기록이라 crash 시 rename 유실이 '차단 해제'라는 fail-open으로 나타나 태스크 서술보다 오히려 심각하다. 단 rotate-pair 경로(runtime_pair_rotation.py:277-283)는 durable intent+재시도("intent는 남고 retry가 target 전체를 다시 publish한다")로 부분 완화되어 있으므로 무완화 노출은 CLI 3개 경로다. 복제 수치도 정확하다: mkstemp 정확히 12곳(admin_password_service:330, map_application_300:1613/1728/1779, compose_service:754, pinvi_database_role_credentials:383, legacy_override_retirement:1254, runtime_execution_registry:456, runtime_pair_rotation:104, runtime_pin_registry:763, runtime_pin_request:307, standalone_backup:877), `_fsync_directory` 사설 구현 5곳+`_fsync_directory_descriptor`(pinvi_bootstrap_credential:859). insecure-mode 파싱 차이도 확인: runtime_pin_registry.py:637 `os.environ.get(ENV, "").strip() == "1"` vs runtime_execution_registry.py:371·runtime_pair_rotation.py:60 `os.environ.get(ENV) == "1"`. O_NOFOLLOW 정책 4종 혼재 확인(bare: runtime_execution_registry:304; getattr(...,0) 무음 폴백: legacy_override_retirement:449; getattr(...,None)+하드 에러: pinvi_database_role_credentials:254-256; hasattr 게이트: c6c_deployment:2143). standalone_backup.py:876-889는 dir fsync와 mode 설정이 둘 다 없다. 계약 충돌 없음: decisions.md에 파일 I/O 사설 구현을 요구하는 ADR이 없고 durable receipt/journal ADR들은 오히려 fsync 의존적이라 정합하며, M05 동결은 frozen-input 규율이지 모듈 동결이 아니고 m05_isolated_harness.py는 파일 목록에서 제외돼 있어 적절하다. 실행 시 주의 2건(태스크 취지 '최상 구현으로 상향 평준화'와 일치하므로 REVISED까지는 아님): (1) pinned_runtime_generation.py:3756-3780 `_write_public_json`은 dir_fd 상대 O_EXCL|O_NOFOLLOW+fsync(directory fd)로 제안된 path 기반 시그니처보다 강하다 — 프리미티브에 dir_fd 변형을 추가하거나 이 writer는 치환에서 제외해야 하강 평준화를 피한다. (2) runtime_pin_registry `_atomic_write_json`의 `directory_mode` 파라미터(745-751)를 공용 시그니처가 수용해야 한다. 첫 커밋의 즉시 fsync 수정은 cli.py 3개 경로(특히 block-execution) 기준으로 검증하는 것이 맞고, effort M은 12곳+기존 테스트 보정 기준으로 현실적이다.
+
+**구현**: `services/secure_state_file.py`를 신설해 `atomic_write_bytes`/
+`atomic_write_json`(`mode`·`directory_mode`·`dir_fsync` 파라미터 — 검증 노트
+(2)가 지적한 `directory_mode` 수용을 반영), `fsync_directory`,
+`insecure_mode_allowed`(`.strip() == "1"`을 정본으로 통일)를 모았다. **첫
+번째로** `runtime_execution_registry.py`의 실제 버그(`_write`가 디렉터리
+fsync 없이 `os.replace`만 함 — cli.py의 migrate-execution-v6/rebind-execution/
+block-execution 세 경로가 무완화로 노출, 특히 block-execution의 crash 유실은
+terminal 차단이 "풀린" fail-open으로 나타남)를 고쳤다. 이미 올바르게 구현돼
+있던 `runtime_pin_registry.py`(원본 패턴의 출처)와 `runtime_pair_rotation.py`도
+같은 정본으로 옮겨 셋을 단일 구현으로 모았다 — 특히 `runtime_pair_rotation.py`는
+옮기며 발견한 별도 결함도 같이 고쳤다: 디렉터리 fsync가 파일 교체와 **같은**
+try/except 안에 있어서 `os.replace`가 이미 성공한 뒤 디렉터리 fsync만 실패해도
+임시 파일 unlink+재raise로 떨어져 "성공한 쓰기"를 실패로 잘못 보고했다 —
+`secure_state_file.atomic_write_json`은 디렉터리 fsync를 별도 단계로 두고 그
+실패를 조용히 삼키므로 이 오탐도 함께 해소된다.
+
+검증 노트가 지적한 실행 시 주의 2건을 그대로 반영해 범위를 좁혔다:
+`pinned_runtime_generation.py`의 `_write_public_json`(dir_fd 상대
+O_EXCL|O_NOFOLLOW + directory fd fsync)은 이 프리미티브보다 강한 보장을 가지므로
+치환하지 않는다(하강 평준화 방지). `admin_password_service`·
+`map_application_300`(3곳)·`compose_service`·`pinvi_database_role_credentials`·
+`legacy_override_retirement`·`standalone_backup`·`pinvi_bootstrap_credential`의
+나머지 mkstemp 자리와 O_NOFOLLOW 4종 혼재·`open_verified_readonly` 통합은 각자
+다른 소유권·symlink 정책을 갖고 있어(검증 노트가 4가지 혼재를 확인) 개별 확인
+없이 일괄 치환하면 조용한 보안 완화가 될 위험이 있다고 판단해 이번 패스에서는
+다루지 않는다 — 후속 태스크로 남긴다.
+
+회귀 테스트 16건 추가(secure_state_file 단위 테스트 15건 + execution registry의
+디렉터리 fsync 회귀 1건). execution registry의 원래 버그(디렉터리 fsync 0회)를
+mutation으로 재현해 새 테스트가 잡는 것을 확인했고, 프리미티브 자체의 dir_fsync
+분기도 mutation으로 검증함. 전체 backend 1327 passed.
 
 
 ## GM-11: docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포

@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -32,6 +31,10 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     load_runtime_pin_registry,
     utc_timestamp,
     write_runtime_pin_registry,
+)
+from kor_travel_docker_manager.services.secure_state_file import (
+    atomic_write_json,
+    insecure_mode_allowed,
 )
 from kor_travel_docker_manager.services.trusted_install import (
     TRUSTED_STATE_ROOT,
@@ -57,12 +60,14 @@ def runtime_pair_rotation_path() -> Path:
 
 
 def _insecure_mode_allowed() -> bool:
-    """공유 마운트 개발 fixture만 명시적으로 완화하고 root에서는 절대 열지 않는다."""
+    """공유 마운트 개발 fixture만 명시적으로 완화하고 root에서는 절대 열지 않는다.
+
+    GM-10: env 파싱 규칙(.strip() == "1")의 정본은 services/secure_state_file.py다.
+    """
 
     geteuid = getattr(os, "geteuid", None)
-    return (
-        (geteuid is None or geteuid() != 0)
-        and os.environ.get(RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV) == "1"
+    return (geteuid is None or geteuid() != 0) and insecure_mode_allowed(
+        RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV
     )
 
 
@@ -100,30 +105,18 @@ def _require_private_parent(path: Path) -> None:
 
 
 def _atomic_write(path: Path, payload: dict[str, object]) -> None:
+    # GM-10: 예전에는 디렉터리 fsync가 파일 교체와 같은 try/except 안에 있어,
+    # os.replace가 이미 성공한 뒤에 디렉터리 fsync만 실패해도 임시 파일
+    # unlink+재raise로 떨어져 "성공한 쓰기"를 실패로 잘못 보고했다.
+    # secure_state_file.atomic_write_json은 디렉터리 fsync를 별도 단계로 두고
+    # 그 실패를 조용히 삼킨다 — 파일은 이미 올바르게 교체됐으므로 그래야 맞다.
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
     _require_private_parent(path)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_CLOEXEC)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    atomic_write_json(path, payload, mode=0o600)
 
 
 @dataclass(frozen=True)
