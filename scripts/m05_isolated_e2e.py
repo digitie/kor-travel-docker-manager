@@ -2563,8 +2563,10 @@ def main(expected_revision: str, output: Path) -> int:
                     "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_ENABLED=true",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_READ_TOKEN={read_token}",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_ACK_TOKEN={ack_token}",
-                    "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_POLL_SECONDS="
-                    f"{_PINVI_RECONCILIATION_POLL_SECONDS}",
+                    (
+                        "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION"
+                        f"_POLL_SECONDS={_PINVI_RECONCILIATION_POLL_SECONDS}"
+                    ),
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_EXPECTED_OPENAPI_SHA256={service_openapi_sha256}",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_EXPECTED_SOURCE_REVISION={service_source_revision}",
                 )
