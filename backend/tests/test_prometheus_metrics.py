@@ -162,6 +162,39 @@ def test_collector_keeps_detailed_resource_observation_and_prometheus_series(mon
     assert 'interface="eth0"' in rendered
 
 
+def test_collect_metrics_persists_save_metric_off_the_event_loop(monkeypatch):
+    """GM-14: collect_metrics()의 `metrics_service.save_metric(...)` 호출도
+    `asyncio.to_thread`로 감싸져 있다(_collect_loop의 cleanup_old_metrics와
+    같은 이유 — 동기 DB 쓰기가 event loop를 막지 않게 하기 위함) — 하지만
+    test_metrics.py의 대응 테스트는 일부러 `collector._running = False`로
+    _collect_loop 본문(=collect_metrics, Docker client mocking 필요)을
+    건드리지 않는다. 여기서는 이 파일에 이미 있는 `_FakeDockerClient`로
+    collect_metrics()를 실제로 실행시키면서, save_metric을 단순 no-op으로
+    몽키패치하는 대신 event loop 위에서 실행되지 않았음을 증명하는
+    capture_loop_state 기법으로 대체해 end-to-end로 검증한다."""
+
+    ran_without_a_running_loop = None
+
+    def capture_loop_state(*args, **kwargs):
+        nonlocal ran_without_a_running_loop
+        try:
+            asyncio.get_running_loop()
+            ran_without_a_running_loop = False
+        except RuntimeError:
+            ran_without_a_running_loop = True
+
+    fake_container = _FakeContainer()
+    fake_client = _FakeDockerClient(fake_container)
+    collector = MetricsCollector()
+
+    collector.set_docker_client_provider(lambda: fake_client)
+    monkeypatch.setattr(metrics_service, "save_metric", capture_loop_state)
+
+    asyncio.run(collector.collect_metrics())
+
+    assert ran_without_a_running_loop is True
+
+
 def test_prometheus_distinguishes_unavailable_exit_code_and_pid_values():
     collector = MetricsCollector()
     container_id = next(iter(MANAGED_CONTAINERS))

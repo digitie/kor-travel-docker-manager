@@ -2,6 +2,49 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — SQLite WAL 모드 안전 fallback + `save_metric` to_thread 테스트 커버리지 (GM-14 후속 2건 종결)
+
+`docs/tasks.md`에 남아 있던 GM-14 후속 항목 두 개를 모두 처리했다.
+
+**(1) WAL 모드.** `database.py`의 `connect` 리스너는 지금까지 `busy_timeout`
+PRAGMA만 걸고 WAL은 개발 체크아웃이 drvfs/9p 위에 있을 수 있다는 이유로 켜지
+않았다. 이번에 두 번째 `connect` 리스너 `_set_sqlite_wal_mode`를 추가해 매
+연결마다 `PRAGMA journal_mode=WAL`을 시도한 뒤, 그 성패를 예외 여부가 아니라
+`PRAGMA journal_mode` 재조회 값으로 판정한다 — SQLite가 WAL 전환이 안 될 때
+항상 예외를 던지는 게 아니라 조용히 이전 모드를 유지하는 경우가 있기 때문이다
+(실측 확인: `:memory:` DB가 정확히 이 경우이며, 예외 없이 항상 `"memory"`
+모드를 유지한다 — 이번 fallback 경로 테스트의 결정적이고 항상 재현 가능한
+재료로 그대로 썼다). 실제로 WAL이 안 된 경우 경고를 한 번만 남기고(매 연결마다
+스팸하지 않도록 모듈 전역 플래그로 억제) rollback-journal 모드로 계속 진행하며,
+`busy_timeout`은 이 성패와 무관하게 항상 걸린다. `PRAGMA` 실행 자체가
+`OSError`/`sqlite3.OperationalError`를 던지는 경우도 같은 fallback 경로로
+처리한다. `test_database.py`에 기존 `busy_timeout` 3계층 테스트와 같은 구조로
+7개 테스트를 추가했다: 일반 파일 기반 연결에서의 WAL 성공, `:memory:` 기반
+fallback(경고 로그 1건 포함), PRAGMA 자체가 예외를 던지는 경로(dbapi 커넥션을
+흉내 낸 얇은 래퍼로 재현 — `sqlite3.Connection`은 내장 메서드가 read-only
+속성이라 인스턴스에 직접 monkeypatch할 수 없었다), 경고가 여러 연결에 걸쳐도
+한 번만 남는지, 성공/fallback 양쪽에서 `busy_timeout`이 그대로 유지되는지,
+그리고 `event.contains(...)`로 실제 엔진에 올바른 이벤트로 배선됐는지까지
+확인한다. 새 리스너를 통째로 no-op으로 되돌려 5개 테스트가 실제로 실패하는
+것을 먼저 확인했고, "경고 once" 가드만 좁게 제거해도 해당 테스트 하나가
+정확히 그 이유로 실패하는 것도 별도로 확인한 뒤 복원해 재통과시켰다.
+
+**(2) `save_metric` to_thread 커버리지.** `metrics_collector.py`의
+`collect_metrics()`가 `metrics_service.save_metric(...)`을
+`asyncio.to_thread`로 감싸는 부분(GM-14 원 커밋)에 전용 테스트가 없었다 —
+같은 파일의 `cleanup_old_metrics` to_thread 테스트는 `collector._running`을
+미리 `False`로 둬서 Docker client mocking이 필요한 `collect_metrics()` 본문을
+일부러 건드리지 않기 때문이다. `test_prometheus_metrics.py`에 이미 있던
+`_FakeDockerClient`/`_FakeContainer`로 `collect_metrics()`를 end-to-end로 실행하는
+새 테스트를 추가하되, 기존 테스트가 쓰던 no-op `save_metric` monkeypatch 대신
+`asyncio.get_running_loop()`가 `RuntimeError`를 던지는지로 to_thread 워커
+스레드에서 실행됐음을 증명하는 기법(`_collect_loop`의 대응 테스트와 동일 기법)으로
+교체했다. `metrics_collector.py`에서 `asyncio.to_thread` 래핑을 일시적으로 제거해
+이 새 테스트가 실제로 실패하는 것을 확인한 뒤 복원해 재통과를 확인했다.
+
+전체 backend 테스트(1488 passed, 2 skipped)와 `ruff check`가 모두 깨끗하다.
+`docs/tasks.md`의 해당 항목은 완전히 해소돼 제거했다.
+
 ## 2026-09-02 — admin-auth-envelope 적대적 리뷰 2인 반영
 
 바로 아래 항목(3d0a740d, `admin.py`/`auth.py` bare-string `HTTPException` 5곳을
