@@ -278,9 +278,38 @@ set -e
 # 일치한 `result.json`만 수용한다. launcher fallback가 있으면 그 파일이 언제나 권위다.
 result_path="$output_dir/result.json"
 launcher_result_path="$output_dir/launcher-result.json"
-post_snapshot="$(snapshot_runtime_pin 2>/dev/null || true)"
-post_execution_snapshot="$(snapshot_runtime_execution 2>/dev/null || true)"
+# 관측 실패와 registry 회전을 같은 값으로 접으면 **관측자의 딸꾹질이 피관측자를
+# 태운다**. driver 실행 **전**에는 같은 함수의 exit status를 살려 쓰는데(위 참조)
+# 후에는 `|| true`가 그걸 지워, fork 실패·ENOMEM·venv 경합 같은 일시 실패에서
+# receipt_validation_status가 초기값 1(= "receipt가 아예 없다")에 머물고 곧장
+# `pin block-execution`으로 간다 — receipt를 **읽어보지도 않고** 소각한다.
+# 회전은 안 났으므로 CLI의 current_matches가 참이라 소각이 실제로 성공한다.
+# 한 번 재시도하고, 그래도 관측이 안 되면 그 사실을 회전과 구분해 남긴다.
+snapshot_pair() {
+  local pin execution
+  pin="$(snapshot_runtime_pin 2>/dev/null)" || return 1
+  execution="$(snapshot_runtime_execution 2>/dev/null)" || return 1
+  printf '%s
+%s
+' "$pin" "$execution"
+}
+post_observation=""
+post_observed=0
+for _attempt in 1 2; do
+  if post_observation="$(snapshot_pair)"; then
+    post_observed=1
+    break
+  fi
+done
+post_snapshot="$(printf '%s' "$post_observation" | sed -n 1p)"
+post_execution_snapshot="$(printf '%s' "$post_observation" | sed -n 2p)"
 receipt_validation_status=1
+if [[ "$post_observed" != 1 ]]; then
+  # 관측 불가는 회전의 증거가 아니다. 소각은 registry가 **실제로** 이 launch
+  # snapshot을 떠났음을 증명했을 때만 정당하다.
+  echo "M05 runtime snapshot is unobservable after the driver" >&2
+  exit 1
+fi
 if [[ ! -e "$launcher_result_path" && "$post_snapshot" == "$initial_snapshot" && "$post_execution_snapshot" == "$initial_execution_snapshot" ]]; then
   set +e
   /usr/bin/python3 -I -S - "$result_path" "$expected_revision" "$initial_pinset" "$initial_execution" "$driver_status" <<'PY'
@@ -545,11 +574,17 @@ if (
 payload = (
     json.dumps(
         {
+            # 이 봉투는 receipt가 아니라 **launcher의 표식**이다. 종전에는
+            # receipt와 같은 harness 태그를 달고, tenant의 phase 네임스페이스에
+            # 없는 토큰을 phase/driver_phase로 발명했다 — 같은 harness 이름으로
+            # 두 파일이 서로 다른 스키마를
+            # 주장하고, launcher가 관측한 적 없는 phase를 주장하는 셈이었다.
+            # 범용 runner가 tenant 어휘를 발명하는 것은 방금 제거한 결함과 같은
+            # 계열이므로(DIAGNOSTIC_TOKEN 주석 참조) phase 키를 아예 뺀다.
             "cleanup_failed": True,
-            "driver_phase": "launcher_safe_result_unavailable",
-            "harness": "m05-isolated-bridge-v1",
+            "harness": "m05-isolated-launcher-fallback-v1",
+            "launcher_outcome": "safe_result_unavailable",
             "manager_source_revision": revision,
-            "phase": "launcher_safe_result_unavailable",
             "pinset_sha256": pinset,
             "execution_identity_sha256": execution,
             "status": "blocked",
