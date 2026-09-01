@@ -14,3 +14,4 @@
 - [/] ktdctl UI migration — public generation 관측과 남은 M5~M7 UI 이관을, root CLI authority를 유지한 채 완료한다.
 - [/] journal/attestation drift — Manager generation receipt와 Map attestation의 execution binding field를 함께 정렬한다.
 - [ ] non-root backend — root ownership을 유지하면서 service-group 접근 경계와 root/서비스 계정 mutation 검증을 완료한다.
+- [/] 범용 관리툴 감사 GM 트랙 — main `9916b33` 기준 전체 분석에서 나온 개선 태스크 20건(P1 7건 포함)을 [`docs/general-mgmt-audit.md`](general-mgmt-audit.md)의 우선순위 순으로 이행한다. 작업 브랜치 `refactor/general-mgmt-improvements`.
