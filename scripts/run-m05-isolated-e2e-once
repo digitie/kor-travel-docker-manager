@@ -311,7 +311,7 @@ PHASES = frozenset(
         "m05_case_decision_http_failed", "m05_case_invalid",
         "m05_case_lookup_http_failed", "m05_fixture_invalid",
         "m05_pinvi_receipt_blocked", "m05_pinvi_receipt_http_failed",
-        "m05_pinvi_receipt_invalid", "network_inspect_invalid",
+        "m05_pinvi_receipt_invalid", "m05_pinvi_receipt_not_ready", "network_inspect_invalid",
         "network_subnet_unavailable", "pair_contract_invalid", "pinvi_auth_invalid",
         "pinvi_login_http_failed", "pinvi_manager_admission_contract_invalid",
         "ports_unavailable", "result_write_failed", "runtime_command_failed",

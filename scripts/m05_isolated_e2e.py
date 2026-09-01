@@ -90,6 +90,12 @@ _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 _FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
 _FORENSIC_CAPTURE_LIMIT = 256 * 1024
+# PinVi reconciliation worker의 폴링 주기(초). driver가 PinVi에 주입하는 값과
+# receipt 대기 창을 **같은 상수**에서 파생시킨다 — 두 곳에 따로 적으면 창이
+# 주기보다 짧아져 receipt가 아직 없는 순간에 단발 실패한다(정합성 스윕 high).
+_PINVI_RECONCILIATION_POLL_SECONDS = 1
+# 워커가 lease→apply→ACK→receipt까지 가는 데 허용할 여유 주기 수.
+_PINVI_RECEIPT_READINESS_ATTEMPTS = 30
 # m04/m05 attestation이 검사·실행하는 Playwright runner의 핀 digest. body에서
 # 부재가 드러나면 무조건 소각이므로, 실행권 소비 전에 존재·버전 정합을 보장한다.
 # v1.62.1-noble — pinned PinVi source의 playwright-core와 driverVersion이 같아야
@@ -178,6 +184,7 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "m05_pinvi_receipt_blocked",
         "m05_pinvi_receipt_http_failed",
         "m05_pinvi_receipt_invalid",
+        "m05_pinvi_receipt_not_ready",
         "map_application_start_failed",
         "map_fresh_init_failed",
         "map_health_status_failed",
@@ -1173,6 +1180,7 @@ def _http_json(
     opener: Any | None = None,
     failure_phase: str = "runtime_http_failed",
     http_error_phase: str | None = None,
+    not_found_phase: str | None = None,
 ) -> dict[str, object]:
     try:
         parsed = urlsplit(url)
@@ -1207,9 +1215,13 @@ def _http_json(
         request_opener = opener.open if opener is not None else _LOOPBACK_OPENER.open
         with request_opener(request, timeout=10) as response:
             raw = response.read(2_000_000)
-    except HTTPError:
+    except HTTPError as error:
         # HTTP status와 loopback transport 오류를 같은 원문 없는 enum으로 합치면
         # 다음 one-shot 후보가 어느 startup 경계를 보정해야 하는지 알 수 없다.
+        # 404("아직 없음")는 호출자가 요청할 때만 별도 enum으로 분리한다 —
+        # 그래야 대기 루프가 404만 재시도하고 401/403/5xx는 즉시 종료한다.
+        if not_found_phase is not None and error.code == 404:
+            _fail(not_found_phase)
         _fail(http_error_phase or failure_phase)
     except (OSError, URLError):
         # 원문 HTTP status/body/socket error는 receipt에 기록하지 않는다. 대신 caller가
@@ -1476,16 +1488,38 @@ def _resolve_m05_case(
 
 
 def _wait_for_pinvi_receipt(*, api_url: str, opener: Any, event_id: str) -> int:
-    """PinVi detail 계약의 `applied`만 성공으로 수용하고 나머지는 즉시 종료한다."""
+    """PinVi detail 계약의 `applied`만 성공으로 수용하고 나머지는 즉시 종료한다.
 
-    data = _data(
-        _http_json(
-            f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}",
-            headers={},
-            opener=opener,
-            failure_phase="m05_pinvi_receipt_http_failed",
-        )
+    Map decision commit과 PinVi worker의 다음 polling 사이에는 receipt도
+    delivery-attempt row도 없는 창이 있고, 그 창에서 PinVi detail 라우트는
+    **404**를 준다(schemas: status는 blocked|applied 두 값뿐이라 'pending'
+    응답은 존재하지 않는다 — 적대 리뷰). 종전 구현은 이름과 달리 단발
+    GET이라 그 창에 걸리면 즉시 실패했다. 재시도 대상은 404 하나이고
+    401/403/5xx·transport 오류·blocked·계약 위반은 여전히 즉시 terminal이다.
+    """
+
+    endpoint = (
+        f"{api_url.rstrip('/')}/admin/feature-reference-reconciliations/{event_id}"
     )
+    for attempt in range(_PINVI_RECEIPT_READINESS_ATTEMPTS):
+        try:
+            data = _data(
+                _http_json(
+                    endpoint,
+                    headers={},
+                    opener=opener,
+                    failure_phase="m05_pinvi_receipt_http_failed",
+                    not_found_phase="m05_pinvi_receipt_not_ready",
+                )
+            )
+            break
+        except _PhaseError as error:
+            if (
+                error.phase != "m05_pinvi_receipt_not_ready"
+                or attempt + 1 == _PINVI_RECEIPT_READINESS_ATTEMPTS
+            ):
+                raise
+            time.sleep(_PINVI_RECONCILIATION_POLL_SECONDS)
     status = data.get("status")
     if status == "blocked":
         _fail("m05_pinvi_receipt_blocked")
@@ -2533,7 +2567,10 @@ def main(expected_revision: str, output: Path) -> int:
                     "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_ENABLED=true",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_READ_TOKEN={read_token}",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_ACK_TOKEN={ack_token}",
-                    "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_POLL_SECONDS=1",
+                    (
+                        "PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION"
+                        f"_POLL_SECONDS={_PINVI_RECONCILIATION_POLL_SECONDS}"
+                    ),
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_EXPECTED_OPENAPI_SHA256={service_openapi_sha256}",
                     f"PINVI_KOR_TRAVEL_MAP_FEATURE_REFERENCE_RECONCILIATION_EXPECTED_SOURCE_REVISION={service_source_revision}",
                 )
